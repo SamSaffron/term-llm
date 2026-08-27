@@ -1,6 +1,29 @@
 import type { AppConfig } from '../app/config';
 import type { Endpoints } from '../api/endpoints';
 
+export function positionPopover(
+  trigger: HTMLElement,
+  panel: HTMLDialogElement,
+  stretchOnMobile = false,
+): void {
+  if (!panel.open) panel.showModal();
+  if (innerWidth <= 540) {
+    panel.style.left = 'calc(0.5rem + var(--safe-left))';
+    if (stretchOnMobile) panel.style.right = 'calc(0.5rem + var(--safe-right))';
+    panel.style.top = 'auto';
+    panel.style.bottom = 'calc(0.5rem + var(--safe-bottom))';
+    return;
+  }
+  const margin = 6;
+  const rect = trigger.getBoundingClientRect();
+  const panelRect = panel.getBoundingClientRect();
+  if (stretchOnMobile) panel.style.right = 'auto';
+  panel.style.bottom = 'auto';
+  panel.style.left = `${Math.max(margin, Math.min(rect.left, innerWidth - panelRect.width - margin))}px`;
+  const below = rect.bottom + 4;
+  panel.style.top = `${below + panelRect.height <= innerHeight - margin ? below : Math.max(margin, rect.top - panelRect.height - 4)}px`;
+}
+
 function base64URLToBytes(value: string): Uint8Array<ArrayBuffer> {
   const padding = '='.repeat((4 - (value.length % 4)) % 4);
   const raw = atob((value + padding).replaceAll('-', '+').replaceAll('_', '/'));

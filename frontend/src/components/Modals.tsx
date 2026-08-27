@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
+import { errorMessage } from '../domain/text';
 import { Icon } from './Icon';
 import { Overlay } from './Overlay';
 import { Markdown } from './Markdown';
@@ -356,7 +357,7 @@ function AskUser() {
     try {
       await store.answerAskUser(cancelled ? [] : prompt.questions.map(validate), cancelled);
     } catch (value) {
-      setError(value instanceof Error ? value.message : String(value));
+      setError(errorMessage(value));
     } finally {
       setSending(false);
     }
@@ -371,7 +372,7 @@ function AskUser() {
       setError('');
       setTab(tab + 1);
     } catch (value) {
-      setError(value instanceof Error ? value.message : String(value));
+      setError(errorMessage(value));
     }
   };
   return (
@@ -477,7 +478,7 @@ function Approval() {
     try {
       await store.decideApproval(selected, resume);
     } catch (value) {
-      setError(value instanceof Error ? value.message : String(value));
+      setError(errorMessage(value));
     }
   };
   return (
@@ -966,7 +967,7 @@ function ProjectPicker() {
       );
       setBrowser(true);
     } catch (value) {
-      setError(value instanceof Error ? value.message : String(value));
+      setError(errorMessage(value));
     } finally {
       setLoading(false);
     }
@@ -1000,7 +1001,7 @@ function ProjectPicker() {
       }
       await complete(String(project?.id || data.id || existing));
     } catch (value) {
-      setError(value instanceof Error ? value.message : String(value));
+      setError(errorMessage(value));
     } finally {
       setLoading(false);
     }

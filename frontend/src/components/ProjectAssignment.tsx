@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
+import { errorMessage } from '../domain/text';
 import { Overlay } from './Overlay';
 
 function assignmentCountCopy(count: number): string {
@@ -49,7 +50,7 @@ export function ProjectAssignment() {
       })
       .catch((value) => {
         if (controller.signal.aborted) return;
-        setError(value instanceof Error ? value.message : String(value));
+        setError(errorMessage(value));
       })
       .finally(() => {
         if (!controller.signal.aborted) setCandidateLoading(false);
@@ -68,7 +69,7 @@ export function ProjectAssignment() {
     try {
       await store.assignProject(selectedProjectID);
     } catch (value) {
-      setError(value instanceof Error ? value.message : String(value));
+      setError(errorMessage(value));
       setSubmitting(false);
     }
   };
@@ -78,7 +79,7 @@ export function ProjectAssignment() {
     try {
       await store.createProjectFromWorkspace(candidateName);
     } catch (value) {
-      setError(value instanceof Error ? value.message : String(value));
+      setError(errorMessage(value));
       setSubmitting(false);
     }
   };

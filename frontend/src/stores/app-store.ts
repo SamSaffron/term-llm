@@ -10,6 +10,7 @@ import {
   type ResponseProjection,
 } from '../domain/response';
 import { applyRuntimeToRequest, type ModelOption } from '../domain/runtime';
+import { errorMessage } from '../domain/text';
 import { planSummary } from '../domain/plan';
 import {
   convertServerMessages,
@@ -1601,10 +1602,7 @@ export class AppStore {
       void this.refreshStatus().catch(() => undefined);
     } catch (error) {
       this.locallyStoppedResponses.delete(responseId);
-      this.toast(
-        `Couldn’t confirm stop: ${error instanceof Error ? error.message : String(error)}`,
-        'error',
-      );
+      this.toast(`Couldn’t confirm stop: ${errorMessage(error)}`, 'error');
       void this.resumeResponse(sessionId, responseId);
     }
   }
@@ -1705,7 +1703,7 @@ export class AppStore {
   private failRun(sessionId: string, error: unknown): void {
     const projection = this.runs.value[sessionId];
     if (!projection) return;
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     this.runs.value = {
       ...this.runs.value,
       [sessionId]: {
@@ -2119,7 +2117,7 @@ export class AppStore {
       this.sideQuestion.value = {
         ...this.sideQuestion.peek(),
         loading: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       };
     }
   }
@@ -2181,7 +2179,7 @@ export class AppStore {
           ...this.sideQuestion.peek(),
           loading: false,
           running: false,
-          error: error instanceof Error ? error.message : String(error),
+          error: errorMessage(error),
         };
       }
     } finally {
@@ -2228,7 +2226,7 @@ export class AppStore {
       this.mcp.value = {
         ...this.mcp.value,
         loading: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       };
     }
   }
@@ -2252,7 +2250,7 @@ export class AppStore {
         ...this.mcp.value,
         enabled: previous,
         pending: '',
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       };
     }
   }
@@ -2487,7 +2485,7 @@ export class AppStore {
         this.diff.value = {
           ...this.diff.value,
           loading: false,
-          error: error instanceof Error ? error.message : String(error),
+          error: errorMessage(error),
         };
     }
   }
@@ -2575,7 +2573,7 @@ export class AppStore {
             ? {
                 ...entry,
                 loading: false,
-                error: error instanceof Error ? error.message : String(error),
+                error: errorMessage(error),
               }
             : entry,
         ),
@@ -3313,7 +3311,7 @@ export class AppStore {
   }
 
   toast(value: unknown, kind: Toast['kind'] = 'info'): void {
-    const message = value instanceof Error ? value.message : String(value);
+    const message = errorMessage(value);
     const toast = { id: uuid(), message, kind };
     this.toasts.value = [...this.toasts.value, toast];
     window.setTimeout(() => {

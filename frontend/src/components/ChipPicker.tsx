@@ -1,5 +1,6 @@
 import type { ComponentChildren } from 'preact';
 import { useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { positionPopover } from '../platform/browser';
 
 export interface ChipPickerOption {
   value: string;
@@ -70,22 +71,7 @@ export function ChipPicker({
   useLayoutEffect(() => {
     if (!open || !trigger.current || !popover.current) return;
     const panel = popover.current;
-    if (!panel.open) panel.showModal();
-    if (innerWidth <= 540) {
-      panel.style.left = 'calc(0.5rem + var(--safe-left))';
-      panel.style.right = 'calc(0.5rem + var(--safe-right))';
-      panel.style.top = 'auto';
-      panel.style.bottom = 'calc(0.5rem + var(--safe-bottom))';
-    } else {
-      const margin = 6;
-      const rect = trigger.current.getBoundingClientRect();
-      const panelRect = panel.getBoundingClientRect();
-      panel.style.right = 'auto';
-      panel.style.bottom = 'auto';
-      panel.style.left = `${Math.max(margin, Math.min(rect.left, innerWidth - panelRect.width - margin))}px`;
-      const below = rect.bottom + 4;
-      panel.style.top = `${below + panelRect.height <= innerHeight - margin ? below : Math.max(margin, rect.top - panelRect.height - 4)}px`;
-    }
+    positionPopover(trigger.current, panel, true);
     if (filterable) panel.querySelector<HTMLInputElement>('.chip-popover-filter')?.focus();
     else {
       const items = [...panel.querySelectorAll<HTMLButtonElement>('.chip-popover-item')];

@@ -15,11 +15,9 @@ export const STORAGE_BASE_KEYS = {
   showHiddenSessions: 'term_llm_show_hidden_sessions',
   showWidgetsSidebar: 'term_llm_show_widgets_sidebar',
   notificationsEnabled: 'term_llm_notifications_enabled',
-  lastNotifiedResponseId: 'term_llm_last_notified_response_id',
   draftMessages: 'term_llm_draft_messages',
   pendingIntents: 'term_llm_pending_intent',
   diffCommentQueue: 'term_llm_diff_comment_queue',
-  optimisticTranscript: 'term_llm_optimistic_transcript',
   projectExpansion: 'term_llm_project_expansion',
   lastProject: 'term_llm_last_project',
 } as const;
@@ -155,15 +153,6 @@ export function persistPendingIntent(
   intent: PendingIntent,
 ): void {
   writeJSON(storage, pendingIntentKey(base, sessionId, intent.clientMessageId), intent);
-}
-
-export function removePendingIntent(
-  storage: Storage,
-  base: string,
-  sessionId: string,
-  clientMessageId: string,
-): void {
-  storage.removeItem(pendingIntentKey(base, sessionId, clientMessageId));
 }
 
 export function removeSessionPendingIntents(

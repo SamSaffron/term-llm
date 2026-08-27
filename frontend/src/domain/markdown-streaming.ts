@@ -90,9 +90,6 @@ function scanFenceState(
   }
   return { active, count };
 }
-export function countCodeFencesFast(text: unknown): number {
-  return scanFenceState(text).count;
-}
 export function isInCodeBlockFast(text: unknown, position: number): boolean {
   return Boolean(scanFenceState(text, position).active);
 }

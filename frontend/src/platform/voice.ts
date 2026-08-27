@@ -4,9 +4,6 @@ export class VoiceRecorder {
   private recorder: MediaRecorder | null = null;
   private stream: MediaStream | null = null;
   private chunks: Blob[] = [];
-  get recording(): boolean {
-    return this.recorder?.state === 'recording';
-  }
 
   async start(): Promise<void> {
     this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });

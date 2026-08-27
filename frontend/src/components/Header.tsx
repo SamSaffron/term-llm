@@ -8,6 +8,7 @@ import {
   supportedEfforts,
 } from '../domain/runtime';
 import { planSummary } from '../domain/plan';
+import { positionPopover } from '../platform/browser';
 import { Icon } from './Icon';
 
 function EffortMeter() {
@@ -46,21 +47,7 @@ function RuntimePicker() {
   const effort = split.effort && efforts.includes(split.effort) ? split.effort : '';
   useLayoutEffect(() => {
     if (!open || !trigger.current || !popover.current) return;
-    const rect = trigger.current.getBoundingClientRect();
-    const panel = popover.current;
-    const margin = 6;
-    if (!panel.open) panel.showModal();
-    if (innerWidth <= 540) {
-      panel.style.left = 'calc(0.5rem + var(--safe-left))';
-      panel.style.top = 'auto';
-      panel.style.bottom = 'calc(0.5rem + var(--safe-bottom))';
-      return;
-    }
-    const panelRect = panel.getBoundingClientRect();
-    panel.style.left = `${Math.max(margin, Math.min(rect.left, innerWidth - panelRect.width - margin))}px`;
-    const below = rect.bottom + 4;
-    panel.style.top = `${below + panelRect.height <= innerHeight - margin ? below : Math.max(margin, rect.top - panelRect.height - 4)}px`;
-    panel.style.bottom = 'auto';
+    positionPopover(trigger.current, popover.current);
   }, [open]);
   const picker = (
     <div class={`model-picker ${locked ? 'locked' : ''}`}>

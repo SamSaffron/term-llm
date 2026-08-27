@@ -9,6 +9,7 @@ import {
   type Completion,
   type MentionSearchResponse,
 } from '../domain/completions';
+import { errorMessage } from '../domain/text';
 import { VoiceRecorder } from '../platform/voice';
 import { Icon } from './Icon';
 
@@ -190,7 +191,7 @@ export function Composer() {
       }
     } catch (error) {
       setRecording(false);
-      setVoiceStatus(error instanceof Error ? error.message : String(error));
+      setVoiceStatus(errorMessage(error));
     }
   };
   const pending = store.interjections.value.filter(

@@ -12,6 +12,14 @@ const rowDir = (row: WorktreeRow | null): string => String(row?.dir || row?.path
 const rowName = (row: WorktreeRow): string =>
   String(row.name || row.branch || (row.root ? 'root checkout' : 'worktree'));
 const isRoot = (row: WorktreeRow): boolean => row.root === true;
+const usageNames = (entries: unknown[]): string[] =>
+  entries
+    .map((entry) => {
+      if (!entry || typeof entry !== 'object') return '';
+      const value = entry as Record<string, unknown>;
+      return String(value.name || (value.number ? `#${value.number}` : value.id || ''));
+    })
+    .filter(Boolean);
 
 function errorDetails(error: unknown): { message: string; inUse: string[] } {
   let message = error instanceof Error ? error.message : String(error || 'Worktree action failed.');
@@ -21,13 +29,7 @@ function errorDetails(error: unknown): { message: string; inUse: string[] } {
       const body = JSON.parse(error.body) as Record<string, unknown>;
       if (typeof body.message === 'string' && body.message.trim()) message = body.message;
       const entries = Array.isArray(body.in_use) ? body.in_use : [];
-      inUse = entries
-        .map((entry) => {
-          if (!entry || typeof entry !== 'object') return '';
-          const value = entry as Record<string, unknown>;
-          return String(value.name || (value.number ? `#${value.number}` : value.id || ''));
-        })
-        .filter(Boolean);
+      inUse = usageNames(entries);
     } catch {
       // The API error's message is the best fallback for a non-JSON response.
     }
@@ -38,13 +40,7 @@ function errorDetails(error: unknown): { message: string; inUse: string[] } {
 function WorktreeBadges({ row, current }: { row: WorktreeRow; current: boolean }) {
   const dirty = Number(row.dirty_files || 0);
   const inUse = Array.isArray(row.in_use) ? row.in_use : [];
-  const inUseNames = inUse
-    .map((entry) => {
-      if (!entry || typeof entry !== 'object') return '';
-      const value = entry as Record<string, unknown>;
-      return String(value.name || (value.number ? `#${value.number}` : value.id || ''));
-    })
-    .filter(Boolean);
+  const inUseNames = usageNames(inUse);
   return (
     <span class="worktree-badges">
       {current && <span class="worktree-badge current">Current</span>}

@@ -63,13 +63,6 @@ export const endpoints = (api: APIClient) => ({
     ),
   sessionState: (id: string, signal?: AbortSignal) =>
     api.get<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/state`, signal),
-  transcript: (id: string, signal?: AbortSignal) =>
-    api.get<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/transcript`, signal),
-  transcriptBodies: (id: string, ids: number[], signal?: AbortSignal) =>
-    api.get<Record<string, unknown>>(
-      `/v1/sessions/${encoded(id)}/transcript/bodies?ids=${ids.join(',')}`,
-      signal,
-    ),
   createResponse: (body: unknown, sessionId: string, requestId: string, signal?: AbortSignal) =>
     api.request(
       '/v1/responses',
@@ -127,8 +120,6 @@ export const endpoints = (api: APIClient) => ({
       'idempotent-mutation',
       { 'Idempotency-Key': `project_${id}_${JSON.stringify(body)}` },
     ),
-  projects: (query = '') =>
-    api.get<Record<string, unknown>>(`/v1/projects${query ? `?${query}` : ''}`),
   patchProject: (id: string, body: unknown) => api.patch(`/v1/projects/${encoded(id)}`, body),
   projectDirectories: (path = '', showHidden = false, signal?: AbortSignal) => {
     const params = new URLSearchParams();

@@ -247,12 +247,11 @@ function ToolGroup({ tools }: { tools: ToolCall[] }) {
     (tool) =>
       !(tool.name === 'update_plan' && tool.status === 'done' && tool.resultStatus !== 'error'),
   );
-  const active = visible.some((tool) => tool.status === 'running');
-  const [expanded, setExpanded] = useState(active);
+  const running = visible.some((tool) => tool.status === 'running');
+  const [expanded, setExpanded] = useState(running);
   if (!visible.length) return null;
   if (visible.length === 1) return <Tool tool={visible[0]} />;
   const names = [...new Set(visible.map((tool) => tool.name))];
-  const running = visible.some((tool) => tool.status === 'running');
   const stopped = !running && visible.some((tool) => tool.status === 'cancelled');
   return (
     <article class="tool-group-card">
