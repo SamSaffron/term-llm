@@ -4,6 +4,7 @@ import { Icon } from './Icon';
 import { Overlay } from './Overlay';
 import { Markdown } from './Markdown';
 import { ProjectAssignment } from './ProjectAssignment';
+import { Worktrees } from './Worktrees';
 
 function Settings() {
   const store = useStore();
@@ -896,109 +897,6 @@ function BranchTree() {
   );
 }
 
-function Worktrees() {
-  const store = useStore();
-  const [name, setName] = useState('');
-  const [selected, setSelected] = useState<Record<string, unknown> | null>(null);
-  const [diff, setDiff] = useState('');
-  const [branch, setBranch] = useState('');
-  const [error, setError] = useState('');
-  const draft = store.draftActive.value;
-  const dir = String(selected?.dir || selected?.path || '');
-  return (
-    <Overlay title="Worktrees" wide>
-      {store.worktreeError.value && (
-        <div class="modal-error">
-          {store.worktreeError.value}
-          <button onClick={() => void store.loadWorktrees()}>Retry</button>
-        </div>
-      )}
-      <div class="worktree-list">
-        <button
-          class="worktree-row"
-          onClick={() => (draft ? store.chooseDraftWorktree('') : setSelected({ root: true }))}
-        >
-          <strong>Project root</strong>
-        </button>
-        {store.worktrees.value.map((worktree, index) => (
-          <button
-            class={`worktree-row ${selected === worktree ? 'selected' : ''}`}
-            key={String(worktree.dir || worktree.path || index)}
-            onClick={() => {
-              if (draft) store.chooseDraftWorktree(String(worktree.dir || worktree.path || ''));
-              else setSelected(worktree);
-            }}
-          >
-            <strong>{String(worktree.name || worktree.branch || 'worktree')}</strong>
-            <small>{String(worktree.dir || worktree.path || '')}</small>
-            {Array.isArray(worktree.in_use) && worktree.in_use.length > 0 && <span>In use</span>}
-          </button>
-        ))}
-      </div>
-      {selected && !draft && dir && (
-        <div class="worktree-actions">
-          <button
-            onClick={() =>
-              void store
-                .worktreeDiff(dir)
-                .then(setDiff)
-                .catch((value) => setError(String(value)))
-            }
-          >
-            View diff
-          </button>
-          <button
-            onClick={() => void store.mergeWorktree(dir).catch((value) => setError(String(value)))}
-          >
-            Merge
-          </button>
-          <input
-            placeholder="Branch name"
-            value={branch}
-            onInput={(event) => setBranch(event.currentTarget.value)}
-          />
-          <button
-            disabled={!branch.trim()}
-            onClick={() =>
-              void store.promoteWorktree(dir, branch).catch((value) => setError(String(value)))
-            }
-          >
-            Promote
-          </button>
-          <button
-            class="danger"
-            onClick={() =>
-              void store.removeWorktree(dir).catch(async (value) => {
-                if (value instanceof Error && confirm(`${value.message}\nForce remove?`))
-                  await store.removeWorktree(dir, true);
-                else setError(String(value));
-              })
-            }
-          >
-            Remove
-          </button>
-          {diff && <pre>{diff}</pre>}
-          {error && <div class="modal-error">{error}</div>}
-        </div>
-      )}
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (name.trim()) void store.createWorktree(name.trim()).then(() => setName(''));
-        }}
-      >
-        <input
-          placeholder="New worktree name"
-          value={name}
-          onInput={(event) => setName(event.currentTarget.value)}
-        />
-        <button class="btn primary" type="submit">
-          Create
-        </button>
-      </form>
-    </Overlay>
-  );
-}
 function Skills() {
   const store = useStore();
   const [selected, setSelected] = useState('');

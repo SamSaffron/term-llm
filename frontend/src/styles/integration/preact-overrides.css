@@ -550,14 +550,12 @@ mark.diff-word {
 }
 
 .widgets-modal-list,
-.worktree-list,
 .skills-list {
   display: grid;
   gap: 0.3rem;
 }
 
 .widget-row,
-.worktree-row,
 .skill-row {
   appearance: none;
   display: grid;
@@ -576,16 +574,13 @@ mark.diff-word {
 }
 
 .widget-row:hover,
-.worktree-row:hover,
 .skill-row:hover,
-.worktree-row.selected,
 .skill-row.selected {
   border-color: var(--border);
   background: var(--surface-2);
 }
 
 .widget-row small,
-.worktree-row small,
 .skill-row small {
   grid-column: 1 / -1;
   overflow: hidden;
@@ -595,8 +590,7 @@ mark.diff-word {
   white-space: nowrap;
 }
 
-.project-create-form,
-.worktree-actions {
+.project-create-form {
   display: grid;
   gap: 0.55rem;
   margin-top: 1rem;
@@ -608,7 +602,6 @@ mark.diff-word {
 }
 
 .project-create-form > button:not(.btn),
-.worktree-actions > button,
 .branch-tree-row > button {
   padding: 0.45rem 0.6rem;
   border: 1px solid var(--border);

@@ -21,4 +21,5 @@
 @import './features/toast.css';
 @import './features/branching.css';
 @import './features/projects.css';
+@import './features/worktrees.css';
 @import './integration/preact-overrides.css';

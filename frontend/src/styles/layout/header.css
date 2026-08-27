@@ -515,32 +515,6 @@ dialog.chip-popover::backdrop {
   padding: 0.75rem;
 }
 
-.worktree-popover {
-  width: min(360px, calc(100vw - 0.75rem));
-}
-
-.worktree-option {
-  appearance: none;
-  width: 100%;
-  border: 0;
-  background: transparent;
-  font: inherit;
-  text-align: left;
-}
-
-.worktree-option .chip-popover-item-meta {
-  overflow: hidden;
-  max-width: 10rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.worktree-option:disabled,
-.worktree-option:disabled:hover {
-  cursor: default;
-  background: transparent;
-}
-
 .runtime-popover-header {
   margin-bottom: 0.7rem;
 }

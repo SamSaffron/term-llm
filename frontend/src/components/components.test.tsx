@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { StoreContext } from '../app/context';
 import { App } from '../app/App';
 import { AppStore } from '../stores/app-store';
+import { APIError } from '../api/client';
 import { Transcript } from './Transcript';
 import { Composer } from './Composer';
 import { Markdown } from './Markdown';
@@ -1842,6 +1843,96 @@ describe('Preact-owned chat surfaces', () => {
       store.askUser.value = null;
     });
     expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument();
+  });
+
+  it('renders worktrees as a compact draft picker without duplicating the root checkout', async () => {
+    const store = createStore();
+    store.modal.value = 'worktrees';
+    store.draftActive.value = true;
+    store.activeSessionId.value = '';
+    store.worktrees.value = [
+      { name: 'root', dir: '/repo', repo_root: '/repo', root: true },
+      {
+        name: 'feature-polish',
+        dir: '/worktrees/feature-polish',
+        repo_root: '/repo',
+        branch: 'feature-polish',
+        dirty_files: 3,
+      },
+    ];
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    expect(screen.getByRole('dialog', { name: 'Worktrees' })).toHaveClass('worktree-modal');
+    expect(screen.getAllByText('root checkout')).toHaveLength(1);
+    expect(screen.getByLabelText('3 changed files')).toBeVisible();
+    expect(screen.getByRole('radio', { name: /root checkout/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+
+    await userEvent.click(screen.getByRole('radio', { name: /feature-polish/ }));
+    expect(store.selectedDraftWorktree.value).toBe('/worktrees/feature-polish');
+    expect(store.modal.value).toBe('');
+  });
+
+  it('opens the bound worktree detail and escalates removal inline without confirm()', async () => {
+    const store = createStore();
+    store.modal.value = 'worktrees';
+    store.sessions.value = [
+      {
+        ...store.sessions.value[0],
+        projectId: 'project-1',
+        projectName: 'Term LLM',
+        worktreeDir: '/worktrees/feature-polish',
+      },
+    ];
+    store.worktrees.value = [
+      { name: 'root', dir: '/repo', repo_root: '/repo', root: true },
+      {
+        name: 'feature-polish',
+        dir: '/worktrees/feature-polish',
+        branch: 'feature-polish',
+        dirty_files: 2,
+        in_use: [{ id: 's1', name: 'Polish worktrees' }],
+      },
+    ];
+    store.removeWorktree = vi.fn(async () => {
+      throw new APIError(
+        'worktree_in_use',
+        409,
+        JSON.stringify({
+          error: 'worktree_in_use',
+          message: 'This worktree is still in use.',
+          in_use: [{ id: 's1', name: 'Polish worktrees' }],
+        }),
+      );
+    });
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'feature-polish' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Merge into root' })).toBeVisible();
+    expect(screen.getByLabelText('2 changed files')).toBeVisible();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Remove…' }));
+    expect(screen.getByRole('button', { name: 'Confirm remove' })).toBeVisible();
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm remove' }));
+    expect(store.removeWorktree).toHaveBeenCalledWith('/worktrees/feature-polish', false);
+    expect(await screen.findByRole('button', { name: 'Force remove' })).toBeVisible();
+    expect(screen.getByRole('status')).toHaveTextContent('In use by Polish worktrees.');
+
+    fireEvent.keyDown(screen.getByRole('dialog', { name: 'Worktrees' }), { key: 'Escape' });
+    expect(screen.getByText('Project checkouts')).toBeVisible();
+    expect(store.modal.value).toBe('worktrees');
   });
 
   it('restores workspace-aware project assignment with recommendations and counts', async () => {
