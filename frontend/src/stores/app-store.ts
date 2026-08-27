@@ -549,7 +549,8 @@ export class AppStore {
         ? (data.worktrees as Record<string, unknown>)
         : {};
     this.projectsEnabled.value = projects.enabled === true;
-    this.worktreesEnabled.value = this.config.worktrees && worktrees.enabled !== false;
+    this.worktreesEnabled.value =
+      worktrees.enabled === true || (worktrees.enabled === undefined && this.config.worktrees);
     this.applyWidgetStatus(data.widget_status || data.widgets);
   }
 
@@ -778,16 +779,24 @@ export class AppStore {
     this.sidebarOpen.value = false;
   }
 
-  newChat(replace = false, projectId = ''): void {
+  newChat(replace = false, projectId?: string): void {
     this.persistCurrentDraft();
     this.resetSideQuestion();
     ++this.selectionEpoch;
+    const currentSession = this.activeSession.peek();
+    const requestedProject =
+      projectId === undefined
+        ? currentSession
+          ? currentSession.projectId || ''
+          : this.activeProjectId.peek()
+        : projectId;
     const selectedProject =
-      projectId &&
+      requestedProject &&
       this.projects.value.some(
-        (project) => project.id === projectId && !project.archived && project.available !== false,
+        (project) =>
+          project.id === requestedProject && !project.archived && project.available !== false,
       )
-        ? projectId
+        ? requestedProject
         : '';
     batch(() => {
       this.activeSessionId.value = '';
@@ -2588,6 +2597,13 @@ export class AppStore {
   resizeDiff(width: number): void {
     this.diff.value = { ...this.diff.value, width };
     this.storage.setItem(this.keys.diffSidebarWidth, String(Math.round(width)));
+  }
+
+  worktreesAvailable(): boolean {
+    if (!this.projectsEnabled.value) return this.worktreesEnabled.value;
+    const projectId = this.activeSession.value?.projectId || this.activeProjectId.value;
+    const project = this.projects.value.find((entry) => entry.id === projectId);
+    return Boolean(project?.git && project.available !== false && !project.archived);
   }
 
   private worktreeProjectID(): string {

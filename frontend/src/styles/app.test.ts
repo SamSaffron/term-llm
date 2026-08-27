@@ -37,6 +37,14 @@ describe('stylesheet manifest', () => {
   });
 });
 
+describe('shell layout', () => {
+  it('stacks the mutually exclusive companion panels in one grid cell', () => {
+    expect(appCSS).toMatch(
+      /\.app > \.diff-sidebar,\s*\.app > \.plan-surface\s*\{\s*grid-column: 3;\s*grid-row: 1;/,
+    );
+  });
+});
+
 describe('header styles', () => {
   it('does not add a redundant chevron beside the runtime effort meter', () => {
     expect(appCSS).not.toContain('.model-chip::after');

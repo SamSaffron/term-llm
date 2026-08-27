@@ -350,7 +350,7 @@ export function Composer() {
                 <span class="composer-add-menu-icon">○</span>
                 <span>Set goal…</span>
               </button>
-              {store.worktreesEnabled.value && (
+              {store.worktreesAvailable() && (
                 <button
                   type="button"
                   role="menuitem"

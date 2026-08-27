@@ -93,6 +93,15 @@ select {
   transition: grid-template-columns var(--layout-transition-duration) ease;
 }
 
+/* Diff and plan are mutually exclusive companion panels. They can both remain
+   mounted while one is hidden, so pin them to the same cell rather than
+   letting the fourth grid child create an implicit row. */
+.app > .diff-sidebar,
+.app > .plan-surface {
+  grid-column: 3;
+  grid-row: 1;
+}
+
 .app.sidebar-collapsed {
   grid-template-columns: var(--sidebar-rail-width) minmax(0, 1fr) 0;
 }

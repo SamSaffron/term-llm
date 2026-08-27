@@ -187,9 +187,7 @@ export function Header() {
   const project = store.projects.value.find(
     (entry) => entry.id === (session?.projectId || store.activeProjectId.value),
   );
-  const showWorktree =
-    store.worktreesEnabled.value &&
-    (!store.projectsEnabled.value || Boolean(project?.git && project.available !== false));
+  const showWorktree = store.worktreesAvailable();
   const currentPlan = store.currentPlan.value;
   const currentPlanSummary = planSummary(currentPlan);
   const planUnseen =
@@ -306,11 +304,16 @@ export function Header() {
                   else store.openPlan();
                 }}
               >
-                <span class="plan-toggle-word">Plan</span>
-                {currentPlanSummary.complete && <Icon class="plan-toggle-check" name="check" />}
-                <span class="plan-toggle-progress">
-                  {currentPlanSummary.position}/{currentPlanSummary.total}
-                </span>
+                {currentPlanSummary.complete ? (
+                  <Icon class="plan-toggle-check" name="check" />
+                ) : (
+                  <>
+                    <span class="plan-toggle-word">Plan</span>
+                    <span class="plan-toggle-progress">
+                      {currentPlanSummary.position}/{currentPlanSummary.total}
+                    </span>
+                  </>
+                )}
                 {planUnseen && <span class="plan-unseen-dot" aria-hidden="true" />}
               </button>
             )}

@@ -111,6 +111,24 @@ describe('AppStore compatibility behavior', () => {
     });
   });
 
+  it('keeps the current project when opening another chat unless No project is explicit', () => {
+    const store = new AppStore(config);
+    const projectSession = { ...session(), projectId: 'project-1', projectName: 'Project' };
+    store.projectsEnabled.value = true;
+    store.projects.value = [
+      { id: 'project-1', name: 'Project', archived: false, available: true, sessions: [] },
+    ];
+    store.sessions.value = [projectSession];
+    store.activeSessionId.value = projectSession.id;
+    store.draftActive.value = false;
+
+    store.newChat();
+    expect(store.activeProjectId.value).toBe('project-1');
+
+    store.newChat(true, '');
+    expect(store.activeProjectId.value).toBe('');
+  });
+
   it('keeps plan visibility session-safe and mutually exclusive with changes', () => {
     const store = new AppStore(config);
     store.currentPlan.value = {
@@ -266,6 +284,23 @@ describe('AppStore compatibility behavior', () => {
     expect(store.mcp.value.enabled).toEqual([]);
     expect(store.mcp.value.pending).toBe('');
     expect(store.mcp.value.error).toBe('Could not save MCP servers');
+  });
+
+  it('trusts the project-mode worktree capability instead of the server CWD bootstrap flag', async () => {
+    const store = new AppStore({ ...config, worktrees: false });
+    store.endpoints.capabilities = vi.fn(async () => ({
+      projects: { enabled: true },
+      worktrees: { enabled: true },
+    }));
+    store.endpoints.providers = vi.fn(async () => ({ object: 'list', data: [] }));
+    store.endpoints.models = vi.fn(async () => ({ object: 'list', data: [] }));
+    store.endpoints.sidebar = vi.fn(async () => ({ groups: [] }));
+    (store as unknown as { startStatusPoll(): void }).startStatusPoll = vi.fn();
+
+    await store.bootstrap();
+
+    expect(store.projectsEnabled.value).toBe(true);
+    expect(store.worktreesEnabled.value).toBe(true);
   });
 
   it('bootstraps no-project mode without calling the project-only sidebar endpoint', async () => {

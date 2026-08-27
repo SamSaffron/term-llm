@@ -118,6 +118,36 @@ describe('Preact-owned chat surfaces', () => {
     expect(trigger).toHaveFocus();
   });
 
+  it('shows the worktree browser for every chat attached to an available Git project', async () => {
+    const store = createStore();
+    store.sessions.value = [
+      { ...store.sessions.value[0], projectId: 'project-1', projectName: 'Project' },
+    ];
+    store.projectsEnabled.value = true;
+    store.worktreesEnabled.value = false;
+    store.projects.value = [
+      {
+        id: 'project-1',
+        name: 'Project',
+        archived: false,
+        available: true,
+        git: true,
+        sessions: [],
+      },
+    ];
+    store.endpoints.projectWorktrees = vi.fn(async () => ({ worktrees: [] }));
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Header />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: 'Worktree' }));
+    expect(store.modal.value).toBe('worktrees');
+    expect(store.endpoints.projectWorktrees).toHaveBeenCalledWith('project-1');
+  });
+
   it('shows the active plan position, update affordance, and semantic checklist', async () => {
     const store = createStore();
     store.currentPlan.value = {
@@ -151,6 +181,31 @@ describe('Preact-owned chat surfaces', () => {
       'step',
     );
     expect(toggle.querySelector('.plan-unseen-dot')).toBeNull();
+  });
+
+  it('collapses a completed plan to a tick-only header action', () => {
+    const store = createStore();
+    store.currentPlan.value = {
+      plan: [
+        { step: 'Build the plan', status: 'completed' },
+        { step: 'Verify the plan', status: 'completed' },
+      ],
+    };
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Header />
+      </StoreContext.Provider>,
+    );
+
+    const toggle = screen.getByRole('button', { name: /Open current plan/ });
+    expect(toggle).toHaveClass('complete');
+    expect(toggle).toHaveAccessibleName('Open current plan. All 2 steps complete');
+    expect(toggle).toHaveAttribute('title', 'All 2 steps complete');
+    expect(toggle).toHaveTextContent('');
+    expect(toggle.querySelector('.plan-toggle-check')).not.toBeNull();
+    expect(toggle.querySelector('.plan-toggle-word')).toBeNull();
+    expect(toggle.querySelector('.plan-toggle-progress')).toBeNull();
   });
 
   it('presents the plan as a dismissible modal sheet on mobile', async () => {
