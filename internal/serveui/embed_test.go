@@ -29,7 +29,9 @@ func TestGeneratedBundleAssets(t *testing.T) {
 
 func TestProductionBundleSizeBudgets(t *testing.T) {
 	budgets := map[string]struct{ raw, gzip int }{
-		"dist/app.js":  {raw: 260_000, gzip: 78_000},
+		// Keep explicit headroom over the current productized UI while still
+		// failing meaningful accidental regressions.
+		"dist/app.js":  {raw: 325_000, gzip: 97_000},
 		"dist/app.css": {raw: 160_000, gzip: 29_000},
 	}
 	for name, budget := range budgets {
@@ -57,8 +59,8 @@ func TestBundlePolicy(t *testing.T) {
 			t.Errorf("production bundle contains forbidden compatibility path %q", forbidden)
 		}
 	}
-	if !bytes.Contains(js, []byte("__TERM_LLM_TEST__")) {
-		t.Fatal("bundle lacks explicitly gated browser test bridge")
+	if bytes.Contains(js, []byte("__TERM_LLM_TEST__")) || bytes.Contains(js, []byte("__TERM_LLM_ENABLE_TEST_BRIDGE__")) {
+		t.Fatal("production bundle contains browser test bridge")
 	}
 }
 

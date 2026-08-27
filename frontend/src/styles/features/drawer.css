@@ -1,0 +1,44 @@
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
+  background: var(--backdrop);
+}
+
+.drawer {
+  width: min(92vw, 32rem);
+  max-height: var(--app-height);
+  overflow: auto;
+  overscroll-behavior: contain;
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: var(--shadow-strong);
+}
+
+.drawer-left {
+  margin-right: auto;
+}
+
+.drawer-bottom {
+  width: 100%;
+  max-height: min(80vh, calc(var(--app-height) - var(--safe-top)));
+  margin-top: auto;
+  border-radius: 1rem 1rem 0 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .drawer {
+    animation: drawer-enter var(--panel-transition-duration) var(--panel-transition-easing);
+  }
+}
+
+@keyframes drawer-enter {
+  from {
+    opacity: 0;
+    transform: translateX(1rem);
+  }
+}

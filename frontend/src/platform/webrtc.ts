@@ -10,6 +10,33 @@ interface SignalingAnswer {
   type: 'answer';
   sdp: string;
 }
+interface SignalingRejection {
+  type: 'rejected';
+  reason?: string;
+}
+
+type SignalingResult = SignalingAnswer | SignalingRejection;
+
+export function withDeadline(
+  parent: AbortSignal | undefined,
+  timeoutMs: number,
+): { signal: AbortSignal; cleanup(): void } {
+  const controller = new AbortController();
+  const abort = () => controller.abort(parent?.reason || new DOMException('Aborted', 'AbortError'));
+  parent?.addEventListener('abort', abort, { once: true });
+  const timer = setTimeout(
+    () => controller.abort(new DOMException('Signaling timed out', 'TimeoutError')),
+    timeoutMs,
+  );
+  if (parent?.aborted) abort();
+  return {
+    signal: controller.signal,
+    cleanup() {
+      clearTimeout(timer);
+      parent?.removeEventListener('abort', abort);
+    },
+  };
+}
 interface WebRTCFrame {
   id: string;
   type: 'headers' | 'chunk' | 'done';
@@ -102,6 +129,9 @@ export function installWebRTC(): () => void {
   let dataChannel: RTCDataChannel | null = null;
   let disposed = false;
   let renegotiating = false;
+  let negotiationGeneration = 0;
+  let negotiationAbort: AbortController | null = null;
+  let negotiationPeer: RTCPeerConnection | null = null;
   let renegotiationTimer: ReturnType<typeof setTimeout> | null = null;
   let renegotiationAttempt = 0;
   const RENEGOTIATION_BACKOFF_MS = [2000, 5000, 10000, 30000, 60000];
@@ -157,21 +187,38 @@ export function installWebRTC(): () => void {
   // ---------------------------------------------------------------------------
 
   async function initWebRTC(): Promise<boolean> {
+    const generation = ++negotiationGeneration;
+    negotiationAbort?.abort(new DOMException('Superseded negotiation', 'AbortError'));
+    negotiationPeer?.close();
+    const generationAbort = new AbortController();
+    negotiationAbort = generationAbort;
+    const ownsGeneration = (): boolean =>
+      !disposed && negotiationGeneration === generation && !generationAbort.signal.aborted;
     diagT0 = performance.now();
-    diag('init signaling=' + SIGNALING_URL);
+    diag('init signaling=' + SIGNALING_URL + ' generation=' + generation);
     let pc: RTCPeerConnection | null = null;
+    let installed = false;
     try {
       // 1. Request a signaling session (no auth — session_id gates routing).
       const sessStart = performance.now();
-      const sessResp = await originalFetch(SIGNALING_URL + '/session', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      if (!sessResp.ok) {
-        diag('session request failed status=' + sessResp.status);
-        return false;
+      const sessionDeadline = withDeadline(generationAbort.signal, ICE_TIMEOUT_MS);
+      let sessResp: Response;
+      let sess: SignalingSession;
+      try {
+        sessResp = await originalFetch(SIGNALING_URL + '/session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: sessionDeadline.signal,
+        });
+        if (!sessResp.ok) {
+          diag('session request failed status=' + sessResp.status);
+          return false;
+        }
+        sess = (await sessResp.json()) as SignalingSession;
+      } finally {
+        sessionDeadline.cleanup();
       }
-      const sess = (await sessResp.json()) as SignalingSession;
+      if (!ownsGeneration()) return false;
       diag(
         'session created id=' +
           sess.session_id +
@@ -200,13 +247,16 @@ export function installWebRTC(): () => void {
       }
       const peer = new RTCPeerConnection(pcConfig);
       pc = peer;
+      negotiationPeer = peer;
 
       peer.oniceconnectionstatechange = () => {
+        if (!ownsGeneration()) return;
         diag('ICE state=' + peer.iceConnectionState);
       };
 
       // Log each ICE candidate as it is gathered.
       peer.onicecandidate = (e) => {
+        if (!ownsGeneration()) return;
         if (e.candidate) {
           diag(
             'ICE candidate: ' +
@@ -238,31 +288,31 @@ export function installWebRTC(): () => void {
       // Wait for ICE gathering to complete, but cap at 4 s so a slow/broken
       // STUN or TURN server (e.g. IPv6 timeout) never stalls the handshake.
       // Whatever candidates are ready at that point are included in the offer.
-      await Promise.race([
-        new Promise<void>((resolve) => {
-          if (peer.iceGatheringState === 'complete') {
-            resolve();
-            return;
-          }
-          peer.onicegatheringstatechange = () => {
-            if (peer.iceGatheringState === 'complete') resolve();
-          };
-        }),
-        new Promise<void>((resolve) => setTimeout(resolve, 4000)),
-      ]);
+      await waitForICEGathering(peer, generationAbort.signal, 4000, ownsGeneration);
       diag('ICE gathering complete');
 
       // 5. Send the completed offer to the signaling server.
       const offerStart = performance.now();
-      const sendResp = await originalFetch(SIGNALING_URL + '/signal', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          session_id: sess.session_id,
-          type: 'offer',
-          sdp: peer.localDescription?.sdp || offer.sdp,
-        }),
-      });
+      const offerDeadline = withDeadline(generationAbort.signal, ICE_TIMEOUT_MS);
+      let sendResp: Response;
+      try {
+        sendResp = await originalFetch(SIGNALING_URL + '/signal', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: offerDeadline.signal,
+          body: JSON.stringify({
+            session_id: sess.session_id,
+            type: 'offer',
+            sdp: peer.localDescription?.sdp || offer.sdp,
+          }),
+        });
+        // Consume error bodies under the same deadline too. Successful offer
+        // posts have no response payload; the answer arrives via polling.
+        if (!sendResp.ok) await sendResp.text();
+      } finally {
+        offerDeadline.cleanup();
+      }
+      if (!ownsGeneration()) return false;
       if (!sendResp.ok) {
         diag('offer post failed status=' + sendResp.status);
         try {
@@ -275,9 +325,14 @@ export function installWebRTC(): () => void {
       diag('offer sent (' + ((performance.now() - offerStart) | 0) + 'ms)');
 
       // 6. Poll for the home peer's answer (8-second timeout).
-      const answer = await pollForAnswer(sess.session_id, ICE_TIMEOUT_MS);
-      if (!answer) {
-        diag('answer timeout — falling back to HTTPS');
+      const answer = await pollForAnswer(sess.session_id, ICE_TIMEOUT_MS, generationAbort.signal);
+      if (!ownsGeneration()) return false;
+      if (!answer || answer.type === 'rejected') {
+        diag(
+          answer?.type === 'rejected'
+            ? 'admission rejected reason=' + (answer.reason || 'unknown')
+            : 'answer timeout — falling back to HTTPS',
+        );
         try {
           peer.close();
         } catch {
@@ -290,29 +345,27 @@ export function installWebRTC(): () => void {
       await peer.setRemoteDescription({ type: 'answer', sdp: answer.sdp });
 
       // 7. Wait for ICE connectivity and the data channel to open.
-      await Promise.race([
-        waitForDataChannelOpen(dc),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('WebRTC connect timeout')), ICE_TIMEOUT_MS),
-        ),
-      ]);
+      await waitForDataChannelOpen(dc, generationAbort.signal, ICE_TIMEOUT_MS);
+      if (!ownsGeneration()) return false;
 
       // 8. Connected — wire up handlers and patch fetch.
-      if (disposed) {
-        dc.close();
-        peer.close();
-        return false;
-      }
       dataChannel = dc;
-      dc.onmessage = handleMessage;
-      dc.onclose = () => onChannelClose(dc);
-      dc.onerror = () => onChannelClose(dc);
+      dc.onmessage = (event) => {
+        if (ownsGeneration()) handleMessage(event);
+      };
+      dc.onclose = () => {
+        if (ownsGeneration()) onChannelClose(dc);
+      };
+      dc.onerror = () => {
+        if (ownsGeneration()) onChannelClose(dc);
+      };
 
       window.fetch = patchedFetch;
       renegotiationAttempt = 0;
       noteTransportState('connected', 'data-channel-open');
 
       diag('data channel open — fetch patched');
+      installed = true;
       return true;
     } catch (error) {
       const message = errorMessage(error);
@@ -326,37 +379,113 @@ export function installWebRTC(): () => void {
       }
       noteTransportState('https', message || 'negotiation-failed');
       return false;
+    } finally {
+      if (!installed && pc) {
+        try {
+          pc.close();
+        } catch {
+          /* ignore */
+        }
+      }
+      if (negotiationGeneration === generation && !installed) {
+        negotiationAbort = null;
+        negotiationPeer = null;
+      }
     }
   }
 
-  function waitForDataChannelOpen(dc: RTCDataChannel): Promise<void> {
+  function waitForICEGathering(
+    peer: RTCPeerConnection,
+    parent: AbortSignal,
+    timeoutMs: number,
+    ownsGeneration: () => boolean,
+  ): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      if (dc.readyState === 'open') {
-        resolve();
+      let settled = false;
+      const finish = (error?: unknown) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        parent.removeEventListener('abort', onAbort);
+        peer.onicegatheringstatechange = null;
+        if (error) reject(error);
+        else resolve();
+      };
+      const onAbort = () => finish(parent.reason || new DOMException('Aborted', 'AbortError'));
+      const timer = setTimeout(() => finish(), timeoutMs);
+      if (parent.aborted || !ownsGeneration()) {
+        onAbort();
         return;
       }
-      dc.onopen = () => resolve();
-      dc.onerror = () => reject(new Error('WebRTC data channel failed to open'));
+      if (peer.iceGatheringState === 'complete') {
+        finish();
+        return;
+      }
+      parent.addEventListener('abort', onAbort, { once: true });
+      peer.onicegatheringstatechange = () => {
+        if (!ownsGeneration()) {
+          onAbort();
+          return;
+        }
+        if (peer.iceGatheringState === 'complete') finish();
+      };
+    });
+  }
+
+  function waitForDataChannelOpen(
+    dc: RTCDataChannel,
+    parent: AbortSignal,
+    timeoutMs: number,
+  ): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (error?: unknown) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        parent.removeEventListener('abort', onAbort);
+        dc.onopen = null;
+        dc.onerror = null;
+        if (error) reject(error);
+        else resolve();
+      };
+      const onAbort = () => finish(parent.reason || new DOMException('Aborted', 'AbortError'));
+      const timer = setTimeout(() => finish(new Error('WebRTC connect timeout')), timeoutMs);
+      if (dc.readyState === 'open') {
+        finish();
+        return;
+      }
+      parent.addEventListener('abort', onAbort, { once: true });
+      dc.onopen = () => finish();
+      dc.onerror = () => finish(new Error('WebRTC data channel failed to open'));
     });
   }
 
   async function pollForAnswer(
     sessionId: string,
     timeoutMs: number,
-  ): Promise<SignalingAnswer | null> {
+    parent: AbortSignal,
+  ): Promise<SignalingResult | null> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) break;
       try {
-        const resp = await originalFetch(
-          SIGNALING_URL + '/signal?session_id=' + encodeURIComponent(sessionId),
-          { signal: AbortSignal.timeout(Math.min(remaining, 12000)) },
-        );
+        const deadline = withDeadline(parent, Math.min(remaining, 12000));
+        let resp: Response;
+        let msg: SignalingResult | null = null;
+        try {
+          resp = await originalFetch(
+            SIGNALING_URL + '/signal?session_id=' + encodeURIComponent(sessionId),
+            { signal: deadline.signal },
+          );
+          if (resp.ok && resp.status !== 204) msg = (await resp.json()) as SignalingResult;
+        } finally {
+          deadline.cleanup();
+        }
         if (resp.status === 204 || resp.status === 408) continue;
         if (!resp.ok) return null;
-        const msg = (await resp.json()) as SignalingAnswer;
-        if (msg.type === 'answer') return msg;
+        if (msg?.type === 'answer' || msg?.type === 'rejected') return msg;
       } catch (_e) {
         return null;
       }
@@ -419,6 +548,10 @@ export function installWebRTC(): () => void {
   function onChannelClose(closedChannel: RTCDataChannel): void {
     if (closedChannel !== dataChannel) return;
     dataChannel = null;
+    negotiationAbort?.abort(new DOMException('Data channel closed', 'AbortError'));
+    negotiationAbort = null;
+    negotiationPeer?.close();
+    negotiationPeer = null;
     restoreHTTPSFetch('data channel closed');
     drainPendingToHTTPS('channel closed');
     scheduleRenegotiation('channel-closed');
@@ -881,6 +1014,11 @@ export function installWebRTC(): () => void {
   return () => {
     if (disposed) return;
     disposed = true;
+    negotiationGeneration += 1;
+    negotiationAbort?.abort(new DOMException('WebRTC disposed', 'AbortError'));
+    negotiationAbort = null;
+    negotiationPeer?.close();
+    negotiationPeer = null;
     window.removeEventListener('online', onOnline);
     window.removeEventListener('pageshow', onPageShow);
     document.removeEventListener('visibilitychange', onVisibility);

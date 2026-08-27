@@ -320,7 +320,31 @@ export interface SSEMessage {
   event: string;
   data: string;
   id?: string;
+  /** True when the server explicitly sent the SSE stream completion sentinel. */
+  done?: true;
 }
+
+function decodeSSEBlock(block: string, onActivity?: () => void): SSEMessage | null {
+  let event = 'message';
+  let id: string | undefined;
+  const data: string[] = [];
+  for (const line of block.split(/\r?\n/)) {
+    if (line.startsWith(':')) {
+      onActivity?.();
+      continue;
+    }
+    const separator = line.indexOf(':');
+    const field = separator < 0 ? line : line.slice(0, separator);
+    const valueText = separator < 0 ? '' : line.slice(separator + 1).replace(/^ /, '');
+    if (field === 'event') event = valueText;
+    else if (field === 'data') data.push(valueText);
+    else if (field === 'id') id = valueText;
+  }
+  if (!data.length) return null;
+  const value = data.join('\n');
+  return { event, data: value, id, ...(value.trim() === '[DONE]' ? { done: true as const } : {}) };
+}
+
 export async function* decodeSSE(
   body: ReadableStream<Uint8Array>,
   signal?: AbortSignal,
@@ -338,24 +362,19 @@ export async function* decodeSSE(
       while ((boundary = buffer.search(/\r?\n\r?\n/)) >= 0) {
         const block = buffer.slice(0, boundary);
         buffer = buffer.slice(boundary).replace(/^\r?\n\r?\n/, '');
-        let event = 'message';
-        let id: string | undefined;
-        const data: string[] = [];
-        for (const line of block.split(/\r?\n/)) {
-          if (line.startsWith(':')) {
-            onActivity?.();
-            continue;
-          }
-          const separator = line.indexOf(':');
-          const field = separator < 0 ? line : line.slice(0, separator);
-          const valueText = separator < 0 ? '' : line.slice(separator + 1).replace(/^ /, '');
-          if (field === 'event') event = valueText;
-          else if (field === 'data') data.push(valueText);
-          else if (field === 'id') id = valueText;
-        }
-        if (data.length) yield { event, data: data.join('\n'), id };
+        const message = decodeSSEBlock(block, onActivity);
+        if (message) yield message;
       }
-      if (done) break;
+      if (done) {
+        // SSE producers normally terminate events with a blank line, but a
+        // transport can close immediately after the final field. TextDecoder's
+        // final non-streaming decode above flushes a fragmented UTF-8 codepoint;
+        // dispatch the remaining complete field block exactly once.
+        const message = decodeSSEBlock(buffer.replace(/\r?\n$/, ''), onActivity);
+        buffer = '';
+        if (message) yield message;
+        break;
+      }
     }
   } finally {
     try {

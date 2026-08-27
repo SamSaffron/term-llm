@@ -14,7 +14,7 @@ const session = (id: string, title: string, number: number) => ({
   file_change_summary: { file_count: 1, adds: 2, dels: 1, git: true },
 });
 
-async function mockAPI(page: Page, options: { holdStream?: boolean } = {}) {
+async function mockAPI(page: Page, options: { holdStream?: boolean; media?: boolean } = {}) {
   const requests: Array<{ method: string; url: string }> = [];
   await page.route('**/v1/**', async (route: Route) => {
     const request = route.request();
@@ -66,7 +66,20 @@ async function mockAPI(page: Page, options: { holdStream?: boolean } = {}) {
                 id: 1,
                 sequence: 0,
                 role: 'user',
-                parts: [{ type: 'text', text: id === 's2' ? 'Second question' : 'First question' }],
+                parts: [
+                  { type: 'text', text: id === 's2' ? 'Second question' : 'First question' },
+                  ...(options.media
+                    ? [
+                        {
+                          type: 'image',
+                          filename: 'preview.png',
+                          mime_type: 'image/png',
+                          image_url:
+                            'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="20" height="20"%3E%3Crect width="20" height="20" fill="blue"/%3E%3C/svg%3E',
+                        },
+                      ]
+                    : []),
+                ],
               },
             ],
           },
@@ -141,7 +154,11 @@ async function mockAPI(page: Page, options: { holdStream?: boolean } = {}) {
   return requests;
 }
 
-async function open(page: Page, suffix = '', options: { holdStream?: boolean } = {}) {
+async function open(
+  page: Page,
+  suffix = '',
+  options: { holdStream?: boolean; media?: boolean } = {},
+) {
   const requests = await mockAPI(page, options);
   await page.goto(`./${suffix}`);
   await expect(page.locator('#startupSplash')).toBeHidden({ timeout: 10_000 });
@@ -153,10 +170,10 @@ test('loads, navigates sessions, opens settings and preserves normal namespace h
 }, testInfo) => {
   test.skip(testInfo.project.name === 'mobile', 'desktop session navigation is covered separately');
   await open(page);
-  await expect(page.getByRole('heading', { name: 'First chat' })).toBeVisible();
-  await page.getByRole('button', { name: 'Second chat', exact: true }).click();
-  await expect(page.getByText('Second question')).toBeVisible();
-  await expect(page).toHaveURL(/\/chat\/2$/);
+  await expect(page.getByRole('heading', { name: 'Second chat' })).toBeVisible();
+  await page.getByRole('button', { name: 'First chat', exact: true }).click();
+  await expect(page.getByText('First question')).toBeVisible();
+  await expect(page).toHaveURL(/\/chat\/1$/);
   await page.locator('#settingsBtn').click();
   const settings = page.getByRole('dialog', { name: 'Settings' });
   await expect(settings).toBeVisible();
@@ -253,7 +270,10 @@ test('opens diff UI, expands a file and queues an inline comment', async ({ page
     .click();
   await page.getByRole('textbox', { name: 'Inline comment' }).fill('Please explain this');
   await page.getByRole('button', { name: 'More send options' }).click();
-  await page.getByRole('menuitem', { name: /Queue comment/ }).click();
+  await expect(page.getByRole('menuitem', { name: 'Send now' })).toBeFocused();
+  await page.getByRole('menu', { name: 'Comment delivery' }).press('End');
+  await expect(page.getByRole('menuitem', { name: /Queue comment/ })).toBeFocused();
+  await page.getByRole('menuitem', { name: /Queue comment/ }).press('Enter');
   await expect(page.locator('.diff-queue-bar')).toContainText('1 queued');
   await expect(page.getByRole('button', { name: 'Send comments' })).toBeVisible();
   await expect(page.getByText('1 inline comment queued.')).toHaveCount(0);
@@ -273,22 +293,59 @@ test('mobile viewport opens a styled sidebar and returns to a usable composer', 
   await expect(sidebar).toHaveCSS('visibility', 'visible');
   await expect(page.locator('#newChatBtn')).toHaveCSS('display', 'flex');
   await expect(page.locator('#newChatBtn svg')).toBeVisible();
+  expect(await page.locator('#appMain').evaluate((element) => (element as HTMLElement).inert)).toBe(
+    true,
+  );
+  await expect(page.locator('#sidebarCloseBtn')).toBeFocused();
   await page.locator('#newChatBtn').click();
   await expect(sidebar).not.toHaveClass(/open/);
+  expect(await page.locator('#appMain').evaluate((element) => (element as HTMLElement).inert)).toBe(
+    false,
+  );
   await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
   await expect(page.locator('.composer-box')).toHaveCSS('border-radius', '22px');
   await expect(page.locator('#sendBtn svg')).toBeVisible();
 });
 
-test('explicit browser-test bridge is gated and excludes credentials', async ({ page }) => {
+test('same-context tabs retain independent session drafts', async ({ context, page }, testInfo) => {
+  test.skip(
+    testInfo.project.name === 'mobile',
+    'multi-tab storage is covered once in desktop Chromium',
+  );
+  const second = await context.newPage();
+  await Promise.all([mockAPI(page), mockAPI(second)]);
+  await Promise.all([page.goto('./'), second.goto('./')]);
+  await Promise.all([
+    expect(page.locator('#startupSplash')).toBeHidden({ timeout: 10_000 }),
+    expect(second.locator('#startupSplash')).toBeHidden({ timeout: 10_000 }),
+  ]);
+
+  await page.getByRole('button', { name: 'First chat', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Message' }).fill('draft in first');
+  await page.getByRole('button', { name: 'Second chat', exact: true }).click();
+
+  await second.getByRole('textbox', { name: 'Message' }).fill('draft in second');
+  await second.getByRole('button', { name: 'First chat', exact: true }).click();
+
+  await page.getByRole('button', { name: 'First chat', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Message' })).toHaveValue('draft in first');
+  await second.getByRole('button', { name: 'Second chat', exact: true }).click();
+  await expect(second.getByRole('textbox', { name: 'Message' })).toHaveValue('draft in second');
+  await second.close();
+});
+
+test('lightbox Escape restores focus to the media trigger', async ({ page }) => {
+  await open(page, '', { media: true });
+  const trigger = page.getByRole('button', { name: 'preview.png' });
+  await trigger.click();
+  const dialog = page.getByRole('dialog', { name: 'Media preview' });
+  await expect(dialog).toBeVisible();
+  await dialog.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(trigger).toBeFocused();
+});
+
+test('production build does not expose the browser-test bridge', async ({ page }) => {
   await open(page, '?test_bridge=1');
-  const bridge = await page.evaluate(() => ({
-    present: Boolean(window.__TERM_LLM_TEST__),
-    keys: Object.keys(window.__TERM_LLM_TEST__ || {}),
-    serialized: JSON.stringify(window.__TERM_LLM_TEST__),
-  }));
-  expect(bridge.present).toBe(true);
-  expect(bridge.keys).toEqual(['store', 'domain']);
-  expect(bridge.serialized).not.toContain('token');
-  expect(bridge.serialized).not.toContain('Authorization');
+  expect(await page.evaluate(() => Boolean(window.__TERM_LLM_TEST__))).toBe(false);
 });

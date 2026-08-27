@@ -3,7 +3,10 @@ import { useStore } from '../app/context';
 import type { Project, Session } from '../domain/types';
 import { displayName } from '../app/config';
 import { readJSON, writeJSON } from '../platform/storage';
+import { overlayManager } from '../platform/overlay-manager';
 import { Icon } from './Icon';
+import { trapOverlayFocus } from './Overlay';
+import { useMenuKeyboard } from './Menu';
 
 function sessionMessageCount(session: Session): number {
   if (Number.isFinite(session.messageCount)) return Math.max(0, session.messageCount || 0);
@@ -109,14 +112,7 @@ function SessionMenu({ session, onHide }: { session: Session; onHide: () => void
   const [open, setOpen] = useState(false);
   const { menu, up } = useMenuFlip(open);
   const trigger = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const close = (event: MouseEvent) => {
-      if (!(event.target as HTMLElement).closest('.session-row-menu')) setOpen(false);
-    };
-    addEventListener('click', close);
-    return () => removeEventListener('click', close);
-  }, [open]);
+  const keyboardMenu = useMenuKeyboard(open, () => setOpen(false), trigger);
   return (
     <div class={`session-row-menu ${open ? 'open' : ''}`}>
       <button
@@ -135,16 +131,13 @@ function SessionMenu({ session, onHide }: { session: Session; onHide: () => void
       </button>
       {open && (
         <div
-          ref={menu}
+          ref={(element) => {
+            menu.current = element;
+            keyboardMenu.current = element;
+          }}
           class={`session-menu ${up ? 'open-up' : ''}`}
           role="menu"
           onClick={(event) => event.stopPropagation()}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape') {
-              setOpen(false);
-              trigger.current?.focus();
-            }
-          }}
         >
           <button
             type="button"
@@ -369,14 +362,8 @@ function ProjectGroup({ project }: { project: Project }) {
   const [open, setOpen] = useState(expansion[project.id] !== false);
   const [menu, setMenu] = useState(false);
   const { menu: menuRef, up } = useMenuFlip(menu);
-  useEffect(() => {
-    if (!menu) return;
-    const close = (event: MouseEvent) => {
-      if (!(event.target as HTMLElement).closest('.project-group-header')) setMenu(false);
-    };
-    addEventListener('click', close);
-    return () => removeEventListener('click', close);
-  }, [menu]);
+  const menuTrigger = useRef<HTMLButtonElement>(null);
+  const keyboardMenu = useMenuKeyboard(menu, () => setMenu(false), menuTrigger);
   const toggle = () => {
     const value = !open;
     setOpen(value);
@@ -422,6 +409,7 @@ function ProjectGroup({ project }: { project: Project }) {
           </span>
         </button>
         <button
+          ref={menuTrigger}
           class="project-group-action"
           type="button"
           aria-label={`Actions for project ${project.name}`}
@@ -436,7 +424,10 @@ function ProjectGroup({ project }: { project: Project }) {
         </button>
         {menu && (
           <div
-            ref={menuRef}
+            ref={(element) => {
+              menuRef.current = element;
+              keyboardMenu.current = element;
+            }}
             class={`session-menu project-menu open ${up ? 'open-up' : ''}`}
             role="menu"
           >
@@ -501,6 +492,23 @@ function ProjectGroup({ project }: { project: Project }) {
 export function Sidebar() {
   const store = useStore();
   const collapsed = store.sidebarCollapsed.value;
+  const mobileOpen = store.sidebarOpen.value;
+  const sidebar = useRef<HTMLElement>(null);
+  const overlayToken = useRef<symbol | null>(null);
+  useLayoutEffect(() => {
+    if (!mobileOpen || !globalThis.matchMedia?.('(max-width: 760px)').matches) return;
+    const trigger =
+      document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+    overlayToken.current = overlayManager.acquire(trigger, sidebar.current);
+    const frame = requestAnimationFrame(() =>
+      sidebar.current?.querySelector<HTMLElement>('#sidebarCloseBtn')?.focus(),
+    );
+    return () => {
+      cancelAnimationFrame(frame);
+      if (overlayToken.current) overlayManager.release(overlayToken.current);
+      overlayToken.current = null;
+    };
+  }, [mobileOpen]);
   const standalone = store.sessions.value.filter((session) => !session.projectId);
   const sidebarSessions = [
     ...store.sessions.value,
@@ -521,9 +529,29 @@ export function Sidebar() {
   return (
     <>
       <aside
-        class={`sidebar ${collapsed ? 'collapsed' : ''} ${store.sidebarOpen.value ? 'open' : ''}`}
+        ref={sidebar}
+        class={`sidebar ${collapsed ? 'collapsed' : ''} ${mobileOpen ? 'open' : ''}`}
         id="sidebar"
         aria-label="Sessions"
+        role={mobileOpen ? 'dialog' : undefined}
+        aria-modal={mobileOpen || undefined}
+        onKeyDown={(event) => {
+          if (
+            event.key === 'Escape' &&
+            overlayToken.current &&
+            overlayManager.isTop(overlayToken.current)
+          ) {
+            event.preventDefault();
+            event.stopPropagation();
+            store.sidebarOpen.value = false;
+            return;
+          }
+          if (overlayToken.current)
+            trapOverlayFocus(
+              event,
+              'button:not([disabled]),input:not([disabled]),a[href],[tabindex]:not([tabindex="-1"])',
+            );
+        }}
       >
         <div class="sidebar-rail">
           <button
@@ -717,10 +745,11 @@ export function Sidebar() {
         </div>
       </aside>
       <div
-        class={`sidebar-backdrop ${store.sidebarOpen.value ? 'open' : ''}`}
+        class={`sidebar-backdrop ${mobileOpen ? 'open' : ''}`}
         id="sidebarBackdrop"
         onClick={() => {
-          store.sidebarOpen.value = false;
+          if (!overlayToken.current || overlayManager.isTop(overlayToken.current))
+            store.sidebarOpen.value = false;
         }}
       />
     </>

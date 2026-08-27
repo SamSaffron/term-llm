@@ -18,9 +18,7 @@ async function bootstrap(): Promise<void> {
   if (!root) throw new Error('term-llm application mount is missing');
   render(<App store={store} />, root);
 
-  const explicitTestBridge =
-    window.__TERM_LLM_ENABLE_TEST_BRIDGE__ === true ||
-    new URLSearchParams(location.search).get('test_bridge') === '1';
+  const explicitTestBridge = import.meta.env.DEV && window.__TERM_LLM_ENABLE_TEST_BRIDGE__ === true;
   if (explicitTestBridge) {
     // Deliberately excludes token, API headers and injected credentials.
     window.__TERM_LLM_TEST__ = Object.freeze({

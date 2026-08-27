@@ -44,6 +44,9 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Race-test Web UI lifecycle owners
+        run: go test -race ./internal/webrtc ./internal/session ./cmd
+
       - name: Vet
         run: go vet ./...
 

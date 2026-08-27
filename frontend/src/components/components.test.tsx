@@ -13,6 +13,7 @@ import { Sidebar } from './Sidebar';
 import { Header } from './Header';
 import { DiffSidebar, PlanSurface } from './Panels';
 import { ChipPicker } from './ChipPicker';
+import { Lightbox } from './Lightbox';
 import type { AppConfig } from '../app/config';
 import { initialProjection } from '../domain/response';
 import { readJSON } from '../platform/storage';
@@ -224,11 +225,13 @@ describe('Preact-owned chat surfaces', () => {
     };
     const { container } = render(
       <StoreContext.Provider value={store}>
-        <aside id="sidebar" />
-        <main id="appMain">
-          <Header />
-        </main>
-        <PlanSurface />
+        <div id="appShell">
+          <aside id="sidebar" />
+          <main id="appMain">
+            <Header />
+          </main>
+          <PlanSurface />
+        </div>
       </StoreContext.Provider>,
     );
 
@@ -242,7 +245,7 @@ describe('Preact-owned chat surfaces', () => {
       expect(container.querySelector('#sidebar')).toHaveProperty('inert', true);
     });
 
-    fireEvent.keyDown(window, { key: 'Escape' });
+    fireEvent.keyDown(sheet, { key: 'Escape' });
     await waitFor(() => {
       expect(store.planOpen.value).toBe(false);
       expect(toggle).toHaveFocus();
@@ -250,7 +253,8 @@ describe('Preact-owned chat surfaces', () => {
     });
 
     await userEvent.click(toggle);
-    await userEvent.click(container.querySelector('.plan-sheet-backdrop')!);
+    await screen.findByRole('dialog', { name: 'Current plan' });
+    fireEvent.mouseDown(container.querySelector('.drawer-backdrop')!);
     expect(store.planOpen.value).toBe(false);
   });
 
@@ -514,7 +518,7 @@ describe('Preact-owned chat surfaces', () => {
     await userEvent.type(firstEditor, 'Queue this');
     expect(screen.getByRole('button', { name: 'Send now' })).toBeEnabled();
     await userEvent.click(screen.getByRole('button', { name: 'More send options' }));
-    await userEvent.click(screen.getByRole('button', { name: /Queue comment/ }));
+    await userEvent.click(screen.getByRole('menuitem', { name: /Queue comment/ }));
     expect(store.queueDiffComment).toHaveBeenCalledWith(
       expect.objectContaining({ path: 'main.go', line: 1, body: 'Queue this' }),
     );
@@ -2352,6 +2356,31 @@ describe('Preact-owned chat surfaces', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('pauses and clears owned video resources when the lightbox closes', async () => {
+    const store = createStore();
+    const trigger = document.createElement('button');
+    document.body.append(trigger);
+    trigger.focus();
+    const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
+    const load = vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => undefined);
+    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+    store.lightbox.value = { src: 'blob:owned-video', type: 'video', ownsObjectURL: true };
+    render(
+      <StoreContext.Provider value={store}>
+        <Lightbox />
+      </StoreContext.Provider>,
+    );
+
+    fireEvent.keyDown(screen.getByRole('dialog', { name: 'Media preview' }), { key: 'Escape' });
+
+    await waitFor(() => expect(store.lightbox.value).toBeNull());
+    expect(pause).toHaveBeenCalled();
+    expect(load).toHaveBeenCalled();
+    expect(revoke).toHaveBeenCalledWith('blob:owned-video');
+    await waitFor(() => expect(trigger).toHaveFocus());
+    trigger.remove();
   });
 
   it('appends safe plain streaming text without replacing its text node', async () => {

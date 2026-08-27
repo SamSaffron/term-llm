@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import { errorMessage } from '../domain/text';
+import type { ApprovalPrompt, AskUserPrompt } from '../domain/types';
 import { Icon } from './Icon';
 import { Overlay } from './Overlay';
 import { Markdown } from './Markdown';
@@ -325,9 +326,9 @@ function Rename() {
   );
 }
 
-function AskUser() {
+function AskUser({ interactionPrompt }: { interactionPrompt?: AskUserPrompt }) {
   const store = useStore();
-  const prompt = store.askUser.value;
+  const prompt = interactionPrompt || store.askUser.value;
   const [answers, setAnswers] = useState<Record<number, string[]>>({});
   const [custom, setCustom] = useState<Record<number, string>>({});
   const [tab, setTab] = useState(0);
@@ -355,7 +356,7 @@ function AskUser() {
     setError('');
     setSending(true);
     try {
-      await store.answerAskUser(cancelled ? [] : prompt.questions.map(validate), cancelled);
+      await store.answerAskUser(cancelled ? [] : prompt.questions.map(validate), cancelled, prompt);
     } catch (value) {
       setError(errorMessage(value));
     } finally {
@@ -364,7 +365,7 @@ function AskUser() {
   };
   const dismiss = () => {
     if (tab > 0) setTab(tab - 1);
-    else void submit(true);
+    else store.dismissInteraction('ask-user', prompt);
   };
   const next = () => {
     try {
@@ -383,7 +384,9 @@ function AskUser() {
           : 'Answer question'
       }
       close={false}
-      onEscape={dismiss}
+      onEscape={() => {
+        if (!sending) dismiss();
+      }}
     >
       <p>The agent needs your input to continue.</p>
       {prompt.questions.length > 1 && (
@@ -391,6 +394,7 @@ function AskUser() {
           {prompt.questions.map((_item, index) => (
             <button
               class={`ask-user-step ${index === tab ? 'active' : index < tab ? 'completed' : ''}`}
+              disabled={sending}
               onClick={() => setTab(index)}
             >
               {index + 1}
@@ -398,7 +402,7 @@ function AskUser() {
           ))}
         </div>
       )}
-      <fieldset class="ask-user-question">
+      <fieldset class="ask-user-question" disabled={sending} aria-busy={sending}>
         <legend class="ask-user-question-text">
           {question.header && <strong>{question.header}: </strong>}
           {question.question}
@@ -446,8 +450,13 @@ function AskUser() {
       {error && <div class="modal-error">{error}</div>}
       <div class="modal-actions">
         <button class="btn" disabled={sending} onClick={dismiss}>
-          {tab > 0 ? 'Back' : sending ? 'Dismissing…' : 'Dismiss'}
+          {tab > 0 ? 'Back' : 'Dismiss'}
         </button>
+        {tab === 0 && (
+          <button class="btn danger" disabled={sending} onClick={() => void submit(true)}>
+            {sending ? 'Cancelling…' : 'Cancel agent request'}
+          </button>
+        )}
         {tab < prompt.questions.length - 1 ? (
           <button class="btn primary" disabled={sending} onClick={next}>
             Next
@@ -462,9 +471,9 @@ function AskUser() {
   );
 }
 
-function Approval() {
+function Approval({ interactionPrompt }: { interactionPrompt?: ApprovalPrompt }) {
   const store = useStore();
-  const prompt = store.approval.value;
+  const prompt = interactionPrompt || store.approval.value;
   const options = prompt?.options || [];
   const deny =
     options.find((option) => option.choice === 'deny')?.index ?? options.at(-1)?.index ?? 0;
@@ -473,19 +482,25 @@ function Approval() {
   );
   const [resume, setResume] = useState(false);
   const [error, setError] = useState('');
+  const [sending, setSending] = useState(false);
   if (!prompt) return null;
-  const decide = async (selected: number) => {
+  const decide = async (selected: number, cancelled = false) => {
+    if (sending) return;
+    setSending(true);
+    setError('');
     try {
-      await store.decideApproval(selected, resume);
+      await store.decideApproval(selected, resume, prompt, cancelled);
     } catch (value) {
       setError(errorMessage(value));
+    } finally {
+      setSending(false);
     }
   };
   return (
     <Overlay
       title={prompt.title || 'Access Request'}
       close={false}
-      onEscape={() => void decide(deny)}
+      onEscape={() => store.dismissInteraction('approval', prompt)}
     >
       {prompt.intro && <div class="approval-intro">{prompt.intro}</div>}
       {prompt.path && <code class="approval-path">{prompt.path}</code>}
@@ -498,9 +513,13 @@ function Approval() {
               type="radio"
               name="approval"
               checked={choice === option.index}
+              disabled={sending}
               onChange={() => setChoice(option.index)}
             />
-            {option.label || option.title || option.choice}
+            <span>
+              {option.label || option.title || option.choice}
+              {option.description && <small>{option.description}</small>}
+            </span>
           </label>
         ))}
       {prompt.resumeAutoAvailable && (
@@ -508,6 +527,7 @@ function Approval() {
           <input
             type="checkbox"
             checked={resume}
+            disabled={sending}
             onChange={(event) => setResume(event.currentTarget.checked)}
           />{' '}
           Resume Guardian auto-approval
@@ -516,11 +536,21 @@ function Approval() {
       {prompt.note && <div class="approval-note">{prompt.note}</div>}
       {error && <div class="modal-error">{error}</div>}
       <div class="modal-actions">
-        <button class="btn" onClick={() => void decide(deny)}>
-          Deny
+        <button
+          class="btn"
+          disabled={sending}
+          onClick={() => store.dismissInteraction('approval', prompt)}
+        >
+          Dismiss
         </button>
-        <button class="btn primary" onClick={() => void decide(choice)}>
-          Approve
+        <button class="btn" disabled={sending} onClick={() => void decide(choice, true)}>
+          Cancel request
+        </button>
+        <button class="btn" disabled={sending} onClick={() => void decide(deny)}>
+          {sending ? 'Submitting…' : 'Deny'}
+        </button>
+        <button class="btn primary" disabled={sending} onClick={() => void decide(choice)}>
+          {sending ? 'Submitting…' : 'Approve'}
         </button>
       </div>
     </Overlay>
@@ -1423,11 +1453,18 @@ export function SideQuestion() {
 
 export function Modals() {
   const store = useStore();
-  const modal = store.approval.value
-    ? 'approval'
-    : store.askUser.value
-      ? 'ask-user'
-      : store.modal.value;
+  const interaction = store.interactionOrder.value
+    .map((key) => store.interactions.value[key])
+    .find((entry) => entry && ['waiting', 'submitting', 'failed'].includes(entry.state));
+  const modal = interaction
+    ? interaction.kind === 'approval'
+      ? 'approval'
+      : 'ask-user'
+    : store.approval.value
+      ? 'approval'
+      : store.askUser.value
+        ? 'ask-user'
+        : store.modal.value;
   switch (modal) {
     case 'settings':
       return <Settings />;
@@ -1436,9 +1473,21 @@ export function Modals() {
     case 'project':
       return store.projectTarget.value ? <ProjectAssignment /> : <ProjectPicker />;
     case 'ask-user':
-      return <AskUser />;
+      return (
+        <AskUser
+          interactionPrompt={
+            interaction?.kind === 'ask-user' ? (interaction.prompt as AskUserPrompt) : undefined
+          }
+        />
+      );
     case 'approval':
-      return <Approval />;
+      return (
+        <Approval
+          interactionPrompt={
+            interaction?.kind === 'approval' ? (interaction.prompt as ApprovalPrompt) : undefined
+          }
+        />
+      );
     case 'mcp':
       return <MCP />;
     case 'goal':

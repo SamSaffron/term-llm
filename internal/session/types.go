@@ -190,6 +190,7 @@ type ListOptions struct {
 	ProjectID        string                // Restrict to one stable project ID
 	NoProject        bool                  // Restrict to legacy sessions with a null project ID
 	ProjectCursor    *ProjectSessionCursor // Group-bound keyset cursor for project sidebar paging
+	ParentID         string                // Restrict to direct child sessions of this parent
 	ExcludeSubagents bool                  // Hide machine-generated child-agent sessions
 }
 

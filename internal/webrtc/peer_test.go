@@ -18,6 +18,59 @@ import (
 	"github.com/pion/ice/v4"
 )
 
+func TestConnectionReservationsAreAtomicAndReusable(t *testing.T) {
+	p := &peer{cfg: Config{MaxConns: 3}}
+	const attempts = 32
+	start := make(chan struct{})
+	results := make(chan *connectionReservation, attempts)
+	var wg sync.WaitGroup
+	for range attempts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			reservation, ok := p.reserve()
+			if ok {
+				results <- reservation
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	reservations := make([]*connectionReservation, 0, p.cfg.MaxConns)
+	for reservation := range results {
+		reservations = append(reservations, reservation)
+	}
+	if got := len(reservations); got != p.cfg.MaxConns {
+		t.Fatalf("reservations = %d, want %d", got, p.cfg.MaxConns)
+	}
+	if got := p.active.Load(); got != int32(p.cfg.MaxConns) {
+		t.Fatalf("active reservations = %d, want %d", got, p.cfg.MaxConns)
+	}
+	if diagnostics := p.Diagnostics(); diagnostics.Active != 0 || diagnostics.Reserved != int32(p.cfg.MaxConns) {
+		t.Fatalf("diagnostics during setup = %#v", diagnostics)
+	}
+	if got := p.rejected.Load(); got != uint64(attempts-p.cfg.MaxConns) {
+		t.Fatalf("rejections = %d, want %d", got, attempts-p.cfg.MaxConns)
+	}
+
+	reservations[0].release()
+	reservations[0].release() // exactly once
+	replacement, ok := p.reserve()
+	if !ok {
+		t.Fatal("released reservation was not reusable")
+	}
+	replacement.release()
+	for _, reservation := range reservations[1:] {
+		reservation.release()
+	}
+	if got := p.active.Load(); got != 0 {
+		t.Fatalf("active after release = %d, want 0", got)
+	}
+}
+
 // newTestPeer creates a peer wired to handler with the given basePath,
 // suitable for calling dispatchRequest in unit tests.
 func newTestPeer(basePath string, handler http.Handler) *peer {
@@ -160,9 +213,13 @@ func TestHandleOffer_SetupTimeoutReleasesConnectionSlot(t *testing.T) {
 	}
 
 	firstDone := make(chan struct{})
+	reservation, ok := p.reserve()
+	if !ok {
+		t.Fatal("reserve first offer")
+	}
 	go func() {
 		defer close(firstDone)
-		p.handleOffer(context.Background(), firstOffer)
+		p.handleOffer(context.Background(), firstOffer, reservation)
 	}()
 
 	var firstAnswer signalingMsg

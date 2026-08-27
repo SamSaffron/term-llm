@@ -192,6 +192,13 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 			}
 		}
 	}
+	if s.responseRuns != nil {
+		if run := s.responseRuns.latestRun(sessionID); run != nil {
+			if resolved := run.resolvedInteractionsSnapshot(); len(resolved) > 0 {
+				resp["resolved_interactions"] = resolved
+			}
+		}
+	}
 	if pendingAuthoritative || len(pendingItems) > 0 {
 		resp["pending_interjections"] = pendingItems
 		if len(pendingItems) > 0 {

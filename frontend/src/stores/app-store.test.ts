@@ -683,7 +683,7 @@ describe('AppStore compatibility behavior', () => {
     ]);
   });
 
-  it('retires a terminal projection once its durable transcript revision is loaded', async () => {
+  it('retains terminal run-center history while retiring its durable transport owner', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];
     store.activeSessionId.value = 's1';
@@ -744,7 +744,10 @@ describe('AppStore compatibility behavior', () => {
 
     await internals.refreshSessionMessages('s1', 5);
 
-    expect(store.runs.value.s1).toBeUndefined();
+    expect(store.runs.value.s1).toMatchObject({
+      messages: [],
+      run: { responseId: 'r1', status: 'completed', summary: 'identical answer' },
+    });
     expect(store.visibleMessages.value.map((message) => message.content)).toEqual([
       'identical answer',
     ]);
@@ -1011,6 +1014,58 @@ describe('AppStore compatibility behavior', () => {
     window.dispatchEvent(new Event('focus'));
     await vi.waitFor(() => expect(store.refreshSidebar).toHaveBeenCalledOnce());
     expect(internals.refreshStatus).toHaveBeenCalledOnce();
+  });
+
+  it('invalidates an old status generation before waiting for it to settle', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [{ ...session(), title: 'Current', transcriptRev: 5 }];
+    store.activeSessionId.value = 's1';
+    const oldStatus = deferred<Record<string, unknown>>();
+    const newStatus = deferred<Record<string, unknown>>();
+    store.endpoints.sessionStatus = vi
+      .fn()
+      .mockImplementationOnce(() => oldStatus.promise)
+      .mockImplementationOnce(() => newStatus.promise);
+    const internals = store as unknown as {
+      refreshStatus(authoritative?: boolean): Promise<void>;
+    };
+
+    const oldRequest = internals.refreshStatus();
+    const authoritative = internals.refreshStatus(true);
+    oldStatus.resolve({
+      sessions: [
+        {
+          id: 's1',
+          short_title: 'Stale',
+          active_response_id: 'old-response',
+          transcript_rev: 1,
+        },
+      ],
+    });
+    await oldRequest;
+    expect(store.sessions.value[0]).toMatchObject({ title: 'Current', transcriptRev: 5 });
+    expect(store.sessions.value[0].activeResponseId).not.toBe('old-response');
+
+    newStatus.resolve({
+      sessions: [{ id: 's1', short_title: 'Newest', active_response_id: '', transcript_rev: 8 }],
+    });
+    await authoritative;
+    expect(store.sessions.value[0]).toMatchObject({ title: 'Newest', transcriptRev: 8 });
+  });
+
+  it('coalesces non-authoritative status callers', async () => {
+    const store = new AppStore(config);
+    const status = deferred<Record<string, unknown>>();
+    store.endpoints.sessionStatus = vi.fn(() => status.promise);
+    const internals = store as unknown as {
+      refreshStatus(authoritative?: boolean): Promise<void>;
+    };
+
+    const first = internals.refreshStatus();
+    const second = internals.refreshStatus();
+    expect(store.endpoints.sessionStatus).toHaveBeenCalledOnce();
+    status.resolve({ sessions: [] });
+    await Promise.all([first, second]);
   });
 
   it('reorders sessions when status polling observes activity from another tab', async () => {
@@ -1398,6 +1453,48 @@ describe('AppStore compatibility behavior', () => {
     expect(store.diff.value.comments).toEqual([]);
   });
 
+  it('explicitly re-anchors a stale queued comment to the current source snapshot', () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.queueDiffComment({
+      id: 'stale-comment',
+      path: 'main.go',
+      side: 'new',
+      line: 12,
+      body: 'Keep this guard.',
+      scope: 'last_turn',
+      context: 'old line',
+      fileChangeSeq: 9,
+    });
+    store.diff.value = {
+      ...store.diff.value,
+      comments: store.diff.value.comments.map((comment) => ({ ...comment, state: 'stale' })),
+    };
+
+    store.reanchorDiffComment('stale-comment', {
+      path: 'main.go',
+      side: 'new',
+      line: 14,
+      scope: 'last_turn',
+      context: 'new line',
+      fileChangeSeq: 10,
+    });
+
+    expect(store.diff.value.comments).toEqual([
+      expect.objectContaining({
+        id: 'stale-comment',
+        state: 'fresh',
+        line: 14,
+        context: 'new line',
+        fileChangeSeq: 10,
+        anchorFingerprint: expect.any(String),
+      }),
+    ]);
+    store.dispose();
+  });
+
   it('sends queued diff comments as typed interjections during an active response', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];
@@ -1734,8 +1831,60 @@ describe('AppStore compatibility behavior', () => {
     };
     store.modal.value = 'ask-user';
     await store.answerAskUser([], true);
-    expect(submit).toHaveBeenCalledWith('s1', { call_id: 'ask1', cancelled: true });
+    expect(submit).toHaveBeenCalledWith('s1', { call_id: 'ask1', cancelled: true }, 'ask1');
     expect(store.askUser.value).toBeNull();
+  });
+
+  it('deduplicates repeated ask-user submissions and locks the record synchronously', async () => {
+    const store = new AppStore(config);
+    const submitted = deferred<void>();
+    const submit = vi.fn(() => submitted.promise.then(() => ({})));
+    store.endpoints.askUser = submit;
+    const prompt = {
+      sessionId: 's1',
+      callId: 'ask-once',
+      questions: [{ question: 'Continue?', options: [] }],
+    };
+    store.askUser.value = prompt;
+
+    const first = store.answerAskUser([{ selected: 'yes' }], false, prompt);
+    const second = store.answerAskUser([{ selected: 'yes' }], false, prompt);
+    expect(submit).toHaveBeenCalledOnce();
+    expect(Object.values(store.interactions.value)[0]).toMatchObject({ state: 'submitting' });
+    submitted.resolve();
+    await Promise.all([first, second]);
+    expect(Object.values(store.interactions.value)[0]).toMatchObject({
+      state: 'accepted',
+      outcome: 'answered',
+    });
+    store.dispose();
+  });
+
+  it('uses the authoritative outcome when an interaction was already resolved', async () => {
+    const store = new AppStore(config);
+    store.endpoints.approval = vi.fn(async () => ({
+      status: 'already_resolved',
+      outcome: 'denied',
+      resolved_at: 1234,
+    }));
+    const prompt = {
+      sessionId: 's1',
+      id: 'approval-replay',
+      options: [
+        { index: 0, choice: 'allow', label: 'Allow' },
+        { index: 1, choice: 'deny', label: 'Deny' },
+      ],
+    };
+    store.approval.value = prompt;
+
+    await store.decideApproval(0, false, prompt);
+
+    expect(Object.values(store.interactions.value)[0]).toMatchObject({
+      state: 'denied',
+      outcome: 'denied',
+      resolvedAt: 1234,
+    });
+    store.dispose();
   });
 
   it('parses provider and model metadata from the real OpenAI list contracts', async () => {
@@ -1944,6 +2093,13 @@ describe('AppStore compatibility behavior', () => {
       refreshStatus(): Promise<void>;
     };
     internals.refreshStatus = vi.fn(() => status.promise);
+    store.endpoints.response = vi.fn(async () => ({
+      id: 'r1',
+      status: 'in_progress',
+      run_epoch: 1,
+      last_sequence_number: 4,
+      recovery: { messages: [], events: [] },
+    }));
     store.streamResponse = vi.fn(async () => undefined);
     const first = internals.recover();
     const second = internals.recover();
@@ -1951,12 +2107,8 @@ describe('AppStore compatibility behavior', () => {
     status.resolve();
     await Promise.all([first, second]);
     expect(store.streamResponse).toHaveBeenCalledOnce();
-    (store as unknown as { streamAborts: Map<string, AbortController> }).streamAborts.set(
-      's1',
-      new AbortController(),
-    );
     internals.refreshStatus = vi.fn(async () => undefined);
     await internals.recover();
-    expect(store.streamResponse).toHaveBeenCalledOnce();
+    expect(store.streamResponse).toHaveBeenCalledTimes(2);
   });
 });

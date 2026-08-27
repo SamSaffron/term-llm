@@ -13,6 +13,8 @@ import { rebaseHubAssetURL } from '../app/config';
 import { planSummary } from '../domain/plan';
 import { Icon } from './Icon';
 import { ChipPicker } from './ChipPicker';
+import { Drawer } from './Drawer';
+import { useMenuKeyboard } from './Menu';
 
 function commentTimestamp(
   createdAt: number | undefined,
@@ -101,6 +103,9 @@ function Line({
   onBody,
   onCancel,
   onSubmit,
+  onEdit,
+  onReanchor,
+  onRemove,
 }: {
   line: DiffLine;
   emphasis?: [number, number];
@@ -113,12 +118,17 @@ function Line({
   onBody: (value: string) => void;
   onCancel: () => void;
   onSubmit: (mode: 'send' | 'queue') => void;
+  onEdit: (comment: DiffComment) => void;
+  onReanchor: (comment: DiffComment) => void;
+  onRemove: (comment: DiffComment) => void;
 }) {
   const [sendMenuOpen, setSendMenuOpen] = useState(false);
   const [clock, setClock] = useState(() => Date.now());
   const affordance = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
   const editor = useRef<HTMLTextAreaElement>(null);
+  const sendTrigger = useRef<HTMLButtonElement>(null);
+  const sendMenu = useMenuKeyboard(sendMenuOpen, () => setSendMenuOpen(false), sendTrigger);
   const number = line.kind === 'delete' ? line.oldLine : line.newLine;
   const kind =
     line.kind === 'add'
@@ -237,8 +247,41 @@ function Line({
                     <span class="diff-comment-status-icon" aria-hidden="true">
                       {status === 'sent' && <Icon name="check" />}
                     </span>
-                    {status === 'queued' ? 'Queued' : status === 'sending' ? 'Sending' : 'Sent'}
+                    {status === 'queued'
+                      ? comment.state === 'stale'
+                        ? 'Stale'
+                        : 'Queued'
+                      : status === 'sending'
+                        ? 'Sending'
+                        : 'Sent'}
                   </span>
+                  {comment.queued && comment.id && (
+                    <span class="diff-comment-actions">
+                      {comment.state === 'stale' && (
+                        <button
+                          type="button"
+                          aria-label={`Re-anchor queued comment to ${comment.path} line ${comment.line}`}
+                          onClick={() => onReanchor(comment)}
+                        >
+                          Re-anchor here
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        aria-label={`Edit queued comment for ${comment.path} line ${comment.line}`}
+                        onClick={() => onEdit(comment)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Remove queued comment for ${comment.path} line ${comment.line}`}
+                        onClick={() => onRemove(comment)}
+                      >
+                        Remove
+                      </button>
+                    </span>
+                  )}
                   {timestamp && (
                     <time dateTime={timestamp.dateTime} title={timestamp.title}>
                       {timestamp.label}
@@ -280,9 +323,12 @@ function Line({
                   Send now
                 </button>
                 <button
+                  ref={sendTrigger}
                   class="diff-comment-send-more"
                   type="button"
                   aria-label="More send options"
+                  aria-haspopup="menu"
+                  aria-controls="diff-comment-delivery-menu"
                   aria-expanded={sendMenuOpen}
                   disabled={!canSubmit}
                   onClick={() => setSendMenuOpen(!sendMenuOpen)}
@@ -290,10 +336,17 @@ function Line({
                   ▾
                 </button>
                 {sendMenuOpen && (
-                  <div class="diff-comment-send-menu">
+                  <div
+                    ref={sendMenu}
+                    id="diff-comment-delivery-menu"
+                    class="diff-comment-send-menu"
+                    role="menu"
+                    aria-label="Comment delivery"
+                  >
                     <button
                       class="diff-comment-send-option"
                       type="button"
+                      role="menuitem"
                       disabled={!canSubmit}
                       onClick={() => submit('send')}
                     >
@@ -302,6 +355,7 @@ function Line({
                     <button
                       class="diff-comment-send-option"
                       type="button"
+                      role="menuitem"
                       disabled={!canSubmit}
                       onClick={() => submit('queue')}
                     >
@@ -583,6 +637,24 @@ function File({ file }: { file: DiffFile }) {
                         setCommenting('');
                       }}
                       onSubmit={(mode) => submitComment(mode, line, key)}
+                      onEdit={(comment) => {
+                        const body = window.prompt('Edit queued comment', comment.body);
+                        if (body !== null && comment.id) store.editDiffComment(comment.id, body);
+                      }}
+                      onReanchor={(comment) => {
+                        if (!comment.id || !number) return;
+                        store.reanchorDiffComment(comment.id, {
+                          path: file.path,
+                          side,
+                          line: number,
+                          context: line.content,
+                          fileChangeSeq: file.snapshotSeq || file.sequence || 0,
+                          scope: store.diff.value.scope,
+                        });
+                      }}
+                      onRemove={(comment) => {
+                        if (comment.id) store.removeDiffComment(comment.id);
+                      }}
                     />
                   );
                 })}
@@ -626,7 +698,9 @@ const DIFF_SCOPE_OPTIONS = [
 function DiffScopePicker() {
   const store = useStore();
   const state = store.diff.value;
-  const options = (state.git ? DIFF_SCOPE_OPTIONS : DIFF_SCOPE_OPTIONS.slice(0, 2)).map(
+  const gitScopesAvailable =
+    state.git || store.worktreesAvailable() || store.worktreesEnabled.value;
+  const options = (gitScopesAvailable ? DIFF_SCOPE_OPTIONS : DIFF_SCOPE_OPTIONS.slice(0, 2)).map(
     ([value, label]) => ({ value, label }),
   );
   return (
@@ -665,6 +739,7 @@ export function DiffSidebar() {
   const store = useStore();
   const state = store.diff.value;
   const aside = useRef<HTMLElement>(null);
+  const mobile = useMediaQuery('(max-width: 767px)');
   useEffect(() => {
     if (!state.open) return;
     const escape = (event: KeyboardEvent) => {
@@ -714,7 +789,7 @@ export function DiffSidebar() {
     addEventListener('pointerup', finish, { once: true });
     addEventListener('pointercancel', finish, { once: true });
   };
-  return (
+  const panel = (
     <aside
       ref={aside}
       class={`diff-sidebar open ${state.maximized ? 'maximized' : ''}`}
@@ -877,16 +952,16 @@ export function DiffSidebar() {
       )}
       {comments.length > 0 && (
         <div class="diff-queue-bar">
-          <span class="diff-queue-count">{comments.length} queued</span>
+          <span class="diff-queue-count" role="status" aria-live="polite">
+            {comments.length} queued
+            {comments.some((comment) => comment.state === 'stale')
+              ? `, ${comments.filter((comment) => comment.state === 'stale').length} stale`
+              : ''}
+          </span>
           <button
             class="diff-queue-discard"
             type="button"
-            onClick={() => {
-              const remaining = state.comments.filter(
-                (comment) => comment.sessionId && comment.sessionId !== state.sessionId,
-              );
-              store.diff.value = { ...state, comments: remaining };
-            }}
+            onClick={() => store.discardDiffComments(state.sessionId)}
           >
             Discard
           </button>
@@ -900,6 +975,18 @@ export function DiffSidebar() {
         </div>
       )}
     </aside>
+  );
+  if (!mobile) return panel;
+  return (
+    <Drawer
+      open
+      id="diffDrawer"
+      title="Session file changes"
+      side="right"
+      onClose={() => (store.diff.value = { ...store.diff.peek(), open: false, maximized: false })}
+    >
+      {panel}
+    </Drawer>
   );
 }
 
@@ -928,30 +1015,15 @@ export function PlanSurface() {
   }, [open, store, summary.signature]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || mobile) return;
     const returnFocus =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const blocked = mobile
-      ? ['sidebar', 'appMain']
-          .map((id) => document.getElementById(id))
-          .filter((element): element is HTMLElement => Boolean(element))
-          .map((element) => ({ element, inert: element.inert }))
-      : [];
-    blocked.forEach(({ element }) => {
-      element.inert = true;
-    });
-    if (mobile) {
-      const active = document.activeElement;
-      if (active instanceof HTMLElement && active.closest('.composer')) active.blur();
-      requestAnimationFrame(() => surface.current?.focus({ preventScroll: true }));
-    }
     const escape = (event: KeyboardEvent) => {
       if (
         event.key !== 'Escape' ||
         store.modal.peek() ||
         store.askUser.peek() ||
-        store.approval.peek() ||
-        store.modal.peek() === 'side'
+        store.approval.peek()
       )
         return;
       event.preventDefault();
@@ -960,43 +1032,11 @@ export function PlanSurface() {
     addEventListener('keydown', escape);
     return () => {
       removeEventListener('keydown', escape);
-      blocked.forEach(({ element, inert }) => {
-        element.inert = inert;
-      });
       if (document.contains(returnFocus)) returnFocus?.focus({ preventScroll: true });
     };
   }, [mobile, open, store]);
 
   if (!plan) return null;
-
-  const trapSheetFocus = (event: KeyboardEvent) => {
-    if (!mobile || event.key !== 'Tab') return;
-    const focusable = [
-      ...(surface.current?.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      ) || []),
-    ];
-    if (!focusable.length) {
-      event.preventDefault();
-      surface.current?.focus();
-      return;
-    }
-    const first = focusable[0];
-    const last = focusable.at(-1)!;
-    if (
-      document.activeElement === surface.current ||
-      !surface.current?.contains(document.activeElement)
-    ) {
-      event.preventDefault();
-      (event.shiftKey ? last : first).focus();
-    } else if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  };
 
   const progress = summary.completed / Math.max(1, summary.total);
   const announcement = summary.complete
@@ -1005,80 +1045,82 @@ export function PlanSurface() {
       ? `Step ${summary.position} of ${summary.total}: ${summary.activeStep}`
       : `Plan has ${summary.total} steps. ${summary.completed} complete.`;
 
-  return (
-    <>
-      {mobile && open && (
-        <div
-          class="plan-sheet-backdrop open"
-          aria-hidden="true"
+  const panel = (
+    <aside
+      ref={surface}
+      class={`plan-surface ${mobile ? 'plan-sheet' : 'plan-panel'} ${open ? 'open' : ''}`}
+      id="planSurface"
+      role={mobile ? undefined : 'complementary'}
+      aria-hidden={!open}
+      aria-labelledby="planSurfaceTitle"
+      tabIndex={-1}
+    >
+      {mobile && <div class="plan-sheet-handle" aria-hidden="true" />}
+      <div class="plan-surface-header">
+        <h2 id="planSurfaceTitle">Current plan</h2>
+        <span class={`plan-surface-progress ${summary.complete ? 'complete' : ''}`}>
+          {summary.complete ? 'Complete' : `Step ${summary.position} of ${summary.total}`}
+        </span>
+        <button
+          class="icon-btn"
+          type="button"
+          aria-label="Close current plan"
           onClick={() => store.closePlan()}
-        />
-      )}
-      <aside
-        ref={surface}
-        class={`plan-surface ${mobile ? 'plan-sheet' : 'plan-panel'} ${open ? 'open' : ''}`}
-        id="planSurface"
-        role={mobile ? 'dialog' : 'complementary'}
-        aria-modal={mobile ? true : undefined}
-        aria-hidden={!open}
-        aria-labelledby="planSurfaceTitle"
-        tabIndex={-1}
-        onKeyDown={trapSheetFocus}
-      >
-        {mobile && <div class="plan-sheet-handle" aria-hidden="true" />}
-        <div class="plan-surface-header">
-          <h2 id="planSurfaceTitle">Current plan</h2>
-          <span class={`plan-surface-progress ${summary.complete ? 'complete' : ''}`}>
-            {summary.complete ? 'Complete' : `Step ${summary.position} of ${summary.total}`}
-          </span>
-          <button
-            class="icon-btn"
-            type="button"
-            aria-label="Close current plan"
-            onClick={() => store.closePlan()}
-          >
-            <Icon name="close" />
-          </button>
-        </div>
-        <div class="plan-progress-track" aria-hidden="true" style={{ '--plan-progress': progress }}>
-          <span />
-        </div>
-        <div class="plan-surface-body">
-          {plan.explanation && <p class="current-plan-explanation">{plan.explanation}</p>}
-          <ol class="current-plan-checklist" role="list">
-            {plan.plan.map((step, index) => (
-              <li
-                class={`current-plan-step current-plan-step-${step.status}`}
-                key={`${index}-${step.step}`}
-                aria-current={step.status === 'in_progress' ? 'step' : undefined}
-              >
-                <span class="current-plan-step-marker" aria-hidden="true">
-                  {step.status === 'completed' ? (
-                    <Icon name="check" />
-                  ) : step.status === 'in_progress' ? (
-                    <span class="current-plan-step-pulse" />
-                  ) : (
-                    <span class="current-plan-step-ring" />
-                  )}
-                </span>
-                <div class="current-plan-step-content">
-                  <div class="current-plan-step-text">{step.step}</div>
-                  <div class="current-plan-step-state">
-                    {step.status === 'in_progress'
-                      ? 'In progress'
-                      : step.status === 'completed'
-                        ? 'Completed'
-                        : 'Pending'}
-                  </div>
+        >
+          <Icon name="close" />
+        </button>
+      </div>
+      <div class="plan-progress-track" aria-hidden="true" style={{ '--plan-progress': progress }}>
+        <span />
+      </div>
+      <div class="plan-surface-body">
+        {plan.explanation && <p class="current-plan-explanation">{plan.explanation}</p>}
+        <ol class="current-plan-checklist" role="list">
+          {plan.plan.map((step, index) => (
+            <li
+              class={`current-plan-step current-plan-step-${step.status}`}
+              key={`${index}-${step.step}`}
+              aria-current={step.status === 'in_progress' ? 'step' : undefined}
+            >
+              <span class="current-plan-step-marker" aria-hidden="true">
+                {step.status === 'completed' ? (
+                  <Icon name="check" />
+                ) : step.status === 'in_progress' ? (
+                  <span class="current-plan-step-pulse" />
+                ) : (
+                  <span class="current-plan-step-ring" />
+                )}
+              </span>
+              <div class="current-plan-step-content">
+                <div class="current-plan-step-text">{step.step}</div>
+                <div class="current-plan-step-state">
+                  {step.status === 'in_progress'
+                    ? 'In progress'
+                    : step.status === 'completed'
+                      ? 'Completed'
+                      : 'Pending'}
                 </div>
-              </li>
-            ))}
-          </ol>
-          <div class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
-            {announcement}
-          </div>
+              </div>
+            </li>
+          ))}
+        </ol>
+        <div class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
+          {announcement}
         </div>
-      </aside>
-    </>
+      </div>
+    </aside>
+  );
+  if (!mobile) return panel;
+  return (
+    <Drawer
+      open={open}
+      id="planSurfaceDrawer"
+      className="plan-sheet open"
+      title="Current plan"
+      side="bottom"
+      onClose={() => store.closePlan()}
+    >
+      {panel}
+    </Drawer>
   );
 }

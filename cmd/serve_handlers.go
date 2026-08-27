@@ -1853,6 +1853,11 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		suffix = parts[1]
 	}
 
+	if suffix == "children" {
+		s.handleSessionChildren(w, r, sessionID)
+		return
+	}
+
 	if suffix == "project" {
 		if r.Method != http.MethodGet && r.Method != http.MethodPost {
 			w.Header().Set("Allow", "GET, POST")
@@ -2186,6 +2191,19 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
+	currentResponseID := ""
+	if s.responseRuns != nil {
+		currentResponseID = s.responseRuns.activeRunID(sessionID)
+	}
+	if expected := strings.TrimSpace(req.ExpectedResponseID); expected != "" && expected != currentResponseID {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": map[string]any{
+				"type": "response_owner_conflict", "message": "the active response changed",
+			},
+			"current_response_id": currentResponseID,
+		})
+		return
+	}
 	displayText := strings.TrimSpace(req.Message)
 	delivery, err := normalizeInterruptDelivery(req.Delivery)
 	if err != nil {
@@ -2237,7 +2255,26 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 	if clientMessageID == "" {
 		clientMessageID = strings.TrimSpace(req.InterjectionID)
 	}
-	action, replayed, interruptErr := rt.InterruptMessage(r.Context(), msg, displayText, clientMessageID, fastProvider, delivery)
+	var action llm.InterruptAction
+	var replayed bool
+	var interruptErr error
+	expectedResponseID := strings.TrimSpace(req.ExpectedResponseID)
+	if expectedResponseID != "" || req.ExpectedRunEpoch > 0 {
+		owned := s.responseRuns.withExpectedActiveRun(sessionID, expectedResponseID, req.ExpectedRunEpoch, func() {
+			action, replayed, interruptErr = rt.InterruptMessage(r.Context(), msg, displayText, clientMessageID, fastProvider, delivery)
+		})
+		if !owned {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": map[string]any{
+					"type": "response_owner_conflict", "message": "the active response changed",
+				},
+				"current_response_id": s.responseRuns.activeRunID(sessionID),
+			})
+			return
+		}
+	} else {
+		action, replayed, interruptErr = rt.InterruptMessage(r.Context(), msg, displayText, clientMessageID, fastProvider, delivery)
+	}
 	if interruptErr != nil {
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", interruptErr.Error())
 		return
@@ -2263,7 +2300,10 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 		actionName = "interject"
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"action": actionName,
+		"action":              actionName,
+		"replayed":            replayed,
+		"interjection_id":     strings.TrimSpace(req.InterjectionID),
+		"current_response_id": currentResponseID,
 	})
 }
 

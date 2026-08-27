@@ -35,14 +35,31 @@ export const endpoints = (api: APIClient) => ({
     api.get<Record<string, unknown>>(
       `/v1/sessions?no_project=1&cursor=${encoded(cursor)}&limit=30&include_archived=${hidden ? '1' : '0'}`,
     ),
-  sessionStatus: (selected = '', hidden = false, categories: string[] = ['all']) => {
+  sessionStatus: async (
+    selected = '',
+    hidden = false,
+    categories: string[] = ['all'],
+    etag = '',
+  ): Promise<Record<string, unknown>> => {
     const params = new URLSearchParams();
     if (selected) params.set('selected_session', selected);
     if (hidden) params.set('include_archived', '1');
     if (!categories.includes('all')) params.set('categories', categories.join(','));
-    return api.get<Record<string, unknown>>(
+    const response = await api.request(
       `/v1/sessions/status${params.size ? `?${params}` : ''}`,
+      { headers: etag ? { 'If-None-Match': etag } : undefined },
+      { policy: 'safe-read' },
     );
+    if (response.status === 304)
+      return { __notModified: true, __etag: response.headers.get('ETag') || etag };
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(body || `Status request returned ${response.status}`);
+    }
+    return {
+      ...((await response.json()) as Record<string, unknown>),
+      __etag: response.headers.get('ETag') || '',
+    };
   },
   searchSessions: (
     query: string,
@@ -63,6 +80,21 @@ export const endpoints = (api: APIClient) => ({
     ),
   sessionState: (id: string, signal?: AbortSignal) =>
     api.get<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/state`, signal),
+  sessionChildren: async (id: string, etag = '', signal?: AbortSignal) => {
+    const response = await api.request(
+      `/v1/sessions/${encoded(id)}/children`,
+      { signal, headers: etag ? { 'If-None-Match': etag } : undefined },
+      { policy: 'safe-read' },
+    );
+    if (response.status === 304)
+      return { __notModified: true, __etag: response.headers.get('ETag') || etag };
+    if (!response.ok)
+      throw new Error((await response.text()) || `Children request returned ${response.status}`);
+    return {
+      ...((await response.json()) as Record<string, unknown>),
+      __etag: response.headers.get('ETag') || '',
+    };
+  },
   createResponse: (body: unknown, sessionId: string, requestId: string, signal?: AbortSignal) =>
     api.request(
       '/v1/responses',
@@ -146,8 +178,14 @@ export const endpoints = (api: APIClient) => ({
   getMCP: (id: string) => api.get<MCPResponse>(`/v1/sessions/${encoded(id)}/mcp`),
   setMCP: (id: string, enabled: string[]) =>
     api.patch<MCPResponse>(`/v1/sessions/${encoded(id)}/mcp`, { enabled }),
-  askUser: (id: string, body: unknown) => api.post(`/v1/sessions/${encoded(id)}/ask_user`, body),
-  approval: (id: string, body: unknown) => api.post(`/v1/sessions/${encoded(id)}/approval`, body),
+  askUser: (id: string, body: unknown, operationId: string) =>
+    api.post(`/v1/sessions/${encoded(id)}/ask_user`, body, 'idempotent-mutation', {
+      'Idempotency-Key': `ask_user_${operationId}`,
+    }),
+  approval: (id: string, body: unknown, operationId: string) =>
+    api.post(`/v1/sessions/${encoded(id)}/approval`, body, 'idempotent-mutation', {
+      'Idempotency-Key': `approval_${operationId}`,
+    }),
   sideQuestionState: (id: string) =>
     api.get<Record<string, unknown>>(`/api/sessions/${encoded(id)}/side-question`),
   startSideQuestion: (id: string, question: string) =>

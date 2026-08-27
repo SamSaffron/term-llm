@@ -11,7 +11,20 @@ import {
 } from '../domain/response';
 import { applyRuntimeToRequest, type ModelOption } from '../domain/runtime';
 import { errorMessage } from '../domain/text';
+import {
+  DEFAULT_ATTACHMENT_POLICY,
+  attachmentAccept,
+  validateAttachmentFile,
+  type AttachmentPolicy,
+} from '../domain/attachments';
 import { planSummary } from '../domain/plan';
+import type { ChildRun } from '../domain/run-center';
+import {
+  reviewAnchorFingerprint,
+  reviewCommentPayload,
+  validateReviewBatch,
+  validateReviewComment,
+} from '../domain/review-policy';
 import {
   convertServerMessages,
   mergeDurableProjection,
@@ -34,6 +47,7 @@ import type {
   FilesystemObservation,
   OutputClaimDiagnostic,
   Goal,
+  InteractionRecord,
   MCPServer,
   Message,
   Project,
@@ -41,20 +55,27 @@ import type {
 } from '../domain/types';
 import {
   clearDraft,
+  clearSessionDiffComments,
   migrateScopedStorage,
+  persistDiffComment,
+  persistAgentReadMarker,
   persistPendingIntent,
+  readAgentReadMarkers,
   readDiffCommentQueue,
   readDrafts,
   readPendingIntents,
+  removeDiffComment,
   removeSessionPendingIntents,
   saveDraft,
-  writeJSON,
   type PendingIntentRegistry,
   type StorageKeys,
 } from '../platform/storage';
 import { sessionIDFromLocation, updateSessionRoute } from '../platform/routing';
+import { blobChecksum, blobToDataURL, DraftBlobStore } from '../platform/draft-blobs';
 import { enableNotifications, hardRefreshAssets, syncTokenCookie } from '../platform/browser';
 import { rebaseHubAssetURL } from '../app/config';
+import { parseTabEvent, TabSync, type TabEventType } from '../platform/tab-sync';
+import { StreamSupervisors, type StreamSupervisor } from './stream-supervisor';
 
 export type Modal =
   | ''
@@ -131,8 +152,6 @@ export interface HubAgent {
 }
 
 const uuid = (): string => globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2);
-const retryBackoff = (attempt: number): number =>
-  Math.round(Math.min(60_000, 1_000 * 1.5 ** Math.max(0, attempt)));
 const worktreeError = (error: unknown): string => {
   const code = error instanceof APIError ? error.type : '';
   const messages: Record<string, string> = {
@@ -227,6 +246,23 @@ const approvalPrompt = (value: unknown, sessionId: string): ApprovalPrompt | nul
   } as ApprovalPrompt;
 };
 
+export interface StatusRequestMetadata {
+  generation: number;
+  requestedAt: number;
+  selectedSessionId: string;
+  selectionEpoch: number;
+  showHidden: boolean;
+  categories: string[];
+}
+interface StatusCoordinator {
+  generation: number;
+  refreshPromise: Promise<void> | null;
+  lastAppliedGeneration: number;
+  lastAppliedRequestedAt: number;
+  lastAppliedReceivedAt: number;
+  etag: string;
+}
+
 export class AppStore {
   readonly keys: StorageKeys;
   readonly api: APIClient;
@@ -250,6 +286,8 @@ export class AppStore {
   readonly token: Signal<string>;
   readonly prompt = signal('');
   readonly attachments = signal<Attachment[]>([]);
+  readonly attachmentPolicy = signal<AttachmentPolicy>(DEFAULT_ATTACHMENT_POLICY);
+  readonly attachmentAccept = computed(() => attachmentAccept(this.attachmentPolicy.value));
   readonly runs = signal<Record<string, ResponseProjection>>({});
   readonly connected = signal(false);
   readonly authRequired = signal(false);
@@ -276,6 +314,11 @@ export class AppStore {
   readonly planVisible = computed(() => this.planOpen.value && Boolean(this.currentPlan.value));
   readonly askUser = signal<AskUserPrompt | null>(null);
   readonly approval = signal<ApprovalPrompt | null>(null);
+  readonly interactions = signal<Record<string, InteractionRecord>>({});
+  readonly interactionOrder = signal<string[]>([]);
+  readonly childRuns = signal<ChildRun[]>([]);
+  readonly agentReadMarkers: Signal<Record<string, number>>;
+  readonly runCenterOpen = signal(false);
   readonly sideQuestion = signal<SideQuestionState>({
     sessionId: '',
     loading: false,
@@ -320,10 +363,24 @@ export class AppStore {
   readonly branchTree = signal<Record<string, unknown> | null>(null);
   readonly branchPathCount = signal(0);
   readonly branchTarget = signal('');
-  readonly lightbox = signal<{ src: string; type: 'image' | 'video' } | null>(null);
+  readonly lightbox = signal<{
+    src: string;
+    type: 'image' | 'video';
+    ownsObjectURL?: boolean;
+  } | null>(null);
   readonly renameTarget = signal<Session | null>(null);
   readonly projectTarget = signal<Session | null>(null);
   readonly networkState = signal<'unknown' | 'online' | 'offline' | 'retrying'>('unknown');
+  readonly diagnostics = signal({
+    staleStatusResults: 0,
+    staleStreamCallbacks: 0,
+    supervisorRetries: 0,
+    supervisorRecoveries: 0,
+    streamWatchdogTimeouts: 0,
+    queueValidationFailures: 0,
+    interactionReconciliations: 0,
+    storageFailures: 0,
+  });
   readonly fileChangeRevision = signal(0);
   readonly pendingIntents: Signal<PendingIntentRegistry>;
 
@@ -332,8 +389,9 @@ export class AppStore {
   readonly visibleMessages: ReadonlySignal<Message[]>;
   readonly streaming: ReadonlySignal<boolean>;
 
-  private readonly streamAborts = new Map<string, AbortController>();
-  private readonly postAborts = new Map<string, AbortController>();
+  private readonly streamSupervisors = new StreamSupervisors();
+  private readonly draftBlobs = new DraftBlobStore();
+  private readonly interactionSubmissions = new Map<string, Promise<void>>();
   // A stop is user-visible immediately. Keep its response ID here while the
   // server finishes cancellation so status polling cannot resurrect the run.
   private readonly locallyStoppedResponses = new Set<string>();
@@ -353,12 +411,31 @@ export class AppStore {
   private statusTimer = 0;
   private lastSidebarRefreshAt = 0;
   private unknownActiveSessionIDs = new Set<string>();
+  private readonly statusCoordinator: StatusCoordinator = {
+    generation: 0,
+    refreshPromise: null,
+    lastAppliedGeneration: 0,
+    lastAppliedRequestedAt: 0,
+    lastAppliedReceivedAt: 0,
+    etag: '',
+  };
+  private sidebarGeneration = 0;
+  private lastAppliedSidebarGeneration = 0;
   private sidebarRefreshPromise: Promise<void> | null = null;
   private sessionSyncChannel: BroadcastChannel | null = null;
+  private readonly tabSync = new TabSync();
+  private readonly peerRevisions = new Map<string, number>();
   private peerSyncTimer = 0;
   private pendingPeerSync = false;
   private titleRefreshTimers = new Map<string, number[]>();
   private lifecycleInstalled = false;
+  private readonly lifecycleAbort = new AbortController();
+  private disposed = false;
+  private currentDraftRev = 0;
+  private readonly childRunETags = new Map<string, string>();
+  private newDraftID = '';
+  private readonly attachmentGenerations = new Map<string, number>();
+  private readonly ownedTimers = new Set<number>();
   private selectionEpoch = 0;
   private modelEpoch = 0;
   private skillEpoch = 0;
@@ -374,6 +451,8 @@ export class AppStore {
     readonly storage: Storage = localStorage,
   ) {
     this.keys = migrateScopedStorage(storage, config.hub);
+    const storedDraftID = storage.getItem(this.keys.draftSessionActive) || '';
+    this.newDraftID = storedDraftID.startsWith('draft:') ? storedDraftID : `draft:${uuid()}`;
     this.token = signal(storage.getItem(this.keys.token) || '');
     this.selectedProvider = signal(storage.getItem(this.keys.selectedProvider) || '');
     this.selectedModel = signal(storage.getItem(this.keys.selectedModel) || '');
@@ -388,11 +467,22 @@ export class AppStore {
     this.showWidgets = signal(storage.getItem(this.keys.showWidgetsSidebar) !== '0');
     this.notificationsEnabled = signal(storage.getItem(this.keys.notificationsEnabled) === '1');
     this.pendingIntents = signal(readPendingIntents(storage, this.keys.pendingIntents));
+    this.agentReadMarkers = signal(readAgentReadMarkers(storage, this.keys.agentReadMarkers));
     this.diff.value = {
       ...this.diff.value,
       width: Math.max(320, Number(storage.getItem(this.keys.diffSidebarWidth)) || 420),
       comments: readDiffCommentQueue(storage, this.keys.diffCommentQueue),
     };
+    const referencedBlobIDs = new Set(
+      readDrafts(storage, this.keys.draftMessages).flatMap((draft) =>
+        (draft.attachments || []).flatMap((attachment) =>
+          attachment.blobRef ? [attachment.blobRef] : [],
+        ),
+      ),
+    );
+    void this.draftBlobs.deleteOrphans(referencedBlobIDs).catch(() => {
+      if (!this.disposed) this.bumpDiagnostic('storageFailures');
+    });
     syncTokenCookie(config.prefix, this.token.value);
     this.api = new APIClient(config, {
       getToken: () => this.token.value,
@@ -464,7 +554,7 @@ export class AppStore {
       await this.loadModels().catch(() => undefined);
       const routed = sessionIDFromLocation(this.config.prefix);
       const forceNew = new URLSearchParams(location.search).get('new') === '1';
-      const restoreDraft = !routed && this.storage.getItem(this.keys.draftSessionActive) === '1';
+      const restoreDraft = !routed && Boolean(this.storage.getItem(this.keys.draftSessionActive));
       const preferred =
         forceNew || restoreDraft
           ? ''
@@ -502,64 +592,145 @@ export class AppStore {
   private installLifecycle(): void {
     if (this.lifecycleInstalled) return;
     this.lifecycleInstalled = true;
-    addEventListener('popstate', () => {
-      const slug = sessionIDFromLocation(this.config.prefix);
-      const session = this.sessions.value.find(
-        (entry) => entry.id === slug || String(entry.number || '') === slug,
-      );
-      if (session) void this.selectSession(session, true);
-      else if (!slug) this.newChat(true);
-      else void this.resolveAndSelectSession(slug, true);
+    addEventListener(
+      'popstate',
+      () => {
+        const slug = sessionIDFromLocation(this.config.prefix);
+        const session = this.sessions.value.find(
+          (entry) => entry.id === slug || String(entry.number || '') === slug,
+        );
+        if (session) void this.selectSession(session, true);
+        else if (!slug) this.newChat(true);
+        else void this.resolveAndSelectSession(slug, true);
+      },
+      { signal: this.lifecycleAbort.signal },
+    );
+    addEventListener('online', () => void this.reconcile('online', { authoritative: true }), {
+      signal: this.lifecycleAbort.signal,
     });
-    addEventListener('online', () => void this.recover());
-    addEventListener('offline', () => {
-      this.networkState.value = 'offline';
-      this.connected.value = false;
-    });
-    addEventListener('term-llm:transport-fallback', () => void this.recover());
-    addEventListener('pageshow', (event) => {
-      this.ensureSessionSyncChannel();
-      if (this.startupDone.value || (event as PageTransitionEvent).persisted) {
-        void this.recover();
-        void this.refreshSidebar(false).catch(() => undefined);
-      }
-    });
-    addEventListener('focus', () => {
-      void this.recover();
-      void this.refreshSidebar(false).catch(() => undefined);
-      void this.refreshHubAgents();
-    });
-    addEventListener('beforeunload', () => this.persistCurrentDraft());
-    addEventListener('pagehide', (event) => {
-      if ((event as PageTransitionEvent).persisted) return;
-      window.clearTimeout(this.peerSyncTimer);
-      this.sessionSyncChannel?.close();
-      this.sessionSyncChannel = null;
-    });
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') {
-        void this.recover();
-        void this.refreshSidebar(false).catch(() => undefined);
+    addEventListener(
+      'offline',
+      () => {
+        this.networkState.value = 'offline';
+        this.connected.value = false;
+      },
+      { signal: this.lifecycleAbort.signal },
+    );
+    addEventListener(
+      'term-llm:transport-fallback',
+      () => void this.reconcile('transport-fallback', { authoritative: true }),
+      { signal: this.lifecycleAbort.signal },
+    );
+    addEventListener(
+      'pageshow',
+      (event) => {
+        this.ensureSessionSyncChannel();
+        if (this.startupDone.value || (event as PageTransitionEvent).persisted)
+          void this.reconcile('pageshow', { authoritative: true });
+      },
+      { signal: this.lifecycleAbort.signal },
+    );
+    addEventListener(
+      'focus',
+      () => {
+        void this.reconcile('focus', { authoritative: true });
         void this.refreshHubAgents();
-      }
+      },
+      { signal: this.lifecycleAbort.signal },
+    );
+    addEventListener('beforeunload', () => this.persistCurrentDraft(), {
+      signal: this.lifecycleAbort.signal,
     });
+    addEventListener(
+      'pagehide',
+      (event) => {
+        if ((event as PageTransitionEvent).persisted) return;
+        window.clearTimeout(this.peerSyncTimer);
+        this.sessionSyncChannel?.close();
+        this.sessionSyncChannel = null;
+      },
+      { signal: this.lifecycleAbort.signal },
+    );
+    document.addEventListener(
+      'visibilitychange',
+      () => {
+        if (document.visibilityState === 'visible') {
+          void this.reconcile('visibility', { authoritative: true });
+          void this.refreshHubAgents();
+        }
+      },
+      { signal: this.lifecycleAbort.signal },
+    );
     this.ensureSessionSyncChannel();
-    addEventListener('storage', (rawEvent) => {
-      const event = rawEvent as StorageEvent;
-      if (
-        event.key === this.keys.pendingIntents ||
-        event.key?.startsWith(`${this.keys.pendingIntents}:`)
-      ) {
-        this.pendingIntents.value = readPendingIntents(this.storage, this.keys.pendingIntents);
-      }
-    });
+    addEventListener(
+      'storage',
+      (rawEvent) => {
+        const event = rawEvent as StorageEvent;
+        if (
+          event.key === this.keys.pendingIntents ||
+          event.key?.startsWith(`${this.keys.pendingIntents}:`)
+        )
+          this.pendingIntents.value = readPendingIntents(this.storage, this.keys.pendingIntents);
+        if (event.key?.startsWith(`${this.keys.draftMessages}:`))
+          this.reconcileDraftStorage(this.draftStorageID());
+        if (event.key?.startsWith(`${this.keys.diffCommentQueue}:`))
+          this.diff.value = {
+            ...this.diff.peek(),
+            comments: readDiffCommentQueue(this.storage, this.keys.diffCommentQueue),
+          };
+        if (event.key?.startsWith(`${this.keys.agentReadMarkers}:`)) {
+          this.agentReadMarkers.value = readAgentReadMarkers(
+            this.storage,
+            this.keys.agentReadMarkers,
+          );
+          void this.loadChildRuns();
+        }
+      },
+      { signal: this.lifecycleAbort.signal },
+    );
   }
 
   private ensureSessionSyncChannel(): void {
     if (this.sessionSyncChannel || typeof BroadcastChannel !== 'function') return;
     const scope = this.config.hub?.nodeId || this.config.prefix;
-    this.sessionSyncChannel = new BroadcastChannel(`term-llm:sessions:${scope}`);
-    this.sessionSyncChannel.addEventListener('message', () => {
+    try {
+      this.sessionSyncChannel = new BroadcastChannel(`term-llm:sessions:${scope}`);
+    } catch {
+      this.diagnostics.value = {
+        ...this.diagnostics.peek(),
+        storageFailures: this.diagnostics.peek().storageFailures + 1,
+      };
+      return; // The always-installed storage listener remains the fallback.
+    }
+    this.sessionSyncChannel.addEventListener('message', (message) => {
+      const parsed = parseTabEvent(message.data);
+      const event = this.tabSync.accept(message.data);
+      // Unknown protocol versions are a full invalidation. Malformed and
+      // duplicate/self events are ignored.
+      if (!event) {
+        if (
+          parsed === null &&
+          message.data &&
+          typeof message.data === 'object' &&
+          'v' in (message.data as object)
+        )
+          this.queuePeerSessionChange();
+        return;
+      }
+      if (event !== 'legacy') {
+        if (event.revision !== undefined && event.sessionId) {
+          const previous = this.peerRevisions.get(event.sessionId) || 0;
+          if (previous && event.revision > previous + 1) this.pendingPeerSync = true;
+          this.peerRevisions.set(event.sessionId, Math.max(previous, event.revision));
+        }
+        if (event.type === 'draft-changed' && event.sessionId === this.draftStorageID())
+          this.reconcileDraftStorage(event.sessionId);
+        if (event.type === 'review-comment-changed')
+          this.diff.value = {
+            ...this.diff.peek(),
+            comments: readDiffCommentQueue(this.storage, this.keys.diffCommentQueue),
+          };
+      }
       if (!this.startupDone.peek()) {
         this.pendingPeerSync = true;
         return;
@@ -570,7 +741,7 @@ export class AppStore {
 
   private recover(): Promise<void> {
     if (this.recoverPromise) return this.recoverPromise;
-    const request = this.performRecovery();
+    const request = this.reconcile('recovery', { authoritative: true });
     const tracked = request.finally(() => {
       if (this.recoverPromise === tracked) this.recoverPromise = null;
     });
@@ -578,12 +749,23 @@ export class AppStore {
     return tracked;
   }
 
-  private async performRecovery(): Promise<void> {
+  private async reconcile(reason: string, options: { authoritative: boolean }): Promise<void> {
     if (navigator.onLine === false) {
       this.networkState.value = 'offline';
       return;
     }
-    await this.refreshStatus().catch(() => undefined);
+    if (reason === 'focus') {
+      await this.refreshStatus(options.authoritative).catch(() => undefined);
+      await this.refreshSidebar(false).catch(() => undefined);
+    } else {
+      if (['peer', 'pageshow', 'visibility'].includes(reason))
+        await this.refreshSidebar(false).catch(() => undefined);
+      await this.refreshStatus(options.authoritative).catch(() => undefined);
+    }
+    if (options.authoritative) await this.performRecovery();
+  }
+
+  private async performRecovery(): Promise<void> {
     const activeSessionId = this.activeSessionId.peek();
     if (activeSessionId) {
       const interjectionRevision = this.interjectionRevision;
@@ -602,12 +784,61 @@ export class AppStore {
     );
     for (const session of active) {
       const run = this.runs.value[session.id].run;
-      if (
-        run.responseId &&
-        !run.responseId.startsWith('pending_') &&
-        !this.streamAborts.has(session.id)
-      )
-        void this.streamResponse(run.responseId, run.sessionId, run.lastSequence);
+      if (run.responseId && !run.responseId.startsWith('pending_')) {
+        const owner = this.streamSupervisors.current(session.id);
+        if (!owner || owner.responseId !== run.responseId) {
+          const adopted = this.streamSupervisors.begin(
+            session.id,
+            run.responseId,
+            run.lastSequence,
+          );
+          void this.recoverSupervisor(adopted);
+        } else void this.recoverSupervisor(owner);
+      }
+    }
+  }
+
+  async loadChildRuns(sessionId = this.activeSessionId.peek()): Promise<void> {
+    if (!sessionId) {
+      this.childRuns.value = [];
+      return;
+    }
+    try {
+      const data = await this.endpoints.sessionChildren(
+        sessionId,
+        this.childRunETags.get(sessionId) || '',
+      );
+      if (this.activeSessionId.peek() !== sessionId) return;
+      const etag = String(data.__etag || '');
+      if (etag) this.childRunETags.set(sessionId, etag);
+      if (data.__notModified) return;
+      this.childRuns.value = listFrom(data, 'children', 'items').map((entry) => {
+        const childSessionId = String(entry.session_id || entry.id || '');
+        const revision = Number(entry.revision) || 0;
+        const state = String(entry.state || 'active');
+        const unreadTerminal =
+          ['complete', 'error', 'failed'].includes(state.toLowerCase()) &&
+          revision > (this.agentReadMarkers.peek()[childSessionId] || 0);
+        return {
+          sessionId: childSessionId,
+          parentSessionId: String(entry.parent_session_id || sessionId),
+          parentSpawnItemId: Number(entry.parent_spawn_item_id) || undefined,
+          parentSpawnCallId: String(entry.parent_spawn_call_id || '') || undefined,
+          title: String(entry.title || entry.agent || 'Agent run'),
+          agent: String(entry.agent || '') || undefined,
+          taskSummary: String(entry.task_summary || '') || undefined,
+          state,
+          attention: Boolean(entry.attention) || unreadTerminal,
+          responseId: String(entry.response_id || '') || undefined,
+          runEpoch: Number(entry.run_epoch) || undefined,
+          revision,
+          startedAt: Number(entry.started_at) || undefined,
+          endedAt: Number(entry.ended_at) || undefined,
+          approximateTimes: Boolean(entry.approximate_times),
+        };
+      });
+    } catch {
+      // Child runs are additive; status reconciliation will retry.
     }
   }
 
@@ -623,6 +854,21 @@ export class AppStore {
     this.projectsEnabled.value = projects.enabled === true;
     this.worktreesEnabled.value =
       worktrees.enabled === true || (worktrees.enabled === undefined && this.config.worktrees);
+    const attachments = recordValue(data.attachments);
+    if (attachments) {
+      const maxCount = Number(attachments.max_count);
+      const maxBytes = Number(attachments.max_bytes);
+      this.attachmentPolicy.value = {
+        maxCount: maxCount > 0 ? maxCount : DEFAULT_ATTACHMENT_POLICY.maxCount,
+        maxBytes: maxBytes > 0 ? maxBytes : DEFAULT_ATTACHMENT_POLICY.maxBytes,
+        mimeTypes: Array.isArray(attachments.mime_types)
+          ? attachments.mime_types.map(String)
+          : DEFAULT_ATTACHMENT_POLICY.mimeTypes,
+        extensions: Array.isArray(attachments.extensions)
+          ? attachments.extensions.map((entry) => String(entry).toLowerCase())
+          : DEFAULT_ATTACHMENT_POLICY.extensions,
+      };
+    }
     this.applyWidgetStatus(data.widget_status || data.widgets);
   }
 
@@ -806,18 +1052,26 @@ export class AppStore {
     }
   }
 
-  async refreshSidebar(fresh = true): Promise<void> {
-    if (this.sidebarRefreshPromise) {
-      if (!fresh) return this.sidebarRefreshPromise;
+  async refreshSidebar(authoritative = true): Promise<void> {
+    if (!authoritative && this.sidebarRefreshPromise) return this.sidebarRefreshPromise;
+    const generation = authoritative ? ++this.sidebarGeneration : this.sidebarGeneration || 1;
+    if (!this.sidebarGeneration) this.sidebarGeneration = generation;
+    if (authoritative && this.sidebarRefreshPromise)
       await this.sidebarRefreshPromise.catch(() => undefined);
-    }
+    const showHidden = this.showHidden.peek();
     const request = (async () => {
       const data = this.projectsEnabled.value
-        ? await this.endpoints.sidebar(this.showHidden.value)
-        : await this.endpoints.sessions(
-            `limit=30&include_archived=${this.showHidden.value ? '1' : '0'}`,
-          );
+        ? await this.endpoints.sidebar(showHidden)
+        : await this.endpoints.sessions(`limit=30&include_archived=${showHidden ? '1' : '0'}`);
+      if (
+        this.disposed ||
+        generation !== this.sidebarGeneration ||
+        showHidden !== this.showHidden.peek() ||
+        generation < this.lastAppliedSidebarGeneration
+      )
+        return;
       this.applySidebar(data);
+      this.lastAppliedSidebarGeneration = generation;
     })();
     const tracked = request.finally(() => {
       if (this.sidebarRefreshPromise === tracked) this.sidebarRefreshPromise = null;
@@ -826,8 +1080,24 @@ export class AppStore {
     return tracked;
   }
 
-  private publishSessionChange(): void {
-    this.sessionSyncChannel?.postMessage({ type: 'sessions-changed' });
+  private publishSessionChange(
+    type: TabEventType = 'session-upserted',
+    sessionId = this.activeSessionId.peek(),
+    responseId = this.runs.peek()[sessionId]?.run.responseId || '',
+    revision = this.sessions.peek().find((entry) => entry.id === sessionId)?.transcriptRev,
+    operationId?: string,
+  ): void {
+    this.sessionSyncChannel?.postMessage(
+      this.tabSync.create(
+        type,
+        {
+          ...(sessionId ? { sessionId } : {}),
+          ...(responseId ? { responseId } : {}),
+          ...(revision !== undefined ? { revision } : {}),
+        },
+        operationId,
+      ),
+    );
   }
 
   private queuePeerSessionChange(): void {
@@ -836,8 +1106,7 @@ export class AppStore {
   }
 
   private async reconcilePeerSessionChange(): Promise<void> {
-    await this.refreshSidebar(false).catch(() => undefined);
-    await this.refreshStatus().catch(() => undefined);
+    await this.reconcile('peer', { authoritative: true }).catch(() => undefined);
     const sessionId = this.activeSessionId.peek();
     if (!sessionId) return;
     const interjectionRevision = this.interjectionRevision;
@@ -848,6 +1117,7 @@ export class AppStore {
 
   async selectSession(session: Session, replace = false): Promise<void> {
     this.persistCurrentDraft();
+    this.releaseAttachmentResources(this.attachments.peek(), false);
     this.resetSideQuestion();
     const epoch = ++this.selectionEpoch;
     batch(() => {
@@ -887,15 +1157,21 @@ export class AppStore {
     });
     if (epoch !== this.selectionEpoch) return;
     void this.refreshBranchTree(current.id);
+    void this.loadChildRuns(current.id);
     if (current.activeResponseId) void this.resumeResponse(current.id, current.activeResponseId);
     this.sidebarOpen.value = false;
   }
 
   newChat(replace = false, projectId?: string): void {
     this.persistCurrentDraft();
+    this.releaseAttachmentResources(this.attachments.peek(), false);
     this.resetSideQuestion();
     ++this.selectionEpoch;
     const currentSession = this.activeSession.peek();
+    if (currentSession) {
+      this.newDraftID = `draft:${uuid()}`;
+      this.currentDraftRev = 0;
+    }
     const requestedProject =
       projectId === undefined
         ? currentSession
@@ -910,6 +1186,15 @@ export class AppStore {
       )
         ? requestedProject
         : '';
+    if (!this.storage.getItem(this.keys.draftSessionActive)) {
+      const legacyID = `draft:${selectedProject || 'none'}`;
+      if (
+        readDrafts(this.storage, this.keys.draftMessages).some(
+          (entry) => entry.sessionId === legacyID,
+        )
+      )
+        this.newDraftID = legacyID;
+    }
     batch(() => {
       this.activeSessionId.value = '';
       this.activeProjectId.value = selectedProject;
@@ -924,40 +1209,97 @@ export class AppStore {
       this.branchPathCount.value = 0;
     });
     this.storage.removeItem(this.keys.activeSession);
-    this.storage.setItem(this.keys.draftSessionActive, '1');
+    this.storage.setItem(this.keys.draftSessionActive, this.newDraftID);
     if (selectedProject) this.storage.setItem(this.keys.lastProject, selectedProject);
     updateSessionRoute(this.config.prefix, null, replace);
     this.restoreDraftFor(this.draftStorageID());
   }
 
   private draftStorageID(): string {
-    return this.activeSessionId.peek() || `draft:${this.activeProjectId.peek() || 'none'}`;
+    return this.activeSessionId.peek() || this.newDraftID;
   }
   private persistCurrentDraft(): void {
     const id = this.draftStorageID();
-    saveDraft(this.storage, this.keys.draftMessages, {
-      sessionId: id,
-      content: this.prompt.peek(),
-      projectId: this.activeProjectId.peek(),
-      updated: Date.now(),
-      provider: this.selectedProvider.peek(),
-      model: this.selectedModel.peek(),
-      effort: this.selectedEffort.peek(),
-      reasoningMode: this.selectedReasoningMode.peek(),
-      agent: this.selectedAgent.peek(),
-      worktreeDir: this.activeSession.peek()?.worktreeDir || this.selectedDraftWorktree.peek(),
-      attachments: this.attachments.peek().filter((attachment) => !attachment.file),
-    });
+    try {
+      const drafts = saveDraft(this.storage, this.keys.draftMessages, {
+        sessionId: id,
+        content: this.prompt.peek(),
+        projectId: this.activeProjectId.peek(),
+        updated: Date.now(),
+        rev: this.currentDraftRev,
+        provider: this.selectedProvider.peek(),
+        model: this.selectedModel.peek(),
+        effort: this.selectedEffort.peek(),
+        reasoningMode: this.selectedReasoningMode.peek(),
+        agent: this.selectedAgent.peek(),
+        worktreeDir: this.activeSession.peek()?.worktreeDir || this.selectedDraftWorktree.peek(),
+        attachments: this.attachments
+          .peek()
+          .map(
+            ({ file: _file, dataURL: _dataURL, previewURL: _previewURL, ...attachment }) =>
+              attachment,
+          ),
+      });
+      this.currentDraftRev = drafts.find((draft) => draft.sessionId === id)?.rev || 0;
+      if (!this.disposed)
+        this.publishSessionChange(
+          'draft-changed',
+          id,
+          '',
+          this.currentDraftRev,
+          `draft:${id}:${this.currentDraftRev}`,
+        );
+    } catch (error) {
+      if (!this.disposed) this.toast(error, 'error');
+    }
   }
+  private reconcileDraftStorage(id: string): void {
+    const incoming = readDrafts(this.storage, this.keys.draftMessages).find(
+      (entry) => entry.sessionId === id,
+    );
+    if (
+      incoming &&
+      (incoming.rev || 0) > this.currentDraftRev &&
+      Boolean(this.prompt.peek().trim()) &&
+      incoming.content !== this.prompt.peek()
+    ) {
+      this.toast(
+        'This draft changed in another tab. Reload the conversation to choose that version.',
+        'error',
+      );
+      return;
+    }
+    this.restoreDraftFor(id);
+  }
+
   private restoreDraftFor(id: string): void {
     const draft = readDrafts(this.storage, this.keys.draftMessages).find(
       (entry) => entry.sessionId === id,
     );
+    this.currentDraftRev = draft?.rev || 0;
     batch(() => {
       this.prompt.value = draft?.content || '';
-      this.attachments.value = draft?.attachments || [];
+      this.attachments.value = (draft?.attachments || []).map((attachment, index) => {
+        const validation = validateAttachmentFile(
+          { name: attachment.name, type: attachment.type, size: Number(attachment.size) || 0 },
+          index,
+          this.attachmentPolicy.peek(),
+        );
+        return {
+          ...attachment,
+          status: validation
+            ? ('error' as const)
+            : attachment.blobRef
+              ? ('preparing' as const)
+              : attachment.status || ('error' as const),
+          error: validation?.message || attachment.error,
+        };
+      });
       this.selectedDraftWorktree.value = draft?.worktreeDir || '';
     });
+    for (const attachment of this.attachments.peek())
+      if (attachment.id && attachment.blobRef && attachment.status !== 'error')
+        void this.restoreAttachmentBlob(id, attachment.id, attachment.blobRef);
     if (!draft) return;
     if (draft.provider) this.setPreference('provider', draft.provider, false);
     if (draft.model) this.setPreference('model', draft.model, false);
@@ -973,7 +1315,14 @@ export class AppStore {
       this.setPreference('reasoning', session.activeReasoningMode, false);
   }
 
-  private async resolveAndSelectSession(id: string, replace: boolean): Promise<void> {
+  markChildRunRead(sessionId: string): void {
+    const child = this.childRuns.peek().find((entry) => entry.sessionId === sessionId);
+    if (!child) return;
+    persistAgentReadMarker(this.storage, this.keys.agentReadMarkers, sessionId, child.revision);
+    this.agentReadMarkers.value = { ...this.agentReadMarkers.peek(), [sessionId]: child.revision };
+  }
+
+  async resolveAndSelectSession(id: string, replace = false): Promise<void> {
     try {
       const data = await this.endpoints.selectedSession(id);
       const source = recordValue(data.selected_session);
@@ -985,6 +1334,21 @@ export class AppStore {
     } catch (error) {
       this.toast(error, 'error');
     }
+  }
+
+  async resolveAndSelectSessionAtMessage(id: string, messageId?: number): Promise<void> {
+    await this.resolveAndSelectSession(id);
+    if (!messageId) return;
+    requestAnimationFrame(() => {
+      const target = document.querySelector<HTMLElement>(
+        `[data-message-id="${String(messageId)}"]`,
+      );
+      if (!target) return;
+      target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      target.tabIndex = -1;
+      target.focus({ preventScroll: true });
+      target.addEventListener('blur', () => target.removeAttribute('tabindex'), { once: true });
+    });
   }
 
   private setInterjections(entries: PendingInterjection[]): void {
@@ -1092,12 +1456,62 @@ export class AppStore {
       const approvals = Array.isArray(state.pending_approvals)
         ? state.pending_approvals
         : [state.pending_approval];
-      if (this.askUser.peek() === sampledAskUser)
-        this.askUser.value = askUserPrompt(asks.find(Boolean), updated.id);
-      if (this.approval.peek() === sampledApproval)
-        this.approval.value = approvalPrompt(approvals.find(Boolean), updated.id);
-      this.reconcilePendingInterjections(updated.id, state, sampledInterjectionRevision);
       const activeResponse = String(state.active_response_id || updated.activeResponseId || '');
+      const recoveredAsks = asks
+        .map((value) => askUserPrompt(value, updated.id))
+        .filter((value): value is AskUserPrompt => Boolean(value?.callId));
+      const recoveredApprovals = approvals
+        .map((value) => approvalPrompt(value, updated.id))
+        .filter((value): value is ApprovalPrompt => Boolean(value?.id));
+      for (const prompt of recoveredAsks)
+        this.upsertInteraction('ask-user', updated.id, activeResponse, prompt.callId!, prompt);
+      for (const prompt of recoveredApprovals)
+        this.upsertInteraction('approval', updated.id, activeResponse, prompt.id!, prompt);
+      for (const resolved of listFrom(state, 'resolved_interactions')) {
+        const requestId = String(resolved.request_id || '');
+        const kind = String(resolved.kind || '') === 'approval' ? 'approval' : 'ask-user';
+        if (requestId)
+          this.resolveInteractionRecord(
+            kind,
+            updated.id,
+            activeResponse,
+            requestId,
+            String(resolved.outcome || 'resolved'),
+            Number(resolved.resolved_at) || Date.now(),
+          );
+      }
+      const pendingInteractionIDs = new Set([
+        ...recoveredAsks.map((prompt) => `ask-user:${prompt.callId}`),
+        ...recoveredApprovals.map((prompt) => `approval:${prompt.id}`),
+      ]);
+      const reconciledInteractions = { ...this.interactions.peek() };
+      for (const [key, record] of Object.entries(reconciledInteractions)) {
+        if (
+          record.sessionId !== updated.id ||
+          !['waiting', 'dismissed', 'submitting', 'failed'].includes(record.state) ||
+          (activeResponse && record.responseId && record.responseId !== activeResponse) ||
+          pendingInteractionIDs.has(`${record.kind}:${record.requestId}`)
+        )
+          continue;
+        reconciledInteractions[key] = {
+          ...record,
+          state: activeResponse ? 'resolved-elsewhere' : 'cancelled-by-agent',
+          outcome: activeResponse ? 'resolved' : 'cancelled-by-agent',
+          resolvedAt: Date.now(),
+        };
+      }
+      this.interactions.value = reconciledInteractions;
+      if (this.askUser.peek() === sampledAskUser)
+        this.askUser.value =
+          recoveredAsks.find((prompt) =>
+            this.shouldOpenInteraction('ask-user', updated.id, prompt.callId!),
+          ) || null;
+      if (this.approval.peek() === sampledApproval)
+        this.approval.value =
+          recoveredApprovals.find((prompt) =>
+            this.shouldOpenInteraction('approval', updated.id, prompt.id!),
+          ) || null;
+      this.reconcilePendingInterjections(updated.id, state, sampledInterjectionRevision);
       if (activeResponse) this.retireCommittedIntents(updated.id, incoming.messages);
       else this.retireIntent(updated.id);
       if (activeResponse)
@@ -1119,6 +1533,16 @@ export class AppStore {
       this.streaming.value
     )
       return;
+    const blockedAttachment = attachments.find(
+      (attachment) => attachment.status && attachment.status !== 'ready',
+    );
+    if (blockedAttachment) {
+      this.toast(
+        blockedAttachment.error || `${blockedAttachment.name} is still being prepared.`,
+        'error',
+      );
+      return;
+    }
     const clientMessageId = uuid();
     const requestId = uuid();
     let session = this.activeSession.value;
@@ -1184,12 +1608,14 @@ export class AppStore {
       status: 'connecting',
       lastSequence: 0,
       startedRev: session.transcriptRev || 0,
+      startedAt: Date.now(),
       reconnects: 0,
       requestId,
     };
     this.runs.value = { ...this.runs.value, [sessionId]: initialProjection(run) };
-    const postAbort = new AbortController();
-    this.postAborts.set(sessionId, postAbort);
+    // Ownership changes before any previous controller is touched. The POST
+    // stream and every later subscription share this same generation.
+    const streamOwner = this.streamSupervisors.begin(sessionId, run.responseId);
     let ownerID = sessionId;
     try {
       const inputContent: unknown = options.contentParts?.length
@@ -1241,7 +1667,7 @@ export class AppStore {
         requestBody,
         sessionId.startsWith('draft_') ? '' : sessionId,
         requestId,
-        postAbort.signal,
+        streamOwner.abort.signal,
       );
       if (!response.ok || !response.body) {
         if (response.status === 409) {
@@ -1267,14 +1693,18 @@ export class AppStore {
       const responseId = response.headers.get('x-response-id') || '';
       if (!responseId) throw new Error('Server did not return a response id.');
       options.onTransportStarted?.();
+      this.releaseAttachmentResources(attachments, true);
+      if (!this.streamSupervisors.owns(streamOwner)) return;
+      if (!this.streamSupervisors.adoptResponse(streamOwner, responseId)) return;
       if (durableSessionId !== sessionId) {
+        if (!this.streamSupervisors.rekey(streamOwner, durableSessionId)) return;
         this.rekeySession(sessionId, durableSessionId);
         ownerID = durableSessionId;
       }
       this.sessions.value = this.sessions.value.map((entry) =>
         entry.id === ownerID ? { ...entry, activeResponseId: responseId, activeRun: true } : entry,
       );
-      this.publishSessionChange();
+      this.publishSessionChange('run-changed', ownerID, responseId, undefined, clientMessageId);
       const projection = this.runs.value[ownerID] || this.runs.value[sessionId];
       this.runs.value = {
         ...this.runs.value,
@@ -1284,14 +1714,15 @@ export class AppStore {
         },
       };
       clearDraft(this.storage, this.keys.draftMessages, sessionId);
-      await this.consumeResponseBody(response.body, ownerID, postAbort.signal);
+      await this.consumeResponseBody(response.body, streamOwner);
+      if (!this.streamSupervisors.owns(streamOwner)) return;
       const current = this.runs.value[ownerID];
       if (current && ['connecting', 'streaming'].includes(current.run.status))
-        await this.resumeResponse(ownerID, responseId);
+        await this.recoverSupervisor(streamOwner);
     } catch (error) {
-      if (error instanceof APIError || postAbort.signal.aborted)
+      if (error instanceof APIError || streamOwner.abort.signal.aborted)
         this.rollbackOptimisticIntent(ownerID, clientMessageId);
-      if (!postAbort.signal.aborted) {
+      if (this.streamSupervisors.owns(streamOwner)) {
         options.onTransportFailed?.(error);
         this.failRun(ownerID, error);
         if (
@@ -1303,8 +1734,6 @@ export class AppStore {
           this.attachments.value = attachments;
         }
       }
-    } finally {
-      if (this.postAborts.get(sessionId) === postAbort) this.postAborts.delete(sessionId);
     }
   }
 
@@ -1346,68 +1775,137 @@ export class AppStore {
 
   private async consumeResponseBody(
     body: ReadableStream<Uint8Array>,
-    sessionId: string,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    for await (const frame of decodeSSE(body, signal)) {
-      let event: ResponseEvent;
-      try {
-        const payload = JSON.parse(frame.data) as ResponseEvent;
-        event = { ...payload, type: frame.event === 'message' ? payload.type : frame.event };
-      } catch {
-        continue;
+    owner: StreamSupervisor,
+  ): Promise<boolean> {
+    let cleanCompletion = false;
+    const watchdog = () =>
+      this.streamSupervisors.touchWatchdog(
+        owner,
+        () => {
+          this.bumpDiagnostic('streamWatchdogTimeouts');
+          owner.abort.abort(new DOMException('Response stream became inactive', 'TimeoutError'));
+          this.scheduleSupervisorRetry(owner, new Error('Response stream became inactive'));
+        },
+        35_000,
+      );
+    watchdog();
+    try {
+      for await (const frame of decodeSSE(body, owner.abort.signal, watchdog)) {
+        if (!this.streamSupervisors.owns(owner)) {
+          this.bumpDiagnostic('staleStreamCallbacks');
+          return false;
+        }
+        if (frame.done) {
+          cleanCompletion = true;
+          continue;
+        }
+        let event: ResponseEvent;
+        try {
+          const payload = JSON.parse(frame.data) as ResponseEvent;
+          event = { ...payload, type: frame.event === 'message' ? payload.type : frame.event };
+        } catch {
+          continue;
+        }
+        this.applyResponseEvent(owner.sessionId, event, owner);
+        const projection = this.runs.peek()[owner.sessionId];
+        if (projection && ['completed', 'cancelled', 'failed'].includes(projection.run.status))
+          cleanCompletion = true;
       }
-      this.applyResponseEvent(sessionId, event);
+      return cleanCompletion;
+    } finally {
+      this.streamSupervisors.clearWatchdog(owner);
     }
   }
 
   async streamResponse(responseId: string, sessionId: string, after: number): Promise<void> {
     if (this.retiredResponses.has(responseId)) return;
-    this.streamAborts.get(sessionId)?.abort();
-    const abort = new AbortController();
-    this.streamAborts.set(sessionId, abort);
+    const current = this.streamSupervisors.current(sessionId);
+    const owner =
+      current && current.responseId === responseId
+        ? current
+        : this.streamSupervisors.begin(sessionId, responseId, after);
+    await this.subscribeSupervisor(owner);
+  }
+
+  private async subscribeSupervisor(owner: StreamSupervisor): Promise<void> {
+    if (!this.streamSupervisors.startSubscription(owner)) return;
+    const abort = this.streamSupervisors.replaceAbort(owner);
+    if (!abort) {
+      this.streamSupervisors.finishSubscription(owner);
+      return;
+    }
     try {
-      const response = await this.endpoints.responseEvents(responseId, after, abort.signal);
+      const response = await this.endpoints.responseEvents(
+        owner.responseId,
+        owner.lastSequence,
+        abort.signal,
+      );
+      if (!this.streamSupervisors.owns(owner) || abort.signal.aborted) return;
       if (!response.ok || !response.body)
         throw new Error(`Response stream returned ${response.status}`);
-      await this.consumeResponseBody(response.body, sessionId, abort.signal);
-      const projection = this.runs.value[sessionId];
-      if (
-        projection &&
-        ['connecting', 'streaming'].includes(projection.run.status) &&
-        !abort.signal.aborted
-      )
-        await this.resumeResponse(sessionId, responseId);
+      const clean = await this.consumeResponseBody(response.body, owner);
+      if (!this.streamSupervisors.owns(owner) || abort.signal.aborted) return;
+      const projection = this.runs.peek()[owner.sessionId];
+      if (!clean && projection && ['connecting', 'streaming'].includes(projection.run.status))
+        this.scheduleSupervisorRetry(owner, new Error('Response stream ended before completion'));
     } catch (error) {
-      if (!abort.signal.aborted) {
-        if (error instanceof ResponseProtocolError) {
-          await this.resumeResponse(sessionId, responseId);
-          return;
-        }
-        const projection = this.runs.value[sessionId];
-        if (projection && ['connecting', 'streaming'].includes(projection.run.status)) {
-          const reconnects = projection.run.reconnects + 1;
-          this.runs.value = {
-            ...this.runs.value,
-            [sessionId]: { ...projection, run: { ...projection.run, reconnects } },
-          };
-          window.setTimeout(
-            () => void this.streamResponse(responseId, sessionId, projection.run.lastSequence),
-            Math.min(60_000, 1_000 * 1.5 ** Math.min(reconnects, 10)),
-          );
-        } else this.failRun(sessionId, error);
+      if (!this.streamSupervisors.owns(owner) || abort.signal.aborted) return;
+      if (error instanceof ResponseProtocolError) {
+        this.scheduleSupervisorRetry(owner, error);
+        return;
       }
+      this.scheduleSupervisorRetry(owner, error);
     } finally {
-      if (this.streamAborts.get(sessionId) === abort) this.streamAborts.delete(sessionId);
+      this.streamSupervisors.finishSubscription(owner);
     }
   }
 
-  applyResponseEvent(sessionId: string, event: ResponseEvent): void {
+  private scheduleSupervisorRetry(owner: StreamSupervisor, error?: unknown): void {
+    if (!this.streamSupervisors.owns(owner)) return;
+    const projection = this.runs.peek()[owner.sessionId];
+    if (!projection || !['connecting', 'streaming'].includes(projection.run.status)) {
+      if (error) this.failRun(owner.sessionId, error);
+      return;
+    }
+    const reconnects = projection.run.reconnects + 1;
+    this.bumpDiagnostic('supervisorRetries');
+    this.runs.value = {
+      ...this.runs.peek(),
+      [owner.sessionId]: {
+        ...projection,
+        run: { ...projection.run, status: 'connecting', reconnects },
+      },
+    };
+    this.streamSupervisors.scheduleRetry(
+      owner,
+      () => void this.recoverSupervisor(owner),
+      Math.min(60_000, 1_000 * 1.5 ** Math.min(reconnects, 10)),
+    );
+  }
+
+  applyResponseEvent(sessionId: string, event: ResponseEvent, owner?: StreamSupervisor): void {
     const current = this.runs.value[sessionId];
     if (!current) return;
+    if (owner && !this.streamSupervisors.owns(owner)) {
+      this.bumpDiagnostic('staleStreamCallbacks');
+      return;
+    }
+    const eventResponse = recordValue(event.response);
+    const explicitResponseId = String(
+      event.response_id || eventResponse?.id || eventResponse?.response_id || '',
+    ).trim();
+    // A frame explicitly owned by a different response is stale. It must not
+    // trigger protocol recovery for the current response.
+    if (explicitResponseId && explicitResponseId !== (owner?.responseId || current.run.responseId))
+      return;
     // The stop action owns the visible state immediately. Frames already queued
     // when the stream was aborted must not restart the spinner or running tools.
-    if (this.locallyStoppedResponses.has(current.run.responseId)) return;
+    const stopped = this.locallyStoppedResponses.has(current.run.responseId);
+    if (
+      stopped &&
+      !['response.completed', 'response.cancelled', 'response.failed'].includes(event.type)
+    )
+      return;
     if (event.type === 'response.stream_error') {
       const error = recordValue(event.error);
       if (String(error?.type || '') === 'stream_buffer_overflow')
@@ -1424,6 +1922,7 @@ export class AppStore {
       }
       throw error;
     }
+    if (owner) this.streamSupervisors.advance(owner, Number(event.sequence_number));
     const response = recordValue(event.response) || {};
     const runtimePatch: Partial<Session> = {};
     if (event.type === 'response.created' || event.type === 'response.completed') {
@@ -1478,11 +1977,46 @@ export class AppStore {
         this.planSeen.value = '';
       }
     }
-    if (next.askUser && next.askUser !== current.askUser) this.askUser.value = next.askUser;
-    if (next.approval && next.approval !== current.approval) this.approval.value = next.approval;
+    if (next.askUser && next.askUser !== current.askUser && next.askUser.callId) {
+      this.upsertInteraction(
+        'ask-user',
+        sessionId,
+        next.run.responseId,
+        next.askUser.callId,
+        next.askUser,
+      );
+      if (this.shouldOpenInteraction('ask-user', sessionId, next.askUser.callId))
+        this.askUser.value = next.askUser;
+    }
+    if (next.approval && next.approval !== current.approval && next.approval.id) {
+      this.upsertInteraction(
+        'approval',
+        sessionId,
+        next.run.responseId,
+        next.approval.id,
+        next.approval,
+      );
+      if (this.shouldOpenInteraction('approval', sessionId, next.approval.id))
+        this.approval.value = next.approval;
+    }
     if (event.type === 'response.interjection') {
       const clientID = String(event.client_message_id || event.interjection_id || '');
       this.setInterjections(this.interjections.value.filter((entry) => entry.id !== clientID));
+    }
+    if (
+      event.type === 'response.approval.resolved' ||
+      event.type === 'response.ask_user.resolved'
+    ) {
+      const kind = event.type === 'response.approval.resolved' ? 'approval' : 'ask-user';
+      const requestId = String(event.approval_id || event.call_id || '');
+      this.resolveInteractionRecord(
+        kind,
+        sessionId,
+        current.run.responseId,
+        requestId,
+        String(event.outcome || 'resolved'),
+        Number(event.resolved_at) || Date.now(),
+      );
     }
     if (next.fileChangeRevision !== current.fileChangeRevision) {
       this.fileChangeRevision.value += 1;
@@ -1492,6 +2026,7 @@ export class AppStore {
       ['completed', 'cancelled', 'failed'].includes(next.run.status) &&
       next.run.status !== current.run.status
     ) {
+      this.locallyStoppedResponses.delete(next.run.responseId);
       this.retireIntent(sessionId);
       this.sessions.value = this.sessions.value.map((session) =>
         session.id === sessionId
@@ -1503,22 +2038,61 @@ export class AppStore {
             }
           : session,
       );
-      this.publishSessionChange();
-      if (this.diff.peek().open && this.diff.peek().sessionId === sessionId) void this.loadDiff();
-      window.setTimeout(
-        () => void this.refreshSessionMessages(sessionId, next.run.finalRev || 0),
-        0,
+      this.publishSessionChange(
+        'run-changed',
+        sessionId,
+        next.run.responseId,
+        undefined,
+        next.run.requestId || next.run.responseId,
       );
-      if (next.run.status === 'completed') this.scheduleTitleReconciliation(sessionId);
+      const interactions = { ...this.interactions.peek() };
+      let interactionsChanged = false;
+      for (const [key, interaction] of Object.entries(interactions)) {
+        if (
+          interaction.sessionId === sessionId &&
+          interaction.responseId === next.run.responseId &&
+          ['waiting', 'dismissed', 'submitting', 'failed'].includes(interaction.state)
+        ) {
+          interactions[key] = {
+            ...interaction,
+            state: 'cancelled-by-agent',
+            outcome: 'Decision no longer needed',
+            resolvedAt: Date.now(),
+          };
+          interactionsChanged = true;
+        }
+      }
+      if (interactionsChanged) this.interactions.value = interactions;
+      if (owner) this.streamSupervisors.retire(owner);
+      if (this.diff.peek().open && this.diff.peek().sessionId === sessionId) void this.loadDiff();
+      this.schedule(() => void this.refreshSessionMessages(sessionId, next.run.finalRev || 0), 0);
+      if (next.run.status === 'completed')
+        this.scheduleTitleReconciliation(sessionId, next.run.responseId, owner?.generation || 0);
     }
   }
 
-  private scheduleTitleReconciliation(sessionId: string): void {
+  private scheduleTitleReconciliation(
+    sessionId: string,
+    responseId = this.sessions.peek().find((entry) => entry.id === sessionId)?.lastResponseId || '',
+    streamGeneration = this.streamSupervisors.current(sessionId)?.generation || 0,
+  ): void {
     for (const timer of this.titleRefreshTimers.get(sessionId) || []) window.clearTimeout(timer);
+    const title = this.sessions.peek().find((entry) => entry.id === sessionId)?.title || '';
+    const statusGeneration = this.statusCoordinator.generation;
     const timers = [2_000, 8_000].map((delay, index) =>
       window.setTimeout(() => {
-        if (document.visibilityState === 'visible')
-          void this.refreshStatus().catch(() => undefined);
+        const session = this.sessions.peek().find((entry) => entry.id === sessionId);
+        const currentOwner = this.streamSupervisors.current(sessionId);
+        const ownerReplaced = Boolean(currentOwner && currentOwner.generation > streamGeneration);
+        if (
+          !this.disposed &&
+          (!session ||
+            ((!responseId || session.lastResponseId === responseId) && session.title === title)) &&
+          !ownerReplaced &&
+          this.statusCoordinator.generation === statusGeneration &&
+          document.visibilityState === 'visible'
+        )
+          void this.reconcile('title', { authoritative: true }).catch(() => undefined);
         if (index === 1) this.titleRefreshTimers.delete(sessionId);
       }, delay),
     );
@@ -1560,9 +2134,22 @@ export class AppStore {
         );
         if (retireProjection && projection) {
           this.retiredResponses.add(projection.run.responseId);
-          const runs = { ...this.runs.peek() };
-          if (runs[sessionId]?.run.responseId === projection.run.responseId) delete runs[sessionId];
-          this.runs.value = runs;
+          // Keep only compact terminal run-center history. Durable transcript
+          // bodies are now authoritative, so retaining projected messages can
+          // duplicate old rows that predate response identity metadata.
+          const summary = [...projection.messages]
+            .reverse()
+            .find((message) => message.role === 'assistant' && message.content.trim())
+            ?.content.trim()
+            .slice(0, 160);
+          this.runs.value = {
+            ...this.runs.peek(),
+            [sessionId]: {
+              ...projection,
+              messages: [],
+              run: { ...projection.run, summary: summary || projection.run.summary },
+            },
+          };
         }
       });
       this.retireIntent(sessionId);
@@ -1583,11 +2170,39 @@ export class AppStore {
 
   private async resumeResponse(sessionId: string, responseId: string): Promise<void> {
     if (this.retiredResponses.has(responseId)) return;
+    const current = this.streamSupervisors.current(sessionId);
+    const owner =
+      current && current.responseId === responseId
+        ? current
+        : this.streamSupervisors.begin(
+            sessionId,
+            responseId,
+            this.runs.peek()[sessionId]?.run.lastSequence || 0,
+          );
+    await this.recoverSupervisor(owner);
+  }
+
+  private async waitForSubscriptionIdle(owner: StreamSupervisor): Promise<boolean> {
+    const deadline = Date.now() + 1_000;
+    while (this.streamSupervisors.owns(owner) && owner.subscriptionInFlight) {
+      if (Date.now() >= deadline) return false;
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 10));
+    }
+    return this.streamSupervisors.owns(owner);
+  }
+
+  private async recoverSupervisor(owner: StreamSupervisor): Promise<void> {
+    if (!this.streamSupervisors.startRecovery(owner)) return;
+    this.bumpDiagnostic('supervisorRecoveries');
+    const abort = this.streamSupervisors.replaceAbort(owner);
+    if (!abort) {
+      this.streamSupervisors.finishRecovery(owner);
+      return;
+    }
+    const { sessionId, responseId } = owner;
     try {
-      const snapshot = await this.endpoints.response(responseId);
-      // A transcript refresh can complete while the snapshot request is in
-      // flight. Never let that late snapshot resurrect a retired projection.
-      if (this.retiredResponses.has(responseId)) return;
+      const snapshot = await this.endpoints.response(responseId, abort.signal);
+      if (!this.streamSupervisors.owns(owner) || abort.signal.aborted) return;
       const recovery = recordValue(snapshot.recovery) || {};
       const existing =
         this.runs.value[sessionId] ||
@@ -1598,6 +2213,8 @@ export class AppStore {
           status: 'streaming',
           lastSequence: 0,
           startedRev: Number(snapshot.started_rev) || 0,
+          startedAt: Number(snapshot.started_at) || undefined,
+          endedAt: Number(snapshot.ended_at) || undefined,
           reconnects: 0,
         });
       const rawMessages = listFrom(recovery, 'messages').length
@@ -1631,8 +2248,20 @@ export class AppStore {
         })
         .filter(Boolean);
       const status = String(snapshot.status || 'in_progress');
+      let recoveredAskUser = existing.askUser;
+      let recoveredApproval = existing.approval;
+      for (const entry of listFrom(recovery, 'events')) {
+        const eventType = String(entry.event || entry.type || '');
+        const payload = entry.payload ?? entry;
+        if (eventType === 'response.ask_user.prompt')
+          recoveredAskUser = askUserPrompt(payload, sessionId) || recoveredAskUser;
+        if (eventType === 'response.approval.prompt')
+          recoveredApproval = approvalPrompt(payload, sessionId) || recoveredApproval;
+      }
       const next: ResponseProjection = {
         ...existing,
+        askUser: recoveredAskUser,
+        approval: recoveredApproval,
         messages: projected.length ? projected : existing.messages,
         run: {
           ...existing.run,
@@ -1650,20 +2279,67 @@ export class AppStore {
             Number(snapshot.last_sequence_number ?? recovery.sequence_number) ||
             existing.run.lastSequence,
           startedRev: Number(snapshot.started_rev) || existing.run.startedRev,
+          startedAt: Number(snapshot.started_at) || existing.run.startedAt,
+          endedAt: Number(snapshot.ended_at) || existing.run.endedAt,
         },
       };
       this.runs.value = { ...this.runs.value, [sessionId]: next };
-      if (next.run.status === 'streaming')
-        await this.streamResponse(responseId, sessionId, next.run.lastSequence);
-      else await this.refreshSessionMessages(sessionId, Number(snapshot.final_rev) || 0);
-    } catch (error) {
-      const projection = this.runs.value[sessionId];
-      if (projection && ['connecting', 'streaming'].includes(projection.run.status)) {
-        window.setTimeout(
-          () => void this.streamResponse(responseId, sessionId, projection.run.lastSequence),
-          Math.min(60_000, retryBackoff(projection.run.reconnects)),
+      if (recoveredAskUser?.callId) {
+        this.upsertInteraction(
+          'ask-user',
+          sessionId,
+          responseId,
+          recoveredAskUser.callId,
+          recoveredAskUser,
         );
-      } else this.failRun(sessionId, error);
+        if (
+          sessionId === this.activeSessionId.peek() &&
+          this.shouldOpenInteraction('ask-user', sessionId, recoveredAskUser.callId)
+        )
+          this.askUser.value = recoveredAskUser;
+      }
+      if (recoveredApproval?.id) {
+        this.upsertInteraction(
+          'approval',
+          sessionId,
+          responseId,
+          recoveredApproval.id,
+          recoveredApproval,
+        );
+        if (
+          sessionId === this.activeSessionId.peek() &&
+          this.shouldOpenInteraction('approval', sessionId, recoveredApproval.id)
+        )
+          this.approval.value = recoveredApproval;
+      }
+      for (const resolved of listFrom(recovery, 'resolved_interactions')) {
+        const requestId = String(resolved.request_id || '');
+        const kind = String(resolved.kind || '') === 'approval' ? 'approval' : 'ask-user';
+        if (requestId)
+          this.resolveInteractionRecord(
+            kind,
+            sessionId,
+            responseId,
+            requestId,
+            String(resolved.outcome || 'resolved'),
+            Number(resolved.resolved_at) || Date.now(),
+          );
+      }
+      if (next.run.lastSequence > owner.lastSequence) owner.lastSequence = next.run.lastSequence;
+      this.streamSupervisors.finishRecovery(owner);
+      if (!this.streamSupervisors.owns(owner)) return;
+      if (next.run.status === 'streaming') {
+        if (await this.waitForSubscriptionIdle(owner))
+          await this.streamResponse(responseId, sessionId, owner.lastSequence);
+        else this.scheduleSupervisorRetry(owner, new Error('Previous subscription did not stop'));
+      } else {
+        this.streamSupervisors.retire(owner);
+        await this.refreshSessionMessages(sessionId, Number(snapshot.final_rev) || 0);
+      }
+    } catch (error) {
+      this.streamSupervisors.finishRecovery(owner);
+      if (!this.streamSupervisors.owns(owner) || abort.signal.aborted) return;
+      this.scheduleSupervisorRetry(owner, error);
     }
   }
 
@@ -1694,13 +2370,31 @@ export class AppStore {
         run: { ...projection.run, status: 'cancelled' },
       },
     };
-    this.postAborts.get(sessionId)?.abort();
-    this.streamAborts.get(sessionId)?.abort();
+    this.streamSupervisors.cancel(sessionId, responseId);
     try {
-      await this.endpoints.cancelResponse(responseId);
+      const result = await this.endpoints.cancelResponse(responseId);
+      const authoritativeStatus = String(result.status || '');
+      const current = this.runs.peek()[sessionId];
+      if (
+        current &&
+        current.run.responseId === responseId &&
+        ['completed', 'cancelled', 'failed'].includes(authoritativeStatus)
+      ) {
+        this.runs.value = {
+          ...this.runs.peek(),
+          [sessionId]: {
+            ...current,
+            run: {
+              ...current.run,
+              status: authoritativeStatus as ResponseProjection['run']['status'],
+            },
+          },
+        };
+      }
+      this.publishSessionChange('run-changed', sessionId, responseId, undefined, uuid());
       // Cancellation acknowledgement is intentionally distinct from durable
-      // finalization. Poll in the background while the UI remains stopped.
-      void this.refreshStatus().catch(() => undefined);
+      // finalization. Reconcile in the background while the UI remains stopped.
+      void this.reconcile('cancellation', { authoritative: true }).catch(() => undefined);
     } catch (error) {
       this.locallyStoppedResponses.delete(responseId);
       this.toast(`Couldn’t confirm stop: ${errorMessage(error)}`, 'error');
@@ -1714,6 +2408,16 @@ export class AppStore {
     const displayContent = (options.displayContent ?? value).trim();
     const attachments = options.contentParts ? [] : [...this.attachments.value];
     if (!session || (!value && !attachments.length && !options.contentParts?.length)) return;
+    const blockedAttachment = attachments.find(
+      (attachment) => attachment.status && attachment.status !== 'ready',
+    );
+    if (blockedAttachment) {
+      this.toast(
+        blockedAttachment.error || `${blockedAttachment.name} is still being prepared.`,
+        'error',
+      );
+      return;
+    }
     const id = uuid();
     const entry: PendingInterjection = {
       id,
@@ -1738,17 +2442,30 @@ export class AppStore {
             : {}),
           interjection_id: id,
           client_message_id: id,
+          ...(this.runs.peek()[session.id]?.run.responseId
+            ? {
+                expected_response_id: this.runs.peek()[session.id].run.responseId,
+                expected_run_epoch: this.runs.peek()[session.id].run.epoch,
+              }
+            : {}),
           delivery: 'steer',
         },
         id,
       );
       options.onTransportStarted?.();
+      this.releaseAttachmentResources(attachments, true);
       this.setInterjections(
         this.interjections.value.map((candidate) =>
           candidate.id === id ? { ...candidate, state: 'pending' } : candidate,
         ),
       );
-      this.publishSessionChange();
+      this.publishSessionChange(
+        'run-changed',
+        session.id,
+        this.runs.peek()[session.id]?.run.responseId || '',
+        undefined,
+        id,
+      );
       if (options.preserveComposer) return;
       const draft = readDrafts(this.storage, this.keys.draftMessages).find(
         (candidate) => candidate.sessionId === session.id,
@@ -1841,17 +2558,30 @@ export class AppStore {
   }
 
   private trackIntent(sessionId: string, intent: PendingIntentRegistry[string][number]): void {
+    const persistedIntent = {
+      ...intent,
+      attachments: intent.attachments?.map(
+        ({ file: _file, dataURL: _dataURL, previewURL: _previewURL, ...attachment }) => attachment,
+      ),
+    };
     const registry = {
       ...this.pendingIntents.value,
       [sessionId]: [
         ...(this.pendingIntents.value[sessionId] || []).filter(
           (entry) => entry.clientMessageId !== intent.clientMessageId,
         ),
-        intent,
+        persistedIntent,
       ],
     };
     this.pendingIntents.value = registry;
-    persistPendingIntent(this.storage, this.keys.pendingIntents, sessionId, intent);
+    try {
+      persistPendingIntent(this.storage, this.keys.pendingIntents, sessionId, persistedIntent);
+    } catch (error) {
+      this.toast(
+        `Your message is queued in this tab but could not be saved: ${errorMessage(error)}`,
+        'error',
+      );
+    }
   }
   private retireIntent(sessionId: string, clientMessageId = ''): void {
     const registry = { ...this.pendingIntents.value };
@@ -1870,15 +2600,9 @@ export class AppStore {
   }
 
   async attachmentInput(attachment: Attachment): Promise<Record<string, unknown>> {
-    let data = attachment.dataURL || attachment.url || '';
-    if (!data && attachment.file)
-      data = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ''));
-        reader.onerror = () =>
-          reject(reader.error || new Error(`Could not read ${attachment.name}`));
-        reader.readAsDataURL(attachment.file!);
-      });
+    if (attachment.status && attachment.status !== 'ready')
+      throw new Error(attachment.error || `${attachment.name} is not ready to send.`);
+    const data = attachment.dataURL || attachment.url || '';
     if (!data) throw new Error(`Could not materialize ${attachment.name}`);
     if (attachment.type.startsWith('image/'))
       return {
@@ -1893,34 +2617,185 @@ export class AppStore {
   }
 
   addAttachments(files: FileList | File[]): void {
+    let count = this.attachments.peek().length;
     for (const file of Array.from(files)) {
+      const validation = validateAttachmentFile(file, count, this.attachmentPolicy.peek());
+      if (validation) {
+        this.toast(validation.message, 'error');
+        continue;
+      }
+      count += 1;
       const attachment: Attachment = {
         id: uuid(),
         name: file.name,
         type: file.type || 'application/octet-stream',
         size: file.size,
         file,
+        status: 'preparing',
+        progress: 0,
+        draftId: this.draftStorageID(),
       };
-      if (file.type.startsWith('image/')) {
-        const preview = URL.createObjectURL(file);
-        attachment.previewURL = preview;
-        const image = new Image();
-        image.onload = () => {
-          attachment.width = image.naturalWidth;
-          attachment.height = image.naturalHeight;
-          this.attachments.value = [...this.attachments.value, attachment];
-        };
-        image.onerror = () => {
-          this.attachments.value = [...this.attachments.value, attachment];
-        };
-        image.src = preview;
-      } else this.attachments.value = [...this.attachments.value, attachment];
+      this.attachments.value = [...this.attachments.peek(), attachment];
+      void this.prepareAttachment(attachment);
     }
   }
+
+  private async prepareAttachment(attachment: Attachment): Promise<void> {
+    if (!attachment.id || !attachment.file) return;
+    const attachmentId = attachment.id;
+    const draftId = attachment.draftId || this.draftStorageID();
+    const generation = (this.attachmentGenerations.get(attachmentId) || 0) + 1;
+    this.attachmentGenerations.set(attachmentId, generation);
+    const owns = (): boolean =>
+      !this.disposed &&
+      this.draftStorageID() === draftId &&
+      this.attachmentGenerations.get(attachmentId) === generation &&
+      this.attachments.peek().some((entry) => entry.id === attachmentId);
+    const source = attachment.file;
+    let previewURL = '';
+    try {
+      const dataURL = await blobToDataURL(source);
+      if (!owns()) return;
+      this.updateAttachment(attachmentId, { progress: 0.5 });
+      let width: number | undefined;
+      let height: number | undefined;
+      if (source.type.startsWith('image/')) {
+        previewURL = URL.createObjectURL(source);
+        const dimensions = await new Promise<{ width: number; height: number }>(
+          (resolve, reject) => {
+            const image = new Image();
+            image.onload = () =>
+              resolve({ width: image.naturalWidth, height: image.naturalHeight });
+            image.onerror = () => reject(new Error(`Could not decode ${source.name} as an image.`));
+            image.src = previewURL;
+          },
+        );
+        width = dimensions.width;
+        height = dimensions.height;
+      }
+      const checksum = await blobChecksum(source);
+      if (!owns()) {
+        if (previewURL) URL.revokeObjectURL(previewURL);
+        return;
+      }
+      await this.draftBlobs.put({
+        id: attachmentId,
+        draftId,
+        blob: source,
+        mime: source.type,
+        size: source.size,
+        checksum,
+        updated: Date.now(),
+      });
+      if (!owns()) {
+        await this.draftBlobs.delete(attachmentId);
+        if (previewURL) URL.revokeObjectURL(previewURL);
+        return;
+      }
+      this.updateAttachment(attachmentId, {
+        dataURL,
+        previewURL: previewURL || undefined,
+        width,
+        height,
+        checksum,
+        blobRef: attachment.id,
+        status: 'ready',
+        progress: 1,
+        error: '',
+      });
+      this.persistCurrentDraft();
+    } catch (error) {
+      if (previewURL) URL.revokeObjectURL(previewURL);
+      if (!owns()) return;
+      this.updateAttachment(attachmentId, {
+        status: 'error',
+        error: errorMessage(error),
+        progress: 0,
+      });
+      this.toast(error, 'error');
+      this.persistCurrentDraft();
+    }
+  }
+
+  private updateAttachment(id: string, patch: Partial<Attachment>): void {
+    this.attachments.value = this.attachments
+      .peek()
+      .map((entry) => (entry.id === id ? { ...entry, ...patch } : entry));
+  }
+
+  private async restoreAttachmentBlob(draftId: string, id: string, blobRef: string): Promise<void> {
+    const generation = (this.attachmentGenerations.get(id) || 0) + 1;
+    this.attachmentGenerations.set(id, generation);
+    const owns = (): boolean =>
+      !this.disposed &&
+      this.draftStorageID() === draftId &&
+      this.attachmentGenerations.get(id) === generation &&
+      this.attachments.peek().some((entry) => entry.id === id);
+    try {
+      const record = await this.draftBlobs.get(blobRef);
+      if (!owns()) return;
+      if (!record || record.draftId !== draftId)
+        throw new Error('Prepared attachment data is missing.');
+      const dataURL = await blobToDataURL(record.blob);
+      const previewURL = record.mime.startsWith('image/')
+        ? URL.createObjectURL(record.blob)
+        : undefined;
+      if (!owns()) {
+        if (previewURL) URL.revokeObjectURL(previewURL);
+        return;
+      }
+      this.updateAttachment(id, { dataURL, previewURL, status: 'ready', progress: 1, error: '' });
+    } catch (error) {
+      if (!owns()) return;
+      this.updateAttachment(id, { status: 'error', error: errorMessage(error), progress: 0 });
+      this.toast(error, 'error');
+    }
+  }
+
+  retryAttachment(id: string | undefined): void {
+    const attachment = this.attachments.peek().find((entry) => entry.id === id);
+    if (!attachment?.file || !attachment.id) return;
+    const validation = validateAttachmentFile(
+      attachment.file,
+      this.attachments.peek().filter((entry) => entry.id !== attachment.id).length,
+      this.attachmentPolicy.peek(),
+    );
+    if (validation) {
+      this.updateAttachment(attachment.id, {
+        status: 'error',
+        error: validation.message,
+        progress: 0,
+      });
+      this.toast(validation.message, 'error');
+      return;
+    }
+    this.updateAttachment(attachment.id, { status: 'preparing', error: '', progress: 0 });
+    void this.prepareAttachment(attachment);
+  }
+
+  private releaseAttachmentResources(attachments: Attachment[], deleteBlobs: boolean): void {
+    for (const attachment of attachments) {
+      if (attachment.id)
+        this.attachmentGenerations.set(
+          attachment.id,
+          (this.attachmentGenerations.get(attachment.id) || 0) + 1,
+        );
+      if (attachment.previewURL?.startsWith('blob:')) URL.revokeObjectURL(attachment.previewURL);
+      if (deleteBlobs && attachment.blobRef)
+        void this.draftBlobs
+          .delete(attachment.blobRef)
+          .catch((error) => this.toast(error, 'error'));
+    }
+  }
+
   removeAttachment(id: string | undefined): void {
     const attachment = this.attachments.value.find((entry) => entry.id === id);
+    if (id) this.attachmentGenerations.set(id, (this.attachmentGenerations.get(id) || 0) + 1);
     if (attachment?.previewURL?.startsWith('blob:')) URL.revokeObjectURL(attachment.previewURL);
     this.attachments.value = this.attachments.value.filter((entry) => entry.id !== id);
+    if (attachment?.blobRef)
+      void this.draftBlobs.delete(attachment.blobRef).catch((error) => this.toast(error, 'error'));
+    this.persistCurrentDraft();
   }
 
   async search(query: string): Promise<void> {
@@ -2128,24 +3003,261 @@ export class AppStore {
     else this.storage.removeItem(this.keys.notificationsEnabled);
   }
 
-  async answerAskUser(answers: unknown = [], cancelled = false): Promise<void> {
-    const prompt = this.askUser.value;
-    if (!prompt) return;
-    await this.endpoints.askUser(
-      prompt.sessionId,
-      cancelled ? { call_id: prompt.callId, cancelled: true } : { call_id: prompt.callId, answers },
-    );
-    this.askUser.value = null;
+  private upsertInteraction(
+    kind: InteractionRecord['kind'],
+    sessionId: string,
+    responseId: string,
+    requestId: string,
+    prompt: ApprovalPrompt | AskUserPrompt,
+  ): string {
+    const key = `${sessionId}:${responseId}:${requestId}`;
+    const existing = this.interactions.peek()[key];
+    const record: InteractionRecord = existing || {
+      key,
+      sessionId,
+      responseId,
+      requestId,
+      kind,
+      state: 'waiting',
+      order: this.interactionOrder.peek().length,
+      createdAt: Date.now(),
+      prompt,
+    };
+    this.interactions.value = {
+      ...this.interactions.peek(),
+      [key]: { ...record, prompt },
+    };
+    if (!existing) this.interactionOrder.value = [...this.interactionOrder.peek(), key];
+    this.publishSessionChange('interaction-changed', sessionId, responseId);
+    return key;
   }
-  async decideApproval(choice: number, resumeAuto = false): Promise<void> {
-    const prompt = this.approval.value;
-    if (!prompt) return;
-    await this.endpoints.approval(prompt.sessionId, {
-      approval_id: prompt.id,
-      choice,
-      resume_auto: resumeAuto,
-    });
-    this.approval.value = null;
+
+  private resolveInteractionRecord(
+    kind: InteractionRecord['kind'],
+    sessionId: string,
+    responseId: string,
+    requestId: string,
+    outcome: string,
+    resolvedAt = Date.now(),
+  ): void {
+    const existing = this.interactionFor(kind, sessionId, requestId, responseId);
+    const key = existing?.key || `${sessionId}:${responseId}:${requestId}`;
+    const normalized = outcome.replaceAll('_', '-');
+    const state: InteractionRecord['state'] =
+      normalized === 'accepted' || normalized === 'answered'
+        ? 'accepted'
+        : normalized === 'denied'
+          ? 'denied'
+          : normalized === 'cancelled-by-user' || normalized === 'cancelled'
+            ? 'cancelled-by-user'
+            : normalized === 'failed'
+              ? 'failed'
+              : 'cancelled-by-agent';
+    const prompt =
+      existing?.prompt ||
+      (kind === 'approval'
+        ? ({ sessionId, id: requestId, title: 'Access request' } satisfies ApprovalPrompt)
+        : ({ sessionId, callId: requestId, questions: [] } satisfies AskUserPrompt));
+    this.interactions.value = {
+      ...this.interactions.peek(),
+      [key]: {
+        key,
+        sessionId,
+        responseId,
+        requestId,
+        kind,
+        order: existing?.order ?? this.interactionOrder.peek().length,
+        createdAt: existing?.createdAt || resolvedAt,
+        prompt,
+        ...existing,
+        state,
+        outcome,
+        resolvedAt,
+      },
+    };
+    if (!existing) this.interactionOrder.value = [...this.interactionOrder.peek(), key];
+    this.bumpDiagnostic('interactionReconciliations');
+    if (kind === 'approval' && this.approval.peek()?.id === requestId) this.approval.value = null;
+    if (kind === 'ask-user' && this.askUser.peek()?.callId === requestId) this.askUser.value = null;
+  }
+
+  private interactionFor(
+    kind: InteractionRecord['kind'],
+    sessionId: string,
+    requestId: string,
+    responseId = '',
+  ): InteractionRecord | null {
+    return (
+      Object.values(this.interactions.peek()).find(
+        (entry) =>
+          entry.kind === kind &&
+          entry.sessionId === sessionId &&
+          entry.requestId === requestId &&
+          (!responseId || entry.responseId === responseId),
+      ) || null
+    );
+  }
+
+  private shouldOpenInteraction(
+    kind: InteractionRecord['kind'],
+    sessionId: string,
+    requestId: string,
+  ): boolean {
+    const state = this.interactionFor(kind, sessionId, requestId)?.state;
+    return state === 'waiting' || state === 'failed';
+  }
+
+  dismissInteraction(
+    kind: InteractionRecord['kind'],
+    promptOverride?: ApprovalPrompt | AskUserPrompt,
+  ): void {
+    const prompt =
+      promptOverride || (kind === 'ask-user' ? this.askUser.peek() : this.approval.peek());
+    const requestId =
+      kind === 'ask-user'
+        ? (prompt as AskUserPrompt | null)?.callId
+        : (prompt as ApprovalPrompt | null)?.id;
+    if (requestId) {
+      const record = this.interactionFor(kind, prompt?.sessionId || '', requestId);
+      if (record)
+        this.interactions.value = {
+          ...this.interactions.peek(),
+          [record.key]: { ...record, state: 'dismissed' },
+        };
+    }
+    if (kind === 'ask-user') this.askUser.value = null;
+    else this.approval.value = null;
+    this.modal.value = '';
+  }
+
+  openInteraction(key: string): void {
+    const record = this.interactions.peek()[key];
+    if (!record || !['waiting', 'dismissed', 'failed'].includes(record.state)) return;
+    if (record.kind === 'ask-user') {
+      this.askUser.value = record.prompt as AskUserPrompt;
+      this.modal.value = 'ask-user';
+    } else {
+      this.approval.value = record.prompt as ApprovalPrompt;
+      this.modal.value = 'approval';
+    }
+    this.interactions.value = {
+      ...this.interactions.peek(),
+      [key]: { ...record, state: 'waiting' },
+    };
+  }
+
+  async answerAskUser(
+    answers: unknown = [],
+    cancelled = false,
+    promptOverride?: AskUserPrompt,
+  ): Promise<void> {
+    const prompt = promptOverride || this.askUser.value;
+    const requestId = prompt?.callId;
+    if (!prompt || !requestId) return;
+    const record = this.interactionFor('ask-user', prompt.sessionId, requestId);
+    const key =
+      record?.key || this.upsertInteraction('ask-user', prompt.sessionId, '', requestId, prompt);
+    const existing = this.interactionSubmissions.get(key);
+    if (existing) return existing;
+    this.interactions.value = {
+      ...this.interactions.peek(),
+      [key]: { ...this.interactions.peek()[key], state: 'submitting', error: '' },
+    };
+    const request = (async () => {
+      try {
+        const result = (await this.endpoints.askUser(
+          prompt.sessionId,
+          cancelled ? { call_id: requestId, cancelled: true } : { call_id: requestId, answers },
+          requestId,
+        )) as Record<string, unknown>;
+        const authoritative = String(result.status || '') === 'already_resolved';
+        this.resolveInteractionRecord(
+          'ask-user',
+          prompt.sessionId,
+          record?.responseId || '',
+          requestId,
+          authoritative
+            ? String(result.outcome || 'resolved')
+            : cancelled
+              ? 'cancelled-by-user'
+              : 'answered',
+          authoritative ? Number(result.resolved_at) || Date.now() : Date.now(),
+        );
+      } catch (error) {
+        const current = this.interactions.peek()[key];
+        this.interactions.value = {
+          ...this.interactions.peek(),
+          [key]: { ...current, state: 'failed', error: errorMessage(error) },
+        };
+        throw error;
+      }
+    })();
+    this.interactionSubmissions.set(key, request);
+    try {
+      await request;
+    } finally {
+      if (this.interactionSubmissions.get(key) === request) this.interactionSubmissions.delete(key);
+    }
+  }
+
+  async decideApproval(
+    choice: number,
+    resumeAuto = false,
+    promptOverride?: ApprovalPrompt,
+    cancelled = false,
+  ): Promise<void> {
+    const prompt = promptOverride || this.approval.value;
+    const requestId = prompt?.id;
+    if (!prompt || !requestId) return;
+    const record = this.interactionFor('approval', prompt.sessionId, requestId);
+    const key =
+      record?.key || this.upsertInteraction('approval', prompt.sessionId, '', requestId, prompt);
+    const existing = this.interactionSubmissions.get(key);
+    if (existing) return existing;
+    this.interactions.value = {
+      ...this.interactions.peek(),
+      [key]: { ...this.interactions.peek()[key], state: 'submitting', error: '' },
+    };
+    const denied = prompt.options?.find((option) => option.index === choice)?.choice === 'deny';
+    const request = (async () => {
+      try {
+        const result = (await this.endpoints.approval(
+          prompt.sessionId,
+          cancelled
+            ? { approval_id: requestId, cancelled: true }
+            : { approval_id: requestId, choice, resume_auto: resumeAuto },
+          requestId,
+        )) as Record<string, unknown>;
+        const authoritative = String(result.status || '') === 'already_resolved';
+        this.resolveInteractionRecord(
+          'approval',
+          prompt.sessionId,
+          record?.responseId || '',
+          requestId,
+          authoritative
+            ? String(result.outcome || 'resolved')
+            : cancelled
+              ? 'cancelled-by-user'
+              : denied
+                ? 'denied'
+                : 'accepted',
+          authoritative ? Number(result.resolved_at) || Date.now() : Date.now(),
+        );
+      } catch (error) {
+        const current = this.interactions.peek()[key];
+        this.interactions.value = {
+          ...this.interactions.peek(),
+          [key]: { ...current, state: 'failed', error: errorMessage(error) },
+        };
+        throw error;
+      }
+    })();
+    this.interactionSubmissions.set(key, request);
+    try {
+      await request;
+    } finally {
+      if (this.interactionSubmissions.get(key) === request) this.interactionSubmissions.delete(key);
+    }
   }
 
   private resetSideQuestion(): void {
@@ -2649,9 +3761,53 @@ export class AppStore {
         message: String(entry.message || ''),
       }));
       const summary = (data.file_change_summary || {}) as Record<string, unknown>;
+      let newlyStale = 0;
+      const comments = state.comments.map((comment) => {
+        if (comment.sessionId !== owner || comment.state === 'stale') return comment;
+        const turnScope = ['last_turn', 'last_3_turns'].includes(
+          normalizeDiffScope(comment.scope || scope),
+        );
+        const file = files.find((entry) => entry.path === comment.path);
+        let anchorChanged = !file;
+        if (file?.lines && comment.anchorFingerprint) {
+          const index = file.lines.findIndex((line) =>
+            comment.side === 'old' ? line.oldLine === comment.line : line.newLine === comment.line,
+          );
+          if (index < 0) anchorChanged = true;
+          else {
+            const beforeCount = comment.contextBefore?.length || 0;
+            const afterCount = comment.contextAfter?.length || 0;
+            const currentAnchor: DiffComment = {
+              ...comment,
+              context: file.lines[index].content,
+              contextBefore: file.lines
+                .slice(Math.max(0, index - beforeCount), index)
+                .map((line) => line.content),
+              contextAfter: file.lines
+                .slice(index + 1, index + 1 + afterCount)
+                .map((line) => line.content),
+            };
+            anchorChanged = reviewAnchorFingerprint(currentAnchor) !== comment.anchorFingerprint;
+          }
+        }
+        const stale =
+          anchorChanged ||
+          (turnScope &&
+            Boolean(comment.fileChangeSeq && (file?.sequence || 0) > comment.fileChangeSeq));
+        if (!stale) return comment;
+        newlyStale += 1;
+        const updated: DiffComment = { ...comment, state: 'stale', updatedAt: Date.now() };
+        try {
+          persistDiffComment(this.storage, this.keys.diffCommentQueue, updated);
+        } catch (error) {
+          this.toast(error, 'error');
+        }
+        return updated;
+      });
       this.diff.value = {
         ...state,
         files,
+        comments,
         materializations,
         observations,
         claimDiagnostics,
@@ -2659,6 +3815,11 @@ export class AppStore {
         git: Boolean(data.git),
         loading: false,
       };
+      if (newlyStale)
+        this.toast(
+          `${newlyStale} queued comment${newlyStale === 1 ? '' : 's'} became stale after the source changed.`,
+          'info',
+        );
       await Promise.all(
         files
           .filter((file) => refreshContexts.has(file.path))
@@ -2798,20 +3959,21 @@ export class AppStore {
     payloads: Array<Record<string, unknown>>;
     inputText: string;
   } | null {
-    const payloads = comments.map((comment) => {
-      const scope = normalizeDiffScope(comment.scope || this.diff.value.scope);
-      const turnScope = ['last_turn', 'last_3_turns'].includes(scope);
-      return {
-        id: comment.id || uuid(),
-        path: comment.path,
-        scope,
-        side: comment.side,
-        line: comment.line,
-        file_change_seq: turnScope ? Number(comment.fileChangeSeq) || 0 : 0,
-        line_text: comment.context || '',
-        instruction: comment.body,
-      };
-    });
+    const validation = validateReviewBatch(comments);
+    if (validation) {
+      this.bumpDiagnostic('queueValidationFailures');
+      this.toast(validation.message, 'error');
+      return null;
+    }
+    const stale = comments.find((comment) => comment.state === 'stale');
+    if (stale) {
+      this.toast(
+        `${stale.path}:${stale.line} is stale. Re-anchor it or explicitly send it individually.`,
+        'error',
+      );
+      return null;
+    }
+    const payloads = comments.map((comment) => reviewCommentPayload(comment));
     if (
       payloads.some(
         (comment) =>
@@ -2880,21 +4042,121 @@ export class AppStore {
   }
   queueDiffComment(comment: DiffComment): void {
     const sessionId = this.activeSessionId.peek();
-    const value = { ...comment, id: comment.id || uuid(), sessionId };
+    const replaced = this.diff.value.comments.find(
+      (entry) =>
+        entry.sessionId === sessionId &&
+        entry.path === comment.path &&
+        entry.side === comment.side &&
+        entry.line === comment.line,
+    );
+    const value: DiffComment = {
+      ...comment,
+      id: comment.id || replaced?.id || uuid(),
+      sessionId,
+      scope: normalizeDiffScope(comment.scope || this.diff.peek().scope),
+      createdAt: comment.createdAt || replaced?.createdAt || Date.now(),
+      updatedAt: Date.now(),
+      state: 'fresh',
+      anchorFingerprint: comment.anchorFingerprint || reviewAnchorFingerprint(comment),
+    };
+    const validation =
+      validateReviewComment(value) ||
+      validateReviewBatch([
+        ...this.diff.value.comments.filter(
+          (entry) => entry.sessionId === sessionId && entry.id !== value.id && entry !== replaced,
+        ),
+        value,
+      ]);
+    if (validation) {
+      this.bumpDiagnostic('queueValidationFailures');
+      this.toast(validation.message, 'error');
+      return;
+    }
+    try {
+      persistDiffComment(this.storage, this.keys.diffCommentQueue, value);
+      if (replaced?.id && replaced.id !== value.id)
+        removeDiffComment(this.storage, this.keys.diffCommentQueue, sessionId, replaced.id);
+    } catch (error) {
+      this.toast(error, 'error');
+      return;
+    }
     const comments = [
-      ...this.diff.value.comments.filter(
-        (entry) =>
-          !(
-            entry.sessionId === sessionId &&
-            entry.path === comment.path &&
-            entry.side === comment.side &&
-            entry.line === comment.line
-          ),
-      ),
+      ...this.diff.value.comments.filter((entry) => entry.id !== value.id && entry !== replaced),
       value,
     ];
     this.diff.value = { ...this.diff.value, comments };
-    writeJSON(this.storage, this.keys.diffCommentQueue, comments);
+    this.publishSessionChange('review-comment-changed', sessionId);
+  }
+
+  editDiffComment(commentId: string, body: string): void {
+    const comment = this.diff.peek().comments.find((entry) => entry.id === commentId);
+    if (!comment?.id || !comment.sessionId || !body.trim()) return;
+    const updated = { ...comment, body: body.trim(), updatedAt: Date.now() };
+    const validation =
+      validateReviewComment(updated) ||
+      validateReviewBatch(
+        this.diff
+          .peek()
+          .comments.map((entry) => (entry.id === commentId ? updated : entry))
+          .filter((entry) => entry.sessionId === comment.sessionId),
+      );
+    if (validation) {
+      this.bumpDiagnostic('queueValidationFailures');
+      this.toast(validation.message, 'error');
+      return;
+    }
+    try {
+      persistDiffComment(this.storage, this.keys.diffCommentQueue, updated);
+    } catch (error) {
+      this.toast(error, 'error');
+      return;
+    }
+    this.diff.value = {
+      ...this.diff.peek(),
+      comments: this.diff
+        .peek()
+        .comments.map((entry) => (entry.id === commentId ? updated : entry)),
+    };
+    this.publishSessionChange('review-comment-changed', comment.sessionId);
+  }
+
+  reanchorDiffComment(
+    commentId: string,
+    anchor: Pick<DiffComment, 'path' | 'side' | 'line' | 'context' | 'fileChangeSeq' | 'scope'>,
+  ): void {
+    const comment = this.diff.peek().comments.find((entry) => entry.id === commentId);
+    if (!comment) return;
+    this.queueDiffComment({
+      ...comment,
+      ...anchor,
+      state: 'fresh',
+      anchorFingerprint: '',
+      updatedAt: Date.now(),
+    });
+    const updated = this.diff.peek().comments.find((entry) => entry.id === commentId);
+    if (updated?.state === 'fresh')
+      this.toast(`Re-anchored comment to ${anchor.path}:${anchor.line}.`, 'success');
+  }
+
+  removeDiffComment(commentId: string): void {
+    const comment = this.diff.peek().comments.find((entry) => entry.id === commentId);
+    if (!comment?.id || !comment.sessionId) return;
+    removeDiffComment(this.storage, this.keys.diffCommentQueue, comment.sessionId, comment.id);
+    this.diff.value = {
+      ...this.diff.peek(),
+      comments: this.diff.peek().comments.filter((entry) => entry.id !== commentId),
+    };
+    this.publishSessionChange('review-comment-changed', comment.sessionId);
+  }
+
+  discardDiffComments(sessionId = this.activeSessionId.peek()): void {
+    if (!sessionId) return;
+    clearSessionDiffComments(this.storage, this.keys.diffCommentQueue, sessionId);
+    this.diff.value = {
+      ...this.diff.peek(),
+      comments: this.diff.peek().comments.filter((entry) => entry.sessionId !== sessionId),
+    };
+    this.publishSessionChange('review-comment-changed', sessionId);
   }
   async sendDiffComments(): Promise<void> {
     const session = this.activeSession.value;
@@ -2902,8 +4164,40 @@ export class AppStore {
       (comment) => !comment.sessionId || comment.sessionId === session?.id,
     );
     if (!session || !comments.length) return;
-    const prepared = this.prepareDiffComments(comments);
+    const staleCount = comments.filter((comment) => comment.state === 'stale').length;
+    if (
+      staleCount &&
+      !window.confirm(
+        `${staleCount} comment${staleCount === 1 ? '' : 's'} no longer match the current source. Send anyway?`,
+      )
+    )
+      return;
+    const prepared = this.prepareDiffComments(
+      staleCount ? comments.map((comment) => ({ ...comment, state: 'fresh' as const })) : comments,
+    );
     if (!prepared) return;
+    const markComments = (state: DiffComment['state'], error = ''): boolean => {
+      const updates = new Map(
+        comments.map((comment) => [
+          comment.id,
+          { ...comment, state, error: error || undefined, updatedAt: Date.now() },
+        ]),
+      );
+      try {
+        updates.forEach((comment) =>
+          persistDiffComment(this.storage, this.keys.diffCommentQueue, comment),
+        );
+      } catch (persistError) {
+        this.toast(persistError, 'error');
+        return false;
+      }
+      this.diff.value = {
+        ...this.diff.peek(),
+        comments: this.diff.peek().comments.map((comment) => updates.get(comment.id) || comment),
+      };
+      return true;
+    };
+    if (!markComments('sending')) return;
     const { payloads, inputText } = prepared;
     const options: SendOptions = {
       contentParts: payloads.map((diff_comment) => ({ type: 'diff_comment', diff_comment })),
@@ -2932,11 +4226,23 @@ export class AppStore {
             ...sent,
           ],
         };
-        writeJSON(this.storage, this.keys.diffCommentQueue, remaining);
+        comments.forEach((comment) => {
+          if (comment.id && (comment.sessionId || session.id))
+            removeDiffComment(
+              this.storage,
+              this.keys.diffCommentQueue,
+              comment.sessionId || session.id,
+              comment.id,
+            );
+        });
+        this.publishSessionChange('review-comment-changed', session.id);
         this.toast('Comments sent to the agent.', 'success');
         void this.refreshDiffComments(session.id);
       },
-      onTransportFailed: (error) => this.toast(error, 'error'),
+      onTransportFailed: (error) => {
+        markComments('failed', errorMessage(error));
+        this.toast(error, 'error');
+      },
     };
     if (this.streaming.value) await this.interject(inputText, options);
     else await this.send(options);
@@ -3098,6 +4404,7 @@ export class AppStore {
     const cursor = this.skillRunCursors.get(runId);
     if (!cursor) return;
     const snapshot = await this.endpoints.skillRun(cursor.sessionId, runId);
+    if (this.disposed || this.skillRunCursors.get(runId) !== cursor) return;
     const events = Array.isArray(snapshot.events) ? snapshot.events : [];
     events.forEach((event) => {
       if (event && typeof event === 'object')
@@ -3160,7 +4467,7 @@ export class AppStore {
     if (!this.skillRunCursors.has(runId)) return;
     await this.reconcileSkillRun(runId).catch(() => undefined);
     if (this.skillRunCursors.has(runId))
-      window.setTimeout(() => void this.followSkillRun(runId), 1_000);
+      this.schedule(() => void this.followSkillRun(runId), 1_000);
   }
   async invokeSkill(name: string, args: string): Promise<void> {
     const session = this.activeSession.value;
@@ -3225,6 +4532,7 @@ export class AppStore {
           status: 'streaming',
           lastSequence: 0,
           startedRev: Number(data.started_rev) || session.transcriptRev || 0,
+          startedAt: Number(data.started_at) || Date.now(),
           reconnects: 0,
           requestId: id,
         };
@@ -3429,7 +4737,8 @@ export class AppStore {
       if (document.visibilityState === 'visible') {
         if (Date.now() - this.lastSidebarRefreshAt >= 30_000)
           await this.refreshSidebar(false).catch(() => undefined);
-        await this.refreshStatus().catch(() => undefined);
+        await this.reconcile('poll', { authoritative: false }).catch(() => undefined);
+        if (this.activeSessionId.peek()) await this.loadChildRuns().catch(() => undefined);
       }
       const anyActive =
         this.locallyStoppedResponses.size > 0 ||
@@ -3444,15 +4753,72 @@ export class AppStore {
     };
     this.statusTimer = window.setTimeout(poll, 0);
   }
-  private async refreshStatus(): Promise<void> {
-    const activeSessionId = this.activeSessionId.peek();
+  private async refreshStatus(authoritative = false): Promise<void> {
+    if (!authoritative && this.statusCoordinator.refreshPromise)
+      return this.statusCoordinator.refreshPromise;
+
+    const generation = ++this.statusCoordinator.generation;
+    const previous = this.statusCoordinator.refreshPromise;
+    const metadata: StatusRequestMetadata = {
+      generation,
+      requestedAt: Date.now(),
+      selectedSessionId: this.activeSessionId.peek(),
+      selectionEpoch: this.selectionEpoch,
+      showHidden: this.showHidden.peek(),
+      categories: [...this.config.sidebarCategories],
+    };
+    const request = (async () => {
+      // An authoritative request invalidates the old generation immediately,
+      // but waits for it to settle to avoid needless parallel work.
+      if (authoritative && previous) await previous.catch(() => undefined);
+      const data = await this.endpoints.sessionStatus(
+        metadata.selectedSessionId,
+        metadata.showHidden,
+        metadata.categories,
+        this.statusCoordinator.etag,
+      );
+      const receivedAt = Date.now();
+      if (!this.statusRequestIsCurrent(metadata)) {
+        this.bumpDiagnostic('staleStatusResults');
+        return;
+      }
+      if (data.__notModified === true) {
+        this.statusCoordinator.lastAppliedGeneration = generation;
+        this.statusCoordinator.lastAppliedRequestedAt = metadata.requestedAt;
+        this.statusCoordinator.lastAppliedReceivedAt = receivedAt;
+        this.statusCoordinator.etag = String(data.__etag || this.statusCoordinator.etag);
+        return;
+      }
+      await this.applyStatus(data, metadata, receivedAt);
+    })();
+    const tracked = request.finally(() => {
+      if (this.statusCoordinator.refreshPromise === tracked)
+        this.statusCoordinator.refreshPromise = null;
+    });
+    this.statusCoordinator.refreshPromise = tracked;
+    return tracked;
+  }
+
+  private statusRequestIsCurrent(metadata: StatusRequestMetadata): boolean {
+    return (
+      !this.disposed &&
+      metadata.generation === this.statusCoordinator.generation &&
+      metadata.selectedSessionId === this.activeSessionId.peek() &&
+      metadata.selectionEpoch === this.selectionEpoch &&
+      metadata.showHidden === this.showHidden.peek() &&
+      metadata.categories.join(',') === this.config.sidebarCategories.join(',')
+    );
+  }
+
+  private async applyStatus(
+    data: Record<string, unknown>,
+    metadata: StatusRequestMetadata,
+    receivedAt: number,
+  ): Promise<void> {
+    if (!this.statusRequestIsCurrent(metadata)) return;
+    const activeSessionId = metadata.selectedSessionId;
     const previousActiveRevision =
       this.sessions.peek().find((session) => session.id === activeSessionId)?.transcriptRev || 0;
-    const data = await this.endpoints.sessionStatus(
-      activeSessionId,
-      this.showHidden.peek(),
-      this.config.sidebarCategories,
-    );
     const statuses = listFrom(data, 'sessions', 'items');
     const known = new Set(this.sessions.peek().map((session) => session.id));
     const unknownActive = new Set(
@@ -3464,31 +4830,44 @@ export class AppStore {
     const discoveredUnknown = [...unknownActive].some(
       (id) => !this.unknownActiveSessionIDs.has(id),
     );
-    this.unknownActiveSessionIDs = unknownActive;
-    if (discoveredUnknown) await this.refreshSidebar(false).catch(() => undefined);
+    if (discoveredUnknown) {
+      await this.refreshSidebar(false).catch(() => undefined);
+      if (!this.statusRequestIsCurrent(metadata)) return;
+    }
+
     const byID = new Map(statuses.map((entry) => [String(entry.id || entry.session_id), entry]));
-    this.sessions.value = this.sessions.value
+    const followUps: Array<() => void> = [];
+    this.sessions.value = this.sessions
+      .peek()
       .map((session) => {
         const status = byID.get(session.id);
         if (!status) return session.activeRun ? { ...session, activeRun: false } : session;
-        const activeResponseId = String(status.active_response_id || '') || null;
-        const transcriptRev = Number(status.transcript_rev) || session.transcriptRev || 0;
+        const serverActiveResponseId = String(status.active_response_id || '') || null;
         const stoppedResponseId = this.runs.peek()[session.id]?.run.responseId || '';
         const awaitingStoppedResponse = this.locallyStoppedResponses.has(stoppedResponseId);
+        const activeResponseId =
+          serverActiveResponseId &&
+          (this.locallyStoppedResponses.has(serverActiveResponseId) || awaitingStoppedResponse)
+            ? null
+            : serverActiveResponseId;
+        const transcriptRev = Math.max(
+          session.transcriptRev || 0,
+          Number(status.transcript_rev) || 0,
+        );
         if (
           activeResponseId &&
           activeResponseId !== session.activeResponseId &&
           !this.locallyStoppedResponses.has(activeResponseId)
         )
-          window.setTimeout(() => void this.resumeResponse(session.id, activeResponseId), 0);
-        if (!activeResponseId && awaitingStoppedResponse)
+          followUps.push(() => void this.resumeResponse(session.id, activeResponseId));
+        if (!serverActiveResponseId && awaitingStoppedResponse)
           this.locallyStoppedResponses.delete(stoppedResponseId);
         if (
-          !activeResponseId &&
+          !serverActiveResponseId &&
           (session.activeResponseId || this.pendingIntents.peek()[session.id]?.length) &&
           transcriptRev >= (this.runs.peek()[session.id]?.run.finalRev || 0)
         )
-          window.setTimeout(() => void this.refreshSessionMessages(session.id, transcriptRev), 0);
+          followUps.push(() => void this.refreshSessionMessages(session.id, transcriptRev));
         const titleRefreshAllowed = this.renameTarget.peek()?.id !== session.id;
         return {
           ...session,
@@ -3499,17 +4878,27 @@ export class AppStore {
               }
             : {}),
           activeResponseId,
-          activeRun: Boolean(status.active_run || activeResponseId),
+          activeRun: Boolean(activeResponseId || (status.active_run && !awaitingStoppedResponse)),
           lastResponseId: String(status.last_response_id || '') || session.lastResponseId,
           transcriptRev,
-          messageCount: Number(status.message_count) || session.messageCount,
+          messageCount: Math.max(session.messageCount || 0, Number(status.message_count) || 0),
           lastMessageAt: Number(status.last_message_at)
-            ? Number(status.last_message_at) *
-              (Number(status.last_message_at) < 10_000_000_000 ? 1000 : 1)
+            ? Math.max(
+                session.lastMessageAt || 0,
+                Number(status.last_message_at) *
+                  (Number(status.last_message_at) < 10_000_000_000 ? 1000 : 1),
+              )
             : session.lastMessageAt,
         };
       })
       .sort(compareSessionsByActivity);
+    if (!this.statusRequestIsCurrent(metadata)) return;
+    this.unknownActiveSessionIDs = unknownActive;
+    this.statusCoordinator.lastAppliedGeneration = metadata.generation;
+    this.statusCoordinator.lastAppliedRequestedAt = metadata.requestedAt;
+    this.statusCoordinator.lastAppliedReceivedAt = receivedAt;
+    this.statusCoordinator.etag = String(data.__etag || '');
+
     const activeRevision =
       this.sessions.peek().find((session) => session.id === activeSessionId)?.transcriptRev || 0;
     if (
@@ -3517,14 +4906,59 @@ export class AppStore {
       this.diff.peek().sessionId === activeSessionId &&
       activeRevision > previousActiveRevision
     )
-      void this.refreshDiffComments(activeSessionId);
+      followUps.push(() => void this.refreshDiffComments(activeSessionId));
+    if (activeSessionId) followUps.push(() => void this.loadChildRuns(activeSessionId));
+    // No follow-up from a stale generation may start after a newer reconcile.
+    if (this.statusRequestIsCurrent(metadata)) followUps.forEach((followUp) => followUp());
+  }
+
+  private bumpDiagnostic(key: keyof ReturnType<typeof this.diagnostics.peek>): void {
+    this.diagnostics.value = {
+      ...this.diagnostics.peek(),
+      [key]: this.diagnostics.peek()[key] + 1,
+    };
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.persistCurrentDraft();
+    this.lifecycleAbort.abort();
+    window.clearTimeout(this.statusTimer);
+    window.clearTimeout(this.searchTimer);
+    window.clearTimeout(this.peerSyncTimer);
+    for (const timers of this.titleRefreshTimers.values())
+      timers.forEach((timer) => window.clearTimeout(timer));
+    this.titleRefreshTimers.clear();
+    this.ownedTimers.forEach((timer) => window.clearTimeout(timer));
+    this.ownedTimers.clear();
+    this.searchAbort?.abort();
+    this.sideQuestionAbort?.abort();
+    this.modelAbort?.abort();
+    this.skillRunAborts.forEach((abort) => abort.abort());
+    this.skillRunAborts.clear();
+    this.skillRunCursors.clear();
+    this.streamSupervisors.dispose();
+    this.releaseAttachmentResources(this.attachments.peek(), false);
+    this.draftBlobs.close();
+    this.sessionSyncChannel?.close();
+    this.sessionSyncChannel = null;
+  }
+
+  private schedule(callback: () => void, delay: number): number {
+    const timer = window.setTimeout(() => {
+      this.ownedTimers.delete(timer);
+      if (!this.disposed) callback();
+    }, delay);
+    this.ownedTimers.add(timer);
+    return timer;
   }
 
   toast(value: unknown, kind: Toast['kind'] = 'info'): void {
     const message = errorMessage(value);
     const toast = { id: uuid(), message, kind };
     this.toasts.value = [...this.toasts.value, toast];
-    window.setTimeout(() => {
+    this.schedule(() => {
       this.toasts.value = this.toasts.value.filter((entry) => entry.id !== toast.id);
     }, 4000);
   }

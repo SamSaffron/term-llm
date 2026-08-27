@@ -262,7 +262,12 @@ export function reduceResponse(
     case 'response.created':
       return {
         ...next,
-        run: { ...run, status: 'streaming', startedRev: number(event.started_rev, run.startedRev) },
+        run: {
+          ...run,
+          status: 'streaming',
+          startedRev: number(event.started_rev, run.startedRev),
+          startedAt: number(event.started_at, run.startedAt || Date.now()),
+        },
       };
     case 'response.output_text.new_segment': {
       messages = closeToolGroups(messages);
@@ -574,6 +579,7 @@ export function reduceResponse(
         run: {
           ...run,
           status: 'completed',
+          endedAt: number(event.ended_at, Date.now()),
           finalRev: number(event.final_rev),
           durableHandoff: event.durable_handoff === true,
         },
@@ -595,6 +601,7 @@ export function reduceResponse(
         run: {
           ...run,
           status: 'cancelled',
+          endedAt: number(event.ended_at, Date.now()),
           finalRev: number(event.final_rev),
           durableHandoff: event.durable_handoff === true,
         },
@@ -610,6 +617,7 @@ export function reduceResponse(
           ...run,
           status: 'failed',
           error: content,
+          endedAt: number(event.ended_at, Date.now()),
           finalRev: number(event.final_rev),
           durableHandoff: event.durable_handoff === true,
         },

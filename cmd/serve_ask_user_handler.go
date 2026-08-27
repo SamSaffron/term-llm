@@ -27,6 +27,24 @@ func (s *serveServer) handleSessionAskUser(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	run := s.responseRuns.latestRun(sessionID)
+	if resolved, ok := s.responseRuns.resolvedInteractionForSession(sessionID, "ask_user", callID); ok {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "already_resolved", "outcome": resolved.Outcome, "resolved_at": resolved.ResolvedAt,
+		})
+		return
+	}
+	if run != nil {
+		run.interactionSubmitMu.Lock()
+		defer run.interactionSubmitMu.Unlock()
+		if resolved, ok := run.resolvedInteraction("ask_user", callID); ok {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status": "already_resolved", "outcome": resolved.Outcome, "resolved_at": resolved.ResolvedAt,
+			})
+			return
+		}
+	}
+
 	rt, ok := s.sessionMgr.Get(sessionID)
 	if !ok {
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
@@ -34,6 +52,12 @@ func (s *serveServer) handleSessionAskUser(w http.ResponseWriter, r *http.Reques
 	}
 	normalized, err := rt.submitAskUser(callID, req.Answers, req.Cancelled)
 	if err != nil {
+		if resolved, ok := s.responseRuns.resolvedInteractionForSession(sessionID, "ask_user", callID); ok {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status": "already_resolved", "outcome": resolved.Outcome, "resolved_at": resolved.ResolvedAt,
+			})
+			return
+		}
 		switch {
 		case errors.Is(err, errServeAskUserNotPending), errors.Is(err, errServeAskUserAnswered):
 			writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
@@ -42,15 +66,17 @@ func (s *serveServer) handleSessionAskUser(w http.ResponseWriter, r *http.Reques
 		}
 		return
 	}
-	if s.responseRuns != nil {
-		if runID := s.responseRuns.activeRunID(sessionID); runID != "" {
-			if run, ok := s.responseRuns.get(runID); ok {
-				run.resolveAskUserRecovery(callID)
-			}
-		}
+	outcome := "answered"
+	if req.Cancelled {
+		outcome = "cancelled-by-user"
+	}
+	resolvedAt := int64(0)
+	if run != nil {
+		resolved := run.recordResolvedInteraction("ask_user", callID, outcome)
+		outcome, resolvedAt = resolved.Outcome, resolved.ResolvedAt
 	}
 
-	resp := map[string]any{"status": "ok"}
+	resp := map[string]any{"status": "ok", "outcome": outcome, "resolved_at": resolvedAt}
 	if !req.Cancelled {
 		resp["answers"] = normalized
 		resp["summary"] = tools.AskUserAnswerSummary(normalized)

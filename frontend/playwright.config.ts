@@ -10,6 +10,10 @@ export default defineConfig({
     browserName: 'chromium',
     headless: true,
     serviceWorkers: 'allow',
+    ignoreHTTPSErrors: true,
+    trace: 'retain-on-failure',
+    screenshot: 'only-on-failure',
+    video: 'retain-on-failure',
     ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE
       ? { launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } }
       : {}),

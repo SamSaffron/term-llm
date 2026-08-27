@@ -23,6 +23,12 @@ export interface Attachment {
   height?: number;
   mention?: boolean;
   file?: File;
+  status?: 'preparing' | 'ready' | 'error';
+  progress?: number;
+  error?: string;
+  checksum?: string;
+  blobRef?: string;
+  draftId?: string;
 }
 
 export interface GuardianReview {
@@ -232,7 +238,14 @@ export interface DiffComment {
   sessionId?: string;
   scope?: string;
   context?: string;
+  contextBefore?: string[];
+  contextAfter?: string[];
+  anchorFingerprint?: string;
   fileChangeSeq?: number;
+  rev?: number;
+  updatedAt?: number;
+  state?: 'fresh' | 'stale' | 'sending' | 'failed';
+  error?: string;
   clientMessageId?: string;
   createdAt?: number;
   optimistic?: boolean;
@@ -246,6 +259,32 @@ export interface PlanStep {
 export interface CurrentPlan {
   explanation?: string;
   plan: PlanStep[];
+}
+
+export type InteractionState =
+  | 'waiting'
+  | 'dismissed'
+  | 'submitting'
+  | 'accepted'
+  | 'denied'
+  | 'cancelled-by-user'
+  | 'cancelled-by-agent'
+  | 'failed'
+  | 'resolved-elsewhere';
+
+export interface InteractionRecord {
+  key: string;
+  sessionId: string;
+  responseId: string;
+  requestId: string;
+  kind: 'approval' | 'ask-user';
+  state: InteractionState;
+  order: number;
+  createdAt: number;
+  prompt: ApprovalPrompt | AskUserPrompt;
+  error?: string;
+  outcome?: string;
+  resolvedAt?: number;
 }
 
 export interface AskUserQuestion {
@@ -293,9 +332,12 @@ export interface ActiveRun {
   status: RunStatus;
   lastSequence: number;
   startedRev: number;
+  startedAt?: number;
+  endedAt?: number;
   reconnects: number;
   error?: string;
   requestId?: string;
   finalRev?: number;
   durableHandoff?: boolean;
+  summary?: string;
 }

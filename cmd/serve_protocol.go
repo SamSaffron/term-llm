@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -26,11 +27,13 @@ import (
 )
 
 type sessionInterruptRequest struct {
-	Message         string          `json:"message"`
-	Content         json.RawMessage `json:"content"`
-	InterjectionID  string          `json:"interjection_id"`
-	ClientMessageID string          `json:"client_message_id,omitempty"`
-	Delivery        string          `json:"delivery,omitempty"`
+	Message            string          `json:"message"`
+	Content            json.RawMessage `json:"content"`
+	InterjectionID     string          `json:"interjection_id"`
+	ClientMessageID    string          `json:"client_message_id,omitempty"`
+	Delivery           string          `json:"delivery,omitempty"`
+	ExpectedResponseID string          `json:"expected_response_id,omitempty"`
+	ExpectedRunEpoch   int64           `json:"expected_run_epoch,omitempty"`
 }
 
 type sessionRuntimeEffortRequest struct {
@@ -128,6 +131,47 @@ const (
 	maxAttachments     = 10
 	maxAttachmentBytes = 20 << 20 // 20 MB per file (decoded)
 )
+
+var supportedAttachmentExtensions = map[string]struct{}{
+	".jpg": {}, ".jpeg": {}, ".png": {}, ".gif": {}, ".webp": {}, ".pdf": {},
+	".txt": {}, ".md": {}, ".markdown": {}, ".json": {}, ".csv": {}, ".yaml": {},
+	".yml": {}, ".xml": {}, ".go": {}, ".js": {}, ".jsx": {}, ".ts": {}, ".tsx": {},
+	".py": {}, ".rb": {}, ".rs": {}, ".java": {}, ".c": {}, ".h": {}, ".cpp": {},
+	".hpp": {}, ".mp3": {}, ".wav": {}, ".ogg": {}, ".mp4": {}, ".webm": {},
+}
+
+var supportedAttachmentMediaTypes = map[string]struct{}{
+	"image/jpeg": {}, "image/png": {}, "image/gif": {}, "image/webp": {},
+	"application/pdf": {}, "text/plain": {}, "text/markdown": {}, "application/json": {},
+	"text/csv": {}, "audio/mpeg": {}, "audio/wav": {}, "audio/ogg": {},
+	"video/mp4": {}, "video/webm": {},
+}
+
+func attachmentMediaTypes() []string {
+	values := make([]string, 0, len(supportedAttachmentMediaTypes))
+	for value := range supportedAttachmentMediaTypes {
+		values = append(values, value)
+	}
+	sort.Strings(values)
+	return values
+}
+
+func attachmentExtensions() []string {
+	values := make([]string, 0, len(supportedAttachmentExtensions))
+	for value := range supportedAttachmentExtensions {
+		values = append(values, value)
+	}
+	sort.Strings(values)
+	return values
+}
+
+func supportedAttachment(filename, mediaType string) bool {
+	if _, ok := supportedAttachmentExtensions[strings.ToLower(filepath.Ext(filename))]; ok {
+		return true
+	}
+	_, ok := supportedAttachmentMediaTypes[llm.NormalizeMediaType(mediaType)]
+	return ok
+}
 
 func stripBase64Newlines(b64Data string) string {
 	if !strings.ContainsAny(b64Data, "\r\n") {
@@ -574,12 +618,12 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 				imageURL := jsonImageURL(part["image_url"])
 				filename := jsonString(part["filename"])
 				if !strings.HasPrefix(imageURL, "data:") {
-					continue
+					return llm.Message{}, fmt.Errorf("attachment %q must use an inline data URL", filename)
 				}
 				mt, b64 := parseDataURL(imageURL)
 				mt = normalizeUploadMediaType(filename, mt, nil)
 				if mt == "" || b64 == "" {
-					continue
+					return llm.Message{}, fmt.Errorf("attachment %q has an empty or malformed data URL", filename)
 				}
 				if isLLMImageType(mt) {
 					fileCount++
@@ -626,6 +670,9 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 						ImagePath: path,
 					})
 				} else {
+					if !supportedAttachment(filename, mt) {
+						return llm.Message{}, fmt.Errorf("unsupported attachment type %q for %q", mt, filename)
+					}
 					fileCount++
 					if fileCount > maxAttachments {
 						return llm.Message{}, fmt.Errorf("too many attachments (max %d)", maxAttachments)
@@ -649,12 +696,12 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 				}
 				displayFilename := llm.EmbeddedFileDisplayName(filename)
 				if !strings.HasPrefix(fileData, "data:") {
-					continue
+					return llm.Message{}, fmt.Errorf("attachment %q must use an inline data URL", displayFilename)
 				}
 				mt, b64 := parseDataURL(fileData)
 				mt = normalizeUploadMediaType(displayFilename, mt, nil)
 				if mt == "" || b64 == "" {
-					continue
+					return llm.Message{}, fmt.Errorf("attachment %q has an empty or malformed data URL", displayFilename)
 				}
 				fileCount++
 				if fileCount > maxAttachments {
@@ -666,6 +713,9 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 					return llm.Message{}, fmt.Errorf("decode attachment %q: %w", displayFilename, err)
 				}
 				mt = normalizeUploadMediaType(displayFilename, mt, raw)
+				if !supportedAttachment(displayFilename, mt) {
+					return llm.Message{}, fmt.Errorf("unsupported attachment type %q for %q", mt, displayFilename)
+				}
 				path, err := saveUploadedBytes(displayFilename, raw)
 				if err != nil {
 					return llm.Message{}, fmt.Errorf("save attachment %q: %w", displayFilename, err)

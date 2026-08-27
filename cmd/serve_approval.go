@@ -206,6 +206,19 @@ func (rt *serveRuntime) awaitApprovalRequest(target string, isWrite bool, isShel
 	}
 }
 
+func (rt *serveRuntime) approvalOutcome(approvalID string, choiceIndex int, cancelled bool) string {
+	if cancelled {
+		return "cancelled-by-user"
+	}
+	rt.approvalMu.Lock()
+	defer rt.approvalMu.Unlock()
+	pending := rt.pendingApprovals[approvalID]
+	if pending != nil && choiceIndex >= 0 && choiceIndex < len(pending.Options) && pending.Options[choiceIndex].Choice == tools.ApprovalChoiceDeny {
+		return "denied"
+	}
+	return "accepted"
+}
+
 func (rt *serveRuntime) submitApproval(approvalID string, choiceIndex int, cancelled bool, resumeAuto bool) error {
 	rt.approvalMu.Lock()
 	pending := rt.pendingApprovals[approvalID]

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { installWebRTC } from './webrtc';
+import { installWebRTC, withDeadline } from './webrtc';
 
 interface SentFrame {
   id: string;
@@ -333,5 +333,31 @@ describe('WebRTC platform bridge', () => {
       channel.sent.filter((frame) => frame.type === 'cancel' && frame.id === request.id),
     ).toHaveLength(0);
     expect(harness.apiCalls()).toBe(0);
+  });
+});
+
+describe('withDeadline', () => {
+  it('combines parent cancellation with a bounded timeout and cleanup', () => {
+    vi.useFakeTimers();
+    const parent = new AbortController();
+    const first = withDeadline(parent.signal, 100);
+    parent.abort(new DOMException('Parent stopped', 'AbortError'));
+    expect(first.signal.aborted).toBe(true);
+    expect(first.signal.reason).toEqual(expect.objectContaining({ name: 'AbortError' }));
+    first.cleanup();
+
+    const preAborted = new AbortController();
+    preAborted.abort(new DOMException('Already stopped', 'AbortError'));
+    const immediate = withDeadline(preAborted.signal, 100);
+    expect(immediate.signal.aborted).toBe(true);
+    expect(immediate.signal.reason).toBe(preAborted.signal.reason);
+    immediate.cleanup();
+
+    const second = withDeadline(undefined, 100);
+    vi.advanceTimersByTime(100);
+    expect(second.signal.aborted).toBe(true);
+    expect(second.signal.reason).toEqual(expect.objectContaining({ name: 'TimeoutError' }));
+    second.cleanup();
+    vi.useRealTimers();
   });
 });

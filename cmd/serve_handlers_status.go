@@ -59,6 +59,7 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 		ActiveResponseID    string `json:"active_response_id,omitempty"`
 		RunEpoch            int64  `json:"run_epoch,omitempty"`
 		StartedRev          int64  `json:"started_rev,omitempty"`
+		StartedAt           int64  `json:"started_at,omitempty"`
 		ClientMessageID     string `json:"client_message_id,omitempty"`
 		AnchorRowID         int64  `json:"anchor_row_id,omitempty"`
 		TranscriptRev       int64  `json:"transcript_rev"`
@@ -89,6 +90,10 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 			}
 		}
 		activeResponseID, startedRev, runEpoch, clientMessageID, anchorRowID := s.activeTranscriptRun(sess.ID)
+		startedAt := int64(0)
+		if run := s.responseRuns.activeRun(sess.ID); run != nil && run.created > 0 {
+			startedAt = run.created * 1000
+		}
 		result = append(result, statusEntry{
 			ID:                  sess.ID,
 			ProjectID:           sess.ProjectID,
@@ -99,6 +104,7 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 			ActiveResponseID:    activeResponseID,
 			RunEpoch:            runEpoch,
 			StartedRev:          startedRev,
+			StartedAt:           startedAt,
 			ClientMessageID:     clientMessageID,
 			AnchorRowID:         anchorRowID,
 			TranscriptRev:       transcriptRev,

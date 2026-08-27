@@ -8,6 +8,7 @@ import {
   supportedEfforts,
 } from '../domain/runtime';
 import { planSummary } from '../domain/plan';
+import { deriveRunCenter } from '../domain/run-center';
 import { positionPopover } from '../platform/browser';
 import { Icon } from './Icon';
 
@@ -169,13 +170,26 @@ export function Header() {
     loadedDiff?.reduce((sum, file) => sum + (file.additions || 0), 0) ?? summary?.additions ?? 0;
   const diffDels =
     loadedDiff?.reduce((sum, file) => sum + (file.deletions || 0), 0) ?? summary?.deletions ?? 0;
-  const showDiff = Boolean(session && (diffFileCount > 0 || summary?.git));
+  const showDiff = Boolean(
+    session &&
+    (diffFileCount > 0 ||
+      summary?.git ||
+      store.worktreesAvailable() ||
+      store.worktreesEnabled.value),
+  );
   const diffTitle = `${diffFileCount} changed ${diffFileCount === 1 ? 'file' : 'files'}${diffAdds || diffDels ? ` (${diffAdds ? `+${diffAdds}` : ''}${diffAdds && diffDels ? ' ' : ''}${diffDels ? `−${diffDels}` : ''})` : ''}`;
   const project = store.projects.value.find(
     (entry) => entry.id === (session?.projectId || store.activeProjectId.value),
   );
   const showWorktree = store.worktreesAvailable();
   const currentPlan = store.currentPlan.value;
+  const runItems = deriveRunCenter(
+    store.sessions.value,
+    store.runs.value,
+    store.interactions.value,
+    store.childRuns.value,
+  );
+  const runAttention = runItems.filter((item) => item.attention).length;
   const currentPlanSummary = planSummary(currentPlan);
   const planUnseen =
     Boolean(currentPlan) &&
@@ -193,6 +207,8 @@ export function Header() {
             class="icon-btn mobile-menu"
             id="mobileMenuBtn"
             aria-label="Open sidebar"
+            aria-expanded={store.sidebarOpen.value}
+            aria-controls="sidebar"
             onClick={() => {
               store.sidebarOpen.value = true;
             }}
@@ -222,6 +238,18 @@ export function Header() {
         <div class="header-controls-row">
           <div class="header-stats" id="headerStats">
             <RuntimePicker />
+            {runItems.length > 0 && (
+              <button
+                type="button"
+                class="run-center-trigger header-action"
+                aria-haspopup="dialog"
+                aria-expanded={store.runCenterOpen.value}
+                aria-controls="run-center"
+                onClick={() => (store.runCenterOpen.value = true)}
+              >
+                Runs {runAttention > 0 ? `· ${runAttention}` : runItems.length}
+              </button>
+            )}
             {(session?.mcpEnabled?.length || 0) > 0 && (
               <button
                 type="button"
@@ -311,6 +339,8 @@ export function Header() {
               id="diffToggleBtn"
               type="button"
               aria-label={`Toggle file changes: ${diffTitle}`}
+              aria-expanded={store.diff.value.open}
+              aria-controls="diffSidebar"
               title={diffTitle}
               onClick={() => void store.toggleDiff()}
             >

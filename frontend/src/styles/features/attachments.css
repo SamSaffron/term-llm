@@ -64,6 +64,16 @@
   pointer-events: none;
 }
 
+.drop-overlay.accepted {
+  border-color: var(--accent-green);
+}
+
+.drop-overlay.rejected {
+  background: color-mix(in srgb, var(--danger) 10%, var(--surface));
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
 .drop-overlay.hidden {
   display: none;
 }

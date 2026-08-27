@@ -99,6 +99,22 @@ describe('API transport', () => {
     ]);
   });
 
+  it('uses conditional status requests and surfaces 304 without JSON parsing', async () => {
+    const request = vi.fn(async (_url: string, init: RequestInit) => {
+      expect(new Headers(init.headers).get('If-None-Match')).toBe('"status-1"');
+      return new Response(null, { status: 304, headers: { ETag: '"status-1"' } });
+    });
+    vi.stubGlobal('fetch', request);
+    const api = new APIClient(config, { getToken: () => '', onAuthRequired: vi.fn() });
+
+    await expect(endpoints(api).sessionStatus('s1', false, ['all'], '"status-1"')).resolves.toEqual(
+      {
+        __notModified: true,
+        __etag: '"status-1"',
+      },
+    );
+  });
+
   it('decodes fragmented CRLF and multiline SSE events', async () => {
     const chunks = [
       'event: response.output_text.delta\r\ndata: {"delta":',
@@ -117,5 +133,37 @@ describe('API transport', () => {
       { event: 'response.output_text.delta', data: '{"delta":"hi"}', id: '2' },
       { event: 'message', data: 'done', id: undefined },
     ]);
+  });
+
+  it('emits a fragmented UTF-8 final event once without a trailing blank line', async () => {
+    const bytes = new TextEncoder().encode('event: note\r\ndata: café');
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes.slice(0, bytes.length - 1));
+        controller.enqueue(bytes.slice(bytes.length - 1));
+        controller.close();
+      },
+    });
+
+    const events = [];
+    for await (const event of decodeSSE(stream)) events.push(event);
+
+    expect(events).toEqual([{ event: 'note', data: 'café', id: undefined }]);
+  });
+
+  it('surfaces the clean-completion sentinel and counts keepalive activity', async () => {
+    const activity = vi.fn();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(': keepalive\n\ndata: [DONE]'));
+        controller.close();
+      },
+    });
+
+    const events = [];
+    for await (const event of decodeSSE(stream, undefined, activity)) events.push(event);
+
+    expect(events).toEqual([{ event: 'message', data: '[DONE]', id: undefined, done: true }]);
+    expect(activity).toHaveBeenCalledTimes(2);
   });
 });

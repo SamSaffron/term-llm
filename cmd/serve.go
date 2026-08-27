@@ -28,6 +28,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
+	webrtcpkg "github.com/samsaffron/term-llm/internal/webrtc"
 	"github.com/samsaffron/term-llm/internal/widgets"
 	"github.com/spf13/cobra"
 )
@@ -1281,6 +1282,8 @@ type serveServer struct {
 	skillRunRetention        time.Duration
 	skillChildRunnerFactory  func(sessionID string, runtime *serveRuntime) (runpkg.ChildRunner, error)
 	webrtcEnabled            bool
+	webrtcMu                 sync.RWMutex
+	webrtcPeer               webrtcpkg.Peer
 	webrtcHeadSnippet        string // injected into index.html <head>; empty when WebRTC disabled
 	runtimeFactory           func(ctx context.Context, providerName string, model string) (*serveRuntime, error)
 	agentRuntimeFactory      func(ctx context.Context, providerName string, model string, agentName string) (*serveRuntime, error)
@@ -1369,6 +1372,8 @@ func (s *serveServer) Start() error {
 	}
 }
 
+var registerServeBrowserFixtureRoutes func(*http.ServeMux, *serveServer)
+
 func (s *serveServer) httpHandler() http.Handler {
 	// Inner mux: all routes registered at their natural paths.
 	// basePath is stripped by http.StripPrefix on the outer mux when mounted,
@@ -1415,6 +1420,9 @@ func (s *serveServer) httpHandler() http.Handler {
 
 	if s.store != nil {
 		inner.HandleFunc("/v1/sessions", s.auth(s.cors(s.handleSessions)))
+	}
+	if registerServeBrowserFixtureRoutes != nil {
+		registerServeBrowserFixtureRoutes(inner, s)
 	}
 
 	if s.cfg.ui {

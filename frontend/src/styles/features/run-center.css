@@ -1,0 +1,60 @@
+.run-center {
+  display: grid;
+  gap: 1rem;
+  max-height: min(70vh, 42rem);
+  overflow: auto;
+}
+
+.run-center-group h3,
+.agent-inbox h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.run-center-group ul,
+.agent-inbox ul {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.run-center-group button,
+.agent-inbox button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.7rem;
+  color: inherit;
+  text-align: left;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+}
+
+.agent-inbox-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.4rem;
+}
+
+.agent-inbox .agent-inbox-item .btn-link {
+  width: auto;
+  grid-template-columns: 1fr;
+  align-content: center;
+  padding-inline: 0.65rem;
+}
+
+.interaction-attention-banner {
+  width: 100%;
+  padding: 0.55rem 0.75rem;
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface));
+  border: 1px solid var(--accent);
+  border-radius: 0.5rem;
+}

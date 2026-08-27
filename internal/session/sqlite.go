@@ -2678,7 +2678,10 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		WHERE 1=1`
 	args := []any{}
 
-	if opts.ExcludeSubagents {
+	if opts.ParentID != "" {
+		query += " AND s.parent_id = ?"
+		args = append(args, opts.ParentID)
+	} else if opts.ExcludeSubagents {
 		query += " AND s.parent_id IS NULL"
 	}
 	if opts.Name != "" {

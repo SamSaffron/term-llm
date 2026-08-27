@@ -245,6 +245,48 @@ func TestResponseRunTimerStopIsCancellationNotTimeout(t *testing.T) {
 	}
 }
 
+func TestResponseRunTerminalEmitsPendingInteractionResolutionsFirst(t *testing.T) {
+	run := newResponseRun("resp-interactions", "sess-interactions", "", "test", time.Now().Unix(), nil)
+	sub := run.subscribe(0)
+	if sub.ch == nil {
+		t.Fatal("expected live subscription")
+	}
+	if err := run.appendEvent("response.approval.prompt", map[string]any{"approval_id": "approval-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.appendEvent("response.ask_user.prompt", map[string]any{"call_id": "call-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.fail(map[string]any{"response": map[string]any{"id": run.id}}, "provider_error", "failed"); err != nil {
+		t.Fatal(err)
+	}
+	var events []responseRunEvent
+	for event := range sub.ch {
+		events = append(events, event)
+	}
+	if len(events) != 5 {
+		t.Fatalf("events = %d, want prompts, resolutions, and terminal", len(events))
+	}
+	want := []string{
+		"response.approval.prompt", "response.ask_user.prompt",
+		"response.approval.resolved", "response.ask_user.resolved", "response.failed",
+	}
+	for i, event := range events {
+		if event.Event != want[i] {
+			t.Fatalf("event[%d] = %q, want %q", i, event.Event, want[i])
+		}
+		if event.Sequence != int64(i+1) {
+			t.Fatalf("event[%d].sequence = %d, want %d", i, event.Sequence, i+1)
+		}
+	}
+	for _, key := range []string{"approval:approval-1", "ask_user:call-1"} {
+		resolved, ok := run.resolvedInteractions[key]
+		if !ok || resolved.Outcome != "failed" {
+			t.Fatalf("resolved interaction %q = %#v, %v", key, resolved, ok)
+		}
+	}
+}
+
 func TestResponseRunCancelledSnapshotRetainsDurableContinuationID(t *testing.T) {
 	run := newResponseRun("resp-cancelled-run", "sess-cancelled-run", "", "test-model", time.Now().Unix(), nil)
 	run.finalRevReader = func() (int64, error) { return 4, nil }
@@ -1631,6 +1673,23 @@ func TestResponseRunInterjectionSplitsRecoveryMessages(t *testing.T) {
 	}
 	if got := messages[2]["content"]; got != "after" {
 		t.Fatalf("messages[2].content = %v, want after", got)
+	}
+}
+
+func TestResponseRunTerminalResolutionDoesNotOverwriteSubmittedOutcome(t *testing.T) {
+	run := newResponseRun("resp_decision", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	if err := run.appendEvent("response.approval.prompt", map[string]any{"approval_id": "approval_1"}); err != nil {
+		t.Fatalf("append approval prompt: %v", err)
+	}
+	resolved := run.recordResolvedInteraction("approval", "approval_1", "accepted")
+
+	run.mu.Lock()
+	run.resolvePendingInteractionsLocked("failed")
+	run.mu.Unlock()
+
+	got, ok := run.resolvedInteraction("approval", "approval_1")
+	if !ok || got.Outcome != "accepted" || got.ResolvedAt != resolved.ResolvedAt {
+		t.Fatalf("resolved interaction = %#v, %t; want accepted %#v", got, ok, resolved)
 	}
 }
 

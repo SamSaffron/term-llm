@@ -378,10 +378,34 @@ func (s *serveServer) handleCapabilities(w http.ResponseWriter, r *http.Request)
 		worktreesEnabled = true
 	}
 	w.Header().Set("ETag", fmt.Sprintf(`W/"projects-%t-worktrees-%t"`, s.projectsEnabled, worktreesEnabled))
-	writeJSON(w, http.StatusOK, map[string]any{
+	payload := map[string]any{
 		"projects":  map[string]bool{"enabled": s.projectsEnabled},
 		"worktrees": map[string]bool{"enabled": worktreesEnabled},
-	})
+		"attachments": map[string]any{
+			"max_count":  maxAttachments,
+			"max_bytes":  maxAttachmentBytes,
+			"mime_types": attachmentMediaTypes(),
+			"extensions": attachmentExtensions(),
+		},
+	}
+	if s.responseRuns != nil {
+		diagnostics := s.responseRuns.Diagnostics()
+		payload["reliability_diagnostics"] = map[string]any{
+			"idempotency_replays": diagnostics.IdempotencyReplays,
+		}
+	}
+	s.webrtcMu.RLock()
+	peer := s.webrtcPeer
+	s.webrtcMu.RUnlock()
+	if peer != nil {
+		diagnostics := peer.Diagnostics()
+		payload["webrtc_diagnostics"] = map[string]any{
+			"active":   diagnostics.Active,
+			"reserved": diagnostics.Reserved,
+			"rejected": diagnostics.Rejected,
+		}
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func projectDirectoryBreadcrumbs(path string) []projectDirectoryBreadcrumb {

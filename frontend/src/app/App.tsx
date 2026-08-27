@@ -9,7 +9,8 @@ import { Composer } from '../components/Composer';
 import { DiffSidebar, PlanSurface } from '../components/Panels';
 import { Modals } from '../components/Modals';
 import { Lightbox } from '../components/Lightbox';
-import { registerServiceWorker } from '../platform/browser';
+import { RunCenter } from '../components/RunCenter';
+import { installVisualViewportSizing, registerServiceWorker } from '../platform/browser';
 
 class ErrorBoundary extends Component<{ children: ComponentChildren }, { error: string }> {
   state = { error: '' };
@@ -38,6 +39,7 @@ export function App({ store }: { store: AppStore }) {
   useEffect(() => {
     void store.bootstrap();
     void registerServiceWorker(store.config);
+    const removeViewportSizing = installVisualViewportSizing();
     const shortcut = (event: KeyboardEvent) => {
       const mac = /Mac|iPhone|iPad|iPod/.test(navigator.platform);
       const primary = mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
@@ -53,7 +55,11 @@ export function App({ store }: { store: AppStore }) {
       }
     };
     addEventListener('keydown', shortcut);
-    return () => removeEventListener('keydown', shortcut);
+    return () => {
+      removeEventListener('keydown', shortcut);
+      removeViewportSizing();
+      store.dispose();
+    };
   }, [store]);
   useEffect(() => {
     const brand = store.config.title.trim();
@@ -104,6 +110,7 @@ export function App({ store }: { store: AppStore }) {
           <PlanSurface />
         </div>
         <Modals />
+        <RunCenter />
         <Lightbox />
       </StoreContext.Provider>
     </ErrorBoundary>

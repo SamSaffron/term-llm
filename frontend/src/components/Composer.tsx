@@ -10,8 +10,10 @@ import {
   type MentionSearchResponse,
 } from '../domain/completions';
 import { errorMessage } from '../domain/text';
+import { validateAttachmentFile } from '../domain/attachments';
 import { VoiceRecorder } from '../platform/voice';
 import { Icon } from './Icon';
+import { useMenuKeyboard } from './Menu';
 
 function resizePrompt(element: HTMLTextAreaElement | null): void {
   if (!element) return;
@@ -22,6 +24,7 @@ function resizePrompt(element: HTMLTextAreaElement | null): void {
 export function Composer() {
   const store = useStore();
   const file = useRef<HTMLInputElement>(null);
+  const camera = useRef<HTMLInputElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const [menu, setMenu] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState('');
@@ -29,7 +32,13 @@ export function Composer() {
   const [completionIndex, setCompletionIndex] = useState(0);
   const [cursor, setCursor] = useState(store.prompt.value.length);
   const [dismissed, setDismissed] = useState('');
+  const [dragging, setDragging] = useState(false);
+  const [dragError, setDragError] = useState('');
   const [projectMentions, setProjectMentions] = useState<MentionSearchResponse | null>(null);
+  const addMenu = useMenuKeyboard(menu, () => {
+    setMenu(false);
+    document.getElementById('attachBtn')?.focus();
+  });
   const voice = useMemo(() => new VoiceRecorder(), []);
   useEffect(() => () => voice.cancel(), [voice]);
   useLayoutEffect(() => resizePrompt(textarea.current), [store.prompt.value]);
@@ -197,7 +206,17 @@ export function Composer() {
   const pending = store.interjections.value.filter(
     (entry) => entry.sessionId === store.activeSession.value?.id,
   );
+  const waitingInteraction = store.interactionOrder.value
+    .map((key) => store.interactions.value[key])
+    .find(
+      (entry) =>
+        entry?.sessionId === store.activeSession.value?.id &&
+        ['waiting', 'dismissed', 'failed'].includes(entry.state),
+    );
   const hasDraft = Boolean(store.prompt.value.trim()) || store.attachments.value.length > 0;
+  const attachmentBlocked = store.attachments.value.some(
+    (attachment) => attachment.status === 'preparing' || attachment.status === 'error',
+  );
   const interjecting = store.streaming.value && hasDraft;
   const loading = store.streaming.value && !hasDraft;
   const sendLabel = bindingBlocked
@@ -205,16 +224,65 @@ export function Composer() {
     : interjecting
       ? 'Interject'
       : 'Send message';
+  const inspectDraggedFiles = (files: FileList | null): string => {
+    let count = store.attachments.peek().length;
+    for (const candidate of Array.from(files || [])) {
+      const validation = validateAttachmentFile(candidate, count, store.attachmentPolicy.peek());
+      if (validation) {
+        setDragError(validation.message);
+        return validation.message;
+      }
+      count += 1;
+    }
+    setDragError('');
+    return '';
+  };
   return (
     <footer
       class="composer"
-      onDragOver={(event) => event.preventDefault()}
+      onDragEnter={(event) => {
+        event.preventDefault();
+        setDragging(true);
+        inspectDraggedFiles(event.dataTransfer?.files || null);
+      }}
+      onDragOver={(event) => {
+        event.preventDefault();
+        inspectDraggedFiles(event.dataTransfer?.files || null);
+        if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+      }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setDragging(false);
+          setDragError('');
+        }
+      }}
       onDrop={(event) => {
         event.preventDefault();
+        setDragging(false);
+        inspectDraggedFiles(event.dataTransfer?.files || null);
         if (event.dataTransfer?.files.length) store.addAttachments(event.dataTransfer.files);
+        setDragError('');
       }}
     >
+      {dragging && (
+        <div
+          class={`drop-overlay ${dragError ? 'rejected' : 'accepted'}`}
+          role="status"
+          aria-live="polite"
+        >
+          {dragError || 'Drop supported files to attach'}
+        </div>
+      )}
       <div class="composer-inner">
+        {waitingInteraction && (
+          <button
+            type="button"
+            class="interaction-attention-banner"
+            onClick={() => store.openInteraction(waitingInteraction.key)}
+          >
+            Decision waiting — Open
+          </button>
+        )}
         {pending.length > 0 && (
           <div
             class="pending-interjection pending-interjection-banner"
@@ -255,6 +323,25 @@ export function Composer() {
                   <img src={attachment.previewURL} alt="" />
                 )}
                 <span class="att-name">{attachment.name}</span>
+                {attachment.status === 'preparing' && (
+                  <span class="att-status" role="status">
+                    Preparing {Math.round((attachment.progress || 0) * 100)}%
+                  </span>
+                )}
+                {attachment.status === 'error' && (
+                  <span class="att-error" role="alert">
+                    {attachment.error || 'Preparation failed'}
+                    {attachment.file && (
+                      <button
+                        type="button"
+                        aria-label={`Retry preparing ${attachment.name}`}
+                        onClick={() => store.retryAttachment(attachment.id)}
+                      >
+                        Retry
+                      </button>
+                    )}
+                  </span>
+                )}
                 <button
                   class="att-remove"
                   type="button"
@@ -294,13 +381,15 @@ export function Composer() {
             id="attachBtn"
             type="button"
             aria-label="Add"
+            aria-haspopup="menu"
+            aria-controls="addMenu"
             aria-expanded={menu}
             onClick={() => setMenu(!menu)}
           >
             <Icon name="add" />
           </button>
           {menu && (
-            <div class="composer-add-menu" id="addMenu" role="menu">
+            <div ref={addMenu} class="composer-add-menu" id="addMenu" role="menu">
               <button
                 type="button"
                 role="menuitem"
@@ -313,6 +402,17 @@ export function Composer() {
                   <Icon name="add" />
                 </span>
                 <span>Upload file</span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  camera.current?.click();
+                  setMenu(false);
+                }}
+              >
+                <span class="composer-add-menu-icon">◉</span>
+                <span>Take photo</span>
               </button>
               {store.config.locationSharing && (
                 <button
@@ -375,6 +475,19 @@ export function Composer() {
             type="file"
             id="fileInput"
             multiple
+            accept={store.attachmentAccept.value}
+            hidden
+            onChange={(event) => {
+              if (event.currentTarget.files) store.addAttachments(event.currentTarget.files);
+              event.currentTarget.value = '';
+            }}
+          />
+          <input
+            ref={camera}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            aria-label="Take a photo"
             hidden
             onChange={(event) => {
               if (event.currentTarget.files) store.addAttachments(event.currentTarget.files);
@@ -525,7 +638,7 @@ export function Composer() {
               type="button"
               title={sendLabel}
               aria-label={sendLabel}
-              disabled={bindingBlocked || (!hasDraft && !loading)}
+              disabled={bindingBlocked || attachmentBlocked || (!hasDraft && !loading)}
               onClick={sendOrCommand}
             >
               <Icon class="arrow" name={interjecting ? 'interject' : 'send'} />

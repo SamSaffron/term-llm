@@ -1,6 +1,28 @@
-import { useEffect, useId, useRef } from 'preact/hooks';
-import { useStore } from '../app/context';
+import { useContext, useId, useLayoutEffect, useRef } from 'preact/hooks';
+import { overlayManager } from '../platform/overlay-manager';
+import { StoreContext } from '../app/context';
 import { Icon } from './Icon';
+
+export function trapOverlayFocus(event: KeyboardEvent, selector: string): void {
+  if (event.key !== 'Tab') return;
+  const root = event.currentTarget as HTMLElement | null;
+  if (!root) return;
+  const items = [...root.querySelectorAll<HTMLElement>(selector)].filter((item) => item !== root);
+  if (!items.length) {
+    event.preventDefault();
+    root.focus();
+    return;
+  }
+  const first = items[0];
+  const last = items.at(-1)!;
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
 
 export function Overlay({
   title,
@@ -10,6 +32,7 @@ export function Overlay({
   onClose,
   onEscape,
   className = '',
+  id,
 }: {
   title: string;
   children: preact.ComponentChildren;
@@ -18,27 +41,32 @@ export function Overlay({
   onClose?: () => void;
   onEscape?: () => void;
   className?: string;
+  id?: string;
 }) {
-  const store = useStore();
+  const store = useContext(StoreContext);
   const dialog = useRef<HTMLDivElement>(null);
+  const token = useRef<symbol | null>(null);
   const label = useId();
-  const dismiss = onClose || (() => (store.modal.value = ''));
-  useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    const shell = document.getElementById('appShell');
-    if (shell) shell.inert = true;
+  const dismiss =
+    onClose ||
+    (() => {
+      if (store) store.modal.value = '';
+    });
+  useLayoutEffect(() => {
+    token.current = overlayManager.acquire(undefined, dialog.current);
     const focusFrame = requestAnimationFrame(() => {
       const target =
         dialog.current?.querySelector<HTMLElement>('[autofocus]:not([disabled])') ||
         dialog.current?.querySelector<HTMLElement>(
           'button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled])',
-        );
+        ) ||
+        dialog.current;
       target?.focus();
     });
     return () => {
       cancelAnimationFrame(focusFrame);
-      if (shell) shell.inert = false;
-      previous?.focus({ preventScroll: true });
+      if (token.current) overlayManager.release(token.current);
+      token.current = null;
     };
   }, []);
   return (
@@ -46,43 +74,40 @@ export function Overlay({
       class="modal-overlay"
       role="presentation"
       onMouseDown={(event) => {
-        if (close && event.target === event.currentTarget) dismiss();
+        if (
+          close &&
+          event.target === event.currentTarget &&
+          token.current &&
+          overlayManager.isTop(token.current)
+        )
+          dismiss();
       }}
     >
       <div
         ref={dialog}
+        id={id}
         class={`modal ${wide ? 'wide-modal' : ''} ${className}`.trim()}
         role="dialog"
         aria-modal="true"
         aria-labelledby={label}
         tabIndex={-1}
         onKeyDown={(event) => {
-          if (event.key === 'Escape' && (close || onEscape)) {
+          if (
+            event.key === 'Escape' &&
+            (close || onEscape) &&
+            token.current &&
+            overlayManager.isTop(token.current)
+          ) {
             event.preventDefault();
+            event.stopPropagation();
             if (onEscape) onEscape();
             else dismiss();
             return;
           }
-          if (event.key !== 'Tab') return;
-          const items = [
-            ...event.currentTarget.querySelectorAll<HTMLElement>(
-              'button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href],[tabindex]:not([tabindex="-1"])',
-            ),
-          ];
-          if (!items.length) {
-            event.preventDefault();
-            event.currentTarget.focus();
-            return;
-          }
-          const first = items[0];
-          const last = items.at(-1)!;
-          if (event.shiftKey && document.activeElement === first) {
-            event.preventDefault();
-            last.focus();
-          } else if (!event.shiftKey && document.activeElement === last) {
-            event.preventDefault();
-            first.focus();
-          }
+          trapOverlayFocus(
+            event,
+            'button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href],[tabindex]:not([tabindex="-1"])',
+          );
         }}
       >
         <div class="modal-title-row">

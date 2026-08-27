@@ -813,7 +813,7 @@ func TestHandleUI_ReturnsEmbeddedStaticAsset(t *testing.T) {
 		bodySnippet string
 	}{
 		{name: "css", path: "/dist/app.css", contentType: "text/css; charset=utf-8", bodySnippet: ".app{"},
-		{name: "module_js", path: "/dist/app.js", contentType: "text/javascript; charset=utf-8", bodySnippet: "__TERM_LLM_TEST__"},
+		{name: "module_js", path: "/dist/app.js", contentType: "text/javascript; charset=utf-8", bodySnippet: "term_llm_token"},
 		{name: "lazy_chunk_js", path: "/dist/chunks/katex.js", contentType: "text/javascript; charset=utf-8", bodySnippet: "katex"},
 		{name: "manifest", path: "/manifest.webmanifest", contentType: "", bodySnippet: `"display": "standalone"`},
 	}
@@ -1456,58 +1456,21 @@ func TestParseResponsesInput_TextFileUploadEmbedsFallback(t *testing.T) {
 	}
 }
 
-func TestParseResponsesInput_UnsupportedImageSavesToDisk(t *testing.T) {
-	dataHome := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", dataHome)
-
-	// image/svg+xml is not a supported LLM image type
+func TestParseResponsesInput_UnsupportedImageIsRejected(t *testing.T) {
+	// image/svg+xml is not a supported LLM image type and must fail at the
+	// protocol boundary instead of silently changing into a saved-file prompt.
 	b64 := "PHN2Zz48L3N2Zz4=" // base64 of "<svg></svg>"
 	payload := json.RawMessage(`[
 		{"type":"message","role":"user","content":[
 			{"type":"input_image","image_url":"data:image/svg+xml;base64,` + b64 + `","filename":"icon.svg"}
 		]}
 	]`)
-	msgs, _, err := parseResponsesInput(payload)
-	if err != nil {
-		t.Fatalf("parseResponsesInput failed: %v", err)
-	}
-	if len(msgs) != 1 {
-		t.Fatalf("len(msgs) = %d, want 1", len(msgs))
-	}
-	msg := msgs[0]
-	if len(msg.Parts) != 1 {
-		t.Fatalf("len(parts) = %d, want 1", len(msg.Parts))
-	}
-	if msg.Parts[0].Type != llm.PartText {
-		t.Fatalf("parts[0].type = %s, want text (saved to disk)", msg.Parts[0].Type)
-	}
-	if !strings.Contains(msg.Parts[0].Text, "icon.svg") {
-		t.Fatalf("parts[0].text = %q, should mention icon.svg", msg.Parts[0].Text)
-	}
-	if strings.Contains(msg.Parts[0].Text, dataHome) {
-		t.Fatalf("parts[0].text leaks upload storage path: %q", msg.Parts[0].Text)
-	}
-
-	// Verify file on disk
-	uploadsDir := filepath.Join(dataHome, "term-llm", "uploads")
-	entries, err := os.ReadDir(uploadsDir)
-	if err != nil {
-		t.Fatalf("read uploads dir: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("uploads dir has %d files, want 1", len(entries))
-	}
-	got, err := os.ReadFile(filepath.Join(uploadsDir, entries[0].Name()))
-	if err != nil {
-		t.Fatalf("read uploaded file: %v", err)
-	}
-	if string(got) != "<svg></svg>" {
-		t.Fatalf("file content = %q, want %q", got, "<svg></svg>")
+	_, _, err := parseResponsesInput(payload)
+	if err == nil || !strings.Contains(err.Error(), `unsupported attachment type "image/svg+xml"`) {
+		t.Fatalf("parseResponsesInput error = %v, want unsupported attachment type", err)
 	}
 }
-
 func TestParseResponsesInput_InvalidBase64ReturnsError(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
 	payload := json.RawMessage(`[
 		{"type":"message","role":"user","content":[
@@ -4673,6 +4636,9 @@ func TestHandleResponses_StreamIdempotencyKeyReplaysExistingRun(t *testing.T) {
 	}
 	if len(provider.Requests) != 1 {
 		t.Fatalf("provider request count after replay = %d, want 1", len(provider.Requests))
+	}
+	if got := srv.responseRuns.Diagnostics().IdempotencyReplays; got != 1 {
+		t.Fatalf("idempotency replay diagnostics = %d, want 1", got)
 	}
 }
 
