@@ -40,6 +40,49 @@ func TestLastTurnChangesUseLatestRun(t *testing.T) {
 	}
 }
 
+func TestLastTurnChangesIncludeRunInProgress(t *testing.T) {
+	store := openTestStore(t, Options{})
+	ctx := context.Background()
+	if _, err := recordTestChange(ctx, store, ChangeRecord{
+		SessionID: "session", RunID: "run-1", Path: "/work/test.txt",
+		BeforeMissing: true, After: []byte("123"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordRunStart(ctx, RunRecord{SessionID: "session", RunID: "run-2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	changes, err := store.ListRecentRunChanges(ctx, "session", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("new in-progress turn fell back to prior changes: %#v", changes)
+	}
+
+	if _, err := recordTestChange(ctx, store, ChangeRecord{
+		SessionID: "session", RunID: "run-2", Path: "/work/test.txt",
+		Before: []byte("123"), After: []byte("234"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	changes, err = store.ListRecentRunChanges(ctx, "session", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 || changes[0].Path != "/work/test.txt" || changes[0].Kind != KindModify || changes[0].Adds != 1 || changes[0].Dels != 1 {
+		t.Fatalf("in-progress last turn changes = %#v", changes)
+	}
+	content, err := store.GetRecentRunFileDiffContent(ctx, "session", "/work/test.txt", 1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content == nil || string(content.Before) != "123" || string(content.After) != "234" {
+		t.Fatalf("in-progress last turn content = %#v", content)
+	}
+}
+
 func TestRecentRunChangesCoverRollingWindow(t *testing.T) {
 	store := openTestStore(t, Options{})
 	ctx := context.Background()

@@ -541,6 +541,148 @@ describe('AppStore compatibility behavior', () => {
     expect(store.activeSession.value?.lastResponseId).toBe('resp_msg_42');
   });
 
+  it('normalizes recovery interjection identity before durable reconciliation', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [
+      {
+        ...session(),
+        messages: [
+          {
+            id: 'durable-first',
+            role: 'user',
+            content: 'this is me interjecting as a demo',
+            created: 2,
+            clientMessageId: 'interject-1',
+          },
+          {
+            id: 'durable-second',
+            role: 'user',
+            content: 'and a second time',
+            created: 3,
+            clientMessageId: 'interject-2',
+          },
+          {
+            id: 'durable-tools',
+            role: 'tool-group',
+            content: '',
+            created: 4,
+            responseId: 'r1',
+            tools: [{ id: 'tool-after', name: 'shell', status: 'done' }],
+          },
+        ],
+      },
+    ];
+    store.activeSessionId.value = 's1';
+    store.endpoints.response = vi.fn(async () => ({
+      status: 'in_progress',
+      run_epoch: 1,
+      last_sequence_number: 8,
+      recovery: {
+        sequence_number: 8,
+        messages: [
+          {
+            id: 'interject-1',
+            role: 'user',
+            content: 'this is me interjecting as a demo',
+            client_message_id: 'interject-1',
+            response_id: 'r1',
+            interruptState: 'interject',
+            created: 2,
+          },
+          {
+            id: 'interject-2',
+            role: 'user',
+            content: 'and a second time',
+            client_message_id: 'interject-2',
+            response_id: 'r1',
+            interruptState: 'interject',
+            created: 3,
+          },
+        ],
+      },
+    }));
+    const internals = store as unknown as {
+      resumeResponse(sessionId: string, responseId: string): Promise<void>;
+      streamResponse(responseId: string, sessionId: string, sequence: number): Promise<void>;
+    };
+    internals.streamResponse = vi.fn(async () => undefined);
+
+    await internals.resumeResponse('s1', 'r1');
+
+    expect(store.runs.value.s1.messages.map((message) => message.clientMessageId)).toEqual([
+      'interject-1',
+      'interject-2',
+    ]);
+    expect(store.visibleMessages.value.map((message) => message.id)).toEqual([
+      'durable-first',
+      'durable-second',
+      'durable-tools',
+    ]);
+  });
+
+  it('hydrates durable pending interjections when a session is opened in another tab', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.endpoints.sessionState = vi.fn(async () => ({
+      pending_interjections: [
+        { id: 'pending-1', text: 'change course', status: 'queued' },
+        { id: 'pending-2', text: 'inspect image', attachment_summary: '[image]', status: 'queued' },
+      ],
+    }));
+    store.endpoints.selectedSession = vi.fn(async () => ({
+      selected_session: { id: 's1', title: 'Test' },
+      selected_transcript: { bodies: { messages: [] } },
+    }));
+
+    await store.loadSession('s1');
+
+    expect(store.interjections.value).toEqual([
+      { id: 'pending-1', sessionId: 's1', content: 'change course', state: 'pending' },
+      { id: 'pending-2', sessionId: 's1', content: 'inspect image', state: 'pending' },
+    ]);
+
+    store.endpoints.sessionState = vi.fn(async () => ({ pending_interjections: [] }));
+    await store.loadSession('s1');
+    expect(store.interjections.value).toEqual([]);
+
+    store.endpoints.sessionState = vi.fn(async () => ({
+      pending_interjection: { id: 'legacy-pending', text: 'legacy state shape', status: 'queued' },
+    }));
+    await store.loadSession('s1');
+    expect(store.interjections.value).toEqual([
+      {
+        id: 'legacy-pending',
+        sessionId: 's1',
+        content: 'legacy state shape',
+        state: 'pending',
+      },
+    ]);
+  });
+
+  it('ignores pending-state snapshots older than a local interjection mutation', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.endpoints.interrupt = vi.fn(async () => ({}));
+    const internals = store as unknown as {
+      interjectionRevision: number;
+      reconcilePendingInterjections(
+        sessionId: string,
+        state: Record<string, unknown>,
+        expectedRevision?: number,
+      ): void;
+    };
+    const sampledRevision = internals.interjectionRevision;
+
+    await store.interject('fresh local steering');
+    internals.reconcilePendingInterjections('s1', { pending_interjections: [] }, sampledRevision);
+
+    expect(store.interjections.value).toEqual([
+      expect.objectContaining({ content: 'fresh local steering', state: 'pending' }),
+    ]);
+  });
+
   it('retires a terminal projection once its durable transcript revision is loaded', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];
@@ -1083,6 +1225,135 @@ describe('AppStore compatibility behavior', () => {
         { kind: 'hunk', content: '@@ -2 +2 @@' },
         { kind: 'delete', content: 'old', oldLine: 2 },
         { kind: 'add', content: 'new', newLine: 2 },
+      ],
+    });
+  });
+
+  it('refreshes an expanded last-turn diff when an in-progress file change arrives', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'r1',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'streaming',
+        lastSequence: 0,
+        startedRev: 0,
+        reconnects: 0,
+      }),
+    };
+    store.endpoints.diffComments = vi.fn(async () => ({ comments: [], transcript_rev: 0 }));
+    let version = 1;
+    store.endpoints.fileChanges = vi.fn(async () => ({
+      scope: 'last_turn',
+      file_changes: [
+        version === 1
+          ? { path: 'test.txt', kind: 'create', adds: 1, dels: 0, seq: 1 }
+          : { path: 'test.txt', kind: 'modify', adds: 1, dels: 1, seq: 2 },
+      ],
+    }));
+    store.endpoints.fileDiff = vi.fn(async () => ({
+      path: 'test.txt',
+      kind: version === 1 ? 'create' : 'modify',
+      context: 3,
+      hunks: [
+        {
+          old_start: 1,
+          new_start: 1,
+          lines:
+            version === 1
+              ? [{ t: 'add', s: '123' }]
+              : [
+                  { t: 'del', s: '123' },
+                  { t: 'add', s: '234' },
+                ],
+        },
+      ],
+    }));
+
+    await store.loadDiff();
+    await store.expandDiff(store.diff.value.files[0]);
+    expect(store.diff.value.files[0].lines).toEqual(
+      expect.arrayContaining([expect.objectContaining({ kind: 'add', content: '123' })]),
+    );
+
+    store.diff.value = { ...store.diff.value, open: true };
+    version = 2;
+    store.applyResponseEvent('s1', {
+      type: 'response.file_change',
+      response_id: 'r1',
+      run_epoch: 1,
+      sequence_number: 1,
+    });
+
+    await vi.waitFor(() => expect(store.endpoints.fileDiff).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(store.diff.value.files[0]).toMatchObject({
+        status: 'modify',
+        sequence: 2,
+        expanded: true,
+        loading: false,
+        lines: [
+          { kind: 'hunk', content: '@@ -1 +1 @@' },
+          { kind: 'delete', content: '123', oldLine: 1 },
+          { kind: 'add', content: '234', newLine: 1 },
+        ],
+      }),
+    );
+  });
+
+  it('keeps the newest expansion when same-version diff requests finish out of order', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.diff.value = {
+      ...store.diff.value,
+      sessionId: 's1',
+      files: [
+        {
+          path: 'test.txt',
+          status: 'modify',
+          sequence: 2,
+          expanded: true,
+          context: 3,
+          lines: [{ kind: 'add', content: 'initial', newLine: 1 }],
+        },
+      ],
+    };
+    const older = deferred<Record<string, unknown>>();
+    const newer = deferred<Record<string, unknown>>();
+    store.endpoints.fileDiff = vi
+      .fn()
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newer.promise);
+
+    const olderRequest = store.expandDiff(store.diff.value.files[0], 12);
+    const newerRequest = store.expandDiff(store.diff.value.files[0], 48);
+    newer.resolve({
+      path: 'test.txt',
+      kind: 'modify',
+      context: 48,
+      hunks: [{ old_start: 1, new_start: 1, lines: [{ t: 'add', s: 'newest' }] }],
+    });
+    await newerRequest;
+    older.resolve({
+      path: 'test.txt',
+      kind: 'modify',
+      context: 12,
+      hunks: [{ old_start: 1, new_start: 1, lines: [{ t: 'add', s: 'stale' }] }],
+    });
+    await olderRequest;
+
+    expect(store.diff.value.files[0]).toMatchObject({
+      context: 48,
+      loading: false,
+      lines: [
+        { kind: 'hunk', content: '@@ -1 +1 @@' },
+        { kind: 'add', content: 'newest', newLine: 1 },
       ],
     });
   });

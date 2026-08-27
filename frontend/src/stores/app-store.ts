@@ -362,6 +362,9 @@ export class AppStore {
   private selectionEpoch = 0;
   private modelEpoch = 0;
   private skillEpoch = 0;
+  private diffLoadEpoch = 0;
+  private readonly diffExpandEpoch = new Map<string, number>();
+  private interjectionRevision = 0;
   private recoverPromise: Promise<void> | null = null;
   private hubAgentLastFetch = 0;
   private hubAgentFetch: Promise<void> | null = null;
@@ -581,6 +584,17 @@ export class AppStore {
       return;
     }
     await this.refreshStatus().catch(() => undefined);
+    const activeSessionId = this.activeSessionId.peek();
+    if (activeSessionId) {
+      const interjectionRevision = this.interjectionRevision;
+      void this.endpoints
+        .sessionState(activeSessionId)
+        .then((state) => {
+          if (this.activeSessionId.peek() === activeSessionId)
+            this.reconcilePendingInterjections(activeSessionId, state, interjectionRevision);
+        })
+        .catch(() => undefined);
+    }
     const active = this.sessions.value.filter(
       (session) =>
         this.runs.value[session.id] &&
@@ -824,6 +838,12 @@ export class AppStore {
   private async reconcilePeerSessionChange(): Promise<void> {
     await this.refreshSidebar(false).catch(() => undefined);
     await this.refreshStatus().catch(() => undefined);
+    const sessionId = this.activeSessionId.peek();
+    if (!sessionId) return;
+    const interjectionRevision = this.interjectionRevision;
+    const state = await this.endpoints.sessionState(sessionId).catch(() => null);
+    if (state && this.activeSessionId.peek() === sessionId)
+      this.reconcilePendingInterjections(sessionId, state, interjectionRevision);
   }
 
   async selectSession(session: Session, replace = false): Promise<void> {
@@ -967,9 +987,63 @@ export class AppStore {
     }
   }
 
+  private setInterjections(entries: PendingInterjection[]): void {
+    this.interjectionRevision += 1;
+    this.interjections.value = entries;
+  }
+
+  private reconcilePendingInterjections(
+    sessionId: string,
+    state: Record<string, unknown>,
+    expectedRevision?: number,
+  ): void {
+    if (expectedRevision !== undefined && expectedRevision !== this.interjectionRevision) return;
+    const hasList = Object.hasOwn(state, 'pending_interjections');
+    const hasSingle = Object.hasOwn(state, 'pending_interjection');
+    // Missing fields mean the server has no authoritative durable/runtime view;
+    // retain local state until a commit, cancellation, or explicit empty list.
+    if (!hasList && !hasSingle) return;
+    const rawEntries = hasList
+      ? array(state.pending_interjections)
+      : state.pending_interjection
+        ? [state.pending_interjection]
+        : [];
+    const committed = new Set(
+      [
+        ...(this.sessions.peek().find((session) => session.id === sessionId)?.messages || []),
+        ...(this.runs.peek()[sessionId]?.messages || []),
+      ]
+        .map((message) => message.clientMessageId)
+        .filter((id): id is string => Boolean(id)),
+    );
+    const remote = rawEntries
+      .map(recordValue)
+      .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+      .map((entry) => ({
+        id: String(entry.id || entry.client_message_id || '').trim(),
+        sessionId,
+        content: String(entry.text || entry.attachment_summary || '').trim(),
+        state: 'pending' as const,
+      }))
+      .filter((entry) => entry.id && !committed.has(entry.id));
+    const remoteIDs = new Set(remote.map((entry) => entry.id));
+    const retained = this.interjections
+      .peek()
+      .filter(
+        (entry) =>
+          entry.sessionId !== sessionId ||
+          entry.state === 'sending' ||
+          entry.state === 'failed' ||
+          remoteIDs.has(entry.id),
+      );
+    const retainedIDs = new Set(retained.map((entry) => entry.id));
+    this.setInterjections([...retained, ...remote.filter((entry) => !retainedIDs.has(entry.id))]);
+  }
+
   async loadSession(id: string, epoch = this.selectionEpoch): Promise<void> {
     const sampledAskUser = this.askUser.peek();
     const sampledApproval = this.approval.peek();
+    const sampledInterjectionRevision = this.interjectionRevision;
     try {
       const [state, selected] = await Promise.all([
         this.endpoints.sessionState(id),
@@ -1022,6 +1096,7 @@ export class AppStore {
         this.askUser.value = askUserPrompt(asks.find(Boolean), updated.id);
       if (this.approval.peek() === sampledApproval)
         this.approval.value = approvalPrompt(approvals.find(Boolean), updated.id);
+      this.reconcilePendingInterjections(updated.id, state, sampledInterjectionRevision);
       const activeResponse = String(state.active_response_id || updated.activeResponseId || '');
       if (activeResponse) this.retireCommittedIntents(updated.id, incoming.messages);
       else this.retireIntent(updated.id);
@@ -1257,8 +1332,10 @@ export class AppStore {
     intents.forEach((intent) =>
       persistPendingIntent(this.storage, this.keys.pendingIntents, id, intent),
     );
-    this.interjections.value = this.interjections.value.map((entry) =>
-      entry.sessionId === oldID ? { ...entry, sessionId: id } : entry,
+    this.setInterjections(
+      this.interjections.value.map((entry) =>
+        entry.sessionId === oldID ? { ...entry, sessionId: id } : entry,
+      ),
     );
     if (this.activeSessionId.peek() === oldID) {
       this.activeSessionId.value = id;
@@ -1405,7 +1482,7 @@ export class AppStore {
     if (next.approval && next.approval !== current.approval) this.approval.value = next.approval;
     if (event.type === 'response.interjection') {
       const clientID = String(event.client_message_id || event.interjection_id || '');
-      this.interjections.value = this.interjections.value.filter((entry) => entry.id !== clientID);
+      this.setInterjections(this.interjections.value.filter((entry) => entry.id !== clientID));
     }
     if (next.fileChangeRevision !== current.fileChangeRevision) {
       this.fileChangeRevision.value += 1;
@@ -1427,6 +1504,7 @@ export class AppStore {
           : session,
       );
       this.publishSessionChange();
+      if (this.diff.peek().open && this.diff.peek().sessionId === sessionId) void this.loadDiff();
       window.setTimeout(
         () => void this.refreshSessionMessages(sessionId, next.run.finalRev || 0),
         0,
@@ -1449,6 +1527,7 @@ export class AppStore {
 
   private async refreshSessionMessages(sessionId: string, targetRev = 0): Promise<void> {
     try {
+      const interjectionRevision = this.interjectionRevision;
       const stateRequest = this.endpoints.sessionState(sessionId).catch(() => null);
       const selected = await this.endpoints.selectedSession(sessionId);
       const source = recordValue(selected.selected_session);
@@ -1489,6 +1568,7 @@ export class AppStore {
       this.retireIntent(sessionId);
       const state = await stateRequest;
       if (state) {
+        this.reconcilePendingInterjections(sessionId, state, interjectionRevision);
         const lastResponseId = String(state.lastResponseId || state.last_response_id || '').trim();
         this.sessions.value = this.sessions.value.map((session) =>
           session.id === sessionId
@@ -1529,13 +1609,24 @@ export class AppStore {
             return convertServerMessages([raw], {
               rebaseAssetURL: (url) => rebaseHubAssetURL(this.config, url),
             })[0];
+          const clientMessageId = String(raw.clientMessageId || raw.client_message_id || '').trim();
+          const projectedResponseId = String(
+            raw.responseId || raw.response_id || responseId,
+          ).trim();
+          const segmentOrdinal = Number(
+            raw.assistantSegmentOrdinal ?? raw.assistant_segment_ordinal,
+          );
+          const interruptState = String(raw.interruptState || raw.interrupt_state || '').trim();
           return {
             ...raw,
             id: String(raw.id || `${responseId}:snapshot:${index}`),
             role: String(raw.role || 'assistant'),
             content: String(raw.content || raw.text || ''),
             created: Number(raw.created || raw.created_at) || Date.now(),
-            responseId,
+            responseId: projectedResponseId || responseId,
+            ...(clientMessageId ? { clientMessageId } : {}),
+            ...(Number.isFinite(segmentOrdinal) ? { assistantSegmentOrdinal: segmentOrdinal } : {}),
+            ...(interruptState ? { interruptState } : {}),
           } as Message;
         })
         .filter(Boolean);
@@ -1630,7 +1721,7 @@ export class AppStore {
       content: displayContent || attachments.map((attachment) => attachment.name).join(', '),
       state: 'sending',
     };
-    this.interjections.value = [...this.interjections.value, entry];
+    this.setInterjections([...this.interjections.value, entry]);
     try {
       const attachmentParts = await Promise.all(
         attachments.map((attachment) => this.attachmentInput(attachment)),
@@ -1652,9 +1743,12 @@ export class AppStore {
         id,
       );
       options.onTransportStarted?.();
-      this.interjections.value = this.interjections.value.map((candidate) =>
-        candidate.id === id ? { ...candidate, state: 'pending' } : candidate,
+      this.setInterjections(
+        this.interjections.value.map((candidate) =>
+          candidate.id === id ? { ...candidate, state: 'pending' } : candidate,
+        ),
       );
+      this.publishSessionChange();
       if (options.preserveComposer) return;
       const draft = readDrafts(this.storage, this.keys.draftMessages).find(
         (candidate) => candidate.sessionId === session.id,
@@ -1683,8 +1777,10 @@ export class AppStore {
             );
         });
     } catch (error) {
-      this.interjections.value = this.interjections.value.map((candidate) =>
-        candidate.id === id ? { ...candidate, state: 'failed' } : candidate,
+      this.setInterjections(
+        this.interjections.value.map((candidate) =>
+          candidate.id === id ? { ...candidate, state: 'failed' } : candidate,
+        ),
       );
       if (options.onTransportFailed) options.onTransportFailed(error);
       else this.toast(error, 'error');
@@ -1693,7 +1789,7 @@ export class AppStore {
   async cancelInterjection(id: string): Promise<void> {
     const entry = this.interjections.value.find((candidate) => candidate.id === id);
     if (!entry) return;
-    this.interjections.value = this.interjections.value.filter((candidate) => candidate.id !== id);
+    this.setInterjections(this.interjections.value.filter((candidate) => candidate.id !== id));
     try {
       await this.endpoints.deleteInterrupt(entry.sessionId, id);
     } catch (error) {
@@ -2463,17 +2559,35 @@ export class AppStore {
     if (!session) return;
     const owner = session.id;
     const scope = normalizeDiffScope(this.diff.value.scope);
+    const epoch = ++this.diffLoadEpoch;
     this.diff.value = { ...this.diff.value, sessionId: owner, scope, loading: true, error: '' };
     try {
       void this.refreshDiffComments(owner);
       const data = await this.endpoints.fileChanges(owner, scope);
-      if (this.activeSessionId.peek() !== owner) return;
-      const existing = new Map(this.diff.value.files.map((file) => [file.path, file]));
+      const state = this.diff.peek();
+      if (
+        epoch !== this.diffLoadEpoch ||
+        this.activeSessionId.peek() !== owner ||
+        state.sessionId !== owner ||
+        normalizeDiffScope(state.scope) !== scope
+      )
+        return;
+      const existing = new Map(state.files.map((file) => [file.path, file]));
+      const refreshContexts = new Map<string, number>();
       const files = sortDiffFiles(
         listFrom(data, 'file_changes', 'files', 'changes')
-          .map((entry) => {
+          .map((entry): DiffFile => {
             const path = String(entry.path || '');
             const previous = existing.get(path);
+            const sequence = Number(entry.seq ?? entry.sequence) || 0;
+            const snapshotSeq = Number(entry.snapshot_seq) || 0;
+            const sameContent = Boolean(
+              previous &&
+              (previous.sequence || 0) === sequence &&
+              (previous.snapshotSeq || 0) === snapshotSeq,
+            );
+            if (previous?.expanded && !sameContent)
+              refreshContexts.set(path, previous.context || 0);
             return {
               path,
               old_path: String(entry.old_path || ''),
@@ -2482,11 +2596,15 @@ export class AppStore {
               deletions: Number(entry.dels ?? entry.deletions) || 0,
               binary: Boolean(entry.binary || entry.is_binary),
               image: Boolean(entry.image || entry.is_image),
-              beforeURL: String(entry.before_url || entry.old_url || previous?.beforeURL || ''),
-              afterURL: String(entry.after_url || entry.new_url || previous?.afterURL || ''),
+              beforeURL: String(
+                entry.before_url || entry.old_url || (sameContent ? previous?.beforeURL : '') || '',
+              ),
+              afterURL: String(
+                entry.after_url || entry.new_url || (sameContent ? previous?.afterURL : '') || '',
+              ),
               lastChangedAt: Number(entry.last_changed_at || entry.updated_at) || 0,
-              sequence: Number(entry.seq ?? entry.sequence) || 0,
-              snapshotSeq: Number(entry.snapshot_seq) || 0,
+              sequence,
+              snapshotSeq,
               truncated: Boolean(entry.truncated),
               provenance: String(entry.provenance || '') as DiffFile['provenance'],
               provenances: Array.isArray(entry.provenances) ? entry.provenances.map(String) : [],
@@ -2495,8 +2613,14 @@ export class AppStore {
               contentAvailable: Boolean(entry.content_available),
               claimCoverage: String(entry.claim_coverage || '') as DiffFile['claimCoverage'],
               expanded: previous?.expanded,
-              lines: previous?.lines,
-              patch: previous?.patch,
+              loading: sameContent ? previous?.loading : Boolean(previous?.expanded),
+              error: sameContent ? previous?.error : '',
+              lines: sameContent ? previous?.lines : undefined,
+              patch: sameContent ? previous?.patch : undefined,
+              context: sameContent ? previous?.context : undefined,
+              oldLineCount: sameContent ? previous?.oldLineCount : undefined,
+              newLineCount: sameContent ? previous?.newLineCount : undefined,
+              lang: sameContent ? previous?.lang : undefined,
             };
           })
           .filter((entry) => entry.path),
@@ -2526,7 +2650,7 @@ export class AppStore {
       }));
       const summary = (data.file_change_summary || {}) as Record<string, unknown>;
       this.diff.value = {
-        ...this.diff.value,
+        ...state,
         files,
         materializations,
         observations,
@@ -2535,8 +2659,18 @@ export class AppStore {
         git: Boolean(data.git),
         loading: false,
       };
+      await Promise.all(
+        files
+          .filter((file) => refreshContexts.has(file.path))
+          .map((file) => this.expandDiff(file, refreshContexts.get(file.path) || 0)),
+      );
     } catch (error) {
-      if (this.activeSessionId.peek() === owner)
+      if (
+        epoch === this.diffLoadEpoch &&
+        this.activeSessionId.peek() === owner &&
+        this.diff.peek().sessionId === owner &&
+        normalizeDiffScope(this.diff.peek().scope) === scope
+      )
         this.diff.value = {
           ...this.diff.value,
           loading: false,
@@ -2547,29 +2681,45 @@ export class AppStore {
   async expandDiff(file: DiffFile, context = 0): Promise<void> {
     const session = this.activeSession.value;
     if (!session) return;
+    const owner = session.id;
+    const scope = normalizeDiffScope(this.diff.value.scope);
+    const isRequestedVersion = (entry: DiffFile): boolean =>
+      entry.path === file.path &&
+      (entry.sequence || 0) === (file.sequence || 0) &&
+      (entry.snapshotSeq || 0) === (file.snapshotSeq || 0);
     if (file.lines && !context) {
       this.diff.value = {
         ...this.diff.value,
         files: this.diff.value.files.map((entry) =>
-          entry.path === file.path ? { ...entry, expanded: !entry.expanded } : entry,
+          isRequestedVersion(entry) ? { ...entry, expanded: !entry.expanded } : entry,
         ),
       };
       return;
     }
+    const requestKey = `${owner}\u0000${scope}\u0000${file.path}`;
+    const requestEpoch = (this.diffExpandEpoch.get(requestKey) || 0) + 1;
+    this.diffExpandEpoch.set(requestKey, requestEpoch);
     this.diff.value = {
       ...this.diff.value,
       files: this.diff.value.files.map((entry) =>
-        entry.path === file.path ? { ...entry, loading: true, error: '' } : entry,
+        isRequestedVersion(entry) ? { ...entry, loading: true, error: '' } : entry,
       ),
     };
     try {
       const data = await this.endpoints.fileDiff(
-        session.id,
+        owner,
         file.path,
-        this.diff.value.scope,
+        scope,
         context,
         file.snapshotSeq || 0,
       );
+      if (
+        this.diffExpandEpoch.get(requestKey) !== requestEpoch ||
+        this.activeSessionId.peek() !== owner ||
+        this.diff.peek().sessionId !== owner ||
+        normalizeDiffScope(this.diff.peek().scope) !== scope
+      )
+        return;
       const lines = Array.isArray(data.hunks)
         ? linesFromHunks(data.hunks)
         : Array.isArray(data.lines)
@@ -2579,28 +2729,16 @@ export class AppStore {
       const status = String(data.kind || file.status || '').toLowerCase();
       const beforeURL =
         image && !['add', 'added', 'create', 'created'].includes(status)
-          ? this.endpoints.fileContentURL(
-              session.id,
-              file.path,
-              this.diff.value.scope,
-              'before',
-              file.snapshotSeq || 0,
-            )
+          ? this.endpoints.fileContentURL(owner, file.path, scope, 'before', file.snapshotSeq || 0)
           : String(data.before_url || file.beforeURL || '');
       const afterURL =
         image && !['delete', 'deleted', 'remove', 'removed'].includes(status)
-          ? this.endpoints.fileContentURL(
-              session.id,
-              file.path,
-              this.diff.value.scope,
-              'after',
-              file.snapshotSeq || 0,
-            )
+          ? this.endpoints.fileContentURL(owner, file.path, scope, 'after', file.snapshotSeq || 0)
           : String(data.after_url || file.afterURL || '');
       this.diff.value = {
         ...this.diff.value,
         files: this.diff.value.files.map((entry) =>
-          entry.path === file.path
+          isRequestedVersion(entry)
             ? {
                 ...entry,
                 status: String(data.kind || entry.status || ''),
@@ -2632,10 +2770,17 @@ export class AppStore {
         ),
       };
     } catch (error) {
+      if (
+        this.diffExpandEpoch.get(requestKey) !== requestEpoch ||
+        this.activeSessionId.peek() !== owner ||
+        this.diff.peek().sessionId !== owner ||
+        normalizeDiffScope(this.diff.peek().scope) !== scope
+      )
+        return;
       this.diff.value = {
         ...this.diff.value,
         files: this.diff.value.files.map((entry) =>
-          entry.path === file.path
+          isRequestedVersion(entry)
             ? {
                 ...entry,
                 loading: false,
@@ -2644,6 +2789,9 @@ export class AppStore {
             : entry,
         ),
       };
+    } finally {
+      if (this.diffExpandEpoch.get(requestKey) === requestEpoch)
+        this.diffExpandEpoch.delete(requestKey);
     }
   }
   private prepareDiffComments(comments: DiffComment[]): {

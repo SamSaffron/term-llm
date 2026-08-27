@@ -3040,6 +3040,186 @@ func TestServeRuntimeRun_PersistsSessionAndMessages(t *testing.T) {
 	}
 }
 
+func TestInterruptMessageSerializesPersistenceWithCancellation(t *testing.T) {
+	rt := &serveRuntime{engine: llm.NewEngine(llm.NewMockProvider("engine"), nil)}
+	persistStarted := make(chan struct{})
+	allowPersist := make(chan struct{})
+	state := &runtimeInterruptState{
+		cancel: func() {},
+		done:   make(chan struct{}),
+		persistPendingInterjection: func(context.Context, llm.QueuedInterjection) error {
+			close(persistStarted)
+			<-allowPersist
+			return nil
+		},
+	}
+	rt.setActiveInterrupt(state)
+	defer rt.clearActiveInterrupt(state)
+
+	interruptDone := make(chan error, 1)
+	go func() {
+		_, _, err := rt.InterruptMessage(
+			context.Background(), llm.UserText("change course"), "change course", "race-1", nil, interruptDeliverySteer,
+		)
+		interruptDone <- err
+	}()
+	<-persistStarted
+	cancelled := make(chan bool, 1)
+	go func() {
+		ok, err := rt.cancelPendingInterjection(context.Background(), "session", "race-1")
+		cancelled <- ok && err == nil
+	}()
+	select {
+	case <-cancelled:
+		t.Fatal("cancellation passed persistence before the interjection was queued")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(allowPersist)
+	if err := <-interruptDone; err != nil {
+		t.Fatalf("InterruptMessage: %v", err)
+	}
+	if ok := <-cancelled; !ok {
+		t.Fatal("serialized cancellation did not remove the queued interjection")
+	}
+	if entries := rt.engine.ListPendingInterjections(); len(entries) != 0 {
+		t.Fatalf("engine pending entries after cancellation = %#v", entries)
+	}
+}
+
+func TestInterruptMessagePersistsPendingUntilDurableCommit(t *testing.T) {
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	const sessionID = "sess-durable-interjection"
+	if err := store.Create(context.Background(), &session.Session{ID: sessionID, Provider: "mock", Model: "mock"}); err != nil {
+		t.Fatal(err)
+	}
+
+	rt := &serveRuntime{engine: llm.NewEngine(llm.NewMockProvider("engine"), nil), store: store}
+	state := &runtimeInterruptState{cancel: func() {}, done: make(chan struct{})}
+	rt.configurePendingInterjectionPersistence(state, sessionID)
+	rt.setActiveInterrupt(state)
+	defer rt.clearActiveInterrupt(state)
+
+	action, _, err := rt.InterruptMessage(
+		context.Background(), llm.UserText("change course"), "change course", "web-pending-1", nil, interruptDeliverySteer,
+	)
+	if err != nil || action != llm.InterruptInterject {
+		t.Fatalf("InterruptMessage action=%q err=%v", action, err)
+	}
+	pendingStore, ok := session.AsPendingInterjectionStore(store)
+	if !ok {
+		t.Fatal("SQLite store does not expose pending interjection persistence")
+	}
+	entries, err := pendingStore.ListPendingInterjections(context.Background(), sessionID)
+	if err != nil || len(entries) != 1 || entries[0].ID != "web-pending-1" || entries[0].Message.ClientMessageID != "web-pending-1" {
+		t.Fatalf("durable pending entries=%#v err=%v", entries, err)
+	}
+
+	srv := &serveServer{store: store}
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sessionID+"/state", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessionState(rr, req, sessionID)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"id":"web-pending-1"`) {
+		t.Fatalf("state status/body=%d %s", rr.Code, rr.Body.String())
+	}
+
+	committed := llm.UserText("change course")
+	committed.ClientMessageID = "web-pending-1"
+	result := rt.appendMessagesDetailed(context.Background(), sessionID, []llm.Message{committed}, 0)
+	if !result.Complete {
+		t.Fatalf("committed interjection persistence=%#v", result)
+	}
+	entries, err = pendingStore.ListPendingInterjections(context.Background(), sessionID)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("pending entries after commit=%#v err=%v", entries, err)
+	}
+
+	if _, _, err := rt.InterruptMessage(
+		context.Background(), llm.UserText("one more"), "one more", "web-abandoned-2", nil, interruptDeliverySteer,
+	); err != nil {
+		t.Fatalf("queue abandoned interjection: %v", err)
+	}
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), time.Second)
+	rt.discardPendingInterjections(cleanupCtx, sessionID)
+	cleanupCancel()
+	entries, err = pendingStore.ListPendingInterjections(context.Background(), sessionID)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("pending entries after run cleanup=%#v err=%v", entries, err)
+	}
+
+	detached := llm.UserText("cancel from another tab")
+	detached.ClientMessageID = "web-detached-3"
+	if err := pendingStore.SavePendingInterjection(context.Background(), session.PendingInterjection{
+		SessionID: sessionID, ID: detached.ClientMessageID, Message: detached, DisplayText: llm.MessageText(detached),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest(http.MethodDelete, "/v1/sessions/"+sessionID+"/interjections/"+detached.ClientMessageID, nil)
+	rr = httptest.NewRecorder()
+	srv.handleSessionInterjectionCancel(rr, req, sessionID, detached.ClientMessageID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("detached cancel status/body=%d %s", rr.Code, rr.Body.String())
+	}
+	entries, err = pendingStore.ListPendingInterjections(context.Background(), sessionID)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("pending entries after detached cancel=%#v err=%v", entries, err)
+	}
+
+	rt.clearActiveInterrupt(state)
+	idle := llm.UserText("cancel from loaded idle runtime")
+	idle.ClientMessageID = "web-idle-4"
+	if err := pendingStore.SavePendingInterjection(context.Background(), session.PendingInterjection{
+		SessionID: sessionID, ID: idle.ClientMessageID, Message: idle, DisplayText: llm.MessageText(idle),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager := newServeSessionManager(time.Minute, 10, nil)
+	defer manager.Close()
+	putTestSession(manager, sessionID, rt)
+	idleServer := &serveServer{store: store, sessionMgr: manager}
+	req = httptest.NewRequest(http.MethodDelete, "/v1/sessions/"+sessionID+"/interjections/"+idle.ClientMessageID, nil)
+	rr = httptest.NewRecorder()
+	idleServer.handleSessionInterjectionCancel(rr, req, sessionID, idle.ClientMessageID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("idle runtime cancel status/body=%d %s", rr.Code, rr.Body.String())
+	}
+
+	filtered := llm.UserText("already committed")
+	filtered.ClientMessageID = "web-filtered-4"
+	if err := pendingStore.SavePendingInterjection(context.Background(), session.PendingInterjection{
+		SessionID: sessionID, ID: filtered.ClientMessageID, Message: filtered, DisplayText: llm.MessageText(filtered),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddMessage(context.Background(), sessionID, session.NewMessage(sessionID, filtered, -1)); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = pendingStore.ListPendingInterjections(context.Background(), sessionID)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("committed client id was still listed as pending: entries=%#v err=%v", entries, err)
+	}
+
+	restored := llm.UserText("restore failed follow-up")
+	restored.ClientMessageID = "web-claimed-5"
+	if err := pendingStore.SavePendingInterjection(context.Background(), session.PendingInterjection{
+		SessionID: sessionID, ID: restored.ClientMessageID, Message: restored, DisplayText: llm.MessageText(restored),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rt.engine.QueueInterjection(llm.QueuedInterjection{ID: restored.ClientMessageID, Message: restored})
+	if claim := rt.engine.ClaimInterjection(restored.ClientMessageID); claim != llm.InterjectionClaimed {
+		t.Fatalf("claim status=%q", claim)
+	}
+	rt.releaseClaimedPendingInterjections(context.Background(), sessionID, []string{restored.ClientMessageID})
+	engineEntries := rt.engine.ListPendingInterjections()
+	if len(engineEntries) != 1 || engineEntries[0].ID != restored.ClientMessageID {
+		t.Fatalf("restored engine interjections=%#v", engineEntries)
+	}
+}
+
 func TestHandleSessionInterrupt_DeduplicatesRetriedImageInterjection(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	mgr := newServeSessionManager(time.Minute, 10, nil)

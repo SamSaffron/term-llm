@@ -1274,6 +1274,29 @@ func (e *Engine) DiscardPendingInterjections() int {
 	return count
 }
 
+// InterjectionIdentityStatus reports engine ownership for a stable ID without
+// mutating the queue. The boolean is false when the engine has never seen it.
+func (e *Engine) InterjectionIdentityStatus(id string) (InterjectionQueueStatus, bool) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "", false
+	}
+	e.callbackMu.Lock()
+	defer e.callbackMu.Unlock()
+	if _, claimed := e.claimedInterjectionIDs[id]; claimed {
+		return InterjectionQueueFollowUpOwned, true
+	}
+	if _, committed := e.committedInterjectionIDs[id]; committed {
+		return InterjectionQueueCommitted, true
+	}
+	for i := range e.pendingInterjections {
+		if e.pendingInterjections[i].ID == id {
+			return InterjectionQueueAlreadyQueued, true
+		}
+	}
+	return "", false
+}
+
 // ListPendingInterjections returns a snapshot of queued, cancellable interjections.
 func (e *Engine) ListPendingInterjections() []QueuedInterjection {
 	e.callbackMu.Lock()

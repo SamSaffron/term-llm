@@ -21,16 +21,15 @@ var errResponseClientMessageAlreadyCommitted = errors.New("response client messa
 const maxResponseClientMessageIDLength = 200
 
 type followUpClaimLease struct {
-	once   sync.Once
-	engine *llm.Engine
-	ids    []string
+	once    sync.Once
+	release func()
 }
 
 func (l *followUpClaimLease) Release() {
-	if l == nil || l.engine == nil || len(l.ids) == 0 {
+	if l == nil || l.release == nil {
 		return
 	}
-	l.once.Do(func() { l.engine.ReleaseClaimedInterjections(l.ids) })
+	l.once.Do(l.release)
 }
 
 type resolvedResponsesRequest struct {
@@ -514,7 +513,7 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 			claims[i] = llm.InterjectionClaimNotFound
 		}
 		if rt.engine != nil {
-			claims = rt.engine.ClaimInterjections(clientMessageIDs)
+			claims = rt.claimInterjections(clientMessageIDs)
 		}
 		claimedIDs := make([]string, 0, len(clientMessageIDs))
 		hasNewClaim := false
@@ -539,7 +538,12 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 			}
 		}
 		if len(claimedIDs) > 0 {
-			followUpClaims = &followUpClaimLease{engine: rt.engine, ids: claimedIDs}
+			claimed := append([]string(nil), claimedIDs...)
+			followUpClaims = &followUpClaimLease{release: func() {
+				releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer releaseCancel()
+				rt.releaseClaimedPendingInterjections(releaseCtx, sessionID, claimed)
+			}}
 		}
 		return nil
 	}

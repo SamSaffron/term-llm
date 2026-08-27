@@ -1346,8 +1346,10 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 		}
 		if msg.InterruptState != "" {
 			entry["interruptState"] = msg.InterruptState
+			entry["interrupt_state"] = msg.InterruptState
 		}
 		if msg.ClientMessageID != "" {
+			entry["clientMessageId"] = msg.ClientMessageID
 			entry["client_message_id"] = msg.ClientMessageID
 		}
 		if msg.Expanded {
@@ -2593,7 +2595,9 @@ func (s *serveServer) discardPendingInterjectionsForResponseRun(run *responseRun
 	if !ok || rt == nil || rt.engine == nil {
 		return
 	}
-	rt.engine.DiscardPendingInterjections()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	rt.discardPendingInterjections(ctx, sessionID)
 }
 
 func (s *serveServer) handleResponseByID(w http.ResponseWriter, r *http.Request) {

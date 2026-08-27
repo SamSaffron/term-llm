@@ -1184,13 +1184,15 @@ func (s *Store) latestRunWindow(ctx context.Context, sessionID string, limit int
 			WHERE session_id=? AND seq<=? AND COALESCE(run_id,'')<>''
 			GROUP BY run_id ORDER BY MAX(seq) DESC LIMIT ?`, sessionID, snapshotSeq, limit)
 	} else {
+		// The active run is the current turn. Include it so clients can refresh
+		// file changes while tools are still running rather than one turn later.
 		rows, err = s.db.QueryContext(ctx, `
 			SELECT run_id FROM filetrack_runs
-			WHERE session_id = ? AND completed_at IS NOT NULL
+			WHERE session_id = ?
 			ORDER BY ordinal DESC LIMIT ?`, sessionID, limit)
 	}
 	if err != nil {
-		return recentRunWindow{}, fmt.Errorf("query recent completed file tracking runs: %w", err)
+		return recentRunWindow{}, fmt.Errorf("query recent file tracking runs: %w", err)
 	}
 	defer rows.Close()
 
@@ -1410,8 +1412,8 @@ func (s *Store) ListSessionChanges(ctx context.Context, sessionID string) ([]Cum
 	return s.listChangesFromSpans(ctx, spans, err)
 }
 
-// ListRecentRunChanges returns the cumulative changes across the latest runs
-// that recorded file changes. Rows without run identities are excluded.
+// ListRecentRunChanges returns the cumulative changes across the latest file
+// tracking runs, including an in-progress run. Rows without run identities are excluded.
 func (s *Store) ListRecentRunChanges(ctx context.Context, sessionID string, runs int) ([]CumulativeChange, error) {
 	window, err := s.latestRunWindow(ctx, sessionID, runs, 0)
 	if err != nil || len(window.runIDs) == 0 {

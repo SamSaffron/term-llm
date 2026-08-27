@@ -168,6 +168,18 @@ CREATE TABLE IF NOT EXISTS session_workspace_grants (
 CREATE INDEX IF NOT EXISTS idx_session_workspace_grants_session
     ON session_workspace_grants(session_id, created_at, id);
 
+CREATE TABLE IF NOT EXISTS session_pending_interjections (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    id TEXT NOT NULL,
+    message TEXT NOT NULL,
+    display_text TEXT NOT NULL DEFAULT '',
+    attachment_summary TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (session_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_session_pending_interjections_order
+    ON session_pending_interjections(session_id, created_at, id);
+
 CREATE TABLE IF NOT EXISTS session_redo (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     stack_pos INTEGER NOT NULL,
@@ -399,7 +411,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // Increment when adding new migrations.
 const (
 	projectSchemaVersion = 47
-	schemaVersion        = 49
+	schemaVersion        = 50
 )
 
 // migration represents a schema migration.
@@ -1354,6 +1366,24 @@ var migrations = []migration{
 			return normalizeSessionMarker(db, 48)
 		},
 	},
+	{
+		version:     50,
+		description: "persist pending session interjections",
+		up: func(db schemaExecutor) error {
+			_, err := db.Exec(`CREATE TABLE IF NOT EXISTS session_pending_interjections (
+				session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+				id TEXT NOT NULL,
+				message TEXT NOT NULL,
+				display_text TEXT NOT NULL DEFAULT '',
+				attachment_summary TEXT NOT NULL DEFAULT '',
+				created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				PRIMARY KEY (session_id, id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_session_pending_interjections_order
+				ON session_pending_interjections(session_id, created_at, id);`)
+			return err
+		},
+	},
 }
 
 // Keep in sync with llm.IsInternalCompactionSummaryText. SQLite migrations and
@@ -2303,6 +2333,85 @@ func (s *SQLiteStore) DeletePlanSnapshot(ctx context.Context, sessionID string) 
 		}
 		return nil
 	})
+}
+
+func (s *SQLiteStore) SavePendingInterjection(ctx context.Context, entry PendingInterjection) error {
+	entry.SessionID = strings.TrimSpace(entry.SessionID)
+	entry.ID = strings.TrimSpace(entry.ID)
+	if entry.SessionID == "" || entry.ID == "" {
+		return fmt.Errorf("save pending interjection: session id and interjection id are required")
+	}
+	if entry.CreatedAt.IsZero() {
+		entry.CreatedAt = time.Now()
+	}
+	messageJSON, err := json.Marshal(entry.Message)
+	if err != nil {
+		return fmt.Errorf("save pending interjection: encode message: %w", err)
+	}
+	// A stable ID is immutable. In-process retries are fingerprint-checked by the
+	// runtime; keeping the first durable payload also prevents a retry from
+	// rewriting an already accepted intent.
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO session_pending_interjections
+			(session_id, id, message, display_text, attachment_summary, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(session_id, id) DO NOTHING`,
+		entry.SessionID, entry.ID, string(messageJSON), entry.DisplayText, entry.AttachmentSummary, entry.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("save pending interjection: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) DeletePendingInterjection(ctx context.Context, sessionID, id string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	id = strings.TrimSpace(id)
+	if sessionID == "" || id == "" {
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM session_pending_interjections WHERE session_id = ? AND id = ?`,
+		sessionID, id); err != nil {
+		return fmt.Errorf("delete pending interjection: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) ListPendingInterjections(ctx context.Context, sessionID string) ([]PendingInterjection, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, nil
+	}
+	rows, err := s.readDB.QueryContext(ctx, `
+		SELECT pending.id, pending.message, pending.display_text, pending.attachment_summary, pending.created_at
+		FROM session_pending_interjections pending
+		WHERE pending.session_id = ?
+		  AND NOT EXISTS (
+			SELECT 1 FROM messages committed
+			WHERE committed.session_id = pending.session_id
+			  AND committed.client_message_id = pending.id
+		  )
+		ORDER BY pending.rowid`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("list pending interjections: %w", err)
+	}
+	defer rows.Close()
+	var entries []PendingInterjection
+	for rows.Next() {
+		entry := PendingInterjection{SessionID: sessionID}
+		var messageJSON string
+		if err := rows.Scan(&entry.ID, &messageJSON, &entry.DisplayText, &entry.AttachmentSummary, &entry.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan pending interjection: %w", err)
+		}
+		if err := json.Unmarshal([]byte(messageJSON), &entry.Message); err != nil {
+			return nil, fmt.Errorf("decode pending interjection %q: %w", entry.ID, err)
+		}
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pending interjections: %w", err)
+	}
+	return entries, nil
 }
 
 // SaveProviderState stores opaque provider-owned resume state for a session.

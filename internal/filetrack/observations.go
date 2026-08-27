@@ -298,9 +298,9 @@ func (s *Store) RecordRunStart(ctx context.Context, run RunRecord) error {
 		return fmt.Errorf("begin file tracking run start: %w", err)
 	}
 	defer tx.Rollback()
-	// A newly started run closes any abandoned predecessor. This prevents a
-	// caller that failed to drain/Close a stream (or a prior process crash) from
-	// leaving attributed rows permanently outside completed-run windows.
+	// A newly started run closes any abandoned predecessor. This keeps the run
+	// lifecycle accurate after a caller fails to drain/Close a stream or after a
+	// process crash.
 	if _, err := tx.ExecContext(ctx, `UPDATE filetrack_runs SET completed_at=? WHERE session_id=? AND completed_at IS NULL AND run_id<>?`, run.StartedAt, run.SessionID, run.RunID); err != nil {
 		return fmt.Errorf("close abandoned file tracking run: %w", err)
 	}

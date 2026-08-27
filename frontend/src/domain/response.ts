@@ -458,6 +458,7 @@ export function reduceResponse(
             clientMessageId,
             created: Date.now(),
             responseId,
+            interruptState: 'interject',
           },
         ],
       };

@@ -1593,8 +1593,14 @@ func TestResponseRunInterjectionSplitsRecoveryMessages(t *testing.T) {
 	if got := messages[1]["client_message_id"]; got != "client-check-x" {
 		t.Fatalf("messages[1].client_message_id = %v, want client-check-x", got)
 	}
+	if got := messages[1]["clientMessageId"]; got != "client-check-x" {
+		t.Fatalf("messages[1].clientMessageId = %v, want client-check-x", got)
+	}
 	if got := messages[1]["interruptState"]; got != "interject" {
 		t.Fatalf("messages[1].interruptState = %v, want interject", got)
+	}
+	if got := messages[1]["interrupt_state"]; got != "interject" {
+		t.Fatalf("messages[1].interrupt_state = %v, want interject", got)
 	}
 	interjectionAttachments, ok := messages[1]["attachments"].([]map[string]any)
 	if !ok || len(interjectionAttachments) != 1 || interjectionAttachments[0]["width"] != 200 || interjectionAttachments[0]["height"] != 400 {

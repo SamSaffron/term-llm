@@ -2441,16 +2441,43 @@ func (s *serveServer) handleSessionInterjectionCancel(w http.ResponseWriter, r *
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "interjection id is required")
 		return
 	}
-	if s.sessionMgr == nil {
-		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
-		return
+	if s.sessionMgr != nil {
+		if rt, ok := s.sessionMgr.Get(sessionID); ok && rt != nil && rt.engine != nil {
+			cancelled, err := rt.cancelPendingInterjection(r.Context(), sessionID, interjectionID)
+			if err != nil {
+				writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to cancel pending interjection")
+				return
+			}
+			if !cancelled {
+				writeOpenAIError(w, http.StatusConflict, "conflict_error", "interjection is not queued or has already been committed")
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"cancelled": true, "interjection_id": interjectionID})
+			return
+		}
 	}
-	rt, ok := s.sessionMgr.Get(sessionID)
-	if !ok || rt == nil || rt.engine == nil {
-		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
-		return
+
+	cancelled := false
+	if pendingStore, ok := session.AsPendingInterjectionStore(s.store); ok {
+		entries, err := pendingStore.ListPendingInterjections(r.Context(), sessionID)
+		if err != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to read pending interjection")
+			return
+		}
+		for _, entry := range entries {
+			if entry.ID == interjectionID {
+				cancelled = true
+				break
+			}
+		}
+		if cancelled {
+			if err := pendingStore.DeletePendingInterjection(r.Context(), sessionID, interjectionID); err != nil {
+				writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to cancel pending interjection")
+				return
+			}
+		}
 	}
-	if !rt.engine.CancelInterjection(interjectionID) {
+	if !cancelled {
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", "interjection is not queued or has already been committed")
 		return
 	}
