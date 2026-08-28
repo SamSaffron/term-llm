@@ -15,6 +15,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/exitcode"
+	"github.com/samsaffron/term-llm/internal/herdr"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -213,9 +214,15 @@ func runChat(cmd *cobra.Command, args []string) error {
 	relaunchHandoff := chatRelaunchHandoff{}
 	mainRuns := chat.NewMainRunManager(ctx)
 	defer mainRuns.Close(5 * time.Second)
+	herdrReporter := herdr.NewReporterFromEnv()
+	defer herdrReporter.Close()
+	var lifecycleReporter chat.LifecycleReporter
+	if herdrReporter != nil {
+		lifecycleReporter = herdrReporter
+	}
 	chatHandoverApprovalMode = nil
 	for {
-		nextResumeID, nextAutoSend, err := runChatOnce(ctx, cmd, initialText, cliAgent, resumeRequested, resumeID, handoverAutoSend, &relaunchHandoff, mainRuns)
+		nextResumeID, nextAutoSend, err := runChatOnce(ctx, cmd, initialText, cliAgent, resumeRequested, resumeID, handoverAutoSend, &relaunchHandoff, mainRuns, lifecycleReporter)
 		if err != nil {
 			return err
 		}
@@ -1017,7 +1024,7 @@ func wireChatSessionUI(ctx context.Context, rt *chatSessionRuntime, p *tea.Progr
 	}
 }
 
-func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent string, resumeRequested bool, resumeID, handoverAutoSend string, relaunchHandoff *chatRelaunchHandoff, mainRuns *chat.MainRunManager) (string, string, error) {
+func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent string, resumeRequested bool, resumeID, handoverAutoSend string, relaunchHandoff *chatRelaunchHandoff, mainRuns *chat.MainRunManager, lifecycleReporter chat.LifecycleReporter) (string, string, error) {
 	rt, err := buildChatSessionRuntime(ctx, cmd, chatSessionLaunch{
 		initialText:      initialText,
 		cliAgent:         cliAgent,
@@ -1029,6 +1036,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	if err != nil {
 		return "", "", err
 	}
+	rt.model.SetLifecycleReporter(lifecycleReporter)
 
 	// In-process session switches replace the active runtime while the program
 	// keeps running, so all teardown paths resolve the runtime late.
@@ -1127,6 +1135,12 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		activeRT = next
 		activeUnwire = nil
 		runtimeMu.Unlock()
+
+		// Only the visible session may author the containing pane's lifecycle.
+		// Background runs from the previous model retain their own UI callbacks,
+		// but must not overwrite the foreground model's Herdr state.
+		prev.model.SetLifecycleReporter(nil)
+		next.model.SetLifecycleReporter(lifecycleReporter)
 
 		// Release process-global UI hooks before installing the replacements.
 		// Runtime-owned callbacks stay bound to prev so its adopted background
