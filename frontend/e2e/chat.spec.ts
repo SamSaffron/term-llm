@@ -285,9 +285,10 @@ test('mobile viewport opens a styled sidebar and returns to a usable composer', 
   test.skip(testInfo.project.name !== 'mobile', 'mobile-only interaction');
   await open(page);
   const diffToggle = page.getByRole('button', { name: 'Toggle file changes' });
+  const mobileMenu = page.getByRole('button', { name: 'Open sidebar' });
   await expect(diffToggle.locator('.diff-toggle-file-icon')).toBeVisible();
   await expect(diffToggle.locator('.diff-toggle-badge')).toHaveCSS('position', 'static');
-  await page.getByRole('button', { name: 'Open sidebar' }).click();
+  await mobileMenu.click();
   const sidebar = page.locator('#sidebar');
   await expect(sidebar).toHaveClass(/open/);
   await expect(sidebar).toHaveCSS('visibility', 'visible');
@@ -300,10 +301,11 @@ test('mobile viewport opens a styled sidebar and returns to a usable composer', 
   await expect(sidebar).toHaveCSS('outline-style', 'none');
   await page.mouse.click(400, 100);
   await expect(sidebar).not.toHaveClass(/open/);
+  await expect(mobileMenu).not.toBeFocused();
   expect(await page.locator('#appMain').evaluate((element) => (element as HTMLElement).inert)).toBe(
     false,
   );
-  await page.getByRole('button', { name: 'Open sidebar' }).click();
+  await mobileMenu.click();
   await expect(sidebar).toBeFocused();
   await page.locator('#newChatBtn').click();
   await expect(sidebar).not.toHaveClass(/open/);
@@ -322,10 +324,11 @@ test('mobile floating surfaces dismiss from their outside area and restore inter
   await open(page);
 
   const runtimeTrigger = page.getByRole('button', { name: 'Runtime settings' });
+  const runtimeClose = page.getByRole('button', { name: 'Close runtime settings' });
   await runtimeTrigger.click();
   const runtime = page.getByRole('dialog', { name: 'Runtime settings' });
   await expect(runtime).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Close runtime settings' })).toBeFocused();
+  await expect(runtimeClose).toBeFocused();
   await expect(page.getByRole('combobox', { name: 'Provider' })).not.toBeFocused();
   await expect(runtime).toHaveCSS('border-radius', '18px');
   await expect(page.getByRole('combobox', { name: 'Runtime model' })).toHaveCSS(
@@ -334,11 +337,18 @@ test('mobile floating surfaces dismiss from their outside area and restore inter
   );
   await page.mouse.click(4, 180);
   await expect(runtime).toBeHidden();
-  await expect(runtimeTrigger).toBeFocused();
+  await expect(runtimeTrigger).not.toBeFocused();
+  await expect(runtimeTrigger).toHaveCSS('box-shadow', 'none');
 
-  // Keyboard dismissal restores a rounded focus ring without WebKit's outline corner artifacts.
+  await runtimeTrigger.click();
+  await expect(runtimeClose).toBeFocused();
+  await runtimeClose.click();
+  await expect(runtime).toBeHidden();
+  await expect(runtimeTrigger).not.toBeFocused();
+  await expect(runtimeTrigger).toHaveCSS('box-shadow', 'none');
+
+  // Keyboard dismissal still restores focus, using a rounded ring without WebKit artifacts.
   await runtimeTrigger.press('Enter');
-  const runtimeClose = page.getByRole('button', { name: 'Close runtime settings' });
   await expect(runtimeClose).toBeFocused();
   await runtimeClose.press('Enter');
   await expect(runtime).toBeHidden();
@@ -354,6 +364,7 @@ test('mobile floating surfaces dismiss from their outside area and restore inter
   );
   await page.mouse.click(4, 180);
   await expect(changes).toBeHidden();
+  await expect(page.getByRole('button', { name: 'Toggle file changes' })).not.toBeFocused();
   expect(await page.locator('#appMain').evaluate((element) => (element as HTMLElement).inert)).toBe(
     false,
   );

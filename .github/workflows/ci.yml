@@ -55,6 +55,13 @@ jobs:
             internal/terminal/runtime/go.sum
             internal/terminal/renderer/go.sum
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
       - name: Check gofmt
         run: |
           files=$(gofmt -l .)
@@ -65,7 +72,7 @@ jobs:
           fi
 
       - name: Build
-        run: go build ./...
+        run: make build
 
       - name: Test
         run: go test ./...
@@ -105,6 +112,18 @@ jobs:
             internal/terminal/runtime/go.sum
             internal/terminal/renderer/go.sum
 
+      - name: Set up Node.js
+        if: needs.changes.outputs.backend == 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend assets
+        if: needs.changes.outputs.backend == 'true'
+        run: make frontend
+
       - name: Race-test Web UI lifecycle owners
         if: needs.changes.outputs.backend == 'true'
         run: go test -race ./internal/webrtc ./internal/session ./cmd
@@ -133,6 +152,9 @@ jobs:
           node-version: '24'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend assets
+        run: make frontend
 
       - name: Install Playwright Chromium
         timeout-minutes: 10

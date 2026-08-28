@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import {
   compactModelLabel,
@@ -180,6 +180,34 @@ function RuntimePicker() {
 
 export function Header() {
   const store = useStore();
+  const header = useRef<HTMLElement>(null);
+  // Keep focus restoration for keyboard navigation, but do not leave any header action
+  // focused after a pointer/touch interaction closes its surface.
+  useEffect(() => {
+    let blurFrame = 0;
+    const blurFocusedAction = () => {
+      cancelAnimationFrame(blurFrame);
+      blurFrame = requestAnimationFrame(() => {
+        const active = document.activeElement;
+        if (
+          active instanceof HTMLButtonElement &&
+          header.current?.contains(active) &&
+          active.matches('.header-action, .mobile-menu')
+        )
+          active.blur();
+      });
+    };
+    const blurAfterPointerClick = (event: MouseEvent) => {
+      if (event.detail > 0) blurFocusedAction();
+    };
+    addEventListener('pointerup', blurFocusedAction, true);
+    addEventListener('click', blurAfterPointerClick, true);
+    return () => {
+      cancelAnimationFrame(blurFrame);
+      removeEventListener('pointerup', blurFocusedAction, true);
+      removeEventListener('click', blurAfterPointerClick, true);
+    };
+  }, []);
   const session = store.activeSession.value;
   const tokenCount = Number(session?.usage?.total_tokens || 0);
   const loadedDiff =
@@ -210,7 +238,7 @@ export function Header() {
     ? `All ${currentPlanSummary.total} steps complete`
     : `Step ${currentPlanSummary.position} of ${currentPlanSummary.total}, ${currentPlanSummary.completed} of ${currentPlanSummary.total} complete`;
   return (
-    <header class="main-header" tabIndex={-1}>
+    <header ref={header} class="main-header" tabIndex={-1}>
       <div class="header-title-row">
         <div class="header-left">
           <button
