@@ -35,24 +35,13 @@ if [ "$BEFORE" = "$COMMIT" ]; then
 else
     log "Updated $BEFORE -> $COMMIT"
 fi
-VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "dev")
-BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+log "Building with make"
 
-log "Building version=$VERSION commit=$COMMIT date=$BUILD_DATE"
-
-make frontend
-
-go build \
-    -ldflags "-s -w \
-        -X github.com/samsaffron/term-llm/cmd.Version=${VERSION} \
-        -X github.com/samsaffron/term-llm/cmd.Commit=${COMMIT} \
-        -X github.com/samsaffron/term-llm/cmd.Date=${BUILD_DATE}" \
-    -o /tmp/term-llm-new \
-    ./main.go
+make build
 
 log "Installing binary to $BINARY_DEST..."
-sudo install -m 755 /tmp/term-llm-new "$BINARY_DEST"
-rm -f /tmp/term-llm-new
+sudo install -m 755 "$SRC_DIR/term-llm" "$BINARY_DEST"
+rm -f "$SRC_DIR/term-llm"
 
 log "Done! Installed:"
 "$BINARY_DEST" version

@@ -42,7 +42,7 @@ make build
 ./term-llm version
 ```
 
-`make build` installs the locked frontend dependencies when needed, generates the embedded web UI, and then builds the Go binary. The generated frontend bundles are intentionally not checked into Git, so plain `go build` from a fresh checkout will fail until `make frontend` has run.
+`make build` installs the locked frontend dependencies when needed, generates the embedded web UI, and then builds the Go binary with the current version, commit, and UTC build time embedded. The generated frontend bundles are intentionally not checked into Git, so plain `go build` from a fresh checkout will fail until `make frontend` has run.
 
 `go install github.com/samsaffron/term-llm@latest` cannot build this repository: in addition to the generated frontend prerequisite, the application intentionally uses local `replace` directives for the owned Bubble Tea, Ultraviolet, and reflow modules. Use the installer/release archive or `make build` from a complete checkout.
 
