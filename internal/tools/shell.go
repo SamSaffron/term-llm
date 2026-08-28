@@ -420,6 +420,7 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 	if prepErr != nil {
 		return errorOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "command setup error: %v", prepErr))), nil
 	}
+	cleanup = sync.OnceFunc(cleanup)
 	defer cleanup()
 
 	stdout := newLimitedBuffer(t.limits.MaxBytes)
@@ -435,6 +436,9 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 
 	// Run command
 	err := cmd.Run()
+	// Stop descendants before reading the filesystem so tracking captures the
+	// state the shell invocation actually leaves behind.
+	cleanup()
 
 	// Diff against the snapshot even on timeout or failure — partial writes
 	// are real changes.
