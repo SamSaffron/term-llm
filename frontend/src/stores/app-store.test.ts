@@ -228,6 +228,25 @@ describe('AppStore compatibility behavior', () => {
     expect(store.activeProjectId.value).toBe('');
   });
 
+  it('clears session-only goal and changes panel state for a new chat', () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.goal.value = { objective: 'Finish the current session', status: 'active' };
+    store.diff.value = {
+      ...store.diff.value,
+      open: true,
+      maximized: true,
+      sessionId: 's1',
+    };
+
+    store.newChat();
+
+    expect(store.goal.value).toBeNull();
+    expect(store.diff.value).toMatchObject({ open: false, maximized: false });
+  });
+
   it('clears assignment state before opening add project', () => {
     const store = new AppStore(config);
     store.projectTarget.value = session();

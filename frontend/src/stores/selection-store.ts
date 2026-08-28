@@ -63,6 +63,7 @@ export class SelectionStore {
       this.plans.current.value = null;
       this.plans.openState.value = false;
       this.plans.seen.value = null;
+      this.goals.state.value = null;
       this.interactions.askUser.value = null;
       this.interactions.approval.value = null;
       this.branches.tree.value = null;
@@ -128,6 +129,12 @@ export class SelectionStore {
       this.plans.current.value = null;
       this.plans.openState.value = false;
       this.plans.seen.value = null;
+      this.goals.state.value = null;
+      this.review.diff.value = {
+        ...this.review.diff.peek(),
+        open: false,
+        maximized: false,
+      };
       this.interactions.askUser.value = null;
       this.interactions.approval.value = null;
       this.skillStore.skills.value = [];
