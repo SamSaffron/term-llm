@@ -228,6 +228,16 @@ describe('AppStore compatibility behavior', () => {
     expect(store.activeProjectId.value).toBe('');
   });
 
+  it('clears assignment state before opening add project', () => {
+    const store = new AppStore(config);
+    store.projectTarget.value = session();
+
+    store.openAddProject();
+
+    expect(store.projectTarget.value).toBeNull();
+    expect(store.modal.value).toBe('project');
+  });
+
   it('keeps plan visibility session-safe and mutually exclusive with changes', () => {
     const store = new AppStore(config);
     store.currentPlan.value = {

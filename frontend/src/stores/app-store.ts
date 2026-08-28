@@ -3110,6 +3110,10 @@ export class AppStore {
     this.projectTarget.value = session;
     this.modal.value = 'project';
   }
+  openAddProject(): void {
+    this.projectTarget.value = null;
+    this.modal.value = 'project';
+  }
   async assignProject(projectId: string): Promise<Record<string, unknown> | null> {
     const session = this.projectTarget.value;
     if (!session) return null;

@@ -1071,7 +1071,7 @@ function ProjectPicker() {
   };
   const complete = async (id: string) => {
     await store.refreshSidebar();
-    await store.startProjectChat(id);
+    store.newChat(true, id);
     store.modal.value = '';
   };
   const submit = async () => {
@@ -1109,37 +1109,9 @@ function ProjectPicker() {
   const breadcrumbs = Array.isArray(listing?.breadcrumbs)
     ? (listing.breadcrumbs as Array<Record<string, unknown>>)
     : [];
-  const pickerProjects = store.projects.value.filter(
-    (project) => !project.archived && project.available !== false,
-  );
   return (
     <Overlay title="Add project" wide>
       <section class="project-modal-fields">
-        {pickerProjects.length > 0 && (
-          <div class="project-field">
-            <div class="project-field-label-row">
-              <span class="project-field-label">Existing projects</span>
-            </div>
-            <div class="project-choice-list">
-              {pickerProjects.map((project) => (
-                <button
-                  type="button"
-                  class="project-choice"
-                  key={project.id}
-                  onClick={() => void store.startProjectChat(project.id)}
-                >
-                  <span class="project-choice-content">
-                    <span class="project-choice-name-row">
-                      <strong class="project-choice-name">{project.name}</strong>
-                      {project.git && <span class="project-browser-badge">Git</span>}
-                    </span>
-                    <code class="project-choice-path">{project.path}</code>
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
         <div class="project-field">
           <div class="project-field-label-row">
             <label class="project-field-label" for="projectPathInput">
@@ -1153,6 +1125,7 @@ function ProjectPicker() {
               aria-label="Project path"
               placeholder="/path/to/project"
               value={path}
+              autoFocus
               autoCapitalize="none"
               autoCorrect="off"
               spellcheck={false}

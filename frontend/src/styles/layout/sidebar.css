@@ -135,6 +135,18 @@
   flex-shrink: 0;
 }
 
+.sidebar-actions .session-group {
+  margin-bottom: 0;
+}
+
+.sidebar-actions .session-group-toggle {
+  padding: 0.5rem 0.2rem 0.35rem;
+}
+
+.sidebar-actions .collapsible-session-group-status {
+  right: 0.2rem;
+}
+
 .new-chat-btn,
 .widgets-sidebar-btn,
 .back-to-hub-link {
@@ -188,7 +200,7 @@
   display: flex;
   flex-direction: column;
   gap: 0.2rem;
-  margin: 0.15rem 0 0.1rem;
+  margin: 0 0 0.1rem;
   padding: 0;
 }
 

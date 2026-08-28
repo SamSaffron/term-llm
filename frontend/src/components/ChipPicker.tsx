@@ -1,4 +1,4 @@
-import type { ComponentChildren } from 'preact';
+import type { ComponentChildren, JSX } from 'preact';
 import { useId, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { observePopoverPosition, positionPopover } from '../platform/browser';
 
@@ -8,10 +8,17 @@ export interface ChipPickerOption {
   meta?: string;
 }
 
+export interface ChipPickerAction {
+  label: string;
+  onSelect: () => void;
+  icon?: ComponentChildren;
+}
+
 interface ChipPickerProps {
   ariaLabel: string;
   value: string;
   options: ChipPickerOption[];
+  actions?: ChipPickerAction[];
   onChange: (value: string) => void;
   triggerClass: string;
   popoverClass?: string;
@@ -24,6 +31,7 @@ export function ChipPicker({
   ariaLabel,
   value,
   options,
+  actions = [],
   onChange,
   triggerClass,
   popoverClass = '',
@@ -55,9 +63,23 @@ export function ChipPicker({
     close(true);
     if (next !== value) onChange(next);
   };
-  const focusOption = (index: number) => {
-    const items = popover.current?.querySelectorAll<HTMLButtonElement>('.chip-popover-item');
-    if (!items?.length) return;
+  const runAction = (action: ChipPickerAction) => {
+    close(true);
+    action.onSelect();
+  };
+  const focusOption = (index: number, fallbackToAction = false) => {
+    let items = [
+      ...(popover.current?.querySelectorAll<HTMLButtonElement>(
+        '.chip-popover-options .chip-popover-item',
+      ) || []),
+    ];
+    if (!items.length && fallbackToAction)
+      items = [
+        ...(popover.current?.querySelectorAll<HTMLButtonElement>(
+          '.chip-popover-actions .chip-popover-item',
+        ) || []),
+      ];
+    if (!items.length) return;
     items[(index + items.length) % items.length].focus();
   };
   const moveFrom = (current: HTMLButtonElement, direction: number) => {
@@ -67,6 +89,21 @@ export function ChipPicker({
     const index = items.indexOf(current);
     if (index >= 0 && items.length)
       items[(index + direction + items.length) % items.length].focus();
+  };
+  const handleItemKeys = (event: JSX.TargetedKeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      moveFrom(event.currentTarget, 1);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      moveFrom(event.currentTarget, -1);
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      focusOption(0);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      focusOption(-1);
+    }
   };
 
   useLayoutEffect(() => {
@@ -106,7 +143,9 @@ export function ChipPicker({
         <dialog
           ref={popover}
           id={popoverID}
-          class={`chip-popover ${popoverClass}`.trim()}
+          class={['chip-popover', actions.length ? 'chip-popover-with-actions' : '', popoverClass]
+            .filter(Boolean)
+            .join(' ')}
           aria-label={ariaLabel}
           onCancel={(event) => {
             event.preventDefault();
@@ -134,10 +173,10 @@ export function ChipPicker({
               onKeyDown={(event) => {
                 if (event.key === 'ArrowDown') {
                   event.preventDefault();
-                  focusOption(0);
+                  focusOption(0, true);
                 } else if (event.key === 'ArrowUp') {
                   event.preventDefault();
-                  focusOption(-1);
+                  focusOption(-1, true);
                 }
               }}
             />
@@ -152,21 +191,7 @@ export function ChipPicker({
                 aria-selected={option.value === value}
                 data-value={option.value}
                 onClick={() => choose(option.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'ArrowDown') {
-                    event.preventDefault();
-                    moveFrom(event.currentTarget, 1);
-                  } else if (event.key === 'ArrowUp') {
-                    event.preventDefault();
-                    moveFrom(event.currentTarget, -1);
-                  } else if (event.key === 'Home') {
-                    event.preventDefault();
-                    focusOption(0);
-                  } else if (event.key === 'End') {
-                    event.preventDefault();
-                    focusOption(-1);
-                  }
-                }}
+                onKeyDown={handleItemKeys}
               >
                 <span class="chip-popover-item-label">{option.label}</span>
                 {option.meta && <span class="chip-popover-item-meta">{option.meta}</span>}
@@ -174,6 +199,24 @@ export function ChipPicker({
             ))}
             {!visibleOptions.length && <div class="chip-popover-empty">No matching options</div>}
           </div>
+          {actions.length > 0 && (
+            <div class="chip-popover-actions" role="group" aria-label={`${ariaLabel} actions`}>
+              {actions.map((action) => (
+                <button
+                  type="button"
+                  key={action.label}
+                  class="chip-popover-item chip-popover-item-action"
+                  onClick={() => runAction(action)}
+                  onKeyDown={handleItemKeys}
+                >
+                  <span class="chip-popover-item-action-icon" aria-hidden="true">
+                    {action.icon}
+                  </span>
+                  <span class="chip-popover-item-label">{action.label}</span>
+                </button>
+              ))}
+            </div>
+          )}
         </dialog>
       )}
     </>

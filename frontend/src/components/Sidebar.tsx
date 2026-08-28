@@ -1,3 +1,4 @@
+import type { ComponentChildren } from 'preact';
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import type { Project, Session } from '../domain/types';
@@ -311,14 +312,17 @@ function SessionDateGroups({
   );
 }
 
-function NoProjectGroup({ sessions }: { sessions: Session[] }) {
+const SIDEBAR_EXPANSION_KEYS = {
+  noProject: '__no_project__',
+  hubAgents: '__hub_agents__',
+} as const;
+
+function useSidebarExpansion(key: string): [boolean, () => void] {
   const store = useStore();
-  const expansionKey = '__no_project__';
   const [open, setOpen] = useState(
     () =>
-      readJSON<Record<string, boolean>>(store.storage, store.keys.projectExpansion, {})[
-        expansionKey
-      ] !== false,
+      readJSON<Record<string, boolean>>(store.storage, store.keys.projectExpansion, {})[key] !==
+      false,
   );
   const toggle = () => {
     const value = !open;
@@ -328,28 +332,50 @@ function NoProjectGroup({ sessions }: { sessions: Session[] }) {
       store.keys.projectExpansion,
       {},
     );
-    writeJSON(store.storage, store.keys.projectExpansion, {
-      ...expansion,
-      [expansionKey]: value,
-    });
+    writeJSON(store.storage, store.keys.projectExpansion, { ...expansion, [key]: value });
   };
+  return [open, toggle];
+}
+
+function CollapsibleSectionHeading({
+  id,
+  label,
+  open,
+  onToggle,
+  status,
+}: {
+  id?: string;
+  label: string;
+  open: boolean;
+  onToggle: () => void;
+  status?: ComponentChildren;
+}) {
+  return (
+    <h3 class="collapsible-session-group-heading" id={id}>
+      <button
+        class="session-group-toggle"
+        type="button"
+        aria-expanded={open}
+        title={`${open ? 'Collapse' : 'Expand'} ${label}`}
+        onClick={onToggle}
+      >
+        <span>{label}</span>
+        <span class="session-group-chevron" aria-hidden="true">
+          <Icon name="chevron-right" />
+        </span>
+      </button>
+      {status && <span class="collapsible-session-group-status">{status}</span>}
+    </h3>
+  );
+}
+
+function NoProjectGroup({ sessions }: { sessions: Session[] }) {
+  const store = useStore();
+  const [open, toggle] = useSidebarExpansion(SIDEBAR_EXPANSION_KEYS.noProject);
   const activeSession = sessions.find((session) => session.id === store.activeSessionId.value);
   return (
     <section class="session-group session-ungrouped">
-      <h3 class="collapsible-session-group-heading">
-        <button
-          class="session-group-toggle"
-          type="button"
-          aria-expanded={open}
-          title={`${open ? 'Collapse' : 'Expand'} No project`}
-          onClick={toggle}
-        >
-          <span>No project</span>
-          <span class="session-group-chevron" aria-hidden="true">
-            <Icon name="chevron-right" />
-          </span>
-        </button>
-      </h3>
+      <CollapsibleSectionHeading label="No project" open={open} onToggle={toggle} />
       {open ? (
         <div class="session-group-list is-opening">
           <SessionDateGroups sessions={sessions} nested />
@@ -375,22 +401,12 @@ function NoProjectGroup({ sessions }: { sessions: Session[] }) {
 
 function ProjectGroup({ project }: { project: Project }) {
   const store = useStore();
-  const expansion = readJSON<Record<string, boolean>>(
-    store.storage,
-    store.keys.projectExpansion,
-    {},
-  );
-  const [open, setOpen] = useState(expansion[project.id] !== false);
+  const [open, toggle] = useSidebarExpansion(project.id);
   const [menu, setMenu] = useState(false);
   const menuID = useId();
   const { menu: menuRef, up } = useMenuFlip(menu);
   const menuTrigger = useRef<HTMLButtonElement>(null);
   const keyboardMenu = useMenuKeyboard(menu, () => setMenu(false), menuTrigger);
-  const toggle = () => {
-    const value = !open;
-    setOpen(value);
-    writeJSON(store.storage, store.keys.projectExpansion, { ...expansion, [project.id]: value });
-  };
   const listedSessionIDs = new Set((project.sessions || []).map((session) => session.id));
   const sessions = [
     ...(project.sessions || []).map(
@@ -509,6 +525,62 @@ function ProjectGroup({ project }: { project: Project }) {
             <SessionRow session={activeSession} />
           </div>
         )
+      )}
+    </section>
+  );
+}
+
+function HubAgents() {
+  const store = useStore();
+  const [open, toggle] = useSidebarExpansion(SIDEBAR_EXPANSION_KEYS.hubAgents);
+  const headingID = useId();
+  const needsAttention = store.hubAgents.value.some((agent) => agent.attention);
+  return (
+    <section class="session-group hub-agent-group">
+      <CollapsibleSectionHeading
+        id={headingID}
+        label="Agents"
+        open={open}
+        onToggle={toggle}
+        status={
+          !open &&
+          needsAttention && (
+            <>
+              <span class="hub-agent-attention" aria-hidden="true" />
+              <span class="visually-hidden">Agents need attention</span>
+            </>
+          )
+        }
+      />
+      {open && (
+        <>
+          <nav class="hub-agent-links" aria-labelledby={headingID}>
+            {store.hubAgents.value.map((agent) => (
+              <a
+                class="hub-agent-link"
+                key={agent.id}
+                href={agent.target}
+                aria-current={agent.id === store.config.hub?.nodeId ? 'true' : undefined}
+                onClick={() => store.clearHubAttention(agent.id)}
+              >
+                <span class="hub-agent-icon" aria-hidden="true" />
+                <span class="hub-agent-name">{agent.name}</span>
+                {agent.attention && (
+                  <>
+                    <span class="hub-agent-attention" aria-hidden="true" />
+                    <span class="visually-hidden">Needs attention</span>
+                  </>
+                )}
+              </a>
+            ))}
+          </nav>
+          {store.config.hub?.url && (
+            <a class="back-to-hub-link" id="backToHubLink" href={store.config.hub.url}>
+              <Icon class="sidebar-action-icon" name="arrow-left" />
+              <span>Back to Hub</span>
+            </a>
+          )}
+        </>
       )}
     </section>
   );
@@ -700,34 +772,7 @@ export function Sidebar() {
                   <span>Widgets</span>
                 </button>
               )}
-              {store.config.hub?.url && (
-                <a class="back-to-hub-link" id="backToHubLink" href={store.config.hub.url}>
-                  <Icon class="sidebar-action-icon" name="arrow-left" />
-                  <span>Back to Hub</span>
-                </a>
-              )}
-              {store.hubAgents.value.length > 0 && (
-                <nav class="hub-agent-links" aria-label="Hub agents">
-                  {store.hubAgents.value.map((agent) => (
-                    <a
-                      class="hub-agent-link"
-                      key={agent.id}
-                      href={agent.target}
-                      aria-current={agent.id === store.config.hub?.nodeId ? 'true' : undefined}
-                      onClick={() => store.clearHubAttention(agent.id)}
-                    >
-                      <span class="hub-agent-icon" aria-hidden="true" />
-                      <span class="hub-agent-name">{agent.name}</span>
-                      {agent.attention && (
-                        <>
-                          <span class="hub-agent-attention" aria-hidden="true" />
-                          <span class="visually-hidden">Needs attention</span>
-                        </>
-                      )}
-                    </a>
-                  ))}
-                </nav>
-              )}
+              {store.hubAgents.value.length > 0 && <HubAgents />}
             </div>
             <div class="session-groups" id="sessionGroups">
               {store.searchLoading.value && <div class="sidebar-loading">Searching…</div>}

@@ -34,7 +34,18 @@
 }
 
 .session-group h3.collapsible-session-group-heading {
+  position: relative;
   padding: 0;
+}
+
+.collapsible-session-group-status {
+  position: absolute;
+  top: 50%;
+  right: 0.75rem;
+  display: inline-flex;
+  align-items: center;
+  pointer-events: none;
+  transform: translateY(-50%);
 }
 
 .session-group-toggle {

@@ -665,6 +665,13 @@ function NewChatControls() {
               ...projects.map((project) => ({ value: project.id, label: project.name })),
             ]}
             triggerClass="new-chat-project-trigger"
+            actions={[
+              {
+                label: 'Add project…',
+                icon: <Icon name="add" />,
+                onSelect: () => store.openAddProject(),
+              },
+            ]}
             onChange={(projectId) => store.newChat(true, projectId)}
             renderTrigger={(selected) => (
               <>

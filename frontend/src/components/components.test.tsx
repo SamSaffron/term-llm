@@ -1531,9 +1531,13 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByRole('listbox', { name: 'Choose chat or project' })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: 'Chat' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('option', { name: 'Chat' })).toHaveFocus();
-    expect(projectPopover).toHaveTextContent('ChatAlphaZeta');
+    expect(projectPopover).toHaveTextContent('Chat');
+    expect(projectPopover).toHaveTextContent('Alpha');
+    expect(projectPopover).toHaveTextContent('Zeta');
     expect(projectPopover).not.toHaveTextContent('Archived');
     expect(projectPopover).not.toHaveTextContent('Unavailable');
+    expect(screen.getByRole('button', { name: 'Add project…' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'Add project…' })).not.toBeInTheDocument();
 
     await userEvent.keyboard('{ArrowDown}{Enter}');
     expect(store.activeProjectId.value).toBe('p1');
@@ -1549,6 +1553,138 @@ describe('Preact-owned chat surfaces', () => {
     expect(agent).toHaveTextContent('Agentjarvis');
   });
 
+  it('opens add project from the project picker and clears a stale assignment target', async () => {
+    const store = createStore();
+    const staleTarget = store.sessions.value[0];
+    store.sessions.value = [];
+    store.activeSessionId.value = '';
+    store.draftActive.value = true;
+    store.projectsEnabled.value = true;
+    store.projects.value = [
+      { id: 'p1', name: 'Alpha', archived: false, available: true, sessions: [] },
+    ];
+    store.projectTarget.value = staleTarget;
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    const trigger = screen.getByRole('button', { name: 'Choose chat or project' });
+    await userEvent.click(trigger);
+    await userEvent.click(screen.getByRole('button', { name: 'Add project…' }));
+
+    expect(
+      screen.queryByRole('dialog', { name: 'Choose chat or project' }),
+    ).not.toBeInTheDocument();
+    expect(store.projectTarget.value).toBeNull();
+    const modal = screen.getByRole('dialog', { name: 'Add project' });
+    const path = screen.getByRole('textbox', { name: 'Project path' });
+    await waitFor(() => expect(path).toHaveFocus());
+
+    fireEvent.keyDown(modal, { key: 'Escape' });
+    expect(store.modal.value).toBe('');
+    expect(trigger).toHaveFocus();
+  });
+
+  it('creates a project from the picker and selects it without losing the draft', async () => {
+    const store = createStore();
+    store.sessions.value = [];
+    store.activeSessionId.value = '';
+    store.draftActive.value = true;
+    store.projectsEnabled.value = true;
+    store.projects.value = [];
+    store.prompt.value = 'Keep this draft';
+    store.endpoints.createProject = vi
+      .fn()
+      .mockResolvedValueOnce({ canonical_dir: '/home/me/new-project', git: true })
+      .mockResolvedValueOnce({
+        project: {
+          id: 'project-new',
+          name: 'New project',
+          canonical_dir: '/home/me/new-project',
+          git: true,
+        },
+      });
+    store.refreshSidebar = vi.fn(async () => {
+      store.projects.value = [
+        {
+          id: 'project-new',
+          name: 'New project',
+          path: '/home/me/new-project',
+          archived: false,
+          available: true,
+          git: true,
+          sessions: [],
+        },
+      ];
+    });
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: 'Choose chat or project' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Add project…' }));
+    await userEvent.type(
+      screen.getByRole('textbox', { name: 'Project path' }),
+      '/home/me/new-project',
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Preview' }));
+    expect(await screen.findByText('Git repository ready')).toBeVisible();
+    await userEvent.click(screen.getByRole('button', { name: 'Add project' }));
+
+    await waitFor(() => expect(store.modal.value).toBe(''));
+    expect(store.endpoints.createProject).toHaveBeenNthCalledWith(
+      1,
+      { path: '/home/me/new-project', name: '' },
+      true,
+    );
+    expect(store.endpoints.createProject).toHaveBeenNthCalledWith(
+      2,
+      { path: '/home/me/new-project', name: '' },
+      false,
+    );
+    expect(store.refreshSidebar).toHaveBeenCalledOnce();
+    expect(store.activeProjectId.value).toBe('project-new');
+    expect(store.prompt.value).toBe('Keep this draft');
+    expect(screen.getByRole('button', { name: 'Choose chat or project' })).toHaveTextContent(
+      'ProjectNew project',
+    );
+  });
+
+  it('runs chip picker footer actions with keyboard focus restoration', async () => {
+    const action = vi.fn();
+    render(
+      <ChipPicker
+        ariaLabel="Picker with action"
+        value="one"
+        options={[
+          { value: 'one', label: 'One' },
+          { value: 'two', label: 'Two' },
+        ]}
+        actions={[{ label: 'Add item…', onSelect: action }]}
+        triggerClass="new-chat-project-trigger"
+        onChange={vi.fn()}
+        renderTrigger={(selected) => <span>{selected.label}</span>}
+      />,
+    );
+
+    const trigger = screen.getByRole('button', { name: 'Picker with action' });
+    await userEvent.click(trigger);
+    expect(screen.getAllByRole('option')).toHaveLength(2);
+    expect(screen.queryByRole('option', { name: 'Add item…' })).not.toBeInTheDocument();
+    await userEvent.keyboard('{ArrowUp}{Enter}');
+    expect(action).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('dialog', { name: 'Picker with action' })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
   it('filters long shared chip pickers and restores trigger focus on Escape', async () => {
     const options = Array.from({ length: 11 }, (_, index) => ({
       value: `value-${index}`,
@@ -1559,6 +1695,7 @@ describe('Preact-owned chat surfaces', () => {
         ariaLabel="Reusable picker"
         value="value-0"
         options={options}
+        actions={[{ label: 'Add project…', onSelect: vi.fn() }]}
         triggerClass="new-chat-project-trigger"
         onChange={vi.fn()}
         renderTrigger={(selected) => <span>{selected.label}</span>}
@@ -1571,6 +1708,15 @@ describe('Preact-owned chat surfaces', () => {
     await userEvent.type(filter, 'special');
     expect(screen.getAllByRole('option')).toHaveLength(1);
     expect(screen.getByRole('option', { name: 'Special project' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add project…' })).toBeInTheDocument();
+    await userEvent.clear(filter);
+    await userEvent.type(filter, 'missing');
+    expect(screen.queryAllByRole('option')).toHaveLength(0);
+    expect(screen.getByText('No matching options')).toBeVisible();
+    const addProject = screen.getByRole('button', { name: 'Add project…' });
+    expect(addProject).toBeVisible();
+    await userEvent.keyboard('{ArrowDown}');
+    expect(addProject).toHaveFocus();
     await userEvent.keyboard('{Escape}');
     expect(screen.queryByRole('dialog', { name: 'Reusable picker' })).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
@@ -1699,23 +1845,70 @@ describe('Preact-owned chat surfaces', () => {
     expect(skillStore.invokeSkill).toHaveBeenCalledWith('review', 'src');
   });
 
-  it('keeps Hub agent rows inside the shared action alignment gutter', () => {
+  it('keeps Back to Hub inside the persisted collapsible Agents section', async () => {
     const store = new AppStore({
       ...config,
       hub: { url: '/hub/', nodeId: 'Dev', nodeBasePath: '/ui' },
     });
+    store.widgets.value = [{ id: 'usage', name: 'Usage', url: '/widgets/usage' }];
     store.hubAgents.value = [
       { id: 'Dev', name: 'Dev', target: '/node/Dev/', active: true, attention: false },
+      {
+        id: 'checklist',
+        name: 'checklist',
+        target: '/node/checklist/',
+        active: false,
+        attention: true,
+      },
     ];
-    const { container } = render(
+    const view = render(
       <StoreContext.Provider value={store}>
         <Sidebar />
       </StoreContext.Provider>,
     );
-    expect(container.querySelector('.sidebar-actions > .hub-agent-links')).not.toBeNull();
+    const { container } = view;
+    const actions = container.querySelector('.sidebar-actions');
+    expect([...actions!.children].map((element) => element.className)).toEqual([
+      'new-chat-btn',
+      'widgets-sidebar-btn',
+      'session-group hub-agent-group',
+    ]);
+
+    const agentsToggle = screen.getByRole('button', { name: 'Agents' });
+    const agentGroup = container.querySelector('.hub-agent-group');
+    const agentsNav = screen.getByRole('navigation', { name: 'Agents' });
+    const backToHub = screen.getByRole('link', { name: 'Back to Hub' });
+    expect(agentsToggle).toHaveAttribute('aria-expanded', 'true');
+    expect(agentGroup).toContainElement(backToHub);
+    expect(agentsNav.nextElementSibling).toBe(backToHub);
+    expect(agentsNav).toContainElement(container.querySelector('.hub-agent-link'));
     expect(
       container.querySelector('.hub-agent-link[aria-current="true"] .hub-agent-name'),
     ).toHaveTextContent('Dev');
+
+    await userEvent.click(agentsToggle);
+    expect(agentsToggle).toHaveAttribute('aria-expanded', 'false');
+    expect(container.querySelector('.hub-agent-link')).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Back to Hub' })).not.toBeInTheDocument();
+    expect(screen.getByText('Agents need attention')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Agents' })).toBe(agentsToggle);
+    expect(
+      readJSON<Record<string, boolean>>(store.storage, store.keys.projectExpansion, {})[
+        '__hub_agents__'
+      ],
+    ).toBe(false);
+
+    view.unmount();
+    render(
+      <StoreContext.Provider value={store}>
+        <Sidebar />
+      </StoreContext.Provider>,
+    );
+    expect(screen.getByRole('button', { name: 'Agents' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    expect(screen.queryByRole('link', { name: 'Back to Hub' })).not.toBeInTheDocument();
   });
 
   it('shows server-observed running state before this tab attaches to the stream', () => {
@@ -2015,6 +2208,28 @@ describe('Preact-owned chat surfaces', () => {
       'aria-expanded',
       'false',
     );
+  });
+
+  it('preserves sibling sidebar expansion choices when toggles are changed in sequence', async () => {
+    const store = createStore();
+    store.projectsEnabled.value = true;
+    store.projects.value = [
+      { id: 'p1', name: 'Alpha', sessions: [] },
+      { id: 'p2', name: 'Beta', sessions: [] },
+    ];
+    render(
+      <StoreContext.Provider value={store}>
+        <Sidebar />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: 'Alpha' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Beta' }));
+    await userEvent.click(screen.getByRole('button', { name: 'No project' }));
+
+    expect(
+      readJSON<Record<string, boolean>>(store.storage, store.keys.projectExpansion, {}),
+    ).toMatchObject({ p1: false, p2: false, __no_project__: false });
   });
 
   it('lifts pinned project conversations into the global pinned section', () => {

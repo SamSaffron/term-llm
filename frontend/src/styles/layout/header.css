@@ -466,11 +466,31 @@
   text-align: center;
 }
 
-.chip-popover-item-action {
+.chip-popover.chip-popover-with-actions {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.chip-popover-with-actions .chip-popover-filter {
+  flex: none;
+}
+
+.chip-popover-with-actions .chip-popover-options {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.chip-popover-actions {
+  flex: none;
   margin-top: 0.25rem;
-  padding-top: 0.55rem;
+  padding-top: 0.25rem;
   border-top: 1px solid var(--border);
-  border-radius: 0 0 6px 6px;
+}
+
+.chip-popover-item-action {
   color: var(--text-muted);
 }
 
@@ -479,10 +499,16 @@
 }
 
 .chip-popover-item-action-icon {
-  width: 1rem;
+  display: grid;
   flex: none;
+  width: 1em;
+  place-items: center;
   color: var(--text);
-  text-align: center;
+}
+
+.chip-popover-item-action-icon svg {
+  width: 0.95rem;
+  height: 0.95rem;
 }
 
 dialog.chip-popover {
