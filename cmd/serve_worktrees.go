@@ -35,16 +35,22 @@ type worktreePromoteRequest struct {
 }
 
 type worktreeRow struct {
-	Name       string                  `json:"name"`
-	Dir        string                  `json:"dir"`
-	RepoRoot   string                  `json:"repo_root,omitempty"`
-	Branch     string                  `json:"branch,omitempty"`
-	Detached   bool                    `json:"detached"`
-	Base       string                  `json:"base,omitempty"`
-	HeadSHA    string                  `json:"head_sha,omitempty"`
-	DirtyFiles int                     `json:"dirty_files"`
-	Root       bool                    `json:"root,omitempty"`
-	InUse      []worktree.InUseSession `json:"in_use,omitempty"`
+	Name              string                  `json:"name"`
+	Dir               string                  `json:"dir"`
+	RepoRoot          string                  `json:"repo_root,omitempty"`
+	Branch            string                  `json:"branch,omitempty"`
+	Detached          bool                    `json:"detached"`
+	Base              string                  `json:"base,omitempty"`
+	HeadSHA           string                  `json:"head_sha,omitempty"`
+	Upstream          string                  `json:"upstream,omitempty"`
+	UpstreamAvailable bool                    `json:"upstream_available"`
+	Ahead             int                     `json:"ahead"`
+	Behind            int                     `json:"behind"`
+	Diverged          bool                    `json:"diverged"`
+	MetadataError     string                  `json:"metadata_error,omitempty"`
+	DirtyFiles        int                     `json:"dirty_files"`
+	Root              bool                    `json:"root,omitempty"`
+	InUse             []worktree.InUseSession `json:"in_use,omitempty"`
 }
 
 type serveWorktreeRootContextKey struct{}
@@ -187,7 +193,23 @@ func (s *serveServer) handleWorktreeList(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	rows := []worktreeRow{{Name: "root", Dir: root, RepoRoot: root, Root: true}}
+	rootCheckout, rootDetailErr := worktree.DescribeCheckout(root)
+	rootRow := worktreeRow{Name: "root", Dir: root, RepoRoot: root, Root: true}
+	if rootDetailErr != nil {
+		rootRow.MetadataError = "HEAD metadata unavailable"
+	} else {
+		rootRow.Branch = rootCheckout.Branch
+		rootRow.Detached = rootCheckout.Detached
+		rootRow.HeadSHA = rootCheckout.HeadSHA
+		rootRow.Upstream = rootCheckout.Upstream
+		rootRow.UpstreamAvailable = rootCheckout.UpstreamAvailable
+		rootRow.Ahead = rootCheckout.Ahead
+		rootRow.Behind = rootCheckout.Behind
+		rootRow.Diverged = rootCheckout.Diverged
+		rootRow.MetadataError = rootCheckout.MetadataError
+		rootRow.DirtyFiles = rootCheckout.DirtyFiles
+	}
+	rows := []worktreeRow{rootRow}
 	items, err := worktree.List(root)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
@@ -199,7 +221,12 @@ func (s *serveServer) handleWorktreeList(w http.ResponseWriter, r *http.Request)
 	}
 	inUseByDir, _ := worktree.InUseByDir(r.Context(), s.store, dirs)
 	for _, wt := range items {
-		rows = append(rows, worktreeRow{Name: wt.Name, Dir: wt.Dir, RepoRoot: wt.RepoRoot, Branch: wt.Branch, Detached: wt.Detached, Base: wt.Base, HeadSHA: wt.HeadSHA, DirtyFiles: wt.DirtyFiles, InUse: inUseByDir[wt.Dir]})
+		rows = append(rows, worktreeRow{
+			Name: wt.Name, Dir: wt.Dir, RepoRoot: wt.RepoRoot, Branch: wt.Branch, Detached: wt.Detached,
+			Base: wt.Base, HeadSHA: wt.HeadSHA, Upstream: wt.Upstream, UpstreamAvailable: wt.UpstreamAvailable,
+			Ahead: wt.Ahead, Behind: wt.Behind, Diverged: wt.Diverged, MetadataError: wt.MetadataError,
+			DirtyFiles: wt.DirtyFiles, InUse: inUseByDir[wt.Dir],
+		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"worktrees": rows})
 }

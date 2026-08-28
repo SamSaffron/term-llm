@@ -8,10 +8,12 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/appdata"
+	"github.com/samsaffron/term-llm/internal/filelock"
 	"github.com/samsaffron/term-llm/internal/hub"
 	"github.com/samsaffron/term-llm/internal/passkeyauth"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -132,6 +134,24 @@ func defaultHubAuthFile() (string, error) {
 	return filepath.Join(dir, "hub", "auth.json"), nil
 }
 
+func lockHubPasskeyState(authFile string) (func() error, error) {
+	dir := filepath.Dir(authFile)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("create Hub passkey directory: %w", err)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(dir)
+		if err != nil || info.Mode().Perm()&0o077 != 0 {
+			return nil, fmt.Errorf("passkey auth directory must have private permissions (0700)")
+		}
+	}
+	unlock, err := filelock.TryLock(filepath.Join(dir, "hub-auth.lock"))
+	if err != nil {
+		return nil, fmt.Errorf("lock Hub passkey state (another Hub process may be using %s): %w", dir, err)
+	}
+	return unlock, nil
+}
+
 func runServeHub(cmd *cobra.Command, args []string) error {
 	authMode, err := resolveHubAuthMode(serveHubAuthMode)
 	if err != nil {
@@ -212,10 +232,27 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("resolve Hub passkey auth file: %w", err)
 			}
 		}
+		unlockPasskeyState, err := lockHubPasskeyState(authFile)
+		if err != nil {
+			return err
+		}
+		defer unlockPasskeyState()
 		authStore, err := passkeyauth.OpenStore(passkeyauth.StoreOptions{Path: authFile, RPID: endpoint.RPID, UserName: hubPasskeyUserName, Warnf: func(format string, args ...any) { fmt.Fprintf(cmd.ErrOrStderr(), "SECURITY: "+format+"\n", args...) }})
 		if err != nil {
 			return err
 		}
+		sessionFile := filepath.Join(filepath.Dir(authFile), "sessions.json")
+		sessions, err := passkeyauth.OpenSessions(passkeyauth.SessionsOptions{
+			Path:            sessionFile,
+			RPID:            endpoint.RPID,
+			UserID:          authStore.User().ID,
+			ValidCredential: authStore.HasCredential,
+			Warnf:           func(format string, args ...any) { fmt.Fprintf(cmd.ErrOrStderr(), "SECURITY: "+format+"\n", args...) },
+		})
+		if err != nil {
+			return err
+		}
+		defer sessions.Close()
 		bootstrapSecret, display, err := resolveHubBootstrapSecret(cmd, authStore.CredentialCount() == 0)
 		if err != nil {
 			return err
@@ -243,7 +280,7 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		s.passkey, err = newHubPasskeyRuntime(endpoint, authStore, bootstrapGrants, recoveryGrants, peerResolver)
+		s.passkey, err = newHubPasskeyRuntime(endpoint, authStore, sessions, bootstrapGrants, recoveryGrants, peerResolver)
 		if err != nil {
 			return err
 		}

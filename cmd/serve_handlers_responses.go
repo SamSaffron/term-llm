@@ -21,29 +21,31 @@ var errResponseClientMessageAlreadyCommitted = errors.New("response client messa
 const maxResponseClientMessageIDLength = 200
 
 type followUpClaimLease struct {
-	once   sync.Once
-	engine *llm.Engine
-	ids    []string
+	once    sync.Once
+	release func()
 }
 
 func (l *followUpClaimLease) Release() {
-	if l == nil || l.engine == nil || len(l.ids) == 0 {
+	if l == nil || l.release == nil {
 		return
 	}
-	l.once.Do(func() { l.engine.ReleaseClaimedInterjections(l.ids) })
+	l.once.Do(l.release)
 }
 
 type resolvedResponsesRequest struct {
-	req                responsesCreateRequest
-	inputMessages      []llm.Message
-	replaceHistory     bool
-	sessionID          string
-	previousResponseID string
-	previousDurable    bool
-	freshConversation  bool
-	durableRuntime     bool
-	uiStream           bool
-	idempotencyKey     string
+	req                        responsesCreateRequest
+	inputMessages              []llm.Message
+	replaceHistory             bool
+	sessionID                  string
+	previousResponseID         string
+	previousDurable            bool
+	freshConversation          bool
+	durableRuntime             bool
+	uiStream                   bool
+	idempotencyKey             string
+	idempotencyScope           string
+	requestFingerprint         string
+	notificationSubscriptionID string
 }
 
 func validateResponseReasoningMode(provider, model, mode string, explicit bool) (normalized string, clearStale bool, err error) {
@@ -256,6 +258,44 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	// previous_response_id continues a conversation; no previous response means a
 	// fresh conversation, even if a session_id header is reused for persistence.
 	headerSessionID := resolveRequestSessionID(r)
+	draftID := strings.TrimSpace(r.Header.Get(requestDraftIDHeader))
+	if draftID != "" && (!isFirstPartyUIResponseRequest(r) || headerSessionID != "" || req.PreviousResponseID != "" || !validResponseDraftID(draftID)) {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "draft id is only valid for a first-party new conversation")
+		return
+	}
+	runIdempotencyKey := responseRunIdempotencyKey(r, req)
+	requestFingerprint := ""
+	if req.Stream && runIdempotencyKey != "" {
+		var fingerprintErr error
+		requestFingerprint, fingerprintErr = responseRequestFingerprint(req)
+		if fingerprintErr != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to fingerprint response request")
+			return
+		}
+	}
+	reservedSessionID := ""
+	if draftID != "" && req.Stream && runIdempotencyKey != "" {
+		var reserveErr error
+		reservedSessionID, reserveErr = s.ensureResponseRuns().reserveSessionForIdempotency(draftID, runIdempotencyKey, requestFingerprint)
+		if errors.Is(reserveErr, errResponseRunKeyConflict) {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", reserveErr.Error())
+			return
+		}
+		if reserveErr != nil {
+			writeOpenAIError(w, http.StatusServiceUnavailable, "server_error", reserveErr.Error())
+			return
+		}
+		if run, found, replayErr := s.ensureResponseRuns().getByIdempotencyClaim(draftID, runIdempotencyKey, requestFingerprint); replayErr != nil {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", replayErr.Error())
+			return
+		} else if found {
+			w.Header().Set("x-session-id", run.sessionID)
+			w.Header().Set("x-response-id", run.id)
+			s.setReplaySessionNumberHeader(ctx, w, run.sessionID)
+			s.streamResponseRunEvents(ctx, w, run, 0)
+			return
+		}
+	}
 	sessionID := ""
 	previousDurable := false
 	resolvedPreviousResponseID := req.PreviousResponseID
@@ -318,6 +358,9 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	if sessionID == "" {
 		sessionID = headerSessionID
 		if sessionID == "" {
+			sessionID = reservedSessionID
+		}
+		if sessionID == "" {
 			sessionID = session.NewID()
 		}
 		w.Header().Set("x-session-id", sessionID)
@@ -331,18 +374,34 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	runIdempotencyKey := responseRunIdempotencyKey(r, req)
+	notificationSubscriptionID := ""
+	if requestedSubscriptionID := strings.TrimSpace(r.Header.Get(requestPushSubscriptionHeader)); requestedSubscriptionID != "" {
+		if !isFirstPartyUIResponseRequest(r) || !req.Stream {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "completion notification target is only valid for first-party streaming responses")
+			return
+		}
+		var targetErr error
+		notificationSubscriptionID, targetErr = s.validateCompletionPushTarget(ctx, requestedSubscriptionID)
+		if targetErr != nil {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", targetErr.Error())
+			return
+		}
+	}
+
 	s.handleResolvedResponses(w, r, ctx, resolvedResponsesRequest{
-		req:                req,
-		inputMessages:      inputMessages,
-		replaceHistory:     replaceHistory,
-		sessionID:          sessionID,
-		previousResponseID: resolvedPreviousResponseID,
-		previousDurable:    previousDurable,
-		freshConversation:  req.PreviousResponseID == "",
-		durableRuntime:     branched,
-		uiStream:           branchUsesFirstPartyUIStream(r, branched),
-		idempotencyKey:     runIdempotencyKey,
+		req:                        req,
+		inputMessages:              inputMessages,
+		replaceHistory:             replaceHistory,
+		sessionID:                  sessionID,
+		previousResponseID:         resolvedPreviousResponseID,
+		previousDurable:            previousDurable,
+		freshConversation:          req.PreviousResponseID == "",
+		durableRuntime:             branched,
+		uiStream:                   branchUsesFirstPartyUIStream(r, branched),
+		idempotencyKey:             runIdempotencyKey,
+		idempotencyScope:           draftID,
+		requestFingerprint:         requestFingerprint,
+		notificationSubscriptionID: notificationSubscriptionID,
 	})
 }
 
@@ -374,14 +433,24 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		return
 	}
 	idempotencyKey := strings.TrimSpace(rr.idempotencyKey)
+	idempotencyScope := strings.TrimSpace(rr.idempotencyScope)
+	if idempotencyScope == "" {
+		idempotencyScope = sessionID
+	}
 	if req.Stream && idempotencyKey != "" {
 		// Streaming response runs retain their event log for the response-run
 		// retention window, so an idempotency replay can attach directly without
-		// rebuilding runtime/provider state. Replay is unconditional for a matching
-		// session/key; first-party UI keys are unique per logical user message.
-		if run, ok := s.ensureResponseRuns().getByIdempotencyKey(sessionID, idempotencyKey); ok {
+		// rebuilding runtime/provider state. The stored fingerprint prevents a key
+		// from silently replaying a semantically different request.
+		run, found, replayErr := s.ensureResponseRuns().getByIdempotencyClaim(idempotencyScope, idempotencyKey, rr.requestFingerprint)
+		if errors.Is(replayErr, errResponseRunKeyConflict) {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", replayErr.Error())
+			return
+		}
+		if found {
+			w.Header().Set("x-session-id", run.sessionID)
 			w.Header().Set("x-response-id", run.id)
-			s.setReplaySessionNumberHeader(ctx, w, sessionID)
+			s.setReplaySessionNumberHeader(ctx, w, run.sessionID)
 			s.streamResponseRunEvents(ctx, w, run, 0)
 			return
 		}
@@ -445,10 +514,6 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 				s.streamFailedResponseRun(ctx, w, sessionID, previousResponseID, model, "conflict_error", err.Error())
 				return true
 			}
-			writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
-			return true
-		}
-		if errors.Is(err, errServeSessionLimitReached) {
 			writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
 			return true
 		}
@@ -518,7 +583,7 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 			claims[i] = llm.InterjectionClaimNotFound
 		}
 		if rt.engine != nil {
-			claims = rt.engine.ClaimInterjections(clientMessageIDs)
+			claims = rt.claimInterjections(clientMessageIDs)
 		}
 		claimedIDs := make([]string, 0, len(clientMessageIDs))
 		hasNewClaim := false
@@ -543,7 +608,12 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 			}
 		}
 		if len(claimedIDs) > 0 {
-			followUpClaims = &followUpClaimLease{engine: rt.engine, ids: claimedIDs}
+			claimed := append([]string(nil), claimedIDs...)
+			followUpClaims = &followUpClaimLease{release: func() {
+				releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer releaseCancel()
+				rt.releaseClaimedPendingInterjections(releaseCtx, sessionID, claimed)
+			}}
 		}
 		return nil
 	}
@@ -845,9 +915,9 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 			claimsTransferred = true
 		}
 		if rr.uiStream && stateful {
-			s.streamUIResponses(w, r, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec, runIdempotencyKey, claimsDone)
+			s.streamUIResponses(w, r, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec, runIdempotencyKey, rr.idempotencyScope, rr.requestFingerprint, rr.notificationSubscriptionID, claimsDone)
 		} else {
-			started := s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec, runIdempotencyKey, claimsDone)
+			started := s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec, runIdempotencyKey, rr.idempotencyScope, rr.requestFingerprint, rr.notificationSubscriptionID, claimsDone)
 			if !stateful && started {
 				cleanupRuntime = false
 			}
@@ -892,6 +962,7 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
 	}
+	s.scheduleAutoTitle(sessionID, runtime.providerKey)
 
 	writeJSON(w, http.StatusOK, responsesFinalResponse(result, model, respID, created))
 }
@@ -1037,6 +1108,20 @@ func responseIdempotencyKeyFromRequest(r *http.Request) string {
 	return ""
 }
 
+func validResponseDraftID(value string) bool {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "draft_") || len(value) <= len("draft_") || len(value) > 200 {
+		return false
+	}
+	for _, r := range value[len("draft_"):] {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func responseRunIdempotencyKey(r *http.Request, req responsesCreateRequest) string {
 	key := responseIdempotencyKeyFromRequest(r)
 	if req.Branch && strings.TrimSpace(req.IdempotencyKey) != "" {
@@ -1089,12 +1174,15 @@ func appendResponsePassthroughTools(serverTools []llm.ToolSpec, passthroughTools
 	return serverTools
 }
 
-func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution, idempotencyKey string, onDone func()) bool {
+func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution, idempotencyKey, idempotencyScope, requestFingerprint, notificationSubscriptionID string, onDone func()) bool {
 	return s.streamResponseRun(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, startResponseRunOptions{
-		previousResponseID:        previousResponseID,
-		resetResponseIDsOnSuccess: resetResponseIDsOnSuccess,
-		modelSwap:                 modelSwap,
-		idempotencyKey:            idempotencyKey,
-		onDone:                    onDone,
+		previousResponseID:         previousResponseID,
+		resetResponseIDsOnSuccess:  resetResponseIDsOnSuccess,
+		modelSwap:                  modelSwap,
+		idempotencyKey:             idempotencyKey,
+		idempotencyScope:           idempotencyScope,
+		requestFingerprint:         requestFingerprint,
+		notificationSubscriptionID: notificationSubscriptionID,
+		onDone:                     onDone,
 	})
 }

@@ -170,6 +170,42 @@ func (s *loggingWorkspaceGrantStore) DeleteWorkspaceGrant(ctx context.Context, s
 	return err
 }
 
+// PendingInterjection is a durable, not-yet-committed steering intent. It lives
+// outside the transcript until the engine consumes it, so restoring a session
+// cannot accidentally send the same user message to a provider early.
+type PendingInterjection struct {
+	SessionID         string
+	ID                string
+	Message           llm.Message
+	DisplayText       string
+	AttachmentSummary string
+	CreatedAt         time.Time
+}
+
+// PendingInterjectionStore persists queued steering intents across tabs and
+// runtime loss. Committed interjections are still written to messages through
+// the normal turn-completion path.
+type PendingInterjectionStore interface {
+	SavePendingInterjection(ctx context.Context, entry PendingInterjection) error
+	DeletePendingInterjection(ctx context.Context, sessionID, id string) error
+	ListPendingInterjections(ctx context.Context, sessionID string) ([]PendingInterjection, error)
+}
+
+// AsPendingInterjectionStore resolves the optional capability through the
+// logging decorator without making unsupported custom stores appear durable.
+func AsPendingInterjectionStore(store Store) (PendingInterjectionStore, bool) {
+	if store == nil {
+		return nil, false
+	}
+	if logging, ok := store.(*LoggingStore); ok {
+		if _, supported := AsPendingInterjectionStore(logging.Store); !supported {
+			return nil, false
+		}
+	}
+	pending, ok := store.(PendingInterjectionStore)
+	return pending, ok
+}
+
 // TranscriptRevisionWriter reports the exact revision committed by a message
 // mutation. Serve response handoff uses this optional capability instead of a
 // session-wide post-write revision sample.
@@ -596,10 +632,71 @@ type PromptHistoryOutsideSessionStore interface {
 
 // PushSubscription represents a Web Push subscription stored in the database.
 type PushSubscription struct {
-	ID        string
-	Endpoint  string
-	KeyP256DH string
-	KeyAuth   string
+	ID              string
+	Endpoint        string
+	KeyP256DH       string
+	KeyAuth         string
+	Status          string
+	VAPIDKeyID      string
+	UpdatedAt       time.Time
+	LastUsedAt      time.Time
+	LastFailureCode string
+	LastFailure     string
+	LastFailureAt   time.Time
+}
+
+type PushSubscriptionLifecycleStore interface {
+	UpsertPushSubscription(ctx context.Context, sub *PushSubscription) (*PushSubscription, error)
+	GetPushSubscription(ctx context.Context, id string) (*PushSubscription, error)
+	DeletePushSubscriptionByID(ctx context.Context, id string) error
+	MarkPushSubscriptionStale(ctx context.Context, id, code, detail string) error
+	MarkPushSubscriptionUsed(ctx context.Context, id string) error
+}
+
+func AsPushSubscriptionLifecycleStore(store Store) (PushSubscriptionLifecycleStore, bool) {
+	if store == nil {
+		return nil, false
+	}
+	if lifecycle, ok := store.(PushSubscriptionLifecycleStore); ok {
+		return lifecycle, true
+	}
+	if logging, ok := store.(*LoggingStore); ok {
+		lifecycle, ok := logging.Store.(PushSubscriptionLifecycleStore)
+		return lifecycle, ok
+	}
+	return nil, false
+}
+
+type CompletionPushOutboxItem struct {
+	ID             int64
+	EventID        string
+	ResponseID     string
+	SubscriptionID string
+	Payload        []byte
+	AttemptCount   int
+}
+
+type CompletionPushOutboxStore interface {
+	EnqueueCompletionPush(ctx context.Context, item CompletionPushOutboxItem) (bool, error)
+	ListDueCompletionPushes(ctx context.Context, now time.Time, limit int) ([]CompletionPushOutboxItem, error)
+	MarkCompletionPushDelivered(ctx context.Context, id int64) error
+	RetryCompletionPush(ctx context.Context, id int64, next time.Time, lastError string) error
+	MarkCompletionPushDead(ctx context.Context, id int64, lastError string) error
+	PruneCompletionPushOutbox(ctx context.Context, before time.Time) error
+}
+
+func AsCompletionPushOutboxStore(store Store) (CompletionPushOutboxStore, bool) {
+	if store == nil {
+		return nil, false
+	}
+	if outbox, ok := store.(CompletionPushOutboxStore); ok {
+		return outbox, true
+	}
+	if logging, ok := store.(*LoggingStore); ok {
+		outbox, ok := logging.Store.(CompletionPushOutboxStore)
+		return outbox, ok
+	}
+	return nil, false
 }
 
 // Config holds session storage configuration.

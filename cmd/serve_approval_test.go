@@ -37,6 +37,31 @@ func TestAwaitApproval_NoTransport_FailsFast(t *testing.T) {
 	}
 }
 
+func TestPrepareApprovalRequestSupportsStateRecoveryWithoutTransport(t *testing.T) {
+	rt := newTestRuntime()
+	pending, prompt := rt.prepareApprovalRequest("review.txt", true, false, false, "")
+	defer rt.removePendingApproval(pending.ApprovalID, pending)
+
+	if prompt.ApprovalID == "" || prompt.ApprovalID != pending.ApprovalID {
+		t.Fatalf("prepared prompt = %#v", prompt)
+	}
+	prompts := rt.pendingApprovalPrompts()
+	if len(prompts) != 1 || prompts[0].ApprovalID != prompt.ApprovalID {
+		t.Fatalf("recoverable prompts = %#v", prompts)
+	}
+	if err := rt.submitApproval(prompt.ApprovalID, 0, false, false); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case submission := <-pending.responseC:
+		if submission.Err != nil || submission.Result.Cancelled {
+			t.Fatalf("submission = %#v", submission)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("prepared approval did not receive submission")
+	}
+}
+
 func TestServeApprovalRequiresExplicitBreakerResume(t *testing.T) {
 	approvalMgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	approvalMgr.SetApprovalMode(tools.ModeAuto)
@@ -180,7 +205,8 @@ func TestAwaitWorkspaceApprovalUsesDedicatedWebPrompt(t *testing.T) {
 }
 
 func TestAwaitWorkspaceApprovalPausesResponseTimeoutWhileWaiting(t *testing.T) {
-	runCtx, runTimer := newResponseRunTimer(500 * time.Millisecond)
+	clock := newFakeResponseRunClock()
+	runCtx, runTimer := newResponseRunTimerWithClock(500*time.Millisecond, clock)
 	defer runTimer.stop()
 	eventFired := make(chan struct{}, 1)
 	rt := &serveRuntime{
@@ -208,7 +234,7 @@ func TestAwaitWorkspaceApprovalPausesResponseTimeoutWhileWaiting(t *testing.T) {
 		t.Fatal("timeout waiting for workspace approval event")
 	}
 
-	time.Sleep(600 * time.Millisecond)
+	clock.Advance(600 * time.Millisecond)
 	if err := runCtx.Err(); err != nil {
 		t.Fatalf("response timeout elapsed during human wait: %v", err)
 	}

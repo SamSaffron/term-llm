@@ -97,6 +97,7 @@ func parseAnthropicMessages(msgs []anthropicMessage) ([]llm.Message, error) {
 		}
 
 		var parts []llm.Part
+		attachmentCount := 0
 		for _, block := range blocks {
 			switch block.Type {
 			case "text":
@@ -104,16 +105,27 @@ func parseAnthropicMessages(msgs []anthropicMessage) ([]llm.Message, error) {
 					parts = append(parts, llm.Part{Type: llm.PartText, Text: block.Text})
 				}
 			case "image":
-				if block.Source != nil {
+				if block.Source == nil || strings.TrimSpace(block.Source.Data) == "" {
+					return nil, fmt.Errorf("image attachment source is required")
+				}
+				mediaType := strings.ToLower(strings.TrimSpace(block.Source.MediaType))
+				if !isLLMImageType(mediaType) {
+					return nil, fmt.Errorf("unsupported attachment type %q for image", mediaType)
+				}
+				attachmentCount++
+				if attachmentCount > maxAttachments {
+					return nil, fmt.Errorf("too many attachments (max %d)", maxAttachments)
+				}
+				{
 					imagePart := llm.Part{
 						Type:      llm.PartImage,
-						ImageData: &llm.ToolImageData{MediaType: block.Source.MediaType, Base64: block.Source.Data},
+						ImageData: &llm.ToolImageData{MediaType: mediaType, Base64: block.Source.Data},
 					}
 					raw, err := decodeUploadedFile("image", block.Source.Data)
 					if err != nil {
 						return nil, fmt.Errorf("decode image attachment: %w", err)
 					}
-					filename := uploadFilenameForMediaType("image", block.Source.MediaType)
+					filename := uploadFilenameForMediaType("image", mediaType)
 					path, err := saveUploadedBytes(filename, raw)
 					if err != nil {
 						return nil, fmt.Errorf("save image attachment: %w", err)

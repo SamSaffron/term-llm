@@ -62,17 +62,26 @@ process environment after capture. A file takes precedence. The explicit
 `--print-passkey-bootstrap-token` escape hatch prints a generated code to
 non-interactive output, but makes service logs temporary enrollment credentials.
 Remove the bootstrap secret after enrollment. Credentials persist in
-`<data-dir>/hub/auth.json` (or `--passkey-auth-file`); sessions do not survive a
-Hub restart. A custom auth file's immediate parent must already be private
-(mode `0700` on Unix); Hub rejects an unsafe parent rather than changing a
-shared directory's permissions.
+`<data-dir>/hub/auth.json` (or `--passkey-auth-file`). Browser sessions persist
+in a private `sessions.json` beside that credential store, so valid sessions
+survive Hub restarts. Hub takes an exclusive lock on the session store to prevent
+overlapping processes from clobbering revocations. Corrupt disposable session
+state is quarantined and reset, requiring browser reauthentication instead of
+preventing Hub startup. A custom auth file's immediate parent must already be
+private (mode `0700` on Unix); Hub rejects an unsafe parent rather than changing
+a shared directory's permissions.
 
 The Security panel can add/name multiple passkeys, remove any non-final
 credential, show the active session count, revoke other sessions, and sign out.
 Adding or deleting a passkey requires a fresh passkey assertion. Sessions have a
 12-hour idle and seven-day absolute lifetime. The browser receives a host-only,
 HttpOnly, SameSite=Strict cookie scoped to the Hub mount; only its SHA-256 hash
-is retained in process memory.
+is stored. Session activity checkpoints are rate-limited to five-minute
+intervals and written atomically; security changes such as logout and revocation
+are written immediately. Recent-auth grants for sensitive credential changes
+remain process-local and must be renewed after a restart. Hub retains at most 1,024
+active browser sessions; if that defensive limit is ever reached, stop Hub and
+remove `sessions.json` to sign out every browser before restarting.
 
 ### Reverse proxy example
 
@@ -139,7 +148,10 @@ granting access to Hub data. With at least one credential already enrolled:
 5. Sign in normally, revoke other sessions if compromise is suspected, then
    remove obsolete passkeys from Security.
 
-Deleting `auth.json` is a destructive identity reset, not recovery.
+Deleting `auth.json` is a destructive identity reset, not recovery. A deliberate
+identity reset must also remove the adjacent `sessions.json`; session stores are
+bound to the passkey identity and Hub refuses to reuse one with a replacement
+identity.
 
 For an interactive process, the complete recovery run is:
 

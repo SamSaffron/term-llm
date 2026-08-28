@@ -1,0 +1,126 @@
+/* Compact, non-blocking toast notifications. */
+
+.toast-region {
+  position: fixed;
+  z-index: 900;
+  top: calc(0.75rem + var(--safe-top));
+  right: calc(0.75rem + var(--safe-right));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.45rem;
+  width: min(20rem, calc(100vw - 1.5rem));
+  pointer-events: none;
+}
+
+.toast {
+  --toast-accent: var(--link);
+
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 0.55rem;
+  width: fit-content;
+  min-width: min(13.5rem, 100%);
+  max-width: 100%;
+  padding: 0.6rem 0.55rem 0.6rem 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--toast-accent) 28%, var(--border-strong));
+  border-radius: 0.65rem;
+  color: var(--text);
+  background: var(--surface-strong);
+  background: color-mix(in srgb, var(--surface-strong) 96%, var(--toast-accent));
+  box-shadow:
+    0 10px 28px rgb(0 0 0 / 18%),
+    var(--shadow-soft);
+  font-size: 0.875rem;
+  pointer-events: auto;
+  transform-origin: top right;
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  animation: toast-enter 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.toast-success {
+  --toast-accent: var(--accent-green);
+}
+
+.toast-error {
+  --toast-accent: var(--danger);
+}
+
+.toast-icon {
+  width: 1rem;
+  height: 1rem;
+  margin-top: 0.1rem;
+  color: var(--toast-accent);
+}
+
+.toast-message {
+  min-width: 0;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.toast-close {
+  display: grid;
+  place-items: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  margin: -0.15rem -0.1rem -0.15rem 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0.35rem;
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.toast-close svg {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.toast-close:hover {
+  color: var(--text);
+  background: var(--bg-accent);
+}
+
+.toast-close:focus-visible {
+  color: var(--text);
+  outline: 2px solid var(--toast-accent);
+  outline-offset: 1px;
+}
+
+.toast-leaving {
+  pointer-events: none;
+  animation: toast-leave 160ms ease-in forwards;
+}
+
+@keyframes toast-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-0.35rem) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes toast-leave {
+  to {
+    opacity: 0;
+    transform: translateY(-0.25rem) scale(0.98);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    animation: none;
+  }
+
+  .toast-leaving {
+    opacity: 0;
+  }
+}

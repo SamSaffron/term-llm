@@ -33,15 +33,18 @@ $ term-llm exec "find all go files modified today"
 curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh
 ```
 
-For a source build, clone the repository and install from its root:
+For a source build, clone the repository and build from its root. This requires Go, Node.js 24 or newer, npm, and Make:
 
 ```bash
 git clone https://github.com/samsaffron/term-llm.git
 cd term-llm
-go install .
+make build
+./term-llm version
 ```
 
-`go install github.com/samsaffron/term-llm@latest` cannot build this repository: the application intentionally uses local `replace` directives for the owned Bubble Tea, Ultraviolet, and reflow modules, and dependency-local replacements are not available to an external `go install ...@version` build. Use the installer/release archive or build from a complete checkout.
+`make build` installs the locked frontend dependencies when needed, generates the embedded web UI, and then builds the Go binary. The generated frontend bundles are intentionally not checked into Git, so plain `go build` from a fresh checkout will fail until `make frontend` has run.
+
+`go install github.com/samsaffron/term-llm@latest` cannot build this repository: in addition to the generated frontend prerequisite, the application intentionally uses local `replace` directives for the owned Bubble Tea, Ultraviolet, and reflow modules. Use the installer/release archive or `make build` from a complete checkout.
 
 Shell completions are available for Bash, Zsh, Fish, and PowerShell. Fish users can install an auto-loaded completion file with:
 
@@ -104,10 +107,10 @@ The root `go test ./...` command does not cross Go module boundaries. During dev
 go test -short ./...
 ```
 
-Before submitting or merging, run the complete root suite and the owned nested-module verification:
+Before submitting or merging, generate the frontend and run the complete root suite plus the owned nested-module verification:
 
 ```bash
-go build ./...
+make build
 go test ./...
 go vet ./...
 scripts/verify_nested_modules.sh

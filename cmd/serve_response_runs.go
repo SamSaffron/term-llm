@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -102,13 +104,21 @@ func newResponseRunPersistenceLedger() *responseRunPersistenceLedger {
 	}
 }
 
+type responseRunResolvedInteraction struct {
+	Outcome    string
+	ResolvedAt int64
+}
+
 type responseRun struct {
 	mu                     sync.Mutex
 	terminalMu             sync.Mutex
+	interactionSubmitMu    sync.Mutex
 	id                     string
 	sessionID              string
 	previousResponseID     string
 	clientMessageID        string
+	idempotencyScope       string
+	requestFingerprint     string
 	anchorRowID            int64 // latest durable completed boundary; zero means unavailable
 	anchorAvailable        bool
 	boundary               *runboundary.Tracker
@@ -116,6 +126,7 @@ type responseRun struct {
 	reasoningEffort        string
 	reasoningEffortSet     bool
 	created                int64
+	endedAt                int64
 	runEpoch               int64
 	startedRev             int64
 	startedCompactionSeq   int
@@ -141,6 +152,7 @@ type responseRun struct {
 	maxRetainedEvents     int
 	recoveryMessages      []responseRunRecoveryMessage
 	recoveryEvents        []responseRunRecoveryEvent
+	resolvedInteractions  map[string]responseRunResolvedInteraction
 	pendingGuardianByCall map[string][]map[string]any
 	nextMessageOrdinal    int64
 	currentAssistant      int
@@ -151,18 +163,23 @@ type responseRun struct {
 	subscriberWarned      map[int]bool // tracks whether 75% buffer warning was logged
 	subscriberDropped     map[int]bool // tracks subscribers dropped after their live buffer overflowed
 	nextSubscriberID      int
+	terminalNotifyOnce    sync.Once
+	terminalNotify        func(string)
 	cancel                context.CancelFunc
 	cancelRequested       bool
 }
 
 type startResponseRunOptions struct {
-	previousResponseID        string
-	uiSession                 bool
-	resetResponseIDsOnSuccess bool
-	modelSwap                 *responseModelSwapExecution
-	idempotencyKey            string
-	onDone                    func()
-	runtimeSetup              func(*llm.Request) error
+	previousResponseID         string
+	uiSession                  bool
+	resetResponseIDsOnSuccess  bool
+	modelSwap                  *responseModelSwapExecution
+	idempotencyKey             string
+	idempotencyScope           string
+	requestFingerprint         string
+	notificationSubscriptionID string
+	onDone                     func()
+	runtimeSetup               func(*llm.Request) error
 }
 
 type responseRunContextKey struct{}
@@ -553,6 +570,7 @@ func (r *responseRun) complete(payload map[string]any, usage llm.Usage, sessionU
 	r.applyTerminalContinuationLocked(payload)
 	if r.cancelRequested {
 		r.status = "cancelled"
+		r.endedAt = time.Now().UnixMilli()
 		r.errorType = ""
 		r.errorMessage = ""
 		r.cancel = nil
@@ -565,6 +583,7 @@ func (r *responseRun) complete(payload map[string]any, usage llm.Usage, sessionU
 		return r.appendEventLocked("response.cancelled", payload, true)
 	}
 	r.status = "completed"
+	r.endedAt = time.Now().UnixMilli()
 	r.errorType = ""
 	r.errorMessage = ""
 	r.cancel = nil
@@ -592,6 +611,7 @@ func (r *responseRun) finishCancelled(payload map[string]any) (bool, error) {
 	r.applyDurableHandoffLocked(handoff)
 	r.applyTerminalContinuationLocked(payload)
 	r.status = "cancelled"
+	r.endedAt = time.Now().UnixMilli()
 	r.errorType = ""
 	r.errorMessage = ""
 	r.cancel = nil
@@ -609,6 +629,7 @@ func (r *responseRun) fail(payload map[string]any, errType, errMessage string) (
 	r.applyTerminalContinuationLocked(payload)
 	hadSubscribers := len(r.subscribers) > 0
 	r.status = "failed"
+	r.endedAt = time.Now().UnixMilli()
 	r.errorType = errType
 	r.errorMessage = errMessage
 	r.cancel = nil
@@ -646,6 +667,7 @@ func (r *responseRun) appendEventLocked(event string, payload map[string]any, te
 	payload["run_epoch"] = r.runEpoch
 	if event == "response.created" {
 		payload["started_rev"] = r.startedRev
+		payload["started_at"] = r.created * 1000
 		if r.clientMessageID != "" {
 			payload["client_message_id"] = r.clientMessageID
 		}
@@ -664,6 +686,7 @@ func (r *responseRun) appendEventLocked(event string, payload map[string]any, te
 		}
 	}
 	if terminal {
+		payload["ended_at"] = r.endedAt
 		payload["final_rev"] = r.finalRev
 		payload["durable_handoff"] = r.durableHandoff
 		payload["durable_output_count"] = r.durableOutputCount
@@ -673,6 +696,7 @@ func (r *responseRun) appendEventLocked(event string, payload map[string]any, te
 			payload["durable_handoff_error"] = r.durableHandoffErr
 		}
 		if response := mapValue(payload["response"]); len(response) > 0 {
+			response["ended_at"] = r.endedAt
 			response["final_rev"] = r.finalRev
 			response["durable_handoff"] = r.durableHandoff
 			response["durable_output_count"] = r.durableOutputCount
@@ -682,6 +706,13 @@ func (r *responseRun) appendEventLocked(event string, payload map[string]any, te
 				response["durable_handoff_error"] = r.durableHandoffErr
 			}
 		}
+	}
+	if terminal {
+		outcome := "cancelled-by-agent"
+		if event == "response.failed" {
+			outcome = "failed"
+		}
+		r.resolvePendingInteractionsLocked(outcome)
 	}
 	r.lastSequenceNumber++
 	payload["sequence_number"] = r.lastSequenceNumber
@@ -700,6 +731,13 @@ func (r *responseRun) appendEventLocked(event string, payload map[string]any, te
 		Event:    event,
 		Data:     data,
 	}, terminal)
+	if terminal && r.terminalNotify != nil && (event == "response.completed" || event == "response.failed") {
+		outcome := "completed"
+		if event == "response.failed" {
+			outcome = "failed"
+		}
+		r.terminalNotifyOnce.Do(func() { go r.terminalNotify(outcome) })
+	}
 	return nil
 }
 
@@ -923,6 +961,48 @@ func (r *responseRun) flushPendingGuardianReviewsLocked() {
 	}
 }
 
+func (r *responseRun) resolvePendingInteractionsLocked(outcome string) {
+	if len(r.recoveryEvents) == 0 {
+		return
+	}
+	if r.resolvedInteractions == nil {
+		r.resolvedInteractions = make(map[string]responseRunResolvedInteraction)
+	}
+	now := time.Now().UnixMilli()
+	for _, pending := range r.recoveryEvents {
+		kind, id, event, idField := "", "", "", ""
+		switch pending.Event {
+		case "response.approval.prompt":
+			kind, id = "approval", stringValue(pending.Payload["approval_id"])
+			event, idField = "response.approval.resolved", "approval_id"
+		case "response.ask_user.prompt":
+			kind, id = "ask_user", stringValue(pending.Payload["call_id"])
+			event, idField = "response.ask_user.resolved", "call_id"
+		}
+		if id == "" {
+			continue
+		}
+		key := kind + ":" + id
+		if _, resolved := r.resolvedInteractions[key]; resolved {
+			continue
+		}
+		r.resolvedInteractions[key] = responseRunResolvedInteraction{Outcome: outcome, ResolvedAt: now}
+		r.lastSequenceNumber++
+		payload := map[string]any{
+			"response_id": r.id, "run_epoch": r.runEpoch, "sequence_number": r.lastSequenceNumber,
+			idField: id, "outcome": outcome, "resolved_at": now,
+		}
+		data, err := json.Marshal(payload)
+		if err == nil {
+			r.storeEventLocked(responseRunEvent{Sequence: r.lastSequenceNumber, Event: event, Data: data}, false)
+		} else {
+			r.lastSequenceNumber--
+		}
+	}
+	clear(r.recoveryEvents)
+	r.recoveryEvents = nil
+}
+
 func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]any) {
 	if event == "response.completed" || event == "response.cancelled" || event == "response.failed" {
 		r.flushPendingGuardianReviewsLocked()
@@ -982,6 +1062,18 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 	}
 
 	switch event {
+	case "response.attempt.discard":
+		kept := r.recoveryMessages[:0]
+		for _, message := range r.recoveryMessages {
+			if message.Role == "assistant" || message.Role == "tool-group" {
+				continue
+			}
+			kept = append(kept, message)
+		}
+		r.recoveryMessages = kept
+		r.currentAssistant = -1
+		r.currentToolGroup = -1
+		clear(r.pendingGuardianByCall)
 	case "response.output_text.delta":
 		delta := stringValue(payload["delta"])
 		if delta == "" {
@@ -1259,6 +1351,7 @@ func (r *responseRun) snapshot() map[string]any {
 		"id":                   r.id,
 		"object":               "response",
 		"created":              r.created,
+		"started_at":           r.created * 1000,
 		"model":                r.model,
 		"status":               r.status,
 		"session_id":           r.sessionID,
@@ -1277,6 +1370,9 @@ func (r *responseRun) snapshot() map[string]any {
 		payload["anchor_row_id"] = r.anchorRowID
 	}
 	if r.status != "in_progress" {
+		if r.endedAt > 0 {
+			payload["ended_at"] = r.endedAt
+		}
 		payload["final_rev"] = r.finalRev
 		payload["durable_handoff"] = r.durableHandoff
 		payload["durable_output_count"] = r.durableOutputCount
@@ -1308,7 +1404,7 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 		"sequence_number":  r.lastSequenceNumber,
 		"min_replay_after": r.minReplayAfter,
 	}
-	if len(r.recoveryMessages) == 0 && len(r.recoveryEvents) == 0 {
+	if len(r.recoveryMessages) == 0 && len(r.recoveryEvents) == 0 && len(r.resolvedInteractions) == 0 {
 		return recovery
 	}
 
@@ -1346,8 +1442,10 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 		}
 		if msg.InterruptState != "" {
 			entry["interruptState"] = msg.InterruptState
+			entry["interrupt_state"] = msg.InterruptState
 		}
 		if msg.ClientMessageID != "" {
+			entry["clientMessageId"] = msg.ClientMessageID
 			entry["client_message_id"] = msg.ClientMessageID
 		}
 		if msg.Expanded {
@@ -1408,24 +1506,76 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 		}
 		recovery["events"] = events
 	}
+	if len(r.resolvedInteractions) > 0 {
+		resolved := make([]map[string]any, 0, len(r.resolvedInteractions))
+		for key, record := range r.resolvedInteractions {
+			kind, id, ok := strings.Cut(key, ":")
+			if !ok || id == "" {
+				continue
+			}
+			resolved = append(resolved, map[string]any{
+				"kind": kind, "request_id": id, "outcome": record.Outcome, "resolved_at": record.ResolvedAt,
+			})
+		}
+		sort.Slice(resolved, func(i, j int) bool {
+			return responseRunInt64Value(resolved[i]["resolved_at"], 0) < responseRunInt64Value(resolved[j]["resolved_at"], 0)
+		})
+		if len(resolved) > 100 {
+			resolved = resolved[len(resolved)-100:]
+		}
+		recovery["resolved_interactions"] = resolved
+	}
 	return recovery
 }
 
-func (r *responseRun) cancelRun() bool {
+func (r *responseRun) resolvedInteractionsSnapshot() []map[string]any {
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	resolved := make([]map[string]any, 0, len(r.resolvedInteractions))
+	for key, record := range r.resolvedInteractions {
+		kind, id, ok := strings.Cut(key, ":")
+		if !ok || id == "" {
+			continue
+		}
+		resolved = append(resolved, map[string]any{
+			"kind": kind, "request_id": id, "outcome": record.Outcome, "resolved_at": record.ResolvedAt,
+		})
+	}
+	sort.Slice(resolved, func(i, j int) bool {
+		return responseRunInt64Value(resolved[i]["resolved_at"], 0) < responseRunInt64Value(resolved[j]["resolved_at"], 0)
+	})
+	if len(resolved) > 100 {
+		resolved = resolved[len(resolved)-100:]
+	}
+	return resolved
+}
+
+func (r *responseRun) cancelPendingInteractions(outcome string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.resolvePendingInteractionsLocked(outcome)
+}
+
+func (r *responseRun) requestCancel() (context.CancelFunc, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.status != "in_progress" {
-		r.mu.Unlock()
-		return false
+		return nil, false
 	}
 	cancel := r.cancel
 	if cancel == nil && !r.cancelRequested {
-		r.mu.Unlock()
-		return false
+		return nil, false
 	}
 	r.cancelRequested = true
 	r.cancel = nil
-	r.mu.Unlock()
+	return cancel, true
+}
 
+func (r *responseRun) cancelRun() bool {
+	cancel, ok := r.requestCancel()
+	if !ok {
+		return false
+	}
 	if cancel != nil {
 		cancel()
 	}
@@ -1466,16 +1616,149 @@ func (r *responseRun) resolveApprovalRecovery(approvalID string) {
 	r.resolveRecoveryEvent("response.approval.prompt", "approval_id", strings.TrimSpace(approvalID))
 }
 
+func (r *responseRun) resolvedInteraction(kind, id string) (responseRunResolvedInteraction, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	value, ok := r.resolvedInteractions[kind+":"+strings.TrimSpace(id)]
+	return value, ok
+}
+
+func (r *responseRun) recordResolvedInteraction(kind, id, outcome string) responseRunResolvedInteraction {
+	id = strings.TrimSpace(id)
+	key := kind + ":" + id
+	r.mu.Lock()
+	if existing, ok := r.resolvedInteractions[key]; ok {
+		r.mu.Unlock()
+		return existing
+	}
+	if r.resolvedInteractions == nil {
+		r.resolvedInteractions = make(map[string]responseRunResolvedInteraction)
+	}
+	resolved := responseRunResolvedInteraction{Outcome: outcome, ResolvedAt: time.Now().UnixMilli()}
+	r.resolvedInteractions[key] = resolved
+	// Remove the actionable recovery prompt under the same lock as recording
+	// the outcome. Terminalization uses this lock too, so it cannot overwrite a
+	// successful decision while the prompt is still visible in recoveryEvents.
+	promptEvent, idField := "response.ask_user.prompt", "call_id"
+	if kind == "approval" {
+		promptEvent, idField = "response.approval.prompt", "approval_id"
+	}
+	kept := r.recoveryEvents[:0]
+	for _, pending := range r.recoveryEvents {
+		if pending.Event == promptEvent && strings.TrimSpace(stringValue(pending.Payload[idField])) == id {
+			continue
+		}
+		kept = append(kept, pending)
+	}
+	for i := len(kept); i < len(r.recoveryEvents); i++ {
+		r.recoveryEvents[i] = responseRunRecoveryEvent{}
+	}
+	r.recoveryEvents = kept
+	// Keep this bounded to the live response recovery window, evicting the
+	// oldest decision rather than a random still-relevant map entry.
+	if len(r.resolvedInteractions) > 128 {
+		oldestKey, oldestAt := "", int64(0)
+		for candidate, value := range r.resolvedInteractions {
+			if candidate == key {
+				continue
+			}
+			if oldestKey == "" || value.ResolvedAt < oldestAt {
+				oldestKey, oldestAt = candidate, value.ResolvedAt
+			}
+		}
+		delete(r.resolvedInteractions, oldestKey)
+	}
+	r.mu.Unlock()
+
+	payload := map[string]any{"outcome": resolved.Outcome, "resolved_at": resolved.ResolvedAt}
+	if kind == "approval" {
+		payload["approval_id"] = id
+	} else {
+		payload["call_id"] = id
+	}
+	_ = r.appendEvent("response."+kind+".resolved", payload)
+	return resolved
+}
+
+func (m *responseRunManager) resolvedInteractionForSession(sessionID, kind, id string) (responseRunResolvedInteraction, bool) {
+	if m == nil {
+		return responseRunResolvedInteraction{}, false
+	}
+	m.mu.Lock()
+	runs := make([]*responseRun, 0, len(m.runs))
+	for _, run := range m.runs {
+		if run != nil && run.sessionID == sessionID {
+			runs = append(runs, run)
+		}
+	}
+	m.mu.Unlock()
+	for _, run := range runs {
+		if resolved, ok := run.resolvedInteraction(kind, id); ok {
+			return resolved, true
+		}
+	}
+	return responseRunResolvedInteraction{}, false
+}
+
+func (m *responseRunManager) activeRun(sessionID string) *responseRun {
+	if m == nil {
+		return nil
+	}
+	if id := m.activeRunID(sessionID); id != "" {
+		if run, ok := m.get(id); ok {
+			return run
+		}
+	}
+	return nil
+}
+
+func (m *responseRunManager) latestRun(sessionID string) *responseRun {
+	if m == nil {
+		return nil
+	}
+	if run := m.activeRun(sessionID); run != nil {
+		return run
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var latest *responseRun
+	for _, run := range m.runs {
+		if run != nil && run.sessionID == sessionID && (latest == nil || run.created > latest.created) {
+			latest = run
+		}
+	}
+	return latest
+}
+
+type responseRunIdempotencyClaim struct {
+	runID       string
+	sessionID   string
+	fingerprint string
+}
+
 type responseRunManager struct {
 	mu                 sync.Mutex
 	runs               map[string]*responseRun
 	activeBySession    map[string]string
-	idempotencyByKey   map[string]string
+	idempotencyByKey   map[string]responseRunIdempotencyClaim
 	cleanupTimers      map[string]*time.Timer
 	nextEpochBySession map[string]int64
 	terminalRetention  time.Duration
 	runWG              sync.WaitGroup
 	closed             bool
+	boundaries         sync.Map // map[session ID]*sync.Mutex
+	idempotencyReplays atomic.Uint64
+}
+
+type responseRunDiagnostics struct {
+	IdempotencyReplays uint64 `json:"idempotency_replays"`
+}
+
+func (m *responseRunManager) Diagnostics() responseRunDiagnostics {
+	if m == nil {
+		return responseRunDiagnostics{}
+	}
+	return responseRunDiagnostics{IdempotencyReplays: m.idempotencyReplays.Load()}
 }
 
 const (
@@ -1485,29 +1768,96 @@ const (
 	defaultServeRequestTimeout         = 30 * time.Minute
 )
 
-var errResponseRunTimeout = errors.New("response run timeout")
+var (
+	errResponseRunTimeout     = errors.New("response run timeout")
+	errResponseRunKeyConflict = errors.New("idempotency key was already used with a different request")
+)
 
-// responseRunTimer bounds active execution time without charging time spent
-// waiting for a person to answer an interactive prompt.
+type responseRunTimerHandle interface {
+	Stop() bool
+}
+
+type responseRunClock interface {
+	Now() time.Time
+	AfterFunc(time.Duration, func()) responseRunTimerHandle
+}
+
+type realResponseRunClock struct{}
+
+func (realResponseRunClock) Now() time.Time { return time.Now() }
+
+func (realResponseRunClock) AfterFunc(delay time.Duration, fn func()) responseRunTimerHandle {
+	return time.AfterFunc(delay, fn)
+}
+
+// responseRunTimer bounds inactivity between the user request and each completed
+// LLM response. Interactive waits pause the current inactivity window.
 type responseRunTimer struct {
-	mu        sync.Mutex
-	cancel    context.CancelCauseFunc
-	timer     *time.Timer
-	remaining time.Duration
-	activeAt  time.Time
-	pauses    int
-	stopped   bool
+	mu         sync.Mutex
+	cancel     context.CancelCauseFunc
+	timer      responseRunTimerHandle
+	clock      responseRunClock
+	timeout    time.Duration
+	remaining  time.Duration
+	activeAt   time.Time
+	generation uint64
+	pauses     int
+	stopped    bool
 }
 
 func newResponseRunTimer(timeout time.Duration) (context.Context, *responseRunTimer) {
+	return newResponseRunTimerWithClock(timeout, realResponseRunClock{})
+}
+
+func newResponseRunTimerWithClock(timeout time.Duration, clock responseRunClock) (context.Context, *responseRunTimer) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	t := &responseRunTimer{
 		cancel:    cancel,
+		clock:     clock,
+		timeout:   timeout,
 		remaining: timeout,
-		activeAt:  time.Now(),
 	}
-	t.timer = time.AfterFunc(timeout, func() { cancel(errResponseRunTimeout) })
+	t.mu.Lock()
+	t.armLocked(timeout)
+	t.mu.Unlock()
 	return ctx, t
+}
+
+func (t *responseRunTimer) armLocked(remaining time.Duration) {
+	t.generation++
+	generation := t.generation
+	t.activeAt = t.clock.Now()
+	t.timer = t.clock.AfterFunc(remaining, func() {
+		t.mu.Lock()
+		if t.stopped || t.pauses > 0 || t.generation != generation {
+			t.mu.Unlock()
+			return
+		}
+		t.remaining = 0
+		t.stopped = true
+		t.mu.Unlock()
+		t.cancel(errResponseRunTimeout)
+	})
+}
+
+// refresh starts a fresh inactivity window after an LLM response completes.
+func (t *responseRunTimer) refresh() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.stopped {
+		return
+	}
+	if t.timer != nil {
+		t.timer.Stop()
+	}
+	t.generation++ // Invalidate a callback already leaving the stopped timer.
+	t.remaining = t.timeout
+	if t.pauses == 0 {
+		t.armLocked(t.remaining)
+	}
 }
 
 func (t *responseRunTimer) pause() func() {
@@ -1525,10 +1875,12 @@ func (t *responseRunTimer) pause() func() {
 		if t.timer != nil {
 			t.timer.Stop()
 		}
-		t.remaining -= time.Since(t.activeAt)
+		t.generation++ // Invalidate a callback already leaving the stopped timer.
+		t.remaining -= t.clock.Now().Sub(t.activeAt)
 		if t.remaining <= 0 {
 			t.remaining = 0
 			t.pauses = 0
+			t.stopped = true
 			expired = true
 		}
 	}
@@ -1556,9 +1908,8 @@ func (t *responseRunTimer) resume() {
 		return
 	}
 	remaining := t.remaining
-	t.activeAt = time.Now()
 	if remaining > 0 {
-		t.timer = time.AfterFunc(remaining, func() { t.cancel(errResponseRunTimeout) })
+		t.armLocked(remaining)
 	}
 	t.mu.Unlock()
 	if remaining <= 0 {
@@ -1576,6 +1927,7 @@ func (t *responseRunTimer) stop() {
 		return
 	}
 	t.stopped = true
+	t.generation++
 	if t.timer != nil {
 		t.timer.Stop()
 	}
@@ -1588,7 +1940,7 @@ func responseRunTimedOut(ctx context.Context) bool {
 }
 
 func responseRunTimeoutMessage(timeout time.Duration) string {
-	return fmt.Sprintf("Response run timed out after %s. Continue to resume from saved progress, or move long-running investigations to a background job.", humanDuration(timeout))
+	return fmt.Sprintf("Timed out because no LLM response completed within %s. Continue to resume from saved progress, or move long-running investigations to a background job.", humanDuration(timeout))
 }
 
 func responseRunDeadlineMessage(runCtx context.Context, timeout time.Duration) string {
@@ -1624,7 +1976,7 @@ func newServeResponseRunManagerWithRetention(retention time.Duration) *responseR
 	return &responseRunManager{
 		runs:               make(map[string]*responseRun),
 		activeBySession:    make(map[string]string),
-		idempotencyByKey:   make(map[string]string),
+		idempotencyByKey:   make(map[string]responseRunIdempotencyClaim),
 		cleanupTimers:      make(map[string]*time.Timer),
 		nextEpochBySession: make(map[string]int64),
 		terminalRetention:  retention,
@@ -1660,22 +2012,37 @@ func (m *responseRunManager) create(run *responseRun) error {
 	return err
 }
 
+func responseRunClaimMatches(claim responseRunIdempotencyClaim, fingerprint string) bool {
+	fingerprint = strings.TrimSpace(fingerprint)
+	return fingerprint == "" || claim.fingerprint == "" || claim.fingerprint == fingerprint
+}
+
 func (m *responseRunManager) createOrGetByIdempotency(run *responseRun, idempotencyKey string) (*responseRun, bool, error) {
 	if run == nil || strings.TrimSpace(run.id) == "" {
 		return nil, false, fmt.Errorf("response run id is required")
 	}
-	key := responseRunIdempotencyScope(run.sessionID, idempotencyKey)
+	scope := strings.TrimSpace(run.idempotencyScope)
+	if scope == "" {
+		scope = run.sessionID
+	}
+	key := responseRunIdempotencyScope(scope, idempotencyKey)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
 		return nil, false, fmt.Errorf("server is shutting down")
 	}
 	if key != "" {
-		if existingID := strings.TrimSpace(m.idempotencyByKey[key]); existingID != "" {
-			if existing, ok := m.runs[existingID]; ok && existing != nil {
+		if claim, ok := m.idempotencyByKey[key]; ok {
+			if !responseRunClaimMatches(claim, run.requestFingerprint) {
+				return nil, false, errResponseRunKeyConflict
+			}
+			if existing, exists := m.runs[claim.runID]; exists && existing != nil {
+				m.idempotencyReplays.Add(1)
 				return existing, true, nil
 			}
-			delete(m.idempotencyByKey, key)
+			if claim.runID != "" {
+				delete(m.idempotencyByKey, key)
+			}
 		}
 	}
 	if _, exists := m.runs[run.id]; exists {
@@ -1690,28 +2057,66 @@ func (m *responseRunManager) createOrGetByIdempotency(run *responseRun, idempote
 	run.runEpoch = nextEpoch
 	m.runs[run.id] = run
 	if key != "" {
-		m.idempotencyByKey[key] = run.id
+		m.idempotencyByKey[key] = responseRunIdempotencyClaim{runID: run.id, sessionID: run.sessionID, fingerprint: strings.TrimSpace(run.requestFingerprint)}
 	}
 	return run, false, nil
 }
 
-func (m *responseRunManager) getByIdempotencyKey(sessionID, idempotencyKey string) (*responseRun, bool) {
-	key := responseRunIdempotencyScope(sessionID, idempotencyKey)
+func (m *responseRunManager) reserveSessionForIdempotency(scope, idempotencyKey, fingerprint string) (string, error) {
+	key := responseRunIdempotencyScope(scope, idempotencyKey)
 	if key == "" {
-		return nil, false
+		return "", fmt.Errorf("idempotency scope and key are required")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	runID := strings.TrimSpace(m.idempotencyByKey[key])
-	if runID == "" {
-		return nil, false
+	if m.closed {
+		return "", fmt.Errorf("server is shutting down")
 	}
-	run, ok := m.runs[runID]
+	if claim, ok := m.idempotencyByKey[key]; ok {
+		if !responseRunClaimMatches(claim, fingerprint) {
+			return "", errResponseRunKeyConflict
+		}
+		if claim.sessionID != "" {
+			return claim.sessionID, nil
+		}
+	}
+	sessionID := session.NewID()
+	m.idempotencyByKey[key] = responseRunIdempotencyClaim{
+		sessionID:   sessionID,
+		fingerprint: strings.TrimSpace(fingerprint),
+	}
+	return sessionID, nil
+}
+
+func (m *responseRunManager) getByIdempotencyKey(sessionID, idempotencyKey string) (*responseRun, bool) {
+	run, found, _ := m.getByIdempotencyClaim(sessionID, idempotencyKey, "")
+	return run, found
+}
+
+func (m *responseRunManager) getByIdempotencyClaim(scope, idempotencyKey, fingerprint string) (*responseRun, bool, error) {
+	key := responseRunIdempotencyScope(scope, idempotencyKey)
+	if key == "" {
+		return nil, false, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	claim, ok := m.idempotencyByKey[key]
+	if !ok {
+		return nil, false, nil
+	}
+	if !responseRunClaimMatches(claim, fingerprint) {
+		return nil, false, errResponseRunKeyConflict
+	}
+	if strings.TrimSpace(claim.runID) == "" {
+		return nil, false, nil
+	}
+	run, ok := m.runs[claim.runID]
 	if !ok || run == nil {
 		delete(m.idempotencyByKey, key)
-		return nil, false
+		return nil, false, nil
 	}
-	return run, true
+	m.idempotencyReplays.Add(1)
+	return run, true, nil
 }
 
 func (m *responseRunManager) start(fn func()) error {
@@ -1741,8 +2146,8 @@ func (m *responseRunManager) delete(id string) {
 		delete(m.cleanupTimers, id)
 	}
 	delete(m.runs, id)
-	for key, runID := range m.idempotencyByKey {
-		if runID == id {
+	for key, claim := range m.idempotencyByKey {
+		if claim.runID == id {
 			delete(m.idempotencyByKey, key)
 		}
 	}
@@ -1771,8 +2176,8 @@ func (m *responseRunManager) scheduleCleanup(id string) {
 
 	if m.closed || m.terminalRetention <= 0 {
 		delete(m.runs, id)
-		for key, runID := range m.idempotencyByKey {
-			if runID == id {
+		for key, claim := range m.idempotencyByKey {
+			if claim.runID == id {
 				delete(m.idempotencyByKey, key)
 			}
 		}
@@ -1796,24 +2201,73 @@ func (m *responseRunManager) get(id string) (*responseRun, bool) {
 	return run, ok
 }
 
+func (m *responseRunManager) sessionBoundary(sessionID string) *sync.Mutex {
+	boundary, _ := m.boundaries.LoadOrStore(sessionID, &sync.Mutex{})
+	return boundary.(*sync.Mutex)
+}
+
+func (m *responseRunManager) trySetActiveRun(sessionID, runID string) bool {
+	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(runID) == "" {
+		return false
+	}
+	boundary := m.sessionBoundary(sessionID)
+	boundary.Lock()
+	defer boundary.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if active := m.activeBySession[sessionID]; active != "" && active != runID {
+		return false
+	}
+	m.activeBySession[sessionID] = runID
+	return true
+}
+
 func (m *responseRunManager) setActiveRun(sessionID, runID string) {
 	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(runID) == "" {
 		return
 	}
+	boundary := m.sessionBoundary(sessionID)
+	boundary.Lock()
+	defer boundary.Unlock()
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.activeBySession[sessionID] = runID
+	m.mu.Unlock()
 }
 
 func (m *responseRunManager) clearActiveRun(sessionID, runID string) {
 	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(runID) == "" {
 		return
 	}
+	boundary := m.sessionBoundary(sessionID)
+	boundary.Lock()
+	defer boundary.Unlock()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.activeBySession[sessionID] == runID {
 		delete(m.activeBySession, sessionID)
 	}
+}
+
+func (m *responseRunManager) withExpectedActiveRun(sessionID, expectedID string, expectedEpoch int64, fn func()) bool {
+	if m == nil || strings.TrimSpace(sessionID) == "" || fn == nil {
+		return false
+	}
+	boundary := m.sessionBoundary(sessionID)
+	boundary.Lock()
+	defer boundary.Unlock()
+	m.mu.Lock()
+	activeID := m.activeBySession[sessionID]
+	run := m.runs[activeID]
+	matches := strings.TrimSpace(expectedID) == "" || activeID == strings.TrimSpace(expectedID)
+	if matches && expectedEpoch > 0 {
+		matches = run != nil && run.runEpoch == expectedEpoch
+	}
+	m.mu.Unlock()
+	if !matches {
+		return false
+	}
+	fn()
+	return true
 }
 
 func (m *responseRunManager) activeRunID(sessionID string) string {
@@ -1829,9 +2283,15 @@ func (m *responseRunManager) runIfSessionIdle(sessionID string, fn func()) bool 
 	if strings.TrimSpace(sessionID) == "" || fn == nil {
 		return false
 	}
+	// Serialize only work for this session. The manager mutex protects the
+	// activity map briefly and is never held across persistence or other I/O.
+	boundary := m.sessionBoundary(sessionID)
+	boundary.Lock()
+	defer boundary.Unlock()
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.activeBySession[sessionID] != "" {
+	active := m.activeBySession[sessionID] != ""
+	m.mu.Unlock()
+	if active {
 		return false
 	}
 	fn()
@@ -1872,6 +2332,7 @@ func (m *responseRunManager) CloseContext(ctx context.Context) {
 	m.mu.Unlock()
 
 	for _, run := range runs {
+		run.cancelPendingInteractions("cancelled-by-agent")
 		_ = run.cancelRun()
 	}
 	waitDone := make(chan struct{})
@@ -2101,8 +2562,19 @@ func (s *serveServer) persistResponseRunErrorEvent(ctx context.Context, runtime 
 func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev llm.Event) error {
 	switch ev.Type {
 	case llm.EventTextDelta:
-		if state.toolsSeen || state.assistantBoundaryPending {
-			state.assistantSegmentOrdinal++
+		segmentOrdinal := state.assistantSegmentOrdinal
+		if ev.ProviderTurnIndexSet && ev.ProviderTurnIndex > segmentOrdinal {
+			// Durable assistant rows are keyed by the engine's provider turn index.
+			// Tool-only turns emit no text, so counting only text-after-tool
+			// boundaries makes the live projection lag those durable identities.
+			segmentOrdinal = ev.ProviderTurnIndex
+		} else if state.toolsSeen || state.assistantBoundaryPending {
+			// Preserve an ordered boundary for inline tools and interjections that
+			// continue within one provider turn.
+			segmentOrdinal++
+		}
+		if segmentOrdinal != state.assistantSegmentOrdinal {
+			state.assistantSegmentOrdinal = segmentOrdinal
 			if err := run.appendEvent("response.output_text.new_segment", map[string]any{
 				"output_index":              state.outputIndex,
 				"assistant_segment_ordinal": state.assistantSegmentOrdinal,
@@ -2130,30 +2602,36 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 			return nil
 		}
 		state.toolsSeen = true
+		itemID := "fc_" + ev.Tool.ID
 		item := map[string]any{
-			"id":        "fc_" + ev.Tool.ID,
+			"id":        itemID,
 			"type":      "function_call",
 			"call_id":   ev.Tool.ID,
 			"name":      ev.Tool.Name,
 			"arguments": string(ev.Tool.Arguments),
 		}
-		if err := run.appendEvent("response.output_item.added", map[string]any{
+		identity := map[string]any{
 			"output_index":              state.outputIndex,
 			"assistant_segment_ordinal": state.assistantSegmentOrdinal,
-			"item":                      item,
-		}); err != nil {
+			"call_id":                   ev.Tool.ID,
+			"item_id":                   itemID,
+		}
+		if ev.ProviderTurnIndexSet {
+			identity["provider_turn_index"] = ev.ProviderTurnIndex
+		}
+		added := maps.Clone(identity)
+		added["item"] = item
+		if err := run.appendEvent("response.output_item.added", added); err != nil {
 			return err
 		}
-		if err := run.appendEvent("response.function_call_arguments.delta", map[string]any{
-			"output_index": state.outputIndex,
-			"delta":        string(ev.Tool.Arguments),
-		}); err != nil {
+		delta := maps.Clone(identity)
+		delta["delta"] = string(ev.Tool.Arguments)
+		if err := run.appendEvent("response.function_call_arguments.delta", delta); err != nil {
 			return err
 		}
-		if err := run.appendEvent("response.output_item.done", map[string]any{
-			"output_index": state.outputIndex,
-			"item":         item,
-		}); err != nil {
+		done := maps.Clone(identity)
+		done["item"] = item
+		if err := run.appendEvent("response.output_item.done", done); err != nil {
 			return err
 		}
 		state.outputIndex++
@@ -2211,14 +2689,41 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 		// Metadata only — diff content is served by the session
 		// file-changes endpoints on demand.
 		for _, fc := range ev.ToolFileChanges {
+			if !fc.TrustedPersisted {
+				if err := run.appendEvent("response.output_claim_diagnostic", map[string]any{
+					"reason": "metadata_unverified", "coverage_status": "unavailable",
+					"message": "unverified tool file metadata was not attributed", "tool_call_id": ev.ToolCallID,
+				}); err != nil {
+					return err
+				}
+				continue
+			}
 			if err := run.appendEvent("response.file_change", map[string]any{
-				"path":         fc.Path,
-				"kind":         fc.Kind,
-				"adds":         fc.Adds,
-				"dels":         fc.Dels,
-				"seq":          fc.Seq,
-				"truncated":    fc.Truncated,
+				"path": fc.Path, "kind": fc.Kind, "adds": fc.Adds, "dels": fc.Dels,
+				"seq": fc.Seq, "event_seq": fc.EventSeq, "truncated": fc.Truncated,
+				"provenance": fc.Provenance, "provenances": fc.Provenances,
+				"baseline_state": fc.BaselineState, "content_status": fc.ContentStatus,
+				"content_available": fc.ContentAvailable, "claim_coverage": fc.ClaimCoverage,
 				"tool_call_id": ev.ToolCallID,
+			}); err != nil {
+				return err
+			}
+		}
+		for _, observation := range ev.ToolFilesystemObservations {
+			if err := run.appendEvent("response.filesystem_observation", map[string]any{
+				"id": observation.ID, "classification": observation.Classification, "root": observation.Root,
+				"created_count": observation.CreatedCount, "modified_count": observation.ModifiedCount, "deleted_count": observation.DeletedCount,
+				"sampled_paths": observation.SampledPaths, "samples_truncated": observation.SamplesTruncated,
+				"coverage_status": observation.CoverageStatus, "event_seq": observation.EventSeq,
+			}); err != nil {
+				return err
+			}
+		}
+		for _, diagnostic := range ev.ToolOutputClaimDiagnostics {
+			if err := run.appendEvent("response.output_claim_diagnostic", map[string]any{
+				"normalized_pattern": diagnostic.NormalizedPattern, "claim_kind": diagnostic.ClaimKind,
+				"reason": diagnostic.Reason, "coverage_status": diagnostic.CoverageStatus,
+				"matching_path_count": diagnostic.MatchingPathCount, "message": diagnostic.Message,
 			}); err != nil {
 				return err
 			}
@@ -2461,7 +2966,9 @@ func (s *serveServer) discardPendingInterjectionsForResponseRun(run *responseRun
 	if !ok || rt == nil || rt.engine == nil {
 		return
 	}
-	rt.engine.DiscardPendingInterjections()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	rt.discardPendingInterjections(ctx, sessionID)
 }
 
 func (s *serveServer) handleResponseByID(w http.ResponseWriter, r *http.Request) {
@@ -2512,16 +3019,32 @@ func (s *serveServer) handleResponseByID(w http.ResponseWriter, r *http.Request)
 			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 			return
 		}
-		if !run.cancelRun() {
-			writeOpenAIError(w, http.StatusConflict, "conflict_error", "response is not running")
+		cancel, accepted := run.requestCancel()
+		if !accepted {
+			snapshot := run.snapshot()
+			writeJSON(w, http.StatusOK, map[string]any{
+				"id":       runID,
+				"object":   "response.cancel",
+				"status":   snapshot["status"],
+				"replayed": true,
+			})
 			return
 		}
-		s.discardPendingInterjectionsForResponseRun(run)
 		writeJSON(w, http.StatusOK, map[string]any{
-			"id":     runID,
-			"object": "response.cancel",
-			"status": "cancelling",
+			"id":       runID,
+			"object":   "response.cancel",
+			"status":   "cancelling",
+			"replayed": false,
 		})
+		// The cancellation request is accepted once it is recorded above. Provider,
+		// tool, and interjection cleanup can wind down without holding the HTTP
+		// acknowledgement open.
+		go func() {
+			if cancel != nil {
+				cancel()
+			}
+			s.discardPendingInterjectionsForResponseRun(run)
+		}()
 		return
 	}
 
@@ -2756,11 +3279,18 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	//  - Clients reconnect via GET /v1/responses/{id}/events?after=N and replay
 	//    events they missed, which only works if the run kept going.
 	//  - Explicit cancellation is available via POST /v1/responses/{id}/cancel.
-	//  - serve.response_timeout bounds active execution, excluding time spent
-	//    waiting for a person to answer an interactive prompt.
+	//  - serve.response_timeout bounds inactivity until the next completed LLM
+	//    response, excluding time spent waiting for an interactive answer.
 	runCtx, runTimer := newResponseRunTimer(s.responseTimeout())
 	cancel := runTimer.stop
 	run := newResponseRun(respID, sessionID, options.previousResponseID, model, created, cancel)
+	run.idempotencyScope = strings.TrimSpace(options.idempotencyScope)
+	run.requestFingerprint = strings.TrimSpace(options.requestFingerprint)
+	if subscriptionID := strings.TrimSpace(options.notificationSubscriptionID); subscriptionID != "" {
+		run.terminalNotify = func(outcome string) {
+			s.enqueueCompletionPush(run.id, run.sessionID, subscriptionID, outcome, time.Now().UTC())
+		}
+	}
 	for i := len(inputMessages) - 1; i >= 0; i-- {
 		if inputMessages[i].Role == llm.RoleUser && strings.TrimSpace(inputMessages[i].ClientMessageID) != "" {
 			run.clientMessageID = strings.TrimSpace(inputMessages[i].ClientMessageID)
@@ -2783,6 +3313,13 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			options.onDone()
 		}
 		return createdRun, nil
+	}
+	// Publish activity before the goroutine can hydrate history or begin provider
+	// work. If another run already owns the session, the per-runtime TryLock will
+	// preserve the existing behavior of producing a failed response-run object;
+	// trySetActiveRun never overwrites that owner.
+	if sessionID != "" {
+		mgr.trySetActiveRun(sessionID, respID)
 	}
 
 	if options.uiSession {
@@ -2837,12 +3374,14 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		}
 		runtime.approvalCtx = runCtx
 		runtime.pauseResponseTimeout = runTimer.pause
+		runtime.refreshResponseTimeout = runTimer.refresh
 		runtime.approvalMu.Unlock()
 		defer func() {
 			runtime.approvalMu.Lock()
 			runtime.approvalEventFunc = nil
 			runtime.approvalCtx = nil
 			runtime.pauseResponseTimeout = nil
+			runtime.refreshResponseTimeout = nil
 			runtime.approvalMu.Unlock()
 		}()
 
@@ -2955,7 +3494,9 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			"response": completeResponse,
 		}, result.Usage, result.SessionUsage); err != nil {
 			log.Printf("response run %s failed to append completion event: %v", respID, err)
+			return
 		}
+		s.scheduleAutoTitle(sessionID, runtime.providerKey)
 	}); err != nil {
 		cancel()
 		mgr.clearActiveRun(sessionID, respID)

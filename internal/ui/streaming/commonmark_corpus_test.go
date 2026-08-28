@@ -8,16 +8,31 @@ import (
 
 func TestCommonMarkFullSpecMarkdownStreamingParity(t *testing.T) {
 	input := []byte(commonMarkSpecMarkdown(t))
-	want := renderDirectBytes(t, input)
-	cases := []corpusChunkCase{
-		{name: "adversarial-markdown-cuts", chunks: adversarialMarkdownChunks(input)},
+	chunks := adversarialMarkdownChunks(input)
+	type renderResult struct {
+		output []byte
+		err    error
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := renderStreamedBytes(t, tc.chunks)
-			assertRenderedEqual(t, want, got, tc.chunks)
-		})
+	directResult := make(chan renderResult, 1)
+	streamedResult := make(chan renderResult, 1)
+	go func() {
+		output, err := renderDirectBytesResult(input)
+		directResult <- renderResult{output: output, err: err}
+	}()
+	go func() {
+		output, err := renderStreamedBytesResult(chunks)
+		streamedResult <- renderResult{output: output, err: err}
+	}()
+
+	want := <-directResult
+	got := <-streamedResult
+	if want.err != nil {
+		t.Fatalf("direct render failed: %v", want.err)
 	}
+	if got.err != nil {
+		t.Fatalf("streamed render failed: %v", got.err)
+	}
+	assertRenderedEqual(t, want.output, got.output, chunks)
 }
 
 func commonMarkSpecMarkdown(tb testing.TB) string {

@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -38,18 +39,24 @@ const (
 
 // Worktree describes a managed git worktree.
 type Worktree struct {
-	Name        string    `json:"name"`
-	Dir         string    `json:"dir"`
-	RepoRoot    string    `json:"repo_root,omitempty"`
-	Branch      string    `json:"branch,omitempty"`
-	Base        string    `json:"base"` // full base SHA
-	Detached    bool      `json:"detached"`
-	Status      Status    `json:"status"`
-	DirtyFiles  int       `json:"dirty_files"`
-	HeadSHA     string    `json:"head_sha"`
-	CreatedAt   time.Time `json:"created_at,omitempty"`
-	LastBoundAt time.Time `json:"last_bound_at,omitempty"`
-	Orphaned    bool      `json:"orphaned,omitempty"`
+	Name              string    `json:"name"`
+	Dir               string    `json:"dir"`
+	RepoRoot          string    `json:"repo_root,omitempty"`
+	Branch            string    `json:"branch,omitempty"`
+	Base              string    `json:"base"` // full base SHA
+	Detached          bool      `json:"detached"`
+	Status            Status    `json:"status"`
+	DirtyFiles        int       `json:"dirty_files"`
+	HeadSHA           string    `json:"head_sha"`
+	Upstream          string    `json:"upstream,omitempty"`
+	UpstreamAvailable bool      `json:"upstream_available"`
+	Ahead             int       `json:"ahead"`
+	Behind            int       `json:"behind"`
+	Diverged          bool      `json:"diverged"`
+	MetadataError     string    `json:"metadata_error,omitempty"`
+	CreatedAt         time.Time `json:"created_at,omitempty"`
+	LastBoundAt       time.Time `json:"last_bound_at,omitempty"`
+	Orphaned          bool      `json:"orphaned,omitempty"`
 }
 
 // Progress is emitted by long-running worktree operations.
@@ -711,6 +718,76 @@ func Create(ctx context.Context, repoRoot string, opts CreateOptions) (*Worktree
 	return wt, nil
 }
 
+func populateCheckoutDetails(wt *Worktree) {
+	if wt == nil || strings.TrimSpace(wt.Dir) == "" {
+		return
+	}
+	if wt.HeadSHA == "" {
+		wt.HeadSHA, _ = revParseFull(wt.Dir, "HEAD")
+	}
+	if wt.Branch == "" && !wt.Detached {
+		branchOut, _ := runGit(wt.Dir, "symbolic-ref", "--short", "-q", "HEAD")
+		wt.Branch = strings.TrimSpace(branchOut)
+		wt.Detached = wt.Branch == ""
+	}
+	if wt.Detached {
+		return
+	}
+	upstream, err := runGit(wt.Dir, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+	if err != nil {
+		// A branch without an upstream is a normal, available state.
+		return
+	}
+	wt.Upstream = strings.TrimSpace(upstream)
+	wt.UpstreamAvailable = wt.Upstream != ""
+	if !wt.UpstreamAvailable {
+		return
+	}
+	counts, err := runGit(wt.Dir, "rev-list", "--left-right", "--count", "HEAD...@{upstream}")
+	if err != nil {
+		wt.MetadataError = "divergence unavailable"
+		return
+	}
+	fields := strings.Fields(counts)
+	if len(fields) != 2 {
+		wt.MetadataError = "divergence unavailable"
+		return
+	}
+	wt.Ahead, err = strconv.Atoi(fields[0])
+	if err != nil {
+		wt.MetadataError = "divergence unavailable"
+		return
+	}
+	wt.Behind, err = strconv.Atoi(fields[1])
+	if err != nil {
+		wt.MetadataError = "divergence unavailable"
+		return
+	}
+	wt.Diverged = wt.Ahead > 0 && wt.Behind > 0
+}
+
+// DescribeCheckout returns HEAD, branch, upstream, divergence, and dirty detail
+// for any checkout, including the repository root.
+func DescribeCheckout(dir string) (Worktree, error) {
+	root, err := canonicalRepoRoot(dir)
+	if err != nil {
+		return Worktree{}, err
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return Worktree{}, err
+	}
+	wt := Worktree{Name: filepath.Base(abs), Dir: abs, RepoRoot: root, Status: StatusReady}
+	populateCheckoutDetails(&wt)
+	status, statusErr := runGit(abs, "status", "--porcelain", "--untracked-files=normal")
+	if statusErr != nil {
+		wt.MetadataError = "status unavailable"
+	} else if strings.TrimSpace(status) != "" {
+		wt.DirtyFiles = len(strings.Split(strings.TrimSpace(status), "\n"))
+	}
+	return wt, nil
+}
+
 // List returns managed worktrees for the repository, excluding the main checkout.
 func List(repoRoot string) ([]Worktree, error) {
 	mainRoot, err := canonicalRepoRoot(repoRoot)
@@ -828,6 +905,9 @@ func listForRoot(mainRoot, bucket string) ([]Worktree, error) {
 		result = append(result, wt)
 	}
 	populateDirtyCounts(result)
+	for index := range result {
+		populateCheckoutDetails(&result[index])
+	}
 	// Drop stale metadata whose directory is no longer in git's worktree list.
 	for dir, m := range metasByDir {
 		if !seen[dir] {

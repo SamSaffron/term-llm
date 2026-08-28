@@ -100,6 +100,26 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 	persistedGoalRead := false
 	var runtimeDefaultModel string
 	runtimeMetaRead := false
+	pendingItems := make([]map[string]any, 0)
+	pendingIDs := make(map[string]struct{})
+	pendingAuthoritative := false
+	if pendingStore, ok := session.AsPendingInterjectionStore(s.store); ok {
+		if entries, err := pendingStore.ListPendingInterjections(r.Context(), sessionID); err == nil {
+			pendingAuthoritative = true
+			for _, entry := range entries {
+				item := map[string]any{
+					"id":     entry.ID,
+					"text":   entry.DisplayText,
+					"status": string(llm.InterjectionQueued),
+				}
+				if entry.AttachmentSummary != "" {
+					item["attachment_summary"] = entry.AttachmentSummary
+				}
+				pendingItems = append(pendingItems, item)
+				pendingIDs[entry.ID] = struct{}{}
+			}
+		}
+	}
 
 	if s.sessionMgr != nil {
 		if rt, ok := s.sessionMgr.Get(sessionID); ok && rt != nil {
@@ -115,8 +135,10 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 			}
 			if rt.engine != nil {
 				if entries := rt.engine.ListPendingInterjections(); len(entries) > 0 {
-					items := make([]map[string]any, 0, len(entries))
 					for _, entry := range entries {
+						if _, exists := pendingIDs[entry.ID]; exists {
+							continue
+						}
 						text := strings.TrimSpace(entry.DisplayText)
 						if text == "" {
 							text = strings.TrimSpace(llm.MessageText(entry.Message))
@@ -132,10 +154,9 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 						if summary := strings.TrimSpace(llm.MessageAttachmentSummary(entry.Message)); summary != "" {
 							item["attachment_summary"] = summary
 						}
-						items = append(items, item)
+						pendingItems = append(pendingItems, item)
+						pendingIDs[entry.ID] = struct{}{}
 					}
-					resp["pending_interjections"] = items
-					resp["pending_interjection"] = items[0]
 				}
 			}
 			if pk := strings.TrimSpace(rt.providerKey); pk != "" {
@@ -169,6 +190,19 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 					resp["last_error"] = lastErr
 				}
 			}
+		}
+	}
+	if s.responseRuns != nil {
+		if run := s.responseRuns.latestRun(sessionID); run != nil {
+			if resolved := run.resolvedInteractionsSnapshot(); len(resolved) > 0 {
+				resp["resolved_interactions"] = resolved
+			}
+		}
+	}
+	if pendingAuthoritative || len(pendingItems) > 0 {
+		resp["pending_interjections"] = pendingItems
+		if len(pendingItems) > 0 {
+			resp["pending_interjection"] = pendingItems[0]
 		}
 	}
 

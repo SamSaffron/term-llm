@@ -19,22 +19,175 @@ import (
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
+type responseTimeoutDelayTool struct {
+	delay time.Duration
+}
+
+func (t responseTimeoutDelayTool) Spec() llm.ToolSpec {
+	return llm.ToolSpec{Name: "response_timeout_delay", Description: "wait before continuing", Schema: map[string]any{"type": "object"}}
+}
+
+func (t responseTimeoutDelayTool) Execute(ctx context.Context, _ json.RawMessage) (llm.ToolOutput, error) {
+	select {
+	case <-time.After(t.delay):
+		return llm.ToolOutput{Content: "done"}, nil
+	case <-ctx.Done():
+		return llm.ToolOutput{}, ctx.Err()
+	}
+}
+
+func (responseTimeoutDelayTool) Preview(json.RawMessage) string { return "" }
+
+type fakeResponseRunClock struct {
+	mu     sync.Mutex
+	now    time.Time
+	timers []*fakeResponseRunTimer
+}
+
+type fakeResponseRunTimer struct {
+	clock   *fakeResponseRunClock
+	at      time.Time
+	fn      func()
+	stopped bool
+}
+
+func newFakeResponseRunClock() *fakeResponseRunClock {
+	return &fakeResponseRunClock{now: time.Unix(0, 0)}
+}
+
+func (c *fakeResponseRunClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *fakeResponseRunClock) AfterFunc(delay time.Duration, fn func()) responseRunTimerHandle {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	timer := &fakeResponseRunTimer{clock: c, at: c.now.Add(delay), fn: fn}
+	c.timers = append(c.timers, timer)
+	return timer
+}
+
+func (c *fakeResponseRunClock) Advance(elapsed time.Duration) {
+	c.mu.Lock()
+	c.now = c.now.Add(elapsed)
+	var ready []func()
+	for _, timer := range c.timers {
+		if !timer.stopped && !timer.at.After(c.now) {
+			timer.stopped = true
+			ready = append(ready, timer.fn)
+		}
+	}
+	c.mu.Unlock()
+	for _, fn := range ready {
+		fn()
+	}
+}
+
+func (t *fakeResponseRunTimer) Stop() bool {
+	t.clock.mu.Lock()
+	defer t.clock.mu.Unlock()
+	if t.stopped {
+		return false
+	}
+	t.stopped = true
+	return true
+}
+
+func TestStartResponseRunRefreshesTimeoutAfterLLMResponse(t *testing.T) {
+	const timeout = 100 * time.Millisecond
+	provider := llm.NewMockProvider("mock").
+		AddTurn(llm.MockTurn{
+			Delay: 60 * time.Millisecond,
+			ToolCalls: []llm.ToolCall{{
+				ID:        "call-delay",
+				Name:      "response_timeout_delay",
+				Arguments: json.RawMessage(`{}`),
+			}},
+		}).
+		AddTurn(llm.MockTurn{Text: "finished"})
+	registry := llm.NewToolRegistry()
+	registry.Register(responseTimeoutDelayTool{delay: 60 * time.Millisecond})
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  "mock",
+		engine:       llm.NewEngine(provider, registry),
+		defaultModel: "mock-model",
+	}
+	rt.Touch()
+	srv := &serveServer{
+		cfg:          serveServerConfig{responseTimeout: timeout},
+		responseRuns: newServeResponseRunManager(),
+	}
+	defer srv.responseRuns.Close()
+
+	run, err := srv.startResponseRun(rt, true, false, []llm.Message{llm.UserText("work")}, llm.Request{
+		SessionID: "sess_refresh_timeout",
+		Tools:     []llm.ToolSpec{responseTimeoutDelayTool{}.Spec()},
+	}, "sess_refresh_timeout", startResponseRunOptions{})
+	if err != nil {
+		t.Fatalf("startResponseRun: %v", err)
+	}
+	waitForServeCondition(t, 2*time.Second, func() bool {
+		return stringValue(run.snapshot()["status"]) == "completed"
+	}, "response run to complete after refreshed timeout")
+}
+
+func TestResponseRunTimerRefreshStartsFreshInactivityWindow(t *testing.T) {
+	clock := newFakeResponseRunClock()
+	ctx, timer := newResponseRunTimerWithClock(200*time.Millisecond, clock)
+	defer timer.stop()
+
+	clock.Advance(130 * time.Millisecond)
+	timer.refresh()
+	clock.Advance(100 * time.Millisecond)
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("timer elapsed at original deadline after refresh: %v", context.Cause(ctx))
+	}
+	clock.Advance(100 * time.Millisecond)
+	if !responseRunTimedOut(ctx) {
+		t.Fatalf("timer cause = %v, want response timeout", context.Cause(ctx))
+	}
+}
+
+func TestResponseRunTimerRefreshWhilePausedAppliesOnResume(t *testing.T) {
+	clock := newFakeResponseRunClock()
+	ctx, timer := newResponseRunTimerWithClock(150*time.Millisecond, clock)
+	defer timer.stop()
+
+	clock.Advance(80 * time.Millisecond)
+	resume := timer.pause()
+	timer.refresh()
+	clock.Advance(180 * time.Millisecond)
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("timer elapsed while paused after refresh: %v", err)
+	}
+
+	resume()
+	clock.Advance(80 * time.Millisecond)
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("refreshed timer elapsed too soon after resume: %v", context.Cause(ctx))
+	}
+	clock.Advance(70 * time.Millisecond)
+	if !responseRunTimedOut(ctx) {
+		t.Fatalf("timer cause = %v, want response timeout", context.Cause(ctx))
+	}
+}
+
 func TestResponseRunTimerExcludesInteractiveWait(t *testing.T) {
-	ctx, timer := newResponseRunTimer(500 * time.Millisecond)
+	clock := newFakeResponseRunClock()
+	ctx, timer := newResponseRunTimerWithClock(500*time.Millisecond, clock)
 	defer timer.stop()
 	resume := timer.pause()
-	time.Sleep(600 * time.Millisecond)
+	clock.Advance(600 * time.Millisecond)
 	if err := ctx.Err(); err != nil {
 		t.Fatalf("timer elapsed while paused: %v", err)
 	}
 	resume()
-	select {
-	case <-ctx.Done():
-		if !responseRunTimedOut(ctx) {
-			t.Fatalf("timer cause = %v, want response timeout", context.Cause(ctx))
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timer did not resume after interactive wait")
+	clock.Advance(500 * time.Millisecond)
+	if !responseRunTimedOut(ctx) {
+		t.Fatalf("timer cause = %v, want response timeout", context.Cause(ctx))
 	}
 }
 
@@ -89,6 +242,48 @@ func TestResponseRunTimerStopIsCancellationNotTimeout(t *testing.T) {
 	}
 	if responseRunTimedOut(ctx) {
 		t.Fatalf("stop cause = %v, must not be classified as timeout", context.Cause(ctx))
+	}
+}
+
+func TestResponseRunTerminalEmitsPendingInteractionResolutionsFirst(t *testing.T) {
+	run := newResponseRun("resp-interactions", "sess-interactions", "", "test", time.Now().Unix(), nil)
+	sub := run.subscribe(0)
+	if sub.ch == nil {
+		t.Fatal("expected live subscription")
+	}
+	if err := run.appendEvent("response.approval.prompt", map[string]any{"approval_id": "approval-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.appendEvent("response.ask_user.prompt", map[string]any{"call_id": "call-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.fail(map[string]any{"response": map[string]any{"id": run.id}}, "provider_error", "failed"); err != nil {
+		t.Fatal(err)
+	}
+	var events []responseRunEvent
+	for event := range sub.ch {
+		events = append(events, event)
+	}
+	if len(events) != 5 {
+		t.Fatalf("events = %d, want prompts, resolutions, and terminal", len(events))
+	}
+	want := []string{
+		"response.approval.prompt", "response.ask_user.prompt",
+		"response.approval.resolved", "response.ask_user.resolved", "response.failed",
+	}
+	for i, event := range events {
+		if event.Event != want[i] {
+			t.Fatalf("event[%d] = %q, want %q", i, event.Event, want[i])
+		}
+		if event.Sequence != int64(i+1) {
+			t.Fatalf("event[%d].sequence = %d, want %d", i, event.Sequence, i+1)
+		}
+	}
+	for _, key := range []string{"approval:approval-1", "ask_user:call-1"} {
+		resolved, ok := run.resolvedInteractions[key]
+		if !ok || resolved.Outcome != "failed" {
+			t.Fatalf("resolved interaction %q = %#v, %v", key, resolved, ok)
+		}
 	}
 }
 
@@ -852,7 +1047,79 @@ func TestSuppressedServerToolStillAdvancesAssistantSegmentIdentity(t *testing.T)
 	}
 }
 
-func TestAppendResponseRunEventKeepsClientToolFileChanges(t *testing.T) {
+func TestProviderTurnIdentitySkipsToolOnlyAssistantSegments(t *testing.T) {
+	server := &serveServer{}
+	run := newResponseRun("resp_tool_only_turns", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	state := newResponseRunStreamState("mock", "")
+	events := []llm.Event{
+		{Type: llm.EventTextDelta, Text: "first", ProviderTurnIndex: 0, ProviderTurnIndexSet: true},
+		{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "call-0", Name: "shell"}, ProviderTurnIndex: 0, ProviderTurnIndexSet: true},
+		{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "call-1", Name: "grep"}, ProviderTurnIndex: 1, ProviderTurnIndexSet: true},
+		{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "call-2", Name: "read_file"}, ProviderTurnIndex: 2, ProviderTurnIndexSet: true},
+		{Type: llm.EventTextDelta, Text: "after tool-only turns", ProviderTurnIndex: 3, ProviderTurnIndexSet: true},
+	}
+	for _, event := range events {
+		if err := server.appendResponseRunEvent(nil, run, state, event); err != nil {
+			t.Fatalf("append %v: %v", event.Type, err)
+		}
+	}
+
+	var lastText map[string]any
+	for _, event := range run.events {
+		if event.Event != "response.output_text.delta" {
+			continue
+		}
+		if err := json.Unmarshal(event.Data, &lastText); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := lastText["assistant_segment_ordinal"]; got != float64(3) {
+		t.Fatalf("assistant segment ordinal = %v, want provider turn 3", got)
+	}
+}
+
+func TestToolArgumentDeltaCarriesStableIdentityAndProviderTurn(t *testing.T) {
+	server := &serveServer{}
+	run := newResponseRun("resp_tool_identity", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	state := newResponseRunStreamState("mock", "")
+	if err := server.appendResponseRunEvent(nil, run, state, llm.Event{
+		Type:                 llm.EventToolCall,
+		Tool:                 &llm.ToolCall{ID: "call-parallel", Name: "shell", Arguments: json.RawMessage(`{"command":"pwd"}`)},
+		ProviderTurnIndex:    4,
+		ProviderTurnIndexSet: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	wantEvents := map[string]bool{
+		"response.output_item.added":             false,
+		"response.function_call_arguments.delta": false,
+		"response.output_item.done":              false,
+	}
+	for _, event := range run.events {
+		if _, ok := wantEvents[event.Event]; !ok {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(event.Data, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["call_id"] != "call-parallel" || payload["item_id"] != "fc_call-parallel" {
+			t.Fatalf("%s identity = %#v", event.Event, payload)
+		}
+		if payload["provider_turn_index"] != float64(4) {
+			t.Fatalf("%s provider turn = %#v", event.Event, payload)
+		}
+		wantEvents[event.Event] = true
+	}
+	for event, found := range wantEvents {
+		if !found {
+			t.Fatalf("missing %s", event)
+		}
+	}
+}
+
+func TestAppendResponseRunEventRejectsUnverifiedClientToolFileChanges(t *testing.T) {
 	registry := llm.NewToolRegistry()
 	runtime := &serveRuntime{engine: llm.NewEngine(llm.NewMockProvider("mock"), registry)}
 	server := &serveServer{cfg: serveServerConfig{suppressServerTools: true}}
@@ -875,14 +1142,17 @@ func TestAppendResponseRunEventKeepsClientToolFileChanges(t *testing.T) {
 
 	run.mu.Lock()
 	defer run.mu.Unlock()
-	var sawFileChange bool
+	var sawFileChange, sawDiagnostic bool
 	for _, ev := range run.events {
 		if ev.Event == "response.file_change" {
 			sawFileChange = true
 		}
+		if ev.Event == "response.output_claim_diagnostic" {
+			sawDiagnostic = true
+		}
 	}
-	if !sawFileChange {
-		t.Fatalf("events = %+v, want response.file_change for non-server tool", run.events)
+	if sawFileChange || !sawDiagnostic {
+		t.Fatalf("events = %+v, want diagnostic and no attributed file change for unverified client metadata", run.events)
 	}
 }
 
@@ -1437,8 +1707,14 @@ func TestResponseRunInterjectionSplitsRecoveryMessages(t *testing.T) {
 	if got := messages[1]["client_message_id"]; got != "client-check-x" {
 		t.Fatalf("messages[1].client_message_id = %v, want client-check-x", got)
 	}
+	if got := messages[1]["clientMessageId"]; got != "client-check-x" {
+		t.Fatalf("messages[1].clientMessageId = %v, want client-check-x", got)
+	}
 	if got := messages[1]["interruptState"]; got != "interject" {
 		t.Fatalf("messages[1].interruptState = %v, want interject", got)
+	}
+	if got := messages[1]["interrupt_state"]; got != "interject" {
+		t.Fatalf("messages[1].interrupt_state = %v, want interject", got)
 	}
 	interjectionAttachments, ok := messages[1]["attachments"].([]map[string]any)
 	if !ok || len(interjectionAttachments) != 1 || interjectionAttachments[0]["width"] != 200 || interjectionAttachments[0]["height"] != 400 {
@@ -1469,6 +1745,23 @@ func TestResponseRunInterjectionSplitsRecoveryMessages(t *testing.T) {
 	}
 	if got := messages[2]["content"]; got != "after" {
 		t.Fatalf("messages[2].content = %v, want after", got)
+	}
+}
+
+func TestResponseRunTerminalResolutionDoesNotOverwriteSubmittedOutcome(t *testing.T) {
+	run := newResponseRun("resp_decision", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	if err := run.appendEvent("response.approval.prompt", map[string]any{"approval_id": "approval_1"}); err != nil {
+		t.Fatalf("append approval prompt: %v", err)
+	}
+	resolved := run.recordResolvedInteraction("approval", "approval_1", "accepted")
+
+	run.mu.Lock()
+	run.resolvePendingInteractionsLocked("failed")
+	run.mu.Unlock()
+
+	got, ok := run.resolvedInteraction("approval", "approval_1")
+	if !ok || got.Outcome != "accepted" || got.ResolvedAt != resolved.ResolvedAt {
+		t.Fatalf("resolved interaction = %#v, %t; want accepted %#v", got, ok, resolved)
 	}
 }
 
@@ -1730,5 +2023,98 @@ func TestResponseRunManagerAssignsMonotonicSessionEpochs(t *testing.T) {
 	}
 	if first.runEpoch < beforeCreate || second.runEpoch <= first.runEpoch {
 		t.Fatalf("restart-safe epochs before=%d first=%d second=%d", beforeCreate, first.runEpoch, second.runEpoch)
+	}
+}
+
+func TestResponseRunManagerSessionBoundaryDoesNotBlockOtherSessions(t *testing.T) {
+	manager := newServeResponseRunManagerWithRetention(time.Minute)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan struct{})
+
+	go func() {
+		manager.runIfSessionIdle("session-a", func() {
+			close(started)
+			<-release
+		})
+		close(done)
+	}()
+	<-started
+
+	otherDone := make(chan struct{})
+	go func() {
+		manager.setActiveRun("session-b", "run-b")
+		_ = manager.activeRunID("session-b")
+		manager.clearActiveRun("session-b", "run-b")
+		close(otherDone)
+	}()
+	select {
+	case <-otherDone:
+	case <-time.After(time.Second):
+		t.Fatal("session B response-run bookkeeping waited for session A persistence boundary")
+	}
+
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("session A boundary did not finish")
+	}
+}
+
+func TestResponseRunManagerAuthoritativeStartReplacesFinishingOwner(t *testing.T) {
+	manager := newServeResponseRunManagerWithRetention(time.Minute)
+	if !manager.trySetActiveRun("session", "run-a") {
+		t.Fatal("initial owner was not claimed")
+	}
+	if manager.trySetActiveRun("session", "run-b") {
+		t.Fatal("early claim overwrote an active owner")
+	}
+
+	// onStart runs while the per-session runtime lock is held, so it is the
+	// authoritative handoff even if the previous run is still finishing its tail.
+	manager.setActiveRun("session", "run-b")
+	manager.clearActiveRun("session", "run-a")
+	if got := manager.activeRunID("session"); got != "run-b" {
+		t.Fatalf("active owner after finishing run A = %q, want run-b", got)
+	}
+}
+
+func TestResponseRunIdempotencyFingerprintRejectsDifferentRequest(t *testing.T) {
+	manager := newServeResponseRunManagerWithRetention(time.Minute)
+	defer manager.Close()
+	first := newResponseRun("resp_first", "session-one", "", "test", time.Now().Unix(), nil)
+	first.idempotencyScope = "draft_client_one"
+	first.requestFingerprint = "fingerprint-a"
+	if _, duplicate, err := manager.createOrGetByIdempotency(first, "request-one"); err != nil || duplicate {
+		t.Fatalf("create first: duplicate=%t err=%v", duplicate, err)
+	}
+	second := newResponseRun("resp_second", "session-one", "", "test", time.Now().Unix(), nil)
+	second.idempotencyScope = "draft_client_one"
+	second.requestFingerprint = "fingerprint-b"
+	if _, _, err := manager.createOrGetByIdempotency(second, "request-one"); !errors.Is(err, errResponseRunKeyConflict) {
+		t.Fatalf("different fingerprint error = %v, want conflict", err)
+	}
+	if got, found, err := manager.getByIdempotencyClaim("draft_client_one", "request-one", "fingerprint-a"); err != nil || !found || got != first {
+		t.Fatalf("same fingerprint replay = %p found=%t err=%v", got, found, err)
+	}
+}
+
+func TestResponseRunDraftReservationKeepsOneServerSession(t *testing.T) {
+	manager := newServeResponseRunManagerWithRetention(time.Minute)
+	defer manager.Close()
+	first, err := manager.reserveSessionForIdempotency("draft_client_one", "request-one", "fingerprint-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.reserveSessionForIdempotency("draft_client_one", "request-one", "fingerprint-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == "" || first != second {
+		t.Fatalf("reserved sessions = %q and %q, want one stable session", first, second)
+	}
+	if _, err := manager.reserveSessionForIdempotency("draft_client_one", "request-one", "fingerprint-b"); !errors.Is(err, errResponseRunKeyConflict) {
+		t.Fatalf("different body reservation error = %v, want conflict", err)
 	}
 }

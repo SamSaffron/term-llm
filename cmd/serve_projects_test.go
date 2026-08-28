@@ -829,8 +829,12 @@ func TestSessionProjectCandidateUpgradeCreatesAndAssigns(t *testing.T) {
 	root := t.TempDir()
 	now := time.Now()
 	legacy := &session.Session{ID: "upgrade-candidate", Provider: "mock", Model: "mock", CWD: root, CreatedAt: now, UpdatedAt: now, Status: session.StatusComplete}
-	if err := store.Create(ctx, legacy); err != nil {
-		t.Fatal(err)
+	matching := &session.Session{ID: "upgrade-candidate-history", Provider: "mock", Model: "mock", CWD: root, CreatedAt: now.Add(-time.Minute), UpdatedAt: now.Add(-time.Minute), Status: session.StatusComplete}
+	other := &session.Session{ID: "upgrade-candidate-other", Provider: "mock", Model: "mock", CWD: t.TempDir(), CreatedAt: now, UpdatedAt: now, Status: session.StatusComplete}
+	for _, sess := range []*session.Session{legacy, matching, other} {
+		if err := store.Create(ctx, sess); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	infoRR := httptest.NewRecorder()
@@ -842,7 +846,7 @@ func TestSessionProjectCandidateUpgradeCreatesAndAssigns(t *testing.T) {
 	if err := json.Unmarshal(infoRR.Body.Bytes(), &info); err != nil {
 		t.Fatal(err)
 	}
-	if info.Candidate == nil || !sameServePath(info.Candidate.CanonicalDir, root) || info.Candidate.DefaultName != filepath.Base(root) {
+	if info.Candidate == nil || !sameServePath(info.Candidate.CanonicalDir, root) || info.Candidate.DefaultName != filepath.Base(root) || info.Candidate.MatchingConversationCount != 2 {
 		t.Fatalf("candidate info = %#v", info)
 	}
 
@@ -853,6 +857,13 @@ func TestSessionProjectCandidateUpgradeCreatesAndAssigns(t *testing.T) {
 	if upgradeRR.Code != http.StatusOK {
 		t.Fatalf("upgrade status=%d body=%s", upgradeRR.Code, upgradeRR.Body.String())
 	}
+	var response sessionProjectAssignmentResponse
+	if err := json.Unmarshal(upgradeRR.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Session == nil || response.ID != legacy.ID || response.ProjectID == "" || response.AssignedConversationCount != 2 {
+		t.Fatalf("assignment response = %#v, body=%s", response, upgradeRR.Body.String())
+	}
 	assigned, err := store.Get(ctx, legacy.ID)
 	if err != nil || assigned == nil || assigned.ProjectID == "" || assigned.ProjectName != "Upgraded workspace" || !sameServePath(assigned.CWD, root) {
 		t.Fatalf("upgraded session = %#v, %v", assigned, err)
@@ -860,6 +871,11 @@ func TestSessionProjectCandidateUpgradeCreatesAndAssigns(t *testing.T) {
 	project, err := store.GetProject(ctx, assigned.ProjectID)
 	if err != nil || project == nil || project.Name != "Upgraded workspace" || !sameServePath(project.CanonicalDir, root) {
 		t.Fatalf("created project = %#v, %v", project, err)
+	}
+	assignedMatching, _ := store.Get(ctx, matching.ID)
+	unassignedOther, _ := store.Get(ctx, other.ID)
+	if assignedMatching.ProjectID != project.ID || unassignedOther.ProjectID != "" {
+		t.Fatalf("history assignment = matching %#v, other %#v", assignedMatching, unassignedOther)
 	}
 }
 
@@ -1336,8 +1352,83 @@ func TestProjectSessionCursorIsBoundToItsGroup(t *testing.T) {
 	}
 }
 
+func TestFlatSessionListingPaginatesWhenProjectsDisabled(t *testing.T) {
+	srv, store := newServeProjectTestServer(t)
+	srv.projectsEnabled = false
+	ctx := context.Background()
+	legacy := &session.Project{Name: "Legacy", CanonicalDir: t.TempDir()}
+	if err := store.CreateProject(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().Add(-time.Hour).Truncate(time.Second)
+	for i := 0; i < 5; i++ {
+		now := base.Add(time.Duration(i) * time.Minute)
+		sess := &session.Session{ID: fmt.Sprintf("flat-%d", i), Provider: "mock", Model: "mock", Origin: session.OriginWeb, CreatedAt: now, UpdatedAt: now, Status: session.StatusComplete}
+		if i < 2 {
+			// Sessions assigned while projects were enabled still belong to
+			// the flat listing once projects are disabled.
+			sess.ProjectID = legacy.ID
+			sess.CWD = legacy.CanonicalDir
+		}
+		if err := store.Create(ctx, sess); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page := func(target string) ([]string, string) {
+		t.Helper()
+		rr := httptest.NewRecorder()
+		srv.handleSessions(rr, httptest.NewRequest(http.MethodGet, target, nil))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", target, rr.Code, rr.Body.String())
+		}
+		var payload struct {
+			Sessions []struct {
+				ID string `json:"id"`
+			} `json:"sessions"`
+			NextCursor string `json:"next_cursor"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		ids := make([]string, 0, len(payload.Sessions))
+		for _, entry := range payload.Sessions {
+			ids = append(ids, entry.ID)
+		}
+		return ids, payload.NextCursor
+	}
+
+	got, cursor := page("/v1/sessions?limit=2")
+	if len(got) != 2 || cursor == "" {
+		t.Fatalf("first page = %v cursor=%q, want 2 sessions and a cursor", got, cursor)
+	}
+	for steps := 0; cursor != ""; steps++ {
+		if steps > 5 {
+			t.Fatalf("cursor never terminated; collected %v", got)
+		}
+		ids, next := page("/v1/sessions?limit=2&cursor=" + cursor)
+		got = append(got, ids...)
+		cursor = next
+	}
+	if len(got) != 5 {
+		t.Fatalf("paged sessions = %v, want all 5", got)
+	}
+	want := []string{"flat-4", "flat-3", "flat-2", "flat-1", "flat-0"}
+	for i, id := range want {
+		if got[i] != id {
+			t.Fatalf("paged order = %v, want %v", got, want)
+		}
+	}
+
+	// Legacy callers without an explicit limit keep the bounded snapshot.
+	all, legacyCursor := page("/v1/sessions")
+	if len(all) != 5 || legacyCursor != "" {
+		t.Fatalf("legacy listing = %d sessions cursor=%q, want 5 and no cursor", len(all), legacyCursor)
+	}
+}
+
 func TestSidebarAndStatusHTTPExposeBoundedProjectMetadata(t *testing.T) {
 	srv, store := newServeProjectTestServer(t)
+	srv.cfgRef = &config.Config{Providers: map[string]config.ProviderConfig{}}
 	ctx := context.Background()
 	project := &session.Project{Name: "HTTP project", CanonicalDir: t.TempDir()}
 	if err := store.CreateProject(ctx, project); err != nil {
@@ -1345,7 +1436,7 @@ func TestSidebarAndStatusHTTPExposeBoundedProjectMetadata(t *testing.T) {
 	}
 	for i := 0; i < 3; i++ {
 		now := time.Now().Add(time.Duration(i) * time.Second)
-		sess := &session.Session{ID: fmt.Sprintf("http-project-%d", i), Provider: "mock", Model: "mock", ProjectID: project.ID, CWD: project.CanonicalDir, CreatedAt: now, UpdatedAt: now, Status: session.StatusComplete}
+		sess := &session.Session{ID: fmt.Sprintf("http-project-%d", i), Provider: "ChatGPT (gpt-5.6-sol, effort=low)", Model: "gpt-5.6-sol", ProjectID: project.ID, CWD: project.CanonicalDir, CreatedAt: now, UpdatedAt: now, Status: session.StatusComplete}
 		if err := store.Create(ctx, sess); err != nil {
 			t.Fatal(err)
 		}
@@ -1364,6 +1455,9 @@ func TestSidebarAndStatusHTTPExposeBoundedProjectMetadata(t *testing.T) {
 	group := sidebarPayload.Groups[0]
 	if group.Project == nil || group.Project.ID != project.ID || group.SessionCount != 3 || len(group.Sessions) != 1 || group.NextCursor == "" {
 		t.Fatalf("bounded sidebar group = %#v", group)
+	}
+	if got := group.Sessions[0].ProviderKey; got != "chatgpt" {
+		t.Fatalf("sidebar provider_key = %q, want canonical chatgpt", got)
 	}
 
 	statusRR := httptest.NewRecorder()

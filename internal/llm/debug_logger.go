@@ -2,12 +2,14 @@ package llm
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -125,9 +127,65 @@ type debugEventEntry struct {
 // debugSessionStartEntry logs the session start with CLI args
 type debugSessionStartEntry struct {
 	debugLogEntry
-	Command string   `json:"command"`
-	Args    []string `json:"args"`
-	Cwd     string   `json:"cwd"`
+	Command string         `json:"command"`
+	Args    []string       `json:"args"`
+	Cwd     string         `json:"cwd"`
+	Build   map[string]any `json:"build,omitempty"`
+}
+
+type debugDiagnosticEntry struct {
+	debugLogEntry
+	Name string         `json:"name"`
+	Data map[string]any `json:"data,omitempty"`
+}
+
+type debugDiagnosticSinkKey struct{}
+
+func withDebugDiagnosticSink(ctx context.Context, logger *DebugLogger) context.Context {
+	if ctx == nil || logger == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, debugDiagnosticSinkKey{}, logger)
+}
+
+func emitDebugDiagnostic(ctx context.Context, name string, data map[string]any) {
+	if ctx == nil {
+		return
+	}
+	logger, _ := ctx.Value(debugDiagnosticSinkKey{}).(*DebugLogger)
+	if logger != nil {
+		logger.LogDiagnostic(name, data)
+	}
+}
+
+func currentDebugBuildInfo() map[string]any {
+	result := map[string]any{}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if info.Main.Version != "" {
+			result["module_version"] = info.Main.Version
+		}
+		for _, setting := range info.Settings {
+			switch setting.Key {
+			case "vcs.revision":
+				result["vcs_revision"] = setting.Value
+			case "vcs.time":
+				result["vcs_time"] = setting.Value
+			case "vcs.modified":
+				result["vcs_modified"] = setting.Value == "true"
+			}
+		}
+	}
+	if executable, err := os.Executable(); err == nil {
+		result["executable"] = executable
+		if stat, statErr := os.Stat(executable); statErr == nil {
+			result["executable_mtime"] = stat.ModTime().UTC().Format(time.RFC3339Nano)
+			result["executable_size"] = stat.Size()
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 // NewDebugLogger creates a new DebugLogger.
@@ -170,8 +228,28 @@ func (l *DebugLogger) LogSessionStart(command string, args []string, cwd string)
 		Command: command,
 		Args:    args,
 		Cwd:     cwd,
+		Build:   currentDebugBuildInfo(),
 	}
 
+	l.writeEntry(entry)
+	l.Flush()
+}
+
+// LogDiagnostic writes a low-volume internal diagnostic and flushes it
+// immediately so timeout and crash investigations retain the last known state.
+func (l *DebugLogger) LogDiagnostic(name string, data map[string]any) {
+	if l == nil || strings.TrimSpace(name) == "" {
+		return
+	}
+	entry := debugDiagnosticEntry{
+		debugLogEntry: debugLogEntry{
+			Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+			SessionID: l.sessionID,
+			Type:      "diagnostic",
+		},
+		Name: name,
+		Data: data,
+	}
 	l.writeEntry(entry)
 	l.Flush()
 }

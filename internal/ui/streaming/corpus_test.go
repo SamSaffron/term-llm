@@ -101,33 +101,49 @@ func normalizeStreamingSourceForDirect(input []byte) []byte {
 
 func renderDirectBytes(t testing.TB, input []byte) []byte {
 	t.Helper()
-	renderer := newTestMarkdownRenderer(testRenderWidth)
-	out, err := renderer.Render(normalizeStreamingSourceForDirect(input))
+	out, err := renderDirectBytesResult(input)
 	if err != nil {
 		t.Fatalf("direct render failed: %v", err)
 	}
-	return normalizeNewlines(out)
+	return out
+}
+
+func renderDirectBytesResult(input []byte) ([]byte, error) {
+	renderer := newTestMarkdownRenderer(testRenderWidth)
+	out, err := renderer.Render(normalizeStreamingSourceForDirect(input))
+	if err != nil {
+		return nil, err
+	}
+	return normalizeNewlines(out), nil
 }
 
 func renderStreamedBytes(t testing.TB, chunks [][]byte) []byte {
 	t.Helper()
+	out, err := renderStreamedBytesResult(chunks)
+	if err != nil {
+		t.Fatalf("streamed render failed: %v", err)
+	}
+	return out
+}
+
+func renderStreamedBytesResult(chunks [][]byte) ([]byte, error) {
 	var buf bytes.Buffer
 	sr, err := NewRenderer(&buf, newTestMarkdownRenderer(testRenderWidth))
 	if err != nil {
-		t.Fatalf("NewRenderer failed: %v", err)
+		return nil, fmt.Errorf("create stream renderer: %w", err)
 	}
 	for i, chunk := range chunks {
 		if len(chunk) == 0 {
 			continue
 		}
 		if _, err := sr.Write(chunk); err != nil {
-			t.Fatalf("write chunk %d failed: %v", i, err)
+			return nil, fmt.Errorf("write chunk %d: %w", i, err)
 		}
 	}
 	if err := sr.Close(); err != nil {
-		t.Fatalf("close failed: %v", err)
+		return nil, fmt.Errorf("close stream renderer: %w", err)
 	}
-	return buf.Bytes()
+	return buf.Bytes(), nil
 }
 
 func fixedSizeChunks(input []byte, size int) [][]byte {

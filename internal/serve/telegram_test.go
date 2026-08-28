@@ -521,7 +521,7 @@ func TestTelegramSessionMgrAcquireMessageSlot_RespectsContextCancel(t *testing.T
 }
 
 func TestTelegramVoiceTranscriptionTimeoutReleasesHandlerChain(t *testing.T) {
-	const transcriptionTimeout = 500 * time.Millisecond
+	const transcriptionTimeout = 150 * time.Millisecond
 
 	transcriptionStarted := make(chan struct{})
 	transcriptionCanceled := make(chan struct{})
@@ -620,7 +620,7 @@ func TestTelegramVoiceTranscriptionTimeoutReleasesHandlerChain(t *testing.T) {
 	select {
 	case <-differentChatAcquired:
 		t.Fatal("different chat acquired a slot while stalled transcription and its same-chat queue held every slot")
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(20 * time.Millisecond):
 	}
 
 	waitForHandler := func(name string, done <-chan struct{}) {

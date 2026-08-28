@@ -209,7 +209,69 @@ func (s *serveServer) handleSessionFileChanges(w http.ResponseWriter, r *http.Re
 	if changes == nil {
 		changes = []filetrack.CumulativeChange{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"file_changes": changes, "git": isGit, "scope": scope})
+	summary := map[string]any{"file_count": len(changes), "adds": 0, "dels": 0, "line_counts_unavailable_files": 0}
+	for _, change := range changes {
+		summary["adds"] = summary["adds"].(int) + change.Adds
+		summary["dels"] = summary["dels"].(int) + change.Dels
+		if turnScope && !change.ContentAvailable {
+			summary["line_counts_unavailable_files"] = summary["line_counts_unavailable_files"].(int) + 1
+		}
+	}
+	materializations := []filetrack.FilesystemObservation{}
+	observationBatches := []filetrack.FilesystemObservation{}
+	claimDiagnostics := []filetrack.OutputClaimDiagnostic{}
+	coverage := filetrack.CoverageComplete
+	observationTruncated := false
+	totalCreated, totalModified, totalDeleted := 0, 0, 0
+	if turnScope {
+		runIDs, runErr := store.RecentRunIDs(r.Context(), sessionID, runs)
+		if runErr != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to load file tracking runs")
+			return
+		}
+		batches, obsErr := store.ListRunObservations(r.Context(), sessionID, runIDs)
+		if obsErr != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to load filesystem observations")
+			return
+		}
+		for _, batch := range batches {
+			totalCreated += batch.CreatedCount
+			totalModified += batch.ModifiedCount
+			totalDeleted += batch.DeletedCount
+			observationTruncated = observationTruncated || batch.SamplesTruncated
+			if batch.CoverageStatus == filetrack.CoverageUnavailable || (batch.CoverageStatus == filetrack.CoverageTruncated && coverage == filetrack.CoverageComplete) {
+				coverage = batch.CoverageStatus
+			}
+			if batch.Classification == filetrack.ObservationMaterialized {
+				materializations = append(materializations, batch)
+			} else {
+				observationBatches = append(observationBatches, batch)
+			}
+			if batch.Classification == filetrack.ObservationUnconfirmedClaim || batch.Classification == filetrack.ObservationClaimMismatch || batch.Classification == filetrack.ObservationClaimConflict {
+				reason := batch.Classification
+				pattern, claimKind, message := "", "", ""
+				if value, ok := batch.Details["reason"].(string); ok && value != "" {
+					reason = value
+				}
+				if value, ok := batch.Details["normalized_pattern"].(string); ok {
+					pattern = value
+				}
+				if value, ok := batch.Details["claim_kind"].(string); ok {
+					claimKind = value
+				}
+				if value, ok := batch.Details["message"].(string); ok {
+					message = value
+				}
+				claimDiagnostics = append(claimDiagnostics, filetrack.OutputClaimDiagnostic{NormalizedPattern: pattern, ClaimKind: claimKind, Reason: reason, CoverageStatus: batch.CoverageStatus, MatchingPathCount: batch.CreatedCount + batch.ModifiedCount + batch.DeletedCount, Message: message})
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"file_changes": changes, "file_change_summary": summary, "git": isGit, "scope": scope,
+		"snapshot_token": store.CurrentSnapshotToken(r.Context(), sessionID), "materializations": materializations,
+		"observations":      map[string]any{"total_created": totalCreated, "total_modified": totalModified, "total_deleted": totalDeleted, "batches": observationBatches, "truncated": observationTruncated, "coverage_status": coverage},
+		"claim_diagnostics": claimDiagnostics,
+	})
 }
 
 // handleSessionFileChangeDiff serves GET /v1/sessions/{id}/file-changes/diff?path=…:
@@ -273,15 +335,20 @@ func (s *serveServer) handleSessionFileChangeDiff(w http.ResponseWriter, r *http
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"path":           content.Path,
-		"kind":           content.Kind,
-		"lang":           strings.ToLower(strings.TrimPrefix(filepath.Ext(content.Path), ".")),
-		"truncated":      content.Truncated,
-		"image":          content.IsImage,
-		"context":        contextLines,
-		"old_line_count": filetrack.LineCount(content.Before),
-		"new_line_count": filetrack.LineCount(content.After),
-		"hunks":          hunks,
+		"path":              content.Path,
+		"kind":              content.Kind,
+		"lang":              strings.ToLower(strings.TrimPrefix(filepath.Ext(content.Path), ".")),
+		"truncated":         content.Truncated,
+		"content_status":    content.ContentStatus,
+		"content_available": content.ContentAvailable,
+		"provenance":        content.Provenance,
+		"baseline_state":    content.BaselineState,
+		"claim_coverage":    content.ClaimCoverage,
+		"image":             content.IsImage,
+		"context":           contextLines,
+		"old_line_count":    filetrack.LineCount(content.Before),
+		"new_line_count":    filetrack.LineCount(content.After),
+		"hunks":             hunks,
 	})
 }
 

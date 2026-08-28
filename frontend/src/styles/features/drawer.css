@@ -1,0 +1,86 @@
+.drawer-backdrop {
+  position: fixed;
+  inset: var(--app-offset-top) 0 auto;
+  z-index: 120;
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  width: 100%;
+  height: var(--app-height);
+  padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
+  background: var(--backdrop);
+}
+
+.drawer-backdrop-bottom {
+  padding-bottom: 0;
+}
+
+.drawer {
+  width: min(92vw, 32rem);
+  max-height: calc(var(--app-height) - var(--safe-top) - var(--safe-bottom));
+  overflow: auto;
+  overscroll-behavior: contain;
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: var(--shadow-strong);
+  will-change: transform;
+}
+
+.drawer-left {
+  margin-right: auto;
+  transform: translateX(var(--drawer-swipe-offset-x, 0));
+  touch-action: pan-y;
+}
+
+.drawer-right {
+  transform: translateX(var(--drawer-swipe-offset-x, 0));
+  touch-action: pan-y;
+}
+
+.drawer-bottom {
+  width: 100%;
+  max-height: min(80dvh, calc(var(--app-height) - var(--safe-top)));
+  margin-top: auto;
+  border-radius: 1rem 1rem 0 0;
+  transform: translateY(var(--drawer-swipe-offset-y, 0));
+  touch-action: pan-x pan-down;
+}
+
+.drawer.is-swipe-dragging {
+  transition: none !important;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .drawer-left {
+    animation: drawer-enter-left var(--panel-transition-duration) var(--panel-transition-easing);
+  }
+
+  .drawer-right {
+    animation: drawer-enter-right var(--panel-transition-duration) var(--panel-transition-easing);
+  }
+
+  .drawer-bottom {
+    animation: drawer-enter-bottom var(--panel-transition-duration) var(--panel-transition-easing);
+  }
+}
+
+@keyframes drawer-enter-left {
+  from {
+    opacity: 0;
+    transform: translateX(-1rem);
+  }
+}
+
+@keyframes drawer-enter-right {
+  from {
+    opacity: 0;
+    transform: translateX(1rem);
+  }
+}
+
+@keyframes drawer-enter-bottom {
+  from {
+    opacity: 0;
+    transform: translateY(1rem);
+  }
+}

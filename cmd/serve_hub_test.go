@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1455,5 +1456,19 @@ func TestHubRebaseNeedlesMatchServeOutput(t *testing.T) {
 	}
 	if !strings.Contains(string(rewritten), `<base href="/node/x/">`) {
 		t.Error("rebased html missing new base tag")
+	}
+	if !strings.Contains(string(rewritten), `type="module" src="dist/app.js?v=`) {
+		t.Error("rebased html lost relative Preact module URL")
+	}
+	moduleURL, err := url.Parse("https://hub.example/node/x/dist/app.js?v=version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lazyURL, err := moduleURL.Parse("./chunks/katex.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := lazyURL.Path, "/node/x/dist/chunks/katex.js"; got != want {
+		t.Fatalf("Hub lazy chunk path = %q, want %q", got, want)
 	}
 }

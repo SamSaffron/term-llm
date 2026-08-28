@@ -45,17 +45,21 @@ type ResponsesClient struct {
 	// transport while keeping HTTP/SSE full-history. This is used for ChatGPT,
 	// whose WebSocket backend supports connection-local continuation but whose
 	// HTTP endpoint may reject previous_response_id.
-	WebSocketServerState    bool
-	WebSocketURL            string
-	WebSocketConnectTimeout time.Duration
-	WebSocketWriteTimeout   time.Duration
-	WebSocketIdleTimeout    time.Duration
-	websocketDisabled       bool
-	wsMu                    sync.Mutex
-	wsConn                  *responsesWebSocketConnection
-	wsConnSessionID         string
-	wsConnBetaHeader        string
-	wsLastRequest           *ResponsesRequest
+	WebSocketServerState       bool
+	WebSocketURL               string
+	WebSocketPoolKey           string
+	WebSocketConnectTimeout    time.Duration
+	WebSocketWriteTimeout      time.Duration
+	WebSocketIdleTimeout       time.Duration
+	WebSocketFirstEventTimeout time.Duration
+	WebSocketParkedTimeout     time.Duration
+	websocketDisabled          bool
+	wsMu                       sync.Mutex
+	wsConn                     *responsesWebSocketConnection
+	wsConnSessionID            string
+	wsConnBetaHeader           string
+	wsLastRequest              *ResponsesRequest
+	wsContinuationBaseline     *responsesWebSocketContinuationBaseline
 	// HandleError, if set, is called for non-200 responses before default handling.
 	// Return a non-nil error to short-circuit; return nil to fall through to defaults.
 	HandleError func(statusCode int, body []byte, headers http.Header) error
@@ -960,19 +964,22 @@ func cloneResponsesClient(c *ResponsesClient) *ResponsesClient {
 	}
 
 	return &ResponsesClient{
-		BaseURL:                 c.BaseURL,
-		GetAuthHeader:           c.GetAuthHeader,
-		ExtraHeaders:            extraHeaders,
-		HTTPClient:              c.HTTPClient,
-		DisableServerState:      c.DisableServerState,
-		UseWebSocket:            c.UseWebSocket,
-		WebSocketServerState:    c.WebSocketServerState,
-		WebSocketURL:            c.WebSocketURL,
-		WebSocketConnectTimeout: c.WebSocketConnectTimeout,
-		WebSocketWriteTimeout:   c.WebSocketWriteTimeout,
-		WebSocketIdleTimeout:    c.WebSocketIdleTimeout,
-		HandleError:             c.HandleError,
-		OnAuthRetry:             c.OnAuthRetry,
+		BaseURL:                    c.BaseURL,
+		GetAuthHeader:              c.GetAuthHeader,
+		ExtraHeaders:               extraHeaders,
+		HTTPClient:                 c.HTTPClient,
+		DisableServerState:         c.DisableServerState,
+		UseWebSocket:               c.UseWebSocket,
+		WebSocketServerState:       c.WebSocketServerState,
+		WebSocketURL:               c.WebSocketURL,
+		WebSocketPoolKey:           c.WebSocketPoolKey,
+		WebSocketConnectTimeout:    c.WebSocketConnectTimeout,
+		WebSocketWriteTimeout:      c.WebSocketWriteTimeout,
+		WebSocketIdleTimeout:       c.WebSocketIdleTimeout,
+		WebSocketFirstEventTimeout: c.WebSocketFirstEventTimeout,
+		WebSocketParkedTimeout:     c.WebSocketParkedTimeout,
+		HandleError:                c.HandleError,
+		OnAuthRetry:                c.OnAuthRetry,
 	}
 }
 
@@ -1019,7 +1026,9 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 	if lastResponseID != "" {
 		if c.websocketServerStateEnabled() {
 			wsReq.PreviousResponseID = lastResponseID
-			wsReq.Input = buildContinuationInput()
+			// WebSocket continuation derives its suffix from the full ordered input
+			// under wsMu; never trust a pre-trimmed caller suffix for local state.
+			wsReq.Input = nil
 		} else {
 			wsReq.Input = buildFullInput()
 		}
@@ -1031,9 +1040,9 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 		}
 	} else {
 		wsReq.PreviousResponseID = ""
-		wsReq.Input = buildFullInput()
+		wsReq.Input = nil
 		httpPayload.PreviousResponseID = ""
-		httpPayload.Input = fullInput
+		httpPayload.Input = buildFullInput()
 	}
 
 	if c.UseWebSocket && !c.websocketDisabled && !req.ForceHTTP {
@@ -1063,8 +1072,8 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 			}
 			if !req.ForceWebSocket {
 				fallbacks = append(fallbacks, responsesWebSocketFallback{
+					disableWebSocket: func() { c.websocketDisabled = true },
 					open: func() (Stream, error) {
-						c.websocketDisabled = true
 						c.closeWebSocket()
 						if debugRaw {
 							DebugRawSection(debugRaw, "Responses WebSocket Fallback", "stream failed before emitting events")
@@ -1083,6 +1092,13 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 				fallbacks: buildWebSocketFallbacks(2),
 			}, nil
 		}
+		if errors.Is(err, errResponsesWebSocketPoolSaturated) {
+			if req.ForceWebSocket {
+				return nil, fmt.Errorf("required Responses WebSocket unavailable: %w", err)
+			}
+			c.closeWebSocket()
+			return c.streamHTTPPrepared(ctx, httpPayload, buildFullInput, responseStateGeneration, debugRaw)
+		}
 		lastErr := err
 		for attempt := 2; attempt <= responsesWebSocketMaxAttempts; attempt++ {
 			wait := responsesWebSocketBackoff(attempt - 1)
@@ -1099,6 +1115,13 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 					current:   stream,
 					fallbacks: buildWebSocketFallbacks(attempt + 1),
 				}, nil
+			}
+			if errors.Is(err, errResponsesWebSocketPoolSaturated) {
+				if req.ForceWebSocket {
+					return nil, fmt.Errorf("required Responses WebSocket unavailable: %w", err)
+				}
+				c.closeWebSocket()
+				return c.streamHTTPPrepared(ctx, httpPayload, buildFullInput, responseStateGeneration, debugRaw)
 			}
 			lastErr = err
 		}
@@ -1389,8 +1412,9 @@ func (e *NonRecoverableStreamError) Unwrap() error {
 }
 
 type responsesWebSocketFallback struct {
-	retry *Event
-	open  func() (Stream, error)
+	retry            *Event
+	open             func() (Stream, error)
+	disableWebSocket func()
 }
 
 type responsesWebSocketFallbackStream struct {
@@ -1398,6 +1422,24 @@ type responsesWebSocketFallbackStream struct {
 	fallbacks       []responsesWebSocketFallback
 	emitted         bool
 	pendingFallback *responsesWebSocketFallback
+}
+
+func (s *responsesWebSocketFallbackStream) skipWebSocketRetriesForImmediateHTTP(err error) bool {
+	var firstEventTimeout *responsesWebSocketFirstEventTimeoutError
+	if !errors.As(err, &firstEventTimeout) && !errors.Is(err, errResponsesWebSocketPoolSaturated) {
+		return false
+	}
+	// A transport heartbeat can prove that a socket is alive while the backend
+	// has silently dropped this response. Likewise, a saturated account-level
+	// connection budget cannot be improved by waiting behind another session.
+	// Skip directly to HTTP; ForceWebSocket requests have no such fallback.
+	for len(s.fallbacks) > 0 && s.fallbacks[0].retry != nil {
+		s.fallbacks = s.fallbacks[1:]
+	}
+	if len(s.fallbacks) > 0 {
+		s.fallbacks[0].disableWebSocket = nil
+	}
+	return true
 }
 
 func responsesWebSocketBackoff(retryAttempt int) time.Duration {
@@ -1434,12 +1476,18 @@ func (s *responsesWebSocketFallbackStream) Recv() (Event, error) {
 		if err == io.EOF || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || len(s.fallbacks) == 0 {
 			return event, err
 		}
+		if s.skipWebSocketRetriesForImmediateHTTP(err) && len(s.fallbacks) == 0 {
+			return event, err
+		}
 		if s.emitted {
 			return event, &NonRecoverableStreamError{Err: err}
 		}
 		return s.switchToNextFallback(err)
 	}
 	if event.Type == EventError {
+		if s.skipWebSocketRetriesForImmediateHTTP(event.Err) && len(s.fallbacks) == 0 {
+			return event, nil
+		}
 		if !s.emitted && len(s.fallbacks) > 0 {
 			return s.switchToNextFallback(event.Err)
 		}
@@ -1453,6 +1501,9 @@ func (s *responsesWebSocketFallbackStream) Recv() (Event, error) {
 func (s *responsesWebSocketFallbackStream) openPendingFallback() (Event, error) {
 	fb := s.pendingFallback
 	s.pendingFallback = nil
+	if fb.disableWebSocket != nil {
+		fb.disableWebSocket()
+	}
 	stream, err := fb.open()
 	if err != nil {
 		return s.switchToNextFallback(err)
@@ -1467,6 +1518,9 @@ func (s *responsesWebSocketFallbackStream) switchToNextFallback(previousErr erro
 	if errors.Is(lastErr, context.Canceled) || errors.Is(lastErr, context.DeadlineExceeded) {
 		return Event{}, lastErr
 	}
+	if s.skipWebSocketRetriesForImmediateHTTP(lastErr) && len(s.fallbacks) == 0 {
+		return Event{}, lastErr
+	}
 	for len(s.fallbacks) > 0 {
 		fb := s.fallbacks[0]
 		s.fallbacks = s.fallbacks[1:]
@@ -1474,10 +1528,16 @@ func (s *responsesWebSocketFallbackStream) switchToNextFallback(previousErr erro
 			s.pendingFallback = &fb
 			return *fb.retry, nil
 		}
+		if fb.disableWebSocket != nil {
+			fb.disableWebSocket()
+		}
 		stream, err := fb.open()
 		if err != nil {
 			lastErr = err
 			if errors.Is(lastErr, context.Canceled) || errors.Is(lastErr, context.DeadlineExceeded) {
+				return Event{}, lastErr
+			}
+			if s.skipWebSocketRetriesForImmediateHTTP(lastErr) && len(s.fallbacks) == 0 {
 				return Event{}, lastErr
 			}
 			continue
@@ -1502,6 +1562,7 @@ func (c *ResponsesClient) ResetConversation() {
 	c.responseStateSessionID = ""
 	c.websocketDisabled = false
 	c.wsLastRequest = nil
+	c.wsContinuationBaseline = nil
 }
 
 func (c *ResponsesClient) websocketServerStateEnabled() bool {

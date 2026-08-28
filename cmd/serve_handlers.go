@@ -270,13 +270,17 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 	}
 	if assetName != "" && !strings.Contains(assetName, "..") {
 		if data, err := serveui.StaticAsset(assetName); err == nil {
-			contentType := mime.TypeByExtension(filepath.Ext(assetName))
-			if contentType == "" {
-				// mime.TypeByExtension may return empty for .woff2 on some systems.
-				switch filepath.Ext(assetName) {
-				case ".woff2":
-					contentType = "font/woff2"
-				default:
+			extension := filepath.Ext(assetName)
+			contentType := mime.TypeByExtension(extension)
+			switch extension {
+			case ".js", ".mjs":
+				contentType = "text/javascript; charset=utf-8"
+			case ".css":
+				contentType = "text/css; charset=utf-8"
+			case ".woff2":
+				contentType = "font/woff2"
+			default:
+				if contentType == "" {
 					contentType = http.DetectContentType(data)
 				}
 			}
@@ -287,9 +291,17 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 			serveEmbeddedUIBytes(w, r, data, contentType, cacheControl, true)
 			return
 		}
+		if strings.HasPrefix(assetName, "dist/") {
+			http.NotFound(w, r)
+			return
+		}
+		if extension := filepath.Ext(assetName); extension == ".js" || extension == ".mjs" || extension == ".css" {
+			http.NotFound(w, r)
+			return
+		}
 	}
 
-	// SPA catch-all: serve index.html for all other paths.
+	// SPA catch-all: serve index.html only for extensionless application routes.
 	serveEmbeddedUIBytes(w, r, s.renderIndexHTML(), "text/html; charset=utf-8", "no-cache, no-store, must-revalidate", false)
 }
 
@@ -337,6 +349,8 @@ func (s *serveServer) buildIndexHTML() []byte {
 			headSnippet += `<script>window.TERM_LLM_VAPID_PUBLIC_KEY=` + string(vapidEscaped) + `;</script>`
 		}
 	}
+	_, pushPersistent := session.AsPushSubscriptionLifecycleStore(s.store)
+	headSnippet += `<script>window.TERM_LLM_PUSH_SUPPORTED=` + strconv.FormatBool(pushPersistent) + `;</script>`
 	headSnippet += s.webrtcHeadSnippet
 	return serveui.RenderIndexHTML(s.cfg.basePath, headSnippet, serveui.RenderOptions{WebRTC: s.webrtcEnabled})
 }
@@ -353,15 +367,12 @@ func (s *serveServer) prewarmUIAssetCache() {
 
 		// Static shell assets (SW precache list minus the PNG icon).
 		assetNames := []string{
-			"app.css",
-			"app-core.js", "app-render.js", "app-stream.js",
-			"app-sessions.js",
-			"markdown-setup.js", "markdown-streaming.js", "decoration.js",
-			"vendor/marked/marked.umd.min.js",
-			"vendor/dompurify/purify.min.js",
+			"dist/app.css",
+			"dist/app.js",
+			"dist/chunks/vendor.js",
 		}
 		if s.webrtcEnabled {
-			assetNames = append(assetNames, "app-webrtc.js")
+			assetNames = append(assetNames, "dist/chunks/webrtc.js")
 		}
 		for _, name := range assetNames {
 			if data, err := serveui.StaticAsset(name); err == nil {
@@ -1344,7 +1355,6 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 		projectID := strings.TrimSpace(r.URL.Query().Get("project_id"))
 		projectCursorValue := strings.TrimSpace(r.URL.Query().Get("cursor"))
 		var projectCursor *session.ProjectSessionCursor
-		noProject := false
 		if projectCursorValue != "" {
 			cursor, decodeErr := session.DecodeProjectSessionCursor(projectCursorValue)
 			if decodeErr != nil || cursor.ProjectID != projectID {
@@ -1352,13 +1362,21 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			projectCursor = &cursor
-			noProject = cursor.ProjectID == ""
 		}
 		groupPage := projectID != "" || projectCursor != nil
+		// An explicit limit opts the flat listing into keyset pagination so
+		// the projects-disabled sidebar can scroll infinitely like project
+		// groups do; legacy callers without a limit keep the bounded snapshot.
+		rawLimit := strings.TrimSpace(r.URL.Query().Get("limit"))
+		paged := groupPage || rawLimit != ""
+		// Ungrouped pages cover the project-less sessions (the "No project"
+		// sidebar group) while projects are enabled, and every session when
+		// projects are disabled and the sidebar is one flat list.
+		noProject := paged && projectID == "" && s.projectsEnabled
 		limit := 100
-		if groupPage {
+		if paged {
 			limit = 13
-			if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+			if rawLimit != "" {
 				if parsed, parseErr := strconv.Atoi(rawLimit); parseErr == nil && parsed > 0 {
 					limit = min(parsed, 100) + 1
 				}
@@ -1378,9 +1396,15 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to list sessions")
 			return
 		}
-		if groupPage && len(sessions) == limit {
+		if paged && len(sessions) == limit {
 			pageSize := limit - 1
-			nextCursor = session.EncodeProjectSessionCursor(sessions[pageSize-1])
+			boundary := sessions[pageSize-1]
+			if projectID == "" {
+				// Ungrouped-listing cursors stay bound to the ungrouped listing
+				// even when the boundary session carries a legacy project ID.
+				boundary.ProjectID = ""
+			}
+			nextCursor = session.EncodeProjectSessionCursor(boundary)
 			sessions = sessions[:pageSize]
 		}
 	}
@@ -1602,11 +1626,13 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 		}
 	}
 	result := make([]sessionMessageEntry, 0, len(msgs))
-	for _, msg := range msgs {
-		// System and ordinary developer messages contain internal prompts. Path
-		// notes are explicitly marked and expose only their display text/provenance.
+	for i := range msgs {
+		msg := &msgs[i]
+		// System, ordinary developer, and synthetic goal-steering messages are
+		// provider context rather than human-authored transcript rows. Path notes
+		// are explicitly marked and expose only their display text/provenance.
 		pathNote, isPathNote := msg.PathNoteProvenance()
-		if msg.Role == llm.RoleSystem || (msg.Role == llm.RoleDeveloper && !isPathNote) {
+		if msg.Role == llm.RoleSystem || (msg.Role == llm.RoleDeveloper && !isPathNote) || msg.IsGoalSteering() {
 			continue
 		}
 		entryRole := string(msg.Role)
@@ -1829,6 +1855,11 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 	suffix := ""
 	if len(parts) > 1 {
 		suffix = parts[1]
+	}
+
+	if suffix == "children" {
+		s.handleSessionChildren(w, r, sessionID)
+		return
 	}
 
 	if suffix == "project" {
@@ -2164,6 +2195,19 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
+	currentResponseID := ""
+	if s.responseRuns != nil {
+		currentResponseID = s.responseRuns.activeRunID(sessionID)
+	}
+	if expected := strings.TrimSpace(req.ExpectedResponseID); expected != "" && expected != currentResponseID {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": map[string]any{
+				"type": "response_owner_conflict", "message": "the active response changed",
+			},
+			"current_response_id": currentResponseID,
+		})
+		return
+	}
 	displayText := strings.TrimSpace(req.Message)
 	delivery, err := normalizeInterruptDelivery(req.Delivery)
 	if err != nil {
@@ -2215,7 +2259,26 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 	if clientMessageID == "" {
 		clientMessageID = strings.TrimSpace(req.InterjectionID)
 	}
-	action, replayed, interruptErr := rt.InterruptMessage(r.Context(), msg, displayText, clientMessageID, fastProvider, delivery)
+	var action llm.InterruptAction
+	var replayed bool
+	var interruptErr error
+	expectedResponseID := strings.TrimSpace(req.ExpectedResponseID)
+	if expectedResponseID != "" || req.ExpectedRunEpoch > 0 {
+		owned := s.responseRuns.withExpectedActiveRun(sessionID, expectedResponseID, req.ExpectedRunEpoch, func() {
+			action, replayed, interruptErr = rt.InterruptMessage(r.Context(), msg, displayText, clientMessageID, fastProvider, delivery)
+		})
+		if !owned {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": map[string]any{
+					"type": "response_owner_conflict", "message": "the active response changed",
+				},
+				"current_response_id": s.responseRuns.activeRunID(sessionID),
+			})
+			return
+		}
+	} else {
+		action, replayed, interruptErr = rt.InterruptMessage(r.Context(), msg, displayText, clientMessageID, fastProvider, delivery)
+	}
 	if interruptErr != nil {
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", interruptErr.Error())
 		return
@@ -2241,7 +2304,10 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 		actionName = "interject"
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"action": actionName,
+		"action":              actionName,
+		"replayed":            replayed,
+		"interjection_id":     strings.TrimSpace(req.InterjectionID),
+		"current_response_id": currentResponseID,
 	})
 }
 
@@ -2419,16 +2485,43 @@ func (s *serveServer) handleSessionInterjectionCancel(w http.ResponseWriter, r *
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "interjection id is required")
 		return
 	}
-	if s.sessionMgr == nil {
-		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
-		return
+	if s.sessionMgr != nil {
+		if rt, ok := s.sessionMgr.Get(sessionID); ok && rt != nil && rt.engine != nil {
+			cancelled, err := rt.cancelPendingInterjection(r.Context(), sessionID, interjectionID)
+			if err != nil {
+				writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to cancel pending interjection")
+				return
+			}
+			if !cancelled {
+				writeOpenAIError(w, http.StatusConflict, "conflict_error", "interjection is not queued or has already been committed")
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"cancelled": true, "interjection_id": interjectionID})
+			return
+		}
 	}
-	rt, ok := s.sessionMgr.Get(sessionID)
-	if !ok || rt == nil || rt.engine == nil {
-		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
-		return
+
+	cancelled := false
+	if pendingStore, ok := session.AsPendingInterjectionStore(s.store); ok {
+		entries, err := pendingStore.ListPendingInterjections(r.Context(), sessionID)
+		if err != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to read pending interjection")
+			return
+		}
+		for _, entry := range entries {
+			if entry.ID == interjectionID {
+				cancelled = true
+				break
+			}
+		}
+		if cancelled {
+			if err := pendingStore.DeletePendingInterjection(r.Context(), sessionID, interjectionID); err != nil {
+				writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to cancel pending interjection")
+				return
+			}
+		}
 	}
-	if !rt.engine.CancelInterjection(interjectionID) {
+	if !cancelled {
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", "interjection is not queued or has already been committed")
 		return
 	}
@@ -2515,16 +2608,7 @@ func (s *serveServer) handleSessionTitleRefine(w http.ResponseWriter, r *http.Re
 
 		if s.sessionMgr != nil {
 			if rt, ok := s.sessionMgr.Get(sessionID); ok {
-				rt.mu.Lock()
-				if rt.sessionMeta != nil {
-					rt.sessionMeta.Name = sess.Name
-					rt.sessionMeta.GeneratedShortTitle = sess.GeneratedShortTitle
-					rt.sessionMeta.GeneratedLongTitle = sess.GeneratedLongTitle
-					rt.sessionMeta.TitleSource = sess.TitleSource
-					rt.sessionMeta.TitleGeneratedAt = sess.TitleGeneratedAt
-					rt.sessionMeta.TitleBasisMsgSeq = sess.TitleBasisMsgSeq
-				}
-				rt.mu.Unlock()
+				trySyncRuntimeSessionMetadata(rt, sess)
 			}
 		}
 	}
@@ -2553,6 +2637,29 @@ func (s *serveServer) handleSessionTitleRefine(w http.ResponseWriter, r *http.Re
 		"pinned":                sess.Pinned,
 		"created_at":            sess.CreatedAt.UnixMilli(),
 	})
+}
+
+// trySyncRuntimeSessionMetadata refreshes the runtime cache only when it is idle.
+// An active stream owns rt.mu for its full run, so metadata endpoints must treat
+// the already-updated store as authoritative rather than waiting on that lock.
+func trySyncRuntimeSessionMetadata(rt *serveRuntime, sess *session.Session) bool {
+	if rt == nil || sess == nil || !rt.mu.TryLock() {
+		return false
+	}
+	defer rt.mu.Unlock()
+	if rt.sessionMeta == nil {
+		return true
+	}
+	rt.sessionMeta.Name = sess.Name
+	rt.sessionMeta.GeneratedShortTitle = sess.GeneratedShortTitle
+	rt.sessionMeta.GeneratedLongTitle = sess.GeneratedLongTitle
+	rt.sessionMeta.TitleSource = sess.TitleSource
+	rt.sessionMeta.TitleGeneratedAt = sess.TitleGeneratedAt
+	rt.sessionMeta.TitleBasisMsgSeq = sess.TitleBasisMsgSeq
+	rt.sessionMeta.Archived = sess.Archived
+	rt.sessionMeta.Pinned = sess.Pinned
+	rt.sessionMeta.Origin = sess.Origin
+	return true
 }
 
 func (s *serveServer) handleSessionMetadataPatch(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -2611,18 +2718,7 @@ func (s *serveServer) handleSessionMetadataPatch(w http.ResponseWriter, r *http.
 
 	if s.sessionMgr != nil {
 		if rt, ok := s.sessionMgr.Get(sessionID); ok {
-			rt.mu.Lock()
-			if rt.sessionMeta != nil {
-				rt.sessionMeta.Name = sess.Name
-				rt.sessionMeta.GeneratedShortTitle = sess.GeneratedShortTitle
-				rt.sessionMeta.GeneratedLongTitle = sess.GeneratedLongTitle
-				rt.sessionMeta.TitleSource = sess.TitleSource
-				rt.sessionMeta.TitleGeneratedAt = sess.TitleGeneratedAt
-				rt.sessionMeta.Archived = sess.Archived
-				rt.sessionMeta.Pinned = sess.Pinned
-				rt.sessionMeta.Origin = sess.Origin
-			}
-			rt.mu.Unlock()
+			trySyncRuntimeSessionMetadata(rt, sess)
 		}
 	}
 
@@ -2716,7 +2812,7 @@ func (s *serveServer) cors(next http.HandlerFunc) http.HandlerFunc {
 				w.Header().Add("Vary", "Origin")
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Term-LLM-Session-ID, session_id, Idempotency-Key, X-Idempotency-Key, X-Term-LLM-Request-ID, X-Term-LLM-UI-Version, X-API-Key, anthropic-version")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Term-LLM-Session-ID, X-Term-LLM-Draft-ID, X-Term-LLM-Push-Subscription-ID, session_id, Idempotency-Key, X-Idempotency-Key, X-Term-LLM-Request-ID, X-Term-LLM-UI-Version, X-API-Key, anthropic-version")
 			w.Header().Set("Access-Control-Expose-Headers", "x-session-id, x-session-number, x-response-id, x-branch-anchor-id, x-term-llm-ui-version")
 		}
 
@@ -3611,10 +3707,24 @@ func applyRuntimeWorktreeBaseDir(ctx context.Context, store session.Store, sessi
 }
 
 func (s *serveServer) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {
-	if s.store == nil {
-		writeOpenAIError(w, http.StatusServiceUnavailable, "server_error", "session store not available")
+	pushStore, supported := session.AsPushSubscriptionLifecycleStore(s.store)
+	if !supported {
+		writeOpenAIError(w, http.StatusServiceUnavailable, "unsupported_error", "persistent push subscription storage is unavailable")
 		return
 	}
+	publicKey := ""
+	if s.cfgRef != nil {
+		publicKey = strings.TrimSpace(s.cfgRef.Serve.WebPush.VAPIDPublicKey)
+		if publicKey == "" {
+			writeOpenAIError(w, http.StatusServiceUnavailable, "unsupported_error", "web push is not configured")
+			return
+		}
+	} else {
+		// Direct handler tests and embedders that construct serveServer without a
+		// config still exercise persistence. Production servers always carry cfgRef.
+		publicKey = "unconfigured-test-key"
+	}
+	vapidKeyID := webPushKeyID(publicKey)
 
 	switch r.Method {
 	case http.MethodPost:
@@ -3633,20 +3743,28 @@ func (s *serveServer) handlePushSubscribe(w http.ResponseWriter, r *http.Request
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 			return
 		}
+		req.Endpoint = strings.TrimSpace(req.Endpoint)
+		req.Keys.P256DH = strings.TrimSpace(req.Keys.P256DH)
+		req.Keys.Auth = strings.TrimSpace(req.Keys.Auth)
 		if req.Endpoint == "" || req.Keys.P256DH == "" || req.Keys.Auth == "" {
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "endpoint and keys (p256dh, auth) are required")
 			return
 		}
-		sub := &session.PushSubscription{
-			Endpoint:  req.Endpoint,
-			KeyP256DH: req.Keys.P256DH,
-			KeyAuth:   req.Keys.Auth,
+		if len(req.Endpoint) > 4096 || len(req.Keys.P256DH) > 1024 || len(req.Keys.Auth) > 1024 {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "subscription fields are too large")
+			return
 		}
-		if err := s.store.SavePushSubscription(r.Context(), sub); err != nil {
+		sub, err := pushStore.UpsertPushSubscription(r.Context(), &session.PushSubscription{
+			Endpoint: req.Endpoint, KeyP256DH: req.Keys.P256DH, KeyAuth: req.Keys.Auth,
+			Status: "active", VAPIDKeyID: vapidKeyID,
+		})
+		if err != nil {
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to save subscription")
 			return
 		}
-		writeJSON(w, http.StatusCreated, map[string]any{"ok": true})
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"id": sub.ID, "state": sub.Status, "vapid_key_id": sub.VAPIDKeyID,
+		})
 
 	case http.MethodDelete:
 		if err := requireJSONContentType(r); err != nil {
@@ -3654,17 +3772,24 @@ func (s *serveServer) handlePushSubscribe(w http.ResponseWriter, r *http.Request
 			return
 		}
 		var req struct {
+			ID       string `json:"id"`
 			Endpoint string `json:"endpoint"`
 		}
 		if err := decodeJSONBody(r, &req); err != nil {
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 			return
 		}
-		if req.Endpoint == "" {
-			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "endpoint is required")
+		var err error
+		if id := strings.TrimSpace(req.ID); id != "" {
+			err = pushStore.DeletePushSubscriptionByID(r.Context(), id)
+		} else if endpoint := strings.TrimSpace(req.Endpoint); endpoint != "" {
+			// Migration fallback for clients enrolled before canonical IDs existed.
+			err = s.store.DeletePushSubscription(r.Context(), endpoint)
+		} else {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "subscription id is required")
 			return
 		}
-		if err := s.store.DeletePushSubscription(r.Context(), req.Endpoint); err != nil {
+		if err != nil {
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to delete subscription")
 			return
 		}

@@ -907,7 +907,7 @@ done
 	})
 	defer p.CleanupMCP()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	stream, err := p.Stream(ctx, Request{Messages: []Message{
 		SystemText(strings.Repeat("large system prompt ", 1<<18)),
@@ -916,6 +916,7 @@ done
 	if err != nil {
 		t.Fatal(err)
 	}
+	readyTimeout := time.After(2 * time.Second)
 	for {
 		if _, err := os.Stat(blockedPath); err == nil {
 			break
@@ -923,7 +924,7 @@ done
 			t.Fatal(err)
 		}
 		select {
-		case <-ctx.Done():
+		case <-readyTimeout:
 			t.Fatal("fake Grok process did not reach its blocked session write")
 		case <-time.After(10 * time.Millisecond):
 		}
@@ -934,6 +935,7 @@ done
 		p.CleanupMCP()
 		close(cleanupDone)
 	}()
+	cancel()
 	<-ctx.Done()
 
 	streamDone := make(chan error, 1)

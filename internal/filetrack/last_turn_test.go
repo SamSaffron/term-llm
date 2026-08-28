@@ -12,7 +12,7 @@ func TestLastTurnChangesUseLatestRun(t *testing.T) {
 	ctx := context.Background()
 	record := func(rec ChangeRecord) {
 		t.Helper()
-		if _, err := store.RecordChange(ctx, rec); err != nil {
+		if _, err := recordTestChange(ctx, store, rec); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -40,12 +40,55 @@ func TestLastTurnChangesUseLatestRun(t *testing.T) {
 	}
 }
 
+func TestLastTurnChangesIncludeRunInProgress(t *testing.T) {
+	store := openTestStore(t, Options{})
+	ctx := context.Background()
+	if _, err := recordTestChange(ctx, store, ChangeRecord{
+		SessionID: "session", RunID: "run-1", Path: "/work/test.txt",
+		BeforeMissing: true, After: []byte("123"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordRunStart(ctx, RunRecord{SessionID: "session", RunID: "run-2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	changes, err := store.ListRecentRunChanges(ctx, "session", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("new in-progress turn fell back to prior changes: %#v", changes)
+	}
+
+	if _, err := recordTestChange(ctx, store, ChangeRecord{
+		SessionID: "session", RunID: "run-2", Path: "/work/test.txt",
+		Before: []byte("123"), After: []byte("234"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	changes, err = store.ListRecentRunChanges(ctx, "session", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 || changes[0].Path != "/work/test.txt" || changes[0].Kind != KindModify || changes[0].Adds != 1 || changes[0].Dels != 1 {
+		t.Fatalf("in-progress last turn changes = %#v", changes)
+	}
+	content, err := store.GetRecentRunFileDiffContent(ctx, "session", "/work/test.txt", 1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content == nil || string(content.Before) != "123" || string(content.After) != "234" {
+		t.Fatalf("in-progress last turn content = %#v", content)
+	}
+}
+
 func TestRecentRunChangesCoverRollingWindow(t *testing.T) {
 	store := openTestStore(t, Options{})
 	ctx := context.Background()
 	record := func(runID, path string, before, after []byte) {
 		t.Helper()
-		if _, err := store.RecordChange(ctx, ChangeRecord{
+		if _, err := recordTestChange(ctx, store, ChangeRecord{
 			SessionID: "session", RunID: runID, Path: path, Before: before, After: after,
 		}); err != nil {
 			t.Fatal(err)
@@ -103,7 +146,7 @@ func TestRecentRunChangesOmitWindowNetNoOp(t *testing.T) {
 		{SessionID: "session", RunID: "run-2", Path: "/work/other.txt", BeforeMissing: true, After: []byte("other\n")},
 		{SessionID: "session", RunID: "run-3", Path: "/work/file.txt", Before: []byte("changed\n"), After: []byte("base\n")},
 	} {
-		if _, err := store.RecordChange(ctx, rec); err != nil {
+		if _, err := recordTestChange(ctx, store, rec); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -134,7 +177,11 @@ func TestOpenMigratesRunIdentityColumn(t *testing.T) {
 			dels INTEGER NOT NULL DEFAULT 0, truncated INTEGER NOT NULL DEFAULT 0,
 			is_binary INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(session_id, seq)
-		);`)
+		);
+		INSERT INTO file_changes(session_id,seq,path,kind,tool_name) VALUES
+			('historical',1,'/work/direct','modify','write_file'),
+			('historical',2,'/work/shell','modify','shell'),
+			('historical',3,'/work/custom','modify','custom_tool');`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +194,22 @@ func TestOpenMigratesRunIdentityColumn(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, err := store.RecordChange(context.Background(), ChangeRecord{
+	rows, err := store.db.Query(`SELECT tool_name, provenance FROM file_changes WHERE session_id='historical' ORDER BY seq`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	want := []struct{ tool, provenance string }{{"write_file", ProvenanceDirect}, {"shell", ProvenanceLegacyUnverified}, {"custom_tool", ProvenanceLegacyUnverified}}
+	for i := 0; rows.Next(); i++ {
+		var tool, provenance string
+		if err := rows.Scan(&tool, &provenance); err != nil {
+			t.Fatal(err)
+		}
+		if i >= len(want) || tool != want[i].tool || provenance != want[i].provenance {
+			t.Fatalf("migration row %d = %q/%q, want %+v", i, tool, provenance, want[i])
+		}
+	}
+	if _, err := recordTestChange(context.Background(), store, ChangeRecord{
 		SessionID: "session", RunID: "run", Path: "/work/file", BeforeMissing: true, After: []byte("x\n"),
 	}); err != nil {
 		t.Fatalf("record after migration: %v", err)
@@ -196,7 +258,7 @@ func TestOpenRepairsPartiallyAppliedRunIdentityMigration(t *testing.T) {
 func TestLastTurnIgnoresLegacyRowsWithoutRunIdentity(t *testing.T) {
 	store := openTestStore(t, Options{})
 	ctx := context.Background()
-	if _, err := store.RecordChange(ctx, ChangeRecord{SessionID: "session", Path: "/work/legacy.txt", BeforeMissing: true, After: []byte("legacy\n")}); err != nil {
+	if _, err := recordTestChange(ctx, store, ChangeRecord{SessionID: "session", Path: "/work/legacy.txt", BeforeMissing: true, After: []byte("legacy\n")}); err != nil {
 		t.Fatal(err)
 	}
 	changes, err := store.ListRecentRunChanges(ctx, "session", 1)

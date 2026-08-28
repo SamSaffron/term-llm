@@ -105,12 +105,23 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 	existingContent := ""
 	isNew := true
 	var existingMode os.FileMode
-	if info, err := os.Stat(absPath); err == nil {
-		existingMode = info.Mode()
-		if data, err := os.ReadFile(absPath); err == nil {
-			existingContent = string(data)
-			isNew = false
+	info, statErr := os.Stat(absPath)
+	switch {
+	case statErr == nil:
+		if !info.Mode().IsRegular() {
+			return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "target is not a regular file: %s", absPath))), nil
 		}
+		existingMode = info.Mode()
+		data, readErr := os.ReadFile(absPath)
+		if readErr != nil {
+			return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to capture existing file before write: %v", readErr))), nil
+		}
+		existingContent = string(data)
+		isNew = false
+	case os.IsNotExist(statErr):
+		// Missing is positively established; BeforeMissing is safe.
+	default:
+		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to inspect target before write: %v", statErr))), nil
 	}
 
 	// Follow symlinks (including dangling ones) so the atomic rename below
@@ -166,8 +177,13 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 
 	// Build result message
 	output := llm.ToolOutput{}
-	if fc := recordFileChange(ctx, t.recorder, WriteFileToolName, absPath, []byte(existingContent), []byte(a.Content), isNew, false); fc != nil {
+	if fc, diagnostic := recordFileChange(ctx, t.recorder, WriteFileToolName, absPath, []byte(existingContent), []byte(a.Content), isNew, false); fc != nil {
 		output.FileChanges = []llm.FileChange{*fc}
+		if diagnostic != nil {
+			output.OutputClaimDiagnostics = []llm.OutputClaimDiagnostic{*diagnostic}
+		}
+	} else if diagnostic != nil {
+		output.OutputClaimDiagnostics = []llm.OutputClaimDiagnostic{*diagnostic}
 	}
 	if isNew {
 		output.Content = fmt.Sprintf("Created new file: %s (%d lines).", absPath, countLines(a.Content))

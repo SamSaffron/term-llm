@@ -133,7 +133,7 @@ func (r *LocalToolRegistry) applyFileRecorderLocked() {
 	}
 	if t, ok := r.tools[ShellToolName]; ok {
 		if st, ok := t.(*ShellTool); ok {
-			st.recorder = r.fileRecorder
+			st.setFileChangeRecorder(r.fileRecorder)
 		}
 	}
 }
@@ -263,6 +263,9 @@ func (r *LocalToolRegistry) RegisterWithEngine(engine *llm.Engine) {
 
 	for _, tool := range r.tools {
 		engine.RegisterTool(tool)
+	}
+	if lifecycle, ok := r.fileRecorder.(llm.FileTrackingRunLifecycle); ok {
+		engine.SetFileTrackingRunLifecycle(lifecycle)
 	}
 }
 

@@ -31,6 +31,25 @@ func (s *serveServer) handleSessionApproval(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	run := s.responseRuns.latestRun(sessionID)
+	if resolved, ok := s.responseRuns.resolvedInteractionForSession(sessionID, "approval", approvalID); ok {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "already_resolved", "outcome": resolved.Outcome, "resolved_at": resolved.ResolvedAt,
+		})
+		return
+	}
+
+	if run != nil {
+		run.interactionSubmitMu.Lock()
+		defer run.interactionSubmitMu.Unlock()
+		if resolved, ok := run.resolvedInteraction("approval", approvalID); ok {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status": "already_resolved", "outcome": resolved.Outcome, "resolved_at": resolved.ResolvedAt,
+			})
+			return
+		}
+	}
+
 	rt, ok := s.sessionMgr.Get(sessionID)
 	if !ok {
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
@@ -40,8 +59,15 @@ func (s *serveServer) handleSessionApproval(w http.ResponseWriter, r *http.Reque
 	if req.Choice != nil {
 		choiceIndex = *req.Choice
 	}
+	outcome := rt.approvalOutcome(approvalID, choiceIndex, req.Cancelled)
 	err := rt.submitApproval(approvalID, choiceIndex, req.Cancelled, req.ResumeAuto)
 	if err != nil {
+		if resolved, ok := s.responseRuns.resolvedInteractionForSession(sessionID, "approval", approvalID); ok {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status": "already_resolved", "outcome": resolved.Outcome, "resolved_at": resolved.ResolvedAt,
+			})
+			return
+		}
 		switch {
 		case errors.Is(err, errServeApprovalNotPending), errors.Is(err, errServeApprovalAnswered):
 			writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
@@ -50,13 +76,11 @@ func (s *serveServer) handleSessionApproval(w http.ResponseWriter, r *http.Reque
 		}
 		return
 	}
-	if s.responseRuns != nil {
-		if runID := s.responseRuns.activeRunID(sessionID); runID != "" {
-			if run, ok := s.responseRuns.get(runID); ok {
-				run.resolveApprovalRecovery(approvalID)
-			}
-		}
+	resolvedAt := int64(0)
+	if run != nil {
+		resolved := run.recordResolvedInteraction("approval", approvalID, outcome)
+		outcome, resolvedAt = resolved.Outcome, resolved.ResolvedAt
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "outcome": outcome, "resolved_at": resolvedAt})
 }

@@ -79,12 +79,13 @@ type projectDirectoryResponse struct {
 }
 
 type sessionProjectCandidate struct {
-	CanonicalDir      string `json:"canonical_dir"`
-	DefaultName       string `json:"default_name"`
-	Git               bool   `json:"git"`
-	ExistingProjectID string `json:"existing_project_id,omitempty"`
-	ExistingName      string `json:"existing_name,omitempty"`
-	ExistingArchived  bool   `json:"existing_archived,omitempty"`
+	CanonicalDir              string `json:"canonical_dir"`
+	DefaultName               string `json:"default_name"`
+	Git                       bool   `json:"git"`
+	ExistingProjectID         string `json:"existing_project_id,omitempty"`
+	ExistingName              string `json:"existing_name,omitempty"`
+	ExistingArchived          bool   `json:"existing_archived,omitempty"`
+	MatchingConversationCount int    `json:"matching_conversation_count"`
 }
 
 type sessionProjectAssignmentInfo struct {
@@ -92,6 +93,11 @@ type sessionProjectAssignmentInfo struct {
 	WorktreeDir string                   `json:"worktree_dir,omitempty"`
 	ProjectID   string                   `json:"project_id,omitempty"`
 	Candidate   *sessionProjectCandidate `json:"candidate,omitempty"`
+}
+
+type sessionProjectAssignmentResponse struct {
+	*session.Session
+	AssignedConversationCount int `json:"assigned_conversation_count"`
 }
 
 type sessionProjectAssignmentRequest struct {
@@ -372,10 +378,34 @@ func (s *serveServer) handleCapabilities(w http.ResponseWriter, r *http.Request)
 		worktreesEnabled = true
 	}
 	w.Header().Set("ETag", fmt.Sprintf(`W/"projects-%t-worktrees-%t"`, s.projectsEnabled, worktreesEnabled))
-	writeJSON(w, http.StatusOK, map[string]any{
+	payload := map[string]any{
 		"projects":  map[string]bool{"enabled": s.projectsEnabled},
 		"worktrees": map[string]bool{"enabled": worktreesEnabled},
-	})
+		"attachments": map[string]any{
+			"max_count":  maxAttachments,
+			"max_bytes":  maxAttachmentBytes,
+			"mime_types": attachmentMediaTypes(),
+			"extensions": attachmentExtensions(),
+		},
+	}
+	if s.responseRuns != nil {
+		diagnostics := s.responseRuns.Diagnostics()
+		payload["reliability_diagnostics"] = map[string]any{
+			"idempotency_replays": diagnostics.IdempotencyReplays,
+		}
+	}
+	s.webrtcMu.RLock()
+	peer := s.webrtcPeer
+	s.webrtcMu.RUnlock()
+	if peer != nil {
+		diagnostics := peer.Diagnostics()
+		payload["webrtc_diagnostics"] = map[string]any{
+			"active":   diagnostics.Active,
+			"reserved": diagnostics.Reserved,
+			"rejected": diagnostics.Rejected,
+		}
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func projectDirectoryBreadcrumbs(path string) []projectDirectoryBreadcrumb {
@@ -796,6 +826,12 @@ func (s *serveServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
 			api := s.cachedProjectStatus(statusCtx, *groups[i].Project, i < maxEagerProjectStatusChecks)
 			groups[i].Project = &api.Project
 		}
+		for j := range groups[i].Sessions {
+			// Legacy sessions predate provider_key and retain Provider.Name() as a
+			// display label (for example, "ChatGPT (gpt-5.6-sol, effort=low)").
+			// The runtime picker must receive the canonical key, never that label.
+			groups[i].Sessions[j].ProviderKey = sessionSummaryProviderKey(s.cfgRef, groups[i].Sessions[j])
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"groups": groups})
 }
@@ -850,6 +886,18 @@ func (s *serveServer) handleSessionProjectAssignment(w http.ResponseWriter, r *h
 			if err != nil {
 				writeProjectError(w, http.StatusInternalServerError, "projects_unavailable", "could not inspect the conversation workspace")
 				return
+			}
+			if info.Candidate != nil {
+				matches, matchErr := projectpkg.MatchingSessionsForResolved(r.Context(), s.store, resolvedProjectPath{
+					CanonicalDir: info.Candidate.CanonicalDir,
+					DefaultName:  info.Candidate.DefaultName,
+					Git:          info.Candidate.Git,
+				})
+				if matchErr != nil {
+					writeProjectError(w, http.StatusInternalServerError, "projects_unavailable", "could not inspect matching conversations")
+					return
+				}
+				info.Candidate.MatchingConversationCount = len(matches)
 			}
 		}
 		writeJSON(w, http.StatusOK, info)
@@ -921,31 +969,19 @@ func (s *serveServer) handleSessionProjectAssignment(w http.ResponseWriter, r *h
 		return
 	}
 
-	// Keep the process-wide session map lock only around the final race-sensitive
-	// recheck and assignment. Project discovery and Git inspection above may be
-	// slow and must not block unrelated conversations.
+	// Pin only this session while the final storage CAS runs. Unrelated runtime
+	// admission and lifecycle operations must remain free to progress.
 	var releaseAssignmentGuard func()
 	if s.sessionMgr != nil {
-		s.sessionMgr.mu.Lock()
-		if rt := s.sessionMgr.sessions[sessionID]; rt != nil {
-			if rt.hasActiveRun() || !rt.mu.TryLock() {
-				s.sessionMgr.mu.Unlock()
-				writeProjectError(w, http.StatusConflict, "workspace_conflict", "an active response cannot be reassigned")
-				return
-			}
-			if rt.hasActiveRun() {
-				rt.mu.Unlock()
-				s.sessionMgr.mu.Unlock()
-				writeProjectError(w, http.StatusConflict, "workspace_conflict", "an active response cannot be reassigned")
-				return
-			}
-			guardedRuntime = rt
-			releaseAssignmentGuard = func() {
-				rt.mu.Unlock()
-				s.sessionMgr.mu.Unlock()
-			}
-		} else {
-			releaseAssignmentGuard = s.sessionMgr.mu.Unlock
+		var lockErr error
+		guardedRuntime, releaseAssignmentGuard, lockErr = s.sessionMgr.lockIdleMetadataMutation(sessionID)
+		if errors.Is(lockErr, errServeSessionManagerClosed) {
+			writeProjectError(w, http.StatusServiceUnavailable, "projects_unavailable", lockErr.Error())
+			return
+		}
+		if lockErr != nil {
+			writeProjectError(w, http.StatusConflict, "workspace_conflict", "an active response cannot be reassigned")
+			return
 		}
 	}
 	releaseGuard := func() {
@@ -975,13 +1011,20 @@ func (s *serveServer) handleSessionProjectAssignment(w http.ResponseWriter, r *h
 		guardedRuntime.sessionMeta = persisted
 	}
 	releaseGuard()
+	assignedCount := 1
 	claimed, claimErr := projectpkg.ClaimMatchingSessions(r.Context(), s.store, *project)
 	if claimErr != nil {
 		log.Printf("[serve] reconcile project history after assignment: id=%s: %v", project.ID, claimErr)
-	} else if claimed > 0 {
-		log.Printf("[serve] project history reconciled after assignment: id=%s claimed=%d", project.ID, claimed)
+	} else {
+		assignedCount += claimed
+		if claimed > 0 {
+			log.Printf("[serve] project history reconciled after assignment: id=%s claimed=%d", project.ID, claimed)
+		}
 	}
-	writeJSON(w, http.StatusOK, persisted)
+	writeJSON(w, http.StatusOK, sessionProjectAssignmentResponse{
+		Session:                   persisted,
+		AssignedConversationCount: assignedCount,
+	})
 }
 
 func (s *serveServer) handleProjectWorktrees(w http.ResponseWriter, r *http.Request, projectID, suffix string) {

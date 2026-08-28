@@ -2402,9 +2402,8 @@ func TestSplitSequences(t *testing.T) {
 	}
 }
 
-// limitedSleepReader is a simple io.Reader that limits the number of bytes
-// read on each Read call and simulates a delay to mimic terminal input
-// behavior.
+// limitedSleepReader limits each read and can delay the second read to simulate
+// an inter-chunk terminal input pause.
 type limitedSleepReader struct {
 	r io.Reader
 	n int
@@ -2421,7 +2420,7 @@ func LimitedReader(r io.Reader, n int) io.Reader {
 }
 
 func (r *limitedSleepReader) Read(p []byte) (n int, err error) {
-	if r.i > 0 && r.d > 0 {
+	if r.i == 1 && r.d > 0 {
 		time.Sleep(r.d)
 	}
 	if r.n <= 0 {

@@ -108,9 +108,7 @@ func (rt *serveRuntime) awaitWorkspaceApproval(workspace string) (tools.Workspac
 	}, nil
 }
 
-func (rt *serveRuntime) awaitApprovalRequest(target string, isWrite bool, isShell bool, isWorkspace bool, workDir string) (tools.ApprovalResult, error) {
-	approvalID := "appr_" + randomSuffix()
-
+func newServePendingApproval(target string, isWrite bool, isShell bool, isWorkspace bool, workDir string) *servePendingApproval {
 	var options []tools.ApprovalOption
 	if isWorkspace {
 		options = tools.BuildWorkspaceOptions(target)
@@ -134,6 +132,38 @@ func (rt *serveRuntime) awaitApprovalRequest(target string, isWrite bool, isShel
 		options = tools.BuildFileOptions(target, repoInfoPtr, isWrite)
 	}
 
+	return &servePendingApproval{
+		ApprovalID:  "appr_" + randomSuffix(),
+		Path:        target,
+		IsWrite:     isWrite,
+		IsShell:     isShell,
+		IsWorkspace: isWorkspace,
+		WorkDir:     workDir,
+		Options:     options,
+		CreatedAt:   time.Now(),
+		responseC:   make(chan serveApprovalSubmission, 1),
+	}
+}
+
+// prepareApprovalRequest registers an approval without requiring a live stream
+// transport. Recovery paths can discover the prompt through session state.
+func (rt *serveRuntime) prepareApprovalRequest(target string, isWrite bool, isShell bool, isWorkspace bool, workDir string) (*servePendingApproval, serveApprovalPrompt) {
+	pending := newServePendingApproval(target, isWrite, isShell, isWorkspace, workDir)
+	rt.approvalMu.Lock()
+	defer rt.approvalMu.Unlock()
+	if rt.pendingApprovals == nil {
+		rt.pendingApprovals = make(map[string]*servePendingApproval)
+	}
+	if rt.toolMgr != nil && rt.toolMgr.ApprovalMgr != nil {
+		pending.ResumeAutoAvailable = rt.toolMgr.ApprovalMgr.GuardianAutoSuspended()
+	}
+	rt.pendingApprovals[pending.ApprovalID] = pending
+	return pending, pending.snapshot()
+}
+
+func (rt *serveRuntime) awaitApprovalRequest(target string, isWrite bool, isShell bool, isWorkspace bool, workDir string) (tools.ApprovalResult, error) {
+	pending := newServePendingApproval(target, isWrite, isShell, isWorkspace, workDir)
+
 	rt.approvalMu.Lock()
 
 	eventFunc := rt.approvalEventFunc
@@ -153,20 +183,10 @@ func (rt *serveRuntime) awaitApprovalRequest(target string, isWrite bool, isShel
 	if rt.pendingApprovals == nil {
 		rt.pendingApprovals = make(map[string]*servePendingApproval)
 	}
-	resumeAutoAvailable := rt.toolMgr != nil && rt.toolMgr.ApprovalMgr != nil && rt.toolMgr.ApprovalMgr.GuardianAutoSuspended()
-	pending := &servePendingApproval{
-		ApprovalID:          approvalID,
-		Path:                target,
-		IsWrite:             isWrite,
-		IsShell:             isShell,
-		IsWorkspace:         isWorkspace,
-		WorkDir:             workDir,
-		Options:             options,
-		ResumeAutoAvailable: resumeAutoAvailable,
-		CreatedAt:           time.Now(),
-		responseC:           make(chan serveApprovalSubmission, 1),
+	if rt.toolMgr != nil && rt.toolMgr.ApprovalMgr != nil {
+		pending.ResumeAutoAvailable = rt.toolMgr.ApprovalMgr.GuardianAutoSuspended()
 	}
-	rt.pendingApprovals[approvalID] = pending
+	rt.pendingApprovals[pending.ApprovalID] = pending
 	rt.approvalMu.Unlock()
 
 	resumeResponseTimeout := func() {}
@@ -174,7 +194,7 @@ func (rt *serveRuntime) awaitApprovalRequest(target string, isWrite bool, isShel
 		resumeResponseTimeout = pauseResponseTimeout()
 	}
 	defer resumeResponseTimeout()
-	defer rt.removePendingApproval(approvalID, pending)
+	defer rt.removePendingApproval(pending.ApprovalID, pending)
 
 	// Emit SSE event — if this fails the client never learns about the
 	// pending approval, so return immediately instead of blocking forever.
@@ -204,6 +224,19 @@ func (rt *serveRuntime) awaitApprovalRequest(target string, isWrite bool, isShel
 	case <-ctx.Done():
 		return tools.ApprovalResult{Cancelled: true, Choice: tools.ApprovalChoiceCancelled}, ctx.Err()
 	}
+}
+
+func (rt *serveRuntime) approvalOutcome(approvalID string, choiceIndex int, cancelled bool) string {
+	if cancelled {
+		return "cancelled-by-user"
+	}
+	rt.approvalMu.Lock()
+	defer rt.approvalMu.Unlock()
+	pending := rt.pendingApprovals[approvalID]
+	if pending != nil && choiceIndex >= 0 && choiceIndex < len(pending.Options) && pending.Options[choiceIndex].Choice == tools.ApprovalChoiceDeny {
+		return "denied"
+	}
+	return "accepted"
 }
 
 func (rt *serveRuntime) submitApproval(approvalID string, choiceIndex int, cancelled bool, resumeAuto bool) error {

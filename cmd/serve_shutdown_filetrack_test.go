@@ -40,11 +40,10 @@ func startBlockingFileRecordServer(t *testing.T, store *filetrack.Store) (*serve
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		close(started)
 		<-release
-		_, err := store.RecordChange(context.WithoutCancel(r.Context()), filetrack.ChangeRecord{
-			SessionID:     "shutdown-session",
-			Path:          "/work/changed.go",
-			BeforeMissing: true,
-			After:         []byte("changed\n"),
+		_, err := store.RecordAttributedChange(context.WithoutCancel(r.Context()), filetrack.ChangeRecord{
+			SessionID: "shutdown-session", ToolName: "write_file", Path: "/work/changed.go",
+			BeforeMissing: true, After: []byte("changed\n"), Provenance: filetrack.ProvenanceDirect,
+			ClaimCoverage: filetrack.CoverageComplete, BaselineState: filetrack.BaselineNormal,
 		})
 		recordErr <- err
 		w.WriteHeader(http.StatusNoContent)

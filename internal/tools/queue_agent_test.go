@@ -177,6 +177,7 @@ func TestQueueAgentPreservesJobIDWhenTriggerCannotBeReconciled(t *testing.T) {
 
 	client := &jobsBackedAgentClient{baseURL: server.URL, httpClient: server.Client()}
 	tool := NewQueueAgentToolWithClient(client)
+	tool.triggerReconcileTimeout = 20 * time.Millisecond
 	out, err := tool.Execute(context.Background(), json.RawMessage(`{"agent_name":"developer","prompt":"do it","cwd":"/tmp/work"}`))
 	if err != nil {
 		t.Fatalf("queue Execute() error = %v", err)

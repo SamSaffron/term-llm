@@ -72,9 +72,10 @@ func TestSendWebPushAllRemovesStaleSubscriptions(t *testing.T) {
 		wantRemaining int
 		wantErrors    bool
 		wantRequests  int32
+		wantStale     bool
 	}{
-		{name: "gone", status: http.StatusGone, wantRemaining: 0, wantRequests: 1},
-		{name: "not found", status: http.StatusNotFound, wantRemaining: 0, wantRequests: 1},
+		{name: "gone", status: http.StatusGone, wantRemaining: 1, wantRequests: 1, wantStale: true},
+		{name: "not found", status: http.StatusNotFound, wantRemaining: 1, wantRequests: 1, wantStale: true},
 		{name: "server error", status: http.StatusInternalServerError, wantRemaining: 1, wantErrors: true, wantRequests: 2},
 	}
 
@@ -132,6 +133,9 @@ func TestSendWebPushAllRemovesStaleSubscriptions(t *testing.T) {
 			}
 			if len(subs) != tt.wantRemaining {
 				t.Fatalf("remaining subscriptions = %d, want %d", len(subs), tt.wantRemaining)
+			}
+			if len(subs) > 0 && (subs[0].Status == "stale") != tt.wantStale {
+				t.Fatalf("subscription status = %q, want stale %t", subs[0].Status, tt.wantStale)
 			}
 			if got := requests.Load(); got != tt.wantRequests {
 				t.Fatalf("push requests = %d, want %d", got, tt.wantRequests)

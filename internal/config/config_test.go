@@ -43,6 +43,44 @@ func TestServeProjectsConfigDefaultsEnabledAndLoadsExplicitDisable(t *testing.T)
 	}
 }
 
+func TestServeAutoTitleDefaultsEnabledAndPreservesExplicitDisable(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Serve.AutoTitle {
+		t.Fatal("serve.auto_title did not default to true")
+	}
+	configDir, err := GetConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte("serve:\n  auto_title: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	viper.Reset()
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Serve.AutoTitle {
+		t.Fatal("explicit serve.auto_title=false was ignored")
+	}
+	encoded, err := yaml.Marshal(ServeConfig{AutoTitle: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), "auto_title: false") {
+		t.Fatalf("explicit false omitted from YAML: %s", encoded)
+	}
+}
+
 func TestWriteFileAtomicallyFollowsFinalPathSymlink(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation requires extra privileges on Windows")
@@ -778,6 +816,7 @@ func TestCanonicalDefaultsCoverage(t *testing.T) {
 		"transcription.save_dir":        "",
 		"transcription.timestamps":      false,
 		"serve.base_path":               DefaultServeBasePath,
+		"serve.auto_title":              DefaultServeAutoTitle,
 		"serve.response_timeout":        DefaultServeResponseTimeout,
 		"sessions.strip_image_base64":   false,
 		"tools.max_tool_output_chars":   DefaultToolsMaxToolOutputChars,

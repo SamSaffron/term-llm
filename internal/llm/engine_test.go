@@ -402,6 +402,8 @@ func TestEngineExternalSearchLoopsUntilNoToolCalls(t *testing.T) {
 
 	var text strings.Builder
 	var toolEvents int
+	var toolTurnIndexes []int
+	var textTurnIndexes []int
 	var gotErr error
 
 	for {
@@ -417,8 +419,16 @@ func TestEngineExternalSearchLoopsUntilNoToolCalls(t *testing.T) {
 			gotErr = event.Err
 		case EventToolCall:
 			toolEvents++
+			if !event.ProviderTurnIndexSet {
+				t.Fatal("tool event is missing provider turn identity")
+			}
+			toolTurnIndexes = append(toolTurnIndexes, event.ProviderTurnIndex)
 		case EventTextDelta:
 			text.WriteString(event.Text)
+			if !event.ProviderTurnIndexSet {
+				t.Fatal("text event is missing provider turn identity")
+			}
+			textTurnIndexes = append(textTurnIndexes, event.ProviderTurnIndex)
 		}
 	}
 
@@ -428,6 +438,12 @@ func TestEngineExternalSearchLoopsUntilNoToolCalls(t *testing.T) {
 	// EventToolCall events are now emitted for all tool calls to preserve interleaving order
 	if toolEvents != 2 {
 		t.Fatalf("expected 2 tool call events, got %d", toolEvents)
+	}
+	if !reflect.DeepEqual(toolTurnIndexes, []int{0, 1}) {
+		t.Fatalf("tool provider turn indexes = %v, want [0 1]", toolTurnIndexes)
+	}
+	if !reflect.DeepEqual(textTurnIndexes, []int{2}) {
+		t.Fatalf("text provider turn indexes = %v, want [2]", textTurnIndexes)
 	}
 	if text.String() != "final answer" {
 		t.Fatalf("unexpected text: %q", text.String())
@@ -1645,6 +1661,36 @@ func TestEngineStripsSkillProvenanceFromProviderRequest(t *testing.T) {
 	}
 	if part := requests[0].Messages[0].Parts[0]; part.Type != PartText || part.Text != "instructions" {
 		t.Fatalf("provider part = %#v", part)
+	}
+}
+
+func TestEngineStripsGoalSteeringMarkerButSendsText(t *testing.T) {
+	provider := NewMockProvider("mock").AddTextResponse("ok")
+	engine := NewEngine(provider, nil)
+	stream, err := engine.Stream(context.Background(), Request{Messages: []Message{
+		UserText("go"),
+		GoalSteeringText("continue the active goal"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	for {
+		_, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatal(recvErr)
+		}
+	}
+	requests := provider.RecordedRequests()
+	if len(requests) != 1 || len(requests[0].Messages) != 2 {
+		t.Fatalf("provider requests = %#v", requests)
+	}
+	got := requests[0].Messages[1]
+	if got.Role != RoleUser || MessageText(got) != "continue the active goal" || len(got.Parts) != 1 || got.Parts[0].Type != PartText {
+		t.Fatalf("provider goal steering message = %#v", got)
 	}
 }
 

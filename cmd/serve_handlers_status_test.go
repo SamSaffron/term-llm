@@ -207,6 +207,85 @@ func TestSessionMessagesETagIgnoresSessionMetadataOnlyUpdates(t *testing.T) {
 	}
 }
 
+func TestHandleSessionsStatusAlwaysIncludesSelectedActiveAndUnresolvedSessions(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	base := time.Now().Add(-24 * time.Hour).Truncate(time.Millisecond)
+	ids := make([]string, 205)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("status-window-%03d", i)
+		if err := store.Create(ctx, &session.Session{
+			ID: ids[i], Provider: "test", Model: "test", Mode: session.ModeChat,
+			CreatedAt: base.Add(time.Duration(i) * time.Minute),
+			UpdatedAt: base.Add(time.Duration(i) * time.Minute),
+		}); err != nil {
+			t.Fatalf("create %d: %v", i, err)
+		}
+	}
+
+	runs := newServeResponseRunManager()
+	defer runs.Close()
+	run := newResponseRun("response-outside-window", ids[0], "", "test", time.Now().Unix(), nil)
+	if err := runs.create(run); err != nil {
+		t.Fatal(err)
+	}
+	runs.setActiveRun(ids[0], run.id)
+	manager := &serveSessionManager{sessions: map[string]*serveRuntime{
+		ids[1]: {
+			pendingAskUsers: map[string]*servePendingAskUser{
+				"ask-outside-window": {CallID: "ask-outside-window", CreatedAt: time.Now()},
+			},
+		},
+	}}
+	srv := &serveServer{store: store, responseRuns: runs, sessionMgr: manager}
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/sessions/status?selected_session="+ids[2],
+		nil,
+	)
+	rr := httptest.NewRecorder()
+	srv.handleSessionsStatus(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var payload struct {
+		Sessions []struct {
+			ID               string `json:"id"`
+			ActiveRun        bool   `json:"active_run"`
+			ActiveResponseID string `json:"active_response_id"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	byID := make(map[string]struct {
+		ActiveRun        bool
+		ActiveResponseID string
+	}, len(payload.Sessions))
+	for _, entry := range payload.Sessions {
+		byID[entry.ID] = struct {
+			ActiveRun        bool
+			ActiveResponseID string
+		}{entry.ActiveRun, entry.ActiveResponseID}
+	}
+	if len(payload.Sessions) != 203 {
+		t.Fatalf("sessions=%d, want bounded 200 plus three critical rows", len(payload.Sessions))
+	}
+	if got := byID[ids[0]]; !got.ActiveRun || got.ActiveResponseID != run.id {
+		t.Fatalf("active session missing or inactive: %#v", got)
+	}
+	if _, ok := byID[ids[1]]; !ok {
+		t.Fatal("unresolved interaction session outside window is missing")
+	}
+	if _, ok := byID[ids[2]]; !ok {
+		t.Fatal("selected session outside window is missing")
+	}
+}
+
 type sessionsStatusTestEntry struct {
 	ID                  string `json:"id"`
 	MsgCount            int    `json:"message_count"`

@@ -1,0 +1,29 @@
+.notification-settings {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.notification-state {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border, rgb(127 127 127 / 30%));
+  border-radius: 0.5rem;
+}
+
+.notification-state > span {
+  color: var(--text-muted, #737373);
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+
+.notification-state-blocked,
+.notification-state-stale {
+  border-color: color-mix(in srgb, var(--danger, #d44) 45%, transparent);
+}
+
+.notification-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}

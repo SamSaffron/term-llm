@@ -113,6 +113,17 @@ In `--no-projects` single-workspace mode, the project/sidebar mutation routes ex
 
 All project routes use the existing bearer-token and CORS middleware. The token identifies one shared operator security domain, not separate users or tenants. Project paths are therefore visible to every authenticated token holder, and the first-party UI version header is only a compatibility signal—not authorization.
 
+## Automatic session titles
+
+After the first successful response, the serve process uses the selected provider's configured fast model to generate a short sidebar title in the background. The initial prompt remains as a fallback, generation failures never affect the response, and a manually renamed session is never replaced. Disable these extra best-effort model requests with:
+
+```yaml
+serve:
+  auto_title: false
+```
+
+The explicit **Improve title with AI** action remains available from the rename dialog regardless of this automatic setting.
+
 ## Live diff sidebar
 
 When [file change tracking](/reference/configuration/#file-change-tracking-config) is enabled, the browser UI shows a right-hand "Changes" panel for sessions in which agent tools modify files. Files appear as the agent edits them, expand inline to show the cumulative diff for the session (baseline = the file's state when the session first touched it), and can be collapsed individually. The panel is resizable and can be dismissed per session.
@@ -304,7 +315,7 @@ Relevant options include:
 - `--tools`, `--read-dir`, `--write-dir`, `--shell-allow`
 - `--base-path`
 - `--title` (overrides the web UI sidebar title; also configurable as `serve.title`)
-- `--response-timeout` (maximum active execution time, default `30m`; the clock pauses while waiting for approval or `ask_user`; also configurable as `serve.response_timeout` with Go durations like `45m` or `1h`)
+- `--response-timeout` (maximum inactivity before the first or next completed LLM response, default `30m`; each completed LLM response refreshes the clock, and interactive approval or `ask_user` waits pause it; also configurable as `serve.response_timeout` with Go durations like `45m` or `1h`)
 - `--cors-origin`
 - `--webrtc`, `--webrtc-signaling-url`, `--webrtc-token` (see [WebRTC direct routing](/guides/webrtc-direct-routing/))
 

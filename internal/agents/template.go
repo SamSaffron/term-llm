@@ -82,6 +82,9 @@ type TemplateContext struct {
 	// Searches in priority order: AGENTS.md, CLAUDE.md, .github/copilot-instructions.md,
 	// .cursor/rules, CONTRIBUTING.md - returns first found
 	Agents string
+
+	// Optional capability instructions.
+	FileTracking bool
 }
 
 // NewTemplateContext creates a context with current environment values.
@@ -246,6 +249,21 @@ func (c TemplateContext) WithLLM(provider, model string) TemplateContext {
 	return c
 }
 
+const fileTrackingInstructions = "## Filesystem tracking\n\n" +
+	"- `affected_paths` only bounds pre/post inspection. It is not a write permission and never attributes detected effects.\n" +
+	"- Before running a command that deliberately edits task files, add `output_claims` with `kind: transform`.\n" +
+	"- Use `kind: generate` only for deliberate task deliverables (including a new deliverable or lockfile), not merely because a command creates files.\n" +
+	"- Use `kind: materialize` for clone, checkout, install, download, extraction, and initial copy operations. Materialized content is presented separately and has no authored line totals.\n" +
+	"- Split materialization and later adaptation into separate shell calls when an adaptation diff matters.\n" +
+	"- Unclaimed transitions are observations, not agent changes. Git state, ignore state, path specificity, and prior session paths cannot create attribution."
+
+// WithFileTracking enables capability-specific instructions in templates that
+// opt in through the {{file_tracking_instructions}} placeholder.
+func (c TemplateContext) WithFileTracking(enabled bool) TemplateContext {
+	c.FileTracking = enabled
+	return c
+}
+
 // ExpandTemplate replaces {{variable}} placeholders with values from context.
 // Use {{env:NAME}} to read an environment variable from the term-llm process.
 // Use {{!variable}} or {{!env:NAME}} to render a literal token without expanding it.
@@ -336,6 +354,11 @@ func ExpandTemplate(text string, ctx TemplateContext) string {
 			return ctx.HandoverPath
 		case "agents":
 			return ctx.Agents
+		case "file_tracking_instructions":
+			if ctx.FileTracking {
+				return fileTrackingInstructions
+			}
+			return ""
 		default:
 			// Unknown variables are left as-is
 			return match

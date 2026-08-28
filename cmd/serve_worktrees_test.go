@@ -495,6 +495,7 @@ func TestServeWorktreeMergeExclusiveLeaseBlocksNewRootRuns(t *testing.T) {
 	platforms := []string{"web", "telegram", "jobs"}
 	started := make([]chan struct{}, len(platforms))
 	attempted := make([]chan struct{}, len(platforms))
+	unexpectedlyStarted := make(chan string, len(platforms))
 	runErrs := make(chan error, len(platforms))
 	for i, platform := range platforms {
 		started[i] = make(chan struct{})
@@ -514,7 +515,10 @@ func TestServeWorktreeMergeExclusiveLeaseBlocksNewRootRuns(t *testing.T) {
 				false,
 				[]llm.Message{llm.UserText("wait for merge")},
 				llm.Request{WorkingDir: repo},
-				func() { close(started[i]) },
+				func() {
+					close(started[i])
+					unexpectedlyStarted <- platform
+				},
 				nil,
 			)
 			runErrs <- runErr
@@ -523,12 +527,10 @@ func TestServeWorktreeMergeExclusiveLeaseBlocksNewRootRuns(t *testing.T) {
 	for i := range attempted {
 		<-attempted[i]
 	}
-	for i, platform := range platforms {
-		select {
-		case <-started[i]:
-			t.Fatalf("%s run became active while merge held the exclusive root lease", platform)
-		case <-time.After(100 * time.Millisecond):
-		}
+	select {
+	case platform := <-unexpectedlyStarted:
+		t.Fatalf("%s run became active while merge held the exclusive root lease", platform)
+	case <-time.After(100 * time.Millisecond):
 	}
 
 	close(continueMutation)

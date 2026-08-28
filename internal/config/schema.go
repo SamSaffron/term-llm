@@ -129,15 +129,21 @@ const (
 	DefaultSessionsMaxCount         = 0
 	DefaultSessionsStripImageBase64 = false
 
-	DefaultFileTrackingMaxFileBytes    = 2 * 1024 * 1024
-	DefaultFileTrackingMaxSessionBytes = 100 * 1024 * 1024
-	DefaultFileTrackingMaxTotalBytes   = int64(1024 * 1024 * 1024)
+	DefaultFileTrackingMaxFileBytes               = 2 * 1024 * 1024
+	DefaultFileTrackingMaxSessionBytes            = 100 * 1024 * 1024
+	DefaultFileTrackingMaxTotalBytes              = int64(1024 * 1024 * 1024)
+	DefaultFileTrackingMaxObservationRows         = 10000
+	DefaultFileTrackingMaxObservationSessionRows  = 1000
+	DefaultFileTrackingMaxObservationBytes        = int64(16 * 1024 * 1024)
+	DefaultFileTrackingMaxObservationSessionBytes = int64(2 * 1024 * 1024)
+	DefaultFileTrackingMaxObservationAgeDays      = 30
 
 	DefaultSkillsMetadataBudgetTokens = 8000
 	DefaultSkillsMaxVisibleSkills     = 50
 
 	DefaultServeBasePath        = "/ui"
 	DefaultServeResponseTimeout = "30m"
+	DefaultServeAutoTitle       = true
 
 	DefaultAutoCompact = true
 )
@@ -350,6 +356,7 @@ var keySpecs = []KeySpec{
 	optional("loop.approval_mode", withoutResetTemplate()),
 
 	def("serve.base_path", DefaultServeBasePath),
+	def("serve.auto_title", DefaultServeAutoTitle),
 	optional("serve.platforms", withPlaceholder([]string{})),
 	optional("serve.approval_mode", withoutResetTemplate()),
 	optional("serve.title"),
@@ -372,6 +379,11 @@ var keySpecs = []KeySpec{
 	def("file_tracking.max_file_bytes", DefaultFileTrackingMaxFileBytes),
 	def("file_tracking.max_session_bytes", DefaultFileTrackingMaxSessionBytes),
 	def("file_tracking.max_total_bytes", int(DefaultFileTrackingMaxTotalBytes)),
+	def("file_tracking.max_observation_rows", DefaultFileTrackingMaxObservationRows),
+	def("file_tracking.max_observation_session_rows", DefaultFileTrackingMaxObservationSessionRows),
+	def("file_tracking.max_observation_bytes", int(DefaultFileTrackingMaxObservationBytes)),
+	def("file_tracking.max_observation_session_bytes", int(DefaultFileTrackingMaxObservationSessionBytes)),
+	def("file_tracking.max_observation_age_days", DefaultFileTrackingMaxObservationAgeDays),
 	def("file_tracking.path", ""),
 }
 

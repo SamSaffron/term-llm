@@ -120,8 +120,9 @@ type jobsV2ErrorResponse struct {
 }
 
 type QueueAgentTool struct {
-	client *jobsBackedAgentClient
-	config *ToolConfig
+	client                  *jobsBackedAgentClient
+	config                  *ToolConfig
+	triggerReconcileTimeout time.Duration
 }
 
 func NewQueueAgentTool(configs ...*ToolConfig) *QueueAgentTool {
@@ -209,7 +210,11 @@ func (t *QueueAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 		// TriggerJob commits the run before writing its response. If that response
 		// is lost, reconcile with server state instead of hiding an active run and
 		// encouraging the caller to queue a duplicate.
-		reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), queuedAgentTriggerReconcileTimeout)
+		reconcileTimeout := t.triggerReconcileTimeout
+		if reconcileTimeout <= 0 {
+			reconcileTimeout = queuedAgentTriggerReconcileTimeout
+		}
+		reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reconcileTimeout)
 		reconciledRun, found, reconcileErr := t.client.reconcileRunForJob(reconcileCtx, job.ID)
 		cancel()
 		if reconcileErr == nil && found && reconciledRun.ID != "" {

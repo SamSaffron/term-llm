@@ -11,7 +11,23 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
+
+func recordTestChange(ctx context.Context, store *Store, rec ChangeRecord) (*Change, error) {
+	if rec.ToolName == "" {
+		rec.ToolName = "write_file"
+	}
+	rec.Provenance = ProvenanceDirect
+	rec.ClaimKind = ""
+	if rec.ClaimCoverage == "" {
+		rec.ClaimCoverage = CoverageComplete
+	}
+	if rec.BaselineState == "" {
+		rec.BaselineState = BaselineUnknown
+	}
+	return store.RecordAttributedChange(ctx, rec)
+}
 
 func openTestStore(t *testing.T, opts Options) *Store {
 	t.Helper()
@@ -106,7 +122,7 @@ func TestRecordChangeKinds(t *testing.T) {
 	var lastSeq int64
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			change, err := store.RecordChange(ctx, tt.rec)
+			change, err := recordTestChange(ctx, store, tt.rec)
 			if err != nil {
 				t.Fatalf("RecordChange: %v", err)
 			}
@@ -142,7 +158,7 @@ func TestRecordChangeConcurrentSeqs(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := store.RecordChange(ctx, ChangeRecord{
+			_, err := recordTestChange(ctx, store, ChangeRecord{
 				SessionID:     "parallel-session",
 				Path:          fmt.Sprintf("/tmp/%02d.txt", i),
 				BeforeMissing: true,
@@ -189,7 +205,7 @@ func TestRelativeAndAbsolutePathsMerge(t *testing.T) {
 	t.Chdir(dir)
 
 	abs := filepath.Join(dir, "dup.txt")
-	if _, err := store.RecordChange(ctx, ChangeRecord{
+	if _, err := recordTestChange(ctx, store, ChangeRecord{
 		SessionID:     "s1",
 		Path:          "dup.txt",
 		BeforeMissing: true,
@@ -197,7 +213,7 @@ func TestRelativeAndAbsolutePathsMerge(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.RecordChange(ctx, ChangeRecord{
+	if _, err := recordTestChange(ctx, store, ChangeRecord{
 		SessionID: "s1",
 		Path:      abs,
 		Before:    []byte("one\n"),
@@ -237,7 +253,7 @@ func TestBlobDedup(t *testing.T) {
 	content := []byte("duplicated content\n")
 
 	for i, path := range []string{"/tmp/x.txt", "/tmp/y.txt"} {
-		_, err := store.RecordChange(ctx, ChangeRecord{
+		_, err := recordTestChange(ctx, store, ChangeRecord{
 			SessionID: "s1", Path: path, After: content, BeforeMissing: true,
 		})
 		if err != nil {
@@ -258,7 +274,7 @@ func TestPerFileCapTruncates(t *testing.T) {
 	store := openTestStore(t, Options{MaxFileBytes: 10})
 	ctx := context.Background()
 
-	change, err := store.RecordChange(ctx, ChangeRecord{
+	change, err := recordTestChange(ctx, store, ChangeRecord{
 		SessionID: "s1", Path: "/tmp/big.txt",
 		After: []byte(strings.Repeat("x", 100) + "\n"), BeforeMissing: true,
 	})
@@ -283,7 +299,7 @@ func TestBinaryContentTruncates(t *testing.T) {
 	store := openTestStore(t, Options{})
 	ctx := context.Background()
 
-	change, err := store.RecordChange(ctx, ChangeRecord{
+	change, err := recordTestChange(ctx, store, ChangeRecord{
 		SessionID: "s1", Path: "/tmp/bin.dat",
 		After: []byte{0x00, 0x01, 0x02, 0xFF}, BeforeMissing: true,
 	})
@@ -313,7 +329,7 @@ func TestImageContentIsRetained(t *testing.T) {
 			before := []byte(tt.prefix + "old image payload")
 			after := []byte(tt.prefix + "new image payload")
 
-			change, err := store.RecordChange(ctx, ChangeRecord{
+			change, err := recordTestChange(ctx, store, ChangeRecord{
 				SessionID: "s1", Path: tt.path, Before: before, After: after,
 			})
 			if err != nil {
@@ -404,7 +420,7 @@ func TestSessionBudgetExhaustion(t *testing.T) {
 	store := openTestStore(t, Options{MaxSessionBytes: 30})
 	ctx := context.Background()
 
-	first, err := store.RecordChange(ctx, ChangeRecord{
+	first, err := recordTestChange(ctx, store, ChangeRecord{
 		SessionID: "s1", Path: "/tmp/a.txt",
 		After: []byte("0123456789012345678\n"), BeforeMissing: true, // 20 bytes
 	})
@@ -415,7 +431,7 @@ func TestSessionBudgetExhaustion(t *testing.T) {
 		t.Fatal("first change should fit the budget")
 	}
 
-	second, err := store.RecordChange(ctx, ChangeRecord{
+	second, err := recordTestChange(ctx, store, ChangeRecord{
 		SessionID: "s1", Path: "/tmp/b.txt",
 		After: []byte("0123456789012345678\n"), BeforeMissing: true,
 	})
@@ -584,7 +600,7 @@ func TestSeqSurvivesReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := store.RecordChange(ctx, ChangeRecord{
+	first, err := recordTestChange(ctx, store, ChangeRecord{
 		SessionID: "s", Path: "/f", After: []byte("v1\n"), BeforeMissing: true,
 	})
 	if err != nil {
@@ -597,7 +613,7 @@ func TestSeqSurvivesReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	second, err := store.RecordChange(ctx, ChangeRecord{
+	second, err := recordTestChange(ctx, store, ChangeRecord{
 		SessionID: "s", Path: "/f", Before: []byte("v1\n"), After: []byte("v2\n"),
 	})
 	if err != nil {
@@ -628,7 +644,7 @@ func TestBlobRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	content := []byte(strings.Repeat("compressible line of text\n", 100))
 
-	change, err := store.RecordChange(ctx, ChangeRecord{
+	change, err := recordTestChange(ctx, store, ChangeRecord{
 		SessionID: "s", Path: "/f", After: content, BeforeMissing: true,
 	})
 	if err != nil {
@@ -833,7 +849,7 @@ func TestRecordChangeEnforcesTotalBudget(t *testing.T) {
 
 func TestRecordChangeRejectsChangePrunedByTotalBudget(t *testing.T) {
 	store := openTestStore(t, Options{MaxTotalBytes: 1})
-	change, err := store.RecordChange(context.Background(), ChangeRecord{
+	change, err := recordTestChange(context.Background(), store, ChangeRecord{
 		SessionID: "current", Path: "/work/f.txt", After: []byte("content"), BeforeMissing: true,
 	})
 	if err == nil || change != nil {
@@ -852,9 +868,13 @@ func TestRecorderSwallowsAndConverts(t *testing.T) {
 	rec := NewRecorder(store)
 	ctx := context.Background()
 
-	fc := rec.RecordChange(ctx, ChangeRecord{
-		SessionID: "s", Path: "/f", After: []byte("a\nb\n"), BeforeMissing: true,
+	fc, err := rec.RecordAttributedChange(ctx, ChangeRecord{
+		SessionID: "s", ToolName: "write_file", Path: "/f", After: []byte("a\nb\n"), BeforeMissing: true,
+		Provenance: ProvenanceDirect, ClaimCoverage: CoverageComplete, BaselineState: BaselineNormal,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if fc == nil {
 		t.Fatal("expected file change")
 	}
@@ -870,7 +890,7 @@ func TestRecorderSwallowsAndConverts(t *testing.T) {
 
 func mustRecord(t *testing.T, store *Store, rec ChangeRecord) *Change {
 	t.Helper()
-	change, err := store.RecordChange(context.Background(), rec)
+	change, err := recordTestChange(context.Background(), store, rec)
 	if err != nil {
 		t.Fatalf("RecordChange(%s): %v", rec.Path, err)
 	}
@@ -884,4 +904,68 @@ func mustList(t *testing.T, store *Store, sessionID string) []CumulativeChange {
 		t.Fatalf("ListSessionChanges: %v", err)
 	}
 	return changes
+}
+
+func TestRecordChangeSessionLockDoesNotGateOtherSessions(t *testing.T) {
+	store := openTestStore(t, Options{})
+	unlockA := store.lockRecordSession("session-a")
+	defer unlockA()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := recordTestChange(context.Background(), store, ChangeRecord{
+			SessionID:     "session-b",
+			Path:          "/tmp/session-b.txt",
+			BeforeMissing: true,
+			After:         []byte("b"),
+		})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("session B file tracking waited for session A's session lock")
+	}
+}
+
+func TestRecordChangeConcurrentAcrossSessions(t *testing.T) {
+	store := openTestStore(t, Options{})
+	const sessions = 8
+	const changesPerSession = 8
+	start := make(chan struct{})
+	errCh := make(chan error, sessions*changesPerSession)
+	var wg sync.WaitGroup
+	for sessionIndex := 0; sessionIndex < sessions; sessionIndex++ {
+		for changeIndex := 0; changeIndex < changesPerSession; changeIndex++ {
+			wg.Add(1)
+			go func(sessionIndex, changeIndex int) {
+				defer wg.Done()
+				<-start
+				_, err := recordTestChange(context.Background(), store, ChangeRecord{
+					SessionID:     fmt.Sprintf("session-%d", sessionIndex),
+					Path:          fmt.Sprintf("/tmp/session-%d-%d.txt", sessionIndex, changeIndex),
+					BeforeMissing: true,
+					After:         []byte("content"),
+				})
+				errCh <- err
+			}(sessionIndex, changeIndex)
+		}
+	}
+	close(start)
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for sessionIndex := 0; sessionIndex < sessions; sessionIndex++ {
+		changes := mustList(t, store, fmt.Sprintf("session-%d", sessionIndex))
+		if len(changes) != changesPerSession {
+			t.Fatalf("session %d changes = %d, want %d", sessionIndex, len(changes), changesPerSession)
+		}
+	}
 }

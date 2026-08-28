@@ -20,9 +20,10 @@ import (
 )
 
 const (
-	idleTimeout      = 10 * time.Minute
-	startupTimeout   = 10 * time.Second
-	socketRuntimeDir = "/tmp/term-llm-widgets"
+	idleTimeout          = 10 * time.Minute
+	startupTimeout       = 10 * time.Second
+	startupProbeInterval = 25 * time.Millisecond
+	socketRuntimeDir     = "/tmp/term-llm-widgets"
 )
 
 var errWidgetManagerShuttingDown = errors.New("widget manager is shutting down")
@@ -469,7 +470,7 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 		}
 		lastErr = err
 
-		t := time.NewTimer(100 * time.Millisecond)
+		t := time.NewTimer(startupProbeInterval)
 		select {
 		case <-ctx.Done():
 			if !t.Stop() {

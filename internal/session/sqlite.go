@@ -168,6 +168,18 @@ CREATE TABLE IF NOT EXISTS session_workspace_grants (
 CREATE INDEX IF NOT EXISTS idx_session_workspace_grants_session
     ON session_workspace_grants(session_id, created_at, id);
 
+CREATE TABLE IF NOT EXISTS session_pending_interjections (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    id TEXT NOT NULL,
+    message TEXT NOT NULL,
+    display_text TEXT NOT NULL DEFAULT '',
+    attachment_summary TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (session_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_session_pending_interjections_order
+    ON session_pending_interjections(session_id, created_at, id);
+
 CREATE TABLE IF NOT EXISTS session_redo (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     stack_pos INTEGER NOT NULL,
@@ -202,9 +214,32 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
     endpoint TEXT NOT NULL UNIQUE,
     key_p256dh TEXT NOT NULL,
     key_auth TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    vapid_key_id TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    last_used_at TEXT
+    updated_at TEXT NOT NULL DEFAULT '',
+    last_used_at TEXT,
+    last_failure_code TEXT NOT NULL DEFAULT '',
+    last_failure TEXT NOT NULL DEFAULT '',
+    last_failure_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS completion_push_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL UNIQUE,
+    response_id TEXT NOT NULL,
+    subscription_id TEXT NOT NULL,
+    payload BLOB NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'delivered', 'dead')),
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(response_id, subscription_id)
+);
+CREATE INDEX IF NOT EXISTS idx_completion_push_outbox_due
+    ON completion_push_outbox(status, next_attempt_at, id);
 
 -- Full-text search on extracted text content
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
@@ -369,11 +404,16 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 				}
 				return reader, nil
 			}
-			readDB, err := openReader("transcript read")
+			readDB, err := openReader("session read")
 			if err != nil {
 				db.Close()
 				return nil, err
 			}
+			// WAL readers do not exclude one another. Do not impose an application-
+			// level one-reader queue that lets a long transcript scan in one session
+			// gate hydration or metadata reads in another.
+			readDB.SetMaxOpenConns(0)
+			readDB.SetMaxIdleConns(4)
 			responseRunReadDB, err := openReader("response-run read")
 			if err != nil {
 				readDB.Close()
@@ -394,7 +434,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // Increment when adding new migrations.
 const (
 	projectSchemaVersion = 47
-	schemaVersion        = 49
+	schemaVersion        = 51
 )
 
 // migration represents a schema migration.
@@ -1349,6 +1389,62 @@ var migrations = []migration{
 			return normalizeSessionMarker(db, 48)
 		},
 	},
+	{
+		version:     50,
+		description: "persist pending session interjections",
+		up: func(db schemaExecutor) error {
+			_, err := db.Exec(`CREATE TABLE IF NOT EXISTS session_pending_interjections (
+				session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+				id TEXT NOT NULL,
+				message TEXT NOT NULL,
+				display_text TEXT NOT NULL DEFAULT '',
+				attachment_summary TEXT NOT NULL DEFAULT '',
+				created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				PRIMARY KEY (session_id, id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_session_pending_interjections_order
+				ON session_pending_interjections(session_id, created_at, id);`)
+			return err
+		},
+	},
+	{
+		version:     51,
+		description: "add push subscription lifecycle and completion outbox",
+		up: func(db schemaExecutor) error {
+			for _, statement := range []string{
+				"ALTER TABLE push_subscriptions ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+				"ALTER TABLE push_subscriptions ADD COLUMN vapid_key_id TEXT NOT NULL DEFAULT ''",
+				"ALTER TABLE push_subscriptions ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''",
+				"ALTER TABLE push_subscriptions ADD COLUMN last_failure_code TEXT NOT NULL DEFAULT ''",
+				"ALTER TABLE push_subscriptions ADD COLUMN last_failure TEXT NOT NULL DEFAULT ''",
+				"ALTER TABLE push_subscriptions ADD COLUMN last_failure_at TEXT",
+			} {
+				if _, err := db.Exec(statement); err != nil && !isDuplicateColumnError(err) {
+					return err
+				}
+			}
+			if _, err := db.Exec("UPDATE push_subscriptions SET updated_at = COALESCE(NULLIF(updated_at, ''), created_at, datetime('now'))"); err != nil {
+				return err
+			}
+			_, err := db.Exec(`CREATE TABLE IF NOT EXISTS completion_push_outbox (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				event_id TEXT NOT NULL UNIQUE,
+				response_id TEXT NOT NULL,
+				subscription_id TEXT NOT NULL,
+				payload BLOB NOT NULL,
+				status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'delivered', 'dead')),
+				attempt_count INTEGER NOT NULL DEFAULT 0,
+				next_attempt_at TEXT NOT NULL DEFAULT (datetime('now')),
+				last_error TEXT NOT NULL DEFAULT '',
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+				UNIQUE(response_id, subscription_id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_completion_push_outbox_due
+				ON completion_push_outbox(status, next_attempt_at, id);`)
+			return err
+		},
+	},
 }
 
 // Keep in sync with llm.IsInternalCompactionSummaryText. SQLite migrations and
@@ -1930,13 +2026,13 @@ func (s *SQLiteStore) enrichSessionProject(ctx context.Context, sess *Session) *
 	if sess == nil || sess.ProjectID == "" || !s.hasProjectsTable {
 		return sess
 	}
-	_ = s.db.QueryRowContext(ctx, `SELECT name FROM projects WHERE id = ?`, sess.ProjectID).Scan(&sess.ProjectName)
+	_ = s.queryDB().QueryRowContext(ctx, `SELECT name FROM projects WHERE id = ?`, sess.ProjectID).Scan(&sess.ProjectName)
 	return sess
 }
 
 // Get retrieves a session by ID.
 func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
-	row := s.db.QueryRowContext(ctx,
+	row := s.queryDB().QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE id = ?", id)
 	sess, err := scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasCompactionCount, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount)
 	return s.enrichSessionProject(ctx, sess), err
@@ -1944,7 +2040,7 @@ func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
 
 // GetByNumber retrieves a session by its sequential number.
 func (s *SQLiteStore) GetByNumber(ctx context.Context, number int64) (*Session, error) {
-	row := s.db.QueryRowContext(ctx,
+	row := s.queryDB().QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE number = ?", number)
 	sess, err := scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasCompactionCount, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount)
 	return s.enrichSessionProject(ctx, sess), err
@@ -1992,7 +2088,7 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 
 	// Try prefix match using expanded short ID
 	pattern := ExpandShortID(prefix)
-	row := s.db.QueryRowContext(ctx,
+	row := s.queryDB().QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE id LIKE ? ORDER BY created_at DESC LIMIT 1", pattern)
 	sess, err = scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasCompactionCount, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount)
 	return s.enrichSessionProject(ctx, sess), err
@@ -2204,7 +2300,7 @@ func (s *SQLiteStore) LoadPlanSnapshot(ctx context.Context, sessionID string) (p
 	var raw string
 	var version int64
 	err := retryOnBusy(ctx, 5, func() error {
-		return s.db.QueryRowContext(ctx, `
+		return s.queryDB().QueryRowContext(ctx, `
 			SELECT snapshot, version FROM session_plans WHERE session_id = ?
 		`, sessionID).Scan(&raw, &version)
 	})
@@ -2300,6 +2396,85 @@ func (s *SQLiteStore) DeletePlanSnapshot(ctx context.Context, sessionID string) 
 	})
 }
 
+func (s *SQLiteStore) SavePendingInterjection(ctx context.Context, entry PendingInterjection) error {
+	entry.SessionID = strings.TrimSpace(entry.SessionID)
+	entry.ID = strings.TrimSpace(entry.ID)
+	if entry.SessionID == "" || entry.ID == "" {
+		return fmt.Errorf("save pending interjection: session id and interjection id are required")
+	}
+	if entry.CreatedAt.IsZero() {
+		entry.CreatedAt = time.Now()
+	}
+	messageJSON, err := json.Marshal(entry.Message)
+	if err != nil {
+		return fmt.Errorf("save pending interjection: encode message: %w", err)
+	}
+	// A stable ID is immutable. In-process retries are fingerprint-checked by the
+	// runtime; keeping the first durable payload also prevents a retry from
+	// rewriting an already accepted intent.
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO session_pending_interjections
+			(session_id, id, message, display_text, attachment_summary, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(session_id, id) DO NOTHING`,
+		entry.SessionID, entry.ID, string(messageJSON), entry.DisplayText, entry.AttachmentSummary, entry.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("save pending interjection: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) DeletePendingInterjection(ctx context.Context, sessionID, id string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	id = strings.TrimSpace(id)
+	if sessionID == "" || id == "" {
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM session_pending_interjections WHERE session_id = ? AND id = ?`,
+		sessionID, id); err != nil {
+		return fmt.Errorf("delete pending interjection: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) ListPendingInterjections(ctx context.Context, sessionID string) ([]PendingInterjection, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, nil
+	}
+	rows, err := s.readDB.QueryContext(ctx, `
+		SELECT pending.id, pending.message, pending.display_text, pending.attachment_summary, pending.created_at
+		FROM session_pending_interjections pending
+		WHERE pending.session_id = ?
+		  AND NOT EXISTS (
+			SELECT 1 FROM messages committed
+			WHERE committed.session_id = pending.session_id
+			  AND committed.client_message_id = pending.id
+		  )
+		ORDER BY pending.rowid`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("list pending interjections: %w", err)
+	}
+	defer rows.Close()
+	var entries []PendingInterjection
+	for rows.Next() {
+		entry := PendingInterjection{SessionID: sessionID}
+		var messageJSON string
+		if err := rows.Scan(&entry.ID, &messageJSON, &entry.DisplayText, &entry.AttachmentSummary, &entry.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan pending interjection: %w", err)
+		}
+		if err := json.Unmarshal([]byte(messageJSON), &entry.Message); err != nil {
+			return nil, fmt.Errorf("decode pending interjection %q: %w", entry.ID, err)
+		}
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pending interjections: %w", err)
+	}
+	return entries, nil
+}
+
 // SaveProviderState stores opaque provider-owned resume state for a session.
 func (s *SQLiteStore) SaveProviderState(ctx context.Context, sessionID, providerKey string, state []byte) error {
 	sessionID = strings.TrimSpace(sessionID)
@@ -2330,7 +2505,7 @@ func (s *SQLiteStore) LoadProviderState(ctx context.Context, sessionID, provider
 		return nil, nil
 	}
 	var state []byte
-	err := s.db.QueryRowContext(ctx, `
+	err := s.queryDB().QueryRowContext(ctx, `
 		SELECT state FROM session_provider_state
 		WHERE session_id = ? AND provider_key = ?
 	`, sessionID, providerKey).Scan(&state)
@@ -2564,7 +2739,31 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		WHERE 1=1`
 	args := []any{}
 
-	if opts.ExcludeSubagents {
+	if len(opts.IDs) > 0 {
+		seen := make(map[string]struct{}, len(opts.IDs))
+		placeholders := make([]string, 0, len(opts.IDs))
+		for _, rawID := range opts.IDs {
+			id := strings.TrimSpace(rawID)
+			if id == "" {
+				continue
+			}
+			if _, duplicate := seen[id]; duplicate {
+				continue
+			}
+			seen[id] = struct{}{}
+			placeholders = append(placeholders, "?")
+			args = append(args, id)
+		}
+		if len(placeholders) == 0 {
+			return []SessionSummary{}, nil
+		}
+		query += " AND s.id IN (" + strings.Join(placeholders, ",") + ")"
+	}
+
+	if opts.ParentID != "" {
+		query += " AND s.parent_id = ?"
+		args = append(args, opts.ParentID)
+	} else if opts.ExcludeSubagents {
 		query += " AND s.parent_id IS NULL"
 	}
 	if opts.Name != "" {
@@ -2666,7 +2865,7 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		args = append(args, opts.Offset)
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.queryDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query sessions: %w", err)
 	}
@@ -2812,7 +3011,7 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	}
 	args = append(args, opts.Limit)
 
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.queryDB().QueryContext(ctx, `
 		WITH raw_matches AS (
 			SELECT rowid AS message_id, rank AS match_rank
 			FROM messages_fts
@@ -3762,14 +3961,14 @@ func (s *SQLiteStore) SessionSummariesIncludeTranscriptRev() bool {
 func (s *SQLiteStore) TranscriptRev(ctx context.Context, sessionID string) (int64, error) {
 	if !s.hasTranscriptRev {
 		var exists int
-		err := s.db.QueryRowContext(ctx, "SELECT 1 FROM sessions WHERE id = ?", sessionID).Scan(&exists)
+		err := s.queryDB().QueryRowContext(ctx, "SELECT 1 FROM sessions WHERE id = ?", sessionID).Scan(&exists)
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, ErrNotFound
 		}
 		return 0, err
 	}
 	var rev int64
-	err := s.db.QueryRowContext(ctx, "SELECT transcript_rev FROM sessions WHERE id = ?", sessionID).Scan(&rev)
+	err := s.queryDB().QueryRowContext(ctx, "SELECT transcript_rev FROM sessions WHERE id = ?", sessionID).Scan(&rev)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, ErrNotFound
 	}
@@ -4234,11 +4433,17 @@ func transcriptRowHasDisplayBody(role llm.Role, parts []llm.Part, planToolCalls 
 	return false
 }
 
-func (s *SQLiteStore) transcriptReadDB() *sql.DB {
+func (s *SQLiteStore) queryDB() *sql.DB {
 	if s.readDB != nil {
 		return s.readDB
 	}
 	return s.db
+}
+
+// transcriptReadDB is retained for focused transcript callers and tests; all
+// ordinary read-only queries share the same WAL reader lane.
+func (s *SQLiteStore) transcriptReadDB() *sql.DB {
+	return s.queryDB()
 }
 
 func (s *SQLiteStore) responseRunStateReadDB() *sql.DB {
@@ -4361,6 +4566,10 @@ func (s *SQLiteStore) GetTranscriptSnapshot(ctx context.Context, sessionID strin
 		if err := json.Unmarshal([]byte(partsJSON), &parts); err != nil {
 			return TranscriptSnapshot{}, fmt.Errorf("decode transcript index parts: %w", err)
 		}
+		candidate := Message{Role: llm.Role(item.Role), Parts: parts, ClientMessageID: item.ClientMessageID}
+		if candidate.IsGoalSteering() {
+			continue
+		}
 		for _, part := range parts {
 			if part.Type == llm.PartToolCall && part.ToolCall != nil && part.ToolCall.ID != "" && part.ToolCall.Name == "update_plan" {
 				planToolCalls[part.ToolCall.ID] = true
@@ -4461,6 +4670,13 @@ func (s *SQLiteStore) GetMessagesByTranscriptRanges(ctx context.Context, session
 		if closeErr != nil {
 			return 0, nil, fmt.Errorf("close transcript bodies: %w", closeErr)
 		}
+		visible := messages[:0]
+		for i := range messages {
+			if !messages[i].IsGoalSteering() {
+				visible = append(visible, messages[i])
+			}
+		}
+		messages = visible
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, nil, fmt.Errorf("commit transcript bodies read: %w", err)
@@ -4492,7 +4708,7 @@ func (s *SQLiteStore) MaxMessageSequences(ctx context.Context, sessionIDs []stri
 				WHERE messages.session_id = requested.session_id
 			), -1)
 			FROM requested`
-		rows, err := s.db.QueryContext(ctx, query, args...)
+		rows, err := s.queryDB().QueryContext(ctx, query, args...)
 		if err != nil {
 			return nil, fmt.Errorf("query maximum message sequences: %w", err)
 		}
@@ -4532,7 +4748,7 @@ func (s *SQLiteStore) GetMessagesFrom(ctx context.Context, sessionID string, fro
 		args = append(args, limit)
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.queryDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query messages from seq %d: %w", fromSeq, err)
 	}
@@ -4583,7 +4799,7 @@ func (s *SQLiteStore) GetMessagesPageDescending(ctx context.Context, sessionID s
 		args = append(args, limit)
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.queryDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query messages descending: %w", err)
 	}
@@ -4594,7 +4810,7 @@ func (s *SQLiteStore) GetMessagesPageDescending(ctx context.Context, sessionID s
 
 // GetMessageByID retrieves a single message by its global message id.
 func (s *SQLiteStore) GetMessageByID(ctx context.Context, msgID int64) (*Message, error) {
-	row := s.db.QueryRowContext(ctx, `
+	row := s.queryDB().QueryRowContext(ctx, `
 		SELECT `+s.messageSelectCols()+`
 		FROM messages
 		WHERE id = ?`, msgID)
@@ -4645,7 +4861,7 @@ func (s *SQLiteStore) GetMessageByClientMessageID(ctx context.Context, sessionID
 	if !s.hasMessageClientID {
 		return nil, ErrNotFound
 	}
-	row := s.db.QueryRowContext(ctx, `
+	row := s.queryDB().QueryRowContext(ctx, `
 		SELECT `+s.messageSelectCols()+`
 		FROM messages
 		WHERE session_id = ? AND client_message_id = ?
@@ -4679,7 +4895,7 @@ func (s *SQLiteStore) GetLatestVisibleMessageID(ctx context.Context, sessionID s
 	if s.hasMessageCompactionTail {
 		compactionTailClause = " AND COALESCE(compaction_tail, FALSE) = FALSE"
 	}
-	err := s.db.QueryRowContext(ctx, `
+	err := s.queryDB().QueryRowContext(ctx, `
 		SELECT id
 		FROM messages
 		WHERE session_id = ? AND role IN (?, ?)`+compactionTailClause+`
@@ -4786,7 +5002,7 @@ func (s *SQLiteStore) NextUserPromptOutsideSession(ctx context.Context, excludeS
 
 func (s *SQLiteStore) queryPromptHistoryEntry(ctx context.Context, query string, args ...any) (*PromptHistoryEntry, error) {
 	var entry PromptHistoryEntry
-	err := s.db.QueryRowContext(ctx, query, args...).Scan(&entry.ID, &entry.Text, &entry.CreatedAt)
+	err := s.queryDB().QueryRowContext(ctx, query, args...).Scan(&entry.ID, &entry.Text, &entry.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -4817,7 +5033,7 @@ func (s *SQLiteStore) GetMessages(ctx context.Context, sessionID string, limit, 
 		args = append(args, offset)
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.queryDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query messages: %w", err)
 	}
@@ -4830,7 +5046,7 @@ func (s *SQLiteStore) GetMessages(ctx context.Context, sessionID string, limit, 
 // contain typed inline-diff comment metadata. The final typed-part check remains
 // with the caller; LIKE is used only as a conservative SQLite row prefilter.
 func (s *SQLiteStore) GetDiffCommentMessages(ctx context.Context, sessionID string) ([]Message, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.queryDB().QueryContext(ctx, `
 		SELECT `+s.messageSelectCols()+`
 		FROM messages
 		WHERE session_id = ? AND parts LIKE ?
@@ -4854,7 +5070,7 @@ func (s *SQLiteStore) SetCurrent(ctx context.Context, sessionID string) error {
 // GetCurrent retrieves the current session.
 func (s *SQLiteStore) GetCurrent(ctx context.Context) (*Session, error) {
 	var sessionID string
-	err := s.db.QueryRowContext(ctx,
+	err := s.queryDB().QueryRowContext(ctx,
 		"SELECT value FROM metadata WHERE key = 'current_session'").Scan(&sessionID)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -4873,21 +5089,88 @@ func (s *SQLiteStore) ClearCurrent(ctx context.Context) error {
 
 // SavePushSubscription upserts a Web Push subscription.
 func (s *SQLiteStore) SavePushSubscription(ctx context.Context, sub *PushSubscription) error {
+	stored, err := s.UpsertPushSubscription(ctx, sub)
+	if err == nil && stored != nil {
+		*sub = *stored
+	}
+	return err
+}
+
+func scanPushSubscription(scanner interface{ Scan(...any) error }) (*PushSubscription, error) {
+	var sub PushSubscription
+	var updated, lastUsed, failureAt sql.NullString
+	if err := scanner.Scan(
+		&sub.ID, &sub.Endpoint, &sub.KeyP256DH, &sub.KeyAuth, &sub.Status, &sub.VAPIDKeyID,
+		&updated, &lastUsed, &sub.LastFailureCode, &sub.LastFailure, &failureAt,
+	); err != nil {
+		return nil, err
+	}
+	parse := func(value sql.NullString) time.Time {
+		if !value.Valid {
+			return time.Time{}
+		}
+		for _, layout := range []string{"2006-01-02 15:04:05", time.RFC3339Nano} {
+			if parsed, err := time.Parse(layout, value.String); err == nil {
+				return parsed.UTC()
+			}
+		}
+		return time.Time{}
+	}
+	sub.UpdatedAt = parse(updated)
+	sub.LastUsedAt = parse(lastUsed)
+	sub.LastFailureAt = parse(failureAt)
+	return &sub, nil
+}
+
+func (s *SQLiteStore) UpsertPushSubscription(ctx context.Context, sub *PushSubscription) (*PushSubscription, error) {
+	if sub == nil || strings.TrimSpace(sub.Endpoint) == "" || strings.TrimSpace(sub.KeyP256DH) == "" || strings.TrimSpace(sub.KeyAuth) == "" {
+		return nil, fmt.Errorf("save push subscription: endpoint and keys are required")
+	}
 	if sub.ID == "" {
 		sub.ID = NewID()
 	}
+	if sub.Status == "" {
+		sub.Status = "active"
+	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO push_subscriptions (id, endpoint, key_p256dh, key_auth)
-		VALUES (?, ?, ?, ?)
+		INSERT INTO push_subscriptions (id, endpoint, key_p256dh, key_auth, status, vapid_key_id, updated_at, last_used_at)
+		VALUES (?, ?, ?, ?, 'active', ?, datetime('now'), datetime('now'))
 		ON CONFLICT(endpoint) DO UPDATE SET
 			key_p256dh = excluded.key_p256dh,
 			key_auth = excluded.key_auth,
-			last_used_at = datetime('now')`,
-		sub.ID, sub.Endpoint, sub.KeyP256DH, sub.KeyAuth)
+			status = 'active',
+			vapid_key_id = excluded.vapid_key_id,
+			updated_at = datetime('now'),
+			last_used_at = datetime('now'),
+			last_failure_code = '',
+			last_failure = '',
+			last_failure_at = NULL`,
+		sub.ID, strings.TrimSpace(sub.Endpoint), strings.TrimSpace(sub.KeyP256DH), strings.TrimSpace(sub.KeyAuth), strings.TrimSpace(sub.VAPIDKeyID))
 	if err != nil {
-		return fmt.Errorf("save push subscription: %w", err)
+		return nil, fmt.Errorf("save push subscription: %w", err)
 	}
-	return nil
+	stored, err := scanPushSubscription(s.queryDB().QueryRowContext(ctx, `
+		SELECT id, endpoint, key_p256dh, key_auth, status, vapid_key_id, updated_at,
+		       last_used_at, last_failure_code, last_failure, last_failure_at
+		FROM push_subscriptions WHERE endpoint = ?`, strings.TrimSpace(sub.Endpoint)))
+	if err != nil {
+		return nil, fmt.Errorf("read saved push subscription: %w", err)
+	}
+	return stored, nil
+}
+
+func (s *SQLiteStore) GetPushSubscription(ctx context.Context, id string) (*PushSubscription, error) {
+	sub, err := scanPushSubscription(s.queryDB().QueryRowContext(ctx, `
+		SELECT id, endpoint, key_p256dh, key_auth, status, vapid_key_id, updated_at,
+		       last_used_at, last_failure_code, last_failure, last_failure_at
+		FROM push_subscriptions WHERE id = ?`, strings.TrimSpace(id)))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get push subscription: %w", err)
+	}
+	return sub, nil
 }
 
 // DeletePushSubscription removes a Web Push subscription by endpoint.
@@ -4899,10 +5182,36 @@ func (s *SQLiteStore) DeletePushSubscription(ctx context.Context, endpoint strin
 	return nil
 }
 
+func (s *SQLiteStore) DeletePushSubscriptionByID(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, "DELETE FROM push_subscriptions WHERE id = ?", strings.TrimSpace(id))
+	if err != nil {
+		return fmt.Errorf("delete push subscription by id: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) MarkPushSubscriptionStale(ctx context.Context, id, code, detail string) error {
+	if len(detail) > 240 {
+		detail = detail[:240]
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE push_subscriptions
+		SET status = 'stale', updated_at = datetime('now'), last_failure_code = ?,
+		    last_failure = ?, last_failure_at = datetime('now') WHERE id = ?`, code, detail, id)
+	return err
+}
+
+func (s *SQLiteStore) MarkPushSubscriptionUsed(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE push_subscriptions
+		SET status = 'active', updated_at = datetime('now'), last_used_at = datetime('now'),
+		    last_failure_code = '', last_failure = '', last_failure_at = NULL WHERE id = ?`, id)
+	return err
+}
+
 // ListPushSubscriptions returns all stored Web Push subscriptions.
 func (s *SQLiteStore) ListPushSubscriptions(ctx context.Context) ([]PushSubscription, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, endpoint, key_p256dh, key_auth
+	rows, err := s.queryDB().QueryContext(ctx, `
+		SELECT id, endpoint, key_p256dh, key_auth, status, vapid_key_id, updated_at,
+		       last_used_at, last_failure_code, last_failure, last_failure_at
 		FROM push_subscriptions
 		ORDER BY created_at ASC`)
 	if err != nil {
@@ -4912,13 +5221,76 @@ func (s *SQLiteStore) ListPushSubscriptions(ctx context.Context) ([]PushSubscrip
 
 	var subs []PushSubscription
 	for rows.Next() {
-		var sub PushSubscription
-		if err := rows.Scan(&sub.ID, &sub.Endpoint, &sub.KeyP256DH, &sub.KeyAuth); err != nil {
+		sub, err := scanPushSubscription(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan push subscription: %w", err)
 		}
-		subs = append(subs, sub)
+		subs = append(subs, *sub)
 	}
 	return subs, rows.Err()
+}
+
+func (s *SQLiteStore) EnqueueCompletionPush(ctx context.Context, item CompletionPushOutboxItem) (bool, error) {
+	result, err := s.db.ExecContext(ctx, `INSERT INTO completion_push_outbox
+		(event_id, response_id, subscription_id, payload) VALUES (?, ?, ?, ?)
+		ON CONFLICT(response_id, subscription_id) DO NOTHING`, item.EventID, item.ResponseID, item.SubscriptionID, item.Payload)
+	if err != nil {
+		return false, fmt.Errorf("enqueue completion push: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	return rows > 0, nil
+}
+
+func (s *SQLiteStore) ListDueCompletionPushes(ctx context.Context, now time.Time, limit int) ([]CompletionPushOutboxItem, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 25
+	}
+	rows, err := s.queryDB().QueryContext(ctx, `SELECT id, event_id, response_id, subscription_id, payload, attempt_count
+		FROM completion_push_outbox WHERE status = 'pending' AND next_attempt_at <= ?
+		ORDER BY next_attempt_at, id LIMIT ?`, now.UTC().Format("2006-01-02 15:04:05"), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CompletionPushOutboxItem
+	for rows.Next() {
+		var item CompletionPushOutboxItem
+		if err := rows.Scan(&item.ID, &item.EventID, &item.ResponseID, &item.SubscriptionID, &item.Payload, &item.AttemptCount); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *SQLiteStore) MarkCompletionPushDelivered(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE completion_push_outbox SET status = 'delivered',
+		attempt_count = attempt_count + 1, updated_at = datetime('now'), last_error = '' WHERE id = ?`, id)
+	return err
+}
+
+func (s *SQLiteStore) RetryCompletionPush(ctx context.Context, id int64, next time.Time, lastError string) error {
+	if len(lastError) > 240 {
+		lastError = lastError[:240]
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE completion_push_outbox SET attempt_count = attempt_count + 1,
+		next_attempt_at = ?, updated_at = datetime('now'), last_error = ? WHERE id = ?`, next.UTC().Format("2006-01-02 15:04:05"), lastError, id)
+	return err
+}
+
+func (s *SQLiteStore) MarkCompletionPushDead(ctx context.Context, id int64, lastError string) error {
+	if len(lastError) > 240 {
+		lastError = lastError[:240]
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE completion_push_outbox SET status = 'dead',
+		attempt_count = attempt_count + 1, updated_at = datetime('now'), last_error = ? WHERE id = ?`, lastError, id)
+	return err
+}
+
+func (s *SQLiteStore) PruneCompletionPushOutbox(ctx context.Context, before time.Time) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM completion_push_outbox
+		WHERE status IN ('delivered', 'dead') AND updated_at < ?`, before.UTC().Format("2006-01-02 15:04:05"))
+	return err
 }
 
 func (s *SQLiteStore) ReadOnly() bool {

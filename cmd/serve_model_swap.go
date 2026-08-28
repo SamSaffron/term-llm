@@ -230,11 +230,12 @@ func (s *serveServer) beginResponseModelSwap(ctx context.Context, sessionID stri
 	restoreHistory = copyLLMMessageSlice(restoreHistory)
 	previousHistory := llm.FilterConversationMessages(copyLLMMessageSlice(restoreHistory))
 
+	agentName := strings.TrimSpace(previous.agentName)
+	if agentName == "" {
+		agentName = s.requestedRuntimeAgent(ctx, sessionID, "")
+	}
 	create := func(ctx context.Context) (*serveRuntime, error) {
-		if s.runtimeFactory == nil {
-			return nil, fmt.Errorf("runtime factory is unavailable for model swap")
-		}
-		return s.runtimeFactory(ctx, plan.requestedProvider, plan.requestedModel)
+		return s.createRequestRuntime(ctx, plan.requestedProvider, plan.requestedModel, agentName)
 	}
 	candidate, retainedPrevious, commit, rollback, err := s.sessionMgr.BeginSwap(ctx, sessionID, create)
 	if err != nil {
@@ -315,7 +316,7 @@ func isModelSwapFallbackEligible(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errServeSessionBusy) || errors.Is(err, errServeSessionLimitReached) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errServeSessionBusy) {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
@@ -655,7 +656,9 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 		if err := run.complete(map[string]any{"response": completeResponse}, result.Usage, result.SessionUsage); err != nil {
 			// Keep parity with the normal path: best-effort terminal event.
 			_ = err
+			return
 		}
+		s.scheduleAutoTitle(sessionID, runtime.providerKey)
 		return
 	}
 
@@ -748,7 +751,9 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 	if effort := strings.TrimSpace(exec.plan.requestedEffort); effort != "" {
 		completeResponse["reasoning_effort"] = effort
 	}
-	_ = run.complete(map[string]any{"response": completeResponse}, result.Usage, result.SessionUsage)
+	if err := run.complete(map[string]any{"response": completeResponse}, result.Usage, result.SessionUsage); err == nil {
+		s.scheduleAutoTitle(sessionID, runtime.providerKey)
+	}
 }
 
 func (s *serveServer) runResponseWithModelSwapFallback(ctx context.Context, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, exec *responseModelSwapExecution) (serveRunResult, string, error) {

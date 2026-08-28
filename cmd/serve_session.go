@@ -2,12 +2,15 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 )
 
 const defaultServeSessionRetirementTimeout = 2 * time.Second
+
+var errServeSessionManagerClosed = errors.New("session manager closed")
 
 type serveSessionManager struct {
 	ttl               time.Duration
@@ -21,12 +24,68 @@ type serveSessionManager struct {
 	creating map[string]*sessionCreateInFlight
 	closed   bool
 	stopCh   chan struct{}
+
+	// Per-session operation locks keep runtime installation/replacement and
+	// metadata mutations ordered without holding the process-wide map mutex.
+	operations sync.Map // map[session ID]*sync.Mutex
+	reserved   sync.Map // session IDs pinned against eviction during metadata I/O
 }
 
 type sessionCreateInFlight struct {
 	done chan struct{}
 	rt   *serveRuntime
 	err  error
+}
+
+func (m *serveSessionManager) sessionOperation(id string) *sync.Mutex {
+	operation, _ := m.operations.LoadOrStore(id, &sync.Mutex{})
+	return operation.(*sync.Mutex)
+}
+
+func (m *serveSessionManager) lockSessionOperation(id string) func() {
+	operation := m.sessionOperation(id)
+	operation.Lock()
+	return operation.Unlock
+}
+
+// lockIdleMetadataMutation pins one session's runtime identity while metadata
+// I/O runs. It never holds the process-wide session map mutex across that I/O.
+func (m *serveSessionManager) lockIdleMetadataMutation(id string) (*serveRuntime, func(), error) {
+	unlockOperation := m.lockSessionOperation(id)
+	m.reserved.Store(id, struct{}{})
+
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		m.reserved.Delete(id)
+		unlockOperation()
+		return nil, nil, errServeSessionManagerClosed
+	}
+	if m.creating[id] != nil {
+		m.mu.Unlock()
+		m.reserved.Delete(id)
+		unlockOperation()
+		return nil, nil, errServeSessionBusy
+	}
+	rt := m.sessions[id]
+	if rt != nil && (rt.hasActiveRun() || !rt.mu.TryLock()) {
+		m.mu.Unlock()
+		m.reserved.Delete(id)
+		unlockOperation()
+		return nil, nil, errServeSessionBusy
+	}
+	m.mu.Unlock()
+
+	var once sync.Once
+	return rt, func() {
+		once.Do(func() {
+			if rt != nil {
+				rt.mu.Unlock()
+			}
+			m.reserved.Delete(id)
+			unlockOperation()
+		})
+	}, nil
 }
 
 func newServeSessionManager(ttl time.Duration, max int, factory func(context.Context) (*serveRuntime, error)) *serveSessionManager {
@@ -62,10 +121,23 @@ func (m *serveSessionManager) evictExpired() {
 
 	m.mu.Lock()
 	for id, rt := range m.sessions {
+		if _, reserved := m.reserved.Load(id); reserved {
+			continue
+		}
 		if now.Sub(rt.LastUsed()) > m.ttl && !rt.hasActiveActivity() {
 			delete(m.sessions, id)
 			stale = append(stale, rt)
 		}
+	}
+	// Active sessions may temporarily overflow the cache target. As soon as
+	// runtimes become idle, janitor passes trim the excess without affecting
+	// admission or active work.
+	for len(m.sessions) > m.max {
+		evicted := m.evictOldestIdleLocked()
+		if evicted == nil {
+			break
+		}
+		stale = append(stale, evicted)
 	}
 	m.mu.Unlock()
 
@@ -105,6 +177,9 @@ func (m *serveSessionManager) evictOldestIdleLocked() *serveRuntime {
 	oldestID := ""
 	var oldestTime time.Time
 	for sid, srt := range m.sessions {
+		if _, reserved := m.reserved.Load(sid); reserved {
+			continue
+		}
 		if srt.hasActiveActivity() {
 			continue
 		}
@@ -128,12 +203,15 @@ func (m *serveSessionManager) makeRoomForNewSessionLocked() (*serveRuntime, erro
 		return nil, nil
 	}
 
-	evicted := m.evictOldestIdleLocked()
-	if evicted != nil {
+	if evicted := m.evictOldestIdleLocked(); evicted != nil {
 		return evicted, nil
 	}
 
-	return nil, errServeSessionLimitReached
+	// max is an idle-runtime cache target, not an admission limit. If every
+	// cached runtime is active, temporarily exceed it rather than allowing one
+	// session's lifecycle to reject an unrelated session. Normal TTL/capacity
+	// cleanup brings the cache back under the target once a runtime becomes idle.
+	return nil, nil
 }
 
 // Get returns an existing session runtime without creating one.
@@ -152,12 +230,16 @@ func (m *serveSessionManager) GetOrCreate(ctx context.Context, id string) (*serv
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
-		return nil, fmt.Errorf("session manager closed")
+		return nil, errServeSessionManagerClosed
 	}
 	if rt, ok := m.sessions[id]; ok {
 		rt.Touch()
 		m.mu.Unlock()
 		return rt, nil
+	}
+	if _, reserved := m.reserved.Load(id); reserved {
+		m.mu.Unlock()
+		return nil, errServeSessionBusy
 	}
 	if inflight, ok := m.creating[id]; ok {
 		m.mu.Unlock()
@@ -189,7 +271,7 @@ func (m *serveSessionManager) GetOrCreate(ctx context.Context, id string) (*serv
 	case err != nil:
 		inflight.err = err
 	case m.closed:
-		inflight.err = fmt.Errorf("session manager closed")
+		inflight.err = errServeSessionManagerClosed
 	default:
 		if existing, ok := m.sessions[id]; ok {
 			existing.Touch()
@@ -231,12 +313,16 @@ func (m *serveSessionManager) GetOrCreateWith(ctx context.Context, id string, cr
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
-		return nil, fmt.Errorf("session manager closed")
+		return nil, errServeSessionManagerClosed
 	}
 	if rt, ok := m.sessions[id]; ok {
 		rt.Touch()
 		m.mu.Unlock()
 		return rt, nil
+	}
+	if _, reserved := m.reserved.Load(id); reserved {
+		m.mu.Unlock()
+		return nil, errServeSessionBusy
 	}
 	if inflight, ok := m.creating[id]; ok {
 		m.mu.Unlock()
@@ -268,7 +354,7 @@ func (m *serveSessionManager) GetOrCreateWith(ctx context.Context, id string, cr
 	case err != nil:
 		inflight.err = err
 	case m.closed:
-		inflight.err = fmt.Errorf("session manager closed")
+		inflight.err = errServeSessionManagerClosed
 	default:
 		if existing, ok := m.sessions[id]; ok {
 			existing.Touch()
@@ -308,9 +394,13 @@ func (m *serveSessionManager) GetOrCreateWith(ctx context.Context, id string, cr
 // This avoids the TOCTOU race between deleting and re-creating a session.
 func (m *serveSessionManager) ReplaceIdleWith(ctx context.Context, id string, shouldReplace func(*serveRuntime) bool, create func(context.Context) (*serveRuntime, error)) (*serveRuntime, error) {
 	m.mu.Lock()
+	if _, reserved := m.reserved.Load(id); reserved {
+		m.mu.Unlock()
+		return nil, errServeSessionBusy
+	}
 	if m.closed {
 		m.mu.Unlock()
-		return nil, fmt.Errorf("session manager closed")
+		return nil, errServeSessionManagerClosed
 	}
 
 	var replaced *serveRuntime
@@ -369,7 +459,7 @@ func (m *serveSessionManager) ReplaceIdleWith(ctx context.Context, id string, sh
 			}
 		}
 	case m.closed:
-		inflight.err = fmt.Errorf("session manager closed")
+		inflight.err = errServeSessionManagerClosed
 	default:
 		if existing, ok := m.sessions[id]; ok {
 			existing.Touch()
@@ -415,9 +505,13 @@ func (m *serveSessionManager) ReplaceIdleWith(ctx context.Context, id string, sh
 func (m *serveSessionManager) BeginSwap(ctx context.Context, id string, create func(context.Context) (*serveRuntime, error)) (candidate *serveRuntime, previous *serveRuntime, commit func(), rollback func(), err error) {
 	for {
 		m.mu.Lock()
+		if _, reserved := m.reserved.Load(id); reserved {
+			m.mu.Unlock()
+			return nil, nil, nil, nil, errServeSessionBusy
+		}
 		if m.closed {
 			m.mu.Unlock()
-			return nil, nil, nil, nil, fmt.Errorf("session manager closed")
+			return nil, nil, nil, nil, errServeSessionManagerClosed
 		}
 		previous = m.sessions[id]
 		if previous != nil && previous.hasActiveActivity() {
@@ -449,7 +543,7 @@ func (m *serveSessionManager) BeginSwap(ctx context.Context, id string, create f
 		if createErr != nil {
 			inflight.err = createErr
 		} else if m.closed {
-			inflight.err = fmt.Errorf("session manager closed")
+			inflight.err = errServeSessionManagerClosed
 			closeCandidate = rt
 		} else {
 			current := m.sessions[id]
@@ -535,6 +629,28 @@ func (m *serveSessionManager) ActiveSessionIDs() map[string]bool {
 	result := make(map[string]bool, len(m.sessions))
 	for id, rt := range m.sessions {
 		if rt.hasActiveRun() {
+			result[id] = true
+		}
+	}
+	return result
+}
+
+// UnresolvedInteractionSessionIDs returns runtimes waiting for an ask-user or
+// approval decision without touching their TTL. These sessions belong to the
+// active control plane even if a bounded recent-session query omits them.
+func (m *serveSessionManager) UnresolvedInteractionSessionIDs() map[string]bool {
+	m.mu.Lock()
+	runtimes := make(map[string]*serveRuntime, len(m.sessions))
+	for id, rt := range m.sessions {
+		runtimes[id] = rt
+	}
+	m.mu.Unlock()
+	result := make(map[string]bool)
+	for id, rt := range runtimes {
+		if rt == nil {
+			continue
+		}
+		if len(rt.pendingAskUserPrompts()) > 0 || len(rt.pendingApprovalPrompts()) > 0 {
 			result[id] = true
 		}
 	}

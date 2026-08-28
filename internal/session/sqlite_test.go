@@ -323,7 +323,7 @@ func TestNewSQLiteStoreMemoryDBUsesSingleConnection(t *testing.T) {
 	}
 }
 
-func TestNewSQLiteStoreFileDBUsesSingleConnection(t *testing.T) {
+func TestNewSQLiteStoreFileDBUsesDedicatedConcurrentReaderPool(t *testing.T) {
 	store, err := NewSQLiteStore(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
 	if err != nil {
 		t.Fatalf("NewSQLiteStore: %v", err)
@@ -336,8 +336,8 @@ func TestNewSQLiteStoreFileDBUsesSingleConnection(t *testing.T) {
 	if store.readDB == nil {
 		t.Fatal("file-backed database has no transcript read connection")
 	}
-	if got := store.readDB.Stats().MaxOpenConnections; got != 1 {
-		t.Fatalf("read MaxOpenConnections = %d, want 1 for file-backed databases", got)
+	if got := store.readDB.Stats().MaxOpenConnections; got != 0 {
+		t.Fatalf("read MaxOpenConnections = %d, want unlimited WAL readers", got)
 	}
 	var cacheSize int
 	if err := store.readDB.QueryRow("PRAGMA cache_size").Scan(&cacheSize); err != nil {
@@ -414,6 +414,74 @@ func TestSQLiteStoreTranscriptReadDoesNotOccupyWriterConnection(t *testing.T) {
 	defer cancel()
 	if err := store.AddMessage(writeCtx, sess.ID, NewMessage(sess.ID, llm.UserText("concurrent write"), -1)); err != nil {
 		t.Fatalf("AddMessage while transcript read is open: %v", err)
+	}
+}
+
+func TestSQLiteStoreSessionReadsDoNotQueueBehindAnotherSessionReader(t *testing.T) {
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	first := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	second := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Create(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+
+	readTx, err := store.queryDB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readTx.Rollback()
+	if err := readTx.QueryRowContext(ctx, "SELECT id FROM sessions WHERE id = ?", first.ID).Scan(new(string)); err != nil {
+		t.Fatal(err)
+	}
+
+	readCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if _, err := store.Get(readCtx, second.ID); err != nil {
+		t.Fatalf("session B read queued behind session A reader: %v", err)
+	}
+}
+
+func TestSQLiteStoreReadsDoNotQueueBehindWriterConnection(t *testing.T) {
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddMessage(ctx, sess.ID, NewMessage(sess.ID, llm.UserText("hello"), -1)); err != nil {
+		t.Fatal(err)
+	}
+
+	writeTx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writeTx.Rollback()
+	if _, err := writeTx.ExecContext(ctx, "UPDATE sessions SET summary = ? WHERE id = ?", "uncommitted", sess.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	readCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if _, err := store.GetMessages(readCtx, sess.ID, 0, 0); err != nil {
+		t.Fatalf("GetMessages queued behind writer connection: %v", err)
+	}
+	if _, err := store.Get(readCtx, sess.ID); err != nil {
+		t.Fatalf("Get queued behind writer connection: %v", err)
 	}
 }
 

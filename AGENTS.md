@@ -27,7 +27,7 @@ Before completion, run root-module checks unless only documentation changed:
 
 ```sh
 gofmt -w <changed-go-files>
-go build ./...
+make build
 go test ./...
 go vet ./...
 ```
@@ -43,6 +43,20 @@ HOME="$TEST_HOME" XDG_CONFIG_HOME="$TEST_HOME/config" \
 ```
 
 JavaScript tests run through Go tests only when `node` is on `PATH`. Match extra checks in `.github/workflows/ci.yml` for browser lifecycle, release, or cross-platform code.
+
+### Frontend formatting and linting
+
+The Preact frontend lives in `frontend/`. Prettier is the source formatter, ESLint checks TypeScript/TSX and hooks, and Stylelint checks CSS. After changing frontend files, format them before reviewing the diff and run every frontend quality check:
+
+```sh
+npm --prefix frontend run format
+npm --prefix frontend run format:check
+npm --prefix frontend run lint
+npm --prefix frontend run typecheck
+npm --prefix frontend test
+```
+
+CI runs `format:check` and `lint`; do not rely on CI to rewrite files. Keep lint suppressions narrow and documented rather than disabling rules inline to bypass a finding.
 
 ## Nested Terminal and Reflow Modules
 `internal/reflow`, `internal/terminal/runtime`, and `internal/terminal/renderer` have their own `go.mod` files. Root `go test ./...` does not enter them.

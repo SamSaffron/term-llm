@@ -1,0 +1,126 @@
+/* Design tokens: color scheme, spacing, layout and syntax palettes. */
+
+:root {
+  --bg: #212121;
+  --bg-accent: rgb(255 255 255 / 3%);
+  --bg-accent-2: rgb(255 255 255 / 2%);
+  --surface: #2f2f2f;
+  --surface-strong: #2f2f2f;
+  --surface-2: #373737;
+  --surface-3: #424242;
+  --border: rgb(255 255 255 / 8%);
+  --border-strong: rgb(255 255 255 / 15%);
+  --text: #ececec;
+  --text-muted: #9a9a9a;
+  --accent: #ececec;
+  --accent-strong: #fff;
+  --accent-green: #34d399;
+  --accent-amber: #e5a210;
+  --danger: #f87171;
+  --backdrop: rgb(0 0 0 / 50%);
+  --overlay: rgb(0 0 0 / 60%);
+  --error-text: #fecaca;
+  --btn-accent-text: #212121;
+  --stop-btn-text: #fecaca;
+  --spinner-ring: rgb(33 33 33 / 35%);
+  --shadow-soft: 0 1px 2px rgb(0 0 0 / 10%);
+  --shadow-strong: 0 2px 8px rgb(0 0 0 / 15%);
+  --gradient-accent: var(--surface-2);
+  --gradient-accent-strong: var(--accent-strong);
+  --link: #60a5fa;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --app-height: 100dvh;
+  --app-offset-top: 0px;
+  --sidebar-width: 280px;
+  --sidebar-rail-width: 56px;
+  --diff-sidebar-width: clamp(300px, 28vw, 460px);
+  --plan-sidebar-width: clamp(300px, 27vw, 430px);
+  --header-action-height: 34px;
+  --header-action-radius: 10px;
+  --header-action-padding-x: 0.65rem;
+  --header-cluster-gap: 0.35rem;
+  --header-action-bg: transparent;
+  --header-action-bg-hover: var(--surface-2);
+  --header-action-bg-active: var(--surface-3);
+  --header-action-border: transparent;
+  --header-action-border-active: var(--border-strong);
+  --header-action-shadow: none;
+  --header-action-text: var(--text);
+  --layout-transition-duration: 0.2s;
+  --panel-transition-duration: 0.22s;
+  --panel-transition-easing: cubic-bezier(0.4, 0, 0.2, 1);
+  --panel-fade-duration: 0.18s;
+  --diff-add-bg: rgb(46 160 67 / 18%);
+  --diff-add-ln-bg: rgb(46 160 67 / 30%);
+  --diff-del-bg: rgb(248 81 73 / 16%);
+  --diff-del-ln-bg: rgb(248 81 73 / 30%);
+  --diff-file-del-bg: rgb(248 81 73 / 7%);
+  --diff-file-del-ln-bg: rgb(248 81 73 / 12%);
+
+  /* GitHub Dark syntax palette. Kept as variables so highlighted diff and
+         markdown code follow the same system theme without re-highlighting. */
+  --syntax-text: #c9d1d9;
+  --syntax-keyword: #ff7b72;
+  --syntax-entity: #d2a8ff;
+  --syntax-constant: #79c0ff;
+  --syntax-string: #a5d6ff;
+  --syntax-variable: #ffa657;
+  --syntax-comment: #8b949e;
+  --syntax-tag: #7ee787;
+  --syntax-heading: #58a6ff;
+  --syntax-bullet: #f2cc60;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #fff;
+    --bg-accent: rgb(0 0 0 / 2%);
+    --bg-accent-2: rgb(0 0 0 / 1%);
+    --surface: #fff;
+    --surface-strong: #fff;
+    --surface-2: #f7f7f8;
+    --surface-3: #ececec;
+    --border: rgb(0 0 0 / 8%);
+    --border-strong: rgb(0 0 0 / 15%);
+    --text: #0d0d0d;
+    --text-muted: #6e6e6e;
+    --accent: #0d0d0d;
+    --accent-strong: #0d0d0d;
+    --accent-green: #059669;
+    --accent-amber: #b45309;
+    --danger: #dc2626;
+    --backdrop: rgb(0 0 0 / 30%);
+    --overlay: rgb(0 0 0 / 40%);
+    --error-text: #991b1b;
+    --btn-accent-text: #fff;
+    --stop-btn-text: #991b1b;
+    --spinner-ring: rgb(255 255 255 / 45%);
+    --shadow-soft: 0 1px 2px rgb(0 0 0 / 5%);
+    --shadow-strong: 0 2px 8px rgb(0 0 0 / 8%);
+    --gradient-accent: var(--surface-2);
+    --gradient-accent-strong: var(--accent-strong);
+    --link: #2563eb;
+    --diff-add-bg: rgb(31 136 61 / 12%);
+    --diff-add-ln-bg: rgb(31 136 61 / 22%);
+    --diff-del-bg: rgb(207 34 46 / 10%);
+    --diff-del-ln-bg: rgb(207 34 46 / 20%);
+    --diff-file-del-bg: rgb(207 34 46 / 5%);
+    --diff-file-del-ln-bg: rgb(207 34 46 / 8%);
+
+    /* GitHub Light syntax palette: deliberately uses the dark, saturated
+           Primer values so tokens stay legible over red/green diff tints. */
+    --syntax-text: #24292f;
+    --syntax-keyword: #cf222e;
+    --syntax-entity: #8250df;
+    --syntax-constant: #0550ae;
+    --syntax-string: #0a3069;
+    --syntax-variable: #953800;
+    --syntax-comment: #57606a;
+    --syntax-tag: #116329;
+    --syntax-heading: #0969da;
+    --syntax-bullet: #6e5509;
+  }
+}

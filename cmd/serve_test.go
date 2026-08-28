@@ -558,15 +558,15 @@ func TestCustomBasePath_EndToEnd(t *testing.T) {
 		t.Error("/ should inject TERM_LLM_UI_VERSION")
 	}
 
-	// 2. /app.css serves static assets
-	req = httptest.NewRequest(http.MethodGet, "/app.css", nil)
+	// 2. /dist/app.css serves the generated static asset.
+	req = httptest.NewRequest(http.MethodGet, "/dist/app.css", nil)
 	rr = httptest.NewRecorder()
 	srv.handleUI(rr, req)
 	if rr.Code != http.StatusOK {
-		t.Fatalf("/app.css status = %d, want 200", rr.Code)
+		t.Fatalf("/dist/app.css status = %d, want 200", rr.Code)
 	}
-	if !strings.Contains(rr.Body.String(), ".app {") {
-		t.Error("/app.css should contain app styles")
+	if !strings.Contains(rr.Body.String(), ".app{") {
+		t.Error("/dist/app.css should contain minified app styles")
 	}
 
 	// 3. /images/ serves images via handleImage (empty filename → 404)
@@ -749,12 +749,12 @@ func TestNormalizeBasePath_ProducesValidRoutes(t *testing.T) {
 			t.Errorf("basePath=%q: handleUI(/) status=%d, want 200", bp, rr.Code)
 		}
 
-		// handleUI serves assets at "/app.css" (basePath stripped)
-		req = httptest.NewRequest(http.MethodGet, "/app.css", nil)
+		// handleUI serves generated assets after the base path is stripped.
+		req = httptest.NewRequest(http.MethodGet, "/dist/app.css", nil)
 		rr = httptest.NewRecorder()
 		srv.handleUI(rr, req)
 		if rr.Code != http.StatusOK {
-			t.Errorf("basePath=%q: handleUI(/app.css) status=%d, want 200", bp, rr.Code)
+			t.Errorf("basePath=%q: handleUI(/dist/app.css) status=%d, want 200", bp, rr.Code)
 		}
 
 		// handleImage rejects empty filename at "/images/" (basePath stripped)
@@ -812,12 +812,10 @@ func TestHandleUI_ReturnsEmbeddedStaticAsset(t *testing.T) {
 		contentType string
 		bodySnippet string
 	}{
-		{name: "css", path: "/app.css", contentType: "text/css", bodySnippet: ".app {"},
-		{name: "js", path: "/app-core.js", contentType: "text/javascript", bodySnippet: "window.TermLLMApp"},
+		{name: "css", path: "/dist/app.css", contentType: "text/css; charset=utf-8", bodySnippet: ".app{"},
+		{name: "module_js", path: "/dist/app.js", contentType: "text/javascript; charset=utf-8", bodySnippet: "term_llm_token"},
+		{name: "lazy_chunk_js", path: "/dist/chunks/katex.js", contentType: "text/javascript; charset=utf-8", bodySnippet: "katex"},
 		{name: "manifest", path: "/manifest.webmanifest", contentType: "", bodySnippet: `"display": "standalone"`},
-		{name: "vendor_subdir_js", path: "/vendor/katex/katex.min.js", contentType: "text/javascript", bodySnippet: "katex"},
-		{name: "vendor_subdir_css", path: "/vendor/hljs/github-dark.min.css", contentType: "text/css", bodySnippet: ".hljs"},
-		{name: "vendor_woff2", path: "/vendor/katex/fonts/KaTeX_Main-Regular.woff2", contentType: "font/woff2", bodySnippet: ""},
 	}
 
 	for _, tt := range tests {
@@ -840,11 +838,26 @@ func TestHandleUI_ReturnsEmbeddedStaticAsset(t *testing.T) {
 	}
 }
 
+func TestHandleUI_UnknownScriptAndStyleDoNotReturnSPAShell(t *testing.T) {
+	srv := &serveServer{cfg: serveServerConfig{ui: true, basePath: "/ui"}}
+	for _, path := range []string{"/missing.js", "/dist/chunks/missing.mjs", "/missing.css", "/dist/assets/missing.woff2", "/dist/assets/missing.png", "/dist/chunks/missing"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+		srv.handleUI(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Errorf("%s status = %d, want 404", path, rr.Code)
+		}
+		if strings.Contains(rr.Body.String(), `<div id="root">`) {
+			t.Errorf("%s returned SPA shell", path)
+		}
+	}
+}
+
 func TestHandleUI_VersionedAssetCaching(t *testing.T) {
 	srv := &serveServer{cfg: serveServerConfig{ui: true, basePath: "/ui"}}
 
-	// Versioned asset gets immutable caching.
-	req := httptest.NewRequest(http.MethodGet, "/vendor/katex/katex.min.js?v=0.16.38", nil)
+	// Versioned generated asset gets immutable caching.
+	req := httptest.NewRequest(http.MethodGet, "/dist/chunks/katex.js?v="+serveui.AssetVersion(), nil)
 	rr := httptest.NewRecorder()
 	srv.handleUI(rr, req)
 	if rr.Code != http.StatusOK {
@@ -855,7 +868,7 @@ func TestHandleUI_VersionedAssetCaching(t *testing.T) {
 	}
 
 	// Unversioned asset gets no-cache.
-	req = httptest.NewRequest(http.MethodGet, "/app.css", nil)
+	req = httptest.NewRequest(http.MethodGet, "/dist/app.css", nil)
 	rr = httptest.NewRecorder()
 	srv.handleUI(rr, req)
 	if rr.Code != http.StatusOK {
@@ -869,12 +882,12 @@ func TestHandleUI_VersionedAssetCaching(t *testing.T) {
 func TestHandleUI_StaticAssetCompressionAndConditionalCaching(t *testing.T) {
 	srv := &serveServer{cfg: serveServerConfig{ui: true, basePath: "/ui"}}
 	version := serveui.AssetVersion()
-	wantBody, err := serveui.StaticAsset("app.css")
+	wantBody, err := serveui.StaticAsset("dist/app.css")
 	if err != nil {
-		t.Fatalf("StaticAsset(app.css): %v", err)
+		t.Fatalf("StaticAsset(dist/app.css): %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/app.css?v="+version, nil)
+	req := httptest.NewRequest(http.MethodGet, "/dist/app.css?v="+version, nil)
 	req.Header.Set("Accept-Encoding", "gzip")
 	rr := httptest.NewRecorder()
 	srv.handleUI(rr, req)
@@ -906,7 +919,7 @@ func TestHandleUI_StaticAssetCompressionAndConditionalCaching(t *testing.T) {
 		t.Fatalf("decompressed body mismatch")
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/app.css?v="+version, nil)
+	req = httptest.NewRequest(http.MethodGet, "/dist/app.css?v="+version, nil)
 	rr = httptest.NewRecorder()
 	srv.handleUI(rr, req)
 	if rr.Code != http.StatusOK {
@@ -919,7 +932,7 @@ func TestHandleUI_StaticAssetCompressionAndConditionalCaching(t *testing.T) {
 		t.Fatalf("plain body mismatch")
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/app.css?v="+version, nil)
+	req = httptest.NewRequest(http.MethodGet, "/dist/app.css?v="+version, nil)
 	req.Header.Set("If-None-Match", etag)
 	rr = httptest.NewRecorder()
 	srv.handleUI(rr, req)
@@ -930,7 +943,7 @@ func TestHandleUI_StaticAssetCompressionAndConditionalCaching(t *testing.T) {
 		t.Fatalf("conditional response body length = %d, want 0", rr.Body.Len())
 	}
 
-	req = httptest.NewRequest(http.MethodHead, "/app.css?v="+version, nil)
+	req = httptest.NewRequest(http.MethodHead, "/dist/app.css?v="+version, nil)
 	rr = httptest.NewRecorder()
 	srv.handleUI(rr, req)
 	if rr.Code != http.StatusOK {
@@ -979,25 +992,22 @@ func TestHandleUI_IndexVersionsShellAssets(t *testing.T) {
 	for _, snippet := range []string{
 		`href="manifest.webmanifest?v=` + version + `"`,
 		`href="icon-512.png?v=` + version + `"`,
-		`href="app.css?v=` + version + `"`,
-		`src="app-core.js?v=` + version + `"`,
-		`src="app-render.js?v=` + version + `"`,
-		`src="app-stream.js?v=` + version + `"`,
-		`src="app-sessions.js?v=` + version + `"`,
-		`.startup-splash {`,
-		`@keyframes startup-spin {`,
+		`href="dist/app.css?v=` + version + `"`,
+		`type="module" src="dist/app.js?v=` + version + `"`,
+		`.startup-splash{`,
+		`@keyframes startup-spin{`,
 	} {
 		if !strings.Contains(body, snippet) {
 			t.Fatalf("expected %q in body", snippet)
 		}
 	}
-	if strings.Index(body, `.startup-splash {`) > strings.Index(body, `href="app.css?v=`+version+`"`) {
-		t.Fatalf("expected inline startup styles before app.css link")
+	if strings.Index(body, `.startup-splash{`) > strings.Index(body, `href="dist/app.css?v=`+version+`"`) {
+		t.Fatalf("expected inline startup styles before generated CSS link")
 	}
 	for _, snippet := range []string{
-		`src="vendor/katex/katex.min.js?v=0.16.38"`,
-		`src="vendor/hljs/highlight.min.js?v=11.11.1"`,
-		`href="vendor/katex/katex.min.css?v=0.16.38"`,
+		`vendor/marked`,
+		`vendor/dompurify`,
+		`dist/chunks/katex.js`,
 	} {
 		if strings.Contains(body, snippet) {
 			t.Fatalf("did not expect eager optional markdown asset %q in index", snippet)
@@ -1020,20 +1030,18 @@ func TestHandleUI_ServiceWorkerVersionsShellCache(t *testing.T) {
 		`term-llm-shell-` + version,
 		`'./manifest.webmanifest?v=` + version + `'`,
 		`'./icon-512.png?v=` + version + `'`,
-		`'./app.css?v=` + version + `'`,
-		`'./app-core.js?v=` + version + `'`,
-		`'./app-render.js?v=` + version + `'`,
-		`'./app-stream.js?v=` + version + `'`,
-		`'./app-sessions.js?v=` + version + `'`,
+		`'./dist/app.css?v=` + version + `'`,
+		`'./dist/app.js?v=` + version + `'`,
 	} {
 		if !strings.Contains(body, snippet) {
 			t.Fatalf("expected %q in body", snippet)
 		}
 	}
 	for _, snippet := range []string{
-		`'./vendor/katex/katex.min.js?v=0.16.38'`,
-		`'./vendor/hljs/highlight.min.js?v=11.11.1'`,
-		`'./vendor/hljs/github-dark.min.css?v=11.11.1'`,
+		`'./dist/chunks/vendor.js`,
+		`'./dist/chunks/webrtc.js`,
+		`'./dist/chunks/katex.js`,
+		`'./dist/chunks/highlight.js`,
 	} {
 		if strings.Contains(body, snippet) {
 			t.Fatalf("did not expect lazy optional asset %q in shell precache", snippet)
@@ -1448,58 +1456,21 @@ func TestParseResponsesInput_TextFileUploadEmbedsFallback(t *testing.T) {
 	}
 }
 
-func TestParseResponsesInput_UnsupportedImageSavesToDisk(t *testing.T) {
-	dataHome := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", dataHome)
-
-	// image/svg+xml is not a supported LLM image type
+func TestParseResponsesInput_UnsupportedImageIsRejected(t *testing.T) {
+	// image/svg+xml is not a supported LLM image type and must fail at the
+	// protocol boundary instead of silently changing into a saved-file prompt.
 	b64 := "PHN2Zz48L3N2Zz4=" // base64 of "<svg></svg>"
 	payload := json.RawMessage(`[
 		{"type":"message","role":"user","content":[
 			{"type":"input_image","image_url":"data:image/svg+xml;base64,` + b64 + `","filename":"icon.svg"}
 		]}
 	]`)
-	msgs, _, err := parseResponsesInput(payload)
-	if err != nil {
-		t.Fatalf("parseResponsesInput failed: %v", err)
-	}
-	if len(msgs) != 1 {
-		t.Fatalf("len(msgs) = %d, want 1", len(msgs))
-	}
-	msg := msgs[0]
-	if len(msg.Parts) != 1 {
-		t.Fatalf("len(parts) = %d, want 1", len(msg.Parts))
-	}
-	if msg.Parts[0].Type != llm.PartText {
-		t.Fatalf("parts[0].type = %s, want text (saved to disk)", msg.Parts[0].Type)
-	}
-	if !strings.Contains(msg.Parts[0].Text, "icon.svg") {
-		t.Fatalf("parts[0].text = %q, should mention icon.svg", msg.Parts[0].Text)
-	}
-	if strings.Contains(msg.Parts[0].Text, dataHome) {
-		t.Fatalf("parts[0].text leaks upload storage path: %q", msg.Parts[0].Text)
-	}
-
-	// Verify file on disk
-	uploadsDir := filepath.Join(dataHome, "term-llm", "uploads")
-	entries, err := os.ReadDir(uploadsDir)
-	if err != nil {
-		t.Fatalf("read uploads dir: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("uploads dir has %d files, want 1", len(entries))
-	}
-	got, err := os.ReadFile(filepath.Join(uploadsDir, entries[0].Name()))
-	if err != nil {
-		t.Fatalf("read uploaded file: %v", err)
-	}
-	if string(got) != "<svg></svg>" {
-		t.Fatalf("file content = %q, want %q", got, "<svg></svg>")
+	_, _, err := parseResponsesInput(payload)
+	if err == nil || !strings.Contains(err.Error(), `unsupported attachment type "image/svg+xml"`) {
+		t.Fatalf("parseResponsesInput error = %v, want unsupported attachment type", err)
 	}
 }
-
 func TestParseResponsesInput_InvalidBase64ReturnsError(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
 	payload := json.RawMessage(`[
 		{"type":"message","role":"user","content":[
@@ -2357,7 +2328,7 @@ func TestServeSessionManager_GetOrCreateBoundsCapacityCleanup(t *testing.T) {
 	}
 }
 
-func TestServeSessionManager_GetOrCreateReturnsErrorWhenAllSessionsAreBusyAtCapacity(t *testing.T) {
+func TestServeSessionManager_GetOrCreateAdmitsWhenAllCachedSessionsAreBusy(t *testing.T) {
 	manager := newServeSessionManager(time.Minute, 1, func(ctx context.Context) (*serveRuntime, error) {
 		rt := &serveRuntime{}
 		rt.Touch()
@@ -2383,11 +2354,11 @@ func TestServeSessionManager_GetOrCreateReturnsErrorWhenAllSessionsAreBusyAtCapa
 	manager.mu.Unlock()
 
 	created, err := manager.GetOrCreate(context.Background(), "new")
-	if !errors.Is(err, errServeSessionLimitReached) {
-		t.Fatalf("error = %v, want %v", err, errServeSessionLimitReached)
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
 	}
-	if created != nil {
-		t.Fatal("expected no runtime to be created")
+	if created == nil {
+		t.Fatal("expected new runtime to be admitted")
 	}
 
 	manager.mu.Lock()
@@ -2399,11 +2370,11 @@ func TestServeSessionManager_GetOrCreateReturnsErrorWhenAllSessionsAreBusyAtCapa
 	if !busyOK {
 		t.Fatal("expected active session to remain in manager")
 	}
-	if newOK {
-		t.Fatal("expected new session not to be stored when all sessions are busy")
+	if !newOK {
+		t.Fatal("expected new session to be stored while cached sessions are busy")
 	}
-	if sessionCount != 1 {
-		t.Fatalf("session count = %d, want 1", sessionCount)
+	if sessionCount != 2 {
+		t.Fatalf("session count = %d, want temporary overflow to 2", sessionCount)
 	}
 	if got := evictions.Load(); got != 0 {
 		t.Fatalf("evictions = %d, want 0", got)
@@ -2415,7 +2386,7 @@ func TestServeSessionManager_GetOrCreateReturnsErrorWhenAllSessionsAreBusyAtCapa
 	}
 }
 
-func TestServeSessionManager_GetOrCreateWithReturnsErrorWhenAllSessionsAreBusyAtCapacity(t *testing.T) {
+func TestServeSessionManager_GetOrCreateWithAdmitsWhenAllCachedSessionsAreBusy(t *testing.T) {
 	manager := newServeSessionManager(time.Minute, 1, nil)
 	defer manager.Close()
 
@@ -2441,11 +2412,11 @@ func TestServeSessionManager_GetOrCreateWithReturnsErrorWhenAllSessionsAreBusyAt
 		rt.Touch()
 		return rt, nil
 	})
-	if !errors.Is(err, errServeSessionLimitReached) {
-		t.Fatalf("error = %v, want %v", err, errServeSessionLimitReached)
+	if err != nil {
+		t.Fatalf("GetOrCreateWith: %v", err)
 	}
-	if created != nil {
-		t.Fatal("expected no runtime to be created")
+	if created == nil {
+		t.Fatal("expected new runtime to be admitted")
 	}
 
 	manager.mu.Lock()
@@ -2457,11 +2428,11 @@ func TestServeSessionManager_GetOrCreateWithReturnsErrorWhenAllSessionsAreBusyAt
 	if !busyOK {
 		t.Fatal("expected active session to remain in manager")
 	}
-	if newOK {
-		t.Fatal("expected new session not to be stored when all sessions are busy")
+	if !newOK {
+		t.Fatal("expected new session to be stored while cached sessions are busy")
 	}
-	if sessionCount != 1 {
-		t.Fatalf("session count = %d, want 1", sessionCount)
+	if sessionCount != 2 {
+		t.Fatalf("session count = %d, want temporary overflow to 2", sessionCount)
 	}
 	if got := evictions.Load(); got != 0 {
 		t.Fatalf("evictions = %d, want 0", got)
@@ -3029,6 +3000,186 @@ func TestServeRuntimeRun_PersistsSessionAndMessages(t *testing.T) {
 	}
 	if msgs[len(msgs)-1].Role != llm.RoleAssistant {
 		t.Fatalf("last role = %s, want assistant", msgs[len(msgs)-1].Role)
+	}
+}
+
+func TestInterruptMessageSerializesPersistenceWithCancellation(t *testing.T) {
+	rt := &serveRuntime{engine: llm.NewEngine(llm.NewMockProvider("engine"), nil)}
+	persistStarted := make(chan struct{})
+	allowPersist := make(chan struct{})
+	state := &runtimeInterruptState{
+		cancel: func() {},
+		done:   make(chan struct{}),
+		persistPendingInterjection: func(context.Context, llm.QueuedInterjection) error {
+			close(persistStarted)
+			<-allowPersist
+			return nil
+		},
+	}
+	rt.setActiveInterrupt(state)
+	defer rt.clearActiveInterrupt(state)
+
+	interruptDone := make(chan error, 1)
+	go func() {
+		_, _, err := rt.InterruptMessage(
+			context.Background(), llm.UserText("change course"), "change course", "race-1", nil, interruptDeliverySteer,
+		)
+		interruptDone <- err
+	}()
+	<-persistStarted
+	cancelled := make(chan bool, 1)
+	go func() {
+		ok, err := rt.cancelPendingInterjection(context.Background(), "session", "race-1")
+		cancelled <- ok && err == nil
+	}()
+	select {
+	case <-cancelled:
+		t.Fatal("cancellation passed persistence before the interjection was queued")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(allowPersist)
+	if err := <-interruptDone; err != nil {
+		t.Fatalf("InterruptMessage: %v", err)
+	}
+	if ok := <-cancelled; !ok {
+		t.Fatal("serialized cancellation did not remove the queued interjection")
+	}
+	if entries := rt.engine.ListPendingInterjections(); len(entries) != 0 {
+		t.Fatalf("engine pending entries after cancellation = %#v", entries)
+	}
+}
+
+func TestInterruptMessagePersistsPendingUntilDurableCommit(t *testing.T) {
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	const sessionID = "sess-durable-interjection"
+	if err := store.Create(context.Background(), &session.Session{ID: sessionID, Provider: "mock", Model: "mock"}); err != nil {
+		t.Fatal(err)
+	}
+
+	rt := &serveRuntime{engine: llm.NewEngine(llm.NewMockProvider("engine"), nil), store: store}
+	state := &runtimeInterruptState{cancel: func() {}, done: make(chan struct{})}
+	rt.configurePendingInterjectionPersistence(state, sessionID)
+	rt.setActiveInterrupt(state)
+	defer rt.clearActiveInterrupt(state)
+
+	action, _, err := rt.InterruptMessage(
+		context.Background(), llm.UserText("change course"), "change course", "web-pending-1", nil, interruptDeliverySteer,
+	)
+	if err != nil || action != llm.InterruptInterject {
+		t.Fatalf("InterruptMessage action=%q err=%v", action, err)
+	}
+	pendingStore, ok := session.AsPendingInterjectionStore(store)
+	if !ok {
+		t.Fatal("SQLite store does not expose pending interjection persistence")
+	}
+	entries, err := pendingStore.ListPendingInterjections(context.Background(), sessionID)
+	if err != nil || len(entries) != 1 || entries[0].ID != "web-pending-1" || entries[0].Message.ClientMessageID != "web-pending-1" {
+		t.Fatalf("durable pending entries=%#v err=%v", entries, err)
+	}
+
+	srv := &serveServer{store: store}
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sessionID+"/state", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessionState(rr, req, sessionID)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"id":"web-pending-1"`) {
+		t.Fatalf("state status/body=%d %s", rr.Code, rr.Body.String())
+	}
+
+	committed := llm.UserText("change course")
+	committed.ClientMessageID = "web-pending-1"
+	result := rt.appendMessagesDetailed(context.Background(), sessionID, []llm.Message{committed}, 0)
+	if !result.Complete {
+		t.Fatalf("committed interjection persistence=%#v", result)
+	}
+	entries, err = pendingStore.ListPendingInterjections(context.Background(), sessionID)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("pending entries after commit=%#v err=%v", entries, err)
+	}
+
+	if _, _, err := rt.InterruptMessage(
+		context.Background(), llm.UserText("one more"), "one more", "web-abandoned-2", nil, interruptDeliverySteer,
+	); err != nil {
+		t.Fatalf("queue abandoned interjection: %v", err)
+	}
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), time.Second)
+	rt.discardPendingInterjections(cleanupCtx, sessionID)
+	cleanupCancel()
+	entries, err = pendingStore.ListPendingInterjections(context.Background(), sessionID)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("pending entries after run cleanup=%#v err=%v", entries, err)
+	}
+
+	detached := llm.UserText("cancel from another tab")
+	detached.ClientMessageID = "web-detached-3"
+	if err := pendingStore.SavePendingInterjection(context.Background(), session.PendingInterjection{
+		SessionID: sessionID, ID: detached.ClientMessageID, Message: detached, DisplayText: llm.MessageText(detached),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest(http.MethodDelete, "/v1/sessions/"+sessionID+"/interjections/"+detached.ClientMessageID, nil)
+	rr = httptest.NewRecorder()
+	srv.handleSessionInterjectionCancel(rr, req, sessionID, detached.ClientMessageID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("detached cancel status/body=%d %s", rr.Code, rr.Body.String())
+	}
+	entries, err = pendingStore.ListPendingInterjections(context.Background(), sessionID)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("pending entries after detached cancel=%#v err=%v", entries, err)
+	}
+
+	rt.clearActiveInterrupt(state)
+	idle := llm.UserText("cancel from loaded idle runtime")
+	idle.ClientMessageID = "web-idle-4"
+	if err := pendingStore.SavePendingInterjection(context.Background(), session.PendingInterjection{
+		SessionID: sessionID, ID: idle.ClientMessageID, Message: idle, DisplayText: llm.MessageText(idle),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager := newServeSessionManager(time.Minute, 10, nil)
+	defer manager.Close()
+	putTestSession(manager, sessionID, rt)
+	idleServer := &serveServer{store: store, sessionMgr: manager}
+	req = httptest.NewRequest(http.MethodDelete, "/v1/sessions/"+sessionID+"/interjections/"+idle.ClientMessageID, nil)
+	rr = httptest.NewRecorder()
+	idleServer.handleSessionInterjectionCancel(rr, req, sessionID, idle.ClientMessageID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("idle runtime cancel status/body=%d %s", rr.Code, rr.Body.String())
+	}
+
+	filtered := llm.UserText("already committed")
+	filtered.ClientMessageID = "web-filtered-4"
+	if err := pendingStore.SavePendingInterjection(context.Background(), session.PendingInterjection{
+		SessionID: sessionID, ID: filtered.ClientMessageID, Message: filtered, DisplayText: llm.MessageText(filtered),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddMessage(context.Background(), sessionID, session.NewMessage(sessionID, filtered, -1)); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = pendingStore.ListPendingInterjections(context.Background(), sessionID)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("committed client id was still listed as pending: entries=%#v err=%v", entries, err)
+	}
+
+	restored := llm.UserText("restore failed follow-up")
+	restored.ClientMessageID = "web-claimed-5"
+	if err := pendingStore.SavePendingInterjection(context.Background(), session.PendingInterjection{
+		SessionID: sessionID, ID: restored.ClientMessageID, Message: restored, DisplayText: llm.MessageText(restored),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rt.engine.QueueInterjection(llm.QueuedInterjection{ID: restored.ClientMessageID, Message: restored})
+	if claim := rt.engine.ClaimInterjection(restored.ClientMessageID); claim != llm.InterjectionClaimed {
+		t.Fatalf("claim status=%q", claim)
+	}
+	rt.releaseClaimedPendingInterjections(context.Background(), sessionID, []string{restored.ClientMessageID})
+	engineEntries := rt.engine.ListPendingInterjections()
+	if len(engineEntries) != 1 || engineEntries[0].ID != restored.ClientMessageID {
+		t.Fatalf("restored engine interjections=%#v", engineEntries)
 	}
 }
 
@@ -4485,6 +4636,9 @@ func TestHandleResponses_StreamIdempotencyKeyReplaysExistingRun(t *testing.T) {
 	}
 	if len(provider.Requests) != 1 {
 		t.Fatalf("provider request count after replay = %d, want 1", len(provider.Requests))
+	}
+	if got := srv.responseRuns.Diagnostics().IdempotencyReplays; got != 1 {
+		t.Fatalf("idempotency replay diagnostics = %d, want 1", got)
 	}
 }
 
@@ -6359,6 +6513,49 @@ func TestHandleSessionByID_PatchRenameAndArchive(t *testing.T) {
 	}
 	if !updated.Pinned {
 		t.Fatal("Pinned = false, want true")
+	}
+
+	mgr := newServeSessionManager(time.Minute, 10, nil)
+	defer mgr.Close()
+	cached := *updated
+	rt := &serveRuntime{sessionMeta: &cached}
+	putTestSession(mgr, sess.ID, rt)
+	srv.sessionMgr = mgr
+
+	// runOnce holds this mutex for the entire provider stream. Renaming is a
+	// durable metadata write and must not wait for that stream to finish merely
+	// to refresh the runtime's cache.
+	rt.mu.Lock()
+	streamingBody := strings.NewReader(`{"name":"Renamed while streaming"}`)
+	streamingReq := httptest.NewRequest(http.MethodPatch, "/v1/sessions/sess-rename", streamingBody)
+	streamingReq.Header.Set("Content-Type", "application/json")
+	streamingRR := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		srv.handleSessionByID(streamingRR, streamingReq)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		rt.mu.Unlock()
+	case <-time.After(time.Second):
+		rt.mu.Unlock()
+		<-done
+		t.Fatal("metadata PATCH waited for the active runtime lock")
+	}
+	if streamingRR.Code != http.StatusOK {
+		t.Fatalf("streaming rename status = %d, want 200 body=%s", streamingRR.Code, streamingRR.Body.String())
+	}
+	persisted, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get after streaming rename: %v", err)
+	}
+	if persisted.Name != "Renamed while streaming" {
+		t.Fatalf("persisted Name = %q, want streaming rename", persisted.Name)
+	}
+	if cached.Name != "Renamed session" {
+		t.Fatalf("busy runtime cache changed without its lock: %q", cached.Name)
 	}
 }
 
@@ -8816,15 +9013,21 @@ func TestHandleResponses_ModelSwapNaiveSuccessCommitsTargetRuntime(t *testing.T)
 	})
 	defer manager.Close()
 	srv := &serveServer{
+		cfg:        serveServerConfig{agentNames: []string{"developer"}},
 		cfgRef:     &config.Config{DefaultProvider: "default"},
 		sessionMgr: manager,
 		store:      store,
 		runtimeFactory: func(ctx context.Context, providerName string, modelName string) (*serveRuntime, error) {
 			return newRuntime(providerName, modelName), nil
 		},
+		agentRuntimeFactory: func(ctx context.Context, providerName string, modelName string, agentName string) (*serveRuntime, error) {
+			runtime := newRuntime(providerName, modelName)
+			runtime.agentName = agentName
+			return runtime, nil
+		},
 	}
 
-	code, resp1 := doResponsesFirstParty(t, srv, `{"input":"hello","client_message_id":"swap-initial","provider":"old","model":"old-model"}`, "swap-naive")
+	code, resp1 := doResponsesFirstParty(t, srv, `{"input":"hello","client_message_id":"swap-initial","provider":"old","model":"old-model","agent":"developer"}`, "swap-naive")
 	if code != http.StatusOK {
 		t.Fatalf("first status = %d, want 200", code)
 	}
@@ -8882,6 +9085,13 @@ func TestHandleResponses_ModelSwapNaiveSuccessCommitsTargetRuntime(t *testing.T)
 	}
 	if sess.ProviderKey != "new" || sess.Model != "new-model" {
 		t.Fatalf("session runtime = %s/%s, want new/new-model", sess.ProviderKey, sess.Model)
+	}
+	if sess.Agent != "developer" {
+		t.Fatalf("session agent = %q after model swap, want developer", sess.Agent)
+	}
+	currentRuntime, ok := manager.Get("swap-naive")
+	if !ok || currentRuntime == nil || currentRuntime.agentName != "developer" {
+		t.Fatalf("replacement runtime lost agent tether: current=%#v ok=%v", currentRuntime, ok)
 	}
 	storedMessages, err := store.GetMessages(context.Background(), "swap-naive", 0, 0)
 	if err != nil {
@@ -10183,9 +10393,47 @@ func TestHandleResponseCancelDiscardsPendingInterjections(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("cancel status = %d, want 200 body=%s", rr.Code, rr.Body.String())
 	}
-	if got := engine.ListPendingInterjections(); len(got) != 0 {
-		t.Fatalf("pending interjections after explicit cancel = %#v, want none", got)
+	waitForServeCondition(t, time.Second, func() bool {
+		return len(engine.ListPendingInterjections()) == 0
+	}, "pending interjections to be discarded after explicit cancel")
+}
+
+func TestHandleResponseCancelAcknowledgesBeforeCleanupFinishes(t *testing.T) {
+	cleanupStarted := make(chan struct{})
+	releaseCleanup := make(chan struct{})
+	run := newResponseRun("resp_cancel_prompt", "cancel-session", "", "mock-model", time.Now().Unix(), func() {
+		close(cleanupStarted)
+		<-releaseCleanup
+	})
+	mgr := newServeResponseRunManagerWithRetention(time.Minute)
+	if err := mgr.create(run); err != nil {
+		t.Fatalf("create run: %v", err)
 	}
+	srv := &serveServer{responseRuns: mgr}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses/resp_cancel_prompt/cancel", nil)
+	rr := httptest.NewRecorder()
+	handlerDone := make(chan struct{})
+	go func() {
+		srv.handleResponseByID(rr, req)
+		close(handlerDone)
+	}()
+
+	select {
+	case <-handlerDone:
+		if rr.Code != http.StatusOK {
+			t.Fatalf("cancel status = %d, want 200 body=%s", rr.Code, rr.Body.String())
+		}
+	case <-time.After(250 * time.Millisecond):
+		close(releaseCleanup)
+		t.Fatal("cancel acknowledgement waited for cleanup")
+	}
+	select {
+	case <-cleanupStarted:
+	case <-time.After(time.Second):
+		close(releaseCleanup)
+		t.Fatal("cancel cleanup did not start")
+	}
+	close(releaseCleanup)
 }
 
 func TestHandleResponseCancelIsIdempotentWhileRunIsFinishing(t *testing.T) {
@@ -10400,8 +10648,8 @@ func TestResponseRunDeadlineMessageUsesConfiguredLimitOnlyWhenRunContextExpired(
 
 	expiredCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
-	if got := responseRunDeadlineMessage(expiredCtx, timeout); !strings.Contains(got, "timed out after 45 minutes") {
-		t.Fatalf("expired run context message = %q, want configured timeout", got)
+	if got := responseRunDeadlineMessage(expiredCtx, timeout); !strings.Contains(got, "no LLM response completed within 45 minutes") {
+		t.Fatalf("expired run context message = %q, want configured inactivity timeout", got)
 	}
 }
 
@@ -13682,5 +13930,44 @@ func TestServeRuntimeEmitGuardianReviewUsesApprovalEventStream(t *testing.T) {
 	}
 	if gotData["message"] != "guardian: denied: nope" || gotData["tool_call_id"] != "shell-1" || gotData["command"] != "rm file" || gotData["workdir"] != "/tmp" || gotData["outcome"] != tools.GuardianDenied {
 		t.Fatalf("guardian payload = %#v", gotData)
+	}
+}
+
+func TestServeSessionMetadataMutationDoesNotBlockOtherSessionAdmission(t *testing.T) {
+	manager := newServeSessionManager(time.Minute, 10, func(context.Context) (*serveRuntime, error) {
+		rt := &serveRuntime{}
+		rt.Touch()
+		return rt, nil
+	})
+	defer manager.Close()
+
+	runtimeA := &serveRuntime{}
+	runtimeA.Touch()
+	manager.mu.Lock()
+	manager.sessions["session-a"] = runtimeA
+	manager.mu.Unlock()
+
+	_, release, err := manager.lockIdleMetadataMutation("session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	if got, err := manager.GetOrCreate(context.Background(), "session-a"); err != nil || got != runtimeA {
+		t.Fatalf("existing reserved runtime lookup = %p, %v; want %p, nil", got, err, runtimeA)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := manager.GetOrCreate(context.Background(), "session-b")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("session B admission waited for session A metadata mutation")
 	}
 }

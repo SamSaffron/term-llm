@@ -83,7 +83,7 @@ func TestWidgetStopSerializesConcurrentRestart(t *testing.T) {
 
 	t.Setenv("TERM_LLM_WIDGET_TEST_CHILD", "1")
 	termMarker := filepath.Join(t.TempDir(), "term-received")
-	t.Setenv("TERM_LLM_WIDGET_TEST_TERM_DELAY", "750ms")
+	t.Setenv("TERM_LLM_WIDGET_TEST_TERM_DELAY", "50ms")
 	t.Setenv("TERM_LLM_WIDGET_TEST_TERM_MARKER", termMarker)
 
 	m := &Manager{
@@ -142,7 +142,7 @@ func TestWidgetStopSerializesConcurrentRestart(t *testing.T) {
 	select {
 	case err := <-startDone:
 		t.Fatalf("replacement start completed before old process exited: %v", err)
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(10 * time.Millisecond):
 	}
 
 	select {

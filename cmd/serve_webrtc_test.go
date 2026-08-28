@@ -41,62 +41,45 @@ func TestServeWebRTC_InjectsHeadSnippet(t *testing.T) {
 	}
 }
 
-func TestRenderIndexHTML_DropsWebRTCScriptWhenDisabled(t *testing.T) {
-	s := &serveServer{
-		cfg:               serveServerConfig{basePath: "/ui"},
-		webrtcHeadSnippet: "",
-	}
-	html := string(s.renderIndexHTML())
-	if strings.Contains(html, "app-webrtc.js") {
-		t.Error("renderIndexHTML should omit app-webrtc.js script tag when WebRTC is disabled")
-	}
-}
-
-func TestRenderIndexHTML_KeepsWebRTCScriptWhenEnabled(t *testing.T) {
-	snippet := `<script>window.__WEBRTC_ENABLED__=true;</script>`
-	s := &serveServer{
-		cfg:               serveServerConfig{basePath: "/ui"},
-		webrtcEnabled:     true,
-		webrtcHeadSnippet: snippet,
-	}
-	html := string(s.renderIndexHTML())
-	if !strings.Contains(html, "app-webrtc.js") {
-		t.Error("renderIndexHTML should include app-webrtc.js script tag when WebRTC is enabled")
+func TestRenderIndexHTMLUsesSingleModuleForWebRTC(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		s := &serveServer{
+			cfg:               serveServerConfig{basePath: "/ui"},
+			webrtcEnabled:     enabled,
+			webrtcHeadSnippet: map[bool]string{true: `<script>window.__WEBRTC_ENABLED__=true;</script>`}[enabled],
+		}
+		html := string(s.renderIndexHTML())
+		if strings.Count(html, `type="module" src="dist/app.js`) != 1 {
+			t.Fatalf("enabled=%v: expected one application module", enabled)
+		}
+		if strings.Contains(html, "app-webrtc.js") {
+			t.Fatalf("enabled=%v: legacy WebRTC script remains", enabled)
+		}
 	}
 }
 
-func TestHandleUIServiceWorkerWebRTCAssetOption(t *testing.T) {
-	tests := []struct {
-		name          string
-		webrtcEnabled bool
-		wantWebRTC    bool
-	}{
-		{name: "disabled", webrtcEnabled: false, wantWebRTC: false},
-		{name: "enabled", webrtcEnabled: true, wantWebRTC: true},
+func TestHandleUIServiceWorkerKeepsWebRTCChunkNetworkFirst(t *testing.T) {
+	var bodies []string
+	for _, enabled := range []bool{false, true} {
+		s := &serveServer{
+			cfg:           serveServerConfig{ui: true, basePath: "/ui"},
+			webrtcEnabled: enabled,
+		}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/sw.js", nil)
+
+		s.handleUI(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("enabled=%v: status = %d, want %d", enabled, rec.Code, http.StatusOK)
+		}
+		body := rec.Body.String()
+		if strings.Contains(body, "dist/chunks/webrtc.js") {
+			t.Fatalf("enabled=%v: stable-named WebRTC chunk must not be treated as a versioned shell URL", enabled)
+		}
+		bodies = append(bodies, body)
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := &serveServer{
-				cfg:           serveServerConfig{ui: true, basePath: "/ui"},
-				webrtcEnabled: tt.webrtcEnabled,
-			}
-			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodGet, "/sw.js", nil)
-
-			s.handleUI(rec, req)
-
-			if rec.Code != http.StatusOK {
-				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-			}
-			body := rec.Body.String()
-			hasWebRTC := strings.Contains(body, "app-webrtc.js")
-			if hasWebRTC != tt.wantWebRTC {
-				t.Fatalf("app-webrtc.js presence = %v, want %v", hasWebRTC, tt.wantWebRTC)
-			}
-			if strings.Contains(body, "term-llm:webrtc-shell-asset") {
-				t.Fatal("service worker response should not contain WebRTC placeholder")
-			}
-		})
+	if bodies[0] != bodies[1] {
+		t.Fatal("WebRTC feature flag changed service-worker chunk cache semantics")
 	}
 }

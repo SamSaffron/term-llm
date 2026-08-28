@@ -348,6 +348,16 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 					return
 				}
 			}
+			for _, observation := range event.ToolFilesystemObservations {
+				if !emit(FilesystemObservationEvent(observation)) {
+					return
+				}
+			}
+			for _, diagnostic := range event.ToolOutputClaimDiagnostics {
+				if !emit(OutputClaimDiagnosticEvent(diagnostic)) {
+					return
+				}
+			}
 
 		case llm.EventRetry:
 			a.updateStats(func(stats *SessionStats) { stats.ScheduleRetryStart(event.RetryWaitSecs) })

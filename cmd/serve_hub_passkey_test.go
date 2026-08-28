@@ -30,12 +30,17 @@ func configureTestPasskeyHub(t *testing.T, s *hubServer, base string) *hubServer
 	if err != nil {
 		t.Fatal(err)
 	}
+	sessions, err := passkeyauth.OpenSessions(passkeyauth.SessionsOptions{Path: filepath.Join(authDir, "sessions.json"), RPID: endpoint.RPID, UserID: store.User().ID, ValidCredential: func(string) bool { return true }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sessions.Close() })
 	bootstrap, err := passkeyauth.NewGrants(passkeyauth.GrantBootstrap, []byte("abcdefghijklmnopqrst"), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	recovery, _ := passkeyauth.NewGrants(passkeyauth.GrantRecovery, nil, nil, nil)
-	runtime, err := newHubPasskeyRuntime(endpoint, store, bootstrap, recovery, nil)
+	runtime, err := newHubPasskeyRuntime(endpoint, store, sessions, bootstrap, recovery, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -498,18 +503,45 @@ func TestResolveHubBootstrapSecretNonInteractiveAndEnvScrub(t *testing.T) {
 	}
 }
 
+func TestLockHubPasskeyStateExcludesOverlappingHub(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "auth")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	authFile := filepath.Join(dir, "auth.json")
+	unlock, err := lockHubPasskeyState(authFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lockHubPasskeyState(authFile); err == nil {
+		t.Fatal("overlapping Hub acquired passkey state lock")
+	}
+	if err := unlock(); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err = lockHubPasskeyState(authFile)
+	if err != nil {
+		t.Fatalf("passkey state remained locked: %v", err)
+	}
+	if err := unlock(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNewHubPasskeyRuntimeRequiresStateStores(t *testing.T) {
 	s := newTestPasskeyHub(t, "")
 	for name, args := range map[string]struct {
 		store               *passkeyauth.Store
+		sessions            *passkeyauth.Sessions
 		bootstrap, recovery *passkeyauth.Grants
 	}{
-		"store":     {nil, s.passkey.bootstrap, s.passkey.recovery},
-		"bootstrap": {s.passkey.store, nil, s.passkey.recovery},
-		"recovery":  {s.passkey.store, s.passkey.bootstrap, nil},
+		"store":     {nil, s.passkey.sessions, s.passkey.bootstrap, s.passkey.recovery},
+		"sessions":  {s.passkey.store, nil, s.passkey.bootstrap, s.passkey.recovery},
+		"bootstrap": {s.passkey.store, s.passkey.sessions, nil, s.passkey.recovery},
+		"recovery":  {s.passkey.store, s.passkey.sessions, s.passkey.bootstrap, nil},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := newHubPasskeyRuntime(s.passkey.endpoint, args.store, args.bootstrap, args.recovery, nil); err == nil {
+			if _, err := newHubPasskeyRuntime(s.passkey.endpoint, args.store, args.sessions, args.bootstrap, args.recovery, nil); err == nil {
 				t.Fatal("accepted incomplete passkey runtime state")
 			}
 		})

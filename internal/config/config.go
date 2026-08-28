@@ -517,6 +517,7 @@ type ServeConfig struct {
 	Platforms              []string            `mapstructure:"platforms" yaml:"platforms,omitempty"`
 	ApprovalMode           string              `mapstructure:"approval_mode" yaml:"approval_mode,omitempty"`
 	BasePath               string              `mapstructure:"base_path" yaml:"base_path,omitempty"`
+	AutoTitle              bool                `mapstructure:"auto_title" yaml:"auto_title"`
 	Title                  string              `mapstructure:"title" yaml:"title,omitempty"`
 	DisableLocationSharing bool                `mapstructure:"disable_location_sharing" yaml:"disable_location_sharing,omitempty"`
 	FilesDir               string              `mapstructure:"files_dir" yaml:"files_dir,omitempty"`
@@ -676,11 +677,16 @@ type SessionsConfig struct {
 
 // FileTrackingConfig configures recording of file changes made by agent tools
 type FileTrackingConfig struct {
-	Enabled         bool   `mapstructure:"enabled"`           // Opt-in: record before/after content of files agents modify
-	MaxFileBytes    int    `mapstructure:"max_file_bytes"`    // Per-file content cap; larger files recorded metadata-only (default 2 MiB)
-	MaxSessionBytes int    `mapstructure:"max_session_bytes"` // Retained-content budget per session (default 100 MiB)
-	MaxTotalBytes   int64  `mapstructure:"max_total_bytes"`   // Whole-database size cap; oldest sessions' history pruned live and on startup (default 1 GiB)
-	Path            string `mapstructure:"path"`              // Optional SQLite DB path override
+	Enabled                    bool   `mapstructure:"enabled"` // Opt-in: record before/after content of attributed files
+	MaxFileBytes               int    `mapstructure:"max_file_bytes"`
+	MaxSessionBytes            int    `mapstructure:"max_session_bytes"`
+	MaxTotalBytes              int64  `mapstructure:"max_total_bytes"`
+	MaxObservationRows         int    `mapstructure:"max_observation_rows"`
+	MaxObservationSessionRows  int    `mapstructure:"max_observation_session_rows"`
+	MaxObservationBytes        int64  `mapstructure:"max_observation_bytes"`
+	MaxObservationSessionBytes int64  `mapstructure:"max_observation_session_bytes"`
+	MaxObservationAgeDays      int    `mapstructure:"max_observation_age_days"`
+	Path                       string `mapstructure:"path"`
 }
 
 // ThemeConfig allows customization of UI colors
@@ -1613,6 +1619,13 @@ func WriteFileAtomically(path string, data []byte, defaultPerm os.FileMode) erro
 		return fmt.Errorf("stat existing file: %w", err)
 	}
 	return writeFileAtomically(writePath, data, perm)
+}
+
+// WriteFileAtomicallyNoFollow replaces path atomically without following a
+// final-path symlink and always applies perm to the replacement file. It is
+// intended for application-owned credential and authentication state.
+func WriteFileAtomicallyNoFollow(path string, data []byte, perm os.FileMode) error {
+	return writeFileAtomically(path, data, perm)
 }
 
 func resolveFinalSymlink(path string) (string, error) {

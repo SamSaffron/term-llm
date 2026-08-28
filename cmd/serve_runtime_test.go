@@ -257,8 +257,8 @@ func TestServeRuntimeStatefulRunRequiresSessionPersistence(t *testing.T) {
 	if !errors.Is(err, errServeSessionPersistence) {
 		t.Fatalf("RunWithEventsAndStart() error = %v, want %v", err, errServeSessionPersistence)
 	}
-	if startCalls != 0 {
-		t.Fatalf("start callbacks = %d, want 0", startCalls)
+	if startCalls != 1 {
+		t.Fatalf("start callbacks = %d, want 1 after runtime claim", startCalls)
 	}
 	if eventCalls != 0 {
 		t.Fatalf("event callbacks = %d, want 0", eventCalls)

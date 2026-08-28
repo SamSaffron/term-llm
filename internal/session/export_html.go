@@ -115,8 +115,9 @@ type pendingHTMLTool struct {
 // Retained post-compaction context is already represented earlier in scrollback.
 func VisibleExportMessages(messages []Message) []Message {
 	visible := make([]Message, 0, len(messages))
-	for _, msg := range messages {
-		if !msg.CompactionTail {
+	for i := range messages {
+		msg := messages[i]
+		if !msg.CompactionTail && !msg.IsGoalSteering() {
 			visible = append(visible, msg)
 		}
 	}

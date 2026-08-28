@@ -22,76 +22,80 @@ import (
 )
 
 type serveRuntime struct {
-	mu                   sync.Mutex
-	goalMu               sync.Mutex
-	interruptMu          sync.Mutex
-	responseMu           sync.Mutex // guards lastResponseID and responseIDs
-	askUserMu            sync.Mutex
-	approvalMu           sync.Mutex
-	uiStateMu            sync.Mutex
-	provider             llm.Provider
-	providerKey          string
-	engine               *llm.Engine
-	toolMgr              *tools.ToolManager
-	mcpManager           *mcp.Manager
-	toolDiscovery        config.ToolDiscoveryConfig
-	store                session.Store
-	goalStore            session.Store
-	syntheticUserCB      func(context.Context, llm.Message) error
-	baseSystemPrompt     string // agent-resolved prompt before workspace skill metadata
-	systemPrompt         string
-	history              []llm.Message
-	historyPersisted     bool // history matches the persisted active transcript and can safely append next turn
-	search               bool
-	toolsSetting         string
-	mcpSetting           string
-	agentName            string
-	sessionMeta          *session.Session
-	forceExternalSearch  bool
-	maxTurns             int
-	toolMap              map[string]string
-	debug                bool
-	debugRaw             bool
-	autoCompact          bool
-	borrowedEngine       bool
-	skipProviderCleanup  bool
-	defaultModel         string
-	yoloMode             bool
-	compacting           atomic.Bool
-	lastUsedUnixNano     atomic.Int64
-	activeInterrupt      *runtimeInterruptState
-	interjectionCalls    map[string]*runtimeInterjectionCall
-	lastResponseID       string
-	responseIDs          []string
-	cumulativeUsage      llm.Usage
-	pendingAskUsers      map[string]*servePendingAskUser
-	askUserFunc          func(context.Context, []tools.AskUserQuestion) ([]tools.AskUserAnswer, error)
-	assistantSnapshotCB  llm.AssistantSnapshotCallback
-	responseCompletedCB  llm.ResponseCompletedCallback
-	turnCompletedCB      llm.TurnCompletedCallback
-	compactionCB         llm.CompactionCallback
-	pendingApprovals     map[string]*servePendingApproval
-	approvalEventFunc    func(event string, data map[string]any) error
-	approvalCtx          context.Context
-	pauseResponseTimeout func() func()
-	lastUIRunError       string
-	platform             string
-	platformMessages     agents.PlatformMessagesConfig
-	lastInjectedPlatform string
-	sideQuestion         sideQuestionRuntime
-	sideProviderFactory  func(providerKey, model string) (llm.Provider, error)
+	mu                     sync.Mutex
+	goalMu                 sync.Mutex
+	interruptMu            sync.Mutex
+	interjectionMutationMu sync.Mutex
+	responseMu             sync.Mutex // guards lastResponseID and responseIDs
+	askUserMu              sync.Mutex
+	approvalMu             sync.Mutex
+	uiStateMu              sync.Mutex
+	provider               llm.Provider
+	providerKey            string
+	engine                 *llm.Engine
+	toolMgr                *tools.ToolManager
+	mcpManager             *mcp.Manager
+	toolDiscovery          config.ToolDiscoveryConfig
+	store                  session.Store
+	goalStore              session.Store
+	syntheticUserCB        func(context.Context, llm.Message) error
+	baseSystemPrompt       string // agent-resolved prompt before workspace skill metadata
+	systemPrompt           string
+	history                []llm.Message
+	historyPersisted       bool // history matches the persisted active transcript and can safely append next turn
+	search                 bool
+	toolsSetting           string
+	mcpSetting             string
+	agentName              string
+	sessionMeta            *session.Session
+	forceExternalSearch    bool
+	maxTurns               int
+	toolMap                map[string]string
+	debug                  bool
+	debugRaw               bool
+	autoCompact            bool
+	borrowedEngine         bool
+	skipProviderCleanup    bool
+	defaultModel           string
+	yoloMode               bool
+	compacting             atomic.Bool
+	lastUsedUnixNano       atomic.Int64
+	activeInterrupt        *runtimeInterruptState
+	interjectionCalls      map[string]*runtimeInterjectionCall
+	lastResponseID         string
+	responseIDs            []string
+	cumulativeUsage        llm.Usage
+	pendingAskUsers        map[string]*servePendingAskUser
+	askUserFunc            func(context.Context, []tools.AskUserQuestion) ([]tools.AskUserAnswer, error)
+	assistantSnapshotCB    llm.AssistantSnapshotCallback
+	responseCompletedCB    llm.ResponseCompletedCallback
+	turnCompletedCB        llm.TurnCompletedCallback
+	compactionCB           llm.CompactionCallback
+	pendingApprovals       map[string]*servePendingApproval
+	approvalEventFunc      func(event string, data map[string]any) error
+	approvalCtx            context.Context
+	pauseResponseTimeout   func() func()
+	refreshResponseTimeout func()
+	lastUIRunError         string
+	platform               string
+	platformMessages       agents.PlatformMessagesConfig
+	lastInjectedPlatform   string
+	sideQuestion           sideQuestionRuntime
+	sideProviderFactory    func(providerKey, model string) (llm.Provider, error)
 }
 
 type runtimeInterruptState struct {
-	cancel          context.CancelFunc
-	requestCancel   func()
-	done            chan struct{}
-	currentTask     string
-	toolsRun        []string
-	proseLen        int
-	activeTool      string
-	model           string
-	reasoningEffort string
+	cancel                     context.CancelFunc
+	requestCancel              func()
+	done                       chan struct{}
+	persistPendingInterjection func(context.Context, llm.QueuedInterjection) error
+	removePendingInterjection  func(context.Context, string)
+	currentTask                string
+	toolsRun                   []string
+	proseLen                   int
+	activeTool                 string
+	model                      string
+	reasoningEffort            string
 }
 
 type runtimeInterjectionCall struct {
@@ -112,6 +116,15 @@ func (rt *serveRuntime) pauseForInteractiveWait() func() {
 		return func() {}
 	}
 	return pause()
+}
+
+func (rt *serveRuntime) refreshResponseDeadline() {
+	rt.approvalMu.Lock()
+	refresh := rt.refreshResponseTimeout
+	rt.approvalMu.Unlock()
+	if refresh != nil {
+		refresh()
+	}
 }
 
 func (rt *serveRuntime) emitGuardianReview(event tools.GuardianEvent) {
@@ -413,6 +426,165 @@ func normalizeInterruptDelivery(delivery string) (interruptDelivery, error) {
 	}
 }
 
+func (rt *serveRuntime) configurePendingInterjectionPersistence(state *runtimeInterruptState, sessionID string) {
+	pendingStore, ok := session.AsPendingInterjectionStore(rt.store)
+	if state == nil || !ok || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	state.persistPendingInterjection = func(persistCtx context.Context, entry llm.QueuedInterjection) error {
+		if strings.TrimSpace(entry.ID) == "" {
+			return nil
+		}
+		displayText := strings.TrimSpace(entry.DisplayText)
+		if displayText == "" {
+			displayText = strings.TrimSpace(llm.MessageText(entry.Message))
+		}
+		attachmentSummary := strings.TrimSpace(llm.MessageAttachmentSummary(entry.Message))
+		if persistCtx == nil {
+			persistCtx = context.Background()
+		} else {
+			persistCtx = context.WithoutCancel(persistCtx)
+		}
+		dbCtx, cancel := inlinePersistContext(persistCtx, 4*time.Second)
+		defer cancel()
+		return pendingStore.SavePendingInterjection(dbCtx, session.PendingInterjection{
+			SessionID:         sessionID,
+			ID:                entry.ID,
+			Message:           entry.Message,
+			DisplayText:       displayText,
+			AttachmentSummary: attachmentSummary,
+			CreatedAt:         time.Now(),
+		})
+	}
+	state.removePendingInterjection = func(removeCtx context.Context, id string) {
+		dbCtx, cancel := inlinePersistContext(removeCtx, 10*time.Second)
+		defer cancel()
+		if err := pendingStore.DeletePendingInterjection(dbCtx, sessionID, id); err != nil {
+			log.Printf("[serve] delete pending interjection %s/%s failed: %v", sessionID, id, err)
+		}
+	}
+}
+
+func (rt *serveRuntime) claimInterjections(ids []string) []llm.InterjectionClaimStatus {
+	if rt == nil || rt.engine == nil {
+		return nil
+	}
+	rt.interjectionMutationMu.Lock()
+	defer rt.interjectionMutationMu.Unlock()
+	return rt.engine.ClaimInterjections(ids)
+}
+
+func (rt *serveRuntime) cancelPendingInterjection(ctx context.Context, sessionID, id string) (bool, error) {
+	if rt == nil || rt.engine == nil {
+		return false, nil
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false, nil
+	}
+	rt.interjectionMutationMu.Lock()
+	defer rt.interjectionMutationMu.Unlock()
+	queued := false
+	for _, entry := range rt.engine.ListPendingInterjections() {
+		if entry.ID == id {
+			queued = true
+			break
+		}
+	}
+	// A live engine is authoritative: a durable row can briefly remain after the
+	// engine has committed or transferred ownership, but that does not make the
+	// interjection cancellable again.
+	if !queued {
+		if _, owned := rt.engine.InterjectionIdentityStatus(id); owned {
+			return false, nil
+		}
+		rt.interruptMu.Lock()
+		active := rt.activeInterrupt != nil
+		rt.interruptMu.Unlock()
+		if active {
+			return false, nil
+		}
+		pendingStore, ok := session.AsPendingInterjectionStore(rt.store)
+		if !ok {
+			return false, nil
+		}
+		entries, err := pendingStore.ListPendingInterjections(ctx, sessionID)
+		if err != nil {
+			return false, err
+		}
+		for _, entry := range entries {
+			if entry.ID == id {
+				return true, pendingStore.DeletePendingInterjection(ctx, sessionID, id)
+			}
+		}
+		return false, nil
+	}
+	if pendingStore, ok := session.AsPendingInterjectionStore(rt.store); ok {
+		if err := pendingStore.DeletePendingInterjection(ctx, sessionID, id); err != nil {
+			return false, err
+		}
+	}
+	return rt.engine.CancelInterjection(id), nil
+}
+
+func (rt *serveRuntime) discardPendingInterjections(ctx context.Context, sessionID string) {
+	if rt == nil || rt.engine == nil {
+		return
+	}
+	rt.interjectionMutationMu.Lock()
+	defer rt.interjectionMutationMu.Unlock()
+	entries := rt.engine.ListPendingInterjections()
+	rt.engine.DiscardPendingInterjections()
+	pendingStore, ok := session.AsPendingInterjectionStore(rt.store)
+	if !ok {
+		return
+	}
+	for _, entry := range entries {
+		if err := pendingStore.DeletePendingInterjection(ctx, sessionID, entry.ID); err != nil {
+			log.Printf("[serve] discard pending interjection %s/%s failed: %v", sessionID, entry.ID, err)
+		}
+	}
+}
+
+func (rt *serveRuntime) releaseClaimedPendingInterjections(ctx context.Context, sessionID string, ids []string) {
+	if rt == nil || rt.engine == nil || len(ids) == 0 {
+		return
+	}
+	rt.interjectionMutationMu.Lock()
+	defer rt.interjectionMutationMu.Unlock()
+	rt.engine.ReleaseClaimedInterjections(ids)
+	pendingStore, ok := session.AsPendingInterjectionStore(rt.store)
+	if !ok {
+		return
+	}
+	entries, err := pendingStore.ListPendingInterjections(ctx, sessionID)
+	if err != nil {
+		log.Printf("[serve] restore claimed interjections for %s failed: %v", sessionID, err)
+		return
+	}
+	byID := make(map[string]session.PendingInterjection, len(entries))
+	for _, entry := range entries {
+		byID[entry.ID] = entry
+	}
+	for _, id := range ids {
+		entry, exists := byID[id]
+		if !exists {
+			continue // The follow-up durably committed the intent.
+		}
+		_, status := rt.engine.QueueInterjectionWithStatus(llm.QueuedInterjection{
+			ID: entry.ID, Message: entry.Message, DisplayText: entry.DisplayText,
+		})
+		if status == llm.InterjectionQueueQueued || status == llm.InterjectionQueueAlreadyQueued {
+			continue
+		}
+		// No active run can consume the restored claim. Do not leave a permanent
+		// queued badge for an intent that no engine owns.
+		if err := pendingStore.DeletePendingInterjection(ctx, sessionID, id); err != nil {
+			log.Printf("[serve] delete abandoned claimed interjection %s/%s failed: %v", sessionID, id, err)
+		}
+	}
+}
+
 func (rt *serveRuntime) Interrupt(ctx context.Context, msg string, fastProvider llm.Provider) (llm.InterruptAction, error) {
 	action, _, err := rt.InterruptMessage(ctx, llm.UserText(msg), msg, "", fastProvider, interruptDeliveryAuto)
 	return action, err
@@ -523,6 +695,8 @@ func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, d
 	}
 	cancel := state.cancel
 	requestCancel := state.requestCancel
+	persistPendingInterjection := state.persistPendingInterjection
+	removePendingInterjection := state.removePendingInterjection
 	activity := llm.InterruptActivity{
 		CurrentTask: state.currentTask,
 		ToolsRun:    append([]string(nil), state.toolsRun...),
@@ -555,22 +729,44 @@ func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, d
 	var resultErr error
 	switch action {
 	case llm.InterruptCancel:
+		rt.interjectionMutationMu.Lock()
+		var discarded []llm.QueuedInterjection
 		if rt.engine != nil {
+			discarded = rt.engine.ListPendingInterjections()
 			rt.engine.DiscardPendingInterjections()
 		}
+		if removePendingInterjection != nil {
+			for _, entry := range discarded {
+				removePendingInterjection(context.WithoutCancel(ctx), entry.ID)
+			}
+		}
+		rt.interjectionMutationMu.Unlock()
 		if requestCancel != nil {
 			requestCancel()
 		} else if cancel != nil {
 			cancel()
 		}
 	case llm.InterruptInterject:
-		_, queueStatus := rt.engine.QueueInterjectionWithStatus(llm.QueuedInterjection{ID: interjectionID, Message: msg, DisplayText: displayText})
+		entry := llm.QueuedInterjection{ID: interjectionID, Message: msg, DisplayText: displayText}
+		rt.interjectionMutationMu.Lock()
+		if persistPendingInterjection != nil {
+			if err := persistPendingInterjection(ctx, entry); err != nil {
+				resultErr = fmt.Errorf("persist pending interjection: %w", err)
+				rt.interjectionMutationMu.Unlock()
+				break
+			}
+		}
+		_, queueStatus := rt.engine.QueueInterjectionWithStatus(entry)
 		switch queueStatus {
 		case llm.InterjectionQueueFollowUpOwned, llm.InterjectionQueueCommitted:
 			resultErr = fmt.Errorf("interjection %q is already %s", interjectionID, queueStatus)
 		case llm.InterjectionQueueRunFinished:
 			resultErr = fmt.Errorf("active run finished before interjection %q could be consumed", interjectionID)
 		}
+		if resultErr != nil && removePendingInterjection != nil {
+			removePendingInterjection(context.WithoutCancel(ctx), interjectionID)
+		}
+		rt.interjectionMutationMu.Unlock()
 	}
 	if call != nil {
 		rt.interruptMu.Lock()
@@ -929,6 +1125,13 @@ func (rt *serveRuntime) appendMessagesDetailed(ctx context.Context, sessionID st
 		}
 		result.LastRowID = sessionMsg.ID
 		if msg.Role == llm.RoleUser {
+			if id := strings.TrimSpace(msg.ClientMessageID); id != "" {
+				if pendingStore, ok := session.AsPendingInterjectionStore(rt.store); ok {
+					if err := pendingStore.DeletePendingInterjection(dbCtx, sessionID, id); err != nil {
+						log.Printf("[serve] session pending interjection cleanup failed for %s/%s: %v", sessionID, id, err)
+					}
+				}
+			}
 			if err := rt.store.IncrementUserTurns(dbCtx, sessionID); err != nil {
 				log.Printf("[serve] session IncrementUserTurns failed for %s: %v", sessionID, err)
 			} else if rt.sessionMeta != nil {
@@ -1114,9 +1317,8 @@ func serveRuntimeSetupFromContext(ctx context.Context) func(*llm.Request) error 
 }
 
 var (
-	errServeSessionBusy         = errors.New("session is busy processing another request")
-	errServeSessionLimitReached = errors.New("session limit reached: all sessions are busy")
-	errServeSessionPersistence  = errors.New("failed to persist or hydrate session")
+	errServeSessionBusy        = errors.New("session is busy processing another request")
+	errServeSessionPersistence = errors.New("failed to persist or hydrate session")
 )
 
 func (rt *serveRuntime) Run(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request) (serveRunResult, error) {
@@ -1171,6 +1373,12 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		return serveRunResult{}, errServeSessionBusy
 	}
 	defer rt.mu.Unlock()
+	// Publish ownership immediately after this session's runtime is claimed.
+	// Hydration and persistence may block; they must not create a false idle
+	// window in which same-session boundary work can enter.
+	if onStart != nil {
+		onStart()
+	}
 	if setup := serveRuntimeSetupFromContext(ctx); setup != nil {
 		if err := setup(&req); err != nil {
 			return serveRunResult{}, err
@@ -1263,10 +1471,6 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		rt.refreshSideQuestionSnapshot(initialBoundary)
 	}
 
-	if onStart != nil {
-		onStart()
-	}
-
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
 	askUserFunc := rt.askUserFunc
@@ -1309,9 +1513,13 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		model:           activeModel,
 		reasoningEffort: activeEffort,
 	}
+	rt.configurePendingInterjectionPersistence(intState, req.SessionID)
 	rt.setActiveInterrupt(intState)
 	defer func() {
 		close(intState.done)
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		rt.discardPendingInterjections(cleanupCtx, req.SessionID)
+		cleanupCancel()
 		rt.clearActiveInterrupt(intState)
 		if rt.engine != nil {
 			rt.engine.ClearPendingRequestModelSwitch()
@@ -1684,6 +1892,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	defer rt.engine.SetAssistantSnapshotCallback(nil)
 
 	rt.engine.SetResponseCompletedCallback(func(cbCtx context.Context, callbackTurnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
+		rt.refreshResponseDeadline()
 		assistantMsg = tagResponseRunMessage(cbCtx, assistantMsg, callbackTurnIndex)
 		if run := responseRunFromContext(cbCtx); run != nil && run.boundary != nil {
 			run.boundary.UpdateAssistant(run.id, assistantMsg)
@@ -1702,6 +1911,11 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	// plain-append the rest (tool results or interjections). Reset pending at
 	// end of turn.
 	rt.engine.SetTurnCompletedCallback(func(cbCtx context.Context, callbackTurnIndex int, msgs []llm.Message, metrics llm.TurnMetrics) error {
+		// Text-only and inline-tool provider responses bypass ResponseCompletedCallback
+		// and deliver their assistant message here instead.
+		if len(msgs) > 0 && msgs[0].Role == llm.RoleAssistant {
+			rt.refreshResponseDeadline()
+		}
 		for i := range msgs {
 			msgs[i] = tagResponseRunMessage(cbCtx, msgs[i], callbackTurnIndex)
 		}

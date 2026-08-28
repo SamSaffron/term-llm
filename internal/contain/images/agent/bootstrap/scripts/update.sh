@@ -40,6 +40,8 @@ BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 log "Building version=$VERSION commit=$COMMIT date=$BUILD_DATE"
 
+make frontend
+
 go build \
     -ldflags "-s -w \
         -X github.com/samsaffron/term-llm/cmd.Version=${VERSION} \

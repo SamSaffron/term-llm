@@ -1,0 +1,28 @@
+/* Manifest for the web UI stylesheet.
+   Imports are inlined at build time and their order is the cascade order, so
+   entries must stay sorted from most general to most specific. The Preact
+   integration layer overrides earlier legacy rules and must remain last. */
+@import './base/tokens.css';
+@import './base/reset.css';
+@import './base/shell.css';
+@import './features/diff.css';
+@import './features/plan.css';
+@import './layout/sidebar.css';
+@import './features/sessions.css';
+@import './layout/header.css';
+@import './features/transcript.css';
+@import './features/composer.css';
+@import './features/modals.css';
+@import './features/notifications.css';
+@import './features/approvals.css';
+@import './features/widgets.css';
+@import './features/attachments.css';
+@import './features/drawer.css';
+@import './features/lightbox.css';
+@import './features/side-questions.css';
+@import './features/transcript-virtualization.css';
+@import './features/toast.css';
+@import './features/branching.css';
+@import './features/projects.css';
+@import './features/worktrees.css';
+@import './integration/preact-overrides.css';

@@ -119,13 +119,14 @@ func (r *Repo) List(ctx context.Context, scope Scope) ([]filetrack.CumulativeCha
 		for _, raw := range untrackedPaths {
 			rel := filepath.ToSlash(string(raw))
 			path := filepath.Join(r.root, filepath.FromSlash(rel))
-			change := filetrack.CumulativeChange{Path: path, Kind: filetrack.KindCreate}
+			change := filetrack.CumulativeChange{Path: path, Kind: filetrack.KindCreate, ContentAvailable: true}
 			info, statErr := os.Lstat(path)
 			if statErr != nil {
 				return nil, fmt.Errorf("stat untracked file: %w", statErr)
 			}
 			if info.Mode().IsRegular() && (info.Size() > int64(maxFileBytes) || info.Size() > remainingBytes) {
 				change.Truncated = true
+				change.ContentAvailable = false
 				changes = append(changes, change)
 				continue
 			}
@@ -136,6 +137,7 @@ func (r *Repo) List(ctx context.Context, scope Scope) ([]filetrack.CumulativeCha
 			remainingBytes -= int64(len(content))
 			if len(content) > maxFileBytes || bytes.IndexByte(content, 0) >= 0 {
 				change.Truncated = true
+				change.ContentAvailable = false
 			} else {
 				change.Adds, _ = filetrack.CountAddsDels(nil, content)
 			}
@@ -188,9 +190,10 @@ func (r *Repo) parseNumstat(out []byte, statuses map[string]string) ([]filetrack
 		if kind == "" {
 			kind = filetrack.KindModify
 		}
-		change := filetrack.CumulativeChange{Path: filepath.Join(r.root, filepath.FromSlash(rel)), Kind: kind}
+		change := filetrack.CumulativeChange{Path: filepath.Join(r.root, filepath.FromSlash(rel)), Kind: kind, ContentAvailable: true}
 		if string(parts[0]) == "-" || string(parts[1]) == "-" {
 			change.Truncated = true
+			change.ContentAvailable = false
 		} else {
 			if _, err := fmt.Sscan(string(parts[0]), &change.Adds); err != nil {
 				return nil, fmt.Errorf("parse git additions: %w", err)
@@ -221,7 +224,7 @@ func (r *Repo) listByContent(ctx context.Context, scope Scope) ([]filetrack.Cumu
 		if content == nil {
 			continue
 		}
-		change := filetrack.CumulativeChange{Path: content.Path, Kind: content.Kind, Truncated: content.Truncated}
+		change := filetrack.CumulativeChange{Path: content.Path, Kind: content.Kind, Truncated: content.Truncated, ContentAvailable: !content.Truncated}
 		if !content.Truncated {
 			change.Adds, change.Dels = filetrack.CountAddsDels(content.Before, content.After)
 		}

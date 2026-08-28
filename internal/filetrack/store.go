@@ -42,13 +42,51 @@ const (
 	KindDelete = "delete"
 )
 
-// ChangeRecord describes one before→after file transition to record.
+// Closed attribution and evidence values persisted by the tracker.
+const (
+	ProvenanceDirect            = "direct"
+	ProvenanceDeclaredTransform = "declared_transform"
+	ProvenanceDeclaredGenerate  = "declared_generate"
+	ProvenanceLegacyUnverified  = "legacy_unverified"
+
+	ClaimTransform   = "transform"
+	ClaimGenerate    = "generate"
+	ClaimMaterialize = "materialize"
+
+	CoverageComplete    = "complete"
+	CoverageTruncated   = "truncated"
+	CoverageUnavailable = "unavailable"
+
+	BaselineNormal           = "normal"
+	BaselinePreexistingDirty = "preexisting_dirty"
+	BaselineUnknown          = "unknown"
+
+	ContentRetained           = "retained"
+	ContentRetainedImage      = "retained_image"
+	ContentBinaryUnrenderable = "binary_unrenderable"
+	ContentOversized          = "oversized"
+	ContentSessionBudget      = "session_budget"
+	ContentStoreBudget        = "store_budget"
+	ContentBeforeUnknown      = "before_unknown"
+	ContentAfterUnknown       = "after_unknown"
+	ContentBothUnknown        = "both_unknown"
+)
+
+// ChangeRecord describes one before→after attributed file transition to record.
 type ChangeRecord struct {
 	SessionID  string
 	RunID      string
 	ToolName   string
 	ToolCallID string
 	Path       string // absolute path
+
+	// Provenance is mandatory for new callers of RecordAttributedChange.
+	Provenance    string
+	ClaimKind     string
+	ClaimPattern  string
+	ClaimLiteral  bool
+	ClaimCoverage string
+	BaselineState string
 
 	Before []byte // content before the change (ignored when BeforeMissing/BeforeUnknown)
 	After  []byte // content after the change (ignored when AfterMissing/AfterUnknown)
@@ -66,41 +104,62 @@ type ChangeRecord struct {
 
 // Change is one recorded change row.
 type Change struct {
-	Seq        int64
-	RunID      string
-	Path       string
-	Kind       string
-	ToolName   string
-	ToolCallID string
-	BeforeHash string // empty when absent/unknown/not retained
-	AfterHash  string
-	BeforeSize int64
-	AfterSize  int64
-	Adds       int
-	Dels       int
-	Truncated  bool
-	IsBinary   bool
+	Seq              int64
+	EventSeq         int64
+	RunID            string
+	Path             string
+	Kind             string
+	ToolName         string
+	ToolCallID       string
+	BeforeHash       string // empty when absent/unknown/not retained
+	AfterHash        string
+	BeforeSize       int64
+	AfterSize        int64
+	Adds             int
+	Dels             int
+	Truncated        bool
+	IsBinary         bool
+	Provenance       string
+	Provenances      []string
+	ClaimKind        string
+	ClaimPattern     string
+	ClaimLiteral     bool
+	ClaimCoverage    string
+	BaselineState    string
+	ContentStatus    string
+	ContentAvailable bool
 }
 
-// CumulativeChange summarizes a file's net change relative to the session baseline.
+// CumulativeChange summarizes a file's net attributed change relative to the selected baseline.
 type CumulativeChange struct {
-	Path        string `json:"path"`
-	Kind        string `json:"kind"`
-	Adds        int    `json:"adds"`
-	Dels        int    `json:"dels"`
-	Truncated   bool   `json:"truncated"`
-	Seq         int64  `json:"seq"`                    // latest change sequence for this path in the session
-	SnapshotSeq int64  `json:"snapshot_seq,omitempty"` // shared identity for a multi-run window
+	Path             string   `json:"path"`
+	Kind             string   `json:"kind"`
+	Adds             int      `json:"adds"`
+	Dels             int      `json:"dels"`
+	Truncated        bool     `json:"truncated"`
+	Seq              int64    `json:"seq"`                    // latest change sequence for this path in the session
+	SnapshotSeq      int64    `json:"snapshot_seq,omitempty"` // compatibility identity for a multi-run window
+	Provenance       string   `json:"provenance,omitempty"`
+	Provenances      []string `json:"provenances,omitempty"`
+	BaselineState    string   `json:"baseline_state,omitempty"`
+	ContentStatus    string   `json:"content_status,omitempty"`
+	ContentAvailable bool     `json:"content_available"`
+	ClaimCoverage    string   `json:"claim_coverage,omitempty"`
 }
 
 // FileDiffContent holds the baseline and current contents for one file.
 type FileDiffContent struct {
-	Path      string
-	Kind      string
-	Before    []byte
-	After     []byte
-	Truncated bool
-	IsImage   bool
+	Path             string
+	Kind             string
+	Before           []byte
+	After            []byte
+	Truncated        bool
+	IsImage          bool
+	ContentStatus    string
+	ContentAvailable bool
+	Provenance       string
+	BaselineState    string
+	ClaimCoverage    string
 }
 
 // ErrInvalidDiffSide means the requested side does not exist for the resolved
@@ -118,22 +177,45 @@ type FileDiffSide struct {
 
 // Options configures a Store.
 type Options struct {
-	MaxFileBytes    int   // 0 = DefaultMaxFileBytes
-	MaxSessionBytes int   // 0 = DefaultMaxSessionBytes
-	MaxTotalBytes   int64 // 0 = DefaultMaxTotalBytes; whole-database size cap enforced live and by GC
+	MaxFileBytes               int   // 0 = DefaultMaxFileBytes
+	MaxSessionBytes            int   // 0 = DefaultMaxSessionBytes
+	MaxTotalBytes              int64 // 0 = DefaultMaxTotalBytes; whole-database size cap enforced live and by GC
+	MaxObservationRows         int   // 0 = 10,000; independent sidecar row cap
+	MaxObservationSessionRows  int   // 0 = 1,000; independent per-session sidecar row cap
+	MaxObservationBytes        int64 // 0 = 16 MiB metadata cap
+	MaxObservationSessionBytes int64 // 0 = 2 MiB per-session metadata cap
+	MaxObservationAgeDays      int   // 0 = 30
+}
+
+type recordSessionLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 // Store persists file-change history in a dedicated SQLite database.
 type Store struct {
-	db              *sql.DB
-	maxFileBytes    int
-	maxSessionBytes int
-	maxTotalBytes   int64
+	db                         *sql.DB
+	observationDB              *sql.DB
+	observationPath            string
+	maxFileBytes               int
+	maxSessionBytes            int
+	maxTotalBytes              int64
+	maxObservationRows         int
+	maxObservationSessionRows  int
+	maxObservationBytes        int64
+	maxObservationSessionBytes int64
+	maxObservationAgeDays      int
 
-	// recordMu serializes change inserts so per-session sequence allocation and
-	// retained-byte budget checks remain deterministic under parallel tool calls.
-	// It also protects the amortized total-budget counters.
-	recordMu                  sync.Mutex
+	// RecordChange is serialized only within a session. The map lock is held for
+	// lock bookkeeping only; file analysis and SQLite work never run under it.
+	recordLocksMu sync.Mutex
+	recordLocks   map[string]*recordSessionLock
+
+	// Total-budget accounting and rare pruning are independent of per-session
+	// recording, so unrelated sessions never wait for another session's normal
+	// file-change processing.
+	totalMu                   sync.Mutex
+	pruneMu                   sync.Mutex
 	uncheckedTotalBytes       int64
 	uncheckedTotalRecordCount int
 
@@ -141,7 +223,7 @@ type Store struct {
 	sessionBytes map[string]int64 // retained-bytes budget cache per session
 }
 
-const schemaVersion = 3
+const schemaVersion = 4
 
 const (
 	// Check after at most 8 MiB of retained input, or 64 metadata-only rows.
@@ -181,12 +263,39 @@ CREATE TABLE IF NOT EXISTS file_changes (
 	dels         INTEGER NOT NULL DEFAULT 0,
 	truncated    INTEGER NOT NULL DEFAULT 0,
 	is_binary    INTEGER NOT NULL DEFAULT 0,
+	provenance   TEXT NOT NULL DEFAULT 'legacy_unverified' CHECK (provenance IN ('direct','declared_transform','declared_generate','legacy_unverified')),
+	claim_kind   TEXT,
+	claim_pattern TEXT,
+	claim_literal INTEGER NOT NULL DEFAULT 0,
+	claim_coverage TEXT NOT NULL DEFAULT 'complete' CHECK (claim_coverage IN ('complete','truncated','unavailable')),
+	baseline_state TEXT NOT NULL DEFAULT 'unknown' CHECK (baseline_state IN ('normal','preexisting_dirty','unknown')),
+	content_status TEXT NOT NULL DEFAULT 'retained',
+	event_seq INTEGER,
 	created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	CHECK ((provenance = 'declared_transform' AND claim_kind = 'transform') OR
+	       (provenance = 'declared_generate' AND claim_kind = 'generate') OR
+	       (provenance IN ('direct','legacy_unverified') AND claim_kind IS NULL)),
 	UNIQUE(session_id, seq)
 );
 
 CREATE INDEX IF NOT EXISTS idx_file_changes_session_path ON file_changes(session_id, path, seq);
 CREATE INDEX IF NOT EXISTS idx_file_changes_session_run ON file_changes(session_id, run_id, seq);
+
+CREATE TABLE IF NOT EXISTS filetrack_event_counters (
+	session_id TEXT PRIMARY KEY,
+	next_event_seq INTEGER NOT NULL
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS filetrack_runs (
+	session_id TEXT NOT NULL,
+	run_id TEXT NOT NULL,
+	ordinal INTEGER NOT NULL,
+	started_at TIMESTAMP NOT NULL,
+	completed_at TIMESTAMP,
+	PRIMARY KEY(session_id, run_id),
+	UNIQUE(session_id, ordinal)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_filetrack_runs_recent ON filetrack_runs(session_id, ordinal DESC);
 `
 
 func preparePrivateDBFile(path string) error {
@@ -263,13 +372,45 @@ func Open(path string, opts Options) (*Store, error) {
 	if maxTotal <= 0 {
 		maxTotal = DefaultMaxTotalBytes
 	}
+	maxObservationRows := opts.MaxObservationRows
+	if maxObservationRows <= 0 {
+		maxObservationRows = 10000
+	}
+	maxObservationSessionRows := opts.MaxObservationSessionRows
+	if maxObservationSessionRows <= 0 {
+		maxObservationSessionRows = 1000
+	}
+	maxObservationBytes := opts.MaxObservationBytes
+	if maxObservationBytes <= 0 {
+		maxObservationBytes = 16 * 1024 * 1024
+	}
+	maxObservationSessionBytes := opts.MaxObservationSessionBytes
+	if maxObservationSessionBytes <= 0 {
+		maxObservationSessionBytes = 2 * 1024 * 1024
+	}
+	maxObservationAgeDays := opts.MaxObservationAgeDays
+	if maxObservationAgeDays <= 0 {
+		maxObservationAgeDays = 30
+	}
+	observationDB, observationPath, err := openObservationDB(path)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	return &Store{
-		db:              db,
-		maxFileBytes:    maxFile,
-		maxSessionBytes: maxSession,
-		maxTotalBytes:   maxTotal,
-		sessionBytes:    make(map[string]int64),
+		db:                         db,
+		observationDB:              observationDB,
+		observationPath:            observationPath,
+		maxFileBytes:               maxFile,
+		maxSessionBytes:            maxSession,
+		maxTotalBytes:              maxTotal,
+		maxObservationRows:         maxObservationRows,
+		maxObservationSessionRows:  maxObservationSessionRows,
+		maxObservationBytes:        maxObservationBytes,
+		maxObservationSessionBytes: maxObservationSessionBytes,
+		maxObservationAgeDays:      maxObservationAgeDays,
+		sessionBytes:               make(map[string]int64),
 	}, nil
 }
 
@@ -309,6 +450,52 @@ var filetrackMigrations = []filetrackMigration{
 			return normalizeFiletrackMarker(tx, 2)
 		},
 	},
+	{
+		version:     4,
+		description: "separate attributed provenance and add run/event indexes",
+		up: func(tx sqliteutil.Executor) error {
+			return canonicalizeAttributedFileChangesTable(tx)
+		},
+	},
+}
+
+func canonicalizeAttributedFileChangesTable(tx sqliteutil.Executor) error {
+	statements := []string{
+		`DROP INDEX IF EXISTS idx_file_changes_session_path`,
+		`DROP INDEX IF EXISTS idx_file_changes_session_run`,
+		`ALTER TABLE file_changes RENAME TO file_changes_old`,
+		`CREATE TABLE file_changes (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, run_id TEXT, seq INTEGER NOT NULL,
+			path TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('create','modify','delete')), tool_name TEXT,
+			tool_call_id TEXT, before_hash TEXT, after_hash TEXT, before_size INTEGER NOT NULL DEFAULT 0,
+			after_size INTEGER NOT NULL DEFAULT 0, adds INTEGER NOT NULL DEFAULT 0, dels INTEGER NOT NULL DEFAULT 0,
+			truncated INTEGER NOT NULL DEFAULT 0, is_binary INTEGER NOT NULL DEFAULT 0,
+			provenance TEXT NOT NULL DEFAULT 'legacy_unverified' CHECK (provenance IN ('direct','declared_transform','declared_generate','legacy_unverified')),
+			claim_kind TEXT, claim_pattern TEXT, claim_literal INTEGER NOT NULL DEFAULT 0,
+			claim_coverage TEXT NOT NULL DEFAULT 'complete' CHECK (claim_coverage IN ('complete','truncated','unavailable')),
+			baseline_state TEXT NOT NULL DEFAULT 'unknown' CHECK (baseline_state IN ('normal','preexisting_dirty','unknown')),
+			content_status TEXT NOT NULL DEFAULT 'retained', event_seq INTEGER,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			CHECK ((provenance = 'declared_transform' AND claim_kind = 'transform') OR
+			       (provenance = 'declared_generate' AND claim_kind = 'generate') OR
+			       (provenance IN ('direct','legacy_unverified') AND claim_kind IS NULL)),
+			UNIQUE(session_id, seq))`,
+		`INSERT INTO file_changes(id,session_id,run_id,seq,path,kind,tool_name,tool_call_id,before_hash,after_hash,before_size,after_size,adds,dels,truncated,is_binary,provenance,created_at)
+		 SELECT id,session_id,run_id,seq,path,kind,tool_name,tool_call_id,before_hash,after_hash,before_size,after_size,adds,dels,truncated,is_binary,
+		 CASE WHEN tool_name IN ('write_file','edit_file','unified_diff') THEN 'direct' ELSE 'legacy_unverified' END,created_at FROM file_changes_old`,
+		`DROP TABLE file_changes_old`,
+		`CREATE INDEX idx_file_changes_session_path ON file_changes(session_id, path, seq)`,
+		`CREATE INDEX idx_file_changes_session_run ON file_changes(session_id, run_id, seq)`,
+		`CREATE TABLE IF NOT EXISTS filetrack_event_counters (session_id TEXT PRIMARY KEY, next_event_seq INTEGER NOT NULL) WITHOUT ROWID`,
+		`CREATE TABLE IF NOT EXISTS filetrack_runs (session_id TEXT NOT NULL, run_id TEXT NOT NULL, ordinal INTEGER NOT NULL, started_at TIMESTAMP NOT NULL, completed_at TIMESTAMP, PRIMARY KEY(session_id, run_id), UNIQUE(session_id, ordinal)) WITHOUT ROWID`,
+		`CREATE INDEX IF NOT EXISTS idx_filetrack_runs_recent ON filetrack_runs(session_id, ordinal DESC)`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return fmt.Errorf("canonicalize attributed file history with %q: %w", statement, err)
+		}
+	}
+	return nil
 }
 
 func canonicalizeFileChangesTable(tx sqliteutil.Executor) error {
@@ -540,9 +727,16 @@ func runFiletrackMigration(db *sql.DB, migration filetrackMigration) error {
 	})
 }
 
-// Close closes the database.
+// Close closes both attributed and observation databases.
 func (s *Store) Close() error {
-	return s.db.Close()
+	var first error
+	if s.observationDB != nil {
+		first = s.observationDB.Close()
+	}
+	if err := s.db.Close(); first == nil {
+		first = err
+	}
+	return first
 }
 
 // MaxFileBytes returns the per-file content cap.
@@ -563,6 +757,31 @@ func normalizePath(path string) string {
 	return filepath.Clean(path)
 }
 
+func (s *Store) lockRecordSession(sessionID string) func() {
+	s.recordLocksMu.Lock()
+	if s.recordLocks == nil {
+		s.recordLocks = make(map[string]*recordSessionLock)
+	}
+	lock := s.recordLocks[sessionID]
+	if lock == nil {
+		lock = &recordSessionLock{}
+		s.recordLocks[sessionID] = lock
+	}
+	lock.refs++
+	s.recordLocksMu.Unlock()
+
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+		s.recordLocksMu.Lock()
+		lock.refs--
+		if lock.refs == 0 {
+			delete(s.recordLocks, sessionID)
+		}
+		s.recordLocksMu.Unlock()
+	}
+}
+
 func (s *Store) totalBudgetCheckDue(retainedBytes int64) bool {
 	byteInterval := s.maxTotalBytes / 16
 	if byteInterval < 1 {
@@ -575,13 +794,69 @@ func (s *Store) totalBudgetCheckDue(retainedBytes int64) bool {
 		s.uncheckedTotalRecordCount+1 >= maxUncheckedTotalRecords
 }
 
-// RecordChange records one file transition and returns metadata for event
-// emission. Returns (nil, nil) for no-ops (identical content, missing→missing,
-// or empty session ID).
+func (s *Store) resolveAttributedBaseline(ctx context.Context, rec ChangeRecord) string {
+	var priorAfterHash, priorKind string
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(after_hash,''), kind FROM file_changes
+		WHERE session_id=? AND path=? AND provenance IN ('direct','declared_transform','declared_generate')
+		ORDER BY seq DESC LIMIT 1`, rec.SessionID, rec.Path).Scan(&priorAfterHash, &priorKind)
+	if err == sql.ErrNoRows {
+		return rec.BaselineState
+	}
+	if err != nil {
+		return BaselineUnknown
+	}
+	if rec.BeforeMissing {
+		if priorAfterHash == "" {
+			return BaselineNormal
+		}
+		return BaselinePreexistingDirty
+	}
+	if rec.BeforeUnknown {
+		return BaselineUnknown
+	}
+	if priorAfterHash == "" {
+		if priorKind == KindDelete {
+			return BaselinePreexistingDirty
+		}
+		return BaselineUnknown
+	}
+	sum := sha256.Sum256(rec.Before)
+	if priorAfterHash == hex.EncodeToString(sum[:]) {
+		return BaselineNormal
+	}
+	return BaselinePreexistingDirty
+}
+
+// RecordChange is retained for source compatibility with older direct callers.
+// New code must use RecordAttributedChange and provide explicit provenance. The
+// compatibility path never upgrades shell detections: shell rows remain legacy
+// unverified and are excluded from attributed views.
 func (s *Store) RecordChange(ctx context.Context, rec ChangeRecord) (*Change, error) {
+	if rec.Provenance == "" {
+		rec.Provenance = ProvenanceLegacyUnverified
+	}
+	return s.recordChange(ctx, rec, false)
+}
+
+// RecordAttributedChange records a classified, witnessed/claim-verified file
+// transition. Missing or incompatible attribution metadata is rejected.
+func (s *Store) RecordAttributedChange(ctx context.Context, rec ChangeRecord) (*Change, error) {
+	return s.recordChange(ctx, rec, true)
+}
+
+func (s *Store) recordChange(ctx context.Context, rec ChangeRecord, requireAttributed bool) (*Change, error) {
 	rec.Path = normalizePath(rec.Path)
 	if rec.SessionID == "" || rec.Path == "" {
 		return nil, nil
+	}
+	if rec.ClaimCoverage == "" {
+		rec.ClaimCoverage = CoverageComplete
+	}
+	if rec.BaselineState == "" {
+		rec.BaselineState = BaselineUnknown
+	}
+	if err := validateChangeRecord(rec, requireAttributed); err != nil {
+		return nil, err
 	}
 
 	var kind string
@@ -599,11 +874,13 @@ func (s *Store) RecordChange(ctx context.Context, rec ChangeRecord) (*Change, er
 		}
 	}
 
-	// Serialize RecordChange calls. This avoids races where concurrent tool calls
-	// for the same session both choose the same next seq, and keeps the
-	// max-session-byte budget from being oversubscribed by parallel inserts.
-	s.recordMu.Lock()
-	defer s.recordMu.Unlock()
+	// Sequence and per-session budget decisions need ordering only within the
+	// owning session; unrelated sessions proceed independently.
+	unlockSession := s.lockRecordSession(rec.SessionID)
+	defer unlockSession()
+	if rec.Provenance != ProvenanceLegacyUnverified {
+		rec.BaselineState = s.resolveAttributedBaseline(ctx, rec)
+	}
 
 	hasBefore := !rec.BeforeMissing && !rec.BeforeUnknown
 	hasAfter := !rec.AfterMissing && !rec.AfterUnknown
@@ -630,11 +907,26 @@ func (s *Store) RecordChange(ctx context.Context, rec ChangeRecord) (*Change, er
 	// for marginal benefit. Browser-renderable images are the sole binary
 	// exception: retaining them lets the web diff show the actual before/after.
 	retain := (!isBinary || isImage) && !rec.BeforeUnknown && !rec.AfterUnknown
+	contentStatus := ContentRetained
+	if isImage {
+		contentStatus = ContentRetainedImage
+	} else if isBinary {
+		contentStatus = ContentBinaryUnrenderable
+	}
+	if rec.BeforeUnknown && rec.AfterUnknown {
+		contentStatus = ContentBothUnknown
+	} else if rec.BeforeUnknown {
+		contentStatus = ContentBeforeUnknown
+	} else if rec.AfterUnknown {
+		contentStatus = ContentAfterUnknown
+	}
 	if retain && hasBefore && len(rec.Before) > s.maxFileBytes {
 		retain = false
+		contentStatus = ContentOversized
 	}
 	if retain && hasAfter && len(rec.After) > s.maxFileBytes {
 		retain = false
+		contentStatus = ContentOversized
 	}
 	if retain {
 		used, err := s.sessionBytesUsed(ctx, rec.SessionID)
@@ -643,6 +935,7 @@ func (s *Store) RecordChange(ctx context.Context, rec ChangeRecord) (*Change, er
 		}
 		if used+beforeSize+afterSize > int64(s.maxSessionBytes) {
 			retain = false
+			contentStatus = ContentSessionBudget
 		}
 	}
 
@@ -659,30 +952,62 @@ func (s *Store) RecordChange(ctx context.Context, rec ChangeRecord) (*Change, er
 	}
 
 	change := &Change{
-		RunID:      rec.RunID,
-		Path:       rec.Path,
-		Kind:       kind,
-		ToolName:   rec.ToolName,
-		ToolCallID: rec.ToolCallID,
-		BeforeSize: beforeSize,
-		AfterSize:  afterSize,
-		Adds:       adds,
-		Dels:       dels,
-		Truncated:  !retain,
-		IsBinary:   isBinary,
+		RunID:            rec.RunID,
+		Path:             rec.Path,
+		Kind:             kind,
+		ToolName:         rec.ToolName,
+		ToolCallID:       rec.ToolCallID,
+		BeforeSize:       beforeSize,
+		AfterSize:        afterSize,
+		Adds:             adds,
+		Dels:             dels,
+		Truncated:        !retain,
+		IsBinary:         isBinary,
+		Provenance:       rec.Provenance,
+		Provenances:      []string{rec.Provenance},
+		ClaimKind:        rec.ClaimKind,
+		ClaimPattern:     rec.ClaimPattern,
+		ClaimLiteral:     rec.ClaimLiteral,
+		ClaimCoverage:    rec.ClaimCoverage,
+		BaselineState:    rec.BaselineState,
+		ContentStatus:    contentStatus,
+		ContentAvailable: retain,
 	}
 
 	retainedBytes := int64(0)
 	if retain {
 		retainedBytes = beforeSize + afterSize
 	}
+	s.totalMu.Lock()
 	checkTotalBudget := s.totalBudgetCheckDue(retainedBytes)
+	if checkTotalBudget {
+		s.uncheckedTotalBytes = 0
+		s.uncheckedTotalRecordCount = 0
+	} else {
+		// Reserve this accounting before I/O. Failed writes may trigger an earlier
+		// check, which is conservative and avoids cross-session synchronization.
+		s.uncheckedTotalBytes += retainedBytes
+		s.uncheckedTotalRecordCount++
+	}
+	s.totalMu.Unlock()
+
+	if checkTotalBudget {
+		s.pruneMu.Lock()
+		defer s.pruneMu.Unlock()
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin file change transaction: %w", err)
 	}
 	defer tx.Rollback()
+	if err := ensureRunForChangeTx(ctx, tx, rec.SessionID, rec.RunID); err != nil {
+		return nil, fmt.Errorf("ensure file tracking run: %w", err)
+	}
+	change.EventSeq, err = allocateEventSeqTx(ctx, tx, rec.SessionID)
+	if err != nil {
+		return nil, err
+	}
 
 	if retain {
 		if hasBefore {
@@ -705,15 +1030,19 @@ func (s *Store) RecordChange(ctx context.Context, rec ChangeRecord) (*Change, er
 		INSERT INTO file_changes
 			(session_id, run_id, seq, path, kind, tool_name, tool_call_id,
 			 before_hash, after_hash, before_size, after_size,
-			 adds, dels, truncated, is_binary)
+			 adds, dels, truncated, is_binary, provenance, claim_kind,
+			 claim_pattern, claim_literal, claim_coverage, baseline_state,
+			 content_status, event_seq)
 		VALUES
 			(?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM file_changes WHERE session_id = ?),
-			 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		RETURNING seq`,
 		rec.SessionID, nullString(rec.RunID), rec.SessionID,
 		rec.Path, kind, rec.ToolName, rec.ToolCallID,
 		nullString(change.BeforeHash), nullString(change.AfterHash), beforeSize, afterSize,
-		adds, dels, boolInt(change.Truncated), boolInt(isBinary),
+		adds, dels, boolInt(change.Truncated), boolInt(isBinary), rec.Provenance,
+		nullString(rec.ClaimKind), nullString(rec.ClaimPattern), boolInt(rec.ClaimLiteral),
+		rec.ClaimCoverage, rec.BaselineState, contentStatus, change.EventSeq,
 	).Scan(&change.Seq)
 	if err != nil {
 		return nil, fmt.Errorf("insert file change: %w", err)
@@ -721,12 +1050,6 @@ func (s *Store) RecordChange(ctx context.Context, rec ChangeRecord) (*Change, er
 
 	var totalBudgetPruned bool
 	if checkTotalBudget {
-		// This check has consumed the accumulated work even if the transaction
-		// later fails. Keeping the counters above threshold would make every
-		// subsequent metadata-only record repeat the same expensive sweep.
-		s.uncheckedTotalBytes = 0
-		s.uncheckedTotalRecordCount = 0
-
 		totalBudgetPruned, err = s.enforceTotalBudget(ctx, tx)
 		if err != nil {
 			return nil, fmt.Errorf("enforce total budget: %w", err)
@@ -753,10 +1076,6 @@ func (s *Store) RecordChange(ctx context.Context, rec ChangeRecord) (*Change, er
 		s.sessionBytes = make(map[string]int64)
 		s.mu.Unlock()
 	} else {
-		if !checkTotalBudget {
-			s.uncheckedTotalBytes += retainedBytes
-			s.uncheckedTotalRecordCount++
-		}
 		if retain {
 			s.mu.Lock()
 			if _, ok := s.sessionBytes[rec.SessionID]; ok {
@@ -792,10 +1111,18 @@ func (s *Store) sessionBytesUsed(ctx context.Context, sessionID string) (int64, 
 	return used, nil
 }
 
+func (s *Store) HasAttributedPath(ctx context.Context, sessionID, path string) (bool, error) {
+	path = normalizePath(path)
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM file_changes WHERE session_id=? AND path=?
+		AND provenance IN ('direct','declared_transform','declared_generate'))`, sessionID, path).Scan(&exists)
+	return exists, err
+}
+
 // SessionPaths returns the distinct absolute paths already recorded for a session.
 func (s *Store) SessionPaths(ctx context.Context, sessionID string) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT DISTINCT path FROM file_changes WHERE session_id = ?", sessionID)
+		"SELECT DISTINCT path FROM file_changes WHERE session_id = ? AND provenance IN ('direct','declared_transform','declared_generate')", sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("query session paths: %w", err)
 	}
@@ -822,14 +1149,20 @@ func (s *Store) SessionPaths(ctx context.Context, sessionID string) ([]string, e
 // pathSpan is the fold of all change rows for one path: its baseline (first
 // row) and latest state (last row).
 type pathSpan struct {
-	path            string
-	firstKind       string
-	firstBeforeHash string
-	firstBinary     bool
-	lastKind        string
-	lastAfterHash   string
-	lastBinary      bool
-	lastSeq         int64
+	path               string
+	firstKind          string
+	firstBeforeHash    string
+	firstBinary        bool
+	firstBaselineState string
+	firstContentStatus string
+	lastKind           string
+	lastAfterHash      string
+	lastBinary         bool
+	lastContentStatus  string
+	lastSeq            int64
+	provenance         string
+	provenances        []string
+	claimCoverage      string
 }
 
 type recentRunWindow struct {
@@ -841,36 +1174,41 @@ func (s *Store) latestRunWindow(ctx context.Context, sessionID string, limit int
 	if limit < 1 {
 		limit = 1
 	}
-	query := `
-		SELECT run_id, MAX(seq) FROM file_changes
-		WHERE session_id = ? AND COALESCE(run_id, '') <> ''`
-	args := []any{sessionID}
+	var rows *sql.Rows
+	var err error
 	if snapshotSeq > 0 {
-		query += " AND seq <= ?"
-		args = append(args, snapshotSeq)
+		// Compatibility for the legacy integer snapshot: resolve runs from rows
+		// visible at that attributed sequence. New clients pin dual streams with
+		// the opaque snapshot token.
+		rows, err = s.db.QueryContext(ctx, `SELECT run_id FROM file_changes
+			WHERE session_id=? AND seq<=? AND COALESCE(run_id,'')<>''
+			GROUP BY run_id ORDER BY MAX(seq) DESC LIMIT ?`, sessionID, snapshotSeq, limit)
+	} else {
+		// The active run is the current turn. Include it so clients can refresh
+		// file changes while tools are still running rather than one turn later.
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT run_id FROM filetrack_runs
+			WHERE session_id = ?
+			ORDER BY ordinal DESC LIMIT ?`, sessionID, limit)
 	}
-	query += " GROUP BY run_id ORDER BY MAX(seq) DESC LIMIT ?"
-	args = append(args, limit)
-	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return recentRunWindow{}, fmt.Errorf("query recent file change runs: %w", err)
+		return recentRunWindow{}, fmt.Errorf("query recent file tracking runs: %w", err)
 	}
 	defer rows.Close()
 
-	window := recentRunWindow{}
+	window := recentRunWindow{snapshotSeq: snapshotSeq}
 	for rows.Next() {
 		var runID string
-		var lastSeq int64
-		if err := rows.Scan(&runID, &lastSeq); err != nil {
+		if err := rows.Scan(&runID); err != nil {
 			return recentRunWindow{}, err
 		}
 		window.runIDs = append(window.runIDs, runID)
-		if lastSeq > window.snapshotSeq {
-			window.snapshotSeq = lastSeq
-		}
 	}
 	if err := rows.Err(); err != nil {
 		return recentRunWindow{}, err
+	}
+	if window.snapshotSeq == 0 {
+		_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq),0) FROM file_changes WHERE session_id = ?`, sessionID).Scan(&window.snapshotSeq)
 	}
 	return window, nil
 }
@@ -901,8 +1239,10 @@ func (s *Store) sessionSpans(ctx context.Context, sessionID string) ([]*pathSpan
 
 func (s *Store) sessionRunSpans(ctx context.Context, sessionID string, runIDs []string, snapshotSeq int64) ([]*pathSpan, error) {
 	query := `
-		SELECT seq, path, kind, COALESCE(before_hash, ''), COALESCE(after_hash, ''), is_binary
-		FROM file_changes WHERE session_id = ?`
+		SELECT seq, path, kind, COALESCE(before_hash, ''), COALESCE(after_hash, ''), is_binary,
+		       provenance, baseline_state, content_status, claim_coverage
+		FROM file_changes WHERE session_id = ?
+		AND provenance IN ('direct','declared_transform','declared_generate')`
 	args := []any{sessionID}
 	filter, filterArgs := runWindowFilter(runIDs, snapshotSeq)
 	query += filter
@@ -918,9 +1258,9 @@ func (s *Store) sessionRunSpans(ctx context.Context, sessionID string, runIDs []
 	var order []string
 	for rows.Next() {
 		var seq int64
-		var path, kind, beforeHash, afterHash string
+		var path, kind, beforeHash, afterHash, provenance, baselineState, contentStatus, coverage string
 		var isBinary bool
-		if err := rows.Scan(&seq, &path, &kind, &beforeHash, &afterHash, &isBinary); err != nil {
+		if err := rows.Scan(&seq, &path, &kind, &beforeHash, &afterHash, &isBinary, &provenance, &baselineState, &contentStatus, &coverage); err != nil {
 			return nil, err
 		}
 		path = normalizePath(path)
@@ -929,13 +1269,20 @@ func (s *Store) sessionRunSpans(ctx context.Context, sessionID string, runIDs []
 		}
 		span, ok := spans[path]
 		if !ok {
-			span = &pathSpan{path: path, firstKind: kind, firstBeforeHash: beforeHash, firstBinary: isBinary}
+			span = &pathSpan{path: path, firstKind: kind, firstBeforeHash: beforeHash, firstBinary: isBinary,
+				firstBaselineState: baselineState, firstContentStatus: contentStatus, provenance: provenance,
+				provenances: []string{provenance}, claimCoverage: coverage}
 			spans[path] = span
 			order = append(order, path)
+		} else if !containsString(span.provenances, provenance) {
+			span.provenances = append(span.provenances, provenance)
+			span.provenance = "mixed"
 		}
+		span.claimCoverage = worstCoverage(span.claimCoverage, coverage)
 		span.lastKind = kind
 		span.lastAfterHash = afterHash
 		span.lastBinary = isBinary
+		span.lastContentStatus = contentStatus
 		span.lastSeq = seq
 	}
 	if err := rows.Err(); err != nil {
@@ -959,28 +1306,48 @@ func (s *Store) sessionRunPathSpan(ctx context.Context, sessionID string, runIDs
 		return nil, nil
 	}
 	sp := &pathSpan{path: path}
-	where := "session_id = ? AND path = ?"
+	where := "session_id = ? AND path = ? AND provenance IN ('direct','declared_transform','declared_generate')"
 	args := []any{sessionID, path}
 	filter, filterArgs := runWindowFilter(runIDs, snapshotSeq)
 	where += filter
 	args = append(args, filterArgs...)
 	if err := s.db.QueryRowContext(ctx, `
-		SELECT kind, COALESCE(before_hash, ''), is_binary
+		SELECT kind, COALESCE(before_hash, ''), is_binary, baseline_state, content_status,
+		       provenance, claim_coverage
 		FROM file_changes
 		WHERE `+where+`
 		ORDER BY seq ASC LIMIT 1`, args...).
-		Scan(&sp.firstKind, &sp.firstBeforeHash, &sp.firstBinary); err != nil {
+		Scan(&sp.firstKind, &sp.firstBeforeHash, &sp.firstBinary, &sp.firstBaselineState,
+			&sp.firstContentStatus, &sp.provenance, &sp.claimCoverage); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("query first path change: %w", err)
 	}
+	sp.provenances = []string{sp.provenance}
+	rows, err := s.db.QueryContext(ctx, `SELECT provenance, claim_coverage FROM file_changes WHERE `+where+` ORDER BY seq`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query path provenance: %w", err)
+	}
+	for rows.Next() {
+		var provenance, coverage string
+		if err := rows.Scan(&provenance, &coverage); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if !containsString(sp.provenances, provenance) {
+			sp.provenances = append(sp.provenances, provenance)
+			sp.provenance = "mixed"
+		}
+		sp.claimCoverage = worstCoverage(sp.claimCoverage, coverage)
+	}
+	rows.Close()
 	if err := s.db.QueryRowContext(ctx, `
-		SELECT seq, kind, COALESCE(after_hash, ''), is_binary
+		SELECT seq, kind, COALESCE(after_hash, ''), is_binary, content_status
 		FROM file_changes
 		WHERE `+where+`
 		ORDER BY seq DESC LIMIT 1`, args...).
-		Scan(&sp.lastSeq, &sp.lastKind, &sp.lastAfterHash, &sp.lastBinary); err != nil {
+		Scan(&sp.lastSeq, &sp.lastKind, &sp.lastAfterHash, &sp.lastBinary, &sp.lastContentStatus); err != nil {
 		return nil, fmt.Errorf("query last path change: %w", err)
 	}
 	return sp, nil
@@ -1045,8 +1412,8 @@ func (s *Store) ListSessionChanges(ctx context.Context, sessionID string) ([]Cum
 	return s.listChangesFromSpans(ctx, spans, err)
 }
 
-// ListRecentRunChanges returns the cumulative changes across the latest runs
-// that recorded file changes. Rows without run identities are excluded.
+// ListRecentRunChanges returns the cumulative changes across the latest file
+// tracking runs, including an in-progress run. Rows without run identities are excluded.
 func (s *Store) ListRecentRunChanges(ctx context.Context, sessionID string, runs int) ([]CumulativeChange, error) {
 	window, err := s.latestRunWindow(ctx, sessionID, runs, 0)
 	if err != nil || len(window.runIDs) == 0 {
@@ -1077,18 +1444,26 @@ func (s *Store) listChangesFromSpans(ctx context.Context, spans []*pathSpan, err
 			continue
 		}
 
-		change := CumulativeChange{Path: sp.path, Kind: kind, Seq: sp.lastSeq}
+		change := CumulativeChange{
+			Path: sp.path, Kind: kind, Seq: sp.lastSeq, Provenance: sp.provenance,
+			Provenances: append([]string(nil), sp.provenances...), BaselineState: sp.firstBaselineState,
+			ClaimCoverage: sp.claimCoverage, ContentStatus: cumulativeContentStatus(sp, kind),
+		}
+
 		needBefore, needAfter := blobsNeeded(kind)
 
 		// Retained binaries are browser-renderable images. Their line counts are
 		// always zero, so verify blob presence without reading and decompressing
 		// potentially multi-megabyte image bodies on every list refresh.
 		if sp.retainedImage(kind) {
+			change.ContentAvailable = true
 			if needBefore && !s.blobExists(ctx, sp.firstBeforeHash) {
 				change.Truncated = true
+				change.ContentAvailable = false
 			}
 			if needAfter && !s.blobExists(ctx, sp.lastAfterHash) {
 				change.Truncated = true
+				change.ContentAvailable = false
 			}
 			changes = append(changes, change)
 			continue
@@ -1120,8 +1495,12 @@ func (s *Store) listChangesFromSpans(ctx context.Context, spans []*pathSpan, err
 
 		if truncated {
 			change.Truncated = true
-		} else if _, isImage := imageChangeMediaType(kind, before, after); !isImage {
-			change.Adds, change.Dels = CountAddsDels(before, after)
+			change.ContentAvailable = false
+		} else {
+			change.ContentAvailable = true
+			if _, isImage := imageChangeMediaType(kind, before, after); !isImage {
+				change.Adds, change.Dels = CountAddsDels(before, after)
+			}
 		}
 		changes = append(changes, change)
 	}
@@ -1157,16 +1536,18 @@ func (s *Store) fileDiffContentFromSpan(ctx context.Context, sp *pathSpan, err e
 		return nil, nil
 	}
 
-	content := &FileDiffContent{Path: sp.path, Kind: kind}
+	content := &FileDiffContent{Path: sp.path, Kind: kind, ContentStatus: cumulativeContentStatus(sp, kind), Provenance: sp.provenance, BaselineState: sp.firstBaselineState, ClaimCoverage: sp.claimCoverage}
 	needBefore, needAfter := blobsNeeded(kind)
 	if sp.retainedImage(kind) {
 		content.IsImage = true
+		content.ContentAvailable = true
 		if needBefore && !s.blobExists(ctx, sp.firstBeforeHash) {
 			content.Truncated = true
 		}
 		if needAfter && !s.blobExists(ctx, sp.lastAfterHash) {
 			content.Truncated = true
 		}
+		content.ContentAvailable = !content.Truncated
 		return content, nil
 	}
 	if sp.hasBinarySide(kind) {
@@ -1192,6 +1573,7 @@ func (s *Store) fileDiffContentFromSpan(ctx context.Context, sp *pathSpan, err e
 		content.After = nil
 		content.Truncated = true
 	}
+	content.ContentAvailable = !content.Truncated
 	return content, nil
 }
 
@@ -1301,6 +1683,9 @@ func (s *Store) GC(ctx context.Context, sessionsDBPath string, maxAgeDays int) e
 	s.mu.Lock()
 	s.sessionBytes = make(map[string]int64)
 	s.mu.Unlock()
+	if err := s.gcObservations(ctx, sessionsDBPath, maxAgeDays); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1324,7 +1709,13 @@ func (s *Store) enforceTotalBudget(ctx context.Context, db totalBudgetDB) (bool,
 	pruned := false
 	var previousSize int64 = -1
 	for {
-		size, err := databaseSize(ctx, db)
+		var size int64
+		var err error
+		if s.maxTotalBytes <= filetrackStructuralReserveBytes {
+			size, err = rawDatabaseSize(ctx, db)
+		} else {
+			size, err = databaseSize(ctx, db)
+		}
 		if err != nil {
 			return pruned, err
 		}
@@ -1366,7 +1757,13 @@ func (s *Store) enforceTotalBudget(ctx context.Context, db totalBudgetDB) (bool,
 }
 
 // databaseSize returns the database file size in bytes (page count × page size).
-func databaseSize(ctx context.Context, db totalBudgetDB) (int64, error) {
+// SQLite's fixed schema/index pages do not grow with retained content and would
+// otherwise make very small configured budgets evict all useful history after
+// adding the mandatory run/event indexes. Charge the growing database footprint
+// while allowing a bounded structural reserve.
+const filetrackStructuralReserveBytes int64 = 64 * 1024
+
+func rawDatabaseSize(ctx context.Context, db totalBudgetDB) (int64, error) {
 	var pageCount, pageSize int64
 	if err := db.QueryRowContext(ctx, "PRAGMA page_count").Scan(&pageCount); err != nil {
 		return 0, fmt.Errorf("page count: %w", err)
@@ -1375,6 +1772,19 @@ func databaseSize(ctx context.Context, db totalBudgetDB) (int64, error) {
 		return 0, fmt.Errorf("page size: %w", err)
 	}
 	return pageCount * pageSize, nil
+}
+
+func databaseSize(ctx context.Context, db totalBudgetDB) (int64, error) {
+	size, err := rawDatabaseSize(ctx, db)
+	if err != nil {
+		return 0, err
+	}
+	if size > filetrackStructuralReserveBytes {
+		size -= filetrackStructuralReserveBytes
+	} else {
+		size = 0
+	}
+	return size, nil
 }
 
 func insertBlob(ctx context.Context, tx *sql.Tx, content []byte) (string, error) {

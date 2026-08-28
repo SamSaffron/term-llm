@@ -267,6 +267,45 @@ func (s *LoggingStore) GetMessageByClientMessageID(ctx context.Context, sessionI
 	return msg, err
 }
 
+// SavePendingInterjection delegates durable queued-interjection persistence.
+func (s *LoggingStore) SavePendingInterjection(ctx context.Context, entry PendingInterjection) error {
+	store, ok := s.Store.(PendingInterjectionStore)
+	if !ok {
+		return nil
+	}
+	err := store.SavePendingInterjection(ctx, entry)
+	if err != nil {
+		s.logOnce("SavePendingInterjection", err)
+	}
+	return err
+}
+
+// DeletePendingInterjection removes a queued intent after commit or cancellation.
+func (s *LoggingStore) DeletePendingInterjection(ctx context.Context, sessionID, id string) error {
+	store, ok := s.Store.(PendingInterjectionStore)
+	if !ok {
+		return nil
+	}
+	err := store.DeletePendingInterjection(ctx, sessionID, id)
+	if err != nil {
+		s.logOnce("DeletePendingInterjection", err)
+	}
+	return err
+}
+
+// ListPendingInterjections returns durable queued intents in acceptance order.
+func (s *LoggingStore) ListPendingInterjections(ctx context.Context, sessionID string) ([]PendingInterjection, error) {
+	store, ok := s.Store.(PendingInterjectionStore)
+	if !ok {
+		return nil, nil
+	}
+	entries, err := store.ListPendingInterjections(ctx, sessionID)
+	if err != nil {
+		s.logOnce("ListPendingInterjections", err)
+	}
+	return entries, err
+}
+
 // GetLatestVisibleMessageID returns the latest persisted user/assistant message id for a session.
 func (s *LoggingStore) GetLatestVisibleMessageID(ctx context.Context, sessionID string) (int64, error) {
 	getter, ok := s.Store.(interface {

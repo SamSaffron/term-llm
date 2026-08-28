@@ -129,7 +129,7 @@ func ExportToMarkdown(sess *Session, messages []Message, opts ExportOptions) str
 		inAssistantTurn = false
 	}
 
-	for _, msg := range messages {
+	for _, msg := range VisibleExportMessages(messages) {
 		// Skip system messages unless explicitly included
 		if msg.Role == llm.RoleSystem {
 			if opts.IncludeSystem {

@@ -28,6 +28,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
+	webrtcpkg "github.com/samsaffron/term-llm/internal/webrtc"
 	"github.com/samsaffron/term-llm/internal/widgets"
 	"github.com/spf13/cobra"
 )
@@ -170,7 +171,7 @@ func init() {
 	serveCmd.Flags().StringVar(&serveFilesDir, "files-dir", "", "Directory for serving arbitrary files (videos, PDFs, etc) at {base}/files/")
 	serveCmd.Flags().BoolVar(&serveEnableWidgets, "enable-widgets", false, "Enable local widget apps proxied under {base}/widgets/<mount>/")
 	serveCmd.Flags().StringVar(&serveWidgetsDir, "widgets-dir", "", "Directory containing widget sub-directories (default: ~/.config/term-llm/widgets)")
-	serveCmd.Flags().DurationVar(&serveResponseTimeout, "response-timeout", defaultServeRequestTimeout, "Maximum active execution time per response; pauses while waiting for interactive input")
+	serveCmd.Flags().DurationVar(&serveResponseTimeout, "response-timeout", defaultServeRequestTimeout, "Maximum inactivity before the first or next completed LLM response (default 30m; pauses for interactive waits)")
 	serveCmd.Flags().BoolVar(&serveEnableFileTracking, "enable-file-tracking", false, "Enable session file-change tracking for this serve process")
 	serveCmd.Flags().BoolVar(&serveProjects, "projects", false, "Strictly enable Web UI project selection")
 	serveCmd.Flags().BoolVar(&serveNoProjects, "no-projects", false, "Use the single-workspace Web UI for dedicated agent deployments")
@@ -1264,6 +1265,8 @@ type serveServer struct {
 	branchPathNoteFlights    sync.Map // source/idempotency key → shared path-note helper result
 	responseRunsOnce         sync.Once
 	responseRuns             *responseRunManager
+	completionPushWake       chan struct{}
+	completionPushWG         sync.WaitGroup
 	transcriptIndexerOnce    sync.Once
 	transcriptIndexer        session.TranscriptIndexer
 	baseSystemPrompt         string
@@ -1281,10 +1284,21 @@ type serveServer struct {
 	skillRunRetention        time.Duration
 	skillChildRunnerFactory  func(sessionID string, runtime *serveRuntime) (runpkg.ChildRunner, error)
 	webrtcEnabled            bool
+	webrtcMu                 sync.RWMutex
+	webrtcPeer               webrtcpkg.Peer
 	webrtcHeadSnippet        string // injected into index.html <head>; empty when WebRTC disabled
 	runtimeFactory           func(ctx context.Context, providerName string, model string) (*serveRuntime, error)
 	agentRuntimeFactory      func(ctx context.Context, providerName string, model string, agentName string) (*serveRuntime, error)
 	titleProviderFactory     func(*config.Config) (llm.Provider, error)
+	autoTitleProviderFactory func(string) (llm.Provider, error)
+	autoTitleMu              sync.Mutex
+	autoTitleFlights         map[string]struct{}
+	autoTitleAttempts        map[string]serveAutoTitleAttempt
+	autoTitleSlots           chan struct{}
+	autoTitleCtx             context.Context
+	autoTitleCancel          context.CancelFunc
+	autoTitleWG              sync.WaitGroup
+	autoTitleStopping        bool
 	pathNotesProviderFactory func(providerName, model string) (llm.Provider, error)
 	widgetsMgr               *widgets.Manager
 	indexHTMLOnce            sync.Once
@@ -1311,6 +1325,13 @@ func (s *serveServer) fileTrackStore() *filetrack.Store {
 func (s *serveServer) Start() error {
 	s.shutdownCh = make(chan struct{})
 	s.shutdownOnce = sync.Once{}
+	s.autoTitleMu.Lock()
+	if s.autoTitleCancel != nil {
+		s.autoTitleCancel()
+	}
+	s.autoTitleCtx, s.autoTitleCancel = context.WithCancel(context.Background())
+	s.autoTitleStopping = false
+	s.autoTitleMu.Unlock()
 	s.skillRunsMu.Lock()
 	s.skillRunsStopping = false
 	s.skillRunsMu.Unlock()
@@ -1349,9 +1370,12 @@ func (s *serveServer) Start() error {
 		}
 		return nil
 	case <-time.After(50 * time.Millisecond):
+		s.startCompletionPushDispatcher()
 		return nil
 	}
 }
+
+var registerServeBrowserFixtureRoutes func(*http.ServeMux, *serveServer)
 
 func (s *serveServer) httpHandler() http.Handler {
 	// Inner mux: all routes registered at their natural paths.
@@ -1399,6 +1423,9 @@ func (s *serveServer) httpHandler() http.Handler {
 
 	if s.store != nil {
 		inner.HandleFunc("/v1/sessions", s.auth(s.cors(s.handleSessions)))
+	}
+	if registerServeBrowserFixtureRoutes != nil {
+		registerServeBrowserFixtureRoutes(inner, s)
 	}
 
 	if s.cfg.ui {
@@ -1456,6 +1483,7 @@ func (s *serveServer) Stop(ctx context.Context) error {
 		}
 	})
 	if s.server == nil {
+		s.stopAutoTitles()
 		return s.stopServeSkillRuns(ctx)
 	}
 
@@ -1482,6 +1510,19 @@ func (s *serveServer) Stop(ctx context.Context) error {
 			return nil
 		})
 	}
+	run(func() error {
+		done := make(chan struct{})
+		go func() {
+			s.completionPushWG.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
 	if s.widgetsMgr != nil {
 		run(func() error {
 			s.widgetsMgr.CloseContext(ctx)
@@ -1489,6 +1530,10 @@ func (s *serveServer) Stop(ctx context.Context) error {
 		})
 	}
 	run(func() error { return s.stopServeSkillRuns(ctx) })
+	run(func() error {
+		s.stopAutoTitles()
+		return nil
+	})
 	run(func() error { return s.server.Shutdown(ctx) })
 
 	s.modelsMu.Lock()

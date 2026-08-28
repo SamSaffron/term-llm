@@ -39,4 +39,4 @@ shell:
 
 search: true
 
-max_turns: 600
+max_turns: 2000

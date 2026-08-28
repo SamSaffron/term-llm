@@ -34,7 +34,15 @@ type Config struct {
 	MaxConns int
 }
 
+// Diagnostics contains correlation-safe WebRTC admission counters.
+type Diagnostics struct {
+	Active   int32  `json:"active"`
+	Reserved int32  `json:"reserved"`
+	Rejected uint64 `json:"rejected"`
+}
+
 // Peer is a running WebRTC home peer. Call Close to stop it.
 type Peer interface {
 	Close() error
+	Diagnostics() Diagnostics
 }

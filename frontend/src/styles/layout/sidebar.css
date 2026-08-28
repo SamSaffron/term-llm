@@ -1,0 +1,302 @@
+/* Sidebar shell: brand, hub links and the widgets rail. */
+
+.sidebar-overlay-root {
+  display: contents;
+}
+
+.sidebar {
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  z-index: 20;
+  padding-left: var(--safe-left);
+  position: relative;
+  overflow: hidden;
+}
+
+.sidebar:focus {
+  outline: none;
+}
+
+.sidebar-rail {
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.55rem;
+  padding: calc(0.85rem + var(--safe-top)) 0.55rem 0.85rem;
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: var(--sidebar-rail-width);
+  z-index: 1;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--panel-fade-duration) ease;
+}
+
+.sidebar-rail-btn {
+  width: 36px;
+  height: 36px;
+}
+
+.sidebar-panel {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  transition: opacity var(--panel-fade-duration) ease;
+}
+
+.app.sidebar-collapsed .sidebar-rail {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.app.sidebar-collapsed .sidebar-panel {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: calc(0.85rem + var(--safe-top)) 0.8rem 0.85rem;
+  min-height: 58px;
+}
+
+.sidebar-header-actions {
+  display: inline-flex;
+  gap: 0.4rem;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  min-width: 0;
+}
+
+.icon-btn {
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  border-radius: 8px;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+  flex-shrink: 0;
+}
+
+.icon-btn:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.icon-btn.diff-toggle {
+  width: auto;
+}
+
+.icon-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.sidebar-close {
+  display: none;
+}
+
+.sidebar-content {
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-anchor: none;
+  padding: 0.45rem 0 0.75rem;
+}
+
+.sidebar-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0 0 0.35rem;
+  flex-shrink: 0;
+}
+
+.sidebar-actions .session-group {
+  margin-bottom: 0;
+}
+
+.new-chat-btn,
+.widgets-sidebar-btn,
+.back-to-hub-link {
+  width: calc(100% - 0.5rem);
+  margin-inline: 0.25rem;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  padding: 0.58rem 0.8rem;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.92rem;
+  font-weight: 600;
+  line-height: 1.25;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.sidebar-action-icon {
+  flex: 0 0 17px;
+  width: 17px;
+  height: 17px;
+  color: currentcolor;
+}
+
+.new-chat-btn:hover,
+.widgets-sidebar-btn:hover,
+.back-to-hub-link:hover {
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+.widgets-sidebar-btn.hidden {
+  display: none;
+}
+
+.back-to-hub-link {
+  text-decoration: none;
+}
+
+.back-to-hub-link.hidden {
+  display: none;
+}
+
+.hub-agent-links {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin: 0 0.25rem 0.1rem;
+  padding: 0;
+}
+
+.hub-agent-links.hidden {
+  display: none;
+}
+
+.hub-agent-link {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  color: var(--text);
+  display: grid;
+  grid-template-columns: 17px minmax(0, 1fr) 0.5rem;
+  align-items: center;
+  column-gap: 0.55rem;
+  padding: 0.58rem 0.8rem;
+  font-size: 0.92rem;
+  font-weight: 600;
+  line-height: 1.25;
+  text-decoration: none;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.hub-agent-link:hover {
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+.hub-agent-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.hub-agent-link[aria-current='true'] {
+  background: var(--surface-2);
+}
+
+.hub-agent-icon {
+  width: 17px;
+  height: 17px;
+  display: block;
+  color: currentcolor;
+  background: currentcolor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4' y='7' width='16' height='13' rx='4'/%3E%3Cpath d='M12 7V3M9 12h.01M15 12h.01M8 17h8'/%3E%3C/svg%3E")
+    center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4' y='7' width='16' height='13' rx='4'/%3E%3Cpath d='M12 7V3M9 12h.01M15 12h.01M8 17h8'/%3E%3C/svg%3E")
+    center / contain no-repeat;
+}
+
+.hub-agent-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hub-agent-attention {
+  width: 0.48rem;
+  height: 0.48rem;
+  justify-self: center;
+  border-radius: 999px;
+  background: #22c55e;
+  box-shadow: 0 0 0 0.14rem rgb(34 197 94 / 12%);
+}
+
+.sidebar-search-wrap {
+  padding: 0 0.55rem 0.55rem;
+  flex-shrink: 0;
+}
+
+.sidebar-search-input {
+  width: 100%;
+  border: 1px solid transparent;
+  background: var(--surface-2);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 0.58rem 0.65rem;
+  font: inherit;
+  font-size: 0.9rem;
+}
+
+.sidebar-search-input:focus {
+  outline: 2px solid var(--border-strong);
+  border-color: var(--border-strong);
+}
+
+.modal-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.35rem;
+}
+
+.modal-title-row h2 {
+  margin: 0;
+}

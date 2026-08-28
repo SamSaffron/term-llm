@@ -205,6 +205,30 @@ func TestResolveSettingsEnablesPlanGuidanceOnlyForBuiltinDeveloper(t *testing.T)
 	}
 }
 
+func TestResolveSettingsGatesFileTrackingPromptInstructions(t *testing.T) {
+	agent := &agents.Agent{
+		Name:         "shell",
+		Source:       agents.SourceBuiltin,
+		SystemPrompt: "before\n{{file_tracking_instructions}}\nafter",
+	}
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("enabled=%t", enabled), func(t *testing.T) {
+			cfg := &config.Config{FileTracking: config.FileTrackingConfig{Enabled: enabled}}
+			settings, err := ResolveSettingsInDir(cfg, agent, CLIFlags{}, "", "", "", 0, 50, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			gotInstructions := strings.Contains(settings.SystemPrompt, "output_claims")
+			if gotInstructions != enabled {
+				t.Fatalf("tracking instructions present = %t, want %t: %q", gotInstructions, enabled, settings.SystemPrompt)
+			}
+			if strings.Contains(settings.SystemPrompt, "file_tracking_instructions") {
+				t.Fatalf("tracking template token was not expanded: %q", settings.SystemPrompt)
+			}
+		})
+	}
+}
+
 func TestResolveSettings_ConfigSystemPromptExpandsIncludeThenTemplate(t *testing.T) {
 	origWD, err := os.Getwd()
 	if err != nil {

@@ -3,6 +3,7 @@ package llm
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,7 +18,48 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const responsesWebSocketBetaHeader = "responses_websockets=2026-02-06"
+const (
+	responsesWebSocketBetaHeader               = "responses_websockets=2026-02-06"
+	defaultResponsesWebSocketIdleTimeout       = 5 * time.Minute
+	defaultResponsesWebSocketFirstEventTimeout = 15 * time.Second
+	defaultResponsesWebSocketParkedTimeout     = 30 * time.Second
+	defaultResponsesWebSocketMaxAge            = 55 * time.Minute
+)
+
+type responsesWebSocketState string
+
+const (
+	responsesWebSocketStateActive     responsesWebSocketState = "active"
+	responsesWebSocketStatePinnedTool responsesWebSocketState = "pinned_tool"
+	responsesWebSocketStateIdle       responsesWebSocketState = "idle"
+	responsesWebSocketStateClosed     responsesWebSocketState = "closed"
+)
+
+type responsesWebSocketContinuationContextKey struct{}
+
+func withResponsesWebSocketContinuationLifetime(ctx context.Context) context.Context {
+	if ctx == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, responsesWebSocketContinuationContextKey{}, ctx)
+}
+
+func responsesWebSocketContinuationLifetime(ctx context.Context) context.Context {
+	if ctx != nil {
+		if lifetime, ok := ctx.Value(responsesWebSocketContinuationContextKey{}).(context.Context); ok && lifetime != nil {
+			return lifetime
+		}
+	}
+	return ctx
+}
+
+type responsesWebSocketFirstEventTimeoutError struct {
+	timeout time.Duration
+}
+
+func (e *responsesWebSocketFirstEventTimeoutError) Error() string {
+	return fmt.Sprintf("Responses WebSocket first response event timeout after %s", e.timeout)
+}
 
 type responsesWebSocketFrameTypeError struct {
 	messageType int
@@ -28,37 +70,81 @@ func (e *responsesWebSocketFrameTypeError) Error() string {
 }
 
 type responsesWebSocketConnection struct {
-	conn *websocket.Conn
+	conn  *websocket.Conn
+	lease *responsesWebSocketLease
 
-	readMu         sync.Mutex
-	readQueue      [][]byte
-	readErr        error
-	readReady      chan struct{}
-	responseActive bool
-	idleTimeout    time.Duration
-	idleTimer      *time.Timer
-	idleGeneration uint64
+	readMu                 sync.Mutex
+	readQueue              [][]byte
+	readErr                error
+	readReady              chan struct{}
+	responseActive         bool
+	responseEventReceived  bool
+	idleTimeout            time.Duration
+	idleTimer              *time.Timer
+	idleGeneration         uint64
+	firstEventTimeout      time.Duration
+	firstEventTimer        *time.Timer
+	firstEventGeneration   uint64
+	parkedTimeout          time.Duration
+	parkedTimer            *time.Timer
+	parkedGeneration       uint64
+	continuationResponseID string
+	continuationCallIDs    map[string]struct{}
+	continuationStop       chan struct{}
+	ownerSessionID         string
+	state                  responsesWebSocketState
+	lastReuseFrom          responsesWebSocketState
+	connectedAt            time.Time
+	responseStartedAt      time.Time
+	lastApplicationAt      time.Time
+	applicationFrames      uint64
+	lastControlAt          time.Time
+	pingFrames             uint64
+	pongFrames             uint64
 }
 
-func newResponsesWebSocketConnection(conn *websocket.Conn, idleTimeout time.Duration) *responsesWebSocketConnection {
+func newResponsesWebSocketConnection(conn *websocket.Conn, lease *responsesWebSocketLease, ownerSessionID string, idleTimeout, firstEventTimeout, parkedTimeout time.Duration) *responsesWebSocketConnection {
 	if idleTimeout == 0 {
-		idleTimeout = 5 * time.Minute
+		idleTimeout = defaultResponsesWebSocketIdleTimeout
 	}
+	if firstEventTimeout == 0 {
+		firstEventTimeout = defaultResponsesWebSocketFirstEventTimeout
+	}
+	if parkedTimeout == 0 {
+		parkedTimeout = defaultResponsesWebSocketParkedTimeout
+	}
+	now := time.Now()
 	ws := &responsesWebSocketConnection{
-		conn:        conn,
-		readReady:   make(chan struct{}, 1),
-		idleTimeout: idleTimeout,
+		conn:              conn,
+		lease:             lease,
+		readReady:         make(chan struct{}, 1),
+		idleTimeout:       idleTimeout,
+		firstEventTimeout: firstEventTimeout,
+		parkedTimeout:     parkedTimeout,
+		ownerSessionID:    ownerSessionID,
+		state:             responsesWebSocketStateIdle,
+		connectedAt:       now,
 	}
-
 	pingHandler := conn.PingHandler()
 	conn.SetPingHandler(func(appData string) error {
-		ws.noteReadActivity()
+		ws.noteControlActivity(true)
 		return pingHandler(appData)
 	})
 	conn.SetPongHandler(func(string) error {
-		ws.noteReadActivity()
+		ws.noteControlActivity(false)
 		return nil
 	})
+	if !lease.attach(ws) {
+		ws.readErr = errors.New("Responses WebSocket lease was released before connection attachment")
+		_ = conn.Close()
+		return ws
+	}
+	// Bound the dial-to-start window as well as the post-response parked window.
+	// The response goroutine disarms this timer in startResponse; if it is never
+	// scheduled or is abandoned, the pool reservation cannot leak indefinitely.
+	ws.readMu.Lock()
+	ws.armParkedTimerLocked()
+	ws.readMu.Unlock()
 
 	go ws.readPump()
 	return ws
@@ -88,15 +174,75 @@ func (c *responsesWebSocketConnection) readPump() {
 			_ = c.conn.Close()
 			return
 		}
-		c.armIdleTimerLocked()
+		c.responseEventReceived = true
+		c.lastApplicationAt = time.Now()
+		c.applicationFrames++
+		c.disarmFirstEventTimerLocked()
 		c.readQueue = append(c.readQueue, data)
 		c.readMu.Unlock()
 		c.signalReadReady()
 	}
 }
 
+func (c *responsesWebSocketConnection) reserveResponse(sessionID, previousResponseID string, input []ResponsesInputItem) bool {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+	if c.readErr != nil || c.ownerSessionID != sessionID || c.state == responsesWebSocketStateClosed || c.state == responsesWebSocketStateActive {
+		return false
+	}
+	if c.state == responsesWebSocketStateIdle && time.Since(c.connectedAt) >= defaultResponsesWebSocketMaxAge {
+		return false
+	}
+	if c.state == responsesWebSocketStatePinnedTool && !c.matchesToolContinuationLocked(previousResponseID, input) {
+		return false
+	}
+	if !c.lease.activate() {
+		return false
+	}
+	c.lastReuseFrom = c.state
+	c.disarmParkedTimerLocked()
+	if c.state == responsesWebSocketStatePinnedTool {
+		c.stopContinuationWatcherLocked()
+		c.continuationResponseID = ""
+		c.continuationCallIDs = nil
+	}
+	return true
+}
+
+func (c *responsesWebSocketConnection) matchesToolContinuationLocked(previousResponseID string, input []ResponsesInputItem) bool {
+	if c.continuationResponseID == "" || previousResponseID != c.continuationResponseID || len(c.continuationCallIDs) == 0 {
+		return false
+	}
+	outputs := make(map[string]struct{}, len(c.continuationCallIDs))
+	for _, item := range input {
+		if item.Type != "function_call_output" {
+			continue
+		}
+		if _, expected := c.continuationCallIDs[item.CallID]; !expected {
+			return false
+		}
+		outputs[item.CallID] = struct{}{}
+	}
+	if len(outputs) != len(c.continuationCallIDs) {
+		return false
+	}
+	return true
+}
+
+func (c *responsesWebSocketConnection) stopContinuationWatcherLocked() {
+	if c.continuationStop != nil {
+		close(c.continuationStop)
+		c.continuationStop = nil
+	}
+}
+
 func (c *responsesWebSocketConnection) startResponse() error {
 	c.readMu.Lock()
+	c.disarmParkedTimerLocked()
+	if !c.lease.activate() {
+		c.readMu.Unlock()
+		return errors.New("Responses WebSocket connection was evicted from the pool")
+	}
 	if c.readErr != nil {
 		err := c.readErr
 		c.readMu.Unlock()
@@ -115,9 +261,66 @@ func (c *responsesWebSocketConnection) startResponse() error {
 		return err
 	}
 	c.responseActive = true
+	c.state = responsesWebSocketStateActive
+	c.responseEventReceived = false
+	c.responseStartedAt = time.Now()
+	c.lastApplicationAt = time.Time{}
+	c.applicationFrames = 0
+	c.lastControlAt = time.Time{}
+	c.pingFrames = 0
+	c.pongFrames = 0
 	c.armIdleTimerLocked()
+	c.armFirstEventTimerLocked()
 	c.readMu.Unlock()
 	return nil
+}
+
+func (c *responsesWebSocketConnection) retainForToolContinuation(ctx context.Context, responseID string, callIDs []string) bool {
+	responseID = strings.TrimSpace(responseID)
+	expected := make(map[string]struct{}, len(callIDs))
+	for _, callID := range callIDs {
+		if callID = strings.TrimSpace(callID); callID != "" {
+			expected[callID] = struct{}{}
+		}
+	}
+	if responseID == "" || len(expected) == 0 {
+		return false
+	}
+
+	c.readMu.Lock()
+	if !c.responseActive || c.readErr != nil {
+		c.readMu.Unlock()
+		return false
+	}
+	c.responseActive = false
+	c.state = responsesWebSocketStatePinnedTool
+	c.disarmIdleTimerLocked()
+	c.disarmFirstEventTimerLocked()
+	c.disarmParkedTimerLocked()
+	stale := len(c.readQueue) != 0
+	if stale {
+		c.readQueue = nil
+		c.failReadingLocked(errors.New("Responses WebSocket received trailing application frames after response completion"))
+		c.readMu.Unlock()
+		c.signalReadReady()
+		_ = c.conn.Close()
+		return false
+	}
+	c.stopContinuationWatcherLocked()
+	c.continuationResponseID = responseID
+	c.continuationCallIDs = expected
+	stop := make(chan struct{})
+	c.continuationStop = stop
+	c.readMu.Unlock()
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = c.closeWithError(fmt.Errorf("Responses WebSocket tool continuation abandoned: %w", context.Cause(ctx)))
+		case <-stop:
+		}
+	}()
+	return true
 }
 
 func (c *responsesWebSocketConnection) finishResponse() {
@@ -127,7 +330,11 @@ func (c *responsesWebSocketConnection) finishResponse() {
 		return
 	}
 	c.responseActive = false
+	c.state = responsesWebSocketStateIdle
 	c.disarmIdleTimerLocked()
+	c.disarmFirstEventTimerLocked()
+	c.disarmParkedTimerLocked()
+	c.lease.park()
 	stale := len(c.readQueue) != 0
 	if stale {
 		c.readQueue = nil
@@ -140,12 +347,62 @@ func (c *responsesWebSocketConnection) finishResponse() {
 	}
 }
 
-func (c *responsesWebSocketConnection) noteReadActivity() {
+func (c *responsesWebSocketConnection) noteControlActivity(ping bool) {
+	c.readMu.Lock()
+	if c.responseActive && c.readErr == nil {
+		c.lastControlAt = time.Now()
+		if ping {
+			c.pingFrames++
+		} else {
+			c.pongFrames++
+		}
+	}
+	c.readMu.Unlock()
+}
+
+func (c *responsesWebSocketConnection) noteApplicationProgress() {
 	c.readMu.Lock()
 	if c.responseActive && c.readErr == nil {
 		c.armIdleTimerLocked()
 	}
 	c.readMu.Unlock()
+}
+
+type responsesWebSocketActivitySnapshot struct {
+	ResponseActive    bool
+	State             responsesWebSocketState
+	LastReuseFrom     responsesWebSocketState
+	OwnerSessionID    string
+	ConnectedAt       time.Time
+	ResponseStartedAt time.Time
+	LastApplicationAt time.Time
+	ApplicationFrames uint64
+	LastControlAt     time.Time
+	PingFrames        uint64
+	PongFrames        uint64
+	ReadError         string
+}
+
+func (c *responsesWebSocketConnection) activitySnapshot() responsesWebSocketActivitySnapshot {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+	snapshot := responsesWebSocketActivitySnapshot{
+		ResponseActive:    c.responseActive,
+		State:             c.state,
+		LastReuseFrom:     c.lastReuseFrom,
+		OwnerSessionID:    c.ownerSessionID,
+		ConnectedAt:       c.connectedAt,
+		ResponseStartedAt: c.responseStartedAt,
+		LastApplicationAt: c.lastApplicationAt,
+		ApplicationFrames: c.applicationFrames,
+		LastControlAt:     c.lastControlAt,
+		PingFrames:        c.pingFrames,
+		PongFrames:        c.pongFrames,
+	}
+	if c.readErr != nil {
+		snapshot.ReadError = c.readErr.Error()
+	}
+	return snapshot
 }
 
 func (c *responsesWebSocketConnection) armIdleTimerLocked() {
@@ -175,12 +432,73 @@ func (c *responsesWebSocketConnection) disarmIdleTimerLocked() {
 	}
 }
 
+func (c *responsesWebSocketConnection) armFirstEventTimerLocked() {
+	c.firstEventGeneration++
+	generation := c.firstEventGeneration
+	if c.firstEventTimer != nil {
+		c.firstEventTimer.Stop()
+	}
+	c.firstEventTimer = time.AfterFunc(c.firstEventTimeout, func() {
+		c.readMu.Lock()
+		if !c.responseActive || c.responseEventReceived || c.readErr != nil || c.firstEventGeneration != generation {
+			c.readMu.Unlock()
+			return
+		}
+		c.failReadingLocked(&responsesWebSocketFirstEventTimeoutError{timeout: c.firstEventTimeout})
+		c.readMu.Unlock()
+		c.signalReadReady()
+		_ = c.conn.Close()
+	})
+}
+
+func (c *responsesWebSocketConnection) disarmFirstEventTimerLocked() {
+	c.firstEventGeneration++
+	if c.firstEventTimer != nil {
+		c.firstEventTimer.Stop()
+		c.firstEventTimer = nil
+	}
+}
+
+func (c *responsesWebSocketConnection) armParkedTimerLocked() {
+	c.parkedGeneration++
+	generation := c.parkedGeneration
+	if c.parkedTimer != nil {
+		c.parkedTimer.Stop()
+	}
+	c.parkedTimer = time.AfterFunc(c.parkedTimeout, func() {
+		c.readMu.Lock()
+		if c.responseActive || c.readErr != nil || c.parkedGeneration != generation {
+			c.readMu.Unlock()
+			return
+		}
+		c.failReadingLocked(fmt.Errorf("Responses WebSocket parked connection timeout after %s", c.parkedTimeout))
+		c.readMu.Unlock()
+		c.signalReadReady()
+		_ = c.conn.Close()
+	})
+}
+
+func (c *responsesWebSocketConnection) disarmParkedTimerLocked() {
+	c.parkedGeneration++
+	if c.parkedTimer != nil {
+		c.parkedTimer.Stop()
+		c.parkedTimer = nil
+	}
+}
+
 func (c *responsesWebSocketConnection) failReadingLocked(err error) {
 	if c.readErr == nil {
 		c.readErr = err
 	}
 	c.responseActive = false
+	c.state = responsesWebSocketStateClosed
+	c.continuationResponseID = ""
+	c.continuationCallIDs = nil
+	c.stopContinuationWatcherLocked()
 	c.disarmIdleTimerLocked()
+	c.disarmFirstEventTimerLocked()
+	c.disarmParkedTimerLocked()
+	c.lease.release()
 }
 
 func (c *responsesWebSocketConnection) finishReading(err error) {
@@ -231,8 +549,12 @@ func (c *responsesWebSocketConnection) healthy() bool {
 }
 
 func (c *responsesWebSocketConnection) close() error {
+	return c.closeWithError(errors.New("Responses WebSocket connection closed"))
+}
+
+func (c *responsesWebSocketConnection) closeWithError(err error) error {
 	c.readMu.Lock()
-	c.failReadingLocked(errors.New("Responses WebSocket connection closed"))
+	c.failReadingLocked(err)
 	c.readMu.Unlock()
 	c.signalReadReady()
 	return c.conn.Close()
@@ -335,22 +657,25 @@ func (c *ResponsesClient) writeResponsesWebSocketRequestLocked(conn *responsesWe
 }
 
 func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req ResponsesRequest, buildContinuationInput func() []ResponsesInputItem, buildFullInput func() []ResponsesInputItem, debugRaw bool, responseStateGeneration uint64) (Stream, error) {
+	parentCtx := responsesWebSocketContinuationLifetime(ctx)
 	c.wsMu.Lock()
 
-	conn, reused, err := c.ensureWebSocket(ctx, req)
+	fullRequestInput := append([]ResponsesInputItem(nil), buildFullInput()...)
+	wireReq := c.prepareWebSocketContinuationLocked(req, buildContinuationInput, func() []ResponsesInputItem { return fullRequestInput })
+	conn, reused, err := c.ensureWebSocket(ctx, wireReq)
 	if err != nil {
 		c.wsMu.Unlock()
 		return nil, err
 	}
 
-	wireReq := c.prepareWebSocketContinuationLocked(req, buildContinuationInput, buildFullInput)
 	if c.WebSocketServerState && !reused {
 		// ChatGPT's previous_response_id chain is local to a WebSocket. A fresh
 		// connection cannot continue state created by the socket it replaced.
 		c.clearLastResponseIDIfGeneration(responseStateGeneration, wireReq.SessionID, wireReq.PreviousResponseID)
 		c.wsLastRequest = nil
+		c.wsContinuationBaseline = nil
 		wireReq.PreviousResponseID = ""
-		wireReq.Input = buildFullInput()
+		wireReq.Input = fullRequestInput
 	}
 
 	body, err := prepareResponsesWebSocketRequest(wireReq, reused, debugRaw)
@@ -362,12 +687,14 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		defer c.wsMu.Unlock()
 		if err := ctx.Err(); err != nil {
+			c.discardWebSocketLocked()
 			return err
 		}
 		if err := conn.startResponse(); err != nil {
 			c.discardWebSocketLocked()
 			return err
 		}
+		leaseAdmittedAtStart, leaseActiveAtStart, poolConnectionsAtStart := conn.lease.diagnosticSnapshot()
 		responseActive := true
 		defer func() {
 			if responseActive {
@@ -404,10 +731,64 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 
 		handler := newResponsesStreamEventHandler(c, responseStateGeneration, debugRaw, "Responses WebSocket", c.websocketServerStateEnabled(), wireReq.SessionID, wireReq.suppressReasoningSummaryDeltas())
 		retriedFullState := false
+		var (
+			protocolEventCount    uint64
+			meaningfulEventCount  uint64
+			lastProtocolEvent     string
+			lastProtocolEventAt   time.Time
+			lastMeaningfulEvent   string
+			lastMeaningfulEventAt time.Time
+		)
+
+		emitTerminationDiagnostic := func(readErr error) {
+			now := time.Now()
+			activity := conn.activitySnapshot()
+			leaseAdmitted, leaseActive, poolConnections := conn.lease.diagnosticSnapshot()
+			data := map[string]any{
+				"transport":                         "responses_websocket",
+				"error":                             readErr.Error(),
+				"context_error":                     contextErrorString(ctx),
+				"context_cause":                     contextCauseString(ctx),
+				"session_id":                        wireReq.SessionID,
+				"connection_reused":                 reused,
+				"connection_reused_from_state":      activity.LastReuseFrom,
+				"connection_state":                  activity.State,
+				"connection_owner_session_id":       activity.OwnerSessionID,
+				"connection_response_active":        activity.ResponseActive,
+				"connection_read_error":             activity.ReadError,
+				"pool_lease_admitted_at_start":      leaseAdmittedAtStart,
+				"pool_lease_active_at_start":        leaseActiveAtStart,
+				"pool_connections_for_key_at_start": poolConnectionsAtStart,
+				"pool_lease_admitted_at_diagnostic": leaseAdmitted,
+				"pool_lease_active_at_diagnostic":   leaseActive,
+				"pool_connections_at_diagnostic":    poolConnections,
+				"previous_response_id_present":      wireReq.PreviousResponseID != "",
+				"protocol_event_count":              protocolEventCount,
+				"last_protocol_event":               lastProtocolEvent,
+				"meaningful_event_count":            meaningfulEventCount,
+				"last_meaningful_event":             lastMeaningfulEvent,
+				"application_frame_count":           activity.ApplicationFrames,
+				"ping_frame_count":                  activity.PingFrames,
+				"pong_frame_count":                  activity.PongFrames,
+			}
+			addDebugAgeMillis(data, "connection_age_ms", now, activity.ConnectedAt)
+			addDebugAgeMillis(data, "response_elapsed_ms", now, activity.ResponseStartedAt)
+			addDebugAgeMillis(data, "last_application_frame_age_ms", now, activity.LastApplicationAt)
+			addDebugAgeMillis(data, "last_control_frame_age_ms", now, activity.LastControlAt)
+			addDebugAgeMillis(data, "last_protocol_event_age_ms", now, lastProtocolEventAt)
+			addDebugAgeMillis(data, "last_meaningful_event_age_ms", now, lastMeaningfulEventAt)
+			emitDebugDiagnostic(ctx, "responses_websocket_terminated", data)
+			if debugRaw {
+				if encoded, err := json.MarshalIndent(data, "", "  "); err == nil {
+					DebugRawSection(true, "Responses WebSocket Termination Diagnostic", string(encoded))
+				}
+			}
+		}
 
 		for {
 			data, err := conn.nextMessage(ctx)
 			if err != nil {
+				emitTerminationDiagnostic(err)
 				c.discardWebSocketLocked()
 				if ctx.Err() != nil {
 					return ctx.Err()
@@ -426,6 +807,15 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 			if err != nil {
 				c.discardWebSocketLocked()
 				return fmt.Errorf("decode Responses WebSocket event envelope: %w", err)
+			}
+			protocolEventCount++
+			lastProtocolEvent = eventType
+			lastProtocolEventAt = time.Now()
+			if responsesWebSocketEventIsMeaningfulProgress(eventType) {
+				meaningfulEventCount++
+				lastMeaningfulEvent = eventType
+				lastMeaningfulEventAt = lastProtocolEventAt
+				conn.noteApplicationProgress()
 			}
 			completed, err := handler.HandleJSONEvent(data, eventType, send)
 			if err != nil {
@@ -453,8 +843,9 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 					retriedFullState = true
 					c.clearLastResponseIDIfGeneration(responseStateGeneration, wireReq.SessionID, wireReq.PreviousResponseID)
 					c.wsLastRequest = nil
+					c.wsContinuationBaseline = nil
 					wireReq.PreviousResponseID = ""
-					wireReq.Input = buildFullInput()
+					wireReq.Input = fullRequestInput
 					handler = newResponsesStreamEventHandler(c, responseStateGeneration, debugRaw, "Responses WebSocket", c.websocketServerStateEnabled(), wireReq.SessionID, wireReq.suppressReasoningSummaryDeltas())
 					if debugRaw {
 						DebugRawSection(debugRaw, "Responses WebSocket Full-State Retry", err.Error())
@@ -478,31 +869,79 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 			}
 		}
 
-		// Park the pump before publishing EventDone. Any already-queued trailing
-		// application frame invalidates the connection, and subsequent pings/closes
-		// remain serviced without an inference idle timer.
-		conn.finishResponse()
-		responseActive = false
-
-		// Stop the cancellation watcher before emitting the terminal EventDone.
-		// Consumers commonly call Close immediately after receiving EventDone; if the
-		// watcher is still active, that Close can race with this goroutine returning
-		// and close an otherwise healthy WebSocket that should be reused for the next
-		// turn.
+		// Stop the response-scoped cancellation watcher before transferring socket
+		// ownership to a possible tool continuation. Stream.Close commonly follows
+		// EventDone and must not close a socket retained by the parent agentic run.
 		stopWatchingContext()
 
+		lastResponseID, _, stateSessionID := c.responseState()
+		if stateSessionID == wireReq.SessionID {
+			c.wsContinuationBaseline = newResponsesWebSocketContinuationBaseline(wireReq.SessionID, lastResponseID, fullRequestInput, handler.OutputItems())
+		} else {
+			c.wsContinuationBaseline = nil
+		}
+		retainedForTool := stateSessionID == wireReq.SessionID && conn.retainForToolContinuation(parentCtx, lastResponseID, handler.FunctionCallIDs())
+		if retainedForTool {
+			responseActive = false
+			lastReq := wireReq
+			// Future continuation checks only compare non-input request metadata. Do
+			// not rebuild or retain the full transcript during local tool execution.
+			lastReq.Input = nil
+			lastReq.Messages = nil
+			lastReq.PreviousResponseID = ""
+			c.wsLastRequest = &lastReq
+		} else {
+			conn.finishResponse()
+			responseActive = false
+			lastReq := wireReq
+			lastReq.Input = nil
+			lastReq.Messages = nil
+			lastReq.PreviousResponseID = ""
+			c.wsLastRequest = &lastReq
+		}
+
 		if err := handler.Finish(send); err != nil {
+			if retainedForTool {
+				c.discardWebSocketLocked()
+			}
 			return err
 		}
-		lastReq := wireReq
-		// Future continuation checks only compare non-input request metadata. Do not
-		// rebuild or retain the full transcript after every completed WebSocket turn.
-		lastReq.Input = nil
-		lastReq.Messages = nil
-		lastReq.PreviousResponseID = ""
-		c.wsLastRequest = &lastReq
 		return nil
 	}), nil
+}
+
+func responsesWebSocketEventIsMeaningfulProgress(eventType string) bool {
+	switch strings.TrimSpace(eventType) {
+	case "", "response.created", "response.queued", "response.in_progress":
+		return false
+	default:
+		return true
+	}
+}
+
+func addDebugAgeMillis(data map[string]any, key string, now, then time.Time) {
+	if data == nil || key == "" || then.IsZero() {
+		return
+	}
+	age := now.Sub(then)
+	if age < 0 {
+		age = 0
+	}
+	data[key] = age.Milliseconds()
+}
+
+func contextErrorString(ctx context.Context) string {
+	if ctx == nil || ctx.Err() == nil {
+		return ""
+	}
+	return ctx.Err().Error()
+}
+
+func contextCauseString(ctx context.Context) string {
+	if ctx == nil || context.Cause(ctx) == nil {
+		return ""
+	}
+	return context.Cause(ctx).Error()
 }
 
 func isPreviousResponseIDRejected(err error) bool {
@@ -519,14 +958,90 @@ func isPreviousResponseIDRejected(err error) bool {
 		(strings.Contains(msg, "invalid") || strings.Contains(msg, "unsupported") || strings.Contains(msg, "not found"))
 }
 
+type responsesWebSocketContinuationBaseline struct {
+	sessionID      string
+	responseID     string
+	requestInput   [][sha256.Size]byte
+	responseOutput [][sha256.Size]byte
+}
+
+func newResponsesWebSocketContinuationBaseline(sessionID, responseID string, requestInput, responseOutput []ResponsesInputItem) *responsesWebSocketContinuationBaseline {
+	responseID = strings.TrimSpace(responseID)
+	if responseID == "" {
+		return nil
+	}
+	requestFingerprints, ok := responsesInputFingerprints(requestInput)
+	if !ok {
+		return nil
+	}
+	responseFingerprints, ok := responsesInputFingerprints(responseOutput)
+	if !ok {
+		return nil
+	}
+	return &responsesWebSocketContinuationBaseline{
+		sessionID:      sessionID,
+		responseID:     responseID,
+		requestInput:   requestFingerprints,
+		responseOutput: responseFingerprints,
+	}
+}
+
+func responsesInputFingerprints(items []ResponsesInputItem) ([][sha256.Size]byte, bool) {
+	fingerprints := make([][sha256.Size]byte, len(items))
+	for i, item := range items {
+		raw, err := json.Marshal(item)
+		if err != nil {
+			return nil, false
+		}
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		var normalized any
+		if err := decoder.Decode(&normalized); err != nil {
+			return nil, false
+		}
+		canonical, err := json.Marshal(normalized)
+		if err != nil {
+			return nil, false
+		}
+		fingerprints[i] = sha256.Sum256(canonical)
+	}
+	return fingerprints, true
+}
+
+func (b *responsesWebSocketContinuationBaseline) incrementalSuffix(sessionID, responseID string, current []ResponsesInputItem) ([]ResponsesInputItem, bool) {
+	if b == nil || b.sessionID != sessionID || b.responseID != responseID {
+		return nil, false
+	}
+	currentFingerprints, ok := responsesInputFingerprints(current)
+	if !ok {
+		return nil, false
+	}
+	prefixLen := len(b.requestInput) + len(b.responseOutput)
+	if len(currentFingerprints) < prefixLen {
+		return nil, false
+	}
+	for i, expected := range b.requestInput {
+		if currentFingerprints[i] != expected {
+			return nil, false
+		}
+	}
+	for i, expected := range b.responseOutput {
+		if currentFingerprints[len(b.requestInput)+i] != expected {
+			return nil, false
+		}
+	}
+	return append([]ResponsesInputItem(nil), current[prefixLen:]...), true
+}
+
 func (c *ResponsesClient) prepareWebSocketContinuationLocked(req ResponsesRequest, buildContinuationInput func() []ResponsesInputItem, buildFullInput func() []ResponsesInputItem) ResponsesRequest {
 	lastResponseID, _, responseStateSessionID := c.responseState()
 	if responseStateSessionID != req.SessionID {
 		lastResponseID = ""
 	}
+	fullInput := buildFullInput()
 	if !c.websocketServerStateEnabled() || lastResponseID == "" {
 		req.PreviousResponseID = ""
-		req.Input = buildFullInput()
+		req.Input = fullInput
 		return req
 	}
 
@@ -536,7 +1051,7 @@ func (c *ResponsesClient) prepareWebSocketContinuationLocked(req ResponsesReques
 
 	useFullInput := func() ResponsesRequest {
 		req.PreviousResponseID = ""
-		req.Input = buildFullInput()
+		req.Input = fullInput
 		return req
 	}
 
@@ -547,9 +1062,6 @@ func (c *ResponsesClient) prepareWebSocketContinuationLocked(req ResponsesReques
 		}
 		// Other Responses providers may expose durable previous_response_id state
 		// that predates this client connection.
-		if req.Input != nil {
-			return req
-		}
 		if continuation := buildContinuationInput(); len(continuation) > 0 {
 			req.Input = continuation
 			return req
@@ -563,17 +1075,20 @@ func (c *ResponsesClient) prepareWebSocketContinuationLocked(req ResponsesReques
 		return useFullInput()
 	}
 
-	if req.Input != nil {
+	if suffix, ok := c.wsContinuationBaseline.incrementalSuffix(req.SessionID, req.PreviousResponseID, fullInput); ok {
+		req.Input = suffix
 		return req
 	}
 
-	// The caller already knows how to build an incremental continuation; prefer
-	// that over rebuilding and rescanning the full transcript on every follow-up.
-	if continuation := buildContinuationInput(); len(continuation) > 0 {
-		req.Input = continuation
-		return req
+	// A durable provider may expose previous_response_id state imported without a
+	// local prefix baseline. Preserve the legacy suffix builder for that case only;
+	// connection-local ChatGPT state must always prove the complete ordered prefix.
+	if c.wsContinuationBaseline == nil && !c.WebSocketServerState {
+		if continuation := buildContinuationInput(); len(continuation) > 0 {
+			req.Input = continuation
+			return req
+		}
 	}
-
 	return useFullInput()
 }
 
@@ -874,7 +1389,7 @@ func (c *ResponsesClient) ensureWebSocket(ctx context.Context, req ResponsesRequ
 	}
 	betaHeader = composeBetaHeader(betaHeader, responsesWebSocketBetaHeader)
 	if c.wsConn != nil {
-		if c.wsConn.healthy() && c.wsConnSessionID == req.SessionID && c.wsConnBetaHeader == betaHeader {
+		if c.wsConn.healthy() && c.wsConnSessionID == req.SessionID && c.wsConnBetaHeader == betaHeader && c.wsConn.reserveResponse(req.SessionID, req.PreviousResponseID, req.Input) {
 			return c.wsConn, true, nil
 		}
 		// SessionID and feature betas are WebSocket handshake state. A read
@@ -903,6 +1418,21 @@ func (c *ResponsesClient) ensureWebSocket(ctx context.Context, req ResponsesRequ
 	// WebSocket transport and request-scoped feature betas are additive.
 	header.Set("OpenAI-Beta", betaHeader)
 
+	lease, err := sharedResponsesWebSocketPool.acquire(c.websocketAdmissionKey())
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() {
+		if lease != nil {
+			lease.release()
+		}
+	}()
+	adoptConnection := func(conn *websocket.Conn) *responsesWebSocketConnection {
+		ws := newResponsesWebSocketConnection(conn, lease, req.SessionID, c.WebSocketIdleTimeout, c.WebSocketFirstEventTimeout, c.WebSocketParkedTimeout)
+		lease = nil
+		return ws
+	}
+
 	connectTimeout := c.WebSocketConnectTimeout
 	if connectTimeout == 0 {
 		connectTimeout = 30 * time.Second
@@ -930,7 +1460,7 @@ func (c *ResponsesClient) ensureWebSocket(ctx context.Context, req ResponsesRequ
 					defer retryCancel()
 					conn, retryResp, retryErr := dialOnce(retryCtx, headerWithFreshAuth(header, c))
 					if retryErr == nil {
-						c.wsConn = newResponsesWebSocketConnection(conn, c.WebSocketIdleTimeout)
+						c.wsConn = adoptConnection(conn)
 						c.wsConnSessionID = req.SessionID
 						c.wsConnBetaHeader = betaHeader
 						return c.wsConn, false, nil
@@ -949,7 +1479,7 @@ func (c *ResponsesClient) ensureWebSocket(ctx context.Context, req ResponsesRequ
 		}
 		return nil, false, fmt.Errorf("connect Responses WebSocket: %w", err)
 	}
-	c.wsConn = newResponsesWebSocketConnection(conn, c.WebSocketIdleTimeout)
+	c.wsConn = adoptConnection(conn)
 	c.wsConnSessionID = req.SessionID
 	c.wsConnBetaHeader = betaHeader
 	return c.wsConn, false, nil
@@ -978,7 +1508,15 @@ func (c *ResponsesClient) closeWebSocket() {
 }
 
 func (c *ResponsesClient) discardWebSocketLocked() {
+	c.closeWebSocketConnectionLocked(true)
+}
+
+func (c *ResponsesClient) closeWebSocketConnectionLocked(clearLastRequest bool) {
 	if c.wsConn == nil {
+		if clearLastRequest {
+			c.wsLastRequest = nil
+			c.wsContinuationBaseline = nil
+		}
 		return
 	}
 	closeTimeout := 5 * time.Second
@@ -988,5 +1526,8 @@ func (c *ResponsesClient) discardWebSocketLocked() {
 	c.wsConn = nil
 	c.wsConnSessionID = ""
 	c.wsConnBetaHeader = ""
-	c.wsLastRequest = nil
+	if clearLastRequest {
+		c.wsLastRequest = nil
+		c.wsContinuationBaseline = nil
+	}
 }

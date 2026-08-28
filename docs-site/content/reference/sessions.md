@@ -116,25 +116,29 @@ file_tracking:
   enabled: true
 ```
 
-Tracked changes include:
+Agent Changes include witnessed `write_file`, `edit_file`, and `unified_diff` transitions plus shell transitions covered by a compatible pre-execution `transform` or `generate` output claim and verified by bounded snapshots. Direct and declared provenance are labeled separately. Materialized output (clone, checkout, install, download, extraction, initial copy) and unclaimed detected effects are presented in separate sections and never contribute file or line totals.
 
-- `write_file`, `edit_file`, and `unified_diff` writes
-- files created, modified, or deleted by `shell` commands when they are detectable
-- cumulative before/after diffs for the session, not just the last tool call
-
-Shell tracking is best with explicit `affected_paths` hints:
+For shell calls, `affected_paths` is inspection scope only. Use `output_claims` for attribution:
 
 ```json
 {
   "command": "go generate ./...",
   "working_dir": "/path/to/repo",
-  "affected_paths": ["**/*.go", "go.mod", "go.sum"]
+  "affected_paths": ["**/*.go", "go.mod", "go.sum"],
+  "output_claims": [
+    {"path": "internal/**/*.go", "kind": "transform"},
+    {"path": "internal/generated/**", "kind": "generate"}
+  ]
 }
 ```
 
-Without hints, term-llm falls back to `git status` in repositories and to paths already touched in the session. That catches common repo work, but broad scripts writing outside git need hints if you want reliable history.
+Without claims, detected transitions are observations. Git status and prior session paths remain best-effort discovery sources but cannot attribute changes. Unconfirmed claims and incomplete coverage are shown explicitly.
 
-The file-change store keeps actual file contents, subject to the configured byte caps. Large files, binary files, and over-budget sessions are still listed as metadata-only changes, but their full diffs are not retained. See [Configuration](/reference/configuration/#file-change-tracking-config/) for retention and privacy details.
+**Last turn** and **Last 3 turns** use a persisted completed-run index, so a latest conversational, failed, canceled, read-only, or observation-only run correctly produces an empty Agent Changes list rather than falling back to an older changing run.
+
+The attributed store may retain before/after content under independent file, session, and global byte caps. Immutable content status distinguishes oversized, binary, unknown-side, and budget cases; totals are marked partial when line-count inputs are unavailable. Observations are metadata-only in a physically separate SQLite sidecar with independent retention, so clone/install/build noise cannot evict attributed blobs. Historical shell rows that predate output claims are labeled unverified and excluded from current totals.
+
+Shell attribution is declaration-verified, not proof of exclusive process causation or intellectual authorship. A concurrent editor, watcher, language server, child process, or another agent can write during the observation window; broad or dishonest claims can misclassify imported content; opaque materialize-then-adapt phases cannot be reconstructed; same-size mtime-preserving changes may be missed when content was not captured; create/delete and modify/restore cycles are net no-ops; and symlinks, hardlinks, renames, remote filesystems, path reuse, and bounded observation can obscure identity or produce false negatives. Direct provenance has a stronger mutation witness but still does not establish legal authorship.
 
 ## Context compaction
 

@@ -77,7 +77,7 @@ func branchMessagePreview(message session.Message, toolCalls map[string]*llm.Too
 }
 
 func hiddenBranchTreeMessage(message session.Message) bool {
-	if message.CompactionTail || llm.IsInternalCompactionSummaryText(message.TextContent) {
+	if message.CompactionTail || message.IsGoalSteering() || llm.IsInternalCompactionSummaryText(message.TextContent) {
 		return true
 	}
 	for _, part := range message.Parts {

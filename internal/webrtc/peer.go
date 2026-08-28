@@ -45,8 +45,9 @@ const maxDataChannelConcurrentRequests = 8
 // signalingMsg is a message exchanged via the signaling server.
 type signalingMsg struct {
 	SessionID string `json:"session_id"`
-	Type      string `json:"type"` // "offer" or "answer"
-	SDP       string `json:"sdp"`
+	Type      string `json:"type"` // "offer", "answer", or "rejected"
+	SDP       string `json:"sdp,omitempty"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 // requestFrame is a data-channel request from the browser.
@@ -127,7 +128,9 @@ type peer struct {
 	cfg          Config
 	handler      http.Handler
 	cancel       context.CancelFunc
-	active       atomic.Int32
+	active       atomic.Int32 // active plus setup reservations
+	connected    atomic.Int32
+	rejected     atomic.Uint64
 	client       *http.Client
 	setupTimeout time.Duration
 }
@@ -167,6 +170,16 @@ func (p *peer) Close() error {
 	return nil
 }
 
+func (p *peer) Diagnostics() Diagnostics {
+	connected := p.connected.Load()
+	total := p.active.Load()
+	reserved := total - connected
+	if reserved < 0 {
+		reserved = 0
+	}
+	return Diagnostics{Active: connected, Reserved: reserved, Rejected: p.rejected.Load()}
+}
+
 func (p *peer) run(ctx context.Context) {
 	for {
 		if ctx.Err() != nil {
@@ -181,6 +194,31 @@ func (p *peer) run(ctx context.Context) {
 		case <-time.After(p.cfg.PollInterval):
 		}
 	}
+}
+
+type connectionReservation struct {
+	peer *peer
+	once sync.Once
+}
+
+func (p *peer) reserve() (*connectionReservation, bool) {
+	for {
+		current := p.active.Load()
+		if int(current) >= p.cfg.MaxConns {
+			p.rejected.Add(1)
+			return nil, false
+		}
+		if p.active.CompareAndSwap(current, current+1) {
+			return &connectionReservation{peer: p}, true
+		}
+	}
+}
+
+func (r *connectionReservation) release() {
+	if r == nil || r.peer == nil {
+		return
+	}
+	r.once.Do(func() { r.peer.active.Add(-1) })
 }
 
 func (p *peer) pollOnce(ctx context.Context) error {
@@ -216,11 +254,19 @@ func (p *peer) pollOnce(ctx context.Context) error {
 	if msg.Type != "offer" {
 		return nil
 	}
-	if int(p.active.Load()) >= p.cfg.MaxConns {
+	reservation, ok := p.reserve()
+	if !ok {
 		log.Printf("webrtc: max connections (%d) reached, rejecting offer for session %s", p.cfg.MaxConns, msg.SessionID)
+		if err := p.postSignal(ctx, signalingMsg{
+			SessionID: msg.SessionID,
+			Type:      "rejected",
+			Reason:    "admission_full",
+		}); err != nil {
+			return fmt.Errorf("post admission rejection: %w", err)
+		}
 		return nil
 	}
-	go p.handleOffer(ctx, msg)
+	go p.handleOffer(ctx, msg, reservation)
 	return nil
 }
 
@@ -370,9 +416,8 @@ func makeFingerprintVerifier(algo, expected string) func([][]byte, [][]*x509.Cer
 	}
 }
 
-func (p *peer) handleOffer(ctx context.Context, offer signalingMsg) {
-	p.active.Add(1)
-	defer p.active.Add(-1)
+func (p *peer) handleOffer(ctx context.Context, offer signalingMsg, reservation *connectionReservation) {
+	defer reservation.release()
 
 	info, err := parseOffer(offer.SDP)
 	if err != nil {
@@ -587,6 +632,8 @@ func (p *peer) handleOffer(ctx context.Context, offer signalingMsg) {
 	}
 	setupCancel()
 
+	p.connected.Add(1)
+	defer p.connected.Add(-1)
 	p.runDataChannel(ctx, dc, func() {
 		_ = sctpAssoc.Close()
 	})

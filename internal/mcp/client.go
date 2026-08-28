@@ -85,6 +85,7 @@ type Client struct {
 	refreshDone       chan struct{}
 	toolRefreshSignal chan struct{}
 	stdioStderr       *synchronizedLimitedBuffer
+	maxToolsPerServer int
 	onCatalogueChange func(oldSnapshot, newSnapshot *ToolSnapshot, err error)
 	snapshot          atomic.Pointer[ToolSnapshot]
 	lifecycleMu       sync.Mutex
@@ -427,13 +428,17 @@ func (c *Client) acquireToolSnapshot(ctx context.Context, session *mcp.ClientSes
 	if session == nil {
 		return nil, fmt.Errorf("MCP server %s has no active session", c.name)
 	}
+	maxTools := c.maxToolsPerServer
+	if maxTools <= 0 {
+		maxTools = MaxToolsPerServer
+	}
 	var tools []*mcp.Tool
 	for tool, err := range session.Tools(ctx, nil) {
 		if err != nil {
 			return nil, err
 		}
-		if len(tools) >= MaxToolsPerServer {
-			return nil, fmt.Errorf("MCP server %s exceeds maximum catalogue size of %d tools", c.name, MaxToolsPerServer)
+		if len(tools) >= maxTools {
+			return nil, fmt.Errorf("MCP server %s exceeds maximum catalogue size of %d tools", c.name, maxTools)
 		}
 		tools = append(tools, tool)
 	}

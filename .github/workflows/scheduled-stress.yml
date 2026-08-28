@@ -1,0 +1,89 @@
+name: Scheduled stress
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scheduled-stress
+  cancel-in-progress: false
+
+jobs:
+  race:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            internal/reflow/go.sum
+            internal/terminal/runtime/go.sum
+            internal/terminal/renderer/go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend assets
+        run: make frontend
+
+      - name: Race-test root module
+        run: go test -race ./...
+
+      - name: Race-test nested modules
+        run: |
+          for module in internal/reflow internal/terminal/renderer internal/terminal/runtime; do
+            (cd "$module" && go test -race ./...)
+          done
+
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            internal/reflow/go.sum
+            internal/terminal/runtime/go.sum
+            internal/terminal/renderer/go.sum
+
+      - name: Fuzz owned renderer differential, invariant, and parser paths
+        env:
+          FUZZ_DIFFERENTIAL_TIME: 2m
+          FUZZ_SHIFT_TIME: 2m
+          FUZZ_ROW_PARSE_TIME: 2m
+          FUZZ_ROW_PREDICATE_TIME: 2m
+          FUZZ_CELL_SHIFT_TIME: 2m
+          FUZZ_PARSE_TIME: 2m
+          FUZZ_DECODE_LOOP_TIME: 2m
+          FUZZ_DECODE_OVERREAD_TIME: 2m
+          FUZZ_DECODE_INTRODUCER_TIME: 2m
+        run: scripts/fuzz_owned_renderer.sh
+
+      - name: Upload fuzz failure corpus
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: owned-terminal-fuzz-corpus-${{ github.run_id }}
+          path: internal/terminal/*/testdata/fuzz/
+          if-no-files-found: ignore
+          retention-days: 14

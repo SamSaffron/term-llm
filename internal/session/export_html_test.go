@@ -182,13 +182,14 @@ func TestVisibleExportMessages(t *testing.T) {
 		{Sequence: 1, TextContent: "before"},
 		{Sequence: 2, TextContent: "[Context Compaction] summary"},
 		{Sequence: 3, TextContent: "duplicate", CompactionTail: true},
-		{Sequence: 4, TextContent: "after"},
+		*NewMessage("s", llm.GoalSteeringText("internal continuation"), 4),
+		{Sequence: 5, TextContent: "after"},
 	}
 	got := VisibleExportMessages(messages)
-	if len(got) != 3 || got[0].Sequence != 1 || got[1].Sequence != 2 || got[2].Sequence != 4 {
+	if len(got) != 3 || got[0].Sequence != 1 || got[1].Sequence != 2 || got[2].Sequence != 5 {
 		t.Fatalf("VisibleExportMessages = %#v", got)
 	}
-	if len(messages) != 4 {
+	if len(messages) != 5 {
 		t.Fatal("input slice was mutated")
 	}
 }

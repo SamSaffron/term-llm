@@ -66,12 +66,10 @@ func TestHandleSessionsSelectedSessionSideloadsStartupMetadata(t *testing.T) {
 			t.Fatalf("Create(%s): %v", sess.ID, err)
 		}
 	}
-	if _, err := fileStore.RecordChange(ctx, filetrack.ChangeRecord{
-		SessionID: changed.ID,
-		RunID:     "run-1",
-		Path:      "/work/changed.go",
-		Before:    []byte("old\nkeep\n"),
-		After:     []byte("new\nkeep\nextra\n"),
+	if _, err := fileStore.RecordAttributedChange(ctx, filetrack.ChangeRecord{
+		SessionID: changed.ID, RunID: "run-1", ToolName: "write_file", Path: "/work/changed.go",
+		Before: []byte("old\nkeep\n"), After: []byte("new\nkeep\nextra\n"),
+		Provenance: filetrack.ProvenanceDirect, ClaimCoverage: filetrack.CoverageComplete, BaselineState: filetrack.BaselineNormal,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +186,13 @@ func TestSessionFileChangesEndpoints(t *testing.T) {
 		if rec.RunID == "" {
 			rec.RunID = "run-1"
 		}
-		if _, err := store.RecordChange(ctx, rec); err != nil {
+		rec.Provenance = filetrack.ProvenanceDirect
+		rec.ClaimCoverage = filetrack.CoverageComplete
+		rec.BaselineState = filetrack.BaselineNormal
+		if rec.ToolName == "" {
+			rec.ToolName = "write_file"
+		}
+		if _, err := store.RecordAttributedChange(ctx, rec); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -449,9 +453,10 @@ func TestSessionFileChangesRequireLiveSession(t *testing.T) {
 	srv.store = sessions
 
 	for _, id := range []string{"live-session", "deleted-session"} {
-		if _, err := store.RecordChange(ctx, filetrack.ChangeRecord{
-			SessionID: id, RunID: "run-1", Path: "/work/f.txt",
-			After: []byte("x\n"), BeforeMissing: true,
+		if _, err := store.RecordAttributedChange(ctx, filetrack.ChangeRecord{
+			SessionID: id, RunID: "run-1", ToolName: "write_file", Path: "/work/f.txt",
+			After: []byte("x\n"), BeforeMissing: true, Provenance: filetrack.ProvenanceDirect,
+			ClaimCoverage: filetrack.CoverageComplete, BaselineState: filetrack.BaselineNormal,
 		}); err != nil {
 			t.Fatal(err)
 		}

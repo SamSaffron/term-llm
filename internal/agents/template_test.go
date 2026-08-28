@@ -195,6 +195,21 @@ func TestExpandTemplate(t *testing.T) {
 	}
 }
 
+func TestExpandTemplate_FileTrackingInstructions(t *testing.T) {
+	template := "before\n{{file_tracking_instructions}}\nafter"
+	disabled := ExpandTemplate(template, TemplateContext{}.WithFileTracking(false))
+	if strings.Contains(disabled, "affected_paths") || strings.Contains(disabled, "file_tracking_instructions") {
+		t.Fatalf("disabled file tracking instructions leaked into prompt: %q", disabled)
+	}
+
+	enabled := ExpandTemplate(template, TemplateContext{}.WithFileTracking(true))
+	for _, want := range []string{"## Filesystem tracking", "affected_paths", "output_claims", "kind: materialize"} {
+		if !strings.Contains(enabled, want) {
+			t.Fatalf("enabled prompt missing %q: %q", want, enabled)
+		}
+	}
+}
+
 func TestNewTemplateContextForTemplate_SkipsGitWhenTemplateDoesNotUseGitFields(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("git PATH shim test requires a POSIX shell")

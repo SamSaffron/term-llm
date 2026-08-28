@@ -136,40 +136,86 @@ func removeChatGPTCredentials(credPath string) error {
 }
 
 // RefreshChatGPTCredentials refreshes the access token using the refresh token.
-// The updated credentials are automatically saved to storage.
+// Remote OAuth I/O deliberately runs outside the process and file locks. A
+// short compare-and-swap commit prevents a stale refresh from overwriting a
+// concurrent login, logout, or refresh.
 func RefreshChatGPTCredentials(creds *ChatGPTCredentials) error {
-	return withChatGPTCredentialsLock(func(credPath string) error {
+	if creds == nil {
+		return fmt.Errorf("missing ChatGPT credentials")
+	}
+	base := *creds
+	hadStored := false
+	if err := withChatGPTCredentialsLock(func(credPath string) error {
 		stored, err := readChatGPTCredentials(credPath)
 		if err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("failed to reload ChatGPT credentials: %w", err)
 		}
-		if err == nil && (stored.RefreshToken != creds.RefreshToken || stored.ExpiresAt > creds.ExpiresAt) {
-			*creds = *stored
-			if !creds.IsExpired() {
-				return nil
+		if err == nil {
+			hadStored = true
+			// The CAS baseline must be the generation actually present on disk,
+			// not a caller's potentially stale or speculative in-memory copy.
+			base = *stored
+			if !base.IsExpired() {
+				*creds = base
 			}
 		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if !base.IsExpired() {
+		*creds = base
+		return nil
+	}
+	if base.RefreshToken == "" {
+		return fmt.Errorf("no refresh token available")
+	}
 
-		if creds.RefreshToken == "" {
-			return fmt.Errorf("no refresh token available")
+	tokenResp, refreshErr := refreshChatGPTToken(base.RefreshToken)
+	return withChatGPTCredentialsLock(func(credPath string) error {
+		stored, readErr := readChatGPTCredentials(credPath)
+		if readErr != nil && !os.IsNotExist(readErr) {
+			return fmt.Errorf("failed to reload ChatGPT credentials: %w", readErr)
 		}
-
-		tokenResp, err := refreshChatGPTToken(creds.RefreshToken)
-		if err != nil {
-			return err
+		if readErr == nil && !sameChatGPTCredentialGeneration(stored, &base) {
+			*creds = *stored
+			if !stored.IsExpired() {
+				return nil
+			}
+			// If the credential still names the token generation we exchanged,
+			// commit a successful server rotation rather than strand the newly
+			// rotated refresh token. A different refresh token is authoritative.
+			if refreshErr != nil || tokenResp == nil || tokenResp.RefreshToken == "" || stored.RefreshToken != base.RefreshToken {
+				return fmt.Errorf("ChatGPT credentials changed during refresh")
+			}
 		}
-
-		creds.AccessToken = tokenResp.AccessToken
-		creds.ExpiresAt = time.Now().Unix() + int64(tokenResp.ExpiresIn)
+		if os.IsNotExist(readErr) && hadStored {
+			return fmt.Errorf("ChatGPT credentials were cleared during refresh")
+		}
+		if refreshErr != nil {
+			*creds = base
+			return refreshErr
+		}
+		replacement := base
+		replacement.AccessToken = tokenResp.AccessToken
+		replacement.ExpiresAt = time.Now().Unix() + int64(tokenResp.ExpiresIn)
 		if tokenResp.RefreshToken != "" {
-			creds.RefreshToken = tokenResp.RefreshToken
+			replacement.RefreshToken = tokenResp.RefreshToken
 		}
-
-		if err := saveChatGPTCredentials(credPath, creds); err != nil {
+		if err := saveChatGPTCredentials(credPath, &replacement); err != nil {
 			return fmt.Errorf("failed to save refreshed credentials: %w", err)
 		}
+		*creds = replacement
 		return nil
 	})
+}
+
+func sameChatGPTCredentialGeneration(a, b *ChatGPTCredentials) bool {
+	return a != nil && b != nil &&
+		a.AccessToken == b.AccessToken &&
+		a.RefreshToken == b.RefreshToken &&
+		a.ExpiresAt == b.ExpiresAt &&
+		a.AccountID == b.AccountID
 }
 
 func withChatGPTCredentialsLock(fn func(credPath string) error) (err error) {

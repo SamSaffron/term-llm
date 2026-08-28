@@ -69,7 +69,11 @@ func runWebRTCPeer(ctx context.Context, s *serveServer) {
 		log.Printf("webrtc: failed to start peer: %v", err)
 		return
 	}
-	// peer.Close() cancels the internal context; the outer ctx cancellation
-	// propagates automatically, so explicit cleanup is not required.
-	_ = peer
+	s.webrtcMu.Lock()
+	s.webrtcPeer = peer
+	s.webrtcMu.Unlock()
+	go func() {
+		<-ctx.Done()
+		_ = peer.Close()
+	}()
 }

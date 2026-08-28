@@ -14,11 +14,7 @@ next:
 curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh
 ```
 
-Or with `go install`:
-
-```bash
-go install github.com/samsaffron/term-llm@latest
-```
+For a source build, clone the repository and run `make build`; it requires Go, Node.js 24 or newer, npm, and Make. Published release binaries remain self-contained.
 
 ## Pick a provider
 

@@ -53,12 +53,13 @@ type serverStartup struct {
 
 // Manager handles MCP server lifecycle and provides tools to LLM.
 type Manager struct {
-	config     *Config
-	clients    map[string]*Client
-	statuses   map[string]*ServerState
-	startups   map[string]*serverStartup
-	catalogues map[string]*ToolSnapshot
-	mu         sync.RWMutex
+	config            *Config
+	clients           map[string]*Client
+	statuses          map[string]*ServerState
+	startups          map[string]*serverStartup
+	catalogues        map[string]*ToolSnapshot
+	maxToolsPerServer int
+	mu                sync.RWMutex
 
 	aggregate           atomic.Pointer[CatalogueSnapshot]
 	aggregateGeneration uint64
@@ -316,6 +317,7 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 
 	// Create client and set status to starting.
 	client := NewClient(name, serverCfg)
+	client.maxToolsPerServer = m.maxToolsPerServer
 	client.SetCatalogueChangeHandler(func(oldSnapshot, newSnapshot *ToolSnapshot, err error) {
 		m.handleCatalogueChange(name, client, oldSnapshot, newSnapshot, err)
 	})

@@ -1,0 +1,169 @@
+{
+  "base_sha": "d9887abd2fe5f4f710176469b336e3da04d3c489",
+  "conditions": {
+    "brotli_quality": 11,
+    "gzip_level": 6,
+    "html": "representative rendered production bootstrap",
+    "lazy": "KaTeX plus dark highlight theme; fonts excluded because glyph-dependent",
+    "route": "/ui/",
+    "webrtc": false
+  },
+  "kind": "baseline",
+  "lazy_vendor": {
+    "assets": [
+      "vendor/katex/katex.min.css",
+      "vendor/katex/katex.min.js",
+      "vendor/katex/auto-render.min.js",
+      "vendor/hljs/github-dark.min.css",
+      "vendor/hljs/highlight.min.js"
+    ],
+    "requests": 5,
+    "sizes": {
+      "brotli11": 104657,
+      "gzip6": 124260,
+      "raw": 425986
+    }
+  },
+  "legacy_delivered": {
+    "combined_total": {
+      "brotli11": 270400,
+      "gzip6": 313950,
+      "raw": 1318053
+    },
+    "first_party_css": {
+      "brotli11": 20356,
+      "gzip6": 25003,
+      "raw": 161397
+    },
+    "first_party_js": {
+      "brotli11": 223675,
+      "gzip6": 259130,
+      "raw": 1050028
+    },
+    "first_party_total": {
+      "brotli11": 251510,
+      "gzip6": 293109,
+      "raw": 1256193
+    },
+    "html": {
+      "brotli11": 7479,
+      "gzip6": 8976,
+      "raw": 44768
+    },
+    "requests": {
+      "combined": 45,
+      "first_party": 43,
+      "vendor": 2
+    },
+    "vendor_js": {
+      "brotli11": 18890,
+      "gzip6": 20841,
+      "raw": 61860
+    },
+    "vendor_total": {
+      "brotli11": 18890,
+      "gzip6": 20841,
+      "raw": 61860
+    }
+  },
+  "legacy_toolchain_minified": {
+    "combined_total": {
+      "brotli11": 181919,
+      "gzip6": 217377,
+      "raw": 783819
+    },
+    "first_party_css": {
+      "brotli11": 18058,
+      "gzip6": 21289,
+      "raw": 119132
+    },
+    "first_party_js": {
+      "brotli11": 137492,
+      "gzip6": 166271,
+      "raw": 558059
+    },
+    "first_party_total": {
+      "brotli11": 163029,
+      "gzip6": 196536,
+      "raw": 721959
+    },
+    "html": {
+      "brotli11": 7479,
+      "gzip6": 8976,
+      "raw": 44768
+    },
+    "requests": {
+      "combined": 45,
+      "first_party": 43,
+      "vendor": 2
+    },
+    "vendor_js": {
+      "brotli11": 18890,
+      "gzip6": 20841,
+      "raw": 61860
+    },
+    "vendor_total": {
+      "brotli11": 18890,
+      "gzip6": 20841,
+      "raw": 61860
+    }
+  },
+  "schema": 2,
+  "service_worker_cache": {
+    "assets": [
+      "manifest.webmanifest",
+      "icon-512.png",
+      "app.css",
+      "markdown-setup.js",
+      "markdown-streaming.js",
+      "decoration.js",
+      "transcript-window.js",
+      "active-response.js",
+      "conversation.js",
+      "app-core.js",
+      "toast.js",
+      "app-network.js",
+      "app-plan.js",
+      "slash-commands.js",
+      "guardian-render.js",
+      "app-render.js",
+      "app-attachments.js",
+      "app-stream.js",
+      "app-response-effects.js",
+      "app-send.js",
+      "app-runtime.js",
+      "app-interject.js",
+      "app-modals.js",
+      "app-composer.js",
+      "app-skills.js",
+      "side-question.js",
+      "app-project-picker.js",
+      "app-sidebar.js",
+      "app-sessions.js",
+      "app-path-notes.js",
+      "app-branching.js",
+      "app-branch-commands.js",
+      "app-session-events.js",
+      "app-mcp.js",
+      "app-goals-location.js",
+      "app-message-convert.js",
+      "intent-storage.js",
+      "app-session-admin.js",
+      "app-diff-scopes.js",
+      "app-diff-context.js",
+      "app-diff-comments.js",
+      "app-diff-queue.js",
+      "app-diffs.js",
+      "app-worktrees.js",
+      "vendor/marked/marked.umd.min.js",
+      "vendor/dompurify/purify.min.js"
+    ],
+    "candidate_sizes": {
+      "brotli11": 558910,
+      "gzip6": 601124,
+      "raw": 1569542
+    },
+    "install_requests": 0,
+    "strategy": "opportunistic cache allowlist; install performs no asset fetches"
+  }
+}

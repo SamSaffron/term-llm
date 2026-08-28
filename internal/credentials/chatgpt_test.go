@@ -1,9 +1,11 @@
 package credentials
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -209,4 +211,139 @@ func waitForTestFile(t *testing.T, path string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", path)
+}
+
+func TestRefreshChatGPTCredentialsDoesNotHoldLockDuringNetwork(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	initial := &ChatGPTCredentials{AccessToken: "old", RefreshToken: "refresh", ExpiresAt: time.Now().Add(-time.Hour).Unix(), AccountID: "account"}
+	if err := SaveChatGPTCredentials(initial); err != nil {
+		t.Fatal(err)
+	}
+
+	oldRefresh := refreshChatGPTToken
+	t.Cleanup(func() { refreshChatGPTToken = oldRefresh })
+	started := make(chan struct{})
+	release := make(chan struct{})
+	refreshChatGPTToken = func(string) (*oauth.ChatGPTTokenResponse, error) {
+		close(started)
+		<-release
+		return &oauth.ChatGPTTokenResponse{AccessToken: "stale-result", RefreshToken: "rotated", ExpiresIn: 3600}, nil
+	}
+
+	refreshDone := make(chan error, 1)
+	go func() {
+		copy := *initial
+		refreshDone <- RefreshChatGPTCredentials(&copy)
+	}()
+	<-started
+
+	saveDone := make(chan error, 1)
+	go func() {
+		saveDone <- SaveChatGPTCredentials(&ChatGPTCredentials{AccessToken: "new-login", RefreshToken: "new-refresh", ExpiresAt: time.Now().Add(time.Hour).Unix(), AccountID: "account"})
+	}()
+	select {
+	case err := <-saveDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("credential save waited for another session's OAuth request")
+	}
+
+	close(release)
+	if err := <-refreshDone; err != nil {
+		t.Fatal(err)
+	}
+	stored, err := GetChatGPTCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.AccessToken != "new-login" {
+		t.Fatalf("stale refresh overwrote concurrent login: %+v", stored)
+	}
+}
+
+func TestRefreshChatGPTCredentialsUsesDiskGenerationAsCASBaseline(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	disk := &ChatGPTCredentials{AccessToken: "disk-old", RefreshToken: "disk-refresh", ExpiresAt: time.Now().Add(-2 * time.Hour).Unix(), AccountID: "account"}
+	if err := SaveChatGPTCredentials(disk); err != nil {
+		t.Fatal(err)
+	}
+	caller := &ChatGPTCredentials{AccessToken: "caller-newer", RefreshToken: "disk-refresh", ExpiresAt: time.Now().Add(-time.Hour).Unix(), AccountID: "account"}
+
+	oldRefresh := refreshChatGPTToken
+	t.Cleanup(func() { refreshChatGPTToken = oldRefresh })
+	refreshChatGPTToken = func(token string) (*oauth.ChatGPTTokenResponse, error) {
+		if token != "disk-refresh" {
+			t.Fatalf("refresh token = %q, want disk generation", token)
+		}
+		return &oauth.ChatGPTTokenResponse{AccessToken: "fresh", RefreshToken: "rotated", ExpiresIn: 3600}, nil
+	}
+	if err := RefreshChatGPTCredentials(caller); err != nil {
+		t.Fatal(err)
+	}
+	if caller.AccessToken != "fresh" || caller.RefreshToken != "rotated" {
+		t.Fatalf("caller credentials = %+v", caller)
+	}
+}
+
+func TestConcurrentChatGPTInvalidGrantAdoptsSiblingRefresh(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	initial := &ChatGPTCredentials{AccessToken: "old", RefreshToken: "refresh", ExpiresAt: time.Now().Add(-time.Hour).Unix(), AccountID: "account"}
+	if err := SaveChatGPTCredentials(initial); err != nil {
+		t.Fatal(err)
+	}
+
+	oldRefresh := refreshChatGPTToken
+	t.Cleanup(func() { refreshChatGPTToken = oldRefresh })
+	var calls atomic.Int32
+	firstStarted := make(chan struct{})
+	secondStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	releaseSecond := make(chan struct{})
+	refreshChatGPTToken = func(string) (*oauth.ChatGPTTokenResponse, error) {
+		switch calls.Add(1) {
+		case 1:
+			close(firstStarted)
+			<-releaseFirst
+			return &oauth.ChatGPTTokenResponse{AccessToken: "fresh", RefreshToken: "rotated", ExpiresIn: 3600}, nil
+		case 2:
+			close(secondStarted)
+			<-releaseSecond
+			return nil, errors.New("invalid_grant")
+		default:
+			return nil, errors.New("unexpected refresh")
+		}
+	}
+
+	a, b := *initial, *initial
+	errA := make(chan error, 1)
+	errB := make(chan error, 1)
+	go func() { errA <- RefreshChatGPTCredentials(&a) }()
+	<-firstStarted
+	go func() { errB <- RefreshChatGPTCredentials(&b) }()
+	<-secondStarted
+	close(releaseFirst)
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		stored, err := GetChatGPTCredentials()
+		if err == nil && stored.AccessToken == "fresh" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("sibling refresh was not committed")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(releaseSecond)
+	if err := <-errA; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errB; err != nil {
+		t.Fatalf("invalid-grant sibling did not adopt committed refresh: %v", err)
+	}
+	if b.AccessToken != "fresh" || b.RefreshToken != "rotated" {
+		t.Fatalf("sibling credentials = %+v", b)
+	}
 }
