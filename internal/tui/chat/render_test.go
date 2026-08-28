@@ -19,6 +19,18 @@ import (
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
+func TestVisibleHistoryMessagesHidesGoalSteering(t *testing.T) {
+	messages := []session.Message{
+		*session.NewMessage("s", llm.UserText("go"), 0),
+		*session.NewMessage("s", llm.GoalSteeringText("internal continuation"), 1),
+		*session.NewMessage("s", llm.AssistantText("done"), 2),
+	}
+	visible := visibleHistoryMessages(messages)
+	if len(visible) != 2 || visible[0].TextContent != "go" || visible[1].TextContent != "done" {
+		t.Fatalf("visible messages = %#v", visible)
+	}
+}
+
 func TestAltScreenRendersStartupWorkspaceApprovalBeforeStreaming(t *testing.T) {
 	m := newTestChatModel(true)
 	done := make(chan tools.ApprovalResult, 1)

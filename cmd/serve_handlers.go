@@ -1626,11 +1626,13 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 		}
 	}
 	result := make([]sessionMessageEntry, 0, len(msgs))
-	for _, msg := range msgs {
-		// System and ordinary developer messages contain internal prompts. Path
-		// notes are explicitly marked and expose only their display text/provenance.
+	for i := range msgs {
+		msg := &msgs[i]
+		// System, ordinary developer, and synthetic goal-steering messages are
+		// provider context rather than human-authored transcript rows. Path notes
+		// are explicitly marked and expose only their display text/provenance.
 		pathNote, isPathNote := msg.PathNoteProvenance()
-		if msg.Role == llm.RoleSystem || (msg.Role == llm.RoleDeveloper && !isPathNote) {
+		if msg.Role == llm.RoleSystem || (msg.Role == llm.RoleDeveloper && !isPathNote) || msg.IsGoalSteering() {
 			continue
 		}
 		entryRole := string(msg.Role)

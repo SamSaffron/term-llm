@@ -275,6 +275,7 @@ test('recovers, neutrally dismisses, and resolves a real approval', async ({ pag
     };
     return body.selected_session?.id || '';
   });
+  expect(sessionID).not.toBe('');
   const fixtureStatus = await page.evaluate(async (id) => {
     const response = await fetch(`${window.TERM_LLM_UI_PREFIX}/__browser_fixture/approval`, {
       method: 'POST',
@@ -284,6 +285,7 @@ test('recovers, neutrally dismisses, and resolves a real approval', async ({ pag
     return response.status;
   }, sessionID);
   expect(fixtureStatus).toBe(201);
+  await page.reload();
 
   const title = 'Write Access Request';
   await expect(page.getByRole('dialog', { name: title })).toBeVisible();

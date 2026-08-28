@@ -81,25 +81,17 @@ func init() {
 				http.Error(w, "fixture session is not live", http.StatusNotFound)
 				return
 			}
+			pending, prompt := runtime.prepareApprovalRequest("review.txt", true, false, false, "")
 			go func() {
-				_, _ = runtime.awaitApprovalRequest("review.txt", true, false, false, "")
-			}()
-			deadline := time.NewTimer(time.Second)
-			defer deadline.Stop()
-			for {
-				if prompts := runtime.pendingApprovalPrompts(); len(prompts) > 0 {
-					writeJSON(w, http.StatusCreated, map[string]string{"approval_id": prompts[0].ApprovalID})
-					return
-				}
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer cancel()
+				defer runtime.removePendingApproval(pending.ApprovalID, pending)
 				select {
-				case <-deadline.C:
-					http.Error(w, "fixture approval was not registered", http.StatusGatewayTimeout)
-					return
-				case <-r.Context().Done():
-					return
-				case <-time.After(5 * time.Millisecond):
+				case <-pending.responseC:
+				case <-ctx.Done():
 				}
-			}
+			}()
+			writeJSON(w, http.StatusCreated, map[string]string{"approval_id": prompt.ApprovalID})
 		})
 		mux.HandleFunc("/__browser_fixture/children", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodPost {

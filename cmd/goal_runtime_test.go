@@ -382,6 +382,55 @@ func TestRunnerSyntheticGoalCallbackOnlyWhenRuntimePersistenceDisabled(t *testin
 	}
 }
 
+func TestRunnerPersistsGoalSteeringMarkerButOmitsItFromWebTranscript(t *testing.T) {
+	ctx := context.Background()
+	store := newGoalTestStore(t)
+	goal := session.NewGoal("hide internal continuation", 0, time.Now())
+	createGoalTestSession(t, store, "sess-goal-hidden", goal)
+	provider := llm.NewMockProvider("mock").WithCapabilities(llm.Capabilities{ToolCalls: true, SupportsToolChoice: true})
+	provider.AddToolCall("goal-hidden-complete", tools.UpdateGoalToolName, map[string]any{
+		"status": "complete",
+		"reason": "done",
+	})
+	provider.AddTurn(llm.MockTurn{Text: "done", Usage: llm.Usage{InputTokens: 1, OutputTokens: 1}})
+	runner := newCmdRunner(goalTestConfig(), cmdRunnerOptions{Store: store}).(*cmdRunner)
+	if _, err := runner.Run(ctx, runpkg.Request{
+		Platform:         runpkg.PlatformConsole,
+		SessionID:        "sess-goal-hidden",
+		Messages:         []llm.Message{llm.UserText("go")},
+		ProviderInstance: provider,
+		Persist:          true,
+	}, eventSinkFunc(nil)); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	messages, err := store.GetMessages(ctx, "sess-goal-hidden", 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	marked := 0
+	for i := range messages {
+		if messages[i].IsGoalSteering() {
+			marked++
+		}
+	}
+	if marked != 1 {
+		t.Fatalf("persisted marked goal steering rows = %d, messages=%#v", marked, messages)
+	}
+	entries := (&serveServer{}).sessionMessageEntries(messages)
+	for _, entry := range entries {
+		for _, part := range entry.Parts {
+			if strings.Contains(part.Text, "Continue working toward the active thread goal") {
+				t.Fatalf("web transcript leaked goal steering entry: %#v", entry)
+			}
+		}
+	}
+	lastProviderMessage := provider.Requests[0].Messages[len(provider.Requests[0].Messages)-1]
+	if llm.HasGoalSteeringPart(lastProviderMessage.Parts) || !strings.Contains(llm.MessageText(lastProviderMessage), "hide internal continuation") {
+		t.Fatalf("provider goal message = %#v", lastProviderMessage)
+	}
+}
+
 func newGoalTestStore(t *testing.T) *session.SQLiteStore {
 	t.Helper()
 	store, err := session.NewSQLiteStore(session.Config{Path: ":memory:"})

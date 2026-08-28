@@ -1,0 +1,517 @@
+import { computed, signal, type Signal } from '@preact/signals';
+import { APIError } from '../api/client';
+import type { Project, Session } from '../domain/types';
+import type { Modal, HubAgent } from './store-types';
+import type { AppStoreServices } from './app-store-services';
+import {
+  array,
+  compareSessionsByActivity,
+  listFrom,
+  recordValue,
+  sessionFrom as sanitizeSessionFrom,
+} from './store-utils';
+
+export interface SessionStoreHost {
+  hasRun: (sessionId: string) => boolean;
+  modal: Signal<Modal>;
+  publishSessionChange: () => void;
+  refreshSidebar: () => Promise<void>;
+  newChat: (replace?: boolean, projectId?: string) => void;
+}
+
+/** Owns session/project catalog state, sidebar loading, search, and catalog mutations. */
+export class SessionStore {
+  readonly sessions = signal<Session[]>([]);
+  readonly projects = signal<Project[]>([]);
+  readonly noProjectCursor = signal('');
+  readonly projectsEnabled = signal(false);
+  readonly worktreesEnabled = signal(false);
+  readonly activeProjectId = signal('');
+  readonly activeSessionId = signal('');
+  readonly draftActive = signal(true);
+  readonly sidebarCollapsed: Signal<boolean>;
+  readonly sidebarOpen = signal(false);
+  readonly sidebarSearch = signal('');
+  readonly searchResults = signal<Session[] | null>(null);
+  readonly searchLoading = signal(false);
+  readonly searchError = signal('');
+  readonly showHidden: Signal<boolean>;
+  readonly hubAgents = signal<HubAgent[]>([]);
+  readonly renameTarget = signal<Session | null>(null);
+  readonly projectTarget = signal<Session | null>(null);
+  readonly activeSession = computed(
+    () => this.sessions.value.find((session) => session.id === this.activeSessionId.value) || null,
+  );
+
+  private searchAbort: AbortController | null = null;
+  private searchTimer = 0;
+  private lastSidebarRefreshAt = 0;
+  private sidebarGeneration = 0;
+  private lastAppliedSidebarGeneration = 0;
+  private sidebarRefreshPromise: Promise<void> | null = null;
+  private hubAgentLastFetch = 0;
+  private hubAgentFetch: Promise<void> | null = null;
+
+  constructor(
+    private readonly services: AppStoreServices,
+    private readonly host: SessionStoreHost,
+  ) {
+    this.sidebarCollapsed = signal(
+      services.storage.getItem(services.keys.sidebarCollapsed) === '1',
+    );
+    this.showHidden = signal(services.storage.getItem(services.keys.showHiddenSessions) === '1');
+  }
+
+  get sidebarRefreshedAt(): number {
+    return this.lastSidebarRefreshAt;
+  }
+
+  patch(id: string, patch: Partial<Session>): void {
+    this.sessions.value = this.sessions
+      .peek()
+      .map((session) => (session.id === id ? { ...session, ...patch } : session));
+  }
+
+  update(id: string, updater: (session: Session) => Session): void {
+    this.sessions.value = this.sessions
+      .peek()
+      .map((session) => (session.id === id ? updater(session) : session));
+  }
+
+  replace(sessions: Session[]): void {
+    this.sessions.value = sessions;
+  }
+
+  prepend(session: Session): void {
+    this.sessions.value = [session, ...this.sessions.peek()];
+  }
+
+  find(id: string): Session | undefined {
+    return this.sessions.peek().find((session) => session.id === id);
+  }
+
+  activate(session: Session): void {
+    this.sidebarOpen.value = false;
+    this.activeSessionId.value = session.id;
+    this.activeProjectId.value = session.projectId || '';
+    this.draftActive.value = false;
+  }
+
+  activateDraft(projectId: string): void {
+    this.sidebarOpen.value = false;
+    this.activeSessionId.value = '';
+    this.activeProjectId.value = projectId;
+    this.draftActive.value = true;
+  }
+
+  applyCapabilities(projectsEnabled: boolean, worktreesEnabled: boolean): void {
+    this.projectsEnabled.value = projectsEnabled;
+    this.worktreesEnabled.value = worktreesEnabled;
+  }
+
+  sessionFrom(value: Record<string, unknown>): Session {
+    return sanitizeSessionFrom(this.services.config, value);
+  }
+
+  mergeSession(
+    existing: Session | undefined,
+    incoming: Session,
+    replaceMessages = false,
+    preserveLiveState = false,
+  ): Session {
+    if (!existing) return incoming;
+    return {
+      ...existing,
+      ...incoming,
+      messages: replaceMessages || incoming.messages.length ? incoming.messages : existing.messages,
+      lastResponseId: incoming.lastResponseId || existing.lastResponseId,
+      activeResponseId: preserveLiveState
+        ? incoming.activeResponseId || existing.activeResponseId
+        : incoming.activeResponseId,
+      activeRun: preserveLiveState
+        ? (incoming.activeRun ?? existing.activeRun)
+        : incoming.activeRun,
+      usage: incoming.usage || existing.usage,
+      goal: incoming.goal ?? existing.goal,
+      fileChangeSummary: incoming.fileChangeSummary || existing.fileChangeSummary,
+    };
+  }
+
+  applySidebar(data: Record<string, unknown>): void {
+    const direct = listFrom(data, 'data', 'sessions', 'items').map((entry) =>
+      this.sessionFrom(entry),
+    );
+    const groups = listFrom(data, 'groups');
+    const projects: Project[] = [];
+    const ungrouped: Session[] = [...direct];
+    // Flat listings (projects disabled) carry the cursor at the top level;
+    // project sidebars carry it on their "no project" group below.
+    this.noProjectCursor.value = String(data.next_cursor || '');
+    for (const group of groups) {
+      const sessions = listFrom(group, 'sessions', 'items');
+      const projectSource =
+        group.project && typeof group.project === 'object'
+          ? (group.project as Record<string, unknown>)
+          : null;
+      if (!projectSource || group.no_project) {
+        ungrouped.push(...sessions.map((entry) => this.sessionFrom(entry)));
+        this.noProjectCursor.value = String(group.next_cursor || '');
+        continue;
+      }
+      const project: Project = {
+        id: String(projectSource.id || ''),
+        name: String(projectSource.name || projectSource.title || 'Project'),
+        path: String(projectSource.canonical_dir || projectSource.path || ''),
+        archived: Boolean(projectSource.archived_at || projectSource.archived),
+        available: projectSource.available !== false,
+        unavailableReason: String(projectSource.unavailable_reason || ''),
+        git: projectSource.git === true,
+        sessions: sessions.map((entry) =>
+          this.sessionFrom({
+            ...entry,
+            project_id: projectSource.id,
+            project_name: projectSource.name,
+            project_unavailable: projectSource.available === false,
+            project_unavailable_reason: projectSource.unavailable_reason,
+          }),
+        ),
+        sessionCount: Number(group.session_count) || sessions.length,
+        next_cursor: String(group.next_cursor || ''),
+        has_more: Boolean(group.next_cursor),
+      };
+      projects.push(project);
+    }
+    const incoming = [...ungrouped, ...projects.flatMap((project) => project.sessions || [])];
+    const existing = new Map(this.sessions.peek().map((session) => [session.id, session]));
+    const merged = new Map(
+      incoming.map((session) => [
+        session.id,
+        this.mergeSession(existing.get(session.id), session, false, true),
+      ]),
+    );
+    for (const [id, session] of existing)
+      if (!merged.has(id) && (this.host.hasRun(id) || id.startsWith('draft_')))
+        merged.set(id, session);
+    this.sessions.value = [...merged.values()].sort(compareSessionsByActivity);
+    this.projects.value = projects.map((project) => ({
+      ...project,
+      sessions: project.sessions?.map((summary) => merged.get(summary.id) || summary),
+    }));
+    this.lastSidebarRefreshAt = Date.now();
+  }
+
+  async refreshSidebar(authoritative = true): Promise<void> {
+    if (!authoritative && this.sidebarRefreshPromise) return this.sidebarRefreshPromise;
+    const generation = authoritative ? ++this.sidebarGeneration : this.sidebarGeneration || 1;
+    if (!this.sidebarGeneration) this.sidebarGeneration = generation;
+    if (authoritative && this.sidebarRefreshPromise)
+      await this.sidebarRefreshPromise.catch(() => undefined);
+    const showHidden = this.showHidden.peek();
+    const request = (async () => {
+      const data = this.projectsEnabled.value
+        ? await this.services.endpoints.sidebar(showHidden)
+        : await this.services.endpoints.sessions(
+            `limit=30&include_archived=${showHidden ? '1' : '0'}`,
+          );
+      if (
+        this.services.isDisposed ||
+        generation !== this.sidebarGeneration ||
+        showHidden !== this.showHidden.peek() ||
+        generation < this.lastAppliedSidebarGeneration
+      )
+        return;
+      this.applySidebar(data);
+      this.lastAppliedSidebarGeneration = generation;
+    })();
+    const tracked = request.finally(() => {
+      if (this.sidebarRefreshPromise === tracked) this.sidebarRefreshPromise = null;
+    });
+    this.sidebarRefreshPromise = tracked;
+    return tracked;
+  }
+
+  async search(query: string): Promise<void> {
+    this.sidebarSearch.value = query;
+    this.searchAbort?.abort();
+    clearTimeout(this.searchTimer);
+    if (!query.trim()) {
+      this.searchResults.value = null;
+      this.searchLoading.value = false;
+      this.searchError.value = '';
+      return;
+    }
+    this.searchLoading.value = true;
+    this.searchResults.value = [];
+    this.searchError.value = '';
+    await new Promise<void>((resolve) => {
+      this.searchTimer = window.setTimeout(resolve, 180);
+    });
+    if (this.sidebarSearch.peek() !== query) return;
+    const abort = new AbortController();
+    this.searchAbort = abort;
+    try {
+      const data = await this.services.endpoints.searchSessions(
+        query,
+        this.showHidden.value,
+        this.services.config.sidebarCategories,
+        abort.signal,
+      );
+      if (!abort.signal.aborted && this.sidebarSearch.peek() === query)
+        this.searchResults.value = listFrom(data, 'sessions', 'items').map((entry) =>
+          this.sessionFrom(entry),
+        );
+    } catch (error) {
+      if (!abort.signal.aborted) {
+        this.searchResults.value = null;
+        this.searchError.value =
+          error instanceof Error ? error.message : 'Could not search conversations';
+      }
+    } finally {
+      if (!abort.signal.aborted) this.searchLoading.value = false;
+    }
+  }
+
+  async mutateSession(session: Session, patch: Record<string, unknown>): Promise<void> {
+    await this.services.endpoints.patchSession(session.id, patch);
+    this.sessions.value = this.sessions.value.map((entry) =>
+      entry.id === session.id ? ({ ...entry, ...patch } as Session) : entry,
+    );
+    await this.host.refreshSidebar();
+    this.host.publishSessionChange();
+  }
+  async archiveSession(session: Session): Promise<void> {
+    const archived = !session.archived;
+    await this.services.endpoints.patchSession(session.id, { archived });
+    const keepVisible = this.showHidden.peek() || !archived;
+    const reconcile = (entries: Session[]): Session[] =>
+      entries.flatMap((entry) => {
+        if (entry.id !== session.id) return [entry];
+        return keepVisible ? [{ ...entry, archived }] : [];
+      });
+    this.sessions.value = reconcile(this.sessions.peek());
+    this.projects.value = this.projects.peek().map((project) => {
+      const contained = Boolean(project.sessions?.some((entry) => entry.id === session.id));
+      if (!contained) return project;
+      return {
+        ...project,
+        sessions: reconcile(project.sessions || []),
+        sessionCount:
+          !keepVisible && project.sessionCount != null
+            ? Math.max(0, project.sessionCount - 1)
+            : project.sessionCount,
+      };
+    });
+    if (this.searchResults.peek()) this.searchResults.value = reconcile(this.searchResults.peek()!);
+    if (session.id === this.activeSessionId.value && archived) this.host.newChat();
+    this.host.publishSessionChange();
+  }
+  async pinSession(session: Session): Promise<void> {
+    await this.mutateSession(session, { pinned: !session.pinned });
+  }
+  openRename(session: Session): void {
+    this.renameTarget.value = session;
+    this.host.modal.value = 'rename';
+  }
+  openProjectPicker(session: Session): void {
+    this.projectTarget.value = session;
+    this.host.modal.value = 'project';
+  }
+  openAddProject(): void {
+    this.projectTarget.value = null;
+    this.host.modal.value = 'project';
+  }
+  async assignProject(projectId: string): Promise<Record<string, unknown> | null> {
+    const session = this.projectTarget.value;
+    if (!session) return null;
+    const response = await this.services.endpoints.setProject(session.id, {
+      project_id: projectId,
+    });
+    await this.host.refreshSidebar();
+    this.host.publishSessionChange();
+    this.host.modal.value = '';
+    return response;
+  }
+  async createProjectFromWorkspace(name: string): Promise<Record<string, unknown> | null> {
+    const session = this.projectTarget.value;
+    if (!session) return null;
+    const response = await this.services.endpoints.setProject(session.id, {
+      create_from_workspace: true,
+      name: name.trim(),
+    });
+    await this.host.refreshSidebar();
+    this.host.publishSessionChange();
+    this.host.modal.value = '';
+    return response;
+  }
+  async renameSession(
+    change: { name: string } | { generatedShortTitle: string; generatedLongTitle: string },
+  ): Promise<void> {
+    const session = this.renameTarget.value;
+    if (!session) return;
+    const patch =
+      'name' in change
+        ? { name: change.name.trim() }
+        : {
+            name: '',
+            generated_short_title: change.generatedShortTitle.trim(),
+            generated_long_title: change.generatedLongTitle.trim(),
+          };
+    await this.services.endpoints.patchSession(session.id, patch);
+    await this.host.refreshSidebar();
+    this.host.publishSessionChange();
+    this.renameTarget.value = null;
+    this.host.modal.value = '';
+  }
+  async improveTitle(): Promise<{ title: string; detail: string }> {
+    const session = this.renameTarget.value;
+    if (!session) return { title: '', detail: '' };
+    const data = await this.services.endpoints.refineTitle(session.id);
+    return {
+      title: String(data.generated_short_title || data.short_title || session.title || ''),
+      detail: String(data.generated_long_title || data.long_title || session.longTitle || ''),
+    };
+  }
+
+  async loadMoreProject(projectId: string): Promise<void> {
+    const project = this.projects.value.find((entry) => entry.id === projectId);
+    if (!project?.next_cursor) return;
+    const data = await this.services.endpoints.projectSessions(
+      projectId,
+      project.next_cursor,
+      this.showHidden.value,
+    );
+    const incoming = listFrom(data, 'sessions', 'items').map((entry) =>
+      this.sessionFrom({ ...entry, project_id: project.id, project_name: project.name }),
+    );
+    const existing = new Map(this.sessions.value.map((entry) => [entry.id, entry]));
+    incoming.forEach((entry) =>
+      existing.set(entry.id, this.mergeSession(existing.get(entry.id), entry, false, true)),
+    );
+    this.sessions.value = [...existing.values()];
+    this.projects.value = this.projects.value.map((entry) =>
+      entry.id === projectId
+        ? {
+            ...entry,
+            sessions: [
+              ...(entry.sessions || []),
+              ...incoming.filter(
+                (candidate) =>
+                  !(entry.sessions || []).some((session) => session.id === candidate.id),
+              ),
+            ],
+            next_cursor: String(data.next_cursor || ''),
+            has_more: Boolean(data.next_cursor),
+          }
+        : entry,
+    );
+  }
+
+  async loadMoreNoProject(): Promise<void> {
+    const cursor = this.noProjectCursor.peek();
+    if (!cursor) return;
+    const data = await this.services.endpoints.noProjectSessions(cursor, this.showHidden.value);
+    const incoming = listFrom(data, 'sessions', 'items').map((entry) => this.sessionFrom(entry));
+    const existing = new Map(this.sessions.peek().map((entry) => [entry.id, entry]));
+    incoming.forEach((entry) =>
+      existing.set(entry.id, this.mergeSession(existing.get(entry.id), entry, false, true)),
+    );
+    this.sessions.value = [...existing.values()].sort(compareSessionsByActivity);
+    this.noProjectCursor.value = String(data.next_cursor || '');
+  }
+  async mutateProject(project: Project, patch: Record<string, unknown>): Promise<void> {
+    await this.services.endpoints.patchProject(project.id, patch);
+    await this.host.refreshSidebar();
+    this.host.publishSessionChange();
+  }
+  async startProjectChat(projectId: string): Promise<void> {
+    this.host.newChat(false, projectId);
+    this.sidebarOpen.value = false;
+  }
+
+  async refreshHubAgents(force = false): Promise<void> {
+    if (this.hubAgentFetch) return this.hubAgentFetch;
+    if (document.visibilityState === 'hidden') return;
+    const raw = this.services.config.hub?.url || '';
+    if (!raw) {
+      this.hubAgents.value = [];
+      return;
+    }
+    let hub: URL;
+    try {
+      hub = new URL(raw, location.href);
+    } catch {
+      return;
+    }
+    if (hub.origin !== location.origin) {
+      this.hubAgents.value = [];
+      return;
+    }
+    if (!force && Date.now() - this.hubAgentLastFetch < 60_000) return;
+    this.hubAgentLastFetch = Date.now();
+    const controller = new AbortController();
+    const request = (async () => {
+      try {
+        const path = `${hub.pathname.replace(/\/+$/, '')}/api/nodes`;
+        const data = await this.services.endpoints.hubNodes(
+          new URL(path, location.origin).href,
+          controller.signal,
+        );
+        const safePath = (value: unknown): string =>
+          typeof value === 'string' && /^\/(?![\\/])/.test(value) ? value : '';
+        const target = (node: Record<string, unknown>): string => {
+          const sessions = recordValue(node.sessions) || {};
+          const active = array(sessions.active);
+          const recent = array(sessions.recent);
+          return (
+            safePath(sessions.resume_path) ||
+            safePath(active[0]?.resume_path) ||
+            safePath(recent[0]?.resume_path) ||
+            safePath(node.new_session_path) ||
+            (safePath(node.proxy_path) ? `${safePath(node.proxy_path)}?new=1` : '')
+          );
+        };
+        const previous = new Map(this.hubAgents.peek().map((entry) => [entry.id, entry]));
+        this.hubAgents.value = array(data.nodes)
+          .filter((node) => recordValue(node.status)?.reachable === true)
+          .map((node) => {
+            const id = String(node.id || '');
+            const sessions = recordValue(node.sessions) || {};
+            const active = Number(sessions.active_count) > 0 || array(sessions.active).length > 0;
+            const old = previous.get(id);
+            return {
+              id,
+              name: String(node.name || id),
+              target: target(node),
+              active,
+              attention:
+                id !== this.services.config.hub?.nodeId &&
+                Boolean(old?.attention || (old?.active && !active)),
+            };
+          })
+          .filter((entry) => entry.name && entry.target)
+          .sort(
+            (left, right) =>
+              left.name.toLowerCase().localeCompare(right.name.toLowerCase()) ||
+              left.id.localeCompare(right.id),
+          );
+      } catch (error) {
+        if (error instanceof APIError && error.status >= 400 && error.status < 500)
+          this.hubAgents.value = [];
+      }
+    })();
+    this.hubAgentFetch = request.finally(() => {
+      this.hubAgentFetch = null;
+    });
+    return this.hubAgentFetch;
+  }
+  clearHubAttention(id: string): void {
+    this.hubAgents.value = this.hubAgents.value.map((entry) =>
+      entry.id === id ? { ...entry, attention: false } : entry,
+    );
+  }
+
+  dispose(): void {
+    this.searchAbort?.abort();
+    window.clearTimeout(this.searchTimer);
+  }
+}

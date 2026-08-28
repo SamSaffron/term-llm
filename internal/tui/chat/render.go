@@ -2005,6 +2005,17 @@ func isAllDigits(s string) bool {
 	return true
 }
 
+func visibleHistoryMessages(messages []session.Message) []session.Message {
+	visible := make([]session.Message, 0, len(messages))
+	for i := range messages {
+		if messages[i].IsGoalSteering() {
+			continue
+		}
+		visible = append(visible, messages[i])
+	}
+	return visible
+}
+
 func visibleDirectShellMessages(messages []session.Message) []session.Message {
 	var visible []session.Message
 	for i := range messages {
@@ -2045,7 +2056,7 @@ func (m *Model) renderHistory() string {
 	// Prepare messages to render
 	// In alt-screen mode, viewport handles scrolling via YOffset, so render all messages
 	// In inline mode, use message-based scrollOffset to slice visible messages
-	messages := m.messages
+	messages := visibleHistoryMessages(m.messages)
 	scrollOffset := 0
 	if !m.altScreen && m.scrollOffset > 0 {
 		// Inline mode: pre-slice messages based on scroll offset

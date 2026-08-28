@@ -4566,6 +4566,10 @@ func (s *SQLiteStore) GetTranscriptSnapshot(ctx context.Context, sessionID strin
 		if err := json.Unmarshal([]byte(partsJSON), &parts); err != nil {
 			return TranscriptSnapshot{}, fmt.Errorf("decode transcript index parts: %w", err)
 		}
+		candidate := Message{Role: llm.Role(item.Role), Parts: parts, ClientMessageID: item.ClientMessageID}
+		if candidate.IsGoalSteering() {
+			continue
+		}
 		for _, part := range parts {
 			if part.Type == llm.PartToolCall && part.ToolCall != nil && part.ToolCall.ID != "" && part.ToolCall.Name == "update_plan" {
 				planToolCalls[part.ToolCall.ID] = true
@@ -4666,6 +4670,13 @@ func (s *SQLiteStore) GetMessagesByTranscriptRanges(ctx context.Context, session
 		if closeErr != nil {
 			return 0, nil, fmt.Errorf("close transcript bodies: %w", closeErr)
 		}
+		visible := messages[:0]
+		for i := range messages {
+			if !messages[i].IsGoalSteering() {
+				visible = append(visible, messages[i])
+			}
+		}
+		messages = visible
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, nil, fmt.Errorf("commit transcript bodies read: %w", err)

@@ -42,8 +42,12 @@ test('records, transcribes, and leaves voice text in the draft', async ({ page }
     }),
   );
   await page.goto('./');
-  await expect(page.locator('#voiceBtn')).toBeVisible();
-  await page.locator('#voiceBtn').click();
+  const voiceButton = page.locator('#voiceBtn');
+  await expect(voiceButton).toBeVisible();
+  await expect(voiceButton).toBeEnabled();
+  // The mocked recorder test exercises the control handler, not browser hit-testing;
+  // WebKit can otherwise stall actionability checks for this animated icon button.
+  await voiceButton.dispatchEvent('click');
   await expect(page.locator('#voiceStatus')).toContainText('Recording');
   await page.getByRole('button', { name: 'Stop', exact: true }).click();
   await expect(page.locator('#voiceStatus')).toContainText('Transcription inserted');

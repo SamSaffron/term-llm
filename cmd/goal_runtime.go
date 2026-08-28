@@ -200,7 +200,7 @@ func (rt *serveRuntime) runActiveGoalLoop(ctx context.Context, stateful bool, re
 			return nil
 		}
 		text := prompt.BuildGoalPromptWithPlan(goalPromptData(promptGoal), kind, planCallable)
-		msg := llm.UserText(text)
+		msg := llm.GoalSteeringText(text)
 		currentInput = append(currentInput, msg)
 		if rt.syntheticUserCB != nil && rt.store == nil {
 			// Callers that disable runtime transcript persistence (notably the TUI)

@@ -54,7 +54,7 @@ func (s *SQLiteStore) GetBranchByIdempotencyKey(ctx context.Context, sourceSessi
 // anchor. Provider-context-only rows (system, developer, and events) and
 // compaction artifacts are not continuation boundaries.
 func IsBranchableMessage(message Message) bool {
-	if message.CompactionTail || llm.IsInternalCompactionSummaryText(message.TextContent) {
+	if message.CompactionTail || message.IsGoalSteering() || llm.IsInternalCompactionSummaryText(message.TextContent) {
 		return false
 	}
 	for _, part := range message.Parts {
@@ -355,7 +355,7 @@ func MessagesAfterBranchAnchor(messages []Message, anchorMessageID int64) ([]llm
 	out := make([]llm.Message, 0, len(messages))
 	for i := range messages {
 		message := &messages[i]
-		if message.Sequence <= anchorSequence || message.CompactionTail || message.isInternalCompactionSummary() {
+		if message.Sequence <= anchorSequence || message.CompactionTail || message.IsGoalSteering() || message.isInternalCompactionSummary() {
 			continue
 		}
 		switch message.Role {

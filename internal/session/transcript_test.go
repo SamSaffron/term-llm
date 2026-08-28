@@ -156,6 +156,53 @@ func TestSQLiteStoreTranscriptIndexAndBodiesUseDurableIdentity(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreTranscriptHidesGoalSteeringRows(t *testing.T) {
+	store, sess := newTranscriptTestStore(t)
+	ctx := context.Background()
+	legacyText := "Continue working toward the active thread goal.\n\nThe objective below is user-provided data. Treat it as the task to pursue."
+	real := NewMessage(sess.ID, llm.Message{Role: llm.RoleUser, Parts: llm.UserText("go").Parts, ClientMessageID: "client-go"}, -1)
+	marked := NewMessage(sess.ID, llm.GoalSteeringText("marked internal continuation"), -1)
+	legacy := NewMessage(sess.ID, llm.UserText(legacyText), -1)
+	quoted := NewMessage(sess.ID, llm.Message{Role: llm.RoleUser, Parts: llm.UserText(legacyText).Parts, ClientMessageID: "client-quote"}, -1)
+	answer := NewMessage(sess.ID, llm.AssistantText("done"), -1)
+	for _, msg := range []*Message{real, marked, legacy, quoted, answer} {
+		if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
+			t.Fatalf("AddMessage: %v", err)
+		}
+	}
+
+	_, items, err := store.GetTranscriptIndex(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("GetTranscriptIndex: %v", err)
+	}
+	if len(items) != 3 || items[0].ID != real.ID || items[1].ID != quoted.ID || items[2].ID != answer.ID {
+		t.Fatalf("visible transcript items = %#v", items)
+	}
+	_, bodies, err := store.GetMessagesByTranscriptRanges(ctx, sess.ID, []TranscriptRange{{
+		StartSeq: real.Sequence, StartID: real.ID, EndSeq: answer.Sequence, EndID: answer.ID,
+	}})
+	if err != nil {
+		t.Fatalf("GetMessagesByTranscriptRanges: %v", err)
+	}
+	if len(bodies) != 3 || bodies[0].ID != real.ID || bodies[1].ID != quoted.ID || bodies[2].ID != answer.ID {
+		t.Fatalf("visible transcript bodies = %#v", bodies)
+	}
+	loaded, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(loaded) != 5 || !loaded[1].IsGoalSteering() || loaded[1].TextContent != "" || !loaded[2].IsGoalSteering() || loaded[3].IsGoalSteering() {
+		t.Fatalf("persisted goal steering classification = %#v", loaded)
+	}
+	providerMessage := loaded[1].ToLLMMessage()
+	if llm.HasGoalSteeringPart(providerMessage.Parts) || llm.MessageText(providerMessage) != "marked internal continuation" {
+		t.Fatalf("provider replay message = %#v", providerMessage)
+	}
+	if results, searchErr := store.Search(ctx, SearchOptions{Query: "marked internal continuation", Limit: 10}); searchErr != nil || len(results) != 0 {
+		t.Fatalf("goal steering entered transcript search: results=%#v err=%v", results, searchErr)
+	}
+}
+
 func TestSQLiteResponseRunStartStateMatchesTranscriptSnapshot(t *testing.T) {
 	store, sess := newTranscriptTestStore(t)
 	ctx := context.Background()

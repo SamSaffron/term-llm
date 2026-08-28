@@ -54,8 +54,9 @@ func (f *FallbackTranscriptIndexer) read(ctx context.Context, sessionID string) 
 		return messages[i].ID < messages[j].ID
 	})
 	visible := make([]Message, 0, len(messages))
-	for _, msg := range messages {
-		if msg.Role == llm.RoleSystem || msg.Role == llm.RoleDeveloper {
+	for i := range messages {
+		msg := messages[i]
+		if msg.Role == llm.RoleSystem || msg.Role == llm.RoleDeveloper || msg.IsGoalSteering() {
 			continue
 		}
 		visible = append(visible, msg)

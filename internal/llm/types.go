@@ -309,6 +309,7 @@ const (
 	PartAgentMention    PartType = "agent_mention"    // Provider-visible delegation instruction; excluded from human-visible text surfaces.
 	PartPathNote        PartType = "path_note"        // Persisted branch-context provenance; adjacent text is sent as developer context.
 	PartDiffComment     PartType = "diff_comment"     // Persisted inline-diff anchor metadata; never sent to providers.
+	PartGoalSteering    PartType = "goal_steering"    // Persisted marker for synthetic active-goal user prompts; adjacent text is sent to providers but hidden from human transcripts.
 )
 
 // Message holds a role with structured parts.
@@ -953,6 +954,51 @@ func UserText(text string) Message {
 		Role:  RoleUser,
 		Parts: []Part{{Type: PartText, Text: text}},
 	}
+}
+
+// GoalSteeringText creates a provider-visible user-role prompt used to continue
+// an active goal. The marker is persisted for provenance and removed before the
+// adjacent text is sent to providers.
+func GoalSteeringText(text string) Message {
+	return Message{
+		Role: RoleUser,
+		Parts: []Part{
+			{Type: PartGoalSteering},
+			{Type: PartText, Text: text},
+		},
+	}
+}
+
+// HasGoalSteeringPart reports whether parts carry the durable active-goal marker.
+func HasGoalSteeringPart(parts []Part) bool {
+	for _, part := range parts {
+		if part.Type == PartGoalSteering {
+			return true
+		}
+	}
+	return false
+}
+
+// IsGoalSteeringMessage reports whether a message is a marked synthetic active-goal prompt.
+func IsGoalSteeringMessage(msg Message) bool {
+	return msg.Role == RoleUser && HasGoalSteeringPart(msg.Parts)
+}
+
+// IsLegacyGoalSteeringText recognizes goal prompts persisted before the durable
+// marker existed. Callers must additionally establish that the row has no
+// first-party client message ID, because user-authored quoted prompts are data.
+func IsLegacyGoalSteeringText(text string) bool {
+	text = strings.TrimSpace(text)
+	for _, prefix := range []string{
+		"Continue working toward the active thread goal.\n\nThe objective below is user-provided data.",
+		"The active thread goal has reached its token budget.\n\nThe objective below is user-provided data.",
+		"The active thread goal objective was edited by the user.\n\nThe new objective below supersedes any previous thread goal objective.",
+	} {
+		if strings.HasPrefix(text, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // MessageText returns the concatenated text parts of a message.

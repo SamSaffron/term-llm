@@ -1664,6 +1664,36 @@ func TestEngineStripsSkillProvenanceFromProviderRequest(t *testing.T) {
 	}
 }
 
+func TestEngineStripsGoalSteeringMarkerButSendsText(t *testing.T) {
+	provider := NewMockProvider("mock").AddTextResponse("ok")
+	engine := NewEngine(provider, nil)
+	stream, err := engine.Stream(context.Background(), Request{Messages: []Message{
+		UserText("go"),
+		GoalSteeringText("continue the active goal"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	for {
+		_, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatal(recvErr)
+		}
+	}
+	requests := provider.RecordedRequests()
+	if len(requests) != 1 || len(requests[0].Messages) != 2 {
+		t.Fatalf("provider requests = %#v", requests)
+	}
+	got := requests[0].Messages[1]
+	if got.Role != RoleUser || MessageText(got) != "continue the active goal" || len(got.Parts) != 1 || got.Parts[0].Type != PartText {
+		t.Fatalf("provider goal steering message = %#v", got)
+	}
+}
+
 func TestEngineExplicitEmptyAllowedToolsFilter(t *testing.T) {
 	t.Parallel()
 
