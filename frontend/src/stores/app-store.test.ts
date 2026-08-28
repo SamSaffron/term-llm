@@ -1664,6 +1664,63 @@ describe('AppStore compatibility behavior', () => {
     expect(store.sessions.value[0]).toMatchObject({ activeRun: false, activeResponseId: null });
   });
 
+  it('reconciles a locally running response when the server reports the session idle', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [
+      { ...session(), activeRun: true, activeResponseId: 'finished-while-suspended' },
+    ];
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'finished-while-suspended',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'streaming',
+        lastSequence: 4,
+        startedRev: 1,
+        reconnects: 0,
+      }),
+    };
+    store.endpoints.sessionStatus = vi.fn(async () => ({
+      sessions: [{ id: 's1', transcript_rev: 2 }],
+    }));
+    const internals = store as unknown as {
+      refreshStatus(): Promise<void>;
+      resumeResponse(sessionId: string, responseId: string): Promise<void>;
+    };
+    internals.resumeResponse = vi.fn(async () => undefined);
+
+    await internals.refreshStatus();
+
+    expect(store.sessions.value[0]).toMatchObject({ activeRun: false, activeResponseId: null });
+    expect(internals.resumeResponse).toHaveBeenCalledWith('s1', 'finished-while-suspended');
+  });
+
+  it('does not probe a provisional response before the server admits it', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [{ ...session(), activeRun: true }];
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'pending_local-response',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'connecting',
+        lastSequence: 0,
+        startedRev: 0,
+        reconnects: 0,
+      }),
+    };
+    store.endpoints.sessionStatus = vi.fn(async () => ({ sessions: [{ id: 's1' }] }));
+    const internals = store as unknown as {
+      refreshStatus(): Promise<void>;
+      resumeResponse(sessionId: string, responseId: string): Promise<void>;
+    };
+    internals.resumeResponse = vi.fn(async () => undefined);
+
+    await internals.refreshStatus();
+
+    expect(internals.resumeResponse).not.toHaveBeenCalled();
+  });
+
   it('forces a post-mutation sidebar fetch after an opportunistic fetch already started', async () => {
     const store = new AppStore(config);
     const first = deferred<Record<string, unknown>>();

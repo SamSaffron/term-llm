@@ -182,6 +182,12 @@ export class StatusReconciler {
         const status = byID.get(session.id);
         if (!status) return session.activeRun ? { ...session, activeRun: false } : session;
         const serverActiveResponseId = String(status.active_response_id || '') || null;
+        const serverReportsActive = Boolean(serverActiveResponseId || status.active_run);
+        const projectedRun = this.host.runs.peek()[session.id]?.run;
+        const clientReportsActive = Boolean(
+          projectedRun &&
+          ['connecting', 'checking', 'streaming', 'cancelling'].includes(projectedRun.status),
+        );
         const committedClientMessageId = String(status.client_message_id || '');
         if (
           serverActiveResponseId &&
@@ -212,9 +218,22 @@ export class StatusReconciler {
             this.host.clearLocallyStopped(stoppedResponseId);
         }
         if (
+          !serverReportsActive &&
+          clientReportsActive &&
+          projectedRun &&
+          projectedRun.responseId &&
+          !projectedRun.responseId.startsWith('pending_')
+        ) {
+          // The status endpoint is authoritative for run liveness, but the
+          // response snapshot owns the terminal projection. Mobile browsers
+          // can suspend or lose the terminal stream event, so reconcile that
+          // snapshot whenever the two views disagree.
+          followUps.push(() => void this.host.resumeResponse(session.id, projectedRun.responseId));
+        }
+        if (
           !serverActiveResponseId &&
           (session.activeResponseId || this.host.pendingIntents.peek()[session.id]?.length) &&
-          transcriptRev >= (this.host.runs.peek()[session.id]?.run.finalRev || 0)
+          transcriptRev >= (projectedRun?.finalRev || 0)
         )
           followUps.push(() => void this.host.refreshSessionMessages(session.id, transcriptRev));
         const titleRefreshAllowed = this.host.renameTarget.peek()?.id !== session.id;
