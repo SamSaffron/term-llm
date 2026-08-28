@@ -30,6 +30,10 @@ export interface ServerMessage {
   clientMessageId?: string;
   assistant_segment_ordinal?: number;
   assistantSegmentOrdinal?: number;
+  segment_start_sequence?: number;
+  segmentStartSequence?: number;
+  segment_end_sequence?: number;
+  segmentEndSequence?: number;
   parts?: ServerPart[];
   compaction_tail?: boolean;
   transcriptEmptyBody?: boolean;
@@ -62,11 +66,17 @@ function withSource(entry: Message, message: ServerMessage): Message {
   const responseID = message.response_id ?? message.responseId;
   const clientMessageID = message.client_message_id ?? message.clientMessageId;
   const segmentOrdinal = message.assistant_segment_ordinal ?? message.assistantSegmentOrdinal;
+  const segmentStart = message.segment_start_sequence ?? message.segmentStartSequence;
+  const segmentEnd = message.segment_end_sequence ?? message.segmentEndSequence;
   if (responseID) entry.responseId = text(responseID);
   if (clientMessageID) entry.clientMessageId = text(clientMessageID);
   if (message.interrupt_state) entry.interruptState = text(message.interrupt_state).toLowerCase();
   if (entry.role === 'assistant' && Number.isFinite(Number(segmentOrdinal)))
     entry.assistantSegmentOrdinal = Math.max(0, Math.trunc(Number(segmentOrdinal)));
+  if (entry.role === 'assistant' && Number.isFinite(Number(segmentStart)))
+    entry.segmentStartSequence = Math.max(0, Math.trunc(Number(segmentStart)));
+  if (entry.role === 'assistant' && Number.isFinite(Number(segmentEnd)))
+    entry.segmentEndSequence = Math.max(0, Math.trunc(Number(segmentEnd)));
   const row = sourceRowID(message);
   if (row != null) {
     entry.durableSourceRowIds = [
@@ -678,12 +688,31 @@ export function windowTranscript(
 
 export function mergeDurableProjection(durable: Message[], projected: Message[]): Message[] {
   const clientIDs = new Set(durable.map((message) => message.clientMessageId).filter(Boolean));
-  const responseSegments = new Set(
+  const responseSegments = new Map(
     durable
       .filter((message) => message.role === 'assistant' && message.responseId)
-      .map((message) => `${message.responseId}:${message.assistantSegmentOrdinal || 0}`),
+      .map((message) => [`${message.responseId}:${message.assistantSegmentOrdinal || 0}`, message]),
   );
-  const toolIDs = new Set(durable.flatMap((message) => message.tools || []).map((tool) => tool.id));
+  const allToolIDs = new Set(
+    durable.flatMap((message) => message.tools || []).map((tool) => tool.id),
+  );
+  const legacyToolIDs = new Set(
+    durable
+      .filter((message) => !message.responseId)
+      .flatMap((message) => message.tools || [])
+      .map((tool) => tool.id),
+  );
+  const scopedToolIDs = new Set(
+    durable.flatMap((message) =>
+      message.responseId
+        ? (message.tools || []).map((tool) => `${message.responseId}:${tool.id}`)
+        : [],
+    ),
+  );
+  const hasDurableTool = (message: Message, tool: ToolCall): boolean =>
+    message.responseId
+      ? scopedToolIDs.has(`${message.responseId}:${tool.id}`) || legacyToolIDs.has(tool.id)
+      : allToolIDs.has(tool.id);
   const pending = projected.filter((message) => {
     if (
       message.role === 'user' &&
@@ -691,22 +720,42 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
       clientIDs.has(message.clientMessageId)
     )
       return false;
-    if (
-      message.role === 'assistant' &&
-      message.responseId &&
-      responseSegments.has(`${message.responseId}:${message.assistantSegmentOrdinal || 0}`)
-    )
-      return false;
+    if (message.role === 'assistant' && message.responseId) {
+      const durableSegment = responseSegments.get(
+        `${message.responseId}:${message.assistantSegmentOrdinal || 0}`,
+      );
+      if (durableSegment)
+        return (
+          Number(message.segmentEndSequence || 0) > Number(durableSegment.segmentEndSequence || 0)
+        );
+    }
     if (
       message.role === 'tool-group' &&
       message.tools?.length &&
-      message.tools.every((tool) => toolIDs.has(tool.id))
+      message.tools.every((tool) => hasDurableTool(message, tool))
     )
       return false;
     return true;
   });
   const output = [...durable];
   for (const message of pending) {
+    if (message.role === 'assistant' && message.responseId) {
+      const durableSegment = responseSegments.get(
+        `${message.responseId}:${message.assistantSegmentOrdinal || 0}`,
+      );
+      const index = durableSegment ? output.indexOf(durableSegment) : -1;
+      if (durableSegment && index >= 0) {
+        output[index] = {
+          ...durableSegment,
+          ...message,
+          id: durableSegment.id,
+          created: durableSegment.created,
+          durableRowId: durableSegment.durableRowId,
+          durableSourceRowIds: durableSegment.durableSourceRowIds,
+        };
+        continue;
+      }
+    }
     const previous = output.at(-1);
     if (
       previous?.role === 'tool-group' &&
@@ -749,7 +798,7 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
       continue;
     }
     if (message.role === 'tool-group' && message.tools?.length) {
-      const tools = message.tools.filter((tool) => !toolIDs.has(tool.id));
+      const tools = message.tools.filter((tool) => !hasDurableTool(message, tool));
       if (!tools.length) continue;
       output.push(tools.length === message.tools.length ? message : { ...message, tools });
     } else output.push(message);

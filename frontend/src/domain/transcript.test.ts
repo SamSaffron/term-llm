@@ -135,12 +135,16 @@ describe('transcript domain', () => {
         role: 'assistant',
         responseId: 'r1',
         assistantSegmentOrdinal: 2,
+        segment_start_sequence: 7,
+        segment_end_sequence: 9,
         parts: [{ type: 'text', text: 'answer' }],
       },
     ]);
     expect(messages[0]).toMatchObject({
       responseId: 'r1',
       assistantSegmentOrdinal: 2,
+      segmentStartSequence: 7,
+      segmentEndSequence: 9,
       content: 'answer',
     });
   });
@@ -163,6 +167,70 @@ describe('transcript domain', () => {
       durableRowId: index + 1,
     }));
     expect(mergeDurableProjection(durable, projected)).toEqual(durable);
+  });
+
+  it('keeps the newest assistant segment coverage during partial durable handoff', () => {
+    const durable: Message[] = [
+      {
+        id: 'durable-answer',
+        role: 'assistant',
+        content: 'partial',
+        created: 1,
+        durableRowId: 8,
+        responseId: 'r1',
+        assistantSegmentOrdinal: 0,
+        segmentStartSequence: 2,
+        segmentEndSequence: 5,
+      },
+    ];
+    const projected: Message[] = [
+      {
+        id: 'projected-answer',
+        role: 'assistant',
+        content: 'partial and recovered suffix',
+        created: 2,
+        responseId: 'r1',
+        assistantSegmentOrdinal: 0,
+        segmentStartSequence: 2,
+        segmentEndSequence: 12,
+      },
+    ];
+
+    expect(mergeDurableProjection(durable, projected)).toEqual([
+      expect.objectContaining({
+        id: 'durable-answer',
+        durableRowId: 8,
+        content: 'partial and recovered suffix',
+        segmentEndSequence: 12,
+      }),
+    ]);
+  });
+
+  it('does not deduplicate response-local tool IDs across responses', () => {
+    const durable: Message[] = [
+      {
+        id: 'old-tools',
+        role: 'tool-group',
+        content: '',
+        created: 1,
+        responseId: 'r1',
+        tools: [{ id: 'call-1', name: 'shell', status: 'done' }],
+      },
+    ];
+    const projected: Message[] = [
+      {
+        id: 'new-tools',
+        role: 'tool-group',
+        content: '',
+        created: 2,
+        responseId: 'r2',
+        tools: [{ id: 'call-1', name: 'read_file', status: 'running' }],
+      },
+    ];
+
+    const merged = mergeDurableProjection(durable, projected);
+    expect(merged).toHaveLength(2);
+    expect(merged.map((message) => message.responseId)).toEqual(['r1', 'r2']);
   });
 
   it('coalesces partially durable tool activity without duplicating completed calls', () => {

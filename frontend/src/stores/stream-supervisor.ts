@@ -2,6 +2,7 @@ export interface StreamSupervisor {
   sessionId: string;
   responseId: string;
   generation: number;
+  transportGeneration: number;
   abort: AbortController;
   retryTimer: number | null;
   terminal: boolean;
@@ -35,6 +36,7 @@ export class StreamSupervisors {
       sessionId,
       responseId,
       generation,
+      transportGeneration: 0,
       abort: new AbortController(),
       retryTimer: null,
       terminal: false,
@@ -57,11 +59,14 @@ export class StreamSupervisors {
 
   rekey(owner: StreamSupervisor, nextSessionId: string): boolean {
     if (!this.owns(owner) || !nextSessionId) return false;
+    const previousSessionId = owner.sessionId;
     const replaced = this.owners.get(nextSessionId);
-    this.owners.delete(owner.sessionId);
-    if (replaced && replaced !== owner) this.cleanup(replaced);
+    this.owners.delete(previousSessionId);
+    // Install the incoming owner before aborting a destination owner so every
+    // synchronous abort callback is stale under both session keys.
     owner.sessionId = nextSessionId;
     this.owners.set(nextSessionId, owner);
+    if (replaced && replaced !== owner) this.cleanup(replaced);
     this.generations.set(
       nextSessionId,
       Math.max(owner.generation, this.generations.get(nextSessionId) || 0),
@@ -78,11 +83,27 @@ export class StreamSupervisors {
     );
   }
 
-  replaceAbort(owner: StreamSupervisor): AbortController | null {
+  ownsTransport(owner: StreamSupervisor, transportGeneration: number): boolean {
+    return this.owns(owner) && owner.transportGeneration === transportGeneration;
+  }
+
+  replaceAbort(owner: StreamSupervisor, invalidateSubscription = false): AbortController | null {
     if (!this.owns(owner)) return null;
-    owner.abort.abort();
+    const previous = owner.abort;
+    this.clearWatchdog(owner);
+    owner.transportGeneration += 1;
     owner.abort = new AbortController();
+    if (invalidateSubscription) owner.subscriptionInFlight = false;
+    // Install the replacement lease before aborting. Synchronous callbacks from
+    // the previous transport can no longer mutate or clean up the new lease.
+    previous.abort();
     return owner.abort;
+  }
+
+  checkpoint(owner: StreamSupervisor, transportGeneration: number, sequence: number): boolean {
+    if (!this.ownsTransport(owner, transportGeneration) || !Number.isFinite(sequence)) return false;
+    owner.lastSequence = Math.max(0, Math.trunc(sequence));
+    return true;
   }
 
   advance(owner: StreamSupervisor, sequence: number): boolean {
@@ -94,29 +115,37 @@ export class StreamSupervisors {
 
   startSubscription(owner: StreamSupervisor): boolean {
     if (!this.owns(owner) || owner.recoveryInFlight || owner.subscriptionInFlight) return false;
+    this.clearRetry(owner);
     owner.subscriptionInFlight = true;
     return true;
   }
 
-  finishSubscription(owner: StreamSupervisor): void {
-    if (this.owners.get(owner.sessionId) === owner) owner.subscriptionInFlight = false;
-    this.clearWatchdog(owner);
+  finishSubscription(owner: StreamSupervisor, transportGeneration: number): void {
+    if (this.ownsTransport(owner, transportGeneration)) owner.subscriptionInFlight = false;
+    this.clearWatchdog(owner, transportGeneration);
   }
 
-  touchWatchdog(owner: StreamSupervisor, callback: () => void, delayMs: number): boolean {
-    if (!this.owns(owner)) return false;
-    this.clearWatchdog(owner);
+  touchWatchdog(
+    owner: StreamSupervisor,
+    transportGeneration: number,
+    callback: () => void,
+    delayMs: number,
+  ): boolean {
+    if (!this.ownsTransport(owner, transportGeneration)) return false;
+    this.clearWatchdog(owner, transportGeneration);
     owner.watchdogTimer = window.setTimeout(
       () => {
         owner.watchdogTimer = null;
-        if (this.owns(owner)) callback();
+        if (this.ownsTransport(owner, transportGeneration)) callback();
       },
       Math.max(0, delayMs),
     );
     return true;
   }
 
-  clearWatchdog(owner: StreamSupervisor): void {
+  clearWatchdog(owner: StreamSupervisor, transportGeneration?: number): void {
+    if (transportGeneration !== undefined && owner.transportGeneration !== transportGeneration)
+      return;
     if (owner.watchdogTimer !== null) {
       window.clearTimeout(owner.watchdogTimer);
       owner.watchdogTimer = null;
@@ -125,6 +154,7 @@ export class StreamSupervisors {
 
   startRecovery(owner: StreamSupervisor): boolean {
     if (!this.owns(owner) || owner.recoveryInFlight) return false;
+    this.clearRetry(owner);
     owner.recoveryInFlight = true;
     return true;
   }
@@ -171,11 +201,15 @@ export class StreamSupervisors {
     });
   }
 
-  private cleanup(owner: StreamSupervisor): void {
+  private clearRetry(owner: StreamSupervisor): void {
     if (owner.retryTimer !== null) {
       window.clearTimeout(owner.retryTimer);
       owner.retryTimer = null;
     }
+  }
+
+  private cleanup(owner: StreamSupervisor): void {
+    this.clearRetry(owner);
     this.clearWatchdog(owner);
     owner.recoveryInFlight = false;
     owner.subscriptionInFlight = false;

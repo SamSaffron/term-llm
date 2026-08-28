@@ -825,6 +825,207 @@ describe('AppStore compatibility behavior', () => {
     ]);
   });
 
+  it('recovers an authoritative terminal snapshot after the server advances offline', async () => {
+    const store = new AppStore(config);
+    const staleAsk = { sessionId: 's1', callId: 'stale-call', questions: [] };
+    store.sessions.value = [
+      { ...session(), activeRun: true, activeResponseId: 'r1', transcriptRev: 1 },
+    ];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.runs.value = {
+      s1: {
+        ...initialProjection({
+          responseId: 'r1',
+          sessionId: 's1',
+          epoch: 1,
+          status: 'connecting',
+          lastSequence: 2,
+          startedRev: 1,
+          reconnects: 1,
+        }),
+        askUser: staleAsk,
+        messages: [
+          {
+            id: 'stale-partial',
+            role: 'assistant',
+            content: 'stale partial attempt',
+            created: 1,
+            responseId: 'r1',
+          },
+        ],
+      },
+    };
+    store.askUser.value = staleAsk;
+    store.interjections.value = [
+      { id: 'interject-1', sessionId: 's1', content: 'change course', state: 'pending' },
+    ];
+    store.endpoints.response = vi.fn(async () => ({
+      id: 'r1',
+      session_id: 's1',
+      status: 'completed',
+      run_epoch: 1,
+      last_sequence_number: 20,
+      started_rev: 1,
+      final_rev: 5,
+      durable_handoff: true,
+      recovery: {
+        sequence_number: 20,
+        messages: [
+          {
+            id: 'interject-1',
+            role: 'user',
+            content: 'change course',
+            client_message_id: 'interject-1',
+            interrupt_state: 'interject',
+            response_id: 'r1',
+            created: 2,
+          },
+          {
+            id: 'recovered-tools',
+            role: 'tool-group',
+            status: 'done',
+            response_id: 'r1',
+            created: 3,
+            tools: [
+              { id: 'tool-1', name: 'shell', status: 'done' },
+              {
+                id: 'plan-1',
+                name: 'update_plan',
+                status: 'done',
+                resultStatus: 'success',
+                arguments: JSON.stringify({
+                  plan: [{ step: 'Recovered work', status: 'completed' }],
+                }),
+              },
+            ],
+          },
+          {
+            id: 'recovered-answer',
+            role: 'assistant',
+            content: 'Done after reconnect.',
+            response_id: 'r1',
+            assistant_segment_ordinal: 1,
+            segment_start_sequence: 18,
+            segment_end_sequence: 19,
+            created: 4,
+          },
+        ],
+      },
+    }));
+    const selected = deferred<Record<string, unknown>>();
+    store.endpoints.selectedSession = vi.fn(() => selected.promise);
+    store.endpoints.sessionState = vi.fn(async () => ({ last_response_id: 'r1' }));
+    const internals = store as unknown as {
+      resumeResponse(sessionId: string, responseId: string): Promise<void>;
+    };
+
+    const recovery = internals.resumeResponse('s1', 'r1');
+    await vi.waitFor(() => expect(store.runs.value.s1.run.lastSequence).toBe(20));
+
+    expect(store.runs.value.s1).toMatchObject({
+      askUser: null,
+      run: { status: 'completed', finalRev: 5, durableHandoff: true },
+    });
+    expect(store.runs.value.s1.messages.map((message) => message.id)).toEqual([
+      'interject-1',
+      'recovered-tools',
+      'recovered-answer',
+    ]);
+    expect(store.runs.value.s1.messages[2]).toMatchObject({
+      segmentStartSequence: 18,
+      segmentEndSequence: 19,
+    });
+    expect(store.interjections.value).toEqual([]);
+    expect(store.currentPlan.value).toEqual({
+      plan: [{ step: 'Recovered work', status: 'completed' }],
+    });
+    expect(store.askUser.value).toBeNull();
+    expect(store.sessions.value[0]).toMatchObject({
+      activeRun: false,
+      activeResponseId: null,
+      lastResponseId: 'r1',
+    });
+
+    selected.resolve({
+      selected_session: { id: 's1', title: 'Test', transcript_rev: 5 },
+      selected_transcript: {
+        bodies: {
+          rev: 5,
+          messages: [
+            {
+              id: 11,
+              sequence: 1,
+              role: 'user',
+              client_message_id: 'interject-1',
+              interrupt_state: 'interject',
+              parts: [{ type: 'text', text: 'change course' }],
+            },
+            {
+              id: 12,
+              sequence: 2,
+              role: 'assistant',
+              response_id: 'r1',
+              parts: [{ type: 'text', text: 'Done after reconnect.' }],
+            },
+          ],
+        },
+      },
+    });
+    await recovery;
+
+    expect(store.runs.value.s1.messages).toEqual([]);
+    expect(store.visibleMessages.value.map((message) => message.content)).toEqual([
+      'change course',
+      'Done after reconnect.',
+    ]);
+    await internals.resumeResponse('s1', 'r1');
+    expect(store.endpoints.response).toHaveBeenCalledOnce();
+  });
+
+  it('uses an empty recovery snapshot to remove stale attempt output', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.runs.value = {
+      s1: {
+        ...initialProjection({
+          responseId: 'r1',
+          sessionId: 's1',
+          epoch: 1,
+          status: 'connecting',
+          lastSequence: 3,
+          startedRev: 0,
+          reconnects: 1,
+        }),
+        messages: [
+          { id: 'discarded', role: 'assistant', content: 'discarded attempt', created: 1 },
+        ],
+        pendingGuardian: {
+          'discarded-call': [{ outcome: 'warning', message: 'stale review' }],
+        },
+      },
+    };
+    store.endpoints.response = vi.fn(async () => ({
+      status: 'in_progress',
+      run_epoch: 1,
+      last_sequence_number: 12,
+      recovery: { sequence_number: 12 },
+    }));
+    const internals = store as unknown as {
+      resumeResponse(sessionId: string, responseId: string): Promise<void>;
+      streamResponse(responseId: string, sessionId: string, after: number): Promise<void>;
+    };
+    internals.streamResponse = vi.fn(async () => undefined);
+
+    await internals.resumeResponse('s1', 'r1');
+
+    expect(store.runs.value.s1.messages).toEqual([]);
+    expect(store.runs.value.s1.pendingGuardian).toEqual({});
+    expect(store.runs.value.s1.run.lastSequence).toBe(12);
+    expect(internals.streamResponse).toHaveBeenCalledWith('r1', 's1', 12);
+  });
+
   it('hydrates durable pending interjections when a session is opened in another tab', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];
@@ -960,6 +1161,77 @@ describe('AppStore compatibility behavior', () => {
     expect(response).not.toHaveBeenCalled();
   });
 
+  it('does not let an old terminal transcript refresh overwrite a newer response', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [{ ...session(), transcriptRev: 4 }];
+    store.activeSessionId.value = 's1';
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'r1',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'completed',
+        lastSequence: 8,
+        startedRev: 3,
+        finalRev: 5,
+        durableHandoff: true,
+        reconnects: 0,
+      }),
+    };
+    const selected = deferred<Record<string, unknown>>();
+    store.endpoints.selectedSession = vi.fn(() => selected.promise);
+    store.endpoints.sessionState = vi.fn(async () => ({ last_response_id: 'r1' }));
+    const internals = store as unknown as {
+      refreshSessionMessages(
+        sessionId: string,
+        targetRev: number,
+        expectedResponseId: string,
+      ): Promise<void>;
+    };
+
+    const refresh = internals.refreshSessionMessages('s1', 5, 'r1');
+    await vi.waitFor(() => expect(store.endpoints.selectedSession).toHaveBeenCalledOnce());
+    const newerMessage = {
+      id: 'new-user',
+      role: 'user' as const,
+      content: 'new work',
+      created: 10,
+      clientMessageId: 'new-client',
+    };
+    store.sessions.value = [{ ...store.sessions.value[0], messages: [newerMessage] }];
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'r2',
+        sessionId: 's1',
+        epoch: 2,
+        status: 'streaming',
+        lastSequence: 1,
+        startedRev: 5,
+        reconnects: 0,
+      }),
+    };
+    selected.resolve({
+      selected_session: { id: 's1', transcript_rev: 5 },
+      selected_transcript: {
+        bodies: {
+          rev: 5,
+          messages: [
+            {
+              id: 4,
+              role: 'assistant',
+              response_id: 'r1',
+              parts: [{ type: 'text', text: 'old answer' }],
+            },
+          ],
+        },
+      },
+    });
+    await refresh;
+
+    expect(store.runs.value.s1.run.responseId).toBe('r2');
+    expect(store.sessions.value[0].messages).toEqual([newerMessage]);
+  });
+
   it('keeps the live projection when transcript bodies are older than the handoff', async () => {
     const store = new AppStore(config);
     store.sessions.value = [{ ...session(), transcriptRev: 2 }];
@@ -998,7 +1270,7 @@ describe('AppStore compatibility behavior', () => {
     expect(store.sessions.value[0].transcriptRev).toBe(2);
   });
 
-  it('re-clears a submitted composer when the server accepts after draft resurrection', async () => {
+  it('clears submitted draft ownership immediately without erasing a newer identical draft', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];
     store.activeSessionId.value = 's1';
@@ -1021,9 +1293,18 @@ describe('AppStore compatibility behavior', () => {
     const sending = store.send();
     await vi.waitFor(() => expect(store.endpoints.createResponse).toHaveBeenCalledOnce());
     expect(store.prompt.value).toBe('');
+    expect(readDrafts(localStorage, store.keys.draftMessages)).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ sessionId: 's1', content: 'Again' })]),
+    );
 
-    // Simulate lifecycle/draft recovery racing the still-unacknowledged POST.
+    // A later identical draft is a new user-owned edit, not the old submitted
+    // value coming back. The old request's acknowledgement must preserve it.
     store.prompt.value = 'Again';
+    saveDraft(localStorage, store.keys.draftMessages, {
+      sessionId: 's1',
+      content: 'Again',
+      updated: 2,
+    });
     accepted.resolve(
       new Response(stream, {
         status: 200,
@@ -1031,8 +1312,9 @@ describe('AppStore compatibility behavior', () => {
       }),
     );
 
-    await vi.waitFor(() => expect(store.prompt.value).toBe(''));
-    expect(readDrafts(localStorage, store.keys.draftMessages)).not.toEqual(
+    await vi.waitFor(() => expect(store.sessions.value[0].activeResponseId).toBe('r1'));
+    expect(store.prompt.value).toBe('Again');
+    expect(readDrafts(localStorage, store.keys.draftMessages)).toEqual(
       expect.arrayContaining([expect.objectContaining({ sessionId: 's1', content: 'Again' })]),
     );
     store.dispose();
@@ -2477,6 +2759,18 @@ describe('AppStore compatibility behavior', () => {
       run_epoch: 1,
       status: 'in_progress',
       last_sequence_number: 4,
+      recovery: {
+        sequence_number: 4,
+        events: [
+          {
+            event: 'response.ask_user.prompt',
+            payload: {
+              call_id: 'call-1',
+              questions: [{ question: 'Choose?', options: [{ label: 'Continue' }] }],
+            },
+          },
+        ],
+      },
     }));
     store.streamResponse = vi.fn(() => openStream.promise);
     (store as unknown as { startStatusPoll(): void }).startStatusPoll = vi.fn();

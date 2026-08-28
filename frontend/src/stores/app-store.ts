@@ -54,7 +54,6 @@ import type {
   Session,
 } from '../domain/types';
 import {
-  clearDraft,
   clearSessionDiffComments,
   migrateScopedStorage,
   persistDiffComment,
@@ -1583,6 +1582,7 @@ export class AppStore {
 
   async send(options: SendOptions = {}): Promise<void> {
     const promptContent = this.prompt.value.trim();
+    const composerDraftId = this.draftStorageID();
     const inputText = options.inputText ?? promptContent;
     const content = options.displayContent ?? inputText;
     const attachments = options.contentParts ? [] : [...this.attachments.value];
@@ -1664,10 +1664,7 @@ export class AppStore {
       attachments: optimistic.attachments,
     });
     if (!options.preserveComposer)
-      batch(() => {
-        this.prompt.value = '';
-        this.attachments.value = [];
-      });
+      this.clearSubmittedComposer(sessionId, promptContent, attachments, composerDraftId);
     const run: ActiveRun = {
       responseId: `pending_${uuid()}`,
       sessionId,
@@ -1739,6 +1736,7 @@ export class AppStore {
       ) {
         this.prompt.value = promptContent;
         this.attachments.value = attachments;
+        this.persistCurrentDraft();
       }
     };
     const submit = async (signal: AbortSignal): Promise<void> => {
@@ -1759,7 +1757,6 @@ export class AppStore {
           clientMessageId,
           requestId,
           attachments,
-          composerText: promptContent,
           options,
         });
       } catch (error) {
@@ -1823,27 +1820,16 @@ export class AppStore {
     clientMessageId: string;
     requestId: string;
     attachments: Attachment[];
-    composerText: string;
     options: SendOptions;
   }): Promise<string> {
-    const {
-      response,
-      streamOwner,
-      sessionId,
-      clientMessageId,
-      requestId,
-      attachments,
-      composerText,
-      options,
-    } = input;
+    const { response, streamOwner, sessionId, clientMessageId, requestId, attachments, options } =
+      input;
     if (!response.ok || !response.body) {
       const body = await response.text();
       if (response.status === 409) {
         try {
           const parsed = JSON.parse(body) as { error?: { type?: string } };
           if (parsed.error?.type === 'client_message_already_committed') {
-            if (!options.preserveComposer)
-              this.clearSubmittedComposer(sessionId, composerText, attachments);
             this.retireIntent(sessionId, clientMessageId);
             this.streamSupervisors.retire(streamOwner);
             await this.loadSession(sessionId);
@@ -1862,11 +1848,6 @@ export class AppStore {
     const durableSessionId = response.headers.get('x-session-id') || sessionId;
     const responseId = response.headers.get('x-response-id') || '';
     if (!responseId) throw new Error('Server did not return a response id.');
-    // A response ID proves that the server owns this exact logical message.
-    // Clear it again in case lifecycle/draft recovery resurrected the submitted
-    // text while the streaming POST was crossing a network handoff.
-    if (!options.preserveComposer)
-      this.clearSubmittedComposer(sessionId, composerText, attachments);
     options.onTransportStarted?.();
     this.releaseAttachmentResources(attachments, true);
     if (!this.streamSupervisors.owns(streamOwner)) return streamOwner.sessionId;
@@ -1910,9 +1891,9 @@ export class AppStore {
         },
       },
     };
-    clearDraft(this.storage, this.keys.draftMessages, sessionId);
-    await this.consumeResponseBody(response.body, streamOwner);
-    if (!this.streamSupervisors.owns(streamOwner)) return ownerID;
+    const transportGeneration = streamOwner.transportGeneration;
+    await this.consumeResponseBody(response.body, streamOwner, transportGeneration);
+    if (!this.streamSupervisors.ownsTransport(streamOwner, transportGeneration)) return ownerID;
     const current = this.runs.value[ownerID];
     if (current && ['connecting', 'streaming'].includes(current.run.status))
       await this.recoverSupervisor(streamOwner);
@@ -1977,11 +1958,13 @@ export class AppStore {
   private async consumeResponseBody(
     body: ReadableStream<Uint8Array>,
     owner: StreamSupervisor,
+    transportGeneration = owner.transportGeneration,
   ): Promise<boolean> {
     let cleanCompletion = false;
     const watchdog = () =>
       this.streamSupervisors.touchWatchdog(
         owner,
+        transportGeneration,
         () => {
           this.bumpDiagnostic('streamWatchdogTimeouts');
           owner.abort.abort(new DOMException('Response stream became inactive', 'TimeoutError'));
@@ -1992,7 +1975,7 @@ export class AppStore {
     watchdog();
     try {
       for await (const frame of decodeSSE(body, owner.abort.signal, watchdog)) {
-        if (!this.streamSupervisors.owns(owner)) {
+        if (!this.streamSupervisors.ownsTransport(owner, transportGeneration)) {
           this.bumpDiagnostic('staleStreamCallbacks');
           return false;
         }
@@ -2014,7 +1997,7 @@ export class AppStore {
       }
       return cleanCompletion;
     } finally {
-      this.streamSupervisors.clearWatchdog(owner);
+      this.streamSupervisors.clearWatchdog(owner, transportGeneration);
     }
   }
 
@@ -2031,8 +2014,9 @@ export class AppStore {
   private async subscribeSupervisor(owner: StreamSupervisor): Promise<void> {
     if (!this.streamSupervisors.startSubscription(owner)) return;
     const abort = this.streamSupervisors.replaceAbort(owner);
+    const transportGeneration = owner.transportGeneration;
     if (!abort) {
-      this.streamSupervisors.finishSubscription(owner);
+      this.streamSupervisors.finishSubscription(owner, transportGeneration);
       return;
     }
     try {
@@ -2041,23 +2025,32 @@ export class AppStore {
         owner.lastSequence,
         abort.signal,
       );
-      if (!this.streamSupervisors.owns(owner) || abort.signal.aborted) return;
+      if (!this.streamSupervisors.ownsTransport(owner, transportGeneration) || abort.signal.aborted)
+        return;
       if (!response.ok || !response.body)
         throw new Error(`Response stream returned ${response.status}`);
-      const clean = await this.consumeResponseBody(response.body, owner);
-      if (!this.streamSupervisors.owns(owner) || abort.signal.aborted) return;
+      const clean = await this.consumeResponseBody(response.body, owner, transportGeneration);
+      if (!this.streamSupervisors.ownsTransport(owner, transportGeneration) || abort.signal.aborted)
+        return;
       const projection = this.runs.peek()[owner.sessionId];
-      if (!clean && projection && ['connecting', 'streaming'].includes(projection.run.status))
+      if (
+        clean &&
+        projection &&
+        ['completed', 'cancelled', 'failed'].includes(projection.run.status)
+      )
+        this.streamSupervisors.retire(owner);
+      else if (!clean && projection && ['connecting', 'streaming'].includes(projection.run.status))
         this.scheduleSupervisorRetry(owner, new Error('Response stream ended before completion'));
     } catch (error) {
-      if (!this.streamSupervisors.owns(owner) || abort.signal.aborted) return;
+      if (!this.streamSupervisors.ownsTransport(owner, transportGeneration) || abort.signal.aborted)
+        return;
       if (error instanceof ResponseProtocolError) {
         this.scheduleSupervisorRetry(owner, error);
         return;
       }
       this.scheduleSupervisorRetry(owner, error);
     } finally {
-      this.streamSupervisors.finishSubscription(owner);
+      this.streamSupervisors.finishSubscription(owner, transportGeneration);
     }
   }
 
@@ -2289,7 +2282,11 @@ export class AppStore {
       if (interactionsChanged) this.interactions.value = interactions;
       if (owner) this.streamSupervisors.retire(owner);
       if (this.diff.peek().open && this.diff.peek().sessionId === sessionId) void this.loadDiff();
-      this.schedule(() => void this.refreshSessionMessages(sessionId, next.run.finalRev || 0), 0);
+      this.schedule(
+        () =>
+          void this.refreshSessionMessages(sessionId, next.run.finalRev || 0, next.run.responseId),
+        0,
+      );
       if (next.run.status === 'completed')
         this.scheduleTitleReconciliation(sessionId, next.run.responseId, owner?.generation || 0);
     }
@@ -2323,11 +2320,17 @@ export class AppStore {
     this.titleRefreshTimers.set(sessionId, timers);
   }
 
-  private async refreshSessionMessages(sessionId: string, targetRev = 0): Promise<void> {
+  private async refreshSessionMessages(
+    sessionId: string,
+    targetRev = 0,
+    expectedResponseId = '',
+  ): Promise<void> {
     try {
       const interjectionRevision = this.interjectionRevision;
       const stateRequest = this.endpoints.sessionState(sessionId).catch(() => null);
       const selected = await this.endpoints.selectedSession(sessionId);
+      if (expectedResponseId && this.runs.peek()[sessionId]?.run.responseId !== expectedResponseId)
+        return;
       const source = recordValue(selected.selected_session);
       const sideload = recordValue(selected.selected_transcript);
       const bodies = recordValue(sideload?.bodies);
@@ -2340,6 +2343,9 @@ export class AppStore {
         messages: listFrom(bodies, 'messages', 'items'),
       });
       const incomingRev = incoming.transcriptRev || 0;
+      const currentRev =
+        this.sessions.peek().find((session) => session.id === sessionId)?.transcriptRev || 0;
+      if (incomingRev < currentRev) return;
       // Never combine a terminal projection with transcript bodies whose
       // generation cannot prove that they contain the durable handoff.
       if (targetRev && incomingRev < targetRev) return;
@@ -2382,6 +2388,8 @@ export class AppStore {
         Boolean(projection && ['connecting', 'streaming'].includes(projection.run.status)),
       );
       const state = await stateRequest;
+      if (expectedResponseId && this.runs.peek()[sessionId]?.run.responseId !== expectedResponseId)
+        return;
       if (state) {
         this.reconcilePendingInterjections(sessionId, state, interjectionRevision);
         const lastResponseId = String(state.lastResponseId || state.last_response_id || '').trim();
@@ -2422,7 +2430,8 @@ export class AppStore {
   private async recoverSupervisor(owner: StreamSupervisor): Promise<void> {
     if (!this.streamSupervisors.startRecovery(owner)) return;
     this.bumpDiagnostic('supervisorRecoveries');
-    const abort = this.streamSupervisors.replaceAbort(owner);
+    const abort = this.streamSupervisors.replaceAbort(owner, true);
+    const transportGeneration = owner.transportGeneration;
     if (!abort) {
       this.streamSupervisors.finishRecovery(owner);
       return;
@@ -2430,7 +2439,8 @@ export class AppStore {
     const { sessionId, responseId } = owner;
     try {
       const snapshot = await this.endpoints.response(responseId, abort.signal);
-      if (!this.streamSupervisors.owns(owner) || abort.signal.aborted) return;
+      if (!this.streamSupervisors.ownsTransport(owner, transportGeneration) || abort.signal.aborted)
+        return;
       const recovery = recordValue(snapshot.recovery) || {};
       const existing =
         this.runs.value[sessionId] ||
@@ -2461,6 +2471,10 @@ export class AppStore {
           const segmentOrdinal = Number(
             raw.assistantSegmentOrdinal ?? raw.assistant_segment_ordinal,
           );
+          const segmentStartSequence = Number(
+            raw.segmentStartSequence ?? raw.segment_start_sequence,
+          );
+          const segmentEndSequence = Number(raw.segmentEndSequence ?? raw.segment_end_sequence);
           const interruptState = String(raw.interruptState || raw.interrupt_state || '').trim();
           return {
             ...raw,
@@ -2471,13 +2485,15 @@ export class AppStore {
             responseId: projectedResponseId || responseId,
             ...(clientMessageId ? { clientMessageId } : {}),
             ...(Number.isFinite(segmentOrdinal) ? { assistantSegmentOrdinal: segmentOrdinal } : {}),
+            ...(Number.isFinite(segmentStartSequence) ? { segmentStartSequence } : {}),
+            ...(Number.isFinite(segmentEndSequence) ? { segmentEndSequence } : {}),
             ...(interruptState ? { interruptState } : {}),
           } as Message;
         })
         .filter(Boolean);
       const status = String(snapshot.status || 'in_progress');
-      let recoveredAskUser = existing.askUser;
-      let recoveredApproval = existing.approval;
+      let recoveredAskUser: AskUserPrompt | null = null;
+      let recoveredApproval: ApprovalPrompt | null = null;
       for (const entry of listFrom(recovery, 'events')) {
         const eventType = String(entry.event || entry.type || '');
         const payload = entry.payload ?? entry;
@@ -2486,11 +2502,42 @@ export class AppStore {
         if (eventType === 'response.approval.prompt')
           recoveredApproval = approvalPrompt(payload, sessionId) || recoveredApproval;
       }
+      const terminal = ['completed', 'cancelled', 'failed'].includes(status);
+      if (terminal) {
+        recoveredAskUser = null;
+        recoveredApproval = null;
+      }
+      const snapshotSequence = Math.max(
+        0,
+        Number(snapshot.last_sequence_number ?? recovery.sequence_number) || 0,
+      );
+      const snapshotError = recordValue(snapshot.error);
+      const snapshotUsage = recordValue(snapshot.usage);
+      let recoveredPlan = existing.plan;
+      for (const tool of projected.flatMap((message) => message.tools || [])) {
+        if (tool.name !== 'update_plan' || tool.status !== 'done' || tool.resultStatus === 'error')
+          continue;
+        try {
+          const value = JSON.parse(tool.arguments || '{}') as CurrentPlan;
+          if (Array.isArray(value.plan)) recoveredPlan = value;
+        } catch {
+          /* Preserve the last authoritative plan if recovered arguments are invalid. */
+        }
+      }
       const next: ResponseProjection = {
         ...existing,
         askUser: recoveredAskUser,
         approval: recoveredApproval,
-        messages: projected.length ? projected : existing.messages,
+        plan: recoveredPlan,
+        pendingGuardian: {},
+        // The snapshot is authoritative. An empty recovery projection means
+        // stale local attempt output was discarded while this client was away.
+        messages: projected,
+        usage: Object.keys(snapshotUsage || {}).length
+          ? (snapshotUsage as ResponseProjection['usage'])
+          : null,
+        phase: undefined,
+        retry: undefined,
         run: {
           ...existing.run,
           responseId,
@@ -2503,15 +2550,72 @@ export class AppStore {
                 : status === 'cancelled'
                   ? 'cancelled'
                   : 'streaming',
-          lastSequence:
-            Number(snapshot.last_sequence_number ?? recovery.sequence_number) ||
-            existing.run.lastSequence,
+          lastSequence: snapshotSequence,
           startedRev: Number(snapshot.started_rev) || existing.run.startedRev,
           startedAt: Number(snapshot.started_at) || existing.run.startedAt,
           endedAt: Number(snapshot.ended_at) || existing.run.endedAt,
+          finalRev: terminal ? Number(snapshot.final_rev) || 0 : undefined,
+          durableHandoff: terminal ? snapshot.durable_handoff === true : undefined,
+          error:
+            status === 'failed'
+              ? String(snapshotError?.message || existing.run.error || 'Response failed')
+              : undefined,
         },
       };
-      this.runs.value = { ...this.runs.value, [sessionId]: next };
+      if (!this.streamSupervisors.checkpoint(owner, transportGeneration, snapshotSequence)) return;
+      const recoveredClientIDs = new Set(
+        projected
+          .map((message) => message.clientMessageId)
+          .filter((id): id is string => Boolean(id)),
+      );
+      if (recoveredClientIDs.size)
+        this.setInterjections(
+          this.interjections
+            .peek()
+            .filter((entry) => entry.sessionId !== sessionId || !recoveredClientIDs.has(entry.id)),
+        );
+      batch(() => {
+        this.runs.value = { ...this.runs.peek(), [sessionId]: next };
+        if (terminal)
+          this.sessions.value = this.sessions.value.map((session) =>
+            session.id === sessionId
+              ? {
+                  ...session,
+                  activeResponseId: null,
+                  activeRun: false,
+                  lastResponseId: responseId,
+                }
+              : session,
+          );
+      });
+      if (sessionId === this.activeSessionId.peek()) {
+        this.currentPlan.value = recoveredPlan;
+        if (!recoveredPlan) {
+          this.planOpen.value = false;
+          this.planSeen.value = '';
+        }
+      }
+      if (terminal) {
+        this.retireIntent(sessionId);
+        const interactions = { ...this.interactions.peek() };
+        let changed = false;
+        for (const [key, interaction] of Object.entries(interactions)) {
+          if (
+            interaction.sessionId === sessionId &&
+            interaction.responseId === responseId &&
+            ['waiting', 'dismissed', 'submitting', 'failed'].includes(interaction.state)
+          ) {
+            interactions[key] = {
+              ...interaction,
+              state: 'cancelled-by-agent',
+              outcome: 'Decision no longer needed',
+              resolvedAt: Date.now(),
+            };
+            changed = true;
+          }
+        }
+        if (changed) this.interactions.value = interactions;
+      }
       if (recoveredAskUser?.callId) {
         this.upsertInteraction(
           'ask-user',
@@ -2525,7 +2629,7 @@ export class AppStore {
           this.shouldOpenInteraction('ask-user', sessionId, recoveredAskUser.callId)
         )
           this.askUser.value = recoveredAskUser;
-      }
+      } else if (this.askUser.peek()?.sessionId === sessionId) this.askUser.value = null;
       if (recoveredApproval?.id) {
         this.upsertInteraction(
           'approval',
@@ -2539,7 +2643,7 @@ export class AppStore {
           this.shouldOpenInteraction('approval', sessionId, recoveredApproval.id)
         )
           this.approval.value = recoveredApproval;
-      }
+      } else if (this.approval.peek()?.sessionId === sessionId) this.approval.value = null;
       for (const resolved of listFrom(recovery, 'resolved_interactions')) {
         const requestId = String(resolved.request_id || '');
         const kind = String(resolved.kind || '') === 'approval' ? 'approval' : 'ask-user';
@@ -2553,20 +2657,22 @@ export class AppStore {
             Number(resolved.resolved_at) || Date.now(),
           );
       }
-      if (next.run.lastSequence > owner.lastSequence) owner.lastSequence = next.run.lastSequence;
       this.streamSupervisors.finishRecovery(owner);
-      if (!this.streamSupervisors.owns(owner)) return;
+      if (!this.streamSupervisors.ownsTransport(owner, transportGeneration)) return;
       if (next.run.status === 'streaming') {
         if (await this.waitForSubscriptionIdle(owner))
           await this.streamResponse(responseId, sessionId, owner.lastSequence);
         else this.scheduleSupervisorRetry(owner, new Error('Previous subscription did not stop'));
       } else {
         this.streamSupervisors.retire(owner);
-        await this.refreshSessionMessages(sessionId, Number(snapshot.final_rev) || 0);
+        await this.refreshSessionMessages(sessionId, Number(snapshot.final_rev) || 0, responseId);
+        if (next.run.status === 'completed')
+          this.scheduleTitleReconciliation(sessionId, responseId, owner.generation);
       }
     } catch (error) {
       this.streamSupervisors.finishRecovery(owner);
-      if (!this.streamSupervisors.owns(owner) || abort.signal.aborted) return;
+      if (!this.streamSupervisors.ownsTransport(owner, transportGeneration) || abort.signal.aborted)
+        return;
       this.scheduleSupervisorRetry(owner, error);
     }
   }
@@ -2635,6 +2741,7 @@ export class AppStore {
     sessionId: string,
     inputText: string,
     attachments: Attachment[],
+    draftSessionId = sessionId,
   ): void {
     const value = inputText.trim();
     const submittedIDs = new Set(
@@ -2653,7 +2760,7 @@ export class AppStore {
       });
     try {
       const draft = readDrafts(this.storage, this.keys.draftMessages).find(
-        (candidate) => candidate.sessionId === sessionId,
+        (candidate) => candidate.sessionId === draftSessionId,
       );
       if (draft?.content.trim() === value)
         saveDraft(this.storage, this.keys.draftMessages, {

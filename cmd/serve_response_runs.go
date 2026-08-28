@@ -1062,6 +1062,18 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 	}
 
 	switch event {
+	case "response.attempt.discard":
+		kept := r.recoveryMessages[:0]
+		for _, message := range r.recoveryMessages {
+			if message.Role == "assistant" || message.Role == "tool-group" {
+				continue
+			}
+			kept = append(kept, message)
+		}
+		r.recoveryMessages = kept
+		r.currentAssistant = -1
+		r.currentToolGroup = -1
+		clear(r.pendingGuardianByCall)
 	case "response.output_text.delta":
 		delta := stringValue(payload["delta"])
 		if delta == "" {

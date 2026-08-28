@@ -74,6 +74,17 @@ func foldResponseEventStream(events []responseRunEvent) (responseRecoveryShape, 
 			shape.Messages = append(shape.Messages, responseRecoveryMessageShape{
 				Role: "user", Content: text, ClientMessageID: clientID,
 			})
+		case "response.attempt.discard":
+			kept := shape.Messages[:0]
+			for _, message := range shape.Messages {
+				if message.Role == "assistant" || message.Role == "tool-group" {
+					continue
+				}
+				kept = append(kept, message)
+			}
+			shape.Messages = kept
+			currentAssistant = -1
+			currentToolGroup = -1
 		case "response.output_text.delta":
 			delta := stringValue(payload["delta"])
 			if delta == "" {
@@ -197,6 +208,7 @@ func TestResponseRunEventFoldStructurallyEqualsRecoveryProjection(t *testing.T) 
 		{name: "tools", events: []responseRecoveryEventFixture{toolAdded, {event: "response.output_item.done", payload: map[string]any{"item": map[string]any{"type": "function_call", "call_id": "call-1", "arguments": `{"command":"false"}`}}}, {event: "response.tool_exec.end", payload: map[string]any{"call_id": "call-1", "success": false}}, {event: "response.completed", payload: map[string]any{}}}},
 		{name: "multiple assistant segments", events: []responseRecoveryEventFixture{text(0, "first"), {event: "response.output_text.new_segment", payload: map[string]any{}}, text(1, "second"), {event: "response.completed", payload: map[string]any{}}}},
 		{name: "interjections", events: []responseRecoveryEventFixture{text(0, "before"), {event: "response.interjection", payload: map[string]any{"text": "clarify", "client_message_id": "client-interjection"}}, text(1, "after")}},
+		{name: "discarded attempt", events: []responseRecoveryEventFixture{text(0, "discard me"), toolAdded, {event: "response.attempt.discard", payload: map[string]any{}}, text(0, "replacement")}},
 		{name: "ask user", events: []responseRecoveryEventFixture{{event: "response.ask_user.prompt", payload: map[string]any{"question": "continue?"}}}},
 		{name: "approval", events: []responseRecoveryEventFixture{{event: "response.approval.prompt", payload: map[string]any{"call_id": "approval-1", "question": "run?"}}}},
 		{name: "cancellation after partial output", events: []responseRecoveryEventFixture{text(0, "partial"), toolAdded, {event: "response.cancelled", payload: map[string]any{}}}},

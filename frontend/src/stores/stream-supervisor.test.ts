@@ -45,7 +45,11 @@ describe('StreamSupervisors', () => {
     supervisors.finishRecovery(owner);
     expect(supervisors.scheduleRetry(owner, retry, 100)).toBe(true);
     expect(supervisors.scheduleRetry(owner, retry, 100)).toBe(false);
-
+    expect(supervisors.startRecovery(owner)).toBe(true);
+    supervisors.finishRecovery(owner);
+    vi.advanceTimersByTime(100);
+    expect(retry).not.toHaveBeenCalled();
+    expect(supervisors.scheduleRetry(owner, retry, 100)).toBe(true);
     vi.advanceTimersByTime(100);
     expect(retry).toHaveBeenCalledOnce();
   });
@@ -58,14 +62,55 @@ describe('StreamSupervisors', () => {
 
     expect(supervisors.startSubscription(owner)).toBe(true);
     expect(supervisors.startSubscription(owner)).toBe(false);
-    expect(supervisors.touchWatchdog(owner, timeout, 100)).toBe(true);
-    supervisors.touchWatchdog(owner, timeout, 200);
+    const abort = supervisors.replaceAbort(owner);
+    expect(abort).not.toBeNull();
+    const transportGeneration = owner.transportGeneration;
+    expect(supervisors.touchWatchdog(owner, transportGeneration, timeout, 100)).toBe(true);
+    supervisors.touchWatchdog(owner, transportGeneration, timeout, 200);
     vi.advanceTimersByTime(100);
     expect(timeout).not.toHaveBeenCalled();
-    supervisors.finishSubscription(owner);
+    supervisors.finishSubscription(owner, transportGeneration);
     vi.advanceTimersByTime(200);
     expect(timeout).not.toHaveBeenCalled();
     expect(supervisors.startSubscription(owner)).toBe(true);
+  });
+
+  it('invalidates stale transport cleanup before replacing a connection', () => {
+    const supervisors = new StreamSupervisors();
+    const owner = supervisors.begin('s1', 'r1');
+    expect(supervisors.startSubscription(owner)).toBe(true);
+    const first = supervisors.replaceAbort(owner)!;
+    const firstGeneration = owner.transportGeneration;
+    let firstOwnedDuringAbort = true;
+    first.signal.addEventListener('abort', () => {
+      firstOwnedDuringAbort = supervisors.ownsTransport(owner, firstGeneration);
+    });
+
+    supervisors.replaceAbort(owner, true);
+    expect(firstOwnedDuringAbort).toBe(false);
+    expect(supervisors.startSubscription(owner)).toBe(true);
+    supervisors.replaceAbort(owner);
+    const currentGeneration = owner.transportGeneration;
+
+    supervisors.finishSubscription(owner, firstGeneration);
+
+    expect(supervisors.ownsTransport(owner, currentGeneration)).toBe(true);
+    expect(supervisors.startSubscription(owner)).toBe(false);
+  });
+
+  it('invalidates a destination owner before rekey abort callbacks run', () => {
+    const supervisors = new StreamSupervisors();
+    const incoming = supervisors.begin('draft_1', 'r1');
+    const replaced = supervisors.begin('s1', 'old');
+    let ownedDuringAbort = true;
+    replaced.abort.signal.addEventListener('abort', () => {
+      ownedDuringAbort = supervisors.owns(replaced);
+    });
+
+    expect(supervisors.rekey(incoming, 's1')).toBe(true);
+
+    expect(ownedDuringAbort).toBe(false);
+    expect(supervisors.current('s1')).toBe(incoming);
   });
 
   it('clears retries on cancel, replacement, retirement, and disposal', () => {
