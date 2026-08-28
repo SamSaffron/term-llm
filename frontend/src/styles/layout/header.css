@@ -317,11 +317,12 @@
 }
 
 .model-chip[data-chip='model'] .chip-trigger {
-  max-width: 126px;
+  max-width: 174px;
 }
 
 .model-chip[data-chip='model'] .chip-label {
-  max-width: 84px;
+  flex: 0 1 auto;
+  max-width: 132px;
   line-height: 1.3;
 }
 

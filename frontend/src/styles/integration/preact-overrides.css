@@ -708,6 +708,18 @@ mark.diff-word {
     max-width: min(36vw, 10rem);
   }
 
+  /* Keep the model readable when the header is quiet. If contextual actions make
+     the row genuinely crowded, move the control cluster to a compact second row
+     instead of clipping every control into ambiguity. */
+  .header-title-row {
+    flex-wrap: wrap;
+    row-gap: 0.35rem;
+  }
+
+  .header-left {
+    min-width: min(9rem, 40vw);
+  }
+
   .header-title {
     font-size: 0.94rem;
   }
@@ -735,7 +747,7 @@ mark.diff-word {
   }
 
   .model-chip[data-chip='model'] .chip-trigger {
-    max-width: 7.5rem;
+    max-width: min(10.875rem, 40vw);
   }
 
   .diff-toggle {
@@ -824,12 +836,8 @@ mark.diff-word {
     max-width: 7.5rem;
   }
 
-  .model-chip[data-chip='model'] .chip-trigger {
-    max-width: 5.7rem;
-  }
-
   .model-picker .narrow-header-action {
-    padding-inline: 0.25rem;
+    padding-inline: 0.4rem;
   }
 
   .header-context-actions .worktree-trigger {

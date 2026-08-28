@@ -14,8 +14,12 @@ const session = (id: string, title: string, number: number) => ({
   file_change_summary: { file_count: 1, adds: 2, dels: 1, git: true },
 });
 
-async function mockAPI(page: Page, options: { holdStream?: boolean; media?: boolean } = {}) {
+async function mockAPI(
+  page: Page,
+  options: { holdStream?: boolean; media?: boolean; model?: string } = {},
+) {
   const requests: Array<{ method: string; url: string }> = [];
+  const model = options.model || 'gpt-test';
   await page.route('**/v1/**', async (route: Route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -36,17 +40,15 @@ async function mockAPI(page: Page, options: { holdStream?: boolean; media?: bool
             name: 'openai',
             configured: true,
             is_default: true,
-            default_model: 'gpt-test',
-            models: ['gpt-test'],
+            default_model: model,
+            models: [model],
           },
         ],
       });
     if (path.endsWith('/v1/models'))
       return json({
         object: 'list',
-        data: [
-          { id: 'gpt-test', owned_by: 'openai', reasoning_efforts: ['low', 'medium', 'high'] },
-        ],
+        data: [{ id: model, owned_by: 'openai', reasoning_efforts: ['low', 'medium', 'high'] }],
       });
     if (path.endsWith('/v1/sidebar'))
       return json({ sessions: [session('s1', 'First chat', 1), session('s2', 'Second chat', 2)] });
@@ -157,7 +159,7 @@ async function mockAPI(page: Page, options: { holdStream?: boolean; media?: bool
 async function open(
   page: Page,
   suffix = '',
-  options: { holdStream?: boolean; media?: boolean } = {},
+  options: { holdStream?: boolean; media?: boolean; model?: string } = {},
 ) {
   const requests = await mockAPI(page, options);
   await page.goto(`./${suffix}`);
@@ -277,6 +279,28 @@ test('opens diff UI, expands a file and queues an inline comment', async ({ page
   await expect(page.locator('.diff-queue-bar')).toContainText('1 queued');
   await expect(page.getByRole('button', { name: 'Send comments' })).toBeVisible();
   await expect(page.getByText('1 inline comment queued.')).toHaveCount(0);
+});
+
+test('mobile header keeps the active runtime legible without overflowing when controls compete', async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', 'mobile-only layout');
+  await open(page, '', { model: 'gpt-5.6-sol-high' });
+
+  const runtime = page.getByRole('button', { name: /Runtime settings: gpt-5\.6-sol, high effort/ });
+  const label = runtime.locator('.chip-label');
+  await expect(label).toHaveText('gpt-5.6-sol');
+  expect(await label.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(
+    true,
+  );
+  expect(
+    await page
+      .locator('.main-header')
+      .evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
+  ).toBe(true);
+
+  await runtime.click();
+  await expect(page.getByRole('dialog', { name: 'Runtime settings' })).toBeVisible();
 });
 
 test('mobile viewport opens a styled sidebar and returns to a usable composer', async ({

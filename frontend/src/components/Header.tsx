@@ -59,6 +59,7 @@ function RuntimePicker() {
     setOpen(false);
     trigger.current?.focus({ preventScroll: true });
   };
+  const displayModel = compactModelLabel(split.model) || 'Auto';
   const picker = (
     <div class={`model-picker ${locked ? 'locked' : ''}`}>
       <div class="model-chip model-chip-primary" data-chip="model">
@@ -69,17 +70,17 @@ function RuntimePicker() {
           aria-haspopup="dialog"
           aria-controls={popoverID}
           aria-expanded={open}
-          aria-label="Runtime settings"
+          aria-label={`Runtime settings: ${displayModel}${effort ? `, ${effort} effort` : ''}`}
           data-effort-level={effort || 'auto'}
           title={
             locked
-              ? 'View runtime and queue reasoning effort for the next model turn'
-              : 'Choose provider, model, and reasoning effort'
+              ? `${displayModel} · view runtime and queue reasoning effort for the next model turn`
+              : `${displayModel} · choose provider, model, and reasoning effort`
           }
           onClick={() => (open ? close() : setOpen(true))}
         >
           <span class={`chip-label ${!selectedModel && fallbackModel ? 'stats-muted' : ''}`}>
-            {compactModelLabel(split.model) || 'Auto'}
+            {displayModel}
           </span>
           <EffortMeter />
         </button>
