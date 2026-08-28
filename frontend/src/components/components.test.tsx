@@ -1518,8 +1518,36 @@ describe('Preact-owned chat surfaces', () => {
       const store = createStore();
       store.sessions.value[0].messages = [
         { id: 'u1', role: 'user', content: 'Question', created: 1 },
-        { id: 'a1', role: 'assistant', content: 'First segment', created: 2 },
-        { id: 'a2', role: 'assistant', content: 'Final segment', created: 3 },
+        {
+          id: 'a1',
+          role: 'assistant',
+          content: 'First segment',
+          created: 2,
+          responseId: 'response-1',
+        },
+        {
+          id: 't1',
+          role: 'tool-group',
+          content: '',
+          created: 3,
+          responseId: 'response-1',
+          tools: [
+            {
+              id: 'shell-1',
+              name: 'shell',
+              status: 'done',
+              arguments: '{"command":"noisy command"}',
+              result: 'noisy tool output',
+            },
+          ],
+        },
+        {
+          id: 'a2',
+          role: 'assistant',
+          content: 'Final segment',
+          created: 4,
+          responseId: 'response-1',
+        },
       ];
       const { container } = render(
         <StoreContext.Provider value={store}>
@@ -1535,7 +1563,7 @@ describe('Preact-owned chat surfaces', () => {
         await Promise.resolve();
         await Promise.resolve();
       });
-      expect(writeText).toHaveBeenCalledWith(expect.stringContaining('Final segment'));
+      expect(writeText).toHaveBeenCalledWith('First segment\n\nFinal segment');
       expect(button).toHaveClass('copied');
       expect(button).toHaveAttribute('aria-label', 'Copied');
       await act(async () => {

@@ -109,7 +109,7 @@ describe('transcript domain', () => {
     expect(runs[1].messages?.filter((message) => message.role === 'user').length).toBe(3);
   });
 
-  it('indexes copy-turn text in one transcript pass', () => {
+  it('indexes assistant response text in one transcript pass', () => {
     const messages = Array.from({ length: 1_000 }, (_, index): Message => ({
       id: String(index),
       role: index % 5 === 0 ? 'user' : 'assistant',
@@ -122,7 +122,48 @@ describe('transcript domain', () => {
     expect(contexts.size).toBe(messages.length);
     expect(contexts.get(messages[1])?.copyTarget).toBe(false);
     expect(contexts.get(messages[4])).toMatchObject({
-      turnText: ['0', '1', '2', '3', '4'].join('\n\n'),
+      responseText: ['1', '2', '3', '4'].join('\n\n'),
+      copyTarget: true,
+    });
+  });
+
+  it('excludes prompts, tools, and older responses from copied response text', () => {
+    const messages: Message[] = [
+      { id: 'u1', role: 'user', content: 'Question', created: 1 },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'Discarded response',
+        created: 2,
+        responseId: 'response-1',
+      },
+      {
+        id: 't1',
+        role: 'tool-group',
+        content: 'shell\nran noisy command',
+        created: 3,
+        responseId: 'response-2',
+      },
+      {
+        id: 'a2',
+        role: 'assistant',
+        content: 'First segment',
+        created: 4,
+        responseId: 'response-2',
+      },
+      {
+        id: 'a3',
+        role: 'assistant',
+        content: 'Final segment',
+        created: 5,
+        responseId: 'response-2',
+      },
+    ];
+
+    const contexts = indexTranscriptTurns(messages, (message) => message.content);
+
+    expect(contexts.get(messages[4])).toMatchObject({
+      responseText: 'First segment\n\nFinal segment',
       copyTarget: true,
     });
   });

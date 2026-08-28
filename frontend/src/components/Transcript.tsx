@@ -468,12 +468,12 @@ function TurnCopyButton({ text }: { text: string }) {
 function MessageRow({
   message,
   streaming,
-  turnText,
+  responseText,
   copyTarget,
 }: {
   message: Message;
   streaming: boolean;
-  turnText: string;
+  responseText: string;
   copyTarget: boolean;
 }) {
   const store = useStore();
@@ -610,7 +610,7 @@ function MessageRow({
       {message.usage && <div class="usage-line">{formatUsage(message)}</div>}
       {message.role === 'assistant' && message.content && copyTarget && (
         <div class="turn-action-panel">
-          <TurnCopyButton text={turnText || message.content} />
+          <TurnCopyButton text={responseText || message.content} />
           {message.durableRowId && (
             <button
               class="turn-action-btn turn-branch-btn"
@@ -706,16 +706,7 @@ export function Transcript() {
     [messages, turnLimit, nearTail],
   );
   const rowContexts = useMemo(
-    () =>
-      indexTranscriptTurns(
-        messages,
-        (message) =>
-          message.content ||
-          message.tools
-            ?.map((tool) => `${tool.name}\n${toolSummary(tool)}\n${tool.result || ''}`)
-            .join('\n') ||
-          '',
-      ),
+    () => indexTranscriptTurns(messages, (message) => message.content),
     [messages],
   );
   useEffect(() => {
@@ -849,7 +840,7 @@ export function Transcript() {
                   key={message.id}
                   message={message}
                   streaming={streaming}
-                  turnText={context?.turnText || message.content}
+                  responseText={context?.responseText || message.content}
                   copyTarget={context?.copyTarget === true}
                 />
               );

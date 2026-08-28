@@ -626,7 +626,7 @@ export function sanitizeSession(
 
 export interface TranscriptRowContext {
   index: number;
-  turnText: string;
+  responseText: string;
   copyTarget: boolean;
 }
 export function indexTranscriptTurns(
@@ -639,17 +639,22 @@ export function indexTranscriptTurns(
     let end = start + 1;
     while (end < messages.length && !(messages[end].role === 'user' && !messages[end].askUser))
       end += 1;
-    const parts: string[] = [];
+    const assistantParts: { responseId?: string; text: string }[] = [];
     let copyTarget = -1;
     for (let index = start; index < end; index += 1) {
-      const value = messageText(messages[index]);
-      if (value) parts.push(value);
-      if (messages[index].role === 'assistant' && messages[index].content.trim())
-        copyTarget = index;
+      const message = messages[index];
+      const value = messageText(message);
+      if (message.role === 'assistant' && value)
+        assistantParts.push({ responseId: message.responseId, text: value });
+      if (message.role === 'assistant' && message.content.trim()) copyTarget = index;
     }
-    const turnText = parts.join('\n\n');
+    const responseId = copyTarget >= 0 ? messages[copyTarget].responseId : undefined;
+    const responseText = assistantParts
+      .filter((part) => !responseId || part.responseId === responseId)
+      .map((part) => part.text)
+      .join('\n\n');
     for (let index = start; index < end; index += 1)
-      result.set(messages[index], { index, turnText, copyTarget: index === copyTarget });
+      result.set(messages[index], { index, responseText, copyTarget: index === copyTarget });
     start = end;
   }
   return result;
