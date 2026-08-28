@@ -9,6 +9,7 @@ import { copyText } from '../platform/browser';
 import { rebaseHubAssetURL } from '../app/config';
 import { responseActivity } from '../domain/activity';
 import type { AppStore } from '../stores/app-store';
+import { TRANSCRIPT_SCROLL_TO_TAIL_EVENT } from './transcript-scroll';
 
 function openMediaGallery(store: AppStore, src: string, type: 'image' | 'video'): void {
   const nodes = [...document.querySelectorAll<HTMLElement>('[data-lightbox-src]')];
@@ -735,12 +736,23 @@ export function Transcript() {
     const scrollToTail = () => {
       if (stickToTail.current) element.scrollTop = element.scrollHeight;
     };
+    const forceScrollToTail = () => {
+      stickToTail.current = true;
+      setNearTail(true);
+      scrollToTail();
+    };
     scrollToTail();
+    element.addEventListener(TRANSCRIPT_SCROLL_TO_TAIL_EVENT, forceScrollToTail);
 
-    if (typeof ResizeObserver !== 'function') return;
+    if (typeof ResizeObserver !== 'function') {
+      return () => element.removeEventListener(TRANSCRIPT_SCROLL_TO_TAIL_EVENT, forceScrollToTail);
+    }
     const observer = new ResizeObserver(scrollToTail);
     observer.observe(contents);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      element.removeEventListener(TRANSCRIPT_SCROLL_TO_TAIL_EVENT, forceScrollToTail);
+    };
   }, [store.activeSession.value?.id]);
   useLayoutEffect(() => {
     const element = scroll.current;

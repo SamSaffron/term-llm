@@ -192,11 +192,6 @@ export function Header() {
   const showWorktree = store.worktreesAvailable();
   const currentPlan = store.currentPlan.value;
   const currentPlanSummary = planSummary(currentPlan);
-  const planUnseen =
-    Boolean(currentPlan) &&
-    !store.planVisible.value &&
-    store.planSeen.value !== null &&
-    store.planSeen.value !== currentPlanSummary.signature;
   const planStatus = currentPlanSummary.complete
     ? `All ${currentPlanSummary.total} steps complete`
     : `Step ${currentPlanSummary.position} of ${currentPlanSummary.total}, ${currentPlanSummary.completed} of ${currentPlanSummary.total} complete`;
@@ -296,12 +291,12 @@ export function Header() {
             )}
             {currentPlan && (
               <button
-                class={`header-action plan-toggle ${currentPlanSummary.complete ? 'complete' : ''} ${planUnseen ? 'updated' : ''}`}
+                class={`header-action plan-toggle ${currentPlanSummary.complete ? 'complete' : ''}`}
                 id="planToggleBtn"
                 type="button"
                 aria-expanded={store.planVisible.value}
                 aria-controls="planSurface"
-                aria-label={`${store.planVisible.value ? 'Close' : 'Open'} current plan. ${planStatus}${planUnseen ? '. Updated' : ''}`}
+                aria-label={`${store.planVisible.value ? 'Close' : 'Open'} current plan. ${planStatus}`}
                 title={planStatus}
                 onClick={() => {
                   if (store.planVisible.value) store.closePlan();
@@ -318,7 +313,6 @@ export function Header() {
                     </span>
                   </>
                 )}
-                {planUnseen && <span class="plan-unseen-dot" aria-hidden="true" />}
               </button>
             )}
           </div>

@@ -49,18 +49,6 @@
   padding-inline: 0;
 }
 
-.plan-unseen-dot {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 6px;
-  height: 6px;
-  border: 1px solid var(--surface);
-  border-radius: 50%;
-  background: var(--accent-amber);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-amber) 18%, transparent);
-}
-
 .plan-surface {
   display: flex;
   flex-direction: column;

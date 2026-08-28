@@ -150,7 +150,7 @@ describe('Preact-owned chat surfaces', () => {
     expect(store.endpoints.projectWorktrees).toHaveBeenCalledWith('project-1');
   });
 
-  it('shows the active plan position, update affordance, and semantic checklist', async () => {
+  it('shows the active plan position and semantic checklist', async () => {
     const store = createStore();
     store.currentPlan.value = {
       explanation: 'Make the plan easy to follow.',
@@ -160,7 +160,6 @@ describe('Preact-owned chat surfaces', () => {
         { step: 'Verify the result', status: 'pending' },
       ],
     };
-    store.planSeen.value = '';
     render(
       <StoreContext.Provider value={store}>
         <Header />
@@ -170,8 +169,7 @@ describe('Preact-owned chat surfaces', () => {
 
     const toggle = screen.getByRole('button', { name: /Open current plan/ });
     expect(toggle).toHaveTextContent('Plan2/3');
-    expect(toggle).toHaveAccessibleName(/Step 2 of 3, 1 of 3 complete\. Updated/);
-    expect(toggle.querySelector('.plan-unseen-dot')).not.toBeNull();
+    expect(toggle).toHaveAccessibleName(/Step 2 of 3, 1 of 3 complete/);
 
     await userEvent.click(toggle);
     expect(store.planVisible.value).toBe(true);
@@ -182,7 +180,6 @@ describe('Preact-owned chat surfaces', () => {
       'aria-current',
       'step',
     );
-    expect(toggle.querySelector('.plan-unseen-dot')).toBeNull();
   });
 
   it('collapses a completed plan to a tick-only header action', () => {
@@ -1247,6 +1244,37 @@ describe('Preact-owned chat surfaces', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it('re-pins the transcript to the bottom when a message is submitted', async () => {
+    const store = createStore();
+    store.send = vi.fn(async () => undefined);
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+        <Composer />
+      </StoreContext.Provider>,
+    );
+    const viewport = container.querySelector<HTMLElement>('#chatScroll')!;
+    let scrollTop = 100;
+    Object.defineProperties(viewport, {
+      clientHeight: { configurable: true, value: 300 },
+      scrollHeight: { configurable: true, value: 1_000 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = Math.min(value, 700);
+        },
+      },
+    });
+    fireEvent.scroll(viewport);
+
+    await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), 'hello');
+    await userEvent.keyboard('{Enter}');
+
+    expect(store.send).toHaveBeenCalledOnce();
+    expect(viewport.scrollTop).toBe(700);
   });
 
   it('groups completed tool calls compactly and omits redundant role labels', async () => {

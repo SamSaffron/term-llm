@@ -13,6 +13,7 @@ import { validateAttachmentFile } from '../domain/attachments';
 import { VoiceOperation, type VoiceSnapshot } from '../platform/voice';
 import { Icon } from './Icon';
 import { useMenuKeyboard } from './Menu';
+import { requestTranscriptScrollToTail } from './transcript-scroll';
 
 function resizePrompt(element: HTMLTextAreaElement | null): void {
   if (!element) return;
@@ -241,6 +242,7 @@ export function Composer() {
       void store.invokeSkill(skill.name, skill.args);
       return;
     }
+    requestTranscriptScrollToTail();
     if (store.streaming.value) void store.interject(value);
     else void store.send();
   };

@@ -933,37 +933,39 @@ function BranchTree() {
               entry.id === id ||
               (node.session_number && entry.number === Number(node.session_number)),
           );
-          return (
-            <section
-              class={`branch-tree-item ${current ? 'active' : ''}`}
-              key={id || String(index)}
-            >
-              <div class="branch-tree-item-content">
-                <div class="branch-tree-item-title">
-                  <strong>{String(node.title || session?.title || `Path ${index + 1}`)}</strong>
-                  {id === root && <span class="project-browser-badge">Origin</span>}
-                  {current && <span class="project-browser-badge is-added">Current</span>}
-                </div>
-                {node.anchor_preview && (
-                  <div class="branch-origin-preview">After “{String(node.anchor_preview)}”</div>
-                )}
+          const content = (
+            <div class="branch-tree-item-content">
+              <div class="branch-tree-item-title">
+                <strong>{String(node.title || session?.title || `Path ${index + 1}`)}</strong>
+                {id === root && <span class="project-browser-badge">Origin</span>}
+                {current && <span class="project-browser-badge is-added">Current</span>}
               </div>
-              {!current && (
-                <button
-                  class="btn"
-                  type="button"
-                  disabled={!id}
-                  title="Open this path"
-                  onClick={() => {
-                    store.modal.value = '';
-                    if (session) void store.selectSession(session);
-                    else void store.resolveAndSelectSession(id);
-                  }}
-                >
-                  Open
-                </button>
+              {node.anchor_preview && (
+                <div class="branch-origin-preview">After “{String(node.anchor_preview)}”</div>
               )}
-            </section>
+            </div>
+          );
+          if (current)
+            return (
+              <section class="branch-tree-item active" key={id || String(index)}>
+                {content}
+              </section>
+            );
+          return (
+            <button
+              class="branch-tree-item branch-tree-path"
+              type="button"
+              key={id || String(index)}
+              disabled={!id}
+              title="Open this path"
+              onClick={() => {
+                store.modal.value = '';
+                if (session) void store.selectSession(session);
+                else void store.resolveAndSelectSession(id);
+              }}
+            >
+              {content}
+            </button>
           );
         })}
         {points.length > 0 && <div class="branch-tree-section-title">Branch points</div>}
