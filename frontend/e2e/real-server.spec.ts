@@ -234,8 +234,8 @@ test('recovers and resolves an ask-user request across real same-context tabs', 
   const question = 'Which path should the browser fixture take?';
   await expect(page.getByText(question)).toBeVisible();
   await expect(second.getByText(question)).toBeVisible();
-
-  await page.getByRole('dialog', { name: 'Answer question' }).press('Escape');
+  await expect(page.getByRole('dialog', { name: 'Answer question' })).toBeVisible();
+  await page.keyboard.press('Escape');
   await expect(page.getByText('Decision waiting — Open')).toBeVisible();
   await second.getByRole('radio', { name: /Safe/ }).check();
   await second.getByRole('button', { name: 'Continue' }).click();
@@ -289,7 +289,7 @@ test('recovers, neutrally dismisses, and resolves a real approval', async ({ pag
 
   const title = 'Write Access Request';
   await expect(page.getByRole('dialog', { name: title })).toBeVisible();
-  await page.getByRole('dialog', { name: title }).press('Escape');
+  await page.keyboard.press('Escape');
   await expect(page.getByText('Decision waiting — Open')).toBeVisible();
   await page.getByText('Decision waiting — Open').click();
   await page.getByRole('button', { name: 'Approve' }).click();
