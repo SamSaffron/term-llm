@@ -12,8 +12,16 @@ Docs: **https://term-llm.com**
 
 ## Install
 
+With the release installer (recommended):
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh
+```
+
+Or with Homebrew:
+
+```bash
+brew install samsaffron/tap/term-llm
 ```
 
 For a source build, clone the repository and build from its root. This requires Go, Node.js 24 or newer, npm, and Make:

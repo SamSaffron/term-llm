@@ -1,7 +1,7 @@
 ---
 title: "Installation"
 weight: 2
-description: "Install term-llm with the one-liner, a release archive, or a local source build."
+description: "Install term-llm with Homebrew, the one-liner, a release archive, or a local source build."
 kicker: "Install"
 source_readme_heading: "Installation"
 featured: true
@@ -20,6 +20,14 @@ Or with options:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh -s -- --version v0.1.0 --install-dir ~/bin
 ```
+
+### Homebrew
+
+```bash
+brew install samsaffron/tap/term-llm
+```
+
+Homebrew installs the correct release binary for Apple Silicon or Intel macOS. Future stable releases are available through `brew upgrade term-llm`.
 
 ### Build from source
 
