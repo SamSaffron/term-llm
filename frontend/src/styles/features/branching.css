@@ -107,6 +107,7 @@
   margin-top: 0.15rem;
 }
 
+.branch-tree-path,
 .branch-tree-point {
   appearance: none;
   cursor: pointer;

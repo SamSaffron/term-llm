@@ -2651,12 +2651,13 @@ describe('Preact-owned chat surfaces', () => {
     expect(store.branchFrom).toHaveBeenCalledWith('42', 'notes', '');
   });
 
-  it('keeps the conversation-path picker compact', () => {
+  it('opens a conversation path from anywhere on its row', async () => {
     const store = createStore();
     store.sessions.value = [
       store.sessions.value[0],
       { ...store.sessions.value[0], id: 's2', title: 'Focused branch', number: 8 },
     ];
+    store.selectSession = vi.fn(async () => undefined);
     store.branchTree.value = {
       root_session_id: 's1',
       active_session_id: 's2',
@@ -2687,7 +2688,12 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByText('After “Earlier answer”')).toBeVisible();
     expect(screen.getByText('Origin')).toBeVisible();
     expect(screen.getByText('Current')).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Open' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: 'Open' })).not.toBeInTheDocument();
+    const originalPath = screen.getByRole('button', { name: /Original path/ });
+    expect(originalPath).toHaveClass('branch-tree-item');
+    await userEvent.click(originalPath);
+    expect(store.selectSession).toHaveBeenCalledWith(store.sessions.value[0]);
+    expect(store.modal.value).toBe('');
     expect(
       screen.queryByText(/Switch between independently resumable paths/),
     ).not.toBeInTheDocument();
