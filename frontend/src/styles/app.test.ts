@@ -55,6 +55,10 @@ describe('header styles', () => {
       /\.header-title\s*\{[^}]*padding-bottom: 0\.2em;[^}]*overflow: hidden;/s,
     );
   });
+
+  it('gives clipped worktree labels enough line height for descenders', () => {
+    expect(appCSS).toMatch(/\.worktree-trigger \.chip-label\s*\{[^}]*line-height: 1\.3;/s);
+  });
 });
 
 describe('widget launcher styles', () => {

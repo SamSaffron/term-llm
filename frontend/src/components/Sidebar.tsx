@@ -651,9 +651,7 @@ export function Sidebar() {
     const trigger =
       document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
     overlayToken.current = overlayManager.acquire(trigger, overlayRoot.current);
-    const frame = requestAnimationFrame(() =>
-      sidebar.current?.querySelector<HTMLElement>('#sidebarCloseBtn')?.focus(),
-    );
+    const frame = requestAnimationFrame(() => sidebar.current?.focus({ preventScroll: true }));
     return () => {
       cancelAnimationFrame(frame);
       if (overlayToken.current) overlayManager.release(overlayToken.current);
@@ -686,6 +684,7 @@ export function Sidebar() {
         aria-label="Sessions"
         role={mobile && mobileOpen ? 'dialog' : undefined}
         aria-modal={(mobile && mobileOpen) || undefined}
+        tabIndex={mobile && mobileOpen ? -1 : undefined}
         onKeyDown={(event) => {
           if (
             event.key === 'Escape' &&

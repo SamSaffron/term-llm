@@ -296,14 +296,15 @@ test('mobile viewport opens a styled sidebar and returns to a usable composer', 
   expect(await page.locator('#appMain').evaluate((element) => (element as HTMLElement).inert)).toBe(
     true,
   );
-  await expect(page.locator('#sidebarCloseBtn')).toBeFocused();
+  await expect(sidebar).toBeFocused();
+  await expect(sidebar).toHaveCSS('outline-style', 'none');
   await page.mouse.click(400, 100);
   await expect(sidebar).not.toHaveClass(/open/);
   expect(await page.locator('#appMain').evaluate((element) => (element as HTMLElement).inert)).toBe(
     false,
   );
   await page.getByRole('button', { name: 'Open sidebar' }).click();
-  await expect(page.locator('#sidebarCloseBtn')).toBeFocused();
+  await expect(sidebar).toBeFocused();
   await page.locator('#newChatBtn').click();
   await expect(sidebar).not.toHaveClass(/open/);
   expect(await page.locator('#appMain').evaluate((element) => (element as HTMLElement).inert)).toBe(

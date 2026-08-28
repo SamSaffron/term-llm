@@ -144,6 +144,10 @@ self.addEventListener('message', (event) => {
     if (!existing.length) {
       await self.registration.showNotification(notification.title, notification.options);
     }
+    event.ports?.[0]?.postMessage({
+      type: 'completion-notification-handled',
+      tag: notification.options.tag,
+    });
   })());
 });
 

@@ -317,7 +317,10 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
     const backdrop = container.querySelector<HTMLElement>('#sidebarBackdrop')!;
+    const dialog = screen.getByRole('dialog', { name: 'Sessions' });
 
+    await waitFor(() => expect(dialog).toHaveFocus());
+    expect(screen.getByRole('button', { name: 'Close sidebar' })).not.toHaveFocus();
     await waitFor(() => expect(container.querySelector('#appMain')).toHaveProperty('inert', true));
     expect(backdrop.inert).not.toBe(true);
     await userEvent.click(backdrop);

@@ -247,6 +247,10 @@
   min-width: 0;
 }
 
+.worktree-trigger .chip-label {
+  line-height: 1.3;
+}
+
 .effort-meter {
   display: inline-flex;
   align-items: flex-end;

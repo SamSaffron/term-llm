@@ -9,6 +9,7 @@ const source = readFileSync(
 type WorkerListener = (event: {
   data?: unknown;
   notification?: { data?: { url?: string }; close(): void };
+  ports?: Array<{ postMessage(message: unknown): void }>;
   waitUntil(value: Promise<unknown>): void;
 }) => void;
 
@@ -87,6 +88,34 @@ describe('service worker completion notifications', () => {
       type: 'completion-push-shown',
       tag: 'term-llm-completion:completion:resp:sub',
     });
+  });
+
+  it('acknowledges local completion handling after deduplicating the stable tag', async () => {
+    const harness = workerHarness();
+    const reply = { postMessage: vi.fn() };
+    const event = {
+      data: {
+        type: 'completion-notification',
+        payload: {
+          version: 1,
+          event_id: 'completion:resp:sub',
+          response_id: 'resp',
+          title: 'Response complete',
+          body: 'Ready',
+          url: '/ui/chat/session',
+        },
+      },
+      ports: [reply],
+    };
+    await harness.dispatch('message', event);
+    await harness.dispatch('message', event);
+    expect(harness.showNotification).toHaveBeenCalledOnce();
+    expect(reply.postMessage).toHaveBeenCalledTimes(2);
+    expect(reply.postMessage).toHaveBeenLastCalledWith({
+      type: 'completion-notification-handled',
+      tag: 'term-llm-completion:completion:resp:sub',
+    });
+    expect(harness.outstanding.size).toBe(1);
   });
 
   it('still displays a safe notification for malformed push data', async () => {

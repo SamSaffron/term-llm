@@ -21,23 +21,39 @@ test('service worker keeps one tagged completion notification for duplicate loca
       url: `${location.pathname.replace(/\/$/, '')}/chat/e2e-session`,
       created_at: new Date().toISOString(),
     };
-    registration.active?.postMessage({ type: 'completion-notification', payload });
-    registration.active?.postMessage({ type: 'completion-notification', payload });
+    const active = registration.active;
+    if (!active) throw new Error('Service worker has no active instance');
+    const sendNotification = () =>
+      new Promise<void>((resolve, reject) => {
+        const channel = new MessageChannel();
+        const timeout = setTimeout(
+          () => reject(new Error('Service worker did not acknowledge the notification')),
+          5_000,
+        );
+        channel.port1.onmessage = (event) => {
+          const data = event.data as { type?: string; tag?: string } | null;
+          if (data?.type !== 'completion-notification-handled') return;
+          clearTimeout(timeout);
+          channel.port1.close();
+          if (data.tag === `term-llm-completion:${eventID}`) resolve();
+          else
+            reject(new Error(`Service worker acknowledged an unexpected tag: ${data.tag || ''}`));
+        };
+        active.postMessage({ type: 'completion-notification', payload }, [channel.port2]);
+      });
+    // Wait for each event to finish so the second delivery exercises the worker's
+    // existing-notification path instead of racing the first delivery.
+    await sendNotification();
+    await sendNotification();
     const tag = `term-llm-completion:${eventID}`;
-    for (let attempt = 0; attempt < 50; attempt += 1) {
-      const notifications = await registration.getNotifications({ tag });
-      if (notifications.length) {
-        const summary = notifications.map((notification) => ({
-          tag: notification.tag,
-          renotify: notification.renotify,
-          url: String((notification.data as { url?: string } | null)?.url || ''),
-        }));
-        notifications.forEach((notification) => notification.close());
-        return summary;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    return [];
+    const notifications = await registration.getNotifications({ tag });
+    const summary = notifications.map((notification) => ({
+      tag: notification.tag,
+      renotify: notification.renotify,
+      url: String((notification.data as { url?: string } | null)?.url || ''),
+    }));
+    notifications.forEach((notification) => notification.close());
+    return summary;
   });
   expect(result).toEqual([
     expect.objectContaining({

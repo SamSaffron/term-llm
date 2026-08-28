@@ -16,6 +16,10 @@
   overflow: hidden;
 }
 
+.sidebar:focus {
+  outline: none;
+}
+
 .sidebar-rail {
   background: transparent;
   display: flex;
