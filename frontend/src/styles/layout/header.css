@@ -530,7 +530,15 @@ dialog.chip-popover::backdrop {
 }
 
 .runtime-popover-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
   margin-bottom: 0.7rem;
+}
+
+.runtime-popover-heading {
+  min-width: 0;
 }
 
 .runtime-popover-title {
@@ -544,6 +552,38 @@ dialog.chip-popover::backdrop {
   color: var(--text-muted);
   font-size: 0.78rem;
   line-height: 1.35;
+}
+
+.runtime-popover-close {
+  appearance: none;
+  display: inline-grid;
+  flex: none;
+  width: 2rem;
+  height: 2rem;
+  margin: -0.25rem -0.25rem 0 0;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.runtime-popover-close:hover,
+.runtime-popover-close:focus-visible {
+  background: var(--surface-3);
+  color: var(--text);
+  outline: none;
+}
+
+.runtime-popover-close:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--border-strong) 48%, transparent);
+}
+
+.runtime-popover-close svg {
+  width: 1rem;
+  height: 1rem;
 }
 
 .runtime-popover-fields {
@@ -601,12 +641,48 @@ dialog.chip-popover::backdrop {
   }
 
   .chip-popover-runtime {
-    padding: 0.9rem;
+    border-radius: 18px;
+    padding: 0.85rem 0.9rem calc(0.9rem + var(--safe-bottom));
+    box-shadow:
+      0 18px 48px rgb(0 0 0 / 42%),
+      0 2px 8px rgb(0 0 0 / 24%);
+  }
+
+  .runtime-popover-header {
+    align-items: center;
+    margin-bottom: 0.9rem;
+  }
+
+  .runtime-popover-title {
+    font-size: 1rem;
+  }
+
+  .runtime-popover-hint {
+    max-width: 30rem;
+    font-size: 0.8rem;
+  }
+
+  .runtime-popover-close {
+    width: 44px;
+    height: 44px;
+    margin: -0.35rem -0.35rem -0.35rem 0;
+    background: var(--surface-3);
+    color: var(--text);
+  }
+
+  .runtime-popover-fields {
+    gap: 0.75rem;
+  }
+
+  .runtime-popover-field {
+    gap: 0.35rem;
   }
 
   .runtime-popover-select {
+    min-height: 48px;
+    border-radius: 12px;
     font-size: 16px;
-    padding: 0.65rem 0.7rem;
+    padding: 0.65rem 0.75rem;
   }
 
   .chip-popover-item {

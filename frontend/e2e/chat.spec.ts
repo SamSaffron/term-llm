@@ -323,9 +323,17 @@ test('mobile floating surfaces dismiss from their outside area and restore inter
 
   const runtimeTrigger = page.getByRole('button', { name: 'Runtime settings' });
   await runtimeTrigger.click();
-  await expect(page.getByRole('dialog', { name: 'Runtime settings' })).toBeVisible();
+  const runtime = page.getByRole('dialog', { name: 'Runtime settings' });
+  await expect(runtime).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Close runtime settings' })).toBeFocused();
+  await expect(page.getByRole('combobox', { name: 'Provider' })).not.toBeFocused();
+  await expect(runtime).toHaveCSS('border-radius', '18px');
+  await expect(page.getByRole('combobox', { name: 'Runtime model' })).toHaveCSS(
+    'min-height',
+    '48px',
+  );
   await page.mouse.click(4, 180);
-  await expect(page.getByRole('dialog', { name: 'Runtime settings' })).toBeHidden();
+  await expect(runtime).toBeHidden();
   await expect(runtimeTrigger).toBeFocused();
 
   await page.getByRole('button', { name: 'Toggle file changes' }).click();

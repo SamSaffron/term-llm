@@ -107,6 +107,9 @@ describe('Preact-owned chat surfaces', () => {
     expect(dialog.tagName).toBe('DIALOG');
     expect(dialog).toHaveAttribute('open');
     expect(dialog).toHaveTextContent('Provider, model, and effort for the next reply');
+    const closeRuntime = screen.getByRole('button', { name: 'Close runtime settings' });
+    expect(closeRuntime).toHaveFocus();
+    expect(screen.getByRole('combobox', { name: 'Provider' })).not.toHaveFocus();
     expect(screen.getByRole('combobox', { name: 'Provider' })).toHaveValue('');
     expect(screen.getByRole('combobox', { name: 'Runtime model' })).toHaveValue('');
     expect(screen.getByRole('combobox', { name: 'Reasoning effort' })).toHaveTextContent('high');

@@ -28,6 +28,7 @@ function RuntimePicker() {
   const popoverID = useId();
   const trigger = useRef<HTMLButtonElement>(null);
   const popover = useRef<HTMLDialogElement>(null);
+  const initialFocus = useRef<HTMLButtonElement>(null);
   const locked = store.streaming.value;
   const selectedProvider = locked
     ? store.activeSession.value?.activeProvider || store.selectedProvider.value
@@ -49,6 +50,7 @@ function RuntimePicker() {
   useLayoutEffect(() => {
     if (!open || !trigger.current || !popover.current) return;
     positionPopover(trigger.current, popover.current);
+    initialFocus.current?.focus({ preventScroll: true });
     return observePopoverPosition(trigger.current, popover.current);
   }, [open]);
   const close = () => {
@@ -99,8 +101,20 @@ function RuntimePicker() {
       }}
     >
       <div class="runtime-popover-header">
-        <div class="runtime-popover-title">Runtime</div>
-        <div class="runtime-popover-hint">Provider, model, and effort for the next reply</div>
+        <div class="runtime-popover-heading">
+          <div class="runtime-popover-title">Runtime</div>
+          <div class="runtime-popover-hint">Provider, model, and effort for the next reply</div>
+        </div>
+        <button
+          ref={initialFocus}
+          type="button"
+          class="runtime-popover-close"
+          aria-label="Close runtime settings"
+          autoFocus
+          onClick={close}
+        >
+          <Icon name="close" />
+        </button>
       </div>
       <div class="runtime-popover-fields">
         <label class="runtime-popover-field">
