@@ -14,6 +14,7 @@ export interface StatusRequestMetadata {
   selectionEpoch: number;
   showHidden: boolean;
   categories: string[];
+  activeResponseIds: Record<string, string>;
 }
 
 interface StatusCoordinatorState {
@@ -105,6 +106,13 @@ export class StatusReconciler {
       selectionEpoch: this.host.selectionEpoch(),
       showHidden: this.host.sessionStore.showHidden.peek(),
       categories: [...this.services.config.sidebarCategories],
+      activeResponseIds: Object.fromEntries(
+        Object.entries(this.host.runs.peek())
+          .filter(([, projection]) =>
+            ['connecting', 'checking', 'streaming', 'cancelling'].includes(projection.run.status),
+          )
+          .map(([sessionId, projection]) => [sessionId, projection.run.responseId]),
+      ),
     };
     const request = (async () => {
       // An authoritative request invalidates the old generation immediately,
@@ -188,6 +196,12 @@ export class StatusReconciler {
           projectedRun &&
           ['connecting', 'checking', 'streaming', 'cancelling'].includes(projectedRun.status),
         );
+        const projectedRunWasActiveAtRequest = Boolean(
+          projectedRun && metadata.activeResponseIds[session.id] === projectedRun.responseId,
+        );
+        const idleStatusCannotDisproveProjectedRun = Boolean(
+          !serverReportsActive && clientReportsActive && !projectedRunWasActiveAtRequest,
+        );
         const committedClientMessageId = String(status.client_message_id || '');
         if (
           serverActiveResponseId &&
@@ -202,7 +216,11 @@ export class StatusReconciler {
         const stoppedServerResponse = Boolean(
           serverActiveResponseId && this.host.isLocallyStopped(serverActiveResponseId),
         );
-        const activeResponseId = stoppedServerResponse ? null : serverActiveResponseId;
+        const activeResponseId = idleStatusCannotDisproveProjectedRun
+          ? session.activeResponseId || projectedRun?.responseId || null
+          : stoppedServerResponse
+            ? null
+            : serverActiveResponseId;
         const transcriptRev = Math.max(
           session.transcriptRev || 0,
           Number(status.transcript_rev) || 0,
@@ -220,6 +238,7 @@ export class StatusReconciler {
         if (
           !serverReportsActive &&
           clientReportsActive &&
+          projectedRunWasActiveAtRequest &&
           projectedRun &&
           projectedRun.responseId &&
           !projectedRun.responseId.startsWith('pending_')
@@ -227,11 +246,13 @@ export class StatusReconciler {
           // The status endpoint is authoritative for run liveness, but the
           // response snapshot owns the terminal projection. Mobile browsers
           // can suspend or lose the terminal stream event, so reconcile that
-          // snapshot whenever the two views disagree.
+          // snapshot whenever the two views disagree. A run admitted after
+          // this status request started cannot be disproven by its stale body.
           followUps.push(() => void this.host.resumeResponse(session.id, projectedRun.responseId));
         }
         if (
           !serverActiveResponseId &&
+          !idleStatusCannotDisproveProjectedRun &&
           (session.activeResponseId || this.host.pendingIntents.peek()[session.id]?.length) &&
           transcriptRev >= (projectedRun?.finalRev || 0)
         )
