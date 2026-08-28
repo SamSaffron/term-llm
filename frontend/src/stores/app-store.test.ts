@@ -1664,6 +1664,157 @@ describe('AppStore compatibility behavior', () => {
     expect(store.sessions.value[0]).toMatchObject({ activeRun: false, activeResponseId: null });
   });
 
+  it('reconciles a locally running response when the server reports the session idle', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [
+      { ...session(), activeRun: true, activeResponseId: 'finished-while-suspended' },
+    ];
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'finished-while-suspended',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'streaming',
+        lastSequence: 4,
+        startedRev: 1,
+        reconnects: 0,
+      }),
+    };
+    store.endpoints.sessionStatus = vi.fn(async () => ({
+      sessions: [{ id: 's1', transcript_rev: 2 }],
+    }));
+    const internals = store as unknown as {
+      refreshStatus(): Promise<void>;
+      resumeResponse(sessionId: string, responseId: string): Promise<void>;
+    };
+    internals.resumeResponse = vi.fn(async () => undefined);
+
+    await internals.refreshStatus();
+
+    expect(store.sessions.value[0]).toMatchObject({ activeRun: false, activeResponseId: null });
+    expect(internals.resumeResponse).toHaveBeenCalledWith('s1', 'finished-while-suspended');
+  });
+
+  it('does not probe a provisional response before the server admits it', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [{ ...session(), activeRun: true }];
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'pending_local-response',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'connecting',
+        lastSequence: 0,
+        startedRev: 0,
+        reconnects: 0,
+      }),
+    };
+    store.endpoints.sessionStatus = vi.fn(async () => ({ sessions: [{ id: 's1' }] }));
+    const internals = store as unknown as {
+      refreshStatus(): Promise<void>;
+      resumeResponse(sessionId: string, responseId: string): Promise<void>;
+    };
+    internals.resumeResponse = vi.fn(async () => undefined);
+
+    await internals.refreshStatus();
+
+    expect(internals.resumeResponse).not.toHaveBeenCalled();
+  });
+
+  it('does not let an idle status response invalidate a run admitted after the request began', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    const status = deferred<Record<string, unknown>>();
+    store.endpoints.sessionStatus = vi.fn(() => status.promise);
+    const internals = store as unknown as {
+      refreshStatus(): Promise<void>;
+      resumeResponse(sessionId: string, responseId: string): Promise<void>;
+    };
+    internals.resumeResponse = vi.fn(async () => undefined);
+
+    const refresh = internals.refreshStatus();
+    store.sessions.value = [
+      { ...session(), activeRun: true, activeResponseId: 'newly-admitted-response' },
+    ];
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'newly-admitted-response',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'streaming',
+        lastSequence: 1,
+        startedRev: 1,
+        startedAt: Date.now() + 1_000,
+        reconnects: 0,
+      }),
+    };
+    status.resolve({ sessions: [{ id: 's1' }] });
+    await refresh;
+
+    expect(store.sessions.value[0]).toMatchObject({
+      activeRun: true,
+      activeResponseId: 'newly-admitted-response',
+    });
+    expect(internals.resumeResponse).not.toHaveBeenCalled();
+  });
+
+  it('does not reconcile a response while the server reports anonymous run activity', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [{ ...session(), activeRun: true, activeResponseId: 'r1' }];
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'r1',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'streaming',
+        lastSequence: 1,
+        startedRev: 1,
+        startedAt: 1,
+        reconnects: 0,
+      }),
+    };
+    store.endpoints.sessionStatus = vi.fn(async () => ({
+      sessions: [{ id: 's1', active_run: true }],
+    }));
+    const internals = store as unknown as {
+      refreshStatus(): Promise<void>;
+      resumeResponse(sessionId: string, responseId: string): Promise<void>;
+    };
+    internals.resumeResponse = vi.fn(async () => undefined);
+
+    await internals.refreshStatus();
+
+    expect(store.sessions.value[0]?.activeRun).toBe(true);
+    expect(internals.resumeResponse).not.toHaveBeenCalled();
+  });
+
+  it('does not treat an omitted status row as authoritative idle', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [{ ...session(), activeRun: true, activeResponseId: 'out-of-scope' }];
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'out-of-scope',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'streaming',
+        lastSequence: 1,
+        startedRev: 1,
+        startedAt: 1,
+        reconnects: 0,
+      }),
+    };
+    store.endpoints.sessionStatus = vi.fn(async () => ({ sessions: [] }));
+    const internals = store as unknown as {
+      refreshStatus(): Promise<void>;
+      resumeResponse(sessionId: string, responseId: string): Promise<void>;
+    };
+    internals.resumeResponse = vi.fn(async () => undefined);
+
+    await internals.refreshStatus();
+
+    expect(internals.resumeResponse).not.toHaveBeenCalled();
+  });
+
   it('forces a post-mutation sidebar fetch after an opportunistic fetch already started', async () => {
     const store = new AppStore(config);
     const first = deferred<Record<string, unknown>>();
