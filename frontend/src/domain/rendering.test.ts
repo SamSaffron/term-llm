@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { highlightDiffLine } from './rich-highlight';
 import { decorateRichContent, renderMarkdown, stableMarkdownBoundary } from './markdown';
 import {
   analyzeStreamingMarkdown,
@@ -37,6 +38,11 @@ describe('markdown security and streaming', () => {
     expect(warn).not.toHaveBeenCalled();
     expect(root.querySelectorAll('[data-highlighted="yes"]')).toHaveLength(4);
     warn.mockRestore();
+  });
+
+  it('highlights CSS diff lines with the registered CSS grammar', () => {
+    expect(highlightDiffLine('.header-action:hover {', 'css')).toContain('hljs-selector-class');
+    expect(highlightDiffLine('  background: var(--surface);', 'css')).toContain('hljs-attribute');
   });
 
   it('does not expose an unterminated fenced tail as stable markdown', () => {

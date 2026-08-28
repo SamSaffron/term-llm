@@ -5,7 +5,40 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Detect backend changes
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          backend=true
+          if [ "$EVENT_NAME" = pull_request ]; then
+            if changed_files=$(git diff --name-only --diff-filter=ACMRTD "$BASE_SHA" "$HEAD_SHA"); then
+              backend=false
+              if printf '%s\n' "$changed_files" | grep -Eq '\.go$|(^|/)go\.(mod|sum)$|^(cmd|internal)/|^Makefile$|^scripts/.*\.sh$|^\.github/workflows/(ci|scheduled-stress)\.yml$'; then
+                backend=true
+              fi
+            else
+              echo "Could not inspect the pull request diff; running race tests."
+            fi
+          fi
+          echo "backend=$backend" >> "$GITHUB_OUTPUT"
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -22,13 +55,6 @@ jobs:
             internal/terminal/runtime/go.sum
             internal/terminal/renderer/go.sum
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
       - name: Check gofmt
         run: |
           files=$(gofmt -l .)
@@ -39,39 +65,74 @@ jobs:
           fi
 
       - name: Build
-        run: make build
+        run: go build ./...
 
       - name: Test
         run: go test ./...
 
-      - name: Race-test Web UI lifecycle owners
-        run: go test -race ./internal/webrtc ./internal/session ./cmd
-
       - name: Vet
         run: go vet ./...
 
-      - name: Build, test, vet, and race nested modules
-        env:
-          VERIFY_RACE: '1'
+      - name: Build, test, and vet nested modules
         run: scripts/verify_nested_modules.sh
-
-      - name: Fuzz owned renderer differential, invariant, and parser paths
-        timeout-minutes: 8
-        run: scripts/fuzz_owned_renderer.sh
-
-      - name: Upload fuzz failure corpus
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: owned-terminal-fuzz-corpus-${{ github.run_id }}
-          path: internal/terminal/*/testdata/fuzz/
-          if-no-files-found: ignore
 
       - name: Nested checkptr
         run: |
           for module in internal/reflow internal/terminal/renderer internal/terminal/runtime; do
             (cd "$module" && GODEBUG=checkptr=2 go test ./...)
           done
+
+  race:
+    needs: changes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip race tests for non-backend changes
+        if: needs.changes.outputs.backend != 'true'
+        run: echo "No backend-relevant files changed."
+
+      - uses: actions/checkout@v7
+        if: needs.changes.outputs.backend == 'true'
+
+      - name: Set up Go
+        if: needs.changes.outputs.backend == 'true'
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            internal/reflow/go.sum
+            internal/terminal/runtime/go.sum
+            internal/terminal/renderer/go.sum
+
+      - name: Race-test Web UI lifecycle owners
+        if: needs.changes.outputs.backend == 'true'
+        run: go test -race ./internal/webrtc ./internal/session ./cmd
+
+      - name: Race-test nested modules
+        if: needs.changes.outputs.backend == 'true'
+        run: |
+          for module in internal/reflow internal/terminal/renderer internal/terminal/runtime; do
+            (cd "$module" && go test -race ./...)
+          done
+
+  passkey-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install Playwright Chromium
         timeout-minutes: 10

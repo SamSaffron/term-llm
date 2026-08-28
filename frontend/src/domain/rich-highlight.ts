@@ -14,6 +14,7 @@ import markdown from 'highlight.js/lib/languages/markdown';
 import cpp from 'highlight.js/lib/languages/cpp';
 import c from 'highlight.js/lib/languages/c';
 import csharp from 'highlight.js/lib/languages/csharp';
+import css from 'highlight.js/lib/languages/css';
 
 highlight.registerLanguage('javascript', javascript);
 highlight.registerLanguage('js', javascript);
@@ -42,6 +43,7 @@ highlight.registerLanguage('cpp', cpp);
 highlight.registerLanguage('c', c);
 highlight.registerLanguage('csharp', csharp);
 highlight.registerLanguage('cs', csharp);
+highlight.registerLanguage('css', css);
 
 const DIFF_LANGUAGE_ALIASES: Record<string, string> = {
   jsx: 'javascript',
