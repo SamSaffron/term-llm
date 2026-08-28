@@ -98,7 +98,8 @@ describe('Preact-owned chat surfaces', () => {
         <Header />
       </StoreContext.Provider>,
     );
-    const trigger = screen.getByRole('button', { name: 'Runtime settings' });
+    const trigger = screen.getByRole('button', { name: /^Runtime settings:/ });
+    expect(trigger).toHaveAccessibleName('Runtime settings: gpt-5, medium effort');
     expect(trigger).toHaveTextContent('gpt-5');
     expect(trigger.querySelectorAll('.effort-meter-bar')).toHaveLength(4);
     expect(trigger).toHaveAttribute('data-effort-level', 'medium');
