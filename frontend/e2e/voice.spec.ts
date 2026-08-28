@@ -42,15 +42,10 @@ test('records, transcribes, and leaves voice text in the draft', async ({ page }
     }),
   );
   await page.goto('./');
-  // The mocked recorder test exercises the control handler, not browser hit-testing.
-  // WebKit can leave the startup overlay present while its WebRTC fallback settles, which
-  // stalls Playwright's actionability checks even though the composer is already mounted.
-  await page.waitForFunction(() => document.getElementById('voiceBtn'));
-  await page.evaluate(() => {
-    document
-      .getElementById('voiceBtn')
-      ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-  });
+  const voiceButton = page.locator('#voiceBtn');
+  await expect(voiceButton).toBeVisible();
+  await expect(voiceButton).toBeEnabled();
+  await voiceButton.click();
   await expect(page.locator('#voiceStatus')).toContainText('Recording');
   await page.getByRole('button', { name: 'Stop', exact: true }).click();
   await expect(page.locator('#voiceStatus')).toContainText('Transcription inserted');

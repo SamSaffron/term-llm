@@ -95,6 +95,11 @@ describe('touch affordances', () => {
 });
 
 describe('diff review styles', () => {
+  it('uses compact source-code spacing without letting comment controls expand every row', () => {
+    expect(appCSS).toMatch(/\.diff-file-body\s*\{[^}]*line-height: 1\.3;/s);
+    expect(appCSS).toMatch(/\.diff-comment-affordance\s*\{[^}]*height: 1\.15rem;/s);
+  });
+
   it('anchors comment cards to code without pinning hunk text to the action column', () => {
     expect(appCSS).toMatch(/\.diff-comment-panel\s*\{[^}]*grid-column: 3 \/ -1;/s);
     expect(appCSS).not.toMatch(/\.diff-code\s*\{[^}]*grid-column:/s);

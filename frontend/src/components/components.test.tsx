@@ -454,6 +454,48 @@ describe('Preact-owned chat surfaces', () => {
     expect(shell).not.toHaveClass('diff-resizing');
   });
 
+  it('removes low-value changed-file navigation controls', () => {
+    const store = createStore();
+    store.diff.value = { ...store.diff.value, open: true };
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <DiffSidebar />
+      </StoreContext.Provider>,
+    );
+
+    const actions = [...container.querySelectorAll('.diff-sidebar-header > .icon-btn')].map(
+      (button) => button.getAttribute('aria-label'),
+    );
+    expect(actions).toEqual(['Expand all files', 'Maximize changes', 'Hide changes']);
+    expect(screen.queryByRole('button', { name: 'Previous changed file' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Next changed file' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Follow current file' })).toBeNull();
+  });
+
+  it('keeps only fullscreen and close icon actions in the mobile changes header', () => {
+    vi.mocked(window.matchMedia).mockImplementation(
+      (query) =>
+        ({
+          matches: query === '(max-width: 767px)',
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        }) as unknown as MediaQueryList,
+    );
+    const store = createStore();
+    store.diff.value = { ...store.diff.value, open: true };
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <DiffSidebar />
+      </StoreContext.Provider>,
+    );
+
+    const actions = [...container.querySelectorAll('.diff-sidebar-header > .icon-btn')].map(
+      (button) => button.getAttribute('aria-label'),
+    );
+    expect(actions).toEqual(['Maximize changes', 'Hide changes']);
+    expect(screen.getByRole('button', { name: 'Change scope' })).toBeInTheDocument();
+  });
+
   it('keeps internal file-tracking diagnostics out of the changes panel', () => {
     const store = createStore();
     store.diff.value = {

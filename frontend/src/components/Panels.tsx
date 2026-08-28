@@ -909,92 +909,54 @@ export function DiffSidebar() {
           {adds > 0 && <span class="diff-sidebar-totals-add">+{adds}</span>}
           {dels > 0 && <span class="diff-sidebar-totals-del">−{dels}</span>}
         </span>
-        <button
-          class="icon-btn"
-          type="button"
-          aria-label="Previous changed file"
-          title="Previous changed file ([)"
-          disabled={
-            !files.length || files.findIndex((file) => file.path === state.selectedPath) <= 0
-          }
-          onClick={() => selectFile(-1)}
-        >
-          ‹
-        </button>
-        <button
-          class="icon-btn"
-          type="button"
-          aria-label="Next changed file"
-          title="Next changed file (])"
-          disabled={
-            !files.length ||
-            files.findIndex((file) => file.path === state.selectedPath) >= files.length - 1
-          }
-          onClick={() => selectFile(1)}
-        >
-          ›
-        </button>
-        <button
-          class={`icon-btn ${state.followCurrentFile ? 'active' : ''}`}
-          type="button"
-          aria-label="Follow current file"
-          aria-pressed={state.followCurrentFile}
-          title="Follow file activity"
-          onClick={() =>
-            (store.diff.value = {
-              ...store.diff.peek(),
-              followCurrentFile: !state.followCurrentFile,
-            })
-          }
-        >
-          ◎
-        </button>
-        <button
-          class="icon-btn diff-bulk-toggle"
-          type="button"
-          aria-label={`${allExpanded ? 'Collapse' : 'Expand'} all files`}
-          title={`${allExpanded ? 'Collapse' : 'Expand'} all`}
-          data-action={allExpanded ? 'collapse' : 'expand'}
-          onClick={() => {
-            if (allExpanded)
-              store.diff.value = {
-                ...store.diff.peek(),
-                files: store.diff.peek().files.map((file) => ({ ...file, expanded: false })),
-              };
-            else {
-              store.diff.value = {
-                ...store.diff.peek(),
-                files: store.diff
-                  .peek()
-                  .files.map((file) => (file.lines ? { ...file, expanded: true } : file)),
-              };
-              state.files
-                .filter((file) => !file.lines)
-                .forEach((file) => void store.expandDiff(file));
-            }
-          }}
-        >
-          <svg
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
+        {!mobile && (
+          <button
+            class="icon-btn diff-bulk-toggle"
+            type="button"
+            aria-label={`${allExpanded ? 'Collapse' : 'Expand'} all files`}
+            title={`${allExpanded ? 'Collapse' : 'Expand'} all`}
+            data-action={allExpanded ? 'collapse' : 'expand'}
+            onClick={() => {
+              if (allExpanded)
+                store.diff.value = {
+                  ...store.diff.peek(),
+                  files: store.diff.peek().files.map((file) => ({ ...file, expanded: false })),
+                };
+              else {
+                store.diff.value = {
+                  ...store.diff.peek(),
+                  files: store.diff
+                    .peek()
+                    .files.map((file) => (file.lines ? { ...file, expanded: true } : file)),
+                };
+                state.files
+                  .filter((file) => !file.lines)
+                  .forEach((file) => void store.expandDiff(file));
+              }
+            }}
           >
-            <g class="diff-bulk-expand-icon">
-              <path d="m7 9 5-5 5 5" />
-              <path d="m7 15 5 5 5-5" />
-            </g>
-            <g class="diff-bulk-collapse-icon">
-              <path d="m7 4 5 5 5-5" />
-              <path d="m7 20 5-5 5 5" />
-            </g>
-          </svg>
-        </button>
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <g class="diff-bulk-expand-icon">
+                <path d="m7 9 5-5 5 5" />
+                <path d="m7 15 5 5 5-5" />
+              </g>
+              <g class="diff-bulk-collapse-icon">
+                <path d="m7 4 5 5 5-5" />
+                <path d="m7 20 5-5 5 5" />
+              </g>
+            </svg>
+          </button>
+        )}
         <button
           class="icon-btn diff-sidebar-maximize"
           type="button"

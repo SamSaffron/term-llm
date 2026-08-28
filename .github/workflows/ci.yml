@@ -123,10 +123,10 @@ jobs:
       - name: Build frontend assets
         run: make frontend
 
-      - name: Install Playwright Chromium and WebKit
+      - name: Install Playwright Chromium
         timeout-minutes: 10
         working-directory: frontend
-        run: npx playwright install --with-deps chromium webkit
+        run: npx playwright install --with-deps chromium
 
       - name: Browser chat smoke
         timeout-minutes: 5
