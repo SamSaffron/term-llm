@@ -612,11 +612,13 @@ function MessageRow({
           <TurnCopyButton text={turnText || message.content} />
           {message.durableRowId && (
             <button
-              class="text-action"
+              class="turn-action-btn turn-branch-btn"
               type="button"
+              title="Branch from here"
+              aria-label="Branch from here"
               onClick={() => store.openBranchContext(String(message.durableRowId))}
             >
-              Branch from here
+              <Icon name="fork" />
             </button>
           )}
         </div>

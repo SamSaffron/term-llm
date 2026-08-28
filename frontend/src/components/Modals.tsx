@@ -852,12 +852,14 @@ function BranchContext() {
   const [focus, setFocus] = useState('');
   const [mode, setMode] = useState<'choices' | 'focused'>('choices');
   const anchor = store.branchTarget.value;
+  const prefill = store.branchPrefill.value;
   const choose = (context: 'clean' | 'notes' | 'focused') => {
     if (context === 'focused' && mode !== 'focused') {
       setMode('focused');
       return;
     }
-    void store.branchFrom(anchor, context, focus.trim());
+    if (prefill) void store.branchFrom(anchor, context, focus.trim(), '', prefill);
+    else void store.branchFrom(anchor, context, focus.trim());
   };
   return (
     <Overlay
@@ -911,15 +913,18 @@ function BranchTree() {
   const tree = store.branchTree.value;
   const nodes =
     tree && Array.isArray(tree.nodes) ? (tree.nodes as Array<Record<string, unknown>>) : [];
+  const points =
+    tree && Array.isArray(tree.branch_points)
+      ? (tree.branch_points as Array<Record<string, unknown>>).filter(
+          (point) => String(point.role || '') === 'user',
+        )
+      : [];
   const active = String(tree?.active_session_id || store.activeSessionId.value);
   const root = String(tree?.root_session_id || '');
   return (
-    <Overlay
-      title={`${Math.max(1, Number(tree?.path_count) || nodes.length)} conversation paths`}
-      wide
-    >
-      <p>Switch between independently resumable paths in this conversation.</p>
+    <Overlay title="Conversation paths">
       <div class="branch-tree-list">
+        {points.length > 0 && <div class="branch-tree-section-title">Existing paths</div>}
         {nodes.map((node, index) => {
           const id = String(node.session_id || '');
           const current = id === active;
@@ -928,13 +933,11 @@ function BranchTree() {
               entry.id === id ||
               (node.session_number && entry.number === Number(node.session_number)),
           );
-          const role = String(node.anchor_role || 'assistant');
           return (
             <section
               class={`branch-tree-item ${current ? 'active' : ''}`}
               key={id || String(index)}
             >
-              <span class={`branch-tree-role ${role}`}>{role === 'user' ? 'U' : 'A'}</span>
               <div class="branch-tree-item-content">
                 <div class="branch-tree-item-title">
                   <strong>{String(node.title || session?.title || `Path ${index + 1}`)}</strong>
@@ -942,26 +945,19 @@ function BranchTree() {
                   {current && <span class="project-browser-badge is-added">Current</span>}
                 </div>
                 {node.anchor_preview && (
-                  <div class="branch-origin-preview">
-                    Branched after “{String(node.anchor_preview)}”
-                  </div>
+                  <div class="branch-origin-preview">After “{String(node.anchor_preview)}”</div>
                 )}
-                <div class="branch-origin-meta">
-                  {node.session_number ? `Conversation #${String(node.session_number)}` : ''}
-                  {node.created_at
-                    ? ` · ${new Date(String(node.created_at)).toLocaleString()}`
-                    : ''}
-                </div>
               </div>
               {!current && (
                 <button
                   class="btn"
                   type="button"
-                  disabled={!session}
-                  title={session ? 'Open this path' : 'This path is not loaded in the sidebar'}
+                  disabled={!id}
+                  title="Open this path"
                   onClick={() => {
-                    if (session) void store.selectSession(session);
                     store.modal.value = '';
+                    if (session) void store.selectSession(session);
+                    else void store.resolveAndSelectSession(id);
                   }}
                 >
                   Open
@@ -970,11 +966,35 @@ function BranchTree() {
             </section>
           );
         })}
+        {points.length > 0 && <div class="branch-tree-section-title">Branch points</div>}
+        {points.map((point, index) => {
+          const sequence = Math.max(1, Number(point.sequence) + 1 || 1);
+          const later = Math.max(0, Number(point.later_message_count) || 0);
+          return (
+            <button
+              class="branch-tree-item branch-tree-point"
+              type="button"
+              key={String(point.message_id || index)}
+              onClick={() =>
+                store.openBranchContext(
+                  String(Math.max(0, Number(point.anchor_message_id) || 0)),
+                  String(point.prefill || ''),
+                )
+              }
+            >
+              <div class="branch-tree-item-content">
+                <div class="branch-tree-item-title">
+                  <strong>Edit: {String(point.preview || '(attachment content)')}</strong>
+                </div>
+                <small>
+                  Message {sequence}
+                  {later > 0 ? ` · ${later} later message${later === 1 ? '' : 's'}` : ''}
+                </small>
+              </div>
+            </button>
+          );
+        })}
       </div>
-      <p class="branch-tree-note">
-        Create a new path from the compact “Branch from here” action on an assistant turn. Branching
-        rewinds conversation context, not filesystem or tool side effects.
-      </p>
     </Overlay>
   );
 }

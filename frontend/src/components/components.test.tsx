@@ -1474,6 +1474,35 @@ describe('Preact-owned chat surfaces', () => {
     }
   });
 
+  it('renders branching as a compact icon action', async () => {
+    const store = createStore();
+    store.sessions.value[0].messages = [
+      { id: 'u1', role: 'user', content: 'Question', created: 1 },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'Answer',
+        created: 2,
+        durableRowId: 42,
+      },
+    ];
+    store.openBranchContext = vi.fn();
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+
+    const button = screen.getByRole('button', { name: 'Branch from here' });
+    expect(button).toHaveClass('turn-action-btn', 'turn-branch-btn');
+    expect(button).toHaveAttribute('title', 'Branch from here');
+    expect(button).toHaveTextContent('');
+    expect(button.querySelector('svg')).not.toBeNull();
+    await userEvent.click(button);
+    expect(store.openBranchContext).toHaveBeenCalledWith('42');
+  });
+
   it('pins a near-tail transcript immediately without smooth scrolling', () => {
     const store = createStore();
     const { container } = render(
@@ -1776,6 +1805,25 @@ describe('Preact-owned chat surfaces', () => {
     await userEvent.type(input, 'hello');
     await userEvent.keyboard('{Enter}');
     expect(store.send).toHaveBeenCalledOnce();
+  });
+
+  it('opens /tree locally and clears the command from the composer', async () => {
+    const store = createStore();
+    store.loadBranchTree = vi.fn(async () => undefined);
+    store.send = vi.fn(async () => undefined);
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    const input = screen.getByRole('textbox', { name: 'Message' });
+    await userEvent.type(input, '/tree');
+    await userEvent.keyboard('{Enter}');
+
+    expect(store.loadBranchTree).toHaveBeenCalledOnce();
+    expect(store.send).not.toHaveBeenCalled();
+    expect(store.prompt.value).toBe('');
   });
 
   it('shrinks the composer after sending a multiline prompt', async () => {
@@ -2573,6 +2621,87 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByRole('heading', { name: 'Start a conversation path' })).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: /Bring concise notes/ }));
     expect(store.branchFrom).toHaveBeenCalledWith('42', 'notes', '');
+  });
+
+  it('keeps the conversation-path picker compact', () => {
+    const store = createStore();
+    store.sessions.value = [
+      store.sessions.value[0],
+      { ...store.sessions.value[0], id: 's2', title: 'Focused branch', number: 8 },
+    ];
+    store.branchTree.value = {
+      root_session_id: 's1',
+      active_session_id: 's2',
+      path_count: 2,
+      nodes: [
+        { session_id: 's1', title: 'Original path', session_number: 7 },
+        {
+          session_id: 's2',
+          title: 'Focused branch',
+          session_number: 8,
+          anchor_preview: 'Earlier answer',
+          created_at: '2026-08-28T12:00:00Z',
+        },
+      ],
+    };
+    store.modal.value = 'branch';
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    const dialog = screen.getByRole('dialog', { name: 'Conversation paths' });
+    expect(dialog).not.toHaveClass('wide-modal');
+    expect(screen.getByText('Original path')).toBeVisible();
+    expect(screen.getByText('Focused branch')).toBeVisible();
+    expect(screen.getByText('After “Earlier answer”')).toBeVisible();
+    expect(screen.getByText('Origin')).toBeVisible();
+    expect(screen.getByText('Current')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Open' })).toBeEnabled();
+    expect(
+      screen.queryByText(/Switch between independently resumable paths/),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Conversation #/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Create a new path from/)).not.toBeInTheDocument();
+  });
+
+  it('offers editable turns from the conversation tree', async () => {
+    const store = createStore();
+    store.branchTree.value = {
+      root_session_id: 's1',
+      active_session_id: 's1',
+      path_count: 1,
+      nodes: [{ session_id: 's1', title: 'Original path' }],
+      branch_points: [
+        {
+          message_id: 11,
+          anchor_message_id: 0,
+          sequence: 0,
+          role: 'user',
+          preview: 'First question',
+          prefill: 'First question',
+          later_message_count: 2,
+        },
+      ],
+    };
+    store.modal.value = 'branch';
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    expect(screen.getByText('Existing paths')).toBeVisible();
+    expect(screen.getByText('Branch points')).toBeVisible();
+    const point = screen.getByRole('button', { name: /Edit: First question/ });
+    expect(point).toHaveTextContent('Message 1 · 2 later messages');
+    await userEvent.click(point);
+    expect(store.branchTarget.value).toBe('0');
+    expect(store.branchPrefill.value).toBe('First question');
+    expect(screen.getByRole('dialog', { name: 'Start a conversation path' })).toBeVisible();
   });
 
   it('prioritizes approval and ask-user prompts without losing the underlying modal', () => {

@@ -216,8 +216,11 @@ export const endpoints = (api: APIClient) => ({
       { method: 'DELETE' },
       'idempotent-mutation',
     ),
-  tree: (id: string, signal?: AbortSignal) =>
-    api.get<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/tree`, signal),
+  tree: (id: string, signal?: AbortSignal, includeBranchPoints = false) =>
+    api.get<Record<string, unknown>>(
+      `/v1/sessions/${encoded(id)}/tree${includeBranchPoints ? '?include_branch_points=1' : ''}`,
+      signal,
+    ),
   branch: (id: string, body: unknown) =>
     api.post<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/branches`, body),
   pathNotes: (id: string, body: unknown) =>

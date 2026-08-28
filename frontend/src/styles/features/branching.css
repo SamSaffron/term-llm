@@ -37,34 +37,26 @@
 
 .branch-tree-list {
   display: grid;
-  gap: 1rem;
-  margin: 1rem 0;
+  gap: 0.5rem;
+  margin: 0.65rem 0 0;
 }
 
-.branch-tree-role {
-  width: 1.4rem;
-  height: 1.4rem;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 999px;
+.branch-tree-section-title {
+  margin-top: 0.2rem;
   color: var(--text-muted);
-  background: var(--surface-2);
-  font-size: 0.68rem;
+  font-size: 0.72rem;
   font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
-.branch-tree-role.user {
-  color: var(--accent-strong);
-}
-
-.branch-tree-point {
-  grid-template-columns: 1.4rem 1fr;
+.branch-tree-section-title:not(:first-child) {
+  margin-top: 0.55rem;
 }
 
 .branch-tree-item {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 0.6rem;
   align-items: start;
   width: 100%;
@@ -89,16 +81,13 @@
 }
 
 .branch-origin-preview {
-  margin-top: 0.2rem;
+  margin-top: 0.15rem;
   color: var(--text-muted);
-  font-size: 0.82rem;
-  overflow-wrap: anywhere;
-}
-
-.branch-origin-meta {
-  margin-top: 0.2rem;
-  color: var(--text-muted);
-  font-size: 0.72rem;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .branch-tree-item:hover,
@@ -116,6 +105,12 @@
   display: block;
   color: var(--text-muted);
   margin-top: 0.15rem;
+}
+
+.branch-tree-point {
+  appearance: none;
+  cursor: pointer;
+  font: inherit;
 }
 
 .branch-context-choices {

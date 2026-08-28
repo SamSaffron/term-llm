@@ -381,6 +381,7 @@ export class AppStore {
   readonly branchTree = signal<Record<string, unknown> | null>(null);
   readonly branchPathCount = signal(0);
   readonly branchTarget = signal('');
+  readonly branchPrefill = signal('');
   readonly lightbox = signal<{
     src: string;
     type: 'image' | 'video';
@@ -1758,6 +1759,7 @@ export class AppStore {
           clientMessageId,
           requestId,
           attachments,
+          composerText: promptContent,
           options,
         });
       } catch (error) {
@@ -1821,16 +1823,27 @@ export class AppStore {
     clientMessageId: string;
     requestId: string;
     attachments: Attachment[];
+    composerText: string;
     options: SendOptions;
   }): Promise<string> {
-    const { response, streamOwner, sessionId, clientMessageId, requestId, attachments, options } =
-      input;
+    const {
+      response,
+      streamOwner,
+      sessionId,
+      clientMessageId,
+      requestId,
+      attachments,
+      composerText,
+      options,
+    } = input;
     if (!response.ok || !response.body) {
       const body = await response.text();
       if (response.status === 409) {
         try {
           const parsed = JSON.parse(body) as { error?: { type?: string } };
           if (parsed.error?.type === 'client_message_already_committed') {
+            if (!options.preserveComposer)
+              this.clearSubmittedComposer(sessionId, composerText, attachments);
             this.retireIntent(sessionId, clientMessageId);
             this.streamSupervisors.retire(streamOwner);
             await this.loadSession(sessionId);
@@ -1849,6 +1862,11 @@ export class AppStore {
     const durableSessionId = response.headers.get('x-session-id') || sessionId;
     const responseId = response.headers.get('x-response-id') || '';
     if (!responseId) throw new Error('Server did not return a response id.');
+    // A response ID proves that the server owns this exact logical message.
+    // Clear it again in case lifecycle/draft recovery resurrected the submitted
+    // text while the streaming POST was crossing a network handoff.
+    if (!options.preserveComposer)
+      this.clearSubmittedComposer(sessionId, composerText, attachments);
     options.onTransportStarted?.();
     this.releaseAttachmentResources(attachments, true);
     if (!this.streamSupervisors.owns(streamOwner)) return streamOwner.sessionId;
@@ -2043,11 +2061,14 @@ export class AppStore {
     }
   }
 
-  private scheduleSupervisorRetry(owner: StreamSupervisor, error?: unknown): void {
+  private scheduleSupervisorRetry(owner: StreamSupervisor, _error?: unknown): void {
     if (!this.streamSupervisors.owns(owner)) return;
     const projection = this.runs.peek()[owner.sessionId];
     if (!projection || !['connecting', 'streaming'].includes(projection.run.status)) {
-      if (error) this.failRun(owner.sessionId, error);
+      // Transport failures are irrelevant once the response has reached a
+      // terminal state. A late stream/subscription callback must not overwrite
+      // the completed transcript with local "Load failed" messages.
+      this.streamSupervisors.retire(owner);
       return;
     }
     const reconnects = projection.run.reconnects + 1;
@@ -2607,6 +2628,44 @@ export class AppStore {
       this.toast(`Couldn’t confirm stop: ${errorMessage(error)}`, 'error');
       const current = this.runs.peek()[sessionId];
       if (current?.run.responseId === responseId) void this.resumeResponse(sessionId, responseId);
+    }
+  }
+
+  private clearSubmittedComposer(
+    sessionId: string,
+    inputText: string,
+    attachments: Attachment[],
+  ): void {
+    const value = inputText.trim();
+    const submittedIDs = new Set(
+      attachments.map((attachment) => attachment.id).filter((id): id is string => Boolean(id)),
+    );
+    if (this.activeSessionId.peek() === sessionId)
+      batch(() => {
+        if (this.prompt.peek().trim() === value) this.prompt.value = '';
+        const submitted = new Set(attachments);
+        this.attachments.value = this.attachments
+          .peek()
+          .filter(
+            (attachment) =>
+              !submitted.has(attachment) && (!attachment.id || !submittedIDs.has(attachment.id)),
+          );
+      });
+    try {
+      const draft = readDrafts(this.storage, this.keys.draftMessages).find(
+        (candidate) => candidate.sessionId === sessionId,
+      );
+      if (draft?.content.trim() === value)
+        saveDraft(this.storage, this.keys.draftMessages, {
+          ...draft,
+          content: '',
+          attachments: (draft.attachments || []).filter(
+            (attachment) => !attachment.id || !submittedIDs.has(attachment.id),
+          ),
+          updated: Date.now(),
+        });
+    } catch {
+      this.bumpDiagnostic('storageFailures');
     }
   }
 
@@ -3736,6 +3795,7 @@ export class AppStore {
 
   async refreshBranchTree(
     sessionId = this.activeSessionId.peek(),
+    includeBranchPoints = false,
   ): Promise<Record<string, unknown> | null> {
     if (!sessionId) {
       this.branchTree.value = null;
@@ -3743,7 +3803,9 @@ export class AppStore {
       return null;
     }
     try {
-      const tree = await this.endpoints.tree(sessionId);
+      const tree = includeBranchPoints
+        ? await this.endpoints.tree(sessionId, undefined, true)
+        : await this.endpoints.tree(sessionId);
       if (this.activeSessionId.peek() !== sessionId) return null;
       this.branchTree.value = tree;
       this.branchPathCount.value = Math.max(1, Number(tree.path_count) || 1);
@@ -3757,8 +3819,9 @@ export class AppStore {
     }
   }
   async loadBranchTree(): Promise<void> {
-    const tree = await this.refreshBranchTree();
-    if (tree && this.branchPathCount.value > 1) this.modal.value = 'branch';
+    const sessionId = this.activeSessionId.peek();
+    const tree = await this.refreshBranchTree(sessionId, true);
+    if (tree) this.modal.value = 'branch';
   }
   async branchCommand(kind: 'fork' | 'thread', message = ''): Promise<void> {
     const session = this.activeSession.value;
@@ -3784,11 +3847,18 @@ export class AppStore {
       this.toast(error, 'error');
     }
   }
-  openBranchContext(messageId: string): void {
+  openBranchContext(messageId: string, prefill = ''): void {
     this.branchTarget.value = messageId;
+    this.branchPrefill.value = prefill;
     this.modal.value = 'branch-context';
   }
-  async branchFrom(messageId: string, context: string, focus = '', autoSend = ''): Promise<void> {
+  async branchFrom(
+    messageId: string,
+    context: string,
+    focus = '',
+    autoSend = '',
+    prefill = '',
+  ): Promise<void> {
     const session = this.activeSession.value;
     if (!session) return;
     const data = await this.endpoints.branch(session.id, {
@@ -3818,8 +3888,12 @@ export class AppStore {
       if (autoSend) {
         this.prompt.value = autoSend;
         await this.send();
+      } else if (prefill) {
+        this.prompt.value = prefill;
       }
     }
+    this.branchTarget.value = '';
+    this.branchPrefill.value = '';
     this.modal.value = '';
   }
 

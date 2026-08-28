@@ -998,6 +998,82 @@ describe('AppStore compatibility behavior', () => {
     expect(store.sessions.value[0].transcriptRev).toBe(2);
   });
 
+  it('re-clears a submitted composer when the server accepts after draft resurrection', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.prompt.value = 'Again';
+    saveDraft(localStorage, store.keys.draftMessages, {
+      sessionId: 's1',
+      content: 'Again',
+      updated: 1,
+    });
+    const accepted = deferred<Response>();
+    store.endpoints.createResponse = vi.fn(() => accepted.promise);
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+      },
+    });
+
+    const sending = store.send();
+    await vi.waitFor(() => expect(store.endpoints.createResponse).toHaveBeenCalledOnce());
+    expect(store.prompt.value).toBe('');
+
+    // Simulate lifecycle/draft recovery racing the still-unacknowledged POST.
+    store.prompt.value = 'Again';
+    accepted.resolve(
+      new Response(stream, {
+        status: 200,
+        headers: { 'x-response-id': 'r1', 'x-session-id': 's1' },
+      }),
+    );
+
+    await vi.waitFor(() => expect(store.prompt.value).toBe(''));
+    expect(readDrafts(localStorage, store.keys.draftMessages)).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ sessionId: 's1', content: 'Again' })]),
+    );
+    store.dispose();
+    streamController.close();
+    await sending;
+  });
+
+  it('ignores late transport failures after a response is already complete', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.runs.value = {
+      s1: {
+        ...initialProjection({
+          responseId: 'r1',
+          sessionId: 's1',
+          epoch: 1,
+          status: 'completed',
+          lastSequence: 4,
+          startedRev: 0,
+          reconnects: 0,
+        }),
+        messages: [{ id: 'done', role: 'assistant', content: 'Done.', created: 2 }],
+      },
+    };
+    store.endpoints.responseEvents = vi.fn(async () => {
+      throw new TypeError('Load failed');
+    });
+
+    await store.streamResponse('r1', 's1', 4);
+    await store.streamResponse('r1', 's1', 4);
+
+    expect(store.endpoints.responseEvents).toHaveBeenCalledTimes(2);
+    expect(store.runs.value.s1.run.status).toBe('completed');
+    expect(store.runs.value.s1.messages).toEqual([
+      expect.objectContaining({ role: 'assistant', content: 'Done.' }),
+    ]);
+    expect(store.visibleMessages.value.some((message) => message.role === 'error')).toBe(false);
+    expect(store.toasts.value).toEqual([]);
+  });
+
   it('acquires the send lock before attachment materialization yields', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];
@@ -2101,6 +2177,34 @@ describe('AppStore compatibility behavior', () => {
     await store.loadBranchTree();
     expect(store.branchPathCount.value).toBe(2);
     expect(store.modal.value).toBe('branch');
+  });
+
+  it('opens the tree with editable branch points even when only one path exists', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.endpoints.tree = vi.fn(async () => ({
+      root_session_id: 's1',
+      active_session_id: 's1',
+      path_count: 1,
+      nodes: [{ session_id: 's1' }],
+      branch_points: [
+        {
+          message_id: 11,
+          anchor_message_id: 0,
+          role: 'user',
+          preview: 'First question',
+          prefill: 'First question',
+        },
+      ],
+    }));
+
+    await store.loadBranchTree();
+
+    expect(store.endpoints.tree).toHaveBeenCalledWith('s1', undefined, true);
+    expect(store.branchPathCount.value).toBe(1);
+    expect(store.modal.value).toBe('branch');
+    expect(store.branchTree.value?.branch_points).toHaveLength(1);
   });
 
   it('starts normal and isolated skill runs from their server responses', async () => {

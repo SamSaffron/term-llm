@@ -206,6 +206,7 @@ export function Composer() {
       return;
     }
     if (command === '/paths' || command === '/tree') {
+      store.prompt.value = '';
       void store.loadBranchTree();
       return;
     }

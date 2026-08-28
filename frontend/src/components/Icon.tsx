@@ -15,6 +15,7 @@ type IconName =
   | 'diff'
   | 'edit'
   | 'expand'
+  | 'fork'
   | 'info'
   | 'interject'
   | 'menu'
@@ -104,6 +105,15 @@ const paths: Record<IconName, JSX.Element> = {
       <path d="m3 21 6-6" />
       <path d="M16 21h5v-5" />
       <path d="m21 21-6-6" />
+    </>
+  ),
+  fork: (
+    <>
+      <circle cx="6" cy="5" r="2" />
+      <circle cx="18" cy="15" r="2" />
+      <circle cx="6" cy="19" r="2" />
+      <path d="M6 7v10" />
+      <path d="M8 7h3a7 7 0 0 1 7 7v-1" />
     </>
   ),
   info: (
