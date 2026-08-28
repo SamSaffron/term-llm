@@ -155,6 +155,13 @@ type Model struct {
 	store    session.Store     // Session storage backend
 	sess     *session.Session  // Current session
 	messages []session.Message // In-memory messages for current session
+
+	// Optional terminal-host lifecycle integration. Reports are deduplicated in
+	// the model so Update can publish the resulting state unconditionally.
+	lifecycleReporter LifecycleReporter
+	lifecycleReported bool
+	lifecycleState    string
+	lifecycleSession  string
 	// pendingTerminalDirectory is emitted as OSC 7 after a successful runtime
 	// directory change, keeping terminal workspace metadata in sync without a
 	// process-wide chdir.
@@ -2324,6 +2331,11 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	defer func() {
 		if reportCmd := m.takeTerminalWorkingDirectoryCmd(); reportCmd != nil {
 			cmd = tea.Batch(cmd, reportCmd)
+		}
+		if updated, ok := model.(*Model); ok && updated != nil {
+			updated.reportLifecycleState()
+		} else {
+			m.reportLifecycleState()
 		}
 	}()
 	if m.resizeReflowPending {
