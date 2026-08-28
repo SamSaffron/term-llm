@@ -2210,6 +2210,54 @@ describe('Preact-owned chat surfaces', () => {
     );
   });
 
+  it('persists the Projects section collapse while keeping its active conversation visible', async () => {
+    const store = createStore();
+    const active = { ...store.sessions.value[0], projectId: 'p1', projectName: 'Alpha' };
+    store.sessions.value = [active];
+    store.projectsEnabled.value = true;
+    store.projects.value = [
+      { id: 'p1', name: 'Alpha', sessions: [active], has_more: false },
+      { id: 'p2', name: 'Beta', sessions: [], has_more: false },
+    ];
+
+    const view = render(
+      <StoreContext.Provider value={store}>
+        <Sidebar />
+      </StoreContext.Provider>,
+    );
+    const { container } = view;
+    const projects = screen.getByRole('button', { name: 'Projects' });
+    expect(projects).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: 'Alpha' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Beta' })).toBeInTheDocument();
+
+    await userEvent.click(projects);
+    expect(projects).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('button', { name: 'Alpha' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Beta' })).not.toBeInTheDocument();
+    expect(container.querySelectorAll('.sidebar-project-groups .session-row')).toHaveLength(1);
+    expect(container.querySelector('.sidebar-project-groups .session-row')).toHaveTextContent(
+      'Test',
+    );
+    expect(
+      readJSON<Record<string, boolean>>(store.storage, store.keys.projectExpansion, {})[
+        '__projects__'
+      ],
+    ).toBe(false);
+
+    view.unmount();
+    render(
+      <StoreContext.Provider value={store}>
+        <Sidebar />
+      </StoreContext.Provider>,
+    );
+    expect(screen.getByRole('button', { name: 'Projects' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    expect(screen.queryByRole('button', { name: 'Alpha' })).not.toBeInTheDocument();
+  });
+
   it('preserves sibling sidebar expansion choices when toggles are changed in sequence', async () => {
     const store = createStore();
     store.projectsEnabled.value = true;
@@ -2226,10 +2274,11 @@ describe('Preact-owned chat surfaces', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Alpha' }));
     await userEvent.click(screen.getByRole('button', { name: 'Beta' }));
     await userEvent.click(screen.getByRole('button', { name: 'No project' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Projects' }));
 
     expect(
       readJSON<Record<string, boolean>>(store.storage, store.keys.projectExpansion, {}),
-    ).toMatchObject({ p1: false, p2: false, __no_project__: false });
+    ).toMatchObject({ p1: false, p2: false, __no_project__: false, __projects__: false });
   });
 
   it('lifts pinned project conversations into the global pinned section', () => {

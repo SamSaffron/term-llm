@@ -640,6 +640,93 @@ describe('AppStore compatibility behavior', () => {
     );
   });
 
+  it('forks a settled loaded session from its latest durable message row', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.endpoints.sessionState = vi.fn(async () => ({ lastResponseId: 'resp_msg_42' }));
+    store.endpoints.selectedSession = vi.fn(async () => ({
+      selected_session: { id: 's1', title: 'Test', transcript_rev: 3 },
+      selected_transcript: {
+        bodies: {
+          rev: 3,
+          messages: [
+            {
+              id: 41,
+              sequence: 1,
+              role: 'user',
+              parts: [{ type: 'text', text: 'question' }],
+            },
+            {
+              id: 42,
+              sequence: 2,
+              role: 'assistant',
+              response_id: 'r1',
+              parts: [{ type: 'text', text: 'settled answer' }],
+            },
+            {
+              id: 43,
+              sequence: 3,
+              role: 'event',
+              parts: [{ type: 'model_swap', text: 'Model switched' }],
+            },
+          ],
+        },
+      },
+    }));
+    store.endpoints.branch = vi.fn(async () => ({}));
+    store.refreshSidebar = vi.fn(async () => undefined);
+
+    await store.loadSession('s1');
+    await store.branchCommand('fork');
+
+    expect(store.endpoints.branch).toHaveBeenCalledWith(
+      's1',
+      expect.objectContaining({ anchor_message_id: 42, expected_rev: 3 }),
+    );
+    expect(store.toasts.value).toEqual([]);
+  });
+
+  it('allows a fork before an in-flight first response has a durable boundary', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [{ ...session(), activeResponseId: 'r1' }];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.runs.value = {
+      s1: {
+        ...initialProjection({
+          responseId: 'r1',
+          sessionId: 's1',
+          epoch: 1,
+          status: 'streaming',
+          lastSequence: 1,
+          startedRev: 0,
+          reconnects: 0,
+        }),
+        messages: [
+          {
+            id: 'pending-user',
+            role: 'user',
+            content: 'first question',
+            created: 1,
+            pending: true,
+          },
+        ],
+      },
+    };
+    store.endpoints.branch = vi.fn(async () => ({}));
+    store.refreshSidebar = vi.fn(async () => undefined);
+
+    await store.branchCommand('fork');
+
+    expect(store.endpoints.branch).toHaveBeenCalledWith(
+      's1',
+      expect.objectContaining({ anchor_message_id: 0 }),
+    );
+    expect(store.toasts.value).toEqual([]);
+  });
+
   it('reconciles a completed runtime response to the latest durable anchor', async () => {
     const store = new AppStore(config);
     store.sessions.value = [{ ...session(), lastResponseId: 'resp_runtime_stale' }];

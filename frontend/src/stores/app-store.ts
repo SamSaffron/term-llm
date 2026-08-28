@@ -3775,13 +3775,6 @@ export class AppStore {
         ? 0
         : [...this.visibleMessages.value].reverse().find((entry) => Number(entry.durableRowId) > 0)
             ?.durableRowId || 0;
-    if (kind === 'fork' && !anchor) {
-      this.toast(
-        'The conversation does not yet have a durable completed boundary to fork from.',
-        'error',
-      );
-      return;
-    }
     const original = this.prompt.value;
     this.prompt.value = '';
     try {

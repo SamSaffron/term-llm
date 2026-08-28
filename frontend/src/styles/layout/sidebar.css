@@ -131,7 +131,7 @@
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-  padding: 0 0.55rem 0.35rem;
+  padding: 0 0 0.35rem;
   flex-shrink: 0;
 }
 
@@ -139,23 +139,16 @@
   margin-bottom: 0;
 }
 
-.sidebar-actions .session-group-toggle {
-  padding: 0.5rem 0.2rem 0.35rem;
-}
-
-.sidebar-actions .collapsible-session-group-status {
-  right: 0.2rem;
-}
-
 .new-chat-btn,
 .widgets-sidebar-btn,
 .back-to-hub-link {
-  width: 100%;
+  width: calc(100% - 0.5rem);
+  margin-inline: 0.25rem;
   border-radius: 10px;
   border: 1px solid transparent;
   background: transparent;
   color: var(--text);
-  padding: 0.58rem 0.65rem;
+  padding: 0.58rem 0.8rem;
   text-align: left;
   cursor: pointer;
   font: inherit;
@@ -200,7 +193,7 @@
   display: flex;
   flex-direction: column;
   gap: 0.2rem;
-  margin: 0 0 0.1rem;
+  margin: 0 0.25rem 0.1rem;
   padding: 0;
 }
 
@@ -219,7 +212,7 @@
   grid-template-columns: 17px minmax(0, 1fr) 0.5rem;
   align-items: center;
   column-gap: 0.55rem;
-  padding: 0.58rem 0.65rem;
+  padding: 0.58rem 0.8rem;
   font-size: 0.92rem;
   font-weight: 600;
   line-height: 1.25;

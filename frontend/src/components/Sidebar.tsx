@@ -314,6 +314,7 @@ function SessionDateGroups({
 
 const SIDEBAR_EXPANSION_KEYS = {
   noProject: '__no_project__',
+  projects: '__projects__',
   hubAgents: '__hub_agents__',
 } as const;
 
@@ -523,6 +524,40 @@ function ProjectGroup({ project }: { project: Project }) {
         activeSession && (
           <div class="project-session-list">
             <SessionRow session={activeSession} />
+          </div>
+        )
+      )}
+    </section>
+  );
+}
+
+function ProjectsGroup({ projects }: { projects: Project[] }) {
+  const store = useStore();
+  const [open, toggle] = useSidebarExpansion(SIDEBAR_EXPANSION_KEYS.projects);
+  const activeSessionID = store.activeSessionId.value;
+  const listedActiveSession = projects
+    .flatMap((project) => project.sessions || [])
+    .find((session) => session.id === activeSessionID);
+  const activeSession = store.activeSession.value || listedActiveSession;
+  const collapsedActiveSession =
+    activeSession &&
+    !activeSession.pinned &&
+    projects.some((project) => project.id === activeSession.projectId)
+      ? activeSession
+      : undefined;
+  return (
+    <section class="session-group sidebar-project-groups">
+      <CollapsibleSectionHeading label="Projects" open={open} onToggle={toggle} />
+      {open ? (
+        <div class="session-group-list is-opening">
+          {projects.map((project) => (
+            <ProjectGroup key={project.id} project={project} />
+          ))}
+        </div>
+      ) : (
+        collapsedActiveSession && (
+          <div class="session-group-collapsed-active">
+            <SessionRow session={collapsedActiveSession} />
           </div>
         )
       )}
@@ -805,12 +840,7 @@ export function Sidebar() {
                     </section>
                   )}
                   {store.projects.value.length > 0 && (
-                    <section class="session-group sidebar-project-groups">
-                      <h3>Projects</h3>
-                      {store.projects.value.map((project) => (
-                        <ProjectGroup key={project.id} project={project} />
-                      ))}
-                    </section>
+                    <ProjectsGroup projects={store.projects.value} />
                   )}
                   {regular.length > 0 &&
                     (store.projectsEnabled.value ? (

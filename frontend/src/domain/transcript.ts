@@ -68,10 +68,17 @@ function withSource(entry: Message, message: ServerMessage): Message {
   if (entry.role === 'assistant' && Number.isFinite(Number(segmentOrdinal)))
     entry.assistantSegmentOrdinal = Math.max(0, Math.trunc(Number(segmentOrdinal)));
   const row = sourceRowID(message);
-  if (row != null)
+  if (row != null) {
     entry.durableSourceRowIds = [
       ...new Set([...((entry.durableSourceRowIds as Array<string | number>) || []), row]),
     ];
+    if (
+      ['user', 'assistant', 'tool-group'].includes(entry.role) &&
+      Number.isSafeInteger(Number(row)) &&
+      Number(row) > 0
+    )
+      entry.durableRowId = Number(row);
+  }
   if (Number.isFinite(Number(message.sequence))) entry.serverSeq = Number(message.sequence);
   return entry;
 }
