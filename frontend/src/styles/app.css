@@ -13,6 +13,7 @@
 @import './features/transcript.css';
 @import './features/composer.css';
 @import './features/modals.css';
+@import './features/notifications.css';
 @import './features/approvals.css';
 @import './features/attachments.css';
 @import './features/drawer.css';

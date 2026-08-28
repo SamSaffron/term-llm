@@ -95,21 +95,38 @@ export const endpoints = (api: APIClient) => ({
       __etag: response.headers.get('ETag') || '',
     };
   },
-  createResponse: (body: unknown, sessionId: string, requestId: string, signal?: AbortSignal) =>
-    api.request(
+  createResponse: (
+    body: unknown,
+    sessionId: string,
+    requestId: string,
+    signal?: AbortSignal,
+    notificationSubscriptionId = '',
+  ) => {
+    const streaming = Boolean(
+      body && typeof body === 'object' && (body as Record<string, unknown>).stream,
+    );
+    const draft = sessionId.startsWith('draft_');
+    return api.request(
       '/v1/responses',
       {
         method: 'POST',
         signal,
         headers: {
-          ...(sessionId ? { 'X-Term-LLM-Session-ID': sessionId } : {}),
+          ...(sessionId && !draft ? { 'X-Term-LLM-Session-ID': sessionId } : {}),
+          ...(draft ? { 'X-Term-LLM-Draft-ID': sessionId } : {}),
+          ...(notificationSubscriptionId
+            ? { 'X-Term-LLM-Push-Subscription-ID': notificationSubscriptionId }
+            : {}),
           'Idempotency-Key': requestId,
           'X-Term-LLM-Request-ID': requestId,
         },
         body: JSON.stringify(body),
       },
-      { policy: 'idempotent-mutation', retries: 2, timeoutMs: 0, auth: 'session' },
-    ),
+      streaming
+        ? { policy: 'idempotent-mutation', retries: 2, timeoutMs: 0, auth: 'session' }
+        : { policy: 'mutation', retries: 0, timeoutMs: 0, auth: 'session' },
+    );
+  },
   response: (id: string, signal?: AbortSignal) =>
     api.get<Record<string, unknown>>(`/v1/responses/${encoded(id)}`, signal),
   responseEvents: (id: string, after: number, signal: AbortSignal) =>
@@ -270,11 +287,23 @@ export const endpoints = (api: APIClient) => ({
     api.delete<Record<string, unknown>>(
       `/v1/projects/${encoded(id)}/worktrees?dir=${encoded(dir)}${force ? '&force=1' : ''}`,
     ),
-  transcribe: (body: FormData) => api.post<Record<string, unknown>>('/v1/transcribe', body),
+  transcribe: (
+    body: FormData,
+    controls?: { signal?: AbortSignal; onProgress?: (loaded: number, total?: number) => void },
+  ) => api.upload<Record<string, unknown>>('/v1/transcribe', body, controls),
   pushSubscribe: (body: unknown) =>
-    api.post('/v1/push/subscribe', body, 'idempotent-mutation', {
-      'Idempotency-Key': 'push_subscription',
-    }),
+    api.post<{ id: string; state: 'active' | 'stale'; vapid_key_id: string }>(
+      '/v1/push/subscribe',
+      body,
+      'idempotent-mutation',
+      { 'Idempotency-Key': 'push_subscription' },
+    ),
+  pushUnsubscribe: (body: { id?: string; endpoint?: string }) =>
+    api.json(
+      '/v1/push/subscribe',
+      { method: 'DELETE', body: JSON.stringify(body) },
+      { policy: 'mutation' },
+    ),
   widgetStatus: () =>
     api.json<Record<string, unknown>>(
       '/admin/widgets/status',

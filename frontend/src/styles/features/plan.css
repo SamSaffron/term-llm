@@ -268,9 +268,17 @@
 
 .plan-sheet-handle {
   flex: none;
+  width: 64px;
+  height: 24px;
+  margin: 0.15rem auto 0;
+  display: grid;
+  place-items: center;
+  touch-action: none;
+}
+
+.plan-sheet-handle span {
   width: 42px;
   height: 4px;
-  margin: 0.5rem auto 0;
   border-radius: 999px;
   background: var(--border-strong);
 }
@@ -352,7 +360,18 @@
   }
 
   .plan-sheet.open {
-    transform: translateY(0);
+    transform: translateY(var(--drawer-swipe-offset-y, 0));
+  }
+
+  .drawer.plan-sheet {
+    width: auto;
+    max-height: min(72dvh, calc(var(--app-height) - var(--safe-top) - 1rem));
+    overflow: hidden;
+  }
+
+  .plan-sheet-content {
+    flex: 1;
+    width: 100%;
   }
 
   .plan-sheet .plan-surface-header {

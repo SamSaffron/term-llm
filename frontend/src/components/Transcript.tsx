@@ -8,6 +8,25 @@ import { Icon } from './Icon';
 import { copyText } from '../platform/browser';
 import { rebaseHubAssetURL } from '../app/config';
 import { responseActivity } from '../domain/activity';
+import type { AppStore } from '../stores/app-store';
+
+function openMediaGallery(store: AppStore, src: string, type: 'image' | 'video'): void {
+  const nodes = [...document.querySelectorAll<HTMLElement>('[data-lightbox-src]')];
+  const items = nodes
+    .map((node, index) => ({
+      key: node.dataset.lightboxKey || `${node.dataset.lightboxSrc}-${index}`,
+      src: node.dataset.lightboxSrc || '',
+      type: node.dataset.lightboxType === 'video' ? ('video' as const) : ('image' as const),
+      name: node.dataset.lightboxName || '',
+    }))
+    .filter((item) => item.src);
+  let index = items.findIndex((item) => item.src === src && item.type === type);
+  if (index < 0) {
+    items.push({ key: `${src}-${items.length}`, src, type, name: '' });
+    index = items.length - 1;
+  }
+  store.lightbox.value = { ...items[index], items, index };
+}
 
 function relativeTime(value: number): string {
   const seconds = Math.max(0, Math.round((Date.now() - value) / 1000));
@@ -231,8 +250,11 @@ function Tool({
                 <button
                   class="message-image-button"
                   key={src}
+                  data-lightbox-src={src}
+                  data-lightbox-type="image"
+                  data-lightbox-name={`${tool.name} output`}
                   onClick={() => {
-                    store.lightbox.value = { src, type: 'image' };
+                    openMediaGallery(store, src, 'image');
                   }}
                 >
                   <img src={src} alt={`${tool.name} output`} loading="lazy" />
@@ -325,8 +347,11 @@ function Attachments({ message }: { message: Message }) {
               class="message-image-button"
               type="button"
               key={`${attachment.name}-${index}`}
+              data-lightbox-src={src}
+              data-lightbox-type="image"
+              data-lightbox-name={attachment.name}
               onClick={() => {
-                store.lightbox.value = { src, type: 'image' };
+                openMediaGallery(store, src, 'image');
               }}
             >
               <img
@@ -344,8 +369,11 @@ function Attachments({ message }: { message: Message }) {
               class="message-image-button"
               type="button"
               key={`${attachment.name}-${index}`}
+              data-lightbox-src={src}
+              data-lightbox-type="video"
+              data-lightbox-name={attachment.name}
               onClick={() => {
-                store.lightbox.value = { src, type: 'video' };
+                openMediaGallery(store, src, 'video');
               }}
             >
               <video src={src} playsInline />
@@ -451,7 +479,7 @@ function MessageRow({
   const [expanded, setExpanded] = useState(false);
   const rebase = (value: string) => rebaseHubAssetURL(store.config, value);
   const media = (src: string, type: 'image' | 'video') => {
-    if (!streaming) store.lightbox.value = { src, type };
+    if (!streaming) openMediaGallery(store, src, type);
   };
   if (message.role === 'tool-group')
     return (

@@ -214,9 +214,32 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
     endpoint TEXT NOT NULL UNIQUE,
     key_p256dh TEXT NOT NULL,
     key_auth TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    vapid_key_id TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    last_used_at TEXT
+    updated_at TEXT NOT NULL DEFAULT '',
+    last_used_at TEXT,
+    last_failure_code TEXT NOT NULL DEFAULT '',
+    last_failure TEXT NOT NULL DEFAULT '',
+    last_failure_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS completion_push_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL UNIQUE,
+    response_id TEXT NOT NULL,
+    subscription_id TEXT NOT NULL,
+    payload BLOB NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'delivered', 'dead')),
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(response_id, subscription_id)
+);
+CREATE INDEX IF NOT EXISTS idx_completion_push_outbox_due
+    ON completion_push_outbox(status, next_attempt_at, id);
 
 -- Full-text search on extracted text content
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
@@ -411,7 +434,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // Increment when adding new migrations.
 const (
 	projectSchemaVersion = 47
-	schemaVersion        = 50
+	schemaVersion        = 51
 )
 
 // migration represents a schema migration.
@@ -1381,6 +1404,44 @@ var migrations = []migration{
 			);
 			CREATE INDEX IF NOT EXISTS idx_session_pending_interjections_order
 				ON session_pending_interjections(session_id, created_at, id);`)
+			return err
+		},
+	},
+	{
+		version:     51,
+		description: "add push subscription lifecycle and completion outbox",
+		up: func(db schemaExecutor) error {
+			for _, statement := range []string{
+				"ALTER TABLE push_subscriptions ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+				"ALTER TABLE push_subscriptions ADD COLUMN vapid_key_id TEXT NOT NULL DEFAULT ''",
+				"ALTER TABLE push_subscriptions ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''",
+				"ALTER TABLE push_subscriptions ADD COLUMN last_failure_code TEXT NOT NULL DEFAULT ''",
+				"ALTER TABLE push_subscriptions ADD COLUMN last_failure TEXT NOT NULL DEFAULT ''",
+				"ALTER TABLE push_subscriptions ADD COLUMN last_failure_at TEXT",
+			} {
+				if _, err := db.Exec(statement); err != nil && !isDuplicateColumnError(err) {
+					return err
+				}
+			}
+			if _, err := db.Exec("UPDATE push_subscriptions SET updated_at = COALESCE(NULLIF(updated_at, ''), created_at, datetime('now'))"); err != nil {
+				return err
+			}
+			_, err := db.Exec(`CREATE TABLE IF NOT EXISTS completion_push_outbox (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				event_id TEXT NOT NULL UNIQUE,
+				response_id TEXT NOT NULL,
+				subscription_id TEXT NOT NULL,
+				payload BLOB NOT NULL,
+				status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'delivered', 'dead')),
+				attempt_count INTEGER NOT NULL DEFAULT 0,
+				next_attempt_at TEXT NOT NULL DEFAULT (datetime('now')),
+				last_error TEXT NOT NULL DEFAULT '',
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+				UNIQUE(response_id, subscription_id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_completion_push_outbox_due
+				ON completion_push_outbox(status, next_attempt_at, id);`)
 			return err
 		},
 	},
@@ -5017,21 +5078,88 @@ func (s *SQLiteStore) ClearCurrent(ctx context.Context) error {
 
 // SavePushSubscription upserts a Web Push subscription.
 func (s *SQLiteStore) SavePushSubscription(ctx context.Context, sub *PushSubscription) error {
+	stored, err := s.UpsertPushSubscription(ctx, sub)
+	if err == nil && stored != nil {
+		*sub = *stored
+	}
+	return err
+}
+
+func scanPushSubscription(scanner interface{ Scan(...any) error }) (*PushSubscription, error) {
+	var sub PushSubscription
+	var updated, lastUsed, failureAt sql.NullString
+	if err := scanner.Scan(
+		&sub.ID, &sub.Endpoint, &sub.KeyP256DH, &sub.KeyAuth, &sub.Status, &sub.VAPIDKeyID,
+		&updated, &lastUsed, &sub.LastFailureCode, &sub.LastFailure, &failureAt,
+	); err != nil {
+		return nil, err
+	}
+	parse := func(value sql.NullString) time.Time {
+		if !value.Valid {
+			return time.Time{}
+		}
+		for _, layout := range []string{"2006-01-02 15:04:05", time.RFC3339Nano} {
+			if parsed, err := time.Parse(layout, value.String); err == nil {
+				return parsed.UTC()
+			}
+		}
+		return time.Time{}
+	}
+	sub.UpdatedAt = parse(updated)
+	sub.LastUsedAt = parse(lastUsed)
+	sub.LastFailureAt = parse(failureAt)
+	return &sub, nil
+}
+
+func (s *SQLiteStore) UpsertPushSubscription(ctx context.Context, sub *PushSubscription) (*PushSubscription, error) {
+	if sub == nil || strings.TrimSpace(sub.Endpoint) == "" || strings.TrimSpace(sub.KeyP256DH) == "" || strings.TrimSpace(sub.KeyAuth) == "" {
+		return nil, fmt.Errorf("save push subscription: endpoint and keys are required")
+	}
 	if sub.ID == "" {
 		sub.ID = NewID()
 	}
+	if sub.Status == "" {
+		sub.Status = "active"
+	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO push_subscriptions (id, endpoint, key_p256dh, key_auth)
-		VALUES (?, ?, ?, ?)
+		INSERT INTO push_subscriptions (id, endpoint, key_p256dh, key_auth, status, vapid_key_id, updated_at, last_used_at)
+		VALUES (?, ?, ?, ?, 'active', ?, datetime('now'), datetime('now'))
 		ON CONFLICT(endpoint) DO UPDATE SET
 			key_p256dh = excluded.key_p256dh,
 			key_auth = excluded.key_auth,
-			last_used_at = datetime('now')`,
-		sub.ID, sub.Endpoint, sub.KeyP256DH, sub.KeyAuth)
+			status = 'active',
+			vapid_key_id = excluded.vapid_key_id,
+			updated_at = datetime('now'),
+			last_used_at = datetime('now'),
+			last_failure_code = '',
+			last_failure = '',
+			last_failure_at = NULL`,
+		sub.ID, strings.TrimSpace(sub.Endpoint), strings.TrimSpace(sub.KeyP256DH), strings.TrimSpace(sub.KeyAuth), strings.TrimSpace(sub.VAPIDKeyID))
 	if err != nil {
-		return fmt.Errorf("save push subscription: %w", err)
+		return nil, fmt.Errorf("save push subscription: %w", err)
 	}
-	return nil
+	stored, err := scanPushSubscription(s.queryDB().QueryRowContext(ctx, `
+		SELECT id, endpoint, key_p256dh, key_auth, status, vapid_key_id, updated_at,
+		       last_used_at, last_failure_code, last_failure, last_failure_at
+		FROM push_subscriptions WHERE endpoint = ?`, strings.TrimSpace(sub.Endpoint)))
+	if err != nil {
+		return nil, fmt.Errorf("read saved push subscription: %w", err)
+	}
+	return stored, nil
+}
+
+func (s *SQLiteStore) GetPushSubscription(ctx context.Context, id string) (*PushSubscription, error) {
+	sub, err := scanPushSubscription(s.queryDB().QueryRowContext(ctx, `
+		SELECT id, endpoint, key_p256dh, key_auth, status, vapid_key_id, updated_at,
+		       last_used_at, last_failure_code, last_failure, last_failure_at
+		FROM push_subscriptions WHERE id = ?`, strings.TrimSpace(id)))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get push subscription: %w", err)
+	}
+	return sub, nil
 }
 
 // DeletePushSubscription removes a Web Push subscription by endpoint.
@@ -5043,10 +5171,36 @@ func (s *SQLiteStore) DeletePushSubscription(ctx context.Context, endpoint strin
 	return nil
 }
 
+func (s *SQLiteStore) DeletePushSubscriptionByID(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, "DELETE FROM push_subscriptions WHERE id = ?", strings.TrimSpace(id))
+	if err != nil {
+		return fmt.Errorf("delete push subscription by id: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) MarkPushSubscriptionStale(ctx context.Context, id, code, detail string) error {
+	if len(detail) > 240 {
+		detail = detail[:240]
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE push_subscriptions
+		SET status = 'stale', updated_at = datetime('now'), last_failure_code = ?,
+		    last_failure = ?, last_failure_at = datetime('now') WHERE id = ?`, code, detail, id)
+	return err
+}
+
+func (s *SQLiteStore) MarkPushSubscriptionUsed(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE push_subscriptions
+		SET status = 'active', updated_at = datetime('now'), last_used_at = datetime('now'),
+		    last_failure_code = '', last_failure = '', last_failure_at = NULL WHERE id = ?`, id)
+	return err
+}
+
 // ListPushSubscriptions returns all stored Web Push subscriptions.
 func (s *SQLiteStore) ListPushSubscriptions(ctx context.Context) ([]PushSubscription, error) {
 	rows, err := s.queryDB().QueryContext(ctx, `
-		SELECT id, endpoint, key_p256dh, key_auth
+		SELECT id, endpoint, key_p256dh, key_auth, status, vapid_key_id, updated_at,
+		       last_used_at, last_failure_code, last_failure, last_failure_at
 		FROM push_subscriptions
 		ORDER BY created_at ASC`)
 	if err != nil {
@@ -5056,13 +5210,76 @@ func (s *SQLiteStore) ListPushSubscriptions(ctx context.Context) ([]PushSubscrip
 
 	var subs []PushSubscription
 	for rows.Next() {
-		var sub PushSubscription
-		if err := rows.Scan(&sub.ID, &sub.Endpoint, &sub.KeyP256DH, &sub.KeyAuth); err != nil {
+		sub, err := scanPushSubscription(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan push subscription: %w", err)
 		}
-		subs = append(subs, sub)
+		subs = append(subs, *sub)
 	}
 	return subs, rows.Err()
+}
+
+func (s *SQLiteStore) EnqueueCompletionPush(ctx context.Context, item CompletionPushOutboxItem) (bool, error) {
+	result, err := s.db.ExecContext(ctx, `INSERT INTO completion_push_outbox
+		(event_id, response_id, subscription_id, payload) VALUES (?, ?, ?, ?)
+		ON CONFLICT(response_id, subscription_id) DO NOTHING`, item.EventID, item.ResponseID, item.SubscriptionID, item.Payload)
+	if err != nil {
+		return false, fmt.Errorf("enqueue completion push: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	return rows > 0, nil
+}
+
+func (s *SQLiteStore) ListDueCompletionPushes(ctx context.Context, now time.Time, limit int) ([]CompletionPushOutboxItem, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 25
+	}
+	rows, err := s.queryDB().QueryContext(ctx, `SELECT id, event_id, response_id, subscription_id, payload, attempt_count
+		FROM completion_push_outbox WHERE status = 'pending' AND next_attempt_at <= ?
+		ORDER BY next_attempt_at, id LIMIT ?`, now.UTC().Format("2006-01-02 15:04:05"), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CompletionPushOutboxItem
+	for rows.Next() {
+		var item CompletionPushOutboxItem
+		if err := rows.Scan(&item.ID, &item.EventID, &item.ResponseID, &item.SubscriptionID, &item.Payload, &item.AttemptCount); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *SQLiteStore) MarkCompletionPushDelivered(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE completion_push_outbox SET status = 'delivered',
+		attempt_count = attempt_count + 1, updated_at = datetime('now'), last_error = '' WHERE id = ?`, id)
+	return err
+}
+
+func (s *SQLiteStore) RetryCompletionPush(ctx context.Context, id int64, next time.Time, lastError string) error {
+	if len(lastError) > 240 {
+		lastError = lastError[:240]
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE completion_push_outbox SET attempt_count = attempt_count + 1,
+		next_attempt_at = ?, updated_at = datetime('now'), last_error = ? WHERE id = ?`, next.UTC().Format("2006-01-02 15:04:05"), lastError, id)
+	return err
+}
+
+func (s *SQLiteStore) MarkCompletionPushDead(ctx context.Context, id int64, lastError string) error {
+	if len(lastError) > 240 {
+		lastError = lastError[:240]
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE completion_push_outbox SET status = 'dead',
+		attempt_count = attempt_count + 1, updated_at = datetime('now'), last_error = ? WHERE id = ?`, lastError, id)
+	return err
+}
+
+func (s *SQLiteStore) PruneCompletionPushOutbox(ctx context.Context, before time.Time) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM completion_push_outbox
+		WHERE status IN ('delivered', 'dead') AND updated_at < ?`, before.UTC().Format("2006-01-02 15:04:05"))
+	return err
 }
 
 func (s *SQLiteStore) ReadOnly() bool {

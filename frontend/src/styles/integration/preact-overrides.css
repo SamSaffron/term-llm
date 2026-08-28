@@ -771,11 +771,12 @@ mark.diff-word {
 
   .modal-overlay {
     align-items: flex-end;
-    padding: 0.5rem;
+    padding: calc(0.5rem + var(--safe-top)) calc(0.5rem + var(--safe-right))
+      calc(0.5rem + var(--safe-bottom)) calc(0.5rem + var(--safe-left));
   }
 
   .modal {
-    max-height: calc(100dvh - 1rem - var(--safe-top));
+    max-height: calc(var(--app-height) - 1rem - var(--safe-top) - var(--safe-bottom));
     overflow: auto;
     border-radius: 12px;
   }
@@ -795,6 +796,30 @@ mark.diff-word {
 
   .diff-sidebar {
     width: min(94vw, 440px) !important;
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .session-menu-trigger,
+  .project-group-action,
+  .mobile-menu,
+  .composer-icon-btn,
+  .header-action,
+  .icon-btn,
+  .lightbox-btn {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .session-row-menu {
+    top: 0.25rem;
+    right: 0.25rem;
+  }
+
+  .session-menu button,
+  .composer-add-menu button,
+  .chip-popover-item {
+    min-height: 44px;
   }
 }
 

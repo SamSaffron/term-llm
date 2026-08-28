@@ -171,10 +171,13 @@ export interface Project {
 }
 
 export interface DiffLine {
-  kind: 'context' | 'add' | 'delete' | 'hunk';
+  kind: 'context' | 'add' | 'delete' | 'hunk' | 'gap';
   content: string;
   oldLine?: number;
   newLine?: number;
+  hiddenOld?: number;
+  hiddenNew?: number;
+  gapDirection?: 'above' | 'between' | 'below';
 }
 
 export interface DiffFile {
@@ -346,6 +349,7 @@ export interface ActiveRun {
   reconnects: number;
   error?: string;
   requestId?: string;
+  notificationSubscriptionId?: string;
   finalRev?: number;
   durableHandoff?: boolean;
   summary?: string;

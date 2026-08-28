@@ -71,33 +71,102 @@ self.addEventListener('fetch', (event) => {
   })());
 });
 
+const scopedNotificationURL = (value) => {
+  try {
+    const scope = new URL(self.registration.scope);
+    const target = new URL(String(value || scope.href), scope);
+    if (target.origin !== scope.origin || !target.pathname.startsWith(scope.pathname)) return scope.href;
+    return target.href;
+  } catch {
+    return self.registration.scope;
+  }
+};
+
+const completionNotification = (raw) => {
+  const valid = raw && raw.version === 1 && typeof raw.event_id === 'string' && raw.event_id;
+  const eventID = valid ? raw.event_id : 'malformed-push';
+  return {
+    title: valid ? String(raw.title || 'term-llm') : 'term-llm notification',
+    options: {
+      body: valid ? String(raw.body || '') : 'Open term-llm to view this update.',
+      icon: new URL('./icon-512.png', self.registration.scope).href,
+      badge: new URL('./icon-512.png', self.registration.scope).href,
+      tag: `term-llm-completion:${eventID}`,
+      renotify: false,
+      data: {
+        event_id: eventID,
+        response_id: valid ? String(raw.response_id || '') : '',
+        url: scopedNotificationURL(valid ? raw.url : self.registration.scope),
+      },
+    },
+  };
+};
+
+const parsePushPayload = (event) => {
+  if (!event.data) return null;
+  try {
+    return event.data.json();
+  } catch {
+    try {
+      return JSON.parse(event.data.text());
+    } catch {
+      return null;
+    }
+  }
+};
+
+const notifyVisibleClients = async (tag) => {
+  const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  const scopePath = new URL(self.registration.scope).pathname;
+  for (const client of windows) {
+    if (new URL(client.url).pathname.startsWith(scopePath) && client.visibilityState === 'visible') {
+      client.postMessage({ type: 'completion-push-shown', tag });
+    }
+  }
+};
+
 self.addEventListener('push', (event) => {
-  const data = event.data?.json() || {};
-  event.waitUntil(
-    self.registration.showNotification(data.title || 'term-llm', {
-      body: data.body || '',
-      icon: './icon-512.png',
-      badge: './icon-512.png',
-      data: { url: data.url || self.registration.scope }
-    })
-  );
+  event.waitUntil((async () => {
+    const notification = completionNotification(parsePushPayload(event));
+    // userVisibleOnly requires every actual push delivery to show (or replace)
+    // a visible notification. Foreground pages close the exact tag afterward.
+    await self.registration.showNotification(notification.title, notification.options);
+    await notifyVisibleClients(notification.options.tag);
+  })());
+});
+
+self.addEventListener('message', (event) => {
+  const message = event.data || {};
+  if (message.type !== 'completion-notification') return;
+  event.waitUntil((async () => {
+    const notification = completionNotification(message.payload);
+    const existing = await self.registration.getNotifications({ tag: notification.options.tag });
+    if (!existing.length) {
+      await self.registration.showNotification(notification.title, notification.options);
+    }
+  })());
 });
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const targetURL = String(event.notification?.data?.url || self.registration.scope);
+  const targetURL = scopedNotificationURL(event.notification?.data?.url);
 
   event.waitUntil((async () => {
-    const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    for (const client of clients) {
-      const url = new URL(client.url);
-      if (url.pathname.startsWith(new URL(self.registration.scope).pathname)) {
-        await client.focus();
-        if ('navigate' in client) {
+    const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const scopePath = new URL(self.registration.scope).pathname;
+    for (const client of windows) {
+      if (!new URL(client.url).pathname.startsWith(scopePath)) continue;
+      await client.focus();
+      if (typeof client.navigate === 'function') {
+        try {
           await client.navigate(targetURL);
+          return;
+        } catch {
+          // Safari may expose navigate without implementing it for this client.
         }
-        return;
       }
+      client.postMessage({ type: 'notification-route', url: targetURL });
+      return;
     }
     await self.clients.openWindow(targetURL);
   })());

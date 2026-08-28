@@ -354,7 +354,7 @@
   z-index: 1000;
   min-width: 180px;
   max-width: min(360px, calc(100vw - 1rem));
-  max-height: min(320px, calc(100vh - 8rem));
+  max-height: min(320px, calc(var(--app-height) - 1rem));
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -566,7 +566,7 @@ dialog.chip-popover::backdrop {
     position: fixed;
     inset: auto 0.5rem max(0.5rem, env(safe-area-inset-bottom, 0.5rem));
     max-width: none;
-    max-height: 60vh;
+    max-height: min(60dvh, calc(var(--app-height) - var(--safe-top) - var(--safe-bottom) - 1rem));
     font-size: 0.95rem;
   }
 

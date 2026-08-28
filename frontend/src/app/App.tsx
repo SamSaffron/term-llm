@@ -10,7 +10,7 @@ import { DiffSidebar, PlanSurface } from '../components/Panels';
 import { Modals } from '../components/Modals';
 import { Lightbox } from '../components/Lightbox';
 import { Icon } from '../components/Icon';
-import { installVisualViewportSizing, registerServiceWorker } from '../platform/browser';
+import { installVisualViewportSizing } from '../platform/browser';
 
 const toastIcon = (kind: Toast['kind']) =>
   kind === 'success' ? 'check' : kind === 'error' ? 'alert-circle' : 'info';
@@ -41,7 +41,6 @@ export function App({ store }: { store: AppStore }) {
   const session = store.activeSession.value;
   useEffect(() => {
     void store.bootstrap();
-    void registerServiceWorker(store.config);
     const removeViewportSizing = installVisualViewportSizing();
     const shortcut = (event: KeyboardEvent) => {
       const mac = /Mac|iPhone|iPad|iPod/.test(navigator.platform);

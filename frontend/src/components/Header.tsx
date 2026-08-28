@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { useId, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import {
   compactModelLabel,
@@ -8,7 +8,7 @@ import {
   supportedEfforts,
 } from '../domain/runtime';
 import { planSummary } from '../domain/plan';
-import { positionPopover } from '../platform/browser';
+import { observePopoverPosition, positionPopover } from '../platform/browser';
 import { Icon } from './Icon';
 
 function EffortMeter() {
@@ -25,6 +25,7 @@ function EffortMeter() {
 function RuntimePicker() {
   const store = useStore();
   const [open, setOpen] = useState(false);
+  const popoverID = useId();
   const trigger = useRef<HTMLButtonElement>(null);
   const popover = useRef<HTMLDialogElement>(null);
   const locked = store.streaming.value;
@@ -48,7 +49,14 @@ function RuntimePicker() {
   useLayoutEffect(() => {
     if (!open || !trigger.current || !popover.current) return;
     positionPopover(trigger.current, popover.current);
+    return observePopoverPosition(trigger.current, popover.current);
   }, [open]);
+  const close = () => {
+    const panel = popover.current;
+    if (panel && typeof panel.close === 'function') panel.close();
+    setOpen(false);
+    trigger.current?.focus({ preventScroll: true });
+  };
   const picker = (
     <div class={`model-picker ${locked ? 'locked' : ''}`}>
       <div class="model-chip model-chip-primary" data-chip="model">
@@ -57,6 +65,7 @@ function RuntimePicker() {
           type="button"
           class="chip-trigger narrow-header-action header-action"
           aria-haspopup="dialog"
+          aria-controls={popoverID}
           aria-expanded={open}
           aria-label="Runtime settings"
           data-effort-level={effort || 'auto'}
@@ -65,7 +74,7 @@ function RuntimePicker() {
               ? 'View runtime and queue reasoning effort for the next model turn'
               : 'Choose provider, model, and reasoning effort'
           }
-          onClick={() => setOpen((value) => !value)}
+          onClick={() => (open ? close() : setOpen(true))}
         >
           <span class={`chip-label ${!selectedModel && fallbackModel ? 'stats-muted' : ''}`}>
             {compactModelLabel(split.model) || 'Auto'}
@@ -78,15 +87,15 @@ function RuntimePicker() {
   const overlay = open ? (
     <dialog
       ref={popover}
+      id={popoverID}
       class="chip-popover chip-popover-runtime"
       aria-label="Runtime settings"
       onCancel={(event) => {
         event.preventDefault();
-        setOpen(false);
-        trigger.current?.focus();
+        close();
       }}
       onClick={(event) => {
-        if (event.target === event.currentTarget) setOpen(false);
+        if (event.target === event.currentTarget) close();
       }}
     >
       <div class="runtime-popover-header">

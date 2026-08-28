@@ -15,6 +15,7 @@ import { Icon } from './Icon';
 import { ChipPicker } from './ChipPicker';
 import { Drawer } from './Drawer';
 import { useMenuKeyboard } from './Menu';
+import { useMediaQuery } from './useMediaQuery';
 
 function commentTimestamp(
   createdAt: number | undefined,
@@ -203,14 +204,10 @@ function Line({
           onMouseDown={(event) => {
             event.preventDefault();
             event.stopPropagation();
-            onComment(commentKey);
           }}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault();
-              event.stopPropagation();
-              onComment(commentKey);
-            }
+          onClick={(event) => {
+            event.stopPropagation();
+            onComment(commentKey);
           }}
         >
           {!comments.length && <Icon name="add" />}
@@ -452,12 +449,24 @@ function File({ file }: { file: DiffFile }) {
     file.path,
     session?.worktreeDir || session?.workingDir || project?.path || '',
   );
-  const canExpandContext =
+  const hasGapRows = lines.some((line) => line.kind === 'gap');
+  const canExpandFallback =
+    !hasGapRows &&
     !file.truncated &&
     lines.length > 0 &&
     (file.context || 3) < Math.max(file.oldLineCount || 0, file.newLineCount || 0);
-  const expandContext = () =>
+  const expandFallback = () =>
     void store.expandDiff(file, Math.min(100_000, Math.max(12, (file.context || 3) * 4)));
+  const expandGap = async (key: string, target: HTMLElement) => {
+    const top = target.getBoundingClientRect().top;
+    await store.expandDiff(file, Math.min(100_000, Math.max(12, (file.context || 3) * 4)));
+    requestAnimationFrame(() => {
+      const replacement = document.querySelector<HTMLElement>(
+        `[data-diff-gap="${CSS.escape(key)}"]`,
+      );
+      if (replacement) window.scrollBy(0, replacement.getBoundingClientRect().top - top);
+    });
+  };
   const emphasis = new Map<number, [number, number]>();
   for (let index = 0; index + 1 < lines.length; index += 1)
     if (lines[index].kind === 'delete' && lines[index + 1].kind === 'add') {
@@ -506,11 +515,18 @@ function File({ file }: { file: DiffFile }) {
       patch: String(data.diff || data.patch || ''),
     });
   };
-  const toggle = () => void store.expandDiff(file);
+  const toggle = () => {
+    store.diff.value = {
+      ...store.diff.peek(),
+      selectedPath: file.path,
+      followCurrentFile: false,
+    };
+    void store.expandDiff(file);
+  };
   return (
     <section class={`diff-file diff-file-${legacyKind}`}>
       <div
-        class={`diff-file-row ${file.expanded ? 'expanded' : ''}`}
+        class={`diff-file-row ${file.expanded ? 'expanded' : ''} ${store.diff.value.selectedPath === file.path ? 'selected' : ''}`}
         role="button"
         tabIndex={0}
         title={file.path}
@@ -592,13 +608,13 @@ function File({ file }: { file: DiffFile }) {
             </div>
           ) : (
             <>
-              {canExpandContext && (
+              {canExpandFallback && (
                 <button
                   class="diff-hunk-expand diff-hunk-expand-above"
                   type="button"
                   aria-label="Show more context above"
                   disabled={file.loading}
-                  onClick={expandContext}
+                  onClick={expandFallback}
                 >
                   <Icon name="chevron-up" />
                   <span>Show more above</span>
@@ -607,6 +623,27 @@ function File({ file }: { file: DiffFile }) {
               <div class={`diff-rows diff-rows-kind-${legacyKind}`}>
                 {lines.slice(0, limit).map((line, index) => {
                   const key = `${line.kind}-${line.oldLine || 0}-${line.newLine || 0}-${index}`;
+                  if (line.kind === 'gap') {
+                    const hidden = Math.max(line.hiddenOld || 0, line.hiddenNew || 0);
+                    const direction =
+                      line.gapDirection === 'above'
+                        ? 'above'
+                        : line.gapDirection === 'below'
+                          ? 'below'
+                          : 'between hunks';
+                    return (
+                      <button
+                        key={key}
+                        data-diff-gap={key}
+                        class="diff-hunk-expand"
+                        type="button"
+                        disabled={file.loading}
+                        onClick={(event) => void expandGap(key, event.currentTarget)}
+                      >
+                        Show {hidden} hidden {hidden === 1 ? 'line' : 'lines'} {direction}
+                      </button>
+                    );
+                  }
                   const number = line.kind === 'delete' ? line.oldLine : line.newLine;
                   const side = line.kind === 'delete' ? 'old' : 'new';
                   const matchesAnchor = (comment: DiffComment) =>
@@ -673,13 +710,13 @@ function File({ file }: { file: DiffFile }) {
                   </button>
                 )}
               </div>
-              {canExpandContext && (
+              {canExpandFallback && (
                 <button
                   class="diff-hunk-expand diff-hunk-expand-below"
                   type="button"
                   aria-label="Show more context below"
                   disabled={file.loading}
-                  onClick={expandContext}
+                  onClick={expandFallback}
                 >
                   <span>Show more below</span>
                   <Icon name="chevron-down" />
@@ -746,6 +783,45 @@ export function DiffSidebar() {
   const state = store.diff.value;
   const aside = useRef<HTMLElement>(null);
   const mobile = useMediaQuery('(max-width: 767px)');
+  const compact = useMediaQuery('(max-width: 1099px)');
+  const files = state.files.filter((file) =>
+    file.path.toLowerCase().includes(state.filter.toLowerCase()),
+  );
+  const selectFile = (delta: number) => {
+    if (!files.length) return;
+    const current = Math.max(
+      0,
+      files.findIndex((file) => file.path === state.selectedPath),
+    );
+    const next = Math.max(0, Math.min(files.length - 1, current + delta));
+    const file = files[next];
+    store.diff.value = {
+      ...store.diff.peek(),
+      selectedPath: file.path,
+      followCurrentFile: false,
+    };
+    if (!file.expanded) void store.expandDiff(file);
+    requestAnimationFrame(() =>
+      document
+        .querySelector<HTMLElement>(`.diff-file-row[data-path="${CSS.escape(file.path)}"]`)
+        ?.scrollIntoView({ block: 'nearest' }),
+    );
+  };
+
+  useEffect(() => {
+    if (!state.open || mobile || !compact) return;
+    const outside = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (
+        aside.current?.contains(target) ||
+        (target instanceof Element && target.closest('[aria-controls="diffSidebar"]'))
+      )
+        return;
+      store.diff.value = { ...store.diff.peek(), open: false, maximized: false };
+    };
+    document.addEventListener('pointerdown', outside);
+    return () => document.removeEventListener('pointerdown', outside);
+  }, [compact, mobile, state.open, store]);
   useEffect(() => {
     if (!state.open) return;
     const escape = (event: KeyboardEvent) => {
@@ -764,10 +840,31 @@ export function DiffSidebar() {
     addEventListener('keydown', escape);
     return () => removeEventListener('keydown', escape);
   }, [state.open, state.maximized, store]);
+  useEffect(() => {
+    if (!state.open) return;
+    const navigate = (event: KeyboardEvent) => {
+      if (
+        event.target instanceof HTMLElement &&
+        event.target.matches('input,textarea,select,[contenteditable="true"]')
+      )
+        return;
+      if (event.key !== '[' && event.key !== ']') return;
+      event.preventDefault();
+      selectFile(event.key === ']' ? 1 : -1);
+    };
+    addEventListener('keydown', navigate);
+    return () => removeEventListener('keydown', navigate);
+  });
+  useEffect(() => {
+    const path = store.currentActivityFile.value;
+    if (!state.open || !state.followCurrentFile || !path) return;
+    const file = state.files.find((entry) => entry.path === path);
+    if (!file) return;
+    store.diff.value = { ...store.diff.peek(), selectedPath: path };
+    if (!file.expanded) void store.expandDiff(file);
+  }, [state.open, state.followCurrentFile, state.files, store, store.currentActivityFile.value]);
   if (!state.open) return null;
-  const files = state.files.filter((file) =>
-    file.path.toLowerCase().includes(state.filter.toLowerCase()),
-  );
+
   const comments = state.comments.filter(
     (comment) => !comment.sessionId || comment.sessionId === state.sessionId,
   );
@@ -795,13 +892,8 @@ export function DiffSidebar() {
     addEventListener('pointerup', finish, { once: true });
     addEventListener('pointercancel', finish, { once: true });
   };
-  const panel = (
-    <aside
-      ref={aside}
-      class={`diff-sidebar open ${state.maximized ? 'maximized' : ''}`}
-      id="diffSidebar"
-      aria-label="Session file changes"
-    >
+  const content = (
+    <>
       <div
         class="diff-resize-handle"
         role="separator"
@@ -817,6 +909,46 @@ export function DiffSidebar() {
           {adds > 0 && <span class="diff-sidebar-totals-add">+{adds}</span>}
           {dels > 0 && <span class="diff-sidebar-totals-del">−{dels}</span>}
         </span>
+        <button
+          class="icon-btn"
+          type="button"
+          aria-label="Previous changed file"
+          title="Previous changed file ([)"
+          disabled={
+            !files.length || files.findIndex((file) => file.path === state.selectedPath) <= 0
+          }
+          onClick={() => selectFile(-1)}
+        >
+          ‹
+        </button>
+        <button
+          class="icon-btn"
+          type="button"
+          aria-label="Next changed file"
+          title="Next changed file (])"
+          disabled={
+            !files.length ||
+            files.findIndex((file) => file.path === state.selectedPath) >= files.length - 1
+          }
+          onClick={() => selectFile(1)}
+        >
+          ›
+        </button>
+        <button
+          class={`icon-btn ${state.followCurrentFile ? 'active' : ''}`}
+          type="button"
+          aria-label="Follow current file"
+          aria-pressed={state.followCurrentFile}
+          title="Follow file activity"
+          onClick={() =>
+            (store.diff.value = {
+              ...store.diff.peek(),
+              followCurrentFile: !state.followCurrentFile,
+            })
+          }
+        >
+          ◎
+        </button>
         <button
           class="icon-btn diff-bulk-toggle"
           type="button"
@@ -940,32 +1072,31 @@ export function DiffSidebar() {
           </button>
         </div>
       )}
-    </aside>
+    </>
   );
-  if (!mobile) return panel;
+  if (!mobile)
+    return (
+      <aside
+        ref={aside}
+        class={`diff-sidebar open ${state.maximized ? 'maximized' : ''}`}
+        id="diffSidebar"
+        aria-label="Session file changes"
+      >
+        {content}
+      </aside>
+    );
   return (
     <Drawer
       open
-      id="diffDrawer"
+      id="diffSidebar"
+      className={`diff-sidebar open ${state.maximized ? 'maximized' : ''}`}
       title="Session file changes"
       side="right"
       onClose={() => (store.diff.value = { ...store.diff.peek(), open: false, maximized: false })}
     >
-      {panel}
+      {content}
     </Drawer>
   );
-}
-
-function useMediaQuery(query: string): boolean {
-  const [matches, setMatches] = useState(() => matchMedia(query).matches);
-  useEffect(() => {
-    const media = matchMedia(query);
-    const update = () => setMatches(media.matches);
-    update();
-    media.addEventListener('change', update);
-    return () => media.removeEventListener('change', update);
-  }, [query]);
-  return matches;
 }
 
 export function PlanSurface() {
@@ -973,12 +1104,28 @@ export function PlanSurface() {
   const plan = store.currentPlan.value;
   const open = store.planVisible.value;
   const mobile = useMediaQuery('(max-width: 767px)');
+  const compact = useMediaQuery('(max-width: 1099px)');
   const surface = useRef<HTMLElement>(null);
   const summary = planSummary(plan);
 
   useEffect(() => {
     if (open) store.planSeen.value = summary.signature;
   }, [open, store, summary.signature]);
+
+  useEffect(() => {
+    if (!open || mobile || !compact) return;
+    const outside = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (
+        surface.current?.contains(target) ||
+        (target instanceof Element && target.closest('[aria-controls="planSurface"]'))
+      )
+        return;
+      store.closePlan();
+    };
+    document.addEventListener('pointerdown', outside);
+    return () => document.removeEventListener('pointerdown', outside);
+  }, [compact, mobile, open, store]);
 
   useEffect(() => {
     if (!open || mobile) return;
@@ -1012,16 +1159,20 @@ export function PlanSurface() {
       : `Plan has ${summary.total} steps. ${summary.completed} complete.`;
 
   const panel = (
-    <aside
+    <section
       ref={surface}
-      class={`plan-surface ${mobile ? 'plan-sheet' : 'plan-panel'} ${open ? 'open' : ''}`}
+      class={`plan-surface ${mobile ? 'plan-sheet-content' : 'plan-panel'} ${open ? 'open' : ''}`}
       id="planSurface"
       role={mobile ? undefined : 'complementary'}
       aria-hidden={!open}
       aria-labelledby="planSurfaceTitle"
       tabIndex={-1}
     >
-      {mobile && <div class="plan-sheet-handle" aria-hidden="true" />}
+      {mobile && (
+        <div class="plan-sheet-handle" data-drawer-handle aria-hidden="true">
+          <span />
+        </div>
+      )}
       <div class="plan-surface-header">
         <h2 id="planSurfaceTitle">Current plan</h2>
         <span class={`plan-surface-progress ${summary.complete ? 'complete' : ''}`}>
@@ -1074,7 +1225,7 @@ export function PlanSurface() {
           {announcement}
         </div>
       </div>
-    </aside>
+    </section>
   );
   if (!mobile) return panel;
   return (

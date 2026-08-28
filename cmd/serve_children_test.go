@@ -7,11 +7,26 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
+
+func TestChildReadRevisionIsSafeForProductionEpochs(t *testing.T) {
+	productionEpoch := time.Date(2026, time.August, 28, 12, 0, 0, 0, time.UTC).UnixMicro()
+	if got := safeChildRevision(productionEpoch); got < 0 || got > maxChildReadRevision {
+		t.Fatalf("safeChildRevision(%d) = %d", productionEpoch, got)
+	}
+	if got := terminalChildRevision(maxChildReadRevision); got != maxChildReadRevision {
+		t.Fatalf("terminal revision overflowed: %d", got)
+	}
+	active := safeChildRevision(time.Now().UnixMilli())
+	if terminal := terminalChildRevision(active); terminal <= active {
+		t.Fatalf("terminal revision %d is not newer than active %d", terminal, active)
+	}
+}
 
 func TestHandleSessionChildrenReturnsBoundedAuthoritativeProjection(t *testing.T) {
 	ctx := context.Background()

@@ -210,7 +210,7 @@ describe('Preact-owned chat surfaces', () => {
     expect(toggle.querySelector('.plan-toggle-progress')).toBeNull();
   });
 
-  it('presents the plan as a dismissible modal sheet on mobile', async () => {
+  it('presents every plan step in a dismissible modal sheet on mobile', async () => {
     vi.mocked(window.matchMedia).mockReturnValue({
       matches: true,
       addEventListener: vi.fn(),
@@ -219,8 +219,10 @@ describe('Preact-owned chat surfaces', () => {
     const store = createStore();
     store.currentPlan.value = {
       plan: [
-        { step: 'Build the sheet', status: 'in_progress' },
-        { step: 'Test dismissal', status: 'pending' },
+        { step: 'Inspect the existing sheet', status: 'completed' },
+        { step: 'Build the sheet', status: 'completed' },
+        { step: 'Test dismissal', status: 'in_progress' },
+        { step: 'Verify the result', status: 'pending' },
       ],
     };
     const { container } = render(
@@ -239,7 +241,13 @@ describe('Preact-owned chat surfaces', () => {
     toggle.focus();
     await userEvent.click(toggle);
     const sheet = screen.getByRole('dialog', { name: 'Current plan' });
+    const planSurface = container.querySelector('#planSurface');
     expect(sheet).toHaveClass('plan-sheet', 'open');
+    expect(planSurface).toHaveClass('plan-surface', 'plan-sheet-content', 'open');
+    expect(planSurface).not.toHaveClass('plan-sheet');
+    expect(screen.getByText('Inspect the existing sheet')).toBeVisible();
+    expect(screen.getByText('Build the sheet')).toBeVisible();
+    expect(planSurface?.querySelectorAll('.current-plan-step-completed')).toHaveLength(2);
     await waitFor(() => {
       expect(container.querySelector('#appMain')).toHaveProperty('inert', true);
       expect(container.querySelector('#sidebar')).toHaveProperty('inert', true);
@@ -254,8 +262,76 @@ describe('Preact-owned chat surfaces', () => {
 
     await userEvent.click(toggle);
     await screen.findByRole('dialog', { name: 'Current plan' });
-    fireEvent.mouseDown(container.querySelector('.drawer-backdrop')!);
+    const backdrop = container.querySelector('.drawer-backdrop')!;
+    fireEvent.pointerDown(backdrop, { pointerId: 1 });
+    fireEvent.pointerUp(backdrop, { pointerId: 1 });
     expect(store.planOpen.value).toBe(false);
+  });
+
+  it('dismisses a tablet plan panel on an outside tap without modalizing chat', () => {
+    vi.mocked(window.matchMedia).mockImplementation(
+      (query) =>
+        ({
+          matches: query === '(max-width: 1099px)',
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        }) as unknown as MediaQueryList,
+    );
+    const store = createStore();
+    store.currentPlan.value = {
+      plan: [{ step: 'Check outside dismissal', status: 'in_progress' }],
+    };
+    store.planOpen.value = true;
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <div id="appShell">
+          <main id="appMain" />
+          <PlanSurface />
+        </div>
+      </StoreContext.Provider>,
+    );
+
+    expect(screen.queryByRole('dialog', { name: 'Current plan' })).toBeNull();
+    fireEvent.pointerDown(container.querySelector('#appMain')!);
+
+    expect(store.planOpen.value).toBe(false);
+    expect(container.querySelector('#appMain')).not.toHaveProperty('inert', true);
+    vi.mocked(window.matchMedia).mockReturnValue({
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as unknown as MediaQueryList);
+  });
+
+  it('keeps the mobile sidebar backdrop interactive and dismisses immediately', async () => {
+    vi.mocked(window.matchMedia).mockReturnValue({
+      matches: true,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as unknown as MediaQueryList);
+    const store = createStore();
+    store.sidebarOpen.value = true;
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <div id="appShell">
+          <Sidebar />
+          <main id="appMain" />
+        </div>
+      </StoreContext.Provider>,
+    );
+    const backdrop = container.querySelector<HTMLElement>('#sidebarBackdrop')!;
+
+    await waitFor(() => expect(container.querySelector('#appMain')).toHaveProperty('inert', true));
+    expect(backdrop.inert).not.toBe(true);
+    await userEvent.click(backdrop);
+
+    expect(store.sidebarOpen.value).toBe(false);
+    await waitFor(() => expect(container.querySelector('#appMain')).toHaveProperty('inert', false));
+    vi.mocked(window.matchMedia).mockReturnValue({
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as unknown as MediaQueryList);
   });
 
   it('renders /side as one private Markdown conversation with an accessible composer', async () => {
@@ -1496,6 +1572,11 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getAllByRole('option')).toHaveLength(1);
     expect(screen.getByRole('option', { name: 'Special project' })).toBeInTheDocument();
     await userEvent.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog', { name: 'Reusable picker' })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+
+    await userEvent.click(trigger);
+    fireEvent.click(screen.getByRole('dialog', { name: 'Reusable picker' }));
     expect(screen.queryByRole('dialog', { name: 'Reusable picker' })).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
   });

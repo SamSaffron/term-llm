@@ -1,5 +1,7 @@
 import { useId, useLayoutEffect, useRef } from 'preact/hooks';
 import { overlayManager } from '../platform/overlay-manager';
+import { OVERLAY_FOCUSABLE, trapOverlayFocus } from './Overlay';
+import { useSwipeDismiss } from './useSwipeDismiss';
 
 export function Drawer({
   open,
@@ -20,17 +22,22 @@ export function Drawer({
 }) {
   const generated = useId();
   const id = providedId || generated;
+  const backdrop = useRef<HTMLDivElement>(null);
   const drawer = useRef<HTMLElement>(null);
   const token = useRef<symbol | null>(null);
+  useSwipeDismiss(drawer, {
+    enabled: open,
+    axis: side === 'bottom' ? 'y' : 'x',
+    direction: side === 'left' ? -1 : 1,
+    property: side === 'bottom' ? '--drawer-swipe-offset-y' : '--drawer-swipe-offset-x',
+    handleSelector: side === 'bottom' ? '[data-drawer-handle]' : undefined,
+    onDismiss: onClose,
+  });
   useLayoutEffect(() => {
     if (!open) return;
-    token.current = overlayManager.acquire(undefined, drawer.current);
+    token.current = overlayManager.acquire(undefined, backdrop.current);
     const frame = requestAnimationFrame(() =>
-      (
-        drawer.current?.querySelector<HTMLElement>(
-          'button:not([disabled]),[href],input:not([disabled])',
-        ) || drawer.current
-      )?.focus(),
+      (drawer.current?.querySelector<HTMLElement>(OVERLAY_FOCUSABLE) || drawer.current)?.focus(),
     );
     return () => {
       cancelAnimationFrame(frame);
@@ -41,9 +48,26 @@ export function Drawer({
   if (!open) return null;
   return (
     <div
-      class="drawer-backdrop"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
+      ref={backdrop}
+      class={`drawer-backdrop drawer-backdrop-${side}`}
+      onPointerDown={(event) => {
+        if (event.target === event.currentTarget)
+          event.currentTarget.dataset.dismissPointer = String(event.pointerId);
+      }}
+      onPointerUp={(event) => {
+        const startedOutside =
+          event.currentTarget.dataset.dismissPointer === String(event.pointerId);
+        delete event.currentTarget.dataset.dismissPointer;
+        if (
+          startedOutside &&
+          event.target === event.currentTarget &&
+          token.current &&
+          overlayManager.isTop(token.current)
+        )
+          onClose();
+      }}
+      onPointerCancel={(event) => {
+        delete event.currentTarget.dataset.dismissPointer;
       }}
     >
       <aside
@@ -60,22 +84,7 @@ export function Drawer({
             event.stopPropagation();
             onClose();
           }
-          if (event.key !== 'Tab') return;
-          const items = [
-            ...event.currentTarget.querySelectorAll<HTMLElement>(
-              'button:not([disabled]),[href],input:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])',
-            ),
-          ];
-          if (!items.length) return;
-          const first = items[0];
-          const last = items.at(-1)!;
-          if (event.shiftKey && document.activeElement === first) {
-            event.preventDefault();
-            last.focus();
-          } else if (!event.shiftKey && document.activeElement === last) {
-            event.preventDefault();
-            first.focus();
-          }
+          trapOverlayFocus(event);
         }}
       >
         {children}

@@ -1265,6 +1265,8 @@ type serveServer struct {
 	branchPathNoteFlights    sync.Map // source/idempotency key → shared path-note helper result
 	responseRunsOnce         sync.Once
 	responseRuns             *responseRunManager
+	completionPushWake       chan struct{}
+	completionPushWG         sync.WaitGroup
 	transcriptIndexerOnce    sync.Once
 	transcriptIndexer        session.TranscriptIndexer
 	baseSystemPrompt         string
@@ -1368,6 +1370,7 @@ func (s *serveServer) Start() error {
 		}
 		return nil
 	case <-time.After(50 * time.Millisecond):
+		s.startCompletionPushDispatcher()
 		return nil
 	}
 }
@@ -1507,6 +1510,19 @@ func (s *serveServer) Stop(ctx context.Context) error {
 			return nil
 		})
 	}
+	run(func() error {
+		done := make(chan struct{})
+		go func() {
+			s.completionPushWG.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
 	if s.widgetsMgr != nil {
 		run(func() error {
 			s.widgetsMgr.CloseContext(ctx)

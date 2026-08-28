@@ -1,5 +1,4 @@
 import type { AppConfig } from '../app/config';
-import type { Endpoints } from '../api/endpoints';
 
 export function installVisualViewportSizing(): () => void {
   const viewport = window.visualViewport;
@@ -28,27 +27,56 @@ export function positionPopover(
   stretchOnMobile = false,
 ): void {
   if (!panel.open) panel.showModal();
-  if (innerWidth <= 540) {
-    panel.style.left = 'calc(0.5rem + var(--safe-left))';
-    if (stretchOnMobile) panel.style.right = 'calc(0.5rem + var(--safe-right))';
-    panel.style.top = 'auto';
-    panel.style.bottom = 'calc(0.5rem + var(--safe-bottom))';
+  const viewport = window.visualViewport;
+  const viewportLeft = viewport?.offsetLeft || 0;
+  const viewportTop = viewport?.offsetTop || 0;
+  const viewportWidth = viewport?.width || innerWidth;
+  const viewportHeight = viewport?.height || innerHeight;
+  const margin = 8;
+  const panelRect = panel.getBoundingClientRect();
+
+  panel.style.bottom = 'auto';
+  if (viewportWidth <= 540) {
+    panel.style.left = `${viewportLeft + margin}px`;
+    panel.style.right =
+      stretchOnMobile || panel.classList.contains('chip-popover-runtime')
+        ? `${Math.max(margin, innerWidth - viewportLeft - viewportWidth + margin)}px`
+        : 'auto';
+    panel.style.top = `${Math.max(viewportTop + margin, viewportTop + viewportHeight - panelRect.height - margin)}px`;
     return;
   }
-  const margin = 6;
-  const rect = trigger.getBoundingClientRect();
-  const panelRect = panel.getBoundingClientRect();
-  if (stretchOnMobile) panel.style.right = 'auto';
-  panel.style.bottom = 'auto';
-  panel.style.left = `${Math.max(margin, Math.min(rect.left, innerWidth - panelRect.width - margin))}px`;
-  const below = rect.bottom + 4;
-  panel.style.top = `${below + panelRect.height <= innerHeight - margin ? below : Math.max(margin, rect.top - panelRect.height - 4)}px`;
+
+  const triggerRect = trigger.getBoundingClientRect();
+  panel.style.right = 'auto';
+  panel.style.left = `${Math.max(viewportLeft + margin, Math.min(triggerRect.left, viewportLeft + viewportWidth - panelRect.width - margin))}px`;
+  const below = triggerRect.bottom + 4;
+  panel.style.top = `${
+    below + panelRect.height <= viewportTop + viewportHeight - margin
+      ? below
+      : Math.max(viewportTop + margin, triggerRect.top - panelRect.height - 4)
+  }px`;
 }
 
-function base64URLToBytes(value: string): Uint8Array<ArrayBuffer> {
-  const padding = '='.repeat((4 - (value.length % 4)) % 4);
-  const raw = atob((value + padding).replaceAll('-', '+').replaceAll('_', '/'));
-  return Uint8Array.from(raw, (character) => character.charCodeAt(0));
+export function observePopoverPosition(
+  trigger: HTMLElement,
+  panel: HTMLDialogElement,
+  stretchOnMobile = false,
+): () => void {
+  const update = () => positionPopover(trigger, panel, stretchOnMobile);
+  const frame = requestAnimationFrame(update);
+  const viewport = window.visualViewport;
+  viewport?.addEventListener('resize', update);
+  viewport?.addEventListener('scroll', update);
+  window.addEventListener('resize', update);
+  const resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(update) : null;
+  resizeObserver?.observe(panel);
+  return () => {
+    cancelAnimationFrame(frame);
+    viewport?.removeEventListener('resize', update);
+    viewport?.removeEventListener('scroll', update);
+    window.removeEventListener('resize', update);
+    resizeObserver?.disconnect();
+  };
 }
 
 export function syncTokenCookie(
@@ -76,24 +104,6 @@ export async function registerServiceWorker(
   } catch {
     return null;
   }
-}
-
-export async function enableNotifications(
-  config: AppConfig,
-  endpoints: Endpoints,
-): Promise<boolean> {
-  if (!('Notification' in window) || !config.vapidKey) return false;
-  const permission = await Notification.requestPermission();
-  if (permission !== 'granted') return false;
-  const registration = await registerServiceWorker(config);
-  if (!registration) return false;
-  let subscription = await registration.pushManager.getSubscription();
-  subscription ||= await registration.pushManager.subscribe({
-    userVisibleOnly: true,
-    applicationServerKey: base64URLToBytes(config.vapidKey),
-  });
-  await endpoints.pushSubscribe(subscription.toJSON());
-  return true;
 }
 
 export async function copyText(text: string): Promise<void> {

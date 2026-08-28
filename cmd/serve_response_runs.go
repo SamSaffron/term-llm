@@ -117,6 +117,8 @@ type responseRun struct {
 	sessionID              string
 	previousResponseID     string
 	clientMessageID        string
+	idempotencyScope       string
+	requestFingerprint     string
 	anchorRowID            int64 // latest durable completed boundary; zero means unavailable
 	anchorAvailable        bool
 	boundary               *runboundary.Tracker
@@ -161,18 +163,23 @@ type responseRun struct {
 	subscriberWarned      map[int]bool // tracks whether 75% buffer warning was logged
 	subscriberDropped     map[int]bool // tracks subscribers dropped after their live buffer overflowed
 	nextSubscriberID      int
+	terminalNotifyOnce    sync.Once
+	terminalNotify        func(string)
 	cancel                context.CancelFunc
 	cancelRequested       bool
 }
 
 type startResponseRunOptions struct {
-	previousResponseID        string
-	uiSession                 bool
-	resetResponseIDsOnSuccess bool
-	modelSwap                 *responseModelSwapExecution
-	idempotencyKey            string
-	onDone                    func()
-	runtimeSetup              func(*llm.Request) error
+	previousResponseID         string
+	uiSession                  bool
+	resetResponseIDsOnSuccess  bool
+	modelSwap                  *responseModelSwapExecution
+	idempotencyKey             string
+	idempotencyScope           string
+	requestFingerprint         string
+	notificationSubscriptionID string
+	onDone                     func()
+	runtimeSetup               func(*llm.Request) error
 }
 
 type responseRunContextKey struct{}
@@ -724,6 +731,13 @@ func (r *responseRun) appendEventLocked(event string, payload map[string]any, te
 		Event:    event,
 		Data:     data,
 	}, terminal)
+	if terminal && r.terminalNotify != nil && (event == "response.completed" || event == "response.failed") {
+		outcome := "completed"
+		if event == "response.failed" {
+			outcome = "failed"
+		}
+		r.terminalNotifyOnce.Do(func() { go r.terminalNotify(outcome) })
+	}
 	return nil
 }
 
@@ -1704,11 +1718,17 @@ func (m *responseRunManager) latestRun(sessionID string) *responseRun {
 	return latest
 }
 
+type responseRunIdempotencyClaim struct {
+	runID       string
+	sessionID   string
+	fingerprint string
+}
+
 type responseRunManager struct {
 	mu                 sync.Mutex
 	runs               map[string]*responseRun
 	activeBySession    map[string]string
-	idempotencyByKey   map[string]string
+	idempotencyByKey   map[string]responseRunIdempotencyClaim
 	cleanupTimers      map[string]*time.Timer
 	nextEpochBySession map[string]int64
 	terminalRetention  time.Duration
@@ -1736,7 +1756,10 @@ const (
 	defaultServeRequestTimeout         = 30 * time.Minute
 )
 
-var errResponseRunTimeout = errors.New("response run timeout")
+var (
+	errResponseRunTimeout     = errors.New("response run timeout")
+	errResponseRunKeyConflict = errors.New("idempotency key was already used with a different request")
+)
 
 type responseRunTimerHandle interface {
 	Stop() bool
@@ -1941,7 +1964,7 @@ func newServeResponseRunManagerWithRetention(retention time.Duration) *responseR
 	return &responseRunManager{
 		runs:               make(map[string]*responseRun),
 		activeBySession:    make(map[string]string),
-		idempotencyByKey:   make(map[string]string),
+		idempotencyByKey:   make(map[string]responseRunIdempotencyClaim),
 		cleanupTimers:      make(map[string]*time.Timer),
 		nextEpochBySession: make(map[string]int64),
 		terminalRetention:  retention,
@@ -1977,23 +2000,37 @@ func (m *responseRunManager) create(run *responseRun) error {
 	return err
 }
 
+func responseRunClaimMatches(claim responseRunIdempotencyClaim, fingerprint string) bool {
+	fingerprint = strings.TrimSpace(fingerprint)
+	return fingerprint == "" || claim.fingerprint == "" || claim.fingerprint == fingerprint
+}
+
 func (m *responseRunManager) createOrGetByIdempotency(run *responseRun, idempotencyKey string) (*responseRun, bool, error) {
 	if run == nil || strings.TrimSpace(run.id) == "" {
 		return nil, false, fmt.Errorf("response run id is required")
 	}
-	key := responseRunIdempotencyScope(run.sessionID, idempotencyKey)
+	scope := strings.TrimSpace(run.idempotencyScope)
+	if scope == "" {
+		scope = run.sessionID
+	}
+	key := responseRunIdempotencyScope(scope, idempotencyKey)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
 		return nil, false, fmt.Errorf("server is shutting down")
 	}
 	if key != "" {
-		if existingID := strings.TrimSpace(m.idempotencyByKey[key]); existingID != "" {
-			if existing, ok := m.runs[existingID]; ok && existing != nil {
+		if claim, ok := m.idempotencyByKey[key]; ok {
+			if !responseRunClaimMatches(claim, run.requestFingerprint) {
+				return nil, false, errResponseRunKeyConflict
+			}
+			if existing, exists := m.runs[claim.runID]; exists && existing != nil {
 				m.idempotencyReplays.Add(1)
 				return existing, true, nil
 			}
-			delete(m.idempotencyByKey, key)
+			if claim.runID != "" {
+				delete(m.idempotencyByKey, key)
+			}
 		}
 	}
 	if _, exists := m.runs[run.id]; exists {
@@ -2008,29 +2045,66 @@ func (m *responseRunManager) createOrGetByIdempotency(run *responseRun, idempote
 	run.runEpoch = nextEpoch
 	m.runs[run.id] = run
 	if key != "" {
-		m.idempotencyByKey[key] = run.id
+		m.idempotencyByKey[key] = responseRunIdempotencyClaim{runID: run.id, sessionID: run.sessionID, fingerprint: strings.TrimSpace(run.requestFingerprint)}
 	}
 	return run, false, nil
 }
 
-func (m *responseRunManager) getByIdempotencyKey(sessionID, idempotencyKey string) (*responseRun, bool) {
-	key := responseRunIdempotencyScope(sessionID, idempotencyKey)
+func (m *responseRunManager) reserveSessionForIdempotency(scope, idempotencyKey, fingerprint string) (string, error) {
+	key := responseRunIdempotencyScope(scope, idempotencyKey)
 	if key == "" {
-		return nil, false
+		return "", fmt.Errorf("idempotency scope and key are required")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	runID := strings.TrimSpace(m.idempotencyByKey[key])
-	if runID == "" {
-		return nil, false
+	if m.closed {
+		return "", fmt.Errorf("server is shutting down")
 	}
-	run, ok := m.runs[runID]
+	if claim, ok := m.idempotencyByKey[key]; ok {
+		if !responseRunClaimMatches(claim, fingerprint) {
+			return "", errResponseRunKeyConflict
+		}
+		if claim.sessionID != "" {
+			return claim.sessionID, nil
+		}
+	}
+	sessionID := session.NewID()
+	m.idempotencyByKey[key] = responseRunIdempotencyClaim{
+		sessionID:   sessionID,
+		fingerprint: strings.TrimSpace(fingerprint),
+	}
+	return sessionID, nil
+}
+
+func (m *responseRunManager) getByIdempotencyKey(sessionID, idempotencyKey string) (*responseRun, bool) {
+	run, found, _ := m.getByIdempotencyClaim(sessionID, idempotencyKey, "")
+	return run, found
+}
+
+func (m *responseRunManager) getByIdempotencyClaim(scope, idempotencyKey, fingerprint string) (*responseRun, bool, error) {
+	key := responseRunIdempotencyScope(scope, idempotencyKey)
+	if key == "" {
+		return nil, false, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	claim, ok := m.idempotencyByKey[key]
+	if !ok {
+		return nil, false, nil
+	}
+	if !responseRunClaimMatches(claim, fingerprint) {
+		return nil, false, errResponseRunKeyConflict
+	}
+	if strings.TrimSpace(claim.runID) == "" {
+		return nil, false, nil
+	}
+	run, ok := m.runs[claim.runID]
 	if !ok || run == nil {
 		delete(m.idempotencyByKey, key)
-		return nil, false
+		return nil, false, nil
 	}
 	m.idempotencyReplays.Add(1)
-	return run, true
+	return run, true, nil
 }
 
 func (m *responseRunManager) start(fn func()) error {
@@ -2060,8 +2134,8 @@ func (m *responseRunManager) delete(id string) {
 		delete(m.cleanupTimers, id)
 	}
 	delete(m.runs, id)
-	for key, runID := range m.idempotencyByKey {
-		if runID == id {
+	for key, claim := range m.idempotencyByKey {
+		if claim.runID == id {
 			delete(m.idempotencyByKey, key)
 		}
 	}
@@ -2090,8 +2164,8 @@ func (m *responseRunManager) scheduleCleanup(id string) {
 
 	if m.closed || m.terminalRetention <= 0 {
 		delete(m.runs, id)
-		for key, runID := range m.idempotencyByKey {
-			if runID == id {
+		for key, claim := range m.idempotencyByKey {
+			if claim.runID == id {
 				delete(m.idempotencyByKey, key)
 			}
 		}
@@ -3198,6 +3272,13 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	runCtx, runTimer := newResponseRunTimer(s.responseTimeout())
 	cancel := runTimer.stop
 	run := newResponseRun(respID, sessionID, options.previousResponseID, model, created, cancel)
+	run.idempotencyScope = strings.TrimSpace(options.idempotencyScope)
+	run.requestFingerprint = strings.TrimSpace(options.requestFingerprint)
+	if subscriptionID := strings.TrimSpace(options.notificationSubscriptionID); subscriptionID != "" {
+		run.terminalNotify = func(outcome string) {
+			s.enqueueCompletionPush(run.id, run.sessionID, subscriptionID, outcome, time.Now().UTC())
+		}
+	}
 	for i := len(inputMessages) - 1; i >= 0; i-- {
 		if inputMessages[i].Role == llm.RoleUser && strings.TrimSpace(inputMessages[i].ClientMessageID) != "" {
 			run.clientMessageID = strings.TrimSpace(inputMessages[i].ClientMessageID)

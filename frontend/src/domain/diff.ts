@@ -42,14 +42,36 @@ export function parseUnifiedPatch(patch: string): DiffLine[] {
     });
 }
 
-export function linesFromHunks(value: unknown): DiffLine[] {
+export function linesFromHunks(
+  value: unknown,
+  totals: { old?: number; new?: number } = {},
+): DiffLine[] {
   if (!Array.isArray(value)) return [];
   const result: DiffLine[] = [];
+  let previousOld = 1;
+  let previousNew = 1;
+  let hunkIndex = 0;
+  const includeGaps = Number(totals.old || 0) > 0 || Number(totals.new || 0) > 0;
+  const gap = (oldStart: number, newStart: number, direction: DiffLine['gapDirection']) => {
+    if (!includeGaps) return;
+    const hiddenOld = Math.max(0, oldStart - previousOld);
+    const hiddenNew = Math.max(0, newStart - previousNew);
+    if (!hiddenOld && !hiddenNew) return;
+    const hidden = Math.max(hiddenOld, hiddenNew);
+    result.push({
+      kind: 'gap',
+      content: `${hidden} hidden ${hidden === 1 ? 'line' : 'lines'}`,
+      hiddenOld,
+      hiddenNew,
+      gapDirection: direction,
+    });
+  };
   for (const candidate of value) {
     if (!candidate || typeof candidate !== 'object') continue;
     const hunk = candidate as Record<string, unknown>;
     let oldLine = Number(hunk.old_start) || 0;
     let newLine = Number(hunk.new_start) || 0;
+    gap(oldLine, newLine, hunkIndex === 0 ? 'above' : 'between');
     result.push({ kind: 'hunk', content: `@@ -${oldLine} +${newLine} @@` });
     for (const candidateLine of Array.isArray(hunk.lines) ? hunk.lines : []) {
       if (!candidateLine || typeof candidateLine !== 'object') continue;
@@ -61,6 +83,12 @@ export function linesFromHunks(value: unknown): DiffLine[] {
         result.push({ kind: 'delete', content, oldLine: oldLine++ });
       else result.push({ kind: 'context', content, oldLine: oldLine++, newLine: newLine++ });
     }
+    previousOld = oldLine;
+    previousNew = newLine;
+    hunkIndex += 1;
+  }
+  if (hunkIndex > 0 && (totals.old || totals.new)) {
+    gap(Number(totals.old || 0) + 1, Number(totals.new || 0) + 1, 'below');
   }
   return result;
 }

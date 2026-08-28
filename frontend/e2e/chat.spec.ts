@@ -297,6 +297,13 @@ test('mobile viewport opens a styled sidebar and returns to a usable composer', 
     true,
   );
   await expect(page.locator('#sidebarCloseBtn')).toBeFocused();
+  await page.mouse.click(400, 100);
+  await expect(sidebar).not.toHaveClass(/open/);
+  expect(await page.locator('#appMain').evaluate((element) => (element as HTMLElement).inert)).toBe(
+    false,
+  );
+  await page.getByRole('button', { name: 'Open sidebar' }).click();
+  await expect(page.locator('#sidebarCloseBtn')).toBeFocused();
   await page.locator('#newChatBtn').click();
   await expect(sidebar).not.toHaveClass(/open/);
   expect(await page.locator('#appMain').evaluate((element) => (element as HTMLElement).inert)).toBe(
@@ -305,6 +312,32 @@ test('mobile viewport opens a styled sidebar and returns to a usable composer', 
   await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
   await expect(page.locator('.composer-box')).toHaveCSS('border-radius', '22px');
   await expect(page.locator('#sendBtn svg')).toBeVisible();
+});
+
+test('mobile floating surfaces dismiss from their outside area and restore interaction', async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', 'mobile-only interaction');
+  await open(page);
+
+  const runtimeTrigger = page.getByRole('button', { name: 'Runtime settings' });
+  await runtimeTrigger.click();
+  await expect(page.getByRole('dialog', { name: 'Runtime settings' })).toBeVisible();
+  await page.mouse.click(4, 180);
+  await expect(page.getByRole('dialog', { name: 'Runtime settings' })).toBeHidden();
+  await expect(runtimeTrigger).toBeFocused();
+
+  await page.getByRole('button', { name: 'Toggle file changes' }).click();
+  const changes = page.getByRole('dialog', { name: 'Session file changes' });
+  await expect(changes).toBeVisible();
+  expect(await page.locator('#appMain').evaluate((element) => (element as HTMLElement).inert)).toBe(
+    true,
+  );
+  await page.mouse.click(4, 180);
+  await expect(changes).toBeHidden();
+  expect(await page.locator('#appMain').evaluate((element) => (element as HTMLElement).inert)).toBe(
+    false,
+  );
 });
 
 test('same-context tabs retain independent session drafts', async ({ context, page }, testInfo) => {

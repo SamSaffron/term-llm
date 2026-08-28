@@ -2,11 +2,15 @@ package cmd
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/samsaffron/term-llm/internal/config"
@@ -53,6 +57,11 @@ func runNotifyWeb(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func webPushKeyID(publicKey string) string {
+	digest := sha256.Sum256([]byte(strings.TrimSpace(publicKey)))
+	return hex.EncodeToString(digest[:8])
+}
+
 func normalizeWebPushSubject(raw string) string {
 	subject := strings.TrimSpace(raw)
 	if subject == "" {
@@ -96,21 +105,30 @@ func sendWebPushAll(ctx context.Context, cfg *config.Config, message string, err
 		TTL:             60,
 	}
 
+	lifecycle, _ := session.AsPushSubscriptionLifecycleStore(store)
 	var errs []string
 	sent := 0
 	for _, sub := range subs {
+		if sub.Status == "stale" {
+			continue
+		}
 		status, err := sendWebPush(ctx, &sub, payload, opts)
-		// Clean up stale subscriptions on 410 Gone or 404 Not Found. These
-		// statuses are returned with an error, so handle them first.
 		if status == http.StatusGone || status == http.StatusNotFound {
-			if delErr := store.DeletePushSubscription(ctx, sub.Endpoint); delErr != nil {
-				errs = append(errs, fmt.Sprintf("remove stale subscription %s: %v", truncateEndpoint(sub.Endpoint), delErr))
+			if lifecycle != nil {
+				if staleErr := lifecycle.MarkPushSubscriptionStale(ctx, sub.ID, fmt.Sprintf("http_%d", status), "push endpoint rejected the subscription"); staleErr != nil {
+					errs = append(errs, fmt.Sprintf("mark stale subscription %s: %v", sub.ID, staleErr))
+				}
+			} else if delErr := store.DeletePushSubscription(ctx, sub.Endpoint); delErr != nil {
+				errs = append(errs, fmt.Sprintf("remove stale subscription %s: %v", sub.ID, delErr))
 			}
 			continue
 		}
 		if err != nil {
-			errs = append(errs, fmt.Sprintf("push to %s: %v", truncateEndpoint(sub.Endpoint), err))
+			errs = append(errs, fmt.Sprintf("push to subscription %s: %v", sub.ID, err))
 			continue
+		}
+		if lifecycle != nil {
+			_ = lifecycle.MarkPushSubscriptionUsed(ctx, sub.ID)
 		}
 		sent++
 	}
@@ -120,6 +138,11 @@ func sendWebPushAll(ctx context.Context, cfg *config.Config, message string, err
 
 // sendWebPush sends a single push notification and returns the HTTP status code.
 func sendWebPush(ctx context.Context, sub *session.PushSubscription, payload []byte, opts *webpush.Options) (int, error) {
+	status, _, err := sendWebPushDetailed(ctx, sub, payload, opts)
+	return status, err
+}
+
+func sendWebPushDetailed(ctx context.Context, sub *session.PushSubscription, payload []byte, opts *webpush.Options) (int, time.Duration, error) {
 	s := &webpush.Subscription{
 		Endpoint: sub.Endpoint,
 		Keys: webpush.Keys{
@@ -130,14 +153,28 @@ func sendWebPush(ctx context.Context, sub *session.PushSubscription, payload []b
 
 	resp, err := webpush.SendNotificationWithContext(ctx, payload, s, opts)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 400 {
-		return resp.StatusCode, fmt.Errorf("push failed: status %d", resp.StatusCode)
+	var retryAfter time.Duration
+	if raw := strings.TrimSpace(resp.Header.Get("Retry-After")); raw != "" {
+		if seconds, parseErr := strconv.Atoi(raw); parseErr == nil && seconds > 0 {
+			retryAfter = time.Duration(seconds) * time.Second
+		} else if retryAt, dateErr := http.ParseTime(raw); dateErr == nil {
+			retryAfter = time.Until(retryAt)
+		}
+		if retryAfter < 0 {
+			retryAfter = 0
+		}
+		if retryAfter > time.Hour {
+			retryAfter = time.Hour
+		}
 	}
-	return resp.StatusCode, nil
+	if resp.StatusCode >= 400 {
+		return resp.StatusCode, retryAfter, fmt.Errorf("push failed: status %d", resp.StatusCode)
+	}
+	return resp.StatusCode, retryAfter, nil
 }
 
 func truncateEndpoint(endpoint string) string {

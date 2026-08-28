@@ -68,6 +68,22 @@ export const SLASH_COMMANDS = [
 
 const BUILTIN_NAMES = new Set(SLASH_COMMANDS.map((entry) => entry.command));
 
+export function skillExecutionLabel(skill: SkillCommand): string {
+  return skill.execution === 'isolated' ? 'Isolated' : 'Main conversation';
+}
+
+export function skillExecutionDescription(skill: SkillCommand): string {
+  return skill.execution === 'isolated'
+    ? 'Runs in a separate child conversation and may run while the main response is active.'
+    : 'Runs in this conversation and cannot start while the main response is active.';
+}
+
+export function skillPresentation(skill: SkillCommand): string {
+  const description = String(skill.description || '').trim();
+  const source = String(skill.source || 'unknown').trim();
+  return `${description}${description ? ' · ' : ''}Source: ${source} · ${skillExecutionLabel(skill)} — ${skillExecutionDescription(skill)}`;
+}
+
 export function skillCompletions(skills: SkillCommand[]): Completion[] {
   const seen = new Set<string>();
   return skills.flatMap((skill): Completion[] => {
@@ -82,13 +98,12 @@ export function skillCompletions(skills: SkillCommand[]): Completion[] {
       return [];
     seen.add(value);
     const hint = String(skill.argument_hint || '').trim();
-    const source = String(skill.source || 'skill').trim();
     const isolated = skill.execution === 'isolated';
     return [
       {
         value,
         label: hint ? `${value} ${hint}` : value,
-        description: `${String(skill.description || '').trim()} · skill:${source}${isolated ? ' · isolated' : ''}`,
+        description: skillPresentation(skill),
         kind: 'slash',
         streamingSafe: isolated,
       },

@@ -2079,3 +2079,42 @@ func TestResponseRunManagerAuthoritativeStartReplacesFinishingOwner(t *testing.T
 		t.Fatalf("active owner after finishing run A = %q, want run-b", got)
 	}
 }
+
+func TestResponseRunIdempotencyFingerprintRejectsDifferentRequest(t *testing.T) {
+	manager := newServeResponseRunManagerWithRetention(time.Minute)
+	defer manager.Close()
+	first := newResponseRun("resp_first", "session-one", "", "test", time.Now().Unix(), nil)
+	first.idempotencyScope = "draft_client_one"
+	first.requestFingerprint = "fingerprint-a"
+	if _, duplicate, err := manager.createOrGetByIdempotency(first, "request-one"); err != nil || duplicate {
+		t.Fatalf("create first: duplicate=%t err=%v", duplicate, err)
+	}
+	second := newResponseRun("resp_second", "session-one", "", "test", time.Now().Unix(), nil)
+	second.idempotencyScope = "draft_client_one"
+	second.requestFingerprint = "fingerprint-b"
+	if _, _, err := manager.createOrGetByIdempotency(second, "request-one"); !errors.Is(err, errResponseRunKeyConflict) {
+		t.Fatalf("different fingerprint error = %v, want conflict", err)
+	}
+	if got, found, err := manager.getByIdempotencyClaim("draft_client_one", "request-one", "fingerprint-a"); err != nil || !found || got != first {
+		t.Fatalf("same fingerprint replay = %p found=%t err=%v", got, found, err)
+	}
+}
+
+func TestResponseRunDraftReservationKeepsOneServerSession(t *testing.T) {
+	manager := newServeResponseRunManagerWithRetention(time.Minute)
+	defer manager.Close()
+	first, err := manager.reserveSessionForIdempotency("draft_client_one", "request-one", "fingerprint-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.reserveSessionForIdempotency("draft_client_one", "request-one", "fingerprint-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == "" || first != second {
+		t.Fatalf("reserved sessions = %q and %q, want one stable session", first, second)
+	}
+	if _, err := manager.reserveSessionForIdempotency("draft_client_one", "request-one", "fingerprint-b"); !errors.Is(err, errResponseRunKeyConflict) {
+		t.Fatalf("different body reservation error = %v, want conflict", err)
+	}
+}

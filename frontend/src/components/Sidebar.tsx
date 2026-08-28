@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import type { Project, Session } from '../domain/types';
 import { displayName } from '../app/config';
@@ -7,6 +7,8 @@ import { overlayManager } from '../platform/overlay-manager';
 import { Icon } from './Icon';
 import { trapOverlayFocus } from './Overlay';
 import { useMenuKeyboard } from './Menu';
+import { useMediaQuery } from './useMediaQuery';
+import { useEdgeSwipeOpen, useSwipeDismiss } from './useSwipeDismiss';
 
 function sessionMessageCount(session: Session): number {
   if (Number.isFinite(session.messageCount)) return Math.max(0, session.messageCount || 0);
@@ -37,7 +39,7 @@ function sessionBucket(value: number): 'Today' | 'Yesterday' | 'This week' | 'Ol
   return 'Older';
 }
 
-/** Flip a dropdown menu above its trigger when it would overflow the viewport. */
+/** Keep a dropdown within its nearest scrollport and flip it when needed. */
 function useMenuFlip(open: boolean) {
   const menu = useRef<HTMLDivElement>(null);
   const [up, setUp] = useState(false);
@@ -46,8 +48,33 @@ function useMenuFlip(open: boolean) {
       setUp(false);
       return;
     }
-    const rect = menu.current?.getBoundingClientRect();
-    if (rect && rect.bottom > window.innerHeight - 8 && rect.top - rect.height > 8) setUp(true);
+    const panel = menu.current;
+    if (!panel) return;
+    const scrollport = panel.closest<HTMLElement>('.sidebar-content');
+    const update = () => {
+      const rect = panel.getBoundingClientRect();
+      const menuHeight = Math.max(rect.height, panel.scrollHeight);
+      const triggerRect = panel.parentElement?.getBoundingClientRect() || rect;
+      const bounds = scrollport?.getBoundingClientRect() || {
+        top: 8,
+        bottom: window.innerHeight - 8,
+      };
+      const below = Math.max(0, bounds.bottom - triggerRect.bottom - 8);
+      const above = Math.max(0, triggerRect.top - bounds.top - 8);
+      const nextUp = menuHeight > below && above > below;
+      setUp(nextUp);
+      panel.style.maxHeight = `${Math.max(72, nextUp ? above : below)}px`;
+    };
+    update();
+    scrollport?.addEventListener('scroll', update, { passive: true });
+    window.addEventListener('resize', update);
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(update) : null;
+    observer?.observe(panel);
+    return () => {
+      scrollport?.removeEventListener('scroll', update);
+      window.removeEventListener('resize', update);
+      observer?.disconnect();
+    };
   }, [open]);
   return { menu, up };
 }
@@ -110,6 +137,7 @@ function PaginationSentinel({ load }: { load: () => Promise<void> }) {
 function SessionMenu({ session, onHide }: { session: Session; onHide: () => void }) {
   const store = useStore();
   const [open, setOpen] = useState(false);
+  const menuID = useId();
   const { menu, up } = useMenuFlip(open);
   const trigger = useRef<HTMLButtonElement>(null);
   const keyboardMenu = useMenuKeyboard(open, () => setOpen(false), trigger);
@@ -121,6 +149,7 @@ function SessionMenu({ session, onHide }: { session: Session; onHide: () => void
         type="button"
         aria-label={`Actions for ${session.title}`}
         aria-haspopup="menu"
+        aria-controls={menuID}
         aria-expanded={open}
         onClick={(event) => {
           event.stopPropagation();
@@ -135,8 +164,10 @@ function SessionMenu({ session, onHide }: { session: Session; onHide: () => void
             menu.current = element;
             keyboardMenu.current = element;
           }}
+          id={menuID}
           class={`session-menu ${up ? 'open-up' : ''}`}
           role="menu"
+          aria-label={`Actions for ${session.title}`}
           onClick={(event) => event.stopPropagation()}
         >
           <button
@@ -351,6 +382,7 @@ function ProjectGroup({ project }: { project: Project }) {
   );
   const [open, setOpen] = useState(expansion[project.id] !== false);
   const [menu, setMenu] = useState(false);
+  const menuID = useId();
   const { menu: menuRef, up } = useMenuFlip(menu);
   const menuTrigger = useRef<HTMLButtonElement>(null);
   const keyboardMenu = useMenuKeyboard(menu, () => setMenu(false), menuTrigger);
@@ -404,6 +436,7 @@ function ProjectGroup({ project }: { project: Project }) {
           type="button"
           aria-label={`Actions for project ${project.name}`}
           aria-haspopup="menu"
+          aria-controls={menuID}
           aria-expanded={menu}
           onClick={(event) => {
             event.stopPropagation();
@@ -418,8 +451,10 @@ function ProjectGroup({ project }: { project: Project }) {
               menuRef.current = element;
               keyboardMenu.current = element;
             }}
+            id={menuID}
             class={`session-menu project-menu open ${up ? 'open-up' : ''}`}
             role="menu"
+            aria-label={`Actions for project ${project.name}`}
           >
             <button
               type="button"
@@ -483,13 +518,32 @@ export function Sidebar() {
   const store = useStore();
   const collapsed = store.sidebarCollapsed.value;
   const mobileOpen = store.sidebarOpen.value;
+  const mobile = useMediaQuery('(max-width: 767px)');
+  const overlayRoot = useRef<HTMLDivElement>(null);
   const sidebar = useRef<HTMLElement>(null);
   const overlayToken = useRef<symbol | null>(null);
+  useSwipeDismiss(sidebar, {
+    enabled: mobile && mobileOpen,
+    axis: 'x',
+    direction: -1,
+    property: '--panel-swipe-offset-x',
+    onDismiss: () => {
+      store.sidebarOpen.value = false;
+    },
+  });
+  useEdgeSwipeOpen(sidebar, {
+    enabled: mobile && !mobileOpen,
+    edge: 'left',
+    property: '--panel-swipe-offset-x',
+    onOpen: () => {
+      store.sidebarOpen.value = true;
+    },
+  });
   useLayoutEffect(() => {
-    if (!mobileOpen || !globalThis.matchMedia?.('(max-width: 760px)').matches) return;
+    if (!mobileOpen || !mobile) return;
     const trigger =
       document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
-    overlayToken.current = overlayManager.acquire(trigger, sidebar.current);
+    overlayToken.current = overlayManager.acquire(trigger, overlayRoot.current);
     const frame = requestAnimationFrame(() =>
       sidebar.current?.querySelector<HTMLElement>('#sidebarCloseBtn')?.focus(),
     );
@@ -498,7 +552,7 @@ export function Sidebar() {
       if (overlayToken.current) overlayManager.release(overlayToken.current);
       overlayToken.current = null;
     };
-  }, [mobileOpen]);
+  }, [mobile, mobileOpen]);
   const standalone = store.sessions.value.filter((session) => !session.projectId);
   const sidebarSessions = [
     ...store.sessions.value,
@@ -517,14 +571,14 @@ export function Sidebar() {
     store.sidebarOpen.value = false;
   };
   return (
-    <>
+    <div ref={overlayRoot} class="sidebar-overlay-root">
       <aside
         ref={sidebar}
         class={`sidebar ${collapsed ? 'collapsed' : ''} ${mobileOpen ? 'open' : ''}`}
         id="sidebar"
         aria-label="Sessions"
-        role={mobileOpen ? 'dialog' : undefined}
-        aria-modal={mobileOpen || undefined}
+        role={mobile && mobileOpen ? 'dialog' : undefined}
+        aria-modal={(mobile && mobileOpen) || undefined}
         onKeyDown={(event) => {
           if (
             event.key === 'Escape' &&
@@ -536,11 +590,7 @@ export function Sidebar() {
             store.sidebarOpen.value = false;
             return;
           }
-          if (overlayToken.current)
-            trapOverlayFocus(
-              event,
-              'button:not([disabled]),input:not([disabled]),a[href],[tabindex]:not([tabindex="-1"])',
-            );
+          if (overlayToken.current) trapOverlayFocus(event);
         }}
       >
         <div class="sidebar-rail">
@@ -742,6 +792,6 @@ export function Sidebar() {
             store.sidebarOpen.value = false;
         }}
       />
-    </>
+    </div>
   );
 }

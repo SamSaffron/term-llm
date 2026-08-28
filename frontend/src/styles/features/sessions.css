@@ -270,6 +270,8 @@
   background: var(--surface);
   box-shadow: var(--shadow-strong);
   z-index: 5;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .session-row.menu-open .session-menu {

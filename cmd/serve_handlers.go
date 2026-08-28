@@ -349,6 +349,8 @@ func (s *serveServer) buildIndexHTML() []byte {
 			headSnippet += `<script>window.TERM_LLM_VAPID_PUBLIC_KEY=` + string(vapidEscaped) + `;</script>`
 		}
 	}
+	_, pushPersistent := session.AsPushSubscriptionLifecycleStore(s.store)
+	headSnippet += `<script>window.TERM_LLM_PUSH_SUPPORTED=` + strconv.FormatBool(pushPersistent) + `;</script>`
 	headSnippet += s.webrtcHeadSnippet
 	return serveui.RenderIndexHTML(s.cfg.basePath, headSnippet, serveui.RenderOptions{WebRTC: s.webrtcEnabled})
 }
@@ -2808,7 +2810,7 @@ func (s *serveServer) cors(next http.HandlerFunc) http.HandlerFunc {
 				w.Header().Add("Vary", "Origin")
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Term-LLM-Session-ID, session_id, Idempotency-Key, X-Idempotency-Key, X-Term-LLM-Request-ID, X-Term-LLM-UI-Version, X-API-Key, anthropic-version")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Term-LLM-Session-ID, X-Term-LLM-Draft-ID, X-Term-LLM-Push-Subscription-ID, session_id, Idempotency-Key, X-Idempotency-Key, X-Term-LLM-Request-ID, X-Term-LLM-UI-Version, X-API-Key, anthropic-version")
 			w.Header().Set("Access-Control-Expose-Headers", "x-session-id, x-session-number, x-response-id, x-branch-anchor-id, x-term-llm-ui-version")
 		}
 
@@ -3703,10 +3705,24 @@ func applyRuntimeWorktreeBaseDir(ctx context.Context, store session.Store, sessi
 }
 
 func (s *serveServer) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {
-	if s.store == nil {
-		writeOpenAIError(w, http.StatusServiceUnavailable, "server_error", "session store not available")
+	pushStore, supported := session.AsPushSubscriptionLifecycleStore(s.store)
+	if !supported {
+		writeOpenAIError(w, http.StatusServiceUnavailable, "unsupported_error", "persistent push subscription storage is unavailable")
 		return
 	}
+	publicKey := ""
+	if s.cfgRef != nil {
+		publicKey = strings.TrimSpace(s.cfgRef.Serve.WebPush.VAPIDPublicKey)
+		if publicKey == "" {
+			writeOpenAIError(w, http.StatusServiceUnavailable, "unsupported_error", "web push is not configured")
+			return
+		}
+	} else {
+		// Direct handler tests and embedders that construct serveServer without a
+		// config still exercise persistence. Production servers always carry cfgRef.
+		publicKey = "unconfigured-test-key"
+	}
+	vapidKeyID := webPushKeyID(publicKey)
 
 	switch r.Method {
 	case http.MethodPost:
@@ -3725,20 +3741,28 @@ func (s *serveServer) handlePushSubscribe(w http.ResponseWriter, r *http.Request
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 			return
 		}
+		req.Endpoint = strings.TrimSpace(req.Endpoint)
+		req.Keys.P256DH = strings.TrimSpace(req.Keys.P256DH)
+		req.Keys.Auth = strings.TrimSpace(req.Keys.Auth)
 		if req.Endpoint == "" || req.Keys.P256DH == "" || req.Keys.Auth == "" {
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "endpoint and keys (p256dh, auth) are required")
 			return
 		}
-		sub := &session.PushSubscription{
-			Endpoint:  req.Endpoint,
-			KeyP256DH: req.Keys.P256DH,
-			KeyAuth:   req.Keys.Auth,
+		if len(req.Endpoint) > 4096 || len(req.Keys.P256DH) > 1024 || len(req.Keys.Auth) > 1024 {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "subscription fields are too large")
+			return
 		}
-		if err := s.store.SavePushSubscription(r.Context(), sub); err != nil {
+		sub, err := pushStore.UpsertPushSubscription(r.Context(), &session.PushSubscription{
+			Endpoint: req.Endpoint, KeyP256DH: req.Keys.P256DH, KeyAuth: req.Keys.Auth,
+			Status: "active", VAPIDKeyID: vapidKeyID,
+		})
+		if err != nil {
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to save subscription")
 			return
 		}
-		writeJSON(w, http.StatusCreated, map[string]any{"ok": true})
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"id": sub.ID, "state": sub.Status, "vapid_key_id": sub.VAPIDKeyID,
+		})
 
 	case http.MethodDelete:
 		if err := requireJSONContentType(r); err != nil {
@@ -3746,17 +3770,24 @@ func (s *serveServer) handlePushSubscribe(w http.ResponseWriter, r *http.Request
 			return
 		}
 		var req struct {
+			ID       string `json:"id"`
 			Endpoint string `json:"endpoint"`
 		}
 		if err := decodeJSONBody(r, &req); err != nil {
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 			return
 		}
-		if req.Endpoint == "" {
-			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "endpoint is required")
+		var err error
+		if id := strings.TrimSpace(req.ID); id != "" {
+			err = pushStore.DeletePushSubscriptionByID(r.Context(), id)
+		} else if endpoint := strings.TrimSpace(req.Endpoint); endpoint != "" {
+			// Migration fallback for clients enrolled before canonical IDs existed.
+			err = s.store.DeletePushSubscription(r.Context(), endpoint)
+		} else {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "subscription id is required")
 			return
 		}
-		if err := s.store.DeletePushSubscription(r.Context(), req.Endpoint); err != nil {
+		if err != nil {
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to delete subscription")
 			return
 		}

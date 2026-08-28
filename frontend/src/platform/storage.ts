@@ -15,6 +15,7 @@ export const STORAGE_BASE_KEYS = {
   showHiddenSessions: 'term_llm_show_hidden_sessions',
   showWidgetsSidebar: 'term_llm_show_widgets_sidebar',
   notificationsEnabled: 'term_llm_notifications_enabled',
+  notificationSubscriptionID: 'term_llm_notification_subscription_id',
   draftMessages: 'term_llm_draft_messages',
   pendingIntents: 'term_llm_pending_intent',
   diffCommentQueue: 'term_llm_diff_comment_queue',

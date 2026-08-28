@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -62,6 +64,29 @@ type responsesCreateRequest struct {
 	ProjectID           string                         `json:"project_id,omitempty"`
 	WorktreeDir         string                         `json:"worktree_dir,omitempty"`
 	ModelSwap           *responsesModelSwapRequest     `json:"model_swap,omitempty"`
+}
+
+func responseRequestFingerprint(req responsesCreateRequest) (string, error) {
+	// The claim key and transport request ID identify the operation; neither is
+	// part of its semantic body.
+	req.IdempotencyKey = ""
+	encoded, err := json.Marshal(req)
+	if err != nil {
+		return "", fmt.Errorf("encode response request fingerprint: %w", err)
+	}
+	// Decode and encode once so nested RawMessage objects are normalized too:
+	// insignificant whitespace and object member ordering must not turn a replay
+	// into a conflict.
+	var semantic any
+	if err := json.Unmarshal(encoded, &semantic); err != nil {
+		return "", fmt.Errorf("normalize response request fingerprint: %w", err)
+	}
+	canonical, err := json.Marshal(semantic)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize response request fingerprint: %w", err)
+	}
+	digest := sha256.Sum256(canonical)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 func parseResponsesInput(input json.RawMessage) ([]llm.Message, bool, error) {

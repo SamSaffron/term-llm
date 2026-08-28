@@ -8,6 +8,7 @@ interface OverlayEntry {
   returnFocus: HTMLElement | null;
   surface: HTMLElement | null;
   surfaceWasInert: boolean;
+  surfaceZIndex: string;
   blocked: BlockedElement[];
 }
 
@@ -17,11 +18,20 @@ export class OverlayManager {
 
   private blockBackground(surface: HTMLElement | null): BlockedElement[] {
     const shell = document.getElementById('appShell');
-    if (!shell) return [];
+    const toastRegion = document.getElementById('toastRegion');
     const blocked: BlockedElement[] = [];
+    const block = (element: HTMLElement | null) => {
+      if (!element || element === surface || element.contains(surface)) return;
+      blocked.push({ element, inert: Boolean(element.inert) });
+      element.inert = true;
+    };
+    if (!shell) {
+      block(toastRegion);
+      return blocked;
+    }
     if (!surface || !shell.contains(surface)) {
-      blocked.push({ element: shell, inert: Boolean(shell.inert) });
-      shell.inert = true;
+      block(shell);
+      block(toastRegion);
       return blocked;
     }
     // A drawer can be rendered inside the application shell. Inert siblings
@@ -32,11 +42,11 @@ export class OverlayManager {
       if (!parent) break;
       for (const sibling of parent.children) {
         if (sibling === branch || !(sibling instanceof HTMLElement)) continue;
-        blocked.push({ element: sibling, inert: Boolean(sibling.inert) });
-        sibling.inert = true;
+        block(sibling);
       }
       branch = parent;
     }
+    block(toastRegion);
     return blocked;
   }
 
@@ -46,6 +56,8 @@ export class OverlayManager {
   ): symbol {
     const token = Symbol('overlay');
     let blocked: BlockedElement[] = [];
+    const surfaceZIndex = surface?.style.zIndex || '';
+    if (surface) surface.style.zIndex = String(1000 + this.stack.length);
     if (!this.stack.length) {
       blocked = this.blockBackground(surface);
       this.previousOverflow = document.documentElement.style.overflow;
@@ -59,6 +71,7 @@ export class OverlayManager {
       returnFocus,
       surface,
       surfaceWasInert: surface?.inert || false,
+      surfaceZIndex,
       blocked,
     });
     return token;
@@ -69,11 +82,15 @@ export class OverlayManager {
     if (index < 0) return;
     const wasTop = index === this.stack.length - 1;
     const [entry] = this.stack.splice(index, 1);
+    if (entry.surface) entry.surface.style.zIndex = entry.surfaceZIndex;
     if (!wasTop && this.stack[index]) {
       if (!this.stack[index].returnFocus?.isConnected)
         this.stack[index].returnFocus = entry.returnFocus;
       if (entry.blocked.length) this.stack[index].blocked.push(...entry.blocked);
     }
+    this.stack.forEach((remaining, remainingIndex) => {
+      if (remaining.surface) remaining.surface.style.zIndex = String(1000 + remainingIndex);
+    });
     if (!this.stack.length) {
       entry.blocked.forEach(({ element, inert }) => {
         if (element.isConnected) element.inert = inert;
@@ -100,7 +117,10 @@ export class OverlayManager {
 
   reset(): void {
     for (const entry of this.stack) {
-      if (entry.surface) entry.surface.inert = entry.surfaceWasInert;
+      if (entry.surface) {
+        entry.surface.inert = entry.surfaceWasInert;
+        entry.surface.style.zIndex = entry.surfaceZIndex;
+      }
       entry.blocked.forEach(({ element, inert }) => {
         if (element.isConnected) element.inert = inert;
       });

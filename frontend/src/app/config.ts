@@ -12,6 +12,7 @@ declare global {
     TERM_LLM_WORKTREES_ENABLED?: boolean;
     TERM_LLM_HUB?: HubContext;
     TERM_LLM_VAPID_PUBLIC_KEY?: string;
+    TERM_LLM_PUSH_SUPPORTED?: boolean;
     TERM_LLM_WEBRTC_ENABLED?: boolean;
     TERM_LLM_WEBRTC_SIGNALING_URL?: string;
     __WEBRTC_ENABLED__?: boolean;
@@ -43,6 +44,7 @@ export interface AppConfig {
   worktrees: boolean;
   hub: HubContext | null;
   vapidKey: string;
+  pushSupported?: boolean;
   webRTC: boolean;
   signalingURL: string;
   initialProject?: Project;
@@ -76,6 +78,7 @@ export function readInjectedConfig(target: Window = window): AppConfig {
     worktrees: target.TERM_LLM_WORKTREES_ENABLED === true,
     hub,
     vapidKey: String(target.TERM_LLM_VAPID_PUBLIC_KEY || ''),
+    pushSupported: target.TERM_LLM_PUSH_SUPPORTED === true,
     webRTC: target.TERM_LLM_WEBRTC_ENABLED === true || target.__WEBRTC_ENABLED__ === true,
     signalingURL: String(
       target.TERM_LLM_WEBRTC_SIGNALING_URL || target.__WEBRTC_SIGNALING_URL__ || '',

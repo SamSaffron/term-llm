@@ -1,6 +1,6 @@
 import type { ComponentChildren } from 'preact';
-import { useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { positionPopover } from '../platform/browser';
+import { useId, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { observePopoverPosition, positionPopover } from '../platform/browser';
 
 export interface ChipPickerOption {
   value: string;
@@ -31,6 +31,7 @@ export function ChipPicker({
 }: ChipPickerProps) {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState('');
+  const popoverID = useId();
   const trigger = useRef<HTMLButtonElement>(null);
   const popover = useRef<HTMLDialogElement>(null);
   const selected = options.find((option) => option.value === value) || options[0];
@@ -72,11 +73,13 @@ export function ChipPicker({
     if (!open || !trigger.current || !popover.current) return;
     const panel = popover.current;
     positionPopover(trigger.current, panel, true);
+    const stopPositioning = observePopoverPosition(trigger.current, panel, true);
     if (filterable) panel.querySelector<HTMLInputElement>('.chip-popover-filter')?.focus();
     else {
       const items = [...panel.querySelectorAll<HTMLButtonElement>('.chip-popover-item')];
       (items.find((item) => item.dataset.value === value) || items[0])?.focus();
     }
+    return stopPositioning;
   }, [filterable, open, value]);
 
   if (!selected) return null;
@@ -87,7 +90,8 @@ export function ChipPicker({
         type="button"
         class={triggerClass}
         aria-label={ariaLabel}
-        aria-haspopup="listbox"
+        aria-haspopup="dialog"
+        aria-controls={popoverID}
         aria-expanded={open}
         onClick={() => (open ? close() : setOpen(true))}
         onKeyDown={(event) => {
@@ -101,6 +105,7 @@ export function ChipPicker({
       {open && (
         <dialog
           ref={popover}
+          id={popoverID}
           class={`chip-popover ${popoverClass}`.trim()}
           aria-label={ariaLabel}
           onCancel={(event) => {
@@ -108,7 +113,7 @@ export function ChipPicker({
             close(true);
           }}
           onClick={(event) => {
-            if (event.target === event.currentTarget) close();
+            if (event.target === event.currentTarget) close(true);
           }}
           onKeyDown={(event) => {
             if (event.key !== 'Escape') return;

@@ -52,6 +52,11 @@ export function useMenuKeyboard(
       if (!root.contains(target) && !trigger?.contains(target)) onCloseRef.current();
     };
     document.addEventListener('pointerdown', outside);
+    const focusOutside = (event: FocusEvent) => {
+      const target = event.target as Node | null;
+      if (!root.contains(target) && !trigger?.contains(target)) onCloseRef.current();
+    };
+    document.addEventListener('focusin', focusOutside);
     const items = menuItems(root);
     items.forEach((item, index) => (item.tabIndex = index === 0 ? 0 : -1));
     const frame = requestAnimationFrame(() => items[0]?.focus());
@@ -59,6 +64,7 @@ export function useMenuKeyboard(
       cancelAnimationFrame(frame);
       root.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('pointerdown', outside);
+      document.removeEventListener('focusin', focusOutside);
       const active = document.activeElement;
       if (
         trigger?.isConnected &&

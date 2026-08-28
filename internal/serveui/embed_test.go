@@ -29,9 +29,11 @@ func TestGeneratedBundleAssets(t *testing.T) {
 
 func TestProductionBundleSizeBudgets(t *testing.T) {
 	budgets := map[string]struct{ raw, gzip int }{
-		// Keep explicit headroom over the current productized UI while still
-		// failing meaningful accidental regressions.
-		"dist/app.js":  {raw: 325_000, gzip: 97_000},
+		// Notification reconciliation/outbox messaging, the owned mobile voice
+		// state machine, and gallery/diff navigation are first-party shell code.
+		// Keep bounded headroom over that productized baseline while still failing
+		// meaningful accidental regressions.
+		"dist/app.js":  {raw: 365_000, gzip: 108_000},
 		"dist/app.css": {raw: 160_000, gzip: 29_000},
 	}
 	for name, budget := range budgets {

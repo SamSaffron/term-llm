@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,7 +14,37 @@ import (
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
-const maxChildRunProjection = 100
+const (
+	maxChildRunProjection = 100
+	// Child revisions are persisted in browser storage and compared as JavaScript
+	// numbers. Keep them below Number.MAX_SAFE_INTEGER even for corrupt/future
+	// timestamps.
+	maxChildReadRevision int64 = 1<<53 - 1
+)
+
+func safeChildRevision(values ...int64) int64 {
+	var revision int64
+	for _, value := range values {
+		if value > revision {
+			revision = value
+		}
+	}
+	if revision < 0 {
+		return 0
+	}
+	if revision > maxChildReadRevision {
+		return maxChildReadRevision
+	}
+	return revision
+}
+
+func terminalChildRevision(revision int64) int64 {
+	revision = safeChildRevision(revision)
+	if revision < maxChildReadRevision {
+		return revision + 1
+	}
+	return revision
+}
 
 type childRunProjection struct {
 	SessionID         string                `json:"session_id"`
@@ -99,9 +131,21 @@ func (s *serveServer) handleSessionChildren(w http.ResponseWriter, r *http.Reque
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to list child sessions")
 		return
 	}
-	sort.SliceStable(children, func(i, j int) bool { return children[i].UpdatedAt.After(children[j].UpdatedAt) })
+	sort.SliceStable(children, func(i, j int) bool {
+		if children[i].UpdatedAt.Equal(children[j].UpdatedAt) {
+			return children[i].ID < children[j].ID
+		}
+		return children[i].UpdatedAt.After(children[j].UpdatedAt)
+	})
+	type childETagSnapshot struct {
+		Projection       childRunProjection `json:"projection"`
+		DurableUpdatedAt int64              `json:"durable_updated_at"`
+		LastSequence     int64              `json:"last_sequence"`
+	}
 	items := make([]childRunProjection, 0, min(len(children), maxChildRunProjection))
+	etagItems := make([]childETagSnapshot, 0, min(len(children), maxChildRunProjection))
 	for _, child := range children {
+		durableUpdatedAt := child.UpdatedAt.UnixNano()
 		item := childRunProjection{
 			SessionID:        child.ID,
 			ParentSessionID:  parentID,
@@ -109,16 +153,18 @@ func (s *serveServer) handleSessionChildren(w http.ResponseWriter, r *http.Reque
 			Agent:            child.Agent,
 			State:            child.Status,
 			Attention:        child.Status == session.StatusError,
-			Revision:         child.UpdatedAt.UnixMicro(),
+			Revision:         safeChildRevision(child.UpdatedAt.UnixMilli()),
 			StartedAt:        child.CreatedAt.UnixMilli(),
 			ApproximateTimes: true,
 		}
+		terminal := child.Status == session.StatusComplete || child.Status == session.StatusError
 		if spawn, ok := spawnProvenance[child.ID]; ok {
 			item.ParentSpawnItemID = spawn.ItemID
 			item.ParentSpawnCallID = spawn.CallID
 		}
-		if child.Status == session.StatusComplete || child.Status == session.StatusError {
+		if terminal {
 			item.EndedAt = child.UpdatedAt.UnixMilli()
+			item.Revision = terminalChildRevision(item.Revision)
 		}
 		if messages, messagesErr := s.store.GetMessages(r.Context(), child.ID, 1, 0); messagesErr == nil && len(messages) > 0 {
 			item.TaskSummary = strings.TrimSpace(messages[0].TextContent)
@@ -126,35 +172,48 @@ func (s *serveServer) handleSessionChildren(w http.ResponseWriter, r *http.Reque
 				item.TaskSummary = string(runes[:240]) + "…"
 			}
 		}
+		var lastSequence int64
 		if run := s.responseRuns.latestRun(child.ID); run != nil {
 			run.mu.Lock()
 			item.ResponseID = run.id
 			item.RunEpoch = run.runEpoch
+			lastSequence = run.lastSequenceNumber
 			if run.created > 0 {
 				item.StartedAt = run.created * 1000
-				item.Revision = max(item.Revision, run.created*1_000_000)
+				item.Revision = safeChildRevision(item.Revision, item.StartedAt)
 				item.ApproximateTimes = false
 			}
 			if run.endedAt > 0 {
 				item.EndedAt = run.endedAt
-				item.Revision = max(item.Revision, run.endedAt*1000)
+				item.Revision = terminalChildRevision(safeChildRevision(item.Revision, run.endedAt))
+				terminal = true
 			}
-			item.Revision += run.runEpoch*1_000_000 + run.lastSequenceNumber
 			run.mu.Unlock()
 		}
 		if s.sessionMgr != nil {
 			if runtime, ok := s.sessionMgr.Get(child.ID); ok && runtime != nil {
 				for _, prompt := range runtime.pendingApprovalPrompts() {
 					item.Attention = true
-					item.Revision = max(item.Revision, prompt.CreatedAt*1000)
+					item.Revision = safeChildRevision(item.Revision, prompt.CreatedAt*1000)
 				}
 				for _, prompt := range runtime.pendingAskUserPrompts() {
 					item.Attention = true
-					item.Revision = max(item.Revision, prompt.CreatedAt*1000)
+					item.Revision = safeChildRevision(item.Revision, prompt.CreatedAt*1000)
 				}
 			}
 		}
+		if terminal {
+			// Attention timestamps may have advanced the projection after the first
+			// terminal bump. Preserve the terminal marker without encoding event
+			// sequence arithmetic into the browser read marker.
+			item.Revision = terminalChildRevision(item.Revision)
+		}
 		items = append(items, item)
+		etagItems = append(etagItems, childETagSnapshot{
+			Projection:       item,
+			DurableUpdatedAt: durableUpdatedAt,
+			LastSequence:     lastSequence,
+		})
 		if len(items) == maxChildRunProjection {
 			break
 		}
@@ -165,7 +224,16 @@ func (s *serveServer) handleSessionChildren(w http.ResponseWriter, r *http.Reque
 			revision = item.Revision
 		}
 	}
-	etag := fmt.Sprintf(`"children-%s-%d"`, parentID, revision)
+	etagPayload, err := json.Marshal(struct {
+		ParentID string              `json:"parent_id"`
+		Items    []childETagSnapshot `json:"items"`
+	}{ParentID: parentID, Items: etagItems})
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to encode child projection")
+		return
+	}
+	digest := sha256.Sum256(etagPayload)
+	etag := fmt.Sprintf(`"children-%s"`, hex.EncodeToString(digest[:16]))
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Cache-Control", "no-cache")
 	if r.Header.Get("If-None-Match") == etag {

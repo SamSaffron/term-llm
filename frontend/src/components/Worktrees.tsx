@@ -52,6 +52,18 @@ function WorktreeBadges({ row, current }: { row: WorktreeRow; current: boolean }
           ±{dirty}
         </span>
       )}
+      {row.diverged === true ? (
+        <span class="worktree-badge diverged">Diverged</span>
+      ) : (
+        <>
+          {Number(row.ahead || 0) > 0 && (
+            <span class="worktree-badge ahead">Ahead {Number(row.ahead)}</span>
+          )}
+          {Number(row.behind || 0) > 0 && (
+            <span class="worktree-badge behind">Behind {Number(row.behind)}</span>
+          )}
+        </>
+      )}
       {inUse.length > 0 && (
         <span
           class="worktree-badge in-use"
@@ -128,6 +140,14 @@ function WorktreeOption({
           <span class="worktree-option-ref">
             {branch || String(row.head_sha || '').slice(0, 8)}
             {row.head_sha && branch ? ` · ${String(row.head_sha).slice(0, 8)}` : ''}
+            {' · '}
+            {row.metadata_error
+              ? 'Metadata unavailable'
+              : row.upstream_available
+                ? `Tracks ${String(row.upstream)}`
+                : row.detached
+                  ? 'Detached HEAD'
+                  : 'No upstream'}
           </span>
         )}
         {dir && (

@@ -9,9 +9,8 @@ import {
   type Completion,
   type MentionSearchResponse,
 } from '../domain/completions';
-import { errorMessage } from '../domain/text';
 import { validateAttachmentFile } from '../domain/attachments';
-import { VoiceRecorder } from '../platform/voice';
+import { VoiceOperation, type VoiceSnapshot } from '../platform/voice';
 import { Icon } from './Icon';
 import { useMenuKeyboard } from './Menu';
 
@@ -21,26 +20,48 @@ function resizePrompt(element: HTMLTextAreaElement | null): void {
   if (element.value) element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
 }
 
+export function insertTranscriptAtCaret(value: string, transcript: string, caret: number) {
+  const clean = transcript.trim();
+  if (!clean) return { value, caret: Math.max(0, Math.min(value.length, caret)) };
+  const position = Math.max(0, Math.min(value.length, caret));
+  const before = value.slice(0, position);
+  const after = value.slice(position);
+  const leading = before && !/\s$/.test(before) && !/^\s/.test(clean) ? ' ' : '';
+  const trailing = after && !/\s$/.test(clean) && !/^\s/.test(after) ? ' ' : '';
+  const insertion = `${leading}${clean}${trailing}`;
+  return {
+    value: `${before}${insertion}${after}`,
+    caret: before.length + leading.length + clean.length,
+  };
+}
+
+function voiceTime(milliseconds = 0): string {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
 export function Composer() {
   const store = useStore();
   const file = useRef<HTMLInputElement>(null);
   const camera = useRef<HTMLInputElement>(null);
+  const attach = useRef<HTMLButtonElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const [menu, setMenu] = useState(false);
-  const [voiceStatus, setVoiceStatus] = useState('');
-  const [recording, setRecording] = useState(false);
+  const voice = useMemo(
+    () => new VoiceOperation((form, controls) => store.endpoints.transcribe(form, controls)),
+    [store],
+  );
+  const [voiceState, setVoiceState] = useState<VoiceSnapshot>(voice.snapshot);
+  const appliedVoiceGeneration = useRef(0);
   const [completionIndex, setCompletionIndex] = useState(0);
   const [cursor, setCursor] = useState(store.prompt.value.length);
   const [dismissed, setDismissed] = useState('');
   const [dragging, setDragging] = useState(false);
   const [dragError, setDragError] = useState('');
   const [projectMentions, setProjectMentions] = useState<MentionSearchResponse | null>(null);
-  const addMenu = useMenuKeyboard(menu, () => {
-    setMenu(false);
-    document.getElementById('attachBtn')?.focus();
-  });
-  const voice = useMemo(() => new VoiceRecorder(), []);
-  useEffect(() => () => voice.cancel(), [voice]);
+  const addMenu = useMenuKeyboard(menu, () => setMenu(false), attach);
+  useEffect(() => voice.subscribe(setVoiceState), [voice]);
+  useEffect(() => () => voice.dispose(), [voice]);
   useLayoutEffect(() => resizePrompt(textarea.current), [store.prompt.value]);
 
   const session = store.draftActive.value ? null : store.activeSession.value;
@@ -50,7 +71,40 @@ export function Composer() {
     session?.worktreeDir ||
     (store.draftActive.value ? store.selectedDraftWorktree.value : '') ||
     '';
+  const composerOwner = store.composerOwnerKey();
+  useEffect(() => {
+    if (
+      voice.snapshot.owner &&
+      voice.snapshot.owner !== composerOwner &&
+      !['idle', 'cancelled'].includes(voice.snapshot.phase)
+    )
+      voice.cancel();
+  }, [voice, composerOwner]);
+  useEffect(() => {
+    if (voiceState.phase === 'complete' && voiceState.transcript) {
+      if (
+        voiceState.owner !== store.composerOwnerKey() ||
+        appliedVoiceGeneration.current === voiceState.generation
+      )
+        return;
+      appliedVoiceGeneration.current = voiceState.generation;
+      const inserted = insertTranscriptAtCaret(store.prompt.peek(), voiceState.transcript, cursor);
+      store.prompt.value = inserted.value;
+      setCursor(inserted.caret);
+      requestAnimationFrame(() => {
+        textarea.current?.focus();
+        textarea.current?.setSelectionRange(inserted.caret, inserted.caret);
+      });
+      const timer = window.setTimeout(() => voice.settle(), 1_200);
+      return () => clearTimeout(timer);
+    }
+    if (voiceState.phase === 'cancelled') {
+      const timer = window.setTimeout(() => voice.settle(), 800);
+      return () => clearTimeout(timer);
+    }
+  }, [voice, voiceState, store, cursor]);
   const mention = activeMentionAtCursor(store.prompt.value, cursor);
+
   const mentionActive = Boolean(mention);
   useEffect(() => {
     setProjectMentions(null);
@@ -123,6 +177,7 @@ export function Composer() {
     return skill ? { skill, name: match[1], args: match[2] || '' } : null;
   };
   const sendOrCommand = () => {
+    if (voiceBusy) return;
     const value = store.prompt.value.trim();
     const command = value.toLowerCase();
     if (/^\/side(?:\s|$)/i.test(value)) {
@@ -176,7 +231,11 @@ export function Composer() {
       return;
     }
     const skill = liveSkill(value);
-    if (skill && (!store.streaming.value || skill.skill.execution === 'isolated')) {
+    if (skill) {
+      if (store.streaming.value && skill.skill.execution !== 'isolated') {
+        store.toast('This main-conversation skill cannot run while a response is active.', 'error');
+        return;
+      }
       store.prompt.value = '';
       void store.invokeSkill(skill.name, skill.args);
       return;
@@ -184,24 +243,8 @@ export function Composer() {
     if (store.streaming.value) void store.interject(value);
     else void store.send();
   };
-  const toggleVoice = async () => {
-    try {
-      if (!recording) {
-        await voice.start();
-        setRecording(true);
-        setVoiceStatus('Recording… tap again to transcribe');
-      } else {
-        setRecording(false);
-        setVoiceStatus('Transcribing…');
-        const text = await voice.stop(store.endpoints);
-        store.prompt.value = `${store.prompt.value}${store.prompt.value ? ' ' : ''}${text}`;
-        setCursor(store.prompt.value.length);
-        setVoiceStatus('');
-      }
-    } catch (error) {
-      setRecording(false);
-      setVoiceStatus(errorMessage(error));
-    }
+  const startVoice = () => {
+    void voice.start(composerOwner, cursor);
   };
   const pending = store.interjections.value.filter(
     (entry) => entry.sessionId === store.activeSession.value?.id,
@@ -213,6 +256,9 @@ export function Composer() {
         entry?.sessionId === store.activeSession.value?.id &&
         ['waiting', 'dismissed', 'failed'].includes(entry.state),
     );
+  const voiceBusy = ['requesting-permission', 'recording', 'preparing', 'transcribing'].includes(
+    voiceState.phase,
+  );
   const hasDraft = Boolean(store.prompt.value.trim()) || store.attachments.value.length > 0;
   const sendPending = store.sendPending.value;
   const sendBlocked = store.sendBlocked.value;
@@ -316,10 +362,57 @@ export function Composer() {
             ))}
           </div>
         )}
-        {voiceStatus && (
-          <div id="voiceStatus" class="voice-status" aria-live="polite">
-            {voiceStatus}
+        {voiceState.phase !== 'idle' && (
+          <div
+            id="voiceStatus"
+            class={`voice-status voice-status-${voiceState.phase}`}
+            aria-live="polite"
+            role={voiceState.phase === 'failed' ? 'alert' : 'status'}
+          >
+            <span
+              class={voiceState.phase === 'recording' ? 'voice-status-dot' : 'voice-status-spinner'}
+              aria-hidden="true"
+            />
+            <span class="voice-status-copy">
+              {voiceState.phase === 'requesting-permission' && 'Requesting microphone access…'}
+              {voiceState.phase === 'recording' && `Recording ${voiceTime(voiceState.durationMs)}`}
+              {voiceState.phase === 'preparing' && 'Preparing recording…'}
+              {voiceState.phase === 'transcribing' &&
+                (voiceState.stage === 'uploading'
+                  ? `Uploading${voiceState.total ? ` ${Math.min(100, Math.round(((voiceState.loaded || 0) / voiceState.total) * 100))}%` : '…'}`
+                  : voiceState.stage === 'stalled'
+                    ? 'Upload stalled'
+                    : `Transcribing… ${voiceTime(voiceState.elapsedMs)}`)}
+              {voiceState.phase === 'complete' && 'Transcription inserted.'}
+              {voiceState.phase === 'cancelled' && 'Voice recording cancelled.'}
+              {voiceState.phase === 'failed' && (voiceState.error || 'Voice transcription failed.')}
+            </span>
+            {voiceState.phase === 'recording' && (
+              <button type="button" class="btn voice-status-action" onClick={() => voice.stop()}>
+                Stop
+              </button>
+            )}
+            {voiceBusy && (
+              <button type="button" class="btn voice-status-cancel" onClick={() => voice.cancel()}>
+                Cancel
+              </button>
+            )}
+            {voiceState.phase === 'failed' && voiceState.retryable && (
+              <button type="button" class="btn voice-status-action" onClick={() => voice.retry()}>
+                Retry
+              </button>
+            )}
+            {voiceState.phase === 'failed' && (
+              <button type="button" class="btn voice-status-cancel" onClick={() => voice.discard()}>
+                Discard
+              </button>
+            )}
           </div>
+        )}
+        {!voiceState.capability.supported && (
+          <span class="voice-unsupported" id="voiceUnsupported">
+            {voiceState.capability.reason}
+          </span>
         )}
         {store.attachments.value.length > 0 && (
           <div id="attachmentsStrip" class="attachments">
@@ -383,6 +476,7 @@ export function Composer() {
         )}
         <div class="composer-box">
           <button
+            ref={attach}
             class="composer-icon-btn attach-btn"
             id="attachBtn"
             type="button"
@@ -517,8 +611,8 @@ export function Composer() {
                   key={`${entry.kind}:${entry.value}`}
                   onMouseDown={(event) => {
                     event.preventDefault();
-                    choose(entry);
                   }}
+                  onClick={() => choose(entry)}
                 >
                   <strong class="slash-command-name">
                     {entry.segments?.length
@@ -627,17 +721,19 @@ export function Composer() {
                 Stop
               </button>
             )}
-            {'MediaRecorder' in window && (
-              <button
-                class={`composer-icon-btn voice-btn ${recording ? 'recording' : ''}`}
-                id="voiceBtn"
-                type="button"
-                aria-label={recording ? 'Stop recording' : 'Record voice message'}
-                onClick={() => void toggleVoice()}
-              >
-                <Icon name="microphone" />
-              </button>
-            )}
+            <button
+              class={`composer-icon-btn voice-btn ${voiceState.phase === 'recording' ? 'recording' : ''} ${voiceBusy ? 'busy' : ''}`}
+              id="voiceBtn"
+              type="button"
+              aria-label="Record voice message"
+              aria-describedby={!voiceState.capability.supported ? 'voiceUnsupported' : undefined}
+              disabled={
+                !voiceState.capability.supported || voiceBusy || voiceState.phase === 'failed'
+              }
+              onClick={startVoice}
+            >
+              <Icon name="microphone" />
+            </button>
             <button
               class={`send-btn ${loading ? 'loading' : ''} ${interjecting ? 'interject' : ''}`}
               id="sendBtn"
@@ -645,7 +741,11 @@ export function Composer() {
               title={sendLabel}
               aria-label={sendLabel}
               disabled={
-                sendBlocked || bindingBlocked || attachmentBlocked || (!hasDraft && !loading)
+                sendBlocked ||
+                voiceBusy ||
+                bindingBlocked ||
+                attachmentBlocked ||
+                (!hasDraft && !loading)
               }
               onClick={sendOrCommand}
             >

@@ -1439,12 +1439,18 @@
     touch-action: pan-y;
   }
 
+  .drawer.diff-sidebar {
+    width: min(440px, calc(100vw - var(--safe-left)), 90vw);
+    max-height: calc(var(--app-height) - var(--safe-top) - var(--safe-bottom));
+    overflow: hidden;
+  }
+
   .diff-resize-handle {
     display: none;
   }
 
   .diff-sidebar.open {
-    transform: translateX(var(--panel-swipe-offset-x, 0));
+    transform: translateX(var(--drawer-swipe-offset-x, var(--panel-swipe-offset-x, 0)));
     box-shadow: -4px 0 20px rgb(0 0 0 / 28%);
   }
 

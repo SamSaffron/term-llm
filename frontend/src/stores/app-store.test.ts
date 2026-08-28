@@ -131,6 +131,29 @@ describe('AppStore compatibility behavior', () => {
     });
   });
 
+  it('closes mobile navigation synchronously before session loading finishes', async () => {
+    const store = new AppStore(config);
+    const next = { ...session(), id: 's2', title: 'Next session' };
+    store.sessions.value = [session(), next];
+    store.sidebarOpen.value = true;
+    const state = deferred<Record<string, unknown>>();
+    const selected = deferred<Record<string, unknown>>();
+    store.endpoints.sessionState = vi.fn(() => state.promise);
+    store.endpoints.selectedSession = vi.fn(() => selected.promise);
+    store.endpoints.skills = vi.fn(async () => ({ skills: [] }));
+
+    const selection = store.selectSession(next);
+
+    expect(store.sidebarOpen.value).toBe(false);
+    state.resolve({});
+    selected.resolve({ selected_session: next, selected_transcript: { bodies: { messages: [] } } });
+    await selection;
+
+    store.sidebarOpen.value = true;
+    store.newChat();
+    expect(store.sidebarOpen.value).toBe(false);
+  });
+
   it('stops the visible run immediately while server cancellation winds down', async () => {
     const store = new AppStore(config);
     store.sessions.value = [{ ...session(), activeResponseId: 'r1' }];
@@ -1480,9 +1503,23 @@ describe('AppStore compatibility behavior', () => {
       oldLineCount: 3,
       newLineCount: 3,
       lines: [
+        {
+          kind: 'gap',
+          content: '1 hidden line',
+          hiddenOld: 1,
+          hiddenNew: 1,
+          gapDirection: 'above',
+        },
         { kind: 'hunk', content: '@@ -2 +2 @@' },
         { kind: 'delete', content: 'old', oldLine: 2 },
         { kind: 'add', content: 'new', newLine: 2 },
+        {
+          kind: 'gap',
+          content: '1 hidden line',
+          hiddenOld: 1,
+          hiddenNew: 1,
+          gapDirection: 'below',
+        },
       ],
     });
   });

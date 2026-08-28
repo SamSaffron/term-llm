@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import { errorMessage } from '../domain/text';
+import { skillExecutionDescription, skillExecutionLabel } from '../domain/completions';
 import type { ApprovalPrompt, AskUserPrompt } from '../domain/types';
 import { Icon } from './Icon';
 import { Overlay } from './Overlay';
@@ -163,17 +164,62 @@ function Settings() {
           />
         </label>
       </div>
-      {store.config.vapidKey && (
-        <div class="settings-field">
-          <button
-            class="btn"
-            disabled={store.notificationsEnabled.value}
-            onClick={() => void store.enableNotifications()}
-          >
-            {store.notificationsEnabled.value ? 'Notifications enabled' : 'Enable notifications'}
-          </button>
+      <div class="settings-field notification-settings">
+        <span class="settings-label">Notifications</span>
+        <div
+          class={`notification-state notification-state-${store.notifications.value.status}`}
+          role="status"
+          aria-live="polite"
+        >
+          <strong>
+            {store.notifications.value.status === 'subscribed'
+              ? store.notifications.value.verified
+                ? 'Enabled'
+                : 'Enabled · verification pending'
+              : store.notifications.value.status === 'blocked'
+                ? 'Blocked'
+                : store.notifications.value.status === 'stale'
+                  ? 'Needs repair'
+                  : store.notifications.value.status === 'unsubscribed'
+                    ? 'Not enabled'
+                    : 'Unavailable'}
+          </strong>
+          <span>{store.notifications.value.detail}</span>
         </div>
-      )}
+        <div class="notification-actions">
+          {store.notifications.value.status === 'unsubscribed' && (
+            <button
+              type="button"
+              class="btn"
+              disabled={store.notifications.value.busy}
+              onClick={() => void store.enableNotifications()}
+            >
+              Enable notifications
+            </button>
+          )}
+          {store.notifications.value.status === 'stale' && (
+            <button
+              type="button"
+              class="btn"
+              disabled={store.notifications.value.busy}
+              onClick={() => void store.retryNotifications()}
+            >
+              Retry repair
+            </button>
+          )}
+          {(store.notifications.value.status === 'subscribed' ||
+            store.notifications.value.status === 'stale') && (
+            <button
+              type="button"
+              class="btn"
+              disabled={store.notifications.value.busy}
+              onClick={() => void store.disableNotifications()}
+            >
+              Disable
+            </button>
+          )}
+        </div>
+      </div>
       <div class="modal-actions">
         {!store.authRequired.value && (
           <button
@@ -937,6 +983,12 @@ function Skills() {
   const store = useStore();
   const [selected, setSelected] = useState('');
   const [args, setArgs] = useState('');
+  const selectedSkill = store.skills.value.find(
+    (skill) => String(skill.name || skill.id || '') === selected,
+  );
+  const selectedBlocked = Boolean(
+    selectedSkill && selectedSkill.execution !== 'isolated' && store.streaming.value,
+  );
   return (
     <Overlay title="Skills">
       <div class="skills-list">
@@ -950,6 +1002,10 @@ function Skills() {
             >
               <strong>{name}</strong>
               <small>{String(skill.description || '')}</small>
+              <small class="skill-provenance">Source: {String(skill.source || 'unknown')}</small>
+              <small class="skill-execution">
+                <strong>{skillExecutionLabel(skill)}</strong> — {skillExecutionDescription(skill)}
+              </small>
             </button>
           );
         })}
@@ -958,12 +1014,18 @@ function Skills() {
         <form
           onSubmit={(event) => {
             event.preventDefault();
-            void store.invokeSkill(selected, args);
+            if (!selectedBlocked) void store.invokeSkill(selected, args);
           }}
         >
           <label class="settings-label">Arguments for {selected}</label>
           <textarea value={args} onInput={(event) => setArgs(event.currentTarget.value)} />
-          <button class="btn primary" type="submit">
+          {selectedBlocked && (
+            <p class="skill-run-blocked" role="status">
+              This main-conversation skill cannot run until the active response finishes. Isolated
+              skills can run now.
+            </p>
+          )}
+          <button class="btn primary" type="submit" disabled={selectedBlocked}>
             Run skill
           </button>
         </form>

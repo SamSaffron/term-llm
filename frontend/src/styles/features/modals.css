@@ -2,7 +2,8 @@
 
 .sidebar-backdrop {
   position: fixed;
-  inset: 0;
+  inset: var(--app-offset-top) 0 auto;
+  height: var(--app-height);
   background: var(--backdrop);
   opacity: 0;
   pointer-events: none;
@@ -17,13 +18,16 @@
 
 .modal-overlay {
   position: fixed;
-  inset: 0;
+  inset: var(--app-offset-top) 0 auto;
+  width: 100%;
+  height: var(--app-height);
   background: var(--overlay);
   z-index: 60;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 1rem;
+  padding: calc(1rem + var(--safe-top)) calc(1rem + var(--safe-right))
+    calc(1rem + var(--safe-bottom)) calc(1rem + var(--safe-left));
 }
 
 .modal-overlay.hidden {
@@ -37,6 +41,8 @@
   border-radius: 8px;
   padding: 1.15rem;
   box-shadow: var(--shadow-strong);
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .modal h2 {
@@ -146,4 +152,19 @@
 
 .rename-session-modal .hidden {
   display: none;
+}
+
+.skill-provenance,
+.skill-execution {
+  display: block;
+  color: var(--muted);
+}
+
+.skill-execution strong {
+  color: var(--text);
+}
+
+.skill-run-blocked {
+  color: var(--muted);
+  font-size: 0.85rem;
 }

@@ -153,6 +153,16 @@ function timeoutSignal(
 
 let externalAuthRedirecting = false;
 
+function rawJSON<T>(value: string): T {
+  if (!value.trim()) return undefined as T;
+  return JSON.parse(value) as T;
+}
+
+export interface UploadControls {
+  signal?: AbortSignal;
+  onProgress?: (loaded: number, total?: number) => void;
+}
+
 export class APIClient {
   constructor(
     readonly config: AppConfig,
@@ -307,6 +317,105 @@ export class APIClient {
       'idempotent-mutation',
     );
   }
+  upload<T>(path: string, body: FormData, controls: UploadControls = {}): Promise<T> {
+    const targetURL = this.url(path);
+    const sameOrigin = new URL(targetURL, location.href).origin === location.origin;
+    return new Promise<T>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      let settled = false;
+      const finish = (callback: () => void) => {
+        if (settled) return;
+        settled = true;
+        controls.signal?.removeEventListener('abort', abort);
+        callback();
+      };
+      const abort = () => {
+        xhr.abort();
+        finish(() =>
+          reject(controls.signal?.reason || new DOMException('Upload cancelled', 'AbortError')),
+        );
+      };
+      if (controls.signal?.aborted) {
+        abort();
+        return;
+      }
+      xhr.open('POST', targetURL, true);
+      xhr.withCredentials = sameOrigin;
+      xhr.setRequestHeader('Accept', 'application/json');
+      const token = this.hooks.getToken();
+      if (sameOrigin && token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+      if (this.config.version) xhr.setRequestHeader('X-Term-LLM-UI-Version', this.config.version);
+      xhr.upload.onprogress = (event) =>
+        controls.onProgress?.(event.loaded, event.lengthComputable ? event.total : undefined);
+      xhr.onerror = () => {
+        this.hooks.onNetworkState?.(navigator.onLine === false ? 'offline' : 'retrying');
+        finish(() => reject(new TypeError('Transcription upload failed')));
+      };
+      xhr.onabort = () => finish(() => reject(new DOMException('Upload cancelled', 'AbortError')));
+      xhr.onload = () => {
+        const responseHeaders = new Headers();
+        for (const line of xhr
+          .getAllResponseHeaders()
+          .trim()
+          .split(/[\r\n]+/)) {
+          const separator = line.indexOf(':');
+          if (separator > 0)
+            responseHeaders.append(
+              line.slice(0, separator).trim(),
+              line.slice(separator + 1).trim(),
+            );
+        }
+        const serverVersion = responseHeaders.get('X-Term-LLM-UI-Version');
+        if (serverVersion && this.config.version && serverVersion !== this.config.version)
+          this.hooks.onVersionMismatch?.();
+        if ((xhr.status === 401 || xhr.status === 403) && !externalAuthRedirecting) {
+          const loginURL = trustedExternalLoginURL({
+            status: xhr.status,
+            headers: responseHeaders,
+          });
+          if (loginURL) {
+            externalAuthRedirecting = true;
+            location.assign(loginURL);
+          } else {
+            this.hooks.onAuthRequired();
+          }
+        }
+        if (xhr.status < 200 || xhr.status >= 300) {
+          const raw = xhr.responseText || '';
+          let message = raw || `Upload returned ${xhr.status}`;
+          let type = '';
+          try {
+            const parsed = JSON.parse(raw) as {
+              error?: string | { message?: string; type?: string; code?: string };
+              message?: string;
+              type?: string;
+            };
+            if (typeof parsed.error === 'object') {
+              message = parsed.error.message || message;
+              type = parsed.error.type || parsed.error.code || '';
+            } else {
+              message = parsed.error || parsed.message || message;
+              type = parsed.type || '';
+            }
+          } catch {
+            /* Plain text response. */
+          }
+          finish(() => reject(new APIError(message, xhr.status, raw, type)));
+          return;
+        }
+        this.hooks.onNetworkState?.('online');
+        try {
+          const value = rawJSON<T>(xhr.responseText);
+          finish(() => resolve(value));
+        } catch (error) {
+          finish(() => reject(error));
+        }
+      };
+      controls.signal?.addEventListener('abort', abort, { once: true });
+      xhr.send(body);
+    });
+  }
+
   delete<T>(path: string, body?: unknown): Promise<T> {
     return this.json<T>(
       path,

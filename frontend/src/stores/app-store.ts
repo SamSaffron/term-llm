@@ -72,7 +72,12 @@ import {
 } from '../platform/storage';
 import { sessionIDFromLocation, updateSessionRoute } from '../platform/routing';
 import { blobChecksum, blobToDataURL, DraftBlobStore } from '../platform/draft-blobs';
-import { enableNotifications, hardRefreshAssets, syncTokenCookie } from '../platform/browser';
+import { hardRefreshAssets, syncTokenCookie } from '../platform/browser';
+import {
+  NotificationController,
+  completionEventId,
+  type NotificationState,
+} from '../platform/notifications';
 import { rebaseHubAssetURL } from '../app/config';
 import { parseTabEvent, TabSync, type TabEventType } from '../platform/tab-sync';
 import { StreamSupervisors, type StreamSupervisor } from './stream-supervisor';
@@ -128,6 +133,8 @@ export interface DiffState {
   error: string;
   maximized: boolean;
   width: number;
+  selectedPath: string;
+  followCurrentFile: boolean;
 }
 export interface PendingInterjection {
   id: string;
@@ -268,6 +275,7 @@ export class AppStore {
   readonly keys: StorageKeys;
   readonly api: APIClient;
   readonly endpoints: Endpoints;
+  readonly notificationController: NotificationController;
 
   readonly sessions = signal<Session[]>([]);
   readonly projects = signal<Project[]>([]);
@@ -305,7 +313,12 @@ export class AppStore {
   readonly searchError = signal('');
   readonly showHidden: Signal<boolean>;
   readonly showWidgets: Signal<boolean>;
-  readonly notificationsEnabled: Signal<boolean>;
+  readonly notifications = signal<NotificationState>({
+    status: 'unsupported',
+    busy: false,
+    detail: 'Checking notification support…',
+    verified: false,
+  });
   readonly widgets = signal<
     Array<{ id: string; name: string; url: string; description?: string; state?: string }>
   >([]);
@@ -350,6 +363,8 @@ export class AppStore {
     error: '',
     maximized: false,
     width: 420,
+    selectedPath: '',
+    followCurrentFile: true,
   });
   readonly goal = signal<Goal | null>(null);
   readonly mcp = signal<{
@@ -370,6 +385,14 @@ export class AppStore {
     src: string;
     type: 'image' | 'video';
     ownsObjectURL?: boolean;
+    items?: Array<{
+      key: string;
+      src: string;
+      type: 'image' | 'video';
+      name?: string;
+      ownsObjectURL?: boolean;
+    }>;
+    index?: number;
   } | null>(null);
   readonly renameTarget = signal<Session | null>(null);
   readonly projectTarget = signal<Session | null>(null);
@@ -385,6 +408,7 @@ export class AppStore {
     storageFailures: 0,
   });
   readonly fileChangeRevision = signal(0);
+  readonly currentActivityFile = signal('');
   readonly pendingIntents: Signal<PendingIntentRegistry>;
 
   readonly activeSession: ReadonlySignal<Session | null>;
@@ -437,6 +461,7 @@ export class AppStore {
   private disposed = false;
   private currentDraftRev = 0;
   private readonly childRunETags = new Map<string, string>();
+  private readonly handledCompletionEvents = new Set<string>();
   private newDraftID = '';
   private readonly attachmentGenerations = new Map<string, number>();
   private readonly ownedTimers = new Set<number>();
@@ -469,7 +494,9 @@ export class AppStore {
     this.sidebarCollapsed = signal(storage.getItem(this.keys.sidebarCollapsed) === '1');
     this.showHidden = signal(storage.getItem(this.keys.showHiddenSessions) === '1');
     this.showWidgets = signal(storage.getItem(this.keys.showWidgetsSidebar) !== '0');
-    this.notificationsEnabled = signal(storage.getItem(this.keys.notificationsEnabled) === '1');
+    // The legacy boolean was optimistic and is never authoritative. Enrollment
+    // is reconstructed from browser and server state below.
+    storage.removeItem(this.keys.notificationsEnabled);
     this.pendingIntents = signal(readPendingIntents(storage, this.keys.pendingIntents));
     this.agentReadMarkers = signal(readAgentReadMarkers(storage, this.keys.agentReadMarkers));
     this.diff.value = {
@@ -503,6 +530,15 @@ export class AppStore {
       },
     });
     this.endpoints = endpoints(this.api);
+    this.notificationController = new NotificationController(
+      config,
+      this.endpoints,
+      storage,
+      this.keys.notificationSubscriptionID,
+    );
+    this.notificationController.setListener((state) => {
+      this.notifications.value = state;
+    });
     this.activeSession = computed(
       () =>
         this.sessions.value.find((session) => session.id === this.activeSessionId.value) || null,
@@ -606,6 +642,7 @@ export class AppStore {
   private installLifecycle(): void {
     if (this.lifecycleInstalled) return;
     this.lifecycleInstalled = true;
+    this.notificationController.installLifecycle();
     addEventListener(
       'popstate',
       () => {
@@ -1135,6 +1172,7 @@ export class AppStore {
     this.resetSideQuestion();
     const epoch = ++this.selectionEpoch;
     batch(() => {
+      this.sidebarOpen.value = false;
       this.activeSessionId.value = session.id;
       this.activeProjectId.value = session.projectId || '';
       this.draftActive.value = false;
@@ -1173,7 +1211,6 @@ export class AppStore {
     void this.refreshBranchTree(current.id);
     void this.loadChildRuns(current.id);
     if (current.activeResponseId) void this.resumeResponse(current.id, current.activeResponseId);
-    this.sidebarOpen.value = false;
   }
 
   newChat(replace = false, projectId?: string, persistCurrent = true): void {
@@ -1212,6 +1249,7 @@ export class AppStore {
         this.newDraftID = legacyID;
     }
     batch(() => {
+      this.sidebarOpen.value = false;
       this.activeSessionId.value = '';
       this.activeProjectId.value = selectedProject;
       this.draftActive.value = true;
@@ -1229,6 +1267,10 @@ export class AppStore {
     if (selectedProject) this.storage.setItem(this.keys.lastProject, selectedProject);
     updateSessionRoute(this.config.prefix, null, replace);
     this.restoreDraftFor(this.draftStorageID());
+  }
+
+  composerOwnerKey(): string {
+    return this.draftActive.peek() ? this.draftStorageID() : this.activeSessionId.peek();
   }
 
   private draftStorageID(): string {
@@ -1564,6 +1606,10 @@ export class AppStore {
     this.sendPending.value = true;
     const clientMessageId = uuid();
     const requestId = uuid();
+    const notificationState = this.notifications.peek();
+    const notificationSubscriptionId =
+      notificationState.status === 'subscribed' ? notificationState.subscriptionId || '' : '';
+
     let session = this.activeSession.value;
     const optimistic: Message = {
       id: `pending_${clientMessageId}`,
@@ -1631,6 +1677,7 @@ export class AppStore {
       startedAt: Date.now(),
       reconnects: 0,
       requestId,
+      notificationSubscriptionId: notificationSubscriptionId || undefined,
     };
     this.runs.value = { ...this.runs.value, [sessionId]: initialProjection(run) };
     // Ownership changes before any previous controller is touched. The POST
@@ -1695,12 +1742,15 @@ export class AppStore {
     };
     const submit = async (signal: AbortSignal): Promise<void> => {
       try {
-        const response = await this.endpoints.createResponse(
-          requestBody,
-          sessionId.startsWith('draft_') ? '' : sessionId,
-          requestId,
-          signal,
-        );
+        const response = notificationSubscriptionId
+          ? await this.endpoints.createResponse(
+              requestBody,
+              sessionId,
+              requestId,
+              signal,
+              notificationSubscriptionId,
+            )
+          : await this.endpoints.createResponse(requestBody, sessionId, requestId, signal);
         ownerID = await this.acceptCreatedResponse({
           response,
           streamOwner,
@@ -2152,6 +2202,7 @@ export class AppStore {
       );
     }
     if (next.fileChangeRevision !== current.fileChangeRevision) {
+      this.currentActivityFile.value = String(event.path || event.file || event.file_path || '');
       this.fileChangeRevision.value += 1;
       if (this.diff.value.open && this.diff.value.sessionId === sessionId) void this.loadDiff();
     }
@@ -2159,6 +2210,25 @@ export class AppStore {
       ['completed', 'cancelled', 'failed'].includes(next.run.status) &&
       next.run.status !== current.run.status
     ) {
+      const originatingSubscriptionId = next.run.notificationSubscriptionId || '';
+      if (
+        (next.run.status === 'completed' || next.run.status === 'failed') &&
+        originatingSubscriptionId
+      ) {
+        const eventId = completionEventId(next.run.responseId, originatingSubscriptionId);
+        if (!this.handledCompletionEvents.has(eventId)) {
+          this.handledCompletionEvents.add(eventId);
+          void this.notificationController.signalCompletion(
+            {
+              responseId: next.run.responseId,
+              sessionId,
+              outcome: next.run.status,
+              createdAt: new Date(next.run.endedAt || Date.now()).toISOString(),
+            },
+            originatingSubscriptionId,
+          );
+        }
+      }
       this.locallyStoppedResponses.delete(next.run.responseId);
       this.retireIntent(sessionId);
       this.sessions.value = this.sessions.value.map((session) =>
@@ -3147,10 +3217,13 @@ export class AppStore {
     void this.bootstrap();
   }
   async enableNotifications(): Promise<void> {
-    const enabled = await enableNotifications(this.config, this.endpoints);
-    this.notificationsEnabled.value = enabled;
-    if (enabled) this.storage.setItem(this.keys.notificationsEnabled, '1');
-    else this.storage.removeItem(this.keys.notificationsEnabled);
+    await this.notificationController.enable();
+  }
+  async retryNotifications(): Promise<void> {
+    await this.notificationController.reconcile({ repair: true });
+  }
+  async disableNotifications(): Promise<void> {
+    await this.notificationController.disable();
   }
 
   private upsertInteraction(
@@ -4032,7 +4105,10 @@ export class AppStore {
       )
         return;
       const lines = Array.isArray(data.hunks)
-        ? linesFromHunks(data.hunks)
+        ? linesFromHunks(data.hunks, {
+            old: Number(data.old_line_count) || 0,
+            new: Number(data.new_line_count) || 0,
+          })
         : Array.isArray(data.lines)
           ? (data.lines as DiffFile['lines'])
           : parseUnifiedPatch(String(data.diff || data.patch || ''));
@@ -4620,6 +4696,11 @@ export class AppStore {
   async invokeSkill(name: string, args: string): Promise<void> {
     const session = this.activeSession.value;
     if (!session) return;
+    const skill = this.skills.peek().find((entry) => String(entry.name || '') === name);
+    if (this.streaming.peek() && skill?.execution !== 'isolated') {
+      this.toast('This main-conversation skill cannot run while a response is active.', 'error');
+      return;
+    }
     const id = uuid();
     const invocation = `/${name}${args.trim() ? ` ${args.trim()}` : ''}`;
     const optimistic: Message = {
@@ -5109,6 +5190,7 @@ export class AppStore {
     this.skillRunAborts.clear();
     this.skillRunCursors.clear();
     this.streamSupervisors.dispose();
+    this.notificationController.dispose();
     this.releaseAttachmentResources(this.attachments.peek(), false);
     this.draftBlobs.close();
     this.sessionSyncChannel?.close();

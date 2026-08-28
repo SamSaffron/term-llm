@@ -3,7 +3,10 @@ import { overlayManager } from '../platform/overlay-manager';
 import { StoreContext } from '../app/context';
 import { Icon } from './Icon';
 
-export function trapOverlayFocus(event: KeyboardEvent, selector: string): void {
+export const OVERLAY_FOCUSABLE =
+  'button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href],audio[controls],video[controls],[contenteditable="true"],[tabindex]:not([tabindex="-1"])';
+
+export function trapOverlayFocus(event: KeyboardEvent, selector = OVERLAY_FOCUSABLE): void {
   if (event.key !== 'Tab') return;
   const root = event.currentTarget as HTMLElement | null;
   if (!root) return;
@@ -44,6 +47,7 @@ export function Overlay({
   id?: string;
 }) {
   const store = useContext(StoreContext);
+  const overlay = useRef<HTMLDivElement>(null);
   const dialog = useRef<HTMLDivElement>(null);
   const token = useRef<symbol | null>(null);
   const label = useId();
@@ -53,7 +57,7 @@ export function Overlay({
       if (store) store.modal.value = '';
     });
   useLayoutEffect(() => {
-    token.current = overlayManager.acquire(undefined, dialog.current);
+    token.current = overlayManager.acquire(undefined, overlay.current);
     const focusFrame = requestAnimationFrame(() => {
       const target =
         dialog.current?.querySelector<HTMLElement>('[autofocus]:not([disabled])') ||
@@ -71,16 +75,28 @@ export function Overlay({
   }, []);
   return (
     <div
+      ref={overlay}
       class="modal-overlay"
       role="presentation"
-      onMouseDown={(event) => {
+      onPointerDown={(event) => {
+        if (event.target === event.currentTarget)
+          event.currentTarget.dataset.dismissPointer = String(event.pointerId);
+      }}
+      onPointerUp={(event) => {
+        const startedOutside =
+          event.currentTarget.dataset.dismissPointer === String(event.pointerId);
+        delete event.currentTarget.dataset.dismissPointer;
         if (
           close &&
+          startedOutside &&
           event.target === event.currentTarget &&
           token.current &&
           overlayManager.isTop(token.current)
         )
           dismiss();
+      }}
+      onPointerCancel={(event) => {
+        delete event.currentTarget.dataset.dismissPointer;
       }}
     >
       <div
@@ -104,10 +120,7 @@ export function Overlay({
             else dismiss();
             return;
           }
-          trapOverlayFocus(
-            event,
-            'button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href],[tabindex]:not([tabindex="-1"])',
-          );
+          trapOverlayFocus(event);
         }}
       >
         <div class="modal-title-row">

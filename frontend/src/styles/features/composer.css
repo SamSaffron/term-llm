@@ -83,6 +83,29 @@
   background: var(--surface-3);
 }
 
+.voice-status-action {
+  flex-shrink: 0;
+}
+
+.voice-status-failed {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+}
+
+.voice-status-complete {
+  border-color: color-mix(in srgb, var(--success, #22c55e) 55%, var(--border));
+}
+
+.voice-unsupported {
+  display: block;
+  margin: 0 0.3rem 0.35rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.voice-btn.busy {
+  opacity: 0.65;
+}
+
 @keyframes voice-pulse {
   0% {
     box-shadow: 0 0 0 0 rgb(248 113 113 / 55%);
@@ -189,6 +212,9 @@
   background: var(--surface);
   box-shadow: var(--shadow-strong);
   z-index: 20;
+  max-height: min(60dvh, calc(var(--app-height) - var(--safe-top) - 7rem));
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .slash-command-menu {
@@ -507,5 +533,52 @@
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@media (width <= 700px) {
+  .composer {
+    padding: 0.45rem calc(0.5rem + var(--safe-right)) max(0.1rem, calc(var(--safe-bottom) * 0.2))
+      calc(0.5rem + var(--safe-left));
+  }
+
+  .voice-status {
+    margin: 0 0.15rem 0.4rem;
+    padding: 0.65rem 0.75rem;
+    border-radius: 16px;
+    gap: 0.6rem;
+  }
+
+  .voice-status-copy {
+    flex: 1 1 10rem;
+    font-size: 0.89rem;
+  }
+
+  .voice-status-cancel,
+  .voice-status-action {
+    min-height: 44px;
+    padding: 0.48rem 0.72rem;
+  }
+
+  .composer-box {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    border-radius: 22px;
+    padding: 5px;
+  }
+
+  .composer-icon-btn,
+  .send-btn,
+  .stop-btn {
+    min-height: 44px;
+  }
+
+  .composer-icon-btn,
+  .send-btn {
+    width: 44px;
+    height: 44px;
+  }
+
+  .prompt {
+    padding: 12px 6px;
   }
 }

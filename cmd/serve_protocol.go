@@ -868,8 +868,10 @@ func decodeJSONBody(r *http.Request, dst any) error {
 }
 
 const (
-	requestSessionIDHeader       = "X-Term-LLM-Session-ID"
-	legacyRequestSessionIDHeader = "session_id"
+	requestSessionIDHeader        = "X-Term-LLM-Session-ID"
+	legacyRequestSessionIDHeader  = "session_id"
+	requestDraftIDHeader          = "X-Term-LLM-Draft-ID"
+	requestPushSubscriptionHeader = "X-Term-LLM-Push-Subscription-ID"
 )
 
 func resolveRequestSessionID(r *http.Request) string {

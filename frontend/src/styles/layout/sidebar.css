@@ -1,5 +1,9 @@
 /* Sidebar shell: brand, hub links and the widgets rail. */
 
+.sidebar-overlay-root {
+  display: contents;
+}
+
 .sidebar {
   border-right: 1px solid var(--border);
   background: var(--surface);
