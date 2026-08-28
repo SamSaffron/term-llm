@@ -52,6 +52,7 @@ import type {
   Message,
   Project,
   Session,
+  Widget,
 } from '../domain/types';
 import {
   clearSessionDiffComments,
@@ -318,9 +319,7 @@ export class AppStore {
     detail: 'Checking notification support…',
     verified: false,
   });
-  readonly widgets = signal<
-    Array<{ id: string; name: string; url: string; description?: string; state?: string }>
-  >([]);
+  readonly widgets = signal<Widget[]>([]);
   readonly hubAgents = signal<HubAgent[]>([]);
   readonly modal = signal<Modal>('');
   readonly toasts = signal<Toast[]>([]);
@@ -934,8 +933,10 @@ export class AppStore {
         return {
           id: String(entry.id || mount),
           name: String(entry.title || entry.name || mount || 'Widget'),
+          mount,
           description: String(entry.description || ''),
           state: String(entry.state || 'stopped'),
+          error: String(entry.error || ''),
           url: mount
             ? `${this.config.prefix}/widgets/${encodeURIComponent(mount)}/`
             : String(entry.url || ''),

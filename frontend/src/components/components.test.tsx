@@ -2542,6 +2542,68 @@ describe('Preact-owned chat surfaces', () => {
     });
   });
 
+  it('renders widgets as a bounded, searchable launcher with useful status details', () => {
+    const store = createStore();
+    store.modal.value = 'widgets';
+    store.widgets.value = [
+      {
+        id: 'usage',
+        name: 'Usage dashboard',
+        url: '/ui/widgets/usage/',
+        mount: 'usage',
+        description: 'Track token usage and cost.',
+        state: 'running',
+      },
+      {
+        id: 'discourse',
+        name: 'Discourse SQL Lab',
+        url: '/ui/widgets/discourse/',
+        mount: 'discourse',
+        description: 'Query community data.',
+        state: 'error',
+        error: 'DISCOURSE_API_KEY is missing',
+      },
+      ...Array.from({ length: 6 }, (_, index) => ({
+        id: `tool-${index}`,
+        name: `Local tool ${index + 1}`,
+        url: `/ui/widgets/tool-${index}/`,
+        mount: `tool-${index}`,
+        description: `Local utility ${index + 1}`,
+        state: 'stopped',
+      })),
+    ];
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    expect(screen.getByRole('dialog', { name: 'Widgets' })).toHaveClass('widgets-modal');
+    expect(screen.getByText('Open a local tool without leaving your workspace.')).toBeVisible();
+    expect(screen.getByLabelText('8 widgets available')).toHaveTextContent('8 available');
+    expect(screen.getByRole('link', { name: 'Open Usage dashboard, Running' })).toHaveAttribute(
+      'href',
+      '/ui/widgets/usage/',
+    );
+    expect(screen.getByText('Track token usage and cost.')).toBeVisible();
+    expect(screen.getByText('Unavailable')).toBeVisible();
+    expect(screen.getByText('DISCOURSE_API_KEY is missing')).toBeVisible();
+    expect(screen.getAllByRole('link')[0]).toHaveAccessibleName(
+      'Open Discourse SQL Lab, Unavailable',
+    );
+
+    const filter = screen.getByRole('searchbox', { name: 'Filter widgets' });
+    fireEvent.input(filter, { target: { value: 'discourse' } });
+    expect(screen.getByRole('link', { name: 'Open Discourse SQL Lab, Unavailable' })).toBeVisible();
+    expect(
+      screen.queryByRole('link', { name: 'Open Usage dashboard, Running' }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.input(filter, { target: { value: 'no such widget' } });
+    expect(screen.getByText('No matching widgets')).toBeVisible();
+  });
+
   it('restores the rich, searchable MCP server picker', async () => {
     const store = createStore();
     store.modal.value = 'mcp';

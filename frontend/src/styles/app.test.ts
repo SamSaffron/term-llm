@@ -57,6 +57,17 @@ describe('header styles', () => {
   });
 });
 
+describe('widget launcher styles', () => {
+  it('keeps the launcher bounded and its card grid independently scrollable', () => {
+    expect(appCSS).toMatch(
+      /\.modal\.widgets-modal\s*\{[^}]*max-height:[^;}]+;[^}]*overflow: hidden;/s,
+    );
+    expect(appCSS).toMatch(/\.widget-grid\s*\{[^}]*min-height: 0;[^}]*overflow-y: auto;/s);
+    expect(appCSS).not.toContain('.widget-row');
+    expect(appCSS).not.toContain('.widgets-modal-list');
+  });
+});
+
 describe('touch affordances', () => {
   it('keeps hover-revealed controls visible without a precise hovering pointer', () => {
     const touchRules = [

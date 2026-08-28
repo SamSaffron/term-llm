@@ -15,6 +15,7 @@
 @import './features/modals.css';
 @import './features/notifications.css';
 @import './features/approvals.css';
+@import './features/widgets.css';
 @import './features/attachments.css';
 @import './features/drawer.css';
 @import './features/lightbox.css';

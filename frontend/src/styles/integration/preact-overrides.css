@@ -586,13 +586,11 @@ mark.diff-word {
   font-size: 0.82rem;
 }
 
-.widgets-modal-list,
 .skills-list {
   display: grid;
   gap: 0.3rem;
 }
 
-.widget-row,
 .skill-row {
   appearance: none;
   display: grid;
@@ -610,14 +608,12 @@ mark.diff-word {
   cursor: pointer;
 }
 
-.widget-row:hover,
 .skill-row:hover,
 .skill-row.selected {
   border-color: var(--border);
   background: var(--surface-2);
 }
 
-.widget-row small,
 .skill-row small {
   grid-column: 1 / -1;
   overflow: hidden;

@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import { errorMessage } from '../domain/text';
 import { skillExecutionDescription, skillExecutionLabel } from '../domain/completions';
-import type { ApprovalPrompt, AskUserPrompt } from '../domain/types';
+import type { ApprovalPrompt, AskUserPrompt, Widget } from '../domain/types';
 import { Icon } from './Icon';
 import { Overlay } from './Overlay';
 import { Markdown } from './Markdown';
@@ -828,20 +828,119 @@ function GoalModal() {
     </Overlay>
   );
 }
+const WIDGET_STATUS: Record<string, { label: string; tone: string } | undefined> = {
+  running: { label: 'Running', tone: 'running' },
+  started: { label: 'Running', tone: 'running' },
+  starting: { label: 'Starting', tone: 'starting' },
+  error: { label: 'Unavailable', tone: 'error' },
+};
+
+function widgetStatus(widget: Widget): { label: string; tone: string } | null {
+  const state = String(widget.state || 'stopped').toLowerCase();
+  if (state === 'stopped') return null;
+  return WIDGET_STATUS[state] || { label: state.replace(/[-_]/g, ' '), tone: 'other' };
+}
+
 function Widgets() {
   const store = useStore();
+  const [query, setQuery] = useState('');
+  const widgets = [...store.widgets.value].sort((left, right) =>
+    left.name.localeCompare(right.name, undefined, { sensitivity: 'base' }),
+  );
+  const showSearch = widgets.length > 6;
+  const normalizedQuery = query.trim().toLowerCase();
+  const visibleWidgets = normalizedQuery
+    ? widgets.filter((widget) =>
+        [widget.name, widget.description, widget.mount].some((value) =>
+          String(value || '')
+            .toLowerCase()
+            .includes(normalizedQuery),
+        ),
+      )
+    : widgets;
+  const countLabel = `${widgets.length} ${widgets.length === 1 ? 'widget' : 'widgets'}`;
+
   return (
-    <Overlay title="Widgets">
-      <div class="widgets-modal-list">
-        {store.widgets.value.map((widget) => (
-          <a class="widget-row" key={widget.id} href={widget.url} title={widget.description}>
-            <span>
-              {widget.name}
-              {widget.state && widget.state !== 'stopped' ? ` · ${widget.state}` : ''}
-            </span>
-            <span>→</span>
-          </a>
-        ))}
+    <Overlay title="Widgets" className="widgets-modal">
+      <div class="widgets-modal-intro">
+        <p class="widgets-modal-subtitle">Open a local tool without leaving your workspace.</p>
+        {widgets.length > 0 && (
+          <span class="widgets-modal-summary" aria-label={`${countLabel} available`}>
+            {widgets.length} available
+          </span>
+        )}
+      </div>
+      {showSearch && (
+        <label class="widgets-modal-search">
+          <span class="widgets-modal-search-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+              <circle cx="11" cy="11" r="7" />
+              <path d="m16 16 4 4" />
+            </svg>
+          </span>
+          <input
+            type="search"
+            aria-label="Filter widgets"
+            value={query}
+            placeholder="Find a widget…"
+            autoFocus
+            onInput={(event) => setQuery(event.currentTarget.value)}
+          />
+        </label>
+      )}
+      <div class="widget-grid">
+        {widgets.length === 0 ? (
+          <div class="widget-empty" role="status">
+            <strong>No widgets available</strong>
+            <span>Loaded local widgets will appear here.</span>
+          </div>
+        ) : visibleWidgets.length === 0 ? (
+          <div class="widget-empty" role="status">
+            <strong>No matching widgets</strong>
+            <span>Try a different name or clear the filter.</span>
+          </div>
+        ) : (
+          visibleWidgets.map((widget, index) => {
+            const status = widgetStatus(widget);
+            const detail =
+              widget.description || (widget.mount ? `/${widget.mount}` : 'Local widget');
+            return (
+              <a
+                class="widget-card"
+                data-state={status?.tone || 'ready'}
+                key={widget.id}
+                href={widget.url}
+                title={widget.description || widget.name}
+                aria-label={`Open ${widget.name}${status ? `, ${status.label}` : ''}`}
+                autoFocus={!showSearch && index === 0}
+              >
+                <span class="widget-card-icon" aria-hidden="true">
+                  <Icon name="widgets" />
+                </span>
+                <span class="widget-card-copy">
+                  <span class="widget-card-title-row">
+                    <span class="widget-card-name">{widget.name}</span>
+                    {status && (
+                      <span class="widget-card-status">
+                        <span class="widget-status-dot" aria-hidden="true" />
+                        {status.label}
+                      </span>
+                    )}
+                  </span>
+                  <span class="widget-card-meta">{detail}</span>
+                  {status?.tone === 'error' && widget.error && (
+                    <span class="widget-card-error">{widget.error}</span>
+                  )}
+                </span>
+                <Icon class="widget-card-chevron" name="chevron-right" />
+              </a>
+            );
+          })
+        )}
+      </div>
+      <div class="widgets-modal-footer">
+        <Icon name="info" />
+        <span>Local widgets open in this tab.</span>
       </div>
     </Overlay>
   );

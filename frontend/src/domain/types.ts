@@ -117,6 +117,16 @@ export interface Goal {
   tokens_used?: number;
 }
 
+export interface Widget {
+  id: string;
+  name: string;
+  url: string;
+  mount?: string;
+  description?: string;
+  state?: string;
+  error?: string;
+}
+
 export interface Session {
   id: string;
   number?: number;
