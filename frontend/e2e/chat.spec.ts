@@ -336,6 +336,16 @@ test('mobile floating surfaces dismiss from their outside area and restore inter
   await expect(runtime).toBeHidden();
   await expect(runtimeTrigger).toBeFocused();
 
+  // Keyboard dismissal restores a rounded focus ring without WebKit's outline corner artifacts.
+  await runtimeTrigger.press('Enter');
+  const runtimeClose = page.getByRole('button', { name: 'Close runtime settings' });
+  await expect(runtimeClose).toBeFocused();
+  await runtimeClose.press('Enter');
+  await expect(runtime).toBeHidden();
+  await expect(runtimeTrigger).toBeFocused();
+  await expect(runtimeTrigger).toHaveCSS('outline-style', 'none');
+  await expect(runtimeTrigger).not.toHaveCSS('box-shadow', 'none');
+
   await page.getByRole('button', { name: 'Toggle file changes' }).click();
   const changes = page.getByRole('dialog', { name: 'Session file changes' });
   await expect(changes).toBeVisible();
