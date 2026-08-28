@@ -8,24 +8,7 @@ Terminal-first AI runtime for commands, chat, editing, tools, jobs, agents, and 
 
 [![Release](https://img.shields.io/github/v/release/samsaffron/term-llm?style=flat-square)](https://github.com/samsaffron/term-llm/releases)
 
-Docs hub: **https://term-llm.com**
-
-## Why it exists
-
-- turn natural language into executable shell commands
-- run persistent chat with tools and MCP servers
-- edit files with model assistance
-- support agents, skills, sessions, jobs, and local automation
-- work with hosted or local models
-
-```bash
-$ term-llm exec "find all go files modified today"
-
-> find . -name "*.go" -mtime 0   Uses find with name pattern
-  fd -e go --changed-within 1d   Uses fd (faster alternative)
-  find . -name "*.go" -newermt "today"   Alternative find syntax
-  something else...
-```
+Docs: **https://term-llm.com**
 
 ## Install
 
