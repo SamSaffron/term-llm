@@ -129,6 +129,7 @@ const (
 	DefaultSessionsMaxCount         = 0
 	DefaultSessionsStripImageBase64 = false
 
+	DefaultFileTrackingEnabled                    = true
 	DefaultFileTrackingMaxFileBytes               = 2 * 1024 * 1024
 	DefaultFileTrackingMaxSessionBytes            = 100 * 1024 * 1024
 	DefaultFileTrackingMaxTotalBytes              = int64(1024 * 1024 * 1024)
@@ -375,7 +376,7 @@ var keySpecs = []KeySpec{
 	optional("serve.mcp.approval_mode", withoutResetTemplate()),
 	def("serve.projects.enabled", true),
 
-	def("file_tracking.enabled", false),
+	def("file_tracking.enabled", DefaultFileTrackingEnabled),
 	def("file_tracking.max_file_bytes", DefaultFileTrackingMaxFileBytes),
 	def("file_tracking.max_session_bytes", DefaultFileTrackingMaxSessionBytes),
 	def("file_tracking.max_total_bytes", int(DefaultFileTrackingMaxTotalBytes)),

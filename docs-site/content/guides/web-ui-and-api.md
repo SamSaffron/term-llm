@@ -21,6 +21,7 @@ term-llm serve api                 # API only (no chat UI)
 term-llm serve web --base-path /chat
 term-llm serve web --title "My Lab"
 term-llm serve web --host 127.0.0.1 --port 8080
+term-llm serve web --enable-widgets
 term-llm serve web jobs
 term-llm serve web jobs telegram   # all platforms at once
 ```
@@ -76,6 +77,8 @@ With the default base path of `/ui`, the web runtime exposes:
 
 If the jobs platform is also enabled, the jobs API is mounted under the same base path.
 
+With `--enable-widgets`, local applications are available under `<base-path>/widgets/`. See [Web UI widgets](/guides/widgets/) for the manifest format, proxy behavior, lifecycle, and security model.
+
 LLM job runs now expose a `session_id` and persist to the same sessions store by default, which makes web/API integrations much easier to inspect while a progressive run is still executing.
 
 ## Project-aware Responses and worktrees
@@ -129,7 +132,7 @@ The explicit **Improve title with AI** action remains available from the rename 
 
 When [file change tracking](/reference/configuration/#file-change-tracking-config) is enabled, the browser UI shows a right-hand "Changes" panel for sessions in which agent tools modify files. Files appear as the agent edits them, expand inline to show the cumulative diff for the session (baseline = the file's state when the session first touched it), and can be collapsed individually. The panel is resizable and can be dismissed per session.
 
-Tracking is opt-in because it persists file contents to a local database — see the privacy note in the configuration reference. Changes made by shell commands are tracked best-effort: precise when the command declares `affected_paths`, otherwise inferred from `git status` and previously tracked files.
+File tracking is enabled by default. It can be disabled with `file_tracking.enabled: false`. Because tracking persists attributed file contents to a local database, review the privacy note in the configuration reference. Trusted direct write tools are witnessed automatically; shell transitions require compatible pre-execution `output_claims` for attribution, while unclaimed detected effects remain metadata-only observations.
 
 ## Attachments
 

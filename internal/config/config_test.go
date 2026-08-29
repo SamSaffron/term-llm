@@ -12,6 +12,40 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestFileTrackingDefaultsEnabledAndLoadsExplicitDisable(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.FileTracking.Enabled {
+		t.Fatal("file_tracking.enabled did not default to true")
+	}
+
+	configDir, err := GetConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte("file_tracking:\n  enabled: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	viper.Reset()
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.FileTracking.Enabled {
+		t.Fatal("explicit file_tracking.enabled=false was ignored")
+	}
+}
+
 func TestServeProjectsConfigDefaultsEnabledAndLoadsExplicitDisable(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	viper.Reset()
@@ -754,7 +788,7 @@ func TestChatTerminalTitleDefaultAndKnownKey(t *testing.T) {
 func TestFileTrackingDefaultsAndKnownKeys(t *testing.T) {
 	defaults := GetDefaults()
 	checks := map[string]any{
-		"file_tracking.enabled":           false,
+		"file_tracking.enabled":           true,
 		"file_tracking.max_file_bytes":    2097152,
 		"file_tracking.max_session_bytes": 104857600,
 		"file_tracking.max_total_bytes":   1073741824,

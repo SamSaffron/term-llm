@@ -433,7 +433,7 @@ Use this to control whether sessions are persisted, how long they are kept, and 
 
 ```yaml
 file_tracking:
-  enabled: false
+  enabled: true
   max_file_bytes: 2097152 # 2 MiB per-file content cap
   max_session_bytes: 104857600 # 100 MiB retained content per session
   max_total_bytes: 1073741824 # 1 GiB attributed-history data cap across sessions
@@ -445,19 +445,22 @@ file_tracking:
   path: "" # optional attributed DB path override; observation sidecar shares its directory
 ```
 
-Opt-in. When enabled, term-llm records retained before/after content only for attributed transitions: trusted direct mutation tools, or shell `transform`/`generate` claims declared before execution and subsequently verified. Materializations and unclaimed effects are metadata-only observations and never contribute Agent Changes totals.
+Enabled by default. term-llm records retained before/after content only for attributed transitions: trusted direct mutation tools, or shell `transform`/`generate` claims declared before execution and subsequently verified. Materializations and unclaimed effects are metadata-only observations and never contribute Agent Changes totals.
 
-Enable it with:
-
-```bash
-term-llm config set file_tracking.enabled true
-```
-
-or by adding the YAML above to your config file. To enable tracking only for one server invocation without changing the saved config, use:
+To disable file tracking, set:
 
 ```bash
-term-llm serve web --enable-file-tracking
+term-llm config set file_tracking.enabled false
 ```
+
+or add the following override to your config file:
+
+```yaml
+file_tracking:
+  enabled: false
+```
+
+The existing `term-llm serve web --enable-file-tracking` flag can still force tracking on for one server invocation when the saved config disables it.
 
 **Privacy note:** attributed content is persisted to `~/.local/share/term-llm/file_history.db`, separate from `sessions.db`. Retained blobs are gzip-compressed and content-addressed. Oversized, unsupported binary, unknown-side, and over-budget transitions keep provenance metadata but not a fabricated diff. `max_total_bytes` applies to growing attributed data with a small fixed structural reserve for mandatory indexes. History for deleted sessions is swept on startup, following `sessions.max_age_days`.
 

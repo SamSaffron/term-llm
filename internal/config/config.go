@@ -676,8 +676,9 @@ type SessionsConfig struct {
 }
 
 // FileTrackingConfig configures recording of file changes made by agent tools
+// and can be disabled by setting enabled to false.
 type FileTrackingConfig struct {
-	Enabled                    bool   `mapstructure:"enabled"` // Opt-in: record before/after content of attributed files
+	Enabled                    bool   `mapstructure:"enabled"` // Record before/after content of attributed files
 	MaxFileBytes               int    `mapstructure:"max_file_bytes"`
 	MaxSessionBytes            int    `mapstructure:"max_session_bytes"`
 	MaxTotalBytes              int64  `mapstructure:"max_total_bytes"`

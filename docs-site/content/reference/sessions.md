@@ -109,11 +109,11 @@ In the Web UI, the header worktree chip is scoped to the active project draft or
 
 ## File change history
 
-When `file_tracking.enabled` is true, term-llm records file changes made by agent tools and exposes them in the web UI as a per-session **Changes** panel. Changed sessions expose a Changes button; on narrower screens the panel opens as a drawer so it does not crush the chat column.
+File tracking is enabled by default. term-llm records file changes made by agent tools and exposes them in the web UI as a per-session **Changes** panel. Changed sessions expose a Changes button; on narrower screens the panel opens as a drawer so it does not crush the chat column. To turn tracking off, override the default in your config:
 
 ```yaml
 file_tracking:
-  enabled: true
+  enabled: false
 ```
 
 Agent Changes include witnessed `write_file`, `edit_file`, and `unified_diff` transitions plus shell transitions covered by a compatible pre-execution `transform` or `generate` output claim and verified by bounded snapshots. Direct and declared provenance are labeled separately. Materialized output (clone, checkout, install, download, extraction, initial copy) and unclaimed detected effects are presented in separate sections and never contribute file or line totals.

@@ -81,6 +81,7 @@ func TestIsBuiltinAgent(t *testing.T) {
 		{"file-organizer", true},
 		{"planner", true},
 		{"web-researcher", true},
+		{"widget-builder", true},
 		{"reviewer", true},
 		{"shell", true},
 		{"nonexistent", false},
@@ -120,6 +121,7 @@ func TestBuiltinAgentConfigs(t *testing.T) {
 		{"file-organizer", true, 200, true, true, false, false},
 		{"planner", true, 300, true, false, false, true},
 		{"web-researcher", true, 200, false, false, false, true},
+		{"widget-builder", true, 500, true, false, false, true},
 		{"reviewer", true, 200, true, true, true, false},
 		{"shell", true, 200, false, false, false, true},
 	}
@@ -252,6 +254,7 @@ func TestBuiltinPromptsUseCapabilityAwareDirectoryGuidance(t *testing.T) {
 		{name: "planner", guidance: shellGuidance},
 		{name: "reviewer", guidance: shellGuidance},
 		{name: "shell", guidance: shellGuidance},
+		{name: "widget-builder", guidance: shellGuidance},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -284,6 +287,58 @@ func TestAgentBuilderDocumentsVolatileDirectoryContext(t *testing.T) {
 	for _, want := range []string{"Avoid `{{!cwd}}`, `{{!cwd_name}}`, and `{{!git_branch}}`; they can go stale", "If `shell.allow` is set, include `pwd`"} {
 		if !strings.Contains(agent.SystemPrompt, want) {
 			t.Errorf("agent-builder system prompt missing %q", want)
+		}
+	}
+}
+
+func TestWidgetBuilderBuiltinContract(t *testing.T) {
+	agent, err := getBuiltinAgent("widget-builder")
+	if err != nil {
+		t.Fatalf("getBuiltinAgent(widget-builder): %v", err)
+	}
+	if err := agent.Validate(); err != nil {
+		t.Fatalf("Validate(): %v", err)
+	}
+	if agent.AgentsMd != "false" {
+		t.Errorf("AgentsMd = %q, want false", agent.AgentsMd)
+	}
+	if !agent.Search {
+		t.Error("Search = false, want true")
+	}
+	if agent.Shell.AutoRun {
+		t.Error("Shell.AutoRun = true, want false")
+	}
+
+	for _, tool := range []string{
+		"read_file", "write_file", "edit_file", "glob", "grep", "shell",
+		"view_image", "image_generate", "ask_user",
+	} {
+		if !stringSliceContains(agent.Tools.Enabled, tool) {
+			t.Errorf("Tools.Enabled = %#v, missing %q", agent.Tools.Enabled, tool)
+		}
+	}
+	for _, tool := range []string{"spawn_agent", "update_plan"} {
+		if stringSliceContains(agent.Tools.Enabled, tool) {
+			t.Errorf("Tools.Enabled unexpectedly contains %q", tool)
+		}
+	}
+
+	for _, want := range []string{
+		"$PORT",
+		"$SOCKET",
+		"BASE_PATH",
+		"127.0.0.1",
+		"relative asset, link, form, and fetch URLs",
+		"ten-second startup window",
+		"may be stopped after being idle",
+		"Authorization",
+		"Cookie",
+		"admin/widgets/reload",
+		"/home/agent/.config/term-llm/widgets/",
+		"~/.config/term-llm/widgets/",
+	} {
+		if !strings.Contains(agent.SystemPrompt, want) {
+			t.Errorf("system prompt missing %q", want)
 		}
 	}
 }
@@ -514,6 +569,7 @@ func TestGetBuiltinAgentNames(t *testing.T) {
 		"file-organizer": true,
 		"planner":        true,
 		"web-researcher": true,
+		"widget-builder": true,
 		"reviewer":       true,
 		"shell":          true,
 	}
