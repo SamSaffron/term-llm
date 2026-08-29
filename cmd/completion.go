@@ -352,7 +352,7 @@ func ToolsFlagCompletion(cmd *cobra.Command, args []string, toComplete string) (
 // Returns the specific providers that the usage command supports.
 func UsageProviderFlagCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	// Include aliases accepted by the usage command.
-	providers := []string{"chatgpt", "claude-bin", "cursor-bin", "opencode-go", "claude-code", "claude", "copilot", "term-llm", "all"}
+	providers := []string{"agy-bin", "chatgpt", "claude-bin", "cursor-bin", "opencode-go", "claude-code", "claude", "copilot", "term-llm", "all"}
 	var completions []string
 	for _, p := range providers {
 		if strings.HasPrefix(p, toComplete) {
