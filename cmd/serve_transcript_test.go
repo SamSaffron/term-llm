@@ -538,8 +538,14 @@ func TestHandleSessionsMessageCountMatchesConversationAcrossSelectedTranscriptRe
 	if len(normal.Sessions) != 1 || normal.Sessions[0].MsgCount != conversationCount {
 		t.Fatalf("normal sessions count=%+v, want %d", normal.Sessions, conversationCount)
 	}
+	if normal.Sessions[0].Model != sess.Model {
+		t.Fatalf("normal session model=%q, want %q", normal.Sessions[0].Model, sess.Model)
+	}
 	if normal.SelectedSession == nil || normal.SelectedSession.MsgCount != conversationCount {
 		t.Fatalf("normal selected_session=%+v, want count %d", normal.SelectedSession, conversationCount)
+	}
+	if normal.SelectedSession.Model != sess.Model {
+		t.Fatalf("selected session model=%q, want %q", normal.SelectedSession.Model, sess.Model)
 	}
 
 	selectedByID := requestSessions("/v1/sessions?selected_session=" + sess.ID + "&selected_only=1&include_transcript=1")
