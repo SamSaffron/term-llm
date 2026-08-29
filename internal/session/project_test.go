@@ -304,6 +304,31 @@ func TestSessionProjectRoundTripSearchAndConditionalBinding(t *testing.T) {
 	}
 }
 
+func TestSwitchSessionWorkspaceExplicitlyMovesProjectSession(t *testing.T) {
+	store := newProjectTestStore(t)
+	ctx := context.Background()
+	project := &Project{Name: "Switchable", CanonicalDir: t.TempDir()}
+	if err := store.CreateProject(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	sess := createWorkspaceTestSession(t, store, "switch-workspace")
+	first := filepath.Join(project.CanonicalDir, "first")
+	if _, err := store.BindSessionWorkspace(ctx, sess.ID, SessionWorkspaceBinding{ProjectID: project.ID, CWD: first, WorktreeDir: first}); err != nil {
+		t.Fatal(err)
+	}
+	second := filepath.Join(project.CanonicalDir, "second")
+	moved, err := store.SwitchSessionWorkspace(ctx, sess.ID, SessionWorkspaceBinding{ProjectID: project.ID, CWD: second, WorktreeDir: second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved.CWD != second || moved.WorktreeDir != second || moved.ProjectID != project.ID {
+		t.Fatalf("switched session = %#v", moved)
+	}
+	if _, err := store.SwitchSessionWorkspace(ctx, sess.ID, SessionWorkspaceBinding{ProjectID: "prj_other", CWD: project.CanonicalDir}); !errors.Is(err, ErrWorkspaceConflict) {
+		t.Fatalf("cross-project switch error = %v", err)
+	}
+}
+
 func TestStaleSessionUpdateCannotOverwriteProjectWorkspaceBinding(t *testing.T) {
 	store := newProjectTestStore(t)
 	ctx := context.Background()

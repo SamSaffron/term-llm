@@ -2,7 +2,7 @@ import { signal, type ReadonlySignal, type Signal } from '@preact/signals';
 import type { Project, Session } from '../domain/types';
 import { readDrafts, saveDraft } from '../platform/storage';
 import type { Modal } from './store-types';
-import { listFrom, worktreeErrorMessage } from './store-utils';
+import { listFrom, recordValue, worktreeErrorMessage } from './store-utils';
 import type { AppStoreServices } from './app-store-services';
 
 export interface WorktreeStoreOptions {
@@ -16,6 +16,7 @@ export interface WorktreeStoreOptions {
   modal: Signal<Modal>;
   selectedDraftWorktree: Signal<string>;
   draftStorageId: () => string;
+  patchSession: (id: string, patch: Partial<Session>) => void;
 }
 
 /** Owns worktree discovery and worktree commands for the active project. */
@@ -59,15 +60,16 @@ export class WorktreeStore {
     }
   }
 
-  async create(name: string): Promise<void> {
+  async create(name: string, clean = false): Promise<void> {
     const projectId = this.projectId();
+    this.error.value = '';
     try {
       if (this.options.projectsEnabled.value)
-        await this.services.endpoints.createProjectWorktree(projectId, { name });
-      else await this.services.api.post('/v1/worktrees', { name });
+        await this.services.endpoints.createProjectWorktree(projectId, { name, clean });
+      else await this.services.api.post('/v1/worktrees', { name, clean });
       await this.load();
     } catch (error) {
-      this.error.value = worktreeErrorMessage(error);
+      throw new Error(worktreeErrorMessage(error), { cause: error });
     }
   }
 
@@ -90,21 +92,64 @@ export class WorktreeStore {
     this.options.modal.value = '';
   }
 
-  async diff(dir: string): Promise<string> {
-    const data = await this.services.endpoints.worktreeDiff(this.projectId(), dir);
-    return String(data.diff || data.patch || '');
+  async switchTo(dir: string): Promise<void> {
+    const active = this.options.activeSession.value;
+    if (!active) throw new Error('Choose a conversation before switching worktrees.');
+    const data = await this.services.endpoints.switchWorktree(this.projectId(), dir, active.id);
+    this.options.patchSession(active.id, {
+      worktreeDir: String(data.worktree_dir || ''),
+      workingDir: String(data.cwd || ''),
+    });
+    await this.load();
+    this.services.toast(
+      dir ? 'Conversation switched to worktree.' : 'Conversation switched to root.',
+      'success',
+    );
   }
 
-  async merge(dir: string): Promise<void> {
-    await this.services.endpoints.mergeWorktree(this.projectId(), dir);
+  private async finishMutation(
+    data: Record<string, unknown>,
+    action: 'merged' | 'promoted',
+  ): Promise<Record<string, unknown>> {
     await this.load();
-    this.services.toast('Worktree merged.', 'success');
+    const cleanup = recordValue(data.cleanup);
+    const result = recordValue(data.result);
+    const movedSession = recordValue(data.session);
+    const warning = String(data.warning || '');
+    const inUse = Array.isArray(cleanup?.in_use) ? cleanup.in_use.length : 0;
+    const active = this.options.activeSession.value;
+    if (active && movedSession && String(movedSession.id || '') === active.id)
+      this.options.patchSession(active.id, {
+        worktreeDir: String(movedSession.worktree_dir || ''),
+        workingDir: String(movedSession.cwd || result?.root_dir || active.workingDir || ''),
+      });
+    if (warning) this.services.toast(warning, 'info');
+    else if (cleanup?.removed === true) {
+      this.services.toast(`Worktree ${action} and old checkout removed.`, 'success');
+    } else if (inUse > 0)
+      this.services.toast(
+        `Worktree ${action}; old checkout kept because ${inUse} other ${inUse === 1 ? 'conversation uses' : 'conversations use'} it.`,
+        'info',
+      );
+    else this.services.toast(`Worktree ${action}.`, 'success');
+    return data;
   }
 
-  async promote(dir: string, branch: string): Promise<void> {
-    await this.services.endpoints.promoteWorktree(this.projectId(), dir, branch);
-    await this.load();
-    this.services.toast('Worktree promoted.', 'success');
+  async merge(dir: string): Promise<Record<string, unknown>> {
+    const sessionId = this.options.activeSession.value?.id || '';
+    const data = await this.services.endpoints.mergeWorktree(this.projectId(), dir, sessionId);
+    return this.finishMutation(data, 'merged');
+  }
+
+  async promote(dir: string, branch: string): Promise<Record<string, unknown>> {
+    const sessionId = this.options.activeSession.value?.id || '';
+    const data = await this.services.endpoints.promoteWorktree(
+      this.projectId(),
+      dir,
+      branch,
+      sessionId,
+    );
+    return this.finishMutation(data, 'promoted');
   }
 
   async remove(dir: string, force = false): Promise<Record<string, unknown>> {

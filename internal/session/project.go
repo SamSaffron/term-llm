@@ -238,6 +238,43 @@ type SessionWorkspaceBinding struct {
 	WorktreeDir string
 }
 
+// SessionWorkspaceSwitcher performs an explicit user-requested workspace change
+// after the caller validates the project root and managed worktree boundary.
+type SessionWorkspaceSwitcher interface {
+	SwitchSessionWorkspace(ctx context.Context, sessionID string, binding SessionWorkspaceBinding) (*Session, error)
+}
+
+func AsSessionWorkspaceSwitcher(store Store) (SessionWorkspaceSwitcher, bool) {
+	if store == nil {
+		return nil, false
+	}
+	if logging, ok := store.(*LoggingStore); ok {
+		switcher, supported := AsSessionWorkspaceSwitcher(logging.Store)
+		if !supported {
+			return nil, false
+		}
+		return &loggingWorkspaceSwitcher{logger: logging, switcher: switcher}, true
+	}
+	if sqlite, ok := store.(*SQLiteStore); ok && (!sqlite.hasProjectID || sqlite.cfg.ReadOnly) {
+		return nil, false
+	}
+	switcher, ok := store.(SessionWorkspaceSwitcher)
+	return switcher, ok
+}
+
+type loggingWorkspaceSwitcher struct {
+	logger   *LoggingStore
+	switcher SessionWorkspaceSwitcher
+}
+
+func (s *loggingWorkspaceSwitcher) SwitchSessionWorkspace(ctx context.Context, id string, binding SessionWorkspaceBinding) (*Session, error) {
+	v, err := s.switcher.SwitchSessionWorkspace(ctx, id, binding)
+	if err != nil && !errors.Is(err, ErrWorkspaceConflict) && !errors.Is(err, ErrNotFound) {
+		s.logger.logOnce("SwitchSessionWorkspace", err)
+	}
+	return v, err
+}
+
 // SessionWorkspaceBinder provides first-writer-wins immutable binding.
 type SessionWorkspaceBinder interface {
 	BindSessionWorkspace(ctx context.Context, sessionID string, binding SessionWorkspaceBinding) (*Session, error)

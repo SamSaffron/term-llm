@@ -1552,6 +1552,24 @@ func MergeBack(ctx context.Context, dir string, opts MergeOptions) (MergeResult,
 
 var mergeBackTestHook func(stage string)
 
+// PromoteToRootAndCleanup promotes a worktree to a root branch and removes the
+// source when no other active sessions remain bound to it. The excluded session
+// is normally the caller, which will continue from the root checkout.
+func PromoteToRootAndCleanup(ctx context.Context, dir, branch string, opts PromoteOptions, store session.Store, excludeSessionID string) (PromoteResult, CleanupResult, error) {
+	res, err := PromoteToRoot(ctx, dir, branch, opts)
+	if err != nil {
+		return res, CleanupResult{}, err
+	}
+	cleanup, err := CleanupAfterOperation(ctx, dir, store, excludeSessionID)
+	if err != nil {
+		return res, CleanupResult{}, fmt.Errorf("%w: %w", ErrMergeCleanupFailed, err)
+	}
+	if cleanup.Removed {
+		res.OriginalWorktreeStillExists = false
+	}
+	return res, cleanup, nil
+}
+
 // MergeBackAndCleanup merges a worktree into root and removes it when no other
 // sessions are bound to it. The excluded session is normally the caller's own
 // session, which will be rebound to root after cleanup.
@@ -1560,10 +1578,19 @@ func MergeBackAndCleanup(ctx context.Context, dir string, opts MergeOptions, sto
 	if err != nil {
 		return res, CleanupResult{}, err
 	}
+	cleanup, err := CleanupAfterOperation(ctx, dir, store, excludeSessionID)
+	if err != nil {
+		return res, CleanupResult{}, fmt.Errorf("%w: %w", ErrMergeCleanupFailed, err)
+	}
+	return res, cleanup, nil
+}
 
+// CleanupAfterOperation removes a managed worktree after merge or promotion
+// when no active session remains bound to it.
+func CleanupAfterOperation(ctx context.Context, dir string, store session.Store, excludeSessionID string) (CleanupResult, error) {
 	inUse, err := InUse(ctx, store, dir)
 	if err != nil {
-		return res, CleanupResult{}, fmt.Errorf("%w: check session usage: %w", ErrMergeCleanupFailed, err)
+		return CleanupResult{}, fmt.Errorf("check session usage: %w", err)
 	}
 	excludeSessionID = strings.TrimSpace(excludeSessionID)
 	if excludeSessionID != "" {
@@ -1576,12 +1603,12 @@ func MergeBackAndCleanup(ctx context.Context, dir string, opts MergeOptions, sto
 		inUse = filtered
 	}
 	if len(inUse) > 0 {
-		return res, CleanupResult{InUse: inUse}, nil
+		return CleanupResult{InUse: inUse}, nil
 	}
 	if err := Remove(ctx, dir, RemoveOptions{Force: true}); err != nil {
-		return res, CleanupResult{}, fmt.Errorf("%w: %w", ErrMergeCleanupFailed, err)
+		return CleanupResult{}, err
 	}
-	return res, CleanupResult{Removed: true}, nil
+	return CleanupResult{Removed: true}, nil
 }
 
 // InUse returns active, non-archived sessions currently bound to dir when the store exposes worktree summaries.

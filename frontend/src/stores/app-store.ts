@@ -327,6 +327,7 @@ export class AppStore {
       modal: this.modal,
       selectedDraftWorktree: this.selectedDraftWorktree,
       draftStorageId: () => this.draftStorageID(),
+      patchSession: (id, patch) => this.sessionStore.patch(id, patch),
     });
     this.worktrees = this.worktreeStore.worktrees;
     this.worktreeError = this.worktreeStore.error;
@@ -1106,6 +1107,9 @@ export class AppStore {
   async toggleDiff(): Promise<void> {
     await this.reviewStore.toggleDiff();
   }
+  async openWorktreeDiff(dir: string, title: string): Promise<void> {
+    await this.reviewStore.openWorktreeDiff(dir, title);
+  }
   async loadDiff(): Promise<void> {
     await this.reviewStore.loadDiff();
   }
@@ -1147,20 +1151,20 @@ export class AppStore {
   async loadWorktrees(): Promise<void> {
     await this.worktreeStore.load();
   }
-  async createWorktree(name: string): Promise<void> {
-    await this.worktreeStore.create(name);
+  async createWorktree(name: string, clean = false): Promise<void> {
+    await this.worktreeStore.create(name, clean);
   }
   chooseDraftWorktree(dir: string): void {
     this.worktreeStore.chooseDraft(dir);
   }
-  async worktreeDiff(dir: string): Promise<string> {
-    return this.worktreeStore.diff(dir);
+  async switchWorktree(dir: string): Promise<void> {
+    await this.worktreeStore.switchTo(dir);
   }
-  async mergeWorktree(dir: string): Promise<void> {
-    await this.worktreeStore.merge(dir);
+  async mergeWorktree(dir: string): Promise<Record<string, unknown>> {
+    return this.worktreeStore.merge(dir);
   }
-  async promoteWorktree(dir: string, branch: string): Promise<void> {
-    await this.worktreeStore.promote(dir, branch);
+  async promoteWorktree(dir: string, branch: string): Promise<Record<string, unknown>> {
+    return this.worktreeStore.promote(dir, branch);
   }
   async removeWorktree(dir: string, force = false): Promise<Record<string, unknown>> {
     return this.worktreeStore.remove(dir, force);

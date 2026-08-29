@@ -42,6 +42,86 @@ const deferred = <T>() => {
 beforeEach(() => localStorage.clear());
 
 describe('AppStore compatibility behavior', () => {
+  it('moves the active session to root after worktree cleanup', async () => {
+    const store = new AppStore(config);
+    try {
+      store.sessions.value = [
+        {
+          ...session(),
+          projectId: 'project-1',
+          workingDir: '/worktrees/feature',
+          worktreeDir: '/worktrees/feature',
+        },
+      ];
+      store.activeSessionId.value = 's1';
+      store.projectsEnabled.value = true;
+      store.endpoints.mergeWorktree = vi.fn(async () => ({
+        result: { root_dir: '/repo' },
+        cleanup: { removed: true },
+        session: { id: 's1', cwd: '/repo', worktree_dir: '' },
+      }));
+      store.endpoints.projectWorktrees = vi.fn(async () => ({ worktrees: [] }));
+
+      await store.mergeWorktree('/worktrees/feature');
+
+      expect(store.endpoints.mergeWorktree).toHaveBeenCalledWith(
+        'project-1',
+        '/worktrees/feature',
+        's1',
+      );
+      expect(store.activeSession.value).toMatchObject({ worktreeDir: '', workingDir: '/repo' });
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('switches the active conversation to a selected worktree', async () => {
+    const store = new AppStore(config);
+    try {
+      store.sessions.value = [{ ...session(), projectId: 'project-1', workingDir: '/repo' }];
+      store.activeSessionId.value = 's1';
+      store.projectsEnabled.value = true;
+      store.endpoints.switchWorktree = vi.fn(async () => ({
+        cwd: '/worktrees/feature',
+        worktree_dir: '/worktrees/feature',
+      }));
+      store.endpoints.projectWorktrees = vi.fn(async () => ({ worktrees: [] }));
+
+      await store.switchWorktree('/worktrees/feature');
+
+      expect(store.endpoints.switchWorktree).toHaveBeenCalledWith(
+        'project-1',
+        '/worktrees/feature',
+        's1',
+      );
+      expect(store.activeSession.value).toMatchObject({
+        worktreeDir: '/worktrees/feature',
+        workingDir: '/worktrees/feature',
+      });
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('forwards clean worktree creation to the project endpoint', async () => {
+    const store = new AppStore(config);
+    try {
+      store.projectsEnabled.value = true;
+      store.activeProjectId.value = 'project-1';
+      store.endpoints.createProjectWorktree = vi.fn(async () => ({}));
+      store.endpoints.projectWorktrees = vi.fn(async () => ({ worktrees: [] }));
+
+      await store.createWorktree('clean-tree', true);
+
+      expect(store.endpoints.createProjectWorktree).toHaveBeenCalledWith('project-1', {
+        name: 'clean-tree',
+        clean: true,
+      });
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('dismisses a toast without waiting for its automatic timeout', () => {
     vi.useFakeTimers();
     const store = new AppStore(config);
@@ -2080,6 +2160,58 @@ describe('AppStore compatibility behavior', () => {
       activeModel: 'gpt-next',
       activeEffort: 'medium',
     });
+  });
+
+  it('loads managed worktree patches into the rich diff state', async () => {
+    const store = new AppStore(config);
+    try {
+      store.sessions.value = [{ ...session(), projectId: 'project-1' }];
+      store.activeSessionId.value = 's1';
+      store.diff.value = { ...store.diff.value, scope: 'staged' };
+      store.queueDiffComment({
+        path: 'queued.go',
+        side: 'new',
+        line: 3,
+        body: 'Keep this queued.',
+        scope: 'staged',
+        context: 'queued',
+      });
+      store.endpoints.fileChanges = vi.fn(async () => ({ file_changes: [] }));
+      store.endpoints.worktreeDiff = vi.fn(async () => ({
+        diff: `diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -1 +1 @@
+-package old
++package main
+`,
+      }));
+
+      await store.openWorktreeDiff('/worktrees/feature', 'feature');
+
+      expect(store.diff.value).toMatchObject({
+        open: true,
+        worktreeDir: '/worktrees/feature',
+        worktreeTitle: 'feature',
+        readOnly: true,
+        loading: false,
+        scope: 'staged',
+        comments: [expect.objectContaining({ path: 'queued.go', body: 'Keep this queued.' })],
+      });
+      expect(store.diff.value.files[0]).toMatchObject({
+        path: 'main.go',
+        additions: 1,
+        deletions: 1,
+        expanded: true,
+      });
+      expect(store.endpoints.worktreeDiff).toHaveBeenCalledWith('project-1', '/worktrees/feature');
+
+      await store.loadDiff();
+      expect(store.endpoints.fileChanges).not.toHaveBeenCalled();
+      expect(store.diff.value.worktreeDir).toBe('/worktrees/feature');
+    } finally {
+      store.dispose();
+    }
   });
 
   it('loads file summaries and structured hunks from the real diff contracts', async () => {

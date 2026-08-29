@@ -351,6 +351,38 @@ func (s *SQLiteStore) AssignSessionProject(ctx context.Context, sessionID, proje
 	return nil
 }
 
+func (s *SQLiteStore) SwitchSessionWorkspace(ctx context.Context, sessionID string, binding SessionWorkspaceBinding) (*Session, error) {
+	if !s.hasProjectID || s.cfg.ReadOnly {
+		return nil, ErrProjectsUnsupported
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	binding.ProjectID = strings.TrimSpace(binding.ProjectID)
+	binding.CWD = strings.TrimSpace(binding.CWD)
+	binding.WorktreeDir = strings.TrimSpace(binding.WorktreeDir)
+	if sessionID == "" || binding.ProjectID == "" || binding.CWD == "" {
+		return nil, ErrWorkspaceConflict
+	}
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE sessions
+		SET cwd = ?, worktree_dir = NULLIF(?, ''), updated_at = ?
+		WHERE id = ? AND project_id = ?`,
+		binding.CWD, binding.WorktreeDir, time.Now().UTC(), sessionID, binding.ProjectID)
+	if err != nil {
+		return nil, fmt.Errorf("switch session workspace: %w", err)
+	}
+	if n, _ := result.RowsAffected(); n != 1 {
+		var count int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE id = ?`, sessionID).Scan(&count); err != nil {
+			return nil, err
+		}
+		if count == 0 {
+			return nil, ErrNotFound
+		}
+		return nil, ErrWorkspaceConflict
+	}
+	return s.Get(ctx, sessionID)
+}
+
 func (s *SQLiteStore) BindSessionWorkspace(ctx context.Context, sessionID string, binding SessionWorkspaceBinding) (*Session, error) {
 	if !s.hasProjectID || s.cfg.ReadOnly {
 		return nil, ErrProjectsUnsupported

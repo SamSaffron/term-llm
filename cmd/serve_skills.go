@@ -353,13 +353,30 @@ func (s *serveServer) configureRuntimeSkillsForDir(rt *serveRuntime, dir string)
 		RegisterSkillToolWithEngine(rt.engine, rt.toolMgr, setup)
 	}
 	rt.mu.Lock()
+	configureRuntimeSkillsMetadataLocked(rt, setup)
+	rt.mu.Unlock()
+}
+
+// configureRuntimeSkillsForDirLocked updates a runtime already pinned by
+// lockIdleMetadataMutation, which holds rt.mu until its release function runs.
+func (s *serveServer) configureRuntimeSkillsForDirLocked(rt *serveRuntime, dir string) {
+	if s == nil || rt == nil || strings.TrimSpace(dir) == "" {
+		return
+	}
+	setup := s.skillsForServeSession(&session.Session{CWD: dir})
+	if rt.engine != nil && rt.toolMgr != nil {
+		RegisterSkillToolWithEngine(rt.engine, rt.toolMgr, setup)
+	}
+	configureRuntimeSkillsMetadataLocked(rt, setup)
+}
+
+func configureRuntimeSkillsMetadataLocked(rt *serveRuntime, setup *skills.Setup) {
 	basePrompt := rt.baseSystemPrompt
 	if basePrompt == "" {
 		basePrompt = rt.systemPrompt
 		rt.baseSystemPrompt = basePrompt
 	}
 	rt.systemPrompt = InjectSkillsMetadata(basePrompt, setup)
-	rt.mu.Unlock()
 }
 
 func (s *serveServer) handleSessionSkillsList(w http.ResponseWriter, r *http.Request, sess *session.Session) {

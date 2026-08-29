@@ -10,6 +10,7 @@ import {
 import {
   linesFromHunks,
   normalizeDiffScope,
+  parseUnifiedDiffFiles,
   parseUnifiedPatch,
   sortDiffFiles,
 } from '../domain/diff';
@@ -127,15 +128,74 @@ export class ReviewStore {
     this.host.closePlan();
     this.diff.value = { ...this.diff.value, sessionId: session.id, open: !this.diff.value.open };
     this.host.restartStatusPoll();
-    if (this.diff.value.open) await this.loadDiff();
+    if (this.diff.value.open) await this.loadDiff(true);
   }
-  async loadDiff(): Promise<void> {
+  async openWorktreeDiff(dir: string, title: string): Promise<void> {
+    const owner = this.host.activeSessionId.peek();
+    if (!owner || !dir) return;
+    this.host.closePlan();
+    const epoch = ++this.loadEpoch;
+    this.diff.value = {
+      ...this.diff.peek(),
+      open: true,
+      maximized: false,
+      sessionId: owner,
+      git: true,
+      loading: true,
+      files: [],
+      error: '',
+      selectedPath: '',
+      followCurrentFile: false,
+      worktreeDir: dir,
+      worktreeTitle: title,
+      readOnly: true,
+    };
+    try {
+      const data = await this.services.endpoints.worktreeDiff(
+        this.host.activeSession.value?.projectId || '',
+        dir,
+      );
+      if (epoch !== this.loadEpoch || this.diff.peek().worktreeDir !== dir) return;
+      const parsed = sortDiffFiles(parseUnifiedDiffFiles(String(data.diff || data.patch || '')));
+      const files =
+        data.truncated === true
+          ? parsed.map((file, index) => ({
+              ...file,
+              truncated: index === parsed.length - 1 || file.truncated,
+            }))
+          : parsed;
+      this.diff.value = {
+        ...this.diff.peek(),
+        files,
+        loading: false,
+        error:
+          data.truncated === true
+            ? 'This worktree diff was truncated; showing the available changes.'
+            : '',
+      };
+    } catch (error) {
+      if (epoch !== this.loadEpoch || this.diff.peek().worktreeDir !== dir) return;
+      this.diff.value = { ...this.diff.peek(), loading: false, error: errorMessage(error) };
+    }
+  }
+
+  async loadDiff(replaceWorktree = false): Promise<void> {
+    if (this.diff.peek().worktreeDir && !replaceWorktree) return;
     const session = this.host.activeSession.value;
     if (!session) return;
     const owner = session.id;
     const scope = normalizeDiffScope(this.diff.value.scope);
     const epoch = ++this.loadEpoch;
-    this.diff.value = { ...this.diff.value, sessionId: owner, scope, loading: true, error: '' };
+    this.diff.value = {
+      ...this.diff.value,
+      sessionId: owner,
+      scope,
+      loading: true,
+      error: '',
+      worktreeDir: undefined,
+      worktreeTitle: undefined,
+      readOnly: false,
+    };
     try {
       void this.refreshDiffComments(owner);
       const data = await this.services.endpoints.fileChanges(owner, scope);
@@ -318,6 +378,12 @@ export class ReviewStore {
           isRequestedVersion(entry) ? { ...entry, expanded: !entry.expanded } : entry,
         ),
       };
+      return;
+    }
+    const worktreeDir = this.diff.peek().worktreeDir;
+    if (worktreeDir) {
+      if (!file.lines)
+        await this.openWorktreeDiff(worktreeDir, this.diff.peek().worktreeTitle || 'Worktree');
       return;
     }
     const requestKey = `${owner}\u0000${scope}\u0000${file.path}`;

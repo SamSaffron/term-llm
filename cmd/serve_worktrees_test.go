@@ -23,6 +23,72 @@ func worktreeRootForTest(repo string) func() (string, error) {
 	return func() (string, error) { return repo, nil }
 }
 
+func TestServeWorktreeCreateCleanLeavesRootChangesInPlace(t *testing.T) {
+	repo := newGitRepoForBindingTest(t)
+	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("keep this change\n"), 0o644); err != nil {
+		t.Fatalf("write dirty root file: %v", err)
+	}
+	srv := &serveServer{worktreeRootFn: worktreeRootForTest(repo)}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/worktrees", bytes.NewBufferString(`{"name":"clean-api-test","clean":true}`))
+	rec := httptest.NewRecorder()
+	srv.handleWorktrees(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Worktree worktreeAPIResponse `json:"worktree"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = worktree.Remove(context.Background(), response.Worktree.Dir, worktree.RemoveOptions{Force: true})
+	})
+
+	rootContents, err := os.ReadFile(filepath.Join(repo, "file.txt"))
+	if err != nil || string(rootContents) != "keep this change\n" {
+		t.Fatalf("root file after clean API create = %q, %v; want unchanged dirty contents", rootContents, err)
+	}
+	worktreeContents, err := os.ReadFile(filepath.Join(response.Worktree.Dir, "file.txt"))
+	if err != nil || string(worktreeContents) != "base\n" {
+		t.Fatalf("clean API worktree file = %q, %v; want committed base contents", worktreeContents, err)
+	}
+}
+
+func TestServeWorktreeCreateCleanIsNotBlockedByActiveRootRun(t *testing.T) {
+	repo := newGitRepoForBindingTest(t)
+	releaseRun, err := processRootCheckoutLeases.acquireRun(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseRun()
+	srv := &serveServer{worktreeRootFn: worktreeRootForTest(repo)}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/worktrees", bytes.NewBufferString(`{"name":"clean-during-run","clean":true}`))
+	rec := httptest.NewRecorder()
+	srv.handleWorktrees(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clean create during root run status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Worktree worktreeAPIResponse `json:"worktree"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = worktree.Remove(context.Background(), response.Worktree.Dir, worktree.RemoveOptions{Force: true})
+	})
+
+	moveReq := httptest.NewRequest(http.MethodPost, "/v1/worktrees", bytes.NewBufferString(`{"name":"move-during-run","clean":false}`))
+	moveRec := httptest.NewRecorder()
+	srv.handleWorktrees(moveRec, moveReq)
+	if moveRec.Code != http.StatusConflict {
+		t.Fatalf("move create during root run status = %d body=%s", moveRec.Code, moveRec.Body.String())
+	}
+}
+
 func TestServeWorktreeHandlersCreateListDiffDelete(t *testing.T) {
 	repo := newGitRepoForBindingTest(t)
 	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("dirty before API create\n"), 0o644); err != nil {
@@ -234,7 +300,7 @@ func TestServeWorktreeMergeInUseReturnsCleanup(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wt.Dir, "merged.txt"), []byte("serve merge\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,6 +328,116 @@ func TestServeWorktreeMergeInUseReturnsCleanup(t *testing.T) {
 	}
 	if _, err := os.Stat(wt.Dir); err != nil {
 		t.Fatalf("worktree should remain: %v", err)
+	}
+}
+
+func TestServeWorktreeMergeExcludesCallingSessionFromCleanup(t *testing.T) {
+	repo := newGitRepoForBindingTest(t)
+	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "serve-caller-cleanup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = worktree.Remove(context.Background(), wt.Dir, worktree.RemoveOptions{Force: true}) })
+	if err := os.WriteFile(filepath.Join(wt.Dir, "merged.txt"), []byte("serve merge\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	project := &session.Project{Name: "Caller cleanup", CanonicalDir: repo}
+	if err := store.CreateProject(context.Background(), project); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := store.Create(context.Background(), &session.Session{ID: "caller", Provider: "mock", Model: "tiny", Mode: session.ModeChat, CreatedAt: now, UpdatedAt: now, Status: session.StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.BindSessionWorkspace(context.Background(), "caller", session.SessionWorkspaceBinding{ProjectID: project.ID, CWD: wt.Dir, WorktreeDir: wt.Dir}); err != nil {
+		t.Fatal(err)
+	}
+
+	runtimeSession := &session.Session{ID: "caller", CWD: wt.Dir, WorktreeDir: wt.Dir}
+	rt := &serveRuntime{sessionMeta: runtimeSession}
+	mgr := &serveSessionManager{sessions: map[string]*serveRuntime{"caller": rt}}
+	srv := &serveServer{store: store, sessionMgr: mgr, worktreeRootFn: worktreeRootForTest(repo)}
+	req := httptest.NewRequest(http.MethodPost, "/v1/worktrees/merge", bytes.NewBufferString(`{"dir":"`+wt.Dir+`"}`))
+	req.Header.Set(requestSessionIDHeader, "caller")
+	rec := httptest.NewRecorder()
+	srv.handleWorktreeMerge(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Cleanup worktree.CleanupResult `json:"cleanup"`
+		Session *session.Session       `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Session == nil || resp.Session.ID != "caller" || resp.Session.WorktreeDir != "" || !sameServePath(resp.Session.CWD, repo) {
+		t.Fatalf("response session = %#v, want root fallback %q", resp.Session, repo)
+	}
+	if !resp.Cleanup.Removed {
+		t.Fatalf("cleanup = %+v, want removed", resp.Cleanup)
+	}
+	if _, err := os.Stat(wt.Dir); !os.IsNotExist(err) {
+		t.Fatalf("worktree stat = %v, want removed", err)
+	}
+	if rt.sessionMeta == nil || rt.sessionMeta.WorktreeDir != "" || !sameServePath(rt.sessionMeta.CWD, repo) {
+		t.Fatalf("runtime session = %#v, want root fallback %q", rt.sessionMeta, repo)
+	}
+	persisted, err := store.Get(context.Background(), "caller")
+	if err != nil || persisted.WorktreeDir != "" || !sameServePath(persisted.CWD, repo) {
+		t.Fatalf("persisted session = %#v, %v; want root fallback %q", persisted, err, repo)
+	}
+}
+
+func TestServeWorktreeMergeKeepsSourceWhenCallerRuntimeIsBusy(t *testing.T) {
+	repo := newGitRepoForBindingTest(t)
+	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "serve-busy-caller"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = worktree.Remove(context.Background(), wt.Dir, worktree.RemoveOptions{Force: true}) })
+	if err := os.WriteFile(filepath.Join(wt.Dir, "merged.txt"), []byte("serve merge\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	project := &session.Project{Name: "Busy caller", CanonicalDir: repo}
+	if err := store.CreateProject(context.Background(), project); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := store.Create(context.Background(), &session.Session{ID: "busy-caller", Provider: "mock", Model: "tiny", Mode: session.ModeChat, CreatedAt: now, UpdatedAt: now, Status: session.StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.BindSessionWorkspace(context.Background(), "busy-caller", session.SessionWorkspaceBinding{ProjectID: project.ID, CWD: wt.Dir, WorktreeDir: wt.Dir}); err != nil {
+		t.Fatal(err)
+	}
+	rt := &serveRuntime{sessionMeta: &session.Session{ID: "busy-caller", CWD: wt.Dir, WorktreeDir: wt.Dir}}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	mgr := &serveSessionManager{sessions: map[string]*serveRuntime{"busy-caller": rt}}
+	srv := &serveServer{store: store, sessionMgr: mgr, worktreeRootFn: worktreeRootForTest(repo)}
+	req := httptest.NewRequest(http.MethodPost, "/v1/worktrees/merge", bytes.NewBufferString(`{"dir":"`+wt.Dir+`"}`))
+	req.Header.Set(requestSessionIDHeader, "busy-caller")
+	rec := httptest.NewRecorder()
+	srv.handleWorktreeMerge(rec, req)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "source checkout was kept") {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(wt.Dir); err != nil {
+		t.Fatalf("source worktree was removed after failed caller move: %v", err)
+	}
+	persisted, err := store.Get(context.Background(), "busy-caller")
+	if err != nil || !sameServePath(persisted.WorktreeDir, wt.Dir) {
+		t.Fatalf("persisted session = %#v, %v; want source binding", persisted, err)
 	}
 }
 
@@ -613,13 +789,17 @@ func TestServeWorktreePromoteReturnsRootResult(t *testing.T) {
 		t.Fatalf("promote status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	var resp struct {
-		Result worktree.PromoteResult `json:"result"`
+		Result  worktree.PromoteResult `json:"result"`
+		Cleanup worktree.CleanupResult `json:"cleanup"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode promote response: %v", err)
 	}
-	if resp.Result.Branch != "feature-api-promote" || resp.Result.RootDir == "" || resp.Result.WorktreeDir == "" || !resp.Result.Applied {
-		t.Fatalf("promote response = %+v", resp.Result)
+	if resp.Result.Branch != "feature-api-promote" || resp.Result.RootDir == "" || resp.Result.WorktreeDir == "" || !resp.Result.Applied || !resp.Cleanup.Removed || resp.Result.OriginalWorktreeStillExists {
+		t.Fatalf("promote response = %+v", resp)
+	}
+	if _, err := os.Stat(wt.Dir); !os.IsNotExist(err) {
+		t.Fatalf("promoted worktree stat = %v, want removed", err)
 	}
 	if got := strings.TrimSpace(runGitForBindingTest(t, repo, "branch", "--show-current")); got != "feature-api-promote" {
 		t.Fatalf("root branch = %q, want feature-api-promote", got)

@@ -1051,6 +1051,8 @@ func (s *serveServer) handleProjectWorktrees(w http.ResponseWriter, r *http.Requ
 	switch suffix {
 	case "", "/":
 		s.handleWorktrees(w, r)
+	case "/switch":
+		s.handleWorktreeSwitch(w, r)
 	case "/diff":
 		s.handleWorktreeDiff(w, r)
 	case "/merge":

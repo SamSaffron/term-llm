@@ -5,13 +5,21 @@ import { Icon } from './Icon';
 import { Overlay } from './Overlay';
 
 type WorktreeRow = Record<string, unknown>;
-type BusyAction = '' | 'diff' | 'merge' | 'promote' | 'remove' | 'create';
+type BusyAction = '' | 'diff' | 'merge' | 'promote' | 'remove' | 'create' | 'switch';
 type RemoveStage = 'idle' | 'armed' | 'force';
 
 const rowDir = (row: WorktreeRow | null): string => String(row?.dir || row?.path || '');
 const rowName = (row: WorktreeRow): string =>
   String(row.name || row.branch || (row.root ? 'root checkout' : 'worktree'));
 const isRoot = (row: WorktreeRow): boolean => row.root === true;
+const cleanupRemoved = (value: unknown): boolean =>
+  Boolean(
+    value &&
+    typeof value === 'object' &&
+    (value as Record<string, unknown>).cleanup &&
+    typeof (value as Record<string, unknown>).cleanup === 'object' &&
+    ((value as Record<string, unknown>).cleanup as Record<string, unknown>).removed === true,
+  );
 const usageNames = (entries: unknown[]): string[] =>
   entries
     .map((entry) => {
@@ -83,6 +91,7 @@ function WorktreeOption({
   selected,
   current,
   first,
+  actionDisabled,
   onChoose,
 }: {
   row: WorktreeRow;
@@ -90,6 +99,7 @@ function WorktreeOption({
   selected: boolean;
   current: boolean;
   first: boolean;
+  actionDisabled?: boolean;
   onChoose: () => void;
 }) {
   const root = isRoot(row);
@@ -97,7 +107,7 @@ function WorktreeOption({
   const branch = String(
     row.branch || (row.detached ? `detached@${String(row.head_sha || '').slice(0, 8)}` : ''),
   );
-  const disabled = !draft && root;
+  const disabled = !draft && root && (current || Boolean(actionDisabled));
   const move = (event: preact.JSX.TargetedKeyboardEvent<HTMLButtonElement>) => {
     if (!draft || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
     const options = [
@@ -126,7 +136,13 @@ function WorktreeOption({
       disabled={disabled}
       onKeyDown={move}
       onClick={onChoose}
-      title={disabled ? 'The root checkout is already used by this conversation.' : undefined}
+      title={
+        disabled
+          ? current
+            ? 'This conversation already uses the root checkout.'
+            : 'Finish the current response before switching worktrees.'
+          : undefined
+      }
     >
       <span class="worktree-option-icon" aria-hidden="true">
         {draft ? <span class="worktree-radio" /> : <Icon name="branch" />}
@@ -164,8 +180,8 @@ function WorktreeOption({
 export function Worktrees() {
   const store = useStore();
   const [name, setName] = useState('');
+  const [clean, setClean] = useState(true);
   const [selected, setSelected] = useState<WorktreeRow | null>(null);
-  const [diff, setDiff] = useState('');
   const [branch, setBranch] = useState('');
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
@@ -189,6 +205,7 @@ export function Worktrees() {
     } as WorktreeRow);
   const rows = [root, ...apiRows.filter((row) => !isRoot(row))];
   const managedCount = rows.length - 1;
+  const rootDirtyFiles = Number(root.dirty_files || 0);
   const dir = rowDir(selected);
   const streaming = store.streaming.value;
 
@@ -203,7 +220,6 @@ export function Worktrees() {
 
   const openDetail = (row: WorktreeRow) => {
     setSelected(row);
-    setDiff('');
     setBranch('');
     setStatus('');
     setError('');
@@ -211,7 +227,6 @@ export function Worktrees() {
   };
   const backToList = () => {
     setSelected(null);
-    setDiff('');
     setBranch('');
     setStatus('');
     setError('');
@@ -252,7 +267,7 @@ export function Worktrees() {
               ? `This conversation runs in ${selected && dir === activeDir ? rowName(selected) : activeDir.split('/').pop()}.`
               : 'This conversation runs in the root checkout.'}
           </span>
-          <span class="worktree-badge current">Locked</span>
+          <span class="worktree-badge current">Current</span>
         </div>
       )}
 
@@ -265,6 +280,14 @@ export function Worktrees() {
           <button class="btn" type="button" onClick={() => void store.loadWorktrees()}>
             Retry
           </button>
+        </div>
+      )}
+      {error && !selected && (
+        <div class="worktree-error-panel" role="alert">
+          <div>
+            <strong>Worktree operation failed</strong>
+            <span>{error}</span>
+          </div>
         </div>
       )}
 
@@ -294,20 +317,35 @@ export function Worktrees() {
             </code>
 
             <div class="worktree-primary-actions">
+              {dir !== activeDir && (
+                <button
+                  class="btn primary worktree-use"
+                  type="button"
+                  disabled={Boolean(busy) || streaming}
+                  onClick={() =>
+                    void run('switch', async () => {
+                      await store.switchWorktree(dir);
+                      backToList();
+                    })
+                  }
+                >
+                  <Icon name="branch" />
+                  {busy === 'switch' ? 'Switching…' : 'Use this worktree'}
+                </button>
+              )}
               <button
                 class="btn"
                 type="button"
                 disabled={Boolean(busy)}
                 onClick={() =>
                   void run('diff', async () => {
-                    const value = await store.worktreeDiff(dir);
-                    setDiff(value);
-                    setStatus(value ? 'Diff loaded.' : 'Worktree is clean.');
+                    await store.openWorktreeDiff(dir, rowName(selected));
+                    close();
                   })
                 }
               >
                 <Icon name="diff" />
-                {busy === 'diff' ? 'Loading…' : 'Show diff'}
+                {busy === 'diff' ? 'Loading…' : 'Show changes'}
               </button>
               <button
                 class="btn primary"
@@ -315,8 +353,9 @@ export function Worktrees() {
                 disabled={Boolean(busy) || streaming}
                 onClick={() =>
                   void run('merge', async () => {
-                    await store.mergeWorktree(dir);
-                    setStatus('Merged into the root checkout.');
+                    const result = await store.mergeWorktree(dir);
+                    if (cleanupRemoved(result)) backToList();
+                    else setStatus('Merged into root; the old checkout is still in use.');
                   })
                 }
               >
@@ -330,15 +369,16 @@ export function Worktrees() {
                 event.preventDefault();
                 if (!branch.trim()) return;
                 void run('promote', async () => {
-                  await store.promoteWorktree(dir, branch.trim());
-                  setStatus(`Promoted to branch ${branch.trim()}.`);
+                  const result = await store.promoteWorktree(dir, branch.trim());
                   setBranch('');
+                  if (cleanupRemoved(result)) backToList();
+                  else setStatus(`Promoted to ${branch.trim()}; the old checkout is still in use.`);
                 });
               }}
             >
               <div class="worktree-action-copy">
                 <strong>Promote to a branch</strong>
-                <span>Keep this checkout as a permanent Git branch.</span>
+                <span>Move these changes to a permanent Git branch.</span>
               </div>
               <div class="worktree-promote-controls">
                 <input
@@ -429,11 +469,6 @@ export function Worktrees() {
                 {error || status}
               </div>
             )}
-            {diff && (
-              <pre class="worktree-diff" tabIndex={0} role="region" aria-label="Worktree diff">
-                {diff}
-              </pre>
-            )}
           </section>
         ) : (
           <>
@@ -459,9 +494,14 @@ export function Worktrees() {
                     selected={checked}
                     current={current}
                     first={index === 0}
+                    actionDisabled={rootRow && (Boolean(busy) || streaming)}
                     onChoose={() => {
                       if (draft) store.chooseDraftWorktree(rootRow ? '' : rowDirectory);
-                      else if (!rootRow) openDetail(row);
+                      else if (rootRow) {
+                        void run('switch', async () => {
+                          await store.switchWorktree('');
+                        });
+                      } else openDetail(row);
                     }}
                   />
                 );
@@ -473,6 +513,11 @@ export function Worktrees() {
                 </div>
               )}
             </div>
+            {status && (
+              <div class="worktree-status" role="status">
+                {status}
+              </div>
+            )}
           </>
         )}
       </div>
@@ -484,7 +529,7 @@ export function Worktrees() {
             event.preventDefault();
             if (!name.trim()) return;
             void run('create', async () => {
-              await store.createWorktree(name.trim());
+              await store.createWorktree(name.trim(), clean);
               if (!store.worktreeError.value) setName('');
             });
           }}
@@ -509,6 +554,23 @@ export function Worktrees() {
               <Icon name="add" />
               {busy === 'create' ? 'Creating…' : 'Create'}
             </button>
+            {rootDirtyFiles > 0 && (
+              <label class="worktree-create-clean">
+                <input
+                  type="checkbox"
+                  checked={clean}
+                  disabled={busy === 'create' || streaming}
+                  onChange={(event) => setClean(event.currentTarget.checked)}
+                />
+                <span>
+                  <strong>Start clean</strong>
+                  <small>
+                    Leave {rootDirtyFiles} changed {rootDirtyFiles === 1 ? 'file' : 'files'} in the
+                    root checkout. Uncheck to move {rootDirtyFiles === 1 ? 'it' : 'them'} here.
+                  </small>
+                </span>
+              </label>
+            )}
           </div>
         </form>
       )}

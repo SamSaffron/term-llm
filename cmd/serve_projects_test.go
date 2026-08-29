@@ -1482,6 +1482,81 @@ func TestSidebarAndStatusHTTPExposeBoundedProjectMetadata(t *testing.T) {
 	}
 }
 
+func TestProjectWorktreeSwitchMovesExistingConversation(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	srv, store := newServeProjectTestServer(t)
+	repo := newGitRepoForBindingTest(t)
+	project := &session.Project{Name: "Switch project", CanonicalDir: repo}
+	if err := store.CreateProject(context.Background(), project); err != nil {
+		t.Fatal(err)
+	}
+	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "switch-target"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = worktree.Remove(context.Background(), wt.Dir, worktree.RemoveOptions{Force: true}) })
+	now := time.Now()
+	sess := &session.Session{ID: "switch-session", Provider: "mock", Model: "mock", Origin: session.OriginWeb, CreatedAt: now, UpdatedAt: now, Status: session.StatusActive}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.BindSessionWorkspace(context.Background(), sess.ID, session.SessionWorkspaceBinding{ProjectID: project.ID, CWD: repo}); err != nil {
+		t.Fatal(err)
+	}
+	toolCfg := tools.DefaultToolConfig()
+	manager, err := tools.NewToolManager(&toolCfg, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetBaseDir(repo); err != nil {
+		t.Fatal(err)
+	}
+	rt := &serveRuntime{toolMgr: manager, sessionMeta: sess}
+	srv.sessionMgr = &serveSessionManager{sessions: map[string]*serveRuntime{sess.ID: rt}}
+
+	switchRequest := func(dir string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(worktreeSwitchRequest{Dir: dir})
+		req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+project.ID+"/worktrees/switch", bytes.NewReader(body))
+		req.Header.Set(requestSessionIDHeader, sess.ID)
+		rr := httptest.NewRecorder()
+		srv.handleProjectByID(rr, req)
+		return rr
+	}
+	if rr := switchRequest(t.TempDir()); rr.Code != http.StatusBadRequest {
+		t.Fatalf("unmanaged switch status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr := switchRequest(wt.Dir); rr.Code != http.StatusOK {
+		t.Fatalf("switch to worktree status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	persisted, err := store.Get(context.Background(), sess.ID)
+	if err != nil || !sameServePath(persisted.CWD, wt.Dir) || !sameServePath(persisted.WorktreeDir, wt.Dir) {
+		t.Fatalf("worktree binding = %#v, %v", persisted, err)
+	}
+	if !sameServePath(manager.BaseDir(), wt.Dir) || rt.sessionMeta == nil || !sameServePath(rt.sessionMeta.WorktreeDir, wt.Dir) {
+		t.Fatalf("live worktree binding = base %q session %#v", manager.BaseDir(), rt.sessionMeta)
+	}
+	if rr := switchRequest(""); rr.Code != http.StatusOK {
+		t.Fatalf("switch to root status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	persisted, err = store.Get(context.Background(), sess.ID)
+	if err != nil || !sameServePath(persisted.CWD, repo) || persisted.WorktreeDir != "" {
+		t.Fatalf("root binding = %#v, %v", persisted, err)
+	}
+	if !sameServePath(manager.BaseDir(), repo) || rt.sessionMeta == nil || rt.sessionMeta.WorktreeDir != "" {
+		t.Fatalf("live root binding = base %q session %#v", manager.BaseDir(), rt.sessionMeta)
+	}
+	rt.mu.Lock()
+	busyResponse := switchRequest(wt.Dir)
+	rt.mu.Unlock()
+	if busyResponse.Code != http.StatusConflict {
+		t.Fatalf("busy switch status=%d body=%s", busyResponse.Code, busyResponse.Body.String())
+	}
+	persisted, err = store.Get(context.Background(), sess.ID)
+	if err != nil || !sameServePath(persisted.CWD, repo) || persisted.WorktreeDir != "" {
+		t.Fatalf("binding changed after busy switch = %#v, %v", persisted, err)
+	}
+}
+
 func TestProjectScopedWorktreesUseIndependentRepositoriesAndLegacyAlias(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	srv, store := newServeProjectTestServer(t)

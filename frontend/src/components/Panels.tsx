@@ -107,6 +107,7 @@ function Line({
   onEdit,
   onReanchor,
   onRemove,
+  commentable = true,
 }: {
   line: DiffLine;
   emphasis?: [number, number];
@@ -122,6 +123,7 @@ function Line({
   onEdit: (comment: DiffComment) => void;
   onReanchor: (comment: DiffComment) => void;
   onRemove: (comment: DiffComment) => void;
+  commentable?: boolean;
 }) {
   const [sendMenuOpen, setSendMenuOpen] = useState(false);
   const [clock, setClock] = useState(() => Date.now());
@@ -185,12 +187,12 @@ function Line({
   return (
     <div
       class={`diff-row ${kind}${commenting ? ' commenting' : ''}`}
-      data-commentable={Boolean(number && line.kind !== 'hunk')}
+      data-commentable={Boolean(commentable && number && line.kind !== 'hunk')}
     >
       <span class="diff-ln">{line.oldLine || ''}</span>
       <span class="diff-ln">{line.newLine || ''}</span>
       <DiffCode line={line} emphasis={emphasis} lang={lang} />
-      {number && line.kind !== 'hunk' && (
+      {commentable && number && line.kind !== 'hunk' && (
         <button
           ref={affordance}
           class={`diff-comment-affordance${comments.length ? ' has-comments' : ''}${comments.some((comment) => comment.queued) ? ' queued' : ''}`}
@@ -583,7 +585,9 @@ function File({ file }: { file: DiffFile }) {
             </div>
           )}
           {file.truncated && <div class="diff-error">Diff unavailable.</div>}
-          {file.image ? (
+          {file.binary ? (
+            <div class="diff-loading">Binary file changed.</div>
+          ) : file.image ? (
             <div class={`diff-image-comparison diff-image-${legacyKind}`}>
               {kind !== 'add' && file.beforeURL && (
                 <figure class="diff-image-side">
@@ -669,6 +673,7 @@ function File({ file }: { file: DiffFile }) {
                       commenting={commenting === key}
                       comments={comments}
                       body={drafts[key] || ''}
+                      commentable={!store.diff.value.readOnly}
                       onComment={(next) => {
                         setCommenting((current) => (current === next ? '' : next));
                       }}
@@ -904,7 +909,11 @@ export function DiffSidebar() {
         onDblClick={() => store.resizeDiff(420)}
       />
       <div class="diff-sidebar-header">
-        <DiffScopePicker />
+        {state.worktreeDir ? (
+          <strong class="diff-source-title">{state.worktreeTitle || 'Worktree'} changes</strong>
+        ) : (
+          <DiffScopePicker />
+        )}
         <span class="diff-sidebar-totals">
           {adds > 0 && <span class="diff-sidebar-totals-add">+{adds}</span>}
           {dels > 0 && <span class="diff-sidebar-totals-del">−{dels}</span>}
@@ -998,7 +1007,14 @@ export function DiffSidebar() {
         {state.error && (
           <div class="diff-error">
             {state.error}
-            <button class="diff-retry" onClick={() => void store.loadDiff()}>
+            <button
+              class="diff-retry"
+              onClick={() =>
+                void (state.worktreeDir
+                  ? store.openWorktreeDiff(state.worktreeDir, state.worktreeTitle || 'Worktree')
+                  : store.loadDiff())
+              }
+            >
               Retry
             </button>
           </div>
@@ -1007,10 +1023,12 @@ export function DiffSidebar() {
           <File key={file.path} file={file} />
         ))}
         {!state.loading && !state.error && !files.length && (
-          <div class="diff-empty">No file changes in this scope.</div>
+          <div class="diff-empty">
+            {state.worktreeDir ? 'This worktree is clean.' : 'No file changes in this scope.'}
+          </div>
         )}
       </div>
-      {comments.length > 0 && (
+      {!state.readOnly && comments.length > 0 && (
         <div class="diff-queue-bar">
           <span class="diff-queue-count" role="status" aria-live="polite">
             {comments.length} queued
@@ -1042,7 +1060,11 @@ export function DiffSidebar() {
         ref={aside}
         class={`diff-sidebar open ${state.maximized ? 'maximized' : ''}`}
         id="diffSidebar"
-        aria-label="Session file changes"
+        aria-label={
+          state.worktreeDir
+            ? `${state.worktreeTitle || 'Worktree'} changes`
+            : 'Session file changes'
+        }
       >
         {content}
       </aside>
@@ -1052,7 +1074,9 @@ export function DiffSidebar() {
       open
       id="diffSidebar"
       className={`diff-sidebar open ${state.maximized ? 'maximized' : ''}`}
-      title="Session file changes"
+      title={
+        state.worktreeDir ? `${state.worktreeTitle || 'Worktree'} changes` : 'Session file changes'
+      }
       side="right"
       onClose={() => (store.diff.value = { ...store.diff.peek(), open: false, maximized: false })}
     >

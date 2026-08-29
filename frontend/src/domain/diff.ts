@@ -42,6 +42,72 @@ export function parseUnifiedPatch(patch: string): DiffLine[] {
     });
 }
 
+export function parseUnifiedDiffFiles(patch: string): DiffFile[] {
+  const source = String(patch || '');
+  const chunks = source
+    .split(/(?=^diff --git )/m)
+    .filter((chunk) => chunk.startsWith('diff --git '));
+  return chunks
+    .map((chunk, index): DiffFile | null => {
+      const rawLines = chunk.split('\n');
+      const oldHeader =
+        rawLines
+          .find((line) => line.startsWith('--- '))
+          ?.slice(4)
+          .trim() || '';
+      const newHeader =
+        rawLines
+          .find((line) => line.startsWith('+++ '))
+          ?.slice(4)
+          .trim() || '';
+      const unquotePath = (value: string): string =>
+        value.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value;
+      const cleanPath = (value: string): string => unquotePath(value).replace(/^[ab]\//, '');
+      let path = cleanPath(newHeader === '/dev/null' ? oldHeader : newHeader);
+      if (!path) {
+        const header = rawLines[0]?.match(/^diff --git a\/(.+) b\/(.+)$/);
+        path = cleanPath(header?.[2] || header?.[1] || '');
+      }
+      if (!path) return null;
+      const binary = rawLines.some(
+        (line) => line.startsWith('Binary files ') || line === 'GIT binary patch',
+      );
+      const renameFrom = rawLines.find((line) => line.startsWith('rename from '));
+      const copyFrom = rawLines.find((line) => line.startsWith('copy from '));
+      const status =
+        newHeader === '/dev/null' || rawLines.some((line) => line.startsWith('deleted file mode'))
+          ? 'delete'
+          : oldHeader === '/dev/null' || rawLines.some((line) => line.startsWith('new file mode'))
+            ? 'create'
+            : renameFrom
+              ? 'rename'
+              : copyFrom
+                ? 'copy'
+                : 'modify';
+      const hunkStart = rawLines.findIndex((line) => line.startsWith('@@'));
+      const body = hunkStart >= 0 ? rawLines.slice(hunkStart).join('\n').replace(/\n$/, '') : '';
+      const lines = binary || !body ? [] : parseUnifiedPatch(body);
+      const extension = path.includes('.') ? path.split('.').pop()?.toLowerCase() || '' : '';
+      return {
+        path,
+        old_path: unquotePath(
+          (renameFrom || copyFrom)?.replace(/^(?:rename|copy) from /, '') || '',
+        ),
+        status,
+        additions: lines.filter((line) => line.kind === 'add').length,
+        deletions: lines.filter((line) => line.kind === 'delete').length,
+        binary,
+        truncated: false,
+        expanded: index === 0,
+        lines,
+        patch: chunk,
+        context: 3,
+        lang: extension,
+      };
+    })
+    .filter((file): file is DiffFile => file !== null);
+}
+
 export function linesFromHunks(
   value: unknown,
   totals: { old?: number; new?: number } = {},

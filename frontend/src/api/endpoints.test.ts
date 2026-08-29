@@ -2,6 +2,37 @@ import { describe, expect, it, vi } from 'vitest';
 import type { APIClient } from './client';
 import { endpoints } from './endpoints';
 
+describe('worktree endpoints', () => {
+  it('identifies the active session for cleanup-aware mutations', async () => {
+    const post = vi.fn(async () => ({}));
+    const routes = endpoints({ post } as unknown as APIClient);
+
+    await routes.switchWorktree('project/one', '/tmp/tree', 'session/one');
+    expect(post).toHaveBeenLastCalledWith(
+      '/v1/projects/project%2Fone/worktrees/switch',
+      { dir: '/tmp/tree' },
+      'mutation',
+      { 'X-Term-LLM-Session-ID': 'session/one' },
+    );
+
+    await routes.mergeWorktree('project/one', '/tmp/tree', 'session/one');
+    expect(post).toHaveBeenLastCalledWith(
+      '/v1/projects/project%2Fone/worktrees/merge',
+      { dir: '/tmp/tree' },
+      'mutation',
+      { 'X-Term-LLM-Session-ID': 'session/one' },
+    );
+
+    await routes.promoteWorktree('project/one', '/tmp/tree', 'feature/tree', 'session/one');
+    expect(post).toHaveBeenLastCalledWith(
+      '/v1/projects/project%2Fone/worktrees/promote',
+      { dir: '/tmp/tree', branch: 'feature/tree' },
+      'mutation',
+      { 'X-Term-LLM-Session-ID': 'session/one' },
+    );
+  });
+});
+
 describe('branch tree endpoint', () => {
   it('requests branch points only for the interactive tree browser', async () => {
     const get = vi.fn(async () => ({}));

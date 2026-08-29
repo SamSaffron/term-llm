@@ -82,11 +82,10 @@ const paths: Record<IconName, JSX.Element> = {
   ),
   diff: (
     <>
-      <path d="M8 5v14" />
-      <path d="M5 8h6" />
-      <path d="M16 5v6" />
-      <path d="M13 8h6" />
-      <path d="M13 16h6" />
+      <circle cx="6" cy="6" r="2.5" />
+      <circle cx="18" cy="18" r="2.5" />
+      <path d="M8.5 6H15a3 3 0 0 1 3 3v6.5" />
+      <path d="M15.5 18H9a3 3 0 0 1-3-3V8.5" />
     </>
   ),
   edit: (

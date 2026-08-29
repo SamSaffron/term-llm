@@ -53,6 +53,7 @@ No API key needed if you use Zen:
 term-llm exec --provider zen "list files"
 term-llm ask --provider zen "explain git rebase"
 term-llm chat
+term-llm serve web
 ```
 
 If you already have a provider key:

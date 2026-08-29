@@ -655,6 +655,47 @@ describe('Preact-owned chat surfaces', () => {
     expect(store.endpoints.fileChanges).toHaveBeenCalledWith('s1', 'uncommitted');
   });
 
+  it('renders managed worktree patches in the highlighted Changes panel', async () => {
+    const store = createStore();
+    store.diff.value = {
+      ...store.diff.value,
+      open: true,
+      sessionId: 's1',
+      git: true,
+      worktreeDir: '/worktrees/feature',
+      worktreeTitle: 'feature',
+      readOnly: true,
+      files: [
+        {
+          path: 'app.ts',
+          status: 'modify',
+          additions: 1,
+          deletions: 1,
+          expanded: true,
+          lang: 'ts',
+          lines: [
+            { kind: 'context', content: 'function feature() {', oldLine: 1, newLine: 1 },
+            { kind: 'delete', content: '  const oldValue = 1;', oldLine: 2 },
+            { kind: 'add', content: '  const newValue = 2;', newLine: 2 },
+          ],
+        },
+      ],
+    };
+
+    render(
+      <StoreContext.Provider value={store}>
+        <DiffSidebar />
+      </StoreContext.Provider>,
+    );
+
+    expect(screen.getByText('feature changes')).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Change scope' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Comment on line 1' })).not.toBeInTheDocument();
+    await vi.waitFor(() =>
+      expect(document.querySelector('.diff-code .hljs-keyword')).toHaveTextContent('function'),
+    );
+  });
+
   it('offers immediate or queued delivery for inline review comments', async () => {
     const store = createStore();
     store.diff.value = {
@@ -2910,6 +2951,49 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument();
   });
 
+  it('creates clean worktrees by default and only offers the choice for a dirty root', async () => {
+    const store = createStore();
+    store.modal.value = 'worktrees';
+    store.worktrees.value = [
+      { name: 'root', dir: '/repo', repo_root: '/repo', root: true, dirty_files: 6 },
+    ];
+    store.createWorktree = vi.fn(async () => {});
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    const clean = screen.getByRole('checkbox', { name: /Start clean/ });
+    expect(clean).toBeChecked();
+    expect(screen.getByText(/Leave 6 changed files in the root checkout/)).toBeVisible();
+
+    fireEvent.input(screen.getByLabelText('New worktree name'), {
+      target: { value: 'clean-tree' },
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'Create' }));
+    expect(store.createWorktree).toHaveBeenCalledWith('clean-tree', true);
+
+    act(() => {
+      store.worktrees.value = [
+        { name: 'root', dir: '/repo', repo_root: '/repo', root: true, dirty_files: 0 },
+      ];
+    });
+    expect(screen.queryByRole('checkbox', { name: /Start clean/ })).not.toBeInTheDocument();
+
+    store.createWorktree = vi.fn(async () => {
+      throw new Error('creation blocked');
+    });
+    fireEvent.input(screen.getByLabelText('New worktree name'), {
+      target: { value: 'blocked-tree' },
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'Create' }));
+    expect(await screen.findByText('Worktree operation failed')).toBeVisible();
+    expect(screen.getByText('creation blocked')).toBeVisible();
+    expect(screen.queryByText('Couldn’t load worktrees')).not.toBeInTheDocument();
+  });
+
   it('renders worktrees as a compact draft picker without duplicating the root checkout', async () => {
     const store = createStore();
     store.modal.value = 'worktrees';
@@ -2943,6 +3027,82 @@ describe('Preact-owned chat surfaces', () => {
     await userEvent.click(screen.getByRole('radio', { name: /feature-polish/ }));
     expect(store.selectedDraftWorktree.value).toBe('/worktrees/feature-polish');
     expect(store.modal.value).toBe('');
+  });
+
+  it('switches existing conversations and opens worktree changes in the rich diff panel', async () => {
+    const store = createStore();
+    store.modal.value = 'worktrees';
+    store.sessions.value = [
+      {
+        ...store.sessions.value[0],
+        projectId: 'project-1',
+        projectName: 'Term LLM',
+        workingDir: '/repo',
+        worktreeDir: '',
+      },
+    ];
+    store.worktrees.value = [
+      { name: 'root', dir: '/repo', repo_root: '/repo', root: true },
+      { name: 'feature-polish', dir: '/worktrees/feature-polish', dirty_files: 2 },
+    ];
+    store.switchWorktree = vi.fn(async () => undefined);
+    store.openWorktreeDiff = vi.fn(async () => undefined);
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: /feature-polish/ }));
+    expect(screen.getByRole('button', { name: 'Use this worktree' })).toBeVisible();
+    await userEvent.click(screen.getByRole('button', { name: 'Use this worktree' }));
+    expect(store.switchWorktree).toHaveBeenCalledWith('/worktrees/feature-polish');
+
+    await userEvent.click(screen.getByRole('button', { name: /feature-polish/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Show changes' }));
+    expect(store.openWorktreeDiff).toHaveBeenCalledWith(
+      '/worktrees/feature-polish',
+      'feature-polish',
+    );
+    expect(store.modal.value).toBe('');
+  });
+
+  it('returns to the list after branch promotion removes the old checkout', async () => {
+    const store = createStore();
+    store.modal.value = 'worktrees';
+    store.sessions.value = [
+      {
+        ...store.sessions.value[0],
+        projectId: 'project-1',
+        projectName: 'Term LLM',
+        worktreeDir: '/worktrees/feature-polish',
+      },
+    ];
+    store.worktrees.value = [
+      { name: 'root', dir: '/repo', repo_root: '/repo', root: true },
+      { name: 'feature-polish', dir: '/worktrees/feature-polish', dirty_files: 2 },
+    ];
+    store.promoteWorktree = vi.fn(async () => ({ cleanup: { removed: true } }));
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'feature-polish' })).toBeInTheDocument();
+    fireEvent.input(screen.getByLabelText('Branch name'), {
+      target: { value: 'feature/promoted' },
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'Promote' }));
+
+    expect(store.promoteWorktree).toHaveBeenCalledWith(
+      '/worktrees/feature-polish',
+      'feature/promoted',
+    );
+    expect(screen.getByText('Project checkouts')).toBeVisible();
+    expect(screen.queryByRole('heading', { name: 'feature-polish' })).not.toBeInTheDocument();
   });
 
   it('opens the bound worktree detail and escalates removal inline without confirm()', async () => {

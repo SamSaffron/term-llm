@@ -27,6 +27,45 @@ func (s *cleanupTestStore) List(_ context.Context, opts session.ListOptions) ([]
 	return summaries, nil
 }
 
+func TestPromoteToRootAndCleanup(t *testing.T) {
+	tests := []struct {
+		name        string
+		excludeID   string
+		otherInUse  bool
+		wantRemoved bool
+	}{
+		{name: "caller only", excludeID: "current", wantRemoved: true},
+		{name: "other session", excludeID: "current", otherInUse: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newGitRepoForWorktreeTest(t)
+			wt, err := Create(context.Background(), repo, CreateOptions{Name: "promote-cleanup-" + strings.ReplaceAll(tt.name, " ", "-")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cleanupWorktreeTest(t, wt.Dir)
+			if err := os.WriteFile(filepath.Join(wt.Dir, "promoted.txt"), []byte("promoted\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			summaries := []session.SessionSummary{{ID: "current", WorktreeDir: wt.Dir, Status: session.StatusActive}}
+			if tt.otherInUse {
+				summaries = append(summaries, session.SessionSummary{ID: "other", WorktreeDir: wt.Dir, Status: session.StatusActive})
+			}
+			res, cleanup, err := PromoteToRootAndCleanup(context.Background(), wt.Dir, "feature/"+strings.ReplaceAll(tt.name, " ", "-"), PromoteOptions{}, &cleanupTestStore{summaries: summaries}, tt.excludeID)
+			if err != nil {
+				t.Fatalf("PromoteToRootAndCleanup: %v", err)
+			}
+			if cleanup.Removed != tt.wantRemoved || res.OriginalWorktreeStillExists == tt.wantRemoved {
+				t.Fatalf("result=%+v cleanup=%+v, want removed=%v", res, cleanup, tt.wantRemoved)
+			}
+			if tt.otherInUse && (len(cleanup.InUse) != 1 || cleanup.InUse[0].ID != "other") {
+				t.Fatalf("cleanup in-use = %+v, want other session", cleanup.InUse)
+			}
+		})
+	}
+}
+
 func TestMergeBackAndCleanup(t *testing.T) {
 	tests := []struct {
 		name       string

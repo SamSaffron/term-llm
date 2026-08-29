@@ -20,6 +20,11 @@ type worktreeCreateRequest struct {
 	Name   string `json:"name"`
 	Base   string `json:"base"`
 	Branch string `json:"branch"`
+	Clean  bool   `json:"clean"`
+}
+
+type worktreeSwitchRequest struct {
+	Dir string `json:"dir"`
 }
 
 type worktreeMergeRequest struct {
@@ -241,16 +246,20 @@ func (s *serveServer) handleWorktreeCreate(w http.ResponseWriter, r *http.Reques
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
 		return
 	}
-	opts := worktree.CreateOptions{Name: req.Name, Base: req.Base, Branch: req.Branch, SetupTimeout: 10 * time.Minute, MoveChanges: true}
+	opts := worktree.CreateOptions{Name: req.Name, Base: req.Base, Branch: req.Branch, SetupTimeout: 10 * time.Minute, MoveChanges: !req.Clean}
 	if opts.Base == "" {
 		opts.Base = "HEAD"
 	}
 	if script := strings.TrimSpace(os.Getenv("TERM_LLM_WORKTREE_SETUP")); script != "" {
 		opts.SetupScript = script
 	}
-	releaseMutation, ok := s.acquireRootMutation(w, r.Context(), root)
-	if !ok {
-		return
+	releaseMutation := func() {}
+	if !req.Clean {
+		var admitted bool
+		releaseMutation, admitted = s.acquireRootMutation(w, r.Context(), root)
+		if !admitted {
+			return
+		}
 	}
 	defer releaseMutation()
 	wt, err := worktree.Create(r.Context(), root, opts)
@@ -263,6 +272,111 @@ func (s *serveServer) handleWorktreeCreate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"worktree": worktreeRow{Name: wt.Name, Dir: wt.Dir, RepoRoot: wt.RepoRoot, Branch: wt.Branch, Detached: wt.Detached, Base: wt.Base, HeadSHA: wt.HeadSHA, DirtyFiles: wt.DirtyFiles}})
+}
+
+func (s *serveServer) handleWorktreeSwitch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+	root, ok := s.currentGitRootOr409(w, r)
+	if !ok {
+		return
+	}
+	sessionID := resolveRequestSessionID(r)
+	if sessionID == "" || s.store == nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "session id is required")
+		return
+	}
+	var req worktreeSwitchRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
+		return
+	}
+	sess, err := s.store.Get(r.Context(), sessionID)
+	if err != nil || sess == nil {
+		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
+		return
+	}
+	projects, ok := session.AsProjectReader(s.store)
+	if !ok || strings.TrimSpace(sess.ProjectID) == "" {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", "session is not bound to a project")
+		return
+	}
+	project, err := projects.GetProject(r.Context(), sess.ProjectID)
+	if err != nil || project == nil || !sameServePath(project.CanonicalDir, root) {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", "session belongs to a different project")
+		return
+	}
+	targetDir, worktreeDir := root, ""
+	if strings.TrimSpace(req.Dir) != "" {
+		wt, err := managedWorktreeForRoot(root, req.Dir)
+		if err != nil {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
+		targetDir, worktreeDir = wt.Dir, wt.Dir
+	}
+	if sameServePath(sess.CWD, targetDir) && sameServePath(sess.WorktreeDir, worktreeDir) {
+		writeJSON(w, http.StatusOK, map[string]any{"session": sess, "worktree_dir": worktreeDir, "cwd": targetDir})
+		return
+	}
+	if s.responseRuns != nil && s.responseRuns.activeRunID(sessionID) != "" {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", "cannot switch worktrees while a response is active")
+		return
+	}
+	var rt *serveRuntime
+	release := func() {}
+	if s.sessionMgr != nil {
+		rt, release, err = s.sessionMgr.lockIdleMetadataMutation(sessionID)
+		if err != nil {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", "cannot switch worktrees while the conversation is active")
+			return
+		}
+	}
+	defer release()
+	switcher, ok := session.AsSessionWorkspaceSwitcher(s.store)
+	if !ok {
+		writeOpenAIError(w, http.StatusServiceUnavailable, "server_error", "session workspace switching is unavailable")
+		return
+	}
+	if rt != nil {
+		resolved := *sess
+		if err := bindRuntimeWorkspace(r.Context(), rt, &resolved, targetDir, worktreeDir); err != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "the live runtime could not switch workspaces")
+			return
+		}
+	}
+	binding := session.SessionWorkspaceBinding{ProjectID: sess.ProjectID, CWD: targetDir, WorktreeDir: worktreeDir}
+	persisted, err := switcher.SwitchSessionWorkspace(r.Context(), sessionID, binding)
+	if err != nil {
+		if rt != nil {
+			rollback := *sess
+			if rollbackErr := bindRuntimeWorkspace(r.Context(), rt, &rollback, sess.CWD, sess.WorktreeDir); rollbackErr == nil {
+				s.configureRuntimeSkillsForDirLocked(rt, sess.CWD)
+			}
+		}
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", "could not switch the conversation workspace")
+		return
+	}
+	if rt != nil {
+		resolved := *persisted
+		rt.sessionMeta = &resolved
+		s.configureRuntimeSkillsForDirLocked(rt, targetDir)
+	}
+	release()
+	writeJSON(w, http.StatusOK, map[string]any{"session": persisted, "worktree_dir": worktreeDir, "cwd": targetDir})
+}
+
+func bindRuntimeWorkspace(ctx context.Context, rt *serveRuntime, sess *session.Session, cwd, worktreeDir string) error {
+	if rt == nil {
+		return nil
+	}
+	if strings.TrimSpace(worktreeDir) == "" {
+		return BindRootSession(ctx, nil, sess, rt.toolMgr, cwd)
+	}
+	return BindWorktreeSession(ctx, nil, sess, rt.toolMgr, worktreeDir)
 }
 
 func (s *serveServer) handleWorktreeDiff(w http.ResponseWriter, r *http.Request) {
@@ -292,6 +406,78 @@ func (s *serveServer) handleWorktreeDiff(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *serveServer) cleanupCallerForWorktree(ctx context.Context, r *http.Request, dir string) string {
+	sessionID := resolveRequestSessionID(r)
+	if sessionID == "" || s.store == nil {
+		return ""
+	}
+	sess, err := s.store.Get(ctx, sessionID)
+	if err != nil || sess == nil || !sameServePath(sess.WorktreeDir, dir) {
+		return ""
+	}
+	return sessionID
+}
+
+func (s *serveServer) moveCleanupCallerToRoot(ctx context.Context, sessionID, worktreeDir, root string) (*session.Session, error) {
+	if sessionID == "" || s.store == nil {
+		return nil, nil
+	}
+	sess, err := s.store.Get(ctx, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("load calling session: %w", err)
+	}
+	if sess == nil || !sameServePath(sess.WorktreeDir, worktreeDir) {
+		return nil, fmt.Errorf("calling session is no longer bound to the source worktree")
+	}
+	var rt *serveRuntime
+	release := func() {}
+	if s.sessionMgr != nil {
+		rt, release, err = s.sessionMgr.lockIdleMetadataMutation(sessionID)
+		if err != nil {
+			return nil, fmt.Errorf("calling conversation is active: %w", err)
+		}
+	}
+	defer release()
+	resolved := *sess
+	if rt != nil {
+		if err := bindRuntimeWorkspace(ctx, rt, &resolved, root, ""); err != nil {
+			return nil, fmt.Errorf("move live runtime to root: %w", err)
+		}
+	}
+	var persisted *session.Session
+	if strings.TrimSpace(sess.ProjectID) != "" {
+		switcher, ok := session.AsSessionWorkspaceSwitcher(s.store)
+		if !ok {
+			if rt != nil {
+				rollback := *sess
+				_ = bindRuntimeWorkspace(ctx, rt, &rollback, sess.CWD, sess.WorktreeDir)
+			}
+			return nil, fmt.Errorf("session workspace switching is unavailable")
+		}
+		persisted, err = switcher.SwitchSessionWorkspace(ctx, sessionID, session.SessionWorkspaceBinding{ProjectID: sess.ProjectID, CWD: root})
+	} else {
+		persisted = &session.Session{}
+		*persisted = *sess
+		err = BindRootSession(ctx, s.store, persisted, nil, root)
+	}
+	if err != nil {
+		if rt != nil {
+			rollback := *sess
+			if rollbackErr := bindRuntimeWorkspace(ctx, rt, &rollback, sess.CWD, sess.WorktreeDir); rollbackErr == nil {
+				s.configureRuntimeSkillsForDirLocked(rt, sess.CWD)
+			}
+		}
+		return nil, fmt.Errorf("persist root workspace: %w", err)
+	}
+	if rt != nil {
+		resolved = *persisted
+		rt.sessionMeta = &resolved
+		s.configureRuntimeSkillsForDirLocked(rt, root)
+	}
+	release()
+	return persisted, nil
 }
 
 func (s *serveServer) handleWorktreeMerge(w http.ResponseWriter, r *http.Request) {
@@ -325,10 +511,12 @@ func (s *serveServer) handleWorktreeMerge(w http.ResponseWriter, r *http.Request
 	opts := worktree.MergeOptions{Commit: req.Commit, Message: req.Message}
 	var res worktree.MergeResult
 	var cleanup worktree.CleanupResult
+	callerSessionID := ""
 	if req.Keep {
 		res, err = worktree.MergeBack(r.Context(), wt.Dir, opts)
 	} else {
-		res, cleanup, err = worktree.MergeBackAndCleanup(r.Context(), wt.Dir, opts, s.store, "")
+		callerSessionID = s.cleanupCallerForWorktree(r.Context(), r, wt.Dir)
+		res, err = worktree.MergeBack(r.Context(), wt.Dir, opts)
 	}
 	if errors.Is(err, worktree.ErrConflict) {
 		message := "root checkout was reset cleanly after conflicts"
@@ -346,7 +534,31 @@ func (s *serveServer) handleWorktreeMerge(w http.ResponseWriter, r *http.Request
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"result": res, "cleanup": cleanup})
+	var movedSession *session.Session
+	if !req.Keep {
+		if callerSessionID != "" {
+			movedSession, err = s.moveCleanupCallerToRoot(r.Context(), callerSessionID, wt.Dir, res.RootDir)
+			if err != nil {
+				writeJSON(w, http.StatusConflict, map[string]any{
+					"result":  res,
+					"error":   "workspace_move_failed",
+					"message": fmt.Sprintf("changes merged, but the conversation could not move to root; the source checkout was kept: %v", err),
+				})
+				return
+			}
+		}
+		cleanup, err = worktree.CleanupAfterOperation(r.Context(), wt.Dir, s.store, "")
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"result":  res,
+				"cleanup": cleanup,
+				"session": movedSession,
+				"warning": fmt.Sprintf("changes merged, but source checkout cleanup failed: %v", err),
+			})
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"result": res, "cleanup": cleanup, "session": movedSession})
 }
 
 func (s *serveServer) acquireRootMutation(w http.ResponseWriter, ctx context.Context, root string) (func(), bool) {
@@ -484,6 +696,7 @@ func (s *serveServer) handleWorktreePromote(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	defer releaseMutation()
+	callerSessionID := s.cleanupCallerForWorktree(r.Context(), r, wt.Dir)
 	res, err := worktree.PromoteToRoot(r.Context(), wt.Dir, req.Branch, worktree.PromoteOptions{})
 	if errors.Is(err, worktree.ErrRootDirty) {
 		writeJSON(w, http.StatusConflict, map[string]any{"result": res, "error": "root_dirty", "message": err.Error()})
@@ -493,7 +706,32 @@ func (s *serveServer) handleWorktreePromote(w http.ResponseWriter, r *http.Reque
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"result": res})
+	var movedSession *session.Session
+	if callerSessionID != "" {
+		movedSession, err = s.moveCleanupCallerToRoot(r.Context(), callerSessionID, wt.Dir, res.RootDir)
+		if err != nil {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"result":  res,
+				"error":   "workspace_move_failed",
+				"message": fmt.Sprintf("changes promoted, but the conversation could not move to root; the source checkout was kept: %v", err),
+			})
+			return
+		}
+	}
+	cleanup, err := worktree.CleanupAfterOperation(r.Context(), wt.Dir, s.store, "")
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"result":  res,
+			"cleanup": cleanup,
+			"session": movedSession,
+			"warning": fmt.Sprintf("changes promoted, but source checkout cleanup failed: %v", err),
+		})
+		return
+	}
+	if cleanup.Removed {
+		res.OriginalWorktreeStillExists = false
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"result": res, "cleanup": cleanup, "session": movedSession})
 }
 
 func (s *serveServer) handleWorktreeDelete(w http.ResponseWriter, r *http.Request) {

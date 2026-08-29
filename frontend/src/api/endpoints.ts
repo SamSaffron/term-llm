@@ -275,17 +275,31 @@ export const endpoints = (api: APIClient) => ({
     api.get<Record<string, unknown>>(`/v1/projects/${encoded(id)}/worktrees`),
   createProjectWorktree: (id: string, body: unknown) =>
     api.post<Record<string, unknown>>(`/v1/projects/${encoded(id)}/worktrees`, body),
+  switchWorktree: (id: string, dir: string, sessionId: string) =>
+    api.post<Record<string, unknown>>(
+      `/v1/projects/${encoded(id)}/worktrees/switch`,
+      { dir },
+      'mutation',
+      sessionHeaders(sessionId),
+    ),
   worktreeDiff: (id: string, dir: string) =>
     api.get<Record<string, unknown>>(
       `/v1/projects/${encoded(id)}/worktrees/diff?dir=${encoded(dir)}`,
     ),
-  mergeWorktree: (id: string, dir: string) =>
-    api.post<Record<string, unknown>>(`/v1/projects/${encoded(id)}/worktrees/merge`, { dir }),
-  promoteWorktree: (id: string, dir: string, branch: string) =>
-    api.post<Record<string, unknown>>(`/v1/projects/${encoded(id)}/worktrees/promote`, {
-      dir,
-      branch,
-    }),
+  mergeWorktree: (id: string, dir: string, sessionId = '') =>
+    api.post<Record<string, unknown>>(
+      `/v1/projects/${encoded(id)}/worktrees/merge`,
+      { dir },
+      'mutation',
+      sessionId ? sessionHeaders(sessionId) : undefined,
+    ),
+  promoteWorktree: (id: string, dir: string, branch: string, sessionId = '') =>
+    api.post<Record<string, unknown>>(
+      `/v1/projects/${encoded(id)}/worktrees/promote`,
+      { dir, branch },
+      'mutation',
+      sessionId ? sessionHeaders(sessionId) : undefined,
+    ),
   removeWorktree: (id: string, dir: string, force = false) =>
     api.delete<Record<string, unknown>>(
       `/v1/projects/${encoded(id)}/worktrees?dir=${encoded(dir)}${force ? '&force=1' : ''}`,

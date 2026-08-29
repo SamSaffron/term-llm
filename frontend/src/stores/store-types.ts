@@ -64,6 +64,9 @@ export interface DiffState {
   width: number;
   selectedPath: string;
   followCurrentFile: boolean;
+  worktreeDir?: string;
+  worktreeTitle?: string;
+  readOnly?: boolean;
 }
 
 export interface PendingInterjection {
