@@ -2064,6 +2064,52 @@ describe('AppStore compatibility behavior', () => {
     });
   });
 
+  it('preserves sanitizer-shaped session identities across an unchanged status poll', async () => {
+    const store = new AppStore(config);
+    try {
+      const stable = session();
+      store.sessions.value = [stable];
+      store.endpoints.sessionStatus = vi.fn(async () => ({ sessions: [{ id: 's1' }] }));
+      const sessions = store.sessions.value;
+
+      await (store as unknown as { refreshStatus(): Promise<void> }).refreshStatus();
+
+      expect(store.sessions.value).toBe(sessions);
+      expect(store.sessions.value[0]).toBe(stable);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('applies changed status while preserving unchanged sibling identities', async () => {
+    const store = new AppStore(config);
+    try {
+      const changed = session();
+      const stable = { ...session(), id: 's2', title: 'Stable' };
+      store.sessions.value = [changed, stable];
+      const sessions = store.sessions.value;
+      store.endpoints.sessionStatus = vi.fn(async () => ({
+        sessions: [
+          { id: 's1', short_title: 'Renamed', active_run: true, transcript_rev: 3 },
+          { id: 's2' },
+        ],
+      }));
+
+      await (store as unknown as { refreshStatus(): Promise<void> }).refreshStatus();
+
+      expect(store.sessions.value).not.toBe(sessions);
+      expect(store.sessions.value[0]).not.toBe(changed);
+      expect(store.sessions.value[0]).toMatchObject({
+        title: 'Renamed',
+        activeRun: true,
+        transcriptRev: 3,
+      });
+      expect(store.sessions.value[1]).toBe(stable);
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('clears stale remote activity without dropping an out-of-scope response anchor', async () => {
     const store = new AppStore(config);
     store.sessions.value = [
