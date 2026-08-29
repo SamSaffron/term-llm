@@ -318,16 +318,25 @@ const SIDEBAR_EXPANSION_KEYS = {
   hubAgents: '__hub_agents__',
 } as const;
 
-function useSidebarExpansion(key: string): [boolean, () => void] {
+function useSidebarExpansion(key: string, animate = true) {
   const store = useStore();
   const [open, setOpen] = useState(
     () =>
       readJSON<Record<string, boolean>>(store.storage, store.keys.projectExpansion, {})[key] !==
       false,
   );
+  const [opening, setOpening] = useState(false);
+  useEffect(() => {
+    if (!opening) return;
+    // animationend normally clears this first. The timeout also covers reduced
+    // motion and interrupted animations so a later data refresh cannot replay it.
+    const timer = window.setTimeout(() => setOpening(false), 250);
+    return () => window.clearTimeout(timer);
+  }, [opening]);
   const toggle = () => {
     const value = !open;
     setOpen(value);
+    setOpening(animate && value);
     const expansion = readJSON<Record<string, boolean>>(
       store.storage,
       store.keys.projectExpansion,
@@ -335,7 +344,12 @@ function useSidebarExpansion(key: string): [boolean, () => void] {
     );
     writeJSON(store.storage, store.keys.projectExpansion, { ...expansion, [key]: value });
   };
-  return [open, toggle];
+  return {
+    open,
+    opening,
+    toggle,
+    finishOpening: () => setOpening(false),
+  };
 }
 
 function CollapsibleSectionHeading({
@@ -372,13 +386,20 @@ function CollapsibleSectionHeading({
 
 function NoProjectGroup({ sessions }: { sessions: Session[] }) {
   const store = useStore();
-  const [open, toggle] = useSidebarExpansion(SIDEBAR_EXPANSION_KEYS.noProject);
+  const { open, opening, toggle, finishOpening } = useSidebarExpansion(
+    SIDEBAR_EXPANSION_KEYS.noProject,
+  );
   const activeSession = sessions.find((session) => session.id === store.activeSessionId.value);
   return (
     <section class="session-group session-ungrouped">
       <CollapsibleSectionHeading label="No project" open={open} onToggle={toggle} />
       {open ? (
-        <div class="session-group-list is-opening">
+        <div
+          class={`session-group-list ${opening ? 'is-opening' : ''}`}
+          onAnimationEnd={(event) => {
+            if (event.target === event.currentTarget) finishOpening();
+          }}
+        >
           <SessionDateGroups sessions={sessions} nested />
           {store.noProjectCursor.value && (
             <PaginationSentinel load={() => store.loadMoreNoProject()} />
@@ -402,7 +423,7 @@ function NoProjectGroup({ sessions }: { sessions: Session[] }) {
 
 function ProjectGroup({ project }: { project: Project }) {
   const store = useStore();
-  const [open, toggle] = useSidebarExpansion(project.id);
+  const { open, opening, toggle, finishOpening } = useSidebarExpansion(project.id);
   const [menu, setMenu] = useState(false);
   const menuID = useId();
   const { menu: menuRef, up } = useMenuFlip(menu);
@@ -519,7 +540,12 @@ function ProjectGroup({ project }: { project: Project }) {
         )}
       </div>
       {open ? (
-        <div class="project-session-list is-opening">
+        <div
+          class={`project-session-list ${opening ? 'is-opening' : ''}`}
+          onAnimationEnd={(event) => {
+            if (event.target === event.currentTarget) finishOpening();
+          }}
+        >
           <SessionDateGroups sessions={regular} nested />
           {project.has_more && (
             <PaginationSentinel load={() => store.loadMoreProject(project.id)} />
@@ -538,7 +564,9 @@ function ProjectGroup({ project }: { project: Project }) {
 
 function ProjectsGroup({ projects }: { projects: Project[] }) {
   const store = useStore();
-  const [open, toggle] = useSidebarExpansion(SIDEBAR_EXPANSION_KEYS.projects);
+  const { open, opening, toggle, finishOpening } = useSidebarExpansion(
+    SIDEBAR_EXPANSION_KEYS.projects,
+  );
   const activeSessionID = store.activeSessionId.value;
   const listedActiveSession = projects
     .flatMap((project) => project.sessions || [])
@@ -554,7 +582,12 @@ function ProjectsGroup({ projects }: { projects: Project[] }) {
     <section class="session-group sidebar-project-groups">
       <CollapsibleSectionHeading label="Projects" open={open} onToggle={toggle} />
       {open ? (
-        <div class="session-group-list is-opening">
+        <div
+          class={`session-group-list ${opening ? 'is-opening' : ''}`}
+          onAnimationEnd={(event) => {
+            if (event.target === event.currentTarget) finishOpening();
+          }}
+        >
           {projects.map((project) => (
             <ProjectGroup key={project.id} project={project} />
           ))}
@@ -572,7 +605,7 @@ function ProjectsGroup({ projects }: { projects: Project[] }) {
 
 function HubAgents() {
   const store = useStore();
-  const [open, toggle] = useSidebarExpansion(SIDEBAR_EXPANSION_KEYS.hubAgents);
+  const { open, toggle } = useSidebarExpansion(SIDEBAR_EXPANSION_KEYS.hubAgents, false);
   const headingID = useId();
   const needsAttention = store.hubAgents.value.some((agent) => agent.attention);
   return (

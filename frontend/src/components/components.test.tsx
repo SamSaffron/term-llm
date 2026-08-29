@@ -380,6 +380,53 @@ describe('Preact-owned chat surfaces', () => {
     } as unknown as MediaQueryList);
   });
 
+  it('only animates sidebar groups after a user expands them', async () => {
+    const store = createStore();
+    const projectSession = {
+      ...store.sessions.value[0],
+      projectId: 'p1',
+      projectName: 'Alpha',
+    };
+    store.sessions.value = [projectSession];
+    store.projects.value = [
+      {
+        id: 'p1',
+        name: 'Alpha',
+        path: '/tmp/alpha',
+        available: true,
+        sessions: [projectSession],
+        sessionCount: 1,
+      },
+    ];
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Sidebar />
+      </StoreContext.Provider>,
+    );
+
+    expect(container.querySelectorAll('.is-opening')).toHaveLength(0);
+
+    // A catalog subscriber can still receive fresh identities from another
+    // update path. That rerender must not look like a user-triggered expansion.
+    act(() => {
+      store.sessions.value = [{ ...projectSession }];
+      store.projects.value = store.projects.value.map((project) => ({
+        ...project,
+        sessions: project.sessions?.map((session) => ({ ...session })),
+      }));
+    });
+    expect(container.querySelectorAll('.is-opening')).toHaveLength(0);
+
+    const projectsToggle = screen.getByRole('button', { name: 'Projects', exact: true });
+    await userEvent.click(projectsToggle);
+    await userEvent.click(projectsToggle);
+    const list = container.querySelector('.sidebar-project-groups > .session-group-list')!;
+    expect(list).toHaveClass('is-opening');
+
+    fireEvent.animationEnd(list, { animationName: 'project-list-reveal' });
+    expect(list).not.toHaveClass('is-opening');
+  });
+
   it('renders /side as one private Markdown conversation with an accessible composer', async () => {
     const store = createStore();
     store.modal.value = 'side';

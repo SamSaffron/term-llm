@@ -11,6 +11,26 @@ import {
   sessionFrom as sanitizeSessionFrom,
 } from './store-utils';
 
+function sidebarValuesEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+    return left.every((value, index) => sidebarValuesEqual(value, right[index]));
+  }
+  const leftPrototype = Object.getPrototypeOf(left);
+  if (leftPrototype !== Object.getPrototypeOf(right)) return false;
+  if (leftPrototype !== Object.prototype && leftPrototype !== null) return false;
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const keys = new Set([...Object.keys(leftRecord), ...Object.keys(rightRecord)]);
+  return [...keys].every((key) => sidebarValuesEqual(leftRecord[key], rightRecord[key]));
+}
+
+function sameReferences<T>(left: T[], right: T[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 export interface SessionStoreHost {
   hasRun: (sessionId: string) => boolean;
   modal: Signal<Modal>;
@@ -194,20 +214,31 @@ export class SessionStore {
       projects.push(project);
     }
     const incoming = [...ungrouped, ...projects.flatMap((project) => project.sessions || [])];
-    const existing = new Map(this.sessions.peek().map((session) => [session.id, session]));
+    const previousSessions = this.sessions.peek();
+    const existing = new Map(previousSessions.map((session) => [session.id, session]));
     const merged = new Map(
-      incoming.map((session) => [
-        session.id,
-        this.mergeSession(existing.get(session.id), session, false, true),
-      ]),
+      incoming.map((session) => {
+        const previous = existing.get(session.id);
+        const next = this.mergeSession(previous, session, false, true);
+        return [session.id, previous && sidebarValuesEqual(previous, next) ? previous : next];
+      }),
     );
     for (const [id, session] of existing)
       if (!merged.has(id) && this.retainedLocally(id)) merged.set(id, session);
-    this.sessions.value = [...merged.values()].sort(compareSessionsByActivity);
-    this.projects.value = projects.map((project) => ({
-      ...project,
-      sessions: project.sessions?.map((summary) => merged.get(summary.id) || summary),
-    }));
+    const nextSessions = [...merged.values()].sort(compareSessionsByActivity);
+    if (!sameReferences(previousSessions, nextSessions)) this.sessions.value = nextSessions;
+
+    const previousProjects = this.projects.peek();
+    const projectsByID = new Map(previousProjects.map((project) => [project.id, project]));
+    const nextProjects = projects.map((project) => {
+      const next = {
+        ...project,
+        sessions: project.sessions?.map((summary) => merged.get(summary.id) || summary),
+      };
+      const previous = projectsByID.get(project.id);
+      return previous && sidebarValuesEqual(previous, next) ? previous : next;
+    });
+    if (!sameReferences(previousProjects, nextProjects)) this.projects.value = nextProjects;
     this.lastSidebarRefreshAt = Date.now();
   }
 

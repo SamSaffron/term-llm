@@ -68,6 +68,50 @@ describe('SessionStore', () => {
     }
   });
 
+  it('preserves sidebar signal identities when a refresh is semantically unchanged', () => {
+    const store = new AppStore(testConfig);
+    try {
+      const payload = {
+        groups: [
+          {
+            project: {
+              id: 'project-1',
+              name: 'Alpha',
+              canonical_dir: '/tmp/alpha',
+              available: true,
+              git: true,
+            },
+            sessions: [
+              {
+                id: 's1',
+                short_title: 'Stable conversation',
+                origin: 'web',
+                created_at: 1,
+                last_message_at: 2,
+                message_count: 3,
+              },
+            ],
+            session_count: 1,
+          },
+        ],
+      };
+      store.sessionStore.applySidebar(payload);
+      const sessions = store.sessions.value;
+      const projects = store.projects.value;
+      const session = sessions[0];
+      const project = projects[0];
+
+      store.sessionStore.applySidebar(payload);
+
+      expect(store.sessions.value).toBe(sessions);
+      expect(store.projects.value).toBe(projects);
+      expect(store.sessions.value[0]).toBe(session);
+      expect(store.projects.value[0]).toBe(project);
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('retains the active flat-list session when a sidebar page omits it', () => {
     const store = new AppStore(testConfig);
     try {
