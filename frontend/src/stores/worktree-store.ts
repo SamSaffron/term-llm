@@ -1,7 +1,8 @@
 import { computed, signal, type ReadonlySignal, type Signal } from '@preact/signals';
+import { APIError } from '../api/client';
 import type { Project, Session } from '../domain/types';
 import { readDrafts, saveDraft } from '../platform/storage';
-import type { Modal } from './store-types';
+import type { Modal, SendOptions } from './store-types';
 import { listFrom, recordValue, worktreeErrorMessage } from './store-utils';
 import type { AppStoreServices } from './app-store-services';
 
@@ -17,6 +18,7 @@ export interface WorktreeStoreOptions {
   selectedDraftWorktree: Signal<string>;
   draftStorageId: () => string;
   patchSession: (id: string, patch: Partial<Session>) => void;
+  send: (options?: SendOptions) => Promise<void>;
 }
 
 /** Owns worktree discovery and worktree commands for the active project. */
@@ -154,6 +156,61 @@ export class WorktreeStore {
       force,
     );
     return this.finishMutation(data, 'merged');
+  }
+
+  private applyMovedSession(data: Record<string, unknown>): void {
+    const active = this.options.activeSession.value;
+    const movedSession = recordValue(data.session);
+    const result = recordValue(data.result);
+    if (!active || !movedSession || String(movedSession.id || '') !== active.id) return;
+    this.options.patchSession(active.id, {
+      worktreeDir: String(movedSession.worktree_dir || ''),
+      workingDir: String(movedSession.cwd || result?.root_dir || active.workingDir || ''),
+    });
+  }
+
+  private movedSessionFromError(error: unknown): void {
+    if (!(error instanceof APIError) || !error.body) return;
+    try {
+      this.applyMovedSession(JSON.parse(error.body) as Record<string, unknown>);
+    } catch {
+      // Preserve the original API error when the response is not JSON.
+    }
+  }
+
+  async recover(dir: string): Promise<Record<string, unknown>> {
+    const active = this.options.activeSession.value;
+    if (!active) throw new Error('Choose a conversation before starting assisted recovery.');
+    let data: Record<string, unknown>;
+    try {
+      data = await this.services.endpoints.assistedMergeWorktree(this.projectId(), dir, active.id);
+    } catch (error) {
+      // The server follows the TUI ordering and moves the conversation to root
+      // before applying the snapshot. Keep the web projection in sync even if
+      // the apply then fails (for example, because root became dirty).
+      this.movedSessionFromError(error);
+      throw error;
+    }
+    // Update workspace ownership before send(). A first response otherwise
+    // includes the stale worktree_dir and re-binds the run to the source tree.
+    this.applyMovedSession(data);
+    await this.load();
+    this.options.modal.value = '';
+    const notice = String(data.notice || data.message || 'Assisted recovery started.');
+    this.services.toast(notice, data.prompt ? 'success' : 'info');
+    const prompt = String(data.prompt || '').trim();
+    if (prompt) {
+      try {
+        await this.options.send({ inputText: prompt, preserveComposer: true });
+      } catch (error) {
+        this.services.toast(
+          `Could not send the recovery prompt: ${worktreeErrorMessage(error)}`,
+          'error',
+        );
+        throw error;
+      }
+    }
+    return data;
   }
 
   async promote(dir: string, branch: string): Promise<Record<string, unknown>> {

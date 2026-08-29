@@ -425,6 +425,48 @@
   font-size: 0.76rem;
 }
 
+.worktree-recovery {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.72rem;
+  border: 1px solid color-mix(in srgb, var(--accent-amber) 50%, var(--border));
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--accent-amber) 9%, var(--surface-2));
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.worktree-recovery > h4 {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.82rem;
+}
+
+.worktree-recovery pre {
+  max-height: 9rem;
+  margin: 0;
+  padding: 0.55rem 0.62rem;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text-muted);
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.worktree-recovery-unavailable {
+  color: var(--accent-amber);
+}
+
+.worktree-recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
 .worktree-promote,
 .worktree-remove {
   display: grid;

@@ -64,6 +64,7 @@ With the default base path of `/ui`, the web runtime exposes:
 - `DELETE /ui/v1/projects/:id/worktrees?dir=...`
 - `GET /ui/v1/projects/:id/worktrees/diff?dir=...`
 - `POST /ui/v1/projects/:id/worktrees/merge`
+- `POST /ui/v1/projects/:id/worktrees/assisted-merge`
 - `POST /ui/v1/projects/:id/worktrees/promote`
 - `GET /ui/v1/sidebar`
 - `GET /ui/v1/sessions?project_id=prj_...&cursor=...`
@@ -94,7 +95,7 @@ The server resolves the stable ID, revalidates the canonical path, verifies mana
 
 The grouped sidebar request is `GET /ui/v1/sidebar?per_project=12&include_archived_projects=1&include_archived_sessions=0`. It returns active, archived, empty, and optional **No project** groups in one bounded projection. Each group carries `session_count`, `last_activity_at`, up to `per_project` summaries, and an opaque `next_cursor`. Pass that cursor back only for the same group; the null-project cursor is sent without `project_id`. Global full-text search results include `project_id` and `project_name` so clients can regroup them without racing a second project lookup.
 
-Project-scoped worktree routes are under `/ui/v1/projects/:id/worktrees`: collection `GET`/`POST`, `DELETE ...?dir=...`, `GET .../diff?dir=...`, and `POST .../merge` or `.../promote`. The old `/ui/v1/worktrees` routes remain for one compatibility release, always target the serve startup repository, and return a deprecation header. They never follow browser-selected project state.
+Project-scoped worktree routes are under `/ui/v1/projects/:id/worktrees`: collection `GET`/`POST`, `DELETE ...?dir=...`, `GET .../diff?dir=...`, and `POST .../merge`, `.../assisted-merge`, or `.../promote`. A conflicting merge returns the shared assisted-recovery confirmation payload. If the calling conversation is using that worktree or the project root, confirming in the Web UI ensures the conversation is on root, reapplies the fresh source snapshot, and sends the same conflict-resolution prompt used by the TUI. The old `/ui/v1/worktrees` routes remain for one compatibility release, always target the serve startup repository, and return a deprecation header. They never follow browser-selected project state.
 
 Stable project/workspace errors use the normal authenticated JSON error envelope:
 

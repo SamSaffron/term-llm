@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppConfig } from '../app/config';
+import { APIError } from '../api/client';
 import { initialProjection } from '../domain/response';
 import type { ActiveRun, Session } from '../domain/types';
 import { persistPendingIntent, readDrafts, saveDraft } from '../platform/storage';
@@ -77,6 +78,90 @@ describe('AppStore compatibility behavior', () => {
       expect(store.activeSession.value).toMatchObject({ worktreeDir: '', workingDir: '/repo' });
       expect(store.selectedDraftWorktree.value).toBe('/worktrees/stale-draft');
       expect(store.currentWorktreeDir.value).toBe('');
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('moves to root before sending the shared assisted-recovery prompt', async () => {
+    const store = new AppStore(config);
+    try {
+      store.sessions.value = [
+        {
+          ...session(),
+          projectId: 'project-1',
+          workingDir: '/worktrees/feature',
+          worktreeDir: '/worktrees/feature',
+        },
+      ];
+      store.activeSessionId.value = 's1';
+      store.draftActive.value = false;
+      store.projectsEnabled.value = true;
+      store.modal.value = 'worktrees';
+      store.endpoints.assistedMergeWorktree = vi.fn(async () => ({
+        result: { root_dir: '/repo', changed_files: ['file.txt'] },
+        session: { id: 's1', cwd: '/repo', worktree_dir: '' },
+        notice: 'Assisted recovery started.',
+        prompt: 'Resolve the worktree conflict in root.',
+      }));
+      store.endpoints.projectWorktrees = vi.fn(async () => ({ worktrees: [] }));
+      store.endpoints.createResponse = vi.fn(
+        async () => new Response('stop after request capture', { status: 400 }),
+      );
+
+      await store.recoverWorktree('/worktrees/feature');
+
+      expect(store.endpoints.assistedMergeWorktree).toHaveBeenCalledWith(
+        'project-1',
+        '/worktrees/feature',
+        's1',
+      );
+      expect(store.activeSession.value).toMatchObject({ worktreeDir: '', workingDir: '/repo' });
+      expect(store.modal.value).toBe('');
+      expect(store.endpoints.createResponse).toHaveBeenCalledWith(
+        expect.not.objectContaining({ worktree_dir: expect.anything() }),
+        's1',
+        expect.any(String),
+        expect.any(AbortSignal),
+      );
+      const request = vi.mocked(store.endpoints.createResponse).mock.calls[0]?.[0];
+      expect(JSON.stringify(request)).toContain('Resolve the worktree conflict in root.');
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('adopts the root session when recovery fails after the server move', async () => {
+    const store = new AppStore(config);
+    try {
+      store.sessions.value = [
+        {
+          ...session(),
+          projectId: 'project-1',
+          workingDir: '/worktrees/feature',
+          worktreeDir: '/worktrees/feature',
+        },
+      ];
+      store.activeSessionId.value = 's1';
+      store.draftActive.value = false;
+      store.projectsEnabled.value = true;
+      store.endpoints.assistedMergeWorktree = vi.fn(async () => {
+        throw new APIError(
+          'root became dirty',
+          409,
+          JSON.stringify({
+            error: 'root_dirty',
+            result: { root_dir: '/repo' },
+            session: { id: 's1', cwd: '/repo', worktree_dir: '' },
+          }),
+        );
+      });
+
+      await expect(store.recoverWorktree('/worktrees/feature')).rejects.toThrow(
+        'root became dirty',
+      );
+
+      expect(store.activeSession.value).toMatchObject({ worktreeDir: '', workingDir: '/repo' });
     } finally {
       store.dispose();
     }

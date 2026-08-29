@@ -166,6 +166,19 @@ export interface Session {
   fileChangeSummary?: { fileCount: number; additions: number; deletions: number; git: boolean };
 }
 
+export interface WorktreeRecoveryOffer {
+  kind: 'conflict';
+  title: string;
+  question: string;
+  yes_label: string;
+  no_label: string;
+  details?: string;
+  conflicts?: string[];
+  available: boolean;
+  unavailable_reason?: string;
+  decline_message?: string;
+}
+
 export interface Project {
   id: string;
   name: string;

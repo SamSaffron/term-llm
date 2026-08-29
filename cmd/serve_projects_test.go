@@ -1618,7 +1618,8 @@ func TestProjectScopedWorktreesUseIndependentRepositoriesAndLegacyAlias(t *testi
 		method, path, body string
 	}{
 		{http.MethodPost, "/v1/projects/" + projectA.ID + "/worktrees/merge", `{"dir":` + mustJSONQuote(createdDirs[projectB.ID]) + `}`},
-		{http.MethodPost, "/v1/projects/" + projectA.ID + "/worktrees/promote", `{"dir":` + mustJSONQuote(createdDirs[projectB.ID]) + `,"branch":"foreign"}`},
+		{http.MethodPost, "/v1/projects/" + projectA.ID + "/worktrees/assisted-merge", `{"dir":` + mustJSONQuote(createdDirs[projectB.ID]) + `}`},
+		{http.MethodPost, "/v1/projects/" + projectA.ID + "/worktrees/promote", `{"dir":` + mustJSONQuote(createdDirs[projectB.ID]) + `,"branch":"cross-project"}`},
 		{http.MethodDelete, "/v1/projects/" + projectA.ID + "/worktrees?dir=" + url.QueryEscape(createdDirs[projectB.ID]), ""},
 	} {
 		req := httptest.NewRequest(mutation.method, mutation.path, strings.NewReader(mutation.body))

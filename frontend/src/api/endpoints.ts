@@ -297,6 +297,13 @@ export const endpoints = (api: APIClient) => ({
       'mutation',
       sessionId ? sessionHeaders(sessionId) : undefined,
     ),
+  assistedMergeWorktree: (id: string, dir: string, sessionId: string) =>
+    api.post<Record<string, unknown>>(
+      `/v1/projects/${encoded(id)}/worktrees/assisted-merge`,
+      { dir },
+      'mutation',
+      sessionHeaders(sessionId),
+    ),
   promoteWorktree: (id: string, dir: string, branch: string, sessionId = '') =>
     api.post<Record<string, unknown>>(
       `/v1/projects/${encoded(id)}/worktrees/promote`,

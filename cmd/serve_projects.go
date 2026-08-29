@@ -1057,6 +1057,8 @@ func (s *serveServer) handleProjectWorktrees(w http.ResponseWriter, r *http.Requ
 		s.handleWorktreeDiff(w, r)
 	case "/merge":
 		s.handleWorktreeMerge(w, r)
+	case "/assisted-merge":
+		s.handleWorktreeAssistedMerge(w, r)
 	case "/promote":
 		s.handleWorktreePromote(w, r)
 	default:

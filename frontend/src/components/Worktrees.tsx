@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import { APIError } from '../api/client';
+import type { WorktreeRecoveryOffer } from '../domain/types';
 import { Icon } from './Icon';
 import { Overlay } from './Overlay';
 
 type WorktreeRow = Record<string, unknown>;
-type BusyAction = '' | 'diff' | 'merge' | 'promote' | 'remove' | 'create' | 'switch';
+type BusyAction = '' | 'diff' | 'merge' | 'recover' | 'promote' | 'remove' | 'create' | 'switch';
 type RemoveStage = 'idle' | 'armed' | 'force';
 
 const rowDir = (row: WorktreeRow | null): string => String(row?.dir || row?.path || '');
@@ -28,6 +29,26 @@ const usageNames = (entries: unknown[]): string[] =>
       return String(value.name || (value.number ? `#${value.number}` : value.id || ''));
     })
     .filter(Boolean);
+
+function recoveryOffer(error: unknown): WorktreeRecoveryOffer | null {
+  if (!(error instanceof APIError) || error.status !== 409 || !error.body) return null;
+  try {
+    const value = (JSON.parse(error.body) as Record<string, unknown>).recovery;
+    if (!value || typeof value !== 'object') return null;
+    const offer = value as WorktreeRecoveryOffer;
+    if (
+      offer.kind !== 'conflict' ||
+      !offer.title ||
+      !offer.question ||
+      !offer.yes_label ||
+      !offer.no_label
+    )
+      return null;
+    return offer;
+  } catch {
+    return null;
+  }
+}
 
 function errorDetails(error: unknown): { message: string; inUse: string[] } {
   let message = error instanceof Error ? error.message : String(error || 'Worktree action failed.');
@@ -187,8 +208,10 @@ export function Worktrees() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState<BusyAction>('');
   const [mergeWarning, setMergeWarning] = useState(false);
+  const [recovery, setRecovery] = useState<WorktreeRecoveryOffer | null>(null);
   const [removeStage, setRemoveStage] = useState<RemoveStage>('idle');
   const autoOpened = useRef(false);
+  const recoveryConfirm = useRef<HTMLButtonElement>(null);
   const draft = store.draftActive.value;
   const activeSession = store.activeSession.value;
   const activeDir = store.currentWorktreeDir.value;
@@ -219,12 +242,19 @@ export function Worktrees() {
     }
   }, [activeDir, apiRows, draft, selected]);
 
+  useEffect(() => {
+    if (!recovery?.available) return;
+    const focusFrame = requestAnimationFrame(() => recoveryConfirm.current?.focus());
+    return () => cancelAnimationFrame(focusFrame);
+  }, [recovery]);
+
   const openDetail = (row: WorktreeRow) => {
     setSelected(row);
     setBranch('');
     setStatus('');
     setError('');
     setMergeWarning(false);
+    setRecovery(null);
     setRemoveStage('idle');
   };
   const backToList = () => {
@@ -233,6 +263,7 @@ export function Worktrees() {
     setStatus('');
     setError('');
     setMergeWarning(false);
+    setRecovery(null);
     setRemoveStage('idle');
   };
   const run = async (action: BusyAction, task: () => Promise<void>) => {
@@ -361,6 +392,13 @@ export function Worktrees() {
                       if (cleanupRemoved(result)) backToList();
                       else setStatus('Merged into root; the old checkout is still in use.');
                     } catch (value) {
+                      const offer = recoveryOffer(value);
+                      if (offer) {
+                        setRecovery(offer);
+                        setMergeWarning(false);
+                        setStatus('');
+                        return;
+                      }
                       if (
                         value instanceof APIError &&
                         value.status === 409 &&
@@ -387,6 +425,45 @@ export function Worktrees() {
                   Another run is actively using it. Merging now may disrupt or overwrite that run’s
                   work. Wait for it to finish, or merge anyway if you accept that risk.
                 </span>
+              </div>
+            )}
+
+            {recovery && (
+              <div class="worktree-recovery" role="group" aria-labelledby="worktreeRecoveryTitle">
+                <h4 id="worktreeRecoveryTitle">{recovery.title}</h4>
+                <span>{recovery.question}</span>
+                {recovery.details && <pre>{recovery.details}</pre>}
+                {!recovery.available && recovery.unavailable_reason && (
+                  <span class="worktree-recovery-unavailable">{recovery.unavailable_reason}</span>
+                )}
+                <div class="worktree-recovery-actions">
+                  <button
+                    ref={recoveryConfirm}
+                    class="btn primary"
+                    type="button"
+                    disabled={Boolean(busy) || streaming || !recovery.available}
+                    onClick={() =>
+                      void run('recover', async () => {
+                        await store.recoverWorktree(dir);
+                      })
+                    }
+                  >
+                    {busy === 'recover' ? 'Starting recovery…' : recovery.yes_label}
+                  </button>
+                  <button
+                    class="btn"
+                    type="button"
+                    disabled={Boolean(busy)}
+                    onClick={() => {
+                      setRecovery(null);
+                      setStatus(
+                        recovery.decline_message || 'Recovery declined; nothing was changed.',
+                      );
+                    }}
+                  >
+                    {recovery.no_label}
+                  </button>
+                </div>
               </div>
             )}
 

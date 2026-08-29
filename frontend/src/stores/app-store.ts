@@ -330,6 +330,7 @@ export class AppStore {
       selectedDraftWorktree: this.selectedDraftWorktree,
       draftStorageId: () => this.draftStorageID(),
       patchSession: (id, patch) => this.sessionStore.patch(id, patch),
+      send: (options) => this.send(options),
     });
     this.worktrees = this.worktreeStore.worktrees;
     this.worktreeError = this.worktreeStore.error;
@@ -1167,6 +1168,9 @@ export class AppStore {
   }
   async mergeWorktree(dir: string, force = false): Promise<Record<string, unknown>> {
     return this.worktreeStore.merge(dir, force);
+  }
+  async recoverWorktree(dir: string): Promise<Record<string, unknown>> {
+    return this.worktreeStore.recover(dir);
   }
   async promoteWorktree(dir: string, branch: string): Promise<Record<string, unknown>> {
     return this.worktreeStore.promote(dir, branch);

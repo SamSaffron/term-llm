@@ -14,6 +14,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/worktree"
+	worktreerecovery "github.com/samsaffron/term-llm/internal/worktree/recovery"
 )
 
 type worktreeCreateRequest struct {
@@ -33,6 +34,10 @@ type worktreeMergeRequest struct {
 	Message string `json:"message"`
 	Keep    bool   `json:"keep"`
 	Force   bool   `json:"force"`
+}
+
+type worktreeAssistedMergeRequest struct {
+	Dir string `json:"dir"`
 }
 
 type worktreePromoteRequest struct {
@@ -421,6 +426,24 @@ func (s *serveServer) cleanupCallerForWorktree(ctx context.Context, r *http.Requ
 	return sessionID
 }
 
+func (s *serveServer) assistedRecoveryCaller(ctx context.Context, r *http.Request, worktreeDir, root string) (string, *session.Session) {
+	sessionID := resolveRequestSessionID(r)
+	if sessionID == "" || s.store == nil {
+		return "", nil
+	}
+	sess, err := s.store.Get(ctx, sessionID)
+	if err != nil || sess == nil {
+		return "", nil
+	}
+	if strings.TrimSpace(sess.WorktreeDir) != "" && sameServePath(sess.WorktreeDir, worktreeDir) {
+		return sessionID, sess
+	}
+	if strings.TrimSpace(sess.WorktreeDir) == "" && sameServePath(sess.CWD, root) {
+		return sessionID, sess
+	}
+	return "", nil
+}
+
 func (s *serveServer) moveCleanupCallerToRoot(ctx context.Context, sessionID, worktreeDir, root string) (*session.Session, error) {
 	if sessionID == "" || s.store == nil {
 		return nil, nil
@@ -512,19 +535,24 @@ func (s *serveServer) handleWorktreeMerge(w http.ResponseWriter, r *http.Request
 	opts := worktree.MergeOptions{Commit: req.Commit, Message: req.Message}
 	var res worktree.MergeResult
 	var cleanup worktree.CleanupResult
-	callerSessionID := ""
-	if req.Keep {
-		res, err = worktree.MergeBack(r.Context(), wt.Dir, opts)
-	} else {
-		callerSessionID = s.cleanupCallerForWorktree(r.Context(), r, wt.Dir)
-		res, err = worktree.MergeBack(r.Context(), wt.Dir, opts)
-	}
+	callerSessionID := s.cleanupCallerForWorktree(r.Context(), r, wt.Dir)
+	recoveryCallerID, _ := s.assistedRecoveryCaller(r.Context(), r, wt.Dir, root)
+	res, err = worktree.MergeBack(r.Context(), wt.Dir, opts)
 	if errors.Is(err, worktree.ErrConflict) {
 		message := "root checkout was reset cleanly after conflicts"
 		if !res.ConflictReset {
 			message = "merge conflicts occurred and automatic cleanup did not fully complete; inspect the root checkout"
 		}
-		writeJSON(w, http.StatusConflict, map[string]any{"result": res, "error": "conflicts", "message": message})
+		offer := worktreerecovery.OfferForMerge(worktreerecovery.KindConflict, res, 0)
+		switch {
+		case !res.ConflictReset:
+			offer.Available = false
+			offer.UnavailableReason = "Automatic conflict cleanup did not complete. Inspect and clean the root checkout before retrying."
+		case recoveryCallerID == "":
+			offer.Available = false
+			offer.UnavailableReason = worktreerecovery.UnavailableCallerReason
+		}
+		writeJSON(w, http.StatusConflict, map[string]any{"result": res, "error": "conflicts", "message": message, "recovery": offer})
 		return
 	}
 	if errors.Is(err, worktree.ErrRootDirty) {
@@ -560,6 +588,113 @@ func (s *serveServer) handleWorktreeMerge(w http.ResponseWriter, r *http.Request
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"result": res, "cleanup": cleanup, "session": movedSession})
+}
+
+func (s *serveServer) handleWorktreeAssistedMerge(w http.ResponseWriter, r *http.Request) {
+	if _, ok := r.Context().Value(serveWorktreeRootContextKey{}).(string); !ok {
+		markLegacyWorktreeRoute(w)
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+	root, ok := s.currentGitRootOr409(w, r)
+	if !ok {
+		return
+	}
+	var req worktreeAssistedMergeRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil || strings.TrimSpace(req.Dir) == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "dir is required")
+		return
+	}
+	wt, err := managedWorktreeForRoot(root, req.Dir)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	callerSessionID, callerSession := s.assistedRecoveryCaller(r.Context(), r, wt.Dir, root)
+	if callerSessionID == "" {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":   "assisted_recovery_unavailable",
+			"message": worktreerecovery.UnavailableCallerReason,
+		})
+		return
+	}
+	releaseMutation, ok := s.acquireRootMutation(w, r.Context(), root, false)
+	if !ok {
+		return
+	}
+	defer releaseMutation()
+	movedSession := callerSession
+	if strings.TrimSpace(callerSession.WorktreeDir) != "" {
+		movedSession, err = s.moveCleanupCallerToRoot(r.Context(), callerSessionID, wt.Dir, root)
+		if err != nil {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":   "workspace_move_failed",
+				"message": fmt.Sprintf("assisted recovery could not move the conversation to root: %v", err),
+			})
+			return
+		}
+	}
+	releaseCaller := func() {}
+	if s.sessionMgr != nil {
+		_, releaseCaller, err = s.sessionMgr.lockIdleMetadataMutation(callerSessionID)
+		if err != nil {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":   "workspace_move_failed",
+				"message": fmt.Sprintf("assisted recovery could not lock the root conversation: %v", err),
+				"session": movedSession,
+			})
+			return
+		}
+	}
+	defer releaseCaller()
+	if _, latest := s.assistedRecoveryCaller(r.Context(), r, wt.Dir, root); latest == nil || strings.TrimSpace(latest.WorktreeDir) != "" {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":   "workspace_move_failed",
+			"message": "the calling conversation is no longer bound to the root checkout",
+		})
+		return
+	} else {
+		movedSession = latest
+	}
+	operationCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Minute)
+	defer cancel()
+	res, err := worktree.StartAssistedMerge(operationCtx, wt.Dir, worktree.AssistedMergeOptions{})
+	if errors.Is(err, worktree.ErrRootDirty) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"result":  res,
+			"session": movedSession,
+			"error":   "root_dirty",
+			"message": worktreerecovery.AssistedMergeRootDirtyMessage(res),
+		})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":   "server_error",
+			"message": err.Error(),
+			"result":  res,
+			"session": movedSession,
+		})
+		return
+	}
+	if len(res.ChangedFiles) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"result":  res,
+			"session": movedSession,
+			"message": worktreerecovery.AssistedMergeNothingToApplyMessage(res),
+		})
+		return
+	}
+	mergeRes := worktree.MergeResult{WorktreeName: res.WorktreeName, WorktreeDir: res.WorktreeDir, RootDir: res.RootDir}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"result":  res,
+		"session": movedSession,
+		"notice":  worktreerecovery.StartingMessage(mergeRes),
+		"prompt":  worktreerecovery.AssistedMergePrompt(res),
+	})
 }
 
 func writeActiveRootRunConflict(w http.ResponseWriter, active []string) {

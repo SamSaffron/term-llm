@@ -775,8 +775,16 @@ func TestServeWorktreeMergeConflictReturnsRicherResult(t *testing.T) {
 		t.Fatalf("merge status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	var resp struct {
-		Error  string               `json:"error"`
-		Result worktree.MergeResult `json:"result"`
+		Error    string               `json:"error"`
+		Result   worktree.MergeResult `json:"result"`
+		Recovery struct {
+			Kind              string `json:"kind"`
+			Question          string `json:"question"`
+			YesLabel          string `json:"yes_label"`
+			NoLabel           string `json:"no_label"`
+			Available         bool   `json:"available"`
+			UnavailableReason string `json:"unavailable_reason"`
+		} `json:"recovery"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode merge response: %v", err)
@@ -784,8 +792,164 @@ func TestServeWorktreeMergeConflictReturnsRicherResult(t *testing.T) {
 	if resp.Error != "conflicts" || !resp.Result.ConflictReset || resp.Result.RootDir == "" || resp.Result.WorktreeDir == "" || len(resp.Result.Conflicts) == 0 {
 		t.Fatalf("merge conflict response = %+v", resp)
 	}
+	if resp.Recovery.Kind != "conflict" || resp.Recovery.Question == "" || resp.Recovery.YesLabel == "" || resp.Recovery.NoLabel == "" || resp.Recovery.Available || resp.Recovery.UnavailableReason == "" {
+		t.Fatalf("merge recovery offer = %+v", resp.Recovery)
+	}
 	if status := runGitForBindingTest(t, repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
 		t.Fatalf("root status after API conflict = %q, want clean", status)
+	}
+}
+
+func TestServeWorktreeAssistedMergeMovesCallerAndReturnsSharedPrompt(t *testing.T) {
+	repo := newGitRepoForBindingTest(t)
+	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "assisted-merge-api"})
+	if err != nil {
+		t.Fatalf("Create worktree: %v", err)
+	}
+	t.Cleanup(func() {
+		runGitForBindingTest(t, repo, "cherry-pick", "--quit")
+		runGitForBindingTest(t, repo, "reset", "--hard", "HEAD")
+		_ = worktree.Remove(context.Background(), wt.Dir, worktree.RemoveOptions{Force: true})
+	})
+	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("root assisted change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitForBindingTest(t, repo, "add", "file.txt")
+	runGitForBindingTest(t, repo, "commit", "-m", "root assisted change")
+	if err := os.WriteFile(filepath.Join(wt.Dir, "file.txt"), []byte("worktree assisted change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now()
+	if err := store.Create(context.Background(), &session.Session{ID: "assisted-caller", Provider: "mock", Model: "tiny", Mode: session.ModeChat, CWD: wt.Dir, WorktreeDir: wt.Dir, CreatedAt: now, UpdatedAt: now, Status: session.StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	runtimeSession := &session.Session{ID: "assisted-caller", CWD: wt.Dir, WorktreeDir: wt.Dir}
+	rt := &serveRuntime{sessionMeta: runtimeSession}
+	mgr := &serveSessionManager{sessions: map[string]*serveRuntime{"assisted-caller": rt}}
+	srv := &serveServer{store: store, sessionMgr: mgr, worktreeRootFn: worktreeRootForTest(repo)}
+	mergeReq := httptest.NewRequest(http.MethodPost, "/v1/worktrees/merge", bytes.NewBufferString(`{"dir":"`+wt.Dir+`"}`))
+	mergeReq.Header.Set(requestSessionIDHeader, "assisted-caller")
+	mergeRec := httptest.NewRecorder()
+	srv.handleWorktreeMerge(mergeRec, mergeReq)
+	if mergeRec.Code != http.StatusConflict {
+		t.Fatalf("merge status = %d body=%s", mergeRec.Code, mergeRec.Body.String())
+	}
+	if !strings.Contains(mergeRec.Body.String(), `"available":true`) {
+		t.Fatalf("merge recovery was not available: %s", mergeRec.Body.String())
+	}
+
+	recoverReq := httptest.NewRequest(http.MethodPost, "/v1/worktrees/assisted-merge", bytes.NewBufferString(`{"dir":"`+wt.Dir+`"}`))
+	recoverReq.Header.Set(requestSessionIDHeader, "assisted-caller")
+	recoverRec := httptest.NewRecorder()
+	srv.handleWorktreeAssistedMerge(recoverRec, recoverReq)
+	if recoverRec.Code != http.StatusOK {
+		t.Fatalf("assisted merge status = %d body=%s", recoverRec.Code, recoverRec.Body.String())
+	}
+	var resp struct {
+		Result  worktree.AssistedMergeResult `json:"result"`
+		Session *session.Session             `json:"session"`
+		Notice  string                       `json:"notice"`
+		Prompt  string                       `json:"prompt"`
+	}
+	if err := json.Unmarshal(recoverRec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Session == nil || resp.Session.WorktreeDir != "" || !sameServePath(resp.Session.CWD, repo) {
+		t.Fatalf("recovery session = %#v, want root %q", resp.Session, repo)
+	}
+	if rt.sessionMeta == nil || rt.sessionMeta.WorktreeDir != "" || !sameServePath(rt.sessionMeta.CWD, repo) {
+		t.Fatalf("runtime recovery session = %#v, want root %q", rt.sessionMeta, repo)
+	}
+	if len(resp.Result.ChangedFiles) == 0 || !strings.Contains(resp.Prompt, "failed `/worktree promote`") || !strings.Contains(resp.Prompt, "file.txt") || resp.Notice == "" {
+		t.Fatalf("assisted recovery response = %+v", resp)
+	}
+	if status := runGitForBindingTest(t, repo, "status", "--porcelain"); !strings.Contains(status, "file.txt") {
+		t.Fatalf("root status after assisted recovery = %q", status)
+	}
+	if _, err := os.Stat(wt.Dir); err != nil {
+		t.Fatalf("source worktree should remain: %v", err)
+	}
+}
+
+func TestServeWorktreeAssistedMergeRequiresBoundCaller(t *testing.T) {
+	repo := newGitRepoForBindingTest(t)
+	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "assisted-unbound-api"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = worktree.Remove(context.Background(), wt.Dir, worktree.RemoveOptions{Force: true}) })
+	srv := &serveServer{worktreeRootFn: worktreeRootForTest(repo)}
+	req := httptest.NewRequest(http.MethodPost, "/v1/worktrees/assisted-merge", bytes.NewBufferString(`{"dir":"`+wt.Dir+`"}`))
+	rec := httptest.NewRecorder()
+	srv.handleWorktreeAssistedMerge(rec, req)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "assisted_recovery_unavailable") {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestServeWorktreeAssistedMergeRetriesFromRootAfterDirtyPreflight(t *testing.T) {
+	repo := newGitRepoForBindingTest(t)
+	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "assisted-root-retry-api"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		runGitForBindingTest(t, repo, "reset", "--hard", "HEAD")
+		_ = worktree.Remove(context.Background(), wt.Dir, worktree.RemoveOptions{Force: true})
+	})
+	if err := os.WriteFile(filepath.Join(wt.Dir, "recovered.txt"), []byte("recover me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("temporarily dirty root\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now()
+	if err := store.Create(context.Background(), &session.Session{ID: "retry-caller", Provider: "mock", Model: "tiny", Mode: session.ModeChat, CWD: wt.Dir, WorktreeDir: wt.Dir, CreatedAt: now, UpdatedAt: now, Status: session.StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	srv := &serveServer{store: store, worktreeRootFn: worktreeRootForTest(repo)}
+	request := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/worktrees/assisted-merge", bytes.NewBufferString(`{"dir":"`+wt.Dir+`"}`))
+		req.Header.Set(requestSessionIDHeader, "retry-caller")
+		rec := httptest.NewRecorder()
+		srv.handleWorktreeAssistedMerge(rec, req)
+		return rec
+	}
+
+	blocked := request()
+	var blockedResp struct {
+		Error   string           `json:"error"`
+		Session *session.Session `json:"session"`
+	}
+	if err := json.Unmarshal(blocked.Body.Bytes(), &blockedResp); err != nil {
+		t.Fatal(err)
+	}
+	if blocked.Code != http.StatusConflict || blockedResp.Error != "root_dirty" || blockedResp.Session == nil || blockedResp.Session.WorktreeDir != "" || !sameServePath(blockedResp.Session.CWD, repo) {
+		t.Fatalf("dirty preflight status=%d body=%s", blocked.Code, blocked.Body.String())
+	}
+	persisted, err := store.Get(context.Background(), "retry-caller")
+	if err != nil || persisted == nil || persisted.WorktreeDir != "" || !sameServePath(persisted.CWD, repo) {
+		t.Fatalf("moved session = %#v err=%v", persisted, err)
+	}
+
+	runGitForBindingTest(t, repo, "checkout", "--", "file.txt")
+	retried := request()
+	if retried.Code != http.StatusOK || !strings.Contains(retried.Body.String(), `"prompt"`) {
+		t.Fatalf("root-bound retry status=%d body=%s", retried.Code, retried.Body.String())
+	}
+	if status := runGitForBindingTest(t, repo, "status", "--porcelain"); !strings.Contains(status, "recovered.txt") {
+		t.Fatalf("root status after retry = %q", status)
 	}
 }
 

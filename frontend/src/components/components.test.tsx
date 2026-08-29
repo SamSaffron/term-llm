@@ -3181,6 +3181,103 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.queryByRole('heading', { name: 'feature-polish' })).not.toBeInTheDocument();
   });
 
+  it('offers shared assisted recovery after a promotion conflict and runs it on confirmation', async () => {
+    const store = createStore();
+    store.modal.value = 'worktrees';
+    store.sessions.value = [
+      {
+        ...store.sessions.value[0],
+        projectId: 'project-1',
+        projectName: 'Term LLM',
+        worktreeDir: '/worktrees/feature-polish',
+      },
+    ];
+    store.worktrees.value = [
+      { name: 'root', dir: '/repo', repo_root: '/repo', root: true },
+      { name: 'feature-polish', dir: '/worktrees/feature-polish', branch: 'feature-polish' },
+    ];
+    const recovery = {
+      kind: 'conflict',
+      title: 'Assisted Worktree Recovery',
+      question: 'Would you like me to resolve it directly in the root checkout?',
+      yes_label: 'Yes — start assisted recovery',
+      no_label: 'No — leave everything unchanged',
+      details: 'Source: /worktrees/feature-polish\nRoot: /repo\nConflicts: file.txt',
+      available: true,
+      decline_message: 'Okay — leaving the root checkout clean.',
+    };
+    store.mergeWorktree = vi.fn(async () => {
+      throw new APIError(
+        'promotion conflicts',
+        409,
+        JSON.stringify({ error: 'conflicts', recovery }),
+      );
+    });
+    store.recoverWorktree = vi.fn(async () => ({}));
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Merge into root' }));
+    expect(await screen.findByText('Assisted Worktree Recovery')).toBeVisible();
+    expect(screen.getByText(/resolve it directly in the root checkout/)).toBeVisible();
+    expect(screen.getByText(/Conflicts: file.txt/)).toBeVisible();
+
+    const confirmRecovery = screen.getByRole('button', { name: recovery.yes_label });
+    await waitFor(() => expect(confirmRecovery).toHaveFocus());
+    await userEvent.click(confirmRecovery);
+    expect(store.recoverWorktree).toHaveBeenCalledWith('/worktrees/feature-polish');
+  });
+
+  it('keeps the checkout unchanged when assisted recovery is declined', async () => {
+    const store = createStore();
+    store.modal.value = 'worktrees';
+    store.sessions.value = [
+      {
+        ...store.sessions.value[0],
+        projectId: 'project-1',
+        worktreeDir: '/worktrees/feature-polish',
+      },
+    ];
+    store.worktrees.value = [
+      { name: 'root', dir: '/repo', repo_root: '/repo', root: true },
+      { name: 'feature-polish', dir: '/worktrees/feature-polish' },
+    ];
+    store.mergeWorktree = vi.fn(async () => {
+      throw new APIError(
+        'promotion conflicts',
+        409,
+        JSON.stringify({
+          recovery: {
+            kind: 'conflict',
+            title: 'Assisted Worktree Recovery',
+            question: 'Run recovery?',
+            yes_label: 'Yes — start assisted recovery',
+            no_label: 'No — leave everything unchanged',
+            available: true,
+            decline_message: 'Okay — leaving the root checkout clean.',
+          },
+        }),
+      );
+    });
+    store.recoverWorktree = vi.fn(async () => ({}));
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+    await userEvent.click(await screen.findByRole('button', { name: 'Merge into root' }));
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'No — leave everything unchanged' }),
+    );
+    expect(store.recoverWorktree).not.toHaveBeenCalled();
+    expect(screen.getByRole('status')).toHaveTextContent('leaving the root checkout clean');
+  });
+
   it('offers an explicit override when the root checkout has an active run', async () => {
     const store = createStore();
     store.modal.value = 'worktrees';
