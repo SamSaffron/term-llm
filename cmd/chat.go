@@ -15,12 +15,12 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/exitcode"
-	"github.com/samsaffron/term-llm/internal/herdr"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/skills"
+	"github.com/samsaffron/term-llm/internal/termhost"
 	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/chat"
@@ -62,6 +62,7 @@ var (
 )
 
 var chatOpenTTY = tea.OpenTTY
+var chatLifecycleInteractive = terminalpolicy.Interactive
 
 type chatMCPManager interface {
 	SetSamplingProvider(provider llm.Provider, model string, yoloMode bool)
@@ -191,8 +192,45 @@ func init() {
 	rootCmd.AddCommand(chatCmd)
 }
 
+func restoreLifecycleOSC(reporter chatLifecycleReporter) {
+	if reporter == nil {
+		return
+	}
+	_, _ = chat.WriteTerminalControlSequence(reporter.RestoreOSC())
+}
+
+func restoreLifecycleOSCToTTY(reporter chatLifecycleReporter) {
+	forcedLifecycleCleanup(reporter, chat.WriteTerminalControlSequenceToTTY)
+}
+
+func forcedLifecycleCleanup(reporter chatLifecycleReporter, write func(string) (int, error)) {
+	if reporter == nil {
+		return
+	}
+	if write != nil {
+		_, _ = write(reporter.RestoreOSC())
+	}
+	reporter.Close()
+}
+
+func chatOwnsTerminalHost() bool {
+	// Authority belongs only to a command genuinely invoked through terminal
+	// stdin and stdout. This excludes tool-spawned/captured --auto-send children,
+	// while preserving a user's direct --auto-send invocation in a real terminal.
+	return chatLifecycleInteractive(os.Stdin, os.Stdout)
+}
+
+func legacyTerminalProgressEnabled(cfg *config.Config) bool {
+	if cfg == nil || !cfg.Chat.TerminalProgress {
+		return false
+	}
+	mode, _ := chat.ParseTerminalTitleMode(cfg.Chat.TerminalTitle)
+	return mode == chat.TerminalTitleSmart
+}
+
 func runChat(cmd *cobra.Command, args []string) error {
-	if len(chatAutoSend) == 0 && !terminalpolicy.Interactive(os.Stdin, os.Stdout) {
+	interactive := chatOwnsTerminalHost()
+	if len(chatAutoSend) == 0 && !interactive {
 		return fmt.Errorf("chat requires an interactive terminal; use --auto-send for non-interactive execution")
 	}
 
@@ -214,15 +252,25 @@ func runChat(cmd *cobra.Command, args []string) error {
 	relaunchHandoff := chatRelaunchHandoff{}
 	mainRuns := chat.NewMainRunManager(ctx)
 	defer mainRuns.Close(5 * time.Second)
-	herdrReporter := herdr.NewReporterFromEnv()
-	defer herdrReporter.Close()
-	var lifecycleReporter chat.LifecycleReporter
-	if herdrReporter != nil {
-		lifecycleReporter = herdrReporter
+	launchConfig, err := loadConfigWithSetup()
+	if err != nil {
+		return err
+	}
+	var lifecycleManager *termhost.Manager
+	var lifecycleReporter chatLifecycleReporter
+	if interactive {
+		lifecycleManager, err = termhost.New(launchConfig.Lifecycle, legacyTerminalProgressEnabled(launchConfig))
+		if err != nil {
+			return fmt.Errorf("initialize terminal-host lifecycle: %w", err)
+		}
+		defer lifecycleManager.Close()
+		defer restoreLifecycleOSC(lifecycleManager)
+		lifecycleReporter = lifecycleManager
 	}
 	chatHandoverApprovalMode = nil
 	for {
-		nextResumeID, nextAutoSend, err := runChatOnce(ctx, cmd, initialText, cliAgent, resumeRequested, resumeID, handoverAutoSend, &relaunchHandoff, mainRuns, lifecycleReporter)
+		nextResumeID, nextAutoSend, err := runChatOnce(ctx, cmd, initialText, cliAgent, resumeRequested, resumeID, handoverAutoSend, &relaunchHandoff, mainRuns, lifecycleReporter, launchConfig)
+		launchConfig = nil // Later relaunches intentionally reload configuration.
 		if err != nil {
 			return err
 		}
@@ -338,6 +386,7 @@ type chatSessionLaunch struct {
 	resumeID         string
 	handoverAutoSend string
 	relaunchHandoff  *chatRelaunchHandoff
+	config           *config.Config
 }
 
 // chatSessionRuntime owns every per-session resource behind a visible chat
@@ -370,10 +419,16 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	handoverAutoSend := launch.handoverAutoSend
 	relaunchHandoff := launch.relaunchHandoff
 
-	cfg, err := loadConfigWithSetup()
-	if err != nil {
-		return nil, err
+	cfg := launch.config
+	var err error
+	if cfg == nil {
+		cfg, err = loadConfigWithSetup()
+		if err != nil {
+			return nil, err
+		}
 	}
+	// The initial runtime shares the exact launch snapshot used to construct the
+	// terminal-host manager. Session switches and relaunches pass nil and reload.
 	rawConfigInstructions := cfg.Chat.Instructions
 
 	// Initialize session store EARLY so resume can override settings before tool/MCP setup.
@@ -1024,7 +1079,7 @@ func wireChatSessionUI(ctx context.Context, rt *chatSessionRuntime, p *tea.Progr
 	}
 }
 
-func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent string, resumeRequested bool, resumeID, handoverAutoSend string, relaunchHandoff *chatRelaunchHandoff, mainRuns *chat.MainRunManager, lifecycleReporter chat.LifecycleReporter) (string, string, error) {
+func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent string, resumeRequested bool, resumeID, handoverAutoSend string, relaunchHandoff *chatRelaunchHandoff, mainRuns *chat.MainRunManager, lifecycleReporter chatLifecycleReporter, launchConfig *config.Config) (string, string, error) {
 	rt, err := buildChatSessionRuntime(ctx, cmd, chatSessionLaunch{
 		initialText:      initialText,
 		cliAgent:         cliAgent,
@@ -1032,11 +1087,11 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		resumeID:         resumeID,
 		handoverAutoSend: handoverAutoSend,
 		relaunchHandoff:  relaunchHandoff,
+		config:           launchConfig,
 	}, mainRuns)
 	if err != nil {
 		return "", "", err
 	}
-	rt.model.SetLifecycleReporter(lifecycleReporter)
 
 	// In-process session switches replace the active runtime while the program
 	// keeps running, so all teardown paths resolve the runtime late.
@@ -1050,7 +1105,6 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		return activeRT
 	}
 
-	var finalModel tea.Model
 	defer func() {
 		runtimeMu.Lock()
 		programDone = true
@@ -1098,7 +1152,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	// to the tea.View that composed them; stdout remains renderer-owned. The host
 	// model keeps the Program stable across session-model replacements and drops
 	// delayed command results from models that are no longer visible.
-	programModel := newChatProgramModel(rt.model)
+	programModel := newChatProgramModel(rt.model, lifecycleReporter)
 	p := tea.NewProgram(programModel, opts...)
 	rt.model.SetProgram(p)
 
@@ -1136,12 +1190,6 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		activeUnwire = nil
 		runtimeMu.Unlock()
 
-		// Only the visible session may author the containing pane's lifecycle.
-		// Background runs from the previous model retain their own UI callbacks,
-		// but must not overwrite the foreground model's Herdr state.
-		prev.model.SetLifecycleReporter(nil)
-		next.model.SetLifecycleReporter(lifecycleReporter)
-
 		// Release process-global UI hooks before installing the replacements.
 		// Runtime-owned callbacks stay bound to prev so its adopted background
 		// run keeps routing prompts to the owning session.
@@ -1176,17 +1224,16 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		case <-killed:
 		case <-time.After(2 * time.Second):
 			fmt.Fprintln(os.Stderr, "term-llm: forced exit after interrupt")
+			// Bubble Tea failed to stop, so restore OSC directly through /dev/tty
+			// before spending the remaining bounded budget releasing adapters.
+			restoreLifecycleOSCToTTY(lifecycleReporter)
 			os.Exit(130)
 		}
 	}()
 
 	programFinalModel, runErr := p.Run()
-	if host, ok := programFinalModel.(*chatProgramModel); ok && host.model != nil {
-		finalModel = host.model
-	} else {
-		finalModel = programFinalModel
-	}
 	currentRuntime().restoreTitle()
+	restoreLifecycleOSC(lifecycleReporter)
 
 	if runErr != nil {
 		if ctx.Err() != nil && errors.Is(runErr, tea.ErrProgramKilled) {
@@ -1194,31 +1241,34 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		}
 		return "", "", fmt.Errorf("failed to run chat: %w", runErr)
 	}
-
-	cur := currentRuntime()
-	var nextResumeID, nextHandoverAutoSend string
-	if m, ok := finalModel.(*chat.Model); ok {
-		nextResumeID = m.RequestedResumeSessionID()
-		nextHandoverAutoSend = m.RequestedHandoverAutoSend()
-		if relaunchHandoff != nil {
-			relaunchHandoff.branchPrefill = m.RequestedBranchPrefill()
-			relaunchHandoff.branchPathNotes = m.RequestedBranchPathNotes()
-			relaunchHandoff.branchAutoSend = m.RequestedBranchAutoSend()
-		}
-		// Carry a user-selected mode only into an actual handover. Ordinary /resume
-		// and /new relaunches must resolve the target session/config independently.
-		mode := m.ApprovalModeRequested()
-		chatHandoverApprovalMode = chatApprovalCarryForRelaunch(m.ApprovalModeChanged(), nextHandoverAutoSend, mode)
-		chatApproval = mode.String()
-		chatYolo = mode == tools.ModeYolo
-		chatAutoApproval = mode == tools.ModeAuto
+	finalModel, err := finalChatModel(programFinalModel)
+	if err != nil {
+		return "", "", fmt.Errorf("extract final chat model: %w", err)
 	}
 
+	cur := currentRuntime()
+	nextResumeID := finalModel.RequestedResumeSessionID()
+	nextHandoverAutoSend := finalModel.RequestedHandoverAutoSend()
+	if relaunchHandoff != nil {
+		relaunchHandoff.branchPrefill = finalModel.RequestedBranchPrefill()
+		relaunchHandoff.branchPathNotes = finalModel.RequestedBranchPathNotes()
+		relaunchHandoff.branchAutoSend = finalModel.RequestedBranchAutoSend()
+	}
+	// Carry a user-selected mode only into an actual handover. Ordinary /resume
+	// and /new relaunches must resolve the target session/config independently.
+	mode := finalModel.ApprovalModeRequested()
+	chatHandoverApprovalMode = chatApprovalCarryForRelaunch(finalModel.ApprovalModeChanged(), nextHandoverAutoSend, mode)
+	chatApproval = mode.String()
+	chatYolo = mode == tools.ModeYolo
+	chatAutoApproval = mode == tools.ModeAuto
+
 	// Handle /reload: stop every runtime-owned resource, then re-exec under the
-	// potentially new binary. Successful exec does not run deferred cleanup.
-	if m, ok := finalModel.(*chat.Model); ok && m.WantsReload() {
+	// potentially new binary. Do not release lifecycle claims before Exec: the
+	// successor immediately republishes them without an idle gap. If Exec fails,
+	// this function returns and runChat's bounded deferred close releases them.
+	if finalModel.WantsReload() {
 		cur.cleanupResources()
-		sessionID := m.ReloadSessionID()
+		sessionID := finalModel.ReloadSessionID()
 		if execErr := execReload(sessionID); execErr != nil {
 			// exec failed (shouldn't happen on Unix) — fall through and exit normally
 			fmt.Fprintf(cmd.ErrOrStderr(), "reload: %v\n", execErr)

@@ -55,6 +55,8 @@ const (
 
 	DefaultAssistantInstructions = "You are a helpful assistant. Today's date is {{date}}."
 	DefaultChatTerminalTitle     = "smart"
+	DefaultLifecycleOSC          = "off"
+	DefaultLifecycleSinkTimeout  = "2s"
 	DefaultEditContextLines      = 3
 	DefaultEditDiffFormat        = "auto"
 
@@ -181,6 +183,11 @@ var keySpecs = []KeySpec{
 	def("chat.terminal_title", DefaultChatTerminalTitle),
 	def("chat.terminal_title_format", ""),
 	def("chat.terminal_progress", false),
+
+	def("lifecycle.enabled", true),
+	def("lifecycle.adapters", []string{"auto"}),
+	def("lifecycle.osc", DefaultLifecycleOSC),
+	def("lifecycle.commands", []map[string]any{}),
 
 	optional("edit.provider"),
 	optional("edit.model"),

@@ -91,6 +91,12 @@ chat:
   # off: do not touch terminal/window titles at all.
   terminal_title: smart
 
+lifecycle:
+  enabled: true
+  adapters: [auto] # environment-detected Herdr/cmux only
+  osc: off         # no terminal progress without explicit opt-in
+  commands: []     # no custom process without explicit configuration
+
 # Optional global approval override. When omitted, chat, ask, and ordinary
 # serve platforms use auto; edit, exec, loop, and serve mcp use prompt.
 # approval:
@@ -292,8 +298,8 @@ This is a built-in safety limit rather than a config option today. It preserves 
 `chat.terminal_title` controls whether interactive chat updates terminal titles:
 
 - `smart` (default): update the terminal/tab title and, inside tmux, rename the current tmux window.
-- `basic`: emit only the terminal/tab title escape; tmux window names and Ghostty progress are not managed.
-- `off`: emit no title/progress escape sequences and do not rename tmux windows.
+- `basic`: emit only the terminal/tab title escape; tmux window names are not managed.
+- `off`: emit no title escape sequences and do not rename tmux windows. Lifecycle OSC is controlled separately by `lifecycle.osc`.
 
 ```yaml
 chat:
@@ -332,7 +338,7 @@ chat:
 
 Title text is sanitized before emission: control characters are removed, whitespace is collapsed, and very long results are truncated.
 
-Ghostty honors `OSC 2` title updates but may override or ignore program-supplied titles. In `smart` mode, term-llm emits Ghostty's `OSC 9;4` indeterminate progress indicator during chat turns and clears it afterward. Inside tmux, term-llm uses passthrough so Ghostty can receive the sequence; tmux 3.3+ may require `set -g allow-passthrough on` in `~/.tmux.conf`.
+Ghostty honors `OSC 2` title updates but may override or ignore program-supplied titles. Terminal lifecycle progress is separate and off by default; explicitly set `lifecycle.osc: auto` to emit Ghostty's `OSC 9;4` indicator for working/blocked state, or `on` to force the protocol. Inside tmux, term-llm uses passthrough so Ghostty can receive the sequence; tmux 3.3+ may require `set -g allow-passthrough on` in `~/.tmux.conf`.
 
 Ghostty title caveats:
 
@@ -358,6 +364,30 @@ printf '\033]9;4;3\a'; sleep 10; printf '\033]9;4;0\a'
 ```
 
 If the title changes only during `sleep` and resets afterward, Ghostty shell integration is overwriting it at the prompt. If it never changes, check for a fixed `title`, `title-command`, or a manual surface/tab title override.
+
+## Terminal-host lifecycle
+
+`lifecycle` controls publication of the visible chat only when the command's
+invoking stdin and stdout are interactive. Tool-spawned/captured `--auto-send`
+children do not acquire terminal-host authority; direct terminal `--auto-send`
+launches do:
+
+```yaml
+lifecycle:
+  enabled: true
+  adapters: [auto] # or [herdr], [cmux], [herdr, cmux], []
+  osc: off         # off, auto, on
+  commands:
+    - name: tmux
+      command: [/home/you/.local/bin/term-llm-tmux-lifecycle]
+      timeout: 2s
+```
+
+`auto` selects only environment-detected first-party adapters and cannot be mixed with explicit adapter names. A command entry is itself an explicit opt-in: term-llm executes the listed executable directly (no shell), passes the remaining entries as literal argv, writes one versioned JSON event to stdin, and discards output. Empty executables, duplicate/reserved names, invalid adapter/OSC modes, NUL arguments, oversized argv, and timeouts outside `(0, 30s]` are rejected during config load.
+
+The global `TERM_LLM_LIFECYCLE=0` opt-out and per-adapter `TERM_LLM_HERDR=0` / `TERM_LLM_CMUX=0` opt-outs override config and skip disabled discovery. `chat.terminal_progress: true` is retained as a deprecated explicit alias for `lifecycle.osc: auto` in its historical smart-title/Ghostty-detection scope; new configurations should use `lifecycle.osc`. Set `TERM_LLM_LIFECYCLE_DEBUG=1` for rate-limited adapter/error-class diagnostics that omit argv, environment, raw errors, cwd, and session data.
+
+Use `term-llm lifecycle status [--json]` for read-only discovery details. See [Terminal-host lifecycle](/guides/terminal-host-lifecycle/) for state semantics, the JSON schema, security/privacy guidance, shutdown/reload behavior, and complete tmux/Zellij bridges.
 
 ## Reasoning and thinking display
 

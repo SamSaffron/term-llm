@@ -354,7 +354,7 @@ type terminalTitleProvider interface {
 	Restore()
 }
 
-type terminalTitleProviderFactory func(mode TerminalTitleMode, env TerminalTitleEnvironment, progress bool) []terminalTitleProvider
+type terminalTitleProviderFactory func(mode TerminalTitleMode, env TerminalTitleEnvironment) []terminalTitleProvider
 
 var terminalTitleProviderFactories []terminalTitleProviderFactory
 
@@ -369,7 +369,7 @@ type terminalTitleManager struct {
 	providers []terminalTitleProvider
 }
 
-func newTerminalTitleManager(mode TerminalTitleMode, env TerminalTitleEnvironment, progress bool) *terminalTitleManager {
+func newTerminalTitleManager(mode TerminalTitleMode, env TerminalTitleEnvironment) *terminalTitleManager {
 	if mode == "" {
 		mode = TerminalTitleSmart
 	}
@@ -380,7 +380,7 @@ func newTerminalTitleManager(mode TerminalTitleMode, env TerminalTitleEnvironmen
 	providers := []terminalTitleProvider{&oscTitleProvider{}}
 	if mode == TerminalTitleSmart {
 		for _, factory := range terminalTitleProviderFactories {
-			providers = append(providers, factory(mode, env, progress)...)
+			providers = append(providers, factory(mode, env)...)
 		}
 	}
 	return &terminalTitleManager{providers: providers}
@@ -507,7 +507,7 @@ func (m *Model) ConfigureTerminalTitleEnvironment(env TerminalTitleEnvironment) 
 		return
 	}
 	m.titleFormatter = newTerminalTitleFormatter(m.titleFormat, env)
-	m.titleManager = newTerminalTitleManager(m.titleMode, env, m.titleProgress)
+	m.titleManager = newTerminalTitleManager(m.titleMode, env)
 }
 
 // SetConversationBranch marks whether the loaded session is a conversation branch.
@@ -583,7 +583,7 @@ func (m *Model) currentTitleState(includeElapsed bool) titleState {
 }
 
 func (m *Model) titleNeedsAttention() bool {
-	return m != nil && (m.approvalModel != nil || m.askUserModel != nil || m.handoverPreview != nil)
+	return m.blockingPromptActive()
 }
 
 func (m *Model) resetTitleGenerationStateForSession() {
