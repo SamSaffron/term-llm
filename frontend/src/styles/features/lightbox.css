@@ -203,7 +203,7 @@
       transform var(--panel-transition-duration) var(--panel-transition-easing),
       visibility 0s linear var(--panel-transition-duration);
     box-shadow: none;
-    padding-top: var(--safe-top);
+    padding-top: 0;
     padding-bottom: var(--safe-bottom);
     visibility: hidden;
     pointer-events: none;

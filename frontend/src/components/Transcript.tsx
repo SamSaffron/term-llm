@@ -769,6 +769,10 @@ export function Transcript() {
   const showActivity = Boolean(
     store.streaming.value && activity && !(streamingText && activity.kind === 'working'),
   );
+  const livenessUnknown = store.runLivenessUnknown.value;
+  const livenessText = activeRun?.run.responseId.startsWith('pending_')
+    ? 'Waiting for server confirmation…'
+    : 'Connection lost — checking status…';
   return (
     <section
       class="chat-scroll"
@@ -830,6 +834,7 @@ export function Transcript() {
             run.messages?.map((message) => {
               const context = rowContexts.get(message);
               const streaming = Boolean(
+                store.streaming.value &&
                 activeRun &&
                 message.role === 'assistant' &&
                 message.responseId === activeRun.run.responseId &&
@@ -855,6 +860,16 @@ export function Transcript() {
         {activeRun?.modelSwap && (
           <div class="message model-swap transient" role="status">
             {activeRun.modelSwap.content}
+          </div>
+        )}
+        {livenessUnknown && (
+          <div
+            class="streaming-indicator streaming-indicator-unknown"
+            role="status"
+            aria-live="polite"
+            aria-label="Response status is unknown"
+          >
+            <span class="streaming-indicator-text">{livenessText}</span>
           </div>
         )}
         {showActivity && activity && (

@@ -35,7 +35,7 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// replayable SSE/long-poll server-event coordination, and branch-tree
 		// navigation are first-party shell code. Keep bounded headroom over that
 		// productized baseline while still failing meaningful accidental regressions.
-		"dist/app.js":  {raw: 416_000, gzip: 124_000},
+		"dist/app.js":  {raw: 417_000, gzip: 124_000},
 		"dist/app.css": {raw: 160_000, gzip: 30_500},
 	}
 	for name, budget := range budgets {

@@ -227,11 +227,11 @@ function SessionRow({ session }: { session: Session }) {
   const active = store.activeSessionId.value === session.id;
   const projection = store.runs.value[session.id];
   const running =
-    Boolean(session.activeRun) ||
     Boolean(
       projection &&
-      ['connecting', 'checking', 'streaming', 'cancelling'].includes(projection.run.status),
-    );
+      ['connecting', 'checking', 'streaming', 'cancelling'].includes(projection.run.status) &&
+      store.runEngine.hasActiveResponseTransport(session.id, projection.run.responseId),
+    ) || Boolean(store.services.eventFeedHealthy.value && session.activeRun);
   const messageCount = sessionMessageCount(session);
   const activityAt = session.lastMessageAt || session.created;
   const hide = () => {

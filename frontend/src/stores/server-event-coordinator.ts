@@ -127,6 +127,7 @@ export class ServerEventCoordinator {
   private setMode(mode: ServerEventTransport): void {
     const wasHealthy = this.isHealthy();
     this.mode = mode;
+    this.services.eventFeedHealthy.value = this.isHealthy();
     if (
       wasHealthy &&
       !this.isHealthy() &&
@@ -425,6 +426,7 @@ export class ServerEventCoordinator {
     this.transport?.abort(this.lifetime.signal.reason);
     window.clearTimeout(this.flushTimer);
     this.mode = 'stopped';
+    this.services.eventFeedHealthy.value = false;
     this.markPrepared();
   }
 }

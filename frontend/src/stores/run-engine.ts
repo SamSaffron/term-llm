@@ -73,9 +73,13 @@ export class RunEngine {
   readonly activeProjection: ReadonlySignal<ResponseProjection | null>;
   readonly visibleMessages: ReadonlySignal<Message[]>;
   readonly streaming: ReadonlySignal<boolean>;
+  readonly runLivenessUnknown: ReadonlySignal<boolean>;
   readonly sendBlocked: ReadonlySignal<boolean>;
 
   private readonly supervisors = new StreamSupervisors();
+  private readonly activeResponseTransports = signal<
+    Record<string, { responseId: string; generation: number }>
+  >({});
   readonly locallyStoppedResponses = new Set<string>();
   private readonly retiredResponses = new Set<string>();
   private readonly handledCompletionEvents = new Set<string>();
@@ -119,19 +123,65 @@ export class RunEngine {
         }));
       return [...messages, ...pending];
     });
-    this.streaming = computed(() =>
-      ['connecting', 'checking', 'streaming', 'cancelling'].includes(
-        this.activeProjection.value?.run.status || '',
-      ),
-    );
+    this.streaming = computed(() => {
+      const projection = this.activeProjection.value;
+      return Boolean(
+        projection &&
+        ['connecting', 'checking', 'streaming', 'cancelling'].includes(projection.run.status) &&
+        this.hasActiveResponseTransport(projection.run.sessionId, projection.run.responseId),
+      );
+    });
+    this.runLivenessUnknown = computed(() => {
+      const projection = this.activeProjection.value;
+      return Boolean(
+        projection &&
+        ['connecting', 'checking', 'streaming', 'cancelling'].includes(projection.run.status) &&
+        !this.hasActiveResponseTransport(projection.run.sessionId, projection.run.responseId),
+      );
+    });
     this.sendBlocked = computed(
       () =>
         composer.sendPending.value ||
+        this.runLivenessUnknown.value ||
+        Boolean(sessionStore.activeSession.value?.activeRun && !this.streaming.value) ||
         Boolean(
           this.pendingIntents.value[sessionStore.activeSessionId.value]?.some(
             (intent) => intent.state === 'checking',
           ),
         ),
+    );
+  }
+
+  markResponseTransportActive(sessionId: string, responseId: string, generation = 0): void {
+    const current = this.activeResponseTransports.peek()[sessionId];
+    if (
+      !sessionId ||
+      !responseId ||
+      (current?.responseId === responseId && current.generation === generation)
+    )
+      return;
+    this.activeResponseTransports.value = {
+      ...this.activeResponseTransports.peek(),
+      [sessionId]: { responseId, generation },
+    };
+  }
+
+  clearResponseTransport(sessionId: string, responseId = '', generation?: number): void {
+    const current = this.activeResponseTransports.peek()[sessionId];
+    if (
+      !current ||
+      (responseId && current.responseId !== responseId) ||
+      (generation !== undefined && current.generation !== generation)
+    )
+      return;
+    const next = { ...this.activeResponseTransports.peek() };
+    delete next[sessionId];
+    this.activeResponseTransports.value = next;
+  }
+
+  hasActiveResponseTransport(sessionId: string, responseId: string): boolean {
+    return Boolean(
+      responseId && this.activeResponseTransports.value[sessionId]?.responseId === responseId,
     );
   }
 
@@ -537,7 +587,16 @@ export class RunEngine {
       },
     };
     const transportGeneration = streamOwner.transportGeneration;
-    await this.consumeResponseBody(response.body, streamOwner, transportGeneration);
+    const serverReportedInProgress =
+      response.headers.get('x-term-llm-response-status') === 'in_progress';
+    if (serverReportedInProgress)
+      this.markResponseTransportActive(ownerID, responseId, transportGeneration);
+    await this.consumeResponseBody(
+      response.body,
+      streamOwner,
+      transportGeneration,
+      serverReportedInProgress,
+    );
     if (!this.supervisors.ownsTransport(streamOwner, transportGeneration)) return ownerID;
     const current = this.runs.value[ownerID];
     if (current && ['connecting', 'streaming'].includes(current.run.status))
@@ -602,6 +661,7 @@ export class RunEngine {
     body: ReadableStream<Uint8Array>,
     owner: StreamSupervisor,
     transportGeneration = owner.transportGeneration,
+    serverReportedInProgress = false,
   ): Promise<boolean> {
     let cleanCompletion = false;
     const watchdog = () =>
@@ -615,9 +675,14 @@ export class RunEngine {
         },
         35_000,
       );
+    const transportActivity = () => {
+      if (serverReportedInProgress && this.supervisors.ownsTransport(owner, transportGeneration))
+        this.markResponseTransportActive(owner.sessionId, owner.responseId, transportGeneration);
+      watchdog();
+    };
     watchdog();
     try {
-      for await (const frame of decodeSSE(body, owner.abort.signal, watchdog)) {
+      for await (const frame of decodeSSE(body, owner.abort.signal, transportActivity)) {
         if (!this.supervisors.ownsTransport(owner, transportGeneration)) {
           this.services.bumpDiagnostic('staleStreamCallbacks');
           return false;
@@ -640,6 +705,7 @@ export class RunEngine {
       }
       return cleanCompletion;
     } finally {
+      this.clearResponseTransport(owner.sessionId, owner.responseId, transportGeneration);
       this.supervisors.clearWatchdog(owner, transportGeneration);
     }
   }
@@ -672,7 +738,16 @@ export class RunEngine {
         return;
       if (!response.ok || !response.body)
         throw new Error(`Response stream returned ${response.status}`);
-      const clean = await this.consumeResponseBody(response.body, owner, transportGeneration);
+      const serverReportedInProgress =
+        response.headers.get('x-term-llm-response-status') === 'in_progress';
+      if (serverReportedInProgress)
+        this.markResponseTransportActive(owner.sessionId, owner.responseId, transportGeneration);
+      const clean = await this.consumeResponseBody(
+        response.body,
+        owner,
+        transportGeneration,
+        serverReportedInProgress,
+      );
       if (!this.supervisors.ownsTransport(owner, transportGeneration) || abort.signal.aborted)
         return;
       const projection = this.runs.peek()[owner.sessionId];
@@ -682,6 +757,8 @@ export class RunEngine {
         ['completed', 'cancelled', 'failed'].includes(projection.run.status)
       )
         this.supervisors.retire(owner);
+      else if (clean && projection)
+        this.scheduleSupervisorRetry(owner, new Error('Response ended before terminal event'));
       else if (!clean && projection && ['connecting', 'streaming'].includes(projection.run.status))
         this.scheduleSupervisorRetry(owner, new Error('Response stream ended before completion'));
     } catch (error) {
@@ -752,6 +829,12 @@ export class RunEngine {
         void this.host.resumeResponse(sessionId, current.run.responseId);
       return;
     }
+    if (owner)
+      this.markResponseTransportActive(
+        sessionId,
+        current.run.responseId,
+        owner.transportGeneration,
+      );
     let next: ResponseProjection;
     try {
       next = reduceResponse(current, event);
@@ -874,6 +957,7 @@ export class RunEngine {
         }
       }
       this.locallyStoppedResponses.delete(next.run.responseId);
+      this.clearResponseTransport(sessionId, next.run.responseId);
       this.retireIntent(sessionId);
       this.sessionStore.patch(sessionId, {
         activeResponseId: null,
@@ -1185,6 +1269,7 @@ export class RunEngine {
         },
       };
       if (!this.supervisors.checkpoint(owner, transportGeneration, snapshotSequence)) return;
+      if (terminal) this.clearResponseTransport(sessionId, responseId);
       const recoveredClientIDs = new Set(
         projected
           .map((message) => message.clientMessageId)

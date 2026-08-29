@@ -1187,7 +1187,21 @@ func TestStreamResponseRunEventsReportsAuthoritativeReplayBoundary(t *testing.T)
 			if got := response.Header.Get("X-Term-LLM-Replay-Through"); got != tc.want {
 				t.Fatalf("X-Term-LLM-Replay-Through = %q, want %q", got, tc.want)
 			}
+			if got := response.Header.Get("X-Term-LLM-Response-Status"); got != "completed" {
+				t.Fatalf("X-Term-LLM-Response-Status = %q, want completed", got)
+			}
 		})
+	}
+}
+
+func TestStreamResponseRunEventsReportsInProgressSubscription(t *testing.T) {
+	run := newResponseRun("resp_active_header", "sess_active_header", "", "mock", time.Now().Unix(), func() {})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	recorder := httptest.NewRecorder()
+	(&serveServer{}).streamResponseRunEvents(ctx, recorder, run, 0)
+	if got := recorder.Result().Header.Get("X-Term-LLM-Response-Status"); got != "in_progress" {
+		t.Fatalf("X-Term-LLM-Response-Status = %q, want in_progress", got)
 	}
 }
 

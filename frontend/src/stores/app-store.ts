@@ -197,6 +197,7 @@ export class AppStore {
   readonly activeProjection: ReadonlySignal<ResponseProjection | null>;
   readonly visibleMessages: ReadonlySignal<Message[]>;
   readonly streaming: ReadonlySignal<boolean>;
+  readonly runLivenessUnknown: ReadonlySignal<boolean>;
   readonly sendBlocked: ReadonlySignal<boolean>;
 
   private lifecycleInstalled = false;
@@ -383,6 +384,7 @@ export class AppStore {
     this.activeProjection = this.runEngine.activeProjection;
     this.visibleMessages = this.runEngine.visibleMessages;
     this.streaming = this.runEngine.streaming;
+    this.runLivenessUnknown = this.runEngine.runLivenessUnknown;
     this.sendBlocked = this.runEngine.sendBlocked;
     this.locallyStoppedResponses = this.runEngine.locallyStoppedResponses;
     this.widgetStore = new WidgetStore(this.services);

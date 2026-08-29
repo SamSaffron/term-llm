@@ -370,6 +370,12 @@
   }
 }
 
+.streaming-indicator-unknown .streaming-indicator-text {
+  background-image: none;
+  color: var(--text-muted);
+  animation: none;
+}
+
 @keyframes streaming-status-enter {
   from {
     opacity: 0;
@@ -833,7 +839,7 @@ mark.diff-word {
 
 @media (width <= 430px) {
   .header-title-context {
-    max-width: 7.5rem;
+    max-width: none;
   }
 
   .model-picker .narrow-header-action {

@@ -68,16 +68,23 @@ function harness() {
   const services = {
     endpoints,
     isDisposed: false,
+    eventFeedHealthy: signal(false),
     bumpDiagnostic: (key: string) => diagnostics.push(key),
   } as unknown as AppStoreServices;
-  return { coordinator: new ServerEventCoordinator(services, host), endpoints, diagnostics, calls };
+  return {
+    coordinator: new ServerEventCoordinator(services, host),
+    services,
+    endpoints,
+    diagnostics,
+    calls,
+  };
 }
 
 afterEach(() => vi.useRealTimers());
 
 describe('ServerEventCoordinator', () => {
   it('reconnects SSE directly when interests change without reporting a poll fallback', async () => {
-    const { coordinator, endpoints, diagnostics } = harness();
+    const { coordinator, services, endpoints, diagnostics } = harness();
     const ready = new TextEncoder().encode(
       `event: ready\ndata: ${JSON.stringify({
         v: 1,
@@ -107,11 +114,13 @@ describe('ServerEventCoordinator', () => {
     coordinator.updateInterest('s1');
     await coordinator.prepare();
     expect(coordinator.isHealthy()).toBe(true);
+    expect(services.eventFeedHealthy.value).toBe(true);
     coordinator.updateInterest('s2');
     await vi.waitFor(() => expect(endpoints.serverEventStream).toHaveBeenCalledTimes(2));
     expect(endpoints.serverEventPoll).not.toHaveBeenCalled();
     expect(diagnostics).not.toContain('serverEventPollFallbacks');
     coordinator.dispose();
+    expect(services.eventFeedHealthy.value).toBe(false);
   });
 
   it('runs authoritative recovery for a snapshot-required event', async () => {
