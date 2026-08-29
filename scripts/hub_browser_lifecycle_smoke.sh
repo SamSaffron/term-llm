@@ -114,6 +114,5 @@ if [[ -z "${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-}" ]] && command -v chromium >/dev/n
 fi
 TERM_LLM_SMOKE_URL="${hub_root}node/production-node/" \
 TERM_LLM_HUB_SMOKE_ROOT="$hub_root" TERM_LLM_HUB_SMOKE_TOKEN="$hub_token" \
-TERM_LLM_WEBRTC_RELAY_URL="$relay_url" \
 npm run test:e2e -- --workers=1 --reporter=line --output="$results" e2e/hub-production.spec.ts "$@"
 succeeded=true
