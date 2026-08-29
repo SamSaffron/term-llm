@@ -33,6 +33,56 @@ func newTranscriptHandlerServer(t *testing.T) (*serveServer, session.Store, *ses
 	return &serveServer{store: store}, store, sess
 }
 
+func TestHandleSessionsIncludesWorkspaceBinding(t *testing.T) {
+	srv, store, sess := newTranscriptHandlerServer(t)
+	worktreeDir := filepath.Join(t.TempDir(), "worktrees", "feature")
+	sess.CWD = worktreeDir
+	sess.WorktreeDir = worktreeDir
+	if err := store.Update(context.Background(), sess); err != nil {
+		t.Fatalf("Update workspace binding: %v", err)
+	}
+
+	request := func(path string) struct {
+		Sessions        []webSessionEntry        `json:"sessions"`
+		SelectedSession *webSelectedSessionEntry `json:"selected_session"`
+	} {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+		srv.handleSessions(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("GET %s: status=%d body=%s", path, rr.Code, rr.Body.String())
+		}
+		var response struct {
+			Sessions        []webSessionEntry        `json:"sessions"`
+			SelectedSession *webSelectedSessionEntry `json:"selected_session"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode %s: %v", path, err)
+		}
+		return response
+	}
+	assertWorkspace := func(label string, entry webSessionEntry) {
+		t.Helper()
+		if entry.CWD != worktreeDir || entry.WorktreeDir != worktreeDir {
+			t.Fatalf("%s workspace = cwd %q, worktree %q; want %q", label, entry.CWD, entry.WorktreeDir, worktreeDir)
+		}
+	}
+
+	listed := request("/v1/sessions?selected_session=" + sess.ID)
+	if len(listed.Sessions) != 1 || listed.SelectedSession == nil {
+		t.Fatalf("listed sessions = %#v, selected = %#v", listed.Sessions, listed.SelectedSession)
+	}
+	assertWorkspace("summary", listed.Sessions[0])
+	assertWorkspace("selected summary", listed.SelectedSession.webSessionEntry)
+
+	selectedOnly := request("/v1/sessions?selected_only=1&selected_session=" + sess.ID)
+	if len(selectedOnly.Sessions) != 0 || selectedOnly.SelectedSession == nil {
+		t.Fatalf("selected-only sessions = %#v, selected = %#v", selectedOnly.Sessions, selectedOnly.SelectedSession)
+	}
+	assertWorkspace("selected full session", selectedOnly.SelectedSession.webSessionEntry)
+}
+
 type unversionedTranscriptStore struct {
 	session.Store
 	indexer session.TranscriptIndexer

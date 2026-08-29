@@ -1198,6 +1198,8 @@ type webSessionEntry struct {
 	Model         string                `json:"model,omitempty"`
 	ProjectID     string                `json:"project_id,omitempty"`
 	ProjectName   string                `json:"project_name,omitempty"`
+	CWD           string                `json:"cwd,omitempty"`
+	WorktreeDir   string                `json:"worktree_dir,omitempty"`
 	Archived      bool                  `json:"archived"`
 	Pinned        bool                  `json:"pinned"`
 	CreatedAt     int64                 `json:"created_at"`
@@ -1224,6 +1226,8 @@ func (s *serveServer) webSessionEntryFromSummary(sess session.SessionSummary) we
 		Model:         sess.Model,
 		ProjectID:     sess.ProjectID,
 		ProjectName:   sess.ProjectName,
+		CWD:           sess.CWD,
+		WorktreeDir:   sess.WorktreeDir,
 		Archived:      sess.Archived,
 		Pinned:        sess.Pinned,
 		CreatedAt:     sess.CreatedAt.UnixMilli(),
@@ -1253,6 +1257,8 @@ func (s *serveServer) webSessionEntryFromSession(sess *session.Session) webSessi
 		Model:         sess.Model,
 		ProjectID:     sess.ProjectID,
 		ProjectName:   sess.ProjectName,
+		CWD:           sess.CWD,
+		WorktreeDir:   sess.WorktreeDir,
 		Archived:      sess.Archived,
 		Pinned:        sess.Pinned,
 		CreatedAt:     sess.CreatedAt.UnixMilli(),
