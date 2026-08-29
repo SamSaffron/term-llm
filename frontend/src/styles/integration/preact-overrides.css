@@ -833,7 +833,7 @@ mark.diff-word {
 
 @media (width <= 430px) {
   .header-title-context {
-    max-width: 7.5rem;
+    max-width: none;
   }
 
   .model-picker .narrow-header-action {

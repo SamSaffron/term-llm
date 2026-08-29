@@ -307,7 +307,10 @@ test('mobile viewport opens a styled sidebar and returns to a usable composer', 
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name !== 'mobile', 'mobile-only interaction');
-  await open(page);
+  await open(page, '', { model: 'gpt-5.6-sol-high' });
+  await page.evaluate(() => document.documentElement.style.setProperty('--safe-top', '59px'));
+  const titleContext = page.locator('.header-title-context');
+  expect((await titleContext.boundingBox())?.width || 0).toBeGreaterThan(140);
   const diffToggle = page.getByRole('button', { name: 'Toggle file changes' });
   const mobileMenu = page.getByRole('button', { name: 'Open sidebar' });
   await expect(diffToggle.locator('.diff-toggle-file-icon')).toBeVisible();
@@ -316,6 +319,13 @@ test('mobile viewport opens a styled sidebar and returns to a usable composer', 
   const sidebar = page.locator('#sidebar');
   await expect(sidebar).toHaveClass(/open/);
   await expect(sidebar).toHaveCSS('visibility', 'visible');
+  await expect(sidebar).toHaveCSS('padding-top', '0px');
+  const [sidebarBox, sidebarHeaderBox] = await Promise.all([
+    sidebar.boundingBox(),
+    sidebar.locator('.sidebar-header').boundingBox(),
+  ]);
+  expect(sidebarHeaderBox?.y).toBe(sidebarBox?.y);
+  await expect(sidebar.locator('.sidebar-header')).toHaveCSS('padding-top', '72.6px');
   await expect(page.locator('#newChatBtn')).toHaveCSS('display', 'flex');
   await expect(page.locator('#newChatBtn svg')).toBeVisible();
   expect(await page.locator('#appMain').evaluate((element) => (element as HTMLElement).inert)).toBe(
