@@ -2,12 +2,9 @@ import { expect, test } from '@playwright/test';
 
 const hubRoot = process.env.TERM_LLM_HUB_SMOKE_ROOT || '';
 const hubToken = process.env.TERM_LLM_HUB_SMOKE_TOKEN || '';
-const relayURL = process.env.TERM_LLM_WEBRTC_RELAY_URL || '';
 
-test('Hub bearer mount preserves a WebRTC-fallback send across reload', async ({
-  page,
-}, testInfo) => {
-  test.skip(!hubRoot || !hubToken || !relayURL, 'production-shaped Hub smoke is not configured');
+test('Hub bearer mount preserves a proxied send across reload', async ({ page }, testInfo) => {
+  test.skip(!hubRoot || !hubToken, 'production-shaped Hub smoke is not configured');
   test.skip(testInfo.project.name === 'mobile', 'the exact production path is covered once');
   test.setTimeout(60_000);
 
@@ -21,9 +18,8 @@ test('Hub bearer mount preserves a WebRTC-fallback send across reload', async ({
   expect(page.url()).not.toContain('token=');
   await expect.poll(async () => (await page.request.get(`${hubRoot}api/nodes`)).status()).toBe(200);
 
-  // Keep WebRTC enabled in the production bundle but make the first signaling
-  // generation unavailable. The app must preserve HTTPS through the Hub proxy.
-  await page.request.post(`${relayURL}/control`, { data: { hang_sessions: 1 } });
+  // The node has WebRTC enabled, but Hub mounts must keep browser traffic on
+  // the authenticated same-origin proxy.
   const nodeRoot = `${hubRoot}node/production-node/`;
   await page.goto(`${nodeRoot}?new=1`);
   await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
@@ -35,7 +31,7 @@ test('Hub bearer mount preserves a WebRTC-fallback send across reload', async ({
   expect(mount).toEqual({
     prefix: '/hub/node/production-node',
     nodeBasePath: '/chat',
-    webrtc: true,
+    webrtc: false,
   });
 
   await page.getByRole('textbox', { name: 'Message' }).fill('Production shaped Hub resume');

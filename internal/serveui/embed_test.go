@@ -31,11 +31,11 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 	budgets := map[string]struct{ raw, gzip int }{
 		// Notification reconciliation/outbox messaging, the owned mobile voice
 		// state machine, gallery/diff navigation, focused store modules, the
-		// safe-point branch workflow, interactive worktree conflict recovery, and
-		// the replayable SSE/long-poll server-event coordinator are first-party
-		// shell code. Keep bounded headroom over that productized baseline while
-		// still failing meaningful accidental regressions.
-		"dist/app.js":  {raw: 412_000, gzip: 118_500},
+		// safe-point branch workflow, interactive worktree conflict recovery,
+		// replayable SSE/long-poll server-event coordination, and branch-tree
+		// navigation are first-party shell code. Keep bounded headroom over that
+		// productized baseline while still failing meaningful accidental regressions.
+		"dist/app.js":  {raw: 416_000, gzip: 124_000},
 		"dist/app.css": {raw: 160_000, gzip: 30_500},
 	}
 	for name, budget := range budgets {
