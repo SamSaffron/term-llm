@@ -530,8 +530,8 @@ func TestServeWorktreeMergeBlocksActiveRootRun(t *testing.T) {
 	if mergeRec.Code != http.StatusConflict {
 		t.Fatalf("merge status = %d body=%s", mergeRec.Code, mergeRec.Body.String())
 	}
-	if !strings.Contains(mergeRec.Body.String(), "root-active") {
-		t.Fatalf("merge body = %s, want active root session id", mergeRec.Body.String())
+	if !strings.Contains(mergeRec.Body.String(), "root-active") || !strings.Contains(mergeRec.Body.String(), "root_checkout_active_runs") {
+		t.Fatalf("merge body = %s, want overridable active-run conflict", mergeRec.Body.String())
 	}
 
 	promoteReq := httptest.NewRequest(http.MethodPost, "/v1/worktrees/promote", bytes.NewBufferString(`{"dir":"`+worktreeDir+`","branch":"blocked-promote"}`))
@@ -543,6 +543,13 @@ func TestServeWorktreeMergeBlocksActiveRootRun(t *testing.T) {
 	if !strings.Contains(promoteRec.Body.String(), "root-active") {
 		t.Fatalf("promote body = %s, want active root session id", promoteRec.Body.String())
 	}
+
+	forceReq := httptest.NewRequest(http.MethodPost, "/v1/worktrees/merge", bytes.NewBufferString(`{"dir":"`+worktreeDir+`","keep":true,"force":true}`))
+	forceRec := httptest.NewRecorder()
+	srv.handleWorktreeMerge(forceRec, forceReq)
+	if forceRec.Code != http.StatusOK {
+		t.Fatalf("forced merge status = %d body=%s", forceRec.Code, forceRec.Body.String())
+	}
 }
 
 func TestServeWorktreeDeleteUsesRepositoryMutationLease(t *testing.T) {
@@ -552,9 +559,9 @@ func TestServeWorktreeDeleteUsesRepositoryMutationLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = worktree.Remove(context.Background(), wt.Dir, worktree.RemoveOptions{Force: true}) })
-	release, admitted, err := processRootCheckoutLeases.tryAcquireMutation(repo)
-	if err != nil || !admitted {
-		t.Fatalf("acquire test mutation lease: admitted=%v err=%v", admitted, err)
+	release, blocked, err := processRootCheckoutLeases.tryAcquireMutation(repo, false)
+	if err != nil || blocked != rootCheckoutMutationAvailable {
+		t.Fatalf("acquire test mutation lease: blocked=%v err=%v", blocked, err)
 	}
 	defer release()
 	srv := &serveServer{worktreeRootFn: worktreeRootForTest(repo)}
@@ -565,6 +572,11 @@ func TestServeWorktreeDeleteUsesRepositoryMutationLease(t *testing.T) {
 	}
 	if _, err := os.Stat(wt.Dir); err != nil {
 		t.Fatalf("blocked delete removed worktree: %v", err)
+	}
+	mergeRec := httptest.NewRecorder()
+	srv.handleWorktreeMerge(mergeRec, httptest.NewRequest(http.MethodPost, "/v1/worktrees/merge", bytes.NewBufferString(`{"dir":"`+wt.Dir+`","keep":true,"force":true}`)))
+	if mergeRec.Code != http.StatusConflict {
+		t.Fatalf("forced merge during mutation status=%d body=%s", mergeRec.Code, mergeRec.Body.String())
 	}
 }
 
@@ -598,6 +610,13 @@ func TestServeWorktreeMutationsBlockNonWebRootRunLease(t *testing.T) {
 	if promoteRec.Code != http.StatusConflict {
 		t.Fatalf("promote status = %d body=%s", promoteRec.Code, promoteRec.Body.String())
 	}
+
+	forceReq := httptest.NewRequest(http.MethodPost, "/v1/worktrees/merge", bytes.NewBufferString(`{"dir":"`+wt.Dir+`","keep":true,"force":true}`))
+	forceRec := httptest.NewRecorder()
+	srv.handleWorktreeMerge(forceRec, forceReq)
+	if forceRec.Code != http.StatusOK {
+		t.Fatalf("forced merge status = %d body=%s", forceRec.Code, forceRec.Body.String())
+	}
 }
 
 func TestRootCheckoutLeaseIgnoresLinkedWorktreeInsideMainRoot(t *testing.T) {
@@ -609,9 +628,9 @@ func TestRootCheckoutLeaseIgnoresLinkedWorktreeInsideMainRoot(t *testing.T) {
 	})
 
 	var leases rootCheckoutLeaseRegistry
-	releaseMutation, ok, err := leases.tryAcquireMutation(repo)
-	if err != nil || !ok {
-		t.Fatalf("acquire mutation lease: ok=%v err=%v", ok, err)
+	releaseMutation, blocked, err := leases.tryAcquireMutation(repo, false)
+	if err != nil || blocked != rootCheckoutMutationAvailable {
+		t.Fatalf("acquire mutation lease: blocked=%v err=%v", blocked, err)
 	}
 	defer releaseMutation()
 

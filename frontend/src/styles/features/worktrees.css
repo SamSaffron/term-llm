@@ -408,6 +408,23 @@
   height: 0.9rem;
 }
 
+.worktree-merge-warning {
+  display: grid;
+  gap: 0.18rem;
+  padding: 0.62rem 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--accent-amber) 42%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent-amber) 8%, var(--surface-2));
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+
+.worktree-merge-warning strong {
+  color: var(--text);
+  font-size: 0.76rem;
+}
+
 .worktree-promote,
 .worktree-remove {
   display: grid;

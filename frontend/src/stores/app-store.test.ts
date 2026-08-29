@@ -70,6 +70,7 @@ describe('AppStore compatibility behavior', () => {
         'project-1',
         '/worktrees/feature',
         's1',
+        false,
       );
       expect(store.activeSession.value).toMatchObject({ worktreeDir: '', workingDir: '/repo' });
       expect(store.selectedDraftWorktree.value).toBe('/worktrees/stale-draft');

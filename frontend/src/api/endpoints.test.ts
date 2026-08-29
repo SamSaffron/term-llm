@@ -23,6 +23,14 @@ describe('worktree endpoints', () => {
       { 'X-Term-LLM-Session-ID': 'session/one' },
     );
 
+    await routes.mergeWorktree('project/one', '/tmp/tree', 'session/one', true);
+    expect(post).toHaveBeenLastCalledWith(
+      '/v1/projects/project%2Fone/worktrees/merge',
+      { dir: '/tmp/tree', force: true },
+      'mutation',
+      { 'X-Term-LLM-Session-ID': 'session/one' },
+    );
+
     await routes.promoteWorktree('project/one', '/tmp/tree', 'feature/tree', 'session/one');
     expect(post).toHaveBeenLastCalledWith(
       '/v1/projects/project%2Fone/worktrees/promote',

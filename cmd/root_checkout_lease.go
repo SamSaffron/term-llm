@@ -25,6 +25,14 @@ type rootCheckoutLease struct {
 	changed chan struct{}
 }
 
+type rootCheckoutMutationBlock uint8
+
+const (
+	rootCheckoutMutationAvailable rootCheckoutMutationBlock = iota
+	rootCheckoutMutationBlockedByRun
+	rootCheckoutMutationBlockedByMutation
+)
+
 var processRootCheckoutLeases rootCheckoutLeaseRegistry
 
 func (r *rootCheckoutLeaseRegistry) acquireRun(ctx context.Context, dir string) (func(), error) {
@@ -61,17 +69,17 @@ func (r *rootCheckoutLeaseRegistry) acquireRun(ctx context.Context, dir string) 
 	return func() {}, nil
 }
 
-func (r *rootCheckoutLeaseRegistry) tryAcquireMutation(root string) (func(), bool, error) {
+func (r *rootCheckoutLeaseRegistry) tryAcquireMutation(root string, allowActiveRuns bool) (func(), rootCheckoutMutationBlock, error) {
 	mainRoot, err := worktree.MainRepoRoot(root)
 	if err != nil {
-		return nil, false, err
+		return nil, rootCheckoutMutationAvailable, err
 	}
 	mainRoot, err = canonicalRootLeasePath(mainRoot)
 	if err != nil {
-		return nil, false, err
+		return nil, rootCheckoutMutationAvailable, err
 	}
-	release, ok := r.lease(mainRoot).tryAcquireWrite()
-	return release, ok, nil
+	release, blocked := r.lease(mainRoot).tryAcquireWrite(allowActiveRuns)
+	return release, blocked, nil
 }
 
 func (r *rootCheckoutLeaseRegistry) knownRootLease(dir string) *rootCheckoutLease {
@@ -129,11 +137,14 @@ func (l *rootCheckoutLease) acquireRead(ctx context.Context) (func(), error) {
 	}
 }
 
-func (l *rootCheckoutLease) tryAcquireWrite() (func(), bool) {
+func (l *rootCheckoutLease) tryAcquireWrite(allowReaders bool) (func(), rootCheckoutMutationBlock) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.writer || l.readers > 0 {
-		return nil, false
+	if l.writer {
+		return nil, rootCheckoutMutationBlockedByMutation
+	}
+	if l.readers > 0 && !allowReaders {
+		return nil, rootCheckoutMutationBlockedByRun
 	}
 	l.writer = true
 	var once sync.Once
@@ -145,7 +156,7 @@ func (l *rootCheckoutLease) tryAcquireWrite() (func(), bool) {
 			l.changed = make(chan struct{})
 			l.mu.Unlock()
 		})
-	}, true
+	}, rootCheckoutMutationAvailable
 }
 
 func canonicalRootLeasePath(path string) (string, error) {

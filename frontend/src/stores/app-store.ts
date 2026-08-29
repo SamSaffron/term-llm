@@ -1161,8 +1161,8 @@ export class AppStore {
   async switchWorktree(dir: string): Promise<void> {
     await this.worktreeStore.switchTo(dir);
   }
-  async mergeWorktree(dir: string): Promise<Record<string, unknown>> {
-    return this.worktreeStore.merge(dir);
+  async mergeWorktree(dir: string, force = false): Promise<Record<string, unknown>> {
+    return this.worktreeStore.merge(dir, force);
   }
   async promoteWorktree(dir: string, branch: string): Promise<Record<string, unknown>> {
     return this.worktreeStore.promote(dir, branch);

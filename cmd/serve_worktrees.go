@@ -32,6 +32,7 @@ type worktreeMergeRequest struct {
 	Commit  bool   `json:"commit"`
 	Message string `json:"message"`
 	Keep    bool   `json:"keep"`
+	Force   bool   `json:"force"`
 }
 
 type worktreePromoteRequest struct {
@@ -256,7 +257,7 @@ func (s *serveServer) handleWorktreeCreate(w http.ResponseWriter, r *http.Reques
 	releaseMutation := func() {}
 	if !req.Clean {
 		var admitted bool
-		releaseMutation, admitted = s.acquireRootMutation(w, r.Context(), root)
+		releaseMutation, admitted = s.acquireRootMutation(w, r.Context(), root, false)
 		if !admitted {
 			return
 		}
@@ -503,7 +504,7 @@ func (s *serveServer) handleWorktreeMerge(w http.ResponseWriter, r *http.Request
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
-	releaseMutation, ok := s.acquireRootMutation(w, r.Context(), root)
+	releaseMutation, ok := s.acquireRootMutation(w, r.Context(), root, req.Force)
 	if !ok {
 		return
 	}
@@ -561,24 +562,37 @@ func (s *serveServer) handleWorktreeMerge(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"result": res, "cleanup": cleanup, "session": movedSession})
 }
 
-func (s *serveServer) acquireRootMutation(w http.ResponseWriter, ctx context.Context, root string) (func(), bool) {
-	release, admitted, err := processRootCheckoutLeases.tryAcquireMutation(root)
+func writeActiveRootRunConflict(w http.ResponseWriter, active []string) {
+	errorBody := map[string]any{
+		"message": "The root checkout has an active run. Merging now may disrupt or overwrite that run's work.",
+		"type":    "root_checkout_active_runs",
+	}
+	if len(active) > 0 {
+		errorBody["active_runs"] = active
+	}
+	writeJSON(w, http.StatusConflict, map[string]any{"error": errorBody})
+}
+
+func (s *serveServer) acquireRootMutation(w http.ResponseWriter, ctx context.Context, root string, allowActiveRuns bool) (func(), bool) {
+	release, blocked, err := processRootCheckoutLeases.tryAcquireMutation(root, allowActiveRuns)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", fmt.Sprintf("coordinate root checkout mutation: %v", err))
 		return nil, false
 	}
-	if !admitted {
-		message := "root checkout has an active agent run or worktree mutation"
-		if active := s.activeRootRunsForWorktreeMerge(ctx, root); len(active) > 0 {
-			message = fmt.Sprintf("root checkout has active session run(s): %s", strings.Join(active, ", "))
-		}
-		writeOpenAIError(w, http.StatusConflict, "conflict_error", message)
+	if blocked == rootCheckoutMutationBlockedByMutation {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", "root checkout has an active worktree mutation")
 		return nil, false
 	}
-	if active := s.activeRootRunsForWorktreeMerge(ctx, root); len(active) > 0 {
-		release()
-		writeOpenAIError(w, http.StatusConflict, "conflict_error", fmt.Sprintf("root checkout has active session run(s): %s", strings.Join(active, ", ")))
+	if blocked == rootCheckoutMutationBlockedByRun {
+		writeActiveRootRunConflict(w, s.activeRootRunsForWorktreeMerge(ctx, root))
 		return nil, false
+	}
+	if !allowActiveRuns {
+		if active := s.activeRootRunsForWorktreeMerge(ctx, root); len(active) > 0 {
+			release()
+			writeActiveRootRunConflict(w, active)
+			return nil, false
+		}
 	}
 	if s.rootMutationAdmitted != nil {
 		s.rootMutationAdmitted()
@@ -691,7 +705,7 @@ func (s *serveServer) handleWorktreePromote(w http.ResponseWriter, r *http.Reque
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
-	releaseMutation, ok := s.acquireRootMutation(w, r.Context(), root)
+	releaseMutation, ok := s.acquireRootMutation(w, r.Context(), root, false)
 	if !ok {
 		return
 	}
@@ -744,7 +758,7 @@ func (s *serveServer) handleWorktreeDelete(w http.ResponseWriter, r *http.Reques
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
-	releaseMutation, ok := s.acquireRootMutation(w, r.Context(), root)
+	releaseMutation, ok := s.acquireRootMutation(w, r.Context(), root, false)
 	if !ok {
 		return
 	}

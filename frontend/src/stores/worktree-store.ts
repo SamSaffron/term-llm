@@ -145,9 +145,14 @@ export class WorktreeStore {
     return data;
   }
 
-  async merge(dir: string): Promise<Record<string, unknown>> {
+  async merge(dir: string, force = false): Promise<Record<string, unknown>> {
     const sessionId = this.options.activeSession.value?.id || '';
-    const data = await this.services.endpoints.mergeWorktree(this.projectId(), dir, sessionId);
+    const data = await this.services.endpoints.mergeWorktree(
+      this.projectId(),
+      dir,
+      sessionId,
+      force,
+    );
     return this.finishMutation(data, 'merged');
   }
 

@@ -286,10 +286,10 @@ export const endpoints = (api: APIClient) => ({
     api.get<Record<string, unknown>>(
       `/v1/projects/${encoded(id)}/worktrees/diff?dir=${encoded(dir)}`,
     ),
-  mergeWorktree: (id: string, dir: string, sessionId = '') =>
+  mergeWorktree: (id: string, dir: string, sessionId = '', force = false) =>
     api.post<Record<string, unknown>>(
       `/v1/projects/${encoded(id)}/worktrees/merge`,
-      { dir },
+      { dir, ...(force ? { force: true } : {}) },
       'mutation',
       sessionId ? sessionHeaders(sessionId) : undefined,
     ),

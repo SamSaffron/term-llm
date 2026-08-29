@@ -190,6 +190,7 @@ describe('Preact-owned chat surfaces', () => {
       'project-1',
       '/worktrees/feature',
       's1',
+      false,
     );
     expect(trigger).toHaveTextContent('root');
     expect(trigger).not.toHaveTextContent('stale-draft');
@@ -3144,6 +3145,47 @@ describe('Preact-owned chat surfaces', () => {
     );
     expect(screen.getByText('Project checkouts')).toBeVisible();
     expect(screen.queryByRole('heading', { name: 'feature-polish' })).not.toBeInTheDocument();
+  });
+
+  it('offers an explicit override when the root checkout has an active run', async () => {
+    const store = createStore();
+    store.modal.value = 'worktrees';
+    store.sessions.value = [
+      {
+        ...store.sessions.value[0],
+        projectId: 'project-1',
+        projectName: 'Term LLM',
+        worktreeDir: '/worktrees/feature-polish',
+      },
+    ];
+    store.worktrees.value = [
+      { name: 'root', dir: '/repo', repo_root: '/repo', root: true },
+      {
+        name: 'feature-polish',
+        dir: '/worktrees/feature-polish',
+        branch: 'feature-polish',
+      },
+    ];
+    store.mergeWorktree = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new APIError('The root checkout has an active run.', 409, '', 'root_checkout_active_runs'),
+      )
+      .mockResolvedValueOnce({ cleanup: { removed: false } });
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Merge into root' }));
+    expect(store.mergeWorktree).toHaveBeenNthCalledWith(1, '/worktrees/feature-polish', false);
+    expect(screen.getByRole('alert')).toHaveTextContent('The root checkout is in use');
+    expect(screen.getByRole('alert')).toHaveTextContent('merge anyway if you accept that risk');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Merge anyway' }));
+    expect(store.mergeWorktree).toHaveBeenNthCalledWith(2, '/worktrees/feature-polish', true);
   });
 
   it('opens the bound worktree detail and escalates removal inline without confirm()', async () => {

@@ -186,6 +186,7 @@ export function Worktrees() {
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState<BusyAction>('');
+  const [mergeWarning, setMergeWarning] = useState(false);
   const [removeStage, setRemoveStage] = useState<RemoveStage>('idle');
   const autoOpened = useRef(false);
   const draft = store.draftActive.value;
@@ -223,6 +224,7 @@ export function Worktrees() {
     setBranch('');
     setStatus('');
     setError('');
+    setMergeWarning(false);
     setRemoveStage('idle');
   };
   const backToList = () => {
@@ -230,6 +232,7 @@ export function Worktrees() {
     setBranch('');
     setStatus('');
     setError('');
+    setMergeWarning(false);
     setRemoveStage('idle');
   };
   const run = async (action: BusyAction, task: () => Promise<void>) => {
@@ -353,15 +356,39 @@ export function Worktrees() {
                 disabled={Boolean(busy) || streaming}
                 onClick={() =>
                   void run('merge', async () => {
-                    const result = await store.mergeWorktree(dir);
-                    if (cleanupRemoved(result)) backToList();
-                    else setStatus('Merged into root; the old checkout is still in use.');
+                    try {
+                      const result = await store.mergeWorktree(dir, mergeWarning);
+                      if (cleanupRemoved(result)) backToList();
+                      else setStatus('Merged into root; the old checkout is still in use.');
+                    } catch (value) {
+                      if (
+                        value instanceof APIError &&
+                        value.status === 409 &&
+                        value.type === 'root_checkout_active_runs' &&
+                        !mergeWarning
+                      ) {
+                        setMergeWarning(true);
+                        setStatus('');
+                        return;
+                      }
+                      throw value;
+                    }
                   })
                 }
               >
-                {busy === 'merge' ? 'Merging…' : 'Merge into root'}
+                {busy === 'merge' ? 'Merging…' : mergeWarning ? 'Merge anyway' : 'Merge into root'}
               </button>
             </div>
+
+            {mergeWarning && (
+              <div class="worktree-merge-warning" role="alert">
+                <strong>The root checkout is in use</strong>
+                <span>
+                  Another run is actively using it. Merging now may disrupt or overwrite that run’s
+                  work. Wait for it to finish, or merge anyway if you accept that risk.
+                </span>
+              </div>
+            )}
 
             <form
               class="worktree-promote"
