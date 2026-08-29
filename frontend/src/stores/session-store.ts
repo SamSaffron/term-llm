@@ -189,6 +189,8 @@ export class SessionStore {
     const groups = listFrom(data, 'groups');
     const projects: Project[] = [];
     const ungrouped: Session[] = [...direct];
+    const incompleteProjectIDs = new Set<string>();
+    let noProjectPageIncomplete = groups.length === 0 && Boolean(data.next_cursor);
     // Flat listings (projects disabled) carry the cursor at the top level;
     // project sidebars carry it on their "no project" group below.
     this.noProjectCursor.value = String(data.next_cursor || '');
@@ -201,10 +203,13 @@ export class SessionStore {
       if (!projectSource || group.no_project) {
         ungrouped.push(...sessions.map((entry) => this.sessionFrom(entry)));
         this.noProjectCursor.value = String(group.next_cursor || '');
+        noProjectPageIncomplete = Boolean(group.next_cursor);
         continue;
       }
+      const projectID = String(projectSource.id || '');
+      if (group.next_cursor) incompleteProjectIDs.add(projectID);
       const project: Project = {
-        id: String(projectSource.id || ''),
+        id: projectID,
         name: String(projectSource.name || projectSource.title || 'Project'),
         path: String(projectSource.canonical_dir || projectSource.path || ''),
         archived: Boolean(projectSource.archived_at || projectSource.archived),
@@ -235,18 +240,36 @@ export class SessionStore {
         return [session.id, previous && semanticEqual(previous, candidate) ? previous : candidate];
       }),
     );
-    for (const [id, session] of existing)
-      if (!merged.has(id) && this.retainedLocally(id)) merged.set(id, session);
+    // A cursor means the response is only the first page for that catalog partition.
+    // Keep already-loaded tail rows until a complete snapshot proves they disappeared.
+    for (const [id, session] of existing) {
+      const incompletePage = session.projectId
+        ? incompleteProjectIDs.has(session.projectId)
+        : noProjectPageIncomplete;
+      if (!merged.has(id) && (incompletePage || this.retainedLocally(id))) merged.set(id, session);
+    }
     const nextSessions = [...merged.values()].sort(compareSessionsByActivity);
     if (!sameIdentityList(this.sessions.peek(), nextSessions)) this.sessions.value = nextSessions;
 
     const existingProjects = new Map(this.projects.peek().map((project) => [project.id, project]));
     const nextProjects = projects.map((project) => {
+      const previous = existingProjects.get(project.id);
+      const sessions = project.sessions?.map((summary) => merged.get(summary.id) || summary) || [];
+      if (incompleteProjectIDs.has(project.id)) {
+        const listed = new Set(sessions.map((session) => session.id));
+        for (const summary of previous?.sessions || []) {
+          const preserved = merged.get(summary.id);
+          if (preserved?.projectId === project.id && !listed.has(summary.id)) {
+            sessions.push(preserved);
+            listed.add(summary.id);
+          }
+        }
+        sessions.sort(compareSessionsByActivity);
+      }
       const candidate = {
         ...project,
-        sessions: project.sessions?.map((summary) => merged.get(summary.id) || summary),
+        sessions,
       };
-      const previous = existingProjects.get(project.id);
       return previous && semanticEqual(previous, candidate) ? previous : candidate;
     });
     if (!sameIdentityList(this.projects.peek(), nextProjects)) this.projects.value = nextProjects;
