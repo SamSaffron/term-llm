@@ -8,12 +8,14 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -1667,7 +1669,20 @@ func TestResponseRunRecoverySynthesizesMissingLegacyInterjectionID(t *testing.T)
 func TestResponseRunInterjectionSplitsRecoveryMessages(t *testing.T) {
 	run := newResponseRun("resp_interjection", "sess_test", "", "mock", time.Now().Unix(), func() {})
 	streamState := newResponseRunStreamState("mock", "")
-	server := &serveServer{}
+	imageOutputDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	uploadDir := serveUploadsDir()
+	if err := os.MkdirAll(uploadDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	imagePath := filepath.Join(uploadDir, "interjection.jpg")
+	if err := os.WriteFile(imagePath, []byte("test image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := &serveServer{
+		cfg:    serveServerConfig{basePath: "/ui"},
+		cfgRef: &config.Config{Image: config.ImageConfig{OutputDir: imageOutputDir}},
+	}
 
 	if err := server.appendResponseRunEvent(nil, run, streamState, llm.Event{Type: llm.EventTextDelta, Text: "before"}); err != nil {
 		t.Fatalf("appendTextDeltaSegmentEvent before: %v", err)
@@ -1675,7 +1690,7 @@ func TestResponseRunInterjectionSplitsRecoveryMessages(t *testing.T) {
 	if err := server.appendResponseRunEvent(nil, run, streamState, llm.Event{
 		Type: llm.EventInterjection, Text: "check X", InterjectionID: "client-check-x",
 		Message: llm.Message{Parts: []llm.Part{{
-			Type: llm.PartImage, ImageData: &llm.ToolImageData{MediaType: "image/jpeg", Width: 200, Height: 400},
+			Type: llm.PartImage, ImagePath: imagePath, ImageData: &llm.ToolImageData{MediaType: "image/jpeg", Width: 200, Height: 400},
 		}}},
 	}); err != nil {
 		t.Fatalf("append interjection: %v", err)
@@ -1720,15 +1735,25 @@ func TestResponseRunInterjectionSplitsRecoveryMessages(t *testing.T) {
 	if !ok || len(interjectionAttachments) != 1 || interjectionAttachments[0]["width"] != 200 || interjectionAttachments[0]["height"] != 400 {
 		t.Fatalf("messages[1].attachments = %#v, want orientation-correct 200x400 metadata", messages[1]["attachments"])
 	}
+	imageURL, _ := interjectionAttachments[0]["url"].(string)
+	if !strings.HasPrefix(imageURL, "/ui/images/") {
+		t.Fatalf("messages[1].attachments URL = %q, want a serveable image URL", imageURL)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/images/"+filepath.Base(imageURL), nil)
+	rr := httptest.NewRecorder()
+	server.handleImage(rr, req)
+	if rr.Code != http.StatusOK || rr.Body.String() != "test image" {
+		t.Fatalf("interjection image response = %d %q, want 200 with original image", rr.Code, rr.Body.String())
+	}
 	if got := messages[2]["content"]; got != "after" {
 		t.Fatalf("messages[2].content = %v, want after", got)
 	}
 	if first, second := messages[0]["assistant_segment_ordinal"], messages[2]["assistant_segment_ordinal"]; first != 0 || second != 1 {
 		t.Fatalf("assistant segment ordinals = %v, %v; want 0, 1 across interjection", first, second)
 	}
-	atts := []map[string]any{{"name": "image 1", "type": "image/png"}}
-	if err := run.appendEvent("response.interjection", map[string]any{"text": "see image", "client_message_id": "img-1", "attachments": atts}); err != nil {
-		t.Fatalf("append image interjection: %v", err)
+	atts := []map[string]any{{"name": "image 1", "type": "image/png", "url": "/ui/images/image-only.png"}}
+	if err := run.appendEvent("response.interjection", map[string]any{"text": "", "client_message_id": "img-1", "attachments": atts}); err != nil {
+		t.Fatalf("append image-only interjection: %v", err)
 	}
 	recovery = run.recoveryPayloadLocked()
 	messages = recovery["messages"].([]map[string]any)
@@ -1745,6 +1770,36 @@ func TestResponseRunInterjectionSplitsRecoveryMessages(t *testing.T) {
 	}
 	if got := messages[2]["content"]; got != "after" {
 		t.Fatalf("messages[2].content = %v, want after", got)
+	}
+}
+
+func TestResponseRunPreservesImageOnlyBoundaryWhenAttachmentCannotBeServed(t *testing.T) {
+	imagePath := filepath.Join(t.TempDir(), "outside.jpg")
+	if err := os.WriteFile(imagePath, []byte("test image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := &serveServer{
+		cfg:    serveServerConfig{basePath: "/ui"},
+		cfgRef: &config.Config{Image: config.ImageConfig{OutputDir: t.TempDir()}},
+	}
+	run := newResponseRun("resp_unserveable_interjection", "sess_test", "", "mock", time.Now().Unix(), nil)
+	if err := server.appendResponseRunEvent(nil, run, newResponseRunStreamState("mock", ""), llm.Event{
+		Type:           llm.EventInterjection,
+		InterjectionID: "image-only-unserveable",
+		Message: llm.Message{Parts: []llm.Part{{
+			Type: llm.PartImage, ImagePath: imagePath, ImageData: &llm.ToolImageData{MediaType: "image/jpeg"},
+		}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	recovery := run.recoveryPayloadLocked()
+	messages := recovery["messages"].([]map[string]any)
+	if len(messages) != 1 || messages[0]["client_message_id"] != "image-only-unserveable" {
+		t.Fatalf("recovery messages = %#v, want preserved image-only user boundary", messages)
+	}
+	if attachments, ok := messages[0]["attachments"].([]map[string]any); ok && len(attachments) > 0 {
+		t.Fatalf("recovery attachments = %#v, want rejected attachment omitted", attachments)
 	}
 }
 

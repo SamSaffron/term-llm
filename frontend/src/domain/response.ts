@@ -2,6 +2,7 @@ import type {
   ActiveRun,
   ApprovalPrompt,
   AskUserPrompt,
+  Attachment,
   CurrentPlan,
   GuardianReview,
   Message,
@@ -48,6 +49,29 @@ const text = (value: unknown): string =>
 const number = (value: unknown, fallback = 0): number =>
   Number.isFinite(Number(value)) ? Math.trunc(Number(value)) : fallback;
 const clone = <T>(value: T): T => structuredClone(value);
+
+function responseAttachments(value: unknown): Attachment[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const attachments = value
+    .filter((entry): entry is Record<string, unknown> =>
+      Boolean(entry && typeof entry === 'object'),
+    )
+    .map((entry): Attachment | null => {
+      const url = text(entry.url || entry.preview_url || entry.previewURL);
+      const type = text(entry.type || entry.mime_type) || 'image/*';
+      if (!url) return null;
+      const width = number(entry.width);
+      const height = number(entry.height);
+      return {
+        name: text(entry.name || entry.filename) || 'attachment',
+        type,
+        url,
+        ...(width > 0 && height > 0 ? { width, height } : {}),
+      } satisfies Attachment;
+    })
+    .filter((entry): entry is Attachment => entry !== null);
+  return attachments.length ? attachments : undefined;
+}
 
 export function initialProjection(run: ActiveRun): ResponseProjection {
   return {
@@ -499,6 +523,7 @@ export function reduceResponse(
             id: `${responseId}:intent:${clientMessageId}`,
             role: 'user',
             content: text(event.text || event.content || event.message),
+            attachments: responseAttachments(event.attachments),
             clientMessageId,
             created: Date.now(),
             responseId,

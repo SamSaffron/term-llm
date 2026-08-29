@@ -1040,12 +1040,14 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 		return
 	case "response.interjection":
 		text := stringValue(payload["text"])
-		if text == "" {
+		attachments := attachmentsFromPayload(payload["attachments"])
+		explicitID := stringValue(payload["client_message_id"])
+		if text == "" && len(attachments) == 0 && explicitID == "" {
 			return
 		}
 		r.closeToolGroupLocked()
 		r.currentAssistant = -1
-		id := stringValue(payload["client_message_id"])
+		id := explicitID
 		if id == "" {
 			id = r.nextRecoveryMessageIDLocked("user")
 		}
@@ -1054,7 +1056,7 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 			Role:            "user",
 			Content:         []byte(text),
 			Created:         time.Now().UnixMilli(),
-			Attachments:     attachmentsFromPayload(payload["attachments"]),
+			Attachments:     attachments,
 			InterruptState:  "interject",
 			ClientMessageID: id,
 		})
@@ -2773,7 +2775,7 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 		if ev.InterjectionStatus != "" {
 			payload["status"] = string(ev.InterjectionStatus)
 		}
-		if atts := interjectionAttachmentsForEvent(ev.Message); len(atts) > 0 {
+		if atts := s.interjectionAttachmentsForEvent(ev.Message); len(atts) > 0 {
 			payload["attachments"] = atts
 		}
 		return run.appendEvent("response.interjection", payload)
@@ -2823,25 +2825,31 @@ func attachmentsFromPayload(v any) []map[string]any {
 	}
 }
 
-func interjectionAttachmentsForEvent(msg llm.Message) []map[string]any {
+func (s *serveServer) interjectionAttachmentsForEvent(msg llm.Message) []map[string]any {
 	var out []map[string]any
 	imageCount := 0
 	for _, part := range msg.Parts {
 		if part.Type != llm.PartImage {
 			continue
 		}
+		imageURL, serveablePath := s.sessionMessageImageURL(part)
+		if imageURL == "" {
+			continue
+		}
 		imageCount++
-		mediaType := "image"
+		mediaType := "image/*"
 		if part.ImageData != nil && part.ImageData.MediaType != "" {
 			mediaType = part.ImageData.MediaType
 		}
 		attachment := map[string]any{
 			"name": fmt.Sprintf("image %d", imageCount),
 			"type": mediaType,
+			"url":  imageURL,
 		}
-		if part.ImageData != nil && part.ImageData.Width > 0 && part.ImageData.Height > 0 {
-			attachment["width"] = part.ImageData.Width
-			attachment["height"] = part.ImageData.Height
+		width, height := sessionMessageImageDimensions(part, serveablePath)
+		if width > 0 && height > 0 {
+			attachment["width"] = width
+			attachment["height"] = height
 		}
 		out = append(out, attachment)
 	}
