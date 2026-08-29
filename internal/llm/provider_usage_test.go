@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/credentials"
+	"github.com/samsaffron/term-llm/internal/oauth"
 )
 
 func TestFetchProviderUsageChatGPT(t *testing.T) {
@@ -69,6 +70,320 @@ func TestFetchProviderUsageChatGPT(t *testing.T) {
 	}
 	if report.Credits == nil || report.Credits.Balance != "12.5" {
 		t.Fatalf("credits = %#v", report.Credits)
+	}
+}
+
+func TestFetchProviderUsageGrok(t *testing.T) {
+	isolateGrokLLMTestEnv(t)
+	if err := credentials.SaveGrokCredentials(&credentials.GrokCredentials{
+		AccessToken:  "grok-access-token",
+		RefreshToken: "grok-refresh-token",
+		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		AccountID:    "grok-account-123",
+	}); err != nil {
+		t.Fatalf("save credentials: %v", err)
+	}
+
+	originalClient := providerUsageHTTPClient
+	defer func() { providerUsageHTTPClient = originalClient }()
+	providerUsageHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet || req.URL.String() != grokUsageURL {
+			t.Fatalf("request = %s %s", req.Method, req.URL)
+		}
+		for name, want := range map[string]string{
+			"Accept":                "application/json",
+			"Authorization":         "Bearer grok-access-token",
+			"X-XAI-Token-Auth":      "xai-grok-cli",
+			"x-userid":              "grok-account-123",
+			"x-grok-client-version": grokProxyCompatibilityVersion,
+			"x-grok-client-mode":    "headless",
+			"User-Agent":            grokUserAgent,
+		} {
+			if got := req.Header.Get(name); got != want {
+				t.Fatalf("header %s = %q, want %q", name, got, want)
+			}
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{
+				"config": {
+					"creditUsagePercent": 42.5,
+					"currentPeriod": {
+						"type": "USAGE_PERIOD_TYPE_WEEKLY",
+						"start": "2026-08-26T05:28:12Z",
+						"end": "2026-09-02T05:28:12Z"
+					},
+					"prepaidBalance": {"val": -1250},
+					"onDemandCap": {"val": -5000},
+					"onDemandUsed": {"val": -300}
+				}
+			}`)),
+		}, nil
+	})}
+
+	report, err := FetchProviderUsage(context.Background(), "grok")
+	if err != nil {
+		t.Fatalf("FetchProviderUsage: %v", err)
+	}
+	if report.Provider != "grok" || len(report.Limits) != 1 {
+		t.Fatalf("report = %#v", report)
+	}
+	limit := report.Limits[0]
+	if limit.ID != "included" || limit.Name != "Weekly limit" || !limit.Allowed || limit.LimitReached {
+		t.Fatalf("limit = %#v", limit)
+	}
+	window := limit.PrimaryWindow
+	if window == nil || window.Label != "1 week window" || window.DurationMinutes != 7*24*60 || window.UsedPercent != 42.5 {
+		t.Fatalf("window = %#v", window)
+	}
+	if want := time.Date(2026, 9, 2, 5, 28, 12, 0, time.UTC); !window.ResetsAt.Equal(want) {
+		t.Fatalf("reset = %s, want %s", window.ResetsAt, want)
+	}
+	if window.Detail != "$3 of $50 pay-as-you-go used" {
+		t.Fatalf("detail = %q", window.Detail)
+	}
+	if report.Credits == nil || !report.Credits.HasCredits || report.Credits.Balance != "12.50" || report.Credits.Currency != "USD" {
+		t.Fatalf("credits = %#v", report.Credits)
+	}
+}
+
+func TestFetchProviderUsageGrokRefreshesRejectedCredentials(t *testing.T) {
+	isolateGrokLLMTestEnv(t)
+	if err := credentials.SaveGrokCredentials(&credentials.GrokCredentials{
+		AccessToken:  "rejected-access",
+		RefreshToken: "old-refresh",
+		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		AccountID:    "grok-account-123",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	originalHTTP, originalOAuth := providerUsageHTTPClient, grokOAuthClient
+	defer func() { providerUsageHTTPClient, grokOAuthClient = originalHTTP, originalOAuth }()
+	grokOAuthClient = &fakeGrokOAuthAPI{
+		token:     &oauth.GrokTokenResponse{AccessToken: "fresh-access", RefreshToken: "fresh-refresh", ExpiresIn: 3600},
+		accountID: "grok-account-123",
+	}
+	calls := 0
+	providerUsageHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			if got := req.Header.Get("Authorization"); got != "Bearer rejected-access" {
+				t.Fatalf("first authorization = %q", got)
+			}
+			return &http.Response{StatusCode: http.StatusUnauthorized, Status: "401 Unauthorized", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"expired"}`))}, nil
+		}
+		if got := req.Header.Get("Authorization"); got != "Bearer fresh-access" {
+			t.Fatalf("retried authorization = %q", got)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"config":{"creditUsagePercent":5}}`))}, nil
+	})}
+
+	report, err := FetchProviderUsage(context.Background(), "grok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || report.Limits[0].PrimaryWindow.UsedPercent != 5 {
+		t.Fatalf("calls = %d, report = %#v", calls, report)
+	}
+	stored, err := credentials.GetGrokCredentials()
+	if err != nil || stored.AccessToken != "fresh-access" || stored.RefreshToken != "fresh-refresh" {
+		t.Fatalf("stored credentials = %#v, err = %v", stored, err)
+	}
+}
+
+func TestFetchProviderUsageGrokRetryFailures(t *testing.T) {
+	t.Run("second unauthorized", func(t *testing.T) {
+		isolateGrokLLMTestEnv(t)
+		if err := credentials.SaveGrokCredentials(&credentials.GrokCredentials{
+			AccessToken: "rejected-access", RefreshToken: "old-refresh",
+			ExpiresAt: time.Now().Add(time.Hour).Unix(), AccountID: "grok-account-123",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		originalHTTP, originalOAuth := providerUsageHTTPClient, grokOAuthClient
+		defer func() { providerUsageHTTPClient, grokOAuthClient = originalHTTP, originalOAuth }()
+		grokOAuthClient = &fakeGrokOAuthAPI{
+			token:     &oauth.GrokTokenResponse{AccessToken: "fresh-access", RefreshToken: "fresh-refresh", ExpiresIn: 3600},
+			accountID: "grok-account-123",
+		}
+		providerUsageHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusUnauthorized, Status: "401 Unauthorized", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"unauthorized"}`))}, nil
+		})}
+
+		_, err := FetchProviderUsage(context.Background(), "grok")
+		if err == nil || !strings.Contains(err.Error(), "remained unauthorized") || !strings.Contains(err.Error(), "auth login grok") {
+			t.Fatalf("error = %v", err)
+		}
+	})
+
+	t.Run("refresh rejected", func(t *testing.T) {
+		isolateGrokLLMTestEnv(t)
+		if err := credentials.SaveGrokCredentials(&credentials.GrokCredentials{
+			AccessToken: "rejected-access", RefreshToken: "invalid-refresh",
+			ExpiresAt: time.Now().Add(time.Hour).Unix(), AccountID: "grok-account-123",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		originalHTTP, originalOAuth := providerUsageHTTPClient, grokOAuthClient
+		defer func() { providerUsageHTTPClient, grokOAuthClient = originalHTTP, originalOAuth }()
+		grokOAuthClient = &fakeGrokOAuthAPI{refreshErr: oauth.ErrGrokRefreshTokenInvalid}
+		providerUsageHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusUnauthorized, Status: "401 Unauthorized", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"expired"}`))}, nil
+		})}
+
+		_, err := FetchProviderUsage(context.Background(), "grok")
+		if err == nil || !strings.Contains(err.Error(), "refresh rejected") || !strings.Contains(err.Error(), "auth login grok") {
+			t.Fatalf("error = %v", err)
+		}
+		if credentials.GrokCredentialsExist() {
+			t.Fatal("invalid rejected credentials were not cleared")
+		}
+	})
+
+	t.Run("non-auth HTTP error", func(t *testing.T) {
+		response := &http.Response{
+			StatusCode: http.StatusForbidden,
+			Status:     "403 Forbidden",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"error":"not entitled"}`)),
+		}
+		_, err := decodeGrokProviderUsageResponse(response)
+		if err == nil || !strings.Contains(err.Error(), "403 Forbidden") || !strings.Contains(err.Error(), "not entitled") {
+			t.Fatalf("error = %v", err)
+		}
+	})
+}
+
+func TestNormalizeGrokProviderUsageSupportsOmittedZeroPercentAndLegacyShape(t *testing.T) {
+	t.Run("protobuf omitted zero", func(t *testing.T) {
+		report, err := normalizeGrokProviderUsage(grokUsageResponse{Config: &grokUsageConfig{
+			CurrentPeriod: &grokUsagePeriod{
+				Type:  "USAGE_PERIOD_TYPE_WEEKLY",
+				Start: "2026-08-26T05:28:12.863758+00:00",
+				End:   "2026-09-02T05:28:12.863758+00:00",
+			},
+			PrepaidBalance: &grokUsageCent{},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		window := report.Limits[0].PrimaryWindow
+		if window.UsedPercent != 0 || window.DurationMinutes != 10080 || window.ResetsAt.IsZero() {
+			t.Fatalf("window = %#v", window)
+		}
+		if report.Credits != nil {
+			t.Fatalf("zero prepaid balance should be omitted: %#v", report.Credits)
+		}
+	})
+
+	t.Run("preserves provider percentage", func(t *testing.T) {
+		percent := 130.0
+		report, err := normalizeGrokProviderUsage(grokUsageResponse{Config: &grokUsageConfig{
+			CreditUsagePercent: &percent,
+			CurrentPeriod:      &grokUsagePeriod{Type: "USAGE_PERIOD_TYPE_WEEKLY"},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		limit := report.Limits[0]
+		if limit.PrimaryWindow.UsedPercent != 130 || !limit.LimitReached || limit.Allowed {
+			t.Fatalf("limit = %#v", limit)
+		}
+	})
+
+	t.Run("on-demand headroom remains allowed", func(t *testing.T) {
+		percent := 100.0
+		report, err := normalizeGrokProviderUsage(grokUsageResponse{Config: &grokUsageConfig{
+			CreditUsagePercent: &percent,
+			OnDemandCap:        &grokUsageCent{Val: -5000},
+			OnDemandUsed:       &grokUsageCent{Val: -300},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		limit := report.Limits[0]
+		if !limit.Allowed || limit.LimitReached {
+			t.Fatalf("limit = %#v", limit)
+		}
+	})
+
+	t.Run("does not mix current and legacy period boundaries", func(t *testing.T) {
+		percent := 10.0
+		report, err := normalizeGrokProviderUsage(grokUsageResponse{Config: &grokUsageConfig{
+			CreditUsagePercent: &percent,
+			CurrentPeriod: &grokUsagePeriod{
+				Type: "USAGE_PERIOD_TYPE_WEEKLY",
+				End:  "2026-09-02T00:00:00Z",
+			},
+			BillingPeriodStart: "2026-08-01T00:00:00Z",
+			BillingPeriodEnd:   "2026-09-01T00:00:00Z",
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		window := report.Limits[0].PrimaryWindow
+		if window.DurationMinutes != 7*24*60 || !window.ResetsAt.Equal(time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC)) {
+			t.Fatalf("window = %#v", window)
+		}
+	})
+
+	t.Run("current metadata excludes legacy boundaries", func(t *testing.T) {
+		percent := 10.0
+		report, err := normalizeGrokProviderUsage(grokUsageResponse{Config: &grokUsageConfig{
+			CreditUsagePercent: &percent,
+			CurrentPeriod:      &grokUsagePeriod{Type: "USAGE_PERIOD_TYPE_WEEKLY"},
+			BillingPeriodStart: "2026-08-01T00:00:00Z",
+			BillingPeriodEnd:   "2026-09-01T00:00:00Z",
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		window := report.Limits[0].PrimaryWindow
+		if window.DurationMinutes != 7*24*60 || !window.ResetsAt.IsZero() {
+			t.Fatalf("window = %#v", window)
+		}
+	})
+
+	t.Run("legacy monthly fields", func(t *testing.T) {
+		report, err := normalizeGrokProviderUsage(grokUsageResponse{Config: &grokUsageConfig{
+			MonthlyLimit:       &grokUsageCent{Val: 2000},
+			Used:               &grokUsageCent{Val: 500},
+			BillingPeriodStart: "2026-08-01T00:00:00Z",
+			BillingPeriodEnd:   "2026-09-01T00:00:00Z",
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		limit := report.Limits[0]
+		if limit.Name != "Monthly limit" || limit.PrimaryWindow.Label != "Monthly window" || limit.PrimaryWindow.UsedPercent != 25 || limit.PrimaryWindow.DurationMinutes != 31*24*60 {
+			t.Fatalf("limit = %#v", limit)
+		}
+	})
+}
+
+func TestFormatProviderUsageGrokCredits(t *testing.T) {
+	now := time.Date(2026, 8, 29, 5, 28, 12, 0, time.UTC)
+	report := &ProviderUsage{
+		Provider: "grok",
+		Credits:  &ProviderUsageCredits{HasCredits: true, Balance: "12.50", Currency: "USD"},
+		Limits: []ProviderUsageLimit{{
+			Name: "Weekly limit",
+			PrimaryWindow: &ProviderUsageWindow{
+				Label:           "1 week window",
+				UsedPercent:     42.6,
+				DurationMinutes: 7 * 24 * 60,
+				ResetsAt:        now.Add(4 * 24 * time.Hour),
+			},
+		}},
+	}
+	formatted := FormatProviderUsage(report, now)
+	for _, want := range []string{"Grok", "$12.50 credits", "Weekly limit", "43% used", "Resets in 4d"} {
+		if !strings.Contains(formatted, want) {
+			t.Fatalf("formatted Grok usage missing %q:\n%s", want, formatted)
+		}
 	}
 }
 

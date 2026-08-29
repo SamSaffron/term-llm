@@ -195,6 +195,16 @@ func TestRefreshOllamaCompletionCacheUsesLongestProviderPrefix(t *testing.T) {
 	}
 }
 
+func TestUsageProviderFlagCompletionIncludesGrok(t *testing.T) {
+	completions, directive := UsageProviderFlagCompletion(nil, nil, "gr")
+	if !slices.Contains(completions, "grok") {
+		t.Fatalf("usage provider completions = %v, want grok", completions)
+	}
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Fatalf("directive = %v, want NoFileComp", directive)
+	}
+}
+
 func TestProviderFlagCompletionDirectiveFinishesConfiguredEffortProfile(t *testing.T) {
 	cfg := &config.Config{Providers: map[string]config.ProviderConfig{
 		"cdck_deepseek": {

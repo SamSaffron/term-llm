@@ -52,6 +52,52 @@ func TestRunDirectProviderUsageWritesChatGPTPlanLimits(t *testing.T) {
 	}
 }
 
+func TestRunUsageRoutesGrokToOAuthUsageFetcher(t *testing.T) {
+	originalFetch := fetchDirectProviderUsage
+	defer func() { fetchDirectProviderUsage = originalFetch }()
+	fetchDirectProviderUsage = func(_ context.Context, provider, apiKey string) (*llm.ProviderUsage, error) {
+		if provider != "grok" || apiKey != "" {
+			t.Fatalf("fetch args = provider %q, apiKey %q", provider, apiKey)
+		}
+		return &llm.ProviderUsage{
+			Provider: "grok",
+			Limits: []llm.ProviderUsageLimit{{
+				Name: "Weekly limit",
+				PrimaryWindow: &llm.ProviderUsageWindow{
+					Label:       "1 week window",
+					UsedPercent: 42,
+				},
+			}},
+		}, nil
+	}
+
+	resetUsageTestFlags()
+	defer resetUsageTestFlags()
+	usageProvider = "grok"
+	var out bytes.Buffer
+	command := &cobra.Command{}
+	command.SetOut(&out)
+	if err := runUsage(command, nil); err != nil {
+		t.Fatalf("runUsage: %v", err)
+	}
+	for _, want := range []string{"Grok", "Weekly limit", "1 week window", "42% used"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRunUsageRejectsLocalFiltersForGrok(t *testing.T) {
+	resetUsageTestFlags()
+	defer resetUsageTestFlags()
+	usageProvider = "grok"
+	usageSince = "20260801"
+	command := &cobra.Command{}
+	if err := runUsage(command, nil); err == nil || !strings.Contains(err.Error(), "live grok usage does not support") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestRunDirectProviderUsageOpenCodeGoUsesConfiguredKey(t *testing.T) {
 	originalFetch := fetchDirectProviderUsage
 	originalLoad := loadProviderUsageConfig

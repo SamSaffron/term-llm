@@ -13,11 +13,15 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/credentials"
+	"github.com/samsaffron/term-llm/internal/grokprotocol"
 )
 
 const (
-	chatGPTUsageURL    = "https://chatgpt.com/backend-api/wham/usage"
-	openCodeGoUsageURL = opencodeGoBaseURL + "/usage"
+	chatGPTUsageURL            = "https://chatgpt.com/backend-api/wham/usage"
+	openCodeGoUsageURL         = opencodeGoBaseURL + "/usage"
+	grokUsageURL               = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
+	maxGrokUsageResponseBytes  = 4 << 20
+	maxGrokUsageErrorBodyBytes = 4096
 )
 
 // ProviderUsage is a live usage snapshot reported by a provider account.
@@ -54,6 +58,7 @@ type ProviderUsageCredits struct {
 	HasCredits bool   `json:"has_credits"`
 	Unlimited  bool   `json:"unlimited"`
 	Balance    string `json:"balance,omitempty"`
+	Currency   string `json:"currency,omitempty"`
 }
 
 type chatGPTUsageResponse struct {
@@ -99,6 +104,32 @@ type openCodeGoUsageWindow struct {
 	ResetsAt string  `json:"resetsAt"`
 }
 
+type grokUsageResponse struct {
+	Config *grokUsageConfig `json:"config"`
+}
+
+type grokUsageConfig struct {
+	CreditUsagePercent *float64         `json:"creditUsagePercent"`
+	CurrentPeriod      *grokUsagePeriod `json:"currentPeriod"`
+	MonthlyLimit       *grokUsageCent   `json:"monthlyLimit"`
+	Used               *grokUsageCent   `json:"used"`
+	OnDemandCap        *grokUsageCent   `json:"onDemandCap"`
+	OnDemandUsed       *grokUsageCent   `json:"onDemandUsed"`
+	PrepaidBalance     *grokUsageCent   `json:"prepaidBalance"`
+	BillingPeriodStart string           `json:"billingPeriodStart"`
+	BillingPeriodEnd   string           `json:"billingPeriodEnd"`
+}
+
+type grokUsagePeriod struct {
+	Type  string `json:"type"`
+	Start string `json:"start"`
+	End   string `json:"end"`
+}
+
+type grokUsageCent struct {
+	Val int64 `json:"val"`
+}
+
 var providerUsageHTTPClient = chatGPTHTTPClient
 
 // FetchProviderUsage fetches current account-level usage directly from provider.
@@ -112,6 +143,8 @@ func FetchProviderUsageWithAPIKey(ctx context.Context, provider, apiKey string) 
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "chatgpt":
 		return fetchChatGPTProviderUsage(ctx)
+	case "grok":
+		return fetchGrokProviderUsage(ctx)
 	case "opencode-go":
 		if strings.TrimSpace(apiKey) == "" {
 			apiKey = os.Getenv("OPENCODE_API_KEY")
@@ -168,6 +201,229 @@ func fetchChatGPTProviderUsage(ctx context.Context) (*ProviderUsage, error) {
 		return nil, fmt.Errorf("decode ChatGPT usage: %w", err)
 	}
 	return normalizeChatGPTProviderUsage(decoded), nil
+}
+
+func fetchGrokProviderUsage(ctx context.Context) (*ProviderUsage, error) {
+	creds, err := credentials.GetGrokCredentials()
+	if err != nil {
+		return nil, fmt.Errorf("load Grok credentials: %w (run 'term-llm auth login grok')", err)
+	}
+	if creds.IsExpired() {
+		if err := refreshGrokSession(ctx, creds, false); err != nil {
+			return nil, fmt.Errorf("refresh Grok credentials: %w", err)
+		}
+	}
+
+	resp, err := requestGrokProviderUsage(ctx, creds)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		return decodeGrokProviderUsageResponse(resp)
+	}
+	closeGrokUsageResponse(resp)
+	if err := refreshGrokSession(ctx, creds, true); err != nil {
+		return nil, fmt.Errorf("refresh rejected Grok credentials: %w", err)
+	}
+
+	resp, err = requestGrokProviderUsage(ctx, creds)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		closeGrokUsageResponse(resp)
+		return nil, fmt.Errorf("Grok usage request remained unauthorized after refreshing credentials; run 'term-llm auth login grok'")
+	}
+	return decodeGrokProviderUsageResponse(resp)
+}
+
+func closeGrokUsageResponse(resp *http.Response) {
+	if resp == nil || resp.Body == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxGrokUsageErrorBodyBytes))
+	_ = resp.Body.Close()
+}
+
+func requestGrokProviderUsage(ctx context.Context, creds *credentials.GrokCredentials) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, grokUsageURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create Grok usage request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+creds.AccessToken)
+	req.Header.Set("X-XAI-Token-Auth", "xai-grok-cli")
+	// Grok's billing endpoint uses x-userid, unlike the Responses endpoint's
+	// x-grok-user-id. This matches the official Grok Build x.ai/billing handler.
+	req.Header.Set("x-userid", creds.AccountID)
+	req.Header.Set("x-grok-client-version", grokProxyCompatibilityVersion)
+	req.Header.Set("x-grok-client-mode", grokprotocol.ClientModeHeadless)
+	req.Header.Set("User-Agent", grokUserAgent)
+
+	client := providerUsageHTTPClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch Grok usage: %w", err)
+	}
+	return resp, nil
+}
+
+func decodeGrokProviderUsageResponse(resp *http.Response) (*ProviderUsage, error) {
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxGrokUsageErrorBodyBytes))
+		message := fmt.Sprintf("Grok usage request failed: %s", resp.Status)
+		if len(body) > 0 {
+			message += ": " + string(body)
+		}
+		return nil, newHTTPStatusErrorMessage(message, resp, body)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxGrokUsageResponseBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read Grok usage: %w", err)
+	}
+	if len(body) > maxGrokUsageResponseBytes {
+		return nil, fmt.Errorf("decode Grok usage: response exceeded %d byte limit", maxGrokUsageResponseBytes)
+	}
+	var decoded grokUsageResponse
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return nil, fmt.Errorf("decode Grok usage: %w", err)
+	}
+	return normalizeGrokProviderUsage(decoded)
+}
+
+func normalizeGrokProviderUsage(raw grokUsageResponse) (*ProviderUsage, error) {
+	if raw.Config == nil {
+		return nil, fmt.Errorf("decode Grok usage: response did not contain billing config")
+	}
+	config := raw.Config
+	// creditUsagePercent is a proto scalar and is omitted when its value is zero.
+	// A config with a current period but no percentage therefore means 0% used,
+	// as observed from the live endpoint and handled by the official harness.
+	usedPercent := 0.0
+	if config.CreditUsagePercent != nil {
+		usedPercent = *config.CreditUsagePercent
+	} else if config.MonthlyLimit != nil && config.MonthlyLimit.Val > 0 && config.Used != nil {
+		usedPercent = float64(config.Used.Val) / float64(config.MonthlyLimit.Val) * 100
+	}
+
+	periodType := ""
+	startText := strings.TrimSpace(config.BillingPeriodStart)
+	endText := strings.TrimSpace(config.BillingPeriodEnd)
+	if config.CurrentPeriod != nil {
+		periodType = strings.ToUpper(strings.TrimSpace(config.CurrentPeriod.Type))
+		// Current and legacy timestamps are alternate response generations. Never
+		// combine period metadata or boundaries across those generations.
+		startText = strings.TrimSpace(config.CurrentPeriod.Start)
+		endText = strings.TrimSpace(config.CurrentPeriod.End)
+	} else if config.MonthlyLimit != nil || startText != "" || endText != "" {
+		periodType = "USAGE_PERIOD_TYPE_MONTHLY"
+	}
+	start, err := parseOptionalGrokUsageTime("period start", startText)
+	if err != nil {
+		return nil, err
+	}
+	reset, err := parseOptionalGrokUsageTime("period end", endText)
+	if err != nil {
+		return nil, err
+	}
+
+	name, label, duration := grokUsageWindowMetadata(periodType)
+	if !start.IsZero() && reset.After(start) {
+		duration = int(reset.Sub(start).Round(time.Minute) / time.Minute)
+	}
+	window := &ProviderUsageWindow{
+		Label:           label,
+		UsedPercent:     usedPercent,
+		DurationMinutes: duration,
+		ResetsAt:        reset,
+	}
+	onDemandHasHeadroom := false
+	if config.OnDemandCap != nil {
+		capCents := absoluteGrokUsageCents(config.OnDemandCap.Val)
+		if capCents > 0 {
+			usedCents := int64(0)
+			if config.OnDemandUsed != nil {
+				usedCents = absoluteGrokUsageCents(config.OnDemandUsed.Val)
+			}
+			onDemandHasHeadroom = usedCents < capCents
+			// These display-facing money fields use accounting signs in Grok's
+			// billing payload. The legacy included limit/used counters above do not.
+			window.Detail = fmt.Sprintf("%s of %s pay-as-you-go used", formatGrokUsageDollars(usedCents), formatGrokUsageDollars(capCents))
+		}
+	}
+	prepaidBalanceCents := int64(0)
+	if config.PrepaidBalance != nil {
+		prepaidBalanceCents = absoluteGrokUsageCents(config.PrepaidBalance.Val)
+	}
+	limitReached := usedPercent >= 100 && !onDemandHasHeadroom && prepaidBalanceCents == 0
+
+	report := &ProviderUsage{
+		Provider: "grok",
+		Limits: []ProviderUsageLimit{{
+			ID:            "included",
+			Name:          name,
+			Allowed:       !limitReached,
+			LimitReached:  limitReached,
+			PrimaryWindow: window,
+		}},
+	}
+	if prepaidBalanceCents > 0 {
+		report.Credits = &ProviderUsageCredits{
+			HasCredits: true,
+			Balance:    formatGrokUsageDollarAmount(prepaidBalanceCents),
+			Currency:   "USD",
+		}
+	}
+	return report, nil
+}
+
+func parseOptionalGrokUsageTime(field, value string) (time.Time, error) {
+	if value == "" {
+		return time.Time{}, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("decode Grok usage %s %q: %w", field, value, err)
+	}
+	return parsed, nil
+}
+
+func grokUsageWindowMetadata(periodType string) (name, label string, duration int) {
+	switch {
+	case strings.Contains(periodType, "WEEKLY"):
+		return "Weekly limit", "1 week window", 7 * 24 * 60
+	case strings.Contains(periodType, "MONTHLY"):
+		return "Monthly limit", "Monthly window", 0
+	default:
+		return "Included allowance", "", 0
+	}
+}
+
+func absoluteGrokUsageCents(value int64) int64 {
+	if value == -1<<63 {
+		return 0
+	}
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
+func formatGrokUsageDollarAmount(cents int64) string {
+	cents = absoluteGrokUsageCents(cents)
+	if cents%100 == 0 {
+		return strconv.FormatInt(cents/100, 10)
+	}
+	return fmt.Sprintf("%d.%02d", cents/100, cents%100)
+}
+
+func formatGrokUsageDollars(cents int64) string {
+	return "$" + formatGrokUsageDollarAmount(cents)
 }
 
 func fetchOpenCodeGoProviderUsage(ctx context.Context, apiKey string) (*ProviderUsage, error) {
@@ -343,7 +599,11 @@ func formatProviderUsageMetadata(report *ProviderUsage) string {
 		case report.Credits.Unlimited:
 			parts = append(parts, "Unlimited credits")
 		case positiveCreditBalance(report.Credits.Balance):
-			parts = append(parts, strings.TrimSpace(report.Credits.Balance)+" credits")
+			balance := strings.TrimSpace(report.Credits.Balance)
+			if strings.EqualFold(strings.TrimSpace(report.Credits.Currency), "USD") {
+				balance = "$" + balance
+			}
+			parts = append(parts, balance+" credits")
 		}
 	}
 	if report.Source != "" {

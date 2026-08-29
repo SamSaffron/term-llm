@@ -46,9 +46,9 @@ var usageCmd = &cobra.Command{
 	Long: `Show token usage and costs from Claude Code, Codex CLI, and term-llm.
 
 By default, this command reads local usage data stored by these CLI tools and
-shows aggregated token counts and estimated costs. The agy-bin, chatgpt,
-claude-bin, cursor-bin, and opencode-go providers instead fetch live
-subscription limits without invoking a model or consuming tokens.
+shows aggregated token counts and estimated costs. The agy-bin, chatgpt, grok,
+claude-bin, cursor-bin, and opencode-go providers instead fetch live subscription
+limits without invoking a model or consuming tokens.
 
 For GitHub Copilot, it fetches AI Credit usage from GitHub's latest
 billing usage API. Set GITHUB_TOKEN or GH_TOKEN with billing permissions.
@@ -63,6 +63,7 @@ Examples:
   term-llm usage --provider cursor-bin        # show live Cursor plan usage
   term-llm usage --provider cursor-bin --json # output the structured Cursor response
   term-llm usage --provider chatgpt           # show live ChatGPT Codex plan usage
+  term-llm usage --provider grok              # show live Grok coding-credit usage
   term-llm usage --provider opencode-go       # show live OpenCode Go plan usage
   term-llm usage --provider copilot           # show personal GitHub Copilot AI Credit usage
   term-llm usage --provider copilot --copilot-scope org --copilot-entity my-org
@@ -75,7 +76,7 @@ Examples:
 
 func init() {
 	rootCmd.AddCommand(usageCmd)
-	usageCmd.Flags().StringVarP(&usageProvider, "provider", "p", "", "Filter by provider (agy-bin, chatgpt, claude-bin, cursor-bin, opencode-go, claude-code, copilot, term-llm, or all)")
+	usageCmd.Flags().StringVarP(&usageProvider, "provider", "p", "", "Filter by provider (agy-bin, chatgpt, grok, claude-bin, cursor-bin, opencode-go, claude-code, copilot, term-llm, or all)")
 	usageCmd.Flags().StringVar(&usageSince, "since", "", "Start date (YYYYMMDD)")
 	usageCmd.Flags().StringVar(&usageUntil, "until", "", "End date (YYYYMMDD)")
 	usageCmd.Flags().BoolVar(&usageJSON, "json", false, "Output as JSON")
@@ -120,7 +121,7 @@ func runUsage(cmd *cobra.Command, args []string) error {
 		}
 		return runCursorBinUsage(cmd.Context(), cmd.OutOrStdout(), usageJSON)
 	}
-	if usageProvider == "chatgpt" || usageProvider == "opencode-go" {
+	if usageProvider == "chatgpt" || usageProvider == "grok" || usageProvider == "opencode-go" {
 		return runDirectProviderUsage(cmd, usageProvider)
 	}
 	// Special handling for copilot - fetch latest AI Credit usage from GitHub's billing API
@@ -173,7 +174,7 @@ func runUsage(cmd *cobra.Command, args []string) error {
 	case "", "all":
 		providerFilter = ""
 	default:
-		return fmt.Errorf("unknown provider: %s (use agy-bin, chatgpt, claude-bin, cursor-bin, opencode-go, claude-code, copilot, or term-llm)", usageProvider)
+		return fmt.Errorf("unknown provider: %s (use agy-bin, chatgpt, grok, claude-bin, cursor-bin, opencode-go, claude-code, copilot, or term-llm)", usageProvider)
 	}
 
 	// Filter entries
