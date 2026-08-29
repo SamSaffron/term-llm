@@ -1,4 +1,4 @@
-import { signal, type ReadonlySignal, type Signal } from '@preact/signals';
+import { computed, signal, type ReadonlySignal, type Signal } from '@preact/signals';
 import type { Project, Session } from '../domain/types';
 import { readDrafts, saveDraft } from '../platform/storage';
 import type { Modal } from './store-types';
@@ -23,11 +23,21 @@ export interface WorktreeStoreOptions {
 export class WorktreeStore {
   readonly worktrees = signal<Record<string, unknown>[]>([]);
   readonly error = signal('');
+  readonly currentDir: ReadonlySignal<string>;
 
   constructor(
     private readonly services: AppStoreServices,
     private readonly options: WorktreeStoreOptions,
-  ) {}
+  ) {
+    // A root checkout is represented by an empty path. Select by conversation
+    // mode rather than truthiness so root can never fall through to draft-only
+    // state left over from another composer.
+    this.currentDir = computed(() =>
+      this.options.draftActive.value
+        ? this.options.selectedDraftWorktree.value
+        : this.options.activeSession.value?.worktreeDir || '',
+    );
+  }
 
   available(): boolean {
     if (!this.options.projectsEnabled.value) return this.options.worktreesEnabled.value;

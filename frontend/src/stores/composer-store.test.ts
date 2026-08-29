@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { readDrafts } from '../platform/storage';
+import { readDrafts, saveDraft } from '../platform/storage';
 import { AppStore } from './app-store';
-import { testConfig } from './store-test-fixtures';
+import { testConfig, testSession } from './store-test-fixtures';
 
 beforeEach(() => localStorage.clear());
 
@@ -30,9 +30,40 @@ describe('ComposerStore', () => {
 
       store.composer.prompt.value = '';
       store.composer.selectedDraftWorktree.value = '';
-      store.composer.restore(id);
+      store.composer.restore(id, 'draft');
       expect(store.composer.prompt.value).toBe('Persist this draft');
       expect(store.composer.selectedDraftWorktree.value).toBe('/tmp/worktree');
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('does not persist or restore draft worktree selection for an existing session', () => {
+    const store = new AppStore(testConfig);
+    try {
+      saveDraft(localStorage, store.keys.draftMessages, {
+        sessionId: 's1',
+        content: 'Legacy conversation reply',
+        updated: 1,
+        worktreeDir: '/worktrees/legacy-copy',
+      });
+      store.sessions.value = [
+        testSession({ worktreeDir: '/worktrees/session', workingDir: '/worktrees/session' }),
+      ];
+      store.activeSessionId.value = 's1';
+      store.draftActive.value = false;
+
+      store.composer.restore('s1', 'session');
+      expect(store.composer.selectedDraftWorktree.value).toBe('');
+
+      store.composer.prompt.value = 'Conversation reply';
+      store.composer.selectedDraftWorktree.value = '/worktrees/stale-draft';
+      store.composer.persist();
+      expect(
+        readDrafts(localStorage, store.keys.draftMessages).find(
+          (draft) => draft.sessionId === 's1',
+        ),
+      ).not.toHaveProperty('worktreeDir');
     } finally {
       store.dispose();
     }

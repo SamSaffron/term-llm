@@ -161,6 +161,7 @@ export class AppStore {
   readonly worktrees: Signal<Record<string, unknown>[]>;
   readonly worktreeError: Signal<string>;
   readonly selectedDraftWorktree: Signal<string>;
+  readonly currentWorktreeDir: ReadonlySignal<string>;
   readonly skills: Signal<Record<string, unknown>[]>;
   readonly branchTree: Signal<Record<string, unknown> | null>;
   readonly branchPathCount: Signal<number>;
@@ -276,7 +277,6 @@ export class AppStore {
     this.selectedReasoningMode = this.runtime.selectedReasoningMode;
     this.selectedAgent = this.runtime.selectedAgent;
     this.composer = new ComposerStore(this.services, {
-      activeSession: this.activeSession,
       activeSessionId: this.activeSessionId,
       activeProjectId: this.activeProjectId,
       draftActive: this.draftActive,
@@ -331,6 +331,7 @@ export class AppStore {
     });
     this.worktrees = this.worktreeStore.worktrees;
     this.worktreeError = this.worktreeStore.error;
+    this.currentWorktreeDir = this.worktreeStore.currentDir;
     this.goalStore = new GoalStore(this.services, this.activeSession, this.modal);
     this.goal = this.goalStore.state;
     this.reviewStore = new ReviewStore(this.services, {
@@ -776,7 +777,7 @@ export class AppStore {
     this.composer.reconcileStorage(id);
   }
   private restoreDraftFor(id: string): void {
-    this.composer.restore(id);
+    this.composer.restore(id, 'draft');
   }
   private syncRuntimeFromSession(session: Session): void {
     this.composer.syncRuntimeFromSession(session);

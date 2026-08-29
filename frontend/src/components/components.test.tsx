@@ -154,6 +154,47 @@ describe('Preact-owned chat surfaces', () => {
     expect(store.endpoints.projectWorktrees).toHaveBeenCalledWith('project-1');
   });
 
+  it('shows root after merging the active worktree, ignoring stale draft state', async () => {
+    const store = createStore();
+    store.worktreesEnabled.value = true;
+    store.selectedDraftWorktree.value = '/worktrees/stale-draft';
+    store.sessions.value = [
+      {
+        ...store.sessions.value[0],
+        projectId: 'project-1',
+        workingDir: '/worktrees/feature',
+        worktreeDir: '/worktrees/feature',
+      },
+    ];
+    store.endpoints.mergeWorktree = vi.fn(async () => ({
+      result: { root_dir: '/repo' },
+      cleanup: { removed: true },
+      session: { id: 's1', cwd: '/repo', worktree_dir: '' },
+    }));
+    store.endpoints.legacyWorktrees = vi.fn(async () => ({ worktrees: [] }));
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Header />
+      </StoreContext.Provider>,
+    );
+
+    const trigger = screen.getByRole('button', { name: 'Worktree' });
+    expect(trigger).toHaveTextContent('feature');
+
+    await act(async () => {
+      await store.mergeWorktree('/worktrees/feature');
+    });
+
+    expect(store.endpoints.mergeWorktree).toHaveBeenCalledWith(
+      'project-1',
+      '/worktrees/feature',
+      's1',
+    );
+    expect(trigger).toHaveTextContent('root');
+    expect(trigger).not.toHaveTextContent('stale-draft');
+  });
+
   it('shows the active plan position and semantic checklist', async () => {
     const store = createStore();
     store.currentPlan.value = {

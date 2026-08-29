@@ -285,6 +285,8 @@ export class RunEngine {
       };
       this.sessionStore.prepend(session);
       this.sessionStore.activate(session);
+      // Ownership transferred to Session.worktreeDir before draft mode ended.
+      this.composer.selectedDraftWorktree.value = '';
     }
     const sessionId = session.id;
     let attachmentParts: Record<string, unknown>[];

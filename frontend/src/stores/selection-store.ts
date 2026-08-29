@@ -83,7 +83,7 @@ export class SelectionStore {
     this.services.storage.setItem(this.services.keys.activeSession, session.id);
     this.services.storage.removeItem(this.services.keys.draftSessionActive);
     updateSessionRoute(this.services.config.prefix, session, replace);
-    this.composer.restore(session.id);
+    this.composer.restore(session.id, 'session');
     this.composer.syncRuntimeFromSession(session);
     await this.loadSession(session.id, epoch);
     if (epoch !== this.epoch) return;
@@ -145,7 +145,7 @@ export class SelectionStore {
     if (selectedProject)
       this.services.storage.setItem(this.services.keys.lastProject, selectedProject);
     updateSessionRoute(this.services.config.prefix, null, replace);
-    this.composer.restore(this.composer.storageId());
+    this.composer.restore(this.composer.storageId(), 'draft');
   }
 
   async resolveAndSelectSession(id: string, replace = false): Promise<void> {

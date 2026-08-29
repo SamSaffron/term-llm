@@ -54,6 +54,8 @@ describe('AppStore compatibility behavior', () => {
         },
       ];
       store.activeSessionId.value = 's1';
+      store.draftActive.value = false;
+      store.selectedDraftWorktree.value = '/worktrees/stale-draft';
       store.projectsEnabled.value = true;
       store.endpoints.mergeWorktree = vi.fn(async () => ({
         result: { root_dir: '/repo' },
@@ -70,6 +72,38 @@ describe('AppStore compatibility behavior', () => {
         's1',
       );
       expect(store.activeSession.value).toMatchObject({ worktreeDir: '', workingDir: '/repo' });
+      expect(store.selectedDraftWorktree.value).toBe('/worktrees/stale-draft');
+      expect(store.currentWorktreeDir.value).toBe('');
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('transfers a draft worktree to the session before the first request', async () => {
+    const store = new AppStore(config);
+    try {
+      store.projectsEnabled.value = true;
+      store.activeProjectId.value = 'project-1';
+      store.selectedDraftWorktree.value = '/worktrees/feature';
+      store.prompt.value = 'Start in the selected checkout';
+      store.endpoints.createResponse = vi.fn(
+        async () => new Response('stop after request capture', { status: 400 }),
+      );
+
+      await store.send();
+
+      expect(store.endpoints.createResponse).toHaveBeenCalledWith(
+        expect.objectContaining({
+          project_id: 'project-1',
+          worktree_dir: '/worktrees/feature',
+        }),
+        expect.stringMatching(/^draft_/),
+        expect.any(String),
+        expect.any(AbortSignal),
+      );
+      expect(store.activeSession.value?.worktreeDir).toBe('/worktrees/feature');
+      expect(store.currentWorktreeDir.value).toBe('/worktrees/feature');
+      expect(store.selectedDraftWorktree.value).toBe('');
     } finally {
       store.dispose();
     }

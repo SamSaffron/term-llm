@@ -210,6 +210,7 @@ export function Header() {
     };
   }, []);
   const session = store.activeSession.value;
+  const currentWorktreeDir = store.currentWorktreeDir.value;
   const tokenCount = Number(session?.usage?.total_tokens || 0);
   const loadedDiff =
     session && store.diff.value.sessionId === session.id && store.diff.value.files.length
@@ -315,10 +316,7 @@ export function Header() {
                 }}
               >
                 <Icon name="branch" />
-                <span class="chip-label">
-                  {(session?.worktreeDir || store.selectedDraftWorktree.value).split('/').pop() ||
-                    'root'}
-                </span>
+                <span class="chip-label">{currentWorktreeDir.split('/').pop() || 'root'}</span>
               </button>
             )}
             {session && store.branchPathCount.value > 1 && (

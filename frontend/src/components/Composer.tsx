@@ -68,10 +68,7 @@ export function Composer() {
   const session = store.draftActive.value ? null : store.activeSession.value;
   const projectId =
     session?.projectId || (store.draftActive.value ? store.activeProjectId.value : '') || '';
-  const worktreeDir =
-    session?.worktreeDir ||
-    (store.draftActive.value ? store.selectedDraftWorktree.value : '') ||
-    '';
+  const worktreeDir = store.currentWorktreeDir.value;
   const composerOwner = store.composerOwnerKey();
   useEffect(() => {
     if (

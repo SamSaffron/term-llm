@@ -190,7 +190,7 @@ export function Worktrees() {
   const autoOpened = useRef(false);
   const draft = store.draftActive.value;
   const activeSession = store.activeSession.value;
-  const activeDir = draft ? store.selectedDraftWorktree.value : activeSession?.worktreeDir || '';
+  const activeDir = store.currentWorktreeDir.value;
   const apiRows = store.worktrees.value;
   const serverRoot = apiRows.find(isRoot);
   const project = store.projects.value.find(

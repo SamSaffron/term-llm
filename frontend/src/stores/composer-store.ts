@@ -12,8 +12,9 @@ import { errorMessage } from '../domain/text';
 import type { AppStoreServices } from './app-store-services';
 import { uuid } from './store-utils';
 
+type ComposerOwner = 'draft' | 'session';
+
 export interface ComposerStoreHost {
-  activeSession: ReadonlySignal<Session | null>;
   activeSessionId: ReadonlySignal<string>;
   activeProjectId: ReadonlySignal<string>;
   draftActive: ReadonlySignal<boolean>;
@@ -101,8 +102,7 @@ export class ComposerStore {
         effort: this.host.selectedEffort.peek(),
         reasoningMode: this.host.selectedReasoningMode.peek(),
         agent: this.host.selectedAgent.peek(),
-        worktreeDir:
-          this.host.activeSession.peek()?.worktreeDir || this.selectedDraftWorktree.peek(),
+        ...(this.host.draftActive.peek() ? { worktreeDir: this.selectedDraftWorktree.peek() } : {}),
         attachments: this.attachments
           .peek()
           .map(
@@ -138,10 +138,10 @@ export class ComposerStore {
       );
       return;
     }
-    this.restore(id);
+    this.restore(id, this.host.draftActive.peek() ? 'draft' : 'session');
   }
 
-  restore(id: string): void {
+  restore(id: string, owner: ComposerOwner): void {
     const draft = readDrafts(this.services.storage, this.services.keys.draftMessages).find(
       (entry) => entry.sessionId === id,
     );
@@ -164,7 +164,9 @@ export class ComposerStore {
           error: validation?.message || attachment.error,
         };
       });
-      this.selectedDraftWorktree.value = draft?.worktreeDir || '';
+      // This signal belongs only to a new-conversation draft. Existing
+      // conversations get their checkout exclusively from Session.worktreeDir.
+      this.selectedDraftWorktree.value = owner === 'draft' ? draft?.worktreeDir || '' : '';
     });
     for (const attachment of this.attachments.peek())
       if (attachment.id && attachment.blobRef && attachment.status !== 'error')
