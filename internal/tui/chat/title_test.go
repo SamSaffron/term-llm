@@ -155,11 +155,11 @@ func TestTerminalTitleCommandSequencesAndSanitization(t *testing.T) {
 
 	env := NewTerminalTitleEnvironment(map[string]string{"TMUX": "/tmp/tmux"})
 	snapshot := terminalTitleSnapshot{Title: title, StableTitle: title}
-	if cmd := newTerminalTitleManager(TerminalTitleOff, env, false).UpdateCmd(snapshot); cmd != nil {
+	if cmd := newTerminalTitleManager(TerminalTitleOff, env).UpdateCmd(snapshot); cmd != nil {
 		t.Fatalf("off mode title command = %T, want nil", cmd)
 	}
 
-	basicRaw := strings.Join(rawStringsFromCmd(newTerminalTitleManager(TerminalTitleBasic, env, false).UpdateCmd(snapshot)), "")
+	basicRaw := strings.Join(rawStringsFromCmd(newTerminalTitleManager(TerminalTitleBasic, env).UpdateCmd(snapshot)), "")
 	if !strings.Contains(basicRaw, "\x1b]2;Fix Ctrl-C\\Exit\x07") {
 		t.Fatalf("basic mode should emit raw OSC title, got %q", basicRaw)
 	}
@@ -167,7 +167,7 @@ func TestTerminalTitleCommandSequencesAndSanitization(t *testing.T) {
 		t.Fatalf("basic mode should not emit provider-specific window sequence: %q", basicRaw)
 	}
 
-	smartRaw := strings.Join(rawStringsFromCmd(newTerminalTitleManager(TerminalTitleSmart, env, false).UpdateCmd(snapshot)), "")
+	smartRaw := strings.Join(rawStringsFromCmd(newTerminalTitleManager(TerminalTitleSmart, env).UpdateCmd(snapshot)), "")
 	if !strings.Contains(smartRaw, "\x1b]2;Fix Ctrl-C\\Exit\x07") || !strings.Contains(smartRaw, "\x1bkFix Ctrl-C\\Exit\x1b\\") {
 		t.Fatalf("smart mode should emit raw OSC and provider-specific window sequences, got %q", smartRaw)
 	}
@@ -208,60 +208,23 @@ func msgFromCmd(cmd tea.Cmd) (tea.Msg, bool) {
 	}
 }
 
-func TestGhosttyProgressProvider(t *testing.T) {
-	provider := newGhosttyProgressProvider(TerminalTitleEnvironment{})
-	raw := strings.Join(rawStringsFromCmd(provider.UpdateCmd(terminalTitleSnapshot{InProgress: true})), "")
-	if !strings.Contains(raw, ghosttyProgressIndeterminateSequence()) {
-		t.Fatalf("progress start raw = %q, want indeterminate sequence", raw)
-	}
-	if cmd := provider.UpdateCmd(terminalTitleSnapshot{InProgress: true}); cmd != nil {
-		if raw := strings.Join(rawStringsFromCmd(cmd), ""); raw != "" {
-			t.Fatalf("progress provider should not spam while refresh tick is pending, got %q", raw)
-		}
-	}
-	if handled, cmd := provider.HandleMsg(ghosttyProgressTickMsg{}, terminalTitleSnapshot{InProgress: true}); !handled {
-		t.Fatal("ghostty progress tick was not handled")
-	} else if raw := strings.Join(rawStringsFromCmd(cmd), ""); !strings.Contains(raw, ghosttyProgressIndeterminateSequence()) {
-		t.Fatalf("progress refresh raw = %q, want indeterminate sequence", raw)
-	}
-	raw = strings.Join(rawStringsFromCmd(provider.UpdateCmd(terminalTitleSnapshot{})), "")
-	if !strings.Contains(raw, ghosttyProgressClearSequence()) {
-		t.Fatalf("progress clear raw = %q, want clear sequence", raw)
+func TestTerminalControlSequenceIsBoundedBeforeTTYOpen(t *testing.T) {
+	oversized := strings.Repeat("x", terminalControlSequenceMaxBytes+1)
+	if _, err := WriteTerminalControlSequenceToTTY(oversized); err == nil {
+		t.Fatal("oversized terminal control sequence was accepted")
 	}
 }
 
-func TestGhosttyProgressProviderWrapsTmuxPassthrough(t *testing.T) {
-	provider := newGhosttyProgressProvider(NewTerminalTitleEnvironment(map[string]string{"TMUX": "/tmp/tmux"}))
-	raw := strings.Join(rawStringsFromCmd(provider.UpdateCmd(terminalTitleSnapshot{InProgress: true})), "")
-	want := "\x1bPtmux;\x1b\x1b]9;4;3\x07\x1b\\"
-	if !strings.Contains(raw, want) {
-		t.Fatalf("tmux progress raw = %q, want passthrough %q", raw, want)
-	}
-}
-
-func TestGhosttyProgressManagerDisabledByDefault(t *testing.T) {
+func TestTerminalTitleManagerDoesNotOwnLifecycleProgress(t *testing.T) {
 	env := NewTerminalTitleEnvironment(map[string]string{"TERM_PROGRAM": "ghostty"})
-	cmd := newTerminalTitleManager(TerminalTitleSmart, env, false).UpdateCmd(terminalTitleSnapshot{
+	cmd := newTerminalTitleManager(TerminalTitleSmart, env).UpdateCmd(terminalTitleSnapshot{
 		Title:       "Working",
 		StableTitle: "Working",
 		InProgress:  true,
 	})
 	raw := strings.Join(rawStringsFromCmd(cmd), "")
 	if strings.Contains(raw, "\x1b]9;4;") {
-		t.Fatalf("manager with progress disabled emitted Ghostty progress sequence: %q", raw)
-	}
-}
-
-func TestGhosttyProgressManagerEnabled(t *testing.T) {
-	env := NewTerminalTitleEnvironment(map[string]string{"TERM_PROGRAM": "ghostty"})
-	cmd := newTerminalTitleManager(TerminalTitleSmart, env, true).UpdateCmd(terminalTitleSnapshot{
-		Title:       "Working",
-		StableTitle: "Working",
-		InProgress:  true,
-	})
-	raw := strings.Join(rawStringsFromCmd(cmd), "")
-	if !strings.Contains(raw, ghosttyProgressIndeterminateSequence()) {
-		t.Fatalf("manager with progress enabled raw = %q, want indeterminate sequence", raw)
+		t.Fatalf("terminal-title manager emitted lifecycle progress: %q", raw)
 	}
 }
 
@@ -335,21 +298,6 @@ func withFakeTmuxCommandLog(t *testing.T) (string, func()) {
 		return cmd
 	}
 	return callsPath, func() { execCommandContext = oldExec }
-}
-
-func TestGhosttyProgressProviderFactory(t *testing.T) {
-	if providers := newGhosttyProgressProviders(TerminalTitleSmart, NewTerminalTitleEnvironment(map[string]string{"TERM_PROGRAM": "ghostty"}), true); len(providers) != 1 {
-		t.Fatalf("ghostty TERM_PROGRAM providers = %d, want 1", len(providers))
-	}
-	if providers := newGhosttyProgressProviders(TerminalTitleSmart, NewTerminalTitleEnvironment(map[string]string{"TERM_PROGRAM": "ghostty"}), false); len(providers) != 0 {
-		t.Fatalf("progress disabled ghostty providers = %d, want 0", len(providers))
-	}
-	if providers := newGhosttyProgressProviders(TerminalTitleBasic, NewTerminalTitleEnvironment(map[string]string{"TERM_PROGRAM": "ghostty"}), true); len(providers) != 0 {
-		t.Fatalf("basic mode ghostty providers = %d, want 0", len(providers))
-	}
-	if providers := newGhosttyProgressProviders(TerminalTitleSmart, NewTerminalTitleEnvironment(nil), true); len(providers) != 0 {
-		t.Fatalf("non-ghostty providers = %d, want 0", len(providers))
-	}
 }
 
 func TestViewTerminalTitleModes(t *testing.T) {

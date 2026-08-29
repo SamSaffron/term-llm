@@ -1,115 +1,41 @@
 package chat
 
 import (
+	"fmt"
 	"os"
-	"strings"
-	"time"
-
-	tea "charm.land/bubbletea/v2"
 )
 
-const ghosttyProgressRefreshInterval = 5 * time.Second
+const terminalControlSequenceMaxBytes = 4096
 
-func init() {
-	registerTerminalTitleProviderFactory(newGhosttyProgressProviders)
+// WriteTerminalControlSequence writes bounded shutdown/restore control output
+// after Bubble Tea has released renderer ownership. Live lifecycle sequences
+// are returned as tea.Raw commands by chatProgramModel instead.
+func WriteTerminalControlSequence(sequence string) (int, error) {
+	return writeTerminalControlSequence(sequence)
 }
 
-func newGhosttyProgressProviders(mode TerminalTitleMode, env TerminalTitleEnvironment, progress bool) []terminalTitleProvider {
-	if !progress || mode != TerminalTitleSmart || !isGhosttyTerminal(env) {
-		return nil
-	}
-	return []terminalTitleProvider{newGhosttyProgressProvider(env)}
-}
-
-func isGhosttyTerminal(env TerminalTitleEnvironment) bool {
-	if strings.EqualFold(strings.TrimSpace(env.Get("TERM_PROGRAM")), "ghostty") {
-		return true
-	}
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(env.Get("TERM"))), "xterm-ghostty") {
-		return true
-	}
-	return strings.TrimSpace(env.Get("GHOSTTY_RESOURCES_DIR")) != ""
-}
-
-type ghosttyProgressProvider struct {
-	tmuxActive  bool
-	active      bool
-	tickPending bool
-}
-
-func newGhosttyProgressProvider(env TerminalTitleEnvironment) *ghosttyProgressProvider {
-	return &ghosttyProgressProvider{tmuxActive: strings.TrimSpace(env.Get("TMUX")) != ""}
-}
-
-func (p *ghosttyProgressProvider) UpdateCmd(snapshot terminalTitleSnapshot) tea.Cmd {
-	if p == nil {
-		return nil
-	}
-	if !snapshot.InProgress {
-		p.tickPending = false
-		if !p.active {
-			return nil
-		}
-		p.active = false
-		return tea.Raw(p.wrapForTerminal(ghosttyProgressClearSequence()))
-	}
-
-	if p.active && p.tickPending {
-		return nil
-	}
-
-	p.active = true
-	p.tickPending = true
-	return tea.Batch(
-		tea.Raw(p.wrapForTerminal(ghosttyProgressIndeterminateSequence())),
-		tea.Tick(ghosttyProgressRefreshInterval, func(time.Time) tea.Msg {
-			return ghosttyProgressTickMsg{}
-		}),
-	)
-}
-
-func (p *ghosttyProgressProvider) HandleMsg(msg tea.Msg, snapshot terminalTitleSnapshot) (bool, tea.Cmd) {
-	if _, ok := msg.(ghosttyProgressTickMsg); !ok {
-		return false, nil
-	}
-	if p != nil {
-		p.tickPending = false
-	}
-	return true, p.UpdateCmd(snapshot)
-}
-
-func (p *ghosttyProgressProvider) Restore() {
-	if p == nil || !p.active {
-		return
-	}
-	p.active = false
-	_, _ = writeTerminalControlSequence(p.wrapForTerminal(ghosttyProgressClearSequence()))
-}
-
-func (p *ghosttyProgressProvider) wrapForTerminal(seq string) string {
-	if p == nil || !p.tmuxActive || seq == "" {
-		return seq
-	}
-	return tmuxPassthroughSequence(seq)
-}
-
-func writeTerminalControlSequence(seq string) (int, error) {
-	if seq == "" {
+// WriteTerminalControlSequenceToTTY writes bounded forced-exit cleanup only to
+// the controlling terminal. It deliberately avoids stdout while Bubble Tea may
+// still own that stream.
+func WriteTerminalControlSequenceToTTY(sequence string) (int, error) {
+	if sequence == "" {
 		return 0, nil
 	}
-	if tty, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0); err == nil {
-		defer tty.Close()
-		return tty.WriteString(seq)
+	if len(sequence) > terminalControlSequenceMaxBytes {
+		return 0, fmt.Errorf("terminal control sequence exceeds %d bytes", terminalControlSequenceMaxBytes)
 	}
-	return os.Stdout.WriteString(seq)
+	return writeTerminalControlSequenceToTTY(sequence)
 }
 
-type ghosttyProgressTickMsg struct{}
-
-func ghosttyProgressIndeterminateSequence() string {
-	return "\x1b]9;4;3\x07"
-}
-
-func ghosttyProgressClearSequence() string {
-	return "\x1b]9;4;0\x07"
+func writeTerminalControlSequence(sequence string) (int, error) {
+	if sequence == "" {
+		return 0, nil
+	}
+	if len(sequence) > terminalControlSequenceMaxBytes {
+		return 0, fmt.Errorf("terminal control sequence exceeds %d bytes", terminalControlSequenceMaxBytes)
+	}
+	if written, err := WriteTerminalControlSequenceToTTY(sequence); err == nil {
+		return written, nil
+	}
+	return os.Stdout.WriteString(sequence)
 }

@@ -19,7 +19,7 @@ func init() {
 	registerTerminalTitleProviderFactory(newTmuxTitleProviders)
 }
 
-func newTmuxTitleProviders(mode TerminalTitleMode, env TerminalTitleEnvironment, progress bool) []terminalTitleProvider {
+func newTmuxTitleProviders(mode TerminalTitleMode, env TerminalTitleEnvironment) []terminalTitleProvider {
 	if mode != TerminalTitleSmart || strings.TrimSpace(env.Get("TMUX")) == "" {
 		return nil
 	}

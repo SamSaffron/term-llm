@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	mapstructure "github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
@@ -471,6 +472,7 @@ type Config struct {
 	Exec            ExecConfig                `mapstructure:"exec"`
 	Ask             AskConfig                 `mapstructure:"ask"`
 	Chat            ChatConfig                `mapstructure:"chat"`
+	Lifecycle       LifecycleConfig           `mapstructure:"lifecycle"`
 	Edit            EditConfig                `mapstructure:"edit"`
 	Loop            LoopConfig                `mapstructure:"loop"`
 	Image           ImageConfig               `mapstructure:"image"`
@@ -729,8 +731,98 @@ type ChatConfig struct {
 	MaxTurns            int    `mapstructure:"max_turns"`                                    // Max agentic turns (default 200)
 	TerminalTitle       string `mapstructure:"terminal_title"`                               // smart, basic, or off (default smart)
 	TerminalTitleFormat string `mapstructure:"terminal_title_format"`                        // Optional custom terminal title template
-	TerminalProgress    bool   `mapstructure:"terminal_progress"`                            // Enable terminal progress indicators (default false)
+	TerminalProgress    bool   `mapstructure:"terminal_progress"`                            // Deprecated compatibility opt-in for automatic OSC progress
 	ApprovalMode        string `mapstructure:"approval_mode" yaml:"approval_mode,omitempty"` // Optional approval mode: prompt or auto
+}
+
+// LifecycleConfig controls terminal-host lifecycle publication.
+type LifecycleConfig struct {
+	Enabled  bool                     `mapstructure:"enabled" yaml:"enabled"`
+	Adapters []string                 `mapstructure:"adapters" yaml:"adapters,omitempty"`
+	OSC      string                   `mapstructure:"osc" yaml:"osc"`
+	Commands []LifecycleCommandConfig `mapstructure:"commands" yaml:"commands,omitempty"`
+}
+
+// LifecycleCommandConfig is an explicitly configured no-shell JSON command sink.
+type LifecycleCommandConfig struct {
+	Name    string   `mapstructure:"name" yaml:"name"`
+	Command []string `mapstructure:"command" yaml:"command"`
+	Timeout string   `mapstructure:"timeout" yaml:"timeout,omitempty"`
+}
+
+// ValidateLifecycle rejects ambiguous host selection and unsafe or unbounded
+// command-sink configuration before chat can start any external process.
+func (c *Config) ValidateLifecycle() error {
+	if c == nil {
+		return nil
+	}
+	modeSeen := make(map[string]bool, len(c.Lifecycle.Adapters))
+	for _, raw := range c.Lifecycle.Adapters {
+		name := strings.ToLower(strings.TrimSpace(raw))
+		if name == "" {
+			return fmt.Errorf("invalid lifecycle.adapters entry: adapter name cannot be empty")
+		}
+		switch name {
+		case "auto", "herdr", "cmux":
+		default:
+			return fmt.Errorf("invalid lifecycle.adapters entry %q: expected auto, herdr, or cmux", raw)
+		}
+		if modeSeen[name] {
+			return fmt.Errorf("invalid lifecycle.adapters: duplicate %q", raw)
+		}
+		modeSeen[name] = true
+	}
+	if modeSeen["auto"] && len(modeSeen) != 1 {
+		return fmt.Errorf("invalid lifecycle.adapters: auto cannot be combined with an explicit adapter")
+	}
+
+	switch strings.ToLower(strings.TrimSpace(c.Lifecycle.OSC)) {
+	case "off", "auto", "on":
+	default:
+		return fmt.Errorf("invalid lifecycle.osc %q: expected off, auto, or on", c.Lifecycle.OSC)
+	}
+
+	commandNames := make(map[string]bool, len(c.Lifecycle.Commands))
+	for i, sink := range c.Lifecycle.Commands {
+		name := strings.TrimSpace(sink.Name)
+		if name == "" {
+			return fmt.Errorf("invalid lifecycle.commands[%d].name: cannot be empty", i)
+		}
+		if len(name) > 64 {
+			return fmt.Errorf("invalid lifecycle.commands[%d].name: must be at most 64 bytes", i)
+		}
+		key := strings.ToLower(name)
+		if key == "herdr" || key == "cmux" || key == "osc" || key == "auto" {
+			return fmt.Errorf("invalid lifecycle.commands[%d].name %q: reserved name", i, sink.Name)
+		}
+		if commandNames[key] {
+			return fmt.Errorf("invalid lifecycle.commands: duplicate name %q", sink.Name)
+		}
+		commandNames[key] = true
+		if len(sink.Command) == 0 || strings.TrimSpace(sink.Command[0]) == "" {
+			return fmt.Errorf("invalid lifecycle.commands[%d].command: executable cannot be empty", i)
+		}
+		if len(sink.Command) > 64 {
+			return fmt.Errorf("invalid lifecycle.commands[%d].command: at most 64 argv entries are allowed", i)
+		}
+		for j, arg := range sink.Command {
+			if strings.IndexByte(arg, 0) >= 0 {
+				return fmt.Errorf("invalid lifecycle.commands[%d].command[%d]: contains NUL", i, j)
+			}
+			if len(arg) > 4096 {
+				return fmt.Errorf("invalid lifecycle.commands[%d].command[%d]: must be at most 4096 bytes", i, j)
+			}
+		}
+		timeout := strings.TrimSpace(sink.Timeout)
+		if timeout == "" {
+			timeout = DefaultLifecycleSinkTimeout
+		}
+		duration, err := time.ParseDuration(timeout)
+		if err != nil || duration <= 0 || duration > 30*time.Second {
+			return fmt.Errorf("invalid lifecycle.commands[%d].timeout %q: expected a duration greater than zero and at most 30s", i, sink.Timeout)
+		}
+	}
+	return nil
 }
 
 type EditConfig struct {
@@ -1052,6 +1144,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.ValidateToolDiscovery(); err != nil {
+		return nil, err
+	}
+	if err := cfg.ValidateLifecycle(); err != nil {
 		return nil, err
 	}
 

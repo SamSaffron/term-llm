@@ -454,7 +454,6 @@ type Model struct {
 	// Terminal/window title state
 	titleMode          TerminalTitleMode
 	titleFormat        string
-	titleProgress      bool
 	conversationBranch bool
 	titleFormatter     *terminalTitleFormatter
 	titleManager       *terminalTitleManager
@@ -1126,9 +1125,8 @@ func NewWithFastProviderAndApproval(cfg *config.Config, provider llm.Provider, f
 		titleMode:                titleMode,
 		directShellEligible:      initialShellComposer,
 		titleFormat:              cfg.Chat.TerminalTitleFormat,
-		titleProgress:            cfg.Chat.TerminalProgress,
 		titleFormatter:           newTerminalTitleFormatter(cfg.Chat.TerminalTitleFormat, TerminalTitleEnvironment{}),
-		titleManager:             newTerminalTitleManager(titleMode, TerminalTitleEnvironment{}, cfg.Chat.TerminalProgress),
+		titleManager:             newTerminalTitleManager(titleMode, TerminalTitleEnvironment{}),
 		streamCancelRequested:    &atomic.Bool{},
 		altScreen:                altScreen,
 		mouseMode:                chatMouseModeFromEnv(),

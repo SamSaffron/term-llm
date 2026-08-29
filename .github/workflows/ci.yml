@@ -126,7 +126,7 @@ jobs:
 
       - name: Race-test Web UI lifecycle owners
         if: needs.changes.outputs.backend == 'true'
-        run: go test -race ./internal/webrtc ./internal/session ./cmd
+        run: go test -race ./internal/webrtc ./internal/session ./internal/termhost ./cmd
 
       - name: Race-test nested modules
         if: needs.changes.outputs.backend == 'true'

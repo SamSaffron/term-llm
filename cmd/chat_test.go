@@ -10,11 +10,87 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/lifecycle"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/termhost"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/cobra"
 )
+
+type forcedCleanupReporter struct {
+	steps *[]string
+}
+
+func (r *forcedCleanupReporter) Report(lifecycle.Snapshot) termhost.Control {
+	return termhost.Control{}
+}
+func (r *forcedCleanupReporter) RestoreOSC() string {
+	*r.steps = append(*r.steps, "restore")
+	return "clear"
+}
+func (r *forcedCleanupReporter) Close() {
+	*r.steps = append(*r.steps, "close")
+}
+
+func TestChatTerminalHostAuthorityRequiresInteractiveInvokingStreams(t *testing.T) {
+	original := chatLifecycleInteractive
+	t.Cleanup(func() { chatLifecycleInteractive = original })
+	for _, test := range []struct {
+		name        string
+		interactive bool
+		want        bool
+	}{
+		{name: "interactive chat", interactive: true, want: true},
+		{name: "direct terminal auto-send", interactive: true, want: true},
+		{name: "tool-spawned noninteractive auto-send", interactive: false, want: false},
+		{name: "captured nested child", interactive: false, want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			chatLifecycleInteractive = func(*os.File, *os.File) bool { return test.interactive }
+			if got := chatOwnsTerminalHost(); got != test.want {
+				t.Fatalf("chatOwnsTerminalHost() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestForcedLifecycleCleanupRestoresOSCBeforeClosingAdapters(t *testing.T) {
+	var steps []string
+	reporter := &forcedCleanupReporter{steps: &steps}
+	forcedLifecycleCleanup(reporter, func(sequence string) (int, error) {
+		steps = append(steps, "write:"+sequence)
+		return len(sequence), nil
+	})
+	if got := strings.Join(steps, ","); got != "restore,write:clear,close" {
+		t.Fatalf("forced cleanup order = %q", got)
+	}
+}
+
+func TestDeprecatedTerminalProgressRetainsSmartTitleScope(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		title string
+		want  bool
+	}{
+		{name: "default smart", title: "", want: true},
+		{name: "smart", title: "smart", want: true},
+		{name: "basic", title: "basic", want: false},
+		{name: "off", title: "off", want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := &config.Config{}
+			cfg.Chat.TerminalProgress = true
+			cfg.Chat.TerminalTitle = test.title
+			if got := legacyTerminalProgressEnabled(cfg); got != test.want {
+				t.Fatalf("legacyTerminalProgressEnabled() = %v, want %v", got, test.want)
+			}
+		})
+	}
+	if legacyTerminalProgressEnabled(&config.Config{}) {
+		t.Fatal("deprecated progress disabled setting enabled compatibility OSC")
+	}
+}
 
 func TestToolManagerHasPathCapableTools(t *testing.T) {
 	tests := []struct {
