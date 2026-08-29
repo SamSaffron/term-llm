@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -25,9 +26,13 @@ type webBranchTreeResponse struct {
 }
 
 type createSessionBranchRequest struct {
-	AnchorMessageID int64  `json:"anchor_message_id"`
-	ExpectedRev     *int64 `json:"expected_rev,omitempty"`
-	IdempotencyKey  string `json:"idempotency_key"`
+	AnchorMessageID int64 `json:"anchor_message_id"`
+	// LegacyExpectedRev is accepted and ignored for backward wire compatibility.
+	// Deprecated: this Web endpoint identifies an immutable transcript prefix by
+	// anchor_message_id; lower-level CreateBranch and /v1/responses retain their
+	// distinct full-head compare-and-swap contracts.
+	LegacyExpectedRev *int64 `json:"expected_rev,omitempty"`
+	IdempotencyKey    string `json:"idempotency_key"`
 }
 
 type createSessionBranchResponse struct {
@@ -45,8 +50,10 @@ type prepareSessionPathNotesRequest struct {
 }
 
 type prepareSessionPathNotesResponse struct {
-	Ready  bool `json:"ready"`
-	Reused bool `json:"reused,omitempty"`
+	Ready   bool   `json:"ready"`
+	Reused  bool   `json:"reused,omitempty"`
+	Limited bool   `json:"limited,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 func branchContextSourceMessage(message session.Message) bool {
@@ -133,6 +140,44 @@ func activeWebBranchAnchorSafety(messages []session.Message, activeResponseID st
 	return activeWebBranchAnchorSafe
 }
 
+const webBranchSnapshotMaxAttempts = 3
+
+var errWebBranchSnapshotUnstable = errors.New("conversation branch snapshot changed while loading")
+
+type webBranchContextSnapshot struct {
+	messages          []session.Message
+	activeAnchorRowID int64
+	limited           bool
+}
+
+func (s *serveServer) loadWebBranchContextSnapshot(ctx context.Context, sessionID string) (webBranchContextSnapshot, error) {
+	for attempt := 0; attempt < webBranchSnapshotMaxAttempts; attempt++ {
+		activeResponseID, _, activeEpoch, _, sampledAnchorRowID := s.activeTranscriptRun(sessionID)
+		messages, err := s.store.GetMessages(ctx, sessionID, 0, 0)
+		if err != nil {
+			return webBranchContextSnapshot{}, err
+		}
+		checkResponseID, _, checkEpoch, _, checkAnchorRowID := s.activeTranscriptRun(sessionID)
+		if checkResponseID != activeResponseID || checkEpoch != activeEpoch || checkAnchorRowID != sampledAnchorRowID {
+			if err := ctx.Err(); err != nil {
+				return webBranchContextSnapshot{}, err
+			}
+			continue
+		}
+		if activeResponseID == "" {
+			return webBranchContextSnapshot{messages: messages}, nil
+		}
+		activeAnchorRowID := activeWebBranchAnchorRowID(messages, activeResponseID, sampledAnchorRowID)
+		safeMessages := pruneActiveWebBranchOutput(messages, activeResponseID, activeAnchorRowID)
+		return webBranchContextSnapshot{
+			messages:          safeMessages,
+			activeAnchorRowID: activeAnchorRowID,
+			limited:           len(safeMessages) < len(messages),
+		}, nil
+	}
+	return webBranchContextSnapshot{}, errWebBranchSnapshotUnstable
+}
+
 func webBranchTreePointsForActiveRun(messages []session.Message, activeAnchorRowID int64) []webBranchTreePoint {
 	if activeAnchorRowID < 0 {
 		return nil
@@ -217,25 +262,16 @@ func (s *serveServer) handleSessionTree(w http.ResponseWriter, r *http.Request, 
 		response := webBranchTreeResponse{BranchTree: tree}
 		if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_branch_points")), "1") ||
 			strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_branch_points")), "true") {
-			activeResponseID, _, activeEpoch, _, sampledAnchorRowID := s.activeTranscriptRun(sessionID)
-			messages, messageErr := s.store.GetMessages(r.Context(), sessionID, 0, 0)
-			if messageErr != nil {
+			snapshot, snapshotErr := s.loadWebBranchContextSnapshot(r.Context(), sessionID)
+			switch {
+			case errors.Is(snapshotErr, errWebBranchSnapshotUnstable):
+				writeOpenAIError(w, http.StatusConflict, "conflict_error", "conversation branch points are changing; refresh and try again")
+				return
+			case snapshotErr != nil:
 				writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to load conversation branch points")
 				return
 			}
-			// Verify that row loading did not cross a moving-boundary publication.
-			checkResponseID, _, checkEpoch, _, checkAnchorRowID := s.activeTranscriptRun(sessionID)
-			if checkResponseID != activeResponseID || checkEpoch != activeEpoch || checkAnchorRowID != sampledAnchorRowID {
-				activeResponseID, activeEpoch, sampledAnchorRowID = checkResponseID, checkEpoch, checkAnchorRowID
-				messages, messageErr = s.store.GetMessages(r.Context(), sessionID, 0, 0)
-				if messageErr != nil {
-					writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to refresh moving conversation branch points")
-					return
-				}
-			}
-			activeAnchorRowID := activeWebBranchAnchorRowID(messages, activeResponseID, sampledAnchorRowID)
-			messages = pruneActiveWebBranchOutput(messages, activeResponseID, activeAnchorRowID)
-			response.BranchPoints = webBranchTreePointsForActiveRun(messages, activeAnchorRowID)
+			response.BranchPoints = webBranchTreePointsForActiveRun(snapshot.messages, snapshot.activeAnchorRowID)
 		}
 		writeJSON(w, http.StatusOK, response)
 	}
@@ -293,57 +329,58 @@ func (s *serveServer) handleCreateSessionBranch(w http.ResponseWriter, r *http.R
 	}
 	activeResponseID, _, _, _, activeAnchorRowID := s.activeTranscriptRun(sourceSessionID)
 	activeSource := activeResponseID != ""
-	var expectedState *session.TranscriptMutationState
-	expectedRev := req.ExpectedRev
 	unlock := func() {}
-	if activeSource {
+	validateActiveAnchor := func() bool {
 		messages, loadErr := s.store.GetMessages(r.Context(), sourceSessionID, 0, 0)
 		if loadErr != nil {
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to validate active conversation branch")
-			return
+			return false
 		}
 		status := activeWebBranchAnchorSafety(messages, activeResponseID, activeAnchorRowID, req.AnchorMessageID)
 		switch status {
 		case activeWebBranchAnchorMissing:
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "branch source or anchor was not found")
-			return
+			return false
 		case activeWebBranchAnchorInvalid:
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "branch anchor is not a durable continuation boundary")
-			return
+			return false
 		case activeWebBranchAnchorUnstable:
 			writeOpenAIError(w, http.StatusConflict, "conflict_error", "branch point is not stable while source work is active")
+			return false
+		default:
+			return true
+		}
+	}
+	if activeSource {
+		if !validateActiveAnchor() {
 			return
 		}
-		// The selected stable prefix is validated above and resolved again inside
-		// CreateBranch's transaction. Full-head revisions are expected to advance
-		// while this response appends output after that immutable prefix.
-		expectedRev = nil
 	} else {
-		if expectedRev == nil {
-			mutationStore, ok := s.store.(session.TranscriptUndoRedoStore)
-			if !ok {
-				writeOpenAIError(w, http.StatusConflict, "conflict_error", "revision-safe conversation branching is unavailable")
-				return
-			}
-			state, stateErr := mutationStore.TranscriptMutationState(r.Context(), sourceSessionID)
-			if stateErr != nil {
-				writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to inspect conversation revision")
-				return
-			}
-			expectedState = &state
-		}
 		var busy bool
 		unlock, busy = s.lockBranchSourceRuntime(sourceSessionID)
 		if busy {
-			writeOpenAIError(w, http.StatusConflict, "conflict_error", "cannot branch while source work is active")
-			return
+			// Work may have become active after the initial sample. Prefer its
+			// published durable boundary over rejecting an otherwise safe prefix.
+			activeResponseID, _, _, _, activeAnchorRowID = s.activeTranscriptRun(sourceSessionID)
+			activeSource = activeResponseID != ""
+			if !activeSource {
+				writeOpenAIError(w, http.StatusConflict, "conflict_error", "cannot branch while source work is active")
+				return
+			}
+			unlock = func() {}
+			if !validateActiveAnchor() {
+				return
+			}
 		}
 	}
 	defer unlock()
+	// This Web API is anchor/prefix-based. LegacyExpectedRev is decoded only for
+	// backward wire compatibility and intentionally has no precondition effect:
+	// unrelated suffix drift cannot mutate the immutable row-ID prefix. The
+	// transaction still resolves and validates that anchor; lower-level callers
+	// retain ExpectedRev/ExpectedState compare-and-swap behavior.
 	result, err := branchStore.CreateBranch(r.Context(), sourceSessionID, session.CreateBranchOptions{
 		AnchorMessageID: req.AnchorMessageID,
-		ExpectedState:   expectedState,
-		ExpectedRev:     expectedRev,
 		IdempotencyKey:  req.IdempotencyKey,
 	})
 	switch {
@@ -437,15 +474,39 @@ func (s *serveServer) handleSessionPathNotes(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusOK, prepareSessionPathNotesResponse{Ready: true, Reused: true})
 		return
 	}
-	unlockSource, busy := s.lockBranchSourceRuntime(edge.ParentSessionID)
-	if busy {
-		writeOpenAIError(w, http.StatusConflict, "conflict_error", "cannot prepare branch context while source work is active")
+	mode, focus, status, message := branchContextRequestValues(&responsesBranchContextRequest{Mode: mode, Focus: req.Focus})
+	if status != 0 {
+		writeOpenAIError(w, status, "invalid_request_error", message)
 		return
 	}
-	defer unlockSource()
 	workCtx, cancelWork := detachedBranchWorkContext(r.Context())
 	defer cancelWork()
-	pathNote, status, message := s.prepareBranchPathNote(workCtx, edge.ParentSessionID, edge.ForkAfterMessageID, &responsesBranchContextRequest{Mode: mode, Focus: req.Focus})
+	snapshot, err := s.loadWebBranchContextSnapshot(workCtx, edge.ParentSessionID)
+	if errors.Is(err, errWebBranchSnapshotUnstable) {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", "branch context is changing; try again")
+		return
+	}
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to load branch context")
+		return
+	}
+	source, sourceErr := session.MessagesAfterBranchAnchor(snapshot.messages, edge.ForkAfterMessageID)
+	if sourceErr != nil && !snapshot.limited {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "branch source or anchor was not found")
+		return
+	}
+	limitedMessage := ""
+	if snapshot.limited {
+		limitedMessage = "Context was prepared from the latest durable completed part of the active source; in-progress output was omitted."
+	}
+	if sourceErr != nil || len(source) == 0 {
+		if snapshot.limited {
+			limitedMessage = "The path was created without additional notes because no later source context was available."
+		}
+		writeJSON(w, http.StatusOK, prepareSessionPathNotesResponse{Ready: true, Limited: snapshot.limited, Message: limitedMessage})
+		return
+	}
+	pathNote, status, message := s.generateBranchPathNote(workCtx, edge.ParentSessionID, source, mode, focus)
 	if status != 0 {
 		errType := "invalid_request_error"
 		if status == http.StatusConflict {
@@ -465,5 +526,5 @@ func (s *serveServer) handleSessionPathNotes(w http.ResponseWriter, r *http.Requ
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, prepareSessionPathNotesResponse{Ready: true})
+	writeJSON(w, http.StatusOK, prepareSessionPathNotesResponse{Ready: true, Limited: snapshot.limited, Message: limitedMessage})
 }

@@ -33,10 +33,12 @@ const session = (): Session => ({
 });
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 };
 
 beforeEach(() => localStorage.clear());
@@ -774,6 +776,56 @@ describe('AppStore compatibility behavior', () => {
     );
   });
 
+  it('keeps a known transcript revision when a sidebar summary omits it', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [{ ...session(), transcriptRev: 11 }];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.projectsEnabled.value = false;
+    store.endpoints.sessions = vi.fn(async () => ({
+      sessions: [{ id: 's1', title: 'Sidebar summary without a revision' }],
+    }));
+
+    await store.refreshSidebar();
+
+    expect(store.activeSession.value?.transcriptRev).toBe(11);
+  });
+
+  it('uses selected transcript bodies.rev for undo concurrency', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    const selected = {
+      selected_session: { id: 's1', title: 'Test' },
+      selected_transcript: {
+        bodies: {
+          rev: 7,
+          messages: [
+            { id: 41, sequence: 0, role: 'user', parts: [{ type: 'text', text: 'question' }] },
+            {
+              id: 42,
+              sequence: 1,
+              role: 'assistant',
+              parts: [{ type: 'text', text: 'answer' }],
+            },
+          ],
+        },
+      },
+    };
+    store.endpoints.sessionState = vi.fn(async () => ({}));
+    store.endpoints.selectedSession = vi.fn(async () => selected);
+    store.endpoints.mutateTranscript = vi.fn(async () => ({ rev: 8, user_text: 'question' }));
+
+    await store.loadSession('s1');
+    await store.mutateTranscript('undo');
+
+    expect(store.endpoints.mutateTranscript).toHaveBeenCalledWith('s1', 'undo', {
+      expected_rev: 7,
+      expected_head_id: 42,
+    });
+  });
+
   it('forks a settled loaded session from its latest durable message row', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];
@@ -781,7 +833,7 @@ describe('AppStore compatibility behavior', () => {
     store.draftActive.value = false;
     store.endpoints.sessionState = vi.fn(async () => ({ lastResponseId: 'resp_msg_42' }));
     store.endpoints.selectedSession = vi.fn(async () => ({
-      selected_session: { id: 's1', title: 'Test', transcript_rev: 3 },
+      selected_session: { id: 's1', title: 'Test' },
       selected_transcript: {
         bodies: {
           rev: 3,
@@ -809,16 +861,18 @@ describe('AppStore compatibility behavior', () => {
         },
       },
     }));
-    store.endpoints.branch = vi.fn(async () => ({}));
+    store.endpoints.branch = vi.fn(async () => ({ session: { id: 's2', title: 'Fork' } }));
     store.refreshSidebar = vi.fn(async () => undefined);
+    store.selectSession = vi.fn(async () => undefined);
 
     await store.loadSession('s1');
+    expect(store.activeSession.value?.transcriptRev).toBe(3);
     await store.branchCommand('fork');
 
-    expect(store.endpoints.branch).toHaveBeenCalledWith(
-      's1',
-      expect.objectContaining({ anchor_message_id: 42, expected_rev: 3 }),
-    );
+    expect(store.endpoints.branch).toHaveBeenCalledWith('s1', {
+      anchor_message_id: 42,
+      idempotency_key: expect.any(String),
+    });
     expect(store.toasts.value).toEqual([]);
   });
 
@@ -849,8 +903,9 @@ describe('AppStore compatibility behavior', () => {
         ],
       },
     };
-    store.endpoints.branch = vi.fn(async () => ({}));
+    store.endpoints.branch = vi.fn(async () => ({ session: { id: 's2', title: 'Fork' } }));
     store.refreshSidebar = vi.fn(async () => undefined);
+    store.selectSession = vi.fn(async () => undefined);
 
     await store.branchCommand('fork');
 
@@ -859,6 +914,178 @@ describe('AppStore compatibility behavior', () => {
       expect.objectContaining({ anchor_message_id: 0 }),
     );
     expect(store.toasts.value).toEqual([]);
+  });
+
+  it('shows branch failures and reuses the same idempotency key on retry', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.refreshSidebar = vi.fn(async () => undefined);
+    store.selectSession = vi.fn(async () => undefined);
+    store.endpoints.branch = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('branch service unavailable'))
+      .mockResolvedValueOnce({ session: { id: 's2', title: 'Retry child' } });
+
+    expect(await store.branchFrom('42', 'clean')).toBe(false);
+    expect(store.branchError.value).toBe('branch service unavailable');
+    expect(store.toasts.value.at(-1)?.message).toBe('branch service unavailable');
+    expect(await store.branchFrom('42', 'clean')).toBe(true);
+
+    const firstBody = vi.mocked(store.endpoints.branch).mock.calls[0][1] as Record<string, unknown>;
+    const secondBody = vi.mocked(store.endpoints.branch).mock.calls[1][1] as Record<
+      string,
+      unknown
+    >;
+    expect(firstBody.idempotency_key).toBeTruthy();
+    expect(secondBody.idempotency_key).toBe(firstBody.idempotency_key);
+    expect(firstBody).not.toHaveProperty('expected_rev');
+  });
+
+  it('guards an in-flight branch against duplicate clicks', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    const request = deferred<Record<string, unknown>>();
+    store.endpoints.branch = vi.fn(() => request.promise);
+    store.refreshSidebar = vi.fn(async () => undefined);
+    store.selectSession = vi.fn(async () => undefined);
+
+    const first = store.branchFrom('42', 'clean');
+    const second = store.branchFrom('42', 'clean');
+    expect(store.branchBusy.value).toBe(true);
+    expect(await second).toBe(false);
+    expect(store.endpoints.branch).toHaveBeenCalledOnce();
+
+    request.resolve({ session: { id: 's2', title: 'Single child' } });
+    expect(await first).toBe(true);
+    expect(store.branchBusy.value).toBe(false);
+  });
+
+  it('notifies when fork or thread commands collide with in-flight branch creation', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    const request = deferred<Record<string, unknown>>();
+    store.endpoints.branch = vi.fn(() => request.promise);
+    store.refreshSidebar = vi.fn(async () => undefined);
+    store.selectSession = vi.fn(async () => undefined);
+
+    const first = store.branchFrom('42', 'clean');
+    await store.branchCommand('fork', 'first follow up');
+    await store.branchCommand('thread', 'second follow up');
+
+    expect(store.endpoints.branch).toHaveBeenCalledOnce();
+    expect(store.toasts.value.slice(-2)).toEqual([
+      expect.objectContaining({
+        message: 'A conversation path is already being created.',
+        kind: 'info',
+      }),
+      expect.objectContaining({
+        message: 'A conversation path is already being created.',
+        kind: 'info',
+      }),
+    ]);
+    request.resolve({ session: { id: 's2', title: 'Single child' } });
+    expect(await first).toBe(true);
+  });
+
+  it('treats an auto-send failure as follow-on work and clears branch retry identity', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.endpoints.branch = vi
+      .fn()
+      .mockResolvedValueOnce({ session: { id: 's2', title: 'First child' } })
+      .mockResolvedValueOnce({ session: { id: 's3', title: 'Second child' } });
+    store.refreshSidebar = vi.fn(async () => undefined);
+    store.selectSession = vi.fn(async () => undefined);
+    store.send = vi.fn(async () => {
+      throw new Error('send transport failed');
+    });
+
+    expect(await store.branchFrom('42', 'clean', '', 'follow up')).toBe(true);
+    expect(store.branchError.value).toBe('');
+    expect(store.toasts.value.at(-1)).toMatchObject({
+      message: 'New path created, but its first message could not be sent: send transport failed',
+      kind: 'error',
+    });
+    expect(await store.branchFrom('42', 'clean')).toBe(true);
+
+    const firstBody = vi.mocked(store.endpoints.branch).mock.calls[0][1] as Record<string, unknown>;
+    const secondBody = vi.mocked(store.endpoints.branch).mock.calls[1][1] as Record<
+      string,
+      unknown
+    >;
+    expect(secondBody.idempotency_key).not.toBe(firstBody.idempotency_key);
+  });
+
+  it('does not dismiss a different modal when branch creation completes', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.branchTarget.value = '42';
+    store.modal.value = 'branch-context';
+    const request = deferred<Record<string, unknown>>();
+    store.endpoints.branch = vi.fn(() => request.promise);
+    store.refreshSidebar = vi.fn(async () => undefined);
+    store.selectSession = vi.fn(async () => undefined);
+
+    const branch = store.branchFrom('42', 'clean');
+    store.modal.value = 'settings';
+    request.resolve({ session: { id: 's2', title: 'Child' } });
+
+    expect(await branch).toBe(true);
+    expect(store.modal.value).toBe('settings');
+  });
+
+  it('keeps and opens a created child when path-note preparation fails', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.endpoints.branch = vi.fn(async () => ({ session: { id: 's2', title: 'Child' } }));
+    store.endpoints.pathNotes = vi.fn(async () => {
+      throw new Error('notes helper failed');
+    });
+    store.refreshSidebar = vi.fn(async () => undefined);
+    store.selectSession = vi.fn(async () => undefined);
+
+    expect(await store.branchFrom('42', 'notes')).toBe(true);
+
+    expect(store.sessions.value.some((entry) => entry.id === 's2')).toBe(true);
+    expect(store.selectSession).toHaveBeenCalledWith(expect.objectContaining({ id: 's2' }));
+    expect(store.endpoints.branch).toHaveBeenCalledOnce();
+    expect(store.toasts.value.at(-1)?.message).toContain(
+      'New path created, but its additional context could not be prepared: notes helper failed',
+    );
+  });
+
+  it('reports when active path notes omit in-progress source output', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.endpoints.branch = vi.fn(async () => ({ session: { id: 's2', title: 'Child' } }));
+    store.endpoints.pathNotes = vi.fn(async () => ({
+      ready: true,
+      limited: true,
+      message: 'In-progress output was omitted.',
+    }));
+    store.refreshSidebar = vi.fn(async () => undefined);
+    store.selectSession = vi.fn(async () => undefined);
+
+    expect(await store.branchFrom('42', 'focused', 'keep durable findings')).toBe(true);
+
+    expect(store.toasts.value.at(-1)).toMatchObject({
+      message: 'In-progress output was omitted.',
+      kind: 'info',
+    });
   });
 
   it('reconciles a completed runtime response to the latest durable anchor', async () => {

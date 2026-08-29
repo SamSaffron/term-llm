@@ -570,6 +570,8 @@ export function sanitizeSession(
     : [];
   const archived = source.archived_at ? true : Boolean(source.archived);
   const fileSummary = record(source.file_change_summary || source.fileChangeSummary);
+  const rawTranscriptRev = source.transcript_rev ?? source.rev;
+  const transcriptRev = Number(rawTranscriptRev);
   return {
     id: text(source.id) || randomID('sess'),
     number: Number(source.number || source.session_number) || undefined,
@@ -608,7 +610,9 @@ export function sanitizeSession(
     messageCount:
       Number(source.message_count) ||
       messages.filter((message) => ['user', 'assistant'].includes(message.role)).length,
-    transcriptRev: Number(source.transcript_rev || source.rev) || 0,
+    ...(rawTranscriptRev != null && rawTranscriptRev !== '' && Number.isFinite(transcriptRev)
+      ? { transcriptRev: Math.max(0, transcriptRev) }
+      : {}),
     usage: (record(source.usage) as Session['usage']) || undefined,
     goal: (record(source.goal) as Session['goal']) || null,
     fileChangeSummary: fileSummary

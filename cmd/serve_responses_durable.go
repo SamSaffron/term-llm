@@ -131,38 +131,34 @@ func (s *serveServer) lockBranchSourceRuntime(sessionID string) (func(), bool) {
 	return runtime.mu.Unlock, false
 }
 
-func (s *serveServer) prepareBranchPathNote(ctx context.Context, sourceSessionID string, anchorMessageID int64, requested *responsesBranchContextRequest) (*session.BranchPathNote, int, string) {
+func branchContextRequestValues(requested *responsesBranchContextRequest) (string, string, int, string) {
 	if requested == nil {
-		return nil, 0, ""
+		return "", "", 0, ""
 	}
 	mode := strings.ToLower(strings.TrimSpace(requested.Mode))
 	if mode == "" || mode == "none" || mode == "clean" {
-		return nil, 0, ""
+		return mode, "", 0, ""
 	}
 	if mode != "notes" && mode != "focused" {
-		return nil, http.StatusBadRequest, "branch_context.mode must be clean, notes, or focused"
+		return "", "", http.StatusBadRequest, "branch_context.mode must be clean, notes, or focused"
 	}
 	focus := strings.TrimSpace(requested.Focus)
 	if len([]rune(focus)) > 2000 {
-		return nil, http.StatusBadRequest, "branch context focus is too long"
+		return "", "", http.StatusBadRequest, "branch context focus is too long"
 	}
 	if mode == "focused" && focus == "" {
-		return nil, http.StatusBadRequest, "focused branch context requires focus instructions"
+		return "", "", http.StatusBadRequest, "focused branch context requires focus instructions"
+	}
+	return mode, focus, 0, ""
+}
+
+func (s *serveServer) generateBranchPathNote(ctx context.Context, sourceSessionID string, source []llm.Message, mode, focus string) (*session.BranchPathNote, int, string) {
+	if mode == "" || mode == "none" || mode == "clean" || len(source) == 0 {
+		return nil, 0, ""
 	}
 	sess, err := s.store.Get(ctx, sourceSessionID)
 	if err != nil || sess == nil {
 		return nil, http.StatusBadRequest, "branch source was not found"
-	}
-	messages, err := s.store.GetMessages(ctx, sourceSessionID, 0, 0)
-	if err != nil {
-		return nil, http.StatusInternalServerError, "failed to load branch context"
-	}
-	source, err := session.MessagesAfterBranchAnchor(messages, anchorMessageID)
-	if err != nil {
-		return nil, http.StatusBadRequest, "branch source or anchor was not found"
-	}
-	if len(source) == 0 {
-		return nil, 0, ""
 	}
 	providerName := strings.TrimSpace(sess.ProviderKey)
 	if providerName == "" {
@@ -210,12 +206,26 @@ func (s *serveServer) prepareBranchPathNote(ctx context.Context, sourceSessionID
 	}, 0, ""
 }
 
+func (s *serveServer) prepareBranchPathNote(ctx context.Context, sourceSessionID string, anchorMessageID int64, requested *responsesBranchContextRequest) (*session.BranchPathNote, int, string) {
+	mode, focus, status, message := branchContextRequestValues(requested)
+	if status != 0 || mode == "" || mode == "none" || mode == "clean" {
+		return nil, status, message
+	}
+	messages, err := s.store.GetMessages(ctx, sourceSessionID, 0, 0)
+	if err != nil {
+		return nil, http.StatusInternalServerError, "failed to load branch context"
+	}
+	source, err := session.MessagesAfterBranchAnchor(messages, anchorMessageID)
+	if err != nil {
+		return nil, http.StatusBadRequest, "branch source or anchor was not found"
+	}
+	return s.generateBranchPathNote(ctx, sourceSessionID, source, mode, focus)
+}
+
 func (s *serveServer) prepareBranchPathNoteOnce(ctx context.Context, sourceSessionID string, anchorMessageID int64, idempotencyKey string, requested *responsesBranchContextRequest) (*session.BranchPathNote, int, string, context.Context, func()) {
-	mode := ""
-	focus := ""
-	if requested != nil {
-		mode = strings.ToLower(strings.TrimSpace(requested.Mode))
-		focus = strings.TrimSpace(requested.Focus)
+	mode, focus, status, message := branchContextRequestValues(requested)
+	if status != 0 {
+		return nil, status, message, ctx, func() {}
 	}
 	if mode == "" || mode == "none" || mode == "clean" {
 		return nil, 0, "", ctx, func() {}

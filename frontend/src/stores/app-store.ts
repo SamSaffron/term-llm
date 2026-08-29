@@ -167,6 +167,8 @@ export class AppStore {
   readonly branchPathCount: Signal<number>;
   readonly branchTarget: Signal<string>;
   readonly branchPrefill: Signal<string>;
+  readonly branchBusy: Signal<boolean>;
+  readonly branchError: Signal<string>;
   readonly lightbox = signal<{
     src: string;
     type: 'image' | 'video';
@@ -409,6 +411,8 @@ export class AppStore {
     this.branchPathCount = this.branchStore.pathCount;
     this.branchTarget = this.branchStore.target;
     this.branchPrefill = this.branchStore.prefill;
+    this.branchBusy = this.branchStore.busy;
+    this.branchError = this.branchStore.error;
     this.skillStore = new SkillStore(this.services, {
       activeSession: this.activeSession,
       activeSessionId: this.activeSessionId,
@@ -1089,8 +1093,8 @@ export class AppStore {
     focus = '',
     autoSend = '',
     prefill = '',
-  ): Promise<void> {
-    await this.branchStore.branchFrom(messageId, context, focus, autoSend, prefill);
+  ): Promise<boolean> {
+    return this.branchStore.branchFrom(messageId, context, focus, autoSend, prefill);
   }
 
   async refreshDiffComments(sessionId = this.activeSessionId.peek()): Promise<void> {

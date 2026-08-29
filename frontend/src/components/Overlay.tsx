@@ -32,6 +32,7 @@ export function Overlay({
   children,
   wide = false,
   close = true,
+  dismissDisabled = false,
   onClose,
   onEscape,
   className = '',
@@ -41,6 +42,7 @@ export function Overlay({
   children: preact.ComponentChildren;
   wide?: boolean;
   close?: boolean;
+  dismissDisabled?: boolean;
   onClose?: () => void;
   onEscape?: () => void;
   className?: string;
@@ -88,6 +90,7 @@ export function Overlay({
         delete event.currentTarget.dataset.dismissPointer;
         if (
           close &&
+          !dismissDisabled &&
           startedOutside &&
           event.target === event.currentTarget &&
           token.current &&
@@ -116,8 +119,10 @@ export function Overlay({
           ) {
             event.preventDefault();
             event.stopPropagation();
-            if (onEscape) onEscape();
-            else dismiss();
+            if (!dismissDisabled) {
+              if (onEscape) onEscape();
+              else dismiss();
+            }
             return;
           }
           trapOverlayFocus(event);
@@ -126,7 +131,13 @@ export function Overlay({
         <div class="modal-title-row">
           <h2 id={label}>{title}</h2>
           {close && (
-            <button class="icon-btn" type="button" aria-label={`Close ${title}`} onClick={dismiss}>
+            <button
+              class="icon-btn"
+              type="button"
+              aria-label={`Close ${title}`}
+              disabled={dismissDisabled}
+              onClick={dismiss}
+            >
               <Icon name="close" />
             </button>
           )}
