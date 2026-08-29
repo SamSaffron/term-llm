@@ -37,6 +37,97 @@ var fileChangeScopeSpecs = [...]fileChangeScopeSpec{
 	{name: fileChangeScopeStaged},
 }
 
+func fileChangeLanguage(path string) string {
+	name := strings.ToLower(filepath.Base(path))
+	switch name {
+	case "dockerfile", "containerfile":
+		return "dockerfile"
+	case "makefile", "gnumakefile":
+		return "makefile"
+	case "cmakelists.txt":
+		return "cmake"
+	case "jenkinsfile":
+		return "groovy"
+	case "gemfile", "rakefile", "guardfile", "vagrantfile", "podfile", "fastfile":
+		return "ruby"
+	case ".bashrc", ".bash_profile", ".zshrc", ".profile":
+		return "bash"
+	case "nginx.conf":
+		return "nginx"
+	case "apache2.conf", "httpd.conf":
+		return "apache"
+	case ".terraformrc", ".tofurc":
+		return "terraform"
+	case ".gitignore", ".dockerignore", ".prettierignore":
+		return "plaintext"
+	}
+	if strings.HasPrefix(name, "dockerfile.") || strings.HasPrefix(name, "containerfile.") {
+		return "dockerfile"
+	}
+	if strings.HasPrefix(name, "makefile.") || strings.HasPrefix(name, "gnumakefile.") {
+		return "makefile"
+	}
+	if name == ".env" || strings.HasPrefix(name, ".env.") {
+		return "ini"
+	}
+
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(name), "."))
+	switch ext {
+	case "cjs", "mjs", "jsx":
+		return "javascript"
+	case "tsx":
+		return "typescript"
+	case "htm", "html", "xhtml", "svg", "vue", "svelte", "astro":
+		return "xml"
+	case "jsonc", "json5", "webmanifest":
+		return "json"
+	case "bash", "zsh":
+		return "bash"
+	case "kt", "kts":
+		return "kotlin"
+	case "ps1", "psm1", "psd1":
+		return "powershell"
+	case "gql":
+		return "graphql"
+	case "proto":
+		return "protobuf"
+	case "hbs", "mustache", "tmpl":
+		return "handlebars"
+	case "jinja", "jinja2":
+		return "django"
+	case "patch":
+		return "diff"
+	case "toml":
+		return "toml"
+	case "tf", "tfvars", "hcl":
+		return "terraform"
+	case "conf", "service", "timer", "socket", "mount", "target", "path", "slice", "automount", "network", "netdev", "link":
+		return "ini"
+	case "mdx":
+		return "markdown"
+	case "rake":
+		return "ruby"
+	case "mm", "objc":
+		return "objectivec"
+	case "fs", "fsi", "fsx":
+		return "fsharp"
+	case "ex", "exs":
+		return "elixir"
+	case "erl", "hrl":
+		return "erlang"
+	case "hs":
+		return "haskell"
+	case "jl":
+		return "julia"
+	case "coffee":
+		return "coffeescript"
+	case "gitignore", "dockerignore", "mod", "sum":
+		return "plaintext"
+	default:
+		return ext
+	}
+}
+
 func lookupFileChangeScope(value string) (fileChangeScopeSpec, bool) {
 	for _, spec := range fileChangeScopeSpecs {
 		if spec.name == value {
@@ -337,7 +428,7 @@ func (s *serveServer) handleSessionFileChangeDiff(w http.ResponseWriter, r *http
 	writeJSON(w, http.StatusOK, map[string]any{
 		"path":              content.Path,
 		"kind":              content.Kind,
-		"lang":              strings.ToLower(strings.TrimPrefix(filepath.Ext(content.Path), ".")),
+		"lang":              fileChangeLanguage(content.Path),
 		"truncated":         content.Truncated,
 		"content_status":    content.ContentStatus,
 		"content_available": content.ContentAvailable,

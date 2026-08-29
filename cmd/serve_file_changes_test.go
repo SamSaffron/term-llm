@@ -41,6 +41,33 @@ func getSessionPath(t *testing.T, srv *serveServer, path string) (int, map[strin
 	return rr.Code, body
 }
 
+func TestFileChangeLanguage(t *testing.T) {
+	tests := map[string]string{
+		"src/main.tsx":      "typescript",
+		"Dockerfile.dev":    "dockerfile",
+		"Containerfile":     "dockerfile",
+		"Makefile":          "makefile",
+		"CMakeLists.txt":    "cmake",
+		"Jenkinsfile":       "groovy",
+		".env.production":   "ini",
+		"config/nginx.conf": "nginx",
+		"schema.proto":      "protobuf",
+		"query.gql":         "graphql",
+		"Cargo.toml":        "toml",
+		"infra/main.tf":     "terraform",
+		"component.vue":     "xml",
+		"migration.sql":     "sql",
+		"unknown.xyz":       "xyz",
+	}
+	for path, want := range tests {
+		t.Run(path, func(t *testing.T) {
+			if got := fileChangeLanguage(path); got != want {
+				t.Fatalf("fileChangeLanguage(%q) = %q, want %q", path, got, want)
+			}
+		})
+	}
+}
+
 func TestHandleSessionsSelectedSessionSideloadsStartupMetadata(t *testing.T) {
 	ctx := context.Background()
 	sessionStore, err := session.NewStore(session.Config{

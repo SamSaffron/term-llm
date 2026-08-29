@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { highlightDiffLine } from './rich-highlight';
+import { highlight, highlightDiffLine } from './rich-highlight';
 import { decorateRichContent, renderMarkdown, stableMarkdownBoundary } from './markdown';
 import {
   analyzeStreamingMarkdown,
@@ -43,6 +43,74 @@ describe('markdown security and streaming', () => {
   it('highlights CSS diff lines with the registered CSS grammar', () => {
     expect(highlightDiffLine('.header-action:hover {', 'css')).toContain('hljs-selector-class');
     expect(highlightDiffLine('  background: var(--surface);', 'css')).toContain('hljs-attribute');
+  });
+
+  it('registers the curated high-value language set', () => {
+    const languages = [
+      'java',
+      'kotlin',
+      'php',
+      'sql',
+      'swift',
+      'scss',
+      'less',
+      'dockerfile',
+      'makefile',
+      'lua',
+      'powershell',
+      'ini',
+      'properties',
+      'graphql',
+      'protobuf',
+      'dart',
+      'scala',
+      'r',
+      'elixir',
+      'erlang',
+      'haskell',
+      'objectivec',
+      'cmake',
+      'nix',
+      'nginx',
+      'apache',
+      'perl',
+      'clojure',
+      'fsharp',
+      'ocaml',
+      'julia',
+      'matlab',
+      'fortran',
+      'groovy',
+      'gradle',
+      'latex',
+      'handlebars',
+      'django',
+      'twig',
+      'erb',
+      'wasm',
+      'x86asm',
+      'armasm',
+      'verilog',
+      'vhdl',
+      'glsl',
+      'awk',
+      'tcl',
+      'vim',
+      'scheme',
+      'lisp',
+      'prolog',
+      'terraform',
+      'elm',
+      'crystal',
+      'nim',
+      'ada',
+      'vbnet',
+      'coffeescript',
+      'diff',
+    ];
+    expect(languages).toHaveLength(60);
+    expect(languages.filter((language) => !highlight.getLanguage(language))).toEqual([]);
+    expect(highlight.getLanguage('toml')).toBeTruthy();
   });
 
   it('does not expose an unterminated fenced tail as stable markdown', () => {

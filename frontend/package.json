@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@preact/signals": "2.11.1",
+    "@taga3s/highlightjs-terraform": "1.0.7",
     "dompurify": "3.4.14",
     "highlight.js": "11.12.0",
     "katex": "0.18.4",
