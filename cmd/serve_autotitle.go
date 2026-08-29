@@ -139,6 +139,7 @@ func (s *serveServer) runAutoTitle(ctx context.Context, sessionID, providerKey s
 			trySyncRuntimeSessionMetadata(runtime, latest)
 		}
 	}
+	s.publishEvent(serveEventInput{Type: serveEventSessionMetadataChanged, SessionID: sessionID, Reason: "generated_title"})
 }
 
 func serveSessionNeedsAutoTitle(sess *session.Session) bool {

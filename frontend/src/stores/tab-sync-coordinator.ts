@@ -13,6 +13,7 @@ export interface TabSyncHost {
   reconcilePeerChange: () => Promise<void>;
   onPendingIntentStorage: () => void;
   onAgentReadMarkerStorage: () => void;
+  serverEventsEnabled: () => boolean;
 }
 
 /** Owns BroadcastChannel and storage-event synchronization between browser tabs. */
@@ -61,6 +62,7 @@ export class TabSyncCoordinator {
       if (!event) {
         if (
           parsed === null &&
+          !this.host.serverEventsEnabled() &&
           message.data &&
           typeof message.data === 'object' &&
           'v' in (message.data as object)
@@ -69,15 +71,23 @@ export class TabSyncCoordinator {
         return;
       }
       if (event !== 'legacy') {
+        if (event.type === 'draft-changed') {
+          if (event.sessionId === this.host.draftStorageId())
+            this.host.reconcileDraftStorage(event.sessionId);
+          return;
+        }
+        if (event.type === 'review-comment-changed') {
+          this.host.reloadReviewQueue();
+          return;
+        }
+        if (this.host.serverEventsEnabled()) return;
         if (event.revision !== undefined && event.sessionId) {
           const previous = this.peerRevisions.get(event.sessionId) || 0;
           if (previous && event.revision > previous + 1) this.pendingPeerSync = true;
           this.peerRevisions.set(event.sessionId, Math.max(previous, event.revision));
         }
-        if (event.type === 'draft-changed' && event.sessionId === this.host.draftStorageId())
-          this.host.reconcileDraftStorage(event.sessionId);
-        if (event.type === 'review-comment-changed') this.host.reloadReviewQueue();
       }
+      if (this.host.serverEventsEnabled()) return;
       if (!this.host.startupDone.peek()) {
         this.pendingPeerSync = true;
         return;

@@ -13,8 +13,11 @@ func (s *serveServer) streamUIResponses(w http.ResponseWriter, r *http.Request, 
 	// Persist session in the store so the client gets the session number in
 	// headers before the streaming body begins. This is a store-only operation
 	// that does NOT mutate runtime state (safe without rt.mu).
-	if num := runtime.ensureSessionInStore(r.Context(), sessionID, inputMessages); num > 0 {
+	if num, created := runtime.ensureSessionInStore(r.Context(), sessionID, inputMessages); num > 0 {
 		w.Header().Set("x-session-number", strconv.FormatInt(num, 10))
+		if created {
+			s.publishEvent(serveEventInput{Type: serveEventSessionCreated, SessionID: sessionID, OperationID: idempotencyKey})
+		}
 	}
 
 	s.streamResponseRun(r.Context(), w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, startResponseRunOptions{

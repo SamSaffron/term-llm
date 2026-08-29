@@ -165,6 +165,7 @@ type responseRun struct {
 	nextSubscriberID      int
 	terminalNotifyOnce    sync.Once
 	terminalNotify        func(string)
+	coarseEvent           func(string, map[string]any)
 	cancel                context.CancelFunc
 	cancelRequested       bool
 }
@@ -731,6 +732,9 @@ func (r *responseRun) appendEventLocked(event string, payload map[string]any, te
 		Event:    event,
 		Data:     data,
 	}, terminal)
+	if r.coarseEvent != nil {
+		r.coarseEvent(event, payload)
+	}
 	if terminal && r.terminalNotify != nil && (event == "response.completed" || event == "response.failed") {
 		outcome := "completed"
 		if event == "response.failed" {
@@ -3220,6 +3224,9 @@ func latestResponseRunDurableBoundary(items []session.TranscriptIndexItem) int64
 func (s *serveServer) configureResponseRunRevision(run *responseRun, sessionID string) {
 	if run == nil {
 		return
+	}
+	run.coarseEvent = func(event string, payload map[string]any) {
+		s.publishResponseRunEvent(run, event, payload)
 	}
 	startedCtx, startedCancel := context.WithTimeout(context.Background(), responseRunRevisionReadTimeout)
 	configured := false

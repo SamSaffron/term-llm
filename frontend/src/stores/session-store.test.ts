@@ -185,6 +185,33 @@ describe('SessionStore', () => {
     }
   });
 
+  it('preserves catalog identity when an authoritative sidebar is unchanged', () => {
+    const store = new AppStore(testConfig);
+    try {
+      const payload = {
+        sessions: [
+          {
+            id: 's1',
+            short_title: 'Stable',
+            created_at: 1,
+            last_message_at: 2,
+            message_count: 3,
+          },
+        ],
+      };
+      store.sessionStore.applySidebar(payload);
+      const sessions = store.sessions.value;
+      const session = sessions[0];
+
+      store.sessionStore.applySidebar(payload);
+
+      expect(store.sessions.value).toBe(sessions);
+      expect(store.sessions.value[0]).toBe(session);
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('clears selection on archive and leaves it cleared through the next sidebar refresh', async () => {
     const store = new AppStore(testConfig);
     try {

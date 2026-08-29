@@ -399,6 +399,10 @@ func (s *serveServer) handleCreateSessionBranch(w http.ResponseWriter, r *http.R
 	case result.Session == nil:
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to create conversation branch")
 	default:
+		if !result.Reused {
+			s.publishEvent(serveEventInput{Type: serveEventSessionCreated, SessionID: result.Session.ID, ParentSessionID: sourceSessionID, Reason: "branch"})
+			s.publishEvent(serveEventInput{Type: serveEventChildrenChanged, SessionID: result.Session.ID, ParentSessionID: sourceSessionID, Reason: "branch_created"})
+		}
 		writeJSON(w, http.StatusCreated, createSessionBranchResponse{
 			Session:               s.webSessionEntryFromSession(result.Session),
 			ParentSessionID:       sourceSessionID,
@@ -525,6 +529,7 @@ func (s *serveServer) handleSessionPathNotes(w http.ResponseWriter, r *http.Requ
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to save branch context")
 			return
 		}
+		s.publishEvent(serveEventInput{Type: serveEventSessionTranscriptChanged, SessionID: childSessionID, ParentSessionID: edge.ParentSessionID, Reason: "branch_path_note"})
 	}
 	writeJSON(w, http.StatusOK, prepareSessionPathNotesResponse{Ready: true, Limited: snapshot.limited, Message: limitedMessage})
 }

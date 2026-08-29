@@ -372,6 +372,8 @@ func (s *serveServer) handleWorktreeSwitch(w http.ResponseWriter, r *http.Reques
 		s.configureRuntimeSkillsForDirLocked(rt, targetDir)
 	}
 	release()
+	s.publishEvent(serveEventInput{Type: serveEventSessionMetadataChanged, SessionID: sessionID, ProjectID: sess.ProjectID, Reason: "worktree"})
+	s.publishEvent(serveEventInput{Type: serveEventFilesChanged, SessionID: sessionID, ProjectID: sess.ProjectID, Reason: "worktree"})
 	writeJSON(w, http.StatusOK, map[string]any{"session": persisted, "worktree_dir": worktreeDir, "cwd": targetDir})
 }
 

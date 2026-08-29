@@ -778,6 +778,7 @@ func (s *serveServer) startServeIsolatedSkill(w http.ResponseWriter, r *http.Req
 	}
 	s.persistServeSkillActivationEvent(sess.ID, display, activation, "running", runID, childSessionID)
 	run.appendEvent("skill_run.created", map[string]any{"run_id": runID, "skill": activation.Skill.Name, "agent": activation.Metadata.Agent, "child_session_id": childSessionID})
+	s.publishEvent(serveEventInput{Type: serveEventChildrenChanged, SessionID: childSessionID, ParentSessionID: sess.ID, Reason: "skill_started"})
 
 	baseDir := strings.TrimSpace(sess.WorktreeDir)
 	if baseDir == "" {
@@ -813,6 +814,11 @@ func (s *serveServer) startServeIsolatedSkill(w http.ResponseWriter, r *http.Req
 		persistCtx, cancelPersist := s.contextWithShutdown(context.Background())
 		s.persistServeSkillRunResultAtBoundary(persistCtx, run, runErr)
 		cancelPersist()
+		reason := "skill_completed"
+		if runErr != nil {
+			reason = "skill_failed"
+		}
+		s.publishEvent(serveEventInput{Type: serveEventChildrenChanged, SessionID: childSessionID, ParentSessionID: sess.ID, Reason: reason})
 		s.scheduleServeSkillRunCleanup(run)
 	}()
 

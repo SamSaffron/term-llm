@@ -11,23 +11,32 @@ import {
   sessionFrom as sanitizeSessionFrom,
 } from './store-utils';
 
-function sidebarValuesEqual(left: unknown, right: unknown): boolean {
+function semanticEqual(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right))
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => semanticEqual(value, right[index]))
+    );
   if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
-  if (Array.isArray(left) || Array.isArray(right)) {
-    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
-    return left.every((value, index) => sidebarValuesEqual(value, right[index]));
-  }
   const leftPrototype = Object.getPrototypeOf(left);
   if (leftPrototype !== Object.getPrototypeOf(right)) return false;
   if (leftPrototype !== Object.prototype && leftPrototype !== null) return false;
   const leftRecord = left as Record<string, unknown>;
   const rightRecord = right as Record<string, unknown>;
-  const keys = new Set([...Object.keys(leftRecord), ...Object.keys(rightRecord)]);
-  return [...keys].every((key) => sidebarValuesEqual(leftRecord[key], rightRecord[key]));
+  const leftKeys = Object.keys(leftRecord).filter((key) => leftRecord[key] !== undefined);
+  const rightKeys = Object.keys(rightRecord).filter((key) => rightRecord[key] !== undefined);
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key) => Object.hasOwn(rightRecord, key) && semanticEqual(leftRecord[key], rightRecord[key]),
+    )
+  );
 }
 
-function sameReferences<T>(left: T[], right: T[]): boolean {
+function sameIdentityList<T>(left: T[], right: T[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
@@ -99,7 +108,7 @@ export class SessionStore {
   }
 
   replace(sessions: Session[]): void {
-    this.sessions.value = sessions;
+    if (!sameIdentityList(this.sessions.peek(), sessions)) this.sessions.value = sessions;
   }
 
   prepend(session: Session): void {
@@ -218,31 +227,29 @@ export class SessionStore {
       projects.push(project);
     }
     const incoming = [...ungrouped, ...projects.flatMap((project) => project.sessions || [])];
-    const previousSessions = this.sessions.peek();
-    const existing = new Map(previousSessions.map((session) => [session.id, session]));
+    const existing = new Map(this.sessions.peek().map((session) => [session.id, session]));
     const merged = new Map(
       incoming.map((session) => {
         const previous = existing.get(session.id);
-        const next = this.mergeSession(previous, session, false, true);
-        return [session.id, previous && sidebarValuesEqual(previous, next) ? previous : next];
+        const candidate = this.mergeSession(previous, session, false, true);
+        return [session.id, previous && semanticEqual(previous, candidate) ? previous : candidate];
       }),
     );
     for (const [id, session] of existing)
       if (!merged.has(id) && this.retainedLocally(id)) merged.set(id, session);
     const nextSessions = [...merged.values()].sort(compareSessionsByActivity);
-    if (!sameReferences(previousSessions, nextSessions)) this.sessions.value = nextSessions;
+    if (!sameIdentityList(this.sessions.peek(), nextSessions)) this.sessions.value = nextSessions;
 
-    const previousProjects = this.projects.peek();
-    const projectsByID = new Map(previousProjects.map((project) => [project.id, project]));
+    const existingProjects = new Map(this.projects.peek().map((project) => [project.id, project]));
     const nextProjects = projects.map((project) => {
-      const next = {
+      const candidate = {
         ...project,
         sessions: project.sessions?.map((summary) => merged.get(summary.id) || summary),
       };
-      const previous = projectsByID.get(project.id);
-      return previous && sidebarValuesEqual(previous, next) ? previous : next;
+      const previous = existingProjects.get(project.id);
+      return previous && semanticEqual(previous, candidate) ? previous : candidate;
     });
-    if (!sameReferences(previousProjects, nextProjects)) this.projects.value = nextProjects;
+    if (!sameIdentityList(this.projects.peek(), nextProjects)) this.projects.value = nextProjects;
     this.lastSidebarRefreshAt = Date.now();
   }
 

@@ -1265,6 +1265,11 @@ type serveServer struct {
 	branchPathNoteFlights    sync.Map // source/idempotency key → shared path-note helper result
 	responseRunsOnce         sync.Once
 	responseRuns             *responseRunManager
+	eventBrokerMu            sync.Mutex
+	eventBroker              *serveEventBroker
+	eventWatcherMu           sync.Mutex
+	eventWatcherCancel       context.CancelFunc
+	eventWatcherWG           sync.WaitGroup
 	completionPushWake       chan struct{}
 	completionPushWG         sync.WaitGroup
 	transcriptIndexerOnce    sync.Once
@@ -1335,6 +1340,7 @@ func (s *serveServer) Start() error {
 	s.skillRunsMu.Lock()
 	s.skillRunsStopping = false
 	s.skillRunsMu.Unlock()
+	s.resetEventBroker()
 	s.skillsCacheMu.Lock()
 	s.skillsByDir = nil
 	s.skillsCacheMu.Unlock()
@@ -1370,6 +1376,7 @@ func (s *serveServer) Start() error {
 		}
 		return nil
 	case <-time.After(50 * time.Millisecond):
+		s.startEventWatcher()
 		s.startCompletionPushDispatcher()
 		return nil
 	}
@@ -1411,6 +1418,8 @@ func (s *serveServer) httpHandler() http.Handler {
 	inner.HandleFunc("/v1/projects", s.auth(s.cors(s.handleProjects)))
 	inner.HandleFunc("/v1/projects/", s.auth(s.cors(s.handleProjectByID)))
 	inner.HandleFunc("/v1/sidebar", s.auth(s.cors(s.handleSidebar)))
+	inner.HandleFunc("/v1/events", s.auth(s.cors(s.handleEvents)))
+	inner.HandleFunc("/v1/events/poll", s.auth(s.cors(s.handleEventPoll)))
 	inner.HandleFunc("/v1/sessions/status", s.auth(s.cors(s.handleSessionsStatus)))
 	inner.HandleFunc("/v1/sessions/search", s.auth(s.cors(s.handleSessionsSearch)))
 	inner.HandleFunc("/v1/worktrees/diff", s.auth(s.cors(s.handleWorktreeDiff)))
@@ -1483,6 +1492,8 @@ func (s *serveServer) Stop(ctx context.Context) error {
 			close(s.shutdownCh)
 		}
 	})
+	s.stopEventWatcher()
+	s.closeEventBroker()
 	if s.server == nil {
 		s.stopAutoTitles()
 		return s.stopServeSkillRuns(ctx)

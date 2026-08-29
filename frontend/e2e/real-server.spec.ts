@@ -40,6 +40,11 @@ test('crosses the real browser-to-Go capability and validation boundary', async 
   expect(result.capabilityStatus).toBe(200);
   expect(result.capabilityBody.attachments.max_count).toBe(10);
   expect(result.capabilityBody.attachments.max_bytes).toBe(20 * 1024 * 1024);
+  expect(result.capabilityBody.event_feed).toMatchObject({
+    version: 1,
+    sse: true,
+    long_poll: true,
+  });
   expect(result.invalidStatus).toBe(400);
   expect(JSON.stringify(result.invalidBody)).toContain('unsupported attachment type');
 });

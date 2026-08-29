@@ -381,6 +381,10 @@ func (s *serveServer) handleCapabilities(w http.ResponseWriter, r *http.Request)
 	payload := map[string]any{
 		"projects":  map[string]bool{"enabled": s.projectsEnabled},
 		"worktrees": map[string]bool{"enabled": worktreesEnabled},
+		"event_feed": map[string]any{
+			"version": 1, "sse": true, "long_poll": true,
+			"heartbeat_ms": serveEventHeartbeat.Milliseconds(), "replay_limit": serveEventReplayLimit,
+		},
 		"attachments": map[string]any{
 			"max_count":  maxAttachments,
 			"max_bytes":  maxAttachmentBytes,
@@ -704,6 +708,14 @@ func (s *serveServer) handleProjects(w http.ResponseWriter, r *http.Request) {
 		api := projectStatus(*p)
 		response.Project = &api
 		response.Restored = wasArchived
+		eventType := serveEventProjectCreated
+		if wasArchived {
+			eventType = serveEventProjectUpdated
+		}
+		s.publishEvent(serveEventInput{Type: eventType, ProjectID: p.ID, Reason: map[bool]string{true: "restored", false: "created"}[wasArchived]})
+		if claimed > 0 {
+			s.publishEvent(serveEventInput{Type: serveEventProjectMembershipChanged, ProjectID: p.ID, Reason: "matching_sessions_claimed"})
+		}
 		log.Printf("[serve] project %s: id=%s path=%s claimed=%d", map[bool]string{true: "restored", false: "created"}[wasArchived], p.ID, p.CanonicalDir, claimed)
 		writeJSON(w, http.StatusCreated, response)
 	default:
@@ -782,6 +794,10 @@ func (s *serveServer) handleProjectByID(w http.ResponseWriter, r *http.Request) 
 			if err != nil {
 				log.Printf("[serve] reconcile project history after restore: id=%s: %v", updated.ID, err)
 			}
+		}
+		s.publishEvent(serveEventInput{Type: serveEventProjectUpdated, ProjectID: updated.ID, Reason: action})
+		if claimed > 0 {
+			s.publishEvent(serveEventInput{Type: serveEventProjectMembershipChanged, ProjectID: updated.ID, Reason: "matching_sessions_claimed"})
 		}
 		log.Printf("[serve] project %s: id=%s path=%s claimed=%d", action, updated.ID, updated.CanonicalDir, claimed)
 		writeJSON(w, http.StatusOK, projectStatus(*updated))
@@ -1021,6 +1037,7 @@ func (s *serveServer) handleSessionProjectAssignment(w http.ResponseWriter, r *h
 			log.Printf("[serve] project history reconciled after assignment: id=%s claimed=%d", project.ID, claimed)
 		}
 	}
+	s.publishEvent(serveEventInput{Type: serveEventProjectMembershipChanged, ProjectID: project.ID, SessionID: sessionID, Reason: "assigned"})
 	writeJSON(w, http.StatusOK, sessionProjectAssignmentResponse{
 		Session:                   persisted,
 		AssignedConversationCount: assignedCount,

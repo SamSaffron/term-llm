@@ -26,10 +26,11 @@ import {
   type StorageKeys,
 } from '../platform/storage';
 import { sessionIDFromLocation } from '../platform/routing';
+import { eventFeedCapability } from '../platform/server-events';
 import { NotificationController, type NotificationState } from '../platform/notifications';
 import { type TabEventType } from '../platform/tab-sync';
 import type { StreamSupervisor } from './stream-supervisor';
-import { AppStoreServices } from './app-store-services';
+import { AppStoreServices, type StoreDiagnostics } from './app-store-services';
 import { RuntimeStore } from './runtime-store';
 import { InteractionStore } from './interaction-store';
 import { SideQuestionStore } from './side-question-store';
@@ -41,6 +42,7 @@ import { BranchStore } from './branch-store';
 import { WidgetStore } from './widget-store';
 import { ReviewStore } from './review-store';
 import { TabSyncCoordinator } from './tab-sync-coordinator';
+import { ServerEventCoordinator } from './server-event-coordinator';
 import { ComposerStore } from './composer-store';
 import { SessionStore } from './session-store';
 import { SkillStore } from './skill-store';
@@ -84,6 +86,7 @@ export class AppStore {
   readonly widgetStore: WidgetStore;
   readonly reviewStore: ReviewStore;
   readonly tabSyncCoordinator: TabSyncCoordinator;
+  readonly serverEventCoordinator: ServerEventCoordinator;
   readonly composer: ComposerStore;
   readonly sessionStore: SessionStore;
   readonly skillStore: SkillStore;
@@ -185,16 +188,7 @@ export class AppStore {
   readonly renameTarget: Signal<Session | null>;
   readonly projectTarget: Signal<Session | null>;
   readonly networkState: Signal<'unknown' | 'online' | 'offline' | 'retrying'>;
-  readonly diagnostics: Signal<{
-    staleStatusResults: number;
-    staleStreamCallbacks: number;
-    supervisorRetries: number;
-    supervisorRecoveries: number;
-    streamWatchdogTimeouts: number;
-    queueValidationFailures: number;
-    interactionReconciliations: number;
-    storageFailures: number;
-  }>;
+  readonly diagnostics: Signal<StoreDiagnostics>;
   readonly fileChangeRevision: Signal<number>;
   readonly currentActivityFile: Signal<string>;
   readonly pendingIntents: Signal<PendingIntentRegistry>;
@@ -208,7 +202,8 @@ export class AppStore {
   private lifecycleInstalled = false;
   private readonly lifecycleAbort = new AbortController();
   private disposed = false;
-  private recoverPromise: Promise<void> | null = null;
+  private recoveryPromise: Promise<void> | null = null;
+  private serverEventFeedEnabled = false;
   private readonly locallyStoppedResponses: Set<string>;
 
   private get selectionEpoch(): number {
@@ -468,6 +463,8 @@ export class AppStore {
         this.childRunStore.reloadReadMarkers();
         void this.loadChildRuns();
       },
+      serverEventsEnabled: () =>
+        this.serverEventFeedEnabled && this.serverEventCoordinator?.mode !== 'unsupported',
     });
     this.statusReconciler = new StatusReconciler(this.services, {
       activeSessionId: this.activeSessionId,
@@ -492,6 +489,24 @@ export class AppStore {
       clearLocallyStopped: (responseId) => {
         this.locallyStoppedResponses.delete(responseId);
       },
+      eventFeedHealthy: () => this.serverEventCoordinator?.isHealthy() || false,
+    });
+    this.serverEventCoordinator = new ServerEventCoordinator(this.services, {
+      startupDone: this.startupDone,
+      activeSessionId: this.activeSessionId,
+      reconcileCatalog: () => this.refreshSidebar(false),
+      reconcileStatus: () => this.refreshStatus(true),
+      reconcileActiveSession: (reason, revision) =>
+        this.reconcileServerEventActive(reason, revision),
+      reconcileChildren: async (parentId) => {
+        if (this.activeSessionId.peek() === parentId) await this.loadChildRuns(parentId);
+      },
+      reconcileFiles: async (sessionId) => {
+        if (this.diff.peek().open && this.diff.peek().sessionId === sessionId)
+          await this.reviewStore.loadDiff();
+      },
+      authoritativeRecovery: (reason) => this.authoritativeRecovery(reason),
+      eventFeedHealthChanged: () => this.startStatusPoll(),
     });
   }
 
@@ -501,6 +516,8 @@ export class AppStore {
     try {
       const capabilities = await this.endpoints.capabilities().catch(() => ({}));
       this.applyCapabilities(capabilities);
+      this.serverEventFeedEnabled = eventFeedCapability(capabilities);
+      if (this.serverEventFeedEnabled) await this.serverEventCoordinator.prepare();
       const [providers, sidebar] = await Promise.all([
         this.endpoints.providers(),
         this.projectsEnabled.value
@@ -529,9 +546,11 @@ export class AppStore {
             null;
       if (session) await this.selectSession(session, true);
       else this.newChat(true, this.storage.getItem(this.keys.lastProject) || '', false);
+      this.serverEventCoordinator.updateInterest(this.activeSessionId.peek());
       this.connected.value = true;
       this.networkState.value = 'online';
       this.startupDone.value = true;
+      this.serverEventCoordinator.flushBuffered();
       this.startStatusPoll();
       this.tabSyncCoordinator.flushPending();
       void this.refreshHubAgents();
@@ -563,9 +582,14 @@ export class AppStore {
       },
       { signal: this.lifecycleAbort.signal },
     );
-    addEventListener('online', () => void this.reconcile('online', { authoritative: true }), {
-      signal: this.lifecycleAbort.signal,
-    });
+    addEventListener(
+      'online',
+      () => {
+        this.serverEventCoordinator.restart();
+        void this.reconcile('online', { authoritative: true });
+      },
+      { signal: this.lifecycleAbort.signal },
+    );
     addEventListener(
       'offline',
       () => {
@@ -583,6 +607,7 @@ export class AppStore {
       'pageshow',
       (event) => {
         this.ensureSessionSyncChannel();
+        this.serverEventCoordinator.restart();
         if (this.startupDone.value || (event as PageTransitionEvent).persisted)
           void this.reconcile('pageshow', { authoritative: true });
       },
@@ -591,6 +616,7 @@ export class AppStore {
     addEventListener(
       'focus',
       () => {
+        this.serverEventCoordinator.restart();
         void this.reconcile('focus', { authoritative: true });
         void this.refreshHubAgents();
       },
@@ -611,6 +637,7 @@ export class AppStore {
       'visibilitychange',
       () => {
         if (document.visibilityState === 'visible') {
+          this.serverEventCoordinator.restart();
           void this.reconcile('visibility', { authoritative: true });
           void this.refreshHubAgents();
         }
@@ -625,13 +652,13 @@ export class AppStore {
     this.tabSyncCoordinator.ensureChannel();
   }
 
-  private recover(): Promise<void> {
-    if (this.recoverPromise) return this.recoverPromise;
-    const request = this.reconcile('recovery', { authoritative: true });
+  private authoritativeRecovery(reason: string): Promise<void> {
+    if (this.recoveryPromise) return this.recoveryPromise;
+    const request = this.reconcile(reason, { authoritative: true });
     const tracked = request.finally(() => {
-      if (this.recoverPromise === tracked) this.recoverPromise = null;
+      if (this.recoveryPromise === tracked) this.recoveryPromise = null;
     });
-    this.recoverPromise = tracked;
+    this.recoveryPromise = tracked;
     return tracked;
   }
 
@@ -745,11 +772,14 @@ export class AppStore {
     revision = this.sessions.peek().find((entry) => entry.id === sessionId)?.transcriptRev,
     operationId?: string,
   ): void {
+    if (
+      this.serverEventFeedEnabled &&
+      this.serverEventCoordinator.mode !== 'unsupported' &&
+      type !== 'draft-changed' &&
+      type !== 'review-comment-changed'
+    )
+      return;
     this.tabSyncCoordinator.publish(type, sessionId, responseId, revision, operationId);
-  }
-
-  private queuePeerSessionChange(): void {
-    this.tabSyncCoordinator.queuePeerChange();
   }
 
   private async reconcilePeerSessionChange(): Promise<void> {
@@ -762,12 +792,31 @@ export class AppStore {
       this.reconcilePendingInterjections(sessionId, state, interjectionRevision);
   }
 
+  private async reconcileServerEventActive(reason: string, revision?: number): Promise<void> {
+    const sessionId = this.activeSessionId.peek();
+    if (!sessionId) return;
+    const currentRevision =
+      this.sessions.peek().find((session) => session.id === sessionId)?.transcriptRev || 0;
+    if (revision && revision > currentRevision)
+      await this.refreshSessionMessages(sessionId, revision).catch(() => undefined);
+    if (this.activeSessionId.peek() !== sessionId) return;
+    await this.loadSession(sessionId).catch(() => undefined);
+    if (
+      reason.includes('interaction') ||
+      reason.includes('ask_user') ||
+      reason.includes('approval')
+    )
+      await this.loadChildRuns(sessionId).catch(() => undefined);
+  }
+
   async selectSession(session: Session, replace = false): Promise<void> {
     await this.selectionStore.selectSession(session, replace);
+    this.serverEventCoordinator.updateInterest(this.activeSessionId.peek());
   }
 
   newChat(replace = false, projectId?: string, persistCurrent = true): void {
     this.selectionStore.newChat(replace, projectId, persistCurrent);
+    this.serverEventCoordinator.updateInterest('');
   }
 
   composerOwnerKey(): string {
@@ -1237,15 +1286,8 @@ export class AppStore {
     this.runEngine.dispose();
     this.composer.dispose();
     this.tabSyncCoordinator.dispose();
+    this.serverEventCoordinator.dispose();
     this.services.dispose();
-  }
-
-  private schedule(callback: () => void, delay: number): number {
-    return this.services.schedule(callback, delay);
-  }
-
-  private bumpDiagnostic(key: keyof ReturnType<typeof this.diagnostics.peek>): void {
-    this.services.bumpDiagnostic(key);
   }
 
   toast(value: unknown, kind: Toast['kind'] = 'info'): void {

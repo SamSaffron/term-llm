@@ -18,6 +18,14 @@ export interface StoreDiagnostics {
   queueValidationFailures: number;
   interactionReconciliations: number;
   storageFailures: number;
+  serverEventSSEConnections: number;
+  serverEventPollFallbacks: number;
+  serverEventReconnects: number;
+  serverEventCursorResets: number;
+  serverEventSequenceGaps: number;
+  serverEventMalformed: number;
+  serverEventNoopBatches: number;
+  serverEventSSEJams: number;
 }
 
 /**
@@ -40,6 +48,14 @@ export class AppStoreServices {
     queueValidationFailures: 0,
     interactionReconciliations: 0,
     storageFailures: 0,
+    serverEventSSEConnections: 0,
+    serverEventPollFallbacks: 0,
+    serverEventReconnects: 0,
+    serverEventCursorResets: 0,
+    serverEventSequenceGaps: 0,
+    serverEventMalformed: 0,
+    serverEventNoopBatches: 0,
+    serverEventSSEJams: 0,
   });
   readonly notifications = signal<NotificationState>({
     status: 'unsupported',

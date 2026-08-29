@@ -2428,6 +2428,7 @@ func (s *serveServer) handleSessionRuntimeGoal(w http.ResponseWriter, r *http.Re
 			}
 		}
 	}
+	s.publishEvent(serveEventInput{Type: serveEventSessionRuntimeChanged, SessionID: sessionID, Reason: "goal"})
 	writeJSON(w, http.StatusOK, map[string]any{"goal": goal})
 }
 
@@ -2481,6 +2482,7 @@ func (s *serveServer) handleSessionRuntimeEffort(w http.ResponseWriter, r *http.
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
 		return
 	}
+	s.publishEvent(serveEventInput{Type: serveEventSessionRuntimeChanged, SessionID: sessionID, Reason: "effort"})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":           "queued",
 		"model":            model,
@@ -2505,6 +2507,7 @@ func (s *serveServer) handleSessionInterjectionCancel(w http.ResponseWriter, r *
 				writeOpenAIError(w, http.StatusConflict, "conflict_error", "interjection is not queued or has already been committed")
 				return
 			}
+			s.publishEvent(serveEventInput{Type: serveEventSessionRuntimeChanged, SessionID: sessionID, Reason: "interjection_cancelled"})
 			writeJSON(w, http.StatusOK, map[string]any{"cancelled": true, "interjection_id": interjectionID})
 			return
 		}
@@ -2534,6 +2537,7 @@ func (s *serveServer) handleSessionInterjectionCancel(w http.ResponseWriter, r *
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", "interjection is not queued or has already been committed")
 		return
 	}
+	s.publishEvent(serveEventInput{Type: serveEventSessionRuntimeChanged, SessionID: sessionID, Reason: "interjection_cancelled"})
 	writeJSON(w, http.StatusOK, map[string]any{"cancelled": true, "interjection_id": interjectionID})
 }
 
@@ -2579,6 +2583,8 @@ func (s *serveServer) handleSessionTitleRefine(w http.ResponseWriter, r *http.Re
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
 		return
 	}
+	previousTitle := sess.PreferredShortTitle()
+	previousLongTitle := sess.PreferredLongTitle()
 
 	messages, err := s.store.GetMessages(r.Context(), sess.ID, 80, 0)
 	if err != nil {
@@ -2619,6 +2625,9 @@ func (s *serveServer) handleSessionTitleRefine(w http.ResponseWriter, r *http.Re
 			if rt, ok := s.sessionMgr.Get(sessionID); ok {
 				trySyncRuntimeSessionMetadata(rt, sess)
 			}
+		}
+		if previousTitle != sess.PreferredShortTitle() || previousLongTitle != sess.PreferredLongTitle() {
+			s.publishEvent(serveEventInput{Type: serveEventSessionMetadataChanged, SessionID: sessionID, Reason: "refined_title"})
 		}
 	}
 
@@ -2699,6 +2708,11 @@ func (s *serveServer) handleSessionMetadataPatch(w http.ResponseWriter, r *http.
 		return
 	}
 
+	beforeName := sess.Name
+	beforeShort := sess.GeneratedShortTitle
+	beforeLong := sess.GeneratedLongTitle
+	beforeArchived := sess.Archived
+	beforePinned := sess.Pinned
 	if req.Name != nil {
 		sess.Name = strings.TrimSpace(*req.Name)
 	}
@@ -2729,6 +2743,9 @@ func (s *serveServer) handleSessionMetadataPatch(w http.ResponseWriter, r *http.
 		if rt, ok := s.sessionMgr.Get(sessionID); ok {
 			trySyncRuntimeSessionMetadata(rt, sess)
 		}
+	}
+	if beforeName != sess.Name || beforeShort != sess.GeneratedShortTitle || beforeLong != sess.GeneratedLongTitle || beforeArchived != sess.Archived || beforePinned != sess.Pinned {
+		s.publishEvent(serveEventInput{Type: serveEventSessionMetadataChanged, SessionID: sessionID, Reason: "metadata"})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -2821,7 +2838,7 @@ func (s *serveServer) cors(next http.HandlerFunc) http.HandlerFunc {
 				w.Header().Add("Vary", "Origin")
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Term-LLM-Session-ID, X-Term-LLM-Draft-ID, X-Term-LLM-Push-Subscription-ID, session_id, Idempotency-Key, X-Idempotency-Key, X-Term-LLM-Request-ID, X-Term-LLM-UI-Version, X-API-Key, anthropic-version")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Last-Event-ID, X-Term-LLM-Session-ID, X-Term-LLM-Draft-ID, X-Term-LLM-Push-Subscription-ID, session_id, Idempotency-Key, X-Idempotency-Key, X-Term-LLM-Request-ID, X-Term-LLM-UI-Version, X-API-Key, anthropic-version")
 			w.Header().Set("Access-Control-Expose-Headers", "x-session-id, x-session-number, x-response-id, x-branch-anchor-id, x-term-llm-ui-version")
 		}
 

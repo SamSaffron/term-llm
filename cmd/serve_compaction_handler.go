@@ -45,6 +45,7 @@ func (s *serveServer) handleSessionRuntimeCompact(w http.ResponseWriter, r *http
 		}
 		return
 	}
+	s.publishEvent(serveEventInput{Type: serveEventSessionTranscriptChanged, SessionID: sessionID, Reason: "compaction"})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                 true,
 		"original_messages":  result.OriginalCount,

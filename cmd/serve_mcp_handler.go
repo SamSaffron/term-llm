@@ -675,5 +675,6 @@ func (s *serveServer) handleSessionMCP(w http.ResponseWriter, r *http.Request, s
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
 	}
+	s.publishEvent(serveEventInput{Type: serveEventSessionRuntimeChanged, SessionID: sessionID, Reason: "mcp"})
 	writeJSON(w, http.StatusOK, rt.mcpStateLocked())
 }

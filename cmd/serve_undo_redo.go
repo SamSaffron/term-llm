@@ -131,6 +131,7 @@ func (s *serveServer) handleSessionUndoRedo(w http.ResponseWriter, r *http.Reque
 			s.responseToSession.Delete(responseID)
 		}
 	}
+	s.publishEvent(serveEventInput{Type: serveEventSessionTranscriptChanged, SessionID: sessionID, TranscriptRev: result.Rev, Reason: operation})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                  true,
 		"operation":           operation,

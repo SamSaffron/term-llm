@@ -58,6 +58,7 @@ type SQLiteStore struct {
 var _ MessageSequenceStore = (*SQLiteStore)(nil)
 var _ ConversationBranchStore = (*SQLiteStore)(nil)
 var _ ConversationBranchReplayStore = (*SQLiteStore)(nil)
+var _ StoreChangeStore = (*SQLiteStore)(nil)
 
 // Schema for the sessions database.
 const schema = `
@@ -285,7 +286,95 @@ CREATE INDEX IF NOT EXISTS idx_sessions_project_activity
     ON sessions(project_id, pinned DESC, last_message_at DESC, number DESC);
 `
 
-const canonicalSessionSchema = schema + projectsSchemaV47
+const changeLogSchemaV52 = `
+CREATE TABLE IF NOT EXISTS session_change_log (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT '',
+    project_id TEXT NOT NULL DEFAULT '',
+    transcript_rev INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TRIGGER IF NOT EXISTS session_change_log_session_insert
+AFTER INSERT ON sessions BEGIN
+    INSERT INTO session_change_log(kind, session_id, project_id, transcript_rev, status)
+    VALUES ('session.created', NEW.id, COALESCE(NEW.project_id, ''), COALESCE(NEW.transcript_rev, 0), COALESCE(NEW.status, ''));
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_change_log_session_delete
+AFTER DELETE ON sessions BEGIN
+    INSERT INTO session_change_log(kind, session_id, project_id, transcript_rev, status)
+    VALUES ('session.deleted', OLD.id, COALESCE(OLD.project_id, ''), COALESCE(OLD.transcript_rev, 0), COALESCE(OLD.status, ''));
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_change_log_session_metadata
+AFTER UPDATE OF name, generated_short_title, generated_long_title, provider_key, model, cwd, worktree_dir, archived, pinned ON sessions
+WHEN OLD.name IS NOT NEW.name
+  OR OLD.generated_short_title IS NOT NEW.generated_short_title
+  OR OLD.generated_long_title IS NOT NEW.generated_long_title
+  OR OLD.provider_key IS NOT NEW.provider_key
+  OR OLD.model IS NOT NEW.model
+  OR OLD.cwd IS NOT NEW.cwd
+  OR OLD.worktree_dir IS NOT NEW.worktree_dir
+  OR OLD.archived IS NOT NEW.archived
+  OR OLD.pinned IS NOT NEW.pinned
+BEGIN
+    INSERT INTO session_change_log(kind, session_id, project_id, transcript_rev, status)
+    VALUES ('session.metadata_changed', NEW.id, COALESCE(NEW.project_id, ''), COALESCE(NEW.transcript_rev, 0), COALESCE(NEW.status, ''));
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_change_log_session_project
+AFTER UPDATE OF project_id ON sessions
+WHEN OLD.project_id IS NOT NEW.project_id
+BEGIN
+    INSERT INTO session_change_log(kind, session_id, project_id, transcript_rev, status)
+    VALUES ('project.membership_changed', NEW.id, COALESCE(NEW.project_id, ''), COALESCE(NEW.transcript_rev, 0), COALESCE(NEW.status, ''));
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_change_log_session_transcript
+AFTER UPDATE OF transcript_rev ON sessions
+WHEN OLD.transcript_rev IS NOT NEW.transcript_rev
+BEGIN
+    INSERT INTO session_change_log(kind, session_id, project_id, transcript_rev, status)
+    VALUES ('session.transcript_changed', NEW.id, COALESCE(NEW.project_id, ''), COALESCE(NEW.transcript_rev, 0), COALESCE(NEW.status, ''));
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_change_log_session_status
+AFTER UPDATE OF status ON sessions
+WHEN OLD.status IS NOT NEW.status
+BEGIN
+    INSERT INTO session_change_log(kind, session_id, project_id, transcript_rev, status)
+    VALUES ('session.status_changed', NEW.id, COALESCE(NEW.project_id, ''), COALESCE(NEW.transcript_rev, 0), COALESCE(NEW.status, ''));
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_change_log_project_insert
+AFTER INSERT ON projects BEGIN
+    INSERT INTO session_change_log(kind, project_id) VALUES ('project.created', NEW.id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_change_log_project_update
+AFTER UPDATE OF name, canonical_dir, archived_at ON projects
+WHEN OLD.name IS NOT NEW.name OR OLD.canonical_dir IS NOT NEW.canonical_dir OR OLD.archived_at IS NOT NEW.archived_at
+BEGIN
+    INSERT INTO session_change_log(kind, project_id) VALUES ('project.updated', NEW.id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_change_log_project_delete
+AFTER DELETE ON projects BEGIN
+    INSERT INTO session_change_log(kind, project_id) VALUES ('project.deleted', OLD.id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_change_log_trim
+AFTER INSERT ON session_change_log
+WHEN (NEW.sequence % 256) = 0
+BEGIN
+    DELETE FROM session_change_log WHERE sequence <= NEW.sequence - 8192;
+END;
+`
+
+const canonicalSessionSchema = schema + projectsSchemaV47 + changeLogSchemaV52
 
 func sqliteFileURI(path string) string {
 	slashPath := filepath.ToSlash(path)
@@ -434,7 +523,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // Increment when adding new migrations.
 const (
 	projectSchemaVersion = 47
-	schemaVersion        = 51
+	schemaVersion        = 52
 )
 
 // migration represents a schema migration.
@@ -1442,6 +1531,14 @@ var migrations = []migration{
 			);
 			CREATE INDEX IF NOT EXISTS idx_completion_push_outbox_due
 				ON completion_push_outbox(status, next_attempt_at, id);`)
+			return err
+		},
+	},
+	{
+		version:     52,
+		description: "add indexed session change log",
+		up: func(db schemaExecutor) error {
+			_, err := db.Exec(changeLogSchemaV52)
 			return err
 		},
 	},

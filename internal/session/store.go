@@ -93,6 +93,51 @@ type Store interface {
 	Close() error
 }
 
+// StoreChange is one durable, monotonically ordered coarse mutation emitted by
+// SQLite triggers. It lets other processes observe shared-store changes without
+// rescanning the session catalog.
+type StoreChange struct {
+	Sequence      int64
+	Kind          string
+	SessionID     string
+	ProjectID     string
+	TranscriptRev int64
+	Status        SessionStatus
+}
+
+const (
+	StoreChangeSessionCreated           = "session.created"
+	StoreChangeSessionDeleted           = "session.deleted"
+	StoreChangeSessionMetadataChanged   = "session.metadata_changed"
+	StoreChangeSessionTranscriptChanged = "session.transcript_changed"
+	StoreChangeSessionStatusChanged     = "session.status_changed"
+	StoreChangeProjectMembershipChanged = "project.membership_changed"
+	StoreChangeProjectCreated           = "project.created"
+	StoreChangeProjectUpdated           = "project.updated"
+	StoreChangeProjectDeleted           = "project.deleted"
+)
+
+// StoreChangeStore is an optional capability implemented by stores with a
+// durable indexed mutation cursor. The serve event watcher uses it for
+// cross-process/TUI observation; stores without it rely on explicit events.
+type StoreChangeStore interface {
+	StoreChangeCursor(ctx context.Context) (int64, error)
+	ListStoreChanges(ctx context.Context, after int64, limit int) ([]StoreChange, error)
+}
+
+// AsStoreChangeStore resolves the optional capability through decorators
+// without making unsupported stores appear observable.
+func AsStoreChangeStore(store Store) (StoreChangeStore, bool) {
+	if store == nil {
+		return nil, false
+	}
+	if logging, ok := store.(*LoggingStore); ok {
+		return AsStoreChangeStore(logging.Store)
+	}
+	changeStore, ok := store.(StoreChangeStore)
+	return changeStore, ok
+}
+
 // WorkspaceAccess is the level of local filesystem authority granted to a
 // session workspace. Write access always implies read access.
 type WorkspaceAccess string

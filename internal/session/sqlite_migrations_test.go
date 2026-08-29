@@ -25,6 +25,38 @@ func TestSessionMigrationListInvariants(t *testing.T) {
 	}
 }
 
+func TestSessionMigrationAddsIndexedChangeLog(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+	if _, err := db.Exec(schema + projectsSchemaV47); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL); INSERT INTO schema_version(id, version) VALUES(1, 51)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := initSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	var table string
+	if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session_change_log'`).Scan(&table); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO sessions(id, provider, model) VALUES('external', 'test', 'model')`); err != nil {
+		t.Fatal(err)
+	}
+	var kind, sessionID string
+	if err := db.QueryRow(`SELECT kind, session_id FROM session_change_log ORDER BY sequence DESC LIMIT 1`).Scan(&kind, &sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if kind != StoreChangeSessionCreated || sessionID != "external" {
+		t.Fatalf("change = %q/%q", kind, sessionID)
+	}
+}
+
 func TestSessionMigrationFailureResumesFromPriorCommittedVersion(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {

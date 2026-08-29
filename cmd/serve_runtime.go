@@ -780,24 +780,24 @@ func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, d
 }
 
 // ensureSessionInStore creates the session record in the database if it doesn't
-// exist yet and returns the assigned session number. Unlike ensurePersistedSession,
+// exist yet and returns the assigned session number plus whether it inserted the row. Unlike ensurePersistedSession,
 // this does NOT mutate runtime state (sessionMeta, history), so it is safe to call
 // without holding rt.mu.
-func (rt *serveRuntime) ensureSessionInStore(ctx context.Context, sessionID string, inputMessages []llm.Message) int64 {
+func (rt *serveRuntime) ensureSessionInStore(ctx context.Context, sessionID string, inputMessages []llm.Message) (int64, bool) {
 	if rt.store == nil || sessionID == "" {
-		return 0
+		return 0, false
 	}
 	// Fast path: runtime already hydrated under rt.mu by a prior run.
 	rt.mu.Lock()
 	if meta := rt.sessionMeta; meta != nil && meta.ID == sessionID {
 		number := meta.Number
 		rt.mu.Unlock()
-		return number
+		return number, false
 	}
 	rt.mu.Unlock()
 	// Check DB for existing session.
 	if existing, err := rt.store.Get(ctx, sessionID); err == nil && existing != nil {
-		return existing.Number
+		return existing.Number, false
 	}
 	// Build and insert a new session record.
 	providerName := "unknown"
@@ -836,12 +836,12 @@ func (rt *serveRuntime) ensureSessionInStore(ctx context.Context, sessionID stri
 	}
 	if err := rt.store.Create(ctx, sess); err != nil {
 		if existing, getErr := rt.store.Get(ctx, sessionID); getErr == nil && existing != nil {
-			return existing.Number
+			return existing.Number, false
 		}
 		log.Printf("[serve] session Create failed for %s: %v", sessionID, err)
-		return 0
+		return 0, false
 	}
-	return sess.Number
+	return sess.Number, true
 }
 
 func (rt *serveRuntime) restorePersistedHistory(ctx context.Context, sess *session.Session) bool {

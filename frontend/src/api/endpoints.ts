@@ -135,6 +135,30 @@ export const endpoints = (api: APIClient) => ({
       { signal, headers: { Accept: 'text/event-stream' } },
       { policy: 'stream', retries: 0, timeoutMs: 0, auth: 'session' },
     ),
+  serverEventStream: (after: number | null, channels: string[], signal: AbortSignal) => {
+    const params = new URLSearchParams();
+    if (after !== null) params.set('after', String(after));
+    if (channels.length) params.set('channels', channels.join(','));
+    return api.request(
+      `/v1/events${params.size ? `?${params}` : ''}`,
+      { signal, headers: { Accept: 'text/event-stream' } },
+      { policy: 'stream', retries: 0, timeoutMs: 0, auth: 'session' },
+    );
+  },
+  serverEventPoll: (after: number | null, channels: string[], signal: AbortSignal) => {
+    const params = new URLSearchParams();
+    if (after !== null) {
+      params.set('after', String(after));
+      params.set('wait_ms', '25000');
+      params.set('limit', '100');
+    }
+    if (channels.length) params.set('channels', channels.join(','));
+    return api.request(
+      `/v1/events/poll${params.size ? `?${params}` : ''}`,
+      { signal, headers: { Accept: 'application/json' } },
+      { policy: 'safe-read', retries: 0, timeoutMs: 35_000, auth: 'session' },
+    );
+  },
   cancelResponse: (id: string) =>
     api.post<Record<string, unknown>>(
       `/v1/responses/${encoded(id)}/cancel`,

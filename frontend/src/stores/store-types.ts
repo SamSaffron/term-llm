@@ -1,6 +1,5 @@
 import type { ModelOption } from '../domain/runtime';
 import type {
-  Attachment,
   DiffComment,
   DiffFile,
   FilesystemObservation,
@@ -92,9 +91,4 @@ export interface HubAgent {
   target: string;
   active: boolean;
   attention: boolean;
-}
-
-export interface PreparedAttachment {
-  attachment: Attachment;
-  contentPart: Record<string, unknown>;
 }

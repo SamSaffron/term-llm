@@ -3622,43 +3622,54 @@ describe('AppStore compatibility behavior', () => {
     expect(store.askUser.value).toBe(live);
   });
 
-  it('coalesces simultaneous lifecycle recovery before opening one SSE subscription', async () => {
+  it('does not orphan a polling loop when event health re-arms reconciliation', async () => {
+    vi.useFakeTimers();
     const store = new AppStore(config);
-    const active = session();
-    store.sessions.value = [active];
-    store.activeSessionId.value = active.id;
-    const run: ActiveRun = {
-      responseId: 'r1',
-      sessionId: active.id,
-      epoch: 1,
-      status: 'streaming',
-      lastSequence: 4,
-      startedRev: 0,
-      reconnects: 0,
+    const first = deferred<void>();
+    const second = deferred<void>();
+    const internals = store as unknown as {
+      reconcile(reason: string, options: { authoritative: boolean }): Promise<void>;
+      refreshSidebar(authoritative?: boolean): Promise<void>;
     };
-    store.runs.value = { s1: initialProjection(run) };
+    internals.refreshSidebar = vi.fn(async () => undefined);
+    internals.reconcile = vi
+      .fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise)
+      .mockResolvedValue(undefined);
+
+    store.statusReconciler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(internals.reconcile).toHaveBeenCalledTimes(1);
+    store.statusReconciler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(internals.reconcile).toHaveBeenCalledTimes(2);
+    first.resolve();
+    second.resolve();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(internals.reconcile).toHaveBeenCalledTimes(3);
+    store.dispose();
+    vi.useRealTimers();
+  });
+
+  it('coalesces concurrent authoritative event recovery', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
     const status = deferred<void>();
     const internals = store as unknown as {
-      recover(): Promise<void>;
+      authoritativeRecovery(reason: string): Promise<void>;
       refreshStatus(): Promise<void>;
     };
     internals.refreshStatus = vi.fn(() => status.promise);
-    store.endpoints.response = vi.fn(async () => ({
-      id: 'r1',
-      status: 'in_progress',
-      run_epoch: 1,
-      last_sequence_number: 4,
-      recovery: { messages: [], events: [] },
-    }));
-    store.streamResponse = vi.fn(async () => undefined);
-    const first = internals.recover();
-    const second = internals.recover();
+    store.endpoints.sessionState = vi.fn(async () => ({}));
+
+    const first = internals.authoritativeRecovery('event-gap');
+    const second = internals.authoritativeRecovery('event-instance');
+    expect(first).toBe(second);
     expect(internals.refreshStatus).toHaveBeenCalledOnce();
     status.resolve();
     await Promise.all([first, second]);
-    expect(store.streamResponse).toHaveBeenCalledOnce();
-    internals.refreshStatus = vi.fn(async () => undefined);
-    await internals.recover();
-    expect(store.streamResponse).toHaveBeenCalledTimes(2);
   });
 });

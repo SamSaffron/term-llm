@@ -45,11 +45,13 @@ export interface StatusReconcilerHost {
   stoppedResponseCount: () => number;
   isLocallyStopped: (responseId: string) => boolean;
   clearLocallyStopped: (responseId: string) => void;
+  eventFeedHealthy: () => boolean;
 }
 
 /** Owns polling generations and reconciliation of authoritative server status. */
 export class StatusReconciler {
   private timer = 0;
+  private pollGeneration = 0;
   private unknownActiveSessionIds = new Set<string>();
   private readonly transcriptAttachSyncs = new Set<string>();
   private readonly coordinator: StatusCoordinatorState = {
@@ -72,9 +74,13 @@ export class StatusReconciler {
 
   start(): void {
     clearTimeout(this.timer);
+    const generation = ++this.pollGeneration;
     const poll = async () => {
+      if (this.services.isDisposed || generation !== this.pollGeneration) return;
+      const eventFeedHealthy = this.host.eventFeedHealthy();
       if (document.visibilityState === 'visible') {
-        if (Date.now() - this.host.sessionStore.sidebarRefreshedAt >= 30_000)
+        const sidebarInterval = eventFeedHealthy ? 60_000 : 30_000;
+        if (Date.now() - this.host.sessionStore.sidebarRefreshedAt >= sidebarInterval)
           await this.host.refreshSidebar(false).catch(() => undefined);
         await this.host.reconcile('poll', false).catch(() => undefined);
         if (this.host.activeSessionId.peek())
@@ -89,10 +95,15 @@ export class StatusReconciler {
         Object.values(this.host.runs.peek()).some((projection) =>
           ['connecting', 'checking', 'streaming', 'cancelling'].includes(projection.run.status),
         );
-      this.timer = window.setTimeout(
-        poll,
-        anyActive || this.host.diff.peek().open ? 2_000 : 30_000,
-      );
+      if (this.services.isDisposed || generation !== this.pollGeneration) return;
+      const interval = eventFeedHealthy
+        ? anyActive || this.host.diff.peek().open
+          ? 10_000
+          : 60_000
+        : anyActive || this.host.diff.peek().open
+          ? 2_000
+          : 30_000;
+      this.timer = window.setTimeout(poll, interval);
     };
     this.timer = window.setTimeout(poll, 0);
   }
@@ -286,7 +297,20 @@ export class StatusReconciler {
         )
           followUps.push(() => void this.host.refreshSessionMessages(session.id, transcriptRev));
         const titleRefreshAllowed = this.host.renameTarget.peek()?.id !== session.id;
-        return {
+        const messages = committedClientMessageId
+          ? session.messages.some(
+              (message) =>
+                message.clientMessageId === committedClientMessageId &&
+                (message.pending || message.interruptState !== undefined),
+            )
+            ? session.messages.map((message) =>
+                message.clientMessageId === committedClientMessageId
+                  ? { ...message, pending: false, interruptState: undefined }
+                  : message,
+              )
+            : session.messages
+          : session.messages;
+        const candidate: Session = {
           ...session,
           ...(titleRefreshAllowed && String(status.short_title || '')
             ? {
@@ -296,15 +320,7 @@ export class StatusReconciler {
             : {}),
           activeResponseId,
           activeRun: Boolean(activeResponseId || (status.active_run && !stoppedServerResponse)),
-          ...(committedClientMessageId
-            ? {
-                messages: session.messages.map((message) =>
-                  message.clientMessageId === committedClientMessageId
-                    ? { ...message, pending: false, interruptState: undefined }
-                    : message,
-                ),
-              }
-            : {}),
+          messages,
           lastResponseId: String(status.last_response_id || '') || session.lastResponseId,
           transcriptRev,
           messageCount: Math.max(session.messageCount || 0, Number(status.message_count) || 0),
@@ -316,6 +332,17 @@ export class StatusReconciler {
               )
             : session.lastMessageAt,
         };
+        return candidate.title === session.title &&
+          candidate.longTitle === session.longTitle &&
+          candidate.activeResponseId === session.activeResponseId &&
+          candidate.activeRun === session.activeRun &&
+          candidate.messages === session.messages &&
+          candidate.lastResponseId === session.lastResponseId &&
+          candidate.transcriptRev === session.transcriptRev &&
+          candidate.messageCount === session.messageCount &&
+          candidate.lastMessageAt === session.lastMessageAt
+          ? session
+          : candidate;
       })
       .sort(compareSessionsByActivity);
     this.host.sessionStore.replace(reconciledSessions);
@@ -380,6 +407,7 @@ export class StatusReconciler {
 
   dispose(): void {
     window.clearTimeout(this.timer);
+    this.pollGeneration += 1;
     this.coordinator.generation += 1;
     this.transcriptAttachSyncs.clear();
   }
