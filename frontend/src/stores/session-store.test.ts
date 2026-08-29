@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { initialProjection } from '../domain/response';
 import { AppStore } from './app-store';
 import { testConfig, testSession } from './store-test-fixtures';
@@ -63,6 +63,115 @@ describe('SessionStore', () => {
         activeResponseId: 'r1',
       });
       expect(store.sessions.value[0].messages).toHaveLength(1);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('retains the active flat-list session when a sidebar page omits it', () => {
+    const store = new AppStore(testConfig);
+    try {
+      const active = testSession({
+        id: 's_old',
+        title: 'Old convo',
+        messages: [{ id: 'm_old', role: 'user', content: 'Still here', created: 1 }],
+      });
+      store.sessionStore.prepend(active);
+      store.sessionStore.activate(active);
+
+      store.sessionStore.applySidebar({
+        sessions: [{ id: 's_recent', title: 'Recent convo' }],
+      });
+
+      expect(store.activeSession.value?.id).toBe('s_old');
+      expect(store.activeSession.value?.messages).toEqual([
+        expect.objectContaining({ id: 'm_old', content: 'Still here' }),
+      ]);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('retains the active project session when grouped sidebar data omits it', () => {
+    const store = new AppStore(testConfig);
+    try {
+      store.projectsEnabled.value = true;
+      const active = testSession({
+        id: 's_old',
+        title: 'Old project convo',
+        projectId: 'project-old',
+        messages: [{ id: 'm_old', role: 'user', content: 'Project transcript', created: 1 }],
+      });
+      store.sessionStore.prepend(active);
+      store.sessionStore.activate(active);
+
+      store.sessionStore.applySidebar({
+        groups: [
+          {
+            project: { id: 'project-recent', name: 'Recent project' },
+            sessions: [{ id: 's_recent', title: 'Recent convo' }],
+          },
+        ],
+      });
+
+      expect(store.activeSession.value?.id).toBe('s_old');
+      expect(store.activeSession.value?.messages).toEqual([
+        expect.objectContaining({ id: 'm_old', content: 'Project transcript' }),
+      ]);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('drops an inactive local session when a sidebar page omits it', () => {
+    const store = new AppStore(testConfig);
+    try {
+      const old = testSession({ id: 's_old', title: 'Old convo' });
+      const recent = testSession({ id: 's_recent', title: 'Recent convo', lastMessageAt: 2 });
+      store.sessionStore.replace([recent, old]);
+      store.sessionStore.activate(recent);
+
+      store.sessionStore.applySidebar({
+        sessions: [{ id: 's_recent', title: 'Recent convo' }],
+      });
+
+      expect(store.sessions.value.map((session) => session.id)).not.toContain('s_old');
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('clears selection on archive and leaves it cleared through the next sidebar refresh', async () => {
+    const store = new AppStore(testConfig);
+    try {
+      const active = testSession({ id: 's_old', title: 'Old convo' });
+      store.sessionStore.prepend(active);
+      store.sessionStore.activate(active);
+      store.endpoints.patchSession = vi.fn(async () => ({}));
+
+      await store.archiveSession(active);
+      store.sessionStore.applySidebar({
+        sessions: [{ id: 's_recent', title: 'Recent convo' }],
+      });
+
+      expect(store.activeSessionId.value).toBe('');
+      expect(store.sessions.value.map((session) => session.id)).not.toContain('s_old');
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('removes the old active draft row when rekeying a session', () => {
+    const store = new AppStore(testConfig);
+    try {
+      const draft = testSession({ id: 'draft_x', title: 'Draft convo' });
+      store.sessionStore.prepend(draft);
+      store.sessionStore.activate(draft);
+
+      store.runEngine.rekeySession('draft_x', 's9', { id: 's9', title: 'Durable convo' });
+
+      expect(store.sessions.value.map((session) => session.id)).not.toContain('draft_x');
+      expect(store.activeSessionId.value).toBe('s9');
     } finally {
       store.dispose();
     }
