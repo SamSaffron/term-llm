@@ -167,7 +167,7 @@ describe('SessionStore', () => {
     }
   });
 
-  it('drops an inactive local session when a sidebar page omits it', () => {
+  it('drops an inactive local session when a complete sidebar snapshot omits it', () => {
     const store = new AppStore(testConfig);
     try {
       const old = testSession({ id: 's_old', title: 'Old convo' });
@@ -180,6 +180,78 @@ describe('SessionStore', () => {
       });
 
       expect(store.sessions.value.map((session) => session.id)).not.toContain('s_old');
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('preserves the loaded tail when a partial first page omits older sessions', () => {
+    const store = new AppStore(testConfig);
+    try {
+      const loaded = Array.from({ length: 21 }, (_, index) =>
+        testSession({
+          id: `s${index + 1}`,
+          title: `Session ${index + 1}`,
+          created: 21 - index,
+          lastMessageAt: 21 - index,
+        }),
+      );
+      store.sessionStore.replace(loaded);
+
+      store.sessionStore.applySidebar({
+        sessions: loaded.slice(0, 7).map((session) => ({
+          id: session.id,
+          short_title: session.title,
+          created_at: session.created,
+          last_message_at: session.lastMessageAt,
+        })),
+        next_cursor: 'older-page',
+      });
+
+      expect(store.sessions.value.map((session) => session.id)).toEqual(
+        loaded.map((session) => session.id),
+      );
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('preserves loaded project tails only while the project page is incomplete', () => {
+    const store = new AppStore(testConfig);
+    try {
+      store.projectsEnabled.value = true;
+      const project = { id: 'p1', name: 'Alpha' };
+      const sessions = ['s1', 's2', 's3'].map((id, index) => ({
+        id,
+        short_title: id,
+        created_at: 3 - index,
+        last_message_at: 3 - index,
+      }));
+      store.sessionStore.applySidebar({
+        groups: [{ project, sessions, session_count: 3 }],
+      });
+
+      store.sessionStore.applySidebar({
+        groups: [
+          {
+            project,
+            sessions: sessions.slice(0, 1),
+            session_count: 3,
+            next_cursor: 'older-project-page',
+          },
+        ],
+      });
+      expect(store.sessions.value.map((session) => session.id)).toEqual(['s1', 's2', 's3']);
+      expect(store.projects.value[0].sessions?.map((session) => session.id)).toEqual([
+        's1',
+        's2',
+        's3',
+      ]);
+
+      store.sessionStore.applySidebar({
+        groups: [{ project, sessions: sessions.slice(0, 1), session_count: 1 }],
+      });
+      expect(store.sessions.value.map((session) => session.id)).toEqual(['s1']);
     } finally {
       store.dispose();
     }
