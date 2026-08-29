@@ -310,6 +310,14 @@ export class StatusReconciler {
               )
             : session.messages
           : session.messages;
+        const nextActiveRun = Boolean(
+          activeResponseId || (status.active_run && !stoppedServerResponse),
+        );
+        const nextLastResponseId = String(status.last_response_id || '');
+        const nextMessageCount = Math.max(
+          session.messageCount || 0,
+          Number(status.message_count) || 0,
+        );
         const candidate: Session = {
           ...session,
           ...(titleRefreshAllowed && String(status.short_title || '')
@@ -318,12 +326,16 @@ export class StatusReconciler {
                 longTitle: String(status.long_title || '') || session.longTitle,
               }
             : {}),
-          activeResponseId,
-          activeRun: Boolean(activeResponseId || (status.active_run && !stoppedServerResponse)),
+          ...(activeResponseId !== null || session.activeResponseId !== undefined
+            ? { activeResponseId }
+            : {}),
+          ...(nextActiveRun || session.activeRun !== undefined ? { activeRun: nextActiveRun } : {}),
           messages,
-          lastResponseId: String(status.last_response_id || '') || session.lastResponseId,
-          transcriptRev,
-          messageCount: Math.max(session.messageCount || 0, Number(status.message_count) || 0),
+          ...(nextLastResponseId ? { lastResponseId: nextLastResponseId } : {}),
+          ...(transcriptRev || session.transcriptRev !== undefined ? { transcriptRev } : {}),
+          ...(nextMessageCount || session.messageCount !== undefined
+            ? { messageCount: nextMessageCount }
+            : {}),
           lastMessageAt: Number(status.last_message_at)
             ? Math.max(
                 session.lastMessageAt || 0,
