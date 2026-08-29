@@ -952,7 +952,10 @@ function BranchContext() {
   const [mode, setMode] = useState<'choices' | 'focused'>('choices');
   const anchor = store.branchTarget.value;
   const prefill = store.branchPrefill.value;
+  const busy = store.branchBusy.value;
+  const error = store.branchError.value;
   const choose = (context: 'clean' | 'notes' | 'focused') => {
+    if (busy) return;
     if (context === 'focused' && mode !== 'focused') {
       setMode('focused');
       return;
@@ -963,43 +966,65 @@ function BranchContext() {
   return (
     <Overlay
       title="Start a conversation path"
-      onEscape={() => (mode === 'focused' ? setMode('choices') : (store.modal.value = ''))}
+      dismissDisabled={busy}
+      onEscape={() => {
+        if (!busy)
+          if (mode === 'focused') setMode('choices');
+          else store.modal.value = '';
+      }}
     >
       <p>Choose how much context to carry after this turn.</p>
-      {mode === 'choices' ? (
-        <div class="branch-context-choices">
-          <button type="button" onClick={() => choose('clean')}>
-            <strong>Clean branch</strong>
-            <small>Continue only with context up to this turn.</small>
-          </button>
-          <button type="button" onClick={() => choose('notes')}>
-            <strong>Bring concise notes</strong>
-            <small>Prepare a short summary of useful later discoveries.</small>
-          </button>
-          <button type="button" onClick={() => choose('focused')}>
-            <strong>Focused context</strong>
-            <small>Tell the agent which later information matters.</small>
-          </button>
-        </div>
-      ) : (
-        <div class="branch-context-focus">
-          <label for="branchContextFocus">What should this path carry forward?</label>
-          <textarea
-            id="branchContextFocus"
-            autoFocus
-            rows={5}
-            value={focus}
-            placeholder="For example: preserve the database findings, but not the abandoned UI approach."
-            onInput={(event) => setFocus(event.currentTarget.value)}
-          />
-          <div class="modal-actions">
-            <button class="btn" onClick={() => setMode('choices')}>
-              Back
+      <div aria-busy={busy ? 'true' : undefined}>
+        {mode === 'choices' ? (
+          <div class="branch-context-choices">
+            <button type="button" disabled={busy} onClick={() => choose('clean')}>
+              <strong>Clean branch</strong>
+              <small>Continue only with context up to this turn.</small>
             </button>
-            <button class="btn primary" disabled={!focus.trim()} onClick={() => choose('focused')}>
-              Create path
+            <button type="button" disabled={busy} onClick={() => choose('notes')}>
+              <strong>Bring concise notes</strong>
+              <small>Prepare a short summary of useful later discoveries.</small>
+            </button>
+            <button type="button" disabled={busy} onClick={() => choose('focused')}>
+              <strong>Focused context</strong>
+              <small>Tell the agent which later information matters.</small>
             </button>
           </div>
+        ) : (
+          <div class="branch-context-focus">
+            <label for="branchContextFocus">What should this path carry forward?</label>
+            <textarea
+              id="branchContextFocus"
+              autoFocus
+              rows={5}
+              value={focus}
+              placeholder="For example: preserve the database findings, but not the abandoned UI approach."
+              disabled={busy}
+              onInput={(event) => setFocus(event.currentTarget.value)}
+            />
+            <div class="modal-actions">
+              <button class="btn" disabled={busy} onClick={() => setMode('choices')}>
+                Back
+              </button>
+              <button
+                class="btn primary"
+                disabled={busy || !focus.trim()}
+                onClick={() => choose('focused')}
+              >
+                Create path
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+      {busy && (
+        <div role="status" aria-live="polite">
+          Creating path…
+        </div>
+      )}
+      {error && (
+        <div class="modal-error" role="alert">
+          {error}
         </div>
       )}
       <p class="branch-tree-note">Filesystem and tool side effects are not undone.</p>

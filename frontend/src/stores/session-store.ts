@@ -133,6 +133,7 @@ export class SessionStore {
         : incoming.activeRun,
       usage: incoming.usage || existing.usage,
       goal: incoming.goal ?? existing.goal,
+      transcriptRev: incoming.transcriptRev ?? existing.transcriptRev,
       fileChangeSummary: incoming.fileChangeSummary || existing.fileChangeSummary,
     };
   }

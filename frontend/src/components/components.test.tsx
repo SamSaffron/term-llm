@@ -2862,7 +2862,7 @@ describe('Preact-owned chat surfaces', () => {
     const store = createStore();
     store.branchTarget.value = '42';
     store.modal.value = 'branch-context';
-    store.branchFrom = vi.fn(async () => undefined);
+    store.branchFrom = vi.fn(async () => true);
     render(
       <StoreContext.Provider value={store}>
         <Modals />
@@ -2871,6 +2871,40 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByRole('heading', { name: 'Start a conversation path' })).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: /Bring concise notes/ }));
     expect(store.branchFrom).toHaveBeenCalledWith('42', 'notes', '');
+  });
+
+  it('shows branch progress and a visible failure while blocking double-clicks', async () => {
+    const store = createStore();
+    store.branchTarget.value = '42';
+    store.modal.value = 'branch-context';
+    let rejectRequest!: (reason?: unknown) => void;
+    const request = new Promise<Record<string, unknown>>((_resolve, reject) => {
+      rejectRequest = reject;
+    });
+    store.endpoints.branch = vi.fn(() => request);
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    const notes = screen.getByRole('button', { name: /Bring concise notes/ });
+    await userEvent.dblClick(notes);
+
+    expect(store.endpoints.branch).toHaveBeenCalledOnce();
+    expect(notes).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Close Start a conversation path' })).toBeDisabled();
+    expect(screen.getByRole('status')).toHaveTextContent('Creating path…');
+
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    const backdrop = container.querySelector('.modal-overlay') as HTMLElement;
+    fireEvent.pointerDown(backdrop, { pointerId: 7 });
+    fireEvent.pointerUp(backdrop, { pointerId: 7 });
+    expect(store.modal.value).toBe('branch-context');
+
+    await act(async () => rejectRequest(new Error('branch service unavailable')));
+    expect(await screen.findByRole('alert')).toHaveTextContent('branch service unavailable');
+    expect(notes).toBeEnabled();
   });
 
   it('opens a conversation path from anywhere on its row', async () => {

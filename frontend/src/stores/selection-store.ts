@@ -195,6 +195,8 @@ export class SelectionStore {
       const incoming = this.sessionsStore.sessionFrom({
         id,
         ...selectedSource,
+        // The selected transcript revision owns the message bodies being installed.
+        transcript_rev: bodies.rev ?? selectedSource.transcript_rev ?? selectedSource.rev,
         messages: serverMessages,
       });
       const currentIndex = this.sessionsStore.sessions.value.findIndex(

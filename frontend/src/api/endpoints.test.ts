@@ -55,4 +55,17 @@ describe('branch tree endpoint', () => {
       undefined,
     );
   });
+
+  it('allows path-note requests to outlive the server detached-work budget', async () => {
+    const json = vi.fn(async () => ({}));
+    const routes = endpoints({ json } as unknown as APIClient);
+
+    await routes.pathNotes('session/one', { mode: 'notes' });
+
+    expect(json).toHaveBeenCalledWith(
+      '/v1/sessions/session%2Fone/path-notes',
+      { method: 'POST', body: JSON.stringify({ mode: 'notes' }) },
+      { policy: 'mutation', timeoutMs: 150_000 },
+    );
+  });
 });

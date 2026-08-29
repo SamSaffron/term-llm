@@ -224,7 +224,11 @@ export const endpoints = (api: APIClient) => ({
   branch: (id: string, body: unknown) =>
     api.post<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/branches`, body),
   pathNotes: (id: string, body: unknown) =>
-    api.post<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/path-notes`, body),
+    api.json<Record<string, unknown>>(
+      `/v1/sessions/${encoded(id)}/path-notes`,
+      { method: 'POST', body: JSON.stringify(body) },
+      { policy: 'mutation', timeoutMs: 150_000 },
+    ),
   skills: (id: string) =>
     api.json<Record<string, unknown>>(
       `/v1/sessions/${encoded(id)}/skills`,

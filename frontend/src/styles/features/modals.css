@@ -146,6 +146,11 @@
   cursor: not-allowed;
 }
 
+.modal .icon-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .rename-session-modal {
   width: min(420px, 100%);
 }

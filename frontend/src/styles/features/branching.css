@@ -132,10 +132,16 @@
   cursor: pointer;
 }
 
-.branch-context-choices button:hover,
-.branch-context-choices button:focus-visible {
+.branch-context-choices button:hover:not(:disabled),
+.branch-context-choices button:focus-visible:not(:disabled) {
   background: var(--surface-2);
   border-color: var(--accent);
+}
+
+.branch-context-choices button:disabled,
+.branch-context-focus textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .branch-context-choices small {

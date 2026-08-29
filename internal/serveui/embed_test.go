@@ -30,11 +30,12 @@ func TestGeneratedBundleAssets(t *testing.T) {
 func TestProductionBundleSizeBudgets(t *testing.T) {
 	budgets := map[string]struct{ raw, gzip int }{
 		// Notification reconciliation/outbox messaging, the owned mobile voice
-		// state machine, gallery/diff navigation, and the focused store modules
-		// are first-party shell code. Keep bounded headroom over that productized
-		// baseline while still failing meaningful accidental regressions.
-		"dist/app.js":  {raw: 390_000, gzip: 113_000},
-		"dist/app.css": {raw: 160_000, gzip: 29_000},
+		// state machine, gallery/diff navigation, focused store modules, and the
+		// safe-point branch workflow are first-party shell code. Keep bounded
+		// headroom over that productized baseline while still failing meaningful
+		// accidental regressions.
+		"dist/app.js":  {raw: 395_000, gzip: 117_000},
+		"dist/app.css": {raw: 160_000, gzip: 30_500},
 	}
 	for name, budget := range budgets {
 		body, err := StaticAsset(name)
