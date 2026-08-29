@@ -868,7 +868,7 @@ func TestHubProxyInjectsTokenAndStripsCredentials(t *testing.T) {
 }
 
 func TestHubProxyRebasesAndInjectsHubContext(t *testing.T) {
-	const body = `<html><head><base href="/chat/"><script>window.TERM_LLM_UI_PREFIX="/chat";</script></head><body></body></html>`
+	const body = `<html><head><base href="/chat/"><script>window.TERM_LLM_UI_PREFIX="/chat";window.__WEBRTC_ENABLED__=true;</script></head><body></body></html>`
 	s := hubWithBackend(t, "/chat", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		io.WriteString(w, body)
@@ -889,6 +889,9 @@ func TestHubProxyRebasesAndInjectsHubContext(t *testing.T) {
 	}
 	if !strings.Contains(got, `window.TERM_LLM_HUB={"nodeBasePath":"/chat","nodeId":"alpha","nodeName":"Alpha","url":"/"}`) {
 		t.Errorf("hub context not injected: %s", got)
+	}
+	if enabled, disabled := strings.Index(got, `window.__WEBRTC_ENABLED__=true`), strings.Index(got, `window.__WEBRTC_ENABLED__=false`); enabled < 0 || disabled < enabled {
+		t.Errorf("Hub proxy must override node WebRTC enablement after the node setting: %s", got)
 	}
 	if cl := rec.Header().Get("Content-Length"); cl != fmt.Sprintf("%d", len(got)) {
 		t.Errorf("Content-Length = %q, want %d", cl, len(got))

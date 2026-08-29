@@ -425,9 +425,11 @@ func hubRebaseUIPrefix(body []byte, basePath, mount string) (out []byte, baseHit
 
 // hubInjectContext injects window.TERM_LLM_HUB into the served HTML head so
 // the node's web UI knows it was opened via the hub and can render a "Back
-// to Hub" link. The hub URL is root-relative because the proxied UI is
-// same-origin with the hub; it includes the hub mount when served under a
-// prefix such as /hub.
+// to Hub" link. It also disables the node's direct WebRTC transport: Hub
+// pages should keep browser traffic on the authenticated same-origin proxy,
+// rather than contacting the node's external signaling URL cross-origin.
+// The hub URL is root-relative because the proxied UI is same-origin with the
+// hub; it includes the hub mount when served under a prefix such as /hub.
 func hubInjectContext(body []byte, t *hubProxyTarget) []byte {
 	hubURL := t.hubURL
 	if hubURL == "" {
@@ -442,7 +444,7 @@ func hubInjectContext(body []byte, t *hubProxyTarget) []byte {
 	if err != nil {
 		return body
 	}
-	snippet := []byte(`<script>window.TERM_LLM_HUB=` + string(ctxJSON) + `;</script></head>`)
+	snippet := []byte(`<script>window.__WEBRTC_ENABLED__=false;</script><script>window.TERM_LLM_HUB=` + string(ctxJSON) + `;</script></head>`)
 	if bytes.Contains(body, []byte("</head>")) {
 		return bytes.Replace(body, []byte("</head>"), snippet, 1)
 	}
