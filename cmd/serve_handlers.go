@@ -1195,6 +1195,7 @@ type webSessionEntry struct {
 	Mode          session.SessionMode   `json:"mode,omitempty"`
 	Origin        session.SessionOrigin `json:"origin,omitempty"`
 	Provider      string                `json:"provider,omitempty"`
+	Model         string                `json:"model,omitempty"`
 	ProjectID     string                `json:"project_id,omitempty"`
 	ProjectName   string                `json:"project_name,omitempty"`
 	Archived      bool                  `json:"archived"`
@@ -1220,6 +1221,7 @@ func (s *serveServer) webSessionEntryFromSummary(sess session.SessionSummary) we
 		Mode:          sess.Mode,
 		Origin:        sess.Origin,
 		Provider:      sessionSummaryProviderKey(s.cfgRef, sess),
+		Model:         sess.Model,
 		ProjectID:     sess.ProjectID,
 		ProjectName:   sess.ProjectName,
 		Archived:      sess.Archived,
@@ -1248,6 +1250,7 @@ func (s *serveServer) webSessionEntryFromSession(sess *session.Session) webSessi
 		Mode:          sess.Mode,
 		Origin:        sess.Origin,
 		Provider:      provider,
+		Model:         sess.Model,
 		ProjectID:     sess.ProjectID,
 		ProjectName:   sess.ProjectName,
 		Archived:      sess.Archived,
