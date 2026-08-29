@@ -73,6 +73,70 @@ describe('response projection', () => {
     expect(projection.phase).toBeUndefined();
   });
 
+  it('projects interjection image attachments before transcript reload', () => {
+    const projection = reduceResponse(
+      initialProjection(run),
+      event('response.interjection', 1, {
+        text: 'inspect this image',
+        client_message_id: 'interjection-image-1',
+        attachments: [
+          {
+            name: 'image 1',
+            type: 'image/png',
+            url: '/ui/images/interjection.png',
+            width: 320,
+            height: 180,
+          },
+        ],
+      }),
+    );
+
+    expect(projection.messages).toEqual([
+      expect.objectContaining({
+        role: 'user',
+        content: 'inspect this image',
+        attachments: [
+          {
+            name: 'image 1',
+            type: 'image/png',
+            url: '/ui/images/interjection.png',
+            width: 320,
+            height: 180,
+          },
+        ],
+      }),
+    ]);
+  });
+
+  it('projects image-only interjections before transcript reload', () => {
+    const projection = reduceResponse(
+      initialProjection(run),
+      event('response.interjection', 1, {
+        text: '',
+        client_message_id: 'interjection-image-only-1',
+        attachments: [
+          {
+            name: 'image 1',
+            type: 'image/png',
+            url: '/ui/images/image-only.png',
+          },
+        ],
+      }),
+    );
+
+    expect(projection.messages[0]).toMatchObject({
+      role: 'user',
+      content: '',
+      attachments: [
+        {
+          name: 'image 1',
+          type: 'image/png',
+          url: '/ui/images/image-only.png',
+        },
+      ],
+    });
+  });
+
   it('streams stable assistant segments without replacing earlier content', () => {
     let projection = initialProjection(run);
     projection = reduceResponse(projection, event('response.created', 1));
