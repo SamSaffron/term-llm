@@ -35,19 +35,102 @@
   margin: 0.25rem 0 0;
 }
 
+.modal.branch-tree-modal {
+  display: flex;
+  flex-direction: column;
+  max-height: min(
+    86dvh,
+    calc(var(--app-height) - 2rem - var(--safe-top) - var(--safe-bottom)),
+    54rem
+  );
+  overflow: hidden;
+}
+
+.branch-tree-modal .modal-title-row {
+  flex: 0 0 auto;
+}
+
+.branch-tree-modal .branch-tree-intro {
+  flex: 0 0 auto;
+  margin: 0 0 0.75rem;
+  font-size: 0.85rem;
+}
+
+.branch-tree-search {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+
+.branch-tree-modal .branch-tree-search input {
+  width: 100%;
+  min-height: 2.35rem;
+  padding: 0.55rem 2rem 0.55rem 2.25rem;
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.86rem;
+  appearance: none;
+}
+
+.branch-tree-modal .branch-tree-search input:focus {
+  border-color: var(--border-strong);
+  outline: 2px solid color-mix(in srgb, var(--text) 12%, transparent);
+  outline-offset: 1px;
+}
+
+.branch-tree-search-icon {
+  position: absolute;
+  left: 0.72rem;
+  z-index: 1;
+  display: inline-flex;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.branch-tree-search-icon svg {
+  width: 1rem;
+  height: 1rem;
+}
+
 .branch-tree-list {
   display: grid;
+  flex: 1 1 auto;
+  min-height: 0;
   gap: 0.5rem;
   margin: 0.65rem 0 0;
+  padding-right: 0.25rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .branch-tree-section-title {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
   margin-top: 0.2rem;
+  padding: 0.3rem 0.25rem 0.2rem;
+  background: var(--surface);
   color: var(--text-muted);
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+.branch-tree-section-count {
+  flex: 0 0 auto;
+  font-weight: 600;
+  letter-spacing: normal;
+  text-transform: none;
 }
 
 .branch-tree-section-title:not(:first-child) {
@@ -56,7 +139,7 @@
 
 .branch-tree-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.6rem;
   align-items: start;
   width: 100%;
@@ -97,8 +180,9 @@
 }
 
 .branch-tree-item.active {
-  border-color: var(--border);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
   background: var(--surface-2);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .branch-tree-item small {
@@ -112,6 +196,43 @@
   appearance: none;
   cursor: pointer;
   font: inherit;
+}
+
+.branch-tree-more {
+  width: 100%;
+  min-height: 2.5rem;
+  border: 1px dashed var(--border);
+  border-radius: 0.55rem;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.branch-tree-more:hover,
+.branch-tree-more:focus-visible {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.branch-tree-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  border: 1px dashed var(--border);
+  border-radius: 0.65rem;
+  padding: 0.9rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+.branch-tree-empty strong {
+  color: var(--text);
+  font-size: 0.9rem;
 }
 
 .branch-context-choices {
@@ -175,4 +296,19 @@
   background: var(--surface-2);
   color: var(--text);
   font: inherit;
+}
+
+@media (width <= 767px) {
+  .branch-tree-item {
+    min-height: 2.75rem;
+    padding: 0.65rem 0.7rem;
+  }
+
+  .branch-tree-section-title {
+    gap: 0.4rem;
+  }
+
+  .branch-tree-section-count {
+    font-size: 0.68rem;
+  }
 }

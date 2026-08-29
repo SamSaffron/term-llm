@@ -1032,8 +1032,12 @@ function BranchContext() {
   );
 }
 
+const BRANCH_POINT_BATCH_SIZE = 50;
+
 function BranchTree() {
   const store = useStore();
+  const [query, setQuery] = useState('');
+  const [pointLimit, setPointLimit] = useState(BRANCH_POINT_BATCH_SIZE);
   const tree = store.branchTree.value;
   const nodes =
     tree && Array.isArray(tree.nodes) ? (tree.nodes as Array<Record<string, unknown>>) : [];
@@ -1045,22 +1049,94 @@ function BranchTree() {
       : [];
   const active = String(tree?.active_session_id || store.activeSessionId.value);
   const root = String(tree?.root_session_id || '');
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const matchesQuery = (...values: unknown[]) =>
+    !normalizedQuery ||
+    values.some((value) =>
+      String(value || '')
+        .toLocaleLowerCase()
+        .includes(normalizedQuery),
+    );
+  const nodeEntries = nodes.map((node, index) => {
+    const id = String(node.session_id || '');
+    const session = store.sessions.value.find(
+      (entry) =>
+        entry.id === id || (node.session_number && entry.number === Number(node.session_number)),
+    );
+    const title = String(node.title || session?.title || `Path ${index + 1}`);
+    return { node, index, id, session, title, current: id === active };
+  });
+  const visibleNodes = nodeEntries.filter(({ node, title, current, id }) =>
+    matchesQuery(
+      title,
+      node.anchor_preview,
+      node.session_number,
+      current && 'current',
+      id === root && 'origin',
+    ),
+  );
+  const pointEntries = points
+    .map((point, index) => ({
+      point,
+      index,
+      sequence: Math.max(1, Number(point.sequence) + 1 || 1),
+      later: Math.max(0, Number(point.later_message_count) || 0),
+      preview: String(point.preview || '(attachment content)'),
+    }))
+    .sort((left, right) => right.sequence - left.sequence);
+  const visiblePoints = pointEntries.filter(({ point, preview, sequence }) =>
+    matchesQuery(preview, point.prefill, sequence, `message ${sequence}`),
+  );
+  const shownPoints = normalizedQuery ? visiblePoints : visiblePoints.slice(0, pointLimit);
+  const hiddenPointCount = visiblePoints.length - shownPoints.length;
+  const showSearch = nodes.length + points.length > 8;
+  const countLabel = (visible: number, total: number) =>
+    normalizedQuery ? `${visible} of ${total}` : String(total);
+
   return (
-    <Overlay title="Conversation paths">
+    <Overlay title="Conversation paths" className="branch-tree-modal">
+      <p class="branch-tree-intro">
+        Open an existing path, or start a new one from an earlier message.
+      </p>
+      {showSearch && (
+        <label class="branch-tree-search">
+          <span class="branch-tree-search-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+              <circle cx="11" cy="11" r="7" />
+              <path d="m16 16 4 4" />
+            </svg>
+          </span>
+          <input
+            type="search"
+            aria-label="Filter conversation paths and messages"
+            value={query}
+            placeholder="Find a path or message…"
+            autoFocus
+            onInput={(event) => setQuery(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape' && query) {
+                event.preventDefault();
+                event.stopPropagation();
+                setQuery('');
+              }
+            }}
+          />
+        </label>
+      )}
       <div class="branch-tree-list">
-        {points.length > 0 && <div class="branch-tree-section-title">Existing paths</div>}
-        {nodes.map((node, index) => {
-          const id = String(node.session_id || '');
-          const current = id === active;
-          const session = store.sessions.value.find(
-            (entry) =>
-              entry.id === id ||
-              (node.session_number && entry.number === Number(node.session_number)),
-          );
+        {visibleNodes.length > 0 && (
+          <div class="branch-tree-section-title">
+            <span>Existing paths</span>
+            <span class="branch-tree-section-count">
+              {countLabel(visibleNodes.length, nodeEntries.length)}
+            </span>
+          </div>
+        )}
+        {visibleNodes.map(({ node, index, id, session, title, current }) => {
           const content = (
             <div class="branch-tree-item-content">
               <div class="branch-tree-item-title">
-                <strong>{String(node.title || session?.title || `Path ${index + 1}`)}</strong>
+                <strong>{title}</strong>
                 {id === root && <span class="project-browser-badge">Origin</span>}
                 {current && <span class="project-browser-badge is-added">Current</span>}
               </div>
@@ -1071,7 +1147,11 @@ function BranchTree() {
           );
           if (current)
             return (
-              <section class="branch-tree-item active" key={id || String(index)}>
+              <section
+                class="branch-tree-item active"
+                aria-current="true"
+                key={id || String(index)}
+              >
                 {content}
               </section>
             );
@@ -1092,34 +1172,55 @@ function BranchTree() {
             </button>
           );
         })}
-        {points.length > 0 && <div class="branch-tree-section-title">Branch points</div>}
-        {points.map((point, index) => {
-          const sequence = Math.max(1, Number(point.sequence) + 1 || 1);
-          const later = Math.max(0, Number(point.later_message_count) || 0);
-          return (
-            <button
-              class="branch-tree-item branch-tree-point"
-              type="button"
-              key={String(point.message_id || index)}
-              onClick={() =>
-                store.openBranchContext(
-                  String(Math.max(0, Number(point.anchor_message_id) || 0)),
-                  String(point.prefill || ''),
-                )
-              }
-            >
-              <div class="branch-tree-item-content">
-                <div class="branch-tree-item-title">
-                  <strong>Edit: {String(point.preview || '(attachment content)')}</strong>
-                </div>
-                <small>
-                  Message {sequence}
-                  {later > 0 ? ` · ${later} later message${later === 1 ? '' : 's'}` : ''}
-                </small>
+        {visiblePoints.length > 0 && (
+          <div class="branch-tree-section-title">
+            <span>Branch from a message</span>
+            <span class="branch-tree-section-count">
+              {countLabel(visiblePoints.length, pointEntries.length)} · newest first
+            </span>
+          </div>
+        )}
+        {shownPoints.map(({ point, index, sequence, later, preview }) => (
+          <button
+            class="branch-tree-item branch-tree-point"
+            type="button"
+            key={String(point.message_id || index)}
+            aria-label={`Branch from message ${sequence}: ${preview}`}
+            title={`Start a path from message ${sequence}`}
+            onClick={() =>
+              store.openBranchContext(
+                String(Math.max(0, Number(point.anchor_message_id) || 0)),
+                String(point.prefill || ''),
+              )
+            }
+          >
+            <div class="branch-tree-item-content">
+              <div class="branch-tree-item-title">
+                <strong>{preview}</strong>
               </div>
-            </button>
-          );
-        })}
+              <small>
+                Message {sequence}
+                {later > 0 ? ` · ${later} later message${later === 1 ? '' : 's'}` : ''}
+              </small>
+            </div>
+          </button>
+        ))}
+        {hiddenPointCount > 0 && (
+          <button
+            class="branch-tree-more"
+            type="button"
+            onClick={() => setPointLimit((limit) => limit + BRANCH_POINT_BATCH_SIZE)}
+          >
+            Show {Math.min(BRANCH_POINT_BATCH_SIZE, hiddenPointCount)} older message
+            {Math.min(BRANCH_POINT_BATCH_SIZE, hiddenPointCount) === 1 ? '' : 's'}
+          </button>
+        )}
+        {normalizedQuery && visibleNodes.length === 0 && visiblePoints.length === 0 && (
+          <div class="branch-tree-empty" role="status">
+            <strong>No matching paths or messages</strong>
+            <span>Try a different phrase or clear the filter.</span>
+          </div>
+        )}
       </div>
     </Overlay>
   );

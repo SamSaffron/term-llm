@@ -3005,12 +3005,14 @@ describe('Preact-owned chat surfaces', () => {
     );
 
     const dialog = screen.getByRole('dialog', { name: 'Conversation paths' });
+    expect(dialog).toHaveClass('branch-tree-modal');
     expect(dialog).not.toHaveClass('wide-modal');
     expect(screen.getByText('Original path')).toBeVisible();
     expect(screen.getByText('Focused branch')).toBeVisible();
     expect(screen.getByText('After “Earlier answer”')).toBeVisible();
     expect(screen.getByText('Origin')).toBeVisible();
-    expect(screen.getByText('Current')).toBeVisible();
+    const currentPath = screen.getByText('Current').closest('.branch-tree-item');
+    expect(currentPath).toHaveAttribute('aria-current', 'true');
     expect(screen.queryByRole('button', { name: 'Open' })).not.toBeInTheDocument();
     const originalPath = screen.getByRole('button', { name: /Original path/ });
     expect(originalPath).toHaveClass('branch-tree-item');
@@ -3052,13 +3054,68 @@ describe('Preact-owned chat surfaces', () => {
     );
 
     expect(screen.getByText('Existing paths')).toBeVisible();
-    expect(screen.getByText('Branch points')).toBeVisible();
-    const point = screen.getByRole('button', { name: /Edit: First question/ });
+    expect(screen.getByText('Branch from a message')).toBeVisible();
+    const point = screen.getByRole('button', {
+      name: 'Branch from message 1: First question',
+    });
+    expect(point).toHaveTextContent('First question');
+    expect(point).not.toHaveTextContent('Edit:');
     expect(point).toHaveTextContent('Message 1 · 2 later messages');
     await userEvent.click(point);
     expect(store.branchTarget.value).toBe('0');
     expect(store.branchPrefill.value).toBe('First question');
     expect(screen.getByRole('dialog', { name: 'Start a conversation path' })).toBeVisible();
+  });
+
+  it('makes large conversation trees searchable and reveals older messages in batches', async () => {
+    const store = createStore();
+    store.branchTree.value = {
+      root_session_id: 's1',
+      active_session_id: 's1',
+      path_count: 1,
+      nodes: [{ session_id: 's1', title: 'Original path' }],
+      branch_points: Array.from({ length: 55 }, (_, index) => ({
+        message_id: index + 1,
+        anchor_message_id: index,
+        sequence: index,
+        role: 'user',
+        preview: index === 2 ? 'Deployment concern' : `Question ${index + 1}`,
+        prefill: index === 2 ? 'Deployment concern' : `Question ${index + 1}`,
+        later_message_count: 54 - index,
+      })),
+    };
+    store.modal.value = 'branch';
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    const initialPoints = screen.getAllByRole('button', { name: /Branch from message/ });
+    expect(initialPoints).toHaveLength(50);
+    expect(initialPoints[0]).toHaveAccessibleName('Branch from message 55: Question 55');
+    expect(
+      screen.queryByRole('button', { name: 'Branch from message 3: Deployment concern' }),
+    ).not.toBeInTheDocument();
+
+    const filter = screen.getByRole('searchbox', {
+      name: 'Filter conversation paths and messages',
+    });
+    await userEvent.type(filter, 'deployment concern');
+    expect(
+      screen.getByRole('button', { name: 'Branch from message 3: Deployment concern' }),
+    ).toBeVisible();
+    expect(screen.queryByText('Original path')).not.toBeInTheDocument();
+
+    await userEvent.keyboard('{Escape}');
+    expect(filter).toHaveValue('');
+    expect(screen.getByRole('dialog', { name: 'Conversation paths' })).toBeVisible();
+    expect(screen.getAllByRole('button', { name: /Branch from message/ })).toHaveLength(50);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Show 5 older messages' }));
+    expect(screen.getAllByRole('button', { name: /Branch from message/ })).toHaveLength(55);
+    expect(screen.getByRole('button', { name: 'Branch from message 1: Question 1' })).toBeVisible();
   });
 
   it('prioritizes approval and ask-user prompts without losing the underlying modal', () => {
