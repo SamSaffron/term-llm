@@ -14,13 +14,16 @@ func TestEventV1GoldenJSON(t *testing.T) {
 		PID:        4242,
 		CWD:        "/work/project",
 		ResumeArgv: []string{"/usr/local/bin/term-llm", "chat", "--resume=session-123"},
-	}, Snapshot{State: Blocked, SessionID: " session-123 ", Message: "Waiting\n  for approval"})
+	}, Snapshot{State: Blocked, SessionID: " session-123 ", Title: " Testing\nHerdr ", Message: "Waiting\n  for approval"})
 
 	encoded, err := json.Marshal(event)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := `{"schema_version":1,"producer":"term-llm","kind":"state","sequence":1700000000000000001,"timestamp":"2026-08-28T18:05:06.123456789Z","state":"blocked","message":"Waiting for approval","session_id":"session-123","pid":4242,"cwd":"/work/project","resume_argv":["/usr/local/bin/term-llm","chat","--resume=session-123"]}`
+	if event.Title != "Testing Herdr" {
+		t.Fatalf("event title = %q, want normalized internal title", event.Title)
+	}
 	if string(encoded) != want {
 		t.Fatalf("event JSON = %s\nwant       = %s", encoded, want)
 	}

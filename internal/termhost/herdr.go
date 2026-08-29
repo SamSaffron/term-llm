@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	herdrSource = "custom:term-llm"
-	herdrAgent  = "term-llm"
+	herdrSource         = "custom:term-llm"
+	herdrMetadataSource = "custom:term-llm-title"
+	herdrAgent          = "term-llm"
 )
 
 type herdrAdapter struct {
@@ -46,7 +47,23 @@ func (a *herdrAdapter) Send(ctx context.Context, event lifecycle.Event) error {
 	if event.Message != "" && event.State != lifecycle.Idle {
 		args = append(args, "--message", event.Message)
 	}
-	return a.run(ctx, a.binPath, args, nil)
+	if err := a.run(ctx, a.binPath, args, nil); err != nil {
+		return err
+	}
+
+	metadataArgs := []string{
+		"pane", "report-metadata", a.paneID,
+		"--source", herdrMetadataSource,
+		"--agent", herdrAgent,
+		"--applies-to-source", herdrSource,
+	}
+	if event.Title == "" {
+		metadataArgs = append(metadataArgs, "--clear-title", "--clear-display-agent")
+	} else {
+		metadataArgs = append(metadataArgs, "--title", event.Title, "--display-agent", event.Title)
+	}
+	metadataArgs = append(metadataArgs, "--seq", sequence)
+	return a.run(ctx, a.binPath, metadataArgs, nil)
 }
 
 func discoverHerdr(rt runtimeContext) discoveredAdapter {

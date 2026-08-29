@@ -15,6 +15,7 @@ const (
 
 	maxProducerRunes  = 64
 	maxSessionRunes   = 256
+	maxTitleRunes     = 256
 	maxMessageRunes   = 512
 	maxCWDRunes       = 4096
 	maxResumeArgs     = 64
@@ -39,12 +40,15 @@ const (
 )
 
 // Snapshot is a side-effect-free view of the currently visible chat.
+// Title is optional presentation metadata for first-party terminal hosts. It is
+// intentionally not part of the versioned JSON event schema sent to command sinks.
 // Message is an optional, stable detail suitable for display by a terminal host.
 // CWD is the visible session's effective working directory when available; the
 // manager uses the producer process working directory as its event fallback.
 type Snapshot struct {
 	State     State
 	SessionID string
+	Title     string
 	Message   string
 	CWD       string
 }
@@ -68,6 +72,7 @@ type Event struct {
 	State         State    `json:"state"`
 	Message       string   `json:"message"`
 	SessionID     string   `json:"session_id"`
+	Title         string   `json:"-"`
 	PID           int      `json:"pid"`
 	CWD           string   `json:"cwd"`
 	ResumeArgv    []string `json:"resume_argv,omitempty"`
@@ -91,6 +96,7 @@ func NewEvent(kind Kind, sequence int64, timestamp time.Time, metadata Metadata,
 		State:         snapshot.State,
 		Message:       snapshot.Message,
 		SessionID:     snapshot.SessionID,
+		Title:         snapshot.Title,
 		PID:           metadata.PID,
 		CWD:           metadata.CWD,
 		ResumeArgv:    metadata.ResumeArgv,
@@ -104,6 +110,7 @@ func NormalizeSnapshot(snapshot Snapshot) Snapshot {
 		snapshot.State = ""
 	}
 	snapshot.SessionID = sanitizeCollapsed(snapshot.SessionID, maxSessionRunes)
+	snapshot.Title = sanitizeCollapsed(snapshot.Title, maxTitleRunes)
 	snapshot.Message = sanitizeCollapsed(snapshot.Message, maxMessageRunes)
 	snapshot.CWD = sanitizePreservingSpace(snapshot.CWD, maxCWDRunes)
 	if snapshot.State == Idle {

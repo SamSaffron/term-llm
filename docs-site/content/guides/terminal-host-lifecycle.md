@@ -148,9 +148,14 @@ Detection requires:
 
 The adapter invokes the release-matched Herdr CLI directly, never a socket or a
 shell. It reports source `custom:term-llm`, agent `term-llm`, the state, shared
-sequence, display message, and persisted session ID, then calls
-`pane release-agent` on shutdown. The session-ID field is forwarded for future
-compatibility but is currently inert for Herdr custom-source restore authority.
+sequence, display message, and persisted session ID. It separately publishes the
+visible session's preferred short title through `pane report-metadata`, scoped to
+the term-llm lifecycle source. The value is sent as both Herdr's pane title and
+its display-agent label because Herdr's default agent rows render the latter; this
+makes `/title` and generated titles visible without custom Herdr sidebar rows. A
+titleless new session clears both fields. On shutdown the adapter calls
+`pane release-agent`. The session-ID field is forwarded for future compatibility
+but is currently inert for Herdr custom-source restore authority.
 
 Herdr currently treats `custom:term-llm` as a custom source. Native one-step
 restore is not available: Herdr versions investigated for this integration do

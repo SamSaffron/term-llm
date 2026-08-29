@@ -52,6 +52,14 @@ func TestLifecycleSnapshotMapping(t *testing.T) {
 	}
 }
 
+func TestLifecycleSnapshotIncludesPreferredSessionTitle(t *testing.T) {
+	m := newTestChatModel(true)
+	m.sess = &session.Session{ID: "session-title", Name: "Testing", GeneratedShortTitle: "Generated fallback"}
+	if got := m.LifecycleSnapshot().Title; got != "Testing" {
+		t.Fatalf("LifecycleSnapshot().Title = %q, want Testing", got)
+	}
+}
+
 func TestLifecycleSnapshotBlockedPrecedesWorking(t *testing.T) {
 	blockers := []struct {
 		name      string

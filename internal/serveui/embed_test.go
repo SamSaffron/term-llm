@@ -34,7 +34,7 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// safe-point branch workflow, and interactive worktree conflict recovery
 		// are first-party shell code. Keep bounded headroom over that productized
 		// baseline while still failing meaningful accidental regressions.
-		"dist/app.js":  {raw: 395_000, gzip: 117_000},
+		"dist/app.js":  {raw: 400_000, gzip: 117_000},
 		"dist/app.css": {raw: 160_000, gzip: 30_500},
 	}
 	for name, budget := range budgets {

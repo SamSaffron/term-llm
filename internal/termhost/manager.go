@@ -288,7 +288,7 @@ func (w *adapterWorker) enqueue(event lifecycle.Event) {
 }
 
 func sameStateEvent(left, right lifecycle.Event) bool {
-	return left.State == right.State && left.Message == right.Message && left.SessionID == right.SessionID && left.CWD == right.CWD
+	return left.State == right.State && left.Message == right.Message && left.SessionID == right.SessionID && left.Title == right.Title && left.CWD == right.CWD
 }
 
 func (w *adapterWorker) beginClose(release lifecycle.Event, claimed bool) {

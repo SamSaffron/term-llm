@@ -12,6 +12,7 @@ func (m *Model) LifecycleSnapshot() lifecycle.Snapshot {
 	}
 	snapshot.SessionID = sessionIDOf(m.sess)
 	if m.sess != nil {
+		snapshot.Title = m.sess.PreferredShortTitle()
 		snapshot.CWD = m.effectiveWorkingDir()
 	}
 

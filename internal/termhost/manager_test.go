@@ -54,7 +54,7 @@ func TestHerdrAdapterExactArgv(t *testing.T) {
 	var mu sync.Mutex
 	adapter := &herdrAdapter{binPath: "/opt/herdr", paneID: "w1:p2", run: recordingRunner(&commands, &mu, nil)}
 	state := lifecycle.NewEvent(lifecycle.KindState, 100, time.Now(), lifecycle.Metadata{}, lifecycle.Snapshot{
-		State: lifecycle.Blocked, SessionID: "session-a", Message: "Waiting for approval",
+		State: lifecycle.Blocked, SessionID: "session-a", Message: "Waiting for approval", Title: "Testing Herdr titles",
 	})
 	if err := adapter.Send(context.Background(), state); err != nil {
 		t.Fatal(err)
@@ -65,10 +65,25 @@ func TestHerdrAdapterExactArgv(t *testing.T) {
 	}
 	want := []recordedCommand{
 		{path: "/opt/herdr", args: []string{"pane", "report-agent", "w1:p2", "--source", "custom:term-llm", "--agent", "term-llm", "--state", "blocked", "--seq", "100", "--agent-session-id", "session-a", "--message", "Waiting for approval"}},
+		{path: "/opt/herdr", args: []string{"pane", "report-metadata", "w1:p2", "--source", "custom:term-llm-title", "--agent", "term-llm", "--applies-to-source", "custom:term-llm", "--title", "Testing Herdr titles", "--display-agent", "Testing Herdr titles", "--seq", "100"}},
 		{path: "/opt/herdr", args: []string{"pane", "release-agent", "w1:p2", "--source", "custom:term-llm", "--agent", "term-llm", "--seq", "101"}},
 	}
 	if !reflect.DeepEqual(commands, want) {
 		t.Fatalf("commands = %#v\nwant = %#v", commands, want)
+	}
+}
+
+func TestHerdrAdapterClearsMissingTitle(t *testing.T) {
+	var commands []recordedCommand
+	var mu sync.Mutex
+	adapter := &herdrAdapter{binPath: "/opt/herdr", paneID: "w1:p2", run: recordingRunner(&commands, &mu, nil)}
+	event := lifecycle.NewEvent(lifecycle.KindState, 102, time.Now(), lifecycle.Metadata{}, lifecycle.Snapshot{State: lifecycle.Idle})
+	if err := adapter.Send(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"pane", "report-metadata", "w1:p2", "--source", "custom:term-llm-title", "--agent", "term-llm", "--applies-to-source", "custom:term-llm", "--clear-title", "--clear-display-agent", "--seq", "102"}
+	if len(commands) != 2 || !reflect.DeepEqual(commands[1].args, want) {
+		t.Fatalf("metadata command = %#v, want %#v", commands, want)
 	}
 }
 
