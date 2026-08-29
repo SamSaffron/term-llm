@@ -138,6 +138,17 @@ export class SessionStore {
     };
   }
 
+  /**
+   * Rows the client owns survive a server rebuild: live runs, unsent drafts,
+   * and the open conversation. Deliberately scoped to applySidebar's
+   * rebuild-from-server loop only — do not centralize into replace(), which
+   * must stay lossy so RunEngine.rekeySession can drop the pre-rekey draft_
+   * row while activeSessionId still points at it (it re-points afterward).
+   */
+  private retainedLocally(id: string): boolean {
+    return this.host.hasRun(id) || id.startsWith('draft_') || id === this.activeSessionId.peek();
+  }
+
   applySidebar(data: Record<string, unknown>): void {
     const direct = listFrom(data, 'data', 'sessions', 'items').map((entry) =>
       this.sessionFrom(entry),
@@ -191,8 +202,7 @@ export class SessionStore {
       ]),
     );
     for (const [id, session] of existing)
-      if (!merged.has(id) && (this.host.hasRun(id) || id.startsWith('draft_')))
-        merged.set(id, session);
+      if (!merged.has(id) && this.retainedLocally(id)) merged.set(id, session);
     this.sessions.value = [...merged.values()].sort(compareSessionsByActivity);
     this.projects.value = projects.map((project) => ({
       ...project,
