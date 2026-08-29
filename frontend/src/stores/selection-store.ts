@@ -192,13 +192,19 @@ export class SelectionStore {
       const bodies = recordValue(sideload.bodies) || {};
       const serverMessages = listFrom(bodies, 'messages', 'items');
       const lastResponseId = String(state.lastResponseId || state.last_response_id || '').trim();
-      const incoming = this.sessionsStore.sessionFrom({
-        id,
-        ...selectedSource,
-        // The selected transcript revision owns the message bodies being installed.
-        transcript_rev: bodies.rev ?? selectedSource.transcript_rev ?? selectedSource.rev,
-        messages: serverMessages,
-      });
+      const selectedRevision = Number(
+        bodies.rev ?? selectedSource.transcript_rev ?? selectedSource.rev,
+      );
+      const incoming = {
+        ...this.sessionsStore.sessionFrom({
+          id,
+          ...selectedSource,
+          // The selected transcript revision owns the message bodies being installed.
+          transcript_rev: bodies.rev ?? selectedSource.transcript_rev ?? selectedSource.rev,
+          messages: serverMessages,
+        }),
+        ...(Number.isFinite(selectedRevision) ? { messageBodiesRev: selectedRevision } : {}),
+      };
       const currentIndex = this.sessionsStore.sessions.value.findIndex(
         (session) => session.id === id || (incoming.id && session.id === incoming.id),
       );

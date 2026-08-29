@@ -39,6 +39,7 @@ export interface StatusReconcilerHost {
   loadChildRuns: (sessionId?: string) => Promise<void>;
   resumeResponse: (sessionId: string, responseId: string) => Promise<void>;
   refreshSessionMessages: (sessionId: string, targetRev?: number) => Promise<void>;
+  syncSessionMessagesForAttach: (sessionId: string, targetRev?: number) => Promise<void>;
   refreshDiffComments: (sessionId: string) => Promise<void>;
   retireIntent: (sessionId: string, clientMessageId?: string) => void;
   stoppedResponseCount: () => number;
@@ -50,6 +51,7 @@ export interface StatusReconcilerHost {
 export class StatusReconciler {
   private timer = 0;
   private unknownActiveSessionIds = new Set<string>();
+  private readonly transcriptAttachSyncs = new Set<string>();
   private readonly coordinator: StatusCoordinatorState = {
     generation: 0,
     refreshPromise: null,
@@ -221,16 +223,42 @@ export class StatusReconciler {
           : stoppedServerResponse
             ? null
             : serverActiveResponseId;
-        const transcriptRev = Math.max(
-          session.transcriptRev || 0,
-          Number(status.transcript_rev) || 0,
+        const serverTranscriptRev = Number(status.transcript_rev) || 0;
+        const installedTranscriptRev = session.messageBodiesRev || 0;
+        const initiatingMessageInstalled = Boolean(
+          committedClientMessageId &&
+          session.messages.some(
+            (message) =>
+              message.role === 'user' && message.clientMessageId === committedClientMessageId,
+          ),
         );
-        if (
-          activeResponseId &&
-          activeResponseId !== session.activeResponseId &&
-          !this.host.isLocallyStopped(activeResponseId)
-        )
-          followUps.push(() => void this.host.resumeResponse(session.id, activeResponseId));
+        const peerPromptMissing = committedClientMessageId
+          ? !initiatingMessageInstalled
+          : serverTranscriptRev > installedTranscriptRev;
+        const needsTranscriptSyncBeforeAttach = Boolean(
+          serverActiveResponseId &&
+          session.id === activeSessionId &&
+          projectedRun?.responseId !== serverActiveResponseId &&
+          peerPromptMissing &&
+          !this.host.isLocallyStopped(serverActiveResponseId),
+        );
+        // Status and sidebar metadata can advance independently from the
+        // message bodies installed in this client. Track both generations.
+        const transcriptRev = Math.max(session.transcriptRev || 0, serverTranscriptRev);
+        if (activeResponseId && !this.host.isLocallyStopped(activeResponseId)) {
+          if (needsTranscriptSyncBeforeAttach)
+            followUps.push(
+              () =>
+                void this.syncTranscriptThenResume(
+                  session.id,
+                  activeResponseId,
+                  serverTranscriptRev,
+                  committedClientMessageId,
+                ),
+            );
+          else if (activeResponseId !== session.activeResponseId)
+            followUps.push(() => void this.host.resumeResponse(session.id, activeResponseId));
+        }
         if (stoppedResponseId && this.host.isLocallyStopped(stoppedResponseId)) {
           if (!serverActiveResponseId || serverActiveResponseId !== stoppedResponseId)
             this.host.clearLocallyStopped(stoppedResponseId);
@@ -312,8 +340,47 @@ export class StatusReconciler {
     if (this.statusRequestIsCurrent(metadata)) followUps.forEach((followUp) => followUp());
   }
 
+  private async syncTranscriptThenResume(
+    sessionId: string,
+    responseId: string,
+    targetRev: number,
+    clientMessageId: string,
+  ): Promise<void> {
+    const key = `${sessionId}:${responseId}`;
+    if (this.transcriptAttachSyncs.has(key)) return;
+    this.transcriptAttachSyncs.add(key);
+    try {
+      await this.host.syncSessionMessagesForAttach(sessionId, targetRev).catch(() => undefined);
+      if (
+        this.services.isDisposed ||
+        this.host.activeSessionId.peek() !== sessionId ||
+        this.host.isLocallyStopped(responseId)
+      )
+        return;
+      const session = this.host.sessionStore.find(sessionId);
+      const installedBodiesRev = session?.messageBodiesRev;
+      const initiatingMessageInstalled = Boolean(
+        clientMessageId &&
+        session?.messages.some(
+          (message) => message.role === 'user' && message.clientMessageId === clientMessageId,
+        ),
+      );
+      const durableBaseInstalled = clientMessageId
+        ? initiatingMessageInstalled ||
+          (installedBodiesRev !== undefined && installedBodiesRev > targetRev)
+        : (installedBodiesRev ?? session?.transcriptRev ?? 0) >= targetRev;
+      // A newer status result owns a changed response, and a failed/lagging
+      // transcript fetch must not expose response output without its durable base.
+      if (session?.activeResponseId !== responseId || !durableBaseInstalled) return;
+      await this.host.resumeResponse(sessionId, responseId).catch(() => undefined);
+    } finally {
+      this.transcriptAttachSyncs.delete(key);
+    }
+  }
+
   dispose(): void {
     window.clearTimeout(this.timer);
     this.coordinator.generation += 1;
+    this.transcriptAttachSyncs.clear();
   }
 }

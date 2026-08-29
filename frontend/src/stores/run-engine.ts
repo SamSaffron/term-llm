@@ -939,6 +939,7 @@ export class RunEngine {
     sessionId: string,
     targetRev = 0,
     expectedResponseId = '',
+    preserveLiveRun = false,
   ): Promise<void> {
     try {
       const interjectionRevision = this.interjectionRevision;
@@ -950,17 +951,22 @@ export class RunEngine {
       const sideload = recordValue(selected.selected_transcript);
       const bodies = recordValue(sideload?.bodies);
       if (!source || !bodies) return;
-      const incoming = this.sessionStore.sessionFrom({
-        ...source,
-        // The bodies revision is the generation of the messages being installed.
-        // Prefer it over summary metadata, which may have advanced independently.
-        transcript_rev: bodies.rev ?? source.transcript_rev ?? source.rev,
-        messages: listFrom(bodies, 'messages', 'items'),
-      });
-      const incomingRev = incoming.transcriptRev || 0;
-      const currentRev =
-        this.sessionStore.sessions.peek().find((session) => session.id === sessionId)
-          ?.transcriptRev || 0;
+      const incomingRevision = Number(bodies.rev ?? source.transcript_rev ?? source.rev);
+      const incoming = {
+        ...this.sessionStore.sessionFrom({
+          ...source,
+          // The bodies revision is the generation of the messages being installed.
+          // Prefer it over summary metadata, which may have advanced independently.
+          transcript_rev: bodies.rev ?? source.transcript_rev ?? source.rev,
+          messages: listFrom(bodies, 'messages', 'items'),
+        }),
+        ...(Number.isFinite(incomingRevision) ? { messageBodiesRev: incomingRevision } : {}),
+      };
+      const incomingRev = incoming.messageBodiesRev || 0;
+      const currentSession = this.sessionStore.sessions
+        .peek()
+        .find((session) => session.id === sessionId);
+      const currentRev = currentSession?.messageBodiesRev ?? currentSession?.transcriptRev ?? 0;
       if (incomingRev < currentRev) return;
       // Never combine a terminal projection with transcript bodies whose
       // generation cannot prove that they contain the durable handoff.
@@ -976,7 +982,11 @@ export class RunEngine {
       );
       batch(() => {
         this.sessionStore.update(sessionId, (session) =>
-          this.sessionStore.mergeSession(session, incoming, true),
+          // Selected-session payloads own transcript bodies, not live response
+          // ownership. Peer attachment preserves that ownership until the
+          // durable initiating message is installed; other refreshes retain
+          // their existing authoritative replacement behavior.
+          this.sessionStore.mergeSession(session, incoming, true, preserveLiveRun),
         );
         if (retireProjection && projection) {
           this.retiredResponses.add(projection.run.responseId);

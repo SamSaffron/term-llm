@@ -163,6 +163,8 @@ export interface Session {
   mcpEnabled?: string[];
   messageCount?: number;
   transcriptRev?: number;
+  /** Revision of the durable message bodies currently installed in messages. */
+  messageBodiesRev?: number;
   fileChangeSummary?: { fileCount: number; additions: number; deletions: number; git: boolean };
 }
 

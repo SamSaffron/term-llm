@@ -483,6 +483,8 @@ export class AppStore {
       resumeResponse: (sessionId, responseId) => this.resumeResponse(sessionId, responseId),
       refreshSessionMessages: (sessionId, targetRev) =>
         this.refreshSessionMessages(sessionId, targetRev),
+      syncSessionMessagesForAttach: (sessionId, targetRev) =>
+        this.refreshSessionMessages(sessionId, targetRev, '', true),
       refreshDiffComments: (sessionId) => this.refreshDiffComments(sessionId),
       retireIntent: (sessionId, clientMessageId) => this.retireIntent(sessionId, clientMessageId),
       stoppedResponseCount: () => this.locallyStoppedResponses.size,
@@ -844,8 +846,9 @@ export class AppStore {
     sessionId: string,
     targetRev = 0,
     responseId = '',
+    preserveLiveRun = false,
   ): Promise<void> {
-    await this.runEngine.refreshSessionMessages(sessionId, targetRev, responseId);
+    await this.runEngine.refreshSessionMessages(sessionId, targetRev, responseId, preserveLiveRun);
   }
 
   private async resumeResponse(sessionId: string, responseId: string): Promise<void> {

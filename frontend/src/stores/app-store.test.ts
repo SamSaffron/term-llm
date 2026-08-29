@@ -1609,7 +1609,7 @@ describe('AppStore compatibility behavior', () => {
 
   it('does not let an old terminal transcript refresh overwrite a newer response', async () => {
     const store = new AppStore(config);
-    store.sessions.value = [{ ...session(), transcriptRev: 4 }];
+    store.sessions.value = [{ ...session(), transcriptRev: 4, messageBodiesRev: 4 }];
     store.activeSessionId.value = 's1';
     store.runs.value = {
       s1: initialProjection({
@@ -2146,6 +2146,170 @@ describe('AppStore compatibility behavior', () => {
     await internals.refreshStatus();
 
     expect(internals.resumeResponse).not.toHaveBeenCalled();
+  });
+
+  it('installs a peer prompt before streaming its active response', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [{ ...session(), transcriptRev: 4, messageBodiesRev: 4 }];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    const order: string[] = [];
+    store.endpoints.sessionStatus = vi.fn(async () => ({
+      sessions: [
+        {
+          id: 's1',
+          active_run: true,
+          active_response_id: 'peer-response',
+          client_message_id: 'peer-message',
+          transcript_rev: 5,
+        },
+      ],
+    }));
+    store.endpoints.sessions = vi.fn(async () => ({
+      data: [{ id: 's1', short_title: 'Test', transcript_rev: 5 }],
+    }));
+    store.endpoints.selectedSession = vi.fn(async () => {
+      order.push('transcript');
+      return {
+        selected_session: { id: 's1', title: 'Test' },
+        selected_transcript: {
+          bodies: {
+            rev: 5,
+            messages: [
+              {
+                id: 42,
+                sequence: 1,
+                role: 'user',
+                client_message_id: 'peer-message',
+                parts: [{ type: 'text', text: 'peer prompt' }],
+              },
+            ],
+          },
+        },
+      };
+    });
+    store.endpoints.sessionState = vi.fn(async () => ({}));
+    store.endpoints.response = vi.fn(async () => {
+      order.push('response');
+      return {
+        id: 'peer-response',
+        status: 'in_progress',
+        run_epoch: 1,
+        started_rev: 4,
+        last_sequence_number: 1,
+        recovery: {
+          sequence_number: 1,
+          messages: [
+            {
+              id: 'peer-response:assistant:0',
+              role: 'assistant',
+              content: 'streamed reply',
+              response_id: 'peer-response',
+              assistant_segment_ordinal: 0,
+            },
+          ],
+        },
+      };
+    });
+    const internals = store as unknown as {
+      refreshStatus(): Promise<void>;
+      streamResponse(responseId: string, sessionId: string, after: number): Promise<void>;
+    };
+    internals.streamResponse = vi.fn(async () => {
+      order.push('stream');
+    });
+
+    await store.refreshSidebar();
+    expect(store.sessions.value[0]).toMatchObject({ transcriptRev: 5, messageBodiesRev: 4 });
+
+    await internals.refreshStatus();
+    await vi.waitFor(() => expect(order).toContain('stream'));
+
+    expect(store.endpoints.selectedSession).toHaveBeenCalledOnce();
+    expect(order).toEqual(['transcript', 'response', 'stream']);
+    expect(store.visibleMessages.value.map((message) => message.content)).toEqual([
+      'peer prompt',
+      'streamed reply',
+    ]);
+    expect(store.sessions.value[0]).toMatchObject({
+      transcriptRev: 5,
+      messageBodiesRev: 5,
+      activeResponseId: 'peer-response',
+      activeRun: true,
+    });
+  });
+
+  it('retries a peer attach without publishing an uninstalled transcript revision', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [{ ...session(), transcriptRev: 4, messageBodiesRev: 4 }];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.endpoints.sessionStatus = vi.fn(async () => ({
+      sessions: [
+        {
+          id: 's1',
+          active_run: true,
+          active_response_id: 'peer-response',
+          client_message_id: 'peer-message',
+          transcript_rev: 5,
+        },
+      ],
+    }));
+    const stalledTranscript = deferred<Record<string, unknown>>();
+    store.endpoints.selectedSession = vi
+      .fn()
+      .mockImplementationOnce(() => stalledTranscript.promise)
+      .mockResolvedValue({
+        selected_session: { id: 's1', title: 'Test' },
+        selected_transcript: {
+          bodies: {
+            rev: 5,
+            messages: [
+              {
+                id: 42,
+                sequence: 1,
+                role: 'user',
+                client_message_id: 'peer-message',
+                parts: [{ type: 'text', text: 'peer prompt' }],
+              },
+            ],
+          },
+        },
+      });
+    store.endpoints.sessionState = vi.fn(async () => ({}));
+    store.endpoints.response = vi.fn(async () => ({
+      id: 'peer-response',
+      status: 'in_progress',
+      run_epoch: 1,
+      last_sequence_number: 1,
+      recovery: { sequence_number: 1 },
+    }));
+    const internals = store as unknown as {
+      refreshStatus(authoritative?: boolean): Promise<void>;
+      streamResponse(responseId: string, sessionId: string, after: number): Promise<void>;
+    };
+    internals.streamResponse = vi.fn(async () => undefined);
+
+    await internals.refreshStatus();
+    await vi.waitFor(() => expect(store.endpoints.selectedSession).toHaveBeenCalledOnce());
+
+    await internals.refreshStatus(true);
+    expect(store.endpoints.selectedSession).toHaveBeenCalledOnce();
+    expect(store.sessions.value[0]).toMatchObject({ transcriptRev: 5, messageBodiesRev: 4 });
+    expect(store.endpoints.response).not.toHaveBeenCalled();
+
+    stalledTranscript.reject(new Error('temporary transcript failure'));
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    await internals.refreshStatus(true);
+    await vi.waitFor(() => expect(internals.streamResponse).toHaveBeenCalledOnce());
+
+    expect(store.endpoints.selectedSession).toHaveBeenCalledTimes(2);
+    expect(store.sessions.value[0]).toMatchObject({
+      transcriptRev: 5,
+      messageBodiesRev: 5,
+      activeResponseId: 'peer-response',
+      activeRun: true,
+    });
   });
 
   it('does not let an idle status response invalidate a run admitted after the request began', async () => {

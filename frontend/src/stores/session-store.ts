@@ -154,6 +154,10 @@ export class SessionStore {
       usage: incoming.usage || existing.usage,
       goal: incoming.goal ?? existing.goal,
       transcriptRev: incoming.transcriptRev ?? existing.transcriptRev,
+      messageBodiesRev:
+        replaceMessages || incoming.messages.length
+          ? (incoming.messageBodiesRev ?? existing.messageBodiesRev)
+          : existing.messageBodiesRev,
       fileChangeSummary: incoming.fileChangeSummary || existing.fileChangeSummary,
     };
   }
