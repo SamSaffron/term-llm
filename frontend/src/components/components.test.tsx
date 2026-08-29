@@ -2147,6 +2147,26 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.queryByRole('link', { name: 'Back to Hub' })).not.toBeInTheDocument();
   });
 
+  it('keeps terminal-origin agent sessions out of the default sidebar', () => {
+    const store = createStore();
+    store.sessions.value = [
+      ...store.sessions.value,
+      {
+        ...store.sessions.value[0],
+        id: 'agent-session',
+        title: 'Background agent investigation',
+        origin: 'tui',
+      },
+    ];
+    render(
+      <StoreContext.Provider value={store}>
+        <Sidebar />
+      </StoreContext.Provider>,
+    );
+
+    expect(screen.getByText('Test')).toBeInTheDocument();
+    expect(screen.queryByText('Background agent investigation')).not.toBeInTheDocument();
+  });
   it('shows server-observed running state before this tab attaches to the stream', () => {
     const store = createStore();
     store.activeSessionId.value = '';

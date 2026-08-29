@@ -408,13 +408,18 @@ function ProjectGroup({ project }: { project: Project }) {
   const { menu: menuRef, up } = useMenuFlip(menu);
   const menuTrigger = useRef<HTMLButtonElement>(null);
   const keyboardMenu = useMenuKeyboard(menu, () => setMenu(false), menuTrigger);
-  const listedSessionIDs = new Set((project.sessions || []).map((session) => session.id));
+  const listedSessionIDs = new Set(
+    (project.sessions || []).filter(isSidebarSessionVisible).map((session) => session.id),
+  );
   const sessions = [
-    ...(project.sessions || []).map(
-      (session) => store.sessions.value.find((entry) => entry.id === session.id) || session,
-    ),
+    ...(project.sessions || [])
+      .filter(isSidebarSessionVisible)
+      .map((session) => store.sessions.value.find((entry) => entry.id === session.id) || session),
     ...store.sessions.value.filter(
-      (session) => session.projectId === project.id && !listedSessionIDs.has(session.id),
+      (session) =>
+        session.projectId === project.id &&
+        isSidebarSessionVisible(session) &&
+        !listedSessionIDs.has(session.id),
     ),
   ].sort(
     (left, right) =>
@@ -621,6 +626,13 @@ function HubAgents() {
   );
 }
 
+function isSidebarSessionVisible(session: Session): boolean {
+  // TUI-origin sessions include native background-agent runs. They remain
+  // addressable directly and through spawn-agent links, but should not make a
+  // web sidebar shared with the terminal look like an agent process monitor.
+  return session.origin !== 'tui';
+}
+
 export function Sidebar() {
   const store = useStore();
   const collapsed = store.sidebarCollapsed.value;
@@ -658,11 +670,13 @@ export function Sidebar() {
       overlayToken.current = null;
     };
   }, [mobile, mobileOpen]);
-  const standalone = store.sessions.value.filter((session) => !session.projectId);
+  const standalone = store.sessions.value.filter(
+    (session) => !session.projectId && isSidebarSessionVisible(session),
+  );
   const sidebarSessions = [
     ...store.sessions.value,
     ...store.projects.value.flatMap((project) => project.sessions || []),
-  ];
+  ].filter(isSidebarSessionVisible);
   const results = store.searchResults.value;
   const brand = store.config.title.trim() || displayName(store.config.agentName);
   const pinned = sidebarSessions.filter(
