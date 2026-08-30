@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { Message, ToolCall } from '../domain/types';
 import { indexTranscriptTurns, windowTranscript } from '../domain/transcript';
 import { useStore } from '../app/context';
@@ -478,7 +478,10 @@ function MessageRow({
 }) {
   const store = useStore();
   const [expanded, setExpanded] = useState(false);
-  const rebase = (value: string) => rebaseHubAssetURL(store.config, value);
+  const rebase = useCallback(
+    (value: string) => rebaseHubAssetURL(store.config, value),
+    [store.config],
+  );
   const media = (src: string, type: 'image' | 'video') => {
     if (!streaming) openMediaGallery(store, src, type);
   };
@@ -695,6 +698,7 @@ export function Transcript() {
   const scroll = useRef<HTMLElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const stickToTail = useRef(true);
+  const programmaticScrollTops = useRef<number[]>([]);
   const touchY = useRef<number | null>(null);
   const [nearTail, setNearTail] = useState(true);
   const [turnLimit, setTurnLimit] = useState(80);
@@ -725,7 +729,13 @@ export function Transcript() {
     stickToTail.current = true;
     setNearTail(true);
     const scrollToTail = () => {
-      if (stickToTail.current) element.scrollTop = element.scrollHeight;
+      if (!stickToTail.current) return;
+      element.scrollTop = element.scrollHeight;
+      const pinnedTop = element.scrollTop;
+      const recentTops = programmaticScrollTops.current;
+      if (recentTops.at(-1) !== pinnedTop) {
+        programmaticScrollTops.current = [...recentTops.slice(-7), pinnedTop];
+      }
     };
     const forceScrollToTail = () => {
       stickToTail.current = true;
@@ -747,7 +757,14 @@ export function Transcript() {
   }, [store.activeSession.value?.id]);
   useLayoutEffect(() => {
     const element = scroll.current;
-    if (element && stickToTail.current) element.scrollTop = element.scrollHeight;
+    if (element && stickToTail.current) {
+      element.scrollTop = element.scrollHeight;
+      const pinnedTop = element.scrollTop;
+      const recentTops = programmaticScrollTops.current;
+      if (recentTops.at(-1) !== pinnedTop) {
+        programmaticScrollTops.current = [...recentTops.slice(-7), pinnedTop];
+      }
+    }
   }, [messages]);
   useLayoutEffect(() => {
     const element = scroll.current;
@@ -779,7 +796,10 @@ export function Transcript() {
       id="chatScroll"
       ref={scroll}
       onWheel={(event) => {
-        if (event.deltaY < 0) stickToTail.current = false;
+        if (event.deltaY < 0) {
+          stickToTail.current = false;
+          programmaticScrollTops.current = [];
+        }
       }}
       onTouchStart={(event) => {
         touchY.current = event.touches[0]?.clientY ?? null;
@@ -788,6 +808,7 @@ export function Transcript() {
         const nextY = event.touches[0]?.clientY;
         if (nextY !== undefined && touchY.current !== null && nextY > touchY.current) {
           stickToTail.current = false;
+          programmaticScrollTops.current = [];
         }
         touchY.current = nextY ?? null;
       }}
@@ -797,9 +818,19 @@ export function Transcript() {
       onScroll={(event) => {
         const element = event.currentTarget;
         const distanceFromTail = element.scrollHeight - element.scrollTop - element.clientHeight;
+        const programmatic = programmaticScrollTops.current.some(
+          (requested) => Math.abs(element.scrollTop - requested) <= 1,
+        );
 
-        if (distanceFromTail > 1) stickToTail.current = false;
-        else if (distanceFromTail <= 0) stickToTail.current = true;
+        if (programmatic) {
+          // Keep recent markers until an actual move disagrees with all of them.
+          // Chromium may emit delayed scroll events for older pins after streamed
+          // content briefly shrinks and then grows again.
+          stickToTail.current = true;
+        } else if (distanceFromTail > 1) {
+          programmaticScrollTops.current = [];
+          stickToTail.current = false;
+        } else if (distanceFromTail <= 0) stickToTail.current = true;
 
         setNearTail(distanceFromTail < 96);
       }}

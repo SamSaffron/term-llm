@@ -180,6 +180,9 @@ describe('markdown security and streaming', () => {
   it('latches globally sensitive markdown onto the canonical fallback path', () => {
     expect(hasIncrementalGlobalMarkdownSyntax('[name]: https://example.com')).toBe(true);
     expect(hasIncrementalGlobalMarkdownSyntax('    indented code')).toBe(true);
+    expect(hasIncrementalGlobalMarkdownSyntax('    - name: build\n      run: make')).toBe(true);
+    expect(hasIncrementalGlobalMarkdownSyntax('  - nested\n    - deeply nested')).toBe(false);
+    expect(hasIncrementalGlobalMarkdownSyntax('   1. nested\n      1. deeper')).toBe(false);
     expect(hasIncrementalGlobalMarkdownSyntax('```md\n[name]: still code\n```')).toBe(false);
   });
 });

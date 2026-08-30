@@ -1478,18 +1478,40 @@ describe('Preact-owned chat surfaces', () => {
       act(() => resize?.([], {} as ResizeObserver));
       expect(viewport.scrollTop).toBe(1_100);
 
-      viewport.scrollTop = 1_095;
+      // Canonical tail reparsing can briefly shrink the document. Chromium clamps
+      // scrollTop, then may restore an older programmatic position after it grows.
+      scrollHeight = 1_390;
+      viewport.scrollTop = 1_090;
       fireEvent.scroll(viewport);
-      scrollHeight = 1_500;
       act(() => resize?.([], {} as ResizeObserver));
-      expect(viewport.scrollTop).toBe(1_095);
+      expect(viewport.scrollTop).toBe(1_090);
 
-      viewport.scrollTop = 1_200;
+      scrollHeight = 1_500;
+      viewport.scrollTop = 1_100;
       fireEvent.scroll(viewport);
-      fireEvent.wheel(viewport, { deltaY: -1 });
-      scrollHeight = 1_600;
       act(() => resize?.([], {} as ResizeObserver));
       expect(viewport.scrollTop).toBe(1_200);
+
+      viewport.scrollTop = 1_195;
+      fireEvent.scroll(viewport);
+      scrollHeight = 1_600;
+      act(() => resize?.([], {} as ResizeObserver));
+      expect(viewport.scrollTop).toBe(1_195);
+
+      // Returning to the old programmatic position via scrollbar or keyboard
+      // must not revive a stale marker and re-pin the reader.
+      viewport.scrollTop = 1_200;
+      fireEvent.scroll(viewport);
+      scrollHeight = 1_700;
+      act(() => resize?.([], {} as ResizeObserver));
+      expect(viewport.scrollTop).toBe(1_200);
+
+      viewport.scrollTop = 1_400;
+      fireEvent.scroll(viewport);
+      fireEvent.wheel(viewport, { deltaY: -1 });
+      scrollHeight = 1_800;
+      act(() => resize?.([], {} as ResizeObserver));
+      expect(viewport.scrollTop).toBe(1_400);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -3903,6 +3925,17 @@ describe('Preact-owned chat surfaces', () => {
     }
   });
 
+  it('rebases finalized assets without rebuilding their DOM', () => {
+    const source = '![artifact](/artifact.png)';
+    const { container, rerender } = render(<Markdown value={source} />);
+    const image = container.querySelector('img');
+    expect(image).not.toBeNull();
+
+    rerender(<Markdown value={source} rebase={(value) => `/chat${value}`} />);
+    expect(container.querySelector('img')).toBe(image);
+    expect(image).toHaveAttribute('src', '/chat/artifact.png');
+  });
+
   it('keeps one code node while an open fence grows and commits it once', async () => {
     vi.useFakeTimers();
     try {
@@ -3935,9 +3968,45 @@ describe('Preact-owned chat surfaces', () => {
       expect(container).toHaveTextContent('trailing prose');
 
       rerender(<Markdown value={closed} />);
+      await act(async () => {
+        await Promise.resolve();
+      });
       expect(container.querySelector('pre')).toBe(pre);
       expect(container.querySelector('pre code')).toBe(code);
+      expect(code).toHaveAttribute('data-highlighted', 'yes');
+      const highlighted = code?.innerHTML;
       expect(screen.getAllByRole('button', { name: 'Copy code' })).toHaveLength(1);
+
+      rerender(<Markdown value={closed} rebase={(value) => value} />);
+      expect(container.querySelector('pre')).toBe(pre);
+      expect(container.querySelector('pre code')).toBe(code);
+      expect(code?.innerHTML).toBe(highlighted);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps committed code immutable when a nested list arrives later', async () => {
+    vi.useFakeTimers();
+    try {
+      const codeSource = '```js\nconst stable = true;\n```\n\n';
+      const { container, rerender } = render(<Markdown value={codeSource} streaming />);
+      const pre = container.querySelector('pre');
+      const code = container.querySelector('pre code');
+      expect(pre).not.toBeNull();
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(code).toHaveAttribute('data-highlighted', 'yes');
+
+      rerender(<Markdown value={`${codeSource}- outer\n    - deeply nested\n`} streaming />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      expect(container.querySelector('pre')).toBe(pre);
+      expect(container.querySelector('pre code')).toBe(code);
+      expect(code).toHaveAttribute('data-highlighted', 'yes');
+      expect(container.querySelector('.streaming-markdown')).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }

@@ -367,13 +367,28 @@ export function appendedTextIsPlainSafe(text: unknown): boolean {
   return !/[`[\]()!*_~<\\$|#>\r\n]/.test(String(text || ''));
 }
 
+function containsGlobalIndentedCode(value: string): boolean {
+  const lines = value.split('\n');
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = /^(?: {4}|\t)(\S.*)$/.exec(lines[index]);
+    if (!match) continue;
+    if (/^(?:[-+*]|\d+[.)])\s/.test(match[1])) {
+      let previous = index - 1;
+      while (previous >= 0 && !lines[previous].trim()) previous -= 1;
+      if (previous >= 0 && /^\s*(?:[-+*]|\d+[.)])\s/.test(lines[previous])) continue;
+    }
+    return true;
+  }
+  return false;
+}
+
 /** Constructs that can change the interpretation of source committed much
  * earlier are kept on the canonical-render fallback path. */
 export function hasIncrementalGlobalMarkdownSyntax(text: unknown): boolean {
   const value = withoutFencedCode(text);
   return (
     /^ {0,3}\[[^\]\r\n]+\]:\s*\S/m.test(value) ||
-    /^(?: {4}|\t)\S/m.test(value) ||
+    containsGlobalIndentedCode(value) ||
     /^ {0,3}<(?:address|article|aside|base|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:\s|>|\/)/im.test(
       value,
     )

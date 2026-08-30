@@ -180,7 +180,9 @@ class AssistantStreamRenderer {
   }
 
   setRebase(rebase?: (value: string) => string): void {
+    if (this.rebase === rebase) return;
     this.rebase = rebase;
+    if (this.finalized && rebase) rebaseRenderedAssetURLs(this.root, rebase);
   }
 
   private decorate(root: HTMLElement, source: string, copyCode: boolean): void {
@@ -357,6 +359,7 @@ class AssistantStreamRenderer {
   }
 
   finalize(source: string): void {
+    if (this.finalized && source === this.latestSource) return;
     if (!this.hasStreamed) {
       this.renderStatic(source);
       return;
