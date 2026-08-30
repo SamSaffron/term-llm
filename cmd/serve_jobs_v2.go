@@ -2055,6 +2055,11 @@ func (m *jobsV2Manager) GetRun(id string) (jobsV2Run, error) {
 	return scanRunV2(row)
 }
 
+func (m *jobsV2Manager) GetRunSummary(id string) (jobsV2Run, error) {
+	row := m.db.QueryRow(`SELECT `+jobsV2RunSummaryColumns+` FROM job_runs_v2 WHERE id = ?`, id)
+	return scanRunSummaryV2(row)
+}
+
 func (m *jobsV2Manager) ListRuns(jobID string, limit, offset int) ([]jobsV2Run, int, error) {
 	return m.listRuns(jobID, limit, offset, true)
 }
@@ -2894,7 +2899,13 @@ func (s *serveServer) handleRunV2ByID(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
-	run, err := s.jobsV2.GetRun(runID)
+	var run jobsV2Run
+	var err error
+	if queryBool(r, "summary") {
+		run, err = s.jobsV2.GetRunSummary(runID)
+	} else {
+		run, err = s.jobsV2.GetRun(runID)
+	}
 	if err != nil {
 		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "run not found")
 		return

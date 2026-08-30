@@ -366,6 +366,23 @@ func TestJobsV2RunsSummaryOmitsOutputPayload(t *testing.T) {
 		t.Fatalf("summary lost metadata: %+v", summary)
 	}
 
+	summaryDetailReq := httptest.NewRequest(http.MethodGet, "/v2/runs/run_summary_payload?summary=true", nil)
+	summaryDetailRR := httptest.NewRecorder()
+	srv.handleRunV2ByID(summaryDetailRR, summaryDetailReq)
+	if summaryDetailRR.Code != http.StatusOK {
+		t.Fatalf("summary detail status = %d, want 200 body=%s", summaryDetailRR.Code, summaryDetailRR.Body.String())
+	}
+	var summaryDetail jobsV2Run
+	if err := json.Unmarshal(summaryDetailRR.Body.Bytes(), &summaryDetail); err != nil {
+		t.Fatalf("decode summary detail: %v", err)
+	}
+	if summaryDetail.Stdout != "" || summaryDetail.Stderr != "" || summaryDetail.Thinking != "" || summaryDetail.Response != "" {
+		t.Fatalf("summary detail included output payloads: stdout=%d stderr=%d thinking=%d response=%d", len(summaryDetail.Stdout), len(summaryDetail.Stderr), len(summaryDetail.Thinking), len(summaryDetail.Response))
+	}
+	if summaryDetail.Status != jobsV2RunFailed || summaryDetail.Error != "sample error" || summaryDetail.ExitReason != exitReasonException {
+		t.Fatalf("summary detail lost status metadata: %+v", summaryDetail)
+	}
+
 	detailReq := httptest.NewRequest(http.MethodGet, "/v2/runs/run_summary_payload", nil)
 	detailRR := httptest.NewRecorder()
 	srv.handleRunV2ByID(detailRR, detailReq)
