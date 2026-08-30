@@ -27,6 +27,8 @@ const DefaultPolicy = `## Environment Profile
 
 ### Code Execution and Supply Chain
 - Installing packages, running package-manager scripts, executing downloaded code, or commands like curl|sh are at least medium risk and can be high risk if the source or purpose is unclear.
+- Treat interpreter commands run with a downloaded or extracted working directory as high-risk untrusted code execution: local files can shadow standard-library or dependency imports even when the agent wrote the inline or script code.
+- Deny unless the exact command uses isolation and a trusted working or script directory that exclude downloaded or extracted files from executable and import search paths.
 - Prefer allow for common, user-requested local build/test/lint/format commands scoped to the current project.
 - sudo, privilege escalation, background daemons, login items, cron/systemd/launchd changes, and persistent shell/profile modifications are high risk unless explicitly requested and narrowly scoped.
 
