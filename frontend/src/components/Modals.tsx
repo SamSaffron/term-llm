@@ -854,6 +854,7 @@ function widgetStatus(widget: Widget): { label: string; tone: string } | null {
 function Widgets() {
   const store = useStore();
   const [query, setQuery] = useState('');
+  const [stopping, setStopping] = useState<Set<string>>(() => new Set());
   const widgets = [...store.widgets.value].sort((left, right) =>
     left.name.localeCompare(right.name, undefined, { sensitivity: 'base' }),
   );
@@ -869,6 +870,22 @@ function Widgets() {
       )
     : widgets;
   const countLabel = `${widgets.length} ${widgets.length === 1 ? 'widget' : 'widgets'}`;
+
+  const stopWidget = async (widget: Widget) => {
+    if (!widget.mount || stopping.has(widget.id)) return;
+    setStopping((current) => new Set(current).add(widget.id));
+    try {
+      await store.widgetStore.stop(widget.mount);
+    } catch (error) {
+      store.toast(error, 'error');
+    } finally {
+      setStopping((current) => {
+        const next = new Set(current);
+        next.delete(widget.id);
+        return next;
+      });
+    }
+  };
 
   return (
     <Overlay title="Widgets" className="widgets-modal">
@@ -911,39 +928,63 @@ function Widgets() {
           </div>
         ) : (
           visibleWidgets.map((widget, index) => {
-            const status = widgetStatus(widget);
+            const isStopping = stopping.has(widget.id);
+            const state = String(widget.state || 'stopped').toLowerCase();
+            const canStop = Boolean(
+              widget.mount && ['running', 'started', 'starting'].includes(state),
+            );
+            const status = isStopping
+              ? { label: 'Stopping', tone: 'starting' }
+              : widgetStatus(widget);
             const detail =
               widget.description || (widget.mount ? `/${widget.mount}` : 'Local widget');
             return (
-              <a
+              <div
                 class="widget-card"
                 data-state={status?.tone || 'ready'}
+                data-stoppable={canStop ? 'true' : undefined}
                 key={widget.id}
-                href={widget.url}
-                title={widget.description || widget.name}
-                aria-label={`Open ${widget.name}${status ? `, ${status.label}` : ''}`}
-                autoFocus={!showSearch && index === 0}
               >
-                <span class="widget-card-icon" aria-hidden="true">
-                  <Icon name="widgets" />
-                </span>
-                <span class="widget-card-copy">
-                  <span class="widget-card-title-row">
-                    <span class="widget-card-name">{widget.name}</span>
-                    {status && (
-                      <span class="widget-card-status">
-                        <span class="widget-status-dot" aria-hidden="true" />
-                        {status.label}
-                      </span>
+                <a
+                  class="widget-card-open"
+                  href={widget.url}
+                  title={widget.description || widget.name}
+                  aria-label={`Open ${widget.name}${status ? `, ${status.label}` : ''}`}
+                  autoFocus={!showSearch && index === 0}
+                >
+                  <span class="widget-card-icon" aria-hidden="true">
+                    <Icon name="widgets" />
+                  </span>
+                  <span class="widget-card-copy">
+                    <span class="widget-card-title-row">
+                      <span class="widget-card-name">{widget.name}</span>
+                      {status && (
+                        <span class="widget-card-status">
+                          <span class="widget-status-dot" aria-hidden="true" />
+                          {status.label}
+                        </span>
+                      )}
+                    </span>
+                    <span class="widget-card-meta">{detail}</span>
+                    {status?.tone === 'error' && widget.error && (
+                      <span class="widget-card-error">{widget.error}</span>
                     )}
                   </span>
-                  <span class="widget-card-meta">{detail}</span>
-                  {status?.tone === 'error' && widget.error && (
-                    <span class="widget-card-error">{widget.error}</span>
-                  )}
-                </span>
-                <Icon class="widget-card-chevron" name="chevron-right" />
-              </a>
+                  <Icon class="widget-card-chevron" name="chevron-right" />
+                </a>
+                {canStop && (
+                  <button
+                    class="widget-card-stop"
+                    type="button"
+                    aria-label={`Stop ${widget.name}`}
+                    title={`Stop ${widget.name}`}
+                    disabled={isStopping}
+                    onClick={() => void stopWidget(widget)}
+                  >
+                    Stop
+                  </button>
+                )}
+              </div>
             );
           })
         )}

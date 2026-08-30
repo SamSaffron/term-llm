@@ -65,7 +65,17 @@ curl -fsS -X POST \
   http://127.0.0.1:8081/chat/admin/widgets/reload
 ```
 
-4. Inspect widget status and load errors:
+4. If the widget was already running, stop it so the next request starts the updated code:
+
+```bash
+curl -fsS -X POST \
+  -H "Authorization: Bearer ${WEB_TOKEN}" \
+  http://127.0.0.1:8081/chat/admin/widgets/<widget-name>/stop
+```
+
+Use `/chat/admin/widgets/stop` instead only when every running widget should be stopped.
+
+5. Inspect widget status and load errors:
 
 ```bash
 curl -fsS \
@@ -73,7 +83,7 @@ curl -fsS \
   http://127.0.0.1:8081/chat/admin/widgets/status
 ```
 
-5. Smoke the route:
+6. Smoke the route:
 
 ```bash
 curl -i http://127.0.0.1:8081/chat/widgets/<widget-name>/
@@ -86,5 +96,5 @@ For authenticated browser access use the Web UI token from the workspace `.env`.
 - Keep widget state and source in the persistent `/home/agent/.config/term-llm/widgets` directory unless the user asks for a project-local mount.
 - Prefer small, inspectable apps over framework sprawl.
 - Do not expose secrets through static assets or client-side JavaScript.
-- After adding, removing, or changing widget manifests, use `/chat/admin/widgets/reload`; do not restart `webui` just to rescan widgets.
+- After adding, removing, or changing widget manifests, use `/chat/admin/widgets/reload`; after changing code for a running widget, stop that mount before smoke-testing so it restarts with the update. Do not restart `webui` just to rescan or restart widgets.
 - Restart `webui` only for service flag changes, binary upgrades, or if the admin reload endpoint itself is unavailable.

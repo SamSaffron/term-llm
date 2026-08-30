@@ -202,6 +202,27 @@ func (m *Manager) StopMount(mount string) error {
 	return nil
 }
 
+// StopAll stops every loaded widget process without closing the manager. Widgets
+// remain registered and can start lazily again on their next proxied request.
+func (m *Manager) StopAll() {
+	m.mu.RLock()
+	entries := make([]*widgetEntry, 0, len(m.entries))
+	for _, e := range m.entries {
+		entries = append(entries, e)
+	}
+	m.mu.RUnlock()
+
+	var wg sync.WaitGroup
+	for _, e := range entries {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			e.stopProcess()
+		}()
+	}
+	wg.Wait()
+}
+
 // Proxy forwards r to the widget identified by mount.
 // The path in r must already have the /widgets/<mount> prefix stripped.
 func (m *Manager) Proxy(mount string, w http.ResponseWriter, r *http.Request) {

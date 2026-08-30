@@ -351,6 +351,8 @@ export const endpoints = (api: APIClient) => ({
       {},
       { policy: 'safe-read', auth: 'ignore' },
     ),
+  stopWidget: (mount: string) =>
+    api.post<Record<string, unknown>>(`/admin/widgets/${encoded(mount)}/stop`, {}, 'mutation'),
   hubNodes: (absoluteURL: string, signal?: AbortSignal) =>
     api.json<Record<string, unknown>>(
       absoluteURL,

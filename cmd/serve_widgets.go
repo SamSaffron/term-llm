@@ -22,6 +22,7 @@ func (s *serveServer) registerWidgetRoutes(inner *http.ServeMux) {
 	inner.HandleFunc("/widgets/", s.auth(s.handleWidgetProxy))
 	inner.HandleFunc("/admin/widgets/reload", s.auth(s.cors(s.handleAdminWidgetsReload)))
 	inner.HandleFunc("/admin/widgets/status", s.auth(s.cors(s.handleAdminWidgetsStatus)))
+	inner.HandleFunc("/admin/widgets/stop", s.auth(s.cors(s.handleAdminWidgetsStop)))
 	inner.HandleFunc("/admin/widgets/", s.auth(s.cors(s.handleAdminWidgetStop)))
 	inner.HandleFunc("/widgets", s.auth(s.handleWidgetIndex))
 }
@@ -152,6 +153,17 @@ func (s *serveServer) handleAdminWidgetsStatus(w http.ResponseWriter, r *http.Re
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(s.currentWidgetStatus())
+}
+
+// handleAdminWidgetsStop handles POST /admin/widgets/stop.
+func (s *serveServer) handleAdminWidgetsStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.widgetsMgr.StopAll()
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprint(w, `{"ok":true}`)
 }
 
 // handleAdminWidgetStop handles POST /admin/widgets/<mount>/stop.

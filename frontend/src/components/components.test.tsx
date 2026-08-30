@@ -3190,6 +3190,40 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByText('No matching widgets')).toBeVisible();
   });
 
+  it('stops a running widget without opening it', async () => {
+    const store = createStore();
+    store.modal.value = 'widgets';
+    store.widgets.value = [
+      {
+        id: 'usage',
+        name: 'Usage dashboard',
+        url: '/ui/widgets/usage/',
+        mount: 'usage',
+        state: 'running',
+      },
+    ];
+    store.endpoints.stopWidget = vi.fn(async () => ({ ok: true }));
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop Usage dashboard' }));
+
+    await waitFor(() => expect(store.endpoints.stopWidget).toHaveBeenCalledWith('usage'));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('button', { name: 'Stop Usage dashboard' }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole('link', { name: 'Open Usage dashboard' })).toHaveAttribute(
+      'href',
+      '/ui/widgets/usage/',
+    );
+  });
+
   it('restores the rich, searchable MCP server picker', async () => {
     const store = createStore();
     store.modal.value = 'mcp';

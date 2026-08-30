@@ -723,6 +723,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 				return wErr
 			}
 			widgetsMgr = widgets.NewManager(wDir, serveBasePath)
+			defer installWidgetStopSignal(ctx, widgetsMgr)()
 			log.Printf("widgets enabled, dir: %s", wDir)
 		}
 

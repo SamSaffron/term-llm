@@ -132,8 +132,11 @@ Use the available runtime's syntax checks and tests. When approval and tools per
 If a widgets-enabled term-llm server and its authentication details are available:
 
 1. `POST <base-path>/admin/widgets/reload`
-2. Inspect `<base-path>/admin/widgets/status` for load or startup errors.
-3. Smoke-test `<base-path>/widgets/<mount>/` with its trailing slash.
+2. If an existing widget process may still be running, `POST <base-path>/admin/widgets/<mount>/stop` so the next request uses the updated code. Use `POST <base-path>/admin/widgets/stop` only when every running widget should be restarted lazily.
+3. Inspect `<base-path>/admin/widgets/status` for load or startup errors.
+4. Smoke-test `<base-path>/widgets/<mount>/` with its trailing slash.
+
+On POSIX systems, the widgets-enabled `term-llm serve web` process also treats `SIGUSR1` as "stop all widgets without stopping the Web UI." Prefer the authenticated admin endpoints: they are precise and do not require discovering a PID. Use `kill -USR1 <serve-web-pid>` only as an operational fallback, target the Web UI process specifically, and never use a broad `pkill` because other term-llm processes do not install this handler.
 
 Refer to tokens through environment variables; never print or embed `WEB_TOKEN`. Do not install browser or screenshot tooling solely for verification without asking. If live or visual verification is unavailable, state exactly what was not tested.
 

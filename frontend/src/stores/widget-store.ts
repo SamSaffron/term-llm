@@ -39,4 +39,11 @@ export class WidgetStore {
       /* Widgets are optional. */
     }
   }
+
+  async stop(mount: string): Promise<void> {
+    await this.services.endpoints.stopWidget(mount);
+    this.widgets.value = this.widgets.value.map((widget) =>
+      widget.mount === mount ? { ...widget, state: 'stopped', error: '' } : widget,
+    );
+  }
 }

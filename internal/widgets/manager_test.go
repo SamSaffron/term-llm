@@ -190,6 +190,36 @@ func TestWidgetStopSerializesConcurrentRestart(t *testing.T) {
 	}
 }
 
+func TestManagerStopAllKeepsWidgetsRegisteredForLazyRestart(t *testing.T) {
+	m := &Manager{entries: make(map[string]*widgetEntry)}
+	for _, mount := range []string{"alpha", "beta"} {
+		m.entries[mount] = &widgetEntry{
+			manifest: &Manifest{ID: mount, Mount: mount, Title: mount},
+			state:    stateRunning,
+			proxy:    &httputil.ReverseProxy{},
+			port:     9000,
+		}
+	}
+
+	m.StopAll()
+
+	statuses := m.Status()
+	if len(statuses) != 2 {
+		t.Fatalf("status count = %d, want 2", len(statuses))
+	}
+	for _, status := range statuses {
+		if status.State != "stopped" {
+			t.Errorf("widget %q state = %q, want stopped", status.Mount, status.State)
+		}
+		if status.Port != 0 {
+			t.Errorf("widget %q port = %d, want 0", status.Mount, status.Port)
+		}
+	}
+	if len(m.entries) != 2 {
+		t.Fatalf("registered widget count = %d, want 2", len(m.entries))
+	}
+}
+
 func TestManagerCloseContextPreventsStartAfterShutdownBegins(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("process groups are Unix-specific")

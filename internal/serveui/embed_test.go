@@ -34,12 +34,12 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// safe-point branch workflow, interactive worktree conflict recovery,
 		// replayable SSE/long-poll server-event coordination, branch-tree
 		// navigation, the paginated Recent/Projects sidebar, elastic streaming
-		// presentation buffer, explicit response authority/transport state, and
-		// authoritative mobile stream recovery are first-party shell code. Keep
-		// bounded headroom over that productized baseline while still failing
-		// meaningful accidental regressions.
+		// presentation buffer, explicit response authority/transport state,
+		// authoritative mobile stream recovery, and widget process lifecycle
+		// controls are first-party shell code. Keep bounded headroom over that
+		// productized baseline while still failing meaningful accidental regressions.
 		"dist/app.js":  {raw: 426_000, gzip: 126_000},
-		"dist/app.css": {raw: 162_500, gzip: 32_000},
+		"dist/app.css": {raw: 164_500, gzip: 32_000},
 	}
 	for name, budget := range budgets {
 		body, err := StaticAsset(name)

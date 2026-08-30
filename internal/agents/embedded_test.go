@@ -334,6 +334,9 @@ func TestWidgetBuilderBuiltinContract(t *testing.T) {
 		"Authorization",
 		"Cookie",
 		"admin/widgets/reload",
+		"admin/widgets/<mount>/stop",
+		"admin/widgets/stop",
+		"SIGUSR1",
 		"/home/agent/.config/term-llm/widgets/",
 		"~/.config/term-llm/widgets/",
 	} {

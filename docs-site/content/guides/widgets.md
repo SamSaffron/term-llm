@@ -108,6 +108,7 @@ With the default Web UI base path `/ui`, the routes are:
 /ui/widgets/<mount>/
 /ui/admin/widgets/reload
 /ui/admin/widgets/status
+/ui/admin/widgets/stop
 /ui/admin/widgets/<mount>/stop
 ```
 
@@ -145,7 +146,7 @@ Only the variables for the selected port or socket mode are set.
 
 ## Lifecycle and persistence
 
-A widget starts lazily when its route is first requested. term-llm waits for the widget root to respond, then begins proxying the request. An idle widget is stopped after ten minutes by default and will start again on a later request.
+A widget starts lazily when its route is first requested. term-llm waits for the widget root to respond, then begins proxying the request. An idle widget is stopped after ten minutes by default and will start again on a later request. Running widgets can also be stopped from the Web UI widget launcher; this does not remove the widget, and opening it again starts a fresh process.
 
 Consequences for application design:
 
@@ -173,7 +174,20 @@ curl -fsS \
 curl -fsS -X POST \
   -H "Authorization: Bearer ${TOKEN}" \
   http://127.0.0.1:8080/ui/admin/widgets/example/stop
+
+# Stop every running widget without shutting down term-llm.
+curl -fsS -X POST \
+  -H "Authorization: Bearer ${TOKEN}" \
+  http://127.0.0.1:8080/ui/admin/widgets/stop
 ```
+
+On POSIX systems, sending `SIGUSR1` to the widgets-enabled `term-llm serve web` process also stops all widget subprocesses while leaving the Web UI running:
+
+```bash
+kill -USR1 <serve-web-pid>
+```
+
+Target the Web UI process specifically; other term-llm commands do not install this widget signal handler. The authenticated admin endpoint is preferable for scripts and agents because it does not require discovering the server PID.
 
 Open the proxied widget with its trailing slash so relative browser URLs resolve correctly:
 
@@ -181,7 +195,7 @@ Open the proxied widget with its trailing slash so relative browser URLs resolve
 http://127.0.0.1:8080/ui/widgets/example/
 ```
 
-A manifest reload is enough for registry changes. Restart the Web UI only when changing service flags, changing the widget root, upgrading the binary, or recovering from an unavailable admin endpoint.
+A manifest reload is enough for registry changes. Reloading does not restart an already running process; after changing a running widget's application code, stop that mount and let the next request start it again. Restart the Web UI only when changing service flags, changing the widget root, upgrading the binary, or recovering from an unavailable admin endpoint.
 
 ## Security model
 
