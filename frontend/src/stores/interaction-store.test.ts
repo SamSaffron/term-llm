@@ -1,6 +1,9 @@
+import { signal } from '@preact/signals';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AskUserPrompt } from '../domain/types';
 import { AppStore } from './app-store';
+import { InteractionStore } from './interaction-store';
+import type { Modal } from './store-types';
 import { testConfig } from './store-test-fixtures';
 
 beforeEach(() => localStorage.clear());
@@ -33,6 +36,29 @@ describe('InteractionStore', () => {
       });
     } finally {
       store.dispose();
+    }
+  });
+
+  it('publishes only authoritative interaction transitions, not recovery refreshes', () => {
+    const app = new AppStore(testConfig);
+    const publish = vi.fn();
+    const interactions = new InteractionStore(app.services, signal<Modal>(''), publish);
+    const prompt: AskUserPrompt = {
+      sessionId: 's1',
+      callId: 'ask-1',
+      questions: [{ header: 'Choice', question: 'Continue?', options: [] }],
+    };
+    try {
+      interactions.upsert('ask-user', 's1', 'r1', 'ask-1', prompt);
+      interactions.upsert('ask-user', 's1', 'r1', 'ask-1', { ...prompt });
+      expect(publish).toHaveBeenCalledTimes(1);
+
+      interactions.resolve('ask-user', 's1', 'r1', 'ask-1', 'answered', 10);
+      interactions.resolve('ask-user', 's1', 'r1', 'ask-1', 'answered', 20);
+      expect(publish).toHaveBeenCalledTimes(2);
+      expect(interactions.shouldOpen('ask-user', 's1', 'ask-1')).toBe(false);
+    } finally {
+      app.dispose();
     }
   });
 

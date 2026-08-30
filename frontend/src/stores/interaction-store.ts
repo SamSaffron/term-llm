@@ -49,8 +49,10 @@ export class InteractionStore {
       ...this.interactions.peek(),
       [key]: { ...record, prompt },
     };
-    if (!existing) this.order.value = [...this.order.peek(), key];
-    this.publish('interaction-changed', sessionId, responseId);
+    if (!existing) {
+      this.order.value = [...this.order.peek(), key];
+      this.publish('interaction-changed', sessionId, responseId);
+    }
     return key;
   }
 
@@ -80,6 +82,7 @@ export class InteractionStore {
       (kind === 'approval'
         ? ({ sessionId, id: requestId, title: 'Access request' } satisfies ApprovalPrompt)
         : ({ sessionId, callId: requestId, questions: [] } satisfies AskUserPrompt));
+    const changed = !existing || existing.state !== state || existing.outcome !== outcome;
     this.interactions.value = {
       ...this.interactions.peek(),
       [key]: {
@@ -101,6 +104,7 @@ export class InteractionStore {
     this.services.bumpDiagnostic('interactionReconciliations');
     if (kind === 'approval' && this.approval.peek()?.id === requestId) this.approval.value = null;
     if (kind === 'ask-user' && this.askUser.peek()?.callId === requestId) this.askUser.value = null;
+    if (changed) this.publish('interaction-changed', sessionId, responseId);
   }
 
   find(
