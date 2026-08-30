@@ -10,7 +10,6 @@ function harness() {
     catalog: vi.fn(async () => undefined),
     status: vi.fn(async () => undefined),
     active: vi.fn(async () => undefined),
-    children: vi.fn(async () => undefined),
     files: vi.fn(async () => undefined),
     recovery: vi.fn(async () => undefined),
     health: vi.fn(),
@@ -21,7 +20,6 @@ function harness() {
     reconcileCatalog: calls.catalog,
     reconcileStatus: calls.status,
     reconcileActiveSession: calls.active,
-    reconcileChildren: calls.children,
     reconcileFiles: calls.files,
     authoritativeRecovery: calls.recovery,
     eventFeedHealthChanged: calls.health,
@@ -165,11 +163,7 @@ describe('ServerEventCoordinator', () => {
 
     expect(diagnostics).toContain('serverEventSSEJams');
     expect(diagnostics).toContain('serverEventPollFallbacks');
-    expect(endpoints.serverEventStream.mock.calls[0]?.[1]).toEqual([
-      'session:s1',
-      'children:s1',
-      'files:s1',
-    ]);
+    expect(endpoints.serverEventStream.mock.calls[0]?.[1]).toEqual(['session:s1', 'files:s1']);
     coordinator.dispose();
   });
 });

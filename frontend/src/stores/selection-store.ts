@@ -19,7 +19,6 @@ import type { WidgetStore } from './widget-store';
 import { approvalPrompt, askUserPrompt, listFrom, recordValue } from './store-utils';
 
 export interface SelectionStoreHost {
-  loadChildRuns: (sessionId?: string) => Promise<void>;
   publishSessionChange: (
     type?: TabEventType,
     sessionId?: string,
@@ -96,7 +95,6 @@ export class SelectionStore {
     });
     if (epoch !== this.epoch) return;
     void this.branches.refresh(current.id);
-    void this.host.loadChildRuns(current.id);
     if (current.activeResponseId)
       void this.runEngine.resumeResponse(current.id, current.activeResponseId);
   }
@@ -160,21 +158,6 @@ export class SelectionStore {
     } catch (error) {
       this.services.toast(error, 'error');
     }
-  }
-
-  async resolveAndSelectSessionAtMessage(id: string, messageId?: number): Promise<void> {
-    await this.resolveAndSelectSession(id);
-    if (!messageId) return;
-    requestAnimationFrame(() => {
-      const target = document.querySelector<HTMLElement>(
-        `[data-message-id="${String(messageId)}"]`,
-      );
-      if (!target) return;
-      target.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      target.tabIndex = -1;
-      target.focus({ preventScroll: true });
-      target.addEventListener('blur', () => target.removeAttribute('tabindex'), { once: true });
-    });
   }
 
   async loadSession(id: string, epoch = this.epoch): Promise<void> {

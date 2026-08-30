@@ -15,8 +15,7 @@ export interface ServerEventHost {
   activeSessionId: ReadonlySignal<string>;
   reconcileCatalog: () => Promise<void>;
   reconcileStatus: () => Promise<void>;
-  reconcileActiveSession: (reason: string, revision?: number) => Promise<void>;
-  reconcileChildren: (parentId: string) => Promise<void>;
+  reconcileActiveSession: (revision?: number) => Promise<void>;
   reconcileFiles: (sessionId: string) => Promise<void>;
   authoritativeRecovery: (reason: string) => Promise<void>;
   eventFeedHealthChanged: () => void;
@@ -63,10 +62,8 @@ export class ServerEventCoordinator {
   private statusPending = false;
   private activePending = false;
   private recoveryPending = false;
-  private activeReason = '';
   private recoveryReason = '';
   private activeRevision = 0;
-  private readonly childParents = new Set<string>();
   private readonly fileSessions = new Set<string>();
   private interestChannels: string[] = [];
 
@@ -97,7 +94,7 @@ export class ServerEventCoordinator {
 
   updateInterest(sessionId: string): void {
     const id = sessionId.trim();
-    const next = id ? [`session:${id}`, `children:${id}`, `files:${id}`] : [];
+    const next = id ? [`session:${id}`, `files:${id}`] : [];
     if (next.join(',') === this.interestChannels.join(',')) return;
     this.interestChannels = next;
     // The server filters detail events by registered channels. Reconnect from
@@ -350,7 +347,6 @@ export class ServerEventCoordinator {
         this.statusPending = true;
         if (event.sessionId === this.host.activeSessionId.peek()) {
           this.activePending = true;
-          this.activeReason = event.reason || event.type;
           this.activeRevision = Math.max(this.activeRevision, event.transcriptRev || 0);
         }
         break;
@@ -358,19 +354,12 @@ export class ServerEventCoordinator {
         this.statusPending = true;
         if (event.sessionId === this.host.activeSessionId.peek()) {
           this.activePending = true;
-          this.activeReason = event.reason || event.type;
           this.activeRevision = Math.max(this.activeRevision, event.transcriptRev || 0);
         }
         break;
       case 'session.runtime_changed':
       case 'interaction.changed':
-        if (event.sessionId === this.host.activeSessionId.peek()) {
-          this.activePending = true;
-          this.activeReason = event.reason || event.type;
-        }
-        break;
-      case 'children.changed':
-        if (event.parentSessionId) this.childParents.add(event.parentSessionId);
+        if (event.sessionId === this.host.activeSessionId.peek()) this.activePending = true;
         break;
       case 'files.changed':
         if (event.sessionId) this.fileSessions.add(event.sessionId);
@@ -390,34 +379,26 @@ export class ServerEventCoordinator {
     const catalog = this.catalogPending;
     const status = this.statusPending;
     const active = this.activePending;
-    const reason = this.activeReason;
     const revision = this.activeRevision;
-    const children = [...this.childParents];
     const files = [...this.fileSessions];
     this.catalogPending = this.statusPending = this.activePending = false;
     this.recoveryPending = false;
-    this.activeReason = '';
     this.recoveryReason = '';
     this.activeRevision = 0;
-    this.childParents.clear();
     this.fileSessions.clear();
-    if (!recovery && !catalog && !status && !active && !children.length && !files.length) {
+    if (!recovery && !catalog && !status && !active && !files.length) {
       this.services.bumpDiagnostic('serverEventNoopBatches');
       return;
     }
     if (recovery) {
       await this.host.authoritativeRecovery(recoveryReason).catch(() => undefined);
-      await Promise.all(
-        children.map((id) => this.host.reconcileChildren(id).catch(() => undefined)),
-      );
       await Promise.all(files.map((id) => this.host.reconcileFiles(id).catch(() => undefined)));
       return;
     }
     if (catalog) await this.host.reconcileCatalog().catch(() => undefined);
     if (status) await this.host.reconcileStatus().catch(() => undefined);
     if (active)
-      await this.host.reconcileActiveSession(reason, revision || undefined).catch(() => undefined);
-    await Promise.all(children.map((id) => this.host.reconcileChildren(id).catch(() => undefined)));
+      await this.host.reconcileActiveSession(revision || undefined).catch(() => undefined);
     await Promise.all(files.map((id) => this.host.reconcileFiles(id).catch(() => undefined)));
   }
 

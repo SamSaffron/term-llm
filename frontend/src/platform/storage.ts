@@ -21,7 +21,6 @@ export const STORAGE_BASE_KEYS = {
   diffCommentQueue: 'term_llm_diff_comment_queue',
   projectExpansion: 'term_llm_project_expansion',
   sidebarView: 'term_llm_sidebar_view',
-  agentReadMarkers: 'term_llm_agent_read_marker',
   lastProject: 'term_llm_last_project',
 } as const;
 
@@ -243,37 +242,6 @@ export function clearSessionDiffComments(storage: Storage, base: string, session
       });
     }
     storage.removeItem(key);
-  });
-}
-
-export function agentReadMarkerKey(base: string, sessionId: string): string {
-  return `${base}:${encodeURIComponent(sessionId)}`;
-}
-
-export function readAgentReadMarkers(storage: Storage, base: string): Record<string, number> {
-  const markers: Record<string, number> = {};
-  for (const key of storageKeysWithPrefix(storage, `${base}:`)) {
-    const encoded = key.slice(base.length + 1);
-    try {
-      const sessionId = decodeURIComponent(encoded);
-      const record = readJSON<{ revision?: number } | null>(storage, key, null);
-      if (record && Number(record.revision) >= 0) markers[sessionId] = Number(record.revision);
-    } catch {
-      // Ignore malformed non-user-content preference records.
-    }
-  }
-  return markers;
-}
-
-export function persistAgentReadMarker(
-  storage: Storage,
-  base: string,
-  sessionId: string,
-  revision: number,
-): void {
-  persistRecord(storage, agentReadMarkerKey(base, sessionId), {
-    revision: Math.max(0, revision),
-    updated: Date.now(),
   });
 }
 

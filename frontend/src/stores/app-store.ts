@@ -4,7 +4,6 @@ import { APIError, type APIClient } from '../api/client';
 import type { Endpoints } from '../api/endpoints';
 import type { ResponseEvent, ResponseProjection } from '../domain/response';
 import { DEFAULT_ATTACHMENT_POLICY, type AttachmentPolicy } from '../domain/attachments';
-import type { ChildRun } from '../domain/child-run';
 import type {
   ApprovalPrompt,
   AskUserPrompt,
@@ -49,7 +48,6 @@ import { SkillStore } from './skill-store';
 import { StatusReconciler } from './status-reconciler';
 import { RunEngine } from './run-engine';
 import { SelectionStore } from './selection-store';
-import { ChildRunStore } from './child-run-store';
 import type {
   DiffState,
   HubAgent,
@@ -93,7 +91,6 @@ export class AppStore {
   readonly statusReconciler: StatusReconciler;
   readonly runEngine: RunEngine;
   readonly selectionStore: SelectionStore;
-  readonly childRunStore: ChildRunStore;
   readonly keys: StorageKeys;
   readonly api: APIClient;
   readonly endpoints: Endpoints;
@@ -151,8 +148,6 @@ export class AppStore {
   readonly approval: Signal<ApprovalPrompt | null>;
   readonly interactions: Signal<Record<string, InteractionRecord>>;
   readonly interactionOrder: Signal<string[]>;
-  readonly childRuns: Signal<ChildRun[]>;
-  readonly agentReadMarkers: Signal<Record<string, number>>;
   readonly sideQuestion: Signal<SideQuestionState>;
   readonly interjections: Signal<PendingInterjection[]>;
   readonly diff: Signal<DiffState>;
@@ -259,9 +254,6 @@ export class AppStore {
     this.renameTarget = this.sessionStore.renameTarget;
     this.projectTarget = this.sessionStore.projectTarget;
     this.activeSession = this.sessionStore.activeSession;
-    this.childRunStore = new ChildRunStore(this.services, this.activeSessionId);
-    this.childRuns = this.childRunStore.childRuns;
-    this.agentReadMarkers = this.childRunStore.readMarkers;
     this.showWidgets = signal(storage.getItem(this.keys.showWidgetsSidebar) !== '0');
     // The legacy boolean was optimistic and is never authoritative. Enrollment
     // is reconstructed from browser and server state below.
@@ -449,7 +441,6 @@ export class AppStore {
       this.goalStore,
       this.widgetStore,
       {
-        loadChildRuns: (sessionId) => this.loadChildRuns(sessionId),
         publishSessionChange: (type, sessionId, responseId, revision, operationId) =>
           this.publishSessionChange(type, sessionId, responseId, revision, operationId),
       },
@@ -467,10 +458,6 @@ export class AppStore {
       onPendingIntentStorage: () => {
         this.pendingIntents.value = readPendingIntents(this.storage, this.keys.pendingIntents);
       },
-      onAgentReadMarkerStorage: () => {
-        this.childRunStore.reloadReadMarkers();
-        void this.loadChildRuns();
-      },
       serverEventsEnabled: () =>
         this.serverEventFeedEnabled && this.serverEventCoordinator?.mode !== 'unsupported',
     });
@@ -484,7 +471,6 @@ export class AppStore {
       renameTarget: this.renameTarget,
       reconcile: (reason, authoritative) => this.reconcile(reason, { authoritative }),
       refreshSidebar: (authoritative) => this.refreshSidebar(authoritative),
-      loadChildRuns: (sessionId) => this.loadChildRuns(sessionId),
       resumeResponse: (sessionId, responseId) => this.resumeResponse(sessionId, responseId),
       refreshSessionMessages: (sessionId, targetRev) =>
         this.refreshSessionMessages(sessionId, targetRev),
@@ -504,11 +490,7 @@ export class AppStore {
       activeSessionId: this.activeSessionId,
       reconcileCatalog: () => this.refreshSidebar(false),
       reconcileStatus: () => this.refreshStatus(true),
-      reconcileActiveSession: (reason, revision) =>
-        this.reconcileServerEventActive(reason, revision),
-      reconcileChildren: async (parentId) => {
-        if (this.activeSessionId.peek() === parentId) await this.loadChildRuns(parentId);
-      },
+      reconcileActiveSession: (revision) => this.reconcileServerEventActive(revision),
       reconcileFiles: async (sessionId) => {
         if (this.diff.peek().open && this.diff.peek().sessionId === sessionId)
           await this.reviewStore.loadDiff();
@@ -701,10 +683,6 @@ export class AppStore {
     this.runEngine.recoverActiveSupervisors();
   }
 
-  async loadChildRuns(sessionId = this.activeSessionId.peek()): Promise<void> {
-    await this.childRunStore.load(sessionId);
-  }
-
   private applyCapabilities(data: Record<string, unknown>): void {
     const projects =
       data.projects && typeof data.projects === 'object'
@@ -800,7 +778,7 @@ export class AppStore {
       this.reconcilePendingInterjections(sessionId, state, interjectionRevision);
   }
 
-  private async reconcileServerEventActive(reason: string, revision?: number): Promise<void> {
+  private async reconcileServerEventActive(revision?: number): Promise<void> {
     const sessionId = this.activeSessionId.peek();
     if (!sessionId) return;
     const currentRevision =
@@ -809,12 +787,6 @@ export class AppStore {
       await this.refreshSessionMessages(sessionId, revision).catch(() => undefined);
     if (this.activeSessionId.peek() !== sessionId) return;
     await this.loadSession(sessionId).catch(() => undefined);
-    if (
-      reason.includes('interaction') ||
-      reason.includes('ask_user') ||
-      reason.includes('approval')
-    )
-      await this.loadChildRuns(sessionId).catch(() => undefined);
   }
 
   async selectSession(session: Session, replace = false): Promise<void> {
@@ -847,16 +819,8 @@ export class AppStore {
     this.composer.syncRuntimeFromSession(session);
   }
 
-  markChildRunRead(sessionId: string): void {
-    this.childRunStore.markRead(sessionId);
-  }
-
   async resolveAndSelectSession(id: string, replace = false): Promise<void> {
     await this.selectionStore.resolveAndSelectSession(id, replace);
-  }
-
-  async resolveAndSelectSessionAtMessage(id: string, messageId?: number): Promise<void> {
-    await this.selectionStore.resolveAndSelectSessionAtMessage(id, messageId);
   }
 
   private get interjectionRevision(): number {

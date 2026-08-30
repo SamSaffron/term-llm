@@ -12,7 +12,6 @@ export interface TabSyncHost {
   reloadReviewQueue: () => void;
   reconcilePeerChange: () => Promise<void>;
   onPendingIntentStorage: () => void;
-  onAgentReadMarkerStorage: () => void;
   serverEventsEnabled: () => boolean;
 }
 
@@ -40,8 +39,6 @@ export class TabSyncCoordinator {
         if (event.key?.startsWith(`${keys.draftMessages}:`))
           this.host.reconcileDraftStorage(this.host.draftStorageId());
         if (event.key?.startsWith(`${keys.diffCommentQueue}:`)) this.host.reloadReviewQueue();
-        if (event.key?.startsWith(`${keys.agentReadMarkers}:`))
-          this.host.onAgentReadMarkerStorage();
       },
       { signal },
     );

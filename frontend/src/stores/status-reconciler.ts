@@ -36,7 +36,6 @@ export interface StatusReconcilerHost {
   renameTarget: ReadonlySignal<Session | null>;
   reconcile: (reason: string, authoritative: boolean) => Promise<void>;
   refreshSidebar: (authoritative?: boolean) => Promise<void>;
-  loadChildRuns: (sessionId?: string) => Promise<void>;
   resumeResponse: (sessionId: string, responseId: string) => Promise<void>;
   refreshSessionMessages: (sessionId: string, targetRev?: number) => Promise<void>;
   syncSessionMessagesForAttach: (sessionId: string, targetRev?: number) => Promise<void>;
@@ -83,8 +82,6 @@ export class StatusReconciler {
         if (Date.now() - this.host.sessionStore.sidebarRefreshedAt >= sidebarInterval)
           await this.host.refreshSidebar(false).catch(() => undefined);
         await this.host.reconcile('poll', false).catch(() => undefined);
-        if (this.host.activeSessionId.peek())
-          await this.host.loadChildRuns().catch(() => undefined);
       }
       const anyActive =
         this.host.stoppedResponseCount() > 0 ||
@@ -374,7 +371,6 @@ export class StatusReconciler {
       activeRevision > previousActiveRevision
     )
       followUps.push(() => void this.host.refreshDiffComments(activeSessionId));
-    if (activeSessionId) followUps.push(() => void this.host.loadChildRuns(activeSessionId));
     // No follow-up from a stale generation may start after a newer reconcile.
     if (this.statusRequestIsCurrent(metadata)) followUps.forEach((followUp) => followUp());
   }

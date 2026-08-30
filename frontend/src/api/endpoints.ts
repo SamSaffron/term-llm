@@ -84,21 +84,6 @@ export const endpoints = (api: APIClient) => ({
     ),
   sessionState: (id: string, signal?: AbortSignal) =>
     api.get<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/state`, signal),
-  sessionChildren: async (id: string, etag = '', signal?: AbortSignal) => {
-    const response = await api.request(
-      `/v1/sessions/${encoded(id)}/children`,
-      { signal, headers: etag ? { 'If-None-Match': etag } : undefined },
-      { policy: 'safe-read' },
-    );
-    if (response.status === 304)
-      return { __notModified: true, __etag: response.headers.get('ETag') || etag };
-    if (!response.ok)
-      throw new Error((await response.text()) || `Children request returned ${response.status}`);
-    return {
-      ...((await response.json()) as Record<string, unknown>),
-      __etag: response.headers.get('ETag') || '',
-    };
-  },
   createResponse: (
     body: unknown,
     sessionId: string,
