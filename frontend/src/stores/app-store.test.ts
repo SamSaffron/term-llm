@@ -2752,7 +2752,11 @@ describe('AppStore compatibility behavior', () => {
       await vi.advanceTimersByTimeAsync(1_500);
       await vi.waitFor(() => expect(store.endpoints.response).toHaveBeenCalledOnce());
       await vi.waitFor(() => expect(store.endpoints.responseEvents).toHaveBeenCalledTimes(2));
-      expect(store.endpoints.responseEvents).toHaveBeenLastCalledWith('r1', 4, expect.any(AbortSignal));
+      expect(store.endpoints.responseEvents).toHaveBeenLastCalledWith(
+        'r1',
+        4,
+        expect.any(AbortSignal),
+      );
       expect(store.runEngine.currentSupervisor('s1')).toBeUndefined();
     } finally {
       store.dispose();
