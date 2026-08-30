@@ -715,24 +715,31 @@ mark.diff-word {
     min-height: 58px;
   }
 
-  .header-title-context {
-    max-width: min(36vw, 10rem);
-  }
-
-  /* Keep the model readable when the header is quiet. If contextual actions make
-     the row genuinely crowded, move the control cluster to a compact second row
-     instead of clipping every control into ambiguity. */
+  /* Keep the mobile header to one physical row. Runtime is the primary live
+     control, so the conversation title yields via ellipsis and project context
+     stays in the sidebar rather than competing with the model. */
   .header-title-row {
-    flex-wrap: wrap;
-    row-gap: 0.35rem;
+    flex-wrap: nowrap;
   }
 
   .header-left {
-    min-width: min(9rem, 40vw);
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .header-title-context {
+    max-width: none;
+    overflow: hidden;
+  }
+
+  .header-project-subtitle {
+    display: none;
   }
 
   .header-title {
+    display: block;
     font-size: 0.94rem;
+    white-space: nowrap;
   }
 
   .header-controls-row {
