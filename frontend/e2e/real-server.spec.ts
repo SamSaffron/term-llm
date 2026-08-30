@@ -381,7 +381,7 @@ test('a disconnected mobile response stream cannot keep claiming work is running
 
   await expect(page.locator('#stopBtn')).toBeHidden({ timeout: 5_000 });
   await expect(page.getByRole('status', { name: 'Response status is unknown' })).toContainText(
-    'Connection lost',
+    'Response stream interrupted',
   );
 
   await expect

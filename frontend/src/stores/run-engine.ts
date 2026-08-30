@@ -215,6 +215,11 @@ export class RunEngine {
       const run = this.runs.value[session.id].run;
       if (run.responseId && !run.responseId.startsWith('pending_')) {
         const owner = this.supervisors.current(session.id);
+        if (
+          owner?.responseId === run.responseId &&
+          this.hasActiveResponseTransport(session.id, run.responseId)
+        )
+          continue;
         if (!owner || owner.responseId !== run.responseId) {
           const adopted = this.supervisors.begin(session.id, run.responseId, run.lastSequence);
           void this.recoverSupervisor(adopted);

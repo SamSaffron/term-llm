@@ -2290,6 +2290,94 @@ describe('AppStore compatibility behavior', () => {
     }
   });
 
+  it('keeps a healthy owned response transport during lifecycle recovery', async () => {
+    const store = new AppStore(config);
+    let transportAborted = false;
+    try {
+      store.sessions.value = [{ ...session(), activeRun: true, activeResponseId: 'r1' }];
+      store.activeSessionId.value = 's1';
+      store.runs.value = {
+        s1: initialProjection({
+          responseId: 'r1',
+          sessionId: 's1',
+          epoch: 1,
+          status: 'streaming',
+          lastSequence: 1,
+          startedRev: 0,
+          reconnects: 0,
+        }),
+      };
+      store.endpoints.responseEvents = vi.fn(async (_responseId, _after, signal) => {
+        signal.addEventListener('abort', () => {
+          transportAborted = true;
+        });
+        return new Response(new ReadableStream<Uint8Array>({ start() {} }), {
+          headers: { 'X-Term-LLM-Response-Status': 'in_progress' },
+        });
+      });
+      store.endpoints.response = vi.fn(async () => ({
+        id: 'r1',
+        status: 'in_progress',
+        run_epoch: 1,
+        last_sequence_number: 1,
+        recovery: { sequence_number: 1 },
+      }));
+
+      void store.streamResponse('r1', 's1', 1);
+      await vi.waitFor(() => expect(store.streaming.value).toBe(true));
+
+      store.runEngine.recoverActiveSupervisors();
+      await Promise.resolve();
+
+      expect(transportAborted).toBe(false);
+      expect(store.endpoints.response).not.toHaveBeenCalled();
+      expect(store.endpoints.responseEvents).toHaveBeenCalledOnce();
+      expect(store.runLivenessUnknown.value).toBe(false);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('recovers an active run when no response transport is owned', async () => {
+    const store = new AppStore(config);
+    try {
+      store.sessions.value = [{ ...session(), activeRun: true, activeResponseId: 'r1' }];
+      store.activeSessionId.value = 's1';
+      store.runs.value = {
+        s1: initialProjection({
+          responseId: 'r1',
+          sessionId: 's1',
+          epoch: 1,
+          status: 'streaming',
+          lastSequence: 3,
+          startedRev: 0,
+          reconnects: 0,
+        }),
+      };
+      store.endpoints.response = vi.fn(async () => ({
+        id: 'r1',
+        status: 'in_progress',
+        run_epoch: 1,
+        last_sequence_number: 4,
+        recovery: { sequence_number: 4 },
+      }));
+      const internals = store as unknown as {
+        streamResponse(responseId: string, sessionId: string, after: number): Promise<void>;
+      };
+      internals.streamResponse = vi.fn(async () => undefined);
+
+      expect(store.runLivenessUnknown.value).toBe(true);
+      store.runEngine.recoverActiveSupervisors();
+
+      await vi.waitFor(() => expect(store.endpoints.response).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(internals.streamResponse).toHaveBeenCalledWith('r1', 's1', 4));
+      expect(store.runEngine.currentSupervisor('s1')?.responseId).toBe('r1');
+      expect(store.runs.value.s1.run).toMatchObject({ status: 'streaming', lastSequence: 4 });
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('reconciles a locally running response when the server reports the session idle', async () => {
     const store = new AppStore(config);
     store.sessions.value = [

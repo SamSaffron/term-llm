@@ -789,7 +789,7 @@ export function Transcript() {
   const livenessUnknown = store.runLivenessUnknown.value;
   const livenessText = activeRun?.run.responseId.startsWith('pending_')
     ? 'Waiting for server confirmation…'
-    : 'Connection lost — checking status…';
+    : 'Response stream interrupted — reconnecting…';
   return (
     <section
       class="chat-scroll"

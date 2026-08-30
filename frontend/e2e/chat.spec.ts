@@ -259,7 +259,7 @@ test('drops the stop control when a response transport ends before completion', 
   await page.getByRole('button', { name: 'Send message' }).click();
   await expect(page.locator('#stopBtn')).toBeHidden();
   await expect(page.getByRole('status', { name: 'Response status is unknown' })).toContainText(
-    'Connection lost',
+    'Response stream interrupted',
   );
   expect(
     requests.some(

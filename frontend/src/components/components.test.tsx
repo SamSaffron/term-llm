@@ -1226,7 +1226,7 @@ describe('Preact-owned chat surfaces', () => {
         screen.queryByRole('status', { name: 'Assistant is responding: Working' }),
       ).not.toBeInTheDocument();
       expect(screen.getByRole('status', { name: 'Response status is unknown' })).toHaveTextContent(
-        'Connection lost — checking status…',
+        'Response stream interrupted — reconnecting…',
       );
       expect(screen.getByRole('button', { name: 'Checking whether sent' })).toBeDisabled();
     } finally {
