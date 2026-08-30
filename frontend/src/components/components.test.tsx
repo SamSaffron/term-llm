@@ -3106,6 +3106,28 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByRole('textbox', { name: 'Detail' })).toHaveValue('Existing detail');
   });
 
+  it('only exposes the widget sidebar launcher when widgets are discovered', () => {
+    const store = createStore();
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Sidebar />
+      </StoreContext.Provider>,
+    );
+
+    expect(screen.queryByRole('button', { name: 'Widgets' })).not.toBeInTheDocument();
+
+    act(() => {
+      store.widgets.value = [{ id: 'usage', name: 'Usage', url: '/ui/widgets/usage/' }];
+    });
+    expect(screen.getByRole('button', { name: 'Widgets' })).toBeInTheDocument();
+
+    act(() => {
+      store.showWidgets.value = false;
+    });
+    expect(screen.queryByRole('button', { name: 'Widgets' })).not.toBeInTheDocument();
+  });
+
   it('renders widgets as a bounded, searchable launcher with useful status details', () => {
     const store = createStore();
     store.modal.value = 'widgets';

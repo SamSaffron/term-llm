@@ -21,7 +21,7 @@ term-llm serve api                 # API only (no chat UI)
 term-llm serve web --base-path /chat
 term-llm serve web --title "My Lab"
 term-llm serve web --host 127.0.0.1 --port 8080
-term-llm serve web --enable-widgets
+term-llm serve web --disable-widgets
 term-llm serve web jobs
 term-llm serve web jobs telegram   # all platforms at once
 ```
@@ -77,7 +77,7 @@ With the default base path of `/ui`, the web runtime exposes:
 
 If the jobs platform is also enabled, the jobs API is mounted under the same base path.
 
-With `--enable-widgets`, local applications are available under `<base-path>/widgets/`. See [Web UI widgets](/guides/widgets/) for the manifest format, proxy behavior, lifecycle, and security model.
+The Web UI discovers local applications under `<base-path>/widgets/` by default. A clean installation ships with none, and widget controls remain hidden until at least one valid manifest is found. Use `--disable-widgets` to turn discovery and the widget routes off. See [Web UI widgets](/guides/widgets/) for the directory layout, manifest format, proxy behavior, lifecycle, and security model.
 
 LLM job runs now expose a `session_id` and persist to the same sessions store by default, which makes web/API integrations much easier to inspect while a progressive run is still executing.
 

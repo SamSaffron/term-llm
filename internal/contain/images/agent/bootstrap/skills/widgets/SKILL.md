@@ -6,12 +6,11 @@ description: "Build, install, inspect, and debug term-llm Web UI widgets. Use wh
 # Widgets
 
 Widgets are local web apps proxied by `term-llm serve web` under the Web UI base path.
-In this container the `webui` service starts with widgets enabled:
+Widgets are enabled by default for `term-llm serve web`. In this container the `webui` service uses:
 
 ```bash
 term-llm serve web \
   --base-path "${WEB_BASE_PATH:-/chat}" \
-  --enable-widgets \
   --widgets-dir /home/agent/.config/term-llm/widgets
 ```
 
@@ -54,7 +53,7 @@ Useful source paths:
 1. Inspect existing widget support first:
 
 ```bash
-rg "widget.yaml|enable-widgets|widgets-dir" /home/agent/source/term-llm
+rg "widget.yaml|disable-widgets|widgets-dir" /home/agent/source/term-llm
 ```
 
 2. Add or edit files under the widgets directory.

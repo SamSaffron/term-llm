@@ -70,7 +70,7 @@ var (
 	serveSidebarSessions        string
 	serveToolMap                []string
 	serveFilesDir               string
-	serveEnableWidgets          bool
+	serveDisableWidgets         bool
 	serveWidgetsDir             string
 	serveResponseTimeout        time.Duration
 	serveEnableFileTracking     bool
@@ -169,7 +169,7 @@ func init() {
 	serveCmd.Flags().StringArrayVar(&serveToolMap, "tool-map", nil, "Map client tool name to server tool (repeatable, format ClientName:ServerName)")
 	serveCmd.Flags().BoolVar(&serveFilterServerTools, "suppress-server-tool-calls", false, "Hide server-executed tool calls from API responses (use when proxying to external clients)")
 	serveCmd.Flags().StringVar(&serveFilesDir, "files-dir", "", "Directory for serving arbitrary files (videos, PDFs, etc) at {base}/files/")
-	serveCmd.Flags().BoolVar(&serveEnableWidgets, "enable-widgets", false, "Enable local widget apps proxied under {base}/widgets/<mount>/")
+	serveCmd.Flags().BoolVar(&serveDisableWidgets, "disable-widgets", false, "Disable local widget apps under {base}/widgets/<mount>/")
 	serveCmd.Flags().StringVar(&serveWidgetsDir, "widgets-dir", "", "Directory containing widget sub-directories (default: ~/.config/term-llm/widgets)")
 	serveCmd.Flags().DurationVar(&serveResponseTimeout, "response-timeout", defaultServeRequestTimeout, "Maximum inactivity before the first or next completed LLM response (default 30m; pauses for interactive waits)")
 	serveCmd.Flags().BoolVar(&serveEnableFileTracking, "enable-file-tracking", false, "Enable session file-change tracking for this serve process")
@@ -717,7 +717,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		serveUI := hasWeb
 
 		var widgetsMgr *widgets.Manager
-		if serveEnableWidgets && (hasWeb || hasAPI) {
+		if serveWidgetsEnabled(hasWeb, serveDisableWidgets) {
 			wDir, wErr := resolveWidgetsDir(serveWidgetsDir, cfg)
 			if wErr != nil {
 				return wErr
@@ -745,8 +745,6 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 				corsOrigins:             append([]string(nil), serveCORSOrigins...),
 				filesDir:                resolveFilesDir(serveFilesDir, cfg),
 				writeDirs:               resolveServeWriteDirs(serveWriteDirs, cfg),
-				enableWidgets:           serveEnableWidgets,
-				widgetsDir:              serveWidgetsDir,
 				responseTimeout:         responseTimeout,
 				hubURL:                  strings.TrimSpace(serveHubURL),
 				hubNodeID:               strings.TrimSpace(serveHubNodeID),
@@ -1133,8 +1131,6 @@ type serveServerConfig struct {
 	corsOrigins             []string
 	filesDir                string   // opt-in directory for serving arbitrary files (videos, PDFs, etc)
 	writeDirs               []string // tool write-dirs (CLI + config); tool-reported files inside these are trusted sources for ensureFileServeable
-	enableWidgets           bool
-	widgetsDir              string
 	responseTimeout         time.Duration
 	// hubURL/hubNodeID/hubNodeName describe the term-llm Hub this node
 	// belongs to. When hubURL is set, the web UI gets window.TERM_LLM_HUB and
@@ -1161,6 +1157,11 @@ func resolveFilesDir(flagVal string, cfg *config.Config) string {
 		return flagVal
 	}
 	return cfg.Serve.FilesDir
+}
+
+// serveWidgetsEnabled reports whether this process should discover and serve widgets.
+func serveWidgetsEnabled(hasWeb, disabled bool) bool {
+	return hasWeb && !disabled
 }
 
 // resolveWidgetsDir returns the widgets directory, defaulting to ~/.config/term-llm/widgets.

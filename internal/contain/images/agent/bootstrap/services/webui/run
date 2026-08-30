@@ -20,7 +20,6 @@ set -- serve web \
   --token "${WEB_TOKEN:?Set WEB_TOKEN in .env}" \
   --yolo \
   --files-dir /home/agent/Files \
-  --enable-widgets \
   --widgets-dir /home/agent/.config/term-llm/widgets
 
 if [ -n "${TERM_LLM_PROVIDER:-}" ] && [ "${TERM_LLM_PROVIDER}" != "skip" ]; then

@@ -123,7 +123,6 @@ term-llm serve web \
   --auth bearer \
   --yolo \
   --files-dir /home/agent/Files \
-  --enable-widgets \
   --widgets-dir /home/agent/.config/term-llm/widgets
 ```
 

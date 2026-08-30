@@ -120,7 +120,7 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 set -- serve web \
   --agent "${AGENT_NAME:-agent}" \
   --no-projects \`
-			for _, want := range []string{serveArgs, "--files-dir /home/agent/Files", "--enable-widgets", "--widgets-dir /home/agent/.config/term-llm/widgets"} {
+			for _, want := range []string{serveArgs, "--files-dir /home/agent/Files", "--widgets-dir /home/agent/.config/term-llm/widgets"} {
 				if !strings.Contains(string(data), want) {
 					t.Fatalf("webui service missing %q", want)
 				}
@@ -208,7 +208,7 @@ set -- serve web \
 			}
 		}
 		if rel == "bootstrap/skills/widgets/SKILL.md" {
-			for _, want := range []string{"name: widgets", "--enable-widgets", "--widgets-dir /home/agent/.config/term-llm/widgets", "/chat/widgets/<widget-name>/", "/chat/admin/widgets/reload", "/chat/admin/widgets/status"} {
+			for _, want := range []string{"name: widgets", "enabled by default", "--widgets-dir /home/agent/.config/term-llm/widgets", "/chat/widgets/<widget-name>/", "/chat/admin/widgets/reload", "/chat/admin/widgets/status"} {
 				if !strings.Contains(string(data), want) {
 					t.Fatalf("widgets skill missing %q", want)
 				}

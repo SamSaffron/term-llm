@@ -12,13 +12,9 @@ The built-in agent can create or modify one interactively:
 term-llm chat @widget-builder
 ```
 
-## Enable widgets
+## Widget discovery
 
-Widgets are opt-in. Start the Web UI with:
-
-```bash
-term-llm serve web --enable-widgets
-```
+`term-llm serve web` discovers widgets by default. The standard distribution does not include any widget manifests, so a clean installation has no widget launcher; the Web UI only shows widget controls after it discovers at least one valid widget.
 
 The default widget root is:
 
@@ -30,7 +26,6 @@ Choose another root with either the CLI or `config.yaml`:
 
 ```bash
 term-llm serve web \
-  --enable-widgets \
   --widgets-dir /path/to/widgets
 ```
 
@@ -39,7 +34,13 @@ serve:
   widgets_dir: /path/to/widgets
 ```
 
-The flag enables the runtime; `serve.widgets_dir` only selects its directory. Agent containers enable widgets by default and use `/home/agent/.config/term-llm/widgets`.
+`serve.widgets_dir` only selects the directory; discovery remains enabled for the Web UI. To turn the widget runtime and its routes off entirely, use:
+
+```bash
+term-llm serve web --disable-widgets
+```
+
+Agent containers use the same opt-out default and scan `/home/agent/.config/term-llm/widgets`.
 
 ## Directory and manifest
 
@@ -192,7 +193,7 @@ Keep secrets out of HTML, JavaScript, CSS, generated images, manifests, and clie
 
 ## Troubleshooting
 
-- **Widget is missing:** confirm `--enable-widgets`, the effective widgets directory, and that `widget.yaml` is in an immediate child directory.
+- **Widget is missing:** confirm the effective widgets directory, make sure `--disable-widgets` is not set, and check that `widget.yaml` is in an immediate child directory.
 - **Load error:** inspect `/admin/widgets/status` for malformed YAML, a missing title or command, an invalid mount, duplicate mounts, or missing `$PORT`/`$SOCKET`.
 - **Startup timeout:** run the manifest command manually with a test port, verify loopback binding, and make sure `/` responds quickly.
 - **HTML loads but assets fail:** replace root-relative browser URLs with relative URLs.

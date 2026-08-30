@@ -156,4 +156,4 @@ Summarize:
 3. Files created or changed
 4. Checks performed and their results
 5. Checks skipped and why
-6. Any required `--enable-widgets`, `--widgets-dir`, reload, or service restart action
+6. Any required `--widgets-dir`, reload, or service restart action
