@@ -523,6 +523,30 @@ describe('Preact-owned chat surfaces', () => {
     expect(toggle.closest('.header-controls-row')).not.toBeNull();
   });
 
+  it('replaces header diff totals with the file icon while the changes panel is open', () => {
+    const store = createStore();
+    store.sessions.value = [
+      {
+        ...store.sessions.value[0],
+        fileChangeSummary: { fileCount: 2, additions: 2, deletions: 2, git: true },
+      },
+    ];
+    store.diff.value = { ...store.diff.value, open: true };
+    render(
+      <StoreContext.Provider value={store}>
+        <Header />
+      </StoreContext.Provider>,
+    );
+
+    const toggle = screen.getByRole('button', {
+      name: 'Toggle file changes: 2 changed files (+2 −2)',
+    });
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(toggle.querySelector('.diff-toggle-file-icon')).toBeInTheDocument();
+    expect(toggle.querySelector('.diff-toggle-stat-add')).not.toBeInTheDocument();
+    expect(toggle.querySelector('.diff-toggle-stat-del')).not.toBeInTheDocument();
+  });
+
   it('resizes the grid column with the changes panel handle', () => {
     const store = createStore();
     store.startupDone.value = true;

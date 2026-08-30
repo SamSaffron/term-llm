@@ -211,7 +211,12 @@ test('desktop shell uses authored controls, message hierarchy and diff rows', as
       .evaluate((element) => parseFloat(getComputedStyle(element).columnGap) > 0),
   ).toBe(true);
 
-  await page.getByRole('button', { name: 'Toggle file changes' }).click();
+  const diffToggle = page.getByRole('button', { name: 'Toggle file changes' });
+  await diffToggle.click();
+  await expect(diffToggle).toHaveCSS('width', '34px');
+  await expect(diffToggle.locator('.diff-toggle-file-icon')).toBeVisible();
+  await expect(diffToggle.locator('.diff-toggle-stat-add')).toBeHidden();
+  await expect(diffToggle.locator('.diff-toggle-stat-del')).toBeHidden();
   await expect(page.locator('#diffSidebar')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Change scope' })).toBeVisible();
   const diffRow = page.locator('.diff-file-row[data-path="frontend/src/main.tsx"]');

@@ -372,8 +372,12 @@ export function Header() {
                 <span class="diff-toggle-file-count">
                   <span class="diff-toggle-file-icon" aria-hidden="true" />
                 </span>
-                {diffAdds > 0 && <span class="diff-toggle-stat-add">+{diffAdds}</span>}
-                {diffDels > 0 && <span class="diff-toggle-stat-del">−{diffDels}</span>}
+                {!store.diff.value.open && (
+                  <>
+                    {diffAdds > 0 && <span class="diff-toggle-stat-add">+{diffAdds}</span>}
+                    {diffDels > 0 && <span class="diff-toggle-stat-del">−{diffDels}</span>}
+                  </>
+                )}
               </span>
             </button>
           )}

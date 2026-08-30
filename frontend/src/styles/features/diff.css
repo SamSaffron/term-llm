@@ -1208,10 +1208,17 @@
   flex-shrink: 0;
 }
 
-.diff-toggle.active {
+.icon-btn.diff-toggle.active {
+  width: var(--header-action-height);
+  min-width: var(--header-action-height);
+  padding-inline: 0;
   border-color: var(--border-strong);
   background: var(--surface-3);
   color: var(--text);
+}
+
+.diff-toggle.active .diff-toggle-file-count {
+  display: inline-flex;
 }
 
 .diff-toggle svg {
