@@ -43,6 +43,7 @@ import type { TabEventType } from '../platform/tab-sync';
 // Supervisor backoff guarantees seven consecutive failures represent more than
 // thirty seconds without a successfully attached response transport.
 const STALE_RESPONSE_RECOVERY_FAILURES = 7;
+const RESPONSE_STREAM_CONNECT_TIMEOUT_MS = 15_000;
 
 export interface RunEngineHost {
   loadSession: (id: string, epoch?: number) => Promise<void>;
@@ -812,6 +813,16 @@ export class RunEngine {
       this.supervisors.finishSubscription(owner, transportGeneration);
       return;
     }
+    this.supervisors.touchWatchdog(
+      owner,
+      transportGeneration,
+      () => {
+        this.services.bumpDiagnostic('streamWatchdogTimeouts');
+        abort.abort(new DOMException('Response stream connection timed out', 'TimeoutError'));
+        this.scheduleSupervisorRetry(owner, new Error('Response stream connection timed out'));
+      },
+      RESPONSE_STREAM_CONNECT_TIMEOUT_MS,
+    );
     try {
       const response = await this.services.endpoints.responseEvents(
         owner.responseId,
@@ -1218,6 +1229,46 @@ export class RunEngine {
             this.runs.peek()[sessionId]?.run.lastSequence || 0,
           );
     await this.recoverSupervisor(owner);
+  }
+
+  async reconcileServerIdleResponse(
+    sessionId: string,
+    responseId: string,
+    transcriptRev: number,
+  ): Promise<void> {
+    if (transcriptRev <= 0 || this.retiredResponses.has(responseId)) return;
+    try {
+      await this.host.refreshSessionMessages(sessionId, transcriptRev);
+    } catch {
+      return;
+    }
+    const session = this.sessionStore.sessions.peek().find((entry) => entry.id === sessionId);
+    const projection = this.runs.peek()[sessionId];
+    if (
+      !session ||
+      session.activeRun ||
+      session.activeResponseId ||
+      (transcriptRev > 0 && (session.messageBodiesRev || 0) < transcriptRev) ||
+      projection?.run.responseId !== responseId ||
+      !['connecting', 'checking', 'streaming', 'cancelling'].includes(projection.run.status)
+    )
+      return;
+
+    this.retiredResponses.add(responseId);
+    this.clearResponseTransport(sessionId, responseId);
+    const owner = this.supervisors.current(sessionId);
+    if (owner?.responseId === responseId) this.supervisors.retire(owner);
+    const nextRuns = { ...this.runs.peek() };
+    delete nextRuns[sessionId];
+    batch(() => {
+      this.runs.value = nextRuns;
+      this.sessionStore.patch(sessionId, {
+        activeRun: false,
+        activeResponseId: null,
+        lastResponseId: responseId,
+      });
+    });
+    this.retireIntent(sessionId);
   }
 
   private async waitForSubscriptionIdle(owner: StreamSupervisor): Promise<boolean> {

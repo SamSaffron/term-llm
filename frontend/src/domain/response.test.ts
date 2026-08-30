@@ -52,6 +52,23 @@ describe('response projection', () => {
     expect(new Set(RESPONSE_EVENT_TYPES).size).toBe(RESPONSE_EVENT_TYPES.length);
   });
 
+  it('adopts the server epoch from the initial response.created event', () => {
+    const projection = reduceResponse(
+      initialProjection(run),
+      event('response.created', 1, { run_epoch: 1788084563000000 }),
+    );
+
+    expect(projection.run).toMatchObject({
+      responseId: 'r1',
+      epoch: 1788084563000000,
+      lastSequence: 1,
+      status: 'streaming',
+    });
+    expect(() =>
+      reduceResponse(projection, event('response.output_text.delta', 2, { run_epoch: 1 })),
+    ).toThrow(ResponseProtocolError);
+  });
+
   it('does not project the compaction resume handoff below its transcript boundary', () => {
     let projection = initialProjection(run);
     projection = reduceResponse(

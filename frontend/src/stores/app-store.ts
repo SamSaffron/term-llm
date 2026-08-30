@@ -480,6 +480,8 @@ export class AppStore {
       reconcile: (reason, authoritative) => this.reconcile(reason, { authoritative }),
       refreshSidebar: (authoritative) => this.refreshSidebar(authoritative),
       resumeResponse: (sessionId, responseId) => this.resumeResponse(sessionId, responseId),
+      reconcileServerIdleResponse: (sessionId, responseId, transcriptRev) =>
+        this.runEngine.reconcileServerIdleResponse(sessionId, responseId, transcriptRev),
       refreshSessionMessages: (sessionId, targetRev) =>
         this.refreshSessionMessages(sessionId, targetRev),
       syncSessionMessagesForAttach: (sessionId, targetRev) =>
