@@ -459,6 +459,11 @@ export function reduceResponse(
         status: failed ? 'error' : 'done',
         resultStatus: failed ? 'error' : 'success',
         result: text(event.output || event.result),
+        askUserAnswer:
+          !failed &&
+          (text(event.tool_name || event.name || event.tool) || entry.name) === 'ask_user'
+            ? text(event.ask_user_summary).trim() || entry.askUserAnswer
+            : entry.askUserAnswer,
         images,
       });
       messages = messages.map((message) =>
@@ -622,17 +627,29 @@ export function reduceResponse(
         modelSwap: undefined,
         retry: undefined,
       };
-    case 'response.ask_user.prompt':
+    case 'response.ask_user.prompt': {
+      const callId = text(event.call_id);
+      let entry: ToolCall;
+      [messages, entry] = tool(messages, responseId, callId, 'ask_user');
+      const questions = Array.isArray(event.questions)
+        ? (event.questions as AskUserPrompt['questions'])
+        : [];
+      messages = patchTool(messages, callId, {
+        name: 'ask_user',
+        arguments: entry.arguments || JSON.stringify({ questions }),
+        argumentsFinalized: true,
+        status: 'running',
+      });
       return {
         ...next,
+        messages,
         askUser: {
           sessionId: projection.run.sessionId,
-          callId: text(event.call_id),
-          questions: Array.isArray(event.questions)
-            ? (event.questions as AskUserPrompt['questions'])
-            : [],
+          callId,
+          questions,
         },
       };
+    }
     case 'response.approval.prompt':
       return {
         ...next,

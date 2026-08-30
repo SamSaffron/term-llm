@@ -1306,6 +1306,73 @@ describe('Preact-owned chat surfaces', () => {
     }
   });
 
+  it('renders ask_user questions and keeps the answer inside its tool card', async () => {
+    const store = createStore();
+    store.sessions.value[0].messages = [
+      {
+        id: 'ask-tools',
+        role: 'tool-group',
+        content: '',
+        created: Date.now(),
+        tools: [
+          {
+            id: 'ask-1',
+            name: 'ask_user',
+            arguments: JSON.stringify({
+              questions: [
+                {
+                  header: 'Frontend',
+                  question: 'Which frontend approach should I use?',
+                  multi_select: false,
+                  options: [
+                    {
+                      label: 'Vendor xterm.js',
+                      description: 'Download and serve the full terminal renderer.',
+                    },
+                    {
+                      label: 'Basic renderer',
+                      description: 'Use a smaller renderer with limited terminal support.',
+                    },
+                  ],
+                },
+                {
+                  header: 'Features',
+                  question: 'Which extras should be enabled?',
+                  multi_select: true,
+                  options: [{ label: 'Search', description: 'Enable transcript search.' }],
+                },
+              ],
+            }),
+            argumentsFinalized: true,
+            status: 'done',
+            askUserAnswer: 'Frontend: Vendor xterm.js | Features: Search',
+          },
+        ],
+      },
+    ];
+
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+
+    const toggle = screen.getByRole('button', { name: /Which frontend approach should I use/ });
+    expect(toggle).toHaveTextContent('2 questions');
+    await userEvent.click(toggle);
+
+    expect(screen.getByText('Frontend')).toBeInTheDocument();
+    expect(screen.getByText('Which frontend approach should I use?')).toBeInTheDocument();
+    expect(screen.getByText('Download and serve the full terminal renderer.')).toBeInTheDocument();
+    expect(screen.getByText('Choose multiple')).toBeInTheDocument();
+    const answer = screen.getByText('Frontend: Vendor xterm.js | Features: Search');
+    const card = container.querySelector('[data-tool-id="ask-1"] .tool-card');
+    expect(answer.closest('.tool-card')).toBe(card);
+    expect(card?.querySelector('.ask-user-result')).toHaveTextContent('Answer');
+    expect(card?.querySelector('.tool-argument')).toBeNull();
+    expect(container.querySelector('.message.user')).toBeNull();
+  });
+
   it('formats tool parameters as readable typed rows and preserves partial argument fallbacks', async () => {
     const store = createStore();
     store.sessions.value[0].messages = [

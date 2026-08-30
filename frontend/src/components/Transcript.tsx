@@ -92,7 +92,110 @@ function ToolArguments({ raw }: { raw: string }) {
   );
 }
 
+interface AskUserQuestion {
+  header: string;
+  question: string;
+  multiSelect: boolean;
+  options: { label: string; description: string }[];
+}
+
+function parseAskUserQuestions(raw: string): AskUserQuestion[] | null {
+  try {
+    const value = JSON.parse(raw) as Record<string, unknown>;
+    if (!value || !Array.isArray(value.questions) || !value.questions.length) return null;
+    const questions = value.questions.map((entry) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+      const question = entry as Record<string, unknown>;
+      const prompt = typeof question.question === 'string' ? question.question.trim() : '';
+      if (!prompt) return null;
+      const options = Array.isArray(question.options)
+        ? question.options
+            .map((option) => {
+              if (!option || typeof option !== 'object' || Array.isArray(option)) return null;
+              const item = option as Record<string, unknown>;
+              const label = typeof item.label === 'string' ? item.label.trim() : '';
+              if (!label) return null;
+              return {
+                label,
+                description: typeof item.description === 'string' ? item.description.trim() : '',
+              };
+            })
+            .filter((option): option is { label: string; description: string } => Boolean(option))
+        : [];
+      return {
+        header: typeof question.header === 'string' ? question.header.trim() : '',
+        question: prompt,
+        multiSelect: question.multi_select === true,
+        options,
+      };
+    });
+    return questions.every(Boolean) ? (questions as AskUserQuestion[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+function AskUserArguments({ tool }: { tool: ToolCall }) {
+  const questions = parseAskUserQuestions(tool.arguments || '');
+  if (!questions) {
+    if (tool.status === 'running' && !tool.argumentsFinalized)
+      return <div class="ask-user-loading">Receiving questions…</div>;
+    return <ToolArguments raw={tool.arguments || ''} />;
+  }
+  return (
+    <>
+      <div class="tool-details-label">Questions</div>
+      <div class="ask-user-questions">
+        {questions.map((question, index) => (
+          <section
+            class="ask-user-question"
+            aria-label={question.header || `Question ${index + 1}`}
+            key={index}
+          >
+            <div class="ask-user-question-heading">
+              <strong>{question.header || `Question ${index + 1}`}</strong>
+              {question.multiSelect && <span>Choose multiple</span>}
+            </div>
+            <p>{question.question}</p>
+            {question.options.length > 0 && (
+              <ul class="ask-user-options" role="list">
+                {question.options.map((option, optionIndex) => (
+                  <li key={`${option.label}-${optionIndex}`}>
+                    <strong>{option.label}</strong>
+                    {option.description && <span>{option.description}</span>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function AskUserAnswer({ answer }: { answer: string }) {
+  if (!answer) return null;
+  return (
+    <div class="ask-user-result">
+      <div class="tool-details-label">Answer</div>
+      <div class="ask-user-result-value">
+        <span aria-hidden="true">✓</span>
+        <span>{answer}</span>
+      </div>
+    </div>
+  );
+}
+
 function toolSummary(tool: ToolCall): string {
+  if (tool.name === 'ask_user') {
+    const questions = parseAskUserQuestions(tool.arguments || '');
+    if (questions?.length) {
+      const first = questions[0].question.replace(/\s+/g, ' ');
+      return questions.length > 1 ? `${questions.length} questions · ${first}` : first;
+    }
+    if (tool.status === 'running' && !tool.argumentsFinalized) return 'Receiving questions…';
+  }
   let args: Record<string, unknown> = {};
   try {
     args = JSON.parse(tool.arguments || '{}') as Record<string, unknown>;
@@ -202,7 +305,12 @@ function Tool({
         </button>
         {expanded && (
           <div class="tool-details open">
-            <ToolArguments raw={tool.arguments || ''} />
+            {tool.name === 'ask_user' ? (
+              <AskUserArguments tool={tool} />
+            ) : (
+              <ToolArguments raw={tool.arguments || ''} />
+            )}
+            <AskUserAnswer answer={tool.askUserAnswer || ''} />
             {tool.guardianReviews?.map((review, index) => {
               const outcome = String(review.outcome || 'notice').toLowerCase();
               const denied = outcome === 'denied' || outcome === 'error';
@@ -219,7 +327,7 @@ function Tool({
                 </div>
               );
             })}
-            {tool.result && !failed && (
+            {tool.result && !failed && (tool.name !== 'ask_user' || !tool.askUserAnswer) && (
               <pre class="tool-result">
                 <code>{tool.result}</code>
               </pre>
@@ -581,7 +689,7 @@ function MessageRow({
     );
   return (
     <article
-      class={`message ${message.role} ${message.askUser ? 'ask-user-answer' : ''}`}
+      class={`message ${message.role}`}
       data-message-id={message.id}
       data-created={message.created}
       data-durable-id={message.durableRowId}

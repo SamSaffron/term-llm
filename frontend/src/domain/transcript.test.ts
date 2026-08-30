@@ -107,6 +107,90 @@ describe('transcript domain', () => {
     });
   });
 
+  it('keeps durable ask_user answers on their matching tool calls', () => {
+    const messages = convertServerMessages([
+      {
+        id: 1,
+        sequence: 0,
+        role: 'assistant',
+        parts: [
+          {
+            type: 'tool_call',
+            tool_call_id: 'ask-1',
+            tool_name: 'ask_user',
+            tool_arguments:
+              '{"questions":[{"header":"Frontend","question":"Which renderer?","options":[]}]}',
+          },
+          {
+            type: 'tool_call',
+            tool_call_id: 'ask-2',
+            tool_name: 'ask_user',
+            tool_arguments:
+              '{"questions":[{"header":"Theme","question":"Which theme?","options":[]}]}',
+          },
+        ],
+      },
+      {
+        id: 2,
+        sequence: 1,
+        role: 'tool',
+        parts: [
+          {
+            type: 'tool_result',
+            tool_call_id: 'ask-2',
+            tool_name: 'ask_user',
+            ask_user_summary: 'Theme: Dark',
+          },
+          {
+            type: 'tool_result',
+            tool_call_id: 'ask-1',
+            tool_name: 'ask_user',
+            ask_user_summary: 'Frontend: Vendor xterm.js',
+          },
+        ],
+      },
+    ]);
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].role).toBe('tool-group');
+    expect(messages[0].tools).toEqual([
+      expect.objectContaining({ id: 'ask-1', askUserAnswer: 'Frontend: Vendor xterm.js' }),
+      expect.objectContaining({ id: 'ask-2', askUserAnswer: 'Theme: Dark' }),
+    ]);
+    expect(messages.some((message) => message.role === 'user')).toBe(false);
+  });
+
+  it('represents an orphaned ask_user result as a tool instead of a user turn', () => {
+    const messages = convertServerMessages([
+      {
+        id: 3,
+        sequence: 2,
+        role: 'tool',
+        parts: [
+          {
+            type: 'tool_result',
+            tool_call_id: 'ask-orphan',
+            tool_name: 'ask_user',
+            ask_user_summary: 'Choice: Continue',
+          },
+        ],
+      },
+    ]);
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      role: 'tool-group',
+      tools: [
+        {
+          id: 'ask-orphan',
+          name: 'ask_user',
+          status: 'done',
+          askUserAnswer: 'Choice: Continue',
+        },
+      ],
+    });
+  });
+
   it('sanitizes server session defaults and seconds timestamps', () => {
     const session = sanitizeSession({
       id: 's1',
@@ -147,12 +231,15 @@ describe('transcript domain', () => {
   });
 
   it('windows old turns behind a stable gap and always keeps the tail', () => {
-    const messages = Array.from({ length: 240 }, (_, index): Message => ({
-      id: String(index),
-      role: index % 3 === 0 ? 'user' : 'assistant',
-      content: String(index),
-      created: index,
-    }));
+    const messages = Array.from(
+      { length: 240 },
+      (_, index): Message => ({
+        id: String(index),
+        role: index % 3 === 0 ? 'user' : 'assistant',
+        content: String(index),
+        created: index,
+      }),
+    );
     const runs = windowTranscript(messages, 3, true);
     expect(runs[0]).toMatchObject({ type: 'gap' });
     expect(runs[1].messages?.at(-1)?.id).toBe('239');
@@ -160,12 +247,15 @@ describe('transcript domain', () => {
   });
 
   it('indexes assistant response text in one transcript pass', () => {
-    const messages = Array.from({ length: 1_000 }, (_, index): Message => ({
-      id: String(index),
-      role: index % 5 === 0 ? 'user' : 'assistant',
-      content: String(index),
-      created: index,
-    }));
+    const messages = Array.from(
+      { length: 1_000 },
+      (_, index): Message => ({
+        id: String(index),
+        role: index % 5 === 0 ? 'user' : 'assistant',
+        content: String(index),
+        created: index,
+      }),
+    );
     const read = vi.fn((message: Message) => message.content);
     const contexts = indexTranscriptTurns(messages, read);
     expect(read).toHaveBeenCalledTimes(messages.length);

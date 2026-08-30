@@ -1028,14 +1028,24 @@ func TestAppendResponseRunEventEmitsAskUserPromptWhenServerToolMetadataIsSuppres
 		t.Fatalf("append start: %v", err)
 	}
 
+	if err := server.appendResponseRunEvent(runtime, run, state, llm.Event{
+		Type:        llm.EventToolExecEnd,
+		ToolCallID:  "call-ask",
+		ToolName:    tools.AskUserToolName,
+		ToolSuccess: true,
+		ToolOutput:  `{"answers":[{"header":"Theme","selected":"Dark"}]}`,
+	}); err != nil {
+		t.Fatalf("append end: %v", err)
+	}
+
 	run.mu.Lock()
 	defer run.mu.Unlock()
-	if len(run.events) != 1 || run.events[0].Event != "response.ask_user.prompt" {
+	if len(run.events) != 2 || run.events[0].Event != "response.ask_user.prompt" || run.events[1].Event != "response.tool_exec.end" {
 		var names []string
 		for _, ev := range run.events {
 			names = append(names, ev.Event)
 		}
-		t.Fatalf("events = %v, want only response.ask_user.prompt", names)
+		t.Fatalf("events = %v, want prompt and minimal ask_user end", names)
 	}
 	var payload map[string]any
 	if err := json.Unmarshal(run.events[0].Data, &payload); err != nil {
@@ -1047,6 +1057,77 @@ func TestAppendResponseRunEventEmitsAskUserPromptWhenServerToolMetadataIsSuppres
 	questions, ok := payload["questions"].([]any)
 	if !ok || len(questions) != 1 {
 		t.Fatalf("questions = %#v, want one question", payload["questions"])
+	}
+	var endPayload map[string]any
+	if err := json.Unmarshal(run.events[1].Data, &endPayload); err != nil {
+		t.Fatalf("unmarshal end: %v", err)
+	}
+	if endPayload["ask_user_summary"] != "Theme: Dark" || endPayload["tool_arguments"] != nil || endPayload["tool_info"] != nil {
+		t.Fatalf("suppressed ask_user end = %#v", endPayload)
+	}
+	if len(run.recoveryMessages) != 1 || len(run.recoveryMessages[0].Tools) != 1 || run.recoveryMessages[0].Tools[0].AskUserAnswer != "Theme: Dark" {
+		t.Fatalf("suppressed ask_user recovery = %#v", run.recoveryMessages)
+	}
+}
+
+func TestAppendResponseRunEventIncludesAskUserAnswerInLiveAndRecoveryTools(t *testing.T) {
+	registry := llm.NewToolRegistry()
+	registry.Register(tools.NewAskUserTool())
+	runtime := &serveRuntime{engine: llm.NewEngine(llm.NewMockProvider("mock"), registry)}
+	server := &serveServer{}
+	run := newResponseRun("resp_ask_answer", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	state := &responseRunStreamState{}
+	arguments := json.RawMessage(`{"questions":[{"header":"Frontend","question":"Which renderer?","options":[{"label":"Vendor xterm.js","description":"Serve xterm.js"}]}]}`)
+
+	if err := server.appendResponseRunEvent(runtime, run, state, llm.Event{
+		Type:       llm.EventToolCall,
+		ToolCallID: "call-ask",
+		ToolName:   tools.AskUserToolName,
+		Tool: &llm.ToolCall{
+			ID:        "call-ask",
+			Name:      tools.AskUserToolName,
+			Arguments: arguments,
+		},
+	}); err != nil {
+		t.Fatalf("append call: %v", err)
+	}
+	if err := server.appendResponseRunEvent(runtime, run, state, llm.Event{
+		Type:        llm.EventToolExecEnd,
+		ToolCallID:  "call-ask",
+		ToolName:    tools.AskUserToolName,
+		ToolSuccess: true,
+		ToolOutput:  `{"answers":[{"header":"Frontend","selected":"Vendor xterm.js"}]}`,
+	}); err != nil {
+		t.Fatalf("append end: %v", err)
+	}
+
+	run.mu.Lock()
+	var endPayload map[string]any
+	for _, event := range run.events {
+		if event.Event != "response.tool_exec.end" {
+			continue
+		}
+		if err := json.Unmarshal(event.Data, &endPayload); err != nil {
+			t.Fatalf("decode end event: %v", err)
+		}
+	}
+	run.mu.Unlock()
+	if got := stringValue(endPayload["ask_user_summary"]); got != "Frontend: Vendor xterm.js" {
+		t.Fatalf("live ask_user_summary = %q", got)
+	}
+
+	snapshot := run.snapshot()
+	recovery, ok := snapshot["recovery"].(map[string]any)
+	if !ok {
+		t.Fatalf("recovery = %#v", snapshot["recovery"])
+	}
+	messages, ok := recovery["messages"].([]map[string]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("recovery messages = %#v", recovery["messages"])
+	}
+	toolPayloads, ok := messages[0]["tools"].([]map[string]any)
+	if !ok || len(toolPayloads) != 1 || toolPayloads[0]["askUserAnswer"] != "Frontend: Vendor xterm.js" {
+		t.Fatalf("recovery tools = %#v", messages[0]["tools"])
 	}
 }
 

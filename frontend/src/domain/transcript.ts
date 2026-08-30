@@ -244,13 +244,11 @@ export function convertServerMessages(
   const rebase = options.rebaseAssetURL || ((value: string) => value);
   let group: Message | null = null;
   let pendingCompaction = -1;
-  const askAnswers = new Map<Message, Message[]>();
   const flush = () => {
     if (!group) return;
     const current = group;
     group = null;
-    output.push(current, ...(askAnswers.get(current) || []));
-    askAnswers.delete(current);
+    output.push(current);
   };
   const ensureGroup = (message: ServerMessage, partIndex: number): Message => {
     if (!group)
@@ -497,25 +495,11 @@ export function convertServerMessages(
           : [];
         let tool = current ? findTool(current, callID, name) : undefined;
         const reviews = guardianReviews(part.guardian_reviews);
-        const askSummary =
-          !part.tool_error && name === 'ask_user' ? text(part.ask_user_summary).trim() : '';
-        if (!tool && !images.length && !reviews?.length) {
-          if (askSummary)
-            output.push(
-              withSource(
-                {
-                  id: `${messageID}_ask_user_${index}`,
-                  role: 'user',
-                  content: askSummary,
-                  askUser: true,
-                  askUserCallId: callID,
-                  created: at,
-                },
-                message,
-              ),
-            );
-          continue;
-        }
+        const askAnswer =
+          callID && !part.tool_error && name === 'ask_user'
+            ? text(part.ask_user_summary).trim()
+            : '';
+        if (!tool && !images.length && !reviews?.length && !askAnswer) continue;
         const target = current || ensureGroup(message, index);
         tool ||= {
           id: callID || `${messageID}_tool_${index}`,
@@ -527,6 +511,7 @@ export function convertServerMessages(
         tool.resultStatus = tool.status === 'error' ? 'error' : 'success';
         tool.result = text(part.output || part.result || part.tool_info || part.text);
         tool.guardianReviews = reviews || tool.guardianReviews;
+        if (askAnswer && tool.name === 'ask_user') tool.askUserAnswer = askAnswer;
         if (images.length) tool.images = [...new Set([...(tool.images || []), ...images])];
         const spawn = record(part.spawn_agent);
         if (spawn)
@@ -538,23 +523,6 @@ export function convertServerMessages(
             durationMs: Number(spawn.duration_ms) || 0,
             childSessionId: text(spawn.session_id),
           };
-        if (askSummary) {
-          const list = askAnswers.get(target) || [];
-          list.push(
-            withSource(
-              {
-                id: `${messageID}_ask_user_${index}`,
-                role: 'user',
-                content: askSummary,
-                askUser: true,
-                askUserCallId: callID,
-                created: at,
-              },
-              message,
-            ),
-          );
-          askAnswers.set(target, list);
-        }
       }
     }
   }
@@ -646,8 +614,7 @@ export function indexTranscriptTurns(
   let start = 0;
   while (start < messages.length) {
     let end = start + 1;
-    while (end < messages.length && !(messages[end].role === 'user' && !messages[end].askUser))
-      end += 1;
+    while (end < messages.length && messages[end].role !== 'user') end += 1;
     const assistantParts: { responseId?: string; text: string }[] = [];
     let copyTarget = -1;
     for (let index = start; index < end; index += 1) {

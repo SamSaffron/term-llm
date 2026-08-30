@@ -283,6 +283,36 @@ describe('response projection', () => {
     });
   });
 
+  it('attaches live ask_user answers to the originating tool call', () => {
+    let projection = initialProjection(run);
+    projection = reduceResponse(
+      projection,
+      event('response.ask_user.prompt', 1, {
+        call_id: 'ask-1',
+        questions: [{ question: 'Choose?', options: [] }],
+      }),
+    );
+    projection = reduceResponse(
+      projection,
+      event('response.tool_exec.end', 2, {
+        call_id: 'ask-1',
+        tool_name: 'ask_user',
+        success: true,
+        ask_user_summary: 'Frontend: Vendor xterm.js',
+      }),
+    );
+
+    expect(projection.messages).toHaveLength(1);
+    expect(projection.messages[0].tools?.[0]).toMatchObject({
+      id: 'ask-1',
+      name: 'ask_user',
+      status: 'done',
+      arguments: '{"questions":[{"question":"Choose?","options":[]}]}',
+      argumentsFinalized: true,
+      askUserAnswer: 'Frontend: Vendor xterm.js',
+    });
+  });
+
   it('keeps interleaved parallel tool arguments attached to stable call and item identities', () => {
     let projection = initialProjection(run);
     projection = reduceResponse(

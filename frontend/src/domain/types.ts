@@ -52,6 +52,8 @@ export interface ToolCall {
   status: 'running' | 'done' | 'cancelled' | 'error';
   resultStatus?: 'success' | 'error';
   result?: string;
+  /** Human-readable answer returned by an ask_user call. */
+  askUserAnswer?: string;
   images?: string[];
   guardianReviews?: GuardianReview[];
   subagent?: Record<string, unknown>;
@@ -87,7 +89,6 @@ export interface Message {
   lineCount?: number;
   expanded?: boolean;
   activeBoundary?: boolean;
-  askUser?: boolean;
   diffComments?: DiffComment[];
   [key: string]: unknown;
 }

@@ -30,14 +30,16 @@ type responseRunEvent struct {
 }
 
 type responseRunRecoveryTool struct {
-	ID              string
-	Name            string
-	Arguments       string
-	Status          string
-	ResultStatus    string
-	Created         int64
-	Images          []string
-	GuardianReviews []map[string]any
+	ID                 string
+	Name               string
+	Arguments          string
+	ArgumentsFinalized bool
+	Status             string
+	ResultStatus       string
+	AskUserAnswer      string
+	Created            int64
+	Images             []string
+	GuardianReviews    []map[string]any
 }
 
 type responseRunRecoveryMessage struct {
@@ -1015,7 +1017,44 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 		r.flushPendingGuardianReviewsLocked()
 	}
 	switch event {
-	case "response.ask_user.prompt", "response.approval.prompt":
+	case "response.ask_user.prompt":
+		r.recoveryEvents = append(r.recoveryEvents, responseRunRecoveryEvent{
+			Event:   event,
+			Payload: cloneJSONMap(payload),
+		})
+		callID := stringValue(payload["call_id"])
+		if callID == "" {
+			return
+		}
+		arguments := ""
+		if encoded, err := json.Marshal(map[string]any{"questions": payload["questions"]}); err == nil {
+			arguments = string(encoded)
+		}
+		if r.currentToolGroup >= 0 && r.currentToolGroup < len(r.recoveryMessages) {
+			group := &r.recoveryMessages[r.currentToolGroup]
+			for i := range group.Tools {
+				if group.Tools[i].ID == callID {
+					if group.Tools[i].Arguments == "" {
+						group.Tools[i].Arguments = arguments
+					}
+					group.Tools[i].ArgumentsFinalized = true
+					return
+				}
+			}
+		}
+		r.recoveryMessages = append(r.recoveryMessages, responseRunRecoveryMessage{
+			ID:      r.nextRecoveryMessageIDLocked("tool_group"),
+			Role:    "tool-group",
+			Created: time.Now().UnixMilli(),
+			Tools: []responseRunRecoveryTool{{
+				ID: callID, Name: tools.AskUserToolName, Arguments: arguments,
+				ArgumentsFinalized: true, Status: "running", Created: time.Now().UnixMilli(),
+			}},
+			Status: "running",
+		})
+		r.currentToolGroup = len(r.recoveryMessages) - 1
+		r.currentAssistant = -1
+	case "response.approval.prompt":
 		r.recoveryEvents = append(r.recoveryEvents, responseRunRecoveryEvent{
 			Event:   event,
 			Payload: cloneJSONMap(payload),
@@ -1173,15 +1212,18 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 		for i := range group.Tools {
 			if callID != "" && group.Tools[i].ID == callID {
 				group.Tools[i].Arguments = arguments
+				group.Tools[i].ArgumentsFinalized = true
 				return
 			}
 			if callID == "" && name != "" && group.Tools[i].Name == name && group.Tools[i].Status == "running" {
 				group.Tools[i].Arguments = arguments
+				group.Tools[i].ArgumentsFinalized = true
 				return
 			}
 		}
 	case "response.tool_exec.end":
 		images := stringSliceValue(payload["images"])
+		askUserAnswer := strings.TrimSpace(stringValue(payload["ask_user_summary"]))
 		succeeded := true
 		if value, ok := payload["success"].(bool); ok {
 			succeeded = value
@@ -1199,6 +1241,9 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 						group.Tools[i].ResultStatus = "error"
 					}
 					group.Tools[i].Images = appendUniqueStrings(group.Tools[i].Images, images...)
+					if succeeded && callID != "" && group.Tools[i].Name == tools.AskUserToolName && askUserAnswer != "" {
+						group.Tools[i].AskUserAnswer = askUserAnswer
+					}
 					if callID != "" {
 						break
 					}
@@ -1496,8 +1541,14 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 				if tool.Arguments != "" {
 					toolEntry["arguments"] = tool.Arguments
 				}
+				if tool.ArgumentsFinalized {
+					toolEntry["argumentsFinalized"] = true
+				}
 				if tool.ResultStatus != "" {
 					toolEntry["resultStatus"] = tool.ResultStatus
+				}
+				if tool.AskUserAnswer != "" {
+					toolEntry["askUserAnswer"] = tool.AskUserAnswer
 				}
 				if len(tool.GuardianReviews) > 0 {
 					reviews := make([]map[string]any, 0, len(tool.GuardianReviews))
@@ -2697,7 +2748,8 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 		if ev.ToolName == tools.AskUserToolName && runtime != nil {
 			runtime.clearPendingAskUser(ev.ToolCallID)
 		}
-		if s.suppressResponseRunServerToolEvent(runtime, ev.ToolName) {
+		suppressed := s.suppressResponseRunServerToolEvent(runtime, ev.ToolName)
+		if suppressed && ev.ToolName != tools.AskUserToolName {
 			return nil
 		}
 		payload := map[string]any{
@@ -2705,19 +2757,27 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 			"tool_name": ev.ToolName,
 			"success":   ev.ToolSuccess,
 		}
-		if ev.ToolInfo != "" {
+		if !suppressed && ev.ToolInfo != "" {
 			payload["tool_info"] = ev.ToolInfo
 		}
-		if len(ev.ToolArgs) > 0 {
+		if !suppressed && len(ev.ToolArgs) > 0 {
 			payload["tool_arguments"] = string(ev.ToolArgs)
 		}
-		if len(ev.ToolImages) > 0 {
+		if ev.ToolSuccess && ev.ToolName == tools.AskUserToolName {
+			if summary := askUserResultSummary(ev.ToolOutput); summary != "" {
+				payload["ask_user_summary"] = summary
+			}
+		}
+		if !suppressed && len(ev.ToolImages) > 0 {
 			if imageURLs := s.toolImageURLs(ev.ToolImages); len(imageURLs) > 0 {
 				payload["images"] = imageURLs
 			}
 		}
 		if err := run.appendEvent("response.tool_exec.end", payload); err != nil {
 			return err
+		}
+		if suppressed {
+			return nil
 		}
 		// Metadata only — diff content is served by the session
 		// file-changes endpoints on demand.
