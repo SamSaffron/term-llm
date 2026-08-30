@@ -68,6 +68,7 @@ type responseRunSubscribeResult struct {
 	id               int
 	replay           []responseRunEvent
 	ch               <-chan responseRunEvent
+	status           string
 	snapshotRequired bool
 	minReplayAfter   int64
 }
@@ -1276,6 +1277,7 @@ func (r *responseRun) subscribe(after int64) responseRunSubscribeResult {
 
 	if after < r.minReplayAfter {
 		return responseRunSubscribeResult{
+			status:           r.status,
 			snapshotRequired: true,
 			minReplayAfter:   r.minReplayAfter,
 		}
@@ -1290,14 +1292,14 @@ func (r *responseRun) subscribe(after int64) responseRunSubscribeResult {
 	}
 
 	if r.status != "in_progress" {
-		return responseRunSubscribeResult{replay: replay}
+		return responseRunSubscribeResult{replay: replay, status: r.status}
 	}
 
 	id := r.nextSubscriberID
 	r.nextSubscriberID++
 	ch := make(chan responseRunEvent, defaultResponseRunSubscriberBuffer)
 	r.subscribers[id] = ch
-	return responseRunSubscribeResult{id: id, replay: replay, ch: ch}
+	return responseRunSubscribeResult{id: id, replay: replay, ch: ch, status: r.status}
 }
 
 func (r *responseRun) subscriberWasDropped(id int) bool {
@@ -3090,6 +3092,7 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 		replayThrough = replay[len(replay)-1].Sequence
 	}
 	w.Header().Set("X-Term-LLM-Replay-Through", strconv.FormatInt(replayThrough, 10))
+	w.Header().Set("X-Term-LLM-Response-Status", subscription.status)
 	setSSEHeaders(w)
 	flusher.Flush()
 	ch := subscription.ch

@@ -2137,6 +2137,70 @@ describe('AppStore compatibility behavior', () => {
     expect(store.sessions.value[0]).toMatchObject({ activeRun: false, activeResponseId: null });
   });
 
+  it('blocks a duplicate send when status reports a remote run before this tab attaches', () => {
+    const store = new AppStore(config);
+    try {
+      store.sessions.value = [{ ...session(), activeRun: true, activeResponseId: 'remote-r1' }];
+      store.activeSessionId.value = 's1';
+
+      expect(store.runs.value).toEqual({});
+      expect(store.streaming.value).toBe(false);
+      expect(store.sendBlocked.value).toBe(true);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('uses the owned response transport for running state without declaring completion on loss', () => {
+    const store = new AppStore(config);
+    try {
+      store.sessions.value = [{ ...session(), activeRun: true, activeResponseId: 'r1' }];
+      store.activeSessionId.value = 's1';
+      store.runs.value = {
+        s1: initialProjection({
+          responseId: 'r1',
+          sessionId: 's1',
+          epoch: 1,
+          status: 'streaming',
+          lastSequence: 1,
+          startedRev: 0,
+          reconnects: 0,
+        }),
+      };
+
+      expect(store.streaming.value).toBe(false);
+      expect(store.runLivenessUnknown.value).toBe(true);
+      expect(store.sendBlocked.value).toBe(true);
+
+      store.runEngine.markResponseTransportActive('s1', 'r1', 1);
+      expect(store.streaming.value).toBe(true);
+      expect(store.runLivenessUnknown.value).toBe(false);
+
+      store.runEngine.markResponseTransportActive('s1', 'r1', 2);
+      store.runEngine.clearResponseTransport('s1', 'r1', 1);
+      expect(store.streaming.value).toBe(true);
+
+      store.runEngine.clearResponseTransport('s1', 'r1', 2);
+      expect(store.streaming.value).toBe(false);
+      expect(store.runLivenessUnknown.value).toBe(true);
+      expect(store.runs.value.s1.run.status).toBe('streaming');
+      expect(store.sendBlocked.value).toBe(true);
+
+      store.runEngine.markResponseTransportActive('s1', 'r1', 2);
+      store.applyResponseEvent('s1', {
+        type: 'response.output_text.delta',
+        response_id: 'r1',
+        run_epoch: 1,
+        sequence_number: 2,
+        delta: 'still alive',
+      });
+      expect(store.streaming.value).toBe(true);
+      expect(store.runLivenessUnknown.value).toBe(false);
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('reconciles a locally running response when the server reports the session idle', async () => {
     const store = new AppStore(config);
     store.sessions.value = [
@@ -2361,6 +2425,7 @@ describe('AppStore compatibility behavior', () => {
   it('does not let an idle status response invalidate a run admitted after the request began', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
     const status = deferred<Record<string, unknown>>();
     store.endpoints.sessionStatus = vi.fn(() => status.promise);
     const internals = store as unknown as {
@@ -2385,6 +2450,7 @@ describe('AppStore compatibility behavior', () => {
         reconnects: 0,
       }),
     };
+    store.runEngine.markResponseTransportActive('s1', 'newly-admitted-response');
     status.resolve({ sessions: [{ id: 's1' }] });
     await refresh;
 
@@ -2392,6 +2458,7 @@ describe('AppStore compatibility behavior', () => {
       activeRun: true,
       activeResponseId: 'newly-admitted-response',
     });
+    expect(store.streaming.value).toBe(true);
     expect(internals.resumeResponse).not.toHaveBeenCalled();
   });
 
@@ -3066,6 +3133,7 @@ describe('AppStore compatibility behavior', () => {
         reconnects: 0,
       }),
     };
+    store.runEngine.markResponseTransportActive('s1', 'r1');
     store.queueDiffComment({
       id: 'queued-comment',
       path: 'main.go',
@@ -3131,6 +3199,7 @@ describe('AppStore compatibility behavior', () => {
         reconnects: 0,
       }),
     };
+    store.runEngine.markResponseTransportActive('s1', 'r1');
     store.refreshDiffComments = vi.fn(async () => undefined);
     store.endpoints.interrupt = vi.fn(async () => ({}));
 

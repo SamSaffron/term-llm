@@ -38,6 +38,7 @@ export class AppStoreServices {
   readonly authRequired = signal(false);
   readonly networkState = signal<'unknown' | 'online' | 'offline' | 'retrying'>('unknown');
   readonly connected = signal(false);
+  readonly eventFeedHealthy = signal(false);
   readonly toasts = signal<Toast[]>([]);
   readonly diagnostics = signal<StoreDiagnostics>({
     staleStatusResults: 0,

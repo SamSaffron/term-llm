@@ -120,7 +120,11 @@ async function mockAPI(
       return route.fulfill({
         status: 200,
         contentType: 'text/event-stream',
-        headers: { 'x-response-id': 'r1', 'x-session-id': 's1' },
+        headers: {
+          'x-response-id': 'r1',
+          'x-session-id': 's1',
+          'x-term-llm-response-status': 'in_progress',
+        },
         body,
       });
     }
@@ -240,18 +244,21 @@ test('sends through public composer UI and reduces a streamed response', async (
   ).toBe(true);
 });
 
-test('cancels an active response from the public stop control', async ({ page }) => {
+test('drops the stop control when a response transport ends before completion', async ({
+  page,
+}) => {
   const requests = await open(page, '', { holdStream: true });
   await page.getByRole('textbox', { name: 'Message' }).fill('Long request');
   await page.getByRole('button', { name: 'Send message' }).click();
-  await page.locator('#stopBtn').click();
-  await expect
-    .poll(() =>
-      requests.some(
-        (entry) => entry.method === 'POST' && entry.url.endsWith('/v1/responses/r1/cancel'),
-      ),
-    )
-    .toBe(true);
+  await expect(page.locator('#stopBtn')).toBeHidden();
+  await expect(page.getByRole('status', { name: 'Response status is unknown' })).toContainText(
+    'Connection lost',
+  );
+  expect(
+    requests.some(
+      (entry) => entry.method === 'POST' && entry.url.endsWith('/v1/responses/r1/cancel'),
+    ),
+  ).toBe(false);
 });
 
 test('opens diff UI, expands a file and queues an inline comment', async ({ page }) => {

@@ -672,8 +672,11 @@ func TestServeCORSExposesUIVersionHeader(t *testing.T) {
 	if got := rr.Header().Get("X-Term-LLM-UI-Version"); got == "" {
 		t.Fatal("X-Term-LLM-UI-Version header missing")
 	}
-	if got := rr.Header().Get("Access-Control-Expose-Headers"); !strings.Contains(strings.ToLower(got), "x-term-llm-ui-version") {
-		t.Fatalf("Access-Control-Expose-Headers = %q, want x-term-llm-ui-version", got)
+	exposeHeaders := strings.ToLower(rr.Header().Get("Access-Control-Expose-Headers"))
+	for _, name := range []string{"x-term-llm-ui-version", "x-term-llm-response-status"} {
+		if !strings.Contains(exposeHeaders, name) {
+			t.Fatalf("Access-Control-Expose-Headers = %q, want %s", exposeHeaders, name)
+		}
 	}
 	allowHeaders := strings.ToLower(rr.Header().Get("Access-Control-Allow-Headers"))
 	for _, name := range []string{"x-term-llm-ui-version", strings.ToLower(requestSessionIDHeader), legacyRequestSessionIDHeader} {

@@ -332,6 +332,70 @@ test('a suspended same-context tab resumes through authoritative reconciliation'
   await second.close();
 });
 
+test('a disconnected mobile response stream cannot keep claiming work is running', async ({
+  context,
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', 'mobile disconnect recovery is covered once');
+  test.setTimeout(45_000);
+  await page.addInitScript(() => {
+    const NativePeer = window.RTCPeerConnection;
+    const peers: RTCPeerConnection[] = [];
+    Object.defineProperty(window, '__responseStreamTestPeers', { value: peers });
+    window.RTCPeerConnection = class extends NativePeer {
+      constructor(configuration?: RTCConfiguration) {
+        super(configuration);
+        peers.push(this);
+      }
+    };
+  });
+  await page.goto('./?new=1');
+  await page.getByRole('textbox', { name: 'Message' }).fill('sleep 5 response transport probe');
+  await page.getByRole('button', { name: 'Send message' }).click();
+  await expect(page.locator('#stopBtn')).toBeVisible();
+  const sessionID = decodeURIComponent(page.url().match(/\/chat\/([^/?#]+)/)?.[1] || '');
+  expect(sessionID).not.toBe('');
+
+  await context.setOffline(true);
+  await page.evaluate(() => {
+    const peers = (window as unknown as { __responseStreamTestPeers?: RTCPeerConnection[] })
+      .__responseStreamTestPeers;
+    peers?.forEach((peer) => peer.close());
+    window.stop();
+  });
+
+  const baseURL = String(testInfo.project.use.baseURL || '');
+  const sessionStatus = async () => {
+    const response = await fetch(
+      `${baseURL}v1/sessions/status?session_id=${encodeURIComponent(sessionID)}`,
+    );
+    const data = (await response.json()) as { sessions?: Array<Record<string, unknown>> };
+    return data.sessions?.find((entry) => String(entry.id || entry.session_id) === sessionID);
+  };
+  await expect.poll(async () => Boolean((await sessionStatus())?.active_run)).toBe(true);
+
+  await expect(page.locator('#stopBtn')).toBeHidden({ timeout: 5_000 });
+  await expect(page.getByRole('status', { name: 'Response status is unknown' })).toContainText(
+    'Connection lost',
+  );
+
+  await expect
+    .poll(
+      async () => {
+        const status = await sessionStatus();
+        return Boolean(status && !status.active_run && !status.active_response_id);
+      },
+      { timeout: 15_000 },
+    )
+    .toBe(true);
+
+  await context.setOffline(false);
+  await expect(page.getByRole('heading', { name: 'Debug Provider Output' }).last()).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.getByRole('status', { name: 'Response status is unknown' })).toBeHidden();
+});
+
 test('real status endpoint honors browser conditional requests', async ({ page }) => {
   await page.goto('./');
   const result = await page.evaluate(async () => {

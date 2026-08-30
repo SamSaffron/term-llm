@@ -1074,6 +1074,7 @@ describe('Preact-owned chat surfaces', () => {
         ],
       },
     };
+    store.runEngine.markResponseTransportActive('s1', 'response-1');
     store.currentPlan.value = {
       plan: [{ step: 'Implement the semantic activity label', status: 'in_progress' }],
     };
@@ -1128,6 +1129,7 @@ describe('Preact-owned chat surfaces', () => {
         reconnects: 0,
       }),
     };
+    store.runEngine.markResponseTransportActive('s1', 'response-1');
     render(
       <StoreContext.Provider value={store}>
         <Transcript />
@@ -1162,6 +1164,48 @@ describe('Preact-owned chat surfaces', () => {
     expect(
       screen.queryByRole('status', { name: 'Assistant is responding: Working' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('stops claiming a response is running when its owned transport is lost', () => {
+    const store = createStore();
+    try {
+      store.runs.value = {
+        s1: initialProjection({
+          responseId: 'r1',
+          sessionId: 's1',
+          epoch: 1,
+          status: 'streaming',
+          lastSequence: 1,
+          startedRev: 0,
+          reconnects: 0,
+        }),
+      };
+      store.runEngine.markResponseTransportActive('s1', 'r1');
+      render(
+        <StoreContext.Provider value={store}>
+          <Transcript />
+          <Composer />
+        </StoreContext.Provider>,
+      );
+
+      expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument();
+      expect(
+        screen.getByRole('status', { name: 'Assistant is responding: Working' }),
+      ).toBeInTheDocument();
+
+      act(() => store.runEngine.clearResponseTransport('s1', 'r1'));
+
+      expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole('status', { name: 'Assistant is responding: Working' }),
+      ).not.toBeInTheDocument();
+      expect(screen.getByRole('status', { name: 'Response status is unknown' })).toHaveTextContent(
+        'Connection lost — checking status…',
+      );
+      expect(screen.getByRole('button', { name: 'Checking whether sent' })).toBeDisabled();
+    } finally {
+      store.dispose();
+    }
   });
 
   it('formats tool parameters as readable typed rows and preserves partial argument fallbacks', async () => {
@@ -2004,6 +2048,7 @@ describe('Preact-owned chat surfaces', () => {
         reconnects: 0,
       }),
     };
+    store.runEngine.markResponseTransportActive('s1', 'r1');
     render(
       <StoreContext.Provider value={store}>
         <Composer />
@@ -2221,6 +2266,7 @@ describe('Preact-owned chat surfaces', () => {
       ...entry,
       activeRun: true,
     }));
+    store.services.eventFeedHealthy.value = true;
 
     const { container } = render(
       <StoreContext.Provider value={store}>
@@ -2314,6 +2360,7 @@ describe('Preact-owned chat surfaces', () => {
         reconnects: 0,
       }),
     };
+    store.runEngine.markResponseTransportActive('s1', 'r1');
 
     const { container } = render(
       <StoreContext.Provider value={store}>
