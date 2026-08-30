@@ -169,6 +169,7 @@ func init() {
 	serveCmd.Flags().StringArrayVar(&serveToolMap, "tool-map", nil, "Map client tool name to server tool (repeatable, format ClientName:ServerName)")
 	serveCmd.Flags().BoolVar(&serveFilterServerTools, "suppress-server-tool-calls", false, "Hide server-executed tool calls from API responses (use when proxying to external clients)")
 	serveCmd.Flags().StringVar(&serveFilesDir, "files-dir", "", "Directory for serving arbitrary files (videos, PDFs, etc) at {base}/files/")
+	serveCmd.Flags().Bool("enable-widgets", false, "Deprecated no-op; widgets are enabled by default")
 	serveCmd.Flags().BoolVar(&serveDisableWidgets, "disable-widgets", false, "Disable local widget apps under {base}/widgets/<mount>/")
 	serveCmd.Flags().StringVar(&serveWidgetsDir, "widgets-dir", "", "Directory containing widget sub-directories (default: ~/.config/term-llm/widgets)")
 	serveCmd.Flags().DurationVar(&serveResponseTimeout, "response-timeout", defaultServeRequestTimeout, "Maximum inactivity before the first or next completed LLM response (default 30m; pauses for interactive waits)")
@@ -230,6 +231,8 @@ func servePlatformCompletion(cmd *cobra.Command, args []string, toComplete strin
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
+	warnDeprecatedEnableWidgets(cmd)
+
 	svc, err := serve.NewService(serve.Options{
 		Host:      serveHost,
 		Port:      servePort,
@@ -244,6 +247,12 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	return svc.Run(cmd.Context())
+}
+
+func warnDeprecatedEnableWidgets(cmd *cobra.Command) {
+	if cmd.Flags().Changed("enable-widgets") {
+		fmt.Fprintln(cmd.ErrOrStderr(), "Warning: --enable-widgets is deprecated and has no effect; widgets are enabled by default. Use --disable-widgets to opt out.")
+	}
 }
 
 func withServeSessionLogging(store session.Store) session.Store {
