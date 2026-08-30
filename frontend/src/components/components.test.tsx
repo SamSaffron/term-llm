@@ -3359,6 +3359,14 @@ describe('Preact-owned chat surfaces', () => {
       'true',
     );
 
+    await userEvent.click(screen.getByRole('button', { name: 'Manage feature-polish' }));
+    expect(screen.getByRole('heading', { name: 'feature-polish' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Run this conversation here' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Remove…' })).toBeVisible();
+    expect(store.selectedDraftWorktree.value).toBe('');
+    expect(store.modal.value).toBe('worktrees');
+
+    await userEvent.click(screen.getByRole('button', { name: 'All worktrees' }));
     await userEvent.click(screen.getByRole('radio', { name: /feature-polish/ }));
     expect(store.selectedDraftWorktree.value).toBe('/worktrees/feature-polish');
     expect(store.modal.value).toBe('');
@@ -3389,12 +3397,11 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
 
-    await userEvent.click(screen.getByRole('button', { name: /feature-polish/ }));
-    expect(screen.getByRole('button', { name: 'Use this worktree' })).toBeVisible();
-    await userEvent.click(screen.getByRole('button', { name: 'Use this worktree' }));
+    await userEvent.click(screen.getByRole('button', { name: /^feature-polish/ }));
     expect(store.switchWorktree).toHaveBeenCalledWith('/worktrees/feature-polish');
 
-    await userEvent.click(screen.getByRole('button', { name: /feature-polish/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Manage feature-polish' }));
+    expect(screen.getByRole('button', { name: 'Switch conversation here' })).toBeVisible();
     await userEvent.click(screen.getByRole('button', { name: 'Show changes' }));
     expect(store.openWorktreeDiff).toHaveBeenCalledWith(
       '/worktrees/feature-polish',

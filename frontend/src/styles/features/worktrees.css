@@ -112,22 +112,14 @@
   gap: 0.42rem;
 }
 
-.worktree-option {
-  appearance: none;
+.worktree-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 0.7rem;
-  width: 100%;
+  grid-template-columns: minmax(0, 1fr) auto;
   min-height: 3.75rem;
-  padding: 0.62rem 0.72rem;
+  overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 11px;
   background: color-mix(in srgb, var(--surface-2) 55%, transparent);
-  color: var(--text);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
   transition:
     border-color 0.12s ease,
     background 0.12s ease,
@@ -135,23 +127,41 @@
     transform 0.12s ease;
 }
 
-.worktree-option:hover:not(:disabled),
-.worktree-option:focus-visible {
+.worktree-option {
+  appearance: none;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.7rem;
+  min-width: 0;
+  width: 100%;
+  padding: 0.62rem 0.72rem;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.worktree-row:hover,
+.worktree-row:focus-within {
   border-color: var(--border-strong);
   background: var(--surface-2);
   box-shadow: var(--shadow-soft);
 }
 
-.worktree-option:hover:not(:disabled) {
+.worktree-row:hover {
   transform: translateY(-1px);
 }
 
-.worktree-option:focus-visible {
+.worktree-option:focus-visible,
+.worktree-option-details:focus-visible {
   outline: 2px solid var(--border-strong);
-  outline-offset: 2px;
+  outline-offset: -3px;
 }
 
-.worktree-option.is-selected {
+.worktree-row.is-selected {
   border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
   background: color-mix(in srgb, var(--accent) 5%, var(--surface-2));
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 12%, transparent);
@@ -161,9 +171,8 @@
   cursor: default;
 }
 
-.worktree-option:disabled.is-current {
+.worktree-row.is-current .worktree-option:disabled {
   opacity: 1;
-  background: color-mix(in srgb, var(--surface-2) 72%, transparent);
 }
 
 .worktree-option-icon {
@@ -187,7 +196,7 @@
   box-shadow: inset 0 0 0 0.2rem var(--surface-2);
 }
 
-.worktree-option.is-selected .worktree-radio {
+.worktree-row.is-selected .worktree-radio {
   border-color: var(--accent);
   background: var(--accent);
 }
@@ -268,10 +277,28 @@
   white-space: nowrap;
 }
 
-.worktree-option-chevron {
+.worktree-option-details {
+  appearance: none;
+  display: inline-flex;
+  min-width: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.worktree-option-details:hover {
+  background: color-mix(in srgb, var(--surface-3) 70%, transparent);
+  color: var(--text);
+}
+
+.worktree-option-details svg {
   width: 0.95rem;
   height: 0.95rem;
-  color: var(--text-muted);
 }
 
 .worktree-empty {
@@ -666,7 +693,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .worktree-option {
+  .worktree-row {
     transition: none;
   }
 }

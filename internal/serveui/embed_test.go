@@ -36,7 +36,7 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// navigation, and the paginated Recent/Projects sidebar are first-party
 		// shell code. Keep bounded headroom over that productized baseline while
 		// still failing meaningful accidental regressions.
-		"dist/app.js":  {raw: 418_000, gzip: 124_000},
+		"dist/app.js":  {raw: 419_000, gzip: 124_000},
 		"dist/app.css": {raw: 160_000, gzip: 30_500},
 	}
 	for name, budget := range budgets {

@@ -225,6 +225,28 @@ describe('AppStore compatibility behavior', () => {
     }
   });
 
+  it('clears a draft selection when its worktree is removed', async () => {
+    const store = new AppStore(config);
+    try {
+      store.projectsEnabled.value = true;
+      store.activeProjectId.value = 'project-1';
+      store.draftActive.value = true;
+      store.prompt.value = 'Draft prompt';
+      store.chooseDraftWorktree('/worktrees/feature');
+      store.modal.value = 'worktrees';
+      store.endpoints.removeWorktree = vi.fn(async () => ({ ok: true }));
+      store.endpoints.projectWorktrees = vi.fn(async () => ({ worktrees: [] }));
+
+      await store.removeWorktree('/worktrees/feature', true);
+
+      expect(store.selectedDraftWorktree.value).toBe('');
+      expect(store.modal.value).toBe('worktrees');
+      expect(readDrafts(localStorage, store.keys.draftMessages)[0]?.worktreeDir).toBe('');
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('forwards clean worktree creation to the project endpoint', async () => {
     const store = new AppStore(config);
     try {

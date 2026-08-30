@@ -85,8 +85,7 @@ export class WorktreeStore {
     }
   }
 
-  chooseDraft(dir: string): void {
-    if (!this.options.draftActive.value) return;
+  private setDraftSelection(dir: string, close: boolean): void {
     this.options.selectedDraftWorktree.value = dir;
     const id = this.options.draftStorageId();
     const draft = readDrafts(this.services.storage, this.services.keys.draftMessages).find(
@@ -101,7 +100,12 @@ export class WorktreeStore {
       worktreeDir: dir,
       projectId: this.options.activeProjectId.value,
     });
-    this.options.modal.value = '';
+    if (close) this.options.modal.value = '';
+  }
+
+  chooseDraft(dir: string): void {
+    if (!this.options.draftActive.value) return;
+    this.setDraftSelection(dir, true);
   }
 
   async switchTo(dir: string): Promise<void> {
@@ -122,9 +126,16 @@ export class WorktreeStore {
   private async finishMutation(
     data: Record<string, unknown>,
     action: 'merged' | 'promoted',
+    sourceDir: string,
   ): Promise<Record<string, unknown>> {
     await this.load();
     const cleanup = recordValue(data.cleanup);
+    if (
+      cleanup?.removed === true &&
+      this.options.draftActive.value &&
+      this.options.selectedDraftWorktree.value === sourceDir
+    )
+      this.setDraftSelection('', false);
     const result = recordValue(data.result);
     const movedSession = recordValue(data.session);
     const warning = String(data.warning || '');
@@ -155,7 +166,7 @@ export class WorktreeStore {
       sessionId,
       force,
     );
-    return this.finishMutation(data, 'merged');
+    return this.finishMutation(data, 'merged', dir);
   }
 
   private applyMovedSession(data: Record<string, unknown>): void {
@@ -221,11 +232,17 @@ export class WorktreeStore {
       branch,
       sessionId,
     );
-    return this.finishMutation(data, 'promoted');
+    return this.finishMutation(data, 'promoted', dir);
   }
 
   async remove(dir: string, force = false): Promise<Record<string, unknown>> {
     const result = await this.services.endpoints.removeWorktree(this.projectId(), dir, force);
+    if (
+      this.options.draftActive.value &&
+      this.options.selectedDraftWorktree.value &&
+      this.options.selectedDraftWorktree.value === dir
+    )
+      this.setDraftSelection('', false);
     await this.load();
     return result || {};
   }

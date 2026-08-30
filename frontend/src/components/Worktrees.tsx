@@ -114,6 +114,7 @@ function WorktreeOption({
   first,
   actionDisabled,
   onChoose,
+  onDetails,
 }: {
   row: WorktreeRow;
   draft: boolean;
@@ -122,19 +123,20 @@ function WorktreeOption({
   first: boolean;
   actionDisabled?: boolean;
   onChoose: () => void;
+  onDetails?: () => void;
 }) {
   const root = isRoot(row);
   const dir = rowDir(row);
   const branch = String(
     row.branch || (row.detached ? `detached@${String(row.head_sha || '').slice(0, 8)}` : ''),
   );
-  const disabled = !draft && root && (current || Boolean(actionDisabled));
+  const disabled = !draft && (current || Boolean(actionDisabled));
   const move = (event: preact.JSX.TargetedKeyboardEvent<HTMLButtonElement>) => {
     if (!draft || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
     const options = [
-      ...(event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>(
-        '.worktree-option',
-      ) || []),
+      ...(event.currentTarget
+        .closest('.worktree-list')
+        ?.querySelectorAll<HTMLButtonElement>('.worktree-option') || []),
     ];
     const index = options.indexOf(event.currentTarget);
     if (index < 0 || !options.length) return;
@@ -148,53 +150,64 @@ function WorktreeOption({
     options[next]?.focus();
   };
   return (
-    <button
-      type="button"
-      class={`worktree-option ${selected ? 'is-selected' : ''} ${current ? 'is-current' : ''}`}
-      role={draft ? 'radio' : undefined}
-      aria-checked={draft ? selected : undefined}
-      tabIndex={draft ? (selected || (!selected && first) ? 0 : -1) : undefined}
-      disabled={disabled}
-      onKeyDown={move}
-      onClick={onChoose}
-      title={
-        disabled
-          ? current
-            ? 'This conversation already uses the root checkout.'
-            : 'Finish the current response before switching worktrees.'
-          : undefined
-      }
-    >
-      <span class="worktree-option-icon" aria-hidden="true">
-        {draft ? <span class="worktree-radio" /> : <Icon name="branch" />}
-      </span>
-      <span class="worktree-option-content">
-        <span class="worktree-option-name-row">
-          <strong class="worktree-option-name">{root ? 'root checkout' : rowName(row)}</strong>
-          <WorktreeBadges row={row} current={current} />
+    <div class={`worktree-row ${selected ? 'is-selected' : ''} ${current ? 'is-current' : ''}`}>
+      <button
+        type="button"
+        class="worktree-option"
+        role={draft ? 'radio' : undefined}
+        aria-checked={draft ? selected : undefined}
+        tabIndex={draft ? (selected || (!selected && first) ? 0 : -1) : undefined}
+        disabled={disabled}
+        onKeyDown={move}
+        onClick={onChoose}
+        title={
+          disabled
+            ? current
+              ? 'This conversation already uses this checkout.'
+              : 'Finish the current response before switching worktrees.'
+            : undefined
+        }
+      >
+        <span class="worktree-option-icon" aria-hidden="true">
+          {draft ? <span class="worktree-radio" /> : <Icon name="branch" />}
         </span>
-        {(branch || row.head_sha) && (
-          <span class="worktree-option-ref">
-            {branch || String(row.head_sha || '').slice(0, 8)}
-            {row.head_sha && branch ? ` · ${String(row.head_sha).slice(0, 8)}` : ''}
-            {' · '}
-            {row.metadata_error
-              ? 'Metadata unavailable'
-              : row.upstream_available
-                ? `Tracks ${String(row.upstream)}`
-                : row.detached
-                  ? 'Detached HEAD'
-                  : 'No upstream'}
+        <span class="worktree-option-content">
+          <span class="worktree-option-name-row">
+            <strong class="worktree-option-name">{root ? 'root checkout' : rowName(row)}</strong>
+            <WorktreeBadges row={row} current={current} />
           </span>
-        )}
-        {dir && (
-          <code class="worktree-option-path" title={dir}>
-            {dir}
-          </code>
-        )}
-      </span>
-      {!draft && !root && <Icon name="chevron-right" class="worktree-option-chevron" />}
-    </button>
+          {(branch || row.head_sha) && (
+            <span class="worktree-option-ref">
+              {branch || String(row.head_sha || '').slice(0, 8)}
+              {row.head_sha && branch ? ` · ${String(row.head_sha).slice(0, 8)}` : ''}
+              {' · '}
+              {row.metadata_error
+                ? 'Metadata unavailable'
+                : row.upstream_available
+                  ? `Tracks ${String(row.upstream)}`
+                  : row.detached
+                    ? 'Detached HEAD'
+                    : 'No upstream'}
+            </span>
+          )}
+          {dir && (
+            <code class="worktree-option-path" title={dir}>
+              {dir}
+            </code>
+          )}
+        </span>
+      </button>
+      {onDetails && (
+        <button
+          class="worktree-option-details"
+          type="button"
+          aria-label={`Manage ${rowName(row)}`}
+          onClick={onDetails}
+        >
+          <Icon name="chevron-right" />
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -211,6 +224,7 @@ export function Worktrees() {
   const [recovery, setRecovery] = useState<WorktreeRecoveryOffer | null>(null);
   const [removeStage, setRemoveStage] = useState<RemoveStage>('idle');
   const autoOpened = useRef(false);
+  const detailTitle = useRef<HTMLHeadingElement>(null);
   const recoveryConfirm = useRef<HTMLButtonElement>(null);
   const draft = store.draftActive.value;
   const activeSession = store.activeSession.value;
@@ -243,10 +257,16 @@ export function Worktrees() {
   }, [activeDir, apiRows, draft, selected]);
 
   useEffect(() => {
-    if (!recovery?.available) return;
+    if (!selected) return;
+    const focusFrame = requestAnimationFrame(() => detailTitle.current?.focus());
+    return () => cancelAnimationFrame(focusFrame);
+  }, [selected]);
+
+  useEffect(() => {
+    if (!recovery?.available || draft) return;
     const focusFrame = requestAnimationFrame(() => recoveryConfirm.current?.focus());
     return () => cancelAnimationFrame(focusFrame);
-  }, [recovery]);
+  }, [draft, recovery]);
 
   const openDetail = (row: WorktreeRow) => {
     setSelected(row);
@@ -257,10 +277,10 @@ export function Worktrees() {
     setRecovery(null);
     setRemoveStage('idle');
   };
-  const backToList = () => {
+  const backToList = (nextStatus = '') => {
     setSelected(null);
     setBranch('');
-    setStatus('');
+    setStatus(nextStatus);
     setError('');
     setMergeWarning(false);
     setRecovery(null);
@@ -328,13 +348,13 @@ export function Worktrees() {
       <div class="worktree-body">
         {selected ? (
           <section class="worktree-detail" aria-labelledby="worktreeDetailTitle">
-            <button class="worktree-back" type="button" onClick={backToList}>
+            <button class="worktree-back" type="button" onClick={() => backToList()}>
               <Icon name="arrow-left" />
               All worktrees
             </button>
             <div class="worktree-detail-heading">
               <div>
-                <h3 id="worktreeDetailTitle" tabIndex={-1}>
+                <h3 id="worktreeDetailTitle" ref={detailTitle} tabIndex={-1}>
                   {rowName(selected)}
                 </h3>
                 <span class="worktree-detail-ref">
@@ -351,20 +371,34 @@ export function Worktrees() {
             </code>
 
             <div class="worktree-primary-actions">
-              {dir !== activeDir && (
+              {dir !== activeDir ? (
                 <button
                   class="btn primary worktree-use"
                   type="button"
                   disabled={Boolean(busy) || streaming}
-                  onClick={() =>
+                  onClick={() => {
+                    if (draft) {
+                      store.chooseDraftWorktree(dir);
+                      return;
+                    }
                     void run('switch', async () => {
+                      autoOpened.current = true;
                       await store.switchWorktree(dir);
                       backToList();
-                    })
-                  }
+                    });
+                  }}
                 >
                   <Icon name="branch" />
-                  {busy === 'switch' ? 'Switching…' : 'Use this worktree'}
+                  {busy === 'switch'
+                    ? 'Switching…'
+                    : draft
+                      ? 'Run this conversation here'
+                      : 'Switch conversation here'}
+                </button>
+              ) : (
+                <button class="btn primary worktree-use" type="button" disabled>
+                  <Icon name="branch" />
+                  {draft ? 'Selected for this conversation' : 'Current worktree'}
                 </button>
               )}
               <button
@@ -433,15 +467,19 @@ export function Worktrees() {
                 <h4 id="worktreeRecoveryTitle">{recovery.title}</h4>
                 <span>{recovery.question}</span>
                 {recovery.details && <pre>{recovery.details}</pre>}
-                {!recovery.available && recovery.unavailable_reason && (
-                  <span class="worktree-recovery-unavailable">{recovery.unavailable_reason}</span>
+                {(!recovery.available || draft) && (
+                  <span class="worktree-recovery-unavailable">
+                    {draft
+                      ? 'Start the conversation before using assisted recovery.'
+                      : recovery.unavailable_reason}
+                  </span>
                 )}
                 <div class="worktree-recovery-actions">
                   <button
                     ref={recoveryConfirm}
                     class="btn primary"
                     type="button"
-                    disabled={Boolean(busy) || streaming || !recovery.available}
+                    disabled={Boolean(busy) || streaming || !recovery.available || draft}
                     onClick={() =>
                       void run('recover', async () => {
                         await store.recoverWorktree(dir);
@@ -546,7 +584,7 @@ export function Worktrees() {
                       }
                       throw value;
                     }
-                    backToList();
+                    backToList(`Removed ${rowName(selected)}.`);
                   });
                 }}
               >
@@ -598,15 +636,18 @@ export function Worktrees() {
                     selected={checked}
                     current={current}
                     first={index === 0}
-                    actionDisabled={rootRow && (Boolean(busy) || streaming)}
+                    actionDisabled={Boolean(busy) || streaming}
                     onChoose={() => {
-                      if (draft) store.chooseDraftWorktree(rootRow ? '' : rowDirectory);
-                      else if (rootRow) {
-                        void run('switch', async () => {
-                          await store.switchWorktree('');
-                        });
-                      } else openDetail(row);
+                      if (draft) {
+                        store.chooseDraftWorktree(rootRow ? '' : rowDirectory);
+                        return;
+                      }
+                      void run('switch', async () => {
+                        autoOpened.current = true;
+                        await store.switchWorktree(rootRow ? '' : rowDirectory);
+                      });
                     }}
+                    onDetails={rootRow ? undefined : () => openDetail(row)}
                   />
                 );
               })}
