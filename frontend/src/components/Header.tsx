@@ -4,8 +4,10 @@ import {
   compactModelLabel,
   defaultModel,
   defaultProvider,
+  isFastServiceTier,
   splitModelEffort,
   supportedEfforts,
+  supportsFastMode,
 } from '../domain/runtime';
 import { planSummary } from '../domain/plan';
 import { observePopoverPosition, positionPopover } from '../platform/browser';
@@ -47,6 +49,9 @@ function RuntimePicker() {
   const model = store.models.value.find((entry) => entry.id === split.model);
   const efforts = supportedEfforts(model);
   const effort = split.effort && efforts.includes(split.effort) ? split.effort : '';
+  const fastSupported = supportsFastMode(model);
+  const providerFast = isFastServiceTier(provider?.service_tier);
+  const fast = providerFast || (fastSupported && store.selectedFast.value);
   useLayoutEffect(() => {
     if (!open || !trigger.current || !popover.current) return;
     positionPopover(trigger.current, popover.current);
@@ -59,7 +64,8 @@ function RuntimePicker() {
     setOpen(false);
     trigger.current?.focus({ preventScroll: true });
   };
-  const displayModel = compactModelLabel(split.model) || 'Auto';
+  const baseDisplayModel = compactModelLabel(split.model) || 'Auto';
+  const displayModel = `${baseDisplayModel}${fast && !/-fast$/i.test(baseDisplayModel) ? '-fast' : ''}`;
   const picker = (
     <div class={`model-picker ${locked ? 'locked' : ''}`}>
       <div class="model-chip model-chip-primary" data-chip="model">
@@ -104,7 +110,9 @@ function RuntimePicker() {
       <div class="runtime-popover-header">
         <div class="runtime-popover-heading">
           <div class="runtime-popover-title">Runtime</div>
-          <div class="runtime-popover-hint">Provider, model, and effort for the next reply</div>
+          <div class="runtime-popover-hint">
+            Provider, model, effort, and speed for the next reply
+          </div>
         </div>
         <button
           ref={initialFocus}
@@ -168,6 +176,27 @@ function RuntimePicker() {
             ))}
           </select>
         </label>
+        {fastSupported && !providerFast && (
+          <div class="runtime-popover-fast-row">
+            <div>
+              <div class="runtime-popover-label">Fast</div>
+              <div id={`${popoverID}-fast-hint`} class="runtime-popover-fast-hint">
+                Use priority processing for this model
+              </div>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              class="runtime-popover-fast-toggle"
+              aria-label="Fast mode"
+              aria-describedby={`${popoverID}-fast-hint`}
+              aria-checked={fast}
+              onClick={() => store.setFast(!fast)}
+            >
+              <span aria-hidden="true" />
+            </button>
+          </div>
+        )}
       </div>
     </dialog>
   ) : null;

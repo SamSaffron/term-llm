@@ -42,7 +42,7 @@ func TestRunCommandUsesRealExecutablePathAndPreservesArguments(t *testing.T) {
 	}
 }
 
-func TestRunCommandTimeoutKillsBackgroundDescendant(t *testing.T) {
+func TestRunCommandCancellationKillsBackgroundDescendant(t *testing.T) {
 	dir := t.TempDir()
 	pidPath := filepath.Join(dir, "descendant.pid")
 	scriptPath := filepath.Join(dir, "bridge")
@@ -50,20 +50,37 @@ func TestRunCommandTimeoutKillsBackgroundDescendant(t *testing.T) {
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	started := time.Now()
-	err := runCommand(ctx, scriptPath, []string{pidPath}, nil)
-	if !errors.Is(ctx.Err(), context.DeadlineExceeded) || err == nil {
-		t.Fatalf("runCommand timeout = (%v, %v), want deadline and command error", ctx.Err(), err)
+	done := make(chan error, 1)
+	go func() {
+		done <- runCommand(ctx, scriptPath, []string{pidPath}, nil)
+	}()
+
+	var pidData []byte
+	readyDeadline := time.Now().Add(2 * time.Second)
+	for len(pidData) == 0 {
+		var err error
+		pidData, err = os.ReadFile(pidPath)
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatalf("read descendant pid: %v", err)
+		}
+		if time.Now().After(readyDeadline) {
+			t.Fatal("background descendant did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	if elapsed := time.Since(started); elapsed > time.Second {
-		t.Fatalf("runCommand took %v after timeout; descendant likely retained exec resources", elapsed)
+
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(ctx.Err(), context.Canceled) || err == nil {
+			t.Fatalf("runCommand cancellation = (%v, %v), want canceled context and command error", ctx.Err(), err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runCommand did not return after cancellation; descendant likely retained exec resources")
 	}
-	pidData, err := os.ReadFile(pidPath)
-	if err != nil {
-		t.Fatalf("read descendant pid: %v", err)
-	}
+
 	pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
 	if err != nil {
 		t.Fatalf("parse descendant pid: %v", err)
@@ -80,7 +97,7 @@ func TestRunCommandTimeoutKillsBackgroundDescendant(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("background descendant %d survived lifecycle command timeout", pid)
+			t.Fatalf("background descendant %d survived lifecycle command cancellation", pid)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -111,6 +128,7 @@ func TestCommandSinkDoesNotInvokeShellForAdversarialContent(t *testing.T) {
 	sink, err := newCommandSink(config.LifecycleCommandConfig{
 		Name:    "adversarial",
 		Command: []string{scriptPath, logPath, "; touch " + marker, "$(touch " + marker + ")"},
+		Timeout: "5s",
 	}, runCommand)
 	if err != nil {
 		t.Fatal(err)

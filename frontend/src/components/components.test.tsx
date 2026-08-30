@@ -108,7 +108,7 @@ describe('Preact-owned chat surfaces', () => {
     const dialog = screen.getByRole('dialog', { name: 'Runtime settings' });
     expect(dialog.tagName).toBe('DIALOG');
     expect(dialog).toHaveAttribute('open');
-    expect(dialog).toHaveTextContent('Provider, model, and effort for the next reply');
+    expect(dialog).toHaveTextContent('Provider, model, effort, and speed for the next reply');
     const closeRuntime = screen.getByRole('button', { name: 'Close runtime settings' });
     expect(closeRuntime).toHaveFocus();
     expect(screen.getByRole('combobox', { name: 'Provider' })).not.toHaveFocus();
@@ -123,6 +123,88 @@ describe('Preact-owned chat surfaces', () => {
     fireEvent(dialog, new Event('cancel', { cancelable: true }));
     expect(dialog).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
+  });
+
+  it('offers fast mode only for supported models and adds it to the runtime label', async () => {
+    const store = createStore();
+    store.selectedProvider.value = 'chatgpt';
+    store.selectedModel.value = 'gpt-5.6-sol';
+    store.models.value = [
+      {
+        id: 'gpt-5.6-sol',
+        name: 'gpt-5.6-sol',
+        provider: 'chatgpt',
+        service_tiers: [{ id: 'priority', name: 'fast' }],
+      },
+    ];
+    render(
+      <StoreContext.Provider value={store}>
+        <Header />
+      </StoreContext.Provider>,
+    );
+
+    const trigger = screen.getByRole('button', { name: /^Runtime settings:/ });
+    expect(trigger).toHaveTextContent('gpt-5.6-sol');
+    await userEvent.click(trigger);
+    const fast = screen.getByRole('switch', { name: 'Fast mode' });
+    expect(screen.getByText('Fast')).toHaveClass('runtime-popover-label');
+    expect(fast).toHaveAttribute('aria-checked', 'false');
+
+    await userEvent.click(fast);
+
+    expect(store.selectedFast.value).toBe(true);
+    expect(fast).toHaveAttribute('aria-checked', 'true');
+    expect(trigger).toHaveTextContent('gpt-5.6-sol-fast');
+    expect(trigger).toHaveAccessibleName('Runtime settings: gpt-5.6-sol-fast');
+  });
+
+  it('inherits provider-enforced fast mode without showing a toggle', async () => {
+    const store = createStore();
+    store.selectedProvider.value = 'chatgpt';
+    store.selectedModel.value = 'gpt-5.6-sol';
+    store.providers.value = [
+      {
+        id: 'chatgpt',
+        name: 'chatgpt',
+        service_tier: 'priority',
+      },
+    ];
+    store.models.value = [
+      {
+        id: 'gpt-5.6-sol',
+        name: 'gpt-5.6-sol',
+        provider: 'chatgpt',
+        service_tiers: [{ id: 'priority', name: 'fast' }],
+      },
+    ];
+    render(
+      <StoreContext.Provider value={store}>
+        <Header />
+      </StoreContext.Provider>,
+    );
+
+    const trigger = screen.getByRole('button', {
+      name: 'Runtime settings: gpt-5.6-sol-fast',
+    });
+    expect(trigger).toHaveTextContent('gpt-5.6-sol-fast');
+    await userEvent.click(trigger);
+
+    expect(screen.queryByRole('switch', { name: 'Fast mode' })).not.toBeInTheDocument();
+  });
+
+  it('hides fast mode for a model without fast-tier metadata', async () => {
+    const store = createStore();
+    store.selectedModel.value = 'plain-model';
+    store.models.value = [{ id: 'plain-model', name: 'plain-model' }];
+    render(
+      <StoreContext.Provider value={store}>
+        <Header />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: /^Runtime settings:/ }));
+
+    expect(screen.queryByRole('switch', { name: 'Fast mode' })).not.toBeInTheDocument();
   });
 
   it('shows the worktree browser for every chat attached to an available Git project', async () => {

@@ -7,7 +7,7 @@ import {
   type ResponseEvent,
   type ResponseProjection,
 } from '../domain/response';
-import { applyRuntimeToRequest } from '../domain/runtime';
+import { applyRuntimeToRequest, defaultProvider } from '../domain/runtime';
 import { errorMessage } from '../domain/text';
 import { mergeDurableProjection, convertServerMessages } from '../domain/transcript';
 import type {
@@ -496,6 +496,10 @@ export class RunEngine {
     const selectedModel = this.runtime.models.value.find(
       (entry) => entry.id === this.runtime.selectedModel.value,
     );
+    const selectedProvider =
+      this.runtime.providers.value.find(
+        (entry) => entry.id === this.runtime.selectedProvider.value,
+      ) || defaultProvider(this.runtime.providers.value);
     applyRuntimeToRequest(
       requestBody,
       {
@@ -509,8 +513,10 @@ export class RunEngine {
         model: this.runtime.selectedModel.value,
         effort: this.runtime.selectedEffort.value,
         reasoningMode: this.runtime.selectedReasoningMode.value,
+        fast: this.runtime.selectedFast.value,
       },
       selectedModel,
+      selectedProvider,
     );
 
     let unknownAttempts = 0;

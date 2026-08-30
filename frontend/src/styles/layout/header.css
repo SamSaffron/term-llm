@@ -631,6 +631,61 @@ dialog.chip-popover::backdrop {
   opacity: 0.65;
 }
 
+.runtime-popover-fast-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 2.5rem;
+}
+
+.runtime-popover-fast-hint {
+  margin-top: 0.1rem;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.runtime-popover-fast-toggle {
+  appearance: none;
+  position: relative;
+  flex: none;
+  width: 2.35rem;
+  height: 1.35rem;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface-3);
+  cursor: pointer;
+}
+
+.runtime-popover-fast-toggle span {
+  position: absolute;
+  top: 0.16rem;
+  left: 0.17rem;
+  width: 0.9rem;
+  height: 0.9rem;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition:
+    transform 0.12s ease,
+    background 0.12s ease;
+}
+
+.runtime-popover-fast-toggle[aria-checked='true'] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface-3));
+}
+
+.runtime-popover-fast-toggle[aria-checked='true'] span {
+  transform: translateX(0.98rem);
+  background: var(--text);
+}
+
+.runtime-popover-fast-toggle:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--border-strong) 38%, transparent);
+}
+
 @media (width <= 540px) {
   .chip-popover-backdrop,
   dialog.chip-popover::backdrop {

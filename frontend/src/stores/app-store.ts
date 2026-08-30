@@ -112,6 +112,7 @@ export class AppStore {
   readonly selectedProvider: Signal<string>;
   readonly selectedModel: Signal<string>;
   readonly selectedEffort: Signal<string>;
+  readonly selectedFast: Signal<boolean>;
   readonly selectedReasoningMode: Signal<string>;
   readonly selectedAgent: Signal<string>;
   readonly token: Signal<string>;
@@ -274,6 +275,7 @@ export class AppStore {
     this.selectedProvider = this.runtime.selectedProvider;
     this.selectedModel = this.runtime.selectedModel;
     this.selectedEffort = this.runtime.selectedEffort;
+    this.selectedFast = this.runtime.selectedFast;
     this.selectedReasoningMode = this.runtime.selectedReasoningMode;
     this.selectedAgent = this.runtime.selectedAgent;
     this.composer = new ComposerStore(this.services, {
@@ -973,6 +975,10 @@ export class AppStore {
     abstained?: boolean;
   }> {
     return this.sessionStore.improveTitle();
+  }
+
+  setFast(value: boolean): void {
+    this.runtime.setFast(value);
   }
 
   setPreference(

@@ -18,6 +18,7 @@ export class RuntimeStore {
   readonly selectedProvider: Signal<string>;
   readonly selectedModel: Signal<string>;
   readonly selectedEffort: Signal<string>;
+  readonly selectedFast: Signal<boolean>;
   readonly selectedReasoningMode: Signal<string>;
   readonly selectedAgent: Signal<string>;
 
@@ -32,6 +33,7 @@ export class RuntimeStore {
     this.selectedProvider = signal(storage.getItem(keys.selectedProvider) || '');
     this.selectedModel = signal(storage.getItem(keys.selectedModel) || '');
     this.selectedEffort = signal(storage.getItem(keys.selectedEffort) || '');
+    this.selectedFast = signal(storage.getItem(keys.selectedFast) === '1');
     this.selectedReasoningMode = signal(storage.getItem(keys.selectedReasoningMode) || 'standard');
     const agent = storage.getItem(keys.selectedAgent) || '';
     this.selectedAgent = signal(config.agentNames.includes(agent) ? agent : '');
@@ -95,6 +97,12 @@ export class RuntimeStore {
       );
       if (matching) this.setPreference('model', matching.id, false);
     }
+  }
+
+  setFast(value: boolean): void {
+    this.selectedFast.value = value;
+    if (value) this.services.storage.setItem(this.services.keys.selectedFast, '1');
+    else this.services.storage.removeItem(this.services.keys.selectedFast);
   }
 
   setPreference(

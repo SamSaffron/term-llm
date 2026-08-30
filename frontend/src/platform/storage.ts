@@ -8,6 +8,7 @@ export const STORAGE_BASE_KEYS = {
   selectedModel: 'term_llm_selected_model',
   selectedProvider: 'term_llm_selected_provider',
   selectedEffort: 'term_llm_selected_effort',
+  selectedFast: 'term_llm_selected_fast',
   selectedReasoningMode: 'term_llm_selected_reasoning_mode',
   selectedAgent: 'term_llm_selected_agent',
   sidebarCollapsed: 'term_llm_sidebar_collapsed',

@@ -2919,8 +2919,10 @@ func (s *serveServer) handleProviders(w http.ResponseWriter, r *http.Request) {
 			models = []string{}
 		}
 		defaultModel := ""
+		serviceTier := ""
 		if pc, ok := s.cfgRef.Providers[p.Name]; ok {
 			defaultModel = strings.TrimSpace(pc.Model)
+			serviceTier = llm.NormalizeServiceTier(pc.ServiceTier)
 		}
 		items = append(items, map[string]any{
 			"name":          p.Name,
@@ -2930,6 +2932,7 @@ func (s *serveServer) handleProviders(w http.ResponseWriter, r *http.Request) {
 			"is_builtin":    p.IsBuiltin,
 			"is_default":    p.Name == s.cfgRef.DefaultProvider,
 			"default_model": defaultModel,
+			"service_tier":  serviceTier,
 		})
 	}
 
@@ -3061,6 +3064,12 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 		if m.DefaultReasoningEffort != "" {
 			item["default_reasoning_effort"] = m.DefaultReasoningEffort
+		}
+		if len(m.ServiceTiers) > 0 {
+			item["service_tiers"] = append([]llm.ModelServiceTier(nil), m.ServiceTiers...)
+		}
+		if len(m.AdditionalSpeedTiers) > 0 {
+			item["additional_speed_tiers"] = append([]string(nil), m.AdditionalSpeedTiers...)
 		}
 		reasoningModes := m.ReasoningModes
 		if len(reasoningModes) == 0 && llm.SupportsReasoningMode(effectiveName, id) {

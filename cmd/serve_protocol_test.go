@@ -20,6 +20,25 @@ import (
 
 const onePixelPNGDataURL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4//8/AwAI/AL+KDvV3wAAAABJRU5ErkJggg=="
 
+func TestResponsesCreateRequestPreservesServiceTierOverride(t *testing.T) {
+	for _, body := range []string{`{"service_tier":"priority"}`, `{"service_tier":""}`} {
+		var req responsesCreateRequest
+		if err := json.Unmarshal([]byte(body), &req); err != nil {
+			t.Fatal(err)
+		}
+		if req.ServiceTier == nil {
+			t.Fatalf("service_tier pointer is nil for %s", body)
+		}
+	}
+	var omitted responsesCreateRequest
+	if err := json.Unmarshal([]byte(`{}`), &omitted); err != nil {
+		t.Fatal(err)
+	}
+	if omitted.ServiceTier != nil {
+		t.Fatalf("omitted service_tier = %#v, want nil", omitted.ServiceTier)
+	}
+}
+
 func TestResolveRequestSessionIDHeaderCompatibility(t *testing.T) {
 	tests := []struct {
 		name      string

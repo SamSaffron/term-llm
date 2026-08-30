@@ -231,15 +231,12 @@ describe('transcript domain', () => {
   });
 
   it('windows old turns behind a stable gap and always keeps the tail', () => {
-    const messages = Array.from(
-      { length: 240 },
-      (_, index): Message => ({
-        id: String(index),
-        role: index % 3 === 0 ? 'user' : 'assistant',
-        content: String(index),
-        created: index,
-      }),
-    );
+    const messages = Array.from({ length: 240 }, (_, index): Message => ({
+      id: String(index),
+      role: index % 3 === 0 ? 'user' : 'assistant',
+      content: String(index),
+      created: index,
+    }));
     const runs = windowTranscript(messages, 3, true);
     expect(runs[0]).toMatchObject({ type: 'gap' });
     expect(runs[1].messages?.at(-1)?.id).toBe('239');
@@ -247,15 +244,12 @@ describe('transcript domain', () => {
   });
 
   it('indexes assistant response text in one transcript pass', () => {
-    const messages = Array.from(
-      { length: 1_000 },
-      (_, index): Message => ({
-        id: String(index),
-        role: index % 5 === 0 ? 'user' : 'assistant',
-        content: String(index),
-        created: index,
-      }),
-    );
+    const messages = Array.from({ length: 1_000 }, (_, index): Message => ({
+      id: String(index),
+      role: index % 5 === 0 ? 'user' : 'assistant',
+      content: String(index),
+      created: index,
+    }));
     const read = vi.fn((message: Message) => message.content);
     const contexts = indexTranscriptTurns(messages, read);
     expect(read).toHaveBeenCalledTimes(messages.length);

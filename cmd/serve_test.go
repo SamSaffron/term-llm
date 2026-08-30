@@ -12236,7 +12236,7 @@ func TestHandleProviders_ReturnsList(t *testing.T) {
 		DefaultProvider: "anthropic",
 		Providers: map[string]config.ProviderConfig{
 			"anthropic": {Model: "claude-sonnet-4-6"},
-			"openai":    {Model: "gpt-5"},
+			"openai":    {Model: "gpt-5", ServiceTier: "fast"},
 		},
 	}
 	srv := &serveServer{cfgRef: cfg}
@@ -12260,8 +12260,9 @@ func TestHandleProviders_ReturnsList(t *testing.T) {
 	if len(result.Data) == 0 {
 		t.Fatal("expected at least one provider")
 	}
-	// Check that the default provider is marked
+	// Check that the default provider is marked and configured tiers are normalized.
 	found := false
+	foundFast := false
 	for _, p := range result.Data {
 		if p["name"] == "anthropic" {
 			if p["is_default"] != true {
@@ -12269,9 +12270,18 @@ func TestHandleProviders_ReturnsList(t *testing.T) {
 			}
 			found = true
 		}
+		if p["name"] == "openai" {
+			if p["service_tier"] != llm.ServiceTierFast {
+				t.Errorf("openai service_tier = %#v, want %q", p["service_tier"], llm.ServiceTierFast)
+			}
+			foundFast = true
+		}
 	}
 	if !found {
 		t.Error("expected anthropic in provider list")
+	}
+	if !foundFast {
+		t.Error("expected openai in provider list")
 	}
 }
 
@@ -12409,6 +12419,49 @@ func TestHandleModels_CachesUpstreamListResults(t *testing.T) {
 	}
 	if calls := provider.CallCount(); calls != 1 {
 		t.Fatalf("ListModels call count = %d, want 1", calls)
+	}
+}
+
+func TestHandleModels_ReportsFastModeMetadata(t *testing.T) {
+	provider := &countingListModelsProvider{
+		name: "chatgpt",
+		models: []llm.ModelInfo{{
+			ID:                   "gpt-fast",
+			ServiceTiers:         []llm.ModelServiceTier{{ID: llm.ServiceTierFast, Name: "fast"}},
+			AdditionalSpeedTiers: []string{"fast"},
+		}},
+	}
+	srv := &serveServer{
+		cfgRef: &config.Config{
+			DefaultProvider: "chatgpt",
+			Providers:       map[string]config.ProviderConfig{"chatgpt": {Model: "gpt-fast"}},
+		},
+		modelsProviders: map[string]llm.Provider{"chatgpt": provider},
+	}
+
+	rr := httptest.NewRecorder()
+	srv.handleModels(rr, httptest.NewRequest(http.MethodGet, "/v1/models?provider=chatgpt", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	var result struct {
+		Data []struct {
+			ID                   string                 `json:"id"`
+			ServiceTiers         []llm.ModelServiceTier `json:"service_tiers"`
+			AdditionalSpeedTiers []string               `json:"additional_speed_tiers"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+		t.Fatalf("json decode: %v", err)
+	}
+	if len(result.Data) != 1 || result.Data[0].ID != "gpt-fast" {
+		t.Fatalf("models = %#v", result.Data)
+	}
+	if len(result.Data[0].ServiceTiers) != 1 || result.Data[0].ServiceTiers[0].ID != llm.ServiceTierFast {
+		t.Fatalf("service_tiers = %#v", result.Data[0].ServiceTiers)
+	}
+	if len(result.Data[0].AdditionalSpeedTiers) != 1 || result.Data[0].AdditionalSpeedTiers[0] != "fast" {
+		t.Fatalf("additional_speed_tiers = %#v", result.Data[0].AdditionalSpeedTiers)
 	}
 }
 

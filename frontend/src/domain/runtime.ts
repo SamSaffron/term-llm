@@ -7,6 +7,9 @@ export interface ModelOption {
   provider?: string;
   efforts?: string[];
   reasoning_modes?: string[];
+  service_tiers?: Array<{ id?: string; name?: string } | string | null>;
+  additional_speed_tiers?: string[];
+  service_tier?: string;
   default_effort?: string;
   [key: string]: unknown;
 }
@@ -62,11 +65,31 @@ export function supportsReasoningMode(model: ModelOption | undefined, mode: stri
   return Boolean(model?.reasoning_modes?.includes(mode));
 }
 
+const normalizeServiceTier = (value: unknown): string => {
+  const tier = String(value || '')
+    .trim()
+    .toLowerCase();
+  return tier === 'fast' ? 'priority' : tier;
+};
+
+export function isFastServiceTier(value: unknown): boolean {
+  return normalizeServiceTier(value) === 'priority';
+}
+
+export function supportsFastMode(model: ModelOption | undefined): boolean {
+  return Boolean(
+    model?.service_tiers?.some((tier) =>
+      isFastServiceTier(tier && typeof tier === 'object' ? tier.id : tier),
+    ) || model?.additional_speed_tiers?.some(isFastServiceTier),
+  );
+}
+
 export interface RuntimeSelection {
   provider: string;
   model: string;
   effort: string;
   reasoningMode: string;
+  fast: boolean;
 }
 export function runtimeDiffers(
   active: Partial<RuntimeSelection>,
@@ -86,6 +109,7 @@ export function applyRuntimeToRequest(
   active: Partial<RuntimeSelection>,
   selected: RuntimeSelection,
   modelInfo?: ModelOption,
+  providerInfo?: ModelOption,
 ): void {
   const split = splitModelEffort(selected.model, selected.effort);
   if (split.model) body.model = split.model;
@@ -100,4 +124,6 @@ export function applyRuntimeToRequest(
   }
   if (supportsReasoningMode(modelInfo, selected.reasoningMode))
     body.reasoning = { mode: selected.reasoningMode === 'pro' ? 'pro' : 'standard' };
+  if (supportsFastMode(modelInfo) && !isFastServiceTier(providerInfo?.service_tier))
+    body.service_tier = selected.fast ? 'priority' : '';
 }

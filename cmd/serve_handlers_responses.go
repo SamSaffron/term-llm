@@ -889,6 +889,10 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		Debug:               runtime.debug,
 		DebugRaw:            runtime.debugRaw,
 	}
+	if req.ServiceTier != nil {
+		llmReq.ServiceTier = llm.NormalizeServiceTier(*req.ServiceTier)
+		llmReq.ServiceTierSet = true
+	}
 
 	if req.MaxOutputTokens > 0 {
 		llmReq.MaxOutputTokens = req.MaxOutputTokens

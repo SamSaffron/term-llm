@@ -37,9 +37,10 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// presentation buffer, explicit response authority/transport state,
 		// authoritative mobile stream recovery, and widget process lifecycle
 		// controls are first-party shell code. Keep bounded headroom over that
-		// productized baseline while still failing meaningful accidental regressions.
-		"dist/app.js":  {raw: 426_000, gzip: 126_000},
-		"dist/app.css": {raw: 164_500, gzip: 32_000},
+		// productized baseline, including model capability-aware runtime controls,
+		// while still failing meaningful accidental regressions.
+		"dist/app.js":  {raw: 430_000, gzip: 127_000},
+		"dist/app.css": {raw: 166_000, gzip: 32_000},
 	}
 	for name, budget := range budgets {
 		body, err := StaticAsset(name)

@@ -56,6 +56,7 @@ type responsesCreateRequest struct {
 	IdempotencyKey      string                         `json:"idempotency_key,omitempty"`
 	ClientMessageID     string                         `json:"client_message_id,omitempty"`
 	ReasoningEffort     string                         `json:"reasoning_effort,omitempty"`
+	ServiceTier         *string                        `json:"service_tier,omitempty"`
 	Reasoning           *responsesReasoningRequest     `json:"reasoning,omitempty"`
 	MultiAgent          *responsesMultiAgentRequest    `json:"multi_agent,omitempty"`
 	PromptCacheOptions  *responsesPromptCacheRequest   `json:"prompt_cache_options,omitempty"`
