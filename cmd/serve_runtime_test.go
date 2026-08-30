@@ -1667,6 +1667,10 @@ func TestServeRuntimeCompactionCallbackUpdatesActiveContext(t *testing.T) {
 			serveRuntimeTextMessage(llm.RoleAssistant, "old answer"),
 		},
 	}
+	rt.compactionCB = func(ctx context.Context, result *llm.CompactionResult) error {
+		_, _, _, err := session.ApplyCompaction(ctx, store, sess, nil, result)
+		return err
+	}
 
 	rt.configureContextManagementForRequest(llm.Request{Model: "compact-runtime"})
 	if got := engine.InputLimit(); got != 1000 {
@@ -1717,6 +1721,10 @@ func TestServeRuntimeCompactionCallbackUpdatesActiveContext(t *testing.T) {
 	refreshed, err := store.Get(context.Background(), "sess-runtime-compact")
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
+	}
+	sequence, count, ok := rt.takePendingCompactionIdentity()
+	if !ok || sequence != refreshed.CompactionSeq || count != refreshed.CompactionCount {
+		t.Fatalf("pending compaction identity = %d/%d, %v; want %d/%d", sequence, count, ok, refreshed.CompactionSeq, refreshed.CompactionCount)
 	}
 	active, err := session.LoadActiveMessages(context.Background(), store, refreshed)
 	if err != nil {

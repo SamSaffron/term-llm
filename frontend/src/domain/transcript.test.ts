@@ -297,6 +297,249 @@ describe('transcript domain', () => {
     ]);
   });
 
+  it('adopts an exact durable compaction at its ordered live stream position', () => {
+    const durable: Message[] = [
+      { id: 'question', role: 'user', content: 'question', created: 1, serverSeq: 1 },
+      {
+        id: 'historical-compaction',
+        role: 'compaction',
+        content: 'Context compacted',
+        rawContent: 'older summary',
+        created: 2,
+        serverSeq: 2,
+      },
+      {
+        id: 'durable-before-tools',
+        role: 'tool-group',
+        content: '',
+        created: 3,
+        responseId: 'r1',
+        tools: [{ id: 'already-before', name: 'grep', status: 'done' }],
+      },
+      {
+        id: 'active-compaction',
+        role: 'compaction',
+        content: 'Context compacted',
+        rawContent: 'current summary',
+        created: 3,
+        serverSeq: 10,
+      },
+      {
+        id: 'durable-after-tools',
+        role: 'tool-group',
+        content: '',
+        created: 6,
+        responseId: 'r1',
+        tools: [{ id: 'after', name: 'read_file', status: 'done' }],
+      },
+    ];
+    const projected: Message[] = [
+      {
+        id: 'before-tools',
+        role: 'tool-group',
+        content: '',
+        created: 4,
+        responseId: 'r1',
+        tools: [
+          { id: 'already-before', name: 'grep', status: 'running' },
+          { id: 'before', name: 'shell', status: 'done' },
+        ],
+      },
+      {
+        id: 'live-compaction',
+        role: 'compaction-boundary',
+        content: 'Context compacted',
+        created: 5,
+        responseId: 'r1',
+        compactionSeq: 10,
+      },
+      {
+        id: 'after-tools',
+        role: 'tool-group',
+        content: '',
+        created: 6,
+        responseId: 'r1',
+        tools: [{ id: 'after', name: 'read_file', status: 'running' }],
+      },
+    ];
+
+    const merged = mergeDurableProjection(durable, projected);
+    expect(
+      merged.map((message) =>
+        message.role === 'tool-group'
+          ? message.tools?.map((tool) => tool.id).join(',')
+          : message.id,
+      ),
+    ).toEqual([
+      'question',
+      'historical-compaction',
+      'already-before,before',
+      'active-compaction',
+      'after',
+    ]);
+    expect(merged[2].tools?.[0]).toMatchObject({ id: 'already-before', status: 'done' });
+    expect(merged.filter((message) => message.id === 'active-compaction')).toHaveLength(1);
+    expect(merged[3]).toMatchObject({ rawContent: 'current summary', serverSeq: 10 });
+    expect(merged[4].tools?.[0]).toMatchObject({ id: 'after', status: 'done' });
+  });
+
+  it('keeps multiple adopted compactions in live stream order', () => {
+    const toolGroup = (id: string, created: number): Message => ({
+      id,
+      role: 'tool-group',
+      content: '',
+      created,
+      responseId: 'r1',
+      tools: [{ id, name: 'shell', status: 'done' }],
+    });
+    const durable: Message[] = [
+      {
+        id: 'first-boundary',
+        role: 'compaction',
+        content: 'Context compacted',
+        created: 2,
+        serverSeq: 10,
+      },
+      {
+        id: 'second-boundary',
+        role: 'compaction',
+        content: 'Context compacted',
+        created: 4,
+        serverSeq: 20,
+      },
+    ];
+    const projected: Message[] = [
+      toolGroup('first-tools', 1),
+      {
+        id: 'first-live',
+        role: 'compaction-boundary',
+        content: 'Context compacted',
+        created: 2,
+        compactionSeq: 10,
+      },
+      toolGroup('second-tools', 3),
+      {
+        id: 'second-live',
+        role: 'compaction-boundary',
+        content: 'Context compacted',
+        created: 4,
+        compactionSeq: 20,
+      },
+      toolGroup('third-tools', 5),
+    ];
+
+    expect(mergeDurableProjection(durable, projected).map((message) => message.id)).toEqual([
+      'first-tools',
+      'first-boundary',
+      'second-tools',
+      'second-boundary',
+      'third-tools',
+    ]);
+  });
+
+  it('adopts a recovered server-row compaction by its durable sequence', () => {
+    const raw = {
+      id: 10,
+      sequence: 10,
+      role: 'user',
+      parts: [{ type: 'text', text: '[Context Compaction]\nsummary' }],
+    };
+    const durableBoundary = convertServerMessages([raw])[0];
+    const recoveredBoundary = convertServerMessages([raw])[0];
+
+    const merged = mergeDurableProjection([durableBoundary], [recoveredBoundary]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toBe(durableBoundary);
+  });
+
+  it('does not reintroduce durable tools while coalescing adjacent pending groups', () => {
+    const durable: Message[] = [
+      {
+        id: 'durable-tools',
+        role: 'tool-group',
+        content: '',
+        created: 1,
+        responseId: 'r1',
+        tools: [{ id: 'durable-call', name: 'shell', status: 'done' }],
+      },
+      {
+        id: 'durable-assistant',
+        role: 'assistant',
+        content: 'covered boundary',
+        created: 2,
+        responseId: 'r1',
+        assistantSegmentOrdinal: 0,
+        segmentEndSequence: 5,
+      },
+    ];
+    const projected: Message[] = [
+      {
+        id: 'pending-first',
+        role: 'tool-group',
+        content: '',
+        created: 3,
+        responseId: 'r1',
+        tools: [{ id: 'pending-first', name: 'grep', status: 'done' }],
+      },
+      {
+        id: 'covered-assistant',
+        role: 'assistant',
+        content: 'covered boundary',
+        created: 4,
+        responseId: 'r1',
+        assistantSegmentOrdinal: 0,
+        segmentEndSequence: 5,
+      },
+      {
+        id: 'pending-second',
+        role: 'tool-group',
+        content: '',
+        created: 5,
+        responseId: 'r1',
+        tools: [
+          { id: 'durable-call', name: 'shell', status: 'running' },
+          { id: 'pending-second', name: 'read_file', status: 'running' },
+        ],
+      },
+    ];
+
+    const merged = mergeDurableProjection(durable, projected);
+    expect(merged.flatMap((message) => message.tools || []).map((tool) => tool.id)).toEqual([
+      'durable-call',
+      'pending-first',
+      'pending-second',
+    ]);
+  });
+
+  it('does not move an unrelated durable compaction into a pending live boundary', () => {
+    const durable: Message[] = [
+      { id: 'question', role: 'user', content: 'question', created: 1 },
+      {
+        id: 'historical-compaction',
+        role: 'compaction',
+        content: 'Context compacted',
+        created: 2,
+        serverSeq: 2,
+      },
+    ];
+    const projected: Message[] = [
+      {
+        id: 'pending-compaction',
+        role: 'compaction-boundary',
+        content: 'Context compacted',
+        created: 3,
+        responseId: 'r1',
+        compactionSeq: 10,
+      },
+    ];
+
+    expect(mergeDurableProjection(durable, projected).map((message) => message.id)).toEqual([
+      'question',
+      'historical-compaction',
+      'pending-compaction',
+    ]);
+  });
+
   it('does not deduplicate response-local tool IDs across responses', () => {
     const durable: Message[] = [
       {

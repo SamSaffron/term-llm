@@ -1278,17 +1278,28 @@ export class RunEngine {
           );
           const segmentEndSequence = Number(raw.segmentEndSequence ?? raw.segment_end_sequence);
           const interruptState = String(raw.interruptState || raw.interrupt_state || '').trim();
+          const rawRole = String(raw.role || 'assistant');
+          const role = rawRole === 'compaction-ref' ? 'compaction-boundary' : rawRole;
+          const eventSequence = Number(raw.eventSequence ?? raw.compaction_sequence);
+          const compactionSeq = Number(raw.compactionSeq ?? raw.compaction_seq);
+          const compactionCount = Number(raw.compactionCount ?? raw.compaction_count);
           return {
             ...raw,
             id: String(raw.id || `${responseId}:snapshot:${index}`),
-            role: String(raw.role || 'assistant'),
-            content: String(raw.content || raw.text || ''),
+            role,
+            content:
+              role === 'compaction-boundary'
+                ? String(raw.content || raw.text || 'Context compacted')
+                : String(raw.content || raw.text || ''),
             created: Number(raw.created || raw.created_at) || Date.now(),
             responseId: projectedResponseId || responseId,
             ...(clientMessageId ? { clientMessageId } : {}),
             ...(Number.isFinite(segmentOrdinal) ? { assistantSegmentOrdinal: segmentOrdinal } : {}),
             ...(Number.isFinite(segmentStartSequence) ? { segmentStartSequence } : {}),
             ...(Number.isFinite(segmentEndSequence) ? { segmentEndSequence } : {}),
+            ...(Number.isFinite(eventSequence) ? { eventSequence } : {}),
+            ...(Number.isFinite(compactionSeq) ? { compactionSeq } : {}),
+            ...(Number.isFinite(compactionCount) ? { compactionCount } : {}),
             ...(interruptState ? { interruptState } : {}),
           } as Message;
         })

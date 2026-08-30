@@ -701,6 +701,28 @@ export function windowTranscript(
 }
 
 export function mergeDurableProjection(durable: Message[], projected: Message[]): Message[] {
+  const compactionSequence = (message: Message): number | null => {
+    // Persisted summary rows expose their durable identity as serverSeq;
+    // recovery/live boundaries carry the same value as compactionSeq.
+    const value = Number(message.compactionSeq ?? message.serverSeq);
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  };
+  const durableCompactions = new Map<number, Message>();
+  for (const message of durable) {
+    if (message.role !== 'compaction' && message.role !== 'compaction-boundary') continue;
+    const sequence = compactionSequence(message);
+    if (sequence != null) durableCompactions.set(sequence, message);
+  }
+  const adoptedCompactions = new Map<Message, Message>();
+  const adoptedDurableCompactions = new Set<Message>();
+  for (const message of projected) {
+    if (message.role !== 'compaction' && message.role !== 'compaction-boundary') continue;
+    const sequence = compactionSequence(message);
+    const durableMessage = sequence == null ? undefined : durableCompactions.get(sequence);
+    if (!durableMessage || adoptedDurableCompactions.has(durableMessage)) continue;
+    adoptedCompactions.set(message, durableMessage);
+    adoptedDurableCompactions.add(durableMessage);
+  }
   const clientIDs = new Set(durable.map((message) => message.clientMessageId).filter(Boolean));
   const responseSegments = new Map(
     durable
@@ -751,8 +773,23 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
       return false;
     return true;
   });
+  const insertBefore = new Map<Message, Message>();
+  let nextCompaction: Message | undefined;
+  for (let index = pending.length - 1; index >= 0; index -= 1) {
+    const message = pending[index];
+    const adoptedCompaction = adoptedCompactions.get(message);
+    if (adoptedCompaction) nextCompaction = adoptedCompaction;
+    else if (message.role === 'compaction' || message.role === 'compaction-boundary')
+      nextCompaction = undefined;
+    else if (nextCompaction) insertBefore.set(message, nextCompaction);
+  }
   const output = [...durable];
   for (const message of pending) {
+    if (adoptedCompactions.has(message)) {
+      // The durable row already renders this boundary. Its exact sequence lets
+      // pending rows before it be inserted here without adding a second marker.
+      continue;
+    }
     if (message.role === 'assistant' && message.responseId) {
       const durableSegment = responseSegments.get(
         `${message.responseId}:${message.assistantSegmentOrdinal || 0}`,
@@ -770,18 +807,21 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
         continue;
       }
     }
-    const previous = output.at(-1);
+    const boundary = insertBefore.get(message);
+    const boundaryIndex = boundary ? output.indexOf(boundary) : -1;
+    const insertionIndex = boundaryIndex >= 0 ? boundaryIndex : output.length;
+    const previous = output[insertionIndex - 1];
     if (
       previous?.role === 'tool-group' &&
       previous.toolGroupClosed !== true &&
       message.role === 'tool-group' &&
-      previous.responseId === message.responseId &&
-      output.length === durable.length
+      previous.responseId === message.responseId
     ) {
       const tools = [...(previous.tools || [])];
       for (const incoming of message.tools || []) {
         const index = tools.findIndex((tool) => tool.id === incoming.id);
         if (index < 0) {
+          if (hasDurableTool(message, incoming)) continue;
           tools.push(incoming);
           continue;
         }
@@ -795,7 +835,7 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
             : incoming.status;
         tools[index] = { ...tools[index], ...defined, status };
       }
-      output[output.length - 1] = {
+      output[insertionIndex - 1] = {
         ...previous,
         ...message,
         id: previous.id,
@@ -814,8 +854,12 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
     if (message.role === 'tool-group' && message.tools?.length) {
       const tools = message.tools.filter((tool) => !hasDurableTool(message, tool));
       if (!tools.length) continue;
-      output.push(tools.length === message.tools.length ? message : { ...message, tools });
-    } else output.push(message);
+      output.splice(
+        insertionIndex,
+        0,
+        tools.length === message.tools.length ? message : { ...message, tools },
+      );
+    } else output.splice(insertionIndex, 0, message);
   }
   return output;
 }

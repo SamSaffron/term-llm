@@ -56,7 +56,9 @@ type responseRunRecoveryMessage struct {
 	AssistantSegmentOrdinal int
 	SegmentStartSequence    int64
 	SegmentEndSequence      int64
-	CompactionSequence      int64
+	CompactionEventSequence int64
+	DurableCompactionSeq    int
+	CompactionCount         int
 }
 
 type responseRunRecoveryEvent struct {
@@ -1100,11 +1102,28 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 		r.currentAssistant = -1
 		sequence := responseRunInt64Value(payload["sequence_number"], 0)
 		r.recoveryMessages = append(r.recoveryMessages, responseRunRecoveryMessage{
-			ID:                 fmt.Sprintf("%s_compaction_%d", r.id, sequence),
-			Role:               "compaction-ref",
-			Created:            time.Now().UnixMilli(),
-			CompactionSequence: sequence,
+			ID:                      fmt.Sprintf("%s_compaction_%d", r.id, sequence),
+			Role:                    "compaction-boundary",
+			Created:                 time.Now().UnixMilli(),
+			CompactionEventSequence: sequence,
+			DurableCompactionSeq:    responseRunIntValue(payload["compaction_seq"], -1),
+			CompactionCount:         responseRunIntValue(payload["compaction_count"], 0),
 		})
+	case "response.model_switch":
+		r.closeToolGroupLocked()
+		r.currentAssistant = -1
+		content := strings.TrimSpace(stringValue(payload["message"]))
+		if content == "" {
+			content = strings.TrimSpace(stringValue(payload["model"]))
+		}
+		if content != "" {
+			r.recoveryMessages = append(r.recoveryMessages, responseRunRecoveryMessage{
+				ID:      r.nextRecoveryMessageIDLocked("model_switch"),
+				Role:    "model-swap",
+				Content: []byte(content),
+				Created: time.Now().UnixMilli(),
+			})
+		}
 	case "response.output_item.added":
 		item := mapValue(payload["item"])
 		if stringValue(item["type"]) != "function_call" {
@@ -1439,8 +1458,14 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 				entry["segment_end_sequence"] = msg.SegmentEndSequence
 			}
 		}
-		if msg.Role == "compaction-ref" && msg.CompactionSequence > 0 {
-			entry["compaction_sequence"] = msg.CompactionSequence
+		if msg.Role == "compaction-boundary" {
+			if msg.CompactionEventSequence > 0 {
+				entry["compaction_sequence"] = msg.CompactionEventSequence
+			}
+			if msg.DurableCompactionSeq >= 0 {
+				entry["compaction_seq"] = msg.DurableCompactionSeq
+				entry["compaction_count"] = msg.CompactionCount
+			}
 		}
 		if len(msg.Content) > 0 {
 			entry["content"] = string(msg.Content)
@@ -2750,7 +2775,15 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 			"text": ev.Text,
 		})
 	case llm.EventCompaction:
-		return run.appendEvent("response.compaction", nil)
+		payload := map[string]any{}
+		if sequence, count, ok := runtime.takePendingCompactionIdentity(); ok {
+			// The durable sequence is the stable identity shared by the persisted
+			// summary and this ordered stream boundary. The web projection uses it
+			// to adopt the durable row at this exact event position.
+			payload["compaction_seq"] = sequence
+			payload["compaction_count"] = count
+		}
+		return run.appendEvent("response.compaction", payload)
 	case llm.EventRetry:
 		payload := map[string]any{
 			"attempt":      ev.RetryAttempt,

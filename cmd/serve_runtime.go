@@ -30,6 +30,7 @@ type serveRuntime struct {
 	askUserMu              sync.Mutex
 	approvalMu             sync.Mutex
 	uiStateMu              sync.Mutex
+	compactionIdentityMu   sync.Mutex
 	provider               llm.Provider
 	providerKey            string
 	engine                 *llm.Engine
@@ -71,6 +72,7 @@ type serveRuntime struct {
 	responseCompletedCB    llm.ResponseCompletedCallback
 	turnCompletedCB        llm.TurnCompletedCallback
 	compactionCB           llm.CompactionCallback
+	pendingCompactions     []runtimeCompactionIdentity
 	pendingApprovals       map[string]*servePendingApproval
 	approvalEventFunc      func(event string, data map[string]any) error
 	approvalCtx            context.Context
@@ -82,6 +84,40 @@ type serveRuntime struct {
 	lastInjectedPlatform   string
 	sideQuestion           sideQuestionRuntime
 	sideProviderFactory    func(providerKey, model string) (llm.Provider, error)
+}
+
+type runtimeCompactionIdentity struct {
+	sequence int
+	count    int
+}
+
+func (rt *serveRuntime) resetPendingCompactionIdentities() {
+	rt.compactionIdentityMu.Lock()
+	rt.pendingCompactions = nil
+	rt.compactionIdentityMu.Unlock()
+}
+
+func (rt *serveRuntime) recordPendingCompactionIdentity(sequence, count int) {
+	rt.compactionIdentityMu.Lock()
+	rt.pendingCompactions = append(rt.pendingCompactions, runtimeCompactionIdentity{sequence: sequence, count: count})
+	rt.compactionIdentityMu.Unlock()
+}
+
+// takePendingCompactionIdentity returns durable boundaries in callback order,
+// matching the ordered compaction events emitted immediately after each callback.
+func (rt *serveRuntime) takePendingCompactionIdentity() (sequence, count int, ok bool) {
+	if rt == nil {
+		return 0, 0, false
+	}
+	rt.compactionIdentityMu.Lock()
+	defer rt.compactionIdentityMu.Unlock()
+	if len(rt.pendingCompactions) == 0 {
+		return 0, 0, false
+	}
+	identity := rt.pendingCompactions[0]
+	rt.pendingCompactions[0] = runtimeCompactionIdentity{}
+	rt.pendingCompactions = rt.pendingCompactions[1:]
+	return identity.sequence, identity.count, true
 }
 
 type runtimeInterruptState struct {
@@ -1711,16 +1747,31 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	// replaces its in-flight request; without this callback serve/web would later
 	// rebuild snapshots from stale baseHistory/inputMessages/produced and
 	// resurrect the pre-compaction context.
+	rt.resetPendingCompactionIdentities()
 	rt.engine.SetCompactionCallback(func(cbCtx context.Context, result *llm.CompactionResult) error {
 		producedMu.Lock()
 		defer producedMu.Unlock()
 		if result == nil {
 			return nil
 		}
+		previousCompactionSeq := -1
+		previousCompactionCount := 0
+		if session.HasCompactionBoundary(rt.sessionMeta) {
+			previousCompactionSeq = rt.sessionMeta.CompactionSeq
+			previousCompactionCount = rt.sessionMeta.CompactionCount
+		}
 		handledByPlatform := rt.compactionCB != nil
 		if handledByPlatform {
 			if err := rt.compactionCB(cbCtx, result); err != nil {
 				return err
+			}
+			// Platform callbacks own persistence, but the response stream still
+			// needs the resulting durable boundary identity. Refresh the runtime
+			// snapshot after the callback has committed it.
+			if rt.store != nil && rt.sessionMeta != nil && rt.sessionMeta.ID != "" {
+				if refreshed, err := rt.store.Get(cbCtx, rt.sessionMeta.ID); err == nil && refreshed != nil {
+					rt.sessionMeta = refreshed
+				}
 			}
 		}
 		var compacted []llm.Message
@@ -1741,6 +1792,10 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 			for _, msg := range updated {
 				compacted = append(compacted, msg.ToLLMMessage())
 			}
+		}
+		if session.HasCompactionBoundary(rt.sessionMeta) &&
+			(rt.sessionMeta.CompactionSeq != previousCompactionSeq || rt.sessionMeta.CompactionCount > previousCompactionCount) {
+			rt.recordPendingCompactionIdentity(rt.sessionMeta.CompactionSeq, rt.sessionMeta.CompactionCount)
 		}
 		if !result.Usage.IsZero() {
 			compactionUsageMu.Lock()

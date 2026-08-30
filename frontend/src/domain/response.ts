@@ -310,7 +310,13 @@ export function reduceResponse(
         responseId,
         number(event.assistant_segment_ordinal ?? event.output_index, 0),
       );
-      return { ...next, messages, phase: undefined, retry: undefined };
+      return {
+        ...next,
+        messages,
+        phase: undefined,
+        modelSwap: undefined,
+        retry: undefined,
+      };
     }
     case 'response.output_text.delta': {
       const delta = text(event.delta);
@@ -333,6 +339,7 @@ export function reduceResponse(
         messages,
         run: { ...run, status: 'streaming' },
         phase: undefined,
+        modelSwap: undefined,
         retry: undefined,
       };
     }
@@ -351,7 +358,7 @@ export function reduceResponse(
           itemId,
         );
       }
-      return { ...next, messages, retry: undefined };
+      return { ...next, messages, modelSwap: undefined, retry: undefined };
     }
     case 'response.function_call_arguments.delta': {
       const callId = text(event.call_id);
@@ -406,6 +413,7 @@ export function reduceResponse(
           arguments: Object.hasOwn(item, 'arguments') ? text(item.arguments) : entry?.arguments,
           argumentsFinalized: true,
         }),
+        modelSwap: undefined,
       };
     }
     case 'response.tool_exec.start': {
@@ -425,6 +433,7 @@ export function reduceResponse(
           arguments: text(event.tool_arguments) || entry.arguments,
           status: 'running',
         }),
+        modelSwap: undefined,
         retry: undefined,
       };
     }
@@ -466,7 +475,7 @@ export function reduceResponse(
           /* Server plan state remains authoritative. */
         }
       }
-      return { ...next, messages, plan, retry: undefined };
+      return { ...next, messages, plan, modelSwap: undefined, retry: undefined };
     }
     case 'response.guardian.review': {
       const id = text(event.call_id || event.tool_call_id || event.item_id);
@@ -545,6 +554,8 @@ export function reduceResponse(
             responseId,
             pending: true,
             eventSequence: checked.sequence,
+            compactionSeq: number(event.compaction_seq, -1),
+            compactionCount: number(event.compaction_count, 0),
           },
         ],
         phase: undefined,
@@ -560,14 +571,20 @@ export function reduceResponse(
         retry: undefined,
       };
     }
-    case 'response.model_swap.progress':
+    case 'response.model_swap.progress': {
+      const stage = text(event.stage);
       return {
         ...next,
-        modelSwap: {
-          stage: text(event.stage),
-          content: text(event.text || event.message || event.content) || 'Switching model…',
-        },
+        // Completion/failure is represented by the durable inline marker or the
+        // terminal response. Do not leave a transient status at the transcript tail.
+        modelSwap: ['complete', 'failed'].includes(stage)
+          ? undefined
+          : {
+              stage,
+              content: text(event.text || event.message || event.content) || 'Switching model…',
+            },
       };
+    }
     case 'response.model_switch':
       return {
         ...next,
@@ -598,6 +615,7 @@ export function reduceResponse(
         ),
         pendingGuardian: {},
         phase: undefined,
+        modelSwap: undefined,
         retry: undefined,
       };
     case 'response.ask_user.prompt':
@@ -651,6 +669,7 @@ export function reduceResponse(
           (event.response as Record<string, unknown> | undefined)?.usage ||
           null) as Usage | null,
         phase: undefined,
+        modelSwap: undefined,
         retry: undefined,
       };
     case 'response.cancelled':
@@ -670,6 +689,7 @@ export function reduceResponse(
           durableHandoff: event.durable_handoff === true,
         },
         phase: undefined,
+        modelSwap: undefined,
         retry: undefined,
       };
     case 'response.failed': {
@@ -688,6 +708,7 @@ export function reduceResponse(
         pendingGuardian: {},
         messages: appendNotice(messages, event, content, 'error'),
         phase: undefined,
+        modelSwap: undefined,
         retry: undefined,
       };
     }

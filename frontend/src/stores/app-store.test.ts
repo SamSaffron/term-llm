@@ -1496,6 +1496,15 @@ describe('AppStore compatibility behavior', () => {
             ],
           },
           {
+            id: 'recovered-compaction',
+            role: 'compaction-ref',
+            response_id: 'r1',
+            compaction_sequence: 17,
+            compaction_seq: 10,
+            compaction_count: 2,
+            created: 4,
+          },
+          {
             id: 'recovered-answer',
             role: 'assistant',
             content: 'Done after reconnect.',
@@ -1525,9 +1534,17 @@ describe('AppStore compatibility behavior', () => {
     expect(store.runs.value.s1.messages.map((message) => message.id)).toEqual([
       'interject-1',
       'recovered-tools',
+      'recovered-compaction',
       'recovered-answer',
     ]);
     expect(store.runs.value.s1.messages[2]).toMatchObject({
+      role: 'compaction-boundary',
+      content: 'Context compacted',
+      eventSequence: 17,
+      compactionSeq: 10,
+      compactionCount: 2,
+    });
+    expect(store.runs.value.s1.messages[3]).toMatchObject({
       segmentStartSequence: 18,
       segmentEndSequence: 19,
     });

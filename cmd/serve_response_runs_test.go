@@ -796,13 +796,16 @@ func TestAppendResponseRunEventCompactionSplitsRecoveryToolGroups(t *testing.T) 
 	run := newResponseRun("resp_compaction", "sess_test", "", "mock", time.Now().Unix(), func() {})
 	server := &serveServer{}
 	state := &responseRunStreamState{}
+	runtime := &serveRuntime{
+		pendingCompactions: []runtimeCompactionIdentity{{sequence: 42, count: 3}},
+	}
 
 	for _, event := range []llm.Event{
 		{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "before", Name: "shell"}},
 		{Type: llm.EventCompaction},
 		{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "after", Name: "shell"}},
 	} {
-		if err := server.appendResponseRunEvent(nil, run, state, event); err != nil {
+		if err := server.appendResponseRunEvent(runtime, run, state, event); err != nil {
 			t.Fatalf("append %v: %v", event.Type, err)
 		}
 	}
@@ -815,22 +818,84 @@ func TestAppendResponseRunEventCompactionSplitsRecoveryToolGroups(t *testing.T) 
 	if run.events[3].Event != "response.compaction" {
 		t.Fatalf("boundary event = %q, want response.compaction", run.events[3].Event)
 	}
-	if len(run.recoveryMessages) != 3 {
-		t.Fatalf("recovery messages = %#v, want tool/ref/tool", run.recoveryMessages)
+	var boundaryPayload map[string]any
+	if err := json.Unmarshal(run.events[3].Data, &boundaryPayload); err != nil {
+		t.Fatalf("decode compaction event: %v", err)
 	}
-	if run.recoveryMessages[0].Role != "tool-group" || run.recoveryMessages[1].Role != "compaction-ref" || run.recoveryMessages[2].Role != "tool-group" {
+	if boundaryPayload["compaction_seq"] != float64(42) || boundaryPayload["compaction_count"] != float64(3) {
+		t.Fatalf("compaction identity payload = %#v", boundaryPayload)
+	}
+	if len(run.recoveryMessages) != 3 {
+		t.Fatalf("recovery messages = %#v, want tool/boundary/tool", run.recoveryMessages)
+	}
+	if run.recoveryMessages[0].Role != "tool-group" || run.recoveryMessages[1].Role != "compaction-boundary" || run.recoveryMessages[2].Role != "tool-group" {
 		t.Fatalf("recovery roles = %q, %q, %q", run.recoveryMessages[0].Role, run.recoveryMessages[1].Role, run.recoveryMessages[2].Role)
 	}
-	if run.recoveryMessages[1].CompactionSequence != run.events[3].Sequence {
-		t.Fatalf("recovery compaction sequence = %d, want %d", run.recoveryMessages[1].CompactionSequence, run.events[3].Sequence)
+	if run.recoveryMessages[1].CompactionEventSequence != run.events[3].Sequence {
+		t.Fatalf("recovery compaction event sequence = %d, want %d", run.recoveryMessages[1].CompactionEventSequence, run.events[3].Sequence)
+	}
+	if run.recoveryMessages[1].DurableCompactionSeq != 42 {
+		t.Fatalf("recovery durable compaction sequence = %d, want 42", run.recoveryMessages[1].DurableCompactionSeq)
+	}
+	if run.recoveryMessages[1].CompactionCount != 3 {
+		t.Fatalf("recovery compaction count = %d, want 3", run.recoveryMessages[1].CompactionCount)
 	}
 	recovery := run.recoveryPayloadLocked()
 	messages, ok := recovery["messages"].([]map[string]any)
 	if !ok || len(messages) != 3 {
 		t.Fatalf("recovery payload messages = %#v", recovery["messages"])
 	}
-	if messages[1]["role"] != "compaction-ref" || messages[1]["compaction_sequence"] != run.events[3].Sequence {
+	if messages[1]["role"] != "compaction-boundary" ||
+		messages[1]["compaction_sequence"] != run.events[3].Sequence ||
+		messages[1]["compaction_seq"] != 42 ||
+		messages[1]["compaction_count"] != 3 {
 		t.Fatalf("recovery compaction payload = %#v", messages[1])
+	}
+}
+
+func TestAppendResponseRunEventCompactionsConsumeDurableIdentitiesInOrder(t *testing.T) {
+	run := newResponseRun("resp_compactions", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	runtime := &serveRuntime{pendingCompactions: []runtimeCompactionIdentity{
+		{sequence: 42, count: 3},
+		{sequence: 84, count: 4},
+	}}
+	for range 2 {
+		if err := (&serveServer{}).appendResponseRunEvent(runtime, run, &responseRunStreamState{}, llm.Event{Type: llm.EventCompaction}); err != nil {
+			t.Fatalf("append compaction: %v", err)
+		}
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	for index, want := range []float64{42, 84} {
+		var payload map[string]any
+		if err := json.Unmarshal(run.events[index].Data, &payload); err != nil {
+			t.Fatalf("decode compaction event %d: %v", index, err)
+		}
+		if payload["compaction_seq"] != want {
+			t.Fatalf("compaction event %d sequence = %#v, want %.0f", index, payload["compaction_seq"], want)
+		}
+	}
+}
+
+func TestAppendResponseRunEventCompactionWithoutRecordedIdentityStaysUnmatched(t *testing.T) {
+	run := newResponseRun("resp_compaction_unmatched", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	runtime := &serveRuntime{sessionMeta: &session.Session{CompactionSeq: 42, CompactionCount: 3}}
+	if err := (&serveServer{}).appendResponseRunEvent(runtime, run, &responseRunStreamState{}, llm.Event{Type: llm.EventCompaction}); err != nil {
+		t.Fatalf("append compaction: %v", err)
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	var payload map[string]any
+	if err := json.Unmarshal(run.events[0].Data, &payload); err != nil {
+		t.Fatalf("decode compaction event: %v", err)
+	}
+	if _, exists := payload["compaction_seq"]; exists {
+		t.Fatalf("unrecorded compaction adopted stale identity: %#v", payload)
+	}
+	if got := run.recoveryMessages[0].DurableCompactionSeq; got != -1 {
+		t.Fatalf("recovery durable compaction sequence = %d, want -1", got)
 	}
 }
 
@@ -935,6 +1000,14 @@ func TestAppendResponseRunEventEmitsModelSwitchAndUpdatesSnapshot(t *testing.T) 
 	snapshot := run.snapshot()
 	if snapshot["model"] != "gpt-5.4" || snapshot["reasoning_effort"] != "high" {
 		t.Fatalf("snapshot runtime = %#v/%#v, want gpt-5.4/high", snapshot["model"], snapshot["reasoning_effort"])
+	}
+	recovery, ok := snapshot["recovery"].(map[string]any)
+	if !ok {
+		t.Fatalf("snapshot recovery = %#v", snapshot["recovery"])
+	}
+	messages, ok := recovery["messages"].([]map[string]any)
+	if !ok || len(messages) != 1 || messages[0]["role"] != "model-swap" || messages[0]["content"] != "gpt-5.4" {
+		t.Fatalf("model-switch recovery messages = %#v", recovery["messages"])
 	}
 }
 

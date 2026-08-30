@@ -38,6 +38,7 @@ describe('response projection', () => {
         'response.guardian.review',
         'response.compaction',
         'response.model_swap.progress',
+        'response.model_switch',
         'response.interjection',
         'response.ask_user.prompt',
         'response.approval.prompt',
@@ -59,10 +60,15 @@ describe('response projection', () => {
     );
     expect(projection.phase).toBe('Compacting: summarize history');
 
-    projection = reduceResponse(projection, event('response.compaction', 2));
+    projection = reduceResponse(
+      projection,
+      event('response.compaction', 2, { compaction_seq: 41, compaction_count: 3 }),
+    );
     expect(projection.messages.at(-1)).toMatchObject({
       role: 'compaction-boundary',
       content: 'Context compacted',
+      compactionSeq: 41,
+      compactionCount: 3,
     });
     expect(projection.phase).toBeUndefined();
 
@@ -71,6 +77,74 @@ describe('response projection', () => {
       event('response.phase', 3, { text: 'Compacting: resume task' }),
     );
     expect(projection.phase).toBeUndefined();
+  });
+
+  it('does not project terminal model-swap progress below the chronological transcript', () => {
+    let projection = reduceResponse(
+      initialProjection(run),
+      event('response.model_swap.progress', 1, {
+        stage: 'naive_start',
+        message: 'Switching model…',
+      }),
+    );
+    expect(projection.modelSwap?.content).toBe('Switching model…');
+
+    projection = reduceResponse(
+      projection,
+      event('response.output_item.added', 2, {
+        item: { type: 'function_call', call_id: 'after-switch', name: 'read_file' },
+      }),
+    );
+    expect(projection.modelSwap).toBeUndefined();
+
+    projection = reduceResponse(
+      projection,
+      event('response.model_swap.progress', 3, {
+        stage: 'handover_done',
+        message: 'Handover ready…',
+      }),
+    );
+    projection = reduceResponse(
+      projection,
+      event('response.model_swap.progress', 4, {
+        stage: 'complete',
+        message: 'Continuing on the new model.',
+      }),
+    );
+    expect(projection.modelSwap).toBeUndefined();
+
+    projection = reduceResponse(
+      projection,
+      event('response.model_swap.progress', 5, {
+        stage: 'handover_start',
+        message: 'Preparing handover…',
+      }),
+    );
+    projection = reduceResponse(projection, event('response.attempt.discard', 6));
+    expect(projection.modelSwap).toBeUndefined();
+
+    projection = reduceResponse(
+      projection,
+      event('response.model_swap.progress', 7, {
+        stage: 'handover_start',
+        message: 'Preparing handover…',
+      }),
+    );
+    projection = reduceResponse(
+      projection,
+      event('response.output_text.new_segment', 8, { assistant_segment_ordinal: 1 }),
+    );
+    expect(projection.modelSwap).toBeUndefined();
+
+    projection = reduceResponse(
+      projection,
+      event('response.model_swap.progress', 9, {
+        stage: 'handover_start',
+        message: 'Preparing handover…',
+      }),
+    );
+    projection = reduceResponse(projection, event('response.completed', 10));
+    expect(projection.modelSwap).toBeUndefined();
   });
 
   it('projects interjection image attachments before transcript reload', () => {
