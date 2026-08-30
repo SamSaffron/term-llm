@@ -88,6 +88,17 @@ describe('widget launcher styles', () => {
   });
 });
 
+describe('close buttons', () => {
+  it('uses a contained keyboard focus treatment instead of a detached outline', () => {
+    expect(appCSS).toMatch(
+      /\.close-button:focus-visible\s*\{[^}]*outline: none;[^}]*box-shadow: inset/s,
+    );
+    expect(appCSS).toMatch(
+      /\.icon-btn\.close-button\s*\{[^}]*border-color: transparent;[^}]*background: transparent;/s,
+    );
+  });
+});
+
 describe('touch affordances', () => {
   it('keeps hover-revealed controls visible without a precise hovering pointer', () => {
     const touchRules = [

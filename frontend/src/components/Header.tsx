@@ -109,7 +109,7 @@ function RuntimePicker() {
         <button
           ref={initialFocus}
           type="button"
-          class="runtime-popover-close"
+          class="runtime-popover-close close-button"
           aria-label="Close runtime settings"
           autoFocus
           onClick={close}

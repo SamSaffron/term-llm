@@ -794,6 +794,29 @@ func (s *serveServer) activeRootRunsForWorktreeMerge(ctx context.Context, root s
 		if err != nil || sess == nil {
 			continue
 		}
+
+		// Project ownership identifies the repository, not the checkout. Prefer the
+		// runtime's persisted workspace so a run in a linked worktree does not get
+		// mistaken for a run using the root checkout.
+		candidate := strings.TrimSpace(sess.WorktreeDir)
+		if candidate == "" {
+			candidate = strings.TrimSpace(sess.CWD)
+		}
+		if candidate != "" {
+			checkoutRoot, checkoutErr := worktree.CheckoutRoot(candidate)
+			if checkoutErr == nil {
+				if sameServePath(checkoutRoot, root) {
+					active = append(active, id)
+				}
+				continue
+			}
+			if hasGit, known := directoryGitMetadataState(candidate); known && !hasGit {
+				continue
+			}
+		}
+
+		// A removed checkout can no longer be inspected. Fall back to project
+		// provenance so an unknown run is still handled conservatively.
 		sessRoot := ""
 		if projects != nil && strings.TrimSpace(sess.ProjectID) != "" {
 			project, projectErr := projects.GetProject(ctx, sess.ProjectID)
@@ -802,27 +825,9 @@ func (s *serveServer) activeRootRunsForWorktreeMerge(ctx context.Context, root s
 			}
 		}
 		if sessRoot == "" {
-			candidate := strings.TrimSpace(sess.WorktreeDir)
-			if candidate == "" {
-				candidate = strings.TrimSpace(sess.CWD)
-			}
-			if candidate == "" {
-				// An unbound serve runtime executes relative to the server checkout.
-				// Without persisted provenance, fail closed for repository mutation.
-				active = append(active, id)
-				continue
-			}
-			resolvedRoot, rootErr := worktree.MainRepoRootContext(ctx, candidate)
-			if rootErr != nil {
-				if hasGit, known := directoryGitMetadataState(candidate); known && !hasGit {
-					continue
-				}
-				// Git inspection failures are not proof that an active runtime is
-				// unrelated. Fail closed unless the directory is provably non-Git.
-				active = append(active, id)
-				continue
-			}
-			sessRoot = resolvedRoot
+			// An unbound or uninspectable active runtime cannot be proven unrelated.
+			active = append(active, id)
+			continue
 		}
 		if sameServePath(sessRoot, root) {
 			active = append(active, id)

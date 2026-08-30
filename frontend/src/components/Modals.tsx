@@ -254,6 +254,7 @@ function Rename() {
   const [improving, setImproving] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   if (!target) return null;
   const close = () => {
     store.renameTarget.value = null;
@@ -264,10 +265,16 @@ function Rename() {
     setGeneratedMode(true);
     setImproving(true);
     setError('');
+    setNotice('');
     try {
       const suggestion = await store.improveTitle();
       setGeneratedTitle(suggestion.title);
       setGeneratedDetail(suggestion.detail);
+      if (suggestion.abstained) {
+        setNotice(
+          "AI couldn't produce a specific title from this session. Edit the current title or try again.",
+        );
+      }
     } catch (value) {
       setError(value instanceof Error ? value.message : 'Failed to improve title.');
     } finally {
@@ -352,8 +359,11 @@ function Rename() {
             ? 'Try again with AI'
             : 'Improve title with AI'}
       </button>
-      <div class="modal-error" role={error ? 'alert' : undefined}>
-        {error}
+      <div
+        class={`modal-error ${notice && !error ? 'modal-notice' : ''}`}
+        role={error ? 'alert' : notice ? 'status' : undefined}
+      >
+        {error || notice}
       </div>
       <div class="modal-actions">
         <button class="btn" type="button" disabled={saving} onClick={close}>

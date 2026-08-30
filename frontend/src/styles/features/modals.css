@@ -106,6 +106,10 @@
   margin-top: 0.5rem;
 }
 
+.modal-error.modal-notice {
+  color: var(--text-muted);
+}
+
 .modal-actions {
   margin-top: 0.75rem;
   display: flex;

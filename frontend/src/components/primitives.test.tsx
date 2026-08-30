@@ -46,6 +46,18 @@ describe('shared interaction primitives', () => {
     expect(trigger).toHaveFocus();
   });
 
+  it('focuses a dialog action before its close button', async () => {
+    render(
+      <Overlay title="Question">
+        <button>Answer</button>
+      </Overlay>,
+    );
+
+    const close = screen.getByRole('button', { name: 'Close Question' });
+    expect(close).toHaveClass('close-button');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Answer' })).toHaveFocus());
+  });
+
   it('keeps nested Overlay ownership until the final surface closes', async () => {
     function Fixture() {
       const [outer, setOuter] = useState(false);

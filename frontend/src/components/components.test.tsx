@@ -16,6 +16,7 @@ import { ChipPicker } from './ChipPicker';
 import { Lightbox } from './Lightbox';
 import type { AppConfig } from '../app/config';
 import { initialProjection } from '../domain/response';
+import { convertServerMessages } from '../domain/transcript';
 import { readJSON } from '../platform/storage';
 
 const config: AppConfig = {
@@ -1619,6 +1620,43 @@ describe('Preact-owned chat surfaces', () => {
     expect(viewport.scrollTop).toBe(700);
   });
 
+  it('shows persisted spawn_agent calls as running until agents finish', () => {
+    const store = createStore();
+    store.sessions.value[0].messages = convertServerMessages([
+      {
+        id: 1,
+        sequence: 0,
+        role: 'assistant',
+        parts: [
+          {
+            type: 'tool_call',
+            tool_call_id: 'spawn-grok',
+            tool_name: 'spawn_agent',
+            tool_arguments: '{"agent_name":"reviewer"}',
+          },
+          {
+            type: 'tool_call',
+            tool_call_id: 'spawn-gemini',
+            tool_name: 'spawn_agent',
+            tool_arguments: '{"agent_name":"reviewer"}',
+          },
+        ],
+      },
+    ]);
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+
+    const group = screen.getByRole('button', { name: /2 tool calls · spawn_agent/ });
+    const status = group.querySelector('.tool-status');
+    expect(status).toHaveTextContent('running…');
+    expect(status).not.toHaveTextContent('✓');
+    expect(status).not.toHaveClass('done');
+  });
+
   it('groups completed tool calls compactly and omits redundant role labels', async () => {
     const store = createStore();
     store.sessions.value[0].messages = [
@@ -3029,6 +3067,31 @@ describe('Preact-owned chat surfaces', () => {
     });
   });
 
+  it('keeps the fallback title editable when AI refinement abstains', async () => {
+    const store = createStore();
+    store.renameTarget.value = store.sessions.value[0];
+    store.modal.value = 'rename';
+    store.improveTitle = vi.fn(async () => ({
+      title: 'Test',
+      detail: 'Existing detail',
+      abstained: true,
+    }));
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: 'Improve title with AI' }));
+
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      "AI couldn't produce a specific title from this session",
+    );
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue('Test');
+    expect(screen.getByRole('textbox', { name: 'Detail' })).toHaveValue('Existing detail');
+  });
+
   it('renders widgets as a bounded, searchable launcher with useful status details', () => {
     const store = createStore();
     store.modal.value = 'widgets';
@@ -3669,7 +3732,7 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByRole('status')).toHaveTextContent('leaving the root checkout clean');
   });
 
-  it('offers an explicit override when the root checkout has an active run', async () => {
+  it('merges immediately even when the root checkout may have an active run', async () => {
     const store = createStore();
     store.modal.value = 'worktrees';
     store.sessions.value = [
@@ -3688,12 +3751,7 @@ describe('Preact-owned chat surfaces', () => {
         branch: 'feature-polish',
       },
     ];
-    store.mergeWorktree = vi
-      .fn()
-      .mockRejectedValueOnce(
-        new APIError('The root checkout has an active run.', 409, '', 'root_checkout_active_runs'),
-      )
-      .mockResolvedValueOnce({ cleanup: { removed: false } });
+    store.mergeWorktree = vi.fn().mockResolvedValue({ cleanup: { removed: false } });
 
     render(
       <StoreContext.Provider value={store}>
@@ -3702,12 +3760,9 @@ describe('Preact-owned chat surfaces', () => {
     );
 
     await userEvent.click(await screen.findByRole('button', { name: 'Merge into root' }));
-    expect(store.mergeWorktree).toHaveBeenNthCalledWith(1, '/worktrees/feature-polish', false);
-    expect(screen.getByRole('alert')).toHaveTextContent('The root checkout is in use');
-    expect(screen.getByRole('alert')).toHaveTextContent('merge anyway if you accept that risk');
-
-    await userEvent.click(screen.getByRole('button', { name: 'Merge anyway' }));
-    expect(store.mergeWorktree).toHaveBeenNthCalledWith(2, '/worktrees/feature-polish', true);
+    expect(store.mergeWorktree).toHaveBeenCalledOnce();
+    expect(store.mergeWorktree).toHaveBeenCalledWith('/worktrees/feature-polish', true);
+    expect(screen.queryByText('The root checkout is in use')).not.toBeInTheDocument();
   });
 
   it('opens the bound worktree detail and escalates removal inline without confirm()', async () => {

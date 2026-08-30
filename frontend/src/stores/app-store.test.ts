@@ -592,6 +592,23 @@ describe('AppStore compatibility behavior', () => {
     expect(store.endpoints.refineTitle).toHaveBeenCalledWith('s1');
   });
 
+  it('returns the editable fallback when AI title refinement abstains', async () => {
+    const store = new AppStore(config);
+    const target = session();
+    store.renameTarget.value = target;
+    store.endpoints.refineTitle = vi.fn(async () => ({
+      refinement_status: 'abstained',
+      short_title: target.title,
+      long_title: target.longTitle,
+    }));
+
+    await expect(store.improveTitle()).resolves.toEqual({
+      title: target.title,
+      detail: '',
+      abstained: true,
+    });
+  });
+
   it('preserves MCP server metadata and normalizes partial endpoint data', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];

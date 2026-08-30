@@ -503,13 +503,18 @@ export class SessionStore {
     this.renameTarget.value = null;
     this.host.modal.value = '';
   }
-  async improveTitle(): Promise<{ title: string; detail: string }> {
+  async improveTitle(): Promise<{
+    title: string;
+    detail: string;
+    abstained?: boolean;
+  }> {
     const session = this.renameTarget.value;
     if (!session) return { title: '', detail: '' };
     const data = await this.services.endpoints.refineTitle(session.id);
     return {
       title: String(data.generated_short_title || data.short_title || session.title || ''),
       detail: String(data.generated_long_title || data.long_title || session.longTitle || ''),
+      ...(data.refinement_status === 'abstained' ? { abstained: true } : {}),
     };
   }
 

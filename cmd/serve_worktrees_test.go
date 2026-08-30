@@ -519,13 +519,15 @@ func TestServeWorktreeMergeBlocksActiveRootRun(t *testing.T) {
 	// falls back to this project, and an unrelated non-Git directory.
 	srv := &serveServer{store: store, sessionMgr: mgr, worktreeRootFn: worktreeRootForTest(repo)}
 	active := srv.activeRootRunsForWorktreeMerge(context.Background(), repo)
-	for _, want := range []string{"root-active", "worktree-active", "missing-worktree-active"} {
+	for _, want := range []string{"root-active", "missing-worktree-active"} {
 		if !slices.Contains(active, want) {
 			t.Fatalf("active runs %v missing %s", active, want)
 		}
 	}
-	if slices.Contains(active, "unrelated-nongit") {
-		t.Fatalf("unrelated non-Git run blocked repository mutation: %v", active)
+	for _, unwanted := range []string{"worktree-active", "unrelated-nongit"} {
+		if slices.Contains(active, unwanted) {
+			t.Fatalf("run outside the root checkout %q blocked repository mutation: %v", unwanted, active)
+		}
 	}
 
 	mergeReq := httptest.NewRequest(http.MethodPost, "/v1/worktrees/merge", bytes.NewBufferString(`{"dir":"`+worktreeDir+`"}`))

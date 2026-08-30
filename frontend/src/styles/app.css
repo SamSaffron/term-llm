@@ -22,6 +22,7 @@
 @import './features/side-questions.css';
 @import './features/transcript-virtualization.css';
 @import './features/toast.css';
+@import './features/close-buttons.css';
 @import './features/branching.css';
 @import './features/projects.css';
 @import './features/worktrees.css';

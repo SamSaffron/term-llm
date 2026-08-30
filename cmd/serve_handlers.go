@@ -2601,7 +2601,7 @@ func (s *serveServer) handleSessionTitleRefine(w http.ResponseWriter, r *http.Re
 	previousTitle := sess.PreferredShortTitle()
 	previousLongTitle := sess.PreferredLongTitle()
 
-	messages, err := s.store.GetMessages(r.Context(), sess.ID, 80, 0)
+	messages, err := loadSessionTitleMessages(r.Context(), s.store, sess.ID)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to load session messages")
 		return
@@ -2618,6 +2618,18 @@ func (s *serveServer) handleSessionTitleRefine(w http.ResponseWriter, r *http.Re
 	}
 	cand, err := sessiontitle.Generate(r.Context(), provider, sess, messages)
 	if err != nil {
+		if errors.Is(err, sessiontitle.ErrRejected) {
+			writeSessionTitleRefineResponse(
+				w,
+				sess,
+				sess.PreferredShortTitle(),
+				sess.PreferredLongTitle(),
+				sess.GeneratedShortTitle,
+				sess.GeneratedLongTitle,
+				"abstained",
+			)
+			return
+		}
 		writeOpenAIError(w, http.StatusBadGateway, "server_error", "failed to refine title: "+err.Error())
 		return
 	}
@@ -2657,6 +2669,26 @@ func (s *serveServer) handleSessionTitleRefine(w http.ResponseWriter, r *http.Re
 		preferredLong = cand.LongTitle
 	}
 
+	writeSessionTitleRefineResponse(
+		w,
+		sess,
+		preferredShort,
+		preferredLong,
+		generatedShort,
+		generatedLong,
+		"generated",
+	)
+}
+
+func writeSessionTitleRefineResponse(
+	w http.ResponseWriter,
+	sess *session.Session,
+	preferredShort string,
+	preferredLong string,
+	generatedShort string,
+	generatedLong string,
+	status string,
+) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":                    sess.ID,
 		"name":                  sess.Name,
@@ -2664,6 +2696,7 @@ func (s *serveServer) handleSessionTitleRefine(w http.ResponseWriter, r *http.Re
 		"long_title":            preferredLong,
 		"generated_short_title": generatedShort,
 		"generated_long_title":  generatedLong,
+		"refinement_status":     status,
 		"mode":                  sess.Mode,
 		"origin":                sess.Origin,
 		"archived":              sess.Archived,

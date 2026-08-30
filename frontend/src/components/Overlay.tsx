@@ -64,8 +64,9 @@ export function Overlay({
       const target =
         dialog.current?.querySelector<HTMLElement>('[autofocus]:not([disabled])') ||
         dialog.current?.querySelector<HTMLElement>(
-          'button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled])',
+          'button:not([disabled]):not([data-overlay-close]),input:not([disabled]),select:not([disabled]),textarea:not([disabled])',
         ) ||
+        dialog.current?.querySelector<HTMLElement>('[data-overlay-close]:not([disabled])') ||
         dialog.current;
       target?.focus();
     });
@@ -132,9 +133,10 @@ export function Overlay({
           <h2 id={label}>{title}</h2>
           {close && (
             <button
-              class="icon-btn"
+              class="icon-btn close-button"
               type="button"
               aria-label={`Close ${title}`}
+              data-overlay-close
               disabled={dismissDisabled}
               onClick={dismiss}
             >

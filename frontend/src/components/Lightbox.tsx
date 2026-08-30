@@ -263,7 +263,7 @@ export function Lightbox() {
         >
           <Icon name={maximized ? 'restore' : 'expand'} />
         </button>
-        <button class="lightbox-btn" type="button" aria-label="Close" onClick={close}>
+        <button class="lightbox-btn close-button" type="button" aria-label="Close" onClick={close}>
           <Icon name="close" />
         </button>
       </div>

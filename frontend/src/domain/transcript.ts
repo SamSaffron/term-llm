@@ -458,11 +458,16 @@ export function convertServerMessages(
           ['failed', 'error'].includes(text(part.tool_status).toLowerCase());
         let tool = findTool(current, callID, text(part.tool_name || part.name));
         if (!tool) {
+          const name = text(part.tool_name || part.name) || 'tool';
+          // Most successful tool results are omitted from history, but spawn_agent results are
+          // retained, so a persisted spawn can remain running until its matching result arrives.
+          const awaitsResult =
+            part.type === 'function_call' || (part.type === 'tool_call' && name === 'spawn_agent');
           tool = {
             id: callID,
-            name: text(part.tool_name || part.name) || 'tool',
+            name,
             arguments: text(part.tool_arguments || part.arguments),
-            status: failed ? 'error' : part.type === 'function_call' ? 'running' : 'done',
+            status: failed ? 'error' : awaitsResult ? 'running' : 'done',
           };
           current.tools!.push(tool);
         } else

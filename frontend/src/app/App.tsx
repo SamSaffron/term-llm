@@ -81,7 +81,7 @@ export function App({ store }: { store: AppStore }) {
               <Icon class="toast-icon" name={toastIcon(toast.kind)} />
               <span class="toast-message">{toast.message}</span>
               <button
-                class="toast-close"
+                class="toast-close close-button"
                 type="button"
                 aria-label="Dismiss notification"
                 onClick={() => store.dismissToast(toast.id)}

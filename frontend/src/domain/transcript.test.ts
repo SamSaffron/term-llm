@@ -57,6 +57,56 @@ describe('transcript domain', () => {
     expect(messages[3]).toMatchObject({ role: 'compaction-boundary', rawContent: 'summary' });
   });
 
+  it('keeps durable spawn_agent calls running until their result arrives', () => {
+    const call = {
+      id: 1,
+      sequence: 0,
+      role: 'assistant',
+      parts: [
+        {
+          type: 'tool_call',
+          tool_call_id: 'spawn-1',
+          tool_name: 'spawn_agent',
+          tool_arguments: '{"agent_name":"reviewer"}',
+        },
+      ],
+    };
+
+    const pending = convertServerMessages([call]);
+    expect(pending[0].tools?.[0]).toMatchObject({
+      id: 'spawn-1',
+      name: 'spawn_agent',
+      status: 'running',
+    });
+
+    const completed = convertServerMessages([
+      call,
+      {
+        id: 2,
+        sequence: 1,
+        role: 'tool',
+        parts: [
+          {
+            type: 'tool_result',
+            tool_call_id: 'spawn-1',
+            tool_name: 'spawn_agent',
+            spawn_agent: {
+              agent_name: 'reviewer',
+              output: 'No issues found.',
+              duration_ms: 250,
+            },
+          },
+        ],
+      },
+    ]);
+    expect(completed[0].tools?.[0]).toMatchObject({
+      id: 'spawn-1',
+      status: 'done',
+      resultStatus: 'success',
+      subagent: { agentName: 'reviewer', output: 'No issues found.', durationMs: 250 },
+    });
+  });
+
   it('sanitizes server session defaults and seconds timestamps', () => {
     const session = sanitizeSession({
       id: 's1',

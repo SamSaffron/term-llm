@@ -883,7 +883,7 @@ export function Sidebar() {
                 <Icon name="settings" />
               </button>
               <button
-                class="icon-btn sidebar-close"
+                class="icon-btn close-button sidebar-close"
                 id="sidebarCloseBtn"
                 aria-label="Close sidebar"
                 onClick={() => {

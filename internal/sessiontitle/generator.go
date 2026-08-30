@@ -3,6 +3,7 @@ package sessiontitle
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
@@ -21,6 +22,10 @@ type Candidate struct {
 	LongTitle  string  `json:"long_title"`
 	Confidence float64 `json:"confidence"`
 }
+
+// ErrRejected means the provider responded successfully but did not produce a
+// title candidate that is specific and complete enough to use.
+var ErrRejected = errors.New("generated titles rejected")
 
 func Generate(ctx context.Context, provider llm.Provider, sess *session.Session, messages []session.Message) (Candidate, error) {
 	if provider == nil {
@@ -62,8 +67,8 @@ Conversation slice:
 		return Candidate{}, err
 	}
 	if !Acceptable(cand) {
-		return cand, fmt.Errorf("generated titles rejected: short=%q (%d words) long=%q (%d words) conf=%.2f",
-			cand.ShortTitle, wordCount(cand.ShortTitle),
+		return cand, fmt.Errorf("%w: short=%q (%d words) long=%q (%d words) conf=%.2f",
+			ErrRejected, cand.ShortTitle, wordCount(cand.ShortTitle),
 			cand.LongTitle, wordCount(cand.LongTitle),
 			cand.Confidence)
 	}

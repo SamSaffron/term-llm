@@ -2,6 +2,7 @@ package sessiontitle
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -204,6 +205,17 @@ func TestNormalizeTitleEdgeCases(t *testing.T) {
 				t.Errorf("normalizeTitle(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGenerateReturnsRejectedSentinelForAbstention(t *testing.T) {
+	provider := llm.NewMockProvider("fast").AddTextResponse(`{"short_title":null,"long_title":null,"confidence":0}`)
+	sess := &session.Session{Summary: "unclear request"}
+	messages := []session.Message{{Role: llm.RoleUser, TextContent: "please fix it"}}
+
+	_, err := Generate(context.Background(), provider, sess, messages)
+	if !errors.Is(err, ErrRejected) {
+		t.Fatalf("Generate error = %v, want ErrRejected", err)
 	}
 }
 

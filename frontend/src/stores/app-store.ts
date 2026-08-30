@@ -965,7 +965,11 @@ export class AppStore {
   ): Promise<void> {
     await this.sessionStore.renameSession(change);
   }
-  async improveTitle(): Promise<{ title: string; detail: string }> {
+  async improveTitle(): Promise<{
+    title: string;
+    detail: string;
+    abstained?: boolean;
+  }> {
     return this.sessionStore.improveTitle();
   }
 

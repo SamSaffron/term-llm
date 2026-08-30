@@ -978,7 +978,7 @@ export function DiffSidebar() {
           <Icon name={state.maximized ? 'restore' : 'expand'} />
         </button>
         <button
-          class="icon-btn diff-sidebar-close"
+          class="icon-btn close-button diff-sidebar-close"
           type="button"
           aria-label="Hide changes"
           onClick={() => {
@@ -1165,7 +1165,7 @@ export function PlanSurface() {
           {summary.complete ? 'Complete' : `Step ${summary.position} of ${summary.total}`}
         </span>
         <button
-          class="icon-btn"
+          class="icon-btn close-button"
           type="button"
           aria-label="Close current plan"
           onClick={() => store.closePlan()}

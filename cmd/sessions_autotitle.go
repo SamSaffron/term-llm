@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -160,9 +161,7 @@ func runSessionsAutotitle(cmd *cobra.Command, args []string) error {
 	for _, c := range candidates {
 		sess := c.sess
 
-		// Only the first few user+assistant messages are used for titling.
-		// Fetch at most 50 rows to avoid loading entire large sessions.
-		messages, err := store.GetMessages(ctx, sess.ID, 50, 0)
+		messages, err := loadSessionTitleMessages(ctx, store, sess.ID)
 		if err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "#%d messages failed: %v\n", sess.Number, err)
 			continue
@@ -174,7 +173,7 @@ func runSessionsAutotitle(cmd *cobra.Command, args []string) error {
 			current = "Untitled"
 		}
 		if err != nil {
-			if strings.Contains(err.Error(), "generated titles rejected") {
+			if errors.Is(err, sessiontitle.ErrRejected) {
 				skips.rejected++
 				if sessionsAutotitleVerbose {
 					fmt.Fprintf(cmd.ErrOrStderr(), "#%d rejected: %v\n", sess.Number, err)
