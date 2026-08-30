@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/config"
 )
@@ -25,6 +26,7 @@ func TestDebugProviderName(t *testing.T) {
 		{"slow", "debug:slow"},
 		{"realtime", "debug:realtime"},
 		{"burst", "debug:burst"},
+		{"jitter", "debug:jitter"},
 		{"compaction", "debug:compaction"},
 		{"unknown", "debug:unknown"}, // Unknown variants still get named
 	}
@@ -139,6 +141,74 @@ func TestDebugProviderStream(t *testing.T) {
 
 	if !gotUsage {
 		t.Error("stream did not emit usage event")
+	}
+}
+
+func TestDebugProviderJitterStreamIsDeterministicAndUTF8Safe(t *testing.T) {
+	t.Parallel()
+
+	p := NewDebugProvider("jitter")
+	for i := range p.pattern {
+		p.pattern[i].Delay = 0
+	}
+	stream, err := p.Stream(context.Background(), Request{})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+
+	var fullText strings.Builder
+	var sizes []int
+	for {
+		event, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatalf("stream receive: %v", recvErr)
+		}
+		if event.Type != EventTextDelta {
+			continue
+		}
+		if !utf8.ValidString(event.Text) {
+			t.Fatalf("invalid UTF-8 chunk %q", event.Text)
+		}
+		sizes = append(sizes, len(event.Text))
+		fullText.WriteString(event.Text)
+	}
+	if got := fullText.String(); got != debugMarkdown {
+		t.Fatal("jitter stream did not reconstruct the original markdown")
+	}
+	if len(sizes) < len(jitterPattern) {
+		t.Fatalf("got %d chunks, want at least %d", len(sizes), len(jitterPattern))
+	}
+	for i, step := range jitterPattern[:4] {
+		if sizes[i] != step.ChunkSize {
+			t.Fatalf("chunk %d size = %d, want %d", i, sizes[i], step.ChunkSize)
+		}
+	}
+}
+
+func TestDebugChunkEndPreservesRunes(t *testing.T) {
+	t.Parallel()
+
+	const text = "a✅b"
+	for _, tt := range []struct {
+		size int
+		want int
+	}{
+		{size: 1, want: 1},
+		{size: 2, want: 1},
+		{size: 3, want: 1},
+		{size: 4, want: 4},
+		{size: 5, want: 5},
+	} {
+		if got := debugChunkEnd(text, tt.size); got != tt.want {
+			t.Errorf("debugChunkEnd(%q, %d) = %d, want %d", text, tt.size, got, tt.want)
+		}
+	}
+	if got := debugChunkEnd("✅", 1); got != len("✅") {
+		t.Errorf("single-rune fallback = %d, want %d", got, len("✅"))
 	}
 }
 
