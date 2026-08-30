@@ -1,4 +1,19 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
+
+async function waitForSessionIdle(page: Page, sessionID: string): Promise<void> {
+  await expect
+    .poll(
+      () =>
+        page.evaluate(async (id) => {
+          const state = (await (
+            await fetch(`v1/sessions/${encodeURIComponent(id)}/state`)
+          ).json()) as { active_run?: boolean; active_response_id?: string };
+          return !state.active_run && !state.active_response_id;
+        }, sessionID),
+      { timeout: 15_000 },
+    )
+    .toBe(true);
+}
 
 // These checks deliberately do not install page.route handlers. They exercise
 // the embedded production bundle and Go HTTP protocol in the isolated server
@@ -224,6 +239,10 @@ test('recovers and resolves an ask-user request across real same-context tabs', 
     return body.selected_session?.id || '';
   });
   expect(sessionID).not.toBe('');
+  // These fixtures are standalone control-plane requests. If they are created
+  // while the setup response is still active, response completion correctly
+  // retires them as interactions owned by that response.
+  await waitForSessionIdle(page, sessionID);
   const fixtureStatus = await page.evaluate(async (id) => {
     const response = await fetch(`${window.TERM_LLM_UI_PREFIX}/__browser_fixture/ask-user`, {
       method: 'POST',
@@ -281,6 +300,7 @@ test('recovers, neutrally dismisses, and resolves a real approval', async ({ pag
     return body.selected_session?.id || '';
   });
   expect(sessionID).not.toBe('');
+  await waitForSessionIdle(page, sessionID);
   const fixtureStatus = await page.evaluate(async (id) => {
     const response = await fetch(`${window.TERM_LLM_UI_PREFIX}/__browser_fixture/approval`, {
       method: 'POST',
