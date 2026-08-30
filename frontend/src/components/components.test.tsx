@@ -3834,16 +3834,21 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.queryByRole('button', { name: 'Copy code' })).not.toBeInTheDocument();
   });
 
-  it('throttles streaming markdown updates at the adaptive cadence', async () => {
+  it('drains a streaming burst over multiple presentation frames', async () => {
     vi.useFakeTimers();
     try {
+      const target = `first ${'second '.repeat(20)}`;
       const { container, rerender } = render(<Markdown value="first" streaming />);
-      rerender(<Markdown value="second" streaming />);
+      rerender(<Markdown value={target} streaming />);
       expect(container).toHaveTextContent('first');
       await act(async () => {
         await vi.advanceTimersByTimeAsync(33);
       });
-      expect(container).toHaveTextContent('second');
+      expect(container.textContent).not.toBe(target);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(container).toHaveTextContent(target.trim());
     } finally {
       vi.useRealTimers();
     }
@@ -3863,7 +3868,7 @@ describe('Preact-owned chat surfaces', () => {
       const second = `${first};\nconsole.log(value);`;
       rerender(<Markdown value={second} streaming />);
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(33);
+        await vi.advanceTimersByTimeAsync(1_000);
       });
       expect(container.querySelector('pre')).toBe(pre);
       expect(container.querySelector('pre code')).toBe(code);
@@ -3873,7 +3878,7 @@ describe('Preact-owned chat surfaces', () => {
       const closed = `${second}\n\`\`\`\ntrailing prose`;
       rerender(<Markdown value={closed} streaming />);
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(33);
+        await vi.advanceTimersByTimeAsync(1_000);
       });
       expect(container.querySelector('pre')).toBe(pre);
       expect(container.querySelector('pre code')).toBe(code);
@@ -3961,7 +3966,7 @@ describe('Preact-owned chat surfaces', () => {
       const text = tail?.firstChild;
       rerender(<Markdown value="first second" streaming />);
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(33);
+        await vi.advanceTimersByTimeAsync(500);
       });
       expect(container.querySelector('.streaming-tail')?.firstChild).toBe(text);
       expect(text).toHaveTextContent('first second');

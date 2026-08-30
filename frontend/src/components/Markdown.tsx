@@ -1,13 +1,14 @@
 import { copyText } from '../platform/browser';
-import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import {
   analyzeStreamingMarkdown,
   canStreamPlainTextTailIncremental,
   createStreamingState,
+  elasticStreamingStep,
+  ELASTIC_STREAM_FRAME_MS,
   findNextFencedCodeBlock,
   hasIncrementalGlobalMarkdownSyntax,
   inspectFencedCodeBlock,
-  nextStreamingRenderDelay,
   type ActiveFencedCodeBlock,
   type StreamingMarkdownState,
 } from '../domain/markdown-streaming';
@@ -47,35 +48,81 @@ function addCodeCopyButtons(root: HTMLElement): void {
   });
 }
 
+function safePrefixEnd(value: string, requested: number): number {
+  let end = Math.max(0, Math.min(value.length, requested));
+  if (
+    end > 0 &&
+    end < value.length &&
+    /[\uD800-\uDBFF]/.test(value[end - 1]) &&
+    /[\uDC00-\uDFFF]/.test(value[end])
+  )
+    end += 1;
+  return end;
+}
+
 function useAdaptiveStreamingValue(value: string, streaming: boolean): string {
   const [rendered, setRendered] = useState(value);
+  const renderedRef = useRef(value);
   const latest = useRef(value);
   const timer = useRef<number | null>(null);
-  const lastRender = useRef(performance.now());
+  const lastTick = useRef(performance.now());
+  const remainder = useRef(0);
+
+  const publish = useCallback((next: string) => {
+    renderedRef.current = next;
+    setRendered(next);
+  }, []);
+  const cancel = useCallback(() => {
+    if (timer.current !== null) clearTimeout(timer.current);
+    timer.current = null;
+  }, []);
+  const schedule = useCallback(() => {
+    if (timer.current !== null) return;
+    timer.current = window.setTimeout(() => {
+      timer.current = null;
+      const target = latest.current;
+      const current = renderedRef.current;
+      if (target === current) return;
+      if (!target.startsWith(current)) {
+        remainder.current = 0;
+        lastTick.current = performance.now();
+        publish(target);
+        return;
+      }
+
+      const now = performance.now();
+      const step = elasticStreamingStep(
+        target.length - current.length,
+        now - lastTick.current,
+        remainder.current,
+      );
+      lastTick.current = now;
+      remainder.current = step.remainder;
+      const end = safePrefixEnd(target, current.length + step.characters);
+      publish(target.slice(0, end));
+      if (end < target.length) schedule();
+    }, ELASTIC_STREAM_FRAME_MS);
+  }, [publish]);
+
   useEffect(() => {
     latest.current = value;
     if (!streaming) {
-      if (timer.current !== null) clearTimeout(timer.current);
-      timer.current = null;
-      lastRender.current = performance.now();
-      setRendered(value);
+      cancel();
+      remainder.current = 0;
+      lastTick.current = performance.now();
+      if (renderedRef.current !== value) publish(value);
       return;
     }
-    if (value === rendered || timer.current !== null) return;
-    const delay = nextStreamingRenderDelay(value.length);
-    const wait = Math.max(0, delay - (performance.now() - lastRender.current));
-    timer.current = window.setTimeout(() => {
-      timer.current = null;
-      lastRender.current = performance.now();
-      setRendered(latest.current);
-    }, wait);
-  }, [value, streaming, rendered]);
-  useEffect(
-    () => () => {
-      if (timer.current !== null) clearTimeout(timer.current);
-    },
-    [],
-  );
+    if (!value.startsWith(renderedRef.current)) {
+      cancel();
+      remainder.current = 0;
+      lastTick.current = performance.now();
+      publish(value);
+      return;
+    }
+    if (value !== renderedRef.current) schedule();
+  }, [value, streaming, cancel, publish, schedule]);
+  useEffect(() => () => cancel(), [cancel]);
   return streaming ? rendered : value;
 }
 

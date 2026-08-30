@@ -3,6 +3,7 @@ import { highlight, highlightDiffLine } from './rich-highlight';
 import { decorateRichContent, renderMarkdown, stableMarkdownBoundary } from './markdown';
 import {
   analyzeStreamingMarkdown,
+  elasticStreamingStep,
   findActiveFencedCodeBlock,
   hasIncrementalGlobalMarkdownSyntax,
   inspectFencedCodeBlock,
@@ -111,6 +112,25 @@ describe('markdown security and streaming', () => {
     expect(languages).toHaveLength(60);
     expect(languages.filter((language) => !highlight.getLanguage(language))).toEqual([]);
     expect(highlight.getLanguage('toml')).toBeTruthy();
+  });
+
+  it('drains streaming bursts elastically while preserving fractional cadence', () => {
+    const shallow = elasticStreamingStep(10, 32);
+    const deep = elasticStreamingStep(1_000, 32);
+    expect(shallow.characters).toBeGreaterThanOrEqual(1);
+    expect(deep.characters).toBeGreaterThan(shallow.characters);
+    expect(deep.characters).toBeLessThan(1_000);
+
+    const first = elasticStreamingStep(1, 1);
+    expect(first).toEqual({ characters: 1, remainder: 0 });
+    expect(elasticStreamingStep(0, 32, first.remainder)).toEqual({ characters: 0, remainder: 0 });
+  });
+
+  it('bounds elastic catch-up after a suspended frame', () => {
+    const ordinary = elasticStreamingStep(10_000, 250);
+    const suspended = elasticStreamingStep(10_000, 30_000);
+    expect(suspended).toEqual(ordinary);
+    expect(suspended.characters).toBeLessThan(10_000);
   });
 
   it('does not expose an unterminated fenced tail as stable markdown', () => {

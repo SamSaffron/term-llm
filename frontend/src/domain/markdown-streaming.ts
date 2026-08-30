@@ -44,12 +44,39 @@ export function createStreamingState(): StreamingMarkdownState {
   };
 }
 
-export function nextStreamingRenderDelay(contentLength: unknown): number {
-  const length = Math.max(0, Number(contentLength) || 0);
-  if (length > 96_000) return 250;
-  if (length > 32_000) return 150;
-  if (length > 8_000) return 75;
-  return 33;
+export const ELASTIC_STREAM_FRAME_MS = 32;
+const ELASTIC_STREAM_MIN_CHARS_PER_SECOND = 40;
+const ELASTIC_STREAM_MAX_CHARS_PER_SECOND = 720;
+const ELASTIC_STREAM_BACKLOG_GAIN = 1.8;
+
+export interface ElasticStreamingStep {
+  characters: number;
+  remainder: number;
+}
+
+/**
+ * Converts queued source pressure into a bounded presentation rate. Small
+ * queues drain gently; bursts accelerate rather than appearing in one jump.
+ * The fractional remainder keeps the cadence accurate at low rates.
+ */
+export function elasticStreamingStep(
+  backlog: number,
+  elapsedMs: number,
+  remainder = 0,
+): ElasticStreamingStep {
+  const queued = Math.max(0, Math.floor(Number(backlog) || 0));
+  if (!queued) return { characters: 0, remainder: 0 };
+  const elapsed = Math.max(0, Math.min(250, Number(elapsedMs) || 0));
+  const rate = Math.min(
+    ELASTIC_STREAM_MAX_CHARS_PER_SECOND,
+    ELASTIC_STREAM_MIN_CHARS_PER_SECOND + queued * ELASTIC_STREAM_BACKLOG_GAIN,
+  );
+  const budget = Math.max(0, Number(remainder) || 0) + (rate * elapsed) / 1000;
+  const characters = Math.min(queued, Math.max(1, Math.floor(budget)));
+  return {
+    characters,
+    remainder: characters === queued ? 0 : Math.max(0, budget - characters),
+  };
 }
 
 function fenceMarker(line: unknown): Fence | null {
