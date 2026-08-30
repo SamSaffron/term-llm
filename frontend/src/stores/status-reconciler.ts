@@ -37,6 +37,11 @@ export interface StatusReconcilerHost {
   reconcile: (reason: string, authoritative: boolean) => Promise<void>;
   refreshSidebar: (authoritative?: boolean) => Promise<void>;
   resumeResponse: (sessionId: string, responseId: string) => Promise<void>;
+  reconcileServerIdleResponse: (
+    sessionId: string,
+    responseId: string,
+    transcriptRev: number,
+  ) => Promise<void>;
   refreshSessionMessages: (sessionId: string, targetRev?: number) => Promise<void>;
   syncSessionMessagesForAttach: (sessionId: string, targetRev?: number) => Promise<void>;
   refreshDiffComments: (sessionId: string) => Promise<void>;
@@ -132,7 +137,7 @@ export class StatusReconciler {
         metadata.selectedSessionId,
         metadata.showHidden,
         metadata.categories,
-        this.coordinator.etag,
+        authoritative ? '' : this.coordinator.etag,
       );
       const receivedAt = Date.now();
       if (!this.statusRequestIsCurrent(metadata)) {
@@ -299,7 +304,14 @@ export class StatusReconciler {
           // can suspend or lose the terminal stream event, so reconcile that
           // snapshot whenever the two views disagree. A run admitted after
           // this status request started cannot be disproven by its stale body.
-          followUps.push(() => void this.host.resumeResponse(session.id, projectedRun.responseId));
+          followUps.push(() => {
+            void this.host.resumeResponse(session.id, projectedRun.responseId);
+            void this.host.reconcileServerIdleResponse(
+              session.id,
+              projectedRun.responseId,
+              serverTranscriptRev,
+            );
+          });
         }
         if (
           !serverActiveResponseId &&

@@ -254,7 +254,8 @@ function validate(
   if (responseId !== projection.run.responseId)
     throw new ResponseProtocolError(`Response owner mismatch: ${responseId}`, 'owner');
   const epoch = number(event.run_epoch);
-  if (!epoch || epoch !== projection.run.epoch)
+  const adoptingCreatedEpoch = event.type === 'response.created' && projection.run.lastSequence === 0;
+  if (!epoch || (!adoptingCreatedEpoch && epoch !== projection.run.epoch))
     throw new ResponseProtocolError(`Response epoch mismatch: ${epoch}`, 'epoch');
   const sequence = number(event.sequence_number);
   if (!sequence)

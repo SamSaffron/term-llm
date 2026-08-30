@@ -2033,6 +2033,71 @@ describe('AppStore compatibility behavior', () => {
     }
   });
 
+  it('keeps the admitted POST stream when response.created supplies the server epoch', async () => {
+    const store = new AppStore(config);
+    let postSignal: AbortSignal | undefined;
+    try {
+      store.sessions.value = [session()];
+      store.activeSessionId.value = 's1';
+      store.draftActive.value = false;
+      store.prompt.value = 'Use the original response stream';
+      store.endpoints.response = vi.fn(async () => {
+        throw new Error('snapshot recovery should not run');
+      });
+      store.endpoints.createResponse = vi.fn(async (_body, _sessionId, _requestId, signal) => {
+        postSignal = signal;
+        const encoder = new TextEncoder();
+        const frames = [
+          ['response.created', { response: { id: 'r1', status: 'in_progress' } }],
+          ['response.output_text.delta', { delta: 'Done.' }],
+          ['response.completed', { response: { id: 'r1', status: 'completed' }, final_rev: 2 }],
+        ] as const;
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            frames.forEach(([type, payload], index) =>
+              controller.enqueue(
+                encoder.encode(
+                  `event: ${type}\ndata: ${JSON.stringify({
+                    ...payload,
+                    response_id: 'r1',
+                    run_epoch: 1788084563000000,
+                    sequence_number: index + 1,
+                  })}\n\n`,
+                ),
+              ),
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        });
+        return new Response(body, {
+          headers: { 'x-response-id': 'r1', 'x-session-id': 's1' },
+        });
+      });
+      store.endpoints.selectedSession = vi.fn(async () => ({
+        selected_session: { id: 's1', transcript_rev: 2 },
+        selected_transcript: { bodies: { rev: 2, messages: [] } },
+      }));
+      store.endpoints.sessionState = vi.fn(async () => ({}));
+
+      await store.send();
+
+      expect(postSignal?.aborted).toBe(true);
+      expect(store.endpoints.response).not.toHaveBeenCalled();
+      expect(store.runs.value.s1.run).toMatchObject({
+        responseId: 'r1',
+        epoch: 1788084563000000,
+        status: 'completed',
+        lastSequence: 3,
+      });
+      expect(store.runs.value.s1.messages).toEqual([
+        expect.objectContaining({ role: 'assistant', content: 'Done.' }),
+      ]);
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('ignores late transport failures after a response is already complete', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];
@@ -2618,6 +2683,61 @@ describe('AppStore compatibility behavior', () => {
     }
   });
 
+  it('retries when a replacement response stream never returns headers', async () => {
+    vi.useFakeTimers();
+    const store = new AppStore(config);
+    let connectSignal: AbortSignal | undefined;
+    try {
+      store.sessions.value = [{ ...session(), activeRun: true, activeResponseId: 'r1' }];
+      store.activeSessionId.value = 's1';
+      store.runs.value = {
+        s1: initialProjection({
+          responseId: 'r1',
+          sessionId: 's1',
+          epoch: 1,
+          status: 'connecting',
+          lastSequence: 3,
+          startedRev: 0,
+          reconnects: 0,
+        }),
+      };
+      store.endpoints.responseEvents = vi.fn((_responseId, _after, signal) => {
+        connectSignal = signal;
+        // Model WebKit leaving fetch pending even after its signal is aborted.
+        return new Promise<Response>(() => undefined);
+      });
+      store.endpoints.response = vi.fn(async () => ({
+        id: 'r1',
+        status: 'completed',
+        run_epoch: 1,
+        last_sequence_number: 4,
+        final_rev: 1,
+        recovery: { sequence_number: 4 },
+      }));
+      store.endpoints.selectedSession = vi.fn(async () => ({
+        selected_session: { id: 's1' },
+        selected_transcript: { bodies: { rev: 1, messages: [] } },
+      }));
+      store.endpoints.sessionState = vi.fn(async () => ({}));
+
+      void store.streamResponse('r1', 's1', 3);
+      await Promise.resolve();
+      expect(connectSignal?.aborted).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      expect(connectSignal?.aborted).toBe(true);
+      expect(store.runs.value.s1.run).toMatchObject({ status: 'connecting', reconnects: 1 });
+
+      await vi.advanceTimersByTimeAsync(1_500);
+      await vi.waitFor(() => expect(store.endpoints.response).toHaveBeenCalledOnce());
+      expect(store.runEngine.currentSupervisor('s1')).toBeUndefined();
+    } finally {
+      store.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it('recovers an active run when no response transport is owned', async () => {
     const store = new AppStore(config);
     try {
@@ -2689,6 +2809,64 @@ describe('AppStore compatibility behavior', () => {
 
     expect(store.sessions.value[0]).toMatchObject({ activeRun: false, activeResponseId: null });
     expect(internals.resumeResponse).toHaveBeenCalledWith('s1', 'finished-while-suspended');
+  });
+
+  it('retires an expired response after authoritative idle transcript reconciliation', async () => {
+    const store = new AppStore(config);
+    try {
+      store.sessions.value = [
+        {
+          ...session(),
+          activeRun: true,
+          activeResponseId: 'expired-response',
+          transcriptRev: 1,
+          messageBodiesRev: 1,
+        },
+      ];
+      store.activeSessionId.value = 's1';
+      store.runs.value = {
+        s1: initialProjection({
+          responseId: 'expired-response',
+          sessionId: 's1',
+          epoch: 99,
+          status: 'streaming',
+          lastSequence: 25,
+          startedRev: 1,
+          reconnects: 0,
+        }),
+      };
+      store.endpoints.sessionStatus = vi.fn(async () => ({
+        sessions: [{ id: 's1', transcript_rev: 2 }],
+        __etag: 'idle-etag',
+      }));
+      store.endpoints.response = vi.fn(async () => {
+        throw new APIError('response not found', 404);
+      });
+      store.endpoints.selectedSession = vi.fn(async () => ({
+        selected_session: { id: 's1', transcript_rev: 2 },
+        selected_transcript: { bodies: { rev: 2, messages: [] } },
+      }));
+      store.endpoints.sessionState = vi.fn(async () => ({}));
+      const internals = store as unknown as {
+        refreshStatus(authoritative?: boolean): Promise<void>;
+      };
+
+      await internals.refreshStatus(true);
+
+      await vi.waitFor(() => expect(store.runs.value.s1).toBeUndefined());
+      expect(store.endpoints.sessionStatus).toHaveBeenCalledWith('s1', false, ['all'], '');
+      expect(store.sessions.value[0]).toMatchObject({
+        activeRun: false,
+        activeResponseId: null,
+        messageBodiesRev: 2,
+        lastResponseId: 'expired-response',
+      });
+      expect(store.runEngine.currentSupervisor('s1')).toBeUndefined();
+      expect(store.runActive.value).toBe(false);
+      expect(store.streaming.value).toBe(false);
+    } finally {
+      store.dispose();
+    }
   });
 
   it('does not probe a provisional response before the server admits it', async () => {
