@@ -1236,6 +1236,7 @@ export class RunEngine {
     responseId: string,
     transcriptRev: number,
   ): Promise<void> {
+    if (transcriptRev <= 0 || this.retiredResponses.has(responseId)) return;
     try {
       await this.host.refreshSessionMessages(sessionId, transcriptRev);
     } catch {

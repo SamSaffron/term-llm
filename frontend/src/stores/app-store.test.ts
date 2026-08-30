@@ -2701,17 +2701,37 @@ describe('AppStore compatibility behavior', () => {
           reconnects: 0,
         }),
       };
-      store.endpoints.responseEvents = vi.fn((_responseId, _after, signal) => {
-        connectSignal = signal;
-        // Model WebKit leaving fetch pending even after its signal is aborted.
-        return new Promise<Response>(() => undefined);
-      });
+      store.endpoints.responseEvents = vi
+        .fn()
+        .mockImplementationOnce((_responseId, _after, signal) => {
+          connectSignal = signal;
+          // Model WebKit leaving fetch pending even after its signal is aborted.
+          return new Promise<Response>(() => undefined);
+        })
+        .mockImplementationOnce(async () => {
+          const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(
+                new TextEncoder().encode(
+                  `event: response.completed\ndata: ${JSON.stringify({
+                    response_id: 'r1',
+                    run_epoch: 1,
+                    sequence_number: 5,
+                    response: { id: 'r1', status: 'completed' },
+                    final_rev: 1,
+                  })}\n\ndata: [DONE]\n\n`,
+                ),
+              );
+              controller.close();
+            },
+          });
+          return new Response(body);
+        });
       store.endpoints.response = vi.fn(async () => ({
         id: 'r1',
-        status: 'completed',
+        status: 'in_progress',
         run_epoch: 1,
         last_sequence_number: 4,
-        final_rev: 1,
         recovery: { sequence_number: 4 },
       }));
       store.endpoints.selectedSession = vi.fn(async () => ({
@@ -2731,6 +2751,8 @@ describe('AppStore compatibility behavior', () => {
 
       await vi.advanceTimersByTimeAsync(1_500);
       await vi.waitFor(() => expect(store.endpoints.response).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(store.endpoints.responseEvents).toHaveBeenCalledTimes(2));
+      expect(store.endpoints.responseEvents).toHaveBeenLastCalledWith('r1', 4, expect.any(AbortSignal));
       expect(store.runEngine.currentSupervisor('s1')).toBeUndefined();
     } finally {
       store.dispose();

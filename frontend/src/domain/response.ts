@@ -254,7 +254,10 @@ function validate(
   if (responseId !== projection.run.responseId)
     throw new ResponseProtocolError(`Response owner mismatch: ${responseId}`, 'owner');
   const epoch = number(event.run_epoch);
-  const adoptingCreatedEpoch = event.type === 'response.created' && projection.run.lastSequence === 0;
+  // Before sequence 1 there is no projected server state to contradict; the
+  // response.created event establishes the authoritative epoch for this run.
+  const adoptingCreatedEpoch =
+    event.type === 'response.created' && projection.run.lastSequence === 0;
   if (!epoch || (!adoptingCreatedEpoch && epoch !== projection.run.epoch))
     throw new ResponseProtocolError(`Response epoch mismatch: ${epoch}`, 'epoch');
   const sequence = number(event.sequence_number);

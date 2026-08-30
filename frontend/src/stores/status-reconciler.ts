@@ -305,6 +305,8 @@ export class StatusReconciler {
           // snapshot whenever the two views disagree. A run admitted after
           // this status request started cannot be disproven by its stale body.
           followUps.push(() => {
+            // Probe the rich terminal snapshot and durable transcript in parallel:
+            // either transport can be the one iOS left permanently wedged.
             void this.host.resumeResponse(session.id, projectedRun.responseId);
             void this.host.reconcileServerIdleResponse(
               session.id,
