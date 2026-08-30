@@ -2,7 +2,7 @@
 
 .sidebar-view-footer {
   flex: 0 0 auto;
-  padding: 0.45rem 0.25rem calc(0.45rem + var(--safe-bottom));
+  padding: 0 0.25rem calc(0.15rem + var(--safe-bottom));
   border-top: 1px solid var(--border);
   background: var(--surface);
 }
@@ -12,51 +12,72 @@
 }
 
 .sidebar-view-switch {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.2rem;
   margin: 0.15rem 0.5rem 0.35rem;
-  padding: 0.2rem;
-  border: 1px solid var(--border);
-  border-radius: 0.55rem;
-  background: var(--surface-2);
+}
+
+.sidebar-view-switch::after {
+  position: absolute;
+  top: -1px;
+  left: calc(25% - 0.875rem);
+  width: 1.75rem;
+  height: 2px;
+  border-radius: 0 0 1px 1px;
+  background: var(--text);
+  pointer-events: none;
+  content: '';
+  transition: left 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.sidebar-view-switch[data-view='projects']::after {
+  left: calc(75% - 0.875rem);
 }
 
 .sidebar-view-switch button {
-  min-height: 2rem;
-  padding: 0.35rem 0.6rem;
+  min-height: 44px;
+  padding: 0 0.6rem;
   border: 0;
-  border-radius: 0.38rem;
+  border-radius: 0.5rem;
   background: transparent;
   color: var(--text-muted);
   font: inherit;
-  font-size: 0.78rem;
-  font-weight: 650;
+  font-size: 0.82rem;
+  font-weight: 550;
   cursor: pointer;
   transition:
     color 0.12s ease,
-    background 0.12s ease,
-    box-shadow 0.12s ease;
+    background 0.12s ease;
 }
 
 .sidebar-view-switch button:hover:not(:disabled) {
+  background: var(--surface-2);
   color: var(--text);
 }
 
 .sidebar-view-switch button:disabled {
   cursor: default;
+}
+
+.sidebar-view-switch button:disabled:not(.active) {
   opacity: 0.55;
 }
 
 .sidebar-view-switch button.active {
-  background: var(--surface);
   color: var(--text);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 10%);
+  font-weight: 650;
 }
 
 .sidebar-view-switch button:focus-visible {
   outline: 2px solid var(--border-strong);
-  outline-offset: 1px;
+  outline-offset: -3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-view-switch::after {
+    transition: none;
+  }
 }
 
 .session-project-context {

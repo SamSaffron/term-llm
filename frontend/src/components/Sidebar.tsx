@@ -686,6 +686,7 @@ function SidebarViewSwitch({ disabled = false }: { disabled?: boolean }) {
   return (
     <div
       class="sidebar-view-switch"
+      data-view={view}
       role="tablist"
       aria-label="Conversation view"
       onKeyDown={onKeyDown}

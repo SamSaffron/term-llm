@@ -2617,6 +2617,10 @@ describe('Preact-owned chat surfaces', () => {
     );
 
     expect(screen.getByRole('tab', { name: 'Recent' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tablist', { name: 'Conversation view' })).toHaveAttribute(
+      'data-view',
+      'recent',
+    );
     expect(
       container
         .querySelector('.sidebar-content')!
@@ -2631,6 +2635,10 @@ describe('Preact-owned chat surfaces', () => {
     expect(container.querySelector('.sidebar-recent-groups')).toHaveTextContent('Chat');
 
     await userEvent.click(screen.getByRole('tab', { name: 'Projects' }));
+    expect(screen.getByRole('tablist', { name: 'Conversation view' })).toHaveAttribute(
+      'data-view',
+      'projects',
+    );
     expect(screen.getByRole('heading', { name: 'Projects' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Chat' })).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: 'Pinned work' })).toHaveLength(1);
