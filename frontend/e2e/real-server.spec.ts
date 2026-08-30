@@ -293,14 +293,19 @@ test('recovers, neutrally dismisses, and resolves a real approval', async ({ pag
   await page.reload();
 
   const title = 'Write Access Request';
-  await expect(page.getByRole('dialog', { name: title })).toBeVisible();
+  const decisionBanner = page.getByRole('button', { name: 'Decision waiting — Open' });
+  const approvalDialog = page.getByRole('dialog', { name: title });
+  await expect(approvalDialog).toBeVisible();
   await page.keyboard.press('Escape');
-  await expect(page.getByText('Decision waiting — Open')).toBeVisible();
-  await page.getByText('Decision waiting — Open').click();
+  await expect(approvalDialog).toBeHidden();
+  await expect(page.locator('.modal-overlay')).toHaveCount(0);
+  await expect(decisionBanner).toBeVisible();
+  await decisionBanner.click();
   await page.getByRole('button', { name: 'Approve' }).click();
-  await expect(page.getByText('Decision waiting — Open')).toBeHidden();
+  await expect(decisionBanner).toBeHidden();
+  await expect(page.locator('.modal-overlay')).toHaveCount(0);
   await page.reload();
-  await expect(page.getByRole('dialog', { name: title })).toBeHidden();
+  await expect(approvalDialog).toBeHidden();
 });
 
 test('a suspended same-context tab resumes through authoritative reconciliation', async ({

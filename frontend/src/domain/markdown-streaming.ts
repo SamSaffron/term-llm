@@ -44,12 +44,47 @@ export function createStreamingState(): StreamingMarkdownState {
   };
 }
 
-export function nextStreamingRenderDelay(contentLength: unknown): number {
+export const ELASTIC_STREAM_FRAME_MS = 32;
+const ELASTIC_STREAM_MIN_CHARS_PER_SECOND = 40;
+const ELASTIC_STREAM_MAX_CHARS_PER_SECOND = 12_000;
+const ELASTIC_STREAM_BACKLOG_GAIN = 4;
+
+export function elasticStreamingFrameDelay(contentLength: unknown): number {
   const length = Math.max(0, Number(contentLength) || 0);
-  if (length > 96_000) return 250;
-  if (length > 32_000) return 150;
-  if (length > 8_000) return 75;
-  return 33;
+  if (length > 64_000) return 200;
+  if (length > 32_000) return 128;
+  if (length > 8_000) return 64;
+  return ELASTIC_STREAM_FRAME_MS;
+}
+
+export interface ElasticStreamingStep {
+  characters: number;
+  remainder: number;
+}
+
+/**
+ * Converts queued source pressure into a bounded presentation rate. Small
+ * queues drain gently; bursts accelerate rather than appearing in one jump.
+ * The fractional remainder keeps the cadence accurate at low rates.
+ */
+export function elasticStreamingStep(
+  backlog: number,
+  elapsedMs: number,
+  remainder = 0,
+): ElasticStreamingStep {
+  const queued = Math.max(0, Math.floor(Number(backlog) || 0));
+  if (!queued) return { characters: 0, remainder: 0 };
+  const elapsed = Math.max(0, Math.min(250, Number(elapsedMs) || 0));
+  const rate = Math.min(
+    ELASTIC_STREAM_MAX_CHARS_PER_SECOND,
+    ELASTIC_STREAM_MIN_CHARS_PER_SECOND + queued * ELASTIC_STREAM_BACKLOG_GAIN,
+  );
+  const budget = Math.max(0, Number(remainder) || 0) + (rate * elapsed) / 1000;
+  const characters = Math.min(queued, Math.max(1, Math.floor(budget)));
+  return {
+    characters,
+    remainder: characters === queued ? 0 : Math.max(0, budget - characters),
+  };
 }
 
 function fenceMarker(line: unknown): Fence | null {
@@ -332,13 +367,28 @@ export function appendedTextIsPlainSafe(text: unknown): boolean {
   return !/[`[\]()!*_~<\\$|#>\r\n]/.test(String(text || ''));
 }
 
+function containsGlobalIndentedCode(value: string): boolean {
+  const lines = value.split('\n');
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = /^(?: {4}|\t)(\S.*)$/.exec(lines[index]);
+    if (!match) continue;
+    if (/^(?:[-+*]|\d+[.)])\s/.test(match[1])) {
+      let previous = index - 1;
+      while (previous >= 0 && !lines[previous].trim()) previous -= 1;
+      if (previous >= 0 && /^\s*(?:[-+*]|\d+[.)])\s/.test(lines[previous])) continue;
+    }
+    return true;
+  }
+  return false;
+}
+
 /** Constructs that can change the interpretation of source committed much
  * earlier are kept on the canonical-render fallback path. */
 export function hasIncrementalGlobalMarkdownSyntax(text: unknown): boolean {
   const value = withoutFencedCode(text);
   return (
     /^ {0,3}\[[^\]\r\n]+\]:\s*\S/m.test(value) ||
-    /^(?: {4}|\t)\S/m.test(value) ||
+    containsGlobalIndentedCode(value) ||
     /^ {0,3}<(?:address|article|aside|base|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:\s|>|\/)/im.test(
       value,
     )

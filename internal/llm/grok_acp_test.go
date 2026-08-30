@@ -1100,9 +1100,6 @@ done
 	}
 
 	provider.RequestInlineFlush()
-	if provider.inlineFlushRequested() {
-		t.Fatal("successful native interrupt retained tool-boundary fallback")
-	}
 
 	done := make(chan error, 1)
 	phases := make(chan string, 8)
@@ -1134,6 +1131,9 @@ done
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("native interrupt did not end Grok ACP stream")
+	}
+	if provider.inlineFlushRequested() {
+		t.Fatal("successful native interrupt retained tool-boundary fallback")
 	}
 	// The interrupt is the expected boundary for a steer, so it must stay quiet.
 	for phase := range phases {

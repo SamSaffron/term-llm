@@ -1478,18 +1478,40 @@ describe('Preact-owned chat surfaces', () => {
       act(() => resize?.([], {} as ResizeObserver));
       expect(viewport.scrollTop).toBe(1_100);
 
-      viewport.scrollTop = 1_095;
+      // Canonical tail reparsing can briefly shrink the document. Chromium clamps
+      // scrollTop, then may restore an older programmatic position after it grows.
+      scrollHeight = 1_390;
+      viewport.scrollTop = 1_090;
       fireEvent.scroll(viewport);
-      scrollHeight = 1_500;
       act(() => resize?.([], {} as ResizeObserver));
-      expect(viewport.scrollTop).toBe(1_095);
+      expect(viewport.scrollTop).toBe(1_090);
 
-      viewport.scrollTop = 1_200;
+      scrollHeight = 1_500;
+      viewport.scrollTop = 1_100;
       fireEvent.scroll(viewport);
-      fireEvent.wheel(viewport, { deltaY: -1 });
-      scrollHeight = 1_600;
       act(() => resize?.([], {} as ResizeObserver));
       expect(viewport.scrollTop).toBe(1_200);
+
+      viewport.scrollTop = 1_195;
+      fireEvent.scroll(viewport);
+      scrollHeight = 1_600;
+      act(() => resize?.([], {} as ResizeObserver));
+      expect(viewport.scrollTop).toBe(1_195);
+
+      // Returning to the old programmatic position via scrollbar or keyboard
+      // must not revive a stale marker and re-pin the reader.
+      viewport.scrollTop = 1_200;
+      fireEvent.scroll(viewport);
+      scrollHeight = 1_700;
+      act(() => resize?.([], {} as ResizeObserver));
+      expect(viewport.scrollTop).toBe(1_200);
+
+      viewport.scrollTop = 1_400;
+      fireEvent.scroll(viewport);
+      fireEvent.wheel(viewport, { deltaY: -1 });
+      scrollHeight = 1_800;
+      act(() => resize?.([], {} as ResizeObserver));
+      expect(viewport.scrollTop).toBe(1_400);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -3834,19 +3856,84 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.queryByRole('button', { name: 'Copy code' })).not.toBeInTheDocument();
   });
 
-  it('throttles streaming markdown updates at the adaptive cadence', async () => {
+  it('drains a streaming burst over multiple presentation frames', async () => {
     vi.useFakeTimers();
     try {
+      const target = `first ${'second '.repeat(20)}`;
       const { container, rerender } = render(<Markdown value="first" streaming />);
-      rerender(<Markdown value="second" streaming />);
+      rerender(<Markdown value={target} streaming />);
       expect(container).toHaveTextContent('first');
       await act(async () => {
         await vi.advanceTimersByTimeAsync(33);
       });
-      expect(container).toHaveTextContent('second');
+      expect(container.textContent).not.toBe(target);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(container).toHaveTextContent(target.trim());
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('flushes the latest source immediately when streaming completes', async () => {
+    vi.useFakeTimers();
+    try {
+      const target = `start ${'queued '.repeat(100)}`;
+      const { container, rerender } = render(<Markdown value="start" streaming />);
+      rerender(<Markdown value={target} streaming />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(33);
+      });
+      expect(container.textContent).not.toBe(target);
+      rerender(<Markdown value={target} />);
+      expect(container).toHaveTextContent(target.trim());
+      await act(async () => {
+        await vi.runAllTimersAsync();
+      });
+      expect(container).toHaveTextContent(target.trim());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does no streaming presentation work while the tab is hidden', async () => {
+    vi.useFakeTimers();
+    const hidden = Object.getOwnPropertyDescriptor(document, 'hidden');
+    try {
+      const { container, rerender } = render(<Markdown value="visible" streaming />);
+      Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+
+      const target = `visible ${'hidden '.repeat(100)}`;
+      rerender(<Markdown value={target} streaming />);
+      await act(async () => {
+        await vi.runAllTimersAsync();
+      });
+      expect(container).toHaveTextContent('visible');
+      expect(container.textContent).not.toBe(target);
+
+      Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+      await act(async () => {
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      expect(container).toHaveTextContent(target.trim());
+    } finally {
+      if (hidden) Object.defineProperty(document, 'hidden', hidden);
+      else Reflect.deleteProperty(document, 'hidden');
+      vi.useRealTimers();
+    }
+  });
+
+  it('rebases finalized assets without rebuilding their DOM', () => {
+    const source = '![artifact](/artifact.png)';
+    const { container, rerender } = render(<Markdown value={source} />);
+    const image = container.querySelector('img');
+    expect(image).not.toBeNull();
+
+    rerender(<Markdown value={source} rebase={(value) => `/chat${value}`} />);
+    expect(container.querySelector('img')).toBe(image);
+    expect(image).toHaveAttribute('src', '/chat/artifact.png');
   });
 
   it('keeps one code node while an open fence grows and commits it once', async () => {
@@ -3863,7 +3950,7 @@ describe('Preact-owned chat surfaces', () => {
       const second = `${first};\nconsole.log(value);`;
       rerender(<Markdown value={second} streaming />);
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(33);
+        await vi.advanceTimersByTimeAsync(1_000);
       });
       expect(container.querySelector('pre')).toBe(pre);
       expect(container.querySelector('pre code')).toBe(code);
@@ -3873,7 +3960,7 @@ describe('Preact-owned chat surfaces', () => {
       const closed = `${second}\n\`\`\`\ntrailing prose`;
       rerender(<Markdown value={closed} streaming />);
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(33);
+        await vi.advanceTimersByTimeAsync(1_000);
       });
       expect(container.querySelector('pre')).toBe(pre);
       expect(container.querySelector('pre code')).toBe(code);
@@ -3881,9 +3968,45 @@ describe('Preact-owned chat surfaces', () => {
       expect(container).toHaveTextContent('trailing prose');
 
       rerender(<Markdown value={closed} />);
+      await act(async () => {
+        await Promise.resolve();
+      });
       expect(container.querySelector('pre')).toBe(pre);
       expect(container.querySelector('pre code')).toBe(code);
+      expect(code).toHaveAttribute('data-highlighted', 'yes');
+      const highlighted = code?.innerHTML;
       expect(screen.getAllByRole('button', { name: 'Copy code' })).toHaveLength(1);
+
+      rerender(<Markdown value={closed} rebase={(value) => value} />);
+      expect(container.querySelector('pre')).toBe(pre);
+      expect(container.querySelector('pre code')).toBe(code);
+      expect(code?.innerHTML).toBe(highlighted);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps committed code immutable when a nested list arrives later', async () => {
+    vi.useFakeTimers();
+    try {
+      const codeSource = '```js\nconst stable = true;\n```\n\n';
+      const { container, rerender } = render(<Markdown value={codeSource} streaming />);
+      const pre = container.querySelector('pre');
+      const code = container.querySelector('pre code');
+      expect(pre).not.toBeNull();
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(code).toHaveAttribute('data-highlighted', 'yes');
+
+      rerender(<Markdown value={`${codeSource}- outer\n    - deeply nested\n`} streaming />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      expect(container.querySelector('pre')).toBe(pre);
+      expect(container.querySelector('pre code')).toBe(code);
+      expect(code).toHaveAttribute('data-highlighted', 'yes');
+      expect(container.querySelector('.streaming-markdown')).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
@@ -3961,7 +4084,7 @@ describe('Preact-owned chat surfaces', () => {
       const text = tail?.firstChild;
       rerender(<Markdown value="first second" streaming />);
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(33);
+        await vi.advanceTimersByTimeAsync(500);
       });
       expect(container.querySelector('.streaming-tail')?.firstChild).toBe(text);
       expect(text).toHaveTextContent('first second');

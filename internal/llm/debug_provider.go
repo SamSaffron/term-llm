@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 // debugPreset defines streaming rate configuration.
@@ -26,6 +27,21 @@ var presets = map[string]debugPreset{
 	"realtime":   {ChunkSize: 5, Delay: 30 * time.Millisecond},
 	"burst":      {ChunkSize: 200, Delay: 100 * time.Millisecond},
 	"compaction": {ChunkSize: 12, Delay: 80 * time.Millisecond},
+}
+
+// jitterPattern deliberately alternates dribbles, bursts, and stalls. It is
+// deterministic so browser demos and performance investigations are repeatable.
+var jitterPattern = []debugPreset{
+	{ChunkSize: 9, Delay: 45 * time.Millisecond},
+	{ChunkSize: 14, Delay: 30 * time.Millisecond},
+	{ChunkSize: 180, Delay: 8 * time.Millisecond},
+	{ChunkSize: 260, Delay: 12 * time.Millisecond},
+	{ChunkSize: 5, Delay: 620 * time.Millisecond},
+	{ChunkSize: 72, Delay: 25 * time.Millisecond},
+	{ChunkSize: 7, Delay: 190 * time.Millisecond},
+	{ChunkSize: 320, Delay: 6 * time.Millisecond},
+	{ChunkSize: 28, Delay: 85 * time.Millisecond},
+	{ChunkSize: 3, Delay: 430 * time.Millisecond},
 }
 
 // debugMarkdown contains rich markdown content for performance testing.
@@ -172,10 +188,11 @@ Final section with mixed content:
 type DebugProvider struct {
 	variant string
 	preset  debugPreset
+	pattern []debugPreset
 }
 
 // NewDebugProvider creates a debug provider with the specified variant.
-// Valid variants: fast, normal, slow, realtime, burst, compaction.
+// Valid variants: fast, normal, slow, realtime, burst, jitter, compaction.
 // Empty string defaults to "normal".
 func NewDebugProvider(variant string) *DebugProvider {
 	if variant == "" {
@@ -185,10 +202,16 @@ func NewDebugProvider(variant string) *DebugProvider {
 	if !ok {
 		preset = presets["normal"]
 	}
-	return &DebugProvider{
+	provider := &DebugProvider{
 		variant: variant,
 		preset:  preset,
 	}
+	if variant == "jitter" {
+		// Rich Markdown uses the erratic pattern; fixed helper responses retain
+		// the normal preset so tool and compaction probes stay predictable.
+		provider.pattern = append([]debugPreset(nil), jitterPattern...)
+	}
+	return provider
 }
 
 // Name returns the provider name with variant.
@@ -388,16 +411,14 @@ func (d *DebugProvider) streamTextWithUsage(ctx context.Context, send eventSende
 // streamDebugMarkdown streams the standard debug markdown content.
 func (d *DebugProvider) streamDebugMarkdown(ctx context.Context, send eventSender) error {
 	text := debugMarkdown
-	chunkSize := d.preset.ChunkSize
-	delay := d.preset.Delay
+	steps := []debugPreset{d.preset}
+	if len(d.pattern) > 0 {
+		steps = d.pattern
+	}
 
-	for len(text) > 0 {
-		// Calculate chunk boundary
-		end := chunkSize
-		if end > len(text) {
-			end = len(text)
-		}
-
+	for index := 0; len(text) > 0; index++ {
+		step := steps[index%len(steps)]
+		end := debugChunkEnd(text, step.ChunkSize)
 		chunk := text[:end]
 		text = text[end:]
 
@@ -405,20 +426,34 @@ func (d *DebugProvider) streamDebugMarkdown(ctx context.Context, send eventSende
 			return err
 		}
 
-		if delay > 0 && len(text) > 0 {
+		if step.Delay > 0 && len(text) > 0 {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(delay):
+			case <-time.After(step.Delay):
 			}
 		}
 	}
 
-	// Emit usage stats
 	return send.Send(Event{Type: EventUsage, Use: &Usage{
 		InputTokens:  10,
-		OutputTokens: len(debugMarkdown) / 4, // Approximate tokens
+		OutputTokens: len(debugMarkdown) / 4,
 	}})
+}
+
+func debugChunkEnd(text string, size int) int {
+	if size <= 0 || size >= len(text) {
+		return len(text)
+	}
+	end := size
+	for end > 0 && !utf8.RuneStart(text[end]) {
+		end--
+	}
+	if end == 0 {
+		_, width := utf8.DecodeRuneInString(text)
+		return width
+	}
+	return end
 }
 
 // streamCompletionText streams a simple completion message after tool execution.

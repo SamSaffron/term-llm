@@ -3,6 +3,8 @@ import { highlight, highlightDiffLine } from './rich-highlight';
 import { decorateRichContent, renderMarkdown, stableMarkdownBoundary } from './markdown';
 import {
   analyzeStreamingMarkdown,
+  elasticStreamingFrameDelay,
+  elasticStreamingStep,
   findActiveFencedCodeBlock,
   hasIncrementalGlobalMarkdownSyntax,
   inspectFencedCodeBlock,
@@ -113,6 +115,34 @@ describe('markdown security and streaming', () => {
     expect(highlight.getLanguage('toml')).toBeTruthy();
   });
 
+  it('drains streaming bursts elastically while preserving fractional cadence', () => {
+    const shallow = elasticStreamingStep(10, 32);
+    const deep = elasticStreamingStep(1_000, 32);
+    expect(shallow.characters).toBeGreaterThanOrEqual(1);
+    expect(deep.characters).toBeGreaterThan(shallow.characters);
+    expect(deep.characters).toBeLessThan(1_000);
+
+    const first = elasticStreamingStep(100, 10);
+    const second = elasticStreamingStep(100 - first.characters, 10, first.remainder);
+    expect(first.remainder).toBeGreaterThan(0);
+    expect(second.characters).toBeGreaterThanOrEqual(first.characters);
+    expect(elasticStreamingStep(0, 32, second.remainder)).toEqual({ characters: 0, remainder: 0 });
+  });
+
+  it('backs off presentation frames as rendered Markdown grows', () => {
+    expect(elasticStreamingFrameDelay(8_000)).toBe(32);
+    expect(elasticStreamingFrameDelay(8_001)).toBe(64);
+    expect(elasticStreamingFrameDelay(32_001)).toBe(128);
+    expect(elasticStreamingFrameDelay(64_001)).toBe(200);
+  });
+
+  it('bounds elastic catch-up after a suspended frame', () => {
+    const ordinary = elasticStreamingStep(10_000, 250);
+    const suspended = elasticStreamingStep(10_000, 30_000);
+    expect(suspended).toEqual(ordinary);
+    expect(suspended.characters).toBeLessThan(10_000);
+  });
+
   it('does not expose an unterminated fenced tail as stable markdown', () => {
     const input = 'paragraph\n\n```ts\nconst x = 1';
     expect(stableMarkdownBoundary(input)).toBe('paragraph\n\n'.length);
@@ -150,6 +180,9 @@ describe('markdown security and streaming', () => {
   it('latches globally sensitive markdown onto the canonical fallback path', () => {
     expect(hasIncrementalGlobalMarkdownSyntax('[name]: https://example.com')).toBe(true);
     expect(hasIncrementalGlobalMarkdownSyntax('    indented code')).toBe(true);
+    expect(hasIncrementalGlobalMarkdownSyntax('    - name: build\n      run: make')).toBe(true);
+    expect(hasIncrementalGlobalMarkdownSyntax('  - nested\n    - deeply nested')).toBe(false);
+    expect(hasIncrementalGlobalMarkdownSyntax('   1. nested\n      1. deeper')).toBe(false);
     expect(hasIncrementalGlobalMarkdownSyntax('```md\n[name]: still code\n```')).toBe(false);
   });
 });
