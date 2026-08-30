@@ -4,8 +4,8 @@ import {
   analyzeStreamingMarkdown,
   canStreamPlainTextTailIncremental,
   createStreamingState,
+  elasticStreamingFrameDelay,
   elasticStreamingStep,
-  ELASTIC_STREAM_FRAME_MS,
   findNextFencedCodeBlock,
   hasIncrementalGlobalMarkdownSyntax,
   inspectFencedCodeBlock,
@@ -50,11 +50,15 @@ function addCodeCopyButtons(root: HTMLElement): void {
 
 function safePrefixEnd(value: string, requested: number): number {
   let end = Math.max(0, Math.min(value.length, requested));
+  const previous = value.charCodeAt(end - 1);
+  const next = value.charCodeAt(end);
   if (
     end > 0 &&
     end < value.length &&
-    /[\uD800-\uDBFF]/.test(value[end - 1]) &&
-    /[\uDC00-\uDFFF]/.test(value[end])
+    previous >= 0xd800 &&
+    previous <= 0xdbff &&
+    next >= 0xdc00 &&
+    next <= 0xdfff
   )
     end += 1;
   return end;
@@ -64,6 +68,7 @@ function useAdaptiveStreamingValue(value: string, streaming: boolean): string {
   const [rendered, setRendered] = useState(value);
   const renderedRef = useRef(value);
   const latest = useRef(value);
+  latest.current = value;
   const timer = useRef<number | null>(null);
   const lastTick = useRef(performance.now());
   const remainder = useRef(0);
@@ -82,7 +87,11 @@ function useAdaptiveStreamingValue(value: string, streaming: boolean): string {
       timer.current = null;
       const target = latest.current;
       const current = renderedRef.current;
-      if (target === current) return;
+      if (target === current) {
+        remainder.current = 0;
+        lastTick.current = performance.now();
+        return;
+      }
       if (!target.startsWith(current)) {
         remainder.current = 0;
         lastTick.current = performance.now();
@@ -101,7 +110,7 @@ function useAdaptiveStreamingValue(value: string, streaming: boolean): string {
       const end = safePrefixEnd(target, current.length + step.characters);
       publish(target.slice(0, end));
       if (end < target.length) schedule();
-    }, ELASTIC_STREAM_FRAME_MS);
+    }, elasticStreamingFrameDelay(latest.current.length));
   }, [publish]);
 
   useEffect(() => {
@@ -122,6 +131,18 @@ function useAdaptiveStreamingValue(value: string, streaming: boolean): string {
     }
     if (value !== renderedRef.current) schedule();
   }, [value, streaming, cancel, publish, schedule]);
+  useEffect(() => {
+    if (!streaming) return;
+    const flushHidden = () => {
+      if (!document.hidden) return;
+      cancel();
+      remainder.current = 0;
+      lastTick.current = performance.now();
+      if (renderedRef.current !== latest.current) publish(latest.current);
+    };
+    document.addEventListener('visibilitychange', flushHidden);
+    return () => document.removeEventListener('visibilitychange', flushHidden);
+  }, [streaming, cancel, publish]);
   useEffect(() => () => cancel(), [cancel]);
   return streaming ? rendered : value;
 }

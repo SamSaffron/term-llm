@@ -3,6 +3,7 @@ import { highlight, highlightDiffLine } from './rich-highlight';
 import { decorateRichContent, renderMarkdown, stableMarkdownBoundary } from './markdown';
 import {
   analyzeStreamingMarkdown,
+  elasticStreamingFrameDelay,
   elasticStreamingStep,
   findActiveFencedCodeBlock,
   hasIncrementalGlobalMarkdownSyntax,
@@ -121,9 +122,18 @@ describe('markdown security and streaming', () => {
     expect(deep.characters).toBeGreaterThan(shallow.characters);
     expect(deep.characters).toBeLessThan(1_000);
 
-    const first = elasticStreamingStep(1, 1);
-    expect(first).toEqual({ characters: 1, remainder: 0 });
-    expect(elasticStreamingStep(0, 32, first.remainder)).toEqual({ characters: 0, remainder: 0 });
+    const first = elasticStreamingStep(100, 10);
+    const second = elasticStreamingStep(100 - first.characters, 10, first.remainder);
+    expect(first.remainder).toBeGreaterThan(0);
+    expect(second.characters).toBeGreaterThanOrEqual(first.characters);
+    expect(elasticStreamingStep(0, 32, second.remainder)).toEqual({ characters: 0, remainder: 0 });
+  });
+
+  it('backs off presentation frames as rendered Markdown grows', () => {
+    expect(elasticStreamingFrameDelay(8_000)).toBe(32);
+    expect(elasticStreamingFrameDelay(8_001)).toBe(64);
+    expect(elasticStreamingFrameDelay(32_001)).toBe(128);
+    expect(elasticStreamingFrameDelay(64_001)).toBe(200);
   });
 
   it('bounds elastic catch-up after a suspended frame', () => {

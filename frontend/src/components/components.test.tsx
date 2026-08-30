@@ -3854,6 +3854,27 @@ describe('Preact-owned chat surfaces', () => {
     }
   });
 
+  it('flushes the latest source immediately when streaming completes', async () => {
+    vi.useFakeTimers();
+    try {
+      const target = `start ${'queued '.repeat(100)}`;
+      const { container, rerender } = render(<Markdown value="start" streaming />);
+      rerender(<Markdown value={target} streaming />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(33);
+      });
+      expect(container.textContent).not.toBe(target);
+      rerender(<Markdown value={target} />);
+      expect(container).toHaveTextContent(target.trim());
+      await act(async () => {
+        await vi.runAllTimersAsync();
+      });
+      expect(container).toHaveTextContent(target.trim());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps one code node while an open fence grows and commits it once', async () => {
     vi.useFakeTimers();
     try {

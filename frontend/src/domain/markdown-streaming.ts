@@ -46,8 +46,16 @@ export function createStreamingState(): StreamingMarkdownState {
 
 export const ELASTIC_STREAM_FRAME_MS = 32;
 const ELASTIC_STREAM_MIN_CHARS_PER_SECOND = 40;
-const ELASTIC_STREAM_MAX_CHARS_PER_SECOND = 720;
-const ELASTIC_STREAM_BACKLOG_GAIN = 1.8;
+const ELASTIC_STREAM_MAX_CHARS_PER_SECOND = 12_000;
+const ELASTIC_STREAM_BACKLOG_GAIN = 4;
+
+export function elasticStreamingFrameDelay(contentLength: unknown): number {
+  const length = Math.max(0, Number(contentLength) || 0);
+  if (length > 64_000) return 200;
+  if (length > 32_000) return 128;
+  if (length > 8_000) return 64;
+  return ELASTIC_STREAM_FRAME_MS;
+}
 
 export interface ElasticStreamingStep {
   characters: number;
