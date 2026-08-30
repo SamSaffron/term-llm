@@ -3875,6 +3875,34 @@ describe('Preact-owned chat surfaces', () => {
     }
   });
 
+  it('does no streaming presentation work while the tab is hidden', async () => {
+    vi.useFakeTimers();
+    const hidden = Object.getOwnPropertyDescriptor(document, 'hidden');
+    try {
+      const { container, rerender } = render(<Markdown value="visible" streaming />);
+      Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+
+      const target = `visible ${'hidden '.repeat(100)}`;
+      rerender(<Markdown value={target} streaming />);
+      await act(async () => {
+        await vi.runAllTimersAsync();
+      });
+      expect(container).toHaveTextContent('visible');
+      expect(container.textContent).not.toBe(target);
+
+      Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+      await act(async () => {
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      expect(container).toHaveTextContent(target.trim());
+    } finally {
+      if (hidden) Object.defineProperty(document, 'hidden', hidden);
+      else Reflect.deleteProperty(document, 'hidden');
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps one code node while an open fence grows and commits it once', async () => {
     vi.useFakeTimers();
     try {

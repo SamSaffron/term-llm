@@ -122,6 +122,10 @@ function useAdaptiveStreamingValue(value: string, streaming: boolean): string {
       if (renderedRef.current !== value) publish(value);
       return;
     }
+    if (document.hidden) {
+      cancel();
+      return;
+    }
     if (!value.startsWith(renderedRef.current)) {
       cancel();
       remainder.current = 0;
@@ -133,15 +137,14 @@ function useAdaptiveStreamingValue(value: string, streaming: boolean): string {
   }, [value, streaming, cancel, publish, schedule]);
   useEffect(() => {
     if (!streaming) return;
-    const flushHidden = () => {
-      if (!document.hidden) return;
+    const flushVisibilityTransition = () => {
       cancel();
       remainder.current = 0;
       lastTick.current = performance.now();
       if (renderedRef.current !== latest.current) publish(latest.current);
     };
-    document.addEventListener('visibilitychange', flushHidden);
-    return () => document.removeEventListener('visibilitychange', flushHidden);
+    document.addEventListener('visibilitychange', flushVisibilityTransition);
+    return () => document.removeEventListener('visibilitychange', flushVisibilityTransition);
   }, [streaming, cancel, publish]);
   useEffect(() => () => cancel(), [cancel]);
   return streaming ? rendered : value;
