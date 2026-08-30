@@ -403,6 +403,37 @@ func TestListKeepsDetachedBranchEmpty(t *testing.T) {
 	}
 }
 
+func TestListComparesDetachedWorktreeWithMainCheckout(t *testing.T) {
+	repo := newGitRepoForWorktreeTest(t)
+	wt, err := Create(context.Background(), repo, CreateOptions{Name: "main-divergence"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	cleanupWorktreeTest(t, wt.Dir)
+
+	if err := os.WriteFile(filepath.Join(wt.Dir, "worktree.txt"), []byte("worktree\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitForWorktreeTest(t, wt.Dir, "add", "worktree.txt")
+	runGitForWorktreeTest(t, wt.Dir, "commit", "-q", "-m", "worktree commit")
+	if err := os.WriteFile(filepath.Join(repo, "main.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitForWorktreeTest(t, repo, "add", "main.txt")
+	runGitForWorktreeTest(t, repo, "commit", "-q", "-m", "main commit")
+
+	items, err := List(repo)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("List returned %d worktrees, want 1: %+v", len(items), items)
+	}
+	if !items[0].MainDivergenceAvailable || items[0].MainAhead != 1 || items[0].MainBehind != 1 {
+		t.Fatalf("main divergence = available:%t ahead:%d behind:%d, want true/1/1", items[0].MainDivergenceAvailable, items[0].MainAhead, items[0].MainBehind)
+	}
+}
+
 func TestMetadataByDirUsesCanonicalPathKeys(t *testing.T) {
 	root := t.TempDir()
 	realDir := filepath.Join(t.TempDir(), "real")

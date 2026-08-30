@@ -46,22 +46,29 @@ type worktreePromoteRequest struct {
 }
 
 type worktreeRow struct {
-	Name              string                  `json:"name"`
-	Dir               string                  `json:"dir"`
-	RepoRoot          string                  `json:"repo_root,omitempty"`
-	Branch            string                  `json:"branch,omitempty"`
-	Detached          bool                    `json:"detached"`
-	Base              string                  `json:"base,omitempty"`
-	HeadSHA           string                  `json:"head_sha,omitempty"`
-	Upstream          string                  `json:"upstream,omitempty"`
-	UpstreamAvailable bool                    `json:"upstream_available"`
-	Ahead             int                     `json:"ahead"`
-	Behind            int                     `json:"behind"`
-	Diverged          bool                    `json:"diverged"`
-	MetadataError     string                  `json:"metadata_error,omitempty"`
-	DirtyFiles        int                     `json:"dirty_files"`
-	Root              bool                    `json:"root,omitempty"`
-	InUse             []worktree.InUseSession `json:"in_use,omitempty"`
+	Name                    string                  `json:"name"`
+	Dir                     string                  `json:"dir"`
+	RepoRoot                string                  `json:"repo_root,omitempty"`
+	Branch                  string                  `json:"branch,omitempty"`
+	Detached                bool                    `json:"detached"`
+	Base                    string                  `json:"base,omitempty"`
+	HeadSHA                 string                  `json:"head_sha,omitempty"`
+	Upstream                string                  `json:"upstream,omitempty"`
+	UpstreamAvailable       bool                    `json:"upstream_available"`
+	Ahead                   int                     `json:"ahead"`
+	Behind                  int                     `json:"behind"`
+	Diverged                bool                    `json:"diverged"`
+	MainBranch              string                  `json:"main_branch,omitempty"`
+	MainAhead               int                     `json:"main_ahead"`
+	MainBehind              int                     `json:"main_behind"`
+	MainDivergenceAvailable bool                    `json:"main_divergence_available"`
+	MetadataError           string                  `json:"metadata_error,omitempty"`
+	DirtyFiles              int                     `json:"dirty_files"`
+	Status                  worktree.Status         `json:"status,omitempty"`
+	CreatedAt               time.Time               `json:"created_at,omitempty"`
+	LastBoundAt             time.Time               `json:"last_bound_at,omitempty"`
+	Root                    bool                    `json:"root,omitempty"`
+	InUse                   []worktree.InUseSession `json:"in_use,omitempty"`
 }
 
 type serveWorktreeRootContextKey struct{}
@@ -205,7 +212,7 @@ func (s *serveServer) handleWorktreeList(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	rootCheckout, rootDetailErr := worktree.DescribeCheckout(root)
-	rootRow := worktreeRow{Name: "root", Dir: root, RepoRoot: root, Root: true}
+	rootRow := worktreeRow{Name: "root", Dir: root, RepoRoot: root, Root: true, Status: worktree.StatusReady}
 	if rootDetailErr != nil {
 		rootRow.MetadataError = "HEAD metadata unavailable"
 	} else {
@@ -235,8 +242,10 @@ func (s *serveServer) handleWorktreeList(w http.ResponseWriter, r *http.Request)
 		rows = append(rows, worktreeRow{
 			Name: wt.Name, Dir: wt.Dir, RepoRoot: wt.RepoRoot, Branch: wt.Branch, Detached: wt.Detached,
 			Base: wt.Base, HeadSHA: wt.HeadSHA, Upstream: wt.Upstream, UpstreamAvailable: wt.UpstreamAvailable,
-			Ahead: wt.Ahead, Behind: wt.Behind, Diverged: wt.Diverged, MetadataError: wt.MetadataError,
-			DirtyFiles: wt.DirtyFiles, InUse: inUseByDir[wt.Dir],
+			Ahead: wt.Ahead, Behind: wt.Behind, Diverged: wt.Diverged, MainBranch: rootRow.Branch,
+			MainAhead: wt.MainAhead, MainBehind: wt.MainBehind, MainDivergenceAvailable: wt.MainDivergenceAvailable,
+			MetadataError: wt.MetadataError, DirtyFiles: wt.DirtyFiles, Status: wt.Status,
+			CreatedAt: wt.CreatedAt, LastBoundAt: wt.LastBoundAt, InUse: inUseByDir[wt.Dir],
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"worktrees": rows})
@@ -277,7 +286,10 @@ func (s *serveServer) handleWorktreeCreate(w http.ResponseWriter, r *http.Reques
 		writeOpenAIError(w, status, "server_error", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"worktree": worktreeRow{Name: wt.Name, Dir: wt.Dir, RepoRoot: wt.RepoRoot, Branch: wt.Branch, Detached: wt.Detached, Base: wt.Base, HeadSHA: wt.HeadSHA, DirtyFiles: wt.DirtyFiles}})
+	writeJSON(w, http.StatusOK, map[string]any{"worktree": worktreeRow{
+		Name: wt.Name, Dir: wt.Dir, RepoRoot: wt.RepoRoot, Branch: wt.Branch, Detached: wt.Detached,
+		Base: wt.Base, HeadSHA: wt.HeadSHA, DirtyFiles: wt.DirtyFiles, Status: wt.Status, CreatedAt: wt.CreatedAt,
+	}})
 }
 
 func (s *serveServer) handleWorktreeSwitch(w http.ResponseWriter, r *http.Request) {

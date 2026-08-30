@@ -194,8 +194,9 @@ func TestServeWorktreeListBatchesSessionUsage(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = worktree.Remove(context.Background(), wt2.Dir, worktree.RemoveOptions{Force: true}) })
 
+	updatedAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
 	store := &countingWorktreeListStore{summaries: []session.SessionSummary{
-		{ID: "sess-one", Number: 11, Name: "one", WorktreeDir: wt1.Dir, Status: session.StatusActive},
+		{ID: "sess-one", Number: 11, GeneratedShortTitle: "Investigate cache invalidation", WorktreeDir: wt1.Dir, Status: session.StatusActive, UpdatedAt: updatedAt},
 		{ID: "sess-two", Number: 12, Name: "two", WorktreeDir: wt2.Dir, Status: session.StatusActive},
 		{ID: "sess-complete", Number: 13, Name: "complete", WorktreeDir: wt2.Dir, Status: session.StatusComplete},
 	}}
@@ -222,7 +223,7 @@ func TestServeWorktreeListBatchesSessionUsage(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode list response: %v", err)
 	}
-	assertInUse := func(dir, id string) {
+	assertInUse := func(dir, id, title string) {
 		t.Helper()
 		for _, row := range resp.Worktrees {
 			if !sameServePath(row.Dir, dir) {
@@ -231,12 +232,15 @@ func TestServeWorktreeListBatchesSessionUsage(t *testing.T) {
 			if len(row.InUse) != 1 || row.InUse[0].ID != id {
 				t.Fatalf("worktree %s in_use = %+v, want %s", dir, row.InUse, id)
 			}
+			if row.InUse[0].Title != title {
+				t.Fatalf("worktree %s title = %q, want %q", dir, row.InUse[0].Title, title)
+			}
 			return
 		}
 		t.Fatalf("worktree %s missing from response: %+v", dir, resp.Worktrees)
 	}
-	assertInUse(wt1.Dir, "sess-one")
-	assertInUse(wt2.Dir, "sess-two")
+	assertInUse(wt1.Dir, "sess-one", "Investigate cache invalidation")
+	assertInUse(wt2.Dir, "sess-two", "two")
 }
 
 func TestServeWorktreeMergeCleanupSemantics(t *testing.T) {

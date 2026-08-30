@@ -26,9 +26,26 @@ const usageNames = (entries: unknown[]): string[] =>
     .map((entry) => {
       if (!entry || typeof entry !== 'object') return '';
       const value = entry as Record<string, unknown>;
-      return String(value.name || (value.number ? `#${value.number}` : value.id || ''));
+      return String(
+        value.title || value.name || (value.number ? `#${value.number}` : value.id || ''),
+      );
     })
     .filter(Boolean);
+
+const timestamp = (value: unknown): number => {
+  if (!value) return 0;
+  const parsed = new Date(String(value)).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const relativeActivity = (value: number): string => {
+  const difference = Math.max(0, Date.now() - value);
+  if (difference < 45_000) return 'just now';
+  if (difference < 3_600_000) return `${Math.max(1, Math.floor(difference / 60_000))}m ago`;
+  if (difference < 86_400_000) return `${Math.max(1, Math.floor(difference / 3_600_000))}h ago`;
+  if (difference < 604_800_000) return `${Math.max(1, Math.floor(difference / 86_400_000))}d ago`;
+  return new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+};
 
 function recoveryOffer(error: unknown): WorktreeRecoveryOffer | null {
   if (!(error instanceof APIError) || error.status !== 409 || !error.body) return null;
@@ -66,32 +83,28 @@ function errorDetails(error: unknown): { message: string; inUse: string[] } {
   return { message, inUse };
 }
 
-function WorktreeBadges({ row, current }: { row: WorktreeRow; current: boolean }) {
+function WorktreeBadges({
+  row,
+  current,
+  details = false,
+}: {
+  row: WorktreeRow;
+  current: boolean;
+  details?: boolean;
+}) {
   const dirty = Number(row.dirty_files || 0);
   const inUse = Array.isArray(row.in_use) ? row.in_use : [];
   const inUseNames = usageNames(inUse);
   return (
     <span class="worktree-badges">
       {current && <span class="worktree-badge current">Current</span>}
-      {dirty > 0 && (
+      {details && dirty > 0 && (
         <span
           class="worktree-badge dirty"
           aria-label={`${dirty} changed ${dirty === 1 ? 'file' : 'files'}`}
         >
-          ±{dirty}
+          {dirty} changed
         </span>
-      )}
-      {row.diverged === true ? (
-        <span class="worktree-badge diverged">Diverged</span>
-      ) : (
-        <>
-          {Number(row.ahead || 0) > 0 && (
-            <span class="worktree-badge ahead">Ahead {Number(row.ahead)}</span>
-          )}
-          {Number(row.behind || 0) > 0 && (
-            <span class="worktree-badge behind">Behind {Number(row.behind)}</span>
-          )}
-        </>
       )}
       {inUse.length > 0 && (
         <span
@@ -99,7 +112,7 @@ function WorktreeBadges({ row, current }: { row: WorktreeRow; current: boolean }
           title={inUseNames.length ? `Used by ${inUseNames.join(', ')}` : undefined}
           aria-label={`In use by ${inUse.length} ${inUse.length === 1 ? 'conversation' : 'conversations'}`}
         >
-          In use · {inUse.length}
+          In use{inUse.length > 1 ? ` · ${inUse.length}` : ''}
         </span>
       )}
     </span>
@@ -127,10 +140,30 @@ function WorktreeOption({
 }) {
   const root = isRoot(row);
   const dir = rowDir(row);
-  const branch = String(
-    row.branch || (row.detached ? `detached@${String(row.head_sha || '').slice(0, 8)}` : ''),
-  );
-  const disabled = !draft && (current || Boolean(actionDisabled));
+  const inUse = Array.isArray(row.in_use) ? row.in_use : [];
+  const conversations = usageNames(inUse);
+  const latestConversationActivity = inUse.reduce((latest, entry) => {
+    if (!entry || typeof entry !== 'object') return latest;
+    return Math.max(latest, timestamp((entry as Record<string, unknown>).updated_at));
+  }, 0);
+  const lastBound = timestamp(row.last_bound_at);
+  const created = timestamp(row.created_at);
+  const activity = latestConversationActivity || lastBound || created;
+  const activityLabel = activity
+    ? `${latestConversationActivity ? 'Active' : lastBound ? 'Last used' : 'Created'} ${relativeActivity(activity)}`
+    : '';
+  const dirty = Number(row.dirty_files || 0);
+  const mainAhead = Number(row.main_ahead || 0);
+  const mainBehind = Number(row.main_behind || 0);
+  const mainLabel = String(row.main_branch || 'main checkout');
+  const state: string[] = [dirty ? `${dirty} changed ${dirty === 1 ? 'file' : 'files'}` : 'Clean'];
+  if (!root && row.main_divergence_available === true) {
+    if (mainBehind)
+      state.push(`${mainBehind} ${mainBehind === 1 ? 'commit' : 'commits'} behind ${mainLabel}`);
+    if (mainAhead) state.push(`${mainAhead} ahead`);
+    if (!mainAhead && !mainBehind) state.push(`Up to date with ${mainLabel}`);
+  }
+  const disabled = !draft && root && (current || Boolean(actionDisabled));
   const move = (event: preact.JSX.TargetedKeyboardEvent<HTMLButtonElement>) => {
     if (!draft || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
     const options = [
@@ -165,7 +198,7 @@ function WorktreeOption({
             ? current
               ? 'This conversation already uses this checkout.'
               : 'Finish the current response before switching worktrees.'
-            : undefined
+            : dir || undefined
         }
       >
         <span class="worktree-option-icon" aria-hidden="true">
@@ -176,25 +209,20 @@ function WorktreeOption({
             <strong class="worktree-option-name">{root ? 'root checkout' : rowName(row)}</strong>
             <WorktreeBadges row={row} current={current} />
           </span>
-          {(branch || row.head_sha) && (
-            <span class="worktree-option-ref">
-              {branch || String(row.head_sha || '').slice(0, 8)}
-              {row.head_sha && branch ? ` · ${String(row.head_sha).slice(0, 8)}` : ''}
-              {' · '}
-              {row.metadata_error
-                ? 'Metadata unavailable'
-                : row.upstream_available
-                  ? `Tracks ${String(row.upstream)}`
-                  : row.detached
-                    ? 'Detached HEAD'
-                    : 'No upstream'}
+          {conversations.length > 0 && (
+            <span class="worktree-option-conversation" title={conversations.join(', ')}>
+              {conversations.length === 1
+                ? conversations[0]
+                : `${conversations[0]} + ${conversations.length - 1} more`}
             </span>
           )}
-          {dir && (
-            <code class="worktree-option-path" title={dir}>
-              {dir}
-            </code>
-          )}
+          <span
+            class="worktree-option-summary"
+            aria-label={dirty ? `${dirty} changed ${dirty === 1 ? 'file' : 'files'}` : undefined}
+          >
+            {state.join(' · ')}
+            {activityLabel ? ` · ${activityLabel}` : ''}
+          </span>
         </span>
       </button>
       {onDetails && (
@@ -364,7 +392,7 @@ export function Worktrees() {
                   {selected.head_sha ? ` · ${String(selected.head_sha).slice(0, 8)}` : ''}
                 </span>
               </div>
-              <WorktreeBadges row={selected} current={dir === activeDir} />
+              <WorktreeBadges row={selected} current={dir === activeDir} details />
             </div>
             <code class="worktree-detail-path" title={dir}>
               {dir}

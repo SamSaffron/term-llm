@@ -253,15 +253,23 @@
   color: var(--accent-amber);
 }
 
-.worktree-option-ref {
+.worktree-option-conversation,
+.worktree-option-summary {
   overflow: hidden;
-  color: var(--text-muted);
   font-size: 0.7rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.worktree-option-path,
+.worktree-option-conversation {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.worktree-option-summary {
+  color: var(--text-muted);
+}
+
 .worktree-detail-path {
   min-width: 0;
   overflow: hidden;

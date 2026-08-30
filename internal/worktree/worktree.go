@@ -39,24 +39,27 @@ const (
 
 // Worktree describes a managed git worktree.
 type Worktree struct {
-	Name              string    `json:"name"`
-	Dir               string    `json:"dir"`
-	RepoRoot          string    `json:"repo_root,omitempty"`
-	Branch            string    `json:"branch,omitempty"`
-	Base              string    `json:"base"` // full base SHA
-	Detached          bool      `json:"detached"`
-	Status            Status    `json:"status"`
-	DirtyFiles        int       `json:"dirty_files"`
-	HeadSHA           string    `json:"head_sha"`
-	Upstream          string    `json:"upstream,omitempty"`
-	UpstreamAvailable bool      `json:"upstream_available"`
-	Ahead             int       `json:"ahead"`
-	Behind            int       `json:"behind"`
-	Diverged          bool      `json:"diverged"`
-	MetadataError     string    `json:"metadata_error,omitempty"`
-	CreatedAt         time.Time `json:"created_at,omitempty"`
-	LastBoundAt       time.Time `json:"last_bound_at,omitempty"`
-	Orphaned          bool      `json:"orphaned,omitempty"`
+	Name                    string    `json:"name"`
+	Dir                     string    `json:"dir"`
+	RepoRoot                string    `json:"repo_root,omitempty"`
+	Branch                  string    `json:"branch,omitempty"`
+	Base                    string    `json:"base"` // full base SHA
+	Detached                bool      `json:"detached"`
+	Status                  Status    `json:"status"`
+	DirtyFiles              int       `json:"dirty_files"`
+	HeadSHA                 string    `json:"head_sha"`
+	Upstream                string    `json:"upstream,omitempty"`
+	UpstreamAvailable       bool      `json:"upstream_available"`
+	Ahead                   int       `json:"ahead"`
+	Behind                  int       `json:"behind"`
+	Diverged                bool      `json:"diverged"`
+	MainAhead               int       `json:"main_ahead"`
+	MainBehind              int       `json:"main_behind"`
+	MainDivergenceAvailable bool      `json:"main_divergence_available"`
+	MetadataError           string    `json:"metadata_error,omitempty"`
+	CreatedAt               time.Time `json:"created_at,omitempty"`
+	LastBoundAt             time.Time `json:"last_bound_at,omitempty"`
+	Orphaned                bool      `json:"orphaned,omitempty"`
 }
 
 // Progress is emitted by long-running worktree operations.
@@ -215,10 +218,12 @@ type AssistedMergeResult struct {
 
 // InUseSession describes a session bound to a worktree.
 type InUseSession struct {
-	ID     string `json:"id"`
-	Number int64  `json:"number,omitempty"`
-	Name   string `json:"name,omitempty"`
-	Status string `json:"status,omitempty"`
+	ID        string    `json:"id"`
+	Number    int64     `json:"number,omitempty"`
+	Name      string    `json:"name,omitempty"`
+	Title     string    `json:"title,omitempty"`
+	Status    string    `json:"status,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
 
 // metadata is persisted outside the worktree so the checkout stays clean.
@@ -905,6 +910,7 @@ func listForRoot(mainRoot, bucket string) ([]Worktree, error) {
 		result = append(result, wt)
 	}
 	populateDirtyCounts(result)
+	populateMainDivergence(result, mainRoot)
 	for index := range result {
 		populateCheckoutDetails(&result[index])
 	}
@@ -1652,7 +1658,14 @@ func InUseByDir(ctx context.Context, store session.Store, dirs []string) (map[st
 		if len(matches) == 0 {
 			continue
 		}
-		inUse := InUseSession{ID: s.ID, Number: s.Number, Name: s.Name, Status: string(s.Status)}
+		inUse := InUseSession{
+			ID:        s.ID,
+			Number:    s.Number,
+			Name:      s.Name,
+			Title:     s.PreferredShortTitle(),
+			Status:    string(s.Status),
+			UpdatedAt: s.UpdatedAt,
+		}
 		for _, dir := range matches {
 			out[dir] = append(out[dir], inUse)
 		}
@@ -1749,6 +1762,54 @@ func populateDirtyCounts(items []Worktree) {
 			defer wg.Done()
 			for idx := range jobs {
 				items[idx].DirtyFiles = dirtyCount(items[idx].Dir)
+			}
+		}()
+	}
+	for i := range items {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
+}
+
+// populateMainDivergence compares each managed checkout with the current main
+// checkout HEAD. Managed worktrees are commonly detached, so upstream-based
+// divergence does not describe the operator-relevant state.
+func populateMainDivergence(items []Worktree, mainRoot string) {
+	if len(items) == 0 {
+		return
+	}
+	mainHead, err := revParseFull(mainRoot, "HEAD")
+	if err != nil {
+		return
+	}
+	workers := 4
+	if len(items) < workers {
+		workers = len(items)
+	}
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			for idx := range jobs {
+				counts, err := runGit(items[idx].Dir, "rev-list", "--left-right", "--count", "HEAD..."+mainHead)
+				if err != nil {
+					continue
+				}
+				fields := strings.Fields(counts)
+				if len(fields) != 2 {
+					continue
+				}
+				ahead, aheadErr := strconv.Atoi(fields[0])
+				behind, behindErr := strconv.Atoi(fields[1])
+				if aheadErr != nil || behindErr != nil {
+					continue
+				}
+				items[idx].MainAhead = ahead
+				items[idx].MainBehind = behind
+				items[idx].MainDivergenceAvailable = true
 			}
 		}()
 	}
