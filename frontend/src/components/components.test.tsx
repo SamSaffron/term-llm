@@ -2659,6 +2659,10 @@ describe('Preact-owned chat surfaces', () => {
       'data-view',
       'recent',
     );
+    expect(screen.getByRole('tablist', { name: 'Conversation view' })).toHaveAttribute(
+      'data-indicator-cycle',
+      'initial',
+    );
     expect(
       container
         .querySelector('.sidebar-content')!
@@ -2681,6 +2685,16 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByRole('heading', { name: 'Chat' })).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: 'Pinned work' })).toHaveLength(1);
     expect(store.storage.getItem(store.keys.sidebarView)).toBe('projects');
+    expect(screen.getByRole('tablist', { name: 'Conversation view' })).toHaveAttribute(
+      'data-indicator-cycle',
+      'alternate',
+    );
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Projects' }));
+    expect(screen.getByRole('tablist', { name: 'Conversation view' })).toHaveAttribute(
+      'data-indicator-cycle',
+      'initial',
+    );
   });
 
   it('does not add view controls when projects are disabled', () => {

@@ -28,7 +28,34 @@
   background: var(--text);
   pointer-events: none;
   content: '';
+  animation: sidebar-view-indicator-fade 5s ease-out forwards;
   transition: left 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes sidebar-view-indicator-fade {
+  0%,
+  80% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
+  }
+}
+
+.sidebar-view-switch[data-indicator-cycle='alternate']::after {
+  animation-name: sidebar-view-indicator-refade;
+}
+
+@keyframes sidebar-view-indicator-refade {
+  0%,
+  80% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
+  }
 }
 
 .sidebar-view-switch[data-view='projects']::after {
@@ -76,6 +103,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   .sidebar-view-switch::after {
+    animation-duration: 0s;
+    animation-delay: 5s;
     transition: none;
   }
 }

@@ -671,7 +671,11 @@ function HubAgents() {
 function SidebarViewSwitch({ disabled = false }: { disabled?: boolean }) {
   const store = useStore();
   const view = store.sidebarView.value;
-  const select = (next: 'recent' | 'projects') => store.setSidebarView(next);
+  const [indicatorCycle, setIndicatorCycle] = useState(false);
+  const select = (next: 'recent' | 'projects') => {
+    setIndicatorCycle((current) => !current);
+    store.setSidebarView(next);
+  };
   const onKeyDown = (event: KeyboardEvent) => {
     let next: 'recent' | 'projects' | undefined;
     if (event.key === 'ArrowLeft' || event.key === 'Home') next = 'recent';
@@ -687,6 +691,7 @@ function SidebarViewSwitch({ disabled = false }: { disabled?: boolean }) {
     <div
       class="sidebar-view-switch"
       data-view={view}
+      data-indicator-cycle={indicatorCycle ? 'alternate' : 'initial'}
       role="tablist"
       aria-label="Conversation view"
       onKeyDown={onKeyDown}
