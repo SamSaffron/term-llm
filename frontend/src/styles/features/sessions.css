@@ -70,7 +70,7 @@
 }
 
 .sidebar-view-switch button:focus-visible {
-  outline: 2px solid var(--border-strong);
+  outline: 2px solid var(--accent);
   outline-offset: -3px;
 }
 
