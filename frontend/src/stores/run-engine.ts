@@ -40,6 +40,10 @@ import type { PendingInterjection, SendOptions } from './store-types';
 import { approvalPrompt, array, askUserPrompt, listFrom, recordValue, uuid } from './store-utils';
 import type { TabEventType } from '../platform/tab-sync';
 
+// Supervisor backoff guarantees seven consecutive failures represent more than
+// thirty seconds without a successfully attached response transport.
+const STALE_RESPONSE_RECOVERY_FAILURES = 7;
+
 export interface RunEngineHost {
   loadSession: (id: string, epoch?: number) => Promise<void>;
   refreshSidebar: (authoritative?: boolean) => Promise<void>;
@@ -72,13 +76,20 @@ export class RunEngine {
   readonly fileChangeRevision = signal(0);
   readonly activeProjection: ReadonlySignal<ResponseProjection | null>;
   readonly visibleMessages: ReadonlySignal<Message[]>;
+  readonly responseTransportAttached: ReadonlySignal<boolean>;
+  readonly runActive: ReadonlySignal<boolean>;
   readonly streaming: ReadonlySignal<boolean>;
   readonly runLivenessUnknown: ReadonlySignal<boolean>;
+  readonly canStop: ReadonlySignal<boolean>;
+  readonly canInterject: ReadonlySignal<boolean>;
   readonly sendBlocked: ReadonlySignal<boolean>;
 
   private readonly supervisors = new StreamSupervisors();
   private readonly activeResponseTransports = signal<
     Record<string, { responseId: string; generation: number }>
+  >({});
+  private readonly responseRecoveryFailures = signal<
+    Record<string, { responseId: string; count: number }>
   >({});
   readonly locallyStoppedResponses = new Set<string>();
   private readonly retiredResponses = new Set<string>();
@@ -123,7 +134,7 @@ export class RunEngine {
         }));
       return [...messages, ...pending];
     });
-    this.streaming = computed(() => {
+    this.responseTransportAttached = computed(() => {
       const projection = this.activeProjection.value;
       return Boolean(
         projection &&
@@ -131,28 +142,96 @@ export class RunEngine {
         this.hasActiveResponseTransport(projection.run.sessionId, projection.run.responseId),
       );
     });
-    this.runLivenessUnknown = computed(() => {
+    this.runActive = computed(() => {
+      const projection = this.activeProjection.value;
+      const session = this.sessionStore.activeSession.value;
+      if (!projection) return Boolean(session?.activeRun);
+      // The projection owns the local response lifecycle. Losing a transport or
+      // receiving a contradictory status sample starts recovery; neither is a
+      // terminal transition. Only a terminal response event/snapshot may make
+      // this projection stop presenting as running.
+      return ['connecting', 'checking', 'streaming', 'cancelling'].includes(projection.run.status);
+    });
+    // Compatibility alias for consumers that mean "a response is running", not
+    // "this tab currently owns an event-stream body".
+    this.streaming = computed(
+      () => this.runActive.value && this.services.networkState.value !== 'offline',
+    );
+    this.canStop = computed(() => {
       const projection = this.activeProjection.value;
       return Boolean(
+        this.streaming.value &&
         projection &&
-        ['connecting', 'checking', 'streaming', 'cancelling'].includes(projection.run.status) &&
-        !this.hasActiveResponseTransport(projection.run.sessionId, projection.run.responseId),
+        !projection.run.responseId.startsWith('pending_') &&
+        ['connecting', 'streaming', 'cancelling'].includes(projection.run.status),
       );
     });
-    this.sendBlocked = computed(
-      () =>
+    this.canInterject = computed(() => {
+      const projection = this.activeProjection.value;
+      return Boolean(
+        this.streaming.value &&
+        projection &&
+        !projection.run.responseId.startsWith('pending_') &&
+        ['connecting', 'streaming'].includes(projection.run.status),
+      );
+    });
+    this.runLivenessUnknown = computed(() => {
+      const projection = this.activeProjection.value;
+      const failures = projection
+        ? this.responseRecoveryFailures.value[projection.run.sessionId]
+        : undefined;
+      return Boolean(
+        this.services.networkState.value !== 'offline' &&
+        projection &&
+        !projection.run.responseId.startsWith('pending_') &&
+        ['connecting', 'streaming'].includes(projection.run.status) &&
+        !this.responseTransportAttached.value &&
+        failures?.responseId === projection.run.responseId &&
+        failures.count >= STALE_RESPONSE_RECOVERY_FAILURES,
+      );
+    });
+    this.sendBlocked = computed(() => {
+      const projection = this.activeProjection.value;
+      const projectedRunPending = Boolean(
+        projection &&
+        ['connecting', 'checking', 'streaming', 'cancelling'].includes(projection.run.status) &&
+        !this.canInterject.value,
+      );
+      return (
         composer.sendPending.value ||
-        this.runLivenessUnknown.value ||
-        Boolean(sessionStore.activeSession.value?.activeRun && !this.streaming.value) ||
+        projectedRunPending ||
+        Boolean(sessionStore.activeSession.value?.activeRun && !this.canInterject.value) ||
         Boolean(
           this.pendingIntents.value[sessionStore.activeSessionId.value]?.some(
             (intent) => intent.state === 'checking',
           ),
-        ),
-    );
+        )
+      );
+    });
+  }
+
+  private clearResponseRecoveryFailures(sessionId: string, responseId: string): void {
+    const current = this.responseRecoveryFailures.peek()[sessionId];
+    if (!current || current.responseId !== responseId) return;
+    const next = { ...this.responseRecoveryFailures.peek() };
+    delete next[sessionId];
+    this.responseRecoveryFailures.value = next;
+  }
+
+  private markResponseRecoveryFailure(sessionId: string, responseId: string): void {
+    if (!sessionId || !responseId || responseId.startsWith('pending_')) return;
+    const current = this.responseRecoveryFailures.peek()[sessionId];
+    this.responseRecoveryFailures.value = {
+      ...this.responseRecoveryFailures.peek(),
+      [sessionId]: {
+        responseId,
+        count: current?.responseId === responseId ? current.count + 1 : 1,
+      },
+    };
   }
 
   markResponseTransportActive(sessionId: string, responseId: string, generation = 0): void {
+    this.clearResponseRecoveryFailures(sessionId, responseId);
     const current = this.activeResponseTransports.peek()[sessionId];
     if (
       !sessionId ||
@@ -592,16 +671,8 @@ export class RunEngine {
       },
     };
     const transportGeneration = streamOwner.transportGeneration;
-    const serverReportedInProgress =
-      response.headers.get('x-term-llm-response-status') === 'in_progress';
-    if (serverReportedInProgress)
-      this.markResponseTransportActive(ownerID, responseId, transportGeneration);
-    await this.consumeResponseBody(
-      response.body,
-      streamOwner,
-      transportGeneration,
-      serverReportedInProgress,
-    );
+    this.markResponseTransportActive(ownerID, responseId, transportGeneration);
+    await this.consumeResponseBody(response.body, streamOwner, transportGeneration);
     if (!this.supervisors.ownsTransport(streamOwner, transportGeneration)) return ownerID;
     const current = this.runs.value[ownerID];
     if (current && ['connecting', 'streaming'].includes(current.run.status))
@@ -668,7 +739,6 @@ export class RunEngine {
     body: ReadableStream<Uint8Array>,
     owner: StreamSupervisor,
     transportGeneration = owner.transportGeneration,
-    serverReportedInProgress = false,
   ): Promise<boolean> {
     let cleanCompletion = false;
     const watchdog = () =>
@@ -683,7 +753,7 @@ export class RunEngine {
         35_000,
       );
     const transportActivity = () => {
-      if (serverReportedInProgress && this.supervisors.ownsTransport(owner, transportGeneration))
+      if (this.supervisors.ownsTransport(owner, transportGeneration))
         this.markResponseTransportActive(owner.sessionId, owner.responseId, transportGeneration);
       watchdog();
     };
@@ -720,6 +790,13 @@ export class RunEngine {
   async streamResponse(responseId: string, sessionId: string, after: number): Promise<void> {
     if (this.retiredResponses.has(responseId)) return;
     const current = this.supervisors.current(sessionId);
+    if (
+      current?.responseId === responseId &&
+      (current.recoveryInFlight ||
+        current.subscriptionInFlight ||
+        this.hasActiveResponseTransport(sessionId, responseId))
+    )
+      return;
     const owner =
       current && current.responseId === responseId
         ? current
@@ -745,16 +822,8 @@ export class RunEngine {
         return;
       if (!response.ok || !response.body)
         throw new Error(`Response stream returned ${response.status}`);
-      const serverReportedInProgress =
-        response.headers.get('x-term-llm-response-status') === 'in_progress';
-      if (serverReportedInProgress)
-        this.markResponseTransportActive(owner.sessionId, owner.responseId, transportGeneration);
-      const clean = await this.consumeResponseBody(
-        response.body,
-        owner,
-        transportGeneration,
-        serverReportedInProgress,
-      );
+      this.markResponseTransportActive(owner.sessionId, owner.responseId, transportGeneration);
+      const clean = await this.consumeResponseBody(response.body, owner, transportGeneration);
       if (!this.supervisors.ownsTransport(owner, transportGeneration) || abort.signal.aborted)
         return;
       const projection = this.runs.peek()[owner.sessionId];
@@ -800,11 +869,12 @@ export class RunEngine {
         run: { ...projection.run, status: 'connecting', reconnects },
       },
     };
-    this.supervisors.scheduleRetry(
+    const scheduled = this.supervisors.scheduleRetry(
       owner,
       () => void this.recoverSupervisor(owner),
       Math.min(60_000, 1_000 * 1.5 ** Math.min(reconnects, 10)),
     );
+    if (scheduled) this.markResponseRecoveryFailure(owner.sessionId, owner.responseId);
   }
 
   applyResponseEvent(sessionId: string, event: ResponseEvent, owner?: StreamSupervisor): void {
@@ -1071,13 +1141,17 @@ export class RunEngine {
         finalRev > 0 &&
         incomingRev >= finalRev,
       );
+      const preserveCurrentLiveRun = Boolean(
+        preserveLiveRun ||
+        (projection &&
+          ['connecting', 'checking', 'streaming', 'cancelling'].includes(projection.run.status)),
+      );
       batch(() => {
         this.sessionStore.update(sessionId, (session) =>
           // Selected-session payloads own transcript bodies, not live response
-          // ownership. Peer attachment preserves that ownership until the
-          // durable initiating message is installed; other refreshes retain
-          // their existing authoritative replacement behavior.
-          this.sessionStore.mergeSession(session, incoming, true, preserveLiveRun),
+          // ownership. An active projection remains the lifecycle authority
+          // until a terminal event/snapshot is installed.
+          this.sessionStore.mergeSession(session, incoming, true, preserveCurrentLiveRun),
         );
         if (retireProjection && projection) {
           this.retiredResponses.add(projection.run.responseId);
@@ -1119,6 +1193,21 @@ export class RunEngine {
 
   async resumeResponse(sessionId: string, responseId: string): Promise<void> {
     if (this.retiredResponses.has(responseId)) return;
+    const projected = this.runs.peek()[sessionId];
+    if (!projected || projected.run.responseId !== responseId) {
+      this.runs.value = {
+        ...this.runs.peek(),
+        [sessionId]: initialProjection({
+          responseId,
+          sessionId,
+          epoch: 1,
+          status: 'connecting',
+          lastSequence: 0,
+          startedRev: 0,
+          reconnects: 0,
+        }),
+      };
+    }
     const current = this.supervisors.current(sessionId);
     const owner =
       current && current.responseId === responseId

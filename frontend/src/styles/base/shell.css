@@ -3,7 +3,7 @@
 .startup-splash {
   position: fixed;
   inset: 0;
-  z-index: 120;
+  z-index: var(--z-blocking-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -88,7 +88,7 @@ select {
   top: var(--app-offset-top);
   left: 0;
   right: 0;
-  z-index: 1;
+  z-index: var(--z-local-raised);
   overflow: hidden;
   transition: grid-template-columns var(--layout-transition-duration) ease;
 }

@@ -53,6 +53,27 @@
   --panel-transition-duration: 0.22s;
   --panel-transition-easing: cubic-bezier(0.4, 0, 0.2, 1);
   --panel-fade-duration: 0.18s;
+
+  /* Central stacking order. Local layers only compete within their nearest
+     stacking context; viewport layers define app-wide overlay priority. */
+  --z-local-raised: 1;
+  --z-local-control: 2;
+  --z-local-popover: 5;
+  --z-session-menu: 6;
+  --z-session-menu-open: 7;
+  --z-sidebar-backdrop: 15;
+  --z-floating-panel: 20;
+  --z-drop-target: 50;
+  --z-dialog: 60;
+  --z-maximized-panel: 70;
+  --z-lightbox: 100;
+  --z-blocking-overlay: 120;
+  --z-toast: 900;
+  --z-popover-backdrop: 999;
+  --z-popover: 1000;
+  --z-sheet-backdrop: var(--z-popover);
+  --z-sheet: 1001;
+  --z-runtime-popover: 10000;
   --diff-add-bg: rgb(46 160 67 / 18%);
   --diff-add-ln-bg: rgb(46 160 67 / 30%);
   --diff-del-bg: rgb(248 81 73 / 16%);

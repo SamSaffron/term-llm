@@ -1,7 +1,7 @@
 .drawer-backdrop {
   position: fixed;
   inset: var(--app-offset-top) 0 auto;
-  z-index: 120;
+  z-index: var(--z-blocking-overlay);
   display: flex;
   align-items: stretch;
   justify-content: flex-end;

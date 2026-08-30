@@ -81,7 +81,7 @@
 .widgets-modal-search-icon {
   position: absolute;
   left: 0.72rem;
-  z-index: 1;
+  z-index: var(--z-local-raised);
   display: inline-flex;
   color: var(--text-muted);
   pointer-events: none;

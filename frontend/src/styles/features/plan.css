@@ -247,7 +247,7 @@
 .plan-sheet-backdrop {
   position: fixed;
   inset: var(--app-offset-top) 0 0;
-  z-index: 1000;
+  z-index: var(--z-sheet-backdrop);
   background: rgb(0 0 0 / 44%);
   opacity: 0;
   backdrop-filter: blur(2px);
@@ -303,7 +303,7 @@
     position: fixed;
     top: var(--app-offset-top);
     right: 0;
-    z-index: 60;
+    z-index: var(--z-dialog);
     width: min(430px, calc(100vw - var(--safe-left)), 90vw);
     height: var(--app-height);
     padding: var(--safe-top) var(--safe-right) var(--safe-bottom) 0;
@@ -336,7 +336,7 @@
     right: var(--safe-right);
     bottom: 0;
     left: var(--safe-left);
-    z-index: 1001;
+    z-index: var(--z-sheet);
     display: flex;
     min-height: min(280px, calc(var(--app-height) - var(--safe-top) - 1rem));
     max-height: min(72dvh, calc(var(--app-height) - var(--safe-top) - 1rem));

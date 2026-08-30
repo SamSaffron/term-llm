@@ -59,7 +59,12 @@
 }
 
 .session-row-menu {
-  z-index: 6;
+  z-index: var(--z-session-menu);
+}
+
+/* Lift only the active menu above action triggers in later session rows. */
+.session-row-menu.open {
+  z-index: var(--z-session-menu-open);
 }
 
 .session-row-menu.open .session-menu {

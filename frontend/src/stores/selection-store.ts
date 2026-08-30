@@ -84,6 +84,11 @@ export class SelectionStore {
     updateSessionRoute(this.services.config.prefix, session, replace);
     this.composer.restore(session.id, 'session');
     this.composer.syncRuntimeFromSession(session);
+    // Sidebar/status metadata already identifies the running response. Begin
+    // adopting it immediately instead of waiting for transcript hydration,
+    // which does not own live-run state.
+    if (session.activeResponseId)
+      void this.runEngine.resumeResponse(session.id, session.activeResponseId);
     await this.loadSession(session.id, epoch);
     if (epoch !== this.epoch) return;
     const current =
@@ -175,6 +180,8 @@ export class SelectionStore {
       const bodies = recordValue(sideload.bodies) || {};
       const serverMessages = listFrom(bodies, 'messages', 'items');
       const lastResponseId = String(state.lastResponseId || state.last_response_id || '').trim();
+      const stateActiveResponseId = String(state.active_response_id || '').trim();
+      const stateReportsActive = Boolean(state.active_run || stateActiveResponseId);
       const selectedRevision = Number(
         bodies.rev ?? selectedSource.transcript_rev ?? selectedSource.rev,
       );
@@ -196,12 +203,24 @@ export class SelectionStore {
       // selected_transcript is authoritative here, including an empty transcript.
       // Session state is authoritative for its durable continuation anchor.
       const updated = {
-        ...this.sessionsStore.mergeSession(current, incoming, true),
+        // Selected transcript payloads own message bodies, not live response
+        // ownership. Preserve the sidebar/status evidence sampled before this
+        // request, and strengthen it with the session-state endpoint when that
+        // endpoint confirms an active run.
+        ...this.sessionsStore.mergeSession(current, incoming, true, true),
+        ...(stateReportsActive
+          ? {
+              activeRun: true,
+              ...(stateActiveResponseId ? { activeResponseId: stateActiveResponseId } : {}),
+            }
+          : {}),
         lastResponseId: lastResponseId || null,
       };
       if (currentIndex >= 0 && current) this.sessionsStore.update(current.id, () => updated);
       else this.sessionsStore.prepend(updated);
       if (updated.id !== id) this.runEngine.rekeySession(id, updated.id, selectedSource);
+      if (stateActiveResponseId)
+        void this.runEngine.resumeResponse(updated.id, stateActiveResponseId);
       const planSource = state.current_plan || selectedSource.plan_summary;
       let loadedPlan: CurrentPlan | null = null;
       if (planSource && typeof planSource === 'object') {

@@ -1192,7 +1192,7 @@ describe('Preact-owned chat surfaces', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('stops claiming a response is running when its owned transport is lost', () => {
+  it('keeps a projected response running while its transport reconnects', () => {
     const store = createStore();
     try {
       store.runs.value = {
@@ -1221,14 +1221,85 @@ describe('Preact-owned chat surfaces', () => {
 
       act(() => store.runEngine.clearResponseTransport('s1', 'r1'));
 
-      expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument();
       expect(
-        screen.queryByRole('status', { name: 'Assistant is responding: Working' }),
+        screen.getByRole('status', { name: 'Assistant is responding: Working' }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole('status', { name: 'Response status is unknown' }),
       ).not.toBeInTheDocument();
-      expect(screen.getByRole('status', { name: 'Response status is unknown' })).toHaveTextContent(
-        'Response stream interrupted — reconnecting…',
+      expect(screen.getByRole('button', { name: 'Response is running' })).toBeEnabled();
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('keeps server-confirmed runs visually active while their transport reattaches', async () => {
+    const store = createStore();
+    try {
+      store.sessions.value = [
+        { ...store.sessions.value[0], activeRun: true, activeResponseId: 'r1' },
+      ];
+      store.runs.value = {
+        s1: initialProjection({
+          responseId: 'r1',
+          sessionId: 's1',
+          epoch: 1,
+          status: 'connecting',
+          lastSequence: 1,
+          startedRev: 0,
+          reconnects: 1,
+        }),
+      };
+      render(
+        <StoreContext.Provider value={store}>
+          <Transcript />
+          <Composer />
+        </StoreContext.Provider>,
       );
-      expect(screen.getByRole('button', { name: 'Checking whether sent' })).toBeDisabled();
+
+      expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Response is running' })).toBeEnabled();
+      expect(screen.getByPlaceholderText('Type to interject…')).toBeInTheDocument();
+      expect(
+        screen.getByRole('status', { name: 'Assistant is responding: Working' }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole('status', { name: 'Response status is unknown' }),
+      ).not.toBeInTheDocument();
+
+      store.interject = vi.fn(async () => undefined);
+      await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), 'steer this run');
+      const interject = screen.getByRole('button', { name: 'Interject' });
+      expect(interject).toBeEnabled();
+      await userEvent.click(interject);
+      expect(store.interject).toHaveBeenCalledWith('steer this run');
+      act(() => {
+        store.prompt.value = '';
+      });
+
+      act(() => {
+        store.sessions.value = [
+          { ...store.sessions.value[0], activeRun: false, activeResponseId: null },
+        ];
+      });
+
+      // An idle status sample starts snapshot reconciliation; it does not own
+      // the projected response's terminal transition.
+      expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument();
+      expect(
+        screen.queryByRole('status', { name: 'Response status is unknown' }),
+      ).not.toBeInTheDocument();
+
+      act(() => {
+        store.runs.value = {
+          s1: {
+            ...store.runs.value.s1,
+            run: { ...store.runs.value.s1.run, status: 'completed' },
+          },
+        };
+      });
+      expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument();
     } finally {
       store.dispose();
     }
@@ -2103,7 +2174,7 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
 
-    const send = screen.getByRole('button', { name: 'Send message' });
+    const send = screen.getByRole('button', { name: 'Response is running' });
     const sendIcon = send.querySelector('.arrow')?.innerHTML;
     expect(send).toBeEnabled();
     expect(send).toHaveClass('loading');

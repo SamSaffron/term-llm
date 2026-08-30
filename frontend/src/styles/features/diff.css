@@ -36,7 +36,7 @@
   bottom: 0;
   width: 6px;
   cursor: col-resize;
-  z-index: 2;
+  z-index: var(--z-local-control);
   touch-action: none;
 }
 
@@ -151,7 +151,7 @@
   inset: var(--app-offset-top) 0 auto 0;
   width: 100%;
   height: var(--app-height);
-  z-index: 70;
+  z-index: var(--z-maximized-panel);
   border-left: 0;
   box-shadow: none;
   opacity: 1;
@@ -229,7 +229,7 @@
 .diff-file-row {
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: var(--z-local-raised);
   display: flex;
   align-items: center;
   gap: 0.45rem;
@@ -1040,7 +1040,7 @@
   position: absolute;
   right: 0;
   bottom: calc(100% + 0.5rem);
-  z-index: 5;
+  z-index: var(--z-local-popover);
   display: grid;
   gap: 0.15rem;
   min-width: 14rem;
@@ -1446,7 +1446,7 @@
     right: 0;
     height: var(--app-height);
     width: min(440px, calc(100vw - var(--safe-left)), 90vw);
-    z-index: 60;
+    z-index: var(--z-dialog);
     transform: translateX(100%);
     transition:
       transform var(--panel-transition-duration) var(--panel-transition-easing),

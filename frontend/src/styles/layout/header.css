@@ -18,7 +18,7 @@
   padding: calc(0.85rem + var(--safe-top)) calc(1.15rem + var(--safe-right)) 0.85rem
     calc(1.15rem + var(--safe-left));
   position: relative;
-  z-index: 1;
+  z-index: var(--z-local-raised);
 }
 
 .header-title-row {
@@ -348,7 +348,7 @@
   appearance: none;
   position: fixed;
   inset: 0;
-  z-index: 999;
+  z-index: var(--z-popover-backdrop);
   padding: 0;
   border: 0;
   background: transparent;
@@ -360,7 +360,7 @@
 
 .chip-popover {
   position: fixed;
-  z-index: 1000;
+  z-index: var(--z-popover);
   min-width: 180px;
   max-width: min(360px, calc(100vw - 1rem));
   max-height: min(320px, calc(var(--app-height) - 1rem));
@@ -529,7 +529,7 @@ dialog.chip-popover::backdrop {
 }
 
 .chip-popover-runtime {
-  z-index: 10000;
+  z-index: var(--z-runtime-popover);
   min-width: 280px;
   padding: 0.75rem;
 }

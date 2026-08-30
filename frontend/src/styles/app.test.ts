@@ -45,6 +45,22 @@ describe('shell layout', () => {
   });
 });
 
+describe('stacking layers', () => {
+  it('centralizes every z-index behind a semantic token', () => {
+    const tokens = readFileSync(resolve(stylesRoot, 'base/tokens.css'), 'utf8');
+    const declarations = [...appCSS.matchAll(/z-index:\s*([^;]+);/g)].map((match) =>
+      match[1].trim(),
+    );
+
+    expect(declarations.length).toBeGreaterThan(0);
+    for (const declaration of declarations) {
+      expect(declaration).toMatch(/^var\((--z-[a-z-]+)\)$/);
+      const token = declaration.match(/^var\((--z-[a-z-]+)\)$/)?.[1];
+      expect(tokens).toContain(`${token}:`);
+    }
+  });
+});
+
 describe('header styles', () => {
   it('does not add a redundant chevron beside the runtime effort meter', () => {
     expect(appCSS).not.toContain('.model-chip::after');

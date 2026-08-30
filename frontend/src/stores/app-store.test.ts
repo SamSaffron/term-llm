@@ -378,6 +378,49 @@ describe('AppStore compatibility behavior', () => {
     expect(store.sidebarOpen.value).toBe(false);
   });
 
+  it('preserves a running sidebar session while selected-session data loads', async () => {
+    const store = new AppStore(config);
+    const running = {
+      ...session(),
+      id: 's2',
+      title: 'Running session',
+      activeRun: true,
+      activeResponseId: 'r2',
+    };
+    store.sessions.value = [session(), running];
+    const state = deferred<Record<string, unknown>>();
+    const selected = deferred<Record<string, unknown>>();
+    store.endpoints.sessionState = vi.fn(() => state.promise);
+    store.endpoints.selectedSession = vi.fn(() => selected.promise);
+    store.endpoints.skills = vi.fn(async () => ({ skills: [] }));
+    const resumeResponse = vi.fn(async () => undefined);
+    store.runEngine.resumeResponse = resumeResponse;
+
+    const selection = store.selectSession(running);
+    expect(store.streaming.value).toBe(true);
+    expect(resumeResponse).toHaveBeenCalledWith('s2', 'r2');
+    const observed: boolean[] = [];
+    const unsubscribe = store.streaming.subscribe((value) => observed.push(value));
+
+    state.resolve({ active_run: true, active_response_id: 'r2' });
+    selected.resolve({
+      // Selected transcript payloads intentionally omit live-run metadata.
+      selected_session: { id: 's2', title: 'Running session' },
+      selected_transcript: { bodies: { messages: [] } },
+    });
+    await selection;
+    unsubscribe();
+
+    expect(observed).toEqual([true]);
+    expect(store.activeSession.value).toMatchObject({
+      id: 's2',
+      activeRun: true,
+      activeResponseId: 'r2',
+    });
+    expect(resumeResponse).toHaveBeenCalledWith('s2', 'r2');
+    store.dispose();
+  });
+
   it('stops the visible run immediately while server cancellation winds down', async () => {
     const store = new AppStore(config);
     store.sessions.value = [{ ...session(), activeResponseId: 'r1' }];
@@ -1767,6 +1810,40 @@ describe('AppStore compatibility behavior', () => {
     expect(store.sessions.value[0].messages).toEqual([newerMessage]);
   });
 
+  it('preserves live ownership while refreshing active transcript bodies', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [
+      { ...session(), activeRun: true, activeResponseId: 'r1', transcriptRev: 2 },
+    ];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'r1',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'connecting',
+        lastSequence: 3,
+        startedRev: 1,
+        reconnects: 1,
+      }),
+    };
+    store.endpoints.selectedSession = vi.fn(async () => ({
+      selected_session: { id: 's1', transcript_rev: 3 },
+      selected_transcript: { bodies: { rev: 3, messages: [] } },
+    }));
+    store.endpoints.sessionState = vi.fn(async () => ({}));
+
+    await store.runEngine.refreshSessionMessages('s1');
+
+    expect(store.sessions.value[0]).toMatchObject({
+      activeRun: true,
+      activeResponseId: 'r1',
+      messageBodiesRev: 3,
+    });
+    expect(store.streaming.value).toBe(true);
+  });
+
   it('keeps the live projection when transcript bodies are older than the handoff', async () => {
     const store = new AppStore(config);
     store.sessions.value = [{ ...session(), transcriptRev: 2 }];
@@ -1848,6 +1925,8 @@ describe('AppStore compatibility behavior', () => {
     );
 
     await vi.waitFor(() => expect(store.sessions.value[0].activeResponseId).toBe('r1'));
+    expect(store.streaming.value).toBe(true);
+    expect(store.runLivenessUnknown.value).toBe(false);
     expect(store.prompt.value).toBe('Again');
     expect(readDrafts(localStorage, store.keys.draftMessages)).toEqual(
       expect.arrayContaining([expect.objectContaining({ sessionId: 's1', content: 'Again' })]),
@@ -1855,6 +1934,69 @@ describe('AppStore compatibility behavior', () => {
     store.dispose();
     streamController.close();
     await sending;
+  });
+
+  it('lets an admitted POST adopt the response discovered by status without aborting it', async () => {
+    const store = new AppStore(config);
+    const accepted = deferred<Response>();
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    try {
+      store.sessions.value = [session()];
+      store.activeSessionId.value = 's1';
+      store.draftActive.value = false;
+      store.prompt.value = 'Race status against admission';
+      store.endpoints.createResponse = vi.fn(() => accepted.promise);
+      store.endpoints.response = vi.fn(async () => ({
+        id: 'r1',
+        status: 'in_progress',
+        run_epoch: 1,
+        last_sequence_number: 0,
+        recovery: { sequence_number: 0 },
+      }));
+
+      const sending = store.send();
+      await vi.waitFor(() => expect(store.endpoints.createResponse).toHaveBeenCalledOnce());
+      const [rawBody, , , rawSignal] = vi.mocked(store.endpoints.createResponse).mock.calls[0];
+      const body = rawBody as Record<string, unknown>;
+      const signal = rawSignal as AbortSignal;
+      const clientMessageId = String(body.client_message_id || '');
+      expect(clientMessageId).not.toBe('');
+      store.endpoints.sessionStatus = vi.fn(async () => ({
+        sessions: [
+          {
+            id: 's1',
+            active_run: true,
+            active_response_id: 'r1',
+            client_message_id: clientMessageId,
+          },
+        ],
+      }));
+
+      await (store as unknown as { refreshStatus(): Promise<void> }).refreshStatus();
+
+      expect(signal.aborted).toBe(false);
+      expect(store.endpoints.response).not.toHaveBeenCalled();
+
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          streamController = controller;
+        },
+      });
+      accepted.resolve(
+        new Response(stream, {
+          status: 200,
+          headers: { 'x-response-id': 'r1', 'x-session-id': 's1' },
+        }),
+      );
+
+      await vi.waitFor(() => expect(store.streaming.value).toBe(true));
+      expect(store.runs.value.s1.run.responseId).toBe('r1');
+      expect(store.runLivenessUnknown.value).toBe(false);
+      streamController.close();
+      await sending;
+    } finally {
+      store.dispose();
+    }
   });
 
   it('ignores late transport failures after a response is already complete', async () => {
@@ -2233,14 +2375,15 @@ describe('AppStore compatibility behavior', () => {
       store.activeSessionId.value = 's1';
 
       expect(store.runs.value).toEqual({});
-      expect(store.streaming.value).toBe(false);
+      expect(store.streaming.value).toBe(true);
+      expect(store.canStop.value).toBe(false);
       expect(store.sendBlocked.value).toBe(true);
     } finally {
       store.dispose();
     }
   });
 
-  it('uses the owned response transport for running state without declaring completion on loss', () => {
+  it('keeps server-confirmed runs active independently of transport attachment', () => {
     const store = new AppStore(config);
     try {
       store.sessions.value = [{ ...session(), activeRun: true, activeResponseId: 'r1' }];
@@ -2257,11 +2400,15 @@ describe('AppStore compatibility behavior', () => {
         }),
       };
 
-      expect(store.streaming.value).toBe(false);
-      expect(store.runLivenessUnknown.value).toBe(true);
-      expect(store.sendBlocked.value).toBe(true);
+      expect(store.responseTransportAttached.value).toBe(false);
+      expect(store.streaming.value).toBe(true);
+      expect(store.runLivenessUnknown.value).toBe(false);
+      expect(store.canStop.value).toBe(true);
+      expect(store.canInterject.value).toBe(true);
+      expect(store.sendBlocked.value).toBe(false);
 
       store.runEngine.markResponseTransportActive('s1', 'r1', 1);
+      expect(store.responseTransportAttached.value).toBe(true);
       expect(store.streaming.value).toBe(true);
       expect(store.runLivenessUnknown.value).toBe(false);
 
@@ -2270,20 +2417,121 @@ describe('AppStore compatibility behavior', () => {
       expect(store.streaming.value).toBe(true);
 
       store.runEngine.clearResponseTransport('s1', 'r1', 2);
-      expect(store.streaming.value).toBe(false);
-      expect(store.runLivenessUnknown.value).toBe(true);
+      expect(store.responseTransportAttached.value).toBe(false);
+      expect(store.streaming.value).toBe(true);
+      expect(store.runLivenessUnknown.value).toBe(false);
       expect(store.runs.value.s1.run.status).toBe('streaming');
-      expect(store.sendBlocked.value).toBe(true);
+      expect(store.sendBlocked.value).toBe(false);
 
-      store.runEngine.markResponseTransportActive('s1', 'r1', 2);
-      store.applyResponseEvent('s1', {
-        type: 'response.output_text.delta',
-        response_id: 'r1',
-        run_epoch: 1,
-        sequence_number: 2,
-        delta: 'still alive',
+      store.sessions.value = [
+        { ...store.sessions.value[0], activeRun: false, activeResponseId: null },
+      ];
+      expect(store.streaming.value).toBe(true);
+      expect(store.runLivenessUnknown.value).toBe(false);
+      expect(store.canStop.value).toBe(true);
+      expect(store.canInterject.value).toBe(true);
+      expect(store.sendBlocked.value).toBe(false);
+
+      const recoveryEvidence = store.runEngine as unknown as {
+        markResponseRecoveryFailure(sessionId: string, responseId: string): void;
+      };
+      for (let attempt = 0; attempt < 6; attempt += 1)
+        recoveryEvidence.markResponseRecoveryFailure('s1', 'r1');
+      expect(store.runLivenessUnknown.value).toBe(false);
+      recoveryEvidence.markResponseRecoveryFailure('s1', 'r1');
+      expect(store.runLivenessUnknown.value).toBe(true);
+      // Stale transport evidence may show a warning, but it never changes the
+      // authoritative running controls.
+      expect(store.streaming.value).toBe(true);
+      expect(store.canStop.value).toBe(true);
+
+      store.runEngine.markResponseTransportActive('s1', 'r1', 3);
+      expect(store.runLivenessUnknown.value).toBe(false);
+
+      store.runs.value = {
+        s1: {
+          ...store.runs.value.s1,
+          run: { ...store.runs.value.s1.run, status: 'completed' },
+        },
+      };
+      expect(store.streaming.value).toBe(false);
+      expect(store.canStop.value).toBe(false);
+      expect(store.canInterject.value).toBe(false);
+      expect(store.runLivenessUnknown.value).toBe(false);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('projects a remotely running response before its snapshot returns', async () => {
+    const store = new AppStore(config);
+    try {
+      store.sessions.value = [{ ...session(), activeRun: true, activeResponseId: 'remote-r1' }];
+      store.activeSessionId.value = 's1';
+      const snapshot = deferred<Record<string, unknown>>();
+      store.endpoints.response = vi.fn(() => snapshot.promise);
+      const internals = store as unknown as {
+        streamResponse(responseId: string, sessionId: string, after: number): Promise<void>;
+      };
+      internals.streamResponse = vi.fn(async () => undefined);
+
+      const recovery = store.runEngine.resumeResponse('s1', 'remote-r1');
+      const duplicateRecovery = store.runEngine.resumeResponse('s1', 'remote-r1');
+
+      expect(store.runs.value.s1.run).toMatchObject({
+        responseId: 'remote-r1',
+        status: 'connecting',
       });
       expect(store.streaming.value).toBe(true);
+      expect(store.canStop.value).toBe(true);
+      expect(store.canInterject.value).toBe(true);
+      await duplicateRecovery;
+      expect(store.endpoints.response).toHaveBeenCalledOnce();
+      snapshot.resolve({
+        id: 'remote-r1',
+        status: 'in_progress',
+        run_epoch: 2,
+        last_sequence_number: 4,
+        recovery: { sequence_number: 4 },
+      });
+      await recovery;
+      expect(internals.streamResponse).toHaveBeenCalledWith('remote-r1', 's1', 4);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('presents a running sidebar session as active before its stream attaches', () => {
+    const store = new AppStore(config);
+    try {
+      const running = {
+        ...session(),
+        id: 's2',
+        title: 'Running elsewhere',
+        activeRun: true,
+        activeResponseId: 'r2',
+      };
+      store.sessions.value = [session(), running];
+      store.activeSessionId.value = 's1';
+      store.runs.value = {
+        s2: initialProjection({
+          responseId: 'r2',
+          sessionId: 's2',
+          epoch: 1,
+          status: 'connecting',
+          lastSequence: 3,
+          startedRev: 0,
+          reconnects: 1,
+        }),
+      };
+
+      expect(store.streaming.value).toBe(false);
+      store.activeSessionId.value = 's2';
+
+      expect(store.responseTransportAttached.value).toBe(false);
+      expect(store.streaming.value).toBe(true);
+      expect(store.canStop.value).toBe(true);
+      expect(store.canInterject.value).toBe(true);
       expect(store.runLivenessUnknown.value).toBe(false);
     } finally {
       store.dispose();
@@ -2311,9 +2559,7 @@ describe('AppStore compatibility behavior', () => {
         signal.addEventListener('abort', () => {
           transportAborted = true;
         });
-        return new Response(new ReadableStream<Uint8Array>({ start() {} }), {
-          headers: { 'X-Term-LLM-Response-Status': 'in_progress' },
-        });
+        return new Response(new ReadableStream<Uint8Array>({ start() {} }));
       });
       store.endpoints.response = vi.fn(async () => ({
         id: 'r1',
@@ -2366,7 +2612,9 @@ describe('AppStore compatibility behavior', () => {
       };
       internals.streamResponse = vi.fn(async () => undefined);
 
-      expect(store.runLivenessUnknown.value).toBe(true);
+      expect(store.responseTransportAttached.value).toBe(false);
+      expect(store.streaming.value).toBe(true);
+      expect(store.runLivenessUnknown.value).toBe(false);
       store.runEngine.recoverActiveSupervisors();
 
       await vi.waitFor(() => expect(store.endpoints.response).toHaveBeenCalledOnce());
@@ -2635,6 +2883,53 @@ describe('AppStore compatibility behavior', () => {
       activeRun: true,
       activeResponseId: 'newly-admitted-response',
     });
+    expect(store.streaming.value).toBe(true);
+    expect(internals.resumeResponse).not.toHaveBeenCalled();
+  });
+
+  it('rejects an active status snapshot from an older response generation', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [{ ...session(), activeRun: true, activeResponseId: 'r-old' }];
+    store.activeSessionId.value = 's1';
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'r-old',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'streaming',
+        lastSequence: 3,
+        startedRev: 1,
+        reconnects: 0,
+      }),
+    };
+    const status = deferred<Record<string, unknown>>();
+    store.endpoints.sessionStatus = vi.fn(() => status.promise);
+    const internals = store as unknown as {
+      refreshStatus(): Promise<void>;
+      resumeResponse(sessionId: string, responseId: string): Promise<void>;
+    };
+    internals.resumeResponse = vi.fn(async () => undefined);
+
+    const refresh = internals.refreshStatus();
+    store.sessions.value = [{ ...session(), activeRun: true, activeResponseId: 'r-new' }];
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'r-new',
+        sessionId: 's1',
+        epoch: 2,
+        status: 'connecting',
+        lastSequence: 0,
+        startedRev: 2,
+        reconnects: 0,
+      }),
+    };
+    status.resolve({
+      sessions: [{ id: 's1', active_run: true, active_response_id: 'r-old' }],
+    });
+    await refresh;
+
+    expect(store.sessions.value[0]).toMatchObject({ activeRun: true, activeResponseId: 'r-new' });
+    expect(store.runs.value.s1.run.responseId).toBe('r-new');
     expect(store.streaming.value).toBe(true);
     expect(internals.resumeResponse).not.toHaveBeenCalled();
   });

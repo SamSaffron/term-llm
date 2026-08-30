@@ -251,16 +251,14 @@ test('sends through public composer UI and reduces a streamed response', async (
   ).toBe(true);
 });
 
-test('drops the stop control when a response transport ends before completion', async ({
-  page,
-}) => {
+test('keeps running controls while a response transport reconnects', async ({ page }) => {
   const requests = await open(page, '', { holdStream: true });
   await page.getByRole('textbox', { name: 'Message' }).fill('Long request');
   await page.getByRole('button', { name: 'Send message' }).click();
-  await expect(page.locator('#stopBtn')).toBeHidden();
-  await expect(page.getByRole('status', { name: 'Response status is unknown' })).toContainText(
-    'Response stream interrupted',
-  );
+  await expect(page.locator('#stopBtn')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Response is running' })).toBeEnabled();
+  await expect(page.getByPlaceholder('Type to interject…')).toBeVisible();
+  await expect(page.getByRole('status', { name: 'Response status is unknown' })).toBeHidden();
   expect(
     requests.some(
       (entry) => entry.method === 'POST' && entry.url.endsWith('/v1/responses/r1/cancel'),

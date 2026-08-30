@@ -2,7 +2,7 @@
 
 .toast-region {
   position: fixed;
-  z-index: 900;
+  z-index: var(--z-toast);
   top: calc(0.75rem + var(--safe-top));
   right: calc(0.75rem + var(--safe-right));
   display: flex;

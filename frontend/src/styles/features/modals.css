@@ -8,7 +8,7 @@
   opacity: 0;
   pointer-events: none;
   transition: opacity var(--panel-fade-duration) ease;
-  z-index: 15;
+  z-index: var(--z-sidebar-backdrop);
 }
 
 .sidebar-backdrop.open {
@@ -22,7 +22,7 @@
   width: 100%;
   height: var(--app-height);
   background: var(--overlay);
-  z-index: 60;
+  z-index: var(--z-dialog);
   display: flex;
   align-items: center;
   justify-content: center;

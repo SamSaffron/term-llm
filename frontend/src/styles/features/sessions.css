@@ -343,7 +343,7 @@
   border: 1px solid var(--border);
   background: var(--surface);
   box-shadow: var(--shadow-strong);
-  z-index: 5;
+  z-index: var(--z-local-popover);
   overflow-y: auto;
   overscroll-behavior: contain;
 }

@@ -194,8 +194,12 @@ export class AppStore {
   readonly activeSession: ReadonlySignal<Session | null>;
   readonly activeProjection: ReadonlySignal<ResponseProjection | null>;
   readonly visibleMessages: ReadonlySignal<Message[]>;
+  readonly responseTransportAttached: ReadonlySignal<boolean>;
+  readonly runActive: ReadonlySignal<boolean>;
   readonly streaming: ReadonlySignal<boolean>;
   readonly runLivenessUnknown: ReadonlySignal<boolean>;
+  readonly canStop: ReadonlySignal<boolean>;
+  readonly canInterject: ReadonlySignal<boolean>;
   readonly sendBlocked: ReadonlySignal<boolean>;
 
   private lifecycleInstalled = false;
@@ -381,8 +385,12 @@ export class AppStore {
     this.fileChangeRevision = this.runEngine.fileChangeRevision;
     this.activeProjection = this.runEngine.activeProjection;
     this.visibleMessages = this.runEngine.visibleMessages;
+    this.responseTransportAttached = this.runEngine.responseTransportAttached;
+    this.runActive = this.runEngine.runActive;
     this.streaming = this.runEngine.streaming;
     this.runLivenessUnknown = this.runEngine.runLivenessUnknown;
+    this.canStop = this.runEngine.canStop;
+    this.canInterject = this.runEngine.canInterject;
     this.sendBlocked = this.runEngine.sendBlocked;
     this.locallyStoppedResponses = this.runEngine.locallyStoppedResponses;
     this.widgetStore = new WidgetStore(this.services);

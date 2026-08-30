@@ -54,7 +54,7 @@
   background: rgb(255 255 255 / 4%);
   border: 2px dashed var(--border-strong);
   border-radius: 8px;
-  z-index: 50;
+  z-index: var(--z-drop-target);
   display: flex;
   align-items: center;
   justify-content: center;

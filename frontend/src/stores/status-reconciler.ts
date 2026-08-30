@@ -156,13 +156,23 @@ export class StatusReconciler {
   }
 
   private statusRequestIsCurrent(metadata: StatusRequestMetadata): boolean {
+    const activeRuns = Object.entries(this.host.runs.peek()).filter(([, projection]) =>
+      ['connecting', 'checking', 'streaming', 'cancelling'].includes(projection.run.status),
+    );
+    const sameRunGeneration =
+      activeRuns.length === Object.keys(metadata.activeResponseIds).length &&
+      activeRuns.every(
+        ([sessionId, projection]) =>
+          metadata.activeResponseIds[sessionId] === projection.run.responseId,
+      );
     return (
       !this.services.isDisposed &&
       metadata.generation === this.coordinator.generation &&
       metadata.selectedSessionId === this.host.activeSessionId.peek() &&
       metadata.selectionEpoch === this.host.selectionEpoch() &&
       metadata.showHidden === this.host.sessionStore.showHidden.peek() &&
-      metadata.categories.join(',') === this.services.config.sidebarCategories.join(',')
+      metadata.categories.join(',') === this.services.config.sidebarCategories.join(',') &&
+      sameRunGeneration
     );
   }
 
@@ -213,13 +223,18 @@ export class StatusReconciler {
           !serverReportsActive && clientReportsActive && !projectedRunWasActiveAtRequest,
         );
         const committedClientMessageId = String(status.client_message_id || '');
-        if (
-          serverActiveResponseId &&
+        const matchesPendingIntent = Boolean(
           committedClientMessageId &&
           this.host.pendingIntents
             .peek()
-            [session.id]?.some((intent) => intent.clientMessageId === committedClientMessageId)
-        ) {
+            [session.id]?.some((intent) => intent.clientMessageId === committedClientMessageId),
+        );
+        const locallyAdmittingResponse = Boolean(
+          serverActiveResponseId &&
+          matchesPendingIntent &&
+          projectedRun?.responseId.startsWith('pending_'),
+        );
+        if (serverActiveResponseId && matchesPendingIntent) {
           followUps.push(() => this.host.retireIntent(session.id, committedClientMessageId));
         }
         const stoppedResponseId = this.host.runs.peek()[session.id]?.run.responseId || '';
@@ -264,7 +279,7 @@ export class StatusReconciler {
                   committedClientMessageId,
                 ),
             );
-          else if (activeResponseId !== session.activeResponseId)
+          else if (activeResponseId !== session.activeResponseId && !locallyAdmittingResponse)
             followUps.push(() => void this.host.resumeResponse(session.id, activeResponseId));
         }
         if (stoppedResponseId && this.host.isLocallyStopped(stoppedResponseId)) {

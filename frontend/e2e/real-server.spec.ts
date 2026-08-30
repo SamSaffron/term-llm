@@ -337,6 +337,47 @@ test('a suspended same-context tab resumes through authoritative reconciliation'
   await second.close();
 });
 
+test('a newly sent plain HTTPS response keeps its owned stream', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'plain HTTPS admission race is covered once');
+  test.setTimeout(30_000);
+  await page.goto('./?new=1&no_webrtc=1');
+  await page.getByRole('textbox', { name: 'Message' }).fill('sleep 5 response transport probe');
+  await page.getByRole('button', { name: 'Send message' }).click();
+
+  await expect(page.locator('#stopBtn')).toBeVisible({ timeout: 5_000 });
+  const unknown = page.getByRole('status', { name: 'Response status is unknown' });
+  await expect(unknown).toBeHidden();
+  await page.waitForTimeout(2_000);
+  await expect(page.locator('#stopBtn')).toBeVisible();
+  await expect(unknown).toBeHidden();
+  await expect(page.getByRole('heading', { name: 'Debug Provider Output' }).last()).toBeVisible({
+    timeout: 15_000,
+  });
+});
+
+test('reloading a running HTTPS session never presents it as idle', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'running-session reload is covered once');
+  test.setTimeout(30_000);
+  await page.goto('./?new=1&no_webrtc=1');
+  await page.getByRole('textbox', { name: 'Message' }).fill('sleep 8 reload running response');
+  await page.getByRole('button', { name: 'Send message' }).click();
+  await expect(page.locator('#stopBtn')).toBeVisible({ timeout: 5_000 });
+
+  await page.reload();
+
+  const unknown = page.getByRole('status', { name: 'Response status is unknown' });
+  await expect(page.locator('#stopBtn')).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByRole('button', { name: 'Response is running' })).toBeEnabled();
+  await expect(page.getByPlaceholder('Type to interject…')).toBeVisible();
+  await expect(unknown).toBeHidden();
+  await page.waitForTimeout(2_000);
+  await expect(page.locator('#stopBtn')).toBeVisible();
+  await expect(unknown).toBeHidden();
+  await expect(page.getByRole('heading', { name: 'Debug Provider Output' }).last()).toBeVisible({
+    timeout: 15_000,
+  });
+});
+
 test('a disconnected mobile response stream cannot keep claiming work is running', async ({
   context,
   page,
@@ -380,9 +421,7 @@ test('a disconnected mobile response stream cannot keep claiming work is running
   await expect.poll(async () => Boolean((await sessionStatus())?.active_run)).toBe(true);
 
   await expect(page.locator('#stopBtn')).toBeHidden({ timeout: 5_000 });
-  await expect(page.getByRole('status', { name: 'Response status is unknown' })).toContainText(
-    'Response stream interrupted',
-  );
+  await expect(page.getByRole('status', { name: 'Response status is unknown' })).toBeHidden();
 
   await expect
     .poll(

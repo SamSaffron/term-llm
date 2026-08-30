@@ -43,6 +43,9 @@ function voiceTime(milliseconds = 0): string {
 
 export function Composer() {
   const store = useStore();
+  const runActive = store.runActive.value;
+  const canStop = store.canStop.value;
+  const canInterject = store.canInterject.value;
   const file = useRef<HTMLInputElement>(null);
   const camera = useRef<HTMLInputElement>(null);
   const attach = useRef<HTMLButtonElement>(null);
@@ -142,7 +145,7 @@ export function Composer() {
     store.prompt.value.slice(0, cursor),
     store.config.agentNames,
     store.skills.value,
-    store.streaming.value,
+    runActive,
   );
   const combined = mention ? [...local, ...mentionCompletions(projectMentions)] : local;
   const completions =
@@ -231,7 +234,7 @@ export function Composer() {
     }
     const skill = liveSkill(value);
     if (skill) {
-      if (store.streaming.value && skill.skill.execution !== 'isolated') {
+      if (runActive && skill.skill.execution !== 'isolated') {
         store.toast('This main-conversation skill cannot run while a response is active.', 'error');
         return;
       }
@@ -240,7 +243,7 @@ export function Composer() {
       return;
     }
     requestTranscriptScrollToTail();
-    if (store.streaming.value) void store.interject(value);
+    if (canInterject) void store.interject(value);
     else void store.send();
   };
   const startVoice = () => {
@@ -265,17 +268,19 @@ export function Composer() {
   const attachmentBlocked = store.attachments.value.some(
     (attachment) => attachment.status === 'preparing' || attachment.status === 'error',
   );
-  const interjecting = store.streaming.value && hasDraft;
-  const loading = store.streaming.value && !hasDraft;
+  const interjecting = canInterject && hasDraft;
+  const loading = runActive && !hasDraft;
   const sendLabel = bindingBlocked
     ? 'Project unavailable'
     : sendPending
       ? 'Sending message'
-      : sendBlocked
-        ? 'Checking whether sent'
-        : interjecting
-          ? 'Interject'
-          : 'Send message';
+      : loading
+        ? 'Response is running'
+        : sendBlocked
+          ? 'Checking whether sent'
+          : interjecting
+            ? 'Interject'
+            : 'Send message';
   const inspectDraggedFiles = (files: FileList | null): string => {
     let count = store.attachments.peek().length;
     for (const candidate of Array.from(files || [])) {
@@ -636,7 +641,7 @@ export function Composer() {
             id="promptInput"
             class="prompt"
             rows={1}
-            placeholder={store.streaming.value ? 'Type to interject…' : 'Message…'}
+            placeholder={runActive ? 'Type to interject…' : 'Message…'}
             aria-label="Message"
             autoComplete="off"
             spellcheck={false}
@@ -711,7 +716,7 @@ export function Composer() {
             }}
           />
           <div class="composer-actions">
-            {store.streaming.value && (
+            {canStop && (
               <button
                 class="stop-btn visible"
                 id="stopBtn"
@@ -741,7 +746,7 @@ export function Composer() {
               title={sendLabel}
               aria-label={sendLabel}
               disabled={
-                sendBlocked ||
+                (sendBlocked && !loading) ||
                 voiceBusy ||
                 bindingBlocked ||
                 attachmentBlocked ||

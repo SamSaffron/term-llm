@@ -5,7 +5,7 @@
   padding: 0.75rem calc(1rem + var(--safe-right)) max(0.3rem, calc(var(--safe-bottom) * 0.35))
     calc(1rem + var(--safe-left));
   position: relative;
-  z-index: 1;
+  z-index: var(--z-local-raised);
 }
 
 .composer-inner {
@@ -211,7 +211,7 @@
   border-radius: 12px;
   background: var(--surface);
   box-shadow: var(--shadow-strong);
-  z-index: 20;
+  z-index: var(--z-floating-panel);
   max-height: min(60dvh, calc(var(--app-height) - var(--safe-top) - 7rem));
   overflow-y: auto;
   overscroll-behavior: contain;
