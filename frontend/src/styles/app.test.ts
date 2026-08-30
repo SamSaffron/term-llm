@@ -15,6 +15,10 @@ function readStylesheet(path: string): string {
 }
 
 const appCSS = readStylesheet(resolve(stylesRoot, 'app.css'));
+const preactOverrides = readFileSync(
+  resolve(stylesRoot, 'integration/preact-overrides.css'),
+  'utf8',
+);
 
 describe('stylesheet manifest', () => {
   it('inlines every module and keeps the Preact integration layer last', () => {
@@ -74,6 +78,20 @@ describe('header styles', () => {
 
   it('gives clipped worktree labels enough line height for descenders', () => {
     expect(appCSS).toMatch(/\.worktree-trigger \.chip-label\s*\{[^}]*line-height: 1\.3;/s);
+  });
+
+  it('keeps the mobile header on one model-priority row', () => {
+    const start = preactOverrides.indexOf('@media (width <= 767px)');
+    const end = preactOverrides.indexOf('@media (hover: none)', start);
+    const mobile = preactOverrides.slice(start, end);
+
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(mobile).toMatch(/\.header-title-row\s*\{[^}]*flex-wrap: nowrap;/s);
+    expect(mobile).toMatch(/\.header-left\s*\{[^}]*flex: 1 1 0;[^}]*min-width: 0;/s);
+    expect(mobile).toMatch(/\.header-title-context\s*\{[^}]*overflow: hidden;/s);
+    expect(mobile).toMatch(/\.header-project-subtitle\s*\{[^}]*display: none;/s);
+    expect(mobile).not.toMatch(/\.header-title-row\s*\{[^}]*flex-wrap: wrap;/s);
   });
 });
 
