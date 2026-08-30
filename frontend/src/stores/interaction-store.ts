@@ -32,8 +32,10 @@ export class InteractionStore {
     requestId: string,
     prompt: ApprovalPrompt | AskUserPrompt,
   ): string {
-    const key = `${sessionId}:${responseId}:${requestId}`;
-    const existing = this.interactions.peek()[key];
+    const discoveredKey = `${sessionId}:${responseId}:${requestId}`;
+    const existing =
+      this.find(kind, sessionId, requestId, responseId) || this.find(kind, sessionId, requestId);
+    const key = existing?.key || discoveredKey;
     const record: InteractionRecord = existing || {
       key,
       sessionId,
@@ -47,7 +49,7 @@ export class InteractionStore {
     };
     this.interactions.value = {
       ...this.interactions.peek(),
-      [key]: { ...record, prompt },
+      [key]: { ...record, responseId: record.responseId || responseId, prompt },
     };
     if (!existing) {
       this.order.value = [...this.order.peek(), key];
@@ -64,7 +66,8 @@ export class InteractionStore {
     outcome: string,
     resolvedAt = Date.now(),
   ): void {
-    const existing = this.find(kind, sessionId, requestId, responseId);
+    const existing =
+      this.find(kind, sessionId, requestId, responseId) || this.find(kind, sessionId, requestId);
     const key = existing?.key || `${sessionId}:${responseId}:${requestId}`;
     const normalized = outcome.replaceAll('_', '-');
     const state: InteractionRecord['state'] =

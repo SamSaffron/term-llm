@@ -49,13 +49,15 @@ describe('InteractionStore', () => {
       questions: [{ header: 'Choice', question: 'Continue?', options: [] }],
     };
     try {
-      interactions.upsert('ask-user', 's1', 'r1', 'ask-1', prompt);
+      interactions.upsert('ask-user', 's1', '', 'ask-1', prompt);
       interactions.upsert('ask-user', 's1', 'r1', 'ask-1', { ...prompt });
       expect(publish).toHaveBeenCalledTimes(1);
+      expect(interactions.order.value).toHaveLength(1);
 
-      interactions.resolve('ask-user', 's1', 'r1', 'ask-1', 'answered', 10);
+      interactions.resolve('ask-user', 's1', 'r2', 'ask-1', 'answered', 10);
       interactions.resolve('ask-user', 's1', 'r1', 'ask-1', 'answered', 20);
       expect(publish).toHaveBeenCalledTimes(2);
+      expect(interactions.order.value).toHaveLength(1);
       expect(interactions.shouldOpen('ask-user', 's1', 'ask-1')).toBe(false);
     } finally {
       app.dispose();
