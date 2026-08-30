@@ -382,6 +382,8 @@ describe('Preact-owned chat surfaces', () => {
 
   it('only animates sidebar groups after a user expands them', async () => {
     const store = createStore();
+    store.projectsEnabled.value = true;
+    store.setSidebarView('projects');
     const projectSession = {
       ...store.sessions.value[0],
       projectId: 'p1',
@@ -2327,6 +2329,7 @@ describe('Preact-owned chat surfaces', () => {
 
   it('opens Assign project without submitting an ancestor form', async () => {
     const store = createStore();
+    store.setSidebarView('projects');
     store.projectsEnabled.value = true;
     store.endpoints.projectAssignment = vi.fn(async () => ({ candidate: null }));
     const submit = vi.fn((event: SubmitEvent) => event.preventDefault());
@@ -2374,6 +2377,7 @@ describe('Preact-owned chat surfaces', () => {
 
   it('adds a newly created project conversation to the sidebar immediately', () => {
     const store = createStore();
+    store.setSidebarView('projects');
     const existing = { ...store.sessions.value[0], projectId: 'p1', projectName: 'Alpha' };
     store.sessions.value = [existing];
     store.projectsEnabled.value = true;
@@ -2451,12 +2455,94 @@ describe('Preact-owned chat surfaces', () => {
     }
   });
 
+  it('switches between deduplicated Recent and Projects views and remembers the choice', async () => {
+    const store = createStore();
+    const pinned = {
+      ...store.sessions.value[0],
+      id: 'pinned',
+      title: 'Pinned work',
+      projectId: 'p1',
+      projectName: 'Alpha',
+      pinned: true,
+    };
+    const projectChat = {
+      ...pinned,
+      id: 'project-chat',
+      title: 'Project work',
+      pinned: false,
+    };
+    const chat = {
+      ...projectChat,
+      id: 'chat',
+      title: 'Loose chat',
+      projectId: undefined,
+      projectName: undefined,
+    };
+    const olderActive = {
+      ...projectChat,
+      id: 'older-active',
+      title: 'Older active work',
+      lastMessageAt: 0,
+      created: 0,
+    };
+    store.sessions.value = [pinned, projectChat, chat, olderActive];
+    store.recentSessions.value = [pinned, projectChat, chat];
+    store.projectsEnabled.value = true;
+    store.projects.value = [
+      { id: 'p1', name: 'Alpha', sessions: [pinned, projectChat, olderActive] },
+    ];
+    store.sessionStore.activate(olderActive);
+
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Sidebar />
+      </StoreContext.Provider>,
+    );
+
+    expect(screen.getByRole('tab', { name: 'Recent' })).toHaveAttribute('aria-selected', 'true');
+    expect(
+      container
+        .querySelector('.sidebar-content')!
+        .compareDocumentPosition(container.querySelector('.sidebar-view-footer')!),
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(screen.queryByRole('heading', { name: 'Projects' })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Pinned work' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Project work' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Loose chat' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Older active work' })).toHaveLength(1);
+    expect(container.querySelector('.sidebar-recent-groups')).toHaveTextContent('Alpha');
+    expect(container.querySelector('.sidebar-recent-groups')).toHaveTextContent('Chat');
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Projects' }));
+    expect(screen.getByRole('heading', { name: 'Projects' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Chat' })).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Pinned work' })).toHaveLength(1);
+    expect(store.storage.getItem(store.keys.sidebarView)).toBe('projects');
+  });
+
+  it('does not add view controls when projects are disabled', () => {
+    const store = createStore();
+    store.projectsEnabled.value = false;
+    store.sessions.value = [{ ...store.sessions.value[0], pinned: true }];
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Sidebar />
+      </StoreContext.Provider>,
+    );
+
+    expect(screen.queryByRole('tablist', { name: 'Conversation view' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Pinned' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: store.sessions.value[0].title })).toBeInTheDocument();
+  });
+
   it('keeps non-empty date sections inside project mode groups', () => {
     vi.useFakeTimers();
     try {
       const now = new Date(2026, 7, 26, 12).getTime();
       vi.setSystemTime(now);
       const store = createStore();
+      store.setSidebarView('projects');
       const base = { ...store.sessions.value[0], projectId: 'p1', projectName: 'Alpha' };
       const projectSessions = [
         { ...base, lastMessageAt: now - 60 * 60 * 1000 },
@@ -2514,6 +2600,7 @@ describe('Preact-owned chat surfaces', () => {
 
   it('auto-loads older sidebar conversations through the pagination sentinels', async () => {
     const store = createStore();
+    store.setSidebarView('projects');
     store.projectsEnabled.value = true;
     store.projects.value = [
       { id: 'p1', name: 'Alpha', sessions: [], has_more: true, next_cursor: 'cursor-1' },
@@ -2528,14 +2615,14 @@ describe('Preact-owned chat surfaces', () => {
     );
     const { container } = view;
     expect(screen.getByRole('heading', { name: 'Projects' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'No project' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Chat' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Project' })).not.toBeInTheDocument();
     expect(container.querySelectorAll('.project-pagination-sentinel')).toHaveLength(2);
     expect(container.querySelector('.sidebar-load-more')).toBeNull();
     await waitFor(() => expect(store.loadMoreProject).toHaveBeenCalledWith('p1'));
     await waitFor(() => expect(store.loadMoreNoProject).toHaveBeenCalled());
 
-    const noProject = screen.getByRole('button', { name: 'No project' });
+    const noProject = screen.getByRole('button', { name: 'Chat' });
     expect(noProject).toHaveAttribute('aria-expanded', 'true');
     await userEvent.click(noProject);
     expect(noProject).toHaveAttribute('aria-expanded', 'false');
@@ -2554,14 +2641,12 @@ describe('Preact-owned chat surfaces', () => {
         <Sidebar />
       </StoreContext.Provider>,
     );
-    expect(screen.getByRole('button', { name: 'No project' })).toHaveAttribute(
-      'aria-expanded',
-      'false',
-    );
+    expect(screen.getByRole('button', { name: 'Chat' })).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('persists the Projects section collapse while keeping its active conversation visible', async () => {
     const store = createStore();
+    store.setSidebarView('projects');
     const active = { ...store.sessions.value[0], projectId: 'p1', projectName: 'Alpha' };
     store.sessions.value = [active];
     store.projectsEnabled.value = true;
@@ -2610,6 +2695,7 @@ describe('Preact-owned chat surfaces', () => {
 
   it('preserves sibling sidebar expansion choices when toggles are changed in sequence', async () => {
     const store = createStore();
+    store.setSidebarView('projects');
     store.projectsEnabled.value = true;
     store.projects.value = [
       { id: 'p1', name: 'Alpha', sessions: [] },
@@ -2623,7 +2709,7 @@ describe('Preact-owned chat surfaces', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Alpha' }));
     await userEvent.click(screen.getByRole('button', { name: 'Beta' }));
-    await userEvent.click(screen.getByRole('button', { name: 'No project' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Chat' }));
     await userEvent.click(screen.getByRole('button', { name: 'Projects' }));
 
     expect(
@@ -2633,6 +2719,7 @@ describe('Preact-owned chat surfaces', () => {
 
   it('lifts pinned project conversations into the global pinned section', () => {
     const store = createStore();
+    store.setSidebarView('projects');
     const pinned = { ...store.sessions.value[0], projectId: 'p1', pinned: true };
     const regular = {
       ...pinned,
@@ -2665,6 +2752,7 @@ describe('Preact-owned chat surfaces', () => {
 
   it('keeps the active conversation visible when its project is collapsed', async () => {
     const store = createStore();
+    store.setSidebarView('projects');
     const active = { ...store.sessions.value[0], projectId: 'p1' };
     const other = { ...active, id: 's2', title: 'Other conversation' };
     store.sessions.value = [active, other];

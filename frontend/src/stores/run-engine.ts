@@ -630,7 +630,9 @@ export class RunEngine {
     const remaining = this.sessionStore.sessions.value.filter(
       (entry) => entry.id !== oldID && entry.id !== id,
     );
-    this.sessionStore.replace([this.sessionStore.mergeSession(duplicate, updated), ...remaining]);
+    const merged = this.sessionStore.mergeSession(duplicate, updated);
+    this.sessionStore.replace([merged, ...remaining]);
+    this.sessionStore.rekeyRecent(oldID, merged);
     const projection = this.runs.value[oldID];
     const next = { ...this.runs.value };
     delete next[oldID];

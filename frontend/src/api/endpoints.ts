@@ -27,6 +27,10 @@ export const endpoints = (api: APIClient) => ({
     api.get<Record<string, unknown>>(
       `/v1/sidebar?per_project=12&include_archived_projects=1&include_archived_sessions=${hidden ? '1' : '0'}`,
     ),
+  recentSessions: (cursor: string, hidden: boolean) =>
+    api.get<Record<string, unknown>>(
+      `/v1/sessions?scope=all${cursor ? `&cursor=${encoded(cursor)}` : ''}&limit=30&include_archived=${hidden ? '1' : '0'}`,
+    ),
   projectSessions: (projectId: string, cursor: string, hidden: boolean) =>
     api.get<Record<string, unknown>>(
       `/v1/sessions?project_id=${encoded(projectId)}&cursor=${encoded(cursor)}&limit=12&include_archived=${hidden ? '1' : '0'}`,

@@ -62,18 +62,30 @@ type ProjectUpdate struct {
 
 type ProjectSessionCursor struct {
 	ProjectID  string    `json:"g"`
+	Scope      string    `json:"s,omitempty"`
 	Pinned     bool      `json:"p"`
 	ActivityAt time.Time `json:"a"`
 	Number     int64     `json:"n"`
 }
 
-func EncodeProjectSessionCursor(summary SessionSummary) string {
+func encodeProjectSessionCursor(summary SessionSummary, scope string) string {
 	activity := summary.LastMessageAt
 	if activity.IsZero() {
 		activity = summary.CreatedAt
 	}
-	data, _ := json.Marshal(ProjectSessionCursor{ProjectID: summary.ProjectID, Pinned: summary.Pinned, ActivityAt: activity, Number: summary.Number})
+	data, _ := json.Marshal(ProjectSessionCursor{ProjectID: summary.ProjectID, Scope: scope, Pinned: summary.Pinned, ActivityAt: activity, Number: summary.Number})
 	return base64.RawURLEncoding.EncodeToString(data)
+}
+
+func EncodeProjectSessionCursor(summary SessionSummary) string {
+	return encodeProjectSessionCursor(summary, "")
+}
+
+func EncodeRecentSessionCursor(summary SessionSummary) string {
+	// A scope marker prevents an ungrouped cursor from being reused for the
+	// cross-project Recent feed: both deliberately clear ProjectID.
+	summary.ProjectID = ""
+	return encodeProjectSessionCursor(summary, "all")
 }
 
 func DecodeProjectSessionCursor(value string) (ProjectSessionCursor, error) {
@@ -82,7 +94,7 @@ func DecodeProjectSessionCursor(value string) (ProjectSessionCursor, error) {
 	if err != nil {
 		return cursor, fmt.Errorf("decode project cursor: %w", err)
 	}
-	if err := json.Unmarshal(data, &cursor); err != nil || cursor.Number <= 0 || cursor.ActivityAt.IsZero() {
+	if err := json.Unmarshal(data, &cursor); err != nil || cursor.Number <= 0 || cursor.ActivityAt.IsZero() || (cursor.Scope != "" && cursor.Scope != "all") {
 		return ProjectSessionCursor{}, fmt.Errorf("invalid project cursor")
 	}
 	return cursor, nil

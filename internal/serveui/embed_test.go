@@ -32,10 +32,11 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// Notification reconciliation/outbox messaging, the owned mobile voice
 		// state machine, gallery/diff navigation, focused store modules, the
 		// safe-point branch workflow, interactive worktree conflict recovery,
-		// replayable SSE/long-poll server-event coordination, and branch-tree
-		// navigation are first-party shell code. Keep bounded headroom over that
-		// productized baseline while still failing meaningful accidental regressions.
-		"dist/app.js":  {raw: 417_000, gzip: 124_000},
+		// replayable SSE/long-poll server-event coordination, branch-tree
+		// navigation, and the paginated Recent/Projects sidebar are first-party
+		// shell code. Keep bounded headroom over that productized baseline while
+		// still failing meaningful accidental regressions.
+		"dist/app.js":  {raw: 418_000, gzip: 124_000},
 		"dist/app.css": {raw: 160_000, gzip: 30_500},
 	}
 	for name, budget := range budgets {

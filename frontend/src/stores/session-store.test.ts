@@ -307,6 +307,7 @@ describe('SessionStore', () => {
   it('removes the old active draft row when rekeying a session', () => {
     const store = new AppStore(testConfig);
     try {
+      store.projectsEnabled.value = true;
       const draft = testSession({ id: 'draft_x', title: 'Draft convo' });
       store.sessionStore.prepend(draft);
       store.sessionStore.activate(draft);
@@ -314,6 +315,8 @@ describe('SessionStore', () => {
       store.runEngine.rekeySession('draft_x', 's9', { id: 's9', title: 'Durable convo' });
 
       expect(store.sessions.value.map((session) => session.id)).not.toContain('draft_x');
+      expect(store.recentSessions.value.map((session) => session.id)).toEqual(['s9']);
+      expect(store.recentSessions.value[0].title).toBe('Durable convo');
       expect(store.activeSessionId.value).toBe('s9');
     } finally {
       store.dispose();

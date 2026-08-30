@@ -11,6 +11,8 @@ import {
   sessionFrom as sanitizeSessionFrom,
 } from './store-utils';
 
+export type SidebarView = 'recent' | 'projects';
+
 function semanticEqual(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) return true;
   if (Array.isArray(left) || Array.isArray(right))
@@ -51,6 +53,9 @@ export interface SessionStoreHost {
 /** Owns session/project catalog state, sidebar loading, search, and catalog mutations. */
 export class SessionStore {
   readonly sessions = signal<Session[]>([]);
+  readonly recentSessions = signal<Session[]>([]);
+  readonly recentCursor = signal('');
+  readonly sidebarView: Signal<SidebarView>;
   readonly projects = signal<Project[]>([]);
   readonly noProjectCursor = signal('');
   readonly projectsEnabled = signal(false);
@@ -78,6 +83,7 @@ export class SessionStore {
   private sidebarGeneration = 0;
   private lastAppliedSidebarGeneration = 0;
   private sidebarRefreshPromise: Promise<void> | null = null;
+  private recentTailLoaded = false;
   private hubAgentLastFetch = 0;
   private hubAgentFetch: Promise<void> | null = null;
 
@@ -87,6 +93,9 @@ export class SessionStore {
   ) {
     this.sidebarCollapsed = signal(
       services.storage.getItem(services.keys.sidebarCollapsed) === '1',
+    );
+    this.sidebarView = signal(
+      services.storage.getItem(services.keys.sidebarView) === 'projects' ? 'projects' : 'recent',
     );
     this.showHidden = signal(services.storage.getItem(services.keys.showHiddenSessions) === '1');
   }
@@ -111,12 +120,35 @@ export class SessionStore {
     if (!sameIdentityList(this.sessions.peek(), sessions)) this.sessions.value = sessions;
   }
 
+  rekeyRecent(oldID: string, replacement: Session): void {
+    if (!this.recentSessions.peek().some((session) => session.id === oldID)) return;
+    this.recentSessions.value = this.recentSessions
+      .peek()
+      .map((session) => (session.id === oldID ? replacement : session))
+      .filter(
+        (session, index, entries) =>
+          entries.findIndex((candidate) => candidate.id === session.id) === index,
+      )
+      .sort(compareSessionsByActivity);
+  }
+
   prepend(session: Session): void {
     this.sessions.value = [session, ...this.sessions.peek()];
+    if (this.projectsEnabled.peek()) {
+      this.recentSessions.value = [
+        session,
+        ...this.recentSessions.peek().filter((entry) => entry.id !== session.id),
+      ].sort(compareSessionsByActivity);
+    }
   }
 
   find(id: string): Session | undefined {
     return this.sessions.peek().find((session) => session.id === id);
+  }
+
+  setSidebarView(view: SidebarView): void {
+    this.sidebarView.value = view;
+    this.services.storage.setItem(this.services.keys.sidebarView, view);
   }
 
   activate(session: Session): void {
@@ -186,6 +218,10 @@ export class SessionStore {
     const direct = listFrom(data, 'data', 'sessions', 'items').map((entry) =>
       this.sessionFrom(entry),
     );
+    const recent = listFrom(data, 'recent_sessions').map((entry) => this.sessionFrom(entry));
+    const recentCursor = String(data.recent_next_cursor || '');
+    const previousRecent = this.recentSessions.peek();
+    const previousRecentIDs = new Set(previousRecent.map((session) => session.id));
     const groups = listFrom(data, 'groups');
     const projects: Project[] = [];
     const ungrouped: Session[] = [...direct];
@@ -231,7 +267,11 @@ export class SessionStore {
       };
       projects.push(project);
     }
-    const incoming = [...ungrouped, ...projects.flatMap((project) => project.sessions || [])];
+    const incoming = [
+      ...recent,
+      ...ungrouped,
+      ...projects.flatMap((project) => project.sessions || []),
+    ];
     const existing = new Map(this.sessions.peek().map((session) => [session.id, session]));
     const merged = new Map(
       incoming.map((session) => {
@@ -246,10 +286,34 @@ export class SessionStore {
       const incompletePage = session.projectId
         ? incompleteProjectIDs.has(session.projectId)
         : noProjectPageIncomplete;
-      if (!merged.has(id) && (incompletePage || this.retainedLocally(id))) merged.set(id, session);
+      const incompleteRecentPage = Boolean(recentCursor) && previousRecentIDs.has(id);
+      if (!merged.has(id) && (incompletePage || incompleteRecentPage || this.retainedLocally(id)))
+        merged.set(id, session);
     }
     const nextSessions = [...merged.values()].sort(compareSessionsByActivity);
     if (!sameIdentityList(this.sessions.peek(), nextSessions)) this.sessions.value = nextSessions;
+
+    const listedRecent = recent.map((session) => merged.get(session.id) || session);
+    if (recentCursor) {
+      const listed = new Set(listedRecent.map((session) => session.id));
+      for (const previous of previousRecent) {
+        const preserved = merged.get(previous.id);
+        if (preserved && !listed.has(previous.id)) {
+          listedRecent.push(preserved);
+          listed.add(previous.id);
+        }
+      }
+    }
+    listedRecent.sort(compareSessionsByActivity);
+    if (!sameIdentityList(previousRecent, listedRecent)) {
+      this.recentSessions.value = listedRecent;
+    }
+    if (!recentCursor) {
+      this.recentCursor.value = '';
+      this.recentTailLoaded = false;
+    } else if (!this.recentTailLoaded) {
+      this.recentCursor.value = recentCursor;
+    }
 
     const existingProjects = new Map(this.projects.peek().map((project) => [project.id, project]));
     const nextProjects = projects.map((project) => {
@@ -365,6 +429,7 @@ export class SessionStore {
         return keepVisible ? [{ ...entry, archived }] : [];
       });
     this.sessions.value = reconcile(this.sessions.peek());
+    this.recentSessions.value = reconcile(this.recentSessions.peek());
     this.projects.value = this.projects.peek().map((project) => {
       const contained = Boolean(project.sessions?.some((entry) => entry.id === session.id));
       if (!contained) return project;
@@ -446,6 +511,23 @@ export class SessionStore {
       title: String(data.generated_short_title || data.short_title || session.title || ''),
       detail: String(data.generated_long_title || data.long_title || session.longTitle || ''),
     };
+  }
+
+  async loadMoreRecent(): Promise<void> {
+    const cursor = this.recentCursor.peek();
+    if (!cursor) return;
+    const data = await this.services.endpoints.recentSessions(cursor, this.showHidden.value);
+    const incoming = listFrom(data, 'sessions', 'items').map((entry) => this.sessionFrom(entry));
+    const existing = new Map(this.sessions.peek().map((entry) => [entry.id, entry]));
+    incoming.forEach((entry) =>
+      existing.set(entry.id, this.mergeSession(existing.get(entry.id), entry, false, true)),
+    );
+    this.sessions.value = [...existing.values()].sort(compareSessionsByActivity);
+    const recent = new Map(this.recentSessions.peek().map((entry) => [entry.id, entry]));
+    incoming.forEach((entry) => recent.set(entry.id, existing.get(entry.id) || entry));
+    this.recentSessions.value = [...recent.values()].sort(compareSessionsByActivity);
+    this.recentCursor.value = String(data.next_cursor || '');
+    this.recentTailLoaded = true;
   }
 
   async loadMoreProject(projectId: string): Promise<void> {

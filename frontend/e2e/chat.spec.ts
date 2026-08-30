@@ -50,8 +50,10 @@ async function mockAPI(
         object: 'list',
         data: [{ id: model, owned_by: 'openai', reasoning_efforts: ['low', 'medium', 'high'] }],
       });
-    if (path.endsWith('/v1/sidebar'))
-      return json({ sessions: [session('s1', 'First chat', 1), session('s2', 'Second chat', 2)] });
+    if (path.endsWith('/v1/sidebar')) {
+      const sessions = [session('s1', 'First chat', 1), session('s2', 'Second chat', 2)];
+      return json({ sessions, recent_sessions: sessions });
+    }
     if (path.endsWith('/v1/sessions/status')) return json({ sessions: [] });
     if (path.endsWith('/v1/sessions') && url.searchParams.get('selected_only') === '1') {
       const id = url.searchParams.get('selected_session') || 's1';

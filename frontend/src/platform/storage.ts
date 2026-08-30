@@ -20,6 +20,7 @@ export const STORAGE_BASE_KEYS = {
   pendingIntents: 'term_llm_pending_intent',
   diffCommentQueue: 'term_llm_diff_comment_queue',
   projectExpansion: 'term_llm_project_expansion',
+  sidebarView: 'term_llm_sidebar_view',
   agentReadMarkers: 'term_llm_agent_read_marker',
   lastProject: 'term_llm_last_project',
 } as const;

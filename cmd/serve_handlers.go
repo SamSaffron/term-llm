@@ -1362,12 +1362,23 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 			strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_archived")), "true")
 
 		projectID := strings.TrimSpace(r.URL.Query().Get("project_id"))
+		scope := strings.TrimSpace(r.URL.Query().Get("scope"))
+		if scope != "" && scope != "all" {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "unsupported session scope")
+			return
+		}
+		allProjects := scope == "all"
+		if allProjects && projectID != "" {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "scope=all cannot be combined with project_id")
+			return
+		}
 		projectCursorValue := strings.TrimSpace(r.URL.Query().Get("cursor"))
 		var projectCursor *session.ProjectSessionCursor
 		if projectCursorValue != "" {
 			cursor, decodeErr := session.DecodeProjectSessionCursor(projectCursorValue)
-			if decodeErr != nil || cursor.ProjectID != projectID {
-				writeProjectError(w, http.StatusBadRequest, "invalid_cursor", "session cursor does not belong to this project group")
+			wrongScope := (allProjects && cursor.Scope != "all") || (!allProjects && cursor.Scope == "all")
+			if decodeErr != nil || cursor.ProjectID != projectID || wrongScope {
+				writeProjectError(w, http.StatusBadRequest, "invalid_cursor", "session cursor does not belong to this session listing")
 				return
 			}
 			projectCursor = &cursor
@@ -1381,7 +1392,7 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 		// Ungrouped pages cover the project-less sessions (the "No project"
 		// sidebar group) while projects are enabled, and every session when
 		// projects are disabled and the sidebar is one flat list.
-		noProject := paged && projectID == "" && s.projectsEnabled
+		noProject := paged && projectID == "" && s.projectsEnabled && !allProjects
 		limit := 100
 		if paged {
 			limit = 13
@@ -1408,12 +1419,16 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 		if paged && len(sessions) == limit {
 			pageSize := limit - 1
 			boundary := sessions[pageSize-1]
-			if projectID == "" {
-				// Ungrouped-listing cursors stay bound to the ungrouped listing
-				// even when the boundary session carries a legacy project ID.
-				boundary.ProjectID = ""
+			if allProjects {
+				nextCursor = session.EncodeRecentSessionCursor(boundary)
+			} else {
+				if projectID == "" {
+					// Ungrouped-listing cursors stay bound to the ungrouped listing
+					// even when the boundary session carries a legacy project ID.
+					boundary.ProjectID = ""
+				}
+				nextCursor = session.EncodeProjectSessionCursor(boundary)
 			}
-			nextCursor = session.EncodeProjectSessionCursor(boundary)
 			sessions = sessions[:pageSize]
 		}
 	}

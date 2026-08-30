@@ -687,6 +687,73 @@ describe('AppStore compatibility behavior', () => {
     ]);
   });
 
+  it('persists and paginates the cross-project Recent view without duplicating rows', async () => {
+    const store = new AppStore(config);
+    expect(store.sidebarView.value).toBe('recent');
+    store.setSidebarView('projects');
+    expect(localStorage.getItem(store.keys.sidebarView)).toBe('projects');
+    expect(new AppStore(config).sidebarView.value).toBe('projects');
+
+    store.projectsEnabled.value = true;
+    store.endpoints.sidebar = vi.fn(async () => ({
+      groups: [
+        {
+          project: { id: 'p1', name: 'Alpha' },
+          sessions: [{ id: 's1', title: 'First', created_at: 3, last_message_at: 3 }],
+        },
+      ],
+      recent_sessions: [
+        {
+          id: 's1',
+          title: 'First',
+          project_id: 'p1',
+          project_name: 'Alpha',
+          created_at: 3,
+          last_message_at: 3,
+        },
+        { id: 's2', title: 'Second', created_at: 2, last_message_at: 2 },
+      ],
+      recent_next_cursor: 'recent-cursor',
+    }));
+    await store.refreshSidebar();
+    expect(store.recentSessions.value.map((session) => session.id)).toEqual(['s1', 's2']);
+    expect(store.sessions.value.map((session) => session.id)).toEqual(['s1', 's2']);
+    expect(store.recentCursor.value).toBe('recent-cursor');
+
+    store.endpoints.recentSessions = vi.fn(async () => ({
+      sessions: [
+        { id: 's2', title: 'Second', created_at: 2, last_message_at: 2 },
+        { id: 's3', title: 'Third', created_at: 1, last_message_at: 1 },
+      ],
+      next_cursor: 'deep-cursor',
+    }));
+    await store.loadMoreRecent();
+    expect(store.endpoints.recentSessions).toHaveBeenCalledWith('recent-cursor', false);
+    expect(store.recentSessions.value.map((session) => session.id)).toEqual(['s1', 's2', 's3']);
+    expect(store.recentCursor.value).toBe('deep-cursor');
+
+    store.sessionStore.applySidebar({
+      groups: [
+        {
+          project: { id: 'p1', name: 'Alpha' },
+          sessions: [{ id: 's1', title: 'First', created_at: 4, last_message_at: 4 }],
+        },
+      ],
+      recent_sessions: [
+        { id: 's1', title: 'First', created_at: 4, last_message_at: 4 },
+        { id: 's2', title: 'Second', created_at: 2, last_message_at: 2 },
+      ],
+      recent_next_cursor: 'refreshed-first-page-cursor',
+    });
+    expect(store.recentSessions.value.map((session) => session.id)).toEqual(['s1', 's2', 's3']);
+    expect(store.recentCursor.value).toBe('deep-cursor');
+
+    store.endpoints.recentSessions = vi.fn(async () => ({ sessions: [] }));
+    await store.loadMoreRecent();
+    expect(store.endpoints.recentSessions).toHaveBeenCalledWith('deep-cursor', false);
+    expect(store.recentCursor.value).toBe('');
+  });
+
   it('paginates the no-project sidebar group with the cursor from the sidebar payload', async () => {
     const store = new AppStore(config);
     store.projectsEnabled.value = true;

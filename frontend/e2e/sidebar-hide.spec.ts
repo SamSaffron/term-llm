@@ -241,6 +241,7 @@ test('keeps paginated no-project scroll stable when hiding conversation #40', as
   );
   await page.setViewportSize({ width: 480, height: 600 });
   const controls = await mockSidebarAPI(page);
+  await page.addInitScript(() => localStorage.setItem('term_llm_sidebar_view', 'projects'));
   await page.goto('./');
   await expect(page.locator('#startupSplash')).toBeHidden({ timeout: 10_000 });
   await page.getByRole('button', { name: 'Open sidebar' }).click();

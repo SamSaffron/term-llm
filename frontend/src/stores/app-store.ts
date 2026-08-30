@@ -44,7 +44,7 @@ import { ReviewStore } from './review-store';
 import { TabSyncCoordinator } from './tab-sync-coordinator';
 import { ServerEventCoordinator } from './server-event-coordinator';
 import { ComposerStore } from './composer-store';
-import { SessionStore } from './session-store';
+import { SessionStore, type SidebarView } from './session-store';
 import { SkillStore } from './skill-store';
 import { StatusReconciler } from './status-reconciler';
 import { RunEngine } from './run-engine';
@@ -100,6 +100,9 @@ export class AppStore {
   readonly notificationController: NotificationController;
 
   readonly sessions: Signal<Session[]>;
+  readonly recentSessions: Signal<Session[]>;
+  readonly recentCursor: Signal<string>;
+  readonly sidebarView: Signal<SidebarView>;
   readonly projects: Signal<Project[]>;
   readonly noProjectCursor: Signal<string>;
   readonly projectsEnabled: Signal<boolean>;
@@ -235,6 +238,9 @@ export class AppStore {
       newChat: (replace, projectId) => this.newChat(replace, projectId),
     });
     this.sessions = this.sessionStore.sessions;
+    this.recentSessions = this.sessionStore.recentSessions;
+    this.recentCursor = this.sessionStore.recentCursor;
+    this.sidebarView = this.sessionStore.sidebarView;
     this.projects = this.sessionStore.projects;
     this.noProjectCursor = this.sessionStore.noProjectCursor;
     this.projectsEnabled = this.sessionStore.projectsEnabled;
@@ -1245,6 +1251,14 @@ export class AppStore {
 
   async mutateTranscript(operation: 'undo' | 'redo'): Promise<void> {
     await this.selectionStore.mutateTranscript(operation);
+  }
+
+  setSidebarView(view: SidebarView): void {
+    this.sessionStore.setSidebarView(view);
+  }
+
+  async loadMoreRecent(): Promise<void> {
+    await this.sessionStore.loadMoreRecent();
   }
 
   async loadMoreProject(projectId: string): Promise<void> {

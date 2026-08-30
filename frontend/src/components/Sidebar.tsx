@@ -5,6 +5,7 @@ import type { Project, Session } from '../domain/types';
 import { displayName } from '../app/config';
 import { readJSON, writeJSON } from '../platform/storage';
 import { overlayManager } from '../platform/overlay-manager';
+import { compareSessionsByActivity } from '../stores/store-utils';
 import { Icon } from './Icon';
 import { trapOverlayFocus } from './Overlay';
 import { useMenuKeyboard } from './Menu';
@@ -220,7 +221,7 @@ function SessionMenu({ session, onHide }: { session: Session; onHide: () => void
   );
 }
 
-function SessionRow({ session }: { session: Session }) {
+function SessionRow({ session, showProject = false }: { session: Session; showProject?: boolean }) {
   const store = useStore();
   const row = useRef<HTMLDivElement>(null);
   const [hiding, setHiding] = useState(false);
@@ -270,6 +271,12 @@ function SessionRow({ session }: { session: Session }) {
         <span class="session-meta" title={new Date(activityAt).toLocaleString()}>
           {messageCount} {messageCount === 1 ? 'message' : 'messages'} ·{' '}
           {sessionRelativeTime(activityAt)}
+          {showProject && (
+            <>
+              {' · '}
+              <span class="session-project-context">{session.projectName || 'Chat'}</span>
+            </>
+          )}
         </span>
       </button>
       <SessionMenu session={session} onHide={hide} />
@@ -280,9 +287,11 @@ function SessionRow({ session }: { session: Session }) {
 function SessionDateGroups({
   sessions,
   nested = false,
+  showProject = false,
 }: {
   sessions: Session[];
   nested?: boolean;
+  showProject?: boolean;
 }) {
   const labels = ['Today', 'Yesterday', 'This week', 'Older'] as const;
   return (
@@ -296,14 +305,14 @@ function SessionDateGroups({
           <section class="session-date-group" key={label}>
             <h4>{label}</h4>
             {entries.map((session) => (
-              <SessionRow key={session.id} session={session} />
+              <SessionRow key={session.id} session={session} showProject={showProject} />
             ))}
           </section>
         ) : (
           <section class="session-group" key={label}>
             <h3>{label}</h3>
             {entries.map((session) => (
-              <SessionRow key={session.id} session={session} />
+              <SessionRow key={session.id} session={session} showProject={showProject} />
             ))}
           </section>
         );
@@ -392,7 +401,7 @@ function NoProjectGroup({ sessions }: { sessions: Session[] }) {
   const activeSession = sessions.find((session) => session.id === store.activeSessionId.value);
   return (
     <section class="session-group session-ungrouped">
-      <CollapsibleSectionHeading label="No project" open={open} onToggle={toggle} />
+      <CollapsibleSectionHeading label="Chat" open={open} onToggle={toggle} />
       {open ? (
         <div
           class={`session-group-list ${opening ? 'is-opening' : ''}`}
@@ -659,6 +668,50 @@ function HubAgents() {
   );
 }
 
+function SidebarViewSwitch({ disabled = false }: { disabled?: boolean }) {
+  const store = useStore();
+  const view = store.sidebarView.value;
+  const select = (next: 'recent' | 'projects') => store.setSidebarView(next);
+  const onKeyDown = (event: KeyboardEvent) => {
+    let next: 'recent' | 'projects' | undefined;
+    if (event.key === 'ArrowLeft' || event.key === 'Home') next = 'recent';
+    if (event.key === 'ArrowRight' || event.key === 'End') next = 'projects';
+    if (!next) return;
+    event.preventDefault();
+    select(next);
+    (event.currentTarget as HTMLDivElement)
+      .querySelector<HTMLButtonElement>(`[data-sidebar-view="${next}"]`)
+      ?.focus();
+  };
+  return (
+    <div
+      class="sidebar-view-switch"
+      role="tablist"
+      aria-label="Conversation view"
+      onKeyDown={onKeyDown}
+    >
+      {(['recent', 'projects'] as const).map((option) => (
+        <button
+          key={option}
+          id={`sidebarView${option === 'recent' ? 'Recent' : 'Projects'}`}
+          class={view === option ? 'active' : ''}
+          data-sidebar-view={option}
+          type="button"
+          role="tab"
+          aria-selected={view === option}
+          aria-disabled={disabled || undefined}
+          aria-controls="sessionGroups"
+          disabled={disabled}
+          tabIndex={view === option ? 0 : -1}
+          onClick={() => select(option)}
+        >
+          {option === 'recent' ? 'Recent' : 'Projects'}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function isSidebarSessionVisible(session: Session): boolean {
   // TUI-origin sessions include native background-agent runs. They remain
   // addressable directly and through spawn-agent links, but should not make a
@@ -706,18 +759,36 @@ export function Sidebar() {
   const standalone = store.sessions.value.filter(
     (session) => !session.projectId && isSidebarSessionVisible(session),
   );
+  const sessionByID = new Map(store.sessions.value.map((session) => [session.id, session]));
+  const recent = store.recentSessions.value
+    .map((summary) => sessionByID.get(summary.id) || summary)
+    .filter(isSidebarSessionVisible);
+  const activeRecent = store.activeSession.value;
+  if (
+    store.projectsEnabled.value &&
+    activeRecent &&
+    isSidebarSessionVisible(activeRecent) &&
+    !recent.some((session) => session.id === activeRecent.id)
+  )
+    recent.push(activeRecent);
+  recent.sort(compareSessionsByActivity);
   const sidebarSessions = [
     ...store.sessions.value,
     ...store.projects.value.flatMap((project) => project.sessions || []),
   ].filter(isSidebarSessionVisible);
   const results = store.searchResults.value;
   const brand = store.config.title.trim() || displayName(store.config.agentName);
-  const pinned = sidebarSessions.filter(
-    (session, index) =>
-      session.pinned &&
-      sidebarSessions.findIndex((candidate) => candidate.id === session.id) === index,
-  );
+  const sidebarView = store.projectsEnabled.value ? store.sidebarView.value : 'recent';
+  const visibleForView =
+    store.projectsEnabled.value && sidebarView === 'recent' ? recent : sidebarSessions;
+  const pinnedIDs = new Set<string>();
+  const pinned = visibleForView.filter((session) => {
+    if (!session.pinned || pinnedIDs.has(session.id)) return false;
+    pinnedIDs.add(session.id);
+    return true;
+  });
   const regular = standalone.filter((session) => !session.pinned);
+  const recentRegular = recent.filter((session) => !session.pinned);
   const newChat = () => {
     store.newChat();
     store.sidebarOpen.value = false;
@@ -855,7 +926,18 @@ export function Sidebar() {
               )}
               {store.hubAgents.value.length > 0 && <HubAgents />}
             </div>
-            <div class="session-groups" id="sessionGroups">
+            <div
+              class="session-groups"
+              id="sessionGroups"
+              role={store.projectsEnabled.value && !results ? 'tabpanel' : undefined}
+              aria-labelledby={
+                store.projectsEnabled.value && !results
+                  ? sidebarView === 'recent'
+                    ? 'sidebarViewRecent'
+                    : 'sidebarViewProjects'
+                  : undefined
+              }
+            >
               {store.searchLoading.value && <div class="sidebar-loading">Searching…</div>}
               {store.searchError.value && (
                 <div class="sidebar-error">
@@ -881,28 +963,49 @@ export function Sidebar() {
                     <section class="session-group sidebar-pinned-group">
                       <h3>Pinned</h3>
                       {pinned.map((session) => (
-                        <SessionRow key={session.id} session={session} />
+                        <SessionRow
+                          key={session.id}
+                          session={session}
+                          showProject={store.projectsEnabled.value && sidebarView === 'recent'}
+                        />
                       ))}
                     </section>
                   )}
-                  {store.projects.value.length > 0 && (
-                    <ProjectsGroup projects={store.projects.value} />
-                  )}
-                  {regular.length > 0 &&
-                    (store.projectsEnabled.value ? (
-                      <NoProjectGroup sessions={regular} />
+                  {store.projectsEnabled.value ? (
+                    sidebarView === 'recent' ? (
+                      <div class="flat-session-date-groups sidebar-recent-groups">
+                        <SessionDateGroups sessions={recentRegular} showProject />
+                        {store.recentCursor.value && (
+                          <PaginationSentinel load={() => store.loadMoreRecent()} />
+                        )}
+                      </div>
                     ) : (
+                      <>
+                        {store.projects.value.length > 0 && (
+                          <ProjectsGroup projects={store.projects.value} />
+                        )}
+                        {regular.length > 0 && <NoProjectGroup sessions={regular} />}
+                      </>
+                    )
+                  ) : (
+                    regular.length > 0 && (
                       <div class="flat-session-date-groups">
                         <SessionDateGroups sessions={regular} />
                         {store.noProjectCursor.value && (
                           <PaginationSentinel load={() => store.loadMoreNoProject()} />
                         )}
                       </div>
-                    ))}
+                    )
+                  )}
                 </>
               )}
             </div>
           </div>
+          {store.projectsEnabled.value && (
+            <div class="sidebar-view-footer">
+              <SidebarViewSwitch disabled={Boolean(results)} />
+            </div>
+          )}
         </div>
       </aside>
       <div

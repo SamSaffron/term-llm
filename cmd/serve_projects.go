@@ -834,6 +834,22 @@ func (s *serveServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
 		writeProjectError(w, http.StatusInternalServerError, "projects_unavailable", "could not load projects and conversations")
 		return
 	}
+	const recentPageSize = 30
+	recent, err := s.store.List(r.Context(), session.ListOptions{
+		Limit:            recentPageSize + 1,
+		Archived:         r.URL.Query().Get("include_archived_sessions") == "1",
+		SortByActivity:   true,
+		ExcludeSubagents: true,
+	})
+	if err != nil {
+		writeProjectError(w, http.StatusInternalServerError, "projects_unavailable", "could not load recent conversations")
+		return
+	}
+	recentNextCursor := ""
+	if len(recent) > recentPageSize {
+		recentNextCursor = session.EncodeRecentSessionCursor(recent[recentPageSize-1])
+		recent = recent[:recentPageSize]
+	}
 	// Availability is intentionally derived rather than persisted.
 	statusCtx, cancelStatus := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancelStatus()
@@ -849,7 +865,15 @@ func (s *serveServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
 			groups[i].Sessions[j].ProviderKey = sessionSummaryProviderKey(s.cfgRef, groups[i].Sessions[j])
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"groups": groups})
+	recentEntries := make([]webSessionEntry, 0, len(recent))
+	for _, summary := range recent {
+		recentEntries = append(recentEntries, s.webSessionEntryFromSummary(summary))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"groups":             groups,
+		"recent_sessions":    recentEntries,
+		"recent_next_cursor": recentNextCursor,
+	})
 }
 
 func sessionProjectCandidateFor(ctx context.Context, persisted *session.Session, projects session.ProjectStore) (*sessionProjectCandidate, error) {

@@ -1344,11 +1344,148 @@ func TestResponseProjectValidationFailsBeforeRuntimeOrProvider(t *testing.T) {
 func TestProjectSessionCursorIsBoundToItsGroup(t *testing.T) {
 	srv, _ := newServeProjectTestServer(t)
 	cursor := session.EncodeProjectSessionCursor(session.SessionSummary{ProjectID: "prj_a", Number: 10, CreatedAt: time.Now()})
-	req := httptest.NewRequest(http.MethodGet, "/v1/sessions?project_id=prj_b&cursor="+cursor, nil)
+	for _, target := range []string{
+		"/v1/sessions?project_id=prj_b&cursor=" + cursor,
+		"/v1/sessions?scope=all&project_id=prj_a",
+		"/v1/sessions?scope=bogus",
+	} {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		rr := httptest.NewRecorder()
+		srv.handleSessions(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("%s status=%d body=%s, want 400", target, rr.Code, rr.Body.String())
+		}
+	}
+}
+
+func TestRecentSessionListingPaginatesAcrossProjects(t *testing.T) {
+	srv, store := newServeProjectTestServer(t)
+	ctx := context.Background()
+	project := &session.Project{Name: "Alpha", CanonicalDir: t.TempDir()}
+	if err := store.CreateProject(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().Add(-time.Hour).Truncate(time.Second)
+	for i := 0; i < 5; i++ {
+		now := base.Add(time.Duration(i) * time.Minute)
+		sess := &session.Session{ID: fmt.Sprintf("recent-%d", i), Provider: "mock", Model: "mock", Origin: session.OriginWeb, CreatedAt: now, UpdatedAt: now, Status: session.StatusComplete}
+		if i%2 == 0 {
+			sess.ProjectID = project.ID
+			sess.CWD = project.CanonicalDir
+		}
+		if err := store.Create(ctx, sess); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page := func(target string) ([]string, string) {
+		t.Helper()
+		rr := httptest.NewRecorder()
+		srv.handleSessions(rr, httptest.NewRequest(http.MethodGet, target, nil))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", target, rr.Code, rr.Body.String())
+		}
+		var payload struct {
+			Sessions []struct {
+				ID string `json:"id"`
+			} `json:"sessions"`
+			NextCursor string `json:"next_cursor"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		ids := make([]string, 0, len(payload.Sessions))
+		for _, entry := range payload.Sessions {
+			ids = append(ids, entry.ID)
+		}
+		return ids, payload.NextCursor
+	}
+
+	got, cursor := page("/v1/sessions?scope=all&limit=2")
+	if len(got) != 2 || cursor == "" {
+		t.Fatalf("first page = %v cursor=%q, want 2 sessions and a cursor", got, cursor)
+	}
+	wrongScope := httptest.NewRecorder()
+	srv.handleSessions(wrongScope, httptest.NewRequest(http.MethodGet, "/v1/sessions?limit=2&cursor="+cursor, nil))
+	if wrongScope.Code != http.StatusBadRequest || !strings.Contains(wrongScope.Body.String(), "invalid_cursor") {
+		t.Fatalf("cross-scope cursor status=%d body=%s", wrongScope.Code, wrongScope.Body.String())
+	}
+	for cursor != "" {
+		ids, next := page("/v1/sessions?scope=all&limit=2&cursor=" + cursor)
+		got = append(got, ids...)
+		cursor = next
+	}
+	want := []string{"recent-4", "recent-3", "recent-2", "recent-1", "recent-0"}
+	if len(got) != len(want) {
+		t.Fatalf("paged sessions = %v, want %v", got, want)
+	}
+	for i, id := range want {
+		if got[i] != id {
+			t.Fatalf("paged order = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestSidebarRecentCursorContinuesGlobalListing(t *testing.T) {
+	srv, store := newServeProjectTestServer(t)
+	ctx := context.Background()
+	project := &session.Project{Name: "Alpha", CanonicalDir: t.TempDir()}
+	if err := store.CreateProject(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().Add(-time.Hour).Truncate(time.Second)
+	for i := 0; i < 32; i++ {
+		now := base.Add(time.Duration(i) * time.Second)
+		sess := &session.Session{ID: fmt.Sprintf("sidebar-recent-%02d", i), Provider: "mock", Model: "mock", ProjectID: project.ID, CWD: project.CanonicalDir, Origin: session.OriginWeb, CreatedAt: now, UpdatedAt: now, Status: session.StatusComplete}
+		if err := store.Create(ctx, sess); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	rr := httptest.NewRecorder()
-	srv.handleSessions(rr, req)
-	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "invalid_cursor") {
-		t.Fatalf("cross-group cursor status=%d body=%s", rr.Code, rr.Body.String())
+	srv.handleSidebar(rr, httptest.NewRequest(http.MethodGet, "/v1/sidebar?per_project=12", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("sidebar status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var sidebar struct {
+		RecentSessions []struct {
+			ID string `json:"id"`
+		} `json:"recent_sessions"`
+		RecentNextCursor string `json:"recent_next_cursor"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &sidebar); err != nil || len(sidebar.RecentSessions) != 30 || sidebar.RecentNextCursor == "" {
+		t.Fatalf("sidebar recent page=%d cursor=%q err=%v", len(sidebar.RecentSessions), sidebar.RecentNextCursor, err)
+	}
+
+	next := httptest.NewRecorder()
+	target := "/v1/sessions?scope=all&limit=30&cursor=" + url.QueryEscape(sidebar.RecentNextCursor)
+	srv.handleSessions(next, httptest.NewRequest(http.MethodGet, target, nil))
+	if next.Code != http.StatusOK {
+		t.Fatalf("recent continuation status=%d body=%s", next.Code, next.Body.String())
+	}
+	var continuation struct {
+		Sessions []struct {
+			ID string `json:"id"`
+		} `json:"sessions"`
+		NextCursor string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(next.Body.Bytes(), &continuation); err != nil {
+		t.Fatal(err)
+	}
+	if len(continuation.Sessions) != 2 || continuation.NextCursor != "" {
+		t.Fatalf("continuation=%#v cursor=%q", continuation.Sessions, continuation.NextCursor)
+	}
+	seen := make(map[string]bool, 32)
+	for _, entry := range sidebar.RecentSessions {
+		seen[entry.ID] = true
+	}
+	for _, entry := range continuation.Sessions {
+		if seen[entry.ID] {
+			t.Fatalf("recent continuation duplicated %s", entry.ID)
+		}
+		seen[entry.ID] = true
+	}
+	if len(seen) != 32 {
+		t.Fatalf("recent listing covered %d sessions, want 32", len(seen))
 	}
 }
 
@@ -1447,7 +1584,13 @@ func TestSidebarAndStatusHTTPExposeBoundedProjectMetadata(t *testing.T) {
 		t.Fatalf("sidebar status=%d body=%s", sidebarRR.Code, sidebarRR.Body.String())
 	}
 	var sidebarPayload struct {
-		Groups []session.SidebarGroup `json:"groups"`
+		Groups         []session.SidebarGroup `json:"groups"`
+		RecentSessions []struct {
+			ID          string `json:"id"`
+			ProjectName string `json:"project_name"`
+			Provider    string `json:"provider"`
+		} `json:"recent_sessions"`
+		RecentNextCursor string `json:"recent_next_cursor"`
 	}
 	if err := json.Unmarshal(sidebarRR.Body.Bytes(), &sidebarPayload); err != nil || len(sidebarPayload.Groups) != 1 {
 		t.Fatalf("sidebar payload = %#v, %v", sidebarPayload, err)
@@ -1458,6 +1601,12 @@ func TestSidebarAndStatusHTTPExposeBoundedProjectMetadata(t *testing.T) {
 	}
 	if got := group.Sessions[0].ProviderKey; got != "chatgpt" {
 		t.Fatalf("sidebar provider_key = %q, want canonical chatgpt", got)
+	}
+	if len(sidebarPayload.RecentSessions) != 3 || sidebarPayload.RecentNextCursor != "" {
+		t.Fatalf("recent sidebar payload = %#v cursor=%q", sidebarPayload.RecentSessions, sidebarPayload.RecentNextCursor)
+	}
+	if recent := sidebarPayload.RecentSessions[0]; recent.ProjectName != project.Name || recent.Provider != "chatgpt" {
+		t.Fatalf("recent sidebar metadata = %#v", recent)
 	}
 
 	statusRR := httptest.NewRecorder()
