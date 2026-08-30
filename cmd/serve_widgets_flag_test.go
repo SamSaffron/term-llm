@@ -1,6 +1,12 @@
 package cmd
 
-import "testing"
+import (
+	"bytes"
+	"strings"
+	"testing"
+
+	"github.com/spf13/cobra"
+)
 
 func TestServeWidgetsAreOptOut(t *testing.T) {
 	disableFlag := serveCmd.Flags().Lookup("disable-widgets")
@@ -10,8 +16,13 @@ func TestServeWidgetsAreOptOut(t *testing.T) {
 	if disableFlag.DefValue != "false" {
 		t.Fatalf("serve --disable-widgets default = %q, want false", disableFlag.DefValue)
 	}
-	if enableFlag := serveCmd.Flags().Lookup("enable-widgets"); enableFlag != nil {
-		t.Fatal("serve --enable-widgets should be replaced by --disable-widgets")
+
+	enableFlag := serveCmd.Flags().Lookup("enable-widgets")
+	if enableFlag == nil {
+		t.Fatal("serve --enable-widgets compatibility flag is not registered")
+	}
+	if enableFlag.DefValue != "false" {
+		t.Fatalf("serve --enable-widgets default = %q, want false", enableFlag.DefValue)
 	}
 
 	for _, tc := range []struct {
@@ -29,5 +40,29 @@ func TestServeWidgetsAreOptOut(t *testing.T) {
 				t.Fatalf("serveWidgetsEnabled(%t, %t) = %t, want %t", tc.hasWeb, tc.disabled, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestDeprecatedEnableWidgetsWarning(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().Bool("enable-widgets", false, "")
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+
+	warnDeprecatedEnableWidgets(cmd)
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr without flag = %q, want empty", stderr.String())
+	}
+
+	if err := cmd.Flags().Set("enable-widgets", "true"); err != nil {
+		t.Fatal(err)
+	}
+	warnDeprecatedEnableWidgets(cmd)
+
+	warning := stderr.String()
+	for _, want := range []string{"--enable-widgets is deprecated", "has no effect", "--disable-widgets"} {
+		if !strings.Contains(warning, want) {
+			t.Fatalf("stderr = %q, want it to contain %q", warning, want)
+		}
 	}
 }
