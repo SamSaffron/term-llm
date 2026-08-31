@@ -16,7 +16,7 @@ const session = (id: string, title: string, number: number) => ({
 
 async function mockAPI(
   page: Page,
-  options: { holdStream?: boolean; media?: boolean; model?: string } = {},
+  options: { holdStream?: boolean; media?: boolean; model?: string; attention?: boolean } = {},
 ) {
   const requests: Array<{ method: string; url: string }> = [];
   const model = options.model || 'gpt-test';
@@ -52,19 +52,37 @@ async function mockAPI(
       });
     if (path.endsWith('/v1/sidebar')) {
       const sessions = [session('s1', 'First chat', 1), session('s2', 'Second chat', 2)];
+      if (options.attention)
+        Object.assign(sessions[0], {
+          attention_store_instance_id: 'store-a',
+          attention_seq: 42,
+          attention_response_id: 'response-a',
+          attention_final_rev: 7,
+          seen_through_seq: 0,
+          attention_unseen: true,
+          attention_outcome: 'completed',
+        });
       return json({ sessions, recent_sessions: sessions });
     }
     if (path.endsWith('/v1/sessions/status')) return json({ sessions: [] });
     if (path.endsWith('/v1/sessions') && url.searchParams.get('selected_only') === '1') {
       const id = url.searchParams.get('selected_session') || 's1';
+      const selected = session(id, id === 's2' ? 'Second chat' : 'First chat', id === 's2' ? 2 : 1);
+      if (options.attention && id === 's1')
+        Object.assign(selected, {
+          attention_store_instance_id: 'store-a',
+          attention_seq: 42,
+          attention_response_id: 'response-a',
+          attention_final_rev: 7,
+          seen_through_seq: 0,
+          attention_unseen: true,
+          attention_outcome: 'completed',
+        });
       return json({
-        selected_session: session(
-          id,
-          id === 's2' ? 'Second chat' : 'First chat',
-          id === 's2' ? 2 : 1,
-        ),
+        selected_session: selected,
         selected_transcript: {
           bodies: {
+            ...(options.attention && id === 's1' ? { rev: 7 } : {}),
             messages: [
               {
                 id: 1,
@@ -90,6 +108,13 @@ async function mockAPI(
         },
       });
     }
+    if (/\/v1\/sessions\/s1\/attention\/seen$/.test(path) && request.method() === 'POST')
+      return json({
+        store_instance_id: 'store-a',
+        latest_attention_seq: 42,
+        seen_through_seq: 42,
+        attention_unseen: false,
+      });
     if (/\/v1\/sessions\/s[12]\/state$/.test(path))
       return json({
         session: session(
@@ -165,7 +190,7 @@ async function mockAPI(
 async function open(
   page: Page,
   suffix = '',
-  options: { holdStream?: boolean; media?: boolean; model?: string } = {},
+  options: { holdStream?: boolean; media?: boolean; model?: string; attention?: boolean } = {},
 ) {
   const requests = await mockAPI(page, options);
   await page.goto(`./${suffix}`);
@@ -192,6 +217,29 @@ test('loads, navigates sessions, opens settings and preserves normal namespace h
       test: '__TERM_LLM_TEST__' in window,
     })),
   ).toEqual({ legacy: false, test: false });
+});
+
+test('turns a durable completion indicator off only after a visible revision-gated visit', async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', 'desktop sidebar attention flow');
+  const requests = await open(page, '', { attention: true });
+  const ready = page.getByRole('button', {
+    name: 'First chat — Completed, not yet visited',
+  });
+  await expect(ready).toBeVisible();
+
+  await ready.click();
+
+  await expect
+    .poll(() =>
+      requests.some(
+        (request) =>
+          request.method === 'POST' && request.url.endsWith('/v1/sessions/s1/attention/seen'),
+      ),
+    )
+    .toBe(true);
+  await expect(page.getByRole('button', { name: 'First chat', exact: true })).toBeVisible();
 });
 
 test('desktop shell uses authored controls, message hierarchy and diff rows', async ({

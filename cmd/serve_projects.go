@@ -392,12 +392,22 @@ func (s *serveServer) handleCapabilities(w http.ResponseWriter, r *http.Request)
 			"extensions": attachmentExtensions(),
 		},
 	}
+	if attention, ok := session.AsAttentionStore(s.store); ok {
+		if storeID, err := attention.StoreInstanceID(r.Context()); err == nil {
+			payload["attention"] = map[string]any{"enabled": true, "protocol_version": 1, "store_instance_id": storeID}
+		} else {
+			payload["attention"] = map[string]bool{"enabled": false}
+		}
+	} else {
+		payload["attention"] = map[string]bool{"enabled": false}
+	}
 	if s.responseRuns != nil {
 		diagnostics := s.responseRuns.Diagnostics()
 		payload["reliability_diagnostics"] = map[string]any{
 			"idempotency_replays": diagnostics.IdempotencyReplays,
 		}
 	}
+	payload["attention_diagnostics"] = s.attentionDiagnostics.snapshot()
 	s.webrtcMu.RLock()
 	peer := s.webrtcPeer
 	s.webrtcMu.RUnlock()
@@ -807,6 +817,22 @@ func (s *serveServer) handleProjectByID(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+func applySessionSummaryAttention(summary *session.SessionSummary, attention session.AttentionState) {
+	if summary == nil || attention.LatestAttentionSeq <= 0 {
+		return
+	}
+	summary.AttentionStoreInstanceID = attention.StoreInstanceID
+	summary.AttentionSeq = attention.LatestAttentionSeq
+	summary.AttentionResponseID = attention.ResponseID
+	summary.AttentionFinalRev = attention.FinalRev
+	summary.SeenThroughSeq = attention.SeenThroughSeq
+	summary.AttentionUnseen = attention.Unseen
+	summary.AttentionOutcome = attention.Outcome
+	if !attention.TerminalAt.IsZero() {
+		summary.AttentionTerminalAt = attention.TerminalAt.UnixMilli()
+	}
+}
+
 func (s *serveServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
 	if !s.projectsEnabled {
 		writeProjectError(w, http.StatusNotFound, "projects_disabled", "project mode is disabled")
@@ -850,6 +876,23 @@ func (s *serveServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
 		recentNextCursor = session.EncodeRecentSessionCursor(recent[recentPageSize-1])
 		recent = recent[:recentPageSize]
 	}
+	attentionBySession := make(map[string]session.AttentionState)
+	if batch, ok := session.AsAttentionBatchStore(s.store); ok {
+		ids := make([]string, 0, len(recent))
+		for _, group := range groups {
+			for _, summary := range group.Sessions {
+				ids = append(ids, summary.ID)
+			}
+		}
+		for _, summary := range recent {
+			ids = append(ids, summary.ID)
+		}
+		if states, batchErr := batch.GetAttentionBatch(r.Context(), ids); batchErr == nil {
+			attentionBySession = states
+		} else {
+			log.Printf("[serve] project sidebar attention projection unavailable: %v", batchErr)
+		}
+	}
 	// Availability is intentionally derived rather than persisted.
 	statusCtx, cancelStatus := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancelStatus()
@@ -859,6 +902,7 @@ func (s *serveServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
 			groups[i].Project = &api.Project
 		}
 		for j := range groups[i].Sessions {
+			applySessionSummaryAttention(&groups[i].Sessions[j], attentionBySession[groups[i].Sessions[j].ID])
 			// Legacy sessions predate provider_key and retain Provider.Name() as a
 			// display label (for example, "ChatGPT (gpt-5.6-sol, effort=low)").
 			// The runtime picker must receive the canonical key, never that label.
@@ -867,7 +911,9 @@ func (s *serveServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
 	}
 	recentEntries := make([]webSessionEntry, 0, len(recent))
 	for _, summary := range recent {
-		recentEntries = append(recentEntries, s.webSessionEntryFromSummary(summary))
+		entry := s.webSessionEntryFromSummary(summary)
+		applyWebSessionAttention(&entry, attentionBySession[summary.ID])
+		recentEntries = append(recentEntries, entry)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"groups":             groups,

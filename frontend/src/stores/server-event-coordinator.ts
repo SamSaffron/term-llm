@@ -357,6 +357,12 @@ export class ServerEventCoordinator {
           this.activeRevision = Math.max(this.activeRevision, event.transcriptRev || 0);
         }
         break;
+      case 'session.attention_changed':
+      case 'session.lifecycle_changed':
+        this.catalogPending = true;
+        this.statusPending = true;
+        if (event.sessionId === this.host.activeSessionId.peek()) this.activePending = true;
+        break;
       case 'session.runtime_changed':
       case 'interaction.changed':
         if (event.sessionId === this.host.activeSessionId.peek()) this.activePending = true;

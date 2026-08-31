@@ -3,6 +3,8 @@ export const SERVER_EVENT_TYPES = [
   'session.metadata_changed',
   'session.transcript_changed',
   'session.runtime_changed',
+  'session.attention_changed',
+  'session.lifecycle_changed',
   'session.deleted',
   'project.created',
   'project.updated',

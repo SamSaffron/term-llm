@@ -77,6 +77,10 @@ export class TabSyncCoordinator {
           this.host.reloadReviewQueue();
           return;
         }
+        if (event.type === 'attention-changed') {
+          this.queuePeerChange();
+          return;
+        }
         if (this.host.serverEventsEnabled()) return;
         if (event.revision !== undefined && event.sessionId) {
           const previous = this.peerRevisions.get(event.sessionId) || 0;

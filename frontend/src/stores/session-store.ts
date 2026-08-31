@@ -181,9 +181,51 @@ export class SessionStore {
     preserveLiveState = false,
   ): Session {
     if (!existing) return incoming;
+    const storeReplaced = Boolean(
+      existing.attentionStoreInstanceId &&
+      incoming.attentionStoreInstanceId &&
+      existing.attentionStoreInstanceId !== incoming.attentionStoreInstanceId,
+    );
+    const existingSeq = existing.attentionSeq || 0;
+    const incomingSeq = incoming.attentionSeq ?? (storeReplaced ? 0 : existingSeq);
+    const markerSource =
+      storeReplaced || (incoming.attentionSeq !== undefined && incomingSeq >= existingSeq)
+        ? incoming
+        : existing;
+    const attentionSeq = storeReplaced ? incomingSeq : Math.max(existingSeq, incomingSeq);
+    const seenThroughSeq = storeReplaced
+      ? incoming.seenThroughSeq || 0
+      : Math.max(existing.seenThroughSeq || 0, incoming.seenThroughSeq || 0);
+    const hasAttention = Boolean(
+      existing.attentionStoreInstanceId ||
+      incoming.attentionStoreInstanceId ||
+      existing.attentionSeq !== undefined ||
+      incoming.attentionSeq !== undefined,
+    );
     return {
       ...existing,
       ...incoming,
+      ...(hasAttention
+        ? {
+            attentionStoreInstanceId:
+              markerSource.attentionStoreInstanceId || existing.attentionStoreInstanceId,
+            attentionSeq,
+            attentionResponseId: storeReplaced
+              ? incoming.attentionResponseId
+              : (markerSource.attentionResponseId ?? existing.attentionResponseId),
+            attentionFinalRev: storeReplaced
+              ? incoming.attentionFinalRev
+              : (markerSource.attentionFinalRev ?? existing.attentionFinalRev),
+            attentionOutcome: storeReplaced
+              ? incoming.attentionOutcome
+              : (markerSource.attentionOutcome ?? existing.attentionOutcome),
+            attentionTerminalAt: storeReplaced
+              ? incoming.attentionTerminalAt
+              : (markerSource.attentionTerminalAt ?? existing.attentionTerminalAt),
+            seenThroughSeq,
+            attentionUnseen: attentionSeq > seenThroughSeq,
+          }
+        : {}),
       messages: replaceMessages || incoming.messages.length ? incoming.messages : existing.messages,
       lastResponseId: incoming.lastResponseId || existing.lastResponseId,
       activeResponseId: preserveLiveState
@@ -633,22 +675,19 @@ export class SessionStore {
             (safePath(node.proxy_path) ? `${safePath(node.proxy_path)}?new=1` : '')
           );
         };
-        const previous = new Map(this.hubAgents.peek().map((entry) => [entry.id, entry]));
         this.hubAgents.value = array(data.nodes)
           .filter((node) => recordValue(node.status)?.reachable === true)
           .map((node) => {
             const id = String(node.id || '');
             const sessions = recordValue(node.sessions) || {};
             const active = Number(sessions.active_count) > 0 || array(sessions.active).length > 0;
-            const old = previous.get(id);
+            const unseen = Number(sessions.unseen_count) > 0;
             return {
               id,
               name: String(node.name || id),
               target: target(node),
               active,
-              attention:
-                id !== this.services.config.hub?.nodeId &&
-                Boolean(old?.attention || (old?.active && !active)),
+              attention: id !== this.services.config.hub?.nodeId && Boolean(active || unseen),
             };
           })
           .filter((entry) => entry.name && entry.target)
@@ -666,11 +705,6 @@ export class SessionStore {
       this.hubAgentFetch = null;
     });
     return this.hubAgentFetch;
-  }
-  clearHubAttention(id: string): void {
-    this.hubAgents.value = this.hubAgents.value.map((entry) =>
-      entry.id === id ? { ...entry, attention: false } : entry,
-    );
   }
 
   dispose(): void {

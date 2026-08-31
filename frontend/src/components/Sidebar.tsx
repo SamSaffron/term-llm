@@ -233,6 +233,18 @@ function SessionRow({ session, showProject = false }: { session: Session; showPr
       ['connecting', 'checking', 'streaming', 'cancelling'].includes(projection.run.status) &&
       store.runEngine.hasActiveResponseTransport(session.id, projection.run.responseId),
     ) || Boolean(store.services.eventFeedHealthy.value && session.activeRun);
+  const unseen = !running && Boolean(session.attentionUnseen);
+  const attentionLabel = running
+    ? 'Running'
+    : unseen
+      ? session.attentionOutcome === 'failed'
+        ? 'Failed, not yet visited'
+        : session.attentionOutcome === 'orphaned'
+          ? 'Recovery required, not yet visited'
+          : session.attentionOutcome === 'cancelled'
+            ? 'Cancelled with output, not yet visited'
+            : 'Completed, not yet visited'
+      : '';
   const messageCount = sessionMessageCount(session);
   const activityAt = session.lastMessageAt || session.created;
   const hide = () => {
@@ -256,12 +268,12 @@ function SessionRow({ session, showProject = false }: { session: Session; showPr
   return (
     <div
       ref={row}
-      class={`session-row ${session.archived ? 'archived' : ''} ${running ? 'is-active' : ''} ${hiding ? 'is-hiding' : ''}`}
+      class={`session-row ${session.archived ? 'archived' : ''} ${running ? 'is-active' : ''} ${unseen ? 'is-unseen' : ''} ${hiding ? 'is-hiding' : ''}`}
     >
       <button
         class={`session-btn ${active ? 'active' : ''}`}
         type="button"
-        aria-label={session.title || session.name || 'New chat'}
+        aria-label={`${session.title || session.name || 'New chat'}${attentionLabel ? ` — ${attentionLabel}` : ''}`}
         aria-current={active ? 'page' : undefined}
         title={session.longTitle || session.title}
         onMouseDown={(event) => event.preventDefault()}
@@ -643,7 +655,6 @@ function HubAgents() {
                 key={agent.id}
                 href={agent.target}
                 aria-current={agent.id === store.config.hub?.nodeId ? 'true' : undefined}
-                onClick={() => store.clearHubAttention(agent.id)}
               >
                 <span class="hub-agent-icon" aria-hidden="true" />
                 <span class="hub-agent-name">{agent.name}</span>

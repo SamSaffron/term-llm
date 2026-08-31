@@ -4,7 +4,8 @@ export type TabEventType =
   | 'run-changed'
   | 'draft-changed'
   | 'review-comment-changed'
-  | 'interaction-changed';
+  | 'interaction-changed'
+  | 'attention-changed';
 
 export interface TabEventV1 {
   v: 1;
@@ -25,6 +26,7 @@ const EVENT_TYPES = new Set<TabEventType>([
   'draft-changed',
   'review-comment-changed',
   'interaction-changed',
+  'attention-changed',
 ]);
 const uuid = (): string => globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2);
 

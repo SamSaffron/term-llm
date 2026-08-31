@@ -1308,6 +1308,12 @@ type serveServer struct {
 	branchPathNoteFlights    sync.Map // source/idempotency key → shared path-note helper result
 	responseRunsOnce         sync.Once
 	responseRuns             *responseRunManager
+	responseOwnerOnce        sync.Once
+	responseLifecycleOnce    sync.Once
+	responseLifecycleCancel  context.CancelFunc
+	responseLifecycleWG      sync.WaitGroup
+	responseOwnerInstanceID  string
+	attentionDiagnostics     serveAttentionDiagnostics
 	eventBrokerMu            sync.Mutex
 	eventBroker              *serveEventBroker
 	eventWatcherMu           sync.Mutex
@@ -1420,6 +1426,7 @@ func (s *serveServer) Start() error {
 		return nil
 	case <-time.After(50 * time.Millisecond):
 		s.startEventWatcher()
+		s.startResponseLifecycle()
 		s.startCompletionPushDispatcher()
 		return nil
 	}
@@ -1468,6 +1475,7 @@ func (s *serveServer) httpHandler() http.Handler {
 	// single-use SDK state value is the capability checked by this handler.
 	inner.HandleFunc("/v1/mcp/oauth/callback", s.handleMCPOAuthCallback)
 	inner.HandleFunc("/v1/sessions/status", s.auth(s.cors(s.handleSessionsStatus)))
+	inner.HandleFunc("/v1/attention", s.auth(s.cors(s.handleAttention)))
 	inner.HandleFunc("/v1/sessions/search", s.auth(s.cors(s.handleSessionsSearch)))
 	inner.HandleFunc("/v1/worktrees/diff", s.auth(s.cors(s.handleWorktreeDiff)))
 	inner.HandleFunc("/v1/worktrees/merge", s.auth(s.cors(s.handleWorktreeMerge)))
@@ -1540,6 +1548,13 @@ func (s *serveServer) Stop(ctx context.Context) error {
 		}
 	})
 	s.stopEventWatcher()
+	// Synchronize with a concurrently starting lifecycle loop, or permanently
+	// suppress a late start once shutdown has begun.
+	s.responseLifecycleOnce.Do(func() {})
+	if s.responseLifecycleCancel != nil {
+		s.responseLifecycleCancel()
+		s.responseLifecycleWG.Wait()
+	}
 	s.closeEventBroker()
 	if s.server == nil {
 		s.stopAutoTitles()

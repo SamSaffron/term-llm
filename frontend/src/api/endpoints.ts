@@ -87,6 +87,16 @@ export const endpoints = (api: APIClient) => ({
     ),
   sessionState: (id: string, signal?: AbortSignal) =>
     api.get<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/state`, signal),
+  markAttentionSeen: (id: string, storeInstanceId: string, throughSeq: number) =>
+    api.json<Record<string, unknown>>(
+      `/v1/sessions/${encoded(id)}/attention/seen`,
+      {
+        method: 'POST',
+        headers: sessionHeaders(id),
+        body: JSON.stringify({ store_instance_id: storeInstanceId, through_seq: throughSeq }),
+      },
+      { policy: 'mutation', auth: 'session' },
+    ),
   createResponse: (
     body: unknown,
     sessionId: string,

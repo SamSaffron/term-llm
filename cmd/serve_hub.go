@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/hub"
@@ -46,7 +48,11 @@ type hubServer struct {
 	// shares the proxy's direct-dial transport (no env proxy: requests carry
 	// node tokens) but, unlike streaming proxy traffic, gets a whole-request
 	// timeout.
-	nodeAPIClient *http.Client
+	nodeAPIClient        *http.Client
+	attentionStore       *hub.AttentionProjectionStore
+	attentionCancel      context.CancelFunc
+	attentionWG          sync.WaitGroup
+	attentionDiagnostics hubAttentionDiagnostics
 
 	requireAuth       bool
 	authMode          string

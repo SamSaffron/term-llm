@@ -545,6 +545,9 @@ export function sanitizeSession(
   const fileSummary = record(source.file_change_summary || source.fileChangeSummary);
   const rawTranscriptRev = source.transcript_rev ?? source.rev;
   const transcriptRev = Number(rawTranscriptRev);
+  const attentionSeq = Number(source.attention_seq ?? source.latest_attention_seq);
+  const seenThroughSeq = Number(source.seen_through_seq);
+  const attentionFinalRev = Number(source.attention_final_rev ?? source.final_rev);
   return {
     id: text(source.id) || randomID('sess'),
     number: Number(source.number || source.session_number) || undefined,
@@ -585,6 +588,30 @@ export function sanitizeSession(
       messages.filter((message) => ['user', 'assistant'].includes(message.role)).length,
     ...(rawTranscriptRev != null && rawTranscriptRev !== '' && Number.isFinite(transcriptRev)
       ? { transcriptRev: Math.max(0, transcriptRev) }
+      : {}),
+    ...((source.attention_store_instance_id ?? source.store_instance_id) != null
+      ? {
+          attentionStoreInstanceId: text(
+            source.attention_store_instance_id || source.store_instance_id,
+          ),
+        }
+      : {}),
+    ...(Number.isSafeInteger(attentionSeq) && attentionSeq >= 0 ? { attentionSeq } : {}),
+    ...(source.attention_response_id != null
+      ? { attentionResponseId: text(source.attention_response_id) }
+      : {}),
+    ...(Number.isSafeInteger(attentionFinalRev) && attentionFinalRev >= 0
+      ? { attentionFinalRev }
+      : {}),
+    ...(Number.isSafeInteger(seenThroughSeq) && seenThroughSeq >= 0 ? { seenThroughSeq } : {}),
+    ...(source.attention_unseen !== undefined
+      ? { attentionUnseen: Boolean(source.attention_unseen) }
+      : {}),
+    ...(source.attention_outcome != null
+      ? { attentionOutcome: text(source.attention_outcome) }
+      : {}),
+    ...((source.attention_terminal_at ?? source.terminal_at) != null
+      ? { attentionTerminalAt: timestamp(source.attention_terminal_at ?? source.terminal_at) }
       : {}),
     usage: (record(source.usage) as Session['usage']) || undefined,
     goal: (record(source.goal) as Session['goal']) || null,

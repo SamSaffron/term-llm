@@ -457,3 +457,15 @@ tools:
 - **Scoped visibility**: a node may read only delegations it originates or targets; the full list is reserved for the hub operator's same-origin dashboard.
 - The delegation ledger (`<data-dir>/hub/delegations.json`, mode 0600) holds prompts/response excerpts for audit; terminal records are pruned after 7 days.
 - All hub→node and node→hub clients dial directly (no `HTTP_PROXY`), since those requests carry bearer tokens.
+
+## Hub-wide terminal attention
+
+Nodes that advertise the `attention` capability publish complete paginated snapshots of durable running runs and terminal conversations that have not yet been visited. Hub collects these snapshots in the background over the same direct or reverse transport used for node requests and stores a private projection in `<data-dir>/hub/attention.db` (mode 0600). Collection is faster while cached work is active or ready to review, slower while idle, and uses bounded jitter/backoff after failures. The projection contains titles and lifecycle metadata only—never prompts, transcripts, response bodies, backend URLs, or node tokens.
+
+The dashboard's **Ready to review** section combines unseen completed, failed, reviewable-cancelled, and orphan-recovery conversations from every node. `GET /api/attention` exposes the same privacy-safe global/per-node counts and a bounded newest-first inbox; its `limit` is 1–500 (default 200) and `has_more` reports truncation. Conversation links navigate through the normal node proxy. Clicking is not an acknowledgement: the proxied node web app clears the marker only after the route is selected, the page is visible, and transcript bodies are installed through the marker's final revision. Hub learns that authoritative change on a later collection pass.
+
+Hub retains its last successful rows when a node is offline, times out, returns malformed pagination, or loses a previously advertised capability. It replaces one node's projection only after every `unseen` and `running` page has the same store instance and snapshot version. If a node database is reset, the new stable store instance ID prevents unrelated session IDs from being merged. Nodes that never supported the API report attention as unavailable rather than falsely reporting zero.
+
+A solid green Hub node/agent indicator means at least one child conversation is running or terminal-unseen. Hub aggregate indicators never pulse; conversation rows retain the pulse (running) versus solid (ready to review) distinction.
+
+Terminal attention currently follows the Hub's existing single-logical-operator model. Every Hub passkey is a credential for that same operator, not a separate principal, and all clients share each node's seen watermark.

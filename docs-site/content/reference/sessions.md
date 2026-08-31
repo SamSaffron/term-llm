@@ -224,6 +224,22 @@ Use sessions when you want:
 
 Use [Memory](/guides/memory/) when you want durable facts and behavioral insights that survive beyond one specific chat.
 
+## Terminal attention and seen state
+
+Serve web records terminal attention for top-level, user-initiated web response runs. A green pulsing circle means the conversation is running. When the run completes or fails, or when recovery marks an abandoned run as orphaned, the circle becomes solid until the conversation is visited in a visible browser tab and its transcript has loaded through the run's final durable revision. A cancelled run receives the marker only when it produced durable output.
+
+The node database is authoritative. It stores monotonic `latest_attention_seq` and `seen_through_seq` watermarks; a conversation needs attention exactly when the former is greater than the latter. A browser acknowledges the exact sequence it rendered, so a delayed acknowledgement for one completion cannot clear a newer completion. Hidden tabs, link prefetches, notification clicks, and ordinary GET requests do not mark a conversation seen.
+
+Attention is a single-operator feature in this version. All tabs, passkeys, and bearer clients connected to one node share the same watermark. Passkey credential labels are devices, not separate user principals. CLI/TUI `ask` and chat runs do not create terminal-attention markers because their terminal operator normally observes them; serve-origin web response runs are the marker source.
+
+Node APIs:
+
+- `GET /v1/attention?kind=unseen|running&limit=200&cursor=...` returns a complete, stable-version, paginated projection for Hub collection. It contains identifiers, titles, lifecycle metadata, and revisions, but no transcript content.
+- `POST /v1/sessions/{id}/attention/seen` accepts `{"store_instance_id":"...","through_seq":N}` after the visible transcript revision gate.
+- `/healthz` advertises the `attention` capability, while `/v1/capabilities` includes its protocol version and stable store instance ID.
+
+Unsupported and read-only session stores do not advertise durable attention. They continue to serve conversations without pretending that unseen state or crash recovery is durable.
+
 ## Related pages
 
 - [Configuration](/reference/configuration/)

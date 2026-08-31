@@ -111,6 +111,8 @@ const (
 	StoreChangeSessionMetadataChanged   = "session.metadata_changed"
 	StoreChangeSessionTranscriptChanged = "session.transcript_changed"
 	StoreChangeSessionStatusChanged     = "session.status_changed"
+	StoreChangeSessionLifecycleChanged  = "session.lifecycle_changed"
+	StoreChangeSessionAttentionChanged  = "session.attention_changed"
 	StoreChangeProjectMembershipChanged = "project.membership_changed"
 	StoreChangeProjectCreated           = "project.created"
 	StoreChangeProjectUpdated           = "project.updated"
@@ -136,6 +138,323 @@ func AsStoreChangeStore(store Store) (StoreChangeStore, bool) {
 	}
 	changeStore, ok := store.(StoreChangeStore)
 	return changeStore, ok
+}
+
+// ResponseRunState is the durable lifecycle state of a serve-origin web run.
+type ResponseRunState string
+
+const (
+	ResponseRunRunning   ResponseRunState = "running"
+	ResponseRunCompleted ResponseRunState = "completed"
+	ResponseRunFailed    ResponseRunState = "failed"
+	ResponseRunCancelled ResponseRunState = "cancelled"
+	ResponseRunOrphaned  ResponseRunState = "orphaned"
+)
+
+var (
+	ErrResponseRunLeaseLost = errors.New("session: response run lease lost")
+	ErrAttentionConflict    = errors.New("session: attention generation conflict")
+)
+
+// ResponseRunAdmission durably accounts for a run before provider work starts.
+type ResponseRunAdmission struct {
+	ResponseID      string
+	SessionID       string
+	RunEpoch        int64
+	OwnerInstanceID string
+	StartedRev      int64
+	StartedAt       time.Time
+	LeaseDuration   time.Duration
+}
+
+type ResponseRunLease struct {
+	ResponseID     string
+	FencingToken   int64
+	LeaseExpiresAt time.Time
+}
+
+type ResponseRunCheckpoint struct {
+	ResponseID         string
+	OwnerInstanceID    string
+	FencingToken       int64
+	FinalRev           int64
+	DurableOutputCount int
+}
+
+// ResponseRunFence travels with response-scoped transcript writes. SQLite
+// validates and checkpoints it in the same transaction as the transcript
+// mutation so a recovered/stale owner cannot commit after losing ownership.
+type ResponseRunFence struct {
+	ResponseID         string
+	OwnerInstanceID    string
+	FencingToken       int64
+	DurableOutputCount int
+}
+
+type responseRunFenceContextKey struct{}
+
+func WithResponseRunFence(ctx context.Context, fence ResponseRunFence) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, responseRunFenceContextKey{}, fence)
+}
+
+func ResponseRunFenceFromContext(ctx context.Context) (ResponseRunFence, bool) {
+	if ctx == nil {
+		return ResponseRunFence{}, false
+	}
+	fence, ok := ctx.Value(responseRunFenceContextKey{}).(ResponseRunFence)
+	return fence, ok && fence.ResponseID != "" && fence.OwnerInstanceID != "" && fence.FencingToken > 0
+}
+
+type ResponseRunTerminal struct {
+	ResponseID         string
+	OwnerInstanceID    string
+	FencingToken       int64
+	Outcome            ResponseRunState
+	FinalRev           int64
+	DurableOutputCount int
+	EndedAt            time.Time
+}
+
+// AttentionState is the authoritative per-session terminal-attention watermark.
+type AttentionState struct {
+	StoreInstanceID    string           `json:"store_instance_id"`
+	SessionID          string           `json:"session_id"`
+	LatestAttentionSeq int64            `json:"latest_attention_seq"`
+	ResponseID         string           `json:"response_id,omitempty"`
+	RunEpoch           int64            `json:"run_epoch,omitempty"`
+	Outcome            ResponseRunState `json:"outcome,omitempty"`
+	StartedRev         int64            `json:"started_rev,omitempty"`
+	FinalRev           int64            `json:"final_rev,omitempty"`
+	TerminalAt         time.Time        `json:"terminal_at,omitempty"`
+	SeenThroughSeq     int64            `json:"seen_through_seq"`
+	SeenAt             time.Time        `json:"seen_at,omitempty"`
+	Unseen             bool             `json:"attention_unseen"`
+	Changed            bool             `json:"-"`
+}
+
+type AttentionKind string
+
+const (
+	AttentionKindUnseen  AttentionKind = "unseen"
+	AttentionKindRunning AttentionKind = "running"
+)
+
+type AttentionListOptions struct {
+	Kind            AttentionKind
+	Limit           int
+	Cursor          string
+	SnapshotVersion int64
+}
+
+type AttentionItem struct {
+	SessionID      string           `json:"session_id"`
+	ResponseID     string           `json:"response_id"`
+	Kind           AttentionKind    `json:"kind"`
+	LifecycleState ResponseRunState `json:"lifecycle_state"`
+	AttentionSeq   int64            `json:"attention_seq,omitempty"`
+	StartedRev     int64            `json:"started_rev,omitempty"`
+	FinalRev       int64            `json:"final_rev,omitempty"`
+	ShortTitle     string           `json:"short_title,omitempty"`
+	LongTitle      string           `json:"long_title,omitempty"`
+	ProjectID      string           `json:"project_id,omitempty"`
+	Outcome        ResponseRunState `json:"outcome,omitempty"`
+	StartedAt      time.Time        `json:"started_at,omitempty"`
+	TerminalAt     time.Time        `json:"terminal_at,omitempty"`
+	LeaseExpiresAt time.Time        `json:"lease_expires_at,omitempty"`
+}
+
+type AttentionPage struct {
+	ProtocolVersion int             `json:"protocol_version"`
+	StoreInstanceID string          `json:"store_instance_id"`
+	SnapshotVersion int64           `json:"snapshot_version"`
+	Items           []AttentionItem `json:"items"`
+	NextCursor      string          `json:"next_cursor,omitempty"`
+	HasMore         bool            `json:"has_more"`
+}
+
+// ServeResponseLifecycleStore is optional so custom/read-only stores remain usable.
+type ServeResponseLifecycleStore interface {
+	AdmitResponseRun(context.Context, ResponseRunAdmission) (ResponseRunLease, error)
+	RenewResponseRunLease(context.Context, string, string, int64) (ResponseRunLease, error)
+	ValidateResponseRunLease(context.Context, string, string, int64) error
+	CheckpointResponseRun(context.Context, ResponseRunCheckpoint) error
+	FinalizeResponseRun(context.Context, ResponseRunTerminal) (AttentionState, error)
+	RecoverExpiredResponseRuns(context.Context, int) ([]AttentionState, error)
+}
+
+// AttentionStore owns durable terminal markers and exact-sequence acknowledgements.
+type AttentionStore interface {
+	MarkAttentionSeen(context.Context, string, string, int64) (AttentionState, error)
+	GetAttention(context.Context, string) (AttentionState, error)
+	ListAttention(context.Context, AttentionListOptions) (AttentionPage, error)
+	StoreInstanceID(context.Context) (string, error)
+}
+
+// AttentionBatchStore avoids per-session queries on bounded sidebar/status projections.
+type AttentionBatchStore interface {
+	GetAttentionBatch(context.Context, []string) (map[string]AttentionState, error)
+}
+
+func AsServeResponseLifecycleStore(store Store) (ServeResponseLifecycleStore, bool) {
+	if store == nil {
+		return nil, false
+	}
+	if logging, ok := store.(*LoggingStore); ok {
+		underlying, supported := AsServeResponseLifecycleStore(logging.Store)
+		if !supported {
+			return nil, false
+		}
+		return &loggingServeResponseLifecycleStore{logger: logging, store: underlying}, true
+	}
+	if sqlite, ok := store.(*SQLiteStore); ok && sqlite.cfg.ReadOnly {
+		return nil, false
+	}
+	result, ok := store.(ServeResponseLifecycleStore)
+	return result, ok
+}
+
+func AsAttentionStore(store Store) (AttentionStore, bool) {
+	if store == nil {
+		return nil, false
+	}
+	if logging, ok := store.(*LoggingStore); ok {
+		underlying, supported := AsAttentionStore(logging.Store)
+		if !supported {
+			return nil, false
+		}
+		return &loggingAttentionStore{logger: logging, store: underlying}, true
+	}
+	if sqlite, ok := store.(*SQLiteStore); ok && sqlite.cfg.ReadOnly {
+		return nil, false
+	}
+	result, ok := store.(AttentionStore)
+	return result, ok
+}
+
+func AsAttentionBatchStore(store Store) (AttentionBatchStore, bool) {
+	if store == nil {
+		return nil, false
+	}
+	if logging, ok := store.(*LoggingStore); ok {
+		underlying, supported := AsAttentionBatchStore(logging.Store)
+		if !supported {
+			return nil, false
+		}
+		return &loggingAttentionBatchStore{logger: logging, store: underlying}, true
+	}
+	if sqlite, ok := store.(*SQLiteStore); ok && sqlite.cfg.ReadOnly {
+		return nil, false
+	}
+	result, ok := store.(AttentionBatchStore)
+	return result, ok
+}
+
+// SupportsAtomicResponseRunTranscriptFencing reports whether response-scoped
+// transcript writes validate and checkpoint their fence in the write transaction.
+func SupportsAtomicResponseRunTranscriptFencing(store Store) bool {
+	if logging, ok := store.(*LoggingStore); ok {
+		return SupportsAtomicResponseRunTranscriptFencing(logging.Store)
+	}
+	sqlite, ok := store.(*SQLiteStore)
+	return ok && !sqlite.cfg.ReadOnly
+}
+
+type loggingAttentionBatchStore struct {
+	logger *LoggingStore
+	store  AttentionBatchStore
+}
+
+func (s *loggingAttentionBatchStore) GetAttentionBatch(ctx context.Context, ids []string) (map[string]AttentionState, error) {
+	result, err := s.store.GetAttentionBatch(ctx, ids)
+	if err != nil {
+		s.logger.logOnce("GetAttentionBatch", err)
+	}
+	return result, err
+}
+
+type loggingServeResponseLifecycleStore struct {
+	logger *LoggingStore
+	store  ServeResponseLifecycleStore
+}
+
+func (s *loggingServeResponseLifecycleStore) AdmitResponseRun(ctx context.Context, value ResponseRunAdmission) (ResponseRunLease, error) {
+	result, err := s.store.AdmitResponseRun(ctx, value)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		s.logger.logOnce("AdmitResponseRun", err)
+	}
+	return result, err
+}
+func (s *loggingServeResponseLifecycleStore) RenewResponseRunLease(ctx context.Context, responseID, ownerID string, token int64) (ResponseRunLease, error) {
+	result, err := s.store.RenewResponseRunLease(ctx, responseID, ownerID, token)
+	if err != nil && !errors.Is(err, ErrResponseRunLeaseLost) {
+		s.logger.logOnce("RenewResponseRunLease", err)
+	}
+	return result, err
+}
+func (s *loggingServeResponseLifecycleStore) ValidateResponseRunLease(ctx context.Context, responseID, ownerID string, token int64) error {
+	err := s.store.ValidateResponseRunLease(ctx, responseID, ownerID, token)
+	if err != nil && !errors.Is(err, ErrResponseRunLeaseLost) {
+		s.logger.logOnce("ValidateResponseRunLease", err)
+	}
+	return err
+}
+func (s *loggingServeResponseLifecycleStore) CheckpointResponseRun(ctx context.Context, value ResponseRunCheckpoint) error {
+	err := s.store.CheckpointResponseRun(ctx, value)
+	if err != nil && !errors.Is(err, ErrResponseRunLeaseLost) {
+		s.logger.logOnce("CheckpointResponseRun", err)
+	}
+	return err
+}
+func (s *loggingServeResponseLifecycleStore) FinalizeResponseRun(ctx context.Context, value ResponseRunTerminal) (AttentionState, error) {
+	result, err := s.store.FinalizeResponseRun(ctx, value)
+	if err != nil && !errors.Is(err, ErrResponseRunLeaseLost) {
+		s.logger.logOnce("FinalizeResponseRun", err)
+	}
+	return result, err
+}
+func (s *loggingServeResponseLifecycleStore) RecoverExpiredResponseRuns(ctx context.Context, limit int) ([]AttentionState, error) {
+	result, err := s.store.RecoverExpiredResponseRuns(ctx, limit)
+	if err != nil {
+		s.logger.logOnce("RecoverExpiredResponseRuns", err)
+	}
+	return result, err
+}
+
+type loggingAttentionStore struct {
+	logger *LoggingStore
+	store  AttentionStore
+}
+
+func (s *loggingAttentionStore) MarkAttentionSeen(ctx context.Context, sessionID, storeID string, seq int64) (AttentionState, error) {
+	result, err := s.store.MarkAttentionSeen(ctx, sessionID, storeID, seq)
+	if err != nil && !errors.Is(err, ErrAttentionConflict) && !errors.Is(err, ErrNotFound) {
+		s.logger.logOnce("MarkAttentionSeen", err)
+	}
+	return result, err
+}
+func (s *loggingAttentionStore) GetAttention(ctx context.Context, sessionID string) (AttentionState, error) {
+	result, err := s.store.GetAttention(ctx, sessionID)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		s.logger.logOnce("GetAttention", err)
+	}
+	return result, err
+}
+func (s *loggingAttentionStore) ListAttention(ctx context.Context, value AttentionListOptions) (AttentionPage, error) {
+	result, err := s.store.ListAttention(ctx, value)
+	if err != nil && !errors.Is(err, ErrAttentionConflict) {
+		s.logger.logOnce("ListAttention", err)
+	}
+	return result, err
+}
+func (s *loggingAttentionStore) StoreInstanceID(ctx context.Context) (string, error) {
+	result, err := s.store.StoreInstanceID(ctx)
+	if err != nil {
+		s.logger.logOnce("StoreInstanceID", err)
+	}
+	return result, err
 }
 
 // WorkspaceAccess is the level of local filesystem authority granted to a

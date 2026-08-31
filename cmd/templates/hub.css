@@ -373,6 +373,15 @@ body {
   font-size: 0.84rem;
 }
 
+.node-attention-freshness {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.node-attention-freshness.is-stale {
+  color: var(--warn);
+}
+
 .node-error {
   color: var(--down);
   font-size: 0.82rem;
@@ -851,4 +860,58 @@ body {
   .node-session-meta { white-space: normal; }
   .modal-actions { flex-direction: column-reverse; }
   .modal-actions .hub-btn { width: 100%; }
+}
+.attention-panel {
+  margin-bottom: 1.25rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.attention-list {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.attention-row {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.7rem 0.8rem;
+  color: inherit;
+  text-decoration: none;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface) 80%, #22c55e 6%);
+}
+
+.attention-row:hover {
+  background: color-mix(in srgb, var(--surface) 75%, #22c55e 12%);
+}
+
+.attention-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: #22c55e;
+}
+
+.attention-body {
+  display: grid;
+  min-width: 0;
+  gap: 0.2rem;
+}
+
+.attention-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attention-meta {
+  color: var(--muted);
+  font-size: 0.82rem;
 }

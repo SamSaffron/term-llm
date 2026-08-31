@@ -1032,8 +1032,8 @@ func (rt *serveRuntime) persistSnapshotWithInitialBoundary(ctx context.Context, 
 		sessionMsg := session.NewMessage(sessionID, msg, -1)
 		messages = append(messages, *sessionMsg)
 	}
-	_, err := runResponseRunPersistence(ctx, snapshot, func() (int64, error) {
-		return replaceResponseRunMessages(dbCtx, rt.store, sessionID, messages)
+	_, err := runResponseRunPersistence(ctx, snapshot, func(fence session.ResponseRunFence) (int64, error) {
+		return replaceResponseRunMessages(session.WithResponseRunFence(dbCtx, fence), rt.store, sessionID, messages)
 	})
 	if err != nil {
 		log.Printf("[serve] session ReplaceMessages failed for %s: %v", sessionID, err)
@@ -1104,8 +1104,8 @@ func (rt *serveRuntime) persistCompactedSnapshot(ctx context.Context, sessionID 
 		sessionMsg := session.NewMessage(sessionID, msg, -1)
 		messages = append(messages, *sessionMsg)
 	}
-	_, err := runResponseRunPersistence(ctx, snapshot, func() (int64, error) {
-		return replaceCompactedResponseRunMessages(dbCtx, rt.store, sessionID, messages)
+	_, err := runResponseRunPersistence(ctx, snapshot, func(fence session.ResponseRunFence) (int64, error) {
+		return replaceCompactedResponseRunMessages(session.WithResponseRunFence(dbCtx, fence), rt.store, sessionID, messages)
 	})
 	if err != nil {
 		log.Printf("[serve] session ReplaceCompactedMessages failed for %s: %v", sessionID, err)
@@ -1151,8 +1151,8 @@ func (rt *serveRuntime) appendMessagesDetailed(ctx context.Context, sessionID st
 		}
 		sessionMsg := session.NewMessage(sessionID, msg, -1)
 		sessionMsg.TurnIndex = turnIndex
-		_, err := runResponseRunPersistence(ctx, []llm.Message{msg}, func() (int64, error) {
-			return addResponseRunMessage(dbCtx, rt.store, sessionID, sessionMsg)
+		_, err := runResponseRunPersistence(ctx, []llm.Message{msg}, func(fence session.ResponseRunFence) (int64, error) {
+			return addResponseRunMessage(session.WithResponseRunFence(dbCtx, fence), rt.store, sessionID, sessionMsg)
 		})
 		if err != nil {
 			log.Printf("[serve] session AddMessage failed for %s: %v", sessionID, err)
@@ -1882,8 +1882,8 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		sessionMsg.TurnIndex = turnIndex
 		if pendingAssistantMsgID != 0 {
 			sessionMsg.ID = pendingAssistantMsgID
-			_, err := runResponseRunPersistence(persistCtx, []llm.Message{assistantMsg}, func() (int64, error) {
-				return updateResponseRunStreamingMessage(dbCtx, rt.store, req.SessionID, sessionMsg, finalizeText)
+			_, err := runResponseRunPersistence(persistCtx, []llm.Message{assistantMsg}, func(fence session.ResponseRunFence) (int64, error) {
+				return updateResponseRunStreamingMessage(session.WithResponseRunFence(dbCtx, fence), rt.store, req.SessionID, sessionMsg, finalizeText)
 			})
 			if err == nil {
 				assistantSnapshotDirty = false
@@ -1907,8 +1907,8 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 			sessionMsg = session.NewMessage(req.SessionID, assistantMsg, -1)
 			sessionMsg.TurnIndex = turnIndex
 		}
-		_, err := runResponseRunPersistence(persistCtx, []llm.Message{assistantMsg}, func() (int64, error) {
-			return addResponseRunMessage(dbCtx, rt.store, req.SessionID, sessionMsg)
+		_, err := runResponseRunPersistence(persistCtx, []llm.Message{assistantMsg}, func(fence session.ResponseRunFence) (int64, error) {
+			return addResponseRunMessage(session.WithResponseRunFence(dbCtx, fence), rt.store, req.SessionID, sessionMsg)
 		})
 		if err != nil {
 			assistantSnapshotNeedsReconcile = true

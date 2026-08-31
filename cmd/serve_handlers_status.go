@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"log"
 	"net/http"
 	"strings"
 
@@ -46,6 +48,45 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 
 	// Collect active session IDs from in-memory state without touching runtimes.
 	activeIDs := s.activeSessionIDs()
+	durableRunning := make(map[string]session.AttentionItem)
+	attentionStore, attentionSupported := session.AsAttentionStore(s.store)
+	if attentionSupported {
+		for attempt := 0; attempt < 2; attempt++ {
+			candidate := make(map[string]session.AttentionItem)
+			cursor := ""
+			var snapshotVersion int64
+			complete := true
+			for {
+				page, listErr := attentionStore.ListAttention(r.Context(), session.AttentionListOptions{
+					Kind: session.AttentionKindRunning, Limit: 500, Cursor: cursor, SnapshotVersion: snapshotVersion,
+				})
+				if listErr != nil {
+					complete = false
+					if !errors.Is(listErr, session.ErrAttentionConflict) || attempt == 1 {
+						log.Printf("[serve] durable running status projection unavailable: %v", listErr)
+					}
+					break
+				}
+				if snapshotVersion == 0 {
+					snapshotVersion = page.SnapshotVersion
+				}
+				for _, item := range page.Items {
+					candidate[item.SessionID] = item
+				}
+				if !page.HasMore || page.NextCursor == "" {
+					break
+				}
+				cursor = page.NextCursor
+			}
+			if complete {
+				durableRunning = candidate
+				for id := range candidate {
+					activeIDs[id] = true
+				}
+				break
+			}
+		}
+	}
 	criticalIDs := make(map[string]bool, len(activeIDs)+1)
 	if selected := strings.TrimSpace(r.URL.Query().Get("selected_session")); selected != "" {
 		criticalIDs[selected] = true
@@ -87,25 +128,50 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
+	attentionBySession := make(map[string]session.AttentionState)
+	attentionBatchSupported := false
+	if attentionSupported {
+		ids := make([]string, 0, len(sessions))
+		for _, sess := range sessions {
+			ids = append(ids, sess.ID)
+		}
+		if batch, ok := session.AsAttentionBatchStore(s.store); ok {
+			attentionBatchSupported = true
+			if states, batchErr := batch.GetAttentionBatch(r.Context(), ids); batchErr == nil {
+				attentionBySession = states
+			} else {
+				log.Printf("[serve] status attention projection unavailable: %v", batchErr)
+			}
+		}
+	}
+
 	// transcript_updated_at remains for older cached clients and hub dashboards.
 	// Revision-aware clients use transcript_rev as the correctness signal.
 	type statusEntry struct {
-		ID                  string `json:"id"`
-		ProjectID           string `json:"project_id,omitempty"`
-		ProjectName         string `json:"project_name,omitempty"`
-		ShortTitle          string `json:"short_title"`
-		LongTitle           string `json:"long_title"`
-		ActiveRun           bool   `json:"active_run,omitempty"`
-		ActiveResponseID    string `json:"active_response_id,omitempty"`
-		RunEpoch            int64  `json:"run_epoch,omitempty"`
-		StartedRev          int64  `json:"started_rev,omitempty"`
-		StartedAt           int64  `json:"started_at,omitempty"`
-		ClientMessageID     string `json:"client_message_id,omitempty"`
-		AnchorRowID         int64  `json:"anchor_row_id,omitempty"`
-		TranscriptRev       int64  `json:"transcript_rev"`
-		MsgCount            int    `json:"message_count"`
-		LastMessageAt       int64  `json:"last_message_at"`
-		TranscriptUpdatedAt int64  `json:"transcript_updated_at"`
+		ID                       string `json:"id"`
+		ProjectID                string `json:"project_id,omitempty"`
+		ProjectName              string `json:"project_name,omitempty"`
+		ShortTitle               string `json:"short_title"`
+		LongTitle                string `json:"long_title"`
+		ActiveRun                bool   `json:"active_run,omitempty"`
+		ActiveResponseID         string `json:"active_response_id,omitempty"`
+		RunEpoch                 int64  `json:"run_epoch,omitempty"`
+		StartedRev               int64  `json:"started_rev,omitempty"`
+		StartedAt                int64  `json:"started_at,omitempty"`
+		ClientMessageID          string `json:"client_message_id,omitempty"`
+		AnchorRowID              int64  `json:"anchor_row_id,omitempty"`
+		TranscriptRev            int64  `json:"transcript_rev"`
+		MsgCount                 int    `json:"message_count"`
+		LastMessageAt            int64  `json:"last_message_at"`
+		TranscriptUpdatedAt      int64  `json:"transcript_updated_at"`
+		AttentionStoreInstanceID string `json:"attention_store_instance_id,omitempty"`
+		AttentionSeq             int64  `json:"attention_seq,omitempty"`
+		AttentionResponseID      string `json:"attention_response_id,omitempty"`
+		AttentionFinalRev        int64  `json:"attention_final_rev,omitempty"`
+		SeenThroughSeq           int64  `json:"seen_through_seq,omitempty"`
+		AttentionUnseen          bool   `json:"attention_unseen,omitempty"`
+		AttentionOutcome         string `json:"attention_outcome,omitempty"`
+		AttentionTerminalAt      int64  `json:"attention_terminal_at,omitempty"`
 	}
 
 	result := make([]statusEntry, 0, len(sessions))
@@ -131,26 +197,54 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 		}
 		activeResponseID, startedRev, runEpoch, clientMessageID, anchorRowID := s.activeTranscriptRun(sess.ID)
 		startedAt := int64(0)
-		if run := s.responseRuns.activeRun(sess.ID); run != nil && run.created > 0 {
-			startedAt = run.created * 1000
+		if s.responseRuns != nil {
+			if run := s.responseRuns.activeRun(sess.ID); run != nil && run.created > 0 {
+				startedAt = run.created * 1000
+			}
+		}
+		if durable, ok := durableRunning[sess.ID]; ok && activeResponseID == "" {
+			// A durable row owned by another/restarted process is authoritative for
+			// the running indicator, but this process cannot serve its event stream.
+			// Do not invite the browser to attach to a response ID it does not own.
+			startedRev = durable.StartedRev
+			startedAt = durable.StartedAt.UnixMilli()
+		}
+		var attention session.AttentionState
+		attentionTerminalAt := int64(0)
+		if attentionSupported {
+			attention = attentionBySession[sess.ID]
+			if !attentionBatchSupported {
+				attention, _ = attentionStore.GetAttention(r.Context(), sess.ID)
+			}
+			if !attention.TerminalAt.IsZero() {
+				attentionTerminalAt = attention.TerminalAt.UnixMilli()
+			}
 		}
 		result = append(result, statusEntry{
-			ID:                  sess.ID,
-			ProjectID:           sess.ProjectID,
-			ProjectName:         sess.ProjectName,
-			ShortTitle:          sess.PreferredShortTitle(),
-			LongTitle:           sess.PreferredLongTitle(),
-			ActiveRun:           activeIDs[sess.ID],
-			ActiveResponseID:    activeResponseID,
-			RunEpoch:            runEpoch,
-			StartedRev:          startedRev,
-			StartedAt:           startedAt,
-			ClientMessageID:     clientMessageID,
-			AnchorRowID:         anchorRowID,
-			TranscriptRev:       transcriptRev,
-			MsgCount:            sess.MessageCount,
-			LastMessageAt:       lastMessageAt.UnixMilli(),
-			TranscriptUpdatedAt: transcriptUpdatedAt.UnixMilli(),
+			ID:                       sess.ID,
+			ProjectID:                sess.ProjectID,
+			ProjectName:              sess.ProjectName,
+			ShortTitle:               sess.PreferredShortTitle(),
+			LongTitle:                sess.PreferredLongTitle(),
+			ActiveRun:                activeIDs[sess.ID],
+			ActiveResponseID:         activeResponseID,
+			RunEpoch:                 runEpoch,
+			StartedRev:               startedRev,
+			StartedAt:                startedAt,
+			ClientMessageID:          clientMessageID,
+			AnchorRowID:              anchorRowID,
+			TranscriptRev:            transcriptRev,
+			MsgCount:                 sess.MessageCount,
+			LastMessageAt:            lastMessageAt.UnixMilli(),
+			TranscriptUpdatedAt:      transcriptUpdatedAt.UnixMilli(),
+			AttentionStoreInstanceID: attention.StoreInstanceID,
+			AttentionSeq:             attention.LatestAttentionSeq,
+			AttentionResponseID:      attention.ResponseID,
+			AttentionFinalRev:        attention.FinalRev,
+			SeenThroughSeq:           attention.SeenThroughSeq,
+			AttentionUnseen:          attention.Unseen,
+			AttentionOutcome:         string(attention.Outcome),
+			AttentionTerminalAt:      attentionTerminalAt,
 		})
 	}
 

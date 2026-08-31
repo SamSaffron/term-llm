@@ -180,6 +180,14 @@ export interface Session {
   transcriptRev?: number;
   /** Revision of the durable message bodies currently installed in messages. */
   messageBodiesRev?: number;
+  attentionStoreInstanceId?: string;
+  attentionSeq?: number;
+  attentionResponseId?: string;
+  attentionFinalRev?: number;
+  seenThroughSeq?: number;
+  attentionUnseen?: boolean;
+  attentionOutcome?: 'completed' | 'failed' | 'cancelled' | 'orphaned' | string;
+  attentionTerminalAt?: number;
   fileChangeSummary?: { fileCount: number; additions: number; deletions: number; git: boolean };
 }
 

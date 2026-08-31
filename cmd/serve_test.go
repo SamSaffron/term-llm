@@ -6252,6 +6252,18 @@ func TestHandleSessionsSearch_UsesFTSAndReturnsSessionSummaries(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AddMessage: %v", err)
 	}
+	lifecycle, ok := session.AsServeResponseLifecycleStore(store)
+	if !ok {
+		t.Fatal("SQLite store missing response lifecycle capability")
+	}
+	lease, err := lifecycle.AdmitResponseRun(ctx, session.ResponseRunAdmission{ResponseID: "search-response", SessionID: sess.ID, RunEpoch: 1, OwnerInstanceID: "owner", StartedAt: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker, err := lifecycle.FinalizeResponseRun(ctx, session.ResponseRunTerminal{ResponseID: "search-response", OwnerInstanceID: "owner", FencingToken: lease.FencingToken, Outcome: session.ResponseRunCompleted, FinalRev: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	srv := &serveServer{store: store}
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/search?q=linux%20mount", nil)
@@ -6263,9 +6275,12 @@ func TestHandleSessionsSearch_UsesFTSAndReturnsSessionSummaries(t *testing.T) {
 
 	var body struct {
 		Sessions []struct {
-			ID         string `json:"id"`
-			ShortTitle string `json:"short_title"`
-			Snippet    string `json:"snippet"`
+			ID                       string `json:"id"`
+			ShortTitle               string `json:"short_title"`
+			Snippet                  string `json:"snippet"`
+			AttentionStoreInstanceID string `json:"attention_store_instance_id"`
+			AttentionSeq             int64  `json:"attention_seq"`
+			AttentionUnseen          bool   `json:"attention_unseen"`
 		} `json:"sessions"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
@@ -6282,6 +6297,10 @@ func TestHandleSessionsSearch_UsesFTSAndReturnsSessionSummaries(t *testing.T) {
 	}
 	if !strings.Contains(body.Sessions[0].Snippet, "linux") && !strings.Contains(body.Sessions[0].Snippet, "Linux") {
 		t.Fatalf("snippet = %q, want matched text", body.Sessions[0].Snippet)
+	}
+	if body.Sessions[0].AttentionStoreInstanceID != marker.StoreInstanceID ||
+		body.Sessions[0].AttentionSeq != marker.LatestAttentionSeq || !body.Sessions[0].AttentionUnseen {
+		t.Fatalf("search attention projection = %+v, marker=%+v", body.Sessions[0], marker)
 	}
 }
 
@@ -10871,6 +10890,30 @@ func TestStartResponseRunExplicitCancelClearsDeferredUIError(t *testing.T) {
 	}, "UI response cancellation")
 	if got := rt.consumeLastUIRunError(); got != "" {
 		t.Fatalf("explicit cancellation retained deferred UI error %q", got)
+	}
+}
+
+func TestResponseOwnerIDIsStableAcrossConcurrentInitialization(t *testing.T) {
+	srv := &serveServer{}
+	ids := make(chan string, 64)
+	var wg sync.WaitGroup
+	for range 64 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ids <- srv.responseOwnerID()
+		}()
+	}
+	wg.Wait()
+	close(ids)
+	var first string
+	for id := range ids {
+		if first == "" {
+			first = id
+		}
+		if id == "" || id != first {
+			t.Fatalf("owner IDs diverged: first=%q got=%q", first, id)
+		}
 	}
 }
 

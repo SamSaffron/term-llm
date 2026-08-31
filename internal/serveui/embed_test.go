@@ -66,10 +66,11 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// navigation, the paginated Recent/Projects sidebar, elastic streaming
 		// presentation buffer, explicit response authority/transport state,
 		// authoritative mobile stream recovery, widget process lifecycle controls,
-		// model capability-aware runtime controls, and the small eager Markdown
-		// review toggle/loader are first-party shell code. The preview body, parser,
-		// source transport, and preview CSS remain in bounded lazy chunks. Keep
-		// bounded headroom while still failing meaningful accidental regressions.
+		// model capability-aware runtime controls, durable terminal attention
+		// reconciliation, and the small eager Markdown review toggle/loader are
+		// first-party shell code. The preview body, parser, source transport, and
+		// preview CSS remain in bounded lazy chunks. Keep bounded headroom while
+		// still failing meaningful accidental regressions.
 		"dist/app.js":  {raw: 435_500, gzip: 127_000},
 		"dist/app.css": {raw: 168_000, gzip: 32_000},
 	}

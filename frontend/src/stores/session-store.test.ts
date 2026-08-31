@@ -6,6 +6,90 @@ import { testConfig, testSession } from './store-test-fixtures';
 beforeEach(() => localStorage.clear());
 
 describe('SessionStore', () => {
+  it('merges attention watermarks monotonically without clearing a newer marker', () => {
+    const store = new AppStore(testConfig);
+    try {
+      const current = testSession({
+        attentionStoreInstanceId: 'store-a',
+        attentionSeq: 20,
+        attentionResponseId: 'resp-new',
+        attentionFinalRev: 8,
+        seenThroughSeq: 10,
+        attentionUnseen: true,
+        attentionOutcome: 'failed',
+      });
+      const delayed = testSession({
+        attentionStoreInstanceId: 'store-a',
+        attentionSeq: 15,
+        attentionResponseId: 'resp-old',
+        attentionFinalRev: 5,
+        seenThroughSeq: 15,
+        attentionUnseen: false,
+      });
+      const merged = store.sessionStore.mergeSession(current, delayed);
+      expect(merged).toMatchObject({
+        attentionSeq: 20,
+        attentionResponseId: 'resp-new',
+        attentionFinalRev: 8,
+        seenThroughSeq: 15,
+        attentionUnseen: true,
+        attentionOutcome: 'failed',
+      });
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('preserves marker metadata when an equal-sequence projection omits optional fields', () => {
+    const store = new AppStore(testConfig);
+    try {
+      const current = testSession({
+        attentionStoreInstanceId: 'store-a',
+        attentionSeq: 20,
+        attentionResponseId: 'resp-current',
+        attentionFinalRev: 8,
+        attentionOutcome: 'failed',
+        attentionTerminalAt: 1234,
+        attentionUnseen: true,
+      });
+      const sparse = testSession({
+        attentionStoreInstanceId: 'store-a',
+        attentionSeq: 20,
+        attentionUnseen: true,
+      });
+      expect(store.sessionStore.mergeSession(current, sparse)).toMatchObject({
+        attentionResponseId: 'resp-current',
+        attentionFinalRev: 8,
+        attentionOutcome: 'failed',
+        attentionTerminalAt: 1234,
+      });
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('resets attention watermarks when the node store identity changes', () => {
+    const store = new AppStore(testConfig);
+    try {
+      const current = testSession({
+        attentionStoreInstanceId: 'store-a',
+        attentionSeq: 20,
+        seenThroughSeq: 10,
+        attentionUnseen: true,
+      });
+      const replacement = testSession({ attentionStoreInstanceId: 'store-b' });
+
+      expect(store.sessionStore.mergeSession(current, replacement)).toMatchObject({
+        attentionStoreInstanceId: 'store-b',
+        attentionSeq: 0,
+        seenThroughSeq: 0,
+        attentionUnseen: false,
+      });
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('is the command owner for catalog and selection state', () => {
     const store = new AppStore(testConfig);
     try {

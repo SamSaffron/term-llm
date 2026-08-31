@@ -319,7 +319,7 @@ func TestResponseRunPersistenceIdentityDoesNotDependOnAssistantContent(t *testin
 	ctx := withResponseRunContext(context.Background(), run)
 	for _, text := range []string{"partial", "partial complete"} {
 		message := tagResponseRunMessage(ctx, llm.AssistantText(text), 0)
-		finish := beginResponseRunPersistence(ctx, []llm.Message{message})
+		finish, _ := beginResponseRunPersistence(ctx, []llm.Message{message})
 		finish(3, nil)
 	}
 	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, llm.Usage{}, llm.Usage{}); err != nil {
@@ -327,6 +327,27 @@ func TestResponseRunPersistenceIdentityDoesNotDependOnAssistantContent(t *testin
 	}
 	if run.durableOutputCount != 1 {
 		t.Fatalf("durable output count = %d, want one exact assistant segment", run.durableOutputCount)
+	}
+}
+
+func TestResponseRunTerminalizationFailureStillPublishesTerminalEvent(t *testing.T) {
+	run := newResponseRun("resp-lifecycle-failure", "sess-lifecycle-failure", "", "test", time.Now().Unix(), nil)
+	run.finalizeLifecycle = func(session.ResponseRunState, int64, int) (session.AttentionState, error) {
+		return session.AttentionState{}, errors.New("database unavailable")
+	}
+	err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, llm.Usage{}, llm.Usage{})
+	if err == nil {
+		t.Fatal("complete unexpectedly succeeded")
+	}
+	if run.status != "failed" || len(run.events) != 1 || run.events[0].Event != "response.failed" {
+		t.Fatalf("terminal fallback = status %q events %+v", run.status, run.events)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(run.events[0].Data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["lifecycle_recovery_required"] != true {
+		t.Fatalf("terminal fallback payload = %+v", payload)
 	}
 }
 
@@ -381,7 +402,7 @@ func TestResponseRunCarriesStartedAndFinalTranscriptRevisions(t *testing.T) {
 	}
 	runCtx := withResponseRunContext(ctx, run)
 	assistant := tagResponseRunMessage(runCtx, llm.AssistantText("durable output"), 0)
-	finishPersistence := beginResponseRunPersistence(runCtx, []llm.Message{assistant})
+	finishPersistence, _ := beginResponseRunPersistence(runCtx, []llm.Message{assistant})
 	message := session.NewMessage(sess.ID, assistant, -1)
 	writer, ok := store.(session.TranscriptRevisionWriter)
 	if !ok {
@@ -590,7 +611,7 @@ func TestResponseRunUsesFallbackRevisionForUnversionedPersistence(t *testing.T) 
 	run.finalRevReader = func() (int64, error) { return 9, nil }
 	ctx := withResponseRunContext(context.Background(), run)
 	assistant := tagResponseRunMessage(ctx, llm.AssistantText("persisted"), 0)
-	finish := beginResponseRunPersistence(ctx, []llm.Message{assistant})
+	finish, _ := beginResponseRunPersistence(ctx, []llm.Message{assistant})
 	finish(0, nil)
 
 	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, llm.Usage{}, llm.Usage{}); err != nil {
@@ -619,8 +640,8 @@ func TestResponseRunUsesFallbackRevisionForCapabilitylessStore(t *testing.T) {
 	runCtx := withResponseRunContext(ctx, run)
 	assistant := tagResponseRunMessage(runCtx, llm.AssistantText("persisted"), 0)
 	message := session.NewMessage(sess.ID, assistant, -1)
-	if _, err := runResponseRunPersistence(runCtx, []llm.Message{assistant}, func() (int64, error) {
-		return addResponseRunMessage(ctx, server.store, sess.ID, message)
+	if _, err := runResponseRunPersistence(runCtx, []llm.Message{assistant}, func(fence session.ResponseRunFence) (int64, error) {
+		return addResponseRunMessage(session.WithResponseRunFence(ctx, fence), server.store, sess.ID, message)
 	}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
@@ -636,7 +657,7 @@ func TestResponseRunPersistenceBarrierTimesOut(t *testing.T) {
 	run := newResponseRun("resp-final-rev-timeout", "sess-timeout", "", "test", time.Now().Unix(), nil)
 	ctx := withResponseRunContext(context.Background(), run)
 	assistant := tagResponseRunMessage(ctx, llm.AssistantText("persisting"), 0)
-	_ = beginResponseRunPersistence(ctx, []llm.Message{assistant})
+	_, _ = beginResponseRunPersistence(ctx, []llm.Message{assistant})
 
 	started := time.Now()
 	handoff := run.readDurableHandoffWithTimeout(20 * time.Millisecond)
@@ -652,7 +673,7 @@ func TestResponseRunPersistenceBarrierDoesNotBlockEventMutex(t *testing.T) {
 	run := newResponseRun("resp-final-rev-lock", "sess-lock", "", "test", time.Now().Unix(), nil)
 	ctx := withResponseRunContext(context.Background(), run)
 	assistant := tagResponseRunMessage(ctx, llm.AssistantText("persisted"), 0)
-	finish := beginResponseRunPersistence(ctx, []llm.Message{assistant})
+	finish, _ := beginResponseRunPersistence(ctx, []llm.Message{assistant})
 
 	completeDone := make(chan error, 1)
 	go func() {
@@ -689,7 +710,7 @@ func TestResponseRunRejectsDurableHandoffWhenOwnedWriteFails(t *testing.T) {
 	run := newResponseRun("resp-write-failed", "sess-write-failed", "", "test", time.Now().Unix(), nil)
 	ctx := withResponseRunContext(context.Background(), run)
 	assistant := tagResponseRunMessage(ctx, llm.AssistantText("visible partial"), 0)
-	finishPersistence := beginResponseRunPersistence(ctx, []llm.Message{assistant})
+	finishPersistence, _ := beginResponseRunPersistence(ctx, []llm.Message{assistant})
 	finishPersistence(0, errors.New("database unavailable"))
 
 	if _, err := run.fail(map[string]any{"error": map[string]any{"message": "failed"}}, "server_error", "failed"); err != nil {

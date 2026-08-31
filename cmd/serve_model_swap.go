@@ -497,8 +497,8 @@ func (s *serveServer) persistModelSwapMarker(ctx context.Context, sessionID stri
 		sm := session.NewMessage(sessionID, msg, -1)
 		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		_, _ = runResponseRunPersistence(ctx, []llm.Message{msg}, func() (int64, error) {
-			return addResponseRunMessage(dbCtx, s.store, sessionID, sm)
+		_, _ = runResponseRunPersistence(ctx, []llm.Message{msg}, func(fence session.ResponseRunFence) (int64, error) {
+			return addResponseRunMessage(session.WithResponseRunFence(dbCtx, fence), s.store, sessionID, sm)
 		})
 	}
 }
@@ -526,8 +526,8 @@ func (s *serveServer) restoreModelSwapRollback(ctx context.Context, sessionID st
 		}
 		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		_, _ = runResponseRunPersistence(ctx, restoredHistory, func() (int64, error) {
-			return replaceResponseRunMessages(dbCtx, s.store, sessionID, dbMessages)
+		_, _ = runResponseRunPersistence(ctx, restoredHistory, func(fence session.ResponseRunFence) (int64, error) {
+			return replaceResponseRunMessages(session.WithResponseRunFence(dbCtx, fence), s.store, sessionID, dbMessages)
 		})
 		if exec.previous != nil {
 			s.syncPersistedSessionRuntime(dbCtx, sessionID, exec.previous, exec.plan.previousModel, exec.plan.previousEffort, "", false, "", false)

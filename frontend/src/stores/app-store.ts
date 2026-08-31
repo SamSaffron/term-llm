@@ -209,6 +209,7 @@ export class AppStore {
   private readonly lifecycleAbort = new AbortController();
   private disposed = false;
   private recoveryPromise: Promise<void> | null = null;
+  private readonly attentionAcks = new Map<string, number>();
   private serverEventFeedEnabled = false;
   private readonly locallyStoppedResponses: Set<string>;
 
@@ -501,6 +502,7 @@ export class AppStore {
         this.locallyStoppedResponses.delete(responseId);
       },
       eventFeedHealthy: () => this.serverEventCoordinator?.isHealthy() || false,
+      acknowledgeAttention: () => this.acknowledgeSelectedAttention(),
     });
     this.serverEventCoordinator = new ServerEventCoordinator(this.services, {
       startupDone: this.startupDone,
@@ -683,6 +685,77 @@ export class AppStore {
       await this.refreshStatus(options.authoritative).catch(() => undefined);
     }
     if (options.authoritative) await this.performRecovery();
+    void this.acknowledgeSelectedAttention();
+  }
+
+  private async acknowledgeSelectedAttention(): Promise<void> {
+    if (document.visibilityState !== 'visible' || navigator.onLine === false) return;
+    const sessionId = this.activeSessionId.peek();
+    const epoch = this.selectionEpoch;
+    if (!sessionId) return;
+    const selected = this.sessions.peek().find((session) => session.id === sessionId);
+    if (
+      !selected?.attentionUnseen ||
+      !selected.attentionStoreInstanceId ||
+      !selected.attentionSeq ||
+      selected.attentionSeq <= (selected.seenThroughSeq || 0)
+    )
+      return;
+    const installedRev = selected.messageBodiesRev;
+    const finalRev = selected.attentionFinalRev || 0;
+    // A zero/unknown final revision means there is no later durable body to
+    // wait for. The selected-session load that installed messageBodiesRev is
+    // still authoritative, including for orphan recovery in a fresh window.
+    if (installedRev === undefined || (finalRev > 0 && installedRev < finalRev)) return;
+    const throughSeq = selected.attentionSeq;
+    if ((this.attentionAcks.get(sessionId) || 0) >= throughSeq) return;
+    if (this.activeSessionId.peek() !== sessionId || this.selectionEpoch !== epoch) return;
+    this.attentionAcks.set(sessionId, throughSeq);
+    try {
+      const state = await this.endpoints.markAttentionSeen(
+        sessionId,
+        selected.attentionStoreInstanceId,
+        throughSeq,
+      );
+      const latestValue = Number(state.latest_attention_seq);
+      const seenValue = Number(state.seen_through_seq);
+      const latest = Number.isFinite(latestValue) ? Math.max(0, latestValue) : throughSeq;
+      const seen = Number.isFinite(seenValue) ? Math.max(0, seenValue) : throughSeq;
+      const storeInstanceId = String(state.store_instance_id || selected.attentionStoreInstanceId);
+      const terminalAt = Date.parse(String(state.terminal_at || ''));
+      this.sessionStore.update(sessionId, (current) => {
+        const storeReplaced = Boolean(
+          current.attentionStoreInstanceId &&
+          storeInstanceId &&
+          current.attentionStoreInstanceId !== storeInstanceId,
+        );
+        const currentSeq = current.attentionSeq || 0;
+        const nextSeq = storeReplaced ? latest : Math.max(currentSeq, latest);
+        const nextSeen = storeReplaced ? seen : Math.max(current.seenThroughSeq || 0, seen);
+        const markerIsCurrent = storeReplaced || latest >= currentSeq;
+        return {
+          ...current,
+          attentionStoreInstanceId: storeInstanceId,
+          attentionSeq: nextSeq,
+          seenThroughSeq: nextSeen,
+          ...(markerIsCurrent
+            ? {
+                attentionResponseId: String(state.response_id || ''),
+                attentionFinalRev: Math.max(0, Number(state.final_rev) || 0),
+                attentionOutcome: String(state.outcome || '') as Session['attentionOutcome'],
+                ...(Number.isFinite(terminalAt) ? { attentionTerminalAt: terminalAt } : {}),
+              }
+            : {}),
+          attentionUnseen: nextSeq > nextSeen,
+        };
+      });
+      this.tabSyncCoordinator.publish('attention-changed', sessionId);
+    } catch {
+      // Durable state remains unseen; normal status, event, online, and visibility
+      // reconciliation provide bounded retries without inventing local truth.
+    } finally {
+      if (this.attentionAcks.get(sessionId) === throughSeq) this.attentionAcks.delete(sessionId);
+    }
   }
 
   private async performRecovery(): Promise<void> {
@@ -809,6 +882,7 @@ export class AppStore {
   async selectSession(session: Session, replace = false): Promise<void> {
     await this.selectionStore.selectSession(session, replace);
     this.serverEventCoordinator.updateInterest(this.activeSessionId.peek());
+    void this.acknowledgeSelectedAttention();
   }
 
   newChat(replace = false, projectId?: string, persistCurrent = true): void {
@@ -854,6 +928,8 @@ export class AppStore {
 
   async loadSession(id: string, epoch = this.selectionEpoch): Promise<void> {
     await this.selectionStore.loadSession(id, epoch);
+    if (this.activeSessionId.peek() === id && this.selectionEpoch === epoch)
+      void this.acknowledgeSelectedAttention();
   }
 
   async send(options: SendOptions = {}): Promise<void> {
@@ -887,6 +963,7 @@ export class AppStore {
     preserveLiveRun = false,
   ): Promise<void> {
     await this.runEngine.refreshSessionMessages(sessionId, targetRev, responseId, preserveLiveRun);
+    if (this.activeSessionId.peek() === sessionId) void this.acknowledgeSelectedAttention();
   }
 
   private async resumeResponse(sessionId: string, responseId: string): Promise<void> {
@@ -1287,9 +1364,6 @@ export class AppStore {
 
   async refreshHubAgents(force = false): Promise<void> {
     await this.sessionStore.refreshHubAgents(force);
-  }
-  clearHubAttention(id: string): void {
-    this.sessionStore.clearHubAttention(id);
   }
 
   private startStatusPoll(): void {

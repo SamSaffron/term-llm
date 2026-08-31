@@ -134,41 +134,49 @@ type Message struct {
 
 // SessionSummary is a lightweight view of a session for listing.
 type SessionSummary struct {
-	ID                  string             `json:"id"`
-	Number              int64              `json:"number,omitempty"` // Sequential session number
-	Name                string             `json:"name,omitempty"`
-	Summary             string             `json:"summary,omitempty"`
-	GeneratedShortTitle string             `json:"generated_short_title,omitempty"`
-	GeneratedLongTitle  string             `json:"generated_long_title,omitempty"`
-	TitleSource         SessionTitleSource `json:"title_source,omitempty"`
-	Provider            string             `json:"provider"`
-	ProviderKey         string             `json:"provider_key,omitempty"`
-	Model               string             `json:"model"`
-	Mode                SessionMode        `json:"mode,omitempty"`
-	Origin              SessionOrigin      `json:"origin,omitempty"`
-	Agent               string             `json:"agent,omitempty"`
-	Archived            bool               `json:"archived,omitempty"`
-	Pinned              bool               `json:"pinned,omitempty"`
-	MessageCount        int                `json:"message_count"`
-	TranscriptRev       int64              `json:"transcript_rev"`
-	UserTurns           int                `json:"user_turns,omitempty"`
-	LLMTurns            int                `json:"llm_turns,omitempty"`
-	ToolCalls           int                `json:"tool_calls,omitempty"`
-	InputTokens         int                `json:"input_tokens,omitempty"`
-	CachedInputTokens   int                `json:"cached_input_tokens,omitempty"`
-	CacheWriteTokens    int                `json:"cache_write_tokens,omitempty"`
-	OutputTokens        int                `json:"output_tokens,omitempty"`
-	Status              SessionStatus      `json:"status,omitempty"`
-	Tags                string             `json:"tags,omitempty"`
-	ProjectID           string             `json:"project_id,omitempty"`
-	ProjectName         string             `json:"project_name,omitempty"`
-	CWD                 string             `json:"cwd,omitempty"`
-	WorktreeDir         string             `json:"worktree_dir,omitempty"`
-	Goal                *Goal              `json:"goal,omitempty"`
-	Share               *ShareState        `json:"share,omitempty"`
-	CreatedAt           time.Time          `json:"created_at"`
-	UpdatedAt           time.Time          `json:"updated_at"`
-	LastMessageAt       time.Time          `json:"last_message_at,omitempty"`
+	ID                       string             `json:"id"`
+	Number                   int64              `json:"number,omitempty"` // Sequential session number
+	Name                     string             `json:"name,omitempty"`
+	Summary                  string             `json:"summary,omitempty"`
+	GeneratedShortTitle      string             `json:"generated_short_title,omitempty"`
+	GeneratedLongTitle       string             `json:"generated_long_title,omitempty"`
+	TitleSource              SessionTitleSource `json:"title_source,omitempty"`
+	Provider                 string             `json:"provider"`
+	ProviderKey              string             `json:"provider_key,omitempty"`
+	Model                    string             `json:"model"`
+	Mode                     SessionMode        `json:"mode,omitempty"`
+	Origin                   SessionOrigin      `json:"origin,omitempty"`
+	Agent                    string             `json:"agent,omitempty"`
+	Archived                 bool               `json:"archived,omitempty"`
+	Pinned                   bool               `json:"pinned,omitempty"`
+	MessageCount             int                `json:"message_count"`
+	TranscriptRev            int64              `json:"transcript_rev"`
+	UserTurns                int                `json:"user_turns,omitempty"`
+	LLMTurns                 int                `json:"llm_turns,omitempty"`
+	ToolCalls                int                `json:"tool_calls,omitempty"`
+	InputTokens              int                `json:"input_tokens,omitempty"`
+	CachedInputTokens        int                `json:"cached_input_tokens,omitempty"`
+	CacheWriteTokens         int                `json:"cache_write_tokens,omitempty"`
+	OutputTokens             int                `json:"output_tokens,omitempty"`
+	Status                   SessionStatus      `json:"status,omitempty"`
+	Tags                     string             `json:"tags,omitempty"`
+	ProjectID                string             `json:"project_id,omitempty"`
+	ProjectName              string             `json:"project_name,omitempty"`
+	CWD                      string             `json:"cwd,omitempty"`
+	WorktreeDir              string             `json:"worktree_dir,omitempty"`
+	Goal                     *Goal              `json:"goal,omitempty"`
+	Share                    *ShareState        `json:"share,omitempty"`
+	CreatedAt                time.Time          `json:"created_at"`
+	UpdatedAt                time.Time          `json:"updated_at"`
+	LastMessageAt            time.Time          `json:"last_message_at,omitempty"`
+	AttentionStoreInstanceID string             `json:"attention_store_instance_id,omitempty"`
+	AttentionSeq             int64              `json:"attention_seq,omitempty"`
+	AttentionResponseID      string             `json:"attention_response_id,omitempty"`
+	AttentionFinalRev        int64              `json:"attention_final_rev,omitempty"`
+	SeenThroughSeq           int64              `json:"seen_through_seq,omitempty"`
+	AttentionUnseen          bool               `json:"attention_unseen,omitempty"`
+	AttentionOutcome         ResponseRunState   `json:"attention_outcome,omitempty"`
+	AttentionTerminalAt      int64              `json:"attention_terminal_at,omitempty"`
 }
 
 // ListOptions configures session listing.

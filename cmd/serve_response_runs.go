@@ -115,40 +115,49 @@ type responseRunResolvedInteraction struct {
 }
 
 type responseRun struct {
-	mu                     sync.Mutex
-	terminalMu             sync.Mutex
-	interactionSubmitMu    sync.Mutex
-	id                     string
-	sessionID              string
-	previousResponseID     string
-	clientMessageID        string
-	idempotencyScope       string
-	requestFingerprint     string
-	anchorRowID            int64 // latest durable completed boundary; zero means unavailable
-	anchorAvailable        bool
-	boundary               *runboundary.Tracker
-	model                  string
-	reasoningEffort        string
-	reasoningEffortSet     bool
-	created                int64
-	endedAt                int64
-	runEpoch               int64
-	startedRev             int64
-	startedCompactionSeq   int
-	startedCompactionCount int
-	finalRev               int64
-	finalRevReader         func() (int64, error)
-	durableHandoff         bool
-	durableOutputCount     int
-	durableHandoffErr      string
-	continuationResponseID string
-	persistence            *responseRunPersistenceLedger
-	status                 string
-	errorType              string
-	errorMessage           string
-	usage                  llm.Usage
-	sessionUsage           llm.Usage
-	lastSequenceNumber     int64
+	mu                      sync.Mutex
+	terminalMu              sync.Mutex
+	interactionSubmitMu     sync.Mutex
+	id                      string
+	sessionID               string
+	previousResponseID      string
+	clientMessageID         string
+	idempotencyScope        string
+	requestFingerprint      string
+	anchorRowID             int64 // latest durable completed boundary; zero means unavailable
+	anchorAvailable         bool
+	boundary                *runboundary.Tracker
+	model                   string
+	reasoningEffort         string
+	reasoningEffortSet      bool
+	created                 int64
+	endedAt                 int64
+	runEpoch                int64
+	startedRev              int64
+	startedCompactionSeq    int
+	startedCompactionCount  int
+	finalRev                int64
+	attentionSeq            int64
+	attentionStoreID        string
+	ownerInstanceID         string
+	fencingToken            int64
+	leaseExpiresAt          time.Time
+	validateLifecycle       func() error
+	checkpointLifecycle     func(int64, int) error
+	finalizeLifecycle       func(session.ResponseRunState, int64, int) (session.AttentionState, error)
+	atomicTranscriptFencing bool
+	finalRevReader          func() (int64, error)
+	durableHandoff          bool
+	durableOutputCount      int
+	durableHandoffErr       string
+	continuationResponseID  string
+	persistence             *responseRunPersistenceLedger
+	status                  string
+	errorType               string
+	errorMessage            string
+	usage                   llm.Usage
+	sessionUsage            llm.Usage
+	lastSequenceNumber      int64
 	// events[eventStart:] is the retained replay window; dropped prefix slots
 	// are zeroed and reclaimed in batches to avoid per-token slice copies.
 	events                []responseRunEvent
@@ -353,14 +362,14 @@ func responseRunOwnedOutputKeys(runID string, messages []llm.Message) []string {
 	return keys
 }
 
-func beginResponseRunPersistence(ctx context.Context, messages []llm.Message) func(int64, error) {
+func beginResponseRunPersistence(ctx context.Context, messages []llm.Message) (func(int64, error), int) {
 	run, _ := ctx.Value(responseRunContextKey{}).(*responseRun)
 	if run == nil || run.persistence == nil {
-		return func(int64, error) {}
+		return func(int64, error) {}, 0
 	}
 	keys := responseRunOwnedOutputKeys(run.id, messages)
 	if len(keys) == 0 {
-		return func(int64, error) {}
+		return func(int64, error) {}, 0
 	}
 
 	ledger := run.persistence
@@ -376,6 +385,7 @@ func beginResponseRunPersistence(ctx context.Context, messages []llm.Message) fu
 		}
 		ledger.outputKeys[key] = struct{}{}
 	}
+	reservedOutputCount := len(ledger.outputKeys)
 	ledger.mu.Unlock()
 
 	var once sync.Once
@@ -395,15 +405,47 @@ func beginResponseRunPersistence(ctx context.Context, messages []llm.Message) fu
 			if ledger.inflight == 0 {
 				close(ledger.idle)
 			}
+			outputCount := len(ledger.outputKeys)
 			ledger.mu.Unlock()
+			if persistErr == nil && run.checkpointLifecycle != nil && !run.atomicTranscriptFencing {
+				if checkpointErr := run.checkpointLifecycle(rev, outputCount); checkpointErr != nil {
+					ledger.mu.Lock()
+					ledger.failed = true
+					if ledger.failureText == "" {
+						ledger.failureText = checkpointErr.Error()
+					}
+					ledger.mu.Unlock()
+					if errors.Is(checkpointErr, session.ErrResponseRunLeaseLost) {
+						run.mu.Lock()
+						cancelRun := run.cancel
+						run.mu.Unlock()
+						if cancelRun != nil {
+							cancelRun()
+						}
+					}
+				}
+			}
 		})
-	}
+	}, reservedOutputCount
 }
 
-func runResponseRunPersistence(ctx context.Context, messages []llm.Message, persist func() (int64, error)) (rev int64, err error) {
-	finish := beginResponseRunPersistence(ctx, messages)
+func runResponseRunPersistence(ctx context.Context, messages []llm.Message, persist func(session.ResponseRunFence) (int64, error)) (rev int64, err error) {
+	run := responseRunFromContext(ctx)
+	if run != nil && run.validateLifecycle != nil {
+		if err := run.validateLifecycle(); err != nil {
+			return 0, err
+		}
+	}
+	finish, outputCount := beginResponseRunPersistence(ctx, messages)
 	defer func() { finish(rev, err) }()
-	return persist()
+	var fence session.ResponseRunFence
+	if run != nil {
+		run.mu.Lock()
+		fence = session.ResponseRunFence{ResponseID: run.id, OwnerInstanceID: run.ownerInstanceID,
+			FencingToken: run.fencingToken, DurableOutputCount: outputCount}
+		run.mu.Unlock()
+	}
+	return persist(fence)
 }
 
 func addResponseRunMessage(ctx context.Context, store session.Store, sessionID string, message *session.Message) (int64, error) {
@@ -566,6 +608,42 @@ func (r *responseRun) applyDurableHandoffLocked(handoff responseRunDurableHandof
 	r.durableHandoffErr = handoff.Error
 }
 
+func (r *responseRun) finalizeLifecycleLocked(outcome session.ResponseRunState) error {
+	if r.finalizeLifecycle == nil {
+		return nil
+	}
+	attention, err := r.finalizeLifecycle(outcome, r.finalRev, r.durableOutputCount)
+	if err != nil {
+		return fmt.Errorf("persist terminal response lifecycle: %w", err)
+	}
+	r.attentionSeq = attention.LatestAttentionSeq
+	r.attentionStoreID = attention.StoreInstanceID
+	return nil
+}
+
+func (r *responseRun) appendLifecycleFailureLocked(payload map[string]any, lifecycleErr error) error {
+	r.status = "failed"
+	r.errorType = "server_error"
+	r.errorMessage = "response lifecycle could not be finalized; recovery is required"
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["lifecycle_recovery_required"] = true
+	response := mapValue(payload["response"])
+	if len(response) == 0 {
+		response = map[string]any{"id": r.id, "object": "response"}
+		payload["response"] = response
+	}
+	response["status"] = "failed"
+	response["error"] = map[string]any{"type": r.errorType, "message": r.errorMessage}
+	delete(response, "usage")
+	delete(response, "session_usage")
+	if appendErr := r.appendEventLocked("response.failed", payload, true); appendErr != nil {
+		return errors.Join(lifecycleErr, appendErr)
+	}
+	return lifecycleErr
+}
+
 func (r *responseRun) complete(payload map[string]any, usage llm.Usage, sessionUsage llm.Usage) error {
 	r.terminalMu.Lock()
 	defer r.terminalMu.Unlock()
@@ -586,16 +664,40 @@ func (r *responseRun) complete(payload map[string]any, usage llm.Usage, sessionU
 			delete(response, "usage")
 			delete(response, "session_usage")
 		}
+		if err := r.finalizeLifecycleLocked(session.ResponseRunCancelled); err != nil {
+			return r.appendLifecycleFailureLocked(payload, err)
+		}
 		return r.appendEventLocked("response.cancelled", payload, true)
 	}
-	r.status = "completed"
 	r.endedAt = time.Now().UnixMilli()
-	r.errorType = ""
-	r.errorMessage = ""
 	r.cancel = nil
 	r.cancelRequested = false
+	if !handoff.Valid {
+		r.status = "failed"
+		r.errorType = "server_error"
+		r.errorMessage = "response persistence could not be durably verified"
+		if handoff.Error != "" {
+			r.errorMessage += ": " + handoff.Error
+		}
+		if response := mapValue(payload["response"]); len(response) > 0 {
+			response["status"] = "failed"
+			response["error"] = map[string]any{"type": r.errorType, "message": r.errorMessage}
+			delete(response, "usage")
+			delete(response, "session_usage")
+		}
+		if err := r.finalizeLifecycleLocked(session.ResponseRunFailed); err != nil {
+			return r.appendLifecycleFailureLocked(payload, err)
+		}
+		return r.appendEventLocked("response.failed", payload, true)
+	}
+	r.status = "completed"
+	r.errorType = ""
+	r.errorMessage = ""
 	r.usage = usage
 	r.sessionUsage = sessionUsage
+	if err := r.finalizeLifecycleLocked(session.ResponseRunCompleted); err != nil {
+		return r.appendLifecycleFailureLocked(payload, err)
+	}
 	return r.appendEventLocked("response.completed", payload, true)
 }
 
@@ -622,6 +724,9 @@ func (r *responseRun) finishCancelled(payload map[string]any) (bool, error) {
 	r.errorMessage = ""
 	r.cancel = nil
 	r.cancelRequested = false
+	if err := r.finalizeLifecycleLocked(session.ResponseRunCancelled); err != nil {
+		return true, r.appendLifecycleFailureLocked(payload, err)
+	}
 	return true, r.appendEventLocked("response.cancelled", payload, true)
 }
 
@@ -640,6 +745,9 @@ func (r *responseRun) fail(payload map[string]any, errType, errMessage string) (
 	r.errorMessage = errMessage
 	r.cancel = nil
 	r.cancelRequested = false
+	if err := r.finalizeLifecycleLocked(session.ResponseRunFailed); err != nil {
+		return hadSubscribers, r.appendLifecycleFailureLocked(payload, err)
+	}
 	return hadSubscribers, r.appendEventLocked("response.failed", payload, true)
 }
 
@@ -696,6 +804,12 @@ func (r *responseRun) appendEventLocked(event string, payload map[string]any, te
 		payload["final_rev"] = r.finalRev
 		payload["durable_handoff"] = r.durableHandoff
 		payload["durable_output_count"] = r.durableOutputCount
+		if r.attentionSeq > 0 {
+			payload["attention_seq"] = r.attentionSeq
+			payload["attention_final_rev"] = r.finalRev
+			payload["attention_response_id"] = r.id
+			payload["attention_store_instance_id"] = r.attentionStoreID
+		}
 		payload["handoff_compaction_seq"] = r.startedCompactionSeq
 		payload["handoff_compaction_count"] = r.startedCompactionCount
 		if r.durableHandoffErr != "" {
@@ -706,6 +820,12 @@ func (r *responseRun) appendEventLocked(event string, payload map[string]any, te
 			response["final_rev"] = r.finalRev
 			response["durable_handoff"] = r.durableHandoff
 			response["durable_output_count"] = r.durableOutputCount
+			if r.attentionSeq > 0 {
+				response["attention_seq"] = r.attentionSeq
+				response["attention_final_rev"] = r.finalRev
+				response["attention_response_id"] = r.id
+				response["attention_store_instance_id"] = r.attentionStoreID
+			}
 			response["handoff_compaction_seq"] = r.startedCompactionSeq
 			response["handoff_compaction_count"] = r.startedCompactionCount
 			if r.durableHandoffErr != "" {
@@ -2067,13 +2187,133 @@ func newServeResponseRunManagerWithRetention(retention time.Duration) *responseR
 	}
 }
 
+func (s *serveServer) responseOwnerID() string {
+	s.responseOwnerOnce.Do(func() {
+		s.responseOwnerInstanceID = "owner_" + randomSuffix()
+	})
+	return s.responseOwnerInstanceID
+}
+
 func (s *serveServer) ensureResponseRuns() *responseRunManager {
 	s.responseRunsOnce.Do(func() {
 		if s.responseRuns == nil {
 			s.responseRuns = newServeResponseRunManager()
 		}
 	})
+	s.responseOwnerID()
+	if s.shutdownCh != nil {
+		s.startResponseLifecycle()
+	}
 	return s.responseRuns
+}
+
+func (s *serveServer) startResponseLifecycle() {
+	s.responseLifecycleOnce.Do(func() {
+		lifecycle, ok := session.AsServeResponseLifecycleStore(s.store)
+		if !ok {
+			return
+		}
+		ownerID := s.responseOwnerID()
+		ctx, cancel := context.WithCancel(context.Background())
+		s.responseLifecycleCancel = cancel
+		s.responseLifecycleWG.Add(1)
+		go func() {
+			defer s.responseLifecycleWG.Done()
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			s.sweepAndRenewResponseLifecycle(ctx, lifecycle, ownerID)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					s.sweepAndRenewResponseLifecycle(ctx, lifecycle, ownerID)
+				}
+			}
+		}()
+	})
+}
+
+func (s *serveServer) sweepAndRenewResponseLifecycle(ctx context.Context, lifecycle session.ServeResponseLifecycleStore, processOwnerID string) {
+	type ownedRun struct {
+		run                 *responseRun
+		responseID, ownerID string
+		token               int64
+		leaseExpiresAt      time.Time
+		cancel              context.CancelFunc
+	}
+	owned := make([]ownedRun, 0)
+	skipRecovery := false
+	if s.responseRuns != nil {
+		s.responseRuns.mu.Lock()
+		runs := make([]*responseRun, 0, len(s.responseRuns.runs))
+		for _, run := range s.responseRuns.runs {
+			if run != nil {
+				runs = append(runs, run)
+			}
+		}
+		s.responseRuns.mu.Unlock()
+		for _, run := range runs {
+			// Terminalization may briefly own run.mu while committing its durable
+			// marker. Skipping that run for one 10s pass is safer than allowing one
+			// slow finalizer to delay every other lease renewal.
+			if !run.mu.TryLock() {
+				skipRecovery = true
+				continue
+			}
+			if run.ownerInstanceID == processOwnerID && run.fencingToken > 0 && run.status == "in_progress" {
+				owned = append(owned, ownedRun{run: run, responseID: run.id, ownerID: run.ownerInstanceID,
+					token: run.fencingToken, leaseExpiresAt: run.leaseExpiresAt, cancel: run.cancel})
+			}
+			run.mu.Unlock()
+		}
+	}
+	semaphore := make(chan struct{}, 32)
+	var renewWG sync.WaitGroup
+	for _, candidate := range owned {
+		candidate := candidate
+		renewWG.Add(1)
+		go func() {
+			defer renewWG.Done()
+			select {
+			case semaphore <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			defer func() { <-semaphore }()
+			renewCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			lease, err := lifecycle.RenewResponseRunLease(renewCtx, candidate.responseID, candidate.ownerID, candidate.token)
+			cancel()
+			if err != nil {
+				s.attentionDiagnostics.LeaseRenewFailures.Add(1)
+				log.Printf("[serve] response lifecycle lease renewal failed for %.12s: %v", candidate.responseID, err)
+				if candidate.cancel != nil && (errors.Is(err, session.ErrResponseRunLeaseLost) || time.Until(candidate.leaseExpiresAt) <= 12*time.Second) {
+					candidate.cancel()
+				}
+				return
+			}
+			candidate.run.mu.Lock()
+			candidate.run.leaseExpiresAt = lease.LeaseExpiresAt
+			candidate.run.mu.Unlock()
+		}()
+	}
+	renewWG.Wait()
+	// A contended run may be inside its terminal transaction. Do not let this
+	// process's sweeper orphan it merely because renewal intentionally used
+	// TryLock; the next pass will recover genuinely abandoned rows.
+	if skipRecovery {
+		return
+	}
+	recoverCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	recovered, err := lifecycle.RecoverExpiredResponseRuns(recoverCtx, 100)
+	cancel()
+	if len(recovered) > 0 {
+		s.attentionDiagnostics.OrphanRecoveries.Add(uint64(len(recovered)))
+		s.attentionDiagnostics.MarkerWrites.Add(uint64(len(recovered)))
+	}
+	if err != nil && !errors.Is(err, context.Canceled) {
+		log.Printf("[serve] response lifecycle orphan sweep failed: %v", err)
+	}
 }
 
 func responseRunIdempotencyScope(sessionID, key string) string {
@@ -2635,8 +2875,8 @@ func (s *serveServer) persistResponseRunErrorEvent(ctx context.Context, runtime 
 		Message:    errMessage,
 	})
 	msg.ResponseID = respID
-	_, err := runResponseRunPersistence(ctx, []llm.Message{msg}, func() (int64, error) {
-		return addResponseRunMessage(dbCtx, runtime.store, sessionID, session.NewMessage(sessionID, msg, -1))
+	_, err := runResponseRunPersistence(ctx, []llm.Message{msg}, func(fence session.ResponseRunFence) (int64, error) {
+		return addResponseRunMessage(session.WithResponseRunFence(dbCtx, fence), runtime.store, sessionID, session.NewMessage(sessionID, msg, -1))
 	})
 	if err != nil {
 		log.Printf("[serve] persist response run error event failed for %s: %v", sessionID, err)
@@ -3424,6 +3664,78 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			options.onDone()
 		}
 		return createdRun, nil
+	}
+	if lifecycle, ok := session.AsServeResponseLifecycleStore(s.store); ok && sessionID != "" && s.shutdownCh != nil {
+		ownerID := s.responseOwnerID()
+		admitCtx, admitCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		lease, admitErr := lifecycle.AdmitResponseRun(admitCtx, session.ResponseRunAdmission{
+			ResponseID:      respID,
+			SessionID:       sessionID,
+			RunEpoch:        run.runEpoch,
+			OwnerInstanceID: ownerID,
+			StartedRev:      run.startedRev,
+			StartedAt:       time.Unix(created, 0).UTC(),
+			LeaseDuration:   30 * time.Second,
+		})
+		admitCancel()
+		if admitErr != nil {
+			cancel()
+			mgr.delete(respID)
+			if options.onDone != nil {
+				options.onDone()
+			}
+			return nil, fmt.Errorf("admit durable response run: %w", admitErr)
+		}
+		if admitErr == nil {
+			s.attentionDiagnostics.LifecycleAdmissions.Add(1)
+			run.mu.Lock()
+			run.ownerInstanceID = ownerID
+			run.fencingToken = lease.FencingToken
+			run.leaseExpiresAt = lease.LeaseExpiresAt
+			run.atomicTranscriptFencing = session.SupportsAtomicResponseRunTranscriptFencing(s.store)
+			run.mu.Unlock()
+			run.validateLifecycle = func() error {
+				validateCtx, validateCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer validateCancel()
+				return lifecycle.ValidateResponseRunLease(validateCtx, respID, ownerID, lease.FencingToken)
+			}
+			run.checkpointLifecycle = func(finalRev int64, outputCount int) error {
+				checkpointCtx, checkpointCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer checkpointCancel()
+				return lifecycle.CheckpointResponseRun(checkpointCtx, session.ResponseRunCheckpoint{
+					ResponseID: respID, OwnerInstanceID: ownerID, FencingToken: lease.FencingToken,
+					FinalRev: finalRev, DurableOutputCount: outputCount,
+				})
+			}
+			run.finalizeLifecycle = func(outcome session.ResponseRunState, finalRev int64, outputCount int) (session.AttentionState, error) {
+				terminal := session.ResponseRunTerminal{ResponseID: respID, OwnerInstanceID: ownerID,
+					FencingToken: lease.FencingToken, Outcome: outcome, FinalRev: finalRev,
+					DurableOutputCount: outputCount, EndedAt: time.Now().UTC()}
+				finalizeCtx, finalizeCancel := context.WithTimeout(context.Background(), 6*time.Second)
+				defer finalizeCancel()
+				var attention session.AttentionState
+				var finalizeErr error
+				for attempt := 0; attempt < 2; attempt++ {
+					attention, finalizeErr = lifecycle.FinalizeResponseRun(finalizeCtx, terminal)
+					if finalizeErr == nil || errors.Is(finalizeErr, session.ErrResponseRunLeaseLost) || errors.Is(finalizeErr, context.Canceled) || errors.Is(finalizeErr, context.DeadlineExceeded) {
+						break
+					}
+					select {
+					case <-finalizeCtx.Done():
+						finalizeErr = finalizeCtx.Err()
+						break
+					case <-time.After(100 * time.Millisecond):
+					}
+				}
+				if finalizeErr == nil {
+					s.attentionDiagnostics.LifecycleFinalized.Add(1)
+					if attention.ResponseID == respID && attention.LatestAttentionSeq > 0 {
+						s.attentionDiagnostics.MarkerWrites.Add(1)
+					}
+				}
+				return attention, finalizeErr
+			}
+		}
 	}
 	// Publish activity before the goroutine can hydrate history or begin provider
 	// work. If another run already owns the session, the per-runtime TryLock will

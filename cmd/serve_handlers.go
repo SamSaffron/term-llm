@@ -97,6 +97,9 @@ func (s *serveServer) capabilityList() []string {
 	if s.webrtcEnabled {
 		caps = append(caps, "voice")
 	}
+	if _, ok := session.AsAttentionStore(s.store); ok {
+		caps = append(caps, "attention")
+	}
 	return caps
 }
 
@@ -1187,25 +1190,33 @@ type webFileChangeSummary struct {
 }
 
 type webSessionEntry struct {
-	ID            string                `json:"id"`
-	Number        int64                 `json:"number,omitempty"`
-	Name          string                `json:"name,omitempty"`
-	ShortTitle    string                `json:"short_title"`
-	LongTitle     string                `json:"long_title"`
-	Mode          session.SessionMode   `json:"mode,omitempty"`
-	Origin        session.SessionOrigin `json:"origin,omitempty"`
-	Provider      string                `json:"provider,omitempty"`
-	Model         string                `json:"model,omitempty"`
-	Agent         string                `json:"agent,omitempty"`
-	ProjectID     string                `json:"project_id,omitempty"`
-	ProjectName   string                `json:"project_name,omitempty"`
-	CWD           string                `json:"cwd,omitempty"`
-	WorktreeDir   string                `json:"worktree_dir,omitempty"`
-	Archived      bool                  `json:"archived"`
-	Pinned        bool                  `json:"pinned"`
-	CreatedAt     int64                 `json:"created_at"`
-	LastMessageAt int64                 `json:"last_message_at"`
-	MsgCount      int                   `json:"message_count"`
+	ID                       string                   `json:"id"`
+	Number                   int64                    `json:"number,omitempty"`
+	Name                     string                   `json:"name,omitempty"`
+	ShortTitle               string                   `json:"short_title"`
+	LongTitle                string                   `json:"long_title"`
+	Mode                     session.SessionMode      `json:"mode,omitempty"`
+	Origin                   session.SessionOrigin    `json:"origin,omitempty"`
+	Provider                 string                   `json:"provider,omitempty"`
+	Model                    string                   `json:"model,omitempty"`
+	Agent                    string                   `json:"agent,omitempty"`
+	ProjectID                string                   `json:"project_id,omitempty"`
+	ProjectName              string                   `json:"project_name,omitempty"`
+	CWD                      string                   `json:"cwd,omitempty"`
+	WorktreeDir              string                   `json:"worktree_dir,omitempty"`
+	Archived                 bool                     `json:"archived"`
+	Pinned                   bool                     `json:"pinned"`
+	CreatedAt                int64                    `json:"created_at"`
+	LastMessageAt            int64                    `json:"last_message_at"`
+	MsgCount                 int                      `json:"message_count"`
+	AttentionStoreInstanceID string                   `json:"attention_store_instance_id,omitempty"`
+	AttentionSeq             int64                    `json:"attention_seq,omitempty"`
+	AttentionResponseID      string                   `json:"attention_response_id,omitempty"`
+	AttentionFinalRev        int64                    `json:"attention_final_rev,omitempty"`
+	SeenThroughSeq           int64                    `json:"seen_through_seq,omitempty"`
+	AttentionUnseen          bool                     `json:"attention_unseen,omitempty"`
+	AttentionOutcome         session.ResponseRunState `json:"attention_outcome,omitempty"`
+	AttentionTerminalAt      int64                    `json:"attention_terminal_at,omitempty"`
 }
 
 type webSelectedSessionEntry struct {
@@ -1270,6 +1281,41 @@ func (s *serveServer) webSessionEntryFromSession(sess *session.Session) webSessi
 	}
 }
 
+func applyWebSessionAttention(entry *webSessionEntry, attention session.AttentionState) {
+	if entry == nil || attention.LatestAttentionSeq <= 0 {
+		return
+	}
+	entry.AttentionStoreInstanceID = attention.StoreInstanceID
+	entry.AttentionSeq = attention.LatestAttentionSeq
+	entry.AttentionResponseID = attention.ResponseID
+	entry.AttentionFinalRev = attention.FinalRev
+	entry.SeenThroughSeq = attention.SeenThroughSeq
+	entry.AttentionUnseen = attention.Unseen
+	entry.AttentionOutcome = attention.Outcome
+	if !attention.TerminalAt.IsZero() {
+		entry.AttentionTerminalAt = attention.TerminalAt.UnixMilli()
+	}
+}
+
+func (s *serveServer) enrichWebSessionAttention(ctx context.Context, entries []webSessionEntry) {
+	batch, ok := session.AsAttentionBatchStore(s.store)
+	if !ok || len(entries) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		ids = append(ids, entry.ID)
+	}
+	states, err := batch.GetAttentionBatch(ctx, ids)
+	if err != nil {
+		log.Printf("[serve] sidebar attention projection unavailable: %v", err)
+		return
+	}
+	for i := range entries {
+		applyWebSessionAttention(&entries[i], states[entries[i].ID])
+	}
+}
+
 func (s *serveServer) selectedWebSession(ctx context.Context, selector string, summaries []session.SessionSummary) (*webSelectedSessionEntry, error) {
 	selector = strings.TrimSpace(selector)
 	if selector == "" {
@@ -1308,6 +1354,11 @@ func (s *serveServer) selectedWebSession(ctx context.Context, selector string, s
 	}
 
 	result := &webSelectedSessionEntry{webSessionEntry: selected}
+	if attention, ok := session.AsAttentionStore(s.store); ok {
+		if state, err := attention.GetAttention(ctx, selected.ID); err == nil {
+			applyWebSessionAttention(&result.webSessionEntry, state)
+		}
+	}
 	if fileStore := s.fileTrackStore(); fileStore != nil {
 		_, result.FileChangeSummary.Git = s.sessionGitRepo(ctx, selected.ID)
 		changes, err := fileStore.ListRecentRunChanges(ctx, selected.ID, 1)
@@ -1440,6 +1491,7 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 	for _, sess := range sessions {
 		result = append(result, s.webSessionEntryFromSummary(sess))
 	}
+	s.enrichWebSessionAttention(r.Context(), result)
 
 	selected, err := s.selectedWebSession(r.Context(), selectedSelector, sessions)
 	if err != nil {
@@ -1517,23 +1569,44 @@ func (s *serveServer) handleSessionsSearch(w http.ResponseWriter, r *http.Reques
 	}
 
 	type sessionSearchEntry struct {
-		ID            string                `json:"id"`
-		Number        int64                 `json:"number,omitempty"`
-		Name          string                `json:"name,omitempty"`
-		ShortTitle    string                `json:"short_title"`
-		LongTitle     string                `json:"long_title"`
-		Mode          session.SessionMode   `json:"mode,omitempty"`
-		Origin        session.SessionOrigin `json:"origin,omitempty"`
-		Provider      string                `json:"provider,omitempty"`
-		ProjectID     string                `json:"project_id,omitempty"`
-		ProjectName   string                `json:"project_name,omitempty"`
-		Archived      bool                  `json:"archived"`
-		Pinned        bool                  `json:"pinned"`
-		CreatedAt     int64                 `json:"created_at"`
-		LastMessageAt int64                 `json:"last_message_at"`
-		MsgCount      int                   `json:"message_count"`
-		Snippet       string                `json:"snippet,omitempty"`
-		MessageID     int64                 `json:"message_id,omitempty"`
+		ID                       string                   `json:"id"`
+		Number                   int64                    `json:"number,omitempty"`
+		Name                     string                   `json:"name,omitempty"`
+		ShortTitle               string                   `json:"short_title"`
+		LongTitle                string                   `json:"long_title"`
+		Mode                     session.SessionMode      `json:"mode,omitempty"`
+		Origin                   session.SessionOrigin    `json:"origin,omitempty"`
+		Provider                 string                   `json:"provider,omitempty"`
+		ProjectID                string                   `json:"project_id,omitempty"`
+		ProjectName              string                   `json:"project_name,omitempty"`
+		Archived                 bool                     `json:"archived"`
+		Pinned                   bool                     `json:"pinned"`
+		CreatedAt                int64                    `json:"created_at"`
+		LastMessageAt            int64                    `json:"last_message_at"`
+		MsgCount                 int                      `json:"message_count"`
+		Snippet                  string                   `json:"snippet,omitempty"`
+		MessageID                int64                    `json:"message_id,omitempty"`
+		AttentionStoreInstanceID string                   `json:"attention_store_instance_id,omitempty"`
+		AttentionSeq             int64                    `json:"attention_seq,omitempty"`
+		AttentionResponseID      string                   `json:"attention_response_id,omitempty"`
+		AttentionFinalRev        int64                    `json:"attention_final_rev,omitempty"`
+		SeenThroughSeq           int64                    `json:"seen_through_seq,omitempty"`
+		AttentionUnseen          bool                     `json:"attention_unseen,omitempty"`
+		AttentionOutcome         session.ResponseRunState `json:"attention_outcome,omitempty"`
+		AttentionTerminalAt      int64                    `json:"attention_terminal_at,omitempty"`
+	}
+
+	attentionBySession := make(map[string]session.AttentionState)
+	if batch, ok := session.AsAttentionBatchStore(s.store); ok {
+		ids := make([]string, 0, len(matches))
+		for _, match := range matches {
+			ids = append(ids, match.SessionID)
+		}
+		if states, batchErr := batch.GetAttentionBatch(r.Context(), ids); batchErr == nil {
+			attentionBySession = states
+		} else {
+			log.Printf("[serve] search attention projection unavailable: %v", batchErr)
+		}
 	}
 
 	result := make([]sessionSearchEntry, 0, len(matches))
@@ -1562,24 +1635,37 @@ func (s *serveServer) handleSessionsSearch(w http.ResponseWriter, r *http.Reques
 			LastMessageAt:       match.LastMessageAt,
 		}
 		lastMessageAt := sessionSummaryLastMessageAt(summary)
+		attention := attentionBySession[summary.ID]
+		attentionTerminalAt := int64(0)
+		if !attention.TerminalAt.IsZero() {
+			attentionTerminalAt = attention.TerminalAt.UnixMilli()
+		}
 		result = append(result, sessionSearchEntry{
-			ID:            summary.ID,
-			Number:        summary.Number,
-			Name:          summary.Name,
-			ShortTitle:    summary.PreferredShortTitle(),
-			LongTitle:     summary.PreferredLongTitle(),
-			Mode:          summary.Mode,
-			Origin:        summary.Origin,
-			Provider:      sessionSummaryProviderKey(s.cfgRef, summary),
-			ProjectID:     summary.ProjectID,
-			ProjectName:   summary.ProjectName,
-			Archived:      summary.Archived,
-			Pinned:        summary.Pinned,
-			CreatedAt:     summary.CreatedAt.UnixMilli(),
-			LastMessageAt: lastMessageAt.UnixMilli(),
-			MsgCount:      summary.MessageCount,
-			Snippet:       match.Snippet,
-			MessageID:     match.MessageID,
+			ID:                       summary.ID,
+			Number:                   summary.Number,
+			Name:                     summary.Name,
+			ShortTitle:               summary.PreferredShortTitle(),
+			LongTitle:                summary.PreferredLongTitle(),
+			Mode:                     summary.Mode,
+			Origin:                   summary.Origin,
+			Provider:                 sessionSummaryProviderKey(s.cfgRef, summary),
+			ProjectID:                summary.ProjectID,
+			ProjectName:              summary.ProjectName,
+			Archived:                 summary.Archived,
+			Pinned:                   summary.Pinned,
+			CreatedAt:                summary.CreatedAt.UnixMilli(),
+			LastMessageAt:            lastMessageAt.UnixMilli(),
+			MsgCount:                 summary.MessageCount,
+			Snippet:                  match.Snippet,
+			MessageID:                match.MessageID,
+			AttentionStoreInstanceID: attention.StoreInstanceID,
+			AttentionSeq:             attention.LatestAttentionSeq,
+			AttentionResponseID:      attention.ResponseID,
+			AttentionFinalRev:        attention.FinalRev,
+			SeenThroughSeq:           attention.SeenThroughSeq,
+			AttentionUnseen:          attention.Unseen,
+			AttentionOutcome:         attention.Outcome,
+			AttentionTerminalAt:      attentionTerminalAt,
 		})
 	}
 
@@ -1882,6 +1968,11 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 	suffix := ""
 	if len(parts) > 1 {
 		suffix = parts[1]
+	}
+
+	if suffix == "attention/seen" {
+		s.handleSessionAttentionSeen(w, r, sessionID)
+		return
 	}
 
 	if suffix == "children" {

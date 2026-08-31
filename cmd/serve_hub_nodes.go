@@ -31,12 +31,15 @@ type hubNodeSessionView struct {
 }
 
 type hubNodeSessionsView struct {
-	CountLabel  string               `json:"count_label"`
-	HasMore     bool                 `json:"has_more,omitempty"`
-	ActiveCount int                  `json:"active_count,omitempty"`
-	Active      []hubNodeSessionView `json:"active,omitempty"`
-	Recent      []hubNodeSessionView `json:"recent,omitempty"`
-	ResumePath  string               `json:"resume_path,omitempty"`
+	CountLabel             string               `json:"count_label"`
+	HasMore                bool                 `json:"has_more,omitempty"`
+	ActiveCount            int                  `json:"active_count,omitempty"`
+	UnseenCount            int                  `json:"unseen_count,omitempty"`
+	AttentionCapability    string               `json:"attention_capability,omitempty"`
+	AttentionLastSuccessAt int64                `json:"attention_last_success_at,omitempty"`
+	Active                 []hubNodeSessionView `json:"active,omitempty"`
+	Recent                 []hubNodeSessionView `json:"recent,omitempty"`
+	ResumePath             string               `json:"resume_path,omitempty"`
 }
 
 // hubNodeView is the public record for one node. It deliberately omits the
@@ -60,7 +63,22 @@ type hubNodeView struct {
 }
 
 func (s *hubServer) handleHubHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "role": "hub"})
+	staleNodes := 0
+	if s.attentionStore != nil {
+		_, syncs, err := s.attentionStore.List(r.Context())
+		if err == nil {
+			now := time.Now().UTC()
+			for _, state := range syncs {
+				if state.LastSuccessAt.IsZero() || now.Sub(state.LastSuccessAt) > hubAttentionStaleAfter ||
+					(!state.LastErrorAt.IsZero() && state.LastErrorAt.After(state.LastSuccessAt)) {
+					staleNodes++
+				}
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ok", "role": "hub", "attention_diagnostics": s.attentionDiagnostics.snapshot(staleNodes),
+	})
 }
 
 // collectNodes resolves all nodes and probes them concurrently. Resolver
@@ -97,6 +115,7 @@ func (s *hubServer) collectNodes(ctx context.Context) ([]hubNodeView, error) {
 		views = append(views, view)
 	}
 	s.collectNodeSessionViews(probeCtx, nodes, views)
+	s.applyHubAttentionViews(ctx, views)
 	for i := range views {
 		views[i].Diagnostics = hubNodeDiagnostics(nodes[i], views[i], nodes)
 	}

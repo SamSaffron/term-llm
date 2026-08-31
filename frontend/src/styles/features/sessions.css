@@ -315,7 +315,8 @@
   }
 }
 
-.session-row.is-active .session-title::before {
+.session-row.is-active .session-title::before,
+.session-row.is-unseen .session-title::before {
   content: '';
   display: inline-block;
   width: 7px;
@@ -324,8 +325,11 @@
   background: #22c55e;
   margin-right: 0.4em;
   flex-shrink: 0;
-  animation: pulse-dot 1.8s ease-in-out infinite;
   vertical-align: middle;
+}
+
+.session-row.is-active .session-title::before {
+  animation: pulse-dot 1.8s ease-in-out infinite;
 }
 
 @keyframes pulse-dot {

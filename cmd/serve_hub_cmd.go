@@ -223,6 +223,19 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 	s.basePath = hubBasePath
 	// The delegation ledger lives beside the node store (same private dir).
 	s.delegations = hub.NewDelegationStore(filepath.Join(filepath.Dir(nodesFile), "delegations.json"))
+	attentionStore, err := hub.OpenAttentionProjectionStore(filepath.Join(filepath.Dir(nodesFile), "attention.db"))
+	if err != nil {
+		return fmt.Errorf("open Hub attention projection: %w", err)
+	}
+	defer attentionStore.Close()
+	s.attentionStore = attentionStore
+	s.startAttentionCollector()
+	defer func() {
+		if s.attentionCancel != nil {
+			s.attentionCancel()
+			s.attentionWG.Wait()
+		}
+	}()
 	bootstrapDisplay := ""
 	if authMode == "passkey" {
 		authFile := strings.TrimSpace(serveHubPasskeyAuthFile)

@@ -33,6 +33,8 @@ const (
 	serveEventSessionMetadataChanged   = "session.metadata_changed"
 	serveEventSessionTranscriptChanged = "session.transcript_changed"
 	serveEventSessionRuntimeChanged    = "session.runtime_changed"
+	serveEventSessionAttentionChanged  = "session.attention_changed"
+	serveEventSessionLifecycleChanged  = "session.lifecycle_changed"
 	serveEventSessionDeleted           = "session.deleted"
 	serveEventProjectCreated           = "project.created"
 	serveEventProjectUpdated           = "project.updated"
@@ -49,6 +51,7 @@ const (
 var validServeEventTypes = map[string]struct{}{
 	serveEventSessionCreated: {}, serveEventSessionMetadataChanged: {},
 	serveEventSessionTranscriptChanged: {}, serveEventSessionRuntimeChanged: {},
+	serveEventSessionAttentionChanged: {}, serveEventSessionLifecycleChanged: {},
 	serveEventSessionDeleted: {}, serveEventProjectCreated: {}, serveEventProjectUpdated: {},
 	serveEventProjectDeleted: {}, serveEventProjectMembershipChanged: {}, serveEventRunStarted: {}, serveEventRunFinished: {},
 	serveEventInteractionChanged: {}, serveEventChildrenChanged: {}, serveEventFilesChanged: {},
@@ -367,6 +370,7 @@ func parseServeEventChannels(r *http.Request) map[string]struct{} {
 func serveEventRelevant(event serveEvent, channels map[string]struct{}) bool {
 	switch event.Type {
 	case serveEventSessionCreated, serveEventSessionMetadataChanged, serveEventSessionDeleted,
+		serveEventSessionAttentionChanged, serveEventSessionLifecycleChanged,
 		serveEventProjectCreated, serveEventProjectUpdated, serveEventProjectDeleted,
 		serveEventProjectMembershipChanged, serveEventRunStarted, serveEventRunFinished, serveEventSnapshotRequired:
 		return true
@@ -706,6 +710,12 @@ func (s *serveServer) publishObservedStoreChange(change session.StoreChange) {
 				input.Reason = string(change.Status)
 			}
 		}
+		s.publishEvent(input)
+	case session.StoreChangeSessionAttentionChanged:
+		input.Type = serveEventSessionAttentionChanged
+		s.publishEvent(input)
+	case session.StoreChangeSessionLifecycleChanged:
+		input.Type = serveEventSessionLifecycleChanged
 		s.publishEvent(input)
 	case session.StoreChangeProjectCreated:
 		input.Type = serveEventProjectCreated
