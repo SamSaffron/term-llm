@@ -148,7 +148,9 @@ describe('record-oriented drafts', () => {
         updated: 2,
         rev: 0,
       }),
-    ).toThrow(/another tab saved a newer revision/i);
+    ).toThrow(
+      'Draft conflict: another tab saved a newer revision. Reload before choosing which version to keep.',
+    );
     expect(JSON.parse(localStorage.getItem(draftKey('drafts', 's1')) || '{}').content).toBe('one');
   });
 

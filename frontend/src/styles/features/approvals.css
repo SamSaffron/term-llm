@@ -188,7 +188,7 @@
 
 .mcp-server-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 0.72rem;
   border: 1px solid var(--border);
@@ -306,6 +306,47 @@
   word-break: break-word;
 }
 
+.mcp-auth-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.42rem;
+  max-width: 18rem;
+}
+
+.mcp-auth-waiting {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  line-height: 1.25;
+}
+
+.mcp-auth-action {
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-3);
+  color: var(--text);
+  padding: 0.34rem 0.52rem;
+  font: inherit;
+  font-size: 0.76rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.mcp-auth-action:hover,
+.mcp-auth-action:focus-visible {
+  background: var(--surface-2);
+}
+
+.mcp-auth-action.primary {
+  border-color: color-mix(in srgb, var(--accent-blue) 42%, var(--border));
+  color: var(--accent-blue);
+}
+
+.mcp-auth-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .mcp-switch {
   position: relative;
   display: inline-flex;
@@ -379,6 +420,13 @@
   .mcp-server-row {
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 0.6rem;
+  }
+
+  .mcp-auth-actions {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-content: flex-start;
+    max-width: none;
   }
 
   .mcp-server-icon {

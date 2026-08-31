@@ -12,6 +12,27 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func TestMCPStatusReportsStaticAuthWithoutSecrets(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	cfg := &mcp.Config{Servers: map[string]mcp.ServerConfig{
+		"static": {Type: "http", URL: "https://mcp.example/mcp", Headers: map[string]string{"Authorization": "Bearer must-not-print"}},
+	}}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	if err := mcpStatus(cmd, []string{"static"}); err != nil {
+		t.Fatal(err)
+	}
+	got := output.String()
+	if !strings.Contains(got, "authentication: not needed") || strings.Contains(got, "must-not-print") {
+		t.Fatalf("status output = %q", got)
+	}
+}
+
 func TestMCPRunArgCompletionDoesNotStartServerOnCacheMiss(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)

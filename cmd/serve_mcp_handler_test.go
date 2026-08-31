@@ -181,6 +181,47 @@ func decodeServeMCPResponse(t *testing.T, rr *httptest.ResponseRecorder) serveMC
 	return resp
 }
 
+func TestPromoteDraftMCPSelectionToReservedSession(t *testing.T) {
+	ctx := context.Background()
+	store := newServeMCPTestStore(t)
+	now := time.Now()
+	draft := &session.Session{
+		ID:        "draft_client_one",
+		Provider:  "mock",
+		Model:     "mock-model",
+		Mode:      session.ModeChat,
+		Origin:    session.OriginWeb,
+		CreatedAt: now,
+		UpdatedAt: now,
+		MCP:       "github,chromium-devtools",
+		Archived:  true,
+		Status:    session.StatusActive,
+	}
+	if err := store.Create(ctx, draft); err != nil {
+		t.Fatalf("Create draft: %v", err)
+	}
+	srv, _ := newServeMCPHandlerTestServer(t, store)
+
+	if err := srv.promoteDraftMCPSelection(ctx, draft.ID, "session_reserved"); err != nil {
+		t.Fatalf("promoteDraftMCPSelection: %v", err)
+	}
+
+	promoted, err := store.Get(ctx, "session_reserved")
+	if err != nil {
+		t.Fatalf("Get promoted session: %v", err)
+	}
+	if promoted == nil || promoted.MCP != draft.MCP || promoted.Archived {
+		t.Fatalf("promoted session = %#v, want visible MCP %q", promoted, draft.MCP)
+	}
+	remaining, err := store.Get(ctx, draft.ID)
+	if err != nil {
+		t.Fatalf("Get draft after promotion: %v", err)
+	}
+	if remaining != nil {
+		t.Fatalf("draft session still exists after promotion: %#v", remaining)
+	}
+}
+
 func TestHandleSessionMCPGetListsConfiguredServers(t *testing.T) {
 	writeServeMCPConfig(t, map[string]internalmcp.ServerConfig{
 		"filesystem": {Command: "term-llm-test-filesystem"},

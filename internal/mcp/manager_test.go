@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -18,6 +21,7 @@ import (
 
 	mcpSDK "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/samsaffron/term-llm/internal/llm"
+	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
 )
 
 const runMCPManagerTestServerEnv = "TERM_LLM_MCP_MANAGER_TEST_SERVER"
@@ -107,6 +111,45 @@ func runMCPManagerTestServer() {
 	})
 	if err := server.Run(context.Background(), &mcpSDK.StdioTransport{}); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func TestManagerMapsProtectedHTTPServerToAuthRequired(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/mcp" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	manager := NewManagerWithConfig(&Config{Servers: map[string]ServerConfig{
+		"protected": {Type: "http", URL: server.URL + "/mcp", OAuth: &OAuthConfig{ClientID: "public-client"}},
+	}})
+	manager.oauthCoordinator = mcpoauth.NewCoordinator(mcpoauth.NewFileStore(filepath.Join(t.TempDir(), "oauth.json")))
+	updates := make(chan StatusUpdate, 4)
+	manager.SetStatusChannel(updates)
+	if err := manager.Enable(t.Context(), "protected"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	for {
+		select {
+		case update := <-updates:
+			if update.Status != StatusAuthRequired {
+				continue
+			}
+			if !errors.Is(update.Error, mcpoauth.ErrAuthenticationRequired) {
+				t.Fatalf("auth-required error = %v", update.Error)
+			}
+			if got := manager.EnabledServers(); !reflect.DeepEqual(got, []string{"protected"}) {
+				t.Fatalf("enabled servers = %v", got)
+			}
+			return
+		case <-ctx.Done():
+			t.Fatal("timed out waiting for auth-required status")
+		}
 	}
 }
 

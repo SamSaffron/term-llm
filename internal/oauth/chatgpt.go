@@ -93,6 +93,9 @@ func buildAuthorizationURL(codeChallenge, state string) string {
 	return ChatGPTAuthEndpoint + "?" + params.Encode()
 }
 
+// OpenBrowser opens a URL in the user's default browser.
+func OpenBrowser(url string) error { return openBrowser(url) }
+
 // openBrowser opens a URL in the default browser
 func openBrowser(url string) error {
 	var cmd *exec.Cmd

@@ -239,6 +239,11 @@ export function Header() {
     };
   }, []);
   const session = store.activeSession.value;
+  const mcpOwnerId = session?.id || store.composer.runtimeDraftId();
+  const mcpCount =
+    store.mcp.value.ownerId === mcpOwnerId
+      ? store.mcp.value.enabled.length
+      : session?.mcpEnabled?.length || 0;
   const currentWorktreeDir = store.currentWorktreeDir.value;
   const tokenCount = Number(session?.usage?.total_tokens || 0);
   const loadedDiff =
@@ -307,7 +312,7 @@ export function Header() {
         <div class="header-controls-row">
           <div class="header-stats" id="headerStats">
             <RuntimePicker />
-            {(session?.mcpEnabled?.length || 0) > 0 && (
+            {mcpCount > 0 && (
               <button
                 type="button"
                 class="mcp-status header-action"
@@ -318,7 +323,7 @@ export function Header() {
                   void store.loadMCP();
                 }}
               >
-                MCP {session?.mcpEnabled?.length}
+                MCP {mcpCount}
               </button>
             )}
             {tokenCount > 0 && (

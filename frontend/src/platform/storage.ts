@@ -412,7 +412,7 @@ export function saveDraft(storage: Storage, base: string, draft: DraftMessage): 
       JSON.stringify({ ...draft, rev: 0, updated: 0 })
   )
     throw new Error(
-      `Draft conflict for ${draft.sessionId}: another tab saved a newer revision. Reload before choosing which version to keep.`,
+      `Draft conflict: another tab saved a newer revision. Reload before choosing which version to keep.`,
     );
   if (draft.content.trim() || draft.attachments?.length || draft.projectId || draft.worktreeDir) {
     // Persist the new record before retention GC so pressure can never remove

@@ -249,10 +249,12 @@ func AllCommands() []Command {
 		{
 			Name:        "mcp",
 			Description: "MCP servers (browser, database, git tools)",
-			Usage:       "/mcp [start|stop|add|list|status [tools]]",
+			Usage:       "/mcp [start|stop|login|logout|add|list|status [tools]]",
 			Subcommands: []Subcommand{
 				{Name: "start", Description: "Start a configured server"},
 				{Name: "stop", Description: "Stop a running server"},
+				{Name: "login", Description: "Sign in to a remote server"},
+				{Name: "logout", Description: "Sign out of a remote server"},
 				{Name: "add", Description: "Add a new server"},
 				{Name: "list", Description: "Show available servers"},
 				{Name: "status", Description: "Show server status"},
@@ -2740,6 +2742,35 @@ func (m *Model) cmdMcp(args []string) (tea.Model, tea.Cmd) {
 		m.setMCPServerSelected(name, true)
 		m.setTextareaValue("")
 		return m.showSystemMessage(fmt.Sprintf("Restarting MCP server: %s", name))
+
+	case "login":
+		if m.mcpManager == nil {
+			return m.showMCPQuickStart()
+		}
+		if len(subArgs) != 1 {
+			return m.showSystemMessage("Usage: `/mcp login <server>`")
+		}
+		name, err := m.mcpFindServer(subArgs[0])
+		if err != nil {
+			return m.showSystemMessage(err.Error())
+		}
+		m.setTextareaValue("")
+		_, footerCmd := m.showFooterMessage("Waiting for MCP authorization in your browser…")
+		return m, tea.Batch(footerCmd, m.startMCPOAuthCmd(name, false))
+
+	case "logout":
+		if m.mcpManager == nil {
+			return m.showMCPQuickStart()
+		}
+		if len(subArgs) != 1 {
+			return m.showSystemMessage("Usage: `/mcp logout <server>`")
+		}
+		name, err := m.mcpFindServer(subArgs[0])
+		if err != nil {
+			return m.showSystemMessage(err.Error())
+		}
+		m.setTextareaValue("")
+		return m, m.logoutMCPOAuthCmd(name)
 
 	case "status":
 		if m.mcpManager == nil {

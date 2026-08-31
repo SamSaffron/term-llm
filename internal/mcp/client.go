@@ -19,6 +19,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/samsaffron/term-llm/internal/llm"
+	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
 	"github.com/samsaffron/term-llm/internal/procutil"
 )
 
@@ -87,6 +88,7 @@ type Client struct {
 	stdioStderr       *synchronizedLimitedBuffer
 	maxToolsPerServer int
 	onCatalogueChange func(oldSnapshot, newSnapshot *ToolSnapshot, err error)
+	oauthCoordinator  *mcpoauth.Coordinator
 	snapshot          atomic.Pointer[ToolSnapshot]
 	lifecycleMu       sync.Mutex
 	mu                sync.RWMutex
@@ -165,11 +167,9 @@ func (c *Client) start(ctx, processCtx context.Context) error {
 		Version: "1.0.0",
 	}, clientOpts)
 
-	var transport mcp.Transport
-	if c.config.TransportType() == "http" {
-		transport = c.createHTTPTransport()
-	} else {
-		transport = c.createStdioTransport(processCtx)
+	transport, err := c.createTransport(processCtx)
+	if err != nil {
+		return fmt.Errorf("configure MCP server %s transport: %w", c.name, err)
 	}
 
 	session, err := client.Connect(ctx, transport, nil)
@@ -177,6 +177,9 @@ func (c *Client) start(ctx, processCtx context.Context) error {
 		c.mu.Lock()
 		c.cancelStdioProcessLocked()
 		c.mu.Unlock()
+		if isClientAuthenticationRequired(err) {
+			return fmt.Errorf("connect to MCP server %s: %w; run `term-llm mcp login %s`", c.name, err, c.name)
+		}
 		return fmt.Errorf("connect to MCP server %s: %w", c.name, c.withStdioStderr(err))
 	}
 
@@ -245,8 +248,15 @@ func (c *Client) withStdioStderr(err error) error {
 	return fmt.Errorf("%w\n\nMCP server stderr:\n%s", err, output)
 }
 
+func (c *Client) createTransport(ctx context.Context) (mcp.Transport, error) {
+	if c.config.TransportType() == "http" {
+		return c.createHTTPTransport()
+	}
+	return c.createStdioTransport(ctx), nil
+}
+
 // createHTTPTransport creates an HTTP transport for URL-based servers.
-func (c *Client) createHTTPTransport() mcp.Transport {
+func (c *Client) createHTTPTransport() (mcp.Transport, error) {
 	// Use a clone of the default transport so proxy, HTTP/2, and other standard
 	// settings are preserved while avoiding a whole-request http.Client timeout.
 	// Caller contexts control the full request lifetime, including long-running
@@ -277,7 +287,52 @@ func (c *Client) createHTTPTransport() mcp.Transport {
 		MaxRetries: 5,
 	}
 
-	return transport
+	if c.automaticOAuthEnabled() {
+		oauthConfig := c.config.OAuth
+		// The OAuth handler talks to the authorization server (metadata,
+		// registration, token, refresh), not just the MCP endpoint. Custom
+		// per-server headers such as API keys must never be sent there, so it
+		// gets a client without the headerTransport wrapper.
+		options := mcpoauth.Options{HTTPClient: &http.Client{Transport: baseTransport}}
+		if oauthConfig != nil {
+			options.ClientID = oauthConfig.ClientID
+			options.Scopes = append([]string(nil), oauthConfig.Scopes...)
+			options.ClientIDMetadataURL = oauthConfig.ClientIDMetadataURL
+			if oauthConfig.ClientSecretEnv != "" {
+				options.ClientSecret = os.Getenv(oauthConfig.ClientSecretEnv)
+				if options.ClientSecret == "" {
+					return nil, fmt.Errorf("OAuth client secret environment variable %s is not set", oauthConfig.ClientSecretEnv)
+				}
+			}
+		}
+		coordinator := c.oauthCoordinator
+		if coordinator == nil {
+			coordinator = mcpoauth.DefaultCoordinator()
+		}
+		handler, err := coordinator.Handler(c.config.URL, options)
+		if err != nil {
+			return nil, err
+		}
+		transport.OAuthHandler = handler
+	}
+
+	return transport, nil
+}
+
+func (c *Client) automaticOAuthEnabled() bool {
+	if c.config.OAuth != nil && c.config.OAuth.Disabled {
+		return false
+	}
+	for key := range c.config.Headers {
+		if strings.EqualFold(key, "Authorization") {
+			return false
+		}
+	}
+	return true
+}
+
+func isClientAuthenticationRequired(err error) bool {
+	return errors.Is(err, mcpoauth.ErrAuthenticationRequired) || errors.Is(err, mcpoauth.ErrRefreshRejected)
 }
 
 // headerTransport is an http.RoundTripper that adds custom headers to requests.

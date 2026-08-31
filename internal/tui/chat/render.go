@@ -1852,7 +1852,9 @@ func (m *Model) updateCompletions() {
 	// Check for "/mcp start ", "/mcp stop ", "/mcp restart " - show configured servers
 	if strings.HasPrefix(lowerQuery, "mcp start ") ||
 		strings.HasPrefix(lowerQuery, "mcp stop ") ||
-		strings.HasPrefix(lowerQuery, "mcp restart ") {
+		strings.HasPrefix(lowerQuery, "mcp restart ") ||
+		strings.HasPrefix(lowerQuery, "mcp login ") ||
+		strings.HasPrefix(lowerQuery, "mcp logout ") {
 		if m.mcpManager != nil {
 			// Extract the partial server name after the subcommand
 			parts := strings.SplitN(query, " ", 3)

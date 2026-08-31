@@ -369,6 +369,13 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		replaceHistory = true
 	}
 
+	if draftID != "" {
+		if err := s.promoteDraftMCPSelection(ctx, draftID, sessionID); err != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
+			return
+		}
+	}
+
 	if _, branchContextActive := s.branchNotes.Load(sessionID); branchContextActive {
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", "branch context is still being prepared")
 		return

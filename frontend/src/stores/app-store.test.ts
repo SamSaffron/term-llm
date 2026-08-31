@@ -609,6 +609,114 @@ describe('AppStore compatibility behavior', () => {
     });
   });
 
+  it('loads configured MCP servers before the first message', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [];
+    store.activeSessionId.value = '';
+    store.draftActive.value = true;
+    store.endpoints.getMCP = vi.fn(async () => ({
+      enabled: [],
+      servers: [{ name: 'github', configured: true, status: 'stopped' }],
+    }));
+
+    await store.loadMCP();
+
+    expect(store.endpoints.getMCP).toHaveBeenCalledWith(expect.stringMatching(/^draft_/));
+    expect(store.mcp.value.servers).toEqual([
+      expect.objectContaining({ name: 'github', configured: true, status: 'stopped' }),
+    ]);
+  });
+
+  it('keeps pre-message MCP changes on the draft used by the first send', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [];
+    store.activeSessionId.value = '';
+    store.draftActive.value = true;
+    store.mcp.value = {
+      ownerId: store.composer.runtimeDraftId(),
+      servers: [
+        {
+          name: 'github',
+          configured: true,
+          enabled: false,
+          status: 'stopped',
+          error: '',
+          refreshWarning: '',
+          tools: 0,
+          active: 0,
+          deferred: 0,
+          loadingMode: '',
+        },
+      ],
+      enabled: [],
+      loading: false,
+      pending: '',
+      error: '',
+    };
+    store.endpoints.setMCP = vi.fn(async (_id, enabled) => ({
+      enabled,
+      servers: [{ name: 'github', enabled: true, status: 'ready' }],
+    }));
+    store.endpoints.createResponse = vi.fn(async () => {
+      const encoder = new TextEncoder();
+      const frames = [
+        ['response.created', { response: { id: 'r1', status: 'in_progress' } }],
+        ['response.completed', { response: { id: 'r1', status: 'completed' }, final_rev: 1 }],
+      ] as const;
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            frames.forEach(([type, payload], index) =>
+              controller.enqueue(
+                encoder.encode(
+                  `event: ${type}\ndata: ${JSON.stringify({
+                    ...payload,
+                    response_id: 'r1',
+                    run_epoch: 1,
+                    sequence_number: index + 1,
+                  })}\n\n`,
+                ),
+              ),
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+        {
+          headers: {
+            'x-response-id': 'r1',
+            'x-session-id': 's1',
+            'x-session-number': '7406',
+          },
+        },
+      );
+    });
+
+    await store.toggleMCP('github');
+    const draftId = vi.mocked(store.endpoints.setMCP).mock.calls[0]?.[0];
+    const composerId = store.composer.storageId();
+    store.storage.setItem(store.keys.draftSessionActive, composerId);
+    history.replaceState(null, '', '/ui/');
+    expect(draftId).toMatch(/^draft_/);
+    expect(composerId).toMatch(/^draft:/);
+    expect(draftId?.slice('draft_'.length)).not.toBe(composerId.slice('draft:'.length));
+
+    store.prompt.value = 'Use the configured server';
+    await store.send();
+
+    expect(store.endpoints.createResponse).toHaveBeenCalledWith(
+      expect.any(Object),
+      draftId,
+      expect.any(String),
+      expect.any(AbortSignal),
+    );
+    expect(store.activeSessionId.value).toBe('s1');
+    expect(store.activeSession.value).toMatchObject({ number: 7406, mcpEnabled: ['github'] });
+    expect(location.pathname).toBe('/ui/chat/7406');
+    expect(store.storage.getItem(store.keys.draftSessionActive)).toBeNull();
+    expect(store.mcp.value).toMatchObject({ ownerId: 's1', enabled: ['github'] });
+  });
+
   it('preserves MCP server metadata and normalizes partial endpoint data', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];
@@ -661,12 +769,153 @@ describe('AppStore compatibility behavior', () => {
     expect(store.activeSession.value?.mcpEnabled).toEqual(['github']);
   });
 
+  it('starts MCP OAuth from a user popup and keeps flow data ephemeral', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    const assign = vi.fn();
+    const close = vi.fn();
+    const popup = { location: { assign }, close } as unknown as Window;
+    vi.spyOn(window, 'open').mockReturnValue(popup);
+    store.endpoints.startMCPOAuth = vi.fn(async () => ({
+      flow_id: 'flow-id',
+      authorization_url: 'https://auth.example/authorize?state=capability',
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+      state: 'pending' as const,
+    }));
+    store.endpoints.cancelMCPOAuth = vi.fn(async () => ({}));
+    store.endpoints.getMCP = vi.fn(async () => ({ servers: [], enabled: [] }));
+
+    await store.startMCPOAuth('protected');
+
+    expect(window.open).toHaveBeenCalledWith('', '_blank', 'popup=yes,width=560,height=720');
+    expect(assign).toHaveBeenCalledWith('https://auth.example/authorize?state=capability');
+    expect(store.mcp.value.oauth?.protected).toMatchObject({
+      flowId: 'flow-id',
+      state: 'pending',
+      popupBlocked: false,
+    });
+    const browserStorage = Array.from({ length: localStorage.length }, (_, index) =>
+      localStorage.getItem(localStorage.key(index) || ''),
+    ).join('');
+    expect(browserStorage).not.toContain('capability');
+
+    await store.cancelMCPOAuth('protected');
+    expect(store.endpoints.cancelMCPOAuth).toHaveBeenCalledWith('s1', 'protected', 'flow-id');
+    expect(close).toHaveBeenCalled();
+    expect(store.mcp.value.oauth?.protected).toBeUndefined();
+  });
+
+  it('uses the fresh draft identity for MCP OAuth before the first message', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [];
+    store.activeSessionId.value = '';
+    store.draftActive.value = true;
+    vi.spyOn(window, 'open').mockReturnValue(null);
+    store.endpoints.startMCPOAuth = vi.fn(async () => ({
+      flow_id: 'draft-flow',
+      authorization_url: 'https://auth.example/authorize',
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+      state: 'pending' as const,
+    }));
+    store.endpoints.cancelMCPOAuth = vi.fn(async () => ({}));
+    store.endpoints.getMCP = vi.fn(async () => ({ servers: [], enabled: [] }));
+
+    await store.startMCPOAuth('protected');
+    const draftId = vi.mocked(store.endpoints.startMCPOAuth).mock.calls[0]?.[0];
+    expect(draftId).toMatch(/^draft_/);
+
+    await store.cancelMCPOAuth('protected');
+    expect(store.endpoints.cancelMCPOAuth).toHaveBeenCalledWith(draftId, 'protected', 'draft-flow');
+  });
+
+  it('stops MCP OAuth polling when the flow no longer exists server-side', async () => {
+    vi.useFakeTimers();
+    try {
+      const store = new AppStore(config);
+      store.sessions.value = [session()];
+      store.activeSessionId.value = 's1';
+      store.draftActive.value = false;
+      vi.spyOn(window, 'open').mockReturnValue(null);
+      store.endpoints.startMCPOAuth = vi.fn(async () => ({
+        flow_id: 'flow-id',
+        authorization_url: 'https://auth.example/authorize',
+        expires_at: new Date(Date.now() + 60_000).toISOString(),
+        state: 'pending' as const,
+      }));
+      const getFlow = vi.fn(async () => {
+        throw new APIError('flow not found', 404);
+      });
+      store.endpoints.getMCPOAuthFlow = getFlow;
+
+      await store.startMCPOAuth('protected');
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(getFlow).toHaveBeenCalledTimes(1);
+      expect(store.mcp.value.oauth?.protected).toMatchObject({ state: 'failed' });
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(getFlow).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows an MCP server starting while enablement is in flight', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.mcp.value = {
+      ownerId: 's1',
+      servers: [
+        {
+          name: 'github',
+          configured: true,
+          enabled: false,
+          status: 'stopped',
+          error: '',
+          refreshWarning: '',
+          tools: 0,
+          active: 0,
+          deferred: 0,
+          loadingMode: '',
+        },
+      ],
+      enabled: [],
+      loading: false,
+      pending: '',
+      error: '',
+    };
+    const request = deferred<{ servers: Record<string, unknown>[]; enabled: string[] }>();
+    store.endpoints.setMCP = vi.fn(() => request.promise);
+
+    const toggling = store.toggleMCP('github');
+
+    expect(store.mcp.value).toMatchObject({
+      enabled: ['github'],
+      pending: 'github',
+      servers: [{ name: 'github', enabled: true, status: 'starting' }],
+    });
+
+    request.resolve({
+      enabled: ['github'],
+      servers: [{ name: 'github', enabled: true, status: 'ready', tools: 3 }],
+    });
+    await toggling;
+    expect(store.mcp.value).toMatchObject({
+      pending: '',
+      servers: [{ name: 'github', enabled: true, status: 'ready', tools: 3 }],
+    });
+  });
+
   it('rolls back an MCP toggle and exposes a recoverable save error', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];
     store.activeSessionId.value = 's1';
     store.draftActive.value = false;
     store.mcp.value = {
+      ownerId: 's1',
       servers: [
         {
           name: 'github',

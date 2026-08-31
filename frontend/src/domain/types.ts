@@ -104,6 +104,20 @@ export interface MCPServer {
   active: number;
   deferred: number;
   loadingMode: string;
+  authState?: string;
+  authIssuer?: string;
+  authScopes?: string[];
+  authExpiresAt?: string;
+  canSignIn?: boolean;
+  canSignOut?: boolean;
+}
+
+export interface MCPOAuthFlow {
+  flow_id: string;
+  authorization_url?: string;
+  expires_at: string;
+  state: 'starting' | 'pending' | 'succeeded' | 'failed' | 'canceled' | 'expired';
+  error?: string;
 }
 
 export interface MCPResponse {

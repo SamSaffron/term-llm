@@ -75,6 +75,29 @@ const createStore = () => {
 };
 
 describe('Preact-owned chat surfaces', () => {
+  it('shows the MCP count for a new chat before a session exists', () => {
+    const store = createStore();
+    store.sessions.value = [];
+    store.activeSessionId.value = '';
+    store.draftActive.value = true;
+    store.mcp.value = {
+      ownerId: store.composer.runtimeDraftId(),
+      servers: [],
+      enabled: ['github'],
+      loading: false,
+      pending: '',
+      error: '',
+    };
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Header />
+      </StoreContext.Provider>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Manage MCP servers' })).toHaveTextContent('MCP 1');
+  });
+
   it('restores the compact runtime chip and unified runtime popover', async () => {
     const store = createStore();
     store.providers.value = [
@@ -3925,6 +3948,76 @@ describe('Preact-owned chat surfaces', () => {
     fireEvent.input(filter, { target: { value: '' } });
     await userEvent.click(screen.getByRole('checkbox', { name: 'Enable discourse' }));
     expect(store.toggleMCP).toHaveBeenCalledWith('discourse');
+  });
+
+  it('separates MCP enablement from OAuth sign-in actions', async () => {
+    const store = createStore();
+    store.modal.value = 'mcp';
+    store.mcp.value = {
+      servers: [
+        {
+          name: 'protected',
+          configured: true,
+          enabled: true,
+          status: 'auth_required',
+          error: '',
+          refreshWarning: '',
+          tools: 0,
+          active: 0,
+          deferred: 0,
+          loadingMode: '',
+          authState: 'needs_sign_in',
+          authIssuer: 'https://auth.example',
+          authScopes: ['read'],
+          authExpiresAt: '',
+          canSignIn: true,
+          canSignOut: false,
+        },
+      ],
+      enabled: ['protected'],
+      loading: false,
+      pending: '',
+      error: '',
+      oauth: {},
+    };
+    store.startMCPOAuth = vi.fn(async () => undefined);
+
+    const { rerender } = render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+    expect(screen.getByText('Server enabled · sign-in required')).toBeVisible();
+    await userEvent.click(screen.getByRole('button', { name: 'Sign in again' }));
+    expect(store.startMCPOAuth).toHaveBeenCalledWith('protected', true);
+    expect(screen.getByRole('checkbox', { name: 'Disable protected' })).toBeChecked();
+
+    store.mcp.value = {
+      ...store.mcp.value,
+      oauth: {
+        protected: {
+          flowId: 'flow-safe-id',
+          authorizationURL: 'https://auth.example/authorize',
+          state: 'pending',
+          error: '',
+          popupBlocked: true,
+        },
+      },
+    };
+    store.copyMCPOAuthLink = vi.fn(async () => undefined);
+    store.cancelMCPOAuth = vi.fn(async () => undefined);
+    rerender(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+    await waitFor(() =>
+      expect(screen.getByText('Popup blocked — copy the sign-in link.')).toBeVisible(),
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Copy link' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(store.copyMCPOAuthLink).toHaveBeenCalledWith('protected');
+    expect(store.cancelMCPOAuth).toHaveBeenCalledWith('protected');
   });
 
   it('does not claim the MCP config is empty when loading fails', () => {

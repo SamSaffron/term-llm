@@ -15,7 +15,7 @@ func TestGeneratedBundleAssets(t *testing.T) {
 	for _, name := range []string{
 		"dist/app.js", "dist/app.css", "dist/chunks/vendor.js",
 		"dist/chunks/rich-highlight.js", "dist/chunks/rich-katex.js",
-		"dist/chunks/highlight.js", "dist/chunks/katex.js", "dist/chunks/katex.css", "dist/chunks/webrtc.js",
+		"dist/chunks/highlight.js", "dist/chunks/katex.js", "dist/chunks/katex.css", "dist/chunks/webrtc.js", "dist/chunks/mcp.js",
 		"dist/chunks/MarkdownFilePreview.js", "dist/chunks/markdown-preview-store.js",
 		"dist/chunks/markdown-document.js", "dist/chunks/file-text.js",
 		"dist/assets/MarkdownFilePreview.css",
@@ -71,7 +71,7 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// source transport, and preview CSS remain in bounded lazy chunks. Keep
 		// bounded headroom while still failing meaningful accidental regressions.
 		"dist/app.js":  {raw: 435_500, gzip: 127_000},
-		"dist/app.css": {raw: 166_500, gzip: 32_000},
+		"dist/app.css": {raw: 168_000, gzip: 32_000},
 	}
 	for name, budget := range budgets {
 		body, err := StaticAsset(name)
@@ -162,7 +162,7 @@ func TestRenderServiceWorkerVersionsOnlyDirectShellAssets(t *testing.T) {
 			t.Errorf("service worker missing %q", want)
 		}
 	}
-	for _, chunk := range []string{"app.js?v=", "vendor.js?v=", "webrtc.js?v=", "highlight.js?v=", "katex.js?v="} {
+	for _, chunk := range []string{"app.js?v=", "vendor.js?v=", "webrtc.js?v=", "highlight.js?v=", "katex.js?v=", "mcp.js?v="} {
 		if strings.Contains(without, chunk) || strings.Contains(with, chunk) {
 			t.Errorf("stable-named chunk %q must remain unversioned and network-first", chunk)
 		}

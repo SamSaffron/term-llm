@@ -66,6 +66,8 @@ export interface RunEngineHost {
   resumeResponse: (sessionId: string, responseId: string) => Promise<void>;
   streamResponse: (responseId: string, sessionId: string, sequence: number) => Promise<void>;
   applyResponseEvent: (sessionId: string, event: ResponseEvent, owner?: StreamSupervisor) => void;
+  draftMCPEnabled: (draftId: string) => string[];
+  rekeyMCP: (oldId: string, newId: string) => void;
 }
 
 /** Owns response creation, transport, recovery, intents, interjections, and run projections. */
@@ -404,7 +406,7 @@ export class RunEngine {
     if (!session) {
       const project = this.sessionStore.activeProjectId.value;
       session = {
-        id: `draft_${uuid()}`,
+        id: this.composer.runtimeDraftId(),
         name: '',
         title: content.slice(0, 72) || 'New chat',
         mode: 'chat',
@@ -416,6 +418,7 @@ export class RunEngine {
         projectId: project,
         projectName: this.sessionStore.projects.value.find((entry) => entry.id === project)?.name,
         worktreeDir: this.composer.selectedDraftWorktree.value || undefined,
+        mcpEnabled: this.host.draftMCPEnabled(this.composer.runtimeDraftId()),
         messages: [],
       };
       this.sessionStore.prepend(session);
@@ -638,6 +641,9 @@ export class RunEngine {
       );
     }
     const durableSessionId = response.headers.get('x-session-id') || sessionId;
+    const rawSessionNumber = Number(response.headers.get('x-session-number'));
+    const sessionNumber =
+      Number.isSafeInteger(rawSessionNumber) && rawSessionNumber > 0 ? rawSessionNumber : undefined;
     const responseId = response.headers.get('x-response-id') || '';
     if (!responseId) throw new Error('Server did not return a response id.');
     options.onTransportStarted?.();
@@ -647,8 +653,10 @@ export class RunEngine {
     let ownerID = sessionId;
     if (durableSessionId !== sessionId) {
       if (!this.supervisors.rekey(streamOwner, durableSessionId)) return streamOwner.sessionId;
-      this.rekeySession(sessionId, durableSessionId);
+      this.rekeySession(sessionId, durableSessionId, undefined, sessionNumber);
       ownerID = durableSessionId;
+    } else if (sessionNumber) {
+      this.sessionStore.patch(sessionId, { number: sessionNumber });
     }
     this.sessionStore.update(ownerID, (entry) => ({
       ...entry,
@@ -702,11 +710,22 @@ export class RunEngine {
     if (intent) this.trackIntent(sessionId, { ...intent, state: 'checking' });
   }
 
-  rekeySession(oldID: string, id: string, source?: Record<string, unknown>): void {
+  rekeySession(
+    oldID: string,
+    id: string,
+    source?: Record<string, unknown>,
+    sessionNumber?: number,
+  ): void {
     const current = this.sessionStore.sessions.value.find((entry) => entry.id === oldID);
     if (!current || !id) return;
     const incoming = source ? this.sessionStore.sessionFrom(source) : null;
-    const updated: Session = { ...current, ...(incoming || {}), id, messages: current.messages };
+    const updated: Session = {
+      ...current,
+      ...(incoming || {}),
+      ...(sessionNumber ? { number: sessionNumber } : {}),
+      id,
+      messages: current.messages,
+    };
     const duplicate = this.sessionStore.sessions.value.find(
       (entry) => entry.id === id && entry.id !== oldID,
     );
@@ -715,6 +734,7 @@ export class RunEngine {
     );
     const merged = this.sessionStore.mergeSession(duplicate, updated);
     this.sessionStore.replace([merged, ...remaining]);
+    this.host.rekeyMCP(oldID, id);
     this.sessionStore.rekeyRecent(oldID, merged);
     const projection = this.runs.value[oldID];
     const next = { ...this.runs.value };
@@ -738,6 +758,8 @@ export class RunEngine {
     if (this.sessionStore.activeSessionId.peek() === oldID) {
       this.sessionStore.activeSessionId.value = id;
       this.services.storage.setItem(this.services.keys.activeSession, id);
+      if (oldID.startsWith('draft_'))
+        this.services.storage.removeItem(this.services.keys.draftSessionActive);
       updateSessionRoute(this.services.config.prefix, updated, true);
     }
   }

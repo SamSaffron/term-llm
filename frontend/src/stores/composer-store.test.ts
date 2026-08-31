@@ -17,6 +17,10 @@ describe('ComposerStore', () => {
 
       store.composer.persist();
       const id = store.composer.storageId();
+      const runtimeId = store.composer.runtimeDraftId();
+      expect(id).toMatch(/^draft:/);
+      expect(runtimeId).toMatch(/^draft_/);
+      expect(runtimeId.slice('draft_'.length)).not.toBe(id.slice('draft:'.length));
       expect(readDrafts(localStorage, store.keys.draftMessages)).toEqual([
         expect.objectContaining({
           sessionId: id,

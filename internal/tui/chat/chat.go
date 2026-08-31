@@ -2681,6 +2681,26 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	case promptHistoryLookupMsg:
 		return m.handlePromptHistoryLookupMsg(msg)
 
+	case mcpOAuthResultMsg:
+		m.refreshMCPPickerIfOpen()
+		if msg.err != nil {
+			detail := safeMCPOAuthMessage(msg.err)
+			action := fmt.Sprintf("Try `/mcp login %s` again.", msg.name)
+			if msg.logout {
+				action = fmt.Sprintf("Try `/mcp logout %s` again.", msg.name)
+			}
+			m.dialog.ShowContent("MCP authentication", detail+"\n\n"+action)
+			_, footerCmd := m.showFooterMessageWithTone("MCP authentication failed: "+detail, "error")
+			cmds = append(cmds, footerCmd)
+		} else {
+			verb := "Signed in to"
+			if msg.logout {
+				verb = "Signed out of"
+			}
+			_, footerCmd := m.showFooterMessage(verb + " MCP server " + msg.name)
+			cmds = append(cmds, footerCmd)
+		}
+
 	case mcpStatusUpdateMsg:
 		m.refreshMCPPickerIfOpen()
 		cmds = append(cmds, m.listenForMCPStatusUpdates())

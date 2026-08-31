@@ -44,6 +44,7 @@ export class ComposerStore {
   private readonly attachmentGenerations = new Map<string, number>();
   private currentDraftRev = 0;
   private newDraftID: string;
+  private runtimeDraftID = `draft_${uuid()}`;
 
   constructor(
     private readonly services: AppStoreServices,
@@ -71,9 +72,14 @@ export class ComposerStore {
     return this.host.activeSessionId.peek() || this.newDraftID;
   }
 
+  runtimeDraftId(): string {
+    return this.runtimeDraftID;
+  }
+
   beginNewDraft(fromSession: boolean, selectedProject: string): void {
     if (fromSession) {
       this.newDraftID = `draft:${uuid()}`;
+      this.runtimeDraftID = `draft_${uuid()}`;
       this.currentDraftRev = 0;
     }
     if (!this.services.storage.getItem(this.services.keys.draftSessionActive)) {

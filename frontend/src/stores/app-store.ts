@@ -33,7 +33,7 @@ import { AppStoreServices, type StoreDiagnostics } from './app-store-services';
 import { RuntimeStore } from './runtime-store';
 import { InteractionStore } from './interaction-store';
 import { SideQuestionStore } from './side-question-store';
-import { MCPStore } from './mcp-store';
+import { MCPStore, type MCPOAuthUIState } from './mcp-store';
 import { WorktreeStore } from './worktree-store';
 import { GoalStore } from './goal-store';
 import { PlanStore } from './plan-store';
@@ -154,11 +154,13 @@ export class AppStore {
   readonly diff: Signal<DiffState>;
   readonly goal: Signal<Goal | null>;
   readonly mcp: Signal<{
+    ownerId?: string;
     servers: MCPServer[];
     enabled: string[];
     loading: boolean;
     pending: string;
     error: string;
+    oauth?: Record<string, MCPOAuthUIState>;
   }>;
   readonly worktrees: Signal<Record<string, unknown>[]>;
   readonly worktreeError: Signal<string>;
@@ -315,6 +317,7 @@ export class AppStore {
     this.sideQuestion = this.sideQuestions.state;
     this.mcpStore = new MCPStore(this.services, {
       activeSession: this.activeSession,
+      draftSessionId: () => this.composer.runtimeDraftId(),
       patchSession: (id, patch) => this.sessionStore.patch(id, patch),
     });
     this.mcp = this.mcpStore.state;
@@ -378,6 +381,8 @@ export class AppStore {
           this.streamResponse(responseId, sessionId, sequence),
         applyResponseEvent: (sessionId, event, owner) =>
           this.applyResponseEvent(sessionId, event, owner),
+        draftMCPEnabled: (draftId) => this.mcpStore.enabledFor(draftId),
+        rekeyMCP: (oldId, newId) => this.mcpStore.rekey(oldId, newId),
       },
     );
     this.runs = this.runEngine.runs;
@@ -1100,6 +1105,18 @@ export class AppStore {
   }
   async toggleMCP(name: string): Promise<void> {
     await this.mcpStore.toggle(name);
+  }
+  async startMCPOAuth(name: string, force = false): Promise<void> {
+    await this.mcpStore.startOAuth(name, force);
+  }
+  async cancelMCPOAuth(name: string): Promise<void> {
+    await this.mcpStore.cancelOAuth(name);
+  }
+  async logoutMCPOAuth(name: string): Promise<void> {
+    await this.mcpStore.logoutOAuth(name);
+  }
+  async copyMCPOAuthLink(name: string): Promise<void> {
+    await this.mcpStore.copyOAuthLink(name);
   }
   async saveGoal(goal: Goal | { action: string }): Promise<void> {
     await this.goalStore.save(goal);
