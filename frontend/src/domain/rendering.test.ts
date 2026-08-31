@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { highlight, highlightDiffLine } from './rich-highlight';
 import { decorateRichContent, renderMarkdown, stableMarkdownBoundary } from './markdown';
+import { applyDocumentURLPolicy } from './markdown-document';
 import {
   analyzeStreamingMarkdown,
   elasticStreamingFrameDelay,
@@ -26,6 +27,23 @@ describe('markdown security and streaming', () => {
     expect(html).toContain('target="_blank"');
     expect(html).toContain('rel="noopener noreferrer"');
   });
+  it('disables repository-relative document assets without issuing live file URLs', () => {
+    const root = document.createElement('div');
+    root.innerHTML =
+      '<a href="docs/guide.md">guide</a><a href="https://example.com">web</a><img src="images/chart.png" alt="chart"><img src="https://cdn.example.com/chart.png">';
+    applyDocumentURLPolicy(root);
+    const links = root.querySelectorAll('a');
+    expect(links[0]).not.toHaveAttribute('href');
+    expect(links[0]).toHaveClass('markdown-relative-link-unavailable');
+    expect(links[1]).toHaveAttribute('target', '_blank');
+    expect(root.querySelector('.markdown-local-asset')).toHaveTextContent(
+      'chart — local asset unavailable in preview',
+    );
+    const remote = root.querySelector<HTMLImageElement>('img');
+    expect(remote).toHaveAttribute('loading', 'lazy');
+    expect(remote).toHaveAttribute('referrerpolicy', 'no-referrer');
+  });
+
   it('keeps strict math syntax as text until the lazy decorator and avoids currency delimiters', () => {
     const html = renderMarkdown('Price is $5 and inline is \\(x^2\\).');
     expect(html).toContain('$5');

@@ -1460,10 +1460,10 @@ func TestHubRebaseNeedlesMatchServeOutput(t *testing.T) {
 	if !strings.Contains(string(rewritten), `<base href="/node/x/">`) {
 		t.Error("rebased html missing new base tag")
 	}
-	if !strings.Contains(string(rewritten), `type="module" src="dist/app.js?v=`) {
-		t.Error("rebased html lost relative Preact module URL")
+	if !strings.Contains(string(rewritten), `type="module" src="dist/app.js"`) || strings.Contains(string(rewritten), `src="dist/app.js?v=`) {
+		t.Error("rebased html lost canonical relative Preact module URL")
 	}
-	moduleURL, err := url.Parse("https://hub.example/node/x/dist/app.js?v=version")
+	moduleURL, err := url.Parse("https://hub.example/node/x/dist/app.js")
 	if err != nil {
 		t.Fatal(err)
 	}

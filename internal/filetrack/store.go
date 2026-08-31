@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/sqliteutil"
@@ -173,6 +174,14 @@ type FileDiffSide struct {
 	Side      string
 	Data      []byte
 	MediaType string
+}
+
+// FileDiffTextSide contains one retained textual side of a file diff.
+type FileDiffTextSide struct {
+	Path string
+	Kind string
+	Side string
+	Data []byte
 }
 
 // Options configures a Store.
@@ -1602,24 +1611,55 @@ func (s *Store) GetRecentRunFileDiffSide(ctx context.Context, sessionID, path, s
 	return s.fileDiffSideFromSpan(ctx, sp, side, err)
 }
 
-func (s *Store) fileDiffSideFromSpan(ctx context.Context, sp *pathSpan, side string, err error) (*FileDiffSide, error) {
-	if err != nil || sp == nil {
+// GetFileDiffTextSide returns one retained UTF-8 text side without loading the
+// other side. It returns nil for unknown, truncated, binary, and image content.
+func (s *Store) GetFileDiffTextSide(ctx context.Context, sessionID, path, side string) (*FileDiffTextSide, error) {
+	if side != "before" && side != "after" {
+		return nil, ErrInvalidDiffSide
+	}
+	sp, err := s.sessionPathSpan(ctx, sessionID, path)
+	return s.fileDiffTextSideFromSpan(ctx, sp, side, err)
+}
+
+// GetRecentRunFileDiffTextSide returns one retained UTF-8 text side across the
+// latest runs that recorded file changes. A positive snapshotSeq pins the window.
+func (s *Store) GetRecentRunFileDiffTextSide(ctx context.Context, sessionID, path, side string, runs int, snapshotSeq int64) (*FileDiffTextSide, error) {
+	if side != "before" && side != "after" {
+		return nil, ErrInvalidDiffSide
+	}
+	window, err := s.latestRunWindow(ctx, sessionID, runs, snapshotSeq)
+	if err != nil || len(window.runIDs) == 0 {
 		return nil, err
 	}
-	kind, ok := sp.resolve()
+	sp, err := s.sessionRunPathSpan(ctx, sessionID, window.runIDs, window.snapshotSeq, path)
+	return s.fileDiffTextSideFromSpan(ctx, sp, side, err)
+}
+
+func (sp *pathSpan) diffSide(side string) (kind, hash string, binary bool, ok bool, err error) {
+	kind, ok = sp.resolve()
 	if !ok {
-		return nil, nil
+		return "", "", false, false, nil
 	}
 	needBefore, needAfter := blobsNeeded(kind)
 	if (side == "before" && !needBefore) || (side == "after" && !needAfter) {
-		return nil, ErrInvalidDiffSide
+		return "", "", false, false, ErrInvalidDiffSide
 	}
-	if !sp.retainedImage(kind) {
+	if side == "before" {
+		return kind, sp.firstBeforeHash, sp.firstBinary, true, nil
+	}
+	return kind, sp.lastAfterHash, sp.lastBinary, true, nil
+}
+
+func (s *Store) fileDiffSideFromSpan(ctx context.Context, sp *pathSpan, side string, spanErr error) (*FileDiffSide, error) {
+	if spanErr != nil || sp == nil {
+		return nil, spanErr
+	}
+	kind, hash, _, ok, err := sp.diffSide(side)
+	if err != nil || !ok {
+		return nil, err
+	}
+	if !sp.retainedImage(kind) || hash == "" {
 		return nil, nil
-	}
-	hash := sp.firstBeforeHash
-	if side == "after" {
-		hash = sp.lastAfterHash
 	}
 	data, err := s.getBlob(ctx, hash)
 	if err != nil {
@@ -1630,6 +1670,27 @@ func (s *Store) fileDiffSideFromSpan(ctx context.Context, sp *pathSpan, side str
 		return nil, nil
 	}
 	return &FileDiffSide{Path: sp.path, Kind: kind, Side: side, Data: data, MediaType: mediaType}, nil
+}
+
+func (s *Store) fileDiffTextSideFromSpan(ctx context.Context, sp *pathSpan, side string, spanErr error) (*FileDiffTextSide, error) {
+	if spanErr != nil || sp == nil {
+		return nil, spanErr
+	}
+	kind, hash, binary, ok, err := sp.diffSide(side)
+	if err != nil || !ok {
+		return nil, err
+	}
+	if binary || hash == "" {
+		return nil, nil
+	}
+	data, err := s.getBlob(ctx, hash)
+	if err != nil {
+		return nil, err
+	}
+	if !IsRenderableText(data) {
+		return nil, nil
+	}
+	return &FileDiffTextSide{Path: sp.path, Kind: kind, Side: side, Data: data}, nil
 }
 
 // GC removes change rows for sessions that no longer exist in the sessions DB
@@ -1900,6 +1961,12 @@ func imageChangeMediaType(kind string, before, after []byte) (string, bool) {
 		return afterType, true
 	}
 	return beforeType, beforeType != ""
+}
+
+// IsRenderableText reports whether data is valid UTF-8 text and not a
+// browser-renderable image or other binary content.
+func IsRenderableText(data []byte) bool {
+	return utf8.Valid(data) && imageMediaType(data) == "" && !isBinaryContent(data)
 }
 
 // isBinaryContent detects binary content via http.DetectContentType plus a NUL

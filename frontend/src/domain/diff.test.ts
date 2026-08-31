@@ -1,7 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { fileKind, linesFromHunks, parseUnifiedDiffFiles } from './diff';
+import { fileKind, isMarkdownPath, linesFromHunks, parseUnifiedDiffFiles } from './diff';
 
 describe('structured diff contracts', () => {
+  it('recognizes only Markdown document extensions', () => {
+    expect(['README.md', 'PLAN.MD', 'notes.markdown'].map(isMarkdownPath)).toEqual([
+      true,
+      true,
+      true,
+    ]);
+    expect(['notes.mdx', 'notes.md.bak', 'markdown', ''].map(isMarkdownPath)).toEqual([
+      false,
+      false,
+      false,
+      false,
+    ]);
+  });
+
   it('converts server hunks into numbered display lines', () => {
     expect(
       linesFromHunks([

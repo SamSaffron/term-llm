@@ -29,6 +29,7 @@ export interface RequestControls {
   auth?: AuthOwner;
   retries?: number;
   timeoutMs?: number;
+  versionCheck?: boolean;
 }
 
 export interface RequestClassification {
@@ -40,6 +41,7 @@ export interface RequestClassification {
 }
 interface TransportRequestInit extends RequestInit {
   __termLLMRetrySafe?: boolean;
+  __termLLMSkipVersionCheck?: boolean;
 }
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
@@ -207,10 +209,16 @@ export class APIClient {
           headers,
           credentials: sameOrigin ? 'same-origin' : 'omit',
           __termLLMRetrySafe: classification.retryable,
+          __termLLMSkipVersionCheck: controls.versionCheck === false,
         };
         const response = await fetch(targetURL, transportInit);
         const serverVersion = response.headers.get('X-Term-LLM-UI-Version');
-        if (serverVersion && this.config.version && serverVersion !== this.config.version)
+        if (
+          controls.versionCheck !== false &&
+          serverVersion &&
+          this.config.version &&
+          serverVersion !== this.config.version
+        )
           this.hooks.onVersionMismatch?.();
         if (response.status === 401 && controls.auth === 'session' && !externalAuthRedirecting) {
           const loginURL = trustedExternalLoginURL(response);

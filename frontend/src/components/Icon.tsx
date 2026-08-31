@@ -19,6 +19,7 @@ type IconName =
   | 'info'
   | 'interject'
   | 'menu'
+  | 'markdown'
   | 'microphone'
   | 'panel'
   | 'restore'
@@ -82,10 +83,11 @@ const paths: Record<IconName, JSX.Element> = {
   ),
   diff: (
     <>
-      <circle cx="6" cy="6" r="2.5" />
-      <circle cx="18" cy="18" r="2.5" />
-      <path d="M8.5 6H15a3 3 0 0 1 3 3v6.5" />
-      <path d="M15.5 18H9a3 3 0 0 1-3-3V8.5" />
+      <path d="M3 8h3" />
+      <path d="M9.5 8H21" />
+      <path d="M4.5 14.5v5" />
+      <path d="M2 17h5" />
+      <path d="M10.5 17H21" />
     </>
   ),
   edit: (
@@ -133,6 +135,14 @@ const paths: Record<IconName, JSX.Element> = {
       <path d="M4 6h16" />
       <path d="M4 12h16" />
       <path d="M4 18h16" />
+    </>
+  ),
+  markdown: (
+    <>
+      <rect class="icon-state-fill" x="4" y="3" width="16" height="18" rx="2" />
+      <path d="M8 8h8" />
+      <path d="M8 12h8" />
+      <path d="M8 16h5" />
     </>
   ),
   microphone: (

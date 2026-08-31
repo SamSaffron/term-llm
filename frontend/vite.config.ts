@@ -1,8 +1,8 @@
 import { defineConfig } from 'vitest/config';
 import type { Plugin } from 'vite';
 import preact from '@preact/preset-vite';
-import { resolve } from 'node:path';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 
 function deterministicStyles(): Plugin {
   return {
@@ -44,12 +44,21 @@ function deterministicStyles(): Plugin {
     },
     closeBundle() {
       // Vite injects __vite__mapDeps after Rollup's generateBundle hooks. Keep
-      // those generated preload URLs aligned with the deterministic CSS moves.
-      const entry = resolve(import.meta.dirname, '../internal/serveui/static/dist/app.js');
-      const code = readFileSync(entry, 'utf8')
-        .replaceAll('./assets/highlight.css', './chunks/highlight.css')
-        .replaceAll('./assets/katex.css', './chunks/katex.css');
-      writeFileSync(entry, code);
+      // those generated preload URLs aligned with the deterministic CSS moves,
+      // including maps emitted into lazy chunks rather than the entry module.
+      const outputDir = resolve(import.meta.dirname, '../internal/serveui/static/dist');
+      for (const relative of readdirSync(outputDir, { recursive: true, encoding: 'utf8' })) {
+        if (!relative.endsWith('.js')) continue;
+        const file = resolve(outputDir, relative);
+        const inOutputRoot = dirname(relative) === '.';
+        const relativeToOutput = inOutputRoot ? './' : '../';
+        const relativeToChunks = inOutputRoot ? './chunks/' : './';
+        const code = readFileSync(file, 'utf8')
+          .replaceAll(`${relativeToOutput}assets/main.css`, `${relativeToOutput}app.css`)
+          .replaceAll(`${relativeToOutput}assets/highlight.css`, `${relativeToChunks}highlight.css`)
+          .replaceAll(`${relativeToOutput}assets/katex.css`, `${relativeToChunks}katex.css`);
+        writeFileSync(file, code);
+      }
     },
   };
 }

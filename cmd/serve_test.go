@@ -508,6 +508,81 @@ func TestRuntimeForFreshAgentProviderRequestUsesSelectedAgent(t *testing.T) {
 	}
 }
 
+func TestRuntimeForProviderRequestReplacesMismatchedCachedAgent(t *testing.T) {
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	persisted := &session.Session{ID: "sess-agent-restart", Provider: "test", Model: "model", Agent: "developer"}
+	if err := store.Create(context.Background(), persisted); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := newServeSessionManager(time.Hour, 10, func(context.Context) (*serveRuntime, error) { return &serveRuntime{}, nil })
+	defer mgr.Close()
+	putTestSession(mgr, persisted.ID, &serveRuntime{agentName: "", maxTurns: 50})
+
+	created := 0
+	srv := &serveServer{
+		cfg:        serveServerConfig{},
+		cfgRef:     &config.Config{DefaultProvider: "test"},
+		store:      store,
+		sessionMgr: mgr,
+		runtimeFactory: func(context.Context, string, string) (*serveRuntime, error) {
+			return nil, errors.New("generic runtime factory should not be used")
+		},
+		agentRuntimeFactory: func(_ context.Context, _, _, agentName string) (*serveRuntime, error) {
+			created++
+			return &serveRuntime{agentName: agentName, maxTurns: 2000}, nil
+		},
+	}
+
+	rt, stateful, err := srv.runtimeForProviderRequest(context.Background(), persisted.ID, "test")
+	if err != nil {
+		t.Fatalf("runtimeForProviderRequest: %v", err)
+	}
+	if !stateful || rt.agentName != "developer" || rt.maxTurns != 2000 || created != 1 {
+		t.Fatalf("stateful=%v agent=%q maxTurns=%d created=%d", stateful, rt.agentName, rt.maxTurns, created)
+	}
+	cached, ok := mgr.Get(persisted.ID)
+	if !ok || cached != rt {
+		t.Fatal("replacement runtime was not cached")
+	}
+}
+
+func TestCreateRequestRuntimeRejectsWrongAgentIdentity(t *testing.T) {
+	srv := &serveServer{agentRuntimeFactory: func(context.Context, string, string, string) (*serveRuntime, error) {
+		return &serveRuntime{agentName: ""}, nil
+	}}
+	if _, err := srv.createRequestRuntime(context.Background(), "", "", "developer"); err == nil || !strings.Contains(err.Error(), "does not match requested agent") {
+		t.Fatalf("createRequestRuntime error = %v, want identity mismatch", err)
+	}
+}
+
+func TestSyncPersistedSessionRuntimeDoesNotClearNamedAgent(t *testing.T) {
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	persisted := &session.Session{ID: "sess-no-agent-downgrade", Provider: "test", Model: "model", Agent: "developer"}
+	if err := store.Create(context.Background(), persisted); err != nil {
+		t.Fatal(err)
+	}
+	srv := &serveServer{store: store}
+	rt := &serveRuntime{providerKey: "test", defaultModel: "model"}
+	srv.syncPersistedSessionRuntime(context.Background(), persisted.ID, rt, "model", "", "", false, "", false)
+
+	got, err := store.Get(context.Background(), persisted.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Agent != "developer" {
+		t.Fatalf("agent = %q, want developer", got.Agent)
+	}
+}
+
 func TestCustomBasePath_EndToEnd(t *testing.T) {
 	// Handlers are called with paths already stripped of basePath by
 	// http.StripPrefix in the mux. So "/" is the SPA root, "/app.css" is
@@ -981,7 +1056,7 @@ func TestHandleUI_ServiceWorkerCompressionKeepsNoCache(t *testing.T) {
 	}
 }
 
-func TestHandleUI_IndexVersionsShellAssets(t *testing.T) {
+func TestHandleUI_IndexVersionsCacheableAssetsAndKeepsCanonicalModule(t *testing.T) {
 	srv := &serveServer{cfg: serveServerConfig{ui: true, basePath: "/ui"}}
 	version := serveui.AssetVersion()
 
@@ -996,13 +1071,16 @@ func TestHandleUI_IndexVersionsShellAssets(t *testing.T) {
 		`href="manifest.webmanifest?v=` + version + `"`,
 		`href="icon-512.png?v=` + version + `"`,
 		`href="dist/app.css?v=` + version + `"`,
-		`type="module" src="dist/app.js?v=` + version + `"`,
+		`type="module" src="dist/app.js"`,
 		`.startup-splash{`,
 		`@keyframes startup-spin{`,
 	} {
 		if !strings.Contains(body, snippet) {
 			t.Fatalf("expected %q in body", snippet)
 		}
+	}
+	if strings.Contains(body, `src="dist/app.js?v=`) {
+		t.Fatal("did not expect a version query on the canonical application module")
 	}
 	if strings.Index(body, `.startup-splash{`) > strings.Index(body, `href="dist/app.css?v=`+version+`"`) {
 		t.Fatalf("expected inline startup styles before generated CSS link")
@@ -1034,13 +1112,13 @@ func TestHandleUI_ServiceWorkerVersionsShellCache(t *testing.T) {
 		`'./manifest.webmanifest?v=` + version + `'`,
 		`'./icon-512.png?v=` + version + `'`,
 		`'./dist/app.css?v=` + version + `'`,
-		`'./dist/app.js?v=` + version + `'`,
 	} {
 		if !strings.Contains(body, snippet) {
 			t.Fatalf("expected %q in body", snippet)
 		}
 	}
 	for _, snippet := range []string{
+		`'./dist/app.js`,
 		`'./dist/chunks/vendor.js`,
 		`'./dist/chunks/webrtc.js`,
 		`'./dist/chunks/katex.js`,

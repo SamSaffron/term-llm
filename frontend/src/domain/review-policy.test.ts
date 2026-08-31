@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   REVIEW_LIMITS,
+  reviewCommentPayload,
   utf8Bytes,
   validateReviewBatch,
   validateReviewComment,
@@ -19,6 +20,28 @@ const comment = (patch: Partial<DiffComment> = {}): DiffComment => ({
 });
 
 describe('review queue policy', () => {
+  it('serializes nearby Markdown context with the line metadata required by the server', () => {
+    expect(
+      reviewCommentPayload(
+        comment({
+          side: 'new',
+          line: 8,
+          contextBefore: ['before 1', 'before 2'],
+          contextAfter: ['after 1', 'after 2'],
+        }),
+      ),
+    ).toMatchObject({
+      context_before: [
+        { side: 'new', line: 6, text: 'before 1' },
+        { side: 'new', line: 7, text: 'before 2' },
+      ],
+      context_after: [
+        { side: 'new', line: 9, text: 'after 1' },
+        { side: 'new', line: 10, text: 'after 2' },
+      ],
+    });
+  });
+
   it('counts UTF-8 bytes instead of JavaScript code units', () => {
     expect(utf8Bytes('界')).toBe(3);
     const error = validateReviewComment(comment({ body: '界'.repeat(3000) }));

@@ -310,12 +310,15 @@ AFTER DELETE ON sessions BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS session_change_log_session_metadata
-AFTER UPDATE OF name, generated_short_title, generated_long_title, provider_key, model, cwd, worktree_dir, archived, pinned ON sessions
+AFTER UPDATE OF name, generated_short_title, generated_long_title, provider_key, model, agent, tools, mcp, cwd, worktree_dir, archived, pinned ON sessions
 WHEN OLD.name IS NOT NEW.name
   OR OLD.generated_short_title IS NOT NEW.generated_short_title
   OR OLD.generated_long_title IS NOT NEW.generated_long_title
   OR OLD.provider_key IS NOT NEW.provider_key
   OR OLD.model IS NOT NEW.model
+  OR OLD.agent IS NOT NEW.agent
+  OR OLD.tools IS NOT NEW.tools
+  OR OLD.mcp IS NOT NEW.mcp
   OR OLD.cwd IS NOT NEW.cwd
   OR OLD.worktree_dir IS NOT NEW.worktree_dir
   OR OLD.archived IS NOT NEW.archived
@@ -523,7 +526,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // Increment when adding new migrations.
 const (
 	projectSchemaVersion = 47
-	schemaVersion        = 52
+	schemaVersion        = 53
 )
 
 // migration represents a schema migration.
@@ -1542,6 +1545,17 @@ var migrations = []migration{
 			return err
 		},
 	},
+	{
+		version:     53,
+		description: "audit runtime identity metadata changes",
+		up: func(db schemaExecutor) error {
+			if _, err := db.Exec(`DROP TRIGGER IF EXISTS session_change_log_session_metadata`); err != nil {
+				return err
+			}
+			_, err := db.Exec(changeLogSchemaV52)
+			return err
+		},
+	},
 }
 
 // Keep in sync with llm.IsInternalCompactionSummaryText. SQLite migrations and
@@ -2243,7 +2257,8 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	query := `
 		UPDATE sessions SET name = ?, summary = ?, generated_short_title = ?, generated_long_title = ?, title_source = ?, title_generated_at = ?, title_basis_msg_seq = ?` +
 		titleSkippedAtClause + `,
-		       provider = ?, provider_key = ?, model = ?` + reasoningEffortClause + reasoningModeClause + `, mode = ?` + approvalModeClause + `, origin = ?, agent = ?, ` + cwdAssignment + worktreeDirClause + `,
+		       provider = ?, provider_key = ?, model = ?` + reasoningEffortClause + reasoningModeClause + `, mode = ?` + approvalModeClause + `, origin = ?,
+		       agent = CASE WHEN COALESCE(agent, '') <> '' AND COALESCE(?, '') = '' THEN agent ELSE ? END, ` + cwdAssignment + worktreeDirClause + `,
 		       updated_at = ?, archived = ?, pinned = ?, parent_id = ?, search = ?, tools = ?, mcp = ?,
 		       status = ?, tags = ?` + goalClause + shareClause + `
 		WHERE id = ?`
@@ -2270,7 +2285,7 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 		args = append(args, nullString(string(sess.ApprovalMode)))
 	}
 	args = append(args,
-		nullString(string(sess.Origin)), nullString(sess.Agent), sess.CWD,
+		nullString(string(sess.Origin)), nullString(sess.Agent), nullString(sess.Agent), sess.CWD,
 	)
 	if s.hasWorktreeDir {
 		args = append(args, nullString(sess.WorktreeDir))

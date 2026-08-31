@@ -1,0 +1,171 @@
+.diff-markdown-preview {
+  min-width: 0;
+  overflow: hidden;
+  background: var(--surface);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+.diff-markdown-deleted-banner {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--danger) 25%, var(--border));
+  background: color-mix(in srgb, var(--danger) 7%, var(--surface));
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.diff-markdown-document {
+  padding: 0.45rem 0.45rem 0.8rem;
+}
+
+.diff-markdown-block {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1.85rem minmax(0, 1fr);
+  align-items: start;
+  border-radius: 7px;
+}
+
+.diff-markdown-block.commenting {
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  box-shadow: inset 2px 0 color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+.diff-markdown-block-content {
+  grid-column: 2;
+  min-width: 0;
+  padding: 0.08rem 0.35rem;
+  overflow-wrap: anywhere;
+}
+
+.diff-markdown-block-content > :first-child {
+  margin-top: 0.25em;
+}
+
+.diff-markdown-block-content > :last-child {
+  margin-bottom: 0.35em;
+}
+
+.diff-markdown-block-content pre,
+.diff-markdown-block-content .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.diff-markdown-block-content img {
+  max-width: 100%;
+  height: auto;
+  cursor: default;
+}
+
+.diff-markdown-block > .diff-comment-affordance {
+  grid-column: 1;
+  grid-row: 1;
+  align-self: start;
+  margin: 0.45rem auto 0;
+}
+
+.diff-markdown-block:hover > .diff-comment-affordance,
+.diff-markdown-block:focus-within > .diff-comment-affordance {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.diff-markdown-block > .diff-comment-panel {
+  grid-column: 2;
+  grid-row: 2;
+  width: auto;
+}
+
+.markdown-local-asset {
+  display: inline-block;
+  padding: 0.15rem 0.35rem;
+  border: 1px dashed var(--border-strong);
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: 0.78em;
+}
+
+.markdown-relative-link-unavailable {
+  color: var(--text-muted);
+  text-decoration: underline dotted;
+  cursor: not-allowed;
+}
+
+.diff-source-only-comments {
+  margin: 0.8rem 0.35rem 0;
+  padding: 0.65rem;
+  border-top: 1px solid var(--border);
+  color: var(--text);
+}
+
+.diff-source-only-comments h4 {
+  margin: 0 0 0.5rem;
+  font-size: 0.78rem;
+}
+
+.diff-source-only-comment {
+  padding: 0.45rem 0;
+  border-top: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+.diff-source-only-actions {
+  display: flex;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+}
+
+.diff-source-only-actions button {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.72rem;
+}
+
+.diff-markdown-block .diff-comment-affordance.has-comments::before,
+.diff-markdown-block .diff-comment-affordance.has-comments::after {
+  display: none;
+}
+
+.diff-comment-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1rem;
+  height: 1rem;
+  padding-inline: 0.18rem;
+  border: 1px solid currentcolor;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.diff-comment-anchor-line {
+  display: inline-block;
+  margin-right: 0.4rem;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.68rem;
+}
+
+.diff-comment-reanchor-draft {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--danger);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.72rem;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .diff-markdown-block > .diff-comment-affordance {
+    opacity: 0.7;
+    transform: scale(1);
+  }
+}

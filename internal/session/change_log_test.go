@@ -96,6 +96,16 @@ func TestSQLiteStoreChangeLogTailsExternalMutations(t *testing.T) {
 		cursor = change.Sequence
 	}
 
+	if _, err := store.db.ExecContext(ctx, `UPDATE sessions SET agent = 'developer', tools = 'shell', mcp = 'browser' WHERE id = ?`, sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	changes, err = store.ListStoreChanges(ctx, cursor, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertStoreChangeKinds(t, changes, StoreChangeSessionMetadataChanged)
+	cursor = changes[0].Sequence
+
 	if _, err := store.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, sess.ID); err != nil {
 		t.Fatal(err)
 	}

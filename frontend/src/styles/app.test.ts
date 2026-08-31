@@ -132,10 +132,25 @@ describe('touch affordances', () => {
       '.session-group-chevron',
       '.code-copy-btn',
       '.math-copy-btn',
+      '.diff-file-actions',
       '.diff-comment-affordance',
     ]) {
       expect(touchRules).toContain(selector);
     }
+    expect(touchRules).toMatch(
+      /\.diff-file-actions \.diff-action-btn\s*\{[^}]*min-width: 36px;[^}]*min-height: 36px;/s,
+    );
+    expect(touchRules).toMatch(
+      /\.diff-file-actions \.diff-action-btn svg\s*\{[^}]*width: 17px;[^}]*height: 17px;/s,
+    );
+  });
+
+  it('uses hover alone to reveal file actions for precise pointers', () => {
+    expect(appCSS).toMatch(
+      /@media \(hover: hover\) and \(pointer: fine\) \{[\s\S]*?\.diff-file-row:hover \.diff-file-actions\s*\{[^}]*display: inline-flex;/,
+    );
+    expect(appCSS).not.toContain('.diff-file-row:focus-within .diff-file-actions');
+    expect(appCSS).not.toContain('.diff-file-row:focus-within .diff-file-counts');
   });
 });
 
@@ -143,6 +158,10 @@ describe('diff review styles', () => {
   it('uses compact source-code spacing without letting comment controls expand every row', () => {
     expect(appCSS).toMatch(/\.diff-file-body\s*\{[^}]*line-height: 1\.3;/s);
     expect(appCSS).toMatch(/\.diff-comment-affordance\s*\{[^}]*height: 1\.15rem;/s);
+  });
+
+  it('sizes every file action glyph consistently', () => {
+    expect(appCSS).toMatch(/\.diff-action-btn svg\s*\{[^}]*width: 19px;[^}]*height: 19px;/s);
   });
 
   it('anchors comment cards to code without pinning hunk text to the action column', () => {

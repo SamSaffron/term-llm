@@ -1,3 +1,4 @@
+import type { ComponentChildren, ComponentType } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import type { DiffComment, DiffFile, DiffLine } from '../domain/types';
@@ -5,6 +6,7 @@ import {
   clampDiffWidth,
   fileKind,
   inlineEmphasis,
+  isMarkdownPath,
   linesFromHunks,
   unifiedPatchForFile,
 } from '../domain/diff';
@@ -14,43 +16,32 @@ import { planSummary } from '../domain/plan';
 import { Icon } from './Icon';
 import { ChipPicker } from './ChipPicker';
 import { Drawer } from './Drawer';
-import { useMenuKeyboard } from './Menu';
+import type { MarkdownFilePreviewProps } from './MarkdownFilePreview';
+import { ReviewComment, type ReviewCommentEntry } from './ReviewComment';
 import { useMediaQuery } from './useMediaQuery';
 
-function commentTimestamp(
-  createdAt: number | undefined,
-  now: number,
-): { dateTime: string; label: string; title: string } | null {
-  if (!createdAt || !Number.isFinite(createdAt)) return null;
-  const timestamp = createdAt < 10_000_000_000 ? createdAt * 1000 : createdAt;
-  const date = new Date(timestamp);
-  if (Number.isNaN(date.getTime())) return null;
-  const elapsed = Math.max(0, now - timestamp);
-  let label: string;
-  if (elapsed < 60_000) label = 'just now';
-  else {
-    const minutes = Math.floor(elapsed / 60_000);
-    if (minutes < 60) label = `${minutes}m ago`;
-    else {
-      const hours = Math.floor(minutes / 60);
-      if (hours < 24) label = `${hours}h ago`;
-      else {
-        const days = Math.floor(hours / 24);
-        label = days < 7 ? `${days}d ago` : date.toLocaleDateString();
-      }
-    }
-  }
-  return { dateTime: date.toISOString(), label, title: date.toLocaleString() };
-}
+let loadedMarkdownPreview: ComponentType<MarkdownFilePreviewProps> | null = null;
+let markdownPreviewImport: Promise<ComponentType<MarkdownFilePreviewProps>> | null = null;
 
-function resizeCommentEditor(editor: HTMLTextAreaElement): void {
-  editor.style.height = 'auto';
-  const computedMaxHeight = getComputedStyle(editor).maxHeight;
-  const parsedMaxHeight = Number.parseFloat(computedMaxHeight);
-  const maxHeight = computedMaxHeight.endsWith('rem')
-    ? parsedMaxHeight * Number.parseFloat(getComputedStyle(document.documentElement).fontSize)
-    : parsedMaxHeight;
-  editor.style.height = `${Math.min(editor.scrollHeight, Number.isFinite(maxHeight) ? maxHeight : 160)}px`;
+function LazyMarkdownFilePreview(props: MarkdownFilePreviewProps) {
+  const [Preview, setPreview] = useState<ComponentType<MarkdownFilePreviewProps> | null>(
+    () => loadedMarkdownPreview,
+  );
+  useEffect(() => {
+    if (Preview) return;
+    markdownPreviewImport ||= import('./MarkdownFilePreview').then(
+      ({ MarkdownFilePreview }) => MarkdownFilePreview,
+    );
+    let live = true;
+    void markdownPreviewImport.then((component) => {
+      loadedMarkdownPreview = component;
+      if (live) setPreview(() => component);
+    });
+    return () => {
+      live = false;
+    };
+  }, [Preview]);
+  return Preview ? <Preview {...props} /> : <div class="diff-loading">Loading preview…</div>;
 }
 
 function DiffCode({
@@ -114,7 +105,7 @@ function Line({
   lang: string;
   commentKey: string;
   commenting: boolean;
-  comments: Array<DiffComment & { queued?: boolean }>;
+  comments: ReviewCommentEntry[];
   body: string;
   onComment: (key: string) => void;
   onBody: (value: string) => void;
@@ -125,14 +116,8 @@ function Line({
   onRemove: (comment: DiffComment) => void;
   commentable?: boolean;
 }) {
-  const [sendMenuOpen, setSendMenuOpen] = useState(false);
-  const [clock, setClock] = useState(() => Date.now());
-  const affordance = useRef<HTMLButtonElement>(null);
-  const panel = useRef<HTMLDivElement>(null);
-  const editor = useRef<HTMLTextAreaElement>(null);
-  const sendTrigger = useRef<HTMLButtonElement>(null);
-  const sendMenu = useMenuKeyboard(sendMenuOpen, () => setSendMenuOpen(false), sendTrigger);
   const number = line.kind === 'delete' ? line.oldLine : line.newLine;
+  const side = line.kind === 'delete' ? 'old' : 'new';
   const kind =
     line.kind === 'add'
       ? 'add'
@@ -141,232 +126,43 @@ function Line({
         : line.kind === 'hunk'
           ? 'hunk'
           : 'ctx';
-  const canSubmit = Boolean(body.trim());
-  const cancel = () => {
-    setSendMenuOpen(false);
-    onCancel();
-    requestAnimationFrame(() => affordance.current?.focus({ preventScroll: true }));
-  };
-  const submit = (mode: 'send' | 'queue') => {
-    if (!canSubmit) return;
-    setSendMenuOpen(false);
-    onSubmit(mode);
-  };
-  useEffect(() => {
-    if (!commenting) return;
-    setClock(Date.now());
-    const timer = window.setInterval(() => setClock(Date.now()), 60_000);
-    return () => clearInterval(timer);
-  }, [commenting]);
-  useEffect(() => {
-    if (!commenting || !canSubmit) setSendMenuOpen(false);
-  }, [canSubmit, commenting]);
-  useEffect(() => {
-    if (!commenting) return;
-    const frame = requestAnimationFrame(() => {
-      const reduceMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-      panel.current?.scrollIntoView?.({
-        block: 'nearest',
-        behavior: reduceMotion ? 'auto' : 'smooth',
-      });
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [commenting]);
-  useEffect(() => {
-    if (!commenting || !editor.current) return;
-    resizeCommentEditor(editor.current);
-  }, [body, commenting]);
-  useEffect(() => {
-    if (!commenting || !editor.current || typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(() => {
-      if (editor.current) resizeCommentEditor(editor.current);
-    });
-    observer.observe(editor.current);
-    return () => observer.disconnect();
-  }, [commenting]);
+  const enabled = Boolean(commentable && number && line.kind !== 'hunk');
   return (
     <div
       class={`diff-row ${kind}${commenting ? ' commenting' : ''}`}
-      data-commentable={Boolean(commentable && number && line.kind !== 'hunk')}
+      data-commentable={enabled}
+      data-diff-anchor={number ? `${side}:${number}` : undefined}
+      tabIndex={number ? -1 : undefined}
     >
       <span class="diff-ln">{line.oldLine || ''}</span>
       <span class="diff-ln">{line.newLine || ''}</span>
       <DiffCode line={line} emphasis={emphasis} lang={lang} />
-      {commentable && number && line.kind !== 'hunk' && (
-        <button
-          ref={affordance}
-          class={`diff-comment-affordance${comments.length ? ' has-comments' : ''}${comments.some((comment) => comment.queued) ? ' queued' : ''}`}
-          type="button"
-          aria-label={
+      {enabled && number && (
+        <ReviewComment
+          controlId={`diff-comment-${commentKey.replace(/[^a-z0-9_-]/gi, '-')}`}
+          commenting={commenting}
+          comments={comments}
+          body={body}
+          affordanceLabel={
             comments.length
               ? `Show ${comments.length} inline comment${comments.length === 1 ? '' : 's'} for line ${number}`
               : `Comment on line ${number}`
           }
-          aria-expanded={commenting}
-          onMouseDown={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-          }}
-          onClick={(event) => {
-            event.stopPropagation();
-            onComment(commentKey);
-          }}
-        >
-          {!comments.length && <Icon name="add" />}
-        </button>
-      )}
-      {commenting && (
-        <div
-          ref={panel}
-          class="diff-comment-panel"
-          role="region"
-          aria-label={`Inline comments for line ${number}`}
-          onKeyDown={(event) => {
-            if (event.key !== 'Escape') return;
-            event.preventDefault();
-            event.stopPropagation();
-            if (sendMenuOpen) {
-              setSendMenuOpen(false);
-              editor.current?.focus();
-            } else if (!body.trim()) cancel();
-          }}
-        >
-          <div class="diff-comment-heading">
-            <span class="diff-comment-line-chip">Line {number}</span>
-            <span>{line.kind === 'delete' ? 'Original' : 'Current'} version</span>
-          </div>
-          {comments.map((comment) => {
-            const status = comment.queued ? 'queued' : comment.optimistic ? 'sending' : 'sent';
-            const timestamp = commentTimestamp(comment.createdAt, clock);
-            return (
-              <div class={`diff-comment-history-item ${status}`} key={comment.id}>
-                <div class="diff-comment-history-text">{comment.body}</div>
-                <div class="diff-comment-history-meta">
-                  <span class={`diff-comment-status ${status}`}>
-                    <span class="diff-comment-status-icon" aria-hidden="true">
-                      {status === 'sent' && <Icon name="check" />}
-                    </span>
-                    {status === 'queued'
-                      ? comment.state === 'stale'
-                        ? 'Stale'
-                        : 'Queued'
-                      : status === 'sending'
-                        ? 'Sending'
-                        : 'Sent'}
-                  </span>
-                  {comment.queued && comment.id && (
-                    <span class="diff-comment-actions">
-                      {comment.state === 'stale' && (
-                        <button
-                          type="button"
-                          aria-label={`Re-anchor queued comment to ${comment.path} line ${comment.line}`}
-                          onClick={() => onReanchor(comment)}
-                        >
-                          Re-anchor here
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        aria-label={`Edit queued comment for ${comment.path} line ${comment.line}`}
-                        onClick={() => onEdit(comment)}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        aria-label={`Remove queued comment for ${comment.path} line ${comment.line}`}
-                        onClick={() => onRemove(comment)}
-                      >
-                        Remove
-                      </button>
-                    </span>
-                  )}
-                  {timestamp && (
-                    <time dateTime={timestamp.dateTime} title={timestamp.title}>
-                      {timestamp.label}
-                    </time>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-          <form
-            class="diff-comment-editor"
-            onSubmit={(event) => {
-              event.preventDefault();
-              submit('send');
-            }}
-          >
-            <textarea
-              ref={editor}
-              autoFocus
-              aria-label="Inline comment"
-              placeholder={comments.length ? 'Add a follow-up…' : 'Add a comment…'}
-              value={body}
-              onInput={(event) => onBody(event.currentTarget.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  submit('send');
-                }
-              }}
-            />
-            <div class="diff-comment-editor-actions">
-              <span class="diff-comment-shortcut">⌘/Ctrl + Enter to send</span>
-              <button class="diff-comment-cancel" type="button" onClick={cancel}>
-                Cancel
-              </button>
-              <div class="diff-comment-send-split">
-                <button class="diff-comment-send" type="submit" disabled={!canSubmit}>
-                  Send now
-                </button>
-                <button
-                  ref={sendTrigger}
-                  class="diff-comment-send-more"
-                  type="button"
-                  aria-label="More send options"
-                  aria-haspopup="menu"
-                  aria-controls="diff-comment-delivery-menu"
-                  aria-expanded={sendMenuOpen}
-                  disabled={!canSubmit}
-                  onClick={() => setSendMenuOpen(!sendMenuOpen)}
-                >
-                  ▾
-                </button>
-                {sendMenuOpen && (
-                  <div
-                    ref={sendMenu}
-                    id="diff-comment-delivery-menu"
-                    class="diff-comment-send-menu"
-                    role="menu"
-                    aria-label="Comment delivery"
-                  >
-                    <button
-                      class="diff-comment-send-option"
-                      type="button"
-                      role="menuitem"
-                      disabled={!canSubmit}
-                      onClick={() => submit('send')}
-                    >
-                      Send now
-                    </button>
-                    <button
-                      class="diff-comment-send-option"
-                      type="button"
-                      role="menuitem"
-                      disabled={!canSubmit}
-                      onClick={() => submit('queue')}
-                    >
-                      Queue comment
-                      <small>Deliver later as one batch</small>
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-          </form>
-        </div>
+          regionLabel={`Inline comments for line ${number}`}
+          heading={
+            <>
+              <span class="diff-comment-line-chip">Line {number}</span>
+              <span>{line.kind === 'delete' ? 'Original' : 'Current'} version</span>
+            </>
+          }
+          onToggle={() => onComment(commentKey)}
+          onBody={onBody}
+          onCancel={onCancel}
+          onSubmit={onSubmit}
+          onEdit={onEdit}
+          onReanchor={onReanchor}
+          onRemove={onRemove}
+        />
       )}
     </div>
   );
@@ -378,7 +174,7 @@ function DiffAction({
   value,
 }: {
   label: string;
-  glyph: string;
+  glyph: ComponentChildren;
   value: () => string | Promise<string>;
 }) {
   const [copied, setCopied] = useState(false);
@@ -390,6 +186,7 @@ function DiffAction({
     [],
   );
   const copy = async (event: MouseEvent) => {
+    event.preventDefault();
     event.stopPropagation();
     try {
       const text = await value();
@@ -440,9 +237,21 @@ function File({ file }: { file: DiffFile }) {
   const [limit, setLimit] = useState(500);
   const [commenting, setCommenting] = useState('');
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [draftTargets, setDraftTargets] = useState<Record<string, string>>({});
   const lines = file.lines || [];
   const kind = fileKind(file);
   const legacyKind = kind === 'add' ? 'create' : kind === 'delete' ? 'delete' : 'modify';
+  const markdownPath = isMarkdownPath(file.path);
+  const markdownUnavailableReason = store.diff.value.worktreeDir
+    ? 'Rendered preview is unavailable for worktree patches'
+    : file.binary || file.image
+      ? 'Rendered preview is unavailable for binary content'
+      : file.truncated
+        ? 'Rendered preview is unavailable for truncated content'
+        : file.contentAvailable === false
+          ? 'Rendered Markdown source is unavailable'
+          : '';
+  const markdownAvailable = markdownPath && !markdownUnavailableReason;
   const session = store.activeSession.value;
   const project = store.projects.value.find(
     (entry) => entry.id === (session?.projectId || store.activeProjectId.value),
@@ -451,6 +260,12 @@ function File({ file }: { file: DiffFile }) {
     file.path,
     session?.worktreeDir || session?.workingDir || project?.path || '',
   );
+  const selectedView =
+    markdownAvailable && file.markdownPreview?.view === 'rendered' ? 'rendered' : 'diff';
+  const viewIdentity = `${file.sequence || 0}-${Math.abs(
+    [...file.path].reduce((hash, character) => (hash * 31 + character.codePointAt(0)!) | 0, 0),
+  ).toString(36)}`;
+  const previewPanelID = `diff-panel-${viewIdentity}`;
   const hasGapRows = lines.some((line) => line.kind === 'gap');
   const canExpandFallback =
     !hasGapRows &&
@@ -483,18 +298,53 @@ function File({ file }: { file: DiffFile }) {
       delete next[key];
       return next;
     });
+    setDraftTargets((current) => {
+      if (!(key in current)) return current;
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
   };
-  const submitComment = (mode: 'send' | 'queue', line: DiffLine, key: string) => {
-    const number = line.kind === 'delete' ? line.oldLine : line.newLine;
+  const matchingComments = (
+    side: DiffComment['side'],
+    startLine: number,
+    endLine = startLine,
+  ): Array<DiffComment & { queued?: boolean }> => {
+    const matches = (comment: DiffComment) =>
+      (!comment.sessionId || comment.sessionId === store.diff.value.sessionId) &&
+      comment.path === file.path &&
+      comment.side === side &&
+      comment.line >= startLine &&
+      comment.line <= endLine &&
+      (!comment.scope || comment.scope === store.diff.value.scope);
+    return [
+      ...store.diff.value.historyComments.filter(matches),
+      ...store.diff.value.comments.filter(matches).map((comment) => ({
+        ...comment,
+        queued: true,
+      })),
+    ].sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
+  };
+  const submitAnchor = (
+    mode: 'send' | 'queue',
+    side: DiffComment['side'],
+    number: number,
+    context: string,
+    key: string,
+    contextBefore?: string[],
+    contextAfter?: string[],
+  ) => {
     const body = drafts[key] || '';
     if (!body.trim() || !number) return;
-    const comment = {
+    const comment: DiffComment = {
       path: file.path,
-      side: line.kind === 'delete' ? ('old' as const) : ('new' as const),
+      side,
       line: number,
       body: body.trim(),
       scope: store.diff.value.scope,
-      context: line.content,
+      context,
+      contextBefore,
+      contextAfter,
       fileChangeSeq: file.snapshotSeq || file.sequence || 0,
     };
     if (mode === 'queue') store.queueDiffComment(comment);
@@ -525,8 +375,158 @@ function File({ file }: { file: DiffFile }) {
     };
     void store.expandDiff(file);
   };
+  const editComment = (comment: DiffComment) => {
+    const body = window.prompt('Edit queued comment', comment.body);
+    if (body !== null && comment.id) store.editDiffComment(comment.id, body);
+  };
+  const removeComment = (comment: DiffComment) => {
+    if (comment.id) store.removeDiffComment(comment.id);
+  };
+  const diffContent = (
+    <>
+      {file.loading && <div class="diff-loading">Loading…</div>}
+      {file.error && (
+        <div class="diff-error">
+          {file.error}
+          <button
+            class="diff-retry"
+            onClick={() => void store.expandDiff({ ...file, lines: undefined })}
+          >
+            Retry
+          </button>
+        </div>
+      )}
+      {file.truncated && <div class="diff-error">Diff unavailable.</div>}
+      {file.binary ? (
+        <div class="diff-loading">Binary file changed.</div>
+      ) : file.image ? (
+        <div class={`diff-image-comparison diff-image-${legacyKind}`}>
+          {kind !== 'add' && file.beforeURL && (
+            <figure class="diff-image-side">
+              <figcaption class="diff-image-label">Before</figcaption>
+              <img
+                class="diff-image-preview"
+                src={rebaseHubAssetURL(store.config, file.beforeURL)}
+                alt={`Before ${file.path}`}
+              />
+            </figure>
+          )}
+          {kind !== 'delete' && file.afterURL && (
+            <figure class="diff-image-side">
+              <figcaption class="diff-image-label">After</figcaption>
+              <img
+                class="diff-image-preview"
+                src={rebaseHubAssetURL(store.config, file.afterURL)}
+                alt={`After ${file.path}`}
+              />
+            </figure>
+          )}
+        </div>
+      ) : (
+        <>
+          {canExpandFallback && (
+            <button
+              class="diff-hunk-expand diff-hunk-expand-above"
+              type="button"
+              aria-label="Show more context above"
+              disabled={file.loading}
+              onClick={expandFallback}
+            >
+              <Icon name="chevron-up" />
+              <span>Show more above</span>
+            </button>
+          )}
+          <div class={`diff-rows diff-rows-kind-${legacyKind}`}>
+            {lines.slice(0, limit).map((line, index) => {
+              const rowKey = `${line.kind}-${line.oldLine || 0}-${line.newLine || 0}-${index}`;
+              if (line.kind === 'gap') {
+                const hidden = Math.max(line.hiddenOld || 0, line.hiddenNew || 0);
+                const direction =
+                  line.gapDirection === 'above'
+                    ? 'above'
+                    : line.gapDirection === 'below'
+                      ? 'below'
+                      : 'between hunks';
+                return (
+                  <button
+                    key={rowKey}
+                    data-diff-gap={rowKey}
+                    class="diff-hunk-expand"
+                    type="button"
+                    disabled={file.loading}
+                    onClick={(event) => void expandGap(rowKey, event.currentTarget)}
+                  >
+                    Show {hidden} hidden {hidden === 1 ? 'line' : 'lines'} {direction}
+                  </button>
+                );
+              }
+              const number = line.kind === 'delete' ? line.oldLine : line.newLine;
+              const side: DiffComment['side'] = line.kind === 'delete' ? 'old' : 'new';
+              const anchorKey = number ? `${side}:${number}` : rowKey;
+              const comments = number ? matchingComments(side, number) : [];
+              return (
+                <Line
+                  key={rowKey}
+                  line={line}
+                  emphasis={emphasis.get(index)}
+                  lang={lines.length <= 1500 ? file.lang || '' : ''}
+                  commentKey={anchorKey}
+                  commenting={commenting === anchorKey}
+                  comments={comments}
+                  body={drafts[anchorKey] || ''}
+                  commentable={!store.diff.value.readOnly}
+                  onComment={(next) => setCommenting((current) => (current === next ? '' : next))}
+                  onBody={(value) => setDrafts((current) => ({ ...current, [anchorKey]: value }))}
+                  onCancel={() => {
+                    clearDraft(anchorKey);
+                    setCommenting('');
+                  }}
+                  onSubmit={(mode) =>
+                    number && submitAnchor(mode, side, number, line.content, anchorKey)
+                  }
+                  onEdit={editComment}
+                  onReanchor={(comment) => {
+                    if (!comment.id || !number) return;
+                    store.reanchorDiffComment(comment.id, {
+                      path: file.path,
+                      side,
+                      line: number,
+                      context: line.content,
+                      fileChangeSeq: file.snapshotSeq || file.sequence || 0,
+                      scope: store.diff.value.scope,
+                    });
+                  }}
+                  onRemove={removeComment}
+                />
+              );
+            })}
+            {lines.length > limit && (
+              <button
+                class="diff-show-more"
+                onClick={() => setLimit((value) => Math.min(lines.length, value + 500))}
+              >
+                Show {Math.min(500, lines.length - limit)} more lines
+              </button>
+            )}
+          </div>
+          {canExpandFallback && (
+            <button
+              class="diff-hunk-expand diff-hunk-expand-below"
+              type="button"
+              aria-label="Show more context below"
+              disabled={file.loading}
+              onClick={expandFallback}
+            >
+              <span>Show more below</span>
+              <Icon name="chevron-down" />
+            </button>
+          )}
+        </>
+      )}
+    </>
+  );
   return (
-    <section class={`diff-file diff-file-${legacyKind}`}>
+    <section class={`diff-file diff-file-${legacyKind}`} data-diff-file-path={file.path}>
       <div
         class={`diff-file-row ${file.expanded ? 'expanded' : ''} ${store.diff.value.selectedPath === file.path ? 'selected' : ''}`}
         role="button"
@@ -534,7 +534,10 @@ function File({ file }: { file: DiffFile }) {
         title={file.path}
         data-path={file.path}
         aria-expanded={file.expanded}
-        onClick={toggle}
+        onClick={(event) => {
+          if ((event.target as Element).closest('.diff-file-actions')) return;
+          toggle();
+        }}
         onKeyDown={(event) => {
           if (
             event.target === event.currentTarget &&
@@ -563,172 +566,64 @@ function File({ file }: { file: DiffFile }) {
             </>
           )}
         </span>
-        <span class="diff-file-actions">
-          <DiffAction label={`Copy path ${file.path}`} glyph="⧉" value={() => file.path} />
+        <span class="diff-file-actions" onClick={(event) => event.stopPropagation()}>
+          {markdownPath && (
+            <button
+              class={`diff-action-btn diff-markdown-toggle${selectedView === 'rendered' ? ' active' : ''}`}
+              type="button"
+              title={markdownUnavailableReason || 'Toggle rendered Markdown'}
+              aria-label={
+                selectedView === 'rendered' ? 'Show Markdown diff' : 'Show rendered Markdown'
+              }
+              aria-pressed={selectedView === 'rendered'}
+              aria-controls={previewPanelID}
+              disabled={!markdownAvailable}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                const nextView = selectedView === 'rendered' ? 'diff' : 'rendered';
+                void store.setMarkdownView(file, nextView);
+              }}
+            >
+              <Icon name="markdown" />
+            </button>
+          )}
+          <DiffAction
+            label={`Copy path ${file.path}`}
+            glyph={<Icon name="copy" />}
+            value={() => file.path}
+          />
           {!file.image && (
-            <DiffAction label={`Copy diff for ${file.path}`} glyph="±" value={patch} />
+            <DiffAction
+              label={`Copy diff for ${file.path}`}
+              glyph={<Icon name="diff" />}
+              value={patch}
+            />
           )}
         </span>
       </div>
       {file.expanded && (
         <div class="diff-file-body">
-          {file.loading && <div class="diff-loading">Loading…</div>}
-          {file.error && (
-            <div class="diff-error">
-              {file.error}
-              <button
-                class="diff-retry"
-                onClick={() => void store.expandDiff({ ...file, lines: undefined })}
-              >
-                Retry
-              </button>
-            </div>
-          )}
-          {file.truncated && <div class="diff-error">Diff unavailable.</div>}
-          {file.binary ? (
-            <div class="diff-loading">Binary file changed.</div>
-          ) : file.image ? (
-            <div class={`diff-image-comparison diff-image-${legacyKind}`}>
-              {kind !== 'add' && file.beforeURL && (
-                <figure class="diff-image-side">
-                  <figcaption class="diff-image-label">Before</figcaption>
-                  <img
-                    class="diff-image-preview"
-                    src={rebaseHubAssetURL(store.config, file.beforeURL)}
-                    alt={`Before ${file.path}`}
-                  />
-                </figure>
-              )}
-              {kind !== 'delete' && file.afterURL && (
-                <figure class="diff-image-side">
-                  <figcaption class="diff-image-label">After</figcaption>
-                  <img
-                    class="diff-image-preview"
-                    src={rebaseHubAssetURL(store.config, file.afterURL)}
-                    alt={`After ${file.path}`}
-                  />
-                </figure>
-              )}
-            </div>
-          ) : (
-            <>
-              {canExpandFallback && (
-                <button
-                  class="diff-hunk-expand diff-hunk-expand-above"
-                  type="button"
-                  aria-label="Show more context above"
-                  disabled={file.loading}
-                  onClick={expandFallback}
-                >
-                  <Icon name="chevron-up" />
-                  <span>Show more above</span>
-                </button>
-              )}
-              <div class={`diff-rows diff-rows-kind-${legacyKind}`}>
-                {lines.slice(0, limit).map((line, index) => {
-                  const key = `${line.kind}-${line.oldLine || 0}-${line.newLine || 0}-${index}`;
-                  if (line.kind === 'gap') {
-                    const hidden = Math.max(line.hiddenOld || 0, line.hiddenNew || 0);
-                    const direction =
-                      line.gapDirection === 'above'
-                        ? 'above'
-                        : line.gapDirection === 'below'
-                          ? 'below'
-                          : 'between hunks';
-                    return (
-                      <button
-                        key={key}
-                        data-diff-gap={key}
-                        class="diff-hunk-expand"
-                        type="button"
-                        disabled={file.loading}
-                        onClick={(event) => void expandGap(key, event.currentTarget)}
-                      >
-                        Show {hidden} hidden {hidden === 1 ? 'line' : 'lines'} {direction}
-                      </button>
-                    );
-                  }
-                  const number = line.kind === 'delete' ? line.oldLine : line.newLine;
-                  const side = line.kind === 'delete' ? 'old' : 'new';
-                  const matchesAnchor = (comment: DiffComment) =>
-                    (!comment.sessionId || comment.sessionId === store.diff.value.sessionId) &&
-                    comment.path === file.path &&
-                    comment.side === side &&
-                    comment.line === number &&
-                    (!comment.scope || comment.scope === store.diff.value.scope);
-                  const comments: Array<DiffComment & { queued?: boolean }> = [
-                    ...store.diff.value.historyComments.filter(matchesAnchor),
-                    ...store.diff.value.comments.filter(matchesAnchor).map((comment) => ({
-                      ...comment,
-                      queued: true,
-                    })),
-                  ].sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
-                  return (
-                    <Line
-                      key={key}
-                      line={line}
-                      emphasis={emphasis.get(index)}
-                      lang={lines.length <= 1500 ? file.lang || '' : ''}
-                      commentKey={key}
-                      commenting={commenting === key}
-                      comments={comments}
-                      body={drafts[key] || ''}
-                      commentable={!store.diff.value.readOnly}
-                      onComment={(next) => {
-                        setCommenting((current) => (current === next ? '' : next));
-                      }}
-                      onBody={(value) => {
-                        setDrafts((current) => ({ ...current, [key]: value }));
-                      }}
-                      onCancel={() => {
-                        clearDraft(key);
-                        setCommenting('');
-                      }}
-                      onSubmit={(mode) => submitComment(mode, line, key)}
-                      onEdit={(comment) => {
-                        const body = window.prompt('Edit queued comment', comment.body);
-                        if (body !== null && comment.id) store.editDiffComment(comment.id, body);
-                      }}
-                      onReanchor={(comment) => {
-                        if (!comment.id || !number) return;
-                        store.reanchorDiffComment(comment.id, {
-                          path: file.path,
-                          side,
-                          line: number,
-                          context: line.content,
-                          fileChangeSeq: file.snapshotSeq || file.sequence || 0,
-                          scope: store.diff.value.scope,
-                        });
-                      }}
-                      onRemove={(comment) => {
-                        if (comment.id) store.removeDiffComment(comment.id);
-                      }}
-                    />
-                  );
-                })}
-                {lines.length > limit && (
-                  <button
-                    class="diff-show-more"
-                    onClick={() => setLimit((value) => Math.min(lines.length, value + 500))}
-                  >
-                    Show {Math.min(500, lines.length - limit)} more lines
-                  </button>
-                )}
-              </div>
-              {canExpandFallback && (
-                <button
-                  class="diff-hunk-expand diff-hunk-expand-below"
-                  type="button"
-                  aria-label="Show more context below"
-                  disabled={file.loading}
-                  onClick={expandFallback}
-                >
-                  <span>Show more below</span>
-                  <Icon name="chevron-down" />
-                </button>
-              )}
-            </>
-          )}
+          <div id={previewPanelID}>
+            {selectedView === 'rendered' ? (
+              <LazyMarkdownFilePreview
+                file={file}
+                commenting={commenting}
+                setCommenting={setCommenting}
+                drafts={drafts}
+                setDrafts={setDrafts}
+                clearDraft={clearDraft}
+                draftTargets={draftTargets}
+                setDraftTargets={setDraftTargets}
+              />
+            ) : (
+              diffContent
+            )}
+          </div>
         </div>
       )}
     </section>

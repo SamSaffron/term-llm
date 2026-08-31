@@ -1,5 +1,9 @@
 import type { DiffFile, DiffLine } from './types';
 
+export function isMarkdownPath(path: string): boolean {
+  return /\.(?:md|markdown)$/i.test(String(path || ''));
+}
+
 export const DIFF_SCOPES = [
   'last_turn',
   'last_3_turns',

@@ -2,6 +2,63 @@ import { describe, expect, it, vi } from 'vitest';
 import type { APIClient } from './client';
 import { endpoints } from './endpoints';
 
+describe('file change endpoints', () => {
+  it('fetches encoded raw text with version pinning and cancellation', async () => {
+    const response = new Response('# Plan\n', {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    });
+    const request = vi.fn(async () => response);
+    const routes = endpoints({ request } as unknown as APIClient);
+    const controller = new AbortController();
+
+    await expect(
+      routes.fileText(
+        'session/one',
+        '/work/Plan File.md',
+        'last_3_turns',
+        'after',
+        42,
+        controller.signal,
+      ),
+    ).resolves.toBe('# Plan\n');
+    expect(request).toHaveBeenCalledWith(
+      '/v1/sessions/session%2Fone/file-changes/content?path=%2Fwork%2FPlan%20File.md&scope=last_3_turns&side=after&snapshot_seq=42',
+      { signal: controller.signal, headers: { Accept: 'text/plain' } },
+      { policy: 'safe-read', auth: 'session', versionCheck: false },
+    );
+  });
+
+  it('does not treat session review responses as shell asset updates', async () => {
+    const get = vi.fn(async () => ({}));
+    const routes = endpoints({ get } as unknown as APIClient);
+
+    await routes.fileChanges('session/one', 'uncommitted');
+    await routes.fileDiff('session/one', '/work/Plan File.md', 'uncommitted', 12, 42);
+    await routes.diffComments('session/one');
+
+    const controls = { auth: 'session', versionCheck: false };
+    expect(get).toHaveBeenNthCalledWith(
+      1,
+      '/v1/sessions/session%2Fone/file-changes?scope=uncommitted',
+      undefined,
+      controls,
+    );
+    expect(get).toHaveBeenNthCalledWith(
+      2,
+      '/v1/sessions/session%2Fone/file-changes/diff?path=%2Fwork%2FPlan%20File.md&scope=uncommitted&context=12&snapshot_seq=42',
+      undefined,
+      controls,
+    );
+    expect(get).toHaveBeenNthCalledWith(
+      3,
+      '/v1/sessions/session%2Fone/diff-comments',
+      undefined,
+      controls,
+    );
+  });
+});
+
 describe('worktree endpoints', () => {
   it('identifies the active session for cleanup-aware mutations', async () => {
     const post = vi.fn(async () => ({}));

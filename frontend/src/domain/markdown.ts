@@ -49,19 +49,23 @@ function protectMath(source: string): { source: string; values: string[] } {
   return { source: protectedSource, values };
 }
 
-export function renderMarkdown(source: string): string {
-  const math = protectMath(source || '');
-  let rendered = marked.parse(math.source, { async: false }) as string;
-  rendered = rendered.replace(/TERM_LLM_MATH_(\d+)_TOKEN/g, (_match, index: string) =>
-    escapeHTML(math.values[Number(index)] || ''),
-  );
-  return DOMPurify.sanitize(rendered, {
+export function sanitizeMarkdownHTML(source: string): string {
+  return DOMPurify.sanitize(source, {
     USE_PROFILES: { html: true },
     ADD_ATTR: ['target', 'rel', 'data-language'],
     FORBID_TAGS: ['style', 'script', 'iframe', 'object', 'embed', 'form', 'input', 'button'],
     FORBID_ATTR: ['style', 'srcdoc', 'onerror', 'onload'],
     ALLOW_UNKNOWN_PROTOCOLS: false,
   });
+}
+
+export function renderMarkdown(source: string): string {
+  const math = protectMath(source || '');
+  let rendered = marked.parse(math.source, { async: false }) as string;
+  rendered = rendered.replace(/TERM_LLM_MATH_(\d+)_TOKEN/g, (_match, index: string) =>
+    escapeHTML(math.values[Number(index)] || ''),
+  );
+  return sanitizeMarkdownHTML(rendered);
 }
 
 export function stableMarkdownBoundary(value: string): number {

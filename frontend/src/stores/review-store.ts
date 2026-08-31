@@ -122,6 +122,14 @@ export class ReviewStore {
     }
   }
 
+  private markdownContext() {
+    return {
+      services: this.services,
+      host: this.host,
+      diff: this.diff,
+    };
+  }
+
   async toggleDiff(): Promise<void> {
     const session = this.host.activeSession.value;
     if (!session) return;
@@ -208,6 +216,7 @@ export class ReviewStore {
       )
         return;
       const existing = new Map(state.files.map((file) => [file.path, file]));
+      const turnScope = scope === 'last_turn' || scope === 'last_3_turns';
       const refreshContexts = new Map<string, number>();
       const files = sortDiffFiles(
         listFrom(data, 'file_changes', 'files', 'changes')
@@ -217,16 +226,34 @@ export class ReviewStore {
             const sequence = Number(entry.seq ?? entry.sequence) || 0;
             const snapshotSeq = Number(entry.snapshot_seq) || 0;
             const sameContent = Boolean(
+              turnScope &&
               previous &&
               (previous.sequence || 0) === sequence &&
               (previous.snapshotSeq || 0) === snapshotSeq,
             );
             if (previous?.expanded && !sameContent)
               refreshContexts.set(path, previous.context || 0);
+            const status = String(entry.status || entry.kind || '');
+            const previewSide = status.toLowerCase() === 'delete' ? 'before' : 'after';
+            const preservePreview = Boolean(
+              turnScope && sameContent && previous?.markdownPreview?.scope === scope,
+            );
+            const markdownPreview = preservePreview
+              ? previous?.markdownPreview
+              : previous?.markdownPreview?.view === 'rendered'
+                ? {
+                    view: 'rendered' as const,
+                    side: previewSide as 'before' | 'after',
+                    sequence,
+                    snapshotSeq,
+                    scope,
+                    loading: true,
+                  }
+                : undefined;
             return {
               path,
               old_path: String(entry.old_path || ''),
-              status: String(entry.status || entry.kind || ''),
+              status,
               additions: Number(entry.adds ?? entry.additions) || 0,
               deletions: Number(entry.dels ?? entry.deletions) || 0,
               binary: Boolean(entry.binary || entry.is_binary),
@@ -256,6 +283,7 @@ export class ReviewStore {
               oldLineCount: sameContent ? previous?.oldLineCount : undefined,
               newLineCount: sameContent ? previous?.newLineCount : undefined,
               lang: sameContent ? previous?.lang : undefined,
+              markdownPreview,
             };
           })
           .filter((entry) => entry.path),
@@ -287,7 +315,7 @@ export class ReviewStore {
       let newlyStale = 0;
       const comments = state.comments.map((comment) => {
         if (comment.sessionId !== owner || comment.state === 'stale') return comment;
-        const turnScope = ['last_turn', 'last_3_turns'].includes(
+        const commentTurnScope = ['last_turn', 'last_3_turns'].includes(
           normalizeDiffScope(comment.scope || scope),
         );
         const file = files.find((entry) => entry.path === comment.path);
@@ -296,8 +324,9 @@ export class ReviewStore {
           const index = file.lines.findIndex((line) =>
             comment.side === 'old' ? line.oldLine === comment.line : line.newLine === comment.line,
           );
-          if (index < 0) anchorChanged = true;
-          else {
+          // A missing line in a partial hunk is unknown, not stale. Complete
+          // preview source or a later context expansion can validate it.
+          if (index >= 0) {
             const beforeCount = comment.contextBefore?.length || 0;
             const afterCount = comment.contextAfter?.length || 0;
             const currentAnchor: DiffComment = {
@@ -315,7 +344,7 @@ export class ReviewStore {
         }
         const stale =
           anchorChanged ||
-          (turnScope &&
+          (commentTurnScope &&
             Boolean(comment.fileChangeSeq && (file?.sequence || 0) > comment.fileChangeSeq));
         if (!stale) return comment;
         newlyStale += 1;
@@ -343,11 +372,18 @@ export class ReviewStore {
           `${newlyStale} queued comment${newlyStale === 1 ? '' : 's'} became stale after the source changed.`,
           'info',
         );
-      await Promise.all(
-        files
+      await Promise.all([
+        ...files
           .filter((file) => refreshContexts.has(file.path))
           .map((file) => this.expandDiff(file, refreshContexts.get(file.path) || 0)),
-      );
+        ...files
+          .filter(
+            (file) =>
+              file.markdownPreview?.view === 'rendered' &&
+              file.markdownPreview.source === undefined,
+          )
+          .map((file) => this.loadMarkdownPreview(file, true)),
+      ]);
     } catch (error) {
       if (
         epoch === this.loadEpoch &&
@@ -392,7 +428,7 @@ export class ReviewStore {
     this.diff.value = {
       ...this.diff.value,
       files: this.diff.value.files.map((entry) =>
-        isRequestedVersion(entry) ? { ...entry, loading: true, error: '' } : entry,
+        isRequestedVersion(entry) ? { ...entry, expanded: true, loading: true, error: '' } : entry,
       ),
     };
     try {
@@ -498,6 +534,34 @@ export class ReviewStore {
       if (this.expandEpoch.get(requestKey) === requestEpoch) this.expandEpoch.delete(requestKey);
     }
   }
+  async setMarkdownView(file: DiffFile, view: 'diff' | 'rendered'): Promise<void> {
+    const { setMarkdownView } = await import('./markdown-preview-store');
+    await setMarkdownView(this.markdownContext(), file, view);
+  }
+
+  async loadMarkdownPreview(file: DiffFile, force = false): Promise<void> {
+    const { loadMarkdownPreview } = await import('./markdown-preview-store');
+    await loadMarkdownPreview(this.markdownContext(), file, force);
+  }
+
+  async revealDiffLine(file: DiffFile, side: 'old' | 'new', line: number): Promise<void> {
+    await this.setMarkdownView(file, 'diff');
+    await this.expandDiff(file, 100_000);
+    requestAnimationFrame(() => {
+      const fileRoot = document.querySelector<HTMLElement>(
+        `[data-diff-file-path="${CSS.escape(file.path)}"]`,
+      );
+      const target = fileRoot?.querySelector<HTMLElement>(`[data-diff-anchor="${side}:${line}"]`);
+      target?.scrollIntoView({ block: 'center' });
+      target?.focus({ preventScroll: true });
+    });
+  }
+
+  private async revalidateGitMarkdownComments(comments: DiffComment[]): Promise<boolean> {
+    const { revalidateGitMarkdownComments } = await import('./markdown-preview-store');
+    return revalidateGitMarkdownComments(this.markdownContext(), comments);
+  }
+
   private prepareDiffComments(comments: DiffComment[]): {
     payloads: Array<Record<string, unknown>>;
     inputText: string;
@@ -541,6 +605,7 @@ export class ReviewStore {
   async sendDiffComment(comment: DiffComment): Promise<void> {
     const session = this.host.activeSession.value;
     if (!session || (comment.sessionId && comment.sessionId !== session.id)) return;
+    if (!(await this.revalidateGitMarkdownComments([comment]))) return;
     const value: DiffComment = {
       ...comment,
       id: comment.id || uuid(),
@@ -712,10 +777,14 @@ export class ReviewStore {
   }
   async sendDiffComments(): Promise<void> {
     const session = this.host.activeSession.value;
-    const comments = this.diff.value.comments.filter(
+    let comments = this.diff.value.comments.filter(
       (comment) => !comment.sessionId || comment.sessionId === session?.id,
     );
     if (!session || !comments.length) return;
+    if (!(await this.revalidateGitMarkdownComments(comments))) return;
+    comments = this.diff.value.comments.filter(
+      (comment) => !comment.sessionId || comment.sessionId === session.id,
+    );
     const staleCount = comments.filter((comment) => comment.state === 'stale').length;
     if (
       staleCount &&

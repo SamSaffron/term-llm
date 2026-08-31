@@ -32,6 +32,10 @@ const (
 	maxUntrackedListBytes = 32 << 20
 )
 
+// ErrPathOutsideRepository means a requested file is not contained by the
+// repository and must never be read as diff content.
+var ErrPathOutsideRepository = errors.New("file path is outside repository")
+
 // Repo is a Git checkout used for scoped diff queries.
 type Repo struct {
 	root string
@@ -292,11 +296,12 @@ func (r *Repo) file(ctx context.Context, scope Scope, rel string) (*filetrack.Fi
 		before, after = nil, nil
 	}
 	return &filetrack.FileDiffContent{
-		Path:      filepath.Join(r.root, filepath.FromSlash(rel)),
-		Kind:      kind,
-		Before:    before,
-		After:     after,
-		Truncated: truncated,
+		Path:             filepath.Join(r.root, filepath.FromSlash(rel)),
+		Kind:             kind,
+		Before:           before,
+		After:            after,
+		Truncated:        truncated,
+		ContentAvailable: !truncated,
 	}, nil
 }
 
@@ -377,7 +382,7 @@ func (r *Repo) relativePath(path string) (string, error) {
 	}
 	rel, err := filepath.Rel(r.root, path)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", errors.New("file path is outside repository")
+		return "", ErrPathOutsideRepository
 	}
 	return filepath.ToSlash(rel), nil
 }

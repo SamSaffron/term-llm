@@ -65,8 +65,8 @@ func TestRepoScopes(t *testing.T) {
 				if !ok {
 					t.Fatalf("unexpected path %q", rel)
 				}
-				if change.Kind != want[0] || change.Adds != want[1] || change.Dels != want[2] {
-					t.Fatalf("%s = kind %s +%d -%d, want %#v", rel, change.Kind, change.Adds, change.Dels, want)
+				if change.Kind != want[0] || change.Adds != want[1] || change.Dels != want[2] || !change.ContentAvailable {
+					t.Fatalf("%s = kind %s +%d -%d available=%t, want %#v and available", rel, change.Kind, change.Adds, change.Dels, change.ContentAvailable, want)
 				}
 			}
 		})
@@ -76,14 +76,14 @@ func TestRepoScopes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if content == nil || string(content.Before) != "base\n" || string(content.After) != "staged\n" {
+	if content == nil || !content.ContentAvailable || string(content.Before) != "base\n" || string(content.After) != "staged\n" {
 		t.Fatalf("staged content = %#v", content)
 	}
 	if content, err := repo.File(context.Background(), ScopeStaged, filepath.Join(root, "new.txt")); err != nil || content != nil {
 		t.Fatalf("unstaged path in staged scope = %#v, %v", content, err)
 	}
 	untracked, err := repo.File(context.Background(), ScopeUnstaged, filepath.Join(root, "new.txt"))
-	if err != nil || untracked == nil || untracked.Kind != "create" || string(untracked.After) != "new\n" {
+	if err != nil || untracked == nil || !untracked.ContentAvailable || untracked.Kind != "create" || string(untracked.After) != "new\n" {
 		t.Fatalf("untracked content = %#v, %v", untracked, err)
 	}
 }

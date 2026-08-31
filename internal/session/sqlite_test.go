@@ -2435,6 +2435,46 @@ func TestSQLiteStoreUpdateMetricsIncludesCachedTokens(t *testing.T) {
 	}
 }
 
+func TestUpdateDoesNotClearNamedAgentFromStaleSnapshot(t *testing.T) {
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Agent = "developer"
+	if err := store.Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+
+	stale.Summary = "unrelated stale metadata update"
+	if err := store.Update(ctx, stale); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Agent != "developer" {
+		t.Fatalf("agent = %q, want developer", got.Agent)
+	}
+	if got.Summary != stale.Summary {
+		t.Fatalf("summary = %q, want %q", got.Summary, stale.Summary)
+	}
+}
+
 func TestUpdateDoesNotClobberTokenMetrics(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 

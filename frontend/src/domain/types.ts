@@ -206,6 +206,27 @@ export interface DiffLine {
   gapDirection?: 'above' | 'between' | 'below';
 }
 
+export interface MarkdownSourceBlock {
+  id: string;
+  type: string;
+  startLine: number;
+  endLine: number;
+  anchorLine: number;
+  commentable: boolean;
+}
+
+export interface MarkdownPreviewState {
+  view: 'diff' | 'rendered';
+  side: 'before' | 'after';
+  source?: string;
+  blocks?: MarkdownSourceBlock[];
+  loading?: boolean;
+  error?: string;
+  sequence: number;
+  snapshotSeq: number;
+  scope: string;
+}
+
 export interface DiffFile {
   path: string;
   old_path?: string;
@@ -235,6 +256,7 @@ export interface DiffFile {
   loading?: boolean;
   error?: string;
   lines?: DiffLine[];
+  markdownPreview?: MarkdownPreviewState;
 }
 
 export interface FilesystemObservation {

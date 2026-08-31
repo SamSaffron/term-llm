@@ -46,6 +46,7 @@ interface WebRTCFrame {
 }
 interface WebRTCRequestInit extends RequestInit {
   __termLLMRetrySafe?: boolean;
+  __termLLMSkipVersionCheck?: boolean;
 }
 interface PendingRequest {
   onHeaders(headers: HeadersInit, status: number): void;
@@ -898,7 +899,7 @@ export function installWebRTC(): () => void {
             status,
             headers: new Headers(headers),
           });
-          maybeReloadForUIVersion(response);
+          if (!options.__termLLMSkipVersionCheck) maybeReloadForUIVersion(response);
           resolveOnce(response);
         },
         onChunk(fragment) {

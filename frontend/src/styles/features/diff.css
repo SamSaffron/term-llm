@@ -268,7 +268,6 @@
   width: 0.9em;
   color: var(--text-muted);
   transition: transform 0.15s ease;
-  user-select: none;
 }
 
 .diff-file-row.expanded .diff-chevron {
@@ -1287,26 +1286,32 @@
   gap: 0.2rem;
 }
 
-/* Actions swap in for the counts on hover/focus so the header row keeps
-       a stable width. focus-within keeps them reachable by keyboard/tap. */
-.diff-file-row:hover .diff-file-actions,
-.diff-file-row:focus-within .diff-file-actions {
-  display: inline-flex;
-}
+/* Precise pointers swap actions in for counts only while the row is hovered.
+   Touch layouts below keep the actions visible without relying on sticky hover
+   or focus state. */
+@media (hover: hover) and (pointer: fine) {
+  .diff-file-row:hover .diff-file-actions {
+    display: inline-flex;
+  }
 
-.diff-file-row:hover .diff-file-counts,
-.diff-file-row:focus-within .diff-file-counts {
-  display: none;
+  .diff-file-row:hover .diff-file-counts {
+    display: none;
+  }
 }
 
 .diff-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0.3rem;
   border: 0;
+  border-radius: 6px;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  padding: 0.1rem 0.3rem;
-  border-radius: 4px;
-  font-size: 0.8rem;
+  font-size: 0.95rem;
   line-height: 1;
 }
 
@@ -1317,6 +1322,62 @@
 
 .diff-action-btn.copied {
   color: var(--accent-green);
+}
+
+.diff-markdown-toggle {
+  flex: none;
+  border: 1px solid transparent;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.diff-action-btn svg {
+  width: 19px;
+  height: 19px;
+}
+
+.diff-markdown-toggle .icon-state-fill {
+  fill: currentcolor;
+  fill-opacity: 0;
+  transition: fill-opacity 0.15s ease;
+}
+
+.diff-markdown-toggle.active {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+.diff-markdown-toggle.active .icon-state-fill {
+  fill-opacity: 0.3;
+}
+
+.diff-markdown-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .diff-file-actions {
+    display: inline-flex;
+  }
+
+  .diff-file-counts {
+    display: none;
+  }
+
+  .diff-file-actions .diff-action-btn {
+    min-width: 36px;
+    min-height: 36px;
+    padding: 0.25rem;
+  }
+
+  .diff-file-actions .diff-action-btn svg {
+    width: 17px;
+    height: 17px;
+  }
 }
 
 .diff-row.add .diff-word {

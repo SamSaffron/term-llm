@@ -1166,6 +1166,15 @@ export class AppStore {
   async expandDiff(file: DiffFile, context = 0): Promise<void> {
     await this.reviewStore.expandDiff(file, context);
   }
+  async setMarkdownView(file: DiffFile, view: 'diff' | 'rendered'): Promise<void> {
+    await this.reviewStore.setMarkdownView(file, view);
+  }
+  async loadMarkdownPreview(file: DiffFile, force = false): Promise<void> {
+    await this.reviewStore.loadMarkdownPreview(file, force);
+  }
+  async revealDiffLine(file: DiffFile, side: 'old' | 'new', line: number): Promise<void> {
+    await this.reviewStore.revealDiffLine(file, side, line);
+  }
   async sendDiffComment(comment: DiffComment): Promise<void> {
     await this.reviewStore.sendDiffComment(comment);
   }

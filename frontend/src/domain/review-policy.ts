@@ -32,6 +32,8 @@ const violation = (
 });
 
 export function reviewCommentPayload(comment: DiffComment): Record<string, unknown> {
+  const contextBefore = comment.contextBefore || [];
+  const contextAfter = comment.contextAfter || [];
   return {
     id: comment.id || '',
     path: comment.path,
@@ -42,8 +44,16 @@ export function reviewCommentPayload(comment: DiffComment): Record<string, unkno
       ? Number(comment.fileChangeSeq) || 0
       : 0,
     line_text: comment.context || '',
-    context_before: comment.contextBefore || [],
-    context_after: comment.contextAfter || [],
+    context_before: contextBefore.map((text, index) => ({
+      side: comment.side,
+      line: comment.line - contextBefore.length + index,
+      text,
+    })),
+    context_after: contextAfter.map((text, index) => ({
+      side: comment.side,
+      line: comment.line + index + 1,
+      text,
+    })),
     instruction: comment.body,
   };
 }

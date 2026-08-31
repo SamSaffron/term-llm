@@ -41,6 +41,17 @@ func getSessionPath(t *testing.T, srv *serveServer, path string) (int, map[strin
 	return rr.Code, body
 }
 
+func TestIsMarkdownPath(t *testing.T) {
+	for path, want := range map[string]bool{
+		"README.md": true, "notes.MARKDOWN": true, "notes.mdx": false,
+		"notes.md.bak": false, "markdown": false,
+	} {
+		if got := isMarkdownPath(path); got != want {
+			t.Errorf("isMarkdownPath(%q) = %v, want %v", path, got, want)
+		}
+	}
+}
+
 func TestFileChangeLanguage(t *testing.T) {
 	tests := map[string]string{
 		"src/main.tsx":      "typescript",
@@ -245,14 +256,34 @@ func TestSessionFileChangesEndpoints(t *testing.T) {
 		SessionID: "sess-image", Path: "/work/deleted.gif",
 		Before: []byte("GIF89adeleted"), AfterMissing: true,
 	})
+	mustStoreRecord(filetrack.ChangeRecord{
+		SessionID: "sess-markdown", Path: "/work/README.MD",
+		Before: []byte("# Before\n\nOld paragraph.\n"), After: []byte("# After\n\nNew paragraph.\n"),
+	})
+	mustStoreRecord(filetrack.ChangeRecord{
+		SessionID: "sess-markdown", Path: "/work/created.markdown",
+		BeforeMissing: true, After: []byte("# Created\n"),
+	})
+	mustStoreRecord(filetrack.ChangeRecord{
+		SessionID: "sess-markdown", Path: "/work/deleted.md",
+		Before: []byte("# Deleted\n"), AfterMissing: true,
+	})
+	mustStoreRecord(filetrack.ChangeRecord{
+		SessionID: "sess-markdown", Path: "/work/invalid.md",
+		BeforeMissing: true, After: []byte{0xff, 0xfe},
+	})
+	mustStoreRecord(filetrack.ChangeRecord{
+		SessionID: "sess-markdown", Path: "/work/not-markdown.mdx",
+		BeforeMissing: true, After: []byte("# MDX\n"),
+	})
 	windowPNG1 := []byte("\x89PNG\r\n\x1a\nwindow-one")
 	windowPNG2 := []byte("\x89PNG\r\n\x1a\nwindow-two")
 	windowPNG3 := []byte("\x89PNG\r\n\x1a\nwindow-three")
 	for _, rec := range []filetrack.ChangeRecord{
 		{SessionID: "sess-window", RunID: "run-1", Path: "/work/old.txt", Before: []byte("old\n"), After: []byte("older\n")},
-		{SessionID: "sess-window", RunID: "run-2", Path: "/work/shared.txt", Before: []byte("base\n"), After: []byte("two\n")},
+		{SessionID: "sess-window", RunID: "run-2", Path: "/work/shared.md", Before: []byte("base\n"), After: []byte("two\n")},
 		{SessionID: "sess-window", RunID: "run-3", Path: "/work/window.png", Before: windowPNG1, After: windowPNG2},
-		{SessionID: "sess-window", RunID: "run-4", Path: "/work/shared.txt", Before: []byte("two\n"), After: []byte("four\n")},
+		{SessionID: "sess-window", RunID: "run-4", Path: "/work/shared.md", Before: []byte("two\n"), After: []byte("four\n")},
 		{SessionID: "sess-window", RunID: "run-4", Path: "/work/window.png", Before: windowPNG2, After: windowPNG3},
 	} {
 		mustStoreRecord(rec)
@@ -295,17 +326,23 @@ func TestSessionFileChangesEndpoints(t *testing.T) {
 			}
 		}
 		mustStoreRecord(filetrack.ChangeRecord{
-			SessionID: "sess-window", RunID: "run-5", Path: "/work/shared.txt",
+			SessionID: "sess-window", RunID: "run-5", Path: "/work/shared.md",
 			Before: []byte("four\n"), After: []byte("five\n"),
 		})
 
-		code, body = getSessionPath(t, srv, "/v1/sessions/sess-window/file-changes/diff?path=/work/shared.txt&scope=last_3_turns&snapshot_seq=5")
+		code, body = getSessionPath(t, srv, "/v1/sessions/sess-window/file-changes/diff?path=/work/shared.md&scope=last_3_turns&snapshot_seq=5")
 		if code != http.StatusOK || body["kind"] != filetrack.KindModify {
 			t.Fatalf("diff status=%d body=%#v", code, body)
 		}
 		hunks := body["hunks"].([]any)
 		if len(hunks) == 0 || !strings.Contains(fmt.Sprint(hunks), "base") || !strings.Contains(fmt.Sprint(hunks), "four") {
 			t.Fatalf("window hunks = %#v", hunks)
+		}
+		req := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess-window/file-changes/content?path=/work/shared.md&side=after&scope=last_3_turns&snapshot_seq=5", nil)
+		rr := httptest.NewRecorder()
+		srv.handleSessionByID(rr, req)
+		if rr.Code != http.StatusOK || rr.Body.String() != "four\n" {
+			t.Fatalf("pinned Markdown status=%d body=%q", rr.Code, rr.Body.String())
 		}
 
 		for _, tc := range []struct {
@@ -337,6 +374,53 @@ func TestSessionFileChangesEndpoints(t *testing.T) {
 		lines := hunks[0].(map[string]any)["lines"].([]any)
 		if len(lines) != 3 {
 			t.Fatalf("lines = %#v, want 3 added lines", lines)
+		}
+	})
+
+	t.Run("Markdown source content", func(t *testing.T) {
+		for _, tc := range []struct {
+			path string
+			side string
+			want string
+		}{
+			{path: "/work/README.MD", side: "before", want: "# Before\n\nOld paragraph.\n"},
+			{path: "/work/README.MD", side: "after", want: "# After\n\nNew paragraph.\n"},
+			{path: "/work/created.markdown", side: "after", want: "# Created\n"},
+			{path: "/work/deleted.md", side: "before", want: "# Deleted\n"},
+		} {
+			req := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess-markdown/file-changes/content?path="+tc.path+"&side="+tc.side, nil)
+			req.Header.Set("Authorization", "Bearer test")
+			rr := httptest.NewRecorder()
+			srv.handleSessionByID(rr, req)
+			if rr.Code != http.StatusOK || rr.Body.String() != tc.want {
+				t.Fatalf("%s %s: status=%d body=%q", tc.path, tc.side, rr.Code, rr.Body.String())
+			}
+			if rr.Header().Get("Content-Type") != "text/plain; charset=utf-8" ||
+				rr.Header().Get("Cache-Control") != "private, no-store" ||
+				rr.Header().Get("X-Content-Type-Options") != "nosniff" ||
+				rr.Header().Get("Content-Length") != strconv.Itoa(len(tc.want)) ||
+				!strings.Contains(rr.Header().Get("Vary"), "Authorization") ||
+				!strings.Contains(rr.Header().Get("Vary"), "Cookie") {
+				t.Fatalf("Markdown headers = %#v", rr.Header())
+			}
+		}
+	})
+
+	t.Run("Markdown source rejects invalid side and unsupported content", func(t *testing.T) {
+		for _, tc := range []struct {
+			path string
+			want int
+		}{
+			{path: "/v1/sessions/sess-markdown/file-changes/content?path=/work/created.markdown&side=before", want: http.StatusBadRequest},
+			{path: "/v1/sessions/sess-markdown/file-changes/content?path=/work/deleted.md&side=after", want: http.StatusBadRequest},
+			{path: "/v1/sessions/sess-markdown/file-changes/content?path=/work/invalid.md&side=after", want: http.StatusNotFound},
+			{path: "/v1/sessions/sess-markdown/file-changes/content?path=/work/not-markdown.mdx&side=after", want: http.StatusNotFound},
+			{path: "/v1/sessions/sess-1/file-changes/content?path=/work/a.go&side=after", want: http.StatusNotFound},
+		} {
+			code, _ := getSessionPath(t, srv, tc.path)
+			if code != tc.want {
+				t.Fatalf("%s status = %d, want %d", tc.path, code, tc.want)
+			}
 		}
 	})
 

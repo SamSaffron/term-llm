@@ -3276,17 +3276,48 @@ func (s *serveServer) requestedRuntimeAgent(ctx context.Context, sessionID, requ
 	return ""
 }
 
+func normalizeRuntimeAgent(name string) string {
+	return strings.TrimSpace(name)
+}
+
+func runtimeAgentName(rt *serveRuntime) string {
+	if rt == nil {
+		return ""
+	}
+	return normalizeRuntimeAgent(rt.agentName)
+}
+
+func runtimeHasAgent(rt *serveRuntime, agentName string) bool {
+	return rt != nil && runtimeAgentName(rt) == normalizeRuntimeAgent(agentName)
+}
+
 func (s *serveServer) createRequestRuntime(ctx context.Context, providerName, modelName, agentName string) (*serveRuntime, error) {
+	var (
+		rt  *serveRuntime
+		err error
+	)
 	if s.agentRuntimeFactory != nil {
-		return s.agentRuntimeFactory(ctx, providerName, modelName, agentName)
+		rt, err = s.agentRuntimeFactory(ctx, providerName, modelName, agentName)
+	} else {
+		if strings.TrimSpace(agentName) != "" {
+			return nil, fmt.Errorf("per-conversation agents are unavailable")
+		}
+		if s.runtimeFactory != nil {
+			rt, err = s.runtimeFactory(ctx, providerName, modelName)
+		} else {
+			rt, err = s.sessionMgr.factory(ctx)
+		}
 	}
-	if strings.TrimSpace(agentName) != "" {
-		return nil, fmt.Errorf("per-conversation agents are unavailable")
+	if err != nil {
+		return nil, err
 	}
-	if s.runtimeFactory != nil {
-		return s.runtimeFactory(ctx, providerName, modelName)
+	if !runtimeHasAgent(rt, agentName) {
+		if rt != nil {
+			rt.Close()
+		}
+		return nil, fmt.Errorf("created runtime agent %q does not match requested agent %q", runtimeAgentName(rt), normalizeRuntimeAgent(agentName))
 	}
-	return s.sessionMgr.factory(ctx)
+	return rt, nil
 }
 
 func (s *serveServer) runtimeForRequest(ctx context.Context, sessionID string) (*serveRuntime, bool, error) {
@@ -3303,8 +3334,13 @@ func (s *serveServer) runtimeForRequest(ctx context.Context, sessionID string) (
 		return rt, false, nil
 	}
 	// Stateful sessions should persist beyond a single HTTP request, but
-	// creation must still respect request cancellation/timeouts.
-	rt, err := s.sessionMgr.GetOrCreateWith(ctx, sessionID, create)
+	// creation must still respect request cancellation/timeouts. A session's
+	// durable agent is authoritative across daemon restarts and metadata races:
+	// never reuse an idle runtime created for a different agent identity.
+	rt, err := s.sessionMgr.ReplaceIdleWith(ctx, sessionID,
+		func(existing *serveRuntime) bool { return !runtimeHasAgent(existing, agentName) },
+		create,
+	)
 	if err != nil {
 		return nil, false, err
 	}
@@ -3434,10 +3470,15 @@ func (s *serveServer) runtimeForProviderModelRequest(ctx context.Context, sessio
 			}
 		}
 	}
-	// Use GetOrCreateWith to get proper in-flight deduplication.
-	rt, err := s.sessionMgr.GetOrCreateWith(ctx, sessionID, func(ctx context.Context) (*serveRuntime, error) {
-		return s.createRequestRuntime(ctx, providerName, modelName, agentName)
-	})
+	// Atomically replace an idle cached runtime whose agent identity no longer
+	// matches the durable session. This is the continuation path used after a
+	// daemon restart as well as for an already-warm web session.
+	rt, err := s.sessionMgr.ReplaceIdleWith(ctx, sessionID,
+		func(existing *serveRuntime) bool { return !runtimeHasAgent(existing, agentName) },
+		func(ctx context.Context) (*serveRuntime, error) {
+			return s.createRequestRuntime(ctx, providerName, modelName, agentName)
+		},
+	)
 	if err != nil {
 		return nil, false, err
 	}
@@ -3661,9 +3702,18 @@ func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID
 	}
 
 	changed := false
-	if strings.TrimSpace(sess.Agent) != strings.TrimSpace(rt.agentName) {
-		sess.Agent = strings.TrimSpace(rt.agentName)
-		changed = true
+	persistedAgent := normalizeRuntimeAgent(sess.Agent)
+	runtimeAgent := runtimeAgentName(rt)
+	if persistedAgent != runtimeAgent {
+		if persistedAgent != "" && runtimeAgent == "" {
+			// Omission is not an explicit request to clear a named conversation.
+			// Preserve the durable identity so a later daemon restart cannot
+			// silently recreate this session with generic ask defaults.
+			log.Printf("[serve] refusing implicit agent downgrade for %s: persisted=%q runtime=%q", sessionID, persistedAgent, runtimeAgent)
+		} else {
+			sess.Agent = runtimeAgent
+			changed = true
+		}
 	}
 	if strings.TrimSpace(sess.Provider) != providerName {
 		sess.Provider = providerName

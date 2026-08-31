@@ -432,6 +432,12 @@ func (m *serveSessionManager) ReplaceIdleWith(ctx context.Context, id string, sh
 		if inflight.rt == nil {
 			return nil, fmt.Errorf("failed to initialize session runtime")
 		}
+		if shouldReplace(inflight.rt) {
+			// The in-flight creator may have resolved an older durable identity.
+			// Re-enter after publication so the mismatched runtime is replaced
+			// atomically rather than being handed to this caller.
+			return m.ReplaceIdleWith(ctx, id, shouldReplace, create)
+		}
 		inflight.rt.Touch()
 		return inflight.rt, nil
 	}

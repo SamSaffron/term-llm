@@ -3615,6 +3615,196 @@ describe('AppStore compatibility behavior', () => {
     });
   });
 
+  it('exposes an uncommitted Markdown file as expanded while its diff is loading', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.diff.value = {
+      ...store.diff.value,
+      open: true,
+      sessionId: 's1',
+      scope: 'uncommitted',
+      git: true,
+      files: [
+        {
+          path: '/work/plan.md',
+          status: 'modify',
+          contentAvailable: true,
+        },
+      ],
+    };
+    const response = deferred<Record<string, unknown>>();
+    store.endpoints.fileDiff = vi.fn(() => response.promise);
+
+    const expansion = store.expandDiff(store.diff.value.files[0]);
+    expect(store.diff.value.files[0]).toMatchObject({ expanded: true, loading: true });
+
+    response.resolve({
+      kind: 'modify',
+      content_available: true,
+      hunks: [{ old_start: 1, new_start: 1, lines: [{ t: 'add', s: '# Plan' }] }],
+    });
+    await expansion;
+    expect(store.diff.value.files[0]).toMatchObject({ expanded: true, loading: false });
+  });
+
+  it('loads Markdown source only on Rendered activation and caches the pinned turn version', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.endpoints.diffComments = vi.fn(async () => ({ comments: [] }));
+    let sequence = 7;
+    store.endpoints.fileChanges = vi.fn(async () => ({
+      scope: 'last_turn',
+      file_changes: [
+        {
+          path: '/work/plan.md',
+          kind: 'modify',
+          seq: sequence,
+          snapshot_seq: sequence,
+          content_available: true,
+        },
+      ],
+    }));
+    store.endpoints.fileDiff = vi.fn(async () => ({
+      kind: 'modify',
+      hunks: [{ old_start: 1, new_start: 1, lines: [{ t: 'add', s: '# Plan' }] }],
+    }));
+    store.endpoints.fileText = vi
+      .fn()
+      .mockResolvedValueOnce('# Plan\n\nFirst version.\n')
+      .mockResolvedValueOnce('# Plan\n\nSecond version.\n');
+
+    await store.loadDiff();
+    const file = store.diff.value.files[0];
+    await store.expandDiff(file);
+    expect(store.endpoints.fileText).not.toHaveBeenCalled();
+
+    await store.setMarkdownView(store.diff.value.files[0], 'rendered');
+    await vi.waitFor(() =>
+      expect(store.diff.value.files[0].markdownPreview?.source).toContain('First version.'),
+    );
+    expect(store.endpoints.fileText).toHaveBeenCalledWith(
+      's1',
+      '/work/plan.md',
+      'last_turn',
+      'after',
+      7,
+      expect.any(AbortSignal),
+    );
+    expect(store.diff.value.files[0].markdownPreview?.blocks?.[0]).toMatchObject({
+      type: 'heading',
+      startLine: 1,
+      anchorLine: 1,
+    });
+
+    await store.setMarkdownView(store.diff.value.files[0], 'diff');
+    await store.setMarkdownView(store.diff.value.files[0], 'rendered');
+    await store.loadDiff();
+    expect(store.endpoints.fileText).toHaveBeenCalledTimes(1);
+    expect(store.diff.value.files[0].markdownPreview?.source).toContain('First version.');
+
+    sequence = 8;
+    await store.loadDiff();
+    expect(store.endpoints.fileText).toHaveBeenCalledTimes(2);
+    expect(store.diff.value.files[0].markdownPreview?.source).toContain('Second version.');
+    expect(store.diff.value.files[0].markdownPreview).toMatchObject({
+      view: 'rendered',
+      sequence: 8,
+      snapshotSeq: 8,
+    });
+  });
+
+  it('refreshes Git diff lines before switching back from a rendered Markdown preview', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.diff.value = { ...store.diff.value, scope: 'uncommitted' };
+    store.endpoints.diffComments = vi.fn(async () => ({ comments: [] }));
+    let version = 'Old version.';
+    store.endpoints.fileChanges = vi.fn(async () => ({
+      scope: 'uncommitted',
+      git: true,
+      file_changes: [
+        {
+          path: '/work/plan.md',
+          kind: 'create',
+          adds: 1,
+          dels: 0,
+          content_available: true,
+        },
+      ],
+    }));
+    store.endpoints.fileDiff = vi.fn(async () => ({
+      kind: 'create',
+      content_available: true,
+      hunks: [{ old_start: 0, new_start: 1, lines: [{ t: 'add', s: version }] }],
+    }));
+    store.endpoints.fileText = vi.fn(async () => `${version}\n`);
+
+    await store.loadDiff();
+    await store.expandDiff(store.diff.value.files[0]);
+    await store.setMarkdownView(store.diff.value.files[0], 'rendered');
+    expect(store.diff.value.files[0].markdownPreview?.source).toContain('Old version.');
+
+    version = 'Current version.';
+    await store.loadDiff();
+    expect(store.diff.value.files[0].markdownPreview?.source).toContain('Current version.');
+    expect(store.diff.value.files[0].lines).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'add', content: 'Current version.' }),
+      ]),
+    );
+
+    await store.setMarkdownView(store.diff.value.files[0], 'diff');
+    expect(store.diff.value.files[0].markdownPreview?.view).toBe('diff');
+    expect(store.diff.value.files[0].lines).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'add', content: 'Current version.' }),
+      ]),
+    );
+    expect(store.endpoints.fileDiff).toHaveBeenCalledTimes(2);
+    expect(store.endpoints.fileText).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores a superseded Markdown source response', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    const older = deferred<string>();
+    const newer = deferred<string>();
+    store.endpoints.fileText = vi
+      .fn()
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newer.promise);
+    store.diff.value = {
+      ...store.diff.value,
+      sessionId: 's1',
+      files: [
+        {
+          path: '/work/plan.md',
+          status: 'modify',
+          sequence: 4,
+          snapshotSeq: 3,
+          contentAvailable: true,
+          expanded: true,
+        },
+      ],
+    };
+    const file = store.diff.value.files[0];
+    const first = store.loadMarkdownPreview(file, true);
+    const second = store.loadMarkdownPreview(file, true);
+    newer.resolve('# Newest\n');
+    await second;
+    older.resolve('# Stale\n');
+    await first;
+    expect(store.diff.value.files[0].markdownPreview?.source).toBe('# Newest\n');
+  });
+
   it('refreshes an expanded last-turn diff when an in-progress file change arrives', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];
@@ -3744,6 +3934,45 @@ describe('AppStore compatibility behavior', () => {
     });
   });
 
+  it('revalidates queued rendered comments against live Git Markdown before sending', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.diff.value = {
+      ...store.diff.value,
+      sessionId: 's1',
+      scope: 'unstaged',
+      files: [
+        {
+          path: '/work/plan.md',
+          status: 'modify',
+          contentAvailable: true,
+        },
+      ],
+    };
+    store.queueDiffComment({
+      path: '/work/plan.md',
+      side: 'new',
+      line: 3,
+      body: 'Keep this paragraph.',
+      scope: 'unstaged',
+      context: 'Original paragraph.',
+      contextBefore: ['# Plan', ''],
+      contextAfter: [''],
+      fileChangeSeq: 0,
+    });
+    store.endpoints.fileText = vi.fn(async () => '# Plan\n\nChanged paragraph.\n');
+    store.send = vi.fn(async () => undefined);
+
+    await store.sendDiffComments();
+
+    expect(store.endpoints.fileText).toHaveBeenCalledTimes(1);
+    expect(store.send).not.toHaveBeenCalled();
+    expect(store.diff.value.comments[0]).toMatchObject({ state: 'stale' });
+    expect(store.diff.value.files[0].markdownPreview?.view).toBe('diff');
+  });
+
   it('sends queued diff comments as response input parts, not the read-only history endpoint', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];
@@ -3756,6 +3985,8 @@ describe('AppStore compatibility behavior', () => {
       body: 'Keep this guard.',
       scope: 'last_turn',
       context: 'if ready {',
+      contextBefore: ['prepare()'],
+      contextAfter: ['run()', '}'],
       fileChangeSeq: 9,
     });
     let options: Record<string, unknown> | undefined;
@@ -3777,6 +4008,11 @@ describe('AppStore compatibility behavior', () => {
           line: 12,
           file_change_seq: 9,
           line_text: 'if ready {',
+          context_before: [{ side: 'new', line: 11, text: 'prepare()' }],
+          context_after: [
+            { side: 'new', line: 13, text: 'run()' },
+            { side: 'new', line: 14, text: '}' },
+          ],
           instruction: 'Keep this guard.',
         }),
       }),

@@ -28,6 +28,31 @@ describe('API transport', () => {
     expect((init as RequestInit & { __termLLMRetrySafe?: boolean }).__termLLMRetrySafe).toBe(true);
   });
 
+  it('can suppress shell-version refreshes for raw node-owned resources', async () => {
+    const request = vi.fn(
+      async () =>
+        new Response('source', {
+          status: 200,
+          headers: { 'X-Term-LLM-UI-Version': 'node-version' },
+        }),
+    );
+    vi.stubGlobal('fetch', request);
+    const mismatch = vi.fn();
+    const api = new APIClient(config, {
+      getToken: () => 'secret',
+      onAuthRequired: vi.fn(),
+      onVersionMismatch: mismatch,
+    });
+
+    await api.request('/v1/source', {}, { policy: 'safe-read', versionCheck: false });
+
+    expect(mismatch).not.toHaveBeenCalled();
+    const [, init] = request.mock.calls[0] as unknown as [string, RequestInit];
+    expect(
+      (init as RequestInit & { __termLLMSkipVersionCheck?: boolean }).__termLLMSkipVersionCheck,
+    ).toBe(true);
+  });
+
   it('never forwards the stored bearer token to a foreign origin', async () => {
     const request = vi.fn(
       async () =>

@@ -3,8 +3,10 @@ package cmd
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,11 +19,11 @@ import (
 func TestSessionFileChangesGitScopes(t *testing.T) {
 	ctx := context.Background()
 	repo := newGitRepoForBindingTest(t)
-	path := filepath.Join(repo, "scope-test.txt")
+	path := filepath.Join(repo, "scope-test.md")
 	if err := os.WriteFile(path, []byte("staged\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runGitForBindingTest(t, repo, "add", "scope-test.txt")
+	runGitForBindingTest(t, repo, "add", "scope-test.md")
 	if err := os.WriteFile(path, []byte("working\nextra\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -60,15 +62,40 @@ func TestSessionFileChangesGitScopes(t *testing.T) {
 				t.Fatalf("changes = %#v", changes)
 			}
 			change := changes[0].(map[string]any)
-			if change["path"] != path || change["adds"] != tc.adds || change["dels"] != tc.dels {
-				t.Fatalf("change = %#v, want path %q +%v -%v", change, path, tc.adds, tc.dels)
+			if change["path"] != path || change["adds"] != tc.adds || change["dels"] != tc.dels || change["content_available"] != true {
+				t.Fatalf("change = %#v, want path %q +%v -%v with content", change, path, tc.adds, tc.dels)
 			}
 
 			code, diff := getSessionPath(t, srv, "/v1/sessions/git-session/file-changes/diff?scope="+tc.scope+"&path="+path)
-			if code != http.StatusOK || diff["kind"] == nil {
+			if code != http.StatusOK || diff["kind"] == nil || diff["content_available"] != true {
 				t.Fatalf("diff status=%d body=%#v", code, diff)
 			}
+
+			req := httptest.NewRequest(http.MethodGet, "/v1/sessions/git-session/file-changes/content?scope="+tc.scope+"&path="+path+"&side=after", nil)
+			rr := httptest.NewRecorder()
+			srv.handleSessionByID(rr, req)
+			want := "working\nextra\n"
+			if tc.scope == fileChangeScopeStaged {
+				want = "staged\n"
+			}
+			if rr.Code != http.StatusOK || rr.Header().Get("Content-Type") != "text/plain; charset=utf-8" || rr.Body.String() != want {
+				t.Fatalf("content status=%d type=%q body=%q want=%q", rr.Code, rr.Header().Get("Content-Type"), rr.Body.String(), want)
+			}
 		})
+	}
+
+	for _, target := range []string{
+		"/v1/sessions/git-session/file-changes/content?scope=staged&path=" + path + "&side=before",
+		"/v1/sessions/git-session/file-changes/content?scope=uncommitted&path=" + filepath.Join(t.TempDir(), "outside.md") + "&side=after",
+	} {
+		code, _ := getSessionPath(t, srv, target)
+		want := http.StatusBadRequest
+		if strings.Contains(target, "outside.md") {
+			want = http.StatusNotFound
+		}
+		if code != want {
+			t.Fatalf("%s status=%d want=%d", target, code, want)
+		}
 	}
 }
 

@@ -3,7 +3,6 @@ const SHELL_ASSETS = [
   './manifest.webmanifest',
   './icon-512.png',
   './dist/app.css',
-  './dist/app.js',
 ];
 
 const putIfCacheable = async (cache, request, response) => {
@@ -58,10 +57,10 @@ self.addEventListener('fetch', (event) => {
     const networkFetch = fetch(request)
       .then((response) => putIfCacheable(cache, request, response))
       .catch(() => null);
-    // The rendered HTML requests these versioned shell URLs directly, so they
-    // are safe for stale-while-revalidate. Vite imports every stable-named
-    // chunk without an AssetVersion query; all chunks therefore stay
-    // network-first so a deployment cannot execute an old dependency graph.
+    // The rendered HTML requests versioned cacheable assets directly, so they
+    // are safe for stale-while-revalidate. The canonical app entry and every
+    // stable-named Vite chunk stay network-first so imports share one module URL
+    // and a deployment cannot execute an old dependency graph.
     if (cached && isShellAsset) {
       void networkFetch;
       return cached;

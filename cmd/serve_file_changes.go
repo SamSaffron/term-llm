@@ -37,6 +37,11 @@ var fileChangeScopeSpecs = [...]fileChangeScopeSpec{
 	{name: fileChangeScopeStaged},
 }
 
+func isMarkdownPath(path string) bool {
+	ext := filepath.Ext(path)
+	return strings.EqualFold(ext, ".md") || strings.EqualFold(ext, ".markdown")
+}
+
 func fileChangeLanguage(path string) string {
 	name := strings.ToLower(filepath.Base(path))
 	switch name {
@@ -443,9 +448,9 @@ func (s *serveServer) handleSessionFileChangeDiff(w http.ResponseWriter, r *http
 	})
 }
 
-// handleSessionFileChangeContent serves one retained side of an image diff.
-// Content comes from the session-scoped blob history rather than the live file,
-// so both the baseline and current image remain inspectable after the run.
+// handleSessionFileChangeContent serves one retained side of an image diff or
+// Markdown source. Retained turn content comes from session-scoped blob history;
+// Git-scoped Markdown comes only from a changed path in the bound repository.
 func (s *serveServer) handleSessionFileChangeContent(w http.ResponseWriter, r *http.Request, sessionID string) {
 	store := s.fileTrackStore()
 	if store == nil {
@@ -478,6 +483,60 @@ func (s *serveServer) handleSessionFileChangeContent(w http.ResponseWriter, r *h
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "snapshot_seq must be a positive integer")
 		return
 	}
+
+	if isMarkdownPath(path) {
+		var data []byte
+		available := false
+		if runs, turnScope := fileChangeScopeRunWindow(scope); turnScope {
+			content, err := store.GetRecentRunFileDiffTextSide(r.Context(), sessionID, path, side, runs, snapshotSeq)
+			if errors.Is(err, filetrack.ErrInvalidDiffSide) {
+				writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "requested side is not available for this change")
+				return
+			}
+			if err != nil {
+				writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to load file diff content")
+				return
+			}
+			if content != nil {
+				data = content.Data
+				available = true
+			}
+		} else if repo, isGit := s.sessionGitRepo(r.Context(), sessionID); !isGit {
+			writeOpenAIError(w, http.StatusConflict, "invalid_request_error", "git file change scopes require a git repository")
+			return
+		} else {
+			content, err := repo.File(r.Context(), gitdiff.Scope(scope), path)
+			if errors.Is(err, gitdiff.ErrPathOutsideRepository) {
+				writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "Markdown source is not available")
+				return
+			}
+			if err != nil {
+				writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to load file diff content")
+				return
+			}
+			if content != nil {
+				needBefore, needAfter := content.Kind != filetrack.KindCreate, content.Kind != filetrack.KindDelete
+				if (side == "before" && !needBefore) || (side == "after" && !needAfter) {
+					writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "requested side is not available for this change")
+					return
+				}
+				if !content.Truncated {
+					data = content.Before
+					if side == "after" {
+						data = content.After
+					}
+					available = filetrack.IsRenderableText(data)
+				}
+			}
+		}
+		if !available {
+			writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "Markdown source is not available")
+			return
+		}
+		writeFileChangeContent(w, "text/plain; charset=utf-8", data)
+		return
+	}
+
 	runs, turnScope := fileChangeScopeRunWindow(scope)
 	if !turnScope {
 		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "image diff content is not available for git scopes")
@@ -496,13 +555,16 @@ func (s *serveServer) handleSessionFileChangeContent(w http.ResponseWriter, r *h
 		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "image diff content is not available")
 		return
 	}
+	writeFileChangeContent(w, content.MediaType, content.Data)
+}
 
-	w.Header().Set("Content-Type", content.MediaType)
+func writeFileChangeContent(w http.ResponseWriter, mediaType string, data []byte) {
+	w.Header().Set("Content-Type", mediaType)
 	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Length", strconv.Itoa(len(content.Data)))
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	uiAddVary(w.Header(), "Authorization")
 	uiAddVary(w.Header(), "Cookie")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(content.Data)
+	_, _ = w.Write(data)
 }

@@ -17,6 +17,7 @@ import { Lightbox } from './Lightbox';
 import type { AppConfig } from '../app/config';
 import { initialProjection } from '../domain/response';
 import { convertServerMessages } from '../domain/transcript';
+import { markdownDocumentBlocks } from '../domain/markdown-document';
 import { readJSON } from '../platform/storage';
 
 const config: AppConfig = {
@@ -894,6 +895,350 @@ describe('Preact-owned chat surfaces', () => {
     );
   });
 
+  it('keeps the Markdown view toggle visible when source availability refreshes', async () => {
+    const store = createStore();
+    store.diff.value = {
+      ...store.diff.value,
+      open: true,
+      sessionId: 's1',
+      scope: 'uncommitted',
+      git: true,
+      files: [
+        {
+          path: '/work/plan.md',
+          status: 'modify',
+          contentAvailable: true,
+          expanded: false,
+          lines: [{ kind: 'add', content: '# Plan', newLine: 1 }],
+        },
+      ],
+    };
+    render(
+      <StoreContext.Provider value={store}>
+        <DiffSidebar />
+      </StoreContext.Provider>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Show rendered Markdown' })).toBeEnabled();
+    act(() => {
+      store.diff.value = {
+        ...store.diff.value,
+        files: store.diff.value.files.map((file) => ({ ...file, contentAvailable: false })),
+      };
+    });
+    expect(screen.getByRole('button', { name: 'Show rendered Markdown' })).toBeDisabled();
+    act(() => {
+      store.diff.value = {
+        ...store.diff.value,
+        files: store.diff.value.files.map((file) => ({ ...file, contentAvailable: true })),
+      };
+    });
+    expect(screen.getByRole('button', { name: 'Show rendered Markdown' })).toBeEnabled();
+  });
+
+  it('switches a Markdown file to a source-mapped rendered review without losing drafts', async () => {
+    const store = createStore();
+    const source = '# Title\n\nFirst line\nsecond line\n';
+    store.diff.value = {
+      ...store.diff.value,
+      open: true,
+      sessionId: 's1',
+      scope: 'last_turn',
+      historyComments: [
+        {
+          id: 'sent-rendered',
+          path: '/work/plan.md',
+          side: 'new',
+          line: 4,
+          body: 'Existing line comment',
+          sessionId: 's1',
+          scope: 'last_turn',
+        },
+        {
+          id: 'source-only',
+          path: '/work/plan.md',
+          side: 'new',
+          line: 2,
+          body: 'Comment on source-only line',
+          sessionId: 's1',
+          scope: 'last_turn',
+        },
+      ],
+      files: [
+        {
+          path: '/work/plan.md',
+          status: 'modify',
+          sequence: 8,
+          snapshotSeq: 8,
+          contentAvailable: true,
+          expanded: true,
+          lines: [{ kind: 'context', content: 'second line', oldLine: 4, newLine: 4 }],
+          markdownPreview: {
+            view: 'diff',
+            side: 'after',
+            source,
+            blocks: markdownDocumentBlocks(source),
+            sequence: 8,
+            snapshotSeq: 8,
+            scope: 'last_turn',
+          },
+        },
+      ],
+    };
+    store.queueDiffComment = vi.fn();
+    store.revealDiffLine = vi.fn(async () => undefined);
+    store.expandDiff = vi.fn(async () => undefined);
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <DiffSidebar />
+      </StoreContext.Provider>,
+    );
+
+    const viewToggle = await screen.findByRole('button', { name: 'Show rendered Markdown' });
+    expect(viewToggle.closest('.diff-file-row')).not.toBeNull();
+    expect(viewToggle.closest('.diff-file-actions')).not.toBeNull();
+    expect(viewToggle.closest('.diff-file-body')).toBeNull();
+    expect(container.querySelectorAll('.diff-file-actions .diff-action-btn svg')).toHaveLength(3);
+    expect(viewToggle).toHaveAttribute('aria-pressed', 'false');
+    expect(container.querySelector('[data-diff-anchor="new:4"]')).toHaveAttribute('tabindex', '-1');
+    expect(screen.queryByText('Title', { selector: 'h1' })).not.toBeInTheDocument();
+    await userEvent.click(viewToggle);
+    expect(store.expandDiff).not.toHaveBeenCalled();
+    expect(await screen.findByRole('button', { name: 'Show Markdown diff' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(await screen.findByText('Title', { selector: 'h1' })).toBeVisible();
+    expect(screen.getByRole('region', { name: 'Source-only comments' })).toHaveTextContent(
+      'Comment on source-only line',
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Reveal in Diff' }));
+    expect(store.revealDiffLine).toHaveBeenCalledWith(
+      expect.objectContaining({ path: '/work/plan.md' }),
+      'new',
+      2,
+    );
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Show 1 comment for Paragraph, lines 3–4' }),
+    );
+    expect(screen.getByText('Existing line comment')).toBeVisible();
+    const revealActions = screen.getAllByRole('button', { name: 'Reveal in Diff' });
+    expect(revealActions).toHaveLength(2);
+    await userEvent.click(revealActions[0]);
+    expect(store.revealDiffLine).toHaveBeenLastCalledWith(
+      expect.objectContaining({ path: '/work/plan.md' }),
+      'new',
+      4,
+    );
+    const editor = screen.getByRole('textbox', { name: 'Inline comment' });
+    await userEvent.type(editor, 'Rendered draft');
+    await userEvent.click(screen.getByRole('button', { name: 'Show Markdown diff' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Show rendered Markdown' }));
+    expect(screen.getByRole('textbox', { name: 'Inline comment' })).toHaveValue('Rendered draft');
+
+    await userEvent.click(screen.getByRole('button', { name: 'More send options' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: /Queue comment/ }));
+    expect(store.queueDiffComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/work/plan.md',
+        side: 'new',
+        line: 3,
+        context: 'First line',
+        contextBefore: ['# Title', ''],
+        contextAfter: ['second line', ''],
+        body: 'Rendered draft',
+        fileChangeSeq: 8,
+      }),
+    );
+  });
+
+  it('renders Markdown while the Uncommitted file diff is still in flight', async () => {
+    const store = createStore();
+    const source = '# Immediate preview\n';
+    let resolveDiff!: (value: Record<string, unknown>) => void;
+    const pendingDiff = new Promise<Record<string, unknown>>((resolve) => {
+      resolveDiff = resolve;
+    });
+    store.diff.value = {
+      ...store.diff.value,
+      open: true,
+      sessionId: 's1',
+      scope: 'uncommitted',
+      files: [
+        {
+          path: '/work/immediate.md',
+          status: 'modify',
+          sequence: 2,
+          snapshotSeq: 2,
+          contentAvailable: true,
+          expanded: false,
+        },
+      ],
+    };
+    store.endpoints.fileDiff = vi.fn(() => pendingDiff);
+    store.endpoints.fileText = vi.fn(async () => source);
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <DiffSidebar />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.click(container.querySelector<HTMLElement>('.diff-file-row')!);
+    expect(store.diff.value.files[0]).toMatchObject({ expanded: true, loading: true });
+    await userEvent.click(screen.getByRole('button', { name: 'Show rendered Markdown' }));
+
+    expect(store.endpoints.fileDiff).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() =>
+      expect(store.endpoints.fileText).toHaveBeenCalledWith(
+        's1',
+        '/work/immediate.md',
+        'uncommitted',
+        'after',
+        2,
+        expect.any(AbortSignal),
+      ),
+    );
+    expect(await screen.findByText('Immediate preview', { selector: 'h1' })).toBeVisible();
+    expect(store.diff.value.files[0]).toMatchObject({
+      expanded: true,
+      loading: true,
+      markdownPreview: { view: 'rendered' },
+    });
+
+    resolveDiff({
+      kind: 'modify',
+      content_available: true,
+      old_line_count: 0,
+      new_line_count: 1,
+      hunks: [],
+    });
+    await vi.waitFor(() => expect(store.diff.value.files[0].loading).toBe(false));
+    expect(screen.getByText('Immediate preview', { selector: 'h1' })).toBeVisible();
+    expect(store.diff.value.files[0].markdownPreview?.view).toBe('rendered');
+  });
+
+  it('fails closed when a rendered draft block changes and allows explicit re-anchoring', async () => {
+    const store = createStore();
+    const source = '# Plan\n\nOriginal paragraph.\n';
+    store.diff.value = {
+      ...store.diff.value,
+      open: true,
+      sessionId: 's1',
+      scope: 'last_turn',
+      files: [
+        {
+          path: '/work/plan.md',
+          status: 'modify',
+          sequence: 3,
+          snapshotSeq: 3,
+          contentAvailable: true,
+          expanded: true,
+          lines: [{ kind: 'add', content: 'Original paragraph.', newLine: 3 }],
+          markdownPreview: {
+            view: 'rendered',
+            side: 'after',
+            source,
+            blocks: markdownDocumentBlocks(source),
+            sequence: 3,
+            snapshotSeq: 3,
+            scope: 'last_turn',
+          },
+        },
+      ],
+    };
+    render(
+      <StoreContext.Provider value={store}>
+        <DiffSidebar />
+      </StoreContext.Provider>,
+    );
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Comment on Paragraph, line 3' }),
+    );
+    fireEvent.input(screen.getByRole('textbox', { name: 'Inline comment' }), {
+      target: { value: 'Preserved draft' },
+    });
+    expect(screen.getByRole('button', { name: 'Send now' })).toBeEnabled();
+
+    const changed = '# Plan\n\nChanged paragraph.\n';
+    act(() => {
+      store.diff.value = {
+        ...store.diff.value,
+        files: store.diff.value.files.map((file) => ({
+          ...file,
+          markdownPreview: file.markdownPreview
+            ? {
+                ...file.markdownPreview,
+                source: changed,
+                blocks: markdownDocumentBlocks(changed),
+              }
+            : undefined,
+        })),
+      };
+    });
+
+    expect(screen.getByRole('textbox', { name: 'Inline comment' })).toHaveValue('Preserved draft');
+    expect(screen.getByRole('button', { name: 'Send now' })).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Re-anchor draft here' }));
+    expect(screen.getByRole('button', { name: 'Send now' })).toBeEnabled();
+  });
+
+  it('keeps rendered history inspectable without offering new comments in read-only mode', async () => {
+    const store = createStore();
+    const source = '# Plan\n';
+    store.diff.value = {
+      ...store.diff.value,
+      open: true,
+      readOnly: true,
+      sessionId: 's1',
+      scope: 'last_turn',
+      historyComments: [
+        {
+          id: 'history',
+          path: '/work/plan.md',
+          side: 'new',
+          line: 1,
+          body: 'Existing history',
+          sessionId: 's1',
+          scope: 'last_turn',
+        },
+      ],
+      files: [
+        {
+          path: '/work/plan.md',
+          status: 'modify',
+          contentAvailable: true,
+          expanded: true,
+          markdownPreview: {
+            view: 'rendered',
+            side: 'after',
+            source,
+            blocks: markdownDocumentBlocks(source),
+            sequence: 1,
+            snapshotSeq: 1,
+            scope: 'last_turn',
+          },
+        },
+      ],
+    };
+    render(
+      <StoreContext.Provider value={store}>
+        <DiffSidebar />
+      </StoreContext.Provider>,
+    );
+    expect(
+      await screen.findByRole('button', { name: 'Show 1 comment for Heading, line 1' }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole('button', { name: 'Comment on Heading, line 1' }),
+    ).not.toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Show 1 comment for Heading, line 1' }),
+    );
+    expect(screen.getByText('Existing history')).toBeVisible();
+    expect(screen.queryByRole('textbox', { name: 'Inline comment' })).not.toBeInTheDocument();
+  });
+
   it('offers immediate or queued delivery for inline review comments', async () => {
     const store = createStore();
     store.diff.value = {
@@ -1040,7 +1385,7 @@ describe('Preact-owned chat surfaces', () => {
     expect(timestamp).toHaveAttribute('title');
   });
 
-  it('ports the tiny legacy diff actions and transient copied state', async () => {
+  it('uses aligned SVG diff actions and transient copied state', async () => {
     vi.useFakeTimers();
     const descriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
     const writeText = vi.fn(async () => undefined);
@@ -1085,9 +1430,8 @@ describe('Preact-owned chat surfaces', () => {
       const patch = screen.getByRole('button', {
         name: 'Copy diff for /home/sam/Source/term-llm/frontend/src/stores/app-store.ts',
       });
-      expect(path).toHaveTextContent('⧉');
-      expect(path.querySelector('svg')).toBeNull();
-      expect(patch).toHaveTextContent('±');
+      expect(path.querySelector('svg')).toHaveAttribute('viewBox', '0 0 24 24');
+      expect(patch.querySelector('svg')).toHaveAttribute('viewBox', '0 0 24 24');
       expect(screen.queryByText('Patch')).not.toBeInTheDocument();
       await act(async () => {
         fireEvent.click(path);

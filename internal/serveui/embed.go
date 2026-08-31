@@ -75,8 +75,9 @@ type RenderOptions struct {
 	WebRTC bool
 }
 
-// RenderIndexHTML returns the Preact entry page with versioned first-party
-// assets, caller-supplied head markup, and the exact relative base-path contract.
+// RenderIndexHTML returns the Preact entry page with versioned cacheable assets,
+// a canonical network-first module entry, caller-supplied head markup, and the
+// exact relative base-path contract.
 func RenderIndexHTML(basePath, headSnippet string, _ RenderOptions) []byte {
 	html := IndexHTML()
 	if len(html) == 0 {
@@ -86,7 +87,6 @@ func RenderIndexHTML(basePath, headSnippet string, _ RenderOptions) []byte {
 		{`href="icon-512.png"`, `href="` + versioned("icon-512.png") + `"`},
 		{`href="manifest.webmanifest"`, `href="` + versioned("manifest.webmanifest") + `"`},
 		{`href="dist/app.css"`, `href="` + versioned("dist/app.css") + `"`},
-		{`src="dist/app.js"`, `src="` + versioned("dist/app.js") + `"`},
 	} {
 		html = bytes.ReplaceAll(html, []byte(replacement.old), []byte(replacement.new))
 	}
@@ -112,9 +112,9 @@ func RenderManifest() []byte {
 }
 
 // RenderServiceWorker returns the service worker with a versioned cache key and
-// generated shell asset URLs. Stable-named Vite chunks deliberately remain
-// unversioned and network-first because module imports do not inherit the entry
-// module's AssetVersion query.
+// generated shell asset URLs. The canonical app entry and stable-named Vite
+// chunks deliberately remain unversioned and network-first so every import uses
+// one module identity and deployments cannot execute an old dependency graph.
 func RenderServiceWorker(_ RenderOptions) []byte {
 	renderServiceWorkerOnce.Do(func() {
 		data, err := StaticAsset("sw.js")
@@ -126,7 +126,6 @@ func RenderServiceWorker(_ RenderOptions) []byte {
 			{"'./manifest.webmanifest'", "'./" + versioned("manifest.webmanifest") + "'"},
 			{"'./icon-512.png'", "'./" + versioned("icon-512.png") + "'"},
 			{"'./dist/app.css'", "'./" + versioned("dist/app.css") + "'"},
-			{"'./dist/app.js'", "'./" + versioned("dist/app.js") + "'"},
 		} {
 			data = bytes.ReplaceAll(data, []byte(replacement.old), []byte(replacement.new))
 		}

@@ -4,6 +4,9 @@ import type { MentionSearchResponse } from '../domain/completions';
 
 const encoded = (value: string): string => encodeURIComponent(value);
 const sessionHeaders = (id: string): Record<string, string> => ({ 'X-Term-LLM-Session-ID': id });
+// Review data may come from the session's node rather than the shell host. The
+// node's embedded UI hash is not authoritative for the browser's shell assets.
+const sessionReviewRead = { auth: 'session', versionCheck: false } as const;
 export const endpoints = (api: APIClient) => ({
   capabilities: () => api.get<Record<string, unknown>>('/v1/capabilities'),
   providers: () => api.get<Record<string, unknown>>('/v1/providers'),
@@ -270,10 +273,14 @@ export const endpoints = (api: APIClient) => ({
   fileChanges: (id: string, scope: string) =>
     api.get<Record<string, unknown>>(
       `/v1/sessions/${encoded(id)}/file-changes${scope ? `?scope=${encoded(scope)}` : ''}`,
+      undefined,
+      sessionReviewRead,
     ),
   fileDiff: (id: string, path: string, scope: string, context = 0, snapshotSeq = 0) =>
     api.get<Record<string, unknown>>(
       `/v1/sessions/${encoded(id)}/file-changes/diff?path=${encoded(path)}&scope=${encoded(scope)}${context ? `&context=${context}` : ''}${snapshotSeq ? `&snapshot_seq=${snapshotSeq}` : ''}`,
+      undefined,
+      sessionReviewRead,
     ),
   fileContentURL: (
     id: string,
@@ -285,8 +292,23 @@ export const endpoints = (api: APIClient) => ({
     api.url(
       `/v1/sessions/${encoded(id)}/file-changes/content?path=${encoded(path)}&scope=${encoded(scope)}&side=${side}${snapshotSeq ? `&snapshot_seq=${snapshotSeq}` : ''}`,
     ),
+  fileText: (
+    id: string,
+    path: string,
+    scope: string,
+    side: 'before' | 'after',
+    snapshotSeq = 0,
+    signal?: AbortSignal,
+  ) =>
+    import('./file-text').then(({ fileText }) =>
+      fileText(api, id, path, scope, side, snapshotSeq, signal),
+    ),
   diffComments: (id: string) =>
-    api.get<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/diff-comments`),
+    api.get<Record<string, unknown>>(
+      `/v1/sessions/${encoded(id)}/diff-comments`,
+      undefined,
+      sessionReviewRead,
+    ),
   legacyWorktrees: () => api.get<Record<string, unknown>>('/v1/worktrees'),
   projectWorktrees: (id: string) =>
     api.get<Record<string, unknown>>(`/v1/projects/${encoded(id)}/worktrees`),

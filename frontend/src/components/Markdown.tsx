@@ -25,6 +25,9 @@ interface MarkdownProps {
   streaming?: boolean;
   rebase?: (value: string) => string;
   onMedia?: (source: string, type: 'image' | 'video') => void;
+  variant?: 'chat' | 'document';
+  renderedHTML?: string;
+  documentPolicy?: (root: HTMLElement) => void;
 }
 
 const COPY_ICON =
@@ -398,8 +401,11 @@ export function Markdown({
   streaming = false,
   rebase,
   onMedia,
+  variant = 'chat',
+  renderedHTML,
+  documentPolicy,
 }: MarkdownProps) {
-  const renderValue = useAdaptiveStreamingValue(value, streaming);
+  const renderValue = useAdaptiveStreamingValue(value, variant === 'chat' && streaming);
   const root = useRef<HTMLDivElement>(null);
   const renderer = useRef<AssistantStreamRenderer | null>(null);
   const copyTimers = useRef(new Map<HTMLButtonElement, number>());
@@ -407,11 +413,18 @@ export function Markdown({
   useLayoutEffect(() => {
     const element = root.current;
     if (!element) return;
+    if (variant === 'document') {
+      element.innerHTML = renderedHTML || '';
+      documentPolicy?.(element);
+      addCodeCopyButtons(element);
+      void decorateRichContent(element, renderValue);
+      return;
+    }
     renderer.current ||= new AssistantStreamRenderer(element, rebase);
     renderer.current.setRebase(rebase);
     if (streaming) renderer.current.update(renderValue);
     else renderer.current.finalize(renderValue);
-  }, [renderValue, streaming, rebase]);
+  }, [renderValue, streaming, rebase, variant, renderedHTML, documentPolicy]);
 
   useEffect(() => {
     const timers = copyTimers.current;
