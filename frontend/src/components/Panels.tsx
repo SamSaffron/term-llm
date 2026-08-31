@@ -1,5 +1,5 @@
 import type { ComponentChildren, ComponentType } from 'preact';
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import type { DiffComment, DiffFile, DiffLine } from '../domain/types';
 import {
@@ -232,7 +232,15 @@ function splitDiffPath(path: string, workingDir = ''): { base: string; dir: stri
     : { base: display.slice(index + 1), dir: display.slice(0, index) };
 }
 
-function File({ file }: { file: DiffFile }) {
+function File({
+  file,
+  fullscreen,
+  onFullscreenToggle,
+}: {
+  file: DiffFile;
+  fullscreen: boolean;
+  onFullscreenToggle: () => void;
+}) {
   const store = useStore();
   const [limit, setLimit] = useState(500);
   const [commenting, setCommenting] = useState('');
@@ -526,7 +534,10 @@ function File({ file }: { file: DiffFile }) {
     </>
   );
   return (
-    <section class={`diff-file diff-file-${legacyKind}`} data-diff-file-path={file.path}>
+    <section
+      class={`diff-file diff-file-${legacyKind}${fullscreen ? ' diff-file-fullscreen' : ''}`}
+      data-diff-file-path={file.path}
+    >
       <div
         class={`diff-file-row ${file.expanded ? 'expanded' : ''} ${store.diff.value.selectedPath === file.path ? 'selected' : ''}`}
         role="button"
@@ -592,6 +603,24 @@ function File({ file }: { file: DiffFile }) {
               <Icon name="markdown" />
             </button>
           )}
+          <button
+            class={`diff-action-btn diff-fullscreen-toggle${fullscreen ? ' active' : ''}`}
+            type="button"
+            title={fullscreen ? 'Exit fullscreen' : 'View file fullscreen'}
+            aria-label={`${fullscreen ? 'Exit fullscreen for' : 'View fullscreen'} ${file.path}`}
+            aria-pressed={fullscreen}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onFullscreenToggle();
+            }}
+          >
+            <Icon name={fullscreen ? 'restore' : 'expand'} />
+          </button>
           <DiffAction
             label={`Copy path ${file.path}`}
             glyph={<Icon name="copy" />}
@@ -682,19 +711,34 @@ export function DiffSidebar() {
   const store = useStore();
   const state = store.diff.value;
   const aside = useRef<HTMLElement>(null);
+  const fullscreenFollow = useRef<boolean | null>(null);
+  const [fullscreenPath, setFullscreenPath] = useState('');
   const mobile = useMediaQuery('(max-width: 767px)');
   const compact = useMediaQuery('(max-width: 1099px)');
   const files = state.files.filter((file) =>
     file.path.toLowerCase().includes(state.filter.toLowerCase()),
   );
+  const displayedFiles = fullscreenPath
+    ? state.files.filter((file) => file.path === fullscreenPath)
+    : files;
+  const exitFullscreen = useCallback(() => {
+    setFullscreenPath('');
+    if (fullscreenFollow.current === null) return;
+    store.diff.value = {
+      ...store.diff.peek(),
+      followCurrentFile: fullscreenFollow.current,
+    };
+    fullscreenFollow.current = null;
+  }, [store]);
   const selectFile = (delta: number) => {
     if (!files.length) return;
     const current = Math.max(
       0,
-      files.findIndex((file) => file.path === state.selectedPath),
+      files.findIndex((file) => file.path === (fullscreenPath || state.selectedPath)),
     );
     const next = Math.max(0, Math.min(files.length - 1, current + delta));
     const file = files[next];
+    if (fullscreenPath) setFullscreenPath(file.path);
     store.diff.value = {
       ...store.diff.peek(),
       selectedPath: file.path,
@@ -726,6 +770,11 @@ export function DiffSidebar() {
     if (!state.open) return;
     const escape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
+      if (fullscreenPath) {
+        event.preventDefault();
+        exitFullscreen();
+        return;
+      }
       const target = event.target as HTMLInputElement;
       if (target?.matches('input[type="search"]') && target.value) {
         store.diff.value = { ...store.diff.peek(), filter: '' };
@@ -739,7 +788,11 @@ export function DiffSidebar() {
     };
     addEventListener('keydown', escape);
     return () => removeEventListener('keydown', escape);
-  }, [state.open, state.maximized, store]);
+  }, [exitFullscreen, fullscreenPath, state.open, state.maximized, store]);
+  useEffect(() => {
+    if (fullscreenPath && !state.files.some((file) => file.path === fullscreenPath))
+      exitFullscreen();
+  }, [exitFullscreen, fullscreenPath, state.files]);
   useEffect(() => {
     if (!state.open) return;
     const navigate = (event: KeyboardEvent) => {
@@ -914,10 +967,28 @@ export function DiffSidebar() {
             </button>
           </div>
         )}
-        {files.map((file) => (
-          <File key={file.path} file={file} />
+        {displayedFiles.map((file) => (
+          <File
+            key={file.path}
+            file={file}
+            fullscreen={fullscreenPath === file.path}
+            onFullscreenToggle={() => {
+              if (fullscreenPath === file.path) {
+                exitFullscreen();
+                return;
+              }
+              fullscreenFollow.current = state.followCurrentFile;
+              setFullscreenPath(file.path);
+              store.diff.value = {
+                ...store.diff.peek(),
+                selectedPath: file.path,
+                followCurrentFile: false,
+              };
+              if (!file.expanded) void store.expandDiff(file);
+            }}
+          />
         ))}
-        {!state.loading && !state.error && !files.length && (
+        {!state.loading && !state.error && !displayedFiles.length && (
           <div class="diff-empty">
             {state.worktreeDir ? 'This worktree is clean.' : 'No file changes in this scope.'}
           </div>
@@ -953,7 +1024,7 @@ export function DiffSidebar() {
     return (
       <aside
         ref={aside}
-        class={`diff-sidebar open ${state.maximized ? 'maximized' : ''}`}
+        class={`diff-sidebar open ${state.maximized ? 'maximized' : ''} ${fullscreenPath ? 'file-fullscreen' : ''}`.trim()}
         id="diffSidebar"
         aria-label={
           state.worktreeDir
@@ -968,12 +1039,18 @@ export function DiffSidebar() {
     <Drawer
       open
       id="diffSidebar"
-      className={`diff-sidebar open ${state.maximized ? 'maximized' : ''}`}
+      className={`diff-sidebar open ${state.maximized ? 'maximized' : ''} ${fullscreenPath ? 'file-fullscreen' : ''}`.trim()}
       title={
         state.worktreeDir ? `${state.worktreeTitle || 'Worktree'} changes` : 'Session file changes'
       }
       side="right"
-      onClose={() => (store.diff.value = { ...store.diff.peek(), open: false, maximized: false })}
+      onClose={() => {
+        if (fullscreenPath) {
+          exitFullscreen();
+          return;
+        }
+        store.diff.value = { ...store.diff.peek(), open: false, maximized: false };
+      }}
     >
       {content}
     </Drawer>

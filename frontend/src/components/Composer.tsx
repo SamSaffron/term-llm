@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { displayName } from '../app/config';
 import { useStore } from '../app/context';
 import {
   activeMentionAtCursor,
@@ -69,6 +70,10 @@ export function Composer() {
   useLayoutEffect(() => resizePrompt(textarea.current), [store.prompt.value]);
 
   const session = store.draftActive.value ? null : store.activeSession.value;
+  const agentName =
+    session?.agent ||
+    (store.draftActive.value ? store.selectedAgent.value : store.config.agentName);
+  const messagePlaceholder = agentName ? `Message ${displayName(agentName)}…` : 'Message…';
   const projectId =
     session?.projectId || (store.draftActive.value ? store.activeProjectId.value : '') || '';
   const worktreeDir = store.currentWorktreeDir.value;
@@ -641,7 +646,7 @@ export function Composer() {
             id="promptInput"
             class="prompt"
             rows={1}
-            placeholder={runActive ? 'Type to interject…' : 'Message…'}
+            placeholder={runActive ? 'Type to interject…' : messagePlaceholder}
             aria-label="Message"
             autoComplete="off"
             spellcheck={false}

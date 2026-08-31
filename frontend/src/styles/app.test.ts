@@ -47,6 +47,12 @@ describe('shell layout', () => {
       /\.app > \.diff-sidebar,\s*\.app > \.plan-surface\s*\{\s*grid-column: 3;\s*grid-row: 1;/,
     );
   });
+
+  it('keeps queued comment controls visible in file fullscreen mode', () => {
+    expect(appCSS).toContain(
+      '.diff-sidebar.file-fullscreen > :not(.diff-file-list, .diff-queue-bar)',
+    );
+  });
 });
 
 describe('stacking layers', () => {

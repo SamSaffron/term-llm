@@ -998,7 +998,7 @@ describe('Preact-owned chat surfaces', () => {
     expect(viewToggle.closest('.diff-file-row')).not.toBeNull();
     expect(viewToggle.closest('.diff-file-actions')).not.toBeNull();
     expect(viewToggle.closest('.diff-file-body')).toBeNull();
-    expect(container.querySelectorAll('.diff-file-actions .diff-action-btn svg')).toHaveLength(3);
+    expect(container.querySelectorAll('.diff-file-actions .diff-action-btn svg')).toHaveLength(4);
     expect(viewToggle).toHaveAttribute('aria-pressed', 'false');
     expect(container.querySelector('[data-diff-anchor="new:4"]')).toHaveAttribute('tabindex', '-1');
     expect(screen.queryByText('Title', { selector: 'h1' })).not.toBeInTheDocument();
@@ -1406,6 +1406,7 @@ describe('Preact-owned chat surfaces', () => {
             additions: 1,
             deletions: 0,
             provenance: 'direct',
+            expanded: true,
             lines: [
               { kind: 'hunk', content: '@@ -1 +1 @@' },
               { kind: 'add', content: 'package main', newLine: 1 },
@@ -1424,15 +1425,36 @@ describe('Preact-owned chat surfaces', () => {
       expect(row.querySelector('.diff-file-dir')).toHaveTextContent('term-llm/frontend/src/stores');
       expect(row).not.toHaveTextContent('direct tool');
       expect(row).not.toHaveTextContent('/home/sam/Source/term-llm');
+      const fullscreen = screen.getByRole('button', {
+        name: 'View fullscreen /home/sam/Source/term-llm/frontend/src/stores/app-store.ts',
+      });
       const path = screen.getByRole('button', {
         name: 'Copy path /home/sam/Source/term-llm/frontend/src/stores/app-store.ts',
       });
       const patch = screen.getByRole('button', {
         name: 'Copy diff for /home/sam/Source/term-llm/frontend/src/stores/app-store.ts',
       });
+      expect(fullscreen.querySelector('svg')).toHaveAttribute('viewBox', '0 0 24 24');
       expect(path.querySelector('svg')).toHaveAttribute('viewBox', '0 0 24 24');
       expect(patch.querySelector('svg')).toHaveAttribute('viewBox', '0 0 24 24');
       expect(screen.queryByText('Patch')).not.toBeInTheDocument();
+
+      fireEvent.click(fullscreen);
+      const exitFullscreen = screen.getByRole('button', {
+        name: 'Exit fullscreen for /home/sam/Source/term-llm/frontend/src/stores/app-store.ts',
+      });
+      expect(container.querySelector('.diff-sidebar')).toHaveClass('file-fullscreen');
+      expect(container.querySelector('.diff-file')).toHaveClass('diff-file-fullscreen');
+      expect(exitFullscreen).toHaveAttribute('aria-pressed', 'true');
+      expect(store.diff.value.followCurrentFile).toBe(false);
+      fireEvent.keyDown(exitFullscreen, { key: 'Escape' });
+      expect(container.querySelector('.diff-sidebar')).not.toHaveClass('file-fullscreen');
+      expect(store.diff.value.followCurrentFile).toBe(true);
+      expect(screen.getByRole('button', { name: /^View fullscreen/ })).toHaveAttribute(
+        'aria-pressed',
+        'false',
+      );
+
       await act(async () => {
         fireEvent.click(path);
         await Promise.resolve();
@@ -1462,6 +1484,95 @@ describe('Preact-owned chat surfaces', () => {
       if (descriptor) Object.defineProperty(navigator, 'clipboard', descriptor);
       else Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
       vi.useRealTimers();
+    }
+  });
+
+  it('keeps fullscreen file navigation synchronized with the selected file', () => {
+    const store = createStore();
+    store.diff.value = {
+      ...store.diff.value,
+      open: true,
+      files: [
+        {
+          path: 'first.ts',
+          status: 'modify',
+          additions: 1,
+          deletions: 0,
+          expanded: true,
+          lines: [{ kind: 'add', content: 'first', newLine: 1 }],
+        },
+        {
+          path: 'second.ts',
+          status: 'modify',
+          additions: 1,
+          deletions: 0,
+          expanded: true,
+          lines: [{ kind: 'add', content: 'second', newLine: 1 }],
+        },
+      ],
+      selectedPath: 'first.ts',
+    };
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <DiffSidebar />
+      </StoreContext.Provider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'View fullscreen first.ts' }));
+    fireEvent.keyDown(window, { key: ']' });
+
+    expect(store.diff.value.selectedPath).toBe('second.ts');
+    expect(
+      screen.getByRole('button', { name: 'Exit fullscreen for second.ts' }),
+    ).toBeInTheDocument();
+    expect(container.querySelector('[data-diff-file-path="first.ts"]')).toBeNull();
+  });
+
+  it('exits file fullscreen before closing the mobile changes drawer', () => {
+    vi.mocked(window.matchMedia).mockImplementation(
+      (query) =>
+        ({
+          matches: query === '(max-width: 767px)',
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        }) as unknown as MediaQueryList,
+    );
+    try {
+      const store = createStore();
+      store.expandDiff = vi.fn(async () => undefined);
+      store.diff.value = {
+        ...store.diff.value,
+        open: true,
+        files: [
+          {
+            path: 'mobile.ts',
+            status: 'modify',
+            additions: 1,
+            deletions: 0,
+            expanded: false,
+            lines: [{ kind: 'add', content: 'mobile', newLine: 1 }],
+          },
+        ],
+      };
+      const { container } = render(
+        <StoreContext.Provider value={store}>
+          <DiffSidebar />
+        </StoreContext.Provider>,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'View fullscreen mobile.ts' }));
+      expect(store.expandDiff).toHaveBeenCalledWith(store.diff.value.files[0]);
+      fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+
+      expect(store.diff.value.open).toBe(true);
+      expect(store.diff.value.followCurrentFile).toBe(true);
+      expect(container.querySelector('.diff-sidebar')).not.toHaveClass('file-fullscreen');
+    } finally {
+      vi.mocked(window.matchMedia).mockReturnValue({
+        matches: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as MediaQueryList);
     }
   });
 
@@ -2683,6 +2794,33 @@ describe('Preact-owned chat surfaces', () => {
     fireEvent.click(screen.getByRole('dialog', { name: 'Reusable picker' }));
     expect(screen.queryByRole('dialog', { name: 'Reusable picker' })).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
+  });
+
+  it('names the active agent in the idle composer placeholder', () => {
+    const store = createStore();
+    store.sessions.value = [{ ...store.sessions.value[0], agent: 'widget-builder' }];
+    const { rerender } = render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveAttribute(
+      'placeholder',
+      'Message Widget Builder…',
+    );
+
+    store.draftActive.value = true;
+    store.selectedAgent.value = 'jarvis';
+    rerender(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveAttribute(
+      'placeholder',
+      'Message Jarvis…',
+    );
   });
 
   it('morphs the send icon into the interjection icon while streaming with a draft', async () => {

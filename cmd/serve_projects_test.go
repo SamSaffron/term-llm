@@ -1573,7 +1573,7 @@ func TestSidebarAndStatusHTTPExposeBoundedProjectMetadata(t *testing.T) {
 	}
 	for i := 0; i < 3; i++ {
 		now := time.Now().Add(time.Duration(i) * time.Second)
-		sess := &session.Session{ID: fmt.Sprintf("http-project-%d", i), Provider: "ChatGPT (gpt-5.6-sol, effort=low)", Model: "gpt-5.6-sol", ProjectID: project.ID, CWD: project.CanonicalDir, CreatedAt: now, UpdatedAt: now, Status: session.StatusComplete}
+		sess := &session.Session{ID: fmt.Sprintf("http-project-%d", i), Provider: "ChatGPT (gpt-5.6-sol, effort=low)", Model: "gpt-5.6-sol", Agent: "developer", ProjectID: project.ID, CWD: project.CanonicalDir, CreatedAt: now, UpdatedAt: now, Status: session.StatusComplete}
 		if err := store.Create(ctx, sess); err != nil {
 			t.Fatal(err)
 		}
@@ -1589,6 +1589,7 @@ func TestSidebarAndStatusHTTPExposeBoundedProjectMetadata(t *testing.T) {
 			ID          string `json:"id"`
 			ProjectName string `json:"project_name"`
 			Provider    string `json:"provider"`
+			Agent       string `json:"agent"`
 		} `json:"recent_sessions"`
 		RecentNextCursor string `json:"recent_next_cursor"`
 	}
@@ -1605,7 +1606,7 @@ func TestSidebarAndStatusHTTPExposeBoundedProjectMetadata(t *testing.T) {
 	if len(sidebarPayload.RecentSessions) != 3 || sidebarPayload.RecentNextCursor != "" {
 		t.Fatalf("recent sidebar payload = %#v cursor=%q", sidebarPayload.RecentSessions, sidebarPayload.RecentNextCursor)
 	}
-	if recent := sidebarPayload.RecentSessions[0]; recent.ProjectName != project.Name || recent.Provider != "chatgpt" {
+	if recent := sidebarPayload.RecentSessions[0]; recent.ProjectName != project.Name || recent.Provider != "chatgpt" || recent.Agent != "developer" {
 		t.Fatalf("recent sidebar metadata = %#v", recent)
 	}
 
