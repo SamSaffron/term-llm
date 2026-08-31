@@ -1006,6 +1006,9 @@ export class RunEngine {
     if (next.plan !== current.plan && sessionId === this.sessionStore.activeSessionId.peek()) {
       this.plans.update(next.plan);
     }
+    // Prompts only open the modal over their own conversation; background
+    // sessions keep them as waiting interaction records until selected.
+    const promptSessionVisible = sessionId === this.sessionStore.activeSessionId.peek();
     if (next.askUser && next.askUser !== current.askUser && next.askUser.callId) {
       this.interactionsStore.present(
         'ask-user',
@@ -1013,6 +1016,7 @@ export class RunEngine {
         next.run.responseId,
         next.askUser.callId,
         next.askUser,
+        promptSessionVisible,
       );
     }
     if (next.approval && next.approval !== current.approval && next.approval.id) {
@@ -1022,6 +1026,7 @@ export class RunEngine {
         next.run.responseId,
         next.approval.id,
         next.approval,
+        promptSessionVisible,
       );
     }
     if (event.type === 'response.interjection') {

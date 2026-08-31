@@ -138,9 +138,10 @@ export class InteractionStore {
     responseId: string,
     requestId: string,
     prompt: ApprovalPrompt | AskUserPrompt,
+    open = true,
   ): void {
     this.upsert(kind, sessionId, responseId, requestId, prompt);
-    if (!this.shouldOpen(kind, sessionId, requestId)) return;
+    if (!open || !this.shouldOpen(kind, sessionId, requestId)) return;
     if (kind === 'ask-user') this.askUser.value = prompt as AskUserPrompt;
     else this.approval.value = prompt as ApprovalPrompt;
   }

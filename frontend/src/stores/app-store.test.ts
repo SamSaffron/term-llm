@@ -5117,6 +5117,71 @@ describe('AppStore compatibility behavior', () => {
     await vi.waitFor(() => expect(store.streamResponse).toHaveBeenCalledWith('r1', 's1', 4));
   });
 
+  it('keeps a background session interactive prompt from opening over the active conversation', () => {
+    const store = new AppStore(config);
+    try {
+      store.sessions.value = [
+        { ...session(), activeResponseId: 'r1' },
+        { ...session(), id: 's2', title: 'Other', activeResponseId: 'r2' },
+      ];
+      store.activeSessionId.value = 's2';
+      store.draftActive.value = false;
+      const run = (sessionId: string, responseId: string) =>
+        initialProjection({
+          responseId,
+          sessionId,
+          epoch: 1,
+          status: 'streaming',
+          lastSequence: 1,
+          startedRev: 0,
+          reconnects: 0,
+        });
+      store.runs.value = { s1: run('s1', 'r1'), s2: run('s2', 'r2') };
+
+      store.applyResponseEvent('s1', {
+        type: 'response.ask_user.prompt',
+        response_id: 'r1',
+        run_epoch: 1,
+        sequence_number: 2,
+        call_id: 'ask-1',
+        questions: [{ question: 'Continue?', options: [{ label: 'Yes' }] }],
+      });
+      store.applyResponseEvent('s1', {
+        type: 'response.approval.prompt',
+        response_id: 'r1',
+        run_epoch: 1,
+        sequence_number: 3,
+        approval_id: 'approval-1',
+        title: 'Allow access?',
+        options: [{ index: 0, label: 'Allow', choice: 'allow' }],
+      });
+
+      // Prompts from another conversation must not hijack the active one…
+      expect(store.askUser.value).toBeNull();
+      expect(store.approval.value).toBeNull();
+      // …but they stay tracked and actionable for their own session.
+      expect(store.interactionStore.find('ask-user', 's1', 'ask-1')).toMatchObject({
+        state: 'waiting',
+      });
+      expect(store.interactionStore.find('approval', 's1', 'approval-1')).toMatchObject({
+        state: 'waiting',
+      });
+
+      // The active conversation still opens its own prompt immediately.
+      store.applyResponseEvent('s2', {
+        type: 'response.ask_user.prompt',
+        response_id: 'r2',
+        run_epoch: 1,
+        sequence_number: 2,
+        call_id: 'ask-2',
+        questions: [{ question: 'Pick one', options: [{ label: 'A' }] }],
+      });
+      expect(store.askUser.value).toMatchObject({ sessionId: 's2', callId: 'ask-2' });
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('does not let stale session state overwrite a prompt opened by the live stream', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];
