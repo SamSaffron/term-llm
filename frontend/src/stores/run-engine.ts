@@ -45,6 +45,22 @@ import type { TabEventType } from '../platform/tab-sync';
 const STALE_RESPONSE_RECOVERY_FAILURES = 7;
 const RESPONSE_STREAM_CONNECT_TIMEOUT_MS = 15_000;
 
+function retainInitiatingMessages(existing: Message[], incoming: Message[]): Message[] {
+  const incomingIDs = new Set(incoming.map((message) => message.id));
+  const incomingClientIDs = new Set(
+    incoming.map((message) => message.clientMessageId).filter(Boolean),
+  );
+  const initiating = existing.filter(
+    (message) =>
+      message.role === 'user' &&
+      Boolean(message.clientMessageId) &&
+      message.id === `pending_${message.clientMessageId}` &&
+      !incomingIDs.has(message.id) &&
+      !incomingClientIDs.has(message.clientMessageId),
+  );
+  return [...initiating, ...incoming];
+}
+
 export interface RunEngineHost {
   loadSession: (id: string, epoch?: number) => Promise<void>;
   refreshSidebar: (authoritative?: boolean) => Promise<void>;
@@ -463,7 +479,13 @@ export class RunEngine {
       requestId,
       notificationSubscriptionId: notificationSubscriptionId || undefined,
     };
-    this.runs.value = { ...this.runs.value, [sessionId]: initialProjection(run) };
+    // Keep the initiating row in the live projection as well as the session.
+    // A selected-session hydration can briefly return pre-commit transcript
+    // bodies; the projection owns this row until the durable handoff catches up.
+    this.runs.value = {
+      ...this.runs.value,
+      [sessionId]: { ...initialProjection(run), messages: [optimistic] },
+    };
     // Ownership changes before any previous controller is touched. The POST
     // stream and every later subscription share this same generation.
     const streamOwner = this.supervisors.begin(sessionId, run.responseId);
@@ -658,15 +680,15 @@ export class RunEngine {
     } else if (sessionNumber) {
       this.sessionStore.patch(sessionId, { number: sessionNumber });
     }
+    const acceptMessage = (message: Message): Message =>
+      message.clientMessageId === clientMessageId
+        ? { ...message, pending: false, interruptState: undefined }
+        : message;
     this.sessionStore.update(ownerID, (entry) => ({
       ...entry,
       activeResponseId: responseId,
       activeRun: true,
-      messages: entry.messages.map((message) =>
-        message.clientMessageId === clientMessageId
-          ? { ...message, pending: false, interruptState: undefined }
-          : message,
-      ),
+      messages: entry.messages.map(acceptMessage),
     }));
     this.retireIntent(ownerID, clientMessageId);
     this.host.publishSessionChange('run-changed', ownerID, responseId, undefined, clientMessageId);
@@ -675,6 +697,7 @@ export class RunEngine {
       ...this.runs.value,
       [ownerID]: {
         ...projection,
+        messages: projection.messages.map(acceptMessage),
         phase: undefined,
         run: {
           ...projection.run,
@@ -696,14 +719,22 @@ export class RunEngine {
   }
 
   private markIntentChecking(sessionId: string, clientMessageId: string): void {
-    this.sessionStore.update(sessionId, (session) => ({
-      ...session,
-      messages: session.messages.map((message) =>
-        message.clientMessageId === clientMessageId
-          ? { ...message, interruptState: 'checking_send', pending: true }
-          : message,
-      ),
-    }));
+    const markChecking = (message: Message): Message =>
+      message.clientMessageId === clientMessageId
+        ? { ...message, interruptState: 'checking_send', pending: true }
+        : message;
+    batch(() => {
+      this.sessionStore.update(sessionId, (session) => ({
+        ...session,
+        messages: session.messages.map(markChecking),
+      }));
+      const projection = this.runs.peek()[sessionId];
+      if (projection)
+        this.runs.value = {
+          ...this.runs.peek(),
+          [sessionId]: { ...projection, messages: projection.messages.map(markChecking) },
+        };
+    });
     const intent = this.pendingIntents
       .peek()
       [sessionId]?.find((entry) => entry.clientMessageId === clientMessageId);
@@ -1422,9 +1453,10 @@ export class RunEngine {
         approval: recoveredApproval,
         plan: recoveredPlan,
         pendingGuardian: {},
-        // The snapshot is authoritative. An empty recovery projection means
-        // stale local attempt output was discarded while this client was away.
-        messages: projected,
+        // The snapshot is authoritative for response output. Keep the initiating
+        // user row until transcript bodies contain the matching client id; the
+        // response recovery payload may legitimately omit that input row.
+        messages: retainInitiatingMessages(existing.messages, projected),
         usage: Object.keys(snapshotUsage || {}).length
           ? (snapshotUsage as ResponseProjection['usage'])
           : null,
@@ -1720,11 +1752,24 @@ export class RunEngine {
   }
 
   private rollbackOptimisticIntent(sessionId: string, clientMessageId: string): void {
-    this.sessionStore.update(sessionId, (session) => ({
-      ...session,
-      messages: session.messages.filter((message) => message.clientMessageId !== clientMessageId),
-    }));
-    this.retireIntent(sessionId, clientMessageId);
+    batch(() => {
+      this.sessionStore.update(sessionId, (session) => ({
+        ...session,
+        messages: session.messages.filter((message) => message.clientMessageId !== clientMessageId),
+      }));
+      const projection = this.runs.peek()[sessionId];
+      if (projection)
+        this.runs.value = {
+          ...this.runs.peek(),
+          [sessionId]: {
+            ...projection,
+            messages: projection.messages.filter(
+              (message) => message.clientMessageId !== clientMessageId,
+            ),
+          },
+        };
+      this.retireIntent(sessionId, clientMessageId);
+    });
   }
 
   private failRun(sessionId: string, error: unknown): void {

@@ -407,6 +407,57 @@ describe('AppStore compatibility behavior', () => {
     }
   });
 
+  it('keeps the first message visible while a new session transcript catches up', async () => {
+    const store = new AppStore(config);
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let sending: Promise<void> = Promise.resolve();
+    try {
+      store.sessions.value = [];
+      store.activeSessionId.value = '';
+      store.draftActive.value = true;
+      store.endpoints.createResponse = vi.fn(
+        async () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                streamController = controller;
+              },
+            }),
+            { headers: { 'x-response-id': 'r1', 'x-session-id': 's1' } },
+          ),
+      );
+      store.endpoints.sessionState = vi.fn(async () => ({
+        active_run: true,
+        active_response_id: 'r1',
+      }));
+      store.endpoints.selectedSession = vi.fn(async () => ({
+        selected_session: { id: 's1', active_run: true, active_response_id: 'r1' },
+        selected_transcript: { bodies: { rev: 0, messages: [] } },
+      }));
+      vi.spyOn(store.runEngine, 'resumeResponse').mockResolvedValue(undefined);
+      store.prompt.value = 'My first message';
+
+      sending = store.send();
+      await vi.waitFor(() => expect(store.activeSessionId.value).toBe('s1'));
+      expect(store.visibleMessages.value.map((message) => message.content)).toEqual([
+        'My first message',
+      ]);
+
+      // Session hydration may beat durable transcript persistence immediately
+      // after response admission. It must not erase the locally submitted row.
+      await store.loadSession('s1');
+
+      expect(store.activeSession.value?.messages).toEqual([]);
+      expect(store.visibleMessages.value.map((message) => message.content)).toEqual([
+        'My first message',
+      ]);
+    } finally {
+      streamController?.close();
+      store.dispose();
+      await sending;
+    }
+  });
+
   it('switches the active conversation to a selected worktree', async () => {
     const store = new AppStore(config);
     try {
@@ -1879,6 +1930,67 @@ describe('AppStore compatibility behavior', () => {
     ]);
   });
 
+  it('keeps the initiating user row when recovery only returns response output', async () => {
+    const store = new AppStore(config);
+    try {
+      store.sessions.value = [session()];
+      store.activeSessionId.value = 's1';
+      store.draftActive.value = false;
+      store.runs.value = {
+        s1: {
+          ...initialProjection({
+            responseId: 'r1',
+            sessionId: 's1',
+            epoch: 1,
+            status: 'connecting',
+            lastSequence: 0,
+            startedRev: 0,
+            reconnects: 0,
+          }),
+          messages: [
+            {
+              id: 'pending_c1',
+              role: 'user',
+              content: 'My first message',
+              created: 1,
+              clientMessageId: 'c1',
+            },
+          ],
+        },
+      };
+      store.endpoints.response = vi.fn(async () => ({
+        id: 'r1',
+        status: 'completed',
+        run_epoch: 1,
+        last_sequence_number: 2,
+        final_rev: 1,
+        durable_handoff: true,
+        recovery: {
+          sequence_number: 2,
+          messages: [{ id: 'a1', role: 'assistant', content: 'Done.', created: 2 }],
+        },
+      }));
+      store.endpoints.selectedSession = vi.fn(async () => ({
+        selected_session: { id: 's1', transcript_rev: 0 },
+        selected_transcript: { bodies: { rev: 0, messages: [] } },
+      }));
+      store.endpoints.sessionState = vi.fn(async () => ({}));
+
+      await store.runEngine.resumeResponse('s1', 'r1');
+
+      expect(store.runs.value.s1.messages.map((message) => message.content)).toEqual([
+        'My first message',
+        'Done.',
+      ]);
+      expect(store.visibleMessages.value.map((message) => message.content)).toEqual([
+        'My first message',
+        'Done.',
+      ]);
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('recovers an authoritative terminal snapshot after the server advances offline', async () => {
     const store = new AppStore(config);
     const staleAsk = { sessionId: 's1', callId: 'stale-call', questions: [] };
@@ -2550,6 +2662,7 @@ describe('AppStore compatibility behavior', () => {
         lastSequence: 3,
       });
       expect(store.runs.value.s1.messages).toEqual([
+        expect.objectContaining({ role: 'user', content: 'Use the original response stream' }),
         expect.objectContaining({ role: 'assistant', content: 'Done.' }),
       ]);
     } finally {
@@ -2668,6 +2781,56 @@ describe('AppStore compatibility behavior', () => {
       expect(store.pendingIntents.value).toEqual({});
       expect(store.prompt.value).toBe('do not duplicate this');
     } finally {
+      store.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('clears checking state from the projected message after retry admission', async () => {
+    vi.useFakeTimers();
+    const store = new AppStore(config);
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    try {
+      store.sessions.value = [session()];
+      store.activeSessionId.value = 's1';
+      store.draftActive.value = false;
+      store.prompt.value = 'retry this message';
+      store.endpoints.createResponse = vi
+        .fn()
+        .mockRejectedValueOnce(new TypeError('browser transport disconnected'))
+        .mockResolvedValueOnce(
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                streamController = controller;
+              },
+            }),
+            { headers: { 'x-response-id': 'r1', 'x-session-id': 's1' } },
+          ),
+        );
+
+      await store.send();
+      expect(store.visibleMessages.value[0]).toMatchObject({
+        content: 'retry this message',
+        interruptState: 'checking_send',
+      });
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      for (let index = 0; index < 10; index += 1) await Promise.resolve();
+      expect(store.activeSession.value?.activeResponseId).toBe('r1');
+
+      // If pre-commit hydration removes the session copy, the projection is
+      // visible and must no longer claim that delivery is still unknown.
+      store.sessions.value = [{ ...store.activeSession.value!, messages: [] }];
+      expect(store.visibleMessages.value).toEqual([
+        expect.objectContaining({
+          content: 'retry this message',
+          pending: false,
+          interruptState: undefined,
+        }),
+      ]);
+    } finally {
+      streamController?.close();
       store.dispose();
       vi.useRealTimers();
     }
