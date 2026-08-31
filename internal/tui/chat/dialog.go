@@ -377,6 +377,7 @@ func (d *DialogModel) ShowMCPPicker(mcpManager *mcp.Manager, discovery ...llm.To
 
 	available := mcpManager.AvailableServers()
 	states := mcpManager.GetAllStates()
+	authStatuses := mcpManager.AuthStatuses()
 	discoveryServers := make(map[string]llm.ToolDiscoveryServerDiagnostic)
 	if len(discovery) > 0 {
 		for _, server := range discovery[0].Servers {
@@ -396,8 +397,20 @@ func (d *DialogModel) ShowMCPPicker(mcpManager *mcp.Manager, discovery ...llm.To
 		if status == "" {
 			status = "stopped"
 		}
-		isRunning := status == "ready" || status == "starting"
+		isRunning := status == "ready" || status == "starting" || status == "auth_required"
 		description := status
+		if authStatus, ok := authStatuses[name]; ok {
+			switch authStatus.State {
+			case "signed_in":
+				description += " · signed in"
+			case "waiting":
+				description += " · waiting for browser…"
+			case "signed_out", "needs_sign_in", "expired":
+				description += " · sign-in required"
+			case "retry":
+				description += " · sign-in retry available"
+			}
+		}
 		if state.ToolCount > 0 {
 			description += fmt.Sprintf(" · %d tools", state.ToolCount)
 		}
@@ -1165,6 +1178,8 @@ func (d *DialogModel) viewMCPPicker() string {
 			statusIcon = successStyle.Render("●")
 		case "starting":
 			statusIcon = warningStyle.Render("◐")
+		case "auth_required":
+			statusIcon = warningStyle.Render("○")
 		case "failed":
 			statusIcon = errorStyle.Render("○")
 		default:
@@ -1186,8 +1201,19 @@ func (d *DialogModel) viewMCPPicker() string {
 			statusText = warningStyle.Render(" starting...")
 		case "failed":
 			statusText = errorStyle.Render(" failed")
+		case "auth_required":
+			statusText = warningStyle.Render(" sign-in required")
 		default:
 			// No status text for stopped servers - cleaner look
+		}
+		if strings.Contains(item.Description, "waiting for browser") {
+			statusText += warningStyle.Render(" · waiting for browser…")
+		} else if status != "auth_required" && strings.Contains(item.Description, "sign-in required") {
+			statusText += warningStyle.Render(" · sign-in required")
+		} else if strings.Contains(item.Description, "signed in") {
+			statusText += successStyle.Render(" · signed in")
+		} else if strings.Contains(item.Description, "sign-in retry available") {
+			statusText += warningStyle.Render(" · retry sign-in")
 		}
 
 		line := cursor + statusIcon + " " + item.Label + statusText

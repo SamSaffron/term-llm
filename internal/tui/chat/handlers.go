@@ -744,6 +744,9 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					// attached discovery planner.
 					name := selected.ID
 					status, _ := m.mcpManager.ServerStatus(name)
+					if status == mcp.StatusAuthRequired {
+						return m, m.startMCPOAuthCmd(name, false)
+					}
 					if status == mcp.StatusReady || status == mcp.StatusStarting {
 						if err := m.mcpManager.Disable(name); err == nil {
 							m.setMCPServerSelected(name, false)
@@ -1346,6 +1349,20 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+		}
+
+		// Tab completion for /mcp login|logout <server>.
+		for _, subcommand := range []string{"login", "logout"} {
+			prefix := "/mcp " + subcommand + " "
+			if strings.HasPrefix(valueLower, prefix) && m.mcpManager != nil {
+				partial := strings.TrimSpace(value[len(prefix):])
+				if partial != "" {
+					if match := m.mcpFindServerMatch(partial); match != "" {
+						m.setTextareaValue(prefix + match)
+					}
+				}
+				return m, nil
+			}
 		}
 
 		return m, nil

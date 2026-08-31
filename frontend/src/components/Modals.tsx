@@ -638,6 +638,7 @@ function MCP() {
       return `${server.tools} tool${server.tools === 1 ? '' : 's'} available`;
     }
     if (status === 'starting') return 'Starting server…';
+    if (status === 'auth_required') return 'Server enabled · sign-in required';
     if (server.error) return 'Failed to start';
     return '';
   };
@@ -698,8 +699,16 @@ function MCP() {
             const checked = state.enabled.includes(server.name);
             const status = server.configured ? server.status.toLocaleLowerCase() : 'failed';
             const statusClass = status.replace(/[^a-z0-9_-]/g, '') || 'stopped';
+            const oauth = state.oauth?.[server.name];
+            const waiting = oauth?.state === 'starting' || oauth?.state === 'pending';
+            const signInLabel =
+              server.authState === 'needs_sign_in'
+                ? 'Sign in again'
+                : server.authState === 'retry'
+                  ? 'Retry'
+                  : 'Sign in';
             return (
-              <label
+              <div
                 class="mcp-server-row"
                 data-enabled={checked ? 'true' : 'false'}
                 key={server.name}
@@ -731,6 +740,70 @@ function MCP() {
                     <span class="mcp-server-warning">{server.refreshWarning}</span>
                   )}
                 </span>
+                {waiting ? (
+                  <span class="mcp-auth-actions">
+                    <span class="mcp-auth-waiting" role="status">
+                      {oauth.popupBlocked
+                        ? 'Popup blocked — copy the sign-in link.'
+                        : 'Waiting for authorization…'}
+                    </span>
+                    {oauth.authorizationURL && (
+                      <button
+                        class="mcp-auth-action"
+                        type="button"
+                        onClick={() => void store.copyMCPOAuthLink(server.name)}
+                      >
+                        Copy link
+                      </button>
+                    )}
+                    <button
+                      class="mcp-auth-action"
+                      type="button"
+                      onClick={() => void store.cancelMCPOAuth(server.name)}
+                    >
+                      Cancel
+                    </button>
+                  </span>
+                ) : oauth?.state === 'failed' ? (
+                  <span class="mcp-auth-actions">
+                    <span class="mcp-server-warning">{oauth.error}</span>
+                    <button
+                      class="mcp-auth-action"
+                      type="button"
+                      onClick={() => void store.startMCPOAuth(server.name, true)}
+                    >
+                      Retry
+                    </button>
+                  </span>
+                ) : (
+                  <span class="mcp-auth-actions">
+                    {server.canSignIn && server.authState !== 'signed_in' && (
+                      <button
+                        class="mcp-auth-action primary"
+                        type="button"
+                        disabled={store.streaming.value}
+                        onClick={() =>
+                          void store.startMCPOAuth(
+                            server.name,
+                            server.authState === 'needs_sign_in',
+                          )
+                        }
+                      >
+                        {signInLabel}
+                      </button>
+                    )}
+                    {server.canSignOut && server.authState === 'signed_in' && (
+                      <button
+                        class="mcp-auth-action"
+                        type="button"
+                        disabled={store.streaming.value}
+                        onClick={() => void store.logoutMCPOAuth(server.name)}
+                      >
+                        Sign out
+                      </button>
+                    )}
+                  </span>
+                )}
                 <span class="mcp-switch">
                   <input
                     class="mcp-switch-input"
@@ -744,7 +817,7 @@ function MCP() {
                     <span class="mcp-switch-thumb" />
                   </span>
                 </span>
-              </label>
+              </div>
             );
           })
         )}

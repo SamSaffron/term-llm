@@ -12,6 +12,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tooldiscovery"
 )
@@ -30,6 +31,12 @@ type serveMCPServerView struct {
 	Deferred       int       `json:"deferred,omitempty"`
 	LoadingMode    string    `json:"loading_mode,omitempty"`
 	LastRefresh    time.Time `json:"last_refresh,omitempty"`
+	AuthState      string    `json:"auth_state"`
+	AuthIssuer     string    `json:"auth_issuer,omitempty"`
+	AuthScopes     []string  `json:"auth_scopes,omitempty"`
+	AuthExpiresAt  time.Time `json:"auth_expires_at,omitempty"`
+	CanSignIn      bool      `json:"can_sign_in"`
+	CanSignOut     bool      `json:"can_sign_out"`
 }
 
 type serveMCPDiscoveryView struct {
@@ -161,6 +168,7 @@ func buildServeMCPState(manager *mcp.Manager, engine *llm.Engine, mcpSetting, se
 	enabled := normalizeMCPSelection(append(manager.EnabledServers(), parseServerList(mcpSetting)...))
 	enabledSet := stringSet(enabled)
 	states := make(map[string]mcp.ServerState)
+	authStatuses := manager.AuthStatuses()
 	for _, state := range manager.GetAllStates() {
 		states[state.Name] = state
 	}
@@ -194,6 +202,16 @@ func buildServeMCPState(manager *mcp.Manager, engine *llm.Engine, mcpSetting, se
 		}
 		if err != nil {
 			view.Error = err.Error()
+		}
+		if authStatus, ok := authStatuses[name]; ok {
+			view.AuthState = string(authStatus.State)
+			view.AuthIssuer = authStatus.Issuer
+			view.AuthScopes = append([]string(nil), authStatus.Scopes...)
+			view.AuthExpiresAt = authStatus.ExpiresAt
+			view.CanSignIn = authStatus.CanSignIn
+			view.CanSignOut = authStatus.CanSignOut
+		} else {
+			view.AuthState = string(mcpoauth.AuthNotNeeded)
 		}
 		if state, ok := states[name]; ok {
 			view.LastRefresh = state.LastToolRefresh

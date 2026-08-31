@@ -17,11 +17,12 @@ func TestMCPPickerRendersStatusIndicatorsWithMetadata(t *testing.T) {
 		{ID: "ready", Label: "ready-server", Description: "ready · 42 tools · refreshed 17:16:40"},
 		{ID: "starting", Label: "starting-server", Description: "starting"},
 		{ID: "failed", Label: "failed-server", Description: "failed · error: connection closed"},
+		{ID: "auth", Label: "protected-server", Description: "auth_required · sign-in required"},
 	}
 	d.filtered = d.items
 
 	view := d.View()
-	for _, want := range []string{"●", "◐", "○", "ready", "starting", "failed"} {
+	for _, want := range []string{"●", "◐", "○", "ready", "starting", "failed", "sign-in required"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("MCP picker missing %q:\n%s", want, view)
 		}

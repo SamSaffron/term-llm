@@ -27,12 +27,27 @@ type ServerConfig struct {
 	URL     string            `json:"url,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
 
+	// OAuth configures automatic authorization-code authentication for HTTP
+	// transports. An explicit Authorization header remains authoritative.
+	OAuth *OAuthConfig `json:"oauth,omitempty"`
+
 	// Shared fields
 	Env        map[string]string `json:"env,omitempty"`
 	AlwaysLoad []string          `json:"always_load,omitempty"`
 
 	// Sampling configuration
 	Sampling *SamplingConfig `json:"sampling,omitempty"`
+}
+
+// OAuthConfig customizes automatic OAuth for a remote MCP server. Client
+// secrets are referenced through the environment and are never stored in
+// mcp.json.
+type OAuthConfig struct {
+	ClientID            string   `json:"client_id,omitempty"`
+	ClientSecretEnv     string   `json:"client_secret_env,omitempty"`
+	Scopes              []string `json:"scopes,omitempty"`
+	ClientIDMetadataURL string   `json:"client_id_metadata_url,omitempty"`
+	Disabled            bool     `json:"disabled,omitempty"`
 }
 
 // SamplingConfig configures MCP sampling behavior for a server.

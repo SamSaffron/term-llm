@@ -74,6 +74,7 @@ export default defineConfig({
         manualChunks(id) {
           if (id.includes('/katex/')) return 'katex';
           if (id.includes('/highlight.js/')) return 'highlight';
+          if (id.endsWith('/src/stores/mcp-store.ts')) return 'mcp';
           if (
             id.includes('/node_modules/preact/') ||
             id.includes('/node_modules/@preact/signals/') ||

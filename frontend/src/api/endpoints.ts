@@ -1,5 +1,5 @@
 import type { APIClient } from './client';
-import type { Goal, MCPResponse } from '../domain/types';
+import type { Goal, MCPOAuthFlow, MCPResponse } from '../domain/types';
 import type { MentionSearchResponse } from '../domain/completions';
 
 const encoded = (value: string): string => encodeURIComponent(value);
@@ -207,6 +207,18 @@ export const endpoints = (api: APIClient) => ({
   getMCP: (id: string) => api.get<MCPResponse>(`/v1/sessions/${encoded(id)}/mcp`),
   setMCP: (id: string, enabled: string[]) =>
     api.patch<MCPResponse>(`/v1/sessions/${encoded(id)}/mcp`, { enabled }),
+  startMCPOAuth: (id: string, server: string, force = false) =>
+    api.post<MCPOAuthFlow>(`/v1/sessions/${encoded(id)}/mcp/${encoded(server)}/oauth/start`, {
+      force,
+    }),
+  cancelMCPOAuth: (id: string, server: string, flowId: string) =>
+    api.post(`/v1/sessions/${encoded(id)}/mcp/${encoded(server)}/oauth/cancel`, {
+      flow_id: flowId,
+    }),
+  logoutMCPOAuth: (id: string, server: string) =>
+    api.delete(`/v1/sessions/${encoded(id)}/mcp/${encoded(server)}/oauth`),
+  getMCPOAuthFlow: (flowId: string) =>
+    api.get<MCPOAuthFlow>(`/v1/mcp/oauth/flows/${encoded(flowId)}`),
   askUser: (id: string, body: unknown, operationId: string) =>
     api.post(`/v1/sessions/${encoded(id)}/ask_user`, body, 'idempotent-mutation', {
       'Idempotency-Key': `ask_user_${operationId}`,

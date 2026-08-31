@@ -4,19 +4,24 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/samsaffron/term-llm/internal/llm"
+	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -168,11 +173,15 @@ func TestCreateHTTPTransport_UsesTransportLevelTimeouts(t *testing.T) {
 	client := &Client{
 		name: "test",
 		config: ServerConfig{
-			URL: "https://example.com/mcp",
+			URL:   "https://example.com/mcp",
+			OAuth: &OAuthConfig{Disabled: true},
 		},
 	}
 
-	transport := client.createHTTPTransport()
+	transport, err := client.createHTTPTransport()
+	if err != nil {
+		t.Fatalf("createHTTPTransport: %v", err)
+	}
 	st, ok := transport.(*sdkmcp.StreamableClientTransport)
 	if !ok {
 		t.Fatal("expected sdkmcp.StreamableClientTransport")
@@ -217,7 +226,10 @@ func TestCreateHTTPTransport_HeadersWrapTimeoutTransport(t *testing.T) {
 		},
 	}
 
-	transport := client.createHTTPTransport()
+	transport, err := client.createHTTPTransport()
+	if err != nil {
+		t.Fatalf("createHTTPTransport: %v", err)
+	}
 	st := transport.(*sdkmcp.StreamableClientTransport)
 	if st.HTTPClient.Timeout != 0 {
 		t.Fatalf("HTTPClient.Timeout = %v, want 0 so context controls long-running calls", st.HTTPClient.Timeout)
@@ -237,6 +249,107 @@ func TestCreateHTTPTransport_HeadersWrapTimeoutTransport(t *testing.T) {
 	}
 	if base.ResponseHeaderTimeout == 0 {
 		t.Fatal("expected wrapped transport to keep response header timeout")
+	}
+}
+
+func TestCreateHTTPTransport_OAuthWiringAndAuthorizationHeaderPrecedence(t *testing.T) {
+	tests := []struct {
+		name        string
+		config      ServerConfig
+		wantHandler bool
+	}{
+		{name: "automatic OAuth", config: ServerConfig{URL: "https://example.com/mcp"}, wantHandler: true},
+		{name: "explicit Authorization header", config: ServerConfig{URL: "https://example.com/mcp", Headers: map[string]string{"authorization": "Bearer static"}}},
+		{name: "OAuth disabled", config: ServerConfig{URL: "https://example.com/mcp", OAuth: &OAuthConfig{Disabled: true}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &Client{
+				name: "test", config: tt.config,
+				oauthCoordinator: mcpoauth.NewCoordinator(mcpoauth.NewFileStore(filepath.Join(t.TempDir(), "oauth.json"))),
+			}
+			transport, err := client.createHTTPTransport()
+			if err != nil {
+				t.Fatal(err)
+			}
+			streamable := transport.(*sdkmcp.StreamableClientTransport)
+			if got := streamable.OAuthHandler != nil; got != tt.wantHandler {
+				t.Fatalf("OAuthHandler attached = %v, want %v", got, tt.wantHandler)
+			}
+		})
+	}
+}
+
+func TestCreateHTTPTransport_OAuthClientOmitsCustomHeaders(t *testing.T) {
+	// The OAuth handler talks to authorization-server endpoints (metadata,
+	// registration, token). Custom per-server headers such as API keys must
+	// only reach the MCP endpoint, never OAuth discovery or registration.
+	var server *httptest.Server
+	var leakedHeader atomic.Bool
+	var oauthRequests atomic.Int32
+	record := func(r *http.Request) {
+		oauthRequests.Add(1)
+		if r.Header.Get("X-Api-Key") != "" {
+			leakedHeader.Store(true)
+		}
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/oauth-protected-resource/mcp", func(w http.ResponseWriter, r *http.Request) {
+		record(r)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"resource":%q,"authorization_servers":[%q]}`, server.URL+"/mcp", server.URL)
+	})
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
+		record(r)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"issuer":%q,"authorization_endpoint":%q,"token_endpoint":%q,"registration_endpoint":%q,"response_types_supported":["code"],"code_challenge_methods_supported":["S256"]}`,
+			server.URL, server.URL+"/authorize", server.URL+"/token", server.URL+"/register")
+	})
+	mux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
+		record(r)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"client_id":"dynamic-client","redirect_uris":["http://127.0.0.1/callback"],"token_endpoint_auth_method":"none","grant_types":["authorization_code","refresh_token"],"response_types":["code"]}`)
+	})
+	server = httptest.NewServer(mux)
+	defer server.Close()
+
+	client := &Client{
+		name: "test",
+		config: ServerConfig{
+			URL:     server.URL + "/mcp",
+			Headers: map[string]string{"X-Api-Key": "super-secret"},
+		},
+		oauthCoordinator: mcpoauth.NewCoordinator(mcpoauth.NewFileStore(filepath.Join(t.TempDir(), "oauth.json"))),
+	}
+	transport, err := client.createHTTPTransport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	streamable := transport.(*sdkmcp.StreamableClientTransport)
+	if streamable.OAuthHandler == nil {
+		t.Fatal("expected OAuth handler")
+	}
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/mcp", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	challenge := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header: http.Header{"Www-Authenticate": []string{
+			fmt.Sprintf(`Bearer resource_metadata=%q`, server.URL+"/.well-known/oauth-protected-resource/mcp"),
+		}},
+		Body: io.NopCloser(strings.NewReader("")),
+	}
+	err = streamable.OAuthHandler.Authorize(context.Background(), req, challenge)
+	if !errors.Is(err, mcpoauth.ErrAuthenticationRequired) {
+		t.Fatalf("background Authorize error = %v, want ErrAuthenticationRequired", err)
+	}
+	if oauthRequests.Load() == 0 {
+		t.Fatal("expected OAuth discovery requests to reach the fake authorization server")
+	}
+	if leakedHeader.Load() {
+		t.Fatal("custom MCP header leaked to authorization-server endpoints")
 	}
 }
 

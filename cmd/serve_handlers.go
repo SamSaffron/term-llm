@@ -2040,6 +2040,11 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if serverName, action, ok := parseSessionMCPOAuthSuffix(suffix); ok {
+		s.handleSessionMCPOAuth(w, r, sessionID, serverName, action)
+		return
+	}
+
 	if suffix == "mcp" {
 		if r.Method != http.MethodGet && r.Method != http.MethodPatch {
 			w.Header().Set("Allow", "GET, PATCH")

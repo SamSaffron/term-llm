@@ -5,24 +5,29 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/samsaffron/term-llm/internal/llm"
+	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
 )
 
 // ServerStatus represents the current state of an MCP server.
 type ServerStatus string
 
 const (
-	StatusStopped  ServerStatus = "stopped"
-	StatusStarting ServerStatus = "starting"
-	StatusReady    ServerStatus = "ready"
-	StatusFailed   ServerStatus = "failed"
+	StatusStopped      ServerStatus = "stopped"
+	StatusStarting     ServerStatus = "starting"
+	StatusReady        ServerStatus = "ready"
+	StatusFailed       ServerStatus = "failed"
+	StatusAuthRequired ServerStatus = "auth_required"
 )
 
 var mcpStartupTimeout = 30 * time.Second
@@ -59,6 +64,7 @@ type Manager struct {
 	startups          map[string]*serverStartup
 	catalogues        map[string]*ToolSnapshot
 	maxToolsPerServer int
+	oauthCoordinator  *mcpoauth.Coordinator
 	mu                sync.RWMutex
 
 	aggregate           atomic.Pointer[CatalogueSnapshot]
@@ -119,7 +125,26 @@ func (m *Manager) Config() *Config {
 	for name, server := range m.config.Servers {
 		serverCopy := server
 		serverCopy.AlwaysLoad = append([]string(nil), server.AlwaysLoad...)
+		serverCopy.Args = append([]string(nil), server.Args...)
+		serverCopy.Headers = cloneStringMap(server.Headers)
+		serverCopy.Env = cloneStringMap(server.Env)
+		if server.OAuth != nil {
+			oauthCopy := *server.OAuth
+			oauthCopy.Scopes = append([]string(nil), server.OAuth.Scopes...)
+			serverCopy.OAuth = &oauthCopy
+		}
 		copy.Servers[name] = serverCopy
+	}
+	return copy
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	copy := make(map[string]string, len(values))
+	for key, value := range values {
+		copy[key] = value
 	}
 	return copy
 }
@@ -275,7 +300,7 @@ func (m *Manager) EnabledServers() []string {
 	defer m.mu.RUnlock()
 	var names []string
 	for name, state := range m.statuses {
-		if state.Status == StatusStarting || state.Status == StatusReady {
+		if state.Status == StatusStarting || state.Status == StatusReady || state.Status == StatusAuthRequired {
 			names = append(names, name)
 		}
 	}
@@ -309,7 +334,7 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 
 	// Check if already running or starting
 	if state, ok := m.statuses[name]; ok {
-		if state.Status == StatusStarting || state.Status == StatusReady {
+		if state.Status == StatusStarting || state.Status == StatusReady || state.Status == StatusAuthRequired {
 			m.mu.Unlock()
 			return nil
 		}
@@ -317,6 +342,7 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 
 	// Create client and set status to starting.
 	client := NewClient(name, serverCfg)
+	client.oauthCoordinator = m.oauthCoordinator
 	client.maxToolsPerServer = m.maxToolsPerServer
 	client.SetCatalogueChangeHandler(func(oldSnapshot, newSnapshot *ToolSnapshot, err error) {
 		m.handleCatalogueChange(name, client, oldSnapshot, newSnapshot, err)
@@ -383,7 +409,11 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 		var catalogueEvent *CatalogueEvent
 		var catalogueHandler func(CatalogueEvent)
 		if err != nil {
-			status = StatusFailed
+			if isAuthenticationRequired(err) {
+				status = StatusAuthRequired
+			} else {
+				status = StatusFailed
+			}
 			state.Error = err
 		} else {
 			state.Error = nil
@@ -438,10 +468,14 @@ func (m *Manager) watchSession(name string, client *Client, session *sdkmcp.Clie
 	delete(m.catalogues, name)
 	snapshot := m.publishAggregateLocked()
 	handler := m.catalogueHandler
-	state.Status = StatusFailed
+	status := StatusFailed
+	if isAuthenticationRequired(err) {
+		status = StatusAuthRequired
+	}
+	state.Status = status
 	state.Error = err
 	state.ToolCount = 0
-	m.sendStatusLocked(name, StatusFailed, err)
+	m.sendStatusLocked(name, status, err)
 	m.mu.Unlock()
 	if handler != nil {
 		handler(CatalogueEvent{Server: name, Snapshot: copyCatalogueSnapshot(snapshot)})
@@ -493,6 +527,170 @@ func (m *Manager) Restart(ctx context.Context, name string) error {
 		return err
 	}
 	return m.Enable(ctx, name)
+}
+
+// AuthStatus is safe OAuth account metadata for display surfaces.
+type AuthStatus = mcpoauth.AuthStatus
+
+// OAuthStartOptions selects the redirect frontend and whether an existing valid
+// grant should be replaced.
+type OAuthStartOptions struct {
+	RedirectURL   string
+	Force         bool
+	SkipReconnect bool
+}
+
+// AuthStatuses reports account state without starting any MCP server.
+func (m *Manager) AuthStatuses() map[string]AuthStatus {
+	m.mu.RLock()
+	cfg := m.config
+	m.mu.RUnlock()
+	statuses := make(map[string]AuthStatus)
+	if cfg == nil {
+		return statuses
+	}
+	coordinator := m.oauthCoordinatorOrDefault()
+	for name, server := range cfg.Servers {
+		if server.TransportType() != "http" || !automaticOAuthForServer(server) {
+			statuses[name] = AuthStatus{State: mcpoauth.AuthNotNeeded}
+			continue
+		}
+		statuses[name] = coordinator.Status(server.URL)
+	}
+	return statuses
+}
+
+// StartOAuth starts a browser authorization flow for one server. Callers should
+// provide their callback URL; the default is only useful for custom native
+// callback handlers.
+func (m *Manager) StartOAuth(ctx context.Context, name string, startOptions ...OAuthStartOptions) (*mcpoauth.Flow, error) {
+	m.mu.RLock()
+	if m.config == nil {
+		m.mu.RUnlock()
+		return nil, fmt.Errorf("no MCP configuration loaded")
+	}
+	server, ok := m.config.Servers[name]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("unknown MCP server: %s", name)
+	}
+	if server.TransportType() != "http" || !automaticOAuthForServer(server) {
+		return nil, fmt.Errorf("MCP server %s does not use automatic OAuth", name)
+	}
+	options := OAuthStartOptions{RedirectURL: "http://127.0.0.1/callback"}
+	if len(startOptions) > 0 {
+		options = startOptions[0]
+	}
+	coordinator := m.oauthCoordinatorOrDefault()
+	oauthOptions := oauthOptionsForServer(server)
+	if server.OAuth != nil && server.OAuth.ClientSecretEnv != "" && oauthOptions.ClientSecret == "" {
+		return nil, fmt.Errorf("OAuth client secret environment variable %s is not set", server.OAuth.ClientSecretEnv)
+	}
+	flow, err := coordinator.Start(ctx, server.URL, oauthOptions, options.RedirectURL, options.Force)
+	if err != nil {
+		return nil, err
+	}
+	m.sendStatus(name, StatusAuthRequired, nil)
+	if !flow.Created || options.SkipReconnect {
+		return flow, nil
+	}
+	go func(flowID string) {
+		flow, waitErr := coordinator.Wait(context.Background(), flowID)
+		if waitErr != nil || flow == nil || flow.State != mcpoauth.FlowSucceeded {
+			m.sendStatus(name, StatusAuthRequired, waitErr)
+			return
+		}
+		m.mu.RLock()
+		state := m.statuses[name]
+		selected := state != nil && state.Status != StatusStopped
+		m.mu.RUnlock()
+		if selected {
+			_ = m.Restart(context.Background(), name)
+		} else {
+			m.sendStatus(name, StatusStopped, nil)
+		}
+	}(flow.ID)
+	return flow, nil
+}
+
+func (m *Manager) CancelOAuth(name, flowID string) error {
+	m.mu.RLock()
+	if m.config == nil {
+		m.mu.RUnlock()
+		return fmt.Errorf("no MCP configuration loaded")
+	}
+	server, ok := m.config.Servers[name]
+	m.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("unknown MCP server: %s", name)
+	}
+	if !m.oauthCoordinatorOrDefault().Cancel(server.URL, flowID) {
+		return fmt.Errorf("OAuth flow is not pending")
+	}
+	m.sendStatus(name, StatusAuthRequired, nil)
+	return nil
+}
+
+func (m *Manager) LogoutOAuth(ctx context.Context, name string, localOnly bool) error {
+	m.mu.RLock()
+	if m.config == nil {
+		m.mu.RUnlock()
+		return fmt.Errorf("no MCP configuration loaded")
+	}
+	server, ok := m.config.Servers[name]
+	state := m.statuses[name]
+	selected := state != nil && state.Status != StatusStopped
+	m.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("unknown MCP server: %s", name)
+	}
+	if server.TransportType() != "http" || !automaticOAuthForServer(server) {
+		return nil
+	}
+	if err := m.oauthCoordinatorOrDefault().Logout(ctx, server.URL, localOnly); err != nil {
+		return err
+	}
+	if selected {
+		return m.Restart(ctx, name)
+	}
+	m.sendStatus(name, StatusStopped, nil)
+	return nil
+}
+
+func (m *Manager) oauthCoordinatorOrDefault() *mcpoauth.Coordinator {
+	if m.oauthCoordinator != nil {
+		return m.oauthCoordinator
+	}
+	return mcpoauth.DefaultCoordinator()
+}
+
+func automaticOAuthForServer(server ServerConfig) bool {
+	if server.OAuth != nil && server.OAuth.Disabled {
+		return false
+	}
+	for key := range server.Headers {
+		if strings.EqualFold(key, "Authorization") {
+			return false
+		}
+	}
+	return true
+}
+
+func oauthOptionsForServer(server ServerConfig) mcpoauth.Options {
+	options := mcpoauth.Options{}
+	if server.OAuth != nil {
+		options.ClientID = server.OAuth.ClientID
+		options.Scopes = append([]string(nil), server.OAuth.Scopes...)
+		options.ClientIDMetadataURL = server.OAuth.ClientIDMetadataURL
+		if server.OAuth.ClientSecretEnv != "" {
+			options.ClientSecret = os.Getenv(server.OAuth.ClientSecretEnv)
+		}
+	}
+	return options
+}
+
+func isAuthenticationRequired(err error) bool {
+	return errors.Is(err, mcpoauth.ErrAuthenticationRequired) || errors.Is(err, mcpoauth.ErrRefreshRejected)
 }
 
 // StopAll stops all running MCP servers.

@@ -34,6 +34,9 @@ term-llm chat --mcp playwright,filesystem
 |---------|-------------|
 | `mcp add <name-or-url>` | Add server from registry or URL |
 | `mcp list` | List configured servers |
+| `mcp status [name]` | Show transport and safe authentication metadata |
+| `mcp login <name>` | Sign in to a protected remote server |
+| `mcp logout <name>` | Revoke and remove a stored grant |
 | `mcp info <name>` | Show server info and tools |
 | `mcp run <server> <tool> [args]` | Run MCP tool(s) directly |
 | `mcp remove <name>` | Remove a server |
@@ -61,6 +64,45 @@ term-llm mcp add exa       # Exa web_search_exa and web_fetch_exa over https://m
 ```
 
 This adds Exa's free remote MCP endpoint. To use your own Exa key with this manually added MCP server, edit `mcp.json` and add an `x-api-key` header. The `search.exa_mcp.api_key` setting applies to term-llm's built-in `search.provider: exa_mcp` path.
+
+### OAuth sign-in for remote servers
+
+Streamable HTTP servers can use MCP OAuth automatically. Adding a URL does not contact it or open a browser. Enable the server, then sign in when term-llm reports that authentication is required:
+
+```bash
+term-llm mcp add https://mcp.example.com/mcp
+term-llm mcp login example
+term-llm mcp status example
+```
+
+`mcp login` performs protected-resource and authorization-server discovery, dynamic client registration when needed, PKCE S256, and the browser callback. It prints the authorization URL as a fallback. Use `--no-browser` when the browser is elsewhere; over SSH, forward the printed loopback callback port (for example with `ssh -L`) before opening the URL. Device-code authentication is not currently supported.
+
+The resulting registration and grant are stored in `$XDG_CONFIG_HOME/term-llm/mcp_oauth.json` (normally `~/.config/term-llm/mcp_oauth.json`). The directory is mode `0700`, the file and lock are mode `0600`, writes are atomic, and refresh-token rotation is serialized across term-llm processes. This private file contains credentials: do not copy it into a repository or expose it to a browser. Tokens and client secrets are never returned by the serve API or stored in browser storage.
+
+Use `term-llm mcp logout example` to attempt RFC 7009 revocation and remove the local grant. `--local-only` skips the remote attempt. Logout is safe to repeat.
+
+An explicit `Authorization` header remains authoritative and disables automatic OAuth for that server. Stdio servers continue to use their configured environment. Optional OAuth client configuration belongs in `mcp.json`, while the secret itself stays in the named environment variable:
+
+```json
+{
+  "servers": {
+    "private-remote": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "oauth": {
+        "client_id": "registered-public-client",
+        "client_secret_env": "MCP_CLIENT_SECRET",
+        "scopes": ["read", "write"],
+        "client_id_metadata_url": "https://client.example/metadata.json"
+      }
+    }
+  }
+}
+```
+
+Set `"disabled": true` under `oauth` to opt out without adding a static header.
+
+For web sign-in, `term-llm serve` derives the callback from the authenticated start request. Set `--public-url` or `TERM_LLM_SERVE_PUBLIC_URL` when the browser-visible URL differs. A node mounted behind `serve hub` must set this to its hub mount, such as `https://hub.example/node/<id>`, because the hub deliberately strips forwarding headers.
 
 ### Using MCP Tools
 

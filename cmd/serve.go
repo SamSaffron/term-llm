@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -40,6 +41,7 @@ var (
 	serveAllowNoAuth            bool
 	serveAuthMode               string
 	serveBasePath               string
+	servePublicURL              string
 	serveTitle                  string
 	serveDisableLocationSharing bool
 	serveCORSOrigins            []string
@@ -155,6 +157,7 @@ func init() {
 	_ = serveCmd.Flags().MarkHidden("allow-no-auth")
 	serveCmd.Flags().StringVar(&serveAuthMode, "auth", "bearer", "Auth mode: bearer or none")
 	serveCmd.Flags().StringVar(&serveBasePath, "base-path", "/ui", "URL prefix the UI uses for session URLs (e.g. /chat)")
+	serveCmd.Flags().StringVar(&servePublicURL, "public-url", "", "Browser-visible URL for OAuth callbacks (defaults to $TERM_LLM_SERVE_PUBLIC_URL or the authenticated request origin)")
 	serveCmd.Flags().StringVar(&serveTitle, "title", "", "Override the web UI sidebar title (defaults to agent name or Chat)")
 	serveCmd.Flags().BoolVar(&serveDisableLocationSharing, "disable-location-sharing", false, "Hide the web UI action for sharing the browser's current location")
 	serveCmd.Flags().StringArrayVar(&serveCORSOrigins, "cors-origin", nil, "Allowed CORS origin (repeatable, or '*' for all)")
@@ -386,6 +389,13 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	serveBasePath, err = normalizeBasePath(serveBasePath)
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(servePublicURL) == "" {
+		servePublicURL = strings.TrimSpace(os.Getenv("TERM_LLM_SERVE_PUBLIC_URL"))
+	}
+	servePublicURL, err = normalizeServePublicURL(servePublicURL)
+	if err != nil {
+		return fmt.Errorf("invalid serve --public-url: %w", err)
 	}
 
 	resolvedTitle := strings.TrimSpace(serveTitle)
@@ -747,6 +757,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 				suppressServerTools:     serveFilterServerTools,
 				verbose:                 serveVerbose,
 				basePath:                serveBasePath,
+				publicURL:               servePublicURL,
 				uiTitle:                 resolvedTitle,
 				locationSharingDisabled: locationSharingDisabled,
 				sidebarSessions:         append([]string(nil), sidebarSessions...),
@@ -1133,6 +1144,7 @@ type serveServerConfig struct {
 	suppressServerTools     bool
 	verbose                 bool
 	basePath                string // e.g. "/ui" or "/chat", always without trailing slash
+	publicURL               string // explicit browser-visible origin + optional prefix for OAuth callbacks
 	uiTitle                 string
 	locationSharingDisabled bool
 	sidebarSessions         []string
@@ -1244,6 +1256,26 @@ func resolveServeWriteDirs(cliWriteDirs []string, cfg *config.Config) []string {
 		out = append(out, d)
 	}
 	return out
+}
+
+func normalizeServePublicURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+		return "", fmt.Errorf("must be an http(s) URL with a host")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("must not contain a query or fragment")
+	}
+	u.Path = strings.TrimRight(u.Path, "/")
+	u.RawPath = ""
+	return strings.TrimRight(u.String(), "/"), nil
 }
 
 // normalizeBasePath validates and normalizes a base-path value.
@@ -1431,6 +1463,10 @@ func (s *serveServer) httpHandler() http.Handler {
 	inner.HandleFunc("/v1/sidebar", s.auth(s.cors(s.handleSidebar)))
 	inner.HandleFunc("/v1/events", s.auth(s.cors(s.handleEvents)))
 	inner.HandleFunc("/v1/events/poll", s.auth(s.cors(s.handleEventPoll)))
+	inner.HandleFunc("/v1/mcp/oauth/flows/", s.auth(s.cors(s.handleMCPOAuthFlow)))
+	// OAuth callbacks cannot carry the serve bearer token. A high-entropy,
+	// single-use SDK state value is the capability checked by this handler.
+	inner.HandleFunc("/v1/mcp/oauth/callback", s.handleMCPOAuthCallback)
 	inner.HandleFunc("/v1/sessions/status", s.auth(s.cors(s.handleSessionsStatus)))
 	inner.HandleFunc("/v1/sessions/search", s.auth(s.cors(s.handleSessionsSearch)))
 	inner.HandleFunc("/v1/worktrees/diff", s.auth(s.cors(s.handleWorktreeDiff)))

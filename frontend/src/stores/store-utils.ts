@@ -62,6 +62,12 @@ export const normalizeMCPState = (value: unknown): { servers: MCPServer[]; enabl
         active: count('active'),
         deferred: count('deferred'),
         loadingMode: String(server.loading_mode || '').trim(),
+        authState: String(server.auth_state || 'not_needed').trim(),
+        authIssuer: String(server.auth_issuer || '').trim(),
+        authScopes: Array.isArray(server.auth_scopes) ? server.auth_scopes.map(String) : [],
+        authExpiresAt: String(server.auth_expires_at || '').trim(),
+        canSignIn: Boolean(server.can_sign_in),
+        canSignOut: Boolean(server.can_sign_out),
       };
     })
     .filter((server): server is MCPServer => server !== null);

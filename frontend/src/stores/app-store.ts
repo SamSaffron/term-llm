@@ -33,7 +33,7 @@ import { AppStoreServices, type StoreDiagnostics } from './app-store-services';
 import { RuntimeStore } from './runtime-store';
 import { InteractionStore } from './interaction-store';
 import { SideQuestionStore } from './side-question-store';
-import { MCPStore } from './mcp-store';
+import { MCPStore, type MCPOAuthUIState } from './mcp-store';
 import { WorktreeStore } from './worktree-store';
 import { GoalStore } from './goal-store';
 import { PlanStore } from './plan-store';
@@ -159,6 +159,7 @@ export class AppStore {
     loading: boolean;
     pending: string;
     error: string;
+    oauth?: Record<string, MCPOAuthUIState>;
   }>;
   readonly worktrees: Signal<Record<string, unknown>[]>;
   readonly worktreeError: Signal<string>;
@@ -1100,6 +1101,18 @@ export class AppStore {
   }
   async toggleMCP(name: string): Promise<void> {
     await this.mcpStore.toggle(name);
+  }
+  async startMCPOAuth(name: string, force = false): Promise<void> {
+    await this.mcpStore.startOAuth(name, force);
+  }
+  async cancelMCPOAuth(name: string): Promise<void> {
+    await this.mcpStore.cancelOAuth(name);
+  }
+  async logoutMCPOAuth(name: string): Promise<void> {
+    await this.mcpStore.logoutOAuth(name);
+  }
+  async copyMCPOAuthLink(name: string): Promise<void> {
+    await this.mcpStore.copyOAuthLink(name);
   }
   async saveGoal(goal: Goal | { action: string }): Promise<void> {
     await this.goalStore.save(goal);

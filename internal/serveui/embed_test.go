@@ -12,7 +12,7 @@ func TestGeneratedBundleAssets(t *testing.T) {
 	for _, name := range []string{
 		"dist/app.js", "dist/app.css", "dist/chunks/vendor.js",
 		"dist/chunks/rich-highlight.js", "dist/chunks/rich-katex.js",
-		"dist/chunks/highlight.js", "dist/chunks/katex.js", "dist/chunks/katex.css", "dist/chunks/webrtc.js",
+		"dist/chunks/highlight.js", "dist/chunks/katex.js", "dist/chunks/katex.css", "dist/chunks/webrtc.js", "dist/chunks/mcp.js",
 	} {
 		body, err := StaticAsset(name)
 		if err != nil {
@@ -108,7 +108,7 @@ func TestRenderServiceWorkerVersionsOnlyDirectShellAssets(t *testing.T) {
 			t.Errorf("service worker missing %q", want)
 		}
 	}
-	for _, chunk := range []string{"vendor.js?v=", "webrtc.js?v=", "highlight.js?v=", "katex.js?v="} {
+	for _, chunk := range []string{"vendor.js?v=", "webrtc.js?v=", "highlight.js?v=", "katex.js?v=", "mcp.js?v="} {
 		if strings.Contains(without, chunk) || strings.Contains(with, chunk) {
 			t.Errorf("stable-named chunk %q must remain unversioned and network-first", chunk)
 		}
