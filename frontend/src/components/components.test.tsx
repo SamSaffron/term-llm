@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/preact';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { StoreContext } from '../app/context';
@@ -4976,6 +4976,144 @@ describe('Preact-owned chat surfaces', () => {
       expect(container).toHaveTextContent('after');
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it('opens ready composer images as an isolated lightbox gallery without taking URL ownership', async () => {
+    const store = createStore();
+    store.attachments.value = [
+      {
+        id: 'image-one',
+        name: 'one.png',
+        type: 'image/png',
+        previewURL: 'blob:image-one',
+        status: 'ready',
+      },
+      {
+        id: 'notes',
+        name: 'notes.txt',
+        type: 'text/plain',
+        dataURL: 'data:text/plain,notes',
+        status: 'ready',
+      },
+      {
+        id: 'image-two',
+        name: 'two.png',
+        type: 'image/png',
+        previewURL: 'blob:image-two',
+        status: 'ready',
+      },
+      {
+        id: 'preparing-image',
+        name: 'preparing.png',
+        type: 'image/png',
+        previewURL: 'blob:preparing-image',
+        status: 'preparing',
+        progress: 0.5,
+      },
+      {
+        id: 'failed-image',
+        name: 'failed.png',
+        type: 'image/png',
+        previewURL: 'blob:failed-image',
+        status: 'error',
+        error: 'Could not prepare image',
+      },
+    ];
+    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+    try {
+      render(
+        <StoreContext.Provider value={store}>
+          <Composer />
+          <Lightbox />
+        </StoreContext.Provider>,
+      );
+
+      const preview = screen.getByRole('button', { name: 'Preview two.png' });
+      expect(screen.queryByRole('button', { name: 'Preview preparing.png' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Preview failed.png' })).toBeNull();
+      await userEvent.click(preview);
+
+      expect(store.lightbox.value?.items?.map((item) => item.key)).toEqual([
+        'image-one',
+        'image-two',
+      ]);
+      expect(store.lightbox.value?.index).toBe(1);
+      expect(store.lightbox.value?.items?.every((item) => !item.ownsObjectURL)).toBe(true);
+      expect(screen.getByRole('img', { name: 'two.png' })).toHaveAttribute('src', 'blob:image-two');
+      expect(screen.getByText('2 / 2')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Copy URL' })).toBeNull();
+
+      fireEvent.keyDown(screen.getByRole('dialog', { name: 'Media preview' }), {
+        key: 'ArrowLeft',
+      });
+      expect(screen.getByRole('img', { name: 'one.png' })).toHaveAttribute('src', 'blob:image-one');
+
+      await userEvent.click(screen.getByRole('button', { name: 'Close' }));
+      await waitFor(() => expect(store.lightbox.value).toBeNull());
+      expect(revoke).not.toHaveBeenCalled();
+      await waitFor(() => expect(preview).toHaveFocus());
+    } finally {
+      revoke.mockRestore();
+    }
+  });
+
+  it('removes attachments directly and while reviewing the draft gallery', async () => {
+    const store = createStore();
+    store.attachments.value = [
+      {
+        id: 'direct-image',
+        name: 'direct.png',
+        type: 'image/png',
+        previewURL: 'blob:direct-image',
+        status: 'ready',
+      },
+      {
+        id: 'image-one',
+        name: 'one.png',
+        type: 'image/png',
+        previewURL: 'blob:image-one',
+        status: 'ready',
+      },
+      {
+        id: 'image-two',
+        name: 'two.png',
+        type: 'image/png',
+        previewURL: 'blob:image-two',
+        status: 'ready',
+      },
+    ];
+    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+    try {
+      render(
+        <StoreContext.Provider value={store}>
+          <Composer />
+          <Lightbox />
+        </StoreContext.Provider>,
+      );
+
+      await userEvent.click(screen.getByRole('button', { name: 'Remove direct.png' }));
+      expect(store.attachments.value.map((attachment) => attachment.id)).toEqual([
+        'image-one',
+        'image-two',
+      ]);
+      expect(revoke).toHaveBeenCalledWith('blob:direct-image');
+
+      await userEvent.click(screen.getByRole('button', { name: 'Preview two.png' }));
+      const dialog = screen.getByRole('dialog', { name: 'Media preview' });
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Remove two.png' }));
+      expect(store.attachments.value.map((attachment) => attachment.id)).toEqual(['image-one']);
+      expect(revoke).toHaveBeenCalledWith('blob:image-two');
+      expect(screen.getByRole('img', { name: 'one.png' })).toHaveAttribute('src', 'blob:image-one');
+      expect(screen.getByText('1 / 1')).toBeInTheDocument();
+
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Remove one.png' }));
+      await waitFor(() => expect(store.lightbox.value).toBeNull());
+      expect(store.attachments.value).toEqual([]);
+      expect(revoke).toHaveBeenCalledWith('blob:image-one');
+      await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toHaveFocus());
+    } finally {
+      revoke.mockRestore();
     }
   });
 

@@ -114,6 +114,12 @@
   background: rgb(255 255 255 / 15%);
 }
 
+.lightbox-remove:hover:not(:disabled),
+.lightbox-remove:focus-visible {
+  background: color-mix(in srgb, var(--danger) 55%, transparent);
+  color: #fff;
+}
+
 .lightbox-btn.copied {
   color: #4ade80;
 }

@@ -71,6 +71,26 @@ export type {
 } from './store-types';
 export type { StatusRequestMetadata } from './status-reconciler';
 
+export interface LightboxItem {
+  key: string;
+  src: string;
+  type: 'image' | 'video';
+  name?: string;
+  ownsObjectURL?: boolean;
+}
+
+export interface LightboxState {
+  key?: string;
+  src: string;
+  type: 'image' | 'video';
+  name?: string;
+  ownsObjectURL?: boolean;
+  items?: LightboxItem[];
+  index?: number;
+  onRemove?: (item: LightboxItem) => void;
+  fallbackFocus?: () => HTMLElement | null;
+}
+
 export class AppStore {
   readonly services: AppStoreServices;
   readonly runtime: RuntimeStore;
@@ -173,19 +193,7 @@ export class AppStore {
   readonly branchPrefill: Signal<string>;
   readonly branchBusy: Signal<boolean>;
   readonly branchError: Signal<string>;
-  readonly lightbox = signal<{
-    src: string;
-    type: 'image' | 'video';
-    ownsObjectURL?: boolean;
-    items?: Array<{
-      key: string;
-      src: string;
-      type: 'image' | 'video';
-      name?: string;
-      ownsObjectURL?: boolean;
-    }>;
-    index?: number;
-  } | null>(null);
+  readonly lightbox = signal<LightboxState | null>(null);
   readonly renameTarget: Signal<Session | null>;
   readonly projectTarget: Signal<Session | null>;
   readonly networkState: Signal<'unknown' | 'online' | 'offline' | 'retrying'>;

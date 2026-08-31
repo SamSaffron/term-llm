@@ -299,6 +299,33 @@ export function Composer() {
     setDragError('');
     return '';
   };
+  const openAttachmentPreview = (attachmentId: string, previewURL: string) => {
+    const images = store.attachments
+      .peek()
+      .filter(
+        (attachment) =>
+          attachment.id &&
+          attachment.previewURL &&
+          attachment.type.startsWith('image/') &&
+          attachment.status !== 'preparing' &&
+          attachment.status !== 'error',
+      )
+      .map((attachment) => ({
+        key: attachment.id!,
+        src: attachment.previewURL!,
+        type: 'image' as const,
+        name: attachment.name,
+      }));
+    const index = images.findIndex((item) => item.key === attachmentId || item.src === previewURL);
+    if (index < 0) return;
+    store.lightbox.value = {
+      ...images[index],
+      items: images,
+      index,
+      onRemove: (item) => store.removeAttachment(item.key),
+      fallbackFocus: () => textarea.current,
+    };
+  };
   return (
     <footer
       class="composer"
@@ -428,9 +455,20 @@ export function Composer() {
           <div id="attachmentsStrip" class="attachments">
             {store.attachments.value.map((attachment) => (
               <div class="attachment-chip" key={attachment.id}>
-                {attachment.previewURL && attachment.type.startsWith('image/') && (
-                  <img src={attachment.previewURL} alt="" />
-                )}
+                {attachment.id &&
+                  attachment.previewURL &&
+                  attachment.type.startsWith('image/') &&
+                  attachment.status !== 'preparing' &&
+                  attachment.status !== 'error' && (
+                    <button
+                      class="att-preview"
+                      type="button"
+                      aria-label={`Preview ${attachment.name}`}
+                      onClick={() => openAttachmentPreview(attachment.id!, attachment.previewURL!)}
+                    >
+                      <img src={attachment.previewURL} alt="" />
+                    </button>
+                  )}
                 <span class="att-name">{attachment.name}</span>
                 {attachment.status === 'preparing' && (
                   <span class="att-status" role="status">
@@ -452,7 +490,7 @@ export function Composer() {
                   </span>
                 )}
                 <button
-                  class="att-remove"
+                  class="att-remove close-button"
                   type="button"
                   aria-label={`Remove ${attachment.name}`}
                   onClick={() => store.removeAttachment(attachment.id)}

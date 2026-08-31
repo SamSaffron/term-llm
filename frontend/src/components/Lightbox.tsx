@@ -11,11 +11,25 @@ const MAX_ZOOM = 4;
 export function Lightbox() {
   const store = useStore();
   const media = store.lightbox.value;
-  const items = media?.items?.length
+  const allItems = media?.items?.length
     ? media.items
     : media
-      ? [{ key: media.src, src: media.src, type: media.type, ownsObjectURL: media.ownsObjectURL }]
+      ? [
+          {
+            key: media.src,
+            src: media.src,
+            type: media.type,
+            name: media.name,
+            ownsObjectURL: media.ownsObjectURL,
+          },
+        ]
       : [];
+  const [removed, setRemoved] = useState<{ media: typeof media; keys: Set<string> }>({
+    media: null,
+    keys: new Set(),
+  });
+  const items =
+    removed.media === media ? allItems.filter((item) => !removed.keys.has(item.key)) : allItems;
   const [index, setIndex] = useState(media?.index || 0);
   const [maximized, setMaximized] = useState(false);
   const [zoom, setZoom] = useState(1);
@@ -24,6 +38,7 @@ export function Lightbox() {
   const [retryKey, setRetryKey] = useState(0);
   const dialog = useRef<HTMLDivElement>(null);
   const token = useRef<symbol | null>(null);
+  const fallbackOnRelease = useRef(false);
   const video = useRef<HTMLVideoElement>(null);
   const drag = useRef<{ id: number; x: number; y: number; panX: number; panY: number } | null>(
     null,
@@ -50,14 +65,29 @@ export function Lightbox() {
     setZoom(1);
     setPan({ x: 0, y: 0 });
     setError('');
-    token.current = overlayManager.acquire(undefined, dialog.current);
-    const frame = requestAnimationFrame(() => dialog.current?.focus());
+    fallbackOnRelease.current = false;
+    const surface = dialog.current;
+    token.current = overlayManager.acquire(undefined, surface);
+    const frame = requestAnimationFrame(() => surface?.focus());
     return () => {
       cancelAnimationFrame(frame);
       releaseVideo();
       releaseURLs();
       if (token.current) overlayManager.release(token.current);
       token.current = null;
+      if (fallbackOnRelease.current) {
+        const fallback = media.fallbackFocus?.();
+        const active = document.activeElement;
+        if (
+          fallback?.isConnected &&
+          (!active ||
+            active === document.body ||
+            !active.isConnected ||
+            Boolean(surface?.contains(active)))
+        )
+          fallback.focus({ preventScroll: true });
+      }
+      fallbackOnRelease.current = false;
     };
     // The gallery snapshot is stable for the lifetime of one open modal.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -78,9 +108,26 @@ export function Lightbox() {
   };
   const close = () => {
     releaseVideo();
+    fallbackOnRelease.current = true;
     store.lightbox.value = null;
+    setRemoved({ media: null, keys: new Set() });
     setMaximized(false);
     resetView();
+  };
+  const removeCurrent = () => {
+    if (!media.onRemove) return;
+    const keys = new Set(removed.media === media ? removed.keys : []);
+    keys.add(current.key);
+    const remaining = allItems.length - keys.size;
+    media.onRemove(current);
+    if (remaining <= 0) {
+      close();
+      return;
+    }
+    setRemoved({ media, keys });
+    if (index >= remaining) setIndex(remaining - 1);
+    resetView();
+    setRetryKey((value) => value + 1);
   };
   const changeZoom = (next: number) => {
     const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, next));
@@ -239,6 +286,16 @@ export function Lightbox() {
         >
           +
         </button>
+        {media.onRemove && (
+          <button
+            class="lightbox-btn lightbox-remove"
+            type="button"
+            aria-label={`Remove ${current.name || 'attachment'}`}
+            onClick={removeCurrent}
+          >
+            <Icon name="trash" />
+          </button>
+        )}
         <a
           class="lightbox-btn"
           aria-label="Download"
@@ -247,14 +304,16 @@ export function Lightbox() {
         >
           ↓
         </a>
-        <button
-          class="lightbox-btn"
-          type="button"
-          aria-label="Copy URL"
-          onClick={() => void copyText(current.src)}
-        >
-          <Icon name="copy" />
-        </button>
+        {!current.src.startsWith('blob:') && (
+          <button
+            class="lightbox-btn"
+            type="button"
+            aria-label="Copy URL"
+            onClick={() => void copyText(current.src)}
+          >
+            <Icon name="copy" />
+          </button>
+        )}
         <button
           class="lightbox-btn"
           type="button"

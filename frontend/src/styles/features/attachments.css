@@ -19,11 +19,37 @@
   max-width: 200px;
 }
 
-.attachment-chip img {
+.attachment-chip .att-preview {
+  display: grid;
   width: 32px;
   height: 32px;
-  object-fit: cover;
+  flex: 0 0 auto;
+  place-items: center;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
   border-radius: 4px;
+  background: none;
+  cursor: zoom-in;
+}
+
+.attachment-chip .att-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s ease;
+}
+
+.attachment-chip .att-preview:hover img {
+  opacity: 0.82;
+  transform: scale(1.04);
+}
+
+.attachment-chip .att-preview:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .attachment-chip .att-name {
@@ -34,17 +60,27 @@
 }
 
 .attachment-chip .att-remove {
-  background: none;
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  place-items: center;
+  margin-right: -0.3rem;
+  padding: 0;
   border: none;
+  background: none;
   color: var(--text-muted);
   cursor: pointer;
-  padding: 0 0.15rem;
-  font-size: 1rem;
-  line-height: 1;
-  flex-shrink: 0;
 }
 
-.attachment-chip .att-remove:hover {
+.attachment-chip .att-remove svg {
+  display: block;
+  width: 1rem;
+  height: 1rem;
+}
+
+.attachment-chip .att-remove.close-button:hover:not(:disabled),
+.attachment-chip .att-remove.close-button:focus-visible {
   color: var(--danger);
 }
 
@@ -126,4 +162,17 @@
   content: ' ▶';
   font-size: 0.75em;
   opacity: 0.7;
+}
+
+@media (pointer: coarse) {
+  .attachment-chip .att-preview {
+    width: 40px;
+    height: 40px;
+  }
+
+  .attachment-chip .att-remove {
+    width: 40px;
+    height: 40px;
+    margin-right: -0.4rem;
+  }
 }
