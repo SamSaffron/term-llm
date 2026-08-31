@@ -142,9 +142,10 @@ func namespaceCatalogTool(server, namespaceDescription string, tool CatalogTool)
 	return tool
 }
 
-// normalizeCatalogueIdentities assigns explicit native namespace/child identities
-// and resolves the rare flattened-name collision without relying on delimiter
-// parsing. Common flattened names remain byte-for-byte compatible.
+// normalizeCatalogueIdentities assigns provider-safe native namespace, child,
+// and flattened identities and resolves sanitization or delimiter collisions
+// without relying on delimiter parsing. Already-valid common names remain
+// byte-for-byte compatible.
 func normalizeCatalogueIdentities(tools []CatalogTool) []CatalogTool {
 	namespaceIDs := make([]string, 0, len(tools))
 	childrenByServer := make(map[string][]string)
@@ -177,7 +178,7 @@ func collisionSafeFlattenedNames(tools []CatalogTool) map[string]string {
 	groups := make(map[string][]string)
 	for _, tool := range tools {
 		identity := catalogIdentity(tool)
-		base := tool.Server + "__" + tool.OriginalName
+		base := sanitizeProviderToolName(tool.Server + "__" + tool.OriginalName)
 		groups[base] = append(groups[base], identity)
 	}
 	out := make(map[string]string, len(tools))
@@ -192,7 +193,7 @@ func collisionSafeFlattenedNames(tools []CatalogTool) map[string]string {
 		for _, identity := range identities {
 			candidate := base
 			if len(identities) > 1 {
-				candidate = base + identityHashSuffix(identity)
+				candidate = appendIdentityHash(base, identity)
 			}
 			for attempt := 0; ; attempt++ {
 				if prior, exists := used[candidate]; !exists || prior == identity {
@@ -200,11 +201,30 @@ func collisionSafeFlattenedNames(tools []CatalogTool) map[string]string {
 					out[identity] = candidate
 					break
 				}
-				candidate = base + identityHashSuffix(fmt.Sprintf("%s\x00%d", identity, attempt+1))
+				candidate = appendIdentityHash(base, fmt.Sprintf("%s\x00%d", identity, attempt+1))
 			}
 		}
 	}
 	return out
+}
+
+func sanitizeProviderToolName(value string) string {
+	var b strings.Builder
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	name := strings.TrimSpace(b.String())
+	if name == "" {
+		name = "tool"
+	}
+	if len(name) > maxNativeIdentityBytes {
+		return appendIdentityHash(name, value)
+	}
+	return name
 }
 
 func normalizedIdentityNames(rawNames []string) map[string]string {

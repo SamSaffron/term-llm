@@ -156,10 +156,15 @@ func TestNormalizeCatalogueIdentitiesResolvesSanitizationCollisionsDeterministic
 	project := func(tools []CatalogTool) map[string]string {
 		out := make(map[string]string, len(tools))
 		for _, tool := range tools {
-			if len(tool.Namespace) > maxNativeIdentityBytes || len(tool.ChildName) > maxNativeIdentityBytes {
-				t.Fatalf("native identity exceeds cap: %+v", tool)
+			if len(tool.Namespace) > maxNativeIdentityBytes || len(tool.ChildName) > maxNativeIdentityBytes || len(tool.Name) > maxNativeIdentityBytes {
+				t.Fatalf("provider identity exceeds cap: %+v", tool)
 			}
-			out[catalogIdentity(tool)] = tool.Namespace + "/" + tool.ChildName
+			for _, r := range tool.Name {
+				if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-') {
+					t.Fatalf("flattened tool name %q contains provider-invalid character %q", tool.Name, r)
+				}
+			}
+			out[catalogIdentity(tool)] = tool.Namespace + "/" + tool.ChildName + "/" + tool.Name
 		}
 		return out
 	}
@@ -171,6 +176,27 @@ func TestNormalizeCatalogueIdentitiesResolvesSanitizationCollisionsDeterministic
 	}
 	if first[1].ChildName == first[2].ChildName {
 		t.Fatalf("sanitized child collision survived: %+v", first)
+	}
+	for _, tool := range first {
+		if tool.OriginalName == "find.issue" && !strings.Contains(tool.Name, "find_issue") {
+			t.Fatalf("dotted MCP tool was not mapped to a provider-safe name: %+v", tool)
+		}
+	}
+}
+
+func TestNormalizeCatalogueIdentitiesBoundsLongFlattenedNames(t *testing.T) {
+	original := strings.Repeat("segment.", 20)
+	tool := normalizeCatalogueIdentities([]CatalogTool{{
+		Server: "very-long-server-name", OriginalName: original, InputSchema: map[string]any{},
+	}})[0]
+	if len(tool.Name) > maxNativeIdentityBytes {
+		t.Fatalf("flattened name has %d bytes, want at most %d: %q", len(tool.Name), maxNativeIdentityBytes, tool.Name)
+	}
+	if tool.OriginalName != original {
+		t.Fatalf("original MCP routing name changed to %q", tool.OriginalName)
+	}
+	if !strings.Contains(tool.Name, "_") {
+		t.Fatalf("bounded provider name lacks a collision-resistant suffix: %q", tool.Name)
 	}
 }
 
