@@ -21,9 +21,13 @@ var (
 
 // Options configures the SDK authorization-code handler for an MCP endpoint.
 type Options struct {
-	ClientID            string
-	ClientSecret        string
-	Scopes              []string
+	ClientID     string
+	ClientSecret string
+	Scopes       []string
+	// ScopesConfigured distinguishes an explicitly empty scope list from an
+	// omitted list. When omitted, login requests every scope advertised by the
+	// authorization server.
+	ScopesConfigured    bool
 	ClientIDMetadataURL string
 	HTTPClient          *http.Client
 }

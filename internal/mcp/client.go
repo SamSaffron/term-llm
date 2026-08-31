@@ -297,6 +297,7 @@ func (c *Client) createHTTPTransport() (mcp.Transport, error) {
 		if oauthConfig != nil {
 			options.ClientID = oauthConfig.ClientID
 			options.Scopes = append([]string(nil), oauthConfig.Scopes...)
+			options.ScopesConfigured = oauthConfig.Scopes != nil
 			options.ClientIDMetadataURL = oauthConfig.ClientIDMetadataURL
 			if oauthConfig.ClientSecretEnv != "" {
 				options.ClientSecret = os.Getenv(oauthConfig.ClientSecretEnv)

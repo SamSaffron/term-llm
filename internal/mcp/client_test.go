@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -166,6 +167,73 @@ func TestCreateStdioTransport_EnvOverridesParent(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected overridden env var in subprocess env")
+	}
+}
+
+func TestClientStart_StatelessServerMayRejectSubscriptionsListen(t *testing.T) {
+	var listenSeen atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch request.Method {
+		case "server/discover":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": request.ID,
+				"result": map[string]any{
+					"resultType":        "complete",
+					"supportedVersions": []string{"2026-07-28"},
+					"capabilities": map[string]any{
+						"tools": map[string]any{"listChanged": false},
+					},
+					"_meta": map[string]any{
+						"io.modelcontextprotocol/serverInfo": map[string]any{"name": "stateless-test", "version": "1"},
+					},
+				},
+			})
+		case "subscriptions/listen":
+			listenSeen.Store(true)
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": request.ID,
+				"error": map[string]any{"code": -32601, "message": "Method not found"},
+			})
+		case "tools/list":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": request.ID,
+				"result": map[string]any{"tools": []any{}, "resultType": "complete"},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": request.ID,
+				"error": map[string]any{"code": -32601, "message": "Method not found"},
+			})
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient("stateless-test", ServerConfig{
+		URL:   server.URL,
+		OAuth: &OAuthConfig{Disabled: true},
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := client.Start(ctx); err != nil {
+		t.Fatalf("Start after optional subscriptions/listen rejection: %v", err)
+	}
+	defer client.Stop()
+	if !listenSeen.Load() {
+		t.Fatal("expected client to attempt subscriptions/listen")
+	}
+	if snapshot := client.ToolSnapshot(); snapshot == nil || len(snapshot.Tools) != 0 {
+		t.Fatalf("tool snapshot = %+v, want an empty published snapshot", snapshot)
 	}
 }
 

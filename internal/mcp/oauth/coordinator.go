@@ -238,23 +238,40 @@ func (c *Coordinator) newHandler(endpoint string, options Options, redirectURL s
 		return nil, err
 	}
 	configuredScopes := append([]string(nil), options.Scopes...)
-	if stored != nil {
+	scopesConfigured := options.ScopesConfigured || options.Scopes != nil
+	if scopesConfigured && stored != nil {
 		configuredScopes = unionScopeStrings(configuredScopes, stored.Config.Scopes)
 	}
-	if len(configuredScopes) > 0 {
-		return &scopeOAuthHandler{OAuthHandler: handler, scopes: configuredScopes}, nil
-	}
-	return handler, nil
+	return &scopeOAuthHandler{
+		OAuthHandler: handler,
+		scopes:       configuredScopes,
+		discoverAll:  !scopesConfigured,
+		client:       client,
+	}, nil
 }
 
 type scopeOAuthHandler struct {
 	sdkauth.OAuthHandler
-	scopes []string
+	scopes      []string
+	discoverAll bool
+	client      *http.Client
 }
 
 func (h *scopeOAuthHandler) Authorize(ctx context.Context, req *http.Request, resp *http.Response) error {
 	challenges, err := oauthex.ParseWWWAuthenticate(resp.Header.Values("WWW-Authenticate"))
 	if err != nil {
+		return h.OAuthHandler.Authorize(ctx, req, resp)
+	}
+	scopes := h.scopes
+	if h.discoverAll {
+		metadataCtx, cancel := context.WithTimeout(ctx, metadataTimeout)
+		discovered, discoveryErr := discoverAuthorizationServerScopes(metadataCtx, req.URL.String(), challenges, h.client)
+		cancel()
+		if discoveryErr == nil {
+			scopes = unionScopeStrings(scopes, discovered)
+		}
+	}
+	if len(scopes) == 0 {
 		return h.OAuthHandler.Authorize(ctx, req, resp)
 	}
 	foundBearer := false
@@ -264,11 +281,11 @@ func (h *scopeOAuthHandler) Authorize(ctx context.Context, req *http.Request, re
 		}
 		foundBearer = true
 		existing := strings.Fields(challenges[index].Params["scope"])
-		challenges[index].Params["scope"] = strings.Join(unionScopeStrings(existing, h.scopes), " ")
+		challenges[index].Params["scope"] = strings.Join(unionScopeStrings(existing, scopes), " ")
 		break
 	}
 	if !foundBearer {
-		challenges = append(challenges, oauthex.Challenge{Scheme: "bearer", Params: map[string]string{"scope": strings.Join(h.scopes, " ")}})
+		challenges = append(challenges, oauthex.Challenge{Scheme: "bearer", Params: map[string]string{"scope": strings.Join(scopes, " ")}})
 	}
 	cloned := *resp
 	cloned.Header = resp.Header.Clone()
@@ -277,6 +294,72 @@ func (h *scopeOAuthHandler) Authorize(ctx context.Context, req *http.Request, re
 		cloned.Header.Add("WWW-Authenticate", formatChallenge(challenge))
 	}
 	return h.OAuthHandler.Authorize(ctx, req, &cloned)
+}
+
+type protectedResourceMetadataCandidate struct {
+	url      string
+	resource string
+}
+
+func discoverAuthorizationServerScopes(ctx context.Context, resourceURL string, challenges []oauthex.Challenge, client *http.Client) ([]string, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	metadataURL := ""
+	for _, challenge := range challenges {
+		if challenge.Scheme == "bearer" && challenge.Params["resource_metadata"] != "" {
+			metadataURL = challenge.Params["resource_metadata"]
+			break
+		}
+	}
+	candidates := protectedResourceMetadataCandidates(metadataURL, resourceURL)
+	var metadata *oauthex.ProtectedResourceMetadata
+	for _, candidate := range candidates {
+		resolved, err := oauthex.GetProtectedResourceMetadata(ctx, candidate.url, candidate.resource, client)
+		if err == nil && resolved != nil {
+			metadata = resolved
+			break
+		}
+	}
+
+	authorizationServer := ""
+	if metadata != nil && len(metadata.AuthorizationServers) > 0 {
+		authorizationServer = metadata.AuthorizationServers[0]
+	} else {
+		// Compatibility with the 2025-03-26 authorization flow: the MCP
+		// endpoint's origin doubles as the authorization server.
+		u, err := url.Parse(resourceURL)
+		if err != nil {
+			return nil, err
+		}
+		u.Path, u.RawPath, u.RawQuery, u.Fragment = "", "", "", ""
+		authorizationServer = u.String()
+	}
+	serverMetadata, err := sdkauth.GetAuthServerMetadata(ctx, authorizationServer, client)
+	if err != nil || serverMetadata == nil {
+		return nil, err
+	}
+	return unionScopeStrings(nil, serverMetadata.ScopesSupported), nil
+}
+
+func protectedResourceMetadataCandidates(metadataURL, resourceURL string) []protectedResourceMetadataCandidate {
+	var candidates []protectedResourceMetadataCandidate
+	if metadataURL != "" {
+		candidates = append(candidates, protectedResourceMetadataCandidate{url: metadataURL, resource: resourceURL})
+	}
+	u, err := url.Parse(resourceURL)
+	if err != nil {
+		return candidates
+	}
+	metadata := *u
+	metadata.Path = "/.well-known/oauth-protected-resource/" + strings.TrimLeft(u.Path, "/")
+	metadata.RawPath, metadata.RawQuery, metadata.Fragment = "", "", ""
+	candidates = append(candidates, protectedResourceMetadataCandidate{url: metadata.String(), resource: resourceURL})
+	metadata.Path = "/.well-known/oauth-protected-resource"
+	rootResource := *u
+	rootResource.Path, rootResource.RawPath, rootResource.RawQuery, rootResource.Fragment = "", "", "", ""
+	candidates = append(candidates, protectedResourceMetadataCandidate{url: metadata.String(), resource: rootResource.String()})
+	return candidates
 }
 
 func unionScopeStrings(left, right []string) []string {

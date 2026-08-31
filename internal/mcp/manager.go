@@ -681,6 +681,7 @@ func oauthOptionsForServer(server ServerConfig) mcpoauth.Options {
 	if server.OAuth != nil {
 		options.ClientID = server.OAuth.ClientID
 		options.Scopes = append([]string(nil), server.OAuth.Scopes...)
+		options.ScopesConfigured = server.OAuth.Scopes != nil
 		options.ClientIDMetadataURL = server.OAuth.ClientIDMetadataURL
 		if server.OAuth.ClientSecretEnv != "" {
 			options.ClientSecret = os.Getenv(server.OAuth.ClientSecretEnv)

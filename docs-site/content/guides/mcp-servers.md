@@ -75,7 +75,7 @@ term-llm mcp login example
 term-llm mcp status example
 ```
 
-`mcp login` performs protected-resource and authorization-server discovery, dynamic client registration when needed, PKCE S256, and the browser callback. It prints the authorization URL as a fallback. Use `--no-browser` when the browser is elsewhere; over SSH, forward the printed loopback callback port (for example with `ssh -L`) before opening the URL. Device-code authentication is not currently supported.
+`mcp login` performs protected-resource and authorization-server discovery, dynamic client registration when needed, PKCE S256, and the browser callback. By default it requests every scope advertised in the authorization server's `scopes_supported` metadata. Set `oauth.scopes` in `mcp.json` to request a specific subset instead; an explicitly empty list requests only scopes required by the server's authentication challenge. It prints the authorization URL as a fallback. Use `--no-browser` when the browser is elsewhere; over SSH, forward the printed loopback callback port (for example with `ssh -L`) before opening the URL. Device-code authentication is not currently supported.
 
 The resulting registration and grant are stored in `$XDG_CONFIG_HOME/term-llm/mcp_oauth.json` (normally `~/.config/term-llm/mcp_oauth.json`). The directory is mode `0700`, the file and lock are mode `0600`, writes are atomic, and refresh-token rotation is serialized across term-llm processes. This private file contains credentials: do not copy it into a repository or expose it to a browser. Tokens and client secrets are never returned by the serve API or stored in browser storage.
 

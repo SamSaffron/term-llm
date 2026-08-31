@@ -22,7 +22,7 @@ require (
 	github.com/go-webauthn/webauthn v0.17.4
 	github.com/gorilla/websocket v1.5.3
 	github.com/mattn/go-runewidth v0.0.23
-	github.com/modelcontextprotocol/go-sdk v1.7.0
+	github.com/modelcontextprotocol/go-sdk v1.7.1-0.20260825122737-c68ad9a4e6e1
 	github.com/muesli/cancelreader v0.2.2
 	github.com/muesli/reflow v0.3.0
 	github.com/openai/openai-go v1.12.0

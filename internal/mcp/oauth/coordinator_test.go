@@ -157,6 +157,85 @@ func TestCoordinatorUsesSDKAuthorizationAndPersistsSession(t *testing.T) {
 	}
 }
 
+func TestCoordinatorDefaultsToAllAdvertisedScopes(t *testing.T) {
+	var server *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/resource", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata="%s/.well-known/oauth-protected-resource/resource", scope="profile"`, server.URL))
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	mux.HandleFunc("/.well-known/oauth-protected-resource/resource", func(w http.ResponseWriter, r *http.Request) {
+		writeTestJSON(w, map[string]any{
+			"resource": server.URL + "/resource", "authorization_servers": []string{server.URL},
+		})
+	})
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
+		writeTestJSON(w, map[string]any{
+			"issuer": server.URL, "authorization_endpoint": server.URL + "/authorize",
+			"token_endpoint": server.URL + "/token", "response_types_supported": []string{"code"},
+			"token_endpoint_auth_methods_supported": []string{"none"},
+			"code_challenge_methods_supported":      []string{"S256"},
+			"scopes_supported":                      []string{"profile", "content:read", "content:write"},
+		})
+	})
+	server = httptest.NewServer(mux)
+	defer server.Close()
+
+	tests := []struct {
+		name        string
+		options     Options
+		wantScopes  []string
+		rejectScope string
+	}{
+		{
+			name:       "omitted scopes request every advertised scope",
+			options:    Options{HTTPClient: server.Client(), ClientID: "registered-client"},
+			wantScopes: []string{"profile", "content:read", "content:write"},
+		},
+		{
+			name: "configured scopes take precedence",
+			options: Options{
+				HTTPClient: server.Client(), ClientID: "registered-client",
+				Scopes: []string{"content:read"}, ScopesConfigured: true,
+			},
+			wantScopes:  []string{"profile", "content:read"},
+			rejectScope: "content:write",
+		},
+		{
+			name: "explicitly empty scopes retain required challenge scopes only",
+			options: Options{
+				HTTPClient: server.Client(), ClientID: "registered-client",
+				Scopes: []string{}, ScopesConfigured: true,
+			},
+			wantScopes:  []string{"profile"},
+			rejectScope: "content:read",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			coordinator := NewCoordinator(NewFileStore(t.TempDir() + "/oauth.json"))
+			flow, err := coordinator.Start(t.Context(), server.URL+"/resource", test.options, "http://127.0.0.1/callback", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer coordinator.Cancel(server.URL+"/resource", flow.ID)
+			authorizeURL, err := url.Parse(flow.AuthorizationURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := strings.Fields(authorizeURL.Query().Get("scope"))
+			for _, scope := range test.wantScopes {
+				if !containsString(got, scope) {
+					t.Errorf("authorization scopes = %v, missing %q", got, scope)
+				}
+			}
+			if test.rejectScope != "" && containsString(got, test.rejectScope) {
+				t.Errorf("authorization scopes = %v, unexpectedly included %q", got, test.rejectScope)
+			}
+		})
+	}
+}
+
 func TestConcurrentCoordinatorsAdoptRotatedRefresh(t *testing.T) {
 	var refreshes atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
