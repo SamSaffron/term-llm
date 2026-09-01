@@ -113,6 +113,34 @@ describe('SessionStore', () => {
     }
   });
 
+  it('keeps transcript hydration out of the sidebar projection', () => {
+    const store = new AppStore(testConfig);
+    try {
+      const session = testSession({ messageCount: 3 });
+      store.sessions.value = [session];
+      const sidebarSession = store.sidebarSessions.value[0];
+      const updates: unknown[] = [];
+      const unsubscribe = store.sidebarSessions.subscribe((value) => updates.push(value));
+
+      store.sessionStore.update(session.id, (current) => ({
+        ...current,
+        messages: [{ id: 'm1', role: 'user', content: 'hydrated', created: 1 }],
+        transcriptRev: 2,
+      }));
+
+      expect(store.sidebarSessions.value[0]).toBe(sidebarSession);
+      expect(updates).toHaveLength(1);
+
+      store.sessionStore.patch(session.id, { title: 'Visible title change' });
+      expect(store.sidebarSessions.value[0]).not.toBe(sidebarSession);
+      expect(store.sidebarSessions.value[0].title).toBe('Visible title change');
+      expect(updates).toHaveLength(2);
+      unsubscribe();
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('normalizes and merges sidebar payloads without replacing live session state', () => {
     const store = new AppStore(testConfig);
     try {
