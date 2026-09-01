@@ -520,9 +520,28 @@ func (m *ToolManager) SetupEngine(engine *llm.Engine) {
 	m.Registry.RegisterWithEngine(engine)
 }
 
-// GetSpecs returns all tool specs for the request.
+// FilterToolSpecsForApprovalMode removes tools that have no model-facing use in
+// the effective approval mode. Executors stay registered so an in-flight call
+// issued before a mode change can still complete safely.
+func FilterToolSpecsForApprovalMode(specs []llm.ToolSpec, approval *ApprovalManager) []llm.ToolSpec {
+	if approval == nil || !approval.YoloEnabled() {
+		return specs
+	}
+	filtered := make([]llm.ToolSpec, 0, len(specs))
+	for _, spec := range specs {
+		if spec.Name != ManageWorkspaceToolName {
+			filtered = append(filtered, spec)
+		}
+	}
+	return filtered
+}
+
+// GetSpecs returns all model-facing tool specs for the effective approval mode.
 func (m *ToolManager) GetSpecs() []llm.ToolSpec {
-	return m.Registry.GetSpecs()
+	if m == nil || m.Registry == nil {
+		return nil
+	}
+	return FilterToolSpecsForApprovalMode(m.Registry.GetSpecs(), m.ApprovalMgr)
 }
 
 // GetSpawnAgentTool returns the spawn_agent tool if enabled, for runner configuration.

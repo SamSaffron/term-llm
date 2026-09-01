@@ -872,6 +872,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 		// tools (notably web_search/read_url) are registered so they can be injected
 		// when search is enabled, but they should not leak into ordinary chats.
 		reqTools = filterSearchToolSpecs(reqTools, m.searchEnabled)
+		reqTools = tools.FilterToolSpecsForApprovalMode(reqTools, m.approvalMgr)
 
 		serviceTier, serviceTierSet := m.currentServiceTier()
 		req := llm.Request{

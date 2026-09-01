@@ -534,7 +534,13 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	// Add tools to request if any are registered (local, MCP, or output tool)
 	if toolMgr != nil || mcpManager != nil || outputTool != nil {
-		if specs := llm.ToolSpecsForRequest(engine.Tools(), settings.Search); len(specs) > 0 {
+		specs := llm.ToolSpecsForRequest(engine.Tools(), settings.Search)
+		var approvalMgr *tools.ApprovalManager
+		if toolMgr != nil {
+			approvalMgr = toolMgr.ApprovalMgr
+		}
+		specs = tools.FilterToolSpecsForApprovalMode(specs, approvalMgr)
+		if len(specs) > 0 {
 			req.Tools = specs
 			req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
 		}

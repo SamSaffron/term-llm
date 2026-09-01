@@ -1252,6 +1252,9 @@ const maxResponseIDs = 16
 
 func (rt *serveRuntime) selectTools(requested map[string]bool) []llm.ToolSpec {
 	all := rt.engine.Tools().AllSpecs()
+	if rt.toolMgr != nil {
+		all = tools.FilterToolSpecsForApprovalMode(all, rt.toolMgr.ApprovalMgr)
+	}
 	if len(requested) == 0 {
 		return all
 	}

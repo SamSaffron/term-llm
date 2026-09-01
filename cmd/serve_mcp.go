@@ -234,9 +234,11 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Collect MCP tool specs.
+	// Collect MCP tool specs. Keep the executor registered for stale/in-flight
+	// calls, but do not advertise redundant workspace grants in yolo mode.
 	var mcpTools []mcphttp.ToolSpec
-	for _, spec := range registry.GetSpecs() {
+	localSpecs := tools.FilterToolSpecsForApprovalMode(registry.GetSpecs(), approvalMgr)
+	for _, spec := range localSpecs {
 		mcpTools = append(mcpTools, mcphttp.ToolSpec{
 			Name:        spec.Name,
 			Description: spec.Description,
