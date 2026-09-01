@@ -255,6 +255,36 @@ describe('AppStore compatibility behavior', () => {
     store.dispose();
   });
 
+  it('detaches and hides a bound shell before selecting or creating a conversation', async () => {
+    const store = new AppStore(config);
+    const first = session();
+    const second = { ...session(), id: 's2', title: 'Second' };
+    store.sessions.value = [first, second];
+    store.activeSessionId.value = first.id;
+    store.draftActive.value = false;
+    store.shellStore.enabled.value = true;
+    expect(store.shellStore.show(first.id)).toBe(true);
+    store.shellStore.status.value = 'running';
+    store.endpoints.sessionState = vi.fn(async () => ({}));
+    store.endpoints.selectedSession = vi.fn(async (id: string) => ({
+      selected_session: { id },
+      selected_transcript: { bodies: { messages: [] } },
+    }));
+    store.endpoints.skills = vi.fn(async () => ({ skills: [] }));
+    store.endpoints.tree = vi.fn(async () => ({}));
+
+    const selecting = store.selectSession(second);
+    expect(store.shellStore.visible.value).toBe(false);
+    expect(store.activeSessionId.value).toBe(second.id);
+    await selecting;
+
+    expect(store.shellStore.show(second.id)).toBe(true);
+    store.newChat();
+    expect(store.shellStore.visible.value).toBe(false);
+    expect(store.activeSessionId.value).toBe('');
+    store.dispose();
+  });
+
   it('moves the active session to root after worktree cleanup', async () => {
     const store = new AppStore(config);
     try {

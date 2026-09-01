@@ -17,8 +17,8 @@ func TestGeneratedBundleAssets(t *testing.T) {
 		"dist/chunks/rich-highlight.js", "dist/chunks/rich-katex.js",
 		"dist/chunks/highlight.js", "dist/chunks/katex.js", "dist/chunks/katex.css", "dist/chunks/webrtc.js", "dist/chunks/mcp.js",
 		"dist/chunks/MarkdownFilePreview.js", "dist/chunks/markdown-preview-store.js",
-		"dist/chunks/markdown-document.js", "dist/chunks/file-text.js",
-		"dist/assets/MarkdownFilePreview.css",
+		"dist/chunks/ShellOverlay.js", "dist/chunks/markdown-document.js", "dist/chunks/file-text.js",
+		"dist/assets/MarkdownFilePreview.css", "dist/assets/ShellOverlay.css",
 	} {
 		body, err := StaticAsset(name)
 		if err != nil {
@@ -67,13 +67,13 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// presentation buffer, explicit response authority/transport state,
 		// authoritative mobile stream recovery, widget process lifecycle controls,
 		// model capability-aware runtime controls, durable terminal/input-required
-		// attention reconciliation, native commit review/editor controls, and the
-		// small eager Markdown review toggle/loader are first-party shell code. The
-		// preview body, parser, source transport, and preview CSS remain in bounded
-		// lazy chunks. Keep bounded headroom while still failing meaningful accidental
-		// regressions.
-		"dist/app.js":  {raw: 455_000, gzip: 132_000},
-		"dist/app.css": {raw: 174_000, gzip: 32_000},
+		// attention reconciliation, native commit review/editor controls, the
+		// resumable shell transport/store, and the small eager Markdown review
+		// toggle/loader are first-party shell code. The xterm terminal, preview body,
+		// parser, source transport, and feature CSS remain in bounded lazy chunks.
+		// Keep bounded headroom while still failing meaningful accidental regressions.
+		"dist/app.js":  {raw: 465_000, gzip: 135_000},
+		"dist/app.css": {raw: 174_000, gzip: 33_000},
 	}
 	for name, budget := range budgets {
 		body, err := StaticAsset(name)
@@ -95,7 +95,7 @@ func TestBundlePolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{"window.TermLLMApp", "preact/compat", "legacy-bridge", "./assets/highlight.css", "./assets/katex.css"} {
+	for _, forbidden := range []string{"window.TermLLMApp", "preact/compat", "legacy-bridge", "./assets/highlight.css", "./assets/katex.css", "@xterm/xterm", "xterm-rows"} {
 		if bytes.Contains(js, []byte(forbidden)) {
 			t.Errorf("production bundle contains forbidden compatibility path %q", forbidden)
 		}

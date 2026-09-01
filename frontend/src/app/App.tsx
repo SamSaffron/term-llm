@@ -1,5 +1,5 @@
-import { Component, type ComponentChildren } from 'preact';
-import { useEffect } from 'preact/hooks';
+import { Component, type ComponentChildren, type ComponentType } from 'preact';
+import { useEffect, useState } from 'preact/hooks';
 import { StoreContext } from './context';
 import type { AppStore, Toast } from '../stores/app-store';
 import { Sidebar } from '../components/Sidebar';
@@ -35,6 +35,49 @@ class ErrorBoundary extends Component<{ children: ComponentChildren }, { error: 
       props.children
     );
   }
+}
+
+function ShellOverlayLoader({ store }: { store: AppStore }) {
+  const [Overlay, setOverlay] = useState<ComponentType<{ store: AppStore }> | null>(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let current = true;
+    void import('../components/ShellOverlay')
+      .then((module) => {
+        if (current) setOverlay(() => module.ShellOverlay);
+      })
+      .catch((reason: unknown) => {
+        if (current)
+          setError(reason instanceof Error ? reason.message : 'Could not load terminal.');
+      });
+    return () => {
+      current = false;
+    };
+  }, []);
+  if (error)
+    return (
+      <section class="shell-overlay" role="alert">
+        <header class="shell-overlay-header">
+          <strong>Terminal could not load</strong>
+          <button class="btn" type="button" onClick={() => store.shellStore.back()}>
+            Back to chat
+          </button>
+        </header>
+        <div class="shell-error">{error}</div>
+      </section>
+    );
+  return Overlay ? (
+    <Overlay store={store} />
+  ) : (
+    <section class="shell-overlay" aria-label="Interactive shell" aria-busy="true">
+      <header class="shell-overlay-header">
+        <strong>Loading terminal…</strong>
+        <button class="btn" type="button" onClick={() => store.shellStore.back()}>
+          Back to chat
+        </button>
+      </header>
+    </section>
+  );
 }
 
 export function App({ store }: { store: AppStore }) {
@@ -122,6 +165,7 @@ export function App({ store }: { store: AppStore }) {
         </div>
         <Modals />
         <Lightbox />
+        {store.shellStore.visible.value && <ShellOverlayLoader store={store} />}
       </StoreContext.Provider>
     </ErrorBoundary>
   );

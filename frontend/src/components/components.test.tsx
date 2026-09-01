@@ -3159,6 +3159,25 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByRole('option', { name: /compact/ })).toBeInTheDocument();
   });
 
+  it('discovers and dispatches the capability-gated shell command locally', async () => {
+    const store = createStore();
+    store.shellStore.enabled.value = true;
+    store.openShell = vi.fn();
+    store.send = vi.fn(async () => undefined);
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+    const input = screen.getByRole('textbox', { name: 'Message' });
+    await userEvent.type(input, '/sh');
+    expect(screen.getByRole('option', { name: /shell/ })).toBeInTheDocument();
+    await userEvent.type(input, 'ell');
+    await userEvent.keyboard('{Enter}');
+    expect(store.openShell).toHaveBeenCalledOnce();
+    expect(store.send).not.toHaveBeenCalled();
+  });
+
   it('dispatches restored branch and live skill commands instead of sending them as chat', async () => {
     const branchStore = createStore();
     branchStore.branchCommand = vi.fn(async () => undefined);
