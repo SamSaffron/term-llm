@@ -7,6 +7,20 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 )
 
+func TestNewEmbeddingProviderChatGPTOAuthModel(t *testing.T) {
+	provider, err := NewEmbeddingProvider(&config.Config{}, "chatgpt:text-embedding-3-large")
+	if err != nil {
+		t.Fatalf("NewEmbeddingProvider: %v", err)
+	}
+	chatgpt, ok := provider.(*ChatGPTProvider)
+	if !ok {
+		t.Fatalf("provider type = %T", provider)
+	}
+	if chatgpt.model != "text-embedding-3-large" {
+		t.Fatalf("model = %q", chatgpt.model)
+	}
+}
+
 func TestNewEmbeddingProviderResolvesOllamaBaseURL(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Embed.Ollama.BaseURL = "$(printf https://ollama.example.test)"
@@ -93,6 +107,7 @@ func TestParseProviderModel(t *testing.T) {
 	}{
 		{"openai", "openai", ""},
 		{"openai:text-embedding-3-large", "openai", "text-embedding-3-large"},
+		{"chatgpt:text-embedding-3-large", "chatgpt", "text-embedding-3-large"},
 		{"gemini", "gemini", ""},
 		{"gemini:gemini-embedding-001", "gemini", "gemini-embedding-001"},
 		{"ollama:nomic-embed-text", "ollama", "nomic-embed-text"},

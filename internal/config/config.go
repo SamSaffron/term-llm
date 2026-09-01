@@ -1043,7 +1043,7 @@ type TranscriptionElevenLabsConfig struct {
 
 // EmbedConfig configures text embedding generation
 type EmbedConfig struct {
-	Provider string            `mapstructure:"provider"` // default embedding provider: gemini, openai, jina, voyage, ollama
+	Provider string            `mapstructure:"provider"` // default embedding provider: gemini, openai, chatgpt, jina, voyage, ollama
 	OpenAI   EmbedOpenAIConfig `mapstructure:"openai"`
 	Gemini   EmbedGeminiConfig `mapstructure:"gemini"`
 	Jina     EmbedJinaConfig   `mapstructure:"jina"`

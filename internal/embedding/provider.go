@@ -78,6 +78,13 @@ func NewEmbeddingProvider(cfg *config.Config, providerOverride string) (Embeddin
 		}
 		return p, nil
 
+	case "chatgpt":
+		p := NewChatGPTProvider()
+		if model != "" {
+			p.model = model
+		}
+		return p, nil
+
 	case "gemini":
 		apiKey := cfg.Embed.Gemini.APIKey
 		if apiKey == "" {
@@ -129,7 +136,7 @@ func NewEmbeddingProvider(cfg *config.Config, providerOverride string) (Embeddin
 		return p, nil
 
 	default:
-		return nil, fmt.Errorf("unknown embedding provider: %s (valid: gemini, openai, jina, voyage, ollama)", provider)
+		return nil, fmt.Errorf("unknown embedding provider: %s (valid: gemini, openai, chatgpt, jina, voyage, ollama)", provider)
 	}
 }
 
