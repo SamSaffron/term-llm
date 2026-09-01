@@ -256,6 +256,7 @@ var keySpecs = []KeySpec{
 	def("transcription.elevenlabs.model", DefaultTranscriptionElevenLabsModel),
 
 	optional("embed.provider"),
+	def("embed.batch_size", 32),
 	optional("embed.openai.api_key", sensitive()),
 	def("embed.openai.model", DefaultEmbedOpenAIModel),
 	optional("embed.gemini.api_key", sensitive()),

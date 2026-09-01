@@ -1043,12 +1043,13 @@ type TranscriptionElevenLabsConfig struct {
 
 // EmbedConfig configures text embedding generation
 type EmbedConfig struct {
-	Provider string            `mapstructure:"provider"` // default embedding provider: gemini, openai, chatgpt, venice, jina, voyage, ollama
-	OpenAI   EmbedOpenAIConfig `mapstructure:"openai"`
-	Gemini   EmbedGeminiConfig `mapstructure:"gemini"`
-	Jina     EmbedJinaConfig   `mapstructure:"jina"`
-	Voyage   EmbedVoyageConfig `mapstructure:"voyage"`
-	Ollama   EmbedOllamaConfig `mapstructure:"ollama"`
+	Provider  string            `mapstructure:"provider"`   // default embedding provider: gemini, openai, chatgpt, venice, jina, voyage, ollama
+	BatchSize int               `mapstructure:"batch_size"` // document embedding batch size; default 32
+	OpenAI    EmbedOpenAIConfig `mapstructure:"openai"`
+	Gemini    EmbedGeminiConfig `mapstructure:"gemini"`
+	Jina      EmbedJinaConfig   `mapstructure:"jina"`
+	Voyage    EmbedVoyageConfig `mapstructure:"voyage"`
+	Ollama    EmbedOllamaConfig `mapstructure:"ollama"`
 }
 
 // EmbedOpenAIConfig configures OpenAI embedding generation

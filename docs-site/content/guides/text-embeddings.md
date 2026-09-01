@@ -121,6 +121,16 @@ For Qwen3 embedding models served by Ollama, `RETRIEVAL_QUERY` automatically add
 
 Embedding providers normally use their own credentials, separate from text and image providers. ChatGPT and Venice are exceptions: `chatgpt:<model>` reuses the existing ChatGPT/Codex OAuth login, while `venice:<model>` reuses `providers.venice`. Select either explicitly with `-p` or `embed.provider`; automatic detection remains limited to configured Gemini and OpenAI API keys.
 
+Memory mining embeds documents in batches of 32 by default. Reduce `embed.batch_size` for CPU-only local models that cannot finish a large batch within the provider timeout:
+
+```yaml
+embed:
+  provider: ollama:qwen3-embedding:4b
+  batch_size: 8
+  ollama:
+    base_url: http://127.0.0.1:11435
+```
+
 **Jina AI** is a great choice for getting started. Sign up at [jina.ai/embeddings](https://jina.ai/embeddings/) for a free API key with 10M tokens, no credit card required.
 
 **Voyage AI** is Anthropic's recommended embedding partner (acquired by MongoDB, Feb 2025). The API remains fully available.

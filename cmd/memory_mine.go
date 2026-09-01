@@ -1125,7 +1125,10 @@ func runMemoryEmbedPhase(ctx context.Context, cfg *config.Config, store *memoryd
 	}
 
 	embeddedCount := 0
-	const embedBatchSize = 32
+	embedBatchSize := cfg.Embed.BatchSize
+	if embedBatchSize <= 0 {
+		embedBatchSize = 32
+	}
 	for i := 0; i < len(fragments); i += embedBatchSize {
 		end := i + embedBatchSize
 		if end > len(fragments) {
