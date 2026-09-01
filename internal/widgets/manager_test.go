@@ -190,6 +190,96 @@ func TestWidgetStopSerializesConcurrentRestart(t *testing.T) {
 	}
 }
 
+func TestWidgetPublicPrefix(t *testing.T) {
+	tests := []struct {
+		name      string
+		public    string
+		forwarded string
+		want      string
+	}{
+		{name: "direct request", want: "/chat/widgets/memory"},
+		{name: "Hub replacement", public: "/hub/node/jarvis", want: "/hub/node/jarvis/widgets/memory"},
+		{name: "standard proxy prepend", forwarded: "/proxy", want: "/proxy/chat/widgets/memory"},
+		{name: "trailing slash", public: "/node/jarvis/", want: "/node/jarvis/widgets/memory"},
+		{name: "absolute URL rejected", public: "https://evil.example/node/jarvis", want: "/chat/widgets/memory"},
+		{name: "path traversal rejected", public: "/node/../evil", want: "/chat/widgets/memory"},
+		{name: "encoded traversal rejected", public: "/node/%2e%2e/evil", want: "/chat/widgets/memory"},
+		{name: "uncanonical path rejected", public: "/node/a b", want: "/chat/widgets/memory"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := widgetPublicPrefix(tt.public, tt.forwarded, "/chat", "memory"); got != tt.want {
+				t.Fatalf("widgetPublicPrefix(%q, %q) = %q, want %q", tt.public, tt.forwarded, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestForwardedHost(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		host string
+		want string
+	}{
+		{name: "hostname", host: "hub.example.com:443", want: "hub.example.com:443"},
+		{name: "comma rejected", host: "evil.example,hub.example", want: "fallback.example"},
+		{name: "quote rejected", host: `evil.example"`, want: "fallback.example"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := forwardedHost(tt.host, "fallback.example"); got != tt.want {
+				t.Fatalf("forwardedHost(%q) = %q, want %q", tt.host, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestManagerProxyForwardsRequestSpecificPublicPrefix(t *testing.T) {
+	var gotPrefix, gotHost, gotProto, gotForwarded, gotPublicPrefix string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPrefix = r.Header.Get("X-Forwarded-Prefix")
+		gotHost = r.Header.Get("X-Forwarded-Host")
+		gotProto = r.Header.Get("X-Forwarded-Proto")
+		gotForwarded = r.Header.Get("Forwarded")
+		gotPublicPrefix = r.Header.Get(PublicPrefixHeader)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	target, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{
+		basePath: "/chat",
+		entries: map[string]*widgetEntry{
+			"memory": {
+				manifest: &Manifest{ID: "memory-browser", Mount: "memory"},
+				state:    stateRunning,
+				proxy:    httputil.NewSingleHostReverseProxy(target),
+			},
+		},
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(PublicPrefixHeader, "/hub/node/jarvis")
+	req.Header.Set("X-Forwarded-Prefix", "/spoofed-standard-prefix")
+	req.Header.Set("X-Forwarded-Host", "hub.example.com")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("Forwarded", `host=evil.example;proto=http`)
+	m.Proxy("memory", rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	if gotPrefix != "/hub/node/jarvis/widgets/memory" {
+		t.Fatalf("widget X-Forwarded-Prefix = %q, want /hub/node/jarvis/widgets/memory", gotPrefix)
+	}
+	if gotHost != "hub.example.com" || gotProto != "https" {
+		t.Fatalf("widget forwarded origin = %q %q, want hub.example.com https", gotHost, gotProto)
+	}
+	if gotForwarded != "" || gotPublicPrefix != "" {
+		t.Fatalf("internal forwarding headers leaked: Forwarded=%q %s=%q", gotForwarded, PublicPrefixHeader, gotPublicPrefix)
+	}
+}
+
 func TestManagerStopAllKeepsWidgetsRegisteredForLazyRestart(t *testing.T) {
 	m := &Manager{entries: make(map[string]*widgetEntry)}
 	for _, mount := range []string{"alpha", "beta"} {

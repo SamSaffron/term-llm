@@ -58,9 +58,10 @@ Use the variables appropriate to the selected placeholder mode. Never bind to `0
 
 term-llm strips the widget mount before forwarding requests. Build with these constraints:
 
-- Use relative asset, link, form, and fetch URLs. Root-relative paths such as `/assets/app.css` and `/api/state` escape the widget route.
-- Use `BASE_PATH` or `TERM_LLM_WIDGET_BASE_PATH` only when an absolute public path is genuinely needed.
-- Never hard-code `/chat`, `/ui`, or another Web UI base path.
+- Use relative asset, link, form, and fetch URLs. Root-relative paths such as `/assets/app.css` and `/api/state` escape the widget mount. Relative URLs remain correct when Hub or another proxy changes the browser-visible base path.
+- When an absolute public path is genuinely unavoidable, derive it per request from the `X-Forwarded-Prefix` request header. term-llm normalizes that header to the widget's complete browser-visible mount before forwarding the request. `X-Forwarded-Host` and `X-Forwarded-Proto` provide the browser-visible origin when a complete absolute URL is required. Treat all forwarding headers as routing hints, not authenticated facts; never use them for authorization or other security decisions.
+- Treat `BASE_PATH` and `TERM_LLM_WIDGET_BASE_PATH` only as the node-local startup fallback. Never bake them into browser-facing HTML or JavaScript: one widget process can simultaneously serve direct and Hub paths.
+- Never hard-code `/chat`, `/ui`, `/node/<id>`, or another Web UI or Hub base path.
 - Widgets start on first request and may be stopped after being idle. Persist important state to files or a database; do not rely on process memory surviving.
 - Keep startup fast. Do not build assets, download packages, or run migrations that can exceed the startup window on every launch.
 - Handle process termination cleanly when the chosen runtime supports it.

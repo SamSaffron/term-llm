@@ -15,6 +15,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/samsaffron/term-llm/internal/hub"
+	"github.com/samsaffron/term-llm/internal/widgets"
 )
 
 func TestHubReverseConnectionNextRequestIDIsUnique(t *testing.T) {
@@ -49,8 +50,11 @@ func TestHubReverseConnectionNextRequestIDIsUnique(t *testing.T) {
 }
 
 func TestHubReverseNodeProxy(t *testing.T) {
-	var projectPath, projectQuery, sessionHeader string
+	var projectPath, projectQuery, sessionHeader, forwardedHost, forwardedProto, publicPrefix string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwardedHost = r.Header.Get("X-Forwarded-Host")
+		forwardedProto = r.Header.Get("X-Forwarded-Proto")
+		publicPrefix = r.Header.Get(widgets.PublicPrefixHeader)
 		switch r.URL.Path {
 		case "/chat/healthz":
 			sessionHeader = r.Header.Get(requestSessionIDHeader)
@@ -78,6 +82,8 @@ func TestHubReverseNodeProxy(t *testing.T) {
 	waitForReverseNode(t, s, "artist")
 
 	req := httptest.NewRequest(http.MethodGet, "/node/artist/healthz", nil)
+	req.Host = "hub.example.com"
+	req.Header.Set("X-Forwarded-Proto", "https")
 	req.Header.Set(requestSessionIDHeader, "sess-safe")
 	rec := httptest.NewRecorder()
 	s.handler().ServeHTTP(rec, req)
@@ -89,6 +95,12 @@ func TestHubReverseNodeProxy(t *testing.T) {
 	}
 	if sessionHeader != "sess-safe" {
 		t.Fatalf("reverse backend %s = %q, want sess-safe", requestSessionIDHeader, sessionHeader)
+	}
+	if publicPrefix != "/node/artist" {
+		t.Fatalf("reverse backend %s = %q, want /node/artist", widgets.PublicPrefixHeader, publicPrefix)
+	}
+	if forwardedHost != "hub.example.com" || forwardedProto != "https" {
+		t.Fatalf("reverse backend forwarded origin = %q %q, want hub.example.com https", forwardedHost, forwardedProto)
 	}
 	projectReq := httptest.NewRequest(http.MethodGet, "/node/artist/v1/projects/prj_one/worktrees/diff?dir=%2Fmanaged%2Fone", nil)
 	projectRec := httptest.NewRecorder()

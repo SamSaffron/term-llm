@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/hub"
+	"github.com/samsaffron/term-llm/internal/widgets"
 )
 
 // hubWithBackend spins up a fake node serve and returns a hub fronting it as
@@ -832,12 +833,15 @@ func TestValidateHubBindAllowsPublicOnlyWithAuth(t *testing.T) {
 }
 
 func TestHubProxyInjectsTokenAndStripsCredentials(t *testing.T) {
-	var gotAuth, gotCookie, gotAPIKey, gotPath, gotQuery, gotFwd string
+	var gotAuth, gotCookie, gotAPIKey, gotPath, gotQuery, gotFwdHost, gotFwdProto, gotFwdPrefix, gotPublicPrefix string
 	s := hubWithBackend(t, "/chat", func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		gotCookie = r.Header.Get("Cookie")
 		gotAPIKey = r.Header.Get("X-Api-Key")
-		gotFwd = r.Header.Get("X-Forwarded-Host")
+		gotFwdHost = r.Header.Get("X-Forwarded-Host")
+		gotFwdProto = r.Header.Get("X-Forwarded-Proto")
+		gotFwdPrefix = r.Header.Get("X-Forwarded-Prefix")
+		gotPublicPrefix = r.Header.Get(widgets.PublicPrefixHeader)
 		gotPath = r.URL.Path
 		gotQuery = r.URL.RawQuery
 		io.WriteString(w, "hello from node")
@@ -851,6 +855,9 @@ func TestHubProxyInjectsTokenAndStripsCredentials(t *testing.T) {
 	req.Header.Set("Cookie", "term_llm_token=client-cookie")
 	req.Header.Set("X-Api-Key", "client-key")
 	req.Header.Set("X-Forwarded-Host", "evil.example.com")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Prefix", "/spoofed")
+	req.Host = "hub.example.com"
 	s.handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -859,8 +866,17 @@ func TestHubProxyInjectsTokenAndStripsCredentials(t *testing.T) {
 	if gotAuth != "Bearer tkn-123" {
 		t.Errorf("backend Authorization = %q, want injected token", gotAuth)
 	}
-	if gotCookie != "" || gotAPIKey != "" || gotFwd != "" {
-		t.Errorf("credentials leaked: cookie=%q apikey=%q fwd=%q", gotCookie, gotAPIKey, gotFwd)
+	if gotCookie != "" || gotAPIKey != "" {
+		t.Errorf("credentials leaked: cookie=%q apikey=%q", gotCookie, gotAPIKey)
+	}
+	if gotFwdHost != "hub.example.com" || gotFwdProto != "https" {
+		t.Errorf("backend forwarded origin = %q %q, want hub.example.com https", gotFwdHost, gotFwdProto)
+	}
+	if gotFwdPrefix != "" {
+		t.Errorf("backend client X-Forwarded-Prefix survived: %q", gotFwdPrefix)
+	}
+	if gotPublicPrefix != "/node/alpha" {
+		t.Errorf("backend %s = %q, want trusted Hub mount /node/alpha", widgets.PublicPrefixHeader, gotPublicPrefix)
 	}
 	if gotPath != "/chat/v1/models" || gotQuery != "limit=5" {
 		t.Errorf("backend path = %q query = %q", gotPath, gotQuery)
