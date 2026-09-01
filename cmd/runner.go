@@ -358,7 +358,10 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 
 	var sess *session.Session
 	if store != nil && !req.DeferSession {
-		sess = r.ensureRunSession(ctx, store, req, provider, cfg.DefaultProvider, modelName, agentName, settings)
+		sess, err = r.ensureRunSession(ctx, store, req, provider, cfg.DefaultProvider, modelName, agentName, settings)
+		if err != nil {
+			return nil, err
+		}
 		runtime.sessionMeta = sess
 	}
 	if toolMgr != nil {
@@ -585,12 +588,12 @@ func configureInteractiveSink(toolMgr *tools.ToolManager, sink runpkg.EventSink)
 	}
 }
 
-func (r *cmdRunner) ensureRunSession(ctx context.Context, store session.Store, req runpkg.Request, provider llm.Provider, providerKey, modelName, agentName string, settings SessionSettings) *session.Session {
+func (r *cmdRunner) ensureRunSession(ctx context.Context, store session.Store, req runpkg.Request, provider llm.Provider, providerKey, modelName, agentName string, settings SessionSettings) (*session.Session, error) {
 	if store == nil || strings.TrimSpace(req.SessionID) == "" {
-		return nil
+		return nil, nil
 	}
 	if existing, err := store.Get(ctx, req.SessionID); err == nil && existing != nil {
-		return existing
+		return existing, nil
 	}
 	name := strings.TrimSpace(req.SessionName)
 	summary := name
@@ -627,12 +630,12 @@ func (r *cmdRunner) ensureRunSession(ctx context.Context, store session.Store, r
 	}
 	if err := store.Create(ctx, sess); err != nil {
 		if existing, getErr := store.Get(ctx, req.SessionID); getErr == nil && existing != nil {
-			return existing
+			return existing, nil
 		}
 		log.Printf("[runner] session Create failed for %s: %v", req.SessionID, err)
-		return nil
+		return nil, fmt.Errorf("create session %q: %w", req.SessionID, err)
 	}
-	return sess
+	return sess, nil
 }
 
 func (r *cmdRunner) runProgressive(ctx context.Context, runtime *serveRuntime, engine *llm.Engine, llmReq llm.Request, inputMessages []llm.Message, req runpkg.Request, sess *session.Session, store session.Store, provider llm.Provider, collector *runnerEventCollector) (runpkg.Result, error) {
