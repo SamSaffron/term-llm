@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/mcphttp"
 )
 
 func TestClaudeBinProvider_ImplementsToolExecutorSetter(t *testing.T) {
@@ -46,9 +48,9 @@ func TestClaudeBinProvider_ImplementsInlineFlusher(t *testing.T) {
 	if !provider.inlineFlushRequested() {
 		t.Fatal("RequestInlineFlush did not mark the tool-result boundary")
 	}
-	formatted := provider.formatToolOutputForClaude(TextOutput("tool ok"))
+	formatted := provider.formatToolResultForClaude(TextOutput("tool ok")).Content
 	if !strings.Contains(formatted, strings.TrimSpace(inlineFlushToolNotice)) {
-		t.Fatalf("formatToolOutputForClaude = %q, want flush notice", formatted)
+		t.Fatalf("formatToolResultForClaude content = %q, want flush notice", formatted)
 	}
 }
 
@@ -2113,10 +2115,101 @@ func TestBuildStreamJsonInput_FramesHistoryEvenWhenFinalUserEmpty(t *testing.T) 
 	}
 }
 
-func TestFormatToolOutputForClaude_UsesStructuredImageParts(t *testing.T) {
+func TestFormatToolResultForClaude_EmitsImageParts(t *testing.T) {
 	p := NewClaudeBinProvider("sonnet", nil)
 
-	formatted := p.formatToolOutputForClaude(ToolOutput{
+	result := p.formatToolResultForClaude(testClaudeImageToolOutput())
+
+	if result.Content != "Image loaded" {
+		t.Fatalf("Content = %q, want %q", result.Content, "Image loaded")
+	}
+	if len(result.Parts) != 2 {
+		t.Fatalf("Parts = %#v, want text and image blocks", result.Parts)
+	}
+	if result.Parts[0].Type != mcphttp.ContentPartText || result.Parts[0].Text != "Image loaded" {
+		t.Errorf("text part = %#v", result.Parts[0])
+	}
+	if image := result.Parts[1]; image.Type != mcphttp.ContentPartImage || image.MIMEType != "image/png" || string(image.Data) != "hello" {
+		t.Errorf("image part = %#v", image)
+	}
+
+	p.tempFilesMu.Lock()
+	trackedFiles := len(p.tempFiles)
+	p.tempFilesMu.Unlock()
+	if trackedFiles != 0 {
+		t.Fatalf("formatting tracked %d temp files, want none", trackedFiles)
+	}
+}
+
+func TestFormatToolResultForClaude_TextOnlyHasNoParts(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+
+	result := p.formatToolResultForClaude(TextOutput("tool ok"))
+
+	if result.Content != "tool ok" {
+		t.Fatalf("Content = %q, want %q", result.Content, "tool ok")
+	}
+	if result.Parts != nil {
+		t.Fatalf("Parts = %#v, want nil", result.Parts)
+	}
+}
+
+func TestFormatToolResultForClaude_FlushNoticeStaysInTextPart(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+	p.requestInlineFlush()
+
+	result := p.formatToolResultForClaude(testClaudeImageToolOutput())
+
+	if len(result.Parts) != 2 {
+		t.Fatalf("Parts = %#v, want text and image blocks", result.Parts)
+	}
+	if result.Parts[0].Type != mcphttp.ContentPartText || !strings.HasSuffix(result.Parts[0].Text, inlineFlushToolNotice) {
+		t.Fatalf("text part = %#v, want inline flush notice", result.Parts[0])
+	}
+	if result.Parts[1].Type != mcphttp.ContentPartImage {
+		t.Fatalf("image part = %#v", result.Parts[1])
+	}
+
+	second := p.formatToolResultForClaude(testClaudeImageToolOutput())
+	if strings.Contains(second.Content, strings.TrimSpace(inlineFlushToolNotice)) {
+		t.Fatalf("second Content retained one-shot flush notice: %q", second.Content)
+	}
+}
+
+func TestClaudeBinProvider_SetToolExecutor_EmitsImageParts(t *testing.T) {
+	tests := []struct {
+		name      string
+		timedOut  bool
+		wantError bool
+	}{
+		{name: "success"},
+		{name: "timeout", timedOut: true, wantError: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := NewClaudeBinProvider("sonnet", nil)
+			provider.SetToolExecutor(func(context.Context, string, json.RawMessage) (ToolOutput, error) {
+				output := testClaudeImageToolOutput()
+				output.TimedOut = tt.timedOut
+				return output, nil
+			})
+
+			result, err := provider.toolExecutor(context.Background(), "view_image", json.RawMessage("{}"))
+			if err != nil {
+				t.Fatalf("toolExecutor: %v", err)
+			}
+			if result.IsError != tt.wantError {
+				t.Errorf("IsError = %v, want %v", result.IsError, tt.wantError)
+			}
+			if len(result.Parts) != 2 || result.Parts[1].Type != mcphttp.ContentPartImage {
+				t.Fatalf("Parts = %#v, want text and image blocks", result.Parts)
+			}
+		})
+	}
+}
+
+func testClaudeImageToolOutput() ToolOutput {
+	return ToolOutput{
 		Content: "Image loaded",
 		ContentParts: []ToolContentPart{
 			{Type: ToolContentPartText, Text: "Image loaded"},
@@ -2125,20 +2218,6 @@ func TestFormatToolOutputForClaude_UsesStructuredImageParts(t *testing.T) {
 				Base64:    "aGVsbG8=",
 			}},
 		},
-	})
-
-	lines := strings.Split(strings.TrimSpace(formatted), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("expected formatted output to include text and image path, got %q", formatted)
-	}
-	if lines[0] != "Image loaded" {
-		t.Fatalf("expected first line to keep text output, got %q", lines[0])
-	}
-	if lines[1] == "" {
-		t.Fatal("expected second line to contain image path")
-	}
-	if _, err := os.Stat(lines[1]); err != nil {
-		t.Fatalf("expected materialized image path %q to exist: %v", lines[1], err)
 	}
 }
 

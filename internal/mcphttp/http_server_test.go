@@ -3,12 +3,15 @@ package mcphttp
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestServerStartStop(t *testing.T) {
@@ -128,6 +131,107 @@ func TestServerPropagatesToolResultIsError(t *testing.T) {
 	}
 	if !result.Result.IsError || len(result.Result.Content) != 1 || result.Result.Content[0].Text != "failed usefully" {
 		t.Fatalf("tool result = %#v", result.Result)
+	}
+}
+
+func TestServerEmitsImageContentParts(t *testing.T) {
+	server := NewServer(func(context.Context, string, json.RawMessage) (ToolResult, error) {
+		return ToolResult{
+			Content: "Image loaded",
+			Parts: []ContentPart{
+				{Type: ContentPartText, Text: "Image loaded"},
+				{Type: ContentPartImage, MIMEType: "image/png", Data: []byte("hello")},
+			},
+		}, nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	url, token, err := server.Start(ctx, []ToolSpec{{Name: "view_image", Schema: map[string]interface{}{"type": "object"}}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Second)
+		defer stopCancel()
+		if err := server.Stop(stopCtx); err != nil {
+			t.Errorf("Stop: %v", err)
+		}
+	}()
+
+	body := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"view_image","arguments":{}}}`)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	payload, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	for _, line := range bytes.Split(bytes.TrimSpace(payload), []byte("\n")) {
+		if bytes.HasPrefix(bytes.TrimSpace(line), []byte("data:")) {
+			payload = bytes.TrimSpace(bytes.TrimPrefix(bytes.TrimSpace(line), []byte("data:")))
+			break
+		}
+	}
+	var result struct {
+		Result struct {
+			Content []struct {
+				Type     string `json:"type"`
+				Text     string `json:"text"`
+				MIMEType string `json:"mimeType"`
+				Data     string `json:"data"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(payload, &result); err != nil {
+		t.Fatalf("decode response %q: %v", payload, err)
+	}
+	if len(result.Result.Content) != 2 {
+		t.Fatalf("content = %#v, want two blocks", result.Result.Content)
+	}
+	if got := result.Result.Content[0]; got.Type != "text" || got.Text != "Image loaded" {
+		t.Errorf("text block = %#v", got)
+	}
+	image := result.Result.Content[1]
+	if image.Type != "image" || image.MIMEType != "image/png" {
+		t.Fatalf("image block = %#v", image)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(image.Data)
+	if err != nil {
+		t.Fatalf("decode image data: %v", err)
+	}
+	if !bytes.Equal(decoded, []byte("hello")) {
+		t.Errorf("image data = %q, want %q", decoded, "hello")
+	}
+}
+
+func TestToolResultContentFallbacks(t *testing.T) {
+	tests := []struct {
+		name   string
+		result ToolResult
+	}{
+		{name: "plain text", result: ToolResult{Content: "plain"}},
+		{name: "invalid parts", result: ToolResult{Content: "fallback", Parts: []ContentPart{{Type: ContentPartImage, MIMEType: "image/png"}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := toolResultContent(tt.result)
+			if len(content) != 1 {
+				t.Fatalf("content = %#v, want one text block", content)
+			}
+			text, ok := content[0].(*mcp.TextContent)
+			if !ok || text.Text != tt.result.Content {
+				t.Fatalf("content = %#v, want text %q", content, tt.result.Content)
+			}
+		})
 	}
 }
 
