@@ -382,11 +382,18 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 		startupCancel()
 		if startupExpired {
 			processCancel()
-			if err == nil {
-				err = startupCtx.Err()
-				if err == nil {
-					err = context.Canceled
-				}
+			// Expiry cancels the process context, so the transport can report
+			// EOF or "client is closing" before the SDK observes the deadline.
+			// The startup context error is the cause; make it the reported one.
+			ctxErr := startupCtx.Err()
+			if ctxErr == nil {
+				ctxErr = context.Canceled
+			}
+			switch {
+			case err == nil:
+				err = ctxErr
+			case !errors.Is(err, ctxErr):
+				err = fmt.Errorf("%w: %v", ctxErr, err)
 			}
 		}
 		if err != nil {
