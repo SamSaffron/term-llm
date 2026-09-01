@@ -102,6 +102,8 @@ const (
 	DefaultTranscriptionElevenLabsModel = "scribe_v2"
 
 	DefaultEmbedOpenAIModel   = "text-embedding-3-small"
+	DefaultEmbedChatGPTModel  = DefaultEmbedOpenAIModel
+	DefaultEmbedVeniceModel   = "text-embedding-qwen3-8b"
 	DefaultEmbedGeminiModel   = "gemini-embedding-001"
 	DefaultEmbedJinaModel     = "jina-embeddings-v3"
 	DefaultEmbedVoyageModel   = "voyage-3.5"

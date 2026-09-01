@@ -7,6 +7,37 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 )
 
+func TestNewEmbeddingProviderVeniceModel(t *testing.T) {
+	cfg := &config.Config{Providers: map[string]config.ProviderConfig{
+		"venice": {APIKey: "venice-key"},
+	}}
+	provider, err := NewEmbeddingProvider(cfg, "venice:text-embedding-qwen3-8b")
+	if err != nil {
+		t.Fatalf("NewEmbeddingProvider: %v", err)
+	}
+	venice, ok := provider.(*VeniceProvider)
+	if !ok {
+		t.Fatalf("provider type = %T", provider)
+	}
+	if venice.model != "text-embedding-qwen3-8b" {
+		t.Fatalf("model = %q", venice.model)
+	}
+}
+
+func TestNewEmbeddingProviderChatGPTOAuthModel(t *testing.T) {
+	provider, err := NewEmbeddingProvider(&config.Config{}, "chatgpt:text-embedding-3-large")
+	if err != nil {
+		t.Fatalf("NewEmbeddingProvider: %v", err)
+	}
+	chatgpt, ok := provider.(*ChatGPTProvider)
+	if !ok {
+		t.Fatalf("provider type = %T", provider)
+	}
+	if chatgpt.model != "text-embedding-3-large" {
+		t.Fatalf("model = %q", chatgpt.model)
+	}
+}
+
 func TestNewEmbeddingProviderResolvesOllamaBaseURL(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Embed.Ollama.BaseURL = "$(printf https://ollama.example.test)"
@@ -93,6 +124,8 @@ func TestParseProviderModel(t *testing.T) {
 	}{
 		{"openai", "openai", ""},
 		{"openai:text-embedding-3-large", "openai", "text-embedding-3-large"},
+		{"chatgpt:text-embedding-3-large", "chatgpt", "text-embedding-3-large"},
+		{"venice:text-embedding-qwen3-8b", "venice", "text-embedding-qwen3-8b"},
 		{"gemini", "gemini", ""},
 		{"gemini:gemini-embedding-001", "gemini", "gemini-embedding-001"},
 		{"ollama:nomic-embed-text", "ollama", "nomic-embed-text"},

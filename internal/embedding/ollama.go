@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
@@ -45,10 +46,12 @@ func (p *OllamaProvider) Embed(ctx context.Context, req EmbedRequest) (*Embeddin
 		model = req.Model
 	}
 
-	// Ollama's /api/embed endpoint supports batch input
+	texts := prepareQwen3EmbeddingTexts(model, req.TaskType, req.Texts)
+
+	// Ollama's /api/embed endpoint supports batch input.
 	ollamaReq := ollamaEmbedRequest{
 		Model: model,
-		Input: req.Texts,
+		Input: texts,
 	}
 
 	jsonBody, err := json.Marshal(ollamaReq)
@@ -104,6 +107,18 @@ func (p *OllamaProvider) Embed(ctx context.Context, req EmbedRequest) (*Embeddin
 	}
 
 	return result, nil
+}
+
+func prepareQwen3EmbeddingTexts(model, taskType string, texts []string) []string {
+	modelLower := strings.ToLower(model)
+	if taskType != "RETRIEVAL_QUERY" || !strings.Contains(modelLower, "qwen3") || !strings.Contains(modelLower, "embedding") {
+		return texts
+	}
+	prepared := make([]string, len(texts))
+	for i, text := range texts {
+		prepared[i] = "Instruct: Given a user question, retrieve relevant passages that answer it\nQuery: " + text
+	}
+	return prepared
 }
 
 // Ollama API types

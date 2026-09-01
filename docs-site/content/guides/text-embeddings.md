@@ -88,7 +88,9 @@ term-llm embed --similarity "What is AI?" "Machine learning is a subset of AI" "
 ```bash
 # Provider/model selection
 term-llm embed "hello" -p openai                          # use OpenAI
-term-llm embed "hello" -p openai:text-embedding-3-large   # specific model
+term-llm embed "hello" -p openai:text-embedding-3-large   # specific API-key model
+term-llm embed "hello" -p chatgpt:text-embedding-3-large  # reuse ChatGPT OAuth
+term-llm embed "hello" -p venice:text-embedding-qwen3-8b   # reuse providers.venice
 term-llm embed "hello" -p gemini                           # use Gemini
 term-llm embed "hello" -p jina                             # use Jina (free tier)
 term-llm embed "hello" -p voyage                           # use Voyage AI
@@ -97,10 +99,13 @@ term-llm embed "hello" -p ollama:nomic-embed-text          # local Ollama
 # Custom dimensions (Matryoshka)
 term-llm embed "hello" --dimensions 256
 
-# Gemini task type hints
+# Retrieval task type hints
 term-llm embed "search query" --task-type RETRIEVAL_QUERY -p gemini
 term-llm embed -f doc.txt --task-type RETRIEVAL_DOCUMENT -p gemini
+term-llm embed "search query" --task-type RETRIEVAL_QUERY -p ollama:qwen3-embedding:4b
 ```
+
+For Qwen3 embedding models served by Ollama, `RETRIEVAL_QUERY` automatically adds Qwen's recommended retrieval instruction while document text remains unchanged.
 
 ### Embedding Providers
 
@@ -108,11 +113,13 @@ term-llm embed -f doc.txt --task-type RETRIEVAL_DOCUMENT -p gemini
 |----------|--------------|------------|---------------------|-----------|
 | Gemini (default) | `gemini-embedding-001` | 3072 (128–3072) | `GEMINI_API_KEY` | Yes |
 | OpenAI | `text-embedding-3-small` | 1536 (customizable) | `OPENAI_API_KEY` | No |
+| ChatGPT OAuth | `text-embedding-3-small` | 1536 (customizable) | `term-llm auth login chatgpt` | Subscription access |
+| Venice | `text-embedding-qwen3-8b` | 4096 (customizable) | `providers.venice.api_key` | No |
 | [Jina AI](https://jina.ai/embeddings/) | `jina-embeddings-v3` | 1024 (customizable) | `JINA_API_KEY` | Yes (10M tokens) |
 | [Voyage AI](https://voyageai.com) | `voyage-3.5` | 1024 (256–2048) | `VOYAGE_API_KEY` | No |
 | Ollama | `nomic-embed-text` | 768 | — | Local |
 
-Embedding providers use their own credentials, separate from text and image providers. The default provider is auto-detected from your LLM provider (Gemini users → Gemini, OpenAI users → OpenAI, Anthropic users → Voyage if configured, otherwise Gemini).
+Embedding providers normally use their own credentials, separate from text and image providers. ChatGPT and Venice are exceptions: `chatgpt:<model>` reuses the existing ChatGPT/Codex OAuth login, while `venice:<model>` reuses `providers.venice`. Select either explicitly with `-p` or `embed.provider`; automatic detection remains limited to configured Gemini and OpenAI API keys.
 
 **Jina AI** is a great choice for getting started. Sign up at [jina.ai/embeddings](https://jina.ai/embeddings/) for a free API key with 10M tokens, no credit card required.
 
