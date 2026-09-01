@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import { errorMessage } from '../domain/text';
+import { passwordManagerIgnoreProps } from './input-attributes';
 import { Overlay } from './Overlay';
 
 function assignmentCountCopy(count: number): string {
@@ -136,6 +137,7 @@ export function ProjectAssignment() {
                 <input
                   class="project-input"
                   aria-label="New project display name"
+                  {...passwordManagerIgnoreProps}
                   value={candidateName}
                   onInput={(event) => setCandidateName(event.currentTarget.value)}
                 />

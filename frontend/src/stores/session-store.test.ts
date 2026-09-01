@@ -90,6 +90,68 @@ describe('SessionStore', () => {
     }
   });
 
+  it('keeps running Hub agents distinct from agents with unseen terminal attention', async () => {
+    const store = new AppStore({
+      ...testConfig,
+      hub: { url: '/hub/', nodeId: 'current', nodeBasePath: '/ui' },
+    });
+    try {
+      store.endpoints.hubNodes = vi.fn(async () => ({
+        nodes: [
+          {
+            id: 'active-only',
+            name: 'Active only',
+            status: { reachable: true },
+            sessions: { active_count: 1, unseen_count: 0 },
+            new_session_path: '/hub/node/active-only/?new=1',
+          },
+          {
+            id: 'unseen-only',
+            name: 'Unseen only',
+            status: { reachable: true },
+            sessions: { active_count: 0, unseen_count: 1 },
+            new_session_path: '/hub/node/unseen-only/?new=1',
+          },
+          {
+            id: 'active-and-unseen',
+            name: 'Active and unseen',
+            status: { reachable: true },
+            sessions: { active_count: 1, unseen_count: 1 },
+            new_session_path: '/hub/node/active-and-unseen/?new=1',
+          },
+          {
+            id: 'idle',
+            name: 'Idle',
+            status: { reachable: true },
+            sessions: { active_count: 0, unseen_count: 0 },
+            new_session_path: '/hub/node/idle/?new=1',
+          },
+          {
+            id: 'current',
+            name: 'Current',
+            status: { reachable: true },
+            sessions: { active_count: 0, unseen_count: 1 },
+            new_session_path: '/hub/node/current/?new=1',
+          },
+        ],
+      }));
+
+      await store.refreshHubAgents(true);
+
+      expect(
+        Object.fromEntries(store.hubAgents.value.map((agent) => [agent.id, agent])),
+      ).toMatchObject({
+        'active-only': { active: true, attention: false },
+        'unseen-only': { active: false, attention: true },
+        'active-and-unseen': { active: true, attention: true },
+        idle: { active: false, attention: false },
+        current: { active: false, attention: false },
+      });
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('is the command owner for catalog and selection state', () => {
     const store = new AppStore(testConfig);
     try {

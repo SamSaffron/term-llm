@@ -687,7 +687,7 @@ export class SessionStore {
               name: String(node.name || id),
               target: target(node),
               active,
-              attention: id !== this.services.config.hub?.nodeId && Boolean(active || unseen),
+              attention: id !== this.services.config.hub?.nodeId && unseen,
             };
           })
           .filter((entry) => entry.name && entry.target)

@@ -74,6 +74,15 @@ const createStore = () => {
   return store;
 };
 
+const expectPasswordManagersIgnored = (element: HTMLElement) => {
+  expect(element).toHaveAttribute('autocomplete', 'off');
+  expect(element).toHaveAttribute('data-1p-ignore', 'true');
+  expect(element).toHaveAttribute('data-bwignore', 'true');
+  expect(element).toHaveAttribute('data-form-type', 'other');
+  expect(element).toHaveAttribute('data-lpignore', 'true');
+  expect(element).toHaveAttribute('data-protonpass-ignore', 'true');
+};
+
 describe('Preact-owned chat surfaces', () => {
   it('shows the MCP count for a new chat before a session exists', () => {
     const store = createStore();
@@ -2993,6 +3002,13 @@ describe('Preact-owned chat surfaces', () => {
     store.hubAgents.value = [
       { id: 'Dev', name: 'Dev', target: '/node/Dev/', active: true, attention: false },
       {
+        id: 'worker',
+        name: 'worker',
+        target: '/node/worker/',
+        active: true,
+        attention: false,
+      },
+      {
         id: 'checklist',
         name: 'checklist',
         target: '/node/checklist/',
@@ -3024,6 +3040,10 @@ describe('Preact-owned chat surfaces', () => {
     expect(
       container.querySelector('.hub-agent-link[aria-current="true"] .hub-agent-name'),
     ).toHaveTextContent('Dev');
+    expect(
+      screen.getByRole('link', { name: 'worker' }).querySelector('.hub-agent-attention'),
+    ).toBeNull();
+    expect(screen.getByText('Needs attention')).toBeInTheDocument();
 
     await userEvent.click(agentsToggle);
     expect(agentsToggle).toHaveAttribute('aria-expanded', 'false');
@@ -4283,10 +4303,12 @@ describe('Preact-owned chat surfaces', () => {
     );
 
     const clean = screen.getByRole('checkbox', { name: /Start clean/ });
+    const name = screen.getByLabelText('New worktree name');
     expect(clean).toBeChecked();
+    expectPasswordManagersIgnored(name);
     expect(screen.getByText(/Leave 6 changed files in the root checkout/)).toBeVisible();
 
-    fireEvent.input(screen.getByLabelText('New worktree name'), {
+    fireEvent.input(name, {
       target: { value: 'clean-tree' },
     });
     await userEvent.click(screen.getByRole('button', { name: 'Create' }));
@@ -4416,7 +4438,9 @@ describe('Preact-owned chat surfaces', () => {
     );
 
     expect(await screen.findByRole('heading', { name: 'feature-polish' })).toBeInTheDocument();
-    fireEvent.input(screen.getByLabelText('Branch name'), {
+    const branch = screen.getByLabelText('Branch name');
+    expectPasswordManagersIgnored(branch);
+    fireEvent.input(branch, {
       target: { value: 'feature/promoted' },
     });
     await userEvent.click(screen.getByRole('button', { name: 'Promote' }));
@@ -4712,6 +4736,7 @@ describe('Preact-owned chat surfaces', () => {
 
     const name = await screen.findByRole('textbox', { name: 'New project display name' });
     expect(name).toHaveValue('new-repo');
+    expectPasswordManagersIgnored(name);
     expect(
       screen.getByText('1 conversation from this workspace will be grouped here.'),
     ).toBeVisible();

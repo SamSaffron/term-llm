@@ -466,6 +466,6 @@ The dashboard's **Ready to review** section combines unseen completed, failed, r
 
 Hub retains its last successful rows when a node is offline, times out, returns malformed pagination, or loses a previously advertised capability. It replaces one node's projection only after every `unseen` and `running` page has the same store instance and snapshot version. If a node database is reset, the new stable store instance ID prevents unrelated session IDs from being merged. Nodes that never supported the API report attention as unavailable rather than falsely reporting zero.
 
-A solid green Hub node/agent indicator means at least one child conversation is running or terminal-unseen. Hub aggregate indicators never pulse; conversation rows retain the pulse (running) versus solid (ready to review) distinction.
+The Hub dashboard's solid green node indicator means at least one child conversation is running or terminal-unseen. The web agents sidebar reserves its solid green dot for terminal-unseen work on other agents that needs attention; running-only agents stay quiet there. Hub aggregate indicators never pulse, while conversation rows retain the pulse (running) versus solid (ready to review) distinction.
 
 Terminal attention currently follows the Hub's existing single-logical-operator model. Every Hub passkey is a credential for that same operator, not a separate principal, and all clients share each node's seen watermark.

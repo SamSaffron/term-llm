@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import { APIError } from '../api/client';
 import type { WorktreeRecoveryOffer } from '../domain/types';
+import { passwordManagerIgnoreProps } from './input-attributes';
 import { Icon } from './Icon';
 import { Overlay } from './Overlay';
 
@@ -532,6 +533,7 @@ export function Worktrees() {
                 <input
                   aria-label="Branch name"
                   placeholder="Branch name"
+                  {...passwordManagerIgnoreProps}
                   value={branch}
                   disabled={Boolean(busy) || streaming}
                   onInput={(event) => setBranch(event.currentTarget.value)}
@@ -693,6 +695,7 @@ export function Worktrees() {
             <input
               aria-label="New worktree name"
               placeholder="Name"
+              {...passwordManagerIgnoreProps}
               value={name}
               disabled={busy === 'create' || streaming}
               onInput={(event) => setName(event.currentTarget.value)}
