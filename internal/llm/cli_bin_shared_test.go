@@ -3,6 +3,7 @@ package llm
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"go/ast"
@@ -143,6 +144,140 @@ func TestCLIToolBridgePreservesToolFailureStatus(t *testing.T) {
 	}
 }
 
+func TestCLIToolBridgeForwardsImageParts(t *testing.T) {
+	tests := []struct {
+		name      string
+		isError   bool
+		wantError bool
+	}{
+		{name: "success"},
+		{name: "semantic error", isError: true, wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			bridge := &cliTurnBridge{
+				toolReqCh: make(chan cliToolRequest, 1),
+				done:      make(chan struct{}),
+			}
+			events := make(chan Event, 1)
+			var state cliToolBridgeState
+			state.activate(bridge, events)
+			defer state.deactivate(bridge)
+
+			server := mcphttp.NewServer(state.wrappedResultExecutor(func(output ToolOutput) mcphttp.ToolResult {
+				return mcphttp.ToolResult{
+					Content: output.Content,
+					Parts: append([]mcphttp.ContentPart{{
+						Type: mcphttp.ContentPartText,
+						Text: output.Content,
+					}}, mcpImageContentParts(output)...),
+				}
+			}))
+			url, token, err := server.Start(testCtx, []mcphttp.ToolSpec{{
+				Name:   "view_image",
+				Schema: map[string]interface{}{"type": "object"},
+			}})
+			if err != nil {
+				t.Fatalf("start MCP server: %v", err)
+			}
+			defer func() {
+				stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer stopCancel()
+				if err := server.Stop(stopCtx); err != nil {
+					t.Errorf("stop MCP server: %v", err)
+				}
+			}()
+
+			go func() {
+				req := <-bridge.toolReqCh
+				req.ack <- nil
+				req.response <- ToolExecutionResponse{Result: ToolOutput{
+					Content: "Image loaded",
+					ContentParts: []ToolContentPart{
+						{Type: ToolContentPartText, Text: "Image loaded"},
+						{Type: ToolContentPartImageData, ImageData: &ToolImageData{
+							MediaType: "image/png",
+							Base64:    "aGVsbG8=",
+						}},
+					},
+					IsError: tt.isError,
+				}}
+			}()
+
+			body := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"view_image","arguments":{}}}`)
+			req, err := http.NewRequestWithContext(testCtx, http.MethodPost, url, body)
+			if err != nil {
+				t.Fatalf("create MCP request: %v", err)
+			}
+			req.Header.Set("Authorization", "Bearer "+token)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("call MCP tool: %v", err)
+			}
+			defer resp.Body.Close()
+			responseBody, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read MCP response: %v", err)
+			}
+			gotError, content := decodeMCPToolCallResponseBlocks(t, responseBody)
+			if gotError != tt.wantError {
+				t.Errorf("CallToolResult.IsError = %v, want %v; response: %s", gotError, tt.wantError, responseBody)
+			}
+			if len(content) != 2 {
+				t.Fatalf("MCP content = %#v, want two blocks", content)
+			}
+			if content[0].Type != "text" || content[0].Text != "Image loaded" {
+				t.Errorf("text block = %#v", content[0])
+			}
+			if content[1].Type != "image" || content[1].MIMEType != "image/png" {
+				t.Fatalf("image block = %#v", content[1])
+			}
+			decoded, err := base64.StdEncoding.DecodeString(content[1].Data)
+			if err != nil {
+				t.Fatalf("decode image data: %v", err)
+			}
+			if !bytes.Equal(decoded, []byte("hello")) {
+				t.Errorf("image data = %q, want %q", decoded, "hello")
+			}
+		})
+	}
+}
+
+type mcpToolCallContentBlock struct {
+	Type     string `json:"type"`
+	Text     string `json:"text"`
+	MIMEType string `json:"mimeType"`
+	Data     string `json:"data"`
+}
+
+func decodeMCPToolCallResponseBlocks(t *testing.T, body []byte) (bool, []mcpToolCallContentBlock) {
+	t.Helper()
+	payload := bytes.TrimSpace(body)
+	for _, line := range bytes.Split(payload, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if bytes.HasPrefix(line, []byte("data:")) {
+			payload = bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+			break
+		}
+	}
+
+	var response struct {
+		Result struct {
+			Content []mcpToolCallContentBlock `json:"content"`
+			IsError bool                      `json:"isError"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(payload, &response); err != nil {
+		t.Fatalf("decode MCP response %q: %v", body, err)
+	}
+	return response.Result.IsError, response.Result.Content
+}
+
 func decodeMCPToolCallResponse(t *testing.T, body []byte) (bool, string) {
 	t.Helper()
 	payload := bytes.TrimSpace(body)
@@ -187,7 +322,9 @@ func TestInlineLoopCLIProvidersSupportInlineFlush(t *testing.T) {
 		state        *cliToolBridgeState
 		formatOutput func(ToolOutput) string
 	}{
-		{"claude_bin", claude, &claude.cliToolBridgeState, claude.formatToolOutputForClaude},
+		{"claude_bin", claude, &claude.cliToolBridgeState, func(output ToolOutput) string {
+			return claude.formatToolResultForClaude(output).Content
+		}},
 		{"grok_bin", grok, &grok.cliToolBridgeState, grok.formatToolOutput},
 		{"cursor_bin", cursor, &cursor.cliToolBridgeState, cursor.formatToolOutput},
 		{"agy_bin", agy, &agy.cliToolBridgeState, agy.formatToolOutput},

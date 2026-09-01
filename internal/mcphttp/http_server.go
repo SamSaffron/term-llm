@@ -22,10 +22,52 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// ToolResult is the text result exposed to an MCP client and its semantic status.
+// ContentPartType identifies an MCP tool-result content block.
+type ContentPartType string
+
+const (
+	ContentPartText  ContentPartType = "text"
+	ContentPartImage ContentPartType = "image"
+)
+
+// ContentPart is one MCP content block. Image Data holds raw (decoded) bytes;
+// the go-sdk base64-encodes it on the wire.
+type ContentPart struct {
+	Type     ContentPartType
+	Text     string
+	MIMEType string
+	Data     []byte
+}
+
+// ToolResult is the result exposed to an MCP client and its semantic status.
 type ToolResult struct {
-	Content string
+	Content string        // text-only result; used when Parts is empty
+	Parts   []ContentPart // optional structured blocks (text + images); takes precedence over Content
 	IsError bool
+}
+
+func toolResultContent(result ToolResult) []mcp.Content {
+	if len(result.Parts) == 0 {
+		return []mcp.Content{&mcp.TextContent{Text: result.Content}}
+	}
+
+	content := make([]mcp.Content, 0, len(result.Parts))
+	for _, part := range result.Parts {
+		switch part.Type {
+		case ContentPartText:
+			if part.Text != "" {
+				content = append(content, &mcp.TextContent{Text: part.Text})
+			}
+		case ContentPartImage:
+			if len(part.Data) > 0 && part.MIMEType != "" {
+				content = append(content, &mcp.ImageContent{Data: part.Data, MIMEType: part.MIMEType})
+			}
+		}
+	}
+	if len(content) == 0 {
+		return []mcp.Content{&mcp.TextContent{Text: result.Content}}
+	}
+	return content
 }
 
 // ToolExecutor is a function that executes a tool and returns the result.
@@ -147,9 +189,7 @@ func (s *Server) startInternal(host string, port int, token string, tools []Tool
 			}
 
 			return &mcp.CallToolResult{
-				Content: []mcp.Content{
-					&mcp.TextContent{Text: result.Content},
-				},
+				Content: toolResultContent(result),
 				IsError: result.IsError,
 			}, nil
 		})

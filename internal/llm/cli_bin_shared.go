@@ -270,9 +270,13 @@ func (s *cliToolBridgeState) deactivate(bridge *cliTurnBridge) {
 	s.eventsMu.Unlock()
 }
 
-// wrappedExecutor routes an HTTP MCP call through the active provider stream so
+// cliToolResultFormatter builds Content and Parts for an MCP tool result. The
+// bridge owns IsError so formatters cannot override execution status.
+type cliToolResultFormatter func(ToolOutput) mcphttp.ToolResult
+
+// wrappedResultExecutor routes an HTTP MCP call through the active provider stream so
 // the engine remains the sole owner of tool execution and event emission.
-func (s *cliToolBridgeState) wrappedExecutor(formatOutput func(ToolOutput) string) mcphttp.ToolExecutor {
+func (s *cliToolBridgeState) wrappedResultExecutor(format cliToolResultFormatter) mcphttp.ToolExecutor {
 	return func(ctx context.Context, name string, args json.RawMessage) (mcphttp.ToolResult, error) {
 		s.eventsMu.Lock()
 		bridge := s.currentBridge
@@ -315,20 +319,28 @@ func (s *cliToolBridgeState) wrappedExecutor(formatOutput func(ToolOutput) strin
 
 		select {
 		case response := <-responseChan:
-			content := response.Result.Content
-			if formatOutput != nil {
-				content = formatOutput(response.Result)
+			result := mcphttp.ToolResult{Content: response.Result.Content}
+			if format != nil {
+				result = format(response.Result)
 			}
-			return mcphttp.ToolResult{
-				Content: content,
-				IsError: response.Result.IsError || response.Result.TimedOut,
-			}, response.Err
+			result.IsError = response.Result.IsError || response.Result.TimedOut
+			return result, response.Err
 		case <-bridge.done:
 			return mcphttp.ToolResult{}, fmt.Errorf("tool execution rejected: stream closed during tool call %q", name)
 		case <-ctx.Done():
 			return mcphttp.ToolResult{}, ctx.Err()
 		}
 	}
+}
+
+func (s *cliToolBridgeState) wrappedExecutor(formatOutput func(ToolOutput) string) mcphttp.ToolExecutor {
+	return s.wrappedResultExecutor(func(output ToolOutput) mcphttp.ToolResult {
+		content := output.Content
+		if formatOutput != nil {
+			content = formatOutput(output)
+		}
+		return mcphttp.ToolResult{Content: content}
+	})
 }
 
 func handleCLIToolRequest(req cliToolRequest, send eventSender) {
@@ -736,4 +748,28 @@ func mcpToolSpecs(tools []ToolSpec) []mcphttp.ToolSpec {
 		out[i] = mcphttp.ToolSpec{Name: tool.Name, Description: tool.Description, Schema: tool.Schema}
 	}
 	return out
+}
+
+// mcpImageContentParts decodes the supported image parts of a tool output into
+// MCP image blocks. Unsupported media types and invalid base64 are skipped
+// (toolResultImageData already gates on png/jpeg/gif/webp).
+func mcpImageContentParts(output ToolOutput) []mcphttp.ContentPart {
+	result := &ToolResult{Content: output.Content, ContentParts: output.ContentParts}
+	var parts []mcphttp.ContentPart
+	for _, part := range toolResultContentParts(result) {
+		mediaType, base64Data, ok := toolResultImageData(part)
+		if !ok {
+			continue
+		}
+		raw, err := base64.StdEncoding.DecodeString(base64Data)
+		if err != nil || len(raw) == 0 {
+			continue
+		}
+		parts = append(parts, mcphttp.ContentPart{
+			Type:     mcphttp.ContentPartImage,
+			MIMEType: mediaType,
+			Data:     raw,
+		})
+	}
+	return parts
 }

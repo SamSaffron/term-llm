@@ -218,14 +218,11 @@ func (p *ClaudeBinProvider) SetEnv(env map[string]string) {
 // to satisfy the ToolExecutorSetter interface in engine.go.
 func (p *ClaudeBinProvider) SetToolExecutor(executor func(ctx context.Context, name string, args json.RawMessage) (ToolOutput, error)) {
 	// Wrap the ToolOutput executor to satisfy the mcphttp.ToolExecutor interface.
-	// For tool outputs with image data, materialise images to temp files and include their
-	// paths in the response text so Claude CLI can read them natively as vision inputs.
 	p.toolExecutor = func(ctx context.Context, name string, args json.RawMessage) (mcphttp.ToolResult, error) {
 		output, err := executor(ctx, name, args)
-		return mcphttp.ToolResult{
-			Content: p.formatToolOutputForClaude(output),
-			IsError: output.IsError || output.TimedOut,
-		}, err
+		result := p.formatToolResultForClaude(output)
+		result.IsError = output.IsError || output.TimedOut
+		return result, err
 	}
 }
 
@@ -1516,7 +1513,7 @@ func (p *ClaudeBinProvider) createHTTPMCPConfig(ctx context.Context, tools []Too
 		}
 	}
 
-	wrappedExecutor := p.cliToolBridgeState.wrappedExecutor(p.formatToolOutputForClaude)
+	wrappedExecutor := p.cliToolBridgeState.wrappedResultExecutor(p.formatToolResultForClaude)
 
 	// Create and start HTTP server
 	server := mcphttp.NewServer(wrappedExecutor)
@@ -1676,8 +1673,8 @@ func (p *ClaudeBinProvider) renderConversationParts(messages []Message) []string
 			// Format tool results
 			for _, part := range msg.Parts {
 				if part.Type == PartToolResult && part.ToolResult != nil {
-					// Process content to keep prompts compact for image tool results.
-					content := p.processToolResultContent(part.ToolResult)
+					// Keep flattened history textual; final-turn images are emitted as native blocks.
+					content := toolResultTextContent(part.ToolResult)
 					conversationParts = append(conversationParts,
 						fmt.Sprintf("Tool result (%s): %s", part.ToolResult.Name, content))
 				}
@@ -1711,42 +1708,6 @@ func mapClaudeToolName(claudeName string) string {
 		return strings.TrimPrefix(claudeName, "mcp__term-llm__")
 	}
 	return claudeName
-}
-
-// processToolResultContent formats tool result content for Claude CLI prompts.
-// Image data parts are written to temp files and their paths included inline so
-// Claude CLI can read them natively rather than receiving truncated base64.
-func (p *ClaudeBinProvider) processToolResultContent(result *ToolResult) string {
-	if result == nil {
-		return ""
-	}
-	if !toolResultHasImageData(result) {
-		return toolResultTextContent(result)
-	}
-
-	// Build combined output: text parts inline, image parts as file paths.
-	var parts []string
-	for _, contentPart := range toolResultContentParts(result) {
-		switch contentPart.Type {
-		case ToolContentPartText:
-			if contentPart.Text != "" {
-				parts = append(parts, contentPart.Text)
-			}
-		case ToolContentPartImageData:
-			mediaType, base64Data, ok := toolResultImageData(contentPart)
-			if !ok {
-				continue
-			}
-			path := p.imageDataToTempFile(mediaType, base64Data)
-			if path != "" {
-				parts = append(parts, path)
-			}
-		}
-	}
-	if len(parts) == 0 {
-		return toolResultTextContent(result)
-	}
-	return strings.Join(parts, "\n")
 }
 
 // mediaTypeToExt maps an image MIME type to a file extension.
@@ -1960,11 +1921,22 @@ func (p *ClaudeBinProvider) buildStreamJsonInput(messages []Message, sessionID s
 	return strings.Join(lines, "\n")
 }
 
-func (p *ClaudeBinProvider) formatToolOutputForClaude(output ToolOutput) string {
-	return p.appendInlineFlushNotice(p.processToolResultContent(&ToolResult{
-		Content:      output.Content,
-		ContentParts: output.ContentParts,
-	}))
+// formatToolResultForClaude builds the MCP tool result for Claude Code: all
+// text (plus any pending inline-flush notice) as one text block, followed by
+// image parts as MCP image blocks. Claude Code runs with --tools "" so it
+// cannot Read a temp-file path; images must travel inline over MCP.
+func (p *ClaudeBinProvider) formatToolResultForClaude(output ToolOutput) mcphttp.ToolResult {
+	text := p.appendInlineFlushNotice(toolResultTextContent(&ToolResult{Content: output.Content, ContentParts: output.ContentParts}))
+	images := mcpImageContentParts(output)
+	if len(images) == 0 {
+		return mcphttp.ToolResult{Content: text}
+	}
+	parts := make([]mcphttp.ContentPart, 0, len(images)+1)
+	if text != "" {
+		parts = append(parts, mcphttp.ContentPart{Type: mcphttp.ContentPartText, Text: text})
+	}
+	parts = append(parts, images...)
+	return mcphttp.ToolResult{Content: text, Parts: parts}
 }
 
 func buildSDKUserContentBlocks(parts []Part) []sdkContentBlock {
