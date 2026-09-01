@@ -42,6 +42,34 @@ function sameIdentityList<T>(left: T[], right: T[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
+const TRANSCRIPT_ONLY_SESSION_FIELDS = [
+  'usage',
+  'goal',
+  'mcpServers',
+  'mcpEnabled',
+  'transcriptRev',
+  'messageBodiesRev',
+  'lastResponseId',
+  'activeResponseId',
+  'activeModel',
+  'activeProvider',
+  'activeEffort',
+  'activeReasoningMode',
+  'workingDir',
+  'worktreeDir',
+  'fileChangeSummary',
+] as const satisfies readonly (keyof Session)[];
+
+function sidebarSessionProjection(session: Session): Session {
+  const messageCount = Number.isFinite(session.messageCount)
+    ? Math.max(0, session.messageCount || 0)
+    : session.messages.filter((message) => message.role === 'user' || message.role === 'assistant')
+        .length;
+  const projection = { ...session, messages: [], messageCount };
+  for (const field of TRANSCRIPT_ONLY_SESSION_FIELDS) delete projection[field];
+  return projection;
+}
+
 export interface SessionStoreHost {
   hasRun: (sessionId: string) => boolean;
   modal: Signal<Modal>;
@@ -53,6 +81,25 @@ export interface SessionStoreHost {
 /** Owns session/project catalog state, sidebar loading, search, and catalog mutations. */
 export class SessionStore {
   readonly sessions = signal<Session[]>([]);
+  private readonly sidebarSessionCache = new Map<string, Session>();
+  private sidebarSessionList: Session[] = [];
+  readonly sidebarSessions = computed(() => {
+    const sessions = this.sessions.value;
+    const present = new Set(sessions.map((session) => session.id));
+    for (const id of this.sidebarSessionCache.keys()) {
+      if (!present.has(id)) this.sidebarSessionCache.delete(id);
+    }
+    const projected = sessions.map((session) => {
+      const candidate = sidebarSessionProjection(session);
+      const previous = this.sidebarSessionCache.get(session.id);
+      if (previous && semanticEqual(previous, candidate)) return previous;
+      this.sidebarSessionCache.set(session.id, candidate);
+      return candidate;
+    });
+    if (sameIdentityList(this.sidebarSessionList, projected)) return this.sidebarSessionList;
+    this.sidebarSessionList = projected;
+    return projected;
+  });
   readonly recentSessions = signal<Session[]>([]);
   readonly recentCursor = signal('');
   readonly sidebarView: Signal<SidebarView>;

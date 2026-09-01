@@ -785,16 +785,19 @@ export function Sidebar() {
       overlayToken.current = null;
     };
   }, [mobile, mobileOpen]);
-  const standalone = store.sessions.value.filter(
+  const catalog = store.sidebarSessions.value;
+  const standalone = catalog.filter(
     (session) => !session.projectId && isSidebarSessionVisible(session),
   );
-  const sessionByID = new Map(store.sessions.value.map((session) => [session.id, session]));
+  const sessionByID = new Map(catalog.map((session) => [session.id, session]));
   const recent = store.recentSessions.value
     .map((summary) => sessionByID.get(summary.id) || summary)
     .filter(isSidebarSessionVisible);
-  const activeRecent = store.activeSession.value;
+  const projectsEnabled = store.projectsEnabled.value;
+  const activeRecent = projectsEnabled
+    ? catalog.find((session) => session.id === store.activeSessionId.peek())
+    : undefined;
   if (
-    store.projectsEnabled.value &&
     activeRecent &&
     isSidebarSessionVisible(activeRecent) &&
     !recent.some((session) => session.id === activeRecent.id)
@@ -802,14 +805,13 @@ export function Sidebar() {
     recent.push(activeRecent);
   recent.sort(compareSessionsByActivity);
   const sidebarSessions = [
-    ...store.sessions.value,
+    ...catalog,
     ...store.projects.value.flatMap((project) => project.sessions || []),
   ].filter(isSidebarSessionVisible);
   const results = store.searchResults.value;
   const brand = store.config.title.trim() || displayName(store.config.agentName);
-  const sidebarView = store.projectsEnabled.value ? store.sidebarView.value : 'recent';
-  const visibleForView =
-    store.projectsEnabled.value && sidebarView === 'recent' ? recent : sidebarSessions;
+  const sidebarView = projectsEnabled ? store.sidebarView.value : 'recent';
+  const visibleForView = projectsEnabled && sidebarView === 'recent' ? recent : sidebarSessions;
   const pinnedIDs = new Set<string>();
   const pinned = visibleForView.filter((session) => {
     if (!session.pinned || pinnedIDs.has(session.id)) return false;
@@ -958,9 +960,9 @@ export function Sidebar() {
             <div
               class="session-groups"
               id="sessionGroups"
-              role={store.projectsEnabled.value && !results ? 'tabpanel' : undefined}
+              role={projectsEnabled && !results ? 'tabpanel' : undefined}
               aria-labelledby={
-                store.projectsEnabled.value && !results
+                projectsEnabled && !results
                   ? sidebarView === 'recent'
                     ? 'sidebarViewRecent'
                     : 'sidebarViewProjects'
@@ -995,12 +997,12 @@ export function Sidebar() {
                         <SessionRow
                           key={session.id}
                           session={session}
-                          showProject={store.projectsEnabled.value && sidebarView === 'recent'}
+                          showProject={projectsEnabled && sidebarView === 'recent'}
                         />
                       ))}
                     </section>
                   )}
-                  {store.projectsEnabled.value ? (
+                  {projectsEnabled ? (
                     sidebarView === 'recent' ? (
                       <div class="flat-session-date-groups sidebar-recent-groups">
                         <SessionDateGroups sessions={recentRegular} showProject />
@@ -1030,7 +1032,7 @@ export function Sidebar() {
               )}
             </div>
           </div>
-          {store.projectsEnabled.value && (
+          {projectsEnabled && (
             <div class="sidebar-view-footer">
               <SidebarViewSwitch disabled={Boolean(results)} />
             </div>

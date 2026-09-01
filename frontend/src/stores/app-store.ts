@@ -117,6 +117,7 @@ export class AppStore {
   readonly notificationController: NotificationController;
 
   readonly sessions: Signal<Session[]>;
+  readonly sidebarSessions: ReadonlySignal<Session[]>;
   readonly recentSessions: Signal<Session[]>;
   readonly recentCursor: Signal<string>;
   readonly sidebarView: Signal<SidebarView>;
@@ -249,6 +250,7 @@ export class AppStore {
       newChat: (replace, projectId) => this.newChat(replace, projectId),
     });
     this.sessions = this.sessionStore.sessions;
+    this.sidebarSessions = this.sessionStore.sidebarSessions;
     this.recentSessions = this.sessionStore.recentSessions;
     this.recentCursor = this.sessionStore.recentCursor;
     this.sidebarView = this.sessionStore.sidebarView;
