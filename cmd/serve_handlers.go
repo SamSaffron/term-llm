@@ -2165,6 +2165,74 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if suffix == "commit/status" {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		s.handleCommitStatus(w, r, sessionID)
+		return
+	}
+	if suffix == "commit/stage" {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		s.handleCommitStage(w, r, sessionID)
+		return
+	}
+	if suffix == "commit-runs" {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		s.handleCreateCommitRun(w, r, sessionID)
+		return
+	}
+	if strings.HasPrefix(suffix, "commit-runs/") {
+		rest := strings.TrimPrefix(suffix, "commit-runs/")
+		if strings.HasSuffix(rest, "/events") {
+			if r.Method != http.MethodGet {
+				w.Header().Set("Allow", "GET")
+				writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+				return
+			}
+			s.handleCommitRunEvents(w, r, sessionID, strings.TrimSuffix(rest, "/events"))
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			s.handleGetCommitRun(w, r, sessionID, rest)
+		case http.MethodDelete:
+			s.handleCancelCommitRun(w, r, sessionID, rest)
+		default:
+			w.Header().Set("Allow", "GET, DELETE")
+			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		}
+		return
+	}
+	if suffix == "commit-operations" {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		s.handleCreateCommitOperation(w, r, sessionID)
+		return
+	}
+	if strings.HasPrefix(suffix, "commit-operations/") {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		s.handleGetCommitOperation(w, r, sessionID, strings.TrimPrefix(suffix, "commit-operations/"))
+		return
+	}
+
 	if suffix == "file-changes" || suffix == "file-changes/diff" || suffix == "file-changes/content" {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", "GET")

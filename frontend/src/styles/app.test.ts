@@ -41,6 +41,19 @@ describe('stylesheet manifest', () => {
   });
 });
 
+describe('commit modal styles', () => {
+  it('loads after the generic modal shell and uses defined hierarchy tokens', () => {
+    const manifest = readFileSync(resolve(stylesRoot, 'app.css'), 'utf8');
+    expect(manifest.indexOf("@import './features/modals.css';")).toBeLessThan(
+      manifest.indexOf("@import './features/commit.css';"),
+    );
+    const commitCSS = readFileSync(resolve(stylesRoot, 'features/commit.css'), 'utf8');
+    expect(commitCSS).not.toContain('var(--muted)');
+    expect(commitCSS).not.toContain('var(--mono)');
+    expect(commitCSS).toContain('var(--text-muted)');
+  });
+});
+
 describe('shell layout', () => {
   it('stacks the mutually exclusive companion panels in one grid cell', () => {
     expect(appCSS).toMatch(

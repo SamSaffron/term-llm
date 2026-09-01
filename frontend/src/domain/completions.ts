@@ -38,6 +38,7 @@ export interface MentionSearchResponse {
 
 export const SLASH_COMMANDS = [
   { command: '/compact', description: 'Compact conversation context' },
+  { command: '/commit', description: 'Review, stage, and create a Git commit' },
   { command: '/effort', description: 'Choose reasoning effort' },
   {
     command: '/fork',

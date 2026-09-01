@@ -280,6 +280,12 @@ func AllCommands() []Command {
 			Usage:       "/inspect",
 		},
 		{
+			Name:         "commit",
+			Description:  "Review, stage, draft, and create a Git commit",
+			Usage:        "/commit [commit intent]",
+			ArgumentHint: "[commit intent]",
+		},
+		{
 			Name:        "compact",
 			Description: "Compact context (soft brief by default; hard = full summary)",
 			Usage:       "/compact [hard]",
@@ -621,6 +627,8 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdSkills(args, rawArgs)
 	case "inspect":
 		return m.cmdInspect()
+	case "commit":
+		return m.cmdCommit(rawArgs)
 	case "compact":
 		return m.cmdCompress(args...)
 	case "resume":

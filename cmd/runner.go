@@ -168,6 +168,13 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 
 	agentProvider, agentModel, agentSkills, agentName := "", "", "", ""
 	if agent != nil {
+		if req.HostOutputTool != nil {
+			agentCopy := *agent
+			agentCopy.Output = ""
+			agentCopy.OnComplete = ""
+			agentCopy.OutputTool = agents.OutputToolConfig{Name: req.HostOutputTool.Name, Param: req.HostOutputTool.Param, Description: req.HostOutputTool.Description, Schema: req.HostOutputTool.Schema}
+			agent = &agentCopy
+		}
 		if model := strings.TrimSpace(req.Model); model != "" {
 			agentCopy := *agent
 			agentCopy.Model = model
@@ -202,6 +209,9 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	}
 
 	settings.SessionID = req.SessionID
+	if suffix := strings.TrimSpace(req.SystemSuffix); suffix != "" {
+		settings.SystemPrompt = strings.TrimSpace(settings.SystemPrompt) + "\n\n" + suffix
+	}
 	baseSystemPrompt := appendChildSkillSystemContext(settings.SystemPrompt, req.ChildSkill)
 	skillsSetup := SetupSkillsInDir(&cfg.Skills, req.Skills, agentSkills, r.errWriter(), settings.BaseDir)
 	settings.SystemPrompt = InjectSkillsMetadata(baseSystemPrompt, skillsSetup)
@@ -381,6 +391,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	if len(req.ExtraTools) > 0 {
 		toolSpecs = append(toolSpecs, req.ExtraTools...)
 	}
+	toolSpecs = appendHostOutputToolSpec(toolSpecs, req.HostOutputTool)
 	toolSpecs = filterEngineAllowedToolSpecs(toolSpecs, engine)
 	toolChoice := llm.ToolChoice{}
 	if len(toolSpecs) > 0 {
@@ -444,8 +455,19 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 }
 
 func (r *cmdRunner) resolveSettings(cfg *config.Config, agent *agents.Agent, req runpkg.Request, providerFlag string) (SessionSettings, error) {
+	configuredTools := req.IncludeConfiguredTools == nil || *req.IncludeConfiguredTools
+	if !configuredTools && agent != nil {
+		agentCopy := *agent
+		agentCopy.Tools = agents.ToolsConfig{}
+		agentCopy.MCP = nil
+		agentCopy.Skills = "none"
+		agentCopy.Search = false
+		agent = &agentCopy
+	}
 	toolsFlag := r.defaults.Tools
-	if strings.TrimSpace(req.Tools) != "" {
+	if !configuredTools {
+		toolsFlag = ""
+	} else if strings.TrimSpace(req.Tools) != "" {
 		toolsFlag = req.Tools
 	}
 	systemMessage := r.defaults.SystemMessage
@@ -479,13 +501,17 @@ func (r *cmdRunner) resolveSettings(cfg *config.Config, agent *agents.Agent, req
 		defaultMaxTurns = 50
 	}
 	cmdProvider, cmdModel, cmdInstructions, cmdMaxTurns := r.commandConfig(cfg)
+	mcpFlag := runnerFirstNonEmpty(req.MCP, r.defaults.MCP)
+	if !configuredTools {
+		mcpFlag = ""
+	}
 	settings, err := ResolveSettingsInDir(cfg, agent, CLIFlags{
 		Provider:        providerFlag,
 		Tools:           toolsFlag,
 		ReadDirs:        readDirs,
 		WriteDirs:       writeDirs,
 		ShellAllow:      shellAllow,
-		MCP:             runnerFirstNonEmpty(req.MCP, r.defaults.MCP),
+		MCP:             mcpFlag,
 		SystemMessage:   systemMessage,
 		MaxTurns:        maxTurns,
 		MaxTurnsSet:     maxTurnsSet,
@@ -511,6 +537,20 @@ func (r *cmdRunner) resolveSettings(cfg *config.Config, agent *agents.Agent, req
 		settings.RequireExplicitWorkingDir = true
 	}
 	return settings, nil
+}
+
+func appendHostOutputToolSpec(specs []llm.ToolSpec, host *runpkg.HostOutputTool) []llm.ToolSpec {
+	if host == nil {
+		return specs
+	}
+	name := strings.TrimSpace(host.Name)
+	for _, spec := range specs {
+		if spec.Name == name {
+			return specs
+		}
+	}
+	output := tools.NewSetOutputTool(name, host.Param, host.Description, host.Schema)
+	return append(specs, output.Spec())
 }
 
 func (r *cmdRunner) errWriter() io.Writer {

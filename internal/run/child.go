@@ -14,6 +14,8 @@ type ChildRunKind string
 const (
 	ChildRunSpawnAgent    ChildRunKind = "spawn_agent"
 	ChildRunIsolatedSkill ChildRunKind = "isolated_skill"
+	ChildRunCommitScope   ChildRunKind = "commit_scope"
+	ChildRunCommitDraft   ChildRunKind = "commit_draft"
 )
 
 // SkillRunMetadata carries the resolved activation into a child engine without
@@ -29,6 +31,13 @@ type SkillRunMetadata struct {
 	Resources           []string
 }
 
+type HostOutputTool struct {
+	Name        string
+	Param       string
+	Description string
+	Schema      map[string]interface{}
+}
+
 // ChildRunRequest is the shared child-runtime contract used by spawn_agent and
 // direct isolated skill invocation.
 type ChildRunRequest struct {
@@ -42,6 +51,14 @@ type ChildRunRequest struct {
 	BaseDir         string
 	Depth           int
 	Skill           *SkillRunMetadata
+
+	// Specialized host-owned child runs use these overlays without mutating the
+	// registry's shared agent definition.
+	SkipOnComplete   bool
+	MaxTurnsOverride int
+	SystemSuffix     string
+	DisableTools     bool
+	OutputTool       *HostOutputTool
 }
 
 // ChildRunResult identifies the durable child session and collected output.
@@ -53,6 +70,15 @@ type ChildRunResult struct {
 	Model          string
 	StartedAt      time.Time
 	CompletedAt    time.Time
+}
+
+type ChildAgentMetadata struct {
+	Name   string
+	Source string
+}
+
+type ChildAgentResolver interface {
+	ResolveChildAgent(name string) (ChildAgentMetadata, error)
 }
 
 // ChildRunEventCallback receives structured child progress keyed by the direct

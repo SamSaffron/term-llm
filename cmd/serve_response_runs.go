@@ -3778,6 +3778,14 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		}
 		return createdRun, nil
 	}
+	if s.commitActiveForSession(context.Background(), sessionID) {
+		cancel()
+		mgr.delete(respID)
+		if options.onDone != nil {
+			options.onDone()
+		}
+		return nil, fmt.Errorf("%w: commit workflow is active for this session or checkout", errServeSessionBusy)
+	}
 	if lifecycle, ok := session.AsServeResponseLifecycleStore(s.store); ok && sessionID != "" && s.shutdownCh != nil {
 		ownerID := s.responseOwnerID()
 		admitCtx, admitCancel := context.WithTimeout(context.Background(), 5*time.Second)

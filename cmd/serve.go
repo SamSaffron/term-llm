@@ -1365,6 +1365,12 @@ type serveServer struct {
 	fileTrackStoreFn         func() *filetrack.Store // test seam; nil → process-wide store from config
 	worktreeRootFn           func() (string, error)  // test seam; nil → os.Getwd
 	rootMutationAdmitted     func()                  // test seam; called while the exclusive root lease is held
+	commitMu                 sync.Mutex
+	commitRuns               map[string]*serveCommitRun
+	commitOperations         map[string]*serveCommitOperation
+	commitOperationsWG       sync.WaitGroup
+	commitRunsWG             sync.WaitGroup
+	commitStopping           bool
 }
 
 // fileTrackStore returns the file-change history store, or nil when file
@@ -1558,11 +1564,11 @@ func (s *serveServer) Stop(ctx context.Context) error {
 	s.closeEventBroker()
 	if s.server == nil {
 		s.stopAutoTitles()
-		return s.stopServeSkillRuns(ctx)
+		return errors.Join(s.stopServeSkillRuns(ctx), s.stopCommitWorkflows(ctx))
 	}
 
 	var wg sync.WaitGroup
-	errCh := make(chan error, 5)
+	errCh := make(chan error, 7)
 	run := func(fn func() error) {
 		wg.Add(1)
 		go func() {
@@ -1604,6 +1610,7 @@ func (s *serveServer) Stop(ctx context.Context) error {
 		})
 	}
 	run(func() error { return s.stopServeSkillRuns(ctx) })
+	run(func() error { return s.stopCommitWorkflows(ctx) })
 	run(func() error {
 		s.stopAutoTitles()
 		return nil

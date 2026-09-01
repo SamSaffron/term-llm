@@ -60,6 +60,10 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 	if sessionID == "" {
 		sessionID = ensureSessionID(w)
 	}
+	if s.commitActiveForSession(ctx, sessionID) {
+		writeAnthropicError(w, http.StatusConflict, "api_error", "a commit workflow is active for this session or checkout")
+		return
+	}
 	runtime, stateful, err := s.runtimeForRequest(ctx, sessionID)
 	if err != nil {
 		if errors.Is(err, errServeSessionBusy) {

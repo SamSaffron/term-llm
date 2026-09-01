@@ -48,6 +48,7 @@ import { SkillStore } from './skill-store';
 import { StatusReconciler } from './status-reconciler';
 import { RunEngine } from './run-engine';
 import { SelectionStore } from './selection-store';
+import { CommitStore } from './commit-store';
 import type {
   DiffState,
   HubAgent,
@@ -111,6 +112,7 @@ export class AppStore {
   readonly statusReconciler: StatusReconciler;
   readonly runEngine: RunEngine;
   readonly selectionStore: SelectionStore;
+  readonly commitStore: CommitStore;
   readonly keys: StorageKeys;
   readonly api: APIClient;
   readonly endpoints: Endpoints;
@@ -412,6 +414,16 @@ export class AppStore {
     this.canInterject = this.runEngine.canInterject;
     this.sendBlocked = this.runEngine.sendBlocked;
     this.locallyStoppedResponses = this.runEngine.locallyStoppedResponses;
+    this.commitStore = new CommitStore(this.services, {
+      activeSession: this.activeSession,
+      draftActive: this.draftActive,
+      modal: this.modal,
+      busy: () => this.runActive.peek(),
+      changed: () => {
+        this.fileChangeRevision.value += 1;
+        this.publishSessionChange();
+      },
+    });
     this.widgetStore = new WidgetStore(this.services);
     this.widgets = this.widgetStore.widgets;
     this.branchStore = new BranchStore(this.services, {

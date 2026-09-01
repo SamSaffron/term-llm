@@ -184,6 +184,8 @@ var keySpecs = []KeySpec{
 	def("chat.terminal_title_format", ""),
 	def("chat.terminal_progress", false),
 
+	def("commit.message_agent", "commit-message"),
+
 	def("lifecycle.enabled", true),
 	def("lifecycle.adapters", []string{"auto"}),
 	def("lifecycle.osc", DefaultLifecycleOSC),

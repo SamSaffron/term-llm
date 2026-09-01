@@ -8,6 +8,7 @@ import { Overlay } from './Overlay';
 import { Markdown } from './Markdown';
 import { ProjectAssignment } from './ProjectAssignment';
 import { Worktrees } from './Worktrees';
+import { CommitModal } from './CommitModal';
 
 function Settings() {
   const store = useStore();
@@ -1917,6 +1918,8 @@ export function Modals() {
       return <Widgets />;
     case 'skills':
       return <Skills />;
+    case 'commit':
+      return <CommitModal />;
     case 'side':
       return <SideQuestion />;
     case 'branch':

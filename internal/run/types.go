@@ -124,6 +124,10 @@ type Request struct {
 	// ChildSkill configures an already-resolved direct skill on a fresh child
 	// engine. It is never interpreted as a request for model-driven activation.
 	ChildSkill *SkillRunMetadata
+
+	// SystemSuffix is a host-owned policy appended after resolved agent context.
+	SystemSuffix   string
+	HostOutputTool *HostOutputTool
 }
 
 // EventSink receives the raw llm.Event stream for a run. Implementations should

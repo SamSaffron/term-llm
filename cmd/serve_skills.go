@@ -743,6 +743,10 @@ func (s *serveServer) startServeIsolatedSkill(w http.ResponseWriter, r *http.Req
 		writeServeIsolatedSkillResponse(w, sess.ID, existing)
 		return
 	}
+	if s.commitActiveForSession(r.Context(), sess.ID) {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", "a commit workflow is active for this session or checkout")
+		return
+	}
 	var runtime *serveRuntime
 	if s.sessionMgr != nil {
 		runtime, _, _ = s.runtimeForRequest(r.Context(), sess.ID)

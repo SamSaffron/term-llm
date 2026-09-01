@@ -33,6 +33,7 @@ A typical config has a few major parts:
 - `default_provider` for the global LLM default
 - `providers` for model-specific credentials and routing
 - per-command blocks such as `exec`, `ask`, and `edit`
+- `commit.message_agent` for the native commit workflow's scope/message agent
 - feature-specific blocks such as `image`, `audio`, `music`, `embed`, `search`, `sessions`, `file_tracking`, `tools`, and `skills`
 
 ## Example
@@ -90,6 +91,10 @@ chat:
   # basic: only emit the terminal/tab OSC title.
   # off: do not touch terminal/window titles at all.
   terminal_title: smart
+
+commit:
+  # Defaults to commit-message and uses normal agent registry precedence.
+  message_agent: commit-message
 
 lifecycle:
   enabled: true
@@ -292,6 +297,10 @@ chat:
 Models may request many independent tool calls in a single turn, such as several `read_file`, `grep`, or `glob` calls. term-llm executes independent tool calls concurrently when parallel tool calls are enabled by the provider/request, but caps one model turn at **20 concurrently running tool calls**. Additional tool calls from the same turn are queued and run as earlier calls finish.
 
 This is a built-in safety limit rather than a config option today. It preserves useful batching while preventing a single response from spawning an unbounded number of shells, greps, reads, or subagents at once.
+
+## Native commit agent
+
+`commit.message_agent` defaults to `commit-message`. The value must be a safe exact agent registry lookup name. Normal precedence applies, so a project-local or user-global `commit-message` shadows the builtin; setting another name selects that agent explicitly. Resolution errors are shown in `/commit` and leave manual message entry available—there is no silent builtin fallback. The workflow keeps the agent's style/model preferences but overlays read-only, host-owned scope and staged-message tools and always suppresses `on_complete`.
 
 ## Chat terminal titles
 

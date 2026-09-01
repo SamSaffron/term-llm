@@ -186,6 +186,13 @@ export function Composer() {
     if (voiceBusy) return;
     const value = store.prompt.value.trim();
     const command = value.toLowerCase();
+    if (/^\/commit(?:\s|$)/i.test(value)) {
+      const intent = value.replace(/^\/commit\b/i, '').trim();
+      void store.commitStore.open(intent).then((started) => {
+        if (started && store.prompt.peek().trim() === value) store.prompt.value = '';
+      });
+      return;
+    }
     if (/^\/side(?:\s|$)/i.test(value)) {
       const question = value.replace(/^\/side\b/i, '').trim();
       if (store.openSideQuestion(question)) store.prompt.value = '';

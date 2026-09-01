@@ -798,6 +798,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		ParentApprovalMgr:  approvalMgr,
 	}))
 	model.SetChildRunner(spawnRunner)
+	model.SetCommitMutationCoordinator(commitRootCoordinator{})
 	model.SetMainRunManager(mainRuns)
 
 	// Wire handover auto-send if pending from previous iteration

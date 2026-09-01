@@ -219,7 +219,7 @@ func TestCompleteChildAgentUsesOutputToolAndRunsHookInChildDirectory(t *testing.
 		OnComplete: "cat > child-output.txt",
 	}
 
-	output, err := completeChildAgent(agent, runpkg.Result{Engine: engine, Response: "ignored prose"}, "streamed prose", baseDir)
+	output, err := completeChildAgent(agent, runpkg.Result{Engine: engine, Response: "ignored prose"}, "streamed prose", baseDir, false)
 	if err != nil {
 		t.Fatalf("completeChildAgent() error = %v", err)
 	}

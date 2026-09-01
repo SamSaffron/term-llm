@@ -22,6 +22,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/clipboard"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/gitcommit"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/mentions"
@@ -278,6 +279,8 @@ type Model struct {
 	agentMentionEngine         atomic.Pointer[llm.Engine]
 	runner                     runpkg.Runner
 	childRunner                runpkg.ChildRunner
+	commit                     *CommitState
+	commitMutationCoordinator  gitcommit.MutationCoordinator
 	skillRuns                  map[string]*skillRunState
 	skillRunSeq                uint64
 	pendingSkillResults        []skillRunDoneMsg
@@ -2268,6 +2271,12 @@ func (m *Model) closeEmbeddedViewsForInteractivePrompt() {
 	m.worktreeBrowserModel = nil
 	m.worktreeBrowserRoot = ""
 	m.worktreeBrowserOperation = ""
+	if m.commit == nil || (m.commit.Phase != CommitCommitting && m.commit.Phase != CommitStaging) {
+		if m.commit != nil && m.commit.cancel != nil {
+			m.commit.cancel()
+		}
+		m.commit = nil
+	}
 	m.sideQuestion.Visible = false
 	m.sideQuestion.ConfirmClear = false
 	m.selection = Selection{}
@@ -2383,6 +2392,12 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	}
 	if keyMsg, ok := msg.(tea.KeyPressMsg); ok && m.sideQuestion.Visible {
 		return m.handleSideQuestionKey(keyMsg)
+	}
+	if m.commit != nil {
+		switch msg.(type) {
+		case commitInspectMsg, commitStageMsg, commitScopeMsg, commitDraftMsg, commitDoneMsg, tea.KeyPressMsg, tea.PasteMsg:
+			return m.updateCommit(msg)
+		}
 	}
 
 	// The yolo toggle is intentionally global so it works while streaming,

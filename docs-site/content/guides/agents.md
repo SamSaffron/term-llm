@@ -59,6 +59,12 @@ A few good starting points:
 - `@web-researcher` when the answer depends on current web information
 - `@commit-message` when you want a clean commit message without fuss
 
+### Commit workflow agent
+
+Native `/commit` resolves `commit-message` through the normal registry, so a project-local or user agent with that name shadows the builtin. You can instead set `commit.message_agent` to another registered lookup name. The same resolution is used by TUI and Web.
+
+The resolved agent contributes its prompt, tone, provider, model, and reasoning style to two specialized child phases: read-only whole-file scope planning and staged-only message drafting. The host overlays the safety contract for both phases. Configured write/custom tools, broad file reads, custom output tools, and `on_complete` are disabled; a small turn cap and host-owned typed finishing tool replace them. In particular, `/commit` never runs the builtin's legacy `commit_editmsg` side effect or a custom agent's completion hook before user review. Missing or invalid configured agents are reported without silently falling back, and manual file/message entry stays available.
+
 ## Managing agents
 
 ```bash

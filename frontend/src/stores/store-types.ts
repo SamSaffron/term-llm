@@ -20,6 +20,7 @@ export type Modal =
   | 'project'
   | 'worktrees'
   | 'skills'
+  | 'commit'
   | 'side';
 
 export interface Toast {

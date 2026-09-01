@@ -87,6 +87,42 @@ export const endpoints = (api: APIClient) => ({
     ),
   sessionState: (id: string, signal?: AbortSignal) =>
     api.get<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/state`, signal),
+  commitStatus: (id: string, signal?: AbortSignal) =>
+    api.get<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/commit/status`, signal),
+  commitStage: (id: string, body: unknown) =>
+    api.json<Record<string, unknown>>(
+      `/v1/sessions/${encoded(id)}/commit/stage`,
+      { method: 'POST', headers: sessionHeaders(id), body: JSON.stringify(body) },
+      { policy: 'mutation', auth: 'session' },
+    ),
+  createCommitRun: (id: string, body: unknown) =>
+    api.json<Record<string, unknown>>(
+      `/v1/sessions/${encoded(id)}/commit-runs`,
+      { method: 'POST', headers: sessionHeaders(id), body: JSON.stringify(body) },
+      { policy: 'mutation', auth: 'session' },
+    ),
+  commitRun: (id: string, runId: string, signal?: AbortSignal) =>
+    api.get<Record<string, unknown>>(
+      `/v1/sessions/${encoded(id)}/commit-runs/${encoded(runId)}`,
+      signal,
+    ),
+  cancelCommitRun: (id: string, runId: string) =>
+    api.delete(`/v1/sessions/${encoded(id)}/commit-runs/${encoded(runId)}`),
+  createCommitOperation: (id: string, body: unknown, key: string) =>
+    api.json<Record<string, unknown>>(
+      `/v1/sessions/${encoded(id)}/commit-operations`,
+      {
+        method: 'POST',
+        headers: { ...sessionHeaders(id), 'Idempotency-Key': key },
+        body: JSON.stringify(body),
+      },
+      { policy: 'idempotent-mutation', auth: 'session', retries: 2, timeoutMs: 0 },
+    ),
+  commitOperation: (id: string, operationId: string, signal?: AbortSignal) =>
+    api.get<Record<string, unknown>>(
+      `/v1/sessions/${encoded(id)}/commit-operations/${encoded(operationId)}`,
+      signal,
+    ),
   markAttentionSeen: (id: string, storeInstanceId: string, throughSeq: number) =>
     api.json<Record<string, unknown>>(
       `/v1/sessions/${encoded(id)}/attention/seen`,

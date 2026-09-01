@@ -462,6 +462,10 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
+	if s.commitActiveForSession(ctx, sessionID) {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", "a commit workflow is active for this session or checkout")
+		return
+	}
 	// Chained requests are locked to the persisted provider/model/
 	// reasoning_effort unless the client explicitly asks for a mid-conversation
 	// model swap. External bare session_id requests start a fresh conversation,

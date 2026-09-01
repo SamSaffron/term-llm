@@ -112,12 +112,23 @@ Set `TERM_LLM_AT_MENTIONS=0` to disable `@` autocomplete and submit-time textual
 | `/mcp` | Manage MCP servers |
 | `/goal` | Set, edit, pause, resume, clear, or show the persistent session goal |
 | `/side <question>` | Ask a private, tool-less one-turn question without interrupting or changing the main conversation |
+| `/commit [intent]` | Review, stage, draft, and create a Git commit in the active checkout |
 | `/share [new] [public]` | Share the session as a GitHub Gist; repeat to update or create a new gist |
 | `/quit` | Exit chat |
 
 When web search is enabled, the chat status line shows `web`; when fast service tier is enabled, it shows `fast`.
 
-In the web UI, typing `/` opens an alphabetized command menu. `/compact` manually compresses the active conversation context without adding a user message; `/goal`, `/mcp`, and `/model` open their existing controls; `/new` starts a fresh conversation; and `/side` opens a side question.
+In the web UI, typing `/` opens an alphabetized command menu. `/compact` manually compresses the active conversation context without adding a user message; `/commit` opens the native Git workflow; `/goal`, `/mcp`, and `/model` open their existing controls; `/new` starts a fresh conversation; and `/side` opens a side question.
+
+### Native Git commits
+
+> If changes are already staged, `/commit` immediately asks **Commit everything** or **Commit staged**. If nothing is staged, plain `/commit` stages everything; explicit natural-language scope intent may instead propose a reviewed subset.
+
+`/commit [intent]` works in both terminal chat and the Web UI. It always uses the active session checkout, including a session-bound linked worktree. Existing staged content is never silently widened or replaced: choose **Commit staged** to preserve the index exactly, **Commit everything** to run `git add -A`, or **Follow request** to ask the configured commit agent for a whole-file proposal. Partially staged files are identified because committing their staged portion, staging their complete working copy, and selecting/excluding the whole file have different results.
+
+With an empty index, plain `/commit` visibly stages all tracked, deleted, renamed, and non-ignored untracked changes. Intent such as `mention issue #482` may resolve to the same all-changes flow. Narrowing intent such as `only the checkbox changes` produces checked included paths and unchecked excluded paths for adjustment before the index changes. If included and excluded concerns share a file, the planner must return **needs manual** rather than pretending whole-file selection can separate them.
+
+The message agent drafts from `git diff --cached` only. Its result is editable; generation can be retried or skipped, and a manual message remains available when the agent/provider fails. Confirmed staging persists if the dialog is cancelled. Immediately before committing, the host rechecks checkout identity, born/unborn `HEAD`, operation state, and the exact index tree. Normal hooks and signing run non-interactively; failures keep the message and refreshed status. Merge, cherry-pick, revert, rebase, sequencer, conflict, empty-index, stale-review, and index-lock states are blocked with guidance. A started commit is drained to a verified result rather than killed on `Esc` or browser disconnect.
 
 ### Side questions
 

@@ -48,6 +48,10 @@ func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	if sessionID == "" {
 		sessionID = ensureSessionID(w)
 	}
+	if s.commitActiveForSession(ctx, sessionID) {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", "a commit workflow is active for this session or checkout")
+		return
+	}
 	runtime, stateful, err := s.runtimeForRequest(ctx, sessionID)
 	if err != nil {
 		if errors.Is(err, errServeSessionBusy) {

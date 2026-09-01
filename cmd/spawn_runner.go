@@ -188,14 +188,19 @@ func (r *SpawnAgentRunner) buildChildExecutionRequest(ctx context.Context, reque
 		baseDir = r.currentBaseDir()
 	}
 	approvalRole := "parent_agent_task"
-	if request.Kind == runpkg.ChildRunIsolatedSkill {
+	switch request.Kind {
+	case runpkg.ChildRunIsolatedSkill:
 		approvalRole = "user_skill_activation"
+	case runpkg.ChildRunCommitScope:
+		approvalRole = "commit_scope"
+	case runpkg.ChildRunCommitDraft:
+		approvalRole = "commit_draft"
 	}
 	sessionName := fmt.Sprintf("@%s: %s", request.AgentName, session.TruncateSummary(request.Prompt))
 	if request.Skill != nil {
 		sessionName = fmt.Sprintf("/%s @%s: %s", request.Skill.Name, request.AgentName, session.TruncateSummary(request.Prompt))
 	}
-	return runpkg.Request{
+	execution := runpkg.Request{
 		Platform:                 runpkg.PlatformConsole,
 		AgentName:                request.AgentName,
 		Prompt:                   request.Prompt,
@@ -211,7 +216,35 @@ func (r *SpawnAgentRunner) buildChildExecutionRequest(ctx context.Context, reque
 		ApprovalRole:             approvalRole,
 		ApprovalTranscriptPrefix: subagentApprovalTranscriptPrefix(ctx),
 		ChildSkill:               request.Skill,
+		SystemSuffix:             request.SystemSuffix,
+		HostOutputTool:           request.OutputTool,
 	}
+	if request.OutputTool != nil {
+		execution.LastTurnForceToolName = request.OutputTool.Name
+	}
+	if request.MaxTurnsOverride > 0 {
+		execution.MaxTurns = request.MaxTurnsOverride
+		execution.MaxTurnsSet = true
+	}
+	if request.DisableTools {
+		execution.Skills = "none"
+		execution.NoSearch = true
+		execution.Search = childBoolPointer(false)
+		include := false
+		execution.IncludeConfiguredTools = &include
+	}
+	return execution
+}
+
+func childBoolPointer(value bool) *bool { return &value }
+
+// ResolveChildAgent returns validated registry metadata for host-owned child runs.
+func (r *SpawnAgentRunner) ResolveChildAgent(name string) (runpkg.ChildAgentMetadata, error) {
+	agent, err := r.resolveSpawnAgent(name)
+	if err != nil {
+		return runpkg.ChildAgentMetadata{}, err
+	}
+	return runpkg.ChildAgentMetadata{Name: agent.Name, Source: agent.Source.SourceName()}, nil
 }
 
 // ResolveSpawnAgent validates one exact registry lookup key using the same
@@ -298,6 +331,17 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 	if err != nil {
 		return emptyResult, err
 	}
+	if request.SkipOnComplete || request.OutputTool != nil {
+		agentCopy := *agent
+		if request.SkipOnComplete {
+			agentCopy.OnComplete = ""
+			agentCopy.Output = ""
+		}
+		if output := request.OutputTool; output != nil {
+			agentCopy.OutputTool = agents.OutputToolConfig{Name: output.Name, Param: output.Param, Description: output.Description, Schema: output.Schema}
+		}
+		agent = &agentCopy
+	}
 	if strings.TrimSpace(request.ModelOverride) != "" {
 		agentCopy := *agent
 		agentCopy.Model = strings.TrimSpace(request.ModelOverride)
@@ -333,7 +377,7 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 	executionRequest := r.buildChildExecutionRequest(ctx, request, childSessionID, search)
 	result, err := runner.Run(ctx, executionRequest, sink)
 
-	output, completionErr := completeChildAgent(agent, result, sink.Output(), executionRequest.Cwd)
+	output, completionErr := completeChildAgent(agent, result, sink.Output(), executionRequest.Cwd, request.SkipOnComplete)
 	if completionErr != nil {
 		r.warn("agent %q on_complete failed: %v", agentName, completionErr)
 	}
@@ -366,7 +410,7 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 // completeChildAgent resolves the agent's semantic result before presentation.
 // Agents with an output tool use that captured value as their required return
 // channel; streamed prose is only a fallback for ordinary agents.
-func completeChildAgent(agent *agents.Agent, result runpkg.Result, streamedOutput, baseDir string) (string, error) {
+func completeChildAgent(agent *agents.Agent, result runpkg.Result, streamedOutput, baseDir string, skipOnComplete bool) (string, error) {
 	output := streamedOutput
 	if output == "" {
 		output = result.Response
@@ -378,7 +422,7 @@ func completeChildAgent(agent *agents.Agent, result runpkg.Result, streamedOutpu
 			}
 		}
 	}
-	if agent == nil || strings.TrimSpace(agent.OnComplete) == "" || output == "" {
+	if skipOnComplete || agent == nil || strings.TrimSpace(agent.OnComplete) == "" || output == "" {
 		return output, nil
 	}
 	_, err := runOnCompleteCaptureInDir(agent.OnComplete, output, baseDir)

@@ -486,6 +486,7 @@ type Config struct {
 	Tools           ToolsConfig               `mapstructure:"tools"`
 	ToolDiscovery   ToolDiscoveryConfig       `mapstructure:"tool_discovery" yaml:"tool_discovery,omitempty"`
 	Agents          AgentsConfig              `mapstructure:"agents"`
+	Commit          CommitConfig              `mapstructure:"commit" yaml:"commit,omitempty"`
 	Skills          SkillsConfig              `mapstructure:"skills"`
 	AgentsMd        AgentsMdConfig            `mapstructure:"agents_md"`
 	AutoCompact     bool                      `mapstructure:"auto_compact"`
@@ -557,6 +558,19 @@ type TelegramServeConfig struct {
 	InterruptTimeout int      `mapstructure:"interrupt_timeout" yaml:"interrupt_timeout,omitempty"` // seconds, 0 = default (3)
 }
 
+// CommitConfig configures the native commit workflow.
+type CommitConfig struct {
+	MessageAgent string `mapstructure:"message_agent" yaml:"message_agent,omitempty"`
+}
+
+// EffectiveMessageAgent returns the configured commit agent or the stable default.
+func (c CommitConfig) EffectiveMessageAgent() string {
+	if name := strings.TrimSpace(c.MessageAgent); name != "" {
+		return name
+	}
+	return "commit-message"
+}
+
 // AgentsConfig configures the agent system
 type AgentsConfig struct {
 	UseBuiltin  bool                       `mapstructure:"use_builtin"`  // Enable built-in agents (default true)
@@ -615,6 +629,18 @@ type ToolDiscoveryConfig struct {
 	Strategy       string `mapstructure:"strategy" yaml:"strategy,omitempty"`
 	Threshold      int    `mapstructure:"threshold" yaml:"threshold,omitempty"`
 	MaxActiveTools int    `mapstructure:"max_active_tools" yaml:"max_active_tools,omitempty"`
+}
+
+// ValidateCommit rejects unsafe agent lookup names before registry resolution.
+func (c *Config) ValidateCommit() error {
+	if c == nil {
+		return nil
+	}
+	name := c.Commit.EffectiveMessageAgent()
+	if name == "." || name == ".." || strings.ContainsAny(name, "/\\:*?\"<>|\x00\r\n\t") {
+		return fmt.Errorf("invalid commit.message_agent %q", name)
+	}
+	return nil
 }
 
 // ValidateToolDiscovery rejects invalid loading policy before any MCP server starts.
@@ -1140,6 +1166,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	markReasoningConfigPresence(&cfg.Reasoning, viper.GetViper())
+	if err := cfg.ValidateCommit(); err != nil {
+		return nil, err
+	}
 	if err := cfg.ValidateApprovalModes(); err != nil {
 		return nil, err
 	}

@@ -82,6 +82,12 @@ func (m *Model) View() (view tea.View) {
 		return m.resumeBrowserModel.View()
 	}
 
+	// Native commit workflow is modal and owns the full terminal while open.
+	if m.commit != nil {
+		m.resetPostFrameCurrentImages()
+		return m.newView(m.renderCommit())
+	}
+
 	if m.streaming && m.streamPerf != nil {
 		m.streamPerf.RecordFrameAt(time.Now())
 	}

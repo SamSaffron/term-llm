@@ -364,6 +364,12 @@ server tool instead. The client tool definition is sent to the backend LLM
 while the server tool is hidden. If a `--tool-map` target doesn't match a
 registered server tool, startup fails with the list of available tools.
 
+## Native commit API
+
+The Web `/commit` flow uses session-bound endpoints; browsers never submit a filesystem path. `GET /v1/sessions/{id}/commit/status` returns relative changes, an opaque status token, and the checkout/HEAD/index/operation fingerprint. `POST .../commit/stage` applies fingerprint-guarded `all` or exact whole-file staging. `POST .../commit-runs` starts a cancellable `scope` or `message` child run, with snapshot and event endpoints under `/commit-runs/{run-id}`. Final commits use `POST .../commit-operations` with an `Idempotency-Key`, then poll `/commit-operations/{operation-id}`. Final operations are persisted as `queued`, `running`, `succeeded`, `failed`, or `uncertain`; reconnecting with the same key joins the original operation and never automatically creates a second commit.
+
+The server executes normal repository hooks and signing programs as the `serve` OS user with non-interactive Git prompts. Review the trust model of repositories exposed to Web sessions.
+
 ## When to use web mode
 
 Use the web runtime when you want:
