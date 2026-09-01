@@ -223,6 +223,57 @@ func TestCustomScriptTool_Execute_SuccessStatus(t *testing.T) {
 	}
 }
 
+func TestCustomScriptTool_Execute_UnboundRemoteUsesAgentDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("script execution working-directory test requires POSIX executable files")
+	}
+	agentDir := t.TempDir()
+	writeScript(t, agentDir, "pwd.sh", "#!/bin/sh\npwd\n")
+	cfg := &ToolConfig{RequireExplicitWorkingDir: true}
+	tool := newCustomScriptTool(agents.CustomToolDef{
+		Name:        "pwd",
+		Description: "Print working directory",
+		Script:      "pwd.sh",
+	}, agentDir, DefaultOutputLimits(), cfg)
+
+	out, err := tool.Execute(context.Background(), json.RawMessage("{}"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.IsError {
+		t.Fatalf("unbound custom tool failed: %s", out.Content)
+	}
+	if !strings.Contains(out.Content, agentDir) {
+		t.Fatalf("working directory output = %q, want agent dir %q", out.Content, agentDir)
+	}
+}
+
+func TestCustomScriptTool_Execute_BoundSessionUsesSessionDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("script execution working-directory test requires POSIX executable files")
+	}
+	agentDir := t.TempDir()
+	sessionDir := t.TempDir()
+	writeScript(t, agentDir, "pwd.sh", "#!/bin/sh\npwd\n")
+	cfg := &ToolConfig{BaseDir: sessionDir, RequireExplicitWorkingDir: true}
+	tool := newCustomScriptTool(agents.CustomToolDef{
+		Name:        "pwd",
+		Description: "Print working directory",
+		Script:      "pwd.sh",
+	}, agentDir, DefaultOutputLimits(), cfg)
+
+	out, err := tool.Execute(context.Background(), json.RawMessage("{}"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.IsError {
+		t.Fatalf("bound custom tool failed: %s", out.Content)
+	}
+	if !strings.Contains(out.Content, sessionDir) {
+		t.Fatalf("working directory output = %q, want session dir %q", out.Content, sessionDir)
+	}
+}
+
 func TestCustomScriptTool_Execute_ContextFailureStatus(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("script execution status test requires POSIX executable files")

@@ -124,6 +124,8 @@ sqlite3 "$DB_PATH" \
   "SELECT * FROM runs WHERE job='$NAME' ORDER BY started DESC LIMIT $LIMIT;"
 ```
 
+Custom tools run from the session working directory when the session is bound to a workspace. In unbound remote sessions, such as a dedicated `--no-projects` Web UI, they run from their agent directory instead of inheriting the server process's working directory. This keeps agent-contained tools usable without weakening the ambient-CWD protection for general shell and file tools.
+
 **Field reference:**
 
 | Field | Required | Description |
