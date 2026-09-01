@@ -13338,6 +13338,46 @@ func TestSelectTools_ResolvesToolMapNames(t *testing.T) {
 	}
 }
 
+func TestSelectTools_OmitsManageWorkspaceInYoloWithoutUnregisteringIt(t *testing.T) {
+	provider := llm.NewMockProvider("mock")
+	registry := llm.NewToolRegistry()
+	approval := tools.NewApprovalManager(tools.NewToolPermissions())
+	registry.Register(tools.NewManageWorkspaceTool(approval))
+	registry.Register(&echoTool{})
+	engine := llm.NewEngine(provider, registry)
+	rt := &serveRuntime{
+		provider: provider,
+		engine:   engine,
+		toolMgr:  &tools.ToolManager{ApprovalMgr: approval},
+	}
+
+	if got := rt.selectTools(nil); len(got) != 2 {
+		t.Fatalf("prompt tools = %v, want manage_workspace and echo", serveToolSpecNames(got))
+	}
+
+	approval.SetApprovalMode(tools.ModeYolo)
+	got := rt.selectTools(nil)
+	if len(got) != 1 || got[0].Name != "echo" {
+		t.Fatalf("yolo tools = %v, want only echo", serveToolSpecNames(got))
+	}
+	if _, ok := engine.Tools().Get(tools.ManageWorkspaceToolName); !ok {
+		t.Fatal("manage_workspace executor was unregistered in yolo mode")
+	}
+
+	approval.SetApprovalMode(tools.ModePrompt)
+	if got := rt.selectTools(nil); len(got) != 2 {
+		t.Fatalf("restored prompt tools = %v, want manage_workspace and echo", serveToolSpecNames(got))
+	}
+}
+
+func serveToolSpecNames(specs []llm.ToolSpec) []string {
+	names := make([]string, len(specs))
+	for i, spec := range specs {
+		names[i] = spec.Name
+	}
+	return names
+}
+
 func TestToolMap_ChatCompletions(t *testing.T) {
 	srv := newTestServeServerWithToolMap(
 		map[string]string{"MyEcho": "echo"},
