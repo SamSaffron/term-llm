@@ -218,6 +218,7 @@ export class ReviewStore {
       const existing = new Map(state.files.map((file) => [file.path, file]));
       const turnScope = scope === 'last_turn' || scope === 'last_3_turns';
       const refreshContexts = new Map<string, number>();
+      const refreshMarkdown = new Set<string>();
       const files = sortDiffFiles(
         listFrom(data, 'file_changes', 'files', 'changes')
           .map((entry): DiffFile => {
@@ -238,18 +239,29 @@ export class ReviewStore {
             const preservePreview = Boolean(
               turnScope && sameContent && previous?.markdownPreview?.scope === scope,
             );
-            const markdownPreview = preservePreview
-              ? previous?.markdownPreview
-              : previous?.markdownPreview?.view === 'rendered'
-                ? {
-                    view: 'rendered' as const,
-                    side: previewSide as 'before' | 'after',
-                    sequence,
-                    snapshotSeq,
-                    scope,
-                    loading: true,
-                  }
-                : undefined;
+            const refreshRenderedPreview = Boolean(
+              previous?.markdownPreview?.view === 'rendered' &&
+              (!preservePreview ||
+                previous.markdownPreview.source === undefined ||
+                Boolean(previous.markdownPreview.error)),
+            );
+            if (refreshRenderedPreview) refreshMarkdown.add(path);
+            const markdownPreview =
+              preservePreview && !refreshRenderedPreview
+                ? previous?.markdownPreview
+                : refreshRenderedPreview
+                  ? {
+                      ...previous?.markdownPreview,
+                      view: 'rendered' as const,
+                      side: previewSide as 'before' | 'after',
+                      sequence,
+                      snapshotSeq,
+                      scope,
+                      loading: true,
+                      error: '',
+                    }
+                  : undefined;
+            const preserveExpandedDiff = Boolean(previous?.expanded && previous.lines);
             return {
               path,
               old_path: String(entry.old_path || ''),
@@ -277,12 +289,14 @@ export class ReviewStore {
               expanded: previous?.expanded,
               loading: sameContent ? previous?.loading : Boolean(previous?.expanded),
               error: sameContent ? previous?.error : '',
-              lines: sameContent ? previous?.lines : undefined,
-              patch: sameContent ? previous?.patch : undefined,
-              context: sameContent ? previous?.context : undefined,
-              oldLineCount: sameContent ? previous?.oldLineCount : undefined,
-              newLineCount: sameContent ? previous?.newLineCount : undefined,
-              lang: sameContent ? previous?.lang : undefined,
+              lines: sameContent || preserveExpandedDiff ? previous?.lines : undefined,
+              patch: sameContent || preserveExpandedDiff ? previous?.patch : undefined,
+              context: sameContent || preserveExpandedDiff ? previous?.context : undefined,
+              oldLineCount:
+                sameContent || preserveExpandedDiff ? previous?.oldLineCount : undefined,
+              newLineCount:
+                sameContent || preserveExpandedDiff ? previous?.newLineCount : undefined,
+              lang: sameContent || preserveExpandedDiff ? previous?.lang : undefined,
               markdownPreview,
             };
           })
@@ -375,13 +389,9 @@ export class ReviewStore {
       await Promise.all([
         ...files
           .filter((file) => refreshContexts.has(file.path))
-          .map((file) => this.expandDiff(file, refreshContexts.get(file.path) || 0)),
+          .map((file) => this.expandDiff(file, refreshContexts.get(file.path) || 0, true)),
         ...files
-          .filter(
-            (file) =>
-              file.markdownPreview?.view === 'rendered' &&
-              file.markdownPreview.source === undefined,
-          )
+          .filter((file) => refreshMarkdown.has(file.path))
           .map((file) => this.loadMarkdownPreview(file, true)),
       ]);
     } catch (error) {
@@ -398,7 +408,55 @@ export class ReviewStore {
         };
     }
   }
-  async expandDiff(file: DiffFile, context = 0): Promise<void> {
+  private revalidateExpandedDiffComments(
+    path: string,
+    lines: NonNullable<DiffFile['lines']>,
+  ): void {
+    const state = this.diff.peek();
+    let newlyStale = 0;
+    const comments = state.comments.map((comment) => {
+      if (
+        comment.path !== path ||
+        (comment.sessionId && comment.sessionId !== state.sessionId) ||
+        comment.state === 'stale' ||
+        !comment.anchorFingerprint
+      )
+        return comment;
+      const index = lines.findIndex((line) =>
+        comment.side === 'old' ? line.oldLine === comment.line : line.newLine === comment.line,
+      );
+      // Expanded diffs can still contain partial hunks. A missing line is
+      // unknown until complete source or broader context is available.
+      if (index < 0) return comment;
+      const beforeCount = comment.contextBefore?.length || 0;
+      const afterCount = comment.contextAfter?.length || 0;
+      const currentAnchor: DiffComment = {
+        ...comment,
+        context: lines[index].content,
+        contextBefore: lines
+          .slice(Math.max(0, index - beforeCount), index)
+          .map((line) => line.content),
+        contextAfter: lines.slice(index + 1, index + 1 + afterCount).map((line) => line.content),
+      };
+      if (reviewAnchorFingerprint(currentAnchor) === comment.anchorFingerprint) return comment;
+      newlyStale += 1;
+      const updated: DiffComment = { ...comment, state: 'stale', updatedAt: Date.now() };
+      try {
+        persistDiffComment(this.services.storage, this.services.keys.diffCommentQueue, updated);
+      } catch (error) {
+        this.services.toast(error, 'error');
+      }
+      return updated;
+    });
+    if (!newlyStale) return;
+    this.diff.value = { ...this.diff.peek(), comments };
+    this.services.toast(
+      `${newlyStale} queued comment${newlyStale === 1 ? '' : 's'} became stale after the source changed.`,
+      'info',
+    );
+  }
+
+  async expandDiff(file: DiffFile, context = 0, refresh = false): Promise<void> {
     const session = this.host.activeSession.value;
     if (!session) return;
     const owner = session.id;
@@ -407,7 +465,7 @@ export class ReviewStore {
       entry.path === file.path &&
       (entry.sequence || 0) === (file.sequence || 0) &&
       (entry.snapshotSeq || 0) === (file.snapshotSeq || 0);
-    if (file.lines && !context) {
+    if (file.lines && !context && !refresh) {
       this.diff.value = {
         ...this.diff.value,
         files: this.diff.value.files.map((entry) =>
@@ -510,6 +568,7 @@ export class ReviewStore {
             : entry,
         ),
       };
+      this.revalidateExpandedDiffComments(file.path, lines || []);
     } catch (error) {
       if (
         this.expandEpoch.get(requestKey) !== requestEpoch ||

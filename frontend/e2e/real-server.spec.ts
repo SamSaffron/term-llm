@@ -419,8 +419,29 @@ test('a disconnected mobile response stream cannot keep claiming work is running
   await page.getByRole('textbox', { name: 'Message' }).fill('sleep 5 response transport probe');
   await page.getByRole('button', { name: 'Send message' }).click();
   await expect(page.locator('#stopBtn')).toBeVisible();
-  const sessionID = decodeURIComponent(page.url().match(/\/chat\/([^/?#]+)/)?.[1] || '');
+  // Chat routes prefer a human-facing numeric slug; resolve it to the durable
+  // session ID used by status and response APIs.
+  const sessionID = await page.evaluate(async () => {
+    const selected = decodeURIComponent(location.pathname.match(/\/chat\/([^/]+)/)?.[1] || '');
+    const query = new URLSearchParams({ selected_only: '1', selected_session: selected });
+    const body = (await (await fetch(`v1/sessions?${query}`)).json()) as {
+      selected_session?: { id?: string };
+    };
+    return body.selected_session?.id || '';
+  });
   expect(sessionID).not.toBe('');
+
+  const baseURL = String(testInfo.project.use.baseURL || '');
+  const sessionStatus = async () => {
+    const query = new URLSearchParams({ selected_session: sessionID });
+    const response = await fetch(`${baseURL}v1/sessions/status?${query}`);
+    const data = (await response.json()) as { sessions?: Array<Record<string, unknown>> };
+    return data.sessions?.find((entry) => String(entry.id || entry.session_id) === sessionID);
+  };
+  // The stop button is optimistic client state. Wait for authoritative server
+  // admission before cutting the browser's transports, or the request itself
+  // can be dropped and there is no running response to recover from.
+  await expect.poll(async () => Boolean((await sessionStatus())?.active_run)).toBe(true);
 
   await context.setOffline(true);
   await page.evaluate(() => {
@@ -429,16 +450,6 @@ test('a disconnected mobile response stream cannot keep claiming work is running
     peers?.forEach((peer) => peer.close());
     window.stop();
   });
-
-  const baseURL = String(testInfo.project.use.baseURL || '');
-  const sessionStatus = async () => {
-    const response = await fetch(
-      `${baseURL}v1/sessions/status?session_id=${encodeURIComponent(sessionID)}`,
-    );
-    const data = (await response.json()) as { sessions?: Array<Record<string, unknown>> };
-    return data.sessions?.find((entry) => String(entry.id || entry.session_id) === sessionID);
-  };
-  await expect.poll(async () => Boolean((await sessionStatus())?.active_run)).toBe(true);
 
   await expect(page.locator('#stopBtn')).toBeHidden({ timeout: 5_000 });
   await expect(page.getByRole('status', { name: 'Response status is unknown' })).toBeHidden();

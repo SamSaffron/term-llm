@@ -90,8 +90,8 @@ export async function loadMarkdownPreview(
             markdownPreview: {
               view: entry.markdownPreview?.view || 'diff',
               side,
-              source: force ? undefined : entry.markdownPreview?.source,
-              blocks: force ? undefined : entry.markdownPreview?.blocks,
+              source: entry.markdownPreview?.source,
+              blocks: entry.markdownPreview?.blocks,
               loading: true,
               error: '',
               sequence,
@@ -166,6 +166,8 @@ export async function loadMarkdownPreview(
               markdownPreview: {
                 view: entry.markdownPreview?.view || 'diff',
                 side,
+                source: entry.markdownPreview?.source,
+                blocks: entry.markdownPreview?.blocks,
                 loading: false,
                 error: errorMessage(error),
                 sequence,

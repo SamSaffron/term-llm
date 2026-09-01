@@ -1,6 +1,7 @@
 import type { ComponentChildren, ComponentType } from 'preact';
-import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
+import { responseActivity } from '../domain/activity';
 import type { DiffComment, DiffFile, DiffLine } from '../domain/types';
 import {
   clampDiffWidth,
@@ -42,6 +43,167 @@ function LazyMarkdownFilePreview(props: MarkdownFilePreviewProps) {
     };
   }, [Preview]);
   return Preview ? <Preview {...props} /> : <div class="diff-loading">Loading preview…</div>;
+}
+
+function activeDiffScroller(list: HTMLElement | null, fullscreenPath: string): HTMLElement | null {
+  if (!list) return null;
+  if (!fullscreenPath) return list;
+  return list.querySelector<HTMLElement>('.diff-file-fullscreen .diff-file-body') || list;
+}
+
+type DiffViewportMarker = 'diff' | 'markdown' | 'file';
+
+interface DiffViewportAnchor {
+  scroller: HTMLElement;
+  scrollTop: number;
+  atTop: boolean;
+  path?: string;
+  marker?: DiffViewportMarker;
+  value?: string;
+  offset?: number;
+  fileOffset?: number;
+}
+
+function visibleDiffAnchor(
+  scroller: HTMLElement,
+  candidates: HTMLElement[],
+): HTMLElement | undefined {
+  const viewport = scroller.getBoundingClientRect();
+  let low = 0;
+  let high = candidates.length - 1;
+  let visible = -1;
+  while (low <= high) {
+    const index = Math.floor((low + high) / 2);
+    const bounds = candidates[index].getBoundingClientRect();
+    if (bounds.bottom <= viewport.top) low = index + 1;
+    else {
+      visible = index;
+      high = index - 1;
+    }
+  }
+  if (visible < 0) return undefined;
+  const candidate = candidates[visible];
+  return candidate.getBoundingClientRect().top < viewport.bottom ? candidate : undefined;
+}
+
+function diffFilesForScroller(scroller: HTMLElement): HTMLElement[] {
+  const owner = scroller.closest<HTMLElement>('[data-diff-file-path]');
+  return owner
+    ? [owner]
+    : Array.from(scroller.querySelectorAll<HTMLElement>('[data-diff-file-path]'));
+}
+
+function captureDiffViewport(scroller: HTMLElement): DiffViewportAnchor {
+  const scrollTop = scroller.scrollTop;
+  if (scrollTop <= 1) return { scroller, scrollTop, atTop: true };
+  const detailed = Array.from(
+    scroller.querySelectorAll<HTMLElement>(
+      '.diff-row[data-diff-anchor], .diff-markdown-block[data-source-start]',
+    ),
+  );
+  const files = diffFilesForScroller(scroller);
+  const target = visibleDiffAnchor(scroller, detailed) || visibleDiffAnchor(scroller, files);
+  if (!target) return { scroller, scrollTop, atTop: false };
+  const file = target.closest<HTMLElement>('[data-diff-file-path]');
+  const viewport = scroller.getBoundingClientRect();
+  const marker: DiffViewportMarker = target.dataset.diffAnchor
+    ? 'diff'
+    : target.dataset.sourceStart
+      ? 'markdown'
+      : 'file';
+  const value =
+    marker === 'diff'
+      ? target.dataset.diffAnchor
+      : marker === 'markdown'
+        ? target.dataset.sourceStart
+        : file?.dataset.diffFilePath;
+  return {
+    scroller,
+    scrollTop,
+    atTop: false,
+    path: file?.dataset.diffFilePath,
+    marker,
+    value,
+    offset: target.getBoundingClientRect().top - viewport.top,
+    fileOffset: file ? file.getBoundingClientRect().top - viewport.top : undefined,
+  };
+}
+
+function findDiffViewportTarget(
+  scroller: HTMLElement,
+  anchor: DiffViewportAnchor,
+): HTMLElement | null {
+  const file = diffFilesForScroller(scroller).find(
+    (candidate) => candidate.dataset.diffFilePath === anchor.path,
+  );
+  if (!file) return null;
+  if (anchor.marker === 'file') return file;
+  const candidates = Array.from(
+    file.querySelectorAll<HTMLElement>(
+      anchor.marker === 'diff' ? '[data-diff-anchor]' : '[data-source-start]',
+    ),
+  );
+  return (
+    candidates.find((candidate) =>
+      anchor.marker === 'diff'
+        ? candidate.dataset.diffAnchor === anchor.value
+        : candidate.dataset.sourceStart === anchor.value,
+    ) || null
+  );
+}
+
+function restoreDiffViewport(scroller: HTMLElement, anchor: DiffViewportAnchor): void {
+  if (anchor.atTop) {
+    scroller.scrollTop = 0;
+    return;
+  }
+  const viewportTop = scroller.getBoundingClientRect().top;
+  const target = findDiffViewportTarget(scroller, anchor);
+  if (target && anchor.offset !== undefined) {
+    scroller.scrollTop += target.getBoundingClientRect().top - viewportTop - anchor.offset;
+    return;
+  }
+  const file = diffFilesForScroller(scroller).find(
+    (candidate) => candidate.dataset.diffFilePath === anchor.path,
+  );
+  if (file && anchor.fileOffset !== undefined) {
+    scroller.scrollTop += file.getBoundingClientRect().top - viewportTop - anchor.fileOffset;
+    return;
+  }
+  scroller.scrollTop = anchor.scrollTop;
+}
+
+function useDiffViewportAnchor(
+  list: { current: HTMLElement | null },
+  files: DiffFile[],
+  fullscreenPath: string,
+) {
+  const anchor = useRef<DiffViewportAnchor | null>(null);
+  const captureFrame = useRef<number | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (captureFrame.current !== undefined) {
+      cancelAnimationFrame(captureFrame.current);
+      captureFrame.current = undefined;
+    }
+    const scroller = activeDiffScroller(list.current, fullscreenPath);
+    if (!scroller) return;
+    const previous = anchor.current;
+    if (previous?.scroller === scroller) restoreDiffViewport(scroller, previous);
+    anchor.current = captureDiffViewport(scroller);
+  }, [files, fullscreenPath, list]);
+  useEffect(
+    () => () => {
+      if (captureFrame.current !== undefined) cancelAnimationFrame(captureFrame.current);
+    },
+    [],
+  );
+  return useCallback((scroller: HTMLElement) => {
+    if (captureFrame.current !== undefined) return;
+    captureFrame.current = requestAnimationFrame(() => {
+      captureFrame.current = undefined;
+      anchor.current = captureDiffViewport(scroller);
+    });
+  }, []);
 }
 
 function DiffCode({
@@ -99,6 +261,8 @@ function Line({
   onReanchor,
   onRemove,
   commentable = true,
+  submitDisabled = false,
+  reanchorDisabled = false,
 }: {
   line: DiffLine;
   emphasis?: [number, number];
@@ -115,6 +279,8 @@ function Line({
   onReanchor: (comment: DiffComment) => void;
   onRemove: (comment: DiffComment) => void;
   commentable?: boolean;
+  submitDisabled?: boolean;
+  reanchorDisabled?: boolean;
 }) {
   const number = line.kind === 'delete' ? line.oldLine : line.newLine;
   const side = line.kind === 'delete' ? 'old' : 'new';
@@ -137,7 +303,7 @@ function Line({
       <span class="diff-ln">{line.oldLine || ''}</span>
       <span class="diff-ln">{line.newLine || ''}</span>
       <DiffCode line={line} emphasis={emphasis} lang={lang} />
-      {enabled && number && (
+      {(enabled || comments.length > 0) && number && (
         <ReviewComment
           controlId={`diff-comment-${commentKey.replace(/[^a-z0-9_-]/gi, '-')}`}
           commenting={commenting}
@@ -162,6 +328,9 @@ function Line({
           onEdit={onEdit}
           onReanchor={onReanchor}
           onRemove={onRemove}
+          allowNew={enabled}
+          submitDisabled={submitDisabled}
+          reanchorDisabled={reanchorDisabled}
         />
       )}
     </div>
@@ -172,10 +341,12 @@ function DiffAction({
   label,
   glyph,
   value,
+  disabled = false,
 }: {
   label: string;
   glyph: ComponentChildren;
   value: () => string | Promise<string>;
+  disabled?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<number | undefined>(undefined);
@@ -208,6 +379,7 @@ function DiffAction({
       type="button"
       title={label}
       aria-label={label}
+      disabled={disabled}
       onClick={(event) => void copy(event)}
     >
       {glyph}
@@ -236,10 +408,12 @@ function File({
   file,
   fullscreen,
   onFullscreenToggle,
+  onViewportScroll,
 }: {
   file: DiffFile;
   fullscreen: boolean;
   onFullscreenToggle: () => void;
+  onViewportScroll: (scroller: HTMLElement) => void;
 }) {
   const store = useStore();
   const [limit, setLimit] = useState(500);
@@ -247,6 +421,7 @@ function File({
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [draftTargets, setDraftTargets] = useState<Record<string, string>>({});
   const lines = file.lines || [];
+  const diffStale = Boolean(file.loading || (file.error && lines.length));
   const kind = fileKind(file);
   const legacyKind = kind === 'add' ? 'create' : kind === 'delete' ? 'delete' : 'modify';
   const markdownPath = isMarkdownPath(file.path);
@@ -261,6 +436,16 @@ function File({
           : '';
   const markdownAvailable = markdownPath && !markdownUnavailableReason;
   const session = store.activeSession.value;
+  const fullscreenRun = fullscreen ? store.activeProjection.value : null;
+  const fullscreenActivity =
+    fullscreen &&
+    !store.diff.value.worktreeDir &&
+    store.diff.value.sessionId === store.activeSessionId.value &&
+    store.runActive.value
+      ? fullscreenRun
+        ? responseActivity(fullscreenRun, store.currentPlan.value, fullscreenRun.run.status)
+        : { text: 'Working', kind: 'working' as const }
+      : null;
   const project = store.projects.value.find(
     (entry) => entry.id === (session?.projectId || store.activeProjectId.value),
   );
@@ -282,16 +467,8 @@ function File({
     (file.context || 3) < Math.max(file.oldLineCount || 0, file.newLineCount || 0);
   const expandFallback = () =>
     void store.expandDiff(file, Math.min(100_000, Math.max(12, (file.context || 3) * 4)));
-  const expandGap = async (key: string, target: HTMLElement) => {
-    const top = target.getBoundingClientRect().top;
-    await store.expandDiff(file, Math.min(100_000, Math.max(12, (file.context || 3) * 4)));
-    requestAnimationFrame(() => {
-      const replacement = document.querySelector<HTMLElement>(
-        `[data-diff-gap="${CSS.escape(key)}"]`,
-      );
-      if (replacement) window.scrollBy(0, replacement.getBoundingClientRect().top - top);
-    });
-  };
+  const expandGap = () =>
+    store.expandDiff(file, Math.min(100_000, Math.max(12, (file.context || 3) * 4)));
   const emphasis = new Map<number, [number, number]>();
   for (let index = 0; index + 1 < lines.length; index += 1)
     if (lines[index].kind === 'delete' && lines[index + 1].kind === 'add') {
@@ -343,7 +520,7 @@ function File({
     contextAfter?: string[],
   ) => {
     const body = drafts[key] || '';
-    if (!body.trim() || !number) return;
+    if (!body.trim() || !number || diffStale) return;
     const comment: DiffComment = {
       path: file.path,
       side,
@@ -392,7 +569,7 @@ function File({
   };
   const diffContent = (
     <>
-      {file.loading && <div class="diff-loading">Loading…</div>}
+      {file.loading && !lines.length && <div class="diff-loading">Loading…</div>}
       {file.error && (
         <div class="diff-error">
           {file.error}
@@ -462,7 +639,7 @@ function File({
                     class="diff-hunk-expand"
                     type="button"
                     disabled={file.loading}
-                    onClick={(event) => void expandGap(rowKey, event.currentTarget)}
+                    onClick={() => void expandGap()}
                   >
                     Show {hidden} hidden {hidden === 1 ? 'line' : 'lines'} {direction}
                   </button>
@@ -483,6 +660,8 @@ function File({
                   comments={comments}
                   body={drafts[anchorKey] || ''}
                   commentable={!store.diff.value.readOnly}
+                  submitDisabled={diffStale}
+                  reanchorDisabled={diffStale}
                   onComment={(next) => setCommenting((current) => (current === next ? '' : next))}
                   onBody={(value) => setDrafts((current) => ({ ...current, [anchorKey]: value }))}
                   onCancel={() => {
@@ -494,7 +673,7 @@ function File({
                   }
                   onEdit={editComment}
                   onReanchor={(comment) => {
-                    if (!comment.id || !number) return;
+                    if (!comment.id || !number || diffStale) return;
                     store.reanchorDiffComment(comment.id, {
                       path: file.path,
                       side,
@@ -577,6 +756,24 @@ function File({
             </>
           )}
         </span>
+        {fullscreenActivity && (
+          <span
+            class={`streaming-indicator diff-sidebar-activity streaming-indicator-${fullscreenActivity.kind}`}
+            style={{ marginLeft: 'auto', maxWidth: 'min(42vw, 32rem)', padding: 0 }}
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            aria-label={`Assistant is responding: ${fullscreenActivity.text}`}
+            title={fullscreenActivity.text}
+          >
+            <span
+              class="streaming-indicator-text"
+              key={`${fullscreenActivity.kind}:${fullscreenActivity.text}`}
+            >
+              {fullscreenActivity.text}
+            </span>
+          </span>
+        )}
         <span class="diff-file-actions" onClick={(event) => event.stopPropagation()}>
           {markdownPath && (
             <button
@@ -631,12 +828,17 @@ function File({
               label={`Copy diff for ${file.path}`}
               glyph={<Icon name="diff" />}
               value={patch}
+              disabled={Boolean(diffStale && (file.lines || file.patch))}
             />
           )}
         </span>
       </div>
       {file.expanded && (
-        <div class="diff-file-body">
+        <div
+          class="diff-file-body"
+          aria-busy={file.loading || undefined}
+          onScroll={(event) => onViewportScroll(event.currentTarget)}
+        >
           <div id={previewPanelID}>
             {selectedView === 'rendered' ? (
               <LazyMarkdownFilePreview
@@ -711,8 +913,10 @@ export function DiffSidebar() {
   const store = useStore();
   const state = store.diff.value;
   const aside = useRef<HTMLElement>(null);
+  const fileList = useRef<HTMLDivElement>(null);
   const fullscreenFollow = useRef<boolean | null>(null);
   const [fullscreenPath, setFullscreenPath] = useState('');
+  const captureViewport = useDiffViewportAnchor(fileList, state.files, fullscreenPath);
   const mobile = useMediaQuery('(max-width: 767px)');
   const compact = useMediaQuery('(max-width: 1099px)');
   const files = state.files.filter((file) =>
@@ -824,6 +1028,16 @@ export function DiffSidebar() {
   const allExpanded = state.files.length > 0 && state.files.every((file) => file.expanded);
   const adds = state.files.reduce((sum, file) => sum + (file.additions || 0), 0);
   const dels = state.files.reduce((sum, file) => sum + (file.deletions || 0), 0);
+  const activeRun = store.activeProjection.value;
+  const activity = activeRun
+    ? responseActivity(activeRun, store.currentPlan.value, activeRun.run.status)
+    : { text: 'Working', kind: 'working' as const };
+  const showActivity = Boolean(
+    state.maximized &&
+    !state.worktreeDir &&
+    state.sessionId === store.activeSessionId.value &&
+    store.runActive.value,
+  );
   const startResize = (event: PointerEvent) => {
     event.preventDefault();
     const handle = event.currentTarget as HTMLElement;
@@ -866,6 +1080,21 @@ export function DiffSidebar() {
           {adds > 0 && <span class="diff-sidebar-totals-add">+{adds}</span>}
           {dels > 0 && <span class="diff-sidebar-totals-del">−{dels}</span>}
         </span>
+        {showActivity && (
+          <span
+            class={`streaming-indicator diff-sidebar-activity streaming-indicator-${activity.kind}`}
+            style={{ maxWidth: 'min(42vw, 32rem)', padding: 0 }}
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            aria-label={`Assistant is responding: ${activity.text}`}
+            title={activity.text}
+          >
+            <span class="streaming-indicator-text" key={`${activity.kind}:${activity.text}`}>
+              {activity.text}
+            </span>
+          </span>
+        )}
         {!mobile && (
           <button
             class="icon-btn diff-bulk-toggle"
@@ -950,8 +1179,13 @@ export function DiffSidebar() {
           />
         </div>
       )}
-      <div class="diff-file-list" aria-label="Changed files">
-        {state.loading && <div class="diff-loading">Loading changes…</div>}
+      <div
+        ref={fileList}
+        class="diff-file-list"
+        aria-label="Changed files"
+        onScroll={(event) => captureViewport(event.currentTarget)}
+      >
+        {state.loading && !state.files.length && <div class="diff-loading">Loading changes…</div>}
         {state.error && (
           <div class="diff-error">
             {state.error}
@@ -972,6 +1206,7 @@ export function DiffSidebar() {
             key={file.path}
             file={file}
             fullscreen={fullscreenPath === file.path}
+            onViewportScroll={captureViewport}
             onFullscreenToggle={() => {
               if (fullscreenPath === file.path) {
                 exitFullscreen();

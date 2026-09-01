@@ -62,6 +62,7 @@ export function ReviewComment({
   showAnchorLine = false,
   allowNew = true,
   submitDisabled = false,
+  reanchorDisabled = false,
 }: {
   controlId: string;
   commenting: boolean;
@@ -82,6 +83,7 @@ export function ReviewComment({
   showAnchorLine?: boolean;
   allowNew?: boolean;
   submitDisabled?: boolean;
+  reanchorDisabled?: boolean;
 }) {
   const [sendMenuOpen, setSendMenuOpen] = useState(false);
   const [clock, setClock] = useState(() => Date.now());
@@ -208,7 +210,11 @@ export function ReviewComment({
                   {comment.queued && comment.id && (
                     <span class="diff-comment-actions">
                       {comment.state === 'stale' && (
-                        <button type="button" onClick={() => onReanchor(comment)}>
+                        <button
+                          type="button"
+                          disabled={reanchorDisabled}
+                          onClick={() => onReanchor(comment)}
+                        >
                           Re-anchor here
                         </button>
                       )}

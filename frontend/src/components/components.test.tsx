@@ -1519,6 +1519,204 @@ describe('Preact-owned chat surfaces', () => {
     }
   });
 
+  it('shows active work in the maximized changes header without inserting refresh rows', () => {
+    const store = createStore();
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'r1',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'streaming',
+        lastSequence: 0,
+        startedRev: 0,
+        reconnects: 0,
+      }),
+    };
+    store.diff.value = {
+      ...store.diff.value,
+      open: true,
+      maximized: true,
+      loading: true,
+      sessionId: 's1',
+      files: [
+        {
+          path: 'live.ts',
+          status: 'modify',
+          additions: 1,
+          deletions: 0,
+          expanded: true,
+          loading: true,
+          lines: [{ kind: 'add', content: 'still visible', newLine: 1 }],
+        },
+      ],
+    };
+
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <DiffSidebar />
+      </StoreContext.Provider>,
+    );
+
+    expect(
+      container.querySelector('.diff-sidebar-header .diff-sidebar-activity'),
+    ).toHaveAccessibleName('Assistant is responding: Working');
+    expect(screen.queryByText('Loading changes…')).not.toBeInTheDocument();
+    expect(screen.queryByText('Loading…')).not.toBeInTheDocument();
+    expect(container.querySelector('.diff-row')).toHaveTextContent('still visible');
+
+    fireEvent.click(screen.getByRole('button', { name: 'View fullscreen live.ts' }));
+    expect(container.querySelector('.diff-file-row .diff-sidebar-activity')).toHaveAccessibleName(
+      'Assistant is responding: Working',
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Exit fullscreen for live.ts' }));
+
+    act(() => {
+      store.diff.value = { ...store.diff.value, maximized: false };
+    });
+    expect(container.querySelector('.diff-sidebar-activity')).toBeNull();
+  });
+
+  it('preserves the visible diff anchor when live rows move', async () => {
+    const store = createStore();
+    const lines = [{ kind: 'add' as const, content: 'anchor', newLine: 1 }];
+    store.diff.value = {
+      ...store.diff.value,
+      open: true,
+      maximized: true,
+      sessionId: 's1',
+      files: [
+        {
+          path: 'live.ts',
+          status: 'modify',
+          additions: 1,
+          deletions: 0,
+          expanded: true,
+          lines,
+        },
+      ],
+    };
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <DiffSidebar />
+      </StoreContext.Provider>,
+    );
+    const scroller = container.querySelector<HTMLElement>('.diff-file-list')!;
+    const row = container.querySelector<HTMLElement>('[data-diff-anchor="new:1"]')!;
+    const file = container.querySelector<HTMLElement>('[data-diff-file-path="live.ts"]')!;
+    let scrollTop = 200;
+    let rowTop = 100;
+    Object.defineProperties(scroller, {
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value;
+        },
+      },
+      getBoundingClientRect: {
+        configurable: true,
+        value: () => ({ top: 0, bottom: 500, left: 0, right: 500, width: 500, height: 500 }),
+      },
+    });
+    Object.defineProperty(row, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({
+        top: rowTop,
+        bottom: rowTop + 20,
+        left: 0,
+        right: 500,
+        width: 500,
+        height: 20,
+      }),
+    });
+    Object.defineProperty(file, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: -50, bottom: 400, left: 0, right: 500, width: 500, height: 450 }),
+    });
+    fireEvent.scroll(scroller);
+    await act(
+      () =>
+        new Promise<void>((resolve) => {
+          requestAnimationFrame(() => resolve());
+        }),
+    );
+
+    rowTop = 250;
+    act(() => {
+      store.diff.value = {
+        ...store.diff.value,
+        files: store.diff.value.files.map((entry) => ({ ...entry, additions: 2 })),
+      };
+    });
+
+    expect(scrollTop).toBe(350);
+
+    fireEvent.click(screen.getByRole('button', { name: 'View fullscreen live.ts' }));
+    await act(async () => Promise.resolve());
+    const fullscreenScroller = container.querySelector<HTMLElement>('.diff-file-body')!;
+    const fullscreenRow = container.querySelector<HTMLElement>('[data-diff-anchor="new:1"]')!;
+    const originalRect = HTMLElement.prototype.getBoundingClientRect;
+    const rowRect = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.matches('[data-diff-anchor="new:1"]'))
+          return {
+            top: rowTop,
+            bottom: rowTop + 20,
+            left: 0,
+            right: 500,
+            width: 500,
+            height: 20,
+          } as DOMRect;
+        return originalRect.call(this);
+      });
+    let fullscreenScrollTop = 120;
+    Object.defineProperty(fullscreenRow, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({
+        top: rowTop,
+        bottom: rowTop + 20,
+        left: 0,
+        right: 500,
+        width: 500,
+        height: 20,
+      }),
+    });
+    Object.defineProperties(fullscreenScroller, {
+      scrollTop: {
+        configurable: true,
+        get: () => fullscreenScrollTop,
+        set: (value: number) => {
+          fullscreenScrollTop = value;
+        },
+      },
+      getBoundingClientRect: {
+        configurable: true,
+        value: () => ({ top: 0, bottom: 500, left: 0, right: 500, width: 500, height: 500 }),
+      },
+    });
+    rowTop = 80;
+    fireEvent.scroll(fullscreenScroller);
+    await act(
+      () =>
+        new Promise<void>((resolve) => {
+          requestAnimationFrame(() => resolve());
+        }),
+    );
+
+    rowTop = 180;
+    act(() => {
+      store.diff.value = {
+        ...store.diff.value,
+        files: [...store.diff.value.files],
+      };
+    });
+    rowRect.mockRestore();
+
+    expect(container.querySelector('.diff-file-body')).toBe(fullscreenScroller);
+    expect(fullscreenScrollTop).toBe(220);
+  });
+
   it('keeps fullscreen file navigation synchronized with the selected file', () => {
     const store = createStore();
     store.diff.value = {

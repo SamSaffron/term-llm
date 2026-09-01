@@ -47,6 +47,7 @@ export function MarkdownFilePreview({
 }: MarkdownFilePreviewProps) {
   const store = useStore();
   const preview = file.markdownPreview;
+  const previewStale = Boolean(preview?.loading || preview?.error);
   const renderedSide: DiffComment['side'] = preview?.side === 'before' ? 'old' : 'new';
   const sourceLines = preview?.source?.split(/\r?\n/) || [];
   const renderedBlocks = useMemo(
@@ -90,7 +91,7 @@ export function MarkdownFilePreview({
     contextAfter: string[],
   ) => {
     const body = drafts[key] || '';
-    if (!body.trim()) return;
+    if (!body.trim() || previewStale) return;
     const comment: DiffComment = {
       path: file.path,
       side: renderedSide,
@@ -108,11 +109,11 @@ export function MarkdownFilePreview({
   };
 
   return (
-    <div class="diff-markdown-preview">
+    <div class="diff-markdown-preview" aria-busy={preview?.loading || undefined}>
       {preview?.side === 'before' && (
         <div class="diff-markdown-deleted-banner">Deleted — showing the last retained version</div>
       )}
-      {preview?.loading && (
+      {preview?.loading && preview.source === undefined && (
         <div class="diff-loading" aria-live="polite">
           Loading rendered document…
         </div>
@@ -201,7 +202,8 @@ export function MarkdownFilePreview({
                     showCount
                     showAnchorLine
                     allowNew={allowNew}
-                    submitDisabled={draftStale}
+                    submitDisabled={draftStale || previewStale}
+                    reanchorDisabled={previewStale}
                     onToggle={() =>
                       setCommenting((current) => (current === anchorKey ? '' : anchorKey))
                     }
@@ -228,7 +230,7 @@ export function MarkdownFilePreview({
                     }
                     onEdit={editComment}
                     onReanchor={(comment) => {
-                      if (!comment.id) return;
+                      if (!comment.id || previewStale) return;
                       store.reanchorDiffComment(comment.id, {
                         path: file.path,
                         side: renderedSide,
