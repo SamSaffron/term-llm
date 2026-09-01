@@ -25,6 +25,37 @@ func TestJobsV2MigrationListInvariants(t *testing.T) {
 	}
 }
 
+func TestJobsV2MigrationAddsByIDSummaryIndex(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "v1-jobs.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := execJobsV2Schema(db); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP INDEX ` + jobsV2RunByIDSummaryIndexName); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE jobs_v2_schema_version SET version = 1`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := initJobsV2Schema(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	var version, indexes int
+	if err := db.QueryRow(`SELECT version FROM jobs_v2_schema_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?`, jobsV2RunByIDSummaryIndexName).Scan(&indexes); err != nil {
+		t.Fatal(err)
+	}
+	if version != jobsV2SchemaVersion || indexes != 1 {
+		t.Fatalf("migrated version=%d by-id indexes=%d, want version=%d indexes=1", version, indexes, jobsV2SchemaVersion)
+	}
+}
+
 func TestJobsV2FreshAndCurrentPathsRunZeroMigrationCallbacks(t *testing.T) {
 	original := jobsV2Migrations
 	jobsV2Migrations = append([]jobsV2Migration(nil), original...)
@@ -173,6 +204,7 @@ func TestJobsV2MigrationRepairsEveryIndividualLegacyColumnHole(t *testing.T) {
 				`DROP TABLE jobs_v2_schema_version`,
 				`DROP INDEX IF EXISTS idx_job_runs_v2_summary_by_job_created`,
 				`DROP INDEX IF EXISTS idx_job_runs_v2_summary_created`,
+				`DROP INDEX IF EXISTS idx_job_runs_v2_summary_by_id`,
 				`ALTER TABLE job_runs_v2 DROP COLUMN "` + column.name + `"`,
 			} {
 				if _, err := db.Exec(statement); err != nil {
@@ -269,7 +301,7 @@ func TestJobsV2MigrationRepairsNonPrefixLegacyColumnHoles(t *testing.T) {
 	if sessionID != "session" || inputTokens != 7 || truncated != 0 || turnCount != 0 || outputTokens != 0 {
 		t.Fatalf("legacy values/defaults = %q,%d,%d,%d,%d", sessionID, inputTokens, truncated, turnCount, outputTokens)
 	}
-	for _, index := range []string{jobsV2RunSummaryIndexName, jobsV2RunGlobalSummaryIndexName, "idx_job_run_events_v2_run_id_id"} {
+	for _, index := range []string{jobsV2RunSummaryIndexName, jobsV2RunGlobalSummaryIndexName, jobsV2RunByIDSummaryIndexName, "idx_job_run_events_v2_run_id_id"} {
 		var count int
 		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?`, index).Scan(&count); err != nil || count != 1 {
 			t.Fatalf("current index %s count=%d err=%v", index, count, err)

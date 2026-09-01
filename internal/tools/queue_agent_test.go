@@ -250,39 +250,61 @@ func TestQueueAgentNotifyWhenDonePersistsTrustedOrigin(t *testing.T) {
 }
 
 func TestWaitForJobsPollsUntilTerminal(t *testing.T) {
-	var polls int32
+	var summaryPolls int32
+	var fullRequests int32
+	payload := strings.Repeat("x", 1<<20)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/v2/runs" {
-			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/runs":
+			if r.URL.Query().Get("job_id") != "job_123" {
+				t.Fatalf("job_id query = %q, want job_123", r.URL.Query().Get("job_id"))
+			}
+			if r.URL.Query().Get("limit") != "1" || r.URL.Query().Get("offset") != "0" {
+				t.Fatalf("unexpected pagination query: %s", r.URL.RawQuery)
+			}
+			if r.URL.Query().Get("summary") != "true" {
+				t.Fatalf("poll should request a summary, got query %q", r.URL.RawQuery)
+			}
+			count := atomic.AddInt32(&summaryPolls, 1)
+			if count == 1 {
+				writeJSON(t, w, jobsV2AgentRunsListResponse{Data: []jobsV2AgentRunResponse{{ID: "run_123", JobID: "job_123", Status: "running"}}})
+				return
+			}
+			exitCode := 0
+			turnCount := 1
+			inputTokens := 10
+			outputTokens := 3
+			writeJSON(t, w, jobsV2AgentRunsListResponse{Data: []jobsV2AgentRunResponse{{
+				ID:           "run_123",
+				JobID:        "job_123",
+				Status:       "succeeded",
+				ExitReason:   "natural_completion",
+				TurnCount:    &turnCount,
+				InputTokens:  &inputTokens,
+				OutputTokens: &outputTokens,
+				ExitCode:     &exitCode,
+				StartedAt:    "2026-06-07T07:15:51.314202856Z",
+				FinishedAt:   "2026-06-07T07:16:49.259958355Z",
+			}}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/runs/run_123":
+			if r.URL.RawQuery != "" {
+				t.Fatalf("terminal output fetch should be full, got query %q", r.URL.RawQuery)
+			}
+			atomic.AddInt32(&fullRequests, 1)
+			exitCode := 0
+			writeJSON(t, w, jobsV2AgentRunResponse{
+				ID:         "run_123",
+				JobID:      "job_123",
+				Status:     "succeeded",
+				Response:   "STATUS: COMPLETE\nOK",
+				Stdout:     payload,
+				ExitCode:   &exitCode,
+				StartedAt:  "2026-06-07T07:15:51.314202856Z",
+				FinishedAt: "2026-06-07T07:16:49.259958355Z",
+			})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
 		}
-		if r.URL.Query().Get("job_id") != "job_123" {
-			t.Fatalf("job_id query = %q, want job_123", r.URL.Query().Get("job_id"))
-		}
-		if r.URL.Query().Get("limit") != "1" || r.URL.Query().Get("offset") != "0" {
-			t.Fatalf("unexpected pagination query: %s", r.URL.RawQuery)
-		}
-		count := atomic.AddInt32(&polls, 1)
-		if count == 1 {
-			writeJSON(t, w, jobsV2AgentRunsListResponse{Data: []jobsV2AgentRunResponse{{ID: "run_123", JobID: "job_123", Status: "running"}}})
-			return
-		}
-		exitCode := 0
-		turnCount := 1
-		inputTokens := 10
-		outputTokens := 3
-		writeJSON(t, w, jobsV2AgentRunsListResponse{Data: []jobsV2AgentRunResponse{{
-			ID:           "run_123",
-			JobID:        "job_123",
-			Status:       "succeeded",
-			ExitReason:   "natural_completion",
-			TurnCount:    &turnCount,
-			InputTokens:  &inputTokens,
-			OutputTokens: &outputTokens,
-			Response:     "STATUS: COMPLETE\nOK",
-			ExitCode:     &exitCode,
-			StartedAt:    "2026-06-07T07:15:51.314202856Z",
-			FinishedAt:   "2026-06-07T07:16:49.259958355Z",
-		}}})
 	}))
 	defer server.Close()
 
@@ -301,36 +323,50 @@ func TestWaitForJobsPollsUntilTerminal(t *testing.T) {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
 	result := results[0]
-	if result.JobID != "job_123" || result.Status != "succeeded" || result.Response != "STATUS: COMPLETE\nOK" {
-		t.Fatalf("unexpected result: %+v", result)
+	if result.JobID != "job_123" || result.Status != "succeeded" || result.Response != "STATUS: COMPLETE\nOK" || result.Stdout != payload {
+		t.Fatalf("unexpected result metadata or output lengths: job=%q status=%q response=%q stdout=%d", result.JobID, result.Status, result.Response, len(result.Stdout))
 	}
 	if strings.Contains(out.Content, "run_id") {
-		t.Fatalf("wait output should not expose run_id: %s", out.Content)
+		t.Fatalf("wait output should not expose run_id")
 	}
 	if result.DurationSeconds == nil || *result.DurationSeconds < 57.9 || *result.DurationSeconds > 58.0 {
 		t.Fatalf("duration = %#v, want about 57.9", result.DurationSeconds)
 	}
-	if polls != 2 {
-		t.Fatalf("polls = %d, want 2", polls)
+	if summaryPolls != 2 {
+		t.Fatalf("summary polls = %d, want 2", summaryPolls)
+	}
+	if fullRequests != 1 {
+		t.Fatalf("full requests = %d, want 1", fullRequests)
 	}
 }
 
 func TestWaitForJobsPollsSpecificRunUntilTerminal(t *testing.T) {
-	var polls int32
+	var summaryPolls int32
+	var fullRequests int32
+	payload := strings.Repeat("x", 1<<20)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/v2/runs/run_123":
-			count := atomic.AddInt32(&polls, 1)
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/runs/run_123" && r.URL.Query().Get("summary") == "true":
+			count := atomic.AddInt32(&summaryPolls, 1)
 			if count == 1 {
 				writeJSON(t, w, jobsV2AgentRunResponse{ID: "run_123", JobID: "job_123", Status: "running"})
 				return
 			}
+			writeJSON(t, w, jobsV2AgentRunResponse{
+				ID:        "run_123",
+				JobID:     "job_123",
+				Status:    "succeeded",
+				StartedAt: "2026-06-07T07:15:51.314202856Z",
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/runs/run_123" && r.URL.RawQuery == "":
+			atomic.AddInt32(&fullRequests, 1)
 			exitCode := 0
 			writeJSON(t, w, jobsV2AgentRunResponse{
 				ID:         "run_123",
 				JobID:      "job_123",
 				Status:     "succeeded",
 				Response:   "STATUS: COMPLETE\nOK",
+				Stdout:     payload,
 				ExitCode:   &exitCode,
 				StartedAt:  "2026-06-07T07:15:51.314202856Z",
 				FinishedAt: "2026-06-07T07:16:49.259958355Z",
@@ -338,7 +374,7 @@ func TestWaitForJobsPollsSpecificRunUntilTerminal(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/v2/runs":
 			t.Fatalf("wait_for_jobs should poll the specific run, got list query %q", r.URL.RawQuery)
 		default:
-			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
 		}
 	}))
 	defer server.Close()
@@ -358,11 +394,35 @@ func TestWaitForJobsPollsSpecificRunUntilTerminal(t *testing.T) {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
 	result := results[0]
-	if result.JobID != "job_123" || result.Status != "succeeded" || result.Response != "STATUS: COMPLETE\nOK" {
-		t.Fatalf("unexpected result: %+v", result)
+	if result.JobID != "job_123" || result.Status != "succeeded" || result.Response != "STATUS: COMPLETE\nOK" || result.Stdout != payload {
+		t.Fatalf("unexpected result metadata or output lengths: job=%q status=%q response=%q stdout=%d", result.JobID, result.Status, result.Response, len(result.Stdout))
 	}
-	if polls != 2 {
-		t.Fatalf("polls = %d, want 2", polls)
+	if summaryPolls != 2 {
+		t.Fatalf("summary polls = %d, want 2", summaryPolls)
+	}
+	if fullRequests != 1 {
+		t.Fatalf("full requests = %d, want 1", fullRequests)
+	}
+}
+
+func TestWaitForRunReportsTerminalDetailFetchFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.RawQuery {
+		case "summary=true":
+			writeJSON(t, w, jobsV2AgentRunResponse{ID: "run_123", JobID: "job_123", Status: "succeeded"})
+		case "":
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("temporarily unavailable"))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client := &jobsBackedAgentClient{baseURL: server.URL, httpClient: server.Client()}
+	_, err := client.waitForRun(context.Background(), "run_123", time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), `run "run_123" reached terminal status "succeeded"`) || !strings.Contains(err.Error(), "HTTP 503") {
+		t.Fatalf("terminal detail fetch error = %v", err)
 	}
 }
 

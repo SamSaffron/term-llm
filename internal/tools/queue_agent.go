@@ -444,12 +444,12 @@ func (c *jobsBackedAgentClient) waitForRun(ctx context.Context, runID string, po
 		pollInterval = defaultQueuedAgentPollInterval * time.Second
 	}
 	for {
-		run, err := c.getRun(ctx, runID)
+		run, err := c.getRunSummary(ctx, runID)
 		if err != nil {
 			return jobsV2AgentRunResponse{}, err
 		}
 		if isQueuedAgentTerminalStatus(run.Status) {
-			return run, nil
+			return c.getTerminalRun(ctx, run)
 		}
 		timer := time.NewTimer(pollInterval)
 		select {
@@ -472,6 +472,29 @@ func (c *jobsBackedAgentClient) getRun(ctx context.Context, runID string) (jobsV
 	return run, nil
 }
 
+func (c *jobsBackedAgentClient) getRunSummary(ctx context.Context, runID string) (jobsV2AgentRunResponse, error) {
+	var run jobsV2AgentRunResponse
+	if err := c.doJSON(ctx, http.MethodGet, "/v2/runs/"+url.PathEscape(runID)+"?summary=true", nil, &run); err != nil {
+		return jobsV2AgentRunResponse{}, err
+	}
+	if run.ID == "" {
+		run.ID = runID
+	}
+	return run, nil
+}
+
+func (c *jobsBackedAgentClient) getTerminalRun(ctx context.Context, terminal jobsV2AgentRunResponse) (jobsV2AgentRunResponse, error) {
+	runID := strings.TrimSpace(terminal.ID)
+	if runID == "" {
+		return jobsV2AgentRunResponse{}, fmt.Errorf("jobs server returned terminal run without id")
+	}
+	run, err := c.getRun(ctx, runID)
+	if err != nil {
+		return jobsV2AgentRunResponse{}, fmt.Errorf("run %q reached terminal status %q but fetching final output failed: %w", runID, terminal.Status, err)
+	}
+	return run, nil
+}
+
 func (c *jobsBackedAgentClient) waitForJob(ctx context.Context, jobID string, pollInterval time.Duration) (jobsV2AgentRunResponse, error) {
 	if pollInterval <= 0 {
 		pollInterval = defaultQueuedAgentPollInterval * time.Second
@@ -482,7 +505,7 @@ func (c *jobsBackedAgentClient) waitForJob(ctx context.Context, jobID string, po
 			return jobsV2AgentRunResponse{}, err
 		}
 		if found && isQueuedAgentTerminalStatus(run.Status) {
-			return run, nil
+			return c.getTerminalRun(ctx, run)
 		}
 		timer := time.NewTimer(pollInterval)
 		select {
@@ -532,7 +555,7 @@ func (c *jobsBackedAgentClient) reconcileRunForJob(ctx context.Context, jobID st
 
 func (c *jobsBackedAgentClient) latestRunForJob(ctx context.Context, jobID string) (jobsV2AgentRunResponse, bool, error) {
 	var runs jobsV2AgentRunsListResponse
-	path := "/v2/runs?limit=1&offset=0&job_id=" + url.QueryEscape(jobID)
+	path := "/v2/runs?limit=1&offset=0&summary=true&job_id=" + url.QueryEscape(jobID)
 	if err := c.doJSON(ctx, http.MethodGet, path, nil, &runs); err != nil {
 		return jobsV2AgentRunResponse{}, false, err
 	}

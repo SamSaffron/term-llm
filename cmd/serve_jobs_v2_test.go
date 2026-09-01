@@ -210,6 +210,19 @@ func TestJobsV2GlobalRunSummaryUsesCoveringIndex(t *testing.T) {
 	}
 }
 
+func TestJobsV2RunSummaryByIDUsesCoveringIndex(t *testing.T) {
+	mgr, err := newJobsV2Manager(":memory:", 0, nil)
+	if err != nil {
+		t.Fatalf("newJobsV2Manager failed: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	plan := jobsV2ExplainPlan(t, mgr.db, "EXPLAIN QUERY PLAN SELECT "+jobsV2RunSummaryColumns+" FROM job_runs_v2 INDEXED BY "+jobsV2RunByIDSummaryIndexName+" WHERE id = ?", "run_test")
+	if !strings.Contains(plan, "USING COVERING INDEX "+jobsV2RunByIDSummaryIndexName) {
+		t.Fatalf("by-id summary query plan = %q, want covering summary index", plan)
+	}
+}
+
 func jobsV2ExplainPlan(t *testing.T, db *sql.DB, query string, args ...any) string {
 	t.Helper()
 	rows, err := db.Query(query, args...)
@@ -364,6 +377,23 @@ func TestJobsV2RunsSummaryOmitsOutputPayload(t *testing.T) {
 	}
 	if summary.Error != "sample error" || summary.ExitReason != exitReasonException || !summary.Truncated || summary.TurnCount != 3 || summary.InputTokens != 100 || summary.OutputTokens != 20 {
 		t.Fatalf("summary lost metadata: %+v", summary)
+	}
+
+	summaryDetailReq := httptest.NewRequest(http.MethodGet, "/v2/runs/run_summary_payload?summary=true", nil)
+	summaryDetailRR := httptest.NewRecorder()
+	srv.handleRunV2ByID(summaryDetailRR, summaryDetailReq)
+	if summaryDetailRR.Code != http.StatusOK {
+		t.Fatalf("summary detail status = %d, want 200 body=%s", summaryDetailRR.Code, summaryDetailRR.Body.String())
+	}
+	var summaryDetail jobsV2Run
+	if err := json.Unmarshal(summaryDetailRR.Body.Bytes(), &summaryDetail); err != nil {
+		t.Fatalf("decode summary detail: %v", err)
+	}
+	if summaryDetail.Stdout != "" || summaryDetail.Stderr != "" || summaryDetail.Thinking != "" || summaryDetail.Response != "" {
+		t.Fatalf("summary detail included output payloads: stdout=%d stderr=%d thinking=%d response=%d", len(summaryDetail.Stdout), len(summaryDetail.Stderr), len(summaryDetail.Thinking), len(summaryDetail.Response))
+	}
+	if summaryDetail.Status != jobsV2RunFailed || summaryDetail.Error != "sample error" || summaryDetail.ExitReason != exitReasonException {
+		t.Fatalf("summary detail lost status metadata: %+v", summaryDetail)
 	}
 
 	detailReq := httptest.NewRequest(http.MethodGet, "/v2/runs/run_summary_payload", nil)

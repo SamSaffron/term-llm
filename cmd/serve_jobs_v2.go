@@ -2055,6 +2055,11 @@ func (m *jobsV2Manager) GetRun(id string) (jobsV2Run, error) {
 	return scanRunV2(row)
 }
 
+func (m *jobsV2Manager) GetRunSummary(id string) (jobsV2Run, error) {
+	row := m.db.QueryRow(`SELECT `+jobsV2RunSummaryColumns+` FROM job_runs_v2 INDEXED BY `+jobsV2RunByIDSummaryIndexName+` WHERE id = ?`, id)
+	return scanRunSummaryV2(row)
+}
+
 func (m *jobsV2Manager) ListRuns(jobID string, limit, offset int) ([]jobsV2Run, int, error) {
 	return m.listRuns(jobID, limit, offset, true)
 }
@@ -2070,6 +2075,10 @@ const jobsV2RunSummaryIndexSQL = "CREATE INDEX IF NOT EXISTS " + jobsV2RunSummar
 const jobsV2RunGlobalSummaryIndexName = "idx_job_runs_v2_summary_created"
 
 const jobsV2RunGlobalSummaryIndexSQL = "CREATE INDEX IF NOT EXISTS " + jobsV2RunGlobalSummaryIndexName + " ON job_runs_v2(created_at DESC, id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, exit_reason, truncated, turn_count, input_tokens, output_tokens, updated_at)"
+
+const jobsV2RunByIDSummaryIndexName = "idx_job_runs_v2_summary_by_id"
+
+const jobsV2RunByIDSummaryIndexSQL = "CREATE UNIQUE INDEX IF NOT EXISTS " + jobsV2RunByIDSummaryIndexName + " ON job_runs_v2(id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at)"
 
 const jobsV2RunFullColumns = "id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at"
 
@@ -2894,7 +2903,13 @@ func (s *serveServer) handleRunV2ByID(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
-	run, err := s.jobsV2.GetRun(runID)
+	var run jobsV2Run
+	var err error
+	if queryBool(r, "summary") {
+		run, err = s.jobsV2.GetRunSummary(runID)
+	} else {
+		run, err = s.jobsV2.GetRun(runID)
+	}
 	if err != nil {
 		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "run not found")
 		return

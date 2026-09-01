@@ -9,7 +9,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/sqliteutil"
 )
 
-const jobsV2SchemaVersion = 1
+const jobsV2SchemaVersion = 2
 
 const jobsV2MarkerSchema = `CREATE TABLE jobs_v2_schema_version (
 	id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -74,6 +74,7 @@ var jobsV2BootstrapStatements = []string{
 	`CREATE INDEX idx_job_run_events_v2_run_id_id ON job_run_events_v2(run_id, id)`,
 	jobsV2RunSummaryIndexSQL,
 	jobsV2RunGlobalSummaryIndexSQL,
+	jobsV2RunByIDSummaryIndexSQL,
 	jobsV2MarkerSchema,
 }
 
@@ -89,6 +90,18 @@ var jobsV2Migrations = []jobsV2Migration{
 		description: "adopt legacy jobs schema and reconcile run metadata and indexes",
 		up:          reconcileLegacyJobsV2Schema,
 	},
+	{
+		version:     2,
+		description: "cover run summaries looked up by id",
+		up:          createJobsV2RunByIDSummaryIndex,
+	},
+}
+
+func createJobsV2RunByIDSummaryIndex(tx sqliteutil.Executor) error {
+	if _, err := tx.Exec(jobsV2RunByIDSummaryIndexSQL); err != nil {
+		return fmt.Errorf("create by-id run summary covering index: %w", err)
+	}
+	return nil
 }
 
 var jobsV2LegacyColumns = []struct {
