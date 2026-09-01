@@ -101,13 +101,18 @@ func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (l
 		timeout = 3600
 	}
 
-	// Working directory: same as the session BaseDir, falling back to process cwd
-	// only for legacy callers that have not forbidden ambient execution.
+	// Working directory: use the bound session workspace when present. Unbound
+	// remote sessions must not inherit the daemon's ambient CWD, but custom
+	// scripts still have a deterministic trusted home: the agent directory.
+	// Local/legacy callers may continue falling back to the process CWD.
 	workDir := ""
 	if t.toolConfig != nil {
 		workDir = t.toolConfig.WorkingDir()
 		if workDir == "" && t.toolConfig.RequiresExplicitWorkingDir() {
-			return scriptToolErrorOutput(NewToolError(ErrInvalidParams, "an explicit session working directory is required to run custom tools")), nil
+			workDir, err = filepath.Abs(t.agentDir)
+			if err != nil {
+				return scriptToolErrorOutput(NewToolErrorf(ErrExecutionFailed, "resolve agent working directory: %v", err)), nil
+			}
 		}
 	}
 	if workDir == "" {
