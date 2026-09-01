@@ -1044,6 +1044,7 @@ export class RunEngine {
         next.run.responseId,
         next.askUser.callId,
         next.askUser,
+        Number(event.sequence_number) || 0,
       );
     }
     if (next.approval && next.approval !== current.approval && next.approval.id) {
@@ -1053,6 +1054,7 @@ export class RunEngine {
         next.run.responseId,
         next.approval.id,
         next.approval,
+        Number(event.sequence_number) || 0,
       );
     }
     if (event.type === 'response.interjection') {

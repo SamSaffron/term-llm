@@ -394,7 +394,11 @@ func (s *serveServer) handleCapabilities(w http.ResponseWriter, r *http.Request)
 	}
 	if attention, ok := session.AsAttentionStore(s.store); ok {
 		if storeID, err := attention.StoreInstanceID(r.Context()); err == nil {
-			payload["attention"] = map[string]any{"enabled": true, "protocol_version": 1, "store_instance_id": storeID}
+			protocolVersion := 1
+			if _, supported := session.AsResponseRunInteractionStore(s.store); supported {
+				protocolVersion = 2
+			}
+			payload["attention"] = map[string]any{"enabled": true, "protocol_version": protocolVersion, "store_instance_id": storeID}
 		} else {
 			payload["attention"] = map[string]bool{"enabled": false}
 		}

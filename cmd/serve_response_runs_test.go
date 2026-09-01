@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1989,6 +1990,38 @@ func TestResponseRunPreservesImageOnlyBoundaryWhenAttachmentCannotBeServed(t *te
 	}
 	if attachments, ok := messages[0]["attachments"].([]map[string]any); ok && len(attachments) > 0 {
 		t.Fatalf("recovery attachments = %#v, want rejected attachment omitted", attachments)
+	}
+}
+
+func TestResponseRunInteractionStateSummarizesEveryBlockingApprovalKind(t *testing.T) {
+	run := newResponseRun("resp_input", "sess_input", "", "test", time.Now().Unix(), nil)
+	run.ownerInstanceID = "owner"
+	run.fencingToken = 7
+	for _, event := range []struct {
+		name    string
+		payload map[string]any
+	}{
+		{name: "response.ask_user.prompt", payload: map[string]any{"call_id": "ask", "created_at": int64(1000)}},
+		{name: "response.approval.prompt", payload: map[string]any{"approval_id": "shell", "is_shell": true, "created_at": int64(2000)}},
+		{name: "response.approval.prompt", payload: map[string]any{"approval_id": "workspace", "is_workspace": true, "created_at": int64(3000)}},
+		{name: "response.approval.prompt", payload: map[string]any{"approval_id": "write", "is_write": true, "created_at": int64(4000)}},
+	} {
+		if err := run.appendEvent(event.name, event.payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := run.interactionState()
+	if state.Count != 4 || state.ResponseID != run.id || state.OwnerInstanceID != "owner" || state.FencingToken != 7 {
+		t.Fatalf("interaction state = %+v", state)
+	}
+	wantKinds := []string{"approval.file_write", "approval.shell", "approval.workspace", "ask_user"}
+	if !slices.Equal(state.Kinds, wantKinds) || state.RequiredSince.UnixMilli() != 1000 {
+		t.Fatalf("interaction kinds/since = %v / %v", state.Kinds, state.RequiredSince)
+	}
+	run.recordResolvedInteraction("approval", "shell", "accepted")
+	state = run.interactionState()
+	if state.Count != 3 || slices.Contains(state.Kinds, "approval.shell") {
+		t.Fatalf("resolved approval remained pending: %+v", state)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -20,6 +21,7 @@ const (
 )
 
 var _ ServeResponseLifecycleStore = (*SQLiteStore)(nil)
+var _ ResponseRunInteractionStore = (*SQLiteStore)(nil)
 var _ AttentionStore = (*SQLiteStore)(nil)
 
 func unixMilli(t time.Time) int64 {
@@ -202,6 +204,98 @@ func (s *SQLiteStore) CheckpointResponseRun(ctx context.Context, checkpoint Resp
 	return nil
 }
 
+func normalizeInteractionKinds(values []string, count int) ([]string, string) {
+	if count <= 0 {
+		return nil, ""
+	}
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	encoded, _ := json.Marshal(result)
+	return result, string(encoded)
+}
+
+func (s *SQLiteStore) SetResponseRunInteractionState(ctx context.Context, value ResponseRunInteractionState) error {
+	if strings.TrimSpace(value.ResponseID) == "" || strings.TrimSpace(value.OwnerInstanceID) == "" || value.FencingToken <= 0 || value.Revision < 0 {
+		return errors.New("session: invalid response interaction state")
+	}
+	if value.Count < 0 {
+		value.Count = 0
+	}
+	_, kindsJSON := normalizeInteractionKinds(value.Kinds, value.Count)
+	var since any
+	if value.Count > 0 {
+		requiredSince := value.RequiredSince.UTC()
+		if requiredSince.IsZero() {
+			requiredSince = time.Now().UTC()
+		}
+		since = unixMilli(requiredSince)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var sessionID, currentKinds string
+	var currentCount int
+	var currentRevision, finalRev int64
+	var currentSince sql.NullInt64
+	err = tx.QueryRowContext(ctx, `SELECT session_id, interaction_required_count, interaction_required_kinds,
+		interaction_required_since, interaction_state_rev, final_rev FROM serve_response_lifecycle
+		WHERE response_id = ? AND state = 'running' AND owner_instance_id = ? AND fencing_token = ?
+		  AND lease_expires_at + ? > CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)`,
+		value.ResponseID, value.OwnerInstanceID, value.FencingToken, responseRunOrphanGrace.Milliseconds()).
+		Scan(&sessionID, &currentCount, &currentKinds, &currentSince, &currentRevision, &finalRev)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrResponseRunLeaseLost
+	}
+	if err != nil {
+		return fmt.Errorf("read response interaction state: %w", err)
+	}
+	if value.Revision < currentRevision {
+		return tx.Commit()
+	}
+	incomingSince := int64(0)
+	if millis, ok := since.(int64); ok {
+		incomingSince = millis
+	}
+	currentSinceMillis := int64(0)
+	if currentSince.Valid {
+		currentSinceMillis = currentSince.Int64
+	}
+	if currentCount == value.Count && currentKinds == kindsJSON && currentSinceMillis == incomingSince && currentRevision == value.Revision {
+		return tx.Commit()
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE serve_response_lifecycle
+		SET interaction_required_count = ?, interaction_required_kinds = ?, interaction_required_since = ?,
+		    interaction_state_rev = ?, updated_at = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
+		WHERE response_id = ? AND state = 'running' AND owner_instance_id = ? AND fencing_token = ?
+		  AND interaction_state_rev <= ?`, value.Count, kindsJSON, since, value.Revision,
+		value.ResponseID, value.OwnerInstanceID, value.FencingToken, value.Revision)
+	if err != nil {
+		return fmt.Errorf("update response interaction state: %w", err)
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		return ErrResponseRunLeaseLost
+	}
+	if err := insertLifecycleChange(ctx, tx, sessionID, finalRev); err != nil {
+		return fmt.Errorf("publish response interaction state: %w", err)
+	}
+	return tx.Commit()
+}
+
 type responseRunFenceExecutor interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
@@ -321,7 +415,8 @@ func (s *SQLiteStore) FinalizeResponseRun(ctx context.Context, terminal Response
 	finalRev := max(storedFinalRev, terminal.FinalRev)
 	outputCount := max(storedCount, terminal.DurableOutputCount)
 	result, err := tx.ExecContext(ctx, `UPDATE serve_response_lifecycle SET state = ?, final_rev = ?,
-		durable_output_count = ?, ended_at = ?, updated_at = ?
+		durable_output_count = ?, ended_at = ?, updated_at = ?, interaction_required_count = 0,
+		interaction_required_kinds = '', interaction_required_since = NULL
 		WHERE response_id = ? AND state = 'running' AND owner_instance_id = ? AND fencing_token = ?`,
 		terminal.Outcome, finalRev, outputCount, unixMilli(now), unixMilli(now), terminal.ResponseID,
 		terminal.OwnerInstanceID, terminal.FencingToken)
@@ -419,7 +514,8 @@ func (s *SQLiteStore) RecoverExpiredResponseRuns(ctx context.Context, limit int)
 		}
 		now := time.Now().UTC()
 		updated, err := tx.ExecContext(ctx, `UPDATE serve_response_lifecycle SET state = 'orphaned', ended_at = ?,
-			updated_at = ? WHERE response_id = ? AND state = 'running' AND lease_expires_at < ?`, unixMilli(now), unixMilli(now), id, cutoff)
+			updated_at = ?, interaction_required_count = 0, interaction_required_kinds = '', interaction_required_since = NULL
+			WHERE response_id = ? AND state = 'running' AND lease_expires_at < ?`, unixMilli(now), unixMilli(now), id, cutoff)
 		if err != nil {
 			tx.Rollback()
 			return nil, err
@@ -604,9 +700,10 @@ func (s *SQLiteStore) MarkAttentionSeen(ctx context.Context, sessionID, storeIns
 }
 
 type attentionCursor struct {
-	Seq        int64  `json:"s,omitempty"`
-	StartedAt  int64  `json:"t,omitempty"`
-	ResponseID string `json:"r,omitempty"`
+	Seq           int64  `json:"s,omitempty"`
+	StartedAt     int64  `json:"t,omitempty"`
+	RequiredSince int64  `json:"u,omitempty"`
+	ResponseID    string `json:"r,omitempty"`
 }
 
 func encodeAttentionCursor(cursor attentionCursor) string {
@@ -640,7 +737,7 @@ func attentionSnapshotVersion(ctx context.Context, q interface {
 }
 
 func (s *SQLiteStore) ListAttention(ctx context.Context, opts AttentionListOptions) (AttentionPage, error) {
-	if opts.Kind != AttentionKindUnseen && opts.Kind != AttentionKindRunning {
+	if opts.Kind != AttentionKindUnseen && opts.Kind != AttentionKindRunning && opts.Kind != AttentionKindInputRequired {
 		return AttentionPage{}, ErrAttentionConflict
 	}
 	if opts.Limit <= 0 || opts.Limit > maxAttentionPageSize {
@@ -667,20 +764,21 @@ func (s *SQLiteStore) ListAttention(ctx context.Context, opts AttentionListOptio
 		return AttentionPage{}, ErrAttentionConflict
 	}
 	var rows *sql.Rows
-	if opts.Kind == AttentionKindUnseen {
+	switch opts.Kind {
+	case AttentionKindUnseen:
 		rows, err = tx.QueryContext(ctx, `SELECT a.session_id, a.response_id, COALESCE(l.state, a.outcome), a.latest_attention_seq,
 			a.started_rev, a.final_rev, COALESCE(s.generated_short_title, s.name, ''),
 			COALESCE(s.generated_long_title, ''), COALESCE(s.project_id, ''), a.outcome,
-			COALESCE(l.started_at, a.terminal_at, 0), a.terminal_at, l.lease_expires_at
+			COALESCE(l.started_at, a.terminal_at, 0), a.terminal_at, l.lease_expires_at, 0, '', NULL, 0
 			FROM session_attention a JOIN sessions s ON s.id = a.session_id
 			LEFT JOIN serve_response_lifecycle l ON l.response_id = a.response_id
 			WHERE a.latest_attention_seq > a.seen_through_seq AND s.parent_id IS NULL
 			  AND (? = 0 OR a.latest_attention_seq < ?)
 			ORDER BY a.latest_attention_seq DESC LIMIT ?`, cursor.Seq, cursor.Seq, opts.Limit+1)
-	} else {
+	case AttentionKindRunning:
 		rows, err = tx.QueryContext(ctx, `SELECT l.session_id, l.response_id, l.state, 0, l.started_rev, l.final_rev,
 			COALESCE(s.generated_short_title, s.name, ''), COALESCE(s.generated_long_title, ''),
-			COALESCE(s.project_id, ''), '', l.started_at, NULL, l.lease_expires_at
+			COALESCE(s.project_id, ''), '', l.started_at, NULL, l.lease_expires_at, 0, '', NULL, 0
 			FROM serve_response_lifecycle l JOIN sessions s ON s.id = l.session_id
 			WHERE l.state = 'running' AND s.parent_id IS NULL
 			  AND NOT EXISTS (SELECT 1 FROM serve_response_lifecycle newer
@@ -688,6 +786,20 @@ func (s *SQLiteStore) ListAttention(ctx context.Context, opts AttentionListOptio
 			        AND (newer.started_at > l.started_at OR (newer.started_at = l.started_at AND newer.response_id > l.response_id)))
 			  AND (? = 0 OR l.started_at > ? OR (l.started_at = ? AND l.response_id > ?))
 			ORDER BY l.started_at, l.response_id LIMIT ?`, cursor.StartedAt, cursor.StartedAt, cursor.StartedAt, cursor.ResponseID, opts.Limit+1)
+	case AttentionKindInputRequired:
+		rows, err = tx.QueryContext(ctx, `SELECT l.session_id, l.response_id, l.state, 0, l.started_rev, l.final_rev,
+			COALESCE(s.generated_short_title, s.name, ''), COALESCE(s.generated_long_title, ''),
+			COALESCE(s.project_id, ''), '', l.started_at, NULL, l.lease_expires_at,
+			l.interaction_required_count, l.interaction_required_kinds, l.interaction_required_since, l.interaction_state_rev
+			FROM serve_response_lifecycle l JOIN sessions s ON s.id = l.session_id
+			WHERE l.state = 'running' AND l.interaction_required_count > 0 AND s.parent_id IS NULL
+			  AND NOT EXISTS (SELECT 1 FROM serve_response_lifecycle newer
+			      WHERE newer.session_id = l.session_id AND newer.state = 'running'
+			        AND (newer.started_at > l.started_at OR (newer.started_at = l.started_at AND newer.response_id > l.response_id)))
+			  AND (? = 0 OR COALESCE(l.interaction_required_since, l.started_at) > ?
+			       OR (COALESCE(l.interaction_required_since, l.started_at) = ? AND l.response_id > ?))
+			ORDER BY COALESCE(l.interaction_required_since, l.started_at), l.response_id LIMIT ?`,
+			cursor.RequiredSince, cursor.RequiredSince, cursor.RequiredSince, cursor.ResponseID, opts.Limit+1)
 	}
 	if err != nil {
 		return AttentionPage{}, err
@@ -697,16 +809,23 @@ func (s *SQLiteStore) ListAttention(ctx context.Context, opts AttentionListOptio
 	for rows.Next() {
 		var item AttentionItem
 		var startedAt int64
-		var terminalAt, leaseExpires sql.NullInt64
+		var terminalAt, leaseExpires, requiredSince sql.NullInt64
+		var kindsJSON string
 		if err := rows.Scan(&item.SessionID, &item.ResponseID, &item.LifecycleState, &item.AttentionSeq,
 			&item.StartedRev, &item.FinalRev, &item.ShortTitle, &item.LongTitle, &item.ProjectID,
-			&item.Outcome, &startedAt, &terminalAt, &leaseExpires); err != nil {
+			&item.Outcome, &startedAt, &terminalAt, &leaseExpires, &item.PendingInteractionCount,
+			&kindsJSON, &requiredSince, &item.InteractionStateRev); err != nil {
 			return AttentionPage{}, err
 		}
 		item.Kind = opts.Kind
 		item.StartedAt = time.UnixMilli(startedAt).UTC()
 		item.TerminalAt = timeFromMillis(terminalAt)
 		item.LeaseExpiresAt = timeFromMillis(leaseExpires)
+		item.InteractionRequiredSince = timeFromMillis(requiredSince)
+		item.InteractionRequired = item.PendingInteractionCount > 0
+		if kindsJSON != "" {
+			_ = json.Unmarshal([]byte(kindsJSON), &item.PendingInteractionKinds)
+		}
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -721,6 +840,12 @@ func (s *SQLiteStore) ListAttention(ctx context.Context, opts AttentionListOptio
 		last := items[len(items)-1]
 		if opts.Kind == AttentionKindUnseen {
 			next = encodeAttentionCursor(attentionCursor{Seq: last.AttentionSeq})
+		} else if opts.Kind == AttentionKindInputRequired {
+			requiredSince := last.InteractionRequiredSince
+			if requiredSince.IsZero() {
+				requiredSince = last.StartedAt
+			}
+			next = encodeAttentionCursor(attentionCursor{RequiredSince: requiredSince.UnixMilli(), ResponseID: last.ResponseID})
 		} else {
 			next = encodeAttentionCursor(attentionCursor{StartedAt: last.StartedAt.UnixMilli(), ResponseID: last.ResponseID})
 		}
@@ -728,6 +853,10 @@ func (s *SQLiteStore) ListAttention(ctx context.Context, opts AttentionListOptio
 	if err := tx.Commit(); err != nil {
 		return AttentionPage{}, err
 	}
-	return AttentionPage{ProtocolVersion: 1, StoreInstanceID: storeID, SnapshotVersion: version,
+	protocolVersion := 1
+	if opts.Kind == AttentionKindInputRequired {
+		protocolVersion = 2
+	}
+	return AttentionPage{ProtocolVersion: protocolVersion, StoreInstanceID: storeID, SnapshotVersion: version,
 		Items: items, NextCursor: next, HasMore: hasMore}, nil
 }

@@ -1861,16 +1861,25 @@ export function SideQuestion() {
 
 export function Modals() {
   const store = useStore();
+  const activeSessionId = store.activeSessionId.value;
   const interaction = store.interactionOrder.value
     .map((key) => store.interactions.value[key])
-    .find((entry) => entry && ['waiting', 'submitting', 'failed'].includes(entry.state));
+    .find(
+      (entry) =>
+        entry?.sessionId === activeSessionId &&
+        ['waiting', 'submitting', 'failed'].includes(entry.state),
+    );
+  const activeApproval =
+    store.approval.value?.sessionId === activeSessionId ? store.approval.value : null;
+  const activeAskUser =
+    store.askUser.value?.sessionId === activeSessionId ? store.askUser.value : null;
   const modal = interaction
     ? interaction.kind === 'approval'
       ? 'approval'
       : 'ask-user'
-    : store.approval.value
+    : activeApproval
       ? 'approval'
-      : store.askUser.value
+      : activeAskUser
         ? 'ask-user'
         : store.modal.value;
   switch (modal) {
@@ -1884,7 +1893,9 @@ export function Modals() {
       return (
         <AskUser
           interactionPrompt={
-            interaction?.kind === 'ask-user' ? (interaction.prompt as AskUserPrompt) : undefined
+            interaction?.kind === 'ask-user'
+              ? (interaction.prompt as AskUserPrompt)
+              : activeAskUser || undefined
           }
         />
       );
@@ -1892,7 +1903,9 @@ export function Modals() {
       return (
         <Approval
           interactionPrompt={
-            interaction?.kind === 'approval' ? (interaction.prompt as ApprovalPrompt) : undefined
+            interaction?.kind === 'approval'
+              ? (interaction.prompt as ApprovalPrompt)
+              : activeApproval || undefined
           }
         />
       );

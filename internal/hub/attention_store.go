@@ -3,10 +3,12 @@ package hub
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -31,22 +33,26 @@ type AttentionSync struct {
 }
 
 type SessionActivity struct {
-	NodeID          string    `json:"node_id"`
-	StoreInstanceID string    `json:"store_instance_id"`
-	SessionID       string    `json:"session_id"`
-	Kind            string    `json:"kind"`
-	ResponseID      string    `json:"response_id,omitempty"`
-	LifecycleState  string    `json:"lifecycle_state,omitempty"`
-	AttentionSeq    int64     `json:"attention_seq,omitempty"`
-	FinalRev        int64     `json:"final_rev,omitempty"`
-	ShortTitle      string    `json:"short_title,omitempty"`
-	LongTitle       string    `json:"long_title,omitempty"`
-	ProjectID       string    `json:"project_id,omitempty"`
-	Outcome         string    `json:"outcome,omitempty"`
-	StartedAt       time.Time `json:"started_at,omitempty"`
-	TerminalAt      time.Time `json:"terminal_at,omitempty"`
-	LeaseExpiresAt  time.Time `json:"lease_expires_at,omitempty"`
-	ObservedAt      time.Time `json:"observed_at"`
+	NodeID                   string    `json:"node_id"`
+	StoreInstanceID          string    `json:"store_instance_id"`
+	SessionID                string    `json:"session_id"`
+	Kind                     string    `json:"kind"`
+	ResponseID               string    `json:"response_id,omitempty"`
+	LifecycleState           string    `json:"lifecycle_state,omitempty"`
+	AttentionSeq             int64     `json:"attention_seq,omitempty"`
+	FinalRev                 int64     `json:"final_rev,omitempty"`
+	ShortTitle               string    `json:"short_title,omitempty"`
+	LongTitle                string    `json:"long_title,omitempty"`
+	ProjectID                string    `json:"project_id,omitempty"`
+	Outcome                  string    `json:"outcome,omitempty"`
+	StartedAt                time.Time `json:"started_at,omitempty"`
+	TerminalAt               time.Time `json:"terminal_at,omitempty"`
+	LeaseExpiresAt           time.Time `json:"lease_expires_at,omitempty"`
+	InteractionStateRev      int64     `json:"interaction_state_rev,omitempty"`
+	PendingInteractionCount  int       `json:"pending_interaction_count,omitempty"`
+	PendingInteractionKinds  []string  `json:"pending_interaction_kinds,omitempty"`
+	InteractionRequiredSince time.Time `json:"interaction_required_since,omitempty"`
+	ObservedAt               time.Time `json:"observed_at"`
 }
 
 type AttentionProjectionStore struct{ db *sql.DB }
@@ -70,26 +76,53 @@ func OpenAttentionProjectionStore(path string) (*AttentionProjectionStore, error
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	schema := `
+	nodeSchema := `
 CREATE TABLE IF NOT EXISTS node_attention_sync (
  node_id TEXT PRIMARY KEY, store_instance_id TEXT NOT NULL DEFAULT '', etag TEXT NOT NULL DEFAULT '',
  capability_state TEXT NOT NULL DEFAULT 'unavailable', last_success_at INTEGER, last_error_at INTEGER,
  last_error TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL
-);
+);`
+	if _, err := db.Exec(nodeSchema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("initialize Hub attention sync database: %w", err)
+	}
+	// This table is a rebuildable node projection. Recreate older schemas rather
+	// than pretending CREATE TABLE IF NOT EXISTS updated their CHECK or columns.
+	var existingActivitySchema string
+	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='hub_session_activity'`).Scan(&existingActivitySchema); err == nil {
+		if !strings.Contains(existingActivitySchema, "'input_required'") || !strings.Contains(existingActivitySchema, "pending_interaction_count") {
+			if _, resetErr := db.Exec(`UPDATE node_attention_sync SET etag = ''`); resetErr != nil {
+				db.Close()
+				return nil, fmt.Errorf("invalidate rebuilt Hub attention projection: %w", resetErr)
+			}
+			if _, dropErr := db.Exec(`DROP TABLE hub_session_activity`); dropErr != nil {
+				db.Close()
+				return nil, fmt.Errorf("rebuild Hub attention projection: %w", dropErr)
+			}
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		db.Close()
+		return nil, fmt.Errorf("inspect Hub attention projection: %w", err)
+	}
+	activitySchema := `
 CREATE TABLE IF NOT EXISTS hub_session_activity (
  node_id TEXT NOT NULL, store_instance_id TEXT NOT NULL, session_id TEXT NOT NULL,
- kind TEXT NOT NULL CHECK(kind IN ('running','terminal_unseen')), response_id TEXT NOT NULL DEFAULT '',
+ kind TEXT NOT NULL CHECK(kind IN ('running','terminal_unseen','input_required')), response_id TEXT NOT NULL DEFAULT '',
  lifecycle_state TEXT NOT NULL DEFAULT '', attention_seq INTEGER NOT NULL DEFAULT 0,
  final_rev INTEGER NOT NULL DEFAULT 0, short_title TEXT NOT NULL DEFAULT '', long_title TEXT NOT NULL DEFAULT '',
  project_id TEXT NOT NULL DEFAULT '', outcome TEXT NOT NULL DEFAULT '', started_at INTEGER,
- terminal_at INTEGER, lease_expires_at INTEGER, observed_at INTEGER NOT NULL,
+ terminal_at INTEGER, lease_expires_at INTEGER, interaction_state_rev INTEGER NOT NULL DEFAULT 0,
+ pending_interaction_count INTEGER NOT NULL DEFAULT 0, pending_interaction_kinds TEXT NOT NULL DEFAULT '',
+ interaction_required_since INTEGER, observed_at INTEGER NOT NULL,
  PRIMARY KEY(node_id, store_instance_id, session_id, kind)
 );
 CREATE INDEX IF NOT EXISTS hub_session_activity_inbox ON hub_session_activity(kind, terminal_at DESC)
  WHERE kind='terminal_unseen';
 CREATE INDEX IF NOT EXISTS hub_session_activity_running ON hub_session_activity(kind, started_at)
- WHERE kind='running';`
-	if _, err := db.Exec(schema); err != nil {
+ WHERE kind='running';
+CREATE INDEX IF NOT EXISTS hub_session_activity_input ON hub_session_activity(kind, interaction_required_since)
+ WHERE kind='input_required';`
+	if _, err := db.Exec(activitySchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("initialize Hub attention database: %w", err)
 	}
@@ -128,16 +161,23 @@ func (s *AttentionProjectionStore) ReplaceNode(ctx context.Context, nodeID, stor
 		return err
 	}
 	for _, activity := range activities {
-		if activity.SessionID == "" || (activity.Kind != "running" && activity.Kind != "terminal_unseen") {
+		if activity.SessionID == "" || (activity.Kind != "running" && activity.Kind != "terminal_unseen" && activity.Kind != "input_required") {
 			return errors.New("hub: invalid node attention activity")
+		}
+		kindsJSON := ""
+		if len(activity.PendingInteractionKinds) > 0 {
+			encoded, _ := json.Marshal(activity.PendingInteractionKinds)
+			kindsJSON = string(encoded)
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO hub_session_activity(node_id, store_instance_id, session_id, kind,
  response_id, lifecycle_state, attention_seq, final_rev, short_title, long_title, project_id, outcome,
- started_at, terminal_at, lease_expires_at, observed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+ started_at, terminal_at, lease_expires_at, interaction_state_rev, pending_interaction_count,
+ pending_interaction_kinds, interaction_required_since, observed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			nodeID, storeID, activity.SessionID, activity.Kind, activity.ResponseID, activity.LifecycleState,
 			activity.AttentionSeq, activity.FinalRev, activity.ShortTitle, activity.LongTitle, activity.ProjectID,
 			activity.Outcome, nullableMillis(activity.StartedAt), nullableMillis(activity.TerminalAt),
-			nullableMillis(activity.LeaseExpiresAt), now.UnixMilli()); err != nil {
+			nullableMillis(activity.LeaseExpiresAt), activity.InteractionStateRev, activity.PendingInteractionCount,
+			kindsJSON, nullableMillis(activity.InteractionRequiredSince), now.UnixMilli()); err != nil {
 			return err
 		}
 	}
@@ -207,19 +247,23 @@ func (s *AttentionProjectionStore) GetSync(ctx context.Context, nodeID string) (
 
 func (s *AttentionProjectionStore) List(ctx context.Context) ([]SessionActivity, []AttentionSync, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT node_id,store_instance_id,session_id,kind,response_id,lifecycle_state,
- attention_seq,final_rev,short_title,long_title,project_id,outcome,started_at,terminal_at,lease_expires_at,observed_at
- FROM hub_session_activity ORDER BY CASE kind WHEN 'terminal_unseen' THEN 0 ELSE 1 END, terminal_at DESC, started_at DESC`)
+ attention_seq,final_rev,short_title,long_title,project_id,outcome,started_at,terminal_at,lease_expires_at,
+ interaction_state_rev,pending_interaction_count,pending_interaction_kinds,interaction_required_since,observed_at
+ FROM hub_session_activity ORDER BY CASE kind WHEN 'input_required' THEN 0 WHEN 'terminal_unseen' THEN 1 ELSE 2 END,
+ interaction_required_since, terminal_at DESC, started_at DESC`)
 	if err != nil {
 		return nil, nil, err
 	}
 	var activities []SessionActivity
 	for rows.Next() {
 		var item SessionActivity
-		var started, terminal, lease sql.NullInt64
+		var started, terminal, lease, requiredSince sql.NullInt64
 		var observed int64
+		var kindsJSON string
 		if err := rows.Scan(&item.NodeID, &item.StoreInstanceID, &item.SessionID, &item.Kind, &item.ResponseID,
 			&item.LifecycleState, &item.AttentionSeq, &item.FinalRev, &item.ShortTitle, &item.LongTitle,
-			&item.ProjectID, &item.Outcome, &started, &terminal, &lease, &observed); err != nil {
+			&item.ProjectID, &item.Outcome, &started, &terminal, &lease, &item.InteractionStateRev,
+			&item.PendingInteractionCount, &kindsJSON, &requiredSince, &observed); err != nil {
 			rows.Close()
 			return nil, nil, err
 		}
@@ -231,6 +275,12 @@ func (s *AttentionProjectionStore) List(ctx context.Context) ([]SessionActivity,
 		}
 		if lease.Valid {
 			item.LeaseExpiresAt = time.UnixMilli(lease.Int64).UTC()
+		}
+		if requiredSince.Valid {
+			item.InteractionRequiredSince = time.UnixMilli(requiredSince.Int64).UTC()
+		}
+		if kindsJSON != "" {
+			_ = json.Unmarshal([]byte(kindsJSON), &item.PendingInteractionKinds)
 		}
 		item.ObservedAt = time.UnixMilli(observed).UTC()
 		activities = append(activities, item)

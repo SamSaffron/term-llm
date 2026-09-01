@@ -238,8 +238,9 @@ type AttentionState struct {
 type AttentionKind string
 
 const (
-	AttentionKindUnseen  AttentionKind = "unseen"
-	AttentionKindRunning AttentionKind = "running"
+	AttentionKindUnseen        AttentionKind = "unseen"
+	AttentionKindRunning       AttentionKind = "running"
+	AttentionKindInputRequired AttentionKind = "input_required"
 )
 
 type AttentionListOptions struct {
@@ -250,20 +251,25 @@ type AttentionListOptions struct {
 }
 
 type AttentionItem struct {
-	SessionID      string           `json:"session_id"`
-	ResponseID     string           `json:"response_id"`
-	Kind           AttentionKind    `json:"kind"`
-	LifecycleState ResponseRunState `json:"lifecycle_state"`
-	AttentionSeq   int64            `json:"attention_seq,omitempty"`
-	StartedRev     int64            `json:"started_rev,omitempty"`
-	FinalRev       int64            `json:"final_rev,omitempty"`
-	ShortTitle     string           `json:"short_title,omitempty"`
-	LongTitle      string           `json:"long_title,omitempty"`
-	ProjectID      string           `json:"project_id,omitempty"`
-	Outcome        ResponseRunState `json:"outcome,omitempty"`
-	StartedAt      time.Time        `json:"started_at,omitempty"`
-	TerminalAt     time.Time        `json:"terminal_at,omitempty"`
-	LeaseExpiresAt time.Time        `json:"lease_expires_at,omitempty"`
+	SessionID                string           `json:"session_id"`
+	ResponseID               string           `json:"response_id"`
+	Kind                     AttentionKind    `json:"kind"`
+	LifecycleState           ResponseRunState `json:"lifecycle_state"`
+	AttentionSeq             int64            `json:"attention_seq,omitempty"`
+	StartedRev               int64            `json:"started_rev,omitempty"`
+	FinalRev                 int64            `json:"final_rev,omitempty"`
+	ShortTitle               string           `json:"short_title,omitempty"`
+	LongTitle                string           `json:"long_title,omitempty"`
+	ProjectID                string           `json:"project_id,omitempty"`
+	Outcome                  ResponseRunState `json:"outcome,omitempty"`
+	StartedAt                time.Time        `json:"started_at,omitempty"`
+	TerminalAt               time.Time        `json:"terminal_at,omitempty"`
+	LeaseExpiresAt           time.Time        `json:"lease_expires_at,omitempty"`
+	InteractionRequired      bool             `json:"interaction_required,omitempty"`
+	InteractionStateRev      int64            `json:"interaction_state_rev,omitempty"`
+	PendingInteractionCount  int              `json:"pending_interaction_count,omitempty"`
+	PendingInteractionKinds  []string         `json:"pending_interaction_kinds,omitempty"`
+	InteractionRequiredSince time.Time        `json:"interaction_required_since,omitempty"`
 }
 
 type AttentionPage struct {
@@ -283,6 +289,24 @@ type ServeResponseLifecycleStore interface {
 	CheckpointResponseRun(context.Context, ResponseRunCheckpoint) error
 	FinalizeResponseRun(context.Context, ResponseRunTerminal) (AttentionState, error)
 	RecoverExpiredResponseRuns(context.Context, int) ([]AttentionState, error)
+}
+
+// ResponseRunInteractionState is the level-triggered, payload-free projection of
+// actionable interactions currently blocking one response run.
+type ResponseRunInteractionState struct {
+	ResponseID      string
+	OwnerInstanceID string
+	FencingToken    int64
+	Revision        int64
+	Count           int
+	Kinds           []string
+	RequiredSince   time.Time
+}
+
+// ResponseRunInteractionStore is optional so older/custom lifecycle stores keep
+// their existing running and terminal-attention capabilities.
+type ResponseRunInteractionStore interface {
+	SetResponseRunInteractionState(context.Context, ResponseRunInteractionState) error
 }
 
 // AttentionStore owns durable terminal markers and exact-sequence acknowledgements.
@@ -313,6 +337,24 @@ func AsServeResponseLifecycleStore(store Store) (ServeResponseLifecycleStore, bo
 		return nil, false
 	}
 	result, ok := store.(ServeResponseLifecycleStore)
+	return result, ok
+}
+
+func AsResponseRunInteractionStore(store Store) (ResponseRunInteractionStore, bool) {
+	if store == nil {
+		return nil, false
+	}
+	if logging, ok := store.(*LoggingStore); ok {
+		underlying, supported := AsResponseRunInteractionStore(logging.Store)
+		if !supported {
+			return nil, false
+		}
+		return &loggingResponseRunInteractionStore{logger: logging, store: underlying}, true
+	}
+	if sqlite, ok := store.(*SQLiteStore); ok && sqlite.cfg.ReadOnly {
+		return nil, false
+	}
+	result, ok := store.(ResponseRunInteractionStore)
 	return result, ok
 }
 
@@ -373,6 +415,19 @@ func (s *loggingAttentionBatchStore) GetAttentionBatch(ctx context.Context, ids 
 		s.logger.logOnce("GetAttentionBatch", err)
 	}
 	return result, err
+}
+
+type loggingResponseRunInteractionStore struct {
+	logger *LoggingStore
+	store  ResponseRunInteractionStore
+}
+
+func (s *loggingResponseRunInteractionStore) SetResponseRunInteractionState(ctx context.Context, value ResponseRunInteractionState) error {
+	err := s.store.SetResponseRunInteractionState(ctx, value)
+	if err != nil && !errors.Is(err, ErrResponseRunLeaseLost) {
+		s.logger.logOnce("SetResponseRunInteractionState", err)
+	}
+	return err
 }
 
 type loggingServeResponseLifecycleStore struct {

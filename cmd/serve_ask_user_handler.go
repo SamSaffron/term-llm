@@ -9,9 +9,10 @@ import (
 )
 
 type sessionAskUserRequest struct {
-	CallID    string                `json:"call_id"`
-	Answers   []tools.AskUserAnswer `json:"answers,omitempty"`
-	Cancelled bool                  `json:"cancelled,omitempty"`
+	CallID     string                `json:"call_id"`
+	ResponseID string                `json:"response_id,omitempty"`
+	Answers    []tools.AskUserAnswer `json:"answers,omitempty"`
+	Cancelled  bool                  `json:"cancelled,omitempty"`
 }
 
 func (s *serveServer) handleSessionAskUser(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -28,11 +29,32 @@ func (s *serveServer) handleSessionAskUser(w http.ResponseWriter, r *http.Reques
 	}
 
 	run := s.responseRuns.latestRun(sessionID)
-	if resolved, ok := s.responseRuns.resolvedInteractionForSession(sessionID, "ask_user", callID); ok {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status": "already_resolved", "outcome": resolved.Outcome, "resolved_at": resolved.ResolvedAt,
-		})
-		return
+	responseScoped := strings.TrimSpace(req.ResponseID) != ""
+	if responseScoped {
+		candidate, exists := s.responseRuns.get(strings.TrimSpace(req.ResponseID))
+		if !exists || candidate == nil || candidate.sessionID != sessionID {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", "response does not own this session interaction")
+			return
+		}
+		run = candidate
+		if resolved, ok := run.resolvedInteraction("ask_user", callID); ok {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status": "already_resolved", "outcome": resolved.Outcome, "resolved_at": resolved.ResolvedAt,
+			})
+			return
+		}
+		if !run.hasPendingInteraction("ask_user", callID) {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", "response does not own this ask_user request")
+			return
+		}
+	}
+	if !responseScoped {
+		if resolved, ok := s.responseRuns.resolvedInteractionForSession(sessionID, "ask_user", callID); ok {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status": "already_resolved", "outcome": resolved.Outcome, "resolved_at": resolved.ResolvedAt,
+			})
+			return
+		}
 	}
 	if run != nil {
 		run.interactionSubmitMu.Lock()
@@ -52,11 +74,20 @@ func (s *serveServer) handleSessionAskUser(w http.ResponseWriter, r *http.Reques
 	}
 	normalized, err := rt.submitAskUser(callID, req.Answers, req.Cancelled)
 	if err != nil {
-		if resolved, ok := s.responseRuns.resolvedInteractionForSession(sessionID, "ask_user", callID); ok {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"status": "already_resolved", "outcome": resolved.Outcome, "resolved_at": resolved.ResolvedAt,
-			})
-			return
+		if run != nil {
+			if resolved, ok := run.resolvedInteraction("ask_user", callID); ok {
+				writeJSON(w, http.StatusOK, map[string]any{
+					"status": "already_resolved", "outcome": resolved.Outcome, "resolved_at": resolved.ResolvedAt,
+				})
+				return
+			}
+		} else if !responseScoped {
+			if resolved, ok := s.responseRuns.resolvedInteractionForSession(sessionID, "ask_user", callID); ok {
+				writeJSON(w, http.StatusOK, map[string]any{
+					"status": "already_resolved", "outcome": resolved.Outcome, "resolved_at": resolved.ResolvedAt,
+				})
+				return
+			}
 		}
 		switch {
 		case errors.Is(err, errServeAskUserNotPending), errors.Is(err, errServeAskUserAnswered):

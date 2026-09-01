@@ -8,6 +8,7 @@ import (
 
 type sessionApprovalRequest struct {
 	ApprovalID string `json:"approval_id"`
+	ResponseID string `json:"response_id,omitempty"`
 	Choice     *int   `json:"choice"`
 	Cancelled  bool   `json:"cancelled,omitempty"`
 	ResumeAuto bool   `json:"resume_auto,omitempty"`
@@ -32,11 +33,32 @@ func (s *serveServer) handleSessionApproval(w http.ResponseWriter, r *http.Reque
 	}
 
 	run := s.responseRuns.latestRun(sessionID)
-	if resolved, ok := s.responseRuns.resolvedInteractionForSession(sessionID, "approval", approvalID); ok {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status": "already_resolved", "outcome": resolved.Outcome, "resolved_at": resolved.ResolvedAt,
-		})
-		return
+	responseScoped := strings.TrimSpace(req.ResponseID) != ""
+	if responseScoped {
+		candidate, exists := s.responseRuns.get(strings.TrimSpace(req.ResponseID))
+		if !exists || candidate == nil || candidate.sessionID != sessionID {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", "response does not own this session interaction")
+			return
+		}
+		run = candidate
+		if resolved, ok := run.resolvedInteraction("approval", approvalID); ok {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status": "already_resolved", "outcome": resolved.Outcome, "resolved_at": resolved.ResolvedAt,
+			})
+			return
+		}
+		if !run.hasPendingInteraction("approval", approvalID) {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", "response does not own this approval request")
+			return
+		}
+	}
+	if !responseScoped {
+		if resolved, ok := s.responseRuns.resolvedInteractionForSession(sessionID, "approval", approvalID); ok {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status": "already_resolved", "outcome": resolved.Outcome, "resolved_at": resolved.ResolvedAt,
+			})
+			return
+		}
 	}
 
 	if run != nil {
@@ -62,11 +84,20 @@ func (s *serveServer) handleSessionApproval(w http.ResponseWriter, r *http.Reque
 	outcome := rt.approvalOutcome(approvalID, choiceIndex, req.Cancelled)
 	err := rt.submitApproval(approvalID, choiceIndex, req.Cancelled, req.ResumeAuto)
 	if err != nil {
-		if resolved, ok := s.responseRuns.resolvedInteractionForSession(sessionID, "approval", approvalID); ok {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"status": "already_resolved", "outcome": resolved.Outcome, "resolved_at": resolved.ResolvedAt,
-			})
-			return
+		if run != nil {
+			if resolved, ok := run.resolvedInteraction("approval", approvalID); ok {
+				writeJSON(w, http.StatusOK, map[string]any{
+					"status": "already_resolved", "outcome": resolved.Outcome, "resolved_at": resolved.ResolvedAt,
+				})
+				return
+			}
+		} else if !responseScoped {
+			if resolved, ok := s.responseRuns.resolvedInteractionForSession(sessionID, "approval", approvalID); ok {
+				writeJSON(w, http.StatusOK, map[string]any{
+					"status": "already_resolved", "outcome": resolved.Outcome, "resolved_at": resolved.ResolvedAt,
+				})
+				return
+			}
 		}
 		switch {
 		case errors.Is(err, errServeApprovalNotPending), errors.Is(err, errServeApprovalAnswered):

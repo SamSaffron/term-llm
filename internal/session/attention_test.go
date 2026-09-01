@@ -246,7 +246,7 @@ func TestAttentionSnapshotIncludesCompleteSetsAndStablePagination(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(unseen.Items) != 1 || unseen.Items[0].SessionID != sessionID {
+	if unseen.ProtocolVersion != 1 || len(unseen.Items) != 1 || unseen.Items[0].SessionID != sessionID {
 		t.Fatalf("unseen page = %+v", unseen)
 	}
 	running, err := store.ListAttention(ctx, AttentionListOptions{Kind: AttentionKindRunning, Limit: 1, SnapshotVersion: unseen.SnapshotVersion})
@@ -255,6 +255,53 @@ func TestAttentionSnapshotIncludesCompleteSetsAndStablePagination(t *testing.T) 
 	}
 	if len(running.Items) != 1 || running.Items[0].SessionID != other || running.StoreInstanceID != unseen.StoreInstanceID {
 		t.Fatalf("running page = %+v", running)
+	}
+}
+
+func TestResponseInteractionRequiredIsLevelTriggeredAndFenced(t *testing.T) {
+	store, ctx, sessionID := newAttentionTestStore(t)
+	lease := admitAttentionRun(t, store, ctx, sessionID, "resp_input", "owner", 0)
+	since := time.Now().UTC().Add(-time.Minute)
+	if err := store.SetResponseRunInteractionState(ctx, ResponseRunInteractionState{
+		ResponseID: "resp_input", OwnerInstanceID: "owner", FencingToken: lease.FencingToken,
+		Revision: 4, Count: 2, Kinds: []string{"approval.shell", "ask_user"}, RequiredSince: since,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := store.ListAttention(ctx, AttentionListOptions{Kind: AttentionKindInputRequired, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.ProtocolVersion != 2 || len(page.Items) != 1 {
+		t.Fatalf("input-required page = %+v", page)
+	}
+	item := page.Items[0]
+	if item.SessionID != sessionID || !item.InteractionRequired || item.PendingInteractionCount != 2 ||
+		len(item.PendingInteractionKinds) != 2 || item.InteractionStateRev != 4 {
+		t.Fatalf("input-required item = %+v", item)
+	}
+	// An older asynchronous projection cannot clear a newer prompt set.
+	if err := store.SetResponseRunInteractionState(ctx, ResponseRunInteractionState{
+		ResponseID: "resp_input", OwnerInstanceID: "owner", FencingToken: lease.FencingToken, Revision: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	page, err = store.ListAttention(ctx, AttentionListOptions{Kind: AttentionKindInputRequired, Limit: 10})
+	if err != nil || len(page.Items) != 1 || page.Items[0].PendingInteractionCount != 2 {
+		t.Fatalf("stale projection changed level: %+v, %v", page, err)
+	}
+	if err := store.SetResponseRunInteractionState(ctx, ResponseRunInteractionState{
+		ResponseID: "resp_input", OwnerInstanceID: "other", FencingToken: lease.FencingToken, Revision: 5,
+	}); !errors.Is(err, ErrResponseRunLeaseLost) {
+		t.Fatalf("stale owner error = %v", err)
+	}
+	if _, err := store.FinalizeResponseRun(ctx, ResponseRunTerminal{ResponseID: "resp_input", OwnerInstanceID: "owner",
+		FencingToken: lease.FencingToken, Outcome: ResponseRunCompleted}); err != nil {
+		t.Fatal(err)
+	}
+	page, err = store.ListAttention(ctx, AttentionListOptions{Kind: AttentionKindInputRequired, Limit: 10})
+	if err != nil || len(page.Items) != 0 {
+		t.Fatalf("terminal run remained input-required: %+v, %v", page, err)
 	}
 }
 
@@ -280,5 +327,8 @@ func TestReadOnlyStoreDoesNotAdvertiseDurableAttention(t *testing.T) {
 	}
 	if _, ok := AsServeResponseLifecycleStore(readOnly); ok {
 		t.Fatal("read-only store advertised response lifecycle writes")
+	}
+	if _, ok := AsResponseRunInteractionStore(readOnly); ok {
+		t.Fatal("read-only store advertised response interaction writes")
 	}
 }

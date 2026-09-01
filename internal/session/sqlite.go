@@ -393,6 +393,10 @@ CREATE TABLE IF NOT EXISTS serve_response_lifecycle (
     final_rev INTEGER NOT NULL DEFAULT 0,
     durable_output_count INTEGER NOT NULL DEFAULT 0,
     attention_seq INTEGER NOT NULL DEFAULT 0,
+    interaction_required_count INTEGER NOT NULL DEFAULT 0,
+    interaction_required_kinds TEXT NOT NULL DEFAULT '',
+    interaction_required_since INTEGER,
+    interaction_state_rev INTEGER NOT NULL DEFAULT 0,
     started_at INTEGER NOT NULL,
     ended_at INTEGER,
     updated_at INTEGER NOT NULL
@@ -571,7 +575,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // Increment when adding new migrations.
 const (
 	projectSchemaVersion = 47
-	schemaVersion        = 54
+	schemaVersion        = 55
 )
 
 // migration represents a schema migration.
@@ -1607,6 +1611,23 @@ var migrations = []migration{
 		up: func(db schemaExecutor) error {
 			_, err := db.Exec(attentionSchemaV54)
 			return err
+		},
+	},
+	{
+		version:     55,
+		description: "add response interaction-required projection",
+		up: func(db schemaExecutor) error {
+			for _, statement := range []string{
+				"ALTER TABLE serve_response_lifecycle ADD COLUMN interaction_required_count INTEGER NOT NULL DEFAULT 0",
+				"ALTER TABLE serve_response_lifecycle ADD COLUMN interaction_required_kinds TEXT NOT NULL DEFAULT ''",
+				"ALTER TABLE serve_response_lifecycle ADD COLUMN interaction_required_since INTEGER",
+				"ALTER TABLE serve_response_lifecycle ADD COLUMN interaction_state_rev INTEGER NOT NULL DEFAULT 0",
+			} {
+				if _, err := db.Exec(statement); err != nil && !isDuplicateColumnError(err) {
+					return err
+				}
+			}
+			return nil
 		},
 	},
 }

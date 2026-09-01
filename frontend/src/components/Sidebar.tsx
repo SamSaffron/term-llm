@@ -227,24 +227,36 @@ function SessionRow({ session, showProject = false }: { session: Session; showPr
   const [hiding, setHiding] = useState(false);
   const active = store.activeSessionId.value === session.id;
   const projection = store.runs.value[session.id];
+  const localPendingInteractionCount = store.interactionOrder.value
+    .map((key) => store.interactions.value[key])
+    .filter(
+      (entry) =>
+        entry?.sessionId === session.id &&
+        ['waiting', 'dismissed', 'submitting', 'failed'].includes(entry.state),
+    ).length;
+  const needsInput = Boolean(session.interactionRequired || localPendingInteractionCount > 0);
   const running =
     Boolean(
       projection &&
       ['connecting', 'checking', 'streaming', 'cancelling'].includes(projection.run.status) &&
       store.runEngine.hasActiveResponseTransport(session.id, projection.run.responseId),
     ) || Boolean(store.services.eventFeedHealthy.value && session.activeRun);
-  const unseen = !running && Boolean(session.attentionUnseen);
-  const attentionLabel = running
-    ? 'Running'
-    : unseen
-      ? session.attentionOutcome === 'failed'
-        ? 'Failed, not yet visited'
-        : session.attentionOutcome === 'orphaned'
-          ? 'Recovery required, not yet visited'
-          : session.attentionOutcome === 'cancelled'
-            ? 'Cancelled with output, not yet visited'
-            : 'Completed, not yet visited'
-      : '';
+  const unseen = !needsInput && !running && Boolean(session.attentionUnseen);
+  const attentionLabel = needsInput
+    ? localPendingInteractionCount > 1 || (session.pendingInteractionCount || 0) > 1
+      ? `${Math.max(localPendingInteractionCount, session.pendingInteractionCount || 0)} decisions waiting`
+      : 'Waiting for your input'
+    : running
+      ? 'Running'
+      : unseen
+        ? session.attentionOutcome === 'failed'
+          ? 'Failed, not yet visited'
+          : session.attentionOutcome === 'orphaned'
+            ? 'Recovery required, not yet visited'
+            : session.attentionOutcome === 'cancelled'
+              ? 'Cancelled with output, not yet visited'
+              : 'Completed, not yet visited'
+        : '';
   const messageCount = sessionMessageCount(session);
   const activityAt = session.lastMessageAt || session.created;
   const hide = () => {
@@ -268,7 +280,7 @@ function SessionRow({ session, showProject = false }: { session: Session; showPr
   return (
     <div
       ref={row}
-      class={`session-row ${session.archived ? 'archived' : ''} ${running ? 'is-active' : ''} ${unseen ? 'is-unseen' : ''} ${hiding ? 'is-hiding' : ''}`}
+      class={`session-row ${session.archived ? 'archived' : ''} ${needsInput ? 'is-input-required' : running ? 'is-active' : ''} ${unseen ? 'is-unseen' : ''} ${hiding ? 'is-hiding' : ''}`}
     >
       <button
         class={`session-btn ${active ? 'active' : ''}`}

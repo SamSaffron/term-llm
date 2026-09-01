@@ -316,6 +316,7 @@
 }
 
 .session-row.is-active .session-title::before,
+.session-row.is-input-required .session-title::before,
 .session-row.is-unseen .session-title::before {
   content: '';
   display: inline-block;

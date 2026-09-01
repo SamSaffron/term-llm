@@ -188,6 +188,12 @@ export interface Session {
   attentionUnseen?: boolean;
   attentionOutcome?: 'completed' | 'failed' | 'cancelled' | 'orphaned' | string;
   attentionTerminalAt?: number;
+  interactionRequired?: boolean;
+  interactionResponseId?: string;
+  interactionStateRev?: number;
+  pendingInteractionCount?: number;
+  pendingInteractionKinds?: string[];
+  interactionRequiredSince?: number;
   fileChangeSummary?: { fileCount: number; additions: number; deletions: number; git: boolean };
 }
 
@@ -356,6 +362,7 @@ export interface InteractionRecord {
   state: InteractionState;
   order: number;
   createdAt: number;
+  interactionStateRev?: number;
   prompt: ApprovalPrompt | AskUserPrompt;
   error?: string;
   outcome?: string;

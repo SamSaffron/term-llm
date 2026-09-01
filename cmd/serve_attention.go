@@ -90,8 +90,8 @@ func (s *serveServer) handleAttention(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	kind := session.AttentionKind(strings.TrimSpace(r.URL.Query().Get("kind")))
-	if kind != session.AttentionKindUnseen && kind != session.AttentionKindRunning {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "kind must be unseen or running")
+	if kind != session.AttentionKindUnseen && kind != session.AttentionKindRunning && kind != session.AttentionKindInputRequired {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "kind must be unseen, running, or input_required")
 		return
 	}
 	limit := 200
@@ -123,7 +123,7 @@ func (s *serveServer) handleAttention(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to read attention snapshot")
 		return
 	}
-	etag := fmt.Sprintf(`"attention-%s-%d-%s-%d"`, page.StoreInstanceID, page.SnapshotVersion, kind, limit)
+	etag := fmt.Sprintf(`"attention-v%d-%s-%d-%s-%d"`, page.ProtocolVersion, page.StoreInstanceID, page.SnapshotVersion, kind, limit)
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Cache-Control", "private, no-cache")
 	if r.URL.Query().Get("cursor") == "" && r.Header.Get("If-None-Match") == etag {

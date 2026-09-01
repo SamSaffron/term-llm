@@ -613,6 +613,30 @@ export function sanitizeSession(
     ...((source.attention_terminal_at ?? source.terminal_at) != null
       ? { attentionTerminalAt: timestamp(source.attention_terminal_at ?? source.terminal_at) }
       : {}),
+    ...(source.interaction_required !== undefined
+      ? { interactionRequired: Boolean(source.interaction_required) }
+      : {}),
+    ...(source.interaction_response_id != null
+      ? { interactionResponseId: text(source.interaction_response_id) }
+      : {}),
+    ...(Number.isSafeInteger(Number(source.interaction_state_rev)) &&
+    Number(source.interaction_state_rev) >= 0
+      ? { interactionStateRev: Number(source.interaction_state_rev) }
+      : {}),
+    ...(Number.isSafeInteger(Number(source.pending_interaction_count)) &&
+    Number(source.pending_interaction_count) >= 0
+      ? { pendingInteractionCount: Number(source.pending_interaction_count) }
+      : {}),
+    ...(Array.isArray(source.pending_interaction_kinds)
+      ? {
+          pendingInteractionKinds: source.pending_interaction_kinds
+            .map((kind) => text(kind))
+            .filter(Boolean),
+        }
+      : {}),
+    ...(source.interaction_required_since != null
+      ? { interactionRequiredSince: timestamp(source.interaction_required_since) }
+      : {}),
     usage: (record(source.usage) as Session['usage']) || undefined,
     goal: (record(source.goal) as Session['goal']) || null,
     fileChangeSummary: fileSummary

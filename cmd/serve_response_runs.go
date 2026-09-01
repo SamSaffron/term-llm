@@ -160,28 +160,29 @@ type responseRun struct {
 	lastSequenceNumber      int64
 	// events[eventStart:] is the retained replay window; dropped prefix slots
 	// are zeroed and reclaimed in batches to avoid per-token slice copies.
-	events                []responseRunEvent
-	eventStart            int
-	minReplayAfter        int64
-	maxRetainedEvents     int
-	recoveryMessages      []responseRunRecoveryMessage
-	recoveryEvents        []responseRunRecoveryEvent
-	resolvedInteractions  map[string]responseRunResolvedInteraction
-	pendingGuardianByCall map[string][]map[string]any
-	nextMessageOrdinal    int64
-	currentAssistant      int
-	currentToolGroup      int
-	segmentRanges         map[int]responseRunSegmentRange
-	compactionEnabled     bool
-	subscribers           map[int]chan responseRunEvent
-	subscriberWarned      map[int]bool // tracks whether 75% buffer warning was logged
-	subscriberDropped     map[int]bool // tracks subscribers dropped after their live buffer overflowed
-	nextSubscriberID      int
-	terminalNotifyOnce    sync.Once
-	terminalNotify        func(string)
-	coarseEvent           func(string, map[string]any)
-	cancel                context.CancelFunc
-	cancelRequested       bool
+	events                  []responseRunEvent
+	eventStart              int
+	minReplayAfter          int64
+	maxRetainedEvents       int
+	recoveryMessages        []responseRunRecoveryMessage
+	recoveryEvents          []responseRunRecoveryEvent
+	resolvedInteractions    map[string]responseRunResolvedInteraction
+	pendingGuardianByCall   map[string][]map[string]any
+	nextMessageOrdinal      int64
+	currentAssistant        int
+	currentToolGroup        int
+	segmentRanges           map[int]responseRunSegmentRange
+	compactionEnabled       bool
+	subscribers             map[int]chan responseRunEvent
+	subscriberWarned        map[int]bool // tracks whether 75% buffer warning was logged
+	subscriberDropped       map[int]bool // tracks subscribers dropped after their live buffer overflowed
+	nextSubscriberID        int
+	terminalNotifyOnce      sync.Once
+	terminalNotify          func(string)
+	coarseEvent             func(string, map[string]any)
+	interactionStateChanged func(session.ResponseRunInteractionState)
+	cancel                  context.CancelFunc
+	cancelRequested         bool
 }
 
 type startResponseRunOptions struct {
@@ -857,6 +858,13 @@ func (r *responseRun) appendEventLocked(event string, payload map[string]any, te
 		Event:    event,
 		Data:     data,
 	}, terminal)
+	if r.interactionStateChanged != nil {
+		switch event {
+		case "response.ask_user.prompt", "response.ask_user.resolved",
+			"response.approval.prompt", "response.approval.resolved":
+			r.interactionStateChanged(r.interactionStateLocked())
+		}
+	}
 	if r.coarseEvent != nil {
 		r.coarseEvent(event, payload)
 	}
@@ -1088,6 +1096,68 @@ func (r *responseRun) flushPendingGuardianReviewsLocked() {
 		}
 		delete(r.pendingGuardianByCall, callID)
 	}
+}
+
+func responseRunBoolValue(value any) bool {
+	result, _ := value.(bool)
+	return result
+}
+
+func interactionKindForRecoveryEvent(pending responseRunRecoveryEvent) string {
+	switch pending.Event {
+	case "response.ask_user.prompt":
+		return "ask_user"
+	case "response.approval.prompt":
+		switch {
+		case responseRunBoolValue(pending.Payload["is_workspace"]):
+			return "approval.workspace"
+		case responseRunBoolValue(pending.Payload["is_shell"]):
+			return "approval.shell"
+		case responseRunBoolValue(pending.Payload["is_write"]):
+			return "approval.file_write"
+		default:
+			return "approval"
+		}
+	default:
+		return ""
+	}
+}
+
+func (r *responseRun) interactionStateLocked() session.ResponseRunInteractionState {
+	state := session.ResponseRunInteractionState{
+		ResponseID:      r.id,
+		OwnerInstanceID: r.ownerInstanceID,
+		FencingToken:    r.fencingToken,
+		Revision:        r.lastSequenceNumber,
+	}
+	kindSet := make(map[string]struct{})
+	for _, pending := range r.recoveryEvents {
+		kind := interactionKindForRecoveryEvent(pending)
+		if kind == "" {
+			continue
+		}
+		state.Count++
+		kindSet[kind] = struct{}{}
+		createdAt := responseRunInt64Value(pending.Payload["created_at"], 0)
+		if createdAt > 0 && (state.RequiredSince.IsZero() || createdAt < state.RequiredSince.UnixMilli()) {
+			state.RequiredSince = time.UnixMilli(createdAt).UTC()
+		}
+	}
+	state.Kinds = make([]string, 0, len(kindSet))
+	for kind := range kindSet {
+		state.Kinds = append(state.Kinds, kind)
+	}
+	sort.Strings(state.Kinds)
+	return state
+}
+
+func (r *responseRun) interactionState() session.ResponseRunInteractionState {
+	if r == nil {
+		return session.ResponseRunInteractionState{}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.interactionStateLocked()
 }
 
 func (r *responseRun) resolvePendingInteractionsLocked(outcome string) {
@@ -1820,6 +1890,25 @@ func (r *responseRun) resolveApprovalRecovery(approvalID string) {
 	r.resolveRecoveryEvent("response.approval.prompt", "approval_id", strings.TrimSpace(approvalID))
 }
 
+func (r *responseRun) hasPendingInteraction(kind, id string) bool {
+	if r == nil {
+		return false
+	}
+	id = strings.TrimSpace(id)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	promptEvent, idField := "response.ask_user.prompt", "call_id"
+	if kind == "approval" {
+		promptEvent, idField = "response.approval.prompt", "approval_id"
+	}
+	for _, pending := range r.recoveryEvents {
+		if pending.Event == promptEvent && strings.TrimSpace(stringValue(pending.Payload[idField])) == id {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *responseRun) resolvedInteraction(kind, id string) (responseRunResolvedInteraction, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -2235,12 +2324,14 @@ func (s *serveServer) startResponseLifecycle() {
 }
 
 func (s *serveServer) sweepAndRenewResponseLifecycle(ctx context.Context, lifecycle session.ServeResponseLifecycleStore, processOwnerID string) {
+	interactionStore, interactionProjectionSupported := session.AsResponseRunInteractionStore(s.store)
 	type ownedRun struct {
 		run                 *responseRun
 		responseID, ownerID string
 		token               int64
 		leaseExpiresAt      time.Time
 		cancel              context.CancelFunc
+		interactionState    session.ResponseRunInteractionState
 	}
 	owned := make([]ownedRun, 0)
 	skipRecovery := false
@@ -2263,7 +2354,8 @@ func (s *serveServer) sweepAndRenewResponseLifecycle(ctx context.Context, lifecy
 			}
 			if run.ownerInstanceID == processOwnerID && run.fencingToken > 0 && run.status == "in_progress" {
 				owned = append(owned, ownedRun{run: run, responseID: run.id, ownerID: run.ownerInstanceID,
-					token: run.fencingToken, leaseExpiresAt: run.leaseExpiresAt, cancel: run.cancel})
+					token: run.fencingToken, leaseExpiresAt: run.leaseExpiresAt, cancel: run.cancel,
+					interactionState: run.interactionStateLocked()})
 			}
 			run.mu.Unlock()
 		}
@@ -2295,6 +2387,14 @@ func (s *serveServer) sweepAndRenewResponseLifecycle(ctx context.Context, lifecy
 			candidate.run.mu.Lock()
 			candidate.run.leaseExpiresAt = lease.LeaseExpiresAt
 			candidate.run.mu.Unlock()
+			if interactionProjectionSupported {
+				projectionCtx, projectionCancel := context.WithTimeout(ctx, 5*time.Second)
+				err := interactionStore.SetResponseRunInteractionState(projectionCtx, candidate.interactionState)
+				projectionCancel()
+				if err != nil && !errors.Is(err, session.ErrResponseRunLeaseLost) {
+					log.Printf("[serve] response interaction reconciliation failed for %.12s: %v", candidate.responseID, err)
+				}
+			}
 		}()
 	}
 	renewWG.Wait()
@@ -3557,6 +3657,19 @@ func latestResponseRunDurableBoundary(items []session.TranscriptIndexItem) int64
 	return 0
 }
 
+func (s *serveServer) projectResponseInteractionState(store session.ResponseRunInteractionStore, state session.ResponseRunInteractionState) {
+	if store == nil || state.ResponseID == "" || state.OwnerInstanceID == "" || state.FencingToken <= 0 {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := store.SetResponseRunInteractionState(ctx, state); err != nil && !errors.Is(err, session.ErrResponseRunLeaseLost) {
+			log.Printf("[serve] response interaction projection failed for %.12s: %v", state.ResponseID, err)
+		}
+	}()
+}
+
 func (s *serveServer) configureResponseRunRevision(run *responseRun, sessionID string) {
 	if run == nil {
 		return
@@ -3734,6 +3847,11 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 					}
 				}
 				return attention, finalizeErr
+			}
+			if interactionStore, supported := session.AsResponseRunInteractionStore(s.store); supported {
+				run.interactionStateChanged = func(state session.ResponseRunInteractionState) {
+					s.projectResponseInteractionState(interactionStore, state)
+				}
 			}
 		}
 	}

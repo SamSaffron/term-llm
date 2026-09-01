@@ -34,6 +34,10 @@
 
   <main class="hub-main">
     <div class="hub-error hidden" id="hubError" role="alert"></div>
+    <section class="attention-panel input-required-panel hidden" id="inputRequiredPanel" aria-label="Needs your input">
+      <div class="delegations-head"><div><h2>Needs your input</h2><p>Conversations blocked on a question or approval.</p></div><span class="delegations-count" id="inputRequiredCount"></span></div>
+      <div class="attention-list" id="inputRequiredList"></div>
+    </section>
     <section class="attention-panel hidden" id="attentionPanel" aria-label="Ready to review">
       <div class="delegations-head"><div><h2>Ready to review</h2><p>Finished conversations not yet visited.</p></div><span class="delegations-count" id="attentionCount"></span></div>
       <div class="attention-list" id="attentionList"></div>
@@ -160,6 +164,9 @@ term-llm serve hub</code></pre>
     const attentionPanel = document.getElementById('attentionPanel');
     const attentionList = document.getElementById('attentionList');
     const attentionCount = document.getElementById('attentionCount');
+    const inputRequiredPanel = document.getElementById('inputRequiredPanel');
+    const inputRequiredList = document.getElementById('inputRequiredList');
+    const inputRequiredCount = document.getElementById('inputRequiredCount');
 
     const nodeBasePaths = new Map();
     const el = (tag, className, text) => {
@@ -244,7 +251,10 @@ term-llm serve hub</code></pre>
 
     const sessionMetaText = (session, { active = false } = {}) => {
       const parts = [];
-      if (active || session.active_run) parts.push('active now');
+      if (session.interaction_required) {
+        const count = Number(session.pending_interaction_count) || 1;
+        parts.push(count === 1 ? 'waiting for input' : `${count} decisions waiting`);
+      } else if (active || session.active_run) parts.push('active now');
       const rel = relativeSessionTime(session.last_message_at);
       if (rel) parts.push(rel);
       const count = sessionMessageCountLabel(session.message_count);
@@ -265,7 +275,8 @@ term-llm serve hub</code></pre>
       const group = el('div', 'node-session-group');
       group.appendChild(el('div', 'node-session-label', label));
       sessions.forEach((session) => {
-        const row = el('a', `node-session-row${opts.active ? ' is-active' : ''}`);
+        const stateClass = session.interaction_required ? ' is-input-required' : opts.active ? ' is-active' : '';
+        const row = el('a', `node-session-row${stateClass}`);
         row.href = session.resume_path || '#';
         row.title = session.long_title || session.short_title || session.id || 'Session';
         const title = el('span', 'node-session-title', session.short_title || session.long_title || session.id || 'Untitled session');
@@ -323,9 +334,9 @@ term-llm serve hub</code></pre>
       dot.title = status.reachable ? 'Reachable' : (status.error || 'Unreachable');
       head.appendChild(dot);
       head.appendChild(el('h2', 'node-name', n.name));
-      if (n.sessions && (Number(n.sessions.active_count) > 0 || Number(n.sessions.unseen_count) > 0)) {
+      if (n.sessions && (Number(n.sessions.active_count) > 0 || Number(n.sessions.input_required_count) > 0 || Number(n.sessions.unseen_count) > 0)) {
         const attentionDot = el('span', 'attention-dot');
-        attentionDot.title = `${Number(n.sessions.active_count) || 0} running · ${Number(n.sessions.unseen_count) || 0} ready to review`;
+        attentionDot.title = `${Number(n.sessions.input_required_count) || 0} waiting · ${Number(n.sessions.active_count) || 0} running · ${Number(n.sessions.unseen_count) || 0} ready to review`;
         head.appendChild(attentionDot);
       }
       if (n.sessions && n.sessions.count_label) {
@@ -442,6 +453,29 @@ term-llm serve hub</code></pre>
         const resp = await fetch('api/attention');
         if (!resp.ok) throw new Error(`api/attention returned ${resp.status}`);
         const data = await resp.json();
+        const waiting = Array.isArray(data.input_required) ? data.input_required : [];
+        const waitingRows = waiting.map((item) => {
+          const row = el('a', `attention-row input-required-row${item.stale ? ' is-stale' : ''}`);
+          row.href = item.resume_path || '#';
+          const dot = el('span', 'attention-dot');
+          const body = el('span', 'attention-body');
+          body.appendChild(el('strong', 'attention-title', item.title || item.session_id || 'Untitled conversation'));
+          const count = Number(item.pending_interaction_count) || 1;
+          const kinds = Array.isArray(item.pending_interaction_kinds) ? item.pending_interaction_kinds : [];
+          const kindLabel = kinds.some((kind) => String(kind).startsWith('approval'))
+            ? kinds.includes('ask_user') ? 'Question and approval waiting' : 'Approval waiting'
+            : 'Question waiting';
+          const required = Date.parse(item.required_since || '');
+          const when = Number.isFinite(required) ? relativeSessionTime(required) : '';
+          body.appendChild(el('span', 'attention-meta', [item.node_name || item.node_id, count > 1 ? `${count} decisions waiting` : kindLabel, item.stale ? 'last known state' : when].filter(Boolean).join(' · ')));
+          row.appendChild(dot); row.appendChild(body);
+          return row;
+        });
+        inputRequiredList.replaceChildren(...waitingRows);
+        inputRequiredPanel.classList.toggle('hidden', waiting.length === 0);
+        const totalInputRequired = Number(data.total_input_required) || waiting.length;
+        inputRequiredCount.textContent = totalInputRequired ? `${totalInputRequired} waiting${data.has_more ? ' · showing first' : ''}` : '';
+
         const inbox = Array.isArray(data.inbox) ? data.inbox : [];
         const rows = inbox.map((item) => {
           const row = el('a', 'attention-row');

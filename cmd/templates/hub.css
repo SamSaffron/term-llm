@@ -349,9 +349,31 @@ body {
   border-color: var(--border);
 }
 
-.node-session-row.is-active {
+.node-session-row.is-active,
+.node-session-row.is-input-required {
   background: color-mix(in srgb, var(--ok) 8%, transparent);
   border-color: color-mix(in srgb, var(--ok) 28%, var(--border));
+}
+
+.node-session-row.is-active .node-session-title::before,
+.node-session-row.is-input-required .node-session-title::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 0.4rem;
+  border-radius: 50%;
+  background: #22c55e;
+  vertical-align: 0.08em;
+}
+
+.node-session-row.is-active .node-session-title::before {
+  animation: hub-pulse-dot 1.8s ease-in-out infinite;
+}
+
+@keyframes hub-pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
 }
 
 .node-session-title {
@@ -888,6 +910,18 @@ body {
 
 .attention-row:hover {
   background: color-mix(in srgb, var(--surface) 75%, #22c55e 12%);
+}
+
+.attention-row.is-stale {
+  opacity: 0.72;
+}
+
+.attention-row.is-stale .attention-dot {
+  background: var(--warn);
+}
+
+.input-required-panel {
+  border-color: color-mix(in srgb, #22c55e 32%, var(--border));
 }
 
 .attention-dot {

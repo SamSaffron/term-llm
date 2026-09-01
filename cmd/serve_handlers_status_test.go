@@ -254,23 +254,29 @@ func TestHandleSessionsStatusAlwaysIncludesSelectedActiveAndUnresolvedSessions(t
 	}
 	var payload struct {
 		Sessions []struct {
-			ID               string `json:"id"`
-			ActiveRun        bool   `json:"active_run"`
-			ActiveResponseID string `json:"active_response_id"`
+			ID                      string `json:"id"`
+			ActiveRun               bool   `json:"active_run"`
+			ActiveResponseID        string `json:"active_response_id"`
+			InteractionRequired     bool   `json:"interaction_required"`
+			PendingInteractionCount int    `json:"pending_interaction_count"`
 		} `json:"sessions"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
 	byID := make(map[string]struct {
-		ActiveRun        bool
-		ActiveResponseID string
+		ActiveRun               bool
+		ActiveResponseID        string
+		InteractionRequired     bool
+		PendingInteractionCount int
 	}, len(payload.Sessions))
 	for _, entry := range payload.Sessions {
 		byID[entry.ID] = struct {
-			ActiveRun        bool
-			ActiveResponseID string
-		}{entry.ActiveRun, entry.ActiveResponseID}
+			ActiveRun               bool
+			ActiveResponseID        string
+			InteractionRequired     bool
+			PendingInteractionCount int
+		}{entry.ActiveRun, entry.ActiveResponseID, entry.InteractionRequired, entry.PendingInteractionCount}
 	}
 	if len(payload.Sessions) != 203 {
 		t.Fatalf("sessions=%d, want bounded 200 plus three critical rows", len(payload.Sessions))
@@ -278,8 +284,10 @@ func TestHandleSessionsStatusAlwaysIncludesSelectedActiveAndUnresolvedSessions(t
 	if got := byID[ids[0]]; !got.ActiveRun || got.ActiveResponseID != run.id {
 		t.Fatalf("active session missing or inactive: %#v", got)
 	}
-	if _, ok := byID[ids[1]]; !ok {
+	if got, ok := byID[ids[1]]; !ok {
 		t.Fatal("unresolved interaction session outside window is missing")
+	} else if !got.InteractionRequired || got.PendingInteractionCount != 1 {
+		t.Fatalf("unresolved interaction state = %#v", got)
 	}
 	if _, ok := byID[ids[2]]; !ok {
 		t.Fatal("selected session outside window is missing")

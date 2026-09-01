@@ -311,6 +311,7 @@ export class AppStore {
     this.interactionStore = new InteractionStore(
       this.services,
       this.modal,
+      this.activeSessionId,
       (type, sessionId, responseId) => this.publishSessionChange(type, sessionId, responseId),
     );
     this.askUser = this.interactionStore.askUser;
@@ -509,6 +510,22 @@ export class AppStore {
       clearLocallyStopped: (responseId) => {
         this.locallyStoppedResponses.delete(responseId);
       },
+      reconcileInteractionLevel: (
+        sessionId,
+        responseId,
+        revision,
+        required,
+        activeRun,
+        requestedAt,
+      ) =>
+        this.interactionStore.reconcileSessionLevel(
+          sessionId,
+          responseId,
+          revision,
+          required,
+          activeRun,
+          requestedAt,
+        ),
       eventFeedHealthy: () => this.serverEventCoordinator?.isHealthy() || false,
       acknowledgeAttention: () => this.acknowledgeSelectedAttention(),
     });

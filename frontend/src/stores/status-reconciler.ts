@@ -49,6 +49,14 @@ export interface StatusReconcilerHost {
   stoppedResponseCount: () => number;
   isLocallyStopped: (responseId: string) => boolean;
   clearLocallyStopped: (responseId: string) => void;
+  reconcileInteractionLevel: (
+    sessionId: string,
+    responseId: string,
+    interactionStateRev: number,
+    required: boolean,
+    activeRun: boolean,
+    statusRequestedAt: number,
+  ) => void;
   eventFeedHealthy: () => boolean;
   acknowledgeAttention?: () => Promise<void>;
 }
@@ -94,7 +102,9 @@ export class StatusReconciler {
         Object.values(this.host.pendingIntents.peek()).some((intents) =>
           intents.some((intent) => intent.state === 'checking'),
         ) ||
-        this.host.sessionStore.sessions.peek().some((session) => session.activeRun) ||
+        this.host.sessionStore.sessions
+          .peek()
+          .some((session) => session.activeRun || session.interactionRequired) ||
         Object.values(this.host.runs.peek()).some((projection) =>
           ['connecting', 'checking', 'streaming', 'cancelling'].includes(projection.run.status),
         );
@@ -364,6 +374,25 @@ export class StatusReconciler {
           status.attention_seq !== undefined ||
           session.attentionSeq !== undefined,
         );
+        const statusInteractionResponseId = String(status.interaction_response_id || '');
+        const statusInteractionStateRev = Math.max(0, Number(status.interaction_state_rev) || 0);
+        const sameInteractionResponse =
+          !session.interactionResponseId ||
+          !statusInteractionResponseId ||
+          session.interactionResponseId === statusInteractionResponseId;
+        const applyInteractionStatus =
+          !nextActiveRun ||
+          (sameInteractionResponse
+            ? statusInteractionStateRev >= (session.interactionStateRev || 0)
+            : statusInteractionResponseId === activeResponseId);
+        const statusInteractionKinds = Array.isArray(status.pending_interaction_kinds)
+          ? status.pending_interaction_kinds.map(String).filter(Boolean)
+          : [];
+        const pendingInteractionKinds =
+          statusInteractionKinds.join('\u0000') ===
+          (session.pendingInteractionKinds || []).join('\u0000')
+            ? session.pendingInteractionKinds || []
+            : statusInteractionKinds;
         const candidate: Session = {
           ...session,
           ...(titleRefreshAllowed && String(status.short_title || '')
@@ -410,6 +439,20 @@ export class StatusReconciler {
                     : session.attentionTerminalAt,
               }
             : {}),
+          ...(applyInteractionStatus &&
+          (status.interaction_required !== undefined || statusInteractionResponseId)
+            ? {
+                interactionRequired: Boolean(status.interaction_required),
+                interactionResponseId: statusInteractionResponseId,
+                interactionStateRev: statusInteractionStateRev,
+                pendingInteractionCount: Math.max(0, Number(status.pending_interaction_count) || 0),
+                pendingInteractionKinds,
+                interactionRequiredSince: Math.max(
+                  0,
+                  Number(status.interaction_required_since) || 0,
+                ),
+              }
+            : {}),
           lastMessageAt: Number(status.last_message_at)
             ? Math.max(
                 session.lastMessageAt || 0,
@@ -434,6 +477,12 @@ export class StatusReconciler {
           candidate.attentionFinalRev === session.attentionFinalRev &&
           candidate.attentionOutcome === session.attentionOutcome &&
           candidate.attentionTerminalAt === session.attentionTerminalAt &&
+          candidate.interactionRequired === session.interactionRequired &&
+          candidate.interactionResponseId === session.interactionResponseId &&
+          candidate.interactionStateRev === session.interactionStateRev &&
+          candidate.pendingInteractionCount === session.pendingInteractionCount &&
+          candidate.pendingInteractionKinds === session.pendingInteractionKinds &&
+          candidate.interactionRequiredSince === session.interactionRequiredSince &&
           candidate.lastMessageAt === session.lastMessageAt
           ? session
           : candidate;
@@ -441,6 +490,17 @@ export class StatusReconciler {
       .sort(compareSessionsByActivity);
     this.host.sessionStore.replace(reconciledSessions);
     if (!this.statusRequestIsCurrent(metadata)) return;
+    for (const status of statuses) {
+      if (status.interaction_required === undefined) continue;
+      this.host.reconcileInteractionLevel(
+        String(status.id || ''),
+        String(status.interaction_response_id || ''),
+        Math.max(0, Number(status.interaction_state_rev) || 0),
+        Boolean(status.interaction_required),
+        Boolean(status.active_run),
+        metadata.requestedAt,
+      );
+    }
     if (this.host.acknowledgeAttention) void this.host.acknowledgeAttention();
     this.unknownActiveSessionIds = unknownActive;
     this.coordinator.lastAppliedGeneration = metadata.generation;

@@ -4257,6 +4257,7 @@ describe('Preact-owned chat surfaces', () => {
 
   it('prioritizes approval and ask-user prompts without losing the underlying modal', () => {
     const store = createStore();
+    store.activeSessionId.value = 's1';
     store.modal.value = 'settings';
     store.askUser.value = {
       sessionId: 's1',
@@ -4286,6 +4287,26 @@ describe('Preact-owned chat surfaces', () => {
       store.askUser.value = null;
     });
     expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument();
+  });
+
+  it('never renders a background-session interaction over the active conversation', () => {
+    const store = createStore();
+    store.activeSessionId.value = 's2';
+    store.modal.value = 'settings';
+    store.interactionStore.upsert('ask-user', 's1', 'r1', 'ask-1', {
+      sessionId: 's1',
+      callId: 'ask-1',
+      questions: [{ question: 'Background question?', options: [] }],
+    });
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument();
+    expect(screen.queryByText('Background question?')).not.toBeInTheDocument();
   });
 
   it('creates clean worktrees by default and only offers the choice for a dirty root', async () => {

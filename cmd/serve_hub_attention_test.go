@@ -81,10 +81,56 @@ func TestHubAttentionCollectorInstallsBothKindsAtomically(t *testing.T) {
 	}
 }
 
+func TestHubAttentionCollectorIncludesProtocolV2InputRequired(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := hubAttentionPage{ProtocolVersion: 2, StoreInstanceID: "store-v2", SnapshotVersion: 12}
+		switch r.URL.Query().Get("kind") {
+		case "unseen", "running":
+		case "input_required":
+			page.Items = []hubAttentionPageItem{{
+				SessionID: "blocked", ResponseID: "resp-blocked", Kind: "input_required", LifecycleState: "running",
+				InteractionRequired: true, InteractionStateRev: 8, PendingInteractionCount: 2,
+				PendingInteractionKinds: []string{"approval.shell", "ask_user"}, InteractionRequiredSince: time.Now().UTC(),
+			}}
+		default:
+			http.Error(w, "bad kind", http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(page)
+	}))
+	defer server.Close()
+	node := hub.Node{ID: "alpha", Name: "Alpha", URL: server.URL + "/chat"}
+	if err := node.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	projection, err := hub.OpenAttentionProjectionStore(filepath.Join(t.TempDir(), "attention.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer projection.Close()
+	srv := newHubServer(nil, nil)
+	srv.attentionStore = projection
+	if err := srv.collectNodeAttention(context.Background(), node); err != nil {
+		t.Fatal(err)
+	}
+	activities, _, err := projection.List(context.Background())
+	if err != nil || len(activities) != 1 {
+		t.Fatalf("activities = %+v, %v", activities, err)
+	}
+	activity := activities[0]
+	if activity.Kind != "input_required" || activity.PendingInteractionCount != 2 || len(activity.PendingInteractionKinds) != 2 {
+		t.Fatalf("input-required activity = %+v", activity)
+	}
+}
+
 func TestHubAttentionCollectorRetriesSnapshotDriftWithoutInstallingPartialState(t *testing.T) {
 	unseenRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		kind := r.URL.Query().Get("kind")
+		if kind == "input_required" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		version := int64(10)
 		if kind == "unseen" {
 			unseenRequests++
@@ -168,6 +214,8 @@ func TestHubAttentionAPIKeepsExactCountsWhenInboxIsBounded(t *testing.T) {
 		{SessionID: "one", Kind: "terminal_unseen", AttentionSeq: 1, TerminalAt: now.Add(-time.Minute)},
 		{SessionID: "two", Kind: "terminal_unseen", AttentionSeq: 2, TerminalAt: now},
 		{SessionID: "live", Kind: "running", StartedAt: now},
+		{SessionID: "blocked", Kind: "input_required", PendingInteractionCount: 1,
+			PendingInteractionKinds: []string{"approval.workspace"}, InteractionRequiredSince: now},
 	}
 	if err := projection.ReplaceNode(context.Background(), "alpha", "store-a", "etag", activities); err != nil {
 		t.Fatal(err)
@@ -180,15 +228,19 @@ func TestHubAttentionAPIKeepsExactCountsWhenInboxIsBounded(t *testing.T) {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 	var response struct {
-		TotalRunning int                     `json:"total_running"`
-		TotalUnseen  int                     `json:"total_unseen"`
-		HasMore      bool                    `json:"has_more"`
-		Inbox        []hubAttentionInboxItem `json:"inbox"`
+		TotalRunning       int                     `json:"total_running"`
+		TotalInputRequired int                     `json:"total_input_required"`
+		TotalUnseen        int                     `json:"total_unseen"`
+		HasMore            bool                    `json:"has_more"`
+		InputRequired      []hubInputRequiredItem  `json:"input_required"`
+		Inbox              []hubAttentionInboxItem `json:"inbox"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.TotalRunning != 1 || response.TotalUnseen != 2 || !response.HasMore || len(response.Inbox) != 1 || response.Inbox[0].SessionID != "two" {
+	if response.TotalRunning != 1 || response.TotalInputRequired != 1 || response.TotalUnseen != 2 || !response.HasMore ||
+		len(response.InputRequired) != 1 || response.InputRequired[0].SessionID != "blocked" ||
+		len(response.Inbox) != 1 || response.Inbox[0].SessionID != "two" {
 		t.Fatalf("bounded response = %+v", response)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -641,24 +642,76 @@ func (m *serveSessionManager) ActiveSessionIDs() map[string]bool {
 	return result
 }
 
-// UnresolvedInteractionSessionIDs returns runtimes waiting for an ask-user or
-// approval decision without touching their TTL. These sessions belong to the
-// active control plane even if a bounded recent-session query omits them.
-func (m *serveSessionManager) UnresolvedInteractionSessionIDs() map[string]bool {
+type serveInteractionSummary struct {
+	Count         int
+	Kinds         []string
+	RequiredSince time.Time
+}
+
+func pendingApprovalInteractionKind(prompt serveApprovalPrompt) string {
+	switch {
+	case prompt.IsWorkspace:
+		return "approval.workspace"
+	case prompt.IsShell:
+		return "approval.shell"
+	case prompt.IsWrite:
+		return "approval.file_write"
+	default:
+		return "approval"
+	}
+}
+
+// UnresolvedInteractionSummaries returns level-triggered actionable interaction
+// state without touching runtime TTLs.
+func (m *serveSessionManager) UnresolvedInteractionSummaries() map[string]serveInteractionSummary {
 	m.mu.Lock()
 	runtimes := make(map[string]*serveRuntime, len(m.sessions))
 	for id, rt := range m.sessions {
 		runtimes[id] = rt
 	}
 	m.mu.Unlock()
-	result := make(map[string]bool)
+	result := make(map[string]serveInteractionSummary)
 	for id, rt := range runtimes {
 		if rt == nil {
 			continue
 		}
-		if len(rt.pendingAskUserPrompts()) > 0 || len(rt.pendingApprovalPrompts()) > 0 {
-			result[id] = true
+		kindSet := make(map[string]struct{})
+		summary := serveInteractionSummary{}
+		for _, prompt := range rt.pendingAskUserPrompts() {
+			summary.Count++
+			kindSet["ask_user"] = struct{}{}
+			created := time.UnixMilli(prompt.CreatedAt).UTC()
+			if prompt.CreatedAt > 0 && (summary.RequiredSince.IsZero() || created.Before(summary.RequiredSince)) {
+				summary.RequiredSince = created
+			}
 		}
+		for _, prompt := range rt.pendingApprovalPrompts() {
+			summary.Count++
+			kindSet[pendingApprovalInteractionKind(prompt)] = struct{}{}
+			created := time.UnixMilli(prompt.CreatedAt).UTC()
+			if prompt.CreatedAt > 0 && (summary.RequiredSince.IsZero() || created.Before(summary.RequiredSince)) {
+				summary.RequiredSince = created
+			}
+		}
+		if summary.Count == 0 {
+			continue
+		}
+		for kind := range kindSet {
+			summary.Kinds = append(summary.Kinds, kind)
+		}
+		sort.Strings(summary.Kinds)
+		result[id] = summary
+	}
+	return result
+}
+
+// UnresolvedInteractionSessionIDs returns runtimes waiting for an ask-user or
+// approval decision without touching their TTL. These sessions belong to the
+// active control plane even if a bounded recent-session query omits them.
+func (m *serveSessionManager) UnresolvedInteractionSessionIDs() map[string]bool {
+	result := make(map[string]bool)
+	for id := range m.UnresolvedInteractionSummaries() {
+		result[id] = true
 	}
 	return result
 }

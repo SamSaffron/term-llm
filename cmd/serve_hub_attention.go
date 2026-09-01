@@ -59,19 +59,24 @@ type hubAttentionPage struct {
 }
 
 type hubAttentionPageItem struct {
-	SessionID      string    `json:"session_id"`
-	ResponseID     string    `json:"response_id"`
-	Kind           string    `json:"kind"`
-	LifecycleState string    `json:"lifecycle_state"`
-	AttentionSeq   int64     `json:"attention_seq"`
-	FinalRev       int64     `json:"final_rev"`
-	ShortTitle     string    `json:"short_title"`
-	LongTitle      string    `json:"long_title"`
-	ProjectID      string    `json:"project_id"`
-	Outcome        string    `json:"outcome"`
-	StartedAt      time.Time `json:"started_at"`
-	TerminalAt     time.Time `json:"terminal_at"`
-	LeaseExpiresAt time.Time `json:"lease_expires_at"`
+	SessionID                string    `json:"session_id"`
+	ResponseID               string    `json:"response_id"`
+	Kind                     string    `json:"kind"`
+	LifecycleState           string    `json:"lifecycle_state"`
+	AttentionSeq             int64     `json:"attention_seq"`
+	FinalRev                 int64     `json:"final_rev"`
+	ShortTitle               string    `json:"short_title"`
+	LongTitle                string    `json:"long_title"`
+	ProjectID                string    `json:"project_id"`
+	Outcome                  string    `json:"outcome"`
+	StartedAt                time.Time `json:"started_at"`
+	TerminalAt               time.Time `json:"terminal_at"`
+	LeaseExpiresAt           time.Time `json:"lease_expires_at"`
+	InteractionRequired      bool      `json:"interaction_required,omitempty"`
+	InteractionStateRev      int64     `json:"interaction_state_rev,omitempty"`
+	PendingInteractionCount  int       `json:"pending_interaction_count,omitempty"`
+	PendingInteractionKinds  []string  `json:"pending_interaction_kinds,omitempty"`
+	InteractionRequiredSince time.Time `json:"interaction_required_since,omitempty"`
 }
 
 func (s *hubServer) startAttentionCollector() {
@@ -229,7 +234,9 @@ func (s *hubServer) collectNodeAttentionOnce(ctx context.Context, node hub.Node)
 	storeID := ""
 	version := int64(0)
 	responseETag := ""
-	for _, kind := range []string{"unseen", "running"} {
+	kinds := []string{"unseen", "input_required", "running"}
+	for kindIndex := 0; kindIndex < len(kinds); kindIndex++ {
+		kind := kinds[kindIndex]
 		cursor := ""
 		for {
 			page, pageETag, notModified, status, err := s.fetchNodeAttentionPage(ctx, node, kind, cursor, version, etag)
@@ -238,6 +245,10 @@ func (s *hubServer) collectNodeAttentionOnce(ctx context.Context, node hub.Node)
 			}
 			if notModified {
 				return s.attentionStore.MarkSuccess(ctx, node.ID)
+			}
+			if kind == "input_required" && status == http.StatusBadRequest {
+				// Protocol-v1 nodes reject the v2 kind; retain their unseen/running support.
+				break
 			}
 			if status == http.StatusNotFound || status == http.StatusNotImplemented {
 				lost := previousErr == nil && previous.Capability == hub.AttentionSupported
@@ -249,8 +260,11 @@ func (s *hubServer) collectNodeAttentionOnce(ctx context.Context, node hub.Node)
 			if status != http.StatusOK {
 				return fmt.Errorf("attention endpoint returned HTTP %d", status)
 			}
-			if page.ProtocolVersion != 1 || page.StoreInstanceID == "" {
+			if (page.ProtocolVersion != 1 && page.ProtocolVersion != 2) || page.StoreInstanceID == "" {
 				return errors.New("attention endpoint returned invalid identity")
+			}
+			if kind == "input_required" && page.ProtocolVersion < 2 {
+				return errors.New("attention endpoint returned invalid input-required protocol")
 			}
 			if storeID == "" {
 				storeID, version, responseETag = page.StoreInstanceID, page.SnapshotVersion, pageETag
@@ -262,15 +276,21 @@ func (s *hubServer) collectNodeAttentionOnce(ctx context.Context, node hub.Node)
 			etag = ""
 			for _, item := range page.Items {
 				activityKind := "running"
-				if kind == "unseen" {
+				switch kind {
+				case "unseen":
 					activityKind = "terminal_unseen"
+				case "input_required":
+					activityKind = "input_required"
 				}
 				activities = append(activities, hub.SessionActivity{NodeID: node.ID, StoreInstanceID: storeID,
 					SessionID: item.SessionID, Kind: activityKind, ResponseID: item.ResponseID,
 					LifecycleState: item.LifecycleState, AttentionSeq: item.AttentionSeq, FinalRev: item.FinalRev,
 					ShortTitle: item.ShortTitle, LongTitle: item.LongTitle, ProjectID: item.ProjectID,
 					Outcome: item.Outcome, StartedAt: item.StartedAt, TerminalAt: item.TerminalAt,
-					LeaseExpiresAt: item.LeaseExpiresAt})
+					LeaseExpiresAt: item.LeaseExpiresAt, InteractionStateRev: item.InteractionStateRev,
+					PendingInteractionCount:  item.PendingInteractionCount,
+					PendingInteractionKinds:  append([]string(nil), item.PendingInteractionKinds...),
+					InteractionRequiredSince: item.InteractionRequiredSince})
 			}
 			if !page.HasMore {
 				break
@@ -336,15 +356,16 @@ func (s *hubServer) fetchNodeAttentionPage(ctx context.Context, node hub.Node, k
 }
 
 type hubAttentionNodeView struct {
-	NodeID         string                  `json:"node_id"`
-	NodeName       string                  `json:"node_name"`
-	Capability     hub.AttentionCapability `json:"capability_state"`
-	Stale          bool                    `json:"stale"`
-	LastSuccessAt  time.Time               `json:"last_success_at,omitempty"`
-	LastError      string                  `json:"last_error,omitempty"`
-	RunningCount   int                     `json:"running_count"`
-	UnseenCount    int                     `json:"unseen_count"`
-	GreenIndicator bool                    `json:"has_green_indicator"`
+	NodeID             string                  `json:"node_id"`
+	NodeName           string                  `json:"node_name"`
+	Capability         hub.AttentionCapability `json:"capability_state"`
+	Stale              bool                    `json:"stale"`
+	LastSuccessAt      time.Time               `json:"last_success_at,omitempty"`
+	LastError          string                  `json:"last_error,omitempty"`
+	RunningCount       int                     `json:"running_count"`
+	InputRequiredCount int                     `json:"input_required_count"`
+	UnseenCount        int                     `json:"unseen_count"`
+	GreenIndicator     bool                    `json:"has_green_indicator"`
 }
 
 type hubAttentionInboxItem struct {
@@ -356,6 +377,18 @@ type hubAttentionInboxItem struct {
 	TerminalAt   time.Time `json:"terminal_at,omitempty"`
 	AttentionSeq int64     `json:"attention_seq"`
 	ResumePath   string    `json:"resume_path"`
+}
+
+type hubInputRequiredItem struct {
+	NodeID                  string    `json:"node_id"`
+	NodeName                string    `json:"node_name"`
+	SessionID               string    `json:"session_id"`
+	Title                   string    `json:"title"`
+	PendingInteractionCount int       `json:"pending_interaction_count"`
+	PendingInteractionKinds []string  `json:"pending_interaction_kinds,omitempty"`
+	RequiredSince           time.Time `json:"required_since,omitempty"`
+	ResumePath              string    `json:"resume_path"`
+	Stale                   bool      `json:"stale,omitempty"`
 }
 
 func hubAttentionSyncHealthy(state hub.AttentionSync) bool {
@@ -419,7 +452,7 @@ func (s *hubServer) handleHubAttention(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.attentionStore == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"total_running": 0, "total_unseen": 0, "nodes": []any{}, "inbox": []any{}, "has_more": false})
+		writeJSON(w, http.StatusOK, map[string]any{"total_running": 0, "total_input_required": 0, "total_unseen": 0, "nodes": []any{}, "input_required": []any{}, "inbox": []any{}, "has_more": false})
 		return
 	}
 	limit := 200
@@ -453,21 +486,15 @@ func (s *hubServer) handleHubAttention(w http.ResponseWriter, r *http.Request) {
 			LastSuccessAt: state.LastSuccessAt, LastError: state.LastError}
 	}
 	activities = deduplicateHubActivities(activities, syncs)
+	inputRequired := make([]hubInputRequiredItem, 0)
 	inbox := make([]hubAttentionInboxItem, 0)
-	totalRunning, totalUnseen := 0, 0
+	totalRunning, totalInputRequired, totalUnseen := 0, 0, 0
 	for _, activity := range activities {
 		state := states[activity.NodeID]
 		if state == nil {
 			continue
 		}
 		state.GreenIndicator = true
-		if activity.Kind == "running" {
-			state.RunningCount++
-			totalRunning++
-			continue
-		}
-		state.UnseenCount++
-		totalUnseen++
 		title := strings.TrimSpace(activity.ShortTitle)
 		if title == "" {
 			title = strings.TrimSpace(activity.LongTitle)
@@ -475,10 +502,42 @@ func (s *hubServer) handleHubAttention(w http.ResponseWriter, r *http.Request) {
 		if title == "" {
 			title = "Untitled conversation"
 		}
+		switch activity.Kind {
+		case "running":
+			state.RunningCount++
+			totalRunning++
+			continue
+		case "input_required":
+			state.InputRequiredCount++
+			totalInputRequired++
+			inputRequired = append(inputRequired, hubInputRequiredItem{
+				NodeID: activity.NodeID, NodeName: names[activity.NodeID], SessionID: activity.SessionID,
+				Title: title, PendingInteractionCount: activity.PendingInteractionCount,
+				PendingInteractionKinds: append([]string(nil), activity.PendingInteractionKinds...),
+				RequiredSince:           activity.InteractionRequiredSince,
+				ResumePath:              s.hubPath("/node/" + url.PathEscape(activity.NodeID) + "/" + url.PathEscape(activity.SessionID)),
+				Stale:                   state.Stale,
+			})
+			continue
+		}
+		state.UnseenCount++
+		totalUnseen++
 		inbox = append(inbox, hubAttentionInboxItem{NodeID: activity.NodeID, NodeName: names[activity.NodeID], SessionID: activity.SessionID,
 			Title: title, Outcome: activity.Outcome, TerminalAt: activity.TerminalAt, AttentionSeq: activity.AttentionSeq,
 			ResumePath: s.hubPath("/node/" + url.PathEscape(activity.NodeID) + "/" + url.PathEscape(activity.SessionID))})
 	}
+	sort.Slice(inputRequired, func(i, j int) bool {
+		if inputRequired[i].Stale != inputRequired[j].Stale {
+			return !inputRequired[i].Stale
+		}
+		if !inputRequired[i].RequiredSince.Equal(inputRequired[j].RequiredSince) {
+			return inputRequired[i].RequiredSince.Before(inputRequired[j].RequiredSince)
+		}
+		if inputRequired[i].NodeID != inputRequired[j].NodeID {
+			return inputRequired[i].NodeID < inputRequired[j].NodeID
+		}
+		return inputRequired[i].SessionID < inputRequired[j].SessionID
+	})
 	sort.Slice(inbox, func(i, j int) bool {
 		if !inbox[i].TerminalAt.Equal(inbox[j].TerminalAt) {
 			return inbox[i].TerminalAt.After(inbox[j].TerminalAt)
@@ -488,16 +547,22 @@ func (s *hubServer) handleHubAttention(w http.ResponseWriter, r *http.Request) {
 		}
 		return inbox[i].SessionID < inbox[j].SessionID
 	})
-	hasMore := len(inbox) > limit
-	if hasMore {
+	hasMore := len(inbox) > limit || len(inputRequired) > limit
+	if len(inbox) > limit {
 		inbox = inbox[:limit]
+	}
+	if len(inputRequired) > limit {
+		inputRequired = inputRequired[:limit]
 	}
 	nodeViews := make([]hubAttentionNodeView, 0, len(states))
 	for _, state := range states {
 		nodeViews = append(nodeViews, *state)
 	}
 	sort.Slice(nodeViews, func(i, j int) bool { return nodeViews[i].NodeName < nodeViews[j].NodeName })
-	writeJSON(w, http.StatusOK, map[string]any{"total_running": totalRunning, "total_unseen": totalUnseen, "nodes": nodeViews, "inbox": inbox, "has_more": hasMore})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total_running": totalRunning, "total_input_required": totalInputRequired, "total_unseen": totalUnseen,
+		"nodes": nodeViews, "input_required": inputRequired, "inbox": inbox, "has_more": hasMore,
+	})
 }
 
 func (s *hubServer) applyHubAttentionViews(ctx context.Context, views []hubNodeView) {
@@ -509,13 +574,16 @@ func (s *hubServer) applyHubAttentionViews(ctx context.Context, views []hubNodeV
 		return
 	}
 	activities = deduplicateHubActivities(activities, syncs)
-	counts := make(map[string][2]int)
+	counts := make(map[string][3]int)
 	for _, activity := range activities {
 		value := counts[activity.NodeID]
-		if activity.Kind == "running" {
+		switch activity.Kind {
+		case "running":
 			value[0]++
-		} else {
+		case "input_required":
 			value[1]++
+		default:
+			value[2]++
 		}
 		counts[activity.NodeID] = value
 	}
@@ -529,7 +597,8 @@ func (s *hubServer) applyHubAttentionViews(ctx context.Context, views []hubNodeV
 			views[i].Sessions = &hubNodeSessionsView{}
 		}
 		views[i].Sessions.ActiveCount = max(views[i].Sessions.ActiveCount, count[0])
-		views[i].Sessions.UnseenCount = count[1]
+		views[i].Sessions.InputRequiredCount = max(views[i].Sessions.InputRequiredCount, count[1])
+		views[i].Sessions.UnseenCount = count[2]
 		if state, ok := syncByNode[views[i].ID]; ok {
 			views[i].Sessions.AttentionCapability = string(state.Capability)
 			if !state.LastSuccessAt.IsZero() {

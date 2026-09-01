@@ -21,19 +21,23 @@ type hubNodeDiagnostic struct {
 }
 
 type hubNodeSessionView struct {
-	ID            string `json:"id"`
-	ShortTitle    string `json:"short_title"`
-	LongTitle     string `json:"long_title,omitempty"`
-	ActiveRun     bool   `json:"active_run,omitempty"`
-	LastMessageAt int64  `json:"last_message_at,omitempty"`
-	MessageCount  int    `json:"message_count,omitempty"`
-	ResumePath    string `json:"resume_path"`
+	ID                      string   `json:"id"`
+	ShortTitle              string   `json:"short_title"`
+	LongTitle               string   `json:"long_title,omitempty"`
+	ActiveRun               bool     `json:"active_run,omitempty"`
+	InteractionRequired     bool     `json:"interaction_required,omitempty"`
+	PendingInteractionCount int      `json:"pending_interaction_count,omitempty"`
+	PendingInteractionKinds []string `json:"pending_interaction_kinds,omitempty"`
+	LastMessageAt           int64    `json:"last_message_at,omitempty"`
+	MessageCount            int      `json:"message_count,omitempty"`
+	ResumePath              string   `json:"resume_path"`
 }
 
 type hubNodeSessionsView struct {
 	CountLabel             string               `json:"count_label"`
 	HasMore                bool                 `json:"has_more,omitempty"`
 	ActiveCount            int                  `json:"active_count,omitempty"`
+	InputRequiredCount     int                  `json:"input_required_count,omitempty"`
 	UnseenCount            int                  `json:"unseen_count,omitempty"`
 	AttentionCapability    string               `json:"attention_capability,omitempty"`
 	AttentionLastSuccessAt int64                `json:"attention_last_success_at,omitempty"`
@@ -130,12 +134,15 @@ const (
 )
 
 type hubNodeSessionStatus struct {
-	ID            string `json:"id"`
-	ShortTitle    string `json:"short_title"`
-	LongTitle     string `json:"long_title"`
-	ActiveRun     bool   `json:"active_run"`
-	LastMessageAt int64  `json:"last_message_at"`
-	MessageCount  int    `json:"message_count"`
+	ID                      string   `json:"id"`
+	ShortTitle              string   `json:"short_title"`
+	LongTitle               string   `json:"long_title"`
+	ActiveRun               bool     `json:"active_run"`
+	InteractionRequired     bool     `json:"interaction_required"`
+	PendingInteractionCount int      `json:"pending_interaction_count"`
+	PendingInteractionKinds []string `json:"pending_interaction_kinds"`
+	LastMessageAt           int64    `json:"last_message_at"`
+	MessageCount            int      `json:"message_count"`
 }
 
 // collectNodeSessionViews enriches reachable nodes with a bounded session
@@ -248,13 +255,19 @@ func (s *hubServer) buildHubNodeSessionsView(n hub.Node, entries []hubNodeSessio
 			continue
 		}
 		sess := hubNodeSessionView{
-			ID:            entry.ID,
-			ShortTitle:    hubNodeSessionTitle(entry),
-			LongTitle:     strings.TrimSpace(entry.LongTitle),
-			ActiveRun:     entry.ActiveRun,
-			LastMessageAt: entry.LastMessageAt,
-			MessageCount:  entry.MessageCount,
-			ResumePath:    s.hubPath("/node/" + n.ID + "/" + url.PathEscape(entry.ID)),
+			ID:                      entry.ID,
+			ShortTitle:              hubNodeSessionTitle(entry),
+			LongTitle:               strings.TrimSpace(entry.LongTitle),
+			ActiveRun:               entry.ActiveRun,
+			InteractionRequired:     entry.InteractionRequired,
+			PendingInteractionCount: entry.PendingInteractionCount,
+			PendingInteractionKinds: append([]string(nil), entry.PendingInteractionKinds...),
+			LastMessageAt:           entry.LastMessageAt,
+			MessageCount:            entry.MessageCount,
+			ResumePath:              s.hubPath("/node/" + n.ID + "/" + url.PathEscape(entry.ID)),
+		}
+		if sess.InteractionRequired {
+			out.InputRequiredCount++
 		}
 		if sess.ActiveRun {
 			out.ActiveCount++

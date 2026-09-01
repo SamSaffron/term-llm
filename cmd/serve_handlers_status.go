@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +12,41 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/session"
 )
+
+func listStatusAttention(ctx context.Context, store session.AttentionStore, kind session.AttentionKind) map[string]session.AttentionItem {
+	for attempt := 0; attempt < 2; attempt++ {
+		candidate := make(map[string]session.AttentionItem)
+		cursor := ""
+		var snapshotVersion int64
+		complete := true
+		for {
+			page, err := store.ListAttention(ctx, session.AttentionListOptions{
+				Kind: kind, Limit: 500, Cursor: cursor, SnapshotVersion: snapshotVersion,
+			})
+			if err != nil {
+				complete = false
+				if !errors.Is(err, session.ErrAttentionConflict) || attempt == 1 {
+					log.Printf("[serve] durable %s status projection unavailable: %v", kind, err)
+				}
+				break
+			}
+			if snapshotVersion == 0 {
+				snapshotVersion = page.SnapshotVersion
+			}
+			for _, item := range page.Items {
+				candidate[item.SessionID] = item
+			}
+			if !page.HasMore || page.NextCursor == "" {
+				break
+			}
+			cursor = page.NextCursor
+		}
+		if complete {
+			return candidate
+		}
+	}
+	return map[string]session.AttentionItem{}
+}
 
 func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -48,44 +84,23 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 
 	// Collect active session IDs from in-memory state without touching runtimes.
 	activeIDs := s.activeSessionIDs()
-	durableRunning := make(map[string]session.AttentionItem)
 	attentionStore, attentionSupported := session.AsAttentionStore(s.store)
+	_, interactionProjectionSupported := session.AsResponseRunInteractionStore(s.store)
+	durableRunning := make(map[string]session.AttentionItem)
+	durableInputRequired := make(map[string]session.AttentionItem)
 	if attentionSupported {
-		for attempt := 0; attempt < 2; attempt++ {
-			candidate := make(map[string]session.AttentionItem)
-			cursor := ""
-			var snapshotVersion int64
-			complete := true
-			for {
-				page, listErr := attentionStore.ListAttention(r.Context(), session.AttentionListOptions{
-					Kind: session.AttentionKindRunning, Limit: 500, Cursor: cursor, SnapshotVersion: snapshotVersion,
-				})
-				if listErr != nil {
-					complete = false
-					if !errors.Is(listErr, session.ErrAttentionConflict) || attempt == 1 {
-						log.Printf("[serve] durable running status projection unavailable: %v", listErr)
-					}
-					break
-				}
-				if snapshotVersion == 0 {
-					snapshotVersion = page.SnapshotVersion
-				}
-				for _, item := range page.Items {
-					candidate[item.SessionID] = item
-				}
-				if !page.HasMore || page.NextCursor == "" {
-					break
-				}
-				cursor = page.NextCursor
-			}
-			if complete {
-				durableRunning = candidate
-				for id := range candidate {
-					activeIDs[id] = true
-				}
-				break
-			}
+		durableRunning = listStatusAttention(r.Context(), attentionStore, session.AttentionKindRunning)
+		for id := range durableRunning {
+			activeIDs[id] = true
 		}
+		if interactionProjectionSupported {
+			durableInputRequired = listStatusAttention(r.Context(), attentionStore, session.AttentionKindInputRequired)
+		}
+	}
+
+	runtimeInteractions := make(map[string]serveInteractionSummary)
+	if s.sessionMgr != nil {
+		runtimeInteractions = s.sessionMgr.UnresolvedInteractionSummaries()
 	}
 	criticalIDs := make(map[string]bool, len(activeIDs)+1)
 	if selected := strings.TrimSpace(r.URL.Query().Get("selected_session")); selected != "" {
@@ -94,10 +109,8 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 	for id := range activeIDs {
 		criticalIDs[id] = true
 	}
-	if s.sessionMgr != nil {
-		for id := range s.sessionMgr.UnresolvedInteractionSessionIDs() {
-			criticalIDs[id] = true
-		}
+	for id := range runtimeInteractions {
+		criticalIDs[id] = true
 	}
 	listed := make(map[string]bool, len(sessions))
 	for _, sess := range sessions {
@@ -148,30 +161,36 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 	// transcript_updated_at remains for older cached clients and hub dashboards.
 	// Revision-aware clients use transcript_rev as the correctness signal.
 	type statusEntry struct {
-		ID                       string `json:"id"`
-		ProjectID                string `json:"project_id,omitempty"`
-		ProjectName              string `json:"project_name,omitempty"`
-		ShortTitle               string `json:"short_title"`
-		LongTitle                string `json:"long_title"`
-		ActiveRun                bool   `json:"active_run,omitempty"`
-		ActiveResponseID         string `json:"active_response_id,omitempty"`
-		RunEpoch                 int64  `json:"run_epoch,omitempty"`
-		StartedRev               int64  `json:"started_rev,omitempty"`
-		StartedAt                int64  `json:"started_at,omitempty"`
-		ClientMessageID          string `json:"client_message_id,omitempty"`
-		AnchorRowID              int64  `json:"anchor_row_id,omitempty"`
-		TranscriptRev            int64  `json:"transcript_rev"`
-		MsgCount                 int    `json:"message_count"`
-		LastMessageAt            int64  `json:"last_message_at"`
-		TranscriptUpdatedAt      int64  `json:"transcript_updated_at"`
-		AttentionStoreInstanceID string `json:"attention_store_instance_id,omitempty"`
-		AttentionSeq             int64  `json:"attention_seq,omitempty"`
-		AttentionResponseID      string `json:"attention_response_id,omitempty"`
-		AttentionFinalRev        int64  `json:"attention_final_rev,omitempty"`
-		SeenThroughSeq           int64  `json:"seen_through_seq,omitempty"`
-		AttentionUnseen          bool   `json:"attention_unseen,omitempty"`
-		AttentionOutcome         string `json:"attention_outcome,omitempty"`
-		AttentionTerminalAt      int64  `json:"attention_terminal_at,omitempty"`
+		ID                       string   `json:"id"`
+		ProjectID                string   `json:"project_id,omitempty"`
+		ProjectName              string   `json:"project_name,omitempty"`
+		ShortTitle               string   `json:"short_title"`
+		LongTitle                string   `json:"long_title"`
+		ActiveRun                bool     `json:"active_run,omitempty"`
+		ActiveResponseID         string   `json:"active_response_id,omitempty"`
+		RunEpoch                 int64    `json:"run_epoch,omitempty"`
+		StartedRev               int64    `json:"started_rev,omitempty"`
+		StartedAt                int64    `json:"started_at,omitempty"`
+		ClientMessageID          string   `json:"client_message_id,omitempty"`
+		AnchorRowID              int64    `json:"anchor_row_id,omitempty"`
+		TranscriptRev            int64    `json:"transcript_rev"`
+		MsgCount                 int      `json:"message_count"`
+		LastMessageAt            int64    `json:"last_message_at"`
+		TranscriptUpdatedAt      int64    `json:"transcript_updated_at"`
+		AttentionStoreInstanceID string   `json:"attention_store_instance_id,omitempty"`
+		AttentionSeq             int64    `json:"attention_seq,omitempty"`
+		AttentionResponseID      string   `json:"attention_response_id,omitempty"`
+		AttentionFinalRev        int64    `json:"attention_final_rev,omitempty"`
+		SeenThroughSeq           int64    `json:"seen_through_seq,omitempty"`
+		AttentionUnseen          bool     `json:"attention_unseen,omitempty"`
+		AttentionOutcome         string   `json:"attention_outcome,omitempty"`
+		AttentionTerminalAt      int64    `json:"attention_terminal_at,omitempty"`
+		InteractionRequired      bool     `json:"interaction_required"`
+		InteractionResponseID    string   `json:"interaction_response_id,omitempty"`
+		InteractionStateRev      int64    `json:"interaction_state_rev,omitempty"`
+		PendingInteractionCount  int      `json:"pending_interaction_count,omitempty"`
+		PendingInteractionKinds  []string `json:"pending_interaction_kinds,omitempty"`
+		InteractionRequiredSince int64    `json:"interaction_required_since,omitempty"`
 	}
 
 	result := make([]statusEntry, 0, len(sessions))
@@ -220,6 +239,46 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 				attentionTerminalAt = attention.TerminalAt.UnixMilli()
 			}
 		}
+		var interactionRequired bool
+		var interactionResponseID string
+		var interactionStateRev int64
+		var pendingInteractionCount int
+		var pendingInteractionKinds []string
+		var interactionRequiredSince int64
+		if durable, ok := durableInputRequired[sess.ID]; ok {
+			interactionRequired = durable.InteractionRequired
+			interactionResponseID = durable.ResponseID
+			interactionStateRev = durable.InteractionStateRev
+			pendingInteractionCount = durable.PendingInteractionCount
+			pendingInteractionKinds = append([]string(nil), durable.PendingInteractionKinds...)
+			if !durable.InteractionRequiredSince.IsZero() {
+				interactionRequiredSince = durable.InteractionRequiredSince.UnixMilli()
+			}
+		}
+		if runtimeState, ok := runtimeInteractions[sess.ID]; ok {
+			interactionRequired = runtimeState.Count > 0
+			interactionResponseID = activeResponseID
+			interactionStateRev = 0
+			pendingInteractionCount = runtimeState.Count
+			pendingInteractionKinds = append([]string(nil), runtimeState.Kinds...)
+			if !runtimeState.RequiredSince.IsZero() {
+				interactionRequiredSince = runtimeState.RequiredSince.UnixMilli()
+			}
+		}
+		if s.responseRuns != nil {
+			if activeRun := s.responseRuns.activeRun(sess.ID); activeRun != nil {
+				state := activeRun.interactionState()
+				interactionRequired = state.Count > 0
+				interactionResponseID = state.ResponseID
+				interactionStateRev = state.Revision
+				pendingInteractionCount = state.Count
+				pendingInteractionKinds = append([]string(nil), state.Kinds...)
+				interactionRequiredSince = 0
+				if !state.RequiredSince.IsZero() {
+					interactionRequiredSince = state.RequiredSince.UnixMilli()
+				}
+			}
+		}
 		result = append(result, statusEntry{
 			ID:                       sess.ID,
 			ProjectID:                sess.ProjectID,
@@ -245,6 +304,12 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 			AttentionUnseen:          attention.Unseen,
 			AttentionOutcome:         string(attention.Outcome),
 			AttentionTerminalAt:      attentionTerminalAt,
+			InteractionRequired:      interactionRequired,
+			InteractionResponseID:    interactionResponseID,
+			InteractionStateRev:      interactionStateRev,
+			PendingInteractionCount:  pendingInteractionCount,
+			PendingInteractionKinds:  pendingInteractionKinds,
+			InteractionRequiredSince: interactionRequiredSince,
 		})
 	}
 

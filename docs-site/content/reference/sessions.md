@@ -224,17 +224,21 @@ Use sessions when you want:
 
 Use [Memory](/guides/memory/) when you want durable facts and behavioral insights that survive beyond one specific chat.
 
-## Terminal attention and seen state
+## Running, input-required, and terminal attention
 
-Serve web records terminal attention for top-level, user-initiated web response runs. A green pulsing circle means the conversation is running. When the run completes or fails, or when recovery marks an abandoned run as orphaned, the circle becomes solid until the conversation is visited in a visible browser tab and its transcript has loaded through the run's final durable revision. A cancelled run receives the marker only when it produced durable output.
+Serve web distinguishes three session states. A green pulsing circle means the conversation is running. A solid green circle while the run is active means the agent is blocked on an actionable interaction such as `ask_user`, shell/file approval, or workspace access. That input-required state is level-triggered: visiting or dismissing the prompt does not clear it; answering, denying, cancelling, or terminating the run does.
 
-The node database is authoritative. It stores monotonic `latest_attention_seq` and `seen_through_seq` watermarks; a conversation needs attention exactly when the former is greater than the latter. A browser acknowledges the exact sequence it rendered, so a delayed acknowledgement for one completion cannot clear a newer completion. Hidden tabs, link prefetches, notification clicks, and ordinary GET requests do not mark a conversation seen.
+When a run completes or fails, or when recovery marks an abandoned run as orphaned, the circle becomes solid until the conversation is visited in a visible browser tab and its transcript has loaded through the run's final durable revision. A cancelled run receives the terminal marker only when it produced durable output.
+
+Input-required state is deliberately separate from terminal seen state. The response lifecycle stores a fenced, payload-free count and broad interaction kinds; prompt questions, paths, and choices remain in the live response recovery state. If the owning process disappears, lease expiry removes the actionable state and orphan recovery creates the normal terminal marker instead of resurrecting a prompt that can no longer be answered.
+
+The node database is authoritative. For terminal attention it stores monotonic `latest_attention_seq` and `seen_through_seq` watermarks; a conversation needs terminal review exactly when the former is greater than the latter. A browser acknowledges the exact sequence it rendered, so a delayed acknowledgement for one completion cannot clear a newer completion. Hidden tabs, link prefetches, notification clicks, and ordinary GET requests do not mark a conversation seen.
 
 Attention is a single-operator feature in this version. All tabs, passkeys, and bearer clients connected to one node share the same watermark. Passkey credential labels are devices, not separate user principals. CLI/TUI `ask` and chat runs do not create terminal-attention markers because their terminal operator normally observes them; serve-origin web response runs are the marker source.
 
 Node APIs:
 
-- `GET /v1/attention?kind=unseen|running&limit=200&cursor=...` returns a complete, stable-version, paginated projection for Hub collection. It contains identifiers, titles, lifecycle metadata, and revisions, but no transcript content.
+- `GET /v1/attention?kind=unseen|input_required|running&limit=200&cursor=...` returns a complete, stable-version, paginated projection for Hub collection. Protocol v2 adds `input_required` with counts, broad kinds, and waiting time, but no prompt or transcript content.
 - `POST /v1/sessions/{id}/attention/seen` accepts `{"store_instance_id":"...","through_seq":N}` after the visible transcript revision gate.
 - `/healthz` advertises the `attention` capability, while `/v1/capabilities` includes its protocol version and stable store instance ID.
 

@@ -22,6 +22,7 @@ export class InteractionStore {
   constructor(
     private readonly services: AppStoreServices,
     private readonly modal: Signal<Modal>,
+    private readonly activeSessionId: Signal<string>,
     private readonly publish: PublishInteractionChange,
   ) {}
 
@@ -31,10 +32,12 @@ export class InteractionStore {
     responseId: string,
     requestId: string,
     prompt: ApprovalPrompt | AskUserPrompt,
+    interactionStateRev = 0,
   ): string {
-    const discoveredKey = `${sessionId}:${responseId}:${requestId}`;
-    const existing =
-      this.find(kind, sessionId, requestId, responseId) || this.find(kind, sessionId, requestId);
+    const discoveredKey = `${kind}:${sessionId}:${responseId}:${requestId}`;
+    const exact = responseId ? this.find(kind, sessionId, requestId, responseId) : null;
+    const unscoped = this.find(kind, sessionId, requestId);
+    const existing = exact || (unscoped && (!responseId || !unscoped.responseId) ? unscoped : null);
     const key = existing?.key || discoveredKey;
     const record: InteractionRecord = existing || {
       key,
@@ -49,7 +52,12 @@ export class InteractionStore {
     };
     this.interactions.value = {
       ...this.interactions.peek(),
-      [key]: { ...record, responseId: record.responseId || responseId, prompt },
+      [key]: {
+        ...record,
+        responseId: record.responseId || responseId,
+        interactionStateRev: Math.max(record.interactionStateRev || 0, interactionStateRev),
+        prompt,
+      },
     };
     if (!existing) {
       this.order.value = [...this.order.peek(), key];
@@ -66,9 +74,10 @@ export class InteractionStore {
     outcome: string,
     resolvedAt = Date.now(),
   ): void {
-    const existing =
-      this.find(kind, sessionId, requestId, responseId) || this.find(kind, sessionId, requestId);
-    const key = existing?.key || `${sessionId}:${responseId}:${requestId}`;
+    const exact = responseId ? this.find(kind, sessionId, requestId, responseId) : null;
+    const unscoped = this.find(kind, sessionId, requestId);
+    const existing = exact || (unscoped && (!responseId || !unscoped.responseId) ? unscoped : null);
+    const key = existing?.key || `${kind}:${sessionId}:${responseId}:${requestId}`;
     const normalized = outcome.replaceAll('_', '-');
     const state: InteractionRecord['state'] =
       normalized === 'accepted' || normalized === 'answered'
@@ -105,8 +114,18 @@ export class InteractionStore {
     };
     if (!existing) this.order.value = [...this.order.peek(), key];
     this.services.bumpDiagnostic('interactionReconciliations');
-    if (kind === 'approval' && this.approval.peek()?.id === requestId) this.approval.value = null;
-    if (kind === 'ask-user' && this.askUser.peek()?.callId === requestId) this.askUser.value = null;
+    if (
+      kind === 'approval' &&
+      this.approval.peek()?.sessionId === sessionId &&
+      this.approval.peek()?.id === requestId
+    )
+      this.approval.value = null;
+    if (
+      kind === 'ask-user' &&
+      this.askUser.peek()?.sessionId === sessionId &&
+      this.askUser.peek()?.callId === requestId
+    )
+      this.askUser.value = null;
     if (changed) this.publish('interaction-changed', sessionId, responseId);
   }
 
@@ -116,14 +135,20 @@ export class InteractionStore {
     requestId: string,
     responseId = '',
   ): InteractionRecord | null {
+    const matches = Object.values(this.interactions.peek()).filter(
+      (entry) =>
+        entry.kind === kind &&
+        entry.sessionId === sessionId &&
+        entry.requestId === requestId &&
+        (!responseId || entry.responseId === responseId),
+    );
+    if (responseId) return matches[0] || null;
     return (
-      Object.values(this.interactions.peek()).find(
-        (entry) =>
-          entry.kind === kind &&
-          entry.sessionId === sessionId &&
-          entry.requestId === requestId &&
-          (!responseId || entry.responseId === responseId),
-      ) || null
+      matches
+        .sort((left, right) => right.order - left.order)
+        .find((entry) => ['waiting', 'dismissed', 'submitting', 'failed'].includes(entry.state)) ||
+      matches[0] ||
+      null
     );
   }
 
@@ -138,11 +163,63 @@ export class InteractionStore {
     responseId: string,
     requestId: string,
     prompt: ApprovalPrompt | AskUserPrompt,
+    interactionStateRev = 0,
   ): void {
-    this.upsert(kind, sessionId, responseId, requestId, prompt);
+    this.upsert(kind, sessionId, responseId, requestId, prompt, interactionStateRev);
+    if (sessionId !== this.activeSessionId.peek()) return;
     if (!this.shouldOpen(kind, sessionId, requestId)) return;
     if (kind === 'ask-user') this.askUser.value = prompt as AskUserPrompt;
     else this.approval.value = prompt as ApprovalPrompt;
+  }
+
+  pendingForSession(sessionId: string): InteractionRecord[] {
+    if (!sessionId) return [];
+    return this.order
+      .peek()
+      .map((key) => this.interactions.peek()[key])
+      .filter(
+        (entry): entry is InteractionRecord =>
+          Boolean(entry) &&
+          entry.sessionId === sessionId &&
+          ['waiting', 'dismissed', 'submitting', 'failed'].includes(entry.state),
+      );
+  }
+
+  reconcileSessionLevel(
+    sessionId: string,
+    responseId: string,
+    interactionStateRev: number,
+    required: boolean,
+    activeRun: boolean,
+    statusRequestedAt: number,
+  ): void {
+    if (required) return;
+    const interactions = { ...this.interactions.peek() };
+    let changed = false;
+    for (const [key, interaction] of Object.entries(interactions)) {
+      if (
+        interaction.sessionId !== sessionId ||
+        !['waiting', 'dismissed', 'submitting', 'failed'].includes(interaction.state) ||
+        interaction.createdAt > statusRequestedAt ||
+        (activeRun &&
+          responseId &&
+          interaction.responseId &&
+          interaction.responseId !== responseId) ||
+        (activeRun && (interaction.interactionStateRev || 0) > interactionStateRev)
+      )
+        continue;
+      interactions[key] = {
+        ...interaction,
+        state: 'resolved-elsewhere',
+        outcome: 'Decision no longer needed',
+        resolvedAt: Date.now(),
+      };
+      changed = true;
+    }
+    if (!changed) return;
+    this.interactions.value = interactions;
+    if (this.askUser.peek()?.sessionId === sessionId) this.askUser.value = null;
+    if (this.approval.peek()?.sessionId === sessionId) this.approval.value = null;
   }
 
   dismiss(kind: InteractionRecord['kind'], promptOverride?: ApprovalPrompt | AskUserPrompt): void {
@@ -160,14 +237,29 @@ export class InteractionStore {
           [record.key]: { ...record, state: 'dismissed' },
         };
     }
-    if (kind === 'ask-user') this.askUser.value = null;
-    else this.approval.value = null;
+    if (
+      kind === 'ask-user' &&
+      this.askUser.peek()?.sessionId === prompt?.sessionId &&
+      this.askUser.peek()?.callId === requestId
+    )
+      this.askUser.value = null;
+    else if (
+      kind === 'approval' &&
+      this.approval.peek()?.sessionId === prompt?.sessionId &&
+      this.approval.peek()?.id === requestId
+    )
+      this.approval.value = null;
     this.modal.value = '';
   }
 
   open(key: string): void {
     const record = this.interactions.peek()[key];
-    if (!record || !['waiting', 'dismissed', 'failed'].includes(record.state)) return;
+    if (
+      !record ||
+      record.sessionId !== this.activeSessionId.peek() ||
+      !['waiting', 'dismissed', 'failed'].includes(record.state)
+    )
+      return;
     if (record.kind === 'ask-user') {
       this.askUser.value = record.prompt as AskUserPrompt;
       this.modal.value = 'ask-user';
@@ -222,7 +314,17 @@ export class InteractionStore {
       try {
         const result = (await this.services.endpoints.askUser(
           prompt.sessionId,
-          cancelled ? { call_id: requestId, cancelled: true } : { call_id: requestId, answers },
+          cancelled
+            ? {
+                call_id: requestId,
+                ...(record?.responseId ? { response_id: record.responseId } : {}),
+                cancelled: true,
+              }
+            : {
+                call_id: requestId,
+                ...(record?.responseId ? { response_id: record.responseId } : {}),
+                answers,
+              },
           requestId,
         )) as Record<string, unknown>;
         const authoritative = String(result.status || '') === 'already_resolved';
@@ -278,8 +380,17 @@ export class InteractionStore {
         const result = (await this.services.endpoints.approval(
           prompt.sessionId,
           cancelled
-            ? { approval_id: requestId, cancelled: true }
-            : { approval_id: requestId, choice, resume_auto: resumeAuto },
+            ? {
+                approval_id: requestId,
+                ...(record?.responseId ? { response_id: record.responseId } : {}),
+                cancelled: true,
+              }
+            : {
+                approval_id: requestId,
+                ...(record?.responseId ? { response_id: record.responseId } : {}),
+                choice,
+                resume_auto: resumeAuto,
+              },
           requestId,
         )) as Record<string, unknown>;
         const authoritative = String(result.status || '') === 'already_resolved';
