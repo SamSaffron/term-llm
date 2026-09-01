@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/hub"
+	"github.com/samsaffron/term-llm/internal/widgets"
 )
 
 const hubHTMLRebaseMaxBytes = 4 << 20
@@ -152,6 +153,10 @@ func (s *hubServer) handleReverseNodeProxy(w http.ResponseWriter, r *http.Reques
 	req.Header.Del("X-Forwarded-Proto")
 	req.Header.Del("X-Forwarded-Prefix")
 	req.Header.Del("Forwarded")
+	req.Header.Del(widgets.PublicPrefixHeader)
+	req.Header.Set("X-Forwarded-Host", r.Host)
+	req.Header.Set("X-Forwarded-Proto", hubForwardedProto(r))
+	req.Header.Set(widgets.PublicPrefixHeader, t.mount)
 	resp, err := s.reverse.do(r.Context(), node, req)
 	if err != nil {
 		hubProxyErrorHandler(w, r.WithContext(withHubProxyTarget(r.Context(), t)), err)
@@ -302,12 +307,23 @@ func hubRewriteProxyRequest(pr *httputil.ProxyRequest) {
 	// negotiates and decodes gzip itself.
 	out.Header.Del("Accept-Encoding")
 
-	// Drop spoofable forwarding metadata.
+	// Replace spoofable forwarding metadata with the public Hub node mount.
 	out.Header.Del("X-Forwarded-For")
 	out.Header.Del("X-Forwarded-Host")
 	out.Header.Del("X-Forwarded-Proto")
 	out.Header.Del("X-Forwarded-Prefix")
 	out.Header.Del("Forwarded")
+	out.Header.Del(widgets.PublicPrefixHeader)
+	out.Header.Set("X-Forwarded-Host", pr.In.Host)
+	out.Header.Set("X-Forwarded-Proto", hubForwardedProto(pr.In))
+	out.Header.Set(widgets.PublicPrefixHeader, t.mount)
+}
+
+func hubForwardedProto(r *http.Request) string {
+	if r != nil && (r.TLS != nil || strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")) {
+		return "https"
+	}
+	return "http"
 }
 
 type hubPrefixReadCloser struct {

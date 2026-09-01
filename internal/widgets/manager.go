@@ -12,9 +12,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"golang.org/x/net/http/httpguts"
 
 	"github.com/samsaffron/term-llm/internal/procutil"
 )
@@ -24,6 +27,10 @@ const (
 	startupTimeout       = 10 * time.Second
 	startupProbeInterval = 25 * time.Millisecond
 	socketRuntimeDir     = "/tmp/term-llm-widgets"
+
+	// PublicPrefixHeader carries a term-llm proxy's replacement for the node's
+	// base path. It is consumed by Manager and is not forwarded to widgets.
+	PublicPrefixHeader = "X-Term-LLM-Public-Prefix"
 )
 
 var errWidgetManagerShuttingDown = errors.New("widget manager is shutting down")
@@ -223,6 +230,50 @@ func (m *Manager) StopAll() {
 	wg.Wait()
 }
 
+func widgetPublicPrefix(publicPrefix, forwardedPrefix, localBasePath, mount string) string {
+	prefix := strings.TrimSpace(publicPrefix)
+	if !validForwardedPrefix(prefix) {
+		forwardedPrefix = strings.TrimSpace(forwardedPrefix)
+		prefix = strings.TrimRight(localBasePath, "/")
+		if validForwardedPrefix(forwardedPrefix) {
+			prefix = strings.TrimRight(forwardedPrefix, "/") + prefix
+		}
+	}
+	return strings.TrimRight(prefix, "/") + "/widgets/" + mount
+}
+
+func validForwardedPrefix(prefix string) bool {
+	if prefix == "" || !strings.HasPrefix(prefix, "/") || strings.HasPrefix(prefix, "//") || strings.Contains(prefix, "//") || strings.ContainsAny(prefix, "?#\\") {
+		return false
+	}
+	parsed, err := url.ParseRequestURI(prefix)
+	if err != nil || parsed.RawQuery != "" || parsed.EscapedPath() != prefix || strings.Contains(parsed.Path, "//") {
+		return false
+	}
+	for _, segment := range strings.Split(parsed.Path, "/") {
+		if segment == "." || segment == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+func forwardedHost(host, fallback string) string {
+	host = strings.TrimSpace(host)
+	parsed, err := url.Parse("//" + host)
+	if host == "" || !httpguts.ValidHostHeader(host) || err != nil || parsed.Host != host || parsed.User != nil || parsed.Path != "" || strings.ContainsAny(host, "\\/?#,\"<>") {
+		return fallback
+	}
+	return host
+}
+
+func forwardedProto(proto string, tls bool) string {
+	if strings.EqualFold(strings.TrimSpace(proto), "https") || tls {
+		return "https"
+	}
+	return "http"
+}
+
 // Proxy forwards r to the widget identified by mount.
 // The path in r must already have the /widgets/<mount> prefix stripped.
 func (m *Manager) Proxy(mount string, w http.ResponseWriter, r *http.Request) {
@@ -263,13 +314,12 @@ func (m *Manager) Proxy(mount string, w http.ResponseWriter, r *http.Request) {
 	r2 := r.Clone(r.Context())
 	r2.Header.Del("Authorization")
 	r2.Header.Del("Cookie")
-	r2.Header.Set("X-Forwarded-Prefix", m.basePath+"/widgets/"+mount)
-	r2.Header.Set("X-Forwarded-Host", r.Host)
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	r2.Header.Set("X-Forwarded-Proto", scheme)
+	publicPrefix := widgetPublicPrefix(r.Header.Get(PublicPrefixHeader), r.Header.Get("X-Forwarded-Prefix"), m.basePath, mount)
+	r2.Header.Del("Forwarded")
+	r2.Header.Del(PublicPrefixHeader)
+	r2.Header.Set("X-Forwarded-Prefix", publicPrefix)
+	r2.Header.Set("X-Forwarded-Host", forwardedHost(r.Header.Get("X-Forwarded-Host"), r.Host))
+	r2.Header.Set("X-Forwarded-Proto", forwardedProto(r.Header.Get("X-Forwarded-Proto"), r.TLS != nil))
 	r2.Header.Set("X-Term-LLM-Widget", widgetID)
 
 	proxy.ServeHTTP(w, r2)

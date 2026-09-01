@@ -125,9 +125,13 @@ term-llm removes `/widgets/<mount>` before forwarding the request. Use relative 
 const response = await fetch("api/state");
 ```
 
-Avoid root-relative URLs such as `/static/app.css` or `/api/state`; those target the term-llm server root instead of the widget. When an absolute public URL is unavoidable, render it from `BASE_PATH` or `TERM_LLM_WIDGET_BASE_PATH` on the server.
+Avoid root-relative URLs such as `/static/app.css` or `/api/state`; those target the term-llm server root instead of the widget. Relative URLs are also the only portable default when a widget is opened through a Hub or another path-rewriting proxy.
 
-The widget process receives:
+When an absolute public path is genuinely unavoidable, derive it **for each request** from the `X-Forwarded-Prefix` request header. term-llm normalizes this header before proxying to the widget, so the widget receives its complete browser-visible mount, for example `/chat/widgets/example` directly or `/hub/node/jarvis/widgets/example` through a Hub. `X-Forwarded-Host` and `X-Forwarded-Proto` likewise describe the browser-visible origin when a complete absolute URL is required. These headers are routing hints from the current request's proxy chain, not authenticated facts; do not use them for authorization or other security decisions. Do not use a process-global value for browser URLs.
+
+`BASE_PATH` and `TERM_LLM_WIDGET_BASE_PATH` remain available as the node-local startup path for compatibility with non-request work, but they cannot represent every public route when one widget process serves both direct and Hub traffic.
+
+The widget process receives these environment variables:
 
 ```text
 TERM_LLM_WIDGET_ID
