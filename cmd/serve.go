@@ -784,6 +784,13 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			runtimeFactory:      runtimeFactory,
 			agentRuntimeFactory: agentRuntimeFactory,
 			widgetsMgr:          widgetsMgr,
+			shells: newServeShellManager(serveSessionTTL, func(sessionID string) bool {
+				if store == nil {
+					return false
+				}
+				sess, getErr := store.Get(context.Background(), sessionID)
+				return getErr == nil && sess != nil
+			}),
 		}
 		if hasJobs {
 			jobsV2, err = newServeJobsV2Manager(cfg, serveJobsWorkers, resolvedApproval, s.notifyJobsV2RunDone)
@@ -1371,6 +1378,9 @@ type serveServer struct {
 	commitOperationsWG       sync.WaitGroup
 	commitRunsWG             sync.WaitGroup
 	commitStopping           bool
+	shellsMu                 sync.Mutex
+	shells                   *serveShellManager
+	shellsClosed             bool
 }
 
 // fileTrackStore returns the file-change history store, or nil when file
@@ -1553,6 +1563,7 @@ func (s *serveServer) Stop(ctx context.Context) error {
 			close(s.shutdownCh)
 		}
 	})
+	s.closeShellManager()
 	s.stopEventWatcher()
 	// Synchronize with a concurrently starting lifecycle loop, or permanently
 	// suppress a late start once shutdown has begun.

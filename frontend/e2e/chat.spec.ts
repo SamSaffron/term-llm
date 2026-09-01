@@ -16,7 +16,13 @@ const session = (id: string, title: string, number: number) => ({
 
 async function mockAPI(
   page: Page,
-  options: { holdStream?: boolean; media?: boolean; model?: string; attention?: boolean } = {},
+  options: {
+    holdStream?: boolean;
+    media?: boolean;
+    model?: string;
+    attention?: boolean;
+    shell?: boolean;
+  } = {},
 ) {
   const requests: Array<{ method: string; url: string }> = [];
   const model = options.model || 'gpt-test';
@@ -30,6 +36,7 @@ async function mockAPI(
     if (path.endsWith('/v1/capabilities'))
       return json({
         projects: { enabled: true },
+        shell: { enabled: options.shell === true, version: 1, transport: 'http_sse' },
         widgets: [{ id: 'status', name: 'Status', url: '../widgets/status/' }],
       });
     if (path.endsWith('/v1/providers'))
@@ -108,6 +115,29 @@ async function mockAPI(
         },
       });
     }
+    if (options.shell && /\/v1\/sessions\/[^/]+\/shell$/.test(path) && request.method() === 'POST')
+      return json(
+        { shell_id: 'sh_browser', cwd: '/workspace/project', created: true, state: 'running' },
+        201,
+      );
+    if (options.shell && /\/v1\/sessions\/[^/]+\/shell\/stream$/.test(path))
+      return route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        body: [
+          'event: ready\ndata: {"shell_id":"sh_browser","offset":0,"base_offset":0,"next_offset":0}\n\n',
+          'event: output\ndata: {"offset":0,"next_offset":5,"data":"aGVsbG8="}\n\n',
+          'event: exit\ndata: {"offset":5,"exit_code":0}\n\n',
+        ].join(''),
+      });
+    if (options.shell && /\/v1\/sessions\/[^/]+\/shell\/(?:input|resize)$/.test(path))
+      return request.method() === 'POST' ? json({ accepted: 1 }) : json({});
+    if (
+      options.shell &&
+      /\/v1\/sessions\/[^/]+\/shell$/.test(path) &&
+      request.method() === 'DELETE'
+    )
+      return route.fulfill({ status: 204, body: '' });
     if (/\/v1\/sessions\/s1\/attention\/seen$/.test(path) && request.method() === 'POST')
       return json({
         store_instance_id: 'store-a',
@@ -190,13 +220,57 @@ async function mockAPI(
 async function open(
   page: Page,
   suffix = '',
-  options: { holdStream?: boolean; media?: boolean; model?: string; attention?: boolean } = {},
+  options: {
+    holdStream?: boolean;
+    media?: boolean;
+    model?: string;
+    attention?: boolean;
+    shell?: boolean;
+  } = {},
 ) {
   const requests = await mockAPI(page, options);
   await page.goto(`./${suffix}`);
   await expect(page.locator('#startupSplash')).toBeHidden({ timeout: 10_000 });
   return requests;
 }
+
+test('lazy-loads the capability-gated interactive shell overlay', async ({ page }) => {
+  const requests = await open(page, '', { shell: true });
+  const composer = page.getByRole('textbox', { name: 'Message' });
+  await composer.fill('/shell');
+  await composer.press('Enter');
+
+  await expect(page.getByRole('region', { name: 'Interactive shell' })).toBeVisible();
+  await expect(page.getByText('/workspace/project')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Back to chat' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Close shell' })).toBeVisible();
+
+  await page.evaluate(() => {
+    history.pushState({}, '', new URL('/ui/chat/1', location.origin));
+    dispatchEvent(new PopStateEvent('popstate'));
+  });
+  await expect(page.getByRole('region', { name: 'Interactive shell' })).toBeHidden();
+  await expect(page.getByText('First question')).toBeVisible();
+
+  await composer.fill('/shell');
+  await composer.press('Enter');
+  await expect(page.getByRole('region', { name: 'Interactive shell' })).toBeVisible();
+  await page.getByRole('button', { name: 'Back to chat' }).click();
+  await expect(page.getByRole('region', { name: 'Interactive shell' })).toBeHidden();
+
+  await composer.fill('/shell');
+  await composer.press('Enter');
+  await expect(page.getByRole('region', { name: 'Interactive shell' })).toBeVisible();
+  await page.evaluate(() => {
+    history.pushState({}, '', new URL('/ui/', location.origin));
+    dispatchEvent(new PopStateEvent('popstate'));
+  });
+  await expect(page.getByRole('region', { name: 'Interactive shell' })).toBeHidden();
+  expect(requests.some((entry) => /\/v1\/sessions\/[^/]+\/shell$/.test(entry.url))).toBe(true);
+  expect(requests.some((entry) => /\/v1\/sessions\/[^/]+\/shell\/stream$/.test(entry.url))).toBe(
+    true,
+  );
+});
 
 test('loads, navigates sessions, opens settings and preserves normal namespace hygiene', async ({
   page,

@@ -216,6 +216,15 @@ describe('composer completion', () => {
     expect(applyCompletion('please /co', '/compact')).toBe('please /compact ');
   });
 
+  it('gates the interactive shell command on the server capability', () => {
+    expect(composerCompletions('/sh', [], [], false, false).map((entry) => entry.value)).toEqual(
+      [],
+    );
+    expect(composerCompletions('/sh', [], [], false, true).map((entry) => entry.value)).toEqual([
+      '/shell',
+    ]);
+  });
+
   it('restores branch commands and live skill filtering while streaming', () => {
     const skills = [
       {

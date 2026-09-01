@@ -84,6 +84,9 @@ func (s *serveServer) capabilityList() []string {
 	caps := []string{}
 	if s.cfg.ui {
 		caps = append(caps, "web")
+		if platformServeShellSupported() && s.store != nil {
+			caps = append(caps, "shell")
+		}
 	}
 	if s.cfg.api {
 		caps = append(caps, "api")
@@ -1968,6 +1971,11 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 	suffix := ""
 	if len(parts) > 1 {
 		suffix = parts[1]
+	}
+
+	if suffix == "shell" || strings.HasPrefix(suffix, "shell/") {
+		s.handleSessionShell(w, r, sessionID, suffix)
+		return
 	}
 
 	if suffix == "attention/seen" {

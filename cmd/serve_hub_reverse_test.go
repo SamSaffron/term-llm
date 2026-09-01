@@ -186,16 +186,16 @@ func TestHubReverseNodeProxyStreamsChunkedResponse(t *testing.T) {
 	}
 }
 
-func TestHubReverseNodeProxyStreamsIncrementalSSE(t *testing.T) {
-	firstEvent := "data: first\n\n"
-	secondEvent := "data: second\n\n"
+func TestHubReverseNodeProxyStreamsShellSSEIncrementally(t *testing.T) {
+	firstEvent := "event: ready\ndata: {\"shell_id\":\"sh_one\",\"next_offset\":0}\n\n"
+	secondEvent := "event: output\ndata: {\"offset\":0,\"next_offset\":2,\"data\":\"aGk=\"}\n\n"
 	releaseBackend := make(chan struct{})
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(releaseBackend) }) }
 
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/chat/events" {
-			t.Errorf("backend path = %q", r.URL.Path)
+		if r.URL.Path != "/chat/v1/sessions/shell-session/shell/stream" || r.URL.Query().Get("shell_id") != "sh_one" || r.URL.Query().Get("offset") != "0" {
+			t.Errorf("backend target = %q", r.URL.RequestURI())
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -221,7 +221,7 @@ func TestHubReverseNodeProxyStreamsIncrementalSSE(t *testing.T) {
 
 	requestCtx, cancelRequest := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelRequest()
-	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, hubTS.URL+"/node/artist/events", nil)
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, hubTS.URL+"/node/artist/v1/sessions/shell-session/shell/stream?shell_id=sh_one&offset=0", nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}

@@ -71,6 +71,10 @@ With the default base path of `/ui`, the web runtime exposes:
 - `GET /ui/v1/sessions?project_id=prj_...&cursor=...`
 - `GET /ui/v1/sessions/search?q=...&project_id=prj_...`
 - `POST /ui/v1/sessions/:id/project` (validated one-time historical assignment)
+- `POST|DELETE /ui/v1/sessions/:id/shell`
+- `GET /ui/v1/sessions/:id/shell/stream` (SSE)
+- `POST /ui/v1/sessions/:id/shell/input`
+- `POST /ui/v1/sessions/:id/shell/resize`
 - `GET /ui/healthz`
 - `GET /ui/` for the browser UI
 - `GET /ui/images/:file` for generated images
@@ -80,6 +84,14 @@ If the jobs platform is also enabled, the jobs API is mounted under the same bas
 The Web UI discovers local applications under `<base-path>/widgets/` by default. A clean installation ships with none, and widget controls remain hidden until at least one valid manifest is found. Use `--disable-widgets` to turn discovery and the widget routes off. See [Web UI widgets](/guides/widgets/) for the directory layout, manifest format, proxy behavior, lifecycle, and security model.
 
 LLM job runs now expose a `session_id` and persist to the same sessions store by default, which makes web/API integrations much easier to inspect while a progressive run is still executing.
+
+## Interactive shell
+
+On supported Unix servers, enter `/shell` in an existing Web UI conversation to open a full-screen terminal in that conversation's authoritative project or worktree. **Back to chat** detaches the browser while leaving the one session shell running; opening `/shell` again reattaches and replays bounded output. **Close shell** explicitly terminates the shell and its process group.
+
+The browser never sends a filesystem path. The server resolves the persisted session binding without creating or pinning an LLM runtime, and advertises support as `shell.enabled` from `GET /ui/v1/capabilities`. Unsupported platforms and API-only servers leave the command hidden. Shell input is explicit direct operator execution—it does not use the model shell-tool approval flow.
+
+Shell control uses authenticated HTTP mutations plus a resumable SSE response rather than WebSockets, so the same protocol works through direct serve, Hub proxying, reverse-connected Hub nodes, and WebRTC HTTP transport. Shell endpoints additionally require the first-party browser origin and are not opened to configured cross-origin API callers.
 
 ## Project-aware Responses and worktrees
 

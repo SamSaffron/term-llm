@@ -56,6 +56,11 @@ export const SLASH_COMMANDS = [
     description: 'Ask a side question without interrupting the main run',
     streamingSafe: true,
   },
+  {
+    command: '/shell',
+    description: 'Open an interactive terminal for this conversation',
+    streamingSafe: true,
+  },
   { command: '/skills', description: 'Browse available skills' },
   {
     command: '/thread',
@@ -117,6 +122,7 @@ export function composerCompletions(
   agents: string[],
   skills: SkillCommand[] = [],
   streaming = false,
+  shellEnabled = false,
 ): Completion[] {
   const slash = value.match(/^\/[\w-]*$/);
   if (slash) {
@@ -131,7 +137,12 @@ export function composerCompletions(
       ...skillCompletions(skills),
     ];
     return entries
-      .filter((entry) => entry.value.startsWith(slash[0]) && (!streaming || entry.streamingSafe))
+      .filter(
+        (entry) =>
+          entry.value.startsWith(slash[0]) &&
+          (!streaming || entry.streamingSafe) &&
+          (entry.value !== '/shell' || shellEnabled),
+      )
       .sort((left, right) => left.value.localeCompare(right.value));
   }
   const mention = activeMentionAtCursor(value, value.length);

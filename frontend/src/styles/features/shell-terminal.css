@@ -1,0 +1,134 @@
+.shell-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  background: #111418;
+  color: #dce2e8;
+}
+
+.shell-overlay-header {
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #30363d;
+  background: #f7f7f5;
+  color: var(--text-primary);
+}
+
+.shell-overlay-heading,
+.shell-overlay-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.shell-overlay-heading strong {
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.shell-status {
+  flex: none;
+  padding: 3px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.shell-status-running {
+  border-color: #b9d5c2;
+  color: #356543;
+}
+
+.shell-status-error,
+.shell-status-exited {
+  border-color: #dec5c0;
+  color: #8a4338;
+}
+
+.shell-cwd {
+  overflow: hidden;
+  max-width: min(48vw, 680px);
+  color: var(--text-secondary);
+  font-family: SFMono-Regular, Consolas, 'Liberation Mono', monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-overlay-actions .btn {
+  min-height: 34px;
+  white-space: nowrap;
+}
+
+.shell-overlay-actions .shell-close {
+  border-color: #d9b9b4;
+  color: #873b32;
+}
+
+.shell-error {
+  padding: 8px 16px;
+  border-bottom: 1px solid #5d2d2d;
+  background: #321d1d;
+  color: #f1c7c2;
+  font-size: 12px;
+}
+
+.shell-terminal {
+  min-width: 0;
+  min-height: 0;
+  padding: 12px 10px 10px;
+  overflow: hidden;
+  background: #111418;
+}
+
+.shell-terminal .xterm {
+  height: 100%;
+}
+
+.shell-terminal .xterm-viewport {
+  scrollbar-color: #4f5862 #111418;
+}
+
+@media (width <= 680px) {
+  .shell-overlay-header {
+    min-height: 0;
+    align-items: flex-start;
+    padding: max(8px, env(safe-area-inset-top)) 10px 8px;
+  }
+
+  .shell-overlay-heading {
+    flex-wrap: wrap;
+    gap: 5px 8px;
+  }
+
+  .shell-cwd {
+    order: 3;
+    width: 100%;
+    max-width: 50vw;
+  }
+
+  .shell-overlay-actions {
+    gap: 6px;
+  }
+
+  .shell-overlay-actions .btn {
+    min-height: 38px;
+    padding-inline: 9px;
+    font-size: 12px;
+  }
+
+  .shell-terminal {
+    padding: 8px 5px max(5px, env(safe-area-inset-bottom));
+  }
+}

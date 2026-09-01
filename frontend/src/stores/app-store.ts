@@ -49,6 +49,7 @@ import { StatusReconciler } from './status-reconciler';
 import { RunEngine } from './run-engine';
 import { SelectionStore } from './selection-store';
 import { CommitStore } from './commit-store';
+import { ShellStore } from './shell-store';
 import type {
   DiffState,
   HubAgent,
@@ -113,6 +114,7 @@ export class AppStore {
   readonly runEngine: RunEngine;
   readonly selectionStore: SelectionStore;
   readonly commitStore: CommitStore;
+  readonly shellStore: ShellStore;
   readonly keys: StorageKeys;
   readonly api: APIClient;
   readonly endpoints: Endpoints;
@@ -274,6 +276,11 @@ export class AppStore {
     this.renameTarget = this.sessionStore.renameTarget;
     this.projectTarget = this.sessionStore.projectTarget;
     this.activeSession = this.sessionStore.activeSession;
+    this.shellStore = new ShellStore(
+      this.endpoints,
+      (message, kind) => this.services.toast(message, kind),
+      () => this.activeSession.peek()?.id || '',
+    );
     this.showWidgets = signal(storage.getItem(this.keys.showWidgetsSidebar) !== '0');
     // The legacy boolean was optimistic and is never authoritative. Enrollment
     // is reconstructed from browser and server state below.
@@ -825,6 +832,7 @@ export class AppStore {
     const worktreesEnabled =
       worktrees.enabled === true || (worktrees.enabled === undefined && this.config.worktrees);
     this.sessionStore.applyCapabilities(projectsEnabled, worktreesEnabled);
+    this.shellStore.enabled.value = recordValue(data.shell)?.enabled === true;
     const attachments = recordValue(data.attachments);
     if (attachments) {
       const maxCount = Number(attachments.max_count);
@@ -919,12 +927,14 @@ export class AppStore {
   }
 
   async selectSession(session: Session, replace = false): Promise<void> {
+    if (session.id !== this.activeSessionId.peek()) this.shellStore.back();
     await this.selectionStore.selectSession(session, replace);
     this.serverEventCoordinator.updateInterest(this.activeSessionId.peek());
     void this.acknowledgeSelectedAttention();
   }
 
   newChat(replace = false, projectId?: string, persistCurrent = true): void {
+    this.shellStore.back();
     this.selectionStore.newChat(replace, projectId, persistCurrent);
     this.serverEventCoordinator.updateInterest('');
   }
@@ -950,6 +960,7 @@ export class AppStore {
   }
 
   async resolveAndSelectSession(id: string, replace = false): Promise<void> {
+    this.shellStore.back();
     await this.selectionStore.resolveAndSelectSession(id, replace);
   }
 
@@ -1426,7 +1437,17 @@ export class AppStore {
     this.composer.dispose();
     this.tabSyncCoordinator.dispose();
     this.serverEventCoordinator.dispose();
+    this.shellStore.dispose();
     this.services.dispose();
+  }
+
+  openShell(): void {
+    const session = this.activeSession.peek();
+    if (!session || this.draftActive.peek()) {
+      this.toast('Start the conversation before opening a shell.', 'error');
+      return;
+    }
+    if (this.shellStore.show(session.id)) this.prompt.value = '';
   }
 
   toast(value: unknown, kind: Toast['kind'] = 'info'): void {

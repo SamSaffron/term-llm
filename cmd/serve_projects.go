@@ -377,10 +377,15 @@ func (s *serveServer) handleCapabilities(w http.ResponseWriter, r *http.Request)
 	} else if _, err := s.currentGitRoot(); err == nil {
 		worktreesEnabled = true
 	}
-	w.Header().Set("ETag", fmt.Sprintf(`W/"projects-%t-worktrees-%t"`, s.projectsEnabled, worktreesEnabled))
+	shellEnabled := s.cfg.ui && platformServeShellSupported() && s.store != nil
+	w.Header().Set("ETag", fmt.Sprintf(`W/"projects-%t-worktrees-%t-shell-%t"`, s.projectsEnabled, worktreesEnabled, shellEnabled))
 	payload := map[string]any{
 		"projects":  map[string]bool{"enabled": s.projectsEnabled},
 		"worktrees": map[string]bool{"enabled": worktreesEnabled},
+		"shell": map[string]any{
+			"enabled": shellEnabled, "version": 1,
+			"transport": "http_sse", "replay_bytes": serveShellReplayBytes,
+		},
 		"event_feed": map[string]any{
 			"version": 1, "sse": true, "long_poll": true,
 			"heartbeat_ms": serveEventHeartbeat.Milliseconds(), "replay_limit": serveEventReplayLimit,

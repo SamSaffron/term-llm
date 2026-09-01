@@ -2,6 +2,39 @@ import { describe, expect, it, vi } from 'vitest';
 import type { APIClient } from './client';
 import { endpoints } from './endpoints';
 
+describe('shell endpoints', () => {
+  it('uses authenticated HTTP/SSE session routes with encoded generation state', async () => {
+    const json = vi.fn(async () => ({ shell_id: 'sh/one' }));
+    const request = vi.fn(async () => new Response());
+    const routes = endpoints({ json, request } as unknown as APIClient);
+    const controller = new AbortController();
+
+    await routes.shellCreate('session/one', 100, 30);
+    expect(json).toHaveBeenLastCalledWith(
+      '/v1/sessions/session%2Fone/shell',
+      {
+        method: 'POST',
+        headers: { 'X-Term-LLM-Session-ID': 'session/one' },
+        body: JSON.stringify({ cols: 100, rows: 30 }),
+      },
+      { policy: 'mutation', auth: 'session' },
+    );
+
+    await routes.shellStream('session/one', 'sh/one', 42, controller.signal);
+    expect(request).toHaveBeenLastCalledWith(
+      '/v1/sessions/session%2Fone/shell/stream?shell_id=sh%2Fone&offset=42',
+      {
+        signal: controller.signal,
+        headers: {
+          'X-Term-LLM-Session-ID': 'session/one',
+          Accept: 'text/event-stream',
+        },
+      },
+      { policy: 'stream', retries: 0, timeoutMs: 0, auth: 'session' },
+    );
+  });
+});
+
 describe('file change endpoints', () => {
   it('fetches encoded raw text with version pinning and cancellation', async () => {
     const response = new Response('# Plan\n', {

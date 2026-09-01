@@ -151,6 +151,7 @@ export function Composer() {
     store.config.agentNames,
     store.skills.value,
     runActive,
+    store.shellStore.enabled.value,
   );
   const combined = mention ? [...local, ...mentionCompletions(projectMentions)] : local;
   const completions =
@@ -204,6 +205,10 @@ export function Composer() {
       return;
     }
     if (command === '/new') return store.newChat();
+    if (command === '/shell') {
+      store.openShell();
+      return;
+    }
     if (command === '/goal') {
       store.modal.value = 'goal';
       return;

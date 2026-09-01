@@ -2,6 +2,17 @@ import type { APIClient } from './client';
 import type { Goal, MCPOAuthFlow, MCPResponse } from '../domain/types';
 import type { MentionSearchResponse } from '../domain/completions';
 
+export interface ShellCreateResponse {
+  shell_id: string;
+  cwd: string;
+  created: boolean;
+  state: 'running';
+}
+
+export interface ShellInputResponse {
+  accepted: number;
+}
+
 const encoded = (value: string): string => encodeURIComponent(value);
 const sessionHeaders = (id: string): Record<string, string> => ({ 'X-Term-LLM-Session-ID': id });
 // Review data may come from the session's node rather than the shell host. The
@@ -165,6 +176,52 @@ export const endpoints = (api: APIClient) => ({
         : { policy: 'mutation', retries: 0, timeoutMs: 0, auth: 'session' },
     );
   },
+  shellCreate: (id: string, cols: number, rows: number) =>
+    api.json<ShellCreateResponse>(
+      `/v1/sessions/${encoded(id)}/shell`,
+      {
+        method: 'POST',
+        headers: sessionHeaders(id),
+        body: JSON.stringify({ cols, rows }),
+      },
+      { policy: 'mutation', auth: 'session' },
+    ),
+  shellStream: (id: string, shellId: string, offset: number, signal: AbortSignal) =>
+    api.request(
+      `/v1/sessions/${encoded(id)}/shell/stream?shell_id=${encoded(shellId)}&offset=${offset}`,
+      { signal, headers: { ...sessionHeaders(id), Accept: 'text/event-stream' } },
+      { policy: 'stream', retries: 0, timeoutMs: 0, auth: 'session' },
+    ),
+  shellInput: (id: string, shellId: string, data: string) =>
+    api.json<ShellInputResponse>(
+      `/v1/sessions/${encoded(id)}/shell/input`,
+      {
+        method: 'POST',
+        headers: sessionHeaders(id),
+        body: JSON.stringify({ shell_id: shellId, data }),
+      },
+      { policy: 'mutation', auth: 'session' },
+    ),
+  shellResize: (id: string, shellId: string, cols: number, rows: number) =>
+    api.json<void>(
+      `/v1/sessions/${encoded(id)}/shell/resize`,
+      {
+        method: 'POST',
+        headers: sessionHeaders(id),
+        body: JSON.stringify({ shell_id: shellId, cols, rows }),
+      },
+      { policy: 'mutation', auth: 'session' },
+    ),
+  shellClose: (id: string, shellId: string) =>
+    api.json<void>(
+      `/v1/sessions/${encoded(id)}/shell`,
+      {
+        method: 'DELETE',
+        headers: sessionHeaders(id),
+        body: JSON.stringify({ shell_id: shellId }),
+      },
+      { policy: 'mutation', auth: 'session' },
+    ),
   response: (id: string, signal?: AbortSignal) =>
     api.get<Record<string, unknown>>(`/v1/responses/${encoded(id)}`, signal),
   responseEvents: (id: string, after: number, signal: AbortSignal) =>

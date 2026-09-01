@@ -617,6 +617,7 @@ func (s *serveServer) promoteDraftMCPSelection(ctx context.Context, draftID, ses
 	if err := s.store.Delete(ctx, draftID); err != nil {
 		return fmt.Errorf("draft session Delete failed after promoting MCP selection from %s: %w", draftID, err)
 	}
+	s.closeSessionShell(draftID)
 	return nil
 }
 
