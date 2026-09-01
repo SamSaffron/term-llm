@@ -366,6 +366,11 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	var toolSpecs []llm.ToolSpec
 	if toolMgr != nil || mcpManager != nil {
 		toolSpecs = llm.ToolSpecsForRequest(engine.Tools(), settings.Search)
+		var approvalMgr *tools.ApprovalManager
+		if toolMgr != nil {
+			approvalMgr = toolMgr.ApprovalMgr
+		}
+		toolSpecs = tools.FilterToolSpecsForApprovalMode(toolSpecs, approvalMgr)
 	}
 
 	// Force external search setting

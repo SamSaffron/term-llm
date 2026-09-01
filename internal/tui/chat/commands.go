@@ -3165,6 +3165,7 @@ func (m *Model) newInspectorConfig() *inspector.Config {
 			}
 		}
 	}
+	toolSpecs = tools.FilterToolSpecsForApprovalMode(toolSpecs, m.approvalMgr)
 
 	cfg := &inspector.Config{
 		ProviderName:            m.providerName,
