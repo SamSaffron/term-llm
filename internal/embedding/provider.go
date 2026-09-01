@@ -85,6 +85,31 @@ func NewEmbeddingProvider(cfg *config.Config, providerOverride string) (Embeddin
 		}
 		return p, nil
 
+	case "venice":
+		providerCfg := cfg.GetProviderConfig("venice")
+		if providerCfg == nil {
+			return nil, fmt.Errorf("Venice embedding requires a configured providers.venice entry")
+		}
+		if err := providerCfg.ResolveForInference(); err != nil {
+			return nil, fmt.Errorf("resolve Venice embedding credentials: %w", err)
+		}
+		apiKey := strings.TrimSpace(providerCfg.ResolvedAPIKey)
+		if apiKey == "" && strings.TrimSpace(providerCfg.APIKey) != "" {
+			resolved, err := config.ResolveValue(providerCfg.APIKey)
+			if err != nil {
+				return nil, fmt.Errorf("resolve Venice embedding API key: %w", err)
+			}
+			apiKey = strings.TrimSpace(resolved)
+		}
+		if apiKey == "" {
+			return nil, fmt.Errorf("VENICE_API_KEY not configured. Set providers.venice.api_key or VENICE_API_KEY")
+		}
+		p := NewVeniceProvider(apiKey, providerCfg.BaseURL)
+		if model != "" {
+			p.model = model
+		}
+		return p, nil
+
 	case "gemini":
 		apiKey := cfg.Embed.Gemini.APIKey
 		if apiKey == "" {
@@ -136,7 +161,7 @@ func NewEmbeddingProvider(cfg *config.Config, providerOverride string) (Embeddin
 		return p, nil
 
 	default:
-		return nil, fmt.Errorf("unknown embedding provider: %s (valid: gemini, openai, chatgpt, jina, voyage, ollama)", provider)
+		return nil, fmt.Errorf("unknown embedding provider: %s (valid: gemini, openai, chatgpt, venice, jina, voyage, ollama)", provider)
 	}
 }
 

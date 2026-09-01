@@ -46,7 +46,7 @@ func (p *OllamaProvider) Embed(ctx context.Context, req EmbedRequest) (*Embeddin
 		model = req.Model
 	}
 
-	texts := prepareOllamaTexts(model, req.TaskType, req.Texts)
+	texts := prepareQwen3EmbeddingTexts(model, req.TaskType, req.Texts)
 
 	// Ollama's /api/embed endpoint supports batch input.
 	ollamaReq := ollamaEmbedRequest{
@@ -109,8 +109,9 @@ func (p *OllamaProvider) Embed(ctx context.Context, req EmbedRequest) (*Embeddin
 	return result, nil
 }
 
-func prepareOllamaTexts(model, taskType string, texts []string) []string {
-	if taskType != "RETRIEVAL_QUERY" || !strings.HasPrefix(strings.ToLower(model), "qwen3-embedding") {
+func prepareQwen3EmbeddingTexts(model, taskType string, texts []string) []string {
+	modelLower := strings.ToLower(model)
+	if taskType != "RETRIEVAL_QUERY" || !strings.Contains(modelLower, "qwen3") || !strings.Contains(modelLower, "embedding") {
 		return texts
 	}
 	prepared := make([]string, len(texts))

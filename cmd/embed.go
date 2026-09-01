@@ -57,7 +57,7 @@ Examples:
 }
 
 func init() {
-	embedCmd.Flags().StringVarP(&embedProvider, "provider", "p", "", "Override embedding provider (gemini, openai, chatgpt, jina, voyage, ollama), optionally with model (e.g., chatgpt:text-embedding-3-large)")
+	embedCmd.Flags().StringVarP(&embedProvider, "provider", "p", "", "Override embedding provider (gemini, openai, chatgpt, venice, jina, voyage, ollama), optionally with model (e.g., venice:text-embedding-qwen3-8b)")
 	embedCmd.Flags().StringArrayVarP(&embedFiles, "file", "f", nil, "Input file(s) to embed (can be specified multiple times)")
 	embedCmd.Flags().StringVarP(&embedOutput, "output", "o", "", "Write output to file instead of stdout")
 	embedCmd.Flags().StringVar(&embedFormat, "format", "json", "Output format: json, array, plain")
