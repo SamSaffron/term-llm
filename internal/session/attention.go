@@ -766,7 +766,7 @@ func (s *SQLiteStore) ListAttention(ctx context.Context, opts AttentionListOptio
 	var rows *sql.Rows
 	switch opts.Kind {
 	case AttentionKindUnseen:
-		rows, err = tx.QueryContext(ctx, `SELECT a.session_id, a.response_id, COALESCE(l.state, a.outcome), a.latest_attention_seq,
+		rows, err = tx.QueryContext(ctx, `SELECT a.session_id, COALESCE(s.number, 0), a.response_id, COALESCE(l.state, a.outcome), a.latest_attention_seq,
 			a.started_rev, a.final_rev, COALESCE(s.generated_short_title, s.name, ''),
 			COALESCE(s.generated_long_title, ''), COALESCE(s.project_id, ''), a.outcome,
 			COALESCE(l.started_at, a.terminal_at, 0), a.terminal_at, l.lease_expires_at, 0, '', NULL, 0
@@ -776,7 +776,7 @@ func (s *SQLiteStore) ListAttention(ctx context.Context, opts AttentionListOptio
 			  AND (? = 0 OR a.latest_attention_seq < ?)
 			ORDER BY a.latest_attention_seq DESC LIMIT ?`, cursor.Seq, cursor.Seq, opts.Limit+1)
 	case AttentionKindRunning:
-		rows, err = tx.QueryContext(ctx, `SELECT l.session_id, l.response_id, l.state, 0, l.started_rev, l.final_rev,
+		rows, err = tx.QueryContext(ctx, `SELECT l.session_id, COALESCE(s.number, 0), l.response_id, l.state, 0, l.started_rev, l.final_rev,
 			COALESCE(s.generated_short_title, s.name, ''), COALESCE(s.generated_long_title, ''),
 			COALESCE(s.project_id, ''), '', l.started_at, NULL, l.lease_expires_at, 0, '', NULL, 0
 			FROM serve_response_lifecycle l JOIN sessions s ON s.id = l.session_id
@@ -787,7 +787,7 @@ func (s *SQLiteStore) ListAttention(ctx context.Context, opts AttentionListOptio
 			  AND (? = 0 OR l.started_at > ? OR (l.started_at = ? AND l.response_id > ?))
 			ORDER BY l.started_at, l.response_id LIMIT ?`, cursor.StartedAt, cursor.StartedAt, cursor.StartedAt, cursor.ResponseID, opts.Limit+1)
 	case AttentionKindInputRequired:
-		rows, err = tx.QueryContext(ctx, `SELECT l.session_id, l.response_id, l.state, 0, l.started_rev, l.final_rev,
+		rows, err = tx.QueryContext(ctx, `SELECT l.session_id, COALESCE(s.number, 0), l.response_id, l.state, 0, l.started_rev, l.final_rev,
 			COALESCE(s.generated_short_title, s.name, ''), COALESCE(s.generated_long_title, ''),
 			COALESCE(s.project_id, ''), '', l.started_at, NULL, l.lease_expires_at,
 			l.interaction_required_count, l.interaction_required_kinds, l.interaction_required_since, l.interaction_state_rev
@@ -811,7 +811,7 @@ func (s *SQLiteStore) ListAttention(ctx context.Context, opts AttentionListOptio
 		var startedAt int64
 		var terminalAt, leaseExpires, requiredSince sql.NullInt64
 		var kindsJSON string
-		if err := rows.Scan(&item.SessionID, &item.ResponseID, &item.LifecycleState, &item.AttentionSeq,
+		if err := rows.Scan(&item.SessionID, &item.SessionNumber, &item.ResponseID, &item.LifecycleState, &item.AttentionSeq,
 			&item.StartedRev, &item.FinalRev, &item.ShortTitle, &item.LongTitle, &item.ProjectID,
 			&item.Outcome, &startedAt, &terminalAt, &leaseExpires, &item.PendingInteractionCount,
 			&kindsJSON, &requiredSince, &item.InteractionStateRev); err != nil {

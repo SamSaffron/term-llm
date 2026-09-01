@@ -34,10 +34,10 @@ func TestHubAttentionCollectorInstallsBothKindsAtomically(t *testing.T) {
 		switch kind {
 		case "unseen":
 			w.Header().Set("ETag", unseenETag)
-			page.Items = []hubAttentionPageItem{{SessionID: "done", ResponseID: "resp-done", Kind: "unseen", LifecycleState: "completed", Outcome: "completed", AttentionSeq: 9, FinalRev: 3, TerminalAt: time.Now().UTC()}}
+			page.Items = []hubAttentionPageItem{{SessionID: "done", SessionNumber: 41, ResponseID: "resp-done", Kind: "unseen", LifecycleState: "completed", Outcome: "completed", AttentionSeq: 9, FinalRev: 3, TerminalAt: time.Now().UTC()}}
 		case "running":
 			w.Header().Set("ETag", `"running-v1"`)
-			page.Items = []hubAttentionPageItem{{SessionID: "live", ResponseID: "resp-live", Kind: "running", LifecycleState: "running", StartedAt: time.Now().UTC()}}
+			page.Items = []hubAttentionPageItem{{SessionID: "live", SessionNumber: 42, ResponseID: "resp-live", Kind: "running", LifecycleState: "running", StartedAt: time.Now().UTC()}}
 		default:
 			http.Error(w, "bad kind", http.StatusBadRequest)
 			return
@@ -67,7 +67,7 @@ func TestHubAttentionCollectorInstallsBothKindsAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(activities) != 2 || len(syncs) != 1 || syncs[0].ETag != unseenETag {
+	if len(activities) != 2 || len(syncs) != 1 || syncs[0].ETag != unseenETag || activities[0].SessionNumber <= 0 || activities[1].SessionNumber <= 0 {
 		t.Fatalf("projection = %+v, sync=%+v", activities, syncs)
 	}
 	// A global snapshot that has not changed may short-circuit on the first
@@ -211,10 +211,10 @@ func TestHubAttentionAPIKeepsExactCountsWhenInboxIsBounded(t *testing.T) {
 	defer projection.Close()
 	now := time.Now().UTC()
 	activities := []hub.SessionActivity{
-		{SessionID: "one", Kind: "terminal_unseen", AttentionSeq: 1, TerminalAt: now.Add(-time.Minute)},
-		{SessionID: "two", Kind: "terminal_unseen", AttentionSeq: 2, TerminalAt: now},
-		{SessionID: "live", Kind: "running", StartedAt: now},
-		{SessionID: "blocked", Kind: "input_required", PendingInteractionCount: 1,
+		{SessionID: "one", SessionNumber: 21, Kind: "terminal_unseen", AttentionSeq: 1, TerminalAt: now.Add(-time.Minute)},
+		{SessionID: "two", SessionNumber: 22, Kind: "terminal_unseen", AttentionSeq: 2, TerminalAt: now},
+		{SessionID: "live", SessionNumber: 23, Kind: "running", StartedAt: now},
+		{SessionID: "blocked", SessionNumber: 24, Kind: "input_required", PendingInteractionCount: 1,
 			PendingInteractionKinds: []string{"approval.workspace"}, InteractionRequiredSince: now},
 	}
 	if err := projection.ReplaceNode(context.Background(), "alpha", "store-a", "etag", activities); err != nil {
@@ -240,7 +240,8 @@ func TestHubAttentionAPIKeepsExactCountsWhenInboxIsBounded(t *testing.T) {
 	}
 	if response.TotalRunning != 1 || response.TotalInputRequired != 1 || response.TotalUnseen != 2 || !response.HasMore ||
 		len(response.InputRequired) != 1 || response.InputRequired[0].SessionID != "blocked" ||
-		len(response.Inbox) != 1 || response.Inbox[0].SessionID != "two" {
+		response.InputRequired[0].ResumePath != "/node/alpha/24" || len(response.Inbox) != 1 ||
+		response.Inbox[0].SessionID != "two" || response.Inbox[0].ResumePath != "/node/alpha/22" {
 		t.Fatalf("bounded response = %+v", response)
 	}
 }

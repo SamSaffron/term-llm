@@ -252,6 +252,7 @@ type AttentionListOptions struct {
 
 type AttentionItem struct {
 	SessionID                string           `json:"session_id"`
+	SessionNumber            int64            `json:"session_number,omitempty"`
 	ResponseID               string           `json:"response_id"`
 	Kind                     AttentionKind    `json:"kind"`
 	LifecycleState           ResponseRunState `json:"lifecycle_state"`

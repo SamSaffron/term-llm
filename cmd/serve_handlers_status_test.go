@@ -43,6 +43,9 @@ func TestHandleSessionsStatusTranscriptUpdatedAtChangesOnMessageUpdate(t *testin
 	}
 
 	first := readStatusEntryForSession(t, store, sess.ID)
+	if first.Number <= 0 {
+		t.Fatalf("number = %d, want canonical positive session number", first.Number)
+	}
 	if first.TranscriptRev <= 0 {
 		t.Fatalf("transcript_rev = %d, want positive", first.TranscriptRev)
 	}
@@ -296,6 +299,7 @@ func TestHandleSessionsStatusAlwaysIncludesSelectedActiveAndUnresolvedSessions(t
 
 type sessionsStatusTestEntry struct {
 	ID                  string `json:"id"`
+	Number              int64  `json:"number"`
 	MsgCount            int    `json:"message_count"`
 	LastMessageAt       int64  `json:"last_message_at"`
 	TranscriptRev       int64  `json:"transcript_rev"`

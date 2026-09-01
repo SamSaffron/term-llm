@@ -1049,6 +1049,7 @@ func TestHubNodesAPIIncludesBoundedSessionSummary(t *testing.T) {
 			sessionsAuth = r.Header.Get("Authorization")
 			type sess struct {
 				ID            string `json:"id"`
+				Number        int64  `json:"number"`
 				ShortTitle    string `json:"short_title"`
 				LongTitle     string `json:"long_title"`
 				ActiveRun     bool   `json:"active_run,omitempty"`
@@ -1059,6 +1060,7 @@ func TestHubNodesAPIIncludesBoundedSessionSummary(t *testing.T) {
 			for i := 0; i < 100; i++ {
 				sessions = append(sessions, sess{
 					ID:            fmt.Sprintf("sess_%03d", i),
+					Number:        int64(1000 + i),
 					ShortTitle:    fmt.Sprintf("Session %03d", i),
 					LastMessageAt: int64(1_800_000_000_000 - i),
 					MessageCount:  i + 1,
@@ -1118,14 +1120,14 @@ func TestHubNodesAPIIncludesBoundedSessionSummary(t *testing.T) {
 	if len(n.Sessions.Active) != 1 || n.Sessions.Active[0].ID != "sess_busy" || n.Sessions.ActiveCount != 1 {
 		t.Fatalf("active sessions = %+v active_count=%d", n.Sessions.Active, n.Sessions.ActiveCount)
 	}
-	if n.Sessions.ResumePath != "/hub/node/alpha/sess_busy" {
+	if n.Sessions.ResumePath != "/hub/node/alpha/1005" {
 		t.Fatalf("resume path = %q", n.Sessions.ResumePath)
 	}
 	if len(n.Sessions.Recent) != 3 || n.Sessions.Recent[0].ID != "sess_000" {
 		t.Fatalf("recent sessions = %+v", n.Sessions.Recent)
 	}
-	if n.Sessions.Recent[0].ResumePath != "/hub/node/alpha/sess_000" {
-		t.Fatalf("recent resume path = %q", n.Sessions.Recent[0].ResumePath)
+	if n.Sessions.Recent[0].Number != 1000 || n.Sessions.Recent[0].ResumePath != "/hub/node/alpha/1000" {
+		t.Fatalf("recent session = %+v", n.Sessions.Recent[0])
 	}
 }
 

@@ -246,14 +246,14 @@ func TestAttentionSnapshotIncludesCompleteSetsAndStablePagination(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if unseen.ProtocolVersion != 1 || len(unseen.Items) != 1 || unseen.Items[0].SessionID != sessionID {
+	if unseen.ProtocolVersion != 1 || len(unseen.Items) != 1 || unseen.Items[0].SessionID != sessionID || unseen.Items[0].SessionNumber <= 0 {
 		t.Fatalf("unseen page = %+v", unseen)
 	}
 	running, err := store.ListAttention(ctx, AttentionListOptions{Kind: AttentionKindRunning, Limit: 1, SnapshotVersion: unseen.SnapshotVersion})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(running.Items) != 1 || running.Items[0].SessionID != other || running.StoreInstanceID != unseen.StoreInstanceID {
+	if len(running.Items) != 1 || running.Items[0].SessionID != other || running.Items[0].SessionNumber <= 0 || running.StoreInstanceID != unseen.StoreInstanceID {
 		t.Fatalf("running page = %+v", running)
 	}
 }

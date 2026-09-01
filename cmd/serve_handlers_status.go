@@ -162,6 +162,7 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 	// Revision-aware clients use transcript_rev as the correctness signal.
 	type statusEntry struct {
 		ID                       string   `json:"id"`
+		Number                   int64    `json:"number,omitempty"`
 		ProjectID                string   `json:"project_id,omitempty"`
 		ProjectName              string   `json:"project_name,omitempty"`
 		ShortTitle               string   `json:"short_title"`
@@ -281,6 +282,7 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 		}
 		result = append(result, statusEntry{
 			ID:                       sess.ID,
+			Number:                   sess.Number,
 			ProjectID:                sess.ProjectID,
 			ProjectName:              sess.ProjectName,
 			ShortTitle:               sess.PreferredShortTitle(),

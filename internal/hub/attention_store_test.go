@@ -17,9 +17,9 @@ func TestAttentionProjectionAtomicallyReplacesAndRetainsErrors(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	first := []SessionActivity{
-		{SessionID: "s1", Kind: "terminal_unseen", AttentionSeq: 2, TerminalAt: now},
-		{SessionID: "s2", Kind: "running", StartedAt: now},
-		{SessionID: "s3", Kind: "input_required", PendingInteractionCount: 2,
+		{SessionID: "s1", SessionNumber: 101, Kind: "terminal_unseen", AttentionSeq: 2, TerminalAt: now},
+		{SessionID: "s2", SessionNumber: 102, Kind: "running", StartedAt: now},
+		{SessionID: "s3", SessionNumber: 103, Kind: "input_required", PendingInteractionCount: 2,
 			PendingInteractionKinds: []string{"approval.workspace", "ask_user"}, InteractionRequiredSince: now},
 	}
 	if err := store.ReplaceNode(ctx, "node-a", "store-a", `"etag-1"`, first); err != nil {
@@ -35,7 +35,7 @@ func TestAttentionProjectionAtomicallyReplacesAndRetainsErrors(t *testing.T) {
 	if len(activities) != 3 || len(syncs) != 1 || syncs[0].LastError != "offline" {
 		t.Fatalf("stale projection not retained: %+v %+v", activities, syncs)
 	}
-	if activities[0].Kind != "input_required" || activities[0].PendingInteractionCount != 2 || len(activities[0].PendingInteractionKinds) != 2 {
+	if activities[0].Kind != "input_required" || activities[0].SessionNumber != 103 || activities[0].PendingInteractionCount != 2 || len(activities[0].PendingInteractionKinds) != 2 {
 		t.Fatalf("input-required projection did not round trip: %+v", activities)
 	}
 	if err := store.ReplaceNode(ctx, "node-a", "store-b", `"etag-2"`, []SessionActivity{{SessionID: "s9", Kind: "terminal_unseen", AttentionSeq: 7}}); err != nil {

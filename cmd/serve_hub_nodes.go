@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ type hubNodeDiagnostic struct {
 
 type hubNodeSessionView struct {
 	ID                      string   `json:"id"`
+	Number                  int64    `json:"number,omitempty"`
 	ShortTitle              string   `json:"short_title"`
 	LongTitle               string   `json:"long_title,omitempty"`
 	ActiveRun               bool     `json:"active_run,omitempty"`
@@ -135,6 +137,7 @@ const (
 
 type hubNodeSessionStatus struct {
 	ID                      string   `json:"id"`
+	Number                  int64    `json:"number"`
 	ShortTitle              string   `json:"short_title"`
 	LongTitle               string   `json:"long_title"`
 	ActiveRun               bool     `json:"active_run"`
@@ -256,6 +259,7 @@ func (s *hubServer) buildHubNodeSessionsView(n hub.Node, entries []hubNodeSessio
 		}
 		sess := hubNodeSessionView{
 			ID:                      entry.ID,
+			Number:                  entry.Number,
 			ShortTitle:              hubNodeSessionTitle(entry),
 			LongTitle:               strings.TrimSpace(entry.LongTitle),
 			ActiveRun:               entry.ActiveRun,
@@ -264,7 +268,7 @@ func (s *hubServer) buildHubNodeSessionsView(n hub.Node, entries []hubNodeSessio
 			PendingInteractionKinds: append([]string(nil), entry.PendingInteractionKinds...),
 			LastMessageAt:           entry.LastMessageAt,
 			MessageCount:            entry.MessageCount,
-			ResumePath:              s.hubPath("/node/" + n.ID + "/" + url.PathEscape(entry.ID)),
+			ResumePath:              s.hubSessionResumePath(n.ID, entry.ID, entry.Number),
 		}
 		if sess.InteractionRequired {
 			out.InputRequiredCount++
@@ -284,6 +288,17 @@ func (s *hubServer) buildHubNodeSessionsView(n hub.Node, entries []hubNodeSessio
 		out.ResumePath = out.Recent[0].ResumePath
 	}
 	return out
+}
+
+// hubSessionResumePath prefers the stable sequential session number used by
+// the serve UI's canonical routes, while retaining the globally unique ID as
+// a compatibility fallback for older nodes that do not expose numbers.
+func (s *hubServer) hubSessionResumePath(nodeID, sessionID string, sessionNumber int64) string {
+	selector := strings.TrimSpace(sessionID)
+	if sessionNumber > 0 {
+		selector = strconv.FormatInt(sessionNumber, 10)
+	}
+	return s.hubPath("/node/" + url.PathEscape(nodeID) + "/" + url.PathEscape(selector))
 }
 
 func hubNodeSessionTitle(entry hubNodeSessionStatus) string {

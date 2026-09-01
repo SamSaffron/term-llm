@@ -60,6 +60,7 @@ type hubAttentionPage struct {
 
 type hubAttentionPageItem struct {
 	SessionID                string    `json:"session_id"`
+	SessionNumber            int64     `json:"session_number,omitempty"`
 	ResponseID               string    `json:"response_id"`
 	Kind                     string    `json:"kind"`
 	LifecycleState           string    `json:"lifecycle_state"`
@@ -283,7 +284,7 @@ func (s *hubServer) collectNodeAttentionOnce(ctx context.Context, node hub.Node)
 					activityKind = "input_required"
 				}
 				activities = append(activities, hub.SessionActivity{NodeID: node.ID, StoreInstanceID: storeID,
-					SessionID: item.SessionID, Kind: activityKind, ResponseID: item.ResponseID,
+					SessionID: item.SessionID, SessionNumber: item.SessionNumber, Kind: activityKind, ResponseID: item.ResponseID,
 					LifecycleState: item.LifecycleState, AttentionSeq: item.AttentionSeq, FinalRev: item.FinalRev,
 					ShortTitle: item.ShortTitle, LongTitle: item.LongTitle, ProjectID: item.ProjectID,
 					Outcome: item.Outcome, StartedAt: item.StartedAt, TerminalAt: item.TerminalAt,
@@ -369,20 +370,22 @@ type hubAttentionNodeView struct {
 }
 
 type hubAttentionInboxItem struct {
-	NodeID       string    `json:"node_id"`
-	NodeName     string    `json:"node_name"`
-	SessionID    string    `json:"session_id"`
-	Title        string    `json:"title"`
-	Outcome      string    `json:"outcome"`
-	TerminalAt   time.Time `json:"terminal_at,omitempty"`
-	AttentionSeq int64     `json:"attention_seq"`
-	ResumePath   string    `json:"resume_path"`
+	NodeID        string    `json:"node_id"`
+	NodeName      string    `json:"node_name"`
+	SessionID     string    `json:"session_id"`
+	SessionNumber int64     `json:"session_number,omitempty"`
+	Title         string    `json:"title"`
+	Outcome       string    `json:"outcome"`
+	TerminalAt    time.Time `json:"terminal_at,omitempty"`
+	AttentionSeq  int64     `json:"attention_seq"`
+	ResumePath    string    `json:"resume_path"`
 }
 
 type hubInputRequiredItem struct {
 	NodeID                  string    `json:"node_id"`
 	NodeName                string    `json:"node_name"`
 	SessionID               string    `json:"session_id"`
+	SessionNumber           int64     `json:"session_number,omitempty"`
 	Title                   string    `json:"title"`
 	PendingInteractionCount int       `json:"pending_interaction_count"`
 	PendingInteractionKinds []string  `json:"pending_interaction_kinds,omitempty"`
@@ -512,10 +515,10 @@ func (s *hubServer) handleHubAttention(w http.ResponseWriter, r *http.Request) {
 			totalInputRequired++
 			inputRequired = append(inputRequired, hubInputRequiredItem{
 				NodeID: activity.NodeID, NodeName: names[activity.NodeID], SessionID: activity.SessionID,
-				Title: title, PendingInteractionCount: activity.PendingInteractionCount,
+				SessionNumber: activity.SessionNumber, Title: title, PendingInteractionCount: activity.PendingInteractionCount,
 				PendingInteractionKinds: append([]string(nil), activity.PendingInteractionKinds...),
 				RequiredSince:           activity.InteractionRequiredSince,
-				ResumePath:              s.hubPath("/node/" + url.PathEscape(activity.NodeID) + "/" + url.PathEscape(activity.SessionID)),
+				ResumePath:              s.hubSessionResumePath(activity.NodeID, activity.SessionID, activity.SessionNumber),
 				Stale:                   state.Stale,
 			})
 			continue
@@ -523,8 +526,8 @@ func (s *hubServer) handleHubAttention(w http.ResponseWriter, r *http.Request) {
 		state.UnseenCount++
 		totalUnseen++
 		inbox = append(inbox, hubAttentionInboxItem{NodeID: activity.NodeID, NodeName: names[activity.NodeID], SessionID: activity.SessionID,
-			Title: title, Outcome: activity.Outcome, TerminalAt: activity.TerminalAt, AttentionSeq: activity.AttentionSeq,
-			ResumePath: s.hubPath("/node/" + url.PathEscape(activity.NodeID) + "/" + url.PathEscape(activity.SessionID))})
+			SessionNumber: activity.SessionNumber, Title: title, Outcome: activity.Outcome, TerminalAt: activity.TerminalAt,
+			AttentionSeq: activity.AttentionSeq, ResumePath: s.hubSessionResumePath(activity.NodeID, activity.SessionID, activity.SessionNumber)})
 	}
 	sort.Slice(inputRequired, func(i, j int) bool {
 		if inputRequired[i].Stale != inputRequired[j].Stale {
