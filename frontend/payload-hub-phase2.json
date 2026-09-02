@@ -1,0 +1,42 @@
+{
+  "asset_requests": 2,
+  "asset_total": {
+    "brotli11": 22480,
+    "gzip6": 25214,
+    "raw": 81492
+  },
+  "assets": {
+    "dist/hub.css": {
+      "brotli11": 3598,
+      "gzip6": 4126,
+      "raw": 16595
+    },
+    "dist/hub.js": {
+      "brotli11": 18882,
+      "gzip6": 21088,
+      "raw": 64897
+    }
+  },
+  "conditions": {
+    "brotli_quality": 11,
+    "graph": "standalone hub.js and hub.css; HTML excluded from the two asset requests",
+    "gzip_level": 6,
+    "html": "representative escaped Hub bootstrap shell",
+    "route": "/hub/"
+  },
+  "dist_sha256": {
+    "dist/hub.css": "c92d1aabdbee22d0feee4b08e030bcf2df0d9e9e12408dfad5e8ae0b183dd612",
+    "dist/hub.js": "37a7162fb31e794094264b942f3f88c6eb3aa9e1fd9415f4f21d3eb29b595820"
+  },
+  "html": {
+    "brotli11": 93,
+    "gzip6": 160,
+    "raw": 213
+  },
+  "initial_assets": [
+    "dist/hub.js",
+    "dist/hub.css"
+  ],
+  "kind": "hub",
+  "schema": 1
+}

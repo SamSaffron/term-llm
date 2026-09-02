@@ -17,10 +17,10 @@ case "$mode" in
     git -C "$root" archive "$baseline_sha" internal/serveui/static | tar -x -C "$work/tree"
     static="$work/tree/internal/serveui/static"
     ;;
-  final)
+  final|hub)
     static="$root/internal/serveui/static"
     ;;
-  *) echo "usage: $0 baseline|final" >&2; exit 2 ;;
+  *) echo "usage: $0 baseline|final|hub" >&2; exit 2 ;;
 esac
 
 python3 - "$mode" "$static" "$work" "$esbuild" "$baseline_sha" <<'PY'
@@ -117,6 +117,37 @@ def service_worker_candidates():
         if (static / name).is_file() and name not in names:
             names.append(name)
     return names
+
+
+if mode == 'hub':
+    names = ['dist/hub.js', 'dist/hub.css']
+    missing = [name for name in names if not (static / name).is_file()]
+    if missing:
+        raise SystemExit(f'missing generated Hub assets: {missing}')
+    shell_text = '<!doctype html><html><head><link rel="stylesheet" href="/hub/dist/hub.css?v=000000000000"><script type="module" src="/hub/dist/hub.js"></script></head><body><div id="root" data-hub-config="{}"></div></body></html>'
+    html = compressed(shell_text.encode())
+    shell_assets = service_worker_candidates()
+    if any(name in shell_assets for name in names):
+        raise SystemExit('Hub assets must not join the chat service-worker cache')
+    result = {
+        'schema': 1,
+        'kind': 'hub',
+        'conditions': {
+            'route': '/hub/',
+            'gzip_level': 6,
+            'brotli_quality': 11,
+            'html': 'representative escaped Hub bootstrap shell',
+            'graph': 'standalone hub.js and hub.css; HTML excluded from the two asset requests',
+        },
+        'html': html,
+        'assets': {name: file_size(static / name) for name in names},
+        'asset_total': sum_names(names),
+        'asset_requests': 2,
+        'initial_assets': names,
+        'dist_sha256': {name: hashlib.sha256((static / name).read_bytes()).hexdigest() for name in names},
+    }
+    print(json.dumps(result, indent=2, sort_keys=True))
+    raise SystemExit(0)
 
 
 html_text = rendered_html(static / 'index.html')

@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -112,6 +111,25 @@ func TestHubPasskeyUnauthorizedBehaviorAndBasePath(t *testing.T) {
 		t.Fatalf("secret navigation redirect=%d %q", w.Code, location)
 	}
 }
+func TestHubPasskeyOnlyStandaloneAssetsArePublic(t *testing.T) {
+	s := newTestPasskeyHub(t, "/hub")
+	handler := s.handler()
+	for _, path := range []string{"/hub/dist/hub.js", "/hub/dist/hub.css"} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://backend"+path, nil))
+		if recorder.Code != http.StatusOK || recorder.Body.Len() == 0 {
+			t.Errorf("public asset %s status=%d bytes=%d", path, recorder.Code, recorder.Body.Len())
+		}
+	}
+	for _, path := range []string{"/hub/dist/app.js", "/hub/dist/chunks/vendor.js", "/hub/dist/hub.js.map", "/hub/api/nodes"} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://backend"+path, nil))
+		if recorder.Code != http.StatusUnauthorized {
+			t.Errorf("protected path %s status=%d, want 401", path, recorder.Code)
+		}
+	}
+}
+
 func TestHubPasskeyExpiredSessionSignalsMountedLogin(t *testing.T) {
 	s := newTestPasskeyHub(t, "/hub")
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -210,8 +228,12 @@ func TestHubPasskeyBootstrapVerifyCookieSecurityAndOrigin(t *testing.T) {
 	if strings.Contains(w.Body.String(), "abcdefghijklmnopqrst") {
 		t.Fatal("bootstrap secret rendered in setup page")
 	}
-	if w.Header().Get("Cache-Control") != "no-store" || !strings.Contains(w.Header().Get("Content-Security-Policy"), "frame-ancestors 'none'") || w.Header().Get("X-Frame-Options") != "DENY" {
+	wantCSP := "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+	if w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("Content-Security-Policy") != wantCSP || w.Header().Get("X-Frame-Options") != "DENY" || w.Header().Get("Referrer-Policy") != "no-referrer" {
 		t.Fatalf("auth page security headers=%v", w.Header())
+	}
+	if strings.Contains(w.Body.String(), "<style") || strings.Contains(w.Body.String(), "<script>") || strings.Contains(w.Body.String(), "<base") || strings.Contains(w.Body.String(), "rel=\"icon\"") {
+		t.Fatalf("auth page contains inline or relative-base execution: %s", w.Body.String())
 	}
 	login := httptest.NewRequest(http.MethodGet, "http://backend/auth/login", nil)
 	login.AddCookie(c)
@@ -444,18 +466,6 @@ func TestHubPasskeyRateLimiter(t *testing.T) {
 	now = now.Add(6 * time.Second)
 	if !limiter.allow("192.0.2.1:1") {
 		t.Fatal("token did not refill")
-	}
-}
-
-func TestHubAuthJavaScript(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node not available")
-	}
-	cmd := exec.Command(node, "hub_auth_test.js")
-	cmd.Dir = filepath.Join("templates")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("node: %v\n%s", err, output)
 	}
 }
 

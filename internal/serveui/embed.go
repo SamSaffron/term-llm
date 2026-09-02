@@ -24,6 +24,9 @@ var (
 	assetVersionOnce sync.Once
 	assetVersion     string
 
+	hubAssetVersionOnce sync.Once
+	hubAssetVersion     string
+
 	renderManifestOnce sync.Once
 	renderManifest     []byte
 
@@ -31,32 +34,53 @@ var (
 	renderServiceWorker     []byte
 )
 
-// AssetVersion returns a stable hash of every embedded UI asset.
+// AssetVersion returns a stable hash of the chat UI assets. The standalone Hub
+// entry has an independent version so changes to either application do not
+// rotate the other application's cache identity.
 func AssetVersion() string {
 	assetVersionOnce.Do(func() {
-		entries := make([]string, 0, 16)
-		_ = fs.WalkDir(staticFiles, "static", func(path string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
-				return err
-			}
-			entries = append(entries, path)
-			return nil
+		assetVersion = embeddedAssetVersion(func(path string) bool {
+			return path != "static/dist/hub.js" && path != "static/dist/hub.css"
 		})
-		sort.Strings(entries)
-		h := sha256.New()
-		for _, path := range entries {
-			data, err := fs.ReadFile(staticFiles, path)
-			if err != nil {
-				continue
-			}
-			_, _ = h.Write([]byte(path))
-			_, _ = h.Write([]byte{0})
-			_, _ = h.Write(data)
-			_, _ = h.Write([]byte{0})
-		}
-		assetVersion = hex.EncodeToString(h.Sum(nil))[:12]
 	})
 	return assetVersion
+}
+
+// HubAssetVersion returns a stable hash over exactly the standalone Hub entry
+// module and stylesheet.
+func HubAssetVersion() string {
+	hubAssetVersionOnce.Do(func() {
+		hubAssetVersion = embeddedAssetVersion(func(path string) bool {
+			return path == "static/dist/hub.js" || path == "static/dist/hub.css"
+		})
+	})
+	return hubAssetVersion
+}
+
+func embeddedAssetVersion(include func(string) bool) string {
+	entries := make([]string, 0, 16)
+	_ = fs.WalkDir(staticFiles, "static", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if include(path) {
+			entries = append(entries, path)
+		}
+		return nil
+	})
+	sort.Strings(entries)
+	h := sha256.New()
+	for _, path := range entries {
+		data, err := fs.ReadFile(staticFiles, path)
+		if err != nil {
+			continue
+		}
+		_, _ = h.Write([]byte(path))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write(data)
+		_, _ = h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))[:12]
 }
 
 func versioned(path string) string { return path + "?v=" + AssetVersion() }

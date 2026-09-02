@@ -3,7 +3,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [[ ! -x "$root/frontend/node_modules/.bin/playwright" ]]; then
-  echo "frontend smoke dependencies are missing; run 'cd frontend && npm ci' first" >&2
+  echo "frontend smoke dependencies are missing; run 'make frontend-deps' first" >&2
   exit 1
 fi
 free_port() {
@@ -18,6 +18,7 @@ node_port="$(free_port)"
 hub_port="$(free_port)"
 node_token="production-node-bearer"
 hub_token="production-hub-bearer"
+registration_token="production-registration-secret"
 hub_root="http://127.0.0.1:${hub_port}/hub/"
 node_root="http://127.0.0.1:${node_port}/chat/"
 binary="$(mktemp "${TMPDIR:-/tmp}/term-llm-hub-browser.XXXXXX")"
@@ -98,7 +99,7 @@ YAML
 env -u TERM_LLM_PPROF -u TERM_LLM_SERVE_HUB_URL -u TERM_LLM_SERVE_HUB_REGISTER \
   -u TERM_LLM_SERVE_HUB_NODE_ID -u TERM_LLM_SERVE_HUB_NODE_NAME \
   "$binary" serve hub --host 127.0.0.1 --port "$hub_port" --base-path /hub \
-  --auth bearer --token "$hub_token" --config "$state/nodes.yaml" --contain=false \
+  --auth bearer --token "$hub_token" --registration-token "$registration_token" --config "$state/nodes.yaml" --contain=false \
   --nodes-file "$state/nodes.json" >"$state/hub.log" 2>&1 &
 hub_pid=$!
 for _ in $(seq 1 80); do
@@ -114,5 +115,6 @@ if [[ -z "${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-}" ]] && command -v chromium >/dev/n
 fi
 TERM_LLM_SMOKE_URL="${hub_root}node/production-node/" \
 TERM_LLM_HUB_SMOKE_ROOT="$hub_root" TERM_LLM_HUB_SMOKE_TOKEN="$hub_token" \
+TERM_LLM_HUB_NODE_ROOT="$node_root" TERM_LLM_HUB_REGISTRATION_TOKEN="$registration_token" \
 npm run test:e2e -- --workers=1 --reporter=line --output="$results" e2e/hub-production.spec.ts "$@"
 succeeded=true

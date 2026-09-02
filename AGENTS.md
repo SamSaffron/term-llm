@@ -46,7 +46,7 @@ JavaScript tests run through Go tests only when `node` is on `PATH`. Match extra
 
 ### Frontend formatting and linting
 
-The Preact frontend lives in `frontend/`. Prettier is the source formatter, ESLint checks TypeScript/TSX and hooks, and Stylelint checks CSS. After changing frontend files, format them before reviewing the diff and run every frontend quality check:
+The Preact frontends live in `frontend/`. Chat uses `frontend/src/main.tsx`; every Hub surface and Hub style is owned by `frontend/src/hub/`, with Hub transport under `frontend/src/api/hub-client.ts`. The chat build runs first and the standalone Hub build then emits `hub.js`/`hub.css` into the same ignored embedded directory. Prettier is the source formatter, ESLint checks TypeScript/TSX and hooks, and Stylelint checks CSS. After changing frontend files, format them before reviewing the diff and run every frontend quality check:
 
 ```sh
 npm --prefix frontend run format

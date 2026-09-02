@@ -18,5 +18,5 @@
     "jsxImportSource": "preact",
     "types": ["vite/client", "vitest/globals", "node"]
   },
-  "include": ["src", "vite.config.ts", "playwright.config.ts"]
+  "include": ["src", "e2e", "vite.config.ts", "vite.hub.config.ts", "playwright.config.ts"]
 }

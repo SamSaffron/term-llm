@@ -3,7 +3,6 @@ package cmd
 import (
 	"crypto/sha256"
 	"crypto/subtle"
-	"html/template"
 	"net/http"
 	"net/url"
 	"strings"
@@ -18,6 +17,8 @@ func (s *hubServer) handler() http.Handler {
 		s.registerPasskeyRoutes(mux)
 	}
 	mux.HandleFunc("/healthz", s.handleHubHealth)
+	mux.HandleFunc("/dist/hub.js", s.handleHubAsset)
+	mux.HandleFunc("/dist/hub.css", s.handleHubAsset)
 	mux.HandleFunc("/api/nodes/test", s.handleTestNode)
 	mux.HandleFunc("/api/registration-info", s.handleRegistrationInfo)
 	mux.HandleFunc("/api/register-node/", s.handleRegisterNode)
@@ -41,7 +42,7 @@ func (s *hubServer) auth(next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodOptions || r.URL.Path == "/healthz" || hubNodeAuthRoute(r) || hubRegistrationRoute(r) {
+		if r.Method == http.MethodOptions || r.URL.Path == "/healthz" || hubPublicAssetRoute(r.URL.Path) || hubNodeAuthRoute(r) || hubRegistrationRoute(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -75,6 +76,10 @@ func (s *hubServer) auth(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func hubPublicAssetRoute(path string) bool {
+	return path == "/dist/hub.js" || path == "/dist/hub.css"
 }
 
 func hubNodeAuthRoute(r *http.Request) bool {
@@ -121,104 +126,18 @@ func hubShouldRenderLogin(r *http.Request) bool {
 	return strings.Contains(accept, "text/html")
 }
 
-var hubLoginTemplate = template.Must(template.New("hub-login").Parse(`<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Hub - term-llm</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230d1117'/%3E%3Cg fill='none' stroke='%23e6edf3' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='32' cy='32' r='8'/%3E%3Ccircle cx='14' cy='16' r='5'/%3E%3Ccircle cx='50' cy='16' r='5'/%3E%3Ccircle cx='14' cy='48' r='5'/%3E%3Ccircle cx='50' cy='48' r='5'/%3E%3Cpath d='M18 20 27 29M46 20 37 29M18 44 27 35M46 44 37 35'/%3E%3C/g%3E%3C/svg%3E">
-  <style>
-    :root { color-scheme: dark light; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      display: grid;
-      place-items: center;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #0d1117;
-      color: #e6edf3;
-    }
-    main {
-      width: min(24rem, calc(100vw - 2rem));
-      padding: 1.5rem;
-      border: 1px solid rgba(255,255,255,0.12);
-      border-radius: 16px;
-      background: #161b22;
-      box-shadow: 0 20px 60px rgba(0,0,0,0.35);
-    }
-    h1 { margin: 0 0 0.35rem; font-size: 1.35rem; }
-    p { margin: 0 0 1rem; color: #8b949e; line-height: 1.45; }
-    .error {
-      margin-bottom: 1rem;
-      padding: 0.65rem 0.75rem;
-      border: 1px solid rgba(248,81,73,0.35);
-      border-radius: 10px;
-      background: rgba(248,81,73,0.10);
-      color: #ffa198;
-      font-size: 0.92rem;
-    }
-    label { display: block; margin-bottom: 0.45rem; font-weight: 650; }
-    input {
-      box-sizing: border-box;
-      width: 100%;
-      padding: 0.72rem 0.8rem;
-      border-radius: 10px;
-      border: 1px solid rgba(255,255,255,0.16);
-      background: #0d1117;
-      color: inherit;
-      font: inherit;
-    }
-    button {
-      width: 100%;
-      margin-top: 0.9rem;
-      padding: 0.72rem 0.8rem;
-      border: 0;
-      border-radius: 10px;
-      background: #238636;
-      color: white;
-      font: inherit;
-      font-weight: 750;
-      cursor: pointer;
-    }
-    button:hover { background: #2ea043; }
-    code { color: #a5d6ff; }
-    @media (prefers-color-scheme: light) {
-      body { background: #f6f8fa; color: #24292f; }
-      main { background: #fff; border-color: rgba(27,31,36,0.15); box-shadow: 0 20px 60px rgba(27,31,36,0.12); }
-      p { color: #57606a; }
-      input { background: #fff; border-color: rgba(27,31,36,0.18); }
-    }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>term-llm Hub</h1>
-    <p>Enter your hub access token to continue. I’ll store it in an HTTP-only cookie on this host.</p>
-    {{if .Invalid}}<div class="error">That hub token was not accepted.</div>{{end}}
-    <form method="get" action="{{.Action}}">
-      <label for="token">Hub token</label>
-      <input id="token" name="token" type="password" autocomplete="current-password" autofocus required>
-      <button type="submit">Connect to Hub</button>
-    </form>
-  </main>
-</body>
-</html>`))
-
 func (s *hubServer) writeHubLoginPage(w http.ResponseWriter, r *http.Request, invalid bool) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusUnauthorized)
 	action := s.publicPath(r.URL.EscapedPath())
 	if action == "" {
 		action = s.publicPath("/")
 	}
-	if err := hubLoginTemplate.Execute(w, struct {
-		Action  string
-		Invalid bool
-	}{Action: action, Invalid: invalid}); err != nil {
-		return
-	}
+	s.writeHubShell(w, r, http.StatusUnauthorized, "Hub - term-llm", hubPageConfig{
+		Page:         "bearer-login",
+		AuthMode:     "bearer",
+		BasePath:     s.basePath,
+		InvalidToken: invalid,
+		FormAction:   action,
+	})
 }
 
 func bearerTokenFromHeader(r *http.Request) string {

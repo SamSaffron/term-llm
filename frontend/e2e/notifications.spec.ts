@@ -49,7 +49,7 @@ test('service worker keeps one tagged completion notification for duplicate loca
     const notifications = await registration.getNotifications({ tag });
     const summary = notifications.map((notification) => ({
       tag: notification.tag,
-      renotify: notification.renotify,
+      renotify: (notification as Notification & { renotify?: boolean }).renotify,
       url: String((notification.data as { url?: string } | null)?.url || ''),
     }));
     notifications.forEach((notification) => notification.close());

@@ -237,7 +237,16 @@ func TestHubAuthBrowserNavigationShowsLoginPage(t *testing.T) {
 		t.Fatalf("browser login status = %d, want 401", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Hub - term-llm", `rel="icon"`, "data:image/svg+xml", "term-llm Hub", "Hub token", `name="token"`} {
+	for _, want := range []string{
+		"Hub - term-llm",
+		`href="/dist/hub.css?v=`,
+		`type="module" src="/dist/hub.js"`,
+		`data-hub-config=`,
+		`&#34;page&#34;:&#34;bearer-login&#34;`,
+		"term-llm Hub",
+		"Hub token",
+		`name="token"`,
+	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("login page missing %q: %s", want, body)
 		}
@@ -342,7 +351,7 @@ func TestHubRegistrationInfoRequiresHubAuthAndNoStores(t *testing.T) {
 	}
 }
 
-func TestHubIndexShowsRegistrationHelpWithoutEmbeddingToken(t *testing.T) {
+func TestHubIndexBootstrapDoesNotEmbedRegistrationToken(t *testing.T) {
 	store := hub.NewStore(filepath.Join(t.TempDir(), "nodes.json"))
 	s := newHubServer(hub.NewRegistry(store), store)
 	s.registrationToken = "reg-secret"
@@ -353,16 +362,22 @@ func TestHubIndexShowsRegistrationHelpWithoutEmbeddingToken(t *testing.T) {
 		t.Fatalf("index status = %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Private node", "Register a private / Docker node", "api/registration-info", "Registration token", "Copy token", "Reveal", "copyButtonFeedback", "copy-flash"} {
+	for _, want := range []string{
+		`id="root"`,
+		`data-hub-config=`,
+		`&#34;page&#34;:&#34;dashboard&#34;`,
+		`&#34;canAddNodes&#34;:true`,
+		`src="/dist/hub.js"`,
+		`href="/dist/hub.css?v=`,
+	} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("index missing %q", want)
+			t.Fatalf("index missing %q: %s", want, body)
 		}
 	}
-	if strings.Contains(body, "? Private node") {
-		t.Fatalf("index still contains question-mark private node label")
-	}
-	if strings.Contains(body, "reg-secret") {
-		t.Fatalf("index embedded registration token: %s", body)
+	for _, forbidden := range []string{"reg-secret", "api/registration-info", "copyButtonFeedback", "<script>"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("index contains forbidden value %q: %s", forbidden, body)
+		}
 	}
 }
 
@@ -398,8 +413,14 @@ func TestHubBasePathMountsDashboardAPIAndProxy(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("index status = %d body=%q", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `const hubBasePath = "/hub";`) {
-		t.Fatalf("index did not expose hub base path: %s", rec.Body.String())
+	for _, want := range []string{
+		`&#34;basePath&#34;:&#34;/hub&#34;`,
+		`href="/hub/dist/hub.css?v=`,
+		`src="/hub/dist/hub.js"`,
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("index missing mounted bootstrap value %q: %s", want, rec.Body.String())
+		}
 	}
 
 	rec = httptest.NewRecorder()
@@ -1238,14 +1259,19 @@ func assertDiagnosticCode(t *testing.T, n hubNodeView, code string) {
 	t.Fatalf("node %q diagnostics missing %q: %+v", n.ID, code, n.Diagnostics)
 }
 
-func TestHubIndexIncludesDiagnosticsUI(t *testing.T) {
+func TestHubIndexUsesStandaloneFrontendShell(t *testing.T) {
 	s := newHubServer(hub.NewRegistry(), nil)
 	rec := httptest.NewRecorder()
 	s.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	body := rec.Body.String()
-	for _, want := range []string{"node-diagnostics", "diagnostic-label", "n.diagnostics"} {
+	for _, want := range []string{`id="root"`, `src="/dist/hub.js"`, `href="/dist/hub.css?v=`} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("dashboard missing %q", want)
+			t.Fatalf("dashboard shell missing %q", want)
+		}
+	}
+	for _, legacy := range []string{"node-diagnostics", "n.diagnostics", "fetch('api/nodes')"} {
+		if strings.Contains(body, legacy) {
+			t.Fatalf("dashboard shell retained legacy renderer %q", legacy)
 		}
 	}
 }
@@ -1329,16 +1355,21 @@ func TestHubIndexBranding(t *testing.T) {
 		t.Fatalf("status = %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Hub - term-llm", `rel="icon"`, "data:image/svg+xml"} {
+	for _, want := range []string{
+		"Hub - term-llm",
+		`rel="icon"`,
+		"data:image/svg+xml",
+		`type="module" src="/dist/hub.js"`,
+		`href="/dist/hub.css?v=`,
+		`&#34;page&#34;:&#34;dashboard&#34;`,
+		`&#34;canAddNodes&#34;:true`,
+	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("dashboard missing %q", want)
 		}
 	}
-	if !strings.Contains(body, "term-llm Hub") && !strings.Contains(body, `term-llm <span class="hub-brand-accent">Hub</span>`) {
-		t.Error("dashboard missing term-llm Hub branding")
-	}
-	if !strings.Contains(body, "addNodeModal") {
-		t.Error("dashboard missing Add Node UI while store is enabled")
+	if strings.Contains(body, "addNodeModal") {
+		t.Error("dashboard shell retained legacy inline UI")
 	}
 }
 

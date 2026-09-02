@@ -374,6 +374,10 @@ The dashboard also shows lightweight diagnostics on each node card when the Hub 
 
 These diagnostics are advisory and token-safe; `/api/nodes` still never returns node tokens or full secret-bearing config.
 
+## Frontend development
+
+The dashboard and all Hub authentication pages are one standalone Preact application under `frontend/src/hub/`; Hub network calls are owned by `frontend/src/api/hub-client.ts`. Go renders only the escaped bootstrap shell and serves the embedded `dist/hub.js` and `dist/hub.css` assets. Source builds must run `make frontend`; generated files under `internal/serveui/static/dist/` are ignored and must not be edited or committed.
+
 ## Security posture
 
 The hub defaults to bearer auth: `--auth bearer` protects the dashboard, Hub APIs, and node proxy with a single Hub token. (`/healthz` is intentionally public and returns only `{"status":"ok","role":"hub"}`.) Set the bearer explicitly with `--token` or `TERM_LLM_HUB_TOKEN` for stable deployments; otherwise the hub prints a generated token at startup. Treat this token as an operator/admin secret: a holder can add or test nodes pointing at any address the Hub can reach and can proxy through those nodes. `--auth passkey` replaces browser bearer copies with WebAuthn-backed, revocable, expiring in-memory sessions while leaving node, registration, reverse-WebSocket, and delegation credentials unchanged. `--auth none` is available for local development, but it is loopback-only because anyone who can reach an unauthenticated hub can reach every node it fronts. Reverse nodes authenticate their websocket with the node id plus the node's bearer token; the hub accepts that connection only for nodes configured with `connection: reverse`, and the node-side connector forwards only requests under its configured base path.

@@ -40,6 +40,18 @@ The comparable rich-content scenario loads KaTeX and the dark highlight theme. F
 
 The six final requests are `rich-highlight.js`, highlight JS/CSS, `rich-katex.js`, and KaTeX JS/CSS. The generated preload map points at the emitted `dist/chunks/*.css` paths. Vite emits only WOFF2 KaTeX fonts.
 
+## Standalone Hub entry
+
+`scripts/measure_ui_payload.sh hub` measures the independent Hub graph without changing the chat baseline/final inclusion rules above. A Hub page makes two generated-asset requests—`dist/hub.js` and `dist/hub.css`; the HTML/bootstrap response is reported separately. Hub assets are not chat service-worker candidates. `payload-hub-phase2.json` preserves the first working standalone checkpoint (81,492 raw / 25,214 gzip-6 / 22,480 Brotli-11); `payload-hub-final.json` records the completed, reviewed port below.
+
+| Asset / compression | Raw | gzip-6 | Brotli-11 |
+|---|---:|---:|---:|
+| `dist/hub.js` | 67,682 | 21,542 | 19,291 |
+| `dist/hub.css` | 16,674 | 4,145 | 3,617 |
+| Two-asset total | 84,356 | 25,687 | 22,908 |
+
+These measured values set the explicit embedded-asset budgets in `internal/serveui/embed_test.go`. The standalone bundle contains its own Preact runtime but no marked, DOMPurify, KaTeX, highlight.js, xterm, MCP, WebRTC, chat store, dynamic chunk, or production test-bridge dependency.
+
 ## Service-worker cache policy
 
 The worker intentionally performs **no install-time asset fetches** in either version: installation must survive an expired external-auth session. Therefore the honest install request count is zero, not the number of entries in `SHELL_ASSETS`. The byte figures below describe the cache allowlist candidates that can be populated opportunistically by real page requests.

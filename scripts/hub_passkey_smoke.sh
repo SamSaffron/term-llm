@@ -2,6 +2,10 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ ! -x "$root/frontend/node_modules/.bin/playwright" ]]; then
+  echo "frontend smoke dependencies are missing; run 'make frontend-deps' first" >&2
+  exit 1
+fi
 free_port(){ node -e 'const net=require("node:net");const s=net.createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close();});'; }
 public_port="${TERM_LLM_HUB_SMOKE_PORT:-$(free_port)}"
 backend_port="$(free_port)"
@@ -31,6 +35,7 @@ wait_for_hub(){
 }
 
 cd "$root"
+npm --prefix frontend run build
 go build -o "$binary" .
 cat >"$state/proxy.go" <<'GO'
 package main
@@ -42,7 +47,7 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=localhost' -addext 
 "$proxy_binary" "http://127.0.0.1:${backend_port}" "127.0.0.1:${public_port}" "$state/cert.pem" "$state/key.pem" >>"$log" 2>&1 &
 proxy_pid=$!
 
-TERM_LLM_HUB_TOKEN="$bearer_token" TERM_LLM_HUB_BOOTSTRAP_TOKEN="$token" "$binary" serve hub \
+env -u TERM_LLM_PPROF TERM_LLM_HUB_TOKEN="$bearer_token" TERM_LLM_HUB_BOOTSTRAP_TOKEN="$token" "$binary" serve hub \
   --auth passkey --public-url "$url" --base-path /hub --passkey-trusted-proxy 127.0.0.1/32 \
   --host 127.0.0.1 --port "$backend_port" --contain=false \
   --nodes-file "$state/nodes.json" --passkey-auth-file "$state/auth/auth.json" >"$log" 2>&1 &
@@ -53,21 +58,22 @@ if grep -Fq "$token" "$log" || grep -Fq "$bearer_token" "$log";then echo "bootst
 if grep -Fq "generated Hub bearer token" "$log";then echo "passkey mode generated a bearer token" >&2;exit 1;fi
 if ! grep -Fq "explicit bearer API compatibility: enabled (from TERM_LLM_HUB_TOKEN)" "$log";then echo "passkey bearer compatibility was not disclosed" >&2;exit 1;fi
 
-cd "$root/internal/serveui"
-TERM_LLM_HUB_SMOKE_URL="$url" TERM_LLM_HUB_SMOKE_TOKEN="$token" TERM_LLM_HUB_CREDENTIAL_FILE="$state/credential.json" TERM_LLM_HUB_CHROMIUM="$(command -v chromium || true)" \
-  npx --yes --package @playwright/test@1.62.1 sh -c \
-  'export NODE_PATH="$(dirname "$(dirname "$(command -v playwright)")")"; playwright test hub_passkey.spec.js --workers=1 --reporter=line --output="'"$results"'"'
+cd "$root/frontend"
+if [[ -z "${PLAYWRIGHT_CHROMIUM_EXECUTABLE:-}" ]] && command -v chromium >/dev/null 2>&1; then
+  export PLAYWRIGHT_CHROMIUM_EXECUTABLE="$(command -v chromium)"
+fi
+TERM_LLM_HUB_SMOKE_URL="$url" TERM_LLM_HUB_SMOKE_TOKEN="$token" TERM_LLM_HUB_CREDENTIAL_FILE="$state/credential.json" \
+  npm run test:e2e -- --project=desktop --workers=1 --reporter=line --output="$results" e2e/hub-passkey.spec.ts
 
 kill "$server_pid";wait "$server_pid" 2>/dev/null||true;server_pid=""
 recovery_token="virtual-passkey-recovery-secret"
-TERM_LLM_HUB_TOKEN="$bearer_token" TERM_LLM_HUB_RECOVERY_TOKEN="$recovery_token" "$binary" serve hub \
+env -u TERM_LLM_PPROF TERM_LLM_HUB_TOKEN="$bearer_token" TERM_LLM_HUB_RECOVERY_TOKEN="$recovery_token" "$binary" serve hub \
   --auth passkey --public-url "$url" --base-path /hub --passkey-trusted-proxy 127.0.0.1/32 \
   --host 127.0.0.1 --port "$backend_port" --contain=false \
   --nodes-file "$state/nodes.json" --passkey-auth-file "$state/auth/auth.json" >>"$log" 2>&1 &
 server_pid=$!
 wait_for_hub
-TERM_LLM_HUB_SMOKE_URL="$url" TERM_LLM_HUB_SMOKE_TOKEN="$recovery_token" TERM_LLM_HUB_CREDENTIAL_FILE="$state/credential.json" TERM_LLM_HUB_CHROMIUM="$(command -v chromium || true)" \
-  npx --yes --package @playwright/test@1.62.1 sh -c \
-  'export NODE_PATH="$(dirname "$(dirname "$(command -v playwright)")")"; playwright test hub_recovery.spec.js --workers=1 --reporter=line --output="'"$results"'"'
+TERM_LLM_HUB_SMOKE_URL="$url" TERM_LLM_HUB_SMOKE_TOKEN="$recovery_token" TERM_LLM_HUB_CREDENTIAL_FILE="$state/credential.json" \
+  npm run test:e2e -- --project=desktop --workers=1 --reporter=line --output="$results" e2e/hub-recovery.spec.ts
 if grep -Fq "$token" "$log"||grep -Fq "$recovery_token" "$log"||grep -Fq "$bearer_token" "$log";then echo "passkey host secret leaked to Hub output" >&2;exit 1;fi
 succeeded=true

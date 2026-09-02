@@ -70,7 +70,6 @@ func (s *hubServer) registerPasskeyRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/auth/login", s.handlePasskeyPage)
 	mux.HandleFunc("/auth/setup", s.handlePasskeyPage)
 	mux.HandleFunc("/auth/recover", s.handlePasskeyPage)
-	mux.HandleFunc("/auth/hub_auth.js", s.handlePasskeyScript)
 	mux.HandleFunc("/api/auth/bootstrap/verify", s.handleBootstrapVerify)
 	mux.HandleFunc("/api/auth/bootstrap/register/begin", s.handleBootstrapRegisterBegin)
 	mux.HandleFunc("/api/auth/bootstrap/register/finish", s.handleBootstrapRegisterFinish)
@@ -767,7 +766,7 @@ func (s *hubServer) passkeyAuth(next http.Handler) http.Handler {
 
 func passkeyPublicRoute(path string) bool {
 	switch path {
-	case "/auth/login", "/auth/setup", "/auth/recover", "/auth/hub_auth.js",
+	case "/auth/login", "/auth/setup", "/auth/recover", "/dist/hub.js", "/dist/hub.css",
 		"/api/auth/login/begin", "/api/auth/login/finish",
 		"/api/auth/bootstrap/verify", "/api/auth/bootstrap/register/begin", "/api/auth/bootstrap/register/finish",
 		"/api/auth/recovery/verify", "/api/auth/recovery/register/begin", "/api/auth/recovery/register/finish":

@@ -7,7 +7,9 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "vite build",
+    "build": "npm run build:chat && npm run build:hub",
+    "build:chat": "vite build",
+    "build:hub": "vite build --config vite.hub.config.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "npm run lint:ts && npm run lint:css",

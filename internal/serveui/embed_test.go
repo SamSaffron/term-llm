@@ -3,17 +3,20 @@ package serveui
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"io/fs"
 	pathpkg "path"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
 
 func TestGeneratedBundleAssets(t *testing.T) {
 	for _, name := range []string{
-		"dist/app.js", "dist/app.css", "dist/chunks/vendor.js",
+		"dist/app.js", "dist/app.css", "dist/hub.js", "dist/hub.css", "dist/chunks/vendor.js",
 		"dist/chunks/rich-highlight.js", "dist/chunks/rich-katex.js",
 		"dist/chunks/highlight.js", "dist/chunks/katex.js", "dist/chunks/katex.css", "dist/chunks/webrtc.js", "dist/chunks/mcp.js",
 		"dist/chunks/MarkdownFilePreview.js", "dist/chunks/markdown-preview-store.js",
@@ -30,6 +33,9 @@ func TestGeneratedBundleAssets(t *testing.T) {
 	}
 	if _, err := StaticAsset("dist/app.js.map"); err == nil {
 		t.Fatal("production source map must not be embedded")
+	}
+	if _, err := StaticAsset("dist/hub.js.map"); err == nil {
+		t.Fatal("Hub production source map must not be embedded")
 	}
 }
 
@@ -74,6 +80,11 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// Keep bounded headroom while still failing meaningful accidental regressions.
 		"dist/app.js":  {raw: 465_000, gzip: 135_000},
 		"dist/app.css": {raw: 174_000, gzip: 33_000},
+		// Measured after the completed standalone port: 67.7/21.5 KiB JS and
+		// 16.7/4.1 KiB CSS. These limits retain modest growth headroom without
+		// allowing chat-only rendering dependencies into the Hub graph.
+		"dist/hub.js":  {raw: 72_000, gzip: 24_000},
+		"dist/hub.css": {raw: 19_000, gzip: 5_500},
 	}
 	for name, budget := range budgets {
 		body, err := StaticAsset(name)
@@ -102,6 +113,70 @@ func TestBundlePolicy(t *testing.T) {
 	}
 	if bytes.Contains(js, []byte("__TERM_LLM_TEST__")) || bytes.Contains(js, []byte("__TERM_LLM_ENABLE_TEST_BRIDGE__")) {
 		t.Fatal("production bundle contains browser test bridge")
+	}
+}
+
+func TestHubBundlePolicy(t *testing.T) {
+	js, err := StaticAsset("dist/hub.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{
+		"marked", "DOMPurify", "KaTeX", "highlight.js", "@xterm", "WebRTC",
+		"TERM_LLM_TEST", "mcp-store", "app-store", "chunks/",
+	} {
+		if bytes.Contains(js, []byte(forbidden)) {
+			t.Errorf("standalone Hub bundle contains forbidden chat dependency marker %q", forbidden)
+		}
+	}
+	if bytes.Contains(js, []byte("sourceMappingURL")) {
+		t.Fatal("standalone Hub bundle references a source map")
+	}
+}
+
+func TestChatAndHubAssetVersionScopes(t *testing.T) {
+	versionFor := func(include func(string) bool) string {
+		entries := []string{}
+		err := fs.WalkDir(staticFiles, "static", func(path string, entry fs.DirEntry, err error) error {
+			if err != nil || entry.IsDir() {
+				return err
+			}
+			if include(path) {
+				entries = append(entries, path)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sort.Strings(entries)
+		hash := sha256.New()
+		for _, path := range entries {
+			body, err := fs.ReadFile(staticFiles, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = hash.Write([]byte(path))
+			_, _ = hash.Write([]byte{0})
+			_, _ = hash.Write(body)
+			_, _ = hash.Write([]byte{0})
+		}
+		return hex.EncodeToString(hash.Sum(nil))[:12]
+	}
+	chat := versionFor(func(path string) bool {
+		return path != "static/dist/hub.js" && path != "static/dist/hub.css"
+	})
+	hub := versionFor(func(path string) bool {
+		return path == "static/dist/hub.js" || path == "static/dist/hub.css"
+	})
+	if AssetVersion() != chat {
+		t.Fatalf("AssetVersion=%q, want chat-only scope %q", AssetVersion(), chat)
+	}
+	if HubAssetVersion() != hub {
+		t.Fatalf("HubAssetVersion=%q, want exact Hub scope %q", HubAssetVersion(), hub)
+	}
+	if AssetVersion() == HubAssetVersion() {
+		t.Fatal("chat and Hub asset scopes unexpectedly share an identity")
 	}
 }
 
@@ -171,6 +246,9 @@ func TestRenderServiceWorkerVersionsOnlyDirectShellAssets(t *testing.T) {
 	}
 	if strings.Contains(without, "'./dist/app.js'") || strings.Contains(with, "'./dist/app.js'") {
 		t.Fatal("canonical app entry must remain network-first instead of joining the shell cache")
+	}
+	if strings.Contains(without, "hub.js") || strings.Contains(without, "hub.css") || strings.Contains(with, "hub.js") || strings.Contains(with, "hub.css") {
+		t.Fatal("standalone Hub assets must stay outside the chat service-worker cache")
 	}
 	if without != with {
 		t.Fatal("WebRTC must not add a versioned URL that differs from the chunk URL imported by Vite")
