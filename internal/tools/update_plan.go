@@ -249,7 +249,7 @@ func (c *PlanController) prepareRequestContext(ctx context.Context, sessionID st
 	if len(contextParts) == 0 {
 		return messages, nil
 	}
-	return insertPlanContextBeforeLatestUser(messages, planContextMessage(strings.Join(contextParts, "\n\n"))), nil
+	return insertPlanContextAtStablePrefix(messages, planContextMessage(strings.Join(contextParts, "\n\n"))), nil
 }
 
 func (c *PlanController) prepareCompactionContext(ctx context.Context, sessionID string, result *llm.CompactionResult) error {
@@ -314,14 +314,21 @@ func containsPromptGuidance(messages []llm.Message) bool {
 	return false
 }
 
-func insertPlanContextBeforeLatestUser(messages []llm.Message, contextMessage llm.Message) []llm.Message {
-	insertAt := len(messages)
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == llm.RoleUser {
-			insertAt = i
+func insertPlanContextAtStablePrefix(messages []llm.Message, contextMessage llm.Message) []llm.Message {
+	// Request context is ephemeral and is rebuilt from durable history on every
+	// run. Keep it beside the leading system/developer context so stateful
+	// providers see the same delivered prefix on follow-up turns. Inserting it
+	// before the latest user message moves it past prior conversation turns and
+	// invalidates provider continuation boundaries.
+	insertAt := 0
+	for insertAt < len(messages) {
+		role := messages[insertAt].Role
+		if role != llm.RoleSystem && role != llm.RoleDeveloper {
 			break
 		}
+		insertAt++
 	}
+
 	out := make([]llm.Message, 0, len(messages)+1)
 	out = append(out, messages[:insertAt]...)
 	out = append(out, contextMessage)

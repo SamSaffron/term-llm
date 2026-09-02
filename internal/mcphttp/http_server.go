@@ -329,6 +329,13 @@ func (r *responseLogger) WriteHeader(status int) {
 	r.ResponseWriter.WriteHeader(status)
 }
 
+// Unwrap exposes optional interfaces such as http.Flusher through
+// http.ResponseController. Streamable MCP responses rely on those interfaces
+// to send headers before their long-lived handlers return.
+func (r *responseLogger) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
 // Stop gracefully stops the HTTP server.
 func (s *Server) Stop(ctx context.Context) error {
 	s.mu.Lock()

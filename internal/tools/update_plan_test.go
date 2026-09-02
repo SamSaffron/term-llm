@@ -282,6 +282,31 @@ func TestUpdatePlanRestoresAcrossControllerRestartOnlyWhenCallable(t *testing.T)
 	}
 }
 
+func TestPlanControllerPromptGuidanceKeepsStableContinuationPrefix(t *testing.T) {
+	controller := NewPlanController(nil)
+	controller.SetPromptGuidance(true)
+	tool := NewUpdatePlanTool(controller)
+
+	base := []llm.Message{llm.SystemText("system"), llm.UserText("first")}
+	first, err := tool.PrepareRequestContext(context.Background(), "session-1", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	followUp := []llm.Message{
+		base[0],
+		base[1],
+		llm.AssistantText("answer"),
+		llm.UserText("second"),
+	}
+	second, err := tool.PrepareRequestContext(context.Background(), "session-1", followUp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) > len(second) || !reflect.DeepEqual(second[:len(first)], first) {
+		t.Fatalf("follow-up context moved inside the durable transcript:\nfirst = %#v\nsecond = %#v", first, second)
+	}
+}
+
 func TestPlanControllerPromptGuidanceIsCallableOnlyContext(t *testing.T) {
 	controller := NewPlanController(nil)
 	controller.SetPromptGuidance(true)

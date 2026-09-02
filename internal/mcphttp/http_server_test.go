@@ -235,6 +235,86 @@ func TestToolResultContentFallbacks(t *testing.T) {
 	}
 }
 
+func TestServerSubscriptionsListenFlushesHeaders(t *testing.T) {
+	server := NewServer(func(context.Context, string, json.RawMessage) (ToolResult, error) {
+		return ToolResult{}, nil
+	})
+	url, token, err := server.Start(context.Background(), []ToolSpec{{
+		Name:   "test_tool",
+		Schema: map[string]interface{}{"type": "object"},
+	}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := server.Stop(stopCtx); err != nil {
+			t.Errorf("Stop: %v", err)
+		}
+	}()
+
+	client := &http.Client{}
+	discoverBody := `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/clientCapabilities":{"elicitation":{"form":{},"url":{}},"roots":{"listChanged":true}},"io.modelcontextprotocol/clientInfo":{"name":"antigravity-client","version":"v1.0.0"},"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}`
+	discoverReq, err := http.NewRequest(http.MethodPost, url, strings.NewReader(discoverBody))
+	if err != nil {
+		t.Fatalf("NewRequest(discover): %v", err)
+	}
+	discoverReq.Header.Set("Authorization", "Bearer "+token)
+	discoverReq.Header.Set("Content-Type", "application/json")
+	discoverReq.Header.Set("Accept", "application/json, text/event-stream")
+	discoverReq.Header.Set("Mcp-Protocol-Version", "2026-07-28")
+	discoverReq.Header.Set("Mcp-Method", "server/discover")
+	discoverResp, err := client.Do(discoverReq)
+	if err != nil {
+		t.Fatalf("server/discover: %v", err)
+	}
+	discoverPayload, _ := io.ReadAll(discoverResp.Body)
+	_ = discoverResp.Body.Close()
+	if discoverResp.StatusCode != http.StatusOK {
+		t.Fatalf("server/discover status = %d, want %d: %s", discoverResp.StatusCode, http.StatusOK, discoverPayload)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	body := `{"jsonrpc":"2.0","id":2,"method":"subscriptions/listen","params":{"_meta":{"io.modelcontextprotocol/clientCapabilities":{"roots":{"listChanged":true}},"io.modelcontextprotocol/clientInfo":{"name":"antigravity-client","version":"v1.0.0"},"io.modelcontextprotocol/protocolVersion":"2026-07-28"},"notifications":{"toolsListChanged":true}}}`
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Mcp-Protocol-Version", "2026-07-28")
+	req.Header.Set("Mcp-Method", "subscriptions/listen")
+
+	responseCh := make(chan *http.Response, 1)
+	errorCh := make(chan error, 1)
+	go func() {
+		resp, err := client.Do(req)
+		if err != nil {
+			errorCh <- err
+			return
+		}
+		responseCh <- resp
+	}()
+
+	select {
+	case resp := <-responseCh:
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "text/event-stream") {
+			t.Fatalf("Content-Type = %q, want text/event-stream", got)
+		}
+	case err := <-errorCh:
+		t.Fatalf("subscriptions/listen request failed before receiving headers: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("subscriptions/listen did not flush response headers")
+	}
+}
+
 func TestServerAuthMiddleware(t *testing.T) {
 	executor := func(ctx context.Context, name string, args json.RawMessage) (ToolResult, error) {
 		return ToolResult{Content: "executed"}, nil
