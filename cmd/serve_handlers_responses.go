@@ -186,18 +186,9 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid agent name")
 		return
 	}
-	if req.Agent != "" {
-		available := false
-		for _, name := range s.cfg.agentNames {
-			if req.Agent == name {
-				available = true
-				break
-			}
-		}
-		if !available {
-			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "agent is not available")
-			return
-		}
+	if req.Agent != "" && !s.cfg.agentAvailable(req.Agent) {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "agent is not available")
+		return
 	}
 	if req.NoProject && strings.TrimSpace(req.ProjectID) != "" {
 		writeProjectError(w, http.StatusBadRequest, "invalid_project_selection", "no_project and project_id are mutually exclusive")

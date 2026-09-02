@@ -1180,6 +1180,19 @@ func (c serveServerConfig) imagesRoute() string { return c.basePath + "/images/"
 // filesRoute returns the files sub-route, e.g. "/ui/files/" or "/chat/files/".
 func (c serveServerConfig) filesRoute() string { return c.basePath + "/files/" }
 
+// agentAvailable reports whether a first-party request may select name.
+func (c serveServerConfig) agentAvailable(name string) bool {
+	if name != "" && name == c.agentName {
+		return true
+	}
+	for _, available := range c.agentNames {
+		if name == available {
+			return true
+		}
+	}
+	return false
+}
+
 // resolveFilesDir returns the files-dir from the flag if set, otherwise from config.
 func resolveFilesDir(flagVal string, cfg *config.Config) string {
 	if flagVal != "" {

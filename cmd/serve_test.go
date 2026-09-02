@@ -481,6 +481,58 @@ func TestServeServerConfig_RouteHelpers(t *testing.T) {
 	}
 }
 
+func TestServeServerConfigAgentAvailable(t *testing.T) {
+	dedicated := serveServerConfig{agentName: "jarvis"}
+	if !dedicated.agentAvailable("jarvis") {
+		t.Fatal("dedicated agent was unavailable")
+	}
+	for _, name := range []string{"", "developer", "missing"} {
+		if dedicated.agentAvailable(name) {
+			t.Errorf("dedicated agentAvailable(%q) = true, want false", name)
+		}
+	}
+
+	multiAgent := serveServerConfig{agentNames: []string{"developer", "reviewer"}}
+	for _, name := range []string{"developer", "reviewer"} {
+		if !multiAgent.agentAvailable(name) {
+			t.Errorf("multi-agent agentAvailable(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"", "jarvis", "missing"} {
+		if multiAgent.agentAvailable(name) {
+			t.Errorf("multi-agent agentAvailable(%q) = true, want false", name)
+		}
+	}
+}
+
+func TestHandleResponsesAcceptsDedicatedAgentForFreshThread(t *testing.T) {
+	srv := newTestServeServer("thread response")
+	defer srv.sessionMgr.Close()
+	srv.cfg.agentName = "jarvis"
+	var createdAgent string
+	srv.agentRuntimeFactory = func(ctx context.Context, _, _, agentName string) (*serveRuntime, error) {
+		createdAgent = agentName
+		runtime, err := srv.sessionMgr.factory(ctx)
+		if runtime != nil {
+			runtime.agentName = agentName
+		}
+		return runtime, err
+	}
+
+	code, response := doResponsesFirstParty(t, srv, `{"input":"continue in a new thread","agent":"jarvis","client_message_id":"thread-message"}`, "thread-child")
+	if code != http.StatusOK {
+		t.Fatalf("response status = %d, want 200: %#v", code, response)
+	}
+	if createdAgent != "jarvis" {
+		t.Fatalf("created agent = %q, want jarvis", createdAgent)
+	}
+
+	code, response = doResponsesFirstParty(t, srv, `{"input":"continue in a new thread","agent":"developer","client_message_id":"foreign-agent-message"}`, "foreign-agent-thread")
+	if code != http.StatusBadRequest || !strings.Contains(fmt.Sprint(response), "agent is not available") {
+		t.Fatalf("foreign agent status/response = %d %#v, want unavailable-agent 400", code, response)
+	}
+}
+
 func TestRuntimeForFreshAgentProviderRequestUsesSelectedAgent(t *testing.T) {
 	mgr := newServeSessionManager(time.Hour, 10, func(context.Context) (*serveRuntime, error) {
 		return &serveRuntime{}, nil
