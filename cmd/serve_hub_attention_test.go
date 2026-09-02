@@ -240,8 +240,8 @@ func TestHubAttentionAPIKeepsExactCountsWhenInboxIsBounded(t *testing.T) {
 	}
 	if response.TotalRunning != 1 || response.TotalInputRequired != 1 || response.TotalUnseen != 2 || !response.HasMore ||
 		len(response.InputRequired) != 1 || response.InputRequired[0].SessionID != "blocked" ||
-		response.InputRequired[0].ResumePath != "/node/alpha/24" || len(response.Inbox) != 1 ||
-		response.Inbox[0].SessionID != "two" || response.Inbox[0].ResumePath != "/node/alpha/22" {
+		response.InputRequired[0].ResumePath != "/node/alpha/chat/24" || len(response.Inbox) != 1 ||
+		response.Inbox[0].SessionID != "two" || response.Inbox[0].ResumePath != "/node/alpha/chat/22" {
 		t.Fatalf("bounded response = %+v", response)
 	}
 }

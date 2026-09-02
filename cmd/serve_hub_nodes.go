@@ -291,14 +291,15 @@ func (s *hubServer) buildHubNodeSessionsView(n hub.Node, entries []hubNodeSessio
 }
 
 // hubSessionResumePath prefers the stable sequential session number used by
-// the serve UI's canonical routes, while retaining the globally unique ID as
-// a compatibility fallback for older nodes that do not expose numbers.
+// the serve UI's canonical /chat/<selector> routes, while retaining the
+// globally unique ID as a compatibility fallback for older nodes that do not
+// expose numbers.
 func (s *hubServer) hubSessionResumePath(nodeID, sessionID string, sessionNumber int64) string {
 	selector := strings.TrimSpace(sessionID)
 	if sessionNumber > 0 {
 		selector = strconv.FormatInt(sessionNumber, 10)
 	}
-	return s.hubPath("/node/" + url.PathEscape(nodeID) + "/" + url.PathEscape(selector))
+	return s.hubPath("/node/" + url.PathEscape(nodeID) + "/chat/" + url.PathEscape(selector))
 }
 
 func hubNodeSessionTitle(entry hubNodeSessionStatus) string {

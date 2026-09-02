@@ -1055,12 +1055,15 @@ func TestHubBareNodePathRedirects(t *testing.T) {
 }
 
 func TestHubNodesAPIIncludesBoundedSessionSummary(t *testing.T) {
-	var sessionsAuth string
+	var sessionsAuth, resumedPath string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/chat/healthz":
 			io.WriteString(w, `{"status":"ok","agent":"alpha-agent","version":"v1","capabilities":["web"]}`)
+		case "/chat/chat/1005":
+			resumedPath = r.URL.Path
+			io.WriteString(w, `{"route":"session"}`)
 		case "/chat/v1/sessions/status":
 			sessionsAuth = r.Header.Get("Authorization")
 			type sess struct {
@@ -1136,14 +1139,20 @@ func TestHubNodesAPIIncludesBoundedSessionSummary(t *testing.T) {
 	if len(n.Sessions.Active) != 1 || n.Sessions.Active[0].ID != "sess_busy" || n.Sessions.ActiveCount != 1 {
 		t.Fatalf("active sessions = %+v active_count=%d", n.Sessions.Active, n.Sessions.ActiveCount)
 	}
-	if n.Sessions.ResumePath != "/hub/node/alpha/1005" {
+	if n.Sessions.ResumePath != "/hub/node/alpha/chat/1005" {
 		t.Fatalf("resume path = %q", n.Sessions.ResumePath)
 	}
 	if len(n.Sessions.Recent) != 3 || n.Sessions.Recent[0].ID != "sess_000" {
 		t.Fatalf("recent sessions = %+v", n.Sessions.Recent)
 	}
-	if n.Sessions.Recent[0].Number != 1000 || n.Sessions.Recent[0].ResumePath != "/hub/node/alpha/1000" {
+	if n.Sessions.Recent[0].Number != 1000 || n.Sessions.Recent[0].ResumePath != "/hub/node/alpha/chat/1000" {
 		t.Fatalf("recent session = %+v", n.Sessions.Recent[0])
+	}
+
+	resumeRec := httptest.NewRecorder()
+	s.handler().ServeHTTP(resumeRec, httptest.NewRequest(http.MethodGet, n.Sessions.ResumePath, nil))
+	if resumeRec.Code != http.StatusOK || resumedPath != "/chat/chat/1005" {
+		t.Fatalf("resume request status=%d backend path=%q body=%s", resumeRec.Code, resumedPath, resumeRec.Body.String())
 	}
 }
 

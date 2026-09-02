@@ -161,7 +161,7 @@ func TestHubReverseNodeSessionsSummary(t *testing.T) {
 		t.Fatalf("nodes response = %+v", resp.Nodes)
 	}
 	sessions := resp.Nodes[0].Sessions
-	if sessions.CountLabel != "1 session" || sessions.ActiveCount != 1 || sessions.ResumePath != "/node/artist/sess_reverse" {
+	if sessions.CountLabel != "1 session" || sessions.ActiveCount != 1 || sessions.ResumePath != "/node/artist/chat/sess_reverse" {
 		t.Fatalf("sessions summary = %+v", sessions)
 	}
 }
