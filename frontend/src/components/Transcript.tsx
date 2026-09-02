@@ -10,6 +10,7 @@ import { rebaseHubAssetURL } from '../app/config';
 import { responseActivity } from '../domain/activity';
 import type { AppStore } from '../stores/app-store';
 import { TRANSCRIPT_SCROLL_TO_TAIL_EVENT } from './transcript-scroll';
+import { formatElapsedDuration, subscribeElapsedClock } from '../platform/elapsed-clock';
 
 function openMediaGallery(store: AppStore, src: string, type: 'image' | 'video'): void {
   const nodes = [...document.querySelectorAll<HTMLElement>('[data-lightbox-src]')];
@@ -259,14 +260,49 @@ function formatUsage(message: Message): string {
   return `↙ ${Number(usage.input_tokens || 0).toLocaleString()} in · ${Number(usage.output_tokens || 0).toLocaleString()} out · ${Number(details.cached_tokens || usage.cached_input_tokens || 0).toLocaleString()} cached`;
 }
 
+function ElapsedDuration({
+  startedAt,
+  durationMs,
+  running,
+  active = true,
+}: {
+  startedAt?: number;
+  durationMs?: number;
+  running: boolean;
+  active?: boolean;
+}) {
+  const label = useRef<HTMLSpanElement>(null);
+  const elapsed = useCallback(
+    () =>
+      formatElapsedDuration(
+        running && startedAt ? Math.max(0, Date.now() - startedAt) : Math.max(0, durationMs || 0),
+      ),
+    [durationMs, running, startedAt],
+  );
+  useLayoutEffect(() => {
+    const update = () => {
+      if (label.current) label.current.textContent = elapsed();
+    };
+    update();
+    return running && active && startedAt ? subscribeElapsedClock(update) : undefined;
+  }, [active, elapsed, running, startedAt]);
+  return (
+    <span class="tool-elapsed" ref={label} aria-hidden="true">
+      {elapsed()}
+    </span>
+  );
+}
+
 function Tool({
   tool,
   expanded: controlledExpanded,
   onToggle,
+  tickElapsed = true,
 }: {
   tool: ToolCall;
   expanded?: boolean;
   onToggle?: () => void;
+  tickElapsed?: boolean;
 }) {
   const store = useStore();
   const failed = tool.status === 'error' || tool.resultStatus === 'error';
@@ -275,6 +311,53 @@ function Tool({
   const expanded = controlledExpanded ?? localExpanded;
   const summary = toolSummary(tool);
   const failureReason = failed ? String(tool.result || tool.subagent?.error || '').trim() : '';
+  const spawnAgent = tool.name.toLowerCase() === 'spawn_agent';
+  const finalDurationMs =
+    tool.durationMs ??
+    (tool.startedAt && tool.endedAt ? Math.max(0, tool.endedAt - tool.startedAt) : undefined);
+  const timedSpawn =
+    spawnAgent &&
+    (tool.status === 'running' ? Boolean(tool.startedAt) : finalDurationMs !== undefined);
+  const status =
+    tool.status === 'running' ? (
+      timedSpawn ? (
+        <ElapsedDuration
+          startedAt={tool.startedAt}
+          durationMs={tool.durationMs}
+          running
+          active={tickElapsed}
+        />
+      ) : (
+        'running…'
+      )
+    ) : failed ? (
+      <>
+        {timedSpawn && (
+          <>
+            <ElapsedDuration durationMs={finalDurationMs} running={false} />{' '}
+          </>
+        )}
+        ✕
+      </>
+    ) : stopped ? (
+      <>
+        {timedSpawn && (
+          <>
+            <ElapsedDuration durationMs={finalDurationMs} running={false} />{' '}
+          </>
+        )}
+        stopped
+      </>
+    ) : (
+      <>
+        {timedSpawn && (
+          <>
+            <ElapsedDuration durationMs={finalDurationMs} running={false} />{' '}
+          </>
+        )}
+        ✓
+      </>
+    );
   if (tool.name === 'update_plan' && tool.status === 'done' && tool.resultStatus !== 'error')
     return null;
   return (
@@ -297,10 +380,12 @@ function Tool({
                   ? 'Stopped'
                   : tool.status === 'done'
                     ? 'Complete'
-                    : undefined
+                    : timedSpawn
+                      ? 'Running'
+                      : undefined
             }
           >
-            {tool.status === 'running' ? 'running…' : failed ? '✕' : stopped ? 'stopped' : '✓'}
+            {status}
           </span>
         </button>
         {expanded && (
@@ -397,6 +482,12 @@ function ToolGroup({ tools }: { tools: ToolCall[] }) {
     );
   const names = [...new Set(visible.map((tool) => tool.name))];
   const stopped = !running && visible.some((tool) => tool.status === 'cancelled');
+  const runningTools = visible.filter((tool) => tool.status === 'running');
+  const runningSpawnStartedAt =
+    runningTools.length > 0 &&
+    runningTools.every((tool) => tool.name.toLowerCase() === 'spawn_agent' && tool.startedAt)
+      ? Math.min(...runningTools.map((tool) => tool.startedAt!))
+      : undefined;
   return (
     <article class="tool-group-card">
       <button
@@ -414,9 +505,19 @@ function ToolGroup({ tools }: { tools: ToolCall[] }) {
         </span>
         <span
           class={`tool-status ${running || stopped ? '' : 'done'}`}
-          aria-label={running ? undefined : stopped ? 'Stopped' : 'Complete'}
+          aria-label={running ? 'Running' : stopped ? 'Stopped' : 'Complete'}
         >
-          {running ? 'running…' : stopped ? 'stopped' : '✓'}
+          {running ? (
+            runningSpawnStartedAt ? (
+              <ElapsedDuration startedAt={runningSpawnStartedAt} running />
+            ) : (
+              'running…'
+            )
+          ) : stopped ? (
+            'stopped'
+          ) : (
+            '✓'
+          )}
         </span>
       </button>
       <div class={`tool-group-details ${expanded ? 'open' : ''}`}>
@@ -426,7 +527,7 @@ function ToolGroup({ tools }: { tools: ToolCall[] }) {
               {toolIcon(tool.name)}
             </span>
             <div class="tool-group-entry-body">
-              <Tool tool={tool} />
+              <Tool tool={tool} tickElapsed={expanded} />
             </div>
           </div>
         ))}

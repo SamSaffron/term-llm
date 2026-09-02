@@ -103,6 +103,7 @@ describe('transcript domain', () => {
       id: 'spawn-1',
       status: 'done',
       resultStatus: 'success',
+      durationMs: 250,
       subagent: { agentName: 'reviewer', output: 'No issues found.', durationMs: 250 },
     });
   });

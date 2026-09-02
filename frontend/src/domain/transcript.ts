@@ -9,6 +9,8 @@ const timestamp = (value: unknown): number => {
   const parsed = typeof value === 'string' ? Date.parse(value) : Number.NaN;
   return Number.isFinite(parsed) ? parsed : Date.now();
 };
+const optionalTimestamp = (value: unknown): number | undefined =>
+  value == null || value === '' ? undefined : timestamp(value);
 const text = (value: unknown): string =>
   typeof value === 'string' ? value : value == null ? '' : String(value);
 const record = (value: unknown): Record<string, unknown> | null =>
@@ -461,11 +463,20 @@ export function convertServerMessages(
           // retained, so a persisted spawn can remain running until its matching result arrives.
           const awaitsResult =
             part.type === 'function_call' || (part.type === 'tool_call' && name === 'spawn_agent');
+          const startedAt = optionalTimestamp(part.started_at ?? part.startedAt);
+          const endedAt = optionalTimestamp(part.ended_at ?? part.endedAt);
+          const rawDuration = part.duration_ms ?? part.durationMs;
+          const durationMs = rawDuration == null ? undefined : Math.max(0, Number(rawDuration));
           tool = {
             id: callID,
             name,
             arguments: text(part.tool_arguments || part.arguments),
             status: failed ? 'error' : awaitsResult ? 'running' : 'done',
+            ...(startedAt || (name === 'spawn_agent' && awaitsResult)
+              ? { startedAt: startedAt || at }
+              : {}),
+            ...(endedAt ? { endedAt } : {}),
+            ...(durationMs !== undefined && Number.isFinite(durationMs) ? { durationMs } : {}),
           };
           current.tools!.push(tool);
         } else
@@ -514,15 +525,19 @@ export function convertServerMessages(
         if (askAnswer && tool.name === 'ask_user') tool.askUserAnswer = askAnswer;
         if (images.length) tool.images = [...new Set([...(tool.images || []), ...images])];
         const spawn = record(part.spawn_agent);
-        if (spawn)
+        if (spawn) {
+          const durationMs = Math.max(0, Number(spawn.duration_ms) || 0);
+          tool.durationMs = durationMs;
+          if (!tool.endedAt && tool.startedAt) tool.endedAt = tool.startedAt + durationMs;
           tool.subagent = {
             agentName: text(spawn.agent_name),
             output: text(spawn.output),
             error: text(spawn.error),
             errorType: text(spawn.type),
-            durationMs: Number(spawn.duration_ms) || 0,
+            durationMs,
             childSessionId: text(spawn.session_id),
           };
+        }
       }
     }
   }

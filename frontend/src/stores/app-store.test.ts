@@ -1960,6 +1960,53 @@ describe('AppStore compatibility behavior', () => {
     ]);
   });
 
+  it('re-anchors running tool duration from recovery snapshots', async () => {
+    const store = new AppStore(config);
+    try {
+      store.sessions.value = [session()];
+      store.activeSessionId.value = 's1';
+      store.endpoints.response = vi.fn(async () => ({
+        status: 'in_progress',
+        run_epoch: 1,
+        last_sequence_number: 8,
+        recovery: {
+          sequence_number: 8,
+          messages: [
+            {
+              id: 'tools',
+              role: 'tool-group',
+              created: 1,
+              tools: [
+                {
+                  id: 'spawn-1',
+                  name: 'spawn_agent',
+                  status: 'running',
+                  startedAt: 1,
+                  durationMs: 5_000,
+                },
+              ],
+            },
+          ],
+        },
+      }));
+      const internals = store as unknown as {
+        resumeResponse(sessionId: string, responseId: string): Promise<void>;
+        streamResponse(responseId: string, sessionId: string, sequence: number): Promise<void>;
+      };
+      internals.streamResponse = vi.fn(async () => undefined);
+      const recoveredAt = Date.now();
+
+      await internals.resumeResponse('s1', 'r1');
+
+      const tool = store.runs.value.s1.messages[0].tools?.[0];
+      expect(tool).toMatchObject({ id: 'spawn-1', status: 'running', durationMs: 5_000 });
+      expect(tool?.startedAt).toBeGreaterThanOrEqual(recoveredAt - 5_000);
+      expect(tool?.startedAt).toBeLessThanOrEqual(Date.now() - 5_000);
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('keeps the initiating user row when recovery only returns response output', async () => {
     const store = new AppStore(config);
     try {

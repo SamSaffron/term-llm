@@ -18,6 +18,7 @@ import type {
   CurrentPlan,
   Message,
   Session,
+  ToolCall,
 } from '../domain/types';
 import {
   persistPendingIntent,
@@ -1395,6 +1396,34 @@ export class RunEngine {
           const eventSequence = Number(raw.eventSequence ?? raw.compaction_sequence);
           const compactionSeq = Number(raw.compactionSeq ?? raw.compaction_seq);
           const compactionCount = Number(raw.compactionCount ?? raw.compaction_count);
+          const recoveredAt = Date.now();
+          const tools = Array.isArray(raw.tools)
+            ? raw.tools.map((value) => {
+                const tool = recordValue(value) || {};
+                const status = String(tool.status || 'running') as ToolCall['status'];
+                const rawDuration = tool.durationMs ?? tool.duration_ms;
+                const durationMs =
+                  rawDuration == null ? undefined : Math.max(0, Number(rawDuration));
+                const reportedStart = Number(tool.startedAt ?? tool.started_at) || undefined;
+                const startedAt =
+                  status === 'running' && durationMs !== undefined && Number.isFinite(durationMs)
+                    ? recoveredAt - durationMs
+                    : reportedStart;
+                return {
+                  ...tool,
+                  id: String(tool.id || ''),
+                  name: String(tool.name || 'tool'),
+                  status,
+                  ...(startedAt ? { startedAt } : {}),
+                  ...(Number(tool.endedAt ?? tool.ended_at)
+                    ? { endedAt: Number(tool.endedAt ?? tool.ended_at) }
+                    : {}),
+                  ...(durationMs !== undefined && Number.isFinite(durationMs)
+                    ? { durationMs }
+                    : {}),
+                } satisfies ToolCall;
+              })
+            : undefined;
           return {
             ...raw,
             id: String(raw.id || `${responseId}:snapshot:${index}`),
@@ -1405,6 +1434,7 @@ export class RunEngine {
                 : String(raw.content || raw.text || ''),
             created: Number(raw.created || raw.created_at) || Date.now(),
             responseId: projectedResponseId || responseId,
+            ...(tools ? { tools } : {}),
             ...(clientMessageId ? { clientMessageId } : {}),
             ...(Number.isFinite(segmentOrdinal) ? { assistantSegmentOrdinal: segmentOrdinal } : {}),
             ...(Number.isFinite(segmentStartSequence) ? { segmentStartSequence } : {}),

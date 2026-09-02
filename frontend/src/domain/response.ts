@@ -430,12 +430,14 @@ export function reduceResponse(
         text(event.tool_name || event.name || event.tool),
         projection.pendingGuardian,
       );
+      const startedAt = number(event.started_at, entry.startedAt || Date.now());
       return {
         ...next,
         messages: patchTool(messages, id, {
           name: text(event.tool_name || event.name || event.tool) || entry.name,
           arguments: text(event.tool_arguments) || entry.arguments,
           status: 'running',
+          startedAt: entry.startedAt || startedAt,
         }),
         modelSwap: undefined,
         retry: undefined,
@@ -453,12 +455,24 @@ export function reduceResponse(
       );
       const failed = event.success === false || event.error != null || event.status === 'error';
       const images = Array.isArray(event.images) ? event.images.map(String) : entry.images;
+      const startedAt = number(event.started_at, entry.startedAt || 0) || undefined;
+      const endedAt = number(event.ended_at, Date.now());
+      const reportedDuration = number(event.duration_ms, -1);
+      const durationMs =
+        reportedDuration >= 0
+          ? reportedDuration
+          : startedAt
+            ? Math.max(0, endedAt - startedAt)
+            : undefined;
       messages = patchTool(messages, id, {
         name: text(event.tool_name || event.name || event.tool) || entry.name,
         arguments: text(event.tool_arguments) || entry.arguments,
         status: failed ? 'error' : 'done',
         resultStatus: failed ? 'error' : 'success',
         result: text(event.output || event.result),
+        startedAt,
+        endedAt,
+        durationMs,
         askUserAnswer:
           !failed &&
           (text(event.tool_name || event.name || event.tool) || entry.name) === 'ask_user'

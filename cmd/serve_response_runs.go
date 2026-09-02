@@ -38,6 +38,9 @@ type responseRunRecoveryTool struct {
 	ResultStatus       string
 	AskUserAnswer      string
 	Created            int64
+	StartedAt          int64
+	EndedAt            int64
+	DurationMs         int64
 	Images             []string
 	GuardianReviews    []map[string]any
 }
@@ -1411,6 +1414,21 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 				return
 			}
 		}
+	case "response.tool_exec.start":
+		if r.currentToolGroup >= 0 && r.currentToolGroup < len(r.recoveryMessages) {
+			group := &r.recoveryMessages[r.currentToolGroup]
+			callID := stringValue(payload["call_id"])
+			for i := range group.Tools {
+				if callID == "" || group.Tools[i].ID == callID {
+					if group.Tools[i].StartedAt == 0 {
+						group.Tools[i].StartedAt = responseRunInt64Value(payload["started_at"], group.Tools[i].Created)
+					}
+					if callID != "" {
+						break
+					}
+				}
+			}
+		}
 	case "response.tool_exec.end":
 		images := stringSliceValue(payload["images"])
 		askUserAnswer := strings.TrimSpace(stringValue(payload["ask_user_summary"]))
@@ -1423,6 +1441,14 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 			callID := stringValue(payload["call_id"])
 			for i := range group.Tools {
 				if callID == "" || group.Tools[i].ID == callID {
+					if startedAt := responseRunInt64Value(payload["started_at"], 0); startedAt > 0 && group.Tools[i].StartedAt == 0 {
+						group.Tools[i].StartedAt = startedAt
+					}
+					group.Tools[i].EndedAt = responseRunInt64Value(payload["ended_at"], 0)
+					group.Tools[i].DurationMs = responseRunInt64Value(payload["duration_ms"], 0)
+					if group.Tools[i].DurationMs == 0 && group.Tools[i].StartedAt > 0 && group.Tools[i].EndedAt >= group.Tools[i].StartedAt {
+						group.Tools[i].DurationMs = group.Tools[i].EndedAt - group.Tools[i].StartedAt
+					}
 					if succeeded {
 						group.Tools[i].Status = "done"
 						group.Tools[i].ResultStatus = "success"
@@ -1733,6 +1759,19 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 				}
 				if tool.ArgumentsFinalized {
 					toolEntry["argumentsFinalized"] = true
+				}
+				if tool.StartedAt > 0 {
+					toolEntry["startedAt"] = tool.StartedAt
+					durationMs := tool.DurationMs
+					if durationMs == 0 && tool.EndedAt > 0 {
+						durationMs = max(int64(0), tool.EndedAt-tool.StartedAt)
+					} else if durationMs == 0 && tool.Status == "running" {
+						durationMs = max(int64(0), time.Now().UnixMilli()-tool.StartedAt)
+					}
+					toolEntry["durationMs"] = durationMs
+				}
+				if tool.EndedAt > 0 {
+					toolEntry["endedAt"] = tool.EndedAt
 				}
 				if tool.ResultStatus != "" {
 					toolEntry["resultStatus"] = tool.ResultStatus
@@ -2911,6 +2950,7 @@ type responseRunStreamState struct {
 	model                    string
 	reasoningEffort          string
 	reasoningEffortSet       bool
+	toolStartedAt            map[string]int64
 }
 
 func newResponseRunStreamState(model, reasoningEffort string) *responseRunStreamState {
@@ -2919,6 +2959,7 @@ func newResponseRunStreamState(model, reasoningEffort string) *responseRunStream
 		model:              strings.TrimSpace(model),
 		reasoningEffort:    effort,
 		reasoningEffortSet: effort != "",
+		toolStartedAt:      make(map[string]int64),
 	}
 }
 
@@ -3078,11 +3119,21 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 		if s.suppressResponseRunServerToolEvent(runtime, ev.ToolName) {
 			return nil
 		}
+		startedAt := time.Now().UnixMilli()
+		if state.toolStartedAt == nil {
+			state.toolStartedAt = make(map[string]int64)
+		}
+		if previous := state.toolStartedAt[ev.ToolCallID]; previous > 0 {
+			startedAt = previous
+		} else {
+			state.toolStartedAt[ev.ToolCallID] = startedAt
+		}
 		return run.appendEvent("response.tool_exec.start", map[string]any{
 			"call_id":        ev.ToolCallID,
 			"tool_name":      ev.ToolName,
 			"tool_info":      ev.ToolInfo,
 			"tool_arguments": string(ev.ToolArgs),
+			"started_at":     startedAt,
 		})
 	case llm.EventToolExecEnd:
 		if ev.ToolName == tools.AskUserToolName && runtime != nil {
@@ -3096,6 +3147,13 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 			"call_id":   ev.ToolCallID,
 			"tool_name": ev.ToolName,
 			"success":   ev.ToolSuccess,
+		}
+		if startedAt := state.toolStartedAt[ev.ToolCallID]; startedAt > 0 {
+			endedAt := time.Now().UnixMilli()
+			payload["started_at"] = startedAt
+			payload["ended_at"] = endedAt
+			payload["duration_ms"] = max(int64(0), endedAt-startedAt)
+			delete(state.toolStartedAt, ev.ToolCallID)
 		}
 		if !suppressed && ev.ToolInfo != "" {
 			payload["tool_info"] = ev.ToolInfo

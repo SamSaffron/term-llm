@@ -57,6 +57,10 @@ export interface ToolCall {
   images?: string[];
   guardianReviews?: GuardianReview[];
   subagent?: Record<string, unknown>;
+  /** Execution timing in milliseconds. Running recovery snapshots are re-anchored locally. */
+  startedAt?: number;
+  endedAt?: number;
+  durationMs?: number;
 }
 
 export interface Usage {

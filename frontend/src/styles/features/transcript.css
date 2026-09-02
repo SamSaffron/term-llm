@@ -826,6 +826,13 @@
   color: var(--accent-red, #ef4444);
 }
 
+.tool-elapsed {
+  display: inline-block;
+  min-inline-size: 6ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 .tool-details {
   border-top: 1px solid var(--border);
   padding: 0.58rem 0.75rem 0.72rem;

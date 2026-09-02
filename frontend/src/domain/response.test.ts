@@ -52,6 +52,41 @@ describe('response projection', () => {
     expect(new Set(RESPONSE_EVENT_TYPES).size).toBe(RESPONSE_EVENT_TYPES.length);
   });
 
+  it('tracks authoritative tool timing without resetting the original start', () => {
+    let projection = reduceResponse(
+      initialProjection(run),
+      event('response.output_item.added', 1, {
+        item: { type: 'function_call', call_id: 'spawn-1', name: 'spawn_agent' },
+      }),
+    );
+    projection = reduceResponse(
+      projection,
+      event('response.tool_exec.start', 2, { call_id: 'spawn-1', started_at: 10_000 }),
+    );
+    projection = reduceResponse(
+      projection,
+      event('response.tool_exec.start', 3, { call_id: 'spawn-1', started_at: 20_000 }),
+    );
+    expect(projection.messages[0].tools?.[0].startedAt).toBe(10_000);
+
+    projection = reduceResponse(
+      projection,
+      event('response.tool_exec.end', 4, {
+        call_id: 'spawn-1',
+        success: true,
+        started_at: 10_000,
+        ended_at: 22_345,
+        duration_ms: 12_345,
+      }),
+    );
+    expect(projection.messages[0].tools?.[0]).toMatchObject({
+      status: 'done',
+      startedAt: 10_000,
+      endedAt: 22_345,
+      durationMs: 12_345,
+    });
+  });
+
   it('adopts the server epoch from the initial response.created event', () => {
     const projection = reduceResponse(
       initialProjection(run),

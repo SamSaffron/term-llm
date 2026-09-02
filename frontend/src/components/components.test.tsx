@@ -2486,9 +2486,80 @@ describe('Preact-owned chat surfaces', () => {
 
     const group = screen.getByRole('button', { name: /2 tool calls · spawn_agent/ });
     const status = group.querySelector('.tool-status');
-    expect(status).toHaveTextContent('running…');
-    expect(status).not.toHaveTextContent('✓');
+    expect(status).toHaveTextContent(/^\s*0s\s*$/);
+    expect(status).not.toHaveTextContent('running…');
     expect(status).not.toHaveClass('done');
+  });
+
+  it('ticks spawn-agent duration without replacing unrelated transcript DOM', async () => {
+    vi.useFakeTimers();
+    try {
+      const now = new Date('2026-09-02T12:00:00Z').getTime();
+      vi.setSystemTime(now);
+      const store = createStore();
+      store.sessions.value[0].messages = [
+        { id: 'answer', role: 'assistant', content: 'Still here', created: now - 10_000 },
+        {
+          id: 'spawn-tools',
+          role: 'tool-group',
+          content: '',
+          created: now - 5_000,
+          tools: [
+            {
+              id: 'spawn-1',
+              name: 'spawn_agent',
+              status: 'running',
+              startedAt: now - 5_000,
+            },
+          ],
+        },
+      ];
+      const { container } = render(
+        <StoreContext.Provider value={store}>
+          <Transcript />
+        </StoreContext.Provider>,
+      );
+      const unrelated = container.querySelector('[data-message-id="answer"]');
+      const status = container.querySelector('[data-tool-id="spawn-1"] .tool-status');
+      expect(status).toHaveTextContent('5s');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      expect(status).toHaveTextContent('6s');
+      expect(container.querySelector('[data-message-id="answer"]')).toBe(unrelated);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows a frozen duration beside a completed spawn-agent status', () => {
+    const store = createStore();
+    store.sessions.value[0].messages = [
+      {
+        id: 'spawn-tools',
+        role: 'tool-group',
+        content: '',
+        created: Date.now(),
+        tools: [
+          {
+            id: 'spawn-1',
+            name: 'spawn_agent',
+            status: 'done',
+            resultStatus: 'success',
+            durationMs: 90_000,
+          },
+        ],
+      },
+    ];
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+    expect(container.querySelector('[data-tool-id="spawn-1"] .tool-status')).toHaveTextContent(
+      '1m30s ✓',
+    );
   });
 
   it('groups completed tool calls compactly and omits redundant role labels', async () => {

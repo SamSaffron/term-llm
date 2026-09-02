@@ -787,6 +787,44 @@ func TestResponseRunAppendEventMarshalErrorDoesNotBurnSequence(t *testing.T) {
 	}
 }
 
+func TestAppendResponseRunEventIncludesToolTiming(t *testing.T) {
+	run := newResponseRun("resp_tool_timing", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	server := &serveServer{}
+	state := newResponseRunStreamState("mock", "")
+	if err := server.appendResponseRunEvent(nil, run, state, llm.Event{
+		Type: llm.EventToolExecStart, ToolCallID: "spawn-1", ToolName: "spawn_agent",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.appendResponseRunEvent(nil, run, state, llm.Event{
+		Type: llm.EventToolExecEnd, ToolCallID: "spawn-1", ToolName: "spawn_agent", ToolSuccess: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if len(run.events) != 2 {
+		t.Fatalf("events = %d, want 2", len(run.events))
+	}
+	var started, ended map[string]any
+	if err := json.Unmarshal(run.events[0].Data, &started); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(run.events[1].Data, &ended); err != nil {
+		t.Fatal(err)
+	}
+	startedAt := int64(started["started_at"].(float64))
+	endedAt := int64(ended["ended_at"].(float64))
+	durationMs := int64(ended["duration_ms"].(float64))
+	if startedAt <= 0 || endedAt < startedAt || durationMs != endedAt-startedAt {
+		t.Fatalf("start = %d, end = %d, duration = %d", startedAt, endedAt, durationMs)
+	}
+	if _, ok := state.toolStartedAt["spawn-1"]; ok {
+		t.Fatal("completed tool retained its start timestamp")
+	}
+}
+
 func TestAppendResponseRunEventEmitsPhase(t *testing.T) {
 	run := newResponseRun("resp_phase", "sess_test", "", "mock", time.Now().Unix(), func() {})
 	server := &serveServer{}
@@ -1608,6 +1646,33 @@ func TestResponseRunRecoveryPreservesToolExecutionResults(t *testing.T) {
 	}
 	if messages[0]["status"] != "done" {
 		t.Fatalf("recovered group status = %v, want done", messages[0]["status"])
+	}
+}
+
+func TestResponseRunRecoveryPreservesToolTiming(t *testing.T) {
+	run := newResponseRun("resp_tool_timing", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	if err := run.appendEvent("response.output_item.added", map[string]any{"item": map[string]any{
+		"type": "function_call", "call_id": "spawn-1", "name": "spawn_agent", "arguments": `{}`,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.appendEvent("response.tool_exec.start", map[string]any{
+		"call_id": "spawn-1", "started_at": int64(10_000),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.appendEvent("response.tool_exec.end", map[string]any{
+		"call_id": "spawn-1", "success": true, "started_at": int64(10_000),
+		"ended_at": int64(22_345), "duration_ms": int64(12_345),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	recovery := run.recoveryPayloadLocked()
+	messages := recovery["messages"].([]map[string]any)
+	tools := messages[0]["tools"].([]map[string]any)
+	if tools[0]["startedAt"] != int64(10_000) || tools[0]["endedAt"] != int64(22_345) || tools[0]["durationMs"] != int64(12_345) {
+		t.Fatalf("recovered timing = %#v", tools[0])
 	}
 }
 
