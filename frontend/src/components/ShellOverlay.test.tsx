@@ -83,7 +83,8 @@ describe('ShellOverlay', () => {
     render(<ShellOverlay store={store} />);
 
     expect(screen.getByText('/workspace/project')).toBeVisible();
-    expect(screen.getByText('Connected')).toBeVisible();
+    expect(screen.getByText('Running')).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'Shell' })).toBeVisible();
     await userEvent.click(screen.getByRole('button', { name: 'Back to chat' }));
     expect(store.shellStore.back).toHaveBeenCalledOnce();
 
@@ -96,7 +97,7 @@ describe('ShellOverlay', () => {
     window.removeEventListener('keydown', observe);
     expect(prevented).toBe(false);
 
-    await userEvent.click(screen.getByRole('button', { name: 'Close shell' }));
+    await userEvent.click(screen.getByRole('button', { name: 'End shell' }));
     expect(store.shellStore.close).toHaveBeenCalledOnce();
   });
 
@@ -134,7 +135,7 @@ describe('ShellOverlay', () => {
 
     await waitFor(() => expect(back).toHaveBeenCalled());
     const restart = screen.getByRole('button', { name: 'Restart' });
-    const close = screen.getByRole('button', { name: 'Close shell' });
+    const close = screen.getByRole('button', { name: 'End shell' });
     expect(restart).toBeDisabled();
     expect(close).toBeDisabled();
     await userEvent.click(restart);

@@ -56,14 +56,32 @@ function ShellOverlayLoader({ store }: { store: AppStore }) {
   }, []);
   if (error)
     return (
-      <section class="shell-overlay" role="alert">
+      <section class="shell-overlay" aria-label="Interactive shell">
         <header class="shell-overlay-header">
-          <strong>Terminal could not load</strong>
-          <button class="btn" type="button" onClick={() => store.shellStore.back()}>
-            Back to chat
-          </button>
+          <div class="shell-overlay-heading">
+            <span class="shell-prompt-mark" aria-hidden="true">
+              &gt;_
+            </span>
+            <div class="shell-title-block">
+              <div class="shell-title-row">
+                <h1>Shell</h1>
+                <span class="shell-status shell-status-error">
+                  <span class="shell-status-dot" aria-hidden="true" />
+                  Could not load
+                </span>
+              </div>
+            </div>
+          </div>
+          <div class="shell-overlay-actions">
+            <button class="btn shell-back" type="button" onClick={() => store.shellStore.back()}>
+              <Icon name="arrow-left" />
+              <span>Back to chat</span>
+            </button>
+          </div>
         </header>
-        <div class="shell-error">{error}</div>
+        <div class="shell-error" role="alert">
+          {error}
+        </div>
       </section>
     );
   return Overlay ? (
@@ -71,10 +89,26 @@ function ShellOverlayLoader({ store }: { store: AppStore }) {
   ) : (
     <section class="shell-overlay" aria-label="Interactive shell" aria-busy="true">
       <header class="shell-overlay-header">
-        <strong>Loading terminal…</strong>
-        <button class="btn" type="button" onClick={() => store.shellStore.back()}>
-          Back to chat
-        </button>
+        <div class="shell-overlay-heading">
+          <span class="shell-prompt-mark" aria-hidden="true">
+            &gt;_
+          </span>
+          <div class="shell-title-block">
+            <div class="shell-title-row">
+              <h1>Shell</h1>
+              <span class="shell-status">
+                <span class="shell-status-dot" aria-hidden="true" />
+                Loading…
+              </span>
+            </div>
+          </div>
+        </div>
+        <div class="shell-overlay-actions">
+          <button class="btn shell-back" type="button" onClick={() => store.shellStore.back()}>
+            <Icon name="arrow-left" />
+            <span>Back to chat</span>
+          </button>
+        </div>
       </header>
     </section>
   );
@@ -152,7 +186,8 @@ export function App({ store }: { store: AppStore }) {
           class={`app ${store.sidebarCollapsed.value ? 'sidebar-collapsed' : ''} ${store.diff.value.open ? 'diff-open' : ''} ${store.diff.value.maximized ? 'diff-maximized' : ''} ${store.planVisible.value ? 'plan-open' : ''}`}
           id="appShell"
           style={{ '--diff-sidebar-user-width': `${store.diff.value.width}px` }}
-          aria-hidden={!store.startupDone.value || undefined}
+          aria-hidden={!store.startupDone.value || store.shellStore.visible.value || undefined}
+          inert={store.shellStore.visible.value || undefined}
         >
           <Sidebar />
           <main class="main" id="appMain">

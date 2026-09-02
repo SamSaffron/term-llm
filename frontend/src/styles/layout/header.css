@@ -187,6 +187,32 @@
   display: none;
 }
 
+.shell-return {
+  gap: 0.4rem;
+  border-color: color-mix(in srgb, var(--accent-green) 34%, var(--header-action-border));
+  color: var(--text);
+}
+
+.shell-return:hover,
+.shell-return:focus-visible {
+  border-color: color-mix(in srgb, var(--accent-green) 58%, var(--header-action-border));
+}
+
+.shell-return-dot {
+  width: 0.42rem;
+  height: 0.42rem;
+  flex: none;
+  border-radius: 999px;
+  background: var(--accent-green);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-green) 12%, transparent);
+}
+
+.shell-return-exited .shell-return-dot,
+.shell-return-error .shell-return-dot {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
 .chip-trigger:not(.header-action) {
   display: inline-flex;
   align-items: center;

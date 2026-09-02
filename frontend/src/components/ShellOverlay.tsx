@@ -5,6 +5,7 @@ import '@xterm/xterm/css/xterm.css';
 import '../styles/features/shell-terminal.css';
 import type { AppStore } from '../stores/app-store';
 import type { ShellSink } from '../stores/shell-store';
+import { Icon } from './Icon';
 
 const statusLabel = (
   status: AppStore['shellStore']['status']['value'],
@@ -13,7 +14,7 @@ const statusLabel = (
   switch (status) {
     case 'idle':
     case 'connecting':
-      return 'Opening terminal…';
+      return 'Opening…';
     case 'reconnecting':
       return 'Reconnecting…';
     case 'exited':
@@ -21,7 +22,7 @@ const statusLabel = (
     case 'error':
       return 'Connection error';
     default:
-      return 'Connected';
+      return 'Running';
   }
 };
 
@@ -143,32 +144,57 @@ export function ShellOverlay({ store }: { store: AppStore }) {
     <section class="shell-overlay" aria-label="Interactive shell">
       <header class="shell-overlay-header">
         <div class="shell-overlay-heading">
-          <strong>Terminal</strong>
-          <span class={`shell-status shell-status-${status}`}>
-            {statusLabel(status, store.shellStore.exitCode.value)}
+          <span class="shell-prompt-mark" aria-hidden="true">
+            &gt;_
           </span>
-          {store.shellStore.cwd.value && (
-            <span class="shell-cwd" title={store.shellStore.cwd.value}>
-              {store.shellStore.cwd.value}
-            </span>
-          )}
+          <div class="shell-title-block">
+            <div class="shell-title-row">
+              <h1>Shell</h1>
+              <span
+                class={`shell-status shell-status-${status}`}
+                role="status"
+                title={
+                  status === 'running' ? 'Shell stays running when you return to chat' : undefined
+                }
+              >
+                <span class="shell-status-dot" aria-hidden="true" />
+                {statusLabel(status, store.shellStore.exitCode.value)}
+              </span>
+            </div>
+            {store.shellStore.cwd.value && (
+              <span class="shell-cwd" title={store.shellStore.cwd.value}>
+                {store.shellStore.cwd.value}
+              </span>
+            )}
+          </div>
         </div>
         <div class="shell-overlay-actions">
           {status === 'exited' && (
-            <button class="btn" type="button" disabled={!matchesActiveSession} onClick={restart}>
+            <button
+              class="btn shell-restart"
+              type="button"
+              disabled={!matchesActiveSession}
+              onClick={restart}
+            >
               Restart
             </button>
           )}
-          <button class="btn" type="button" onClick={() => store.shellStore.back()}>
-            Back to chat
+          <button
+            class="btn shell-back"
+            type="button"
+            title="Return to chat; this shell will keep running"
+            onClick={() => store.shellStore.back()}
+          >
+            <Icon name="arrow-left" />
+            <span>Back to chat</span>
           </button>
           <button
-            class="btn shell-close"
+            class="btn shell-end"
             type="button"
             disabled={closing || !matchesActiveSession}
             onClick={close}
           >
-            {closing ? 'Closing…' : 'Close shell'}
+            {closing ? 'Ending…' : 'End shell'}
           </button>
         </div>
       </header>

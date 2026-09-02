@@ -242,8 +242,10 @@ test('lazy-loads the capability-gated interactive shell overlay', async ({ page 
 
   await expect(page.getByRole('region', { name: 'Interactive shell' })).toBeVisible();
   await expect(page.getByText('/workspace/project')).toBeVisible();
+  await expect(page.getByText('Exited (0)')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Restart' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Back to chat' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Close shell' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'End shell' })).toBeVisible();
 
   await page.evaluate(() => {
     history.pushState({}, '', new URL('/ui/chat/1', location.origin));
@@ -258,8 +260,9 @@ test('lazy-loads the capability-gated interactive shell overlay', async ({ page 
   await page.getByRole('button', { name: 'Back to chat' }).click();
   await expect(page.getByRole('region', { name: 'Interactive shell' })).toBeHidden();
 
-  await composer.fill('/shell');
-  await composer.press('Enter');
+  const returnToShell = page.getByRole('button', { name: 'Return to shell' });
+  await expect(returnToShell).toHaveText('Shell');
+  await returnToShell.click();
   await expect(page.getByRole('region', { name: 'Interactive shell' })).toBeVisible();
   await page.evaluate(() => {
     history.pushState({}, '', new URL('/ui/', location.origin));

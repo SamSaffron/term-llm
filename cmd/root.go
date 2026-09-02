@@ -54,6 +54,8 @@ const rootExamples = `  term-llm chat @developer                    # agentic co
   term-llm config                             # view configuration
   term-llm config completion fish             # Fish shell completions`
 
+type shellCompletionExecutionKey struct{}
+
 var rootCmd = &cobra.Command{
 	Use:   "term-llm",
 	Short: "Your AI toolkit, from terminal to web",
@@ -63,11 +65,25 @@ create media, and automate recurring work—from your terminal or browser.`,
 	SilenceErrors:     true,
 	SilenceUsage:      true,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if shellCompletionExecution(cmd) {
+			return nil
+		}
 		return startProfiling()
 	},
 	PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
+		if shellCompletionExecution(cmd) {
+			return nil
+		}
 		return stopProfiling()
 	},
+}
+
+func shellCompletionExecution(cmd *cobra.Command) bool {
+	if cmd == nil || cmd.Context() == nil {
+		return false
+	}
+	enabled, _ := cmd.Context().Value(shellCompletionExecutionKey{}).(bool)
+	return enabled
 }
 
 var debugRaw bool
@@ -200,6 +216,17 @@ func writeRootError(w io.Writer, err error) {
 func executeWithArgs(args []string) error {
 	if handlePreCommandCompletion(args) {
 		return nil
+	}
+	if len(args) > 0 && isShellCompletionRequest(args[0]) {
+		// Completion runs as a nested term-llm process. It must not inherit
+		// profiling servers or output files owned by the parent process.
+		previousContext := rootCmd.Context()
+		parentContext := previousContext
+		if parentContext == nil {
+			parentContext = context.Background()
+		}
+		rootCmd.SetContext(context.WithValue(parentContext, shellCompletionExecutionKey{}, true))
+		defer rootCmd.SetContext(previousContext)
 	}
 	rootCmd.SetArgs(normalizeShellCompletionArgs(args))
 	return rootCmd.Execute()

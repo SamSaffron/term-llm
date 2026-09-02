@@ -239,6 +239,14 @@ export function Header() {
     };
   }, []);
   const session = store.activeSession.value;
+  const resumableShell = Boolean(
+    session &&
+    store.shellStore.enabled.value &&
+    !store.shellStore.visible.value &&
+    store.shellStore.shellId.value &&
+    store.shellStore.sessionId.value === session.id &&
+    store.shellStore.status.value !== 'idle',
+  );
   const mcpOwnerId = session?.id || store.composer.runtimeDraftId();
   const mcpCount =
     store.mcp.value.ownerId === mcpOwnerId
@@ -338,6 +346,18 @@ export function Header() {
             )}
           </div>
           <div class="header-context-actions">
+            {resumableShell && session && (
+              <button
+                type="button"
+                class={`header-action shell-return shell-return-${store.shellStore.status.value}`}
+                aria-label="Return to shell"
+                title="Return to shell"
+                onClick={() => store.shellStore.show(session.id)}
+              >
+                <span class="shell-return-dot" aria-hidden="true" />
+                <span>Shell</span>
+              </button>
+            )}
             {showWorktree && (
               <button
                 type="button"

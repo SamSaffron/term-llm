@@ -107,13 +107,14 @@ export class ShellStore {
     this.streamAbort = controller;
     this.status.value = 'connecting';
     this.error.value = '';
+    // Every overlay mount owns a fresh terminal surface. Replay from the start of
+    // the retained server buffer instead of resuming at the old, now invisible,
+    // surface's offset.
+    this.offset.value = 0;
+    sink.reset();
     try {
       const created = await this.endpoints.shellCreate(sessionId, cols, rows);
       if (!this.current(generation, sessionId)) return;
-      if (this.shellId.peek() && this.shellId.peek() !== created.shell_id) {
-        this.offset.value = 0;
-        sink.reset();
-      }
       this.shellId.value = created.shell_id;
       this.cwd.value = created.cwd;
       this.exitCode.value = null;

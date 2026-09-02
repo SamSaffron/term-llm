@@ -1,18 +1,45 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/spf13/cobra"
 )
+
+func TestShellCompletionSkipsInheritedPprofServer(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	t.Setenv("TERM_LLM_PPROF", fmt.Sprint(listener.Addr().(*net.TCPAddr).Port))
+
+	oldOut := rootCmd.OutOrStdout()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	defer func() {
+		rootCmd.SetArgs(nil)
+		rootCmd.SetOut(oldOut)
+	}()
+
+	if err := executeWithArgs([]string{cobra.ShellCompRequestCmd, "chat", ""}); err != nil {
+		t.Fatalf("shell completion with occupied inherited pprof port: %v", err)
+	}
+	if output := strings.TrimSpace(out.String()); !strings.HasSuffix(output, ":0") {
+		t.Fatalf("shell completion produced no trailing default directive: %q", out.String())
+	}
+}
 
 func TestRefreshAgyBinCompletionCache(t *testing.T) {
 	original := refreshAgyBinModelsForCompletion

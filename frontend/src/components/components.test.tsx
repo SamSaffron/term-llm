@@ -107,6 +107,30 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByRole('button', { name: 'Manage MCP servers' })).toHaveTextContent('MCP 1');
   });
 
+  it('shows a persistent Shell return control for the active conversation', async () => {
+    const store = createStore();
+    store.shellStore.enabled.value = true;
+    store.shellStore.sessionId.value = 's1';
+    store.shellStore.shellId.value = 'sh_one';
+    store.shellStore.status.value = 'running';
+    store.prompt.value = 'unfinished message';
+    const show = vi.spyOn(store.shellStore, 'show');
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Header />
+      </StoreContext.Provider>,
+    );
+
+    const shell = screen.getByRole('button', { name: 'Return to shell' });
+    expect(shell).toHaveTextContent('Shell');
+    await userEvent.click(shell);
+    expect(show).toHaveBeenCalledWith('s1');
+    expect(store.shellStore.visible.value).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Return to shell' })).not.toBeInTheDocument();
+    expect(store.prompt.value).toBe('unfinished message');
+  });
+
   it('restores the compact runtime chip and unified runtime popover', async () => {
     const store = createStore();
     store.providers.value = [

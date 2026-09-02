@@ -12,74 +12,186 @@
 
 .shell-overlay-header {
   display: flex;
-  min-height: 58px;
+  min-height: 62px;
   align-items: center;
   justify-content: space-between;
-  gap: 18px;
-  padding: 10px 16px;
+  gap: 20px;
+  padding: calc(10px + env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 10px
+    max(16px, env(safe-area-inset-left));
   border-bottom: 1px solid #30363d;
-  background: #f7f7f5;
-  color: var(--text-primary);
+  background: #181c22;
+  color: #eef2f5;
+  box-shadow: 0 1px 0 rgb(255 255 255 / 3%);
 }
 
-.shell-overlay-heading,
-.shell-overlay-actions {
+.shell-overlay-heading {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 11px;
+}
+
+.shell-prompt-mark {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #363d46;
+  border-radius: 9px;
+  background: #111418;
+  color: #98c379;
+  font-family: SFMono-Regular, Consolas, 'Liberation Mono', monospace;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: -0.08em;
+}
+
+.shell-title-block {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.shell-title-row {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 
-.shell-overlay-heading strong {
-  font-size: 15px;
-  font-weight: 650;
+.shell-title-row h1 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 680;
+  letter-spacing: 0.01em;
 }
 
 .shell-status {
+  display: inline-flex;
   flex: none;
-  padding: 3px 7px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 999px;
-  color: var(--text-secondary);
+  align-items: center;
+  gap: 6px;
+  color: #aeb7c2;
   font-size: 11px;
+  font-weight: 600;
   line-height: 1.2;
 }
 
+.shell-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #e5c07b;
+  box-shadow: 0 0 0 3px rgb(229 192 123 / 10%);
+}
+
 .shell-status-running {
-  border-color: #b9d5c2;
-  color: #356543;
+  color: #b9d9a7;
+}
+
+.shell-status-running .shell-status-dot {
+  background: #98c379;
+  box-shadow: 0 0 0 3px rgb(152 195 121 / 12%);
 }
 
 .shell-status-error,
 .shell-status-exited {
-  border-color: #dec5c0;
-  color: #8a4338;
+  color: #eda9ae;
+}
+
+.shell-status-error .shell-status-dot,
+.shell-status-exited .shell-status-dot {
+  background: #e06c75;
+  box-shadow: 0 0 0 3px rgb(224 108 117 / 12%);
 }
 
 .shell-cwd {
   overflow: hidden;
-  max-width: min(48vw, 680px);
-  color: var(--text-secondary);
+  max-width: min(58vw, 760px);
+  color: #8f99a5;
   font-family: SFMono-Regular, Consolas, 'Liberation Mono', monospace;
-  font-size: 12px;
+  font-size: 11px;
+  line-height: 1.3;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.shell-overlay-actions {
+  display: flex;
+  min-width: 0;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
 .shell-overlay-actions .btn {
-  min-height: 34px;
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding-inline: 13px;
+  border-color: #4d5661;
+  background: transparent;
+  color: #c8d0d8;
+  font-size: 12px;
+  font-weight: 650;
   white-space: nowrap;
 }
 
-.shell-overlay-actions .shell-close {
-  border-color: #d9b9b4;
-  color: #873b32;
+.shell-overlay-actions .btn:hover {
+  border-color: #505a66;
+  background: #232930;
+  color: #f4f7f9;
+}
+
+.shell-overlay-actions .btn:focus-visible {
+  outline: 2px solid #7fb2d9;
+  outline-offset: 2px;
+}
+
+.shell-overlay-actions .btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+.shell-overlay-actions .shell-back {
+  border-color: #eef2f5;
+  background: #eef2f5;
+  color: #171b20;
+}
+
+.shell-overlay-actions .shell-back:hover {
+  border-color: #fff;
+  background: #fff;
+  color: #111418;
+}
+
+.shell-overlay-actions .shell-end {
+  border-color: #7a4149;
+  color: #eda9ae;
+}
+
+.shell-overlay-actions .shell-end:hover {
+  border-color: #7a4149;
+  background: rgb(224 108 117 / 10%);
+  color: #ffc3c7;
+}
+
+.shell-overlay-actions .btn:disabled {
+  cursor: default;
+  opacity: 0.48;
 }
 
 .shell-error {
   padding: 8px 16px;
   border-bottom: 1px solid #5d2d2d;
-  background: #321d1d;
+  border-left: 3px solid #e06c75;
+  background: #25191b;
   color: #f1c7c2;
   font-size: 12px;
 }
@@ -104,32 +216,54 @@
 @media (width <= 680px) {
   .shell-overlay-header {
     min-height: 0;
-    align-items: flex-start;
-    padding: max(8px, env(safe-area-inset-top)) 10px 8px;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: max(8px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) 8px
+      max(10px, env(safe-area-inset-left));
   }
 
   .shell-overlay-heading {
-    flex-wrap: wrap;
-    gap: 5px 8px;
+    gap: 8px;
   }
 
-  .shell-cwd {
-    order: 3;
-    width: 100%;
-    max-width: 50vw;
+  .shell-prompt-mark {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    font-size: 11px;
   }
 
-  .shell-overlay-actions {
+  .shell-title-row {
     gap: 6px;
   }
 
+  .shell-cwd {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .shell-overlay-actions {
+    gap: 5px;
+    margin-left: auto;
+  }
+
   .shell-overlay-actions .btn {
-    min-height: 38px;
+    min-height: 36px;
     padding-inline: 9px;
-    font-size: 12px;
+    font-size: 11px;
   }
 
   .shell-terminal .xterm {
     padding: 8px 5px max(5px, env(safe-area-inset-bottom));
+  }
+}
+
+@media (width <= 440px) {
+  .shell-prompt-mark {
+    display: none;
+  }
+
+  .shell-overlay-actions .shell-end {
+    padding-inline: 8px;
   }
 }

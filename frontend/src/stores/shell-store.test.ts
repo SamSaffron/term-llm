@@ -95,6 +95,36 @@ describe('ShellStore', () => {
     expect(store.exitCode.value).toBe(0);
   });
 
+  it('replays retained output into a fresh terminal when returning from chat', async () => {
+    const { store, endpoints } = setup();
+    vi.mocked(endpoints.shellStream)
+      .mockReset()
+      .mockResolvedValueOnce(
+        sse(
+          { event: 'output', data: { offset: 0, next_offset: 2, data: btoa('hi') } },
+          { event: 'exit', data: { offset: 2, exit_code: 0 } },
+        ),
+      );
+    store.show('session-one');
+    store.shellId.value = 'sh_one';
+    store.offset.value = 42;
+    store.status.value = 'running';
+    store.back();
+    expect(store.show('session-one')).toBe(true);
+
+    const freshSink: ShellSink = { write: vi.fn(), reset: vi.fn() };
+    await store.connect(100, 30, freshSink);
+
+    expect(freshSink.reset).toHaveBeenCalled();
+    expect(endpoints.shellStream).toHaveBeenCalledWith(
+      'session-one',
+      'sh_one',
+      0,
+      expect.any(AbortSignal),
+    );
+    expect(freshSink.write).toHaveBeenCalledWith(new Uint8Array([104, 105]));
+  });
+
   it('serializes and batches input without closing the shell when returning to chat', async () => {
     vi.useFakeTimers();
     const { store, endpoints } = setup();
