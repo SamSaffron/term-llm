@@ -272,6 +272,47 @@ test('lazy-loads the capability-gated interactive shell overlay', async ({ page 
   );
 });
 
+test('shell terminal fills the viewport and follows height changes', async ({ page }) => {
+  await open(page, '', { shell: true });
+  const composer = page.getByRole('textbox', { name: 'Message' });
+  await composer.fill('/shell');
+  await composer.press('Enter');
+
+  const overlay = page.getByRole('region', { name: 'Interactive shell' });
+  const terminalHost = overlay.locator('.shell-terminal');
+  const terminalScreen = terminalHost.locator('.xterm-screen');
+  await expect(terminalScreen).toBeVisible();
+
+  const viewport = page.viewportSize();
+  expect(viewport).not.toBeNull();
+  const initialHostHeight = await terminalHost.evaluate(
+    (element) => element.getBoundingClientRect().height,
+  );
+  expect(initialHostHeight).toBeGreaterThan(viewport!.height * 0.7);
+  const initialScreenHeight = await terminalScreen.evaluate(
+    (element) => element.getBoundingClientRect().height,
+  );
+
+  await page.setViewportSize({ width: viewport!.width, height: viewport!.height - 200 });
+  await expect
+    .poll(() => terminalScreen.evaluate((element) => element.getBoundingClientRect().height))
+    .toBeLessThan(initialScreenHeight - 100);
+  const shrunkenScreenHeight = await terminalScreen.evaluate(
+    (element) => element.getBoundingClientRect().height,
+  );
+
+  await page.setViewportSize(viewport!);
+  await expect
+    .poll(() => terminalScreen.evaluate((element) => element.getBoundingClientRect().height))
+    .toBeGreaterThan(shrunkenScreenHeight + 100);
+  const bounds = await terminalHost.evaluate((host) => {
+    const hostRect = host.getBoundingClientRect();
+    const screenRect = host.querySelector('.xterm-screen')!.getBoundingClientRect();
+    return { hostBottom: hostRect.bottom, screenBottom: screenRect.bottom };
+  });
+  expect(bounds.screenBottom).toBeLessThanOrEqual(bounds.hostBottom);
+});
+
 test('loads, navigates sessions, opens settings and preserves normal namespace hygiene', async ({
   page,
 }, testInfo) => {
