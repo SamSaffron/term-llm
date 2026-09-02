@@ -1843,20 +1843,45 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 
 	var stream llm.Stream
 	var runnerDone <-chan struct{}
-	waitForRunnerDone := func() {
-		if runnerDone == nil {
+	streamCloseDone := make(chan struct{})
+	var streamCloseOnce sync.Once
+	startStreamClose := func() {
+		streamCloseOnce.Do(func() {
+			if stream == nil {
+				close(streamCloseDone)
+				return
+			}
+			go func() {
+				_ = stream.Close()
+				close(streamCloseDone)
+			}()
+		})
+	}
+	cleanupTimeout := func() time.Duration {
+		timeout := telegramRunnerCleanupTimeout
+		if timeout <= 0 {
+			timeout = runpkg.DefaultRunnerCleanupTimeout
+		}
+		return timeout
+	}
+	cleanupDetached := false
+	markCleanupDetached := func() {
+		if cleanupDetached {
 			return
 		}
-		cleanupTimeout := telegramRunnerCleanupTimeout
-		if cleanupTimeout <= 0 {
-			cleanupTimeout = runpkg.DefaultRunnerCleanupTimeout
+		cleanupDetached = true
+		sess.runtimeStale.Store(true)
+		log.Printf("[telegram] stream for chat %d did not stop after cancellation; detaching and resetting runtime before reuse", chatID)
+	}
+	waitForRunnerDone := func() {
+		if runnerDone == nil || cleanupDetached {
+			return
 		}
-		if !runpkg.WaitForRunnerDone(context.Background(), runnerDone, cleanupTimeout) {
-			sess.runtimeStale.Store(true)
-			log.Printf("[telegram] runner for chat %d did not stop within %s after stream cancellation; detaching and resetting runtime before reuse", chatID, cleanupTimeout)
+		timeout := cleanupTimeout()
+		if !runpkg.WaitForRunnerDone(context.Background(), runnerDone, timeout) {
+			markCleanupDetached()
 		}
 	}
-	defer waitForRunnerDone()
 	if m.settings.Runner != nil {
 		pipe := runpkg.NewEventPipe(streamCtx, ui.DefaultStreamBufferSize)
 		stream = pipe
@@ -1934,8 +1959,27 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 			}
 			return fmt.Errorf("stream: %w", err)
 		}
-		defer stream.Close()
+		sess.cancelMu.Lock()
+		if sess.streamToken == streamToken {
+			sess.runnerDone = streamCloseDone
+		}
+		sess.cancelMu.Unlock()
 	}
+	defer func() {
+		streamCancel()
+		startStreamClose()
+		waitForRunnerDone()
+		if cleanupDetached {
+			return
+		}
+		closeCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout())
+		defer cancel()
+		select {
+		case <-streamCloseDone:
+		case <-closeCtx.Done():
+			markCleanupDetached()
+		}
+	}()
 
 	// Send placeholder message to obtain a message ID for live editing.
 	placeholder, err := bot.Send(tgbotapi.NewMessage(chatID, "⏳"))
@@ -1997,7 +2041,22 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 	}()
 
 	// Goroutine: consume stream events.
+	streamConsumerDone := make(chan struct{})
+	if runnerDone == nil {
+		streamCleanupDone := make(chan struct{})
+		go func() {
+			<-streamConsumerDone
+			<-streamCloseDone
+			close(streamCleanupDone)
+		}()
+		sess.cancelMu.Lock()
+		if sess.streamToken == streamToken {
+			sess.runnerDone = streamCleanupDone
+		}
+		sess.cancelMu.Unlock()
+	}
 	go func() {
+		defer close(streamConsumerDone)
 		for {
 			ev, recvErr := stream.Recv()
 			if recvErr == io.EOF {
@@ -2328,23 +2387,35 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 	userInterrupted := false
 	streamDoneDrained := false
 	stopStreamAndWait := func(waitCtx context.Context) bool {
-		if m.settings.Runner != nil {
-			streamCancel()
-		} else if stream != nil {
-			stream.Close()
-		} else {
-			streamCancel()
+		streamCancel()
+		startStreamClose()
+
+		var pendingStreamDone <-chan error
+		if !streamDoneDrained {
+			pendingStreamDone = streamDone
 		}
-		if streamDoneDrained {
-			return true
+		pendingCloseDone := (<-chan struct{})(streamCloseDone)
+		pendingRunnerDone := runnerDone
+		for pendingStreamDone != nil || pendingCloseDone != nil || pendingRunnerDone != nil {
+			select {
+			case <-pendingStreamDone:
+				streamDoneDrained = true
+				pendingStreamDone = nil
+			case <-pendingCloseDone:
+				pendingCloseDone = nil
+			case <-pendingRunnerDone:
+				pendingRunnerDone = nil
+			case <-waitCtx.Done():
+				markCleanupDetached()
+				return false
+			}
 		}
-		select {
-		case <-streamDone:
-			streamDoneDrained = true
-			return true
-		case <-waitCtx.Done():
-			return false
-		}
+		return true
+	}
+	stopStreamWithCleanupTimeout := func() bool {
+		waitCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout())
+		defer cancel()
+		return stopStreamAndWait(waitCtx)
 	}
 loop:
 	for {
@@ -2441,8 +2512,9 @@ loop:
 
 	if userInterrupted {
 		// Stop and drain anything already in flight so history and persistence
-		// snapshots include the final callback-produced messages.
-		stopStreamAndWait(context.Background())
+		// snapshots include the final callback-produced messages. If cleanup does
+		// not finish promptly, detach it and avoid racing the stale producer.
+		drained := stopStreamWithCleanupTimeout()
 
 		textMu.Lock()
 		partial := textBuf.String()
@@ -2466,8 +2538,11 @@ loop:
 		}
 		sendEdit(currentMsgID, display, true)
 
-		// Preserve partial history so conversation context isn't lost.
-		salvagePartialHistory(streamCtx, "AddMessage(assistant_interrupt_fallback)")
+		// Preserve partial history so conversation context isn't lost, but only
+		// after every producer has stopped mutating the callback snapshot.
+		if drained {
+			salvagePartialHistory(streamCtx, "AddMessage(assistant_interrupt_fallback)")
+		}
 
 		if m.store != nil && sess.meta != nil {
 			m.runStoreOpWithTimeout(sess.meta.ID, "UpdateStatus(interrupted)", func(storeCtx context.Context) error {
@@ -2478,10 +2553,10 @@ loop:
 	}
 
 	if streamErr != nil {
-		if !streamDoneDrained {
-			stopStreamAndWait(context.Background())
+		drained := stopStreamWithCleanupTimeout()
+		if drained {
+			salvagePartialHistory(streamCtx, "AddMessage(assistant_error_fallback)")
 		}
-		salvagePartialHistory(streamCtx, "AddMessage(assistant_error_fallback)")
 		if strings.Contains(streamErr.Error(), "stream timed out") {
 			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "⌛ Response timed out — please try again."))
 		}

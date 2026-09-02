@@ -20,6 +20,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/testutil"
 )
@@ -295,6 +296,76 @@ func (s *blockingTextStream) Close() error {
 		close(s.closed)
 	})
 	return nil
+}
+
+type uncooperativeCloseProvider struct {
+	started chan struct{}
+	release chan struct{}
+	stopped chan struct{}
+	runs    atomic.Int32
+}
+
+func (p *uncooperativeCloseProvider) Name() string { return "uncooperative-close" }
+
+func (p *uncooperativeCloseProvider) Credential() string { return "mock" }
+
+func (p *uncooperativeCloseProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+
+func (p *uncooperativeCloseProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	if p.runs.Add(1) == 1 {
+		return &uncooperativeCloseStream{
+			ctx:     ctx,
+			started: p.started,
+			release: p.release,
+			stopped: p.stopped,
+		}, nil
+	}
+	return &oneShotTextStream{text: "replacement answer"}, nil
+}
+
+type uncooperativeCloseStream struct {
+	ctx       context.Context
+	started   chan struct{}
+	release   chan struct{}
+	stopped   chan struct{}
+	startOnce sync.Once
+	stopOnce  sync.Once
+	sent      bool
+}
+
+func (s *uncooperativeCloseStream) Recv() (llm.Event, error) {
+	if !s.sent {
+		s.sent = true
+		s.startOnce.Do(func() { close(s.started) })
+		return llm.Event{Type: llm.EventTextDelta, Text: "partial answer"}, nil
+	}
+	<-s.ctx.Done()
+	return llm.Event{}, s.ctx.Err()
+}
+
+func (s *uncooperativeCloseStream) Close() error {
+	<-s.release
+	s.stopOnce.Do(func() { close(s.stopped) })
+	return nil
+}
+
+type uncooperativeSequenceRunner struct {
+	started chan struct{}
+	release chan struct{}
+	stopped chan struct{}
+	runs    atomic.Int32
+}
+
+func (r *uncooperativeSequenceRunner) Run(ctx context.Context, req runpkg.Request, sink runpkg.EventSink) (runpkg.Result, error) {
+	if r.runs.Add(1) == 1 {
+		sink.Event(llm.Event{Type: llm.EventTextDelta, Text: "partial answer"})
+		close(r.started)
+		<-r.release
+		close(r.stopped)
+		return runpkg.Result{}, nil
+	}
+	sink.Event(llm.Event{Type: llm.EventTextDelta, Text: "replacement answer"})
+	return runpkg.Result{}, nil
 }
 
 type errorAfterTextProvider struct {
@@ -2682,6 +2753,179 @@ func TestStreamReply_WatchdogTimeoutIsNotTreatedAsUserInterrupt(t *testing.T) {
 	sess.mu.Unlock()
 	if historyLen != 2 {
 		t.Fatalf("watchdog timeout should not persist partial history; got %d messages", historyLen)
+	}
+}
+
+func TestStreamReply_UncooperativeCleanupIsBounded(t *testing.T) {
+	previousCleanupTimeout := telegramRunnerCleanupTimeout
+	telegramRunnerCleanupTimeout = 25 * time.Millisecond
+	defer func() { telegramRunnerCleanupTimeout = previousCleanupTimeout }()
+
+	tests := []struct {
+		name     string
+		watchdog bool
+		newMgr   func(started, release, stopped chan struct{}) *telegramSessionMgr
+	}{
+		{
+			name: "stream Close ignores cancellation",
+			newMgr: func(started, release, stopped chan struct{}) *telegramSessionMgr {
+				provider := &uncooperativeCloseProvider{started: started, release: release, stopped: stopped}
+				return &telegramSessionMgr{
+					sessions:       make(map[int64]*telegramSession),
+					allowedUserIDs: map[int64]struct{}{7: {}},
+					idleTimeout:    time.Hour,
+					tickerInterval: 5 * time.Millisecond,
+					settings: Settings{
+						MaxTurns: 5,
+						NewSession: func(context.Context) (*SessionRuntime, error) {
+							return &SessionRuntime{
+								Engine:       llm.NewEngine(provider, llm.NewToolRegistry()),
+								ProviderName: "mock",
+								ModelName:    "test",
+							}, nil
+						},
+					},
+				}
+			},
+		},
+		{
+			name:     "Runner.Run ignores watchdog cancellation",
+			watchdog: true,
+			newMgr: func(started, release, stopped chan struct{}) *telegramSessionMgr {
+				runner := &uncooperativeSequenceRunner{started: started, release: release, stopped: stopped}
+				return &telegramSessionMgr{
+					sessions:           make(map[int64]*telegramSession),
+					allowedUserIDs:     map[int64]struct{}{7: {}},
+					idleTimeout:        time.Hour,
+					tickerInterval:     5 * time.Millisecond,
+					streamEventTimeout: 15 * time.Millisecond,
+					settings: Settings{
+						Runner:   runner,
+						MaxTurns: 5,
+						NewSession: func(context.Context) (*SessionRuntime, error) {
+							provider := llm.NewMockProvider("mock")
+							return &SessionRuntime{
+								Engine:       llm.NewEngine(provider, llm.NewToolRegistry()),
+								Provider:     provider,
+								ProviderName: "mock",
+								ModelName:    "test",
+							}, nil
+						},
+					},
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			started := make(chan struct{})
+			release := make(chan struct{})
+			stopped := make(chan struct{})
+			released := false
+			defer func() {
+				if !released {
+					close(release)
+				}
+			}()
+
+			mgr := tc.newMgr(started, release, stopped)
+			sess, err := mgr.getOrCreate(context.Background(), 42)
+			if err != nil {
+				t.Fatalf("getOrCreate failed: %v", err)
+			}
+			bot := &fakeBotSender{}
+			replyResult := make(chan error, 1)
+			go func() {
+				replyResult <- mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("first request"))
+			}()
+
+			select {
+			case <-started:
+			case <-time.After(time.Second):
+				t.Fatal("first response did not start")
+			}
+
+			sess.cancelMu.Lock()
+			cancelStream := sess.streamCancel
+			replyDone := sess.replyDone
+			sess.cancelMu.Unlock()
+			if cancelStream == nil || replyDone == nil {
+				t.Fatal("active response did not publish cancellation state")
+			}
+			if !tc.watchdog {
+				cancelStream()
+			}
+
+			start := time.Now()
+			select {
+			case err := <-replyResult:
+				if tc.watchdog {
+					if err == nil || !strings.Contains(err.Error(), "stream timed out") {
+						t.Fatalf("streamReply error = %v, want watchdog timeout", err)
+					}
+				} else if err != nil {
+					t.Fatalf("streamReply returned error after interrupt: %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("streamReply remained blocked on uncooperative cleanup")
+			}
+			if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+				t.Fatalf("streamReply cleanup took %s, want bounded cleanup", elapsed)
+			}
+			if !sess.runtimeStale.Load() {
+				t.Fatal("uncooperative cleanup did not mark runtime stale")
+			}
+			select {
+			case <-replyDone:
+			default:
+				t.Fatal("replyDone was not closed after detached cleanup")
+			}
+
+			lockAcquired := make(chan struct{})
+			go func() {
+				sess.mu.Lock()
+				sess.mu.Unlock()
+				close(lockAcquired)
+			}()
+			select {
+			case <-lockAcquired:
+			case <-time.After(time.Second):
+				t.Fatal("session mutex remained locked after detached cleanup")
+			}
+
+			nextDone := make(chan struct{})
+			go func() {
+				mgr.handleMessage(context.Background(), bot, &tgbotapi.Message{
+					From: &tgbotapi.User{ID: 7, UserName: "sam"},
+					Chat: &tgbotapi.Chat{ID: 42},
+					Text: "next request",
+				})
+				close(nextDone)
+			}()
+			select {
+			case <-nextDone:
+			case <-time.After(time.Second):
+				t.Fatal("replacement session did not process the next message")
+			}
+			mgr.mu.Lock()
+			replacement := mgr.sessions[42]
+			mgr.mu.Unlock()
+			if replacement == sess {
+				t.Fatal("stale runtime was reused for the next message")
+			}
+			if got := bot.lastText(); got != "replacement answer" {
+				t.Fatalf("replacement response = %q, want replacement answer", got)
+			}
+
+			close(release)
+			released = true
+			select {
+			case <-stopped:
+			case <-time.After(time.Second):
+				t.Fatal("detached cleanup did not finish after test release")
+			}
+		})
 	}
 }
 
