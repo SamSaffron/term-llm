@@ -17,7 +17,7 @@ import (
 
 func TestSupportedModelListProviderTypesIncludesCLIProviders(t *testing.T) {
 	got := supportedModelListProviderTypes()
-	for _, want := range []string{"cursor-bin", "grok-bin"} {
+	for _, want := range []string{"agy-bin", "cursor-bin", "grok-bin"} {
 		if !slices.Contains(got, want) {
 			t.Fatalf("supported provider types %v missing %q", got, want)
 		}
@@ -42,6 +42,74 @@ func TestModelListSupportedTypesIncludesNearAI(t *testing.T) {
 func TestModelListSupportedTypesIncludesOllama(t *testing.T) {
 	if !modelListSupportedTypes[config.ProviderTypeOllama] {
 		t.Fatal("Ollama should be wired for dynamic model listing")
+	}
+}
+
+func TestRunModelsQueriesAgyCLIAndCachesCatalog(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+if [ "$1" = "models" ]; then
+  printf '%b\n' \
+    'gemini-3.8-flash-high\tGemini 3.8 Flash (High)' \
+    'gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)' \
+    'gemini-3.8-flash-low\tGemini 3.8 Flash (Low)' \
+    'claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)' \
+    'gpt-oss-120b-medium\tGPT-OSS 120B (Medium)'
+  exit 0
+fi
+exit 1
+`
+	if err := os.WriteFile(filepath.Join(binDir, "agy"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	oldProvider, oldJSON := modelsProvider, modelsJSON
+	modelsProvider, modelsJSON = "agy-bin", true
+	t.Cleanup(func() {
+		modelsProvider, modelsJSON = oldProvider, oldJSON
+	})
+
+	readOut, writeOut, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStdout := os.Stdout
+	os.Stdout = writeOut
+	err = runModels(modelsCmd, nil)
+	_ = writeOut.Close()
+	os.Stdout = oldStdout
+	if err != nil {
+		t.Fatalf("runModels: %v", err)
+	}
+	defer readOut.Close()
+
+	var models []llm.ModelInfo
+	if err := json.NewDecoder(readOut).Decode(&models); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	got := make([]string, 0, len(models))
+	for _, model := range models {
+		got = append(got, model.ID)
+	}
+	want := []string{
+		"gemini-3.8-flash-high",
+		"gemini-3.8-flash-medium",
+		"gemini-3.8-flash-low",
+		"claude-sonnet-4-6",
+		"gpt-oss-120b-medium",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("listed models = %v, want %v", got, want)
+	}
+	if cached := llm.GetCachedAgyBinModels(); !slices.Equal(cached, want) {
+		t.Fatalf("cached models = %v, want %v", cached, want)
 	}
 }
 

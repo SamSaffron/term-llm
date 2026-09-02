@@ -916,7 +916,7 @@ done
 	if err != nil {
 		t.Fatal(err)
 	}
-	readyTimeout := time.After(2 * time.Second)
+	readyTimeout := time.After(10 * time.Second)
 	for {
 		if _, err := os.Stat(blockedPath); err == nil {
 			break

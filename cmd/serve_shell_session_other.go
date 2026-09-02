@@ -1,9 +1,9 @@
-//go:build (aix || android || darwin || dragonfly || freebsd || illumos || ios || netbsd || openbsd || solaris) && !linux
+//go:build (aix || android || dragonfly || freebsd || illumos || ios || netbsd || openbsd || solaris) && !linux
 
 package cmd
 
 import "syscall"
 
-// SIGHUP plus process-group signaling is the portable fallback. Linux also
-// enumerates the owning login session so job-control groups cannot survive.
+// SIGHUP plus process-group signaling is the portable fallback on platforms
+// without process-tree enumeration for job-control groups.
 func signalServeShellSession(_ int, _ syscall.Signal) error { return nil }

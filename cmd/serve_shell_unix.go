@@ -37,16 +37,41 @@ func startServeShellProcess(cwd string, cols, rows int, output func([]byte)) (se
 	}
 	process := &unixServeShellProcess{file: file, cmd: cmd, done: make(chan serveShellExit, 1), stopped: make(chan struct{})}
 	readDone := make(chan struct{})
+	outputChunks := make(chan []byte, 64)
 	go func() {
-		defer close(readDone)
+		defer close(outputChunks)
 		buffer := make([]byte, 32<<10)
 		for {
 			n, readErr := file.Read(buffer)
 			if n > 0 {
-				output(append([]byte(nil), buffer[:n]...))
+				outputChunks <- append([]byte(nil), buffer[:n]...)
 			}
 			if readErr != nil {
 				return
+			}
+		}
+	}()
+	go func() {
+		defer close(readDone)
+		for chunk := range outputChunks {
+			// Keep draining the PTY while a temporarily slow consumer handles the
+			// previous callback. Coalescing queued reads both avoids backpressure
+			// on short-lived producers and preserves output ordering.
+			for {
+				select {
+				case next, ok := <-outputChunks:
+					if !ok {
+						output(chunk)
+						return
+					}
+					chunk = append(chunk, next...)
+				default:
+					output(chunk)
+					chunk = nil
+				}
+				if chunk == nil {
+					break
+				}
 			}
 		}
 	}()

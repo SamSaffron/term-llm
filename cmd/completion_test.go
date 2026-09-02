@@ -14,6 +14,53 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func TestRefreshAgyBinCompletionCache(t *testing.T) {
+	original := refreshAgyBinModelsForCompletion
+	t.Cleanup(func() { refreshAgyBinModelsForCompletion = original })
+
+	var calls int
+	var gotModel string
+	var gotEnv map[string]string
+	refreshAgyBinModelsForCompletion = func(ctx context.Context, model string, env map[string]string) error {
+		calls++
+		gotModel = model
+		gotEnv = env
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("completion refresh context has no deadline")
+		}
+		return nil
+	}
+
+	cfg := &config.Config{Providers: map[string]config.ProviderConfig{
+		"my-agy": {
+			Type:  config.ProviderTypeAgyBin,
+			Model: "gemini-3.8-flash-high",
+			Env:   map[string]string{"AGY_TEST": "value"},
+		},
+		"pinned-agy": {
+			Type:   config.ProviderTypeAgyBin,
+			Models: []string{"gemini-custom"},
+		},
+	}}
+
+	refreshAgyBinCompletionCache("my-agy:gem", cfg)
+	if calls != 1 || gotModel != "gemini-3.8-flash-high" || gotEnv["AGY_TEST"] != "value" {
+		t.Fatalf("refresh calls/model/env = %d/%q/%v", calls, gotModel, gotEnv)
+	}
+
+	refreshAgyBinCompletionCache("agy-bin:", nil)
+	if calls != 2 {
+		t.Fatalf("built-in agy-bin refresh calls = %d, want 2", calls)
+	}
+
+	refreshAgyBinCompletionCache("my-agy", cfg)
+	refreshAgyBinCompletionCache("pinned-agy:", cfg)
+	refreshAgyBinCompletionCache("openai:gpt", cfg)
+	if calls != 2 {
+		t.Fatalf("inapplicable completion unexpectedly refreshed: calls = %d", calls)
+	}
+}
+
 func TestRefreshGrokBinCompletionCache(t *testing.T) {
 	original := refreshGrokBinModelsForCompletion
 	t.Cleanup(func() { refreshGrokBinModelsForCompletion = original })

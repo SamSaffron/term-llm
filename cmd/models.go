@@ -34,6 +34,7 @@ Examples:
   term-llm models --provider venice     # list models from Venice
   term-llm models --provider cursor-bin # list/cache Cursor Agent models
   term-llm models --provider grok-bin   # list/cache Grok Build CLI models
+  term-llm models --provider agy-bin    # list/cache Antigravity CLI models
   term-llm models --provider ollama     # list models from Ollama
   term-llm models --provider lmstudio   # list models from LM Studio
   term-llm models --json                # output as JSON`,
@@ -69,6 +70,7 @@ var modelListSupportedTypes = map[config.ProviderType]bool{
 	config.ProviderTypeOllama:       true,
 	config.ProviderTypeCursorBin:    true,
 	config.ProviderTypeGrokBin:      true,
+	config.ProviderTypeAgyBin:       true,
 }
 
 func supportedModelListProviderTypes() []string {
@@ -171,6 +173,8 @@ func runModels(cmd *cobra.Command, args []string) error {
 		lister = llm.NewCursorBinProvider(providerCfg.Model, providerCfg.Env)
 	case config.ProviderTypeGrokBin:
 		lister = llm.NewGrokBinProvider(providerCfg.Model, providerCfg.Env)
+	case config.ProviderTypeAgyBin:
+		lister = llm.NewAgyBinProvider(providerCfg.Model, providerCfg.Env)
 	case config.ProviderTypeOpenRouter:
 		apiKey := providerCfg.ResolvedAPIKey
 		if apiKey == "" {
@@ -245,7 +249,7 @@ func runModels(cmd *cobra.Command, args []string) error {
 		timeout = 6 * time.Minute
 	} else if providerType == config.ProviderTypeGrok {
 		timeout = 30 * time.Second
-	} else if providerType == config.ProviderTypeCursorBin || providerType == config.ProviderTypeGrokBin {
+	} else if providerType == config.ProviderTypeCursorBin || providerType == config.ProviderTypeGrokBin || providerType == config.ProviderTypeAgyBin {
 		timeout = 45 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -260,6 +264,9 @@ func runModels(cmd *cobra.Command, args []string) error {
 	}
 	if err == nil && providerType == config.ProviderTypeGrokBin {
 		llm.RefreshGrokBinCacheSync(models)
+	}
+	if err == nil && providerType == config.ProviderTypeAgyBin {
+		llm.RefreshAgyBinCacheSync(models)
 	}
 	if err != nil {
 		// Provide helpful error messages for common issues

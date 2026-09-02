@@ -296,8 +296,8 @@ func PricingForProviderModel(provider, model string) (inputPrice, outputPrice fl
 }
 
 // ProviderModelIDs returns model IDs for a built-in provider.
-// Copilot, Grok, Zen, cursor-bin, and grok-bin prefer the latest live model-list cache
-// when present; Grok, Zen, cursor-bin, and grok-bin fall back to their curated starter
+// Copilot, Grok, Zen, agy-bin, cursor-bin, and grok-bin prefer the latest live model-list cache
+// when present; Grok, Zen, agy-bin, cursor-bin, and grok-bin fall back to their curated starter
 // lists when the cache is empty.
 // For callers that might receive a custom alias name, use ResolveProviderModelIDs.
 func ProviderModelIDs(provider string) []string {
@@ -308,6 +308,10 @@ func ProviderModelIDs(provider string) []string {
 		return GetCachedOpenCodeGoModels()
 	case "zen":
 		if ids := GetCachedZenModels(); len(ids) > 0 {
+			return ids
+		}
+	case "agy-bin":
+		if ids := GetCachedAgyBinModels(); len(ids) > 0 {
 			return ids
 		}
 	case "cursor-bin":

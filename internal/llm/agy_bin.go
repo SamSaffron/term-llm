@@ -929,31 +929,6 @@ func AgyBinHasCredentials() bool {
 	return agyPlatformHasCredentials(home)
 }
 
-func (p *AgyBinProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
-	cmd, err := newCLICommand(ctx, "agy", []string{"models"}, "")
-	if err != nil {
-		return nil, err
-	}
-	cmd.Env = p.extraEnvList()
-	auditedEnv, wireAudit, err := startCLIWireAudit("agy-bin-models", cmd.Env)
-	if err != nil {
-		return nil, err
-	}
-	cmd.Env = auditedEnv
-	defer stopCLIWireAudit(wireAudit)
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("list agy models: %w", err)
-	}
-	var models []ModelInfo
-	for _, line := range strings.Split(string(out), "\n") {
-		id := strings.TrimSpace(line)
-		if id != "" {
-			models = append(models, ModelInfo{ID: id, DisplayName: id})
-		}
-	}
-	return models, nil
-}
 func (p *AgyBinProvider) extraEnvList() []string {
 	out := append([]string{}, os.Environ()...)
 	for k, v := range p.extraEnv {

@@ -16,12 +16,14 @@ import (
 // Keep completion refreshes short: stale cached or curated models remain
 // available when the local CLI or its remote catalog is slow.
 const (
+	agyBinCompletionRefreshTimeout  = 5 * time.Second
 	grokBinCompletionRefreshTimeout = 5 * time.Second
 	ollamaCompletionRefreshTimeout  = 2 * time.Second
 	zenCompletionRefreshTimeout     = 2 * time.Second
 )
 
 var (
+	refreshAgyBinModelsForCompletion  = llm.RefreshAgyBinModelsIfStale
 	refreshGrokBinModelsForCompletion = llm.RefreshGrokBinModelsIfStale
 	refreshOllamaModelsForCompletion  = llm.RefreshOllamaModelsIfStale
 	refreshZenModelsForCompletion     = llm.RefreshZenModelsIfStale
@@ -31,6 +33,7 @@ var (
 func ProviderFlagCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	// Try to load config for custom provider completions; nil is OK if it fails
 	cfg, _ := config.Load()
+	refreshAgyBinCompletionCache(toComplete, cfg)
 	refreshGrokBinCompletionCache(toComplete, cfg)
 	refreshOllamaCompletionCache(toComplete, cfg)
 	refreshZenCompletionCache(toComplete, cfg)
@@ -42,6 +45,28 @@ func ProviderFlagCompletion(cmd *cobra.Command, args []string, toComplete string
 		return completions, providerFlagCompletionDirective(cfg, toComplete)
 	}
 	return completions, cobra.ShellCompDirectiveNoFileComp
+}
+
+func refreshAgyBinCompletionCache(toComplete string, cfg *config.Config) {
+	provider, _, completingModel := strings.Cut(toComplete, ":")
+	if !completingModel {
+		return
+	}
+
+	var providerCfg config.ProviderConfig
+	if cfg != nil {
+		providerCfg = cfg.Providers[provider]
+		if len(providerCfg.Models) > 0 {
+			return
+		}
+	}
+	if config.InferProviderType(provider, providerCfg.Type) != config.ProviderTypeAgyBin {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), agyBinCompletionRefreshTimeout)
+	defer cancel()
+	_ = refreshAgyBinModelsForCompletion(ctx, providerCfg.Model, providerCfg.Env)
 }
 
 func refreshGrokBinCompletionCache(toComplete string, cfg *config.Config) {

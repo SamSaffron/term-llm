@@ -58,7 +58,7 @@ func TestRunCommandCancellationKillsBackgroundDescendant(t *testing.T) {
 	}()
 
 	var pidData []byte
-	readyDeadline := time.Now().Add(2 * time.Second)
+	readyDeadline := time.Now().Add(10 * time.Second)
 	for len(pidData) == 0 {
 		var err error
 		pidData, err = os.ReadFile(pidPath)

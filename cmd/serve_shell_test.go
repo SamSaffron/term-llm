@@ -326,9 +326,12 @@ func TestServeShellProcessDrainsHighVolumeOutputBeforeExit(t *testing.T) {
 	dir := t.TempDir()
 	const repetitions = 4_096
 	const block = "0123456789abcdef0123456789abcdef"
+	payload := strings.Repeat(block, repetitions)
+	if err := os.WriteFile(filepath.Join(dir, "output.txt"), []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	script := filepath.Join(dir, "write-and-exit.sh")
-	contents := fmt.Sprintf("#!/bin/sh\ni=0\nwhile [ \"$i\" -lt %d ]; do\n  printf '%s'\n  i=$((i + 1))\ndone\n", repetitions, block)
-	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ncat output.txt\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("SHELL", script)
@@ -480,7 +483,7 @@ func TestServeShellProcessGroupCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := shell.write([]byte("sleep 30 & printf '__child__%s\\n' \"$!\"\n")); err != nil {
+	if err := shell.write([]byte("sleep 30 & printf '__child__%s\\n' \"$(jobs -p)\"\n")); err != nil {
 		t.Fatal(err)
 	}
 	var childPID int
@@ -497,7 +500,7 @@ func TestServeShellProcessGroupCleanup(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if childPID <= 0 {
-		t.Fatal("did not capture background child PID")
+		t.Fatalf("did not capture background child PID; shell output: %q", shell.snapshot(0).data)
 	}
 	manager.closeSession("group")
 	waitForShellExit(t, shell)
