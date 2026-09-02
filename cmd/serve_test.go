@@ -481,6 +481,46 @@ func TestServeServerConfig_RouteHelpers(t *testing.T) {
 	}
 }
 
+func TestServeServerConfigAgentAvailableIncludesDedicatedAgent(t *testing.T) {
+	cfg := serveServerConfig{
+		agentName:  "jarvis",
+		agentNames: []string{"developer", "reviewer"},
+	}
+	for _, name := range []string{"jarvis", "developer", "reviewer"} {
+		if !cfg.agentAvailable(name) {
+			t.Errorf("agentAvailable(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"", "missing"} {
+		if cfg.agentAvailable(name) {
+			t.Errorf("agentAvailable(%q) = true, want false", name)
+		}
+	}
+}
+
+func TestHandleResponsesAcceptsDedicatedAgentForFreshThread(t *testing.T) {
+	srv := newTestServeServer("thread response")
+	defer srv.sessionMgr.Close()
+	srv.cfg.agentName = "jarvis"
+	var createdAgent string
+	srv.agentRuntimeFactory = func(ctx context.Context, _, _, agentName string) (*serveRuntime, error) {
+		createdAgent = agentName
+		runtime, err := srv.sessionMgr.factory(ctx)
+		if runtime != nil {
+			runtime.agentName = agentName
+		}
+		return runtime, err
+	}
+
+	code, response := doResponsesFirstParty(t, srv, `{"input":"continue in a new thread","agent":"jarvis","client_message_id":"thread-message"}`, "thread-child")
+	if code != http.StatusOK {
+		t.Fatalf("response status = %d, want 200: %#v", code, response)
+	}
+	if createdAgent != "jarvis" {
+		t.Fatalf("created agent = %q, want jarvis", createdAgent)
+	}
+}
+
 func TestRuntimeForFreshAgentProviderRequestUsesSelectedAgent(t *testing.T) {
 	mgr := newServeSessionManager(time.Hour, 10, func(context.Context) (*serveRuntime, error) {
 		return &serveRuntime{}, nil
