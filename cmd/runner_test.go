@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
+	"github.com/samsaffron/term-llm/internal/session"
 )
 
 func TestCmdRunnerUnboundRemoteSettingsRejectAmbientCWD(t *testing.T) {
@@ -154,7 +156,7 @@ func TestCmdRunnerEnsureRunSessionUsesExplicitPrimaryWorkspace(t *testing.T) {
 	store := newServeRuntimeTestStore()
 	workingDir := t.TempDir()
 
-	sess := runner.ensureRunSession(
+	sess, err := runner.ensureRunSession(
 		context.Background(),
 		store,
 		runpkg.Request{Platform: runpkg.PlatformConsole, SessionID: "working-dir-session"},
@@ -164,11 +166,97 @@ func TestCmdRunnerEnsureRunSessionUsesExplicitPrimaryWorkspace(t *testing.T) {
 		"",
 		SessionSettings{BaseDir: workingDir, PrimaryWorkspace: workingDir},
 	)
+	if err != nil {
+		t.Fatalf("ensureRunSession: %v", err)
+	}
 	if sess == nil {
 		t.Fatal("ensureRunSession returned nil")
 	}
 	if sess.CWD != workingDir {
 		t.Fatalf("session CWD = %q, want %q", sess.CWD, workingDir)
+	}
+}
+
+type cmdRunnerCreateFailureStore struct {
+	session.Store
+	createErr        error
+	concurrentCreate *session.Session
+}
+
+func (s *cmdRunnerCreateFailureStore) Create(ctx context.Context, _ *session.Session) error {
+	if s.concurrentCreate != nil {
+		_ = s.Store.Create(ctx, s.concurrentCreate)
+	}
+	return s.createErr
+}
+
+func TestCmdRunnerPersistedSessionCreateFailure(t *testing.T) {
+	createErr := errors.New("session database is read-only")
+	tests := []struct {
+		name             string
+		concurrentCreate bool
+		wantErr          bool
+	}{
+		{name: "unrecovered failure", wantErr: true},
+		{name: "concurrent create is recovered", concurrentCreate: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			const sessionID = "persisted-job-session"
+			baseStore := newServeRuntimeTestStore()
+			store := &cmdRunnerCreateFailureStore{Store: baseStore, createErr: createErr}
+			if tc.concurrentCreate {
+				store.concurrentCreate = &session.Session{
+					ID:       sessionID,
+					Provider: "mock",
+					Model:    "mock-model",
+					Status:   session.StatusActive,
+				}
+			}
+			provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+			cfg := &config.Config{
+				DefaultProvider: "mock",
+				Providers: map[string]config.ProviderConfig{
+					"mock": {Model: "mock-model"},
+				},
+			}
+			runner := newCmdRunner(cfg, cmdRunnerOptions{Store: store}).(*cmdRunner)
+			includeConfiguredTools := false
+
+			result, err := runner.Run(context.Background(), runpkg.Request{
+				Platform:               runpkg.PlatformJob,
+				Prompt:                 "run the job",
+				SessionID:              sessionID,
+				Persist:                true,
+				ProviderInstance:       provider,
+				Cwd:                    t.TempDir(),
+				IncludeConfiguredTools: &includeConfiguredTools,
+			}, nil)
+
+			if tc.wantErr {
+				if !errors.Is(err, createErr) {
+					t.Fatalf("Run() error = %v, want wrapped %v", err, createErr)
+				}
+				if requests := provider.RecordedRequests(); len(requests) != 0 {
+					t.Fatalf("provider requests = %d, want 0", len(requests))
+				}
+				if result.SessionID != "" || result.Provider != "" || result.Model != "" || result.Response != "" || result.Engine != nil || result.ProviderInstance != nil || result.Progressive != nil {
+					t.Fatalf("Run() result = %+v, want zero result", result)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("Run() error = %v, want nil", err)
+			}
+			if requests := provider.RecordedRequests(); len(requests) != 1 {
+				t.Fatalf("provider requests = %d, want 1", len(requests))
+			}
+			if result.Response != "ok" {
+				t.Fatalf("Run() response = %q, want %q", result.Response, "ok")
+			}
+		})
 	}
 }
 
