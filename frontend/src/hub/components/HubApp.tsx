@@ -39,7 +39,6 @@ export function HubApp({
         <AttentionPanels store={store} />
         <NodeGrid store={store} />
         <DelegationsPanel config={config} store={store} />
-        {config.passkeyAuth && <SecurityPanel store={store} />}
         {!store.initialLoading.value && !store.nodes.value.length && (
           <div class="hub-empty">
             <p>No nodes yet.</p>
@@ -55,6 +54,7 @@ export function HubApp({
           </div>
         )}
       </main>
+      {config.passkeyAuth && store.securityOpen.value && <SecurityPanel store={store} />}
       {config.canAddNodes && store.addDialogOpen.value && (
         <AddNodeDialog config={config} store={store} clipboard={clipboard} />
       )}

@@ -30,6 +30,7 @@ func TestHandleSessionsStatusTranscriptUpdatedAtChangesOnMessageUpdate(t *testin
 		Model:     "test-model",
 		Mode:      session.ModeChat,
 		Origin:    session.OriginWeb,
+		Pinned:    true,
 		CreatedAt: createdAt,
 		UpdatedAt: createdAt,
 	}
@@ -43,6 +44,9 @@ func TestHandleSessionsStatusTranscriptUpdatedAtChangesOnMessageUpdate(t *testin
 	}
 
 	first := readStatusEntryForSession(t, store, sess.ID)
+	if !first.Pinned {
+		t.Fatal("pinned status was not projected")
+	}
 	if first.Number <= 0 {
 		t.Fatalf("number = %d, want canonical positive session number", first.Number)
 	}
@@ -300,6 +304,7 @@ func TestHandleSessionsStatusAlwaysIncludesSelectedActiveAndUnresolvedSessions(t
 type sessionsStatusTestEntry struct {
 	ID                  string `json:"id"`
 	Number              int64  `json:"number"`
+	Pinned              bool   `json:"pinned"`
 	MsgCount            int    `json:"message_count"`
 	LastMessageAt       int64  `json:"last_message_at"`
 	TranscriptRev       int64  `json:"transcript_rev"`

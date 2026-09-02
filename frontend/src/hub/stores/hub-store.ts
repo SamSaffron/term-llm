@@ -299,14 +299,24 @@ export class HubStore {
     this.registrationError.value = '';
   }
 
+  async openSecurity(): Promise<void> {
+    if (this.securityOpen.value) return;
+    this.securityOpen.value = true;
+    await this.loadSecurity();
+  }
+
+  closeSecurity(): void {
+    this.securityOpen.value = false;
+    this.securityRead?.abort();
+    this.securityRead = undefined;
+    this.securityLoading.value = false;
+  }
+
   async toggleSecurity(): Promise<void> {
-    this.securityOpen.value = !this.securityOpen.value;
     if (this.securityOpen.value) {
-      await this.loadSecurity();
+      this.closeSecurity();
     } else {
-      this.securityRead?.abort();
-      this.securityRead = undefined;
-      this.securityLoading.value = false;
+      await this.openSecurity();
     }
   }
 
@@ -412,8 +422,7 @@ export class HubStore {
     this.generation++;
     this.reads?.abort();
     this.reads = undefined;
-    this.securityRead?.abort();
-    this.securityRead = undefined;
+    this.closeSecurity();
     if (this.interval !== undefined) this.stopInterval(this.interval);
     this.interval = undefined;
     this.closeAddDialog();

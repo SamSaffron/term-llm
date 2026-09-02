@@ -1092,6 +1092,7 @@ func TestHubNodesAPIIncludesBoundedSessionSummary(t *testing.T) {
 				Number        int64  `json:"number"`
 				ShortTitle    string `json:"short_title"`
 				LongTitle     string `json:"long_title"`
+				Pinned        bool   `json:"pinned,omitempty"`
 				ActiveRun     bool   `json:"active_run,omitempty"`
 				LastMessageAt int64  `json:"last_message_at"`
 				MessageCount  int    `json:"message_count"`
@@ -1105,6 +1106,9 @@ func TestHubNodesAPIIncludesBoundedSessionSummary(t *testing.T) {
 					LastMessageAt: int64(1_800_000_000_000 - i),
 					MessageCount:  i + 1,
 				})
+			}
+			for i := 20; i < 24; i++ {
+				sessions[i].Pinned = true
 			}
 			sessions[5].ID = "sess_busy"
 			sessions[5].ShortTitle = "Busy session"
@@ -1163,10 +1167,10 @@ func TestHubNodesAPIIncludesBoundedSessionSummary(t *testing.T) {
 	if n.Sessions.ResumePath != "/hub/node/alpha/chat/1005" {
 		t.Fatalf("resume path = %q", n.Sessions.ResumePath)
 	}
-	if len(n.Sessions.Recent) != 3 || n.Sessions.Recent[0].ID != "sess_000" {
+	if len(n.Sessions.Recent) != 4 || n.Sessions.Recent[0].ID != "sess_020" || n.Sessions.Recent[1].ID != "sess_000" {
 		t.Fatalf("recent sessions = %+v", n.Sessions.Recent)
 	}
-	if n.Sessions.Recent[0].Number != 1000 || n.Sessions.Recent[0].ResumePath != "/hub/node/alpha/chat/1000" {
+	if n.Sessions.Recent[0].Number != 1020 || n.Sessions.Recent[0].ResumePath != "/hub/node/alpha/chat/1020" {
 		t.Fatalf("recent session = %+v", n.Sessions.Recent[0])
 	}
 
@@ -1174,6 +1178,27 @@ func TestHubNodesAPIIncludesBoundedSessionSummary(t *testing.T) {
 	s.handler().ServeHTTP(resumeRec, httptest.NewRequest(http.MethodGet, n.Sessions.ResumePath, nil))
 	if resumeRec.Code != http.StatusOK || resumedPath != "/chat/chat/1005" {
 		t.Fatalf("resume request status=%d backend path=%q body=%s", resumeRec.Code, resumedPath, resumeRec.Body.String())
+	}
+}
+
+func TestHubNodeRecentSessionsPromotesPinsWithinRecentWindow(t *testing.T) {
+	sessions := []hubNodeSessionView{
+		{ID: "newest", LastMessageAt: 40},
+		{ID: "recent-pin", LastMessageAt: 30, Pinned: true},
+		{ID: "middle", LastMessageAt: 20},
+		{ID: "oldest", LastMessageAt: 10},
+		{ID: "old-pin", LastMessageAt: 5, Pinned: true},
+	}
+
+	got := hubNodeRecentSessions(sessions)
+	want := []string{"recent-pin", "newest", "middle", "oldest"}
+	if len(got) != len(want) {
+		t.Fatalf("recent sessions = %+v", got)
+	}
+	for i, id := range want {
+		if got[i].ID != id {
+			t.Fatalf("recent session %d = %q, want %q; all=%+v", i, got[i].ID, id, got)
+		}
 	}
 }
 

@@ -44,9 +44,10 @@ export function HubHeader({ config, store }: { config: HubConfig; store: HubStor
           <button
             class="hub-btn ghost"
             type="button"
+            aria-haspopup="dialog"
             aria-expanded={store.securityOpen.value}
-            aria-controls="hub-security-panel"
-            onClick={() => void store.toggleSecurity()}
+            aria-controls="hub-security-dialog"
+            onClick={() => void store.openSecurity()}
           >
             Security
           </button>

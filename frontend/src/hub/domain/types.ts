@@ -20,6 +20,7 @@ export interface HubNodeSession {
   number?: number;
   short_title: string;
   long_title?: string;
+  pinned?: boolean;
   active_run?: boolean;
   interaction_required?: boolean;
   pending_interaction_count?: number;

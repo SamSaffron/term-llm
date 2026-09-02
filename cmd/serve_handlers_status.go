@@ -167,6 +167,7 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 		ProjectName              string   `json:"project_name,omitempty"`
 		ShortTitle               string   `json:"short_title"`
 		LongTitle                string   `json:"long_title"`
+		Pinned                   bool     `json:"pinned,omitempty"`
 		ActiveRun                bool     `json:"active_run,omitempty"`
 		ActiveResponseID         string   `json:"active_response_id,omitempty"`
 		RunEpoch                 int64    `json:"run_epoch,omitempty"`
@@ -287,6 +288,7 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 			ProjectName:              sess.ProjectName,
 			ShortTitle:               sess.PreferredShortTitle(),
 			LongTitle:                sess.PreferredLongTitle(),
+			Pinned:                   sess.Pinned,
 			ActiveRun:                activeIDs[sess.ID],
 			ActiveResponseID:         activeResponseID,
 			RunEpoch:                 runEpoch,

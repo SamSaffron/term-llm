@@ -175,6 +175,37 @@ describe('Hub components', () => {
     clearTimeout.mockRestore();
   });
 
+  it('renders four node sessions without duplicates or group headings', () => {
+    const session = (id: string, extras = {}) => ({
+      id,
+      short_title: id,
+      resume_path: `/hub/node/alpha/chat/${id}`,
+      ...extras,
+    });
+    const node = {
+      id: 'alpha',
+      name: 'Alpha',
+      status: { reachable: true, state: 'ok', latency_ms: 1 },
+      sessions: {
+        count_label: '5 sessions',
+        active: [session('recent-1', { active_run: true })],
+        recent: [
+          session('pin-1', { pinned: true }),
+          session('recent-1', { active_run: true }),
+          session('recent-2'),
+          session('recent-3'),
+        ],
+      },
+    } as HubNode;
+
+    const view = render(<NodeSessions node={node} />);
+    expect(view.container.querySelectorAll('.node-session-row')).toHaveLength(4);
+    expect(screen.getAllByLabelText('Pinned')).toHaveLength(1);
+    expect(screen.queryByText('Pinned')).not.toBeInTheDocument();
+    expect(screen.queryByText('Recent activity')).not.toBeInTheDocument();
+    expect(screen.getByText('recent-1').closest('.node-session-row')).toHaveClass('is-active');
+  });
+
   it('renders stale, lost, and unavailable node-attention capability messages', () => {
     const node = {
       id: 'alpha',
@@ -210,6 +241,28 @@ describe('Hub components', () => {
       />,
     );
     expect(screen.getByText('Terminal attention unavailable')).toBeVisible();
+  });
+
+  it('opens Security as a dismissible modal and restores focus', () => {
+    const trigger = document.createElement('button');
+    document.body.append(trigger);
+    trigger.focus();
+    const value = store();
+    value.securityOpen.value = true;
+
+    const view = render(<SecurityPanel store={value} />);
+    expect(screen.getByRole('dialog', { name: 'Security' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Close security' })).toHaveFocus();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Security' })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+
+    trigger.focus();
+    value.securityOpen.value = true;
+    view.rerender(<SecurityPanel store={value} />);
+    fireEvent.mouseDown(view.container.querySelector('.modal-overlay')!);
+    expect(value.securityOpen.value).toBe(false);
+    trigger.remove();
   });
 
   it('disables removal when only one passkey remains', () => {

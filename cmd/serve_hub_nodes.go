@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,6 +27,7 @@ type hubNodeSessionView struct {
 	Number                  int64    `json:"number,omitempty"`
 	ShortTitle              string   `json:"short_title"`
 	LongTitle               string   `json:"long_title,omitempty"`
+	Pinned                  bool     `json:"pinned,omitempty"`
 	ActiveRun               bool     `json:"active_run,omitempty"`
 	InteractionRequired     bool     `json:"interaction_required,omitempty"`
 	PendingInteractionCount int      `json:"pending_interaction_count,omitempty"`
@@ -130,7 +132,7 @@ func (s *hubServer) collectNodes(ctx context.Context) ([]hubNodeView, error) {
 
 const (
 	hubNodeSessionActiveLimit = 2
-	hubNodeSessionRecentLimit = 3
+	hubNodeSessionRecentLimit = 4
 	hubNodeSessionCountCap    = 100
 	hubNodeSessionsMaxBytes   = 1 << 20
 )
@@ -140,6 +142,7 @@ type hubNodeSessionStatus struct {
 	Number                  int64    `json:"number"`
 	ShortTitle              string   `json:"short_title"`
 	LongTitle               string   `json:"long_title"`
+	Pinned                  bool     `json:"pinned"`
 	ActiveRun               bool     `json:"active_run"`
 	InteractionRequired     bool     `json:"interaction_required"`
 	PendingInteractionCount int      `json:"pending_interaction_count"`
@@ -253,15 +256,23 @@ func (s *hubServer) buildHubNodeSessionsView(n hub.Node, entries []hubNodeSessio
 		CountLabel: hubNodeSessionCountLabel(len(entries)),
 		HasMore:    len(entries) >= hubNodeSessionCountCap,
 	}
+	all := make([]hubNodeSessionView, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
-		if strings.TrimSpace(entry.ID) == "" {
+		id := strings.TrimSpace(entry.ID)
+		if id == "" {
 			continue
 		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
 		sess := hubNodeSessionView{
 			ID:                      entry.ID,
 			Number:                  entry.Number,
 			ShortTitle:              hubNodeSessionTitle(entry),
 			LongTitle:               strings.TrimSpace(entry.LongTitle),
+			Pinned:                  entry.Pinned,
 			ActiveRun:               entry.ActiveRun,
 			InteractionRequired:     entry.InteractionRequired,
 			PendingInteractionCount: entry.PendingInteractionCount,
@@ -270,6 +281,7 @@ func (s *hubServer) buildHubNodeSessionsView(n hub.Node, entries []hubNodeSessio
 			MessageCount:            entry.MessageCount,
 			ResumePath:              s.hubSessionResumePath(n.ID, entry.ID, entry.Number),
 		}
+		all = append(all, sess)
 		if sess.InteractionRequired {
 			out.InputRequiredCount++
 		}
@@ -278,16 +290,63 @@ func (s *hubServer) buildHubNodeSessionsView(n hub.Node, entries []hubNodeSessio
 			if len(out.Active) < hubNodeSessionActiveLimit {
 				out.Active = append(out.Active, sess)
 			}
-		} else if len(out.Recent) < hubNodeSessionRecentLimit {
-			out.Recent = append(out.Recent, sess)
 		}
 	}
+	out.Recent = hubNodeRecentSessions(all)
 	if len(out.Active) > 0 {
 		out.ResumePath = out.Active[0].ResumePath
 	} else if len(out.Recent) > 0 {
 		out.ResumePath = out.Recent[0].ResumePath
 	}
 	return out
+}
+
+// hubNodeRecentSessions keeps node cards a consistent four rows. Pins already
+// in the recent window move to the front; otherwise the most recently active
+// pin replaces the oldest row so a long-lived pin remains discoverable.
+func hubNodeRecentSessions(sessions []hubNodeSessionView) []hubNodeSessionView {
+	ordered := append([]hubNodeSessionView(nil), sessions...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].LastMessageAt != ordered[j].LastMessageAt {
+			return ordered[i].LastMessageAt > ordered[j].LastMessageAt
+		}
+		return ordered[i].Number > ordered[j].Number
+	})
+	selected := append([]hubNodeSessionView(nil), ordered...)
+	if len(selected) > hubNodeSessionRecentLimit {
+		selected = selected[:hubNodeSessionRecentLimit]
+	}
+
+	hasPinned := false
+	for _, sess := range selected {
+		if sess.Pinned {
+			hasPinned = true
+			break
+		}
+	}
+	if !hasPinned {
+		for _, sess := range ordered {
+			if !sess.Pinned {
+				continue
+			}
+			selected = append([]hubNodeSessionView{sess}, selected...)
+			if len(selected) > hubNodeSessionRecentLimit {
+				selected = selected[:hubNodeSessionRecentLimit]
+			}
+			return selected
+		}
+	}
+
+	pinned := make([]hubNodeSessionView, 0, len(selected))
+	recent := make([]hubNodeSessionView, 0, len(selected))
+	for _, sess := range selected {
+		if sess.Pinned {
+			pinned = append(pinned, sess)
+		} else {
+			recent = append(recent, sess)
+		}
+	}
+	return append(pinned, recent...)
 }
 
 // hubSessionResumePath prefers the stable sequential session number used by
