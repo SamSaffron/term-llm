@@ -143,10 +143,10 @@ test('sends a real uncommitted diff comment through the browser and Go protocol'
   await file.locator('.diff-file-row').click();
   await file.getByRole('button', { name: 'Comment on line 2' }).click();
   await file.getByRole('textbox', { name: 'Inline comment' }).fill('Keep this fixture change.');
+  const responseHeadings = page.getByRole('heading', { name: 'Debug Provider Output' });
+  const responseCount = await responseHeadings.count();
   await file.getByRole('button', { name: 'Send now' }).click();
-  await expect(page.getByRole('heading', { name: 'Debug Provider Output' }).last()).toBeVisible({
-    timeout: 15_000,
-  });
+  await expect(responseHeadings).toHaveCount(responseCount + 1, { timeout: 15_000 });
 
   const durable = await page.evaluate(async () => {
     const selected = decodeURIComponent(location.pathname.match(/\/chat\/([^/]+)/)?.[1] || '');
