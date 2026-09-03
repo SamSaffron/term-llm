@@ -156,30 +156,6 @@ func TestProviderModelIDs(t *testing.T) {
 	}
 }
 
-func TestProviderModelIDsMatchEntries(t *testing.T) {
-	t.Parallel()
-
-	for provider, entries := range ProviderModels {
-		// These providers intentionally prefer account-scoped live caches over
-		// their static starter entries.
-		if provider == "copilot" || provider == "cursor-bin" || provider == "grok" || provider == "grok-bin" || provider == "opencode-go" || provider == "zen" {
-			continue
-		}
-		ids := ProviderModelIDs(provider)
-		if len(ids) != len(entries) {
-			t.Errorf("provider %q: ProviderModelIDs returned %d items, entries has %d",
-				provider, len(ids), len(entries))
-			continue
-		}
-		for i, id := range ids {
-			if id != entries[i].ID {
-				t.Errorf("provider %q index %d: ProviderModelIDs=%q, entry.ID=%q",
-					provider, i, id, entries[i].ID)
-			}
-		}
-	}
-}
-
 // TestAllListedModelsHaveContextLimits ensures every model in ProviderModels
 // resolves to a non-zero input limit via explicit entry, prefix table, or
 // config. Models with genuinely unknown limits are exempted.

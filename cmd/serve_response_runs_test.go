@@ -1028,11 +1028,17 @@ func TestAppendResponseRunEventEmitsModelSwitchAndUpdatesSnapshot(t *testing.T) 
 	run := newResponseRun("resp_model_switch", "sess_test", "", "gpt-5.4", time.Now().Unix(), func() {})
 	server := &serveServer{}
 	state := newResponseRunStreamState("gpt-5.4", "medium")
+	runtime := &serveRuntime{providerKey: "chatgpt"}
 
-	if err := server.appendResponseRunEvent(nil, run, state, llm.Event{
-		Type:            llm.EventModelSwitch,
-		Model:           "gpt-5.4",
-		ReasoningEffort: "high",
+	if err := server.appendResponseRunEvent(runtime, run, state, llm.Event{
+		Type:                    llm.EventModelSwitch,
+		PreviousModel:           "gpt-5.4",
+		PreviousReasoningEffort: "medium",
+		Model:                   "gpt-5.4",
+		ReasoningEffort:         "high",
+		ProviderTurnIndex:       1,
+		ProviderTurnIndexSet:    true,
+		ModelSwitchBoundaryID:   "engine-switch-1",
 	}); err != nil {
 		t.Fatalf("appendResponseRunEvent() error = %v", err)
 	}
@@ -1054,6 +1060,12 @@ func TestAppendResponseRunEventEmitsModelSwitchAndUpdatesSnapshot(t *testing.T) 
 	if payload["model"] != "gpt-5.4" || payload["reasoning_effort"] != "high" {
 		t.Fatalf("payload runtime = %#v/%#v, want gpt-5.4/high", payload["model"], payload["reasoning_effort"])
 	}
+	if payload["from_model"] != "gpt-5.4" || payload["from_reasoning_effort"] != "medium" || payload["to_model"] != "gpt-5.4" {
+		t.Fatalf("payload transition = %#v, want authoritative medium -> high runtime", payload)
+	}
+	if payload["boundary_id"] != "engine-switch-1" {
+		t.Fatalf("payload boundary = %#v", payload["boundary_id"])
+	}
 	if state.model != "gpt-5.4" || state.reasoningEffort != "high" || !state.reasoningEffortSet {
 		t.Fatalf("stream state = %#v, want gpt-5.4/high set", state)
 	}
@@ -1066,8 +1078,11 @@ func TestAppendResponseRunEventEmitsModelSwitchAndUpdatesSnapshot(t *testing.T) 
 		t.Fatalf("snapshot recovery = %#v", snapshot["recovery"])
 	}
 	messages, ok := recovery["messages"].([]map[string]any)
-	if !ok || len(messages) != 1 || messages[0]["role"] != "model-swap" || messages[0]["content"] != "gpt-5.4" {
+	if !ok || len(messages) != 1 || messages[0]["role"] != "model-swap" {
 		t.Fatalf("model-switch recovery messages = %#v", recovery["messages"])
+	}
+	if messages[0]["from_model"] != "gpt-5.4" || messages[0]["to_model"] != "gpt-5.4" || messages[0]["boundary_id"] != "engine-switch-1" {
+		t.Fatalf("model-switch recovery transition = %#v", messages[0])
 	}
 }
 

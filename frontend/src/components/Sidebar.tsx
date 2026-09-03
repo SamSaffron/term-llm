@@ -136,13 +136,22 @@ function PaginationSentinel({ load }: { load: () => Promise<void> }) {
   );
 }
 
-function SessionMenu({ session, onHide }: { session: Session; onHide: () => void }) {
+function SessionMenu({
+  session,
+  onHide,
+  open,
+  onOpenChange,
+}: {
+  session: Session;
+  onHide: () => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   const store = useStore();
-  const [open, setOpen] = useState(false);
   const menuID = useId();
   const { menu, up } = useMenuFlip(open);
   const trigger = useRef<HTMLButtonElement>(null);
-  const keyboardMenu = useMenuKeyboard(open, () => setOpen(false), trigger);
+  const keyboardMenu = useMenuKeyboard(open, () => onOpenChange(false), trigger);
   return (
     <div class={`session-row-menu ${open ? 'open' : ''}`}>
       <button
@@ -155,7 +164,7 @@ function SessionMenu({ session, onHide }: { session: Session; onHide: () => void
         aria-expanded={open}
         onClick={(event) => {
           event.stopPropagation();
-          setOpen(!open);
+          onOpenChange(!open);
         }}
       >
         ⋯
@@ -177,7 +186,7 @@ function SessionMenu({ session, onHide }: { session: Session; onHide: () => void
             role="menuitem"
             onClick={() => {
               store.openRename(session);
-              setOpen(false);
+              onOpenChange(false);
             }}
           >
             Rename
@@ -188,7 +197,7 @@ function SessionMenu({ session, onHide }: { session: Session; onHide: () => void
               role="menuitem"
               onClick={() => {
                 store.openProjectPicker(session);
-                setOpen(false);
+                onOpenChange(false);
               }}
             >
               Assign project…
@@ -199,7 +208,7 @@ function SessionMenu({ session, onHide }: { session: Session; onHide: () => void
             role="menuitem"
             onClick={() => {
               void store.pinSession(session);
-              setOpen(false);
+              onOpenChange(false);
             }}
           >
             {session.pinned ? 'Unpin' : 'Pin'}
@@ -210,7 +219,7 @@ function SessionMenu({ session, onHide }: { session: Session; onHide: () => void
             onClick={() => {
               if (session.archived) void store.archiveSession(session);
               else onHide();
-              setOpen(false);
+              onOpenChange(false);
             }}
           >
             {session.archived ? 'Unhide' : 'Hide'}
@@ -225,6 +234,7 @@ function SessionRow({ session, showProject = false }: { session: Session; showPr
   const store = useStore();
   const row = useRef<HTMLDivElement>(null);
   const [hiding, setHiding] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const active = store.activeSessionId.value === session.id;
   const projection = store.runs.value[session.id];
   const localPendingInteractionCount = store.interactionOrder.value
@@ -280,7 +290,7 @@ function SessionRow({ session, showProject = false }: { session: Session; showPr
   return (
     <div
       ref={row}
-      class={`session-row ${session.archived ? 'archived' : ''} ${needsInput ? 'is-input-required' : running ? 'is-active' : ''} ${unseen ? 'is-unseen' : ''} ${hiding ? 'is-hiding' : ''}`}
+      class={`session-row ${session.archived ? 'archived' : ''} ${needsInput ? 'is-input-required' : running ? 'is-active' : ''} ${unseen ? 'is-unseen' : ''} ${menuOpen ? 'menu-open' : ''} ${hiding ? 'is-hiding' : ''}`}
     >
       <button
         class={`session-btn ${active ? 'active' : ''}`}
@@ -303,7 +313,7 @@ function SessionRow({ session, showProject = false }: { session: Session; showPr
           )}
         </span>
       </button>
-      <SessionMenu session={session} onHide={hide} />
+      <SessionMenu session={session} onHide={hide} open={menuOpen} onOpenChange={setMenuOpen} />
     </div>
   );
 }

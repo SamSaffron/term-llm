@@ -89,6 +89,21 @@ type ResponseCompletedCallback func(ctx context.Context, turnIndex int, assistan
 // and tool execution).
 type AssistantSnapshotCallback func(ctx context.Context, turnIndex int, assistantMsg Message) error
 
+// RuntimeSwitch describes the exact request runtime transition applied between
+// provider turns. Empty effort means the provider's automatic/default effort.
+type RuntimeSwitch struct {
+	PreviousModel           string
+	PreviousReasoningEffort string
+	Model                   string
+	ReasoningEffort         string
+	ProviderTurnIndex       int
+	BoundaryID              string
+}
+
+// RuntimeSwitchCallback durably records an applied transition before the next
+// provider turn can produce output.
+type RuntimeSwitchCallback func(ctx context.Context, change RuntimeSwitch) error
+
 // CompactionCallback is called after context compaction to allow callers to
 // update their state (e.g., replace in-memory messages, persist changes). The
 // callback must synchronously replace/persist the owner's active context before
@@ -134,6 +149,9 @@ type Engine struct {
 	// assistant state materially changes (typically right before each EventToolCall
 	// emission). Implementations MUST upsert the same logical row.
 	onAssistantSnapshot AssistantSnapshotCallback
+	// onRuntimeSwitch is called after the preceding turn is committed and before
+	// the newly selected runtime can produce output.
+	onRuntimeSwitch RuntimeSwitchCallback
 	// onCompaction is called after context compaction completes.
 	onCompaction CompactionCallback
 	callbackMu   sync.RWMutex
@@ -757,6 +775,14 @@ func (e *Engine) SetAssistantSnapshotCallback(cb AssistantSnapshotCallback) {
 	e.callbackMu.Unlock()
 }
 
+// SetRuntimeSwitchCallback sets the callback that records an applied request
+// runtime transition before the target provider turn begins.
+func (e *Engine) SetRuntimeSwitchCallback(cb RuntimeSwitchCallback) {
+	e.callbackMu.Lock()
+	e.onRuntimeSwitch = cb
+	e.callbackMu.Unlock()
+}
+
 // getTurnCallback returns the current turn callback under read lock.
 func (e *Engine) getTurnCallback() TurnCompletedCallback {
 	e.callbackMu.RLock()
@@ -777,6 +803,13 @@ func (e *Engine) getResponseCallback() ResponseCompletedCallback {
 func (e *Engine) getSnapshotCallback() AssistantSnapshotCallback {
 	e.callbackMu.RLock()
 	cb := e.onAssistantSnapshot
+	e.callbackMu.RUnlock()
+	return cb
+}
+
+func (e *Engine) getRuntimeSwitchCallback() RuntimeSwitchCallback {
+	e.callbackMu.RLock()
+	cb := e.onRuntimeSwitch
 	e.callbackMu.RUnlock()
 	return cb
 }
@@ -2549,6 +2582,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 	ctx = withResponsesWebSocketContinuationLifetime(ctx)
 	defer e.markInterjectionRunNonConsuming()
 	runID := e.beginToolRun()
+	modelSwitchOrdinal := 0
 	e.recordFileTrackingRunStart(ctx, req.SessionID, runID)
 	defer func() {
 		e.recordFileTrackingRunComplete(ctx, req.SessionID, runID)
@@ -2792,12 +2826,44 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 			targetModel = req.Model
 		}
 		targetEffort := pending.reasoningEffort
-		if targetModel == req.Model && targetEffort == strings.TrimSpace(req.ReasoningEffort) {
+		previousModel := strings.TrimSpace(req.Model)
+		previousEffort := strings.TrimSpace(req.ReasoningEffort)
+		if targetModel == previousModel && targetEffort == previousEffort {
 			return nil
+		}
+		if previousModel == "" || targetModel == "" {
+			return fmt.Errorf("model switch requires complete runtime identity: %q -> %q", previousModel, targetModel)
 		}
 		req.Model = targetModel
 		req.ReasoningEffort = targetEffort
-		if err := send.Send(Event{Type: EventModelSwitch, Text: targetModel, Model: targetModel, ReasoningEffort: targetEffort}); err != nil {
+		modelSwitchOrdinal++
+		change := RuntimeSwitch{
+			PreviousModel:           previousModel,
+			PreviousReasoningEffort: previousEffort,
+			Model:                   targetModel,
+			ReasoningEffort:         targetEffort,
+			ProviderTurnIndex:       attempt,
+			BoundaryID:              fmt.Sprintf("%s:model-switch:%d", runID, modelSwitchOrdinal),
+		}
+		if runtimeSwitchCallback := e.getRuntimeSwitchCallback(); runtimeSwitchCallback != nil {
+			cbCtx, cancel := callbackContext(ctx)
+			err := runtimeSwitchCallback(cbCtx, change)
+			cancel()
+			if err != nil {
+				return fmt.Errorf("persist model switch boundary: %w", err)
+			}
+		}
+		if err := send.Send(Event{
+			Type:                    EventModelSwitch,
+			Text:                    targetModel,
+			Model:                   targetModel,
+			ReasoningEffort:         targetEffort,
+			PreviousModel:           previousModel,
+			PreviousReasoningEffort: previousEffort,
+			ProviderTurnIndex:       attempt,
+			ProviderTurnIndexSet:    true,
+			ModelSwitchBoundaryID:   change.BoundaryID,
+		}); err != nil {
 			return err
 		}
 		if req.DebugRaw {
@@ -3127,9 +3193,6 @@ turnLoop:
 				maybeCompactAfterLLMCall(append([]Message{assistantMsg}, syncToolResults...))
 				req.Messages = append(req.Messages, assistantMsg)
 				req.Messages = append(req.Messages, syncToolResults...)
-				if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
-					return false, err
-				}
 				recoveredAtMessageCount = len(req.Messages)
 				if turnCallback != nil {
 					turnMetrics.ToolCalls = len(syncToolCalls)
@@ -3138,6 +3201,9 @@ turnLoop:
 					cbCtx, cancel := callbackContext(ctx)
 					_ = turnCallback(cbCtx, attempt, turnMessages, turnMetrics)
 					cancel()
+				}
+				if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+					return false, err
 				}
 				return true, nil
 			}
@@ -3261,9 +3327,6 @@ turnLoop:
 
 			req.Messages = append(req.Messages, assistantMsg)
 			req.Messages = append(req.Messages, toolResults...)
-			if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
-				return false, err
-			}
 			recoveredAtMessageCount = len(req.Messages)
 			if turnCallback != nil {
 				turnMetrics.ToolCalls = len(registered)
@@ -3281,6 +3344,9 @@ turnLoop:
 				}
 				recoveryCompleted = true
 				return true, nil
+			}
+			if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+				return false, err
 			}
 			return true, nil
 		}
@@ -3867,11 +3933,6 @@ turnLoop:
 			maybeCompactAfterLLMCall(append([]Message{assistantMsg}, syncToolResults...))
 			req.Messages = append(req.Messages, assistantMsg)
 			req.Messages = append(req.Messages, syncToolResults...)
-			if !inlineToolLoop {
-				if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
-					return err
-				}
-			}
 
 			// For MCP path, tools already executed synchronously during streaming,
 			// so we call turnCallback with the complete turn (assistant + tool results).
@@ -3895,6 +3956,11 @@ turnLoop:
 					return err
 				}
 				return nil
+			}
+			if !inlineToolLoop {
+				if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+					return err
+				}
 			}
 			if inlineToolLoop {
 				pendingTools := e.hasPendingToolSpecs(runID)
@@ -4119,9 +4185,6 @@ turnLoop:
 
 		req.Messages = append(req.Messages, assistantMsg)
 		req.Messages = append(req.Messages, toolResults...)
-		if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
-			return err
-		}
 
 		// Call turn completed callback with tool results for incremental persistence
 		if turnCallback != nil {
@@ -4144,6 +4207,9 @@ turnLoop:
 				return err
 			}
 			return nil
+		}
+		if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+			return err
 		}
 
 		// Check for user interjections queued during this turn.

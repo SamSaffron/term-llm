@@ -335,13 +335,27 @@ export function convertServerMessages(
         const marker =
           parts.find((part) => part.type === 'model_swap') ||
           parts.find((part) => part.type === 'text');
+        const structured = record(marker?.model_swap);
         output.push(
           withSource(
             {
               id: messageID,
               role: 'model-swap',
-              content: text(marker?.text) || 'Model switched',
+              content: text(marker?.text),
               created: at,
+              ...(structured
+                ? {
+                    boundaryId: text(structured.boundary_id),
+                    fromProvider: text(structured.from_provider),
+                    fromModel: text(structured.from_model),
+                    fromEffort: text(structured.from_effort),
+                    toProvider: text(structured.to_provider),
+                    toModel: text(structured.to_model),
+                    toEffort: text(structured.to_effort),
+                    swapStatus: text(structured.status),
+                    swapStrategy: text(structured.strategy),
+                  }
+                : {}),
             },
             message,
           ),
@@ -734,6 +748,48 @@ export function windowTranscript(
 }
 
 export function mergeDurableProjection(durable: Message[], projected: Message[]): Message[] {
+  // A model change is a hard provider-turn boundary. Older servers may not have
+  // persisted that boundary, allowing conversion to coalesce tools from both
+  // sides into one durable group. Split that group using the ordered live stream
+  // before adopting durable rows so the marker can never jump around it.
+  const durableRows = [...durable];
+  for (let markerIndex = 0; markerIndex < projected.length; markerIndex += 1) {
+    if (projected[markerIndex].role !== 'model-swap') continue;
+    const before = projected[markerIndex - 1];
+    const after = projected[markerIndex + 1];
+    if (before?.role !== 'tool-group' || after?.role !== 'tool-group') continue;
+    const beforeIDs = new Set((before.tools || []).map((tool) => tool.id));
+    const afterIDs = new Set((after.tools || []).map((tool) => tool.id));
+    const durableIndex = durableRows.findIndex(
+      (message) =>
+        message.role === 'tool-group' &&
+        message.responseId === before.responseId &&
+        (message.tools || []).some((tool) => beforeIDs.has(tool.id)) &&
+        (message.tools || []).some((tool) => afterIDs.has(tool.id)),
+    );
+    if (durableIndex < 0) continue;
+    const combined = durableRows[durableIndex];
+    const beforeTools = (combined.tools || []).filter((tool) => beforeIDs.has(tool.id));
+    const afterTools = (combined.tools || []).filter((tool) => !beforeIDs.has(tool.id));
+    if (!beforeTools.length || !afterTools.some((tool) => afterIDs.has(tool.id))) continue;
+    const combinedView = { ...combined };
+    delete combinedView.durableRowId;
+    delete combinedView.serverSeq;
+    durableRows.splice(
+      durableIndex,
+      1,
+      {
+        ...combinedView,
+        id: `${combined.id}:before:${projected[markerIndex].id}`,
+        tools: beforeTools,
+      },
+      {
+        ...combinedView,
+        id: `${combined.id}:after:${projected[markerIndex].id}`,
+        tools: afterTools,
+      },
+    );
+  }
   const compactionSequence = (message: Message): number | null => {
     // Persisted summary rows expose their durable identity as serverSeq;
     // recovery/live boundaries carry the same value as compactionSeq.
@@ -741,47 +797,79 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
     return Number.isSafeInteger(value) && value >= 0 ? value : null;
   };
   const durableCompactions = new Map<number, Message>();
-  for (const message of durable) {
-    if (message.role !== 'compaction' && message.role !== 'compaction-boundary') continue;
-    const sequence = compactionSequence(message);
-    if (sequence != null) durableCompactions.set(sequence, message);
+  const durableModelSwaps = new Map<string, Message>();
+  for (const message of durableRows) {
+    if (message.role === 'compaction' || message.role === 'compaction-boundary') {
+      const sequence = compactionSequence(message);
+      if (sequence != null) durableCompactions.set(sequence, message);
+    }
+    if (message.role === 'model-swap') {
+      const boundaryID = String(message.boundaryId || '').trim();
+      if (boundaryID) durableModelSwaps.set(boundaryID, message);
+    }
   }
   const adoptedCompactions = new Map<Message, Message>();
   const adoptedDurableCompactions = new Set<Message>();
+  const adoptedModelSwaps = new Map<Message, Message>();
+  const adoptedDurableModelSwaps = new Set<Message>();
   for (const message of projected) {
-    if (message.role !== 'compaction' && message.role !== 'compaction-boundary') continue;
-    const sequence = compactionSequence(message);
-    const durableMessage = sequence == null ? undefined : durableCompactions.get(sequence);
-    if (!durableMessage || adoptedDurableCompactions.has(durableMessage)) continue;
-    adoptedCompactions.set(message, durableMessage);
-    adoptedDurableCompactions.add(durableMessage);
+    if (message.role === 'compaction' || message.role === 'compaction-boundary') {
+      const sequence = compactionSequence(message);
+      const durableMessage = sequence == null ? undefined : durableCompactions.get(sequence);
+      if (durableMessage && !adoptedDurableCompactions.has(durableMessage)) {
+        adoptedCompactions.set(message, durableMessage);
+        adoptedDurableCompactions.add(durableMessage);
+      }
+    }
+    if (message.role === 'model-swap') {
+      const boundaryID = String(message.boundaryId || '').trim();
+      const durableMessage = boundaryID ? durableModelSwaps.get(boundaryID) : undefined;
+      if (durableMessage && !adoptedDurableModelSwaps.has(durableMessage)) {
+        adoptedModelSwaps.set(message, durableMessage);
+        adoptedDurableModelSwaps.add(durableMessage);
+      }
+    }
   }
-  const clientIDs = new Set(durable.map((message) => message.clientMessageId).filter(Boolean));
+  const clientIDs = new Set(durableRows.map((message) => message.clientMessageId).filter(Boolean));
   const responseSegments = new Map(
-    durable
+    durableRows
       .filter((message) => message.role === 'assistant' && message.responseId)
       .map((message) => [`${message.responseId}:${message.assistantSegmentOrdinal || 0}`, message]),
   );
   const allToolIDs = new Set(
-    durable.flatMap((message) => message.tools || []).map((tool) => tool.id),
+    durableRows.flatMap((message) => message.tools || []).map((tool) => tool.id),
   );
   const legacyToolIDs = new Set(
-    durable
+    durableRows
       .filter((message) => !message.responseId)
       .flatMap((message) => message.tools || [])
       .map((tool) => tool.id),
   );
   const scopedToolIDs = new Set(
-    durable.flatMap((message) =>
+    durableRows.flatMap((message) =>
       message.responseId
         ? (message.tools || []).map((tool) => `${message.responseId}:${tool.id}`)
         : [],
     ),
   );
+  const durableToolMessages = new Map<string, Message>();
+  for (const message of durableRows) {
+    if (message.role !== 'tool-group') continue;
+    for (const tool of message.tools || []) {
+      durableToolMessages.set(
+        message.responseId ? `${message.responseId}:${tool.id}` : tool.id,
+        message,
+      );
+    }
+  }
   const hasDurableTool = (message: Message, tool: ToolCall): boolean =>
     message.responseId
       ? scopedToolIDs.has(`${message.responseId}:${tool.id}`) || legacyToolIDs.has(tool.id)
       : allToolIDs.has(tool.id);
+  const durableToolMessage = (message: Message, tool: ToolCall): Message | undefined =>
+    message.responseId
+      ? durableToolMessages.get(`${message.responseId}:${tool.id}`)
+      : durableToolMessages.get(tool.id);
   const pending = projected.filter((message) => {
     if (
       message.role === 'user' &&
@@ -807,19 +895,54 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
     return true;
   });
   const insertBefore = new Map<Message, Message>();
-  let nextCompaction: Message | undefined;
+  const projectedPositions = new Map(projected.map((message, index) => [message, index]));
+  const durableAnchorFor = (message: Message): Message | undefined => {
+    const adopted = adoptedCompactions.get(message) || adoptedModelSwaps.get(message);
+    if (adopted) return adopted;
+    if (message.role === 'assistant' && message.responseId)
+      return responseSegments.get(`${message.responseId}:${message.assistantSegmentOrdinal || 0}`);
+    if (message.role === 'tool-group') {
+      for (const tool of message.tools || []) {
+        const durableMessage = durableToolMessage(message, tool);
+        if (durableMessage) return durableMessage;
+      }
+    }
+    return undefined;
+  };
+  const followingAnchor = (marker: Message): Message | undefined => {
+    const start = projectedPositions.get(marker);
+    if (start == null) return undefined;
+    for (let index = start + 1; index < projected.length; index += 1) {
+      const candidate = projected[index];
+      if (candidate.role === 'model-swap') break;
+      const anchor = durableAnchorFor(candidate);
+      if (anchor) return anchor;
+    }
+    return undefined;
+  };
+  let nextBoundary: Message | undefined;
   for (let index = pending.length - 1; index >= 0; index -= 1) {
     const message = pending[index];
-    const adoptedCompaction = adoptedCompactions.get(message);
-    if (adoptedCompaction) nextCompaction = adoptedCompaction;
-    else if (message.role === 'compaction' || message.role === 'compaction-boundary')
-      nextCompaction = undefined;
-    else if (nextCompaction) insertBefore.set(message, nextCompaction);
+    const adoptedBoundary = adoptedCompactions.get(message) || adoptedModelSwaps.get(message);
+    if (adoptedBoundary) nextBoundary = adoptedBoundary;
+    else if (message.role === 'model-swap') {
+      const following = followingAnchor(message);
+      if (following) {
+        insertBefore.set(message, following);
+        nextBoundary = following;
+      } else {
+        // With no following durable row, preserve projected stream order by
+        // letting preceding pending rows and then this marker append in sequence.
+        nextBoundary = undefined;
+      }
+    } else if (message.role === 'compaction' || message.role === 'compaction-boundary')
+      nextBoundary = undefined;
+    else if (nextBoundary) insertBefore.set(message, nextBoundary);
   }
-  const output = [...durable];
+  const output = [...durableRows];
   for (const message of pending) {
-    if (adoptedCompactions.has(message)) {
-      // The durable row already renders this boundary. Its exact sequence lets
+    if (adoptedCompactions.has(message) || adoptedModelSwaps.has(message)) {
+      // The durable row already renders this boundary. Its exact identity lets
       // pending rows before it be inserted here without adding a second marker.
       continue;
     }

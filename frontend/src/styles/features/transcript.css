@@ -235,11 +235,67 @@
   color: var(--error-text);
 }
 
-.message.model-swap .message-body {
-  background: rgb(125 211 252 / 8%);
-  border-color: rgb(125 211 252 / 22%);
-  color: var(--muted);
-  font-size: 0.9rem;
+.message.model-swap-divider {
+  align-self: stretch;
+  width: min(100%, 820px);
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.model-swap-line {
+  min-width: 1.5rem;
+  flex: 1;
+  border-top: 1px solid var(--border-strong);
+}
+
+.model-swap-label {
+  display: inline-flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: center;
+  gap: 0.45rem;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.model-swap-from {
+  color: var(--text-muted);
+}
+
+.model-swap-arrow {
+  color: var(--text-muted);
+}
+
+.model-swap-to {
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+.model-swap-detail {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 500;
+}
+
+.message.model-swap-divider.failed .model-swap-to,
+.message.model-swap-divider.failed .model-swap-detail {
+  color: var(--error-text);
+}
+
+@media (width <= 640px) {
+  .message.model-swap-divider {
+    gap: 0.5rem;
+  }
+
+  .model-swap-label {
+    flex-wrap: wrap;
+    gap: 0.25rem 0.4rem;
+  }
 }
 
 .message.compaction,

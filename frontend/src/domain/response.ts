@@ -608,17 +608,40 @@ export function reduceResponse(
             },
       };
     }
-    case 'response.model_switch':
+    case 'response.model_switch': {
+      const fromModel = text(event.from_model).trim();
+      const toModel = text(event.to_model || event.model).trim();
+      const boundaryId = text(event.boundary_id).trim();
+      if (!fromModel || !toModel || !boundaryId)
+        throw new ResponseProtocolError(
+          'Model switch is missing authoritative runtime identity',
+          'gap',
+        );
       return {
         ...next,
-        messages: appendNotice(
-          closeToolGroups(messages),
-          event,
-          text(event.message || event.model) || 'Model switched',
-          'model-swap',
-        ),
+        messages: [
+          ...closeToolGroups(messages),
+          {
+            id: boundaryId,
+            role: 'model-swap',
+            content: text(event.message),
+            created: Date.now(),
+            responseId,
+            eventSequence: checked.sequence,
+            boundaryId,
+            fromProvider: text(event.from_provider).trim(),
+            fromModel,
+            fromEffort: text(event.from_reasoning_effort).trim(),
+            toProvider: text(event.to_provider).trim(),
+            toModel,
+            toEffort: text(event.to_reasoning_effort ?? event.reasoning_effort).trim(),
+            swapStatus: text(event.swap_status).trim(),
+            swapStrategy: text(event.swap_strategy).trim(),
+          },
+        ],
         modelSwap: undefined,
       };
+    }
     case 'response.retry':
       return {
         ...next,

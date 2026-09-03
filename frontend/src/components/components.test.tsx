@@ -1848,13 +1848,19 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.queryByRole('button', { name: 'Copy details' })).not.toBeInTheDocument();
   });
 
-  it('renders model-switch glyphs exactly once', () => {
+  it('renders a model switch as a quiet structured boundary', () => {
     const store = createStore();
     store.sessions.value[0].messages.push({
       id: 'swap-1',
       role: 'model-swap',
-      content: '↔ Model switch: chatgpt:gpt-5.6-sol / high → chatgpt:gpt-5.6-sol',
+      content: '',
       created: 4,
+      fromProvider: 'chatgpt',
+      fromModel: 'gpt-5.6-luna-high',
+      fromEffort: 'high',
+      toProvider: 'chatgpt',
+      toModel: 'gpt-5.6-sol-high',
+      toEffort: 'medium',
     });
 
     const { container } = render(
@@ -1863,9 +1869,16 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
 
-    expect(container.querySelector('[data-message-id="swap-1"] .message-body')?.textContent).toBe(
-      '↔ Model switch: chatgpt:gpt-5.6-sol / high → chatgpt:gpt-5.6-sol',
+    const boundary = container.querySelector('[data-message-id="swap-1"]');
+    expect(boundary?.classList.contains('model-swap-divider')).toBe(true);
+    expect(boundary?.querySelector('.model-swap-from')?.textContent).toBe(
+      'chatgpt:gpt-5.6-luna-high · high',
     );
+    expect(boundary?.querySelector('.model-swap-to')?.textContent).toBe(
+      'chatgpt:gpt-5.6-sol-high · medium',
+    );
+    expect(boundary?.textContent).not.toContain('Model switch');
+    expect(boundary?.textContent).not.toContain('↔');
   });
 
   it('shows the active plan step as the live response activity', () => {
@@ -3419,6 +3432,31 @@ describe('Preact-owned chat surfaces', () => {
 
     expect(container.querySelector('.session-row')).toHaveClass('is-active');
     expect(store.runs.value).toEqual({});
+  });
+
+  it('lifts an archived session row while its actions menu is open', () => {
+    const store = createStore();
+    store.sessions.value = store.sessions.value.map((session) => ({
+      ...session,
+      archived: true,
+    }));
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Sidebar />
+      </StoreContext.Provider>,
+    );
+    const row = container.querySelector('.session-row');
+    const trigger = screen.getByRole('button', { name: 'Actions for Test' });
+
+    expect(row).toHaveClass('archived');
+    expect(row).not.toHaveClass('menu-open');
+
+    fireEvent.click(trigger);
+    expect(row).toHaveClass('menu-open');
+    expect(screen.getByRole('menuitem', { name: 'Unhide' })).toBeInTheDocument();
+
+    fireEvent.click(trigger);
+    expect(row).not.toHaveClass('menu-open');
   });
 
   it('collapses a hidden session before removing it from the sidebar', async () => {

@@ -674,6 +674,21 @@ function TurnCopyButton({ text }: { text: string }) {
   );
 }
 
+function modelIdentity(provider: unknown, model: unknown, effort: unknown, showEffort: boolean) {
+  const providerText = String(provider || '').trim();
+  const modelText = String(model || '').trim();
+  const base = providerText && modelText ? `${providerText}:${modelText}` : modelText;
+  if (!showEffort) return base;
+  return `${base} · ${String(effort || '').trim() || 'auto'}`;
+}
+
+function legacyModelSwapText(content: string) {
+  return content
+    .trim()
+    .replace(/^↔\s*/, '')
+    .replace(/^Model switch:\s*/i, '');
+}
+
 function MessageRow({
   message,
   streaming,
@@ -725,16 +740,61 @@ function MessageRow({
         </div>
       </article>
     );
-  if (message.role === 'model-swap' || message.role === 'phase') {
-    const content = message.content.trimStart().startsWith('↔')
-      ? message.content
-      : `↔ ${message.content}`;
+  if (message.role === 'model-swap') {
+    const fromModel = String(message.fromModel || '').trim();
+    const toModel = String(message.toModel || '').trim();
+    const effortChanged =
+      String(message.fromEffort || '').trim() !== String(message.toEffort || '').trim();
+    const structured = Boolean(fromModel && toModel);
+    const from = structured
+      ? modelIdentity(message.fromProvider, fromModel, message.fromEffort, effortChanged)
+      : '';
+    const to = structured
+      ? modelIdentity(message.toProvider, toModel, message.toEffort, effortChanged)
+      : '';
+    const failed = message.swapStatus === 'failed';
+    const started = message.swapStatus === 'started';
+    const handover = message.swapStrategy === 'handover';
+    const accessibleLabel = structured
+      ? failed
+        ? `Switch from ${from} to ${to} failed; continuing on ${from}`
+        : started
+          ? `Switching from ${from} to ${to}`
+          : `Model changed from ${from} to ${to}${handover ? ' using handover' : ''}`
+      : legacyModelSwapText(message.content);
     return (
-      <article class={`message ${message.role}`} data-message-id={message.id}>
-        <div class="message-body">{content}</div>
+      <article
+        class={`message model-swap-divider ${failed ? 'failed' : ''}`}
+        data-message-id={message.id}
+        aria-label={accessibleLabel}
+      >
+        <span class="model-swap-line" aria-hidden="true" />
+        <span class="model-swap-label">
+          {structured ? (
+            <>
+              <span class="model-swap-from">{from}</span>
+              <span class="model-swap-arrow" aria-hidden="true">
+                {failed ? '↛' : '→'}
+              </span>
+              <span class="model-swap-to">{to}</span>
+              {(failed || handover) && (
+                <span class="model-swap-detail">{failed ? 'failed' : 'handover'}</span>
+              )}
+            </>
+          ) : (
+            legacyModelSwapText(message.content)
+          )}
+        </span>
+        <span class="model-swap-line" aria-hidden="true" />
       </article>
     );
   }
+  if (message.role === 'phase')
+    return (
+      <article class="message phase" data-message-id={message.id}>
+        <div class="message-body">{message.content}</div>
+      </article>
+    );
   if (message.role === 'path-note')
     return (
       <article class="message path-note" data-message-id={message.id}>

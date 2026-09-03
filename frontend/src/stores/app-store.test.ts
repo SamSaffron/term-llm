@@ -4186,11 +4186,19 @@ describe('AppStore compatibility behavior', () => {
       response_id: 'r1',
       run_epoch: 1,
       sequence_number: 2,
+      from_provider: 'openai',
+      from_model: 'gpt-test',
+      from_reasoning_effort: 'high',
+      to_provider: 'anthropic',
+      to_model: 'gpt-next',
+      to_reasoning_effort: 'medium',
+      boundary_id: 'r1:model-switch:1',
       model: 'gpt-next',
       reasoning_effort: 'medium',
     });
     expect(store.activeSession.value).toMatchObject({
       activeModel: 'gpt-next',
+      activeProvider: 'anthropic',
       activeEffort: 'medium',
     });
   });

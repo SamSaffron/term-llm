@@ -2932,6 +2932,103 @@ func TestServeRuntimeRun_ReconfiguresContextManagementForRequestModel(t *testing
 	}
 }
 
+type blockingModelSwitchTool struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (t *blockingModelSwitchTool) Spec() llm.ToolSpec {
+	return llm.ToolSpec{Name: "blocking_model_switch", Description: "Waits for a model switch", Schema: map[string]any{"type": "object"}}
+}
+
+func (t *blockingModelSwitchTool) Execute(ctx context.Context, _ json.RawMessage) (llm.ToolOutput, error) {
+	close(t.started)
+	select {
+	case <-ctx.Done():
+		return llm.ToolOutput{}, ctx.Err()
+	case <-t.release:
+		return llm.TextOutput("released"), nil
+	}
+}
+
+func (t *blockingModelSwitchTool) Preview(_ json.RawMessage) string { return "" }
+
+func TestServeRuntimePersistsModelSwitchAtProviderTurnBoundary(t *testing.T) {
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	provider := llm.NewMockProvider("mock").
+		WithCapabilities(llm.Capabilities{ToolCalls: true}).
+		AddToolCall("before", "blocking_model_switch", map[string]any{}).
+		AddToolCall("after", "echo", map[string]any{}).
+		AddTextResponse("done")
+	blocking := &blockingModelSwitchTool{started: make(chan struct{}), release: make(chan struct{})}
+	registry := llm.NewToolRegistry()
+	registry.Register(blocking)
+	registry.Register(&echoTool{})
+	engine := llm.NewEngine(provider, registry)
+	runtime := &serveRuntime{
+		provider: provider, providerKey: "mock", defaultModel: "old-model",
+		engine: engine, store: store,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, runErr := runtime.Run(context.Background(), true, false, []llm.Message{llm.UserText("work")}, llm.Request{
+			SessionID: "model-switch-boundary", Model: "old-model", ReasoningEffort: "high", MaxTurns: 4,
+			Tools: []llm.ToolSpec{blocking.Spec(), (&echoTool{}).Spec()},
+		})
+		done <- runErr
+	}()
+	select {
+	case <-blocking.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for tool execution")
+	}
+	engine.QueueRequestRuntimeSwitch("new-model", "medium")
+	close(blocking.release)
+	select {
+	case runErr := <-done:
+		if runErr != nil {
+			t.Fatal(runErr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for switched run")
+	}
+
+	messages, err := store.GetMessages(context.Background(), "model-switch-boundary", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	markerIndex := -1
+	markerCount := 0
+	beforeIndex := -1
+	afterIndex := -1
+	for index, message := range messages {
+		if marker, ok := llm.ParseModelSwapMarker(message.ToLLMMessage()); ok {
+			markerCount++
+			markerIndex = index
+			if marker.FromModel != "old-model" || marker.ToModel != "new-model" || marker.FromEffort != "high" || marker.ToEffort != "medium" || marker.BoundaryID == "" {
+				t.Fatalf("marker = %#v", marker)
+			}
+		}
+		for _, part := range message.Parts {
+			if part.ToolResult != nil && part.ToolResult.ID == "before" {
+				beforeIndex = index
+			}
+			if part.ToolCall != nil && part.ToolCall.ID == "after" {
+				afterIndex = index
+			}
+		}
+	}
+	if markerCount != 1 || beforeIndex < 0 || markerIndex <= beforeIndex || afterIndex <= markerIndex {
+		t.Fatalf("durable boundary order/count before=%d marker=%d after=%d count=%d messages=%#v", beforeIndex, markerIndex, afterIndex, markerCount, messages)
+	}
+}
+
 // echoTool is a minimal tool for testing the agentic loop in serve.
 type echoTool struct{}
 

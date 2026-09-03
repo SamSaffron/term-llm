@@ -412,8 +412,8 @@ func TestDeveloperBuiltinCanSpawnDocumentedSubagents(t *testing.T) {
 			t.Errorf("developer prompt should document subagent %q", name)
 		}
 	}
-	if agent.Spawn.MaxParallel != 3 {
-		t.Errorf("developer spawn.max_parallel = %d, want 3", agent.Spawn.MaxParallel)
+	if agent.Spawn.MaxParallel != 5 {
+		t.Errorf("developer spawn.max_parallel = %d, want 5", agent.Spawn.MaxParallel)
 	}
 	if agent.Spawn.MaxDepth != 1 {
 		t.Errorf("developer spawn.max_depth = %d, want 1", agent.Spawn.MaxDepth)

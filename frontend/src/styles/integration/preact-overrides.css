@@ -58,11 +58,16 @@
   opacity: 0.68;
 }
 
+/* Lift the whole active row so archived-row opacity cannot trap its menu below
+   later session hover backgrounds. */
+.session-row.menu-open {
+  z-index: var(--z-session-menu-open);
+}
+
 .session-row-menu {
   z-index: var(--z-session-menu);
 }
 
-/* Lift only the active menu above action triggers in later session rows. */
 .session-row-menu.open {
   z-index: var(--z-session-menu-open);
 }

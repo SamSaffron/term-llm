@@ -810,6 +810,9 @@ type Event struct {
 	ProviderTurnIndexSet       bool
 	Model                      string // For EventModelSwitch: request model applied at provider-turn boundary
 	ReasoningEffort            string // For EventModelSwitch: request reasoning effort applied at provider-turn boundary
+	PreviousModel              string // For EventModelSwitch: request model used by the preceding provider turn
+	PreviousReasoningEffort    string // For EventModelSwitch: request reasoning effort used by the preceding provider turn
+	ModelSwitchBoundaryID      string // For EventModelSwitch: stable identity shared by live and durable transcript markers
 	InterjectionID             string // For EventInterjection: stable ID for matching queued interjections in the UI
 	InterjectionStatus         InterjectionStatus
 	Message                    Message       // For EventInterjection: structured user message including attachments

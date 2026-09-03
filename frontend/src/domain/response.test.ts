@@ -131,6 +131,61 @@ describe('response projection', () => {
     expect(projection.phase).toBeUndefined();
   });
 
+  it('projects an authoritative model boundary between tool groups', () => {
+    let projection = reduceResponse(
+      initialProjection(run),
+      event('response.output_item.added', 1, {
+        item: { type: 'function_call', call_id: 'before', name: 'shell' },
+      }),
+    );
+    projection = reduceResponse(
+      projection,
+      event('response.tool_exec.end', 2, { call_id: 'before', success: true }),
+    );
+    projection = reduceResponse(
+      projection,
+      event('response.model_switch', 3, {
+        boundary_id: 'r1:model-switch:1',
+        from_provider: 'chatgpt',
+        from_model: 'gpt-5.6-luna-high',
+        from_reasoning_effort: 'high',
+        to_provider: 'chatgpt',
+        to_model: 'gpt-5.6-sol-high',
+        to_reasoning_effort: 'high',
+      }),
+    );
+    projection = reduceResponse(
+      projection,
+      event('response.output_item.added', 4, {
+        item: { type: 'function_call', call_id: 'after', name: 'read_file' },
+      }),
+    );
+
+    expect(projection.messages.map((message) => message.role)).toEqual([
+      'tool-group',
+      'model-swap',
+      'tool-group',
+    ]);
+    expect(projection.messages[1]).toMatchObject({
+      id: 'r1:model-switch:1',
+      eventSequence: 3,
+      fromModel: 'gpt-5.6-luna-high',
+      toModel: 'gpt-5.6-sol-high',
+    });
+  });
+
+  it('rejects model boundaries without both authoritative endpoints', () => {
+    expect(() =>
+      reduceResponse(
+        initialProjection(run),
+        event('response.model_switch', 1, {
+          boundary_id: 'r1:model-switch:1',
+          to_model: 'gpt-5.6-sol-high',
+        }),
+      ),
+    ).toThrow(ResponseProtocolError);
+  });
+
   it('does not project terminal model-swap progress below the chronological transcript', () => {
     let projection = reduceResponse(
       initialProjection(run),

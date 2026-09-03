@@ -64,6 +64,8 @@ type responseRunRecoveryMessage struct {
 	CompactionEventSequence int64
 	DurableCompactionSeq    int
 	CompactionCount         int
+	ModelSwap               *llm.ModelSwapMarker
+	EventSequence           int64
 }
 
 type responseRunRecoveryEvent struct {
@@ -1344,16 +1346,33 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 	case "response.model_switch":
 		r.closeToolGroupLocked()
 		r.currentAssistant = -1
-		content := strings.TrimSpace(stringValue(payload["message"]))
-		if content == "" {
-			content = strings.TrimSpace(stringValue(payload["model"]))
+		marker := &llm.ModelSwapMarker{
+			FromProvider: strings.TrimSpace(stringValue(payload["from_provider"])),
+			FromModel:    strings.TrimSpace(stringValue(payload["from_model"])),
+			FromEffort:   strings.TrimSpace(stringValue(payload["from_reasoning_effort"])),
+			ToProvider:   strings.TrimSpace(stringValue(payload["to_provider"])),
+			ToModel:      strings.TrimSpace(stringValue(payload["to_model"])),
+			ToEffort:     strings.TrimSpace(stringValue(payload["to_reasoning_effort"])),
+			BoundaryID:   strings.TrimSpace(stringValue(payload["boundary_id"])),
+			Status:       strings.TrimSpace(stringValue(payload["swap_status"])),
+			Strategy:     strings.TrimSpace(stringValue(payload["swap_strategy"])),
 		}
-		if content != "" {
+		if marker.Status == "" {
+			marker.Status = "succeeded"
+		}
+		content := strings.TrimSpace(stringValue(payload["message"]))
+		if content == "" && marker.FromModel != "" && marker.ToModel != "" {
+			content = llm.FormatModelSwapMarker(*marker)
+		}
+		if content != "" && marker.FromModel != "" && marker.ToModel != "" {
+			marker.DisplayText = content
 			r.recoveryMessages = append(r.recoveryMessages, responseRunRecoveryMessage{
-				ID:      r.nextRecoveryMessageIDLocked("model_switch"),
-				Role:    "model-swap",
-				Content: []byte(content),
-				Created: time.Now().UnixMilli(),
+				ID:            r.nextRecoveryMessageIDLocked("model_switch"),
+				Role:          "model-swap",
+				Content:       []byte(content),
+				Created:       time.Now().UnixMilli(),
+				ModelSwap:     marker,
+				EventSequence: responseRunInt64Value(payload["sequence_number"], 0),
 			})
 		}
 	case "response.output_item.added":
@@ -1727,6 +1746,18 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 				entry["compaction_seq"] = msg.DurableCompactionSeq
 				entry["compaction_count"] = msg.CompactionCount
 			}
+		}
+		if msg.Role == "model-swap" && msg.ModelSwap != nil {
+			entry["event_sequence"] = msg.EventSequence
+			entry["boundary_id"] = msg.ModelSwap.BoundaryID
+			entry["from_provider"] = msg.ModelSwap.FromProvider
+			entry["from_model"] = msg.ModelSwap.FromModel
+			entry["from_reasoning_effort"] = msg.ModelSwap.FromEffort
+			entry["to_provider"] = msg.ModelSwap.ToProvider
+			entry["to_model"] = msg.ModelSwap.ToModel
+			entry["to_reasoning_effort"] = msg.ModelSwap.ToEffort
+			entry["swap_status"] = msg.ModelSwap.Status
+			entry["swap_strategy"] = msg.ModelSwap.Strategy
 		}
 		if len(msg.Content) > 0 {
 			entry["content"] = string(msg.Content)
@@ -3277,22 +3308,47 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 		}
 		return run.appendEvent("response.interjection", payload)
 	case llm.EventModelSwitch:
-		model := strings.TrimSpace(ev.Model)
-		if model == "" {
-			model = strings.TrimSpace(ev.Text)
+		fromModel := strings.TrimSpace(ev.PreviousModel)
+		toModel := strings.TrimSpace(ev.Model)
+		if toModel == "" {
+			toModel = strings.TrimSpace(ev.Text)
 		}
-		if model == "" {
-			return nil
+		boundaryID := strings.TrimSpace(ev.ModelSwitchBoundaryID)
+		if fromModel == "" || toModel == "" || boundaryID == "" || !ev.ProviderTurnIndexSet {
+			return fmt.Errorf("model switch event is missing authoritative runtime identity")
 		}
-		effort := strings.TrimSpace(ev.ReasoningEffort)
+		fromEffort := strings.TrimSpace(ev.PreviousReasoningEffort)
+		toEffort := strings.TrimSpace(ev.ReasoningEffort)
+		provider := runtimeProviderKey(runtime)
+		marker := llm.ModelSwapMarker{
+			FromProvider: provider,
+			FromModel:    fromModel,
+			FromEffort:   fromEffort,
+			ToProvider:   provider,
+			ToModel:      toModel,
+			ToEffort:     toEffort,
+			BoundaryID:   boundaryID,
+			Status:       "succeeded",
+		}
+		message := llm.FormatModelSwapMarker(marker)
 		if state != nil {
-			state.model = model
-			state.reasoningEffort = effort
+			state.model = toModel
+			state.reasoningEffort = toEffort
 			state.reasoningEffortSet = true
 		}
 		return run.appendEvent("response.model_switch", map[string]any{
-			"model":            model,
-			"reasoning_effort": effort,
+			"model":                 toModel,
+			"reasoning_effort":      toEffort,
+			"from_provider":         provider,
+			"from_model":            fromModel,
+			"from_reasoning_effort": fromEffort,
+			"to_provider":           provider,
+			"to_model":              toModel,
+			"to_reasoning_effort":   toEffort,
+			"provider_turn_index":   ev.ProviderTurnIndex,
+			"boundary_id":           boundaryID,
+			"swap_status":           "succeeded",
+			"message":               message,
 		})
 	default:
 		return nil

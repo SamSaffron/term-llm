@@ -57,6 +57,41 @@ describe('transcript domain', () => {
     expect(messages[3]).toMatchObject({ role: 'compaction-boundary', rawContent: 'summary' });
   });
 
+  it('preserves structured durable model-switch metadata', () => {
+    const messages = convertServerMessages([
+      {
+        id: 7,
+        sequence: 7,
+        role: 'event',
+        parts: [
+          {
+            type: 'model_swap',
+            text: 'legacy display text',
+            model_swap: {
+              boundary_id: 'r1:model-switch:2',
+              from_provider: 'chatgpt',
+              from_model: 'gpt-5.6-luna-high',
+              from_effort: 'high',
+              to_provider: 'chatgpt',
+              to_model: 'gpt-5.6-sol-high',
+              to_effort: 'medium',
+              status: 'succeeded',
+            },
+          },
+        ],
+      },
+    ]);
+
+    expect(messages[0]).toMatchObject({
+      role: 'model-swap',
+      boundaryId: 'r1:model-switch:2',
+      fromModel: 'gpt-5.6-luna-high',
+      fromEffort: 'high',
+      toModel: 'gpt-5.6-sol-high',
+      toEffort: 'medium',
+    });
+  });
+
   it('keeps durable spawn_agent calls running until their result arrives', () => {
     const call = {
       id: 1,
@@ -380,6 +415,149 @@ describe('transcript domain', () => {
         segmentEndSequence: 12,
       }),
     ]);
+  });
+
+  it('keeps a model boundary fixed while adjacent tool groups become durable', () => {
+    const projected: Message[] = [
+      {
+        id: 'before-live',
+        role: 'tool-group',
+        content: '',
+        created: 1,
+        responseId: 'r1',
+        tools: [{ id: 'before', name: 'shell', status: 'done' }],
+      },
+      {
+        id: 'r1:model-switch:1',
+        role: 'model-swap',
+        content: '',
+        created: 2,
+        responseId: 'r1',
+        boundaryId: 'r1:model-switch:1',
+        fromModel: 'gpt-5.6-luna-high',
+        toModel: 'gpt-5.6-sol-high',
+      },
+      {
+        id: 'after-live',
+        role: 'tool-group',
+        content: '',
+        created: 3,
+        responseId: 'r1',
+        tools: [{ id: 'after', name: 'read_file', status: 'running' }],
+      },
+    ];
+    const partialDurable: Message[] = [
+      {
+        id: 'before-durable',
+        role: 'tool-group',
+        content: '',
+        created: 1,
+        responseId: 'r1',
+        tools: [{ id: 'before', name: 'shell', status: 'done' }],
+      },
+    ];
+    const combinedDurable: Message[] = [
+      {
+        id: 'combined-durable',
+        role: 'tool-group',
+        content: '',
+        created: 1,
+        responseId: 'r1',
+        tools: [
+          { id: 'before', name: 'shell', status: 'done' },
+          { id: 'after', name: 'read_file', status: 'done' },
+        ],
+      },
+    ];
+    const shape = (messages: Message[]) =>
+      messages.map((message) =>
+        message.role === 'tool-group'
+          ? message.tools?.map((tool) => tool.id).join(',')
+          : message.role,
+      );
+
+    expect(shape(mergeDurableProjection([], projected))).toEqual(['before', 'model-swap', 'after']);
+    expect(shape(mergeDurableProjection(partialDurable, projected))).toEqual([
+      'before',
+      'model-swap',
+      'after',
+    ]);
+    expect(shape(mergeDurableProjection(combinedDurable, projected))).toEqual([
+      'before',
+      'model-swap',
+      'after',
+    ]);
+  });
+
+  it('keeps pending pre-switch tools ahead of an unanchored model boundary', () => {
+    const durable: Message[] = [
+      {
+        id: 'durable-answer',
+        role: 'assistant',
+        content: 'working',
+        created: 1,
+        responseId: 'r1',
+        assistantSegmentOrdinal: 0,
+      },
+    ];
+    const projected: Message[] = [
+      { ...durable[0], id: 'live-answer' },
+      {
+        id: 'before',
+        role: 'tool-group',
+        content: '',
+        created: 2,
+        responseId: 'r1',
+        tools: [{ id: 'before', name: 'shell', status: 'done' }],
+      },
+      {
+        id: 'switch',
+        role: 'model-swap',
+        content: '',
+        created: 3,
+        boundaryId: 'switch',
+        fromModel: 'old',
+        toModel: 'new',
+      },
+      {
+        id: 'after',
+        role: 'tool-group',
+        content: '',
+        created: 4,
+        responseId: 'r1',
+        tools: [{ id: 'after', name: 'read_file', status: 'running' }],
+      },
+    ];
+
+    expect(mergeDurableProjection(durable, projected).map((message) => message.id)).toEqual([
+      'durable-answer',
+      'before',
+      'switch',
+      'after',
+    ]);
+  });
+
+  it('adopts a durable model boundary by exact identity without duplication', () => {
+    const durable: Message[] = [
+      {
+        id: 'durable-switch',
+        role: 'model-swap',
+        content: '',
+        created: 1,
+        boundaryId: 'r1:model-switch:1',
+        fromModel: 'old',
+        toModel: 'new',
+      },
+    ];
+    const projected: Message[] = [
+      {
+        ...durable[0],
+        id: 'live-switch',
+        responseId: 'r1',
+      },
+    ];
+
+    expect(mergeDurableProjection(durable, projected)).toEqual(durable);
   });
 
   it('adopts an exact durable compaction at its ordered live stream position', () => {

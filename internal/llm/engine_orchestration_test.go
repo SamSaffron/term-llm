@@ -681,7 +681,7 @@ func TestEngineOrchestration_InlineLoopLeavesModelSwitchForNextStream(t *testing
 	registry.Register(&mockTool{name: "test_tool", result: "tool output"})
 	provider := &inlineSyncToolProvider{inline: true}
 	engine := NewEngine(provider, registry)
-	req := Request{Messages: []Message{UserText("use tool")}, Tools: []ToolSpec{{Name: "test_tool"}}}
+	req := Request{Model: "grok-4.5-high", Messages: []Message{UserText("use tool")}, Tools: []ToolSpec{{Name: "test_tool"}}}
 
 	stream, err := engine.Stream(context.Background(), req)
 	if err != nil {

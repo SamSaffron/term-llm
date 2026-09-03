@@ -927,6 +927,7 @@ type sessionMessagePartEntry struct {
 	SkillActivation *llm.SkillActivationProvenance `json:"skill_activation,omitempty"`
 	PathNote        *llm.PathNoteProvenance        `json:"path_note,omitempty"`
 	DiffComment     *llm.DiffComment               `json:"diff_comment,omitempty"`
+	ModelSwap       *llm.ModelSwapMarker           `json:"model_swap,omitempty"`
 	ToolName        string                         `json:"tool_name,omitempty"`
 	ToolInfo        string                         `json:"tool_info,omitempty"`
 	ToolArgs        string                         `json:"tool_arguments,omitempty"`
@@ -1780,7 +1781,8 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 		}
 		if msg.Role == llm.RoleEvent {
 			if marker, ok := llm.ParseModelSwapMarker(msg.ToLLMMessage()); ok {
-				entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "model_swap", Text: marker.DisplayText})
+				copyMarker := marker
+				entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "model_swap", Text: marker.DisplayText, ModelSwap: &copyMarker})
 			} else if marker, ok := llm.ParseRunErrorMarker(msg.ToLLMMessage()); ok {
 				entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "error", Text: marker.Message})
 			} else {

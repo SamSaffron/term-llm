@@ -3830,6 +3830,11 @@ func TestEngineRequestRuntimeSwitchAppliesReasoningEffortBeforeNextToolTurn(t *t
 	}
 
 	engine := NewEngine(provider, registry)
+	var persistedSwitches []RuntimeSwitch
+	engine.SetRuntimeSwitchCallback(func(_ context.Context, change RuntimeSwitch) error {
+		persistedSwitches = append(persistedSwitches, change)
+		return nil
+	})
 	stream, err := engine.Stream(context.Background(), Request{
 		Model:           "gpt-5.4",
 		ReasoningEffort: "medium",
@@ -3868,6 +3873,15 @@ func TestEngineRequestRuntimeSwitchAppliesReasoningEffortBeforeNextToolTurn(t *t
 	}
 	if switches[0].Model != "gpt-5.4" || switches[0].ReasoningEffort != "high" {
 		t.Fatalf("switch event runtime = %q/%q, want gpt-5.4/high", switches[0].Model, switches[0].ReasoningEffort)
+	}
+	if switches[0].PreviousModel != "gpt-5.4" || switches[0].PreviousReasoningEffort != "medium" {
+		t.Fatalf("switch event previous runtime = %q/%q, want gpt-5.4/medium", switches[0].PreviousModel, switches[0].PreviousReasoningEffort)
+	}
+	if !switches[0].ProviderTurnIndexSet || switches[0].ProviderTurnIndex != 1 || switches[0].ModelSwitchBoundaryID == "" {
+		t.Fatalf("switch target turn = %d set=%v boundary=%q, want 1/true/non-empty", switches[0].ProviderTurnIndex, switches[0].ProviderTurnIndexSet, switches[0].ModelSwitchBoundaryID)
+	}
+	if len(persistedSwitches) != 1 || persistedSwitches[0].PreviousModel != "gpt-5.4" || persistedSwitches[0].Model != "gpt-5.4" || persistedSwitches[0].BoundaryID != switches[0].ModelSwitchBoundaryID {
+		t.Fatalf("persisted switch boundaries = %#v, want one authoritative transition", persistedSwitches)
 	}
 }
 

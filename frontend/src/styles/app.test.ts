@@ -69,6 +69,12 @@ describe('shell layout', () => {
 });
 
 describe('stacking layers', () => {
+  it('lifts an archived session row with its open menu above later rows', () => {
+    expect(appCSS).toMatch(
+      /\.session-row\.menu-open\s*\{[^}]*z-index:\s*var\(--z-session-menu-open\);/s,
+    );
+  });
+
   it('centralizes every z-index behind a semantic token', () => {
     const tokens = readFileSync(resolve(stylesRoot, 'base/tokens.css'), 'utf8');
     const declarations = [...appCSS.matchAll(/z-index:\s*([^;]+);/g)].map((match) =>

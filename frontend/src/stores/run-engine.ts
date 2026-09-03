@@ -1002,10 +1002,12 @@ export class RunEngine {
       if (Object.hasOwn(response, 'reasoning_effort'))
         runtimePatch.activeEffort = String(response.reasoning_effort || '');
     } else if (event.type === 'response.model_switch') {
-      runtimePatch.activeModel = String(event.model || '') || undefined;
-      runtimePatch.activeProvider = String(event.provider || '') || undefined;
-      if (Object.hasOwn(event, 'reasoning_effort'))
-        runtimePatch.activeEffort = String(event.reasoning_effort || '');
+      runtimePatch.activeModel = String(event.to_model || event.model || '') || undefined;
+      runtimePatch.activeProvider = String(event.to_provider || event.provider || '') || undefined;
+      if (Object.hasOwn(event, 'to_reasoning_effort') || Object.hasOwn(event, 'reasoning_effort'))
+        runtimePatch.activeEffort = String(
+          event.to_reasoning_effort ?? event.reasoning_effort ?? '',
+        );
     } else if (event.type === 'response.model_swap.progress') {
       const prefix =
         event.stage === 'failed' ? 'previous_' : event.stage === 'complete' ? 'target_' : '';
@@ -1393,7 +1395,9 @@ export class RunEngine {
           const interruptState = String(raw.interruptState || raw.interrupt_state || '').trim();
           const rawRole = String(raw.role || 'assistant');
           const role = rawRole === 'compaction-ref' ? 'compaction-boundary' : rawRole;
-          const eventSequence = Number(raw.eventSequence ?? raw.compaction_sequence);
+          const eventSequence = Number(
+            raw.eventSequence ?? raw.event_sequence ?? raw.compaction_sequence,
+          );
           const compactionSeq = Number(raw.compactionSeq ?? raw.compaction_seq);
           const compactionCount = Number(raw.compactionCount ?? raw.compaction_count);
           const recoveredAt = Date.now();
@@ -1440,6 +1444,19 @@ export class RunEngine {
             ...(Number.isFinite(segmentStartSequence) ? { segmentStartSequence } : {}),
             ...(Number.isFinite(segmentEndSequence) ? { segmentEndSequence } : {}),
             ...(Number.isFinite(eventSequence) ? { eventSequence } : {}),
+            ...(role === 'model-swap'
+              ? {
+                  boundaryId: String(raw.boundaryId || raw.boundary_id || '').trim(),
+                  fromProvider: String(raw.fromProvider || raw.from_provider || '').trim(),
+                  fromModel: String(raw.fromModel || raw.from_model || '').trim(),
+                  fromEffort: String(raw.fromEffort || raw.from_reasoning_effort || '').trim(),
+                  toProvider: String(raw.toProvider || raw.to_provider || '').trim(),
+                  toModel: String(raw.toModel || raw.to_model || '').trim(),
+                  toEffort: String(raw.toEffort || raw.to_reasoning_effort || '').trim(),
+                  swapStatus: String(raw.swapStatus || raw.swap_status || '').trim(),
+                  swapStrategy: String(raw.swapStrategy || raw.swap_strategy || '').trim(),
+                }
+              : {}),
             ...(Number.isFinite(compactionSeq) ? { compactionSeq } : {}),
             ...(Number.isFinite(compactionCount) ? { compactionCount } : {}),
             ...(interruptState ? { interruptState } : {}),

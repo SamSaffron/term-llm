@@ -21,6 +21,7 @@ type ModelSwapMarker struct {
 	ToEffort     string `json:"to_effort,omitempty"`
 	Strategy     string `json:"strategy,omitempty"`
 	Status       string `json:"status,omitempty"`
+	BoundaryID   string `json:"boundary_id,omitempty"`
 	DisplayText  string `json:"display_text,omitempty"`
 }
 

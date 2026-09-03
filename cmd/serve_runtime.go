@@ -644,6 +644,7 @@ func (rt *serveRuntime) QueueActiveRunRuntimeSwitch(model, reasoningEffort strin
 	if model == "" {
 		model = activeModel
 	}
+	model, reasoningEffort = normalizeProviderModelEffort(runtimeProviderKey(rt), model, reasoningEffort)
 	if activeModel != "" && model != activeModel {
 		return fmt.Errorf("runtime effort switch can only target active model %q", activeModel)
 	}
@@ -1540,6 +1541,13 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		activeModel = strings.TrimSpace(rt.defaultModel)
 	}
 	activeModel, activeEffort = normalizeProviderModelEffort(runtimeProviderKey(rt), activeModel, activeEffort)
+	// The engine owns in-run transitions and must retain the exact model used by
+	// the preceding provider turn, even when the caller selected a runtime default
+	// rather than spelling the model in the request.
+	if activeModel != "" {
+		req.Model = activeModel
+	}
+	req.ReasoningEffort = activeEffort
 	var requestCancel func()
 	if responseRun := responseRunFromContext(ctx); responseRun != nil {
 		requestCancel = func() { responseRun.cancelRun() }
@@ -1839,6 +1847,37 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		return nil
 	})
 	defer rt.engine.SetCompactionCallback(nil)
+
+	// Persist an in-run model/effort transition as an ordered transcript boundary.
+	// The engine invokes this only after the preceding turn callback has committed
+	// and before the target provider turn can produce output.
+	rt.engine.SetRuntimeSwitchCallback(func(cbCtx context.Context, change llm.RuntimeSwitch) error {
+		marker := llm.ModelSwapMarker{
+			FromProvider: runtimeProviderKey(rt),
+			FromModel:    change.PreviousModel,
+			FromEffort:   change.PreviousReasoningEffort,
+			ToProvider:   runtimeProviderKey(rt),
+			ToModel:      change.Model,
+			ToEffort:     change.ReasoningEffort,
+			BoundaryID:   change.BoundaryID,
+			Status:       "succeeded",
+		}
+		msg := tagResponseRunMessage(cbCtx, llm.ModelSwapEventMessage(marker), -1)
+		producedMu.Lock()
+		defer producedMu.Unlock()
+		markerIndex := len(produced)
+		produced = append(produced, msg)
+		updateStateAndAppendLocked(cbCtx)
+		if persisted && markerIndex >= lastAppendedIdx {
+			produced = produced[:markerIndex]
+			if stateful {
+				rt.history = buildSnapshotLocked()
+			}
+			return errors.New("model switch boundary was not durably persisted")
+		}
+		return nil
+	})
+	defer rt.engine.SetRuntimeSwitchCallback(nil)
 
 	// upsertPendingAssistantLocked writes (or rewrites) the in-progress
 	// assistant row for the current turn. First call inserts, subsequent calls
