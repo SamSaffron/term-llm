@@ -71,6 +71,8 @@ func scrubUnsupportedOpenAISchemaKeywords(value interface{}) {
 	}
 }
 
+const maxOpenAIParametersCacheEntries = 4096
+
 type openAIParametersCacheKey struct {
 	schemaPtr uintptr
 	strict    bool
@@ -85,7 +87,16 @@ type openAIParametersCacheEntry struct {
 	params map[string]interface{}
 }
 
-var openAIParametersCache sync.Map
+// Keep identity caching bounded so short-lived runtimes do not pin every schema
+// and lowered copy for the lifetime of the process.
+var openAIParametersCache = struct {
+	mu      sync.Mutex
+	entries map[openAIParametersCacheKey]*openAIParametersCacheEntry
+	order   []openAIParametersCacheKey
+	next    int
+}{
+	entries: make(map[openAIParametersCacheKey]*openAIParametersCacheEntry),
+}
 
 func openAIParametersFromToolSchema(schema map[string]interface{}, strict bool) map[string]interface{} {
 	key := openAIParametersCacheKey{strict: strict}
@@ -93,8 +104,22 @@ func openAIParametersFromToolSchema(schema map[string]interface{}, strict bool) 
 		key.schemaPtr = reflect.ValueOf(schema).Pointer()
 	}
 
-	cached, _ := openAIParametersCache.LoadOrStore(key, &openAIParametersCacheEntry{schema: schema})
-	entry := cached.(*openAIParametersCacheEntry)
+	openAIParametersCache.mu.Lock()
+	entry := openAIParametersCache.entries[key]
+	if entry == nil {
+		entry = &openAIParametersCacheEntry{schema: schema}
+		if len(openAIParametersCache.order) < maxOpenAIParametersCacheEntries {
+			openAIParametersCache.order = append(openAIParametersCache.order, key)
+		} else {
+			oldest := openAIParametersCache.order[openAIParametersCache.next]
+			delete(openAIParametersCache.entries, oldest)
+			openAIParametersCache.order[openAIParametersCache.next] = key
+			openAIParametersCache.next = (openAIParametersCache.next + 1) % maxOpenAIParametersCacheEntries
+		}
+		openAIParametersCache.entries[key] = entry
+	}
+	openAIParametersCache.mu.Unlock()
+
 	entry.once.Do(func() {
 		parsed, err := ParseToolJSONSchemaMap(schema)
 		if err != nil {

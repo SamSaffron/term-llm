@@ -115,3 +115,60 @@ func TestOpenAIParametersFromToolSchema_CachesLoweredParametersBySchemaIdentityA
 		t.Fatalf("strict and non-strict schemas should be cached separately")
 	}
 }
+
+func TestOpenAIParametersCacheIsBounded(t *testing.T) {
+	resetOpenAIParametersCacheForTest(t)
+
+	schemas := make([]map[string]interface{}, maxOpenAIParametersCacheEntries+10)
+	for i := range schemas {
+		schemas[i] = map[string]interface{}{"type": "object", "x-index": i}
+		openAIParametersFromToolSchema(schemas[i], true)
+	}
+
+	firstKey := openAIParametersCacheKey{
+		schemaPtr: reflect.ValueOf(schemas[0]).Pointer(),
+		strict:    true,
+	}
+	lastKey := openAIParametersCacheKey{
+		schemaPtr: reflect.ValueOf(schemas[len(schemas)-1]).Pointer(),
+		strict:    true,
+	}
+
+	openAIParametersCache.mu.Lock()
+	entryCount := len(openAIParametersCache.entries)
+	orderCount := len(openAIParametersCache.order)
+	_, hasFirst := openAIParametersCache.entries[firstKey]
+	_, hasLast := openAIParametersCache.entries[lastKey]
+	openAIParametersCache.mu.Unlock()
+
+	if entryCount != maxOpenAIParametersCacheEntries || orderCount != maxOpenAIParametersCacheEntries {
+		t.Fatalf("cache size = entries %d order %d, want %d", entryCount, orderCount, maxOpenAIParametersCacheEntries)
+	}
+	if hasFirst {
+		t.Fatal("oldest schema was not evicted")
+	}
+	if !hasLast {
+		t.Fatal("newest schema was not cached")
+	}
+}
+
+func resetOpenAIParametersCacheForTest(t *testing.T) {
+	t.Helper()
+
+	openAIParametersCache.mu.Lock()
+	oldEntries := openAIParametersCache.entries
+	oldOrder := openAIParametersCache.order
+	oldNext := openAIParametersCache.next
+	openAIParametersCache.entries = make(map[openAIParametersCacheKey]*openAIParametersCacheEntry)
+	openAIParametersCache.order = nil
+	openAIParametersCache.next = 0
+	openAIParametersCache.mu.Unlock()
+
+	t.Cleanup(func() {
+		openAIParametersCache.mu.Lock()
+		openAIParametersCache.entries = oldEntries
+		openAIParametersCache.order = oldOrder
+		openAIParametersCache.next = oldNext
+		openAIParametersCache.mu.Unlock()
+	})
+}
