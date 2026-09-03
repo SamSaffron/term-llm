@@ -69,10 +69,14 @@ describe('shell layout', () => {
 });
 
 describe('stacking layers', () => {
-  it('lifts an archived session row with its open menu above later rows', () => {
+  it('keeps an archived session menu opaque and above later rows', () => {
     expect(appCSS).toMatch(
       /\.session-row\.menu-open\s*\{[^}]*z-index:\s*var\(--z-session-menu-open\);/s,
     );
+    expect(appCSS).toMatch(
+      /\.session-row\.archived\s*>\s*\.session-btn\s*\{[^}]*opacity:\s*0\.68;/s,
+    );
+    expect(appCSS).not.toMatch(/\.session-row\.archived\s*\{[^}]*opacity:/s);
   });
 
   it('centralizes every z-index behind a semantic token', () => {

@@ -54,7 +54,7 @@
   min-width: 0;
 }
 
-.session-row.archived {
+.session-row.archived > .session-btn {
   opacity: 0.68;
 }
 
