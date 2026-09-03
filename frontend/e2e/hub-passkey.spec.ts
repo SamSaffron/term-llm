@@ -38,9 +38,9 @@ test('enrolls and authenticates with a virtual passkey', async ({ page, context 
     sameSite: 'Strict',
     path: '/hub/',
   });
-  await expect(page.getByRole('button', { name: 'Security' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Security', exact: true })).toBeVisible();
 
-  await page.getByRole('button', { name: 'Security' }).click();
+  await page.getByRole('button', { name: 'Security', exact: true }).click();
   await expect(page.getByText('Virtual platform passkey')).toBeVisible();
 
   await cdp.send('WebAuthn.addVirtualAuthenticator', {
@@ -56,29 +56,29 @@ test('enrolls and authenticates with a virtual passkey', async ({ page, context 
   page.once('dialog', (dialog) => void dialog.accept('Virtual second key'));
   await page.getByRole('button', { name: 'Add passkey' }).click();
   await expect(page.getByText('Virtual second key')).toBeVisible();
-  let second = page.locator('.delegation-card').filter({ hasText: 'Virtual second key' });
+  let second = page.locator('.security-credential').filter({ hasText: 'Virtual second key' });
   page.once('dialog', (dialog) => void dialog.accept('Renamed virtual key'));
   await second.getByRole('button', { name: 'Rename' }).click();
   await expect(page.getByText('Renamed virtual key')).toBeVisible();
-  second = page.locator('.delegation-card').filter({ hasText: 'Renamed virtual key' });
+  second = page.locator('.security-credential').filter({ hasText: 'Renamed virtual key' });
   await second.getByRole('button', { name: 'Remove' }).click();
   await expect(page.getByText('Renamed virtual key')).toHaveCount(0);
   await expect(
     page
-      .locator('.delegation-card')
+      .locator('.security-credential')
       .filter({ hasText: 'Virtual platform passkey' })
       .getByRole('button', { name: 'Remove' }),
   ).toBeDisabled();
   await page.getByRole('button', { name: 'Revoke other sessions' }).click();
   await expect(page.getByText('Revoked 0 other sessions.')).toBeVisible();
 
-  await page.getByRole('button', { name: 'Security' }).click();
+  await page.getByRole('button', { name: 'Close security' }).click();
   await context.clearCookies();
-  await page.getByRole('button', { name: 'Security' }).click();
+  await page.getByRole('button', { name: 'Security', exact: true }).click();
   await expect(page).toHaveURL(/\/hub\/auth\/login$/);
   await page.getByRole('button', { name: 'Sign in with a passkey' }).click();
   await expect(page).toHaveURL(/\/hub\/$/);
-  await page.getByRole('button', { name: 'Security' }).click();
+  await page.getByRole('button', { name: 'Security', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible();
 
   await page.getByRole('button', { name: 'Sign out' }).click();
