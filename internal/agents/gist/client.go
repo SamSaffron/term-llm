@@ -42,19 +42,17 @@ func NewClient() (*Client, error) {
 	return c, nil
 }
 
-// checkGH verifies gh CLI is installed and authenticated.
+// checkGH verifies gh CLI is installed and the active account can access GitHub.
 func (c *Client) checkGH() error {
-	cmd := c.execCommand("gh", "auth", "status")
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
+	// Checking the API mirrors the account selection used by "gh gist". In
+	// contrast, "gh auth status" fails when any configured account is invalid,
+	// including inactive accounts that will not be used for the Gist operation.
+	cmd := c.execCommand("gh", "api", "user", "--silent")
 	if err := cmd.Run(); err != nil {
-		// Check if gh is not installed
 		if _, ok := err.(*exec.ExitError); !ok {
 			return fmt.Errorf("gh CLI not found. Install from: https://cli.github.com")
 		}
-		// gh is installed but not authenticated
-		return fmt.Errorf("gh CLI not authenticated. Run: gh auth login\n%s", stderr.String())
+		return fmt.Errorf("gh CLI not authenticated. Run: gh auth login --hostname github.com")
 	}
 
 	return nil
