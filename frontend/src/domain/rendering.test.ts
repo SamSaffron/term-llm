@@ -18,6 +18,43 @@ import {
 } from './completions';
 
 describe('markdown security and streaming', () => {
+  it('resolves registered term-llm media references with contextual alt text', () => {
+    const reference = '0123456789abcdef0123456789abcdef';
+    const resolve = (value: string) =>
+      value === reference
+        ? ({ url: '/ui/media/result.webm', type: 'video' as const } as const)
+        : undefined;
+    const html = renderMarkdown(
+      `Before\n\n![Demo recording](term-llm-media://${reference})\n\nAfter`,
+      resolve,
+    );
+    expect(html).toContain('<video');
+    expect(html).toContain('src="/ui/media/result.webm"');
+    expect(html).toContain('aria-label="Demo recording"');
+    expect(html).toContain('controls');
+    expect(html).not.toContain('term-llm-media://');
+  });
+
+  it('normalizes mixed-case media references before lookup', () => {
+    const lower = 'abcdef0123456789abcdef0123456789';
+    const html = renderMarkdown(`![Chart](term-llm-media://${lower.toUpperCase()})`, (reference) =>
+      reference === lower ? { url: '/ui/media/result.png', type: 'image' } : undefined,
+    );
+    expect(html).toContain('<img');
+    expect(html).toContain('alt="Chart"');
+    expect(html).not.toContain('unavailable');
+  });
+
+  it('does not resolve term-llm media references inside code', () => {
+    const reference = '0123456789abcdef0123456789abcdef';
+    const html = renderMarkdown(`\`![example](term-llm-media://${reference})\``, () => ({
+      url: '/ui/media/result.png',
+      type: 'image',
+    }));
+    expect(html).toContain('term-llm-media://');
+    expect(html).not.toContain('<img');
+  });
+
   it('sanitizes active content and hardens external links', () => {
     const html = renderMarkdown(
       '[safe](https://example.com) <script>alert(1)</script><img src=x onerror=alert(1)>',

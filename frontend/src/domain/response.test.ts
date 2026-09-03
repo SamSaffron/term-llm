@@ -788,4 +788,37 @@ describe('response projection', () => {
     expect(projection.run.status).toBe('completed');
     expect(projection.usage?.total_tokens).toBe(12);
   });
+
+  it('projects typed media from live tool completion events', () => {
+    let projection = reduceResponse(
+      initialProjection(run),
+      event('response.output_item.added', 1, {
+        item: { type: 'function_call', call_id: 'media-1', name: 'show_media' },
+      }),
+    );
+    projection = reduceResponse(
+      projection,
+      event('response.tool_exec.end', 2, {
+        call_id: 'media-1',
+        media: [
+          {
+            reference: '0123456789abcdef0123456789abcdef',
+            url: '/ui/media/hash.mp4',
+            type: 'video/mp4',
+            name: 'demo.mp4',
+            caption: 'Demo',
+          },
+        ],
+      }),
+    );
+    expect(projection.messages[0].tools?.[0].media).toEqual([
+      {
+        reference: '0123456789abcdef0123456789abcdef',
+        url: '/ui/media/hash.mp4',
+        type: 'video/mp4',
+        name: 'demo.mp4',
+        caption: 'Demo',
+      },
+    ]);
+  });
 });

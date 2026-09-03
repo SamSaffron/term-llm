@@ -25,8 +25,9 @@ term-llm exec --tools read_file,write_file,edit_file,shell,grep,glob,view_image
 | `shell` | Execute shell commands; when file tracking is enabled, `affected_paths` bounds inspection and `output_claims` declares transform, generated deliverable, or materialization intent |
 | `grep` | Search file contents (uses ripgrep) |
 | `glob` | Find files by glob pattern |
-| `view_image` | Inspect an image file. Normally returns structured image content to a vision-capable primary model; with `vision_via`, calls the configured vision model and returns text only. |
-| `show_image` | Show image file info |
+| `view_image` | Inspect an image file. Normally returns structured image content to a vision-capable primary model; with `vision_via`, a routed vision model returns text instead |
+| `show_media` | Register an existing local image or video and return an opaque `term-llm-media://…` URL for placement in assistant Markdown; web serves import an approved durable copy and terminals resolve it to rich media or a clickable local link |
+| `show_image` | Legacy image-only presentation tool retained for explicit configurations |
 | `image_generate` | Generate images via configured provider |
 | `manage_workspace` | Grant, list, or revoke session-scoped local workspaces. Added automatically whenever a local path-capable file/search/image tool is enabled. |
 | `ask_user` | Prompt user for input |

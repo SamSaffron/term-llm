@@ -482,6 +482,8 @@ func runLoopIteration(ctx context.Context, engine *llm.Engine, req llm.Request, 
 
 	var textContent strings.Builder
 	var toolsUsed []string
+	mediaByReference := make(map[string]llm.MediaArtifact)
+	var mediaOutput ui.MediaMarkdownStream
 
 	for {
 		event, err := stream.Recv()
@@ -489,13 +491,14 @@ func runLoopIteration(ctx context.Context, engine *llm.Engine, req llm.Request, 
 			break
 		}
 		if err != nil {
+			fmt.Fprint(stdout, mediaOutput.Finish(mediaByReference))
 			return "", err
 		}
 
 		switch event.Type {
 		case llm.EventTextDelta:
-			fmt.Fprint(stdout, event.Text)
 			textContent.WriteString(event.Text)
+			fmt.Fprint(stdout, mediaOutput.Write(event.Text, mediaByReference))
 
 		case llm.EventToolExecStart:
 			if event.ToolName != "" {
@@ -518,9 +521,14 @@ func runLoopIteration(ctx context.Context, engine *llm.Engine, req llm.Request, 
 
 			// Display any images from tool output
 			for _, imagePath := range event.ToolImages {
-				if rendered := ui.RenderInlineImage(imagePath); rendered != "" {
+				if rendered := ui.RenderImageArtifact(imagePath); rendered != "" {
 					fmt.Fprint(stdout, rendered)
-					fmt.Fprint(stdout, "\r\n") // CR+LF to reset cursor position after image
+					fmt.Fprint(stdout, "\r\n")
+				}
+			}
+			for _, media := range event.ToolMedia {
+				if reference := strings.ToLower(strings.TrimSpace(media.Reference)); reference != "" {
+					mediaByReference[reference] = media
 				}
 			}
 
@@ -529,11 +537,13 @@ func runLoopIteration(ctx context.Context, engine *llm.Engine, req llm.Request, 
 
 		case llm.EventError:
 			if event.Err != nil {
+				fmt.Fprint(stdout, mediaOutput.Finish(mediaByReference))
 				return "", event.Err
 			}
 		}
 	}
 
+	fmt.Fprint(stdout, mediaOutput.Finish(mediaByReference))
 	// Build summary for history
 	summary := buildIterationSummary(textContent.String(), toolsUsed)
 	return summary, nil

@@ -329,6 +329,9 @@ func clonePart(part Part) (Part, bool) {
 		if len(result.Images) > 0 {
 			result.Images = append([]string(nil), result.Images...)
 		}
+		if len(result.Media) > 0 {
+			result.Media = append([]MediaArtifact(nil), result.Media...)
+		}
 		if len(result.ThoughtSig) > 0 {
 			result.ThoughtSig = append([]byte(nil), result.ThoughtSig...)
 		}

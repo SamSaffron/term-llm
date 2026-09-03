@@ -5,6 +5,21 @@ import (
 	"testing"
 )
 
+func TestNormalizeMediaCombinesLegacyImagesWithoutDuplicates(t *testing.T) {
+	structured := []MediaArtifact{{SourcePath: "/tmp/a.png", MediaType: "image/png"}, {SourcePath: "/tmp/v.mp4", MediaType: "video/mp4"}}
+	got := NormalizeMedia(structured, []string{"/tmp/a.png", "/tmp/old.png"})
+	if len(got) != 3 || got[0].SourcePath != "/tmp/a.png" || got[1].MediaType != "video/mp4" || got[2].SourcePath != "/tmp/old.png" {
+		t.Fatalf("NormalizeMedia() = %#v", got)
+	}
+	withReferences := NormalizeMedia([]MediaArtifact{
+		{Reference: "one", SourcePath: "/tmp/a.png", MediaType: "image/png"},
+		{Reference: "two", SourcePath: "/tmp/a.png", MediaType: "image/png"},
+	}, nil)
+	if len(withReferences) != 2 {
+		t.Fatalf("reference-distinct artifacts were collapsed: %#v", withReferences)
+	}
+}
+
 func TestToolResultMessageFromOutput_WithDiffs(t *testing.T) {
 	t.Parallel()
 

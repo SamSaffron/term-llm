@@ -234,6 +234,15 @@ func emitStreamEvent(e *jsonEmitter, ev ui.StreamEvent) error {
 		}
 		return e.emit("image", map[string]any{"path": ev.ImagePath})
 
+	case ui.StreamEventMedia:
+		path := ev.Media.Path()
+		if path == "" {
+			return nil
+		}
+		return e.emit("media", map[string]any{
+			"reference": ev.Media.Reference, "path": path, "media_type": ev.Media.MediaType, "name": ev.Media.Name, "caption": ev.Media.Caption,
+		})
+
 	case ui.StreamEventDiff:
 		payload := map[string]any{
 			"path": ev.DiffPath,

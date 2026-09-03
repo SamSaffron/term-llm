@@ -42,6 +42,14 @@ export interface GuardianReview {
   workdir?: string;
 }
 
+export interface MediaArtifact {
+  reference?: string;
+  url: string;
+  type: string;
+  name?: string;
+  caption?: string;
+}
+
 export interface ToolCall {
   id: string;
   /** Response-local output item identity; call id remains the canonical execution identity. */
@@ -55,6 +63,7 @@ export interface ToolCall {
   /** Human-readable answer returned by an ask_user call. */
   askUserAnswer?: string;
   images?: string[];
+  media?: MediaArtifact[];
   guardianReviews?: GuardianReview[];
   subagent?: Record<string, unknown>;
   /** Execution timing in milliseconds. Running recovery snapshots are re-anchored locally. */

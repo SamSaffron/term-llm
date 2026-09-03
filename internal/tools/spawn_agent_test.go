@@ -14,6 +14,54 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
+type mediaEventMockRunner struct {
+	*mockRunner
+	media llm.MediaArtifact
+}
+
+func (r *mediaEventMockRunner) RunAgentWithCallback(ctx context.Context, agentName, prompt string, depth int, callID string, cb SubagentEventCallback) (SpawnAgentRunResult, error) {
+	cb(callID, SubagentEvent{Type: SubagentEventToolEnd, ToolName: ShowMediaToolName, Media: []llm.MediaArtifact{r.media}, Success: true})
+	return r.mockRunner.RunAgent(ctx, agentName, prompt, depth)
+}
+
+func (r *mediaEventMockRunner) RunAgentWithCallbackAndOptions(ctx context.Context, agentName, prompt string, depth int, callID string, cb SubagentEventCallback, opts SpawnAgentRunOptions) (SpawnAgentRunResult, error) {
+	cb(callID, SubagentEvent{Type: SubagentEventToolEnd, ToolName: ShowMediaToolName, Media: []llm.MediaArtifact{r.media}, Success: true})
+	return r.mockRunner.RunAgentWithOptions(ctx, agentName, prompt, depth, opts)
+}
+
+func TestSpawnAgentToolRetainsNestedMediaOnResult(t *testing.T) {
+	const reference = "0123456789abcdef0123456789abcdef"
+	tool := NewSpawnAgentTool(DefaultSpawnConfig(), 0)
+	tool.SetRunner(&mediaEventMockRunner{mockRunner: newMockRunner(), media: llm.MediaArtifact{
+		Reference: reference, SourcePath: "/tmp/chart.png", MediaType: "image/png",
+	}})
+	ctx := llm.ContextWithCallID(context.Background(), "parent-call")
+	out, err := tool.Execute(ctx, makeSpawnArgs("reviewer", "inspect", 0))
+	if err != nil || len(out.Media) != 1 || out.Media[0].Reference != reference {
+		t.Fatalf("nested media output = %#v, %v", out, err)
+	}
+}
+
+type publisherAwareMockRunner struct {
+	*mockRunner
+	publisher MediaPublisher
+}
+
+func (r *publisherAwareMockRunner) SetMediaPublisher(publisher MediaPublisher) {
+	r.publisher = publisher
+}
+
+func TestSpawnAgentToolPropagatesPublisherSetBeforeRunner(t *testing.T) {
+	tool := NewSpawnAgentTool(DefaultSpawnConfig(), 0)
+	publisher := testMediaPublisher{path: "stored.png"}
+	tool.SetMediaPublisher(publisher)
+	runner := &publisherAwareMockRunner{mockRunner: newMockRunner()}
+	tool.SetRunner(runner)
+	if runner.publisher == nil {
+		t.Fatal("publisher was not propagated to a later runner")
+	}
+}
+
 // mockRunner implements SpawnAgentRunner for testing.
 type mockRunner struct {
 	mu           sync.Mutex

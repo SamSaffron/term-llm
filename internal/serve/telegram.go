@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,8 +34,26 @@ import (
 const telegramMaxMessageLen = 4000 // Telegram limit is 4096; leave margin
 const minEditInterval = 3 * time.Second
 const telegramFinalDeliveryTimeout = 30 * time.Second
+const telegramMaxMediaUploadBytes int64 = 50 << 20
 const telegramFinalDeliveryMaxAttempts = 3
 const telegramTransientRetryDelay = 500 * time.Millisecond
+
+var telegramMediaMarkdownPattern = regexp.MustCompile(`!\[([^\]\n]*)\]\(term-llm-media://([A-Fa-f0-9]{32})\)`)
+
+func telegramProseChunk(value string) (string, int) {
+	chunk, splitAt := prefixRunes(value, telegramMaxMessageLen)
+	start := strings.LastIndex(chunk, "![")
+	if start < 0 || !strings.Contains(value[start:], "term-llm-media://") || strings.Contains(chunk[start:], ")") {
+		return chunk, splitAt
+	}
+	if start > 0 {
+		return value[:start], start
+	}
+	if closeOffset := strings.Index(value, ")"); closeOffset >= 0 {
+		return value[:closeOffset+1], closeOffset + 1
+	}
+	return chunk, splitAt
+}
 
 // defaultStreamEventTimeout is used when telegramSessionMgr.streamEventTimeout is zero.
 const defaultStreamEventTimeout = 10 * time.Minute
@@ -1949,7 +1968,8 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 		activeTools      = make(map[string]string) // toolCallID → toolName
 		activePhase      string                    // most-recent EventPhase text, "" when idle
 		toolsRan         bool                      // true once any EventToolExecStart seen
-		collectedImages  []string                  // image paths from tool executions
+		collectedImages  []string                  // legacy image paths from tool executions
+		collectedMedia   []llm.MediaArtifact       // ordered image/video artifacts
 		textDeltas       int
 		reasoningDeltas  int
 		toolStarts       int
@@ -2042,6 +2062,9 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 				if len(ev.ToolImages) > 0 {
 					collectedImages = append(collectedImages, ev.ToolImages...)
 				}
+				if len(ev.ToolMedia) > 0 {
+					collectedMedia = append(collectedMedia, ev.ToolMedia...)
+				}
 				textMu.Unlock()
 				if sess.streamToolCnt.Load() > 0 {
 					sess.streamToolCnt.Add(-1)
@@ -2119,6 +2142,7 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 	spinIdx := 0
 
 	sendEdit := func(msgID int, content string, force bool) bool {
+		content = telegramMediaMarkdownPattern.ReplaceAllString(content, "$1")
 		if !force && content == lastSentContent {
 			return false
 		}
@@ -2165,7 +2189,7 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 			if !ensureCurrentMessage() {
 				return prose, false
 			}
-			chunk, splitAtBytes := prefixRunes(prose, telegramMaxMessageLen)
+			chunk, splitAtBytes := telegramProseChunk(prose)
 			if !sendEdit(currentMsgID, chunk, force) {
 				return prose, false
 			}
@@ -2227,6 +2251,7 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 	}
 
 	sendFinalEdit := func(deliveryCtx context.Context, msgID int, content string) error {
+		content = telegramMediaMarkdownPattern.ReplaceAllString(content, "$1")
 		if content == lastSentContent {
 			return nil
 		}
@@ -2266,7 +2291,7 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 			if err := ensureFinalCurrentMessage(deliveryCtx); err != nil {
 				return prose, err
 			}
-			chunk, splitAtBytes := prefixRunes(prose, telegramMaxMessageLen)
+			chunk, splitAtBytes := telegramProseChunk(prose)
 			if err := sendFinalEdit(deliveryCtx, currentMsgID, chunk); err != nil {
 				return prose, err
 			}
@@ -2512,6 +2537,7 @@ loop:
 		finalOtherTypes[k] = v
 	}
 	imagesToSend := append([]string(nil), collectedImages...)
+	mediaToSend := referencedTelegramMedia(full, collectedMedia)
 	textMu.Unlock()
 
 	finalDeliveryCtx, cancelFinalDelivery := context.WithTimeout(ctx, telegramFinalDeliveryTimeout)
@@ -2521,6 +2547,7 @@ loop:
 	prose := ""
 	if msgStart < len(full) {
 		prose = full[msgStart:]
+		prose = telegramMediaMarkdownPattern.ReplaceAllString(prose, "$1")
 	}
 	switch {
 	case prose != "":
@@ -2574,6 +2601,64 @@ loop:
 		})
 		if _, sendErr := bot.Send(photoMsg); sendErr != nil {
 			log.Printf("[telegram] failed to send image %s: %v", imgPath, sendErr)
+		}
+	}
+	for _, media := range mediaToSend {
+		mediaPath := media.PublishedPath()
+		info, statErr := os.Stat(mediaPath)
+		if statErr != nil {
+			log.Printf("[telegram] cannot access media %s: %v", mediaPath, statErr)
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			log.Printf("[telegram] media is not a regular file: %s", mediaPath)
+			continue
+		}
+		if info.Size() > telegramMaxMediaUploadBytes {
+			label := strings.TrimSpace(media.Name)
+			if label == "" {
+				label = "video"
+			}
+			message := tgbotapi.NewMessage(chatID, fmt.Sprintf("%s was not sent because it exceeds Telegram's 50 MiB upload limit.", label))
+			if _, sendErr := bot.Send(message); sendErr != nil {
+				log.Printf("[telegram] failed to report oversized media %s: %v", mediaPath, sendErr)
+			}
+			continue
+		}
+		upload, openErr := os.Open(mediaPath)
+		if openErr != nil {
+			log.Printf("[telegram] cannot open media %s: %v", mediaPath, openErr)
+			continue
+		}
+		file := tgbotapi.FileReader{Name: telegramMediaFilename(media.MediaType), Reader: upload}
+		if strings.HasPrefix(strings.ToLower(media.MediaType), "image/") {
+			message := tgbotapi.NewPhoto(chatID, file)
+			message.Caption = media.Caption
+			_, sendErr := bot.Send(message)
+			_ = upload.Close()
+			if sendErr != nil {
+				log.Printf("[telegram] failed to send image media %s: %v", mediaPath, sendErr)
+			}
+			continue
+		}
+		message := tgbotapi.NewVideo(chatID, file)
+		message.Caption = media.Caption
+		_, sendErr := bot.Send(message)
+		_ = upload.Close()
+		if sendErr != nil {
+			log.Printf("[telegram] video send failed for %s, retrying as document: %v", mediaPath, sendErr)
+			fallback, fallbackOpenErr := os.Open(mediaPath)
+			if fallbackOpenErr != nil {
+				log.Printf("[telegram] cannot reopen media document %s: %v", mediaPath, fallbackOpenErr)
+				continue
+			}
+			document := tgbotapi.NewDocument(chatID, tgbotapi.FileReader{Name: telegramMediaFilename(media.MediaType), Reader: fallback})
+			document.Caption = media.Caption
+			_, documentErr := bot.Send(document)
+			_ = fallback.Close()
+			if documentErr != nil {
+				log.Printf("[telegram] failed to send media document %s: %v", mediaPath, documentErr)
+			}
 		}
 	}
 
@@ -2699,6 +2784,49 @@ func buildHistoryContextTail(history []llm.Message, maxChars int) string {
 	return tailRunes(strings.Join(lines, "\n"), maxChars)
 }
 
+func referencedTelegramMedia(text string, media []llm.MediaArtifact) []llm.MediaArtifact {
+	byReference := make(map[string]llm.MediaArtifact, len(media))
+	for _, item := range media {
+		if reference := strings.ToLower(strings.TrimSpace(item.Reference)); reference != "" {
+			byReference[reference] = item
+		}
+	}
+	seen := make(map[string]struct{})
+	var result []llm.MediaArtifact
+	for _, match := range telegramMediaMarkdownPattern.FindAllStringSubmatch(text, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		reference := strings.ToLower(match[2])
+		item, ok := byReference[reference]
+		if _, duplicate := seen[reference]; !ok || duplicate {
+			continue
+		}
+		seen[reference] = struct{}{}
+		result = append(result, item)
+	}
+	return result
+}
+
+func telegramMediaFilename(mediaType string) string {
+	switch strings.ToLower(strings.TrimSpace(mediaType)) {
+	case "image/png":
+		return "media.png"
+	case "image/jpeg":
+		return "media.jpg"
+	case "image/gif":
+		return "media.gif"
+	case "image/webp":
+		return "media.webp"
+	case "image/bmp":
+		return "media.bmp"
+	case "video/webm":
+		return "media.webm"
+	default:
+		return "media.mp4"
+	}
+}
+
 func extractToolResultTextWithPlaceholders(result *llm.ToolResult) string {
 	if result == nil {
 		return ""
@@ -2725,6 +2853,13 @@ func extractToolResultTextWithPlaceholders(result *llm.ToolResult) string {
 	}
 	for range result.Images {
 		parts = append(parts, "[image uploaded]")
+	}
+	for _, media := range result.Media {
+		kind := "image"
+		if strings.HasPrefix(strings.ToLower(media.MediaType), "video/") {
+			kind = "video"
+		}
+		parts = append(parts, "["+kind+" uploaded]")
 	}
 	return strings.Join(parts, "\n")
 }

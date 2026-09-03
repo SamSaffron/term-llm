@@ -67,22 +67,23 @@ const (
 
 // SubagentEvent represents an event from a running subagent.
 type SubagentEvent struct {
-	Type         SubagentEventType // "init", "text", "tool_start", "tool_end", "phase", "usage", "done"
-	Text         string            // for "text" events
-	ToolName     string            // for tool events
-	ToolCallID   string            // nested tool invocation ID
-	ToolArgs     json.RawMessage   // nested tool arguments
-	Guardian     *GuardianEvent    // for guardian events
-	ToolInfo     string            // for tool events
-	ToolOutput   string            // for "tool_end" events - text content
-	Diffs        []llm.DiffData    // for "tool_end" events - structured diffs
-	Images       []string          // for "tool_end" events - image paths
-	Success      bool              // for "tool_end" events
-	Phase        string            // for "phase" events
-	InputTokens  int               // for "usage" events
-	OutputTokens int               // for "usage" events
-	Provider     string            // for "init" events - provider name
-	Model        string            // for "init" events - model name
+	Type         SubagentEventType   // "init", "text", "tool_start", "tool_end", "phase", "usage", "done"
+	Text         string              // for "text" events
+	ToolName     string              // for tool events
+	ToolCallID   string              // nested tool invocation ID
+	ToolArgs     json.RawMessage     // nested tool arguments
+	Guardian     *GuardianEvent      // for guardian events
+	ToolInfo     string              // for tool events
+	ToolOutput   string              // for "tool_end" events - text content
+	Diffs        []llm.DiffData      // for "tool_end" events - structured diffs
+	Images       []string            // for "tool_end" events - legacy image paths
+	Media        []llm.MediaArtifact // for "tool_end" events - ordered image/video artifacts
+	Success      bool                // for "tool_end" events
+	Phase        string              // for "phase" events
+	InputTokens  int                 // for "usage" events
+	OutputTokens int                 // for "usage" events
+	Provider     string              // for "init" events - provider name
+	Model        string              // for "init" events - model name
 }
 
 // SubagentEventCallback is called to bubble up events from a running subagent.
@@ -148,12 +149,13 @@ func DefaultSpawnConfig() SpawnConfig {
 
 // SpawnAgentTool implements the spawn_agent tool.
 type SpawnAgentTool struct {
-	runner        SpawnAgentRunner
-	config        SpawnConfig
-	semaphore     chan struct{}         // Limits concurrent agents
-	depth         int                   // Current nesting depth
-	mu            sync.Mutex            // Protects runner updates
-	eventCallback SubagentEventCallback // Optional callback for event bubbling
+	runner         SpawnAgentRunner
+	mediaPublisher MediaPublisher
+	config         SpawnConfig
+	semaphore      chan struct{}         // Limits concurrent agents
+	depth          int                   // Current nesting depth
+	mu             sync.Mutex            // Protects runner updates
+	eventCallback  SubagentEventCallback // Optional callback for event bubbling
 }
 
 // NewSpawnAgentTool creates a new spawn_agent tool.
@@ -181,6 +183,22 @@ func (t *SpawnAgentTool) SetRunner(runner SpawnAgentRunner) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.runner = runner
+	if t.mediaPublisher != nil {
+		if setter, ok := t.runner.(interface{ SetMediaPublisher(MediaPublisher) }); ok {
+			setter.SetMediaPublisher(t.mediaPublisher)
+		}
+	}
+}
+
+// SetMediaPublisher forwards serve-owned media publication to runners that
+// support child-registry propagation without expanding the public runner API.
+func (t *SpawnAgentTool) SetMediaPublisher(publisher MediaPublisher) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.mediaPublisher = publisher
+	if setter, ok := t.runner.(interface{ SetMediaPublisher(MediaPublisher) }); ok {
+		setter.SetMediaPublisher(publisher)
+	}
 }
 
 // SetDepth sets the current nesting depth for this tool.
@@ -446,9 +464,23 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	var runResult SpawnAgentRunResult
 	var err error
 
-	// Get callback and call ID for event bubbling
-	cb := t.GetEventCallback()
+	// Get callback and call ID for event bubbling. Always use the callback runner
+	// path so nested media can be retained on the parent tool result even when no
+	// live progress consumer is installed.
+	externalCallback := t.GetEventCallback()
 	callID := llm.CallIDFromContext(ctx)
+	var mediaMu sync.Mutex
+	var nestedMedia []llm.MediaArtifact
+	cb := func(eventCallID string, event SubagentEvent) {
+		if event.Type == SubagentEventToolEnd && len(event.Media) > 0 {
+			mediaMu.Lock()
+			nestedMedia = append(nestedMedia, event.Media...)
+			mediaMu.Unlock()
+		}
+		if externalCallback != nil && callID != "" {
+			externalCallback(eventCallID, event)
+		}
+	}
 	modelOverride := requestedModel
 	if modelOverride == "" {
 		modelOverride = strings.TrimSpace(t.config.AgentModels[a.AgentName])
@@ -457,20 +489,10 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	runnerWithOptions, supportsOptions := runner.(SpawnAgentRunnerWithOptions)
 
 	childDepth := currentDepth + 1
-	if cb != nil && callID != "" {
-		// Use callback version for progress reporting
-		if supportsOptions {
-			runResult, err = runnerWithOptions.RunAgentWithCallbackAndOptions(childCtx, a.AgentName, a.Prompt, childDepth, callID, cb, opts)
-		} else {
-			runResult, err = runner.RunAgentWithCallback(childCtx, a.AgentName, a.Prompt, childDepth, callID, cb)
-		}
+	if supportsOptions {
+		runResult, err = runnerWithOptions.RunAgentWithCallbackAndOptions(childCtx, a.AgentName, a.Prompt, childDepth, callID, cb, opts)
 	} else {
-		// Fall back to simple version
-		if supportsOptions {
-			runResult, err = runnerWithOptions.RunAgentWithOptions(childCtx, a.AgentName, a.Prompt, childDepth, opts)
-		} else {
-			runResult, err = runner.RunAgent(childCtx, a.AgentName, a.Prompt, childDepth)
-		}
+		runResult, err = runner.RunAgentWithCallback(childCtx, a.AgentName, a.Prompt, childDepth, callID, cb)
 	}
 	duration := time.Since(start).Milliseconds()
 
@@ -486,7 +508,12 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 		SessionID: runResult.SessionID,
 	}
 	data, _ := json.Marshal(result)
-	return llm.TextOutput(string(data)), nil
+	mediaMu.Lock()
+	media := llm.NormalizeMedia(append([]llm.MediaArtifact(nil), nestedMedia...), nil)
+	mediaMu.Unlock()
+	output := llm.TextOutput(string(data))
+	output.Media = media
+	return output, nil
 }
 
 // Preview returns a short description of the tool call.

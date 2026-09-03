@@ -72,6 +72,7 @@ type MessageBlockRenderer struct {
 	reasoningRenderedCount int
 	reasoningLineOffsets   []int
 	persistedSubagents     map[string]subagentview.CompletedRun
+	mediaByReference       map[string]llm.MediaArtifact
 	firstSegmentType       ui.SegmentType
 	lastSegmentType        ui.SegmentType
 	hasSegmentTypes        bool
@@ -103,13 +104,41 @@ func NewMessageBlockRendererWithContext(width int, mdRenderer MarkdownRenderer, 
 		theme:            sharedTheme,
 		messages:         messages,
 		currentIndex:     index,
+		mediaByReference: collectReferencedMedia(messages),
 		toolsExpanded:    toolsExpanded,
 		reasoningConfig:  config.DefaultReasoningConfig(),
 	}
 }
 
+func collectReferencedMedia(messages []session.Message) map[string]llm.MediaArtifact {
+	media := make(map[string]llm.MediaArtifact)
+	for _, message := range messages {
+		for _, part := range message.Parts {
+			if part.Type != llm.PartToolResult || part.ToolResult == nil {
+				continue
+			}
+			for _, item := range part.ToolResult.Media {
+				if reference := strings.ToLower(strings.TrimSpace(item.Reference)); reference != "" {
+					media[reference] = item
+				}
+			}
+		}
+	}
+	return media
+}
+
 func (r *MessageBlockRenderer) SetPersistedSubagents(runs map[string]subagentview.CompletedRun) {
 	r.persistedSubagents = runs
+	if r.mediaByReference == nil {
+		r.mediaByReference = make(map[string]llm.MediaArtifact)
+	}
+	for _, run := range runs {
+		for _, item := range run.Media {
+			if reference := strings.ToLower(strings.TrimSpace(item.Reference)); reference != "" {
+				r.mediaByReference[reference] = item
+			}
+		}
+	}
 }
 
 // SetImageRenderer configures the renderer used for generated-image artifacts.
@@ -492,7 +521,7 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 						b.WriteString("\n")
 					}
 					if len(run.Images) > 0 {
-						b.WriteString(r.renderToolImages(run.Images))
+						b.WriteString(r.renderToolMedia(llm.NormalizeMedia(nil, run.Images)))
 						r.noteRenderedSegment(ui.SegmentImage)
 					}
 					r.noteRenderedSegment(ui.SegmentTool)
@@ -510,7 +539,7 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 				hasContent = true
 
 				if result != nil && len(result.Images) > 0 {
-					b.WriteString(r.renderToolImages(result.Images))
+					b.WriteString(r.renderToolMedia(llm.NormalizeMedia(nil, result.Images)))
 					r.noteRenderedSegment(ui.SegmentImage)
 				}
 
@@ -678,10 +707,22 @@ func writeWithBlankLineBefore(b *strings.Builder, content string) {
 	b.WriteString(strings.TrimLeft(content, "\n"))
 }
 
-func (r *MessageBlockRenderer) renderToolImages(images []string) string {
+func (r *MessageBlockRenderer) renderToolMedia(media []llm.MediaArtifact) string {
 	var b strings.Builder
-	for _, imagePath := range images {
-		if rendered := ui.RenderImageArtifactWithRenderer(imagePath, r.imageRenderer); rendered != "" {
+	for _, item := range media {
+		mediaPath := item.Path()
+		var rendered string
+		if strings.HasPrefix(strings.ToLower(item.MediaType), "video/") {
+			rendered = ui.RenderMediaLink(item)
+		} else {
+			rendered = ui.RenderImageArtifactWithRenderer(mediaPath, r.imageRenderer)
+			if rendered == "" {
+				rendered = ui.RenderMediaLink(item)
+			} else if item.Caption != "" {
+				rendered += "\n" + item.Caption
+			}
+		}
+		if rendered != "" {
 			b.WriteString(rendered)
 			if !strings.HasSuffix(rendered, "\n") {
 				b.WriteString("\n")
@@ -786,10 +827,13 @@ func (r *MessageBlockRenderer) renderMarkdown(content string) string {
 	if content == "" {
 		return ""
 	}
-	if r.markdownRenderer == nil {
-		return content
+	base := func(value string) string {
+		if r.markdownRenderer == nil {
+			return value
+		}
+		return r.markdownRenderer(value, r.width)
 	}
-	return r.markdownRenderer(content, r.width)
+	return ui.RenderMediaMarkdown(content, r.mediaByReference, base, r.imageRenderer)
 }
 
 // countLines counts the number of newlines in a string.

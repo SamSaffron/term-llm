@@ -932,4 +932,44 @@ describe('transcript domain', () => {
     expect(merged[0].tools?.map((tool) => tool.id)).toEqual(['c1']);
     expect(merged[2].tools?.map((tool) => tool.id)).toEqual(['c2']);
   });
+
+  it('projects durable typed media and rebases its URL', () => {
+    const messages = convertServerMessages(
+      [
+        {
+          id: 1,
+          role: 'assistant',
+          parts: [{ type: 'tool_call', tool_call_id: 'm1', tool_name: 'show_media' }],
+        },
+        {
+          id: 2,
+          role: 'tool',
+          parts: [
+            {
+              type: 'tool_result',
+              tool_call_id: 'm1',
+              tool_name: 'show_media',
+              media: [
+                {
+                  reference: '0123456789abcdef0123456789abcdef',
+                  url: '/media/hash.mp4',
+                  type: 'video/mp4',
+                  name: 'demo.mp4',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      { rebaseAssetURL: (value) => `/node/demo${value}` },
+    );
+    expect(messages[0].tools?.[0].media).toEqual([
+      {
+        reference: '0123456789abcdef0123456789abcdef',
+        url: '/node/demo/media/hash.mp4',
+        type: 'video/mp4',
+        name: 'demo.mp4',
+      },
+    ]);
+  });
 });

@@ -216,6 +216,11 @@ func (b *askProgressiveBridge) HandleEvent(event llm.Event) error {
 				return err
 			}
 		}
+		for _, media := range event.ToolMedia {
+			if err := b.send(ui.MediaEvent(media)); err != nil {
+				return err
+			}
+		}
 		for _, d := range event.ToolDiffs {
 			if err := b.send(ui.DiffEventWithOperation(d.File, d.Old, d.New, d.Line, d.Operation)); err != nil {
 				return err

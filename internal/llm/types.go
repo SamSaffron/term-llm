@@ -726,13 +726,73 @@ type ToolContentPart struct {
 	ImageData *ToolImageData      `json:"image_data,omitempty"`
 }
 
+// MediaArtifact describes a local image or video produced for presentation to
+// the user. SourcePath remains useful to local terminal surfaces; StoredPath is
+// an optional durable copy owned by a serve runtime. Neither path is sent to a
+// browser directly.
+type MediaArtifact struct {
+	Reference  string `json:"reference,omitempty"`
+	SourcePath string `json:"source_path,omitempty"`
+	StoredPath string `json:"stored_path,omitempty"`
+	MediaType  string `json:"media_type,omitempty"`
+	Name       string `json:"name,omitempty"`
+	Caption    string `json:"caption,omitempty"`
+}
+
+// Path returns the durable copy when available, falling back to the approved
+// source path for local-only terminal sessions.
+func (m MediaArtifact) Path() string {
+	if m.StoredPath != "" {
+		return m.StoredPath
+	}
+	return m.SourcePath
+}
+
+// PublishedPath returns the durable path preferred by remote serve surfaces.
+func (m MediaArtifact) PublishedPath() string {
+	if m.StoredPath != "" {
+		return m.StoredPath
+	}
+	return m.SourcePath
+}
+
+// NormalizeMedia combines structured media with legacy image paths while
+// preserving order and suppressing duplicate paths.
+func NormalizeMedia(media []MediaArtifact, images []string) []MediaArtifact {
+	out := make([]MediaArtifact, 0, len(media)+len(images))
+	seen := make(map[string]struct{}, len(media)+len(images))
+	appendOne := func(item MediaArtifact) {
+		path := item.Path()
+		key := path
+		if reference := strings.ToLower(strings.TrimSpace(item.Reference)); reference != "" {
+			key = "reference:" + reference
+		}
+		if key == "" {
+			return
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, item)
+	}
+	for _, item := range media {
+		appendOne(item)
+	}
+	for _, imagePath := range images {
+		appendOne(MediaArtifact{SourcePath: imagePath, MediaType: "image/*"})
+	}
+	return out
+}
+
 // ToolOutput is the structured return type from Tool.Execute().
-// Most tools only populate Content. Edit/image tools also populate Diffs/Images.
+// Most tools only populate Content. Edit/media tools also populate Diffs/Media.
 type ToolOutput struct {
 	Content                string                         // Text result (sent to LLM)
 	ContentParts           []ToolContentPart              `json:"content_parts,omitempty"` // Structured multimodal tool content for provider formatting
 	Diffs                  []DiffData                     // Structured diff data (for UI rendering)
-	Images                 []string                       // Image paths (for UI rendering)
+	Images                 []string                       // Legacy image paths (for UI rendering)
+	Media                  []MediaArtifact                `json:"media,omitempty"`        // Ordered image/video artifacts for UI rendering
 	FileChanges            []FileChange                   `json:"file_changes,omitempty"` // Persisted attributed changes only
 	FilesystemObservations []FilesystemObservationSummary `json:"filesystem_observations,omitempty"`
 	OutputClaimDiagnostics []OutputClaimDiagnostic        `json:"output_claim_diagnostics,omitempty"`
@@ -754,7 +814,8 @@ type ToolResult struct {
 	ContentParts    []ToolContentPart `json:"content_parts,omitempty"` // Structured multimodal tool content
 	Display         string            // Deprecated: old marker-based output. Kept only for deserializing pre-structured sessions. TODO: remove once no saved sessions use Display-based diff markers.
 	Diffs           []DiffData        `json:"diffs,omitempty"`            // Structured diff data
-	Images          []string          `json:"images,omitempty"`           // Image paths
+	Images          []string          `json:"images,omitempty"`           // Legacy image paths
+	Media           []MediaArtifact   `json:"media,omitempty"`            // Ordered image/video artifacts
 	GuardianReviews []GuardianReview  `json:"guardian_reviews,omitempty"` // Display-only Guardian audit metadata
 	IsError         bool              // True if this result represents a tool execution error
 	Caller          string            `json:",omitempty"` // PTC caller provenance.
@@ -833,7 +894,8 @@ type Event struct {
 	ToolFileChanges            []FileChange    // Persisted attributed changes
 	ToolFilesystemObservations []FilesystemObservationSummary
 	ToolOutputClaimDiagnostics []OutputClaimDiagnostic
-	ToolImages                 []string // For EventToolExecEnd: image paths from image tools
+	ToolImages                 []string        // Legacy image paths from image tools
+	ToolMedia                  []MediaArtifact // Ordered image/video artifacts from presentation tools
 	Use                        *Usage
 	Err                        error
 	// Retry fields (for EventRetry). RetryMaxAttempts == 0 means the retry
@@ -1082,6 +1144,7 @@ func ToolResultMessageFromOutput(id, name string, output ToolOutput, thoughtSig 
 				ContentParts:    output.ContentParts,
 				Diffs:           output.Diffs,
 				Images:          output.Images,
+				Media:           append([]MediaArtifact(nil), output.Media...),
 				GuardianReviews: append([]GuardianReview(nil), output.GuardianReviews...),
 				IsError:         output.IsError || output.TimedOut,
 				ThoughtSig:      thoughtSig,

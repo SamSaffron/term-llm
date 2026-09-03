@@ -3,6 +3,8 @@ package serve
 import (
 	"strings"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/llm"
 )
 
 func TestMdToTelegramHTML(t *testing.T) {
@@ -101,5 +103,37 @@ func TestMdToTelegramHTML(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestTelegramProseChunkDoesNotSplitMediaReference(t *testing.T) {
+	const reference = "0123456789abcdef0123456789abcdef"
+	token := "![Chart](term-llm-media://" + reference + ")"
+	input := strings.Repeat("a", telegramMaxMessageLen-8) + token
+	first, split := telegramProseChunk(input)
+	if strings.Contains(first, "term-llm-media://") || split != telegramMaxMessageLen-8 {
+		t.Fatalf("first chunk split=%d content tail=%q", split, first[max(0, len(first)-32):])
+	}
+	second, _ := telegramProseChunk(input[split:])
+	if second != token || telegramMediaMarkdownPattern.ReplaceAllString(second, "$1") != "Chart" {
+		t.Fatalf("second chunk = %q", second)
+	}
+}
+
+func TestReferencedTelegramMediaFollowsAssistantOrder(t *testing.T) {
+	const first = "0123456789abcdef0123456789abcdef"
+	const second = "fedcba9876543210fedcba9876543210"
+	media := []llm.MediaArtifact{
+		{Reference: first, Name: "first.png"},
+		{Reference: second, Name: "second.mp4"},
+		{Reference: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Name: "unused.png"},
+	}
+	text := "![Video](term-llm-media://" + second + ") then ![Image](term-llm-media://" + first + ") and ![again](term-llm-media://" + second + ")"
+	got := referencedTelegramMedia(text, media)
+	if len(got) != 2 || got[0].Reference != second || got[1].Reference != first {
+		t.Fatalf("referencedTelegramMedia() = %#v", got)
+	}
+	if prose := telegramMediaMarkdownPattern.ReplaceAllString(text, "$1"); strings.Contains(prose, "term-llm-media://") || !strings.Contains(prose, "Video then Image") {
+		t.Fatalf("telegram prose = %q", prose)
 	}
 }

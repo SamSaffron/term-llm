@@ -939,6 +939,7 @@ type sessionMessagePartEntry struct {
 	AskUserSummary  string                         `json:"ask_user_summary,omitempty"`
 	ImageURL        string                         `json:"image_url,omitempty"`
 	Images          []string                       `json:"images,omitempty"`
+	Media           []webMediaEntry                `json:"media,omitempty"`
 	ToolError       bool                           `json:"tool_error,omitempty"`
 	GuardianReviews []llm.GuardianReview           `json:"guardian_reviews,omitempty"`
 	SpawnAgent      *tools.SpawnAgentResult        `json:"spawn_agent,omitempty"`
@@ -1901,7 +1902,7 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 							spawnResult.SessionID = s.validatedSpawnChildID(parentSessionID, spawnResult.SessionID)
 						}
 					}
-					includeResult := p.ToolResult.IsError || len(p.ToolResult.Images) > 0 || len(p.ToolResult.GuardianReviews) > 0 || isPlanResult || isAskUserResult || spawnResult != nil
+					includeResult := p.ToolResult.IsError || len(p.ToolResult.Images) > 0 || len(p.ToolResult.Media) > 0 || len(p.ToolResult.GuardianReviews) > 0 || isPlanResult || isAskUserResult || spawnResult != nil
 					if !includeResult {
 						continue
 					}
@@ -1922,6 +1923,9 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 					}
 					if len(p.ToolResult.Images) > 0 {
 						pe.Images = s.toolImageURLs(p.ToolResult.Images)
+					}
+					if len(p.ToolResult.Media) > 0 {
+						pe.Media = s.toolMediaEntries(p.ToolResult.Media)
 					}
 					entry.Parts = append(entry.Parts, pe)
 				}

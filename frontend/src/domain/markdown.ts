@@ -1,5 +1,5 @@
 import DOMPurify from 'dompurify';
-import { marked } from 'marked';
+import { marked, Renderer } from 'marked';
 import { findStableMarkdownBoundary, isInCodeBlockFast } from './markdown-streaming';
 
 const escapeHTML = (value: unknown): string =>
@@ -59,9 +59,45 @@ export function sanitizeMarkdownHTML(source: string): string {
   });
 }
 
-export function renderMarkdown(source: string): string {
+export interface MarkdownMediaTarget {
+  url: string;
+  type: 'image' | 'video';
+}
+
+export type MarkdownMediaResolver = (reference: string) => MarkdownMediaTarget | undefined;
+
+function mediaRenderer(resolveMedia: MarkdownMediaResolver): Renderer {
+  const renderer = new Renderer();
+  renderer.link = function ({ href, title, tokens }) {
+    const label = this.parser.parseInline(tokens);
+    const safeTitle = title ? ` title="${escapeHTML(title)}"` : '';
+    return `<a href="${escapeHTML(href)}"${safeTitle} target="_blank" rel="noopener noreferrer">${label}</a>`;
+  };
+  const defaultImage = renderer.image.bind(renderer);
+  renderer.image = function (token) {
+    const prefix = 'term-llm-media://';
+    if (!token.href.startsWith(prefix)) return defaultImage(token);
+    const label = token.text.trim() || 'Media';
+    const reference = token.href.slice(prefix.length).trim().toLowerCase();
+    if (!/^[a-f0-9]{32}$/.test(reference))
+      return `<span class="media-reference-missing">[${escapeHTML(label)} unavailable]</span>`;
+    const media = resolveMedia(reference);
+    if (!media)
+      return `<span class="media-reference-missing">[${escapeHTML(label)} unavailable]</span>`;
+    if (media.type === 'video') {
+      return `<video src="${escapeHTML(media.url)}" controls playsinline preload="metadata" aria-label="${escapeHTML(label)}"></video>`;
+    }
+    return `<img src="${escapeHTML(media.url)}" alt="${escapeHTML(label)}">`;
+  };
+  return renderer;
+}
+
+export function renderMarkdown(source: string, resolveMedia?: MarkdownMediaResolver): string {
   const math = protectMath(source || '');
-  let rendered = marked.parse(math.source, { async: false }) as string;
+  const options = resolveMedia
+    ? { async: false as const, renderer: mediaRenderer(resolveMedia) }
+    : { async: false as const };
+  let rendered = marked.parse(math.source, options) as string;
   rendered = rendered.replace(/TERM_LLM_MATH_(\d+)_TOKEN/g, (_match, index: string) =>
     escapeHTML(math.values[Number(index)] || ''),
   );

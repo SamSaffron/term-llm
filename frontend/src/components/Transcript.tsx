@@ -7,10 +7,24 @@ import { ChipPicker } from './ChipPicker';
 import { Icon } from './Icon';
 import { copyText } from '../platform/browser';
 import { rebaseHubAssetURL } from '../app/config';
+import type { MarkdownMediaResolver } from '../domain/markdown';
 import { responseActivity } from '../domain/activity';
 import type { AppStore } from '../stores/app-store';
 import { TRANSCRIPT_SCROLL_TO_TAIL_EVENT } from './transcript-scroll';
 import { formatElapsedDuration, subscribeElapsedClock } from '../platform/elapsed-clock';
+
+function publishedMediaURL(store: AppStore, value: string): string {
+  const rebased = rebaseHubAssetURL(store.config, value);
+  try {
+    const url = new URL(rebased, location.href);
+    if (url.origin !== location.origin || url.search || url.hash) return '';
+    if (!/\/media\/[a-f0-9]{32}\.(?:png|jpe?g|gif|webp|bmp|mp4|webm)$/i.test(url.pathname))
+      return '';
+    return rebased;
+  } catch {
+    return '';
+  }
+}
 
 function openMediaGallery(store: AppStore, src: string, type: 'image' | 'video'): void {
   const nodes = [...document.querySelectorAll<HTMLElement>('[data-lightbox-src]')];
@@ -293,16 +307,43 @@ function ElapsedDuration({
   );
 }
 
+function LegacyToolImages({ tool }: { tool: ToolCall }) {
+  const store = useStore();
+  if (!tool.images?.length) return null;
+  return (
+    <div class="tool-legacy-images">
+      {tool.images.map((raw) => {
+        const src = rebaseHubAssetURL(store.config, raw);
+        return (
+          <button
+            class="message-image-button"
+            type="button"
+            key={src}
+            data-lightbox-src={src}
+            data-lightbox-type="image"
+            data-lightbox-name={`${tool.name} output`}
+            onClick={() => openMediaGallery(store, src, 'image')}
+          >
+            <img src={src} alt={`${tool.name} output`} loading="lazy" />
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function Tool({
   tool,
   expanded: controlledExpanded,
   onToggle,
   tickElapsed = true,
+  resolveMedia,
 }: {
   tool: ToolCall;
   expanded?: boolean;
   onToggle?: () => void;
   tickElapsed?: boolean;
+  resolveMedia?: MarkdownMediaResolver;
 }) {
   const store = useStore();
   const failed = tool.status === 'error' || tool.resultStatus === 'error';
@@ -388,6 +429,7 @@ function Tool({
             {status}
           </span>
         </button>
+        <LegacyToolImages tool={tool} />
         {expanded && (
           <div class="tool-details open">
             {tool.name === 'ask_user' ? (
@@ -421,7 +463,12 @@ function Tool({
               <div class="subagent-result">
                 <strong>{String(tool.subagent.agentName || 'Agent')}</strong>
                 {tool.subagent.output && (
-                  <Markdown value={String(tool.subagent.output)} className="markdown-body" />
+                  <Markdown
+                    value={String(tool.subagent.output)}
+                    className="markdown-body"
+                    resolveMedia={resolveMedia}
+                    onMedia={(source, type) => openMediaGallery(store, source, type)}
+                  />
                 )}
                 {tool.subagent.childSessionId && (
                   <button
@@ -438,23 +485,6 @@ function Tool({
                 )}
               </div>
             )}
-            {tool.images?.map((raw) => {
-              const src = rebaseHubAssetURL(store.config, raw);
-              return (
-                <button
-                  class="message-image-button"
-                  key={src}
-                  data-lightbox-src={src}
-                  data-lightbox-type="image"
-                  data-lightbox-name={`${tool.name} output`}
-                  onClick={() => {
-                    openMediaGallery(store, src, 'image');
-                  }}
-                >
-                  <img src={src} alt={`${tool.name} output`} loading="lazy" />
-                </button>
-              );
-            })}
             {failureReason && (
               <div class="tool-failure-reason" role="alert">
                 <strong>Failure</strong>
@@ -468,7 +498,13 @@ function Tool({
   );
 }
 
-function ToolGroup({ tools }: { tools: ToolCall[] }) {
+function ToolGroup({
+  tools,
+  resolveMedia,
+}: {
+  tools: ToolCall[];
+  resolveMedia: MarkdownMediaResolver;
+}) {
   const visible = tools.filter(
     (tool) =>
       !(tool.name === 'update_plan' && tool.status === 'done' && tool.resultStatus !== 'error'),
@@ -478,7 +514,12 @@ function ToolGroup({ tools }: { tools: ToolCall[] }) {
   if (!visible.length) return null;
   if (visible.length === 1)
     return (
-      <Tool tool={visible[0]} expanded={expanded} onToggle={() => setExpanded((value) => !value)} />
+      <Tool
+        tool={visible[0]}
+        expanded={expanded}
+        onToggle={() => setExpanded((value) => !value)}
+        resolveMedia={resolveMedia}
+      />
     );
   const names = [...new Set(visible.map((tool) => tool.name))];
   const stopped = !running && visible.some((tool) => tool.status === 'cancelled');
@@ -527,7 +568,7 @@ function ToolGroup({ tools }: { tools: ToolCall[] }) {
               {toolIcon(tool.name)}
             </span>
             <div class="tool-group-entry-body">
-              <Tool tool={tool} tickElapsed={expanded} />
+              <Tool tool={tool} tickElapsed={expanded} resolveMedia={resolveMedia} />
             </div>
           </div>
         ))}
@@ -694,11 +735,13 @@ function MessageRow({
   streaming,
   responseText,
   copyTarget,
+  resolveMedia,
 }: {
   message: Message;
   streaming: boolean;
   responseText: string;
   copyTarget: boolean;
+  resolveMedia: MarkdownMediaResolver;
 }) {
   const store = useStore();
   const [expanded, setExpanded] = useState(false);
@@ -712,7 +755,7 @@ function MessageRow({
   if (message.role === 'tool-group')
     return (
       <div class="tool-group" data-message-id={message.id}>
-        <ToolGroup tools={message.tools || []} />
+        <ToolGroup tools={message.tools || []} resolveMedia={resolveMedia} />
       </div>
     );
   if (message.role === 'compaction' || message.role === 'compaction-boundary')
@@ -873,6 +916,7 @@ function MessageRow({
               streaming={streaming}
               className="markdown-body"
               rebase={rebase}
+              resolveMedia={resolveMedia}
               onMedia={media}
             />
           ) : (
@@ -985,6 +1029,32 @@ export function Transcript() {
   const [clock, setClock] = useState(0);
   const anchorHeight = useRef(0);
   const messages = store.visibleMessages.value;
+  const mediaByReference = useMemo(() => {
+    const artifacts = new Map<string, { url: string; type: 'image' | 'video' }>();
+    for (const message of messages) {
+      for (const tool of message.tools || []) {
+        for (const media of tool.media || []) {
+          const reference = String(media.reference || '')
+            .trim()
+            .toLowerCase();
+          if (!reference || artifacts.has(reference)) continue;
+          const url = publishedMediaURL(store, media.url);
+          if (!url) continue;
+          artifacts.set(reference, {
+            url,
+            type: media.type.startsWith('video/') ? 'video' : 'image',
+          });
+        }
+      }
+    }
+    return artifacts;
+  }, [messages, store]);
+  const mediaByReferenceRef = useRef(mediaByReference);
+  mediaByReferenceRef.current = mediaByReference;
+  const resolveMedia = useCallback<MarkdownMediaResolver>(
+    (reference) => mediaByReferenceRef.current.get(reference.toLowerCase()),
+    [],
+  );
   const runs = useMemo(
     () => windowTranscript(messages, turnLimit, nearTail),
     [messages, turnLimit, nearTail],
@@ -1158,6 +1228,7 @@ export function Transcript() {
                   streaming={streaming}
                   responseText={context?.responseText || message.content}
                   copyTarget={context?.copyTarget === true}
+                  resolveMedia={resolveMedia}
                 />
               );
             })

@@ -4,7 +4,7 @@ agents_md: "true"
 skills: "all"
 
 tools:
-  enabled: [read_file, write_file, edit_file, glob, grep, shell, view_image, ask_user, spawn_agent, update_plan]
+  enabled: [read_file, write_file, edit_file, glob, grep, shell, view_image, show_media, ask_user, spawn_agent, update_plan]
 
 spawn:
   allowed_agents:

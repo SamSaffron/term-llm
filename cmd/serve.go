@@ -127,6 +127,7 @@ All HTTP routes are mounted under --base-path (default /ui):
   GET  {base}/healthz
   GET  {base}/                       (web UI)
   GET  {base}/images/:file
+  GET  {base}/media/:file
 
 Jobs endpoints (also under base-path):
   POST   {base}/v2/jobs
@@ -526,6 +527,10 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	}
 
 	forceExternalSearch := resolveForceExternalSearch(cfg, serveNativeSearch, serveNoNativeSearch)
+	mediaPublisher, err := newServeMediaPublisher()
+	if err != nil {
+		return fmt.Errorf("initialize media publisher: %w", err)
+	}
 
 	// Parse --tool-map entries ("ClientName:ServerName")
 	var toolMap map[string]string
@@ -616,6 +621,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 				imageBaseURL = strings.TrimRight(serveBasePath, "/") + "/images/"
 			}
 			runtime.toolMgr.Registry.SetServeMode(true, imageBaseURL)
+			runtime.toolMgr.Registry.SetMediaPublisher(mediaPublisher)
 			if !resolvedYolo {
 				runtime.toolMgr.ApprovalMgr.IgnoreProjectApprovals = true
 				runtime.toolMgr.ApprovalMgr.DebugApproval = serveDebug
@@ -777,6 +783,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			jobsV2:              jobsV2,
 			cfgRef:              cfg,
 			store:               store,
+			mediaPublisher:      mediaPublisher,
 			approvalDefault:     resolvedApproval.Mode,
 			projectsEnabled:     projectsEnabled,
 			bootstrapProjectID:  bootstrapProjectID,
@@ -1180,6 +1187,9 @@ func (c serveServerConfig) uiRoute() string { return c.basePath + "/" }
 // imagesRoute returns the images sub-route, e.g. "/ui/images/" or "/chat/images/".
 func (c serveServerConfig) imagesRoute() string { return c.basePath + "/images/" }
 
+// mediaRoute returns the durable media sub-route.
+func (c serveServerConfig) mediaRoute() string { return c.basePath + "/media/" }
+
 // filesRoute returns the files sub-route, e.g. "/ui/files/" or "/chat/files/".
 func (c serveServerConfig) filesRoute() string { return c.basePath + "/files/" }
 
@@ -1314,6 +1324,7 @@ type serveServer struct {
 	jobsV2                   *jobsV2Manager
 	cfgRef                   *config.Config
 	store                    session.Store
+	mediaPublisher           *serveMediaPublisher
 	approvalDefault          tools.ApprovalMode
 	sharePublisherFactory    func() (share.Publisher, error)
 	shareMu                  sync.Mutex
@@ -1499,6 +1510,7 @@ func (s *serveServer) httpHandler() http.Handler {
 	}
 
 	inner.HandleFunc("/images/", s.auth(s.cors(s.handleImage)))
+	inner.HandleFunc("/media/", s.auth(s.cors(s.handleMedia)))
 	if s.cfg.filesDir != "" {
 		inner.HandleFunc("/files/", s.auth(s.cors(s.handleFile)))
 	}

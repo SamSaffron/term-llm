@@ -125,6 +125,7 @@ const (
 	GlobToolName             = "glob"
 	ViewImageToolName        = "view_image"
 	ShowImageToolName        = "show_image"
+	ShowMediaToolName        = "show_media"
 	ImageGenerateToolName    = "image_generate"
 	AskUserToolName          = "ask_user"
 	SpawnAgentToolName       = "spawn_agent"
@@ -154,7 +155,7 @@ func StandardToolNames() []string {
 		GrepToolName,
 		GlobToolName,
 		ViewImageToolName,
-		ShowImageToolName,
+		ShowMediaToolName,
 		ImageGenerateToolName,
 		AskUserToolName,
 		SpawnAgentToolName,
@@ -201,6 +202,7 @@ var validToolNames = map[string]bool{
 	GlobToolName:               true,
 	ViewImageToolName:          true,
 	ShowImageToolName:          true,
+	ShowMediaToolName:          true,
 	ImageGenerateToolName:      true,
 	AskUserToolName:            true,
 	SpawnAgentToolName:         true,
@@ -230,7 +232,7 @@ func GetToolKind(specName string) ToolKind {
 		return KindSearch
 	case ShellToolName:
 		return KindExecute
-	case ImageGenerateToolName, ShowImageToolName:
+	case ImageGenerateToolName, ShowImageToolName, ShowMediaToolName:
 		return KindImage
 	case AskUserToolName:
 		return KindInteractive

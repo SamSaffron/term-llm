@@ -336,6 +336,11 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 					return
 				}
 			}
+			for _, media := range event.ToolMedia {
+				if !emit(MediaEvent(media)) {
+					return
+				}
+			}
 			// Emit diff events from structured data
 			for _, d := range event.ToolDiffs {
 				if !emit(DiffEventWithOperation(d.File, d.Old, d.New, d.Line, d.Operation)) {

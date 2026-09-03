@@ -25,10 +25,11 @@ type LocalToolRegistry struct {
 	limits      OutputLimits
 	appConfig   *config.Config
 
-	memoryStore  ImageRecorder
-	agent        string
-	sessionID    string
-	fileRecorder FileChangeRecorder
+	memoryStore    ImageRecorder
+	agent          string
+	sessionID      string
+	fileRecorder   FileChangeRecorder
+	mediaPublisher MediaPublisher
 
 	// Registered tools
 	tools map[string]llm.Tool
@@ -163,7 +164,7 @@ func (r *LocalToolRegistry) registerEnabledTools() error {
 func IsPathCapableTool(name string) bool {
 	switch name {
 	case ReadFileToolName, WriteFileToolName, EditFileToolName, UnifiedDiffToolName,
-		GrepToolName, GlobToolName, ViewImageToolName, ShowImageToolName, ImageGenerateToolName:
+		GrepToolName, GlobToolName, ViewImageToolName, ShowImageToolName, ShowMediaToolName, ImageGenerateToolName:
 		return true
 	default:
 		return false
@@ -197,6 +198,10 @@ func (r *LocalToolRegistry) registerTool(specName string) error {
 		tool = NewViewImageTool(r.approval, r.config)
 	case ShowImageToolName:
 		tool = NewShowImageTool(r.approval, r.config)
+	case ShowMediaToolName:
+		mediaTool := NewShowMediaTool(r.approval, r.config)
+		mediaTool.SetPublisher(r.mediaPublisher)
+		tool = mediaTool
 	case ImageGenerateToolName:
 		tool = NewImageGenerateTool(r.approval, r.appConfig, r.config.ImageProvider, r.memoryStore, r.agent, r.sessionID, r.config)
 	case AskUserToolName:
@@ -420,6 +425,29 @@ func (r *LocalToolRegistry) SetServeMode(enabled bool, imageBaseURL string) {
 			si.serveMode = enabled
 		}
 	}
+}
+
+// SetMediaPublisher installs durable media publication for show_media. It is
+// intentionally separate from SetServeMode so legacy show_image behavior is
+// unchanged.
+func (r *LocalToolRegistry) SetMediaPublisher(publisher MediaPublisher) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.mediaPublisher = publisher
+	if tool, ok := r.tools[ShowMediaToolName].(*ShowMediaTool); ok {
+		tool.SetPublisher(publisher)
+	}
+	if tool, ok := r.tools[SpawnAgentToolName].(*SpawnAgentTool); ok {
+		tool.SetMediaPublisher(publisher)
+	}
+}
+
+// MediaPublisher returns the publisher configured for this registry, including
+// registries whose own enabled tool set does not contain show_media.
+func (r *LocalToolRegistry) MediaPublisher() MediaPublisher {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.mediaPublisher
 }
 
 // ToolManager provides a high-level interface for tool management in commands.

@@ -4,7 +4,7 @@ description: "Image generation and editing expert"
 agents_md: "false"
 
 tools:
-  enabled: [image_generate, view_image, read_file, glob, grep, shell, ask_user]
+  enabled: [image_generate, view_image, show_media, read_file, glob, grep, shell, ask_user]
 
 shell:
   allow: ["file *", "ls *", "identify *"]

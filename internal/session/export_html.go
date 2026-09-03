@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"html/template"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -192,8 +193,58 @@ func htmlProviderModelLabel(provider, model string) string {
 	return provider + " · " + model
 }
 
+var htmlMediaReferencePattern = regexp.MustCompile(`!\[([^\]\n]*)\]\(term-llm-media://([A-Fa-f0-9]{32})\)`)
+
+func htmlMediaReferences(messages []Message) map[string]llm.MediaArtifact {
+	media := make(map[string]llm.MediaArtifact)
+	for _, message := range messages {
+		for _, part := range message.Parts {
+			if part.Type != llm.PartToolResult || part.ToolResult == nil {
+				continue
+			}
+			for _, item := range part.ToolResult.Media {
+				if reference := strings.ToLower(strings.TrimSpace(item.Reference)); reference != "" {
+					media[reference] = item
+				}
+			}
+		}
+	}
+	return media
+}
+
+func replaceHTMLMediaReferences(value string, media map[string]llm.MediaArtifact) string {
+	return htmlMediaReferencePattern.ReplaceAllStringFunc(value, func(token string) string {
+		match := htmlMediaReferencePattern.FindStringSubmatch(token)
+		if len(match) != 3 {
+			return token
+		}
+		item, ok := media[strings.ToLower(match[2])]
+		if !ok {
+			label := strings.Join(strings.Fields(match[1]), " ")
+			if label != "" {
+				return "Media: " + label + " — unavailable in exported transcript"
+			}
+			return "Media unavailable in exported transcript"
+		}
+		kind := "Image"
+		if strings.HasPrefix(strings.ToLower(item.MediaType), "video/") {
+			kind = "Video"
+		}
+		label := strings.TrimSpace(match[1])
+		if label == "" {
+			label = strings.TrimSpace(item.Name)
+		}
+		label = strings.Join(strings.Fields(label), " ")
+		if label != "" {
+			return kind + ": " + label + " — not embedded in exported transcript"
+		}
+		return kind + " — not embedded in exported transcript"
+	})
+}
+
 func buildHTMLExportMessages(messages []Message, opts ExportOptions) ([]htmlExportMessage, int) {
 	markdown := goldmark.New(goldmark.WithExtensions(extension.GFM))
+	mediaReferences := htmlMediaReferences(messages)
 	views := make([]htmlExportMessage, 0, len(messages))
 	pending := make(map[string]pendingHTMLTool)
 	inlineBytes := 0
@@ -221,7 +272,8 @@ func buildHTMLExportMessages(messages []Message, opts ExportOptions) ([]htmlExpo
 					detailCount++
 				}
 				if part.Text != "" {
-					view.Blocks = append(view.Blocks, htmlExportBlock{Kind: "markdown", HTML: renderSafeMarkdown(markdown, part.Text)})
+					text := replaceHTMLMediaReferences(part.Text, mediaReferences)
+					view.Blocks = append(view.Blocks, htmlExportBlock{Kind: "markdown", HTML: renderSafeMarkdown(markdown, text)})
 				}
 			case llm.PartImage:
 				image := buildHTMLImage(part.ImageData, &inlineBytes)
@@ -252,7 +304,8 @@ func buildHTMLExportMessages(messages []Message, opts ExportOptions) ([]htmlExpo
 			}
 		}
 		if compaction && len(view.Blocks) == 0 && msg.TextContent != "" {
-			view.Blocks = append(view.Blocks, htmlExportBlock{Kind: "markdown", HTML: renderSafeMarkdown(markdown, msg.TextContent)})
+			text := replaceHTMLMediaReferences(msg.TextContent, mediaReferences)
+			view.Blocks = append(view.Blocks, htmlExportBlock{Kind: "markdown", HTML: renderSafeMarkdown(markdown, text)})
 		}
 		views = append(views, view)
 	}

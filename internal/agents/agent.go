@@ -386,9 +386,12 @@ func (a *Agent) GetEnabledTools(allTools []string) []string {
 		}
 		var enabled []string
 		for _, t := range allTools {
-			if !disabled[t] {
-				enabled = append(enabled, t)
+			// show_media replaces show_image in implicit tool sets. Preserve the
+			// intent of existing deny lists that disabled the legacy presenter.
+			if disabled[t] || (t == "show_media" && disabled["show_image"]) {
+				continue
 			}
+			enabled = append(enabled, t)
 		}
 		return enabled
 	}

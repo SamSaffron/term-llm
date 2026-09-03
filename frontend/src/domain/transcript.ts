@@ -3,6 +3,7 @@ import type {
   Attachment,
   DiffComment,
   GuardianReview,
+  MediaArtifact,
   Message,
   Session,
   ToolCall,
@@ -27,6 +28,25 @@ const text = (value: unknown): string =>
   typeof value === 'string' ? value : value == null ? '' : String(value);
 const record = (value: unknown): Record<string, unknown> | null =>
   Boolean(value) && typeof value === 'object' ? (value as Record<string, unknown>) : null;
+const mediaArtifacts = (value: unknown, rebase: (value: string) => string): MediaArtifact[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((raw): MediaArtifact | null => {
+      const item = record(raw);
+      if (!item) return null;
+      const url = rebase(text(item.url));
+      const type = text(item.type || item.media_type);
+      if (!url || (!type.startsWith('image/') && !type.startsWith('video/'))) return null;
+      return {
+        url,
+        type,
+        ...(text(item.reference) ? { reference: text(item.reference) } : {}),
+        ...(text(item.name) ? { name: text(item.name) } : {}),
+        ...(text(item.caption) ? { caption: text(item.caption) } : {}),
+      };
+    })
+    .filter((item): item is MediaArtifact => item !== null);
+};
 
 export interface ServerPart {
   type?: string;
@@ -124,7 +144,13 @@ function messageFingerprint(message: Message): string {
     content: message.content,
     client: message.clientMessageId || '',
     tools:
-      message.tools?.map((tool) => [tool.name, tool.arguments, tool.status, tool.images]) || [],
+      message.tools?.map((tool) => [
+        tool.name,
+        tool.arguments,
+        tool.status,
+        tool.images,
+        tool.media,
+      ]) || [],
     attachments:
       message.attachments?.map((item) => [item.name, item.type, item.url || item.dataURL]) || [],
   });
@@ -521,6 +547,21 @@ export function convertServerMessages(
           ? part.images.map((url) => rebase(text(url))).filter(Boolean)
           : [];
         if (images.length) tool.images = [...new Set([...(tool.images || []), ...images])];
+        const media = mediaArtifacts(part.media, rebase);
+        if (media.length) {
+          const byKey = new Map(
+            (tool.media || []).map((item) => [
+              item.reference ? `reference:${item.reference}` : `${item.type}\n${item.url}`,
+              item,
+            ]),
+          );
+          for (const item of media)
+            byKey.set(
+              item.reference ? `reference:${item.reference}` : `${item.type}\n${item.url}`,
+              item,
+            );
+          tool.media = [...byKey.values()];
+        }
         continue;
       }
       if (part.type === 'tool_result') {
@@ -530,13 +571,14 @@ export function convertServerMessages(
         const images = Array.isArray(part.images)
           ? part.images.map((url) => rebase(text(url))).filter(Boolean)
           : [];
+        const media = mediaArtifacts(part.media, rebase);
         let tool = current ? findTool(current, callID, name) : undefined;
         const reviews = guardianReviews(part.guardian_reviews);
         const askAnswer =
           callID && !part.tool_error && name === 'ask_user'
             ? text(part.ask_user_summary).trim()
             : '';
-        if (!tool && !images.length && !reviews?.length && !askAnswer) continue;
+        if (!tool && !images.length && !media.length && !reviews?.length && !askAnswer) continue;
         const target = current || ensureGroup(message, index);
         tool ||= {
           id: callID || `${messageID}_tool_${index}`,
@@ -550,6 +592,20 @@ export function convertServerMessages(
         tool.guardianReviews = reviews || tool.guardianReviews;
         if (askAnswer && tool.name === 'ask_user') tool.askUserAnswer = askAnswer;
         if (images.length) tool.images = [...new Set([...(tool.images || []), ...images])];
+        if (media.length) {
+          const byKey = new Map(
+            (tool.media || []).map((item) => [
+              item.reference ? `reference:${item.reference}` : `${item.type}\n${item.url}`,
+              item,
+            ]),
+          );
+          for (const item of media)
+            byKey.set(
+              item.reference ? `reference:${item.reference}` : `${item.type}\n${item.url}`,
+              item,
+            );
+          tool.media = [...byKey.values()];
+        }
         const spawn = record(part.spawn_agent);
         if (spawn) {
           const durationMs = Math.max(0, Number(spawn.duration_ms) || 0);

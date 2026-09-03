@@ -17,6 +17,7 @@ import {
   rebaseRenderedAssetURLs,
   renderMarkdown,
   VIDEO_LINK_PATTERN,
+  type MarkdownMediaResolver,
 } from '../domain/markdown';
 
 interface MarkdownProps {
@@ -24,6 +25,7 @@ interface MarkdownProps {
   className?: string;
   streaming?: boolean;
   rebase?: (value: string) => string;
+  resolveMedia?: MarkdownMediaResolver;
   onMedia?: (source: string, type: 'image' | 'video') => void;
   variant?: 'chat' | 'document';
   renderedHTML?: string;
@@ -176,16 +178,29 @@ class AssistantStreamRenderer {
   hasStreamed = false;
   finalized = false;
   rebase?: (value: string) => string;
+  resolveMedia?: MarkdownMediaResolver;
 
-  constructor(root: HTMLDivElement, rebase?: (value: string) => string) {
+  constructor(
+    root: HTMLDivElement,
+    rebase?: (value: string) => string,
+    resolveMedia?: MarkdownMediaResolver,
+  ) {
     this.root = root;
     this.rebase = rebase;
+    this.resolveMedia = resolveMedia;
   }
 
   setRebase(rebase?: (value: string) => string): void {
     if (this.rebase === rebase) return;
     this.rebase = rebase;
     if (this.finalized && rebase) rebaseRenderedAssetURLs(this.root, rebase);
+  }
+
+  setMediaResolver(resolveMedia?: MarkdownMediaResolver): void {
+    if (this.resolveMedia === resolveMedia) return;
+    this.resolveMedia = resolveMedia;
+    this.unsafe = true;
+    this.finalized = false;
   }
 
   private decorate(root: HTMLElement, source: string, copyCode: boolean): void {
@@ -214,7 +229,7 @@ class AssistantStreamRenderer {
   }
 
   private renderCanonical(source: string, decorate: boolean): void {
-    this.root.innerHTML = renderMarkdown(source);
+    this.root.innerHTML = renderMarkdown(source, this.resolveMedia);
     this.root.classList.remove('streaming-markdown', 'streaming-over-budget');
     this.root.removeAttribute('data-streaming-fallback');
     this.root.style.removeProperty('white-space');
@@ -235,7 +250,7 @@ class AssistantStreamRenderer {
     if (!source || !this.committed) return;
     const piece = document.createElement('div');
     piece.className = 'streaming-stable-piece';
-    piece.innerHTML = renderMarkdown(source);
+    piece.innerHTML = renderMarkdown(source, this.resolveMedia);
     this.committed.append(piece);
     this.decorate(piece, source, true);
   }
@@ -253,7 +268,7 @@ class AssistantStreamRenderer {
     } else if (plain) {
       this.tail.replaceChildren(document.createTextNode(source));
     } else {
-      this.tail.innerHTML = renderMarkdown(source);
+      this.tail.innerHTML = renderMarkdown(source, this.resolveMedia);
       if (this.rebase) rebaseRenderedAssetURLs(this.tail, this.rebase);
     }
     this.tail.className = `streaming-tail${plain ? ' streaming-tail-plain' : ''}`;
@@ -400,6 +415,7 @@ export function Markdown({
   className = 'markdown-body',
   streaming = false,
   rebase,
+  resolveMedia,
   onMedia,
   variant = 'chat',
   renderedHTML,
@@ -420,11 +436,12 @@ export function Markdown({
       void decorateRichContent(element, renderValue);
       return;
     }
-    renderer.current ||= new AssistantStreamRenderer(element, rebase);
+    renderer.current ||= new AssistantStreamRenderer(element, rebase, resolveMedia);
     renderer.current.setRebase(rebase);
+    renderer.current.setMediaResolver(resolveMedia);
     if (streaming) renderer.current.update(renderValue);
     else renderer.current.finalize(renderValue);
-  }, [renderValue, streaming, rebase, variant, renderedHTML, documentPolicy]);
+  }, [renderValue, streaming, rebase, resolveMedia, variant, renderedHTML, documentPolicy]);
 
   useEffect(() => {
     const timers = copyTimers.current;

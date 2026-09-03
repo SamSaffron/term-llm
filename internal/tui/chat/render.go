@@ -2120,21 +2120,22 @@ func (m *Model) renderMarkdown(content string) string {
 	if content == "" {
 		return ""
 	}
-
-	// In text mode, skip markdown rendering but still apply word wrapping.
-	if m.textMode {
-		targetWidth := m.width - 2
-		if targetWidth < 20 {
-			targetWidth = 20
+	base := func(value string) string {
+		// In text mode, skip markdown rendering but still apply word wrapping.
+		if m.textMode {
+			targetWidth := m.width - 2
+			if targetWidth < 20 {
+				targetWidth = 20
+			}
+			return wordwrap.String(value, targetWidth)
 		}
-		return wordwrap.String(content, targetWidth)
+		return ui.RenderMarkdownWithOptions(value, m.width, ui.MarkdownRenderOptions{
+			WrapOffset:        2,
+			NormalizeTabs:     true,
+			NormalizeNewlines: false,
+		})
 	}
-
-	return ui.RenderMarkdownWithOptions(content, m.width, ui.MarkdownRenderOptions{
-		WrapOffset:        2,
-		NormalizeTabs:     true,
-		NormalizeNewlines: false,
-	})
+	return ui.RenderMediaMarkdown(content, m.mediaByReference, base, m.imageArtifactRenderer())
 }
 
 func (m *Model) shouldThrottleSetContent(now time.Time) bool {

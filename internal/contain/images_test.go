@@ -102,7 +102,7 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 				t.Fatalf("entrypoint should not persist Claude OAuth token under providers.env in config.yaml")
 			}
 		}
-		if rel == "bootstrap/bootstrap.yaml" && (!strings.Contains(string(data), "image_generate") || !strings.Contains(string(data), "show_image") || !strings.Contains(string(data), "view_image")) {
+		if rel == "bootstrap/bootstrap.yaml" && (!strings.Contains(string(data), "image_generate") || !strings.Contains(string(data), "show_media") || !strings.Contains(string(data), "view_image")) {
 			t.Fatalf("agent bootstrap missing image generation/viewing tools")
 		}
 		if rel == "bootstrap/bootstrap.yaml" && !strings.Contains(string(data), "memory/palace.md") {

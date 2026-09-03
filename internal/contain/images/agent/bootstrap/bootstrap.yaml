@@ -2,7 +2,7 @@ name: {{AGENT_NAME}}
 description: "AI assistant"
 include: ["soul.md", "memory/palace.md", "memory/recent.md"]
 tools:
-  enabled: [read_file, write_file, edit_file, glob, grep, shell, ask_user, spawn_agent, view_image, show_image, image_generate, run_agent_script]
+  enabled: [read_file, write_file, edit_file, glob, grep, shell, ask_user, spawn_agent, view_image, show_media, image_generate]
 shell:
   auto_run: true
   allow: ["*"]

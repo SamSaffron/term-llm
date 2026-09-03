@@ -20,7 +20,8 @@ const (
 	StreamEventRetry
 	StreamEventDone
 	StreamEventError
-	StreamEventImage        // Image produced by tool
+	StreamEventImage        // Legacy image produced by tool
+	StreamEventMedia        // Image or video produced for presentation
 	StreamEventDiff         // Diff from edit tool
 	StreamEventInterjection // User interjected a message mid-stream
 	StreamEventModelSwitch  // Request model changed at a provider-turn boundary
@@ -77,8 +78,9 @@ type StreamEvent struct {
 	// Error (for StreamEventError)
 	Err error
 
-	// Image (for StreamEventImage)
+	// Image/media presentation.
 	ImagePath string
+	Media     llm.MediaArtifact
 
 	// Diff (for StreamEventDiff)
 	DiffPath      string
@@ -239,6 +241,11 @@ func ImageEvent(path string) StreamEvent {
 		Type:      StreamEventImage,
 		ImagePath: path,
 	}
+}
+
+// MediaEvent creates an ordered image/video presentation event.
+func MediaEvent(media llm.MediaArtifact) StreamEvent {
+	return StreamEvent{Type: StreamEventMedia, Media: media}
 }
 
 // DiffEvent creates a diff event from edit/write tools

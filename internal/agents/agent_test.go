@@ -3,6 +3,7 @@ package agents
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -101,6 +102,14 @@ func TestLoadFromDir_MinimalConfig(t *testing.T) {
 	}
 	if agent.SystemPrompt != "" {
 		t.Errorf("SystemPrompt should be empty, got %q", agent.SystemPrompt)
+	}
+}
+
+func TestLegacyShowImageDisableAlsoDisablesShowMedia(t *testing.T) {
+	agent := Agent{Tools: ToolsConfig{Disabled: []string{"show_image"}}}
+	got := agent.GetEnabledTools([]string{"read_file", "show_media", "shell"})
+	if slices.Contains(got, "show_media") {
+		t.Fatalf("enabled tools = %v; show_media should inherit legacy disable", got)
 	}
 }
 

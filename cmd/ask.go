@@ -1575,9 +1575,10 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent, suppress
 	newlineCompactor := ui.NewStreamingNewlineCompactor(ui.MaxStreamingConsecutiveNewlines)
 	showToolStatus := !suppressToolStatus
 	var pendingText strings.Builder
+	mediaByReference := make(map[string]llm.MediaArtifact)
 
 	flushPendingText := func() {
-		text := pendingText.String()
+		text := ui.ReplaceMediaMarkdown(pendingText.String(), mediaByReference)
 		pendingText.Reset()
 		if text == "" {
 			return
@@ -1734,6 +1735,11 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent, suppress
 					}
 				}
 
+			case ui.StreamEventMedia:
+				if reference := strings.ToLower(strings.TrimSpace(ev.Media.Reference)); reference != "" {
+					mediaByReference[reference] = ev.Media
+				}
+
 			case ui.StreamEventDone:
 				flushPendingText()
 				if showToolStatus && len(pendingTools) > 0 {
@@ -1766,7 +1772,8 @@ type askStreamModel struct {
 	height  int
 
 	// Tool and segment tracking (shared component)
-	tracker *ui.ToolTracker
+	tracker          *ui.ToolTracker
+	mediaByReference map[string]llm.MediaArtifact
 
 	// Smooth text buffer for word-by-word rendering (shared with chat)
 	smoothBuffer       *ui.SmoothBuffer
@@ -2078,7 +2085,7 @@ const maxViewLines = 8
 // keeping View() small to avoid terminal scroll issues.
 // Note: Only flushes images/diffs immediately; text is accumulated and printed at end.
 func (m *askStreamModel) maybeFlushToScrollback() tea.Cmd {
-	result := m.tracker.FlushToScrollback(m.width, 0, maxViewLines, renderMd)
+	result := m.tracker.FlushToScrollback(m.width, 0, maxViewLines, m.renderMdWithWidth)
 	if result.ToPrint != "" {
 		m.cachedContent = "" // Invalidate cache since segments were flushed
 		m.contentDirty = true
@@ -2092,7 +2099,7 @@ func (m *askStreamModel) maybeFlushToScrollback() tea.Cmd {
 // interleaving order without flushing completed concurrent tools ahead of an
 // earlier still-pending tool.
 func (m *askStreamModel) flushCompletedBoundaryNow() tea.Cmd {
-	result := m.tracker.FlushCompletedNow(m.width, renderMd)
+	result := m.tracker.FlushCompletedNow(m.width, m.renderMdWithWidth)
 	if result.ToPrint != "" {
 		m.cachedContent = "" // Invalidate cache since segments were flushed
 		m.contentDirty = true
@@ -2102,7 +2109,7 @@ func (m *askStreamModel) flushCompletedBoundaryNow() tea.Cmd {
 }
 
 func (m *askStreamModel) flushCompletedBoundaryNowWithAck(callID, name string) tea.Cmd {
-	result := m.tracker.FlushCompletedNow(m.width, renderMd)
+	result := m.tracker.FlushCompletedNow(m.width, m.renderMdWithWidth)
 	if result.ToPrint != "" {
 		m.cachedContent = "" // Invalidate cache since segments were flushed
 		m.contentDirty = true
@@ -2144,7 +2151,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.flushSmoothBufferToTracker()
 		// Mark current text segment as complete before starting tool
 		m.tracker.MarkCurrentTextComplete(func(text string) string {
-			return renderMd(text, m.width)
+			return m.renderMd(text)
 		})
 		if m.tracker.HandleToolStart(toolMsg.CallID, toolMsg.Name, toolMsg.Info, toolMsg.ToolArgs) {
 			// New segment added, but don't start wave yet (approval form is active)
@@ -2254,6 +2261,13 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			innerMsg = askAttemptDiscardMsg{}
 		case ui.StreamEventImage:
 			innerMsg = askImageMsg(ev.ImagePath)
+		case ui.StreamEventMedia:
+			if reference := strings.ToLower(strings.TrimSpace(ev.Media.Reference)); reference != "" {
+				if m.mediaByReference == nil {
+					m.mediaByReference = make(map[string]llm.MediaArtifact)
+				}
+				m.mediaByReference[reference] = ev.Media
+			}
 		case ui.StreamEventDiff:
 			innerMsg = askDiffMsg{Path: ev.DiffPath, Old: ev.DiffOld, New: ev.DiffNew, Line: ev.DiffLine, Operation: ev.DiffOperation}
 		case ui.StreamEventDone:
@@ -2351,14 +2365,14 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Complete text segments (finalizes TextBuilder -> Text)
 		m.tracker.CompleteTextSegments(func(text string) string {
-			return renderMd(text, m.width)
+			return m.renderMd(text)
 		})
 
 		// Force-complete any pending tools (defensive - shouldn't happen normally)
 		m.tracker.ForceCompletePendingTools()
 
 		// Flush everything remaining to scrollback
-		res := m.tracker.FlushAllRemaining(m.width, 0, renderMd)
+		res := m.tracker.FlushAllRemaining(m.width, 0, m.renderMdWithWidth)
 		if res.ToPrint != "" {
 			return m, tea.Sequence(tea.Printf("%s", res.ToPrint), tea.Quit)
 		}
@@ -2382,7 +2396,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.smoothBuffer.MarkDone()
 		}
 		// Flush whatever has been rendered so far (including partial text) to scrollback
-		res := m.tracker.FlushAllRemaining(m.width, 0, renderMd)
+		res := m.tracker.FlushAllRemaining(m.width, 0, m.renderMdWithWidth)
 		if res.ToPrint != "" {
 			return m, tea.Sequence(tea.Printf("%s", res.ToPrint), tea.Quit)
 		}
@@ -2405,7 +2419,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Flush as soon as we have any safe boundary to avoid duplication/corruption.
 			streamingFlushThreshold := m.streamingFlushThreshold()
 			if m.width > 0 {
-				result := m.tracker.FlushStreamingText(streamingFlushThreshold, m.width, renderMd)
+				result := m.tracker.FlushStreamingText(streamingFlushThreshold, m.width, m.renderMdWithWidth)
 				if result.ToPrint != "" {
 					m.cachedContent = "" // Invalidate cache since state changed
 					flushCmds = append(flushCmds, tea.Printf("%s", result.ToPrint))
@@ -2479,7 +2493,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.flushSmoothBufferToTracker()
 
 		// Partial flush - keep some context visible for after external UI returns
-		result := m.tracker.FlushBeforeExternalUI(m.width, 0, maxViewLines, renderMd)
+		result := m.tracker.FlushBeforeExternalUI(m.width, 0, maxViewLines, m.renderMdWithWidth)
 
 		var cmds []tea.Cmd
 		if result.ToPrint != "" {
@@ -2499,7 +2513,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.flushSmoothBufferToTracker()
 
 		// Partial flush - keep some context visible for after external UI returns
-		result := m.tracker.FlushBeforeExternalUI(m.width, 0, maxViewLines, renderMd)
+		result := m.tracker.FlushBeforeExternalUI(m.width, 0, maxViewLines, m.renderMdWithWidth)
 
 		var cmds []tea.Cmd
 		if result.ToPrint != "" {
@@ -2536,7 +2550,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Mark current text segment as complete before starting tool
 		// This preserves interleaving order: text -> tool -> text
 		m.tracker.MarkCurrentTextComplete(func(text string) string {
-			return renderMd(text, m.width)
+			return m.renderMd(text)
 		})
 
 		// Add or dedupe pending tool segment for this call.
@@ -2613,6 +2627,16 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case askSubagentProgressMsg:
 		// Handle subagent progress events and update segment stats
 		ui.HandleSubagentProgress(m.tracker, m.subagentTracker, msg.CallID, msg.Event)
+		if msg.Event.Type == tools.SubagentEventToolEnd {
+			for _, media := range msg.Event.Media {
+				if reference := strings.ToLower(strings.TrimSpace(media.Reference)); reference != "" {
+					if m.mediaByReference == nil {
+						m.mediaByReference = make(map[string]llm.MediaArtifact)
+					}
+					m.mediaByReference[reference] = media
+				}
+			}
+		}
 
 	case ui.WaveTickMsg:
 		if cmd := m.tracker.HandleWaveTick(); cmd != nil {
@@ -2663,6 +2687,16 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func (m *askStreamModel) renderMd(text string) string {
+	return ui.RenderMediaMarkdown(text, m.mediaByReference, func(value string) string {
+		return ui.RenderMarkdown(value, m.width)
+	}, nil)
+}
+
+func (m *askStreamModel) renderMdWithWidth(text string, _ int) string {
+	return m.renderMd(text)
 }
 
 func renderMd(text string, width int) string {
@@ -2785,7 +2819,7 @@ func (m askStreamModel) View() tea.View {
 			Segments:        active,
 			WavePos:         m.tracker.WavePos,
 			Width:           m.width,
-			RenderMarkdown:  renderMd,
+			RenderMarkdown:  func(text string, _ int) string { return m.renderMd(text) },
 			HasFlushed:      !hasContent && m.tracker.HasFlushed,
 			LastFlushedType: m.tracker.LastFlushedType,
 			LastFlushedPlan: m.tracker.LastFlushedPlan,

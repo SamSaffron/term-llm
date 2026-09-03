@@ -686,6 +686,7 @@ func WireSpawnAgentRunnerWithStoreAndDepth(cfg *config.Config, toolMgr *tools.To
 	// cannot provide a directory.
 	runner.SetBaseDir(toolMgr.BaseDir())
 	runner.SetBaseDirFunc(toolMgr.BaseDir)
+	runner.SetMediaPublisher(toolMgr.Registry.MediaPublisher())
 	spawnTool.SetDepth(depth)
 	spawnTool.SetRunner(runner)
 	return runner, nil

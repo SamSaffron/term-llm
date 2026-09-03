@@ -77,7 +77,24 @@ With the default base path of `/ui`, the web runtime exposes:
 - `POST /ui/v1/sessions/:id/shell/resize`
 - `GET /ui/healthz`
 - `GET /ui/` for the browser UI
-- `GET /ui/images/:file` for generated images
+- `GET /ui/images/:file` for legacy/generated images
+- `GET /ui/media/:file` for authenticated media published by `show_media`
+
+### Showing local media
+
+Agents with the `show_media` tool can present an existing PNG, JPEG, GIF, WebP,
+BMP, MP4, or WebM directly in the conversation. The tool accepts a local path
+and optional caption. The path follows the normal workspace/read approval
+policy; after approval, web serves import a content-addressed durable copy rather
+than exposing arbitrary host paths. Images are limited to 25 MiB and videos to
+256 MiB. The tool returns an opaque `term-llm-media://…` URL and asks the model
+to embed that exact URL in normal Markdown with context-appropriate alt text.
+The browser resolves only registered artifact URLs and displays the media at the
+position chosen in the assistant response, rather than burying it inside the tool
+call. Videos become inline players; images retain the media lightbox behavior.
+
+`show_image` remains available when explicitly configured for compatibility, but
+`--tools all` and new configurations should use `show_media`.
 
 If the jobs platform is also enabled, the jobs API is mounted under the same base path.
 

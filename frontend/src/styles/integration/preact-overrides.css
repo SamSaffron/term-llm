@@ -240,6 +240,18 @@
   margin-bottom: 0.45rem;
 }
 
+.tool-legacy-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  padding: 0.55rem 0.65rem 0.65rem;
+}
+
+.media-reference-missing {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
 .message-image-button {
   appearance: none;
   display: block;

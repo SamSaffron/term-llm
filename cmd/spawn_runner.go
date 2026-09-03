@@ -31,6 +31,8 @@ type SpawnAgentRunner struct {
 	parentSessionID   string        // Fallback parent session ID when execution context has none
 	parentBaseDir     string        // Fallback BaseDir for legacy callers
 	parentBaseDirFunc func() string // Returns the parent's current per-session BaseDir
+	publisherMu       sync.RWMutex
+	mediaPublisher    tools.MediaPublisher
 	warnFunc          func(format string, args ...any)
 	runMu             sync.Mutex
 	draining          bool
@@ -82,6 +84,24 @@ func (r *SpawnAgentRunner) SetBaseDirFunc(fn func() string) {
 	if r != nil {
 		r.parentBaseDirFunc = fn
 	}
+}
+
+// SetMediaPublisher propagates a serve-owned publisher into child registries.
+func (r *SpawnAgentRunner) SetMediaPublisher(publisher tools.MediaPublisher) {
+	if r != nil {
+		r.publisherMu.Lock()
+		defer r.publisherMu.Unlock()
+		r.mediaPublisher = publisher
+	}
+}
+
+func (r *SpawnAgentRunner) currentMediaPublisher() tools.MediaPublisher {
+	if r == nil {
+		return nil
+	}
+	r.publisherMu.RLock()
+	defer r.publisherMu.RUnlock()
+	return r.mediaPublisher
 }
 
 func (r *SpawnAgentRunner) currentBaseDir() string {
@@ -525,7 +545,7 @@ func subagentEventFromLLM(event llm.Event) tools.SubagentEvent {
 	case llm.EventToolExecStart:
 		return tools.SubagentEvent{Type: tools.SubagentEventToolStart, ToolCallID: event.ToolCallID, ToolName: event.ToolName, ToolInfo: event.ToolInfo, ToolArgs: event.ToolArgs}
 	case llm.EventToolExecEnd:
-		return tools.SubagentEvent{Type: tools.SubagentEventToolEnd, ToolCallID: event.ToolCallID, ToolName: event.ToolName, ToolOutput: event.ToolOutput, Diffs: event.ToolDiffs, Images: event.ToolImages, Success: event.ToolSuccess}
+		return tools.SubagentEvent{Type: tools.SubagentEventToolEnd, ToolCallID: event.ToolCallID, ToolName: event.ToolName, ToolOutput: event.ToolOutput, Diffs: event.ToolDiffs, Images: event.ToolImages, Media: append([]llm.MediaArtifact(nil), event.ToolMedia...), Success: event.ToolSuccess}
 	case llm.EventPhase:
 		return tools.SubagentEvent{Type: tools.SubagentEventPhase, Phase: event.Text}
 	case llm.EventUsage:
@@ -552,6 +572,7 @@ func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engin
 		return toolMgr, err
 	}
 	toolMgr.Registry.SetPlanStore(r.store)
+	toolMgr.Registry.SetMediaPublisher(r.currentMediaPublisher())
 	if r.yoloMode && r.parentApprovalMgr == nil {
 		toolMgr.ApprovalMgr.SetYoloMode(true)
 	}

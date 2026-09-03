@@ -5,6 +5,7 @@ import type {
   Attachment,
   CurrentPlan,
   GuardianReview,
+  MediaArtifact,
   Message,
   ToolCall,
   Usage,
@@ -71,6 +72,28 @@ function responseAttachments(value: unknown): Attachment[] | undefined {
     })
     .filter((entry): entry is Attachment => entry !== null);
   return attachments.length ? attachments : undefined;
+}
+
+function responseMedia(value: unknown): MediaArtifact[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const media = value
+    .filter((entry): entry is Record<string, unknown> =>
+      Boolean(entry && typeof entry === 'object'),
+    )
+    .map((entry): MediaArtifact | null => {
+      const url = text(entry.url);
+      const type = text(entry.type || entry.media_type);
+      if (!url || (!type.startsWith('image/') && !type.startsWith('video/'))) return null;
+      return {
+        url,
+        type,
+        ...(text(entry.reference) ? { reference: text(entry.reference) } : {}),
+        ...(text(entry.name) ? { name: text(entry.name) } : {}),
+        ...(text(entry.caption) ? { caption: text(entry.caption) } : {}),
+      };
+    })
+    .filter((entry): entry is MediaArtifact => entry !== null);
+  return media.length ? media : undefined;
 }
 
 export function initialProjection(run: ActiveRun): ResponseProjection {
@@ -455,6 +478,7 @@ export function reduceResponse(
       );
       const failed = event.success === false || event.error != null || event.status === 'error';
       const images = Array.isArray(event.images) ? event.images.map(String) : entry.images;
+      const media = responseMedia(event.media) || entry.media;
       const startedAt = number(event.started_at, entry.startedAt || 0) || undefined;
       const endedAt = number(event.ended_at, Date.now());
       const reportedDuration = number(event.duration_ms, -1);
@@ -479,6 +503,7 @@ export function reduceResponse(
             ? text(event.ask_user_summary).trim() || entry.askUserAnswer
             : entry.askUserAnswer,
         images,
+        media,
       });
       messages = messages.map((message) =>
         message.role === 'tool-group' &&

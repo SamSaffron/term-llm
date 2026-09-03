@@ -701,6 +701,14 @@ func messagePartsSignature(msg *session.Message) uint64 {
 			for _, image := range part.ToolResult.Images {
 				h = writeStringHash(h, image)
 			}
+			for _, media := range part.ToolResult.Media {
+				h = writeStringHash(h, media.Reference)
+				h = writeStringHash(h, media.SourcePath)
+				h = writeStringHash(h, media.StoredPath)
+				h = writeStringHash(h, media.MediaType)
+				h = writeStringHash(h, media.Name)
+				h = writeStringHash(h, media.Caption)
+			}
 			for _, contentPart := range part.ToolResult.ContentParts {
 				h = writeStringHash(h, string(contentPart.Type))
 				h = writeStringHash(h, contentPart.Text)

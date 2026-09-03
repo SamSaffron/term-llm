@@ -4,7 +4,7 @@ description: Organizes files by renaming them to sensible names and optionally c
 agents_md: "false"
 
 tools:
-  enabled: [read_file, shell, glob, grep, ask_user]
+  enabled: [read_file, shell, glob, grep, show_media, ask_user]
 
 shell:
   allow:

@@ -60,7 +60,8 @@ type CompletedRun struct {
 	Activities  []Activity
 	TextPreview []string
 	Diffs       []llm.DiffData
-	Images      []string
+	Images      []string // Legacy image-only projection retained for callers.
+	Media       []llm.MediaArtifact
 	Fingerprint uint64
 }
 
@@ -90,6 +91,7 @@ func Build(call *llm.ToolCall, result *llm.ToolResult, parsed tools.SpawnAgentRe
 	if result != nil {
 		run.Diffs = appendBounded(run.Diffs, result.Diffs, MaxArtifacts)
 		run.Images = appendBounded(run.Images, result.Images, MaxArtifacts)
+		run.Media = appendBounded(run.Media, llm.NormalizeMedia(result.Media, result.Images), MaxArtifacts)
 		if result.IsError && run.Error == "" {
 			run.Error = "spawn_agent failed"
 		}
@@ -151,6 +153,7 @@ func Build(call *llm.ToolCall, result *llm.ToolResult, parsed tools.SpawnAgentRe
 				}
 				run.Diffs = appendBounded(run.Diffs, toolResult.Diffs, MaxArtifacts)
 				run.Images = appendBounded(run.Images, toolResult.Images, MaxArtifacts)
+				run.Media = appendBounded(run.Media, llm.NormalizeMedia(toolResult.Media, toolResult.Images), MaxArtifacts)
 			}
 		}
 	}
@@ -168,6 +171,7 @@ func Build(call *llm.ToolCall, result *llm.ToolResult, parsed tools.SpawnAgentRe
 	run.TextPreview = outputPreviewLines(run.Output, PreviewTextLineLimit)
 	run.Diffs = dedupeDiffs(run.Diffs)
 	run.Images = dedupeStrings(run.Images)
+	run.Media = dedupeMedia(run.Media)
 	run.Fingerprint = fingerprint(run)
 	return run
 }
@@ -215,6 +219,23 @@ func dedupeStrings(values []string) []string {
 			continue
 		}
 		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func dedupeMedia(values []llm.MediaArtifact) []llm.MediaArtifact {
+	seen := make(map[string]struct{}, len(values))
+	out := values[:0]
+	for _, value := range values {
+		key := value.Path() + "\x00" + value.MediaType
+		if reference := strings.ToLower(strings.TrimSpace(value.Reference)); reference != "" {
+			key = "reference:" + reference
+		}
+		if _, ok := seen[key]; ok || value.Path() == "" {
+			continue
+		}
+		seen[key] = struct{}{}
 		out = append(out, value)
 	}
 	return out
@@ -272,6 +293,10 @@ func fingerprint(run CompletedRun) uint64 {
 	}
 	for _, image := range run.Images {
 		write(image)
+	}
+	for _, media := range run.Media {
+		data, _ := json.Marshal(media)
+		write(string(data))
 	}
 	return h.Sum64()
 }

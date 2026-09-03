@@ -4659,6 +4659,7 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, send 
 		ToolFilesystemObservations: output.FilesystemObservations,
 		ToolOutputClaimDiagnostics: output.OutputClaimDiagnostics,
 		ToolImages:                 output.Images,
+		ToolMedia:                  append([]MediaArtifact(nil), output.Media...),
 	})
 	return []Message{ToolResultMessageFromOutput(call.ID, call.Name, output, call.ThoughtSig)}, nil
 }
@@ -4737,6 +4738,7 @@ func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, send 
 		ToolFilesystemObservations: result.FilesystemObservations,
 		ToolOutputClaimDiagnostics: result.OutputClaimDiagnostics,
 		ToolImages:                 result.Images,
+		ToolMedia:                  append([]MediaArtifact(nil), result.Media...),
 	})
 
 	// Send the result back to the provider bridge.

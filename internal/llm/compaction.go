@@ -1104,8 +1104,22 @@ func compactToolResultSummary(result *ToolResult) string {
 			details = append(details, "diffs: "+truncateVisible(strings.Join(files, ", "), 240))
 		}
 	}
-	if len(result.Images) > 0 {
-		details = append(details, fmt.Sprintf("%d image(s)", len(result.Images)))
+	media := NormalizeMedia(result.Media, result.Images)
+	if len(media) > 0 {
+		images, videos := 0, 0
+		for _, item := range media {
+			if strings.HasPrefix(strings.ToLower(item.MediaType), "video/") {
+				videos++
+			} else {
+				images++
+			}
+		}
+		if images > 0 {
+			details = append(details, fmt.Sprintf("%d image(s)", images))
+		}
+		if videos > 0 {
+			details = append(details, fmt.Sprintf("%d video(s)", videos))
+		}
 	}
 
 	content := toolResultTextContent(result)

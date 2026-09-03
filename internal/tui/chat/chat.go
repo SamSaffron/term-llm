@@ -204,6 +204,7 @@ type Model struct {
 	tracker                     *ui.ToolTracker     // Tool and segment tracking (shared component)
 	subagentTracker             *ui.SubagentTracker // Live subagent progress tracking
 	persistedSubagents          map[string]subagentview.CompletedRun
+	mediaByReference            map[string]llm.MediaArtifact
 	persistedSubagentGeneration uint64
 
 	// Persist-as-we-go: row ID and latest per-turn snapshot of the in-progress
@@ -3420,6 +3421,15 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 				}
 			}
 
+		case ui.StreamEventMedia:
+			m.setRetryStatus("")
+			if reference := strings.ToLower(strings.TrimSpace(ev.Media.Reference)); reference != "" {
+				if m.mediaByReference == nil {
+					m.mediaByReference = make(map[string]llm.MediaArtifact)
+				}
+				m.mediaByReference[reference] = ev.Media
+			}
+
 		case ui.StreamEventDiff:
 			m.setRetryStatus("")
 			// Add diff segment for inline display
@@ -3844,6 +3854,16 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			m.recordGuardianUsage(context.Background(), msg.Event.Guardian.Model, msg.Event.Guardian.Usage)
 		}
 		ui.HandleSubagentProgress(m.tracker, m.subagentTracker, msg.CallID, msg.Event)
+		if msg.Event.Type == tools.SubagentEventToolEnd {
+			for _, media := range msg.Event.Media {
+				if reference := strings.ToLower(strings.TrimSpace(media.Reference)); reference != "" {
+					if m.mediaByReference == nil {
+						m.mediaByReference = make(map[string]llm.MediaArtifact)
+					}
+					m.mediaByReference[reference] = media
+				}
+			}
+		}
 	}
 
 	// Update textarea if not streaming

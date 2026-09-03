@@ -193,3 +193,28 @@ func TestVisibleExportMessages(t *testing.T) {
 		t.Fatal("input slice was mutated")
 	}
 }
+
+func TestHTMLExportPlacesReferencedMediaPlaceholderInAssistantText(t *testing.T) {
+	const reference = "0123456789abcdef0123456789abcdef"
+	messages := []Message{
+		{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{
+			ID: "media-call", Name: "show_media", Media: []llm.MediaArtifact{{
+				Reference: reference, SourcePath: "/private/chart.png", MediaType: "image/png", Name: "chart.png",
+			}},
+		}}}},
+		{Role: llm.RoleAssistant, Parts: []llm.Part{{
+			Type: llm.PartText, Text: "Before\n\n![Quarterly sales](term-llm-media://" + reference + ")\n\nAfter",
+		}}},
+	}
+	views, _ := buildHTMLExportMessages(messages, ExportOptions{})
+	if len(views) != 2 || len(views[1].Blocks) != 1 {
+		t.Fatalf("unexpected export view: %#v", views)
+	}
+	html := string(views[1].Blocks[0].HTML)
+	if !strings.Contains(html, "Before") || !strings.Contains(html, "Image: Quarterly sales") || !strings.Contains(html, "After") {
+		t.Fatalf("referenced media placeholder was not placed in assistant output: %q", html)
+	}
+	if strings.Contains(html, "term-llm-media://") || strings.Contains(html, "/private/chart.png") {
+		t.Fatalf("export leaked opaque or local media path: %q", html)
+	}
+}

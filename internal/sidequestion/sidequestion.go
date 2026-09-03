@@ -161,6 +161,7 @@ func deepCopyMessages(messages []llm.Message) []llm.Message {
 				}
 				result.Diffs = append([]llm.DiffData(nil), result.Diffs...)
 				result.Images = append([]string(nil), result.Images...)
+				result.Media = append([]llm.MediaArtifact(nil), result.Media...)
 				result.ThoughtSig = append([]byte(nil), result.ThoughtSig...)
 				part.ToolResult = &result
 			}
@@ -336,6 +337,7 @@ func truncateConversationPayloads(messages []llm.Message, maxChars int) []llm.Me
 				result := *part.ToolResult
 				result.Content = truncateTextToChars(result.Content, maxChars)
 				result.Images = nil
+				result.Media = nil
 				result.ContentParts = append([]llm.ToolContentPart(nil), result.ContentParts...)
 				for i := range result.ContentParts {
 					result.ContentParts[i].Text = truncateTextToChars(result.ContentParts[i].Text, maxChars)

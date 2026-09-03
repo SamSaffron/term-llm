@@ -42,6 +42,7 @@ type responseRunRecoveryTool struct {
 	EndedAt            int64
 	DurationMs         int64
 	Images             []string
+	Media              []webMediaEntry
 	GuardianReviews    []map[string]any
 }
 
@@ -1450,6 +1451,7 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 		}
 	case "response.tool_exec.end":
 		images := stringSliceValue(payload["images"])
+		media := mediaEntriesFromValue(payload["media"])
 		askUserAnswer := strings.TrimSpace(stringValue(payload["ask_user_summary"]))
 		succeeded := true
 		if value, ok := payload["success"].(bool); ok {
@@ -1476,6 +1478,7 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 						group.Tools[i].ResultStatus = "error"
 					}
 					group.Tools[i].Images = appendUniqueStrings(group.Tools[i].Images, images...)
+					group.Tools[i].Media = appendUniqueWebMedia(group.Tools[i].Media, media...)
 					if succeeded && callID != "" && group.Tools[i].Name == tools.AskUserToolName && askUserAnswer != "" {
 						group.Tools[i].AskUserAnswer = askUserAnswer
 					}
@@ -1821,6 +1824,9 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 					images := make([]string, len(tool.Images))
 					copy(images, tool.Images)
 					toolEntry["images"] = images
+				}
+				if len(tool.Media) > 0 {
+					toolEntry["media"] = append([]webMediaEntry(nil), tool.Media...)
 				}
 				toolsPayload = append(toolsPayload, toolEntry)
 			}
@@ -2934,6 +2940,26 @@ func appendUniqueStrings(dst []string, values ...string) []string {
 	return dst
 }
 
+func appendUniqueWebMedia(dst []webMediaEntry, values ...webMediaEntry) []webMediaEntry {
+	for _, value := range values {
+		if value.URL == "" {
+			continue
+		}
+		seen := false
+		for _, existing := range dst {
+			if (value.Reference != "" && existing.Reference == value.Reference) ||
+				(value.Reference == "" && existing.Reference == "" && existing.URL == value.URL && existing.MediaType == value.MediaType) {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			dst = append(dst, value)
+		}
+	}
+	return dst
+}
+
 func cloneJSONMap(src map[string]any) map[string]any {
 	if len(src) == 0 {
 		return nil
@@ -3200,6 +3226,11 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 		if !suppressed && len(ev.ToolImages) > 0 {
 			if imageURLs := s.toolImageURLs(ev.ToolImages); len(imageURLs) > 0 {
 				payload["images"] = imageURLs
+			}
+		}
+		if !suppressed && len(ev.ToolMedia) > 0 {
+			if media := s.toolMediaEntries(ev.ToolMedia); len(media) > 0 {
+				payload["media"] = media
 			}
 		}
 		if err := run.appendEvent("response.tool_exec.end", payload); err != nil {

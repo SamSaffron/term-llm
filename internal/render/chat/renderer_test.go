@@ -1277,6 +1277,40 @@ func TestRenderer_ConsecutiveToolOnlyAssistantMessages_NoBlankLineBetweenTools(t
 	}
 }
 
+func TestMessageBlockRendererPlacesReferencedMediaInAssistantText(t *testing.T) {
+	const reference = "0123456789abcdef0123456789abcdef"
+	messages := []session.Message{
+		{
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{
+				ID: "call-media", Name: "show_media",
+			}}},
+		},
+		{
+			Role: llm.RoleTool,
+			Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{
+				ID: "call-media", Name: "show_media", Media: []llm.MediaArtifact{{
+					Reference: reference, SourcePath: "/tmp/chart.png", MediaType: "image/png",
+				}},
+			}}},
+		},
+		{
+			Role:  llm.RoleAssistant,
+			Parts: []llm.Part{{Type: llm.PartText, Text: "Before\n\n![Quarterly sales](term-llm-media://" + reference + ")\n\nAfter"}},
+		},
+	}
+	renderer := NewMessageBlockRendererWithContext(80, simpleMarkdownRenderer, messages, 2, false)
+	renderer.SetImageRenderer(func(path string) ui.ImageArtifact { return ui.ImageArtifact{Display: "IMAGE{" + path + "}"} })
+	block := renderer.Render(&messages[2])
+	plain := ui.StripANSI(block.Rendered)
+	if !strings.Contains(plain, "Before") || !strings.Contains(plain, "IMAGE{/tmp/chart.png}") || !strings.Contains(plain, "After") {
+		t.Fatalf("referenced media was not rendered in place: %q", plain)
+	}
+	if strings.Contains(plain, "term-llm-media://") {
+		t.Fatalf("opaque reference leaked into rendered output: %q", plain)
+	}
+}
+
 // BenchmarkRender500MessagesScrolling benchmarks with scroll position changes.
 func BenchmarkRender500MessagesScrolling(b *testing.B) {
 	renderer := NewRenderer(80, 24)
