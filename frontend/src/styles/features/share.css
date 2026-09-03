@@ -13,6 +13,11 @@
   line-height: 1.45;
 }
 
+.share-visibility .share-included {
+  display: grid;
+  gap: 0.14rem;
+}
+
 .share-included strong {
   color: var(--text);
 }
