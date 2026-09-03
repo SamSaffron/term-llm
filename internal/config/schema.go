@@ -57,6 +57,8 @@ const (
 	DefaultChatTerminalTitle     = "smart"
 	DefaultLifecycleOSC          = "off"
 	DefaultLifecycleSinkTimeout  = "2s"
+	DefaultShareProvider         = "github"
+	DefaultShareTimeout          = "120s"
 	DefaultEditContextLines      = 3
 	DefaultEditDiffFormat        = "auto"
 
@@ -192,6 +194,10 @@ var keySpecs = []KeySpec{
 	def("lifecycle.adapters", []string{"auto"}),
 	def("lifecycle.osc", DefaultLifecycleOSC),
 	def("lifecycle.commands", []map[string]any{}),
+
+	def("share.provider", DefaultShareProvider),
+	def("share.command", []string{}),
+	def("share.timeout", DefaultShareTimeout),
 
 	optional("edit.provider"),
 	optional("edit.model"),

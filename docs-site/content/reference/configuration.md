@@ -34,6 +34,7 @@ A typical config has a few major parts:
 - `providers` for model-specific credentials and routing
 - per-command blocks such as `exec`, `ask`, and `edit`
 - `commit.message_agent` for the native commit workflow's scope/message agent
+- `share` for the built-in GitHub or custom command transcript publisher
 - feature-specific blocks such as `image`, `audio`, `music`, `embed`, `search`, `sessions`, `file_tracking`, `tools`, and `skills`
 
 ## Example
@@ -101,6 +102,11 @@ lifecycle:
   adapters: [auto] # environment-detected Herdr/cmux only
   osc: off         # no terminal progress without explicit opt-in
   commands: []     # no custom process without explicit configuration
+
+share:
+  provider: github # or command
+  command: []      # direct argv; required only for provider: command
+  timeout: 120s    # create/update; maximum 600s
 
 # Optional global approval override. When omitted, chat, ask, and ordinary
 # serve platforms use auto; edit, exec, loop, and serve mcp use prompt.
@@ -373,6 +379,21 @@ printf '\033]9;4;3\a'; sleep 10; printf '\033]9;4;0\a'
 ```
 
 If the title changes only during `sleep` and resets afterward, Ghostty shell integration is overwriting it at the prompt. If it never changes, check for a fixed `title`, `title-command`, or a manual surface/tab title override.
+
+## Transcript sharing
+
+`share.provider` defaults to `github`, which publishes through the authenticated `gh` CLI. Set it to `command` to use a Share Helper Protocol v1 executable:
+
+```yaml
+share:
+  provider: command
+  command: [/usr/local/bin/acme-share, --tenant, engineering]
+  timeout: 120s
+```
+
+`share.command` is an argv list, not shell text, and may include prefix arguments. The operation name is appended by term-llm. The timeout must be greater than zero and no more than `600s`; capability discovery is separately capped at ten seconds. A command is rejected under the GitHub provider so an ignored helper configuration cannot look active.
+
+See [Sharing](/reference/sharing/) for TUI/CLI behavior and the complete helper JSON protocol.
 
 ## Terminal-host lifecycle
 

@@ -99,13 +99,6 @@
   margin-top: 0.75rem;
 }
 
-.share-error-help {
-  display: block;
-  margin-top: 0.35rem;
-  color: var(--text-muted);
-  line-height: 1.45;
-}
-
 .share-modal .btn.is-loading {
   display: inline-flex;
   align-items: center;
@@ -162,7 +155,7 @@
   font-size: 0.78rem;
 }
 
-.share-gist-link {
+.share-source-link {
   display: inline-block;
   margin-top: 0.55rem;
   font-size: 0.8rem;

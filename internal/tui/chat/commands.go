@@ -103,11 +103,14 @@ func AllCommands() []Command {
 		},
 		{
 			Name:        "share",
-			Description: "Share this session as a GitHub Gist",
-			Usage:       "/share [new] [public]",
+			Description: "Share this complete session (unlisted is not private)",
+			Usage:       "/share [new] [raw] [public|unlisted|private]",
 			Subcommands: []Subcommand{
-				{Name: "new", Description: "Create a new gist"},
-				{Name: "public", Description: "Make a new gist public"},
+				{Name: "new", Description: "Create a new share"},
+				{Name: "raw", Description: "Explicitly include privacy-sensitive raw model reasoning"},
+				{Name: "public", Description: "Request public visibility"},
+				{Name: "unlisted", Description: "Request unlisted visibility"},
+				{Name: "private", Description: "Request private visibility"},
 			},
 		},
 		{
@@ -732,6 +735,16 @@ func (m *Model) showFooterMessageWithToneFor(content string, tone string, durati
 	return m, tea.Tick(duration, func(time.Time) tea.Msg {
 		return footerMessageClearMsg{Seq: seq}
 	})
+}
+
+func (m *Model) showFooterPersistent(content string, tone string) (tea.Model, tea.Cmd) {
+	m.footerMessage = sanitizeFooterMessage(content)
+	m.footerMessageTone = tone
+	m.footerMessageSeq++ // Invalidate any older transient clear timer.
+	if m.footerMessage == "" {
+		m.footerMessageTone = ""
+	}
+	return m, nil
 }
 
 func (m *Model) showFooterMutedWithCmd(content string, cmd tea.Cmd) (tea.Model, tea.Cmd) {

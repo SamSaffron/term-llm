@@ -825,7 +825,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					if req == nil || selected.ID == "cancel" {
 						return m, nil
 					}
-					if selected.ID == "new" {
+					if selected.ID == "new" || selected.ID == "create" {
 						req.forceNew = true
 						return m.startShare(*req, false)
 					}

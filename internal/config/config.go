@@ -473,6 +473,7 @@ type Config struct {
 	Ask             AskConfig                 `mapstructure:"ask"`
 	Chat            ChatConfig                `mapstructure:"chat"`
 	Lifecycle       LifecycleConfig           `mapstructure:"lifecycle"`
+	Share           ShareConfig               `mapstructure:"share" yaml:"share,omitempty"`
 	Edit            EditConfig                `mapstructure:"edit"`
 	Loop            LoopConfig                `mapstructure:"loop"`
 	Image           ImageConfig               `mapstructure:"image"`
@@ -759,6 +760,57 @@ type ChatConfig struct {
 	TerminalTitleFormat string `mapstructure:"terminal_title_format"`                        // Optional custom terminal title template
 	TerminalProgress    bool   `mapstructure:"terminal_progress"`                            // Deprecated compatibility opt-in for automatic OSC progress
 	ApprovalMode        string `mapstructure:"approval_mode" yaml:"approval_mode,omitempty"` // Optional approval mode: prompt or auto
+}
+
+// ShareConfig selects the provider used by generic transcript sharing.
+type ShareConfig struct {
+	Provider string   `mapstructure:"provider" yaml:"provider,omitempty"`
+	Command  []string `mapstructure:"command" yaml:"command,omitempty"`
+	Timeout  string   `mapstructure:"timeout" yaml:"timeout,omitempty"`
+}
+
+// ValidateShare rejects ignored, shell-like, or unbounded helper configuration
+// before any sharing subprocess can be started.
+func (c *Config) ValidateShare() error {
+	if c == nil {
+		return nil
+	}
+	provider := strings.ToLower(strings.TrimSpace(c.Share.Provider))
+	if provider == "" {
+		provider = DefaultShareProvider
+	}
+	switch provider {
+	case "github":
+		if len(c.Share.Command) != 0 {
+			return fmt.Errorf("invalid share.command: command is only valid when share.provider is command")
+		}
+	case "command":
+		if len(c.Share.Command) == 0 || strings.TrimSpace(c.Share.Command[0]) == "" {
+			return fmt.Errorf("invalid share.command: executable cannot be empty when share.provider is command")
+		}
+	default:
+		return fmt.Errorf("invalid share.provider %q: expected github or command", c.Share.Provider)
+	}
+	if len(c.Share.Command) > 64 {
+		return fmt.Errorf("invalid share.command: at most 64 argv entries are allowed")
+	}
+	for i, arg := range c.Share.Command {
+		if strings.IndexByte(arg, 0) >= 0 {
+			return fmt.Errorf("invalid share.command[%d]: contains NUL", i)
+		}
+		if len(arg) > 4096 {
+			return fmt.Errorf("invalid share.command[%d]: must be at most 4096 bytes", i)
+		}
+	}
+	timeoutValue := strings.TrimSpace(c.Share.Timeout)
+	if timeoutValue == "" {
+		timeoutValue = DefaultShareTimeout
+	}
+	timeout, err := time.ParseDuration(timeoutValue)
+	if err != nil || timeout <= 0 || timeout > 600*time.Second {
+		return fmt.Errorf("invalid share.timeout %q: expected a duration greater than zero and at most 600s", c.Share.Timeout)
+	}
+	return nil
 }
 
 // LifecycleConfig controls terminal-host lifecycle publication.
@@ -1177,6 +1229,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.ValidateLifecycle(); err != nil {
+		return nil, err
+	}
+	if err := cfg.ValidateShare(); err != nil {
 		return nil, err
 	}
 

@@ -19,13 +19,20 @@ term-llm sessions untag 42 auth
 term-llm sessions autotitle
 term-llm sessions autotitle --dry-run
 term-llm sessions browse
-term-llm sessions gist 42
+term-llm sessions share 42 --visibility unlisted
+term-llm sessions export gist 42
 term-llm sessions delete 42
 term-llm sessions reset
 term-llm chat --resume=42
 ```
 
 Sessions are numbered sequentially for convenience, so `42` and `#42` both work.
+
+## Sharing sessions
+
+`term-llm sessions share <id> [--visibility public|unlisted|private] [--new] [--include-raw-reasoning] [--json]` publishes the complete visible session through the configured generic sharing provider. It updates a persisted compatible whole-session share unless `--new` is supplied. Raw reasoning is excluded unless `--include-raw-reasoning` is explicitly supplied; the flag prints a privacy warning and still respects the reasoning source policy. Human-readable output includes provider notes and help, such as GitHub authentication guidance and the warning that unlisted Gists are not private. The TUI equivalent is `/share [new] [raw] [public|unlisted|private]`.
+
+Web response/conversation shares capture a point in time and are not persisted. `term-llm sessions export gist` remains the explicit GitHub-only export path. See [Sharing](/reference/sharing/) for provider configuration and the custom helper protocol.
 
 ## Conversation paths
 

@@ -5,6 +5,7 @@ import { StoreContext } from '../app/context';
 import { App } from '../app/App';
 import { AppStore } from '../stores/app-store';
 import { APIError } from '../api/client';
+import type { SessionShareResponse } from '../api/endpoints';
 import { Transcript } from './Transcript';
 import { Composer } from './Composer';
 import { Markdown } from './Markdown';
@@ -4564,24 +4565,23 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('session is temporarily busy');
   });
 
-  it('creates a point-in-time share with explicit scope and visibility', async () => {
+  it('creates a point-in-time share with provider capabilities and explicit visibility', async () => {
     const store = createStore();
     store.shareTarget.value = { sessionId: store.sessions.value[0].id, anchorMessageId: 42 };
     store.modal.value = 'share';
-    let resolveShare!: (value: {
-      gist_id: string;
-      gist_url: string;
-      preview_url: string;
-      public: boolean;
-    }) => void;
+    store.endpoints.sharingCapabilities = vi.fn(async () => ({
+      enabled: true,
+      provider: { id: 'github', name: 'GitHub Gist' },
+      operations: ['create', 'update'] as Array<'create' | 'update'>,
+      visibilities: ['unlisted', 'public'] as Array<'unlisted' | 'public'>,
+      default_visibility: 'unlisted' as const,
+      help: 'Use the active GitHub account.',
+      notes: ['Unlisted Gists are not private.'],
+    }));
+    let resolveShare!: (value: SessionShareResponse) => void;
     store.endpoints.createSessionShare = vi.fn(
       () =>
-        new Promise<{
-          gist_id: string;
-          gist_url: string;
-          preview_url: string;
-          public: boolean;
-        }>((resolve) => {
+        new Promise<SessionShareResponse>((resolve) => {
           resolveShare = resolve;
         }),
     );
@@ -4592,9 +4592,8 @@ describe('Preact-owned chat surfaces', () => {
     );
 
     expect(await screen.findByRole('heading', { name: 'Share transcript' })).toBeInTheDocument();
-    expect(screen.queryByText('GitHub CLI required for now.')).not.toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: /This response/ })).toBeChecked();
-    expect(screen.getByRole('radio', { name: /Secret \(unlisted\)/ })).toBeChecked();
+    expect(await screen.findByRole('radio', { name: /This response/ })).toBeChecked();
+    expect(screen.getByRole('radio', { name: /Unlisted/ })).toBeChecked();
 
     await userEvent.click(screen.getByRole('radio', { name: /Conversation up to here/ }));
     await userEvent.click(screen.getByRole('radio', { name: /Public/ }));
@@ -4603,9 +4602,9 @@ describe('Preact-owned chat surfaces', () => {
     expect(store.endpoints.createSessionShare).toHaveBeenCalledWith(store.sessions.value[0].id, {
       anchor_message_id: 42,
       scope: 'conversation',
-      public: true,
+      visibility: 'public',
     });
-    expect(screen.getByText('Creating Gist…')).toBeVisible();
+    expect(screen.getByText('Creating share…')).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: 'Close Share transcript' }),
@@ -4617,53 +4616,81 @@ describe('Preact-owned chat surfaces', () => {
 
     await act(async () =>
       resolveShare({
-        gist_id: 'abc123',
-        gist_url: 'https://gist.github.com/test/abc123',
-        preview_url: 'https://gisthost.github.io/?abc123/index.html',
-        public: true,
+        provider: 'github',
+        id: 'abc123',
+        url: 'https://share.example/abc123',
+        source_url: 'https://source.example/abc123',
+        visibility: 'public',
+        ready: true,
+        scope: 'conversation',
       }),
     );
     expect(await screen.findByRole('heading', { name: 'Share created' })).toBeVisible();
-    expect(screen.getByRole('link', { name: 'Open preview' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Open link' })).toHaveAttribute(
       'href',
-      'https://gisthost.github.io/?abc123/index.html',
+      'https://share.example/abc123',
     );
-    expect(screen.getByRole('link', { name: 'View Gist ↗' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'View source ↗' })).toHaveAttribute(
       'href',
-      'https://gist.github.com/test/abc123',
+      'https://source.example/abc123',
     );
   });
 
-  it('preserves share choices and explains GitHub CLI failures', async () => {
+  it('uses generic wording and a statement for a command provider with one visibility', async () => {
     const store = createStore();
     store.shareTarget.value = { sessionId: store.sessions.value[0].id, anchorMessageId: 42 };
     store.modal.value = 'share';
-    store.endpoints.createSessionShare = vi.fn(async () => {
-      throw new Error('gh CLI not found; install it and run gh auth login');
-    });
-    render(
+    store.endpoints.sharingCapabilities = vi.fn(async () => ({
+      enabled: true,
+      provider: { id: 'acme', name: 'Acme Vault' },
+      operations: ['create'] as Array<'create'>,
+      visibilities: ['private'] as Array<'private'>,
+      default_visibility: 'private' as const,
+      notes: ['Only invited teammates can open this link.'],
+    }));
+    const { container } = render(
       <StoreContext.Provider value={store}>
         <Modals />
       </StoreContext.Provider>,
     );
 
-    await screen.findByRole('heading', { name: 'Share transcript' });
+    expect(await screen.findByText('Create a share with Acme Vault.')).toBeVisible();
+    expect(screen.getByText('Private')).toBeVisible();
+    expect(screen.queryByRole('radio', { name: /Private/ })).not.toBeInTheDocument();
+    expect(container).not.toHaveTextContent(/GitHub|Gist|\bgh\b|gisthost/i);
+  });
+
+  it('preserves share choices and shows a curated generic provider failure', async () => {
+    const store = createStore();
+    store.shareTarget.value = { sessionId: store.sessions.value[0].id, anchorMessageId: 42 };
+    store.modal.value = 'share';
+    store.endpoints.sharingCapabilities = vi.fn(async () => ({
+      enabled: true,
+      provider: { id: 'acme', name: 'Acme Vault' },
+      operations: ['create'] as Array<'create'>,
+      visibilities: ['private'] as Array<'private'>,
+      default_visibility: 'private' as const,
+      help: 'Sign in to Acme Vault and try again.',
+    }));
+    store.endpoints.createSessionShare = vi.fn(async () => {
+      throw new Error('Authentication is required by the sharing provider.');
+    });
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    await screen.findByRole('radio', { name: /Conversation up to here/ });
     await userEvent.click(screen.getByRole('radio', { name: /Conversation up to here/ }));
     await userEvent.click(screen.getByRole('button', { name: 'Create share' }));
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'gh CLI not found; install it and run gh auth login',
-    );
-    expect(screen.getByRole('alert')).toHaveTextContent(
-      'Sharing currently uses the GitHub CLI on the machine running term-llm',
-    );
-    expect(screen.getByRole('link', { name: 'gh' })).toHaveAttribute(
-      'href',
-      'https://cli.github.com/',
+      'Authentication is required by the sharing provider.',
     );
     expect(screen.getByRole('radio', { name: /Conversation up to here/ })).toBeChecked();
     expect(screen.getByRole('button', { name: 'Try again' })).toBeEnabled();
+    expect(container).not.toHaveTextContent(/GitHub|Gist|\bgh\b|gisthost/i);
   });
-
   it('offers legacy branch-context choices before creating a path', async () => {
     const store = createStore();
     store.branchTarget.value = '42';

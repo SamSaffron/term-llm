@@ -1,6 +1,7 @@
 package gist
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -82,6 +83,34 @@ func TestGistCommandHelper(t *testing.T) {
 	}
 	fmt.Fprint(os.Stderr, os.Getenv("TERM_LLM_GIST_HELPER_STDERR"))
 	os.Exit(exitCode)
+}
+
+func TestGistWriteFailuresDoNotExposeStderr(t *testing.T) {
+	const diagnostic = "SECRET ghp_example remote diagnostic"
+	client := &Client{execCommand: func(string, ...string) *exec.Cmd {
+		return gistTestCommand(t, 1, diagnostic)
+	}}
+	for name, run := range map[string]func() error{
+		"create": func() error {
+			_, err := client.Create("description", false, map[string]string{"index.html": "hello"})
+			return err
+		},
+		"update": func() error {
+			return client.Update("abc123", map[string]string{"index.html": "hello"})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := run()
+			if err == nil {
+				t.Fatal("write succeeded unexpectedly")
+			}
+			for current := err; current != nil; current = errors.Unwrap(current) {
+				if strings.Contains(current.Error(), diagnostic) || strings.Contains(current.Error(), "ghp_example") {
+					t.Fatalf("error chain exposed stderr: %v", current)
+				}
+			}
+		})
+	}
 }
 
 func TestParseGistRef(t *testing.T) {

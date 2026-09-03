@@ -8,10 +8,11 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
-// ShareScope identifies the point-in-time transcript content exported to a Gist.
+// ShareScope identifies the transcript content included in a share.
 type ShareScope string
 
 const (
+	ShareScopeSession      ShareScope = "session"
 	ShareScopeResponse     ShareScope = "response"
 	ShareScopeConversation ShareScope = "conversation"
 )
