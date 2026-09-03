@@ -146,10 +146,10 @@ func (rt *serveRuntime) ensureMCPManagerLocked() error {
 		}
 		// Publish the manager only after planner construction succeeds. Otherwise a
 		// later retry would skip setup and leave all deferred wrappers invisible.
-		rt.mcpManager = mgr
+		rt.setMCPManager(mgr)
 	}
 	if rt.provider != nil {
-		rt.mcpManager.SetSamplingProvider(rt.provider, rt.defaultModel, rt.yoloMode)
+		rt.mcpManager.SetSamplingProvider(rt.provider, rt.defaultModel, rt.yoloEnabled())
 	}
 	return nil
 }

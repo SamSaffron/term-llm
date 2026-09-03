@@ -713,6 +713,21 @@ func TestCustomBasePath_EndToEnd(t *testing.T) {
 	}
 }
 
+func TestBuildIndexHTMLDisablesApprovalControlsForYoloLaunch(t *testing.T) {
+	for _, tc := range []struct {
+		mode tools.ApprovalMode
+		want string
+	}{
+		{mode: tools.ModeAuto, want: `window.TERM_LLM_APPROVALS_ENABLED=true`},
+		{mode: tools.ModeYolo, want: `window.TERM_LLM_APPROVALS_ENABLED=false`},
+	} {
+		srv := &serveServer{cfg: serveServerConfig{basePath: "/ui"}, approvalDefault: tc.mode}
+		if body := string(srv.renderIndexHTML()); !strings.Contains(body, tc.want) {
+			t.Fatalf("mode %s index missing %q", tc.mode, tc.want)
+		}
+	}
+}
+
 func TestBuildIndexHTMLBootstrapsWorktreeCapabilityAndReusesGitRoot(t *testing.T) {
 	tests := []struct {
 		name       string

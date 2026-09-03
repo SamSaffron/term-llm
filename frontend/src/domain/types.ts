@@ -146,6 +146,8 @@ export interface Widget {
   error?: string;
 }
 
+export type ApprovalMode = 'prompt' | 'auto' | 'yolo';
+
 export interface Session {
   id: string;
   number?: number;
@@ -168,6 +170,11 @@ export interface Session {
   activeModel?: string;
   activeEffort?: string;
   activeReasoningMode?: string;
+  approvalDefaultMode?: ApprovalMode;
+  approvalRequestedMode?: ApprovalMode;
+  approvalEffectiveMode?: ApprovalMode;
+  guardianAvailable?: boolean;
+  guardianAutoSuspended?: boolean;
   activeProvider?: string;
   projectId?: string;
   projectName?: string;

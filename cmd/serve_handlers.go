@@ -341,6 +341,9 @@ func (s *serveServer) buildIndexHTML() []byte {
 	headSnippet += `<script>window.TERM_LLM_LOCATION_SHARING_ENABLED=` + strconv.FormatBool(!s.cfg.locationSharingDisabled) + `;</script>`
 	_, worktreeRootErr := s.currentGitRoot()
 	headSnippet += `<script>window.TERM_LLM_WORKTREES_ENABLED=` + strconv.FormatBool(worktreeRootErr == nil) + `;</script>`
+	headSnippet += `<script>window.TERM_LLM_APPROVALS_ENABLED=` + strconv.FormatBool(s.approvalDefault != tools.ModeYolo) + `;</script>`
+	approvalModeEscaped, _ := json.Marshal(s.approvalDefault.String())
+	headSnippet += `<script>window.TERM_LLM_APPROVAL_MODE=` + string(approvalModeEscaped) + `;</script>`
 	if s.cfg.hubURL != "" {
 		hubEscaped, _ := json.Marshal(map[string]string{
 			"url":      s.cfg.hubURL,
@@ -2025,6 +2028,11 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		s.handleSessionInterrupt(w, r, sessionID)
+		return
+	}
+
+	if suffix == "runtime/approvals" {
+		s.handleSessionApprovalMode(w, r, sessionID)
 		return
 	}
 

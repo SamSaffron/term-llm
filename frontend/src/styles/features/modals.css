@@ -155,6 +155,76 @@
   cursor: not-allowed;
 }
 
+.approval-mode-options {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.approval-mode-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.7rem 0.75rem;
+  cursor: pointer;
+}
+
+.approval-mode-option:has(input:checked) {
+  border-color: color-mix(in srgb, var(--link) 52%, var(--border));
+  background: color-mix(in srgb, var(--link) 6%, var(--surface-2));
+}
+
+.approval-mode-option:has(input:focus-visible) {
+  outline: 2px solid color-mix(in srgb, var(--border-strong) 60%, transparent);
+  outline-offset: 2px;
+}
+
+.approval-mode-option-yolo:has(input:checked) {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+  background: color-mix(in srgb, var(--danger) 6%, var(--surface-2));
+}
+
+.approval-mode-option-yolo input {
+  accent-color: var(--danger);
+}
+
+.approval-mode-option input {
+  margin-top: 0.2rem;
+  accent-color: var(--link);
+}
+
+.approval-mode-option input:focus {
+  outline: none;
+}
+
+.approval-mode-option span,
+.approval-mode-option small {
+  display: block;
+}
+
+.approval-mode-option small {
+  margin-top: 0.2rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
+.approval-mode-option:has(input:disabled) {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.approval-mode-notice {
+  margin-top: 0.7rem;
+  border: 1px solid rgb(245 158 11 / 38%);
+  border-radius: 8px;
+  background: rgb(245 158 11 / 10%);
+  padding: 0.6rem 0.7rem;
+  color: var(--text-muted);
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+
 .rename-session-modal {
   width: min(420px, 100%);
 }

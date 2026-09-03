@@ -1,6 +1,14 @@
 import type { APIClient } from './client';
-import type { Goal, MCPOAuthFlow, MCPResponse } from '../domain/types';
+import type { ApprovalMode, Goal, MCPOAuthFlow, MCPResponse } from '../domain/types';
 import type { MentionSearchResponse } from '../domain/completions';
+
+export interface ApprovalPolicyResponse {
+  default_mode: ApprovalMode;
+  requested_mode: ApprovalMode;
+  effective_mode: ApprovalMode;
+  guardian_available: boolean;
+  guardian_auto_suspended: boolean;
+}
 
 export interface SessionShareResponse {
   gist_id: string;
@@ -317,6 +325,10 @@ export const endpoints = (api: APIClient) => ({
       'Idempotency-Key': `runtime_${id}_${operation}_${JSON.stringify(body)}`,
     }),
   compact: (id: string) => api.post(`/v1/sessions/${encoded(id)}/runtime/compact`, {}),
+  approvalPolicy: (id: string) =>
+    api.get<ApprovalPolicyResponse>(`/v1/sessions/${encoded(id)}/runtime/approvals`),
+  setApprovalMode: (id: string, mode: ApprovalMode) =>
+    api.post<ApprovalPolicyResponse>(`/v1/sessions/${encoded(id)}/runtime/approvals`, { mode }),
   mutateTranscript: (id: string, operation: 'undo' | 'redo', body: unknown) =>
     api.post<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/runtime/${operation}`, body),
   goal: (id: string, body: Goal | { action: string }) =>

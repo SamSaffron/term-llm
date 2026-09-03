@@ -1017,6 +1017,21 @@ export class RunEngine {
         if (Object.hasOwn(event, `${prefix}effort`))
           runtimePatch.activeEffort = String(event[`${prefix}effort`] || '');
       }
+    } else if (event.type === 'response.guardian.review') {
+      const mode = (value: unknown): Session['approvalEffectiveMode'] => {
+        const text = String(value || '');
+        return text === 'prompt' || text === 'auto' || text === 'yolo' ? text : undefined;
+      };
+      if (Object.hasOwn(event, 'approval_default_mode'))
+        runtimePatch.approvalDefaultMode = mode(event.approval_default_mode);
+      if (Object.hasOwn(event, 'approval_requested_mode'))
+        runtimePatch.approvalRequestedMode = mode(event.approval_requested_mode);
+      if (Object.hasOwn(event, 'approval_effective_mode'))
+        runtimePatch.approvalEffectiveMode = mode(event.approval_effective_mode);
+      if (Object.hasOwn(event, 'approval_guardian_available'))
+        runtimePatch.guardianAvailable = Boolean(event.approval_guardian_available);
+      if (Object.hasOwn(event, 'approval_guardian_auto_suspended'))
+        runtimePatch.guardianAutoSuspended = Boolean(event.approval_guardian_auto_suspended);
     }
     if (event.type === 'response.completed' && next.usage) {
       const lastAssistant = [...next.messages]

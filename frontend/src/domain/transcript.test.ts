@@ -245,6 +245,21 @@ describe('transcript domain', () => {
       created: 1_700_000_000_000,
       fileChangeSummary: { fileCount: 2, additions: 7, deletions: 3, git: true },
     });
+    expect(session).not.toHaveProperty('approvalDefaultMode');
+    expect(
+      sanitizeSession({
+        id: 's2',
+        approval_default_mode: 'auto',
+        approval_requested_mode: 'auto',
+        approval_effective_mode: 'prompt',
+        guardian_auto_suspended: true,
+      }),
+    ).toMatchObject({
+      approvalDefaultMode: 'auto',
+      approvalRequestedMode: 'auto',
+      approvalEffectiveMode: 'prompt',
+      guardianAutoSuspended: true,
+    });
   });
 
   it('prefers server-resolved titles while retaining editable generated metadata', () => {

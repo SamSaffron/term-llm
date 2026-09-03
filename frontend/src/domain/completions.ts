@@ -37,6 +37,11 @@ export interface MentionSearchResponse {
 }
 
 export const SLASH_COMMANDS = [
+  {
+    command: '/approvals',
+    description: 'Change tool approval mode',
+    streamingSafe: true,
+  },
   { command: '/compact', description: 'Compact conversation context' },
   { command: '/commit', description: 'Review, stage, and create a Git commit' },
   { command: '/effort', description: 'Choose reasoning effort' },
@@ -123,6 +128,7 @@ export function composerCompletions(
   skills: SkillCommand[] = [],
   streaming = false,
   shellEnabled = false,
+  approvalsEnabled = true,
 ): Completion[] {
   const slash = value.match(/^\/[\w-]*$/);
   if (slash) {
@@ -141,7 +147,8 @@ export function composerCompletions(
         (entry) =>
           entry.value.startsWith(slash[0]) &&
           (!streaming || entry.streamingSafe) &&
-          (entry.value !== '/shell' || shellEnabled),
+          (entry.value !== '/shell' || shellEnabled) &&
+          (entry.value !== '/approvals' || approvalsEnabled),
       )
       .sort((left, right) => left.value.localeCompare(right.value));
   }

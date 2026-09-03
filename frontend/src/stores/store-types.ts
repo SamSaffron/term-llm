@@ -12,6 +12,7 @@ export type Modal =
   | 'rename'
   | 'ask-user'
   | 'approval'
+  | 'approvals'
   | 'mcp'
   | 'goal'
   | 'widgets'

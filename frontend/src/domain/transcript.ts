@@ -1,5 +1,17 @@
-import type { Attachment, DiffComment, GuardianReview, Message, Session, ToolCall } from './types';
+import type {
+  ApprovalMode,
+  Attachment,
+  DiffComment,
+  GuardianReview,
+  Message,
+  Session,
+  ToolCall,
+} from './types';
 
+const approvalMode = (value: unknown): ApprovalMode | undefined => {
+  const mode = String(value || '').toLowerCase();
+  return mode === 'prompt' || mode === 'auto' || mode === 'yolo' ? mode : undefined;
+};
 const randomID = (prefix: string): string =>
   `${prefix}_${globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2)}`;
 const timestamp = (value: unknown): number => {
@@ -577,6 +589,12 @@ export function sanitizeSession(
   const attentionSeq = Number(source.attention_seq ?? source.latest_attention_seq);
   const seenThroughSeq = Number(source.seen_through_seq);
   const attentionFinalRev = Number(source.attention_final_rev ?? source.final_rev);
+  const hasApprovalPolicy =
+    Object.hasOwn(source, 'approval_requested_mode') ||
+    Object.hasOwn(source, 'approval_effective_mode') ||
+    Object.hasOwn(source, 'approval_default_mode') ||
+    Object.hasOwn(source, 'guardian_available') ||
+    Object.hasOwn(source, 'guardian_auto_suspended');
   return {
     id: text(source.id) || randomID('sess'),
     number: Number(source.number || source.session_number) || undefined,
@@ -605,6 +623,19 @@ export function sanitizeSession(
     activeProvider: text(source.active_provider || source.provider_key || source.provider),
     activeEffort: text(source.active_effort || source.effort),
     activeReasoningMode: text(source.active_reasoning_mode),
+    ...(hasApprovalPolicy
+      ? {
+          approvalRequestedMode: approvalMode(source.approval_requested_mode),
+          approvalEffectiveMode: approvalMode(source.approval_effective_mode),
+          approvalDefaultMode: approvalMode(source.approval_default_mode),
+          guardianAvailable:
+            source.guardian_available == null ? undefined : Boolean(source.guardian_available),
+          guardianAutoSuspended:
+            source.guardian_auto_suspended == null
+              ? undefined
+              : Boolean(source.guardian_auto_suspended),
+        }
+      : {}),
     projectId: text(source.project_id),
     projectName: text(source.project_name),
     projectUnavailable: Boolean(source.project_unavailable),

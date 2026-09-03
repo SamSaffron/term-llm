@@ -839,7 +839,7 @@ func (s *serveServer) serveSkillChildRunner(sessionID string, runtime *serveRunt
 	var approval *tools.ApprovalManager
 	yolo := false
 	if runtime != nil {
-		yolo = runtime.yoloMode
+		yolo = runtime.yoloEnabled()
 		if runtime.toolMgr != nil {
 			approval = runtime.toolMgr.ApprovalMgr
 		}

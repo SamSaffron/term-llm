@@ -18,6 +18,8 @@ describe('bootstrap configuration and storage', () => {
       TERM_LLM_UI_PREFIX: '/chat/nodes/alpha',
       TERM_LLM_UI_VERSION: 'abc',
       TERM_LLM_AGENT_NAMES: ['a', 'a', 'b'],
+      TERM_LLM_APPROVALS_ENABLED: false,
+      TERM_LLM_APPROVAL_MODE: 'yolo',
       TERM_LLM_HUB: { nodeId: 'alpha', nodeBasePath: '/chat/nodes/alpha' },
       __WEBRTC_ENABLED__: true,
       __WEBRTC_SIGNALING_URL__: 'https://signal',
@@ -26,6 +28,8 @@ describe('bootstrap configuration and storage', () => {
       prefix: '/chat/nodes/alpha',
       version: 'abc',
       agentNames: ['a', 'b'],
+      approvals: false,
+      approvalMode: 'yolo',
       webRTC: true,
       signalingURL: 'https://signal',
     });

@@ -1,6 +1,13 @@
 import { batch } from '@preact/signals';
 import { APIError } from '../api/client';
-import type { ApprovalPrompt, AskUserPrompt, CurrentPlan, Goal, Session } from '../domain/types';
+import type {
+  ApprovalMode,
+  ApprovalPrompt,
+  AskUserPrompt,
+  CurrentPlan,
+  Goal,
+  Session,
+} from '../domain/types';
 import { planSummary } from '../domain/plan';
 import { updateSessionRoute } from '../platform/routing';
 import type { TabEventType } from '../platform/tab-sync';
@@ -202,6 +209,11 @@ export class SelectionStore {
         currentIndex >= 0 ? this.sessionsStore.sessions.value[currentIndex] : undefined;
       // selected_transcript is authoritative here, including an empty transcript.
       // Session state is authoritative for its durable continuation anchor.
+      const policy = recordValue(state.approval_policy);
+      const policyMode = (value: unknown): ApprovalMode | undefined => {
+        const mode = String(value || '');
+        return mode === 'prompt' || mode === 'auto' || mode === 'yolo' ? mode : undefined;
+      };
       const updated = {
         // Selected transcript payloads own message bodies, not live response
         // ownership. Preserve the sidebar/status evidence sampled before this
@@ -215,6 +227,21 @@ export class SelectionStore {
             }
           : {}),
         lastResponseId: lastResponseId || null,
+        ...(policy
+          ? {
+              approvalDefaultMode: policyMode(policy.default_mode),
+              approvalRequestedMode: policyMode(policy.requested_mode),
+              approvalEffectiveMode: policyMode(policy.effective_mode),
+              guardianAvailable: Boolean(policy.guardian_available),
+              guardianAutoSuspended: Boolean(policy.guardian_auto_suspended),
+            }
+          : {
+              approvalDefaultMode: this.services.config.approvalMode,
+              approvalRequestedMode: this.services.config.approvalMode,
+              approvalEffectiveMode: this.services.config.approvalMode,
+              guardianAvailable: undefined,
+              guardianAutoSuspended: false,
+            }),
       };
       if (currentIndex >= 0 && current) this.sessionsStore.update(current.id, () => updated);
       else this.sessionsStore.prepend(updated);

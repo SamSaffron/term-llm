@@ -3294,6 +3294,131 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByRole('option', { name: /compact/ })).toBeInTheDocument();
   });
 
+  it('opens approval controls from /approvals and shows a changed-mode chip above the goal', async () => {
+    const store = createStore();
+    store.sessions.value = store.sessions.value.map((entry) => ({
+      ...entry,
+      approvalDefaultMode: 'auto',
+      approvalRequestedMode: 'auto',
+      approvalEffectiveMode: 'prompt',
+      guardianAvailable: true,
+      guardianAutoSuspended: true,
+    }));
+    store.goal.value = { objective: 'Ship carefully', status: 'active' };
+    store.endpoints.approvalPolicy = vi.fn(async () => ({
+      default_mode: 'auto' as const,
+      requested_mode: 'auto' as const,
+      effective_mode: 'prompt' as const,
+      guardian_available: true,
+      guardian_auto_suspended: true,
+    }));
+    store.endpoints.setApprovalMode = vi.fn(async () => ({
+      default_mode: 'auto' as const,
+      requested_mode: 'auto' as const,
+      effective_mode: 'auto' as const,
+      guardian_available: true,
+      guardian_auto_suspended: false,
+    }));
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    const chips = container.querySelectorAll('.composer-inner > button');
+    expect(chips[0]).toHaveClass('approval-mode-chip');
+    expect(chips[1]).toHaveClass('goal-chip');
+    expect(chips[0]).toHaveTextContent('Guardian paused');
+
+    const input = screen.getByRole('textbox', { name: 'Message' });
+    await userEvent.type(input, '/approvals');
+    await userEvent.keyboard('{Enter}');
+    expect(await screen.findByRole('heading', { name: 'Tool approvals' })).toBeInTheDocument();
+    const autoMode = screen.getByRole('radio', { name: /Auto/ });
+    expect(autoMode).toBeChecked();
+    await waitFor(() => expect(autoMode).toHaveFocus());
+    expect(screen.getByRole('radio', { name: /Prompt/ })).not.toHaveFocus();
+    const resume = await screen.findByRole('button', { name: 'Resume Auto' });
+    expect(resume).toBeInTheDocument();
+    await userEvent.click(resume);
+    await waitFor(() => expect(store.endpoints.setApprovalMode).toHaveBeenCalledWith('s1', 'auto'));
+    expect(screen.queryByRole('heading', { name: 'Tool approvals' })).not.toBeInTheDocument();
+  });
+
+  it('hides and rejects approval controls when the server launched in Yolo', async () => {
+    const store = createStore();
+    store.config.approvals = false;
+    store.toast = vi.fn();
+    store.modal.value = '';
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    const input = screen.getByRole('textbox', { name: 'Message' });
+    await userEvent.type(input, '/app');
+    expect(screen.queryByRole('option', { name: /approvals/ })).not.toBeInTheDocument();
+    await userEvent.type(input, 'rovals');
+    await userEvent.keyboard('{Enter}');
+    store.config.approvals = true;
+
+    expect(store.modal.value).toBe('');
+    expect(container.querySelector('.approval-mode-chip')).not.toBeInTheDocument();
+    expect(store.toast).toHaveBeenCalledWith(
+      'Approval controls are disabled for a Yolo server.',
+      'error',
+    );
+  });
+
+  it('keeps a local approval choice across live policy updates after hydration', async () => {
+    const store = createStore();
+    let resolvePolicy!: (value: {
+      default_mode: 'auto';
+      requested_mode: 'auto';
+      effective_mode: 'auto';
+      guardian_available: boolean;
+      guardian_auto_suspended: boolean;
+    }) => void;
+    store.endpoints.approvalPolicy = vi.fn(
+      () =>
+        new Promise<Parameters<typeof resolvePolicy>[0]>((resolve) => {
+          resolvePolicy = resolve;
+        }),
+    );
+    store.modal.value = 'approvals';
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    await screen.findByRole('heading', { name: 'Tool approvals' });
+    const yolo = screen.getByRole('radio', { name: /Yolo/ });
+    await act(async () => {
+      resolvePolicy({
+        default_mode: 'auto',
+        requested_mode: 'auto',
+        effective_mode: 'auto',
+        guardian_available: true,
+        guardian_auto_suspended: false,
+      });
+    });
+    await waitFor(() => expect(yolo).toBeEnabled());
+    await userEvent.click(yolo);
+    act(() => {
+      store.sessionStore.patch('s1', {
+        approvalRequestedMode: 'prompt',
+        approvalEffectiveMode: 'prompt',
+      });
+    });
+
+    expect(yolo).toBeChecked();
+    expect(screen.getByRole('radio', { name: /Auto/ })).not.toBeChecked();
+  });
+
   it('discovers and dispatches the capability-gated shell command locally', async () => {
     const store = createStore();
     store.shellStore.enabled.value = true;

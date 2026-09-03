@@ -71,6 +71,7 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// replayable SSE/long-poll server-event coordination, branch-tree
 		// navigation, the paginated Recent/Projects sidebar, elastic streaming
 		// presentation buffer, explicit response authority/transport state,
+		// session approval-policy status/commands and their lazy settings modal,
 		// authoritative mobile stream recovery, widget process lifecycle controls,
 		// model capability-aware runtime controls, durable terminal/input-required
 		// attention reconciliation, native commit review/editor controls, the
@@ -78,7 +79,7 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// toggle/loader are first-party shell code. The xterm terminal, preview body,
 		// parser, source transport, and feature CSS remain in bounded lazy chunks.
 		// Keep bounded headroom while still failing meaningful accidental regressions.
-		"dist/app.js":  {raw: 465_000, gzip: 135_000},
+		"dist/app.js":  {raw: 468_000, gzip: 135_000},
 		"dist/app.css": {raw: 174_000, gzip: 33_000},
 		// Measured after the completed standalone port: 67.7/21.5 KiB JS and
 		// 16.7/4.1 KiB CSS. These limits retain modest growth headroom without

@@ -569,6 +569,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			ApprovalModeSet:     true,
 			ApprovalSource:      resolvedApproval.Source,
 			ApprovalHeadless:    true,
+			ApprovalPrepare:     true,
 			ApprovalDiagnostics: serveVerbose,
 			Debug:               serveDebug,
 			DebugRaw:            debugRaw,
@@ -775,6 +776,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			jobsV2:              jobsV2,
 			cfgRef:              cfg,
 			store:               store,
+			approvalDefault:     resolvedApproval.Mode,
 			projectsEnabled:     projectsEnabled,
 			bootstrapProjectID:  bootstrapProjectID,
 			startupDir:          startupDir,
@@ -1311,6 +1313,7 @@ type serveServer struct {
 	jobsV2                   *jobsV2Manager
 	cfgRef                   *config.Config
 	store                    session.Store
+	approvalDefault          tools.ApprovalMode
 	shareClientFactory       func() (serveGistCreator, error)
 	projectsEnabled          bool
 	bootstrapProjectID       string

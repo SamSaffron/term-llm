@@ -702,6 +702,12 @@ func (m *ApprovalManager) requestedMode() ApprovalMode {
 	return ModePrompt
 }
 
+// RequestedApprovalMode returns the configured mode before a Guardian breaker
+// suspension is applied. Child managers inherit the first non-prompt parent mode.
+func (m *ApprovalManager) RequestedApprovalMode() ApprovalMode {
+	return m.requestedMode()
+}
+
 // ApprovalMode returns this manager's effective mode, inheriting from parents.
 // A root breaker suspension demotes locally-auto children without mutating the
 // requested or persisted policy.

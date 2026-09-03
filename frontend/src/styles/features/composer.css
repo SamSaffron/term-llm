@@ -307,6 +307,7 @@
   height: 20px;
 }
 
+.approval-mode-chip,
 .goal-chip {
   align-self: flex-start;
   border: 1px solid var(--border);
@@ -321,6 +322,21 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.approval-mode-chip {
+  border-color: rgb(245 158 11 / 45%);
+  background: rgb(245 158 11 / 13%);
+}
+
+.approval-mode-chip.approval-mode-yolo {
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.approval-mode-chip-label,
+.goal-chip-label {
+  font-weight: 700;
 }
 
 .goal-chip.hidden {

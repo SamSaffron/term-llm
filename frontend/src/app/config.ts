@@ -1,4 +1,4 @@
-import type { Project } from '../domain/types';
+import type { ApprovalMode, Project } from '../domain/types';
 
 declare global {
   interface Window {
@@ -10,6 +10,8 @@ declare global {
     TERM_LLM_UI_TITLE?: string;
     TERM_LLM_LOCATION_SHARING_ENABLED?: boolean;
     TERM_LLM_WORKTREES_ENABLED?: boolean;
+    TERM_LLM_APPROVALS_ENABLED?: boolean;
+    TERM_LLM_APPROVAL_MODE?: string;
     TERM_LLM_HUB?: HubContext;
     TERM_LLM_VAPID_PUBLIC_KEY?: string;
     TERM_LLM_PUSH_SUPPORTED?: boolean;
@@ -42,6 +44,8 @@ export interface AppConfig {
   title: string;
   locationSharing: boolean;
   worktrees: boolean;
+  approvals?: boolean;
+  approvalMode?: ApprovalMode;
   hub: HubContext | null;
   vapidKey: string;
   pushSupported?: boolean;
@@ -65,6 +69,11 @@ export function readInjectedConfig(target: Window = window): AppConfig {
       ? { ...target.TERM_LLM_HUB }
       : null;
   const prefix = String(target.TERM_LLM_UI_PREFIX || '/ui').replace(/\/$/, '') || '/ui';
+  const injectedApprovalMode = String(target.TERM_LLM_APPROVAL_MODE || 'prompt');
+  const approvalMode: ApprovalMode =
+    injectedApprovalMode === 'auto' || injectedApprovalMode === 'yolo'
+      ? injectedApprovalMode
+      : 'prompt';
   return {
     prefix,
     version: String(target.TERM_LLM_UI_VERSION || ''),
@@ -76,6 +85,8 @@ export function readInjectedConfig(target: Window = window): AppConfig {
     title: String(target.TERM_LLM_UI_TITLE || ''),
     locationSharing: target.TERM_LLM_LOCATION_SHARING_ENABLED !== false,
     worktrees: target.TERM_LLM_WORKTREES_ENABLED === true,
+    approvals: target.TERM_LLM_APPROVALS_ENABLED !== false,
+    approvalMode,
     hub,
     vapidKey: String(target.TERM_LLM_VAPID_PUBLIC_KEY || ''),
     pushSupported: target.TERM_LLM_PUSH_SUPPORTED === true,

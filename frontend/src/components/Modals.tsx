@@ -13,6 +13,8 @@ import { CommitModal } from './CommitModal';
 
 let loadedShareModal: ComponentType | null = null;
 let shareModalImport: Promise<ComponentType> | null = null;
+let loadedApprovalsModal: ComponentType | null = null;
+let approvalsModalImport: Promise<ComponentType> | null = null;
 
 function LazyShareModal() {
   const [Modal, setModal] = useState<ComponentType | null>(() => loadedShareModal);
@@ -22,6 +24,25 @@ function LazyShareModal() {
     let live = true;
     void shareModalImport.then((component) => {
       loadedShareModal = component;
+      if (live) setModal(() => component);
+    });
+    return () => {
+      live = false;
+    };
+  }, [Modal]);
+  return Modal ? <Modal /> : null;
+}
+
+function LazyApprovalsModal() {
+  const [Modal, setModal] = useState<ComponentType | null>(() => loadedApprovalsModal);
+  useEffect(() => {
+    if (Modal) return;
+    approvalsModalImport ||= import('./ApprovalsModal').then(
+      ({ ApprovalsModal }) => ApprovalsModal,
+    );
+    let live = true;
+    void approvalsModalImport.then((component) => {
+      loadedApprovalsModal = component;
       if (live) setModal(() => component);
     });
     return () => {
@@ -1931,6 +1952,8 @@ export function Modals() {
           }
         />
       );
+    case 'approvals':
+      return store.config.approvals === false ? null : <LazyApprovalsModal />;
     case 'mcp':
       return <MCP />;
     case 'goal':

@@ -216,13 +216,14 @@ describe('composer completion', () => {
     expect(applyCompletion('please /co', '/compact')).toBe('please /compact ');
   });
 
-  it('gates the interactive shell command on the server capability', () => {
+  it('gates the interactive shell and approval commands on server capabilities', () => {
     expect(composerCompletions('/sh', [], [], false, false).map((entry) => entry.value)).toEqual(
       [],
     );
     expect(composerCompletions('/sh', [], [], false, true).map((entry) => entry.value)).toEqual([
       '/shell',
     ]);
+    expect(composerCompletions('/app', [], [], false, false, false)).toEqual([]);
   });
 
   it('restores branch commands and live skill filtering while streaming', () => {
@@ -239,7 +240,7 @@ describe('composer completion', () => {
     ];
     const values = composerCompletions('/', [], skills, true).map((entry) => entry.value);
     expect(values).toEqual(
-      expect.arrayContaining(['/fork', '/thread', '/tree', '/side', '/review']),
+      expect.arrayContaining(['/approvals', '/fork', '/thread', '/tree', '/side', '/review']),
     );
     expect(values).not.toEqual(expect.arrayContaining(['/compact', '/undo', '/explain']));
     expect(

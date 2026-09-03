@@ -29,6 +29,8 @@ type serveRuntime struct {
 	responseMu             sync.Mutex // guards lastResponseID and responseIDs
 	askUserMu              sync.Mutex
 	approvalMu             sync.Mutex
+	approvalModeMu         sync.Mutex
+	mcpManagerMu           sync.RWMutex
 	uiStateMu              sync.Mutex
 	compactionIdentityMu   sync.Mutex
 	provider               llm.Provider
@@ -58,6 +60,7 @@ type serveRuntime struct {
 	borrowedEngine         bool
 	skipProviderCleanup    bool
 	defaultModel           string
+	approvalDefault        tools.ApprovalMode
 	yoloMode               bool
 	compacting             atomic.Bool
 	lastUsedUnixNano       atomic.Int64
@@ -183,12 +186,40 @@ func (rt *serveRuntime) emitGuardianReview(event tools.GuardianEvent) {
 			"command":      event.Command,
 			"workdir":      event.WorkDir,
 		}
+		for key, value := range runtimeApprovalPolicy(rt) {
+			payload["approval_"+key] = value
+		}
 		if err := eventFunc("response.guardian.review", payload); err != nil {
 			log.Printf("[serve] guardian review event failed: %v", err)
 		}
 		return
 	}
 	log.Printf("[serve] %s", message)
+}
+
+func (rt *serveRuntime) mcpManagerSnapshot() *mcp.Manager {
+	if rt == nil {
+		return nil
+	}
+	rt.mcpManagerMu.RLock()
+	defer rt.mcpManagerMu.RUnlock()
+	return rt.mcpManager
+}
+
+func (rt *serveRuntime) setMCPManager(manager *mcp.Manager) {
+	if rt == nil {
+		return
+	}
+	rt.mcpManagerMu.Lock()
+	rt.mcpManager = manager
+	rt.mcpManagerMu.Unlock()
+}
+
+func (rt *serveRuntime) yoloEnabled() bool {
+	if rt != nil && rt.toolMgr != nil && rt.toolMgr.ApprovalMgr != nil {
+		return rt.toolMgr.ApprovalMgr.YoloEnabled()
+	}
+	return rt != nil && rt.yoloMode
 }
 
 func (rt *serveRuntime) Touch() {
@@ -384,7 +415,7 @@ func (rt *serveRuntime) closeLocked() {
 	rt.clearPendingApprovals()
 	if rt.mcpManager != nil {
 		rt.mcpManager.StopAll()
-		rt.mcpManager = nil
+		rt.setMCPManager(nil)
 	}
 	if rt.toolMgr != nil && rt.toolMgr.ApprovalMgr != nil {
 		rt.toolMgr.ApprovalMgr.Close()

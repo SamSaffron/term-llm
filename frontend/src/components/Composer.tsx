@@ -152,6 +152,7 @@ export function Composer() {
     store.skills.value,
     runActive,
     store.shellStore.enabled.value,
+    store.config.approvals !== false,
   );
   const combined = mention ? [...local, ...mentionCompletions(projectMentions)] : local;
   const completions =
@@ -160,6 +161,13 @@ export function Composer() {
       : [...new Map(combined.map((entry) => [`${entry.kind}:${entry.value}`, entry])).values()];
   const project = store.projects.value.find((entry) => entry.id === store.activeProjectId.value);
   const bindingBlocked = store.draftActive.value && Boolean(project && project.available === false);
+  const approvalChanged = Boolean(
+    session?.approvalDefaultMode &&
+    (session.approvalRequestedMode !== session.approvalDefaultMode ||
+      session.approvalEffectiveMode !== session.approvalDefaultMode ||
+      session.guardianAutoSuspended ||
+      (session.approvalRequestedMode === 'auto' && session.guardianAvailable === false)),
+  );
   useEffect(() => {
     if (completionIndex >= completions.length) setCompletionIndex(0);
   }, [completionIndex, completions.length]);
@@ -207,6 +215,17 @@ export function Composer() {
     if (command === '/new') return store.newChat();
     if (command === '/shell') {
       store.openShell();
+      return;
+    }
+    if (command === '/approvals') {
+      if (store.config.approvals === false) {
+        store.prompt.value = '';
+        store.toast('Approval controls are disabled for a Yolo server.', 'error');
+      } else if (!session || store.draftActive.value) {
+        store.toast('Start the conversation before changing approval mode.', 'error');
+      } else {
+        store.modal.value = 'approvals';
+      }
       return;
     }
     if (command === '/goal') {
@@ -512,6 +531,27 @@ export function Composer() {
               </div>
             ))}
           </div>
+        )}
+        {store.config.approvals !== false && approvalChanged && session && (
+          <button
+            type="button"
+            class={`approval-mode-chip approval-mode-${session.approvalEffectiveMode || 'prompt'}`}
+            onClick={() => {
+              store.modal.value = 'approvals';
+            }}
+          >
+            <span class="approval-mode-chip-label">Approvals</span> ·{' '}
+            {session.guardianAutoSuspended
+              ? 'Guardian paused · Prompting'
+              : session.approvalRequestedMode === 'auto' && session.guardianAvailable === false
+                ? 'Guardian unavailable · Auto fails closed'
+                : `${(session.approvalEffectiveMode || 'prompt')[0].toUpperCase()}${(session.approvalEffectiveMode || 'prompt').slice(1)} for this chat`}
+            {!session.guardianAutoSuspended &&
+            !(session.approvalRequestedMode === 'auto' && session.guardianAvailable === false) &&
+            session.approvalDefaultMode
+              ? ` · default ${session.approvalDefaultMode}`
+              : ''}
+          </button>
         )}
         {store.goal.value && (
           <button

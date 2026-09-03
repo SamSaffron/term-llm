@@ -45,6 +45,7 @@ type cmdRunnerOptions struct {
 	ApprovalModeSet     bool
 	ApprovalSource      approvalModeSource
 	ApprovalHeadless    bool
+	ApprovalPrepare     bool
 	ApprovalDiagnostics bool
 	Debug               bool
 	DebugRaw            bool
@@ -278,8 +279,9 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 			source = approvalModeSourceCLI
 		}
 		engine, toolMgr, err = newServeEngineWithToolsMode(cfg, settings, provider, cfg.DefaultProvider, modelName, resolvedApprovalMode{Mode: approvalMode, Source: source}, approvalRuntimeOptions{
-			Headless:      r.defaults.ApprovalHeadless,
-			WarningWriter: r.errWriter(),
+			Headless:         r.defaults.ApprovalHeadless,
+			PrepareCallbacks: r.defaults.ApprovalPrepare,
+			WarningWriter:    r.errWriter(),
 		}, wireSpawn, skillsSetup)
 		if err != nil {
 			return nil, err
@@ -338,6 +340,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		borrowedEngine:      borrowedEngine,
 		skipProviderCleanup: !providerOwned,
 		defaultModel:        modelName,
+		approvalDefault:     approvalMode,
 		yoloMode:            yoloMode,
 		toolsSetting:        settings.Tools,
 		mcpSetting:          settings.MCP,
@@ -380,7 +383,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		if err != nil {
 			return nil, err
 		}
-		runtime.mcpManager = mgr
+		runtime.setMCPManager(mgr)
 	}
 
 	configuredTools := true

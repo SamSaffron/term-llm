@@ -7,6 +7,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	planpkg "github.com/samsaffron/term-llm/internal/plan"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 type webCurrentPlan struct {
@@ -125,6 +126,9 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 		if rt, ok := s.sessionMgr.Get(sessionID); ok && rt != nil {
 			activeRun := rt.hasActiveRun()
 			resp["active_run"] = activeRun
+			if s.approvalDefault != tools.ModeYolo {
+				resp["approval_policy"] = runtimeApprovalPolicy(rt)
+			}
 			if prompts := rt.pendingAskUserPrompts(); len(prompts) > 0 {
 				resp["pending_ask_users"] = prompts
 				resp["pending_ask_user"] = prompts[0]
