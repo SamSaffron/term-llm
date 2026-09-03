@@ -353,16 +353,23 @@ func (d *DialogModel) ShowWorktreeConfirmation(title, question, yesLabel, noLabe
 	d.filtered = d.items
 }
 
-// ShowShareChoice asks how an already-shared session should be shared.
-func (d *DialogModel) ShowShareChoice() {
+// ShowShareChoice confirms a share and optionally offers an in-place update.
+func (d *DialogModel) ShowShareChoice(canUpdate bool, guidance string) {
 	d.dialogType = DialogShareChoice
 	d.title = "Share session"
 	d.cursor = 0
 	d.query = ""
-	d.items = []DialogItem{
-		{ID: "update", Label: "Update existing gist"},
-		{ID: "new", Label: "Create new gist"},
-		{ID: "cancel", Label: "Cancel"},
+	if canUpdate {
+		d.items = []DialogItem{
+			{ID: "update", Label: "Update existing share", Description: guidance},
+			{ID: "new", Label: "Create new share", Description: "Replaces the saved share state; the existing provider link may remain active and must be managed separately."},
+			{ID: "cancel", Label: "Cancel"},
+		}
+	} else {
+		d.items = []DialogItem{
+			{ID: "create", Label: "Create share", Description: guidance},
+			{ID: "cancel", Label: "Cancel"},
+		}
 	}
 	d.filtered = d.items
 }

@@ -26,6 +26,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/serve"
 	servehttp "github.com/samsaffron/term-llm/internal/serve/http"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/share"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -1314,7 +1315,15 @@ type serveServer struct {
 	cfgRef                   *config.Config
 	store                    session.Store
 	approvalDefault          tools.ApprovalMode
-	shareClientFactory       func() (serveGistCreator, error)
+	sharePublisherFactory    func() (share.Publisher, error)
+	shareMu                  sync.Mutex
+	shareCacheKey            string
+	shareCachedPublisher     share.Publisher
+	shareCachedCapabilities  share.Capabilities
+	shareCachedErr           error
+	shareCacheUntil          time.Time
+	shareBuildFlight         chan struct{}
+	shareInvocation          chan struct{}
 	projectsEnabled          bool
 	bootstrapProjectID       string
 	startupDir               string
@@ -1497,6 +1506,7 @@ func (s *serveServer) httpHandler() http.Handler {
 		s.registerWidgetRoutes(inner)
 	}
 	inner.HandleFunc("/v1/capabilities", s.auth(s.cors(s.handleCapabilities)))
+	inner.HandleFunc("/v1/sharing/capabilities", s.auth(s.cors(s.handleSharingCapabilities)))
 	inner.HandleFunc("/v1/project-directories", s.auth(s.cors(s.handleProjectDirectories)))
 	inner.HandleFunc("/v1/projects", s.auth(s.cors(s.handleProjects)))
 	inner.HandleFunc("/v1/projects/", s.auth(s.cors(s.handleProjectByID)))

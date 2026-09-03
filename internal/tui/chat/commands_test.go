@@ -20,13 +20,13 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/agents"
-	"github.com/samsaffron/term-llm/internal/agents/gist"
 	"github.com/samsaffron/term-llm/internal/clipboard"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
+	sharepkg "github.com/samsaffron/term-llm/internal/share"
 	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/testutil"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -5317,15 +5317,80 @@ func TestCmdShareRejectsUnknownArgument(t *testing.T) {
 	m.sess = &session.Session{ID: "share-test"}
 	result, cmd := m.ExecuteCommand("/share banana")
 	m = result.(*Model)
-	if cmd == nil || !strings.Contains(m.footerMessage, "Usage: /share [new] [public]") {
+	if cmd == nil || !strings.Contains(m.footerMessage, "Usage: /share [new] [raw] [public|unlisted|private]") {
 		t.Fatalf("footer = %q, cmd nil = %v", m.footerMessage, cmd == nil)
 	}
 }
 
-func TestCmdShareExistingGistOpensChoice(t *testing.T) {
+type recordingSharePublisher struct {
+	caps        sharepkg.Capabilities
+	result      sharepkg.Result
+	capCalls    int
+	createCalls int
+	updateCalls int
+	lastRequest sharepkg.Request
+}
+
+func defaultShareCapabilities() sharepkg.Capabilities {
+	return sharepkg.Capabilities{
+		Protocol: sharepkg.Protocol, Version: sharepkg.Version,
+		Provider:          sharepkg.Provider{ID: "test", Name: "Test helper"},
+		Operations:        []sharepkg.Operation{sharepkg.OperationCreate, sharepkg.OperationUpdate},
+		Visibilities:      []sharepkg.Visibility{sharepkg.VisibilityUnlisted, sharepkg.VisibilityPrivate},
+		DefaultVisibility: sharepkg.VisibilityUnlisted,
+	}
+}
+
+func (p *recordingSharePublisher) Capabilities(context.Context) (sharepkg.Capabilities, error) {
+	p.capCalls++
+	return p.caps, nil
+}
+
+func (p *recordingSharePublisher) Create(_ context.Context, req sharepkg.Request) (sharepkg.Result, error) {
+	p.createCalls++
+	p.lastRequest = req
+	return p.result, nil
+}
+
+func (p *recordingSharePublisher) Update(_ context.Context, _ string, req sharepkg.Request) (sharepkg.Result, error) {
+	p.updateCalls++
+	p.lastRequest = req
+	return p.result, nil
+}
+
+func installSharePublisher(t *testing.T, publisher sharepkg.Publisher) {
+	t.Helper()
+	old := newSharePublisher
+	newSharePublisher = func(config.ShareConfig) (sharepkg.Publisher, error) { return publisher, nil }
+	t.Cleanup(func() { newSharePublisher = old })
+}
+
+func lastBatchMessage(t *testing.T, cmd tea.Cmd) tea.Msg {
+	t.Helper()
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok || len(batch) == 0 {
+		t.Fatalf("command = %T, want non-empty batch", cmd())
+	}
+	return batch[len(batch)-1]()
+}
+
+func TestCmdShareLoadsCapabilitiesAsynchronouslyBeforeOfferingUpdate(t *testing.T) {
+	publisher := &recordingSharePublisher{caps: defaultShareCapabilities()}
+	installSharePublisher(t, publisher)
 	m := newCmdTestModel(&mockStore{})
-	m.sess = &session.Session{ID: "share-test", Share: &session.ShareState{GistID: "abc123"}}
+	m.sess = &session.Session{ID: "share-test", Share: &session.ShareState{
+		Provider: "test", ID: "opaque", URL: "https://example.test/share", Visibility: "unlisted", Scope: session.ShareScopeSession,
+	}}
 	result, cmd := m.ExecuteCommand("/share")
+	m = result.(*Model)
+	if cmd == nil || publisher.capCalls != 0 || !m.shareInFlight || m.dialog.Type() == DialogShareChoice {
+		t.Fatalf("capabilities ran synchronously or dialog opened early: calls=%d inFlight=%v dialog=%v", publisher.capCalls, m.shareInFlight, m.dialog.Type())
+	}
+	message, ok := lastBatchMessage(t, cmd).(shareCapabilitiesMsg)
+	if !ok {
+		t.Fatalf("capability command returned unexpected message")
+	}
+	result, cmd = m.handleShareCapabilities(message)
 	m = result.(*Model)
 	if cmd != nil || m.dialog.Type() != DialogShareChoice || m.pendingShare == nil {
 		t.Fatalf("dialog=%v pending=%v cmd nil=%v", m.dialog.Type(), m.pendingShare, cmd == nil)
@@ -5335,7 +5400,7 @@ func TestCmdShareExistingGistOpensChoice(t *testing.T) {
 func TestShareCommandRegistered(t *testing.T) {
 	for _, command := range AllCommands() {
 		if command.Name == "share" {
-			if command.Usage != "/share [new] [public]" || len(command.Subcommands) != 2 {
+			if command.Usage != "/share [new] [raw] [public|unlisted|private]" || len(command.Subcommands) != 5 {
 				t.Fatalf("share command = %+v", command)
 			}
 			return
@@ -5344,15 +5409,51 @@ func TestShareCommandRegistered(t *testing.T) {
 	t.Fatal("share command not registered")
 }
 
-func TestCmdShareNewSkipsExistingChoice(t *testing.T) {
-	store := &mockStore{sessions: map[string]*session.Session{}, messages: map[string][]session.Message{}}
-	m := newCmdTestModel(store)
-	m.sess = &session.Session{ID: "share-new", Share: &session.ShareState{GistID: "abc123"}}
-	store.sessions[m.sess.ID] = m.sess
-	result, cmd := m.ExecuteCommand("/share new")
+func TestShareCapabilitiesDoNotOfferUpdateWithoutCompatibleCapabilityAndScope(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		provider   string
+		scope      session.ShareScope
+		operations []sharepkg.Operation
+	}{
+		{name: "no update capability", provider: "test", scope: session.ShareScopeSession, operations: []sharepkg.Operation{sharepkg.OperationCreate}},
+		{name: "point in time scope", provider: "test", scope: session.ShareScopeResponse, operations: []sharepkg.Operation{sharepkg.OperationCreate, sharepkg.OperationUpdate}},
+		{name: "different provider", provider: "other", scope: session.ShareScopeSession, operations: []sharepkg.Operation{sharepkg.OperationCreate, sharepkg.OperationUpdate}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			caps := defaultShareCapabilities()
+			caps.Operations = test.operations
+			publisher := &recordingSharePublisher{caps: caps, result: sharepkg.Result{Provider: "test", ID: "new", URL: "https://example.test/new", Visibility: sharepkg.VisibilityUnlisted, Ready: true}}
+			sess := &session.Session{ID: "share-test", Share: &session.ShareState{
+				Provider: test.provider, ID: "old", URL: "https://example.test/old", Visibility: "unlisted", Scope: test.scope,
+			}}
+			store := &mockStore{sessions: map[string]*session.Session{sess.ID: sess}, messages: map[string][]session.Message{sess.ID: {}}}
+			m := newCmdTestModel(store)
+			m.sess = sess
+			result, cmd := m.handleShareCapabilities(shareCapabilitiesMsg{request: shareRequest{}, publisher: publisher, capabilities: caps})
+			m = result.(*Model)
+			if cmd != nil || m.shareInFlight || m.dialog.Type() != DialogShareChoice || m.pendingShare == nil {
+				t.Fatalf("cmd nil=%v inFlight=%v dialog=%v pending=%v", cmd == nil, m.shareInFlight, m.dialog.Type(), m.pendingShare)
+			}
+			if selected := m.dialog.Selected(); selected == nil || selected.ID != "create" || !strings.Contains(selected.Description, "previous provider link") {
+				t.Fatalf("incompatible share warning missing: selected=%+v", selected)
+			}
+		})
+	}
+}
+
+func TestShareCapabilitiesRejectUnsupportedVisibilityBeforeCreate(t *testing.T) {
+	caps := defaultShareCapabilities()
+	caps.Visibilities = []sharepkg.Visibility{sharepkg.VisibilityUnlisted}
+	publisher := &recordingSharePublisher{caps: caps}
+	m := newCmdTestModel(&mockStore{})
+	m.sess = &session.Session{ID: "share-test"}
+	result, _ := m.handleShareCapabilities(shareCapabilitiesMsg{
+		request: shareRequest{visibility: sharepkg.VisibilityPrivate, visibilitySet: true}, publisher: publisher, capabilities: caps,
+	})
 	m = result.(*Model)
-	if cmd == nil || m.dialog.Type() == DialogShareChoice || !m.shareInFlight {
-		t.Fatalf("dialog=%v inFlight=%v cmd nil=%v", m.dialog.Type(), m.shareInFlight, cmd == nil)
+	if publisher.createCalls != 0 || !strings.Contains(m.footerMessage, "not supported") {
+		t.Fatalf("create calls=%d footer=%q", publisher.createCalls, m.footerMessage)
 	}
 }
 
@@ -5374,36 +5475,9 @@ func TestCmdShareRejectsWhileStreamingOrInFlight(t *testing.T) {
 	}
 }
 
-type recordingGistSharer struct {
-	createResult *gist.Gist
-	createCalls  int
-	updateCalls  int
-}
-
-func (s *recordingGistSharer) Create(string, bool, map[string]string) (*gist.Gist, error) {
-	s.createCalls++
-	return s.createResult, nil
-}
-
-func (s *recordingGistSharer) Update(string, map[string]string) error {
-	s.updateCalls++
-	return nil
-}
-
-func installGistSharer(t *testing.T, sharer gistSharer) {
-	t.Helper()
-	old := newGistClient
-	newGistClient = func() (gistSharer, error) { return sharer, nil }
-	t.Cleanup(func() { newGistClient = old })
-}
-
 func shareWorkResult(t *testing.T, cmd tea.Cmd) shareDoneMsg {
 	t.Helper()
-	batch, ok := cmd().(tea.BatchMsg)
-	if !ok || len(batch) < 2 {
-		t.Fatalf("share command = %T, want batch with footer and work commands", cmd())
-	}
-	msg := batch[len(batch)-1]()
+	msg := lastBatchMessage(t, cmd)
 	result, ok := msg.(shareDoneMsg)
 	if !ok {
 		t.Fatalf("share work command returned %T", msg)
@@ -5411,7 +5485,73 @@ func shareWorkResult(t *testing.T, cmd tea.Cmd) shareDoneMsg {
 	return result
 }
 
-func TestStartShareCopiesPreviewExactlyOnceForCreateAndUpdate(t *testing.T) {
+func TestShareProviderGuidanceIncludesNotesHelpPrivacyAndOrphanWarning(t *testing.T) {
+	req := shareRequest{
+		includeRaw: true, visibility: sharepkg.VisibilityUnlisted,
+		capabilities: sharepkg.Capabilities{Provider: sharepkg.Provider{Name: "Acme", Help: "Run acme login."}, Notes: []string{"Links expire."}},
+	}
+	guidance := shareProviderGuidance(req, true)
+	for _, want := range []string{"Unlisted links are not private", "Links expire.", "Run acme login.", "raw model reasoning", "previous provider link"} {
+		if !strings.Contains(guidance, want) {
+			t.Fatalf("guidance missing %q: %q", want, guidance)
+		}
+	}
+}
+
+func TestShareProgressFooterPersistsPastTransientTimer(t *testing.T) {
+	publisher := &recordingSharePublisher{caps: defaultShareCapabilities()}
+	installSharePublisher(t, publisher)
+	m := newCmdTestModel(&mockStore{})
+	m.sess = &session.Session{ID: "share-progress"}
+	_, oldTimer := m.showFooterMuted("older notice")
+	oldClear := oldTimer().(footerMessageClearMsg)
+	result, cmd := m.ExecuteCommand("/share")
+	m = result.(*Model)
+	if cmd == nil || !m.shareInFlight || m.footerMessage != "Loading sharing provider…" {
+		t.Fatalf("progress state inFlight=%v footer=%q cmd=%v", m.shareInFlight, m.footerMessage, cmd != nil)
+	}
+	updated, _ := m.Update(oldClear)
+	m = updated.(*Model)
+	if m.footerMessage != "Loading sharing provider…" {
+		t.Fatalf("old transient timer cleared active progress: %q", m.footerMessage)
+	}
+}
+
+func TestShareRawReasoningRequiresExplicitRawArgument(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		includeRaw bool
+		wantRaw    bool
+	}{
+		{name: "config raw is not implicit"},
+		{name: "explicit raw", includeRaw: true, wantRaw: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			caps := defaultShareCapabilities()
+			publisher := &recordingSharePublisher{caps: caps, result: sharepkg.Result{Provider: "test", ID: "opaque", URL: "https://example.test/share", Visibility: sharepkg.VisibilityUnlisted, Ready: true}}
+			sess := &session.Session{ID: "share-raw", Name: "Raw privacy"}
+			message := session.Message{SessionID: sess.ID, Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "Final answer.", ReasoningContent: "private raw chain", ReasoningKind: llm.ReasoningKindRaw}}, TextContent: "Final answer."}
+			store := &mockStore{sessions: map[string]*session.Session{sess.ID: sess}, messages: map[string][]session.Message{sess.ID: {message}}}
+			m := newCmdTestModel(store)
+			m.sess = sess
+			m.config = &config.Config{Reasoning: config.ReasoningConfig{Raw: true, Source: config.ReasoningSourceAll, Export: config.ReasoningExportRaw}}
+			_, cmd := m.startShare(shareRequest{publisher: publisher, capabilities: caps, visibility: sharepkg.VisibilityUnlisted, includeRaw: test.includeRaw}, false)
+			result := shareWorkResult(t, cmd)
+			if result.err != nil {
+				t.Fatal(result.err)
+			}
+			containsRaw := false
+			for _, file := range publisher.lastRequest.Files {
+				containsRaw = containsRaw || strings.Contains(string(file.Content), "private raw chain")
+			}
+			if containsRaw != test.wantRaw || result.includedRaw != test.wantRaw {
+				t.Fatalf("containsRaw=%v includedRaw=%v want=%v", containsRaw, result.includedRaw, test.wantRaw)
+			}
+		})
+	}
+}
+
+func TestStartShareCopiesLinkExactlyOnceForCreateAndUpdate(t *testing.T) {
 	for _, tt := range []struct {
 		name       string
 		update     bool
@@ -5422,9 +5562,13 @@ func TestStartShareCopiesPreviewExactlyOnceForCreateAndUpdate(t *testing.T) {
 		{name: "update", update: true, wantUpdate: 1},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			caps := defaultShareCapabilities()
+			publisher := &recordingSharePublisher{caps: caps, result: sharepkg.Result{
+				Provider: "test", ID: "opaque", URL: "https://example.test/share", Visibility: sharepkg.VisibilityUnlisted, Ready: true,
+			}}
 			sess := &session.Session{ID: "share-flow", Name: "Share flow"}
 			if tt.update {
-				sess.Share = &session.ShareState{GistID: "abc123", GistURL: "https://gist.github.com/u/abc123"}
+				sess.Share = &session.ShareState{Provider: "test", ID: "opaque", URL: "https://example.test/share", Visibility: "unlisted", Scope: session.ShareScopeSession}
 			}
 			store := &mockStore{
 				sessions: map[string]*session.Session{sess.ID: sess},
@@ -5432,8 +5576,6 @@ func TestStartShareCopiesPreviewExactlyOnceForCreateAndUpdate(t *testing.T) {
 			}
 			m := newCmdTestModel(store)
 			m.sess = sess
-			sharer := &recordingGistSharer{createResult: &gist.Gist{ID: "abc123", URL: "https://gist.github.com/u/abc123"}}
-			installGistSharer(t, sharer)
 			copyCalls := 0
 			var copied string
 			installCopyBackend(t, func(text string) (clipboard.CopyMethod, error) {
@@ -5442,22 +5584,16 @@ func TestStartShareCopiesPreviewExactlyOnceForCreateAndUpdate(t *testing.T) {
 				return clipboard.CopyMethodNative, nil
 			})
 
-			_, cmd := m.startShare(shareRequest{}, tt.update)
+			_, cmd := m.startShare(shareRequest{publisher: publisher, capabilities: caps, visibility: sharepkg.VisibilityUnlisted}, tt.update)
 			result := shareWorkResult(t, cmd)
 			if result.err != nil {
 				t.Fatalf("share result error = %v", result.err)
 			}
-			if copyCalls != 1 {
-				t.Fatalf("CopyTextBestEffort calls = %d, want 1", copyCalls)
+			if copyCalls != 1 || copied != "https://example.test/share" {
+				t.Fatalf("copy calls=%d value=%q", copyCalls, copied)
 			}
-			if copied != session.GistPreviewURL("abc123") {
-				t.Fatalf("copied preview = %q", copied)
-			}
-			if !result.copyAttempted || result.copyErr != nil || result.copyMethod != clipboard.CopyMethodNative {
-				t.Fatalf("copy result = %+v", result)
-			}
-			if sharer.createCalls != tt.wantCreate || sharer.updateCalls != tt.wantUpdate {
-				t.Fatalf("gist calls create=%d update=%d", sharer.createCalls, sharer.updateCalls)
+			if publisher.createCalls != tt.wantCreate || publisher.updateCalls != tt.wantUpdate {
+				t.Fatalf("share calls create=%d update=%d", publisher.createCalls, publisher.updateCalls)
 			}
 		})
 	}
@@ -5473,22 +5609,17 @@ func TestHandleShareDonePersistsOriginatingSession(t *testing.T) {
 	beforeMessages := len(m.messages)
 
 	result, _ := m.handleShareDone(shareDoneMsg{
-		store:     store,
-		sessionID: origin.ID,
-		gist:      &gist.Gist{ID: "abc123", URL: "https://gist.github.com/u/abc123"},
-		preview:   session.GistPreviewURL("abc123"),
+		store: store, sessionID: origin.ID,
+		result: sharepkg.Result{Provider: "test", ID: "opaque", URL: "https://example.test/share", Visibility: sharepkg.VisibilityPrivate, Ready: true},
 	})
 	m = result.(*Model)
-	if m.shareInFlight {
-		t.Fatal("share remained in flight")
+	if m.shareInFlight || store.updated == nil || store.updated.ID != origin.ID || store.updated.Share == nil {
+		t.Fatalf("inFlight=%v updated=%+v", m.shareInFlight, store.updated)
 	}
-	if store.updated == nil || store.updated.ID != origin.ID || store.updated.Share == nil {
-		t.Fatalf("updated session = %+v", store.updated)
+	if store.updated.Share.Scope != session.ShareScopeSession || current.Share != nil {
+		t.Fatalf("persisted/current share = %+v / %+v", store.updated.Share, current.Share)
 	}
-	if current.Share != nil {
-		t.Fatalf("current session was poisoned: %+v", current.Share)
-	}
-	if m.dialog.Type() != DialogContent || !strings.Contains(m.dialog.Content(), "abc123") {
+	if m.dialog.Type() != DialogContent || !strings.Contains(m.dialog.Content(), "example.test/share") {
 		t.Fatalf("result dialog type=%v content=%q", m.dialog.Type(), m.dialog.Content())
 	}
 	if len(m.messages) != beforeMessages {
@@ -5515,37 +5646,14 @@ func TestHandleShareDoneReportsClipboardDelivery(t *testing.T) {
 			m := newCmdTestModel(store)
 			m.sess = sess
 			result, _ := m.handleShareDone(shareDoneMsg{
-				store:         store,
-				sessionID:     sess.ID,
-				gist:          &gist.Gist{ID: "abc123", URL: "https://gist.github.com/u/abc123"},
-				preview:       session.GistPreviewURL("abc123"),
-				copyAttempted: tt.copyAttempted,
-				copyMethod:    tt.method,
-				copyErr:       tt.copyErr,
+				store: store, sessionID: sess.ID,
+				result:        sharepkg.Result{Provider: "test", ID: "opaque", URL: "https://example.test/share", Visibility: sharepkg.VisibilityUnlisted, Ready: true},
+				copyAttempted: tt.copyAttempted, copyMethod: tt.method, copyErr: tt.copyErr,
 			})
 			if got := result.(*Model).dialog.Content(); !strings.Contains(got, tt.wantDialog) {
 				t.Fatalf("dialog = %q, want %q", got, tt.wantDialog)
 			}
 		})
-	}
-}
-
-func TestHandleShareDonePublicUpdateExplainsVisibility(t *testing.T) {
-	sess := &session.Session{ID: "origin"}
-	store := &mockStore{sessions: map[string]*session.Session{"origin": sess}}
-	m := newCmdTestModel(store)
-	m.sess = sess
-	result, _ := m.handleShareDone(shareDoneMsg{
-		store:           store,
-		sessionID:       sess.ID,
-		gist:            &gist.Gist{ID: "abc123", URL: "https://gist.github.com/u/abc123"},
-		preview:         session.GistPreviewURL("abc123"),
-		updated:         true,
-		requestedPublic: true,
-	})
-	m = result.(*Model)
-	if !strings.Contains(m.dialog.Content(), "cannot make it public") {
-		t.Fatalf("dialog did not explain visibility: %q", m.dialog.Content())
 	}
 }
 

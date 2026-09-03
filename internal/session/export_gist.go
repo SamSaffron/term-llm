@@ -2,13 +2,12 @@ package session
 
 import (
 	"fmt"
-	"regexp"
+
+	"github.com/samsaffron/term-llm/internal/agents/gist"
 )
 
-var gistIDPattern = regexp.MustCompile(`^[a-f0-9]+$`)
-
-// GistFiles builds the canonical HTML and Markdown transcript files.
-func GistFiles(sess *Session, messages []Message, opts ExportOptions) (map[string]string, error) {
+// ShareFiles builds the canonical HTML and Markdown transcript bundle.
+func ShareFiles(sess *Session, messages []Message, opts ExportOptions) (map[string]string, error) {
 	markdown := ExportToMarkdown(sess, messages, opts)
 	html, err := ExportToHTML(sess, messages, opts)
 	if err != nil {
@@ -17,10 +16,12 @@ func GistFiles(sess *Session, messages []Message, opts ExportOptions) (map[strin
 	return map[string]string{"index.html": html, "session.md": markdown}, nil
 }
 
+// GistFiles is retained for the explicit GitHub-only export commands.
+func GistFiles(sess *Session, messages []Message, opts ExportOptions) (map[string]string, error) {
+	return ShareFiles(sess, messages, opts)
+}
+
 // GistPreviewURL returns the gisthost preview URL for a valid gist ID.
 func GistPreviewURL(id string) string {
-	if !gistIDPattern.MatchString(id) {
-		return ""
-	}
-	return "https://gisthost.github.io/?" + id + "/index.html"
+	return gist.PreviewURL(id)
 }

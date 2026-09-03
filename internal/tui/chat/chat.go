@@ -2675,6 +2675,9 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	case worktreeOperationDoneMsg:
 		return m.handleWorktreeOperationDone(msg)
 
+	case shareCapabilitiesMsg:
+		return m.handleShareCapabilities(msg)
+
 	case shareDoneMsg:
 		return m.handleShareDone(msg)
 

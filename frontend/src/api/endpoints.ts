@@ -10,11 +10,31 @@ export interface ApprovalPolicyResponse {
   guardian_auto_suspended: boolean;
 }
 
+export type ShareVisibility = 'public' | 'unlisted' | 'private';
+
+export interface SharingCapabilitiesResponse {
+  enabled: boolean;
+  provider: { id: string; name: string };
+  operations: Array<'create' | 'update'>;
+  visibilities: ShareVisibility[];
+  default_visibility: ShareVisibility;
+  help?: string;
+  notes?: string[];
+  limits?: Record<string, unknown>;
+}
+
 export interface SessionShareResponse {
-  gist_id: string;
-  gist_url: string;
-  preview_url: string;
-  public: boolean;
+  provider: string;
+  id: string;
+  url: string;
+  source_url?: string;
+  visibility: ShareVisibility;
+  ready: boolean;
+  scope: 'response' | 'conversation' | 'session';
+  gist_id?: string;
+  gist_url?: string;
+  preview_url?: string;
+  public?: boolean;
 }
 
 export interface ShellCreateResponse {
@@ -35,6 +55,7 @@ const sessionHeaders = (id: string): Record<string, string> => ({ 'X-Term-LLM-Se
 const sessionReviewRead = { auth: 'session', versionCheck: false } as const;
 export const endpoints = (api: APIClient) => ({
   capabilities: () => api.get<Record<string, unknown>>('/v1/capabilities'),
+  sharingCapabilities: () => api.get<SharingCapabilitiesResponse>('/v1/sharing/capabilities'),
   providers: () => api.get<Record<string, unknown>>('/v1/providers'),
   models: (provider = '', signal?: AbortSignal) =>
     api.get<Record<string, unknown>>(

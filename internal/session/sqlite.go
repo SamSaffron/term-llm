@@ -5917,6 +5917,7 @@ func parseShareJSONString(raw sql.NullString) *ShareState {
 	if err := json.Unmarshal([]byte(raw.String), &share); err != nil || !share.Exists() {
 		return nil
 	}
+	share.Normalize()
 	return &share
 }
 

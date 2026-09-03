@@ -38,6 +38,7 @@ Examples:
   term-llm sessions show 42               # By number
   term-llm sessions show #42              # By number (explicit)
   term-llm sessions delete 42
+  term-llm sessions share 42 --visibility unlisted
   term-llm sessions export 42 [path.md]`,
 	RunE: runSessionsList, // Default to list
 }
@@ -74,6 +75,19 @@ var sessionsExportCmd = &cobra.Command{
 	Short: "Export session as markdown",
 	Args:  cobra.RangeArgs(1, 2),
 	RunE:  runSessionsExport,
+}
+
+var sessionsShareCmd = &cobra.Command{
+	Use:   "share <number|id>",
+	Short: "Share a complete saved session",
+	Long: `Share a complete saved session through the configured provider.
+
+Raw model reasoning is excluded unless --include-raw-reasoning is explicitly
+supplied. GitHub's default unlisted Gists are not private: anyone with the link
+can view them. GitHub sharing requires an authenticated gh CLI account.`,
+	Args:         cobra.ExactArgs(1),
+	RunE:         runSessionsShare,
+	SilenceUsage: true,
 }
 
 var sessionsResetCmd = &cobra.Command{
@@ -171,6 +185,10 @@ var (
 	sessionsGistIncludeSystem         bool
 	sessionsGistIncludeReasoning      bool
 	sessionsGistIncludeRawReasoning   bool
+	sessionsShareVisibility           string
+	sessionsShareNew                  bool
+	sessionsShareJSON                 bool
+	sessionsShareIncludeRawReasoning  bool
 	sessionsResetYes                  bool
 )
 
@@ -190,6 +208,12 @@ func init() {
 	sessionsExportCmd.Flags().BoolVar(&sessionsExportIncludeReasoning, "include-reasoning", false, "Include provider reasoning summaries in export")
 	sessionsExportCmd.Flags().BoolVar(&sessionsExportIncludeRawReasoning, "include-raw-reasoning", false, "Include raw reasoning when reasoning.raw is enabled")
 
+	// Share flags
+	sessionsShareCmd.Flags().StringVar(&sessionsShareVisibility, "visibility", "", "Share visibility: public, unlisted, or private (default: provider default)")
+	sessionsShareCmd.Flags().BoolVar(&sessionsShareNew, "new", false, "Create a new share instead of updating a compatible session share")
+	sessionsShareCmd.Flags().BoolVar(&sessionsShareJSON, "json", false, "Output the share result as JSON")
+	sessionsShareCmd.Flags().BoolVar(&sessionsShareIncludeRawReasoning, "include-raw-reasoning", false, "Include raw model reasoning (privacy-sensitive; requires reasoning.raw/source permission)")
+
 	// Reset flags
 	sessionsResetCmd.Flags().BoolVarP(&sessionsResetYes, "yes", "y", false, "Delete without interactive confirmation")
 
@@ -205,6 +229,7 @@ func init() {
 	sessionsCmd.AddCommand(sessionsShowCmd)
 	sessionsCmd.AddCommand(sessionsDeleteCmd)
 	sessionsCmd.AddCommand(sessionsExportCmd)
+	sessionsCmd.AddCommand(sessionsShareCmd)
 	sessionsCmd.AddCommand(sessionsResetCmd)
 	sessionsCmd.AddCommand(sessionsNameCmd)
 	sessionsCmd.AddCommand(sessionsTagCmd)
