@@ -2881,6 +2881,33 @@ describe('Preact-owned chat surfaces', () => {
     expect(store.openBranchContext).toHaveBeenCalledWith('42');
   });
 
+  it('renders share as a compact action for a completed durable assistant response', async () => {
+    const store = createStore();
+    store.sessions.value[0].messages = [
+      { id: 'u1', role: 'user', content: 'Question', created: 1 },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'Answer',
+        created: 2,
+        durableRowId: 42,
+      },
+    ];
+    store.openShare = vi.fn();
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+
+    const button = screen.getByRole('button', { name: 'Share…' });
+    expect(button).toHaveClass('turn-action-btn', 'turn-share-btn');
+    expect(button).toHaveAttribute('title', 'Share…');
+    await userEvent.click(button);
+    expect(store.openShare).toHaveBeenCalledWith(42);
+  });
+
   it('pins a near-tail transcript immediately without smooth scrolling', () => {
     const store = createStore();
     const { container } = render(
@@ -4410,6 +4437,106 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByText('Unable to load MCP servers')).toBeVisible();
     expect(screen.queryByText('No MCP servers configured')).not.toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent('session is temporarily busy');
+  });
+
+  it('creates a point-in-time share with explicit scope and visibility', async () => {
+    const store = createStore();
+    store.shareTarget.value = { sessionId: store.sessions.value[0].id, anchorMessageId: 42 };
+    store.modal.value = 'share';
+    let resolveShare!: (value: {
+      gist_id: string;
+      gist_url: string;
+      preview_url: string;
+      public: boolean;
+    }) => void;
+    store.endpoints.createSessionShare = vi.fn(
+      () =>
+        new Promise<{
+          gist_id: string;
+          gist_url: string;
+          preview_url: string;
+          public: boolean;
+        }>((resolve) => {
+          resolveShare = resolve;
+        }),
+    );
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Share transcript' })).toBeInTheDocument();
+    expect(screen.queryByText('GitHub CLI required for now.')).not.toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /This response/ })).toBeChecked();
+    expect(screen.getByRole('radio', { name: /Secret \(unlisted\)/ })).toBeChecked();
+
+    await userEvent.click(screen.getByRole('radio', { name: /Conversation up to here/ }));
+    await userEvent.click(screen.getByRole('radio', { name: /Public/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Create share' }));
+
+    expect(store.endpoints.createSessionShare).toHaveBeenCalledWith(store.sessions.value[0].id, {
+      anchor_message_id: 42,
+      scope: 'conversation',
+      public: true,
+    });
+    expect(screen.getByText('Creating Gist…')).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Close Share transcript' }),
+    ).not.toBeInTheDocument();
+    const backdrop = container.querySelector('.modal-overlay') as HTMLElement;
+    fireEvent.pointerDown(backdrop, { pointerId: 9 });
+    fireEvent.pointerUp(backdrop, { pointerId: 9 });
+    expect(store.modal.value).toBe('share');
+
+    await act(async () =>
+      resolveShare({
+        gist_id: 'abc123',
+        gist_url: 'https://gist.github.com/test/abc123',
+        preview_url: 'https://gisthost.github.io/?abc123/index.html',
+        public: true,
+      }),
+    );
+    expect(await screen.findByRole('heading', { name: 'Share created' })).toBeVisible();
+    expect(screen.getByRole('link', { name: 'Open preview' })).toHaveAttribute(
+      'href',
+      'https://gisthost.github.io/?abc123/index.html',
+    );
+    expect(screen.getByRole('link', { name: 'View Gist ↗' })).toHaveAttribute(
+      'href',
+      'https://gist.github.com/test/abc123',
+    );
+  });
+
+  it('preserves share choices and explains GitHub CLI failures', async () => {
+    const store = createStore();
+    store.shareTarget.value = { sessionId: store.sessions.value[0].id, anchorMessageId: 42 };
+    store.modal.value = 'share';
+    store.endpoints.createSessionShare = vi.fn(async () => {
+      throw new Error('gh CLI not found; install it and run gh auth login');
+    });
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    await screen.findByRole('heading', { name: 'Share transcript' });
+    await userEvent.click(screen.getByRole('radio', { name: /Conversation up to here/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Create share' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'gh CLI not found; install it and run gh auth login',
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Sharing currently uses the GitHub CLI on the machine running term-llm',
+    );
+    expect(screen.getByRole('link', { name: 'gh' })).toHaveAttribute(
+      'href',
+      'https://cli.github.com/',
+    );
+    expect(screen.getByRole('radio', { name: /Conversation up to here/ })).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeEnabled();
   });
 
   it('offers legacy branch-context choices before creating a path', async () => {

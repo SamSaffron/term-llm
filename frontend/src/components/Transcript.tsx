@@ -883,6 +883,17 @@ function MessageRow({
       {message.role === 'assistant' && message.content && copyTarget && (
         <div class="turn-action-panel">
           <TurnCopyButton text={responseText || message.content} />
+          {!streaming && message.durableRowId && (
+            <button
+              class="turn-action-btn turn-share-btn"
+              type="button"
+              title="Share…"
+              aria-label="Share…"
+              onClick={() => store.openShare(Number(message.durableRowId))}
+            >
+              <Icon name="share" />
+            </button>
+          )}
           {message.durableRowId && (
             <button
               class="turn-action-btn turn-branch-btn"

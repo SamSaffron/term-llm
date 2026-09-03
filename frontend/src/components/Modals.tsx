@@ -1,3 +1,4 @@
+import type { ComponentType } from 'preact';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import { errorMessage } from '../domain/text';
@@ -9,6 +10,26 @@ import { Markdown } from './Markdown';
 import { ProjectAssignment } from './ProjectAssignment';
 import { Worktrees } from './Worktrees';
 import { CommitModal } from './CommitModal';
+
+let loadedShareModal: ComponentType | null = null;
+let shareModalImport: Promise<ComponentType> | null = null;
+
+function LazyShareModal() {
+  const [Modal, setModal] = useState<ComponentType | null>(() => loadedShareModal);
+  useEffect(() => {
+    if (Modal) return;
+    shareModalImport ||= import('./ShareModal').then(({ ShareModal }) => ShareModal);
+    let live = true;
+    void shareModalImport.then((component) => {
+      loadedShareModal = component;
+      if (live) setModal(() => component);
+    });
+    return () => {
+      live = false;
+    };
+  }, [Modal]);
+  return Modal ? <Modal /> : null;
+}
 
 function Settings() {
   const store = useStore();
@@ -1920,6 +1941,8 @@ export function Modals() {
       return <Skills />;
     case 'commit':
       return <CommitModal />;
+    case 'share':
+      return <LazyShareModal />;
     case 'side':
       return <SideQuestion />;
     case 'branch':

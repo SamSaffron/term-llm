@@ -2,6 +2,13 @@ import type { APIClient } from './client';
 import type { Goal, MCPOAuthFlow, MCPResponse } from '../domain/types';
 import type { MentionSearchResponse } from '../domain/completions';
 
+export interface SessionShareResponse {
+  gist_id: string;
+  gist_url: string;
+  preview_url: string;
+  public: boolean;
+}
+
 export interface ShellCreateResponse {
   shell_id: string;
   cwd: string;
@@ -98,6 +105,12 @@ export const endpoints = (api: APIClient) => ({
     ),
   sessionState: (id: string, signal?: AbortSignal) =>
     api.get<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/state`, signal),
+  createSessionShare: (id: string, body: unknown) =>
+    api.json<SessionShareResponse>(
+      `/v1/sessions/${encoded(id)}/shares`,
+      { method: 'POST', headers: sessionHeaders(id), body: JSON.stringify(body) },
+      { policy: 'mutation', auth: 'session', retries: 0, timeoutMs: 0 },
+    ),
   commitStatus: (id: string, signal?: AbortSignal) =>
     api.get<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/commit/status`, signal),
   commitStage: (id: string, body: unknown) =>

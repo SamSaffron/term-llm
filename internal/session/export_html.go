@@ -24,32 +24,34 @@ const maxHTMLExportInlineImageBytes = 2 << 20
 var exportHTMLTemplateFS embed.FS
 
 type htmlExportView struct {
-	Title       string
-	SessionID   string
-	Status      string
-	Agent       string
-	Provider    string
-	Model       string
-	ModelLabel  string
-	Mode        string
-	Origin      string
-	Reasoning   string
-	Created     string
-	Updated     string
-	CWD         string
-	Worktree    string
-	Tools       string
-	MCP         string
-	Tags        string
-	UserTurns   string
-	LLMTurns    string
-	ToolCalls   string
-	Input       string
-	Cached      string
-	CacheWrite  string
-	Output      string
-	Messages    []htmlExportMessage
-	DetailCount int
+	Title        string
+	SessionID    string
+	Status       string
+	Agent        string
+	Provider     string
+	Model        string
+	ModelLabel   string
+	Mode         string
+	Origin       string
+	Reasoning    string
+	Created      string
+	Updated      string
+	CWD          string
+	Worktree     string
+	Tools        string
+	MCP          string
+	Tags         string
+	UserTurns    string
+	LLMTurns     string
+	ToolCalls    string
+	Input        string
+	Cached       string
+	CacheWrite   string
+	Output       string
+	Messages     []htmlExportMessage
+	DetailCount  int
+	Partial      bool
+	ResponseOnly bool
 }
 
 type htmlExportMessage struct {
@@ -169,6 +171,7 @@ func buildHTMLExportView(sess *Session, messages []Message, opts ExportOptions) 
 		CWD: sess.CWD, Worktree: sess.WorktreeDir, Tools: sess.Tools, MCP: sess.MCP, Tags: sess.Tags,
 		UserTurns: formatHTMLCount(sess.UserTurns), LLMTurns: formatHTMLCount(sess.LLMTurns), ToolCalls: formatHTMLCount(sess.ToolCalls),
 		Input: formatHTMLCount(sess.InputTokens), Cached: formatHTMLCount(sess.CachedInputTokens), CacheWrite: formatHTMLCount(sess.CacheWriteTokens), Output: formatHTMLCount(sess.OutputTokens),
+		Partial: opts.Partial, ResponseOnly: opts.ResponseOnly,
 	}
 	view.Messages, view.DetailCount = buildHTMLExportMessages(VisibleExportMessages(messages), opts)
 	return view

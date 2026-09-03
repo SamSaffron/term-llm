@@ -1311,6 +1311,7 @@ type serveServer struct {
 	jobsV2                   *jobsV2Manager
 	cfgRef                   *config.Config
 	store                    session.Store
+	shareClientFactory       func() (serveGistCreator, error)
 	projectsEnabled          bool
 	bootstrapProjectID       string
 	startupDir               string

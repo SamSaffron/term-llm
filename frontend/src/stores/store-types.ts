@@ -21,7 +21,13 @@ export type Modal =
   | 'worktrees'
   | 'skills'
   | 'commit'
+  | 'share'
   | 'side';
+
+export interface ShareTarget {
+  sessionId: string;
+  anchorMessageId: number;
+}
 
 export interface Toast {
   id: string;

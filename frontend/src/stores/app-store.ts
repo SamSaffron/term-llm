@@ -57,6 +57,7 @@ import type {
   PendingInterjection,
   RuntimeOption,
   SendOptions,
+  ShareTarget,
   SideQuestionState,
   Toast,
 } from './store-types';
@@ -165,6 +166,7 @@ export class AppStore {
   readonly widgets: Signal<Widget[]>;
   readonly hubAgents: Signal<HubAgent[]>;
   readonly modal = signal<Modal>('');
+  readonly shareTarget = signal<ShareTarget | null>(null);
   readonly toasts: Signal<Toast[]>;
   readonly currentPlan: Signal<CurrentPlan | null>;
   readonly planOpen: Signal<boolean>;
@@ -1272,6 +1274,15 @@ export class AppStore {
   }
   async branchCommand(kind: 'fork' | 'thread', message = ''): Promise<void> {
     await this.branchStore.command(kind, message);
+  }
+  openShare(anchorMessageId: number): void {
+    const session = this.activeSession.peek();
+    if (!session || this.draftActive.peek() || anchorMessageId <= 0) {
+      this.toast('Select a saved assistant response before sharing.', 'error');
+      return;
+    }
+    this.shareTarget.value = { sessionId: session.id, anchorMessageId };
+    this.modal.value = 'share';
   }
   openBranchContext(messageId: string, prefill = ''): void {
     this.branchStore.openContext(messageId, prefill);

@@ -14,6 +14,8 @@ type ExportOptions struct {
 	IncludeSystem             bool // Include system prompt in export
 	IncludeReasoningSummaries bool // Include provider-sanctioned reasoning summaries
 	IncludeRawReasoning       bool // Include raw reasoning; caller must enforce safety gate
+	Partial                   bool // Export is a transcript prefix; omit misleading whole-session metrics
+	ResponseOnly              bool // Export is a standalone assistant response
 }
 
 // escapeTableCell escapes special characters for markdown table cells.
@@ -33,70 +35,78 @@ func ExportToMarkdown(sess *Session, messages []Message, opts ExportOptions) str
 	if title == "" {
 		title = ShortID(sess.ID)
 	}
-	b.WriteString(fmt.Sprintf("# Session: %s\n\n", escapeTableCell(title)))
+	if opts.ResponseOnly {
+		b.WriteString(fmt.Sprintf("# Assistant response: %s\n\n", escapeTableCell(title)))
+	} else {
+		b.WriteString(fmt.Sprintf("# Session: %s\n\n", escapeTableCell(title)))
+	}
 
 	// Header with link
 	b.WriteString("> Exported from [term-llm](https://github.com/samsaffron/term-llm)\n\n")
 
-	// Setup section
-	b.WriteString("## Setup\n\n")
-	b.WriteString("| | |\n")
-	b.WriteString("|---|---|\n")
+	if !opts.ResponseOnly {
+		// Setup section
+		b.WriteString("## Setup\n\n")
+		b.WriteString("| | |\n")
+		b.WriteString("|---|---|\n")
 
-	// Agent (if set)
-	if sess.Agent != "" {
-		b.WriteString(fmt.Sprintf("| **Agent** | %s |\n", escapeTableCell(sess.Agent)))
+		// Agent (if set)
+		if sess.Agent != "" {
+			b.WriteString(fmt.Sprintf("| **Agent** | %s |\n", escapeTableCell(sess.Agent)))
+		}
+
+		// Provider and model
+		b.WriteString(fmt.Sprintf("| **Provider** | %s |\n", escapeTableCell(sess.Provider)))
+		b.WriteString(fmt.Sprintf("| **Model** | %s |\n", escapeTableCell(sess.Model)))
+
+		// Mode
+		mode := string(sess.Mode)
+		if mode == "" {
+			mode = "chat"
+		}
+		b.WriteString(fmt.Sprintf("| **Mode** | %s |\n", mode))
+
+		// Created at
+		b.WriteString(fmt.Sprintf("| **Created** | %s |\n", sess.CreatedAt.UTC().Format("2006-01-02 15:04 UTC")))
+
+		// Working directory
+		if sess.CWD != "" {
+			b.WriteString(fmt.Sprintf("| **Working Directory** | `%s` |\n", escapeTableCell(sess.CWD)))
+		}
+
+		b.WriteString("\n")
+
+		// Tools (if set)
+		if sess.Tools != "" {
+			b.WriteString("<details>\n")
+			b.WriteString("<summary>Tools</summary>\n\n")
+			b.WriteString(sess.Tools)
+			b.WriteString("\n\n</details>\n\n")
+		}
+
+		// MCP servers (if set)
+		if sess.MCP != "" {
+			b.WriteString("<details>\n")
+			b.WriteString("<summary>MCP Servers</summary>\n\n")
+			b.WriteString(sess.MCP)
+			b.WriteString("\n\n</details>\n\n")
+		}
 	}
 
-	// Provider and model
-	b.WriteString(fmt.Sprintf("| **Provider** | %s |\n", escapeTableCell(sess.Provider)))
-	b.WriteString(fmt.Sprintf("| **Model** | %s |\n", escapeTableCell(sess.Model)))
-
-	// Mode
-	mode := string(sess.Mode)
-	if mode == "" {
-		mode = "chat"
-	}
-	b.WriteString(fmt.Sprintf("| **Mode** | %s |\n", mode))
-
-	// Created at
-	b.WriteString(fmt.Sprintf("| **Created** | %s |\n", sess.CreatedAt.UTC().Format("2006-01-02 15:04 UTC")))
-
-	// Working directory
-	if sess.CWD != "" {
-		b.WriteString(fmt.Sprintf("| **Working Directory** | `%s` |\n", escapeTableCell(sess.CWD)))
+	if !opts.Partial && !opts.ResponseOnly {
+		// Metrics section
+		b.WriteString("## Metrics\n\n")
+		b.WriteString("| Turns | Tool Calls | Tokens |\n")
+		b.WriteString("|-------|------------|--------|\n")
+		tokens := formatTokens(sess.InputTokens, sess.OutputTokens)
+		b.WriteString(fmt.Sprintf("| %d user / %d LLM | %d | %s |\n\n",
+			sess.UserTurns, sess.LLMTurns, sess.ToolCalls, tokens))
 	}
 
-	b.WriteString("\n")
-
-	// Tools (if set)
-	if sess.Tools != "" {
-		b.WriteString("<details>\n")
-		b.WriteString("<summary>Tools</summary>\n\n")
-		b.WriteString(sess.Tools)
-		b.WriteString("\n\n</details>\n\n")
+	if !opts.ResponseOnly {
+		b.WriteString("---\n\n")
+		b.WriteString("## Conversation\n\n")
 	}
-
-	// MCP servers (if set)
-	if sess.MCP != "" {
-		b.WriteString("<details>\n")
-		b.WriteString("<summary>MCP Servers</summary>\n\n")
-		b.WriteString(sess.MCP)
-		b.WriteString("\n\n</details>\n\n")
-	}
-
-	// Metrics section
-	b.WriteString("## Metrics\n\n")
-	b.WriteString("| Turns | Tool Calls | Tokens |\n")
-	b.WriteString("|-------|------------|--------|\n")
-	tokens := formatTokens(sess.InputTokens, sess.OutputTokens)
-	b.WriteString(fmt.Sprintf("| %d user / %d LLM | %d | %s |\n\n",
-		sess.UserTurns, sess.LLMTurns, sess.ToolCalls, tokens))
-
-	b.WriteString("---\n\n")
-
-	// Conversation section
-	b.WriteString("## Conversation\n\n")
 
 	// Track tool calls to pair with their results
 	// We buffer tool calls and only render when we have the result
