@@ -635,6 +635,24 @@ type TranscriptRevisionWriter interface {
 	ReplaceMessagesWithTranscriptRev(ctx context.Context, sessionID string, messages []Message) (int64, error)
 }
 
+// BatchTranscriptRevisionWriter atomically appends an ordered message suffix
+// and reports the single transcript revision committed for the whole batch.
+type BatchTranscriptRevisionWriter interface {
+	AppendMessagesWithTranscriptRev(ctx context.Context, sessionID string, messages []*Message) (int64, error)
+}
+
+type batchTranscriptCapabilityReporter interface {
+	SupportsBatchTranscriptWriter() bool
+}
+
+func SupportsBatchTranscriptWriter(store Store) bool {
+	if reporter, ok := store.(batchTranscriptCapabilityReporter); ok {
+		return reporter.SupportsBatchTranscriptWriter()
+	}
+	_, ok := store.(BatchTranscriptRevisionWriter)
+	return ok
+}
+
 // ClientMessageBatchLookup retrieves durable first-party intents by identity.
 type ClientMessageBatchLookup interface {
 	GetMessagesByClientMessageIDs(ctx context.Context, sessionID string, clientMessageIDs []string) (map[string]*Message, error)

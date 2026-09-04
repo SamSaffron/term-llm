@@ -3293,6 +3293,123 @@ func (s *SQLiteStore) AddMessage(ctx context.Context, sessionID string, msg *Mes
 	return err
 }
 
+// SupportsBatchTranscriptWriter reports whether this store can commit the
+// ordered writable transaction required by collaborative terminal activity.
+func (s *SQLiteStore) SupportsBatchTranscriptWriter() bool {
+	return s != nil && !s.ReadOnly()
+}
+
+// AppendMessagesWithTranscriptRev atomically appends messages in input order,
+// allocates consecutive sequences, and bumps transcript_rev once.
+func (s *SQLiteStore) AppendMessagesWithTranscriptRev(ctx context.Context, sessionID string, messages []*Message) (int64, error) {
+	if len(messages) == 0 {
+		state, err := s.GetResponseRunStartState(ctx, sessionID)
+		return state.Rev, err
+	}
+	parts := make([]string, len(messages))
+	now := time.Now()
+	for i, msg := range messages {
+		if msg == nil {
+			return 0, fmt.Errorf("append messages: nil message at index %d", i)
+		}
+		msg.SessionID = sessionID
+		if msg.CreatedAt.IsZero() {
+			msg.CreatedAt = now
+		}
+		encoded, err := msg.PartsJSONForStorage(s.cfg.StripImageBase64)
+		if err != nil {
+			return 0, fmt.Errorf("serialize message %d parts: %w", i, err)
+		}
+		parts[i] = encoded
+	}
+	var committedRev int64
+	err := retryOnBusy(ctx, 5, func() error {
+		conn, err := s.db.Conn(ctx)
+		if err != nil {
+			return fmt.Errorf("get connection: %w", err)
+		}
+		defer conn.Close()
+		if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+			return fmt.Errorf("begin immediate transaction: %w", err)
+		}
+		committed := false
+		defer func() {
+			if !committed {
+				_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+			}
+		}()
+		var maxSeq sql.NullInt64
+		if err := conn.QueryRowContext(ctx, `SELECT MAX(sequence) FROM messages WHERE session_id = ?`, sessionID).Scan(&maxSeq); err != nil {
+			return fmt.Errorf("get max sequence: %w", err)
+		}
+		firstSequence := 0
+		if maxSeq.Valid {
+			firstSequence = int(maxSeq.Int64) + 1
+		}
+		ids := make([]int64, len(messages))
+		userTurns := 0
+		bumpLast := false
+		lastActivity := now
+		lastUserActivity := now
+		for i, msg := range messages {
+			sequence := firstSequence + i
+			result, err := conn.ExecContext(ctx, `
+				INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, compaction_tail, client_message_id, response_id, assistant_segment_ordinal, segment_start_sequence, segment_end_sequence)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				sessionID, string(msg.Role), parts[i], msg.TextContent, msg.DurationMs, msg.TurnIndex, msg.CreatedAt, sequence, msg.CompactionTail,
+				msg.ClientMessageID, msg.ResponseID, msg.AssistantSegmentOrdinal, msg.SegmentStartSequence, msg.SegmentEndSequence)
+			if err != nil {
+				return fmt.Errorf("insert message %d: %w", i, err)
+			}
+			ids[i], _ = result.LastInsertId()
+			if msg.Role == "user" && !msg.CompactionTail {
+				userTurns++
+				lastUserActivity = msg.CreatedAt
+				if msg.ClientMessageID != "" {
+					if _, err := conn.ExecContext(ctx, `DELETE FROM session_pending_interjections WHERE session_id = ? AND id = ?`, sessionID, msg.ClientMessageID); err != nil {
+						return fmt.Errorf("delete pending interjection: %w", err)
+					}
+				}
+			}
+			if !msg.CompactionTail && (msg.Role == "user" || msg.Role == "assistant") {
+				bumpLast = true
+				lastActivity = msg.CreatedAt
+			}
+		}
+		if _, err := conn.ExecContext(ctx, `UPDATE sessions SET updated_at = ?, user_turns = user_turns + ? WHERE id = ?`, now, userTurns, sessionID); err != nil {
+			return fmt.Errorf("update session metrics: %w", err)
+		}
+		if bumpLast && s.hasLastMessageAt {
+			if _, err := conn.ExecContext(ctx, `UPDATE sessions SET last_message_at = ? WHERE id = ?`, lastActivity, sessionID); err != nil {
+				return fmt.Errorf("update last message time: %w", err)
+			}
+		}
+		if userTurns > 0 && s.hasLastUserMessageAt {
+			if _, err := conn.ExecContext(ctx, `UPDATE sessions SET last_user_message_at = ? WHERE id = ?`, lastUserActivity, sessionID); err != nil {
+				return fmt.Errorf("update last user message time: %w", err)
+			}
+		}
+		rev, err := s.bumpTranscriptRev(ctx, conn, sessionID)
+		if err != nil {
+			return err
+		}
+		if err := checkpointResponseRunFenceTx(ctx, conn, sessionID, rev); err != nil {
+			return err
+		}
+		if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+			return fmt.Errorf("commit transaction: %w", err)
+		}
+		committed = true
+		for i, msg := range messages {
+			msg.ID = ids[i]
+			msg.Sequence = firstSequence + i
+		}
+		committedRev = rev
+		return nil
+	})
+	return committedRev, err
+}
+
 // AddMessageWithTranscriptRev adds a message and returns the revision bumped by
 // the same transaction.
 func (s *SQLiteStore) AddMessageWithTranscriptRev(ctx context.Context, sessionID string, msg *Message) (int64, error) {

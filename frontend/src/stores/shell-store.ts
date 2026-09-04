@@ -1,8 +1,35 @@
 import { signal, type Signal } from '@preact/signals';
-import { decodeSSE } from '../api/client';
-import type { Endpoints } from '../api/endpoints';
+import { APIError, decodeSSE } from '../api/client';
+import type {
+  Endpoints,
+  ShellCollaborationSnapshot,
+  ShellCollaborationState,
+} from '../api/endpoints';
 
 export type ShellStatus = 'idle' | 'connecting' | 'running' | 'reconnecting' | 'exited' | 'error';
+export type ShellLayout = 'fullscreen' | 'bottom' | 'right';
+
+interface ShellLayoutPreference {
+  mode: ShellLayout;
+  bottom: number;
+  right: number;
+}
+
+const defaultShellLayout: ShellLayoutPreference = { mode: 'fullscreen', bottom: 360, right: 520 };
+
+function readShellLayout(storage: Storage, key: string): ShellLayoutPreference {
+  try {
+    const raw = JSON.parse(storage.getItem(key) || 'null') as Partial<ShellLayoutPreference> | null;
+    const mode = raw?.mode;
+    return {
+      mode: mode === 'bottom' || mode === 'right' || mode === 'fullscreen' ? mode : 'fullscreen',
+      bottom: Math.min(1400, Math.max(220, Number(raw?.bottom) || defaultShellLayout.bottom)),
+      right: Math.min(1400, Math.max(320, Number(raw?.right) || defaultShellLayout.right)),
+    };
+  } catch {
+    return { ...defaultShellLayout };
+  }
+}
 
 export interface ShellSink {
   write(data: Uint8Array): void;
@@ -15,6 +42,14 @@ interface ShellEventData {
   next_offset?: number;
   exit_code?: number;
   data?: string;
+  sequence?: number;
+  revision?: number;
+  enabled?: boolean;
+  state?: ShellCollaborationState;
+  command_id?: string;
+  tool_call_id?: string;
+  reason?: string;
+  collaboration?: ShellCollaborationSnapshot;
 }
 
 const delay = (milliseconds: number, signal: AbortSignal): Promise<void> =>
@@ -62,7 +97,24 @@ export class ShellStore {
   readonly offset = signal(0);
   readonly exitCode = signal<number | null>(null);
   readonly error = signal('');
+  readonly collaborationSupported = signal(false);
+  readonly shellToolAvailable = signal(false);
+  readonly collaborationEnabled = signal(false);
+  readonly collaborationState: Signal<ShellCollaborationState> = signal('off');
+  readonly collaborationRevision = signal(0);
+  readonly collaborationSequence = signal(0);
+  readonly collaborationReason = signal('');
+  readonly activeCommandId = signal('');
+  readonly activeToolCallId = signal('');
+  readonly collaborationPending: Signal<'enabling' | 'disabling' | 'interrupting' | null> =
+    signal(null);
+  readonly layout: Signal<ShellLayout>;
+  readonly dockBottomSize: Signal<number>;
+  readonly dockRightSize: Signal<number>;
 
+  private readonly layoutStorage: Storage;
+  private readonly layoutStorageKey: string;
+  private eventCursor = 0;
   private generation = 0;
   private streamAbort: AbortController | null = null;
   private inputTimer = 0;
@@ -76,19 +128,66 @@ export class ShellStore {
     private readonly endpoints: Endpoints,
     private readonly toast: (message: unknown, kind?: 'info' | 'success' | 'error') => void,
     private readonly activeSessionId: () => string,
-  ) {}
+    storage: Storage = localStorage,
+    layoutStorageKey = 'term_llm_shell_layout',
+  ) {
+    this.layoutStorage = storage;
+    this.layoutStorageKey = layoutStorageKey;
+    const preference = readShellLayout(storage, layoutStorageKey);
+    this.layout = signal(preference.mode);
+    this.dockBottomSize = signal(preference.bottom);
+    this.dockRightSize = signal(preference.right);
+  }
 
-  show(sessionId: string): boolean {
+  setLayout(mode: ShellLayout): void {
+    if (this.layout.peek() === mode) return;
+    this.layout.value = mode;
+    this.persistLayout();
+  }
+
+  setDockSize(mode: 'bottom' | 'right', size: number, persist = true): void {
+    const minimum = mode === 'bottom' ? 220 : 320;
+    const next = Math.max(minimum, Math.min(1400, Math.round(size)));
+    const target = mode === 'bottom' ? this.dockBottomSize : this.dockRightSize;
+    if (target.peek() === next) {
+      if (persist) this.persistLayout();
+      return;
+    }
+    target.value = next;
+    if (persist) this.persistLayout();
+  }
+
+  private persistLayout(): void {
+    try {
+      this.layoutStorage.setItem(
+        this.layoutStorageKey,
+        JSON.stringify({
+          mode: this.layout.peek(),
+          bottom: this.dockBottomSize.peek(),
+          right: this.dockRightSize.peek(),
+        } satisfies ShellLayoutPreference),
+      );
+    } catch {
+      // Docking remains usable when storage is unavailable or full.
+    }
+  }
+
+  show(sessionId = ''): boolean {
     if (!this.enabled.peek()) {
       this.toast('Interactive shell is unavailable on this server.', 'error');
       return false;
     }
-    if (!sessionId || sessionId !== this.activeSessionId()) {
-      this.toast('Start the conversation before opening a shell.', 'error');
+    const activeSessionId = this.activeSessionId();
+    if ((sessionId && sessionId !== activeSessionId) || (!sessionId && activeSessionId))
       return false;
-    }
     if (this.sessionId.peek() !== sessionId) this.resetBinding(sessionId);
     this.visible.value = true;
+    return true;
+  }
+
+  bind(sessionId: string): boolean {
+    if (!this.visible.peek() || !sessionId || sessionId !== this.activeSessionId()) return false;
+    if (this.sessionId.peek() !== sessionId) this.resetBinding(sessionId);
     return true;
   }
 
@@ -115,8 +214,15 @@ export class ShellStore {
     try {
       const created = await this.endpoints.shellCreate(sessionId, cols, rows);
       if (!this.current(generation, sessionId)) return;
+      if (this.shellId.peek() !== created.shell_id) this.resetCollaborationGeneration();
       this.shellId.value = created.shell_id;
       this.cwd.value = created.cwd;
+      this.applyCollaborationSnapshot(
+        created.collaboration,
+        generation,
+        sessionId,
+        created.shell_id,
+      );
       this.exitCode.value = null;
       this.status.value = 'running';
       await this.superviseStream(generation, sessionId, sink, controller);
@@ -160,11 +266,18 @@ export class ShellStore {
           const attached = await this.endpoints.shellCreate(sessionId, this.cols, this.rows);
           if (!this.current(generation, sessionId)) return;
           if (attached.shell_id !== this.shellId.peek()) {
+            this.resetCollaborationGeneration();
             this.shellId.value = attached.shell_id;
             this.cwd.value = attached.cwd;
             this.offset.value = 0;
             sink.reset();
           }
+          this.applyCollaborationSnapshot(
+            attached.collaboration,
+            generation,
+            sessionId,
+            attached.shell_id,
+          );
           continue;
         }
         if (!response.ok || !response.body) {
@@ -180,6 +293,28 @@ export class ShellStore {
           try {
             data = JSON.parse(message.data) as ShellEventData;
           } catch {
+            continue;
+          }
+          if (data.shell_id && data.shell_id !== this.shellId.peek()) continue;
+          if (message.event === 'ready') {
+            if (data.collaboration)
+              this.applyCollaborationSnapshot(
+                data.collaboration,
+                generation,
+                sessionId,
+                data.shell_id || this.shellId.peek(),
+                true,
+              );
+            this.eventCursor = Math.max(this.eventCursor, Number(data.sequence) || 0);
+            continue;
+          }
+          if (
+            message.event === 'collaboration' ||
+            message.event === 'agent_command_started' ||
+            message.event === 'agent_command_finished' ||
+            message.event === 'collaboration_desynchronized'
+          ) {
+            this.applyCollaborationEvent(message.event, data, generation, sessionId);
             continue;
           }
           if (message.event === 'reset') {
@@ -200,8 +335,17 @@ export class ShellStore {
             continue;
           }
           if (message.event === 'exit') {
+            if (data.collaboration)
+              this.applyCollaborationSnapshot(
+                data.collaboration,
+                generation,
+                sessionId,
+                data.shell_id || this.shellId.peek(),
+                true,
+              );
             this.offset.value = Math.max(this.offset.peek(), Number(data.offset) || 0);
             this.exitCode.value = Number.isFinite(data.exit_code) ? Number(data.exit_code) : -1;
+            this.clearCollaborationAuthority();
             this.status.value = 'exited';
             return;
           }
@@ -216,6 +360,179 @@ export class ShellStore {
       await delay(retry, controller.signal);
       retry = Math.min(5000, retry * 2);
     }
+  }
+
+  async enableCollaboration(): Promise<void> {
+    if (!this.bindingActive() || !this.shellId.peek() || this.collaborationPending.peek()) return;
+    const generation = this.generation;
+    const sessionId = this.sessionId.peek();
+    const shellId = this.shellId.peek();
+    this.collaborationPending.value = 'enabling';
+    this.error.value = '';
+    try {
+      const snapshot = await this.endpoints.shellCollaboration(sessionId, shellId, true);
+      this.applyCollaborationSnapshot(snapshot, generation, sessionId, shellId, true);
+    } catch (error) {
+      if (this.current(generation, sessionId)) {
+        this.applyCollaborationError(error, generation, sessionId, shellId);
+        this.error.value = error instanceof Error ? error.message : 'Could not share the shell.';
+        this.toast(error, 'error');
+      }
+    } finally {
+      if (this.current(generation, sessionId)) this.collaborationPending.value = null;
+    }
+  }
+
+  async disableCollaboration(): Promise<void> {
+    if (!this.bindingActive() || !this.shellId.peek() || this.collaborationPending.peek()) return;
+    const generation = this.generation;
+    const sessionId = this.sessionId.peek();
+    const shellId = this.shellId.peek();
+    this.collaborationPending.value = 'disabling';
+    try {
+      const snapshot = await this.endpoints.shellCollaboration(sessionId, shellId, false);
+      this.applyCollaborationSnapshot(snapshot, generation, sessionId, shellId, true);
+    } catch (error) {
+      if (this.current(generation, sessionId)) {
+        this.applyCollaborationError(error, generation, sessionId, shellId);
+        this.toast(error, 'error');
+      }
+    } finally {
+      if (this.current(generation, sessionId)) this.collaborationPending.value = null;
+    }
+  }
+
+  async interruptCommand(): Promise<void> {
+    const commandId = this.activeCommandId.peek();
+    if (
+      !this.bindingActive() ||
+      !this.shellId.peek() ||
+      !commandId ||
+      this.collaborationPending.peek()
+    )
+      return;
+    const generation = this.generation;
+    const sessionId = this.sessionId.peek();
+    const shellId = this.shellId.peek();
+    this.collaborationPending.value = 'interrupting';
+    try {
+      const snapshot = await this.endpoints.shellInterrupt(sessionId, shellId, commandId);
+      this.applyCollaborationSnapshot(snapshot, generation, sessionId, shellId, true);
+    } catch (error) {
+      if (this.current(generation, sessionId)) {
+        this.applyCollaborationError(error, generation, sessionId, shellId);
+        this.toast(error, 'error');
+      }
+    } finally {
+      if (this.current(generation, sessionId)) this.collaborationPending.value = null;
+    }
+  }
+
+  private applyCollaborationError(
+    error: unknown,
+    generation: number,
+    sessionId: string,
+    shellId: string,
+  ): void {
+    if (!(error instanceof APIError) || !error.body) return;
+    try {
+      const payload = JSON.parse(error.body) as { collaboration?: ShellCollaborationSnapshot };
+      this.applyCollaborationSnapshot(payload.collaboration, generation, sessionId, shellId);
+    } catch {
+      // The ordinary transport error remains authoritative when no snapshot can be decoded.
+    }
+  }
+
+  private resetCollaborationGeneration(): void {
+    this.collaborationSupported.value = false;
+    this.shellToolAvailable.value = false;
+    this.collaborationEnabled.value = false;
+    this.collaborationState.value = 'off';
+    this.collaborationRevision.value = 0;
+    this.collaborationSequence.value = 0;
+    this.collaborationReason.value = '';
+    this.activeCommandId.value = '';
+    this.activeToolCallId.value = '';
+    this.collaborationPending.value = null;
+    this.eventCursor = 0;
+  }
+
+  private applyCollaborationSnapshot(
+    snapshot: ShellCollaborationSnapshot | undefined,
+    generation: number,
+    sessionId: string,
+    shellId: string,
+    _authoritative = false,
+  ): void {
+    if (!snapshot || !this.current(generation, sessionId)) return;
+    if (shellId !== this.shellId.peek() || snapshot.shell_id !== shellId) return;
+    const revision = Math.max(0, Number(snapshot.revision) || 0);
+    const sequence = Math.max(0, Number(snapshot.sequence) || 0);
+    const currentRevision = this.collaborationRevision.peek();
+    if (revision < currentRevision) return;
+    if (revision === currentRevision && sequence < this.collaborationSequence.peek()) return;
+    this.collaborationSupported.value = snapshot.supported === true;
+    this.shellToolAvailable.value = snapshot.shell_tool_available === true;
+    this.collaborationEnabled.value = snapshot.enabled === true;
+    this.collaborationState.value = snapshot.state || 'off';
+    this.collaborationRevision.value = revision;
+    this.collaborationSequence.value = sequence;
+    this.eventCursor = Math.max(this.eventCursor, this.collaborationSequence.peek());
+    this.collaborationReason.value = snapshot.reason || '';
+    this.activeCommandId.value = snapshot.command_id || '';
+    this.activeToolCallId.value = snapshot.tool_call_id || '';
+  }
+
+  private applyCollaborationEvent(
+    event: string,
+    data: ShellEventData,
+    generation: number,
+    sessionId: string,
+  ): void {
+    if (!this.current(generation, sessionId) || data.shell_id !== this.shellId.peek()) return;
+    const snapshot =
+      data.collaboration ||
+      (event === 'collaboration'
+        ? ({ ...data, shell_id: data.shell_id } as ShellCollaborationSnapshot)
+        : undefined);
+    const revision = Math.max(0, Number(snapshot?.revision ?? data.revision) || 0);
+    if (revision < this.collaborationRevision.peek()) return;
+    const sequence = Math.max(0, Number(data.sequence ?? snapshot?.sequence) || 0);
+    if (sequence && sequence < this.eventCursor) return;
+    if (sequence && sequence === this.eventCursor && !snapshot) return;
+    if (sequence) this.eventCursor = sequence;
+    if (snapshot) {
+      this.applyCollaborationSnapshot(snapshot, generation, sessionId, this.shellId.peek());
+      return;
+    }
+    this.collaborationRevision.value = revision;
+    this.collaborationSequence.value = Math.max(this.collaborationSequence.peek(), sequence);
+    if (event === 'agent_command_started') {
+      this.collaborationEnabled.value = true;
+      this.collaborationState.value = 'agent_running';
+      this.activeCommandId.value = data.command_id || '';
+      this.activeToolCallId.value = data.tool_call_id || '';
+    } else if (event === 'agent_command_finished') {
+      this.collaborationEnabled.value = data.enabled === true;
+      this.collaborationState.value = data.state || (data.enabled ? 'ready' : 'off');
+      this.collaborationReason.value = data.reason || '';
+      this.activeCommandId.value = '';
+      this.activeToolCallId.value = '';
+    } else if (event === 'collaboration_desynchronized') {
+      this.collaborationEnabled.value = true;
+      this.collaborationState.value = 'desynchronized';
+      this.collaborationReason.value = data.reason || 'Shared shell synchronization was lost.';
+      this.activeCommandId.value = '';
+      this.activeToolCallId.value = '';
+    }
+  }
+
+  private clearCollaborationAuthority(): void {
+    this.collaborationEnabled.value = false;
+    this.collaborationState.value = 'off';
+    this.activeCommandId.value = '';
+    this.activeToolCallId.value = '';
+    this.collaborationPending.value = null;
   }
 
   input(data: string): void {
@@ -249,8 +566,12 @@ export class ShellStore {
         })
         .catch((error: unknown) => {
           if (!this.inputCurrent(generation, sessionId, shellId)) return;
-          this.status.value = 'error';
+          // Input rejection does not invalidate the independently supervised SSE
+          // transport. Keep authoritative collaboration controls available (most
+          // importantly interrupt/stop-sharing) and report the rejected bytes
+          // without turning a live terminal into a terminal-level error state.
           this.error.value = error instanceof Error ? error.message : 'Shell input failed.';
+          this.toast(error, 'error');
         });
     }
   }
@@ -315,6 +636,7 @@ export class ShellStore {
     this.resizeTimer = 0;
     this.inputChunks = [];
     this.inputChain = Promise.resolve();
+    this.collaborationPending.value = null;
     return this.generation;
   }
 
@@ -350,5 +672,6 @@ export class ShellStore {
     this.exitCode.value = null;
     this.error.value = '';
     this.status.value = 'idle';
+    this.resetCollaborationGeneration();
   }
 }

@@ -2,12 +2,90 @@
   position: fixed;
   inset: 0;
   z-index: 1200;
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   min-height: 0;
   background: #111418;
   color: #dce2e8;
+}
+
+.shell-overlay.shell-layout-bottom {
+  top: auto;
+  height: min(var(--shell-dock-bottom-size, 360px), 75dvh);
+  border-top: 1px solid #46505b;
+  box-shadow: 0 -14px 35px rgb(0 0 0 / 28%);
+}
+
+.shell-overlay.shell-layout-right {
+  left: auto;
+  width: min(var(--shell-dock-right-size, 520px), 72vw);
+  border-left: 1px solid #46505b;
+  box-shadow: -14px 0 35px rgb(0 0 0 / 28%);
+}
+
+.app.shell-docked-bottom {
+  min-height: 0;
+  height: calc(var(--app-height) - min(var(--shell-dock-bottom-size, 360px), 75dvh));
+}
+
+.app.shell-docked-right {
+  width: calc(100% - min(var(--shell-dock-right-size, 520px), 72vw));
+}
+
+.shell-dock-resizer {
+  position: absolute;
+  z-index: 3;
+  touch-action: none;
+}
+
+.shell-dock-resizer::after {
+  position: absolute;
+  border-radius: 999px;
+  background: #78838f;
+  content: '';
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.shell-dock-resizer:hover::after,
+.shell-dock-resizer:focus-visible::after {
+  opacity: 1;
+}
+
+.shell-dock-resizer:focus-visible {
+  outline: 2px solid #7fb2d9;
+  outline-offset: -2px;
+}
+
+.shell-dock-resizer-bottom {
+  top: -5px;
+  right: 0;
+  left: 0;
+  height: 10px;
+  cursor: ns-resize;
+}
+
+.shell-dock-resizer-bottom::after {
+  top: 4px;
+  left: calc(50% - 24px);
+  width: 48px;
+  height: 2px;
+}
+
+.shell-dock-resizer-right {
+  top: 0;
+  bottom: 0;
+  left: -5px;
+  width: 10px;
+  cursor: ew-resize;
+}
+
+.shell-dock-resizer-right::after {
+  top: calc(50% - 24px);
+  left: 4px;
+  width: 2px;
+  height: 48px;
 }
 
 .shell-overlay-header {
@@ -128,6 +206,61 @@
   gap: 8px;
 }
 
+.shell-layout-picker {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid #3a424c;
+  border-radius: 8px;
+  background: #111418;
+}
+
+.shell-layout-button {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #89939f;
+  cursor: pointer;
+}
+
+.shell-layout-button:hover {
+  background: #252b33;
+  color: #eef2f5;
+}
+
+.shell-layout-button.is-active {
+  background: #343c46;
+  color: #fff;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 8%);
+}
+
+.shell-layout-button:focus-visible {
+  outline: 2px solid #7fb2d9;
+  outline-offset: 1px;
+}
+
+.shell-layout-button svg {
+  width: 15px;
+  height: 15px;
+}
+
+.shell-layout-right .shell-overlay-header {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.shell-layout-right .shell-overlay-actions {
+  flex-wrap: wrap;
+}
+
 .shell-overlay-actions .btn {
   display: inline-flex;
   min-height: 36px;
@@ -187,6 +320,57 @@
   opacity: 0.48;
 }
 
+.shell-collaboration-badge {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  padding: 0 9px;
+  border: 1px solid #426247;
+  border-radius: 999px;
+  color: #b9d9a7;
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.shell-collaboration-running {
+  border-color: #6e5c31;
+  color: #f0cf83;
+}
+
+.shell-collaboration-attention {
+  border-color: #7a4149;
+  color: #eda9ae;
+}
+
+.shell-command-notice,
+.shell-collaboration-error {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 16px;
+  border-bottom: 1px solid #415264;
+  background: #18232d;
+  color: #d7e6f3;
+  font-size: 12px;
+}
+
+.shell-command-notice {
+  justify-content: flex-start;
+  border-color: #6e5c31;
+  background: #292313;
+  color: #f0cf83;
+}
+
+.shell-collaboration-error {
+  justify-content: flex-start;
+  border-color: #7a4149;
+  background: #25191b;
+  color: #f1c7c2;
+}
+
 .shell-error {
   padding: 8px 16px;
   border-bottom: 1px solid #5d2d2d;
@@ -197,11 +381,21 @@
 }
 
 .shell-terminal {
-  grid-row: 3;
+  flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
   background: #111418;
+}
+
+.shell-terminal-pending {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  color: #8f99a5;
+  font-size: 13px;
+  text-align: center;
 }
 
 .shell-terminal .xterm {
@@ -211,6 +405,29 @@
 
 .shell-terminal .xterm-viewport {
   scrollbar-color: #4f5862 #111418;
+}
+
+@media (width <= 760px) {
+  .shell-overlay.shell-layout-right {
+    top: auto;
+    left: 0;
+    width: 100%;
+    height: min(var(--shell-dock-bottom-size, 360px), 75dvh);
+    border-top: 1px solid #46505b;
+    border-left: 0;
+    box-shadow: 0 -14px 35px rgb(0 0 0 / 28%);
+  }
+
+  .app.shell-docked-right {
+    width: 100%;
+    min-height: 0;
+    height: calc(var(--app-height) - min(var(--shell-dock-bottom-size, 360px), 75dvh));
+  }
+
+  .shell-layout-right .shell-overlay-header {
+    align-items: center;
+    flex-direction: row;
+  }
 }
 
 @media (width <= 680px) {
@@ -243,6 +460,8 @@
   }
 
   .shell-overlay-actions {
+    width: 100%;
+    flex-wrap: wrap;
     gap: 5px;
     margin-left: auto;
   }
@@ -263,7 +482,17 @@
     display: none;
   }
 
+  .shell-overlay-actions .btn {
+    flex: 1 1 auto;
+    padding-inline: 7px;
+  }
+
   .shell-overlay-actions .shell-end {
     padding-inline: 8px;
+  }
+
+  .shell-collaboration-badge {
+    width: 100%;
+    justify-content: center;
   }
 }

@@ -253,7 +253,6 @@ export function Header() {
       ? store.mcp.value.enabled.length
       : session?.mcpEnabled?.length || 0;
   const currentWorktreeDir = store.currentWorktreeDir.value;
-  const tokenCount = Number(session?.usage?.total_tokens || 0);
   const loadedDiff =
     session && store.diff.value.sessionId === session.id && store.diff.value.files.length
       ? store.diff.value.files
@@ -333,16 +332,6 @@ export function Header() {
               >
                 MCP {mcpCount}
               </button>
-            )}
-            {tokenCount > 0 && (
-              <>
-                <span class="chip-sep header-tokens-sep" id="headerTokensSep">
-                  ·
-                </span>
-                <span class="header-tokens" id="headerTokens">
-                  {tokenCount.toLocaleString()} tokens
-                </span>
-              </>
             )}
           </div>
           <div class="header-context-actions">

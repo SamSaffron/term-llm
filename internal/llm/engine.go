@@ -4506,7 +4506,7 @@ func (e *Engine) executeSingleToolCallSafe(ctx context.Context, call ToolCall, s
 	defer func() {
 		if r := recover(); r != nil {
 			errMsg := fmt.Sprintf("Error: tool panicked: %v", r)
-			send.TrySend(Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolSuccess: false})
+			sendToolExecEnd(send, Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolSuccess: false})
 			msgs = []Message{ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig)}
 			err = nil
 		}
@@ -4589,13 +4589,28 @@ func toolErrorMessageWithGuardian(id, name, text string, thoughtSig []byte, revi
 	return message
 }
 
+const reliableToolTerminalName = "spawn_agent"
+
+// sendToolExecEnd keeps spawn-agent completion lossless. Its child session can
+// become terminal before the parent tool result is durable, so dropping this
+// event leaves Web clients with only an in-flight placeholder until every
+// parallel tool returns. Other tool ends remain best-effort to preserve the
+// existing worker backpressure behavior.
+func sendToolExecEnd(send eventSender, event Event) {
+	if event.ToolName == reliableToolTerminalName {
+		_ = send.Send(event)
+		return
+	}
+	send.TrySend(event)
+}
+
 // executeSingleToolCall executes a single tool call and returns the result message.
 func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, send eventSender, debug bool, debugRaw bool) ([]Message, error) {
 	tool, ok := e.tools.Get(call.Name)
 	if !ok {
 		errMsg := fmt.Sprintf("Error: tool not registered: %s", call.Name)
 		DebugToolResult(debug, call.ID, call.Name, errMsg)
-		send.TrySend(Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false})
+		sendToolExecEnd(send, Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false})
 		return []Message{ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig)}, nil
 	}
 
@@ -4611,7 +4626,7 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, send 
 	if !allowed {
 		errMsg := fmt.Sprintf("Error: tool '%s' is not in the active skill's allowed-tools list", call.Name)
 		DebugToolResult(debug, call.ID, call.Name, errMsg)
-		send.TrySend(Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false})
+		sendToolExecEnd(send, Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false})
 		return []Message{ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig)}, nil
 	}
 
@@ -4640,14 +4655,15 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, send 
 	if err != nil {
 		errMsg := fmt.Sprintf("Error: %v", err)
 		DebugToolResult(debug, call.ID, call.Name, errMsg)
-		send.TrySend(Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolSuccess: false})
+		sendToolExecEnd(send, Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolSuccess: false})
 		return []Message{toolErrorMessageWithGuardian(call.ID, call.Name, errMsg, call.ThoughtSig, output.GuardianReviews)}, nil
 	}
 
 	DebugToolResult(debug, call.ID, call.Name, output.Content)
 	DebugRawToolResult(debugRaw, call.ID, call.Name, output.Content)
-	// Best-effort: don't let a slow event consumer stall completed tool workers.
-	send.TrySend(Event{
+	// Spawn-agent completion is reliable because its durable parent result may be
+	// delayed behind other parallel tools. Other tool ends remain best-effort.
+	sendToolExecEnd(send, Event{
 		Type:                       EventToolExecEnd,
 		ToolCallID:                 call.ID,
 		ToolName:                   call.Name,

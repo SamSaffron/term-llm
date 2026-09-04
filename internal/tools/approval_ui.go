@@ -328,6 +328,32 @@ func BuildWorkspaceOptions(workspace string) []ApprovalOption {
 	}
 }
 
+// BuildSharedShellOptions creates session-scoped options for a command running
+// in the browser-visible terminal, which may be attached to a remote host.
+func BuildSharedShellOptions(command string) []ApprovalOption {
+	return []ApprovalOption{
+		{
+			Label:       "Allow this specific command",
+			Description: "Approve this exact command in the shared terminal (session only)",
+			Choice:      ApprovalChoiceCommand,
+			Pattern:     command,
+			SaveToRepo:  false,
+		},
+		{
+			Label:       "Allow once",
+			Description: "Single shared-terminal execution, no memory",
+			Choice:      ApprovalChoiceOnce,
+			SaveToRepo:  false,
+		},
+		{
+			Label:       "Deny",
+			Description: "Block this shared-terminal command",
+			Choice:      ApprovalChoiceDeny,
+			SaveToRepo:  false,
+		},
+	}
+}
+
 // BuildShellOptions creates the options for a shell command prompt.
 func BuildShellOptions(command string, repoInfo *GitRepoInfo) []ApprovalOption {
 	var options []ApprovalOption

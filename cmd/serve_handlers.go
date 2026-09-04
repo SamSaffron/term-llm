@@ -1390,8 +1390,12 @@ func (s *serveServer) selectedWebSession(ctx context.Context, selector string, s
 }
 
 func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		s.handleCreateWebSession(w, r)
+		return
+	}
 	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", "GET")
+		w.Header().Set("Allow", "GET, POST")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}

@@ -916,6 +916,20 @@ func TestBuildAnthropicTools_ToolHasSchema(t *testing.T) {
 	}
 }
 
+func TestBuildAnthropicMessages_CollaborativeActivityEnvelopeWrappedOnce(t *testing.T) {
+	activity := `<collaborative_shell_activity source="browser-terminal" id="sha256:test">data</collaborative_shell_activity>`
+	messages := []Message{{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: activity}}}, UserText("continue")}
+	_, standard := buildAnthropicMessages(messages)
+	if got := standard[0].Content[0].OfText.Text; got != "<developer>\n"+activity+"\n</developer>\n\ncontinue" || strings.Count(got, "<developer>") != 1 {
+		t.Fatalf("standard activity = %q", got)
+	}
+	_, beta := buildAnthropicBetaMessages(messages)
+	got := beta[0].Content[0].GetText()
+	if got == nil || *got != "<developer>\n"+activity+"\n</developer>\n\ncontinue" || strings.Count(*got, "<developer>") != 1 {
+		t.Fatalf("beta activity = %#v", got)
+	}
+}
+
 func TestBuildAnthropicMessages_DeveloperRole(t *testing.T) {
 	messages := []Message{
 		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "Be concise"}}},
@@ -940,26 +954,86 @@ func TestBuildAnthropicMessages_DeveloperRole(t *testing.T) {
 	}
 }
 
-func TestBuildAnthropicMessages_DeveloperRoleNotMergedWithoutUser(t *testing.T) {
-	// Developer message at end with no following user message — should be dropped
+func TestBuildAnthropicMessages_DeveloperBeforeAssistantPreservesBoundary(t *testing.T) {
+	messages := []Message{
+		UserText("question"),
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "before assistant"}}},
+		AssistantText("answer"),
+	}
+	_, standard := buildAnthropicMessages(messages)
+	if len(standard) < 2 || standard[0].Role != anthropic.MessageParamRoleUser || standard[1].Role != anthropic.MessageParamRoleAssistant || len(standard[0].Content) != 2 || standard[0].Content[1].OfText == nil || standard[0].Content[1].OfText.Text != "<developer>\nbefore assistant\n</developer>" {
+		t.Fatalf("standard ordering = %#v", standard)
+	}
+	_, beta := buildAnthropicBetaMessages(messages)
+	if len(beta) < 2 || beta[0].Role != anthropic.BetaMessageParamRoleUser || beta[1].Role != anthropic.BetaMessageParamRoleAssistant || len(beta[0].Content) != 2 {
+		t.Fatalf("beta ordering = %#v", beta)
+	}
+	text := beta[0].Content[1].GetText()
+	if text == nil || *text != "<developer>\nbefore assistant\n</developer>" {
+		t.Fatalf("beta developer boundary = %#v", text)
+	}
+}
+
+func TestBuildAnthropicMessages_DeveloperBeforeToolPreservesBoundary(t *testing.T) {
+	toolResult := Message{Role: RoleTool, Parts: []Part{{Type: PartToolResult, ToolResult: &ToolResult{ID: "call-1", Name: "shell", Content: "ok"}}}}
+	assistantCall := Message{Role: RoleAssistant, Parts: []Part{{Type: PartToolCall, ToolCall: &ToolCall{ID: "call-1", Name: "shell", Arguments: json.RawMessage(`{"command":"true"}`)}}}}
+	messages := []Message{
+		UserText("question"),
+		assistantCall,
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "before tool"}}},
+		toolResult,
+	}
+	_, standard := buildAnthropicMessages(messages)
+	if len(standard) != 3 || standard[2].Role != anthropic.MessageParamRoleUser || standard[2].Content[0].OfText == nil || standard[2].Content[0].OfText.Text != "<developer>\nbefore tool\n</developer>\n\n" || standard[2].Content[1].OfToolResult == nil {
+		t.Fatalf("standard tool ordering = %#v", standard)
+	}
+	_, beta := buildAnthropicBetaMessages(messages)
+	if len(beta) != 3 || beta[2].Role != anthropic.BetaMessageParamRoleUser || len(beta[2].Content) != 2 || beta[2].Content[1].OfToolResult == nil {
+		t.Fatalf("beta tool ordering = %#v", beta)
+	}
+	text := beta[2].Content[0].GetText()
+	if text == nil || *text != "<developer>\nbefore tool\n</developer>\n\n" {
+		t.Fatalf("beta tool developer boundary = %#v", text)
+	}
+}
+
+func TestBuildAnthropicMessages_TrailingDeveloper(t *testing.T) {
 	messages := []Message{
 		UserText("Hello"),
 		AssistantText("Hi"),
 		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "Be concise"}}},
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "Use examples"}}},
 	}
 
 	_, out := buildAnthropicMessages(messages)
+	if len(out) != 3 || out[2].Role != anthropic.MessageParamRoleUser || len(out[2].Content) != 1 || out[2].Content[0].OfText == nil {
+		t.Fatalf("expected synthetic trailing user developer block, got %#v", out)
+	}
+	if got, want := out[2].Content[0].OfText.Text, "<developer>\nBe concise\n\nUse examples\n</developer>"; got != want {
+		t.Fatalf("content = %q, want %q", got, want)
+	}
+}
 
-	// Should have user + assistant + synthetic user (trailing assistant normalization)
-	// but no developer content since there's no user turn to merge into
-	for _, msg := range out {
-		if msg.Role == anthropic.MessageParamRoleUser {
-			for _, block := range msg.Content {
-				if block.OfText != nil && strings.Contains(block.OfText.Text, "<developer>") {
-					t.Fatalf("developer tag should not appear without a following user message, got %q", block.OfText.Text)
-				}
-			}
-		}
+func TestBuildAnthropicMessages_AdjacentAndEmptyDeveloper(t *testing.T) {
+	messages := []Message{
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "first"}}},
+		{Role: RoleDeveloper},
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "second"}}},
+		UserText("hello"),
+	}
+	_, out := buildAnthropicMessages(messages)
+	if got, want := out[0].Content[0].OfText.Text, "<developer>\nfirst\n\nsecond\n</developer>\n\nhello"; got != want {
+		t.Fatalf("content = %q, want %q", got, want)
+	}
+}
+
+func TestBuildAnthropicMessages_TrailingDeveloperAppendsToUser(t *testing.T) {
+	_, out := buildAnthropicMessages([]Message{UserText("hello"), {Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "note"}}}})
+	if len(out) != 1 || len(out[0].Content) != 2 || out[0].Content[1].OfText == nil {
+		t.Fatalf("expected trailing block on existing user, got %#v", out)
+	}
+	if got := out[0].Content[1].OfText.Text; got != "<developer>\nnote\n</developer>" {
+		t.Fatalf("trailing developer = %q", got)
 	}
 }
 
@@ -987,6 +1061,40 @@ func TestBuildAnthropicBetaMessages_DeveloperRole(t *testing.T) {
 	want := "<developer>\nBe concise\n</developer>\n\nHello"
 	if *got != want {
 		t.Errorf("content = %q, want %q", *got, want)
+	}
+}
+
+func TestBuildAnthropicBetaMessages_AdjacentEmptyAndTrailingDeveloper(t *testing.T) {
+	messages := []Message{
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "first"}}},
+		{Role: RoleDeveloper},
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "second"}}},
+	}
+	_, onlyDevelopers := buildAnthropicBetaMessages(messages)
+	if len(onlyDevelopers) != 1 || onlyDevelopers[0].Role != anthropic.BetaMessageParamRoleUser {
+		t.Fatalf("expected one synthetic user, got %#v", onlyDevelopers)
+	}
+	text := onlyDevelopers[0].Content[0].GetText()
+	if text == nil || *text != "<developer>\nfirst\n\nsecond\n</developer>" {
+		t.Fatalf("developer-only content = %#v", text)
+	}
+
+	_, afterUser := buildAnthropicBetaMessages([]Message{UserText("hello"), {Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "note"}}}})
+	if len(afterUser) != 1 || len(afterUser[0].Content) != 2 {
+		t.Fatalf("expected developer appended to trailing user, got %#v", afterUser)
+	}
+	trailing := afterUser[0].Content[1].GetText()
+	if trailing == nil || *trailing != "<developer>\nnote\n</developer>" {
+		t.Fatalf("trailing content = %#v", trailing)
+	}
+
+	_, afterAssistant := buildAnthropicBetaMessages([]Message{UserText("hello"), AssistantText("hi"), {Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "note"}}}})
+	if len(afterAssistant) != 3 || afterAssistant[2].Role != anthropic.BetaMessageParamRoleUser || len(afterAssistant[2].Content) != 1 {
+		t.Fatalf("expected synthetic user after assistant, got %#v", afterAssistant)
+	}
+	synthetic := afterAssistant[2].Content[0].GetText()
+	if synthetic == nil || *synthetic != "<developer>\nnote\n</developer>" {
+		t.Fatalf("synthetic trailing content = %#v", synthetic)
 	}
 }
 

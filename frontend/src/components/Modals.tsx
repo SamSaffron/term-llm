@@ -602,6 +602,9 @@ function Approval({ interactionPrompt }: { interactionPrompt?: ApprovalPrompt })
       onEscape={() => store.dismissInteraction('approval', prompt)}
     >
       {prompt.intro && <div class="approval-intro">{prompt.intro}</div>}
+      {prompt.scope === 'shared_shell' && (
+        <div class="approval-intro">Shared interactive shell — target may be remote</div>
+      )}
       {prompt.path && <code class="approval-path">{prompt.path}</code>}
       <div class="approval-body">{prompt.body}</div>
       {options
@@ -618,6 +621,11 @@ function Approval({ interactionPrompt }: { interactionPrompt?: ApprovalPrompt })
             <span>
               {option.label || option.title || option.choice}
               {option.description && <small>{option.description}</small>}
+              {prompt.scope === 'shared_shell' && option.choice !== 'once' && (
+                <small>
+                  Remember only for this session’s shared shell; do not save as a project approval.
+                </small>
+              )}
             </span>
           </label>
         ))}
@@ -1618,7 +1626,9 @@ function ProjectPicker() {
                     role="option"
                     onClick={() => void loadDirectory(String(entry.path || ''))}
                   >
-                    <span class="project-browser-folder-icon">◇</span>
+                    <span class="project-browser-folder-icon">
+                      <Icon name="folder" />
+                    </span>
                     <span class="project-browser-row-name">
                       {String(entry.name || entry.path || '')}
                     </span>

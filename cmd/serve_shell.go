@@ -18,21 +18,28 @@ import (
 )
 
 const (
-	serveShellReplayBytes = 1 << 20
-	serveShellHeartbeat   = 8 * time.Second
-	serveShellChunkBytes  = 32 << 10
-	serveShellInputBytes  = 64 << 10
-	serveShellMinCols     = 2
-	serveShellMaxCols     = 500
-	serveShellMinRows     = 1
-	serveShellMaxRows     = 300
-	serveShellDrainWait   = 3 * time.Second
+	serveShellReplayBytes      = 1 << 20
+	serveShellHeartbeat        = 8 * time.Second
+	serveShellChunkBytes       = 32 << 10
+	serveShellInputBytes       = 64 << 10
+	serveShellMinCols          = 2
+	serveShellMaxCols          = 500
+	serveShellMinRows          = 1
+	serveShellMaxRows          = 300
+	serveShellDrainWait        = 3 * time.Second
+	serveShellActivityBytes    = 256 << 10
+	serveShellActivitySegments = 1024
+	serveShellClaimedRanges    = 1024
+	serveShellEventRingSize    = 64
+	serveShellQueuedInputBytes = 64 << 10
+	serveShellMaxWaiters       = 8
 )
 
 var (
-	errServeShellUnsupported = errors.New("interactive shells are unsupported on this platform")
-	errServeShellClosed      = errors.New("shell manager closed")
-	errServeShellStale       = errors.New("shell generation is stale")
+	errServeShellUnsupported    = errors.New("interactive shells are unsupported on this platform")
+	errServeShellClosed         = errors.New("shell manager closed")
+	errServeShellStale          = errors.New("shell generation is stale")
+	errServeShellInputQueueFull = errors.New("browser input queue is full while agent command starts")
 )
 
 type serveShellExit struct {
@@ -45,6 +52,74 @@ type serveShellProcess interface {
 	Resize(cols, rows int) error
 	Close()
 	Done() <-chan serveShellExit
+}
+
+type serveShellContextWriter interface {
+	WriteContext(context.Context, []byte) (int, error)
+}
+
+type serveShellWriteSource string
+
+const (
+	serveShellWriteBrowser       serveShellWriteSource = "browser_input"
+	serveShellWriteQueuedBrowser serveShellWriteSource = "queued_browser_input"
+	serveShellWriteAgent         serveShellWriteSource = "agent_command"
+	serveShellWriteInterrupt     serveShellWriteSource = "agent_interrupt"
+	serveShellWriteProbe         serveShellWriteSource = "server_probe"
+)
+
+type serveShellCollaborationState string
+
+const (
+	serveShellCollaborationOff            serveShellCollaborationState = "off"
+	serveShellCollaborationReady          serveShellCollaborationState = "ready"
+	serveShellCollaborationAgentRunning   serveShellCollaborationState = "agent_running"
+	serveShellCollaborationDesynchronized serveShellCollaborationState = "desynchronized"
+)
+
+type serveShellCollaborationSnapshot struct {
+	ShellID            string                       `json:"shell_id"`
+	Supported          bool                         `json:"supported"`
+	ShellToolAvailable bool                         `json:"shell_tool_available"`
+	Enabled            bool                         `json:"enabled"`
+	State              serveShellCollaborationState `json:"state"`
+	Revision           uint64                       `json:"revision"`
+	Sequence           uint64                       `json:"sequence"`
+	CommandID          string                       `json:"command_id"`
+	ToolCallID         string                       `json:"tool_call_id"`
+	Reason             string                       `json:"reason"`
+}
+
+type serveShellCollaborationEvent struct {
+	Type        string                           `json:"-"`
+	ShellID     string                           `json:"shell_id"`
+	Revision    uint64                           `json:"revision"`
+	Sequence    uint64                           `json:"sequence"`
+	State       serveShellCollaborationState     `json:"state,omitempty"`
+	Enabled     bool                             `json:"enabled,omitempty"`
+	CommandID   string                           `json:"command_id,omitempty"`
+	ToolCallID  string                           `json:"tool_call_id,omitempty"`
+	StartOffset int64                            `json:"start_offset"`
+	EndOffset   int64                            `json:"end_offset"`
+	ExitCode    *int                             `json:"exit_code,omitempty"`
+	ResultKind  string                           `json:"result_kind,omitempty"`
+	Reason      string                           `json:"reason,omitempty"`
+	Snapshot    *serveShellCollaborationSnapshot `json:"collaboration,omitempty"`
+}
+
+type serveShellOutputRange struct{ start, end int64 }
+type serveShellActivitySegment struct {
+	start int64
+	data  []byte
+}
+type serveShellActivityReservation struct {
+	id, shellID string
+	start, end  int64
+}
+type serveShellMarkerWaiter struct {
+	nonce       string
+	finalMarker byte
+	ch          chan serveShellProtocolMarker
 }
 
 type serveShell struct {
@@ -62,6 +137,56 @@ type serveShell struct {
 	exitCode   int
 	lastUsed   time.Time
 	changed    chan struct{}
+
+	generationCtx      context.Context
+	generationCancel   context.CancelFunc
+	protocol           serveShellProtocolParser
+	markerWaiter       *serveShellMarkerWaiter
+	protocolClaimStart int64
+	protocolEnd        int64
+	capture            []byte
+	captureLimit       int
+	captureTruncated   bool
+	captureStart       int64
+	captureActive      bool
+
+	injectionGate               bool
+	injectionFlushing           bool
+	queuedInput                 []byte
+	queuedInputErr              error
+	interruptWrites             uint64
+	browserInputRevision        uint64
+	displayRedactionStart       int64
+	displayRedactionUntil       int64
+	displayRedactionHeld        bool
+	displayRedactionMarker      byte
+	displayRedactionReplacement []byte
+
+	collaborationEnabled       bool
+	collaborationMutation      sync.Mutex
+	collaborationState         serveShellCollaborationState
+	collaborationRevision      uint64
+	collaborationSequence      uint64
+	collaborationReason        string
+	collaborationSupported     bool
+	collaborationCapabilityMsg string
+	shellToolAvailable         bool
+	commandID                  string
+	toolCallID                 string
+	commandCancel              context.CancelFunc
+	disableRequested           bool
+	events                     []serveShellCollaborationEvent
+
+	commandLease chan struct{}
+	leaseWaiters int
+
+	activityCursor            int64
+	shellResultActivityCursor int64
+	activityFloor             int64
+	activityReservation       *serveShellActivityReservation
+	activitySegments          []serveShellActivitySegment
+	activityBytes             int
+	claimedRanges             []serveShellOutputRange
 }
 
 type serveShellSnapshot struct {
@@ -76,7 +201,14 @@ type serveShellSnapshot struct {
 }
 
 func newServeShell(id, sessionID, cwd string) *serveShell {
-	return &serveShell{id: id, sessionID: sessionID, cwd: cwd, lastUsed: time.Now(), changed: make(chan struct{})}
+	generationCtx, generationCancel := context.WithCancel(context.Background())
+	lease := make(chan struct{}, 1)
+	lease <- struct{}{}
+	return &serveShell{
+		id: id, sessionID: sessionID, cwd: cwd, lastUsed: time.Now(), changed: make(chan struct{}),
+		generationCtx: generationCtx, generationCancel: generationCancel,
+		collaborationState: serveShellCollaborationOff, collaborationSupported: true, commandLease: lease,
+	}
 }
 
 func (s *serveShell) notifyLocked() {
@@ -89,6 +221,7 @@ func (s *serveShell) appendOutput(data []byte) {
 		return
 	}
 	s.mu.Lock()
+	startOffset := s.nextOffset
 	s.nextOffset += int64(len(data))
 	s.lastUsed = time.Now()
 	if len(data) >= serveShellReplayBytes {
@@ -102,8 +235,59 @@ func (s *serveShell) appendOutput(data []byte) {
 			s.baseOffset += int64(overflow)
 		}
 	}
-	s.notifyLocked()
+	markers := s.protocol.Feed(startOffset, data)
+	notifyDisplay := s.redactProtocolDisplayLocked(markers)
+	waiter := s.markerWaiter
+	claimEnd := s.protocolEnd
+	for _, marker := range markers {
+		if waiter != nil && marker.Nonce == waiter.nonce && !marker.Malformed {
+			if marker.Kind == waiter.finalMarker {
+				claimEnd = marker.End
+				s.protocolEnd = marker.End
+			}
+		}
+	}
+	if waiter == nil {
+		s.appendActivityOutputLocked(startOffset, data)
+	} else {
+		claimStart := s.protocolClaimStart
+		chunkEnd := startOffset + int64(len(data))
+		if startOffset < claimStart {
+			prefixEnd := min64(chunkEnd, claimStart)
+			s.appendActivityOutputLocked(startOffset, data[:prefixEnd-startOffset])
+		}
+		if claimEnd > 0 && claimEnd < chunkEnd {
+			suffixStart := max64(claimEnd, startOffset)
+			s.appendActivityOutputLocked(suffixStart, data[suffixStart-startOffset:])
+		}
+	}
+	s.captureOutputLocked(startOffset, data, markers)
+	flushGate := false
+	for _, marker := range markers {
+		if waiter != nil && marker.Nonce == waiter.nonce && marker.Kind == 'B' && !marker.Malformed && s.injectionGate {
+			s.injectionGate = false
+			s.injectionFlushing = true
+			flushGate = true
+		}
+	}
+	if notifyDisplay {
+		s.notifyLocked()
+	}
 	s.mu.Unlock()
+	if waiter != nil {
+		for _, marker := range markers {
+			if marker.Nonce != waiter.nonce {
+				continue
+			}
+			select {
+			case waiter.ch <- marker:
+			default:
+			}
+		}
+	}
+	if flushGate {
+		go s.flushQueuedBrowserInput()
+	}
 }
 
 func (s *serveShell) watchExit() {
@@ -111,14 +295,7 @@ func (s *serveShell) watchExit() {
 	if !ok {
 		exit = serveShellExit{Code: -1}
 	}
-	s.mu.Lock()
-	if !s.exited {
-		s.exited = true
-		s.exitCode = exit.Code
-		s.lastUsed = time.Now()
-		s.notifyLocked()
-	}
-	s.mu.Unlock()
+	s.invalidate(exit.Code)
 }
 
 func (s *serveShell) alive() bool {
@@ -143,11 +320,12 @@ func (s *serveShell) snapshot(offset int64) serveShellSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastUsed = time.Now()
-	reset := offset < s.baseOffset || offset > s.nextOffset
+	visibleNextOffset := s.visibleNextOffsetLocked()
+	reset := offset < s.baseOffset || offset > visibleNextOffset
 	if reset {
 		offset = s.baseOffset
 	}
-	available := s.nextOffset - offset
+	available := visibleNextOffset - offset
 	if available > serveShellChunkBytes {
 		available = serveShellChunkBytes
 	}
@@ -158,32 +336,18 @@ func (s *serveShell) snapshot(offset int64) serveShellSnapshot {
 		data = append([]byte(nil), s.output[start:end]...)
 	}
 	return serveShellSnapshot{
-		reset: reset, baseOffset: s.baseOffset, nextOffset: s.nextOffset,
+		reset: reset, baseOffset: s.baseOffset, nextOffset: visibleNextOffset,
 		dataOffset: offset, data: data, exited: s.exited, exitCode: s.exitCode, changed: s.changed,
 	}
 }
 
 func (s *serveShell) write(data []byte) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	if !s.alive() {
-		return io.ErrClosedPipe
-	}
-	for len(data) > 0 {
-		n, err := s.process.Write(data)
-		if err != nil {
-			return err
-		}
-		if n <= 0 {
-			return io.ErrShortWrite
-		}
-		data = data[n:]
-	}
-	s.touch()
-	return nil
+	return s.writeFrom(serveShellWriteBrowser, data)
 }
 
 func (s *serveShell) resize(cols, rows int) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	if !s.alive() {
 		return io.ErrClosedPipe
 	}
@@ -194,36 +358,49 @@ func (s *serveShell) resize(cols, rows int) error {
 	return nil
 }
 
-func (s *serveShell) close() {
-	if s.process != nil {
-		s.process.Close()
-	}
+func (s *serveShell) invalidate(exitCode int) {
+	s.writeMu.Lock()
 	s.mu.Lock()
 	if !s.exited {
 		s.exited = true
-		s.exitCode = -1
+		s.exitCode = exitCode
 		s.lastUsed = time.Now()
+		s.transitionCollaborationLocked(serveShellCollaborationOff, false, "collaboration", "shell exited")
+		if s.commandCancel != nil {
+			s.commandCancel()
+		}
+		s.generationCancel()
+		s.releaseProtocolDisplayRedactionLocked()
 		s.notifyLocked()
 	}
 	s.mu.Unlock()
+	s.writeMu.Unlock()
+}
+
+func (s *serveShell) close() {
+	s.invalidate(-1)
+	if s.process != nil {
+		s.process.Close()
+	}
 }
 
 type serveShellManager struct {
 	ttl    time.Duration
 	exists func(string) bool
 
-	mu      sync.Mutex
-	shells  map[string]*serveShell
-	closed  bool
-	stopCh  chan struct{}
-	closeCh sync.Once
+	mu         sync.Mutex
+	shells     map[string]*serveShell
+	operations map[string]*sync.Mutex
+	closed     bool
+	stopCh     chan struct{}
+	closeCh    sync.Once
 }
 
 func newServeShellManager(ttl time.Duration, exists func(string) bool) *serveShellManager {
 	if ttl <= 0 {
 		ttl = 30 * time.Minute
 	}
-	m := &serveShellManager{ttl: ttl, exists: exists, shells: make(map[string]*serveShell), stopCh: make(chan struct{})}
+	m := &serveShellManager{ttl: ttl, exists: exists, shells: make(map[string]*serveShell), operations: make(map[string]*sync.Mutex), stopCh: make(chan struct{})}
 	go m.janitor()
 	return m
 }
@@ -257,38 +434,71 @@ func (m *serveShellManager) evictExpired() {
 	}
 	m.mu.Unlock()
 
-	var stale []*serveShell
 	for sessionID, shell := range candidates {
+		op := m.sessionOperation(sessionID)
+		op.Lock()
 		missing := m.exists != nil && !m.exists(sessionID)
 		if !missing && now.Sub(shell.idleSince()) <= m.ttl {
+			op.Unlock()
 			continue
 		}
 		m.mu.Lock()
-		if m.shells[sessionID] == shell {
-			delete(m.shells, sessionID)
-			stale = append(stale, shell)
-		}
+		current := m.shells[sessionID] == shell
 		m.mu.Unlock()
-	}
-	for _, shell := range stale {
-		shell.close()
+		if current {
+			// Invalidate authority while this generation is still discoverable. A
+			// response that pins collaboration in this interval must observe either
+			// the live shared generation or its explicit exited state, never a
+			// transient missing entry that could be interpreted as local mode.
+			shell.invalidate(-1)
+			m.mu.Lock()
+			if m.shells[sessionID] == shell {
+				delete(m.shells, sessionID)
+			}
+			m.mu.Unlock()
+			// Keep this session's operation serialized until the old PTY is closed;
+			// otherwise create could publish a second live generation in the gap.
+			shell.close()
+		}
+		op.Unlock()
 	}
 }
 
-func (m *serveShellManager) create(sessionID, cwd string, cols, rows int) (*serveShell, bool, error) {
+func (m *serveShellManager) sessionOperation(sessionID string) *sync.Mutex {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	op := m.operations[sessionID]
+	if op == nil {
+		op = &sync.Mutex{}
+		m.operations[sessionID] = op
+	}
+	return op
+}
+
+func (m *serveShellManager) create(sessionID, cwd string, cols, rows int) (*serveShell, bool, error) {
+	op := m.sessionOperation(sessionID)
+	op.Lock()
+	defer op.Unlock()
+
+	m.mu.Lock()
 	if m.closed {
+		m.mu.Unlock()
 		return nil, false, errServeShellClosed
 	}
-	if current := m.shells[sessionID]; current != nil && current.alive() {
+	current := m.shells[sessionID]
+	m.mu.Unlock()
+	if current != nil && current.alive() {
 		if err := current.resize(cols, rows); err != nil {
 			return nil, false, fmt.Errorf("resize attached shell: %w", err)
 		}
 		return current, false, nil
 	}
-	if current := m.shells[sessionID]; current != nil {
-		delete(m.shells, sessionID)
+	if current != nil {
+		m.mu.Lock()
+		if m.shells[sessionID] == current {
+			delete(m.shells, sessionID)
+		}
+		m.mu.Unlock()
 		current.close()
 	}
 	id, err := newServeShellID()
@@ -298,10 +508,18 @@ func (m *serveShellManager) create(sessionID, cwd string, cols, rows int) (*serv
 	shell := newServeShell(id, sessionID, cwd)
 	process, err := startServeShellProcess(cwd, cols, rows, shell.appendOutput)
 	if err != nil {
+		shell.generationCancel()
 		return nil, false, err
 	}
 	shell.process = process
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		shell.close()
+		return nil, false, errServeShellClosed
+	}
 	m.shells[sessionID] = shell
+	m.mu.Unlock()
 	go shell.watchExit()
 	return shell, true, nil
 }
@@ -329,6 +547,9 @@ func (m *serveShellManager) get(sessionID, shellID string) (*serveShell, error) 
 }
 
 func (m *serveShellManager) closeShell(sessionID, shellID string) error {
+	op := m.sessionOperation(sessionID)
+	op.Lock()
+	defer op.Unlock()
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -339,18 +560,31 @@ func (m *serveShellManager) closeShell(sessionID, shellID string) error {
 		m.mu.Unlock()
 		return errServeShellStale
 	}
-	delete(m.shells, sessionID)
+	m.mu.Unlock()
+	shell.invalidate(-1)
+	m.mu.Lock()
+	if m.shells[sessionID] == shell {
+		delete(m.shells, sessionID)
+	}
 	m.mu.Unlock()
 	shell.close()
 	return nil
 }
 
 func (m *serveShellManager) closeSession(sessionID string) {
+	op := m.sessionOperation(sessionID)
+	op.Lock()
+	defer op.Unlock()
 	m.mu.Lock()
 	shell := m.shells[sessionID]
-	delete(m.shells, sessionID)
 	m.mu.Unlock()
 	if shell != nil {
+		shell.invalidate(-1)
+		m.mu.Lock()
+		if m.shells[sessionID] == shell {
+			delete(m.shells, sessionID)
+		}
+		m.mu.Unlock()
 		shell.close()
 	}
 }
@@ -363,15 +597,38 @@ func (m *serveShellManager) Close() {
 	}
 	m.closed = true
 	m.closeCh.Do(func() { close(m.stopCh) })
-	shells := make([]*serveShell, 0, len(m.shells))
-	for _, shell := range m.shells {
-		shells = append(shells, shell)
+	type shellTarget struct {
+		sessionID string
+		shell     *serveShell
 	}
+	targets := make([]shellTarget, 0, len(m.shells))
+	for sessionID, shell := range m.shells {
+		targets = append(targets, shellTarget{sessionID: sessionID, shell: shell})
+	}
+	// Keep generations discoverable to the controller until their authority is
+	// invalidated. Creation is already blocked by closed. Per-session operation
+	// locks prevent shutdown from racing another close/eviction of the same PTY.
+	m.mu.Unlock()
+	for _, target := range targets {
+		op := m.sessionOperation(target.sessionID)
+		op.Lock()
+		m.mu.Lock()
+		current := m.shells[target.sessionID] == target.shell
+		m.mu.Unlock()
+		if current {
+			target.shell.invalidate(-1)
+			m.mu.Lock()
+			if m.shells[target.sessionID] == target.shell {
+				delete(m.shells, target.sessionID)
+			}
+			m.mu.Unlock()
+			target.shell.close()
+		}
+		op.Unlock()
+	}
+	m.mu.Lock()
 	m.shells = map[string]*serveShell{}
 	m.mu.Unlock()
-	for _, shell := range shells {
-		shell.close()
-	}
 }
 
 type serveShellCreateRequest struct {
@@ -392,6 +649,16 @@ type serveShellResizeRequest struct {
 	ShellID string `json:"shell_id"`
 	Cols    int    `json:"cols"`
 	Rows    int    `json:"rows"`
+}
+
+type serveShellCollaborationRequest struct {
+	ShellID string `json:"shell_id"`
+	Enabled bool   `json:"enabled"`
+}
+
+type serveShellInterruptRequest struct {
+	ShellID   string `json:"shell_id"`
+	CommandID string `json:"command_id"`
 }
 
 func validServeShellSize(cols, rows int) bool {
@@ -551,6 +818,18 @@ func (s *serveServer) handleSessionShell(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		w.Header().Set("Allow", "POST")
+	case "shell/collaboration":
+		if r.Method == http.MethodPost {
+			s.handleShellCollaboration(w, r, sessionID)
+			return
+		}
+		w.Header().Set("Allow", "POST")
+	case "shell/interrupt":
+		if r.Method == http.MethodPost {
+			s.handleShellInterrupt(w, r, sessionID)
+			return
+		}
+		w.Header().Set("Allow", "POST")
 	}
 	writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 }
@@ -560,9 +839,14 @@ func decodeServeShellJSON(w http.ResponseWriter, r *http.Request, value any) boo
 		writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
 		return false
 	}
-	decoder := json.NewDecoder(io.LimitReader(r.Body, serveShellInputBytes*2))
+	r.Body = http.MaxBytesReader(w, r.Body, serveShellInputBytes*2)
+	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(value); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid shell request")
+		return false
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid shell request")
 		return false
 	}
@@ -601,7 +885,11 @@ func (s *serveServer) handleShellCreate(w http.ResponseWriter, r *http.Request, 
 	if created {
 		status = http.StatusCreated
 	}
-	writeJSON(w, status, map[string]any{"shell_id": shell.id, "cwd": shell.cwd, "created": created, "state": "running"})
+	collaboration := s.shellCollaborationSnapshot(r.Context(), sessionID, shell)
+	writeJSON(w, status, map[string]any{
+		"shell_id": shell.id, "cwd": shell.cwd, "created": created, "state": "running",
+		"collaboration": collaboration,
+	})
 }
 
 func writeServeShellError(w http.ResponseWriter, err error) {
@@ -610,6 +898,10 @@ func writeServeShellError(w http.ResponseWriter, err error) {
 		writeOpenAIError(w, http.StatusServiceUnavailable, "shell_unavailable", "shell service is shutting down")
 	case errors.Is(err, errServeShellStale):
 		writeOpenAIError(w, http.StatusConflict, "stale_shell", "shell generation is stale")
+	case errors.Is(err, errServeShellInputQueueFull):
+		writeOpenAIError(w, http.StatusConflict, "shell_input_busy", err.Error())
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		writeOpenAIError(w, http.StatusConflict, "shell_input_rejected", "shell input could not be delivered")
 	case errors.Is(err, io.ErrClosedPipe):
 		writeOpenAIError(w, http.StatusConflict, "shell_exited", "shell has exited")
 	default:
@@ -634,7 +926,7 @@ func (s *serveServer) handleShellInput(w http.ResponseWriter, r *http.Request, s
 	}
 	shell, err := manager.get(sessionID, strings.TrimSpace(req.ShellID))
 	if err == nil {
-		err = shell.write(data)
+		err = shell.writeFromContext(r.Context(), serveShellWriteBrowser, data)
 	}
 	if err != nil {
 		writeServeShellError(w, err)
@@ -722,10 +1014,13 @@ func (s *serveServer) handleShellStream(w http.ResponseWriter, r *http.Request, 
 	setSSEHeaders(stream)
 	stream.Header().Set("Cache-Control", "no-cache, no-transform")
 	initial := shell.snapshot(offset)
+	collaboration := s.shellCollaborationSnapshot(r.Context(), sessionID, shell)
+	eventSequence := collaboration.Sequence
 	if err := writeShellSSE(stream, "ready", map[string]any{
 		"shell_id": shell.id, "cwd": shell.cwd, "offset": offset,
 		"base_offset": initial.baseOffset, "next_offset": initial.nextOffset,
 		"heartbeat_ms": serveShellHeartbeat.Milliseconds(), "replay_bytes": serveShellReplayBytes,
+		"sequence": eventSequence, "collaboration": collaboration,
 	}); err != nil {
 		return
 	}
@@ -735,6 +1030,26 @@ func (s *serveServer) handleShellStream(w http.ResponseWriter, r *http.Request, 
 	exitSent := false
 	for {
 		snapshot := shell.snapshot(offset)
+		events, overrun, _ := shell.collaborationEventsAfter(eventSequence)
+		if overrun {
+			collaboration := s.shellCollaborationSnapshot(r.Context(), sessionID, shell)
+			if err := writeShellSSE(stream, "collaboration", collaboration); err != nil {
+				return
+			}
+			eventSequence = collaboration.Sequence
+			flusher.Flush()
+			continue
+		}
+		if len(events) > 0 {
+			for _, event := range events {
+				if err := writeShellSSE(stream, event.Type, event); err != nil {
+					return
+				}
+				eventSequence = event.Sequence
+			}
+			flusher.Flush()
+			continue
+		}
 		if snapshot.reset {
 			if err := writeShellSSE(stream, "reset", map[string]any{"offset": snapshot.baseOffset, "reason": "replay_window"}); err != nil {
 				return
@@ -756,7 +1071,14 @@ func (s *serveServer) handleShellStream(w http.ResponseWriter, r *http.Request, 
 			continue
 		}
 		if snapshot.exited && !exitSent {
-			if err := writeShellSSE(stream, "exit", map[string]any{"offset": snapshot.nextOffset, "exit_code": snapshot.exitCode}); err != nil {
+			finalCollaboration := s.shellCollaborationSnapshot(r.Context(), sessionID, shell)
+			if err := writeShellSSE(stream, "collaboration", finalCollaboration); err != nil {
+				return
+			}
+			if err := writeShellSSE(stream, "exit", map[string]any{
+				"shell_id": shell.id, "offset": snapshot.nextOffset, "exit_code": snapshot.exitCode,
+				"collaboration": finalCollaboration,
+			}); err != nil {
 				return
 			}
 			flusher.Flush()

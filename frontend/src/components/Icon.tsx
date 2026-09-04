@@ -13,9 +13,12 @@ type IconName =
   | 'compact'
   | 'copy'
   | 'diff'
+  | 'dock-bottom'
+  | 'dock-right'
   | 'edit'
   | 'expand'
   | 'fork'
+  | 'folder'
   | 'info'
   | 'interject'
   | 'menu'
@@ -92,6 +95,18 @@ const paths: Record<IconName, JSX.Element> = {
       <path d="M10.5 17H21" />
     </>
   ),
+  'dock-bottom': (
+    <>
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <path d="M3 14h18" />
+    </>
+  ),
+  'dock-right': (
+    <>
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <path d="M14 3v18" />
+    </>
+  ),
   edit: (
     <>
       <path d="M12 20h9" />
@@ -117,6 +132,11 @@ const paths: Record<IconName, JSX.Element> = {
       <circle cx="6" cy="19" r="2" />
       <path d="M6 7v10" />
       <path d="M8 7h3a7 7 0 0 1 7 7v-1" />
+    </>
+  ),
+  folder: (
+    <>
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
     </>
   ),
   info: (

@@ -157,6 +157,23 @@ func (s *LoggingStore) AddMessageWithTranscriptRev(ctx context.Context, sessionI
 	return rev, err
 }
 
+func (s *LoggingStore) SupportsBatchTranscriptWriter() bool {
+	if s == nil {
+		return false
+	}
+	return SupportsBatchTranscriptWriter(s.Store)
+}
+
+func (s *LoggingStore) AppendMessagesWithTranscriptRev(ctx context.Context, sessionID string, messages []*Message) (int64, error) {
+	writer, ok := s.Store.(BatchTranscriptRevisionWriter)
+	if !ok {
+		return 0, ErrTranscriptRevisionUnsupported
+	}
+	rev, err := writer.AppendMessagesWithTranscriptRev(ctx, sessionID, messages)
+	s.logOnce("AppendMessagesWithTranscriptRev", err)
+	return rev, err
+}
+
 func (s *LoggingStore) UpdateStreamingMessageWithTranscriptRev(ctx context.Context, sessionID string, msg *Message, finalizeText bool) (int64, error) {
 	writer, ok := s.Store.(TranscriptRevisionWriter)
 	if !ok {

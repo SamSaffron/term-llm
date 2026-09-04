@@ -53,6 +53,16 @@ export function Overlay({
   const dialog = useRef<HTMLDivElement>(null);
   const token = useRef<symbol | null>(null);
   const label = useId();
+  const dockedShellLayout =
+    store?.shellStore.visible.value && store.shellStore.layout.value !== 'fullscreen'
+      ? store.shellStore.layout.value
+      : null;
+  const dockedShellStyle = dockedShellLayout
+    ? {
+        '--shell-dock-bottom-size': `${store!.shellStore.dockBottomSize.value}px`,
+        '--shell-dock-right-size': `${store!.shellStore.dockRightSize.value}px`,
+      }
+    : undefined;
   const dismiss =
     onClose ||
     (() => {
@@ -79,7 +89,8 @@ export function Overlay({
   return (
     <div
       ref={overlay}
-      class="modal-overlay"
+      class={`modal-overlay ${dockedShellLayout ? `modal-overlay-shell-${dockedShellLayout}` : ''}`.trim()}
+      style={dockedShellStyle}
       role="presentation"
       onPointerDown={(event) => {
         if (event.target === event.currentTarget)

@@ -793,24 +793,6 @@ dialog.chip-popover::backdrop {
   display: none;
 }
 
-.header-tokens {
-  display: inline-flex;
-  align-items: center;
-  gap: 0;
-  font-variant-numeric: tabular-nums;
-}
-
-.header-tokens-sep[hidden] {
-  display: none;
-}
-
-@media (width <= 1599px) {
-  .header-tokens,
-  .header-tokens-sep {
-    display: none;
-  }
-}
-
 .stats-tokens {
   font-variant-numeric: tabular-nums;
 }

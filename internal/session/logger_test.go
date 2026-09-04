@@ -17,6 +17,18 @@ func (s *responseRunStartErrorStore) GetResponseRunStartState(context.Context, s
 	return ResponseRunStartState{}, s.err
 }
 
+func TestLoggingStoreBatchTranscriptCapabilityReflectsWrappedStore(t *testing.T) {
+	unsupported := NewLoggingStore(&responseRunStartErrorStore{}, func(string, ...any) {})
+	if SupportsBatchTranscriptWriter(unsupported) {
+		t.Fatal("capabilityless wrapped store reported batch support")
+	}
+	store, _ := newTranscriptTestStore(t)
+	wrapped := NewLoggingStore(store, func(string, ...any) {})
+	if !SupportsBatchTranscriptWriter(wrapped) {
+		t.Fatal("SQLite-backed logging store did not report batch support")
+	}
+}
+
 func TestLoggingStoreResponseRunStartStateIgnoresExpectedErrors(t *testing.T) {
 	for _, expected := range []error{ErrNotFound, ErrTranscriptRevisionUnsupported} {
 		t.Run(expected.Error(), func(t *testing.T) {

@@ -95,6 +95,16 @@ func TestResponseRunFenceIsAtomicWithTranscriptWriteAndCheckpoint(t *testing.T) 
 	if _, err := store.AddMessageWithTranscriptRev(fencedCtx, sessionID, stale); !errors.Is(err, ErrResponseRunLeaseLost) {
 		t.Fatalf("stale fenced write error = %v", err)
 	}
+	batch := []*Message{
+		{Role: llm.RoleDeveloper, TextContent: "activity", Sequence: -1, ResponseID: "resp_fenced"},
+		{Role: llm.RoleUser, TextContent: "retry", Sequence: -1, ResponseID: "resp_fenced"},
+	}
+	if _, err := store.AppendMessagesWithTranscriptRev(fencedCtx, sessionID, batch); !errors.Is(err, ErrResponseRunLeaseLost) {
+		t.Fatalf("stale fenced batch error = %v", err)
+	}
+	if batch[0].ID != 0 || batch[1].ID != 0 {
+		t.Fatalf("rolled-back batch mutated IDs: %#v", batch)
+	}
 	messages, err := store.GetMessages(ctx, sessionID, 0, 0)
 	if err != nil {
 		t.Fatal(err)

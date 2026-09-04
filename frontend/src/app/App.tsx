@@ -10,6 +10,7 @@ import { DiffSidebar, PlanSurface } from '../components/Panels';
 import { Modals } from '../components/Modals';
 import { Lightbox } from '../components/Lightbox';
 import { Icon } from '../components/Icon';
+import { useMediaQuery } from '../components/useMediaQuery';
 import { installVisualViewportSizing } from '../platform/browser';
 
 const toastIcon = (kind: Toast['kind']) =>
@@ -40,6 +41,17 @@ class ErrorBoundary extends Component<{ children: ComponentChildren }, { error: 
 function ShellOverlayLoader({ store }: { store: AppStore }) {
   const [Overlay, setOverlay] = useState<ComponentType<{ store: AppStore }> | null>(null);
   const [error, setError] = useState('');
+  const sideDockFallsBelow = useMediaQuery('(width <= 760px)');
+  const layout = store.shellStore.layout.value;
+  const effectiveLayout = layout === 'right' && sideDockFallsBelow ? 'bottom' : layout;
+  const overlayProps = {
+    class: `shell-overlay shell-layout-${layout} shell-effective-layout-${effectiveLayout}`,
+    style: {
+      '--shell-dock-bottom-size': `${store.shellStore.dockBottomSize.value}px`,
+      '--shell-dock-right-size': `${store.shellStore.dockRightSize.value}px`,
+    },
+    'aria-label': 'Interactive shell',
+  };
   useEffect(() => {
     let current = true;
     void import('../components/ShellOverlay')
@@ -56,7 +68,7 @@ function ShellOverlayLoader({ store }: { store: AppStore }) {
   }, []);
   if (error)
     return (
-      <section class="shell-overlay" aria-label="Interactive shell">
+      <section {...overlayProps}>
         <header class="shell-overlay-header">
           <div class="shell-overlay-heading">
             <span class="shell-prompt-mark" aria-hidden="true">
@@ -75,7 +87,7 @@ function ShellOverlayLoader({ store }: { store: AppStore }) {
           <div class="shell-overlay-actions">
             <button class="btn shell-back" type="button" onClick={() => store.shellStore.back()}>
               <Icon name="arrow-left" />
-              <span>Back to chat</span>
+              <span>{layout === 'fullscreen' ? 'Back to chat' : 'Hide terminal'}</span>
             </button>
           </div>
         </header>
@@ -87,7 +99,7 @@ function ShellOverlayLoader({ store }: { store: AppStore }) {
   return Overlay ? (
     <Overlay store={store} />
   ) : (
-    <section class="shell-overlay" aria-label="Interactive shell" aria-busy="true">
+    <section {...overlayProps} aria-busy="true">
       <header class="shell-overlay-header">
         <div class="shell-overlay-heading">
           <span class="shell-prompt-mark" aria-hidden="true">
@@ -106,7 +118,7 @@ function ShellOverlayLoader({ store }: { store: AppStore }) {
         <div class="shell-overlay-actions">
           <button class="btn shell-back" type="button" onClick={() => store.shellStore.back()}>
             <Icon name="arrow-left" />
-            <span>Back to chat</span>
+            <span>{layout === 'fullscreen' ? 'Back to chat' : 'Hide terminal'}</span>
           </button>
         </div>
       </header>
@@ -116,6 +128,21 @@ function ShellOverlayLoader({ store }: { store: AppStore }) {
 
 export function App({ store }: { store: AppStore }) {
   const session = store.activeSession.value;
+  const shellVisible = store.shellStore.visible.value;
+  const shellLayout = store.shellStore.layout.value;
+  const shellSessionId = store.shellStore.sessionId.value;
+  const draftActive = store.draftActive.value;
+  const shellFullscreen = shellVisible && shellLayout === 'fullscreen';
+  useEffect(() => {
+    if (
+      shellVisible &&
+      !draftActive &&
+      session?.id &&
+      !session.id.startsWith('draft_') &&
+      !shellSessionId
+    )
+      store.shellStore.bind(session.id);
+  }, [draftActive, session?.id, shellSessionId, shellVisible, store]);
   useEffect(() => {
     void store.bootstrap();
     const removeViewportSizing = installVisualViewportSizing();
@@ -183,11 +210,15 @@ export function App({ store }: { store: AppStore }) {
           </div>
         )}
         <div
-          class={`app ${store.sidebarCollapsed.value ? 'sidebar-collapsed' : ''} ${store.diff.value.open ? 'diff-open' : ''} ${store.diff.value.maximized ? 'diff-maximized' : ''} ${store.planVisible.value ? 'plan-open' : ''}`}
+          class={`app ${store.sidebarCollapsed.value ? 'sidebar-collapsed' : ''} ${store.diff.value.open ? 'diff-open' : ''} ${store.diff.value.maximized ? 'diff-maximized' : ''} ${store.planVisible.value ? 'plan-open' : ''} ${shellVisible && shellLayout === 'bottom' ? 'shell-docked-bottom' : ''} ${shellVisible && shellLayout === 'right' ? 'shell-docked-right' : ''}`}
           id="appShell"
-          style={{ '--diff-sidebar-user-width': `${store.diff.value.width}px` }}
-          aria-hidden={!store.startupDone.value || store.shellStore.visible.value || undefined}
-          inert={store.shellStore.visible.value || undefined}
+          style={{
+            '--diff-sidebar-user-width': `${store.diff.value.width}px`,
+            '--shell-dock-bottom-size': `${store.shellStore.dockBottomSize.value}px`,
+            '--shell-dock-right-size': `${store.shellStore.dockRightSize.value}px`,
+          }}
+          aria-hidden={!store.startupDone.value || shellFullscreen || undefined}
+          inert={shellFullscreen || undefined}
         >
           <Sidebar />
           <main class="main" id="appMain">
@@ -200,7 +231,7 @@ export function App({ store }: { store: AppStore }) {
         </div>
         <Modals />
         <Lightbox />
-        {store.shellStore.visible.value && <ShellOverlayLoader store={store} />}
+        {shellVisible && <ShellOverlayLoader store={store} />}
       </StoreContext.Provider>
     </ErrorBoundary>
   );

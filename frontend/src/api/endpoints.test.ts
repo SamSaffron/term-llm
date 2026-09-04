@@ -20,6 +20,28 @@ describe('shell endpoints', () => {
       { policy: 'mutation', auth: 'session' },
     );
 
+    await routes.shellCollaboration('session/one', 'sh/one', true);
+    expect(json).toHaveBeenLastCalledWith(
+      '/v1/sessions/session%2Fone/shell/collaboration',
+      {
+        method: 'POST',
+        headers: { 'X-Term-LLM-Session-ID': 'session/one' },
+        body: JSON.stringify({ shell_id: 'sh/one', enabled: true }),
+      },
+      { policy: 'mutation', auth: 'session', timeoutMs: 3000 },
+    );
+
+    await routes.shellInterrupt('session/one', 'sh/one', 'cmd/one');
+    expect(json).toHaveBeenLastCalledWith(
+      '/v1/sessions/session%2Fone/shell/interrupt',
+      {
+        method: 'POST',
+        headers: { 'X-Term-LLM-Session-ID': 'session/one' },
+        body: JSON.stringify({ shell_id: 'sh/one', command_id: 'cmd/one' }),
+      },
+      { policy: 'mutation', auth: 'session', timeoutMs: 5000 },
+    );
+
     await routes.shellStream('session/one', 'sh/one', 42, controller.signal);
     expect(request).toHaveBeenLastCalledWith(
       '/v1/sessions/session%2Fone/shell/stream?shell_id=sh%2Fone&offset=42',

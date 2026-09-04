@@ -34,6 +34,21 @@
   display: none;
 }
 
+.modal-overlay-shell-bottom {
+  height: calc(var(--app-height) - min(var(--shell-dock-bottom-size, 360px), 75dvh));
+}
+
+.modal-overlay-shell-right {
+  width: calc(100% - min(var(--shell-dock-right-size, 520px), 72vw));
+}
+
+@media (width <= 760px) {
+  .modal-overlay-shell-right {
+    width: 100%;
+    height: calc(var(--app-height) - min(var(--shell-dock-bottom-size, 360px), 75dvh));
+  }
+}
+
 .modal {
   width: min(480px, 100%);
   border: 1px solid var(--border);

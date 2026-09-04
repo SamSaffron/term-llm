@@ -189,6 +189,8 @@ type serveRuntimeTestStore struct {
 	replaceFailures            map[int]error
 	replaceMessagesHook        func(context.Context, string, []session.Message) error
 	addMessageCalls            int
+	batchAppendCalls           int
+	batchAppendHook            func(context.Context, string, []*session.Message) error
 	addMessageHook             func(context.Context, string, *session.Message) error
 	updateMessageCalls         int
 	updateMessageHook          func(context.Context, string, *session.Message) error
@@ -555,6 +557,37 @@ func (s *serveRuntimeTestStore) AddMessageWithTranscriptRev(ctx context.Context,
 		return 0, err
 	}
 	return s.nextTranscriptRev(), nil
+}
+
+func (s *serveRuntimeTestStore) AppendMessagesWithTranscriptRev(ctx context.Context, sessionID string, messages []*session.Message) (int64, error) {
+	if s.batchAppendHook != nil {
+		if err := s.batchAppendHook(ctx, sessionID, messages); err != nil {
+			return 0, err
+		}
+	}
+	for _, msg := range messages {
+		if msg == nil {
+			return 0, errors.New("nil batch message")
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	start := len(s.messages[sessionID])
+	for i, msg := range messages {
+		s.nextID++
+		msg.ID = s.nextID
+		msg.Sequence = start + i
+		copyMsg := *msg
+		s.messages[sessionID] = append(s.messages[sessionID], copyMsg)
+		if msg.Role == llm.RoleUser {
+			if sess := s.sessions[sessionID]; sess != nil {
+				sess.UserTurns++
+			}
+		}
+	}
+	s.batchAppendCalls++
+	s.transcriptRev++
+	return s.transcriptRev, nil
 }
 
 func (s *serveRuntimeTestStore) UpdateStreamingMessageWithTranscriptRev(ctx context.Context, sessionID string, msg *session.Message, _ bool) (int64, error) {

@@ -279,6 +279,30 @@ func (t *countingTool) Preview(args json.RawMessage) string {
 	return ""
 }
 
+type terminalDeliveryTool struct {
+	name     string
+	executed chan struct{}
+}
+
+func (t *terminalDeliveryTool) Spec() ToolSpec {
+	return ToolSpec{
+		Name:        t.name,
+		Description: "Returns immediately",
+		Schema:      map[string]any{"type": "object"},
+	}
+}
+
+func (t *terminalDeliveryTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
+	if t.executed != nil {
+		close(t.executed)
+	}
+	return TextOutput("ok"), nil
+}
+
+func (t *terminalDeliveryTool) Preview(args json.RawMessage) string {
+	return ""
+}
+
 type overlapDetectTool struct {
 	active    atomic.Int64
 	maxActive atomic.Int64
@@ -2750,6 +2774,60 @@ func TestExecuteToolCallsParallelDoesNotBlockOnFullToolExecEndBuffer(t *testing.
 
 	if tool.calls.Load() != int64(len(calls)) {
 		t.Fatalf("expected %d tool executions, got %d", len(calls), tool.calls.Load())
+	}
+}
+
+func TestSpawnAgentToolExecEndWaitsForEventCapacity(t *testing.T) {
+	t.Parallel()
+
+	tool := &terminalDeliveryTool{name: reliableToolTerminalName, executed: make(chan struct{})}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	engine := NewEngine(&fakeProvider{}, registry)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	events := make(chan Event, 1)
+	events <- Event{Type: EventHeartbeat, ToolCallID: "buffer-full"}
+	resultCh := make(chan []Message, 1)
+	go func() {
+		messages, _ := engine.executeSingleToolCall(
+			ctx,
+			ToolCall{ID: "spawn-1", Name: reliableToolTerminalName, Arguments: json.RawMessage(`{}`)},
+			eventSender{ctx: ctx, ch: events},
+			false,
+			false,
+		)
+		resultCh <- messages
+	}()
+
+	select {
+	case <-tool.executed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("spawn agent tool never executed")
+	}
+	select {
+	case <-resultCh:
+		t.Fatal("spawn agent returned before its terminal event had capacity")
+	default:
+	}
+
+	<-events // release the deliberately occupied slot
+	select {
+	case event := <-events:
+		if event.Type != EventToolExecEnd || event.ToolCallID != "spawn-1" || !event.ToolSuccess {
+			t.Fatalf("terminal event = %+v", event)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("spawn agent terminal event was dropped")
+	}
+	select {
+	case messages := <-resultCh:
+		if len(messages) != 1 {
+			t.Fatalf("result messages = %d, want 1", len(messages))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("spawn agent did not return after terminal event delivery")
 	}
 }
 

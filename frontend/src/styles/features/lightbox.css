@@ -350,11 +350,6 @@
     background: var(--surface-3);
   }
 
-  .header-tokens,
-  .header-tokens-sep {
-    display: none;
-  }
-
   .model-picker {
     display: inline-flex;
     align-items: center;

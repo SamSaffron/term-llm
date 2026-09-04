@@ -31,6 +31,9 @@ type LocalToolRegistry struct {
 	fileRecorder   FileChangeRecorder
 	mediaPublisher MediaPublisher
 
+	collaborativeShellController CollaborativeShellController
+	shellRoutingMode             ShellRoutingMode
+
 	// Registered tools
 	tools map[string]llm.Tool
 }
@@ -56,12 +59,13 @@ func NewLocalToolRegistry(toolConfig *ToolConfig, appConfig *config.Config, appr
 	}
 
 	r := &LocalToolRegistry{
-		config:      toolConfig,
-		permissions: perms,
-		approval:    approvalMgr,
-		limits:      DefaultOutputLimits(),
-		appConfig:   appConfig,
-		tools:       make(map[string]llm.Tool),
+		config:           toolConfig,
+		permissions:      perms,
+		approval:         approvalMgr,
+		limits:           DefaultOutputLimits(),
+		appConfig:        appConfig,
+		shellRoutingMode: ShellRoutingLocalOnly,
+		tools:            make(map[string]llm.Tool),
 	}
 
 	// Register enabled tools
@@ -137,6 +141,75 @@ func (r *LocalToolRegistry) applyFileRecorderLocked() {
 			st.setFileChangeRecorder(r.fileRecorder)
 		}
 	}
+}
+
+func (r *LocalToolRegistry) applyCollaborativeShellLocked() {
+	if t, ok := r.tools[ShellToolName].(*ShellTool); ok {
+		t.setCollaborativeShell(r.collaborativeShellController, r.shellRoutingMode)
+	}
+}
+
+// SetCollaborativeShellController configures authoritative shell routing. Web
+// runtimes use controller_required; all other callers retain local_only.
+func (r *LocalToolRegistry) SetCollaborativeShellController(controller CollaborativeShellController, mode ShellRoutingMode) {
+	if r == nil {
+		return
+	}
+	if mode == "" {
+		mode = ShellRoutingLocalOnly
+	}
+	r.mu.Lock()
+	r.collaborativeShellController = controller
+	r.shellRoutingMode = mode
+	r.applyCollaborativeShellLocked()
+	r.mu.Unlock()
+}
+
+func (r *LocalToolRegistry) CollaborativeShellActivityController() CollaborativeShellActivityController {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	controller, _ := r.collaborativeShellController.(CollaborativeShellActivityController)
+	return controller
+}
+
+func (r *LocalToolRegistry) CollaborativeShellRouting() (ShellRoutingMode, bool) {
+	if r == nil {
+		return "", false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.shellRoutingMode, r.collaborativeShellController != nil
+}
+
+func (r *LocalToolRegistry) CollaborativeShellMode(ctx context.Context, sessionID string) CollaborativeShellMode {
+	if r == nil {
+		return CollaborativeShellMode{State: CollaborativeShellUnavailable}
+	}
+	r.mu.RLock()
+	controller := r.collaborativeShellController
+	mode := r.shellRoutingMode
+	r.mu.RUnlock()
+	if mode == ShellRoutingLocalOnly {
+		return CollaborativeShellMode{State: CollaborativeShellOff}
+	}
+	if controller == nil {
+		return CollaborativeShellMode{State: CollaborativeShellUnavailable, Reason: "controller unavailable"}
+	}
+	return controller.Mode(ctx, sessionID)
+}
+
+// HasVisibleShell reports whether shell is registered in this registry.
+func (r *LocalToolRegistry) HasVisibleShell() bool {
+	if r == nil {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.tools[ShellToolName]
+	return ok && r.config.IsToolEnabled(ShellToolName)
 }
 
 // registerEnabledTools registers all tools that are enabled in config.
@@ -232,6 +305,9 @@ func (r *LocalToolRegistry) registerTool(specName string) error {
 	}
 
 	r.tools[specName] = tool
+	if specName == ShellToolName {
+		r.applyCollaborativeShellLocked()
+	}
 	return nil
 }
 
@@ -342,8 +418,9 @@ func (r *LocalToolRegistry) SetLimits(limits OutputLimits) {
 			r.tools[specName] = NewRunAgentScriptTool(r.config, r.limits)
 		}
 	}
-	// Re-created tools start without the recorder; push it back in.
+	// Re-created tools start without runtime wiring; push it back in.
 	r.applyFileRecorderLocked()
+	r.applyCollaborativeShellLocked()
 }
 
 // AddReadDir adds a directory to the read allowlist at runtime.

@@ -255,6 +255,42 @@ describe('AppStore compatibility behavior', () => {
     store.dispose();
   });
 
+  it('opens a pending draft shell and materializes a blank session on demand', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [];
+    store.activeSessionId.value = '';
+    store.draftActive.value = true;
+    store.projectsEnabled.value = false;
+    store.shellStore.enabled.value = true;
+    store.prompt.value = 'keep this draft';
+    store.endpoints.createBlankSession = vi.fn(async () => ({
+      session: {
+        id: 'session-created',
+        title: 'New chat',
+        mode: 'chat',
+        origin: 'web',
+        created: 10,
+        last_message_at: 10,
+      },
+    }));
+
+    store.openShell();
+    expect(store.shellStore.visible.value).toBe(true);
+    expect(store.shellStore.sessionId.value).toBe('');
+    expect(store.prompt.value).toBe('keep this draft');
+    expect(store.toasts.value).toHaveLength(0);
+
+    await expect(store.ensureShellSession()).resolves.toBe('session-created');
+    expect(store.endpoints.createBlankSession).toHaveBeenCalledWith(
+      expect.objectContaining({ use_default_workspace: true }),
+    );
+    expect(store.activeSessionId.value).toBe('session-created');
+    expect(store.draftActive.value).toBe(false);
+    expect(store.sessions.value.map((entry) => entry.id)).toEqual(['session-created']);
+    expect(store.prompt.value).toBe('keep this draft');
+    store.dispose();
+  });
+
   it('detaches and hides a bound shell before selecting or creating a conversation', async () => {
     const store = new AppStore(config);
     const first = session();

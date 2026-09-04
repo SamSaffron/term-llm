@@ -26,6 +26,10 @@ type ShellTool struct {
 
 	recorderMu sync.RWMutex
 	recorder   FileChangeRecorder
+
+	collaborationMu sync.RWMutex
+	controller      CollaborativeShellController
+	routingMode     ShellRoutingMode
 }
 
 func (t *ShellTool) fileChangeRecorder() FileChangeRecorder {
@@ -38,6 +42,37 @@ func (t *ShellTool) setFileChangeRecorder(recorder FileChangeRecorder) {
 	t.recorderMu.Lock()
 	t.recorder = recorder
 	t.recorderMu.Unlock()
+}
+
+func (t *ShellTool) setCollaborativeShell(controller CollaborativeShellController, mode ShellRoutingMode) {
+	t.collaborationMu.Lock()
+	t.controller = controller
+	t.routingMode = mode
+	t.collaborationMu.Unlock()
+}
+
+func (t *ShellTool) collaborativeShell() (CollaborativeShellController, ShellRoutingMode) {
+	t.collaborationMu.RLock()
+	defer t.collaborationMu.RUnlock()
+	return t.controller, t.routingMode
+}
+
+// PrepareRequestContext implements llm.RequestContextTool.
+func (t *ShellTool) PrepareRequestContext(ctx context.Context, sessionID string, messages []llm.Message) ([]llm.Message, error) {
+	controller, _ := t.collaborativeShell()
+	if controller == nil {
+		return messages, nil
+	}
+	return controller.PrepareRequestContext(ctx, sessionID, messages)
+}
+
+// PrepareCompactionContext implements llm.RequestContextTool.
+func (t *ShellTool) PrepareCompactionContext(ctx context.Context, sessionID string, result *llm.CompactionResult) error {
+	controller, _ := t.collaborativeShell()
+	if controller == nil {
+		return nil
+	}
+	return controller.PrepareCompactionContext(ctx, sessionID, result)
 }
 
 func approvalTranscriptFromContext(ctx context.Context) []TranscriptEntry {
@@ -203,6 +238,7 @@ type ShellResult struct {
 	ExitCode        int    `json:"exit_code"`
 	TimedOut        bool   `json:"timed_out,omitempty"`
 	Canceled        bool   `json:"canceled,omitempty"`
+	RecoveryFailed  bool   `json:"recovery_failed,omitempty"`
 	StdoutTruncated bool   `json:"stdout_truncated,omitempty"`
 	StderrTruncated bool   `json:"stderr_truncated,omitempty"`
 }
@@ -287,6 +323,96 @@ func (t *ShellTool) Preview(args json.RawMessage) string {
 }
 
 func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+	warning := WarnUnknownParams(args, []string{"command", "working_dir", "timeout_seconds", "description", "env", "affected_paths", "output_claims"})
+	errorOutput := func(err error) (llm.ToolOutput, error) {
+		if toolErr, ok := err.(*ToolError); ok {
+			out := llm.TextOutput(warning + formatToolError(toolErr))
+			out.IsError = true
+			return out, nil
+		}
+		message := err.Error()
+		if kind := CollaborativeShellErrorKind(err); kind != "" {
+			message = fmt.Sprintf("shared shell %s: %s", kind, message)
+		}
+		out := llm.TextOutput(warning + formatToolError(NewToolError(ErrExecutionFailed, message)))
+		out.IsError = true
+		return out, nil
+	}
+
+	var a ShellArgs
+	if err := json.Unmarshal(args, &a); err != nil {
+		out := llm.TextOutput(warning + formatToolError(NewToolError(ErrInvalidParams, err.Error())))
+		out.IsError = true
+		return out, nil
+	}
+	if a.Command == "" {
+		out := llm.TextOutput(warning + formatToolError(NewToolError(ErrInvalidParams, "command is required")))
+		out.IsError = true
+		return out, nil
+	}
+
+	controller, routing := t.collaborativeShell()
+	binding, hasBinding := CollaborativeShellRunBindingFromContext(ctx)
+	if routing == ShellRoutingControllerRequired && controller == nil {
+		return errorOutput(NewCollaborativeShellError("controller_unavailable", "collaborative shell controller is not installed"))
+	}
+	if routing == ShellRoutingControllerRequired && !hasBinding {
+		return errorOutput(NewCollaborativeShellError("controller_unavailable", "collaborative shell run binding is missing"))
+	}
+	if hasBinding && binding.Required {
+		if controller == nil {
+			return errorOutput(NewCollaborativeShellError("controller_unavailable", "collaborative shell controller is not installed"))
+		}
+		if a.WorkingDir != "" || len(a.Env) != 0 || len(a.AffectedPaths) != 0 || len(a.OutputClaims) != 0 {
+			out := llm.TextOutput(warning + formatToolError(NewToolError(ErrInvalidParams, "Shared shell commands cannot use working_dir, env, affected_paths, or output_claims. Express directory and environment changes in the command with cd, export, or command prefixes.")))
+			out.IsError = true
+			return out, nil
+		}
+		timeout := a.TimeoutSeconds
+		if timeout <= 0 {
+			timeout = 30
+		}
+		if timeout > 300 {
+			timeout = 300
+		}
+		if t.approval != nil {
+			outcome, err := t.approval.CheckSharedShellApprovalWithContext(ctx, a.Command, approvalTranscriptFromContext(ctx))
+			if err != nil {
+				return errorOutput(err)
+			}
+			if outcome == Cancel {
+				out := llm.TextOutput(warning + formatToolError(NewToolErrorf(ErrPermissionDenied, "shared shell command not allowed: %s", truncateCommand(a.Command))))
+				out.IsError = true
+				return out, nil
+			}
+		}
+		result, err := controller.Execute(ctx, llm.SessionIDFromContext(ctx), SharedShellArgs{
+			Command: a.Command, TimeoutSeconds: timeout, ToolCallID: llm.CallIDFromContext(ctx),
+			OutputLimit: t.limits.MaxBytes, ExpectedShellID: binding.ShellID, ActivityFence: binding.Fence,
+		})
+		if err != nil {
+			if CollaborativeShellErrorKind(err) == "terminal_changed" {
+				out := llm.TextOutput(warning + formatShellResult(result, t.limits) + "\n\nshared shell terminal_changed: " + err.Error())
+				out.IsError = true
+				return out, nil
+			}
+			if result.RecoveryFailed && CollaborativeShellErrorKind(err) == "recovery_failed" {
+				out := llm.TextOutput(warning + formatShellResult(result, t.limits) + "\n\nshared shell recovery_failed: " + err.Error())
+				out.TimedOut = result.TimedOut
+				out.IsError = true
+				return out, nil
+			}
+			return errorOutput(err)
+		}
+		out := llm.TextOutput(warning + formatShellResult(result, t.limits))
+		out.TimedOut = result.TimedOut
+		out.IsError = result.ExitCode != 0 || result.TimedOut || result.Canceled || result.RecoveryFailed
+		return out, nil
+	}
+	return t.executeLocal(ctx, args)
+}
+
+func (t *ShellTool) executeLocal(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
 	recorder := t.fileChangeRecorder()
 	trackingEnabled := recorder != nil
 	warning := WarnUnknownParams(args, []string{"command", "working_dir", "timeout_seconds", "description", "env", "affected_paths", "output_claims"})
@@ -528,6 +654,9 @@ func formatShellResult(result ShellResult, limits OutputLimits) string {
 		truncated = true
 	}
 
+	if result.RecoveryFailed {
+		sb.WriteString("[Shared shell recovery failed; collaboration requires attention]\n\n")
+	}
 	if result.TimedOut {
 		sb.WriteString("[Command timed out]\n\n")
 	} else if result.Canceled {

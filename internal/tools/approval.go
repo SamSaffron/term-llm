@@ -294,6 +294,7 @@ type PolicyReviewRequest struct {
 	Transcript      []TranscriptEntry
 	ApprovalContext string
 	ScopeID         string
+	ApprovalScope   string
 	WorkspaceAccess string
 	Reason          string
 }
@@ -325,6 +326,7 @@ type ApprovalRequest struct {
 type guardianShellKey struct {
 	Command string
 	WorkDir string
+	Scope   string
 }
 
 // GuardianOutcome describes the result of an automatic guardian review.
@@ -363,11 +365,12 @@ type WorkspaceApprovalResult struct {
 
 // ApprovalManager coordinates approval requests and caching.
 type ApprovalManager struct {
-	cache         *ApprovalCache
-	dirCache      *DirCache // Tool-agnostic directory approvals
-	shellCache    *ShellApprovalCache
-	guardianMu    sync.RWMutex
-	guardianExact map[guardianShellKey]struct{} // exact shell actions approved by guardian
+	cache            *ApprovalCache
+	dirCache         *DirCache // Tool-agnostic directory approvals
+	shellCache       *ShellApprovalCache
+	sharedShellCache *ShellApprovalCache
+	guardianMu       sync.RWMutex
+	guardianExact    map[guardianShellKey]struct{} // exact shell actions approved by guardian
 
 	policyReviewMu      sync.RWMutex
 	policyReviewFunc    func(context.Context, PolicyReviewRequest) (PolicyDecision, error)
@@ -428,6 +431,9 @@ type ApprovalManager struct {
 	// (non-empty for shell commands to show where the command will run).
 	// If nil, falls back to PromptFunc.
 	PromptUIFunc func(path string, isWrite bool, isShell bool, workDir string) (ApprovalResult, error)
+	// SharedShellPromptUIFunc is distinct so shared-shell approval can never be
+	// mistaken for a local cwd/project authorization.
+	SharedShellPromptUIFunc func(command string) (ApprovalResult, error)
 
 	// WorkspacePromptFunc asks the human to establish whole-workspace read/write
 	// authority for the proposed primary workspace outside yolo mode. Yolo never
@@ -452,6 +458,7 @@ func NewApprovalManager(perms *ToolPermissions) *ApprovalManager {
 		cache:                    NewApprovalCache(),
 		dirCache:                 NewDirCache(),
 		shellCache:               NewShellApprovalCache(),
+		sharedShellCache:         NewShellApprovalCache(),
 		guardianExact:            make(map[guardianShellKey]struct{}),
 		permissions:              perms,
 		projectCache:             make(map[string]*ProjectApprovals),
@@ -556,6 +563,15 @@ func (m *ApprovalManager) lookupPromptUIFunc() func(path string, isWrite bool, i
 	for cur := m; cur != nil; cur = cur.parent {
 		if cur.PromptUIFunc != nil {
 			return cur.PromptUIFunc
+		}
+	}
+	return nil
+}
+
+func (m *ApprovalManager) lookupSharedShellPromptUIFunc() func(command string) (ApprovalResult, error) {
+	for cur := m; cur != nil; cur = cur.parent {
+		if cur.SharedShellPromptUIFunc != nil {
+			return cur.SharedShellPromptUIFunc
 		}
 	}
 	return nil
@@ -935,11 +951,15 @@ func (m *ApprovalManager) checkPathApprovalNoPrompt(toolName, path, absPath stri
 }
 
 func (m *ApprovalManager) addGuardianExactShell(command, workDir string) {
+	m.addGuardianExactShellScoped(command, workDir, "local")
+}
+
+func (m *ApprovalManager) addGuardianExactShellScoped(command, workDir, scope string) {
 	root := m.root()
 	if root == nil {
 		return
 	}
-	key, ok := guardianExactKey(command, workDir)
+	key, ok := guardianExactKey(command, workDir, scope)
 	if !ok {
 		return
 	}
@@ -951,11 +971,15 @@ func (m *ApprovalManager) addGuardianExactShell(command, workDir string) {
 }
 
 func (m *ApprovalManager) isGuardianExactShellApproved(command, workDir string) bool {
+	return m.isGuardianExactShellApprovedScoped(command, workDir, "local")
+}
+
+func (m *ApprovalManager) isGuardianExactShellApprovedScoped(command, workDir, scope string) bool {
 	root := m.root()
 	if root == nil || m.ApprovalMode() != ModeAuto {
 		return false
 	}
-	key, ok := guardianExactKey(command, workDir)
+	key, ok := guardianExactKey(command, workDir, scope)
 	if !ok {
 		return false
 	}
@@ -975,12 +999,19 @@ func (m *ApprovalManager) clearGuardianExactShell() {
 	root.guardianMu.Unlock()
 }
 
-func guardianExactKey(command, workDir string) (guardianShellKey, bool) {
+func guardianExactKey(command, workDir, scope string) (guardianShellKey, bool) {
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return guardianShellKey{}, false
 	}
-	return guardianShellKey{Command: command, WorkDir: normalizeGuardianWorkDir(workDir)}, true
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		scope = "local"
+	}
+	if scope == sharedShellApprovalScope {
+		return guardianShellKey{Command: command, Scope: scope}, true
+	}
+	return guardianShellKey{Command: command, WorkDir: normalizeGuardianWorkDir(workDir), Scope: scope}, true
 }
 
 func normalizeGuardianWorkDir(workDir string) string {
@@ -1457,7 +1488,86 @@ func (m *ApprovalManager) checkShellApprovalWithContext(ctx context.Context, com
 	return outcome, nil
 }
 
+const sharedShellApprovalScope = "shared_shell"
+
+// CheckSharedShellApprovalWithContext authorizes a command for the current
+// session's shared interactive terminal without consulting local/project state.
+func (m *ApprovalManager) CheckSharedShellApprovalWithContext(ctx context.Context, command string, transcript []TranscriptEntry) (ConfirmOutcome, error) {
+	if m == nil {
+		return Cancel, NewToolError(ErrPermissionDenied, "shared shell approval manager is unavailable")
+	}
+	if m.YoloEnabled() {
+		return ProceedOnce, nil
+	}
+	if m.permissions != nil {
+		if m.permissions.isExactScriptCommandAllowed(command) {
+			return ProceedOnce, nil
+		}
+		_, _, patterns := m.permissions.Snapshot()
+		if m.matchShellPatterns(patterns, command) {
+			return ProceedOnce, nil
+		}
+	}
+	if m.isGuardianExactShellApprovedScoped(command, "", sharedShellApprovalScope) {
+		return ProceedAlways, nil
+	}
+	for cur := m; cur != nil; cur = cur.parent {
+		if cur.sharedShellCache.IsCommandApproved(command, sharedShellApprovalScope) || m.matchShellPatterns(cur.sharedShellCache.GetPatterns(), command) {
+			return ProceedAlways, nil
+		}
+	}
+	transcriptFn := func() []TranscriptEntry { return transcript }
+	if m.ApprovalMode() == ModeAuto {
+		if outcome, decided, err := m.checkShellGuardianApprovalScoped(ctx, command, "", sharedShellApprovalScope, transcriptFn); decided || err != nil {
+			return outcome, err
+		}
+	}
+	lock := m.PromptLock()
+	lock.Lock()
+	defer lock.Unlock()
+	if m.YoloEnabled() {
+		return ProceedOnce, nil
+	}
+	for cur := m; cur != nil; cur = cur.parent {
+		if cur.sharedShellCache.IsCommandApproved(command, sharedShellApprovalScope) || m.matchShellPatterns(cur.sharedShellCache.GetPatterns(), command) {
+			return ProceedAlways, nil
+		}
+	}
+	prompt := m.lookupSharedShellPromptUIFunc()
+	if prompt == nil {
+		return Cancel, NewToolError(ErrPermissionDenied, "shared shell command requires approval, but no approval transport is available")
+	}
+	result, err := prompt(command)
+	if err != nil {
+		return Cancel, err
+	}
+	switch result.Choice {
+	case ApprovalChoiceOnce:
+		m.resetGuardianDenials()
+		return ProceedOnce, nil
+	case ApprovalChoiceCommand, ApprovalChoicePattern:
+		if result.Choice == ApprovalChoicePattern && strings.TrimSpace(result.Pattern) != "" {
+			if err := m.sharedShellCache.AddPattern(result.Pattern); err != nil {
+				return ProceedOnce, nil
+			}
+		} else if err := m.sharedShellCache.AddCommand(command, sharedShellApprovalScope); err != nil {
+			return Cancel, err
+		}
+		m.resetGuardianDenials()
+		return ProceedAlways, nil
+	default:
+		return Cancel, nil
+	}
+}
+
 func (m *ApprovalManager) guardianApprovalContext(command, workDir string) string {
+	return m.guardianApprovalContextScoped(command, workDir, "local")
+}
+
+func (m *ApprovalManager) guardianApprovalContextScoped(command, workDir, scope string) string {
+	if scope == sharedShellApprovalScope {
+		return fmt.Sprintf("shell_command=%q\napproval_scope=shared_shell\nThe host, working directory, environment, authentication, and filesystem are controlled by the shared interactive terminal and may be remote. Local filesystem capabilities and project approvals are not authorization evidence for this command.\n", strings.TrimSpace(command))
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "shell_command=%q\n", strings.TrimSpace(command))
 	fmt.Fprintf(&b, "workdir=%q\n", normalizeGuardianWorkDir(workDir))
@@ -1576,18 +1686,29 @@ func (m *ApprovalManager) checkPathGuardianApproval(ctx context.Context, toolNam
 }
 
 func (m *ApprovalManager) checkShellGuardianApproval(ctx context.Context, command, workDir string, transcript func() []TranscriptEntry) (ConfirmOutcome, bool, error) {
+	return m.checkShellGuardianApprovalScoped(ctx, command, workDir, "local", transcript)
+}
+
+func (m *ApprovalManager) checkShellGuardianApprovalScoped(ctx context.Context, command, workDir, scope string, transcript func() []TranscriptEntry) (ConfirmOutcome, bool, error) {
 	reviewFunc := m.lookupPolicyReviewFunc()
 	if reviewFunc == nil {
 		detail := "guardian policy reviewer is not configured"
 		m.emitGuardianEventForContext(ctx, m.guardianEvent(ctx, command, workDir, GuardianWarning, "guardian: auto mode unavailable (no reviewer configured); action denied"))
 		return Cancel, true, guardianReviewFailure(detail)
 	}
-	approvalContext := m.guardianApprovalContext(command, workDir)
+	approvalContext := m.guardianApprovalContextScoped(command, workDir, scope)
 	var entries []TranscriptEntry
 	if transcript != nil {
 		entries = transcript()
 	}
-	decision, err := reviewFunc(ctx, PolicyReviewRequest{Command: command, WorkDir: normalizeGuardianWorkDir(workDir), Transcript: entries, ApprovalContext: approvalContext, ScopeID: llm.SessionIDFromContext(ctx)})
+	reviewWorkDir := normalizeGuardianWorkDir(workDir)
+	if scope == sharedShellApprovalScope {
+		reviewWorkDir = ""
+	}
+	decision, err := reviewFunc(ctx, PolicyReviewRequest{
+		Command: command, WorkDir: reviewWorkDir, Transcript: entries,
+		ApprovalContext: approvalContext, ScopeID: llm.SessionIDFromContext(ctx), ApprovalScope: scope,
+	})
 	if err != nil {
 		m.emitGuardianEventForContext(ctx, m.guardianDecisionEvent(ctx, command, workDir, GuardianError, fmt.Sprintf("guardian: review failed (%v); action denied", err), decision))
 		return Cancel, true, guardianReviewFailure(err.Error())
@@ -1601,7 +1722,7 @@ func (m *ApprovalManager) checkShellGuardianApproval(ctx context.Context, comman
 	}
 	if decision.Allowed {
 		m.resetGuardianDenials()
-		m.addGuardianExactShell(command, workDir)
+		m.addGuardianExactShellScoped(command, workDir, scope)
 		m.emitGuardianEventForContext(ctx, m.guardianDecisionEvent(ctx, command, workDir, GuardianApproved, "guardian: "+formatGuardianApproval(decision), decision))
 		return ProceedAlways, true, nil
 	}

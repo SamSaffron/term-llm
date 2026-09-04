@@ -52,7 +52,11 @@ func (m *serveSessionManager) lockSessionOperation(id string) func() {
 // lockIdleMetadataMutation pins one session's runtime identity while metadata
 // I/O runs. It never holds the process-wide session map mutex across that I/O.
 func (m *serveSessionManager) lockIdleMetadataMutation(id string) (*serveRuntime, func(), error) {
-	unlockOperation := m.lockSessionOperation(id)
+	operation := m.sessionOperation(id)
+	if !operation.TryLock() {
+		return nil, nil, errServeSessionBusy
+	}
+	unlockOperation := operation.Unlock
 	m.reserved.Store(id, struct{}{})
 
 	m.mu.Lock()

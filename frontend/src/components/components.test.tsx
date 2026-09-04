@@ -15,6 +15,7 @@ import { Header } from './Header';
 import { DiffSidebar, PlanSurface } from './Panels';
 import { ChipPicker } from './ChipPicker';
 import { Lightbox } from './Lightbox';
+import { Overlay } from './Overlay';
 import type { AppConfig } from '../app/config';
 import { initialProjection } from '../domain/response';
 import { convertServerMessages } from '../domain/transcript';
@@ -568,6 +569,36 @@ describe('Preact-owned chat surfaces', () => {
 
     fireEvent.animationEnd(list, { animationName: 'project-list-reveal' });
     expect(list).not.toHaveClass('is-opening');
+  });
+
+  it('centers modal overlays within the app area left by a docked shell', () => {
+    const store = createStore();
+    store.shellStore.visible.value = true;
+    store.shellStore.layout.value = 'right';
+    store.shellStore.dockRightSize.value = 640;
+    store.shellStore.dockBottomSize.value = 420;
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Overlay title="Dock-aware modal">Content</Overlay>
+      </StoreContext.Provider>,
+    );
+    const overlay = container.querySelector('.modal-overlay') as HTMLElement;
+
+    expect(overlay).toHaveClass('modal-overlay-shell-right');
+    expect(overlay.style.getPropertyValue('--shell-dock-right-size')).toBe('640px');
+
+    act(() => {
+      store.shellStore.layout.value = 'bottom';
+    });
+    expect(overlay).toHaveClass('modal-overlay-shell-bottom');
+    expect(overlay).not.toHaveClass('modal-overlay-shell-right');
+    expect(overlay.style.getPropertyValue('--shell-dock-bottom-size')).toBe('420px');
+
+    act(() => {
+      store.shellStore.layout.value = 'fullscreen';
+    });
+    expect(overlay).not.toHaveClass('modal-overlay-shell-bottom');
+    expect(overlay.style.getPropertyValue('--shell-dock-bottom-size')).toBe('');
   });
 
   it('renders /side as one private Markdown conversation with an accessible composer', async () => {
@@ -4897,9 +4928,10 @@ describe('Preact-owned chat surfaces', () => {
       sessionId: 's1',
       id: 'approval-1',
       title: 'Approval first',
+      scope: 'shared_shell',
       options: [
-        { index: 0, choice: 'allow', label: 'Allow' },
-        { index: 1, choice: 'deny', label: 'Deny' },
+        { index: 0, choice: 'once', label: 'Allow once' },
+        { index: 1, choice: 'always', label: 'Always allow' },
       ],
     };
     render(
@@ -4908,6 +4940,8 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
     expect(screen.getByRole('heading', { name: 'Approval first' })).toBeInTheDocument();
+    expect(screen.getByText('Shared interactive shell — target may be remote')).toBeVisible();
+    expect(screen.getByText(/Remember only for this session’s shared shell/)).toBeVisible();
     act(() => {
       store.approval.value = null;
     });
@@ -5421,7 +5455,10 @@ describe('Preact-owned chat surfaces', () => {
     });
     await userEvent.click(screen.getByRole('button', { name: 'Browse' }));
     expect(lookup).toHaveBeenCalledWith('/home/me', false, expect.any(AbortSignal));
-    expect(screen.getByRole('option', { name: /src/ })).toBeInTheDocument();
+    const folderOption = screen.getByRole('option', { name: /src/ });
+    expect(folderOption).toBeInTheDocument();
+    expect(folderOption.querySelector('.project-browser-folder-icon svg')).toBeInTheDocument();
+    expect(folderOption).not.toHaveTextContent('◇');
     await userEvent.click(screen.getByRole('checkbox', { name: /Hidden/ }));
     await vi.waitFor(() => expect(lookup).toHaveBeenLastCalledWith('/home/me', true));
     expect(screen.getByRole('option', { name: /.config/ })).toBeInTheDocument();

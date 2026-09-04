@@ -3,6 +3,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -115,7 +116,34 @@ func signalServeShellGroup(pid int, signal syscall.Signal) error {
 	return err
 }
 
-func (p *unixServeShellProcess) Write(data []byte) (int, error) { return p.file.Write(data) }
+func (p *unixServeShellProcess) Write(data []byte) (int, error) {
+	return p.WriteContext(context.Background(), data)
+}
+
+func (p *unixServeShellProcess) WriteContext(ctx context.Context, data []byte) (int, error) {
+	type writeResult struct {
+		n   int
+		err error
+	}
+	done := make(chan writeResult, 1)
+	go func() {
+		n, err := p.file.Write(data)
+		done <- writeResult{n: n, err: err}
+	}()
+	select {
+	case result := <-done:
+		return result.n, result.err
+	case <-ctx.Done():
+		// Closing the PTY master is the only portable way to unblock a write to a
+		// canonical terminal whose input queue is full. A bounded write failure
+		// therefore invalidates this generation rather than allowing later bytes to
+		// race a still-running writer.
+		_ = p.file.Close()
+		_ = signalServeShellSession(p.cmd.Process.Pid, syscall.SIGHUP)
+		_ = signalServeShellGroup(p.cmd.Process.Pid, syscall.SIGHUP)
+		return 0, ctx.Err()
+	}
+}
 
 func (p *unixServeShellProcess) Resize(cols, rows int) error {
 	return pty.Setsize(p.file, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})

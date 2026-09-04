@@ -37,15 +37,35 @@ export interface SessionShareResponse {
   public?: boolean;
 }
 
+export type ShellCollaborationState = 'off' | 'ready' | 'agent_running' | 'desynchronized';
+
+export interface ShellCollaborationSnapshot {
+  shell_id: string;
+  supported: boolean;
+  shell_tool_available: boolean;
+  enabled: boolean;
+  state: ShellCollaborationState;
+  revision: number;
+  sequence: number;
+  command_id: string;
+  tool_call_id: string;
+  reason: string;
+}
+
 export interface ShellCreateResponse {
   shell_id: string;
   cwd: string;
   created: boolean;
   state: 'running';
+  collaboration?: ShellCollaborationSnapshot;
 }
 
 export interface ShellInputResponse {
   accepted: number;
+}
+
+export interface CreateBlankSessionResponse {
+  session: Record<string, unknown>;
 }
 
 const encoded = (value: string): string => encodeURIComponent(value);
@@ -128,6 +148,12 @@ export const endpoints = (api: APIClient) => ({
   },
   sessions: (query = '') =>
     api.get<Record<string, unknown>>(`/v1/sessions${query ? `?${query}` : ''}`),
+  createBlankSession: (body: unknown) =>
+    api.json<CreateBlankSessionResponse>(
+      '/v1/sessions',
+      { method: 'POST', body: JSON.stringify(body) },
+      { policy: 'mutation', auth: 'session', retries: 0 },
+    ),
   selectedSession: (id: string) =>
     api.get<Record<string, unknown>>(
       `/v1/sessions?selected_only=1&include_transcript=1&include_widget_status=1&selected_session=${encoded(id)}`,
@@ -253,6 +279,26 @@ export const endpoints = (api: APIClient) => ({
         body: JSON.stringify({ shell_id: shellId, cols, rows }),
       },
       { policy: 'mutation', auth: 'session' },
+    ),
+  shellCollaboration: (id: string, shellId: string, enabled: boolean) =>
+    api.json<ShellCollaborationSnapshot>(
+      `/v1/sessions/${encoded(id)}/shell/collaboration`,
+      {
+        method: 'POST',
+        headers: sessionHeaders(id),
+        body: JSON.stringify({ shell_id: shellId, enabled }),
+      },
+      { policy: 'mutation', auth: 'session', timeoutMs: 3000 },
+    ),
+  shellInterrupt: (id: string, shellId: string, commandId: string) =>
+    api.json<ShellCollaborationSnapshot>(
+      `/v1/sessions/${encoded(id)}/shell/interrupt`,
+      {
+        method: 'POST',
+        headers: sessionHeaders(id),
+        body: JSON.stringify({ shell_id: shellId, command_id: commandId }),
+      },
+      { policy: 'mutation', auth: 'session', timeoutMs: 5000 },
     ),
   shellClose: (id: string, shellId: string) =>
     api.json<void>(

@@ -422,6 +422,7 @@ export interface ApprovalPrompt {
   options?: ApprovalOption[];
   selectedIndex?: number;
   resumeAutoAvailable?: boolean;
+  scope?: string;
 }
 
 export type RunStatus =

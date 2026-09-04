@@ -224,6 +224,7 @@ export class AppStore {
   private readonly lifecycleAbort = new AbortController();
   private disposed = false;
   private recoveryPromise: Promise<void> | null = null;
+  private shellSessionPromise: Promise<string> | null = null;
   private readonly attentionAcks = new Map<string, number>();
   private serverEventFeedEnabled = false;
   private readonly locallyStoppedResponses: Set<string>;
@@ -282,6 +283,8 @@ export class AppStore {
       this.endpoints,
       (message, kind) => this.services.toast(message, kind),
       () => this.activeSession.peek()?.id || '',
+      storage,
+      this.keys.shellLayout,
     );
     this.showWidgets = signal(storage.getItem(this.keys.showWidgetsSidebar) !== '0');
     // The legacy boolean was optimistic and is never authoritative. Enrollment
@@ -1454,11 +1457,51 @@ export class AppStore {
 
   openShell(): void {
     const session = this.activeSession.peek();
-    if (!session || this.draftActive.peek()) {
-      this.toast('Start the conversation before opening a shell.', 'error');
-      return;
-    }
-    if (this.shellStore.show(session.id)) this.prompt.value = '';
+    const draft = this.draftActive.peek();
+    if (this.shellStore.show(draft ? '' : session?.id || '') && !draft) this.prompt.value = '';
+  }
+
+  async ensureShellSession(): Promise<string> {
+    const active = this.activeSession.peek();
+    if (active && !this.draftActive.peek()) return active.id;
+    if (this.shellSessionPromise) return this.shellSessionPromise;
+    this.shellSessionPromise = (async () => {
+      const draftID = this.composer.runtimeDraftId();
+      const projectID = this.activeProjectId.peek();
+      const worktreeDir = this.selectedDraftWorktree.peek();
+      const body: Record<string, unknown> = {
+        provider: this.selectedProvider.peek(),
+        model: this.selectedModel.peek(),
+        reasoning_effort: this.selectedEffort.peek(),
+        reasoning_mode: this.selectedReasoningMode.peek(),
+        agent: this.selectedAgent.peek(),
+      };
+      if (this.projectsEnabled.peek()) {
+        if (projectID) body.project_id = projectID;
+        else body.no_project = true;
+      } else body.use_default_workspace = true;
+      if (worktreeDir) body.worktree_dir = worktreeDir;
+
+      try {
+        const response = await this.endpoints.createBlankSession(body);
+        const durable = this.sessionFrom(response.session);
+        if (!durable.id) throw new Error('Server did not return a session id.');
+        const provisional: Session = { ...durable, id: draftID, messages: [] };
+        this.sessionStore.prepend(provisional);
+        this.sessionStore.activate(provisional);
+        this.selectedDraftWorktree.value = '';
+        this.rekeySession(draftID, durable.id, response.session);
+        this.composer.persist();
+        this.publishSessionChange('session-upserted', durable.id);
+        return durable.id;
+      } catch (error) {
+        this.toast(error, 'error');
+        return '';
+      } finally {
+        this.shellSessionPromise = null;
+      }
+    })();
+    return this.shellSessionPromise;
   }
 
   toast(value: unknown, kind: Toast['kind'] = 'info'): void {

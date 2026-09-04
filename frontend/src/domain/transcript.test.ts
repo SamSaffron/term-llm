@@ -395,6 +395,59 @@ describe('transcript domain', () => {
     expect(mergeDurableProjection(durable, projected)).toEqual(durable);
   });
 
+  it('preserves live terminal tool state over an earlier durable running placeholder', () => {
+    const durable: Message[] = [
+      {
+        id: 'durable-tools',
+        role: 'tool-group',
+        content: '',
+        created: 1,
+        responseId: 'r1',
+        status: 'running',
+        tools: [
+          { id: 'spawn-a', name: 'spawn_agent', status: 'running', startedAt: 100 },
+          { id: 'spawn-b', name: 'spawn_agent', status: 'running', startedAt: 200 },
+        ],
+      },
+    ];
+    const projected: Message[] = [
+      {
+        id: 'live-tools',
+        role: 'tool-group',
+        content: '',
+        created: 2,
+        responseId: 'r1',
+        status: 'running',
+        tools: [
+          {
+            id: 'spawn-a',
+            name: 'spawn_agent',
+            status: 'done',
+            resultStatus: 'success',
+            startedAt: 100,
+            endedAt: 1_100,
+            durationMs: 1_000,
+          },
+          { id: 'spawn-b', name: 'spawn_agent', status: 'running', startedAt: 200 },
+        ],
+      },
+    ];
+
+    const merged = mergeDurableProjection(durable, projected);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0].id).toBe('durable-tools');
+    expect(merged[0].tools?.[0]).toMatchObject({
+      id: 'spawn-a',
+      status: 'done',
+      resultStatus: 'success',
+      endedAt: 1_100,
+      durationMs: 1_000,
+    });
+    expect(merged[0].tools?.[1]).toMatchObject({ id: 'spawn-b', status: 'running' });
+    expect(durable[0].tools?.[0].status).toBe('running');
+  });
+
   it('keeps the newest assistant segment coverage during partial durable handoff', () => {
     const durable: Message[] = [
       {

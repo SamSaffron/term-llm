@@ -723,6 +723,7 @@ export function reduceResponse(
           path: text(event.path),
           body: text(event.body || event.message),
           note: text(event.note),
+          scope: text(event.scope) || 'local',
           options: Array.isArray(event.options) ? (event.options as ApprovalPrompt['options']) : [],
           selectedIndex: 0,
           resumeAutoAvailable: event.resume_auto_available === true,

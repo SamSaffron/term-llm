@@ -104,6 +104,7 @@ export const approvalPrompt = (value: unknown, sessionId: string): ApprovalPromp
     sessionId: String(source.sessionId || source.session_id || sessionId),
     id,
     options,
+    scope: String(source.scope || 'local'),
     resumeAutoAvailable: Boolean(source.resumeAutoAvailable || source.resume_auto_available),
   } as ApprovalPrompt;
 };

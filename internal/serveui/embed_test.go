@@ -75,12 +75,12 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// authoritative mobile stream recovery, widget process lifecycle controls,
 		// model capability-aware runtime controls, durable terminal/input-required
 		// attention reconciliation, native commit review/editor controls, the
-		// resumable shell transport/store, inline tool media presentation, and the
-		// small eager Markdown review toggle/loader are first-party shell code. The
-		// xterm terminal, preview body, parser, source transport, and feature CSS
-		// remain in bounded lazy chunks. Keep bounded headroom while still failing
-		// meaningful accidental regressions.
-		"dist/app.js":  {raw: 470_000, gzip: 135_000},
+		// resumable server-authoritative shell collaboration transport/store,
+		// inline tool media presentation, and the small eager Markdown review
+		// toggle/loader are first-party shell code. The xterm terminal, preview body,
+		// parser, source transport, and feature CSS remain in bounded lazy chunks.
+		// Keep bounded headroom while still failing meaningful accidental regressions.
+		"dist/app.js":  {raw: 480_000, gzip: 135_000},
 		"dist/app.css": {raw: 174_000, gzip: 33_000},
 		// Measured after the completed standalone port: 67.7/21.5 KiB JS and
 		// 16.7/4.1 KiB CSS. These limits retain modest growth headroom without

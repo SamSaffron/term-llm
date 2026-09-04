@@ -784,6 +784,7 @@ describe('response projection', () => {
     );
     expect(projection.askUser?.callId).toBe('ask1');
     expect(projection.approval?.id).toBe('a1');
+    expect(projection.approval?.scope).toBe('local');
     expect(projection.fileChangeRevision).toBe(1);
     expect(projection.run.status).toBe('completed');
     expect(projection.usage?.total_tokens).toBe(12);

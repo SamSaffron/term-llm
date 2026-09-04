@@ -46,6 +46,148 @@ func requireTranscriptRevIncrease(t *testing.T, store TranscriptIndexer, session
 	return after
 }
 
+func TestSQLiteStoreReadOnlyDoesNotReportBatchTranscriptCapability(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	writable, err := NewSQLiteStore(Config{Enabled: true, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writable.Close(); err != nil {
+		t.Fatal(err)
+	}
+	readOnly, err := NewSQLiteStore(Config{Enabled: true, Path: path, ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readOnly.Close()
+	if SupportsBatchTranscriptWriter(readOnly) {
+		t.Fatal("read-only SQLite store reported writable batch capability")
+	}
+}
+
+func TestSQLiteStoreAppendMessagesWithTranscriptRevAtomicBoundary(t *testing.T) {
+	store, sess := newTranscriptTestStore(t)
+	ctx := context.Background()
+	before, err := store.TranscriptRev(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SavePendingInterjection(ctx, PendingInterjection{SessionID: sess.ID, ID: "client-1", Message: llm.UserText("hello")}); err != nil {
+		t.Fatal(err)
+	}
+	rows := []*Message{
+		NewMessage(sess.ID, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "activity"}}}, -1),
+		NewMessage(sess.ID, llm.UserText("hello"), -1),
+	}
+	rows[1].ClientMessageID = "client-1"
+	rev, err := store.AppendMessagesWithTranscriptRev(ctx, sess.ID, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev != before+1 {
+		t.Fatalf("revision = %d, want %d", rev, before+1)
+	}
+	if rows[0].ID == 0 || rows[1].ID == 0 || rows[1].Sequence != rows[0].Sequence+1 {
+		t.Fatalf("rows not stamped in order: %#v", rows)
+	}
+	var pending int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_pending_interjections WHERE session_id = ?`, sess.ID).Scan(&pending); err != nil || pending != 0 {
+		t.Fatalf("pending count = %d, err=%v", pending, err)
+	}
+	updated, err := store.Get(ctx, sess.ID)
+	if err != nil || updated.UserTurns != 1 {
+		t.Fatalf("user turns = %v, err=%v", updated, err)
+	}
+}
+
+func TestSQLiteStoreAppendMessagesWithTranscriptRevPreservesCompleteOrderedSuffix(t *testing.T) {
+	store, sess := newTranscriptTestStore(t)
+	ctx := context.Background()
+	for _, id := range []string{"client-a", "client-b"} {
+		if err := store.SavePendingInterjection(ctx, PendingInterjection{SessionID: sess.ID, ID: id, Message: llm.UserText(id)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	messages := []llm.Message{
+		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "platform"}}},
+		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "activity"}}},
+		{Role: llm.RoleUser, ClientMessageID: "client-a", Parts: []llm.Part{
+			{Type: llm.PartText, Text: "first"},
+			{Type: llm.PartImage, ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}},
+		}},
+		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "skill"}}},
+		{Role: llm.RoleUser, ClientMessageID: "client-b", Parts: []llm.Part{{Type: llm.PartText, Text: "second"}}},
+	}
+	rows := make([]*Message, len(messages))
+	for i := range messages {
+		rows[i] = NewMessage(sess.ID, messages[i], -1)
+	}
+	before, err := store.TranscriptRev(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev, err := store.AppendMessagesWithTranscriptRev(ctx, sess.ID, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev != before+1 {
+		t.Fatalf("revision=%d before=%d", rev, before)
+	}
+	for i, row := range rows {
+		if row.ID == 0 || (i > 0 && row.Sequence != rows[i-1].Sequence+1) {
+			t.Fatalf("row %d not stamped in input order: %#v", i, row)
+		}
+		if row.Role != llm.RoleUser && row.ClientMessageID != "" {
+			t.Fatalf("developer row retained client message ID: %#v", row)
+		}
+	}
+	loaded, err := LoadActiveMessages(ctx, store, sess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != len(messages) || len(loaded[2].Parts) != 2 || loaded[2].Parts[1].Type != llm.PartImage {
+		t.Fatalf("loaded suffix lost order or multimodal parts: %#v", loaded)
+	}
+	updated, err := store.Get(ctx, sess.ID)
+	if err != nil || updated.UserTurns != 2 {
+		t.Fatalf("user turns=%v err=%v", updated, err)
+	}
+	var pending int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_pending_interjections WHERE session_id = ?`, sess.ID).Scan(&pending); err != nil || pending != 0 {
+		t.Fatalf("pending=%d err=%v", pending, err)
+	}
+}
+
+func TestSQLiteStoreAppendMessagesWithTranscriptRevRollsBackWholeSuffix(t *testing.T) {
+	store, sess := newTranscriptTestStore(t)
+	ctx := context.Background()
+	before, err := store.TranscriptRev(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := []*Message{
+		NewMessage(sess.ID, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "must roll back"}}}, -1),
+		NewMessage(sess.ID, llm.Message{Role: llm.RoleUser, ClientMessageID: "duplicate", Parts: []llm.Part{{Type: llm.PartText, Text: "one"}}}, -1),
+		NewMessage(sess.ID, llm.Message{Role: llm.RoleUser, ClientMessageID: "duplicate", Parts: []llm.Part{{Type: llm.PartText, Text: "two"}}}, -1),
+	}
+	if _, err := store.AppendMessagesWithTranscriptRev(ctx, sess.ID, rows); err == nil {
+		t.Fatal("duplicate client identity unexpectedly committed")
+	}
+	for i, row := range rows {
+		if row.ID != 0 {
+			t.Fatalf("row %d mutated before failed transaction committed: %#v", i, row)
+		}
+	}
+	after, err := store.TranscriptRev(ctx, sess.ID)
+	if err != nil || after != before {
+		t.Fatalf("revision after rollback=%d before=%d err=%v", after, before, err)
+	}
+	loaded, err := LoadActiveMessages(ctx, store, sess)
+	if err != nil || len(loaded) != 0 {
+		t.Fatalf("rolled-back rows remain: %#v err=%v", loaded, err)
+	}
+}
+
 func TestSQLiteStoreTranscriptRevisionCoversMessageWritePaths(t *testing.T) {
 	store, sess := newTranscriptTestStore(t)
 	ctx := context.Background()

@@ -15,6 +15,7 @@ function readStylesheet(path: string): string {
 }
 
 const appCSS = readStylesheet(resolve(stylesRoot, 'app.css'));
+const shellTerminalCSS = readFileSync(resolve(stylesRoot, 'features/shell-terminal.css'), 'utf8');
 const preactOverrides = readFileSync(
   resolve(stylesRoot, 'integration/preact-overrides.css'),
   'utf8',
@@ -58,6 +59,20 @@ describe('shell layout', () => {
   it('stacks the mutually exclusive companion panels in one grid cell', () => {
     expect(appCSS).toMatch(
       /\.app > \.diff-sidebar,\s*\.app > \.plan-surface\s*\{\s*grid-column: 3;\s*grid-row: 1;/,
+    );
+  });
+
+  it('reflows chat for bottom and side terminal docks with a narrow-screen fallback', () => {
+    expect(shellTerminalCSS).toMatch(/\.app\.shell-docked-bottom\s*\{[^}]*height: calc/s);
+    expect(shellTerminalCSS).toMatch(/\.app\.shell-docked-right\s*\{[^}]*width: calc/s);
+    expect(shellTerminalCSS).toMatch(
+      /@media \(width <= 760px\)[\s\S]*\.shell-overlay\.shell-layout-right[\s\S]*height:/,
+    );
+    expect(shellTerminalCSS).toContain('.shell-dock-resizer:focus-visible');
+    expect(appCSS).toMatch(/\.modal-overlay-shell-bottom\s*\{[^}]*height: calc/s);
+    expect(appCSS).toMatch(/\.modal-overlay-shell-right\s*\{[^}]*width: calc/s);
+    expect(appCSS).toMatch(
+      /@media \(width <= 760px\)[\s\S]*\.modal-overlay-shell-right\s*\{[^}]*width: 100%;[^}]*height: calc/s,
     );
   });
 

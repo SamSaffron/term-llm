@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/worktree"
 )
 
@@ -170,6 +171,52 @@ func TestServeShellHTTPCreateInputOutputResizeAttachDeleteAndStaleID(t *testing.
 	reader := bufio.NewReader(streamResp.Body)
 	if ready := readShellSSE(t, reader); ready.Event != "ready" || ready.Data["shell_id"] != created.ShellID {
 		t.Fatalf("ready event = %+v", ready)
+	}
+
+	// Exercise the collaboration transition and command contract over the real
+	// HTTP SSE stream, not only through direct state snapshots.
+	shell, err := srv.shells.get("shell-session", created.ShellID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell.mu.Lock()
+	shell.shellToolAvailable = true
+	shell.resetActivityCursorLocked()
+	shell.transitionCollaborationLocked(serveShellCollaborationReady, true, "collaboration", "")
+	shell.mu.Unlock()
+	controller := &serveCollaborativeShellController{manager: func() (*serveShellManager, error) { return srv.shells, nil }}
+	sharedResult := make(chan tools.ShellResult, 1)
+	sharedErr := make(chan error, 1)
+	go func() {
+		result, err := controller.Execute(ctx, "shell-session", tools.SharedShellArgs{
+			Command: "printf '__shared_sse__\\n'", TimeoutSeconds: 3,
+			ExpectedShellID: created.ShellID, OutputLimit: 1 << 20,
+		})
+		sharedResult <- result
+		sharedErr <- err
+	}()
+	var sharedOutput strings.Builder
+	started, finished := false, false
+	for !finished || !strings.Contains(sharedOutput.String(), "__shared_sse__") {
+		event := readShellSSE(t, reader)
+		switch event.Event {
+		case "output":
+			data, decodeErr := base64.StdEncoding.DecodeString(fmt.Sprint(event.Data["data"]))
+			if decodeErr != nil {
+				t.Fatal(decodeErr)
+			}
+			sharedOutput.Write(data)
+		case "agent_command_started":
+			_, hasStart := event.Data["start_offset"]
+			started = event.Data["command_id"] != "" && hasStart
+		case "agent_command_finished":
+			end, hasEnd := event.Data["end_offset"].(float64)
+			finished = event.Data["command_id"] != "" && hasEnd && end > 0 && event.Data["result_kind"] == "completed"
+		}
+	}
+	result, err := <-sharedResult, <-sharedErr
+	if err != nil || result.ExitCode != 0 || !strings.Contains(result.Stdout, "__shared_sse__") || !started || !finished {
+		t.Fatalf("shared result=%+v err=%v started=%v finished=%v browser=%q", result, err, started, finished, sharedOutput.String())
 	}
 
 	resizeResp := shellJSONRequest(t, ts.Client(), http.MethodPost, base+"/resize", "secret", map[string]any{

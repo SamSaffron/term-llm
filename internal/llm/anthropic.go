@@ -631,7 +631,7 @@ func buildAnthropicMessages(messages []Message) (string, []anthropic.MessagePara
 		case RoleDeveloper:
 			// Anthropic has no native developer role. Buffer the text and prepend
 			// it into the next user turn wrapped in <developer> tags.
-			pendingDev = collectTextParts(msg.Parts)
+			pendingDev = appendAnthropicDeveloperText(pendingDev, collectTextParts(msg.Parts))
 		case RoleUser:
 			parts := msg.Parts
 			if pendingDev != "" {
@@ -647,17 +647,25 @@ func buildAnthropicMessages(messages []Message) (string, []anthropic.MessagePara
 				out = append(out, m)
 			}
 		case RoleAssistant:
+			out = flushAnthropicDeveloper(out, pendingDev)
+			pendingDev = ""
 			blocks := buildAnthropicBlocks(msg.Parts, true)
 			if len(blocks) > 0 {
 				out = append(out, anthropic.NewAssistantMessage(blocks...))
 			}
 		case RoleTool:
-			blocks := buildAnthropicBlocks(msg.Parts, false)
+			parts := msg.Parts
+			if pendingDev != "" {
+				parts = prependTextToParts(fmt.Sprintf("<developer>\n%s\n</developer>\n\n", pendingDev), parts)
+				pendingDev = ""
+			}
+			blocks := buildAnthropicBlocks(parts, false)
 			if len(blocks) > 0 {
 				out = append(out, anthropic.NewUserMessage(blocks...))
 			}
 		}
 	}
+	out = flushAnthropicDeveloper(out, pendingDev)
 
 	return strings.Join(systemParts, "\n\n"), out
 }
@@ -674,7 +682,7 @@ func buildAnthropicBetaMessages(messages []Message) (string, []anthropic.BetaMes
 		case RoleSystem:
 			systemParts = append(systemParts, collectTextParts(msg.Parts))
 		case RoleDeveloper:
-			pendingDev = collectTextParts(msg.Parts)
+			pendingDev = appendAnthropicDeveloperText(pendingDev, collectTextParts(msg.Parts))
 		case RoleUser:
 			parts := msg.Parts
 			if pendingDev != "" {
@@ -690,6 +698,8 @@ func buildAnthropicBetaMessages(messages []Message) (string, []anthropic.BetaMes
 				out = append(out, m)
 			}
 		case RoleAssistant:
+			out = flushAnthropicBetaDeveloper(out, pendingDev)
+			pendingDev = ""
 			blocks := buildAnthropicBetaBlocks(msg.Parts, true)
 			if len(blocks) > 0 {
 				out = append(out, anthropic.BetaMessageParam{
@@ -698,14 +708,54 @@ func buildAnthropicBetaMessages(messages []Message) (string, []anthropic.BetaMes
 				})
 			}
 		case RoleTool:
-			blocks := buildAnthropicBetaBlocks(msg.Parts, false)
+			parts := msg.Parts
+			if pendingDev != "" {
+				parts = prependTextToParts(fmt.Sprintf("<developer>\n%s\n</developer>\n\n", pendingDev), parts)
+				pendingDev = ""
+			}
+			blocks := buildAnthropicBetaBlocks(parts, false)
 			if len(blocks) > 0 {
 				out = append(out, anthropic.NewBetaUserMessage(blocks...))
 			}
 		}
 	}
+	out = flushAnthropicBetaDeveloper(out, pendingDev)
 
 	return strings.Join(systemParts, "\n\n"), out
+}
+
+func appendAnthropicDeveloperText(pending, text string) string {
+	if text == "" {
+		return pending
+	}
+	if pending == "" {
+		return text
+	}
+	return pending + "\n\n" + text
+}
+
+func flushAnthropicDeveloper(messages []anthropic.MessageParam, pending string) []anthropic.MessageParam {
+	if pending == "" {
+		return messages
+	}
+	block := anthropic.NewTextBlock(fmt.Sprintf("<developer>\n%s\n</developer>", pending))
+	if len(messages) > 0 && messages[len(messages)-1].Role == anthropic.MessageParamRoleUser {
+		messages[len(messages)-1].Content = append(messages[len(messages)-1].Content, block)
+		return messages
+	}
+	return append(messages, anthropic.NewUserMessage(block))
+}
+
+func flushAnthropicBetaDeveloper(messages []anthropic.BetaMessageParam, pending string) []anthropic.BetaMessageParam {
+	if pending == "" {
+		return messages
+	}
+	block := anthropic.NewBetaTextBlock(fmt.Sprintf("<developer>\n%s\n</developer>", pending))
+	if len(messages) > 0 && messages[len(messages)-1].Role == anthropic.BetaMessageParamRoleUser {
+		messages[len(messages)-1].Content = append(messages[len(messages)-1].Content, block)
+		return messages
+	}
+	return append(messages, anthropic.NewBetaUserMessage(block))
 }
 
 // prependTextToParts prepends prefix to the first PartText part in parts,

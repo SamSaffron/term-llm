@@ -22,6 +22,7 @@ type serveApprovalPrompt struct {
 	IsShell             bool                  `json:"is_shell"`
 	IsWorkspace         bool                  `json:"is_workspace,omitempty"`
 	WorkDir             string                `json:"work_dir,omitempty"`
+	Scope               string                `json:"scope,omitempty"`
 	Title               string                `json:"title"`
 	Options             []serveApprovalOption `json:"options"`
 	ResumeAutoAvailable bool                  `json:"resume_auto_available,omitempty"`
@@ -47,6 +48,7 @@ type servePendingApproval struct {
 	IsShell             bool
 	IsWorkspace         bool
 	WorkDir             string
+	Scope               string
 	Options             []tools.ApprovalOption
 	ResumeAutoAvailable bool
 	CreatedAt           time.Time
@@ -84,6 +86,7 @@ func (p *servePendingApproval) snapshot() serveApprovalPrompt {
 		IsShell:             p.IsShell,
 		IsWorkspace:         p.IsWorkspace,
 		WorkDir:             p.WorkDir,
+		Scope:               p.Scope,
 		Title:               title,
 		Options:             options,
 		ResumeAutoAvailable: p.ResumeAutoAvailable,
@@ -93,6 +96,10 @@ func (p *servePendingApproval) snapshot() serveApprovalPrompt {
 
 func (rt *serveRuntime) awaitApproval(target string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
 	return rt.awaitApprovalRequest(target, isWrite, isShell, false, workDir)
+}
+
+func (rt *serveRuntime) awaitSharedShellApproval(command string) (tools.ApprovalResult, error) {
+	return rt.awaitApprovalRequestScoped(command, false, true, false, "", "shared_shell")
 }
 
 func (rt *serveRuntime) awaitWorkspaceApproval(workspace string) (tools.WorkspaceApprovalResult, error) {
@@ -109,20 +116,28 @@ func (rt *serveRuntime) awaitWorkspaceApproval(workspace string) (tools.Workspac
 }
 
 func newServePendingApproval(target string, isWrite bool, isShell bool, isWorkspace bool, workDir string) *servePendingApproval {
+	return newServePendingApprovalScoped(target, isWrite, isShell, isWorkspace, workDir, "")
+}
+
+func newServePendingApprovalScoped(target string, isWrite bool, isShell bool, isWorkspace bool, workDir, scope string) *servePendingApproval {
 	var options []tools.ApprovalOption
 	if isWorkspace {
 		options = tools.BuildWorkspaceOptions(target)
 	} else if isShell {
-		dir := workDir
-		if dir == "" {
-			dir, _ = os.Getwd()
+		if scope == "shared_shell" {
+			options = tools.BuildSharedShellOptions(target)
+		} else {
+			dir := workDir
+			if dir == "" {
+				dir, _ = os.Getwd()
+			}
+			repoInfo := tools.DetectGitRepo(dir)
+			var repoInfoPtr *tools.GitRepoInfo
+			if repoInfo.IsRepo {
+				repoInfoPtr = &repoInfo
+			}
+			options = tools.BuildShellOptions(target, repoInfoPtr)
 		}
-		repoInfo := tools.DetectGitRepo(dir)
-		var repoInfoPtr *tools.GitRepoInfo
-		if repoInfo.IsRepo {
-			repoInfoPtr = &repoInfo
-		}
-		options = tools.BuildShellOptions(target, repoInfoPtr)
 	} else {
 		repoInfo := tools.DetectGitRepo(target)
 		var repoInfoPtr *tools.GitRepoInfo
@@ -139,6 +154,7 @@ func newServePendingApproval(target string, isWrite bool, isShell bool, isWorksp
 		IsShell:     isShell,
 		IsWorkspace: isWorkspace,
 		WorkDir:     workDir,
+		Scope:       scope,
 		Options:     options,
 		CreatedAt:   time.Now(),
 		responseC:   make(chan serveApprovalSubmission, 1),
@@ -162,7 +178,11 @@ func (rt *serveRuntime) prepareApprovalRequest(target string, isWrite bool, isSh
 }
 
 func (rt *serveRuntime) awaitApprovalRequest(target string, isWrite bool, isShell bool, isWorkspace bool, workDir string) (tools.ApprovalResult, error) {
-	pending := newServePendingApproval(target, isWrite, isShell, isWorkspace, workDir)
+	return rt.awaitApprovalRequestScoped(target, isWrite, isShell, isWorkspace, workDir, "")
+}
+
+func (rt *serveRuntime) awaitApprovalRequestScoped(target string, isWrite bool, isShell bool, isWorkspace bool, workDir, scope string) (tools.ApprovalResult, error) {
+	pending := newServePendingApprovalScoped(target, isWrite, isShell, isWorkspace, workDir, scope)
 
 	rt.approvalMu.Lock()
 
@@ -206,6 +226,7 @@ func (rt *serveRuntime) awaitApprovalRequest(target string, isWrite bool, isShel
 		"is_shell":              snap.IsShell,
 		"is_workspace":          snap.IsWorkspace,
 		"title":                 snap.Title,
+		"scope":                 snap.Scope,
 		"options":               snap.Options,
 		"resume_auto_available": snap.ResumeAutoAvailable,
 		"created_at":            snap.CreatedAt,

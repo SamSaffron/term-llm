@@ -13,6 +13,7 @@ export const STORAGE_BASE_KEYS = {
   selectedAgent: 'term_llm_selected_agent',
   sidebarCollapsed: 'term_llm_sidebar_collapsed',
   diffSidebarWidth: 'term_llm_diff_sidebar_width',
+  shellLayout: 'term_llm_shell_layout',
   showHiddenSessions: 'term_llm_show_hidden_sessions',
   showWidgetsSidebar: 'term_llm_show_widgets_sidebar',
   notificationsEnabled: 'term_llm_notifications_enabled',

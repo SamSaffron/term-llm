@@ -553,6 +553,13 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	if serveDebug || serveVerbose {
 		approvalErrWriter = cmd.ErrOrStderr()
 	}
+	var s *serveServer
+	collaborationController := &serveCollaborativeShellController{manager: func() (*serveShellManager, error) {
+		if s == nil {
+			return nil, errServeShellClosed
+		}
+		return s.shellManager()
+	}}
 	agentRuntimeFactory := func(ctx context.Context, providerName string, providerModel string, requestedAgent string) (*serveRuntime, error) {
 		runtimeAgent := strings.TrimSpace(serveAgent)
 		if runtimeAgent == "" {
@@ -622,12 +629,18 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			}
 			runtime.toolMgr.Registry.SetServeMode(true, imageBaseURL)
 			runtime.toolMgr.Registry.SetMediaPublisher(mediaPublisher)
+			if hasWeb {
+				runtime.toolMgr.Registry.SetCollaborativeShellController(collaborationController, tools.ShellRoutingControllerRequired)
+			} else {
+				runtime.toolMgr.Registry.SetCollaborativeShellController(nil, tools.ShellRoutingLocalOnly)
+			}
 			if !resolvedYolo {
 				runtime.toolMgr.ApprovalMgr.IgnoreProjectApprovals = true
 				runtime.toolMgr.ApprovalMgr.DebugApproval = serveDebug
 				runtime.toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
 					return runtime.awaitApproval(path, isWrite, isShell, workDir)
 				}
+				runtime.toolMgr.ApprovalMgr.SharedShellPromptUIFunc = runtime.awaitSharedShellApproval
 			}
 			if hasWeb {
 				runtime.toolMgr.ApprovalMgr.WorkspacePromptFunc = runtime.awaitWorkspaceApproval
@@ -736,7 +749,6 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 
 	hasHTTP := hasWeb || hasAPI || hasJobs
 
-	var s *serveServer
 	registeredHubURL := ""
 	registeredHubNodeID := ""
 	if hasHTTP {

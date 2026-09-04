@@ -14314,6 +14314,29 @@ func TestServeRuntimeEmitGuardianReviewUsesApprovalEventStream(t *testing.T) {
 	}
 }
 
+func TestServeSessionIdleMetadataMutationDoesNotWaitForSessionOperation(t *testing.T) {
+	manager := newServeSessionManager(time.Minute, 10, func(context.Context) (*serveRuntime, error) {
+		return &serveRuntime{}, nil
+	})
+	defer manager.Close()
+	op := manager.sessionOperation("session-a")
+	op.Lock()
+	defer op.Unlock()
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := manager.lockIdleMetadataMutation("session-a")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, errServeSessionBusy) {
+			t.Fatalf("error = %v", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("idle metadata mutation waited for an active session operation")
+	}
+}
+
 func TestServeSessionMetadataMutationDoesNotBlockOtherSessionAdmission(t *testing.T) {
 	manager := newServeSessionManager(time.Minute, 10, func(context.Context) (*serveRuntime, error) {
 		rt := &serveRuntime{}
