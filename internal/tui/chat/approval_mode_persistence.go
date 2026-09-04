@@ -22,6 +22,10 @@ func (m *Model) persistApprovalMode(mode tools.ApprovalMode) {
 	if m == nil || m.store == nil || m.sess == nil {
 		return
 	}
-	m.sess.ApprovalMode = sessionApprovalModeFromTools(mode)
+	persistedMode := sessionApprovalModeFromTools(mode)
+	if m.sess.ApprovalMode == persistedMode {
+		return
+	}
+	m.sess.ApprovalMode = persistedMode
 	_ = m.store.Update(context.Background(), m.sess)
 }

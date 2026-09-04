@@ -41,21 +41,22 @@ type LocalToolRegistry struct {
 // NewLocalToolRegistry creates a new registry from configuration.
 // The approvalMgr parameter is used for interactive permission prompts.
 func NewLocalToolRegistry(toolConfig *ToolConfig, appConfig *config.Config, approvalMgr *ApprovalManager) (*LocalToolRegistry, error) {
-	// Build permissions from config
-	perms, err := toolConfig.BuildPermissions()
-	if err != nil {
-		return nil, err
-	}
-
-	// If no approval manager provided, create one (for backwards compatibility).
-	// Otherwise keep the registry and approval manager on the same permissions
-	// instance so dynamic updates like SetBaseDir are visible to tool checks.
-	if approvalMgr == nil {
-		approvalMgr = NewApprovalManager(perms)
-	} else if approvalMgr.permissions != nil {
+	var perms *ToolPermissions
+	if approvalMgr != nil && approvalMgr.permissions != nil {
+		// The caller owns these permissions; reuse the exact instance shared with
+		// its approval manager instead of rebuilding and discarding a duplicate.
 		perms = approvalMgr.permissions
 	} else {
-		approvalMgr.permissions = perms
+		var err error
+		perms, err = toolConfig.BuildPermissions()
+		if err != nil {
+			return nil, err
+		}
+		if approvalMgr == nil {
+			approvalMgr = NewApprovalManager(perms)
+		} else {
+			approvalMgr.permissions = perms
+		}
 	}
 
 	r := &LocalToolRegistry{
