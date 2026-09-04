@@ -840,9 +840,7 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
   // sides into one durable group. Split that group using the ordered live stream
   // before adopting durable rows so the marker can never jump around it.
   const durableRows = durable.map((message) =>
-    message.tools
-      ? { ...message, tools: message.tools.map((tool) => ({ ...tool })) }
-      : message,
+    message.tools ? { ...message, tools: message.tools.map((tool) => ({ ...tool })) } : message,
   );
   for (let markerIndex = 0; markerIndex < projected.length; markerIndex += 1) {
     if (projected[markerIndex].role !== 'model-swap') continue;
@@ -959,7 +957,8 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
       : allToolIDs.has(tool.id);
   const durableToolMessage = (message: Message, tool: ToolCall): Message | undefined =>
     message.responseId
-      ? durableToolMessages.get(`${message.responseId}:${tool.id}`) || durableToolMessages.get(tool.id)
+      ? durableToolMessages.get(`${message.responseId}:${tool.id}`) ||
+        durableToolMessages.get(tool.id)
       : durableToolMessages.get(tool.id);
   // A durable assistant snapshot records tool calls before their result rows exist.
   // During that window the live response stream owns any observed terminal transition;
