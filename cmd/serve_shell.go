@@ -128,15 +128,16 @@ type serveShell struct {
 	cwd       string
 	process   serveShellProcess
 
-	mu         sync.Mutex
-	writeMu    sync.Mutex
-	output     []byte
-	baseOffset int64
-	nextOffset int64
-	exited     bool
-	exitCode   int
-	lastUsed   time.Time
-	changed    chan struct{}
+	mu          sync.Mutex
+	writeMu     sync.Mutex
+	output      []byte
+	outputStart int
+	baseOffset  int64
+	nextOffset  int64
+	exited      bool
+	exitCode    int
+	lastUsed    time.Time
+	changed     chan struct{}
 
 	generationCtx      context.Context
 	generationCancel   context.CancelFunc
@@ -226,13 +227,21 @@ func (s *serveShell) appendOutput(data []byte) {
 	s.lastUsed = time.Now()
 	if len(data) >= serveShellReplayBytes {
 		s.output = append(s.output[:0], data[len(data)-serveShellReplayBytes:]...)
+		s.outputStart = 0
 		s.baseOffset = s.nextOffset - int64(len(s.output))
 	} else {
 		s.output = append(s.output, data...)
-		if overflow := len(s.output) - serveShellReplayBytes; overflow > 0 {
-			copy(s.output, s.output[overflow:])
-			s.output = s.output[:len(s.output)-overflow]
+		if overflow := len(s.output) - s.outputStart - serveShellReplayBytes; overflow > 0 {
+			s.outputStart += overflow
 			s.baseOffset += int64(overflow)
+		}
+		// Reclaim dropped prefixes in replay-window-sized batches so steady PTY
+		// reads do not copy the retained window on every output chunk.
+		if s.outputStart >= serveShellReplayBytes {
+			activeLen := len(s.output) - s.outputStart
+			copy(s.output, s.output[s.outputStart:])
+			s.output = s.output[:activeLen]
+			s.outputStart = 0
 		}
 	}
 	markers := s.protocol.Feed(startOffset, data)
@@ -329,10 +338,10 @@ func (s *serveShell) snapshot(offset int64) serveShellSnapshot {
 	if available > serveShellChunkBytes {
 		available = serveShellChunkBytes
 	}
-	start := int(offset - s.baseOffset)
+	start := s.outputStart + int(offset-s.baseOffset)
 	end := start + int(available)
 	var data []byte
-	if start >= 0 && end <= len(s.output) && start < end {
+	if start >= s.outputStart && end <= len(s.output) && start < end {
 		data = append([]byte(nil), s.output[start:end]...)
 	}
 	return serveShellSnapshot{
