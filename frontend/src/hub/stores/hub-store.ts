@@ -1,3 +1,4 @@
+import { reconcileHubItems } from '../domain/reconcile';
 import { computed, signal } from '@preact/signals';
 import { activeSessionCount as countActiveSessions } from '../domain/formatting';
 import type { HubClient } from '../../api/hub-client';
@@ -128,7 +129,11 @@ export class HubStore {
     if (this.disposed || signal.aborted || generation !== this.generation) return;
     const now = Date.now();
     if (nodes.status === 'fulfilled') {
-      this.nodes.value = nodes.value.nodes ?? [];
+      this.nodes.value = reconcileHubItems(
+        this.nodes.peek(),
+        nodes.value.nodes ?? [],
+        (node) => node.id,
+      );
       this.resolverWarning.value = nodes.value.resolver_error ?? '';
       this.nodeError.value = '';
       this.lastNodesRefresh.value = now;
@@ -136,8 +141,14 @@ export class HubStore {
       this.nodeError.value = `Failed to load nodes: ${message(nodes.reason)}`;
     }
     if (attention.status === 'fulfilled') {
-      this.inputRequired.value = attention.value.input_required ?? [];
-      this.inbox.value = attention.value.inbox ?? [];
+      this.inputRequired.value = reconcileHubItems(
+        this.inputRequired.peek(),
+        attention.value.input_required ?? [],
+        (item) => JSON.stringify([item.node_id, item.session_id]),
+      );
+      this.inbox.value = reconcileHubItems(this.inbox.peek(), attention.value.inbox ?? [], (item) =>
+        JSON.stringify([item.node_id, item.session_id]),
+      );
       this.totalInputRequired.value =
         attention.value.total_input_required ?? this.inputRequired.value.length;
       this.totalUnseen.value = attention.value.total_unseen ?? this.inbox.value.length;
@@ -148,7 +159,11 @@ export class HubStore {
       this.attentionError.value = message(attention.reason);
     }
     if (delegations.status === 'fulfilled') {
-      this.delegations.value = delegations.value.delegations ?? [];
+      this.delegations.value = reconcileHubItems(
+        this.delegations.peek(),
+        delegations.value.delegations ?? [],
+        (item) => item.id,
+      );
       this.delegationError.value = '';
       this.lastDelegationsRefresh.value = now;
     } else if (delegations.reason?.name !== 'AbortError') {

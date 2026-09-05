@@ -839,9 +839,7 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
   // persisted that boundary, allowing conversion to coalesce tools from both
   // sides into one durable group. Split that group using the ordered live stream
   // before adopting durable rows so the marker can never jump around it.
-  const durableRows = durable.map((message) =>
-    message.tools ? { ...message, tools: message.tools.map((tool) => ({ ...tool })) } : message,
-  );
+  const durableRows = [...durable];
   for (let markerIndex = 0; markerIndex < projected.length; markerIndex += 1) {
     if (projected[markerIndex].role !== 'model-swap') continue;
     const before = projected[markerIndex - 1];
@@ -963,6 +961,7 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
   // A durable assistant snapshot records tool calls before their result rows exist.
   // During that window the live response stream owns any observed terminal transition;
   // never let the older durable "running" placeholder regress it.
+  const patchedTools = new Map<Message, Message>();
   for (const message of projected) {
     if (message.role !== 'tool-group') continue;
     for (const tool of message.tools || []) {
@@ -977,9 +976,18 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
       const defined = Object.fromEntries(
         Object.entries(tool).filter(([, value]) => value !== undefined),
       ) as Partial<ToolCall>;
-      Object.assign(durableTool, defined);
-      if (durableMessage.tools?.every((candidate) => candidate.status !== 'running'))
-        durableMessage.status = 'done';
+      // Copy only groups that actually need a live terminal overlay. Keep the
+      // anchor maps pointing at the originals until ordering is complete.
+      const patched = patchedTools.get(durableMessage) || {
+        ...durableMessage,
+        tools: [...(durableMessage.tools || [])],
+      };
+      patched.tools = patched.tools!.map((candidate) =>
+        candidate.id === tool.id ? { ...candidate, ...defined } : candidate,
+      );
+      if (patched.tools.every((candidate) => candidate.status !== 'running'))
+        patched.status = 'done';
+      patchedTools.set(durableMessage, patched);
     }
   }
   const pending = projected.filter((message) => {
@@ -1078,7 +1086,8 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
     const boundary = insertBefore.get(message);
     const boundaryIndex = boundary ? output.indexOf(boundary) : -1;
     const insertionIndex = boundaryIndex >= 0 ? boundaryIndex : output.length;
-    const previous = output[insertionIndex - 1];
+    const previousRow = output[insertionIndex - 1];
+    const previous = patchedTools.get(previousRow) || previousRow;
     if (
       previous?.role === 'tool-group' &&
       previous.toolGroupClosed !== true &&
@@ -1129,5 +1138,5 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
       );
     } else output.splice(insertionIndex, 0, message);
   }
-  return output;
+  return output.map((message) => patchedTools.get(message) || message);
 }

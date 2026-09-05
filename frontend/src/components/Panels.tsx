@@ -1,5 +1,8 @@
+import { computed } from '@preact/signals';
+import { memo } from './memo';
 import type { ComponentChildren, ComponentType } from 'preact';
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useEventCallback } from './useEventCallback';
 import { useStore } from '../app/context';
 import { responseActivity } from '../domain/activity';
 import type { DiffComment, DiffFile, DiffLine } from '../domain/types';
@@ -20,6 +23,9 @@ import { Drawer } from './Drawer';
 import type { MarkdownFilePreviewProps } from './MarkdownFilePreview';
 import { ReviewComment, type ReviewCommentEntry } from './ReviewComment';
 import { useMediaQuery } from './useMediaQuery';
+
+const EMPTY_COMMENTS: ReviewCommentEntry[] = [];
+const EMPTY_DIFF_LINES: DiffLine[] = [];
 
 let loadedMarkdownPreview: ComponentType<MarkdownFilePreviewProps> | null = null;
 let markdownPreviewImport: Promise<ComponentType<MarkdownFilePreviewProps>> | null = null;
@@ -206,6 +212,40 @@ function useDiffViewportAnchor(
   }, []);
 }
 
+function DiffActivity({ fullscreen = false }: { fullscreen?: boolean }) {
+  const store = useStore();
+  const activity = useMemo(() => {
+    const value = computed(() => {
+      const run = store.activeProjection.value;
+      return run
+        ? responseActivity(run, store.currentPlan.value, run.run.status)
+        : { text: 'Working', kind: 'working' as const };
+    });
+    return { kind: computed(() => value.value.kind), text: computed(() => value.value.text) };
+  }, [store]);
+  const kind = activity.kind.value;
+  const text = activity.text.value;
+  return (
+    <span
+      class={`streaming-indicator diff-sidebar-activity streaming-indicator-${kind}`}
+      style={{
+        ...(fullscreen ? { marginLeft: 'auto' } : {}),
+        maxWidth: 'min(42vw, 32rem)',
+        padding: 0,
+      }}
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      aria-label={`Assistant is responding: ${text}`}
+      title={text}
+    >
+      <span class="streaming-indicator-text" key={`${kind}:${text}`}>
+        {text}
+      </span>
+    </span>
+  );
+}
+
 function DiffCode({
   line,
   emphasis,
@@ -245,7 +285,7 @@ function DiffCode({
   );
 }
 
-function Line({
+const Line = memo(function Line({
   line,
   emphasis,
   lang,
@@ -272,11 +312,22 @@ function Line({
   comments: ReviewCommentEntry[];
   body: string;
   onComment: (key: string) => void;
-  onBody: (value: string) => void;
-  onCancel: () => void;
-  onSubmit: (mode: 'send' | 'queue') => void;
+  onBody: (key: string, value: string) => void;
+  onCancel: (key: string) => void;
+  onSubmit: (
+    mode: 'send' | 'queue',
+    side: DiffComment['side'],
+    number: number,
+    context: string,
+    key: string,
+  ) => void;
   onEdit: (comment: DiffComment) => void;
-  onReanchor: (comment: DiffComment) => void;
+  onReanchor: (
+    comment: DiffComment,
+    side: DiffComment['side'],
+    number: number,
+    context: string,
+  ) => void;
   onRemove: (comment: DiffComment) => void;
   commentable?: boolean;
   submitDisabled?: boolean;
@@ -322,11 +373,11 @@ function Line({
             </>
           }
           onToggle={() => onComment(commentKey)}
-          onBody={onBody}
-          onCancel={onCancel}
-          onSubmit={onSubmit}
+          onBody={(value) => onBody(commentKey, value)}
+          onCancel={() => onCancel(commentKey)}
+          onSubmit={(mode) => onSubmit(mode, side, number, line.content, commentKey)}
           onEdit={onEdit}
-          onReanchor={onReanchor}
+          onReanchor={(comment) => onReanchor(comment, side, number, line.content)}
           onRemove={onRemove}
           allowNew={enabled}
           submitDisabled={submitDisabled}
@@ -335,7 +386,7 @@ function Line({
       )}
     </div>
   );
-}
+});
 
 function DiffAction({
   label,
@@ -420,7 +471,7 @@ function File({
   const [commenting, setCommenting] = useState('');
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [draftTargets, setDraftTargets] = useState<Record<string, string>>({});
-  const lines = file.lines || [];
+  const lines = file.lines || EMPTY_DIFF_LINES;
   const diffStale = Boolean(file.loading || (file.error && lines.length));
   const kind = fileKind(file);
   const legacyKind = kind === 'add' ? 'create' : kind === 'delete' ? 'delete' : 'modify';
@@ -436,16 +487,11 @@ function File({
           : '';
   const markdownAvailable = markdownPath && !markdownUnavailableReason;
   const session = store.activeSession.value;
-  const fullscreenRun = fullscreen ? store.activeProjection.value : null;
-  const fullscreenActivity =
+  const showFullscreenActivity =
     fullscreen &&
     !store.diff.value.worktreeDir &&
     store.diff.value.sessionId === store.activeSessionId.value &&
-    store.runActive.value
-      ? fullscreenRun
-        ? responseActivity(fullscreenRun, store.currentPlan.value, fullscreenRun.run.status)
-        : { text: 'Working', kind: 'working' as const }
-      : null;
+    store.runActive.value;
   const project = store.projects.value.find(
     (entry) => entry.id === (session?.projectId || store.activeProjectId.value),
   );
@@ -469,13 +515,17 @@ function File({
     void store.expandDiff(file, Math.min(100_000, Math.max(12, (file.context || 3) * 4)));
   const expandGap = () =>
     store.expandDiff(file, Math.min(100_000, Math.max(12, (file.context || 3) * 4)));
-  const emphasis = new Map<number, [number, number]>();
-  for (let index = 0; index + 1 < lines.length; index += 1)
-    if (lines[index].kind === 'delete' && lines[index + 1].kind === 'add') {
-      const ranges = inlineEmphasis(lines[index].content, lines[index + 1].content);
-      emphasis.set(index, ranges.old);
-      emphasis.set(index + 1, ranges.new);
+  const emphasis = useMemo(() => {
+    const ranges = new Map<number, [number, number]>();
+    for (let index = 0; index + 1 < lines.length; index += 1) {
+      if (lines[index].kind === 'delete' && lines[index + 1].kind === 'add') {
+        const pair = inlineEmphasis(lines[index].content, lines[index + 1].content);
+        ranges.set(index, pair.old);
+        ranges.set(index + 1, pair.new);
+      }
     }
+    return ranges;
+  }, [lines]);
   const clearDraft = (key: string) => {
     setDrafts((current) => {
       if (!(key in current)) return current;
@@ -490,52 +540,65 @@ function File({
       return next;
     });
   };
-  const matchingComments = (
-    side: DiffComment['side'],
-    startLine: number,
-    endLine = startLine,
-  ): Array<DiffComment & { queued?: boolean }> => {
-    const matches = (comment: DiffComment) =>
-      (!comment.sessionId || comment.sessionId === store.diff.value.sessionId) &&
-      comment.path === file.path &&
-      comment.side === side &&
-      comment.line >= startLine &&
-      comment.line <= endLine &&
-      (!comment.scope || comment.scope === store.diff.value.scope);
-    return [
-      ...store.diff.value.historyComments.filter(matches),
-      ...store.diff.value.comments.filter(matches).map((comment) => ({
-        ...comment,
-        queued: true,
-      })),
-    ].sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
-  };
-  const submitAnchor = (
-    mode: 'send' | 'queue',
-    side: DiffComment['side'],
-    number: number,
-    context: string,
-    key: string,
-    contextBefore?: string[],
-    contextAfter?: string[],
-  ) => {
-    const body = drafts[key] || '';
-    if (!body.trim() || !number || diffStale) return;
-    const comment: DiffComment = {
-      path: file.path,
-      side,
-      line: number,
-      body: body.trim(),
-      scope: store.diff.value.scope,
-      context,
-      contextBefore,
-      contextAfter,
-      fileChangeSeq: file.snapshotSeq || file.sequence || 0,
-    };
-    if (mode === 'queue') store.queueDiffComment(comment);
-    else void store.sendDiffComment(comment);
-    clearDraft(key);
-  };
+  const diffState = store.diff.value;
+  const commentIndex = useMemo(() => {
+    const index = new Map<string, ReviewCommentEntry[]>();
+    const comments = [
+      ...diffState.historyComments,
+      ...diffState.comments.map((comment) => ({ ...comment, queued: true })),
+    ];
+    for (const comment of comments) {
+      if (
+        (comment.sessionId && comment.sessionId !== diffState.sessionId) ||
+        comment.path !== file.path ||
+        (comment.scope && comment.scope !== diffState.scope)
+      )
+        continue;
+      const key = `${comment.side}:${comment.line}`;
+      const entries = index.get(key) || [];
+      entries.push(comment);
+      index.set(key, entries);
+    }
+    for (const entries of index.values())
+      entries.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    return index;
+  }, [
+    diffState.historyComments,
+    diffState.comments,
+    diffState.sessionId,
+    diffState.scope,
+    file.path,
+  ]);
+  const matchingComments = (side: DiffComment['side'], line: number): ReviewCommentEntry[] =>
+    commentIndex.get(`${side}:${line}`) || EMPTY_COMMENTS;
+  const submitAnchor = useEventCallback(
+    (
+      mode: 'send' | 'queue',
+      side: DiffComment['side'],
+      number: number,
+      context: string,
+      key: string,
+      contextBefore?: string[],
+      contextAfter?: string[],
+    ) => {
+      const body = drafts[key] || '';
+      if (!body.trim() || !number || diffStale) return;
+      const comment: DiffComment = {
+        path: file.path,
+        side,
+        line: number,
+        body: body.trim(),
+        scope: store.diff.peek().scope,
+        context,
+        contextBefore,
+        contextAfter,
+        fileChangeSeq: file.snapshotSeq || file.sequence || 0,
+      };
+      if (mode === 'queue') store.queueDiffComment(comment);
+      else void store.sendDiffComment(comment);
+      clearDraft(key);
+    },
+  );
   const patch = async () => {
     if (file.lines || file.patch) return unifiedPatchForFile(file);
     const data = await store.endpoints.fileDiff(
@@ -560,13 +623,38 @@ function File({
     };
     void store.expandDiff(file);
   };
-  const editComment = (comment: DiffComment) => {
+  const editComment = useEventCallback((comment: DiffComment) => {
     const body = window.prompt('Edit queued comment', comment.body);
     if (body !== null && comment.id) store.editDiffComment(comment.id, body);
-  };
-  const removeComment = (comment: DiffComment) => {
+  });
+  const removeComment = useEventCallback((comment: DiffComment) => {
     if (comment.id) store.removeDiffComment(comment.id);
-  };
+  });
+  const onLineComment = useCallback(
+    (key: string) => setCommenting((current) => (current === key ? '' : key)),
+    [],
+  );
+  const onLineBody = useCallback(
+    (key: string, value: string) => setDrafts((current) => ({ ...current, [key]: value })),
+    [],
+  );
+  const onLineCancel = useEventCallback((key: string) => {
+    clearDraft(key);
+    setCommenting('');
+  });
+  const onLineReanchor = useEventCallback(
+    (comment: DiffComment, side: DiffComment['side'], number: number, context: string) => {
+      if (!comment.id || !number || diffStale) return;
+      store.reanchorDiffComment(comment.id, {
+        path: file.path,
+        side,
+        line: number,
+        context,
+        fileChangeSeq: file.snapshotSeq || file.sequence || 0,
+        scope: store.diff.peek().scope,
+      });
+    },
+  );
   const diffContent = (
     <>
       {file.loading && !lines.length && <div class="diff-loading">Loading…</div>}
@@ -648,7 +736,7 @@ function File({
               const number = line.kind === 'delete' ? line.oldLine : line.newLine;
               const side: DiffComment['side'] = line.kind === 'delete' ? 'old' : 'new';
               const anchorKey = number ? `${side}:${number}` : rowKey;
-              const comments = number ? matchingComments(side, number) : [];
+              const comments = number ? matchingComments(side, number) : EMPTY_COMMENTS;
               return (
                 <Line
                   key={rowKey}
@@ -662,27 +750,12 @@ function File({
                   commentable={!store.diff.value.readOnly}
                   submitDisabled={diffStale}
                   reanchorDisabled={diffStale}
-                  onComment={(next) => setCommenting((current) => (current === next ? '' : next))}
-                  onBody={(value) => setDrafts((current) => ({ ...current, [anchorKey]: value }))}
-                  onCancel={() => {
-                    clearDraft(anchorKey);
-                    setCommenting('');
-                  }}
-                  onSubmit={(mode) =>
-                    number && submitAnchor(mode, side, number, line.content, anchorKey)
-                  }
+                  onComment={onLineComment}
+                  onBody={onLineBody}
+                  onCancel={onLineCancel}
+                  onSubmit={submitAnchor}
                   onEdit={editComment}
-                  onReanchor={(comment) => {
-                    if (!comment.id || !number || diffStale) return;
-                    store.reanchorDiffComment(comment.id, {
-                      path: file.path,
-                      side,
-                      line: number,
-                      context: line.content,
-                      fileChangeSeq: file.snapshotSeq || file.sequence || 0,
-                      scope: store.diff.value.scope,
-                    });
-                  }}
+                  onReanchor={onLineReanchor}
                   onRemove={removeComment}
                 />
               );
@@ -756,24 +829,7 @@ function File({
             </>
           )}
         </span>
-        {fullscreenActivity && (
-          <span
-            class={`streaming-indicator diff-sidebar-activity streaming-indicator-${fullscreenActivity.kind}`}
-            style={{ marginLeft: 'auto', maxWidth: 'min(42vw, 32rem)', padding: 0 }}
-            role="status"
-            aria-live="polite"
-            aria-atomic="true"
-            aria-label={`Assistant is responding: ${fullscreenActivity.text}`}
-            title={fullscreenActivity.text}
-          >
-            <span
-              class="streaming-indicator-text"
-              key={`${fullscreenActivity.kind}:${fullscreenActivity.text}`}
-            >
-              {fullscreenActivity.text}
-            </span>
-          </span>
-        )}
+        {showFullscreenActivity && <DiffActivity fullscreen />}
         <span class="diff-file-actions" onClick={(event) => event.stopPropagation()}>
           {markdownPath && (
             <button
@@ -913,6 +969,8 @@ export function DiffSidebar() {
   const store = useStore();
   const state = store.diff.value;
   const aside = useRef<HTMLElement>(null);
+  const resizeCleanup = useRef<(() => void) | null>(null);
+  useEffect(() => () => resizeCleanup.current?.(), []);
   const fileList = useRef<HTMLDivElement>(null);
   const fullscreenFollow = useRef<boolean | null>(null);
   const [fullscreenPath, setFullscreenPath] = useState('');
@@ -1028,10 +1086,6 @@ export function DiffSidebar() {
   const allExpanded = state.files.length > 0 && state.files.every((file) => file.expanded);
   const adds = state.files.reduce((sum, file) => sum + (file.additions || 0), 0);
   const dels = state.files.reduce((sum, file) => sum + (file.deletions || 0), 0);
-  const activeRun = store.activeProjection.value;
-  const activity = activeRun
-    ? responseActivity(activeRun, store.currentPlan.value, activeRun.run.status)
-    : { text: 'Working', kind: 'working' as const };
   const showActivity = Boolean(
     state.maximized &&
     !state.worktreeDir &&
@@ -1041,23 +1095,39 @@ export function DiffSidebar() {
   const startResize = (event: PointerEvent) => {
     event.preventDefault();
     const handle = event.currentTarget as HTMLElement;
-    const shell = handle.closest('.app');
+    resizeCleanup.current?.();
+    const shell = handle.closest<HTMLElement>('.app');
     const startX = event.clientX;
     const startWidth = state.width;
-    const move = (next: PointerEvent) =>
-      store.resizeDiff(clampDiffWidth(startWidth + startX - next.clientX, innerWidth));
-    const finish = (next: PointerEvent) => {
+    let width = startWidth;
+    const move = (next: PointerEvent) => {
+      if (next.pointerId !== event.pointerId) return;
+      width = clampDiffWidth(startWidth + startX - next.clientX, innerWidth);
+      // Width is presentation-only during a drag. Do not republish the entire
+      // diff or write storage for every pointer movement.
+      shell?.style.setProperty('--diff-sidebar-user-width', `${width}px`);
+    };
+    const cleanup = () => {
       removeEventListener('pointermove', move);
       removeEventListener('pointerup', finish);
       removeEventListener('pointercancel', finish);
       shell?.classList.remove('diff-resizing');
-      handle.releasePointerCapture?.(next.pointerId);
+      shell?.style.setProperty('--diff-sidebar-user-width', `${store.diff.peek().width}px`);
+      if (handle.hasPointerCapture?.(event.pointerId))
+        handle.releasePointerCapture?.(event.pointerId);
+      resizeCleanup.current = null;
     };
+    const finish = (next: PointerEvent) => {
+      if (next.pointerId !== event.pointerId) return;
+      if (next.type !== 'pointercancel') store.resizeDiff(width);
+      cleanup();
+    };
+    resizeCleanup.current = cleanup;
     handle.setPointerCapture?.(event.pointerId);
     shell?.classList.add('diff-resizing');
     addEventListener('pointermove', move);
-    addEventListener('pointerup', finish, { once: true });
-    addEventListener('pointercancel', finish, { once: true });
+    addEventListener('pointerup', finish);
+    addEventListener('pointercancel', finish);
   };
   const content = (
     <>
@@ -1080,21 +1150,7 @@ export function DiffSidebar() {
           {adds > 0 && <span class="diff-sidebar-totals-add">+{adds}</span>}
           {dels > 0 && <span class="diff-sidebar-totals-del">−{dels}</span>}
         </span>
-        {showActivity && (
-          <span
-            class={`streaming-indicator diff-sidebar-activity streaming-indicator-${activity.kind}`}
-            style={{ maxWidth: 'min(42vw, 32rem)', padding: 0 }}
-            role="status"
-            aria-live="polite"
-            aria-atomic="true"
-            aria-label={`Assistant is responding: ${activity.text}`}
-            title={activity.text}
-          >
-            <span class="streaming-indicator-text" key={`${activity.kind}:${activity.text}`}>
-              {activity.text}
-            </span>
-          </span>
-        )}
+        {showActivity && <DiffActivity />}
         {!mobile && (
           <button
             class="icon-btn diff-bulk-toggle"

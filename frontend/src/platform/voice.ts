@@ -212,7 +212,7 @@ export class VoiceOperation {
       this.update({ phase: 'recording', durationMs: 0 }, generation);
       this.durationTimer = window.setInterval(() => {
         this.update({ durationMs: Math.max(0, performance.now() - this.startedAt) }, generation);
-      }, 250);
+      }, 1_000);
     } catch (error) {
       this.stopTracks();
       this.fail(error, false, generation);
@@ -301,7 +301,7 @@ export class VoiceOperation {
     );
     this.elapsedTimer = window.setInterval(() => {
       this.update({ elapsedMs: performance.now() - this.transcribeStartedAt }, generation);
-    }, 250);
+    }, 1_000);
     this.overallTimer = window.setTimeout(() => {
       this.abort?.abort(new DOMException('Transcription timed out', 'TimeoutError'));
     }, OVERALL_TIMEOUT_MS);

@@ -132,15 +132,23 @@ export class RunEngine {
       const session = sessionStore.activeSession.value;
       return session ? this.runs.value[session.id] || null : null;
     });
+    // Select references before merging: unrelated sessions and status-only events
+    // must not rebuild the foreground transcript.
+    const emptyMessages: Message[] = [];
+    const emptyIntents: PendingIntentRegistry[string] = [];
+    const durableMessages = computed(
+      () => sessionStore.activeSession.value?.messages || emptyMessages,
+    );
+    const projectedMessages = computed(
+      () => this.activeProjection.value?.messages || emptyMessages,
+    );
+    const activeIntents = computed(
+      () => this.pendingIntents.value[sessionStore.activeSession.value?.id || ''] || emptyIntents,
+    );
     this.visibleMessages = computed(() => {
-      const session = sessionStore.activeSession.value;
-      if (!session) return [];
-      const messages = mergeDurableProjection(
-        session.messages,
-        this.runs.value[session.id]?.messages || [],
-      );
+      const messages = mergeDurableProjection(durableMessages.value, projectedMessages.value);
       const clientIDs = new Set(messages.map((message) => message.clientMessageId).filter(Boolean));
-      const pending = (this.pendingIntents.value[session.id] || [])
+      const pending = activeIntents.value
         .filter((intent) => !clientIDs.has(intent.clientMessageId))
         .map((intent) => ({
           id: intent.id,
@@ -278,6 +286,7 @@ export class RunEngine {
     this.activeResponseTransports.value = next;
   }
 
+  /** Reactive lookup: sidebar computeds rely on transport-only invalidation. */
   hasActiveResponseTransport(sessionId: string, responseId: string): boolean {
     return Boolean(
       responseId && this.activeResponseTransports.value[sessionId]?.responseId === responseId,

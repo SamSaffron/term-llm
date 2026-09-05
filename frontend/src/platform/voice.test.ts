@@ -51,6 +51,38 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('voice platform operation', () => {
+  it('publishes recording and transcription clocks once per displayed second', async () => {
+    vi.useFakeTimers();
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn(async () => stream()) },
+    });
+    const operation = new VoiceOperation(() => new Promise(() => {}));
+    const listener = vi.fn();
+    operation.subscribe(listener);
+    try {
+      await operation.start('session-one', 0);
+      listener.mockClear();
+      await vi.advanceTimersByTimeAsync(999);
+      expect(listener).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(operation.snapshot.durationMs).toBe(1_000);
+      operation.stop();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(operation.snapshot.phase).toBe('transcribing');
+      listener.mockClear();
+      await vi.advanceTimersByTimeAsync(999);
+      expect(listener).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(operation.snapshot.elapsedMs).toBe(1_000);
+    } finally {
+      operation.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it('reports capability prerequisites and negotiates Safari-compatible MP4 first', () => {
     Object.defineProperty(navigator, 'mediaDevices', {
       configurable: true,

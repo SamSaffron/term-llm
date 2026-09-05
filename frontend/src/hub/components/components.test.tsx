@@ -1,5 +1,6 @@
+import { observeRenders } from '../../test/render-counts';
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/preact';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import type { HubClient } from '../../api/hub-client';
 import type { HubConfig } from '../config';
 import type { HubDelegation, HubNode } from '../domain/types';
@@ -41,6 +42,37 @@ function DialogFixture({ value }: { value: HubStore }) {
 }
 
 describe('Hub components', () => {
+  it('keeps closed local node cards independent of operations but disables open menu actions', async () => {
+    const value = store();
+    const node = {
+      id: 'alpha',
+      name: 'Alpha',
+      source: 'local',
+      status: { reachable: true, state: 'ok', latency_ms: 1 },
+    } as HubNode;
+    const counts = observeRenders();
+    try {
+      render(<NodeCard node={node} store={value} />);
+      expect(counts.count('NodeCard')).toBe(1);
+      counts.clear();
+      await act(() => {
+        value.nodeOperation.value = 'testing';
+      });
+      expect(counts.count('NodeCard')).toBe(0);
+      fireEvent.click(screen.getByRole('button', { name: 'More actions for Alpha' }));
+      expect(screen.getByRole('menuitem', { name: 'Remove node' })).toBeDisabled();
+      counts.clear();
+      await act(() => {
+        value.nodeOperation.value = 'idle';
+      });
+      expect(screen.getByRole('menuitem', { name: 'Remove node' })).toBeEnabled();
+      expect(counts.count('NodeCard')).toBe(0);
+      expect(counts.count('RemoveNodeAction')).toBeGreaterThan(0);
+    } finally {
+      counts.dispose();
+    }
+  });
+
   it('starts the store and disposes its polling lifecycle on unmount', async () => {
     const listNodes = vi.fn(async () => ({ nodes: [] }));
     const listAttention = vi.fn(async () => ({

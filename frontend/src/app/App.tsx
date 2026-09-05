@@ -1,5 +1,6 @@
+import { computed, effect } from '@preact/signals';
 import { Component, type ComponentChildren, type ComponentType } from 'preact';
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { StoreContext } from './context';
 import type { AppStore, Toast } from '../stores/app-store';
 import { Sidebar } from '../components/Sidebar';
@@ -127,6 +128,25 @@ function ShellOverlayLoader({ store }: { store: AppStore }) {
 }
 
 export function App({ store }: { store: AppStore }) {
+  const shell = useRef<HTMLDivElement>(null);
+  const diffWidth = useMemo(() => computed(() => store.diff.value.width), [store]);
+  const diffOpen = useMemo(() => computed(() => store.diff.value.open), [store]);
+  const diffMaximized = useMemo(() => computed(() => store.diff.value.maximized), [store]);
+  useLayoutEffect(() => {
+    const bind = (property: string, value: () => number) =>
+      effect(() => {
+        const pixels = value();
+        shell.current?.style.setProperty(property, `${pixels}px`);
+      });
+    // Separate effects keep a dock-size update from overwriting an in-flight
+    // diff drag's presentation-only width.
+    const dispose = [
+      bind('--diff-sidebar-user-width', () => diffWidth.value),
+      bind('--shell-dock-bottom-size', () => store.shellStore.dockBottomSize.value),
+      bind('--shell-dock-right-size', () => store.shellStore.dockRightSize.value),
+    ];
+    return () => dispose.forEach((stop) => stop());
+  }, [store, diffWidth]);
   const session = store.activeSession.value;
   const shellVisible = store.shellStore.visible.value;
   const shellLayout = store.shellStore.layout.value;
@@ -210,13 +230,9 @@ export function App({ store }: { store: AppStore }) {
           </div>
         )}
         <div
-          class={`app ${store.sidebarCollapsed.value ? 'sidebar-collapsed' : ''} ${store.diff.value.open ? 'diff-open' : ''} ${store.diff.value.maximized ? 'diff-maximized' : ''} ${store.planVisible.value ? 'plan-open' : ''} ${shellVisible && shellLayout === 'bottom' ? 'shell-docked-bottom' : ''} ${shellVisible && shellLayout === 'right' ? 'shell-docked-right' : ''}`}
+          class={`app ${store.sidebarCollapsed.value ? 'sidebar-collapsed' : ''} ${diffOpen.value ? 'diff-open' : ''} ${diffMaximized.value ? 'diff-maximized' : ''} ${store.planVisible.value ? 'plan-open' : ''} ${shellVisible && shellLayout === 'bottom' ? 'shell-docked-bottom' : ''} ${shellVisible && shellLayout === 'right' ? 'shell-docked-right' : ''}`}
           id="appShell"
-          style={{
-            '--diff-sidebar-user-width': `${store.diff.value.width}px`,
-            '--shell-dock-bottom-size': `${store.shellStore.dockBottomSize.value}px`,
-            '--shell-dock-right-size': `${store.shellStore.dockRightSize.value}px`,
-          }}
+          ref={shell}
           aria-hidden={!store.startupDone.value || shellFullscreen || undefined}
           inert={shellFullscreen || undefined}
         >

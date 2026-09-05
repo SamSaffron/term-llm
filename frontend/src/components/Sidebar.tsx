@@ -1,5 +1,6 @@
+import { computed } from '@preact/signals';
 import type { ComponentChildren } from 'preact';
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import type { Project, Session } from '../domain/types';
 import { displayName } from '../app/config';
@@ -236,21 +237,35 @@ function SessionRow({ session, showProject = false }: { session: Session; showPr
   const [hiding, setHiding] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const active = store.activeSessionId.value === session.id;
-  const projection = store.runs.value[session.id];
-  const localPendingInteractionCount = store.interactionOrder.value
-    .map((key) => store.interactions.value[key])
-    .filter(
-      (entry) =>
-        entry?.sessionId === session.id &&
-        ['waiting', 'dismissed', 'submitting', 'failed'].includes(entry.state),
-    ).length;
+  const localPendingInteractionCount = useMemo(
+    () =>
+      computed(
+        () =>
+          store.interactionOrder.value
+            .map((key) => store.interactions.value[key])
+            .filter(
+              (entry) =>
+                entry?.sessionId === session.id &&
+                ['waiting', 'dismissed', 'submitting', 'failed'].includes(entry.state),
+            ).length,
+      ),
+    [store, session.id],
+  ).value;
   const needsInput = Boolean(session.interactionRequired || localPendingInteractionCount > 0);
-  const running =
-    Boolean(
-      projection &&
-      ['connecting', 'checking', 'streaming', 'cancelling'].includes(projection.run.status) &&
-      store.runEngine.hasActiveResponseTransport(session.id, projection.run.responseId),
-    ) || Boolean(store.services.eventFeedHealthy.value && session.activeRun);
+  const running = useMemo(
+    () =>
+      computed(() => {
+        const projection = store.runs.value[session.id];
+        return (
+          Boolean(
+            projection &&
+            ['connecting', 'checking', 'streaming', 'cancelling'].includes(projection.run.status) &&
+            store.runEngine.hasActiveResponseTransport(session.id, projection.run.responseId),
+          ) || Boolean(store.services.eventFeedHealthy.value && session.activeRun)
+        );
+      }),
+    [store, session],
+  ).value;
   const unseen = !needsInput && !running && Boolean(session.attentionUnseen);
   const attentionLabel = needsInput
     ? localPendingInteractionCount > 1 || (session.pendingInteractionCount || 0) > 1

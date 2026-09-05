@@ -1,3 +1,4 @@
+import { signal, type ReadonlySignal } from '@preact/signals';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { displayName } from '../app/config';
 import { useStore } from '../app/context';
@@ -42,6 +43,72 @@ function voiceTime(milliseconds = 0): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
+type VoiceControls = Pick<
+  VoiceSnapshot,
+  'phase' | 'generation' | 'owner' | 'transcript' | 'capability'
+>;
+
+function VoiceStatus({
+  snapshot,
+  voice,
+}: {
+  snapshot: ReadonlySignal<VoiceSnapshot>;
+  voice: VoiceOperation;
+}) {
+  const voiceState = snapshot.value;
+  const voiceBusy = ['requesting-permission', 'recording', 'preparing', 'transcribing'].includes(
+    voiceState.phase,
+  );
+  if (voiceState.phase === 'idle') return null;
+  return (
+    <div
+      id="voiceStatus"
+      class={`voice-status voice-status-${voiceState.phase}`}
+      aria-live="polite"
+      role={voiceState.phase === 'failed' ? 'alert' : 'status'}
+    >
+      <span
+        class={voiceState.phase === 'recording' ? 'voice-status-dot' : 'voice-status-spinner'}
+        aria-hidden="true"
+      />
+      <span class="voice-status-copy">
+        {voiceState.phase === 'requesting-permission' && 'Requesting microphone access…'}
+        {voiceState.phase === 'recording' && `Recording ${voiceTime(voiceState.durationMs)}`}
+        {voiceState.phase === 'preparing' && 'Preparing recording…'}
+        {voiceState.phase === 'transcribing' &&
+          (voiceState.stage === 'uploading'
+            ? `Uploading${voiceState.total ? ` ${Math.min(100, Math.round(((voiceState.loaded || 0) / voiceState.total) * 100))}%` : '…'}`
+            : voiceState.stage === 'stalled'
+              ? 'Upload stalled'
+              : `Transcribing… ${voiceTime(voiceState.elapsedMs)}`)}
+        {voiceState.phase === 'complete' && 'Transcription inserted.'}
+        {voiceState.phase === 'cancelled' && 'Voice recording cancelled.'}
+        {voiceState.phase === 'failed' && (voiceState.error || 'Voice transcription failed.')}
+      </span>
+      {voiceState.phase === 'recording' && (
+        <button type="button" class="btn voice-status-action" onClick={() => voice.stop()}>
+          Stop
+        </button>
+      )}
+      {voiceBusy && (
+        <button type="button" class="btn voice-status-cancel" onClick={() => voice.cancel()}>
+          Cancel
+        </button>
+      )}
+      {voiceState.phase === 'failed' && voiceState.retryable && (
+        <button type="button" class="btn voice-status-action" onClick={() => voice.retry()}>
+          Retry
+        </button>
+      )}
+      {voiceState.phase === 'failed' && (
+        <button type="button" class="btn voice-status-cancel" onClick={() => voice.discard()}>
+          Discard
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function Composer() {
   const store = useStore();
   const runActive = store.runActive.value;
@@ -56,7 +123,8 @@ export function Composer() {
     () => new VoiceOperation((form, controls) => store.endpoints.transcribe(form, controls)),
     [store],
   );
-  const [voiceState, setVoiceState] = useState<VoiceSnapshot>(voice.snapshot);
+  const voiceSnapshot = useMemo(() => signal(voice.snapshot), [voice]);
+  const [voiceState, setVoiceState] = useState<VoiceControls>(voice.snapshot);
   const appliedVoiceGeneration = useRef(0);
   const [completionIndex, setCompletionIndex] = useState(0);
   const [cursor, setCursor] = useState(store.prompt.value.length);
@@ -65,7 +133,22 @@ export function Composer() {
   const [dragError, setDragError] = useState('');
   const [projectMentions, setProjectMentions] = useState<MentionSearchResponse | null>(null);
   const addMenu = useMenuKeyboard(menu, () => setMenu(false), attach);
-  useEffect(() => voice.subscribe(setVoiceState), [voice]);
+  useEffect(
+    () =>
+      voice.subscribe((snapshot) => {
+        voiceSnapshot.value = snapshot;
+        setVoiceState((previous) =>
+          previous.phase === snapshot.phase &&
+          previous.generation === snapshot.generation &&
+          previous.owner === snapshot.owner &&
+          previous.transcript === snapshot.transcript &&
+          previous.capability === snapshot.capability
+            ? previous
+            : snapshot,
+        );
+      }),
+    [voice, voiceSnapshot],
+  );
   useEffect(() => () => voice.dispose(), [voice]);
   useLayoutEffect(() => resizePrompt(textarea.current), [store.prompt.value]);
 
@@ -430,53 +513,7 @@ export function Composer() {
             ))}
           </div>
         )}
-        {voiceState.phase !== 'idle' && (
-          <div
-            id="voiceStatus"
-            class={`voice-status voice-status-${voiceState.phase}`}
-            aria-live="polite"
-            role={voiceState.phase === 'failed' ? 'alert' : 'status'}
-          >
-            <span
-              class={voiceState.phase === 'recording' ? 'voice-status-dot' : 'voice-status-spinner'}
-              aria-hidden="true"
-            />
-            <span class="voice-status-copy">
-              {voiceState.phase === 'requesting-permission' && 'Requesting microphone access…'}
-              {voiceState.phase === 'recording' && `Recording ${voiceTime(voiceState.durationMs)}`}
-              {voiceState.phase === 'preparing' && 'Preparing recording…'}
-              {voiceState.phase === 'transcribing' &&
-                (voiceState.stage === 'uploading'
-                  ? `Uploading${voiceState.total ? ` ${Math.min(100, Math.round(((voiceState.loaded || 0) / voiceState.total) * 100))}%` : '…'}`
-                  : voiceState.stage === 'stalled'
-                    ? 'Upload stalled'
-                    : `Transcribing… ${voiceTime(voiceState.elapsedMs)}`)}
-              {voiceState.phase === 'complete' && 'Transcription inserted.'}
-              {voiceState.phase === 'cancelled' && 'Voice recording cancelled.'}
-              {voiceState.phase === 'failed' && (voiceState.error || 'Voice transcription failed.')}
-            </span>
-            {voiceState.phase === 'recording' && (
-              <button type="button" class="btn voice-status-action" onClick={() => voice.stop()}>
-                Stop
-              </button>
-            )}
-            {voiceBusy && (
-              <button type="button" class="btn voice-status-cancel" onClick={() => voice.cancel()}>
-                Cancel
-              </button>
-            )}
-            {voiceState.phase === 'failed' && voiceState.retryable && (
-              <button type="button" class="btn voice-status-action" onClick={() => voice.retry()}>
-                Retry
-              </button>
-            )}
-            {voiceState.phase === 'failed' && (
-              <button type="button" class="btn voice-status-cancel" onClick={() => voice.discard()}>
-                Discard
-              </button>
-            )}
-          </div>
-        )}
+        <VoiceStatus snapshot={voiceSnapshot} voice={voice} />
         {!voiceState.capability.supported && (
           <span class="voice-unsupported" id="voiceUnsupported">
             {voiceState.capability.reason}

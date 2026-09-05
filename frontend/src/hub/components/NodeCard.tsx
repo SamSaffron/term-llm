@@ -1,3 +1,4 @@
+import { memo } from '../../components/memo';
 import { useRef, useState } from 'preact/hooks';
 import { Menu } from '../../components/Menu';
 import { nodeResumePath } from '../domain/formatting';
@@ -5,7 +6,27 @@ import type { HubNode } from '../domain/types';
 import type { HubStore } from '../stores/hub-store';
 import { NodeSessions } from './NodeSessions';
 
-export function NodeCard({ node, store }: { node: HubNode; store: HubStore }) {
+function RemoveNodeAction({ store, remove }: { store: HubStore; remove: () => Promise<void> }) {
+  return (
+    <button
+      class="node-menu-item danger"
+      type="button"
+      role="menuitem"
+      disabled={store.nodeOperation.value !== 'idle'}
+      onClick={() => void remove()}
+    >
+      Remove node
+    </button>
+  );
+}
+
+export const NodeCard = memo(function NodeCard({
+  node,
+  store,
+}: {
+  node: HubNode;
+  store: HubStore;
+}) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuTrigger = useRef<HTMLButtonElement>(null);
   const status = node.status ?? { reachable: false, state: 'unknown', latency_ms: 0 };
@@ -112,22 +133,14 @@ export function NodeCard({ node, store }: { node: HubNode; store: HubStore }) {
               triggerRef={menuTrigger}
               className="node-menu-list"
             >
-              <button
-                class="node-menu-item danger"
-                type="button"
-                role="menuitem"
-                disabled={store.nodeOperation.value !== 'idle'}
-                onClick={() => void remove()}
-              >
-                Remove node
-              </button>
+              <RemoveNodeAction store={store} remove={remove} />
             </Menu>
           </div>
         )}
       </div>
     </article>
   );
-}
+});
 
 export function NodeGrid({ store }: { store: HubStore }) {
   return (

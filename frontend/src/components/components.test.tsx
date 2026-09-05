@@ -735,10 +735,12 @@ describe('Preact-owned chat surfaces', () => {
     fireEvent.pointerDown(handle, { clientX: 600, pointerId: 1 });
     expect(shell).toHaveClass('diff-resizing');
     fireEvent.pointerMove(window, { clientX: 500, pointerId: 1 });
-    expect(store.diff.value.width).toBe(655);
+    // Dragging updates layout only; state and persistence commit at pointer-up.
+    expect(store.diff.value.width).toBe(555);
     expect(shell.style.getPropertyValue('--diff-sidebar-user-width')).toBe('655px');
     expect(sidebar.style.width).toBe('');
     fireEvent.pointerUp(window, { clientX: 500, pointerId: 1 });
+    expect(store.diff.value.width).toBe(655);
     expect(shell).not.toHaveClass('diff-resizing');
   });
 

@@ -1,3 +1,6 @@
+import { createMessageMediaResolvers } from '../domain/media-resolvers';
+import { signal, type ReadonlySignal } from '@preact/signals';
+import { memo } from './memo';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { Message, ToolCall } from '../domain/types';
 import { indexTranscriptTurns, windowTranscript } from '../domain/transcript';
@@ -648,7 +651,13 @@ function Attachments({ message }: { message: Message }) {
   );
 }
 
-function MessageMeta({ message }: { message: Message }) {
+function MessageTime({ created, clock }: { created: number; clock: ReadonlySignal<number> }) {
+  // The minute clock belongs to the transcript, but only timestamp leaves read it.
+  void clock.value;
+  return <time title={new Date(created).toLocaleString()}>{relativeTime(created)}</time>;
+}
+
+function MessageMeta({ message, clock }: { message: Message; clock: ReadonlySignal<number> }) {
   const interrupt = (
     {
       evaluating: ['pending', '', 'evaluating…'],
@@ -668,9 +677,7 @@ function MessageMeta({ message }: { message: Message }) {
           {interrupt[2]}
         </span>
       )}
-      <time title={new Date(message.created).toLocaleString()}>
-        {relativeTime(message.created)}
-      </time>
+      <MessageTime created={message.created} clock={clock} />
     </div>
   );
 }
@@ -730,18 +737,20 @@ function legacyModelSwapText(content: string) {
     .replace(/^Model switch:\s*/i, '');
 }
 
-function MessageRow({
+const MessageRow = memo(function MessageRow({
   message,
   streaming,
   responseText,
   copyTarget,
   resolveMedia,
+  clock,
 }: {
   message: Message;
   streaming: boolean;
   responseText: string;
   copyTarget: boolean;
   resolveMedia: MarkdownMediaResolver;
+  clock: ReadonlySignal<number>;
 }) {
   const store = useStore();
   const [expanded, setExpanded] = useState(false);
@@ -951,10 +960,10 @@ function MessageRow({
           )}
         </div>
       )}
-      <MessageMeta message={message} />
+      <MessageMeta message={message} clock={clock} />
     </article>
   );
-}
+});
 
 function NewChatControls() {
   const store = useStore();
@@ -1026,9 +1035,16 @@ export function Transcript() {
   const touchY = useRef<number | null>(null);
   const [nearTail, setNearTail] = useState(true);
   const [turnLimit, setTurnLimit] = useState(80);
-  const [clock, setClock] = useState(0);
+  const clock = useMemo(() => signal(Date.now()), []);
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      clock.value = Date.now();
+    }, 60_000);
+    return () => clearInterval(timer);
+  }, [clock]);
   const anchorHeight = useRef(0);
   const messages = store.visibleMessages.value;
+  const previousMedia = useRef(new Map<string, { url: string; type: 'image' | 'video' }>());
   const mediaByReference = useMemo(() => {
     const artifacts = new Map<string, { url: string; type: 'image' | 'video' }>();
     for (const message of messages) {
@@ -1047,14 +1063,27 @@ export function Transcript() {
         }
       }
     }
+    const previous = previousMedia.current;
+    if (
+      previous.size === artifacts.size &&
+      [...artifacts].every(([key, item]) => {
+        const old = previous.get(key);
+        return old?.url === item.url && old.type === item.type;
+      })
+    )
+      return previous;
+    previousMedia.current = artifacts;
     return artifacts;
   }, [messages, store]);
-  const mediaByReferenceRef = useRef(mediaByReference);
-  mediaByReferenceRef.current = mediaByReference;
-  const resolveMedia = useCallback<MarkdownMediaResolver>(
-    (reference) => mediaByReferenceRef.current.get(reference.toLowerCase()),
-    [],
-  );
+  const sessionId = store.activeSession.value?.id;
+  const resolverCache = useRef<{
+    sessionId: string | undefined;
+    resolve: ReturnType<typeof createMessageMediaResolvers>;
+  } | null>(null);
+  if (!resolverCache.current || resolverCache.current.sessionId !== sessionId) {
+    resolverCache.current = { sessionId, resolve: createMessageMediaResolvers() };
+  }
+  const resolverForMessage = resolverCache.current.resolve;
   const runs = useMemo(
     () => windowTranscript(messages, turnLimit, nearTail),
     [messages, turnLimit, nearTail],
@@ -1066,11 +1095,6 @@ export function Transcript() {
   useEffect(() => {
     setTurnLimit(80);
   }, [store.activeSession.value?.id]);
-  useEffect(() => {
-    const timer = window.setInterval(() => setClock((value) => value + 1), 60_000);
-    return () => clearInterval(timer);
-  }, []);
-  void clock;
   useLayoutEffect(() => {
     const element = scroll.current;
     const contents = content.current;
@@ -1228,7 +1252,8 @@ export function Transcript() {
                   streaming={streaming}
                   responseText={context?.responseText || message.content}
                   copyTarget={context?.copyTarget === true}
-                  resolveMedia={resolveMedia}
+                  resolveMedia={resolverForMessage(message.id, mediaByReference)}
+                  clock={clock}
                 />
               );
             })

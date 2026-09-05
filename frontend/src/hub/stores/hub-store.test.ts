@@ -51,6 +51,33 @@ function fakeClient(overrides: Record<string, unknown> = {}) {
 }
 
 describe('HubStore', () => {
+  it('retains unchanged collections across polls and replaces only changed nodes', async () => {
+    let payload = { nodes: [...nodes('alpha').nodes, ...nodes('beta').nodes] };
+    const client = fakeClient({ listNodes: vi.fn(async () => structuredClone(payload)) });
+    const store = new HubStore(client);
+    await store.refresh();
+    const firstNodes = store.nodes.value;
+    const firstInbox = store.inbox.value;
+    const firstRequired = store.inputRequired.value;
+    const firstDelegations = store.delegations.value;
+    await store.refresh('poll');
+    expect(store.nodes.value).toBe(firstNodes);
+    expect(store.inbox.value).toBe(firstInbox);
+    expect(store.inputRequired.value).toBe(firstRequired);
+    expect(store.delegations.value).toBe(firstDelegations);
+    payload.nodes[1].status.reachable = false;
+    await store.refresh('poll');
+    expect(store.nodes.value[0]).toBe(firstNodes[0]);
+    expect(store.nodes.value[1]).not.toBe(firstNodes[1]);
+    expect(store.nodes.value[1].sessions).toBe(firstNodes[1].sessions);
+    payload = { nodes: [payload.nodes[1], payload.nodes[0]] };
+    const beforeReorder = store.nodes.value;
+    await store.refresh('poll');
+    expect(store.nodes.value[0]).toBe(beforeReorder[1]);
+    expect(store.nodes.value[1]).toBe(beforeReorder[0]);
+    store.dispose();
+  });
+
   afterEach(() => vi.useRealTimers());
 
   it('starts one refresh and polls each endpoint exactly once per interval', async () => {

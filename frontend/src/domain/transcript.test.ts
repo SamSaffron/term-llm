@@ -9,6 +9,47 @@ import {
 import type { Message } from './types';
 
 describe('transcript domain', () => {
+  it('preserves untouched tool identities and applies terminal overlays without mutating durable input', () => {
+    const completed: Message = {
+      id: 'complete',
+      role: 'tool-group',
+      content: '',
+      created: 1,
+      tools: [{ id: 'done', name: 'read_file', status: 'done' }],
+    };
+    const running: Message = {
+      id: 'running',
+      role: 'tool-group',
+      responseId: 'r1',
+      content: '',
+      created: 2,
+      tools: [
+        { id: 'a', name: 'shell', status: 'running' },
+        { id: 'b', name: 'shell', status: 'running' },
+      ],
+    };
+    for (const message of [completed, running]) {
+      message.tools!.forEach(Object.freeze);
+      Object.freeze(message.tools);
+      Object.freeze(message);
+    }
+    expect(mergeDurableProjection([completed, running], [])).toEqual([completed, running]);
+    expect(mergeDurableProjection([completed, running], [])[1]).toBe(running);
+    const live: Message = {
+      ...running,
+      tools: [
+        { id: 'a', name: 'shell', status: 'done', endedAt: 10, result: 'ok' },
+        { id: 'b', name: 'shell', status: 'error', endedAt: 11, result: 'failed' },
+      ],
+    };
+    const merged = mergeDurableProjection([completed, running], [live]);
+    expect(merged[0]).toBe(completed);
+    expect(merged[0].tools![0]).toBe(completed.tools![0]);
+    expect(merged[1].status).toBe('done');
+    expect(merged[1].tools).toEqual(live.tools);
+    expect(running.tools!.every((tool) => tool.status === 'running')).toBe(true);
+  });
+
   it('converts text, measured media, tools and compaction rows', () => {
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
     const messages = convertServerMessages([
