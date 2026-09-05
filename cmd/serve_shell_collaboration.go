@@ -51,7 +51,9 @@ func (s *serveShell) maskReplayRangeLocked(start, end int64) {
 	if start >= end {
 		return
 	}
-	for i := int(start - s.baseOffset); i < int(end-s.baseOffset); i++ {
+	startIndex := s.outputStart + int(start-s.baseOffset)
+	endIndex := s.outputStart + int(end-s.baseOffset)
+	for i := startIndex; i < endIndex; i++ {
 		s.output[i] = 0
 	}
 }
@@ -65,7 +67,9 @@ func (s *serveShell) replaceReplayRangeLocked(start, end int64, replacement []by
 		return
 	}
 	replacementEnd := min64(int64(len(replacement)), replacementStart+copyEnd-copyStart)
-	copy(s.output[copyStart-s.baseOffset:copyEnd-s.baseOffset], replacement[replacementStart:replacementEnd])
+	startIndex := s.outputStart + int(copyStart-s.baseOffset)
+	endIndex := s.outputStart + int(copyEnd-s.baseOffset)
+	copy(s.output[startIndex:endIndex], replacement[replacementStart:replacementEnd])
 }
 
 // redactProtocolDisplayLocked hides transport syntax through an authoritative

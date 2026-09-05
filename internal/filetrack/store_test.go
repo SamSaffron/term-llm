@@ -62,6 +62,108 @@ func TestOpenCreatesPrivateSQLiteFiles(t *testing.T) {
 	}
 }
 
+func TestOpenPreservesVacuumModeWithoutWritingOnReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "file_history.db")
+	store, err := Open(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Independent observers detect commits by other connections, including
+	// redundant PRAGMA auto_vacuum assignments that leave the mode unchanged.
+	for _, dbPath := range []string{path, filepath.Join(filepath.Dir(path), "file_observations.db")} {
+		t.Run(filepath.Base(dbPath), func(t *testing.T) {
+			observer, err := sql.Open("sqlite", dbPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer observer.Close()
+			observer.SetMaxOpenConns(1)
+			var mode, before, after int
+			if err := observer.QueryRow("PRAGMA auto_vacuum").Scan(&mode); err != nil {
+				t.Fatal(err)
+			}
+			if mode != 2 {
+				t.Fatalf("auto_vacuum = %d, want incremental (2)", mode)
+			}
+			if err := observer.QueryRow("PRAGMA data_version").Scan(&before); err != nil {
+				t.Fatal(err)
+			}
+			reopened, err := Open(path, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close()
+			if err := observer.QueryRow("PRAGMA data_version").Scan(&after); err != nil {
+				t.Fatal(err)
+			}
+			if after != before {
+				t.Fatalf("reopening committed an unnecessary write: data_version %d -> %d", before, after)
+			}
+			// A second pooled connection must inherit the persistent mode, too.
+			db := reopened.db
+			if filepath.Base(dbPath) == "file_observations.db" {
+				db = reopened.observationDB
+			}
+			conn, err := db.Conn(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			if err := db.QueryRow("PRAGMA auto_vacuum").Scan(&mode); err != nil {
+				t.Fatal(err)
+			}
+			if mode != 2 {
+				t.Fatalf("new connection auto_vacuum = %d, want 2", mode)
+			}
+			if err := observer.QueryRow("PRAGMA data_version").Scan(&after); err != nil {
+				t.Fatal(err)
+			}
+			if after != before {
+				t.Fatal("opening a second connection wrote the database")
+			}
+		})
+	}
+}
+
+func TestConfigureFileTrackingDBPreservesExistingData(t *testing.T) {
+	for _, mode := range []int{0, 1, 2} {
+		t.Run(fmt.Sprint(mode), func(t *testing.T) {
+			db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "legacy.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if _, err := db.Exec(fmt.Sprintf("PRAGMA auto_vacuum = %d; CREATE TABLE sentinel (value TEXT); INSERT INTO sentinel VALUES ('retained')", mode)); err != nil {
+				t.Fatal(err)
+			}
+			if err := configureFileTrackingDB(db); err != nil {
+				t.Fatal(err)
+			}
+			var gotMode int
+			if err := db.QueryRow("PRAGMA auto_vacuum").Scan(&gotMode); err != nil {
+				t.Fatal(err)
+			}
+			wantMode := 2
+			if mode == 0 {
+				// Existing NONE databases need a full VACUUM to change mode;
+				// preserve the previous behavior rather than rebuilding at launch.
+				wantMode = 0
+			}
+			if gotMode != wantMode {
+				t.Fatalf("auto_vacuum = %d, want %d", gotMode, wantMode)
+			}
+			var value string
+			if err := db.QueryRow("SELECT value FROM sentinel").Scan(&value); err != nil || value != "retained" {
+				t.Fatalf("existing data = %q, err = %v", value, err)
+			}
+		})
+	}
+}
+
 func TestRecordChangeKinds(t *testing.T) {
 	store := openTestStore(t, Options{})
 	ctx := context.Background()

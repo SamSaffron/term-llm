@@ -11,6 +11,9 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/samsaffron/term-llm/internal/procutil"
 )
 
 var scrubGitEnvironment = map[string]struct{}{
@@ -157,34 +160,37 @@ func commandOutput(err error) string {
 	return ""
 }
 
+var (
+	commitTimeout   = 5 * time.Minute
+	commitWaitDelay = 2 * time.Second
+)
+
 // runCommit is deliberately not tied to ctx after the process starts. Callers may
-// abandon a request, but the host must drain Git to a known result.
+// abandon a request, but the host must drain Git to a known result within its
+// own deadline.
 func (r *Repository) runCommit(ctx context.Context, messageFile string) (string, string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", "", err
 	}
+	commitCtx, cancel := context.WithTimeout(context.Background(), commitTimeout)
+	defer cancel()
 	args := []string{"-C", r.root, "commit", "--cleanup=verbatim", "--file=" + messageFile}
-	cmd := exec.Command("git", args...)
+	cmd := exec.CommandContext(commitCtx, "git", args...)
 	cmd.Env = gitEnvironment(nil)
+	cmd.WaitDelay = commitWaitDelay
+	cleanup, err := procutil.PrepareCommandProcessGroup(cmd)
+	if err != nil {
+		return "", "", err
+	}
+	defer cleanup()
 	stdout := &limitBuffer{max: maxCommitOutput}
 	stderr := &limitBuffer{max: maxCommitOutput}
-	outPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return "", "", err
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	waitErr := cmd.Run()
+	if deadlineErr := commitCtx.Err(); deadlineErr != nil {
+		waitErr = fmt.Errorf("Git commit exceeded %s: %w", commitTimeout, deadlineErr)
 	}
-	errPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return "", "", err
-	}
-	if err = cmd.Start(); err != nil {
-		return "", "", err
-	}
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() { defer wg.Done(); _, _ = io.Copy(stdout, outPipe) }()
-	go func() { defer wg.Done(); _, _ = io.Copy(stderr, errPipe) }()
-	waitErr := cmd.Wait()
-	wg.Wait()
 	if stdout.truncated || stderr.truncated {
 		if waitErr == nil {
 			waitErr = &Error{Kind: ErrOutputLimit, Message: "Git commit output exceeded the display limit"}

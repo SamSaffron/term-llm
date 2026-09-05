@@ -412,6 +412,7 @@ type mockStore struct {
 	sessions         map[string]*session.Session
 	getErr           error
 	messages         map[string][]session.Message
+	getMessagesCalls int
 	summaries        []session.SessionSummary
 	searchOptions    []session.SearchOptions
 	msgErr           error
@@ -468,6 +469,7 @@ func (s *mockStore) GetByPrefix(_ context.Context, prefix string) (*session.Sess
 }
 
 func (s *mockStore) GetMessages(_ context.Context, sessionID string, _, _ int) ([]session.Message, error) {
+	s.getMessagesCalls++
 	if s.msgErr != nil {
 		return nil, s.msgErr
 	}

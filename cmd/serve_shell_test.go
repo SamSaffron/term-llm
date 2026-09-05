@@ -298,6 +298,86 @@ func TestServeShellReplayResetAndExit(t *testing.T) {
 	}
 }
 
+func TestServeShellReplayCompactsDroppedPrefixesInBatches(t *testing.T) {
+	const totalBytes = 3*serveShellReplayBytes + 3*serveShellChunkBytes + 123
+	all := make([]byte, totalBytes)
+	for i := range all {
+		all[i] = byte((i*31 + 17) % 251)
+	}
+
+	shell := newServeShell("sh_compaction", "session", t.TempDir())
+	for start := 0; start < len(all); start += serveShellChunkBytes {
+		end := min(start+serveShellChunkBytes, len(all))
+		shell.appendOutput(all[start:end])
+	}
+
+	wantBase := int64(len(all) - serveShellReplayBytes)
+	wantOutputStart := len(all) - 3*serveShellReplayBytes
+	shell.mu.Lock()
+	if shell.baseOffset != wantBase || shell.nextOffset != int64(len(all)) {
+		t.Fatalf("offsets = base %d next %d, want base %d next %d", shell.baseOffset, shell.nextOffset, wantBase, len(all))
+	}
+	if shell.outputStart != wantOutputStart || len(shell.output)-shell.outputStart != serveShellReplayBytes {
+		t.Fatalf("storage = start %d active %d, want start %d active %d", shell.outputStart, len(shell.output)-shell.outputStart, wantOutputStart, serveShellReplayBytes)
+	}
+
+	redactionStart := shell.baseOffset + 1234
+	redactionEnd := redactionStart + 32
+	replacement := []byte("shared")
+	shell.replaceReplayRangeLocked(redactionStart, redactionEnd, replacement)
+	shell.mu.Unlock()
+
+	want := append([]byte(nil), all[len(all)-serveShellReplayBytes:]...)
+	redactionIndex := int(redactionStart - wantBase)
+	clear(want[redactionIndex : redactionIndex+int(redactionEnd-redactionStart)])
+	copy(want[redactionIndex:], replacement)
+
+	reset := shell.snapshot(0)
+	if !reset.reset || reset.baseOffset != wantBase || reset.dataOffset != wantBase {
+		t.Fatalf("reset snapshot = reset %t base %d data %d, want base/data %d", reset.reset, reset.baseOffset, reset.dataOffset, wantBase)
+	}
+
+	var replay []byte
+	for offset := wantBase; offset < int64(len(all)); {
+		snapshot := shell.snapshot(offset)
+		if snapshot.reset || snapshot.dataOffset != offset || len(snapshot.data) == 0 || len(snapshot.data) > serveShellChunkBytes {
+			t.Fatalf("snapshot at %d = reset %t data offset %d len %d", offset, snapshot.reset, snapshot.dataOffset, len(snapshot.data))
+		}
+		replay = append(replay, snapshot.data...)
+		offset += int64(len(snapshot.data))
+	}
+	if !bytes.Equal(replay, want) {
+		t.Fatalf("chunked replay differs: got %d bytes, want %d", len(replay), len(want))
+	}
+
+	// A large write must reset the logical prefix left by small writes.
+	large := bytes.Repeat([]byte("z"), serveShellReplayBytes+17)
+	shell.appendOutput(large)
+	shell.appendOutput([]byte("tail"))
+	snapshot := shell.snapshot(0)
+	wantBase = int64(len(all) + len(large) + 4 - serveShellReplayBytes)
+	if !snapshot.reset || snapshot.baseOffset != wantBase || !bytes.Equal(snapshot.data, large[:serveShellChunkBytes]) {
+		t.Fatalf("large write after compaction: base %d, reset %t, data length %d", snapshot.baseOffset, snapshot.reset, len(snapshot.data))
+	}
+	if tail := shell.snapshot(snapshot.nextOffset - 4); string(tail.data) != "tail" {
+		t.Fatalf("replay tail = %q, want tail", tail.data)
+	}
+}
+
+func BenchmarkServeShellReplaySmallChunks(b *testing.B) {
+	const bytesPerIteration = 256 << 20
+	chunk := bytes.Repeat([]byte("x"), serveShellChunkBytes)
+	shell := newServeShell("sh_benchmark", "session", b.TempDir())
+	shell.appendOutput(bytes.Repeat([]byte("p"), serveShellReplayBytes))
+	b.SetBytes(bytesPerIteration)
+	b.ResetTimer()
+	for range b.N {
+		for written := 0; written < bytesPerIteration; written += len(chunk) {
+			shell.appendOutput(chunk)
+		}
+	}
+}
+
 func TestResolveShellCWDUsesPersistedProjectBindings(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	ctx := context.Background()

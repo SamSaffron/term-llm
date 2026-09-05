@@ -333,6 +333,25 @@ func chmodSQLiteFiles(path string) error {
 	return nil
 }
 
+// configureFileTrackingDB enables WAL and sets incremental vacuum only when
+// needed. Reassigning auto_vacuum even to its current value starts a write
+// transaction; doing it in the connection DSN makes every open pay that cost.
+func configureFileTrackingDB(db *sql.DB) error {
+	var mode int
+	if err := db.QueryRow("PRAGMA auto_vacuum").Scan(&mode); err != nil {
+		return err
+	}
+	if mode != 2 {
+		if _, err := db.Exec("PRAGMA auto_vacuum = 2"); err != nil {
+			return err
+		}
+	}
+	// On an empty database auto_vacuum must be configured before WAL mode
+	// creates its header. Both settings persist for subsequent connections.
+	_, err := db.Exec("PRAGMA journal_mode = WAL")
+	return err
+}
+
 // Open opens (creating if necessary) the file-change history database at path.
 func Open(path string, opts Options) (*Store, error) {
 	if path != ":memory:" {
@@ -347,7 +366,7 @@ func Open(path string, opts Options) (*Store, error) {
 	} else {
 		dsn += "?"
 	}
-	dsn += "_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=auto_vacuum(2)"
+	dsn += "_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)"
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -356,6 +375,11 @@ func Open(path string, opts Options) (*Store, error) {
 	if path == ":memory:" {
 		// Keep a single connection so schema and data stay visible everywhere.
 		db.SetMaxOpenConns(1)
+	}
+
+	if err := configureFileTrackingDB(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("configure file history database: %w", err)
 	}
 
 	if err := initSchema(db); err != nil {

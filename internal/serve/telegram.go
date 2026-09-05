@@ -1559,7 +1559,7 @@ func (m *telegramSessionMgr) handleMessageWithAdmission(ctx context.Context, bot
 			case llm.InterruptCancel:
 				_, _ = bot.Send(tgbotapi.NewMessage(chatID, "↩️ Stopping current work and switching to your new request."))
 				cancelFn()
-				stopWait := 5 * time.Second
+				stopWait := max(5*time.Second, telegramCleanupTimeout()+time.Second)
 				if m.interruptTimeout > stopWait {
 					stopWait = m.interruptTimeout
 				}
@@ -1608,6 +1608,16 @@ func (m *telegramSessionMgr) handleMessageWithAdmission(ctx context.Context, bot
 		}
 	}
 
+	// Cleanup can quarantine the runtime while this message waits for the
+	// interrupted reply. Never start another turn on detached producer state.
+	if sess.runtimeStale.Load() {
+		sess, _, err = m.resetSessionIfCurrent(ctx, chatID, sess)
+		if err != nil {
+			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Error resetting session: "+err.Error()))
+			return
+		}
+	}
+
 	// Send "typing…" indicator.
 	_, _ = bot.Send(tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping))
 
@@ -1639,6 +1649,13 @@ func sendStreamDone(done chan<- error, once *sync.Once, err error) {
 	})
 }
 
+func telegramCleanupTimeout() time.Duration {
+	if telegramRunnerCleanupTimeout > 0 {
+		return telegramRunnerCleanupTimeout
+	}
+	return runpkg.DefaultRunnerCleanupTimeout
+}
+
 // streamReply streams an LLM response back to the chat via live message editing.
 func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, sess *telegramSession, chatID int64, userMsg llm.Message) error {
 	return m.streamReplyWithAdmission(ctx, bot, sess, chatID, userMsg, nil)
@@ -1649,6 +1666,9 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 	// concurrent messages from the same chat are serialised.
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
+	if sess.runtimeStale.Load() {
+		return fmt.Errorf("telegram runtime requires reset after detached cleanup")
+	}
 	if sess.runtime == nil || sess.runtime.Engine == nil {
 		return fmt.Errorf("telegram runtime is not initialized")
 	}
@@ -1862,20 +1882,44 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 
 	var stream llm.Stream
 	var runnerDone <-chan struct{}
-	waitForRunnerDone := func() {
-		if runnerDone == nil {
+	var streamConsumerDone chan struct{}
+	streamCloseDone := make(chan struct{})
+	var streamCloseOnce sync.Once
+	startStreamClose := func() {
+		streamCloseOnce.Do(func() {
+			if stream == nil {
+				close(streamCloseDone)
+				return
+			}
+			go func() {
+				_ = stream.Close()
+				close(streamCloseDone)
+			}()
+		})
+	}
+	cleanupDetached := false
+	markCleanupDetached := func() {
+		if cleanupDetached {
 			return
 		}
-		cleanupTimeout := telegramRunnerCleanupTimeout
-		if cleanupTimeout <= 0 {
-			cleanupTimeout = runpkg.DefaultRunnerCleanupTimeout
-		}
-		if !runpkg.WaitForRunnerDone(context.Background(), runnerDone, cleanupTimeout) {
-			sess.runtimeStale.Store(true)
-			log.Printf("[telegram] runner for chat %d did not stop within %s after stream cancellation; detaching and resetting runtime before reuse", chatID, cleanupTimeout)
-		}
+		cleanupDetached = true
+		sess.runtimeStale.Store(true)
+		log.Printf("[telegram] stream for chat %d did not stop after cancellation; detaching and resetting runtime before reuse", chatID)
 	}
-	defer waitForRunnerDone()
+	waitForCleanup := func(waitCtx context.Context) bool {
+		for _, done := range []<-chan struct{}{streamCloseDone, streamConsumerDone, runnerDone} {
+			if done == nil {
+				continue
+			}
+			select {
+			case <-done:
+			case <-waitCtx.Done():
+				markCleanupDetached()
+				return false
+			}
+		}
+		return true
+	}
 	if m.settings.Runner != nil {
 		pipe := runpkg.NewEventPipe(streamCtx, ui.DefaultStreamBufferSize)
 		stream = pipe
@@ -1953,8 +1997,22 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 			}
 			return fmt.Errorf("stream: %w", err)
 		}
-		defer stream.Close()
+		sess.cancelMu.Lock()
+		if sess.streamToken == streamToken {
+			sess.runnerDone = streamCloseDone
+		}
+		sess.cancelMu.Unlock()
 	}
+	defer func() {
+		streamCancel()
+		startStreamClose()
+		if cleanupDetached {
+			return
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), telegramCleanupTimeout())
+		defer cancel()
+		waitForCleanup(cleanupCtx)
+	}()
 
 	// Send placeholder message to obtain a message ID for live editing.
 	placeholder, err := bot.Send(tgbotapi.NewMessage(chatID, "⏳"))
@@ -2017,7 +2075,22 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 	}()
 
 	// Goroutine: consume stream events.
+	streamConsumerDone = make(chan struct{})
+	if runnerDone == nil {
+		streamCleanupDone := make(chan struct{})
+		go func() {
+			<-streamConsumerDone
+			<-streamCloseDone
+			close(streamCleanupDone)
+		}()
+		sess.cancelMu.Lock()
+		if sess.streamToken == streamToken {
+			sess.runnerDone = streamCleanupDone
+		}
+		sess.cancelMu.Unlock()
+	}
 	go func() {
+		defer close(streamConsumerDone)
 		for {
 			ev, recvErr := stream.Recv()
 			if recvErr == io.EOF {
@@ -2351,31 +2424,21 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 
 	var streamErr error
 	userInterrupted := false
-	streamDoneDrained := false
 	stopStreamAndWait := func(waitCtx context.Context) bool {
-		if m.settings.Runner != nil {
-			streamCancel()
-		} else if stream != nil {
-			stream.Close()
-		} else {
-			streamCancel()
-		}
-		if streamDoneDrained {
-			return true
-		}
-		select {
-		case <-streamDone:
-			streamDoneDrained = true
-			return true
-		case <-waitCtx.Done():
-			return false
-		}
+		streamCancel()
+		startStreamClose()
+
+		return waitForCleanup(waitCtx)
+	}
+	stopStreamWithCleanupTimeout := func() bool {
+		waitCtx, cancel := context.WithTimeout(context.Background(), telegramCleanupTimeout())
+		defer cancel()
+		return stopStreamAndWait(waitCtx)
 	}
 loop:
 	for {
 		select {
 		case err := <-streamDone:
-			streamDoneDrained = true
 			// If streamCtx was cancelled by user interrupt (not parent ctx, not
 			// watchdog), the error from Recv is a consequence of the cancel, not
 			// a real stream failure. Treat as interrupt instead.
@@ -2430,7 +2493,7 @@ loop:
 			if ctx.Err() != nil {
 				// Bound shutdown cleanup, but reconcile any complete snapshot obtained
 				// after the stream consumer and callback queue have stopped.
-				drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				drainCtx, cancel := context.WithTimeout(context.Background(), telegramCleanupTimeout())
 				drained := stopStreamAndWait(drainCtx)
 				cancel()
 				if drained {
@@ -2451,7 +2514,6 @@ loop:
 			if watchdogTimedOut.Load() {
 				select {
 				case streamErr = <-streamDone:
-					streamDoneDrained = true
 				default:
 					streamErr = fmt.Errorf("stream timed out: no events for %s", watchdogTimeout)
 				}
@@ -2466,8 +2528,9 @@ loop:
 
 	if userInterrupted {
 		// Stop and drain anything already in flight so history and persistence
-		// snapshots include the final callback-produced messages.
-		stopStreamAndWait(context.Background())
+		// snapshots include the final callback-produced messages. If cleanup does
+		// not finish promptly, detach it and avoid racing the stale producer.
+		drained := stopStreamWithCleanupTimeout()
 
 		textMu.Lock()
 		partial := textBuf.String()
@@ -2491,8 +2554,11 @@ loop:
 		}
 		sendEdit(currentMsgID, display, true)
 
-		// Preserve partial history so conversation context isn't lost.
-		salvagePartialHistory(streamCtx, "AddMessage(assistant_interrupt_fallback)")
+		// Preserve partial history so conversation context isn't lost, but only
+		// after every producer has stopped mutating the callback snapshot.
+		if drained {
+			salvagePartialHistory(streamCtx, "AddMessage(assistant_interrupt_fallback)")
+		}
 
 		if m.store != nil && sess.meta != nil {
 			m.runStoreOpWithTimeout(sess.meta.ID, "UpdateStatus(interrupted)", func(storeCtx context.Context) error {
@@ -2503,10 +2569,10 @@ loop:
 	}
 
 	if streamErr != nil {
-		if !streamDoneDrained {
-			stopStreamAndWait(context.Background())
+		drained := stopStreamWithCleanupTimeout()
+		if drained {
+			salvagePartialHistory(streamCtx, "AddMessage(assistant_error_fallback)")
 		}
-		salvagePartialHistory(streamCtx, "AddMessage(assistant_error_fallback)")
 		if strings.Contains(streamErr.Error(), "stream timed out") {
 			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "⌛ Response timed out — please try again."))
 		}

@@ -950,7 +950,8 @@ func NewWithFastProviderAndApproval(cfg *config.Config, provider llm.Provider, f
 	}
 
 	// Use provided session or create a new one
-	if sess == nil {
+	newSession := sess == nil
+	if newSession {
 		sess = &session.Session{
 			ID:           session.NewID(),
 			Provider:     provider.Name(),
@@ -980,7 +981,7 @@ func NewWithFastProviderAndApproval(cfg *config.Config, provider llm.Provider, f
 	// window to the LLM.
 	var messages []session.Message
 	var compactionIdx int
-	if store != nil && sess.ID != "" {
+	if !newSession && store != nil && sess.ID != "" {
 		if loadedMsgs, idx, err := loadInitialSessionMessagesForScrollback(context.Background(), store, sess); err == nil {
 			messages = loadedMsgs
 			compactionIdx = idx

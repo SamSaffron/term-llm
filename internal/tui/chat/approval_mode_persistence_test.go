@@ -124,6 +124,64 @@ func TestPersistRequestedApprovalModeSurvivesActualPromptFallback(t *testing.T) 
 	}
 }
 
+func TestPersistApprovalModeSkipsUnchangedSession(t *testing.T) {
+	store := &mockStore{}
+	sess := &session.Session{ID: session.NewID(), ApprovalMode: session.ApprovalModeAuto}
+	m := newTestChatModel(false)
+	m.store = store
+	m.sess = sess
+
+	m.PersistApprovalMode(tools.ModeAuto)
+	if store.updated != nil {
+		t.Fatal("unchanged approval mode wrote the session")
+	}
+	if got := m.ApprovalModeRequested(); got != tools.ModeAuto {
+		t.Fatalf("requested mode = %v, want auto", got)
+	}
+
+	m.PersistApprovalMode(tools.ModeYolo)
+	if store.updated != sess {
+		t.Fatal("changed approval mode did not write the session")
+	}
+	if sess.ApprovalMode != session.ApprovalModeYolo {
+		t.Fatalf("session approval mode = %q, want yolo", sess.ApprovalMode)
+	}
+}
+
+func TestNewChatSkipsScrollbackReadForFreshSession(t *testing.T) {
+	store := &mockStore{}
+	provider := llm.NewMockProvider("mock")
+	model := NewWithFastProviderAndApproval(
+		&config.Config{}, provider, nil, llm.NewEngine(provider, nil),
+		"mock", "mock", mcp.NewManager(), 1,
+		false, false, false, nil, "", "", false, "",
+		store, nil, false, nil, false, true, "", "", false,
+		tools.ModePrompt,
+	)
+	if model.sess == nil || len(store.created) != 1 {
+		t.Fatal("fresh chat session was not created")
+	}
+	if store.getMessagesCalls != 0 {
+		t.Fatalf("fresh chat read scrollback %d times, want 0", store.getMessagesCalls)
+	}
+}
+
+func TestNewChatLoadsScrollbackForExistingSession(t *testing.T) {
+	store := &mockStore{}
+	sess := &session.Session{ID: session.NewID(), Provider: "mock", Model: "mock", Mode: session.ModeChat}
+	provider := llm.NewMockProvider("mock")
+	NewWithFastProviderAndApproval(
+		&config.Config{}, provider, nil, llm.NewEngine(provider, nil),
+		"mock", "mock", mcp.NewManager(), 1,
+		false, false, false, nil, "", "", false, "",
+		store, sess, false, nil, false, true, "", "", false,
+		tools.ModePrompt,
+	)
+	if store.getMessagesCalls == 0 {
+		t.Fatal("existing chat session did not load scrollback")
+	}
+}
+
 func TestSetApprovalModePersistsToSession(t *testing.T) {
 	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
 	if err != nil {

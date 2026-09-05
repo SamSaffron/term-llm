@@ -118,13 +118,17 @@ func openObservationDB(primaryPath string) (*sql.DB, string, error) {
 	} else {
 		dsn += "?"
 	}
-	dsn += "_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=auto_vacuum(2)"
+	dsn += "_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, "", fmt.Errorf("open filesystem observation database: %w", err)
 	}
 	if path == ":memory:" {
 		db.SetMaxOpenConns(1)
+	}
+	if err := configureFileTrackingDB(db); err != nil {
+		db.Close()
+		return nil, "", fmt.Errorf("configure filesystem observation database: %w", err)
 	}
 	if _, err := db.Exec(observationSchema); err != nil {
 		db.Close()

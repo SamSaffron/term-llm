@@ -7,8 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/samsaffron/term-llm/internal/testutil"
 )
 
 func gitTest(t *testing.T, dir string, args ...string) string {
@@ -241,6 +245,63 @@ func TestUnbornHookFailureIsRecoverableNotUncertain(t *testing.T) {
 	_, err = r.Commit(context.Background(), "initial", staged.Fingerprint)
 	if !IsKind(err, ErrCommit) || IsKind(err, ErrUncertain) {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestCommitTimesOutHungHookAndReleasesCheckout(t *testing.T) {
+	r := repoTest(t)
+	writeTest(t, r.root, "base.txt", "changed\n")
+	state, err := r.Inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged, err := r.Stage(context.Background(), StageRequest{Mode: StageAll, StatusToken: state.StatusToken}, state.Fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pidPath := filepath.Join(t.TempDir(), "hook.pid")
+	t.Setenv("TERM_LLM_TEST_HOOK_PID", pidPath)
+	hook := filepath.Join(r.gitDir, "hooks", "pre-commit")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nprintf '%s' $$ > \"$TERM_LLM_TEST_HOOK_PID\"\nsleep 60\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	oldTimeout, oldWaitDelay := commitTimeout, commitWaitDelay
+	commitTimeout, commitWaitDelay = time.Second, 100*time.Millisecond
+	t.Cleanup(func() {
+		commitTimeout, commitWaitDelay = oldTimeout, oldWaitDelay
+	})
+
+	started := time.Now()
+	_, err = r.Commit(context.Background(), "blocked", staged.Fingerprint)
+	if !IsKind(err, ErrCommit) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want deadline-backed commit failure", err)
+	}
+	if elapsed := time.Since(started); elapsed > 3*time.Second {
+		t.Fatalf("hung commit returned after %s, want at most 3s", elapsed)
+	}
+
+	pidBytes, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatalf("read hook PID: %v", err)
+	}
+	hookPID, err := strconv.Atoi(string(pidBytes))
+	if err != nil {
+		t.Fatalf("parse hook PID %q: %v", pidBytes, err)
+	}
+	testutil.WaitForProcessExit(t, hookPID, 2*time.Second)
+
+	if err := os.Remove(hook); err != nil {
+		t.Fatal(err)
+	}
+	commitTimeout, commitWaitDelay = oldTimeout, oldWaitDelay
+	after, err := r.Inspect(context.Background())
+	if err != nil {
+		t.Fatalf("inspect after timed-out commit: %v", err)
+	}
+	if _, err := r.Commit(context.Background(), "after timeout", after.Fingerprint); err != nil {
+		t.Fatalf("commit after timed-out hook: %v", err)
 	}
 }
 
