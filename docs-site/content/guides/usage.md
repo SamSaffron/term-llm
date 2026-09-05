@@ -9,11 +9,15 @@ next:
   label: File editing
   url: /guides/file-editing/
 ---
+`exec` turns a plain-English task into an interactive list of commands, with an explanation for each option:
+
 ```bash
-term-llm exec "your request here"
+term-llm exec "list files"
 ```
 
-Use arrow keys to select a command, Enter to execute, or press `h` for detailed help on the highlighted command. Select "something else..." to refine your request.
+Use **↑/↓** to highlight a command, **i** for detailed information, and **Enter** to execute your selection. Choose **“something else...”** to refine your request and get new suggestions, or **Esc** to cancel. Suggestions depend on your request and shell; review the command before running it.
+
+By default, selecting a command runs it. `--print-only` changes that last step to printing the selected command instead; it is an optional mode, not the main `exec` workflow.
 
 Use `term-llm chat` for a persistent session.
 

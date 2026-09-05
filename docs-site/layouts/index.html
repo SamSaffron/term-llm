@@ -35,9 +35,20 @@
   <section class="home-section container terminal-section" aria-labelledby="terminal-title">
     <div class="section-heading"><p class="eyebrow">{{ .eyebrow }}</p><h2 id="terminal-title">{{ .title }}</h2><p>{{ .description }}</p><a class="text-link" href="/guides/usage/">Explore the CLI →</a></div>
     <figure class="terminal-demo">
-      <div class="terminal-title"><span aria-hidden="true">&gt;_</span> Command suggestion <span>Linux example</span></div>
-      {{ partial "command.html" (dict "command" .command "label" "Generate a command without executing it") }}
-      <div class="terminal-result"><span class="code-label">Suggested command</span><pre tabindex="0" aria-label="Illustrative command output"><code>{{ .output }}</code></pre></div>
+      <div class="terminal-title"><span aria-hidden="true">&gt;_</span> Interactive exec <span>Example picker</span></div>
+      {{ partial "command.html" (dict "command" .command "label" "Open the interactive command picker") }}
+      <div class="exec-picker">
+        <p class="exec-picker-heading"><strong>Select a command to run</strong><span><kbd>i</kbd> info</span></p>
+        <ul class="exec-options" aria-label="Example command suggestions">
+          {{ range $index, $option := .options }}
+            <li{{ if eq $index 0 }} class="highlighted"{{ end }}>
+              <span class="exec-cursor" aria-hidden="true">{{ if eq $index 0 }}&gt;{{ end }}</span>
+              <div>{{ if eq $index 0 }}<span class="sr-only">Highlighted option: </span>{{ end }}<code>{{ $option.command }}</code><p>{{ $option.explanation }}</p></div>
+            </li>
+          {{ end }}
+        </ul>
+        <p class="exec-refine">something else...</p>
+      </div>
       <figcaption>{{ .note }}</figcaption>
     </figure>
   </section>

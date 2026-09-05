@@ -111,8 +111,9 @@ kbd { font-size: 0.75rem; color: var(--muted); }
 .web-section { padding-bottom: 5.5rem; }
 .workspace-launch { display: flex; align-items: center; justify-content: center; gap: 0.7rem; flex-wrap: wrap; margin-bottom: 1rem; font-size: 0.8rem; color: var(--muted); }
 .status-dot { height: 7px; width: 7px; border-radius: 50%; background: var(--accent); }
-.workspace-launch .command-block { width: auto; margin-left: 0.4rem; }
-.workspace-launch .command-block pre { padding: 0.5rem 0.75rem; font-size: 0.8rem; }
+.workspace-launch .command-block { width: auto; margin-left: 0.4rem; align-items: center; }
+.workspace-launch .command-block pre { padding: 0.35rem 0.65rem; font-size: 0.8rem; line-height: 1.4; }
+.workspace-launch .copy-button { min-height: 28px; padding: 0.2rem 0.5rem; margin: 0.2rem; align-self: center; }
 .product-shot .screenshot-link { display: block; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; box-shadow: var(--shadow); }
 .product-shot img { width: 100%; }
 .product-shot figcaption { margin-top: 0.85rem; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; color: var(--muted); font-size: 0.75rem; }
@@ -138,10 +139,18 @@ kbd { font-size: 0.75rem; color: var(--muted); }
 .terminal-title > span:last-child { margin-left: auto; color: var(--muted); font-size: 0.7rem; }
 .terminal-demo .command-block { margin: 1rem; }
 .terminal-demo .command-block pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-.terminal-result { padding: 0 1rem 1rem; }
-.terminal-result pre { overflow-x: auto; color: var(--accent); font-size: 0.8rem; margin-top: 0.65rem; }
+.exec-picker { padding: 0 1rem 1rem; font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: 0.8rem; }
+.exec-picker-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.4rem 1rem; margin-bottom: 1rem; }
+.exec-picker-heading > span { color: var(--muted); }
+.exec-picker-heading kbd { font: inherit; }
+.exec-options { list-style: none; padding: 0; margin: 0; }
+.exec-options li { display: grid; grid-template-columns: 0.8rem minmax(0, 1fr); gap: 0.4rem; margin-bottom: 0.85rem; }
+.exec-options code, .exec-cursor { color: var(--accent); }
+.exec-options code { overflow-wrap: anywhere; }
+.exec-options .highlighted code, .exec-cursor { font-weight: 700; }
+.exec-options p { color: var(--muted); margin: 0.1rem 0 0; line-height: 1.5; }
+.exec-refine { margin: 0; padding-left: 1.2rem; color: var(--muted); }
 .terminal-demo figcaption { font-size: 0.75rem; color: var(--muted); padding: 0.9rem 1rem; background: var(--subtle); border-top: 1px solid var(--border); }
-.code-label { font-size: 0.75rem; color: var(--muted); }
 .command-block { display: flex; align-items: stretch; background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; min-width: 0; max-width: 100%; }
 .command-block pre { padding: 0.9rem; overflow-x: auto; flex: 1; min-width: 0; font-size: 0.8rem; line-height: 1.65; }
 .copy-button { flex-shrink: 0; align-self: start; min-height: 36px; padding: 0.4rem 0.65rem; margin: 0.3rem; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; font-size: 0.7rem; color: var(--muted); }

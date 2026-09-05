@@ -94,13 +94,15 @@ term-llm edit --provider zen "improve error handling" -f main.go --dry-run
 
 Replace `main.go` with a file in your project. `--dry-run` previews the change without writing it to disk.
 
-**Turn plain English into a command suggestion:**
+**Choose and run a command in plain English:**
 
 ```bash
-term-llm exec --provider zen --print-only "find files larger than 100 MB"
+term-llm exec --provider zen "list files"
 ```
 
-`--print-only` shows a suggested shell command without executing it. Check that the command is suitable for your operating system and current directory before running it yourself.
+You’ll see an interactive picker with suggested commands and an explanation for each. Use **↑/↓** to highlight an option, **i** for more information, and **Enter** to run the selected command. Choose **“something else...”** to refine your request, or **Esc** to cancel.
+
+For this example, suggestions might include `ls`, `ls -la`, or `ls -lh`. Check the command before selecting it: Enter runs it, rather than just copying it. If you want to print the selected command instead of running it, add `--print-only`.
 
 ## 5. Make it your own
 

@@ -116,6 +116,20 @@ try {
   }
   await page.goto(origin);
   await noOverflow();
+  assert.equal(await page.locator(".terminal-demo .command-block code").textContent(), 'term-llm exec "list files"');
+  assert.ok(await page.locator(".exec-options li").count() > 1, "Exec should show a choice of commands, not a single output");
+  assert.equal(await page.locator(".exec-options .highlighted").count(), 1);
+  assert.equal(await page.locator(".exec-refine").textContent(), "something else...");
+  assert.ok((await page.locator(".terminal-demo figcaption").textContent()).includes("Enter to run"));
+  const launch = await page.locator(".workspace-launch").evaluate((element) => {
+    const box = element.querySelector(".command-block").getBoundingClientRect();
+    const code = element.querySelector("code").getBoundingClientRect();
+    const caption = element.querySelector(":scope > span:not(.status-dot)").getBoundingClientRect();
+    return { height: box.height, centerOffset: Math.abs(code.top + code.height / 2 - caption.top - caption.height / 2) };
+  });
+  assert.ok(launch.height <= 40, `Inline launch control is too tall: ${launch.height}px`);
+  assert.ok(launch.centerOffset <= 2, `Inline launch text is misaligned: ${launch.centerOffset}px`);
+  console.log("✓ Interactive exec example and compact, aligned web launch control");
   assert.equal(await page.locator("html").evaluate((el) => getComputedStyle(el).colorScheme), "light");
   await accessible("light homepage");
   await page.screenshot({ path: path.join(results, "home-light.png"), fullPage: true });

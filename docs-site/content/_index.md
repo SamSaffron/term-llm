@@ -38,11 +38,21 @@ why:
       link: "Explore automation"
 terminal:
   eyebrow: "At home in your terminal"
-  title: "Small commands. Useful results."
-  description: "Ask a question, pipe in a diff, or stay in a conversation. term-llm fits alongside the tools you already use."
-  command: 'term-llm exec --print-only "find the 3 biggest files in this directory on Linux"'
-  output: "find . -type f -printf '%s %p\\n' | sort -nr | head -3"
-  note: "Illustrative output on GNU/Linux. --print-only displays the suggested command without executing it; always inspect generated commands before running them."
+  title: "Describe the task. Choose the command."
+  description: "Tell term-llm exec what you want to do. It suggests commands with explanations, lets you explore the options, and runs the one you choose. Not quite right? Refine your request without starting over."
+  command: 'term-llm exec "list files"'
+  options:
+    - command: "ls"
+      explanation: "List files and directories in the current directory."
+    - command: "ls -la"
+      explanation: "Include hidden files, permissions, ownership, sizes, and timestamps."
+    - command: "ls -lh"
+      explanation: "Show detailed metadata with human-readable file sizes."
+    - command: "ls -lt"
+      explanation: "Sort by modification time, newest first."
+    - command: "find . -maxdepth 1 -type f"
+      explanation: "List only regular files in the current directory, including hidden files."
+  note: "Use ↑/↓ to choose, i for info, and Enter to run. Choose “something else…” to refine your request. Illustrative suggestions; results vary by request and shell."
 workflows:
   title: "Start with something you need to do."
   items:
