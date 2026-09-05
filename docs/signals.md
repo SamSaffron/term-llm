@@ -1,8 +1,14 @@
 # Process signals
 
 This matrix describes application handlers, not a promise that every operating
-system exposes every signal. An unhandled signal follows Go/OS defaults and any
-inherited disposition; it is not a supported control command.
+system exposes every signal. **Universal safe restart is work in progress, not
+implemented by the current PR.** Unix executables now register one process-wide
+SIGUSR2 listener at command entry, before argument parsing or configuration.
+Without an installed mode owner, signals are coalesced into a logged `deferred`
+status and the original invocation continues; normal command completion logs
+`finished`. No arguments, stdin, mutations, or tool calls are replayed. These
+logs are not the planned authoritative generation registry or a readiness API.
+Other unhandled signals retain Go/OS defaults and inherited dispositions.
 
 ## Handler matrix
 
@@ -13,12 +19,19 @@ inherited disposition; it is not a supported control command.
 | `serve api`, `serve jobs`, `serve telegram` without web | Same shared serve shutdown | No reload handler | No application handler | Logged rejection; no restart |
 | `serve mcp` | Cancels the MCP context and enters shutdown | No reload handler | No application handler | Logged rejection; no restart |
 | `serve hub` | No application shutdown signal handler; Go/OS default disposition | No reload handler | No application handler | Logged rejection; no restart |
+| Chat/TUI, ask, exec, loop, edit, image/music/embed, benchmark | Existing per-command cancellation/terminal handling, unchanged | Unchanged | Unchanged | Nonfatal deferred; no resume implementation yet |
+| Stdio `mcp-server`, MCP clients, maintenance/CRUD, completion, external editors and subprocess wrappers | Existing per-command handling, unchanged | Unchanged | Unchanged | Nonfatal deferred; finishes original invocation without replay |
+
+Deferred semantics are a safety floor, **not** completed long-lived-mode restart
+support. Jobs, Telegram, Hub, TUI, proxy/MCP and combined serve still require
+mode-specific checkpoint/admission/ownership integration. Even a successful
+command completion is not evidence that detached descendants have finished.
 
 USR1/USR2 handling is compiled for AIX, Darwin, DragonFly BSD, FreeBSD, illumos,
 Linux, NetBSD, OpenBSD and Solaris. Other platforms compile no-op installers.
 The same-PID browser integration has been exercised on Linux. Windows does not
-provide these Unix controls. Chat/TUI, ask and exec modes do not acquire the web
-restart handler.
+provide these Unix controls. Chat/TUI, ask and exec have the process-wide
+nonfatal listener but do not yet have resumable lifecycle owners.
 
 SIGINT/SIGTERM handling is unchanged: the shared serve context registers
 `os.Interrupt` and `syscall.SIGTERM`. HTTP shutdown uses a ten-second context;
@@ -59,10 +72,16 @@ attention does not invalidate eligibility; unauthorized requests cannot do so.
 WebRTC and widgets.** Such a process logs a rejection and keeps running. The
 local browser evidence below is not evidence for that deployment.
 
-Inspection found that `runHubReverseConnector` has no owned stop/join handle:
-its socket read is not directly interrupted by context cancellation, and its
-per-request goroutines are cancelled but not joined. WebRTC `peer.Close` only
-cancels its context; it does not acknowledge completion of transport handlers.
+The reverse connector now has a joinable `Stop(ctx)` owner. Cancellation closes
+its socket to wake reads/writes; completion joins the reconnect loop, ping loop
+and forwarded requests. A deadline reports a failed join and never authorizes
+exec. Tests include a transport that observes cancellation but cannot yet return;
+Stop must not claim completion. This joins the forwarding client, **not** the
+server-side mutation: an HTTP client returning does not prove its backend handler
+finished. Existing reconnect tests now join their connectors before cleanup.
+
+WebRTC `peer.Close` still only cancels its context; it does not acknowledge
+completion of transport handlers.
 Widget `CloseContext` is a one-way, best-effort shutdown that may return on its
 deadline and escalates subprocess termination; it is not a reversible drain.
 Simply invoking these shutdown methods before exec would not establish safe
@@ -74,7 +93,7 @@ explicit policy for external effects), and failed-exec rollback. Browser HTTPS
 fallback/reconnection must be exercised through a sandbox Hub and WebRTC relay,
 including ambiguous mutation delivery: automatic transport fallback is not a
 proof of exactly-once request admission. These changes and their combined
-browser proof are intentionally not claimed by this PR.
+browser proof remain required before this PR can claim universal restart.
 
 ## Lifecycle
 

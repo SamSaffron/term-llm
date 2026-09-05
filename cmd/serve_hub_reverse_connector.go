@@ -55,6 +55,35 @@ func netJoinHostPortForURL(host string, port int) string {
 
 var hubReverseReconnectDelay = 2 * time.Second
 
+// hubReverseConnector owns the reconnect loop and every request it forwards.
+// Stop is joinable and idempotent. It does not prove that a remote/local server
+// has rolled back a mutation; that requires the server's admission barrier.
+type hubReverseConnector struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+func startHubReverseConnector(ctx context.Context, hubURL, nodeID, token, localBase, allowedBasePath string, client *http.Client) *hubReverseConnector {
+	ctx, cancel := context.WithCancel(ctx)
+	c := &hubReverseConnector{cancel: cancel, done: make(chan struct{})}
+	go func() {
+		defer close(c.done)
+		runHubReverseConnector(ctx, hubURL, nodeID, token, localBase, allowedBasePath, client)
+	}()
+	return c
+}
+
+func (c *hubReverseConnector) Stop(ctx context.Context) error {
+	c.cancel()
+	select {
+	case <-c.done:
+		return nil
+	case <-ctx.Done():
+		// A deadline is a failed join, never authority to exec or kill work.
+		return ctx.Err()
+	}
+}
+
 func runHubReverseConnector(ctx context.Context, hubURL, nodeID, token, localBase, allowedBasePath string, client *http.Client) {
 	if client == nil {
 		client = newHubReverseLocalClient()
@@ -94,14 +123,25 @@ func hubReverseConnectOnce(ctx context.Context, hubURL, nodeID, token, localBase
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	ctx, cancelConnection := context.WithCancel(ctx)
+	var children sync.WaitGroup
+	// Wake blocked reads/writes on cancellation, not just on heartbeat expiry.
+	children.Go(func() {
+		<-ctx.Done()
+		_ = conn.Close()
+	})
+	defer func() {
+		cancelConnection()
+		_ = conn.Close()
+		children.Wait()
+	}()
 	var writeMu sync.Mutex
 	donePing := make(chan struct{})
 	defer close(donePing)
 	if err := hubReverseSetHeartbeat(conn, nil); err != nil {
 		return err
 	}
-	go hubReversePingLoop(conn, &writeMu, donePing)
+	children.Go(func() { hubReversePingLoop(conn, &writeMu, donePing) })
 	log.Printf("hub reverse connect: node %q connected to %s", nodeID, hubURL)
 	activeMu := sync.Mutex{}
 	active := map[string]context.CancelFunc{}
@@ -131,7 +171,9 @@ func hubReverseConnectOnce(ctx context.Context, hubURL, nodeID, token, localBase
 		activeMu.Lock()
 		active[req.ID] = cancel
 		activeMu.Unlock()
+		children.Add(1)
 		go func(req hubReverseRequest, reqCtx context.Context, cancel context.CancelFunc) {
+			defer children.Done()
 			defer func() {
 				activeMu.Lock()
 				delete(active, req.ID)

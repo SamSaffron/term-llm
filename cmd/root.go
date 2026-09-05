@@ -14,6 +14,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/exitcode"
 	pprofserver "github.com/samsaffron/term-llm/internal/pprof"
+	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/terminaltext"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/samsaffron/term-llm/internal/update"
@@ -200,7 +201,11 @@ func stopProfiling() error {
 }
 
 func Execute() {
-	if err := executeWithArgs(os.Args[1:]); err != nil {
+	stopRestart := restart.Default.Listen()
+	err := executeWithArgs(os.Args[1:])
+	// Execute exits directly on errors, so finish before os.Exit, not in a defer.
+	stopRestart()
+	if err != nil {
 		writeRootError(rootCmd.ErrOrStderr(), err)
 		if exitErr, ok := err.(exitcode.ExitError); ok {
 			os.Exit(exitErr.Code)

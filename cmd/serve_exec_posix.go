@@ -4,26 +4,17 @@ package cmd
 
 import (
 	"context"
-	"os"
-	ossignal "os/signal"
 	"syscall"
+
+	"github.com/samsaffron/term-llm/internal/restart"
 )
 
 func execWebProcess(path string, args, env []string) error { return syscall.Exec(path, args, env) }
 
 func installWebExecSignal(ctx context.Context, c *webExecCoordinator) func() {
-	ctx, cancel := context.WithCancel(ctx)
-	ch := make(chan os.Signal, 1)
-	ossignal.Notify(ch, syscall.SIGUSR2)
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ch:
-				c.request()
-			}
+	return restart.Default.Bind(func() {
+		if ctx.Err() == nil {
+			c.request()
 		}
-	}()
-	return func() { ossignal.Stop(ch); cancel() }
+	})
 }

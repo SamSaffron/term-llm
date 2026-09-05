@@ -78,7 +78,7 @@ func TestHubReverseNodeProxy(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runHubReverseConnector(ctx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client())
+	defer startHubReverseConnector(ctx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client()).Stop(context.Background())
 	waitForReverseNode(t, s, "artist")
 
 	req := httptest.NewRequest(http.MethodGet, "/node/artist/healthz", nil)
@@ -139,7 +139,7 @@ func TestHubReverseNodeSessionsSummary(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runHubReverseConnector(ctx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client())
+	defer startHubReverseConnector(ctx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client()).Stop(context.Background())
 	waitForReverseNode(t, s, "artist")
 
 	rec := httptest.NewRecorder()
@@ -184,7 +184,7 @@ func TestHubReverseNodeProxyStreamsChunkedResponse(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runHubReverseConnector(ctx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client())
+	defer startHubReverseConnector(ctx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client()).Stop(context.Background())
 	waitForReverseNode(t, s, "artist")
 
 	req := httptest.NewRequest(http.MethodGet, "/node/artist/stream", nil)
@@ -228,7 +228,7 @@ func TestHubReverseNodeProxyStreamsShellSSEIncrementally(t *testing.T) {
 
 	connectorCtx, stopConnector := context.WithCancel(context.Background())
 	defer stopConnector()
-	go runHubReverseConnector(connectorCtx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client())
+	defer startHubReverseConnector(connectorCtx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client()).Stop(context.Background())
 	waitForReverseNode(t, s, "artist")
 
 	requestCtx, cancelRequest := context.WithTimeout(context.Background(), 5*time.Second)
@@ -293,7 +293,7 @@ func TestHubReverseNodeProxyRejectsOversizedRequestBody(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runHubReverseConnector(ctx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client())
+	defer startHubReverseConnector(ctx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client()).Stop(context.Background())
 	waitForReverseNode(t, s, "artist")
 
 	payload := strings.Repeat("a", hubReverseMaxRequestBodyBytes+1)
@@ -336,7 +336,7 @@ func TestHubReverseResponseCancellation(t *testing.T) {
 
 	connectorCtx, stopConnector := context.WithCancel(context.Background())
 	defer stopConnector()
-	go runHubReverseConnector(connectorCtx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client())
+	defer startHubReverseConnector(connectorCtx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client()).Stop(context.Background())
 	waitForReverseNode(t, s, "artist")
 
 	reqCtx, cancelReq := context.WithCancel(context.Background())
@@ -893,7 +893,7 @@ func TestHubReverseConnectorReconnectsAfterDroppedWebsocket(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runHubReverseConnector(ctx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client())
+	defer startHubReverseConnector(ctx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client()).Stop(context.Background())
 
 	first := waitForReverseNodeConnection(t, s, "artist")
 	assertReverseProxyContains(t, s, "/node/artist/healthz", `"agent":"artist"`)
@@ -935,7 +935,7 @@ func TestHubReverseConnectorFailsInFlightRequestAndRecoversAfterDrop(t *testing.
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runHubReverseConnector(ctx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client())
+	defer startHubReverseConnector(ctx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client()).Stop(context.Background())
 
 	first := waitForReverseNodeConnection(t, s, "artist")
 	inFlight := make(chan reverseDoResult, 1)
@@ -980,7 +980,7 @@ func TestHubReverseDelegationNodeJSON(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runHubReverseConnector(ctx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client())
+	defer startHubReverseConnector(ctx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client()).Stop(context.Background())
 	waitForReverseNode(t, s, "artist")
 
 	var out struct {

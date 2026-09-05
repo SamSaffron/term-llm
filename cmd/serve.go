@@ -891,7 +891,11 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 
 		if serveHubConnect == "reverse" {
 			localBase := localHubConnectBase(serveHost, servePort)
-			go runHubReverseConnector(ctx, reverseHubURL, reverseHubNodeID, token, localBase, serveBasePath, newHubReverseLocalClient())
+			connector := startHubReverseConnector(ctx, reverseHubURL, reverseHubNodeID, token, localBase, serveBasePath, newHubReverseLocalClient())
+			defer func() {
+				// Join ownership; a deadline must not authorize abandoning requests.
+				_ = connector.Stop(context.Background())
+			}()
 			fmt.Fprintf(cmd.ErrOrStderr(), "hub reverse: connecting %s to %s\n", reverseHubNodeID, reverseHubURL)
 		}
 
