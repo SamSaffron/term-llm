@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"charm.land/bubbles/v2/cursor"
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
@@ -2396,6 +2397,15 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	}
 	if m.commit != nil {
 		switch msg.(type) {
+		case tea.MouseMsg:
+			return m, nil // Do not click or scroll the conversation through the modal.
+		case cursor.BlinkMsg:
+			if m.commit.Phase == CommitEditing {
+				var cmd tea.Cmd
+				m.commit.Message, cmd = m.commit.Message.Update(msg)
+				return m, cmd
+			}
+			return m, nil
 		case commitInspectMsg, commitStageMsg, commitScopeMsg, commitDraftMsg, commitDoneMsg, tea.KeyPressMsg, tea.PasteMsg:
 			return m.updateCommit(msg)
 		}
@@ -2596,7 +2606,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
-		if (m.streaming || m.directShellRun != nil || m.sideQuestion.Running || m.branchContextInFlight() || m.sessionTransition != nil) && !m.pausedForExternalUI {
+		if (m.streaming || m.directShellRun != nil || m.sideQuestion.Running || m.branchContextInFlight() || m.sessionTransition != nil || m.commitBusy()) && !m.pausedForExternalUI {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			cmds = append(cmds, cmd)

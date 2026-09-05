@@ -8,9 +8,12 @@ import (
 
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/samsaffron/term-llm/internal/commitworkflow"
 	"github.com/samsaffron/term-llm/internal/gitcommit"
 	"github.com/samsaffron/term-llm/internal/terminaltext"
+	"github.com/samsaffron/term-llm/internal/ui"
 )
 
 type CommitPhase string
@@ -43,7 +46,6 @@ type CommitState struct {
 	ConfirmOverwrite  bool
 	NeedsReview       bool
 	Error             string
-	Info              string
 	Agent             string
 	AgentSource       string
 	ScopeSummary      string
@@ -91,28 +93,36 @@ func (m *Model) cmdCommit(intent string) (tea.Model, tea.Cmd) {
 	}
 	editor := textarea.New()
 	editor.Placeholder = "Commit subject\n\nOptional body"
-	editor.SetWidth(maxInt(40, m.width-12))
+	editor.Prompt = ""
+	editor.SetVirtualCursor(true)
+	editorStyles := editor.Styles()
+	editorStyles.Focused.Base = lipgloss.NewStyle()
+	editorStyles.Focused.CursorLine = lipgloss.NewStyle()
+	editorStyles.Focused.Placeholder = lipgloss.NewStyle().Foreground(m.styles.Theme().Muted)
+	editorStyles.Blurred = editorStyles.Focused
+	editor.SetStyles(editorStyles)
 	editor.SetHeight(8)
 	editor.ShowLineNumbers = false
+	editor.SetWidth(m.commitBodyWidth())
 	original := "/commit"
 	if strings.TrimSpace(intent) != "" {
 		original += " " + intent
 	}
-	m.commit = &CommitState{Phase: CommitLoading, Intent: intent, OriginalComposer: original, Message: editor, Info: "Inspecting the active checkout…"}
+	m.commit = &CommitState{Phase: CommitLoading, Intent: intent, OriginalComposer: original, Message: editor}
 	m.setTextareaValue("")
 	ctx := m.rootCtx
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	coordinator := m.commitMutationCoordinator
-	return m, func() tea.Msg {
+	return m, tea.Batch(m.spinner.Tick, func() tea.Msg {
 		repo, err := gitcommit.OpenWithCoordinator(ctx, dir, coordinator)
 		if err != nil {
 			return commitInspectMsg{err: err}
 		}
 		state, err := repo.Inspect(ctx)
 		return commitInspectMsg{repo: repo, state: state, err: err}
-	}
+	})
 }
 func (m *Model) footerErrorCmd(text string) tea.Cmd { _, cmd := m.showFooterError(text); return cmd }
 
@@ -144,8 +154,7 @@ func (m *Model) updateCommit(msg tea.Msg) (tea.Model, tea.Cmd) {
 				state.NeedsReview = false
 				state.Error = state.RetryError + " The staged state is unchanged; the message was preserved for retry."
 				state.RetryError = ""
-				state.Message.Focus()
-				return m, textarea.Blink
+				return m, state.Message.Focus()
 			}
 			state.NeedsReview = true
 			state.RetryError = ""
@@ -161,8 +170,15 @@ func (m *Model) updateCommit(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if len(value.state.Staged) > 0 {
+			if value.state.TotalUnstaged == 0 && value.state.TotalUntracked == 0 {
+				// Everything and staged-only are identical. An explicit scope
+				// request still needs planning, but not a redundant staging choice.
+				if strings.TrimSpace(state.Intent) != "" {
+					return m, m.startCommitScopePlan()
+				}
+				return m, m.startCommitDraft()
+			}
 			state.Phase = CommitChoosing
-			state.Info = "Choose deliberately; no staging choice is preselected."
 			return m, nil
 		}
 		if strings.TrimSpace(state.Intent) != "" {
@@ -213,17 +229,16 @@ func (m *Model) updateCommit(msg tea.Msg) (tea.Model, tea.Cmd) {
 		state.Phase = CommitEditing
 		if value.err != nil {
 			state.Error = "Message generation failed; write a message manually: " + value.err.Error()
-			state.Message.Focus()
-			return m, textarea.Blink
+			return m, state.Message.Focus()
 		}
 		state.Generated = value.message
 		state.Message.SetValue(value.message)
+		state.Message.MoveToBegin()
 		state.Dirty = false
 		state.NeedsReview = false
 		state.ConfirmOverwrite = false
 		state.Error = ""
-		state.Message.Focus()
-		return m, textarea.Blink
+		return m, state.Message.Focus()
 	case commitDoneMsg:
 		if value.err != nil {
 			state.Phase = CommitError
@@ -397,8 +412,7 @@ func (m *Model) handleCommitKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		if (key == "m" || key == "M") && !s.NeedsReview {
 			s.Phase = CommitEditing
-			s.Message.Focus()
-			return m, textarea.Blink
+			return m, s.Message.Focus()
 		}
 	}
 	return m, nil
@@ -427,26 +441,25 @@ func (m *Model) startCommitInspect() tea.Cmd {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return func() tea.Msg {
+	return tea.Batch(m.spinner.Tick, func() tea.Msg {
 		state, err := s.Repo.Inspect(ctx)
 		return commitInspectMsg{repo: s.Repo, state: state, err: err}
-	}
+	})
 }
 func (m *Model) startCommitStage(mode gitcommit.StageMode, paths []string) tea.Cmd {
 	s := m.commit
 	s.Phase = CommitStaging
 	s.Error = ""
-	s.Info = "Staging selected content…"
 	ctx := m.rootCtx
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	request := gitcommit.StageRequest{Mode: mode, Paths: paths, StatusToken: s.Status.StatusToken}
 	expected := s.Status.Fingerprint
-	return func() tea.Msg {
+	return tea.Batch(m.spinner.Tick, func() tea.Msg {
 		next, err := s.Repo.Stage(ctx, request, expected)
 		return commitStageMsg{state: next, err: err}
-	}
+	})
 }
 func (m *Model) startCommitScopePlan() tea.Cmd {
 	s := m.commit
@@ -461,10 +474,10 @@ func (m *Model) startCommitScopePlan() tea.Cmd {
 	s.Phase = CommitPlanning
 	s.Error = ""
 	request := commitworkflow.Request{ParentSessionID: m.SessionID(), CheckoutDir: s.Repo.CheckoutRoot(), AgentName: m.commitAgentName(), Intent: s.Intent, ExpectedFingerprint: s.Status.Fingerprint, ExpectedStatusToken: s.Status.StatusToken, Runner: m.childRunner}
-	return func() tea.Msg {
+	return tea.Batch(m.spinner.Tick, func() tea.Msg {
 		proposal, meta, err := commitworkflow.New().PlanScope(ctx, request)
 		return commitScopeMsg{proposal: proposal, meta: meta, err: err}
-	}
+	})
 }
 func (m *Model) startCommitDraft() tea.Cmd {
 	s := m.commit
@@ -473,16 +486,15 @@ func (m *Model) startCommitDraft() tea.Cmd {
 	if m.childRunner == nil {
 		s.Phase = CommitEditing
 		s.Error = "Commit message agent is unavailable; write a message manually."
-		s.Message.Focus()
-		return textarea.Blink
+		return s.Message.Focus()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
 	request := commitworkflow.Request{ParentSessionID: m.SessionID(), CheckoutDir: s.Repo.CheckoutRoot(), AgentName: m.commitAgentName(), Intent: s.Intent, ScopeSummary: s.ScopeSummary, ExpectedFingerprint: s.Status.Fingerprint, Runner: m.childRunner}
-	return func() tea.Msg {
+	return tea.Batch(m.spinner.Tick, func() tea.Msg {
 		message, meta, err := commitworkflow.New().DraftMessage(ctx, request)
 		return commitDraftMsg{message: message, meta: meta, err: err}
-	}
+	})
 }
 func (m *Model) startCommitCommit() tea.Cmd {
 	s := m.commit
@@ -494,10 +506,10 @@ func (m *Model) startCommitCommit() tea.Cmd {
 	s.Phase = CommitCommitting
 	s.Error = ""
 	expected := s.Status.Fingerprint
-	return func() tea.Msg {
+	return tea.Batch(m.spinner.Tick, func() tea.Msg {
 		result, err := s.Repo.Commit(context.Background(), message, expected)
 		return commitDoneMsg{result: result, err: err}
-	}
+	})
 }
 func (m *Model) commitAgentName() string {
 	if m.config == nil {
@@ -523,76 +535,240 @@ func (m *Model) commitSelectablePaths() []string {
 	return paths
 }
 
+// commitBodyWidth leaves room for the border, padding, and terminal margins.
+// An 80-cell editor accommodates conventional 72–76-column hard-wrapped bodies
+// plus the textarea cursor cell, avoiding a second wrap of their final words.
+func (m *Model) commitBodyWidth() int {
+	if m.width <= 0 {
+		return 80
+	}
+	if m.width < 12 {
+		return max(1, m.width-2)
+	}
+	return min(80, m.width-10)
+}
+
 func (m *Model) renderCommit() string {
 	s := m.commit
 	if s == nil {
 		return ""
 	}
-	var b strings.Builder
-	b.WriteString("Git commit\n\n")
-	fmt.Fprintf(&b, "Branch: %s", s.Status.Branch)
-	if s.Status.Detached {
-		b.WriteString("detached HEAD")
+	width := m.commitBodyWidth()
+	theme := m.styles.Theme()
+	title := lipgloss.NewStyle().Bold(true).Foreground(theme.Primary)
+	muted := lipgloss.NewStyle().Foreground(theme.Muted)
+	selected := lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
+	// Reserve chrome and help before allocating space to the editor or file list.
+	height := m.height
+	if height <= 0 {
+		height = 32
 	}
-	b.WriteString("\n")
-	fmt.Fprintf(&b, "Staged %d · Unstaged %d · Untracked %d\n", s.Status.TotalStaged, s.Status.TotalUnstaged, s.Status.TotalUntracked)
+	paddingY, paddingX := 1, 2
+	if height < 16 {
+		paddingY = 0
+	}
+	if m.width > 0 && m.width < 12 {
+		paddingX = 0
+	}
+	bodyHeight := max(1, height-2-2*paddingY)
+	border := lipgloss.RoundedBorder()
+	if (m.width > 0 && m.width < 3) || height < 3 {
+		border = lipgloss.Border{}
+		paddingY, paddingX = 0, 0
+		width = max(1, m.width)
+		bodyHeight = height
+	}
+	line := func(text string) string { return ansi.Truncate(terminaltext.SanitizeSingleLine(text), width, "…") }
+	rows := []string{title.Render("Git commit")}
+	branch := s.Status.Branch
+	if s.Status.Detached {
+		branch = "detached HEAD"
+	}
+	if branch != "" {
+		rows = append(rows, line(branch))
+	}
+	rows = append(rows, muted.Render(line(fmt.Sprintf("%d staged · %d unstaged · %d untracked", s.Status.TotalStaged, s.Status.TotalUnstaged, s.Status.TotalUntracked))))
+	if strings.TrimSpace(s.Intent) != "" {
+		rows = append(rows, muted.Render(line("Request: "+s.Intent)))
+	}
+	rows = append(rows, "")
+	help := "esc cancel"
+	var body []string
 	switch s.Phase {
-	case CommitLoading, CommitPlanning, CommitStaging, CommitDrafting, CommitCommitting:
-		b.WriteString("\n" + s.Info)
-		if s.Phase == CommitPlanning {
-			b.WriteString("Planning whole-file scope…")
-		}
-		if s.Phase == CommitDrafting {
-			b.WriteString("Drafting message…")
-		}
-		if s.Phase == CommitCommitting {
-			b.WriteString("Running Git hooks and signing; this cannot be cancelled…")
-		}
+	case CommitLoading:
+		body = []string{m.spinner.View() + " Inspecting checkout…"}
+	case CommitPlanning:
+		body = []string{m.spinner.View() + " Planning which files to include…"}
+	case CommitStaging:
+		body = []string{m.spinner.View() + " Staging selected changes…"}
+		help = "Please wait · staging cannot be cancelled"
+	case CommitDrafting:
+		body = []string{m.spinner.View() + " Drafting commit message…"}
+	case CommitCommitting:
+		body = []string{m.spinner.View() + " Committing changes…", muted.Render("Running Git hooks and signing")}
+		help = "Please wait · commit cannot be cancelled"
 	case CommitChoosing:
-		b.WriteString("\nExisting staged changes require an explicit choice:\n  [E] Commit everything\n  [S] Commit staged only\n")
+		body = []string{"You already have staged changes.", "", selected.Render("e") + "  Commit everything", selected.Render("s") + "  Commit staged changes only"}
 		if strings.TrimSpace(s.Intent) != "" {
-			b.WriteString("  [F] Follow request with reviewed scope\n")
+			body = append(body, selected.Render("f")+"  Follow request and review files")
 		}
 	case CommitReviewing:
-		b.WriteString("\nIncluded in this commit (Space toggles):\n")
-		paths := m.commitSelectablePaths()
-		for i, path := range paths {
-			marker := " "
-			if s.Selected[path] {
-				marker = "x"
-			}
-			cursor := " "
-			if i == s.Cursor {
-				cursor = ">"
-			}
-			fmt.Fprintf(&b, "%s [%s] %s\n", cursor, marker, terminaltext.SanitizeSingleLine(path))
-		}
-		if s.Proposal.Summary != "" {
-			b.WriteString("\nPlanner: " + terminaltext.SanitizeSingleLine(s.Proposal.Summary) + "\n")
-		}
-		b.WriteString("Enter apply · A everything · R retry · Esc cancel\n")
+		help = "↑/↓ move · space toggle · enter apply\na all files · r retry · esc cancel"
 	case CommitEditing:
-		b.WriteString("\nEditable message:\n")
-		b.WriteString(s.Message.View())
-		b.WriteString("\nCtrl+S commit · Ctrl+R regenerate · Ctrl+F review files · Esc cancel\n")
+		help = "ctrl+s commit · ctrl+r regenerate\nctrl+f review files · esc cancel"
 	case CommitError:
-		if s.NeedsReview {
-			b.WriteString("\nPress R to refresh and review the repository.\n")
-		} else {
-			b.WriteString("\nPress R to refresh or M to enter a message manually.\n")
+		body = []string{"Refresh the checkout before continuing."}
+		help = "r refresh · esc cancel"
+		if !s.NeedsReview {
+			body = []string{"Refresh the checkout or write a message manually."}
+			help = "r refresh · m write message · esc cancel"
 		}
+	}
+	// Wrap between shortcuts, never between a key and its action.
+	var helpLines []string
+	for _, group := range strings.Split(help, "\n") {
+		current := ""
+		for _, hint := range strings.Split(group, " · ") {
+			if current != "" && lipgloss.Width(current+" · "+hint) > width {
+				helpLines = append(helpLines, ansi.Truncate(current, width, "…"))
+				current = ""
+			}
+			if current != "" {
+				current += " · "
+			}
+			current += hint
+		}
+		helpLines = append(helpLines, ansi.Truncate(current, width, "…"))
+	}
+
+	var notices []string
+	if s.Phase == CommitReviewing && s.Proposal.Summary != "" {
+		notices = append(notices, muted.Render(line(s.Proposal.Summary)))
 	}
 	if s.Agent != "" {
-		fmt.Fprintf(&b, "\nAgent: %s (%s)\n", terminaltext.SanitizeSingleLine(s.Agent), terminaltext.SanitizeSingleLine(s.AgentSource))
+		notices = append(notices, muted.Render(line("Agent: "+s.Agent+commitAgentSourceLabel(s.AgentSource))))
 	}
+	optionalNotices := len(notices)
 	if s.Error != "" {
-		b.WriteString("\nError: " + terminaltext.SanitizeSingleLine(s.Error) + "\n")
+		// Keep confirmations readable without allowing hook/agent errors to grow the panel.
+		errorLines := strings.Split(ansi.Wrap(terminaltext.SanitizeSingleLine(s.Error), width, ""), "\n")
+		if len(errorLines) > 3 {
+			errorLines = append(errorLines[:2], ansi.Truncate(errorLines[2], max(1, width-1), "")+"…")
+		}
+		for _, text := range errorLines {
+			notices = append(notices, lipgloss.NewStyle().Foreground(theme.Warning).Render(text))
+		}
 	}
-	return b.String()
+	// Discard optional metadata before sacrificing the active editor/list or help.
+	minimumBody := len(body)
+	if s.Phase == CommitEditing {
+		minimumBody = 2
+	}
+	if s.Phase == CommitReviewing {
+		minimumBody = 3
+	}
+	for len(rows)+len(notices)+minimumBody+len(helpLines)+1 > bodyHeight && len(rows) > 1 {
+		rows = rows[:len(rows)-1]
+	}
+	for len(rows)+len(notices)+minimumBody+len(helpLines)+1 > bodyHeight && len(notices) > 0 {
+		if optionalNotices > 0 {
+			notices = notices[1:]
+			optionalNotices--
+		} else {
+			notices = notices[:len(notices)-1]
+			if len(notices) > 0 {
+				last := len(notices) - 1
+				notices[last] = lipgloss.NewStyle().Foreground(theme.Warning).Render(ansi.Truncate(ansi.Strip(notices[last]), max(0, width-1), "") + "…")
+			}
+		}
+	}
+	available := max(1, bodyHeight-len(rows)-len(notices)-len(helpLines)-1)
+	switch s.Phase {
+	case CommitEditing:
+		s.Message.SetWidth(width)
+		s.Message.SetHeight(max(1, min(8, available-1)))
+		body = append([]string{muted.Render("Commit message")}, strings.Split(s.Message.View(), "\n")...)
+	case CommitReviewing:
+		paths := m.commitSelectablePaths()
+		start, end := ui.VisibleRange(len(paths), s.Cursor, max(1, available-2))
+		body = []string{muted.Render(line(fmt.Sprintf("Files to include · %d selected", countSelectedCommitPaths(paths, s.Selected))))}
+		for i := start; i < end; i++ {
+			mark := "○"
+			if s.Selected[paths[i]] {
+				mark = "●"
+			}
+			text := line("  " + mark + " " + paths[i])
+			if i == s.Cursor {
+				text = selected.Render(line("❯ " + mark + " " + paths[i]))
+			}
+			body = append(body, text)
+		}
+		if len(paths) == 0 {
+			body = append(body, muted.Render("No changed files"))
+		} else {
+			body = append(body, muted.Render(line(fmt.Sprintf("%d–%d of %d files", start+1, end, len(paths)))))
+		}
+	}
+	for _, text := range body {
+		rows = append(rows, ansi.Truncate(text, width, "…"))
+	}
+	rows = append(rows, notices...)
+	// Reserve the footer even on short terminals. If the entire help cannot fit,
+	// retain its first action and final cancellation/wait hint where possible.
+	if len(helpLines) >= bodyHeight {
+		if bodyHeight == 1 {
+			helpLines = helpLines[len(helpLines)-1:]
+		} else {
+			helpLines = append(helpLines[:bodyHeight-1], helpLines[len(helpLines)-1])
+		}
+	}
+	room := bodyHeight - len(helpLines)
+	if len(rows) > room {
+		rows = rows[:room]
+	}
+	if len(rows) < room {
+		rows = append(rows, "")
+	}
+	for _, hint := range helpLines {
+		rows = append(rows, muted.Render(hint))
+	}
+	// Truncate every row before Lip Gloss can soft-wrap it beyond the height budget.
+	for i := range rows {
+		rows[i] = ansi.Truncate(rows[i], width, "…")
+	}
+	frameWidth := width + 2*paddingX
+	if border.Top != "" {
+		frameWidth += 2
+	}
+	return lipgloss.NewStyle().Border(border).BorderForeground(theme.Border).
+		Padding(paddingY, paddingX).Width(frameWidth).Render(strings.Join(rows, "\n"))
 }
-func maxInt(a, b int) int {
-	if a > b {
-		return a
+
+func countSelectedCommitPaths(paths []string, selected map[string]bool) int {
+	count := 0
+	for _, path := range paths {
+		if selected[path] {
+			count++
+		}
 	}
-	return b
+	return count
+}
+
+func commitAgentSourceLabel(source string) string {
+	if source == "" {
+		return ""
+	}
+	return " (" + source + ")"
+}
+
+func (m *Model) commitBusy() bool {
+	if m.commit == nil {
+		return false
+	}
+	switch m.commit.Phase {
+	case CommitLoading, CommitPlanning, CommitStaging, CommitDrafting, CommitCommitting:
+		return true
+	default:
+		return false
+	}
 }

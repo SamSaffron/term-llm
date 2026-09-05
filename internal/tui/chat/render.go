@@ -82,12 +82,6 @@ func (m *Model) View() (view tea.View) {
 		return m.resumeBrowserModel.View()
 	}
 
-	// Native commit workflow is modal and owns the full terminal while open.
-	if m.commit != nil {
-		m.resetPostFrameCurrentImages()
-		return m.newView(m.renderCommit())
-	}
-
 	if m.streaming && m.streamPerf != nil {
 		m.streamPerf.RecordFrameAt(time.Now())
 	}
@@ -191,6 +185,11 @@ func (m *Model) View() (view tea.View) {
 	}
 
 	// Dialog (if open)
+	if m.commit != nil {
+		panel := m.renderCommit()
+		b.WriteString(panel + "\n")
+		renderedLines += lipgloss.Height(panel) + 1
+	}
 	if m.dialog.IsOpen() {
 		dialog := m.dialog.View()
 		b.WriteString(dialog)
@@ -237,7 +236,7 @@ func (m *Model) composerCursor() *tea.Cursor {
 	if m == nil || !m.textareaBoundsValid || !m.textarea.Focused() {
 		return nil
 	}
-	if m.autoSendQueue != nil || m.quitting || m.sideQuestion.Visible {
+	if m.autoSendQueue != nil || m.quitting || m.sideQuestion.Visible || m.commit != nil {
 		return nil
 	}
 	if m.dialog != nil && m.dialog.IsOpen() {
@@ -631,7 +630,7 @@ func (m *Model) overlayAltScreenPanels(base string, footer footerLayout) string 
 	// In alt-screen mode Bubble Tea v2 clips anything that extends beyond the
 	// fixed terminal height, so popups must be composited into the existing frame
 	// instead of being appended below it.
-	if !m.completions.IsVisible() && !m.mentionPopup.IsVisible() && !m.dialog.IsOpen() {
+	if !m.completions.IsVisible() && !m.mentionPopup.IsVisible() && !m.dialog.IsOpen() && m.commit == nil {
 		return base
 	}
 
@@ -722,6 +721,13 @@ func (m *Model) overlayAltScreenPanels(base string, footer footerLayout) string 
 			lines[row] = overlay + remainder
 		}
 		bottomY = y
+	}
+
+	if m.commit != nil {
+		panel := m.renderCommit()
+		placePanel(panel, (screenWidth-lipgloss.Width(panel))/2, (targetHeight-lipgloss.Height(panel))/2)
+		m.resetPostFrameCurrentImages()
+		return strings.Join(lines, "\n")
 	}
 
 	// Preserve the existing visual order above the footer:
