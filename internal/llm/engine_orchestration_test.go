@@ -234,14 +234,14 @@ func TestEngineOrchestration_InlineDynamicToolPublishesBeforeResume(t *testing.T
 	}
 }
 
-func TestEngineOrchestration_InlineDynamicToolContinuationCarriesInterjections(t *testing.T) {
+func TestEngineOrchestration_InlineDynamicToolContinuationCarriesSteering(t *testing.T) {
 	provider := &inlineDynamicToolProvider{published: make(chan ToolSpec, 1)}
 	registry := NewToolRegistry()
 	activation := &dynamicActivationTool{late: &namedTestTool{name: "late_tool"}}
 	registry.Register(activation)
 	engine := NewEngine(provider, registry)
 	activation.engine = engine
-	engine.Interject("use the new tool")
+	engine.Steer("use the new tool")
 
 	stream, err := engine.Stream(context.Background(), Request{
 		Messages: []Message{UserText("activate")},
@@ -252,7 +252,7 @@ func TestEngineOrchestration_InlineDynamicToolContinuationCarriesInterjections(t
 		t.Fatal(err)
 	}
 	defer stream.Close()
-	var sawInterjection bool
+	var sawSteering bool
 	for {
 		event, err := stream.Recv()
 		if err == io.EOF {
@@ -264,15 +264,15 @@ func TestEngineOrchestration_InlineDynamicToolContinuationCarriesInterjections(t
 		if event.Type == EventError {
 			t.Fatal(event.Err)
 		}
-		if event.Type == EventInterjection {
-			sawInterjection = true
+		if event.Type == EventSteering {
+			sawSteering = true
 		}
 	}
-	if !sawInterjection {
-		t.Fatal("expected interjection to ride the dynamic-tool flush turn")
+	if !sawSteering {
+		t.Fatal("expected steering to ride the dynamic-tool flush turn")
 	}
-	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
-		t.Fatalf("pending interjections = %+v, want none", pending)
+	if pending := engine.ListPendingSteering(); len(pending) != 0 {
+		t.Fatalf("pending steering = %+v, want none", pending)
 	}
 }
 
@@ -539,7 +539,7 @@ func TestEngineOrchestration_InlineSyncToolLoopWithoutOrderedEventsKeepsLegacyPe
 	}
 }
 
-func TestEngineOrchestration_InlineSyncToolLoopLeavesInterjectionsForFollowUp(t *testing.T) {
+func TestEngineOrchestration_InlineSyncToolLoopLeavesSteeringForFollowUp(t *testing.T) {
 	registry := NewToolRegistry()
 	registry.Register(&mockTool{name: "test_tool", result: "tool output"})
 	provider := &inlineSyncToolProvider{inline: true}
@@ -549,7 +549,7 @@ func TestEngineOrchestration_InlineSyncToolLoopLeavesInterjectionsForFollowUp(t 
 		persisted = append(persisted, messages...)
 		return nil
 	})
-	engine.Interject("follow-up instruction")
+	engine.Steer("follow-up instruction")
 
 	stream, err := engine.Stream(context.Background(), Request{
 		Messages: []Message{UserText("use tool")},
@@ -559,8 +559,8 @@ func TestEngineOrchestration_InlineSyncToolLoopLeavesInterjectionsForFollowUp(t 
 		t.Fatal(err)
 	}
 	defer stream.Close()
-	interjectionIndex, doneIndex, index := -1, -1, 0
-	var lateStatus InterjectionQueueStatus
+	steeringIndex, doneIndex, index := -1, -1, 0
+	var lateStatus SteeringQueueStatus
 	for {
 		event, err := stream.Recv()
 		if err == io.EOF {
@@ -569,27 +569,27 @@ func TestEngineOrchestration_InlineSyncToolLoopLeavesInterjectionsForFollowUp(t 
 		if err != nil {
 			t.Fatal(err)
 		}
-		if event.Type == EventInterjection {
-			interjectionIndex = index
+		if event.Type == EventSteering {
+			steeringIndex = index
 		}
 		if event.Type == EventDone {
 			doneIndex = index
-			_, lateStatus = engine.QueueInterjectionWithStatus(QueuedInterjection{ID: "late-inline", Message: UserText("too late")})
+			_, lateStatus = engine.QueueSteeringWithStatus(QueuedSteering{ID: "late-inline", Message: UserText("too late")})
 		}
 		index++
 	}
-	if interjectionIndex != -1 || doneIndex < 0 {
-		t.Fatalf("interjection/done indexes = %d/%d, want no committed interjection before done", interjectionIndex, doneIndex)
+	if steeringIndex != -1 || doneIndex < 0 {
+		t.Fatalf("steering/done indexes = %d/%d, want no committed steering before done", steeringIndex, doneIndex)
 	}
-	if lateStatus != InterjectionQueueRunFinished {
-		t.Fatalf("late inline status = %q, want %q", lateStatus, InterjectionQueueRunFinished)
+	if lateStatus != SteeringQueueRunFinished {
+		t.Fatalf("late inline status = %q, want %q", lateStatus, SteeringQueueRunFinished)
 	}
 	if len(persisted) == 0 || persisted[len(persisted)-1].Role == RoleUser {
-		t.Fatalf("inline terminal path persisted interjection: %+v", persisted)
+		t.Fatalf("inline terminal path persisted steering: %+v", persisted)
 	}
-	pending := engine.ListPendingInterjections()
+	pending := engine.ListPendingSteering()
 	if len(pending) != 1 || MessageText(pending[0].Message) != "follow-up instruction" {
-		t.Fatalf("pending interjections = %+v, want only pre-boundary follow-up", pending)
+		t.Fatalf("pending steering = %+v, want only pre-boundary follow-up", pending)
 	}
 	if provider.calls != 1 {
 		t.Fatalf("provider calls = %d, want 1", provider.calls)
@@ -606,7 +606,7 @@ func (p *inlineFlushingToolProvider) RequestInlineFlush() {
 }
 func (p *inlineFlushingToolProvider) SupportsInlineFlush() bool { return true }
 
-func TestEngineOrchestration_InlineFlushDeliversInterjections(t *testing.T) {
+func TestEngineOrchestration_InlineFlushDeliversSteering(t *testing.T) {
 	registry := NewToolRegistry()
 	registry.Register(&mockTool{name: "test_tool", result: "tool output"})
 	provider := &inlineFlushingToolProvider{inlineSyncToolProvider: inlineSyncToolProvider{inline: true}}
@@ -617,7 +617,7 @@ func TestEngineOrchestration_InlineFlushDeliversInterjections(t *testing.T) {
 		return nil
 	})
 
-	engine.Interject("steer mid-loop")
+	engine.Steer("steer mid-loop")
 
 	stream, err := engine.Stream(context.Background(), Request{
 		Messages: []Message{UserText("use tool")},
@@ -630,7 +630,7 @@ func TestEngineOrchestration_InlineFlushDeliversInterjections(t *testing.T) {
 	defer stream.Close()
 
 	var text strings.Builder
-	var sawInterjection bool
+	var sawSteering bool
 	for {
 		event, err := stream.Recv()
 		if err == io.EOF {
@@ -642,27 +642,27 @@ func TestEngineOrchestration_InlineFlushDeliversInterjections(t *testing.T) {
 		switch event.Type {
 		case EventTextDelta:
 			text.WriteString(event.Text)
-		case EventInterjection:
-			sawInterjection = true
+		case EventSteering:
+			sawSteering = true
 			if event.Text != "steer mid-loop" {
-				t.Fatalf("interjection text = %q", event.Text)
+				t.Fatalf("steering text = %q", event.Text)
 			}
 		}
 	}
-	if !sawInterjection {
-		t.Fatal("expected EventInterjection after inline flush")
+	if !sawSteering {
+		t.Fatal("expected EventSteering after inline flush")
 	}
 	if provider.calls != 2 {
 		t.Fatalf("provider calls = %d, want 2", provider.calls)
 	}
 	if provider.flushed == 0 {
-		t.Fatal("queued interjection did not request an inline flush")
+		t.Fatal("queued steering did not request an inline flush")
 	}
 	if text.String() != "inline finalcontinued final" {
 		t.Fatalf("text = %q, want flushed continuation", text.String())
 	}
-	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
-		t.Fatalf("pending interjections = %+v, want none", pending)
+	if pending := engine.ListPendingSteering(); len(pending) != 0 {
+		t.Fatalf("pending steering = %+v, want none", pending)
 	}
 	foundCommitted := false
 	for _, message := range persisted {
@@ -672,7 +672,7 @@ func TestEngineOrchestration_InlineFlushDeliversInterjections(t *testing.T) {
 		}
 	}
 	if !foundCommitted {
-		t.Fatalf("persisted messages = %+v, want committed interjection", persisted)
+		t.Fatalf("persisted messages = %+v, want committed steering", persisted)
 	}
 }
 
@@ -1114,7 +1114,7 @@ func (p *immediateInterruptionProvider) Stream(ctx context.Context, _ Request) (
 	}), nil
 }
 
-func TestImmediateInterruptionEnablesInterjectionWithoutTools(t *testing.T) {
+func TestImmediateInterruptionEnablesSteeringWithoutTools(t *testing.T) {
 	provider := &immediateInterruptionProvider{interrupted: make(chan struct{})}
 	engine := NewEngine(provider, nil)
 	stream, err := engine.Stream(context.Background(), Request{Messages: []Message{UserText("start")}, MaxTurns: 3})
@@ -1137,14 +1137,14 @@ func TestImmediateInterruptionEnablesInterjectionWithoutTools(t *testing.T) {
 		if event.Type == EventTextDelta {
 			text.WriteString(event.Text)
 			if !queued {
-				_, status := engine.QueueInterjectionWithStatus(QueuedInterjection{ID: "no-tools-steer", Message: UserText("steer")})
-				if status != InterjectionQueueQueued {
+				_, status := engine.QueueSteeringWithStatus(QueuedSteering{ID: "no-tools-steer", Message: UserText("steer")})
+				if status != SteeringQueueQueued {
 					t.Fatalf("queue status = %q", status)
 				}
 				queued = true
 			}
 		}
-		if event.Type == EventInterjection && event.InterjectionID == "no-tools-steer" {
+		if event.Type == EventSteering && event.SteeringID == "no-tools-steer" {
 			committed = true
 		}
 	}
@@ -1152,7 +1152,7 @@ func TestImmediateInterruptionEnablesInterjectionWithoutTools(t *testing.T) {
 		t.Fatalf("provider calls = %d, want interrupted turn plus resumed steer", provider.calls)
 	}
 	if !committed {
-		t.Fatal("queued interjection was not committed")
+		t.Fatal("queued steering was not committed")
 	}
 	if got := text.String(); got != "partialsteered" {
 		t.Fatalf("text = %q", got)
@@ -1198,37 +1198,37 @@ func (p *inlineFlushToolProvider) Stream(ctx context.Context, req Request) (Stre
 			}
 			return send.Send(Event{Type: EventDone})
 		}
-		if err := send.Send(Event{Type: EventTextDelta, Text: "after interjection"}); err != nil {
+		if err := send.Send(Event{Type: EventTextDelta, Text: "after steering"}); err != nil {
 			return err
 		}
 		return send.Send(Event{Type: EventDone})
 	}), nil
 }
 
-type interjectingTool struct {
+type steeringTool struct {
 	name string
 	fn   func()
 }
 
-func (t *interjectingTool) Spec() ToolSpec { return ToolSpec{Name: t.name} }
-func (t *interjectingTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
+func (t *steeringTool) Spec() ToolSpec { return ToolSpec{Name: t.name} }
+func (t *steeringTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
 	if t.fn != nil {
 		t.fn()
 	}
 	return TextOutput("tool output"), nil
 }
-func (t *interjectingTool) Preview(args json.RawMessage) string { return "" }
+func (t *steeringTool) Preview(args json.RawMessage) string { return "" }
 
-// TestInlineFlushCommitsInterjectionExactlyOnce pins the persistence contract
-// behind the inline flush path. Each committed interjection is persisted by its
-// consumer keyed on InterjectionID, so emitting one twice writes the same
+// TestInlineFlushCommitsSteeringExactlyOnce pins the persistence contract
+// behind the inline flush path. Each committed steering is persisted by its
+// consumer keyed on SteeringID, so emitting one twice writes the same
 // client_message_id twice and trips the session store's unique index.
-func TestInlineFlushCommitsInterjectionExactlyOnce(t *testing.T) {
+func TestInlineFlushCommitsSteeringExactlyOnce(t *testing.T) {
 	provider := &inlineFlushToolProvider{}
 	engine := NewEngine(provider, nil)
 	registry := NewToolRegistry()
-	registry.Register(&interjectingTool{name: "test_tool", fn: func() {
-		engine.QueueInterjection(QueuedInterjection{ID: "tui-interject-1", Message: UserText("steer me")})
+	registry.Register(&steeringTool{name: "test_tool", fn: func() {
+		engine.QueueSteering(QueuedSteering{ID: "tui-steer-1", Message: UserText("steer me")})
 	}})
 	engine.tools = registry
 
@@ -1260,16 +1260,16 @@ func TestInlineFlushCommitsInterjectionExactlyOnce(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if event.Type == EventInterjection {
-			commits[event.InterjectionID]++
+		if event.Type == EventSteering {
+			commits[event.SteeringID]++
 		}
 	}
 
 	if provider.flushRequests.Load() == 0 {
-		t.Fatal("queued interjection did not request an inline flush")
+		t.Fatal("queued steering did not request an inline flush")
 	}
-	if got := commits["tui-interject-1"]; got != 1 {
-		t.Fatalf("interjection commit events = %d, want exactly 1 (duplicates collide on client_message_id)", got)
+	if got := commits["tui-steer-1"]; got != 1 {
+		t.Fatalf("steering commit events = %d, want exactly 1 (duplicates collide on client_message_id)", got)
 	}
 	if turnUserMessages != 1 {
 		t.Fatalf("turn callback user messages = %d, want exactly 1", turnUserMessages)

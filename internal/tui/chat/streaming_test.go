@@ -42,7 +42,7 @@ func (r *capturingChatRunner) Run(ctx context.Context, req runpkg.Request, sink 
 	}
 }
 
-type interjectionTestTool struct{}
+type steeringTestTool struct{}
 
 type updateMessageFailStore struct {
 	*mockStore
@@ -647,7 +647,7 @@ func TestModelSwapPhaseEventUpdatesStreamingStatus(t *testing.T) {
 	}
 }
 
-func (t *interjectionTestTool) Spec() llm.ToolSpec {
+func (t *steeringTestTool) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
 		Name:        "noop_tool",
 		Description: "does nothing",
@@ -655,25 +655,25 @@ func (t *interjectionTestTool) Spec() llm.ToolSpec {
 	}
 }
 
-func (t *interjectionTestTool) Execute(_ context.Context, _ json.RawMessage) (llm.ToolOutput, error) {
+func (t *steeringTestTool) Execute(_ context.Context, _ json.RawMessage) (llm.ToolOutput, error) {
 	return llm.TextOutput("ok"), nil
 }
 
-func (t *interjectionTestTool) Preview(_ json.RawMessage) string { return "" }
+func (t *steeringTestTool) Preview(_ json.RawMessage) string { return "" }
 
-// TestInterjectionDuringToolTurnDoesNotDoublePersist verifies that when a user
-// interjects mid-turn, the interjection is persisted exactly once. The engine
-// fires turnCallback with the interjection AND a separate EventInterjection
+// TestSteeringDuringToolTurnDoesNotDoublePersist verifies that when a user
+// steers mid-turn, the steering is persisted exactly once. The engine
+// fires turnCallback with the steering AND a separate EventSteering
 // event; the TUI's turn callback must skip RoleUser messages so the
-// ui.StreamEventInterjection handler (simulated here) is the sole owner of
-// interjection persistence. Covers both sync-tool/MCP and async-tool paths
-// since both paths emit interjections via the same two mechanisms.
-func TestInterjectionDuringToolTurnDoesNotDoublePersist(t *testing.T) {
+// ui.StreamEventSteering handler (simulated here) is the sole owner of
+// steering persistence. Covers both sync-tool/MCP and async-tool paths
+// since both paths emit steering via the same two mechanisms.
+func TestSteeringDuringToolTurnDoesNotDoublePersist(t *testing.T) {
 	provider := llm.NewMockProvider("mock").
 		AddToolCall("call-1", "noop_tool", map[string]any{}).
 		AddTextResponse("done")
 
-	tool := &interjectionTestTool{}
+	tool := &steeringTestTool{}
 	registry := llm.NewToolRegistry()
 	registry.Register(tool)
 	engine := llm.NewEngine(provider, registry)
@@ -685,7 +685,7 @@ func TestInterjectionDuringToolTurnDoesNotDoublePersist(t *testing.T) {
 	}
 	defer store.Close()
 
-	sess := &session.Session{ID: "interject-dedup", CreatedAt: time.Now()}
+	sess := &session.Session{ID: "steer-dedup", CreatedAt: time.Now()}
 	if err := store.Create(context.Background(), sess); err != nil {
 		t.Fatalf("Create session: %v", err)
 	}
@@ -698,7 +698,7 @@ func TestInterjectionDuringToolTurnDoesNotDoublePersist(t *testing.T) {
 	m.setupStreamPersistenceCallbacks(time.Now())
 	t.Cleanup(m.clearStreamCallbacks)
 
-	engine.Interject("reconsider this")
+	engine.Steer("reconsider this")
 
 	stream, err := engine.Stream(context.Background(), llm.Request{
 		Messages:   []llm.Message{llm.UserText("run tool")},
@@ -711,7 +711,7 @@ func TestInterjectionDuringToolTurnDoesNotDoublePersist(t *testing.T) {
 	}
 	defer stream.Close()
 
-	sawInterjection := false
+	sawSteering := false
 	for {
 		ev, err := stream.Recv()
 		if err == io.EOF {
@@ -720,8 +720,8 @@ func TestInterjectionDuringToolTurnDoesNotDoublePersist(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Recv: %v", err)
 		}
-		if ev.Type == llm.EventInterjection {
-			sawInterjection = true
+		if ev.Type == llm.EventSteering {
+			sawSteering = true
 			userMsg := &session.Message{
 				SessionID:   sess.ID,
 				Role:        llm.RoleUser,
@@ -735,8 +735,8 @@ func TestInterjectionDuringToolTurnDoesNotDoublePersist(t *testing.T) {
 			}
 		}
 	}
-	if !sawInterjection {
-		t.Fatal("expected EventInterjection to fire")
+	if !sawSteering {
+		t.Fatal("expected EventSteering to fire")
 	}
 
 	time.Sleep(50 * time.Millisecond) // allow any lingering callback goroutines to settle
@@ -755,7 +755,7 @@ func TestInterjectionDuringToolTurnDoesNotDoublePersist(t *testing.T) {
 		}
 	}
 	if userRows != 1 {
-		t.Fatalf("user row count = %d, want 1 (interjection must not double-persist); texts: %v", userRows, userTexts)
+		t.Fatalf("user row count = %d, want 1 (steering must not double-persist); texts: %v", userRows, userTexts)
 	}
 	if userTexts[0] != "reconsider this" {
 		t.Fatalf("persisted user text = %q, want %q", userTexts[0], "reconsider this")

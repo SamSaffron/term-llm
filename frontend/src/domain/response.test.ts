@@ -39,7 +39,7 @@ describe('response projection', () => {
         'response.compaction',
         'response.model_swap.progress',
         'response.model_switch',
-        'response.interjection',
+        'response.steering',
         'response.ask_user.prompt',
         'response.approval.prompt',
         'response.file_change',
@@ -254,17 +254,17 @@ describe('response projection', () => {
     expect(projection.modelSwap).toBeUndefined();
   });
 
-  it('projects interjection image attachments before transcript reload', () => {
+  it('projects steering image attachments before transcript reload', () => {
     const projection = reduceResponse(
       initialProjection(run),
-      event('response.interjection', 1, {
+      event('response.steering', 1, {
         text: 'inspect this image',
-        client_message_id: 'interjection-image-1',
+        client_message_id: 'steering-image-1',
         attachments: [
           {
             name: 'image 1',
             type: 'image/png',
-            url: '/ui/images/interjection.png',
+            url: '/ui/images/steering.png',
             width: 320,
             height: 180,
           },
@@ -280,7 +280,7 @@ describe('response projection', () => {
           {
             name: 'image 1',
             type: 'image/png',
-            url: '/ui/images/interjection.png',
+            url: '/ui/images/steering.png',
             width: 320,
             height: 180,
           },
@@ -289,12 +289,12 @@ describe('response projection', () => {
     ]);
   });
 
-  it('projects image-only interjections before transcript reload', () => {
+  it('projects image-only steering before transcript reload', () => {
     const projection = reduceResponse(
       initialProjection(run),
-      event('response.interjection', 1, {
+      event('response.steering', 1, {
         text: '',
-        client_message_id: 'interjection-image-only-1',
+        client_message_id: 'steering-image-only-1',
         attachments: [
           {
             name: 'image 1',

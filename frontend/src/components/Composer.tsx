@@ -1,6 +1,7 @@
 import { signal, type ReadonlySignal } from '@preact/signals';
+import type { ComponentType } from 'preact';
+import { rushActive } from '../domain/steering';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { displayName } from '../app/config';
 import { useStore } from '../app/context';
 import {
   activeMentionAtCursor,
@@ -109,15 +110,19 @@ function VoiceStatus({
   );
 }
 
+let loadedQueuePreview: ComponentType<{ selectedSteering: string | null }> | null = null;
+let queuePreviewImport: Promise<ComponentType<{ selectedSteering: string | null }>> | null = null;
+
 export function Composer() {
   const store = useStore();
   const runActive = store.runActive.value;
   const canStop = store.canStop.value;
-  const canInterject = store.canInterject.value;
+  const canSteer = store.canSteer.value;
   const file = useRef<HTMLInputElement>(null);
   const camera = useRef<HTMLInputElement>(null);
   const attach = useRef<HTMLButtonElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
+  const [selectedSteering, setSelectedSteering] = useState<string | null>(null);
   const [menu, setMenu] = useState(false);
   const voice = useMemo(
     () => new VoiceOperation((form, controls) => store.endpoints.transcribe(form, controls)),
@@ -153,10 +158,7 @@ export function Composer() {
   useLayoutEffect(() => resizePrompt(textarea.current), [store.prompt.value]);
 
   const session = store.draftActive.value ? null : store.activeSession.value;
-  const agentName =
-    session?.agent ||
-    (store.draftActive.value ? store.selectedAgent.value : store.config.agentName);
-  const messagePlaceholder = agentName ? `Message ${displayName(agentName)}…` : 'Message…';
+  const messagePlaceholder = 'Type a message…';
   const projectId =
     session?.projectId || (store.draftActive.value ? store.activeProjectId.value : '') || '';
   const worktreeDir = store.currentWorktreeDir.value;
@@ -362,15 +364,43 @@ export function Composer() {
       return;
     }
     requestTranscriptScrollToTail();
-    if (canInterject) void store.interject(value);
+    if (canSteer) void store.steer(value);
     else void store.send();
   };
   const startVoice = () => {
     void voice.start(composerOwner, cursor);
   };
-  const pending = store.interjections.value.filter(
+  const pending = store.steering.value.filter(
     (entry) => entry.sessionId === store.activeSession.value?.id,
   );
+  const activeRush = store.activeRush.value;
+  const transitioning =
+    rushActive(activeRush) && activeRush?.session_id === store.activeSession.value?.id;
+  const capability = store.steeringCapabilities.value[store.activeSession.value?.id || ''];
+  const accepted = pending.some((entry) => entry.state === 'pending');
+  const canRush = Boolean(capability?.can_rush && accepted && !transitioning);
+  const [QueuePreview, setQueuePreview] = useState(() => loadedQueuePreview);
+  useEffect(() => {
+    if ((!pending.length && !transitioning) || loadedQueuePreview) {
+      if (loadedQueuePreview) setQueuePreview(() => loadedQueuePreview);
+      return;
+    }
+    let active = true;
+    queuePreviewImport ||= import('./SteeringQueuePreview').then(
+      ({ SteeringQueuePreview }) => SteeringQueuePreview,
+    );
+    void queuePreviewImport
+      .then((component) => {
+        loadedQueuePreview = component;
+        if (active) setQueuePreview(() => component);
+      })
+      .catch(() => {
+        queuePreviewImport = null;
+      });
+    return () => {
+      active = false;
+    };
+  }, [pending.length, transitioning]);
   const waitingInteraction = store.interactionOrder.value
     .map((key) => store.interactions.value[key])
     .find(
@@ -387,7 +417,7 @@ export function Composer() {
   const attachmentBlocked = store.attachments.value.some(
     (attachment) => attachment.status === 'preparing' || attachment.status === 'error',
   );
-  const interjecting = canInterject && hasDraft;
+  const steering = canSteer && hasDraft;
   const loading = runActive && !hasDraft;
   const sendLabel = bindingBlocked
     ? 'Project unavailable'
@@ -397,8 +427,8 @@ export function Composer() {
         ? 'Response is running'
         : sendBlocked
           ? 'Checking whether sent'
-          : interjecting
-            ? 'Interject'
+          : steering
+            ? 'Steer'
             : 'Send message';
   const inspectDraggedFiles = (files: FileList | null): string => {
     let count = store.attachments.peek().length;
@@ -486,33 +516,12 @@ export function Composer() {
             Decision waiting — Open
           </button>
         )}
-        {pending.length > 0 && (
-          <div
-            class="pending-interjection pending-interjection-banner"
-            role="list"
-            aria-label="Pending messages"
-          >
-            {pending.map((entry) => (
-              <div class={`pending-interjection-row ${entry.state}`} role="listitem" key={entry.id}>
-                <span class="pending-interjection-icon" aria-hidden="true">
-                  …
-                </span>
-                <span class="pending-interjection-text">{entry.content}</span>
-                <span class="pending-interjection-label">
-                  ({entry.state === 'sending' ? 'deciding…' : entry.state})
-                </span>
-                {entry.state !== 'committed' && (
-                  <button
-                    class="pending-interjection-cancel"
-                    onClick={() => void store.cancelInterjection(entry.id)}
-                  >
-                    Cancel
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
+        {(pending.length > 0 || transitioning) &&
+          (QueuePreview ? (
+            <QueuePreview selectedSteering={selectedSteering} />
+          ) : (
+            <div role="status">Pending steering…</div>
+          ))}
         <VoiceStatus snapshot={voiceSnapshot} voice={voice} />
         {!voiceState.capability.supported && (
           <span class="voice-unsupported" id="voiceUnsupported">
@@ -773,7 +782,7 @@ export function Composer() {
             id="promptInput"
             class="prompt"
             rows={1}
-            placeholder={runActive ? 'Type to interject…' : messagePlaceholder}
+            placeholder={canSteer ? 'Steer conversation…' : messagePlaceholder}
             aria-label="Message"
             autoComplete="off"
             spellcheck={false}
@@ -841,6 +850,32 @@ export function Composer() {
                 setDismissed(`${store.prompt.value}\u0000${cursor}`);
                 return;
               }
+              if (event.isComposing) return;
+              if (event.key === 'Escape' && (accepted || transitioning)) {
+                event.preventDefault();
+                if (!event.repeat && canRush) void store.rush();
+                return;
+              }
+              if (!store.prompt.value && store.attachments.value.length === 0 && pending.length) {
+                const index = pending.findIndex((entry) => entry.id === selectedSteering);
+                if (event.key === 'ArrowUp') {
+                  event.preventDefault();
+                  setSelectedSteering(
+                    pending[index < 0 ? pending.length - 1 : Math.max(0, index - 1)].id,
+                  );
+                  return;
+                }
+                if (event.key === 'ArrowDown' && index >= 0) {
+                  event.preventDefault();
+                  setSelectedSteering(pending[index + 1]?.id || null);
+                  return;
+                }
+                if (event.key === 'Delete' && selectedSteering && !transitioning) {
+                  event.preventDefault();
+                  void store.cancelSteering(selectedSteering);
+                  return;
+                }
+              }
               if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
                 event.preventDefault();
                 sendOrCommand();
@@ -872,7 +907,7 @@ export function Composer() {
               <Icon name="microphone" />
             </button>
             <button
-              class={`send-btn ${loading ? 'loading' : ''} ${interjecting ? 'interject' : ''}`}
+              class={`send-btn ${loading ? 'loading' : ''} ${steering ? 'steer' : ''}`}
               id="sendBtn"
               type="button"
               title={sendLabel}
@@ -886,7 +921,7 @@ export function Composer() {
               }
               onClick={sendOrCommand}
             >
-              <Icon class="arrow" name={interjecting ? 'interject' : 'send'} />
+              <Icon class="arrow" name={steering ? 'steer' : 'send'} />
               <span class="spinner" aria-hidden="true" />
             </button>
           </div>

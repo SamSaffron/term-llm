@@ -29,7 +29,7 @@ import (
 type sessionInterruptRequest struct {
 	Message            string          `json:"message"`
 	Content            json.RawMessage `json:"content"`
-	InterjectionID     string          `json:"interjection_id"`
+	SteeringID         string          `json:"steering_id"`
 	ClientMessageID    string          `json:"client_message_id,omitempty"`
 	Delivery           string          `json:"delivery,omitempty"`
 	ExpectedResponseID string          `json:"expected_response_id,omitempty"`
@@ -48,7 +48,7 @@ type sessionRuntimeGoalRequest struct {
 }
 
 func writeChatStreamChunk(w io.Writer, payload any) error {
-	b, err := json.Marshal(payload)
+	b, err := steeringWireJSON(w, payload)
 	if err != nil {
 		return err
 	}
@@ -64,11 +64,11 @@ func setSSEHeaders(w http.ResponseWriter) {
 }
 
 func writeSSEEvent(w io.Writer, event string, payload any) error {
-	b, err := json.Marshal(payload)
+	b, err := steeringWireJSON(w, payload)
 	if err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w, "event: %s\n", event); err != nil {
+	if _, err := fmt.Fprintf(w, "event: %s\n", steeringWireEvent(w, event)); err != nil {
 		return err
 	}
 	_, err = fmt.Fprintf(w, "data: %s\n\n", b)
@@ -785,7 +785,8 @@ func writeOpenAIError(w http.ResponseWriter, status int, errorType, message stri
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
+	b, _ := steeringWireJSON(w, payload)
+	_, _ = w.Write(append(b, '\n'))
 }
 
 const jsonGzipMinBytes = 512
@@ -794,7 +795,7 @@ const jsonGzipMinBytes = 512
 // the client advertises gzip support and the marshaled payload is larger than
 // jsonGzipMinBytes. Small responses stay uncompressed to avoid gzip overhead.
 func writeJSONGzip(w http.ResponseWriter, r *http.Request, status int, payload any) {
-	body, err := json.Marshal(payload)
+	body, err := steeringWireJSON(w, payload)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -837,7 +838,7 @@ func jsonPayloadETag(body []byte) string {
 }
 
 func writeJSONConditional(w http.ResponseWriter, r *http.Request, status int, payload any) {
-	body, err := json.Marshal(payload)
+	body, err := steeringWireJSON(w, payload)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return

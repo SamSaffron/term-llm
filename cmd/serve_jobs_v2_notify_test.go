@@ -315,7 +315,7 @@ func TestNotifyQueuedAgentWeb_ActiveRunOwnsNotificationExactlyOnce(t *testing.T)
 	if err := srv.notifyQueuedAgentWeb(context.Background(), "run-active", "sess-active", message); err != nil {
 		t.Fatalf("notifyQueuedAgentWeb: %v", err)
 	}
-	interjectionEvents := 0
+	steeringEvents := 0
 	for {
 		event, recvErr := stream.Recv()
 		if recvErr == io.EOF {
@@ -324,14 +324,14 @@ func TestNotifyQueuedAgentWeb_ActiveRunOwnsNotificationExactlyOnce(t *testing.T)
 		if recvErr != nil {
 			t.Fatalf("Recv: %v", recvErr)
 		}
-		if event.Type == llm.EventInterjection && event.InterjectionID == "job_notify_run-active" {
-			interjectionEvents++
+		if event.Type == llm.EventSteering && event.SteeringID == "job_notify_run-active" {
+			steeringEvents++
 		}
 	}
-	if interjectionEvents != 1 {
-		t.Fatalf("job notification interjection events = %d, want exactly one", interjectionEvents)
+	if steeringEvents != 1 {
+		t.Fatalf("job notification steering events = %d, want exactly one", steeringEvents)
 	}
-	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+	if pending := engine.ListPendingSteering(); len(pending) != 0 {
 		t.Fatalf("active run retained consumed notification: %#v", pending)
 	}
 	requests := provider.RecordedRequests()
@@ -399,8 +399,8 @@ func TestNotifyQueuedAgentWeb_RunFinishedTeardownFallsBackWithoutPhantom(t *test
 	if err := srv.notifyQueuedAgentWeb(context.Background(), "run-finished", "sess-teardown", message); err != nil {
 		t.Fatalf("notifyQueuedAgentWeb: %v", err)
 	}
-	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
-		t.Fatalf("run-finished fallback retained phantom interjection: %#v", pending)
+	if pending := engine.ListPendingSteering(); len(pending) != 0 {
+		t.Fatalf("run-finished fallback retained phantom steering: %#v", pending)
 	}
 	store.mu.Lock()
 	persisted := append([]session.Message(nil), store.messages["sess-teardown"]...)

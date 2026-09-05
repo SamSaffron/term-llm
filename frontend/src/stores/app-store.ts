@@ -1,3 +1,4 @@
+import type { RushOperation } from '../domain/steering';
 import { computed, signal, type ReadonlySignal, type Signal } from '@preact/signals';
 import type { AppConfig } from '../app/config';
 import { APIError, type APIClient } from '../api/client';
@@ -54,7 +55,7 @@ import type {
   DiffState,
   HubAgent,
   Modal,
-  PendingInterjection,
+  PendingSteering,
   RuntimeOption,
   SendOptions,
   ShareTarget,
@@ -67,7 +68,7 @@ export type {
   DiffState,
   HubAgent,
   Modal,
-  PendingInterjection,
+  PendingSteering,
   RuntimeOption,
   SideQuestionState,
   Toast,
@@ -177,7 +178,9 @@ export class AppStore {
   readonly interactions: Signal<Record<string, InteractionRecord>>;
   readonly interactionOrder: Signal<string[]>;
   readonly sideQuestion: Signal<SideQuestionState>;
-  readonly interjections: Signal<PendingInterjection[]>;
+  readonly activeRush: Signal<RushOperation | null>;
+  readonly steeringCapabilities: RunEngine['steeringCapabilities'];
+  readonly steering: Signal<PendingSteering[]>;
   readonly diff: Signal<DiffState>;
   readonly goal: Signal<Goal | null>;
   readonly mcp: Signal<{
@@ -217,7 +220,7 @@ export class AppStore {
   readonly streaming: ReadonlySignal<boolean>;
   readonly runLivenessUnknown: ReadonlySignal<boolean>;
   readonly canStop: ReadonlySignal<boolean>;
-  readonly canInterject: ReadonlySignal<boolean>;
+  readonly canSteer: ReadonlySignal<boolean>;
   readonly sendBlocked: ReadonlySignal<boolean>;
 
   private lifecycleInstalled = false;
@@ -373,7 +376,7 @@ export class AppStore {
       closePlan: () => this.planStore.close(),
       restartStatusPoll: () => this.startStatusPoll(),
       send: (options) => this.send(options),
-      interject: (content, options) => this.interject(content, options),
+      steer: (content, options) => this.steer(content, options),
       publishSessionChange: (type, sessionId) => this.publishSessionChange(type, sessionId),
     });
     this.diff = this.reviewStore.diff;
@@ -413,7 +416,9 @@ export class AppStore {
     );
     this.runs = this.runEngine.runs;
     this.pendingIntents = this.runEngine.pendingIntents;
-    this.interjections = this.runEngine.interjections;
+    this.activeRush = this.runEngine.activeRush;
+    this.steeringCapabilities = this.runEngine.steeringCapabilities;
+    this.steering = this.runEngine.steering;
     this.currentActivityFile = this.runEngine.currentActivityFile;
     this.fileChangeRevision = this.runEngine.fileChangeRevision;
     this.activeProjection = this.runEngine.activeProjection;
@@ -423,7 +428,7 @@ export class AppStore {
     this.streaming = this.runEngine.streaming;
     this.runLivenessUnknown = this.runEngine.runLivenessUnknown;
     this.canStop = this.runEngine.canStop;
-    this.canInterject = this.runEngine.canInterject;
+    this.canSteer = this.runEngine.canSteer;
     this.sendBlocked = this.runEngine.sendBlocked;
     this.locallyStoppedResponses = this.runEngine.locallyStoppedResponses;
     this.commitStore = new CommitStore(this.services, {
@@ -813,12 +818,12 @@ export class AppStore {
   private async performRecovery(): Promise<void> {
     const activeSessionId = this.activeSessionId.peek();
     if (activeSessionId) {
-      const interjectionRevision = this.interjectionRevision;
+      const steeringRevision = this.steeringRevision;
       void this.endpoints
         .sessionState(activeSessionId)
         .then((state) => {
           if (this.activeSessionId.peek() === activeSessionId)
-            this.reconcilePendingInterjections(activeSessionId, state, interjectionRevision);
+            this.reconcilePendingSteering(activeSessionId, state, steeringRevision);
         })
         .catch(() => undefined);
     }
@@ -915,10 +920,10 @@ export class AppStore {
     await this.reconcile('peer', { authoritative: true }).catch(() => undefined);
     const sessionId = this.activeSessionId.peek();
     if (!sessionId) return;
-    const interjectionRevision = this.interjectionRevision;
+    const steeringRevision = this.steeringRevision;
     const state = await this.endpoints.sessionState(sessionId).catch(() => null);
     if (state && this.activeSessionId.peek() === sessionId)
-      this.reconcilePendingInterjections(sessionId, state, interjectionRevision);
+      this.reconcilePendingSteering(sessionId, state, steeringRevision);
   }
 
   private async reconcileServerEventActive(revision?: number): Promise<void> {
@@ -970,16 +975,16 @@ export class AppStore {
     await this.selectionStore.resolveAndSelectSession(id, replace);
   }
 
-  private get interjectionRevision(): number {
-    return this.runEngine.interjectionStateRevision;
+  private get steeringRevision(): number {
+    return this.runEngine.steeringStateRevision;
   }
 
-  private reconcilePendingInterjections(
+  private reconcilePendingSteering(
     sessionId: string,
     state: Record<string, unknown>,
     expectedRevision?: number,
   ): void {
-    this.runEngine.reconcilePendingInterjections(sessionId, state, expectedRevision);
+    this.runEngine.reconcilePendingSteering(sessionId, state, expectedRevision);
   }
 
   async loadSession(id: string, epoch = this.selectionEpoch): Promise<void> {
@@ -1030,12 +1035,16 @@ export class AppStore {
     await this.runEngine.cancel();
   }
 
-  async interject(content: string, options: SendOptions = {}): Promise<void> {
-    await this.runEngine.interject(content, options);
+  async steer(content: string, options: SendOptions = {}): Promise<void> {
+    await this.runEngine.steer(content, options);
   }
 
-  async cancelInterjection(id: string): Promise<void> {
-    await this.runEngine.cancelInterjection(id);
+  async rush(): Promise<void> {
+    await this.runEngine.rush();
+  }
+
+  async cancelSteering(id: string): Promise<void> {
+    await this.runEngine.cancelSteering(id);
   }
 
   private retireCommittedIntents(sessionId: string, messages: Message[]): void {

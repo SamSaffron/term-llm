@@ -26,7 +26,7 @@ const (
 
 // inlineFlushToolNotice is appended to a tool result so an inline-loop CLI
 // (claude-bin, grok-bin) ends its current prompt. The engine then starts a
-// new Stream to deliver queued interjections or a refreshed tool surface.
+// new Stream to deliver queued steering or a refreshed tool surface.
 const inlineFlushToolNotice = "\n\n[term-llm: End this response now without calling more tools or answering the original request. term-llm will immediately continue.]"
 
 // mcpCallCounter generates process-unique IDs for CLI-provider MCP tool calls.
@@ -225,7 +225,7 @@ type cliToolBridgeState struct {
 	currentEvents chan<- Event
 	eventsMu      sync.Mutex
 	// inlineFlushPending asks the next tool result to stop the current CLI
-	// prompt so the engine can resume with new tools or queued interjections.
+	// prompt so the engine can resume with new tools or queued steering.
 	inlineFlushPending atomic.Bool
 }
 

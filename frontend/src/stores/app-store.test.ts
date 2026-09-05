@@ -1917,7 +1917,7 @@ describe('AppStore compatibility behavior', () => {
     expect(store.activeSession.value?.lastResponseId).toBe('resp_msg_42');
   });
 
-  it('normalizes recovery interjection identity before durable reconciliation', async () => {
+  it('normalizes recovery steering identity before durable reconciliation', async () => {
     const store = new AppStore(config);
     store.sessions.value = [
       {
@@ -1926,16 +1926,16 @@ describe('AppStore compatibility behavior', () => {
           {
             id: 'durable-first',
             role: 'user',
-            content: 'this is me interjecting as a demo',
+            content: 'this is me steering as a demo',
             created: 2,
-            clientMessageId: 'interject-1',
+            clientMessageId: 'steer-1',
           },
           {
             id: 'durable-second',
             role: 'user',
             content: 'and a second time',
             created: 3,
-            clientMessageId: 'interject-2',
+            clientMessageId: 'steer-2',
           },
           {
             id: 'durable-tools',
@@ -1957,21 +1957,21 @@ describe('AppStore compatibility behavior', () => {
         sequence_number: 8,
         messages: [
           {
-            id: 'interject-1',
+            id: 'steer-1',
             role: 'user',
-            content: 'this is me interjecting as a demo',
-            client_message_id: 'interject-1',
+            content: 'this is me steering as a demo',
+            client_message_id: 'steer-1',
             response_id: 'r1',
-            interruptState: 'interject',
+            interruptState: 'steer',
             created: 2,
           },
           {
-            id: 'interject-2',
+            id: 'steer-2',
             role: 'user',
             content: 'and a second time',
-            client_message_id: 'interject-2',
+            client_message_id: 'steer-2',
             response_id: 'r1',
-            interruptState: 'interject',
+            interruptState: 'steer',
             created: 3,
           },
         ],
@@ -1986,8 +1986,8 @@ describe('AppStore compatibility behavior', () => {
     await internals.resumeResponse('s1', 'r1');
 
     expect(store.runs.value.s1.messages.map((message) => message.clientMessageId)).toEqual([
-      'interject-1',
-      'interject-2',
+      'steer-1',
+      'steer-2',
     ]);
     expect(store.visibleMessages.value.map((message) => message.id)).toEqual([
       'durable-first',
@@ -2136,8 +2136,8 @@ describe('AppStore compatibility behavior', () => {
       },
     };
     store.askUser.value = staleAsk;
-    store.interjections.value = [
-      { id: 'interject-1', sessionId: 's1', content: 'change course', state: 'pending' },
+    store.steering.value = [
+      { id: 'steer-1', sessionId: 's1', content: 'change course', state: 'pending' },
     ];
     store.endpoints.response = vi.fn(async () => ({
       id: 'r1',
@@ -2152,11 +2152,11 @@ describe('AppStore compatibility behavior', () => {
         sequence_number: 20,
         messages: [
           {
-            id: 'interject-1',
+            id: 'steer-1',
             role: 'user',
             content: 'change course',
-            client_message_id: 'interject-1',
-            interrupt_state: 'interject',
+            client_message_id: 'steer-1',
+            interrupt_state: 'steer',
             response_id: 'r1',
             created: 2,
           },
@@ -2216,7 +2216,7 @@ describe('AppStore compatibility behavior', () => {
       run: { status: 'completed', finalRev: 5, durableHandoff: true },
     });
     expect(store.runs.value.s1.messages.map((message) => message.id)).toEqual([
-      'interject-1',
+      'steer-1',
       'recovered-tools',
       'recovered-compaction',
       'recovered-answer',
@@ -2232,7 +2232,7 @@ describe('AppStore compatibility behavior', () => {
       segmentStartSequence: 18,
       segmentEndSequence: 19,
     });
-    expect(store.interjections.value).toEqual([]);
+    expect(store.steering.value).toEqual([]);
     expect(store.currentPlan.value).toEqual({
       plan: [{ step: 'Recovered work', status: 'completed' }],
     });
@@ -2253,8 +2253,8 @@ describe('AppStore compatibility behavior', () => {
               id: 11,
               sequence: 1,
               role: 'user',
-              client_message_id: 'interject-1',
-              interrupt_state: 'interject',
+              client_message_id: 'steer-1',
+              interrupt_state: 'steer',
               parts: [{ type: 'text', text: 'change course' }],
             },
             {
@@ -2322,12 +2322,12 @@ describe('AppStore compatibility behavior', () => {
     expect(internals.streamResponse).toHaveBeenCalledWith('r1', 's1', 12);
   });
 
-  it('hydrates durable pending interjections when a session is opened in another tab', async () => {
+  it('hydrates durable pending steering when a session is opened in another tab', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];
     store.activeSessionId.value = 's1';
     store.endpoints.sessionState = vi.fn(async () => ({
-      pending_interjections: [
+      pending_steering: [
         { id: 'pending-1', text: 'change course', status: 'queued' },
         { id: 'pending-2', text: 'inspect image', attachment_summary: '[image]', status: 'queued' },
       ],
@@ -2339,20 +2339,20 @@ describe('AppStore compatibility behavior', () => {
 
     await store.loadSession('s1');
 
-    expect(store.interjections.value).toEqual([
+    expect(store.steering.value).toEqual([
       { id: 'pending-1', sessionId: 's1', content: 'change course', state: 'pending' },
       { id: 'pending-2', sessionId: 's1', content: 'inspect image', state: 'pending' },
     ]);
 
-    store.endpoints.sessionState = vi.fn(async () => ({ pending_interjections: [] }));
+    store.endpoints.sessionState = vi.fn(async () => ({ pending_steering: [] }));
     await store.loadSession('s1');
-    expect(store.interjections.value).toEqual([]);
+    expect(store.steering.value).toEqual([]);
 
     store.endpoints.sessionState = vi.fn(async () => ({
       pending_interjection: { id: 'legacy-pending', text: 'legacy state shape', status: 'queued' },
     }));
     await store.loadSession('s1');
-    expect(store.interjections.value).toEqual([
+    expect(store.steering.value).toEqual([
       {
         id: 'legacy-pending',
         sessionId: 's1',
@@ -2362,25 +2362,76 @@ describe('AppStore compatibility behavior', () => {
     ]);
   });
 
-  it('ignores pending-state snapshots older than a local interjection mutation', async () => {
+  it('enables Steer now as soon as the first steering message is accepted', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.steeringCapabilities.value = {
+      s1: { protocol: 1, can_steer: true, can_rush: false, unavailable_reason: 'no_user_steering' },
+    };
+    store.endpoints.interrupt = vi.fn(async () => ({}));
+    await store.steer('say hello');
+    expect(store.steering.value).toEqual([
+      expect.objectContaining({ content: 'say hello', state: 'pending' }),
+    ]);
+    expect(store.steeringCapabilities.value.s1.can_rush).toBe(true);
+    expect(store.steeringCapabilities.value.s1.unavailable_reason).toBeUndefined();
+    store.dispose();
+  });
+
+  it('does not override a real Rush restriction when accepting steering', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.steeringCapabilities.value = {
+      s1: {
+        protocol: 1,
+        can_steer: true,
+        can_rush: false,
+        unavailable_reason: 'durable_store_unavailable',
+      },
+    };
+    store.endpoints.interrupt = vi.fn(async () => ({}));
+    await store.steer('say hello');
+    expect(store.steeringCapabilities.value.s1.can_rush).toBe(false);
+    store.dispose();
+  });
+
+  it('ignores pending-state snapshots older than a local steering mutation', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];
     store.activeSessionId.value = 's1';
     store.endpoints.interrupt = vi.fn(async () => ({}));
     const internals = store as unknown as {
-      interjectionRevision: number;
-      reconcilePendingInterjections(
+      steeringRevision: number;
+      reconcilePendingSteering(
         sessionId: string,
         state: Record<string, unknown>,
         expectedRevision?: number,
       ): void;
     };
-    const sampledRevision = internals.interjectionRevision;
+    store.steeringCapabilities.value = {
+      s1: { protocol: 1, can_steer: true, can_rush: false, unavailable_reason: 'no_user_steering' },
+    };
+    const sampledRevision = internals.steeringRevision;
 
-    await store.interject('fresh local steering');
-    internals.reconcilePendingInterjections('s1', { pending_interjections: [] }, sampledRevision);
+    await store.steer('fresh local steering');
+    internals.reconcilePendingSteering(
+      's1',
+      {
+        pending_steering: [],
+        steering: {
+          protocol: 1,
+          can_steer: true,
+          can_rush: false,
+          unavailable_reason: 'no_user_steering',
+        },
+      },
+      sampledRevision,
+    );
+    expect(store.steeringCapabilities.value.s1.can_rush).toBe(true);
 
-    expect(store.interjections.value).toEqual([
+    expect(store.steering.value).toEqual([
       expect.objectContaining({ content: 'fresh local steering', state: 'pending' }),
     ]);
   });
@@ -3005,7 +3056,7 @@ describe('AppStore compatibility behavior', () => {
     expect(store.prompt.value).toBe('never submitted');
   });
 
-  it('sends interjection images even when navigation occurs before acceptance', async () => {
+  it('sends steering images even when navigation occurs before acceptance', async () => {
     const store = new AppStore(config);
     const other = { ...session(), id: 's2', title: 'Other' };
     store.sessions.value = [session(), other];
@@ -3024,7 +3075,7 @@ describe('AppStore compatibility behavior', () => {
     const accepted = deferred<Record<string, unknown>>();
     store.endpoints.interrupt = vi.fn(() => accepted.promise);
 
-    const request = store.interject(store.prompt.value);
+    const request = store.steer(store.prompt.value);
     await vi.waitFor(() => expect(store.endpoints.interrupt).toHaveBeenCalledOnce());
     (store as unknown as { persistCurrentDraft(): void }).persistCurrentDraft();
     store.activeSessionId.value = 's2';
@@ -3048,12 +3099,13 @@ describe('AppStore compatibility behavior', () => {
         ],
       }),
       expect.any(String),
+      false,
     );
     expect(store.prompt.value).toBe('draft in another conversation');
     expect(readDrafts(localStorage, store.keys.draftMessages)).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ sessionId: 's1' })]),
     );
-    expect(store.interjections.value).toEqual([
+    expect(store.steering.value).toEqual([
       expect.objectContaining({ sessionId: 's1', content: 'inspect this image', state: 'pending' }),
     ]);
   });
@@ -3238,7 +3290,7 @@ describe('AppStore compatibility behavior', () => {
       expect(store.streaming.value).toBe(true);
       expect(store.runLivenessUnknown.value).toBe(false);
       expect(store.canStop.value).toBe(true);
-      expect(store.canInterject.value).toBe(true);
+      expect(store.canSteer.value).toBe(true);
       expect(store.sendBlocked.value).toBe(false);
 
       store.runEngine.markResponseTransportActive('s1', 'r1', 1);
@@ -3263,7 +3315,7 @@ describe('AppStore compatibility behavior', () => {
       expect(store.streaming.value).toBe(true);
       expect(store.runLivenessUnknown.value).toBe(false);
       expect(store.canStop.value).toBe(true);
-      expect(store.canInterject.value).toBe(true);
+      expect(store.canSteer.value).toBe(true);
       expect(store.sendBlocked.value).toBe(false);
 
       const recoveryEvidence = store.runEngine as unknown as {
@@ -3290,7 +3342,7 @@ describe('AppStore compatibility behavior', () => {
       };
       expect(store.streaming.value).toBe(false);
       expect(store.canStop.value).toBe(false);
-      expect(store.canInterject.value).toBe(false);
+      expect(store.canSteer.value).toBe(false);
       expect(store.runLivenessUnknown.value).toBe(false);
     } finally {
       store.dispose();
@@ -3318,7 +3370,7 @@ describe('AppStore compatibility behavior', () => {
       });
       expect(store.streaming.value).toBe(true);
       expect(store.canStop.value).toBe(true);
-      expect(store.canInterject.value).toBe(true);
+      expect(store.canSteer.value).toBe(true);
       await duplicateRecovery;
       expect(store.endpoints.response).toHaveBeenCalledOnce();
       snapshot.resolve({
@@ -3365,7 +3417,7 @@ describe('AppStore compatibility behavior', () => {
       expect(store.responseTransportAttached.value).toBe(false);
       expect(store.streaming.value).toBe(true);
       expect(store.canStop.value).toBe(true);
-      expect(store.canInterject.value).toBe(true);
+      expect(store.canSteer.value).toBe(true);
       expect(store.runLivenessUnknown.value).toBe(false);
     } finally {
       store.dispose();
@@ -4954,7 +5006,7 @@ describe('AppStore compatibility behavior', () => {
     store.dispose();
   });
 
-  it('sends queued diff comments as typed interjections during an active response', async () => {
+  it('sends queued diff comments as typed steering during an active response', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];
     store.activeSessionId.value = 's1';
@@ -5010,17 +5062,18 @@ describe('AppStore compatibility behavior', () => {
         delivery: 'steer',
       }),
       expect.any(String),
+      false,
     );
     expect(store.diff.value.comments).toEqual([]);
     expect(store.diff.value.historyComments).toEqual([
       expect.objectContaining({ id: 'queued-comment', optimistic: true }),
     ]);
-    expect(store.interjections.value).toEqual([
+    expect(store.steering.value).toEqual([
       expect.objectContaining({ content: 'Keep this guard.', state: 'pending' }),
     ]);
   });
 
-  it('sends an immediate diff comment as an interjection during an active response', async () => {
+  it('sends an immediate diff comment as an steering during an active response', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];
     store.activeSessionId.value = 's1';
@@ -5070,6 +5123,7 @@ describe('AppStore compatibility behavior', () => {
         delivery: 'steer',
       }),
       expect.any(String),
+      false,
     );
     expect(store.diff.value.historyComments).toEqual([
       expect.objectContaining({ id: 'immediate-comment', optimistic: true }),

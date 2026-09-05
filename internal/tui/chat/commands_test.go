@@ -1494,7 +1494,7 @@ func TestCycleEffortWhileStreamingQueuesNextEffortAndPreservesDraft(t *testing.T
 	m, store := newEffortCmdTestModel("openai", "gpt-5.4-low")
 	prepareEffortShortcutTestModel(m)
 	m.streaming = true
-	m.setTextareaValue("draft interjection")
+	m.setTextareaValue("draft steering")
 	activeEngine := m.engine
 
 	result, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
@@ -1508,7 +1508,7 @@ func TestCycleEffortWhileStreamingQueuesNextEffortAndPreservesDraft(t *testing.T
 	if rm.pendingStreamModelSwitch == nil || rm.pendingStreamModelSwitch.model != "gpt-5.4-medium" {
 		t.Fatalf("unexpected queued switch: %#v", rm.pendingStreamModelSwitch)
 	}
-	if got := rm.textarea.Value(); got != "draft interjection" {
+	if got := rm.textarea.Value(); got != "draft steering" {
 		t.Fatalf("draft = %q, want preserved", got)
 	}
 	if !strings.Contains(rm.footerMessage, "Effort medium queued") {
@@ -1520,7 +1520,7 @@ func TestCycleEffortWhileStreamingAdvancesFromQueuedEffort(t *testing.T) {
 	m, store := newEffortCmdTestModel("openai", "gpt-5.4-medium")
 	prepareEffortShortcutTestModel(m)
 	m.streaming = true
-	m.setTextareaValue("draft interjection")
+	m.setTextareaValue("draft steering")
 	activeEngine := m.engine
 
 	result, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
@@ -1540,7 +1540,7 @@ func TestCycleEffortWhileStreamingAdvancesFromQueuedEffort(t *testing.T) {
 	if rm.pendingStreamModelSwitch == nil || rm.pendingStreamModelSwitch.model != "gpt-5.4-xhigh" {
 		t.Fatalf("second queued switch = %#v, want xhigh", rm.pendingStreamModelSwitch)
 	}
-	if got := rm.textarea.Value(); got != "draft interjection" {
+	if got := rm.textarea.Value(); got != "draft steering" {
 		t.Fatalf("draft = %q, want preserved", got)
 	}
 	if !strings.Contains(rm.footerMessage, "Effort xhigh queued") {
@@ -1548,14 +1548,14 @@ func TestCycleEffortWhileStreamingAdvancesFromQueuedEffort(t *testing.T) {
 	}
 }
 
-func TestPendingStreamingEffortPreservesQueuedInterjectionsOnStreamDone(t *testing.T) {
+func TestPendingStreamingEffortPreservesQueuedSteeringOnStreamDone(t *testing.T) {
 	m, _ := newEffortCmdTestModel("openai", "gpt-5.4-medium")
 	prepareEffortShortcutTestModel(m)
 	m.streaming = true
-	firstID := m.nextPendingInterjectionID()
-	secondID := m.nextPendingInterjectionID()
-	m.applyInterruptAction(firstID, "first note", llm.InterruptInterject)
-	m.applyInterruptAction(secondID, "second note", llm.InterruptInterject)
+	firstID := m.nextPendingSteeringID()
+	secondID := m.nextPendingSteeringID()
+	m.applyInterruptAction(firstID, "first note", llm.InterruptSteer)
+	m.applyInterruptAction(secondID, "second note", llm.InterruptSteer)
 	m.pendingStreamModelSwitch = &pendingStreamModelSwitch{provider: "openai", model: "gpt-5.4-high"}
 	oldEngine := m.engine
 
@@ -1568,10 +1568,10 @@ func TestPendingStreamingEffortPreservesQueuedInterjectionsOnStreamDone(t *testi
 		t.Fatalf("queued switch did not apply: engineChanged=%v model=%q", rm.engine != oldEngine, rm.modelName)
 	}
 	if got := rm.textarea.Value(); got != "first note\nsecond note" {
-		t.Fatalf("restored draft = %q, want both queued interjections", got)
+		t.Fatalf("restored draft = %q, want both queued steering", got)
 	}
-	if len(rm.pendingInterjections) != 0 || rm.pendingInterjection != "" {
-		t.Fatalf("pending UI state not cleared: latest=%q stack=%#v", rm.pendingInterjection, rm.pendingInterjections)
+	if len(rm.pendingSteeringText) != 0 || rm.pendingSteeringText != "" {
+		t.Fatalf("pending UI state not cleared: latest=%q stack=%#v", rm.pendingSteeringText, rm.pendingSteeringText)
 	}
 }
 

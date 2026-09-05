@@ -57,7 +57,7 @@ type InterruptAction int
 
 const (
 	InterruptCancel InterruptAction = iota
-	InterruptInterject
+	InterruptSteer
 )
 
 // InterruptActivity summarizes active stream state for interrupt classification.
@@ -77,14 +77,14 @@ func ClassifyInterruptImmediate(msg string) (InterruptAction, bool) {
 func classifyInterruptHeuristic(msg string) (InterruptAction, bool) {
 	normalized := strings.ToLower(strings.TrimSpace(msg))
 	if normalized == "" {
-		return InterruptInterject, true
+		return InterruptSteer, true
 	}
 
 	switch normalized {
 	case "/stop", "/cancel":
 		return InterruptCancel, true
 	default:
-		return InterruptInterject, false
+		return InterruptSteer, false
 	}
 }
 
@@ -95,7 +95,7 @@ func ClassifyInterrupt(ctx context.Context, fastProvider Provider, msg string, a
 		return action
 	}
 	if fastProvider == nil {
-		return InterruptInterject
+		return InterruptSteer
 	}
 
 	toolsRun := "none"
@@ -120,9 +120,9 @@ User's new message: %q
 
 Classify as one word:
 - cancel: user wants to stop current work and replace it with this new message
-- interject: user wants to steer or correct the current work; agent should continue and incorporate it at the next legal boundary
+- steer: user wants to steer or correct the current work; agent should continue and incorporate it at the next legal boundary
 
-Reply with exactly one word. If unsure, reply interject.`,
+Reply with exactly one word. If unsure, reply steer.`,
 		agentActivity,
 		strings.TrimSpace(activity.CurrentTask),
 		toolsRun,
@@ -132,15 +132,15 @@ Reply with exactly one word. If unsure, reply interject.`,
 
 	decision, err := Classify(ctx, fastProvider, prompt, 3*time.Second)
 	if err != nil {
-		return InterruptInterject
+		return InterruptSteer
 	}
 
 	switch strings.TrimSpace(decision) {
 	case "cancel", "abort", "stop":
 		return InterruptCancel
-	case "interject", "inject", "queue", "wait", "later":
-		return InterruptInterject
+	case "steer", "inject", "queue", "wait", "later":
+		return InterruptSteer
 	default:
-		return InterruptInterject
+		return InterruptSteer
 	}
 }

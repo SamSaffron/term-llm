@@ -829,7 +829,7 @@ func (p *peer) isDataChannelResponseCancelRequest(frame requestFrame) bool {
 		return false
 	}
 	prefix := p.cfg.BasePath + "/v1/responses/"
-	return strings.HasPrefix(frame.Path, prefix) && strings.HasSuffix(frame.Path, "/cancel")
+	return (strings.HasPrefix(frame.Path, prefix) || (strings.HasPrefix(frame.Path, p.cfg.BasePath+"/v1/sessions/") && strings.Contains(frame.Path, "/steering/rush/"))) && strings.HasSuffix(frame.Path, "/cancel")
 }
 
 // dispatchRequest decodes and dispatches a request frame. runDataChannel uses

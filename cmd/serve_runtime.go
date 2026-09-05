@@ -27,7 +27,7 @@ type serveRuntime struct {
 	mu                     sync.Mutex
 	goalMu                 sync.Mutex
 	interruptMu            sync.Mutex
-	interjectionMutationMu sync.Mutex
+	steeringMutationMu     sync.Mutex
 	responseMu             sync.Mutex // guards lastResponseID and responseIDs
 	askUserMu              sync.Mutex
 	approvalMu             sync.Mutex
@@ -67,7 +67,7 @@ type serveRuntime struct {
 	compacting             atomic.Bool
 	lastUsedUnixNano       atomic.Int64
 	activeInterrupt        *runtimeInterruptState
-	interjectionCalls      map[string]*runtimeInterjectionCall
+	steeringCalls          map[string]*runtimeSteeringCall
 	lastResponseID         string
 	responseIDs            []string
 	cumulativeUsage        llm.Usage
@@ -126,20 +126,20 @@ func (rt *serveRuntime) takePendingCompactionIdentity() (sequence, count int, ok
 }
 
 type runtimeInterruptState struct {
-	cancel                     context.CancelFunc
-	requestCancel              func()
-	done                       chan struct{}
-	persistPendingInterjection func(context.Context, llm.QueuedInterjection) error
-	removePendingInterjection  func(context.Context, string)
-	currentTask                string
-	toolsRun                   []string
-	proseLen                   int
-	activeTool                 string
-	model                      string
-	reasoningEffort            string
+	cancel                 context.CancelFunc
+	requestCancel          func()
+	done                   chan struct{}
+	persistPendingSteering func(context.Context, llm.QueuedSteering) error
+	removePendingSteering  func(context.Context, string)
+	currentTask            string
+	toolsRun               []string
+	proseLen               int
+	activeTool             string
+	model                  string
+	reasoningEffort        string
 }
 
-type runtimeInterjectionCall struct {
+type runtimeSteeringCall struct {
 	done        chan struct{}
 	fingerprint string
 	action      llm.InterruptAction
@@ -147,7 +147,7 @@ type runtimeInterjectionCall struct {
 	completedAt time.Time
 }
 
-const runtimeInterjectionCallTTL = time.Minute
+const runtimeSteeringCallTTL = time.Minute
 
 func (rt *serveRuntime) pauseForInteractiveWait() func() {
 	rt.approvalMu.Lock()
@@ -495,12 +495,12 @@ func normalizeInterruptDelivery(delivery string) (interruptDelivery, error) {
 	}
 }
 
-func (rt *serveRuntime) configurePendingInterjectionPersistence(state *runtimeInterruptState, sessionID string) {
-	pendingStore, ok := session.AsPendingInterjectionStore(rt.store)
+func (rt *serveRuntime) configurePendingSteeringPersistence(state *runtimeInterruptState, sessionID string) {
+	pendingStore, ok := session.AsPendingSteeringStore(rt.store)
 	if state == nil || !ok || strings.TrimSpace(sessionID) == "" {
 		return
 	}
-	state.persistPendingInterjection = func(persistCtx context.Context, entry llm.QueuedInterjection) error {
+	state.persistPendingSteering = func(persistCtx context.Context, entry llm.QueuedSteering) error {
 		if strings.TrimSpace(entry.ID) == "" {
 			return nil
 		}
@@ -516,34 +516,35 @@ func (rt *serveRuntime) configurePendingInterjectionPersistence(state *runtimeIn
 		}
 		dbCtx, cancel := inlinePersistContext(persistCtx, 4*time.Second)
 		defer cancel()
-		return pendingStore.SavePendingInterjection(dbCtx, session.PendingInterjection{
+		return pendingStore.SavePendingSteering(dbCtx, session.PendingSteering{
 			SessionID:         sessionID,
 			ID:                entry.ID,
+			Origin:            entry.Origin,
 			Message:           entry.Message,
 			DisplayText:       displayText,
 			AttachmentSummary: attachmentSummary,
 			CreatedAt:         time.Now(),
 		})
 	}
-	state.removePendingInterjection = func(removeCtx context.Context, id string) {
+	state.removePendingSteering = func(removeCtx context.Context, id string) {
 		dbCtx, cancel := inlinePersistContext(removeCtx, 10*time.Second)
 		defer cancel()
-		if err := pendingStore.DeletePendingInterjection(dbCtx, sessionID, id); err != nil {
-			log.Printf("[serve] delete pending interjection %s/%s failed: %v", sessionID, id, err)
+		if err := pendingStore.DeletePendingSteering(dbCtx, sessionID, id); err != nil {
+			log.Printf("[serve] delete pending steering %s/%s failed: %v", sessionID, id, err)
 		}
 	}
 }
 
-func (rt *serveRuntime) claimInterjections(ids []string) []llm.InterjectionClaimStatus {
+func (rt *serveRuntime) claimSteering(ids []string) []llm.SteeringClaimStatus {
 	if rt == nil || rt.engine == nil {
 		return nil
 	}
-	rt.interjectionMutationMu.Lock()
-	defer rt.interjectionMutationMu.Unlock()
-	return rt.engine.ClaimInterjections(ids)
+	rt.steeringMutationMu.Lock()
+	defer rt.steeringMutationMu.Unlock()
+	return rt.engine.ClaimSteering(ids)
 }
 
-func (rt *serveRuntime) cancelPendingInterjection(ctx context.Context, sessionID, id string) (bool, error) {
+func (rt *serveRuntime) cancelPendingSteering(ctx context.Context, sessionID, id string) (bool, error) {
 	if rt == nil || rt.engine == nil {
 		return false, nil
 	}
@@ -551,10 +552,10 @@ func (rt *serveRuntime) cancelPendingInterjection(ctx context.Context, sessionID
 	if id == "" {
 		return false, nil
 	}
-	rt.interjectionMutationMu.Lock()
-	defer rt.interjectionMutationMu.Unlock()
+	rt.steeringMutationMu.Lock()
+	defer rt.steeringMutationMu.Unlock()
 	queued := false
-	for _, entry := range rt.engine.ListPendingInterjections() {
+	for _, entry := range rt.engine.ListPendingSteering() {
 		if entry.ID == id {
 			queued = true
 			break
@@ -562,9 +563,9 @@ func (rt *serveRuntime) cancelPendingInterjection(ctx context.Context, sessionID
 	}
 	// A live engine is authoritative: a durable row can briefly remain after the
 	// engine has committed or transferred ownership, but that does not make the
-	// interjection cancellable again.
+	// steering cancellable again.
 	if !queued {
-		if _, owned := rt.engine.InterjectionIdentityStatus(id); owned {
+		if _, owned := rt.engine.SteeringIdentityStatus(id); owned {
 			return false, nil
 		}
 		rt.interruptMu.Lock()
@@ -573,83 +574,83 @@ func (rt *serveRuntime) cancelPendingInterjection(ctx context.Context, sessionID
 		if active {
 			return false, nil
 		}
-		pendingStore, ok := session.AsPendingInterjectionStore(rt.store)
+		pendingStore, ok := session.AsPendingSteeringStore(rt.store)
 		if !ok {
 			return false, nil
 		}
-		entries, err := pendingStore.ListPendingInterjections(ctx, sessionID)
+		entries, err := pendingStore.ListPendingSteering(ctx, sessionID)
 		if err != nil {
 			return false, err
 		}
 		for _, entry := range entries {
 			if entry.ID == id {
-				return true, pendingStore.DeletePendingInterjection(ctx, sessionID, id)
+				return true, pendingStore.DeletePendingSteering(ctx, sessionID, id)
 			}
 		}
 		return false, nil
 	}
-	if pendingStore, ok := session.AsPendingInterjectionStore(rt.store); ok {
-		if err := pendingStore.DeletePendingInterjection(ctx, sessionID, id); err != nil {
+	if pendingStore, ok := session.AsPendingSteeringStore(rt.store); ok {
+		if err := pendingStore.DeletePendingSteering(ctx, sessionID, id); err != nil {
 			return false, err
 		}
 	}
-	return rt.engine.CancelInterjection(id), nil
+	return rt.engine.CancelSteering(id), nil
 }
 
-func (rt *serveRuntime) discardPendingInterjections(ctx context.Context, sessionID string) {
+func (rt *serveRuntime) discardPendingSteering(ctx context.Context, sessionID string) {
 	if rt == nil || rt.engine == nil {
 		return
 	}
-	rt.interjectionMutationMu.Lock()
-	defer rt.interjectionMutationMu.Unlock()
-	entries := rt.engine.ListPendingInterjections()
-	rt.engine.DiscardPendingInterjections()
-	pendingStore, ok := session.AsPendingInterjectionStore(rt.store)
+	rt.steeringMutationMu.Lock()
+	defer rt.steeringMutationMu.Unlock()
+	entries := rt.engine.ListPendingSteering()
+	rt.engine.DiscardPendingSteering()
+	pendingStore, ok := session.AsPendingSteeringStore(rt.store)
 	if !ok {
 		return
 	}
 	for _, entry := range entries {
-		if err := pendingStore.DeletePendingInterjection(ctx, sessionID, entry.ID); err != nil {
-			log.Printf("[serve] discard pending interjection %s/%s failed: %v", sessionID, entry.ID, err)
+		if err := pendingStore.DeletePendingSteering(ctx, sessionID, entry.ID); err != nil {
+			log.Printf("[serve] discard pending steering %s/%s failed: %v", sessionID, entry.ID, err)
 		}
 	}
 }
 
-func (rt *serveRuntime) releaseClaimedPendingInterjections(ctx context.Context, sessionID string, ids []string) {
+func (rt *serveRuntime) releaseClaimedPendingSteering(ctx context.Context, sessionID string, ids []string) {
 	if rt == nil || rt.engine == nil || len(ids) == 0 {
 		return
 	}
-	rt.interjectionMutationMu.Lock()
-	defer rt.interjectionMutationMu.Unlock()
-	rt.engine.ReleaseClaimedInterjections(ids)
-	pendingStore, ok := session.AsPendingInterjectionStore(rt.store)
+	rt.steeringMutationMu.Lock()
+	defer rt.steeringMutationMu.Unlock()
+	rt.engine.ReleaseClaimedSteering(ids)
+	pendingStore, ok := session.AsPendingSteeringStore(rt.store)
 	if !ok {
 		return
 	}
-	entries, err := pendingStore.ListPendingInterjections(ctx, sessionID)
+	entries, err := pendingStore.ListPendingSteering(ctx, sessionID)
 	if err != nil {
-		log.Printf("[serve] restore claimed interjections for %s failed: %v", sessionID, err)
+		log.Printf("[serve] restore claimed steering for %s failed: %v", sessionID, err)
 		return
 	}
-	byID := make(map[string]session.PendingInterjection, len(entries))
+	byID := make(map[string]session.PendingSteering, len(entries))
 	for _, entry := range entries {
 		byID[entry.ID] = entry
 	}
 	for _, id := range ids {
 		entry, exists := byID[id]
-		if !exists {
-			continue // The follow-up durably committed the intent.
+		if !exists || entry.OwnerKind == "rush" {
+			continue // Committed or exclusively owned by a rush.
 		}
-		_, status := rt.engine.QueueInterjectionWithStatus(llm.QueuedInterjection{
-			ID: entry.ID, Message: entry.Message, DisplayText: entry.DisplayText,
+		_, status := rt.engine.QueueSteeringWithStatus(llm.QueuedSteering{
+			ID: entry.ID, Message: entry.Message, DisplayText: entry.DisplayText, Origin: entry.Origin,
 		})
-		if status == llm.InterjectionQueueQueued || status == llm.InterjectionQueueAlreadyQueued {
+		if status == llm.SteeringQueueQueued || status == llm.SteeringQueueAlreadyQueued {
 			continue
 		}
 		// No active run can consume the restored claim. Do not leave a permanent
 		// queued badge for an intent that no engine owns.
-		if err := pendingStore.DeletePendingInterjection(ctx, sessionID, id); err != nil {
-			log.Printf("[serve] delete abandoned claimed interjection %s/%s failed: %v", sessionID, id, err)
+		if err := pendingStore.DeletePendingSteering(ctx, sessionID, id); err != nil {
+			log.Printf("[serve] delete abandoned claimed steering %s/%s failed: %v", sessionID, id, err)
 		}
 	}
 }
@@ -685,7 +686,7 @@ func (rt *serveRuntime) QueueActiveRunRuntimeSwitch(model, reasoningEffort strin
 	return nil
 }
 
-func interjectionFingerprint(msg llm.Message, displayText string, delivery interruptDelivery) (string, error) {
+func steeringFingerprint(msg llm.Message, displayText string, delivery interruptDelivery) (string, error) {
 	parts := append([]llm.Part(nil), msg.Parts...)
 	for i := range parts {
 		// Parsing inline attachments can materialize them at a fresh temporary path
@@ -701,72 +702,72 @@ func interjectionFingerprint(msg llm.Message, displayText string, delivery inter
 		Delivery interruptDelivery `json:"delivery"`
 	}{parts, displayText, delivery})
 	if err != nil {
-		return "", fmt.Errorf("encode interjection idempotency payload: %w", err)
+		return "", fmt.Errorf("encode steering idempotency payload: %w", err)
 	}
 	sum := sha256.Sum256(payload)
 	return fmt.Sprintf("%x", sum), nil
 }
 
-func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, displayText string, interjectionID string, fastProvider llm.Provider, delivery interruptDelivery) (llm.InterruptAction, bool, error) {
-	interjectionID = strings.TrimSpace(interjectionID)
+func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, displayText string, steeringID string, fastProvider llm.Provider, delivery interruptDelivery, origins ...llm.SteeringOrigin) (llm.InterruptAction, bool, error) {
+	steeringID = strings.TrimSpace(steeringID)
 	if delivery == "" {
 		delivery = interruptDeliveryAuto
 	}
 	if delivery != interruptDeliveryAuto && delivery != interruptDeliverySteer {
-		return llm.InterruptInterject, false, fmt.Errorf("unsupported interrupt delivery %q", delivery)
+		return llm.InterruptSteer, false, fmt.Errorf("unsupported interrupt delivery %q", delivery)
 	}
-	if interjectionID != "" && msg.Role == llm.RoleUser {
-		msg.ClientMessageID = interjectionID
+	if steeringID != "" && msg.Role == llm.RoleUser {
+		msg.ClientMessageID = steeringID
 	}
 	fingerprint := ""
-	if interjectionID != "" {
+	if steeringID != "" {
 		var err error
-		fingerprint, err = interjectionFingerprint(msg, displayText, delivery)
+		fingerprint, err = steeringFingerprint(msg, displayText, delivery)
 		if err != nil {
-			return llm.InterruptInterject, false, err
+			return llm.InterruptSteer, false, err
 		}
 	}
 
 	rt.interruptMu.Lock()
 	now := time.Now()
-	for id, existing := range rt.interjectionCalls {
-		if !existing.completedAt.IsZero() && now.Sub(existing.completedAt) > runtimeInterjectionCallTTL {
-			delete(rt.interjectionCalls, id)
+	for id, existing := range rt.steeringCalls {
+		if !existing.completedAt.IsZero() && now.Sub(existing.completedAt) > runtimeSteeringCallTTL {
+			delete(rt.steeringCalls, id)
 		}
 	}
-	var call *runtimeInterjectionCall
-	if interjectionID != "" {
-		if rt.interjectionCalls == nil {
-			rt.interjectionCalls = make(map[string]*runtimeInterjectionCall)
+	var call *runtimeSteeringCall
+	if steeringID != "" {
+		if rt.steeringCalls == nil {
+			rt.steeringCalls = make(map[string]*runtimeSteeringCall)
 		}
-		if existing := rt.interjectionCalls[interjectionID]; existing != nil {
+		if existing := rt.steeringCalls[steeringID]; existing != nil {
 			if existing.fingerprint != fingerprint {
 				rt.interruptMu.Unlock()
-				return llm.InterruptInterject, false, fmt.Errorf("interjection id %q was already used for different content", interjectionID)
+				return llm.InterruptSteer, false, fmt.Errorf("steering id %q was already used for different content", steeringID)
 			}
 			rt.interruptMu.Unlock()
 			select {
 			case <-existing.done:
 				return existing.action, true, existing.err
 			case <-ctx.Done():
-				return llm.InterruptInterject, true, ctx.Err()
+				return llm.InterruptSteer, true, ctx.Err()
 			}
 		}
-		call = &runtimeInterjectionCall{done: make(chan struct{}), fingerprint: fingerprint}
-		rt.interjectionCalls[interjectionID] = call
+		call = &runtimeSteeringCall{done: make(chan struct{}), fingerprint: fingerprint}
+		rt.steeringCalls[steeringID] = call
 	}
 	state := rt.activeInterrupt
 	if state == nil {
 		if call != nil {
-			delete(rt.interjectionCalls, interjectionID)
+			delete(rt.steeringCalls, steeringID)
 		}
 		rt.interruptMu.Unlock()
-		return llm.InterruptInterject, false, fmt.Errorf("session has no active stream")
+		return llm.InterruptSteer, false, fmt.Errorf("session has no active stream")
 	}
 	cancel := state.cancel
 	requestCancel := state.requestCancel
-	persistPendingInterjection := state.persistPendingInterjection
-	removePendingInterjection := state.removePendingInterjection
+	persistPendingSteering := state.persistPendingSteering
+	removePendingSteering := state.removePendingSteering
 	activity := llm.InterruptActivity{
 		CurrentTask: state.currentTask,
 		ToolsRun:    append([]string(nil), state.toolsRun...),
@@ -784,11 +785,11 @@ func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, d
 		}
 		classifyText += summary
 	}
-	action := llm.InterruptInterject
+	action := llm.InterruptSteer
 	if delivery == interruptDeliveryAuto {
 		classifyCtx := ctx
 		classifyCancel := func() {}
-		if interjectionID != "" {
+		if steeringID != "" {
 			// Stay below the web client's 5-second mutation first-frame timeout so a
 			// healthy classifier normally responds before transport fallback begins.
 			classifyCtx, classifyCancel = context.WithTimeout(context.WithoutCancel(ctx), 4*time.Second)
@@ -799,44 +800,52 @@ func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, d
 	var resultErr error
 	switch action {
 	case llm.InterruptCancel:
-		rt.interjectionMutationMu.Lock()
-		var discarded []llm.QueuedInterjection
+		rt.steeringMutationMu.Lock()
+		var discarded []llm.QueuedSteering
 		if rt.engine != nil {
-			discarded = rt.engine.ListPendingInterjections()
-			rt.engine.DiscardPendingInterjections()
+			discarded = rt.engine.ListPendingSteering()
+			rt.engine.DiscardPendingSteering()
 		}
-		if removePendingInterjection != nil {
+		if removePendingSteering != nil {
 			for _, entry := range discarded {
-				removePendingInterjection(context.WithoutCancel(ctx), entry.ID)
+				removePendingSteering(context.WithoutCancel(ctx), entry.ID)
 			}
 		}
-		rt.interjectionMutationMu.Unlock()
+		rt.steeringMutationMu.Unlock()
 		if requestCancel != nil {
 			requestCancel()
 		} else if cancel != nil {
 			cancel()
 		}
-	case llm.InterruptInterject:
-		entry := llm.QueuedInterjection{ID: interjectionID, Message: msg, DisplayText: displayText}
-		rt.interjectionMutationMu.Lock()
-		if persistPendingInterjection != nil {
-			if err := persistPendingInterjection(ctx, entry); err != nil {
-				resultErr = fmt.Errorf("persist pending interjection: %w", err)
-				rt.interjectionMutationMu.Unlock()
+	case llm.InterruptSteer:
+		entry := llm.QueuedSteering{ID: steeringID, Message: msg, DisplayText: displayText, Origin: llm.SteeringOriginForMessage(msg)}
+		if len(origins) > 0 {
+			entry.Origin = origins[0]
+		}
+		rt.steeringMutationMu.Lock()
+		if rt.engine.SteeringTransitioning() {
+			resultErr = llm.ErrSteeringTransition
+			rt.steeringMutationMu.Unlock()
+			break
+		}
+		if persistPendingSteering != nil {
+			if err := persistPendingSteering(ctx, entry); err != nil {
+				resultErr = fmt.Errorf("persist pending steering: %w", err)
+				rt.steeringMutationMu.Unlock()
 				break
 			}
 		}
-		_, queueStatus := rt.engine.QueueInterjectionWithStatus(entry)
+		_, queueStatus := rt.engine.QueueSteeringWithStatus(entry)
 		switch queueStatus {
-		case llm.InterjectionQueueFollowUpOwned, llm.InterjectionQueueCommitted:
-			resultErr = fmt.Errorf("interjection %q is already %s", interjectionID, queueStatus)
-		case llm.InterjectionQueueRunFinished:
-			resultErr = fmt.Errorf("active run finished before interjection %q could be consumed", interjectionID)
+		case llm.SteeringQueueTransitioning, llm.SteeringQueueRushOwned, llm.SteeringQueueFollowUpOwned, llm.SteeringQueueCommitted:
+			resultErr = fmt.Errorf("steering %q is already %s", steeringID, queueStatus)
+		case llm.SteeringQueueRunFinished:
+			resultErr = fmt.Errorf("active run finished before steering %q could be consumed", steeringID)
 		}
-		if resultErr != nil && removePendingInterjection != nil {
-			removePendingInterjection(context.WithoutCancel(ctx), interjectionID)
+		if resultErr != nil && removePendingSteering != nil {
+			removePendingSteering(context.WithoutCancel(ctx), steeringID)
 		}
-		rt.interjectionMutationMu.Unlock()
+		rt.steeringMutationMu.Unlock()
 	}
 	if call != nil {
 		rt.interruptMu.Lock()
@@ -1203,9 +1212,9 @@ func (rt *serveRuntime) appendMessagesDetailed(ctx context.Context, sessionID st
 		result.LastRowID = sessionMsg.ID
 		if msg.Role == llm.RoleUser {
 			if id := strings.TrimSpace(msg.ClientMessageID); id != "" {
-				if pendingStore, ok := session.AsPendingInterjectionStore(rt.store); ok {
-					if err := pendingStore.DeletePendingInterjection(dbCtx, sessionID, id); err != nil {
-						log.Printf("[serve] session pending interjection cleanup failed for %s/%s: %v", sessionID, id, err)
+				if pendingStore, ok := session.AsPendingSteeringStore(rt.store); ok {
+					if err := pendingStore.DeletePendingSteering(dbCtx, sessionID, id); err != nil {
+						log.Printf("[serve] session pending steering cleanup failed for %s/%s: %v", sessionID, id, err)
 					}
 				}
 			}
@@ -1250,6 +1259,22 @@ func (rt *serveRuntime) appendMessagesBatchDetailed(ctx context.Context, session
 	dbCtx, cancel := inlinePersistContext(ctx, 10*time.Second)
 	defer cancel()
 	_, err := runResponseRunPersistence(ctx, persistedMessages, func(fence session.ResponseRunFence) (int64, error) {
+		if op := rushFromContext(ctx); op != nil {
+			store, supported := session.AsRushStore(rt.store)
+			if !supported {
+				return 0, errServeSessionPersistence
+			}
+			// Only the complete initial suffix owns the operation commit.
+			if len(durable) > 0 && durable[len(durable)-1].ClientMessageID == op.Entries[len(op.Entries)-1].Steering.ID {
+				rev, err := store.CommitRushInitialInput(session.WithResponseRunFence(dbCtx, fence), op, durable)
+				if err == nil {
+					if authorized, ok := ctx.Value(rushInitialInputKey{}).(func()); ok {
+						authorized()
+					}
+				}
+				return rev, err
+			}
+		}
 		return writer.AppendMessagesWithTranscriptRev(session.WithResponseRunFence(dbCtx, fence), sessionID, durable)
 	})
 	if err != nil {
@@ -1790,12 +1815,12 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		model:           activeModel,
 		reasoningEffort: activeEffort,
 	}
-	rt.configurePendingInterjectionPersistence(intState, req.SessionID)
+	rt.configurePendingSteeringPersistence(intState, req.SessionID)
 	rt.setActiveInterrupt(intState)
 	defer func() {
 		close(intState.done)
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		rt.discardPendingInterjections(cleanupCtx, req.SessionID)
+		rt.discardPendingSteering(cleanupCtx, req.SessionID)
 		cleanupCancel()
 		rt.clearActiveInterrupt(intState)
 		if rt.engine != nil {
@@ -1877,7 +1902,8 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		persistPlatformInjectionLocked()
 	}
 
-	appendOnlyPersisted := persisted && !replaceHistory && rt.historyPersisted && (!isIdentifiedUserBatch(inputMessages) || collaborationBinding.Required)
+	rushInitial := rushFromContext(ctx)
+	appendOnlyPersisted := persisted && !replaceHistory && rt.historyPersisted && (!isIdentifiedUserBatch(inputMessages) || collaborationBinding.Required || rushInitial != nil)
 	initialPersisted := false
 	initialMessages := make([]llm.Message, 0, len(inputMessages)+1)
 	if systemPromptInjected {
@@ -1900,7 +1926,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 			return true
 		}
 		var result appendMessagesResult
-		if collaborationBinding.Required {
+		if collaborationBinding.Required || rushInitial != nil {
 			result = rt.appendMessagesBatchDetailed(persistCtx, req.SessionID, initialMessages[initialAppendedIdx:], turnIndex)
 		} else {
 			result = rt.appendMessagesDetailed(persistCtx, req.SessionID, initialMessages[initialAppendedIdx:], turnIndex)
@@ -1939,7 +1965,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	if run := responseRunFromContext(runCtx); run != nil && appendOnlyPersisted {
 		initialBoundaryPublished = lastAppendResult.Complete && lastAppendResult.LastRowID > 0 && run.setInitialDurableBoundary(lastAppendResult.LastRowID)
 	}
-	if collaborationBinding.Required && !replaceHistory {
+	if (collaborationBinding.Required || rushInitial != nil) && !replaceHistory {
 		if initialPersisted && !initialBoundaryPublished {
 			rt.history = append([]llm.Message(nil), messages...)
 			rt.historyPersisted = true
@@ -2256,7 +2282,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	defer rt.engine.SetResponseCompletedCallback(nil)
 
 	// Turn callback: upsert the assistant row if present as first element, then
-	// plain-append the rest (tool results or interjections). Reset pending at
+	// plain-append the rest (tool results or steering). Reset pending at
 	// end of turn.
 	rt.engine.SetTurnCompletedCallback(func(cbCtx context.Context, callbackTurnIndex int, msgs []llm.Message, metrics llm.TurnMetrics) error {
 		// Text-only and inline-tool provider responses bypass ResponseCompletedCallback
@@ -2408,8 +2434,8 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		}
 	}
 
-	// Do not drain residual queued interjections here. If the run ended without a
-	// tool boundary, queued interjections were never submitted to the provider and
+	// Do not drain residual queued steering here. If the run ended without a
+	// tool boundary, queued steering were never submitted to the provider and
 	// must remain cancellable/pending for UI recovery or explicit follow-up.
 
 	// Accumulate cumulative session-level usage, including helper calls used for

@@ -31,7 +31,7 @@ export interface ReviewStoreHost {
   closePlan: () => void;
   restartStatusPoll: () => void;
   send: (options?: SendOptions) => Promise<void>;
-  interject: (content: string, options?: SendOptions) => Promise<void>;
+  steer: (content: string, options?: SendOptions) => Promise<void>;
   publishSessionChange: (type: 'review-comment-changed', sessionId: string) => void;
 }
 
@@ -703,7 +703,7 @@ export class ReviewStore {
         this.services.toast(error, 'error');
       },
     };
-    if (this.host.streaming.value) await this.host.interject(prepared.inputText, options);
+    if (this.host.streaming.value) await this.host.steer(prepared.inputText, options);
     else await this.host.send(options);
   }
   queueDiffComment(comment: DiffComment): void {
@@ -923,7 +923,7 @@ export class ReviewStore {
         this.services.toast(error, 'error');
       },
     };
-    if (this.host.streaming.value) await this.host.interject(inputText, options);
+    if (this.host.streaming.value) await this.host.steer(inputText, options);
     else await this.host.send(options);
   }
   resizeDiff(width: number): void {

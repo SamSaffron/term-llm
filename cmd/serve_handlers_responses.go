@@ -580,30 +580,32 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 			}
 		}
 
-		claims := make([]llm.InterjectionClaimStatus, len(clientMessageIDs))
+		claims := make([]llm.SteeringClaimStatus, len(clientMessageIDs))
 		for i := range claims {
-			claims[i] = llm.InterjectionClaimNotFound
+			claims[i] = llm.SteeringClaimNotFound
 		}
 		if rt.engine != nil {
-			claims = rt.claimInterjections(clientMessageIDs)
+			claims = rt.claimSteering(clientMessageIDs)
 		}
 		claimedIDs := make([]string, 0, len(clientMessageIDs))
 		hasNewClaim := false
 		hasExistingOwner := false
 		for _, claim := range claims {
-			hasNewClaim = hasNewClaim || claim == llm.InterjectionClaimed
-			hasExistingOwner = hasExistingOwner || claim == llm.InterjectionClaimFollowUpOwned
+			hasNewClaim = hasNewClaim || claim == llm.SteeringClaimed
+			hasExistingOwner = hasExistingOwner || claim == llm.SteeringClaimFollowUpOwned
 		}
 		if hasNewClaim && hasExistingOwner {
 			return errServeSessionBusy
 		}
 		for i, claim := range claims {
 			switch claim {
-			case llm.InterjectionClaimed:
+			case llm.SteeringClaimed:
 				claimedIDs = append(claimedIDs, clientMessageIDs[i])
-			case llm.InterjectionClaimCommitted:
+			case llm.SteeringClaimRushOwned:
+				return errServeSessionBusy
+			case llm.SteeringClaimCommitted:
 				return fmt.Errorf("%w: %q", errResponseClientMessageAlreadyCommitted, clientMessageIDs[i])
-			case llm.InterjectionClaimFollowUpOwned:
+			case llm.SteeringClaimFollowUpOwned:
 				if !trailingUnanswered[clientMessageIDs[i]] {
 					return errServeSessionBusy
 				}
@@ -614,7 +616,7 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 			followUpClaims = &followUpClaimLease{release: func() {
 				releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer releaseCancel()
-				rt.releaseClaimedPendingInterjections(releaseCtx, sessionID, claimed)
+				rt.releaseClaimedPendingSteering(releaseCtx, sessionID, claimed)
 			}}
 		}
 		return nil

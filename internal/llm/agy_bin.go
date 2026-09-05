@@ -144,7 +144,7 @@ func (p *AgyBinProvider) Capabilities() Capabilities {
 }
 
 // RequestInlineFlush marks the next tool result so agy ends its current prompt.
-// The engine then starts a new Stream that delivers queued interjections.
+// The engine then starts a new Stream that delivers queued steering.
 func (p *AgyBinProvider) RequestInlineFlush() {
 	p.requestInlineFlush()
 }

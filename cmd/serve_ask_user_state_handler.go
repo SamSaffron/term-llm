@@ -101,17 +101,44 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 	persistedGoalRead := false
 	var runtimeDefaultModel string
 	runtimeMetaRead := false
+	availability := llm.SteeringAvailability{Protocol: 1, UnavailableReason: "run_not_consuming"}
+	if rushStore, ok := session.AsRushStore(s.store); ok {
+		if op, err := rushStore.LatestRush(r.Context(), sessionID); err == nil {
+			if transition := s.ensureResponseRuns().steeringTransition(sessionID); transition != nil {
+				if failed := transition.failure.Load(); failed != nil {
+					go s.finishSteeringRush(rushStore, transition, failed.status, failed.reason)
+				}
+			}
+
+			// A missing process-local owner after restart is ambiguous external
+			// execution, not permission to start a replacement automatically.
+			if op.Status.Active() && s.ensureResponseRuns().steeringTransition(sessionID) == nil {
+				running := false
+				if s.responseRuns != nil {
+					_, running = s.responseRuns.get(op.SourceResponseID)
+				}
+				if !running {
+					op, _ = rushStore.AdvanceRush(r.Context(), op, session.RushBlocked, "settlement_unknown")
+				}
+			}
+			resp["active_rush"] = op
+		}
+	}
 	pendingItems := make([]map[string]any, 0)
 	pendingIDs := make(map[string]struct{})
 	pendingAuthoritative := false
-	if pendingStore, ok := session.AsPendingInterjectionStore(s.store); ok {
-		if entries, err := pendingStore.ListPendingInterjections(r.Context(), sessionID); err == nil {
+	if pendingStore, ok := session.AsPendingSteeringStore(s.store); ok {
+		if entries, err := pendingStore.ListPendingSteering(r.Context(), sessionID); err == nil {
 			pendingAuthoritative = true
 			for _, entry := range entries {
+				if entry.OwnerKind != "" {
+					continue
+				}
 				item := map[string]any{
 					"id":     entry.ID,
 					"text":   entry.DisplayText,
-					"status": string(llm.InterjectionQueued),
+					"origin": entry.Origin,
+					"status": string(llm.SteeringQueued),
 				}
 				if entry.AttachmentSummary != "" {
 					item["attachment_summary"] = entry.AttachmentSummary
@@ -138,7 +165,8 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 				resp["pending_approval"] = approvals[0]
 			}
 			if rt.engine != nil {
-				if entries := rt.engine.ListPendingInterjections(); len(entries) > 0 {
+				availability = rt.engine.SteeringAvailability()
+				if entries := rt.engine.ListPendingSteering(); len(entries) > 0 {
 					for _, entry := range entries {
 						if _, exists := pendingIDs[entry.ID]; exists {
 							continue
@@ -203,10 +231,25 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 			}
 		}
 	}
+	if _, ok := session.AsRushStore(s.store); !ok {
+		availability.CanRush = false
+		availability.UnavailableReason = "durable_store_unavailable"
+	}
+	eligiblePending := false
+	for _, item := range pendingItems {
+		if item["origin"] != llm.SteeringOriginJobNotification {
+			eligiblePending = true
+		}
+	}
+	if !eligiblePending && availability.CanRush {
+		availability.CanRush = false
+		availability.UnavailableReason = "no_user_steering"
+	}
+	resp["steering"] = availability
 	if pendingAuthoritative || len(pendingItems) > 0 {
-		resp["pending_interjections"] = pendingItems
+		resp["pending_steering"] = pendingItems
 		if len(pendingItems) > 0 {
-			resp["pending_interjection"] = pendingItems[0]
+			resp["pending_steering_text"] = pendingItems[0]
 		}
 	}
 

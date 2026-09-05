@@ -213,7 +213,7 @@ export class SelectionStore {
   async loadSession(id: string, epoch = this.epoch): Promise<void> {
     const sampledAskUser = this.interactions.askUser.peek();
     const sampledApproval = this.interactions.approval.peek();
-    const sampledInterjectionRevision = this.runEngine.interjectionStateRevision;
+    const sampledSteeringRevision = this.runEngine.steeringStateRevision;
     try {
       const [state, selected] = await Promise.all([
         this.services.endpoints.sessionState(id),
@@ -361,7 +361,7 @@ export class SelectionStore {
           recoveredApprovals.find((prompt) =>
             this.interactions.shouldOpen('approval', updated.id, prompt.id!),
           ) || null;
-      this.runEngine.reconcilePendingInterjections(updated.id, state, sampledInterjectionRevision);
+      this.runEngine.reconcilePendingSteering(updated.id, state, sampledSteeringRevision);
       this.runEngine.reconcileLoadedIntents(updated.id, incoming.messages, Boolean(activeResponse));
       if (activeResponse)
         this.sessionsStore.patch(updated.id, { activeResponseId: activeResponse });

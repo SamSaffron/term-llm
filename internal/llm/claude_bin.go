@@ -859,7 +859,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		_ = streamInput.Close()
 		p.interruptSent.Store(false)
 	}()
-	// An interjection can race process startup. The shared flush marker records
+	// An steering can race process startup. The shared flush marker records
 	// it until stdin is live, at which point the native interrupt can be sent.
 	if p.inlineFlushRequested() {
 		p.sendNativeInterrupt()

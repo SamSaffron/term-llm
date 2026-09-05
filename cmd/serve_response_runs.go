@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -121,6 +122,9 @@ type responseRunResolvedInteraction struct {
 }
 
 type responseRun struct {
+	settled                 chan struct{}
+	rushStateful            bool
+	rushRequest             llm.Request
 	mu                      sync.Mutex
 	terminalMu              sync.Mutex
 	interactionSubmitMu     sync.Mutex
@@ -192,6 +196,8 @@ type responseRun struct {
 }
 
 type startResponseRunOptions struct {
+	onInitialInput             func()
+	rush                       *session.RushOperation
 	previousResponseID         string
 	uiSession                  bool
 	resetResponseIDsOnSuccess  bool
@@ -1209,6 +1215,9 @@ func (r *responseRun) resolvePendingInteractionsLocked(outcome string) {
 }
 
 func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]any) {
+	event = steeringWireEvent(nil, event)
+	payload = normalizeSteeringObject(payload, true).(map[string]any)
+
 	if event == "response.completed" || event == "response.cancelled" || event == "response.failed" {
 		r.flushPendingGuardianReviewsLocked()
 	}
@@ -1280,7 +1289,7 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 			Content: []byte(message), Created: time.Now().UnixMilli(),
 		})
 		return
-	case "response.interjection":
+	case "response.steering":
 		text := stringValue(payload["text"])
 		attachments := attachmentsFromPayload(payload["attachments"])
 		explicitID := stringValue(payload["client_message_id"])
@@ -1299,7 +1308,7 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 			Content:         []byte(text),
 			Created:         time.Now().UnixMilli(),
 			Attachments:     attachments,
-			InterruptState:  "interject",
+			InterruptState:  "steer",
 			ClientMessageID: id,
 		})
 		return
@@ -2106,17 +2115,18 @@ type responseRunIdempotencyClaim struct {
 }
 
 type responseRunManager struct {
-	mu                 sync.Mutex
-	runs               map[string]*responseRun
-	activeBySession    map[string]string
-	idempotencyByKey   map[string]responseRunIdempotencyClaim
-	cleanupTimers      map[string]*time.Timer
-	nextEpochBySession map[string]int64
-	terminalRetention  time.Duration
-	runWG              sync.WaitGroup
-	closed             bool
-	boundaries         sync.Map // map[session ID]*sync.Mutex
-	idempotencyReplays atomic.Uint64
+	mu                  sync.Mutex
+	runs                map[string]*responseRun
+	activeBySession     map[string]string
+	idempotencyByKey    map[string]responseRunIdempotencyClaim
+	cleanupTimers       map[string]*time.Timer
+	nextEpochBySession  map[string]int64
+	terminalRetention   time.Duration
+	runWG               sync.WaitGroup
+	closed              bool
+	steeringTransitions sync.Map
+	boundaries          sync.Map // map[session ID]*sync.Mutex
+	idempotencyReplays  atomic.Uint64
 }
 
 type responseRunDiagnostics struct {
@@ -2713,6 +2723,9 @@ func (m *responseRunManager) trySetActiveRun(sessionID, runID string) bool {
 	boundary := m.sessionBoundary(sessionID)
 	boundary.Lock()
 	defer boundary.Unlock()
+	if t := m.steeringTransition(sessionID); t != nil && t.replacementID != runID {
+		return false
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if active := m.activeBySession[sessionID]; active != "" && active != runID {
@@ -2755,6 +2768,9 @@ func (m *responseRunManager) withExpectedActiveRun(sessionID, expectedID string,
 	boundary := m.sessionBoundary(sessionID)
 	boundary.Lock()
 	defer boundary.Unlock()
+	if m.steeringTransition(sessionID) != nil {
+		return false
+	}
 	m.mu.Lock()
 	activeID := m.activeBySession[sessionID]
 	run := m.runs[activeID]
@@ -2789,7 +2805,7 @@ func (m *responseRunManager) runIfSessionIdle(sessionID string, fn func()) bool 
 	boundary.Lock()
 	defer boundary.Unlock()
 	m.mu.Lock()
-	active := m.activeBySession[sessionID] != ""
+	active := m.activeBySession[sessionID] != "" || m.steeringTransition(sessionID) != nil
 	m.mu.Unlock()
 	if active {
 		return false
@@ -2987,6 +3003,19 @@ func cloneJSONValue(value any) any {
 }
 
 func writeStoredResponseEvent(w io.Writer, ev responseRunEvent) error {
+	var payload any
+	dec := json.NewDecoder(bytes.NewReader(ev.Data))
+	dec.UseNumber()
+	if err := dec.Decode(&payload); err != nil {
+		return err
+	}
+	data, err := steeringWireJSON(w, payload)
+	if err != nil {
+		return err
+	}
+	ev.Data = data
+	ev.Event = steeringWireEvent(w, ev.Event)
+
 	b := make([]byte, 0, 4+20+1+7+len(ev.Event)+1+6+len(ev.Data)+2)
 	b = append(b, "id: "...)
 	b = strconv.AppendInt(b, ev.Sequence, 10)
@@ -2995,7 +3024,7 @@ func writeStoredResponseEvent(w io.Writer, ev responseRunEvent) error {
 	b = append(b, "\ndata: "...)
 	b = append(b, ev.Data...)
 	b = append(b, "\n\n"...)
-	_, err := w.Write(b)
+	_, err = w.Write(b)
 	return err
 }
 
@@ -3091,7 +3120,7 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 			// boundaries makes the live projection lag those durable identities.
 			segmentOrdinal = ev.ProviderTurnIndex
 		} else if state.toolsSeen || state.assistantBoundaryPending {
-			// Preserve an ordered boundary for inline tools and interjections that
+			// Preserve an ordered boundary for inline tools and steering that
 			// continue within one provider turn.
 			segmentOrdinal++
 		}
@@ -3319,25 +3348,25 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 			payload["message"] = "Model stream interrupted; reconnecting…"
 		}
 		return run.appendEvent("response.retry", payload)
-	case llm.EventInterjection:
-		if strings.TrimSpace(ev.InterjectionID) == "" {
-			return errors.New("interjection event is missing client_message_id")
+	case llm.EventSteering:
+		if strings.TrimSpace(ev.SteeringID) == "" {
+			return errors.New("steering event is missing client_message_id")
 		}
-		// One or more committed interjections form a single user boundary before
+		// One or more committed steering form a single user boundary before
 		// the next assistant text. Defer the ordinal bump until text arrives so a
-		// batch of interjections cannot create skipped segment identities.
+		// batch of steering cannot create skipped segment identities.
 		state.assistantBoundaryPending = true
 		payload := map[string]any{
 			"text":              ev.Text,
-			"client_message_id": ev.InterjectionID,
+			"client_message_id": ev.SteeringID,
 		}
-		if ev.InterjectionStatus != "" {
-			payload["status"] = string(ev.InterjectionStatus)
+		if ev.SteeringStatus != "" {
+			payload["status"] = string(ev.SteeringStatus)
 		}
-		if atts := s.interjectionAttachmentsForEvent(ev.Message); len(atts) > 0 {
+		if atts := s.steeringAttachmentsForEvent(ev.Message); len(atts) > 0 {
 			payload["attachments"] = atts
 		}
-		return run.appendEvent("response.interjection", payload)
+		return run.appendEvent("response.steering", payload)
 	case llm.EventModelSwitch:
 		fromModel := strings.TrimSpace(ev.PreviousModel)
 		toModel := strings.TrimSpace(ev.Model)
@@ -3409,7 +3438,7 @@ func attachmentsFromPayload(v any) []map[string]any {
 	}
 }
 
-func (s *serveServer) interjectionAttachmentsForEvent(msg llm.Message) []map[string]any {
+func (s *serveServer) steeringAttachmentsForEvent(msg llm.Message) []map[string]any {
 	var out []map[string]any
 	imageCount := 0
 	for _, part := range msg.Parts {
@@ -3546,7 +3575,7 @@ func (s *serveServer) streamFailedResponseRun(ctx context.Context, w http.Respon
 	s.streamResponseRunEvents(ctx, w, run, 0)
 }
 
-func (s *serveServer) discardPendingInterjectionsForResponseRun(run *responseRun) {
+func (s *serveServer) discardPendingSteeringForResponseRun(run *responseRun) {
 	if s == nil || s.sessionMgr == nil || run == nil {
 		return
 	}
@@ -3560,7 +3589,7 @@ func (s *serveServer) discardPendingInterjectionsForResponseRun(run *responseRun
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	rt.discardPendingInterjections(ctx, sessionID)
+	rt.discardPendingSteering(ctx, sessionID)
 }
 
 func (s *serveServer) handleResponseByID(w http.ResponseWriter, r *http.Request) {
@@ -3611,6 +3640,18 @@ func (s *serveServer) handleResponseByID(w http.ResponseWriter, r *http.Request)
 			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 			return
 		}
+		if transition := s.ensureResponseRuns().steeringTransition(run.sessionID); transition != nil && (runID == transition.source.id || runID == transition.replacementID) {
+			if store, ok := session.AsRushStore(s.store); ok {
+				op, err := s.cancelSteeringRush(r.Context(), store, run.sessionID, transition.owner.OperationID)
+				if err != nil {
+					writeOpenAIError(w, 409, "rush_conflict", err.Error())
+					return
+				}
+				writeJSON(w, 200, map[string]any{"id": runID, "status": "cancelling", "rush": op})
+				return
+			}
+		}
+
 		cancel, accepted := run.requestCancel()
 		if !accepted {
 			snapshot := run.snapshot()
@@ -3629,13 +3670,13 @@ func (s *serveServer) handleResponseByID(w http.ResponseWriter, r *http.Request)
 			"replayed": false,
 		})
 		// The cancellation request is accepted once it is recorded above. Provider,
-		// tool, and interjection cleanup can wind down without holding the HTTP
+		// tool, and steering cleanup can wind down without holding the HTTP
 		// acknowledgement open.
 		go func() {
 			if cancel != nil {
 				cancel()
 			}
-			s.discardPendingInterjectionsForResponseRun(run)
+			s.discardPendingSteeringForResponseRun(run)
 		}()
 		return
 	}
@@ -3874,7 +3915,23 @@ func (s *serveServer) responseRunContinuationID(ctx context.Context, runtime *se
 func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, options startResponseRunOptions) (*responseRun, error) {
 	mgr := s.ensureResponseRuns()
 
+	if t := mgr.steeringTransition(sessionID); t != nil && (options.rush == nil || options.rush.RequestID != t.owner.OperationID) {
+		return nil, errServeSessionBusy
+	}
+	if options.rush == nil {
+		if store, ok := session.AsRushStore(s.store); ok {
+			if _, err := store.ActiveRush(context.Background(), sessionID); err == nil {
+				return nil, errServeSessionBusy
+			} else if !errors.Is(err, session.ErrNotFound) {
+				return nil, err
+			}
+		}
+	}
+
 	respID := "resp_" + randomSuffix()
+	if options.rush != nil {
+		respID = options.rush.ReplacementResponseID
+	}
 	model := llmReq.Model
 	if model == "" {
 		model = runtime.defaultModel
@@ -3893,6 +3950,15 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	runCtx, runTimer := newResponseRunTimer(s.responseTimeout())
 	cancel := runTimer.stop
 	run := newResponseRun(respID, sessionID, options.previousResponseID, model, created, cancel)
+	run.settled = make(chan struct{})
+	run.rushStateful = stateful && !replaceHistory
+	run.rushRequest = llmReq
+	if options.rush != nil {
+		runCtx = context.WithValue(runCtx, rushContextKey{}, options.rush)
+		if options.onInitialInput != nil {
+			runCtx = context.WithValue(runCtx, rushInitialInputKey{}, options.onInitialInput)
+		}
+	}
 	run.idempotencyScope = strings.TrimSpace(options.idempotencyScope)
 	run.requestFingerprint = strings.TrimSpace(options.requestFingerprint)
 	if subscriptionID := strings.TrimSpace(options.notificationSubscriptionID); subscriptionID != "" {
@@ -3931,6 +3997,17 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		}
 		return nil, fmt.Errorf("%w: commit workflow is active for this session or checkout", errServeSessionBusy)
 	}
+	// Reserve the source/replacement slot before durable admission. A losing
+	// start must never enter runOnce merely because the old runtime unlocks.
+	if sessionID != "" && !mgr.trySetActiveRun(sessionID, respID) {
+		cancel()
+		mgr.delete(respID)
+		if options.onDone != nil {
+			options.onDone()
+		}
+		return nil, errServeSessionBusy
+	}
+
 	if lifecycle, ok := session.AsServeResponseLifecycleStore(s.store); ok && sessionID != "" && s.shutdownCh != nil {
 		ownerID := s.responseOwnerID()
 		admitCtx, admitCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -4008,13 +4085,6 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			}
 		}
 	}
-	// Publish activity before the goroutine can hydrate history or begin provider
-	// work. If another run already owns the session, the per-runtime TryLock will
-	// preserve the existing behavior of producing a failed response-run object;
-	// trySetActiveRun never overwrites that owner.
-	if sessionID != "" {
-		mgr.trySetActiveRun(sessionID, respID)
-	}
 
 	if options.uiSession {
 		runtime.clearLastUIRunError()
@@ -4046,6 +4116,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	}
 
 	if err := mgr.start(func() {
+		defer close(run.settled)
 		defer cancel()
 		if options.onDone != nil {
 			defer options.onDone()

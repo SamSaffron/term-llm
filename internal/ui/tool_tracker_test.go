@@ -919,8 +919,8 @@ func TestAddPreRenderedTextSegment_SurvivesFlush(t *testing.T) {
 		return "rendered:" + text
 	})
 
-	// Add pre-rendered interjection
-	styledText := "\x1b[1;34m❯\x1b[0m my interjection\n\n"
+	// Add pre-rendered steering
+	styledText := "\x1b[1;34m❯\x1b[0m my steering\n\n"
 	tracker.AddPreRenderedTextSegment(styledText)
 
 	// Flush to scrollback
@@ -929,11 +929,11 @@ func TestAddPreRenderedTextSegment_SurvivesFlush(t *testing.T) {
 	})
 
 	// Flushed content should contain the original styled text without re-rendering
-	if !strings.Contains(result.ToPrint, "my interjection") {
-		t.Errorf("expected flushed output to contain interjection text, got: %q", result.ToPrint)
+	if !strings.Contains(result.ToPrint, "my steering") {
+		t.Errorf("expected flushed output to contain steering text, got: %q", result.ToPrint)
 	}
 
-	// Should NOT contain "md:" prefix for the interjection (it has Rendered set)
+	// Should NOT contain "md:" prefix for the steering (it has Rendered set)
 	// The pre-rendered segment should be used as-is
 	if strings.Contains(result.ToPrint, "md:\x1b[1;34m") {
 		t.Error("pre-rendered segment should not pass through markdown renderer during flush")

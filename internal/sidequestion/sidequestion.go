@@ -233,7 +233,7 @@ func buildMessagesWithinBudget(snapshot []llm.Message, history []Entry, question
 	// Preserve stable instructions and a compaction anchor/ack when one begins
 	// the conversation, then retain the largest recent suffix beginning at a
 	// user turn. Re-sanitize each selected main-context candidate so unusual
-	// user interjections cannot leave an orphaned tool result after the cut.
+	// user steering cannot leave an orphaned tool result after the cut.
 	prefixEnd := stableMainPrefixEnd(snapshot)
 	prefix := snapshot[:prefixEnd]
 	messageTokens := make([]int, len(snapshot))

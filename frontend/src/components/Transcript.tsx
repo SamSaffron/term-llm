@@ -659,8 +659,8 @@ function MessageMeta({ message, clock }: { message: Message; clock: ReadonlySign
     {
       evaluating: ['pending', '', 'evaluating…'],
       checking_send: ['pending', '⏳', 'checking whether this was sent'],
-      pending_interject: ['pending', '⏳', 'will incorporate'],
-      interject: ['interject', '✓', 'injected'],
+      pending_steer: ['pending', '⏳', 'will incorporate'],
+      steer: ['steer', '✓', 'injected'],
       cancel: ['cancel', '⏹', 'cancelled + queued'],
       queue: ['queue', '⏳', 'queued'],
       error: ['error', '⚠', 'failed'],

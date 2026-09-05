@@ -419,8 +419,8 @@ func TestStreamingCanonicalCopyExecutesLocally(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("streaming /copy did not return the local command sequence")
 	}
-	if len(m.pendingInterjections) != 0 {
-		t.Fatalf("/copy queued as an interjection: %+v", m.pendingInterjections)
+	if len(m.pendingSteering) != 0 {
+		t.Fatalf("/copy queued as an steering: %+v", m.pendingSteering)
 	}
 	if got := m.textarea.Value(); got != "" {
 		t.Fatalf("streaming /copy left composer text %q", got)

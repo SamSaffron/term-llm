@@ -25,8 +25,8 @@ Deployment-specific monitoring should alert when any of these conditions persist
 
 Response creation replays `Idempotency-Key` only for stateful streaming runs, using the durable
 session plus `client_message_id` ownership contract. Completed run events remain replayable for
-five minutes by default. Interjection identities are retained for the live response/runtime and
-persisted pending-interjection reload window; cancellation remains permanently scoped to its exact
+five minutes by default. Steering identities are retained for the live response/runtime and
+persisted pending-steering reload window; cancellation remains permanently scoped to its exact
 response ID and repeated late cancellation returns that run's current terminal state. Clients must
 reconcile after these windows rather than assuming an unbounded global replay cache.
 

@@ -264,7 +264,7 @@ func TestHandleSessionInterruptAcceptsTypedDiffComment(t *testing.T) {
 	body, err := json.Marshal(map[string]any{
 		"message":           "provider-facing anchored instruction",
 		"content":           json.RawMessage(content),
-		"interjection_id":   "interrupt-comment-1",
+		"steering_id":       "interrupt-comment-1",
 		"client_message_id": "interrupt-comment-1",
 		"delivery":          "steer",
 	})
@@ -278,9 +278,9 @@ func TestHandleSessionInterruptAcceptsTypedDiffComment(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
-	pending := engine.ListPendingInterjections()
+	pending := engine.ListPendingSteering()
 	if len(pending) != 1 || len(pending[0].Message.Parts) != 2 || pending[0].Message.Parts[0].Type != llm.PartDiffComment {
-		t.Fatalf("pending interjections = %#v", pending)
+		t.Fatalf("pending steering = %#v", pending)
 	}
 }
 

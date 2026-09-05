@@ -284,41 +284,41 @@ func (s *LoggingStore) GetMessageByClientMessageID(ctx context.Context, sessionI
 	return msg, err
 }
 
-// SavePendingInterjection delegates durable queued-interjection persistence.
-func (s *LoggingStore) SavePendingInterjection(ctx context.Context, entry PendingInterjection) error {
-	store, ok := s.Store.(PendingInterjectionStore)
+// SavePendingSteering delegates durable queued-steering persistence.
+func (s *LoggingStore) SavePendingSteering(ctx context.Context, entry PendingSteering) error {
+	store, ok := s.Store.(PendingSteeringStore)
 	if !ok {
 		return nil
 	}
-	err := store.SavePendingInterjection(ctx, entry)
+	err := store.SavePendingSteering(ctx, entry)
 	if err != nil {
-		s.logOnce("SavePendingInterjection", err)
+		s.logOnce("SavePendingSteering", err)
 	}
 	return err
 }
 
-// DeletePendingInterjection removes a queued intent after commit or cancellation.
-func (s *LoggingStore) DeletePendingInterjection(ctx context.Context, sessionID, id string) error {
-	store, ok := s.Store.(PendingInterjectionStore)
+// DeletePendingSteering removes a queued intent after commit or cancellation.
+func (s *LoggingStore) DeletePendingSteering(ctx context.Context, sessionID, id string) error {
+	store, ok := s.Store.(PendingSteeringStore)
 	if !ok {
 		return nil
 	}
-	err := store.DeletePendingInterjection(ctx, sessionID, id)
+	err := store.DeletePendingSteering(ctx, sessionID, id)
 	if err != nil {
-		s.logOnce("DeletePendingInterjection", err)
+		s.logOnce("DeletePendingSteering", err)
 	}
 	return err
 }
 
-// ListPendingInterjections returns durable queued intents in acceptance order.
-func (s *LoggingStore) ListPendingInterjections(ctx context.Context, sessionID string) ([]PendingInterjection, error) {
-	store, ok := s.Store.(PendingInterjectionStore)
+// ListPendingSteering returns durable queued intents in acceptance order.
+func (s *LoggingStore) ListPendingSteering(ctx context.Context, sessionID string) ([]PendingSteering, error) {
+	store, ok := s.Store.(PendingSteeringStore)
 	if !ok {
 		return nil, nil
 	}
-	entries, err := store.ListPendingInterjections(ctx, sessionID)
+	entries, err := store.ListPendingSteering(ctx, sessionID)
 	if err != nil {
-		s.logOnce("ListPendingInterjections", err)
+		s.logOnce("ListPendingSteering", err)
 	}
 	return entries, err
 }
@@ -692,4 +692,54 @@ func (s *LoggingStore) SetCurrent(ctx context.Context, sessionID string) error {
 	err := s.Store.SetCurrent(ctx, sessionID)
 	s.logOnce("SetCurrent", err)
 	return err
+}
+
+// Rush operations preserve optional-capability detection through this decorator.
+func (s *LoggingStore) AdmitRush(ctx context.Context, op RushOperation, entries []PendingSteering) (*RushOperation, error) {
+	store, ok := AsRushStore(s.Store)
+	if !ok {
+		return nil, ErrSteeringConflict
+	}
+	result, err := store.AdmitRush(ctx, op, entries)
+	s.logOnce("AdmitRush", err)
+	return result, err
+}
+func (s *LoggingStore) GetRush(ctx context.Context, sid, id string) (*RushOperation, error) {
+	store, ok := AsRushStore(s.Store)
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return store.GetRush(ctx, sid, id)
+}
+func (s *LoggingStore) ActiveRush(ctx context.Context, sid string) (*RushOperation, error) {
+	store, ok := AsRushStore(s.Store)
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return store.ActiveRush(ctx, sid)
+}
+func (s *LoggingStore) LatestRush(ctx context.Context, sid string) (*RushOperation, error) {
+	store, ok := AsRushStore(s.Store)
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return store.LatestRush(ctx, sid)
+}
+func (s *LoggingStore) AdvanceRush(ctx context.Context, op *RushOperation, status RushStatus, reason string) (*RushOperation, error) {
+	store, ok := AsRushStore(s.Store)
+	if !ok {
+		return nil, ErrSteeringConflict
+	}
+	result, err := store.AdvanceRush(ctx, op, status, reason)
+	s.logOnce("AdvanceRush", err)
+	return result, err
+}
+func (s *LoggingStore) CommitRushInitialInput(ctx context.Context, op *RushOperation, messages []*Message) (int64, error) {
+	store, ok := AsRushStore(s.Store)
+	if !ok {
+		return 0, ErrSteeringConflict
+	}
+	rev, err := store.CommitRushInitialInput(ctx, op, messages)
+	s.logOnce("CommitRushInitialInput", err)
+	return rev, err
 }

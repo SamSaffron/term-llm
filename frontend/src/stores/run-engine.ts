@@ -1,3 +1,4 @@
+import { normalizeSteering, rushActive, type RushOperation } from '../domain/steering';
 import { batch, computed, signal, type ReadonlySignal } from '@preact/signals';
 import { APIError, decodeSSE } from '../api/client';
 import {
@@ -37,9 +38,11 @@ import type { InteractionStore } from './interaction-store';
 import type { PlanStore } from './plan-store';
 import type { ReviewStore } from './review-store';
 import { StreamSupervisors, type StreamSupervisor } from './stream-supervisor';
-import type { PendingInterjection, SendOptions } from './store-types';
+import type { PendingSteering, SendOptions } from './store-types';
 import { approvalPrompt, array, askUserPrompt, listFrom, recordValue, uuid } from './store-utils';
 import type { TabEventType } from '../platform/tab-sync';
+
+const loadSteeringActions = () => import('./steering-actions');
 
 // Supervisor backoff guarantees seven consecutive failures represent more than
 // thirty seconds without a successfully attached response transport.
@@ -87,11 +90,18 @@ export interface RunEngineHost {
   rekeyMCP: (oldId: string, newId: string) => void;
 }
 
-/** Owns response creation, transport, recovery, intents, interjections, and run projections. */
+/** Owns response creation, transport, recovery, intents, steering, and run projections. */
 export class RunEngine {
+  readonly activeRush = signal<RushOperation | null>(null);
+  readonly steeringCapabilities = signal<
+    Record<
+      string,
+      { can_steer?: boolean; can_rush?: boolean; protocol?: number; unavailable_reason?: string }
+    >
+  >({});
   readonly runs = signal<Record<string, ResponseProjection>>({});
   readonly pendingIntents = signal<PendingIntentRegistry>({});
-  readonly interjections = signal<PendingInterjection[]>([]);
+  readonly steering = signal<PendingSteering[]>([]);
   readonly currentActivityFile = signal('');
   readonly fileChangeRevision = signal(0);
   readonly activeProjection: ReadonlySignal<ResponseProjection | null>;
@@ -101,7 +111,7 @@ export class RunEngine {
   readonly streaming: ReadonlySignal<boolean>;
   readonly runLivenessUnknown: ReadonlySignal<boolean>;
   readonly canStop: ReadonlySignal<boolean>;
-  readonly canInterject: ReadonlySignal<boolean>;
+  readonly canSteer: ReadonlySignal<boolean>;
   readonly sendBlocked: ReadonlySignal<boolean>;
 
   private readonly supervisors = new StreamSupervisors();
@@ -115,7 +125,7 @@ export class RunEngine {
   private readonly retiredResponses = new Set<string>();
   private readonly handledCompletionEvents = new Set<string>();
   private readonly titleRefreshTimers = new Map<string, number[]>();
-  private interjectionRevision = 0;
+  private steeringRevision = 0;
 
   constructor(
     private readonly services: AppStoreServices,
@@ -186,6 +196,11 @@ export class RunEngine {
       () => this.runActive.value && this.services.networkState.value !== 'offline',
     );
     this.canStop = computed(() => {
+      if (
+        rushActive(this.activeRush.value) &&
+        this.activeRush.value?.session_id === sessionStore.activeSession.value?.id
+      )
+        return true;
       const projection = this.activeProjection.value;
       return Boolean(
         this.streaming.value &&
@@ -194,10 +209,17 @@ export class RunEngine {
         ['connecting', 'streaming', 'cancelling'].includes(projection.run.status),
       );
     });
-    this.canInterject = computed(() => {
+    this.canSteer = computed(() => {
+      if (
+        rushActive(this.activeRush.value) &&
+        this.activeRush.value?.session_id === sessionStore.activeSession.value?.id
+      )
+        return false;
       const projection = this.activeProjection.value;
       return Boolean(
-        this.streaming.value &&
+        this.runActive.value &&
+        this.steeringCapabilities.value[sessionStore.activeSession.value?.id || '']?.can_steer !==
+          false &&
         projection &&
         !projection.run.responseId.startsWith('pending_') &&
         ['connecting', 'streaming'].includes(projection.run.status),
@@ -223,12 +245,12 @@ export class RunEngine {
       const projectedRunPending = Boolean(
         projection &&
         ['connecting', 'checking', 'streaming', 'cancelling'].includes(projection.run.status) &&
-        !this.canInterject.value,
+        !this.canSteer.value,
       );
       return (
         composer.sendPending.value ||
         projectedRunPending ||
-        Boolean(sessionStore.activeSession.value?.activeRun && !this.canInterject.value) ||
+        Boolean(sessionStore.activeSession.value?.activeRun && !this.canSteer.value) ||
         Boolean(
           this.pendingIntents.value[sessionStore.activeSessionId.value]?.some(
             (intent) => intent.state === 'checking',
@@ -305,8 +327,8 @@ export class RunEngine {
     this.locallyStoppedResponses.delete(responseId);
   }
 
-  get interjectionStateRevision(): number {
-    return this.interjectionRevision;
+  get steeringStateRevision(): number {
+    return this.steeringRevision;
   }
 
   currentSupervisor(sessionId: string): StreamSupervisor | undefined {
@@ -336,25 +358,31 @@ export class RunEngine {
     }
   }
 
-  private setInterjections(entries: PendingInterjection[]): void {
-    this.interjectionRevision += 1;
-    this.interjections.value = entries;
+  private setSteering(entries: PendingSteering[]): void {
+    this.steeringRevision += 1;
+    this.steering.value = entries;
   }
 
-  reconcilePendingInterjections(
+  reconcilePendingSteering(
     sessionId: string,
     state: Record<string, unknown>,
     expectedRevision?: number,
   ): void {
-    if (expectedRevision !== undefined && expectedRevision !== this.interjectionRevision) return;
-    const hasList = Object.hasOwn(state, 'pending_interjections');
-    const hasSingle = Object.hasOwn(state, 'pending_interjection');
-    if (!hasList && !hasSingle) return;
-    const rawEntries = hasList
-      ? array(state.pending_interjections)
-      : state.pending_interjection
-        ? [state.pending_interjection]
-        : [];
+    if (expectedRevision !== undefined && expectedRevision !== this.steeringRevision) return;
+    state = normalizeSteering(state);
+    const capability = recordValue(state.steering);
+    if (capability)
+      this.steeringCapabilities.value = {
+        ...this.steeringCapabilities.peek(),
+        [sessionId]: capability,
+      };
+    const rush = recordValue(state.active_rush) as unknown as RushOperation | null;
+    if (rush)
+      void loadSteeringActions()
+        .then(({ reconcileRush }) => reconcileRush(this.steeringActions(), rush))
+        .catch(() => undefined);
+    if (!Object.hasOwn(state, 'pending_steering')) return;
+    const rawEntries = array(state.pending_steering);
     const committed = new Set(
       [
         ...(this.sessionStore.sessions.peek().find((session) => session.id === sessionId)
@@ -375,17 +403,17 @@ export class RunEngine {
       }))
       .filter((entry) => entry.id && !committed.has(entry.id));
     const remoteIDs = new Set(remote.map((entry) => entry.id));
-    const retained = this.interjections
+    const retained = this.steering
       .peek()
       .filter(
         (entry) =>
           entry.sessionId !== sessionId ||
           entry.state === 'sending' ||
-          entry.state === 'failed' ||
+          (entry.state === 'failed' && !committed.has(entry.id)) ||
           remoteIDs.has(entry.id),
       );
     const retainedIDs = new Set(retained.map((entry) => entry.id));
-    this.setInterjections([...retained, ...remote.filter((entry) => !retainedIDs.has(entry.id))]);
+    this.setSteering([...retained, ...remote.filter((entry) => !retainedIDs.has(entry.id))]);
   }
 
   async send(options: SendOptions = {}): Promise<void> {
@@ -791,8 +819,8 @@ export class RunEngine {
     intents.forEach((intent) =>
       persistPendingIntent(this.services.storage, this.services.keys.pendingIntents, id, intent),
     );
-    this.setInterjections(
-      this.interjections.value.map((entry) =>
+    this.setSteering(
+      this.steering.value.map((entry) =>
         entry.sessionId === oldID ? { ...entry, sessionId: id } : entry,
       ),
     );
@@ -958,6 +986,7 @@ export class RunEngine {
   }
 
   applyResponseEvent(sessionId: string, event: ResponseEvent, owner?: StreamSupervisor): void {
+    event = normalizeSteering(event);
     const current = this.runs.value[sessionId];
     if (!current) return;
     if (owner && !this.supervisors.owns(owner)) {
@@ -1084,9 +1113,9 @@ export class RunEngine {
         Number(event.sequence_number) || 0,
       );
     }
-    if (event.type === 'response.interjection') {
-      const clientID = String(event.client_message_id || event.interjection_id || '');
-      this.setInterjections(this.interjections.value.filter((entry) => entry.id !== clientID));
+    if (event.type === 'response.steering') {
+      const clientID = String(event.client_message_id || event.steering_id || '');
+      this.setSteering(this.steering.value.filter((entry) => entry.id !== clientID));
     }
     if (
       event.type === 'response.approval.resolved' ||
@@ -1202,7 +1231,7 @@ export class RunEngine {
     preserveLiveRun = false,
   ): Promise<void> {
     try {
-      const interjectionRevision = this.interjectionRevision;
+      const steeringRevision = this.steeringRevision;
       const stateRequest = this.services.endpoints.sessionState(sessionId).catch(() => null);
       const selected = await this.services.endpoints.selectedSession(sessionId);
       if (expectedResponseId && this.runs.peek()[sessionId]?.run.responseId !== expectedResponseId)
@@ -1281,7 +1310,7 @@ export class RunEngine {
       if (expectedResponseId && this.runs.peek()[sessionId]?.run.responseId !== expectedResponseId)
         return;
       if (state) {
-        this.reconcilePendingInterjections(sessionId, state, interjectionRevision);
+        this.reconcilePendingSteering(sessionId, state, steeringRevision);
         const lastResponseId = String(state.lastResponseId || state.last_response_id || '').trim();
         this.sessionStore.patch(sessionId, { lastResponseId: lastResponseId || null });
       }
@@ -1567,8 +1596,8 @@ export class RunEngine {
           .filter((id): id is string => Boolean(id)),
       );
       if (recoveredClientIDs.size)
-        this.setInterjections(
-          this.interjections
+        this.setSteering(
+          this.steering
             .peek()
             .filter((entry) => entry.sessionId !== sessionId || !recoveredClientIDs.has(entry.id)),
         );
@@ -1677,6 +1706,22 @@ export class RunEngine {
   }
 
   async cancel(): Promise<void> {
+    const rush = this.activeRush.peek();
+    if (
+      rushActive(rush) &&
+      rush &&
+      rush.session_id === this.sessionStore.activeSession.peek()?.id
+    ) {
+      try {
+        this.activeRush.value = await this.services.endpoints.cancelRush(
+          rush.session_id,
+          rush.rush_id,
+        );
+      } catch (error) {
+        this.services.toast(error, 'error');
+      }
+      return;
+    }
     const projection = this.activeProjection.value;
     if (!projection || !['connecting', 'streaming', 'cancelling'].includes(projection.run.status))
       return;
@@ -1737,91 +1782,40 @@ export class RunEngine {
     }
   }
 
-  async interject(content: string, options: SendOptions = {}): Promise<void> {
-    const session = this.sessionStore.activeSession.value;
-    const value = (options.inputText ?? content).trim();
-    const displayContent = (options.displayContent ?? value).trim();
-    const attachments = options.contentParts ? [] : [...this.composer.attachments.value];
-    if (!session || (!value && !attachments.length && !options.contentParts?.length)) return;
-    const blockedAttachment = attachments.find(
-      (attachment) => attachment.status && attachment.status !== 'ready',
-    );
-    if (blockedAttachment) {
-      this.services.toast(
-        blockedAttachment.error || `${blockedAttachment.name} is still being prepared.`,
-        'error',
-      );
-      return;
-    }
-    const id = uuid();
-    const entry: PendingInterjection = {
-      id,
-      sessionId: session.id,
-      content: displayContent || attachments.map((attachment) => attachment.name).join(', '),
-      state: 'sending',
+  private steeringActions() {
+    return {
+      sessionStore: this.sessionStore,
+      composer: this.composer,
+      services: this.services,
+      host: this.host,
+      runs: this.runs,
+      steering: this.steering,
+      steeringCapabilities: this.steeringCapabilities,
+      activeRush: this.activeRush,
+      setSteering: (entries: PendingSteering[]) => this.setSteering(entries),
+      isDisposed: () => this.disposed,
     };
-    this.setInterjections([...this.interjections.value, entry]);
+  }
+  async steer(content: string, options: SendOptions = {}): Promise<void> {
+    const { steer } = await loadSteeringActions();
+    await steer(this.steeringActions(), content, options);
+  }
+  private rushLoading = false;
+  private disposed = false;
+  async rush(): Promise<void> {
+    const run = this.activeProjection.peek()?.run;
+    if (!run || this.rushLoading || rushActive(this.activeRush.peek())) return;
+    this.rushLoading = true;
     try {
-      const attachmentParts = await Promise.all(
-        attachments.map((attachment) => this.composer.attachmentInput(attachment)),
-      );
-      const contentParts = options.contentParts?.length
-        ? [...options.contentParts, ...(value ? [{ type: 'input_text', text: value }] : [])]
-        : [...attachmentParts, ...(value ? [{ type: 'input_text', text: value }] : [])];
-      await this.services.endpoints.interrupt(
-        session.id,
-        {
-          message: displayContent,
-          ...(options.contentParts?.length || attachmentParts.length
-            ? { content: contentParts }
-            : {}),
-          interjection_id: id,
-          client_message_id: id,
-          ...(this.runs.peek()[session.id]?.run.responseId
-            ? {
-                expected_response_id: this.runs.peek()[session.id].run.responseId,
-                expected_run_epoch: this.runs.peek()[session.id].run.epoch,
-              }
-            : {}),
-          delivery: 'steer',
-        },
-        id,
-      );
-      options.onTransportStarted?.();
-      this.composer.releaseResources(attachments, true);
-      this.setInterjections(
-        this.interjections.value.map((candidate) =>
-          candidate.id === id ? { ...candidate, state: 'pending' } : candidate,
-        ),
-      );
-      this.host.publishSessionChange(
-        'run-changed',
-        session.id,
-        this.runs.peek()[session.id]?.run.responseId || '',
-        undefined,
-        id,
-      );
-      if (options.preserveComposer) return;
-      this.composer.clearSubmitted(session.id, value, attachments);
-    } catch (error) {
-      this.setInterjections(
-        this.interjections.value.map((candidate) =>
-          candidate.id === id ? { ...candidate, state: 'failed' } : candidate,
-        ),
-      );
-      if (options.onTransportFailed) options.onTransportFailed(error);
-      else this.services.toast(error, 'error');
+      const { rush } = await loadSteeringActions();
+      await rush(this.steeringActions(), run);
+    } finally {
+      this.rushLoading = false;
     }
   }
-  async cancelInterjection(id: string): Promise<void> {
-    const entry = this.interjections.value.find((candidate) => candidate.id === id);
-    if (!entry) return;
-    this.setInterjections(this.interjections.value.filter((candidate) => candidate.id !== id));
-    try {
-      await this.services.endpoints.deleteInterrupt(entry.sessionId, id);
-    } catch (error) {
-      this.services.toast(error, 'error');
-    }
+  async cancelSteering(id: string): Promise<void> {
+    const { cancelSteering } = await loadSteeringActions();
+    await cancelSteering(this.steeringActions(), id);
   }
 
   private rollbackOptimisticIntent(sessionId: string, clientMessageId: string): void {
@@ -1938,6 +1932,7 @@ export class RunEngine {
   }
 
   dispose(): void {
+    this.disposed = true;
     for (const timers of this.titleRefreshTimers.values())
       timers.forEach((timer) => window.clearTimeout(timer));
     this.titleRefreshTimers.clear();

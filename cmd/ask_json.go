@@ -157,7 +157,7 @@ func streamJSONEvents(ctx context.Context, events <-chan ui.StreamEvent, e *json
 }
 
 // emitStreamEvent translates one ui.StreamEvent into a JSON event line.
-// Events without a user-facing payload (e.g. interjection) are ignored.
+// Events without a user-facing payload (e.g. steering) are ignored.
 func emitStreamEvent(e *jsonEmitter, ev ui.StreamEvent) error {
 	switch ev.Type {
 	case ui.StreamEventText:

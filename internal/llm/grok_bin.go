@@ -109,7 +109,7 @@ type GrokBinProvider struct {
 	// Grok may report the cancelled prompt during that interval.
 	nativeInterruptPending atomic.Bool
 	// interruptFollowUp frames the next resume prompt with Grok's mid-turn
-	// interjection envelope so a cancel-and-continue steer does not drop work.
+	// steering envelope so a cancel-and-continue steer does not drop work.
 	interruptFollowUp atomic.Bool
 
 	cliToolBridgeState
@@ -427,7 +427,7 @@ func (p *GrokBinProvider) messagesForRequest(req Request) ([]Message, error) {
 func grokResumeMessages(messages []Message) []Message {
 	// Grok's durable session already contains generated assistant/tool output.
 	// Drop only that leading replay, preserving every subsequent user or
-	// developer message (including deferred interjections).
+	// developer message (including deferred steering).
 	for i, message := range messages {
 		switch message.Role {
 		case RoleSystem, RoleEvent, RoleAssistant, RoleTool:

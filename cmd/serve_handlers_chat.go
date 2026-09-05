@@ -264,7 +264,7 @@ func (s *serveServer) streamChatCompletions(ctx context.Context, w http.Response
 					"tool_name": ev.ToolName,
 				},
 			})
-		case llm.EventInterjection:
+		case llm.EventSteering:
 			writeErr = writeChatStreamChunk(w, map[string]any{
 				"id":      respID,
 				"object":  "chat.completion.chunk",
@@ -272,7 +272,7 @@ func (s *serveServer) streamChatCompletions(ctx context.Context, w http.Response
 				"model":   model,
 				"choices": []map[string]any{{
 					"index": 0,
-					"delta": map[string]any{"interjection": ev.Text},
+					"delta": map[string]any{"steering": ev.Text},
 				}},
 			})
 		}

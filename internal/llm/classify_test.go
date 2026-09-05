@@ -9,13 +9,13 @@ import (
 func TestClassify(t *testing.T) {
 	t.Parallel()
 
-	provider := NewMockProvider("mock").AddTextResponse("Interject please")
+	provider := NewMockProvider("mock").AddTextResponse("Steer please")
 	got, err := Classify(context.Background(), provider, "classify", 2*time.Second)
 	if err != nil {
 		t.Fatalf("Classify returned error: %v", err)
 	}
-	if got != "interject" {
-		t.Fatalf("Classify = %q, want interject", got)
+	if got != "steer" {
+		t.Fatalf("Classify = %q, want steer", got)
 	}
 }
 
@@ -44,11 +44,11 @@ func TestClassifyInterruptCancellationProseIsNotImmediate(t *testing.T) {
 
 	for _, prose := range []string{"stop changing direction", "cancel that assumption", "abort only the upload", "/stop after this step"} {
 		action, immediate := ClassifyInterruptImmediate(prose)
-		if immediate || action != InterruptInterject {
-			t.Fatalf("ClassifyInterruptImmediate(%q) = (%v, %v), want non-immediate interject", prose, action, immediate)
+		if immediate || action != InterruptSteer {
+			t.Fatalf("ClassifyInterruptImmediate(%q) = (%v, %v), want non-immediate steer", prose, action, immediate)
 		}
-		if got := ClassifyInterrupt(context.Background(), nil, prose, InterruptActivity{}); got != InterruptInterject {
-			t.Fatalf("ClassifyInterrupt(%q) = %v, want fallback interject", prose, got)
+		if got := ClassifyInterrupt(context.Background(), nil, prose, InterruptActivity{}); got != InterruptSteer {
+			t.Fatalf("ClassifyInterrupt(%q) = %v, want fallback steer", prose, got)
 		}
 	}
 }
@@ -58,13 +58,13 @@ func TestClassifyInterruptLLM(t *testing.T) {
 
 	provider := NewMockProvider("mock").AddTextResponse("queue")
 	a := InterruptActivity{CurrentTask: "analyzing", ActiveTool: "shell", ProseLen: 120}
-	if got := ClassifyInterrupt(context.Background(), provider, "new topic", a); got != InterruptInterject {
-		t.Fatalf("ClassifyInterrupt(queue) = %v, want InterruptInterject", got)
+	if got := ClassifyInterrupt(context.Background(), provider, "new topic", a); got != InterruptSteer {
+		t.Fatalf("ClassifyInterrupt(queue) = %v, want InterruptSteer", got)
 	}
 
-	provider = NewMockProvider("mock").AddTextResponse("interject")
-	if got := ClassifyInterrupt(context.Background(), provider, "also check x", a); got != InterruptInterject {
-		t.Fatalf("ClassifyInterrupt(interject) = %v, want InterruptInterject", got)
+	provider = NewMockProvider("mock").AddTextResponse("steer")
+	if got := ClassifyInterrupt(context.Background(), provider, "also check x", a); got != InterruptSteer {
+		t.Fatalf("ClassifyInterrupt(steer) = %v, want InterruptSteer", got)
 	}
 
 	provider = NewMockProvider("mock").AddTextResponse("cancel")
@@ -78,7 +78,7 @@ func TestClassifyInterruptFallbackOnError(t *testing.T) {
 
 	provider := NewMockProvider("mock").AddError(context.DeadlineExceeded)
 	got := ClassifyInterrupt(context.Background(), provider, "what about y", InterruptActivity{CurrentTask: "task"})
-	if got != InterruptInterject {
-		t.Fatalf("ClassifyInterrupt fallback = %v, want InterruptInterject", got)
+	if got != InterruptSteer {
+		t.Fatalf("ClassifyInterrupt fallback = %v, want InterruptSteer", got)
 	}
 }

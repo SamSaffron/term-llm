@@ -643,7 +643,7 @@ type telegramSession struct {
 
 	cancelMu      sync.Mutex         // protects active stream state and task/tool tracking
 	streamCancel  context.CancelFunc // cancels the active stream's context
-	streamEngine  *llm.Engine        // active runner engine for mid-stream interjections
+	streamEngine  *llm.Engine        // active runner engine for mid-stream steering
 	streamToken   chan struct{}      // identifies callbacks owned by the active stream
 	runnerDone    <-chan struct{}    // closes when a detached runner no longer owns runtime
 	replyDone     chan struct{}      // closed when streamReply exits
@@ -1506,7 +1506,7 @@ func (m *telegramSessionMgr) handleMessageWithAdmission(ctx context.Context, bot
 	// lastActivity has its own lock so this check does not wait behind the
 	// session mutex held for the full active stream. Active streams are not
 	// expired out from under their runtime; the interrupt policy below decides
-	// whether the incoming message cancels or interjects.
+	// whether the incoming message cancels or steers.
 	sess.activityMu.Lock()
 	expired := cancelFn == nil && time.Since(sess.lastActivity) > m.idleTimeout
 	if !expired {
@@ -1522,7 +1522,7 @@ func (m *telegramSessionMgr) handleMessageWithAdmission(ctx context.Context, bot
 		}
 	}
 
-	// If a stream is active, decide whether to cancel, interject, or queue.
+	// If a stream is active, decide whether to cancel, steer, or queue.
 	if cancelFn != nil && doneCh != nil {
 		newMsgText := strings.TrimSpace(extractPlainTextFromMsg(msg))
 		if newMsgText == "" {
@@ -1548,7 +1548,7 @@ func (m *telegramSessionMgr) handleMessageWithAdmission(ctx context.Context, bot
 			}
 			sess.cancelMu.Unlock()
 
-			// Interjections carry text only, so a photo would lose both its image
+			// Steering carry text only, so a photo would lose both its image
 			// content and this handler's temporary path. Process photos as replacement
 			// turns so the structured message remains available to the provider.
 			action := llm.InterruptCancel
@@ -1572,7 +1572,7 @@ func (m *telegramSessionMgr) handleMessageWithAdmission(ctx context.Context, bot
 				case <-ctx.Done():
 					return
 				}
-			case llm.InterruptInterject:
+			case llm.InterruptSteer:
 				sess.cancelMu.Lock()
 				activeEngine := sess.streamEngine
 				if activeEngine == nil && m.settings.Runner == nil && sess.runtime != nil {
@@ -1580,26 +1580,29 @@ func (m *telegramSessionMgr) handleMessageWithAdmission(ctx context.Context, bot
 				}
 				sess.cancelMu.Unlock()
 				if activeEngine == nil {
-					log.Printf("[telegram] no active stream engine for interjection in chat %d; cancelling stream", chatID)
+					log.Printf("[telegram] no active stream engine for steering in chat %d; cancelling stream", chatID)
 					_, _ = bot.Send(tgbotapi.NewMessage(chatID, "↩️ I could not attach that note to the active response, so I am stopping and switching to your new request."))
 					cancelFn()
 					return
 				}
-				interjectionID, queueStatus := activeEngine.QueueInterjectionWithStatus(llm.QueuedInterjection{
+				steeringID, queueStatus := activeEngine.QueueSteeringWithStatus(llm.QueuedSteering{
 					Message:     llm.UserText(newMsgText),
 					DisplayText: newMsgText,
 				})
 				switch queueStatus {
-				case llm.InterjectionQueueQueued, llm.InterjectionQueueAlreadyQueued:
+				case llm.SteeringQueueQueued, llm.SteeringQueueAlreadyQueued:
 					_, _ = bot.Send(tgbotapi.NewMessage(chatID, "📝 Noted. I will incorporate that while I continue."))
-					// Do not persist here: the engine persists the interjection exactly once
+					// Do not persist here: the engine persists the steering exactly once
 					// when it drains it into the conversation via TurnCompletedCallback.
 					return
-				case llm.InterjectionQueueRunFinished:
-					log.Printf("[telegram] stream for chat %d reached its final boundary before interjection %s; handling message as a new turn", chatID, interjectionID)
+				case llm.SteeringQueueTransitioning, llm.SteeringQueueRushOwned:
+					_, _ = bot.Send(tgbotapi.NewMessage(chatID, "The conversation is transitioning. Your message was not sent; please retry it after the transition."))
+					return
+				case llm.SteeringQueueRunFinished:
+					log.Printf("[telegram] stream for chat %d reached its final boundary before steering %s; handling message as a new turn", chatID, steeringID)
 					break activeWait
 				default:
-					log.Printf("[telegram] interjection %s for chat %d is already %s; not resubmitting it", interjectionID, chatID, queueStatus)
+					log.Printf("[telegram] steering %s for chat %d is already %s; not resubmitting it", steeringID, chatID, queueStatus)
 					return
 				}
 			}
@@ -2169,7 +2172,7 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 				retryEvents++
 				activePhase = ui.FormatRetryStatus("Retrying", ev.RetryAttempt, ev.RetryMaxAttempts, ev.RetryWaitSecs, 0, "")
 				textMu.Unlock()
-			case llm.EventInterjection:
+			case llm.EventSteering:
 				textMu.Lock()
 				activePhase = "📝 Considering: " + tailRunes(strings.TrimSpace(ev.Text), 80)
 				textMu.Unlock()

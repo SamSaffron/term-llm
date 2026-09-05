@@ -1225,7 +1225,7 @@ func TestServeRuntimeInterruptCancelMarksResponseRunCancellationRequested(t *tes
 		t.Fatal("run did not start")
 	}
 
-	rt.engine.QueueInterjection(llm.QueuedInterjection{ID: "msg-earlier-queued", Message: llm.UserText("earlier queued")})
+	rt.engine.QueueSteering(llm.QueuedSteering{ID: "msg-earlier-queued", Message: llm.UserText("earlier queued")})
 	action, _, err := rt.InterruptMessage(context.Background(), llm.UserText("/stop"), "/stop", "msg-stop", nil, interruptDeliveryAuto)
 	if err != nil {
 		t.Fatalf("InterruptMessage: %v", err)
@@ -1233,8 +1233,8 @@ func TestServeRuntimeInterruptCancelMarksResponseRunCancellationRequested(t *tes
 	if action != llm.InterruptCancel {
 		t.Fatalf("action = %q, want cancel", action)
 	}
-	if pending := rt.engine.ListPendingInterjections(); len(pending) != 0 {
-		t.Fatalf("classified cancel retained engine interjections: %#v", pending)
+	if pending := rt.engine.ListPendingSteering(); len(pending) != 0 {
+		t.Fatalf("classified cancel retained engine steering: %#v", pending)
 	}
 
 	select {

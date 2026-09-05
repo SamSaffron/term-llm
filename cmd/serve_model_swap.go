@@ -305,7 +305,7 @@ func modelSwapVisibleEvent(ev llm.Event) bool {
 	switch ev.Type {
 	case llm.EventTextDelta:
 		return ev.Text != ""
-	case llm.EventToolCall, llm.EventToolExecStart, llm.EventToolExecEnd, llm.EventInterjection, llm.EventImageGenerated:
+	case llm.EventToolCall, llm.EventToolExecStart, llm.EventToolExecEnd, llm.EventSteering, llm.EventImageGenerated:
 		return true
 	default:
 		return false

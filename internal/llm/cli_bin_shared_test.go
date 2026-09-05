@@ -306,7 +306,7 @@ func decodeMCPToolCallResponse(t *testing.T, body []byte) (bool, string) {
 	return response.Result.IsError, response.Result.Content[0].Text
 }
 
-// TestInlineLoopCLIProvidersSupportInlineFlush pins the interjection contract
+// TestInlineLoopCLIProvidersSupportInlineFlush pins the steering contract
 // for every CLI provider that owns its tool loop. Without a flush hook the
 // engine cannot end the running prompt, so a user message queued mid-run waits
 // for the whole agentic loop to finish instead of landing in the next turn.
@@ -367,7 +367,7 @@ func TestInlineLoopCLIProvidersSupportInlineFlush(t *testing.T) {
 // TestInlineToolLoopProvidersDeclareInlineFlusher is the structural guard behind
 // the table above. Any provider that sets InlineToolLoop owns its whole tool
 // loop inside one Stream call, so it must also declare the flush hooks or a
-// mid-run interjection cannot reach the model until the loop finishes on its
+// mid-run steering cannot reach the model until the loop finishes on its
 // own. Scanning the source catches a newly added provider that the hand-written
 // table would silently miss.
 func TestInlineToolLoopProvidersDeclareInlineFlusher(t *testing.T) {
@@ -429,7 +429,7 @@ func TestInlineToolLoopProvidersDeclareInlineFlusher(t *testing.T) {
 	for typeName := range inlineLoopTypes {
 		for _, method := range []string{"RequestInlineFlush", "SupportsInlineFlush"} {
 			if !methods[typeName][method] {
-				t.Errorf("%s sets InlineToolLoop but does not declare %s; queued interjections would stall until its inline loop ends", typeName, method)
+				t.Errorf("%s sets InlineToolLoop but does not declare %s; queued steering would stall until its inline loop ends", typeName, method)
 			}
 		}
 	}

@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/runboundary"
+	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -46,17 +47,19 @@ type MainRunSnapshot struct {
 // Execute must publish normalized stream events through emit and return only
 // after provider/tool work and persistence callbacks have stopped.
 type MainRunExecution struct {
-	Execute              func(ctx context.Context, emit func(ui.StreamEvent)) error
-	Cancel               context.CancelFunc
-	Finalize             func(error)
-	Cleanup              func()
-	QueueInterjection    func(llm.QueuedInterjection) llm.InterjectionQueueStatus
-	CancelInterjection   func(string) bool
-	DiscardInterjections func()
-	ListInterjections    func() []llm.QueuedInterjection
-	DrainInterjections   func() []llm.QueuedInterjection
-	AnchorMessageID      int64
-	Boundary             *runboundary.Tracker
+	RunID               string
+	SteeringOperationID string
+	Execute             func(ctx context.Context, emit func(ui.StreamEvent)) error
+	Cancel              context.CancelFunc
+	Finalize            func(error)
+	Cleanup             func()
+	QueueSteering       func(llm.QueuedSteering) llm.SteeringQueueStatus
+	CancelSteering      func(string) bool
+	DiscardSteering     func()
+	ListSteering        func() []llm.QueuedSteering
+	DrainSteering       func() []llm.QueuedSteering
+	AnchorMessageID     int64
+	Boundary            *runboundary.Tracker
 }
 
 type mainRunSubscriber struct {
@@ -77,6 +80,7 @@ type mainRunPresentation struct {
 }
 
 type mainRunState struct {
+	epoch           int64
 	id              string
 	sessionID       string
 	anchorMessageID int64
@@ -87,25 +91,25 @@ type mainRunState struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 
-	mu                   sync.Mutex
-	active               bool
-	visited              bool
-	completedAt          time.Time
-	err                  error
-	nextSeq              uint64
-	events               []MainRunEvent
-	subscribers          map[uint64]*mainRunSubscriber
-	pendingUI            []tea.Msg
-	uiSink               func(tea.Msg)
-	uiSinkID             uint64
-	presentation         *mainRunPresentation
-	cleanup              func()
-	queueInterjection    func(llm.QueuedInterjection) llm.InterjectionQueueStatus
-	cancelInterjection   func(string) bool
-	discardInterjections func()
-	listInterjections    func() []llm.QueuedInterjection
-	drainInterjections   func() []llm.QueuedInterjection
-	cleanupOnce          sync.Once
+	mu              sync.Mutex
+	active          bool
+	visited         bool
+	completedAt     time.Time
+	err             error
+	nextSeq         uint64
+	events          []MainRunEvent
+	subscribers     map[uint64]*mainRunSubscriber
+	pendingUI       []tea.Msg
+	uiSink          func(tea.Msg)
+	uiSinkID        uint64
+	presentation    *mainRunPresentation
+	cleanup         func()
+	queueSteering   func(llm.QueuedSteering) llm.SteeringQueueStatus
+	cancelSteering  func(string) bool
+	discardSteering func()
+	listSteering    func() []llm.QueuedSteering
+	drainSteering   func() []llm.QueuedSteering
+	cleanupOnce     sync.Once
 }
 
 // MainRunStatus is an atomic activity and completion-attention snapshot for a session.
@@ -130,6 +134,7 @@ type MainRunManager struct {
 	nextSink atomic.Uint64
 	closed   bool
 	changed  chan struct{}
+	steering sync.Map
 }
 
 // NewMainRunManager creates a process-scoped run manager.
@@ -151,6 +156,19 @@ func (m *MainRunManager) Start(sessionID string, execution MainRunExecution) (Ma
 		return MainRunSnapshot{}, errors.New("invalid main run")
 	}
 	m.mu.Lock()
+	coordinator := m.steeringCoordinator(sessionID)
+	if execution.SteeringOperationID != "" && (coordinator == nil || coordinator.cancelled.Load() || execution.SteeringOperationID != coordinator.owner.OperationID) {
+		m.mu.Unlock()
+		return MainRunSnapshot{}, context.Canceled
+	}
+	if coordinator != nil && execution.SteeringOperationID != coordinator.owner.OperationID {
+		m.mu.Unlock()
+		return MainRunSnapshot{}, errors.New("steering transition in progress")
+	}
+	if coordinator != nil {
+		m.steering.Delete(sessionID)
+	}
+
 	if m.closed {
 		m.mu.Unlock()
 		return MainRunSnapshot{}, errors.New("main run manager is closed")
@@ -174,15 +192,21 @@ func (m *MainRunManager) Start(sessionID string, execution MainRunExecution) (Ma
 		}
 	}
 	sink := m.uiSinks[sessionID]
+	epoch := int64(m.nextRun.Add(1))
+	runID := execution.RunID
+	if runID == "" {
+		runID = "tui-run-" + session.NewID()
+	}
 	run := &mainRunState{
-		id: fmt.Sprintf("tui-run-%d", m.nextRun.Add(1)), sessionID: sessionID,
+		epoch: epoch,
+		id:    runID, sessionID: sessionID,
 		anchorMessageID: execution.AnchorMessageID,
 		boundary:        execution.Boundary,
 		startedAt:       time.Now(), ctx: runCtx, cancel: runCancel, done: make(chan struct{}),
 		active: true, subscribers: make(map[uint64]*mainRunSubscriber), cleanup: execution.Cleanup,
-		uiSink: sink.send, uiSinkID: sink.id, queueInterjection: execution.QueueInterjection,
-		cancelInterjection: execution.CancelInterjection, discardInterjections: execution.DiscardInterjections,
-		listInterjections: execution.ListInterjections, drainInterjections: execution.DrainInterjections,
+		uiSink: sink.send, uiSinkID: sink.id, queueSteering: execution.QueueSteering,
+		cancelSteering: execution.CancelSteering, discardSteering: execution.DiscardSteering,
+		listSteering: execution.ListSteering, drainSteering: execution.DrainSteering,
 	}
 	m.runs[sessionID] = run
 	m.mu.Unlock()
@@ -421,7 +445,7 @@ func (m *MainRunManager) DeliverUI(sessionID string, message tea.Msg) error {
 	run.mu.Unlock()
 	// Deliver outside run.mu: sinks forward into the Bubble Tea message loop
 	// via the blocking Program.Send, and that loop takes run.mu through manager
-	// methods (HasActive, Subscribe, Cancel, interjection routing). The envelope
+	// methods (HasActive, Subscribe, Cancel, steering routing). The envelope
 	// lets the receiving model reject and retain a delivery whose sink detached
 	// while this goroutine was blocked in Send.
 	sink(mainRunUIEnvelope{sessionID: sessionID, sinkID: sinkID, message: message})
@@ -577,28 +601,28 @@ func (m *MainRunManager) signalChanged() {
 	}
 }
 
-// QueueInterjection routes steering to the engine owned by sessionID's run.
-func (m *MainRunManager) QueueInterjection(sessionID string, interjection llm.QueuedInterjection) llm.InterjectionQueueStatus {
+// QueueSteering routes steering to the engine owned by sessionID's run.
+func (m *MainRunManager) QueueSteering(sessionID string, steering llm.QueuedSteering) llm.SteeringQueueStatus {
 	if m == nil {
-		return llm.InterjectionQueueRunFinished
+		return llm.SteeringQueueRunFinished
 	}
 	m.mu.RLock()
 	run := m.runs[sessionID]
 	m.mu.RUnlock()
 	if run == nil {
-		return llm.InterjectionQueueRunFinished
+		return llm.SteeringQueueRunFinished
 	}
 	run.mu.Lock()
-	active, queue := run.active, run.queueInterjection
+	active, queue := run.active, run.queueSteering
 	run.mu.Unlock()
 	if !active || queue == nil {
-		return llm.InterjectionQueueRunFinished
+		return llm.SteeringQueueRunFinished
 	}
-	return queue(interjection)
+	return queue(steering)
 }
 
-// CancelInterjection removes queued steering from the owning run.
-func (m *MainRunManager) CancelInterjection(sessionID, interjectionID string) bool {
+// CancelSteering removes queued steering from the owning run.
+func (m *MainRunManager) CancelSteering(sessionID, steeringID string) bool {
 	if m == nil {
 		return false
 	}
@@ -609,13 +633,13 @@ func (m *MainRunManager) CancelInterjection(sessionID, interjectionID string) bo
 		return false
 	}
 	run.mu.Lock()
-	cancel := run.cancelInterjection
+	cancel := run.cancelSteering
 	run.mu.Unlock()
-	return cancel != nil && cancel(interjectionID)
+	return cancel != nil && cancel(steeringID)
 }
 
-// DiscardInterjections clears all queued steering for the owning run.
-func (m *MainRunManager) DiscardInterjections(sessionID string) {
+// DiscardSteering clears all queued steering for the owning run.
+func (m *MainRunManager) DiscardSteering(sessionID string) {
 	if m == nil {
 		return
 	}
@@ -626,15 +650,15 @@ func (m *MainRunManager) DiscardInterjections(sessionID string) {
 		return
 	}
 	run.mu.Lock()
-	discard := run.discardInterjections
+	discard := run.discardSteering
 	run.mu.Unlock()
 	if discard != nil {
 		discard()
 	}
 }
 
-// ListInterjections returns a snapshot of steering queued on the owning run.
-func (m *MainRunManager) ListInterjections(sessionID string) []llm.QueuedInterjection {
+// ListSteering returns a snapshot of steering queued on the owning run.
+func (m *MainRunManager) ListSteering(sessionID string) []llm.QueuedSteering {
 	if m == nil {
 		return nil
 	}
@@ -645,7 +669,7 @@ func (m *MainRunManager) ListInterjections(sessionID string) []llm.QueuedInterje
 		return nil
 	}
 	run.mu.Lock()
-	list := run.listInterjections
+	list := run.listSteering
 	run.mu.Unlock()
 	if list == nil {
 		return nil
@@ -653,8 +677,8 @@ func (m *MainRunManager) ListInterjections(sessionID string) []llm.QueuedInterje
 	return list()
 }
 
-// DrainInterjections removes and returns steering queued on the owning run.
-func (m *MainRunManager) DrainInterjections(sessionID string) []llm.QueuedInterjection {
+// DrainSteering removes and returns steering queued on the owning run.
+func (m *MainRunManager) DrainSteering(sessionID string) []llm.QueuedSteering {
 	if m == nil {
 		return nil
 	}
@@ -665,7 +689,7 @@ func (m *MainRunManager) DrainInterjections(sessionID string) []llm.QueuedInterj
 		return nil
 	}
 	run.mu.Lock()
-	drain := run.drainInterjections
+	drain := run.drainSteering
 	run.mu.Unlock()
 	if drain == nil {
 		return nil
@@ -707,14 +731,28 @@ func (m *MainRunManager) Cancel(sessionID string) bool {
 	if m == nil {
 		return false
 	}
-	m.mu.RLock()
+	// Serialize Stop's target capture with replacement publication in Start.
+	m.mu.Lock()
+	coordinator := m.steeringCoordinator(sessionID)
+	if coordinator != nil {
+		coordinator.cancelled.Store(true)
+	}
 	run := m.runs[sessionID]
-	m.mu.RUnlock()
+	m.mu.Unlock()
 	if run == nil {
 		return false
 	}
 	cancelMainRunPendingUI(run)
 	run.cancel()
+	if coordinator != nil {
+		go func() {
+			select {
+			case <-coordinator.admitted:
+				m.releaseFailedSteering(sessionID, coordinator, context.Canceled)
+			case <-m.ctx.Done():
+			}
+		}()
+	}
 	return true
 }
 

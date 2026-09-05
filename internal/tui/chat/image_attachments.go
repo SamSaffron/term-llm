@@ -69,7 +69,7 @@ func (m *Model) selectFirstImageAttachment() bool {
 		return false
 	}
 	m.selectedImage = 0
-	m.selectedInterjection = -1
+	m.selectedSteering = -1
 	return true
 }
 

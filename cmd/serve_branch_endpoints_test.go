@@ -201,7 +201,7 @@ func TestWebBranchContextSnapshotStopsAfterBoundedInconsistentSamples(t *testing
 	}
 }
 
-func TestWebBranchTreePointsPruneActiveResponseOutputAndUnsafeInterjections(t *testing.T) {
+func TestWebBranchTreePointsPruneActiveResponseOutputAndUnsafeSteering(t *testing.T) {
 	ctx := context.Background()
 	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
 	if err != nil {
@@ -278,12 +278,12 @@ func TestWebBranchTreePointsPruneActiveResponseOutputAndUnsafeInterjections(t *t
 		t.Fatalf("active branch points = %#v, want active user anchored at completed answer with no partial suffix", points)
 	}
 
-	if err := store.AddMessage(ctx, sourceID, session.NewMessage(sourceID, llm.UserText("mid-run interjection"), -1)); err != nil {
+	if err := store.AddMessage(ctx, sourceID, session.NewMessage(sourceID, llm.UserText("mid-run steering"), -1)); err != nil {
 		t.Fatal(err)
 	}
 	points = loadPoints()
 	if len(points) != 2 || points[1].MessageID != messages[2].ID || points[1].LaterMessageCount != 0 {
-		t.Fatalf("interjection affected the safe active branch snapshot: %#v", points)
+		t.Fatalf("steering affected the safe active branch snapshot: %#v", points)
 	}
 }
 
@@ -360,17 +360,17 @@ func TestSessionBranchEndpointAllowsActiveSourceAtStableAnchor(t *testing.T) {
 		t.Fatalf("partial active anchor status/body = %d %s", rr.Code, rr.Body.String())
 	}
 
-	interjection := session.NewMessage(sourceID, llm.UserText("mid-run interjection"), -1)
-	if err := store.AddMessage(ctx, sourceID, interjection); err != nil {
+	steering := session.NewMessage(sourceID, llm.UserText("mid-run steering"), -1)
+	if err := store.AddMessage(ctx, sourceID, steering); err != nil {
 		t.Fatal(err)
 	}
-	body = fmt.Sprintf(`{"anchor_message_id":%d,"idempotency_key":"active-interjection-anchor"}`, interjection.ID)
+	body = fmt.Sprintf(`{"anchor_message_id":%d,"idempotency_key":"active-steering-anchor"}`, steering.ID)
 	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sourceID+"/branches", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr = httptest.NewRecorder()
 	srv.handleSessionByID(rr, req)
 	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "not stable") {
-		t.Fatalf("interjection anchor status/body = %d %s", rr.Code, rr.Body.String())
+		t.Fatalf("steering anchor status/body = %d %s", rr.Code, rr.Body.String())
 	}
 }
 

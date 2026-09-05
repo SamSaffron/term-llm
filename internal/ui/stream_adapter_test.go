@@ -261,13 +261,13 @@ func TestStreamAdapterAllZeroUsageConsumesTimingWithoutCall(t *testing.T) {
 	}
 }
 
-func TestStreamAdapter_PropagatesInterjectionID(t *testing.T) {
+func TestStreamAdapter_PropagatesSteeringID(t *testing.T) {
 	stream := &testStream{
 		events: []llm.Event{{
-			Type:           llm.EventInterjection,
-			Text:           "keep sleeping",
-			InterjectionID: "adapter-interject-1",
-			Message:        llm.UserImageMessage("image/png", "aW1n", "keep sleeping"),
+			Type:       llm.EventSteering,
+			Text:       "keep sleeping",
+			SteeringID: "adapter-steer-1",
+			Message:    llm.UserImageMessage("image/png", "aW1n", "keep sleeping"),
 		}},
 	}
 
@@ -276,16 +276,16 @@ func TestStreamAdapter_PropagatesInterjectionID(t *testing.T) {
 
 	ev, ok := <-adapter.Events()
 	if !ok {
-		t.Fatal("expected interjection event")
+		t.Fatal("expected steering event")
 	}
-	if ev.Type != StreamEventInterjection {
-		t.Fatalf("event type = %v, want %v", ev.Type, StreamEventInterjection)
+	if ev.Type != StreamEventSteering {
+		t.Fatalf("event type = %v, want %v", ev.Type, StreamEventSteering)
 	}
 	if ev.Text != "keep sleeping" {
 		t.Fatalf("event text = %q, want %q", ev.Text, "keep sleeping")
 	}
-	if ev.InterjectionID != "adapter-interject-1" {
-		t.Fatalf("event interjection ID = %q, want %q", ev.InterjectionID, "adapter-interject-1")
+	if ev.SteeringID != "adapter-steer-1" {
+		t.Fatalf("event steering ID = %q, want %q", ev.SteeringID, "adapter-steer-1")
 	}
 	if len(ev.Message.Parts) != 2 || ev.Message.Parts[0].Type != llm.PartImage {
 		t.Fatalf("event message parts = %#v, want structured image message", ev.Message.Parts)

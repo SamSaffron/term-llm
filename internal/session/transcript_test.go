@@ -72,7 +72,7 @@ func TestSQLiteStoreAppendMessagesWithTranscriptRevAtomicBoundary(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SavePendingInterjection(ctx, PendingInterjection{SessionID: sess.ID, ID: "client-1", Message: llm.UserText("hello")}); err != nil {
+	if err := store.SavePendingSteering(ctx, PendingSteering{SessionID: sess.ID, ID: "client-1", Message: llm.UserText("hello")}); err != nil {
 		t.Fatal(err)
 	}
 	rows := []*Message{
@@ -91,7 +91,7 @@ func TestSQLiteStoreAppendMessagesWithTranscriptRevAtomicBoundary(t *testing.T) 
 		t.Fatalf("rows not stamped in order: %#v", rows)
 	}
 	var pending int
-	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_pending_interjections WHERE session_id = ?`, sess.ID).Scan(&pending); err != nil || pending != 0 {
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_pending_steering WHERE session_id = ?`, sess.ID).Scan(&pending); err != nil || pending != 0 {
 		t.Fatalf("pending count = %d, err=%v", pending, err)
 	}
 	updated, err := store.Get(ctx, sess.ID)
@@ -104,7 +104,7 @@ func TestSQLiteStoreAppendMessagesWithTranscriptRevPreservesCompleteOrderedSuffi
 	store, sess := newTranscriptTestStore(t)
 	ctx := context.Background()
 	for _, id := range []string{"client-a", "client-b"} {
-		if err := store.SavePendingInterjection(ctx, PendingInterjection{SessionID: sess.ID, ID: id, Message: llm.UserText(id)}); err != nil {
+		if err := store.SavePendingSteering(ctx, PendingSteering{SessionID: sess.ID, ID: id, Message: llm.UserText(id)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -153,7 +153,7 @@ func TestSQLiteStoreAppendMessagesWithTranscriptRevPreservesCompleteOrderedSuffi
 		t.Fatalf("user turns=%v err=%v", updated, err)
 	}
 	var pending int
-	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_pending_interjections WHERE session_id = ?`, sess.ID).Scan(&pending); err != nil || pending != 0 {
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_pending_steering WHERE session_id = ?`, sess.ID).Scan(&pending); err != nil || pending != 0 {
 		t.Fatalf("pending=%d err=%v", pending, err)
 	}
 }

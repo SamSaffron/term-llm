@@ -839,7 +839,7 @@ const (
 	EventError           EventType = "error"
 	EventRetry           EventType = "retry"            // Emitted when retrying after rate limit or transport recovery
 	EventAttemptDiscard  EventType = "attempt_discard"  // Discard provisional assistant output from the current streamed attempt
-	EventInterjection    EventType = "interjection"     // User interjected a message mid-stream
+	EventSteering        EventType = "steering"         // User steered a message mid-stream
 	EventModelSwitch     EventType = "model_switch"     // Request model changed at a provider-turn boundary
 	EventImageGenerated  EventType = "image_generated"  // Emitted when a built-in image_generation tool returns an image
 	EventToolActivity    EventType = "tool_activity"    // Internal-only durable display state for provider-managed tools.
@@ -874,9 +874,9 @@ type Event struct {
 	PreviousModel              string // For EventModelSwitch: request model used by the preceding provider turn
 	PreviousReasoningEffort    string // For EventModelSwitch: request reasoning effort used by the preceding provider turn
 	ModelSwitchBoundaryID      string // For EventModelSwitch: stable identity shared by live and durable transcript markers
-	InterjectionID             string // For EventInterjection: stable ID for matching queued interjections in the UI
-	InterjectionStatus         InterjectionStatus
-	Message                    Message       // For EventInterjection: structured user message including attachments
+	SteeringID                 string // For EventSteering: stable ID for matching queued steering in the UI
+	SteeringStatus             SteeringStatus
+	Message                    Message       // For EventSteering: structured user message including attachments
 	ReasoningItemID            string        // For EventReasoningDelta: reasoning item ID
 	ReasoningEncryptedContent  string        // For EventReasoningDelta: encrypted reasoning content
 	ReasoningKind              ReasoningKind // For EventReasoningDelta: summary/raw/encrypted/unknown classification

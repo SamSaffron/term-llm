@@ -364,15 +364,15 @@ func TestGrokBinProviderResumeMessageBoundaries(t *testing.T) {
 	}
 }
 
-func TestGrokResumeMessagesKeepsDeferredInterjections(t *testing.T) {
+func TestGrokResumeMessagesKeepsDeferredSteering(t *testing.T) {
 	messages := []Message{
 		AssistantText("already in Grok session"),
 		ToolResultMessage("call-1", "tool", "already consumed", nil),
-		UserText("deferred interjection"),
+		UserText("deferred steering"),
 		UserText("new user turn"),
 	}
 	got := grokResumeMessages(messages)
-	if len(got) != 2 || MessageText(got[0]) != "deferred interjection" || MessageText(got[1]) != "new user turn" {
+	if len(got) != 2 || MessageText(got[0]) != "deferred steering" || MessageText(got[1]) != "new user turn" {
 		t.Fatalf("grokResumeMessages = %+v", got)
 	}
 }

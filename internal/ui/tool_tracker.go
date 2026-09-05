@@ -567,7 +567,7 @@ func (t *ToolTracker) MarkCurrentTextComplete(renderFunc func(string) string) {
 }
 
 // AddPreRenderedTextSegment adds a text segment that is already fully rendered
-// (e.g., styled interjection prompts). The segment is marked Complete immediately
+// (e.g., styled steering prompts). The segment is marked Complete immediately
 // with the Rendered field set, so it bypasses markdown rendering entirely.
 func (t *ToolTracker) AddPreRenderedTextSegment(rendered string) {
 	t.RecordActivity()

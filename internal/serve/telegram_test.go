@@ -483,7 +483,7 @@ func TestSendStreamDone_OnlyFirstCompletionSends(t *testing.T) {
 
 func TestTelegramInterruptClassificationPolicy(t *testing.T) {
 	t.Run("explicit commands bypass fast classifier", func(t *testing.T) {
-		fast := llm.NewMockProvider("fast").AddTextResponse("interject")
+		fast := llm.NewMockProvider("fast").AddTextResponse("steer")
 		mgr := &telegramSessionMgr{fastProviderFactory: func() llm.Provider { return fast }}
 		for _, command := range []string{"/stop", "/cancel"} {
 			if got := mgr.classifyInterrupt(context.Background(), command, llm.InterruptActivity{}); got != llm.InterruptCancel {
@@ -508,8 +508,8 @@ func TestTelegramInterruptClassificationPolicy(t *testing.T) {
 
 	t.Run("natural prose defaults to steering without fast classifier", func(t *testing.T) {
 		mgr := &telegramSessionMgr{}
-		if got := mgr.classifyInterrupt(context.Background(), "stop changing the schema and inspect it", llm.InterruptActivity{}); got != llm.InterruptInterject {
-			t.Fatalf("classifyInterrupt(natural prose) = %v, want fallback interject", got)
+		if got := mgr.classifyInterrupt(context.Background(), "stop changing the schema and inspect it", llm.InterruptActivity{}); got != llm.InterruptSteer {
+			t.Fatalf("classifyInterrupt(natural prose) = %v, want fallback steer", got)
 		}
 	})
 }
@@ -4271,7 +4271,7 @@ func TestHandleMessage_PhotoInterruptCancelsAndPreservesImage(t *testing.T) {
 	}
 	for _, text := range bot.allTexts() {
 		if strings.Contains(text, "Noted") {
-			t.Fatalf("photo was acknowledged as an interjection instead of a replacement: %v", bot.allTexts())
+			t.Fatalf("photo was acknowledged as an steering instead of a replacement: %v", bot.allTexts())
 		}
 	}
 }

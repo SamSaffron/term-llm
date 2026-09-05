@@ -20,11 +20,11 @@ const (
 	StreamEventRetry
 	StreamEventDone
 	StreamEventError
-	StreamEventImage        // Legacy image produced by tool
-	StreamEventMedia        // Image or video produced for presentation
-	StreamEventDiff         // Diff from edit tool
-	StreamEventInterjection // User interjected a message mid-stream
-	StreamEventModelSwitch  // Request model changed at a provider-turn boundary
+	StreamEventImage       // Legacy image produced by tool
+	StreamEventMedia       // Image or video produced for presentation
+	StreamEventDiff        // Diff from edit tool
+	StreamEventSteering    // User steered a message mid-stream
+	StreamEventModelSwitch // Request model changed at a provider-turn boundary
 	StreamEventAttemptDiscard
 	StreamEventReasoning             // Classified, non-encrypted reasoning text/metadata
 	StreamEventGenerationActivity    // Hidden generation activity (for timing only)
@@ -45,9 +45,9 @@ type StreamEvent struct {
 	// Model switch metadata (for StreamEventModelSwitch)
 	ReasoningEffort string
 
-	// Interjection metadata (for StreamEventInterjection)
-	InterjectionID string
-	Message        llm.Message
+	// Steering metadata (for StreamEventSteering)
+	SteeringID string
+	Message    llm.Message
 
 	// Tool events (for StreamEventToolStart, StreamEventToolEnd)
 	ToolCallID  string
@@ -287,17 +287,17 @@ func ModelSwitchEvent(model, reasoningEffort string) StreamEvent {
 	}
 }
 
-// InterjectionEvent creates an interjection event (user message injected mid-stream).
-func InterjectionEvent(text, interjectionID string) StreamEvent {
-	return InterjectionEventWithMessage(text, interjectionID, llm.Message{})
+// SteeringEvent creates an steering event (user message injected mid-stream).
+func SteeringEvent(text, steeringID string) StreamEvent {
+	return SteeringEventWithMessage(text, steeringID, llm.Message{})
 }
 
-// InterjectionEventWithMessage creates an interjection event with structured content.
-func InterjectionEventWithMessage(text, interjectionID string, msg llm.Message) StreamEvent {
+// SteeringEventWithMessage creates an steering event with structured content.
+func SteeringEventWithMessage(text, steeringID string, msg llm.Message) StreamEvent {
 	return StreamEvent{
-		Type:           StreamEventInterjection,
-		Text:           text,
-		InterjectionID: interjectionID,
-		Message:        msg,
+		Type:       StreamEventSteering,
+		Text:       text,
+		SteeringID: steeringID,
+		Message:    msg,
 	}
 }

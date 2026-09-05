@@ -47,7 +47,7 @@ import (
 )
 
 // Model is the main chat TUI model
-type pendingInterjectionUI struct {
+type pendingSteeringUI struct {
 	ID   string
 	Text string
 }
@@ -198,7 +198,8 @@ type Model struct {
 	streamElapsedOffset         time.Duration
 	webSearchUsed               bool
 	retryStatus                 string
-	streamCancelFunc            context.CancelFunc
+	streamCancelFunc            context.CancelFunc  // explicit user Stop, including a pending handoff
+	streamCleanupFunc           context.CancelFunc  // release only this stream's local resources
 	streamDone                  <-chan struct{}     // closed when the engine goroutine exits
 	streamGeneration            uint64              // increments for each stream; used to ignore stale listener messages
 	streamCancelRequested       *atomic.Bool        // user requested stream cancellation; wait for stream exit before final cleanup
@@ -353,12 +354,13 @@ type Model struct {
 	localTools              []string // Names of enabled local tools (read, write, etc.)
 	toolsStr                string   // Original tools setting (for session persistence)
 	mcpStr                  string   // Original MCP setting (for session persistence)
-	pendingInterjection     string   // Interrupt text waiting to be injected or cancelled (latest, for compatibility)
-	pendingInterjectionID   string   // Stable ID for the latest displayed pending interjection
-	pendingInterjections    []pendingInterjectionUI
-	selectedInterjection    int       // Selected pending interjection; -1 means none
-	interjectionSeq         uint64    // Monotonic sequence for locally generated interjection IDs
-	interjectionNonce       string    // Per-process entropy keeping those IDs unique across resumes
+	pendingSteeringText     string   // Interrupt text waiting to be injected or cancelled (latest, for compatibility)
+	steeringHandoff         string
+	pendingSteeringID       string // Stable ID for the latest displayed pending steering
+	pendingSteering         []pendingSteeringUI
+	selectedSteering        int       // Selected pending steering; -1 means none
+	steeringSeq             uint64    // Monotonic sequence for locally generated steering IDs
+	steeringNonce           string    // Per-process entropy keeping those IDs unique across resumes
 	interruptNotice         string    // One-line UI notice for recent interrupt actions
 	ctrlCExitArmedUntil     time.Time // Second Ctrl+C before this time exits the TUI
 	promptHistory           promptHistoryState
@@ -621,10 +623,18 @@ type Model struct {
 }
 
 func (m *Model) releaseStreamCancelFunc() {
-	if m == nil || m.streamCancelFunc == nil {
+	if m == nil {
 		return
 	}
-	m.streamCancelFunc()
+	// Terminal delivery is cleanup, not a user Stop. A managed source may
+	// finish while Rush already owns the session or has started its successor.
+	if m.streamCleanupFunc != nil {
+		m.streamCleanupFunc()
+	} else if m.streamCancelFunc != nil {
+		// Legacy/model-owned streams have only a local cancellation callback.
+		m.streamCancelFunc()
+	}
+	m.streamCleanupFunc = nil
 	m.streamCancelFunc = nil
 }
 
@@ -914,7 +924,7 @@ func NewWithFastProviderAndApproval(cfg *config.Config, provider llm.Provider, f
 	// Create textarea with minimal styling for inline REPL
 	ta := textarea.New()
 	composerPrompt := "❯ "
-	ta.Placeholder = "Type a message..."
+	ta.Placeholder = "Type a message…"
 	ta.Prompt = composerPrompt
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0 // No limit
@@ -1151,7 +1161,7 @@ func NewWithFastProviderAndApproval(cfg *config.Config, provider llm.Provider, f
 		postFrameRenderCache:     make(map[string]postFrameImageState),
 		viewportImageArtifacts:   make(map[string]viewportImageArtifact),
 		selectedImage:            -1,
-		selectedInterjection:     -1,
+		selectedSteering:         -1,
 	}
 	model.agentMentionEngine.Store(engine)
 	if internalreasoning.RawDisplayBlocked(reasoningCfg) {
@@ -1164,13 +1174,13 @@ func NewWithFastProviderAndApproval(cfg *config.Config, provider llm.Provider, f
 	return model
 }
 
-func sessionMessageForInterjection(sessionID, visibleText string, message llm.Message) *session.Message {
+func sessionMessageForSteering(sessionID, visibleText string, message llm.Message) *session.Message {
 	if len(message.Parts) == 0 {
 		message = llm.UserText(visibleText)
 	}
 	message.Role = llm.RoleUser
 	userMessage := session.NewMessage(sessionID, message, -1)
-	// Interjection parts may include provider-only eager file or delegation
+	// Steering parts may include provider-only eager file or delegation
 	// context. Keep visible consumers clean while retaining full Parts.
 	if visibleText != "" {
 		userMessage.TextContent = visibleText
@@ -1180,7 +1190,7 @@ func sessionMessageForInterjection(sessionID, visibleText string, message llm.Me
 	return userMessage
 }
 
-func addInterjectionMessage(ctx context.Context, store session.Store, sessionID string, msg *session.Message) error {
+func addSteeringMessage(ctx context.Context, store session.Store, sessionID string, msg *session.Message) error {
 	if unlogged, ok := store.(interface {
 		AddMessageUnlogged(context.Context, string, *session.Message) error
 	}); ok {
@@ -1189,7 +1199,7 @@ func addInterjectionMessage(ctx context.Context, store session.Store, sessionID 
 	return store.AddMessage(ctx, sessionID, msg)
 }
 
-func reportInterjectionAddError(store session.Store, err error) {
+func reportSteeringAddError(store session.Store, err error) {
 	if reporter, ok := store.(interface{ ReportAddMessageError(error) }); ok {
 		reporter.ReportAddMessageError(err)
 	}
@@ -1202,31 +1212,29 @@ func isClientMessageIDConflict(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "client_message_id")
 }
 
-// persistInterjection writes a committed interjection to the session store.
-//
-// Interjections are the only chat-TUI messages that carry a ClientMessageID, so
-// they are the only ones the store's unique (session_id, client_message_id)
-// index can reject. A rejection previously dropped the message: the assistant's
-// reply to the interjection stayed in the transcript while the interjection
-// itself vanished, leaving the model answering something no one appeared to
-// have said. The identity is only a UI correlation key here, so trade it away
-// rather than lose the turn.
-func (m *Model) persistInterjection(ctx context.Context, visibleText string, message llm.Message) {
+// persistSteering preserves identities: matching receipts reconcile, while
+// conflicting content is an error, never another invented user turn.
+func (m *Model) persistSteering(ctx context.Context, visibleText string, message llm.Message) {
 	if m.store == nil || m.sess == nil {
 		return
 	}
-	userMsg := sessionMessageForInterjection(m.sess.ID, visibleText, message)
-	err := addInterjectionMessage(ctx, m.store, m.sess.ID, userMsg)
+	userMsg := sessionMessageForSteering(m.sess.ID, visibleText, message)
+	err := addSteeringMessage(ctx, m.store, m.sess.ID, userMsg)
 	if err == nil {
 		return
 	}
-	if !isClientMessageIDConflict(err) {
-		reportInterjectionAddError(m.store, err)
-		return
+	if isClientMessageIDConflict(err) {
+		existing, lookupErr := session.FindMessageByClientMessageID(ctx, m.store, m.sess.ID, userMsg.ClientMessageID)
+		if lookupErr == nil && existing != nil {
+			a, aErr := existing.PartsJSONForStorage(false)
+			b, bErr := userMsg.PartsJSONForStorage(false)
+			if aErr == nil && bErr == nil && existing.Role == userMsg.Role && existing.TextContent == userMsg.TextContent && a == b {
+				return
+			}
+			err = session.ErrSteeringConflict
+		}
 	}
-	retry := sessionMessageForInterjection(m.sess.ID, visibleText, message)
-	retry.ClientMessageID = ""
-	_ = m.store.AddMessage(ctx, m.sess.ID, retry)
+	reportSteeringAddError(m.store, err)
 }
 
 func (m *Model) setMCPServerSelected(name string, selected bool) {
@@ -2319,6 +2327,23 @@ func (m *Model) flushBeforeExternalUI(done chan<- struct{}) (tea.Model, tea.Cmd)
 
 // Update handles messages
 func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
+	if failed, ok := msg.(steeringStartFailedMsg); ok {
+		if failed.generation != m.streamGeneration || failed.operationID != m.steeringHandoff {
+			return m, nil
+		}
+		m.steeringHandoff = ""
+		m.interruptNotice = "Steered run did not start; guidance remains in the conversation"
+		return m.Update(streamEventMsg{generation: failed.generation, event: ui.ErrorEvent(failed.err)})
+	}
+
+	m.textarea.Placeholder = "Type a message…"
+	if m.streaming && m.engine != nil && m.engine.SteeringAvailability().CanSteer {
+		m.textarea.Placeholder = "Steer conversation…"
+	}
+	if ready, ok := msg.(steeringReadyMsg); ok {
+		return m.handleSteeringReady(ready)
+	}
+
 	if envelope, ok := msg.(mainRunUIEnvelope); ok {
 		if envelope.sessionID != m.SessionID() || m.mainRunManager == nil || !m.mainRunManager.IsUISinkCurrent(envelope.sessionID, envelope.sinkID) {
 			manager := m.mainRunManager
@@ -2425,6 +2450,8 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		m.mainRunID = started.runID
+		m.steeringHandoff = ""
+		m.interruptNotice = ""
 		return m, m.attachMainRun(started.sessionID)
 	}
 	if closed, ok := msg.(mainRunSubscriberClosedMsg); ok {
@@ -3161,16 +3188,21 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 
 				m.textarea.Focus()
 
-				// Recover pending interjection text into textarea on error.
+				// Recover pending steering text into textarea on error.
 				// If the engine queue is already empty but we never rendered the
-				// interjection inline, fall back to the visible pending draft.
-				m.restorePendingInterjectionDraft()
-				if len(m.listPendingInterjections()) == 0 {
-					m.clearPendingInterjection()
+				// steering inline, fall back to the visible pending draft.
+				m.restorePendingSteeringDraft()
+				if m.steeringHandoff == "" && len(m.listPendingSteering()) == 0 {
+					m.clearPendingSteering()
 				}
 
 				titleCmd := m.terminalTitleCmd()
 				if m.altScreen {
+					// Rush is a continuous handoff, not a failed conversation. A
+					// queued ClearScreen can erase the next frame while startup waits.
+					if m.steeringHandoff != "" {
+						return m, tea.Batch(footerCmd, titleCmd)
+					}
 					return m, tea.Batch(tea.ClearScreen, footerCmd, titleCmd)
 				}
 				if titleCmd != nil {
@@ -3454,34 +3486,34 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 				}
 			}
 
-		case ui.StreamEventInterjection:
+		case ui.StreamEventSteering:
 			m.setRetryStatus("")
-			// User interjected a message mid-stream (injected between tool turns).
+			// User steered a message mid-stream (injected between tool turns).
 			matchedPending := false
 			switch {
-			case ev.InterjectionID != "":
-				// FIFO interjection events may arrive for an older queue item while a newer
+			case ev.SteeringID != "":
+				// FIFO steering events may arrive for an older queue item while a newer
 				// item is still pending, so remove by ID across the whole stack rather than
 				// comparing only with the latest pending row.
-				matchedPending = m.removePendingInterjectionByID(ev.InterjectionID)
+				matchedPending = m.removePendingSteeringByID(ev.SteeringID)
 			case strings.TrimSpace(ev.Text) != "":
 				// Legacy/no-ID fallback: remove the first same-text pending item.
-				for i := range m.pendingInterjections {
-					if strings.TrimSpace(m.pendingInterjections[i].Text) == strings.TrimSpace(ev.Text) {
+				for i := range m.pendingSteering {
+					if strings.TrimSpace(m.pendingSteering[i].Text) == strings.TrimSpace(ev.Text) {
 						matchedPending = true
-						copy(m.pendingInterjections[i:], m.pendingInterjections[i+1:])
-						m.pendingInterjections = m.pendingInterjections[:len(m.pendingInterjections)-1]
-						m.syncLatestPendingInterjection()
+						copy(m.pendingSteering[i:], m.pendingSteering[i+1:])
+						m.pendingSteering = m.pendingSteering[:len(m.pendingSteering)-1]
+						m.syncLatestPendingSteering()
 						break
 					}
 				}
-				if !matchedPending && m.pendingInterjectionID == "" && strings.TrimSpace(ev.Text) == strings.TrimSpace(m.pendingInterjection) {
+				if !matchedPending && m.pendingSteeringID == "" && strings.TrimSpace(ev.Text) == strings.TrimSpace(m.pendingSteeringText) {
 					matchedPending = true
-					m.clearPendingInterjection()
+					m.clearPendingSteering()
 				}
 			}
 			_ = matchedPending
-			// Flush smooth buffer so any pending text appears before the interjection.
+			// Flush smooth buffer so any pending text appears before the steering.
 			if m.smoothBuffer != nil {
 				remaining := m.smoothBuffer.FlushAll()
 				if remaining != "" {
@@ -3492,12 +3524,12 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 				}
 				m.smoothTickPending = false
 			}
-			// Mark current text segment as complete before interjection
+			// Mark current text segment as complete before steering
 			if m.tracker != nil {
 				m.tracker.MarkCurrentTextComplete(func(text string) string {
 					return m.renderMarkdown(text)
 				})
-				// Add interjection as a pre-rendered text segment.
+				// Add steering as a pre-rendered text segment.
 				// Store the styled version directly so it bypasses markdown rendering
 				// and avoids ANSI escape code artifacts in the output.
 				theme := m.styles.Theme()
@@ -3505,12 +3537,12 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 				rendered := promptStyle.Render("❯") + " " + ev.Text + "\n\n"
 				m.tracker.AddPreRenderedTextSegment(rendered)
 			}
-			// Once the interjection is visibly injected into the transcript, force the
+			// Once the steering is visibly injected into the transcript, force the
 			// viewport to the bottom so the user sees where it landed.
 			m.scrollToBottom = true
-			// Persist interjected message to session store, preserving structured parts.
+			// Persist steered message to session store, preserving structured parts.
 			if m.store != nil {
-				m.persistInterjection(context.Background(), ev.Text, ev.Message)
+				m.persistSteering(context.Background(), ev.Text, ev.Message)
 			}
 
 		case ui.StreamEventDone:
@@ -3739,12 +3771,12 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			// Re-enable textarea
 			m.textarea.Focus()
 
-			// Recover any pending interjection that wasn't consumed. If the
+			// Recover any pending steering that wasn't consumed. If the
 			// engine queue is already empty but the UI still shows a pending
-			// interjection, restore that draft rather than letting it vanish.
-			m.restorePendingInterjectionDraft()
-			if len(m.listPendingInterjections()) == 0 {
-				m.clearPendingInterjection()
+			// steering, restore that draft rather than letting it vanish.
+			m.restorePendingSteeringDraft()
+			if m.steeringHandoff == "" && len(m.listPendingSteering()) == 0 {
+				m.clearPendingSteering()
 			}
 		}
 

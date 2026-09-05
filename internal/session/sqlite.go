@@ -172,17 +172,26 @@ CREATE TABLE IF NOT EXISTS session_workspace_grants (
 CREATE INDEX IF NOT EXISTS idx_session_workspace_grants_session
     ON session_workspace_grants(session_id, created_at, id);
 
-CREATE TABLE IF NOT EXISTS session_pending_interjections (
+CREATE TABLE IF NOT EXISTS session_pending_steering (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     id TEXT NOT NULL,
     message TEXT NOT NULL,
     display_text TEXT NOT NULL DEFAULT '',
     attachment_summary TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    acceptance_sequence INTEGER NOT NULL DEFAULT 0,
+    origin TEXT NOT NULL DEFAULT 'legacy_unknown',
+    owner_kind TEXT NOT NULL DEFAULT '',
+    owner_id TEXT NOT NULL DEFAULT '',
+    owner_fence INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (session_id, id)
 );
-CREATE INDEX IF NOT EXISTS idx_session_pending_interjections_order
-    ON session_pending_interjections(session_id, created_at, id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_session_pending_steering_order
+    ON session_pending_steering(session_id, acceptance_sequence);
+CREATE TABLE IF NOT EXISTS session_steering_sequence (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS session_redo (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -426,7 +435,7 @@ CREATE INDEX IF NOT EXISTS session_attention_unseen
     WHERE latest_attention_seq > seen_through_seq;
 `
 
-const canonicalSessionSchema = schema + projectsSchemaV47 + changeLogSchemaV52 + attentionSchemaV54
+const canonicalSessionSchema = schema + projectsSchemaV47 + changeLogSchemaV52 + attentionSchemaV54 + rushSchemaV57
 
 func sqliteFileURI(path string) string {
 	slashPath := filepath.ToSlash(path)
@@ -575,7 +584,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // Increment when adding new migrations.
 const (
 	projectSchemaVersion = 47
-	schemaVersion        = 55
+	schemaVersion        = 57
 )
 
 // migration represents a schema migration.
@@ -1630,6 +1639,42 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		version:     56,
+		description: "rename pending steering and persist FIFO provenance and ownership",
+		up: func(db schemaExecutor) error {
+			var oldExists int
+			if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='session_pending_interjections'`).Scan(&oldExists); err != nil {
+				return err
+			}
+			if oldExists == 0 {
+				return nil
+			} // canonical-schema fixture/bootstrap
+			var newExists int
+			if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='session_pending_steering'`).Scan(&newExists); err != nil {
+				return err
+			}
+			if newExists != 0 {
+				var count int
+				if err := db.QueryRow(`SELECT count(*) FROM session_pending_steering`).Scan(&count); err != nil {
+					return err
+				}
+				if count != 0 {
+					return fmt.Errorf("refusing to replace a populated steering table")
+				}
+			}
+			_, err := db.Exec(steeringMigrationV56)
+			return err
+		},
+	},
+	{
+		version:     57,
+		description: "durable steering rush operations",
+		up: func(db schemaExecutor) error {
+			_, err := db.Exec(rushSchemaV57)
+			return err
+		},
+	},
 }
 
 // Keep in sync with llm.IsInternalCompactionSummaryText. SQLite migrations and
@@ -2582,81 +2627,112 @@ func (s *SQLiteStore) DeletePlanSnapshot(ctx context.Context, sessionID string) 
 	})
 }
 
-func (s *SQLiteStore) SavePendingInterjection(ctx context.Context, entry PendingInterjection) error {
+func (s *SQLiteStore) SavePendingSteering(ctx context.Context, entry PendingSteering) error {
 	entry.SessionID = strings.TrimSpace(entry.SessionID)
 	entry.ID = strings.TrimSpace(entry.ID)
 	if entry.SessionID == "" || entry.ID == "" {
-		return fmt.Errorf("save pending interjection: session id and interjection id are required")
+		return fmt.Errorf("save pending steering: session and message IDs are required")
 	}
 	if entry.CreatedAt.IsZero() {
 		entry.CreatedAt = time.Now()
 	}
+	if entry.Origin == "" {
+		entry.Origin = llm.SteeringOriginLegacy
+	}
 	messageJSON, err := json.Marshal(entry.Message)
 	if err != nil {
-		return fmt.Errorf("save pending interjection: encode message: %w", err)
+		return err
 	}
-	// A stable ID is immutable. In-process retries are fingerprint-checked by the
-	// runtime; keeping the first durable payload also prevents a retry from
-	// rewriting an already accepted intent.
-	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO session_pending_interjections
-			(session_id, id, message, display_text, attachment_summary, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT(session_id, id) DO NOTHING`,
-		entry.SessionID, entry.ID, string(messageJSON), entry.DisplayText, entry.AttachmentSummary, entry.CreatedAt)
-	if err != nil {
-		return fmt.Errorf("save pending interjection: %w", err)
-	}
-	return nil
+	return retryOnBusy(ctx, 5, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		// Allocate on the writer connection. The counter survives an empty queue.
+		if _, err = tx.ExecContext(ctx, `INSERT INTO session_steering_sequence(session_id,sequence) VALUES (?,1)
+   ON CONFLICT(session_id) DO UPDATE SET sequence=sequence+1`, entry.SessionID); err != nil {
+			return err
+		}
+		result, err := tx.ExecContext(ctx, `INSERT INTO session_pending_steering
+   (session_id,id,message,display_text,attachment_summary,created_at,acceptance_sequence,origin)
+   SELECT ?,?,?,?,?,?,sequence,? FROM session_steering_sequence WHERE session_id=?
+   ON CONFLICT(session_id,id) DO NOTHING`, entry.SessionID, entry.ID, string(messageJSON), entry.DisplayText,
+			entry.AttachmentSummary, entry.CreatedAt, entry.Origin, entry.SessionID)
+		if err != nil {
+			return err
+		}
+		if n, _ := result.RowsAffected(); n == 0 {
+			var content, display, attachments, origin string
+			if err := tx.QueryRowContext(ctx, `SELECT message,display_text,attachment_summary,origin FROM session_pending_steering WHERE session_id=? AND id=?`, entry.SessionID, entry.ID).Scan(&content, &display, &attachments, &origin); err != nil {
+				return err
+			}
+			if content != string(messageJSON) || display != entry.DisplayText || attachments != entry.AttachmentSummary || origin != string(entry.Origin) {
+				return ErrSteeringConflict
+			}
+		}
+		return tx.Commit()
+	})
 }
 
-func (s *SQLiteStore) DeletePendingInterjection(ctx context.Context, sessionID, id string) error {
+func (s *SQLiteStore) DeletePendingSteering(ctx context.Context, sessionID, id string) error {
 	sessionID = strings.TrimSpace(sessionID)
 	id = strings.TrimSpace(id)
 	if sessionID == "" || id == "" {
 		return nil
 	}
-	if _, err := s.db.ExecContext(ctx,
-		`DELETE FROM session_pending_interjections WHERE session_id = ? AND id = ?`,
-		sessionID, id); err != nil {
-		return fmt.Errorf("delete pending interjection: %w", err)
+	result, err := s.db.ExecContext(ctx,
+		`DELETE FROM session_pending_steering WHERE session_id = ? AND id = ? AND owner_kind = ''`,
+		sessionID, id)
+	if err != nil {
+		return fmt.Errorf("delete pending steering: %w", err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		var owner string
+		err := s.queryDB().QueryRowContext(ctx, `SELECT owner_kind FROM session_pending_steering WHERE session_id=? AND id=?`, sessionID, id).Scan(&owner)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if owner != "" {
+			return ErrSteeringConflict
+		}
 	}
 	return nil
 }
 
-func (s *SQLiteStore) ListPendingInterjections(ctx context.Context, sessionID string) ([]PendingInterjection, error) {
+func (s *SQLiteStore) ListPendingSteering(ctx context.Context, sessionID string) ([]PendingSteering, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return nil, nil
 	}
-	rows, err := s.readDB.QueryContext(ctx, `
-		SELECT pending.id, pending.message, pending.display_text, pending.attachment_summary, pending.created_at
-		FROM session_pending_interjections pending
+	rows, err := s.queryDB().QueryContext(ctx, `
+		SELECT pending.id, pending.message, pending.display_text, pending.attachment_summary, pending.created_at, pending.acceptance_sequence, pending.origin, pending.owner_kind, pending.owner_id, pending.owner_fence
+		FROM session_pending_steering pending
 		WHERE pending.session_id = ?
 		  AND NOT EXISTS (
 			SELECT 1 FROM messages committed
 			WHERE committed.session_id = pending.session_id
 			  AND committed.client_message_id = pending.id
 		  )
-		ORDER BY pending.rowid`, sessionID)
+		ORDER BY pending.acceptance_sequence`, sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("list pending interjections: %w", err)
+		return nil, fmt.Errorf("list pending steering: %w", err)
 	}
 	defer rows.Close()
-	var entries []PendingInterjection
+	var entries []PendingSteering
 	for rows.Next() {
-		entry := PendingInterjection{SessionID: sessionID}
+		entry := PendingSteering{SessionID: sessionID}
 		var messageJSON string
-		if err := rows.Scan(&entry.ID, &messageJSON, &entry.DisplayText, &entry.AttachmentSummary, &entry.CreatedAt); err != nil {
-			return nil, fmt.Errorf("scan pending interjection: %w", err)
+		if err := rows.Scan(&entry.ID, &messageJSON, &entry.DisplayText, &entry.AttachmentSummary, &entry.CreatedAt, &entry.AcceptanceSequence, &entry.Origin, &entry.OwnerKind, &entry.OwnerID, &entry.OwnerFence); err != nil {
+			return nil, fmt.Errorf("scan pending steering: %w", err)
 		}
 		if err := json.Unmarshal([]byte(messageJSON), &entry.Message); err != nil {
-			return nil, fmt.Errorf("decode pending interjection %q: %w", entry.ID, err)
+			return nil, fmt.Errorf("decode pending steering %q: %w", entry.ID, err)
 		}
 		entries = append(entries, entry)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate pending interjections: %w", err)
+		return nil, fmt.Errorf("iterate pending steering: %w", err)
 	}
 	return entries, nil
 }
@@ -3302,6 +3378,10 @@ func (s *SQLiteStore) SupportsBatchTranscriptWriter() bool {
 // AppendMessagesWithTranscriptRev atomically appends messages in input order,
 // allocates consecutive sequences, and bumps transcript_rev once.
 func (s *SQLiteStore) AppendMessagesWithTranscriptRev(ctx context.Context, sessionID string, messages []*Message) (int64, error) {
+	return s.appendMessagesWithRush(ctx, sessionID, messages, nil)
+}
+
+func (s *SQLiteStore) appendMessagesWithRush(ctx context.Context, sessionID string, messages []*Message, rush *RushOperation) (int64, error) {
 	if len(messages) == 0 {
 		state, err := s.GetResponseRunStartState(ctx, sessionID)
 		return state.Rev, err
@@ -3338,6 +3418,17 @@ func (s *SQLiteStore) AppendMessagesWithTranscriptRev(ctx context.Context, sessi
 				_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
 			}
 		}()
+		if rush != nil {
+			// This CAS serializes Stop with initial-input/provider authorization.
+			result, err := conn.ExecContext(ctx, `UPDATE session_rush_operations SET status='started',revision=revision+1,updated_at=CURRENT_TIMESTAMP WHERE session_id=? AND request_id=? AND status='starting' AND revision=? AND owner_fence=? AND replacement_response_id=?`, sessionID, rush.RequestID, rush.Revision, rush.Fence, rush.ReplacementResponseID)
+			if err != nil {
+				return err
+			}
+			n, _ := result.RowsAffected()
+			if n != 1 {
+				return ErrSteeringConflict
+			}
+		}
 		var maxSeq sql.NullInt64
 		if err := conn.QueryRowContext(ctx, `SELECT MAX(sequence) FROM messages WHERE session_id = ?`, sessionID).Scan(&maxSeq); err != nil {
 			return fmt.Errorf("get max sequence: %w", err)
@@ -3366,8 +3457,8 @@ func (s *SQLiteStore) AppendMessagesWithTranscriptRev(ctx context.Context, sessi
 				userTurns++
 				lastUserActivity = msg.CreatedAt
 				if msg.ClientMessageID != "" {
-					if _, err := conn.ExecContext(ctx, `DELETE FROM session_pending_interjections WHERE session_id = ? AND id = ?`, sessionID, msg.ClientMessageID); err != nil {
-						return fmt.Errorf("delete pending interjection: %w", err)
+					if _, err := conn.ExecContext(ctx, `DELETE FROM session_pending_steering WHERE session_id = ? AND id = ?`, sessionID, msg.ClientMessageID); err != nil {
+						return fmt.Errorf("delete pending steering: %w", err)
 					}
 				}
 			}
@@ -3395,6 +3486,11 @@ func (s *SQLiteStore) AppendMessagesWithTranscriptRev(ctx context.Context, sessi
 		}
 		if err := checkpointResponseRunFenceTx(ctx, conn, sessionID, rev); err != nil {
 			return err
+		}
+		if rush != nil {
+			if _, err := conn.ExecContext(ctx, `UPDATE session_rush_entries SET disposition='committed' WHERE session_id=? AND request_id=?`, sessionID, rush.RequestID); err != nil {
+				return err
+			}
 		}
 		if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 			return fmt.Errorf("commit transaction: %w", err)

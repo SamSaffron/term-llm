@@ -256,9 +256,9 @@ func (b *askProgressiveBridge) HandleEvent(event llm.Event) error {
 			model = event.Text
 		}
 		b.stats.SetModel(model)
-	case llm.EventInterjection:
+	case llm.EventSteering:
 		if event.Text != "" {
-			return b.send(ui.InterjectionEvent(event.Text, event.InterjectionID))
+			return b.send(ui.SteeringEvent(event.Text, event.SteeringID))
 		}
 	}
 	return nil

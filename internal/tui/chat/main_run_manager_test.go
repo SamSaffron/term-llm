@@ -252,11 +252,11 @@ func TestMainRunManagerConcurrentSessionsAndSessionExclusivity(t *testing.T) {
 	close(block)
 }
 
-func TestMainRunManagerRoutesInterjectionsToOwningSession(t *testing.T) {
+func TestMainRunManagerRoutesSteeringToOwningSession(t *testing.T) {
 	manager := NewMainRunManager(context.Background())
 	defer manager.Close(time.Second)
 	block := make(chan struct{})
-	queued := make(chan llm.QueuedInterjection, 1)
+	queued := make(chan llm.QueuedSteering, 1)
 	cancelled := make(chan string, 1)
 	discarded := make(chan struct{}, 1)
 	if _, err := manager.Start("steered", MainRunExecution{
@@ -268,26 +268,26 @@ func TestMainRunManagerRoutesInterjectionsToOwningSession(t *testing.T) {
 				return ctx.Err()
 			}
 		},
-		QueueInterjection: func(entry llm.QueuedInterjection) llm.InterjectionQueueStatus {
+		QueueSteering: func(entry llm.QueuedSteering) llm.SteeringQueueStatus {
 			queued <- entry
-			return llm.InterjectionQueueQueued
+			return llm.SteeringQueueQueued
 		},
-		CancelInterjection:   func(id string) bool { cancelled <- id; return true },
-		DiscardInterjections: func() { discarded <- struct{}{} },
+		CancelSteering:  func(id string) bool { cancelled <- id; return true },
+		DiscardSteering: func() { discarded <- struct{}{} },
 	}); err != nil {
 		t.Fatal(err)
 	}
-	entry := llm.QueuedInterjection{ID: "steer-1", Message: llm.UserText("change course")}
-	if status := manager.QueueInterjection("steered", entry); status != llm.InterjectionQueueQueued {
+	entry := llm.QueuedSteering{ID: "steer-1", Message: llm.UserText("change course")}
+	if status := manager.QueueSteering("steered", entry); status != llm.SteeringQueueQueued {
 		t.Fatalf("queue status = %q", status)
 	}
 	if got := <-queued; got.ID != entry.ID {
-		t.Fatalf("queued interjection = %#v", got)
+		t.Fatalf("queued steering = %#v", got)
 	}
-	if !manager.CancelInterjection("steered", entry.ID) || <-cancelled != entry.ID {
+	if !manager.CancelSteering("steered", entry.ID) || <-cancelled != entry.ID {
 		t.Fatal("cancel was not routed to owning run")
 	}
-	manager.DiscardInterjections("steered")
+	manager.DiscardSteering("steered")
 	select {
 	case <-discarded:
 	case <-time.After(time.Second):

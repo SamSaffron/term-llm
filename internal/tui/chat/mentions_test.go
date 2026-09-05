@@ -846,9 +846,9 @@ func TestDeniedMentionDoesNotPromptOrBlockSending(t *testing.T) {
 	}
 }
 
-func TestStreamingInterjectionGetsSubmitTimeMentionContext(t *testing.T) {
+func TestStreamingSteeringGetsSubmitTimeMentionContext(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("interjection attachment"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("steering attachment"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	m := newTestChatModel(false)
@@ -858,26 +858,26 @@ func TestStreamingInterjectionGetsSubmitTimeMentionContext(t *testing.T) {
 	m.setTextareaValue("also inspect @note.txt")
 
 	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
-	queued := m.engine.ListPendingInterjections()
+	queued := m.engine.ListPendingSteering()
 	if len(queued) != 1 {
-		t.Fatalf("queued interjections = %#v", queued)
+		t.Fatalf("queued steering = %#v", queued)
 	}
 	parts := queued[0].Message.Parts
 	if len(parts) != 2 || parts[0].Type != llm.PartText || parts[1].Type != llm.PartFile {
 		t.Fatalf("queued part order = %#v, want original text before mention context", parts)
 	}
-	if parts[0].Text != "also inspect @note.txt" || !strings.Contains(parts[1].Text, "interjection attachment") {
+	if parts[0].Text != "also inspect @note.txt" || !strings.Contains(parts[1].Text, "steering attachment") {
 		t.Fatalf("queued mention parts = %#v", parts)
 	}
 	text := llm.MessageText(queued[0].Message)
-	if !strings.Contains(text, "also inspect @note.txt") || !strings.Contains(text, "interjection attachment") {
+	if !strings.Contains(text, "also inspect @note.txt") || !strings.Contains(text, "steering attachment") {
 		t.Fatalf("queued mention context = %q", text)
 	}
 }
 
-func TestStreamingInterjectionGetsAgentDelegationBeforeEagerFileContext(t *testing.T) {
+func TestStreamingSteeringGetsAgentDelegationBeforeEagerFileContext(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("interjection eager body"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("steering eager body"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	m := newTestChatModel(false)
@@ -889,15 +889,15 @@ func TestStreamingInterjectionGetsAgentDelegationBeforeEagerFileContext(t *testi
 	m.setTextareaValue(content)
 
 	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
-	queued := m.engine.ListPendingInterjections()
+	queued := m.engine.ListPendingSteering()
 	if len(queued) != 1 {
-		t.Fatalf("queued interjections = %#v", queued)
+		t.Fatalf("queued steering = %#v", queued)
 	}
 	parts := queued[0].Message.Parts
 	if len(parts) != 3 || parts[0].Type != llm.PartText || parts[1].Type != llm.PartAgentMention || parts[2].Type != llm.PartFile {
 		t.Fatalf("queued part order = %#v", parts)
 	}
-	if parts[0].Text != content || !strings.Contains(parts[1].Text, "term_llm_agent_mentions") || !strings.Contains(parts[2].Text, "interjection eager body") {
+	if parts[0].Text != content || !strings.Contains(parts[1].Text, "term_llm_agent_mentions") || !strings.Contains(parts[2].Text, "steering eager body") {
 		t.Fatalf("queued agent/file context = %#v", parts)
 	}
 	if queued[0].DisplayText != content {
@@ -905,14 +905,14 @@ func TestStreamingInterjectionGetsAgentDelegationBeforeEagerFileContext(t *testi
 	}
 }
 
-func TestInterjectionSessionMessageKeepsDelegationProviderOnly(t *testing.T) {
+func TestSteeringSessionMessageKeepsDelegationProviderOnly(t *testing.T) {
 	visible := "ask @agent:reviewer"
 	message := llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
 		{Type: llm.PartText, Text: visible},
 		{Type: llm.PartAgentMention, Text: "\n\n<term_llm_agent_mentions>hidden</term_llm_agent_mentions>"},
 		{Type: llm.PartFile, Text: "hidden eager body"},
 	}}
-	persisted := sessionMessageForInterjection("session", visible, message)
+	persisted := sessionMessageForSteering("session", visible, message)
 	if persisted.TextContent != visible {
 		t.Fatalf("TextContent = %q", persisted.TextContent)
 	}
@@ -942,10 +942,10 @@ func TestInvalidStreamingAgentMentionPreservesDraftBeforeQueueMutation(t *testin
 
 	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.textarea.Value() != content || len(m.images) != 1 || len(m.files) != 1 || len(m.pasteChunks) != 1 {
-		t.Fatalf("invalid interjection lost draft state: text=%q images=%d files=%d pastes=%d", m.textarea.Value(), len(m.images), len(m.files), len(m.pasteChunks))
+		t.Fatalf("invalid steering lost draft state: text=%q images=%d files=%d pastes=%d", m.textarea.Value(), len(m.images), len(m.files), len(m.pasteChunks))
 	}
-	if len(m.engine.ListPendingInterjections()) != 0 || len(m.pendingInterjections) != 0 {
-		t.Fatalf("invalid interjection mutated queue state: engine=%#v ui=%#v", m.engine.ListPendingInterjections(), m.pendingInterjections)
+	if len(m.engine.ListPendingSteering()) != 0 || len(m.pendingSteering) != 0 {
+		t.Fatalf("invalid steering mutated queue state: engine=%#v ui=%#v", m.engine.ListPendingSteering(), m.pendingSteering)
 	}
 	if !strings.Contains(m.footerMessage, "depth exhausted") {
 		t.Fatalf("footer = %q", m.footerMessage)
@@ -1032,11 +1032,11 @@ func TestAutoSendAgentMentionFailureTerminatesWithoutDroppingQueueHead(t *testin
 	}
 }
 
-func TestRestoreQueuedAgentInterjectionDoesNotExposeProviderContext(t *testing.T) {
+func TestRestoreQueuedAgentSteeringDoesNotExposeProviderContext(t *testing.T) {
 	m := newTestChatModel(false)
 	visible := "ask @agent:reviewer about @note.txt"
-	m.engine.QueueInterjection(llm.QueuedInterjection{
-		ID:          "agent-interjection",
+	m.engine.QueueSteering(llm.QueuedSteering{
+		ID:          "agent-steering",
 		DisplayText: visible,
 		Message: llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
 			{Type: llm.PartText, Text: visible},
@@ -1045,7 +1045,7 @@ func TestRestoreQueuedAgentInterjectionDoesNotExposeProviderContext(t *testing.T
 		}},
 	})
 
-	m.restorePendingInterjectionDraft()
+	m.restorePendingSteeringDraft()
 	if m.textarea.Value() != visible {
 		t.Fatalf("restored draft = %q, want visible text only", m.textarea.Value())
 	}

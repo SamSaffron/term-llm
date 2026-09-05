@@ -757,7 +757,7 @@
   background: var(--surface-2);
 }
 
-.interrupt-badge.interject {
+.interrupt-badge.steer {
   color: var(--accent-green);
   border-color: rgb(52 211 153 / 30%);
   background: rgb(52 211 153 / 8%);

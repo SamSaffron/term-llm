@@ -30,26 +30,26 @@ func TestAskProgressiveRunnerSinkAccountsGuardianUsage(t *testing.T) {
 	}
 }
 
-func TestAskProgressiveBridge_PropagatesInterjectionID(t *testing.T) {
+func TestAskProgressiveBridge_PropagatesSteeringID(t *testing.T) {
 	bridge := newAskProgressiveBridge(ui.DefaultStreamBufferSize)
 
 	if err := bridge.HandleEvent(llm.Event{
-		Type:           llm.EventInterjection,
-		Text:           "keep sleeping",
-		InterjectionID: "bridge-interject-1",
+		Type:       llm.EventSteering,
+		Text:       "keep sleeping",
+		SteeringID: "bridge-steer-1",
 	}); err != nil {
 		t.Fatalf("HandleEvent() error = %v", err)
 	}
 
 	ev := <-bridge.Events()
-	if ev.Type != ui.StreamEventInterjection {
-		t.Fatalf("event type = %v, want %v", ev.Type, ui.StreamEventInterjection)
+	if ev.Type != ui.StreamEventSteering {
+		t.Fatalf("event type = %v, want %v", ev.Type, ui.StreamEventSteering)
 	}
 	if ev.Text != "keep sleeping" {
 		t.Fatalf("event text = %q, want %q", ev.Text, "keep sleeping")
 	}
-	if ev.InterjectionID != "bridge-interject-1" {
-		t.Fatalf("event interjection ID = %q, want %q", ev.InterjectionID, "bridge-interject-1")
+	if ev.SteeringID != "bridge-steer-1" {
+		t.Fatalf("event steering ID = %q, want %q", ev.SteeringID, "bridge-steer-1")
 	}
 }
 

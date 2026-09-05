@@ -1758,9 +1758,9 @@ func TestUpdateAllZeroStreamUsageConsumesPendingTimingWithoutCall(t *testing.T) 
 	}
 }
 
-func TestRenderInputInline_ShowsPendingInterjection(t *testing.T) {
+func TestRenderInputInline_ShowsPendingSteering(t *testing.T) {
 	m := newTestChatModel(false)
-	m.pendingInterjection = "stop doing that"
+	m.pendingSteeringText = "stop doing that"
 	m.width = 80
 
 	output := m.renderInputInline()
@@ -1770,30 +1770,53 @@ func TestRenderInputInline_ShowsPendingInterjection(t *testing.T) {
 		t.Fatalf("expected pending indicator ⏳ in output, got %q", stripped)
 	}
 	if !strings.Contains(stripped, "stop doing that") {
-		t.Fatalf("expected interjection text in output, got %q", stripped)
+		t.Fatalf("expected steering text in output, got %q", stripped)
 	}
 	if !strings.Contains(stripped, "will incorporate") {
 		t.Fatalf("expected inject label in output, got %q", stripped)
 	}
 }
 
-func TestRenderInputInline_ShowsPendingInterjectionStack(t *testing.T) {
+func TestRenderInputInline_ShowsPendingSteeringStack(t *testing.T) {
 	m := newTestChatModel(false)
-	m.setPendingInterjection("one", "first")
-	m.setPendingInterjection("two", "second")
+	m.setPendingSteering("one", "first")
+	m.setPendingSteering("two", "second")
+	m.selectedSteering = 1
 	m.width = 80
 
 	output := m.renderInputInline()
 	stripped := ui.StripANSI(output)
 
 	if !strings.Contains(stripped, "first") || !strings.Contains(stripped, "second") {
-		t.Fatalf("expected both pending interjections in output, got %q", stripped)
+		t.Fatalf("expected both pending steering in output, got %q", stripped)
 	}
 	if strings.Count(stripped, "will incorporate") != 2 {
 		t.Fatalf("expected both pending labels in output, got %q", stripped)
 	}
-	if !strings.Contains(stripped, "[del cancels]") {
+	if !strings.Contains(stripped, "Delete to remove") {
 		t.Fatalf("expected cancel affordance in output, got %q", stripped)
+	}
+}
+
+func TestPendingSteeringHidesUnavailableRush(t *testing.T) {
+	m := newTestChatModel(false)
+	m.engine = llm.NewEngine(llm.NewMockProvider("mock"), nil)
+	m.setPendingSteering("one", "hello")
+	m.width = 100
+	output := ui.StripANSI(m.renderInputInline())
+	for _, unwanted := range []string{"Rush unavailable", "provider_resume_unverified", "Esc to steer"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("unavailable action shown: %q", output)
+		}
+	}
+	for _, want := range []string{"hello", "will incorporate", "↑ to select"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("missing queue control %q: %q", want, output)
+		}
+	}
+	_, cmd := m.rushPendingSteering()
+	if cmd != nil || m.footerMessage != "" {
+		t.Fatal("unavailable rush should not show a diagnostic or start work")
 	}
 }
 
@@ -1860,33 +1883,33 @@ func TestRenderStatusLineShowsAppliedStreamingEffortModel(t *testing.T) {
 
 func TestRenderInputInline_HidesPendingWhenEmpty(t *testing.T) {
 	m := newTestChatModel(false)
-	m.pendingInterjection = ""
+	m.pendingSteeringText = ""
 	m.width = 80
 
 	output := m.renderInputInline()
 	stripped := ui.StripANSI(output)
 
 	if strings.Contains(stripped, "⏳") {
-		t.Fatalf("expected no ⏳ when pendingInterjection is empty, got %q", stripped)
+		t.Fatalf("expected no ⏳ when pendingSteeringText is empty, got %q", stripped)
 	}
 	if strings.Contains(stripped, "will incorporate") {
-		t.Fatalf("expected no inject label when pendingInterjection is empty, got %q", stripped)
+		t.Fatalf("expected no inject label when pendingSteeringText is empty, got %q", stripped)
 	}
 }
 
-func TestRenderInputInline_TruncatesLongInterjection(t *testing.T) {
+func TestRenderInputInline_TruncatesLongSteering(t *testing.T) {
 	m := newTestChatModel(false)
 	m.width = 40
-	m.pendingInterjection = strings.Repeat("x", 100)
+	m.pendingSteeringText = strings.Repeat("x", 100)
 
 	output := m.renderInputInline()
 	stripped := ui.StripANSI(output)
 
 	if !strings.Contains(stripped, "…") {
-		t.Fatalf("expected truncation marker … for long interjection, got %q", stripped)
+		t.Fatalf("expected truncation marker … for long steering, got %q", stripped)
 	}
 	if strings.Contains(stripped, strings.Repeat("x", 100)) {
-		t.Fatalf("expected long interjection to be truncated, got %q", stripped)
+		t.Fatalf("expected long steering to be truncated, got %q", stripped)
 	}
 }
 

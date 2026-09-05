@@ -181,7 +181,7 @@ func (p *CursorBinProvider) Capabilities() Capabilities {
 
 // RequestInlineFlush marks the next tool result so Cursor Agent ends its
 // current prompt. The engine then starts a new Stream that delivers queued
-// interjections.
+// steering.
 func (p *CursorBinProvider) RequestInlineFlush() {
 	p.requestInlineFlush()
 }

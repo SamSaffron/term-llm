@@ -423,7 +423,7 @@ test('keeps running controls while a response transport reconnects', async ({ pa
   await page.getByRole('button', { name: 'Send message' }).click();
   await expect(page.locator('#stopBtn')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Response is running' })).toBeEnabled();
-  await expect(page.getByPlaceholder('Type to interject…')).toBeVisible();
+  await expect(page.getByPlaceholder('Steer conversation…')).toBeVisible();
   await expect(page.getByRole('status', { name: 'Response status is unknown' })).toBeHidden();
   expect(
     requests.some(
@@ -623,4 +623,126 @@ test('lightbox Escape restores focus to the media trigger', async ({ page }) => 
 test('production build does not expose the browser-test bridge', async ({ page }) => {
   await open(page, '?test_bridge=1');
   expect(await page.evaluate(() => Boolean(window.__TERM_LLM_TEST__))).toBe(false);
+});
+
+test('queues separate steering, removes a selected row, and rushes without losing a new draft', async ({
+  page,
+}) => {
+  await mockAPI(page, { holdStream: true });
+  let pending: Array<{ id: string; text: string; status: string }> = [];
+  const rushed: Record<string, unknown>[] = [];
+  const removed: string[] = [];
+  let operation: Record<string, unknown> | null = null;
+  let stops = 0;
+  await page.route('**/v1/responses/r1/events*', (route) =>
+    route.fulfill({
+      contentType: 'text/event-stream',
+      body: 'event: response.created\ndata: {"response_id":"r1","run_epoch":1,"sequence_number":1}\n\n',
+    }),
+  );
+  await page.route('**/v1/sessions/s1/state', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        steering: {
+          protocol: 1,
+          can_steer: !operation,
+          can_rush: !operation && pending.length > 0,
+          ...(!pending.length ? { unavailable_reason: 'no_user_steering' } : {}),
+        },
+        pending_steering: pending,
+        ...(operation ? { active_rush: operation } : {}),
+      }),
+    }),
+  );
+  await page.route('**/v1/sessions/s1/steering**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const json = (body: unknown, status = 200) =>
+      route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    expect(request.headers()['x-term-llm-steering-protocol']).toBe('1');
+    if (url.pathname.endsWith('/rush') && request.method() === 'POST') {
+      const body = request.postDataJSON() as Record<string, unknown>;
+      rushed.push(body);
+      expect(body.expected_response_id).toBe('r1');
+      expect(body.expected_run_epoch).toBe(1);
+      expect(Object.keys(body).sort()).toEqual([
+        'expected_response_id',
+        'expected_run_epoch',
+        'request_id',
+      ]);
+      operation = {
+        rush_id: body.request_id,
+        session_id: 's1',
+        source_response_id: 'r1',
+        source_run_epoch: 1,
+        status: 'interrupting',
+        revision: 1,
+        steering_ids: pending.map((entry) => entry.id),
+      };
+      return json(operation, 202);
+    }
+    if (url.pathname.endsWith('/cancel')) {
+      stops++;
+      operation = { ...operation, status: 'cancelled', revision: 2 };
+      return json(operation);
+    }
+    if (url.pathname.includes('/rush/')) return json(operation);
+    if (request.method() === 'DELETE') {
+      const id = url.pathname.split('/').at(-1)!;
+      removed.push(id);
+      expect(url.searchParams.get('expected_response_id')).toBe('r1');
+      expect(url.searchParams.get('expected_run_epoch')).toBe('1');
+      pending = pending.filter((entry) => entry.id !== id);
+      return json({ cancelled: true });
+    }
+    const body = request.postDataJSON() as Record<string, unknown>;
+    expect(body.delivery).toBe('steer');
+    expect(body.expected_response_id).toBe('r1');
+    pending.push({
+      id: String(body.client_message_id),
+      text: String(body.message),
+      status: 'queued',
+    });
+    return json({ action: 'steer', steering_id: body.client_message_id });
+  });
+  await page.goto('./chat/s1');
+  await expect(page.locator('#startupSplash')).toBeHidden({ timeout: 10_000 });
+  const input = page.locator('#promptInput');
+  await input.fill('Begin');
+  await input.press('Enter');
+  await expect(page.getByPlaceholder('Steer conversation…')).toBeVisible();
+  for (const text of ['first guidance', 'remove this']) {
+    await input.fill(text);
+    await input.press('Enter');
+    await expect(
+      page.locator('.pending-steering-text').getByText(text, { exact: true }),
+    ).toBeVisible();
+    await expect(input).toHaveValue('');
+  }
+  await input.press('ArrowUp');
+  await input.press('Delete');
+  await expect(page.locator('.pending-steering-text')).toHaveCount(1);
+  expect(removed).toHaveLength(1);
+  await input.fill('second guidance');
+  await input.press('Enter');
+  await expect(page.locator('.pending-steering-text')).toHaveCount(2);
+  await expect(
+    page
+      .locator('.pending-steering-row')
+      .filter({ hasText: 'second guidance' })
+      .getByRole('button', { name: 'Steer all now', exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText(/Esc to steer|↑ to select|Delete to remove/)).toHaveCount(0);
+  await input.fill('new unsent draft');
+  await input.press('Escape');
+  await expect(page.getByText('Interrupting…', { exact: true })).toBeVisible();
+  await input.press('Escape');
+  expect(rushed).toHaveLength(1);
+  expect(stops).toBe(0);
+  await expect(input).toHaveValue('new unsent draft');
+  await page.locator('#stopBtn').click();
+  await expect.poll(() => stops).toBe(1);
+  await expect(input).toHaveValue('new unsent draft');
+  expect(pending.map((entry) => entry.text)).toEqual(['first guidance', 'second guidance']);
 });

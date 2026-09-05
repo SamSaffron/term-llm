@@ -326,18 +326,18 @@ func TestGrokBinProviderBuildACPArgsUsesRestrictedProfile(t *testing.T) {
 	}
 }
 
-func TestApplyGrokInterjectionEnvelope(t *testing.T) {
+func TestApplyGrokSteeringEnvelope(t *testing.T) {
 	blocks := []acp.ContentBlock{
 		{Type: "text", Text: "<conversation_history>\nold\n</conversation_history>"},
 		{Type: "text", Text: "<developer>\nnote\n</developer>\n\n"},
 		{Type: "text", Text: "also add tests"},
 		{Type: "image", Data: "abc", MimeType: "image/png"},
 	}
-	got := applyGrokInterjectionEnvelope(blocks)
-	if !strings.Contains(got[2].Text, grokInterjectionNote) || !strings.Contains(got[2].Text, "also add tests") || !strings.Contains(got[2].Text, grokUnfinishedTasksReminder) {
+	got := applyGrokSteeringEnvelope(blocks)
+	if !strings.Contains(got[2].Text, grokSteeringNote) || !strings.Contains(got[2].Text, "also add tests") || !strings.Contains(got[2].Text, grokUnfinishedTasksReminder) {
 		t.Fatalf("user block = %q", got[2].Text)
 	}
-	if strings.Contains(got[0].Text, grokInterjectionNote) || strings.Contains(got[1].Text, grokInterjectionNote) {
+	if strings.Contains(got[0].Text, grokSteeringNote) || strings.Contains(got[1].Text, grokSteeringNote) {
 		t.Fatalf("wrapped non-user blocks: %#v", got)
 	}
 	if got[3].Type != "image" || got[3].Data != "abc" {
@@ -560,8 +560,8 @@ done
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), grokInterjectionNote) || !strings.Contains(string(raw), "also add tests") || !strings.Contains(string(raw), grokUnfinishedTasksReminder) {
-		t.Fatalf("follow-up prompt missing interjection envelope: %s", raw)
+	if !strings.Contains(string(raw), grokSteeringNote) || !strings.Contains(string(raw), "also add tests") || !strings.Contains(string(raw), grokUnfinishedTasksReminder) {
+		t.Fatalf("follow-up prompt missing steering envelope: %s", raw)
 	}
 }
 

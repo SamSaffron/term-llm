@@ -20,7 +20,7 @@ type IconName =
   | 'fork'
   | 'folder'
   | 'info'
-  | 'interject'
+  | 'steer'
   | 'menu'
   | 'markdown'
   | 'microphone'
@@ -146,7 +146,7 @@ const paths: Record<IconName, JSX.Element> = {
       <path d="M12 8h.01" />
     </>
   ),
-  interject: (
+  steer: (
     <>
       <path d="M5 6v7a2 2 0 0 0 2 2h12" />
       <path d="m14 10 5 5-5 5" />

@@ -76,7 +76,7 @@ export interface DiffState {
   readOnly?: boolean;
 }
 
-export interface PendingInterjection {
+export interface PendingSteering {
   id: string;
   sessionId: string;
   content: string;

@@ -258,7 +258,7 @@ func TestMiddleClickPasteWorksWhileStreaming(t *testing.T) {
 	m.streaming = true
 
 	orig := readPrimarySelection
-	readPrimarySelection = func() (string, error) { return "interject from primary", nil }
+	readPrimarySelection = func() (string, error) { return "steer from primary", nil }
 	t.Cleanup(func() { readPrimarySelection = orig })
 
 	_, _ = m.Update(tea.MouseClickMsg{
@@ -267,7 +267,7 @@ func TestMiddleClickPasteWorksWhileStreaming(t *testing.T) {
 		Button: tea.MouseMiddle,
 	})
 
-	if got := m.textarea.Value(); got != "interject from primary" {
+	if got := m.textarea.Value(); got != "steer from primary" {
 		t.Fatalf("textarea value = %q, want pasted primary selection", got)
 	}
 }

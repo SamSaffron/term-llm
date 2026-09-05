@@ -153,8 +153,12 @@ type Engine struct {
 	// the newly selected runtime can produce output.
 	onRuntimeSwitch RuntimeSwitchCallback
 	// onCompaction is called after context compaction completes.
-	onCompaction CompactionCallback
-	callbackMu   sync.RWMutex
+	onCompaction           CompactionCallback
+	callbackMu             sync.RWMutex
+	steeringTransition     *SteeringTransition
+	steeringTransitionDone chan struct{}
+	activeSteeringTools    int
+	steeringToolsSettled   chan struct{}
 
 	// Global tool output truncation
 	maxToolOutputChars int // 0 = disabled; truncate tool output to this many runes
@@ -167,16 +171,16 @@ type Engine struct {
 	systemPrompt         string            // Captured for re-injection after compaction
 	contextNoticeEmitted atomic.Bool       // one-shot flag: WARNING emitted once per session
 
-	// Interjection support: users can send messages while the agent is streaming.
+	// Steering support: users can send messages while the agent is streaming.
 	// Messages are injected FIFO after the current turn's tool results, before
 	// the next LLM turn. While entries remain in this queue they are cancellable;
 	// draining atomically commits them for the next provider request.
-	pendingInterjections       []queuedInterjection
-	claimedInterjectionIDs     map[string]struct{}
-	claimedInterjectionOrder   []string
-	committedInterjectionIDs   map[string]struct{}
-	committedInterjectionOrder []string
-	interjectionRunState       interjectionRunState
+	pendingSteering        []queuedSteering
+	claimedSteeringIDs     map[string]struct{}
+	claimedSteeringOrder   []string
+	committedSteeringIDs   map[string]struct{}
+	committedSteeringOrder []string
+	steeringRunState       steeringRunState
 
 	// pendingRequestRuntime is a same-provider model/effort override requested
 	// while an agentic loop is active. It is drained at the next provider-turn
@@ -218,7 +222,7 @@ type DynamicToolPublisher interface {
 
 // InlineFlusher is implemented by inline-loop providers that can end the
 // current CLI prompt at the next tool-result boundary. The engine requests a
-// flush when an interjection is queued so the following Stream can deliver it.
+// flush when an steering is queued so the following Stream can deliver it.
 // RetryProvider implements the methods so factory wrapping stays transparent;
 // SupportsInlineFlush reports whether the inner provider can actually flush.
 type InlineFlusher interface {
@@ -228,7 +232,7 @@ type InlineFlusher interface {
 
 // ImmediateInterrupter reports that a provider can end an in-flight model turn
 // without waiting for a tool boundary. Engines use the normal agentic loop for
-// these providers even when no tools are exposed so queued interjections have a
+// these providers even when no tools are exposed so queued steering have a
 // continuation boundary to consume.
 type ImmediateInterrupter interface {
 	SupportsImmediateInterruption() bool
@@ -256,57 +260,73 @@ type ProviderTurnCleaner interface {
 	CleanupTurn()
 }
 
-type InterjectionStatus string
+type SteeringStatus string
 
 const (
-	InterjectionQueued    InterjectionStatus = "queued"
-	InterjectionCommitted InterjectionStatus = "committed"
+	SteeringQueued    SteeringStatus = "queued"
+	SteeringCommitted SteeringStatus = "committed"
 )
 
-type InterjectionQueueStatus string
+type SteeringQueueStatus string
 
 const (
-	InterjectionQueueQueued        InterjectionQueueStatus = "queued"
-	InterjectionQueueAlreadyQueued InterjectionQueueStatus = "already_queued"
-	InterjectionQueueFollowUpOwned InterjectionQueueStatus = "follow_up_owned"
-	InterjectionQueueCommitted     InterjectionQueueStatus = "committed"
-	InterjectionQueueRunFinished   InterjectionQueueStatus = "run_finished"
+	SteeringQueueTransitioning SteeringQueueStatus = "transitioning"
+	SteeringQueueRushOwned     SteeringQueueStatus = "rush_owned"
+	SteeringQueueQueued        SteeringQueueStatus = "queued"
+	SteeringQueueAlreadyQueued SteeringQueueStatus = "already_queued"
+	SteeringQueueFollowUpOwned SteeringQueueStatus = "follow_up_owned"
+	SteeringQueueCommitted     SteeringQueueStatus = "committed"
+	SteeringQueueRunFinished   SteeringQueueStatus = "run_finished"
 )
 
-type interjectionRunState uint8
+type steeringRunState uint8
 
 const (
-	interjectionRunIdle interjectionRunState = iota
-	interjectionRunAccepting
-	interjectionRunNonConsuming
+	steeringRunIdle steeringRunState = iota
+	steeringRunAccepting
+	steeringRunNonConsuming
 )
 
-type InterjectionClaimStatus string
+type SteeringClaimStatus string
 
 const (
-	InterjectionClaimNotFound      InterjectionClaimStatus = "not_found"
-	InterjectionClaimed            InterjectionClaimStatus = "claimed"
-	InterjectionClaimFollowUpOwned InterjectionClaimStatus = "follow_up_owned"
-	InterjectionClaimCommitted     InterjectionClaimStatus = "committed"
+	SteeringClaimRushOwned     SteeringClaimStatus = "rush_owned"
+	SteeringClaimNotFound      SteeringClaimStatus = "not_found"
+	SteeringClaimed            SteeringClaimStatus = "claimed"
+	SteeringClaimFollowUpOwned SteeringClaimStatus = "follow_up_owned"
+	SteeringClaimCommitted     SteeringClaimStatus = "committed"
 )
 
-// QueuedInterjection is a structured user message submitted while a run is active.
+// QueuedSteering is a structured user message submitted while a run is active.
 // Queued entries are cancellable until the engine drains them into a provider turn.
-type QueuedInterjection struct {
+type SteeringOrigin string
+
+const (
+	SteeringOriginUser            SteeringOrigin = "user"
+	SteeringOriginReview          SteeringOrigin = "review"
+	SteeringOriginJobNotification SteeringOrigin = "job_notification"
+	SteeringOriginLegacy          SteeringOrigin = "legacy_unknown"
+)
+
+// EligibleForRush excludes notification-only queues, without changing message roles.
+func (o SteeringOrigin) EligibleForRush() bool { return o != SteeringOriginJobNotification }
+
+type QueuedSteering struct {
 	ID          string
+	Origin      SteeringOrigin
 	Message     Message
 	DisplayText string
-	Status      InterjectionStatus
+	Status      SteeringStatus
 }
 
-type queuedInterjection = QueuedInterjection
+type queuedSteering = QueuedSteering
 
-var engineInterjectionID atomic.Uint64
+var engineSteeringID atomic.Uint64
 
-const interjectionIdentityLimit = 1024
+const steeringIdentityLimit = 1024
 
-func nextEngineInterjectionID() string {
-	return fmt.Sprintf("interject_%d", engineInterjectionID.Add(1))
+func nextEngineSteeringID() string {
+	return fmt.Sprintf("steer_%d", engineSteeringID.Add(1))
 }
 
 var engineIdentityFallback atomic.Uint64
@@ -337,6 +357,12 @@ func NewEngine(provider Provider, tools *ToolRegistry) *Engine {
 			if !ok {
 				return ToolOutput{}, fmt.Errorf("tool not found: %s", name)
 			}
+			// Native provider bridges share the same actual-completion barrier as
+			// engine-managed calls, including after their process is cancelled.
+			if err := e.beginSteeringTool(ctx); err != nil {
+				return ToolOutput{}, err
+			}
+			defer e.actualSteeringToolDone()
 			return tool.Execute(ctx, args)
 		})
 	}
@@ -605,11 +631,11 @@ func (e *Engine) ResetConversation() {
 	e.lastTotalTokens = 0
 	e.lastMessageCount = 0
 	e.systemPrompt = ""
-	e.claimedInterjectionIDs = nil
-	e.claimedInterjectionOrder = nil
-	e.committedInterjectionIDs = nil
-	e.committedInterjectionOrder = nil
-	e.interjectionRunState = interjectionRunIdle
+	e.claimedSteeringIDs = nil
+	e.claimedSteeringOrder = nil
+	e.committedSteeringIDs = nil
+	e.committedSteeringOrder = nil
+	e.steeringRunState = steeringRunIdle
 	e.pendingServiceTier = nil
 	e.contextNoticeEmitted.Store(false)
 	e.callbackMu.Unlock()
@@ -1142,60 +1168,64 @@ func (e *Engine) drainPendingRequestRuntimeSwitch() pendingRequestRuntimeSwitch 
 	return pending
 }
 
-// Interject queues a text user message to be inserted after the current turn's tool results,
+// Steer queues a text user message to be inserted after the current turn's tool results,
 // right before the next LLM turn begins. Safe to call from any goroutine.
-func (e *Engine) Interject(text string) {
-	e.InterjectWithID("", text)
+func (e *Engine) Steer(text string) {
+	e.SteerWithID("", text)
 }
 
-// InterjectWithID behaves like Interject but preserves a caller-supplied stable
+// SteerWithID behaves like Steer but preserves a caller-supplied stable
 // identifier.
-func (e *Engine) InterjectWithID(id, text string) {
-	_ = e.QueueInterjection(QueuedInterjection{
+func (e *Engine) SteerWithID(id, text string) {
+	_ = e.QueueSteering(QueuedSteering{
 		ID:          id,
 		Message:     UserText(text),
 		DisplayText: text,
 	})
 }
 
-// QueueInterjection appends a structured interjection to the FIFO pending queue
+// QueueSteering appends a structured steering to the FIFO pending queue
 // and returns its stable ID. The message role is normalized to RoleUser.
-func (e *Engine) QueueInterjection(entry QueuedInterjection) string {
-	id, _ := e.QueueInterjectionWithStatus(entry)
+func (e *Engine) QueueSteering(entry QueuedSteering) string {
+	id, _ := e.QueueSteeringWithStatus(entry)
 	return id
 }
 
-// QueueInterjectionWithStatus reports whether the stable identity was newly
+// QueueSteeringWithStatus reports whether the stable identity was newly
 // queued for an accepting agentic run, rejected because the current/latest run
 // cannot consume it, already queued, transferred to a follow-up, or committed.
-func (e *Engine) QueueInterjectionWithStatus(entry QueuedInterjection) (string, InterjectionQueueStatus) {
+func (e *Engine) QueueSteeringWithStatus(entry QueuedSteering) (string, SteeringQueueStatus) {
 	e.callbackMu.Lock()
-	id, status := e.queueInterjectionWithStatusLocked(entry)
+	id, status := e.queueSteeringWithStatusLocked(entry)
 	e.callbackMu.Unlock()
-	if status == InterjectionQueueQueued {
+	if status == SteeringQueueQueued {
 		e.requestInlineFlush()
 	}
 	return id, status
 }
 
-func (e *Engine) queueInterjectionWithStatusLocked(entry QueuedInterjection) (string, InterjectionQueueStatus) {
+func (e *Engine) queueSteeringWithStatusLocked(entry QueuedSteering) (string, SteeringQueueStatus) {
+	if e.steeringTransition != nil {
+		return entry.ID, SteeringQueueTransitioning
+	}
+
 	entry.ID = strings.TrimSpace(entry.ID)
 	if entry.ID == "" {
-		entry.ID = nextEngineInterjectionID()
+		entry.ID = nextEngineSteeringID()
 	}
-	if _, claimed := e.claimedInterjectionIDs[entry.ID]; claimed {
-		return entry.ID, InterjectionQueueFollowUpOwned
+	if _, claimed := e.claimedSteeringIDs[entry.ID]; claimed {
+		return entry.ID, SteeringQueueFollowUpOwned
 	}
-	if _, committed := e.committedInterjectionIDs[entry.ID]; committed {
-		return entry.ID, InterjectionQueueCommitted
+	if _, committed := e.committedSteeringIDs[entry.ID]; committed {
+		return entry.ID, SteeringQueueCommitted
 	}
-	for i := range e.pendingInterjections {
-		if e.pendingInterjections[i].ID == entry.ID {
-			return entry.ID, InterjectionQueueAlreadyQueued
+	for i := range e.pendingSteering {
+		if e.pendingSteering[i].ID == entry.ID {
+			return entry.ID, SteeringQueueAlreadyQueued
 		}
 	}
-	if e.interjectionRunState == interjectionRunNonConsuming {
-		return entry.ID, InterjectionQueueRunFinished
+	if e.steeringRunState == steeringRunNonConsuming {
+		return entry.ID, SteeringQueueRunFinished
 	}
 	entry.Message.Role = RoleUser
 	if strings.TrimSpace(entry.Message.ClientMessageID) == "" {
@@ -1207,104 +1237,114 @@ func (e *Engine) queueInterjectionWithStatusLocked(entry QueuedInterjection) (st
 			entry.DisplayText = MessageAttachmentSummary(entry.Message)
 		}
 	}
-	entry.Status = InterjectionQueued
-	e.pendingInterjections = append(e.pendingInterjections, entry)
-	return entry.ID, InterjectionQueueQueued
+	entry.Status = SteeringQueued
+	e.pendingSteering = append(e.pendingSteering, entry)
+	return entry.ID, SteeringQueueQueued
 }
 
-// ClaimInterjections atomically transfers queued interjections to one normal
+// ClaimSteering atomically transfers queued steering to one normal
 // follow-up request. IDs must be unique. If any ID is already committed or
 // owned by another follow-up, no queued entry is removed.
-func (e *Engine) ClaimInterjections(ids []string) []InterjectionClaimStatus {
-	statuses := make([]InterjectionClaimStatus, len(ids))
+func (e *Engine) ClaimSteering(ids []string) []SteeringClaimStatus {
+	statuses := make([]SteeringClaimStatus, len(ids))
 	if len(ids) == 0 {
 		return statuses
 	}
 	e.callbackMu.Lock()
 	defer e.callbackMu.Unlock()
+	if e.steeringTransition != nil {
+		out := make([]SteeringClaimStatus, len(ids))
+		for i := range out {
+			out[i] = SteeringClaimRushOwned
+		}
+		return out
+	}
 
-	pending := make(map[string]struct{}, len(e.pendingInterjections))
-	for i := range e.pendingInterjections {
-		pending[e.pendingInterjections[i].ID] = struct{}{}
+	pending := make(map[string]struct{}, len(e.pendingSteering))
+	for i := range e.pendingSteering {
+		pending[e.pendingSteering[i].ID] = struct{}{}
 	}
 	claimable := true
 	claimedIDs := make(map[string]struct{}, len(ids))
 	for i, rawID := range ids {
 		id := strings.TrimSpace(rawID)
 		_, isPending := pending[id]
-		_, isClaimed := e.claimedInterjectionIDs[id]
-		_, isCommitted := e.committedInterjectionIDs[id]
+		_, isClaimed := e.claimedSteeringIDs[id]
+		_, isCommitted := e.committedSteeringIDs[id]
 		switch {
 		case id == "":
-			statuses[i] = InterjectionClaimNotFound
+			statuses[i] = SteeringClaimNotFound
 		case isPending:
-			statuses[i] = InterjectionClaimed
+			statuses[i] = SteeringClaimed
 			claimedIDs[id] = struct{}{}
 		case isClaimed:
-			statuses[i] = InterjectionClaimFollowUpOwned
+			statuses[i] = SteeringClaimFollowUpOwned
 			claimable = false
 		case isCommitted:
-			statuses[i] = InterjectionClaimCommitted
+			statuses[i] = SteeringClaimCommitted
 			claimable = false
 		default:
-			statuses[i] = InterjectionClaimNotFound
+			statuses[i] = SteeringClaimNotFound
 		}
 	}
 	if !claimable || len(claimedIDs) == 0 {
 		return statuses
 	}
 
-	kept := e.pendingInterjections[:0]
-	for i := range e.pendingInterjections {
-		entry := e.pendingInterjections[i]
+	kept := e.pendingSteering[:0]
+	for i := range e.pendingSteering {
+		entry := e.pendingSteering[i]
 		if _, claimed := claimedIDs[entry.ID]; claimed {
-			e.rememberClaimedInterjectionIDLocked(entry.ID)
+			e.rememberClaimedSteeringIDLocked(entry.ID)
 			continue
 		}
 		kept = append(kept, entry)
 	}
-	for i := len(kept); i < len(e.pendingInterjections); i++ {
-		e.pendingInterjections[i] = QueuedInterjection{}
+	for i := len(kept); i < len(e.pendingSteering); i++ {
+		e.pendingSteering[i] = QueuedSteering{}
 	}
-	e.pendingInterjections = kept
+	e.pendingSteering = kept
 	return statuses
 }
 
-// ClaimInterjection atomically transfers a queued interjection to a normal
+// ClaimSteeringEntry atomically transfers a queued steering to a normal
 // follow-up request. A committed result means the engine already drained the ID
 // and the caller must not submit it again.
-func (e *Engine) ClaimInterjection(id string) InterjectionClaimStatus {
-	statuses := e.ClaimInterjections([]string{id})
+func (e *Engine) ClaimSteeringEntry(id string) SteeringClaimStatus {
+	statuses := e.ClaimSteering([]string{id})
 	if len(statuses) == 0 {
-		return InterjectionClaimNotFound
+		return SteeringClaimNotFound
 	}
 	return statuses[0]
 }
 
-// CancelInterjection removes a queued, not-yet-committed interjection without
+// CancelSteering removes a queued, not-yet-committed steering without
 // transferring its identity to follow-up ownership.
-func (e *Engine) CancelInterjection(id string) bool {
+func (e *Engine) CancelSteering(id string) bool {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return false
 	}
 	e.callbackMu.Lock()
 	defer e.callbackMu.Unlock()
-	for i := range e.pendingInterjections {
-		if e.pendingInterjections[i].ID != id {
+	if e.steeringTransition != nil {
+		return false
+	}
+	for i := range e.pendingSteering {
+		if e.pendingSteering[i].ID != id {
 			continue
 		}
-		copy(e.pendingInterjections[i:], e.pendingInterjections[i+1:])
-		e.pendingInterjections[len(e.pendingInterjections)-1] = QueuedInterjection{}
-		e.pendingInterjections = e.pendingInterjections[:len(e.pendingInterjections)-1]
+		copy(e.pendingSteering[i:], e.pendingSteering[i+1:])
+		e.pendingSteering[len(e.pendingSteering)-1] = QueuedSteering{}
+		e.pendingSteering = e.pendingSteering[:len(e.pendingSteering)-1]
 		return true
 	}
 	return false
 }
 
-// ReleaseClaimedInterjections ends temporary follow-up ownership. Durable
+// ReleaseClaimedSteering ends temporary follow-up ownership. Durable
 // history remains authoritative for requests that reached persistence.
-func (e *Engine) ReleaseClaimedInterjections(ids []string) {
+func (e *Engine) ReleaseClaimedSteering(ids []string) {
 	if len(ids) == 0 {
 		return
 	}
@@ -1316,71 +1356,84 @@ func (e *Engine) ReleaseClaimedInterjections(ids []string) {
 		if id == "" {
 			continue
 		}
-		delete(e.claimedInterjectionIDs, id)
+		delete(e.claimedSteeringIDs, id)
 		released[id] = struct{}{}
 	}
-	kept := e.claimedInterjectionOrder[:0]
-	for _, id := range e.claimedInterjectionOrder {
+	kept := e.claimedSteeringOrder[:0]
+	for _, id := range e.claimedSteeringOrder {
 		if _, drop := released[id]; !drop {
 			kept = append(kept, id)
 		}
 	}
-	for i := len(kept); i < len(e.claimedInterjectionOrder); i++ {
-		e.claimedInterjectionOrder[i] = ""
+	for i := len(kept); i < len(e.claimedSteeringOrder); i++ {
+		e.claimedSteeringOrder[i] = ""
 	}
-	e.claimedInterjectionOrder = kept
+	e.claimedSteeringOrder = kept
 }
 
-// DiscardPendingInterjections removes all queued, not-yet-committed
-// interjections and returns how many were discarded.
-func (e *Engine) DiscardPendingInterjections() int {
+// DiscardPendingSteering removes all queued, not-yet-committed
+// steering and returns how many were discarded.
+func (e *Engine) DiscardPendingSteering() int {
 	e.callbackMu.Lock()
 	defer e.callbackMu.Unlock()
-	count := len(e.pendingInterjections)
-	for i := range e.pendingInterjections {
-		e.pendingInterjections[i] = QueuedInterjection{}
+	if e.steeringTransition != nil {
+		return 0
 	}
-	e.pendingInterjections = nil
+	count := len(e.pendingSteering)
+	for i := range e.pendingSteering {
+		e.pendingSteering[i] = QueuedSteering{}
+	}
+	e.pendingSteering = nil
 	return count
 }
 
-// InterjectionIdentityStatus reports engine ownership for a stable ID without
+// SteeringIdentityStatus reports engine ownership for a stable ID without
 // mutating the queue. The boolean is false when the engine has never seen it.
-func (e *Engine) InterjectionIdentityStatus(id string) (InterjectionQueueStatus, bool) {
+func (e *Engine) SteeringIdentityStatus(id string) (SteeringQueueStatus, bool) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return "", false
 	}
 	e.callbackMu.Lock()
 	defer e.callbackMu.Unlock()
-	if _, claimed := e.claimedInterjectionIDs[id]; claimed {
-		return InterjectionQueueFollowUpOwned, true
+	if e.steeringTransition != nil {
+		for _, entry := range e.pendingSteering {
+			if entry.ID == id {
+				return SteeringQueueRushOwned, true
+			}
+		}
 	}
-	if _, committed := e.committedInterjectionIDs[id]; committed {
-		return InterjectionQueueCommitted, true
+	if _, claimed := e.claimedSteeringIDs[id]; claimed {
+		return SteeringQueueFollowUpOwned, true
 	}
-	for i := range e.pendingInterjections {
-		if e.pendingInterjections[i].ID == id {
-			return InterjectionQueueAlreadyQueued, true
+	if _, committed := e.committedSteeringIDs[id]; committed {
+		return SteeringQueueCommitted, true
+	}
+	for i := range e.pendingSteering {
+		if e.pendingSteering[i].ID == id {
+			return SteeringQueueAlreadyQueued, true
 		}
 	}
 	return "", false
 }
 
-// ListPendingInterjections returns a snapshot of queued, cancellable interjections.
-func (e *Engine) ListPendingInterjections() []QueuedInterjection {
+// ListPendingSteering returns a snapshot of queued, cancellable steering.
+func (e *Engine) ListPendingSteering() []QueuedSteering {
 	e.callbackMu.Lock()
 	defer e.callbackMu.Unlock()
-	out := make([]QueuedInterjection, len(e.pendingInterjections))
-	copy(out, e.pendingInterjections)
+	if e.steeringTransition != nil {
+		return nil
+	}
+	out := make([]QueuedSteering, len(e.pendingSteering))
+	copy(out, e.pendingSteering)
 	return out
 }
 
-// DrainInterjection returns pending interjection text and drains all queued
-// interjections. It is retained for legacy recovery paths; new callers should
-// use DrainInterjections or ListPendingInterjections.
-func (e *Engine) DrainInterjection() string {
-	entries := e.DrainInterjections()
+// DrainSteeringText returns pending steering text and drains all queued
+// steering. It is retained for legacy recovery paths; new callers should
+// use DrainSteering or ListPendingSteering.
+func (e *Engine) DrainSteeringText() string {
+	entries := e.DrainSteering()
 	var b strings.Builder
 	for _, entry := range entries {
 		text := entry.DisplayText
@@ -1398,15 +1451,15 @@ func (e *Engine) DrainInterjection() string {
 	return b.String()
 }
 
-// DrainInterjections drains all queued interjections and marks returned entries
+// DrainSteering drains all queued steering and marks returned entries
 // committed. Draining is the atomic handoff after which cancellation fails.
-func (e *Engine) DrainInterjections() []QueuedInterjection {
-	return e.drainInterjections()
+func (e *Engine) DrainSteering() []QueuedSteering {
+	return e.drainSteering()
 }
 
-// PeekInterjection returns a text summary of currently pending interjections.
-func (e *Engine) PeekInterjection() string {
-	entries := e.ListPendingInterjections()
+// PeekSteering returns a text summary of currently pending steering.
+func (e *Engine) PeekSteering() string {
+	entries := e.ListPendingSteering()
 	var b strings.Builder
 	for _, entry := range entries {
 		text := entry.DisplayText
@@ -1424,7 +1477,7 @@ func (e *Engine) PeekInterjection() string {
 	return b.String()
 }
 
-func rememberBoundedInterjectionID(ids map[string]struct{}, order []string, id string) (map[string]struct{}, []string) {
+func rememberBoundedSteeringID(ids map[string]struct{}, order []string, id string) (map[string]struct{}, []string) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return ids, order
@@ -1437,7 +1490,7 @@ func rememberBoundedInterjectionID(ids map[string]struct{}, order []string, id s
 	}
 	ids[id] = struct{}{}
 	order = append(order, id)
-	if len(order) <= interjectionIdentityLimit {
+	if len(order) <= steeringIdentityLimit {
 		return ids, order
 	}
 	oldest := order[0]
@@ -1448,121 +1501,124 @@ func rememberBoundedInterjectionID(ids map[string]struct{}, order []string, id s
 	return ids, order
 }
 
-func (e *Engine) rememberClaimedInterjectionIDLocked(id string) {
-	e.claimedInterjectionIDs, e.claimedInterjectionOrder = rememberBoundedInterjectionID(
-		e.claimedInterjectionIDs, e.claimedInterjectionOrder, id,
+func (e *Engine) rememberClaimedSteeringIDLocked(id string) {
+	e.claimedSteeringIDs, e.claimedSteeringOrder = rememberBoundedSteeringID(
+		e.claimedSteeringIDs, e.claimedSteeringOrder, id,
 	)
 }
 
-func (e *Engine) rememberCommittedInterjectionIDLocked(id string) {
+func (e *Engine) rememberCommittedSteeringIDLocked(id string) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return
 	}
-	delete(e.claimedInterjectionIDs, id)
-	e.committedInterjectionIDs, e.committedInterjectionOrder = rememberBoundedInterjectionID(
-		e.committedInterjectionIDs, e.committedInterjectionOrder, id,
+	delete(e.claimedSteeringIDs, id)
+	e.committedSteeringIDs, e.committedSteeringOrder = rememberBoundedSteeringID(
+		e.committedSteeringIDs, e.committedSteeringOrder, id,
 	)
 }
 
-func (e *Engine) markInterjectionsCommittedLocked(entries []queuedInterjection) {
+func (e *Engine) markSteeringCommittedLocked(entries []queuedSteering) {
 	if len(entries) == 0 {
 		return
 	}
 	for i := range entries {
-		entries[i].Status = InterjectionCommitted
-		e.rememberCommittedInterjectionIDLocked(entries[i].ID)
+		entries[i].Status = SteeringCommitted
+		e.rememberCommittedSteeringIDLocked(entries[i].ID)
 	}
 }
 
-// drainInterjections atomically commits all queued interjections.
-func (e *Engine) drainInterjections() []queuedInterjection {
+// drainSteering atomically commits all queued steering.
+func (e *Engine) drainSteering() []queuedSteering {
 	e.callbackMu.Lock()
 	defer e.callbackMu.Unlock()
-	return e.drainInterjectionsLocked()
+	return e.drainSteeringLocked()
 }
 
-func (e *Engine) drainInterjectionsForNextTurn(canAcceptMore bool) []queuedInterjection {
+func (e *Engine) drainSteeringForNextTurn(canAcceptMore bool) []queuedSteering {
 	e.callbackMu.Lock()
 	defer e.callbackMu.Unlock()
-	out := e.drainInterjectionsLocked()
+	out := e.drainSteeringLocked()
 	if !canAcceptMore {
-		e.interjectionRunState = interjectionRunNonConsuming
+		e.steeringRunState = steeringRunNonConsuming
 	}
 	return out
 }
 
-func (e *Engine) drainInterjectionsLocked() []queuedInterjection {
-	if len(e.pendingInterjections) == 0 {
+func (e *Engine) drainSteeringLocked() []queuedSteering {
+	if e.steeringTransition != nil {
 		return nil
 	}
-	out := make([]queuedInterjection, len(e.pendingInterjections))
-	copy(out, e.pendingInterjections)
-	e.markInterjectionsCommittedLocked(out)
-	e.pendingInterjections = nil
+	if len(e.pendingSteering) == 0 {
+		return nil
+	}
+	out := make([]queuedSteering, len(e.pendingSteering))
+	copy(out, e.pendingSteering)
+	e.markSteeringCommittedLocked(out)
+	e.pendingSteering = nil
 	return out
 }
 
-func (e *Engine) beginInterjectionRun(canConsume bool) {
+func (e *Engine) beginSteeringRun(canConsume bool) {
 	e.callbackMu.Lock()
 	if canConsume {
-		e.interjectionRunState = interjectionRunAccepting
+		e.steeringRunState = steeringRunAccepting
 	} else {
-		e.interjectionRunState = interjectionRunNonConsuming
+		e.steeringRunState = steeringRunNonConsuming
 	}
 	e.callbackMu.Unlock()
 }
 
-func (e *Engine) markInterjectionRunNonConsuming() {
+func (e *Engine) markSteeringRunNonConsuming() {
 	e.callbackMu.Lock()
-	e.interjectionRunState = interjectionRunNonConsuming
+	e.steeringRunState = steeringRunNonConsuming
 	e.callbackMu.Unlock()
 }
 
-// drainBoundaryInterjections atomically either commits every pending steer for
+// drainBoundarySteering atomically either commits every pending steer for
 // another provider turn or closes this run's final agentic boundary. Explicit
 // error and cancellation exits are closed by runLoop's deferred teardown.
-func (e *Engine) drainBoundaryInterjections(canContinue, canAcceptMore bool) []queuedInterjection {
+func (e *Engine) drainBoundarySteering(canContinue, canAcceptMore bool) []queuedSteering {
 	e.callbackMu.Lock()
 	defer e.callbackMu.Unlock()
 
-	if !canContinue || len(e.pendingInterjections) == 0 {
-		e.interjectionRunState = interjectionRunNonConsuming
+	if !canContinue || len(e.pendingSteering) == 0 {
+		e.steeringRunState = steeringRunNonConsuming
 		return nil
 	}
-	out := e.drainInterjectionsLocked()
+	out := e.drainSteeringLocked()
 	if !canAcceptMore {
-		e.interjectionRunState = interjectionRunNonConsuming
+		e.steeringRunState = steeringRunNonConsuming
 	}
 	return out
 }
 
-func (e *Engine) continueWithInterjections(ctx context.Context, send eventSender, req *Request, turnCallback TurnCompletedCallback, attempt int, finalMsg Message, canContinue, canAcceptMore bool) (bool, error) {
-	interjections := e.drainBoundaryInterjections(canContinue, canAcceptMore)
-	if len(interjections) == 0 {
+func (e *Engine) continueWithSteering(ctx context.Context, send eventSender, req *Request, turnCallback TurnCompletedCallback, attempt int, finalMsg Message, canContinue, canAcceptMore bool) (bool, error) {
+	steering := e.drainBoundarySteering(canContinue, canAcceptMore)
+	if len(steering) == 0 {
 		return false, nil
 	}
 	if len(finalMsg.Parts) > 0 {
 		req.Messages = append(req.Messages, finalMsg)
 	}
-	interjectionMsgs := make([]Message, 0, len(interjections))
-	for _, interjection := range interjections {
-		interjectionMsg := interjection.Message
-		interjectionMsg.Role = RoleUser
-		req.Messages = append(req.Messages, interjectionMsg)
-		interjectionMsgs = append(interjectionMsgs, interjectionMsg)
+	steeringMsgs := make([]Message, 0, len(steering))
+	for _, steering := range steering {
+		steeringMsg := steering.Message
+		steeringMsg.Role = RoleUser
+		req.Messages = append(req.Messages, steeringMsg)
+		steeringMsgs = append(steeringMsgs, steeringMsg)
 	}
 	if turnCallback != nil {
 		cbCtx, cancel := callbackContext(ctx)
-		_ = turnCallback(cbCtx, attempt, interjectionMsgs, TurnMetrics{})
+		_ = turnCallback(cbCtx, attempt, steeringMsgs, TurnMetrics{})
 		cancel()
 	}
-	for _, interjection := range interjections {
-		text := interjection.DisplayText
+	for _, steering := range steering {
+		text := steering.DisplayText
 		if text == "" {
-			text = MessageText(interjection.Message)
+			text = MessageText(steering.Message)
 		}
-		if err := send.Send(Event{Type: EventInterjection, Text: text, InterjectionID: interjection.ID, Message: interjection.Message, InterjectionStatus: InterjectionCommitted}); err != nil {
+		if err := send.Send(Event{Type: EventSteering, Text: text, SteeringID: steering.ID, Message: steering.Message, SteeringStatus: SteeringCommitted}); err != nil {
 			return false, err
 		}
 	}
@@ -1951,7 +2007,7 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	ctx = withDebugDiagnosticSink(ctx, e.debugLogger)
 	// Until this request is proven agentic, it has no boundary at which it can
 	// consume steering. This also clears accepting state left by a prior run.
-	e.markInterjectionRunNonConsuming()
+	e.markSteeringRunNonConsuming()
 	req.Messages = FilterConversationMessages(req.Messages)
 
 	caps := e.provider.Capabilities()
@@ -2044,7 +2100,7 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	useLoop := caps.ToolCalls && (len(req.Tools) > 0 || planner != nil || e.providerSupportsImmediateInterruption())
 
 	if useLoop {
-		e.beginInterjectionRun(getMaxTurns(req) > 1)
+		e.beginSteeringRun(getMaxTurns(req) > 1)
 		if req.SessionID != "" {
 			// Tools read this for session-scoped concerns like file-change tracking.
 			ctx = ContextWithSessionID(ctx, req.SessionID)
@@ -2618,7 +2674,7 @@ func restoreToolDiscoveryReplay(messages []Message, replay []Part) []Message {
 
 func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) error {
 	ctx = withResponsesWebSocketContinuationLifetime(ctx)
-	defer e.markInterjectionRunNonConsuming()
+	defer e.markSteeringRunNonConsuming()
 	runID := e.beginToolRun()
 	modelSwitchOrdinal := 0
 	e.recordFileTrackingRunStart(ctx, req.SessionID, runID)
@@ -2643,7 +2699,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 		}
 	}
 	sendDone := func() error {
-		e.markInterjectionRunNonConsuming()
+		e.markSteeringRunNonConsuming()
 		return send.Send(Event{Type: EventDone})
 	}
 	maxTurns := getMaxTurns(req)
@@ -2928,7 +2984,7 @@ turnLoop:
 	for attempt := 0; attempt < maxTurns; attempt++ {
 		// The final provider turn has no later agentic boundary. Reject arrivals
 		// throughout that stream instead of accepting steering it cannot consume.
-		e.beginInterjectionRun(attempt < maxTurns-1)
+		e.beginSteeringRun(attempt < maxTurns-1)
 		// A model-activated skill can tighten the filter between turns. Remove
 		// now-disallowed ordinary definitions before the planner adds its narrowly
 		// owned control surface for this exact run.
@@ -3038,6 +3094,9 @@ turnLoop:
 		}
 
 		e.clearInlineFlush()
+		if err := e.awaitSteeringDispatch(ctx); err != nil {
+			return err
+		}
 		stream, err := e.provider.Stream(ctx, providerReq)
 		if err != nil {
 			// Reactive compaction: if this is a context overflow error, try compacting and retrying (once)
@@ -3931,7 +3990,7 @@ turnLoop:
 				attempt--
 				continue
 			}
-			continued, err := e.continueWithInterjections(ctx, send, &req, turnCallback, attempt, finalMsg, attempt < maxTurns-1, attempt < maxTurns-2)
+			continued, err := e.continueWithSteering(ctx, send, &req, turnCallback, attempt, finalMsg, attempt < maxTurns-1, attempt < maxTurns-2)
 			if err != nil {
 				return err
 			}
@@ -3989,7 +4048,7 @@ turnLoop:
 			// stream. A dynamically registered tool is the exception: grok-bin
 			// deliberately ends the current ACP prompt so the next provider turn can
 			// reconnect with the expanded MCP catalogue. claude-bin and grok-bin
-			// use the same tool-result flush for queued interjections.
+			// use the same tool-result flush for queued steering.
 			if finishingToolExecuted {
 				if err := sendDone(); err != nil {
 					return err
@@ -4004,14 +4063,14 @@ turnLoop:
 			if inlineToolLoop {
 				pendingTools := e.hasPendingToolSpecs(runID)
 				canContinue := attempt < maxTurns-1
-				canFlushInterjections := pendingTools || e.providerSupportsInlineFlush()
+				canFlushSteering := pendingTools || e.providerSupportsInlineFlush()
 				continued := false
 				if pendingTools {
 					req.Messages = append(req.Messages, UserText(dynamicToolContinuationPrompt))
 				}
-				if canFlushInterjections && canContinue {
+				if canFlushSteering && canContinue {
 					var err error
-					continued, err = e.continueWithInterjections(ctx, send, &req, turnCallback, attempt, Message{}, true, attempt < maxTurns-2)
+					continued, err = e.continueWithSteering(ctx, send, &req, turnCallback, attempt, Message{}, true, attempt < maxTurns-2)
 					if err != nil {
 						return err
 					}
@@ -4028,33 +4087,33 @@ turnLoop:
 				return nil
 			}
 			if attempt == maxTurns-1 {
-				e.markInterjectionRunNonConsuming()
+				e.markSteeringRunNonConsuming()
 				if err := send.Send(Event{Type: EventPhase, Text: MaxTurnsExceededWarning(maxTurns)}); err != nil {
 					return err
 				}
 				return &MaxTurnsExceededError{MaxTurns: maxTurns}
 			}
 
-			// Check for user interjections (MCP sync path)
-			if interjections := e.drainInterjectionsForNextTurn(attempt < maxTurns-2); len(interjections) > 0 {
-				interjectionMsgs := make([]Message, 0, len(interjections))
-				for _, interjection := range interjections {
-					interjectionMsg := interjection.Message
-					interjectionMsg.Role = RoleUser
-					req.Messages = append(req.Messages, interjectionMsg)
-					interjectionMsgs = append(interjectionMsgs, interjectionMsg)
+			// Check for user steering (MCP sync path)
+			if steering := e.drainSteeringForNextTurn(attempt < maxTurns-2); len(steering) > 0 {
+				steeringMsgs := make([]Message, 0, len(steering))
+				for _, steering := range steering {
+					steeringMsg := steering.Message
+					steeringMsg.Role = RoleUser
+					req.Messages = append(req.Messages, steeringMsg)
+					steeringMsgs = append(steeringMsgs, steeringMsg)
 				}
 				if turnCallback != nil {
 					cbCtx, cancel := callbackContext(ctx)
-					_ = turnCallback(cbCtx, attempt, interjectionMsgs, TurnMetrics{})
+					_ = turnCallback(cbCtx, attempt, steeringMsgs, TurnMetrics{})
 					cancel()
 				}
-				for _, interjection := range interjections {
-					text := interjection.DisplayText
+				for _, steering := range steering {
+					text := steering.DisplayText
 					if text == "" {
-						text = MessageText(interjection.Message)
+						text = MessageText(steering.Message)
 					}
-					if err := send.Send(Event{Type: EventInterjection, Text: text, InterjectionID: interjection.ID, Message: interjection.Message, InterjectionStatus: InterjectionCommitted}); err != nil {
+					if err := send.Send(Event{Type: EventSteering, Text: text, SteeringID: steering.ID, Message: steering.Message, SteeringStatus: SteeringCommitted}); err != nil {
 						return err
 					}
 				}
@@ -4120,7 +4179,7 @@ turnLoop:
 					cancel()
 				}
 			}
-			continued, err := e.continueWithInterjections(ctx, send, &req, turnCallback, attempt, finalMsg, attempt < maxTurns-1, attempt < maxTurns-2)
+			continued, err := e.continueWithSteering(ctx, send, &req, turnCallback, attempt, finalMsg, attempt < maxTurns-1, attempt < maxTurns-2)
 			if err != nil {
 				return err
 			}
@@ -4137,7 +4196,7 @@ turnLoop:
 		}
 
 		if attempt == maxTurns-1 {
-			e.markInterjectionRunNonConsuming()
+			e.markSteeringRunNonConsuming()
 			if err := send.Send(Event{Type: EventPhase, Text: MaxTurnsExceededWarning(maxTurns)}); err != nil {
 				return err
 			}
@@ -4251,29 +4310,29 @@ turnLoop:
 			return err
 		}
 
-		// Check for user interjections queued during this turn.
+		// Check for user steering queued during this turn.
 		// If present, inject them as FIFO user messages so the LLM sees them on the next turn.
-		if interjections := e.drainInterjectionsForNextTurn(attempt < maxTurns-2); len(interjections) > 0 {
-			interjectionMsgs := make([]Message, 0, len(interjections))
-			for _, interjection := range interjections {
-				interjectionMsg := interjection.Message
-				interjectionMsg.Role = RoleUser
-				req.Messages = append(req.Messages, interjectionMsg)
-				interjectionMsgs = append(interjectionMsgs, interjectionMsg)
+		if steering := e.drainSteeringForNextTurn(attempt < maxTurns-2); len(steering) > 0 {
+			steeringMsgs := make([]Message, 0, len(steering))
+			for _, steering := range steering {
+				steeringMsg := steering.Message
+				steeringMsg.Role = RoleUser
+				req.Messages = append(req.Messages, steeringMsg)
+				steeringMsgs = append(steeringMsgs, steeringMsg)
 			}
-			// Fire turn callback so interjections are persisted
+			// Fire turn callback so steering are persisted
 			if turnCallback != nil {
 				cbCtx, cancel := callbackContext(ctx)
-				_ = turnCallback(cbCtx, attempt, interjectionMsgs, TurnMetrics{})
+				_ = turnCallback(cbCtx, attempt, steeringMsgs, TurnMetrics{})
 				cancel()
 			}
-			// Emit events so UIs can display committed interjections inline
-			for _, interjection := range interjections {
-				text := interjection.DisplayText
+			// Emit events so UIs can display committed steering inline
+			for _, steering := range steering {
+				text := steering.DisplayText
 				if text == "" {
-					text = MessageText(interjection.Message)
+					text = MessageText(steering.Message)
 				}
-				if err := send.Send(Event{Type: EventInterjection, Text: text, InterjectionID: interjection.ID, Message: interjection.Message, InterjectionStatus: InterjectionCommitted}); err != nil {
+				if err := send.Send(Event{Type: EventSteering, Text: text, SteeringID: steering.ID, Message: steering.Message, SteeringStatus: SteeringCommitted}); err != nil {
 					return err
 				}
 			}
@@ -4562,13 +4621,14 @@ type toolExecutionResult struct {
 // executeToolWithCancellation isolates Tool.Execute so a tool that ignores its
 // context cannot keep the engine blocked after the caller cancels. The buffered
 // result channel lets an abandoned invocation finish without blocking later.
-func executeToolWithCancellation(ctx context.Context, tool Tool, args json.RawMessage) (ToolOutput, error, any) {
-	if err := ctx.Err(); err != nil {
+func (e *Engine) executeToolWithCancellation(ctx context.Context, tool Tool, args json.RawMessage) (ToolOutput, error, any) {
+	if err := e.beginSteeringTool(ctx); err != nil {
 		return ToolOutput{}, err, nil
 	}
 
 	results := make(chan toolExecutionResult, 1)
 	go func() {
+		defer e.actualSteeringToolDone()
 		result := toolExecutionResult{}
 		defer func() {
 			if r := recover(); r != nil {
@@ -4676,7 +4736,7 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, send 
 	stopHeartbeat := startToolHeartbeat(ctx, call.ID, call.Name, send)
 	defer stopHeartbeat()
 
-	output, err, panicValue := executeToolWithCancellation(toolCtx, tool, call.Arguments)
+	output, err, panicValue := e.executeToolWithCancellation(toolCtx, tool, call.Arguments)
 	output.GuardianReviews = guardianReviews()
 	if planner := e.currentToolPlanner(); planner != nil {
 		planner.ToolExecuted(SessionIDFromContext(ctx), ToolRunIDFromContext(ctx), call.Name)
@@ -4761,7 +4821,7 @@ func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, send 
 		toolCtx := ContextWithCallID(ctx, callID)
 		toolCtx, guardianReviews := ContextWithGuardianReviewCapture(toolCtx)
 		var panicValue any
-		result, err, panicValue = executeToolWithCancellation(toolCtx, tool, call.Arguments)
+		result, err, panicValue = e.executeToolWithCancellation(toolCtx, tool, call.Arguments)
 		result.GuardianReviews = guardianReviews()
 		if panicValue != nil {
 			err = fmt.Errorf("Error: tool panicked: %v", panicValue)

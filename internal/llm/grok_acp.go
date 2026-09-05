@@ -27,7 +27,7 @@ const (
 	grokLegacyTransportEnv     = "TERM_LLM_GROK_LEGACY_STREAMING_JSON"
 	// Match grok-build's xai-interjection-core envelope so a cancel-and-continue
 	// steer is recognized as mid-turn work rather than a fresh user turn.
-	grokInterjectionNote        = "The user sent a message while you were working:"
+	grokSteeringNote            = "The user sent a message while you were working:"
 	grokUnfinishedTasksReminder = "Make sure to complete any unfinished tasks from previous turns."
 )
 
@@ -519,7 +519,7 @@ func grokACPMCPServer(url, token string) acp.MCPServer {
 }
 
 // sendNativeInterrupt asks the live Grok ACP session to end its current
-// prompt. term-llm interjections are a cancel-and-continue: Grok records the
+// prompt. term-llm steering are a cancel-and-continue: Grok records the
 // cancelled turn as a durable boundary, then the engine starts a new
 // session/prompt with the queued user message. This matches claude-bin's
 // native interrupt rather than Grok's in-turn x.ai/interject, which would
@@ -556,7 +556,7 @@ func (p *GrokBinProvider) shouldWarnGrokCancellation(ctx context.Context) bool {
 	return ctx.Err() == nil && !p.nativeInterruptPending.Load() && !p.interruptFollowUp.Load()
 }
 
-func applyGrokInterjectionEnvelope(blocks []acp.ContentBlock) []acp.ContentBlock {
+func applyGrokSteeringEnvelope(blocks []acp.ContentBlock) []acp.ContentBlock {
 	out := append([]acp.ContentBlock(nil), blocks...)
 	for i := range out {
 		if out[i].Type != "text" || strings.TrimSpace(out[i].Text) == "" {
@@ -565,13 +565,13 @@ func applyGrokInterjectionEnvelope(blocks []acp.ContentBlock) []acp.ContentBlock
 		if strings.HasPrefix(out[i].Text, "<conversation_history>") || strings.HasPrefix(out[i].Text, "<developer>") {
 			continue
 		}
-		out[i].Text = formatGrokInterjection(out[i].Text)
+		out[i].Text = formatGrokSteering(out[i].Text)
 	}
 	return out
 }
 
-func formatGrokInterjection(text string) string {
-	return grokInterjectionNote + "\n<user_query>\n" + text + "\n</user_query>\n" + grokUnfinishedTasksReminder
+func formatGrokSteering(text string) string {
+	return grokSteeringNote + "\n<user_query>\n" + text + "\n</user_query>\n" + grokUnfinishedTasksReminder
 }
 
 func (p *GrokBinProvider) executeGrokACP(ctx context.Context, req Request, messages []Message, debug bool, send eventSender, exposeToolBridge bool) (grokCommandResult, error) {
@@ -595,7 +595,7 @@ func (p *GrokBinProvider) runGrokACP(ctx context.Context, req Request, messages 
 		blocks = append(blocks, acp.ContentBlock{Type: block.Type, Text: block.Text, Data: block.Data, MimeType: block.MimeType})
 	}
 	if !req.Ephemeral && p.interruptFollowUp.Swap(false) {
-		blocks = applyGrokInterjectionEnvelope(blocks)
+		blocks = applyGrokSteeringEnvelope(blocks)
 	}
 
 	process, temporary, err := p.ensureGrokACPProcess(ctx, req, debug)
@@ -653,7 +653,7 @@ func (p *GrokBinProvider) runGrokACP(ctx context.Context, req Request, messages 
 		promptErr := process.client.Connection().CallAfterWrite(promptCtx, "session/prompt", acp.PromptRequest{SessionID: process.sessionID, Prompt: blocks, Meta: promptMeta}, &response, func() {
 			p.acpPromptActive.Store(true)
 			// Arm cancellation only after session/prompt is on the wire so a
-			// Close() or interjection cannot overtake the prompt request.
+			// Close() or steering cannot overtake the prompt request.
 			go func() {
 				select {
 				case <-ctx.Done():
@@ -794,7 +794,7 @@ promptComplete:
 		// Grok records an accepted cancelled prompt as a durable turn boundary.
 		// Preserve the resident session and advance the sent-message boundary so
 		// the cancelled user turn is not replayed on the next request.
-		// A native interjection interrupt is that expected boundary, so keep it
+		// A native steering interrupt is that expected boundary, so keep it
 		// quiet. Unexpected agent-side cancels still surface a warning.
 		if p.shouldWarnGrokCancellation(ctx) {
 			if err := send.Send(Event{Type: EventPhase, Text: WarningPhasePrefix + "Grok cancelled the turn before producing a complete response."}); err != nil {

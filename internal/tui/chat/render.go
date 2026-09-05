@@ -793,10 +793,10 @@ func (m *Model) buildFooterLayout() footerLayout {
 		appendMetaRow(pendingStyle.Render("  ↻ reasoning effort " + queuedEffort + " queued (applies at next model turn)"))
 	}
 
-	if len(m.pendingInterjections) > 0 {
+	if len(m.pendingSteering) > 0 {
 		pendingStyle := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
 		selectedStyle := lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
-		for i, pending := range m.pendingInterjections {
+		for i, pending := range m.pendingSteering {
 			pendingText := pending.Text
 			// Truncate long messages before wrapping so very narrow widths remain stable.
 			maxLen := m.width - 26 // account for prefix/suffix
@@ -804,20 +804,37 @@ func (m *Model) buildFooterLayout() footerLayout {
 				pendingText = pendingText[:maxLen] + "…"
 			}
 			prefix := "  ⏳ "
-			if i == m.selectedInterjection {
+			if i == m.selectedSteering {
 				prefix = "  ▸ "
 			}
 			line := prefix + pendingText + " (will incorporate)"
-			if i == m.selectedInterjection {
-				line += "  [del cancels]"
+			if i == m.selectedSteering {
+				line += "  [selected]"
 				appendMetaRow(selectedStyle.Render(line))
 			} else {
 				appendMetaRow(pendingStyle.Render(line))
 			}
 		}
-	} else if m.pendingInterjection != "" {
+		hint := "↑ to select"
+		if m.steeringHandoff != "" {
+			hint = "Steering now… · /stop to stop"
+		} else if m.engine != nil {
+			availability := m.engine.SteeringAvailability()
+			if availability.CanRush && m.mainRunManager != nil {
+				hint = "Esc to steer right away · ↑ to select"
+				if len(m.pendingSteering) > 1 {
+					hint = fmt.Sprintf("Esc to steer all %d right away · ↑ to select", len(m.pendingSteering))
+				}
+			}
+		}
+		if m.selectedSteering >= 0 {
+			appendMetaRow(pendingStyle.Render("  Delete to remove · ↓ to return"))
+		}
+		appendMetaRow(pendingStyle.Render("  " + hint))
+
+	} else if m.pendingSteeringText != "" {
 		pendingStyle := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
-		pendingText := m.pendingInterjection
+		pendingText := m.pendingSteeringText
 		// Truncate long messages before wrapping so very narrow widths remain stable.
 		maxLen := m.width - 20 // account for prefix/suffix
 		if maxLen > 0 && len(pendingText) > maxLen {

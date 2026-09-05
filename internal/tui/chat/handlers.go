@@ -352,8 +352,8 @@ func (m *Model) cancelActiveForInterrupt() (bool, tea.Cmd) {
 			m.streamCancelFunc()
 			m.streamCancelFunc = nil
 		}
-		_ = m.drainPendingInterjectionText()
-		m.clearPendingInterjection()
+		_ = m.drainPendingSteeringText()
+		m.clearPendingSteering()
 		cmds = append(cmds, m.streamCancelTimeoutCmd())
 		cancelled = true
 	}
@@ -569,30 +569,33 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	// Pending interjections form a cancellable stack. With an empty composer,
+	// Pending steering form a cancellable stack. With an empty composer,
 	// up/down selects and delete/backspace cancels the selected not-yet-consumed
 	// entry, including one preserved after its run reached the final boundary.
-	if len(m.pendingInterjections) > 0 && strings.TrimSpace(m.textarea.Value()) == "" {
+	if !m.dialog.IsOpen() && len(m.pendingSteering) > 0 && strings.TrimSpace(m.textarea.Value()) == "" && len(m.images) == 0 && len(m.files) == 0 {
 		switch msg.String() {
 		case "up":
-			if m.selectedInterjection < 0 {
-				m.selectedInterjection = len(m.pendingInterjections) - 1
-			} else if m.selectedInterjection > 0 {
-				m.selectedInterjection--
+			if m.selectedSteering < 0 {
+				m.selectedSteering = len(m.pendingSteering) - 1
+			} else if m.selectedSteering > 0 {
+				m.selectedSteering--
 			}
 			return m, nil
 		case "down":
-			if m.selectedInterjection >= 0 && m.selectedInterjection < len(m.pendingInterjections)-1 {
-				m.selectedInterjection++
+			if m.selectedSteering >= 0 && m.selectedSteering < len(m.pendingSteering)-1 {
+				m.selectedSteering++
+			} else {
+				m.selectedSteering = -1
 			}
 			return m, nil
 		case "delete", "backspace":
-			if m.cancelSelectedPendingInterjection() {
-				m.interruptNotice = "removed queued interjection"
-			} else {
-				m.interruptNotice = "interjection already incorporated"
+			if m.selectedSteering < 0 {
+				break
 			}
-			return m, nil
+			if m.cancelSelectedPendingSteering() {
+				return m.showFooterMuted("Queued message removed.")
+			}
+			return m.showFooterMuted("That message can no longer be removed.")
 		}
 	}
 
@@ -978,6 +981,12 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// Handle cancel during streaming or a direct shell command (takes priority over clearing selection)
 	if key.Matches(msg, m.keyMap.Cancel) {
+		if m.steeringHandoff != "" {
+			return m, nil
+		}
+		if m.streaming && len(m.pendingSteering) > 0 {
+			return m.rushPendingSteering()
+		}
 		if m.directShellRun != nil {
 			return m.cancelDirectShell()
 		}
@@ -991,11 +1000,11 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.phase = "Stopping..."
 			m.streamCancelFunc()
 
-			// Recover pending interjection text into textarea
-			if residual := m.drainPendingInterjectionText(); residual != "" {
+			// Recover pending steering text into textarea
+			if residual := m.drainPendingSteeringText(); residual != "" {
 				m.setTextareaValue(residual)
 			}
-			m.clearPendingInterjection()
+			m.clearPendingSteering()
 
 			m.textarea.Focus()
 			return m, tea.Batch(m.applyPendingStreamModelSwitch(), m.streamCancelTimeoutCmd())
@@ -1124,7 +1133,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Newline insertion (ctrl+j, alt+enter, shift+enter) — works in both the
-	// streaming interjection composer and the normal composer. Must precede
+	// streaming steering composer and the normal composer. Must precede
 	// any Send handler so shift+enter is caught before a plain "enter" match.
 	if key.Matches(msg, m.keyMap.Newline) || key.Matches(msg, m.keyMap.NewlineAlt) {
 		m.textarea.InsertString("\n")
@@ -1132,7 +1141,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.updateMentionQuery()
 	}
 
-	// Streaming-local shortcuts that affect the interjection composer or queue
+	// Streaming-local shortcuts that affect the steering composer or queue
 	// deferred state must run before the generic streaming textarea handler.
 	if m.streaming {
 		if key.Matches(msg, m.keyMap.Commands) {
@@ -1147,9 +1156,9 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// During streaming: allow local slash commands, typing, image attachments,
-	// and interjection (send queues message for next turn). Commands like
+	// and steering (send queues message for next turn). Commands like
 	// /thinking should update the UI immediately rather than being shipped as an
-	// interrupt/interjection to the model.
+	// interrupt/steering to the model.
 	if m.streaming {
 		if key.Matches(msg, m.keyMap.Send) {
 			raw := strings.TrimSpace(m.textarea.Value())
@@ -1161,7 +1170,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if action, ok := llm.ClassifyInterruptImmediate(raw); ok && action == llm.InterruptCancel {
-				m.applyInterruptActionWithParts(m.nextPendingInterjectionID(), raw, m.imagePartList(), action)
+				m.applyInterruptActionWithParts(m.nextPendingSteeringID(), raw, m.imagePartList(), action)
 				return m, nil
 			}
 			if strings.HasPrefix(raw, "/") {
@@ -1195,13 +1204,13 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				parts = append(parts, llm.Part{Type: llm.PartFile, Text: eagerContext})
 			}
 			if content == "" && len(parts) == 0 {
-				m.phase = "Type to interject, attach an image, or press Esc to cancel"
+				m.phase = "Type to steer, attach an image, or press Esc to cancel"
 				return m, nil
 			}
 			m.pasteChunks = nil
 
-			interjectionID := m.nextPendingInterjectionID()
-			m.applyInterruptActionWithParts(interjectionID, content, parts, llm.InterruptInterject)
+			steeringID := m.nextPendingSteeringID()
+			m.applyInterruptActionWithParts(steeringID, content, parts, llm.InterruptSteer)
 			return m, nil
 		}
 		// Allow textarea to receive input
@@ -1730,23 +1739,23 @@ func (m *Model) currentInterruptActivity() llm.InterruptActivity {
 	return activity
 }
 
-// nextPendingInterjectionID mints the stable identity for one queued
-// interjection. The identity becomes the message's ClientMessageID, which the
+// nextPendingSteeringID mints the stable identity for one queued
+// steering. The identity becomes the message's ClientMessageID, which the
 // session store indexes uniquely per session, so a bare counter collides with
 // rows an earlier process already wrote whenever a session is resumed. Mixing in
 // per-process entropy keeps resumed sessions writable.
-func (m *Model) nextPendingInterjectionID() string {
-	if m.interjectionNonce == "" {
-		m.interjectionNonce = newInterjectionNonce()
+func (m *Model) nextPendingSteeringID() string {
+	if m.steeringNonce == "" {
+		m.steeringNonce = newSteeringNonce()
 	}
-	m.interjectionSeq++
-	return fmt.Sprintf("tui-interject-%s-%d", m.interjectionNonce, m.interjectionSeq)
+	m.steeringSeq++
+	return fmt.Sprintf("tui-steer-%s-%d", m.steeringNonce, m.steeringSeq)
 }
 
-// newInterjectionNonce returns short random entropy for interjection identities.
+// newSteeringNonce returns short random entropy for steering identities.
 // A time-based fallback keeps IDs usable if the system entropy source fails;
 // duplicates remain survivable because persistence retries without the identity.
-func newInterjectionNonce() string {
+func newSteeringNonce() string {
 	var buf [6]byte
 	if _, err := rand.Read(buf[:]); err != nil {
 		return strconv.FormatInt(time.Now().UnixNano(), 36)
@@ -1754,89 +1763,89 @@ func newInterjectionNonce() string {
 	return hex.EncodeToString(buf[:])
 }
 
-func (m *Model) syncLatestPendingInterjection() {
-	if len(m.pendingInterjections) == 0 {
-		m.pendingInterjectionID = ""
-		m.pendingInterjection = ""
-		m.selectedInterjection = -1
+func (m *Model) syncLatestPendingSteering() {
+	if len(m.pendingSteering) == 0 {
+		m.pendingSteeringID = ""
+		m.pendingSteeringText = ""
+		m.selectedSteering = -1
 		return
 	}
-	if m.selectedInterjection >= len(m.pendingInterjections) {
-		m.selectedInterjection = len(m.pendingInterjections) - 1
+	if m.selectedSteering >= len(m.pendingSteering) {
+		m.selectedSteering = len(m.pendingSteering) - 1
 	}
-	latest := m.pendingInterjections[len(m.pendingInterjections)-1]
-	m.pendingInterjectionID = latest.ID
-	m.pendingInterjection = latest.Text
+	latest := m.pendingSteering[len(m.pendingSteering)-1]
+	m.pendingSteeringID = latest.ID
+	m.pendingSteeringText = latest.Text
 }
 
-func (m *Model) setPendingInterjection(interjectionID, content string) {
-	for i := range m.pendingInterjections {
-		if m.pendingInterjections[i].ID == interjectionID {
-			m.pendingInterjections[i].Text = content
-			if m.selectedInterjection < 0 {
-				m.selectedInterjection = i
+func (m *Model) setPendingSteering(steeringID, content string) {
+	for i := range m.pendingSteering {
+		if m.pendingSteering[i].ID == steeringID {
+			m.pendingSteering[i].Text = content
+			if m.selectedSteering < 0 {
+				m.selectedSteering = i
 			}
-			m.syncLatestPendingInterjection()
+			m.syncLatestPendingSteering()
 			return
 		}
 	}
-	m.pendingInterjections = append(m.pendingInterjections, pendingInterjectionUI{ID: interjectionID, Text: content})
-	m.selectedInterjection = len(m.pendingInterjections) - 1
-	m.syncLatestPendingInterjection()
+	m.pendingSteering = append(m.pendingSteering, pendingSteeringUI{ID: steeringID, Text: content})
+	m.selectedSteering = -1
+	m.syncLatestPendingSteering()
 }
 
-func (m *Model) removePendingInterjectionByID(interjectionID string) bool {
-	for i := range m.pendingInterjections {
-		if m.pendingInterjections[i].ID == interjectionID {
-			copy(m.pendingInterjections[i:], m.pendingInterjections[i+1:])
-			m.pendingInterjections = m.pendingInterjections[:len(m.pendingInterjections)-1]
-			if m.selectedInterjection == i {
-				m.selectedInterjection = i
+func (m *Model) removePendingSteeringByID(steeringID string) bool {
+	for i := range m.pendingSteering {
+		if m.pendingSteering[i].ID == steeringID {
+			copy(m.pendingSteering[i:], m.pendingSteering[i+1:])
+			m.pendingSteering = m.pendingSteering[:len(m.pendingSteering)-1]
+			if m.selectedSteering == i {
+				m.selectedSteering = i
 			}
-			m.syncLatestPendingInterjection()
+			m.syncLatestPendingSteering()
 			return true
 		}
 	}
 	return false
 }
 
-func (m *Model) clearPendingInterjection() {
-	m.pendingInterjections = nil
-	m.pendingInterjectionID = ""
-	m.pendingInterjection = ""
-	m.selectedInterjection = -1
+func (m *Model) clearPendingSteering() {
+	m.pendingSteering = nil
+	m.pendingSteeringID = ""
+	m.pendingSteeringText = ""
+	m.selectedSteering = -1
 }
 
-func (m *Model) cancelSelectedPendingInterjection() bool {
-	if len(m.pendingInterjections) == 0 {
+func (m *Model) cancelSelectedPendingSteering() bool {
+	if len(m.pendingSteering) == 0 {
 		return false
 	}
-	idx := m.selectedInterjection
-	if idx < 0 || idx >= len(m.pendingInterjections) {
-		idx = len(m.pendingInterjections) - 1
+	idx := m.selectedSteering
+	if idx < 0 || idx >= len(m.pendingSteering) {
+		idx = len(m.pendingSteering) - 1
 	}
-	entry := m.pendingInterjections[idx]
+	entry := m.pendingSteering[idx]
 	cancelled := false
 	if m.mainRunManager != nil && m.mainRunManager.HasActive(m.SessionID()) {
-		cancelled = m.mainRunManager.CancelInterjection(m.SessionID(), entry.ID)
+		cancelled = m.mainRunManager.CancelSteering(m.SessionID(), entry.ID)
 	} else if m.engine != nil {
-		cancelled = m.engine.CancelInterjection(entry.ID)
+		cancelled = m.engine.CancelSteering(entry.ID)
 	}
 	if !cancelled {
 		return false
 	}
-	copy(m.pendingInterjections[idx:], m.pendingInterjections[idx+1:])
-	m.pendingInterjections = m.pendingInterjections[:len(m.pendingInterjections)-1]
-	m.selectedInterjection = idx
-	m.syncLatestPendingInterjection()
+	copy(m.pendingSteering[idx:], m.pendingSteering[idx+1:])
+	m.pendingSteering = m.pendingSteering[:len(m.pendingSteering)-1]
+	m.selectedSteering = idx
+	m.syncLatestPendingSteering()
 	return true
 }
 
-func (m *Model) applyInterruptAction(interjectionID, content string, action llm.InterruptAction) {
-	m.applyInterruptActionWithParts(interjectionID, content, nil, action)
+func (m *Model) applyInterruptAction(steeringID, content string, action llm.InterruptAction) {
+	m.applyInterruptActionWithParts(steeringID, content, nil, action)
 }
 
-func (m *Model) applyInterruptActionWithParts(interjectionID, content string, parts []llm.Part, action llm.InterruptAction) {
+func (m *Model) applyInterruptActionWithParts(steeringID, content string, parts []llm.Part, action llm.InterruptAction) {
 	m.setTextareaValue("")
 
 	summary := content
@@ -1847,11 +1856,11 @@ func (m *Model) applyInterruptActionWithParts(interjectionID, content string, pa
 	switch action {
 	case llm.InterruptCancel:
 		if m.mainRunManager != nil && m.mainRunManager.HasActive(m.SessionID()) {
-			m.mainRunManager.DiscardInterjections(m.SessionID())
+			m.mainRunManager.DiscardSteering(m.SessionID())
 		} else if m.engine != nil {
-			m.engine.DiscardPendingInterjections()
+			m.engine.DiscardPendingSteering()
 		}
-		m.clearPendingInterjection()
+		m.clearPendingSteering()
 		m.phase = "Stopping..."
 		if immediate, ok := llm.ClassifyInterruptImmediate(content); ok && immediate == llm.InterruptCancel {
 			m.interruptNotice = "✕ cancelled current response"
@@ -1869,7 +1878,7 @@ func (m *Model) applyInterruptActionWithParts(interjectionID, content string, pa
 			m.setStreamCancelRequested(true)
 			m.streamCancelFunc()
 		}
-	case llm.InterruptInterject:
+	case llm.InterruptSteer:
 		leadingImages := 0
 		for leadingImages < len(parts) && parts[leadingImages].Type == llm.PartImage {
 			leadingImages++
@@ -1883,19 +1892,19 @@ func (m *Model) applyInterruptActionWithParts(interjectionID, content string, pa
 		if len(msg.Parts) == 0 {
 			msg = llm.UserText(content)
 		}
-		interjection := llm.QueuedInterjection{ID: interjectionID, Message: msg, DisplayText: summary}
-		queueStatus := llm.InterjectionQueueRunFinished
+		steering := llm.QueuedSteering{ID: steeringID, Message: msg, DisplayText: summary, Origin: llm.SteeringOriginForMessage(msg)}
+		queueStatus := llm.SteeringQueueRunFinished
 		if m.mainRunManager != nil && m.mainRunManager.HasActive(m.SessionID()) {
-			queueStatus = m.mainRunManager.QueueInterjection(m.SessionID(), interjection)
+			queueStatus = m.mainRunManager.QueueSteering(m.SessionID(), steering)
 		} else if m.engine != nil {
-			_, queueStatus = m.engine.QueueInterjectionWithStatus(interjection)
+			_, queueStatus = m.engine.QueueSteeringWithStatus(steering)
 		}
 		switch queueStatus {
-		case llm.InterjectionQueueQueued, llm.InterjectionQueueAlreadyQueued:
-			m.setPendingInterjection(interjectionID, summary)
+		case llm.SteeringQueueQueued, llm.SteeringQueueAlreadyQueued:
+			m.setPendingSteering(steeringID, summary)
 			m.images = nil
 			m.selectedImage = -1
-		case llm.InterjectionQueueRunFinished:
+		case llm.SteeringQueueRunFinished:
 			m.interruptNotice = "response cannot consume steering — draft kept below"
 			m.setTextareaValue(content)
 		default:
@@ -1905,28 +1914,28 @@ func (m *Model) applyInterruptActionWithParts(interjectionID, content string, pa
 	}
 }
 
-func (m *Model) listPendingInterjections() []llm.QueuedInterjection {
+func (m *Model) listPendingSteering() []llm.QueuedSteering {
 	if m.mainRunManager != nil && (m.streaming || m.mainRunManager.HasActive(m.SessionID())) {
-		return m.mainRunManager.ListInterjections(m.SessionID())
+		return m.mainRunManager.ListSteering(m.SessionID())
 	}
 	if m.engine == nil {
 		return nil
 	}
-	return m.engine.ListPendingInterjections()
+	return m.engine.ListPendingSteering()
 }
 
-func (m *Model) drainPendingInterjections() []llm.QueuedInterjection {
+func (m *Model) drainPendingSteering() []llm.QueuedSteering {
 	if m.mainRunManager != nil && (m.streaming || m.mainRunManager.HasActive(m.SessionID())) {
-		return m.mainRunManager.DrainInterjections(m.SessionID())
+		return m.mainRunManager.DrainSteering(m.SessionID())
 	}
 	if m.engine == nil {
 		return nil
 	}
-	return m.engine.DrainInterjections()
+	return m.engine.DrainSteering()
 }
 
-func (m *Model) drainPendingInterjectionText() string {
-	entries := m.drainPendingInterjections()
+func (m *Model) drainPendingSteeringText() string {
+	entries := m.drainPendingSteering()
 	texts := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		if text := strings.TrimSpace(entry.DisplayText); text != "" {
@@ -1936,11 +1945,14 @@ func (m *Model) drainPendingInterjectionText() string {
 	return strings.Join(texts, "\n")
 }
 
-func (m *Model) restorePendingInterjectionDraft() {
+func (m *Model) restorePendingSteeringDraft() {
+	if m.steeringHandoff != "" {
+		return
+	}
 	if strings.TrimSpace(m.textarea.Value()) != "" {
 		return
 	}
-	if entries := m.drainPendingInterjections(); len(entries) > 0 {
+	if entries := m.drainPendingSteering(); len(entries) > 0 {
 		var textParts []string
 		var images []ImageAttachment
 		for _, entry := range entries {
@@ -1958,7 +1970,7 @@ func (m *Model) restorePendingInterjectionDraft() {
 					}
 				}
 			}
-			// DisplayText is the user-visible interjection text. Full message parts
+			// DisplayText is the user-visible steering text. Full message parts
 			// may also contain provider-only eager-file or agent-delegation context,
 			// which must never be restored into the editable composer.
 			if hasTextPart && strings.TrimSpace(entry.DisplayText) != "" {
@@ -1974,8 +1986,8 @@ func (m *Model) restorePendingInterjectionDraft() {
 		m.setTextareaValue(strings.Join(textParts, "\n"))
 		return
 	}
-	if m.pendingInterjection != "" {
-		m.setTextareaValue(m.pendingInterjection)
+	if m.pendingSteeringText != "" {
+		m.setTextareaValue(m.pendingSteeringText)
 	}
 }
 

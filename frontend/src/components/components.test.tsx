@@ -86,6 +86,85 @@ const expectPasswordManagersIgnored = (element: HTMLElement) => {
 };
 
 describe('Preact-owned chat surfaces', () => {
+  it.each([
+    [false, 1],
+    [true, 1],
+    [false, 2],
+    [true, 2],
+  ] as const)(
+    'places Steer now beside Remove (available=%s, count=%s)',
+    async (available, count) => {
+      const store = createStore();
+      store.runs.value = {
+        s1: initialProjection({
+          responseId: 'r1',
+          sessionId: 's1',
+          epoch: 1,
+          status: 'streaming',
+          lastSequence: 0,
+          startedRev: 0,
+          reconnects: 0,
+        }),
+      };
+      store.rush = vi.fn(async () => undefined);
+      store.steering.value = [
+        { id: 'queued', sessionId: 's1', content: 'hello', state: 'pending' },
+      ];
+      if (count === 2)
+        store.steering.value = [
+          ...store.steering.value,
+          { id: 'second', sessionId: 's1', content: 'second guidance', state: 'pending' },
+        ];
+      store.steeringCapabilities.value = {
+        s1: {
+          protocol: 1,
+          can_steer: true,
+          can_rush: available,
+          unavailable_reason: 'provider_resume_unverified',
+        },
+      };
+      const { unmount } = render(
+        <StoreContext.Provider value={store}>
+          <Composer />
+        </StoreContext.Provider>,
+      );
+      expect(await screen.findByText('hello')).toBeVisible();
+      const stop = screen.getByRole('button', { name: 'Stop', exact: true });
+      expect(stop).toBeVisible();
+      expect(screen.getByRole('button', { name: 'Remove pending steering: hello' })).toBeEnabled();
+      expect(
+        screen.queryByText(/Rush unavailable|provider_resume_unverified/),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(/Esc to steer|↑ to select|Delete to remove/),
+      ).not.toBeInTheDocument();
+      if (available) {
+        const rush = screen.getByRole('button', {
+          name: count > 1 ? 'Steer all now' : 'Steer now',
+          exact: true,
+        });
+        const remove = screen.getByRole('button', {
+          name: `Remove pending steering: ${count > 1 ? 'second guidance' : 'hello'}`,
+        });
+        expect(screen.getAllByRole('button', { name: /^Steer (all )?now$/ })).toHaveLength(1);
+        expect(rush).toBeVisible();
+        expect(rush.parentElement).toBe(remove.parentElement);
+        expect(rush.nextElementSibling).toBe(remove);
+        expect(rush.closest('.composer-actions')).toBeNull();
+        expect(rush.closest('.steering-queue-footer')).toBeNull();
+        await userEvent.click(rush);
+        expect(store.rush).toHaveBeenCalledOnce();
+      } else {
+        expect(
+          screen.queryByRole('button', { name: /^Steer (all )?now$/ }),
+        ).not.toBeInTheDocument();
+        expect(screen.queryByRole('status')).not.toBeInTheDocument();
+      }
+      unmount();
+      store.dispose();
+    },
+  );
+
   it('shows the MCP count for a new chat before a session exists', () => {
     const store = createStore();
     store.sessions.value = [];
@@ -2099,7 +2178,7 @@ describe('Preact-owned chat surfaces', () => {
 
       expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Response is running' })).toBeEnabled();
-      expect(screen.getByPlaceholderText('Type to interject…')).toBeInTheDocument();
+      expect(screen.getByPlaceholderText('Steer conversation…')).toBeInTheDocument();
       expect(
         screen.getByRole('status', { name: 'Assistant is responding: Working' }),
       ).toBeInTheDocument();
@@ -2107,12 +2186,12 @@ describe('Preact-owned chat surfaces', () => {
         screen.queryByRole('status', { name: 'Response status is unknown' }),
       ).not.toBeInTheDocument();
 
-      store.interject = vi.fn(async () => undefined);
+      store.steer = vi.fn(async () => undefined);
       await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), 'steer this run');
-      const interject = screen.getByRole('button', { name: 'Interject' });
-      expect(interject).toBeEnabled();
-      await userEvent.click(interject);
-      expect(store.interject).toHaveBeenCalledWith('steer this run');
+      const steer = screen.getByRole('button', { name: 'Steer' });
+      expect(steer).toBeEnabled();
+      await userEvent.click(steer);
+      expect(store.steer).toHaveBeenCalledWith('steer this run');
       act(() => {
         store.prompt.value = '';
       });
@@ -3197,7 +3276,7 @@ describe('Preact-owned chat surfaces', () => {
     expect(trigger).toHaveFocus();
   });
 
-  it('names the active agent in the idle composer placeholder', () => {
+  it('uses the consistent idle composer placeholder', () => {
     const store = createStore();
     store.sessions.value = [{ ...store.sessions.value[0], agent: 'widget-builder' }];
     const { rerender } = render(
@@ -3208,7 +3287,7 @@ describe('Preact-owned chat surfaces', () => {
 
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveAttribute(
       'placeholder',
-      'Message Widget Builder…',
+      'Type a message…',
     );
 
     store.draftActive.value = true;
@@ -3220,11 +3299,11 @@ describe('Preact-owned chat surfaces', () => {
     );
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveAttribute(
       'placeholder',
-      'Message Jarvis…',
+      'Type a message…',
     );
   });
 
-  it('morphs the send icon into the interjection icon while streaming with a draft', async () => {
+  it('morphs the send icon into the steering icon while streaming with a draft', async () => {
     const store = createStore();
     store.runs.value = {
       s1: initialProjection({
@@ -3249,17 +3328,17 @@ describe('Preact-owned chat surfaces', () => {
     expect(send).toBeEnabled();
     expect(send).toHaveClass('loading');
     expect(send.querySelector('.spinner')).toBeInTheDocument();
-    expect(send).not.toHaveClass('interject');
+    expect(send).not.toHaveClass('steer');
 
     await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), 'change course');
 
-    const interject = screen.getByRole('button', { name: 'Interject' });
-    expect(interject).toBeEnabled();
-    expect(interject).not.toHaveClass('loading');
-    expect(interject).toHaveClass('interject');
-    expect(interject).toHaveAttribute('title', 'Interject');
-    expect(interject.querySelector('.arrow')?.innerHTML).not.toBe(sendIcon);
-    expect(interject.querySelector('.arrow path')).toHaveAttribute('d', 'M5 6v7a2 2 0 0 0 2 2h12');
+    const steer = screen.getByRole('button', { name: 'Steer' });
+    expect(steer).toBeEnabled();
+    expect(steer).not.toHaveClass('loading');
+    expect(steer).toHaveClass('steer');
+    expect(steer).toHaveAttribute('title', 'Steer');
+    expect(steer.querySelector('.arrow')?.innerHTML).not.toBe(sendIcon);
+    expect(steer.querySelector('.arrow path')).toHaveAttribute('d', 'M5 6v7a2 2 0 0 0 2 2h12');
   });
 
   it('drives send from public composer UI and opens attachment picker behavior', async () => {

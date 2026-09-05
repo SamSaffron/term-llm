@@ -426,6 +426,7 @@ func isSlashCommandLike(input string) bool {
 		return false
 	}
 	cmdName := strings.ToLower(strings.TrimPrefix(parts[0], "/"))
+
 	if cmdName == "" {
 		return true
 	}
@@ -500,6 +501,11 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 	}
 
 	cmdName := strings.ToLower(strings.TrimPrefix(parts[0], "/"))
+	if m.steeringHandoff != "" && (cmdName == "stop" || cmdName == "cancel") && m.mainRunManager != nil {
+		m.mainRunManager.Cancel(m.SessionID())
+		m.setTextareaValue("")
+		return m.showFooterMuted("Stopping steered handoff…")
+	}
 	args := parts[1:]
 	rawArgs := rawCommandArgs(input)
 
@@ -1005,7 +1011,9 @@ func (m *Model) showHelpModal() (tea.Model, tea.Cmd) {
 		{
 			title: "Composer",
 			rows: [][2]string{
-				{"Enter", "Send message; while streaming, queue interjection"},
+				{"Enter", "Send message; while streaming, queue steering"},
+				{"Esc (pending steering)", "Interrupt safely, then start a new run with all pending guidance"},
+				{"Delete (selected steering)", "Remove the selected pending message"},
 				{"! command", "Run directly in the session directory, then ask the model to respond"},
 				{"Ctrl+J / Alt+Enter / Shift+Enter", "Insert newline"},
 				{"\\ + Enter", "Turn trailing backslash into a newline"},
@@ -1022,7 +1030,7 @@ func (m *Model) showHelpModal() (tea.Model, tea.Cmd) {
 			rows: [][2]string{
 				{"PageUp / PageDown", "Scroll conversation"},
 				{"Ctrl+Up / Ctrl+Down", "Jump between user prompts"},
-				{"Up / Down", "Scroll when composer is empty; select queued interjections while streaming"},
+				{"Up / Down", "Scroll when composer is empty; select queued steering while streaming"},
 				{"Ctrl+Y", "Copy selection, or latest assistant response"},
 			},
 		},
@@ -3277,6 +3285,7 @@ func (m *Model) beginHelperStream(phase string, resetRetainedTracker bool) conte
 	}
 	ctx, cancel := context.WithCancel(m.rootContext())
 	m.streamCancelFunc = cancel
+	m.streamCleanupFunc = cancel
 	return ctx
 }
 
@@ -3459,11 +3468,11 @@ func (m *Model) applyPendingStreamModelSwitch() tea.Cmd {
 		return nil
 	}
 
-	// Preserve any still-queued interjections across the engine replacement. A
-	// text-only stream can finish with queued interjections that were never
+	// Preserve any still-queued steering across the engine replacement. A
+	// text-only stream can finish with queued steering that were never
 	// committed; applying a deferred effort switch must not strand them on the old
-	// engine before restorePendingInterjectionDraft has a chance to recover them.
-	queuedInterjections := m.listPendingInterjections()
+	// engine before restorePendingSteeringDraft has a chance to recover them.
+	queuedSteering := m.listPendingSteering()
 
 	// switchModelWithOptions clears the composer because most model switches are
 	// explicit slash commands. A queued in-stream effort switch is applied
@@ -3475,8 +3484,8 @@ func (m *Model) applyPendingStreamModelSwitch() tea.Cmd {
 	}
 	_, cmd := m.switchModelWithOptions(pending.provider+":"+pending.model, switchModelOptions{deferMarker: true})
 	if m.engine != nil && m.providerKey == pending.provider && m.modelName == pending.model {
-		for _, entry := range queuedInterjections {
-			m.engine.QueueInterjection(entry)
+		for _, entry := range queuedSteering {
+			m.engine.QueueSteering(entry)
 		}
 	}
 	m.restoreComposerSnapshot(draft)

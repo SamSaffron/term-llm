@@ -1910,19 +1910,19 @@ func TestResponseCreatedCarriesExactAnchorIdentity(t *testing.T) {
 	}
 }
 
-func TestResponseRunRejectsInterjectionWithoutClientMessageID(t *testing.T) {
-	run := newResponseRun("resp_missing_interjection_id", "sess_test", "", "mock", time.Now().Unix(), nil)
+func TestResponseRunRejectsSteeringWithoutClientMessageID(t *testing.T) {
+	run := newResponseRun("resp_missing_steering_id", "sess_test", "", "mock", time.Now().Unix(), nil)
 	state := newResponseRunStreamState("mock", "")
-	err := (&serveServer{}).appendResponseRunEvent(nil, run, state, llm.Event{Type: llm.EventInterjection, Text: "ambiguous"})
+	err := (&serveServer{}).appendResponseRunEvent(nil, run, state, llm.Event{Type: llm.EventSteering, Text: "ambiguous"})
 	if err == nil || !strings.Contains(err.Error(), "client_message_id") {
-		t.Fatalf("missing interjection identity error = %v", err)
+		t.Fatalf("missing steering identity error = %v", err)
 	}
 }
 
-func TestResponseRunRecoverySynthesizesMissingLegacyInterjectionID(t *testing.T) {
-	run := newResponseRun("resp_legacy_interjection", "sess_test", "", "mock", time.Now().Unix(), nil)
-	if err := run.appendEvent("response.interjection", map[string]any{"text": "legacy interjection"}); err != nil {
-		t.Fatalf("append legacy interjection: %v", err)
+func TestResponseRunRecoverySynthesizesMissingLegacySteeringID(t *testing.T) {
+	run := newResponseRun("resp_legacy_steering", "sess_test", "", "mock", time.Now().Unix(), nil)
+	if err := run.appendEvent("response.steering", map[string]any{"text": "legacy steering"}); err != nil {
+		t.Fatalf("append legacy steering: %v", err)
 	}
 
 	recovery := run.recoveryPayloadLocked()
@@ -1931,13 +1931,13 @@ func TestResponseRunRecoverySynthesizesMissingLegacyInterjectionID(t *testing.T)
 		t.Fatalf("recovery messages = %#v, want one synthesized user message", recovery["messages"])
 	}
 	id, _ := messages[0]["client_message_id"].(string)
-	if id == "" || messages[0]["id"] != id || messages[0]["content"] != "legacy interjection" {
+	if id == "" || messages[0]["id"] != id || messages[0]["content"] != "legacy steering" {
 		t.Fatalf("legacy recovery message = %#v", messages[0])
 	}
 }
 
-func TestResponseRunInterjectionSplitsRecoveryMessages(t *testing.T) {
-	run := newResponseRun("resp_interjection", "sess_test", "", "mock", time.Now().Unix(), func() {})
+func TestResponseRunSteeringSplitsRecoveryMessages(t *testing.T) {
+	run := newResponseRun("resp_steering", "sess_test", "", "mock", time.Now().Unix(), func() {})
 	streamState := newResponseRunStreamState("mock", "")
 	imageOutputDir := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
@@ -1945,7 +1945,7 @@ func TestResponseRunInterjectionSplitsRecoveryMessages(t *testing.T) {
 	if err := os.MkdirAll(uploadDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	imagePath := filepath.Join(uploadDir, "interjection.jpg")
+	imagePath := filepath.Join(uploadDir, "steering.jpg")
 	if err := os.WriteFile(imagePath, []byte("test image"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1958,12 +1958,12 @@ func TestResponseRunInterjectionSplitsRecoveryMessages(t *testing.T) {
 		t.Fatalf("appendTextDeltaSegmentEvent before: %v", err)
 	}
 	if err := server.appendResponseRunEvent(nil, run, streamState, llm.Event{
-		Type: llm.EventInterjection, Text: "check X", InterjectionID: "client-check-x",
+		Type: llm.EventSteering, Text: "check X", SteeringID: "client-check-x",
 		Message: llm.Message{Parts: []llm.Part{{
 			Type: llm.PartImage, ImagePath: imagePath, ImageData: &llm.ToolImageData{MediaType: "image/jpeg", Width: 200, Height: 400},
 		}}},
 	}); err != nil {
-		t.Fatalf("append interjection: %v", err)
+		t.Fatalf("append steering: %v", err)
 	}
 	if err := server.appendResponseRunEvent(nil, run, streamState, llm.Event{Type: llm.EventTextDelta, Text: "after"}); err != nil {
 		t.Fatalf("appendTextDeltaSegmentEvent after: %v", err)
@@ -1995,17 +1995,17 @@ func TestResponseRunInterjectionSplitsRecoveryMessages(t *testing.T) {
 	if got := messages[1]["clientMessageId"]; got != "client-check-x" {
 		t.Fatalf("messages[1].clientMessageId = %v, want client-check-x", got)
 	}
-	if got := messages[1]["interruptState"]; got != "interject" {
-		t.Fatalf("messages[1].interruptState = %v, want interject", got)
+	if got := messages[1]["interruptState"]; got != "steer" {
+		t.Fatalf("messages[1].interruptState = %v, want steer", got)
 	}
-	if got := messages[1]["interrupt_state"]; got != "interject" {
-		t.Fatalf("messages[1].interrupt_state = %v, want interject", got)
+	if got := messages[1]["interrupt_state"]; got != "steer" {
+		t.Fatalf("messages[1].interrupt_state = %v, want steer", got)
 	}
-	interjectionAttachments, ok := messages[1]["attachments"].([]map[string]any)
-	if !ok || len(interjectionAttachments) != 1 || interjectionAttachments[0]["width"] != 200 || interjectionAttachments[0]["height"] != 400 {
+	steeringAttachments, ok := messages[1]["attachments"].([]map[string]any)
+	if !ok || len(steeringAttachments) != 1 || steeringAttachments[0]["width"] != 200 || steeringAttachments[0]["height"] != 400 {
 		t.Fatalf("messages[1].attachments = %#v, want orientation-correct 200x400 metadata", messages[1]["attachments"])
 	}
-	imageURL, _ := interjectionAttachments[0]["url"].(string)
+	imageURL, _ := steeringAttachments[0]["url"].(string)
 	if !strings.HasPrefix(imageURL, "/ui/images/") {
 		t.Fatalf("messages[1].attachments URL = %q, want a serveable image URL", imageURL)
 	}
@@ -2013,27 +2013,27 @@ func TestResponseRunInterjectionSplitsRecoveryMessages(t *testing.T) {
 	rr := httptest.NewRecorder()
 	server.handleImage(rr, req)
 	if rr.Code != http.StatusOK || rr.Body.String() != "test image" {
-		t.Fatalf("interjection image response = %d %q, want 200 with original image", rr.Code, rr.Body.String())
+		t.Fatalf("steering image response = %d %q, want 200 with original image", rr.Code, rr.Body.String())
 	}
 	if got := messages[2]["content"]; got != "after" {
 		t.Fatalf("messages[2].content = %v, want after", got)
 	}
 	if first, second := messages[0]["assistant_segment_ordinal"], messages[2]["assistant_segment_ordinal"]; first != 0 || second != 1 {
-		t.Fatalf("assistant segment ordinals = %v, %v; want 0, 1 across interjection", first, second)
+		t.Fatalf("assistant segment ordinals = %v, %v; want 0, 1 across steering", first, second)
 	}
 	atts := []map[string]any{{"name": "image 1", "type": "image/png", "url": "/ui/images/image-only.png"}}
-	if err := run.appendEvent("response.interjection", map[string]any{"text": "", "client_message_id": "img-1", "attachments": atts}); err != nil {
-		t.Fatalf("append image-only interjection: %v", err)
+	if err := run.appendEvent("response.steering", map[string]any{"text": "", "client_message_id": "img-1", "attachments": atts}); err != nil {
+		t.Fatalf("append image-only steering: %v", err)
 	}
 	recovery = run.recoveryPayloadLocked()
 	messages = recovery["messages"].([]map[string]any)
 	last := messages[len(messages)-1]
 	if got := last["id"]; got != "img-1" {
-		t.Fatalf("image interjection id = %v, want img-1", got)
+		t.Fatalf("image steering id = %v, want img-1", got)
 	}
 	gotAtts, ok := last["attachments"].([]map[string]any)
 	if !ok || len(gotAtts) != 1 || gotAtts[0]["type"] != "image/png" {
-		t.Fatalf("image interjection attachments = %#v, want image/png", last["attachments"])
+		t.Fatalf("image steering attachments = %#v, want image/png", last["attachments"])
 	}
 	if got := messages[2]["role"]; got != "assistant" {
 		t.Fatalf("messages[2].role = %v, want assistant", got)
@@ -2052,10 +2052,10 @@ func TestResponseRunPreservesImageOnlyBoundaryWhenAttachmentCannotBeServed(t *te
 		cfg:    serveServerConfig{basePath: "/ui"},
 		cfgRef: &config.Config{Image: config.ImageConfig{OutputDir: t.TempDir()}},
 	}
-	run := newResponseRun("resp_unserveable_interjection", "sess_test", "", "mock", time.Now().Unix(), nil)
+	run := newResponseRun("resp_unserveable_steering", "sess_test", "", "mock", time.Now().Unix(), nil)
 	if err := server.appendResponseRunEvent(nil, run, newResponseRunStreamState("mock", ""), llm.Event{
-		Type:           llm.EventInterjection,
-		InterjectionID: "image-only-unserveable",
+		Type:       llm.EventSteering,
+		SteeringID: "image-only-unserveable",
 		Message: llm.Message{Parts: []llm.Part{{
 			Type: llm.PartImage, ImagePath: imagePath, ImageData: &llm.ToolImageData{MediaType: "image/jpeg"},
 		}}},

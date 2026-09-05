@@ -216,7 +216,7 @@ func (m *Model) streamPersistenceCallbacks(streamStart time.Time) (llm.Assistant
 		if m.store != nil && streamSess != nil {
 			for _, msg := range turnMessages[appendStart:] {
 				if msg.Role == llm.RoleUser {
-					// Interjections are persisted by the UI event path. Until that write
+					// Steering are persisted by the UI event path. Until that write
 					// is coordinated, conservatively retain the preceding boundary.
 					persistComplete = false
 					continue
@@ -803,11 +803,13 @@ func (m *Model) beginUserResponse(content, userDisplay string, preSendCmds []tea
 }
 
 func (m *Model) startStream(content string) tea.Cmd {
+	steeringOperationID := m.steeringHandoff
 	ctx, cancel := context.WithCancel(m.rootContext())
 	sessionID := m.SessionID()
 	m.streamGeneration++
 	m.discardPendingCompactionsBeforeGeneration(m.streamGeneration)
 	streamGeneration := m.streamGeneration
+	m.streamCleanupFunc = cancel
 	m.streamCancelFunc = func() {
 		cancel()
 		if m.mainRunManager != nil {
@@ -997,6 +999,13 @@ func (m *Model) startStream(content string) tea.Cmd {
 			}
 			runSessionID := req.SessionID
 			snapshot, err := m.mainRunManager.Start(runSessionID, MainRunExecution{
+				SteeringOperationID: steeringOperationID,
+				RunID: func() string {
+					if steeringOperationID != "" {
+						return "tui-rush-" + steeringOperationID
+					}
+					return ""
+				}(),
 				Execute: func(runCtx context.Context, emit func(ui.StreamEvent)) error {
 					runCtx = tools.ContextWithAskUserUIFunc(runCtx, func(promptCtx context.Context, questions []tools.AskUserQuestion) ([]tools.AskUserAnswer, error) {
 						done := make(chan []tools.AskUserAnswer, 1)
@@ -1051,20 +1060,42 @@ func (m *Model) startStream(content string) tea.Cmd {
 					}
 					_ = m.store.UpdateStatus(context.Background(), runSessionID, status)
 				},
-				QueueInterjection: func(interjection llm.QueuedInterjection) llm.InterjectionQueueStatus {
-					_, status := m.engine.QueueInterjectionWithStatus(interjection)
+				QueueSteering: func(steering llm.QueuedSteering) llm.SteeringQueueStatus {
+					steering.Message.ClientMessageID = steering.ID
+					if store, ok := session.AsPendingSteeringStore(m.store); ok {
+						persistCtx, persistCancel := context.WithTimeout(context.Background(), 4*time.Second)
+						err := store.SavePendingSteering(persistCtx, session.PendingSteering{SessionID: runSessionID, ID: steering.ID, Message: steering.Message, DisplayText: steering.DisplayText, Origin: steering.Origin, AttachmentSummary: llm.MessageAttachmentSummary(steering.Message)})
+						persistCancel()
+						if err != nil {
+							return llm.SteeringQueueRunFinished
+						}
+					}
+					_, status := m.engine.QueueSteeringWithStatus(steering)
 					return status
 				},
-				CancelInterjection: m.engine.CancelInterjection,
-				DiscardInterjections: func() {
-					m.engine.DiscardPendingInterjections()
+				CancelSteering: func(id string) bool {
+					if store, ok := session.AsPendingSteeringStore(m.store); ok {
+						persistCtx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+						defer cancel()
+						if err := store.DeletePendingSteering(persistCtx, runSessionID, id); err != nil {
+							return false
+						}
+					}
+					return m.engine.CancelSteering(id)
 				},
-				ListInterjections:  m.engine.ListPendingInterjections,
-				DrainInterjections: m.engine.DrainInterjections,
-				AnchorMessageID:    m.activeBranchAnchorID,
-				Boundary:           boundary,
+				DiscardSteering: func() {
+					m.engine.DiscardPendingSteering()
+				},
+				ListSteering:    m.engine.ListPendingSteering,
+				DrainSteering:   m.engine.DrainSteering,
+				AnchorMessageID: m.activeBranchAnchorID,
+				Boundary:        boundary,
 			})
 			if err != nil {
+				cancel()
+				if steeringOperationID != "" {
+					return steeringStartFailedMsg{generation: streamGeneration, operationID: steeringOperationID, err: err}
+				}
 				return streamEventMsg{event: ui.ErrorEvent(err), generation: streamGeneration}
 			}
 			cancel()
@@ -1172,8 +1203,8 @@ func (m *Model) attachMainRun(sessionID string) tea.Cmd {
 				m.applyLoadedScrollback(loaded, compactionIdx)
 			}
 		}
-		for _, interjection := range m.mainRunManager.ListInterjections(sessionID) {
-			m.setPendingInterjection(interjection.ID, interjection.DisplayText)
+		for _, steering := range m.mainRunManager.ListSteering(sessionID) {
+			m.setPendingSteering(steering.ID, steering.DisplayText)
 		}
 	}
 	m.mainRunID = snapshot.RunID
@@ -1189,6 +1220,9 @@ func (m *Model) attachMainRun(sessionID string) tea.Cmd {
 	m.streaming = true
 	m.streamDone = snapshot.Done
 	m.streamCancelFunc = func() { m.mainRunManager.Cancel(sessionID) }
+	// The manager owns this run's context. UI terminal cleanup has no local
+	// resource to cancel and must not issue a session-wide Stop.
+	m.streamCleanupFunc = func() {}
 	if snapshotRequired {
 		m.mainRunViewComplete = false
 	}

@@ -81,7 +81,7 @@ func (s *serveServer) healthIdentityTrusted(r *http.Request) bool {
 
 // capabilityList describes what this serve exposes, for hub discovery.
 func (s *serveServer) capabilityList() []string {
-	caps := []string{}
+	caps := []string{"steering_v1"}
 	if s.cfg.ui {
 		caps = append(caps, "web")
 		if platformServeShellSupported() && s.store != nil {
@@ -1986,6 +1986,11 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		suffix = parts[1]
 	}
 
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && s.ensureResponseRuns().steeringTransition(sessionID) != nil && !strings.HasPrefix(suffix, "steering/rush") && suffix != "interrupt" {
+		writeOpenAIError(w, 409, "session_busy", "steering transition in progress")
+		return
+	}
+
 	if suffix == "shell" || strings.HasPrefix(suffix, "shell/") {
 		s.handleSessionShell(w, r, sessionID, suffix)
 		return
@@ -2025,7 +2030,7 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if suffix == "interrupt" {
+	if suffix == "interrupt" || suffix == "steering" {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", "POST")
 			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
@@ -2100,15 +2105,22 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if suffix == "steering/rush" || strings.HasPrefix(suffix, "steering/rush/") {
+		s.handleSteeringRush(w, r, sessionID, strings.TrimPrefix(strings.TrimPrefix(suffix, "steering/rush"), "/"))
+		return
+	}
 	if strings.HasPrefix(suffix, "interjections/") {
-		id := strings.TrimPrefix(suffix, "interjections/")
+		suffix = "steering/" + strings.TrimPrefix(suffix, "interjections/")
+	}
+	if strings.HasPrefix(suffix, "steering/") {
+		id := strings.TrimPrefix(suffix, "steering/")
 		id = strings.TrimSuffix(id, "/cancel")
 		if r.Method != http.MethodDelete && r.Method != http.MethodPost {
 			w.Header().Set("Allow", "DELETE, POST")
 			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 			return
 		}
-		s.handleSessionInterjectionCancel(w, r, sessionID, id)
+		s.handleSessionSteeringCancel(w, r, sessionID, id)
 		return
 	}
 
@@ -2426,6 +2438,34 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
+	if transition := s.ensureResponseRuns().steeringTransition(sessionID); transition != nil {
+		if action, immediate := llm.ClassifyInterruptImmediate(req.Message); immediate && action == llm.InterruptCancel && req.Delivery != "steer" {
+			if store, ok := session.AsRushStore(s.store); ok {
+				op, err := s.cancelSteeringRush(r.Context(), store, sessionID, transition.owner.OperationID)
+				if err != nil {
+					writeOpenAIError(w, 409, "rush_conflict", err.Error())
+					return
+				}
+				writeJSON(w, 200, map[string]any{"action": "cancel", "rush": op})
+				return
+			}
+		}
+		writeOpenAIError(w, 409, "session_busy", "steering transition in progress")
+		return
+	}
+
+	canonicalRoute := strings.HasSuffix(r.URL.Path, "/steering")
+	if canonicalRoute {
+		if req.ExpectedResponseID == "" || req.ExpectedRunEpoch <= 0 || (req.SteeringID == "" && req.ClientMessageID == "") {
+			writeOpenAIError(w, 400, "invalid_request_error", "message ID, expected_response_id and positive expected_run_epoch are required")
+			return
+		}
+		if req.Delivery != "" && req.Delivery != "steer" {
+			writeOpenAIError(w, 400, "invalid_request_error", "canonical steering requires steer delivery")
+			return
+		}
+		req.Delivery = "steer"
+	}
 	currentResponseID := ""
 	if s.responseRuns != nil {
 		currentResponseID = s.responseRuns.activeRunID(sessionID)
@@ -2488,7 +2528,7 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 	}
 	clientMessageID := strings.TrimSpace(req.ClientMessageID)
 	if clientMessageID == "" {
-		clientMessageID = strings.TrimSpace(req.InterjectionID)
+		clientMessageID = strings.TrimSpace(req.SteeringID)
 	}
 	var action llm.InterruptAction
 	var replayed bool
@@ -2527,17 +2567,17 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	actionName := "interject"
+	actionName := "steer"
 	switch action {
 	case llm.InterruptCancel:
 		actionName = "cancel"
-	case llm.InterruptInterject:
-		actionName = "interject"
+	case llm.InterruptSteer:
+		actionName = "steer"
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"action":              actionName,
 		"replayed":            replayed,
-		"interjection_id":     strings.TrimSpace(req.InterjectionID),
+		"steering_id":         strings.TrimSpace(req.SteeringID),
 		"current_response_id": currentResponseID,
 	})
 }
@@ -2712,55 +2752,76 @@ func (s *serveServer) handleSessionRuntimeEffort(w http.ResponseWriter, r *http.
 	})
 }
 
-func (s *serveServer) handleSessionInterjectionCancel(w http.ResponseWriter, r *http.Request, sessionID, interjectionID string) {
-	interjectionID = strings.TrimSpace(interjectionID)
-	if interjectionID == "" {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "interjection id is required")
+func (s *serveServer) handleSessionSteeringCancel(w http.ResponseWriter, r *http.Request, sessionID, steeringID string) {
+	manager := s.ensureResponseRuns()
+	boundary := manager.sessionBoundary(sessionID)
+	boundary.Lock()
+	defer boundary.Unlock()
+	if strings.Contains(r.URL.Path, "/steering/") {
+		active := manager.activeRunID(sessionID)
+		if active != "" {
+			expected := r.URL.Query().Get("expected_response_id")
+			epoch, err := strconv.ParseInt(r.URL.Query().Get("expected_run_epoch"), 10, 64)
+			if expected == "" || err != nil || epoch <= 0 {
+				writeOpenAIError(w, 400, "invalid_request_error", "expected response and positive run epoch are required")
+				return
+			}
+			run, ok := manager.get(active)
+			if !ok || active != expected || run.runEpoch != epoch {
+				writeOpenAIError(w, 409, "response_owner_conflict", "active response changed")
+				return
+			}
+		}
+	}
+
+	steeringID = strings.TrimSpace(steeringID)
+	if steeringID == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "steering id is required")
 		return
 	}
 	if s.sessionMgr != nil {
 		if rt, ok := s.sessionMgr.Get(sessionID); ok && rt != nil && rt.engine != nil {
-			cancelled, err := rt.cancelPendingInterjection(r.Context(), sessionID, interjectionID)
+			cancelled, err := rt.cancelPendingSteering(r.Context(), sessionID, steeringID)
 			if err != nil {
-				writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to cancel pending interjection")
+				writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to cancel pending steering")
 				return
 			}
 			if !cancelled {
-				writeOpenAIError(w, http.StatusConflict, "conflict_error", "interjection is not queued or has already been committed")
+				writeOpenAIError(w, http.StatusConflict, "conflict_error", "steering is not queued or has already been committed")
 				return
 			}
-			s.publishEvent(serveEventInput{Type: serveEventSessionRuntimeChanged, SessionID: sessionID, Reason: "interjection_cancelled"})
-			writeJSON(w, http.StatusOK, map[string]any{"cancelled": true, "interjection_id": interjectionID})
+			s.publishEvent(serveEventInput{Type: serveEventSessionRuntimeChanged, SessionID: sessionID, Reason: "steering_cancelled"})
+			writeJSON(w, http.StatusOK, map[string]any{"cancelled": true, "steering_id": steeringID})
 			return
 		}
 	}
 
 	cancelled := false
-	if pendingStore, ok := session.AsPendingInterjectionStore(s.store); ok {
-		entries, err := pendingStore.ListPendingInterjections(r.Context(), sessionID)
+	if pendingStore, ok := session.AsPendingSteeringStore(s.store); ok {
+		entries, err := pendingStore.ListPendingSteering(r.Context(), sessionID)
 		if err != nil {
-			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to read pending interjection")
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to read pending steering")
 			return
 		}
 		for _, entry := range entries {
-			if entry.ID == interjectionID {
+			if entry.ID == steeringID && entry.OwnerKind == "" {
 				cancelled = true
 				break
 			}
 		}
 		if cancelled {
-			if err := pendingStore.DeletePendingInterjection(r.Context(), sessionID, interjectionID); err != nil {
-				writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to cancel pending interjection")
+			if err := pendingStore.DeletePendingSteering(r.Context(), sessionID, steeringID); err != nil {
+				writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to cancel pending steering")
 				return
 			}
 		}
 	}
 	if !cancelled {
-		writeOpenAIError(w, http.StatusConflict, "conflict_error", "interjection is not queued or has already been committed")
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", "steering is not queued or has already been committed")
 		return
 	}
-	s.publishEvent(serveEventInput{Type: serveEventSessionRuntimeChanged, SessionID: sessionID, Reason: "interjection_cancelled"})
-	writeJSON(w, http.StatusOK, map[string]any{"cancelled": true, "interjection_id": interjectionID})
+	s.publishEvent(serveEventInput{Type: serveEventSessionRuntimeChanged, SessionID: sessionID, Reason: "steering_cancelled"})
+	writeJSON(w, http.StatusOK, map[string]any{"cancelled": true, "steering_id": steeringID})
 }
 
 func (s *serveServer) newTitleProvider() (llm.Provider, error) {
@@ -3056,6 +3117,7 @@ func (s *serveServer) auth(next http.HandlerFunc) http.HandlerFunc {
 			writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "invalid authentication credentials")
 			return
 		}
+
 		next(w, r)
 	}
 }
@@ -3093,7 +3155,7 @@ func (s *serveServer) cors(next http.HandlerFunc) http.HandlerFunc {
 				w.Header().Add("Vary", "Origin")
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Last-Event-ID, X-Term-LLM-Session-ID, X-Term-LLM-Draft-ID, X-Term-LLM-Push-Subscription-ID, session_id, Idempotency-Key, X-Idempotency-Key, X-Term-LLM-Request-ID, X-Term-LLM-UI-Version, X-API-Key, anthropic-version")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Last-Event-ID, X-Term-LLM-Steering-Protocol, X-Term-LLM-Session-ID, X-Term-LLM-Draft-ID, X-Term-LLM-Push-Subscription-ID, session_id, Idempotency-Key, X-Idempotency-Key, X-Term-LLM-Request-ID, X-Term-LLM-UI-Version, X-API-Key, anthropic-version")
 			w.Header().Set("Access-Control-Expose-Headers", "x-session-id, x-session-number, x-response-id, x-branch-anchor-id, x-term-llm-ui-version, x-term-llm-response-status")
 		}
 
@@ -3104,6 +3166,15 @@ func (s *serveServer) cors(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		version := r.Header.Get(steeringProtocolHeader)
+		if version != "" && version != "1" {
+			writeOpenAIError(w, 400, "invalid_request_error", "unsupported steering protocol")
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/v1/") {
+			w.Header().Add("Vary", steeringProtocolHeader)
+			w = &steeringWireWriter{ResponseWriter: w, canonical: version == "1" || strings.Contains(r.URL.Path, "/steering")}
+		}
 		next(w, r)
 	}
 }

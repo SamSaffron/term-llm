@@ -1,3 +1,4 @@
+import { normalizeSteering } from './steering';
 import type {
   ActiveRun,
   ApprovalPrompt,
@@ -262,6 +263,7 @@ function validate(
   projection: ResponseProjection,
   event: ResponseEvent,
 ): { duplicate: boolean; sequence: number; responseId: string; epoch: number } {
+  event = normalizeSteering(event);
   if (event.type === 'response.stream_error')
     return {
       duplicate: false,
@@ -562,10 +564,10 @@ export function reduceResponse(
           }
         : next;
     }
-    case 'response.interjection': {
-      const clientMessageId = text(event.client_message_id || event.interjection_id);
+    case 'response.steering': {
+      const clientMessageId = text(event.client_message_id || event.steering_id);
       if (!clientMessageId)
-        throw new ResponseProtocolError('Interjection is missing client_message_id', 'gap');
+        throw new ResponseProtocolError('Steering is missing client_message_id', 'gap');
       if (
         messages.some(
           (message) => message.role === 'user' && message.clientMessageId === clientMessageId,
@@ -584,7 +586,7 @@ export function reduceResponse(
             clientMessageId,
             created: Date.now(),
             responseId,
-            interruptState: 'interject',
+            interruptState: 'steer',
           },
         ],
       };
@@ -811,7 +813,7 @@ export const RESPONSE_EVENT_TYPES = [
   'response.tool_exec.start',
   'response.tool_exec.end',
   'response.guardian.review',
-  'response.interjection',
+  'response.steering',
   'response.compaction',
   'response.phase',
   'response.model_swap.progress',

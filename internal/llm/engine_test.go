@@ -1879,10 +1879,10 @@ func TestEngineStopsAfterAsyncFinishingTool(t *testing.T) {
 		}
 		if event.Type == EventDone {
 			boundaryChecked = true
-			if _, status := engine.QueueInterjectionWithStatus(QueuedInterjection{ID: "after-finish", Message: UserText("too late")}); status != InterjectionQueueRunFinished {
-				t.Fatalf("finishing-tool boundary status = %q, want %q", status, InterjectionQueueRunFinished)
+			if _, status := engine.QueueSteeringWithStatus(QueuedSteering{ID: "after-finish", Message: UserText("too late")}); status != SteeringQueueRunFinished {
+				t.Fatalf("finishing-tool boundary status = %q, want %q", status, SteeringQueueRunFinished)
 			}
-			if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+			if pending := engine.ListPendingSteering(); len(pending) != 0 {
 				t.Fatalf("finishing-tool boundary retained phantom steer: %#v", pending)
 			}
 		}
@@ -4048,11 +4048,11 @@ func TestEngineRequestModelSwitchAppliesBeforeNextToolTurn(t *testing.T) {
 	}
 }
 
-// --- Interjection tests ---
+// --- Steering tests ---
 
-// TestEngineInterjection_Basic verifies that a user interjection queued during
+// TestEngineSteering_Basic verifies that a user steering queued during
 // tool execution appears in the conversation as a user message after tool results.
-func TestEngineInterjection_Basic(t *testing.T) {
+func TestEngineSteering_Basic(t *testing.T) {
 	t.Parallel()
 
 	tool := &delayingTool{delay: 50 * time.Millisecond}
@@ -4089,12 +4089,12 @@ func TestEngineInterjection_Basic(t *testing.T) {
 	}
 	defer stream.Close()
 
-	// Queue the interjection while the stream is in progress
-	engine.Interject("stop doing that")
+	// Queue the steering while the stream is in progress
+	engine.Steer("stop doing that")
 
 	var text strings.Builder
-	var gotInterjection bool
-	var interjectionText string
+	var gotSteering bool
+	var steeringText string
 
 	for {
 		event, err := stream.Recv()
@@ -4111,24 +4111,24 @@ func TestEngineInterjection_Basic(t *testing.T) {
 			}
 		case EventTextDelta:
 			text.WriteString(event.Text)
-		case EventInterjection:
-			gotInterjection = true
-			interjectionText = event.Text
+		case EventSteering:
+			gotSteering = true
+			steeringText = event.Text
 		}
 	}
 
-	if !gotInterjection {
-		t.Fatal("expected EventInterjection to be emitted")
+	if !gotSteering {
+		t.Fatal("expected EventSteering to be emitted")
 	}
-	if interjectionText != "stop doing that" {
-		t.Fatalf("expected interjection text %q, got %q", "stop doing that", interjectionText)
+	if steeringText != "stop doing that" {
+		t.Fatalf("expected steering text %q, got %q", "stop doing that", steeringText)
 	}
 	if text.String() != "final answer" {
 		t.Fatalf("expected final text %q, got %q", "final answer", text.String())
 	}
 
-	// Verify the LLM saw the interjection on the second call:
-	// Messages should be: [user] + [assistant+tool_call] + [tool_result] + [user interjection]
+	// Verify the LLM saw the steering on the second call:
+	// Messages should be: [user] + [assistant+tool_call] + [tool_result] + [user steering]
 	if len(provider.calls) < 2 {
 		t.Fatalf("expected at least 2 provider calls, got %d", len(provider.calls))
 	}
@@ -4138,11 +4138,11 @@ func TestEngineInterjection_Basic(t *testing.T) {
 		t.Fatalf("expected last message in second call to be user role, got %v", lastMsg.Role)
 	}
 	if len(lastMsg.Parts) == 0 || lastMsg.Parts[0].Text != "stop doing that" {
-		t.Fatalf("expected last message text to be interjection, got %v", lastMsg.Parts)
+		t.Fatalf("expected last message text to be steering, got %v", lastMsg.Parts)
 	}
 }
 
-func TestEngineInterjection_WithIDEmitsMatchingEvent(t *testing.T) {
+func TestEngineSteering_WithIDEmitsMatchingEvent(t *testing.T) {
 	t.Parallel()
 
 	tool := &delayingTool{delay: 50 * time.Millisecond}
@@ -4174,7 +4174,7 @@ func TestEngineInterjection_WithIDEmitsMatchingEvent(t *testing.T) {
 	}
 	defer stream.Close()
 
-	engine.InterjectWithID("custom-interject", "stop doing that")
+	engine.SteerWithID("custom-steer", "stop doing that")
 
 	for {
 		event, err := stream.Recv()
@@ -4184,106 +4184,106 @@ func TestEngineInterjection_WithIDEmitsMatchingEvent(t *testing.T) {
 		if err != nil {
 			t.Fatalf("recv error: %v", err)
 		}
-		if event.Type == EventInterjection {
-			if event.InterjectionID != "custom-interject" {
-				t.Fatalf("interjection id = %q, want %q", event.InterjectionID, "custom-interject")
+		if event.Type == EventSteering {
+			if event.SteeringID != "custom-steer" {
+				t.Fatalf("steering id = %q, want %q", event.SteeringID, "custom-steer")
 			}
 			if event.Text != "stop doing that" {
-				t.Fatalf("interjection text = %q, want %q", event.Text, "stop doing that")
+				t.Fatalf("steering text = %q, want %q", event.Text, "stop doing that")
 			}
 			return
 		}
 	}
 
-	t.Fatal("expected EventInterjection to be emitted")
+	t.Fatal("expected EventSteering to be emitted")
 }
 
-func TestClaimInterjectionsBatchIsAtomic(t *testing.T) {
+func TestClaimSteeringBatchIsAtomic(t *testing.T) {
 	engine := NewEngine(&fakeProvider{}, nil)
-	committed := QueuedInterjection{ID: "msg-committed", Message: UserText("committed")}
-	engine.QueueInterjection(committed)
-	engine.DrainInterjections()
+	committed := QueuedSteering{ID: "msg-committed", Message: UserText("committed")}
+	engine.QueueSteering(committed)
+	engine.DrainSteering()
 	for _, id := range []string{"msg-first", "msg-second"} {
-		engine.QueueInterjection(QueuedInterjection{ID: id, Message: UserText(id)})
+		engine.QueueSteering(QueuedSteering{ID: id, Message: UserText(id)})
 	}
 
-	statuses := engine.ClaimInterjections([]string{"msg-first", committed.ID})
-	if len(statuses) != 2 || statuses[0] != InterjectionClaimed || statuses[1] != InterjectionClaimCommitted {
+	statuses := engine.ClaimSteering([]string{"msg-first", committed.ID})
+	if len(statuses) != 2 || statuses[0] != SteeringClaimed || statuses[1] != SteeringClaimCommitted {
 		t.Fatalf("statuses = %#v", statuses)
 	}
-	if pending := engine.ListPendingInterjections(); len(pending) != 2 {
+	if pending := engine.ListPendingSteering(); len(pending) != 2 {
 		t.Fatalf("conflicted batch partially claimed queue: %#v", pending)
 	}
 
-	statuses = engine.ClaimInterjections([]string{"msg-first", "msg-second"})
-	if statuses[0] != InterjectionClaimed || statuses[1] != InterjectionClaimed {
+	statuses = engine.ClaimSteering([]string{"msg-first", "msg-second"})
+	if statuses[0] != SteeringClaimed || statuses[1] != SteeringClaimed {
 		t.Fatalf("claimable statuses = %#v", statuses)
 	}
-	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+	if pending := engine.ListPendingSteering(); len(pending) != 0 {
 		t.Fatalf("claimed batch remained queued: %#v", pending)
 	}
 }
 
-func TestQueueInterjectionDeduplicatesStableID(t *testing.T) {
+func TestQueueSteeringDeduplicatesStableID(t *testing.T) {
 	engine := NewEngine(&fakeProvider{}, nil)
-	entry := QueuedInterjection{
+	entry := QueuedSteering{
 		ID:          "msg_duplicate",
 		Message:     UserText("only once"),
 		DisplayText: "only once",
 	}
 
-	if got := engine.QueueInterjection(entry); got != entry.ID {
+	if got := engine.QueueSteering(entry); got != entry.ID {
 		t.Fatalf("first id = %q, want %q", got, entry.ID)
 	}
-	if got := engine.QueueInterjection(entry); got != entry.ID {
+	if got := engine.QueueSteering(entry); got != entry.ID {
 		t.Fatalf("duplicate id = %q, want %q", got, entry.ID)
 	}
 
-	pending := engine.ListPendingInterjections()
+	pending := engine.ListPendingSteering()
 	if len(pending) != 1 {
-		t.Fatalf("pending interjections = %d, want 1: %#v", len(pending), pending)
+		t.Fatalf("pending steering = %d, want 1: %#v", len(pending), pending)
 	}
 	if pending[0].Message.ClientMessageID != entry.ID {
 		t.Fatalf("message client id = %q, want %q", pending[0].Message.ClientMessageID, entry.ID)
 	}
-	if claimed := engine.ClaimInterjection(entry.ID); claimed != InterjectionClaimed {
-		t.Fatalf("queued claim = %q, want %q", claimed, InterjectionClaimed)
+	if claimed := engine.ClaimSteeringEntry(entry.ID); claimed != SteeringClaimed {
+		t.Fatalf("queued claim = %q, want %q", claimed, SteeringClaimed)
 	}
-	engine.QueueInterjection(entry)
-	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+	engine.QueueSteering(entry)
+	if pending := engine.ListPendingSteering(); len(pending) != 0 {
 		t.Fatalf("claimed id was requeued: %#v", pending)
 	}
-	if claimed := engine.ClaimInterjection(entry.ID); claimed != InterjectionClaimFollowUpOwned {
-		t.Fatalf("claimed tombstone = %q, want %q", claimed, InterjectionClaimFollowUpOwned)
+	if claimed := engine.ClaimSteeringEntry(entry.ID); claimed != SteeringClaimFollowUpOwned {
+		t.Fatalf("claimed tombstone = %q, want %q", claimed, SteeringClaimFollowUpOwned)
 	}
-	if _, status := engine.QueueInterjectionWithStatus(entry); status != InterjectionQueueFollowUpOwned {
-		t.Fatalf("claimed requeue status = %q, want %q", status, InterjectionQueueFollowUpOwned)
+	if _, status := engine.QueueSteeringWithStatus(entry); status != SteeringQueueFollowUpOwned {
+		t.Fatalf("claimed requeue status = %q, want %q", status, SteeringQueueFollowUpOwned)
 	}
-	engine.ReleaseClaimedInterjections([]string{entry.ID})
-	if _, status := engine.QueueInterjectionWithStatus(entry); status != InterjectionQueueQueued {
-		t.Fatalf("released requeue status = %q, want %q", status, InterjectionQueueQueued)
+	engine.ReleaseClaimedSteering([]string{entry.ID})
+	if _, status := engine.QueueSteeringWithStatus(entry); status != SteeringQueueQueued {
+		t.Fatalf("released requeue status = %q, want %q", status, SteeringQueueQueued)
 	}
-	engine.CancelInterjection(entry.ID)
+	engine.CancelSteering(entry.ID)
 
 	committedEntry := entry
 	committedEntry.ID = "msg_committed"
-	engine.QueueInterjection(committedEntry)
-	if drained := engine.DrainInterjections(); len(drained) != 1 {
-		t.Fatalf("drained interjections = %#v, want one", drained)
+	engine.QueueSteering(committedEntry)
+	if drained := engine.DrainSteering(); len(drained) != 1 {
+		t.Fatalf("drained steering = %#v, want one", drained)
 	}
-	if claimed := engine.ClaimInterjection(committedEntry.ID); claimed != InterjectionClaimCommitted {
-		t.Fatalf("committed claim = %q, want %q", claimed, InterjectionClaimCommitted)
+	if claimed := engine.ClaimSteeringEntry(committedEntry.ID); claimed != SteeringClaimCommitted {
+		t.Fatalf("committed claim = %q, want %q", claimed, SteeringClaimCommitted)
 	}
 	engine.ResetConversation()
-	engine.QueueInterjection(committedEntry)
-	if pending := engine.ListPendingInterjections(); len(pending) != 1 {
+	engine.QueueSteering(committedEntry)
+	if pending := engine.ListPendingSteering(); len(pending) != 1 {
 		t.Fatalf("reset conversation retained committed tombstone: %#v", pending)
 	}
 }
 
-// TestEngineInterjection_NoToolCalls verifies that an interjection stays in the
+// TestEngineSteering_NoToolCalls verifies that an steering stays in the
 // channel when the LLM returns no tool calls (text-only response).
-func TestEngineInterjection_NoToolCalls(t *testing.T) {
+func TestEngineSteering_NoToolCalls(t *testing.T) {
 	t.Parallel()
 
 	provider := &fakeProvider{
@@ -4300,8 +4300,8 @@ func TestEngineInterjection_NoToolCalls(t *testing.T) {
 		Messages: []Message{UserText("hello")},
 	}
 
-	// Queue interjection before streaming
-	engine.Interject("change of plan")
+	// Queue steering before streaming
+	engine.Steer("change of plan")
 
 	stream, err := engine.Stream(context.Background(), req)
 	if err != nil {
@@ -4309,7 +4309,7 @@ func TestEngineInterjection_NoToolCalls(t *testing.T) {
 	}
 	defer stream.Close()
 
-	var gotInterjection bool
+	var gotSteering bool
 	for {
 		event, err := stream.Recv()
 		if err == io.EOF {
@@ -4318,24 +4318,24 @@ func TestEngineInterjection_NoToolCalls(t *testing.T) {
 		if err != nil {
 			t.Fatalf("recv error: %v", err)
 		}
-		if event.Type == EventInterjection {
-			gotInterjection = true
+		if event.Type == EventSteering {
+			gotSteering = true
 		}
 	}
 
-	// Interjection should NOT have been emitted (no tool execution path)
-	if gotInterjection {
-		t.Fatal("interjection should not be emitted when there are no tool calls")
+	// Steering should NOT have been emitted (no tool execution path)
+	if gotSteering {
+		t.Fatal("steering should not be emitted when there are no tool calls")
 	}
 
-	// The interjection should still be pending in the channel
-	residual := engine.DrainInterjection()
+	// The steering should still be pending in the channel
+	residual := engine.DrainSteeringText()
 	if residual != "change of plan" {
-		t.Fatalf("expected pending interjection %q, got %q", "change of plan", residual)
+		t.Fatalf("expected pending steering %q, got %q", "change of plan", residual)
 	}
 }
 
-func TestEngineInterjection_OrdinarySteerContinuesNoToolCalls(t *testing.T) {
+func TestEngineSteering_OrdinarySteerContinuesNoToolCalls(t *testing.T) {
 	t.Parallel()
 
 	provider := &fakeProvider{
@@ -4348,13 +4348,13 @@ func TestEngineInterjection_OrdinarySteerContinuesNoToolCalls(t *testing.T) {
 				}
 			case 1:
 				if len(req.Messages) < 3 {
-					t.Fatalf("second call messages = %d, want original + assistant + interjection", len(req.Messages))
+					t.Fatalf("second call messages = %d, want original + assistant + steering", len(req.Messages))
 				}
 				if req.Messages[len(req.Messages)-2].Role != RoleAssistant || MessageText(req.Messages[len(req.Messages)-2]) != "first response" {
 					t.Fatalf("second call penultimate message = %#v, want first assistant response", req.Messages[len(req.Messages)-2])
 				}
 				if req.Messages[len(req.Messages)-1].Role != RoleUser || MessageText(req.Messages[len(req.Messages)-1]) != "job done" {
-					t.Fatalf("second call final message = %#v, want auto-continue interjection", req.Messages[len(req.Messages)-1])
+					t.Fatalf("second call final message = %#v, want auto-continue steering", req.Messages[len(req.Messages)-1])
 				}
 				return []Event{
 					{Type: EventTextDelta, Text: "follow up"},
@@ -4371,7 +4371,7 @@ func TestEngineInterjection_OrdinarySteerContinuesNoToolCalls(t *testing.T) {
 	tool := &delayingTool{}
 	registry.Register(tool)
 	engine := NewEngine(provider, registry)
-	engine.QueueInterjection(QueuedInterjection{ID: "job-notify", Message: UserText("job done"), DisplayText: "job done"})
+	engine.QueueSteering(QueuedSteering{ID: "job-notify", Message: UserText("job done"), DisplayText: "job done"})
 	stream, err := engine.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}, Tools: []ToolSpec{tool.Spec()}, MaxTurns: 3})
 	if err != nil {
 		t.Fatalf("stream error: %v", err)
@@ -4379,7 +4379,7 @@ func TestEngineInterjection_OrdinarySteerContinuesNoToolCalls(t *testing.T) {
 	defer stream.Close()
 
 	var text strings.Builder
-	var gotInterjection bool
+	var gotSteering bool
 	for {
 		event, err := stream.Recv()
 		if err == io.EOF {
@@ -4391,15 +4391,15 @@ func TestEngineInterjection_OrdinarySteerContinuesNoToolCalls(t *testing.T) {
 		switch event.Type {
 		case EventTextDelta:
 			text.WriteString(event.Text)
-		case EventInterjection:
-			gotInterjection = true
-			if event.InterjectionID != "job-notify" || event.Text != "job done" {
-				t.Fatalf("interjection event = (%q, %q), want job-notify/job done", event.InterjectionID, event.Text)
+		case EventSteering:
+			gotSteering = true
+			if event.SteeringID != "job-notify" || event.Text != "job done" {
+				t.Fatalf("steering event = (%q, %q), want job-notify/job done", event.SteeringID, event.Text)
 			}
 		}
 	}
-	if !gotInterjection {
-		t.Fatal("expected auto-continue interjection event")
+	if !gotSteering {
+		t.Fatal("expected auto-continue steering event")
 	}
 	if got := text.String(); got != "first responsefollow up" {
 		t.Fatalf("stream text = %q, want first responsefollow up", got)
@@ -4407,12 +4407,12 @@ func TestEngineInterjection_OrdinarySteerContinuesNoToolCalls(t *testing.T) {
 	if len(provider.calls) != 2 {
 		t.Fatalf("provider calls = %d, want 2", len(provider.calls))
 	}
-	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
-		t.Fatalf("pending interjections = %#v, want none", pending)
+	if pending := engine.ListPendingSteering(); len(pending) != 0 {
+		t.Fatalf("pending steering = %#v, want none", pending)
 	}
 }
 
-func TestEngineInterjection_OrdinarySteersPreserveFIFOAtTextBoundary(t *testing.T) {
+func TestEngineSteering_OrdinarySteersPreserveFIFOAtTextBoundary(t *testing.T) {
 	t.Parallel()
 
 	provider := &fakeProvider{
@@ -4441,15 +4441,15 @@ func TestEngineInterjection_OrdinarySteersPreserveFIFOAtTextBoundary(t *testing.
 	tool := &delayingTool{}
 	registry.Register(tool)
 	engine := NewEngine(provider, registry)
-	engine.QueueInterjection(QueuedInterjection{ID: "user-note", Message: UserText("user note"), DisplayText: "user note"})
-	engine.QueueInterjection(QueuedInterjection{ID: "job-notify", Message: UserText("job done"), DisplayText: "job done"})
+	engine.QueueSteering(QueuedSteering{ID: "user-note", Message: UserText("user note"), DisplayText: "user note"})
+	engine.QueueSteering(QueuedSteering{ID: "job-notify", Message: UserText("job done"), DisplayText: "job done"})
 
 	stream, err := engine.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}, Tools: []ToolSpec{tool.Spec()}, MaxTurns: 3})
 	if err != nil {
 		t.Fatalf("stream error: %v", err)
 	}
 	defer stream.Close()
-	var interjectionIDs []string
+	var steeringIDs []string
 	for {
 		event, err := stream.Recv()
 		if err == io.EOF {
@@ -4458,25 +4458,25 @@ func TestEngineInterjection_OrdinarySteersPreserveFIFOAtTextBoundary(t *testing.
 		if err != nil {
 			t.Fatalf("recv error: %v", err)
 		}
-		if event.Type == EventInterjection {
-			interjectionIDs = append(interjectionIDs, event.InterjectionID)
-			if event.InterjectionStatus != InterjectionCommitted {
-				t.Fatalf("interjection status = %q, want committed", event.InterjectionStatus)
+		if event.Type == EventSteering {
+			steeringIDs = append(steeringIDs, event.SteeringID)
+			if event.SteeringStatus != SteeringCommitted {
+				t.Fatalf("steering status = %q, want committed", event.SteeringStatus)
 			}
 		}
 	}
-	if want := []string{"user-note", "job-notify"}; !reflect.DeepEqual(interjectionIDs, want) {
-		t.Fatalf("interjection event IDs = %#v, want %#v", interjectionIDs, want)
+	if want := []string{"user-note", "job-notify"}; !reflect.DeepEqual(steeringIDs, want) {
+		t.Fatalf("steering event IDs = %#v, want %#v", steeringIDs, want)
 	}
 	if len(provider.calls) != 2 {
 		t.Fatalf("provider calls = %d, want 2", len(provider.calls))
 	}
-	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
-		t.Fatalf("pending interjections = %#v, want none", pending)
+	if pending := engine.ListPendingSteering(); len(pending) != 0 {
+		t.Fatalf("pending steering = %#v, want none", pending)
 	}
 }
 
-func TestEngineInterjection_TextBoundaryPreservesStructuredParts(t *testing.T) {
+func TestEngineSteering_TextBoundaryPreservesStructuredParts(t *testing.T) {
 	t.Parallel()
 
 	structured := Message{
@@ -4508,7 +4508,7 @@ func TestEngineInterjection_TextBoundaryPreservesStructuredParts(t *testing.T) {
 		persisted = append(persisted, messages...)
 		return nil
 	})
-	engine.QueueInterjection(QueuedInterjection{ID: "structured-steer", Message: structured, DisplayText: "inspect attachments"})
+	engine.QueueSteering(QueuedSteering{ID: "structured-steer", Message: structured, DisplayText: "inspect attachments"})
 
 	stream, err := engine.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}, Tools: []ToolSpec{tool.Spec()}, MaxTurns: 3})
 	if err != nil {
@@ -4523,12 +4523,12 @@ func TestEngineInterjection_TextBoundaryPreservesStructuredParts(t *testing.T) {
 		if recvErr != nil {
 			t.Fatalf("Recv: %v", recvErr)
 		}
-		if event.Type == EventInterjection {
+		if event.Type == EventSteering {
 			copy := event
 			committed = &copy
 		}
 	}
-	if committed == nil || committed.InterjectionID != "structured-steer" || committed.InterjectionStatus != InterjectionCommitted {
+	if committed == nil || committed.SteeringID != "structured-steer" || committed.SteeringStatus != SteeringCommitted {
 		t.Fatalf("committed event = %#v", committed)
 	}
 	if !reflect.DeepEqual(committed.Message.Parts, structured.Parts) {
@@ -4546,7 +4546,7 @@ func TestEngineInterjection_TextBoundaryPreservesStructuredParts(t *testing.T) {
 	}
 }
 
-func TestEngineInterjection_SimpleStreamRejectsFirstRunSteeringWhileActive(t *testing.T) {
+func TestEngineSteering_SimpleStreamRejectsFirstRunSteeringWhileActive(t *testing.T) {
 	t.Parallel()
 
 	started := make(chan struct{})
@@ -4568,17 +4568,17 @@ func TestEngineInterjection_SimpleStreamRejectsFirstRunSteeringWhileActive(t *te
 	defer stream.Close()
 	<-started
 
-	if _, status := engine.QueueInterjectionWithStatus(QueuedInterjection{ID: "during-simple", Message: UserText("steer")}); status != InterjectionQueueRunFinished {
-		t.Fatalf("simple-stream status = %q, want %q", status, InterjectionQueueRunFinished)
+	if _, status := engine.QueueSteeringWithStatus(QueuedSteering{ID: "during-simple", Message: UserText("steer")}); status != SteeringQueueRunFinished {
+		t.Fatalf("simple-stream status = %q, want %q", status, SteeringQueueRunFinished)
 	}
-	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+	if pending := engine.ListPendingSteering(); len(pending) != 0 {
 		t.Fatalf("simple stream retained unconsumable steer: %#v", pending)
 	}
 	close(release)
 	drainStream(t, stream)
 }
 
-func TestEngineInterjection_SimpleStreamClearsPriorAgenticOwnership(t *testing.T) {
+func TestEngineSteering_SimpleStreamClearsPriorAgenticOwnership(t *testing.T) {
 	t.Parallel()
 
 	simpleStarted := make(chan struct{})
@@ -4611,17 +4611,17 @@ func TestEngineInterjection_SimpleStreamClearsPriorAgenticOwnership(t *testing.T
 	}
 	defer simple.Close()
 	<-simpleStarted
-	if _, status := engine.QueueInterjectionWithStatus(QueuedInterjection{ID: "after-agentic", Message: UserText("steer")}); status != InterjectionQueueRunFinished {
-		t.Fatalf("simple stream after agentic status = %q, want %q", status, InterjectionQueueRunFinished)
+	if _, status := engine.QueueSteeringWithStatus(QueuedSteering{ID: "after-agentic", Message: UserText("steer")}); status != SteeringQueueRunFinished {
+		t.Fatalf("simple stream after agentic status = %q, want %q", status, SteeringQueueRunFinished)
 	}
-	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+	if pending := engine.ListPendingSteering(); len(pending) != 0 {
 		t.Fatalf("simple stream retained stale-owned steer: %#v", pending)
 	}
 	close(simpleRelease)
 	drainStream(t, simple)
 }
 
-func TestEngineInterjection_FinalAgenticTurnRejectsSteeringWhileStreaming(t *testing.T) {
+func TestEngineSteering_FinalAgenticTurnRejectsSteeringWhileStreaming(t *testing.T) {
 	t.Parallel()
 
 	started := make(chan struct{})
@@ -4646,17 +4646,17 @@ func TestEngineInterjection_FinalAgenticTurnRejectsSteeringWhileStreaming(t *tes
 	defer stream.Close()
 	<-started
 
-	if _, status := engine.QueueInterjectionWithStatus(QueuedInterjection{ID: "during-final", Message: UserText("too late")}); status != InterjectionQueueRunFinished {
-		t.Fatalf("final-turn status = %q, want %q", status, InterjectionQueueRunFinished)
+	if _, status := engine.QueueSteeringWithStatus(QueuedSteering{ID: "during-final", Message: UserText("too late")}); status != SteeringQueueRunFinished {
+		t.Fatalf("final-turn status = %q, want %q", status, SteeringQueueRunFinished)
 	}
-	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+	if pending := engine.ListPendingSteering(); len(pending) != 0 {
 		t.Fatalf("final provider turn retained phantom steer: %#v", pending)
 	}
 	close(release)
 	drainStream(t, stream)
 }
 
-func TestEngineInterjection_MaxTurnsLeavesSteersPending(t *testing.T) {
+func TestEngineSteering_MaxTurnsLeavesSteersPending(t *testing.T) {
 	t.Parallel()
 
 	provider := &fakeProvider{script: func(_ int, _ Request) []Event {
@@ -4666,7 +4666,7 @@ func TestEngineInterjection_MaxTurnsLeavesSteersPending(t *testing.T) {
 	tool := &delayingTool{}
 	registry.Register(tool)
 	engine := NewEngine(provider, registry)
-	engine.QueueInterjection(QueuedInterjection{ID: "before-final", Message: UserText("recover me")})
+	engine.QueueSteering(QueuedSteering{ID: "before-final", Message: UserText("recover me")})
 
 	stream, err := engine.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}, Tools: []ToolSpec{tool.Spec()}, MaxTurns: 1})
 	if err != nil {
@@ -4680,26 +4680,26 @@ func TestEngineInterjection_MaxTurnsLeavesSteersPending(t *testing.T) {
 		if recvErr != nil {
 			t.Fatalf("Recv: %v", recvErr)
 		}
-		if event.Type == EventInterjection {
+		if event.Type == EventSteering {
 			t.Fatalf("max-turn steer was committed: %#v", event)
 		}
 	}
-	if _, status := engine.QueueInterjectionWithStatus(QueuedInterjection{ID: "after-final", Message: UserText("follow up")}); status != InterjectionQueueRunFinished {
-		t.Fatalf("post-boundary queue status = %q, want %q", status, InterjectionQueueRunFinished)
+	if _, status := engine.QueueSteeringWithStatus(QueuedSteering{ID: "after-final", Message: UserText("follow up")}); status != SteeringQueueRunFinished {
+		t.Fatalf("post-boundary queue status = %q, want %q", status, SteeringQueueRunFinished)
 	}
-	pending := engine.ListPendingInterjections()
+	pending := engine.ListPendingSteering()
 	if len(pending) != 1 || pending[0].ID != "before-final" {
 		t.Fatalf("pending = %#v, want only the pre-boundary steer", pending)
 	}
-	if !engine.CancelInterjection("before-final") {
+	if !engine.CancelSteering("before-final") {
 		t.Fatal("pre-boundary max-turn steer should remain cancellable")
 	}
-	if engine.CancelInterjection("after-final") {
+	if engine.CancelSteering("after-final") {
 		t.Fatal("run_finished steer must not leave a phantom queue entry")
 	}
 }
 
-func TestEngineInterjection_MaxTurnToolBoundaryRejectsLateSteer(t *testing.T) {
+func TestEngineSteering_MaxTurnToolBoundaryRejectsLateSteer(t *testing.T) {
 	t.Parallel()
 
 	tool := &delayingTool{}
@@ -4742,10 +4742,10 @@ func TestEngineInterjection_MaxTurnToolBoundaryRejectsLateSteer(t *testing.T) {
 			continue
 		}
 		sawBoundary = true
-		if _, status := engine.QueueInterjectionWithStatus(QueuedInterjection{ID: "after-max-tool", Message: UserText("too late")}); status != InterjectionQueueRunFinished {
-			t.Fatalf("max-turn tool boundary status = %q, want %q", status, InterjectionQueueRunFinished)
+		if _, status := engine.QueueSteeringWithStatus(QueuedSteering{ID: "after-max-tool", Message: UserText("too late")}); status != SteeringQueueRunFinished {
+			t.Fatalf("max-turn tool boundary status = %q, want %q", status, SteeringQueueRunFinished)
 		}
-		if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+		if pending := engine.ListPendingSteering(); len(pending) != 0 {
 			t.Fatalf("max-turn tool boundary retained phantom steer: %#v", pending)
 		}
 	}
@@ -4754,7 +4754,7 @@ func TestEngineInterjection_MaxTurnToolBoundaryRejectsLateSteer(t *testing.T) {
 	}
 }
 
-func TestEngineInterjection_RunFinishedStateResetsForNextRun(t *testing.T) {
+func TestEngineSteering_RunFinishedStateResetsForNextRun(t *testing.T) {
 	t.Parallel()
 
 	provider := &fakeProvider{script: func(call int, _ Request) []Event {
@@ -4779,10 +4779,10 @@ func TestEngineInterjection_RunFinishedStateResetsForNextRun(t *testing.T) {
 			t.Fatalf("first Recv: %v", recvErr)
 		}
 	}
-	if _, status := engine.QueueInterjectionWithStatus(QueuedInterjection{ID: "too-late", Message: UserText("late")}); status != InterjectionQueueRunFinished {
+	if _, status := engine.QueueSteeringWithStatus(QueuedSteering{ID: "too-late", Message: UserText("late")}); status != SteeringQueueRunFinished {
 		t.Fatalf("late status = %q, want run_finished", status)
 	}
-	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+	if pending := engine.ListPendingSteering(); len(pending) != 0 {
 		t.Fatalf("late steer was retained after run_finished: %#v", pending)
 	}
 
@@ -4800,7 +4800,7 @@ func TestEngineInterjection_RunFinishedStateResetsForNextRun(t *testing.T) {
 		t.Fatalf("second Stream: %v", err)
 	}
 	<-secondStarted
-	if _, status := engine.QueueInterjectionWithStatus(QueuedInterjection{ID: "next-run", Message: UserText("steer next")}); status != InterjectionQueueQueued {
+	if _, status := engine.QueueSteeringWithStatus(QueuedSteering{ID: "next-run", Message: UserText("steer next")}); status != SteeringQueueQueued {
 		t.Fatalf("new-run status = %q, want queued", status)
 	}
 	close(secondRelease)
@@ -4813,7 +4813,7 @@ func TestEngineInterjection_RunFinishedStateResetsForNextRun(t *testing.T) {
 		if recvErr != nil {
 			t.Fatalf("second Recv: %v", recvErr)
 		}
-		if event.Type == EventInterjection && event.InterjectionID == "next-run" {
+		if event.Type == EventSteering && event.SteeringID == "next-run" {
 			committed = true
 		}
 	}
@@ -4822,9 +4822,9 @@ func TestEngineInterjection_RunFinishedStateResetsForNextRun(t *testing.T) {
 	}
 }
 
-// TestEngineInterjection_MultipleInterjections verifies that sending multiple
-// interjections before a turn completes injects all of them in FIFO order.
-func TestEngineInterjection_MultipleInterjections(t *testing.T) {
+// TestEngineSteering_MultipleSteering verifies that sending multiple
+// steering before a turn completes injects all of them in FIFO order.
+func TestEngineSteering_MultipleSteering(t *testing.T) {
 	t.Parallel()
 
 	tool := &delayingTool{delay: 100 * time.Millisecond}
@@ -4861,11 +4861,11 @@ func TestEngineInterjection_MultipleInterjections(t *testing.T) {
 	}
 	defer stream.Close()
 
-	// Queue two interjections rapidly — both should be kept FIFO
-	engine.Interject("first attempt")
-	engine.Interject("second attempt")
+	// Queue two steering rapidly — both should be kept FIFO
+	engine.Steer("first attempt")
+	engine.Steer("second attempt")
 
-	var interjectionTexts []string
+	var steeringTexts []string
 
 	for {
 		event, err := stream.Recv()
@@ -4875,8 +4875,8 @@ func TestEngineInterjection_MultipleInterjections(t *testing.T) {
 		if err != nil {
 			t.Fatalf("recv error: %v", err)
 		}
-		if event.Type == EventInterjection {
-			interjectionTexts = append(interjectionTexts, event.Text)
+		if event.Type == EventSteering {
+			steeringTexts = append(steeringTexts, event.Text)
 		}
 		if event.Type == EventError && event.Err != nil {
 			t.Fatalf("event error: %v", event.Err)
@@ -4884,12 +4884,12 @@ func TestEngineInterjection_MultipleInterjections(t *testing.T) {
 	}
 
 	want := []string{"first attempt", "second attempt"}
-	if !reflect.DeepEqual(interjectionTexts, want) {
-		t.Fatalf("interjection texts = %#v, want %#v", interjectionTexts, want)
+	if !reflect.DeepEqual(steeringTexts, want) {
+		t.Fatalf("steering texts = %#v, want %#v", steeringTexts, want)
 	}
 }
 
-func TestEngineInterjection_StructuredImageFIFO(t *testing.T) {
+func TestEngineSteering_StructuredImageFIFO(t *testing.T) {
 	t.Parallel()
 
 	tool := &delayingTool{delay: 10 * time.Millisecond}
@@ -4915,7 +4915,7 @@ func TestEngineInterjection_StructuredImageFIFO(t *testing.T) {
 	}
 	defer stream.Close()
 
-	engine.QueueInterjection(QueuedInterjection{ID: "img-1", Message: UserImageMessage("image/png", "aW1n", "look"), DisplayText: "look"})
+	engine.QueueSteering(QueuedSteering{ID: "img-1", Message: UserImageMessage("image/png", "aW1n", "look"), DisplayText: "look"})
 
 	var gotEvent bool
 	for {
@@ -4926,10 +4926,10 @@ func TestEngineInterjection_StructuredImageFIFO(t *testing.T) {
 		if err != nil {
 			t.Fatalf("recv error: %v", err)
 		}
-		if event.Type == EventInterjection {
+		if event.Type == EventSteering {
 			gotEvent = true
-			if event.InterjectionID != "img-1" {
-				t.Fatalf("event id = %q, want img-1", event.InterjectionID)
+			if event.SteeringID != "img-1" {
+				t.Fatalf("event id = %q, want img-1", event.SteeringID)
 			}
 			if len(event.Message.Parts) != 2 || event.Message.Parts[0].Type != PartImage || event.Message.Parts[1].Type != PartText {
 				t.Fatalf("event message parts = %#v, want image+text", event.Message.Parts)
@@ -4937,7 +4937,7 @@ func TestEngineInterjection_StructuredImageFIFO(t *testing.T) {
 		}
 	}
 	if !gotEvent {
-		t.Fatal("expected EventInterjection")
+		t.Fatal("expected EventSteering")
 	}
 	if len(provider.calls) < 2 {
 		t.Fatalf("provider calls = %d, want at least 2", len(provider.calls))
@@ -4949,89 +4949,89 @@ func TestEngineInterjection_StructuredImageFIFO(t *testing.T) {
 	}
 }
 
-func TestEngineInterjection_CancelQueuedAndCommittedLifecycle(t *testing.T) {
+func TestEngineSteering_CancelQueuedAndCommittedLifecycle(t *testing.T) {
 	t.Parallel()
 
 	engine := NewEngine(NewMockProvider("test"), nil)
-	id := engine.QueueInterjection(QueuedInterjection{ID: "cancel-me", Message: UserText("drop me")})
+	id := engine.QueueSteering(QueuedSteering{ID: "cancel-me", Message: UserText("drop me")})
 	if id != "cancel-me" {
 		t.Fatalf("id = %q, want cancel-me", id)
 	}
-	if !engine.CancelInterjection("cancel-me") {
-		t.Fatal("expected queued interjection to cancel")
+	if !engine.CancelSteering("cancel-me") {
+		t.Fatal("expected queued steering to cancel")
 	}
-	if got := engine.DrainInterjection(); got != "" {
+	if got := engine.DrainSteeringText(); got != "" {
 		t.Fatalf("drain after cancel = %q, want empty", got)
 	}
-	engine.QueueInterjection(QueuedInterjection{ID: "cancel-me", Message: UserText("reuse me")})
-	if pending := engine.ListPendingInterjections(); len(pending) != 1 || pending[0].ID != "cancel-me" {
+	engine.QueueSteering(QueuedSteering{ID: "cancel-me", Message: UserText("reuse me")})
+	if pending := engine.ListPendingSteering(); len(pending) != 1 || pending[0].ID != "cancel-me" {
 		t.Fatalf("cancelled ID was not reusable: %#v", pending)
 	}
-	if !engine.CancelInterjection("cancel-me") {
-		t.Fatal("expected reused interjection to cancel")
+	if !engine.CancelSteering("cancel-me") {
+		t.Fatal("expected reused steering to cancel")
 	}
 
-	engine.QueueInterjection(QueuedInterjection{ID: "commit-me", Message: UserText("keep me")})
-	entries := engine.DrainInterjections()
-	if len(entries) != 1 || entries[0].ID != "commit-me" || entries[0].Status != InterjectionCommitted {
+	engine.QueueSteering(QueuedSteering{ID: "commit-me", Message: UserText("keep me")})
+	entries := engine.DrainSteering()
+	if len(entries) != 1 || entries[0].ID != "commit-me" || entries[0].Status != SteeringCommitted {
 		t.Fatalf("drained entries = %#v, want committed commit-me", entries)
 	}
-	if engine.CancelInterjection("commit-me") {
-		t.Fatal("committed interjection should not be cancellable")
+	if engine.CancelSteering("commit-me") {
+		t.Fatal("committed steering should not be cancellable")
 	}
 }
 
-// TestEngineInterjection_DrainOnNoPending verifies that drainInterjection
-// returns "" when nothing is queued and that DrainInterjection is safe
-// to call before any Interject().
-func TestEngineInterjection_DrainOnNoPending(t *testing.T) {
+// TestEngineSteering_DrainOnNoPending verifies that drainSteering
+// returns "" when nothing is queued and that DrainSteeringText is safe
+// to call before any Steer().
+func TestEngineSteering_DrainOnNoPending(t *testing.T) {
 	t.Parallel()
 
 	engine := NewEngine(NewMockProvider("test"), nil)
 
-	// Before any Interject: channel is nil, should return ""
-	if text := engine.DrainInterjection(); text != "" {
+	// Before any Steer: channel is nil, should return ""
+	if text := engine.DrainSteeringText(); text != "" {
 		t.Fatalf("expected empty string, got %q", text)
 	}
 
-	// After Interject + Drain: channel exists but is empty, should return ""
-	engine.Interject("test")
-	_ = engine.DrainInterjection()
-	if text := engine.DrainInterjection(); text != "" {
+	// After Steer + Drain: channel exists but is empty, should return ""
+	engine.Steer("test")
+	_ = engine.DrainSteeringText()
+	if text := engine.DrainSteeringText(); text != "" {
 		t.Fatalf("expected empty string after drain, got %q", text)
 	}
 }
 
-// TestEnginePeekInterjection verifies that PeekInterjection returns the pending
-// text non-destructively: the channel retains the value so DrainInterjection
+// TestEnginePeekSteering verifies that PeekSteering returns the pending
+// text non-destructively: the channel retains the value so DrainSteeringText
 // can still consume it afterwards.
-func TestEnginePeekInterjection(t *testing.T) {
+func TestEnginePeekSteering(t *testing.T) {
 	t.Parallel()
 
 	engine := NewEngine(NewMockProvider("test"), nil)
 
-	// Before any Interject: channel is nil, should return ""
-	if text := engine.PeekInterjection(); text != "" {
-		t.Fatalf("expected empty peek before Interject, got %q", text)
+	// Before any Steer: channel is nil, should return ""
+	if text := engine.PeekSteering(); text != "" {
+		t.Fatalf("expected empty peek before Steer, got %q", text)
 	}
 
-	engine.Interject("hello world")
+	engine.Steer("hello world")
 
 	// Peek twice — both should return the same value, neither should consume.
-	if text := engine.PeekInterjection(); text != "hello world" {
+	if text := engine.PeekSteering(); text != "hello world" {
 		t.Fatalf("first peek = %q, want %q", text, "hello world")
 	}
-	if text := engine.PeekInterjection(); text != "hello world" {
+	if text := engine.PeekSteering(); text != "hello world" {
 		t.Fatalf("second peek = %q, want %q", text, "hello world")
 	}
 
 	// Drain should still return it.
-	if text := engine.DrainInterjection(); text != "hello world" {
+	if text := engine.DrainSteeringText(); text != "hello world" {
 		t.Fatalf("drain after peek = %q, want %q", text, "hello world")
 	}
 
 	// Peek after drain: empty.
-	if text := engine.PeekInterjection(); text != "" {
+	if text := engine.PeekSteering(); text != "" {
 		t.Fatalf("peek after drain = %q, want empty", text)
 	}
 }
@@ -5099,10 +5099,10 @@ func TestCallbackStream_CloseWhileDrainingFiresCallbackOnce(t *testing.T) {
 	}
 }
 
-// TestEngineInterject_ConcurrentCallsDoNotBlock verifies that concurrent
-// Interject calls remain non-blocking even when several goroutines race to
-// replace the single pending interjection.
-func TestEngineInterject_ConcurrentCallsDoNotBlock(t *testing.T) {
+// TestEngineSteer_ConcurrentCallsDoNotBlock verifies that concurrent
+// Steer calls remain non-blocking even when several goroutines race to
+// replace the single pending steering.
+func TestEngineSteer_ConcurrentCallsDoNotBlock(t *testing.T) {
 	t.Parallel()
 
 	for attempt := 0; attempt < 50; attempt++ {
@@ -5117,7 +5117,7 @@ func TestEngineInterject_ConcurrentCallsDoNotBlock(t *testing.T) {
 			go func(i int) {
 				defer wg.Done()
 				<-start
-				engine.Interject(fmt.Sprintf("msg-%d", i))
+				engine.Steer(fmt.Sprintf("msg-%d", i))
 			}(i)
 		}
 
@@ -5132,18 +5132,18 @@ func TestEngineInterject_ConcurrentCallsDoNotBlock(t *testing.T) {
 		select {
 		case <-done:
 		case <-time.After(2 * time.Second):
-			t.Fatalf("concurrent Interject calls blocked on attempt %d", attempt)
+			t.Fatalf("concurrent Steer calls blocked on attempt %d", attempt)
 		}
 
-		if text := engine.DrainInterjection(); text == "" {
-			t.Fatalf("expected an interjection to remain queued on attempt %d", attempt)
+		if text := engine.DrainSteeringText(); text == "" {
+			t.Fatalf("expected an steering to remain queued on attempt %d", attempt)
 		}
 	}
 }
 
-// TestEngineInterjection_TurnCallback verifies that the turn callback receives
-// the interjected user message for session persistence.
-func TestEngineInterjection_TurnCallback(t *testing.T) {
+// TestEngineSteering_TurnCallback verifies that the turn callback receives
+// the steered user message for session persistence.
+func TestEngineSteering_TurnCallback(t *testing.T) {
 	t.Parallel()
 
 	tool := &delayingTool{delay: 50 * time.Millisecond}
@@ -5187,8 +5187,8 @@ func TestEngineInterjection_TurnCallback(t *testing.T) {
 		ToolChoice: ToolChoice{Mode: ToolChoiceAuto},
 	}
 
-	// Queue interjection
-	engine.Interject("hey wait")
+	// Queue steering
+	engine.Steer("hey wait")
 
 	stream, err := engine.Stream(context.Background(), req)
 	if err != nil {
@@ -5214,18 +5214,18 @@ func TestEngineInterjection_TurnCallback(t *testing.T) {
 
 	// We expect at least 2 callback invocations for the first turn:
 	//   1. Tool results (from regular turn completion)
-	//   2. Interjection user message
+	//   2. Steering user message
 	// Plus potentially a 3rd for the final text-only response.
-	foundInterjection := false
+	foundSteering := false
 	for _, msgs := range callbackMsgs {
 		for _, msg := range msgs {
 			if msg.Role == RoleUser && len(msg.Parts) > 0 && msg.Parts[0].Text == "hey wait" {
-				foundInterjection = true
+				foundSteering = true
 			}
 		}
 	}
-	if !foundInterjection {
-		t.Fatal("expected turn callback to receive interjection user message")
+	if !foundSteering {
+		t.Fatal("expected turn callback to receive steering user message")
 	}
 }
 
@@ -5322,9 +5322,9 @@ func TestEngineTurnCallbackContextSurvivesCancellation(t *testing.T) {
 	}
 }
 
-// TestEngineInterjection_EventEmitted verifies that EventInterjection events
+// TestEngineSteering_EventEmitted verifies that EventSteering events
 // are properly emitted through the stream with the correct text.
-func TestEngineInterjection_EventEmitted(t *testing.T) {
+func TestEngineSteering_EventEmitted(t *testing.T) {
 	t.Parallel()
 
 	tool := &countingTool{}
@@ -5355,7 +5355,7 @@ func TestEngineInterjection_EventEmitted(t *testing.T) {
 		ToolChoice: ToolChoice{Mode: ToolChoiceAuto},
 	}
 
-	engine.Interject("redirect please")
+	engine.Steer("redirect please")
 
 	stream, err := engine.Stream(context.Background(), req)
 	if err != nil {
@@ -5375,18 +5375,18 @@ func TestEngineInterjection_EventEmitted(t *testing.T) {
 		events = append(events, event)
 	}
 
-	// Find the interjection event
+	// Find the steering event
 	var found bool
 	for _, ev := range events {
-		if ev.Type == EventInterjection {
+		if ev.Type == EventSteering {
 			found = true
 			if ev.Text != "redirect please" {
-				t.Fatalf("expected interjection text %q, got %q", "redirect please", ev.Text)
+				t.Fatalf("expected steering text %q, got %q", "redirect please", ev.Text)
 			}
 		}
 	}
 	if !found {
-		t.Fatal("EventInterjection not found in event stream")
+		t.Fatal("EventSteering not found in event stream")
 	}
 }
 

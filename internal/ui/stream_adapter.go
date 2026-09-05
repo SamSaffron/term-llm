@@ -418,9 +418,9 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 				}
 			}
 
-		case llm.EventInterjection:
+		case llm.EventSteering:
 			if event.Text != "" {
-				if !emit(InterjectionEventWithMessage(event.Text, event.InterjectionID, event.Message)) {
+				if !emit(SteeringEventWithMessage(event.Text, event.SteeringID, event.Message)) {
 					return
 				}
 			}

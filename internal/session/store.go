@@ -590,39 +590,44 @@ func (s *loggingWorkspaceGrantStore) DeleteWorkspaceGrant(ctx context.Context, s
 	return err
 }
 
-// PendingInterjection is a durable, not-yet-committed steering intent. It lives
+// PendingSteering is a durable, not-yet-committed steering intent. It lives
 // outside the transcript until the engine consumes it, so restoring a session
 // cannot accidentally send the same user message to a provider early.
-type PendingInterjection struct {
-	SessionID         string
-	ID                string
-	Message           llm.Message
-	DisplayText       string
-	AttachmentSummary string
-	CreatedAt         time.Time
+type PendingSteering struct {
+	SessionID          string             `json:"session_id"`
+	ID                 string             `json:"id"`
+	Message            llm.Message        `json:"message"`
+	DisplayText        string             `json:"display_text"`
+	AttachmentSummary  string             `json:"attachment_summary"`
+	CreatedAt          time.Time          `json:"created_at"`
+	AcceptanceSequence int64              `json:"acceptance_sequence"`
+	Origin             llm.SteeringOrigin `json:"origin"`
+	OwnerKind          string             `json:"owner_kind"`
+	OwnerID            string             `json:"owner_id"`
+	OwnerFence         int64              `json:"owner_fence"`
 }
 
-// PendingInterjectionStore persists queued steering intents across tabs and
-// runtime loss. Committed interjections are still written to messages through
+// PendingSteeringStore persists queued steering intents across tabs and
+// runtime loss. Committed steering are still written to messages through
 // the normal turn-completion path.
-type PendingInterjectionStore interface {
-	SavePendingInterjection(ctx context.Context, entry PendingInterjection) error
-	DeletePendingInterjection(ctx context.Context, sessionID, id string) error
-	ListPendingInterjections(ctx context.Context, sessionID string) ([]PendingInterjection, error)
+type PendingSteeringStore interface {
+	SavePendingSteering(ctx context.Context, entry PendingSteering) error
+	DeletePendingSteering(ctx context.Context, sessionID, id string) error
+	ListPendingSteering(ctx context.Context, sessionID string) ([]PendingSteering, error)
 }
 
-// AsPendingInterjectionStore resolves the optional capability through the
+// AsPendingSteeringStore resolves the optional capability through the
 // logging decorator without making unsupported custom stores appear durable.
-func AsPendingInterjectionStore(store Store) (PendingInterjectionStore, bool) {
+func AsPendingSteeringStore(store Store) (PendingSteeringStore, bool) {
 	if store == nil {
 		return nil, false
 	}
 	if logging, ok := store.(*LoggingStore); ok {
-		if _, supported := AsPendingInterjectionStore(logging.Store); !supported {
+		if _, supported := AsPendingSteeringStore(logging.Store); !supported {
 			return nil, false
 		}
 	}
-	pending, ok := store.(PendingInterjectionStore)
+	pending, ok := store.(PendingSteeringStore)
 	return pending, ok
 }
 

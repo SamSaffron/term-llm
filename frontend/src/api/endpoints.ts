@@ -68,6 +68,7 @@ export interface CreateBlankSessionResponse {
   session: Record<string, unknown>;
 }
 
+const steeringAPI = () => import('./steering');
 const encoded = (value: string): string => encodeURIComponent(value);
 const sessionHeaders = (id: string): Record<string, string> => ({ 'X-Term-LLM-Session-ID': id });
 // Review data may come from the session's node rather than the shell host. The
@@ -349,18 +350,21 @@ export const endpoints = (api: APIClient) => ({
       'idempotent-mutation',
       { 'Idempotency-Key': `cancel_${id}` },
     ),
-  interrupt: (sessionId: string, body: unknown, interjectionId: string) =>
-    api.json(
-      `/v1/sessions/${encoded(sessionId)}/interrupt`,
-      {
-        method: 'POST',
-        headers: { 'Idempotency-Key': `interrupt_${interjectionId}` },
-        body: JSON.stringify(body),
-      },
-      { policy: 'idempotent-mutation', auth: 'session' },
-    ),
-  deleteInterrupt: (sessionId: string, interjectionId: string) =>
-    api.delete(`/v1/sessions/${encoded(sessionId)}/interjections/${encoded(interjectionId)}`),
+  interrupt: (sessionId: string, body: unknown, steeringId: string, canonical = false) =>
+    steeringAPI().then(({ steer }) => steer(api, sessionId, body, steeringId, canonical)),
+  rush: (sessionId: string, body: Record<string, unknown>) =>
+    steeringAPI().then(({ rush }) => rush(api, sessionId, body)),
+  rushState: (sessionId: string, id: string) =>
+    steeringAPI().then(({ rushState }) => rushState(api, sessionId, id)),
+  cancelRush: (sessionId: string, id: string) =>
+    steeringAPI().then(({ cancelRush }) => cancelRush(api, sessionId, id)),
+  deleteInterrupt: (
+    sessionId: string,
+    id: string,
+    run?: { responseId: string; epoch: number },
+    canonical = false,
+  ) =>
+    steeringAPI().then(({ deleteSteering }) => deleteSteering(api, sessionId, id, run, canonical)),
   patchSession: (id: string, body: unknown) => api.patch(`/v1/sessions/${encoded(id)}`, body),
   refineTitle: (id: string) =>
     api.post<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/title/refine`, {

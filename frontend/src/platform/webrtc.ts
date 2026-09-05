@@ -115,7 +115,7 @@ export function installWebRTC(): () => void {
   // Read-only requests should fail over quickly when UDP is dead. Mutations get
   // longer because endpoints such as /interrupt can classify input before they
   // emit headers. Retried mutations still need endpoint-level idempotency; the
-  // interrupt endpoint uses its stable interjection ID for that purpose.
+  // interrupt endpoint uses its stable steering ID for that purpose.
 
   // Once streaming has started, if no frame arrives within this window,
   // assume the channel silently died.  The backend sends keepalive pings

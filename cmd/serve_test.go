@@ -3255,7 +3255,7 @@ func TestInterruptMessageSerializesPersistenceWithCancellation(t *testing.T) {
 	state := &runtimeInterruptState{
 		cancel: func() {},
 		done:   make(chan struct{}),
-		persistPendingInterjection: func(context.Context, llm.QueuedInterjection) error {
+		persistPendingSteering: func(context.Context, llm.QueuedSteering) error {
 			close(persistStarted)
 			<-allowPersist
 			return nil
@@ -3274,12 +3274,12 @@ func TestInterruptMessageSerializesPersistenceWithCancellation(t *testing.T) {
 	<-persistStarted
 	cancelled := make(chan bool, 1)
 	go func() {
-		ok, err := rt.cancelPendingInterjection(context.Background(), "session", "race-1")
+		ok, err := rt.cancelPendingSteering(context.Background(), "session", "race-1")
 		cancelled <- ok && err == nil
 	}()
 	select {
 	case <-cancelled:
-		t.Fatal("cancellation passed persistence before the interjection was queued")
+		t.Fatal("cancellation passed persistence before the steering was queued")
 	case <-time.After(20 * time.Millisecond):
 	}
 	close(allowPersist)
@@ -3287,9 +3287,9 @@ func TestInterruptMessageSerializesPersistenceWithCancellation(t *testing.T) {
 		t.Fatalf("InterruptMessage: %v", err)
 	}
 	if ok := <-cancelled; !ok {
-		t.Fatal("serialized cancellation did not remove the queued interjection")
+		t.Fatal("serialized cancellation did not remove the queued steering")
 	}
-	if entries := rt.engine.ListPendingInterjections(); len(entries) != 0 {
+	if entries := rt.engine.ListPendingSteering(); len(entries) != 0 {
 		t.Fatalf("engine pending entries after cancellation = %#v", entries)
 	}
 }
@@ -3300,28 +3300,28 @@ func TestInterruptMessagePersistsPendingUntilDurableCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	const sessionID = "sess-durable-interjection"
+	const sessionID = "sess-durable-steering"
 	if err := store.Create(context.Background(), &session.Session{ID: sessionID, Provider: "mock", Model: "mock"}); err != nil {
 		t.Fatal(err)
 	}
 
 	rt := &serveRuntime{engine: llm.NewEngine(llm.NewMockProvider("engine"), nil), store: store}
 	state := &runtimeInterruptState{cancel: func() {}, done: make(chan struct{})}
-	rt.configurePendingInterjectionPersistence(state, sessionID)
+	rt.configurePendingSteeringPersistence(state, sessionID)
 	rt.setActiveInterrupt(state)
 	defer rt.clearActiveInterrupt(state)
 
 	action, _, err := rt.InterruptMessage(
 		context.Background(), llm.UserText("change course"), "change course", "web-pending-1", nil, interruptDeliverySteer,
 	)
-	if err != nil || action != llm.InterruptInterject {
+	if err != nil || action != llm.InterruptSteer {
 		t.Fatalf("InterruptMessage action=%q err=%v", action, err)
 	}
-	pendingStore, ok := session.AsPendingInterjectionStore(store)
+	pendingStore, ok := session.AsPendingSteeringStore(store)
 	if !ok {
-		t.Fatal("SQLite store does not expose pending interjection persistence")
+		t.Fatal("SQLite store does not expose pending steering persistence")
 	}
-	entries, err := pendingStore.ListPendingInterjections(context.Background(), sessionID)
+	entries, err := pendingStore.ListPendingSteering(context.Background(), sessionID)
 	if err != nil || len(entries) != 1 || entries[0].ID != "web-pending-1" || entries[0].Message.ClientMessageID != "web-pending-1" {
 		t.Fatalf("durable pending entries=%#v err=%v", entries, err)
 	}
@@ -3338,9 +3338,9 @@ func TestInterruptMessagePersistsPendingUntilDurableCommit(t *testing.T) {
 	committed.ClientMessageID = "web-pending-1"
 	result := rt.appendMessagesDetailed(context.Background(), sessionID, []llm.Message{committed}, 0)
 	if !result.Complete {
-		t.Fatalf("committed interjection persistence=%#v", result)
+		t.Fatalf("committed steering persistence=%#v", result)
 	}
-	entries, err = pendingStore.ListPendingInterjections(context.Background(), sessionID)
+	entries, err = pendingStore.ListPendingSteering(context.Background(), sessionID)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("pending entries after commit=%#v err=%v", entries, err)
 	}
@@ -3348,30 +3348,30 @@ func TestInterruptMessagePersistsPendingUntilDurableCommit(t *testing.T) {
 	if _, _, err := rt.InterruptMessage(
 		context.Background(), llm.UserText("one more"), "one more", "web-abandoned-2", nil, interruptDeliverySteer,
 	); err != nil {
-		t.Fatalf("queue abandoned interjection: %v", err)
+		t.Fatalf("queue abandoned steering: %v", err)
 	}
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), time.Second)
-	rt.discardPendingInterjections(cleanupCtx, sessionID)
+	rt.discardPendingSteering(cleanupCtx, sessionID)
 	cleanupCancel()
-	entries, err = pendingStore.ListPendingInterjections(context.Background(), sessionID)
+	entries, err = pendingStore.ListPendingSteering(context.Background(), sessionID)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("pending entries after run cleanup=%#v err=%v", entries, err)
 	}
 
 	detached := llm.UserText("cancel from another tab")
 	detached.ClientMessageID = "web-detached-3"
-	if err := pendingStore.SavePendingInterjection(context.Background(), session.PendingInterjection{
+	if err := pendingStore.SavePendingSteering(context.Background(), session.PendingSteering{
 		SessionID: sessionID, ID: detached.ClientMessageID, Message: detached, DisplayText: llm.MessageText(detached),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	req = httptest.NewRequest(http.MethodDelete, "/v1/sessions/"+sessionID+"/interjections/"+detached.ClientMessageID, nil)
+	req = httptest.NewRequest(http.MethodDelete, "/v1/sessions/"+sessionID+"/steering/"+detached.ClientMessageID, nil)
 	rr = httptest.NewRecorder()
-	srv.handleSessionInterjectionCancel(rr, req, sessionID, detached.ClientMessageID)
+	srv.handleSessionSteeringCancel(rr, req, sessionID, detached.ClientMessageID)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("detached cancel status/body=%d %s", rr.Code, rr.Body.String())
 	}
-	entries, err = pendingStore.ListPendingInterjections(context.Background(), sessionID)
+	entries, err = pendingStore.ListPendingSteering(context.Background(), sessionID)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("pending entries after detached cancel=%#v err=%v", entries, err)
 	}
@@ -3379,7 +3379,7 @@ func TestInterruptMessagePersistsPendingUntilDurableCommit(t *testing.T) {
 	rt.clearActiveInterrupt(state)
 	idle := llm.UserText("cancel from loaded idle runtime")
 	idle.ClientMessageID = "web-idle-4"
-	if err := pendingStore.SavePendingInterjection(context.Background(), session.PendingInterjection{
+	if err := pendingStore.SavePendingSteering(context.Background(), session.PendingSteering{
 		SessionID: sessionID, ID: idle.ClientMessageID, Message: idle, DisplayText: llm.MessageText(idle),
 	}); err != nil {
 		t.Fatal(err)
@@ -3388,16 +3388,16 @@ func TestInterruptMessagePersistsPendingUntilDurableCommit(t *testing.T) {
 	defer manager.Close()
 	putTestSession(manager, sessionID, rt)
 	idleServer := &serveServer{store: store, sessionMgr: manager}
-	req = httptest.NewRequest(http.MethodDelete, "/v1/sessions/"+sessionID+"/interjections/"+idle.ClientMessageID, nil)
+	req = httptest.NewRequest(http.MethodDelete, "/v1/sessions/"+sessionID+"/steering/"+idle.ClientMessageID, nil)
 	rr = httptest.NewRecorder()
-	idleServer.handleSessionInterjectionCancel(rr, req, sessionID, idle.ClientMessageID)
+	idleServer.handleSessionSteeringCancel(rr, req, sessionID, idle.ClientMessageID)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("idle runtime cancel status/body=%d %s", rr.Code, rr.Body.String())
 	}
 
 	filtered := llm.UserText("already committed")
 	filtered.ClientMessageID = "web-filtered-4"
-	if err := pendingStore.SavePendingInterjection(context.Background(), session.PendingInterjection{
+	if err := pendingStore.SavePendingSteering(context.Background(), session.PendingSteering{
 		SessionID: sessionID, ID: filtered.ClientMessageID, Message: filtered, DisplayText: llm.MessageText(filtered),
 	}); err != nil {
 		t.Fatal(err)
@@ -3405,30 +3405,30 @@ func TestInterruptMessagePersistsPendingUntilDurableCommit(t *testing.T) {
 	if err := store.AddMessage(context.Background(), sessionID, session.NewMessage(sessionID, filtered, -1)); err != nil {
 		t.Fatal(err)
 	}
-	entries, err = pendingStore.ListPendingInterjections(context.Background(), sessionID)
+	entries, err = pendingStore.ListPendingSteering(context.Background(), sessionID)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("committed client id was still listed as pending: entries=%#v err=%v", entries, err)
 	}
 
 	restored := llm.UserText("restore failed follow-up")
 	restored.ClientMessageID = "web-claimed-5"
-	if err := pendingStore.SavePendingInterjection(context.Background(), session.PendingInterjection{
+	if err := pendingStore.SavePendingSteering(context.Background(), session.PendingSteering{
 		SessionID: sessionID, ID: restored.ClientMessageID, Message: restored, DisplayText: llm.MessageText(restored),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	rt.engine.QueueInterjection(llm.QueuedInterjection{ID: restored.ClientMessageID, Message: restored})
-	if claim := rt.engine.ClaimInterjection(restored.ClientMessageID); claim != llm.InterjectionClaimed {
+	rt.engine.QueueSteering(llm.QueuedSteering{ID: restored.ClientMessageID, Message: restored})
+	if claim := rt.engine.ClaimSteeringEntry(restored.ClientMessageID); claim != llm.SteeringClaimed {
 		t.Fatalf("claim status=%q", claim)
 	}
-	rt.releaseClaimedPendingInterjections(context.Background(), sessionID, []string{restored.ClientMessageID})
-	engineEntries := rt.engine.ListPendingInterjections()
+	rt.releaseClaimedPendingSteering(context.Background(), sessionID, []string{restored.ClientMessageID})
+	engineEntries := rt.engine.ListPendingSteering()
 	if len(engineEntries) != 1 || engineEntries[0].ID != restored.ClientMessageID {
-		t.Fatalf("restored engine interjections=%#v", engineEntries)
+		t.Fatalf("restored engine steering=%#v", engineEntries)
 	}
 }
 
-func TestHandleSessionInterrupt_DeduplicatesRetriedImageInterjection(t *testing.T) {
+func TestHandleSessionInterrupt_DeduplicatesRetriedImageSteering(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	mgr := newServeSessionManager(time.Minute, 10, nil)
 	defer mgr.Close()
@@ -3440,7 +3440,7 @@ func TestHandleSessionInterrupt_DeduplicatesRetriedImageInterjection(t *testing.
 	putTestSession(mgr, "sess-merge", rt)
 
 	srv := &serveServer{sessionMgr: mgr}
-	body := `{"message":"please inspect this image","interjection_id":"web-1","content":[{"type":"input_image","image_url":"data:image/png;base64,aGVsbG8=","filename":"img.png"}]}`
+	body := `{"message":"please inspect this image","steering_id":"web-1","content":[{"type":"input_image","image_url":"data:image/png;base64,aGVsbG8=","filename":"img.png"}]}`
 	for i := 0; i < 2; i++ {
 		req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-merge/interrupt", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
@@ -3454,12 +3454,12 @@ func TestHandleSessionInterrupt_DeduplicatesRetriedImageInterjection(t *testing.
 			rt.clearActiveInterrupt(state)
 		}
 	}
-	entries := engine.ListPendingInterjections()
+	entries := engine.ListPendingSteering()
 	if len(entries) != 1 {
-		t.Fatalf("pending entries after duplicate interjection ID = %d, want 1", len(entries))
+		t.Fatalf("pending entries after duplicate steering ID = %d, want 1", len(entries))
 	}
 
-	mismatch := `{"message":"different message","interjection_id":"web-1"}`
+	mismatch := `{"message":"different message","steering_id":"web-1"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-merge/interrupt", strings.NewReader(mismatch))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
@@ -3468,7 +3468,7 @@ func TestHandleSessionInterrupt_DeduplicatesRetriedImageInterjection(t *testing.
 		t.Fatalf("mismatched idempotency payload status = %d, want 409; body=%s", rr.Code, rr.Body.String())
 	}
 
-	deliveryMismatch := `{"message":"please inspect this image","interjection_id":"web-1","delivery":"steer","content":[{"type":"input_image","image_url":"data:image/png;base64,aGVsbG8=","filename":"img.png"}]}`
+	deliveryMismatch := `{"message":"please inspect this image","steering_id":"web-1","delivery":"steer","content":[{"type":"input_image","image_url":"data:image/png;base64,aGVsbG8=","filename":"img.png"}]}`
 	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-merge/interrupt", strings.NewReader(deliveryMismatch))
 	req.Header.Set("Content-Type", "application/json")
 	rr = httptest.NewRecorder()
@@ -3495,7 +3495,7 @@ func TestHandleSessionInterrupt_DeliveryDispatch(t *testing.T) {
 	}{
 		{name: "omitted auto dispatches explicit command", wantStatus: http.StatusOK, wantAction: "cancel", wantCancel: 1},
 		{name: "auto dispatches explicit command", delivery: `,"delivery":"auto"`, wantStatus: http.StatusOK, wantAction: "cancel", wantCancel: 1},
-		{name: "steer bypasses auto dispatch", delivery: `,"delivery":"steer"`, wantStatus: http.StatusOK, wantAction: "interject", wantQueued: 1},
+		{name: "steer bypasses auto dispatch", delivery: `,"delivery":"steer"`, wantStatus: http.StatusOK, wantAction: "steer", wantQueued: 1},
 		{name: "unknown rejected", delivery: `,"delivery":"rush"`, wantStatus: http.StatusBadRequest},
 	}
 	for _, tt := range tests {
@@ -3511,7 +3511,7 @@ func TestHandleSessionInterrupt_DeliveryDispatch(t *testing.T) {
 			putTestSession(mgr, "sess-delivery", rt)
 
 			srv := &serveServer{sessionMgr: mgr}
-			body := fmt.Sprintf(`{"message":"/stop","interjection_id":"delivery-1"%s}`, tt.delivery)
+			body := fmt.Sprintf(`{"message":"/stop","steering_id":"delivery-1"%s}`, tt.delivery)
 			req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-delivery/interrupt", strings.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
 			rr := httptest.NewRecorder()
@@ -3526,7 +3526,7 @@ func TestHandleSessionInterrupt_DeliveryDispatch(t *testing.T) {
 			if cancelCalls != tt.wantCancel {
 				t.Fatalf("cancel calls = %d, want %d", cancelCalls, tt.wantCancel)
 			}
-			if pending := engine.ListPendingInterjections(); len(pending) != tt.wantQueued {
+			if pending := engine.ListPendingSteering(); len(pending) != tt.wantQueued {
 				t.Fatalf("pending = %#v, want %d entries", pending, tt.wantQueued)
 			}
 		})
@@ -3535,7 +3535,7 @@ func TestHandleSessionInterrupt_DeliveryDispatch(t *testing.T) {
 
 func TestHandleSessionInterrupt_ValidatesDeliveryBeforeContentIO(t *testing.T) {
 	srv := &serveServer{}
-	body := `{"delivery":"rush","interjection_id":"delivery-early","content":[{"type":"input_file","filename":"bad.pdf","file_data":"%%%"}]}`
+	body := `{"delivery":"rush","steering_id":"delivery-early","content":[{"type":"input_file","filename":"bad.pdf","file_data":"%%%"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-delivery/interrupt", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
@@ -3559,7 +3559,7 @@ func TestInterruptMessage_DeliveryControlsFastClassifier(t *testing.T) {
 		wantQueued    int
 	}{
 		{name: "auto invokes fast classifier", delivery: interruptDeliveryAuto, wantAction: llm.InterruptCancel, wantFastTurns: 1},
-		{name: "steer bypasses fast classifier", delivery: interruptDeliverySteer, wantAction: llm.InterruptInterject, wantQueued: 1},
+		{name: "steer bypasses fast classifier", delivery: interruptDeliverySteer, wantAction: llm.InterruptSteer, wantQueued: 1},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			engine := llm.NewEngine(llm.NewMockProvider("engine"), nil)
@@ -3589,7 +3589,7 @@ func TestInterruptMessage_DeliveryControlsFastClassifier(t *testing.T) {
 			if got := fastProvider.CurrentTurn(); got != tt.wantFastTurns {
 				t.Fatalf("fast provider turns = %d, want %d", got, tt.wantFastTurns)
 			}
-			if pending := engine.ListPendingInterjections(); len(pending) != tt.wantQueued {
+			if pending := engine.ListPendingSteering(); len(pending) != tt.wantQueued {
 				t.Fatalf("pending = %#v, want %d", pending, tt.wantQueued)
 			}
 		})
@@ -3599,7 +3599,7 @@ func TestInterruptMessage_DeliveryControlsFastClassifier(t *testing.T) {
 func TestInterruptMessage_DeduplicatesConcurrentRetry(t *testing.T) {
 	engine := llm.NewEngine(llm.NewMockProvider("engine"), nil)
 	fastProvider := llm.NewMockProvider("classifier")
-	fastProvider.AddTurn(llm.MockTurn{Text: "interject", Delay: 100 * time.Millisecond})
+	fastProvider.AddTurn(llm.MockTurn{Text: "steer", Delay: 100 * time.Millisecond})
 	rt := &serveRuntime{engine: engine}
 	state := &runtimeInterruptState{cancel: func() {}, done: make(chan struct{})}
 	rt.setActiveInterrupt(state)
@@ -3638,8 +3638,8 @@ func TestInterruptMessage_DeduplicatesConcurrentRetry(t *testing.T) {
 	if first.err != nil || second.err != nil {
 		t.Fatalf("interrupt errors = %v, %v", first.err, second.err)
 	}
-	if first.action != llm.InterruptInterject || second.action != llm.InterruptInterject {
-		t.Fatalf("actions = %v, %v, want interject", first.action, second.action)
+	if first.action != llm.InterruptSteer || second.action != llm.InterruptSteer {
+		t.Fatalf("actions = %v, %v, want steer", first.action, second.action)
 	}
 	if first.replayed == second.replayed {
 		t.Fatalf("replayed flags = %v, %v, want exactly one replay", first.replayed, second.replayed)
@@ -3647,8 +3647,8 @@ func TestInterruptMessage_DeduplicatesConcurrentRetry(t *testing.T) {
 	if got := fastProvider.CurrentTurn(); got != 1 {
 		t.Fatalf("classifier calls = %d, want 1", got)
 	}
-	if pending := engine.ListPendingInterjections(); len(pending) != 1 {
-		t.Fatalf("pending interjections = %d, want 1", len(pending))
+	if pending := engine.ListPendingSteering(); len(pending) != 1 {
+		t.Fatalf("pending steering = %d, want 1", len(pending))
 	}
 }
 
@@ -4009,7 +4009,7 @@ func TestServeRuntimeRunClearsUnappliedRuntimeSwitch(t *testing.T) {
 	}
 }
 
-func TestServeRuntimeRun_RejectsInterjectionDuringSimpleStream(t *testing.T) {
+func TestServeRuntimeRun_RejectsSteeringDuringSimpleStream(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
 	if err != nil {
@@ -4032,7 +4032,7 @@ func TestServeRuntimeRun_RejectsInterjectionDuringSimpleStream(t *testing.T) {
 	go func() {
 		_, runErr := rt.Run(context.Background(), true, false, []llm.Message{
 			llm.UserText("original request"),
-		}, llm.Request{SessionID: "serve-interject-persist", MaxTurns: 3})
+		}, llm.Request{SessionID: "serve-steer-persist", MaxTurns: 3})
 		errCh <- runErr
 	}()
 
@@ -4043,14 +4043,14 @@ func TestServeRuntimeRun_RejectsInterjectionDuringSimpleStream(t *testing.T) {
 	}
 
 	action, err := rt.Interrupt(context.Background(), "also remember this", nil)
-	if action != llm.InterruptInterject {
-		t.Fatalf("Interrupt action = %v, want %v", action, llm.InterruptInterject)
+	if action != llm.InterruptSteer {
+		t.Fatalf("Interrupt action = %v, want %v", action, llm.InterruptSteer)
 	}
 	if err == nil || !strings.Contains(err.Error(), "active run finished") {
 		t.Fatalf("Interrupt error = %v, want non-consuming simple-stream error", err)
 	}
-	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
-		t.Fatalf("simple stream retained phantom interjection: %#v", pending)
+	if pending := engine.ListPendingSteering(); len(pending) != 0 {
+		t.Fatalf("simple stream retained phantom steering: %#v", pending)
 	}
 
 	close(provider.releaseSecond)
@@ -4067,11 +4067,11 @@ func TestServeRuntimeRun_RejectsInterjectionDuringSimpleStream(t *testing.T) {
 	if len(rt.history) != 2 {
 		t.Fatalf("history len = %d, want 2", len(rt.history))
 	}
-	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
-		t.Fatalf("pending interjections = %#v, want none", pending)
+	if pending := engine.ListPendingSteering(); len(pending) != 0 {
+		t.Fatalf("pending steering = %#v, want none", pending)
 	}
 
-	msgs, err := store.GetMessages(context.Background(), "serve-interject-persist", 0, 0)
+	msgs, err := store.GetMessages(context.Background(), "serve-steer-persist", 0, 0)
 	if err != nil {
 		t.Fatalf("GetMessages failed: %v", err)
 	}
@@ -4386,10 +4386,10 @@ func TestHandleResponses_FirstPartyRequiresDedicatedClientMessageID(t *testing.T
 	}
 }
 
-func TestHandleResponses_UIFollowUpClaimsQueuedInterjection(t *testing.T) {
+func TestHandleResponses_UIFollowUpClaimsQueuedSteering(t *testing.T) {
 	const (
-		sessionID = "sess_interjection_handoff"
-		messageID = "msg_interjection_handoff"
+		sessionID = "sess_steering_handoff"
+		messageID = "msg_steering_handoff"
 	)
 
 	provider := llm.NewMockProvider("mock").AddTextResponse("follow-up response")
@@ -4401,7 +4401,7 @@ func TestHandleResponses_UIFollowUpClaimsQueuedInterjection(t *testing.T) {
 		defaultModel: "mock-model",
 	}
 	runtime.Touch()
-	engine.QueueInterjection(llm.QueuedInterjection{
+	engine.QueueSteering(llm.QueuedSteering{
 		ID:          messageID,
 		Message:     llm.UserText("same logical message"),
 		DisplayText: "same logical message",
@@ -4426,14 +4426,14 @@ func TestHandleResponses_UIFollowUpClaimsQueuedInterjection(t *testing.T) {
 		sessionID:          sessionID,
 		previousResponseID: "resp_previous",
 		previousDurable:    true,
-		idempotencyKey:     "request_interjection_handoff",
+		idempotencyKey:     "request_steering_handoff",
 	})
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
 	}
-	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
-		t.Fatalf("pending interjections after follow-up handoff = %#v, want none", pending)
+	if pending := engine.ListPendingSteering(); len(pending) != 0 {
+		t.Fatalf("pending steering after follow-up handoff = %#v, want none", pending)
 	}
 	if len(provider.Requests) != 1 {
 		t.Fatalf("provider request count = %d, want 1", len(provider.Requests))
@@ -4471,7 +4471,7 @@ func TestHandleResponses_UIQueuedFollowUpBatchRunsOnceAndPersistsDistinctRows(t 
 	}
 
 	for _, queued := range []struct{ id, text string }{{"msg-first", "first queued"}, {"msg-second", "second queued"}} {
-		runtime.engine.QueueInterjection(llm.QueuedInterjection{ID: queued.id, Message: llm.UserText(queued.text), DisplayText: queued.text})
+		runtime.engine.QueueSteering(llm.QueuedSteering{ID: queued.id, Message: llm.UserText(queued.text), DisplayText: queued.text})
 	}
 	body := `{"input":[` +
 		`{"type":"message","role":"user","client_message_id":"msg-first","content":"first queued"},` +
@@ -4481,7 +4481,7 @@ func TestHandleResponses_UIQueuedFollowUpBatchRunsOnceAndPersistsDistinctRows(t 
 	if code != http.StatusOK {
 		t.Fatalf("batch status = %d body=%#v", code, second)
 	}
-	if pending := runtime.engine.ListPendingInterjections(); len(pending) != 0 {
+	if pending := runtime.engine.ListPendingSteering(); len(pending) != 0 {
 		t.Fatalf("batched follow-up retained engine queue ownership: %#v", pending)
 	}
 	if len(provider.Requests) != 2 {
@@ -4527,8 +4527,8 @@ func TestHandleResponses_UIFollowUpStartFailureReleasesClaim(t *testing.T) {
 	)
 	provider := &serveRuntimeErrorProvider{err: errors.New("provider failed before response")}
 	engine := llm.NewEngine(provider, nil)
-	entry := llm.QueuedInterjection{ID: messageID, Message: llm.UserText("retry me")}
-	engine.QueueInterjection(entry)
+	entry := llm.QueuedSteering{ID: messageID, Message: llm.UserText("retry me")}
+	engine.QueueSteering(entry)
 	runtime := &serveRuntime{provider: provider, providerKey: provider.Name(), engine: engine, defaultModel: "mock-model"}
 	runtime.Touch()
 	manager := newServeSessionManager(time.Minute, 10, nil)
@@ -4548,7 +4548,7 @@ func TestHandleResponses_UIFollowUpStartFailureReleasesClaim(t *testing.T) {
 	if rr.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500; body: %s", rr.Code, rr.Body.String())
 	}
-	if _, status := engine.QueueInterjectionWithStatus(entry); status != llm.InterjectionQueueQueued {
+	if _, status := engine.QueueSteeringWithStatus(entry); status != llm.SteeringQueueQueued {
 		t.Fatalf("claim was not released after start failure: %q", status)
 	}
 }
@@ -4560,8 +4560,8 @@ func TestHandleResponses_UIFollowUpRunFailureReleasesClaim(t *testing.T) {
 	)
 	provider := &serveRuntimeErrorProvider{err: errors.New("provider failed before response")}
 	engine := llm.NewEngine(provider, nil)
-	entry := llm.QueuedInterjection{ID: messageID, Message: llm.UserText("retry me")}
-	engine.QueueInterjection(entry)
+	entry := llm.QueuedSteering{ID: messageID, Message: llm.UserText("retry me")}
+	engine.QueueSteering(entry)
 	runtime := &serveRuntime{provider: provider, providerKey: provider.Name(), engine: engine, defaultModel: "mock-model"}
 	runtime.Touch()
 	manager := newServeSessionManager(time.Minute, 10, nil)
@@ -4580,32 +4580,32 @@ func TestHandleResponses_UIFollowUpRunFailureReleasesClaim(t *testing.T) {
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "event: response.failed") {
 		t.Fatalf("run failure response status=%d body=%s", rr.Code, rr.Body.String())
 	}
-	if status := engine.ClaimInterjection(messageID); status != llm.InterjectionClaimNotFound {
+	if status := engine.ClaimSteeringEntry(messageID); status != llm.SteeringClaimNotFound {
 		t.Fatalf("claim was not released after run failure: %q", status)
 	}
-	if _, status := engine.QueueInterjectionWithStatus(entry); status != llm.InterjectionQueueRunFinished {
+	if _, status := engine.QueueSteeringWithStatus(entry); status != llm.SteeringQueueRunFinished {
 		t.Fatalf("finished run unexpectedly reclaimed retry ownership: %q", status)
 	}
-	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
-		t.Fatalf("finished run retained retry as phantom interjection: %#v", pending)
+	if pending := engine.ListPendingSteering(); len(pending) != 0 {
+		t.Fatalf("finished run retained retry as phantom steering: %#v", pending)
 	}
 }
 
-func TestHandleResponses_UIFollowUpRejectsCommittedInterjection(t *testing.T) {
+func TestHandleResponses_UIFollowUpRejectsCommittedSteering(t *testing.T) {
 	const (
-		sessionID = "sess_committed_interjection_handoff"
-		messageID = "msg_committed_interjection_handoff"
+		sessionID = "sess_committed_steering_handoff"
+		messageID = "msg_committed_steering_handoff"
 	)
 
 	provider := llm.NewMockProvider("mock").AddTextResponse("must not run")
 	engine := llm.NewEngine(provider, nil)
-	engine.QueueInterjection(llm.QueuedInterjection{
+	engine.QueueSteering(llm.QueuedSteering{
 		ID:          messageID,
 		Message:     llm.UserText("already committed"),
 		DisplayText: "already committed",
 	})
-	if drained := engine.DrainInterjections(); len(drained) != 1 {
-		t.Fatalf("drained interjections = %#v, want one", drained)
+	if drained := engine.DrainSteering(); len(drained) != 1 {
+		t.Fatalf("drained steering = %#v, want one", drained)
 	}
 	runtime := &serveRuntime{
 		provider:     provider,
@@ -4630,7 +4630,7 @@ func TestHandleResponses_UIFollowUpRejectsCommittedInterjection(t *testing.T) {
 		sessionID:          sessionID,
 		previousResponseID: "resp_previous",
 		previousDurable:    true,
-		idempotencyKey:     "request_committed_interjection_handoff",
+		idempotencyKey:     "request_committed_steering_handoff",
 	})
 
 	if rr.Code != http.StatusConflict {
@@ -4696,9 +4696,9 @@ func TestHandleResponses_UIFollowUpAllowsTrailingUnansweredBatchRetry(t *testing
 	second := llm.UserText("second")
 	second.ClientMessageID = "msg-second"
 	for _, message := range []llm.Message{first, second} {
-		engine.QueueInterjection(llm.QueuedInterjection{ID: message.ClientMessageID, Message: message})
+		engine.QueueSteering(llm.QueuedSteering{ID: message.ClientMessageID, Message: message})
 	}
-	engine.ClaimInterjections([]string{first.ClientMessageID, second.ClientMessageID})
+	engine.ClaimSteering([]string{first.ClientMessageID, second.ClientMessageID})
 	runtime := &serveRuntime{
 		provider: provider, providerKey: provider.Name(), engine: engine, defaultModel: "mock-model",
 		history: []llm.Message{llm.UserText("earlier"), llm.AssistantText("done"), first, second},
@@ -4734,9 +4734,9 @@ func TestHandleResponses_UIFollowUpRejectsMixedOwnedAndPendingBatch(t *testing.T
 	second := llm.UserText("second")
 	second.ClientMessageID = "msg-pending"
 	for _, message := range []llm.Message{first, second} {
-		engine.QueueInterjection(llm.QueuedInterjection{ID: message.ClientMessageID, Message: message})
+		engine.QueueSteering(llm.QueuedSteering{ID: message.ClientMessageID, Message: message})
 	}
-	engine.ClaimInterjection(first.ClientMessageID)
+	engine.ClaimSteeringEntry(first.ClientMessageID)
 	runtime := &serveRuntime{
 		provider: provider, providerKey: provider.Name(), engine: engine, defaultModel: "mock-model",
 		history: []llm.Message{llm.UserText("earlier"), llm.AssistantText("done"), first, second},
@@ -4761,7 +4761,7 @@ func TestHandleResponses_UIFollowUpRejectsMixedOwnedAndPendingBatch(t *testing.T
 	if len(provider.Requests) != 0 {
 		t.Fatalf("provider request count = %d, want 0", len(provider.Requests))
 	}
-	if _, status := engine.QueueInterjectionWithStatus(llm.QueuedInterjection{ID: second.ClientMessageID, Message: second}); status != llm.InterjectionQueueAlreadyQueued {
+	if _, status := engine.QueueSteeringWithStatus(llm.QueuedSteering{ID: second.ClientMessageID, Message: second}); status != llm.SteeringQueueAlreadyQueued {
 		t.Fatalf("pending batch member was transferred despite mixed ownership: %q", status)
 	}
 }
@@ -7888,7 +7888,7 @@ type testServeDelayTool struct {
 }
 
 func (d *testServeDelayTool) Spec() llm.ToolSpec {
-	return llm.ToolSpec{Name: "slow_tool", Description: "delay for interjection test"}
+	return llm.ToolSpec{Name: "slow_tool", Description: "delay for steering test"}
 }
 
 func (d *testServeDelayTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
@@ -8231,9 +8231,9 @@ func TestHandleSessionState_ReturnsModelAndEffortFromRuntime(t *testing.T) {
 	}
 }
 
-func TestHandleSessionState_ExposesPendingInterjection(t *testing.T) {
+func TestHandleSessionState_ExposesPendingSteering(t *testing.T) {
 	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
-	engine.Interject("hi there")
+	engine.Steer("hi there")
 
 	rt := &serveRuntime{engine: engine}
 	mgr := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
@@ -8241,33 +8241,33 @@ func TestHandleSessionState_ExposesPendingInterjection(t *testing.T) {
 	})
 	defer mgr.Close()
 	mgr.mu.Lock()
-	mgr.sessions["sess-interject"] = rt
+	mgr.sessions["sess-steer"] = rt
 	mgr.mu.Unlock()
 
 	srv := &serveServer{sessionMgr: mgr}
-	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess-interject/state", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess-steer/state", nil)
 	rr := httptest.NewRecorder()
 	srv.handleSessionByID(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d", rr.Code)
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, `"pending_interjection"`) {
-		t.Fatalf("expected pending_interjection in body, got %s", body)
+	if !strings.Contains(body, `"pending_steering"`) {
+		t.Fatalf("expected pending_steering in body, got %s", body)
 	}
 	if !strings.Contains(body, `"text":"hi there"`) {
-		t.Fatalf("expected pending_interjection text, got %s", body)
+		t.Fatalf("expected pending_steering text, got %s", body)
 	}
 
 	// Peek must be non-destructive: a subsequent call should still see it.
 	rr2 := httptest.NewRecorder()
 	srv.handleSessionByID(rr2, req)
 	if !strings.Contains(rr2.Body.String(), `"text":"hi there"`) {
-		t.Fatalf("expected pending_interjection to survive repeated peeks, got %s", rr2.Body.String())
+		t.Fatalf("expected pending_steering to survive repeated peeks, got %s", rr2.Body.String())
 	}
 
-	// DrainInterjection should still return the value.
-	if got := engine.DrainInterjection(); got != "hi there" {
+	// DrainSteeringText should still return the value.
+	if got := engine.DrainSteeringText(); got != "hi there" {
 		t.Fatalf("drain after peeks = %q, want %q", got, "hi there")
 	}
 }
@@ -9314,7 +9314,7 @@ func TestHandleResponses_ModelSwapNaiveSuccessCommitsTargetRuntime(t *testing.T)
 	if !ok || previousRuntime == nil {
 		t.Fatal("previous runtime missing before model swap")
 	}
-	previousRuntime.engine.QueueInterjection(llm.QueuedInterjection{
+	previousRuntime.engine.QueueSteering(llm.QueuedSteering{
 		ID:          "swap-follow-up",
 		Message:     llm.UserText("continue"),
 		DisplayText: "continue",
@@ -9323,7 +9323,7 @@ func TestHandleResponses_ModelSwapNaiveSuccessCommitsTargetRuntime(t *testing.T)
 	if code != http.StatusOK {
 		t.Fatalf("swap status = %d, want 200", code)
 	}
-	if pending := previousRuntime.engine.ListPendingInterjections(); len(pending) != 0 {
+	if pending := previousRuntime.engine.ListPendingSteering(); len(pending) != 0 {
 		t.Fatalf("model swap claimed candidate instead of previous runtime: %#v", pending)
 	}
 	if got := responseOutputText(t, resp2); got != "new-1" {
@@ -10635,31 +10635,31 @@ func TestResponsesCompletedRunExpiresAfterRetention(t *testing.T) {
 	}
 }
 
-func TestHandleResponseCancelDiscardsPendingInterjections(t *testing.T) {
+func TestHandleResponseCancelDiscardsPendingSteering(t *testing.T) {
 	mgr := newServeSessionManager(time.Minute, 10, nil)
 	defer mgr.Close()
 
 	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
-	engine.QueueInterjection(llm.QueuedInterjection{ID: "interject-1", Message: llm.UserText("please also do x")})
+	engine.QueueSteering(llm.QueuedSteering{ID: "steer-1", Message: llm.UserText("please also do x")})
 	rt := &serveRuntime{engine: engine}
-	putTestSession(mgr, "sess-cancel-interject", rt)
+	putTestSession(mgr, "sess-cancel-steer", rt)
 
 	runCancel := func() {}
-	run := newResponseRun("resp_cancel_interject", "sess-cancel-interject", "", "mock-model", time.Now().Unix(), runCancel)
+	run := newResponseRun("resp_cancel_steer", "sess-cancel-steer", "", "mock-model", time.Now().Unix(), runCancel)
 	srv := &serveServer{sessionMgr: mgr, responseRuns: newServeResponseRunManager()}
 	if err := srv.responseRuns.create(run); err != nil {
 		t.Fatalf("create run: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/responses/resp_cancel_interject/cancel", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses/resp_cancel_steer/cancel", nil)
 	rr := httptest.NewRecorder()
 	srv.handleResponseByID(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("cancel status = %d, want 200 body=%s", rr.Code, rr.Body.String())
 	}
 	waitForServeCondition(t, time.Second, func() bool {
-		return len(engine.ListPendingInterjections()) == 0
-	}, "pending interjections to be discarded after explicit cancel")
+		return len(engine.ListPendingSteering()) == 0
+	}, "pending steering to be discarded after explicit cancel")
 }
 
 func TestHandleResponseCancelAcknowledgesBeforeCleanupFinishes(t *testing.T) {
@@ -11457,7 +11457,7 @@ func TestResponseToSessionMap_CleanedOnEviction(t *testing.T) {
 	}
 }
 
-func TestStreamResponses_EmitsInterjectionEvent(t *testing.T) {
+func TestStreamResponses_EmitsSteeringEvent(t *testing.T) {
 	provider := llm.NewMockProvider("mock")
 	provider.AddToolCall("call_1", "slow_tool", map[string]any{})
 	provider.AddTextResponse("done")
@@ -11466,7 +11466,7 @@ func TestStreamResponses_EmitsInterjectionEvent(t *testing.T) {
 	registry.Register(&testServeDelayTool{delay: 20 * time.Millisecond})
 
 	engine := llm.NewEngine(provider, registry)
-	engine.Interject("keep sleeping")
+	engine.Steer("keep sleeping")
 
 	rt := &serveRuntime{
 		provider:     provider,
@@ -11486,7 +11486,7 @@ func TestStreamResponses_EmitsInterjectionEvent(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses",
 		strings.NewReader(`{"input":"hi","stream":true}`))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("session_id", "sess_interject")
+	req.Header.Set("session_id", "sess_steer")
 	rr := httptest.NewRecorder()
 
 	srv.handleResponses(rr, req)
@@ -11495,11 +11495,11 @@ func TestStreamResponses_EmitsInterjectionEvent(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, "event: response.interjection") {
-		t.Fatalf("expected response.interjection event in stream, got:\n%s", body)
+	if !strings.Contains(body, "event: response.steering") {
+		t.Fatalf("expected response.steering event in stream, got:\n%s", body)
 	}
 	if !strings.Contains(body, `"text":"keep sleeping"`) {
-		t.Fatalf("expected interjection payload in stream, got:\n%s", body)
+		t.Fatalf("expected steering payload in stream, got:\n%s", body)
 	}
 }
 
@@ -12053,15 +12053,9 @@ func TestStartResponseRun_BusyConcurrentRunKeepsActiveSessionTracking(t *testing
 	run2, err := srv.startResponseRun(rt, true, false, []llm.Message{
 		llm.UserText("second"),
 	}, llm.Request{SessionID: sessionID}, sessionID, startResponseRunOptions{})
-	if err != nil {
-		t.Fatalf("startResponseRun second: %v", err)
+	if !errors.Is(err, errServeSessionBusy) || run2 != nil {
+		t.Fatalf("busy admission returned run=%v err=%v", run2, err)
 	}
-
-	waitForServeCondition(t, time.Second, func() bool {
-		snapshot := run2.snapshot()
-		status, _ := snapshot["status"].(string)
-		return status == "failed"
-	}, "second busy response run failure")
 
 	if got := srv.responseRuns.activeRunID(sessionID); got != run1.id {
 		t.Fatalf("activeRunID after concurrent busy run = %q, want %q", got, run1.id)

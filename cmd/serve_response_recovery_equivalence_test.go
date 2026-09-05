@@ -63,7 +63,7 @@ func foldResponseEventStream(events []responseRunEvent) (responseRecoveryShape, 
 		switch event.Event {
 		case "response.ask_user.prompt", "response.approval.prompt":
 			shape.Interactive = append(shape.Interactive, event.Event)
-		case "response.interjection":
+		case "response.steering":
 			text := stringValue(payload["text"])
 			clientID := stringValue(payload["client_message_id"])
 			if text == "" || clientID == "" {
@@ -207,7 +207,7 @@ func TestResponseRunEventFoldStructurallyEqualsRecoveryProjection(t *testing.T) 
 	}{
 		{name: "tools", events: []responseRecoveryEventFixture{toolAdded, {event: "response.output_item.done", payload: map[string]any{"item": map[string]any{"type": "function_call", "call_id": "call-1", "arguments": `{"command":"false"}`}}}, {event: "response.tool_exec.end", payload: map[string]any{"call_id": "call-1", "success": false}}, {event: "response.completed", payload: map[string]any{}}}},
 		{name: "multiple assistant segments", events: []responseRecoveryEventFixture{text(0, "first"), {event: "response.output_text.new_segment", payload: map[string]any{}}, text(1, "second"), {event: "response.completed", payload: map[string]any{}}}},
-		{name: "interjections", events: []responseRecoveryEventFixture{text(0, "before"), {event: "response.interjection", payload: map[string]any{"text": "clarify", "client_message_id": "client-interjection"}}, text(1, "after")}},
+		{name: "steering", events: []responseRecoveryEventFixture{text(0, "before"), {event: "response.steering", payload: map[string]any{"text": "clarify", "client_message_id": "client-steering"}}, text(1, "after")}},
 		{name: "discarded attempt", events: []responseRecoveryEventFixture{text(0, "discard me"), toolAdded, {event: "response.attempt.discard", payload: map[string]any{}}, text(0, "replacement")}},
 		{name: "ask user", events: []responseRecoveryEventFixture{{event: "response.ask_user.prompt", payload: map[string]any{"question": "continue?"}}}},
 		{name: "approval", events: []responseRecoveryEventFixture{{event: "response.approval.prompt", payload: map[string]any{"call_id": "approval-1", "question": "run?"}}}},

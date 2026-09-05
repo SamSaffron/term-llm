@@ -120,7 +120,7 @@
   }
 }
 
-.pending-interjection {
+.pending-steering {
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
@@ -134,7 +134,7 @@
   line-height: 1.3;
 }
 
-.pending-interjection-row {
+.pending-steering-row {
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -145,30 +145,35 @@
   background: var(--surface-2);
 }
 
-.pending-interjection.hidden {
+.pending-steering.hidden {
   display: none;
 }
 
-.pending-interjection .pending-interjection-icon {
+.pending-steering .pending-steering-icon {
   flex-shrink: 0;
   font-style: normal;
 }
 
-.pending-interjection .pending-interjection-text {
+.pending-steering .pending-steering-text {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.pending-interjection .pending-interjection-label {
+.pending-steering .pending-steering-label {
   flex-shrink: 0;
   opacity: 0.75;
   font-style: normal;
 }
 
-.pending-interjection-cancel {
+.steering-actions {
+  display: flex;
+  gap: inherit;
   margin-left: auto;
+}
+
+.pending-steering-action {
   flex-shrink: 0;
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -182,7 +187,7 @@
   cursor: pointer;
 }
 
-.pending-interjection-cancel:hover {
+.pending-steering-action:hover {
   background: var(--surface-3);
   border-color: var(--border-strong);
 }
@@ -520,7 +525,7 @@
   opacity: 0.85;
 }
 
-.send-btn.interject {
+.send-btn.steer {
   opacity: 1;
 }
 
@@ -598,4 +603,14 @@
   .prompt {
     padding: 12px 6px;
   }
+}
+
+.steering-queue-footer {
+  padding: 0.25rem 0.75rem;
+  font-size: 0.8rem;
+}
+
+.pending-steering-row.selected {
+  outline: 1px solid currentcolor;
+  outline-offset: -1px;
 }

@@ -192,6 +192,7 @@ export class APIClient {
     const sameOrigin = new URL(targetURL, location.href).origin === location.origin;
     const headers = new Headers(init.headers);
     headers.set('Accept', headers.get('Accept') || 'application/json');
+    headers.set('X-Term-LLM-Steering-Protocol', '1');
     const token = this.hooks.getToken();
     if (!sameOrigin && controls.auth !== 'caller') headers.delete('Authorization');
     if (controls.auth !== 'ignore' && sameOrigin && token && !headers.has('Authorization'))

@@ -536,7 +536,7 @@ func TestPromptHistoryRecallsCurrentSessionThenCrossSessionByDate(t *testing.T) 
 	}
 }
 
-func TestPromptHistoryWorksDuringStreamingInterjectionComposer(t *testing.T) {
+func TestPromptHistoryWorksDuringStreamingSteeringComposer(t *testing.T) {
 	store, err := session.NewStore(session.Config{Enabled: true, Path: t.TempDir() + "/sessions.db"})
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
@@ -607,26 +607,26 @@ func TestPromptHistoryUpVisitsPendingImageBeforeRecallingMessage(t *testing.T) {
 	}
 }
 
-func TestImageHistoryNavigationBypassesStreamingInterjections(t *testing.T) {
+func TestImageHistoryNavigationBypassesStreamingSteering(t *testing.T) {
 	m := newTestChatModel(true)
 	m.store = &session.NoopStore{}
 	m.streaming = true
 	m.messages = []session.Message{{Role: llm.RoleUser, TextContent: "previous prompt"}}
-	m.pendingInterjections = []pendingInterjectionUI{{ID: "queued", Text: "queued prompt"}}
+	m.pendingSteering = []pendingSteeringUI{{ID: "queued", Text: "queued prompt"}}
 	m.images = []ImageAttachment{{MediaType: "image/png", Data: []byte("image")}}
 	m.setTextareaValue("")
 
 	m = pressPromptHistoryKey(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
-	if m.selectedImage != 0 || m.selectedInterjection != -1 {
-		t.Fatalf("first up selected image=%d interjection=%d, want 0 and -1", m.selectedImage, m.selectedInterjection)
+	if m.selectedImage != 0 || m.selectedSteering != -1 {
+		t.Fatalf("first up selected image=%d steering=%d, want 0 and -1", m.selectedImage, m.selectedSteering)
 	}
 
 	m = pressPromptHistoryKey(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
 	if got := m.textarea.Value(); got != "previous prompt" {
 		t.Fatalf("second up textarea = %q, want previous prompt", got)
 	}
-	if m.selectedInterjection != -1 {
-		t.Fatalf("second up selected interjection %d instead of entering history", m.selectedInterjection)
+	if m.selectedSteering != -1 {
+		t.Fatalf("second up selected steering %d instead of entering history", m.selectedSteering)
 	}
 }
 
@@ -799,7 +799,7 @@ func TestHandleKeyMsg_ShiftTabTogglesYoloDuringStreaming(t *testing.T) {
 	m.SetApprovalManager(approvalMgr)
 	m.streaming = true
 	m.phase = "Thinking"
-	m.setTextareaValue("draft interjection")
+	m.setTextareaValue("draft steering")
 
 	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 
@@ -809,7 +809,7 @@ func TestHandleKeyMsg_ShiftTabTogglesYoloDuringStreaming(t *testing.T) {
 	if m.currentApprovalMode() != tools.ModeAuto {
 		t.Fatalf("expected first Shift+Tab to enable auto mode, got %v", m.currentApprovalMode())
 	}
-	if got := m.textarea.Value(); got != "draft interjection" {
+	if got := m.textarea.Value(); got != "draft steering" {
 		t.Fatalf("expected composer draft to remain unchanged, got %q", got)
 	}
 
@@ -998,7 +998,7 @@ func TestHandleKeyMsg_StreamingStopCommandCancelsAndShowsStopping(t *testing.T) 
 	m := newTestChatModel(false)
 	m.streaming = true
 	m.phase = "Running shell sleep"
-	m.pendingInterjection = "old"
+	m.pendingSteeringText = "old"
 	m.setTextareaValue("/stop")
 
 	cancelCalls := 0
@@ -1014,11 +1014,11 @@ func TestHandleKeyMsg_StreamingStopCommandCancelsAndShowsStopping(t *testing.T) 
 	if got := m.textarea.Value(); got != "" {
 		t.Fatalf("expected explicit stop command to be consumed, got %q", got)
 	}
-	if m.pendingInterjection != "" {
-		t.Fatalf("expected pendingInterjection to be cleared, got %q", m.pendingInterjection)
+	if m.pendingSteeringText != "" {
+		t.Fatalf("expected pendingSteeringText to be cleared, got %q", m.pendingSteeringText)
 	}
 	if m.phase != "Stopping..." {
-		t.Fatalf("expected stopping phase after cancel interjection, got %q", m.phase)
+		t.Fatalf("expected stopping phase after cancel steering, got %q", m.phase)
 	}
 	if got := m.interruptNotice; got == "" {
 		t.Fatal("expected interrupt notice after cancellation")
@@ -1041,30 +1041,68 @@ func TestHandleKeyMsg_StreamingEnterOnEmptyComposerShowsHint(t *testing.T) {
 	if cancelCalls != 0 {
 		t.Fatalf("expected empty enter to avoid cancellation, got %d cancel calls", cancelCalls)
 	}
-	if m.phase != "Type to interject, attach an image, or press Esc to cancel" {
+	if m.phase != "Type to steer, attach an image, or press Esc to cancel" {
 		t.Fatalf("expected empty enter hint phase, got %q", m.phase)
 	}
 }
 
-func TestHandleKeyMsg_CancelsSelectedPendingInterjection(t *testing.T) {
-	m := newTestChatModel(false)
-	m.streaming = true
-	firstID := m.nextPendingInterjectionID()
-	secondID := m.nextPendingInterjectionID()
-	m.applyInterruptAction(firstID, "first note", llm.InterruptInterject)
-	m.applyInterruptAction(secondID, "second note", llm.InterruptInterject)
+func TestHandleKeyMsg_CancelsSelectedPendingSteering(t *testing.T) {
+	for _, deleteKey := range []tea.KeyPressMsg{{Code: tea.KeyDelete}, {Code: tea.KeyBackspace}} {
+		t.Run(deleteKey.String(), func(t *testing.T) {
+			m := newTestChatModel(false)
+			m.streaming = true
+			firstID := m.nextPendingSteeringID()
+			secondID := m.nextPendingSteeringID()
+			m.applyInterruptAction(firstID, "first note", llm.InterruptSteer)
+			m.applyInterruptAction(secondID, "second note", llm.InterruptSteer)
 
-	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyUp})
-	if m.selectedInterjection != 0 {
-		t.Fatalf("selectedInterjection after up = %d, want 0", m.selectedInterjection)
-	}
-	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyBackspace})
+			_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyUp})
+			_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyUp})
+			if m.selectedSteering != 0 {
+				t.Fatalf("selectedSteering after up = %d, want 0", m.selectedSteering)
+			}
+			_, clearNotice := m.handleKeyMsg(deleteKey)
+			if clearNotice == nil || m.footerMessage != "Queued message removed." {
+				t.Fatal("removal should use a timed footer notification")
+			}
+			if m.interruptNotice != "" {
+				t.Fatalf("removal left a persistent composer notice: %q", m.interruptNotice)
+			}
+			_, _ = m.Update(footerMessageClearMsg{Seq: m.footerMessageSeq})
+			if m.footerMessage != "" {
+				t.Fatal("removal notification did not clear")
+			}
 
-	if got := m.engine.DrainInterjection(); got != "second note" {
-		t.Fatalf("queued interjections after cancel = %q, want second note", got)
+			if got := m.engine.DrainSteeringText(); got != "second note" {
+				t.Fatalf("queued steering after cancel = %q, want second note", got)
+			}
+			if len(m.pendingSteering) != 1 || m.pendingSteering[0].ID != secondID {
+				t.Fatalf("pending stack = %#v, want only second", m.pendingSteering)
+			}
+		})
 	}
-	if len(m.pendingInterjections) != 1 || m.pendingInterjections[0].ID != secondID {
-		t.Fatalf("pending stack = %#v, want only second", m.pendingInterjections)
+}
+
+func TestHandleKeyMsg_BackspacePreservesUnselectedOrObscuredSteering(t *testing.T) {
+	for _, state := range []string{"unselected", "draft", "dialog"} {
+		t.Run(state, func(t *testing.T) {
+			m := newTestChatModel(false)
+			m.streaming = true
+			m.applyInterruptAction("queued", "keep this", llm.InterruptSteer)
+			if state != "unselected" {
+				_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyUp})
+			}
+			if state == "draft" {
+				m.setTextareaValue("new draft")
+			}
+			if state == "dialog" {
+				m.dialog.ShowContent("Help", "body")
+			}
+			_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyBackspace})
+			if len(m.pendingSteering) != 1 || len(m.engine.ListPendingSteering()) != 1 {
+				t.Fatal("Backspace removed guidance outside queue selection")
+			}
+		})
 	}
 }
 
@@ -1083,14 +1121,14 @@ func TestHandleKeyMsg_StreamingEnterSteersImmediatelyWithoutFastProvider(t *test
 	if got := m.textarea.Value(); got != "" {
 		t.Fatalf("expected textarea to clear immediately, got %q", got)
 	}
-	if got := m.pendingInterjection; got != "stop changing the schema; inspect it first" {
-		t.Fatalf("expected pending interjection to render immediately, got %q", got)
+	if got := m.pendingSteeringText; got != "stop changing the schema; inspect it first" {
+		t.Fatalf("expected pending steering to render immediately, got %q", got)
 	}
 	if got := fastProvider.CurrentTurn(); got != 0 {
 		t.Fatalf("fast provider calls = %d, want zero", got)
 	}
-	if got := m.engine.DrainInterjection(); got != "stop changing the schema; inspect it first" {
-		t.Fatalf("expected engine interjection to be queued, got %q", got)
+	if got := m.engine.DrainSteeringText(); got != "stop changing the schema; inspect it first" {
+		t.Fatalf("expected engine steering to be queued, got %q", got)
 	}
 }
 
@@ -1115,73 +1153,73 @@ func TestHandleKeyMsg_SimpleStreamKeepsUnconsumableSteerAsDraft(t *testing.T) {
 	if got := m.textarea.Value(); got != "also inspect the schema" {
 		t.Fatalf("composer = %q, want rejected steer kept as draft", got)
 	}
-	if len(m.pendingInterjections) != 0 || len(m.engine.ListPendingInterjections()) != 0 {
-		t.Fatalf("simple stream retained phantom steer: ui=%#v engine=%#v", m.pendingInterjections, m.engine.ListPendingInterjections())
+	if len(m.pendingSteering) != 0 || len(m.engine.ListPendingSteering()) != 0 {
+		t.Fatalf("simple stream retained phantom steer: ui=%#v engine=%#v", m.pendingSteering, m.engine.ListPendingSteering())
 	}
 	if !strings.Contains(m.interruptNotice, "cannot consume steering") {
 		t.Fatalf("interrupt notice = %q, want non-consuming explanation", m.interruptNotice)
 	}
 }
 
-func TestStreamEventInterjection_DoesNotDiscardNewerPendingSteer(t *testing.T) {
+func TestStreamEventSteering_DoesNotDiscardNewerPendingSteer(t *testing.T) {
 	m := newTestChatModel(false)
 	m.streaming = true
 	m.phase = "Thinking"
 
-	firstID := m.nextPendingInterjectionID()
-	m.applyInterruptAction(firstID, "first note", llm.InterruptInterject)
-	secondID := m.nextPendingInterjectionID()
-	m.applyInterruptAction(secondID, "second note", llm.InterruptInterject)
+	firstID := m.nextPendingSteeringID()
+	m.applyInterruptAction(firstID, "first note", llm.InterruptSteer)
+	secondID := m.nextPendingSteeringID()
+	m.applyInterruptAction(secondID, "second note", llm.InterruptSteer)
 
-	_, _ = m.Update(streamEventMsg{event: ui.InterjectionEvent("first note", firstID)})
+	_, _ = m.Update(streamEventMsg{event: ui.SteeringEvent("first note", firstID)})
 
-	if got := m.pendingInterjection; got != "second note" {
-		t.Fatalf("pendingInterjection after first event = %q, want %q", got, "second note")
+	if got := m.pendingSteeringText; got != "second note" {
+		t.Fatalf("pendingSteeringText after first event = %q, want %q", got, "second note")
 	}
-	if got := m.pendingInterjectionID; got != secondID {
-		t.Fatalf("pendingInterjectionID after first event = %q, want %q", got, secondID)
+	if got := m.pendingSteeringID; got != secondID {
+		t.Fatalf("pendingSteeringID after first event = %q, want %q", got, secondID)
 	}
-	if len(m.pendingInterjections) != 1 || m.pendingInterjections[0].ID != secondID {
-		t.Fatalf("pending stack after first event = %#v, want only second", m.pendingInterjections)
+	if len(m.pendingSteering) != 1 || m.pendingSteering[0].ID != secondID {
+		t.Fatalf("pending stack after first event = %#v, want only second", m.pendingSteering)
 	}
-	if got := m.engine.DrainInterjection(); got != "first note\nsecond note" {
-		t.Fatalf("expected both FIFO interjections to remain queued, got %q", got)
+	if got := m.engine.DrainSteeringText(); got != "first note\nsecond note" {
+		t.Fatalf("expected both FIFO steering to remain queued, got %q", got)
 	}
 }
 
-func TestStreamEventInterjection_MatchesByIDNotText(t *testing.T) {
+func TestStreamEventSteering_MatchesByIDNotText(t *testing.T) {
 	m := newTestChatModel(false)
 	m.streaming = true
 
-	firstID := m.nextPendingInterjectionID()
-	m.applyInterruptAction(firstID, "same text", llm.InterruptInterject)
-	secondID := m.nextPendingInterjectionID()
-	m.applyInterruptAction(secondID, "same text", llm.InterruptInterject)
+	firstID := m.nextPendingSteeringID()
+	m.applyInterruptAction(firstID, "same text", llm.InterruptSteer)
+	secondID := m.nextPendingSteeringID()
+	m.applyInterruptAction(secondID, "same text", llm.InterruptSteer)
 
-	_, _ = m.Update(streamEventMsg{event: ui.InterjectionEvent("same text", firstID)})
+	_, _ = m.Update(streamEventMsg{event: ui.SteeringEvent("same text", firstID)})
 
-	if got := m.pendingInterjectionID; got != secondID {
-		t.Fatalf("pendingInterjectionID after stale event = %q, want %q", got, secondID)
+	if got := m.pendingSteeringID; got != secondID {
+		t.Fatalf("pendingSteeringID after stale event = %q, want %q", got, secondID)
 	}
-	if got := m.pendingInterjection; got != "same text" {
-		t.Fatalf("pendingInterjection after stale event = %q, want same text", got)
+	if got := m.pendingSteeringText; got != "same text" {
+		t.Fatalf("pendingSteeringText after stale event = %q, want same text", got)
 	}
-	if len(m.pendingInterjections) != 1 || m.pendingInterjections[0].ID != secondID {
-		t.Fatalf("pending stack after stale event = %#v, want only second", m.pendingInterjections)
+	if len(m.pendingSteering) != 1 || m.pendingSteering[0].ID != secondID {
+		t.Fatalf("pending stack after stale event = %#v, want only second", m.pendingSteering)
 	}
-	if got := m.engine.DrainInterjection(); got != "same text\nsame text" {
-		t.Fatalf("expected both same-text interjections to remain queued FIFO, got %q", got)
+	if got := m.engine.DrainSteeringText(); got != "same text\nsame text" {
+		t.Fatalf("expected both same-text steering to remain queued FIFO, got %q", got)
 	}
 }
 
-func TestRestorePendingInterjectionDraft_RestoresImageParts(t *testing.T) {
+func TestRestorePendingSteeringDraft_RestoresImageParts(t *testing.T) {
 	m := newTestChatModel(false)
-	m.engine.QueueInterjection(llm.QueuedInterjection{
+	m.engine.QueueSteering(llm.QueuedSteering{
 		ID:      "img-draft",
 		Message: llm.UserImageMessage("image/png", base64.StdEncoding.EncodeToString([]byte("img")), "describe"),
 	})
 
-	m.restorePendingInterjectionDraft()
+	m.restorePendingSteeringDraft()
 
 	if got := m.textarea.Value(); got != "describe" {
 		t.Fatalf("restored text = %q, want describe", got)
@@ -1191,10 +1229,10 @@ func TestRestorePendingInterjectionDraft_RestoresImageParts(t *testing.T) {
 	}
 }
 
-func TestStreamDone_PendingInterjectRestoresDraftWithoutEngineResidual(t *testing.T) {
+func TestStreamDone_PendingSteerRestoresDraftWithoutEngineResidual(t *testing.T) {
 	m := newTestChatModel(false)
 	m.streaming = true
-	m.pendingInterjection = "keep sleeping"
+	m.pendingSteeringText = "keep sleeping"
 
 	_, cmd := m.Update(streamEventMsg{event: ui.DoneEvent(0)})
 	if cmd == nil {
@@ -1204,10 +1242,10 @@ func TestStreamDone_PendingInterjectRestoresDraftWithoutEngineResidual(t *testin
 		t.Fatal("expected streaming to stop after done event")
 	}
 	if got := m.textarea.Value(); got != "keep sleeping" {
-		t.Fatalf("expected pending interjection restored to composer, got %q", got)
+		t.Fatalf("expected pending steering restored to composer, got %q", got)
 	}
-	if got := m.pendingInterjection; got != "" {
-		t.Fatalf("expected pending interjection cleared after restore, got %q", got)
+	if got := m.pendingSteeringText; got != "" {
+		t.Fatalf("expected pending steering cleared after restore, got %q", got)
 	}
 }
 
@@ -1215,32 +1253,33 @@ func TestStreamDone_OccupiedComposerKeepsQueuedSteerVisibleAndCancellable(t *tes
 	m := newTestChatModel(false)
 	m.streaming = true
 	m.setTextareaValue("unrelated draft")
-	m.engine.QueueInterjection(llm.QueuedInterjection{ID: "late-steer", Message: llm.UserText("keep sleeping"), DisplayText: "keep sleeping"})
-	m.setPendingInterjection("late-steer", "keep sleeping")
+	m.engine.QueueSteering(llm.QueuedSteering{ID: "late-steer", Message: llm.UserText("keep sleeping"), DisplayText: "keep sleeping"})
+	m.setPendingSteering("late-steer", "keep sleeping")
 
 	_, _ = m.Update(streamEventMsg{event: ui.DoneEvent(0)})
 
 	if got := m.textarea.Value(); got != "unrelated draft" {
 		t.Fatalf("composer = %q, want existing draft preserved", got)
 	}
-	if len(m.pendingInterjections) != 1 || m.pendingInterjections[0].ID != "late-steer" {
-		t.Fatalf("pending UI = %#v, want late steer still visible", m.pendingInterjections)
+	if len(m.pendingSteering) != 1 || m.pendingSteering[0].ID != "late-steer" {
+		t.Fatalf("pending UI = %#v, want late steer still visible", m.pendingSteering)
 	}
-	if pending := m.engine.ListPendingInterjections(); len(pending) != 1 || pending[0].ID != "late-steer" {
+	if pending := m.engine.ListPendingSteering(); len(pending) != 1 || pending[0].ID != "late-steer" {
 		t.Fatalf("engine pending = %#v, want late steer cancellable", pending)
 	}
 
 	m.setTextareaValue("")
-	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyBackspace})
-	if len(m.pendingInterjections) != 0 || len(m.engine.ListPendingInterjections()) != 0 {
-		t.Fatalf("late steer was not cancellable after completion: ui=%#v engine=%#v", m.pendingInterjections, m.engine.ListPendingInterjections())
+	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyUp})
+	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyDelete})
+	if len(m.pendingSteering) != 0 || len(m.engine.ListPendingSteering()) != 0 {
+		t.Fatalf("late steer was not cancellable after completion: ui=%#v engine=%#v", m.pendingSteering, m.engine.ListPendingSteering())
 	}
 }
 
-func TestStreamError_PendingInterjectRestoresDraftWithoutEngineResidual(t *testing.T) {
+func TestStreamError_PendingSteerRestoresDraftWithoutEngineResidual(t *testing.T) {
 	m := newTestChatModel(false)
 	m.streaming = true
-	m.pendingInterjection = "keep sleeping"
+	m.pendingSteeringText = "keep sleeping"
 
 	_, cmd := m.Update(streamEventMsg{event: ui.ErrorEvent(context.Canceled)})
 	if cmd != nil {
@@ -1250,10 +1289,10 @@ func TestStreamError_PendingInterjectRestoresDraftWithoutEngineResidual(t *testi
 		t.Fatal("expected streaming to stop after error")
 	}
 	if got := m.textarea.Value(); got != "keep sleeping" {
-		t.Fatalf("expected pending interjection restored to composer, got %q", got)
+		t.Fatalf("expected pending steering restored to composer, got %q", got)
 	}
-	if got := m.pendingInterjection; got != "" {
-		t.Fatalf("expected pending interjection cleared after restore, got %q", got)
+	if got := m.pendingSteeringText; got != "" {
+		t.Fatalf("expected pending steering cleared after restore, got %q", got)
 	}
 }
 
@@ -1547,7 +1586,7 @@ func TestPasteCollapse_SmallPasteGoesToTextarea(t *testing.T) {
 	}
 }
 
-func TestPasteCollapse_StreamingInterjectionExpandsPlaceholderOnSend(t *testing.T) {
+func TestPasteCollapse_StreamingSteeringExpandsPlaceholderOnSend(t *testing.T) {
 	stubClipboard(t)
 	m := newTestChatModel(false)
 	m.streaming = true
@@ -1563,8 +1602,8 @@ func TestPasteCollapse_StreamingInterjectionExpandsPlaceholderOnSend(t *testing.
 	if len(m.pasteChunks) != 0 {
 		t.Fatalf("expected paste chunks cleared after streaming send, got %d", len(m.pasteChunks))
 	}
-	if got := m.engine.DrainInterjection(); got != pasteText {
-		t.Fatalf("streaming interjection = %q, want expanded paste %q", got, pasteText)
+	if got := m.engine.DrainSteeringText(); got != pasteText {
+		t.Fatalf("streaming steering = %q, want expanded paste %q", got, pasteText)
 	}
 }
 
@@ -1587,7 +1626,7 @@ func TestPasteCollapse_StreamingSteerBypassesClassifierWithExpandedContent(t *te
 	if got := fastProvider.CurrentTurn(); got != 0 {
 		t.Fatalf("fast provider calls = %d, want zero", got)
 	}
-	if got := m.engine.DrainInterjection(); got != pasteText {
+	if got := m.engine.DrainSteeringText(); got != pasteText {
 		t.Fatalf("queued content = %q, want expanded paste %q", got, pasteText)
 	}
 }
@@ -1610,8 +1649,8 @@ func TestStreamingSlashThinkingExecutesLocally(t *testing.T) {
 	if got := m.textarea.Value(); got != "" {
 		t.Fatalf("expected command to clear composer, got %q", got)
 	}
-	if len(m.pendingInterjections) != 0 || m.pendingInterjection != "" {
-		t.Fatalf("/thinking should not queue interjection, pending=%q stack=%d", m.pendingInterjection, len(m.pendingInterjections))
+	if len(m.pendingSteeringText) != 0 || m.pendingSteeringText != "" {
+		t.Fatalf("/thinking should not queue steering, pending=%q stack=%d", m.pendingSteeringText, len(m.pendingSteeringText))
 	}
 }
 
@@ -1674,7 +1713,7 @@ func TestStreamingSideSlashInvalidatesCachedAltScreenBackgroundBeforeOverlay(t *
 	}
 }
 
-func TestStreamingSlashCommandPrefixQueuesInterjection(t *testing.T) {
+func TestStreamingSlashCommandPrefixQueuesSteering(t *testing.T) {
 	for _, input := range []string{"/s", "/se", "/system-prompt-question", "/i", "/t"} {
 		t.Run(input, func(t *testing.T) {
 			m := newTestChatModel(false)
@@ -1685,17 +1724,17 @@ func TestStreamingSlashCommandPrefixQueuesInterjection(t *testing.T) {
 
 			updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 			m = updated.(*Model)
-			if len(m.pendingInterjections) != 1 {
-				t.Fatalf("expected slash prefix to queue as interjection, pending stack=%d", len(m.pendingInterjections))
+			if len(m.pendingSteering) != 1 {
+				t.Fatalf("expected slash prefix to queue as steering, pending stack=%d", len(m.pendingSteering))
 			}
-			if got := m.pendingInterjections[0].Text; got != input {
-				t.Fatalf("pending interjection = %q, want %q", got, input)
+			if got := m.pendingSteering[0].Text; got != input {
+				t.Fatalf("pending steering = %q, want %q", got, input)
 			}
 		})
 	}
 }
 
-func TestStreamingSideEffectSlashCommandsQueueInterjection(t *testing.T) {
+func TestStreamingSideEffectSlashCommandsQueueSteering(t *testing.T) {
 	for _, input := range []string{"/search", "/export", "/system new prompt", "/inspect"} {
 		t.Run(input, func(t *testing.T) {
 			m := newTestChatModel(false)
@@ -1706,17 +1745,17 @@ func TestStreamingSideEffectSlashCommandsQueueInterjection(t *testing.T) {
 
 			updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 			m = updated.(*Model)
-			if len(m.pendingInterjections) != 1 {
-				t.Fatalf("expected side-effect command to queue as interjection, pending stack=%d", len(m.pendingInterjections))
+			if len(m.pendingSteering) != 1 {
+				t.Fatalf("expected side-effect command to queue as steering, pending stack=%d", len(m.pendingSteering))
 			}
-			if got := m.pendingInterjections[0].Text; got != input {
-				t.Fatalf("pending interjection = %q, want %q", got, input)
+			if got := m.pendingSteering[0].Text; got != input {
+				t.Fatalf("pending steering = %q, want %q", got, input)
 			}
 		})
 	}
 }
 
-func TestStreamingUnknownSlashStillQueuesInterjection(t *testing.T) {
+func TestStreamingUnknownSlashStillQueuesSteering(t *testing.T) {
 	m := newTestChatModel(false)
 	m.streaming = true
 	m.phase = "Thinking"
@@ -1725,11 +1764,11 @@ func TestStreamingUnknownSlashStillQueuesInterjection(t *testing.T) {
 
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(*Model)
-	if len(m.pendingInterjections) != 1 {
-		t.Fatalf("expected slash path to queue as interjection, pending stack=%d", len(m.pendingInterjections))
+	if len(m.pendingSteering) != 1 {
+		t.Fatalf("expected slash path to queue as steering, pending stack=%d", len(m.pendingSteering))
 	}
-	if got := m.pendingInterjections[0].Text; got != "/tmp/foo" {
-		t.Fatalf("pending interjection = %q, want /tmp/foo", got)
+	if got := m.pendingSteering[0].Text; got != "/tmp/foo" {
+		t.Fatalf("pending steering = %q, want /tmp/foo", got)
 	}
 }
 
@@ -1937,7 +1976,7 @@ func TestStreamingFastCommandTogglesLocally(t *testing.T) {
 			if m.fastMode != enabled || !m.streaming {
 				t.Fatalf("fast=%v streaming=%v, want %v/true", m.fastMode, m.streaming, enabled)
 			}
-			if len(m.pendingInterjections) != 0 || m.pendingInterjection != "" || m.textarea.Value() != "" {
+			if len(m.pendingSteering) != 0 || m.pendingSteeringText != "" || m.textarea.Value() != "" {
 				t.Fatal("/fast must clear the composer without queuing conversation text")
 			}
 			if !strings.Contains(m.footerMessage, "next request") {

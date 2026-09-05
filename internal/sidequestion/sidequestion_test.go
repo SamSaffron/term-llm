@@ -255,13 +255,13 @@ func messageText(messages []llm.Message) string {
 	return strings.Join(texts, "|")
 }
 
-func TestBuildMessagesResanitizesInterjectedToolCycleAfterTrim(t *testing.T) {
+func TestBuildMessagesResanitizesSteeredToolCycleAfterTrim(t *testing.T) {
 	call := &llm.ToolCall{ID: "call-1", Name: "read"}
 	result := &llm.ToolResult{ID: "call-1", Name: "read", Content: "tool result"}
 	snapshot := []llm.Message{
 		llm.UserText(strings.Repeat("large old turn ", 100)),
 		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: call}}},
-		llm.UserText("interjection"),
+		llm.UserText("steering"),
 		{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: result}}},
 		llm.AssistantText("answer after tool"),
 	}

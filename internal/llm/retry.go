@@ -388,7 +388,7 @@ func (e *committedError) Unwrap() error { return e.err }
 //   - assistant text deltas
 //   - reasoning deltas (streamed to the user in real time)
 //   - warning-prefixed phase updates (rendered as visible warnings)
-//   - interjections injected into the conversation
+//   - steering injected into the conversation
 //   - tool calls, which are durable model actions and may be followed by side effects
 //   - synchronous tool requests (EventToolCall with ToolResponse)
 //   - provider-native tool execution (EventToolExecStart/End, e.g. web_search)
@@ -452,7 +452,7 @@ func (r *RetryProvider) forwardAttempt(ctx context.Context, stream Stream, send 
 
 func eventRequiresImmediateForwarding(event Event) bool {
 	switch event.Type {
-	case EventTextDelta, EventInterjection, EventReasoningDelta,
+	case EventTextDelta, EventSteering, EventReasoningDelta,
 		EventToolExecStart, EventToolExecEnd:
 		return true
 	case EventPhase:
