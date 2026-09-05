@@ -115,6 +115,10 @@ func (s *serveServer) startCompletionPushDispatcher() {
 func (s *serveServer) dispatchCompletionPushes(outbox session.CompletionPushOutboxStore) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+	s.dispatchCompletionPushesWithSender(ctx, outbox, 20*time.Second, sendWebPushDetailed)
+}
+
+func (s *serveServer) dispatchCompletionPushesWithSender(ctx context.Context, outbox session.CompletionPushOutboxStore, attemptTimeout time.Duration, send func(context.Context, *session.PushSubscription, []byte, *webpush.Options) (int, time.Duration, error)) {
 	items, err := outbox.ListDueCompletionPushes(ctx, time.Now().UTC(), 25)
 	if err != nil || len(items) == 0 {
 		return
@@ -128,6 +132,9 @@ func (s *serveServer) dispatchCompletionPushes(outbox session.CompletionPushOutb
 		Subscriber: normalizeWebPushSubject(s.cfgRef.Serve.WebPush.Subject), TTL: 300,
 	}
 	for _, item := range items {
+		if ctx.Err() != nil {
+			break
+		}
 		sub, getErr := pushStore.GetPushSubscription(ctx, item.SubscriptionID)
 		if getErr != nil {
 			s.retryCompletionPush(ctx, outbox, item, getErr)
@@ -137,24 +144,34 @@ func (s *serveServer) dispatchCompletionPushes(outbox session.CompletionPushOutb
 			_ = outbox.MarkCompletionPushDead(ctx, item.ID, "subscription is stale or missing")
 			continue
 		}
-		status, retryAfter, sendErr := sendWebPushDetailed(ctx, sub, item.Payload, opts)
-		if sendErr == nil {
-			_ = pushStore.MarkPushSubscriptionUsed(ctx, sub.ID)
-			_ = outbox.MarkCompletionPushDelivered(ctx, item.ID)
-			continue
-		}
-		if status == http.StatusGone || status == http.StatusNotFound {
-			_ = pushStore.MarkPushSubscriptionStale(ctx, sub.ID, fmt.Sprintf("http_%d", status), "push endpoint rejected the subscription")
-			_ = outbox.MarkCompletionPushDead(ctx, item.ID, "push endpoint rejected the subscription")
-			continue
-		}
-		if item.AttemptCount >= 7 {
-			_ = outbox.MarkCompletionPushDead(ctx, item.ID, "delivery retry limit reached")
-			continue
-		}
-		s.retryCompletionPushAfter(ctx, outbox, item, sendErr, retryAfter)
+		attemptCtx, cancel := context.WithTimeout(ctx, attemptTimeout)
+		status, retryAfter, sendErr := send(attemptCtx, sub, item.Payload, opts)
+		cancel()
+		s.recordCompletionPushResult(outbox, pushStore, item, sub, status, retryAfter, sendErr)
 	}
 	_ = outbox.PruneCompletionPushOutbox(ctx, time.Now().UTC().Add(-7*24*time.Hour))
+}
+
+func (s *serveServer) recordCompletionPushResult(outbox session.CompletionPushOutboxStore, pushStore session.PushSubscriptionLifecycleStore, item session.CompletionPushOutboxItem, sub *session.PushSubscription, status int, retryAfter time.Duration, sendErr error) {
+	// A send may exhaust the entire dispatch budget. Persist its outcome with
+	// a fresh, bounded context so it cannot remain at the head of every batch.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if sendErr == nil {
+		_ = pushStore.MarkPushSubscriptionUsed(ctx, sub.ID)
+		_ = outbox.MarkCompletionPushDelivered(ctx, item.ID)
+		return
+	}
+	if status == http.StatusGone || status == http.StatusNotFound {
+		_ = pushStore.MarkPushSubscriptionStale(ctx, sub.ID, fmt.Sprintf("http_%d", status), "push endpoint rejected the subscription")
+		_ = outbox.MarkCompletionPushDead(ctx, item.ID, "push endpoint rejected the subscription")
+		return
+	}
+	if item.AttemptCount >= 7 {
+		_ = outbox.MarkCompletionPushDead(ctx, item.ID, "delivery retry limit reached")
+		return
+	}
+	s.retryCompletionPushAfter(ctx, outbox, item, sendErr, retryAfter)
 }
 
 func (s *serveServer) retryCompletionPush(ctx context.Context, outbox session.CompletionPushOutboxStore, item session.CompletionPushOutboxItem, err error) {
@@ -162,7 +179,7 @@ func (s *serveServer) retryCompletionPush(ctx context.Context, outbox session.Co
 }
 
 func (s *serveServer) retryCompletionPushAfter(ctx context.Context, outbox session.CompletionPushOutboxStore, item session.CompletionPushOutboxItem, err error, requestedDelay time.Duration) {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 		return
 	}
 	delay := requestedDelay
