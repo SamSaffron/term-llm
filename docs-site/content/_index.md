@@ -1,30 +1,98 @@
 ---
 title: "term-llm"
-description: "Terminal-first AI runtime for commands, chat, agents, editing, tools, jobs, and local workflows."
-new_here: |
-  - [Quickstart](/getting-started/quickstart/) for the shortest path from install to a working first run
-  - [Installation](/getting-started/installation/) if you just want the install command and platform notes
-  - [Providers and setup](/getting-started/providers-and-setup/) to wire up OpenAI, Anthropic, Gemini, Ollama, OpenRouter, and the rest
-  - [Usage guide](/guides/usage/) when you want the mental model for `exec`, `ask`, and `chat`
-common_workflows: |
-  - [Skills](/guides/skills/) for portable instruction bundles that add task-specific context
-  - [Agents](/guides/agents/) for built-in agents and when to use them
-  - [File editing](/guides/file-editing/) for safe edit workflows from the terminal
-  - [MCP servers](/guides/mcp-servers/) to connect external tools and services
-  - [Job runner](/guides/job-runner/) for scheduled and background automation
-reference_shortcuts: |
-  - [Configuration reference](/reference/configuration/) for config keys, file locations, and examples
-  - [Providers and models](/reference/providers-and-models/) for provider-specific settings and model naming
-  - [Built-in tools](/reference/built-in-tools/) for tool behavior and availability
-  - [Sessions](/reference/sessions/) for persistence, resume behavior, and storage details
-understand_it: |
-  - [Architecture overview](/architecture/overview/) for how runtimes, tools, routing, skills, and memory fit together
-  - [Memory guide](/guides/memory/) for persistent memory behavior and fragment management
-  - [Web UI and API](/guides/web-ui-and-api/) for browser access and HTTP endpoints
-  - [Debugging](/guides/debugging/) when something feels off and you need the shortest path to evidence
+description: "Review code, edit files, research, and automate work with your choice of models. A powerful terminal tool and a complete browser workspace, in one self-hosted AI runtime."
+eyebrow: "Open source. Terminal-first. Browser-ready."
+headline: "AI in your terminal."
+headline_second: "A workspace in your browser."
+intro: "Review code, edit files, research questions, and automate the work you repeat. Bring your choice of models to a powerful CLI and a complete browser interface."
+web:
+  eyebrow: "The browser workspace"
+  title: "Not just a chat window. Your working environment."
+  description: "Run one command to open a full interface for agent work: persistent conversations, projects and worktrees, live file diffs, and an interactive shell. All served from your own machine."
+  command: "term-llm serve web"
+  caption: "The term-llm browser interface, shown with an illustrative review session."
+  features:
+    - title: "Keep work in context"
+      text: "Organize conversations by project, return to saved sessions, and work in isolated Git worktrees."
+      url: "/guides/web-ui-and-api/#project-aware-responses-and-worktrees"
+    - title: "See what your agents change"
+      text: "Follow tool activity and inspect cumulative file diffs as work happens, without leaving the conversation."
+      url: "/guides/web-ui-and-api/#live-diff-sidebar"
+    - title: "More than text"
+      text: "Attach files and images, open an interactive shell, and extend the workspace with your own widget apps."
+      url: "/guides/widgets/"
+why:
+  title: "Your workflow. Not one provider’s workflow."
+  items:
+    - title: "Choose the right model"
+      text: "Use hosted APIs, supported subscriptions, or local models through Ollama and LM Studio. Choose models per agent, not just per app."
+      url: "/getting-started/providers-and-setup/"
+      link: "Explore connection options"
+    - title: "Give repeatable work an agent"
+      text: "Start with a code reviewer, developer, or researcher. Customize their instructions, tools, permissions, and model choices."
+      url: "/guides/agents/"
+      link: "Meet the built-in agents"
+    - title: "Go beyond a single conversation"
+      text: "Keep sessions, schedule jobs, connect MCP tools, or expose an API. Build a workflow around your work—not the other way around."
+      url: "/guides/job-runner/"
+      link: "Explore automation"
+terminal:
+  eyebrow: "At home in your terminal"
+  title: "Small commands. Useful results."
+  description: "Ask a question, pipe in a diff, or stay in a conversation. term-llm fits alongside the tools you already use."
+  command: 'term-llm exec --print-only "find the 3 biggest files in this directory on Linux"'
+  output: "find . -type f -printf '%s %p\\n' | sort -nr | head -3"
+  note: "Illustrative output on GNU/Linux. --print-only displays the suggested command without executing it; always inspect generated commands before running them."
+workflows:
+  title: "Start with something you need to do."
+  items:
+    - title: "Understand an unfamiliar codebase"
+      text: "Trace behavior across files and ask follow-up questions without losing the thread."
+      command: 'term-llm chat @codebase'
+      url: "/guides/agents/"
+    - title: "Review before you commit"
+      text: "Ask a git-aware, read-only reviewer to look for bugs in your staged changes."
+      command: 'term-llm ask @reviewer "review the staged changes"'
+      url: "/guides/agents/#built-in-agents"
+    - title: "Implement a fix"
+      text: "Work with a developer agent that can inspect code, make changes, and run checks with the configured permissions."
+      command: 'term-llm chat @developer'
+      url: "/guides/file-editing/"
+    - title: "Put your diff to work"
+      text: "Use ordinary Unix pipes to turn the context you already have into a useful result."
+      command: 'git diff --staged | term-llm ask @commit-message'
+      url: "/guides/usage/"
+control:
+  title: "Powerful tools. Explicit controls."
+  description: "Choose what your agents can do, understand where your data goes, and keep track of usage."
+  items:
+    - title: "Choose your approval mode"
+      text: "Use human approval for unmatched actions, or Guardian-reviewed auto mode. Workspace grants for file tools do not authorize shell commands."
+      url: "/reference/built-in-tools/#approval-modes"
+    - title: "Know where context goes"
+      text: "Hosted models receive the context you send. For local inference, use a local model and check tool, search, and Guardian routing too."
+      url: "/getting-started/providers-and-setup/#use-a-local-model"
+    - title: "Track usage, not guesses"
+      text: "Inspect recorded token usage and estimated costs by provider and model. Pricing and coverage vary by provider."
+      url: "/reference/usage-tracking/"
+install:
+  title: "Make it part of your next task."
+  description: "Install a self-contained release, connect a model, and choose your interface. No frontend build or separate web app to install."
+  homebrew: "brew install samsaffron/tap/term-llm"
+  shell: "curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh"
+  trial: 'term-llm ask --provider zen "Explain git rebase in three sentences"'
+  caveat: "Zen offers a no-API-key path to supported free models. It is a third-party hosted service; model availability and limits can change."
+explore:
+  - title: "Schedule recurring work"
+    text: "Run background jobs and recurring agent workflows."
+    url: "/guides/job-runner/"
+  - title: "Connect tools and services"
+    text: "Give agents access to your MCP servers."
+    url: "/guides/mcp-servers/"
+  - title: "Run on your infrastructure"
+    text: "Connect web nodes through Hub and deploy agent containers."
+    url: "/guides/hub/"
+  - title: "Create beyond code"
+    text: "Generate images, work with audio, and explore video workflows."
+    url: "/guides/image-generation/"
 ---
-term-llm is a terminal-first AI runtime.
-
-It turns natural language into command suggestions, supports persistent chat, runs agents, edits files, calls tools, schedules jobs, and works with local or hosted models.
-
-If you are new, install it, configure one provider, run the quickstart, and then come back for the workflow or reference page that matches the job.

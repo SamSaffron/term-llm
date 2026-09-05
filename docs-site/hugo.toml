@@ -1,15 +1,19 @@
 baseURL = 'https://term-llm.com/'
 languageCode = 'en-us'
 title = 'term-llm docs'
-disableKinds = ['taxonomy', 'term', 'RSS', 'sitemap', 'robotsTXT']
+disableKinds = ['taxonomy', 'term', 'RSS', 'robotsTXT']
 
 [markup]
   [markup.goldmark]
     [markup.goldmark.renderer]
       unsafe = true
+    [markup.goldmark.parser.attribute]
+      block = true
   [markup.highlight]
     noClasses = false
-    style = 'github-dark'
+  [markup.tableOfContents]
+    startLevel = 2
+    endLevel = 3
 
 [params]
-  description = 'Documentation hub for term-llm: getting started, guides, architecture, and reference.'
+  description = 'Use term-llm in your terminal or browser: getting started, workflow guides, and reference for your self-hosted AI workspace.'

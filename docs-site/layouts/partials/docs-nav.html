@@ -1,0 +1,21 @@
+<aside class="docs-sidebar" data-pagefind-ignore>
+  <details class="docs-navigation" open>
+    <summary>Browse documentation</summary>
+    <nav aria-label="Documentation">
+      {{ $current := . }}
+      {{ range site.Data.navigation.groups }}
+        <div class="nav-group">
+          <p>{{ .title }}</p>
+          {{ $section := .section }}
+          <ul>
+            {{ range .pages }}
+              {{ with site.GetPage (printf "%s/%s" $section .) }}
+                <li><a href="{{ .RelPermalink }}" {{ if eq .RelPermalink $current.RelPermalink }}aria-current="page"{{ end }}>{{ .Title }}</a></li>
+              {{ end }}
+            {{ end }}
+          </ul>
+        </div>
+      {{ end }}
+    </nav>
+  </details>
+</aside>

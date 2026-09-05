@@ -26,14 +26,20 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: '24'
+          cache: npm
+          cache-dependency-path: docs-site/package-lock.json
 
-      - name: Build docs site
+      - name: Install docs validation tools
         run: |
-          rm -rf docs-site-public
+          npm --prefix docs-site ci
           cd docs-site
-          hugo --destination ../docs-site-public
-          cd ..
-          npx --yes pagefind --site docs-site-public
+          npx playwright install --with-deps chromium
+
+      - name: Build and validate docs site
+        run: |
+          npm --prefix docs-site test
+          rm -rf docs-site-public
+          mv .cache/docs-site docs-site-public
           test -f docs-site-public/index.html
           test -f docs-site-public/pagefind/pagefind.js
 

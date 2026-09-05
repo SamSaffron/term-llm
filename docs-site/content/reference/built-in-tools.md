@@ -54,7 +54,7 @@ Limitations: the primary model must call tools; the `vision_via` provider must b
 
 ### Filesystem change attribution
 
-[File change tracking](/reference/sessions/#file-change-history/) is enabled by default. When enabled, trusted direct write tools (`write_file`, `edit_file`, `unified_diff`) record witnessed transitions automatically. Shell detection is different: `affected_paths` only bounds pre/post inspection and never creates attribution. Declare intended task output before execution with `output_claims`:
+[File change tracking](/reference/sessions/#file-change-history) is enabled by default. When enabled, trusted direct write tools (`write_file`, `edit_file`, `unified_diff`) record witnessed transitions automatically. Shell detection is different: `affected_paths` only bounds pre/post inspection and never creates attribution. Declare intended task output before execution with `output_claims`:
 
 ```json
 {

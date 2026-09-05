@@ -1,0 +1,15 @@
+{
+  "name": "term-llm-docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "hugo --destination ../.cache/docs-site && pagefind --site ../.cache/docs-site",
+    "test": "npm run build && node scripts/check-site.mjs",
+    "capture:product": "node scripts/capture-product.mjs"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.11.1",
+    "pagefind": "1.5.2",
+    "playwright": "1.58.2"
+  }
+}

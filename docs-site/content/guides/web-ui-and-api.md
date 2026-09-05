@@ -1,18 +1,33 @@
 ---
-title: "Web UI and API"
+title: "Web workspace"
 weight: 7
-description: "Run term-llm as a web server, use the browser UI, and call the HTTP API endpoints exposed by serve mode."
-kicker: "Web runtime"
+description: "A complete browser workspace for conversations, projects, agent work, live diffs, and an interactive shell—served by term-llm."
+kicker: "Browser workspace"
 featured: true
 next:
   label: WebRTC direct routing
   url: /guides/webrtc-direct-routing/
 ---
+`term-llm serve web` is a full interface for working with models and agents, not just an API with a chat box. It includes persistent conversations, project and worktree organization, model selection, tool activity, attachments, live file diffs, and an interactive shell. The interface ships inside the release binary; there is no separate web application to build or install.
+
+<figure class="product-shot">
+<picture><source srcset="/images/web-workspace-dark.png" media="(prefers-color-scheme: dark)" data-theme-image="dark"><img src="/images/web-workspace-light.png" width="1440" height="940" alt="Browser workspace with saved conversations, an agent review, and a file diff panel." loading="lazy"></picture>
+<figcaption>The term-llm browser interface, shown with an illustrative review session.</figcaption>
+</figure>
+
 ## Start the web runtime
+
+[Configure a provider](/getting-started/providers-and-setup/) first, or pass `--provider` explicitly. Then start the server:
 
 ```bash
 term-llm serve web
 ```
+
+Open the URL printed in the terminal and follow the authentication instructions. Keep the process running while you use the browser interface; **Ctrl+C** stops it. For a first test using Zen’s supported free hosted models, use `term-llm serve web --provider zen` (availability and limits depend on Zen).
+
+Start a conversation, choose a model, and ask a question. To work on code, select a project/worktree and review any workspace access requests. Live changes appear when file tracking records edits; the shell is available through `/shell`. Widgets appear after you install or create a widget application.
+
+For a remote deployment, configure [authentication](#authentication) and HTTPS before exposing the listener. A shared bearer token represents one operator security domain, not separate user accounts or tenant isolation.
 
 Useful variants:
 

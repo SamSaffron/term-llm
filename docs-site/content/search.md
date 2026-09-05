@@ -1,7 +1,7 @@
 ---
 title: "Search"
 description: "Search the term-llm documentation by command, flag, page title, or topic."
-kicker: "Find the thing"
+kicker: "Search"
 layout: "search"
 ---
 

@@ -1,20 +1,22 @@
 {{ define "main" }}
-  <section class="doc-hero">
-    <div class="breadcrumbs"><a href="/">Docs</a><span>→</span><span>{{ .Title }}</span></div>
-    <p class="eyebrow">{{ with .Params.kicker }}{{ . }}{{ else }}Docs section{{ end }}</p>
+  <header class="doc-header">
+    <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/getting-started/quickstart/">Docs</a></nav>
     <h1>{{ .Title }}</h1>
     <div class="doc-intro markdown">{{ .Content }}</div>
-  </section>
-
-  <section class="doc-section">
-    <div class="card-grid card-grid-3">
-      {{ range .Pages.ByWeight }}
-        <a class="card detail-card" href="{{ .RelPermalink }}">
-          <p class="card-kicker">{{ if .Params.kicker }}{{ .Params.kicker }}{{ else }}{{ .Date.Format "Jan 2006" }}{{ end }}</p>
-          <h3>{{ .Title }}</h3>
-          <p>{{ with .Description }}{{ . }}{{ else }}{{ .Summary }}{{ end }}</p>
-        </a>
+  </header>
+  {{ if eq .Section "guides" }}
+    {{ range site.Data.navigation.groups }}
+      {{ if eq .section "guides" }}
+        <section class="guide-group" aria-labelledby="group-{{ .title | anchorize }}">
+          <h2 id="group-{{ .title | anchorize }}">{{ .title }}</h2>
+          <p class="section-description">{{ .description }}</p>
+          <div class="guide-grid">
+            {{ range .pages }}{{ with site.GetPage (printf "guides/%s" .) }}{{ partial "page-card.html" . }}{{ end }}{{ end }}
+          </div>
+        </section>
       {{ end }}
-    </div>
-  </section>
+    {{ end }}
+  {{ else }}
+    <div class="guide-grid">{{ range .Pages.ByWeight }}{{ partial "page-card.html" . }}{{ end }}</div>
+  {{ end }}
 {{ end }}

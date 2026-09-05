@@ -1,40 +1,18 @@
 {{ define "main" }}
-  <section class="doc-hero">
-    <div class="breadcrumbs">
-      <a href="/">Docs</a>
-      <span>→</span>
-      <a href="/{{ .Section }}/">{{ .CurrentSection.Title }}</a>
-      <span>→</span>
-      <span>{{ .Title }}</span>
+  <div class="article-layout">
+    <div class="article-column">
+      <header class="doc-header">
+        <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/getting-started/quickstart/">Docs</a><span aria-hidden="true">/</span><a href="{{ .CurrentSection.RelPermalink }}">{{ .CurrentSection.Title }}</a></nav>
+        <h1>{{ .Title }}</h1>
+        {{ with .Description }}<p class="doc-intro">{{ . }}</p>{{ end }}
+      </header>
+      {{ if gt (len .Fragments.Headings) 0 }}<details class="mobile-toc" data-pagefind-ignore><summary>On this page</summary>{{ .TableOfContents | replaceRE `id="TableOfContents"` `id="mobile-table-of-contents"` | safeHTML }}</details>{{ end }}
+      <article class="markdown">{{ .Content }}</article>
+      <footer class="article-footer" data-pagefind-ignore>
+        {{ with .File }}<a href="https://github.com/samsaffron/term-llm/edit/main/docs-site/content/{{ .Path }}">Edit this page ↗</a>{{ end }}
+        {{ with .Params.next }}<a class="next-page" href="{{ .url }}"><span>Next</span>{{ .label }} <span aria-hidden="true">→</span></a>{{ end }}
+      </footer>
     </div>
-    <p class="eyebrow">{{ with .Params.kicker }}{{ . }}{{ else }}{{ .CurrentSection.Title }}{{ end }}</p>
-    <h1>{{ .Title }}</h1>
-    {{ with .Description }}<p class="doc-intro">{{ . }}</p>{{ end }}
-  </section>
-
-  <section class="doc-section">
-    <div class="doc-grid doc-grid-wide">
-      <article class="doc-surface markdown">
-        {{ if .TableOfContents }}
-          <div class="toc-box">
-            <strong>On this page</strong>
-            {{ .TableOfContents }}
-          </div>
-        {{ end }}
-        {{ .Content }}
-      </article>
-      <aside class="doc-meta">
-        <div class="doc-surface">
-          <h3>Section</h3>
-          <p><a href="/{{ .Section }}/">{{ .CurrentSection.Title }}</a></p>
-        </div>
-        {{ with .Params.next }}
-        <div class="doc-surface">
-          <h3>Next</h3>
-          <p><a href="{{ .url }}">{{ .label }}</a></p>
-        </div>
-        {{ end }}
-      </aside>
-    </div>
-  </section>
+    {{ if gt (len .Fragments.Headings) 0 }}<aside class="page-toc" aria-label="On this page" data-pagefind-ignore><p>On this page</p>{{ .TableOfContents }}</aside>{{ end }}
+  </div>
 {{ end }}

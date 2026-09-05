@@ -1,0 +1,5 @@
+{{ $language := .Type | default "text" }}
+<div class="code-example">
+  <div class="code-header" data-pagefind-ignore><span>{{ with .Attributes.title }}{{ . }} · {{ end }}{{ $language }}</span><button class="copy-button" type="button" data-copy-text="{{ .Inner }}" aria-label="Copy {{ $language }} example" hidden>Copy</button></div>
+  {{ transform.Highlight .Inner $language "" }}
+</div>

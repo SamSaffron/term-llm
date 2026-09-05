@@ -1,86 +1,82 @@
 {{ define "main" }}
-  <section class="hero">
-    <div>
-      <p class="eyebrow">What it is</p>
-      <h1>{{ .Title }}</h1>
-      <div class="lede markdown">{{ .Content }}</div>
-      <div class="actions">
-        <a class="button primary" href="/getting-started/quickstart/">Start with the quickstart</a>
-        <a class="button" href="/reference/configuration/">Open configuration reference</a>
-      </div>
-    </div>
-
-    <aside class="hero-panel terminal-panel">
-      <div class="terminal-bar"><span></span><span></span><span></span></div>
-      <pre><code>$ term-llm exec "find the 3 biggest files"
-
-$ term-llm ask @reviewer "review the staged changes"
-
-$ term-llm chat @codebase</code></pre>
-    </aside>
+  <section class="hero container">
+    <p class="eyebrow">{{ .Params.eyebrow }}</p>
+    <h1>{{ .Params.headline }}<br><span>{{ .Params.headline_second }}</span></h1>
+    <p class="hero-intro">{{ .Params.intro }}</p>
+    <div class="actions"><a class="button primary" href="/getting-started/quickstart/">Get started <span aria-hidden="true">→</span></a><a class="button secondary" href="#web-workspace">See it in action <span aria-hidden="true">↓</span></a></div>
+    <p class="hero-note">MIT licensed <span aria-hidden="true">·</span> Self-hosted <span aria-hidden="true">·</span> Local and hosted models</p>
   </section>
 
-  <section class="section-block install-section">
-    <div class="section-heading">
-      <p class="eyebrow">Install</p>
-      <h2>Copy the command and run it</h2>
-    </div>
-    <div class="install-panel">
-      <pre class="install-command"><code id="install-command">curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh</code></pre>
-      <button class="button primary copy-button" type="button" data-copy-text="curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh" data-copy-default="Copy install command" data-copy-success="Copied install command">Copy install command</button>
-    </div>
-  </section>
-
-  <section class="section-block">
-    <div class="section-heading">
-      <p class="eyebrow">Start with intent</p>
-      <h2>Three common entry points</h2>
-    </div>
-    <div class="card-grid card-grid-3">
-      <a class="card detail-card" href="/guides/usage/">
-        <p class="card-kicker">Exec</p>
-        <h3><code>term-llm exec</code></h3>
-        <p>Use plain English to get a command suggestion fast. Good for one-shot terminal tasks like finding the 3 biggest files.</p>
+  {{ with .Params.web }}
+  <section id="web-workspace" class="web-section container" aria-labelledby="web-title">
+    <div class="workspace-launch"><span class="status-dot" aria-hidden="true"></span><span>One command. A complete workspace.</span>{{ partial "command.html" (dict "command" .command "label" "Start the web interface") }}</div>
+    <figure class="product-shot">
+      <a href="/images/web-workspace-light.png" class="screenshot-link" aria-label="View full-size browser workspace screenshot">
+        <picture>
+          <source srcset="/images/web-workspace-dark.png" media="(prefers-color-scheme: dark)" data-theme-image="dark">
+          <img src="/images/web-workspace-light.png" width="1440" height="940" alt="term-llm browser workspace with saved conversations in the sidebar, an agent code review in the center, and a live file diff panel on the right." fetchpriority="high">
+        </picture>
       </a>
-      <a class="card detail-card" href="/guides/agents/">
-        <p class="card-kicker">Ask + agents</p>
-        <h3><code>term-llm ask @reviewer</code></h3>
-        <p>Use a built-in agent when the job has a mode. <code>@reviewer</code> is read-only and git-aware, so it reviews code without wandering off into edits.</p>
-      </a>
-      <a class="card detail-card" href="/guides/agents/">
-        <p class="card-kicker">Chat + agents</p>
-        <h3><code>term-llm chat @codebase</code></h3>
-        <p>Start a persistent session when you need back-and-forth. <code>@codebase</code> is the right tool for tracing behavior and understanding a repository.</p>
-      </a>
-    </div>
+      <figcaption>{{ .caption }} <a href="/guides/web-ui-and-api/">Explore the web interface →</a></figcaption>
+    </figure>
+    <div class="section-heading web-heading"><p class="eyebrow">{{ .eyebrow }}</p><h2 id="web-title">{{ .title }}</h2><p>{{ .description }}</p></div>
+    <div class="feature-grid">{{ range .features }}<div class="feature"><h3><a href="{{ .url }}">{{ .title }} <span aria-hidden="true">↗</span></a></h3><p>{{ .text }}</p></div>{{ end }}</div>
+  </section>
+  {{ end }}
+
+  {{ with .Params.why }}
+  <section class="home-section section-tinted" aria-labelledby="why-title"><div class="container">
+    <div class="section-heading"><p class="eyebrow">Why term-llm</p><h2 id="why-title">{{ .title }}</h2></div>
+    <div class="feature-grid">{{ range .items }}<div class="feature"><h3>{{ .title }}</h3><p>{{ .text }}</p><a class="text-link" href="{{ .url }}">{{ .link }} <span aria-hidden="true">→</span></a></div>{{ end }}</div>
+  </div></section>
+  {{ end }}
+
+  {{ with .Params.terminal }}
+  <section class="home-section container terminal-section" aria-labelledby="terminal-title">
+    <div class="section-heading"><p class="eyebrow">{{ .eyebrow }}</p><h2 id="terminal-title">{{ .title }}</h2><p>{{ .description }}</p><a class="text-link" href="/guides/usage/">Explore the CLI →</a></div>
+    <figure class="terminal-demo">
+      <div class="terminal-title"><span aria-hidden="true">&gt;_</span> Command suggestion <span>Linux example</span></div>
+      {{ partial "command.html" (dict "command" .command "label" "Generate a command without executing it") }}
+      <div class="terminal-result"><span class="code-label">Suggested command</span><pre tabindex="0" aria-label="Illustrative command output"><code>{{ .output }}</code></pre></div>
+      <figcaption>{{ .note }}</figcaption>
+    </figure>
+  </section>
+  {{ end }}
+
+  {{ with .Params.workflows }}
+  <section class="home-section container" aria-labelledby="workflows-title">
+    <div class="section-heading"><p class="eyebrow">Everyday workflows</p><h2 id="workflows-title">{{ .title }}</h2></div>
+    <div class="workflow-grid">{{ range .items }}<div class="workflow"><h3><a href="{{ .url }}">{{ .title }} <span aria-hidden="true">↗</span></a></h3><p>{{ .text }}</p>{{ partial "command.html" (dict "command" .command "label" .title) }}</div>{{ end }}</div>
+  </section>
+  {{ end }}
+
+  {{ with .Params.control }}
+  <section class="home-section section-tinted" aria-labelledby="control-title"><div class="container">
+    <div class="section-heading"><p class="eyebrow">You stay in control</p><h2 id="control-title">{{ .title }}</h2><p>{{ .description }}</p></div>
+    <div class="feature-grid">{{ range .items }}<div class="feature"><h3><a href="{{ .url }}">{{ .title }} <span aria-hidden="true">↗</span></a></h3><p>{{ .text }}</p></div>{{ end }}</div>
+  </div></section>
+  {{ end }}
+
+  <section class="home-section container" aria-labelledby="explore-title">
+    <div class="section-heading"><p class="eyebrow">Room to grow</p><h2 id="explore-title">Start small. Build your own workflow.</h2></div>
+    <div class="explore-grid">{{ range .Params.explore }}<a class="explore-link" href="{{ .url }}"><h3>{{ .title }} <span aria-hidden="true">↗</span></h3><p>{{ .text }}</p></a>{{ end }}</div>
   </section>
 
-  <section class="section-block">
-    <div class="section-heading">
-      <p class="eyebrow">Read the right page</p>
-      <h2>Pick the lane that matches the job</h2>
-    </div>
-    <div class="card-grid card-grid-4">
-      <div class="card docs-card markdown">
-        <p class="card-kicker">Start here</p>
-        <h3>New here</h3>
-        {{ .Params.new_here | markdownify }}
+  {{ with .Params.install }}
+  <section id="install" class="home-section install-section container" aria-labelledby="install-title">
+    <div class="section-heading"><p class="eyebrow">Get started</p><h2 id="install-title">{{ .title }}</h2><p>{{ .description }}</p><a class="text-link" href="/getting-started/installation/">All installation options →</a></div>
+    <div class="install-steps">
+      <h3><span class="step-number">1</span> Install term-llm</h3>
+      <div class="install-options" data-install-options>
+        <div class="install-tabs" role="tablist" aria-label="Installation method" hidden><button id="tab-homebrew" role="tab" aria-controls="install-homebrew" aria-selected="true" type="button">Homebrew · macOS</button><button id="tab-shell" role="tab" aria-controls="install-shell" aria-selected="false" tabindex="-1" type="button">Shell installer</button></div>
+        <div id="install-homebrew" class="install-option"><p class="install-option-label">Homebrew · macOS</p>{{ partial "command.html" (dict "command" .homebrew "label" "Install with Homebrew") }}</div>
+        <div id="install-shell" class="install-option"><p class="install-option-label">Shell installer</p>{{ partial "command.html" (dict "command" .shell "label" "Install with the shell installer") }}<p class="small-note">Downloads and runs a shell script. <a href="https://github.com/samsaffron/term-llm/blob/main/install.sh">Inspect the installer</a> or <a href="https://github.com/samsaffron/term-llm/releases">download a release</a>.</p></div>
       </div>
-      <div class="card docs-card markdown">
-        <p class="card-kicker">Do a thing</p>
-        <h3>Common workflows</h3>
-        {{ .Params.common_workflows | markdownify }}
-      </div>
-      <div class="card docs-card markdown">
-        <p class="card-kicker">Exact details</p>
-        <h3>Reference shortcuts</h3>
-        {{ .Params.reference_shortcuts | markdownify }}
-      </div>
-      <div class="card docs-card markdown">
-        <p class="card-kicker">Model underneath</p>
-        <h3>Architecture and internals</h3>
-        {{ .Params.understand_it | markdownify }}
-      </div>
+      <h3><span class="step-number">2</span> Try a first question</h3>
+      {{ partial "command.html" (dict "command" .trial "label" "Try a question with Zen") }}
+      <p class="small-note">{{ .caveat }} <a href="/getting-started/providers-and-setup/">Already have a provider?</a></p>
+      <a class="button primary" href="/getting-started/quickstart/">Continue to the quickstart →</a>
     </div>
   </section>
+  {{ end }}
 {{ end }}

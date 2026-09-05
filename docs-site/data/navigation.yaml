@@ -1,0 +1,38 @@
+groups:
+  - title: Start here
+    section: getting-started
+    pages: [quickstart, installation, providers-and-setup]
+  - title: Everyday workflows
+    section: guides
+    description: Ask questions, understand code, and make useful changes.
+    pages: [usage, file-editing, shell-integration, search]
+  - title: Browser workspace
+    section: guides
+    description: A complete interface for conversations, projects, and agent work.
+    pages: [web-ui-and-api, widgets]
+  - title: Agents and automation
+    section: guides
+    description: Give repeatable work its own instructions, tools, and schedule.
+    pages: [agents, skills, memory, autonomous-loops, job-runner, notifications]
+  - title: Models and tools
+    section: guides
+    description: Connect external tools and build on the runtime.
+    pages: [mcp-servers, serve-mcp, text-embeddings]
+  - title: Web and deployment
+    section: guides
+    description: Run on your own infrastructure and reach your agents remotely.
+    pages: [hub, dv-hub, agent-containers, telegram-bot, webrtc-direct-routing]
+  - title: Media
+    section: guides
+    description: Work with images, speech, music, and video.
+    pages: [image-generation, audio-generation, transcription, music-generation, video-generation]
+  - title: Troubleshooting and internals
+    section: guides
+    description: Diagnose issues and understand runtime behavior.
+    pages: [debugging, benchmarking, terminal-host-lifecycle]
+  - title: Reference
+    section: reference
+    pages: [configuration, providers-and-models, provider-setup-details, built-in-tools, sessions, sharing, usage-tracking, version-and-updates, profiling]
+  - title: Architecture
+    section: architecture
+    pages: [overview]

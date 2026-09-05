@@ -1,13 +1,19 @@
-<header class="topbar" data-pagefind-ignore>
-  <a class="brand" href="/">term-llm</a>
-  <nav class="topnav" aria-label="Primary">
-    <a href="/getting-started/" class="{{ if eq .Section "getting-started" }}active{{ end }}">Start</a>
-    <a href="/guides/" class="{{ if eq .Section "guides" }}active{{ end }}">Guides</a>
-    <a href="/architecture/" class="{{ if eq .Section "architecture" }}active{{ end }}">Architecture</a>
-    <a href="/reference/" class="{{ if eq .Section "reference" }}active{{ end }}">Reference</a>
-    <button class="search-trigger{{ if eq .Layout "search" }} active{{ end }}" type="button" data-open-search aria-haspopup="dialog" aria-controls="search-modal">
-      <span>Search</span>
-    </button>
-    <a href="https://github.com/samsaffron/term-llm">GitHub</a>
-  </nav>
+<header class="site-header" data-pagefind-ignore>
+  <div class="header-inner">
+    <a class="brand" href="/" aria-label="term-llm home"><span class="brand-mark" aria-hidden="true">&gt;_</span>term-llm</a>
+    <nav class="desktop-nav" aria-label="Primary">
+      <a href="/#web-workspace">Web workspace</a>
+      <a href="/getting-started/quickstart/" {{ if eq .Section "getting-started" }}aria-current="{{ if eq .RelPermalink "/getting-started/quickstart/" }}page{{ else }}true{{ end }}"{{ end }}>Docs</a>
+      <a href="/guides/" {{ if eq .Section "guides" }}aria-current="{{ if eq .RelPermalink "/guides/" }}page{{ else }}true{{ end }}"{{ end }}>Guides</a>
+      <a href="https://github.com/samsaffron/term-llm">GitHub <span aria-hidden="true">↗</span></a>
+    </nav>
+    <div class="header-tools">
+      <a class="search-trigger" href="/search/" data-open-search aria-haspopup="dialog"><span>Search</span> <kbd>⌘ K</kbd></a>
+      <label class="theme-picker" hidden><span class="sr-only">Color theme</span><select id="theme-select" aria-label="Color theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
+    </div>
+    <details class="mobile-menu">
+      <summary>Menu</summary>
+      <nav aria-label="Mobile primary"><a href="/#web-workspace">Web workspace</a><a href="/getting-started/quickstart/">Docs</a><a href="/guides/">Guides</a><a href="/reference/">Reference</a><a href="https://github.com/samsaffron/term-llm">GitHub ↗</a></nav>
+    </details>
+  </div>
 </header>
