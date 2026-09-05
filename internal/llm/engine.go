@@ -184,6 +184,9 @@ type Engine struct {
 	// results without replacing the in-flight Engine.
 	pendingRequestRuntime pendingRequestRuntimeSwitch
 
+	// Protected by callbackMu; consumed immediately before the next provider request.
+	pendingServiceTier *string
+
 	// chaosFailNext is armed by TERM_LLM_CHAOS_MONKEY UI shortcuts to inject a
 	// replayable stream failure at the next provider receive boundary.
 	chaosFailNext atomic.Bool
@@ -607,6 +610,7 @@ func (e *Engine) ResetConversation() {
 	e.committedInterjectionIDs = nil
 	e.committedInterjectionOrder = nil
 	e.interjectionRunState = interjectionRunIdle
+	e.pendingServiceTier = nil
 	e.contextNoticeEmitted.Store(false)
 	e.callbackMu.Unlock()
 
@@ -1092,6 +1096,33 @@ func (e *Engine) QueueRequestRuntimeSwitch(model, reasoningEffort string) {
 	e.pendingRequestRuntime = pendingRequestRuntimeSwitch{
 		model:           strings.TrimSpace(model),
 		reasoningEffort: strings.TrimSpace(reasoningEffort),
+	}
+}
+
+// QueueRequestServiceTier changes the service tier at the next provider request
+// boundary without modifying an in-flight request. An empty tier explicitly
+// clears the provider default. Safe to call while the engine is streaming.
+func (e *Engine) QueueRequestServiceTier(tier string) {
+	e.callbackMu.Lock()
+	defer e.callbackMu.Unlock()
+	e.pendingServiceTier = &tier
+}
+
+// ClearPendingRequestServiceTier discards an override left by a completed run.
+// Callers starting a new run should put their current preference in Request.
+func (e *Engine) ClearPendingRequestServiceTier() {
+	e.callbackMu.Lock()
+	defer e.callbackMu.Unlock()
+	e.pendingServiceTier = nil
+}
+
+func (e *Engine) applyPendingServiceTier(req *Request) {
+	e.callbackMu.Lock()
+	defer e.callbackMu.Unlock()
+	if e.pendingServiceTier != nil {
+		req.ServiceTier = *e.pendingServiceTier
+		req.ServiceTierSet = true
+		e.pendingServiceTier = nil
 	}
 }
 
@@ -2298,6 +2329,7 @@ func (e *Engine) runSimpleScratchpad(ctx context.Context, req Request, send even
 	snapshotCallback := e.getSnapshotCallback()
 	var priorErr error
 	for retry := 0; ; retry++ {
+		e.applyPendingServiceTier(&req)
 		providerReq := e.prepareProviderRequest(req)
 		e.clearInlineFlush()
 		stream, err := e.provider.Stream(ctx, providerReq)
@@ -2991,6 +3023,7 @@ turnLoop:
 			return err
 		}
 
+		e.applyPendingServiceTier(&req)
 		providerReq := e.prepareProviderRequest(req)
 
 		// Log per-turn request state

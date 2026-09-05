@@ -3808,17 +3808,38 @@ func TestFastCommandRejectsUnsupportedModel(t *testing.T) {
 }
 
 func TestFastCommandWhileMetadataLoadingKeepsPendingToggle(t *testing.T) {
-	m := newTestChatModel(true)
-	m.providerKey = "chatgpt"
-	m.modelName = "gpt-5.5-medium"
-	m.fastMetadataLoading = true
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprintf("streaming=%v", streaming), func(t *testing.T) {
+			m := newTestChatModel(true)
+			m.providerKey = "chatgpt"
+			m.modelName = "gpt-5.5-medium"
+			m.fastMetadataLoading = true
+			m.streaming = streaming
+			m.setTextareaValue("/fast")
 
-	_, _ = m.ExecuteCommand("/fast")
-	if !m.pendingFastToggle {
-		t.Fatal("expected pending fast toggle while metadata is loading")
-	}
-	if !strings.Contains(m.footerMessage, "Loading model metadata") {
-		t.Fatalf("footer = %q, want loading message", m.footerMessage)
+			_, _ = m.ExecuteCommand("/fast")
+			if !m.pendingFastToggle {
+				t.Fatal("expected pending fast toggle while metadata is loading")
+			}
+			if m.textarea.Value() != "" {
+				t.Fatal("expected submitted command to clear composer")
+			}
+			if !strings.Contains(m.footerMessage, "Loading model metadata") {
+				t.Fatalf("footer = %q, want loading message", m.footerMessage)
+			}
+
+			const draft = "Keep this new draft\nwhile metadata loads"
+			m.setTextareaValue(draft)
+			_, _ = m.applyChatGPTModelsLoaded(chatGPTModelsLoadedMsg{fresh: true, models: []llm.ModelInfo{{
+				ID: "gpt-5.5", ServiceTiers: []llm.ModelServiceTier{{ID: llm.ServiceTierFast}},
+			}}})
+			if !m.fastMode || m.pendingFastToggle || m.streaming != streaming {
+				t.Fatalf("fast=%v pending=%v streaming=%v, want true/false/%v", m.fastMode, m.pendingFastToggle, m.streaming, streaming)
+			}
+			if got := m.textarea.Value(); got != draft {
+				t.Fatalf("composer = %q, want preserved draft %q", got, draft)
+			}
+		})
 	}
 }
 

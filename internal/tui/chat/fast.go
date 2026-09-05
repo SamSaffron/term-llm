@@ -164,7 +164,29 @@ func (m *Model) applyChatGPTModelsLoaded(msg chatGPTModelsLoadedMsg) (tea.Model,
 
 	if m.pendingFastToggle {
 		m.pendingFastToggle = false
-		return m.cmdFast()
+		return m.toggleFast()
 	}
 	return m, nil
+}
+
+// Store the session preference and forward it to the active loop, whose request
+// was already snapshotted before the user entered /fast.
+func (m *Model) setFastOverride(override serviceTierOverride) {
+	m.fastOverride = override
+	m.refreshEffectiveFastMode()
+	if m.streaming && m.engine != nil {
+		tier, _ := m.currentServiceTier()
+		m.engine.QueueRequestServiceTier(tier)
+	}
+}
+
+func (m *Model) fastToggleMessage(enabled bool) string {
+	state := "disabled"
+	if enabled {
+		state = "enabled"
+	}
+	if m.streaming {
+		return fmt.Sprintf("Fast mode %s for the next request.", state)
+	}
+	return fmt.Sprintf("Fast mode %s.", state)
 }

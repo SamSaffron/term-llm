@@ -738,7 +738,7 @@ func TestHandleKeyMsg_StreamingSlashShowsLocalCompletions(t *testing.T) {
 		t.Fatal("expected slash completions while streaming")
 	}
 	got := completionNames(rm.completions.filtered)
-	for _, want := range []string{"help", "stats", "effort", "thinking"} {
+	for _, want := range []string{"help", "stats", "effort", "fast", "thinking"} {
 		if !containsString(got, want) {
 			t.Fatalf("streaming completions missing %q: %v", want, got)
 		}
@@ -1696,7 +1696,7 @@ func TestStreamingSlashCommandPrefixQueuesInterjection(t *testing.T) {
 }
 
 func TestStreamingSideEffectSlashCommandsQueueInterjection(t *testing.T) {
-	for _, input := range []string{"/search", "/fast", "/export", "/system new prompt", "/inspect"} {
+	for _, input := range []string{"/search", "/export", "/system new prompt", "/inspect"} {
 		t.Run(input, func(t *testing.T) {
 			m := newTestChatModel(false)
 			m.streaming = true
@@ -1922,5 +1922,27 @@ func TestHandleKeyMsg_ShiftTabResumesAutoAfterGuardianBreaker(t *testing.T) {
 	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	if got := m.currentApprovalMode(); got != tools.ModeYolo {
 		t.Fatalf("mode after second Shift+Tab = %v, want yolo", got)
+	}
+}
+
+func TestStreamingFastCommandTogglesLocally(t *testing.T) {
+	for _, altScreen := range []bool{false, true} {
+		m := newTestChatModel(altScreen)
+		m.providerKey = "openai"
+		m.streaming = true
+		for _, enabled := range []bool{true, false} {
+			m.setTextareaValue("/fast")
+			updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			m = updated.(*Model)
+			if m.fastMode != enabled || !m.streaming {
+				t.Fatalf("fast=%v streaming=%v, want %v/true", m.fastMode, m.streaming, enabled)
+			}
+			if len(m.pendingInterjections) != 0 || m.pendingInterjection != "" || m.textarea.Value() != "" {
+				t.Fatal("/fast must clear the composer without queuing conversation text")
+			}
+			if !strings.Contains(m.footerMessage, "next request") {
+				t.Fatalf("footer = %q, want next request notice", m.footerMessage)
+			}
+		}
 	}
 }

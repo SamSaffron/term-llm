@@ -466,6 +466,7 @@ func isStreamingLocalSlashCommand(input string) bool {
 		"st":        true,
 		"usage":     true,
 		"effort":    true,
+		"fast":      true,
 		"pro":       true,
 		"title":     true,
 		"autotitle": true,
@@ -2135,9 +2136,11 @@ func (m *Model) cmdSearch() (tea.Model, tea.Cmd) {
 
 func (m *Model) cmdFast() (tea.Model, tea.Cmd) {
 	m.setTextareaValue("")
-	if m.streaming {
-		return m.showFooterWarning("Fast mode can be toggled after the current response finishes.")
-	}
+	return m.toggleFast()
+}
+
+// toggleFast also resolves deferred metadata loads without clearing a new draft.
+func (m *Model) toggleFast() (tea.Model, tea.Cmd) {
 	if !m.supportsServiceTierToggle() {
 		return m.showFooterError(fmt.Sprintf("Fast mode is not supported for %s:%s.", m.providerKey, m.modelName))
 	}
@@ -2146,9 +2149,8 @@ func (m *Model) cmdFast() (tea.Model, tea.Cmd) {
 	// explicitly clears the provider default for this chat.
 	m.refreshEffectiveFastMode()
 	if m.fastMode {
-		m.fastOverride = serviceTierClear
-		m.refreshEffectiveFastMode()
-		return m.showFooterMuted("Fast mode disabled.")
+		m.setFastOverride(serviceTierClear)
+		return m.showFooterMuted(m.fastToggleMessage(false))
 	}
 
 	// OpenAI and cursor-bin support fast mode at the request layer without live
@@ -2157,9 +2159,8 @@ func (m *Model) cmdFast() (tea.Model, tea.Cmd) {
 	// unsupported models, just as provider-level config does.
 	switch m.providerType() {
 	case config.ProviderTypeOpenAI, config.ProviderTypeCursorBin:
-		m.fastOverride = serviceTierFast
-		m.refreshEffectiveFastMode()
-		return m.showFooterSuccess("Fast mode enabled.")
+		m.setFastOverride(serviceTierFast)
+		return m.showFooterSuccess(m.fastToggleMessage(true))
 	}
 
 	if !m.fastMetadataLoaded {
@@ -2175,9 +2176,8 @@ func (m *Model) cmdFast() (tea.Model, tea.Cmd) {
 	if !m.currentModelSupportsFast() {
 		return m.showFooterError(fmt.Sprintf("Fast mode is not supported for %s:%s.", m.providerKey, m.modelName))
 	}
-	m.fastOverride = serviceTierFast
-	m.refreshEffectiveFastMode()
-	return m.showFooterSuccess("Fast mode enabled.")
+	m.setFastOverride(serviceTierFast)
+	return m.showFooterSuccess(m.fastToggleMessage(true))
 }
 
 func (m *Model) cmdNew() (tea.Model, tea.Cmd) {

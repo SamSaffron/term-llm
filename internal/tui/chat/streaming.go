@@ -874,6 +874,9 @@ func (m *Model) startStream(content string) tea.Cmd {
 		reqTools = filterSearchToolSpecs(reqTools, m.searchEnabled)
 		reqTools = tools.FilterToolSpecsForApprovalMode(reqTools, m.approvalMgr)
 
+		// The new request carries the session preference; discard any unconsumed
+		// override from the previous run before accepting further live toggles.
+		m.engine.ClearPendingRequestServiceTier()
 		serviceTier, serviceTierSet := m.currentServiceTier()
 		req := llm.Request{
 			SessionID:               m.sess.ID,

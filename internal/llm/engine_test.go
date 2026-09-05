@@ -6677,3 +6677,93 @@ func TestConfigureContextManagementUsesOllamaRuntimeWindow(t *testing.T) {
 		t.Fatalf("show requests = %v, want exact effort variant checked before base model", showRequests)
 	}
 }
+
+func TestEngineServiceTierToggleAppliesBeforeNextToolTurn(t *testing.T) {
+	for _, tier := range []string{ServiceTierFast, ""} {
+		t.Run("tier="+tier, func(t *testing.T) {
+			tool := &delayingTool{delay: time.Millisecond}
+			registry := NewToolRegistry()
+			registry.Register(tool)
+			var engine *Engine
+			provider := &fakeProvider{script: func(call int, req Request) []Event {
+				if call == 0 {
+					// Multiple toggles before the boundary must coalesce to the last.
+					engine.QueueRequestServiceTier(ServiceTierFast)
+					engine.QueueRequestServiceTier("")
+					engine.QueueRequestServiceTier(tier)
+				}
+				if call < 2 {
+					return []Event{
+						{Type: EventToolCall, Tool: &ToolCall{ID: fmt.Sprintf("call-%d", call), Name: "delay_tool", Arguments: json.RawMessage(`{}`)}},
+						{Type: EventDone},
+					}
+				}
+				return []Event{{Type: EventTextDelta, Text: "done"}, {Type: EventDone}}
+			}}
+			engine = NewEngine(provider, registry)
+			stream, err := engine.Stream(context.Background(), Request{
+				Messages: []Message{UserText("run tools")}, Tools: []ToolSpec{tool.Spec()}, MaxTurns: 4,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stream.Close()
+			for {
+				event, err := stream.Recv()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if event.Type == EventError {
+					t.Fatalf("stream error: %v", event.Err)
+				}
+			}
+			if len(provider.calls) != 3 {
+				t.Fatalf("calls = %d, want 3", len(provider.calls))
+			}
+			for call, req := range provider.calls {
+				if call == 0 {
+					if req.ServiceTierSet {
+						t.Fatal("initial request should inherit provider default")
+					}
+				} else if !req.ServiceTierSet || req.ServiceTier != tier {
+					t.Fatalf("call %d tier=(%q, %v), want (%q, true)", call, req.ServiceTier, req.ServiceTierSet, tier)
+				}
+			}
+		})
+	}
+}
+
+func TestEnginePendingServiceTierCleanup(t *testing.T) {
+	for _, reset := range []bool{false, true} {
+		t.Run(fmt.Sprintf("resetConversation=%v", reset), func(t *testing.T) {
+			engine := NewEngine(&fakeProvider{}, nil)
+			engine.QueueRequestServiceTier(ServiceTierFast)
+			if reset {
+				engine.ResetConversation()
+			} else {
+				engine.ClearPendingRequestServiceTier()
+			}
+			req := Request{}
+			engine.applyPendingServiceTier(&req)
+			if req.ServiceTierSet || req.ServiceTier != "" {
+				t.Fatalf("stale tier applied after cleanup: (%q, %v)", req.ServiceTier, req.ServiceTierSet)
+			}
+
+			// Cleanup must not prevent toggles in the new run.
+			engine.QueueRequestServiceTier(ServiceTierFast)
+			engine.applyPendingServiceTier(&req)
+			if !req.ServiceTierSet || req.ServiceTier != ServiceTierFast {
+				t.Fatalf("new tier not applied: (%q, %v)", req.ServiceTier, req.ServiceTierSet)
+			}
+			// Consumed overrides must not leak into another request.
+			fresh := Request{}
+			engine.applyPendingServiceTier(&fresh)
+			if fresh.ServiceTierSet {
+				t.Fatal("consumed override leaked into fresh request")
+			}
+		})
+	}
+}
