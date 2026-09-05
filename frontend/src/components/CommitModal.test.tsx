@@ -110,9 +110,24 @@ describe('CommitModal publishing', () => {
       };
     });
     expect(screen.getByRole('button', { name: 'Done' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Reconnect' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Reconnect' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Push', exact: true })).toBeDisabled();
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
     expect(store.modal.value).toBe('commit');
+    act(() => {
+      store.commitStore.state.value = {
+        ...store.commitStore.state.peek(),
+        publishBusy: false,
+      };
+    });
+    expect(screen.getByRole('button', { name: 'Reconnect' })).toBeEnabled();
+    act(() => {
+      store.commitStore.state.value = {
+        ...store.commitStore.state.peek(),
+        publishBusy: true,
+      };
+    });
+    expect(screen.queryByRole('button', { name: 'Reconnect' })).not.toBeInTheDocument();
     act(() => {
       store.commitStore.state.value = {
         ...store.commitStore.state.peek(),

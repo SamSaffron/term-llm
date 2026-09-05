@@ -382,7 +382,7 @@ export function CommitModal() {
               </form>
             ) : (
               <div class="commit-actions">
-                {state.publishPending ? (
+                {state.publishPending && !publishing ? (
                   <button
                     class="btn"
                     type="button"
