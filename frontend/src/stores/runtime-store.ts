@@ -1,4 +1,4 @@
-import { signal, type ReadonlySignal, type Signal } from '@preact/signals';
+import { batch, signal, type ReadonlySignal, type Signal } from '@preact/signals';
 import type { Session } from '../domain/types';
 import type { Modal, RuntimeOption } from './store-types';
 import { listFrom } from './store-utils';
@@ -15,6 +15,9 @@ export interface RuntimeStoreOptions {
 export class RuntimeStore {
   readonly providers = signal<RuntimeOption[]>([]);
   readonly models = signal<RuntimeOption[]>([]);
+  readonly modelsLoadingProvider = signal<string | null>(null);
+  readonly modelCatalogs = signal<Record<string, RuntimeOption[]>>({});
+  private modelRequest: Promise<void> = Promise.resolve();
   readonly selectedProvider: Signal<string>;
   readonly selectedModel: Signal<string>;
   readonly selectedEffort: Signal<string>;
@@ -58,20 +61,42 @@ export class RuntimeStore {
     }
   }
 
-  async loadModels(provider = this.selectedProvider.value): Promise<void> {
+  loadModels(provider = this.selectedProvider.value): Promise<void> {
+    this.modelRequest = this.fetchModels(provider);
+    return this.modelRequest;
+  }
+
+  whenModelsReady(provider = this.selectedProvider.peek()): Promise<void> {
+    if (this.modelCatalogs.peek()[provider]) return Promise.resolve();
+    if (this.modelsLoadingProvider.peek() === provider) return this.modelRequest;
+    return this.loadModels(provider);
+  }
+
+  modelFor(provider: string, id: string): RuntimeOption | undefined {
+    return (
+      this.modelCatalogs.value[provider]?.find((entry) => entry.id === id) ||
+      this.models.value.find(
+        (entry) => entry.id === id && (!entry.provider || entry.provider === provider),
+      )
+    );
+  }
+
+  private async fetchModels(provider: string): Promise<void> {
     const epoch = ++this.modelEpoch;
     this.modelAbort?.abort();
     const controller = new AbortController();
     this.modelAbort = controller;
+    this.modelsLoadingProvider.value = this.modelCatalogs.peek()[provider] ? null : provider;
     let data: Record<string, unknown>;
     try {
       data = await this.services.endpoints.models(provider, controller.signal);
     } catch (error) {
       if (controller.signal.aborted || epoch !== this.modelEpoch) return;
+      this.modelsLoadingProvider.value = null;
       throw error;
     }
     if (controller.signal.aborted || epoch !== this.modelEpoch) return;
-    this.models.value = listFrom(data, 'data', 'models', 'items')
+    const models = listFrom(data, 'data', 'models', 'items')
       .map((entry) => ({
         ...entry,
         id: String(entry.id || entry.name || ''),
@@ -85,6 +110,13 @@ export class RuntimeStore {
         default_effort: String(entry.default_reasoning_effort || entry.default_effort || ''),
       }))
       .filter((entry) => entry.id) as RuntimeOption[];
+    batch(() => {
+      this.modelCatalogs.value = { ...this.modelCatalogs.peek(), [provider]: models };
+      // Settings previews intentionally load a non-selected provider into this
+      // list. Runtime labels must use the provider-scoped modelFor lookup.
+      this.models.value = models;
+      this.modelsLoadingProvider.value = null;
+    });
     if (provider !== this.selectedProvider.peek()) return;
     if (
       this.selectedModel.value &&
@@ -128,19 +160,23 @@ export class RuntimeStore {
       storage.removeItem(keys.selectedModel);
       const provider = this.providers.peek().find((entry) => entry.id === value);
       const fallback = Array.isArray(provider?.models) ? provider.models : [];
-      this.models.value = fallback
-        .map((entry) => {
-          const source: Record<string, unknown> =
-            entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : { id: entry };
-          const id = String(source.id || source.name || '');
-          return {
-            ...source,
-            id,
-            name: String(source.display_name || source.name || id),
-            provider: value,
-          } as RuntimeOption;
-        })
-        .filter((entry) => entry.id);
+      this.models.value =
+        this.modelCatalogs.peek()[value] ||
+        fallback
+          .map((entry) => {
+            const source: Record<string, unknown> =
+              entry && typeof entry === 'object'
+                ? (entry as Record<string, unknown>)
+                : { id: entry };
+            const id = String(source.id || source.name || '');
+            return {
+              ...source,
+              id,
+              name: String(source.display_name || source.name || id),
+              provider: value,
+            } as RuntimeOption;
+          })
+          .filter((entry) => entry.id);
       void this.loadModels().catch((error) => this.services.toast(error, 'error'));
     }
     const activeSession = this.options.activeSession.value;

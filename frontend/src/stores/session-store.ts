@@ -100,6 +100,19 @@ export class SessionStore {
     this.sidebarSessionList = projected;
     return projected;
   });
+  readonly sidebarSessionById = computed(
+    () => new Map(this.sidebarSessions.value.map((session) => [session.id, session])),
+  );
+  readonly sidebarSessionsByProject = computed(() => {
+    const groups = new Map<string, Session[]>();
+    for (const session of this.sidebarSessions.value) {
+      const id = session.projectId || '';
+      const entries = groups.get(id) || [];
+      entries.push(session);
+      groups.set(id, entries);
+    }
+    return groups;
+  });
   readonly recentSessions = signal<Session[]>([]);
   readonly recentCursor = signal('');
   readonly sidebarView: Signal<SidebarView>;

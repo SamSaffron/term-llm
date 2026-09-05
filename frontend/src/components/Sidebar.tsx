@@ -493,8 +493,8 @@ function ProjectGroup({ project }: { project: Project }) {
   const sessions = [
     ...(project.sessions || [])
       .filter(isSidebarSessionVisible)
-      .map((session) => store.sessions.value.find((entry) => entry.id === session.id) || session),
-    ...store.sessions.value.filter(
+      .map((session) => store.sessionStore.sidebarSessionById.value.get(session.id) || session),
+    ...(store.sessionStore.sidebarSessionsByProject.value.get(project.id) || []).filter(
       (session) =>
         session.projectId === project.id &&
         isSidebarSessionVisible(session) &&
@@ -506,9 +506,10 @@ function ProjectGroup({ project }: { project: Project }) {
       (right.lastMessageAt || right.created) - (left.lastMessageAt || left.created),
   );
   const regular = sessions.filter((session) => !session.pinned);
+  const selected = store.sessionStore.sidebarSessionById.value.get(store.activeSessionId.value);
   const activeSession =
-    store.activeSession.value?.projectId === project.id && !store.activeSession.value.pinned
-      ? store.activeSession.value
+    selected?.projectId === project.id && !selected.pinned
+      ? selected
       : regular.find((session) => session.id === store.activeSessionId.value);
   return (
     <section
@@ -629,7 +630,8 @@ function ProjectsGroup({ projects }: { projects: Project[] }) {
   const listedActiveSession = projects
     .flatMap((project) => project.sessions || [])
     .find((session) => session.id === activeSessionID);
-  const activeSession = store.activeSession.value || listedActiveSession;
+  const activeSession =
+    store.sessionStore.sidebarSessionById.value.get(activeSessionID) || listedActiveSession;
   const collapsedActiveSession =
     activeSession &&
     !activeSession.pinned &&

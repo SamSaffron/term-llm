@@ -1,3 +1,4 @@
+import { useDiffHighlighting } from './useDiffHighlighting';
 import { computed } from '@preact/signals';
 import { memo } from './memo';
 import type { ComponentChildren, ComponentType } from 'preact';
@@ -249,27 +250,12 @@ function DiffActivity({ fullscreen = false }: { fullscreen?: boolean }) {
 function DiffCode({
   line,
   emphasis,
-  lang,
+  html,
 }: {
   line: DiffLine;
   emphasis?: [number, number];
-  lang: string;
+  html?: string;
 }) {
-  const [html, setHTML] = useState('');
-  useEffect(() => {
-    let live = true;
-    setHTML('');
-    if (!lang || !line.content || emphasis)
-      return () => {
-        live = false;
-      };
-    void import('../domain/rich-highlight').then(({ highlightDiffLine }) => {
-      if (live) setHTML(highlightDiffLine(line.content, lang));
-    });
-    return () => {
-      live = false;
-    };
-  }, [line.content, lang, emphasis]);
   if (emphasis && emphasis[1] > emphasis[0])
     return (
       <span class="diff-code">
@@ -288,7 +274,7 @@ function DiffCode({
 const Line = memo(function Line({
   line,
   emphasis,
-  lang,
+  html,
   commentKey,
   commenting,
   comments,
@@ -306,7 +292,7 @@ const Line = memo(function Line({
 }: {
   line: DiffLine;
   emphasis?: [number, number];
-  lang: string;
+  html?: string;
   commentKey: string;
   commenting: boolean;
   comments: ReviewCommentEntry[];
@@ -353,7 +339,7 @@ const Line = memo(function Line({
     >
       <span class="diff-ln">{line.oldLine || ''}</span>
       <span class="diff-ln">{line.newLine || ''}</span>
-      <DiffCode line={line} emphasis={emphasis} lang={lang} />
+      <DiffCode line={line} emphasis={emphasis} html={html} />
       {(enabled || comments.length > 0) && number && (
         <ReviewComment
           controlId={`diff-comment-${commentKey.replace(/[^a-z0-9_-]/gi, '-')}`}
@@ -501,6 +487,12 @@ function File({
   );
   const selectedView =
     markdownAvailable && file.markdownPreview?.view === 'rendered' ? 'rendered' : 'diff';
+  const highlighted = useDiffHighlighting(
+    lines,
+    lines.length <= 1500 ? file.lang || '' : '',
+    limit,
+    Boolean(file.expanded && selectedView === 'diff' && !file.binary && !file.image),
+  );
   const viewIdentity = `${file.sequence || 0}-${Math.abs(
     [...file.path].reduce((hash, character) => (hash * 31 + character.codePointAt(0)!) | 0, 0),
   ).toString(36)}`;
@@ -709,66 +701,72 @@ function File({
               <span>Show more above</span>
             </button>
           )}
-          <div class={`diff-rows diff-rows-kind-${legacyKind}`}>
-            {lines.slice(0, limit).map((line, index) => {
-              const rowKey = `${line.kind}-${line.oldLine || 0}-${line.newLine || 0}-${index}`;
-              if (line.kind === 'gap') {
-                const hidden = Math.max(line.hiddenOld || 0, line.hiddenNew || 0);
-                const direction =
-                  line.gapDirection === 'above'
-                    ? 'above'
-                    : line.gapDirection === 'below'
-                      ? 'below'
-                      : 'between hunks';
+          {highlighted.pending ? (
+            <div class="diff-loading" role="status">
+              Preparing code…
+            </div>
+          ) : (
+            <div class={`diff-rows diff-rows-kind-${legacyKind}`}>
+              {lines.slice(0, limit).map((line, index) => {
+                const rowKey = `${line.kind}-${line.oldLine || 0}-${line.newLine || 0}-${index}`;
+                if (line.kind === 'gap') {
+                  const hidden = Math.max(line.hiddenOld || 0, line.hiddenNew || 0);
+                  const direction =
+                    line.gapDirection === 'above'
+                      ? 'above'
+                      : line.gapDirection === 'below'
+                        ? 'below'
+                        : 'between hunks';
+                  return (
+                    <button
+                      key={rowKey}
+                      data-diff-gap={rowKey}
+                      class="diff-hunk-expand"
+                      type="button"
+                      disabled={file.loading}
+                      onClick={() => void expandGap()}
+                    >
+                      Show {hidden} hidden {hidden === 1 ? 'line' : 'lines'} {direction}
+                    </button>
+                  );
+                }
+                const number = line.kind === 'delete' ? line.oldLine : line.newLine;
+                const side: DiffComment['side'] = line.kind === 'delete' ? 'old' : 'new';
+                const anchorKey = number ? `${side}:${number}` : rowKey;
+                const comments = number ? matchingComments(side, number) : EMPTY_COMMENTS;
                 return (
-                  <button
+                  <Line
                     key={rowKey}
-                    data-diff-gap={rowKey}
-                    class="diff-hunk-expand"
-                    type="button"
-                    disabled={file.loading}
-                    onClick={() => void expandGap()}
-                  >
-                    Show {hidden} hidden {hidden === 1 ? 'line' : 'lines'} {direction}
-                  </button>
+                    line={line}
+                    emphasis={emphasis.get(index)}
+                    html={highlighted.html[index]}
+                    commentKey={anchorKey}
+                    commenting={commenting === anchorKey}
+                    comments={comments}
+                    body={drafts[anchorKey] || ''}
+                    commentable={!store.diff.value.readOnly}
+                    submitDisabled={diffStale}
+                    reanchorDisabled={diffStale}
+                    onComment={onLineComment}
+                    onBody={onLineBody}
+                    onCancel={onLineCancel}
+                    onSubmit={submitAnchor}
+                    onEdit={editComment}
+                    onReanchor={onLineReanchor}
+                    onRemove={removeComment}
+                  />
                 );
-              }
-              const number = line.kind === 'delete' ? line.oldLine : line.newLine;
-              const side: DiffComment['side'] = line.kind === 'delete' ? 'old' : 'new';
-              const anchorKey = number ? `${side}:${number}` : rowKey;
-              const comments = number ? matchingComments(side, number) : EMPTY_COMMENTS;
-              return (
-                <Line
-                  key={rowKey}
-                  line={line}
-                  emphasis={emphasis.get(index)}
-                  lang={lines.length <= 1500 ? file.lang || '' : ''}
-                  commentKey={anchorKey}
-                  commenting={commenting === anchorKey}
-                  comments={comments}
-                  body={drafts[anchorKey] || ''}
-                  commentable={!store.diff.value.readOnly}
-                  submitDisabled={diffStale}
-                  reanchorDisabled={diffStale}
-                  onComment={onLineComment}
-                  onBody={onLineBody}
-                  onCancel={onLineCancel}
-                  onSubmit={submitAnchor}
-                  onEdit={editComment}
-                  onReanchor={onLineReanchor}
-                  onRemove={removeComment}
-                />
-              );
-            })}
-            {lines.length > limit && (
-              <button
-                class="diff-show-more"
-                onClick={() => setLimit((value) => Math.min(lines.length, value + 500))}
-              >
-                Show {Math.min(500, lines.length - limit)} more lines
-              </button>
-            )}
-          </div>
+              })}
+              {lines.length > limit && (
+                <button
+                  class="diff-show-more"
+                  onClick={() => setLimit((value) => Math.min(lines.length, value + 500))}
+                >
+                  Show {Math.min(500, lines.length - limit)} more lines
+                </button>
+              )}
+            </div>
+          )}
           {canExpandFallback && (
             <button
               class="diff-hunk-expand diff-hunk-expand-below"
@@ -1075,7 +1073,8 @@ export function DiffSidebar() {
     if (!state.open || !state.followCurrentFile || !path) return;
     const file = state.files.find((entry) => entry.path === path);
     if (!file) return;
-    store.diff.value = { ...store.diff.peek(), selectedPath: path };
+    if (store.diff.peek().selectedPath !== path)
+      store.diff.value = { ...store.diff.peek(), selectedPath: path };
     if (!file.expanded) void store.expandDiff(file);
   }, [state.open, state.followCurrentFile, state.files, store, store.currentActivityFile.value]);
   if (!state.open) return null;

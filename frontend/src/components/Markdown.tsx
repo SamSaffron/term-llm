@@ -14,6 +14,8 @@ import {
 } from '../domain/markdown-streaming';
 import {
   decorateRichContent,
+  needsHighlight,
+  needsKatex,
   rebaseRenderedAssetURLs,
   renderMarkdown,
   VIDEO_LINK_PATTERN,
@@ -163,8 +165,52 @@ interface ActiveCodeDOM {
   renderedThrough: number;
 }
 
+/** Publish completed rich content once, prepared off-DOM. Streaming stays incremental. */
+function prepareContent(
+  root: HTMLElement,
+  source: string,
+  html: string,
+  finish: (prepared: HTMLElement) => void,
+  committed: () => void = () => {},
+) {
+  const prepared = document.createElement('div');
+  prepared.innerHTML = html;
+  let live = true;
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  const publish = () => {
+    if (!live) return;
+    live = false;
+    clearTimeout(deadline);
+    finish(prepared);
+    root.replaceChildren(...Array.from(prepared.childNodes));
+    root.removeAttribute('aria-busy');
+    committed();
+  };
+  if (needsHighlight(prepared) || needsKatex(source)) {
+    root.setAttribute('aria-busy', 'true');
+    if (!root.hasChildNodes()) root.textContent = 'Rendering…';
+    // Optional chunks must never hold the actual content hostage. A slow
+    // dependency publishes a plain fallback once; it does not upgrade later.
+    deadline = setTimeout(publish, 250);
+    void decorateRichContent(prepared, source, () => live).then(publish, publish);
+  } else publish();
+  return () => {
+    live = false;
+    clearTimeout(deadline);
+    root.removeAttribute('aria-busy');
+  };
+}
+
 class AssistantStreamRenderer {
   readonly root: HTMLDivElement;
+  private cancelStatic = () => {};
+  private revision = 0;
+
+  cancelPending(): void {
+    this.cancelStatic();
+    this.revision += 1;
+    this.root.removeAttribute('aria-busy');
+  }
   committed: HTMLDivElement | null = null;
   tail: HTMLDivElement | null = null;
   activeCode: ActiveCodeDOM | null = null;
@@ -206,10 +252,12 @@ class AssistantStreamRenderer {
   private decorate(root: HTMLElement, source: string, copyCode: boolean): void {
     if (this.rebase) rebaseRenderedAssetURLs(root, this.rebase);
     if (copyCode) addCodeCopyButtons(root);
-    void decorateRichContent(root, source);
+    const revision = this.revision;
+    void decorateRichContent(root, source, () => revision === this.revision);
   }
 
   private createRegions(): void {
+    this.cancelPending();
     const committed = document.createElement('div');
     committed.className = 'streaming-stable';
     const tail = document.createElement('div');
@@ -229,14 +277,31 @@ class AssistantStreamRenderer {
   }
 
   private renderCanonical(source: string, decorate: boolean): void {
-    this.root.innerHTML = renderMarkdown(source, this.resolveMedia);
-    this.root.classList.remove('streaming-markdown', 'streaming-over-budget');
-    this.root.removeAttribute('data-streaming-fallback');
-    this.root.style.removeProperty('white-space');
-    this.committed = null;
-    this.tail = null;
-    this.activeCode = null;
-    if (decorate) this.decorate(this.root, source, true);
+    this.cancelPending();
+    const committed = () => {
+      this.root.classList.remove('streaming-markdown', 'streaming-over-budget');
+      this.root.removeAttribute('data-streaming-fallback');
+      this.root.style.removeProperty('white-space');
+      this.committed = null;
+      this.tail = null;
+      this.activeCode = null;
+    };
+    const html = renderMarkdown(source, this.resolveMedia);
+    if (decorate) {
+      this.cancelStatic = prepareContent(
+        this.root,
+        source,
+        html,
+        (prepared) => {
+          if (this.rebase) rebaseRenderedAssetURLs(prepared, this.rebase);
+          addCodeCopyButtons(prepared);
+        },
+        committed,
+      );
+    } else {
+      this.root.innerHTML = html;
+      committed();
+    }
   }
 
   renderStatic(source: string): void {
@@ -430,11 +495,11 @@ export function Markdown({
     const element = root.current;
     if (!element) return;
     if (variant === 'document') {
-      element.innerHTML = renderedHTML || '';
-      documentPolicy?.(element);
-      addCodeCopyButtons(element);
-      void decorateRichContent(element, renderValue);
-      return;
+      renderer.current?.cancelPending();
+      return prepareContent(element, renderValue, renderedHTML || '', (prepared) => {
+        documentPolicy?.(prepared);
+        addCodeCopyButtons(prepared);
+      });
     }
     renderer.current ||= new AssistantStreamRenderer(element, rebase, resolveMedia);
     renderer.current.setRebase(rebase);
@@ -442,6 +507,8 @@ export function Markdown({
     if (streaming) renderer.current.update(renderValue);
     else renderer.current.finalize(renderValue);
   }, [renderValue, streaming, rebase, resolveMedia, variant, renderedHTML, documentPolicy]);
+
+  useLayoutEffect(() => () => renderer.current?.cancelPending(), []);
 
   useEffect(() => {
     const timers = copyTimers.current;

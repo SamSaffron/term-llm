@@ -1,3 +1,4 @@
+import { memo } from './memo';
 import type { ComponentType } from 'preact';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
@@ -1792,6 +1793,29 @@ function ProjectPicker() {
   );
 }
 
+const SideQuestionHistory = memo(function SideQuestionHistory({
+  history,
+}: {
+  history: { question: string; response: string }[];
+}) {
+  return (
+    <>
+      {history.map((entry, index) => (
+        <section class="side-question-exchange" key={`${index}-${entry.question}`}>
+          <article class="message user">
+            <div class="message-body">{entry.question}</div>
+          </article>
+          <article class="message assistant">
+            <div class="message-body">
+              <Markdown value={entry.response} className="markdown-body" />
+            </div>
+          </article>
+        </section>
+      ))}
+    </>
+  );
+});
+
 export function SideQuestion() {
   const store = useStore();
   const state = store.sideQuestion.value;
@@ -1874,18 +1898,7 @@ export function SideQuestion() {
             </div>
           </div>
         )}
-        {state.history.map((entry, index) => (
-          <section class="side-question-exchange" key={`${index}-${entry.question}`}>
-            <article class="message user">
-              <div class="message-body">{entry.question}</div>
-            </article>
-            <article class="message assistant">
-              <div class="message-body">
-                <Markdown value={entry.response} className="markdown-body" />
-              </div>
-            </article>
-          </section>
-        ))}
+        <SideQuestionHistory history={state.history} />
         {hasCurrent && (
           <section class="side-question-exchange side-question-current">
             <article class="message user">

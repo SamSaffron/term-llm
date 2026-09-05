@@ -1,9 +1,10 @@
+import { createTranscriptIndexes } from '../domain/transcript-indexes';
 import { createMessageMediaResolvers } from '../domain/media-resolvers';
 import { signal, type ReadonlySignal } from '@preact/signals';
 import { memo } from './memo';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { Message, ToolCall } from '../domain/types';
-import { indexTranscriptTurns, windowTranscript } from '../domain/transcript';
+import { windowTranscript } from '../domain/transcript';
 import { useStore } from '../app/context';
 import { Markdown } from './Markdown';
 import { ChipPicker } from './ChipPicker';
@@ -335,7 +336,7 @@ function LegacyToolImages({ tool }: { tool: ToolCall }) {
   );
 }
 
-function Tool({
+const Tool = memo(function Tool({
   tool,
   expanded: controlledExpanded,
   onToggle,
@@ -499,7 +500,7 @@ function Tool({
       </div>
     </article>
   );
-}
+});
 
 function ToolGroup({
   tools,
@@ -514,15 +515,15 @@ function ToolGroup({
   );
   const running = visible.some((tool) => tool.status === 'running');
   const [expanded, setExpanded] = useState(false);
+  const [visited, setVisited] = useState(false);
+  const toggle = useCallback(() => {
+    setVisited(true);
+    setExpanded((value) => !value);
+  }, []);
   if (!visible.length) return null;
   if (visible.length === 1)
     return (
-      <Tool
-        tool={visible[0]}
-        expanded={expanded}
-        onToggle={() => setExpanded((value) => !value)}
-        resolveMedia={resolveMedia}
-      />
+      <Tool tool={visible[0]} expanded={expanded} onToggle={toggle} resolveMedia={resolveMedia} />
     );
   const names = [...new Set(visible.map((tool) => tool.name))];
   const stopped = !running && visible.some((tool) => tool.status === 'cancelled');
@@ -534,12 +535,7 @@ function ToolGroup({
       : undefined;
   return (
     <article class="tool-group-card">
-      <button
-        class="tool-group-toggle"
-        type="button"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((value) => !value)}
-      >
+      <button class="tool-group-toggle" type="button" aria-expanded={expanded} onClick={toggle}>
         <span class="tool-arrow">
           <Icon name="chevron-right" />
         </span>
@@ -565,16 +561,17 @@ function ToolGroup({
         </span>
       </button>
       <div class={`tool-group-details ${expanded ? 'open' : ''}`}>
-        {visible.map((tool) => (
-          <div class="tool-group-entry" key={tool.id}>
-            <span class="tool-entry-icon" aria-hidden="true">
-              {toolIcon(tool.name)}
-            </span>
-            <div class="tool-group-entry-body">
-              <Tool tool={tool} tickElapsed={expanded} resolveMedia={resolveMedia} />
+        {(expanded || visited) &&
+          visible.map((tool) => (
+            <div class="tool-group-entry" key={tool.id}>
+              <span class="tool-entry-icon" aria-hidden="true">
+                {toolIcon(tool.name)}
+              </span>
+              <div class="tool-group-entry-body">
+                <Tool tool={tool} tickElapsed={expanded} resolveMedia={resolveMedia} />
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
       </div>
     </article>
   );
@@ -1044,53 +1041,34 @@ export function Transcript() {
   }, [clock]);
   const anchorHeight = useRef(0);
   const messages = store.visibleMessages.value;
-  const previousMedia = useRef(new Map<string, { url: string; type: 'image' | 'video' }>());
-  const mediaByReference = useMemo(() => {
-    const artifacts = new Map<string, { url: string; type: 'image' | 'video' }>();
-    for (const message of messages) {
-      for (const tool of message.tools || []) {
-        for (const media of tool.media || []) {
-          const reference = String(media.reference || '')
-            .trim()
-            .toLowerCase();
-          if (!reference || artifacts.has(reference)) continue;
-          const url = publishedMediaURL(store, media.url);
-          if (!url) continue;
-          artifacts.set(reference, {
-            url,
-            type: media.type.startsWith('video/') ? 'video' : 'image',
-          });
-        }
-      }
-    }
-    const previous = previousMedia.current;
-    if (
-      previous.size === artifacts.size &&
-      [...artifacts].every(([key, item]) => {
-        const old = previous.get(key);
-        return old?.url === item.url && old.type === item.type;
-      })
-    )
-      return previous;
-    previousMedia.current = artifacts;
-    return artifacts;
-  }, [messages, store]);
   const sessionId = store.activeSession.value?.id;
   const resolverCache = useRef<{
     sessionId: string | undefined;
+    store: AppStore;
     resolve: ReturnType<typeof createMessageMediaResolvers>;
+    index: ReturnType<typeof createTranscriptIndexes>;
   } | null>(null);
-  if (!resolverCache.current || resolverCache.current.sessionId !== sessionId) {
-    resolverCache.current = { sessionId, resolve: createMessageMediaResolvers() };
+  if (
+    !resolverCache.current ||
+    resolverCache.current.sessionId !== sessionId ||
+    resolverCache.current.store !== store
+  ) {
+    resolverCache.current = {
+      sessionId,
+      store,
+      resolve: createMessageMediaResolvers(),
+      index: createTranscriptIndexes((url) => publishedMediaURL(store, url)),
+    };
   }
   const resolverForMessage = resolverCache.current.resolve;
+  const index = resolverCache.current.index;
+  const { contexts: rowContexts, media: mediaByReference } = useMemo(
+    () => index(messages),
+    [index, messages],
+  );
   const runs = useMemo(
     () => windowTranscript(messages, turnLimit, nearTail),
     [messages, turnLimit, nearTail],
-  );
-  const rowContexts = useMemo(
-    () => indexTranscriptTurns(messages, (message) => message.content),
-    [messages],
   );
   useEffect(() => {
     setTurnLimit(80);

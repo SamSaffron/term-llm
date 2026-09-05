@@ -126,66 +126,69 @@ export function needsKatex(value: string): boolean {
   return /\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\(.+?\\\)/.test(value);
 }
 
-export async function decorateRichContent(root: HTMLElement, source: string): Promise<void> {
-  const work: Promise<void>[] = [];
-  if (needsHighlight(root)) {
-    highlightPromise ||= import('./rich-highlight');
-    work.push(
-      highlightPromise.then(({ highlight }) => {
-        root.querySelectorAll<HTMLElement>('pre code').forEach((block) => {
-          if (block.dataset.highlighted) return;
-          const language = [...block.classList]
-            .map((name) => /^language-(.+)$/.exec(name)?.[1] || '')
-            .find(Boolean);
-          if (language && !highlight.getLanguage(language)) {
-            block.dataset.highlighted = 'yes';
-            return;
-          }
-          highlight.highlightElement(block);
-        });
-      }),
-    );
+export async function decorateRichContent(
+  root: HTMLElement,
+  source: string,
+  current: () => boolean = () => true,
+): Promise<void> {
+  // Wait for every dependency before touching the DOM, so code and math do not
+  // arrive as independent visual layers. A failed optional renderer falls back
+  // to sanitized plain content, rather than leaving the presentation pending.
+  const [code, math] = await Promise.all([
+    needsHighlight(root)
+      ? (highlightPromise ||= import('./rich-highlight')).catch(() => null)
+      : null,
+    needsKatex(source) ? (katexPromise ||= import('./rich-katex')).catch(() => null) : null,
+  ]);
+  if (!current()) return;
+  if (code) {
+    const { highlight } = code;
+    root.querySelectorAll<HTMLElement>('pre code').forEach((block) => {
+      if (block.dataset.highlighted) return;
+      const language = [...block.classList]
+        .map((name) => /^language-(.+)$/.exec(name)?.[1] || '')
+        .find(Boolean);
+      if (language && !highlight.getLanguage(language)) {
+        block.dataset.highlighted = 'yes';
+        return;
+      }
+      highlight.highlightElement(block);
+    });
   }
-  if (needsKatex(source)) {
-    katexPromise ||= import('./rich-katex');
-    work.push(
-      katexPromise.then(({ katex }) => {
-        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-        const nodes: Text[] = [];
-        while (walker.nextNode()) {
-          const node = walker.currentNode as Text;
-          if (!node.parentElement?.closest('pre,code,textarea,script,style,.katex'))
-            nodes.push(node);
-        }
-        for (const node of nodes) {
-          let html = escapeHTML(node.data);
-          let changed = false;
-          for (const rule of MATH)
-            html = html.replace(rule.expression, (all, expression: string) => {
-              changed = true;
-              try {
-                return katex.renderToString(expression, {
-                  displayMode: rule.display,
-                  throwOnError: false,
-                  trust: false,
-                  strict: 'warn',
-                });
-              } catch {
-                return escapeHTML(all);
-              }
+  if (math) {
+    const { katex } = math;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const nodes: Text[] = [];
+    while (walker.nextNode()) {
+      const node = walker.currentNode as Text;
+      if (!node.parentElement?.closest('pre,code,textarea,script,style,.katex')) nodes.push(node);
+    }
+    for (const node of nodes) {
+      let html = escapeHTML(node.data);
+      let changed = false;
+      for (const rule of MATH)
+        html = html.replace(rule.expression, (all, expression: string) => {
+          changed = true;
+          try {
+            return katex.renderToString(expression, {
+              displayMode: rule.display,
+              throwOnError: false,
+              trust: false,
+              strict: 'warn',
             });
-          if (!changed) continue;
-          const span = document.createElement('span');
-          span.innerHTML = DOMPurify.sanitize(html, {
-            ADD_ATTR: ['class', 'style', 'aria-hidden'],
-            FORBID_TAGS: ['script', 'iframe', 'object', 'embed'],
-          });
-          node.replaceWith(...Array.from(span.childNodes));
-        }
-      }),
-    );
+          } catch {
+            return escapeHTML(all);
+          }
+        });
+      if (!changed) continue;
+      const span = document.createElement('span');
+      span.innerHTML = DOMPurify.sanitize(html, {
+        ADD_ATTR: ['class', 'style', 'aria-hidden'],
+        FORBID_TAGS: ['script', 'iframe', 'object', 'embed'],
+      });
+      node.replaceWith(...Array.from(span.childNodes));
+    }
   }
-  await Promise.all(work);
 }
 
 export const VIDEO_LINK_PATTERN = /\.(?:mp4|webm|mov|ogg|ogv)(?:[?#].*)?$/i;

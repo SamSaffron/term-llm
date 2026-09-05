@@ -283,50 +283,68 @@ test('recovers and resolves an ask-user request across real same-context tabs', 
   await second.close();
 });
 
-test('recovers, neutrally dismisses, and resolves a real approval', async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name === 'mobile', 'real approval protocol is covered once');
-  await page.goto('./?new=1');
-  await page.getByRole('textbox', { name: 'Message' }).fill('Start approval fixture runtime');
-  await page.getByRole('button', { name: 'Send message' }).click();
-  await expect(page.getByRole('heading', { name: 'Debug Provider Output' }).last()).toBeVisible({
-    timeout: 15_000,
-  });
-  const sessionID = await page.evaluate(async () => {
-    const selected = decodeURIComponent(location.pathname.match(/\/chat\/([^/]+)/)?.[1] || '');
-    const query = new URLSearchParams({ selected_only: '1', selected_session: selected });
-    const body = (await (await fetch(`v1/sessions?${query}`)).json()) as {
-      selected_session?: { id?: string };
-    };
-    return body.selected_session?.id || '';
-  });
-  expect(sessionID).not.toBe('');
-  await waitForSessionIdle(page, sessionID);
-  const fixtureStatus = await page.evaluate(async (id) => {
-    const response = await fetch(`${window.TERM_LLM_UI_PREFIX}/__browser_fixture/approval`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: id }),
+for (const decision of ['Approve', 'Deny'] as const) {
+  test(`recovers a real approval and requires explicit ${decision}`, async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === 'mobile', 'real approval protocol is covered once');
+    await page.goto('./?new=1');
+    await page.getByRole('textbox', { name: 'Message' }).fill('Start approval fixture runtime');
+    await page.getByRole('button', { name: 'Send message' }).click();
+    await expect(page.getByRole('heading', { name: 'Debug Provider Output' }).last()).toBeVisible({
+      timeout: 15_000,
     });
-    return response.status;
-  }, sessionID);
-  expect(fixtureStatus).toBe(201);
-  await page.reload();
+    const sessionID = await page.evaluate(async () => {
+      const selected = decodeURIComponent(location.pathname.match(/\/chat\/([^/]+)/)?.[1] || '');
+      const query = new URLSearchParams({ selected_only: '1', selected_session: selected });
+      const body = (await (await fetch(`v1/sessions?${query}`)).json()) as {
+        selected_session?: { id?: string };
+      };
+      return body.selected_session?.id || '';
+    });
+    expect(sessionID).not.toBe('');
+    await waitForSessionIdle(page, sessionID);
+    const fixtureStatus = await page.evaluate(async (id) => {
+      const response = await fetch(`${window.TERM_LLM_UI_PREFIX}/__browser_fixture/approval`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: id }),
+      });
+      return response.status;
+    }, sessionID);
+    expect(fixtureStatus).toBe(201);
+    await page.reload();
 
-  const title = 'Write Access Request';
-  const decisionBanner = page.getByRole('button', { name: 'Decision waiting — Open' });
-  const approvalDialog = page.getByRole('dialog', { name: title });
-  await expect(approvalDialog).toBeVisible();
-  await page.keyboard.press('Escape');
-  await expect(approvalDialog).toBeHidden();
-  await expect(page.locator('.modal-overlay')).toHaveCount(0);
-  await expect(decisionBanner).toBeVisible();
-  await decisionBanner.click();
-  await page.getByRole('button', { name: 'Approve' }).click();
-  await expect(decisionBanner).toBeHidden();
-  await expect(page.locator('.modal-overlay')).toHaveCount(0);
-  await page.reload();
-  await expect(approvalDialog).toBeHidden();
-});
+    const title = 'Write Access Request';
+    const decisionBanner = page.getByRole('button', { name: 'Decision waiting — Open' });
+    const approvalDialog = page.getByRole('dialog', { name: title });
+    await expect(approvalDialog).toBeVisible();
+    await page.keyboard.press('Escape');
+    // Required approvals are not neutrally dismissible: neither gesture may
+    // hide the request or implicitly submit an approval/denial to the server.
+    await expect(approvalDialog).toBeVisible();
+    await page.locator('.modal-overlay').click({ position: { x: 2, y: 2 } });
+    await expect(approvalDialog).toBeVisible();
+    await expect(approvalDialog.getByRole('button', { name: /Close|Dismiss/ })).toHaveCount(0);
+    const hasPendingApproval = () =>
+      page.evaluate(async (id) => {
+        const state = (await (
+          await fetch(`v1/sessions/${encodeURIComponent(id)}/state`)
+        ).json()) as {
+          pending_approval?: unknown;
+          pending_approvals?: unknown[];
+        };
+        return Boolean(state.pending_approval || state.pending_approvals?.length);
+      }, sessionID);
+    expect(await hasPendingApproval()).toBe(true);
+    await page.reload();
+    await expect(approvalDialog).toBeVisible();
+    await approvalDialog.getByRole('button', { name: decision, exact: true }).click();
+    await expect.poll(hasPendingApproval).toBe(false);
+    await expect(decisionBanner).toBeHidden();
+    await expect(page.locator('.modal-overlay')).toHaveCount(0);
+    await page.reload();
+    await expect(approvalDialog).toBeHidden();
+  });
+}
 
 test('a suspended same-context tab resumes through authoritative reconciliation', async ({
   context,

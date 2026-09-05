@@ -80,7 +80,8 @@ export class SideQuestionStore {
   }
 
   setDraft(value: string): void {
-    this.state.value = { ...this.state.peek(), draft: value };
+    if (this.state.peek().draft !== value)
+      this.state.value = { ...this.state.peek(), draft: value };
   }
 
   async recover(
@@ -162,7 +163,8 @@ export class SideQuestionStore {
         else if (event.type === 'attempt_discard') answer = '';
         else if (event.type === 'done' && recordValue(event.result))
           answer = String(recordValue(event.result)?.response || answer);
-        this.state.value = { ...this.state.peek(), response: answer };
+        if (this.state.peek().response !== answer)
+          this.state.value = { ...this.state.peek(), response: answer };
       }
       if (!controller.signal.aborted && epoch === this.epoch) await this.recover(session.id, epoch);
     } catch (error) {

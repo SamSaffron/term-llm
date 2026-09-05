@@ -31,7 +31,7 @@ function RuntimePicker() {
   const trigger = useRef<HTMLButtonElement>(null);
   const popover = useRef<HTMLDialogElement>(null);
   const initialFocus = useRef<HTMLButtonElement>(null);
-  const locked = store.streaming.value;
+  const locked = store.runActive.value;
   const selectedProvider = locked
     ? store.activeSession.value?.activeProvider || store.selectedProvider.value
     : store.selectedProvider.value;
@@ -46,7 +46,10 @@ function RuntimePicker() {
     selectedModel || fallbackModel,
     store.selectedEffort.value || store.activeSession.value?.activeEffort || '',
   );
-  const model = store.models.value.find((entry) => entry.id === split.model);
+  const model = store.runtime.modelFor(selectedProvider, split.model);
+  const runtimePending =
+    store.runtime.modelsLoadingProvider.value === selectedProvider &&
+    !store.runtime.modelCatalogs.value[selectedProvider];
   const efforts = supportedEfforts(model);
   const effort = split.effort && efforts.includes(split.effort) ? split.effort : '';
   const fastSupported = supportsFastMode(model);
@@ -65,7 +68,9 @@ function RuntimePicker() {
     trigger.current?.focus({ preventScroll: true });
   };
   const baseDisplayModel = compactModelLabel(split.model) || 'Auto';
-  const displayModel = `${baseDisplayModel}${fast && !/-fast$/i.test(baseDisplayModel) ? '-fast' : ''}`;
+  const displayModel = runtimePending
+    ? 'Loading runtime…'
+    : `${baseDisplayModel}${fast && !/-fast$/i.test(baseDisplayModel) ? '-fast' : ''}`;
   const picker = (
     <div class={`model-picker ${locked ? 'locked' : ''}`}>
       <div class="model-chip model-chip-primary" data-chip="model">
@@ -77,7 +82,8 @@ function RuntimePicker() {
           aria-controls={popoverID}
           aria-expanded={open}
           aria-label={`Runtime settings: ${displayModel}${effort ? `, ${effort} effort` : ''}`}
-          data-effort-level={effort || 'auto'}
+          data-effort-level={runtimePending ? 'auto' : effort || 'auto'}
+          aria-busy={runtimePending || undefined}
           title={
             locked
               ? `${displayModel} · view runtime and queue reasoning effort for the next model turn`
@@ -316,115 +322,126 @@ export function Header() {
             </span>
           )}
         </div>
-        <div class="header-controls-row">
-          <div class="header-stats" id="headerStats">
-            <RuntimePicker />
-            {mcpCount > 0 && (
-              <button
-                type="button"
-                class="mcp-status header-action"
-                id="mcpStatus"
-                aria-label="Manage MCP servers"
-                onClick={() => {
-                  store.modal.value = 'mcp';
-                  void store.loadMCP();
-                }}
-              >
-                MCP {mcpCount}
-              </button>
-            )}
+        {store.selectionStore.headerLoading.value ? (
+          <div
+            class="header-controls-row"
+            role="status"
+            aria-label="Loading session controls"
+            aria-busy="true"
+          >
+            <span class="header-action">Loading session…</span>
           </div>
-          <div class="header-context-actions">
-            {resumableShell && session && (
+        ) : (
+          <div class="header-controls-row">
+            <div class="header-stats" id="headerStats">
+              <RuntimePicker />
+              {mcpCount > 0 && (
+                <button
+                  type="button"
+                  class="mcp-status header-action"
+                  id="mcpStatus"
+                  aria-label="Manage MCP servers"
+                  onClick={() => {
+                    store.modal.value = 'mcp';
+                    void store.loadMCP();
+                  }}
+                >
+                  MCP {mcpCount}
+                </button>
+              )}
+            </div>
+            <div class="header-context-actions">
+              {resumableShell && session && (
+                <button
+                  type="button"
+                  class={`header-action shell-return shell-return-${store.shellStore.status.value}`}
+                  aria-label="Return to shell"
+                  title="Return to shell"
+                  onClick={() => store.shellStore.show(session.id)}
+                >
+                  <span class="shell-return-dot" aria-hidden="true" />
+                  <span>Shell</span>
+                </button>
+              )}
+              {showWorktree && (
+                <button
+                  type="button"
+                  class={`chip-trigger worktree-trigger header-action ${session && !store.draftActive.value ? 'locked' : ''}`}
+                  id="chipWorktreeTrigger"
+                  aria-label="Worktree"
+                  onClick={() => {
+                    store.modal.value = 'worktrees';
+                    void store.loadWorktrees();
+                  }}
+                >
+                  <Icon name="branch" />
+                  <span class="chip-label">{currentWorktreeDir.split('/').pop() || 'root'}</span>
+                </button>
+              )}
+              {session && store.branchPathCount.value > 1 && (
+                <button
+                  class="header-action branch-tree-trigger"
+                  id="branchTreeBtn"
+                  type="button"
+                  aria-haspopup="dialog"
+                  onClick={() => void store.loadBranchTree()}
+                >
+                  {store.branchPathCount.value} paths
+                </button>
+              )}
+              {currentPlan && (
+                <button
+                  class={`header-action plan-toggle ${currentPlanSummary.complete ? 'complete' : ''}`}
+                  id="planToggleBtn"
+                  type="button"
+                  aria-expanded={store.planVisible.value}
+                  aria-controls="planSurface"
+                  aria-label={`${store.planVisible.value ? 'Close' : 'Open'} current plan. ${planStatus}`}
+                  title={planStatus}
+                  onClick={() => {
+                    if (store.planVisible.value) store.closePlan();
+                    else store.openPlan();
+                  }}
+                >
+                  {currentPlanSummary.complete ? (
+                    <Icon class="plan-toggle-check" name="check" />
+                  ) : (
+                    <>
+                      <span class="plan-toggle-word">Plan</span>
+                      <span class="plan-toggle-progress">
+                        {currentPlanSummary.position}/{currentPlanSummary.total}
+                      </span>
+                    </>
+                  )}
+                </button>
+              )}
+            </div>
+            {showDiff && (
               <button
+                class={`icon-btn diff-toggle header-action ${store.diff.value.open ? 'active' : ''}`}
+                id="diffToggleBtn"
                 type="button"
-                class={`header-action shell-return shell-return-${store.shellStore.status.value}`}
-                aria-label="Return to shell"
-                title="Return to shell"
-                onClick={() => store.shellStore.show(session.id)}
+                aria-label={`Toggle file changes: ${diffTitle}`}
+                aria-expanded={store.diff.value.open}
+                aria-controls="diffSidebar"
+                title={diffTitle}
+                onClick={() => void store.toggleDiff()}
               >
-                <span class="shell-return-dot" aria-hidden="true" />
-                <span>Shell</span>
-              </button>
-            )}
-            {showWorktree && (
-              <button
-                type="button"
-                class={`chip-trigger worktree-trigger header-action ${session && !store.draftActive.value ? 'locked' : ''}`}
-                id="chipWorktreeTrigger"
-                aria-label="Worktree"
-                onClick={() => {
-                  store.modal.value = 'worktrees';
-                  void store.loadWorktrees();
-                }}
-              >
-                <Icon name="branch" />
-                <span class="chip-label">{currentWorktreeDir.split('/').pop() || 'root'}</span>
-              </button>
-            )}
-            {session && store.branchPathCount.value > 1 && (
-              <button
-                class="header-action branch-tree-trigger"
-                id="branchTreeBtn"
-                type="button"
-                aria-haspopup="dialog"
-                onClick={() => void store.loadBranchTree()}
-              >
-                {store.branchPathCount.value} paths
-              </button>
-            )}
-            {currentPlan && (
-              <button
-                class={`header-action plan-toggle ${currentPlanSummary.complete ? 'complete' : ''}`}
-                id="planToggleBtn"
-                type="button"
-                aria-expanded={store.planVisible.value}
-                aria-controls="planSurface"
-                aria-label={`${store.planVisible.value ? 'Close' : 'Open'} current plan. ${planStatus}`}
-                title={planStatus}
-                onClick={() => {
-                  if (store.planVisible.value) store.closePlan();
-                  else store.openPlan();
-                }}
-              >
-                {currentPlanSummary.complete ? (
-                  <Icon class="plan-toggle-check" name="check" />
-                ) : (
-                  <>
-                    <span class="plan-toggle-word">Plan</span>
-                    <span class="plan-toggle-progress">
-                      {currentPlanSummary.position}/{currentPlanSummary.total}
-                    </span>
-                  </>
-                )}
-              </button>
-            )}
-          </div>
-          {showDiff && (
-            <button
-              class={`icon-btn diff-toggle header-action ${store.diff.value.open ? 'active' : ''}`}
-              id="diffToggleBtn"
-              type="button"
-              aria-label={`Toggle file changes: ${diffTitle}`}
-              aria-expanded={store.diff.value.open}
-              aria-controls="diffSidebar"
-              title={diffTitle}
-              onClick={() => void store.toggleDiff()}
-            >
-              <span class={`diff-toggle-badge ${!diffAdds && !diffDels ? 'no-stats' : ''}`}>
-                <span class="diff-toggle-file-count">
-                  <span class="diff-toggle-file-icon" aria-hidden="true" />
+                <span class={`diff-toggle-badge ${!diffAdds && !diffDels ? 'no-stats' : ''}`}>
+                  <span class="diff-toggle-file-count">
+                    <span class="diff-toggle-file-icon" aria-hidden="true" />
+                  </span>
+                  {!store.diff.value.open && (
+                    <>
+                      {diffAdds > 0 && <span class="diff-toggle-stat-add">+{diffAdds}</span>}
+                      {diffDels > 0 && <span class="diff-toggle-stat-del">−{diffDels}</span>}
+                    </>
+                  )}
                 </span>
-                {!store.diff.value.open && (
-                  <>
-                    {diffAdds > 0 && <span class="diff-toggle-stat-add">+{diffAdds}</span>}
-                    {diffDels > 0 && <span class="diff-toggle-stat-del">−{diffDels}</span>}
-                  </>
-                )}
-              </span>
-            </button>
-          )}
-        </div>
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </header>
   );

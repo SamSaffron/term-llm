@@ -482,6 +482,7 @@ export class AppStore {
       this.services,
       this.sessionStore,
       this.composer,
+      this.runtime,
       this.runEngine,
       this.interactionStore,
       this.sideQuestions,
@@ -1445,6 +1446,7 @@ export class AppStore {
     this.sideQuestions.dispose();
     this.runtime.dispose();
     this.sessionStore.dispose();
+    this.selectionStore.dispose();
     this.skillStore.dispose();
     this.statusReconciler.dispose();
     this.runEngine.dispose();

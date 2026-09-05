@@ -1,4 +1,4 @@
-import { batch } from '@preact/signals';
+import { batch, signal } from '@preact/signals';
 import { APIError } from '../api/client';
 import type {
   ApprovalMode,
@@ -14,6 +14,7 @@ import type { TabEventType } from '../platform/tab-sync';
 import type { AppStoreServices } from './app-store-services';
 import type { SessionStore } from './session-store';
 import type { ComposerStore } from './composer-store';
+import type { RuntimeStore } from './runtime-store';
 import type { RunEngine } from './run-engine';
 import type { InteractionStore } from './interaction-store';
 import type { SideQuestionStore } from './side-question-store';
@@ -38,11 +39,14 @@ export interface SelectionStoreHost {
 /** Owns navigation, selection generations, and authoritative session hydration. */
 export class SelectionStore {
   private epoch = 0;
+  readonly headerLoading = signal(false);
+  private headerDeadline: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     private readonly services: AppStoreServices,
     private readonly sessionsStore: SessionStore,
     private readonly composer: ComposerStore,
+    private readonly runtime: RuntimeStore,
     private readonly runEngine: RunEngine,
     private readonly interactions: InteractionStore,
     private readonly sideQuestions: SideQuestionStore,
@@ -55,16 +59,26 @@ export class SelectionStore {
     private readonly host: SelectionStoreHost,
   ) {}
 
+  dispose(): void {
+    ++this.epoch;
+    clearTimeout(this.headerDeadline);
+  }
+
   get generation(): number {
     return this.epoch;
   }
 
   async selectSession(session: Session, replace = false): Promise<void> {
+    // Sidebar rows carry lightweight projections, not runtime/transcript state.
+    session =
+      this.sessionsStore.sessions.peek().find((entry) => entry.id === session.id) || session;
     this.composer.persist();
     this.composer.releaseResources(this.composer.attachments.peek(), false);
     this.sideQuestions.reset();
     const epoch = ++this.epoch;
+    clearTimeout(this.headerDeadline);
     batch(() => {
+      this.headerLoading.value = true;
       this.sessionsStore.activate(session);
       this.plans.current.value = null;
       this.plans.openState.value = false;
@@ -96,7 +110,30 @@ export class SelectionStore {
     // which does not own live-run state.
     if (session.activeResponseId)
       void this.runEngine.resumeResponse(session.id, session.activeResponseId);
-    await this.loadSession(session.id, epoch);
+    // Hydrate independent header sources together; branch discovery must not
+    // wait behind skills before appearing as a separate header layer.
+    const hydration = this.loadSession(session.id, epoch);
+    const revealHeader = () => {
+      if (epoch !== this.epoch) return;
+      clearTimeout(this.headerDeadline);
+      this.headerLoading.value = false;
+    };
+    // Degrade to the currently known controls if an ancillary request stalls;
+    // a branch catalog must not indefinitely hide shell/diff actions.
+    this.headerDeadline = setTimeout(revealHeader, 1_000);
+    void Promise.allSettled([
+      hydration,
+      this.branches.refresh(session.id),
+      hydration.then(() => {
+        if (epoch !== this.epoch) return;
+        const provider = this.runEngine.runActive.peek()
+          ? this.sessionsStore.activeSession.peek()?.activeProvider ||
+            this.runtime.selectedProvider.peek()
+          : this.runtime.selectedProvider.peek();
+        return this.runtime.whenModelsReady(provider);
+      }),
+    ]).then(revealHeader);
+    await hydration;
     if (epoch !== this.epoch) return;
     const current =
       this.sessionsStore.sessions.value.find(
@@ -106,7 +143,6 @@ export class SelectionStore {
       if (epoch === this.epoch) this.skillStore.skills.value = [];
     });
     if (epoch !== this.epoch) return;
-    void this.branches.refresh(current.id);
     if (current.activeResponseId)
       void this.runEngine.resumeResponse(current.id, current.activeResponseId);
   }
@@ -118,6 +154,8 @@ export class SelectionStore {
     this.composer.releaseResources(this.composer.attachments.peek(), false);
     this.sideQuestions.reset();
     ++this.epoch;
+    clearTimeout(this.headerDeadline);
+    this.headerLoading.value = false;
     const currentSession = this.sessionsStore.activeSession.peek();
     const requestedProject =
       projectId === undefined

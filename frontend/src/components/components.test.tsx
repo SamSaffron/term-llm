@@ -2808,6 +2808,8 @@ describe('Preact-owned chat surfaces', () => {
     expect(group).toHaveAttribute('aria-expanded', 'false');
     expect(group.querySelector('.tool-status')).toHaveTextContent('✓');
     expect(group.querySelector('.tool-status')).not.toHaveTextContent('error');
+    expect(document.querySelectorAll('.tool-toggle')).toHaveLength(0);
+    fireEvent.click(group);
     const toolToggles = [...document.querySelectorAll('.tool-toggle')];
     expect(toolToggles).toHaveLength(2);
     toolToggles.forEach((toggle) => expect(toggle).toHaveAttribute('aria-expanded', 'false'));
@@ -5720,7 +5722,7 @@ describe('Preact-owned chat surfaces', () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
     try {
       render(<Markdown value={'```sh\necho "hello"\n```'} />);
-      const button = screen.getByRole('button', { name: 'Copy code' });
+      const button = await screen.findByRole('button', { name: 'Copy code' });
       await act(async () => {
         fireEvent.click(button);
         await Promise.resolve();
