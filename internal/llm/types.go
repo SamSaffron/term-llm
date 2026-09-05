@@ -227,6 +227,10 @@ func (o ResponsesOptions) IsZero() bool {
 
 // Request represents a single model turn.
 type Request struct {
+	// ModelBoundary is an internal, request-scoped cooperation point. It is
+	// never serialized to providers and is not inherited through tool contexts.
+	ModelBoundary ModelBoundaryCallback `json:"-"`
+
 	Model      string
 	SessionID  string // Optional session ID for provider-side continuity/caching hints
 	WorkingDir string // Optional working directory for local subprocess providers

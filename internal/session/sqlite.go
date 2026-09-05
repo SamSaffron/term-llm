@@ -435,7 +435,7 @@ CREATE INDEX IF NOT EXISTS session_attention_unseen
     WHERE latest_attention_seq > seen_through_seq;
 `
 
-const canonicalSessionSchema = schema + projectsSchemaV47 + changeLogSchemaV52 + attentionSchemaV54 + rushSchemaV57
+const canonicalSessionSchema = schema + projectsSchemaV47 + changeLogSchemaV52 + attentionSchemaV54 + rushSchemaV57 + execHandoffSchemaV58
 
 func sqliteFileURI(path string) string {
 	slashPath := filepath.ToSlash(path)
@@ -584,7 +584,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // Increment when adding new migrations.
 const (
 	projectSchemaVersion = 47
-	schemaVersion        = 57
+	schemaVersion        = 58
 )
 
 // migration represents a schema migration.
@@ -1675,6 +1675,10 @@ var migrations = []migration{
 			return err
 		},
 	},
+	{version: 58, description: "explicit self-exec handoffs", up: func(db schemaExecutor) error {
+		_, err := db.Exec(execHandoffSchemaV58)
+		return err
+	}},
 }
 
 // Keep in sync with llm.IsInternalCompactionSummaryText. SQLite migrations and

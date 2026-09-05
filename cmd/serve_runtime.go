@@ -2290,6 +2290,20 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		if len(msgs) > 0 && msgs[0].Role == llm.RoleAssistant {
 			rt.refreshResponseDeadline()
 		}
+		if run := responseRunFromContext(cbCtx); run != nil && run.webExec != nil {
+			// Synchronous with the engine boundary: a buffered SSE event is
+			// not an acknowledgement that an unsafe tool has been observed.
+			for _, msg := range msgs {
+				for _, part := range msg.Parts {
+					if part.ToolActivity != nil {
+						run.webExec.reject("provider-managed native activity is unsupported")
+					}
+					if part.ToolCall != nil {
+						run.webExec.observeTool(rt, llm.Event{Type: llm.EventToolExecStart, ToolName: part.ToolCall.Name})
+					}
+				}
+			}
+		}
 		for i := range msgs {
 			msgs[i] = tagResponseRunMessage(cbCtx, msgs[i], callbackTurnIndex)
 		}
@@ -2375,6 +2389,17 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		persistProducedSnapshot(deferCtx)
 	}()
 
+	if boundary := req.ModelBoundary; boundary != nil {
+		req.ModelBoundary = func(boundaryCtx context.Context) error {
+			producedMu.Lock()
+			durable := persisted && initialPersisted && !assistantSnapshotDirty && !assistantSnapshotNeedsReconcile && lastAppendedIdx == len(produced)
+			producedMu.Unlock()
+			if !durable {
+				return fmt.Errorf("web restart boundary has unpersisted transcript data")
+			}
+			return boundary(boundaryCtx)
+		}
+	}
 	stream, err := rt.engine.Stream(runCtx, req)
 	if err != nil {
 		runErr = err

@@ -120,6 +120,11 @@ func (s *SQLiteStore) AdmitResponseRun(ctx context.Context, admission ResponseRu
 	if err != nil {
 		return ResponseRunLease{}, fmt.Errorf("allocate response run fence: %w", err)
 	}
+	if admission.ExecRestartID != "" {
+		if err := consumeExecHandoffTx(ctx, tx, admission); err != nil {
+			return ResponseRunLease{}, err
+		}
+	}
 	leaseExpiresAt := now.Add(leaseDuration)
 	result, err := tx.ExecContext(ctx, `INSERT INTO serve_response_lifecycle(
 		response_id, session_id, run_epoch, state, owner_instance_id, fencing_token,
