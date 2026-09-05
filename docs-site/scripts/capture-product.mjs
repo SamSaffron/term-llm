@@ -11,11 +11,14 @@ if (!["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname)) {
 }
 const output = fileURLToPath(new URL("../static/images/", import.meta.url));
 await mkdir(output, { recursive: true });
+const worktreeName = "fix-retry-backoff";
+const worktreeDir = `/workspace/worktrees/${worktreeName}`;
 const session = (id, title, number) => ({
   id, title, name: title, number, mode: "chat", origin: "web", agent: "reviewer",
   provider: "chatgpt", model: "gpt-6-astra-fast",
   created_at: 1_788_609_600, last_message_at: 1_788_609_660,
   pinned: number === 1, archived: false,
+  cwd: "/workspace/term-llm", worktree_dir: number === 1 ? worktreeDir : "",
   file_change_summary: { file_count: 1, adds: 5, dels: 1, git: true },
 });
 const sessions = [
@@ -37,7 +40,7 @@ try {
       const url = new URL(route.request().url());
       const path = url.pathname;
       const json = (value) => route.fulfill({ contentType: "application/json", body: JSON.stringify(value) });
-      if (path.endsWith("/capabilities")) return json({ projects: { enabled: true }, shell: { enabled: true, version: 1, transport: "http_sse" } });
+      if (path.endsWith("/capabilities")) return json({ projects: { enabled: false }, worktrees: { enabled: true }, shell: { enabled: true, version: 1, transport: "http_sse" } });
       if (path.endsWith("/providers")) return json({ object: "list", data: [{ name: "chatgpt", configured: true, is_default: true, default_model: "gpt-6-astra-fast", models: ["gpt-6-astra-fast"] }] });
       if (path.endsWith("/models")) return json({ object: "list", data: [{ id: "gpt-6-astra-fast", owned_by: "chatgpt" }] });
       if (path.endsWith("/sidebar")) return json({ sessions, recent_sessions: sessions });
@@ -52,6 +55,8 @@ try {
     await page.goto(new URL("chat/1", base).href);
     await page.getByText("One issue worth fixing", { exact: true }).waitFor({ timeout: 15000 });
     await page.getByText("gpt-6-astra-fast", { exact: true }).waitFor();
+    // Assert the real worktree chip is visible in both themed captures.
+    await page.getByRole("button", { name: "Worktree", exact: true }).filter({ hasText: worktreeName }).waitFor();
     // Open and expand the real diff component, rather than drawing a mock UI.
     await page.getByRole("button", { name: /Toggle file changes/ }).click();
     const file = page.locator('.diff-file-row[data-path="retry.go"]');
