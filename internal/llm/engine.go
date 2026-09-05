@@ -2097,7 +2097,7 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	// Providers with a true mid-generation interrupt also need the loop when no
 	// tools are exposed: the next provider turn is where the queued steer is
 	// committed and delivered after the interrupted turn.
-	useLoop := caps.ToolCalls && (len(req.Tools) > 0 || planner != nil || e.providerSupportsImmediateInterruption())
+	useLoop := req.ModelBoundary != nil || (caps.ToolCalls && (len(req.Tools) > 0 || planner != nil || e.providerSupportsImmediateInterruption()))
 
 	if useLoop {
 		e.beginSteeringRun(getMaxTurns(req) > 1)
@@ -2673,8 +2673,13 @@ func restoreToolDiscoveryReplay(messages []Message, replay []Part) []Message {
 }
 
 func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) error {
-	ctx = withResponsesWebSocketContinuationLifetime(ctx)
+	boundary := req.ModelBoundary
+	req.ModelBoundary = nil
 	defer e.markSteeringRunNonConsuming()
+	if boundary != nil && e.provider.Capabilities().InlineToolLoop {
+		return fmt.Errorf("cooperative model boundary unavailable for inline tool-loop provider")
+	}
+	ctx = withResponsesWebSocketContinuationLifetime(ctx)
 	runID := e.beginToolRun()
 	modelSwitchOrdinal := 0
 	e.recordFileTrackingRunStart(ctx, req.SessionID, runID)
@@ -2713,6 +2718,20 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 	turnCallback := e.getTurnCallback()
 	responseCallback := e.getResponseCallback()
 	snapshotCallback := e.getSnapshotCallback()
+
+	// Ordinary invocations retain their existing best-effort persistence policy.
+	// Cooperative callers must never park at a boundary after a failed write.
+	var boundaryPersistenceErr error
+	if boundary != nil && turnCallback != nil {
+		persist := turnCallback
+		turnCallback = func(ctx context.Context, turn int, messages []Message, metrics TurnMetrics) error {
+			err := persist(ctx, turn, messages, metrics)
+			if err != nil && boundaryPersistenceErr == nil {
+				boundaryPersistenceErr = fmt.Errorf("persist cooperative model boundary: %w", err)
+			}
+			return err
+		}
+	}
 
 	e.callbackMu.RLock()
 	compactionConfig := e.compactionConfig
@@ -2982,6 +3001,20 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 	}
 turnLoop:
 	for attempt := 0; attempt < maxTurns; attempt++ {
+		if boundary != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if boundaryPersistenceErr != nil {
+				return boundaryPersistenceErr
+			}
+			if err := boundary(ctx); err != nil {
+				return fmt.Errorf("cooperative model boundary: %w", err)
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
 		// The final provider turn has no later agentic boundary. Reject arrivals
 		// throughout that stream instead of accepting steering it cannot consume.
 		e.beginSteeringRun(attempt < maxTurns-1)

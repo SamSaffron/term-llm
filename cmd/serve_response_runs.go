@@ -122,6 +122,7 @@ type responseRunResolvedInteraction struct {
 }
 
 type responseRun struct {
+	webExec                 *webExecCoordinator
 	settled                 chan struct{}
 	rushStateful            bool
 	rushRequest             llm.Request
@@ -196,6 +197,8 @@ type responseRun struct {
 }
 
 type startResponseRunOptions struct {
+	execRestartID              string
+	execServiceID              string
 	onInitialInput             func()
 	rush                       *session.RushOperation
 	previousResponseID         string
@@ -3111,6 +3114,9 @@ func (s *serveServer) persistResponseRunErrorEvent(ctx context.Context, runtime 
 }
 
 func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev llm.Event) error {
+	if s.webExec != nil {
+		s.webExec.observeTool(runtime, ev)
+	}
 	switch ev.Type {
 	case llm.EventTextDelta:
 		segmentOrdinal := state.assistantSegmentOrdinal
@@ -3604,6 +3610,13 @@ func (s *serveServer) handleResponseByID(w http.ResponseWriter, r *http.Request)
 
 	runID := parts[0]
 	run, ok := mgr.get(runID)
+	if !ok && s.webExec != nil && s.webExec.store != nil && r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "cancel" {
+		// A browser Stop sent with the pre-exec response ID must stop that exact
+		// continuation, never whatever unrelated user turn happens to be newest.
+		if replacement, err := s.webExec.store.ExecContinuation(r.Context(), runID, s.webExec.service); err == nil {
+			run, ok = mgr.get(replacement)
+		}
+	}
 	if !ok {
 		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "response not found")
 		return
@@ -3913,6 +3926,14 @@ func (s *serveServer) responseRunContinuationID(ctx context.Context, runtime *se
 }
 
 func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, options startResponseRunOptions) (*responseRun, error) {
+	if s.webExec != nil {
+		s.webExec.mu.Lock()
+		defer s.webExec.mu.Unlock()
+		if s.webExec.draining {
+			return nil, fmt.Errorf("%w: web reload draining", errServeSessionBusy)
+		}
+	}
+
 	mgr := s.ensureResponseRuns()
 
 	if t := mgr.steeringTransition(sessionID); t != nil && (options.rush == nil || options.rush.RequestID != t.owner.OperationID) {
@@ -4012,6 +4033,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		ownerID := s.responseOwnerID()
 		admitCtx, admitCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		lease, admitErr := lifecycle.AdmitResponseRun(admitCtx, session.ResponseRunAdmission{
+			ExecRestartID: options.execRestartID, ExecServiceID: options.execServiceID,
 			ResponseID:      respID,
 			SessionID:       sessionID,
 			RunEpoch:        run.runEpoch,
@@ -4115,8 +4137,14 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		return nil, err
 	}
 
+	if s.webExec != nil {
+		s.webExec.register(run, runCtx, runtime, &llmReq, stateful, options)
+	}
 	if err := mgr.start(func() {
 		defer close(run.settled)
+		if s.webExec != nil {
+			defer s.webExec.settled(run.id)
+		}
 		defer cancel()
 		if options.onDone != nil {
 			defer options.onDone()

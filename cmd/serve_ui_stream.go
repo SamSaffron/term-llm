@@ -49,6 +49,7 @@ func (s *serveServer) streamResponseRun(ctx context.Context, w http.ResponseWrit
 		writeOpenAIError(w, status, errType, err.Error())
 		return false
 	}
+	releaseWebExecTicket(ctx)
 	w.Header().Set("x-response-id", run.id)
 	s.streamResponseRunEvents(ctx, w, run, 0)
 	return true

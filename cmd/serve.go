@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -601,6 +602,9 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			return nil, err
 		}
 		runtime := env.runtime
+		if s != nil && s.webExec != nil && (runtime.provider.Capabilities().InlineToolLoop || runtime.mcpManagerSnapshot() != nil) {
+			s.webExec.reject("a runtime initialized native provider or MCP ownership")
+		}
 		runtime.toolMap = toolMap
 		runtime.platform = "web"
 		runtime.sideProviderFactory = func(providerKey, model string) (llm.Provider, error) {
@@ -748,6 +752,9 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	}
 
 	hasHTTP := hasWeb || hasAPI || hasJobs
+	if !hasHTTP {
+		defer installWebExecSignal(ctx, &webExecCoordinator{ctx: ctx, unsupported: "SIGUSR2 requires standalone serve web"})()
+	}
 
 	registeredHubURL := ""
 	registeredHubNodeID := ""
@@ -814,6 +821,19 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 				return getErr == nil && sess != nil
 			}),
 		}
+
+		unsupportedExec := ""
+		if !hasWeb || hasAPI || hasJobs || hasTelegram {
+			unsupportedExec = "only standalone serve web supports SIGUSR2"
+		}
+		if widgetsMgr != nil {
+			unsupportedExec = "widget ownership is unsupported; start with --disable-widgets"
+		}
+		if serveWebRTC || strings.TrimSpace(serveHubURL) != "" {
+			unsupportedExec = "Hub and WebRTC transports are not yet supported"
+		}
+		s.webExec = newWebExecCoordinator(ctx, s, unsupportedExec)
+		defer installWebExecSignal(ctx, s.webExec)()
 		if hasJobs {
 			jobsV2, err = newServeJobsV2Manager(cfg, serveJobsWorkers, resolvedApproval, s.notifyJobsV2RunDone)
 			if err != nil {
@@ -1331,6 +1351,7 @@ func normalizeBasePath(raw string) (string, error) {
 }
 
 type serveServer struct {
+	webExec                  *webExecCoordinator
 	cfg                      serveServerConfig
 	sessionMgr               *serveSessionManager
 	jobsV2                   *jobsV2Manager
@@ -1474,9 +1495,22 @@ func (s *serveServer) Start() error {
 		s.prewarmUIAssetCache()
 	}
 
+	// Bind before consuming any handoff. Listener ownership, the stable service
+	// identity and durable fences together prevent an env hint from stealing a
+	// still-live service's work. No listener is inherited across exec.
+	listener, err := net.Listen("tcp", s.server.Addr)
+	if err != nil {
+		return fmt.Errorf("listen: %w", err)
+	}
+	if s.webExec != nil {
+		if err := s.webExec.resume(); err != nil {
+			_ = listener.Close()
+			return fmt.Errorf("recover web self-exec: %w", err)
+		}
+	}
 	errCh := make(chan error, 1)
 	go func() {
-		err := s.server.ListenAndServe()
+		err := s.server.Serve(listener)
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
@@ -1493,6 +1527,11 @@ func (s *serveServer) Start() error {
 		s.startEventWatcher()
 		s.startResponseLifecycle()
 		s.startCompletionPushDispatcher()
+		if s.webExec != nil {
+			s.webExec.mu.Lock()
+			s.webExec.ready = true
+			s.webExec.mu.Unlock()
+		}
 		return nil
 	}
 }
@@ -1500,6 +1539,14 @@ func (s *serveServer) Start() error {
 var registerServeBrowserFixtureRoutes func(*http.ServeMux, *serveServer)
 
 func (s *serveServer) httpHandler() http.Handler {
+	handler := s.rawHTTPHandler()
+	if s.webExec != nil {
+		return s.webExec.handler(handler)
+	}
+	return handler
+}
+
+func (s *serveServer) rawHTTPHandler() http.Handler {
 	// Inner mux: all routes registered at their natural paths.
 	// basePath is stripped by http.StripPrefix on the outer mux when mounted,
 	// so handlers see /v1/..., /images/..., / etc. without the prefix.

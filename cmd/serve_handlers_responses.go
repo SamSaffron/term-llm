@@ -936,6 +936,9 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	if s.webExec != nil {
+		s.webExec.reject("non-streaming response engines are unsupported")
+	}
 	result, _, err := s.runResponseWithModelSwapFallback(ctx, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, modelSwapExec)
 	if err != nil {
 		if errors.Is(err, errServeSessionBusy) {

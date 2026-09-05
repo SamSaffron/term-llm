@@ -153,6 +153,8 @@ func lockHubPasskeyState(authFile string) (func() error, error) {
 }
 
 func runServeHub(cmd *cobra.Command, args []string) error {
+	defer installWebExecSignal(cmd.Context(), &webExecCoordinator{ctx: cmd.Context(), unsupported: "SIGUSR2 requires standalone serve web"})()
+
 	authMode, err := resolveHubAuthMode(serveHubAuthMode)
 	if err != nil {
 		return err

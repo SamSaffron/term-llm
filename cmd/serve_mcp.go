@@ -139,6 +139,8 @@ func resolveServeMCPApprovalMode(cmd *cobra.Command, cfg *config.Config) (resolv
 }
 
 func runServeMCP(cmd *cobra.Command, args []string) error {
+	defer installWebExecSignal(cmd.Context(), &webExecCoordinator{ctx: cmd.Context(), unsupported: "SIGUSR2 requires standalone serve web"})()
+
 	if serveMCPTools == "" {
 		return fmt.Errorf("--tools is required\n\nExamples:\n  term-llm serve mcp --tools all\n  term-llm serve mcp --tools read_file,grep,glob,shell")
 	}

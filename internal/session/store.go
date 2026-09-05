@@ -158,6 +158,8 @@ var (
 
 // ResponseRunAdmission durably accounts for a run before provider work starts.
 type ResponseRunAdmission struct {
+	ExecRestartID   string
+	ExecServiceID   string
 	ResponseID      string
 	SessionID       string
 	RunEpoch        int64
