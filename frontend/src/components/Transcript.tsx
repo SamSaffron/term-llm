@@ -278,25 +278,27 @@ function formatUsage(message: Message): string {
   return `↙ ${Number(usage.input_tokens || 0).toLocaleString()} in · ${Number(usage.output_tokens || 0).toLocaleString()} out · ${Number(details.cached_tokens || usage.cached_input_tokens || 0).toLocaleString()} cached`;
 }
 
+const SHELL_TIMER_MINIMUM_MS = 2_000;
+
 function ElapsedDuration({
   startedAt,
   durationMs,
   running,
   active = true,
+  minimumMs = 0,
 }: {
   startedAt?: number;
   durationMs?: number;
   running: boolean;
   active?: boolean;
+  minimumMs?: number;
 }) {
   const label = useRef<HTMLSpanElement>(null);
-  const elapsed = useCallback(
-    () =>
-      formatElapsedDuration(
-        running && startedAt ? Math.max(0, Date.now() - startedAt) : Math.max(0, durationMs || 0),
-      ),
-    [durationMs, running, startedAt],
-  );
+  const elapsed = useCallback(() => {
+    const ms =
+      running && startedAt ? Math.max(0, Date.now() - startedAt) : Math.max(0, durationMs || 0);
+    return ms < minimumMs ? '' : formatElapsedDuration(ms);
+  }, [durationMs, minimumMs, running, startedAt]);
   useLayoutEffect(() => {
     const update = () => {
       if (label.current) label.current.textContent = elapsed();
@@ -357,27 +359,30 @@ const Tool = memo(function Tool({
   const summary = toolSummary(tool);
   const failureReason = failed ? String(tool.result || tool.subagent?.error || '').trim() : '';
   const spawnAgent = tool.name.toLowerCase() === 'spawn_agent';
+  const shell = tool.name.toLowerCase() === 'shell';
   const finalDurationMs =
     tool.durationMs ??
     (tool.startedAt && tool.endedAt ? Math.max(0, tool.endedAt - tool.startedAt) : undefined);
-  const timedSpawn =
-    spawnAgent &&
-    (tool.status === 'running' ? Boolean(tool.startedAt) : finalDurationMs !== undefined);
+  const timedTool =
+    (spawnAgent || shell) &&
+    (tool.status === 'running'
+      ? Boolean(tool.startedAt)
+      : finalDurationMs !== undefined && (!shell || finalDurationMs >= SHELL_TIMER_MINIMUM_MS));
   const status =
     tool.status === 'running' ? (
-      timedSpawn ? (
+      timedTool ? (
         <ElapsedDuration
           startedAt={tool.startedAt}
-          durationMs={tool.durationMs}
           running
           active={tickElapsed}
+          minimumMs={shell ? SHELL_TIMER_MINIMUM_MS : 0}
         />
       ) : (
         'running…'
       )
     ) : failed ? (
       <>
-        {timedSpawn && (
+        {timedTool && (
           <>
             <ElapsedDuration durationMs={finalDurationMs} running={false} />{' '}
           </>
@@ -386,7 +391,7 @@ const Tool = memo(function Tool({
       </>
     ) : stopped ? (
       <>
-        {timedSpawn && (
+        {timedTool && (
           <>
             <ElapsedDuration durationMs={finalDurationMs} running={false} />{' '}
           </>
@@ -395,7 +400,7 @@ const Tool = memo(function Tool({
       </>
     ) : (
       <>
-        {timedSpawn && (
+        {timedTool && (
           <>
             <ElapsedDuration durationMs={finalDurationMs} running={false} />{' '}
           </>
@@ -425,7 +430,7 @@ const Tool = memo(function Tool({
                   ? 'Stopped'
                   : tool.status === 'done'
                     ? 'Complete'
-                    : timedSpawn
+                    : tool.status === 'running'
                       ? 'Running'
                       : undefined
             }
@@ -528,9 +533,11 @@ function ToolGroup({
   const names = [...new Set(visible.map((tool) => tool.name))];
   const stopped = !running && visible.some((tool) => tool.status === 'cancelled');
   const runningTools = visible.filter((tool) => tool.status === 'running');
-  const runningSpawnStartedAt =
+  const runningTimedStartedAt =
     runningTools.length > 0 &&
-    runningTools.every((tool) => tool.name.toLowerCase() === 'spawn_agent' && tool.startedAt)
+    runningTools.every(
+      (tool) => ['spawn_agent', 'shell'].includes(tool.name.toLowerCase()) && tool.startedAt,
+    )
       ? Math.min(...runningTools.map((tool) => tool.startedAt!))
       : undefined;
   return (
@@ -548,8 +555,16 @@ function ToolGroup({
           aria-label={running ? 'Running' : stopped ? 'Stopped' : 'Complete'}
         >
           {running ? (
-            runningSpawnStartedAt ? (
-              <ElapsedDuration startedAt={runningSpawnStartedAt} running />
+            runningTimedStartedAt ? (
+              <ElapsedDuration
+                startedAt={runningTimedStartedAt}
+                running
+                minimumMs={
+                  runningTools.every((tool) => tool.name.toLowerCase() === 'shell')
+                    ? SHELL_TIMER_MINIMUM_MS
+                    : 0
+                }
+              />
             ) : (
               'running…'
             )

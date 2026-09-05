@@ -9,6 +9,183 @@ import {
 import type { Message } from './types';
 
 describe('transcript domain', () => {
+  it('preserves live shell execution and timing over assumed-complete history', () => {
+    const durable = convertServerMessages([
+      {
+        id: 1,
+        role: 'assistant',
+        response_id: 'r1',
+        parts: [{ type: 'tool_call', tool_call_id: 'shell-1', tool_name: 'shell' }],
+      },
+    ]);
+    expect(durable[0].tools?.[0].status).toBe('done');
+    const live: Message = {
+      id: 'live',
+      role: 'tool-group',
+      responseId: 'r1',
+      content: '',
+      created: 1,
+      tools: [{ id: 'shell-1', name: 'shell', status: 'running', startedAt: 10_000 }],
+    };
+    const running = mergeDurableProjection(durable, [live]);
+    expect(running).toHaveLength(1);
+    expect(running[0]).toMatchObject({ status: 'running', tools: live.tools });
+    const finished: Message = {
+      ...live,
+      tools: [
+        {
+          ...live.tools![0],
+          status: 'done',
+          resultStatus: 'success',
+          endedAt: 30_000,
+          durationMs: 20_000,
+        },
+      ],
+    };
+    expect(mergeDurableProjection(durable, [finished])[0]).toMatchObject({
+      status: 'done',
+      tools: finished.tools,
+    });
+    expect(durable[0].tools?.[0]).not.toHaveProperty('startedAt');
+    expect(durable[0].tools?.[0].status).toBe('done');
+  });
+
+  it.each(['done', 'error', 'cancelled'] as const)(
+    'does not regress an explicit durable %s result to running',
+    (status) => {
+      const durable: Message = {
+        id: 'durable',
+        role: 'tool-group',
+        content: '',
+        created: 1,
+        responseId: 'r1',
+        tools: [
+          {
+            id: 'shell-1',
+            name: 'shell',
+            status,
+            resultStatus: status === 'error' ? 'error' : 'success',
+            endedAt: 30_000,
+          },
+        ],
+      };
+      const live: Message = {
+        ...durable,
+        id: 'live',
+        tools: [{ id: 'shell-1', name: 'shell', status: 'running', startedAt: 10_000 }],
+      };
+      expect(mergeDurableProjection([durable], [live])[0]).toBe(durable);
+    },
+  );
+  it.each([undefined, 20_000])(
+    'only overlays timing onto matching explicit terminal results (duration: %s)',
+    (durationMs) => {
+      const durable: Message = {
+        id: 'durable',
+        role: 'tool-group',
+        content: '',
+        created: 1,
+        responseId: 'r1',
+        tools: [
+          {
+            id: 'shell-1',
+            name: 'shell',
+            status: 'done',
+            resultStatus: 'success',
+            arguments: '{"command":"echo complete"}',
+            result: 'complete output',
+            media: [{ url: '/ui/media/result.png', type: 'image/png', caption: 'Saved caption' }],
+            durationMs: 5_000,
+          },
+        ],
+      };
+      const live: Message = {
+        ...durable,
+        id: 'live',
+        tools: [
+          {
+            id: 'shell-1',
+            name: 'shell',
+            status: 'done',
+            resultStatus: 'success',
+            arguments: '',
+            result: '',
+            media: [{ url: '/media/result.png', type: 'image/png' }],
+            startedAt: 10_000,
+            endedAt: 30_000,
+            durationMs,
+          },
+        ],
+      };
+      const merged = mergeDurableProjection([durable], [live]);
+      expect(merged[0].tools?.[0]).toEqual({
+        ...durable.tools![0],
+        startedAt: 10_000,
+        endedAt: 30_000,
+        durationMs: durationMs ?? 5_000,
+      });
+      expect(durable.tools![0]).not.toHaveProperty('startedAt');
+    },
+  );
+
+  it('does not overwrite saved arguments with a running projection', () => {
+    const durable: Message = {
+      id: 'durable',
+      role: 'tool-group',
+      content: '',
+      created: 1,
+      responseId: 'r1',
+      tools: [
+        { id: 'shell-1', name: 'shell', status: 'done', arguments: '{"command":"sleep 20"}' },
+      ],
+    };
+    const live: Message = {
+      ...durable,
+      id: 'live',
+      tools: [
+        {
+          id: 'shell-1',
+          name: 'shell',
+          status: 'running',
+          startedAt: 10_000,
+          arguments: '{"command":',
+        },
+      ],
+    };
+    expect(mergeDurableProjection([durable], [live])[0]).toMatchObject({
+      status: 'running',
+      tools: [{ ...durable.tools![0], status: 'running', startedAt: 10_000 }],
+    });
+  });
+
+  it.each(['running', 'error'] as const)(
+    'preserves a durable result-only completion over live %s state',
+    (status) => {
+      const durable: Message = {
+        id: 'durable',
+        role: 'tool-group',
+        content: '',
+        created: 1,
+        responseId: 'r1',
+        tools: [{ id: 'shell-1', name: 'shell', status: 'done', result: '' }],
+      };
+      const live: Message = {
+        ...durable,
+        id: 'live',
+        tools: [
+          {
+            id: 'shell-1',
+            name: 'shell',
+            status,
+            startedAt: 10_000,
+            ...(status === 'error' ? { endedAt: 30_000, resultStatus: 'error' as const } : {}),
+          },
+        ],
+      };
+      expect(mergeDurableProjection([durable], [live])[0]).toBe(durable);
+    },
+  );
+
   it('preserves untouched tool identities and applies terminal overlays without mutating durable input', () => {
     const completed: Message = {
       id: 'complete',

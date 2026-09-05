@@ -958,25 +958,36 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
       ? durableToolMessages.get(`${message.responseId}:${tool.id}`) ||
         durableToolMessages.get(tool.id)
       : durableToolMessages.get(tool.id);
-  // A durable assistant snapshot records tool calls before their result rows exist.
-  // During that window the live response stream owns any observed terminal transition;
-  // never let the older durable "running" placeholder regress it.
+  // History may assume a tool call succeeded because most successful results are
+  // omitted. Prefer observed live execution over that placeholder, but never let
+  // a stale running projection regress an explicit durable result.
   const patchedTools = new Map<Message, Message>();
   for (const message of projected) {
     if (message.role !== 'tool-group') continue;
     for (const tool of message.tools || []) {
-      if (
-        tool.status === 'running' ||
-        (tool.endedAt === undefined && tool.resultStatus === undefined)
-      )
-        continue;
+      const terminal = tool.endedAt !== undefined || tool.resultStatus !== undefined;
+      if (!terminal && (tool.status !== 'running' || tool.startedAt === undefined)) continue;
       const durableMessage = durableToolMessage(message, tool);
       const durableTool = durableMessage?.tools?.find((candidate) => candidate.id === tool.id);
-      if (!durableMessage || !durableTool || durableTool.status !== 'running') continue;
+      if (!durableMessage || !durableTool) continue;
+      const durableTerminal =
+        durableTool.endedAt !== undefined ||
+        durableTool.resultStatus !== undefined ||
+        durableTool.result !== undefined ||
+        durableTool.status === 'error' ||
+        durableTool.status === 'cancelled';
+      if (durableTerminal && (!terminal || tool.status !== durableTool.status)) continue;
+      // Explicit saved results own their content; only supplement their timing.
+      // A running projection owns status/start time, not finalized saved arguments.
+      const overlay: Partial<ToolCall> = durableTerminal
+        ? { startedAt: tool.startedAt, endedAt: tool.endedAt, durationMs: tool.durationMs }
+        : !terminal
+          ? { status: tool.status, startedAt: tool.startedAt }
+          : tool;
       const defined = Object.fromEntries(
-        Object.entries(tool).filter(([, value]) => value !== undefined),
+        Object.entries(overlay).filter(([, value]) => value !== undefined),
       ) as Partial<ToolCall>;
-      // Copy only groups that actually need a live terminal overlay. Keep the
+      // Copy only groups that need a live execution overlay. Keep the
       // anchor maps pointing at the originals until ordering is complete.
       const patched = patchedTools.get(durableMessage) || {
         ...durableMessage,
@@ -985,8 +996,9 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
       patched.tools = patched.tools!.map((candidate) =>
         candidate.id === tool.id ? { ...candidate, ...defined } : candidate,
       );
-      if (patched.tools.every((candidate) => candidate.status !== 'running'))
-        patched.status = 'done';
+      patched.status = patched.tools.some((candidate) => candidate.status === 'running')
+        ? 'running'
+        : 'done';
       patchedTools.set(durableMessage, patched);
     }
   }

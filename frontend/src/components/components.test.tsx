@@ -2683,6 +2683,140 @@ describe('Preact-owned chat surfaces', () => {
     }
   });
 
+  it.each([
+    { names: ['shell'], missingStart: true, expected: 'running…' },
+    { names: ['shell', 'shell'], missingStart: true, expected: 'running…' },
+    { names: ['shell', 'spawn_agent'], missingStart: false, expected: '0s' },
+    { names: ['shell', 'read_file'], missingStart: false, expected: 'running…' },
+  ])(
+    'renders running status for $names (missing start: $missingStart)',
+    ({ names, missingStart, expected }) => {
+      const store = createStore();
+      store.sessions.value[0].messages = [
+        {
+          id: 'tools',
+          role: 'tool-group',
+          content: '',
+          created: Date.now(),
+          tools: names.map((name, index) => ({
+            id: `tool-${index}`,
+            name,
+            status: 'running' as const,
+            startedAt: missingStart && index === 0 ? undefined : Date.now(),
+          })),
+        },
+      ];
+      const { container } = render(
+        <StoreContext.Provider value={store}>
+          <Transcript />
+        </StoreContext.Provider>,
+      );
+      const status = container.querySelector('.tool-status');
+      expect(status?.textContent).toBe(expected);
+      expect(status).toHaveAttribute('aria-label', 'Running');
+      expect(status).not.toHaveClass('done');
+    },
+  );
+
+  it.each([1, 2])('delays the shell timer for two seconds (%i calls)', async (count) => {
+    vi.useFakeTimers();
+    const now = new Date('2026-09-05T12:00:00Z').getTime();
+    vi.setSystemTime(now);
+    const store = createStore();
+    store.sessions.value[0].messages = [
+      { id: 'answer', role: 'assistant', content: 'Still here', created: now },
+      {
+        id: 'shell-tools',
+        role: 'tool-group',
+        content: '',
+        created: now,
+        tools: Array.from({ length: count }, (_, i) => ({
+          id: `shell-${i}`,
+          name: 'shell',
+          status: 'running' as const,
+          startedAt: now,
+        })),
+      },
+    ];
+    const { container, unmount } = render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+    try {
+      const unrelated = container.querySelector('[data-message-id="answer"]');
+      const status = container.querySelector('.tool-status');
+      // The timed label reserves space but has no text until the threshold.
+      expect(status?.textContent).toBe('');
+      expect(status).not.toHaveClass('done');
+      expect(status).toHaveAttribute('aria-label', 'Running');
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_999);
+      });
+      expect(status?.textContent).toBe('');
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(status).toHaveTextContent('2s');
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(18_000);
+      });
+      expect(status).toHaveTextContent('20s');
+      expect(status).not.toHaveTextContent('✓');
+      expect(container.querySelector('[data-message-id="answer"]')).toBe(unrelated);
+    } finally {
+      unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    { status: 'done' as const, durationMs: 1_999, expected: '✓' },
+    { status: 'done' as const, durationMs: 2_000, expected: '2s ✓' },
+    { status: 'done' as const, durationMs: 20_000, expected: '20s ✓' },
+    { status: 'error' as const, durationMs: 20_000, expected: '20s ✕' },
+    { status: 'cancelled' as const, durationMs: 20_000, expected: '20s stopped' },
+  ])(
+    'freezes shell duration on $status after $durationMs ms',
+    async ({ status, durationMs, expected }) => {
+      vi.useFakeTimers();
+      const store = createStore();
+      store.sessions.value[0].messages = [
+        {
+          id: 'shell-tools',
+          role: 'tool-group',
+          content: '',
+          created: Date.now(),
+          tools: [
+            {
+              id: 'shell-1',
+              name: 'shell',
+              status,
+              startedAt: Date.now() - durationMs,
+              endedAt: Date.now(),
+            },
+          ],
+        },
+      ];
+      const { container, unmount } = render(
+        <StoreContext.Provider value={store}>
+          <Transcript />
+        </StoreContext.Provider>,
+      );
+      try {
+        const label = container.querySelector('.tool-status');
+        expect(label?.textContent?.trim()).toBe(expected);
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(5_000);
+        });
+        expect(label?.textContent?.trim()).toBe(expected);
+      } finally {
+        unmount();
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it('shows a frozen duration beside a completed spawn-agent status', () => {
     const store = createStore();
     store.sessions.value[0].messages = [
