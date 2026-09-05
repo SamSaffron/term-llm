@@ -99,16 +99,14 @@ describe('CommitStore', () => {
     return f;
   }
 
-  it('previews publishing, then submits the reviewed destination without another commit', async () => {
+  it('pushes immediately after resolving the destination without another commit', async () => {
     const { store, endpoints } = await committedFixture();
-    await store.preparePublish('push');
-    expect(store.state.value.publishForm?.branch).toBe('main');
-    expect(endpoints.createCommitOperation).not.toHaveBeenCalled();
     endpoints.commitOperation.mockResolvedValue({
       status: 'succeeded',
       publish_result: { pushed: true, branch: 'main' },
     });
-    await store.publish();
+    await store.preparePublish('push');
+    expect(store.state.value.publishForm).toBeNull();
     expect(endpoints.createCommitOperation).toHaveBeenCalledWith(
       's1',
       expect.objectContaining({
@@ -185,9 +183,8 @@ describe('CommitStore', () => {
 
   it('recovers a disconnected publish with the same idempotency key', async () => {
     const { store, endpoints } = await committedFixture();
-    await store.preparePublish('push');
     endpoints.createCommitOperation.mockRejectedValueOnce(new Error('offline'));
-    await store.publish();
+    await store.preparePublish('push');
     const firstKey = endpoints.createCommitOperation.mock.calls[0][2];
     expect(store.state.value.publishPending).toBe(true);
     await store.preparePublish('pr');
@@ -203,19 +200,24 @@ describe('CommitStore', () => {
     expect(store.state.value.result?.head_oid).toBe('committed');
   });
 
-  it('allows editing again after rejected publish admission', async () => {
+  it('allows a one-click retry after rejected push admission', async () => {
     const { store, endpoints } = await committedFixture();
-    await store.preparePublish('push');
     endpoints.createCommitOperation.mockRejectedValueOnce(new APIError('checkout busy', 409));
-    await store.publish();
+    await store.preparePublish('push');
     expect(store.state.value.publishPending).toBe(false);
-    expect(store.state.value.publishForm?.kind).toBe('push');
+    expect(store.state.value.publishForm).toBeNull();
     expect(localStorage.getItem('term-llm.commit-publish.s1')).toBeNull();
+    endpoints.commitOperation.mockResolvedValue({
+      status: 'succeeded',
+      publish_result: { pushed: true, branch: 'main' },
+    });
+    await store.preparePublish('push');
+    expect(endpoints.createCommitOperation).toHaveBeenCalledTimes(2);
+    expect(store.state.value.publishResult?.pushed).toBe(true);
   });
 
   it('blocks duplicate submission and closing while publishing, but ignores late results after switching session', async () => {
     const { store, endpoints, activeSession } = await committedFixture();
-    await store.preparePublish('push');
     let finish!: (value: Record<string, unknown>) => void;
     endpoints.commitOperation.mockImplementation(
       () =>
@@ -223,9 +225,10 @@ describe('CommitStore', () => {
           finish = resolve;
         }),
     );
-    const pending = store.publish();
+    const pending = store.preparePublish('push');
+    await store.preparePublish('push');
     await vi.waitFor(() => expect(finish).toBeDefined());
-    await store.publish();
+    await store.preparePublish('push');
     store.close();
     expect(store.state.value.publishBusy).toBe(true);
     expect(endpoints.createCommitOperation).toHaveBeenCalledTimes(1);

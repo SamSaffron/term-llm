@@ -633,25 +633,36 @@ export class CommitStore {
         );
       }
       const target = String(plan.target || '');
-      this.patch({
-        publishForm: {
-          kind,
-          plan,
-          branch:
-            kind === 'pr' && target === plan.default_branch
-              ? `pr/${String(state.result.short_oid || '').trim()}`
-              : target,
-          base: String(plan.default_branch || ''),
-          title: String(state.result.subject || ''),
-          body: String(state.result.message || state.message)
-            .split('\n')
-            .slice(1)
-            .join('\n')
-            .trim(),
-          draft: false,
-        },
-        info: '',
-      });
+      const form: PublishForm = {
+        kind,
+        plan,
+        branch:
+          kind === 'pr' && target === plan.default_branch
+            ? `pr/${String(state.result.short_oid || '').trim()}`
+            : target,
+        base: String(plan.default_branch || ''),
+        title: String(state.result.subject || ''),
+        body: String(state.result.message || state.message)
+          .split('\n')
+          .slice(1)
+          .join('\n')
+          .trim(),
+        draft: false,
+      };
+      if (kind === 'push') {
+        await this.runPublish(
+          state.sessionId,
+          {
+            key: `publish_${crypto.randomUUID()}`,
+            form,
+            result: state.result,
+            status: state.status,
+          },
+          epoch,
+        );
+      } else {
+        this.patch({ publishForm: form, info: '' });
+      }
     } catch (error) {
       if (this.current(epoch, state.sessionId))
         this.patch({ error: errorMessage(error), info: '' });
@@ -771,7 +782,7 @@ export class CommitStore {
         this.services.storage.removeItem(this.publishStorageKey(sessionId));
         this.patch({
           publishPending: false,
-          publishForm: saved.form,
+          publishForm: saved.form.kind === 'pr' ? saved.form : null,
           error: errorMessage(error),
           info: '',
         });

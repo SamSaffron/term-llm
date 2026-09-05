@@ -274,7 +274,7 @@ export function CommitModal() {
                 </a>
               </p>
             )}
-            {form ? (
+            {form?.kind === 'pr' ? (
               <form
                 class="commit-publish-form"
                 onSubmit={(event) => {
@@ -294,12 +294,6 @@ export function CommitModal() {
                   This publishes the branch history through this commit, not uncommitted changes. No
                   force-push.
                 </p>
-                {form.kind === 'push' && (
-                  <p class="commit-warning">
-                    This updates the remote branch directly, including main/default branches.
-                    Confirm the destination before pushing.
-                  </p>
-                )}
                 {form.kind === 'pr' && (
                   <>
                     <label class="settings-label" for="commitPRBranch">
@@ -379,7 +373,7 @@ export function CommitModal() {
                           form.branch === form.plan.default_branch))
                     }
                   >
-                    {form.kind === 'pr' ? 'Push & make PR' : 'Confirm push'}
+                    Push & make PR
                   </button>
                   <button class="btn" type="button" onClick={() => commit.cancelPublish()}>
                     Back

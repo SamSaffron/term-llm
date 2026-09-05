@@ -62,17 +62,28 @@ function fixture() {
 }
 
 describe('CommitModal publishing', () => {
-  it('shows post-commit actions without stale staged counts and asks before pushing', async () => {
+  it('pushes with one click without stale staged counts or confirmation', async () => {
     const store = fixture();
+    store.endpoints.createCommitOperation = vi.fn(async () => ({ operation_id: 'push-1' }));
+    store.endpoints.commitOperation = vi.fn(async () => ({
+      status: 'succeeded',
+      publish_result: { pushed: true, branch: 'main' },
+    }));
     expect(screen.getByRole('button', { name: 'Push', exact: true })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'Make PR' })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'Done' })).toBeEnabled();
     expect(screen.queryByText(/1 staged/)).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Push', exact: true }));
-    expect(await screen.findByRole('button', { name: 'Confirm push' })).toBeEnabled();
-    expect(screen.getByText(/updates the remote branch directly/)).toBeInTheDocument();
-    expect(store.commitStore.state.peek().publishForm?.kind).toBe('push');
-    await userEvent.click(screen.getByRole('button', { name: 'Back' }));
+    expect(await screen.findByRole('button', { name: 'Pushed' })).toBeDisabled();
+    expect(store.endpoints.createCommitOperation).toHaveBeenCalledTimes(1);
+    expect(store.endpoints.createCommitOperation).toHaveBeenCalledWith(
+      's1',
+      expect.objectContaining({ kind: 'push' }),
+      expect.any(String),
+    );
+    expect(screen.queryByRole('button', { name: 'Confirm push' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/updates the remote branch directly/)).not.toBeInTheDocument();
+    expect(store.commitStore.state.peek().publishForm).toBeNull();
     expect(screen.getByRole('button', { name: 'Done' })).toBeEnabled();
   });
 
