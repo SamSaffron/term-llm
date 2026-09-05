@@ -991,6 +991,9 @@ type EditToolCall struct {
 
 // ModelInfo represents a model available from a provider.
 type ModelInfo struct {
+	RecommendedContext     int                `json:"recommended_context,omitempty"` // Shipped input budget before user overrides.
+	BackendContext         int                `json:"backend_context,omitempty"`     // Backend default, not an override ceiling.
+	MaxContext             int                `json:"max_context,omitempty"`         // Backend maximum permitted context.
 	ID                     string             `json:"id"`
 	DisplayName            string             `json:"display_name,omitempty"`
 	Created                int64              `json:"created,omitempty"`

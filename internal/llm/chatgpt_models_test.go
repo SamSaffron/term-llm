@@ -30,14 +30,14 @@ func TestChatGPTListModelsFetchesAndCachesServiceTiers(t *testing.T) {
 		if got := req.Header.Get("Authorization"); got != "Bearer test-token" {
 			t.Fatalf("Authorization = %q", got)
 		}
-		if got := req.Header.Get("originator"); got != chatGPTCodexOriginator {
-			t.Fatalf("originator = %q, want %q", got, chatGPTCodexOriginator)
+		if got := req.Header.Get("originator"); got != chatGPTOriginator {
+			t.Fatalf("originator = %q, want %q", got, chatGPTOriginator)
 		}
-		if got := req.Header.Get("User-Agent"); got != chatGPTCodexUserAgent {
-			t.Fatalf("User-Agent = %q, want %q", got, chatGPTCodexUserAgent)
+		if got := req.Header.Get("User-Agent"); got != chatGPTUserAgent() {
+			t.Fatalf("User-Agent = %q, want %q", got, chatGPTUserAgent())
 		}
-		if got := req.Header.Get("version"); got != chatGPTCodexClientVersion {
-			t.Fatalf("version = %q, want %q", got, chatGPTCodexClientVersion)
+		if got := req.Header.Get("version"); got != "" {
+			t.Fatalf("version = %q, want omitted (not a Codex application)", got)
 		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
@@ -89,6 +89,7 @@ func TestChatGPTListModelsFallsBackToStaleCache(t *testing.T) {
 	defer func() { chatGPTHTTPClient = origClient }()
 
 	if err := saveChatGPTModelsCache(chatGPTModelsCache{
+		AccountID:     "test-account",
 		FetchedAt:     time.Now().Add(-time.Hour),
 		ClientVersion: chatGPTModelsClientVersion,
 		Models: []ModelInfo{{
@@ -173,6 +174,7 @@ func TestChatGPTModelInfoPrefersExplicitMetadata(t *testing.T) {
 		MaxInputTokens:           400,
 		InputTokenLimit:          300,
 		ContextWindow:            200,
+		MaxContextWindow:         1000,
 		SupportedReasoningLevels: chatGPTReasoningLevels{"low", "medium", "max"},
 		DefaultReasoningLevel:    "low",
 		DefaultReasoningEffort:   "medium",
@@ -180,7 +182,110 @@ func TestChatGPTModelInfoPrefersExplicitMetadata(t *testing.T) {
 	if got.ID != "gpt-5.6-luna" || got.DisplayName != "Luna title" || got.InputLimit != 400 {
 		t.Fatalf("toModelInfo() = %#v", got)
 	}
+	if got.OutputLimit != 128_000 {
+		t.Fatalf("OutputLimit = %d, want static fallback 128000", got.OutputLimit)
+	}
 	if got.DefaultReasoningEffort != "medium" {
 		t.Fatalf("DefaultReasoningEffort = %q, want explicit medium", got.DefaultReasoningEffort)
+	}
+}
+
+func TestChatGPTModelInfoPrefersActiveContextOverMaximum(t *testing.T) {
+	got := (chatGPTModelInfo{
+		Slug:             "account-preview",
+		ContextWindow:    272_000,
+		MaxContextWindow: 872_000,
+	}).toModelInfo()
+	if got.InputLimit != 272_000 {
+		t.Fatalf("InputLimit = %d, want active context_window 272000", got.InputLimit)
+	}
+}
+
+func TestChatGPTListModelsRetainsHiddenModelsForExplicitSelection(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	origClient := chatGPTHTTPClient
+	defer func() { chatGPTHTTPClient = origClient }()
+
+	chatGPTHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(`{"models":[
+				{"slug":"visible","visibility":"list","context_window":272000},
+				{"slug":"hidden","visibility":"hide","context_window":872000},
+				{"slug":"legacy","context_window":100000}
+			]}`)),
+		}, nil
+	})}
+	provider := NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{
+		AccessToken: "test-token",
+		AccountID:   "test-account",
+		ExpiresAt:   time.Now().Add(time.Hour).Unix(),
+	}, "visible")
+
+	models, fresh, err := provider.ListModelsWithFreshness(context.Background())
+	if err != nil || !fresh {
+		t.Fatalf("ListModelsWithFreshness() = fresh %v, error %v", fresh, err)
+	}
+	if len(models) != 3 || models[0].ID != "visible" || models[1].ID != "hidden" || models[2].ID != "legacy" {
+		t.Fatalf("models = %#v, want complete remote catalog", models)
+	}
+}
+
+func TestChatGPTListModelsFallsBackToStaticCatalogOnColdFailure(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	origClient := chatGPTHTTPClient
+	defer func() { chatGPTHTTPClient = origClient }()
+	chatGPTHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return nil, errors.New("offline")
+	})}
+	provider := NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{
+		AccessToken: "test-token",
+		AccountID:   "test-account",
+		ExpiresAt:   time.Now().Add(time.Hour).Unix(),
+	}, "gpt-5.6-sol")
+
+	models, fresh, err := provider.ListModelsWithFreshness(context.Background())
+	if err != nil || fresh {
+		t.Fatalf("ListModelsWithFreshness() = fresh %v, error %v", fresh, err)
+	}
+	if len(models) != len(ProviderModels["chatgpt"]) || models[0].ID != "gpt-6-astra" {
+		t.Fatalf("static fallback = %#v", models)
+	}
+}
+
+func TestChatGPTCacheIsAccountScoped(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	if err := saveChatGPTModelsCache(chatGPTModelsCache{
+		AccountID:     "account-a",
+		FetchedAt:     time.Now(),
+		ClientVersion: chatGPTModelsClientVersion,
+		Models:        []ModelInfo{{ID: "private-preview"}},
+	}); err != nil {
+		t.Fatalf("save cache: %v", err)
+	}
+	if _, err := loadChatGPTModelsCacheForAccount(chatGPTModelsClientVersion, "account-a"); err != nil {
+		t.Fatalf("load matching account: %v", err)
+	}
+	if _, err := loadChatGPTModelsCacheForAccount(chatGPTModelsClientVersion, "account-b"); err == nil {
+		t.Fatal("expected cache from another account to be rejected")
+	}
+}
+
+func TestChatGPTCachedCatalogDrivesModelsAndContextLimit(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := saveChatGPTModelsCache(chatGPTModelsCache{
+		FetchedAt:     time.Now(),
+		ClientVersion: chatGPTModelsClientVersion,
+		Models:        []ModelInfo{{ID: "account-preview", InputLimit: 333_000}},
+	}); err != nil {
+		t.Fatalf("save cache: %v", err)
+	}
+	ids := ProviderModelIDs("chatgpt")
+	if len(ids) != 1 || ids[0] != "account-preview" {
+		t.Fatalf("ProviderModelIDs(chatgpt) = %v", ids)
+	}
+	if got := InputLimitForProviderModel("chatgpt", "account-preview-high"); got != 333_000 {
+		t.Fatalf("dynamic input limit = %d, want 333000", got)
 	}
 }

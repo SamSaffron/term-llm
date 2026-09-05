@@ -85,6 +85,9 @@ var ProviderModels = map[string][]ModelEntry{
 	"chatgpt": {
 		// Uses ChatGPT backend API with native OAuth. These are static fallback
 		// capabilities; live /codex/models metadata takes precedence in clients.
+		// Codex advertises 872K as Astra's override ceiling, but its active
+		// context_window is 272K; term-llm selects a 372K input budget.
+		{ID: "gpt-6-astra", InputLimit: 372_000, OutputLimit: 128_000, ReasoningEfforts: gpt56ChatGPTEffortVariants},
 		{ID: "gpt-5.6-sol", InputLimit: 372_000, OutputLimit: 128_000, ReasoningEfforts: gpt56ChatGPTEffortVariants},
 		{ID: "gpt-5.6-terra", InputLimit: 372_000, OutputLimit: 128_000, ReasoningEfforts: gpt56ChatGPTEffortVariants},
 		{ID: "gpt-5.6-luna", InputLimit: 372_000, OutputLimit: 128_000, ReasoningEfforts: gpt56ChatGPTEffortVariants},
@@ -296,12 +299,15 @@ func PricingForProviderModel(provider, model string) (inputPrice, outputPrice fl
 }
 
 // ProviderModelIDs returns model IDs for a built-in provider.
-// Copilot, Grok, Zen, agy-bin, cursor-bin, and grok-bin prefer the latest live model-list cache
-// when present; Grok, Zen, agy-bin, cursor-bin, and grok-bin fall back to their curated starter
-// lists when the cache is empty.
+// Dynamic providers prefer the latest live model-list cache when present and
+// otherwise fall back to their curated starter lists where available.
 // For callers that might receive a custom alias name, use ResolveProviderModelIDs.
 func ProviderModelIDs(provider string) []string {
 	switch resolveProviderType(provider) {
+	case "chatgpt":
+		if ids := GetCachedChatGPTModels(); len(ids) > 0 {
+			return ids
+		}
 	case "copilot":
 		return GetCachedCopilotModels()
 	case "opencode-go":
@@ -948,6 +954,10 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 		}
 
 		if len(configModels) > 0 {
+			// ChatGPT model metadata augments, rather than replaces, discovery.
+			if !isImage && config.InferProviderType(provider, configuredProviderType) == config.ProviderTypeChatGPT {
+				configModels = append(append([]string(nil), configModels...), ProviderModelIDs("chatgpt")...)
+			}
 			// Use config-defined models list, plus configured model (deduped)
 			seen := make(map[string]bool)
 			if configModel != "" {

@@ -891,7 +891,13 @@ func (e *Engine) ConfigureContextManagement(provider Provider, providerName, mod
 			// Ollama's GGUF metadata can advertise a much larger architectural
 			// context than the live Modelfile allocates.
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			limit, err = limiter.effectiveInputLimit(ctx, modelName)
+			if scoped, ok := runtimeProvider.(interface {
+				effectiveInputLimitForProvider(context.Context, string, string) (int, error)
+			}); ok {
+				limit, err = scoped.effectiveInputLimitForProvider(ctx, providerName, modelName)
+			} else {
+				limit, err = limiter.effectiveInputLimit(ctx, modelName)
+			}
 			cancel()
 			if err != nil {
 				slog.Debug("failed to inspect provider runtime context limit", "provider", providerName, "model", modelName, "error", err)

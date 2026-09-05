@@ -181,6 +181,22 @@ func TestRunModelsQueriesConfiguredOllamaEndpoint(t *testing.T) {
 	}
 }
 
+func TestModelListSupportedTypesIncludesChatGPT(t *testing.T) {
+	if !modelListSupportedTypes[config.ProviderTypeChatGPT] {
+		t.Fatal("chatgpt should be wired for authenticated dynamic model listing")
+	}
+}
+
+func TestBuiltinProviderMetaChatGPT(t *testing.T) {
+	meta, ok := builtinProviderMeta["chatgpt"]
+	if !ok {
+		t.Fatal("chatgpt provider metadata missing")
+	}
+	if meta.requiresKey || meta.credential != "oauth" || !meta.supportsListModels {
+		t.Fatalf("chatgpt metadata = %+v", meta)
+	}
+}
+
 func TestModelListSupportedTypesIncludesGrok(t *testing.T) {
 	isolateGrokCmdTestEnv(t)
 	if !modelListSupportedTypes[config.ProviderTypeGrok] {
@@ -256,5 +272,35 @@ func TestBuiltinProviderMetaNearAISupportsListModels(t *testing.T) {
 	}
 	if meta.envVar != "NEARAI_API_KEY" {
 		t.Fatalf("NEAR AI env var = %q, want NEARAI_API_KEY", meta.envVar)
+	}
+}
+
+func TestChatGPTContextSummary(t *testing.T) {
+	got := chatGPTContextSummary(llm.ModelInfo{RecommendedContext: 372000, MaxContext: 872000, ConfiguredContext: 600000, InputLimit: 580000})
+	want := "[context: 600K selected, 372K recommended, 872K max]"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+	if got := chatGPTContextSummary(llm.ModelInfo{}); got != "[context: unknown selected, unknown recommended, unknown max]" {
+		t.Fatal(got)
+	}
+}
+
+func TestChatGPTContextReserveSummary(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		selected, input int
+		want            string
+	}{
+		{"default", 372000, 372000, ""},
+		{"unknown", 0, 0, ""},
+		{"reserve", 600000, 580000, "Input budget: 580K · Output reserve: 20K"},
+		{"capped", 872000, 852000, "Input budget: 852K · Output reserve: 20K"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := chatGPTContextReserveSummary(llm.ModelInfo{ConfiguredContext: tc.selected, InputLimit: tc.input}); got != tc.want {
+				t.Fatalf("got %q want %q", got, tc.want)
+			}
+		})
 	}
 }

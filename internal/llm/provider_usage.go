@@ -174,9 +174,8 @@ func fetchChatGPTProviderUsage(ctx context.Context) (*ProviderUsage, error) {
 	if creds.AccountID != "" {
 		req.Header.Set("ChatGPT-Account-ID", creds.AccountID)
 	}
-	req.Header.Set("originator", chatGPTCodexOriginator)
-	req.Header.Set("User-Agent", chatGPTCodexUserAgent)
-	req.Header.Set("version", chatGPTCodexClientVersion)
+	req.Header.Set("originator", chatGPTOriginator)
+	req.Header.Set("User-Agent", chatGPTUserAgent())
 
 	client := providerUsageHTTPClient
 	if client == nil {

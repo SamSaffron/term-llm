@@ -377,9 +377,8 @@ func NewChatGPTResponsesClient(creds *credentials.ChatGPTCredentials) *Responses
 		// ensureWebSocket adds the modern responses_websockets beta by itself.
 		ExtraHeaders: map[string]string{
 			"ChatGPT-Account-ID": creds.AccountID,
-			"originator":         chatGPTCodexOriginator,
-			"User-Agent":         chatGPTCodexUserAgent,
-			"version":            chatGPTCodexClientVersion,
+			"originator":         chatGPTOriginator,
+			"User-Agent":         chatGPTUserAgent(),
 		},
 		HTTPClient:         chatGPTHTTPClient,
 		DisableServerState: true,

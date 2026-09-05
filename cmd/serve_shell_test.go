@@ -530,7 +530,8 @@ func TestServeShellProcessGroupCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := shell.write([]byte("sleep 30 & child=$!; printf '__child__%s\\n' \"$child\"\n")); err != nil {
+	// Whitespace after $! avoids interactive Bash history expansion of !;.
+	if err := shell.write([]byte("sleep 30 & child=$! ; printf '__child__%s\\n' \"$child\"\n")); err != nil {
 		t.Fatal(err)
 	}
 	var childPID int

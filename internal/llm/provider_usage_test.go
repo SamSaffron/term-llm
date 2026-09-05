@@ -34,6 +34,9 @@ func TestFetchProviderUsageChatGPT(t *testing.T) {
 		if got := req.Header.Get("ChatGPT-Account-ID"); got != "account-123" {
 			t.Fatalf("ChatGPT-Account-ID = %q", got)
 		}
+		if req.Header.Get("originator") != "term-llm" || req.Header.Get("User-Agent") != chatGPTUserAgent() || req.Header.Get("version") != "" {
+			t.Fatal("usage must use term-llm identity without a Codex version header")
+		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Status:     "200 OK",

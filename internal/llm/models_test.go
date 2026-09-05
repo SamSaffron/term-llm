@@ -41,7 +41,8 @@ func TestProviderModelsIncludeCursorBin(t *testing.T) {
 }
 
 func TestProviderModelsIncludeLatestOpenAIModels(t *testing.T) {
-	t.Parallel()
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	for _, id := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
 		if !containsModelID(ProviderModelIDs("openai"), id) {
@@ -54,7 +55,7 @@ func TestProviderModelsIncludeLatestOpenAIModels(t *testing.T) {
 			t.Fatalf("%s output limit = %d, want 128000", id, got)
 		}
 	}
-	for _, id := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+	for _, id := range []string{"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
 		if !containsModelID(ProviderModelIDs("chatgpt"), id) {
 			t.Fatalf("chatgpt models missing %s", id)
 		}
@@ -248,7 +249,10 @@ func TestExpandWithEffortVariantsSkipsAlreadySuffixed(t *testing.T) {
 // ProviderModels via the prefix tables. This catches drift between the two
 // data sources.
 func TestEffortVariantLimitsMatchBase(t *testing.T) {
-	t.Parallel()
+	// This checks shipped tables, not the developer's account-specific caches.
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
 	for provider, entries := range ProviderModels {
 		for _, e := range entries {

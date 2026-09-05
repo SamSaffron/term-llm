@@ -35,6 +35,7 @@ func registerModelLimits(cfg *config.Config) {
 		}
 	}
 	llm.RegisterProviderAliases(aliases)
+	llm.RegisterChatGPTContextConfig(cfg.Providers)
 
 	var limits []llm.ConfigModelLimit
 	var reasoning []llm.ConfigModelReasoningEfforts

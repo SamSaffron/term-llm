@@ -187,3 +187,23 @@ func equalStringSlices(a, b []string) bool {
 	}
 	return true
 }
+
+func TestRegisterChatGPTContextOverrides(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	defer registerModelLimits(&config.Config{})
+	registerModelLimits(&config.Config{Providers: map[string]config.ProviderConfig{
+		"work": {Type: config.ProviderTypeChatGPT, ContextWindow: 500000, ModelConfigs: []config.ProviderModelConfig{{ID: "gpt-6-astra", Alias: "astra", ContextWindow: 600000}}},
+	}})
+	for _, tc := range []struct {
+		provider, model string
+		want            int
+	}{
+		{"work", "astra-high", 600000}, {"work", "gpt-6-astra-high", 600000},
+		{"work", "gpt-5.6-sol", 500000}, {"chatgpt", "gpt-6-astra", 372000},
+	} {
+		if got := llm.InputLimitForProviderModel(tc.provider, tc.model); got != tc.want {
+			t.Fatalf("%s:%s got %d want %d", tc.provider, tc.model, got, tc.want)
+		}
+	}
+}

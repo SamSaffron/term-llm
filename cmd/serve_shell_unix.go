@@ -3,10 +3,13 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -127,8 +130,34 @@ func (p *unixServeShellProcess) WriteContext(ctx context.Context, data []byte) (
 	}
 	done := make(chan writeResult, 1)
 	go func() {
-		n, err := p.file.Write(data)
-		done <- writeResult{n: n, err: err}
+		// Darwin interactive PTYs can duplicate input during large multiline
+		// burst pastes. Feed physical lines with a short drain interval once a
+		// paste exceeds 1KiB. Keep browser keystrokes and short protocol writes
+		// immediate, and retain the
+		// existing context-cancellation behavior for blocked or partial writes.
+		pacedPaste := runtime.GOOS == "darwin" && len(data) > 1024
+		total := 0
+		for total < len(data) {
+			end := len(data)
+			if pacedPaste {
+				if newline := bytes.IndexByte(data[total:], '\n'); newline >= 0 {
+					end = total + newline + 1
+				}
+			}
+			n, err := p.file.Write(data[total:end])
+			total += n
+			if n == 0 && err == nil {
+				err = io.ErrShortWrite
+			}
+			if err != nil {
+				done <- writeResult{n: total, err: err}
+				return
+			}
+			if total < len(data) && pacedPaste {
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+		done <- writeResult{n: total}
 	}()
 	select {
 	case result := <-done:

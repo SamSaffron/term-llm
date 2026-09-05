@@ -304,6 +304,17 @@ func InputLimitForProviderModel(providerName, model string) int {
 	// or "acme" -> "venice" via registered aliases).
 	providerType := resolveProviderType(providerName)
 
+	// ChatGPT model limits are account- and rollout-specific. The authenticated
+	// Codex catalog's active context_window wins over bundled fallback metadata.
+	if providerType == string(config.ProviderTypeChatGPT) {
+		id := chatGPTContextModelID(providerName, model)
+		info, _ := chatGPTCachedModelInfo(id)
+		if info.ID == "" {
+			info.ID = id
+		}
+		return resolveChatGPTContext(providerName, info).InputLimit
+	}
+
 	// Copilot model metadata is account/provider-specific and fetched from the
 	// live /models endpoint. Do not fall back to canonical OpenAI/Gemini/Claude
 	// prefix tables here: those numbers can be wrong for Copilot's routed models.
@@ -579,13 +590,6 @@ var inputLimitTable = []limitEntry{
 // that differ from the model's canonical limits.
 // Values are effective input budgets for compaction/model-list display.
 var providerInputOverrides = map[string][]limitEntry{
-	// The ChatGPT Codex backend reports an account/rollout-specific 372K input
-	// budget for GPT-5.6, distinct from the public API's 922K effective input.
-	"chatgpt": {
-		{"gpt-5.6-sol", 372_000},
-		{"gpt-5.6-terra", 372_000},
-		{"gpt-5.6-luna", 372_000},
-	},
 	// Zen free tier imposes lower limits than canonical models
 	"zen": {
 		{"gpt-5-nano", 96_000}, // 128K context on Zen (not 400K like direct OpenAI)

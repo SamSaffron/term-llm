@@ -5,9 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/alecthomas/chroma/v2"
 	xansi "github.com/charmbracelet/x/ansi"
 )
 
@@ -677,5 +679,40 @@ func TestANSIRenderSanitizesSourceTerminalControls(t *testing.T) {
 	}
 	if got := xansi.Strip(string(rendered)); !strings.Contains(got, "beforeafter next") {
 		t.Fatalf("rendered text = %q", got)
+	}
+}
+
+func TestCodeBlockForegroundContrast(t *testing.T) {
+	rgb := regexp.MustCompile(`\x1b\[38;2;([0-9]+);([0-9]+);([0-9]+)`)
+	for _, tc := range []struct{ language, source string }{
+		{"http", "originator: term-llm\nUser-Agent: term-llm/0.9.25"},
+		{"go", "// a comment\nfunc main() { println(\"hello\") }"},
+		{"diff", "-removed\n+added"},
+	} {
+		t.Run(tc.language, func(t *testing.T) {
+			r := NewANSI(Config{Palette: testPalette, Width: 80})
+			rendered, err := r.Render([]byte("```" + tc.language + "\n" + tc.source + "\n```"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			matches := rgb.FindAllSubmatch(rendered, -1)
+			if len(matches) == 0 {
+				t.Fatal("missing syntax foregrounds")
+			}
+			for _, m := range matches {
+				red, _ := strconv.Atoi(string(m[1]))
+				green, _ := strconv.Atoi(string(m[2]))
+				blue, _ := strconv.Atoi(string(m[3]))
+				colour := chroma.NewColour(uint8(red), uint8(green), uint8(blue))
+				if contrast := codeColourContrast(colour); contrast < 4.5 {
+					t.Errorf("%s contrast %.2f < 4.5", colour, contrast)
+				}
+			}
+			for _, line := range strings.Split(tc.source, "\n") {
+				if !strings.Contains(xansi.Strip(string(rendered)), line) {
+					t.Errorf("lost source line %q", line)
+				}
+			}
+		})
 	}
 }

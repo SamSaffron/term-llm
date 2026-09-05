@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/samsaffron/term-llm/internal/buildinfo"
 	"github.com/spf13/cobra"
 )
 
@@ -24,5 +25,6 @@ var versionCmd = &cobra.Command{
 }
 
 func init() {
+	buildinfo.Version = Version
 	rootCmd.AddCommand(versionCmd)
 }

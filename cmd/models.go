@@ -56,6 +56,7 @@ type ModelLister interface {
 var modelListSupportedTypes = map[config.ProviderType]bool{
 	config.ProviderTypeAnthropic:    true,
 	config.ProviderTypeOpenAI:       true,
+	config.ProviderTypeChatGPT:      true,
 	config.ProviderTypeCopilot:      true,
 	config.ProviderTypeOpenRouter:   true,
 	config.ProviderTypeOpenAICompat: true,
@@ -158,6 +159,12 @@ func runModels(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("openai API key not configured. Set OPENAI_API_KEY or configure api_key")
 		}
 		lister = llm.NewOpenAIProvider(apiKey, providerCfg.Model)
+	case config.ProviderTypeChatGPT:
+		provider, err := llm.NewChatGPTProvider(providerCfg.Model)
+		if err != nil {
+			return fmt.Errorf("chatgpt provider: %w", err)
+		}
+		lister = provider
 	case config.ProviderTypeCopilot:
 		// Copilot uses OAuth - create provider which will prompt for auth if needed
 		model := ""
@@ -247,7 +254,7 @@ func runModels(cmd *cobra.Command, args []string) error {
 	timeout := 10 * time.Second
 	if providerType == config.ProviderTypeCopilot {
 		timeout = 6 * time.Minute
-	} else if providerType == config.ProviderTypeGrok {
+	} else if providerType == config.ProviderTypeChatGPT || providerType == config.ProviderTypeGrok {
 		timeout = 30 * time.Second
 	} else if providerType == config.ProviderTypeCursorBin || providerType == config.ProviderTypeGrokBin || providerType == config.ProviderTypeAgyBin {
 		timeout = 45 * time.Second
@@ -255,7 +262,14 @@ func runModels(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	models, err := lister.ListModels(ctx)
+	var models []llm.ModelInfo
+	if scoped, ok := lister.(interface {
+		ListModelsForProvider(context.Context, string) ([]llm.ModelInfo, error)
+	}); ok {
+		models, err = scoped.ListModelsForProvider(ctx, providerName)
+	} else {
+		models, err = lister.ListModels(ctx)
+	}
 	if err == nil && providerType == config.ProviderTypeOpenRouter {
 		llm.RefreshOpenRouterCacheSync(providerCfg.ResolvedAPIKey, models)
 	}
@@ -304,7 +318,9 @@ func runModels(cmd *cobra.Command, args []string) error {
 		}
 
 		// Show input limit if known
-		if ctxStr := llm.FormatTokenCount(m.InputLimit); ctxStr != "" {
+		if providerType == config.ProviderTypeChatGPT {
+			fmt.Print(" " + chatGPTContextSummary(m))
+		} else if ctxStr := llm.FormatTokenCount(m.InputLimit); ctxStr != "" {
 			fmt.Printf(" [%s input]", ctxStr)
 		}
 		if len(m.ReasoningEfforts) > 0 {
@@ -322,6 +338,11 @@ func runModels(cmd *cobra.Command, args []string) error {
 			}
 		}
 		fmt.Println()
+		if providerType == config.ProviderTypeChatGPT {
+			if detail := chatGPTContextReserveSummary(m); detail != "" {
+				fmt.Printf("    %s\n", detail)
+			}
+		}
 	}
 
 	fmt.Printf("\nTo use a model, add to your config:\n")
@@ -365,4 +386,21 @@ func printStaticModels(providerName string, models []string) error {
 	fmt.Printf("  providers:\n    %s:\n", providerName)
 	fmt.Printf("      model: <model-name>\n")
 	return nil
+}
+
+func chatGPTContextSummary(model llm.ModelInfo) string {
+	count := func(n int) string {
+		if s := llm.FormatTokenCount(n); s != "" {
+			return s
+		}
+		return "unknown"
+	}
+	return fmt.Sprintf("[context: %s selected, %s recommended, %s max]", count(model.ConfiguredContext), count(model.RecommendedContext), count(model.MaxContext))
+}
+
+func chatGPTContextReserveSummary(model llm.ModelInfo) string {
+	if model.InputLimit <= 0 || model.ConfiguredContext <= model.InputLimit {
+		return ""
+	}
+	return fmt.Sprintf("Input budget: %s · Output reserve: %s", llm.FormatTokenCount(model.InputLimit), llm.FormatTokenCount(model.ConfiguredContext-model.InputLimit))
 }

@@ -175,7 +175,8 @@ type ProviderConfig struct {
 	// Search behavior - nil means auto (use native if available)
 	UseNativeSearch *bool `mapstructure:"use_native_search"`
 
-	// Model token limits (for custom/self-hosted models not in hardcoded tables)
+	// Model token limits (fallbacks for custom/self-hosted models; ChatGPT
+	// context overrides take precedence and are clamped to backend maxima).
 	ContextWindow   int `mapstructure:"context_window"`
 	MaxOutputTokens int `mapstructure:"max_output_tokens"`
 

@@ -290,7 +290,7 @@ Use `base_url` when the standard `/chat/completions` path should be appended aut
 | `fast_model` | string | Lightweight model used for control-plane tasks (e.g., title generation) and the agent `model: fast` alias. This is separate from service-tier fast mode. Usually this is all you need. |
 | `fast_provider` | string | Optional provider key to use when the `fast_model` should run on a different configured provider than this one. |
 | `service_tier` | string | Optional Responses API service tier for built-in `openai` and `chatgpt` providers. Use `fast` or `priority` to request fast/priority service where the selected model supports it. Omit the field to send no service tier. |
-| `context_window` | int | Override context window size in tokens. Use this for self-hosted models not in the built-in token limit tables. |
+| `context_window` | int | Override context window size in tokens. For ChatGPT, overrides the shipped context target, capped at the known backend maximum. Also supports self-hosted models not in the built-in token limit tables. |
 | `max_output_tokens` | int | Override maximum output tokens. Same use case as `context_window`. |
 | `no_stream_options` | bool | When `true`, don't send `stream_options` in the request. Use this for servers that reject the field. Default `false`; most OpenAI-compatible servers (vLLM, Ollama, LM Studio) support it and need it to report token usage. |
 | `parse_reasoning` | bool | Send `parse_reasoning` for OpenAI-compatible APIs that can parse inline model thinking into `reasoning_content` (for example Friendli). |
@@ -592,3 +592,71 @@ See [Search](/guides/search/) for the full routing model.
 - [Configuration](/reference/configuration/)
 - [Search](/guides/search/)
 - [Providers and setup](/getting-started/providers-and-setup/)
+
+
+### ChatGPT context policy
+
+`term-llm models -p chatgpt` queries the authenticated Codex catalog, using a
+five-minute cache and stale-cache/static fallbacks when offline. Hidden Codex
+picker entries remain available for explicit model selection. ChatGPT `models`
+configuration augments the discovered shell-completion catalog rather than
+restricting it to the entries you customize.
+
+term-llm chooses context in this order:
+
+1. `models[].context_window` for the selected upstream model or alias.
+2. Provider-level `context_window` (including newly discovered models).
+3. term-llm's shipped input budget.
+4. The backend default for an unknown model.
+
+The selected context is capped at the account's known `max_context_window`.
+The backend's `context_window` is a default, **not** that ceiling. When offline,
+the last cached maximum is used; without cache, bundled maxima are used where
+known. For models with no known maximum, an available backend default or shipped
+budget is the conservative ceiling; a configuration value alone cannot establish
+a larger supported window.
+
+The shipped budgets for **GPT-6 Astra and GPT-5.6 Sol/Terra/Luna are 372,000
+tokens**. GPT-5.4 retains its previous 922,000-token budget. These are capped when
+the account reports a smaller maximum. Astra's bundled maximum is 872,000, not
+its 272,000-token Codex default.
+
+```yaml
+providers:
+  chatgpt:
+    # Optional default for all ChatGPT models; each model's maximum still applies.
+    context_window: 372000
+    models:
+      - id: gpt-6-astra
+        context_window: 600000
+      - id: gpt-5.6-sol
+        context_window: 372000
+```
+
+Omit `context_window` (or set it to zero) to use the shipped policy. Context
+settings control local tracking and automatic compaction; they are not sent as
+an unsupported Responses API parameter. With `context_window` alone, the selected
+window is the input budget. If `max_output_tokens` is explicitly configured too,
+it is reserved **after** clamping the context. Shipped budgets already include
+headroom and do not have the model's theoretical output maximum subtracted again.
+The existing soft/hard compaction thresholds apply to the resulting input budget.
+An output reservation that consumes the entire window leaves a minimum one-token
+input budget; choose a smaller reservation instead.
+
+Model listing shows **selected**, **recommended**, and **max** context.
+Recommended is the shipped/default budget capped at the known maximum; selected
+is the local context target after user overrides and clamping, not a server-confirmed
+allocation. Only when an explicit output reservation reduces the input budget,
+a second line shows **Input budget** and **Output reserve**. The reserve is local
+budgeting, not an enforced ChatGPT generation limit. For example:
+
+```text
+gpt-6-astra [context: 600K selected, 372K recommended, 872K max]
+  Input budget: 580K · Output reserve: 20K
+```
+
+`--json` continues to include
+`backend_context`, `recommended_context`, `max_context`, `configured_context`,
+and `input_limit`. Caches store backend facts, not user settings: changing config
+does not require clearing the cache. Custom provider keys with `type: chatgpt`
+have independent context settings.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"html"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -1245,6 +1246,7 @@ func (h *codeHighlighter) highlightLine(line string) string {
 			continue
 		}
 		entry := h.style.Get(token.Type)
+		entry.Colour = readableCodeColour(entry.Colour)
 		var codes []string
 		if entry.Colour.IsSet() {
 			codes = append(codes, fmt.Sprintf("38;2;%d;%d;%d", entry.Colour.Red(), entry.Colour.Green(), entry.Colour.Blue()))
@@ -1265,4 +1267,39 @@ func (h *codeHighlighter) highlightLine(line string) string {
 		}
 	}
 	return b.String()
+}
+
+// Code blocks have a fixed #303030 background (ANSI 236). Monokai's Error
+// token is #960050 and comments are also too dim on it. Incomplete snippets
+// routinely produce Error tokens, so maintain at least 4.5:1 contrast for every
+// foreground, rather than treating syntax errors as unreadable text.
+var codeColourCache sync.Map // map[chroma.Colour]chroma.Colour
+
+func readableCodeColour(c chroma.Colour) chroma.Colour {
+	original := c
+	if cached, ok := codeColourCache.Load(c); ok {
+		return cached.(chroma.Colour)
+	}
+	if !c.IsSet() {
+		c = chroma.MustParseColour("#f8f8f2")
+	}
+	for codeColourContrast(c) < 4.5 {
+		lift := func(v uint8) uint8 { return v + uint8((255-int(v)+9)/10) }
+		c = chroma.NewColour(lift(c.Red()), lift(c.Green()), lift(c.Blue()))
+	}
+	codeColourCache.Store(original, c)
+	return c
+}
+
+func codeColourContrast(c chroma.Colour) float64 {
+	linear := func(v uint8) float64 {
+		s := float64(v) / 255
+		if s <= 0.04045 {
+			return s / 12.92
+		}
+		return math.Pow((s+0.055)/1.055, 2.4)
+	}
+	lum := 0.2126*linear(c.Red()) + 0.7152*linear(c.Green()) + 0.0722*linear(c.Blue())
+	bg := linear(48)
+	return (math.Max(lum, bg) + 0.05) / (math.Min(lum, bg) + 0.05)
 }

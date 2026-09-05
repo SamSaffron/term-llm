@@ -13,20 +13,21 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/appdata"
+	"github.com/samsaffron/term-llm/internal/buildinfo"
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/credentials"
 )
 
 const (
 	chatGPTModelsBaseURL = "https://chatgpt.com/backend-api/codex/models"
-	// The Codex backend gates model availability using both originator and
-	// User-Agent. Use the current Codex protocol identity while retaining a
-	// term-llm suffix so preview models exposed to this account are routable.
-	chatGPTCodexClientVersion = "0.144.0"
-	chatGPTCodexOriginator    = "codex_cli_rs"
-	chatGPTCodexUserAgent     = "codex_cli_rs/" + chatGPTCodexClientVersion + " (term-llm)"
-	// The ChatGPT /codex/models endpoint validates client_version as semver.
-	chatGPTModelsClientVersion = chatGPTCodexClientVersion
-	chatGPTModelsCacheFile     = "chatgpt_models_cache.json"
+	// Identify this client honestly on discovery, inference, and usage requests.
+	// Do not send a `version` header: the backend interprets it as a Codex
+	// application version, not a term-llm version.
+	chatGPTOriginator = "term-llm"
+	// /codex/models requires this semver query parameter to select the catalog
+	// protocol. It is not our application identity and is never sent as a header.
+	chatGPTModelsClientVersion = "0.153.3"
+	chatGPTModelsCacheFile     = "chatgpt_models_cache_v2.json"
 	chatGPTModelsCacheTTL      = 5 * time.Minute
 	chatGPTModelsTimeout       = 5 * time.Second
 )
@@ -79,6 +80,7 @@ type chatGPTModelInfo struct {
 	MaxInputTokens           int                    `json:"max_input_tokens"`
 	InputTokenLimit          int                    `json:"input_token_limit"`
 	ContextWindow            int                    `json:"context_window"`
+	MaxContextWindow         int                    `json:"max_context_window"`
 	ServiceTiers             []ModelServiceTier     `json:"service_tiers"`
 	AdditionalSpeedTiers     []string               `json:"additional_speed_tiers"`
 	SupportedReasoningLevels chatGPTReasoningLevels `json:"supported_reasoning_levels"`
@@ -87,6 +89,7 @@ type chatGPTModelInfo struct {
 }
 
 type chatGPTModelsCache struct {
+	AccountID     string      `json:"account_id,omitempty"`
 	FetchedAt     time.Time   `json:"fetched_at"`
 	ETag          string      `json:"etag,omitempty"`
 	ClientVersion string      `json:"client_version,omitempty"`
@@ -96,11 +99,37 @@ type chatGPTModelsCache struct {
 // CachedChatGPTModels returns cached ChatGPT model metadata, if present. Fresh is
 // false when the cache is stale but still usable as a network-failure fallback.
 func CachedChatGPTModels() (models []ModelInfo, fresh bool, err error) {
-	cache, err := loadChatGPTModelsCache(chatGPTModelsClientVersion)
+	models, fresh, err = cachedChatGPTModelFacts()
+	if err == nil {
+		models = resolveChatGPTModels("chatgpt", models)
+	}
+	return
+}
+
+func cachedChatGPTModelFacts() (models []ModelInfo, fresh bool, err error) {
+	accountID := ""
+	if creds, credErr := credentials.GetChatGPTCredentials(); credErr == nil {
+		accountID = creds.AccountID
+	}
+	cache, err := loadChatGPTModelsCacheForAccount(chatGPTModelsClientVersion, accountID)
 	if err != nil {
 		return nil, false, err
 	}
 	return cache.Models, time.Since(cache.FetchedAt) <= chatGPTModelsCacheTTL, nil
+}
+
+// GetCachedChatGPTModels returns model IDs from the last authenticated catalog.
+// It performs no network requests; callers can use the curated catalog when nil.
+func GetCachedChatGPTModels() []string {
+	models, _, err := CachedChatGPTModels()
+	if err != nil || len(models) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(models))
+	for _, model := range models {
+		ids = append(ids, model.ID)
+	}
+	return ids
 }
 
 // ListModels returns ChatGPT Codex backend model metadata, including service tiers.
@@ -110,16 +139,28 @@ func (p *ChatGPTProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 }
 
 // ListModelsWithFreshness returns model metadata and whether it came from a fresh
-// cache or successful network fetch. If a network fetch fails and stale cache is
-// available, it returns the stale models with fresh=false and nil error.
+// cache or successful network fetch. Failed or empty refreshes use an account-
+// scoped stale cache, then the curated static catalog, with fresh=false.
 func (p *ChatGPTProvider) ListModelsWithFreshness(ctx context.Context) ([]ModelInfo, bool, error) {
-	if cache, err := loadChatGPTModelsCache(chatGPTModelsClientVersion); err == nil && time.Since(cache.FetchedAt) <= chatGPTModelsCacheTTL {
+	models, fresh, err := p.chatGPTModelFacts(ctx)
+	return resolveChatGPTModels("chatgpt", models), fresh, err
+}
+
+// ListModelsForProvider applies the context policy for a configured provider key.
+func (p *ChatGPTProvider) ListModelsForProvider(ctx context.Context, provider string) ([]ModelInfo, error) {
+	models, _, err := p.chatGPTModelFacts(ctx)
+	return resolveChatGPTModels(provider, models), err
+}
+
+func (p *ChatGPTProvider) chatGPTModelFacts(ctx context.Context) ([]ModelInfo, bool, error) {
+	if cache, err := loadChatGPTModelsCacheForAccount(chatGPTModelsClientVersion, p.creds.AccountID); err == nil && time.Since(cache.FetchedAt) <= chatGPTModelsCacheTTL {
 		return cache.Models, true, nil
 	}
 
 	models, etag, err := p.fetchChatGPTModels(ctx)
-	if err == nil {
+	if err == nil && len(models) > 0 {
 		_ = saveChatGPTModelsCache(chatGPTModelsCache{
+			AccountID:     p.creds.AccountID,
 			FetchedAt:     time.Now(),
 			ETag:          etag,
 			ClientVersion: chatGPTModelsClientVersion,
@@ -127,11 +168,10 @@ func (p *ChatGPTProvider) ListModelsWithFreshness(ctx context.Context) ([]ModelI
 		})
 		return models, true, nil
 	}
-
-	if cache, cacheErr := loadChatGPTModelsCache(chatGPTModelsClientVersion); cacheErr == nil && len(cache.Models) > 0 {
+	if cache, cacheErr := loadChatGPTModelsCacheForAccount(chatGPTModelsClientVersion, p.creds.AccountID); cacheErr == nil && len(cache.Models) > 0 {
 		return cache.Models, false, nil
 	}
-	return nil, false, err
+	return staticChatGPTModelInfos(), false, nil
 }
 
 func (p *ChatGPTProvider) fetchChatGPTModels(ctx context.Context) ([]ModelInfo, string, error) {
@@ -162,9 +202,8 @@ func (p *ChatGPTProvider) fetchChatGPTModels(ctx context.Context) ([]ModelInfo, 
 	if p.creds.AccountID != "" {
 		req.Header.Set("ChatGPT-Account-ID", p.creds.AccountID)
 	}
-	req.Header.Set("originator", chatGPTCodexOriginator)
-	req.Header.Set("User-Agent", chatGPTCodexUserAgent)
-	req.Header.Set("version", chatGPTCodexClientVersion)
+	req.Header.Set("originator", chatGPTOriginator)
+	req.Header.Set("User-Agent", chatGPTUserAgent())
 
 	client := chatGPTHTTPClient
 	if client == nil {
@@ -190,26 +229,43 @@ func (p *ChatGPTProvider) fetchChatGPTModels(ctx context.Context) ([]ModelInfo, 
 	}
 	models := make([]ModelInfo, 0, len(decoded.Models))
 	for _, raw := range decoded.Models {
-		models = append(models, raw.toModelInfo())
+		// Codex retains the complete remote catalog, including records that are
+		// hidden from its picker but remain valid for explicit model selection.
+		// term-llm has no separate show-in-picker bit, so keep those IDs available.
+		if model := raw.toModelInfo(); model.ID != "" {
+			models = append(models, model)
+		}
 	}
 	return models, resp.Header.Get("ETag"), nil
 }
 
 func (m chatGPTModelInfo) toModelInfo() ModelInfo {
 	id := firstNonEmpty(m.Slug, m.ID)
-	inputLimit := firstNonZero(m.MaxInputTokens, m.InputTokenLimit, m.ContextWindow)
-	if inputLimit == 0 {
-		inputLimit = InputLimitForModel(id)
+	// Legacy responses may provide an explicit input budget. Otherwise match
+	// Codex's resolved_context_window(): active context_window wins and
+	// max_context_window is only the ceiling for explicit overrides.
+	inputLimit := firstNonZero(m.MaxInputTokens, m.InputTokenLimit, m.ContextWindow, m.MaxContextWindow)
+	fallback, hasFallback := staticChatGPTModelInfo(id)
+	outputLimit := 0
+	if hasFallback {
+		outputLimit = fallback.OutputLimit
+	}
+	reasoningEfforts := chatGPTWireReasoningEfforts(m.SupportedReasoningLevels)
+	if len(reasoningEfforts) == 0 && hasFallback {
+		reasoningEfforts = append([]string(nil), fallback.ReasoningEfforts...)
 	}
 	return ModelInfo{
 		ID:                     id,
 		DisplayName:            firstNonEmpty(m.DisplayName, m.Title, m.Name),
 		InputLimit:             inputLimit,
+		BackendContext:         firstNonZero(m.ContextWindow, m.MaxContextWindow),
+		MaxContext:             firstNonZero(m.MaxInputTokens, m.InputTokenLimit, m.MaxContextWindow),
+		OutputLimit:            outputLimit,
 		InputPrice:             -1,
 		OutputPrice:            -1,
 		ServiceTiers:           m.ServiceTiers,
 		AdditionalSpeedTiers:   m.AdditionalSpeedTiers,
-		ReasoningEfforts:       chatGPTWireReasoningEfforts(m.SupportedReasoningLevels),
+		ReasoningEfforts:       reasoningEfforts,
 		DefaultReasoningEffort: chatGPTWireReasoningEffort(firstNonEmpty(m.DefaultReasoningEffort, m.DefaultReasoningLevel)),
 	}
 }
@@ -239,6 +295,82 @@ func chatGPTWireReasoningEfforts(efforts []string) []string {
 	return out
 }
 
+func staticChatGPTModelInfos() []ModelInfo {
+	entries := ProviderModels[string(config.ProviderTypeChatGPT)]
+	models := make([]ModelInfo, 0, len(entries))
+	for _, entry := range entries {
+		models = append(models, ModelInfo{
+			ID:               entry.ID,
+			InputLimit:       entry.InputLimit,
+			OutputLimit:      entry.OutputLimit,
+			InputPrice:       -1,
+			OutputPrice:      -1,
+			ReasoningEfforts: append([]string(nil), entry.ReasoningEfforts...),
+		})
+	}
+	return models
+}
+
+func staticChatGPTModelInfo(id string) (ModelInfo, bool) {
+	id = strings.ToLower(strings.TrimSpace(id))
+	for _, model := range staticChatGPTModelInfos() {
+		if strings.ToLower(model.ID) == id {
+			return model, true
+		}
+	}
+	return ModelInfo{}, false
+}
+
+func chatGPTCachedModelInfo(model string) (ModelInfo, bool) {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
+		return ModelInfo{}, false
+	}
+	models, _, err := cachedChatGPTModelFacts()
+	if err != nil {
+		return ModelInfo{}, false
+	}
+	lookup := func(id string) (ModelInfo, bool) {
+		for _, info := range models {
+			if strings.ToLower(strings.TrimSpace(info.ID)) == id {
+				return info, true
+			}
+		}
+		return ModelInfo{}, false
+	}
+	if info, ok := lookup(model); ok {
+		return info, true
+	}
+	if base, ok := trimKnownEffortSuffix(model); ok {
+		return lookup(base)
+	}
+	return ModelInfo{}, false
+}
+
+// effectiveInputLimit refreshes account-specific model metadata before context
+// management is configured. A failed refresh still resolves through the stale
+// cache or curated fallback used by ListModelsWithFreshness.
+func (p *ChatGPTProvider) effectiveInputLimit(ctx context.Context, model string) (int, error) {
+	return p.effectiveInputLimitForProvider(ctx, "chatgpt", model)
+}
+
+func (p *ChatGPTProvider) effectiveInputLimitForProvider(ctx context.Context, provider, model string) (int, error) {
+	models, _, err := p.chatGPTModelFacts(ctx)
+	if err != nil {
+		return 0, err
+	}
+	model = chatGPTContextModelID(provider, model)
+	base, _ := trimKnownEffortSuffix(model)
+	for _, id := range []string{model, base} {
+		for _, info := range models {
+			if strings.EqualFold(info.ID, id) {
+				return resolveChatGPTContext(provider, info).InputLimit, nil
+			}
+		}
+	}
+	return resolveChatGPTContext(provider, ModelInfo{ID: model}).InputLimit, nil
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if value != "" {
@@ -266,6 +398,10 @@ func chatGPTModelsCachePath() (string, error) {
 }
 
 func loadChatGPTModelsCache(expectedVersion string) (chatGPTModelsCache, error) {
+	return loadChatGPTModelsCacheForAccount(expectedVersion, "")
+}
+
+func loadChatGPTModelsCacheForAccount(expectedVersion, expectedAccountID string) (chatGPTModelsCache, error) {
 	path, err := chatGPTModelsCachePath()
 	if err != nil {
 		return chatGPTModelsCache{}, err
@@ -278,8 +414,11 @@ func loadChatGPTModelsCache(expectedVersion string) (chatGPTModelsCache, error) 
 	if err := json.Unmarshal(data, &cache); err != nil {
 		return chatGPTModelsCache{}, err
 	}
-	if expectedVersion != "" && cache.ClientVersion != "" && cache.ClientVersion != expectedVersion {
+	if expectedVersion != "" && cache.ClientVersion != expectedVersion {
 		return chatGPTModelsCache{}, fmt.Errorf("cached ChatGPT model metadata is for client version %q", cache.ClientVersion)
+	}
+	if expectedAccountID != "" && cache.AccountID != expectedAccountID {
+		return chatGPTModelsCache{}, fmt.Errorf("cached ChatGPT model metadata is for a different account")
 	}
 	if len(cache.Models) == 0 {
 		return chatGPTModelsCache{}, fmt.Errorf("cached ChatGPT model metadata is empty")
@@ -303,5 +442,24 @@ func saveChatGPTModelsCache(cache chatGPTModelsCache) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0600)
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".chatgpt-models-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
+
+func chatGPTUserAgent() string { return buildinfo.UserAgent() }

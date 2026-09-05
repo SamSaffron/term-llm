@@ -1778,7 +1778,7 @@ func TestCollaborativeShellRealPTYStatePersistence(t *testing.T) {
 	interruptedErr := make(chan error, 1)
 	go func() {
 		result, err := controller.Execute(ctx, "session", tools.SharedShellArgs{
-			Command: "sleep 5", TimeoutSeconds: 10, ExpectedShellID: shell.id, OutputLimit: 1 << 20,
+			Command: "sh -c 'printf __child_running__; sleep 5'", TimeoutSeconds: 10, ExpectedShellID: shell.id, OutputLimit: 1 << 20,
 		})
 		interruptedResult <- result
 		interruptedErr <- err
@@ -1787,7 +1787,11 @@ func TestCollaborativeShellRealPTYStatePersistence(t *testing.T) {
 	deadline = time.Now().Add(2 * time.Second)
 	for runningCommandID == "" && time.Now().Before(deadline) {
 		shell.mu.Lock()
-		runningCommandID = shell.commandID
+		// Wait for the foreground child to start, not merely allocation of a
+		// command ID or B marker before the shell forks its foreground job.
+		if bytes.Contains(shell.capture, []byte("__child_running__")) {
+			runningCommandID = shell.commandID
+		}
 		shell.mu.Unlock()
 		if runningCommandID == "" {
 			time.Sleep(time.Millisecond)
@@ -1826,7 +1830,7 @@ func TestCollaborativeShellRealPTYStatePersistence(t *testing.T) {
 	disabledErr := make(chan error, 1)
 	go func() {
 		result, err := controller.Execute(ctx, "session", tools.SharedShellArgs{
-			Command: "sleep 5", TimeoutSeconds: 10, ExpectedShellID: shell.id, OutputLimit: 1 << 20,
+			Command: "sh -c 'printf __child_running__; sleep 5'", TimeoutSeconds: 10, ExpectedShellID: shell.id, OutputLimit: 1 << 20,
 		})
 		disabledResult <- result
 		disabledErr <- err
@@ -1835,7 +1839,11 @@ func TestCollaborativeShellRealPTYStatePersistence(t *testing.T) {
 	deadline = time.Now().Add(2 * time.Second)
 	for runningCommandID == "" && time.Now().Before(deadline) {
 		shell.mu.Lock()
-		runningCommandID = shell.commandID
+		// Wait for the foreground child to start, not merely allocation of a
+		// command ID or B marker before the shell forks its foreground job.
+		if bytes.Contains(shell.capture, []byte("__child_running__")) {
+			runningCommandID = shell.commandID
+		}
 		shell.mu.Unlock()
 		if runningCommandID == "" {
 			time.Sleep(time.Millisecond)
@@ -1872,7 +1880,7 @@ func TestCollaborativeShellRealPTYStatePersistence(t *testing.T) {
 	exitResult := make(chan error, 1)
 	go func() {
 		_, err := controller.Execute(ctx, "session", tools.SharedShellArgs{
-			Command: "sleep 5", TimeoutSeconds: 10, ExpectedShellID: shell.id, OutputLimit: 1 << 20,
+			Command: "sh -c 'printf __child_running__; sleep 5'", TimeoutSeconds: 10, ExpectedShellID: shell.id, OutputLimit: 1 << 20,
 		})
 		exitResult <- err
 	}()
@@ -1880,7 +1888,11 @@ func TestCollaborativeShellRealPTYStatePersistence(t *testing.T) {
 	deadline = time.Now().Add(2 * time.Second)
 	for runningCommandID == "" && time.Now().Before(deadline) {
 		shell.mu.Lock()
-		runningCommandID = shell.commandID
+		// Wait for the foreground child to start, not merely allocation of a
+		// command ID or B marker before the shell forks its foreground job.
+		if bytes.Contains(shell.capture, []byte("__child_running__")) {
+			runningCommandID = shell.commandID
+		}
 		shell.mu.Unlock()
 		if runningCommandID == "" {
 			time.Sleep(time.Millisecond)

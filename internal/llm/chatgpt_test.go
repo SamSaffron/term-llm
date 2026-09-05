@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/samsaffron/term-llm/internal/credentials"
 )
 
@@ -61,7 +63,7 @@ func TestNewChatGPTProviderWithCredsDefaultsToGPT56SolMedium(t *testing.T) {
 	}
 }
 
-func TestNewChatGPTResponsesClientUsesCurrentCodexHeaders(t *testing.T) {
+func TestNewChatGPTResponsesClientUsesTermLLMIdentity(t *testing.T) {
 	t.Parallel()
 
 	client := NewChatGPTResponsesClient(&credentials.ChatGPTCredentials{
@@ -71,14 +73,14 @@ func TestNewChatGPTResponsesClientUsesCurrentCodexHeaders(t *testing.T) {
 	if got := client.ExtraHeaders["OpenAI-Beta"]; got != "" {
 		t.Fatalf("legacy OpenAI-Beta header = %q, want omitted", got)
 	}
-	if got := client.ExtraHeaders["originator"]; got != chatGPTCodexOriginator {
-		t.Fatalf("originator = %q, want %q", got, chatGPTCodexOriginator)
+	if got := client.ExtraHeaders["originator"]; got != "term-llm" {
+		t.Fatalf("originator = %q, want %q", got, chatGPTOriginator)
 	}
-	if got := client.ExtraHeaders["User-Agent"]; got != chatGPTCodexUserAgent {
-		t.Fatalf("User-Agent = %q, want %q", got, chatGPTCodexUserAgent)
+	if got := client.ExtraHeaders["User-Agent"]; got != chatGPTUserAgent() {
+		t.Fatalf("User-Agent = %q, want %q", got, chatGPTUserAgent())
 	}
-	if got := client.ExtraHeaders["version"]; got != chatGPTCodexClientVersion {
-		t.Fatalf("version = %q, want %q", got, chatGPTCodexClientVersion)
+	if got := client.ExtraHeaders["version"]; got != "" {
+		t.Fatalf("version = %q, want omitted (not a Codex application)", got)
 	}
 }
 
@@ -188,14 +190,14 @@ func TestChatGPTStream_IncludesNormalizedServiceTier(t *testing.T) {
 
 	var captured ResponsesRequest
 	chatGPTHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if got := req.Header.Get("originator"); got != chatGPTCodexOriginator {
-			t.Fatalf("originator = %q, want %q", got, chatGPTCodexOriginator)
+		if got := req.Header.Get("originator"); got != "term-llm" {
+			t.Fatalf("originator = %q, want %q", got, chatGPTOriginator)
 		}
-		if got := req.Header.Get("User-Agent"); got != chatGPTCodexUserAgent {
-			t.Fatalf("User-Agent = %q, want %q", got, chatGPTCodexUserAgent)
+		if got := req.Header.Get("User-Agent"); got != chatGPTUserAgent() {
+			t.Fatalf("User-Agent = %q, want %q", got, chatGPTUserAgent())
 		}
-		if got := req.Header.Get("version"); got != chatGPTCodexClientVersion {
-			t.Fatalf("version = %q, want %q", got, chatGPTCodexClientVersion)
+		if got := req.Header.Get("version"); got != "" {
+			t.Fatalf("version = %q, want omitted (not a Codex application)", got)
 		}
 		if err := json.NewDecoder(req.Body).Decode(&captured); err != nil {
 			t.Fatalf("decode request: %v", err)
@@ -517,4 +519,44 @@ func TestChatGPTStreamOmitsUnsupportedOutputLimit(t *testing.T) {
 	if _, ok := payload["top_p"]; ok {
 		t.Fatalf("top_p should be omitted: %v", payload["top_p"])
 	}
+}
+
+func TestChatGPTWebSocketUsesTermLLMIdentity(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for key, want := range map[string]string{"originator": "term-llm", "User-Agent": chatGPTUserAgent(), "version": "", "Authorization": "Bearer test-token", "ChatGPT-Account-ID": "test-account", "OpenAI-Beta": responsesWebSocketBetaHeader} {
+			if got := r.Header.Get(key); got != want {
+				t.Errorf("%s = %q, want %q", key, got, want)
+			}
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		var request map[string]any
+		if err := conn.ReadJSON(&request); err != nil {
+			t.Errorf("read request: %v", err)
+			return
+		}
+		if request["model"] != "gpt-6-astra" || request["type"] != "response.create" {
+			t.Errorf("unexpected request: %#v", request)
+		}
+		_ = conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_identity"}})
+	}))
+	defer server.Close()
+	client := NewChatGPTResponsesClient(&credentials.ChatGPTCredentials{AccessToken: "test-token", AccountID: "test-account"})
+	client.BaseURL = server.URL
+	client.UseWebSocket = true
+	client.WebSocketPoolKey = ""
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := client.Stream(ctx, ResponsesRequest{Model: "gpt-6-astra", Input: []ResponsesInputItem{{Type: "message", Role: "user", Content: "hi"}}, ForceWebSocket: true}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	drainStreamToDone(t, stream)
 }
