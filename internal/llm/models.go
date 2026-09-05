@@ -118,7 +118,7 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "gemini-2.5-flash-lite", InputLimit: 983_000, OutputLimit: 65_536},
 	},
 	"zen": {
-		{ID: "minimax-m2.5-free", InputLimit: 168_000, OutputLimit: 32_000},
+		{ID: "mimo-v2.5-free", InputLimit: 168_000, OutputLimit: 32_000},
 		{ID: "big-pickle", InputLimit: 168_000, OutputLimit: 32_000},
 		{ID: "gpt-5-nano", InputLimit: 96_000, OutputLimit: 32_000},
 		{ID: "nemotron-3-super-free", InputLimit: 96_000, OutputLimit: 32_000},

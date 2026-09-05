@@ -502,7 +502,7 @@ var providerSpecs = []ProviderSpec{
 	},
 	{
 		Name: "zen", Type: ProviderTypeZen, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
-		Defaults: []DefaultField{{"model", "minimax-m2.5-free"}, {"fast_model", "minimax-m2.5-free"}},
+		Defaults: []DefaultField{{"model", "mimo-v2.5-free"}, {"fast_model", "mimo-v2.5-free"}},
 	},
 	{
 		Name: "opencode-go", Type: ProviderTypeOpenCodeGo, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,

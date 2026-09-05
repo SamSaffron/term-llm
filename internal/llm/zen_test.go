@@ -17,7 +17,7 @@ func TestNormalizeZenModel(t *testing.T) {
 		{"big_pickle", "big-pickle"},
 		{"big pickle", "big-pickle"},
 		{" big-pickle ", "big-pickle"},
-		{"minimax-m2.5-free", "minimax-m2.5-free"},
+		{"mimo-v2.5-free", "mimo-v2.5-free"},
 	}
 
 	for _, tt := range tests {
@@ -110,7 +110,7 @@ func TestZenListModelsIncludesReasoningEfforts(t *testing.T) {
 	if !equalSlice(got, wantCompletions) {
 		t.Fatalf("Zen completions = %v, want live catalog %v", got, wantCompletions)
 	}
-	if containsModelID(got, "zen:minimax-m2.5-free") {
+	if containsModelID(got, "zen:mimo-v2.5-free") {
 		t.Fatalf("Zen completions unexpectedly contain curated fallback: %v", got)
 	}
 }

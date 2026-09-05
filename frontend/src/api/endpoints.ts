@@ -167,6 +167,12 @@ export const endpoints = (api: APIClient) => ({
       { method: 'POST', headers: sessionHeaders(id), body: JSON.stringify(body) },
       { policy: 'mutation', auth: 'session', retries: 0, timeoutMs: 0 },
     ),
+  commitPublishPlan: (id: string, kind: 'push' | 'pr') =>
+    api.get<Record<string, unknown>>(
+      `/v1/sessions/${encoded(id)}/commit/publish-plan?kind=${kind}`,
+      undefined,
+      { auth: 'session', versionCheck: false, timeoutMs: 130_000, retries: 0 },
+    ),
   commitStatus: (id: string, signal?: AbortSignal) =>
     api.get<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/commit/status`, signal),
   commitStage: (id: string, body: unknown) =>

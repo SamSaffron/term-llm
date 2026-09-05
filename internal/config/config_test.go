@@ -718,6 +718,22 @@ func TestGrokSchemaDefaults(t *testing.T) {
 	}
 }
 
+func TestZenSchemaDefaults(t *testing.T) {
+	const want = "mimo-v2.5-free"
+	if got := DefaultProviderModel("zen"); got != want {
+		t.Fatalf("DefaultProviderModel(zen) = %q, want %q", got, want)
+	}
+	if got := DefaultProviderFastModels()["zen"]; got != want {
+		t.Fatalf("zen fast model = %q, want %q", got, want)
+	}
+	defaults := GetDefaults()
+	for _, key := range []string{"providers.zen.model", "providers.zen.fast_model"} {
+		if got := defaults[key]; got != want {
+			t.Fatalf("%s = %#v, want %q", key, got, want)
+		}
+	}
+}
+
 func TestGrokBinSchemaDefaults(t *testing.T) {
 	if got := DefaultProviderModel("grok-bin"); got != "grok-4.6" {
 		t.Fatalf("DefaultProviderModel(grok-bin) = %q, want grok-4.6", got)

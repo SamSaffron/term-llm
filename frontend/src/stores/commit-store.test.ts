@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Session } from '../domain/types';
 import type { AppStoreServices } from './app-store-services';
 import type { Modal } from './store-types';
+import { APIError } from '../api/client';
 import { CommitStore } from './commit-store';
 import { fileChangeStats } from '../components/CommitModal';
 
@@ -33,6 +34,19 @@ const status = (staged = false) => ({
 
 function fixture(initial = status(false), draft = false) {
   const endpoints = {
+    commitPublishPlan: vi.fn(
+      async (_id: string, kind: 'push' | 'pr'): Promise<Record<string, unknown>> => ({
+        checkout_id: 'checkout',
+        head_oid: 'committed',
+        branch: 'main',
+        remote: 'origin',
+        url: 'git@github.com:test/repo.git',
+        target: 'main',
+        ...(kind === 'pr'
+          ? { repository: 'https://github.com/test/repo', default_branch: 'main' }
+          : {}),
+      }),
+    ),
     commitStatus: vi.fn(async () => initial),
     commitStage: vi.fn(async () => status(true)),
     createCommitRun: vi.fn(async (_id: string, body: Record<string, unknown>) => ({
@@ -52,7 +66,12 @@ function fixture(initial = status(false), draft = false) {
     })),
     commitOperation: vi.fn(async (): Promise<Record<string, unknown>> => ({
       status: 'succeeded',
-      result: { short_oid: 'abc123', subject: 'Change A' },
+      result: {
+        head_oid: 'committed',
+        short_oid: 'abc123',
+        subject: 'Change A',
+        message: 'Change A\n\nDetails',
+      },
     })),
   };
   const toast = vi.fn();
@@ -71,6 +90,152 @@ function fixture(initial = status(false), draft = false) {
 }
 
 describe('CommitStore', () => {
+  async function committedFixture() {
+    const f = fixture(status(true));
+    await f.store.open();
+    await vi.waitFor(() => expect(f.store.state.value.phase).toBe('editing'));
+    await f.store.commit();
+    f.endpoints.createCommitOperation.mockClear();
+    return f;
+  }
+
+  it('previews publishing, then submits the reviewed destination without another commit', async () => {
+    const { store, endpoints } = await committedFixture();
+    await store.preparePublish('push');
+    expect(store.state.value.publishForm?.branch).toBe('main');
+    expect(endpoints.createCommitOperation).not.toHaveBeenCalled();
+    endpoints.commitOperation.mockResolvedValue({
+      status: 'succeeded',
+      publish_result: { pushed: true, branch: 'main' },
+    });
+    await store.publish();
+    expect(endpoints.createCommitOperation).toHaveBeenCalledWith(
+      's1',
+      expect.objectContaining({
+        kind: 'push',
+        publish: expect.objectContaining({ branch: 'main' }),
+      }),
+      expect.stringMatching(/^publish_/),
+    );
+    expect(store.state.value.phase).toBe('success');
+    expect(store.state.value.result?.head_oid).toBe('committed');
+    expect(store.state.value.info).toContain('origin/main');
+    expect(localStorage.getItem('term-llm.commit-publish.s1')).toBeNull();
+  });
+
+  it('suggests a new PR branch on main and submits edited PR metadata', async () => {
+    const { store, endpoints } = await committedFixture();
+    await store.preparePublish('pr');
+    expect(store.state.value.publishForm).toMatchObject({
+      branch: 'pr/abc123',
+      base: 'main',
+      title: 'Change A',
+      body: 'Details',
+    });
+    store.editPublish({ title: 'Reviewed title', body: 'Reviewed body', draft: true });
+    endpoints.commitOperation.mockResolvedValue({
+      status: 'succeeded',
+      publish_result: {
+        pushed: true,
+        branch: 'pr/abc123',
+        pr_url: 'https://github.com/test/repo/pull/1',
+        existing: true,
+      },
+    });
+    await store.publish();
+    expect(endpoints.createCommitOperation).toHaveBeenCalledWith(
+      's1',
+      expect.objectContaining({
+        kind: 'pr',
+        publish: expect.objectContaining({
+          title: 'Reviewed title',
+          body: 'Reviewed body',
+          draft: true,
+        }),
+      }),
+      expect.any(String),
+    );
+    expect(store.state.value.info).toContain('existing');
+    expect(store.state.value.publishResult?.pr_url).toContain('/pull/1');
+  });
+
+  it('rejects publishing if HEAD changed after committing', async () => {
+    const { store, endpoints } = await committedFixture();
+    endpoints.commitPublishPlan.mockResolvedValue({ head_oid: 'newer' });
+    await store.preparePublish('push');
+    expect(store.state.value.publishForm).toBeNull();
+    expect(store.state.value.error).toContain('HEAD changed');
+    expect(store.state.value.phase).toBe('success');
+  });
+
+  it('keeps the commit and partial push result if PR creation fails', async () => {
+    const { store, endpoints } = await committedFixture();
+    await store.preparePublish('pr');
+    endpoints.commitOperation.mockResolvedValue({
+      status: 'uncertain',
+      error: 'Check GitHub before retrying',
+      publish_result: { pushed: true, branch: 'pr/abc123' },
+    });
+    await store.publish();
+    expect(store.state.value.result?.head_oid).toBe('committed');
+    expect(store.state.value.publishResult?.pushed).toBe(true);
+    expect(store.state.value.info).toContain('was pushed');
+    expect(store.state.value.error).toContain('Check GitHub');
+  });
+
+  it('recovers a disconnected publish with the same idempotency key', async () => {
+    const { store, endpoints } = await committedFixture();
+    await store.preparePublish('push');
+    endpoints.createCommitOperation.mockRejectedValueOnce(new Error('offline'));
+    await store.publish();
+    const firstKey = endpoints.createCommitOperation.mock.calls[0][2];
+    expect(store.state.value.publishPending).toBe(true);
+    await store.preparePublish('pr');
+    expect(store.state.value.publishForm).toBeNull();
+    store.reset();
+    endpoints.commitOperation.mockResolvedValue({
+      status: 'succeeded',
+      publish_result: { pushed: true, branch: 'main' },
+    });
+    await store.open();
+    expect(endpoints.createCommitOperation.mock.calls[1][2]).toBe(firstKey);
+    expect(store.state.value.publishPending).toBe(false);
+    expect(store.state.value.result?.head_oid).toBe('committed');
+  });
+
+  it('allows editing again after rejected publish admission', async () => {
+    const { store, endpoints } = await committedFixture();
+    await store.preparePublish('push');
+    endpoints.createCommitOperation.mockRejectedValueOnce(new APIError('checkout busy', 409));
+    await store.publish();
+    expect(store.state.value.publishPending).toBe(false);
+    expect(store.state.value.publishForm?.kind).toBe('push');
+    expect(localStorage.getItem('term-llm.commit-publish.s1')).toBeNull();
+  });
+
+  it('blocks duplicate submission and closing while publishing, but ignores late results after switching session', async () => {
+    const { store, endpoints, activeSession } = await committedFixture();
+    await store.preparePublish('push');
+    let finish!: (value: Record<string, unknown>) => void;
+    endpoints.commitOperation.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const pending = store.publish();
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    await store.publish();
+    store.close();
+    expect(store.state.value.publishBusy).toBe(true);
+    expect(endpoints.createCommitOperation).toHaveBeenCalledTimes(1);
+    activeSession.value = { id: 's2' } as Session;
+    store.reset();
+    finish({ status: 'succeeded', publish_result: { pushed: true } });
+    await pending;
+    expect(store.state.value.phase).toBe('closed');
+    expect(localStorage.getItem('term-llm.commit-publish.s1')).not.toBeNull();
+  });
   it('formats per-file line counts and binary changes for review', () => {
     expect(
       fileChangeStats([

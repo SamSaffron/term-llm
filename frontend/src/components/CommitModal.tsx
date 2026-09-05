@@ -39,9 +39,17 @@ export function CommitModal() {
     staged.every((entry) => !entry.partially_staged);
   const willApplySelection = state.selectionNeedsApply || state.reviewRequired;
   const phaseContent = useRef<HTMLDivElement>(null);
-  const busy = ['loading', 'planning_scope', 'staging', 'drafting_message', 'committing'].includes(
-    state.phase,
-  );
+  const publishing = state.publishBusy || state.publishLoading;
+  const locked = state.phase === 'committing' || state.publishBusy;
+  const form = state.publishForm;
+  const hasPublishForm = Boolean(form);
+  const prURL = String(state.publishResult?.pr_url || '');
+  const safePRURL = /^https:\/\//i.test(prURL) ? prURL : '';
+  const busy =
+    publishing ||
+    ['loading', 'planning_scope', 'staging', 'drafting_message', 'committing'].includes(
+      state.phase,
+    );
   useEffect(() => {
     if (state.sessionId && store.activeSession.value?.id !== state.sessionId) commit.reset();
   }, [commit, state.sessionId, store.activeSession.value?.id]);
@@ -56,7 +64,7 @@ export function CommitModal() {
         ?.focus();
     });
     return () => cancelAnimationFrame(frame);
-  }, [state.phase]);
+  }, [state.phase, hasPublishForm]);
   const close = () => commit.close();
   const counts = status
     ? [
@@ -73,14 +81,16 @@ export function CommitModal() {
     <Overlay
       title="Git commit"
       className="commit-modal"
-      onEscape={state.phase === 'committing' ? () => undefined : close}
-      close={state.phase !== 'committing'}
+      onEscape={locked ? () => undefined : close}
+      onClose={close}
+      dismissDisabled={locked}
+      close={!locked}
     >
       <div class="commit-summary">
         {status && (
           <p>
-            <strong>{status.detached ? 'Detached HEAD' : status.branch || 'Git checkout'}</strong> ·{' '}
-            {counts}
+            <strong>{status.detached ? 'Detached HEAD' : status.branch || 'Git checkout'}</strong>
+            {state.phase !== 'success' && <> · {counts}</>}
           </p>
         )}
         {state.info && (
@@ -249,7 +259,7 @@ export function CommitModal() {
         )}
 
         {state.phase === 'success' && (
-          <section class="commit-success" role="status">
+          <section class="commit-success" aria-label="Commit complete">
             <p>
               Committed <strong>{String(state.result?.short_oid || '')}</strong>{' '}
               {String(state.result?.subject || '')}
@@ -257,9 +267,166 @@ export function CommitModal() {
             {state.result?.tree_changed && (
               <p class="commit-warning">A hook changed the committed tree after review.</p>
             )}
-            <button class="btn primary" type="button" onClick={() => commit.reset()}>
-              Done
-            </button>
+            {safePRURL && (
+              <p>
+                <a href={safePRURL} target="_blank" rel="noopener noreferrer">
+                  Open pull request ↗
+                </a>
+              </p>
+            )}
+            {form ? (
+              <form
+                class="commit-publish-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void commit.publish();
+                }}
+              >
+                <p class="commit-note">
+                  Publish <strong>{String(state.result?.short_oid || '')}</strong> to{' '}
+                  <strong>
+                    {String(form.plan.remote)}/{form.branch}
+                  </strong>
+                  <br />
+                  {String(form.plan.url)}
+                </p>
+                <p class="commit-note">
+                  This publishes the branch history through this commit, not uncommitted changes. No
+                  force-push.
+                </p>
+                {form.kind === 'push' && (
+                  <p class="commit-warning">
+                    This updates the remote branch directly, including main/default branches.
+                    Confirm the destination before pushing.
+                  </p>
+                )}
+                {form.kind === 'pr' && (
+                  <>
+                    <label class="settings-label" for="commitPRBranch">
+                      PR branch
+                    </label>
+                    <input
+                      id="commitPRBranch"
+                      class="settings-input"
+                      required
+                      value={form.branch}
+                      onInput={(event) => commit.editPublish({ branch: event.currentTarget.value })}
+                    />
+                    {form.branch !== form.plan.target && (
+                      <p class="commit-note">
+                        A new remote branch will be created. Your local branch is not switched or
+                        reset. If this commit is already on the base branch, there may be nothing to
+                        propose.
+                      </p>
+                    )}
+                    <label class="settings-label" for="commitPRBase">
+                      Base branch
+                    </label>
+                    <input
+                      id="commitPRBase"
+                      class="settings-input"
+                      required
+                      value={form.base}
+                      onInput={(event) => commit.editPublish({ base: event.currentTarget.value })}
+                    />
+                    <label class="settings-label" for="commitPRTitle">
+                      PR title
+                    </label>
+                    <input
+                      id="commitPRTitle"
+                      class="settings-input"
+                      required
+                      value={form.title}
+                      onInput={(event) => commit.editPublish({ title: event.currentTarget.value })}
+                    />
+                    <label class="settings-label" for="commitPRBody">
+                      PR description
+                    </label>
+                    <textarea
+                      id="commitPRBody"
+                      class="commit-message"
+                      rows={5}
+                      value={form.body}
+                      onInput={(event) => commit.editPublish({ body: event.currentTarget.value })}
+                    />
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={form.draft}
+                        onChange={(event) =>
+                          commit.editPublish({ draft: event.currentTarget.checked })
+                        }
+                      />{' '}
+                      Create as draft
+                    </label>
+                    <p class="commit-note">
+                      Pushes first, then creates a PR in {String(form.plan.repository)}. An existing
+                      open PR for this head/base will be reused.
+                    </p>
+                  </>
+                )}
+                <div class="commit-actions">
+                  <button
+                    class="btn primary"
+                    type="submit"
+                    disabled={
+                      publishing ||
+                      !form.branch.trim() ||
+                      (form.kind === 'pr' &&
+                        (!form.title.trim() ||
+                          !form.base.trim() ||
+                          form.branch === form.base ||
+                          form.branch === form.plan.default_branch))
+                    }
+                  >
+                    {form.kind === 'pr' ? 'Push & make PR' : 'Confirm push'}
+                  </button>
+                  <button class="btn" type="button" onClick={() => commit.cancelPublish()}>
+                    Back
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div class="commit-actions">
+                {state.publishPending ? (
+                  <button
+                    class="btn"
+                    type="button"
+                    disabled={publishing}
+                    onClick={() => void commit.reconnectPublish()}
+                  >
+                    Reconnect
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      class="btn"
+                      type="button"
+                      disabled={publishing || Boolean(state.publishResult?.pushed)}
+                      onClick={() => void commit.preparePublish('push')}
+                    >
+                      {state.publishResult?.pushed ? 'Pushed' : 'Push'}
+                    </button>
+                    <button
+                      class="btn"
+                      type="button"
+                      disabled={publishing || Boolean(safePRURL)}
+                      onClick={() => void commit.preparePublish('pr')}
+                    >
+                      Make PR
+                    </button>
+                  </>
+                )}
+                <button
+                  class="btn primary"
+                  type="button"
+                  disabled={state.publishBusy}
+                  onClick={() => commit.reset()}
+                >
+                  Done
+                </button>
+              </div>
+            )}
           </section>
         )}
       </div>

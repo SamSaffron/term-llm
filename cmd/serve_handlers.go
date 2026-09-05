@@ -2203,6 +2203,15 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if suffix == "commit/publish-plan" {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		s.handleCommitPublishPlan(w, r, sessionID)
+		return
+	}
 	if suffix == "commit/status" {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", "GET")

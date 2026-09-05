@@ -2,6 +2,31 @@ import { describe, expect, it, vi } from 'vitest';
 import type { APIClient } from './client';
 import { endpoints } from './endpoints';
 
+describe('commit publishing endpoints', () => {
+  it('previews with a network-sized timeout and submits an idempotent operation', async () => {
+    const get = vi.fn(async () => ({}));
+    const json = vi.fn(async () => ({}));
+    const routes = endpoints({ get, json } as unknown as APIClient);
+    await routes.commitPublishPlan('session/one', 'pr');
+    expect(get).toHaveBeenCalledWith(
+      '/v1/sessions/session%2Fone/commit/publish-plan?kind=pr',
+      undefined,
+      { auth: 'session', versionCheck: false, timeoutMs: 130_000, retries: 0 },
+    );
+    const body = { kind: 'pr', publish: { title: 'Title' } };
+    await routes.createCommitOperation('session/one', body, 'publish-key');
+    expect(json).toHaveBeenCalledWith(
+      '/v1/sessions/session%2Fone/commit-operations',
+      {
+        method: 'POST',
+        headers: { 'X-Term-LLM-Session-ID': 'session/one', 'Idempotency-Key': 'publish-key' },
+        body: JSON.stringify(body),
+      },
+      { policy: 'idempotent-mutation', auth: 'session', retries: 2, timeoutMs: 0 },
+    );
+  });
+});
+
 describe('shell endpoints', () => {
   it('uses authenticated HTTP/SSE session routes with encoded generation state', async () => {
     const json = vi.fn(async () => ({ shell_id: 'sh/one' }));

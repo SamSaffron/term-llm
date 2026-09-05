@@ -6,6 +6,21 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 )
 
+func TestZenDefaultModelFallback(t *testing.T) {
+	const want = "mimo-v2.5-free"
+	models := ProviderModels["zen"]
+	if len(models) == 0 || models[0].ID != want {
+		t.Fatalf("Zen fallback models = %+v, want %s first", models, want)
+	}
+	if config.DefaultProviderModel("zen") != models[0].ID {
+		t.Fatal("Zen default and fallback model disagree")
+	}
+	// MiMo's 200K context reserves 32K for output.
+	if models[0].InputLimit != 168_000 || models[0].OutputLimit != 32_000 {
+		t.Fatalf("Zen default limits = %+v, want 168K input / 32K output", models[0])
+	}
+}
+
 func TestProviderModelsIncludeGrokBin(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	ids := ProviderModelIDs("grok-bin")

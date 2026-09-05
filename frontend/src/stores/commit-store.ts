@@ -1,4 +1,5 @@
 import { signal, type ReadonlySignal, type Signal } from '@preact/signals';
+import { APIError } from '../api/client';
 import type { Session } from '../domain/types';
 import { errorMessage } from '../domain/text';
 import type { AppStoreServices } from './app-store-services';
@@ -44,7 +45,28 @@ export type CommitPhase =
   | 'committing'
   | 'success'
   | 'error';
+export interface PublishForm {
+  kind: 'push' | 'pr';
+  plan: Record<string, unknown>;
+  branch: string;
+  base: string;
+  title: string;
+  body: string;
+  draft: boolean;
+}
+interface SavedPublish {
+  key: string;
+  operationId?: string;
+  form: PublishForm;
+  result: Record<string, unknown> | null;
+  status: CommitStatus | null;
+}
 export interface CommitUIState {
+  publishForm: PublishForm | null;
+  publishBusy: boolean;
+  publishLoading: boolean;
+  publishPending: boolean;
+  publishResult: Record<string, unknown> | null;
   sessionId: string;
   phase: CommitPhase;
   intent: string;
@@ -94,6 +116,11 @@ const fingerprintKey = (value: Record<string, unknown>): string => {
 };
 
 const initialState = (): CommitUIState => ({
+  publishForm: null,
+  publishBusy: false,
+  publishLoading: false,
+  publishPending: false,
+  publishResult: null,
   sessionId: '',
   phase: 'closed',
   intent: '',
@@ -157,6 +184,7 @@ export class CommitStore {
       phase: 'loading',
       info: 'Inspecting the active checkout…',
     };
+    if (await this.recoverPublish(session.id, epoch)) return true;
     const recovered = await this.recoverOperation(session.id, epoch);
     if (recovered) return true;
     try {
@@ -200,7 +228,11 @@ export class CommitStore {
 
   close(): void {
     const state = this.state.peek();
-    const dirty = state.message !== state.generated && Boolean(state.message.trim());
+    if (state.phase === 'committing' || state.publishBusy) return;
+    const dirty =
+      state.phase !== 'success' &&
+      state.message !== state.generated &&
+      Boolean(state.message.trim());
     if (dirty && !window.confirm('Discard the edited commit message?')) return;
     this.reset();
   }
@@ -569,6 +601,188 @@ export class CommitStore {
           error: `Message generation failed; enter one manually. ${errorMessage(error)}`,
           info: '',
         });
+    }
+  }
+
+  async preparePublish(kind: 'push' | 'pr'): Promise<void> {
+    const state = this.state.peek();
+    if (
+      state.phase !== 'success' ||
+      state.publishBusy ||
+      state.publishLoading ||
+      state.publishPending
+    )
+      return;
+    const epoch = this.epoch;
+    this.patch({
+      publishLoading: true,
+      publishForm: null,
+      error: '',
+      info: 'Checking the publishing destination…',
+    });
+    try {
+      const plan = await this.services.endpoints.commitPublishPlan(state.sessionId, kind);
+      if (!this.current(epoch, state.sessionId)) return;
+      if (
+        !state.result?.head_oid ||
+        plan.head_oid !== state.result.head_oid ||
+        (state.status && plan.checkout_id !== state.status.fingerprint.checkout_id)
+      ) {
+        throw new Error(
+          'The checkout or HEAD changed since this commit. Publish from the current branch manually.',
+        );
+      }
+      const target = String(plan.target || '');
+      this.patch({
+        publishForm: {
+          kind,
+          plan,
+          branch:
+            kind === 'pr' && target === plan.default_branch
+              ? `pr/${String(state.result.short_oid || '').trim()}`
+              : target,
+          base: String(plan.default_branch || ''),
+          title: String(state.result.subject || ''),
+          body: String(state.result.message || state.message)
+            .split('\n')
+            .slice(1)
+            .join('\n')
+            .trim(),
+          draft: false,
+        },
+        info: '',
+      });
+    } catch (error) {
+      if (this.current(epoch, state.sessionId))
+        this.patch({ error: errorMessage(error), info: '' });
+    } finally {
+      if (this.current(epoch, state.sessionId)) this.patch({ publishLoading: false });
+    }
+  }
+
+  editPublish(
+    patch: Partial<Pick<PublishForm, 'branch' | 'base' | 'title' | 'body' | 'draft'>>,
+  ): void {
+    const state = this.state.peek();
+    if (state.publishForm && !state.publishBusy)
+      this.patch({ publishForm: { ...state.publishForm, ...patch } });
+  }
+
+  cancelPublish(): void {
+    if (!this.state.peek().publishBusy) this.patch({ publishForm: null, error: '', info: '' });
+  }
+
+  async publish(): Promise<void> {
+    const state = this.state.peek();
+    if (!state.publishForm || state.publishBusy || state.publishPending) return;
+    const saved: SavedPublish = {
+      key: `publish_${crypto.randomUUID()}`,
+      form: state.publishForm,
+      result: state.result,
+      status: state.status,
+    };
+    await this.runPublish(state.sessionId, saved, this.epoch);
+  }
+
+  async reconnectPublish(): Promise<void> {
+    const state = this.state.peek();
+    if (!state.publishBusy) await this.recoverPublish(state.sessionId, this.epoch);
+  }
+
+  private publishStorageKey(sessionId: string): string {
+    return `term-llm.commit-publish.${sessionId}`;
+  }
+
+  private async recoverPublish(sessionId: string, epoch: number): Promise<boolean> {
+    const raw = this.services.storage.getItem(this.publishStorageKey(sessionId));
+    if (!raw) return false;
+    try {
+      const saved = JSON.parse(raw) as SavedPublish;
+      if (!saved.key || !saved.form || !['push', 'pr'].includes(saved.form.kind))
+        throw new Error('Invalid saved publishing operation');
+      this.patch({ phase: 'success', result: saved.result, status: saved.status });
+      await this.runPublish(sessionId, saved, epoch);
+    } catch (error) {
+      if (this.current(epoch, sessionId))
+        this.patch({
+          phase: 'success',
+          publishPending: true,
+          error: errorMessage(error),
+          info: '',
+        });
+    }
+    return true;
+  }
+
+  private async runPublish(sessionId: string, saved: SavedPublish, epoch: number): Promise<void> {
+    this.patch({
+      publishBusy: true,
+      publishPending: true,
+      publishForm: null,
+      error: '',
+      info: saved.form.kind === 'pr' ? 'Pushing branch and making PR…' : 'Pushing branch…',
+    });
+    try {
+      this.services.storage.setItem(this.publishStorageKey(sessionId), JSON.stringify(saved));
+      if (!saved.operationId) {
+        const { kind, ...publish } = saved.form;
+        const created = await this.services.endpoints.createCommitOperation(
+          sessionId,
+          { kind, publish },
+          saved.key,
+        );
+        if (!this.current(epoch, sessionId)) return;
+        saved.operationId = String(created.operation_id || '');
+        if (!saved.operationId) throw new Error('Server returned no publishing operation');
+        this.services.storage.setItem(this.publishStorageKey(sessionId), JSON.stringify(saved));
+      }
+      const operation = await this.pollOperation(sessionId, saved.operationId, epoch);
+      if (!this.current(epoch, sessionId)) return;
+      this.services.storage.removeItem(this.publishStorageKey(sessionId));
+      const result = (operation.publish_result || {}) as Record<string, unknown>;
+      this.patch({
+        publishPending: false,
+        publishResult: result,
+        info:
+          operation.status === 'succeeded'
+            ? result.pr_url
+              ? result.existing
+                ? 'Found the existing pull request.'
+                : 'Pull request created.'
+              : `Pushed to ${saved.form.plan.remote}/${result.branch}.`
+            : result.pushed
+              ? `Branch ${result.branch} was pushed. Your local commit is safe.`
+              : '',
+        error:
+          operation.status === 'succeeded'
+            ? ''
+            : String(operation.error || 'Publishing failed. Your local commit is safe.'),
+      });
+      this.options.changed();
+    } catch (error) {
+      if (!this.current(epoch, sessionId)) return;
+      // A rejected admission did not start an operation. Transport failures and
+      // polling errors retain the saved key, so reconnect cannot submit twice.
+      if (
+        !saved.operationId &&
+        error instanceof APIError &&
+        [400, 403, 404, 409, 415, 422].includes(error.status)
+      ) {
+        this.services.storage.removeItem(this.publishStorageKey(sessionId));
+        this.patch({
+          publishPending: false,
+          publishForm: saved.form,
+          error: errorMessage(error),
+          info: '',
+        });
+      } else {
+        this.patch({
+          error: `Could not confirm publishing: ${errorMessage(error)} Reconnect to check the same operation before retrying.`,
+          info: '',
+        });
+      }
+    } finally {
+      if (this.current(epoch, sessionId)) this.patch({ publishBusy: false });
     }
   }
 

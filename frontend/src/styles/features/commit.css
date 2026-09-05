@@ -86,6 +86,21 @@
   padding: 24px 0 8px;
 }
 
+.commit-success > .commit-actions {
+  justify-content: center;
+}
+
+.commit-publish-form {
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.commit-publish-form .settings-input {
+  box-sizing: border-box;
+  width: 100%;
+  margin-bottom: 10px;
+}
+
 .commit-busy {
   height: 2px;
   margin-top: 12px;

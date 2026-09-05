@@ -31,8 +31,7 @@ type ZenProvider struct {
 }
 
 // NewZenProvider creates a ZenProvider preconfigured for OpenCode Zen.
-// Zen provides free access to models like GLM 4.7 via opencode.ai.
-// API key is optional: empty for free tier, or set ZEN_API_KEY for paid models.
+// API key is optional: empty for supported free models, or set ZEN_API_KEY for paid models.
 func NewZenProvider(apiKey, model string) *ZenProvider {
 	model = normalizeZenModel(model)
 	return &ZenProvider{

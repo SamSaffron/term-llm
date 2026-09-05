@@ -54,18 +54,20 @@ func (r *serveCommitRun) snapshot() map[string]any {
 }
 
 type serveCommitOperation struct {
-	ID             string                  `json:"operation_id"`
-	SessionID      string                  `json:"session_id"`
-	IdempotencyKey string                  `json:"idempotency_key"`
-	RequestHash    string                  `json:"request_hash"`
-	Status         string                  `json:"status"`
-	Expected       gitcommit.Fingerprint   `json:"expected_fingerprint"`
-	Message        string                  `json:"message,omitempty"`
-	Result         *gitcommit.CommitResult `json:"result,omitempty"`
-	Error          string                  `json:"error,omitempty"`
-	ErrorKind      gitcommit.ErrorKind     `json:"error_kind,omitempty"`
-	CreatedAt      time.Time               `json:"created_at"`
-	UpdatedAt      time.Time               `json:"updated_at"`
+	Kind           string                   `json:"kind,omitempty"`
+	PublishResult  *gitcommit.PublishResult `json:"publish_result,omitempty"`
+	ID             string                   `json:"operation_id"`
+	SessionID      string                   `json:"session_id"`
+	IdempotencyKey string                   `json:"idempotency_key"`
+	RequestHash    string                   `json:"request_hash"`
+	Status         string                   `json:"status"`
+	Expected       gitcommit.Fingerprint    `json:"expected_fingerprint"`
+	Message        string                   `json:"message,omitempty"`
+	Result         *gitcommit.CommitResult  `json:"result,omitempty"`
+	Error          string                   `json:"error,omitempty"`
+	ErrorKind      gitcommit.ErrorKind      `json:"error_kind,omitempty"`
+	CreatedAt      time.Time                `json:"created_at"`
+	UpdatedAt      time.Time                `json:"updated_at"`
 	checkoutRoot   string
 }
 
@@ -83,8 +85,10 @@ type commitRunBody struct {
 	ExpectedFingerprint gitcommit.Fingerprint `json:"expected_fingerprint"`
 }
 type commitOperationBody struct {
-	Message             string                `json:"message"`
-	ExpectedFingerprint gitcommit.Fingerprint `json:"expected_fingerprint"`
+	Kind                string                    `json:"kind,omitempty"`
+	Publish             *gitcommit.PublishRequest `json:"publish,omitempty"`
+	Message             string                    `json:"message"`
+	ExpectedFingerprint gitcommit.Fingerprint     `json:"expected_fingerprint"`
 }
 
 func (s *serveServer) commitSession(ctx context.Context, sessionID string) (*session.Session, string, error) {
@@ -599,6 +603,29 @@ func (s *serveServer) findOperationByKeyLocked(sessionID, key string) *serveComm
 	return nil
 }
 
+func (s *serveServer) handleCommitPublishPlan(w http.ResponseWriter, r *http.Request, sessionID string) {
+	kind := r.URL.Query().Get("kind")
+	if kind != "push" && kind != "pr" {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "kind must be push or pr")
+		return
+	}
+	if s.commitBusy(sessionID, true) {
+		writeCommitError(w, errCommitCheckoutBusy)
+		return
+	}
+	_, repo, err := s.commitRepository(r.Context(), sessionID)
+	if err != nil {
+		writeCommitError(w, err)
+		return
+	}
+	plan, err := repo.PublishPlan(r.Context(), kind == "pr")
+	if err != nil {
+		writeCommitError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, plan)
+}
+
 func (s *serveServer) handleCreateCommitOperation(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if err := requireJSONContentType(r); err != nil {
 		writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
@@ -619,6 +646,11 @@ func (s *serveServer) handleCreateCommitOperation(w http.ResponseWriter, r *http
 	decoder.DisallowUnknownFields()
 	if err = decoder.Decode(&body); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid commit operation: "+err.Error())
+		return
+	}
+	if (body.Kind != "" && body.Kind != "commit" && body.Kind != "push" && body.Kind != "pr") ||
+		((body.Kind == "push" || body.Kind == "pr") != (body.Publish != nil)) {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid operation kind or publish request")
 		return
 	}
 	canonical, _ := json.Marshal(body)
@@ -659,7 +691,7 @@ func (s *serveServer) handleCreateCommitOperation(w http.ResponseWriter, r *http
 		writeCommitError(w, err)
 		return
 	}
-	op := &serveCommitOperation{ID: "commit_op_" + randomSuffix(), SessionID: sessionID, IdempotencyKey: key, RequestHash: hash, Status: "queued", Expected: body.ExpectedFingerprint, Message: body.Message, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), checkoutRoot: filepath.Clean(repo.CheckoutRoot())}
+	op := &serveCommitOperation{Kind: body.Kind, ID: "commit_op_" + randomSuffix(), SessionID: sessionID, IdempotencyKey: key, RequestHash: hash, Status: "queued", Expected: body.ExpectedFingerprint, Message: body.Message, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), checkoutRoot: filepath.Clean(repo.CheckoutRoot())}
 	s.commitMu.Lock()
 	if existing := s.findOperationByKeyLocked(sessionID, key); existing != nil {
 		if existing.RequestHash != hash {
@@ -708,8 +740,17 @@ func (s *serveServer) handleCreateCommitOperation(w http.ResponseWriter, r *http
 		op.UpdatedAt = time.Now().UTC()
 		s.persistCommitOperationsLocked(context.Background(), sessionID)
 		s.commitMu.Unlock()
-		result, commitErr := repo.Commit(context.Background(), body.Message, body.ExpectedFingerprint)
+		var result gitcommit.CommitResult
+		var publishResult *gitcommit.PublishResult
+		var commitErr error
+		if body.Publish != nil {
+			published, err := repo.Publish(context.Background(), body.Kind, *body.Publish)
+			publishResult, commitErr = &published, err
+		} else {
+			result, commitErr = repo.Commit(context.Background(), body.Message, body.ExpectedFingerprint)
+		}
 		s.commitMu.Lock()
+		op.PublishResult = publishResult
 		op.UpdatedAt = time.Now().UTC()
 		if commitErr != nil {
 			op.Status = "failed"
@@ -723,7 +764,9 @@ func (s *serveServer) handleCreateCommitOperation(w http.ResponseWriter, r *http
 			}
 		} else {
 			op.Status = "succeeded"
-			op.Result = &result
+			if publishResult == nil {
+				op.Result = &result
+			}
 		}
 		s.persistCommitOperationsLocked(context.Background(), sessionID)
 		s.commitMu.Unlock()
