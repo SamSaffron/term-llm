@@ -80,10 +80,10 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// toggle/loader are first-party shell code. The xterm terminal, preview body,
 		// parser, source transport, and feature CSS remain in bounded lazy chunks.
 		// Keep bounded headroom while still failing meaningful accidental regressions.
-		// Go gzip level 6 measures the current shell at 138137/33383 bytes,
-		// above Vite/zlib's displayed 134.46/30.95 kB. Keep raw budgets intact
-		// and bound gzip with small headroom using the compressor tested here.
-		"dist/app.js":  {raw: 480_000, gzip: 140_000},
+		// The bounded approval dialog and keyboard controls bring the eager JS
+		// to ~481 kB raw. Shared choice-card styles keep CSS under its existing
+		// raw budget; retain both compressed limits.
+		"dist/app.js":  {raw: 482_000, gzip: 140_000},
 		"dist/app.css": {raw: 174_000, gzip: 34_000},
 		// Measured after the completed standalone port: 67.7/21.5 KiB JS and
 		// 16.7/4.1 KiB CSS. These limits retain modest growth headroom without

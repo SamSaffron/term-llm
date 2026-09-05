@@ -101,7 +101,7 @@ export function ShellOverlay({ store }: { store: AppStore }) {
       convertEol: false,
       cursorBlink: true,
       cursorStyle: 'bar',
-      fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
+      fontFamily: getComputedStyle(target).getPropertyValue('--font-mono').trim() || 'monospace',
       fontSize: 14,
       lineHeight: 1.15,
       scrollback: 10_000,
@@ -289,7 +289,7 @@ export function ShellOverlay({ store }: { store: AppStore }) {
       return;
     }
     setSharePending(true);
-    const sessionId = await store.ensureShellSession();
+    const sessionId = await store.ensureSession();
     if (!sessionId || !store.shellStore.bind(sessionId)) setSharePending(false);
   };
   useEffect(() => {

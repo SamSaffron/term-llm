@@ -209,13 +209,8 @@
 .project-manage-path {
   overflow-wrap: anywhere;
   color: var(--text);
-  font:
-    0.78rem/1.45 ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    Monaco,
-    Consolas,
-    monospace;
+  font: 0.78rem/1.45 var(--font-mono);
+  font-variant-ligatures: none;
 }
 
 .project-assign-modal {
@@ -375,13 +370,8 @@
   min-width: 0;
   overflow: hidden;
   color: var(--text-muted);
-  font:
-    0.7rem/1.35 ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    Monaco,
-    Consolas,
-    monospace;
+  font: 0.7rem/1.35 var(--font-mono);
+  font-variant-ligatures: none;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -465,7 +455,8 @@
 }
 
 .project-path-input {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
   font-size: 0.88rem;
 }
 
@@ -559,11 +550,8 @@
   border-radius: 0.38rem;
   background: transparent;
   color: var(--text-muted);
-  font:
-    500 0.75rem/1 ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    monospace;
+  font: 500 0.75rem/1 var(--font-mono);
+  font-variant-ligatures: none;
   cursor: pointer;
 }
 
@@ -788,11 +776,8 @@
 .project-resolution-summary code {
   overflow-wrap: anywhere;
   color: var(--text);
-  font:
-    0.76rem/1.45 ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    monospace;
+  font: 0.76rem/1.45 var(--font-mono);
+  font-variant-ligatures: none;
 }
 
 .project-resolution-note {

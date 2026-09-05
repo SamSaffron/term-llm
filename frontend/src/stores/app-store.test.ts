@@ -280,7 +280,7 @@ describe('AppStore compatibility behavior', () => {
     expect(store.prompt.value).toBe('keep this draft');
     expect(store.toasts.value).toHaveLength(0);
 
-    await expect(store.ensureShellSession()).resolves.toBe('session-created');
+    await expect(store.ensureSession()).resolves.toBe('session-created');
     expect(store.endpoints.createBlankSession).toHaveBeenCalledWith(
       expect.objectContaining({ use_default_workspace: true }),
     );

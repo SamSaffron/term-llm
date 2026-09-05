@@ -3378,6 +3378,80 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.queryByRole('heading', { name: 'Tool approvals' })).not.toBeInTheDocument();
   });
 
+  it('saves approval mode before the first message using the shared blank-session path', async () => {
+    const store = createStore();
+    store.sessions.value = [];
+    store.activeSessionId.value = '';
+    store.draftActive.value = true;
+    store.prompt.value = 'Keep my unsent message';
+    store.modal.value = 'approvals';
+    store.endpoints.approvalPolicy = vi.fn();
+    store.endpoints.createBlankSession = vi.fn(async () => ({
+      session: {
+        id: 'prepared',
+        title: 'New chat',
+        mode: 'chat',
+        origin: 'web',
+        created: 10,
+        last_message_at: 10,
+      },
+    }));
+    store.endpoints.setApprovalMode = vi.fn(async () => ({
+      default_mode: 'prompt' as const,
+      requested_mode: 'auto' as const,
+      effective_mode: 'auto' as const,
+      guardian_available: true,
+      guardian_auto_suspended: false,
+    }));
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+    const auto = await screen.findByRole('radio', { name: /Auto/ });
+    expect(auto).toBeEnabled();
+    expect(store.endpoints.createBlankSession).not.toHaveBeenCalled();
+    expect(store.endpoints.approvalPolicy).not.toHaveBeenCalled();
+    await userEvent.click(auto);
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() =>
+      expect(store.endpoints.setApprovalMode).toHaveBeenCalledWith('prepared', 'auto'),
+    );
+    expect(store.activeSession.value?.approvalRequestedMode).toBe('auto');
+    expect(store.activeSession.value?.messages).toEqual([]);
+    expect(store.prompt.value).toBe('Keep my unsent message');
+    expect(store.modal.value).toBe('');
+  });
+
+  it('shows draft preparation and policy failures without pretending the mode was saved', async () => {
+    const store = createStore();
+    store.activeSessionId.value = '';
+    store.draftActive.value = true;
+    store.modal.value = 'approvals';
+    store.ensureSession = vi.fn(async () => '');
+    store.endpoints.setApprovalMode = vi.fn(async () => {
+      throw new Error('Guardian auto-approval is unavailable');
+    });
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+    await userEvent.click(await screen.findByRole('radio', { name: /Auto/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not prepare approval settings',
+    );
+    expect(store.endpoints.setApprovalMode).not.toHaveBeenCalled();
+    store.ensureSession = vi.fn(async () => 'prepared');
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Guardian auto-approval is unavailable',
+    );
+    expect(store.modal.value).toBe('approvals');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+  });
+
   it('hides and rejects approval controls when the server launched in Yolo', async () => {
     const store = createStore();
     store.config.approvals = false;
@@ -4913,6 +4987,179 @@ describe('Preact-owned chat surfaces', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Show 5 older messages' }));
     expect(screen.getAllByRole('button', { name: /Branch from message/ })).toHaveLength(55);
     expect(screen.getByRole('button', { name: 'Branch from message 1: Question 1' })).toBeVisible();
+  });
+
+  it.each([
+    [0, null],
+    [1, '1 select'],
+    [3, '1–3 select'],
+    [12, '1–9 select'],
+  ] as const)('matches approval shortcut hints to %i available choices', (count, hint) => {
+    const store = createStore();
+    store.activeSessionId.value = 's1';
+    store.approval.value = {
+      sessionId: 's1',
+      id: 'shortcuts',
+      options: [
+        ...Array.from({ length: count }, (_, index) => ({
+          index,
+          choice: 'allow',
+          label: `Choice ${index + 1}`,
+        })),
+        { index: count, choice: 'deny', label: 'Deny' },
+      ],
+    };
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+    const shortcuts = container.querySelector('.approval-shortcuts');
+    if (hint) expect(shortcuts).toHaveTextContent(`${hint} · ↑ ↓ navigate · Enter confirm`);
+    else expect(shortcuts).toBeNull();
+  });
+
+  it('keeps long approval details separate and supports keyboard selection without submitting early', async () => {
+    const store = createStore();
+    store.activeSessionId.value = 's1';
+    const prompt = {
+      sessionId: 's1',
+      id: 'long-approval',
+      title: 'Approve command',
+      path: 'term-llm ' + 'long argument '.repeat(300),
+      body: 'First line\n' + 'Command details\n'.repeat(500),
+      options: [
+        {
+          index: 7,
+          choice: 'pattern',
+          label: 'Allow matching commands',
+          description: 'Remembered for this project',
+        },
+        {
+          index: 12,
+          choice: 'once',
+          label: 'Allow once',
+          description: 'Single execution, no memory',
+        },
+        { index: 20, choice: 'deny', label: 'Deny' },
+      ],
+    };
+    store.approval.value = prompt;
+    store.decideApproval = vi.fn(async () => {});
+    store.dismissInteraction = vi.fn();
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    expect(screen.getByRole('dialog')).toHaveClass('approval-modal');
+    const details = screen.getByRole('region', { name: 'Request details' });
+    expect(details).toHaveAttribute('tabindex', '0');
+    expect(details.querySelector('pre')?.textContent).toBe(prompt.body);
+    expect(screen.getByText('Remembered for this project').tagName).toBe('SMALL');
+    const once = screen.getByRole('radio', { name: /Allow once/ });
+    const pattern = screen.getByRole('radio', { name: /Allow matching commands/ });
+    pattern.focus();
+    await userEvent.keyboard('2');
+    expect(once).toBeChecked();
+    expect(once).toHaveFocus();
+    expect(store.decideApproval).not.toHaveBeenCalled();
+    await userEvent.keyboard('{ArrowUp}');
+    expect(pattern).toBeChecked();
+    await userEvent.keyboard('{ArrowDown}{Enter}');
+    expect(store.decideApproval).toHaveBeenCalledWith(12, false, prompt, false);
+    await userEvent.keyboard('{Escape}');
+    expect(store.dismissInteraction).not.toHaveBeenCalled();
+  });
+
+  it('requires a decision, ignores dismissal gestures, and resets a new request', async () => {
+    const store = createStore();
+    store.activeSessionId.value = 's1';
+    store.approval.value = {
+      sessionId: 's1',
+      id: 'first',
+      resumeAutoAvailable: true,
+      options: [
+        { index: 0, choice: 'pattern', label: 'Allow pattern' },
+        { index: 2, choice: 'once', label: 'Allow once' },
+      ],
+    };
+    store.decideApproval = vi.fn(async () => {});
+    store.dismissInteraction = vi.fn();
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+    expect(screen.getByRole('radio', { name: 'Allow once' }).closest('label')).toHaveClass(
+      'modal-choice',
+    );
+    await userEvent.click(screen.getByRole('radio', { name: 'Allow once' }));
+    await userEvent.click(screen.getByRole('checkbox'));
+    const actions = screen.getByRole('button', { name: 'Approve' }).closest('.modal-actions')!;
+    expect(
+      within(actions as HTMLElement)
+        .getAllByRole('button')
+        .map((button) => button.textContent),
+    ).toEqual(['Deny', 'Approve']);
+    expect(screen.queryByRole('button', { name: 'Cancel agent request' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Dismiss' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Close/ })).not.toBeInTheDocument();
+    await userEvent.keyboard('{Escape}');
+    const backdrop = screen.getByRole('dialog').parentElement!;
+    fireEvent.pointerDown(backdrop, { pointerId: 1 });
+    fireEvent.pointerUp(backdrop, { pointerId: 1 });
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(store.dismissInteraction).not.toHaveBeenCalled();
+    expect(store.decideApproval).not.toHaveBeenCalled();
+    act(() => {
+      store.approval.value = { ...store.approval.value!, id: 'second' };
+    });
+    expect(screen.getByRole('radio', { name: 'Allow pattern' })).toBeChecked();
+    expect(screen.getByRole('checkbox')).not.toBeChecked();
+    expect(screen.getByRole('button', { name: 'Deny' })).toBeDisabled();
+  });
+
+  it('blocks duplicate approval submissions and dismissal while pending, then allows retry', async () => {
+    const store = createStore();
+    store.activeSessionId.value = 's1';
+    store.approval.value = {
+      sessionId: 's1',
+      id: 'pending',
+      options: [
+        { index: 4, choice: 'once', label: 'Allow once' },
+        { index: 9, choice: 'deny' },
+      ],
+    };
+    let reject!: (reason: Error) => void;
+    store.decideApproval = vi.fn(
+      () =>
+        new Promise<void>((_resolve, fail) => {
+          reject = fail;
+        }),
+    );
+    store.dismissInteraction = vi.fn();
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+    const radio = screen.getByRole('radio');
+    fireEvent.keyDown(radio, { key: 'Enter' });
+    fireEvent.keyDown(radio, { key: 'Enter' });
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    expect(store.decideApproval).toHaveBeenCalledTimes(1);
+    expect(store.dismissInteraction).not.toHaveBeenCalled();
+    expect(screen.getAllByRole('button')).toHaveLength(2);
+    for (const button of screen.getAllByRole('button')) expect(button).toBeDisabled();
+    await act(async () => {
+      reject(new Error('Try again'));
+    });
+    expect(screen.getByRole('alert')).toHaveTextContent('Try again');
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeEnabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Deny' }));
+    expect(store.decideApproval).toHaveBeenLastCalledWith(9, false, store.approval.value, false);
   });
 
   it('prioritizes approval and ask-user prompts without losing the underlying modal', () => {

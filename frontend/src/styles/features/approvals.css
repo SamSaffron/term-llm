@@ -132,7 +132,8 @@
   overflow: auto;
   padding: 0.6rem 0.7rem;
   color: var(--text-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
   font-size: 0.74rem;
   line-height: 1.45;
   white-space: pre-wrap;
@@ -438,69 +439,135 @@
   }
 }
 
+.modal.approval-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(760px, 100%);
+  min-width: 0;
+  max-height: 100%;
+  overflow: hidden;
+  padding: 0;
+  border-radius: 14px;
+}
+
+.approval-modal .modal-title-row {
+  flex: none;
+  padding: 1.15rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+.approval-modal .modal-title-row h2 {
+  margin: 0;
+}
+
+.approval-form {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.approval-content {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 1rem 1.25rem;
+  overflow-wrap: anywhere;
+}
+
 .approval-intro,
-.approval-note {
+.approval-note,
+.approval-shortcuts {
   color: var(--text-muted);
-  font-size: 0.88rem;
+  font-size: 0.82rem;
+  line-height: 1.5;
 }
 
 .approval-intro {
-  margin-bottom: 0.45rem;
+  margin-bottom: 0.65rem;
 }
 
 .approval-note {
   margin-top: 0.75rem;
 }
 
-.approval-path {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
-  font-size: 0.88rem;
-  background: var(--surface-2);
+.approval-request {
+  max-height: min(32dvh, 320px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.55rem 0.75rem;
-  margin-bottom: 0.85rem;
-  word-break: break-all;
+  border-radius: 8px;
+  background: var(--surface-2);
 }
 
+.approval-request:focus-visible {
+  outline: 2px solid var(--border-strong);
+  outline-offset: 2px;
+}
+
+.approval-path,
 .approval-body {
-  max-height: min(50vh, 420px);
-  overflow-y: auto;
+  display: block;
+  margin: 0;
+  padding: 0.75rem;
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  direction: ltr;
+  text-align: left;
+}
+
+.approval-path + .approval-body {
+  border-top: 1px solid var(--border);
+}
+
+.approval-options legend {
+  margin-bottom: 0.5rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-muted);
 }
 
 .approval-option {
-  display: flex;
-  align-items: center;
-  gap: 0.65rem;
-  padding: 0.55rem 0.7rem;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: background 0.12s ease;
+  margin-bottom: 0.4rem;
 }
 
-.approval-option:hover {
-  background: var(--surface-2);
+.approval-option kbd {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.1rem 0.35rem;
 }
 
-.approval-option:has(input:checked) {
-  background: var(--surface-2);
+.approval-footer {
+  flex: none;
+  padding: 0.85rem 1.25rem;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
 }
 
-.approval-option:has(input:focus-visible) {
-  outline: 2px solid var(--border-strong);
-  outline-offset: -2px;
+.approval-footer .modal-actions {
+  flex-wrap: wrap;
+  margin-top: 0.65rem;
 }
 
-.approval-option input {
-  width: auto;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  border-radius: 0;
-  margin: 0;
-  flex-shrink: 0;
-  appearance: auto;
-  accent-color: var(--accent-strong);
+@media (width <= 480px) {
+  .approval-content,
+  .approval-footer,
+  .approval-modal .modal-title-row {
+    padding: 0.85rem;
+  }
+
+  .approval-footer .modal-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
 }
 
 .ask-user-steps {
@@ -560,43 +627,4 @@
   font-weight: 700;
   line-height: 1.45;
   color: var(--text);
-}
-
-.ask-user-option {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.8rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.8rem 0.85rem;
-  background: var(--surface);
-  cursor: pointer;
-  min-height: 100%;
-  transition: background 0.15s ease;
-}
-
-.ask-user-option:hover {
-  background: var(--surface-2);
-}
-
-.ask-user-option:has(input:checked) {
-  border-color: var(--border-strong);
-  background: var(--surface-2);
-}
-
-.ask-user-option:has(input:focus-visible) {
-  outline: 2px solid var(--border-strong);
-  outline-offset: 2px;
-}
-
-.ask-user-option input {
-  width: auto;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  border-radius: 0;
-  margin: 0.18rem 0 0;
-  flex-shrink: 0;
-  appearance: auto;
-  accent-color: var(--accent-strong);
 }

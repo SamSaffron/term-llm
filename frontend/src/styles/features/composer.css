@@ -248,6 +248,7 @@
 
 .slash-command-name {
   font-family: var(--font-mono);
+  font-variant-ligatures: none;
   font-weight: 600;
 }
 

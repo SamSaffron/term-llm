@@ -20,7 +20,7 @@ function applyPolicy(
 
 export function ApprovalsModal() {
   const store = useStore();
-  const session = store.activeSession.value;
+  const session = store.draftActive.value ? null : store.activeSession.value;
   const sessionId = session?.id || '';
   const reportedMode =
     session?.approvalRequestedMode === 'auto' && session.guardianAvailable === false
@@ -28,20 +28,34 @@ export function ApprovalsModal() {
       : session?.approvalRequestedMode || store.config.approvalMode || 'prompt';
   const [mode, setMode] = useState(reportedMode);
   const [saving, setSaving] = useState(false);
-  const [loading, setLoading] = useState(!session?.approvalRequestedMode);
+  const [loading, setLoading] = useState(Boolean(sessionId) && !session?.approvalRequestedMode);
   const [error, setError] = useState('');
   const dirty = useRef(false);
+  const submitting = useRef(false);
   const modeInputs = useRef<Record<string, HTMLInputElement | null>>({});
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId || submitting.current) {
+      setLoading(false);
+      return;
+    }
+    let live = true;
     dirty.current = false;
     setError('');
     setLoading(true);
     void store.endpoints
       .approvalPolicy(sessionId)
-      .then((value) => applyPolicy(store, sessionId, value))
-      .catch((value: unknown) => setError(errorMessage(value)))
-      .finally(() => setLoading(false));
+      .then((value) => {
+        if (live) applyPolicy(store, sessionId, value);
+      })
+      .catch((value: unknown) => {
+        if (live) setError(errorMessage(value));
+      })
+      .finally(() => {
+        if (live) setLoading(false);
+      });
+    return () => {
+      live = false;
+    };
   }, [store, sessionId]);
   useEffect(() => {
     if (!dirty.current) setMode(reportedMode);
@@ -56,20 +70,26 @@ export function ApprovalsModal() {
       modeInputs.current[mode]?.focus({ preventScroll: true });
   }, [mode]);
   const save = async () => {
+    if (submitting.current) return;
+    submitting.current = true;
     setSaving(true);
     setError('');
     try {
-      if (!sessionId) throw new Error('Start the conversation before changing approval mode.');
-      const value = await store.endpoints.setApprovalMode(sessionId, mode);
-      applyPolicy(store, sessionId, value);
+      const targetSessionId = sessionId || (await store.ensureSession());
+      if (!targetSessionId)
+        throw new Error('Could not prepare approval settings. Please try again.');
+      const value = await store.endpoints.setApprovalMode(targetSessionId, mode);
+      applyPolicy(store, targetSessionId, value);
       store.modal.value = '';
     } catch (value) {
       setError(errorMessage(value));
+    } finally {
+      submitting.current = false;
       setSaving(false);
     }
   };
   return (
-    <Overlay title="Tool approvals" className="approvals-modal">
+    <Overlay title="Tool approvals" className="approvals-modal" dismissDisabled={saving}>
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -85,7 +105,10 @@ export function ApprovalsModal() {
               ['yolo', 'Yolo', 'Approve all tool access without review.'],
             ] as const
           ).map(([value, label, description]) => (
-            <label class={`approval-mode-option approval-mode-option-${value}`} key={value}>
+            <label
+              class={`modal-choice approval-mode-option approval-mode-option-${value}`}
+              key={value}
+            >
               <input
                 ref={(element) => {
                   modeInputs.current[value] = element;

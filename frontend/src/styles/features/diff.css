@@ -308,7 +308,8 @@
 
 .diff-file-body {
   border-bottom: 1px solid var(--border);
-  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
   font-size: 0.76rem;
   line-height: 1.3;
 }
@@ -831,7 +832,8 @@
   border-radius: 999px;
   background: var(--surface-strong);
   color: var(--text);
-  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
   font-size: 0.7rem;
   font-variant-numeric: tabular-nums;
 }

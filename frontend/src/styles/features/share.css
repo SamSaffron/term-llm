@@ -156,7 +156,8 @@
 }
 
 .share-url {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
   font-size: 0.78rem;
 }
 

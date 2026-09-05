@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -231,5 +231,48 @@ describe('syntax theme', () => {
     );
     expect(appCSS).toMatch(/\.diff-code\s*:is\(\s*\.hljs-addition,\s*\.hljs-deletion\)/);
     expect(appCSS).toContain('background: transparent');
+  });
+});
+
+describe('modal choice focus', () => {
+  it('uses a card-level keyboard focus indicator instead of a second input outline', () => {
+    expect(appCSS).toMatch(
+      /\.modal-choice:has\(input:focus-visible\)\s*\{[^}]*outline: 2px solid var\(--border-strong\)/s,
+    );
+    expect(appCSS).toMatch(/\.modal-choice input:focus-visible\s*\{[^}]*outline: none/s);
+  });
+});
+
+describe('shared code typography', () => {
+  it('defines one code-font stack and loads it in both frontends', () => {
+    const typography = readFileSync(resolve(stylesRoot, 'base/typography.css'), 'utf8');
+    expect(typography).toMatch(
+      /--font-mono:\s*'JetBrains Mono',\s*ui-monospace[^;]*SFMono-Regular[^;]*Cascadia Mono[^;]*Consolas[^;]*Liberation Mono[^;]*DejaVu Sans Mono[^;]*monospace;/s,
+    );
+    expect(appCSS).toContain(typography);
+    const hubCSS = readStylesheet(resolve(stylesRoot, '../hub/styles/hub.css'));
+    expect(hubCSS).toContain(typography);
+  });
+
+  it('disables ligatures on every code-font declaration, including font shorthands', () => {
+    for (const root of [stylesRoot, resolve(stylesRoot, '../hub/styles')]) {
+      for (const path of readdirSync(root, { recursive: true, encoding: 'utf8' })) {
+        if (!path.endsWith('.css')) continue;
+        const css = readFileSync(resolve(root, path), 'utf8');
+        for (const block of css.matchAll(/\{([^{}]*var\(--font-mono\)[^{}]*)\}/g)) {
+          expect(block[1], path).toContain('font-variant-ligatures: none;');
+        }
+      }
+    }
+  });
+
+  it('does not reintroduce separate monospace stacks in feature styles', () => {
+    for (const root of [stylesRoot, resolve(stylesRoot, '../hub/styles')]) {
+      for (const path of readdirSync(root, { recursive: true, encoding: 'utf8' })) {
+        if (!path.endsWith('.css') || path === 'base/typography.css') continue;
+        const css = readFileSync(resolve(root, path), 'utf8');
+        expect(css, path).not.toMatch(/(?:font(?:-family)?|--font-mono):[^;{}]*\bmonospace\b/s);
+      }
+    }
   });
 });

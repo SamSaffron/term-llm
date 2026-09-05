@@ -368,7 +368,8 @@
   background: var(--surface);
   color: var(--text);
   white-space: pre-wrap;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
   font-size: 0.82rem;
   line-height: 1.45;
 }
@@ -612,7 +613,8 @@
 }
 
 .markdown-body :not(pre) > code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
   background: var(--surface-2);
   border: 1px solid var(--border);
   padding: 0.11rem 0.35rem;
@@ -858,11 +860,8 @@
   min-width: 0;
   overflow: hidden;
   color: var(--text-muted);
-  font:
-    0.74rem ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    monospace;
+  font: 0.74rem var(--font-mono);
+  font-variant-ligatures: none;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -923,7 +922,8 @@
 
 .tool-argument dt {
   color: var(--text-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
   font-size: 0.78rem;
   font-weight: 600;
 }
@@ -943,7 +943,8 @@
 .tool-argument-text,
 .tool-argument-literal,
 .tool-argument-structured {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
   font-size: inherit;
   white-space: pre-wrap;
   word-break: break-word;
@@ -1054,7 +1055,8 @@
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--surface);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
   font-size: 0.83rem;
   white-space: pre-wrap;
   word-break: break-word;
@@ -1168,13 +1170,8 @@
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
-  font:
-    0.78rem/1.5 'SF Mono',
-    'Cascadia Code',
-    'Fira Code',
-    Menlo,
-    Consolas,
-    monospace;
+  font: 0.78rem/1.5 var(--font-mono);
+  font-variant-ligatures: none;
   color: var(--text);
 }
 

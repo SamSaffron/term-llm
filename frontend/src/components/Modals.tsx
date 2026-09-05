@@ -507,7 +507,7 @@ function AskUser({ interactionPrompt }: { interactionPrompt?: AskUserPrompt }) {
           {question.question}
         </legend>
         {question.options?.map((option) => (
-          <label class="ask-user-option" key={option.label}>
+          <label class="modal-choice ask-user-option" key={option.label}>
             <input
               type={question.multi_select ? 'checkbox' : 'radio'}
               name={`question-${tab}`}
@@ -574,8 +574,9 @@ function Approval({ interactionPrompt }: { interactionPrompt?: ApprovalPrompt })
   const store = useStore();
   const prompt = interactionPrompt || store.approval.value;
   const options = prompt?.options || [];
-  const deny =
-    options.find((option) => option.choice === 'deny')?.index ?? options.at(-1)?.index ?? 0;
+  const deny = options.find((option) => option.choice === 'deny')?.index;
+  const allowed = options.filter((option) => option.choice !== 'deny');
+  const pending = useRef(false);
   const [choice, setChoice] = useState(
     options.find((option) => option.choice !== 'deny')?.index ?? 0,
   );
@@ -583,83 +584,141 @@ function Approval({ interactionPrompt }: { interactionPrompt?: ApprovalPrompt })
   const [error, setError] = useState('');
   const [sending, setSending] = useState(false);
   if (!prompt) return null;
-  const decide = async (selected: number, cancelled = false) => {
-    if (sending) return;
+  const decide = async (selected: number) => {
+    if (pending.current) return;
+    pending.current = true;
     setSending(true);
     setError('');
     try {
-      await store.decideApproval(selected, resume, prompt, cancelled);
+      await store.decideApproval(selected, resume, prompt, false);
     } catch (value) {
       setError(errorMessage(value));
     } finally {
+      pending.current = false;
       setSending(false);
     }
   };
   return (
     <Overlay
-      title={prompt.title || 'Access Request'}
+      title={prompt.title || 'Access request'}
+      className="approval-modal"
+      dismissDisabled={sending}
       close={false}
-      onEscape={() => store.dismissInteraction('approval', prompt)}
     >
-      {prompt.intro && <div class="approval-intro">{prompt.intro}</div>}
-      {prompt.scope === 'shared_shell' && (
-        <div class="approval-intro">Shared interactive shell — target may be remote</div>
-      )}
-      {prompt.path && <code class="approval-path">{prompt.path}</code>}
-      <div class="approval-body">{prompt.body}</div>
-      {options
-        .filter((option) => option.choice !== 'deny')
-        .map((option) => (
-          <label class="approval-option">
-            <input
-              type="radio"
-              name="approval"
-              checked={choice === option.index}
-              disabled={sending}
-              onChange={() => setChoice(option.index)}
-            />
-            <span>
-              {option.label || option.title || option.choice}
-              {option.description && <small>{option.description}</small>}
-              {prompt.scope === 'shared_shell' && option.choice !== 'once' && (
-                <small>
-                  Remember only for this session’s shared shell; do not save as a project approval.
-                </small>
-              )}
-            </span>
-          </label>
-        ))}
-      {prompt.resumeAutoAvailable && (
-        <label>
-          <input
-            type="checkbox"
-            checked={resume}
-            disabled={sending}
-            onChange={(event) => setResume(event.currentTarget.checked)}
-          />{' '}
-          Resume Guardian auto-approval
-        </label>
-      )}
-      {prompt.note && <div class="approval-note">{prompt.note}</div>}
-      {error && <div class="modal-error">{error}</div>}
-      <div class="modal-actions">
-        <button
-          class="btn"
-          disabled={sending}
-          onClick={() => store.dismissInteraction('approval', prompt)}
-        >
-          Dismiss
-        </button>
-        <button class="btn" disabled={sending} onClick={() => void decide(choice, true)}>
-          Cancel request
-        </button>
-        <button class="btn" disabled={sending} onClick={() => void decide(deny)}>
-          {sending ? 'Submitting…' : 'Deny'}
-        </button>
-        <button class="btn primary" disabled={sending} onClick={() => void decide(choice)}>
-          {sending ? 'Submitting…' : 'Approve'}
-        </button>
-      </div>
+      <form
+        class="approval-form"
+        aria-busy={sending}
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (allowed.some((option) => option.index === choice)) void decide(choice);
+        }}
+        onKeyDown={(event) => {
+          if (event.isComposing || event.repeat || event.altKey || event.metaKey || event.ctrlKey)
+            return;
+          const target = event.target as HTMLElement;
+          if (target instanceof HTMLInputElement && target.type === 'checkbox') return;
+          const position = allowed.findIndex((option) => option.index === choice);
+          let next = /^[1-9]$/.test(event.key) ? Number(event.key) - 1 : -1;
+          if (target instanceof HTMLInputElement && target.type === 'radio') {
+            if (event.key === 'ArrowDown' || event.key === 'ArrowRight')
+              next = (position + 1) % allowed.length;
+            if (event.key === 'ArrowUp' || event.key === 'ArrowLeft')
+              next = (position - 1 + allowed.length) % allowed.length;
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              if (!sending) void decide(choice);
+              return;
+            }
+          }
+          if (next < 0 || next >= allowed.length) return;
+          event.preventDefault();
+          if (sending) return;
+          setChoice(allowed[next].index);
+          event.currentTarget
+            .querySelectorAll<HTMLInputElement>('input[type="radio"]')
+            [next]?.focus();
+        }}
+      >
+        <div class="approval-content">
+          {prompt.intro && <div class="approval-intro">{prompt.intro}</div>}
+          {prompt.scope === 'shared_shell' && (
+            <div class="approval-intro">Shared interactive shell — target may be remote</div>
+          )}
+          {(prompt.path || prompt.body) && (
+            <section class="approval-request" aria-label="Request details" tabIndex={0}>
+              {prompt.path && <code class="approval-path">{prompt.path}</code>}
+              {prompt.body && <pre class="approval-body">{prompt.body}</pre>}
+            </section>
+          )}
+          <fieldset class="approval-options" disabled={sending}>
+            <legend>Approval scope</legend>
+            {allowed.map((option, index) => (
+              <label class="modal-choice approval-option" key={option.index}>
+                <input
+                  type="radio"
+                  name="approval"
+                  autoFocus={choice === option.index}
+                  checked={choice === option.index}
+                  onChange={() => setChoice(option.index)}
+                />
+                <span>
+                  <strong>{option.label || option.title || option.choice}</strong>
+                  {option.description && <small>{option.description}</small>}
+                  {prompt.scope === 'shared_shell' && option.choice !== 'once' && (
+                    <small>
+                      Remember only for this session’s shared shell; do not save as a project
+                      approval.
+                    </small>
+                  )}
+                </span>
+                {index < 9 && <kbd aria-hidden="true">{index + 1}</kbd>}
+              </label>
+            ))}
+          </fieldset>
+          {prompt.resumeAutoAvailable && (
+            <label>
+              <input
+                type="checkbox"
+                checked={resume}
+                disabled={sending}
+                onChange={(event) => setResume(event.currentTarget.checked)}
+              />{' '}
+              Resume Guardian auto-approval
+            </label>
+          )}
+          {prompt.note && <div class="approval-note">{prompt.note}</div>}
+          {error && (
+            <div class="modal-error" role="alert">
+              {error}
+            </div>
+          )}
+        </div>
+        <div class="approval-footer">
+          {allowed.length > 0 && (
+            <div class="approval-shortcuts">
+              {allowed.length === 1 ? '1' : `1–${Math.min(allowed.length, 9)}`} select · ↑ ↓
+              navigate · Enter confirm
+            </div>
+          )}
+          <div class="modal-actions">
+            <button
+              type="button"
+              class="btn"
+              disabled={sending || deny === undefined}
+              onClick={() => deny !== undefined && void decide(deny)}
+            >
+              {sending ? 'Submitting…' : 'Deny'}
+            </button>
+            <button
+              type="submit"
+              class="btn primary"
+              disabled={sending || !allowed.some((option) => option.index === choice)}
+            >
+              {sending ? 'Submitting…' : 'Approve'}
+            </button>
+          </div>
+        </div>
+      </form>
     </Overlay>
   );
 }
@@ -1955,6 +2014,7 @@ export function Modals() {
     case 'approval':
       return (
         <Approval
+          key={`${activeApproval?.sessionId}:${activeApproval?.id}:${interaction?.requestId}`}
           interactionPrompt={
             interaction?.kind === 'approval'
               ? (interaction.prompt as ApprovalPrompt)

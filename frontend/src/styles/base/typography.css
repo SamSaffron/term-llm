@@ -1,0 +1,15 @@
+/* Shared by chat and Hub; the terminal reads this token for its canvas renderer. */
+:root {
+  --font-mono:
+    'JetBrains Mono', ui-monospace, 'SFMono-Regular', 'SF Mono', 'Menlo', 'Cascadia Mono',
+    'Consolas', 'Liberation Mono', 'DejaVu Sans Mono', monospace;
+}
+
+/* Disable operator ligatures: code must display the literal characters. */
+code,
+pre,
+kbd,
+samp {
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+}

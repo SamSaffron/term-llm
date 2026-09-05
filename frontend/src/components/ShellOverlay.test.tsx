@@ -5,10 +5,14 @@ import { AppStore } from '../stores/app-store';
 import { ShellOverlay } from './ShellOverlay';
 
 const registerOscHandler = vi.hoisted(() => vi.fn());
+const terminalOptions = vi.hoisted(() => vi.fn());
 const terminalInput = vi.hoisted(() => ({ handler: null as ((data: string) => void) | null }));
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
+    constructor(options: unknown) {
+      terminalOptions(options);
+    }
     cols = 80;
     rows = 24;
     parser = { registerOscHandler };
@@ -85,6 +89,17 @@ function shellStore(): AppStore {
 }
 
 describe('ShellOverlay', () => {
+  it('uses the shared CSS code font for the terminal renderer', () => {
+    const store = shellStore();
+    vi.spyOn(window, 'getComputedStyle').mockReturnValue({
+      getPropertyValue: (name: string) => (name === '--font-mono' ? 'Test Mono, monospace' : ''),
+    } as CSSStyleDeclaration);
+    render(<ShellOverlay store={store} />);
+    expect(terminalOptions).toHaveBeenLastCalledWith(
+      expect.objectContaining({ fontFamily: 'Test Mono, monospace' }),
+    );
+  });
+
   it('keeps a draft shell open and creates a blank session when sharing is requested', async () => {
     const store = shellStore();
     store.sessions.value = [];
@@ -92,7 +107,7 @@ describe('ShellOverlay', () => {
     store.draftActive.value = true;
     store.shellStore.sessionId.value = '';
     store.shellStore.status.value = 'idle';
-    store.ensureShellSession = vi.fn(async () => {
+    store.ensureSession = vi.fn(async () => {
       store.activeSessionId.value = 'session-created';
       store.draftActive.value = false;
       return 'session-created';
@@ -111,7 +126,7 @@ describe('ShellOverlay', () => {
     expect(screen.getByLabelText('Terminal waiting for conversation')).toBeVisible();
 
     await userEvent.click(screen.getByRole('button', { name: 'Share with agent' }));
-    await waitFor(() => expect(store.ensureShellSession).toHaveBeenCalledOnce());
+    await waitFor(() => expect(store.ensureSession).toHaveBeenCalledOnce());
     expect(store.shellStore.bind).toHaveBeenCalledWith('session-created');
     await waitFor(() => expect(store.shellStore.enableCollaboration).toHaveBeenCalledOnce());
   });

@@ -63,7 +63,8 @@
 
 .commit-file-path {
   overflow-wrap: anywhere;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
 }
 
 .commit-file-badges {
@@ -76,7 +77,8 @@
   width: 100%;
   resize: vertical;
   min-height: 180px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
 }
 
 .commit-success {

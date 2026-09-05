@@ -274,13 +274,8 @@
   min-width: 0;
   overflow: hidden;
   color: var(--text-muted);
-  font:
-    0.68rem/1.35 ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    Monaco,
-    Consolas,
-    monospace;
+  font: 0.68rem/1.35 var(--font-mono);
+  font-variant-ligatures: none;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

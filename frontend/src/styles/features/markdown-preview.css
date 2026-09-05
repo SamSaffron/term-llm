@@ -149,7 +149,8 @@
   display: inline-block;
   margin-right: 0.4rem;
   color: var(--text-muted);
-  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
   font-size: 0.68rem;
 }
 

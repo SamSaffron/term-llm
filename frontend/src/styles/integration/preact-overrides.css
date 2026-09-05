@@ -594,18 +594,6 @@ mark.diff-word {
   margin-bottom: 0.45rem;
 }
 
-.ask-user-option span {
-  display: grid;
-  gap: 0.18rem;
-  min-width: 0;
-}
-
-.ask-user-option small {
-  color: var(--text-muted);
-  font-size: 0.78rem;
-  font-weight: 400;
-}
-
 .ask-user-custom {
   display: grid;
   gap: 0.4rem;

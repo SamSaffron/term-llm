@@ -1,3 +1,5 @@
+@import '../../styles/base/typography.css';
+
 :root {
   color-scheme: dark light;
 
@@ -332,7 +334,8 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
   font-size: 0.82rem;
 }
 
@@ -669,7 +672,8 @@ body {
 
 .registration-help code,
 .command-box {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
 }
 
 .registration-help-head {
@@ -954,7 +958,8 @@ body {
 .delegation-meta {
   color: var(--muted);
   font-size: 0.78rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
 }
 
 .delegation-prompt {

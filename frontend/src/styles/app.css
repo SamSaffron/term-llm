@@ -3,6 +3,7 @@
    entries must stay sorted from most general to most specific. The Preact
    integration layer overrides earlier legacy rules and must remain last. */
 @import './base/tokens.css';
+@import './base/typography.css';
 @import './base/reset.css';
 @import './base/shell.css';
 @import './features/diff.css';

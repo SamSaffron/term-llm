@@ -224,7 +224,7 @@ export class AppStore {
   private readonly lifecycleAbort = new AbortController();
   private disposed = false;
   private recoveryPromise: Promise<void> | null = null;
-  private shellSessionPromise: Promise<string> | null = null;
+  private sessionCreationPromise: Promise<string> | null = null;
   private readonly attentionAcks = new Map<string, number>();
   private serverEventFeedEnabled = false;
   private readonly locallyStoppedResponses: Set<string>;
@@ -1461,11 +1461,12 @@ export class AppStore {
     if (this.shellStore.show(draft ? '' : session?.id || '') && !draft) this.prompt.value = '';
   }
 
-  async ensureShellSession(): Promise<string> {
+  // Materialize the current draft without sending a message (shell and approval controls).
+  async ensureSession(): Promise<string> {
     const active = this.activeSession.peek();
     if (active && !this.draftActive.peek()) return active.id;
-    if (this.shellSessionPromise) return this.shellSessionPromise;
-    this.shellSessionPromise = (async () => {
+    if (this.sessionCreationPromise) return this.sessionCreationPromise;
+    this.sessionCreationPromise = (async () => {
       const draftID = this.composer.runtimeDraftId();
       const projectID = this.activeProjectId.peek();
       const worktreeDir = this.selectedDraftWorktree.peek();
@@ -1498,10 +1499,10 @@ export class AppStore {
         this.toast(error, 'error');
         return '';
       } finally {
-        this.shellSessionPromise = null;
+        this.sessionCreationPromise = null;
       }
     })();
-    return this.shellSessionPromise;
+    return this.sessionCreationPromise;
   }
 
   toast(value: unknown, kind: Toast['kind'] = 'info'): void {

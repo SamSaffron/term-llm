@@ -175,24 +175,75 @@
   gap: 0.55rem;
 }
 
-.approval-mode-option {
+/* Shared choice cards for permissions, approval policy, and agent questions. */
+.modal-choice {
   display: flex;
   align-items: flex-start;
-  gap: 0.65rem;
+  gap: 0.75rem;
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 0.7rem 0.75rem;
+  border-radius: 8px;
+  padding: 0.75rem;
+  background: var(--surface);
   cursor: pointer;
+  transition: background 0.15s ease;
+  overflow-wrap: anywhere;
 }
 
-.approval-mode-option:has(input:checked) {
-  border-color: color-mix(in srgb, var(--link) 52%, var(--border));
-  background: color-mix(in srgb, var(--link) 6%, var(--surface-2));
+.modal-choice:hover {
+  background: var(--surface-2);
 }
 
-.approval-mode-option:has(input:focus-visible) {
-  outline: 2px solid color-mix(in srgb, var(--border-strong) 60%, transparent);
+.modal-choice:has(input:checked) {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+}
+
+.modal-choice:has(input:focus-visible) {
+  outline: 2px solid var(--border-strong);
   outline-offset: 2px;
+}
+
+.modal-choice input:focus-visible {
+  /* The containing card provides the keyboard focus indicator above. */
+  outline: none;
+}
+
+.modal-choice:has(input:disabled) {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.modal-choice input {
+  width: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  border-radius: 0;
+  margin: 0.18rem 0 0;
+  flex-shrink: 0;
+  appearance: auto;
+  accent-color: var(--accent-strong);
+}
+
+.modal-choice > span {
+  display: grid;
+  flex: 1;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.modal-choice strong {
+  font-size: 0.88rem;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.modal-choice small {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-weight: 400;
+  line-height: 1.45;
 }
 
 .approval-mode-option-yolo:has(input:checked) {
@@ -202,31 +253,6 @@
 
 .approval-mode-option-yolo input {
   accent-color: var(--danger);
-}
-
-.approval-mode-option input {
-  margin-top: 0.2rem;
-  accent-color: var(--link);
-}
-
-.approval-mode-option input:focus {
-  outline: none;
-}
-
-.approval-mode-option span,
-.approval-mode-option small {
-  display: block;
-}
-
-.approval-mode-option small {
-  margin-top: 0.2rem;
-  color: var(--text-muted);
-  line-height: 1.35;
-}
-
-.approval-mode-option:has(input:disabled) {
-  opacity: 0.55;
-  cursor: not-allowed;
 }
 
 .approval-mode-notice {
