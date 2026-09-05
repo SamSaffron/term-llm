@@ -6,6 +6,8 @@ package restart
 import (
 	"log"
 	"sync"
+
+	"github.com/samsaffron/term-llm/internal/process"
 )
 
 // Dispatcher keeps the signal disposition installed while mode owners come and
@@ -36,6 +38,7 @@ func (d *Dispatcher) Request() {
 	}
 	if !d.deferred {
 		d.deferred = true
+		process.State("", "deferred", "signal retained original invocation; no replay")
 		if d.report != nil {
 			d.report("deferred")
 		}

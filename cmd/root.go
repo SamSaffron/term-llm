@@ -14,6 +14,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/exitcode"
 	pprofserver "github.com/samsaffron/term-llm/internal/pprof"
+	"github.com/samsaffron/term-llm/internal/process"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/terminaltext"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -66,6 +67,7 @@ create media, and automate recurring work—from your terminal or browser.`,
 	SilenceErrors:     true,
 	SilenceUsage:      true,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		process.State(cmd.CommandPath(), "deferred", "mode has no resumable owner")
 		if shellCompletionExecution(cmd) {
 			return nil
 		}
@@ -202,9 +204,11 @@ func stopProfiling() error {
 
 func Execute() {
 	stopRestart := restart.Default.Listen()
+	publisher := process.Start(versionString())
 	err := executeWithArgs(os.Args[1:])
 	// Execute exits directly on errors, so finish before os.Exit, not in a defer.
 	stopRestart()
+	publisher.Stop()
 	if err != nil {
 		writeRootError(rootCmd.ErrOrStderr(), err)
 		if exitErr, ok := err.(exitcode.ExitError); ok {

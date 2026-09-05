@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/process"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -62,6 +63,7 @@ type webExecCoordinator struct {
 }
 
 func newWebExecCoordinator(ctx context.Context, s *serveServer, unsupported string) *webExecCoordinator {
+	process.State("serve web", "starting", "")
 	executable, err := os.Executable()
 	if err != nil {
 		unsupported = "cannot resolve serving executable"
@@ -93,6 +95,7 @@ func (c *webExecCoordinator) reject(reason string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.unsupported = reason
+	process.State("serve web", "unsupported", reason)
 	if c.draining {
 		c.abortLocked()
 	}
@@ -104,6 +107,7 @@ func (c *webExecCoordinator) abortLocked() {
 	if c.draining {
 		close(c.release)
 		c.draining = false
+		process.State("serve web", "failed", "restart aborted; original process retained")
 	}
 }
 
@@ -283,6 +287,7 @@ func (c *webExecCoordinator) request() {
 		return
 	}
 	if c.unsupported != "" {
+		process.State("serve web", "unsupported", c.unsupported)
 		log.Printf("[reload] SIGUSR2 rejected: %s", c.unsupported)
 		return
 	}
@@ -290,10 +295,12 @@ func (c *webExecCoordinator) request() {
 		return
 	}
 	if !c.ready {
+		process.State("serve web", "deferred", "web startup is not ready")
 		log.Printf("[reload] SIGUSR2 rejected: web startup is not ready")
 		return
 	}
 	c.draining = true
+	process.State("serve web", "draining", "")
 	c.release = make(chan struct{})
 	started = true
 	go c.drain(c.release)
@@ -507,4 +514,13 @@ func webExecRunCancelled(entry *webExecRun) bool {
 	entry.run.mu.Lock()
 	defer entry.run.mu.Unlock()
 	return entry.run.cancelRequested || entry.run.status != "in_progress"
+}
+
+// publishReady is called only after HTTP startup and response lifecycle setup.
+func (c *webExecCoordinator) publishReady() {
+	if c.unsupported != "" {
+		process.State("serve web", "unsupported", c.unsupported)
+	} else {
+		process.State("serve web", "ready", "")
+	}
 }

@@ -213,3 +213,43 @@ user turn. It also exercises simultaneous sessions, a quiet reload with no
 replayed continuation, and a real shell child verifying that restart hints were
 scrubbed. Private fixture homes, transcripts, logs and screenshots are not
 repository assets and must not be published.
+
+## Local process discovery and restart commands (Linux)
+
+```sh
+term-llm process list
+term-llm process list --json
+term-llm process restart 123 --timeout 2m
+term-llm process restart-all --timeout 2m
+```
+
+Discovery is opt-in through running binaries that publish process records. Older
+binaries are not found by scanning arbitrary command lines and are never signalled
+by these commands. Records are owner-private under
+`$XDG_RUNTIME_DIR/term-llm-processes`, falling back to the user's cache directory.
+They contain PID, OS process-start identity, random executable-instance UUID,
+build identity, mode and last reported lifecycle phase, not arguments or tokens.
+
+Publication runs in a goroutine after a 25 ms grace period rather than blocking
+command startup on filesystem I/O. Commands that exit during that period cancel
+publication without opening procfs or the registry. Discovery is therefore eventually
+consistent: a just-started process can be absent briefly. Status is advisory, not a live health probe. Discovery validates
+process ownership, kernel boot/start identity and non-zombie state, and removes
+stale records under the same lock used by publishers. Normal exit asks the single
+publisher to stop and remove its own instance's record; cleanup cannot race a late
+writer into recreating that record after cleanup. Advisory publication does not
+replace synchronous durable resume-intent writes before exec.
+
+`restart` binds a Linux pidfd and revalidates the discovered instance before sending
+SIGUSR2. There is no numeric-PID kill fallback if pidfd is unavailable. By default
+it waits for a different instance UUID, the same OS process lifetime, the installed
+executable's Go build identity, matching mode, and reported `ready` state. Self-exec
+keeps the PID. Exit, unsupported/deferred handling, wrong build or timeout returns
+an error; `--no-wait` reports only that the signal was sent, not restart success.
+
+`restart-all` discovers once, excludes itself, requests restarts concurrently and
+prints ordered per-process results. It does not rescan and restart replacements.
+Any selected process that cannot restart makes the command fail rather than being
+silently counted as success. Modes without a resumable lifecycle owner remain
+unsupported/deferred as described above; these commands do not make those modes
+resumable by themselves.

@@ -1534,6 +1534,7 @@ func (s *serveServer) Start() error {
 		if s.webExec != nil {
 			s.webExec.mu.Lock()
 			s.webExec.ready = true
+			s.webExec.publishReady()
 			s.webExec.mu.Unlock()
 		}
 		return nil
