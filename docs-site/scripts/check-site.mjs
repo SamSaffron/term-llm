@@ -82,8 +82,32 @@ try {
   assert.ok((await readFile(path.join(site, "sitemap.xml"), "utf8")).includes("https://term-llm.com/"));
   console.log(`✓ ${htmlFiles.length} documents: links, fragments, assets, headings, metadata, and sitemap`);
 
-  async function noOverflow() {
-    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `Horizontal page overflow: ${page.url()}`);
+  async function noOverflow(label = "default font") {
+    const layout = await page.evaluate(() => {
+      const viewportWidth = innerWidth;
+      const documentWidth = document.documentElement.scrollWidth;
+      const offenders = documentWidth > viewportWidth + 1
+        ? [...document.querySelectorAll("body *")].filter((element) => {
+          if (!element.getClientRects().length) return false;
+          const rect = element.getBoundingClientRect();
+          if (rect.right <= viewportWidth + 1 && rect.left >= -1) return false;
+          // Long code inside its own scroll container is intentional, not page overflow.
+          for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+            const bounds = parent.getBoundingClientRect();
+            if (getComputedStyle(parent).overflowX !== "visible" && bounds.left >= 0 && bounds.right <= viewportWidth + 1) return false;
+          }
+          return true;
+        }).slice(0, 12).map((element) => {
+          const rect = element.getBoundingClientRect();
+          return { element: element.tagName.toLowerCase(), class: element.getAttribute("class"), text: element.textContent.trim().slice(0, 80), left: rect.left, right: rect.right, width: rect.width };
+        }) : [];
+      return { viewportWidth, documentWidth, offenders };
+    });
+    if (layout.documentWidth > layout.viewportWidth + 1) {
+      const name = `overflow-${layout.viewportWidth}-${new URL(page.url()).pathname.replace(/[^a-z0-9]+/gi, "-")}`;
+      await page.screenshot({ path: path.join(results, `${name}.png`), fullPage: true });
+      assert.fail(`Horizontal page overflow: ${page.url()} (${label})\n${JSON.stringify(layout, null, 2)}`);
+    }
   }
   async function accessible(label) {
     const scan = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21aa"]).analyze();
@@ -163,6 +187,21 @@ try {
       await noOverflow();
     }
   }
+  // System fonts differ across OSes: DejaVu Sans exposed a 320px header
+  // overflow on Ubuntu that did not occur with the development machine's font.
+  await page.setViewportSize({ width: 320, height: 844 });
+  for (const pathname of ["/", "/getting-started/quickstart/"]) {
+    await page.goto(`${origin}${pathname}`);
+    for (const font of ['"DejaVu Sans", sans-serif', '"Liberation Sans", sans-serif']) {
+      const override = await page.addStyleTag({ content: `body { font-family: ${font}; }` });
+      await noOverflow(font);
+      await page.locator(".mobile-menu summary").click();
+      await noOverflow(`${font}, open menu`);
+      await page.locator(".mobile-menu summary").click();
+      await override.evaluate((element) => element.remove());
+    }
+  }
+  console.log("✓ Narrow header with alternate system fonts and open mobile menu");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(origin);
   await accessible("mobile homepage");
