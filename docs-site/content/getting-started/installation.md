@@ -9,6 +9,12 @@ next:
   label: Provider setup
   url: /getting-started/providers-and-setup/
 ---
+### Supported release platforms
+
+The release installer and published archives target **Linux and macOS**, on **amd64** and **arm64**. Homebrew is the macOS option. PowerShell completion support does not imply that a native Windows binary is published by the current release configuration.
+
+Published binaries include the browser workspace. You do not need Go or Node.js to run a release; those are source-build prerequisites. You can also [download an archive and its checksums](https://github.com/samsaffron/term-llm/releases) instead of executing the installer script.
+
 ### One-liner (recommended)
 
 ```bash
@@ -31,7 +37,7 @@ Homebrew installs the correct release binary for Apple Silicon or Intel macOS. F
 
 ### Build from source
 
-Source builds require Go, Node.js 24 or newer, npm, and Make:
+Source builds require the Go version declared in `go.mod`, Node.js 24 or newer, npm, and Make:
 
 ```bash
 git clone https://github.com/samsaffron/term-llm

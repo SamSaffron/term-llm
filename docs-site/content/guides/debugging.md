@@ -101,7 +101,7 @@ To inspect the exact generation payload that `agy` sends through term-llm's comp
 
 ```bash
 mkdir -m 700 /tmp/term-llm-agy-trace
-TERM_LLM_AGY_PROXY_TRACE_FILE=/tmp/term-llm-agy-trace/requests.jsonl term-llm chat
+TERM_LLM_AGY_PROXY_TRACE_FILE=/tmp/term-llm-agy-trace/requests.jsonl term-llm chat --provider agy-bin
 rg 'output\.txt|brain/' /tmp/term-llm-agy-trace/requests.jsonl
 ```
 

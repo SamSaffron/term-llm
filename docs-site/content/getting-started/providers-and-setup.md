@@ -53,7 +53,7 @@ Follow the browser authentication flow on first use. Available models and limits
 
 ## Use a local model
 
-Start your [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai) server and load a model first. Then list the models it exposes:
+Start your [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai) server and load/download a model first. Ollama has a built-in native adapter; for LM Studio, first create the [OpenAI-compatible profile](/reference/providers-and-models/#lm-studio). Then list the models it exposes:
 
 ```bash
 term-llm models --provider ollama
@@ -67,6 +67,8 @@ term-llm ask --provider ollama:MODEL_ID "Explain git rebase in three sentences"
 ```
 
 Replace `MODEL_ID` with an installed model. Model capability and your hardware determine which workflows work well; agent tasks need a model with suitable tool support.
+
+Native Ollama uses `http://127.0.0.1:11434` by default (or `OLLAMA_HOST` when no explicit base URL is set), without `/v1`. See [Ollama setup](/reference/providers-and-models/#ollama) for model installation and context/thinking controls.
 
 Local inference does not automatically make every feature local. Search, MCP tools, media generation, and Guardian review may contact other services. Check those routes before sending sensitive material. See [local endpoint configuration](/reference/provider-setup-details/#option-10-use-local-llms-ollama-lm-studio) and the [Guardian privacy note](/reference/built-in-tools/#approval-modes).
 

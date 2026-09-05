@@ -19,7 +19,7 @@ From the CLI, for a complete saved session:
 
 ```bash
 term-llm sessions share 42
-term-llm sessions share 42 --visibility private
+term-llm sessions share 42 --visibility private # requires a custom provider advertising private shares
 term-llm sessions share 42 --include-raw-reasoning
 term-llm sessions share 42 --new --json
 ```

@@ -94,9 +94,10 @@ Use `/home/agent/source/<project>` for source checkouts and code projects you wa
 │   ├── memory/SKILL.md
 │   ├── self/SKILL.md
 │   └── widgets/SKILL.md
-├── source/
-│   └── term-llm/        # runtime source and docs-site/content documentation
 └── init.sh
+
+/home/agent/source/
+└── term-llm/            # runtime source and docs-site/content documentation
 ```
 
 After first boot, the volume is the source of truth. Future boots ignore image bootstrap files and run `/home/agent/.config/term-llm/init.sh`, which reinstalls persisted runit service definitions into `/etc/sv` and links them into `/etc/runit/runsvdir`.

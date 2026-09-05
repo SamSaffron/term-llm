@@ -167,7 +167,7 @@ Changing sessions, compacting, handing over, or switching models pauses the curr
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--provider` | | Override provider, optionally with model (e.g., `openai:gpt-5.2`) |
+| `--provider` | `-p` | Override provider, optionally with model (e.g., `openai:gpt-5.2`) |
 | `--file` | `-f` | File(s) to include as context (supports globs, line ranges, 'clipboard') |
 | `--auto-pick` | `-a` | Auto-execute the best suggestion without prompting (exec only) |
 | `--agent` | `-a` | Use a specific agent (ask/chat only; see also `@agent` syntax) |
@@ -176,7 +176,7 @@ Changing sessions, compacting, handing over, or switching models pauses the curr
 | `--search` | `-s` | Enable web search and page reading (see [Search](/guides/search/) for providers) |
 | `--native-search` | | Use provider's native search (override config) |
 | `--no-native-search` | | Force external search tools instead of native |
-| `--print-only` | `-p` | Print the command instead of executing it |
+| `--print-only` | | Print the selected command instead of executing it (exec only) |
 | `--debug` | `-d` | Show provider debug information |
 | `--debug-raw` | | Emit raw debug logs with timestamps (tool calls/results, raw requests) |
 | `--json` | | Emit JSONL event stream on stdout, one event per line (ask only; see below) |
@@ -198,10 +198,10 @@ Changing sessions, compacting, handing over, or switching models pauses the curr
 
 ```bash
 term-llm exec "list files by size"              # interactive selection
-term-llm exec "compress folder" --auto-pick     # auto-execute best
+TERM_LLM_ALLOW_AUTORUN=1 term-llm exec "compress folder" --auto-pick # explicit autorun opt-in
 term-llm exec "find large files" -n 3           # show max 3 options
 term-llm exec "install latest node" -s          # with web search
-term-llm exec "disk usage" -p                   # print only
+term-llm exec "disk usage" --print-only         # print selected command
 term-llm exec --provider zen "git status"       # use specific provider
 term-llm exec --provider openai:gpt-5.2 "list"   # provider with specific model
 term-llm exec --debug-raw "list files"          # raw debug logs with timestamps

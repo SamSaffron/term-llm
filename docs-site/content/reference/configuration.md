@@ -20,7 +20,7 @@ term-llm config reset
 term-llm config completion fish
 ```
 
-The main config file lives at:
+The main config file is `$XDG_CONFIG_HOME/term-llm/config.yaml`. Without `XDG_CONFIG_HOME`, it lives at:
 
 ```text
 ~/.config/term-llm/config.yaml
@@ -49,10 +49,19 @@ providers:
   openai:
     model: gpt-5.6-sol
     fast_model: gpt-5.6-luna
-    credentials: codex
-    # WebSocket transport is enabled by default for built-in OpenAI.
-    # Set false to force HTTP/SSE.
+    # Uses OPENAI_API_KEY (or an explicit api_key).
+    # HTTP/SSE is the default; set true to opt into WebSockets.
+    use_websocket: false
+
+  chatgpt:
+    # Separate subscription OAuth: term-llm auth login chatgpt
+    model: gpt-5.6-sol-medium
     use_websocket: true
+
+  ollama:
+    type: ollama
+    base_url: http://127.0.0.1:11434
+    model: qwen2.5-coder:7b
 
   xai:
     model: grok-4-1-fast
@@ -126,6 +135,7 @@ guardian:
   classify_all_shell: false
 
 edit:
+  provider: openai
   model: gpt-5.2-codex
   diff_format: auto
 
@@ -258,11 +268,11 @@ providers:
     model: gpt-5.6-sol
     fast_model: gpt-5.6-luna
   zen:
-    model: glm-4.7-free
+    model: mimo-v2.5-free
 
 exec:
   provider: zen
-  model: glm-4.7-free
+  model: mimo-v2.5-free
 
 ask:
   model: claude-opus-4
@@ -756,9 +766,9 @@ The server still enforces its upload limits (10 attachments, 20 MB decoded per a
 
 ## Provider WebSocket transport
 
-Built-in `openai` and `chatgpt` text providers use the Responses WebSocket transport by default for lower-latency agent/tool loops. The WebSocket path keeps a persistent connection and, when safe, continues turns with `previous_response_id` plus only the new user/tool input. If the WebSocket connect/write step fails, term-llm falls back to HTTP/SSE; if a WebSocket continuation is rejected because the prior response state is unavailable, it retries that turn once with full state.
+The built-in `chatgpt` text provider enables Responses WebSockets by default. `openai` defaults to HTTP/SSE and can opt in with `providers.openai.use_websocket: true`. The WebSocket path keeps a persistent connection and, when safe, continues turns with `previous_response_id` plus only the new user/tool input. If the WebSocket connect/write step fails, term-llm falls back to HTTP/SSE; if a WebSocket continuation is rejected because the prior response state is unavailable, it retries that turn once with full state.
 
-Disable it per provider if you need to force HTTP/SSE:
+Use `false` to keep OpenAI on HTTP/SSE or to disable ChatGPT WebSockets:
 
 ```yaml
 providers:
@@ -768,7 +778,7 @@ providers:
     use_websocket: false
 ```
 
-OpenAI-compatible providers (`type: openai_compatible`, including local/self-hosted endpoints and OpenRouter-style compatible APIs) do **not** enable WebSockets by default. They continue to use HTTP/SSE unless explicitly supported and wired by that provider.
+OpenAI-compatible providers (`type: openai_compatible`, including local/self-hosted endpoints and OpenRouter-style compatible APIs) do **not** enable WebSockets by default. Their generic adapter uses HTTP/SSE; setting `use_websocket` does not turn an arbitrary compatible endpoint into a native Responses transport.
 
 ## vLLM providers
 
@@ -838,18 +848,15 @@ These values are resolved lazily when term-llm actually needs them. Endpoint res
 
 ## WebRTC direct routing config
 
-```yaml
-serve:
-  webrtc:
-    enabled: true
-    signaling_url: https://signal.example.com/webrtc
-    token: your-signaling-token
-    stun_urls:
-      - stun:stun.l.google.com:19302
-    max_conns: 10
+WebRTC options are currently **CLI flags**, not `serve.webrtc.*` configuration keys. Put them in your launch command or service unit:
+
+```bash
+term-llm serve web --webrtc \
+  --webrtc-signaling-url https://signal.example.com/webrtc \
+  --webrtc-token "$SIGNAL_TOKEN"
 ```
 
-These values match the `--webrtc-*` CLI flags. See the [WebRTC direct routing](/guides/webrtc-direct-routing/) guide for full details.
+A `serve.webrtc` YAML block is not read by the current implementation. See [WebRTC direct routing](/guides/webrtc-direct-routing/) for the remaining flags, diagnostics, and security model.
 
 ## Skills config
 

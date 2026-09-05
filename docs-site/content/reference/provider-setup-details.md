@@ -11,7 +11,7 @@ next:
 ---
 Start with [Providers and setup](/getting-started/providers-and-setup/) if you just want a working first connection. This page contains the detailed settings for each provider.
 
-On first run, term-llm will prompt you to choose a provider (Anthropic, AWS Bedrock, OpenAI, ChatGPT, Grok subscription, GitHub Copilot, xAI, Venice, NEAR AI Cloud, SambaNova, OpenRouter, Gemini, Zen, Claude Code (claude-bin), Ollama, or LM Studio).
+On an interactive first run, term-llm helps you choose a provider. See the [provider inventory](/reference/providers-and-models/#credentials) for the complete set of built-in adapters, companion CLIs, and custom endpoint types.
 
 ### Option 1: Try it free with Zen
 
@@ -20,16 +20,20 @@ On first run, term-llm will prompt you to choose a provider (Anthropic, AWS Bedr
 ```bash
 term-llm exec --provider zen "list files"
 term-llm ask --provider zen "explain git rebase"
-term-llm ask --provider zen:gpt-5-nano "quick question"  # use specific model
+term-llm ask --provider zen:mimo-v2.5-free "quick question"  # explicit shipped free default
 ```
 
-Free model availability and limits are controlled by OpenCode Zen and can change. Discover the current catalog with `term-llm models --provider zen`; paid models require a Zen API key.
+The shipped main and fast defaults are `mimo-v2.5-free`. Free model availability and limits are controlled by OpenCode Zen and can change; a listed model may still be unavailable. Discover the current catalog with `term-llm models --provider zen`; paid models require a Zen API key.
 
 Or configure as default:
 
 ```yaml
 # In ~/.config/term-llm/config.yaml
 default_provider: zen
+providers:
+  zen:
+    model: mimo-v2.5-free
+    fast_model: mimo-v2.5-free
 ```
 
 ### Option 2: Use API key
@@ -285,7 +289,7 @@ term-llm providers --json          # JSON output
 [AWS Bedrock](https://aws.amazon.com/bedrock/) provides access to Anthropic Claude models through your AWS account. This is useful for organizations that route AI usage through AWS billing, need VPC/PrivateLink access, or use application inference profiles for rate/cost management.
 
 ```bash
-term-llm ask --provider bedrock "explain this code"
+term-llm ask --provider bedrock:claude-sonnet-4-6 "explain this code"
 term-llm ask --provider bedrock:claude-opus-4-6-thinking "complex question"
 ```
 
@@ -337,19 +341,20 @@ providers:
 
 With this config, `--provider bedrock:claude-opus-4-6-1m-thinking` strips the suffixes, resolves `claude-opus-4-6` through `model_map` to the ARN, and enables adaptive thinking + 1M context.
 
-**Available models** (same as direct Anthropic, translated to Bedrock IDs automatically):
+**Examples of built-in friendly-name translations** (AWS availability and access are account/region-specific):
 
 | Model | Suffixes | Description |
 |-------|----------|-------------|
-| `claude-sonnet-4-6` | `-thinking`, `-1m` | Latest Sonnet |
-| `claude-opus-4-6` | `-thinking`, `-1m` | Latest Opus |
+| `claude-sonnet-4-6` | `-thinking`, `-1m` | Sonnet example |
+| `claude-opus-4-7` | `-thinking`, `-1m` | Opus example |
+| `claude-opus-4-6` | `-thinking`, `-1m` | Earlier Opus example |
 | `claude-haiku-4-5` | `-thinking` | Fast, lightweight |
 
-The geographic prefix (`us.`, `eu.`, `ap.`) is derived from your configured region. For example, `eu-west-1` produces `eu.anthropic.*` IDs, etc. This ensures data residency matches your region.
+The geographic prefix (`us.`, `eu.`, `ap.`) is derived from your configured region. For example, `eu-west-1` produces `eu.anthropic.*` IDs, etc. These are cross-region profiles, not a single-region residency guarantee. The mapper uses `eu` for `eu-*`, `ap` for `ap-*`, and `us` for other region names. Explicitly choose and verify an AWS model/inference profile when routing restrictions matter.
 
 You can also pass raw Bedrock model IDs directly (e.g., `us.anthropic.claude-sonnet-4-6` or full ARNs). These bypass the translation layer.
 
-**Features:** full parity with the direct Anthropic provider: streaming, tool use, extended thinking, 1M context, images, prompt caching, web search/fetch all work through Bedrock.
+**Capabilities:** the adapter shares Anthropic message streaming, tools, images, thinking, and caching logic. AWS model, context, and hosted-tool support still apply; not every direct Anthropic feature is guaranteed on Bedrock. Use `--no-native-search` when the endpoint does not accept the native search/fetch tools. Bedrock translates `-thinking` and `-1m`, not the direct adapter’s effort suffixes such as `-high` and `-max`.
 
 | Config field | Description |
 |---|---|
@@ -363,7 +368,7 @@ You can also pass raw Bedrock model IDs directly (e.g., `us.anthropic.claude-son
 
 ### Option 10: Use local LLMs (Ollama, LM Studio)
 
-Run models locally with [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai):
+Run models locally with [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai). Start the server and load/download a model first. Ollama is a native adapter; LM Studio needs an OpenAI-compatible profile. Configure the profiles below before listing models, and substitute your installed/loaded model IDs:
 
 ```bash
 # List available models from your local server
@@ -378,14 +383,15 @@ default_provider: ollama
 
 providers:
   ollama:
-    type: openai_compatible
-    base_url: http://localhost:11434/v1
-    model: llama3.2:latest
+    type: ollama
+    base_url: http://127.0.0.1:11434
+    model: qwen2.5-coder:7b
+    fast_model: qwen2.5-coder:7b
 
   lmstudio:
     type: openai_compatible
-    base_url: http://localhost:1234/v1
-    model: deepseek-coder-v2
+    base_url: http://127.0.0.1:1234/v1
+    model: your-loaded-model
 ```
 
 For vLLM servers hosting Qwen or DeepSeek reasoning models, use `type: vllm` to enable vLLM chat-template thinking controls:
@@ -408,22 +414,28 @@ term-llm ask -p my-qwen-low "hard"    # Qwen budget 1024
 term-llm ask -p my-qwen-high "harder" # Qwen budget 10000
 ```
 
-DeepSeek-on-vLLM uses the native DeepSeek shape instead: `chat_template_kwargs.thinking` controls thinking, while `reasoning_effort: high` or `max` is sent as a top-level request field. If your served model name contains `deepseek`, term-llm auto-detects this; if the deployment is aliased, force it:
+DeepSeek-on-vLLM can use `chat_template_kwargs.thinking` plus a top-level `reasoning_effort`. Declare the exact supported efforts rather than relying on a hard-coded low-to-high mapping:
 
 ```yaml
 providers:
   my-deepseek:
     type: vllm
     base_url: http://gpu-server:8000/v1
-    model: ds31
+    model: deepseek-ai/DeepSeek-V4-Flash
     vllm_thinking_param: thinking
+    models:
+      - id: deepseek-ai/DeepSeek-V4-Flash
+        reasoning_efforts: [none, low, high, max]
+        default_reasoning_effort: none
 ```
 
 ```bash
-term-llm ask -p my-deepseek "hello"       # thinking=false
-term-llm ask -p my-deepseek-low "hard"    # thinking=true, reasoning_effort=high
+term-llm ask -p my-deepseek "hello"       # configured default: thinking=false
+term-llm ask -p my-deepseek-low "hard"    # thinking=true, reasoning_effort=low
 term-llm ask -p my-deepseek-max "hardest" # thinking=true, reasoning_effort=max
 ```
+
+Use the effort set accepted by your deployed model/template. See [vLLM reasoning providers](/reference/providers-and-models/#vllm-reasoning-providers) for the request fields and parsing behavior.
 
 For other OpenAI-compatible servers (text-generation-inference, generic vLLM models without these chat-template thinking controls, etc.):
 
@@ -440,7 +452,7 @@ providers:
 
 The `models` list enables tab completion for `--provider my-server:<TAB>`. The configured `model` is always included in completions.
 
-Built-in `openai` and `chatgpt` text providers use Responses WebSockets by default for faster tool-heavy conversations. `openai_compatible` and `vllm` providers do not: local/self-hosted compatible APIs stay on HTTP/SSE by default.
+The built-in `chatgpt` text provider enables Responses WebSockets by default. `openai` defaults to HTTP/SSE and can opt in with `use_websocket: true`. `openai_compatible` and `vllm` providers do not: local/self-hosted compatible APIs stay on HTTP/SSE by default.
 
 If your server rejects `stream_options` (causing errors on connect), disable it:
 
@@ -469,7 +481,7 @@ See [Providers and models](/reference/providers-and-models/#configuration-refere
 
 ### Option 11: Use Claude Code (claude-bin)
 
-If you have [Claude Code](https://claude.ai/code) installed and logged in, you can use the `claude-bin` provider to run completions via the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk). This requires no API key - it uses Claude Code's existing authentication.
+If you have [Claude Code](https://claude.ai/code) installed and logged in, you can use the `claude-bin` provider to run completions through the local `claude` subprocess. This requires no API key - it uses Claude Code's existing authentication.
 
 ```bash
 # Use directly via --provider flag (no config needed)
@@ -487,7 +499,7 @@ default_provider: claude-bin
 
 providers:
   claude-bin:
-    model: sonnet  # opus, sonnet, or haiku
+    model: sonnet  # opus, fable, sonnet, or haiku
     env:
       IS_SANDBOX: "1"  # useful in trusted/sandboxed containers
       # Generate a long-lived token with: claude setup-token
@@ -499,8 +511,8 @@ providers:
 
 **Features:**
 - No API key required - uses Claude Code's existing authentication
-- Full tool support via MCP (exec, search, edit all work)
-- Model selection: `opus`, `sonnet` (default), `haiku`
+- term-llm tool access through its MCP bridge, subject to the configured tools and approvals
+- Model selection: `opus`, `fable`, `sonnet` (default), `haiku`; model/account availability still applies
 - Claude Code hooks are disabled by default to keep user hook automation out of term-llm inference sessions
 - Optional `providers.claude-bin.enable_hooks: true` to opt back into Claude Code hooks
 - Optional `providers.claude-bin.env` passthrough for Claude subprocess settings (for example `IS_SANDBOX=1` in trusted root-run containers)
@@ -513,37 +525,38 @@ OpenAI-compatible providers support two URL options:
 
 Use `url` when your endpoint doesn't follow the standard `/chat/completions` path, or to paste URLs directly from API documentation.
 
-### Option 12: Use GitHub Copilot
+### Other companion CLIs
 
-If you have [GitHub Copilot](https://github.com/features/copilot) (free, Individual, or Business), you can use the `copilot` provider with OAuth device flow authentication:
+`cursor-bin`, `agy-bin`, and `grok-bin` reuse an installed, authenticated `cursor-agent`, `agy`, or `grok` binary respectively. They are distinct from hosted API-key integrations and from term-llm-managed OAuth.
 
 ```bash
-term-llm ask --provider copilot "explain this code"
-term-llm ask --provider copilot:claude-opus-4.5 "complex question"
+term-llm models --provider cursor-bin
+term-llm models --provider agy-bin
+term-llm models --provider grok-bin
+term-llm ask --provider cursor-bin "Explain this code"
 ```
 
-On first use, you'll be prompted to authenticate via GitHub device flow. Credentials are stored locally and refreshed automatically.
+Authenticate with the companion CLI first. See the [provider inventory](/reference/providers-and-models/#credentials) for credential sources and the [CLI wire debugging guide](/guides/debugging/#audit-cli-provider-wire-traffic) for diagnosing subprocess behavior. A locally installed CLI still sends inference to its service; it is not local model hosting.
+
+### Option 12: Use GitHub Copilot
+
+The `copilot` provider uses GitHub device-flow OAuth. Sign in and inspect the models available to your account:
+
+```bash
+term-llm auth login copilot
+term-llm models --provider copilot
+term-llm ask --provider copilot "Explain this code"
+```
+
+Credentials are stored in `$XDG_CONFIG_HOME/term-llm/copilot_oauth.json` (normally `~/.config/term-llm/copilot_oauth.json`) and refreshed automatically. The shipped default model is `gpt-4.1`; it is a fallback selection, not a promise that every account or organization enables it.
 
 ```yaml
-# In ~/.config/term-llm/config.yaml
 default_provider: copilot
-
 providers:
   copilot:
-    model: gpt-4.1  # free tier, or gpt-5.2-codex for paid
+    model: gpt-4.1
 ```
 
-**Available models:**
-| Model | Description |
-|-------|-------------|
-| `gpt-4.1` | Default, works on free tier |
-| `gpt-5.2-codex` | Advanced coding model (paid) |
-| `gpt-5.1` | GPT-5.1 (paid) |
-| `claude-opus-4.5` | Claude Opus 4.5 via Copilot (paid) |
-| `gemini-3-pro` | Gemini 3 Pro via Copilot (paid) |
-| `grok-code-fast-1` | Grok coding model via Copilot (paid) |
+Choose a different model from the authenticated catalog when needed. Plan limits, organization policy, and model availability change independently of term-llm releases; do not use a static “free vs paid models” table as an entitlement check. The adapter uses model-specific Responses, Chat Completions, or Messages paths as supported by the catalog, with term-llm's normal tool flow.
 
-**Features:**
-- Free tier with GPT-4.1 (no Copilot subscription required, just GitHub account)
-- OAuth device flow authentication (no API key needed)
-- Full tool support via MCP
+Copilot chat credentials are separate from the GitHub billing credentials used by `term-llm usage --provider copilot`; see [Usage tracking](/reference/usage-tracking/).

@@ -44,6 +44,7 @@ For a text-only model that supports tool calls, add `vision_via` to that model's
 providers:
   local-text:
     type: openai_compatible
+    base_url: http://127.0.0.1:1234/v1
     model: qwen-text
     vision_via: gemini
 ```
@@ -58,11 +59,11 @@ Limitations: the primary model must call tools; the `vision_via` provider must b
 
 ```json
 {
-  "command": "gofmt -w ./internal/... && go generate ./cmd/...",
+  "command": "gofmt -w ./internal/example.go && go generate ./cmd/...",
   "working_dir": "/path/to/project",
-  "affected_paths": ["internal/**", "cmd/**"],
+  "affected_paths": ["internal/example.go", "cmd/**"],
   "output_claims": [
-    {"path": "internal/**/*.go", "kind": "transform"},
+    {"path": "internal/example.go", "kind": "transform"},
     {"path": "cmd/generated/**", "kind": "generate"}
   ]
 }
@@ -98,7 +99,7 @@ tools:
 
     - name: job_history
       description: "Fetch recent run history for a job."
-      script: scripts/job-history.sh
+      script: scripts/job-history.py
       input:
         type: object
         properties:
@@ -114,15 +115,24 @@ tools:
         DB_PATH: /var/lib/myapp/jobs.db
 ```
 
-Scripts receive the LLM's arguments as **JSON on stdin**:
+Put the declarations above in the agent's `agent.yaml`, not the global config. Scripts receive the LLM's arguments as **JSON on stdin**. For example, make `scripts/job-history.py` executable and parameterize SQL rather than interpolating model-supplied values:
 
-```bash
-#!/usr/bin/env bash
-INPUT=$(cat)
-NAME=$(echo "$INPUT" | jq -r '.name')
-LIMIT=$(echo "$INPUT" | jq -r '.limit // 10')
-sqlite3 "$DB_PATH" \
-  "SELECT * FROM runs WHERE job='$NAME' ORDER BY started DESC LIMIT $LIMIT;"
+```python
+#!/usr/bin/env python3
+import json
+import os
+import sqlite3
+import sys
+
+args = json.load(sys.stdin)
+limit = max(1, min(int(args.get("limit", 10)), 100))
+with sqlite3.connect(os.environ["DB_PATH"]) as db:
+    db.row_factory = sqlite3.Row
+    rows = db.execute(
+        "SELECT * FROM runs WHERE job = ? ORDER BY started DESC LIMIT ?",
+        (args["name"], limit),
+    )
+    print(json.dumps([dict(row) for row in rows]))
 ```
 
 Custom tools run from the session working directory when the session is bound to a workspace. In unbound remote sessions, such as a dedicated `--no-projects` Web UI, they run from their agent directory instead of inheriting the server process's working directory. This keeps agent-contained tools usable without weakening the ambient-CWD protection for general shell and file tools.

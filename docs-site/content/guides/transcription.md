@@ -37,9 +37,10 @@ term-llm transcribe call.ogg --provider whisper-cli --porcelain
 
 Key options:
 
-- `--language` for a language hint such as `en` or `ja`
-- `--provider` to select the transcription backend
-- `--model` to override the configured transcription model
+- `--debug` / `-d` for diagnostic output
+- `--language` / `-l` for a language hint such as `en` or `ja`
+- `--provider` / `-p` to select the transcription backend
+- `--model` / `-m` to override the configured transcription model
 - `--timestamps` to ask supported providers for timestamp metadata. ElevenLabs Scribe emits the full JSON response, including `words` entries with `text`, `start`, `end`, `type`, and `logprob`.
 - `--porcelain` to output only transcript text
 

@@ -174,7 +174,7 @@ The explicit **Improve title with AI** action remains available from the rename 
 
 ## Live diff sidebar
 
-When [file change tracking](/reference/configuration/#file-change-tracking-config) is enabled, the browser UI shows a right-hand "Changes" panel for sessions in which agent tools modify files. Files appear as the agent edits them, expand inline to show the cumulative diff for the session (baseline = the file's state when the session first touched it), and can be collapsed individually. The panel is resizable and can be dismissed per session.
+When [file change tracking](/reference/configuration/#file-change-tracking-config) is enabled, the browser UI shows a right-hand "Changes" panel for sessions in which agent tools modify files. Files appear as the agent edits them and expand inline to show attributed changes. Diffs are grouped into continuous attribution windows; an intervening external change breaks continuity rather than being counted as agent work. See [file change history](/reference/sessions/#file-change-history) for window boundaries, observations, and coverage limits. Files can be collapsed individually. The panel is resizable and can be dismissed per session.
 
 File tracking is enabled by default. It can be disabled with `file_tracking.enabled: false`. Because tracking persists attributed file contents to a local database, review the privacy note in the configuration reference. Trusted direct write tools are witnessed automatically; shell transitions require compatible pre-execution `output_claims` for attribution, while unclaimed detected effects remain metadata-only observations.
 
@@ -321,7 +321,7 @@ You can disable auth only on loopback hosts:
 term-llm serve web --auth none --host 127.0.0.1
 ```
 
-`--allow-no-auth` and `--auth none` are only valid for loopback use. Exposing an unauthenticated server beyond localhost would be idiotic.
+`--allow-no-auth` and `--auth none` are only valid for loopback use. Non-loopback listeners require authentication; use HTTPS and a stable token when exposing a server remotely.
 
 ## Run as a systemd user service
 
@@ -345,7 +345,7 @@ Ordinary serve platforms default to Guardian-reviewed auto approval. To require 
 ```bash
 term-llm serve web \
   --provider anthropic \
-  --agent assistant \
+  --agent developer \
   --search \
   --mcp playwright \
   --max-turns 200 \
@@ -373,10 +373,10 @@ Typical checks:
 
 ```bash
 curl http://127.0.0.1:8080/ui/healthz
-curl http://127.0.0.1:8080/ui/v1/models
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/ui/v1/models
 ```
 
-If you change `--base-path`, those URLs change with it.
+Set `TOKEN` to the bearer token configured for or printed by your server. The health endpoint is public, but model discovery requires authentication unless you deliberately disabled it on loopback. If you change `--base-path`, those URLs change with it.
 
 ## API-only mode
 
@@ -412,7 +412,9 @@ registered server tool, startup fails with the list of available tools.
 
 The Web `/commit` flow uses session-bound endpoints; browsers never submit a filesystem path. `GET /v1/sessions/{id}/commit/status` returns relative changes, an opaque status token, and the checkout/HEAD/index/operation fingerprint. `POST .../commit/stage` applies fingerprint-guarded `all` or exact whole-file staging. `POST .../commit-runs` starts a cancellable `scope` or `message` child run, with snapshot and event endpoints under `/commit-runs/{run-id}`. Final commits use `POST .../commit-operations` with an `Idempotency-Key`, then poll `/commit-operations/{operation-id}`. Final operations are persisted as `queued`, `running`, `succeeded`, `failed`, or `uncertain`; reconnecting with the same key joins the original operation and never automatically creates a second commit.
 
-The server executes normal repository hooks and signing programs as the `serve` OS user with non-interactive Git prompts. Review the trust model of repositories exposed to Web sessions.
+Publishing uses the same session-bound operation lifecycle. Fetch `GET /v1/sessions/{id}/commit/publish-plan?kind=push|pr` to review the resolved branch and remote destination, then submit `kind: "push"` or `kind: "pr"` with the reviewed `publish` request to `POST .../commit-operations`. Use an `Idempotency-Key` and poll the returned operation rather than retrying with a new key. Successful publishing returns `publish_result`, including the branch and, for PRs, the PR URL. If an operation becomes `uncertain`, inspect the remote before retrying.
+
+Push uses Git; PR creation also requires an authenticated `gh` installation on the server. The server executes normal repository hooks and signing programs as the `serve` OS user with non-interactive Git prompts. Review the trust model of repositories exposed to Web sessions.
 
 ## When to use web mode
 

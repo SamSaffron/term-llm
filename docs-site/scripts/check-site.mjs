@@ -7,6 +7,22 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import AxeBuilder from "@axe-core/playwright";
 
+// Keep the credentials inventory complete when a built-in provider is added.
+// Read the registry rather than maintaining another independent provider list.
+const configSource = await readFile(new URL("../../internal/config/config.go", import.meta.url), "utf8");
+const registry = configSource.match(/var builtInProviderTypes = map\[string\]ProviderType\{([\s\S]*?)\n\}/);
+assert.ok(registry, "Could not locate the built-in provider registry");
+const providerNames = [...registry[1].matchAll(/"([\w-]+)"\s*:/g)].map((match) => match[1]);
+assert.ok(providerNames.length > 0, "Provider registry must not be empty");
+const providerReference = await readFile(new URL("../content/reference/providers-and-models.md", import.meta.url), "utf8");
+const credentialsSection = providerReference.split("## Credentials\n")[1]?.split("\n### ")[0];
+assert.ok(credentialsSection, "Provider reference needs a credentials inventory");
+const documentedProviders = new Set([...credentialsSection.matchAll(/^\| `([\w-]+)` \|/gm)].map((match) => match[1]));
+for (const name of providerNames) {
+  assert.ok(documentedProviders.has(name), `Provider missing from credentials inventory: ${name}`);
+}
+console.log(`✓ All ${providerNames.length} built-in providers have credentials/setup documentation`);
+
 const site = path.resolve(fileURLToPath(new URL("../../.cache/docs-site/", import.meta.url)));
 const results = fileURLToPath(new URL("../test-results/", import.meta.url));
 await mkdir(results, { recursive: true });
@@ -110,6 +126,8 @@ try {
     }
   }
   async function accessible(label) {
+    // Let media-query changes settle before axe snapshots inherited colors.
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const scan = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21aa"]).analyze();
     const violations = scan.violations.map((item) => ({ id: item.id, nodes: item.nodes.map((node) => ({ target: node.target, summary: node.failureSummary })) }));
     assert.deepEqual(violations, [], `Accessibility: ${label}\n${JSON.stringify(violations, null, 2)}`);
@@ -178,7 +196,7 @@ try {
   await accessible("standalone search");
   console.log("✓ Real Pagefind results, shortcuts, dialog focus, and standalone search");
 
-  for (const pathname of ["/getting-started/quickstart/", "/guides/", "/guides/web-ui-and-api/", "/reference/provider-setup-details/"]) {
+  for (const pathname of ["/getting-started/quickstart/", "/guides/", "/guides/web-ui-and-api/", "/reference/providers-and-models/", "/reference/provider-setup-details/"]) {
     await page.goto(`${origin}${pathname}`);
     await noOverflow();
     await accessible(pathname);
@@ -196,11 +214,23 @@ try {
   await page.emulateMedia({ colorScheme: "light" });
   for (const width of [320, 390, 768, 1024]) {
     await page.setViewportSize({ width, height: 844 });
-    for (const pathname of ["/", "/getting-started/quickstart/", "/guides/", "/reference/provider-setup-details/"]) {
+    for (const pathname of ["/", "/getting-started/quickstart/", "/guides/", "/reference/providers-and-models/", "/reference/provider-setup-details/"]) {
       await page.goto(`${origin}${pathname}`);
       await noOverflow();
     }
   }
+  // Long tables and examples on less frequently visited pages must not widen
+  // the whole document. Check every article at the narrowest supported width.
+  await page.setViewportSize({ width: 320, height: 844 });
+  let articleCount = 0;
+  for (const [filename, doc] of documents) {
+    if (!doc.article || doc.alias) continue;
+    const pathname = path.relative(site, filename).replace(/index\.html$/, "");
+    await page.goto(`${origin}/${pathname}`);
+    await noOverflow();
+    articleCount++;
+  }
+  console.log(`✓ All ${articleCount} articles fit a 320px viewport`);
   // System fonts differ across OSes: DejaVu Sans exposed a 320px header
   // overflow on Ubuntu that did not occur with the development machine's font.
   await page.setViewportSize({ width: 320, height: 844 });

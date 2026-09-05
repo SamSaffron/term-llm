@@ -40,8 +40,12 @@ Runs:
 Use the first-class CLI for interrogation and queue control:
 
 ```bash
-# Point to a server (or set TERM_LLM_JOBS_SERVER / TERM_LLM_JOBS_TOKEN)
-term-llm jobs --server http://127.0.0.1:8080 --token "$TOKEN" list
+# Set TOKEN to the bearer token configured for or printed by the jobs server.
+export TERM_LLM_JOBS_SERVER=http://127.0.0.1:8080
+export TERM_LLM_JOBS_TOKEN="$TOKEN"
+term-llm jobs list
+term-llm jobs list --all # include completed once-off / finished agent jobs
+term-llm jobs active    # active runs across jobs
 
 # Create/update from JSON or YAML
 term-llm jobs create --file job.yaml
@@ -60,6 +64,8 @@ term-llm jobs run events run_abc123
 term-llm jobs run cancel run_abc123
 ```
 
+`jobs runs` defaults to 50 rows, and `jobs run events` defaults to 200; both support `--limit` and `--offset`. With combined `serve web jobs`, include the web base path (normally `/ui`) in `TERM_LLM_JOBS_SERVER`; standalone `serve jobs` exposes these routes at the root.
+
 ### Trigger Types
 
 - `manual`: run only when manually triggered
@@ -77,9 +83,9 @@ canonical **proposed** primary workspace and the shell tool's default `exec.Cmd.
 It does not grant file authority. Because jobs are headless, first non-yolo file/path
 access inside that proposal fails closed unless the same persisted root session already
 has a matching human confirmation or the exact canonical workspace was explicitly
-remembered in an earlier interactive session; use explicit `read_dir`/`write_dir`
-permissions for ordinary unattended jobs. Guardian cannot make the primary workspace
-decision. Explicit yolo bypasses confirmation for tool access without prompting or
+remembered in an earlier interactive session. Arrange that confirmation before scheduling
+file-based unattended work. Explicit `read_dir`/`write_dir` permissions and Guardian
+review do not replace the primary workspace confirmation. Explicit yolo bypasses confirmation for tool access without prompting or
 persisting authority.
 
 That means each LLM run gets a stable `session_id`, and long-running progressive jobs no longer keep their best-so-far state only in memory.
@@ -169,8 +175,10 @@ Jobs v2 automatically prunes historical data to avoid unbounded disk growth:
   },
   "trigger_type": "once",
   "trigger_config": {
-    "run_at": "2026-02-22T00:00:00-08:00"
+    "run_at": "2030-01-01T00:00:00Z"
   },
   "timeout_seconds": 60
 }
 ```
+
+Replace the example `run_at` with your intended future RFC3339 timestamp. LLM examples also require an appropriately authorized workspace and configured provider before scheduling.

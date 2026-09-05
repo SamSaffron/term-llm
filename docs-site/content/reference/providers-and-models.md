@@ -11,49 +11,103 @@ next:
 ## Discover providers and models
 
 ```bash
-term-llm providers
+term-llm providers                    # built-in and configured provider names
+term-llm providers --builtin
 term-llm providers --configured
-term-llm providers anthropic
+term-llm providers --json
+term-llm providers ollama             # details for one provider
 
-term-llm models --provider anthropic
-term-llm models --provider openrouter
-term-llm models --provider nearai
-term-llm models --provider sambanova
 term-llm models --provider ollama
-term-llm models --json
+term-llm models --provider chatgpt
+term-llm models --provider openrouter
+term-llm models --provider zen
+term-llm models --provider opencode-go --json
 ```
 
-Use `providers` when you want to know what is available and how it is configured. Use `models` when you want the concrete model names a provider currently exposes.
+`providers` describes term-llm's integrations and local configuration. It is not a connectivity or account-entitlement check. `models` queries the selected backend when its adapter supports discovery; the default provider is used when `--provider` is omitted. `gemini`, `bedrock`, and `claude-bin` currently show curated model names rather than a live account catalog. Other adapters may use cached or fallback metadata when offline.
+
+A catalog entry is not a guarantee of capacity, free access, tool support, or access by your account. Use the upstream model ID returned for your provider; the same model family can have different names and limits on different services.
 
 ## Provider categories
 
-term-llm supports a mix of provider types:
+The provider name selects an integration, not just a model vendor:
 
-- hosted API providers such as Anthropic, AWS Bedrock, OpenAI, xAI, Gemini, NEAR AI Cloud, SambaNova, and OpenRouter
-- subscription-backed OAuth providers such as ChatGPT, Grok, and Copilot
-- local or self-hosted OpenAI-compatible providers such as Ollama, LM Studio, vLLM, or custom endpoints
+- **Hosted APIs:** Anthropic, OpenAI, Gemini, xAI, OpenRouter, Venice, NEAR AI Cloud, SambaNova, and OpenCode Zen.
+- **AWS:** Bedrock uses AWS credentials and Bedrock model/inference-profile identifiers.
+- **Subscriptions:** ChatGPT, Grok, and Copilot use term-llm-managed OAuth; OpenCode Go uses a subscription API key.
+- **Companion CLIs:** `claude-bin`, `cursor-bin`, `agy-bin`, and `grok-bin` run a separately installed and authenticated CLI.
+- **Local and self-hosted:** `ollama` uses Ollama's native API. LM Studio and generic endpoints use `openai_compatible`; `vllm` adds model-specific thinking controls to that protocol.
+
+These are **text/agent providers**. [Image](/guides/image-generation/), [audio](/guides/audio-generation/), [music](/guides/music-generation/), [video](/guides/video-generation/), [transcription](/guides/transcription/), and [embedding](/guides/text-embeddings/) commands have their own provider sets and configuration. Support in one command does not imply support in another.
 
 ## Credentials
 
-Most providers use API keys via environment variables. Some use OAuth credentials from companion CLIs or locally stored auth files.
+Config paths below are relative to `$XDG_CONFIG_HOME/term-llm/`, normally `~/.config/term-llm/`. Use `term-llm config path` to locate your file. Provider-specific API keys can also be supplied in `providers.<name>.api_key` with the normal [deferred credential resolution](/reference/configuration/).
 
-| Provider | Credentials source | Notes |
+| Provider | Authentication / setup | Notes |
 |---|---|---|
-| `anthropic` | `ANTHROPIC_API_KEY` | API key |
-| `bedrock` | AWS credential chain or explicit `access_key_id` / `secret_access_key` | Anthropic Claude via AWS Bedrock |
-| `openai` | `OPENAI_API_KEY` | Standard OpenAI API key |
-| `chatgpt` | `~/.config/term-llm/chatgpt_oauth.json` | ChatGPT Plus/Pro OAuth |
-| `grok` | `~/.config/term-llm/grok_oauth.json` | Grok subscription device OAuth |
-| `copilot` | `~/.config/term-llm/copilot_creds.json` | GitHub Copilot OAuth |
-| `gemini` | `GEMINI_API_KEY` | Google AI Studio key |
-| `xai` | `XAI_API_KEY` | xAI API key |
-| `venice` | `VENICE_API_KEY` | Venice OpenAI-compatible API key |
-| `nearai` | `NEARAI_API_KEY` | NEAR AI Cloud OpenAI-compatible TEE inference key |
-| `sambanova` | `SAMBANOVA_API_KEY` | SambaNova Cloud OpenAI-compatible API key |
-| `openrouter` | `OPENROUTER_API_KEY` | OpenRouter API key |
-| `vllm` / custom `type: vllm` entries | `VLLM_API_KEY` or `<PROVIDER_NAME>_API_KEY` | Optional for unauthenticated local servers; vLLM OpenAI-compatible API plus reasoning controls for supported chat templates |
-| `zen` | `ZEN_API_KEY` optional | empty is valid for free tier |
-| `opencode-go` | `OPENCODE_API_KEY` | OpenCode Go subscription key; models dynamically route across Chat Completions, Responses, and Anthropic Messages |
+| `anthropic` | `ANTHROPIC_API_KEY` | Native Anthropic Messages API; also supports compatible gateways. |
+| `openai` | `OPENAI_API_KEY` | Public OpenAI Responses API; distinct from a ChatGPT subscription. |
+| `chatgpt` | `term-llm auth login chatgpt`; `chatgpt_oauth.json` | Account's ChatGPT/Codex model access and limits apply. |
+| `grok` | `term-llm auth login grok`; `grok_oauth.json` | Grok subscription OAuth, not the public xAI API or Grok Build CLI. |
+| `copilot` | `term-llm auth login copilot`; `copilot_oauth.json` | GitHub account and organization policy determine available models. |
+| `gemini` | `GEMINI_API_KEY` | Google Gemini API. |
+| `bedrock` | AWS credential chain or explicit `access_key_id` / `secret_access_key` | Region, profile, model access, and inference-profile routing matter. |
+| `openrouter` | `OPENROUTER_API_KEY` | Use OpenRouter's provider-qualified model IDs. |
+| `xai` | `XAI_API_KEY` | Public xAI API. |
+| `venice` | `VENICE_API_KEY` | Hosted text models and Venice-native search. |
+| `nearai` | `NEARAI_API_KEY` | NEAR AI Cloud; check the service's privacy and TEE policies. |
+| `sambanova` | `SAMBANOVA_API_KEY` | SambaNova Cloud. |
+| `zen` | No key for supported free models; optional `ZEN_API_KEY` | Free model availability changes independently of term-llm releases. |
+| `opencode-go` | `OPENCODE_API_KEY` | OpenCode Go subscription key; distinct from Zen's optional key. |
+| `ollama` | Running local Ollama server; no API key needed for local use | Native `/api/chat`; configure `base_url` or `OLLAMA_HOST`, without `/v1`. |
+| `vllm` | Configured endpoint/model; optional `VLLM_API_KEY` | Whether a key is required depends on your server. |
+| `claude-bin` | Installed `claude` CLI and its login | Uses Claude Code's authentication; no separate term-llm API key required. |
+| `cursor-bin` | Installed `cursor-agent` CLI and its login, or `CURSOR_API_KEY` | Model availability comes from the companion CLI/account. |
+| `agy-bin` | Installed `agy` CLI and its login | Uses Antigravity CLI credentials. |
+| `grok-bin` | Installed `grok` CLI; `GROK_AUTH_PATH` or `~/.grok/auth.json` | Grok Build CLI integration, separate from `grok` OAuth. |
+| `lmstudio` | Configured `openai_compatible` endpoint and loaded model | A custom provider name, not a separate built-in adapter. |
+| Other custom names | Explicit `type` and endpoint; `api_key` or `<PROVIDER_NAME>_API_KEY` when required | Unknown provider names default to `openai_compatible`; configure them before use. |
+
+`debug` is a local test provider, not a hosted service. See the [compaction debugging example](/guides/debugging/#exercise-automatic-compaction-locally).
+
+### OAuth sign-in and sign-out
+
+```bash
+term-llm auth login chatgpt
+term-llm auth login grok
+term-llm auth login copilot
+term-llm auth status
+term-llm auth logout chatgpt
+```
+
+Use the companion CLI's own sign-in process for `*-bin` integrations; `term-llm auth login` is not their login manager. Keep OAuth files private and do not copy tokens into project configuration. Copilot chat OAuth is also separate from the GitHub billing credentials used by [live usage reporting](/reference/usage-tracking/).
+
+### OpenCode Zen
+
+The shipped Zen main and fast defaults are `mimo-v2.5-free`. To select that model explicitly, including on an older installation or one with a saved model override:
+
+```bash
+term-llm ask --provider zen:mimo-v2.5-free "Explain git rebase in three sentences"
+term-llm models --provider zen
+```
+
+Zen uses the OpenAI-compatible Chat Completions endpoint at `https://opencode.ai/zen/v1`; unlike OpenCode Go, this adapter does not dynamically switch to Responses or Anthropic Messages. Only models compatible with that endpoint can be used through it. Reasoning-effort suffixes are offered when the catalog advertises discrete efforts; a model having internal reasoning does not mean it accepts every effort suffix.
+
+A model can remain listed while unavailable upstream. If a request reports an unsupported or unavailable model, choose another currently usable free model or a different configured provider. Do not assume `gpt-5-nano` or a model from an old free-model list is still free. An explicit saved `providers.zen.model` or `fast_model` takes precedence over new shipped defaults.
+
+### Companion CLI providers
+
+```bash
+term-llm ask --provider claude-bin "Explain this function"
+term-llm models --provider cursor-bin
+term-llm models --provider agy-bin
+term-llm models --provider grok-bin
+```
+
+Install and authenticate the corresponding CLI first. These are local subprocess integrations with their own version, account, and model constraints—not local inference. Prompts and tool context can still be sent to the companion service. `claude-bin` offers aliases such as `sonnet`, `opus`, `fable`, and `haiku`; the other integrations can discover models through their CLI.
+
+term-llm supplies its agent instructions and tool/approval flow to these integrations. Do not assume every companion CLI feature or setting is inherited unchanged. Claude Code hooks are disabled by default; `providers.claude-bin.enable_hooks: true` is an explicit opt-in. For provider-specific environment overrides and setup, see [Provider setup details](/reference/provider-setup-details/#option-11-use-claude-code-claude-bin).
 
 ### OpenCode Go
 
@@ -63,9 +117,9 @@ term-llm models --provider opencode-go
 term-llm ask --provider opencode-go:glm-5.2 "question"
 ```
 
-OpenCode Go's model set changes frequently. term-llm merges the live Go `/models` availability list with OpenCode's model catalog for protocol, limits, pricing, and reasoning metadata, then caches the result for five minutes. Models marked for `@ai-sdk/openai-compatible`, `@ai-sdk/openai`, and `@ai-sdk/anthropic` are sent to the Go Chat Completions, Responses, and Messages endpoints respectively. Effort-based models expose their advertised suffixes, while budget-based Anthropic-compatible models such as `qwen3.8-max` expose `-high` and `-max` reasoning variants. A newly available model without catalog metadata falls back to Chat Completions until its metadata arrives.
+OpenCode Go's model set changes frequently. term-llm merges the live Go `/models` availability list with OpenCode's model catalog for protocol, limits, pricing, and reasoning metadata, then caches the result for five minutes. Models marked for `@ai-sdk/openai-compatible`, `@ai-sdk/openai`, and `@ai-sdk/anthropic` are sent to the Go Chat Completions, Responses, and Messages endpoints respectively. Effort-based models expose their advertised suffixes, while budget-based Anthropic-compatible models such as `qwen3.8-max` expose `-high` and `-max` reasoning variants. A newly available model without catalog metadata normally falls back to Chat Completions; preview Muse Spark models have a Responses fallback. Protocol and model availability still depend on the upstream service.
 
-A compatible gateway can be configured under a custom provider name. `base_url` replaces the standard OpenCode Go `/v1` base while preserving dynamic protocol routing:
+A compatible gateway can be configured under a custom provider name. `base_url` replaces `https://opencode.ai/zen/go/v1` while preserving dynamic protocol routing. Use `base_url`, not a full-endpoint `url` override:
 
 ```yaml
 providers:
@@ -104,7 +158,7 @@ The Anthropic SDK appends paths such as `/v1/messages` and `/v1/models` to `base
 
 ## WebSocket defaults
 
-The built-in `openai` and `chatgpt` text providers use the Responses WebSocket transport by default. This improves latency in agentic/tool-heavy runs by reusing one connection and continuing compatible turns with `previous_response_id` plus only new input. If setup fails before streaming starts, term-llm falls back to HTTP/SSE; if a WebSocket continuation rejects the previous response ID, it retries once with full input.
+The built-in `openai` text provider defaults to **HTTP/SSE** (`use_websocket: false`); `chatgpt` defaults to **Responses WebSockets** (`use_websocket: true`). OpenAI can opt in with `providers.openai.use_websocket: true`. The WebSocket path can reduce connection overhead in agentic/tool-heavy runs by reusing one connection and continuing compatible turns with `previous_response_id` plus only new input. If setup fails before streaming starts, term-llm falls back to HTTP/SSE; if a WebSocket continuation rejects the previous response ID, it retries once with full input.
 
 To force HTTP/SSE for either built-in provider:
 
@@ -117,6 +171,87 @@ providers:
 ```
 
 OpenAI-compatible providers remain HTTP/SSE by default. WebSocket defaults are not applied to `type: openai_compatible` entries.
+
+## GPT-6 Astra on ChatGPT
+
+`gpt-6-astra` is supported through the ChatGPT OAuth adapter when it is available in your authenticated catalog. It is distinct from the shipped ChatGPT default (`gpt-5.6-sol-medium`).
+
+```bash
+term-llm models --provider chatgpt
+term-llm ask --provider chatgpt:gpt-6-astra "Explain this design"
+term-llm ask --provider chatgpt:gpt-6-astra-fast "Explain this design"
+```
+
+The `-fast` suffix requests the fast/priority service tier; it does not select `fast_model` or a different model. Support depends on the model/account. Choose reasoning effort from the catalog's advertised values rather than assuming every GPT-family suffix is available. Astra's bundled context recommendation is 372K, with an 872K fallback maximum; the account's known maximum and explicit configuration govern the selected budget as described below.
+
+Do not infer public OpenAI API support, pricing, or advanced Responses controls from an OAuth catalog entry. Those paths have separate capability gates.
+
+## ChatGPT context policy
+
+`term-llm models -p chatgpt` queries the authenticated Codex catalog, using a
+five-minute cache and stale-cache/static fallbacks when offline. Hidden Codex
+picker entries remain available for explicit model selection. ChatGPT `models`
+configuration augments the discovered shell-completion catalog rather than
+restricting it to the entries you customize.
+
+term-llm chooses context in this order:
+
+1. `models[].context_window` for the selected upstream model or alias.
+2. Provider-level `context_window` (including newly discovered models).
+3. term-llm's shipped input budget.
+4. The backend default for an unknown model.
+
+The selected context is capped at the account's known `max_context_window`.
+The backend's `context_window` is a default, **not** that ceiling. When offline,
+the last cached maximum is used; without cache, bundled maxima are used where
+known. For models with no known maximum, an available backend default or shipped
+budget is the conservative ceiling; a configuration value alone cannot establish
+a larger supported window.
+
+The shipped budgets for **GPT-6 Astra and GPT-5.6 Sol/Terra/Luna are 372,000
+tokens**. GPT-5.4 retains its previous 922,000-token budget. These are capped when
+the account reports a smaller maximum. Astra's bundled maximum is 872,000, not
+its 272,000-token Codex default.
+
+```yaml
+providers:
+  chatgpt:
+    # Optional default for all ChatGPT models; each model's maximum still applies.
+    context_window: 372000
+    models:
+      - id: gpt-6-astra
+        context_window: 600000
+      - id: gpt-5.6-sol
+        context_window: 372000
+```
+
+Omit `context_window` (or set it to zero) to use the shipped policy. Context
+settings control local tracking and automatic compaction; they are not sent as
+an unsupported Responses API parameter. With `context_window` alone, the selected
+window is the input budget. If `max_output_tokens` is explicitly configured too,
+it is reserved **after** clamping the context. Shipped budgets already include
+headroom and do not have the model's theoretical output maximum subtracted again.
+The existing soft/hard compaction thresholds apply to the resulting input budget.
+An output reservation that consumes the entire window leaves a minimum one-token
+input budget; choose a smaller reservation instead.
+
+Model listing shows **selected**, **recommended**, and **max** context.
+Recommended is the shipped/default budget capped at the known maximum; selected
+is the local context target after user overrides and clamping, not a server-confirmed
+allocation. Only when an explicit output reservation reduces the input budget,
+a second line shows **Input budget** and **Output reserve**. The reserve is local
+budgeting, not an enforced ChatGPT generation limit. For example:
+
+```text
+gpt-6-astra [context: 600K selected, 372K recommended, 872K max]
+  Input budget: 580K · Output reserve: 20K
+```
+
+`--json` continues to include
+`backend_context`, `recommended_context`, `max_context`, `configured_context`,
+and `input_limit`. Caches store backend facts, not user settings: changing config
+does not require clearing the cache. Custom provider keys with `type: chatgpt`
+have independent context settings.
 
 ## GPT-5.6 on OpenAI and ChatGPT
 
@@ -173,16 +308,73 @@ providers:
 
 The provider uses `https://cloud-api.near.ai/v1`, supports tool calls, and has a curated fallback list of TEE-hosted text models. `term-llm models --provider nearai` queries NEAR AI Cloud's public `/model/list` catalog and filters it to chat-capable models, with token prices shown per 1M tokens when available.
 
+## Ollama
+
+The built-in `ollama` provider uses Ollama's **native** `/api/chat` API, not its `/v1/chat/completions` compatibility endpoint. It discovers installed models through `/api/tags` and supports streaming, model-supported tool calls, and Ollama-native generation options.
+
+Start Ollama first (`ollama serve` if it is not already running), then pull a model and try it:
+
+```bash
+ollama pull qwen2.5-coder:7b
+term-llm models --provider ollama
+term-llm ask --provider ollama:qwen2.5-coder:7b "Explain git rebase"
+```
+
+The shipped main and fast model defaults are `qwen2.5-coder:7b`. term-llm does not download models automatically. Select an installed model suitable for your hardware and task; a text response succeeding does not establish reliable agent tool use.
+
+```yaml
+providers:
+  ollama:
+    type: ollama
+    base_url: http://127.0.0.1:11434
+    model: qwen2.5-coder:7b
+    fast_model: qwen2.5-coder:7b
+    # Optional server-side generation controls:
+    num_ctx: 32768
+    num_predict: 4096
+```
+
+Without an explicit `base_url`, the adapter checks `OLLAMA_HOST`, then uses `http://127.0.0.1:11434`. A host without a URL scheme is interpreted as HTTP. Do **not** append `/v1` to a native Ollama base URL. For an intentionally OpenAI-compatible Ollama connection, use a separate profile such as `ollama_compat` with `type: openai_compatible` and `base_url: http://127.0.0.1:11434/v1`.
+
+| Ollama field | Purpose |
+|---|---|
+| `think` | Boolean thinking switch, for models that support it. |
+| `think_level` | Named thinking level; takes precedence over `think`. `xhigh` normalizes to `max`; supported levels depend on the model/server. |
+| `num_ctx` | Context size requested from the Ollama runtime. |
+| `num_predict` | Maximum generated tokens requested from Ollama. |
+| `top_k`, `min_p`, `presence_penalty` | Native sampling options; set only when appropriate for the model. |
+
+`context_window` is term-llm's local context/compaction metadata; it does not by itself configure Ollama's server-side `num_ctx`. Keep those settings consistent with the model and available memory. A local chat backend also does not make external search, MCP services, or a separately configured Guardian provider local.
+
+## LM Studio
+
+Start LM Studio's local API server and load a model. Configure a profile before asking term-llm to discover or use it:
+
+```yaml
+providers:
+  lmstudio:
+    type: openai_compatible
+    base_url: http://127.0.0.1:1234/v1
+    model: your-loaded-model
+```
+
+```bash
+term-llm models --provider lmstudio
+term-llm ask --provider lmstudio:MODEL_ID "Explain git rebase"
+```
+
+Replace `MODEL_ID` and `your-loaded-model` with the identifier exposed by your LM Studio server. If you enabled authentication on the server, configure its API key too. This profile uses the generic OpenAI-compatible adapter; Ollama-specific fields such as `think_level` and `num_ctx` do not apply.
+
 ## Ollama thinking levels
 
 Ollama's native chat API accepts either a boolean `think` switch or a named thinking level. Use `think` for binary on/off models, or `think_level` when the model supports `low`, `medium`, `high`, or `max`:
 
 ```yaml
 providers:
-  local_qwen:
+  local_oss:
     type: ollama
     base_url: http://127.0.0.1:11434
-    model: qwen3:30b
+    model: gpt-oss:20b
     think_level: low
 ```
 
@@ -258,20 +450,20 @@ For local or custom backends that do not need vLLM chat-template thinking contro
 
 ```yaml
 providers:
-  ollama:
-    type: openai_compatible
-    base_url: http://localhost:11434/v1
-    model: llama3.2:latest
+  ollama_compat:
+    type: openai_compatible # optional alternative to the native ollama adapter
+    base_url: http://127.0.0.1:11434/v1
+    model: qwen2.5-coder:7b
 
   lmstudio:
     type: openai_compatible
     base_url: http://localhost:1234/v1
-    model: deepseek-coder-v2
+    model: your-loaded-model
 
   cerebras:
     type: openai_compatible
     base_url: https://api.cerebras.ai/v1
-    model: llama-4-scout-17b
+    model: your-cerebras-model
     api_key: ${CEREBRAS_API_KEY}
 ```
 
@@ -281,7 +473,7 @@ Use `base_url` when the standard `/chat/completions` path should be appended aut
 
 | Field | Type | Description |
 |---|---|---|
-| `type` | string | Use `openai_compatible` for generic custom providers, or `vllm` for vLLM servers that should receive reasoning controls for Qwen/DeepSeek-style chat templates. Inferred automatically for known names like `ollama`, `cerebras`, `groq`, and `vllm`. |
+| `type` | string | Use `openai_compatible` for generic custom providers, or `vllm` for vLLM servers that should receive reasoning controls for Qwen/DeepSeek-style chat templates. An explicit type wins; `ollama` infers native `ollama`, `vllm` infers `vllm`, and an unknown/custom name infers `openai_compatible`. |
 | `base_url` | string | Base URL (e.g., `http://localhost:11434/v1`). `/chat/completions` is appended automatically. Supports `srv://` and `$()` resolution. |
 | `url` | string | Full chat completions URL, used as-is. Use this when your endpoint path differs from the standard. Supports `srv://` for DNS SRV discovery and `$()` for command-based resolution. |
 | `api_key` | string | API key. Supports `${ENV_VAR}`, `op://`, `file://`, and `$()` resolution. If omitted, term-llm tries `<PROVIDER_NAME>_API_KEY` from the environment. |
@@ -292,12 +484,12 @@ Use `base_url` when the standard `/chat/completions` path should be appended aut
 | `service_tier` | string | Optional Responses API service tier for built-in `openai` and `chatgpt` providers. Use `fast` or `priority` to request fast/priority service where the selected model supports it. Omit the field to send no service tier. |
 | `context_window` | int | Override context window size in tokens. For ChatGPT, overrides the shipped context target, capped at the known backend maximum. Also supports self-hosted models not in the built-in token limit tables. |
 | `max_output_tokens` | int | Override maximum output tokens. Same use case as `context_window`. |
-| `no_stream_options` | bool | When `true`, don't send `stream_options` in the request. Use this for servers that reject the field. Default `false`; most OpenAI-compatible servers (vLLM, Ollama, LM Studio) support it and need it to report token usage. |
+| `no_stream_options` | bool | When `true`, don't send `stream_options` in the request. Use this for servers that reject the field. Default `false`; compatible servers may use it to include usage in streamed responses. Native Ollama uses its own protocol and does not need this flag. |
 | `parse_reasoning` | bool | Send `parse_reasoning` for OpenAI-compatible APIs that can parse inline model thinking into `reasoning_content` (for example Friendli). |
 | `include_reasoning` | bool | Send `include_reasoning`; useful with `parse_reasoning: true` when you want streamed `delta.reasoning_content` events. |
 | `thinking_param` | string | Generic OpenAI-compatible chat-template control. When a reasoning effort is selected (for example a `-high`/`-max` suffix), term-llm sends `chat_template_kwargs.<thinking_param>: true`. Friendli GLM-5.2 uses `enable_thinking`. |
 | `vllm_thinking_param` | string | `type: vllm` only. Override the chat-template thinking key when auto-detection is not possible: `enable_thinking` for Qwen-style templates, `thinking` for DeepSeek-style templates. |
-| `use_websocket` | bool | Reserved for providers with native Responses WebSocket support. Defaults to `true` only for built-in `openai` and `chatgpt`; OpenAI-compatible providers default to HTTP/SSE. |
+| `use_websocket` | bool | Reserved for providers with native Responses WebSocket support. Defaults to `true` for `chatgpt` and `false` for `openai`. Generic OpenAI-compatible providers use HTTP/SSE, not this native transport. |
 
 ### Model object entries
 
@@ -491,7 +683,7 @@ Reasoning replay uses vLLM's `reasoning` assistant-message field. vLLM may still
 
 ### Anthropic extended thinking
 
-For Anthropic models, append `-thinking`:
+For supported Anthropic models, append `-thinking`:
 
 ```bash
 term-llm ask --provider anthropic:claude-sonnet-4-6-thinking "complex question"
@@ -503,9 +695,11 @@ providers:
     model: claude-sonnet-4-6-thinking
 ```
 
+On the direct Anthropic adapter, `-thinking` uses adaptive thinking for recognized Claude 4.6+ Opus/Sonnet and Fable models; older supported models use a token budget. Effort suffixes are separate: Opus/Fable expose `-low`, `-medium`, `-high`, `-xhigh`, and `-max`, while Sonnet exposes `-low`, `-medium`, and `-high`. Availability remains model-specific; use only controls accepted by your endpoint.
+
 ### AWS Bedrock
 
-The `bedrock` provider routes Anthropic Claude models through AWS Bedrock. It supports the same model suffixes (`-thinking`, `-1m`) and has full feature parity with the direct `anthropic` provider.
+The `bedrock` provider routes Anthropic Claude models through AWS Bedrock. It shares the Anthropic message/tool implementation and translates `-thinking` and `-1m` suffixes. Model availability, context features, and hosted tools remain subject to AWS support and your account; this is not a guarantee of feature parity with the direct Anthropic service. The Bedrock constructor does not currently translate the direct adapter’s `-high`/`-max` effort suffixes—do not append those to a Bedrock model ID.
 
 **Authentication** uses the standard AWS credential chain (`AWS_ACCESS_KEY_ID` env var, `~/.aws/credentials`, instance profiles), or explicit credentials in config:
 
@@ -532,13 +726,13 @@ providers:
 
 Suffixes are stripped before lookup, so `claude-sonnet-4-6-1m-thinking` strips to `claude-sonnet-4-6`, resolves through `model_map`, then re-applies thinking and 1M context.
 
-The geographic prefix (`us.`, `eu.`, `ap.`) is derived from the configured region automatically. For example, `eu-west-1` produces `eu.anthropic.*` IDs, `ap-southeast-1` produces `ap.anthropic.*`, etc. This ensures data residency matches your region without manual override.
+The geographic prefix (`us.`, `eu.`, `ap.`) is derived from the configured region automatically. For example, `eu-west-1` produces `eu.anthropic.*` IDs, `ap-southeast-1` produces `ap.anthropic.*`, etc. These are cross-region inference profiles, not a guarantee that data stays in the single configured region. The current mapper uses `eu` for `eu-*`, `ap` for `ap-*`, and `us` otherwise. For residency-sensitive workloads, explicitly choose an AWS-supported model or profile in `model_map` and verify its routing policy.
 
 Raw Bedrock model IDs (`us.anthropic.claude-sonnet-4-6`, `anthropic.claude-sonnet-4-6`) and full ARNs are passed through without translation.
 
 | Config field | Description |
 |---|---|
-| `region` | AWS region. Falls back to `AWS_REGION` env var, then `us-east-1`. |
+| `region` | AWS region. Uses the AWS SDK region configuration (including `AWS_REGION` / `AWS_DEFAULT_REGION`), then `us-east-1` if unresolved. |
 | `profile` | AWS profile name from `~/.aws/credentials`. |
 | `access_key_id` | Explicit AWS access key. Supports `$()`, `op://`, `${ENV}`. |
 | `secret_access_key` | Explicit AWS secret key. Same resolution support. |
@@ -549,13 +743,19 @@ Raw Bedrock model IDs (`us.anthropic.claude-sonnet-4-6`, `anthropic.claude-sonne
 
 Some providers support native web search. Others rely on external search tooling.
 
-Native support is most relevant for:
+The implemented adapters expose these native search routes:
 
-- Anthropic
-- Bedrock
-- OpenAI
-- xAI
-- Gemini
+| Provider | Native route | Important distinction |
+|---|---|---|
+| `anthropic` | Anthropic web search and web fetch tools | Model and endpoint must accept the hosted tools. |
+| `openai`, `chatgpt` | Responses web search | URL reading can still use an external fetch tool. |
+| `xai` | Web and X search | Native search does not combine with ordinary client tool definitions in the same request. |
+| `gemini` | Google Search grounding | Thinking configuration is suppressed when native search or function tools are active in this adapter. |
+| `venice` | Venice web search | Independent of the external `search.provider`. |
+| `grok-bin` | Companion CLI search/fetch | Not the same as the `grok` subscription OAuth adapter. |
+| `bedrock` | Advertises the shared Anthropic native-tool path | Do not assume AWS accepts every Anthropic hosted tool/beta. Use external search if the endpoint rejects it. |
+
+`grok` subscription OAuth, `claude-bin`, `cursor-bin`, `agy-bin`, `copilot`, `zen`, `opencode-go`, `openrouter`, and local adapters use term-llm's external search tools rather than claiming those native capabilities. Tool support by the selected model is still required.
 
 You can override behavior with:
 
@@ -584,79 +784,12 @@ See [Search](/guides/search/) for the full routing model.
 - **Claude models:** `anthropic`
 - **Claude models via AWS billing:** `bedrock`
 - **broad model access:** `openrouter`
-- **local inference:** `ollama` or another OpenAI-compatible endpoint
-- **subscription-backed consumer access:** `chatgpt` or `copilot`
+- **local inference:** native `ollama`, LM Studio, or another configured local endpoint
+- **subscription-backed access:** `chatgpt`, `grok`, `copilot`, or `opencode-go`, according to your account
+- **reuse a companion CLI:** `claude-bin`, `cursor-bin`, `agy-bin`, or `grok-bin`
 
 ## Related pages
 
 - [Configuration](/reference/configuration/)
 - [Search](/guides/search/)
 - [Providers and setup](/getting-started/providers-and-setup/)
-
-
-### ChatGPT context policy
-
-`term-llm models -p chatgpt` queries the authenticated Codex catalog, using a
-five-minute cache and stale-cache/static fallbacks when offline. Hidden Codex
-picker entries remain available for explicit model selection. ChatGPT `models`
-configuration augments the discovered shell-completion catalog rather than
-restricting it to the entries you customize.
-
-term-llm chooses context in this order:
-
-1. `models[].context_window` for the selected upstream model or alias.
-2. Provider-level `context_window` (including newly discovered models).
-3. term-llm's shipped input budget.
-4. The backend default for an unknown model.
-
-The selected context is capped at the account's known `max_context_window`.
-The backend's `context_window` is a default, **not** that ceiling. When offline,
-the last cached maximum is used; without cache, bundled maxima are used where
-known. For models with no known maximum, an available backend default or shipped
-budget is the conservative ceiling; a configuration value alone cannot establish
-a larger supported window.
-
-The shipped budgets for **GPT-6 Astra and GPT-5.6 Sol/Terra/Luna are 372,000
-tokens**. GPT-5.4 retains its previous 922,000-token budget. These are capped when
-the account reports a smaller maximum. Astra's bundled maximum is 872,000, not
-its 272,000-token Codex default.
-
-```yaml
-providers:
-  chatgpt:
-    # Optional default for all ChatGPT models; each model's maximum still applies.
-    context_window: 372000
-    models:
-      - id: gpt-6-astra
-        context_window: 600000
-      - id: gpt-5.6-sol
-        context_window: 372000
-```
-
-Omit `context_window` (or set it to zero) to use the shipped policy. Context
-settings control local tracking and automatic compaction; they are not sent as
-an unsupported Responses API parameter. With `context_window` alone, the selected
-window is the input budget. If `max_output_tokens` is explicitly configured too,
-it is reserved **after** clamping the context. Shipped budgets already include
-headroom and do not have the model's theoretical output maximum subtracted again.
-The existing soft/hard compaction thresholds apply to the resulting input budget.
-An output reservation that consumes the entire window leaves a minimum one-token
-input budget; choose a smaller reservation instead.
-
-Model listing shows **selected**, **recommended**, and **max** context.
-Recommended is the shipped/default budget capped at the known maximum; selected
-is the local context target after user overrides and clamping, not a server-confirmed
-allocation. Only when an explicit output reservation reduces the input budget,
-a second line shows **Input budget** and **Output reserve**. The reserve is local
-budgeting, not an enforced ChatGPT generation limit. For example:
-
-```text
-gpt-6-astra [context: 600K selected, 372K recommended, 872K max]
-  Input budget: 580K · Output reserve: 20K
-```
-
-`--json` continues to include
-`backend_context`, `recommended_context`, `max_context`, `configured_context`,
-and `input_limit`. Caches store backend facts, not user settings: changing config
-does not require clearing the cache. Custom provider keys with `type: chatgpt`
-have independent context settings.

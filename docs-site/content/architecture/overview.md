@@ -10,22 +10,23 @@ kicker: "Mental model"
 term-llm is a terminal-first AI runtime with a few distinct surfaces:
 
 - **CLI commands** like `exec`, `ask`, `chat`, `edit`, and `image`
-- **Serve modes** for web and jobs
+- **Serve platforms** for the browser workspace, HTTP API, jobs, and Telegram
+- **Hub** for authenticated access to multiple web nodes over direct or reverse connections
 - **Persistent local state** for sessions, config, logs, agents, skills, and MCP servers
 
 The important thing is that these are not separate products bolted together. They share configuration, provider routing, tool execution, and session state.
 
 ## Providers are the model layer
 
-Providers are the LLM backends: Anthropic, OpenAI, ChatGPT, xAI, OpenRouter, Gemini, local OpenAI-compatible servers, and others.
+Providers adapt model backends: hosted APIs, subscription OAuth, authenticated companion CLI subprocesses, native Ollama, and OpenAI-compatible servers. A companion CLI runs locally but can still send model requests to its hosted service. See the [provider inventory](/reference/providers-and-models/#credentials) for the complete integration list.
 
 They answer slightly different questions:
 
 - what model should be used?
 - how is authentication done?
-- does the provider support native search, image generation, or tool calling?
+- does the text adapter/model support native search, image input, or tool calling?
 
-The CLI can override provider or model per command, while config sets the defaults.
+The CLI can override provider or model per command, while config sets the defaults. Image/audio/music/video generation, transcription, and embeddings have separate provider selection and adapters; a capability in one surface does not imply support in another.
 
 ## Sessions are local persistence
 

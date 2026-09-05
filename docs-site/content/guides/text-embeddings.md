@@ -92,7 +92,7 @@ term-llm embed "hello" -p openai:text-embedding-3-large   # specific API-key mod
 term-llm embed "hello" -p chatgpt:text-embedding-3-large  # reuse ChatGPT OAuth
 term-llm embed "hello" -p venice:text-embedding-qwen3-8b   # reuse providers.venice
 term-llm embed "hello" -p gemini                           # use Gemini
-term-llm embed "hello" -p jina                             # use Jina (free tier)
+term-llm embed "hello" -p jina                             # use Jina
 term-llm embed "hello" -p voyage                           # use Voyage AI
 term-llm embed "hello" -p ollama:nomic-embed-text          # local Ollama
 
@@ -109,14 +109,14 @@ For Qwen3 embedding models served by Ollama, `RETRIEVAL_QUERY` automatically add
 
 ### Embedding Providers
 
-| Provider | Default Model | Dimensions | Environment Variable | Free Tier |
+| Provider | Shipped default / example | Dimensions | Credentials | Access |
 |----------|--------------|------------|---------------------|-----------|
-| Gemini (default) | `gemini-embedding-001` | 3072 (128–3072) | `GEMINI_API_KEY` | Yes |
-| OpenAI | `text-embedding-3-small` | 1536 (customizable) | `OPENAI_API_KEY` | No |
+| Gemini (default) | `gemini-embedding-001` | 3072 (128–3072) | `GEMINI_API_KEY` | Provider plan/limits |
+| OpenAI | `text-embedding-3-small` | 1536 (customizable) | `OPENAI_API_KEY` | Provider plan/limits |
 | ChatGPT OAuth | `text-embedding-3-small` | 1536 (customizable) | `term-llm auth login chatgpt` | Subscription access |
-| Venice | `text-embedding-qwen3-8b` | 4096 (customizable) | `providers.venice.api_key` | No |
-| [Jina AI](https://jina.ai/embeddings/) | `jina-embeddings-v3` | 1024 (customizable) | `JINA_API_KEY` | Yes (10M tokens) |
-| [Voyage AI](https://voyageai.com) | `voyage-3.5` | 1024 (256–2048) | `VOYAGE_API_KEY` | No |
+| Venice | `text-embedding-qwen3-8b` | 4096 (customizable) | `providers.venice.api_key` | Provider plan/limits |
+| [Jina AI](https://jina.ai/embeddings/) | `jina-embeddings-v3` | 1024 (customizable) | `JINA_API_KEY` | Provider plan/limits |
+| [Voyage AI](https://voyageai.com) | `voyage-3.5` | 1024 (256–2048) | `VOYAGE_API_KEY` | Provider plan/limits |
 | Ollama | `nomic-embed-text` | 768 | — | Local |
 
 Embedding providers normally use their own credentials, separate from text and image providers. ChatGPT and Venice are exceptions: `chatgpt:<model>` reuses the existing ChatGPT/Codex OAuth login, while `venice:<model>` reuses `providers.venice`. Select either explicitly with `-p` or `embed.provider`; automatic detection remains limited to configured Gemini and OpenAI API keys.
@@ -131,9 +131,9 @@ embed:
     base_url: http://127.0.0.1:11435
 ```
 
-**Jina AI** is a great choice for getting started. Sign up at [jina.ai/embeddings](https://jina.ai/embeddings/) for a free API key with 10M tokens, no credit card required.
+For hosted embeddings, check the provider’s current pricing, account access, and quotas before sending a batch. Introductory free allowances and available model IDs can change; term-llm does not include a hosted token allowance.
 
-**Voyage AI** is Anthropic's recommended embedding partner (acquired by MongoDB, Feb 2025). The API remains fully available.
+For local Ollama embeddings, download the embedding model first and use its local model ID. Chat and embedding models are not interchangeable simply because they come from the same provider.
 
 ## When to use it
 

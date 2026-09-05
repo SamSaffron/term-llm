@@ -23,6 +23,8 @@ By default, videos are:
 | `--input` | `-i` | Input image for image-to-video |
 | `--reference` | `-r` | Reference image(s) for models that support `reference_image_urls` (repeatable) |
 | `--output` | `-o` | Custom output path |
+| `--provider` | `-p` | Video backend; currently only `venice`. |
+| `--delete-remote` | | Delete provider-side media after successful retrieval (default `true`; use `--delete-remote=false` to retain it). |
 | `--model` | | Venice video model override |
 | `--duration` | | Video duration (`5s`, `10s`) |
 | `--aspect-ratio` | | Aspect ratio, e.g. `16:9`, `9:16` |
@@ -45,6 +47,7 @@ term-llm video "a corgi surfing at sunset" --model kling-v3-pro-text-to-video
 
 # Image-to-video
 term-llm video "make Romeo blink and wag his tail" -i romeo.png
+term-llm image "robot cat" -o - | term-llm video "animate it" -i -
 term-llm video "cute dog, influencer reacts" -i romeo.png --aspect-ratio 9:16 --duration 10s
 
 # Multi-reference image-to-video (model support varies)
@@ -90,7 +93,7 @@ Example:
 
 ### Defaults
 
-If you do not specify a model, term-llm picks a cheap Venice default:
+If you do not specify a model, term-llm uses these shipped defaults (check the returned quote and current provider availability):
 - `longcat-distilled-text-to-video` for text-to-video
 - `longcat-distilled-image-to-video` for image-to-video
 
@@ -102,3 +105,5 @@ This command currently exposes the portable subset:
 - repeatable `--reference` images
 
 If a chosen Venice model rejects reference images, the API will return that error directly instead of term-llm pretending otherwise.
+
+Use stdin for at most one media input: either `--input -` or a single `--reference -`. Supply the prompt as an argument when stdin contains image bytes. `--no-wait` does not retrieve the result, so successful-retrieval cleanup has not happened yet.

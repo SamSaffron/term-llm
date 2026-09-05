@@ -50,26 +50,18 @@ The browser UI shows a **lightning bolt** indicator when the data channel is act
 | `--webrtc-token` | (none) | Bearer token for authenticating with the signaling server |
 | `--webrtc-stun` | `stun:stun.l.google.com:19302` | STUN server URL(s), repeatable |
 | `--webrtc-max-conns` | `10` | Maximum concurrent WebRTC connections |
+| `--webrtc-diagnostics` | `false` | Enable connection and request diagnostics; `TERM_LLM_WEBRTC_DIAGNOSTICS=1` also enables diagnostic output. |
 
 ## Configuration file
 
-You can set the flags in `config.yaml` so you don't have to pass them every time:
+WebRTC settings are currently supplied through `--webrtc*` CLI flags. A `serve.webrtc` block in `config.yaml` is not read by the implementation; do not rely on it to enable routing or supply the signaling token.
 
-```yaml
-serve:
-  webrtc:
-    enabled: true
-    signaling_url: https://signal.example.com/webrtc
-    token: your-signaling-token
-    stun_urls:
-      - stun:stun.l.google.com:19302
-    max_conns: 10
-```
-
-Then just run:
+For a persistent deployment, put the flags in your launcher or [systemd service](/guides/web-ui-and-api/#run-as-a-systemd-user-service), and supply the signaling secret through your service's protected environment/credential setup:
 
 ```bash
-term-llm serve web --webrtc
+term-llm serve web --webrtc \
+  --webrtc-signaling-url https://signal.example.com/webrtc \
+  --webrtc-token "$SIGNAL_TOKEN"
 ```
 
 ## Security
