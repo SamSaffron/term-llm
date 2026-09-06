@@ -40,6 +40,7 @@ require (
 	github.com/spf13/viper v1.21.0
 	github.com/yuin/goldmark v1.8.2
 	golang.org/x/image v0.39.0
+	golang.org/x/mod v0.35.0
 	golang.org/x/net v0.54.0
 	golang.org/x/oauth2 v0.35.0
 	golang.org/x/sync v0.20.0

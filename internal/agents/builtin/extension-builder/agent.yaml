@@ -1,0 +1,7 @@
+name: extension-builder
+description: "Make the web interface yours with CSS and JavaScript extensions"
+agents_md: "false"
+skills: "none"
+tools:
+  enabled: [ui_get_source, ui_extensions, ui_activate_extensions, read_file, write_file, edit_file, glob, grep, ask_user]
+max_turns: 100

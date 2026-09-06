@@ -564,21 +564,22 @@ func TestGetBuiltinAgentNames(t *testing.T) {
 	names := GetBuiltinAgentNames()
 
 	expected := map[string]bool{
-		"active-review":  true,
-		"agent-builder":  true,
-		"artist":         true,
-		"changelog":      true,
-		"codebase":       true,
-		"commit-message": true,
-		"contain":        true,
-		"developer":      true,
-		"editor":         true,
-		"file-organizer": true,
-		"planner":        true,
-		"web-researcher": true,
-		"widget-builder": true,
-		"reviewer":       true,
-		"shell":          true,
+		"active-review":     true,
+		"agent-builder":     true,
+		"artist":            true,
+		"changelog":         true,
+		"codebase":          true,
+		"commit-message":    true,
+		"contain":           true,
+		"developer":         true,
+		"editor":            true,
+		"file-organizer":    true,
+		"planner":           true,
+		"web-researcher":    true,
+		"widget-builder":    true,
+		"extension-builder": true,
+		"reviewer":          true,
+		"shell":             true,
 	}
 
 	if len(names) != len(expected) {

@@ -6,7 +6,7 @@ Vite emits deterministic, minified production files into `internal/serveui/stati
 
 ## Prerequisites
 
-Source builds use Node 24 or newer and npm. The test setup supplies isolated Web Storage implementations for Node 25+, whose process-level `localStorage`/`sessionStorage` globals otherwise depend on runtime flags. CI installs dependencies from `package-lock.json` with `npm ci`.
+Source builds use Node 24 or newer, npm, and Python 3 (for the deterministic private UI-authoring source archive). The archive is embedded in release binaries for on-demand extension builder inspection, not downloaded by ordinary browser sessions. The test setup supplies isolated Web Storage implementations for Node 25+, whose process-level `localStorage`/`sessionStorage` globals otherwise depend on runtime flags. CI installs dependencies from `package-lock.json` with `npm ci`.
 
 From the repository root, the normal build command installs locked frontend dependencies when needed, generates both applications, and builds `./term-llm`:
 

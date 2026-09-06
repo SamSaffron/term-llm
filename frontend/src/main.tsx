@@ -1,3 +1,6 @@
+import { effect } from '@preact/signals';
+import { initializeExtensionRecovery } from './stores/extension-runtime';
+import { loadExtensions, watchExtensionActivation } from './api/extensions';
 import { render } from 'preact';
 import { App } from './app/App';
 import { readInjectedConfig } from './app/config';
@@ -9,6 +12,7 @@ import './styles/app.css';
 async function bootstrap(): Promise<void> {
   // Hub proxy context and <base> rewriting are injected before this deferred module executes.
   const config = readInjectedConfig();
+  initializeExtensionRecovery(config);
   if (config.webRTC && config.signalingURL) {
     const { installWebRTC } = await import('./platform/webrtc');
     installWebRTC();
@@ -17,6 +21,20 @@ async function bootstrap(): Promise<void> {
   const root = document.getElementById('root');
   if (!root) throw new Error('term-llm application mount is missing');
   render(<App store={store} />, root);
+  const extensionMount = document.createElement('div');
+  extensionMount.id = 'extension-mount';
+  document.body.append(extensionMount);
+  // Wait for authentication/startup, including a token entered on first launch.
+  // Execute each extension once per document, never again on session changes.
+  let extensionsStarted = false;
+  effect(() => {
+    if (store.startupDone.value && !store.authRequired.value && !extensionsStarted) {
+      extensionsStarted = true;
+      requestAnimationFrame(() => {
+        void loadExtensions(store).then(() => watchExtensionActivation(store));
+      });
+    }
+  });
 
   const explicitTestBridge = import.meta.env.DEV && window.__TERM_LLM_ENABLE_TEST_BRIDGE__ === true;
   if (explicitTestBridge) {

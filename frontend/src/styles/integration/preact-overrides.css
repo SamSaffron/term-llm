@@ -441,7 +441,7 @@
 
 /* Composer */
 .pending-steering-banner {
-  width: 100%;
+  width: calc(100% - 0.6rem);
 }
 
 .composer-binding-error {

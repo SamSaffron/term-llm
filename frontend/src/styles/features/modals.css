@@ -51,6 +51,7 @@
 
 .modal {
   width: min(480px, 100%);
+  max-height: 100%;
   border: 1px solid var(--border);
   background: var(--surface);
   border-radius: 8px;
@@ -287,4 +288,47 @@
 .skill-run-blocked {
   color: var(--muted);
   font-size: 0.85rem;
+}
+
+/* Settings has distinct sections, not one narrow scrolling form. */
+.modal.settings-modal {
+  width: min(820px, 100%);
+}
+
+.settings-tabs {
+  display: flex;
+  gap: 0.25rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-tabs [role='tab'] {
+  flex: 1;
+  min-width: 0;
+  padding: 0.65rem 0.4rem;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.settings-tabs [aria-selected='true'] {
+  color: var(--text);
+  border-bottom-color: var(--accent-green);
+}
+
+.settings-tabs [role='tab']:focus-visible {
+  outline: 2px solid var(--accent-green);
+  outline-offset: -2px;
+}
+
+@media (width >= 640px) {
+  .settings-panel-model:not([hidden]) {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 1rem;
+  }
 }

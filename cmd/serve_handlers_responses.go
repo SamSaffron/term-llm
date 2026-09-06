@@ -177,6 +177,19 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	clientMessageID := strings.TrimSpace(req.ClientMessageID)
 	firstParty := isFirstPartyUIResponseRequest(r)
+	if req.UIContext != nil {
+		c := req.UIContext
+		if !firstParty || len(c.AssetVersion) > 64 || len(c.Generation) > 64 || len(c.Loaded) > 64 || c.Width < 0 || c.Width > 20000 || c.Height < 0 || c.Height > 20000 {
+			writeOpenAIError(w, 400, "invalid_request_error", "invalid UI context")
+			return
+		}
+		for _, id := range c.Loaded {
+			if len(id) > 64 {
+				writeOpenAIError(w, 400, "invalid_request_error", "invalid UI context")
+				return
+			}
+		}
+	}
 	req.Agent = strings.TrimSpace(req.Agent)
 	if req.Agent != "" && !firstParty {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "agent is available only to the Web UI")
@@ -910,6 +923,9 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		llmReq.TopPSet = true
 	}
 
+	if runtime.toolMgr != nil && runtime.toolMgr.Registry != nil {
+		runtime.toolMgr.Registry.SetUIBrowserContext(req.UIContext)
+	}
 	resetResponseIDsOnSuccess := freshConversation || swapPlan.enabled
 	if req.Stream && s.store != nil {
 		if num, created := runtime.ensureSessionInStore(r.Context(), sessionID, inputMessages); num > 0 {

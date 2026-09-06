@@ -1,3 +1,4 @@
+import { extensionRuntime } from '../stores/extension-runtime';
 import type { Session } from '../domain/types';
 
 export function sessionSlug(session: Pick<Session, 'id' | 'number'>): string {
@@ -16,5 +17,6 @@ export function updateSessionRoute(prefix: string, session: Session | null, repl
     ? `${prefix}/chat/${encodeURIComponent(sessionSlug(session))}`
     : `${prefix}/`;
   const method = replace ? 'replaceState' : 'pushState';
-  if (location.pathname !== path) history[method](null, '', path);
+  const recovery = extensionRuntime.safeMode.peek() ? '?safe-mode=1' : '';
+  if (location.pathname !== path) history[method](null, '', path + recovery);
 }

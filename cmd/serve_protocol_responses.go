@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 type responsesModelSwapRequest struct {
@@ -37,6 +38,7 @@ type responsesBranchContextRequest struct {
 }
 
 type responsesCreateRequest struct {
+	UIContext           *tools.UIBrowserContext        `json:"ui_context,omitempty"`
 	Agent               string                         `json:"agent,omitempty"`
 	Model               string                         `json:"model"`
 	Provider            string                         `json:"provider"`
@@ -71,6 +73,8 @@ func responseRequestFingerprint(req responsesCreateRequest) (string, error) {
 	// The claim key and transport request ID identify the operation; neither is
 	// part of its semantic body.
 	req.IdempotencyKey = ""
+	// Viewport/loaded-extension diagnostics do not change a submitted message's identity.
+	req.UIContext = nil
 	encoded, err := json.Marshal(req)
 	if err != nil {
 		return "", fmt.Errorf("encode response request fingerprint: %w", err)

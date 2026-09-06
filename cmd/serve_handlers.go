@@ -3604,6 +3604,30 @@ func (s *serveServer) createRequestRuntime(ctx context.Context, providerName, mo
 		}
 		return nil, fmt.Errorf("created runtime agent %q does not match requested agent %q", runtimeAgentName(rt), normalizeRuntimeAgent(agentName))
 	}
+
+	if rt.toolMgr != nil && rt.toolMgr.Registry != nil && s.extensions != nil {
+		// Prepare the narrow directory before the first file tool call. Status
+		// refreshes it too, replacing—not accumulating—access after a dir change.
+		_ = s.extensions.authorizeBuilder(rt)
+		rt.toolMgr.Registry.SetUIExtensionControl(func(ctx context.Context, operation string) (any, error) {
+			accessErr := s.extensions.authorizeBuilder(rt)
+			if operation == "activate" {
+				if err := s.extensions.activate(); err != nil {
+					return nil, err
+				}
+			}
+			if operation == "reload" {
+				if err := s.extensions.reload(); err != nil {
+					return nil, err
+				}
+			}
+			result := map[string]any{"extensions": s.extensions.status(), "frontend_asset_version": serveui.AssetVersion(), "version": Version, "recovery": "Append ?safe-mode=1 to the browser URL. ui_activate_extensions requests automatic reload when browsers are idle; safe-mode tabs never auto-activate.", "builder_write_access": rt.extensionBuilder && accessErr == nil}
+			if accessErr != nil {
+				result["builder_access_error"] = accessErr.Error()
+			}
+			return result, nil
+		})
+	}
 	return rt, nil
 }
 

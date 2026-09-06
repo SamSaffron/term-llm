@@ -10,7 +10,9 @@ export function trapOverlayFocus(event: KeyboardEvent, selector = OVERLAY_FOCUSA
   if (event.key !== 'Tab') return;
   const root = event.currentTarget as HTMLElement | null;
   if (!root) return;
-  const items = [...root.querySelectorAll<HTMLElement>(selector)].filter((item) => item !== root);
+  const items = [...root.querySelectorAll<HTMLElement>(selector)].filter(
+    (item) => item !== root && !item.closest('[hidden], [inert]'),
+  );
   if (!items.length) {
     event.preventDefault();
     root.focus();
@@ -73,9 +75,11 @@ export function Overlay({
     const focusFrame = requestAnimationFrame(() => {
       const target =
         dialog.current?.querySelector<HTMLElement>('[autofocus]:not([disabled])') ||
-        dialog.current?.querySelector<HTMLElement>(
-          'button:not([disabled]):not([data-overlay-close]),input:not([disabled]),select:not([disabled]),textarea:not([disabled])',
-        ) ||
+        [
+          ...(dialog.current?.querySelectorAll<HTMLElement>(
+            'button:not([disabled]):not([data-overlay-close]),input:not([disabled]),select:not([disabled]),textarea:not([disabled])',
+          ) || []),
+        ].find((item) => !item.closest('[hidden], [inert]')) ||
         dialog.current?.querySelector<HTMLElement>('[data-overlay-close]:not([disabled])') ||
         dialog.current;
       target?.focus();

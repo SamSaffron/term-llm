@@ -29,6 +29,7 @@ var builtinAgentNames = []string{
 	"planner",
 	"web-researcher",
 	"widget-builder",
+	"extension-builder",
 	"reviewer",
 	"shell",
 }

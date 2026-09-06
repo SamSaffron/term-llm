@@ -1,0 +1,11 @@
+.studio-clock {
+  position: fixed;
+  right: 18px;
+  bottom: 10px;
+  color: var(--text-muted);
+  font: 11px/1.5 var(--font-mono);
+  letter-spacing: 0.03em;
+  pointer-events: none;
+  z-index: 5;
+}
+@media (max-width: 760px) { .studio-clock { display: none; } }

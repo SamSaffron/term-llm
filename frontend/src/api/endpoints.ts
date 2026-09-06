@@ -1,3 +1,4 @@
+import type { ExtensionStatus } from '../stores/extension-runtime';
 import type { APIClient, RequestControls } from './client';
 import type { ApprovalMode, Goal, MCPOAuthFlow, MCPResponse } from '../domain/types';
 import type { MentionSearchResponse } from '../domain/completions';
@@ -89,6 +90,15 @@ const sessionPost = <T = Record<string, unknown>>(
 // node's embedded UI hash is not authoritative for the browser's shell assets.
 const sessionReviewRead = { auth: 'session', versionCheck: false } as const;
 export const endpoints = (api: APIClient) => ({
+  extensionsStatus: () =>
+    api.get<ExtensionStatus>('/admin/extensions/status', undefined, { retries: 0 }),
+  extensionsReload: () =>
+    api.json<ExtensionStatus>('/admin/extensions/reload', { method: 'POST', body: '{}' }),
+  extensionsSave: (enabled: string[], revision: string) =>
+    api.json<ExtensionStatus>('/admin/extensions/config', {
+      method: 'POST',
+      body: JSON.stringify({ enabled, revision }),
+    }),
   capabilities: () => api.get<Record<string, unknown>>('/v1/capabilities'),
   sharingCapabilities: () => api.get<SharingCapabilitiesResponse>('/v1/sharing/capabilities'),
   providers: () => api.get<Record<string, unknown>>('/v1/providers'),

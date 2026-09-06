@@ -66,7 +66,11 @@ default_provider: debug
 providers:
   debug:
     model: fast
+serve:
+  extensions: [studio-clock]
 YAML
+mkdir -p "$home/config/term-llm/extensions"
+cp -R examples/extensions/studio-clock "$home/config/term-llm/extensions/"
 printf 'production hub fixture\n' >"$workspace/fixture.txt"
 git -C "$workspace" init -q
 git -C "$workspace" -c user.name='Hub Browser Fixture' -c user.email='fixture@example.invalid' add fixture.txt

@@ -44,6 +44,14 @@ body {
     sans-serif;
 }
 
+/* Replace the inline startup shell's colors once the application CSS loads.
+   Otherwise #root keeps system-theme colors even when extensions change tokens. */
+#root {
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+}
+
 body {
   overflow: hidden;
   letter-spacing: 0.01em;

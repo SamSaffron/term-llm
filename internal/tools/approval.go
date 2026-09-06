@@ -379,8 +379,9 @@ type ApprovalManager struct {
 	projectCache        map[string]*ProjectApprovals // repo root -> approvals
 	projectMu           sync.Mutex
 
-	toolAllowMu  sync.RWMutex
-	toolReadDirs map[string][]string // per-tool read allowlist, e.g. routed view_image uploads
+	toolAllowMu        sync.RWMutex
+	extensionDirectory string              // host-scoped file access for the built-in web extension-builder only
+	toolReadDirs       map[string][]string // per-tool read allowlist, e.g. routed view_image uploads
 
 	workspaceMu            sync.RWMutex
 	primaryWorkspace       string // canonical proposal; grants no authority by itself
@@ -1127,6 +1128,13 @@ func (m *ApprovalManager) CheckPathApprovalWithContext(ctx context.Context, tool
 		if m.DebugApproval {
 			log.Printf("[approval] CheckPathApproval tool=%s path=%q isWrite=%v → yolo auto-approve", toolName, path, isWrite)
 		}
+		return ProceedOnce, nil
+	}
+
+	// The verified web extension-builder has a separate narrow application
+	// directory, not authority over its proposed project workspace. This host
+	// capability permits only file tools and does not confirm that workspace.
+	if m.extensionFileAllowed(toolName, absPath) {
 		return ProceedOnce, nil
 	}
 

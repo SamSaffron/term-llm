@@ -382,6 +382,8 @@ var keySpecs = []KeySpec{
 	def("serve.disable_location_sharing", false),
 	optional("serve.files_dir"),
 	optional("serve.widgets_dir"),
+	optional("serve.extensions_dir"),
+	optional("serve.extensions"),
 	def("serve.response_timeout", DefaultServeResponseTimeout),
 	optional("serve.telegram.token", sensitive()),
 	optional("serve.telegram.allowed_user_ids", withPlaceholder([]int64{})),

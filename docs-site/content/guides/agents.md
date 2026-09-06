@@ -47,6 +47,7 @@ term-llm ships with these built-in agents:
 | `file-organizer` | Renames and organizes files into sensible names and folders. |
 | `web-researcher` | Information gathering with web search. |
 | `widget-builder` | Builds, edits, and debugs local Web UI widget applications. |
+| `extension-builder` | Personalizes the web interface with local CSS/JavaScript extensions and config. |
 | `reviewer` | Read-only code review with git-aware inspection tools. |
 | `shell` | General shell command helper. |
 
@@ -56,6 +57,7 @@ A few good starting points:
 - `@codebase` for architecture questions and tracing behavior across a repo
 - `@developer` when you want implementation work done
 - `@widget-builder` to build or refine a [local Web UI widget](/guides/widgets/)
+- `@extension-builder` to [make the web interface yours](/guides/extensions/) with CSS and JavaScript
 - `@web-researcher` when the answer depends on current web information
 - `@commit-message` when you want a clean commit message without fuss
 

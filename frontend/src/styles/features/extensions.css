@@ -1,0 +1,137 @@
+.extension-settings {
+  min-width: 0;
+}
+
+.extension-caption {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.extension-empty {
+  padding: 1rem;
+  margin: 0.75rem 0;
+  border: 1px dashed var(--border-strong);
+  border-radius: 10px;
+}
+
+.extension-empty strong {
+  display: block;
+  margin-bottom: 0.3rem;
+}
+
+.extension-settings code {
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.extension-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.extension-card {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.7rem;
+  background: var(--surface);
+}
+
+.extension-card.is-enabled {
+  border-color: var(--border-strong);
+}
+
+.extension-card label {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.extension-card input {
+  width: auto;
+  accent-color: var(--accent-green);
+}
+
+.extension-card strong,
+.extension-card small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.extension-card strong {
+  font-size: 0.85rem;
+}
+
+.extension-card small {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 0.2rem;
+}
+
+.extension-order,
+.extension-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.extension-order .btn {
+  padding: 0.2rem 0.45rem;
+}
+
+.extension-actions {
+  margin-top: 0.85rem;
+}
+
+.extension-error,
+.extension-card .extension-error {
+  color: var(--danger);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.extension-details {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-top: 0.6rem;
+  line-height: 1.5;
+}
+
+.extension-details summary {
+  cursor: pointer;
+  margin-bottom: 0.5rem;
+}
+
+.extension-details a {
+  color: var(--link);
+}
+
+.extension-recovery {
+  padding: 0.8rem;
+  border-radius: 10px;
+  border: 1px solid var(--accent-amber);
+  margin: 0.6rem 0;
+  font-size: 0.85rem;
+}
+
+.extension-recovery p {
+  line-height: 1.5;
+}
+
+.extension-builder {
+  display: flex;
+  width: fit-content;
+  justify-content: center;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0 0 1rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: 10px;
+  background: var(--surface-2);
+}

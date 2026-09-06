@@ -1,4 +1,4 @@
-const SHELL_CACHE = 'term-llm-shell-v6';
+const SHELL_CACHE = 'term-llm-shell-v7';
 const SHELL_ASSETS = [
   './manifest.webmanifest',
   './icon-512.png',
@@ -40,6 +40,8 @@ self.addEventListener('fetch', (event) => {
   const scopePath = new URL(self.registration.scope).pathname;
   const isAppRequest = url.pathname.startsWith(scopePath);
   if (!isAppRequest) return;
+  // Trusted extensions are mutable external assets, never offline shell assets.
+  if (url.pathname.slice(scopePath.length).startsWith('extensions/')) return;
 
   // Navigations are authoritative. A cached application shell can mask login,
   // logout, deployment, and reverse-proxy redirects, so only cache versioned

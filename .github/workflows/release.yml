@@ -38,6 +38,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Publish readable UI source and checksum
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # This platform-independent reference is not part of binary archives.
+          # Upload the updated checksum file with it so fallback readers can verify it.
+          cp internal/uisource/assets/term-llm-ui-source.tar.gz dist/
+          (cd dist && sha256sum term-llm-ui-source.tar.gz >> checksums.txt)
+          gh release upload "$GITHUB_REF_NAME" dist/term-llm-ui-source.tar.gz dist/checksums.txt --clobber
+
   homebrew:
     needs: release
     runs-on: ubuntu-latest

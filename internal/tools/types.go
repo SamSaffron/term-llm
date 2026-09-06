@@ -116,6 +116,9 @@ type ToolMetadata struct {
 
 // Tool specification names
 const (
+	UIGetSourceToolName      = "ui_get_source"
+	UIExtensionsToolName     = "ui_extensions"
+	UIActivateToolName       = "ui_activate_extensions"
 	ReadFileToolName         = "read_file"
 	WriteFileToolName        = "write_file"
 	EditFileToolName         = "edit_file"
@@ -175,7 +178,7 @@ func StandardToolNames() []string {
 // configuration behaves consistently with the historical allowlist.
 func ValidToolNames() []string {
 	names := StandardToolNames()
-	for _, name := range []string{HubDelegateToolName, HubCheckDelegationToolName, ManageWorkspaceToolName, UpdatePlanToolName} {
+	for _, name := range []string{HubDelegateToolName, HubCheckDelegationToolName, ManageWorkspaceToolName, UpdatePlanToolName, UIGetSourceToolName, UIExtensionsToolName, UIActivateToolName} {
 		found := false
 		for _, existing := range names {
 			if existing == name {
@@ -193,6 +196,9 @@ func ValidToolNames() []string {
 // validToolNames is a set of valid tool spec names for fast lookup.
 // Note: activate_skill is excluded as it requires a skills registry and is registered separately.
 var validToolNames = map[string]bool{
+	UIGetSourceToolName:        true,
+	UIExtensionsToolName:       true,
+	UIActivateToolName:         true,
 	ReadFileToolName:           true,
 	WriteFileToolName:          true,
 	EditFileToolName:           true,
@@ -224,7 +230,7 @@ func ValidToolName(name string) bool {
 // GetToolKind returns the kind for a tool spec name.
 func GetToolKind(specName string) ToolKind {
 	switch specName {
-	case ReadFileToolName, ViewImageToolName:
+	case ReadFileToolName, ViewImageToolName, UIGetSourceToolName:
 		return KindRead
 	case WriteFileToolName, EditFileToolName, UnifiedDiffToolName:
 		return KindEdit
@@ -241,7 +247,7 @@ func GetToolKind(specName string) ToolKind {
 		return KindAgent
 	case RunAgentScriptToolName:
 		return KindExecute
-	case UpdatePlanToolName, ManageWorkspaceToolName:
+	case UpdatePlanToolName, ManageWorkspaceToolName, UIExtensionsToolName, UIActivateToolName:
 		return KindSessionState
 	case ActivateSkillToolName:
 		return KindSkill

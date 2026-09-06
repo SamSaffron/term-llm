@@ -5416,6 +5416,61 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument();
   });
 
+  it('separates settings into keyboard-accessible tabs and preserves edits', async () => {
+    const store = createStore();
+    store.modal.value = 'settings';
+    const fetchExtensions = vi.fn(async () => ({
+      directory: '/extensions',
+      config_path: '/extensions/extensions.yaml',
+      enabled: [],
+      entries: [{ id: 'cat', title: 'Composer Cat', description: 'A small cat.' }],
+      errors: [],
+      generation: 'test',
+      source: 'extension-file',
+      disabled: false,
+      config_revision: 'test',
+    }));
+    store.endpoints.extensionsStatus = fetchExtensions;
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+    expect(screen.getAllByRole('tab')).toHaveLength(4);
+    expect(screen.getByRole('tab', { name: 'Model' })).toHaveAttribute('aria-selected', 'true');
+    expect(fetchExtensions).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('Effort'), { target: { value: 'high' } });
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Model' }), { key: 'ArrowRight' });
+    expect(screen.getByRole('tab', { name: 'Interface' })).toHaveFocus();
+    expect(screen.getByRole('checkbox', { name: 'Show widgets in sidebar' })).toBeVisible();
+    expect(screen.queryByRole('combobox', { name: 'Effort' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'Extensions' }));
+    const cat = await screen.findByRole('checkbox', { name: /Composer Cat/ });
+    fireEvent.click(cat);
+    fireEvent.click(screen.getByRole('tab', { name: 'Connection' }));
+    expect(screen.getByLabelText('Bearer token')).toBeVisible();
+    fireEvent.click(screen.getByRole('tab', { name: 'Extensions' }));
+    expect(screen.getByRole('checkbox', { name: /Composer Cat/ })).toBeChecked();
+    expect(fetchExtensions).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Extensions' }), { key: 'Home' });
+    expect(screen.getByLabelText('Effort')).toHaveValue('high');
+  });
+
+  it('keeps authentication directly accessible without settings tabs', () => {
+    const store = createStore();
+    store.modal.value = 'settings';
+    store.authRequired.value = true;
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Bearer token')).toBeVisible();
+    expect(screen.queryByRole('combobox', { name: 'Provider' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save', exact: true })).toBeVisible();
+  });
+
   it('never renders a background-session interaction over the active conversation', () => {
     const store = createStore();
     store.activeSessionId.value = 's2';

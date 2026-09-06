@@ -1,0 +1,57 @@
+/* A complete Dracula palette, including light-system overrides and code. */
+:root {
+  color-scheme: dark;
+  --bg: #282a36;
+  --bg-accent: rgb(189 147 249 / 5%);
+  --bg-accent-2: rgb(189 147 249 / 3%);
+  --surface: #303341;
+  --surface-strong: #343746;
+  --surface-2: #383b4d;
+  --surface-3: #44475a;
+  --border: rgb(189 147 249 / 13%);
+  --border-strong: rgb(189 147 249 / 28%);
+  --text: #f8f8f2;
+  --text-muted: #a6a9c3;
+  --accent: #bd93f9;
+  --accent-strong: #d5b5ff;
+  --accent-green: #50fa7b;
+  --accent-amber: #f1fa8c;
+  --danger: #ff5555;
+  --link: #8be9fd;
+  --error-text: #ffb1b1;
+  --btn-accent-text: #282a36;
+  --stop-btn-text: #ffb1b1;
+  --backdrop: rgb(20 21 29 / 70%);
+  --overlay: rgb(20 21 29 / 75%);
+  --shadow-soft: 0 2px 10px rgb(0 0 0 / 12%);
+  --shadow-strong: 0 12px 36px rgb(0 0 0 / 25%);
+  --syntax-text: #f8f8f2;
+  --syntax-keyword: #ff79c6;
+  --syntax-entity: #50fa7b;
+  --syntax-constant: #bd93f9;
+  --syntax-string: #f1fa8c;
+  --syntax-variable: #ffb86c;
+  --syntax-comment: #8792b8;
+  --syntax-tag: #ff79c6;
+  --syntax-heading: #bd93f9;
+  --syntax-bullet: #8be9fd;
+  --diff-add-bg: rgb(80 250 123 / 12%);
+  --diff-add-ln-bg: rgb(80 250 123 / 20%);
+  --diff-del-bg: rgb(255 85 85 / 12%);
+  --diff-del-ln-bg: rgb(255 85 85 / 20%);
+  --sidebar-width: 260px;
+}
+
+::selection { background: #bd93f9; color: #282a36; }
+body { letter-spacing: 0.012em; }
+.header-title { letter-spacing: -0.025em; }
+.header-title::before { content: '◈'; color: #bd93f9; margin-inline-end: 0.5rem; }
+.sidebar { background: #232530; }
+.composer { border-color: rgb(189 147 249 / 24%); }
+button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible {
+  outline: 2px solid #8be9fd;
+  outline-offset: 3px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  button { transition: background-color 120ms ease, border-color 120ms ease; }
+}

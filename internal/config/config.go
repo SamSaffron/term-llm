@@ -527,6 +527,8 @@ type ServeConfig struct {
 	DisableLocationSharing bool                `mapstructure:"disable_location_sharing" yaml:"disable_location_sharing,omitempty"`
 	FilesDir               string              `mapstructure:"files_dir" yaml:"files_dir,omitempty"`
 	WidgetsDir             string              `mapstructure:"widgets_dir" yaml:"widgets_dir,omitempty"`
+	ExtensionsDir          string              `mapstructure:"extensions_dir" yaml:"extensions_dir,omitempty"`
+	Extensions             []string            `mapstructure:"extensions" yaml:"extensions,omitempty"`
 	ResponseTimeout        string              `mapstructure:"response_timeout" yaml:"response_timeout,omitempty"` // Go duration string, e.g. "30m" or "1h"
 	Telegram               TelegramServeConfig `mapstructure:"telegram" yaml:"telegram,omitempty"`
 	WebPush                WebPushConfig       `mapstructure:"web_push" yaml:"web_push,omitempty"`

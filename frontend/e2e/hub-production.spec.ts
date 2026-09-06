@@ -277,6 +277,15 @@ test('Hub bearer mount preserves a proxied send across reload', async ({ page },
     webrtc: false,
   });
 
+  // Native CSS/module subresource requests carry the Hub cookie, not API
+  // bearer headers. Exercise the actual proxied extension activation path.
+  await expect(page.locator('.studio-clock')).toHaveCount(1);
+  const extensionLinks = await page
+    .locator('link[data-extension="studio-clock"]')
+    .evaluateAll((links) => links.map((link) => (link as HTMLLinkElement).href));
+  expect(extensionLinks).toHaveLength(1);
+  expect(extensionLinks[0]).toContain('/hub/node/production-node/extensions/');
+
   await page.getByRole('textbox', { name: 'Message' }).fill('Production shaped Hub resume');
   await page.getByRole('button', { name: 'Send message' }).click();
   await expect(page).toHaveURL(/\/hub\/node\/production-node\/chat\//);

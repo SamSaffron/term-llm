@@ -52,6 +52,7 @@ type serveRuntime struct {
 	toolsSetting           string
 	mcpSetting             string
 	agentName              string
+	extensionBuilder       bool // verified at agent resolution; a user/local name override is not sufficient
 	sessionMeta            *session.Session
 	forceExternalSearch    bool
 	maxTurns               int

@@ -1,4 +1,5 @@
 import { normalizeSteering, rushActive, type RushOperation } from '../domain/steering';
+import { extensionRuntime } from './extension-runtime';
 import { batch, computed, signal, type ReadonlySignal } from '@preact/signals';
 import { APIError, decodeSSE } from '../api/client';
 import {
@@ -547,6 +548,15 @@ export class RunEngine {
         },
       ],
     };
+    if ((session.agent || this.runtime.selectedAgent.peek()) === 'extension-builder')
+      requestBody.ui_context = {
+        asset_version: this.services.config.version,
+        generation: extensionRuntime.generation.peek(),
+        loaded: extensionRuntime.loaded.peek(),
+        safe_mode: extensionRuntime.safeMode.peek(),
+        width: innerWidth,
+        height: innerHeight,
+      };
     if (session.lastResponseId) requestBody.previous_response_id = session.lastResponseId;
     else if (this.sessionStore.projectsEnabled.value) {
       if (session.projectId) requestBody.project_id = session.projectId;

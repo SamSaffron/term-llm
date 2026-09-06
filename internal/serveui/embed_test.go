@@ -83,10 +83,12 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// The bounded approval dialog, keyboard controls, and isolated streaming,
 		// diff/voice boundaries, atomic rich-content preparation, session readiness,
 		// and incremental transcript indexes are included in the post-cleanup
-		// baseline of ~491.8 kB raw. Allow modest raw JS headroom while retaining
-		// both compressed limits and the existing CSS budget.
-		"dist/app.js":  {raw: 495_000, gzip: 140_000},
-		"dist/app.css": {raw: 174_000, gzip: 34_000},
+		// baseline of ~491.8 kB raw. Extension recovery, ordered loading and the
+		// lazy Interface-settings entry add ~3.9 kB raw; the panel and its CSS
+		// load only on demand. Allow modest headroom for the combined features
+		// with bounded CSS headroom for responsive steering controls.
+		"dist/app.js":  {raw: 499_000, gzip: 142_000},
+		"dist/app.css": {raw: 175_000, gzip: 34_000},
 		// Measured after the completed standalone port: 67.7/21.5 KiB JS and
 		// 16.7/4.1 KiB CSS. These limits retain modest growth headroom without
 		// allowing chat-only rendering dependencies into the Hub graph.

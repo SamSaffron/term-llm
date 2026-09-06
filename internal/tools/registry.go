@@ -254,6 +254,12 @@ func (r *LocalToolRegistry) registerTool(specName string) error {
 	var tool llm.Tool
 
 	switch specName {
+	case UIGetSourceToolName:
+		tool = &UIGetSourceTool{approval: r.approval, config: r.config}
+	case UIActivateToolName:
+		tool = &UIExtensionsTool{activate: true}
+	case UIExtensionsToolName:
+		tool = &UIExtensionsTool{}
 	case ReadFileToolName:
 		tool = NewReadFileTool(r.approval, r.limits, r.config)
 	case WriteFileToolName:

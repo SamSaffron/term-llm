@@ -1,0 +1,5 @@
+title: Studio clock
+description: A small, local-time companion for your workspace. No network requests.
+format_version: 1
+css: style.css
+js: main.js

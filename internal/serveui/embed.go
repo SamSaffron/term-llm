@@ -146,7 +146,7 @@ func RenderServiceWorker(_ RenderOptions) []byte {
 			return
 		}
 		for _, replacement := range []struct{ old, new string }{
-			{"term-llm-shell-v6", "term-llm-shell-" + AssetVersion()},
+			{"term-llm-shell-v7", "term-llm-shell-" + AssetVersion()},
 			{"'./manifest.webmanifest'", "'./" + versioned("manifest.webmanifest") + "'"},
 			{"'./icon-512.png'", "'./" + versioned("icon-512.png") + "'"},
 			{"'./dist/app.css'", "'./" + versioned("dist/app.css") + "'"},
@@ -169,4 +169,17 @@ func StaticAsset(name string) ([]byte, error) {
 		return nil, err
 	}
 	return bytes.Clone(data), nil
+}
+
+// SourceAssetPaths lists static, credential-free chat source assets for agent inspection.
+func SourceAssetPaths() []string {
+	paths := []string{"index.html", "sw.js"}
+	_ = fs.WalkDir(staticFiles, "static/dist", func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && !strings.HasSuffix(p, "/hub.js") && !strings.HasSuffix(p, "/hub.css") && (strings.HasSuffix(p, ".css") || strings.HasSuffix(p, ".js")) {
+			paths = append(paths, strings.TrimPrefix(p, "static/"))
+		}
+		return err
+	})
+	sort.Strings(paths)
+	return paths
 }

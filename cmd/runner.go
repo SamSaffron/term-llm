@@ -345,6 +345,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		toolsSetting:        settings.Tools,
 		mcpSetting:          settings.MCP,
 		agentName:           agentName,
+		extensionBuilder:    agent != nil && agent.Name == "extension-builder" && agent.Source == agents.SourceBuiltin,
 		platform:            templatePlatform(req.Platform),
 	}
 	if agent != nil {

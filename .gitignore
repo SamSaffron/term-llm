@@ -13,3 +13,5 @@ frontend/coverage/
 internal/serveui/static/dist/
 __pycache__/
 *.pyc
+
+internal/uisource/assets/*.tar.gz

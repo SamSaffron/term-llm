@@ -75,6 +75,9 @@ var (
 	serveFilesDir               string
 	serveDisableWidgets         bool
 	serveWidgetsDir             string
+	serveExtensionsDir          string
+	serveExtensionIDs           []string
+	serveDisableExtensions      bool
 	serveResponseTimeout        time.Duration
 	serveEnableFileTracking     bool
 	serveHubURL                 string
@@ -176,6 +179,9 @@ func init() {
 	serveCmd.Flags().StringVar(&serveFilesDir, "files-dir", "", "Directory for serving arbitrary files (videos, PDFs, etc) at {base}/files/")
 	serveCmd.Flags().Bool("enable-widgets", false, "Deprecated no-op; widgets are enabled by default")
 	serveCmd.Flags().BoolVar(&serveDisableWidgets, "disable-widgets", false, "Disable local widget apps under {base}/widgets/<mount>/")
+	serveCmd.Flags().StringSliceVar(&serveExtensionIDs, "extensions", nil, "Ordered web extension IDs (overrides serve.extensions; empty disables all)")
+	serveCmd.Flags().StringVar(&serveExtensionsDir, "extensions-dir", "", "Directory containing web extension sub-directories")
+	serveCmd.Flags().BoolVar(&serveDisableExtensions, "disable-extensions", false, "Disable all web extension code for this process")
 	serveCmd.Flags().StringVar(&serveWidgetsDir, "widgets-dir", "", "Directory containing widget sub-directories (default: ~/.config/term-llm/widgets)")
 	serveCmd.Flags().DurationVar(&serveResponseTimeout, "response-timeout", defaultServeRequestTimeout, "Maximum inactivity before the first or next completed LLM response (default 30m; pauses for interactive waits)")
 	serveCmd.Flags().BoolVar(&serveEnableFileTracking, "enable-file-tracking", false, "Enable session file-change tracking for this serve process")
@@ -814,6 +820,12 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 				return getErr == nil && sess != nil
 			}),
 		}
+		if hasWeb {
+			s.extensions, err = newServeExtensions(serveExtensionsDir, serveExtensionIDs, cmd.Flags().Changed("extensions"), serveDisableExtensions)
+			if err != nil {
+				return fmt.Errorf("extensions: %w", err)
+			}
+		}
 		if hasJobs {
 			jobsV2, err = newServeJobsV2Manager(cfg, serveJobsWorkers, resolvedApproval, s.notifyJobsV2RunDone)
 			if err != nil {
@@ -1411,6 +1423,7 @@ type serveServer struct {
 	autoTitleStopping        bool
 	pathNotesProviderFactory func(providerName, model string) (llm.Provider, error)
 	widgetsMgr               *widgets.Manager
+	extensions               *serveExtensions
 	indexHTMLOnce            sync.Once
 	cachedIndexHTML          []byte
 	worktreeRootOnce         sync.Once
@@ -1528,6 +1541,9 @@ func (s *serveServer) httpHandler() http.Handler {
 	}
 	if s.widgetsMgr != nil {
 		s.registerWidgetRoutes(inner)
+	}
+	if s.extensions != nil {
+		s.registerExtensionRoutes(inner)
 	}
 	inner.HandleFunc("/v1/capabilities", s.auth(s.cors(s.handleCapabilities)))
 	inner.HandleFunc("/v1/sharing/capabilities", s.auth(s.cors(s.handleSharingCapabilities)))
