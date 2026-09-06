@@ -3,11 +3,15 @@ package cmd
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 type modelSwapSessionViewStore struct {
@@ -33,6 +37,129 @@ func (s *blockingModelSwapReplaceStore) ReplaceMessages(ctx context.Context, ses
 		return s.Store.ReplaceMessages(ctx, sessionID, messages)
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+func TestBeginResponseModelSwapRestoresWorkspace(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		requestedModel  string
+		removeWorkspace bool
+	}{
+		{name: "effort-only switch", requestedModel: "old-model"},
+		{name: "model switch", requestedModel: "new-model"},
+		{name: "restoration failure rolls back", requestedModel: "new-model", removeWorkspace: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			srv, store := newServeProjectTestServer(t)
+			project := &session.Project{Name: "Swap project", CanonicalDir: t.TempDir()}
+			if err := store.CreateProject(ctx, project); err != nil {
+				t.Fatal(err)
+			}
+			sess := &session.Session{
+				ID: session.NewID(), Provider: "mock", ProviderKey: "mock", Model: "old-model",
+				Mode: session.ModeChat, Origin: session.OriginWeb,
+				ProjectID: project.ID, CWD: project.CanonicalDir,
+			}
+			if err := store.Create(ctx, sess); err != nil {
+				t.Fatal(err)
+			}
+			newToolManager := func() *tools.ToolManager {
+				t.Helper()
+				cfg := tools.ToolConfig{Enabled: []string{tools.ReadFileToolName}, RequireExplicitWorkingDir: true}
+				mgr, err := tools.NewToolManager(&cfg, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return mgr
+			}
+			previous, prevProvider := newCloseTrackingServeRuntime()
+			previous.providerKey, previous.defaultModel = "mock", "old-model"
+			previous.store, previous.toolMgr = store, newToolManager()
+			candidate, candProvider := newCloseTrackingServeRuntime()
+			candidate.providerKey, candidate.defaultModel = "mock", tc.requestedModel
+			candidate.store, candidate.toolMgr = store, newToolManager()
+			manager := newServeSessionManager(time.Minute, 10, nil)
+			t.Cleanup(manager.Close)
+			srv.sessionMgr = manager
+			putTestSession(manager, sess.ID, previous)
+			srv.runtimeFactory = func(context.Context, string, string) (*serveRuntime, error) {
+				// The previous runtime has already been restored by this point.
+				// Make only the candidate's workspace initialization fail.
+				if tc.removeWorkspace {
+					if err := os.RemoveAll(project.CanonicalDir); err != nil {
+						return nil, err
+					}
+				}
+				return candidate, nil
+			}
+
+			if err := srv.ensureRuntimeBaseDirForSession(ctx, sess.ID, previous); err != nil {
+				t.Fatal(err)
+			}
+			previous.toolMgr.ApprovalMgr.WorkspacePromptFunc = func(string) (tools.WorkspaceApprovalResult, error) {
+				return tools.WorkspaceApprovalResult{Approved: true}, nil
+			}
+			path := filepath.Join(project.CanonicalDir, "file.txt")
+			if err := os.WriteFile(path, []byte("workspace fixture"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if outcome, err := previous.toolMgr.ApprovalMgr.CheckPathApproval(tools.ReadFileToolName, path, path, false); err != nil || outcome != tools.ProceedAlways {
+				t.Fatalf("confirm primary workspace: outcome=%v err=%v", outcome, err)
+			}
+			grantsBefore, err := store.ListWorkspaceGrants(ctx, sess.ID)
+			if err != nil || len(grantsBefore) != 1 {
+				t.Fatalf("initial workspace grants = %#v, err=%v", grantsBefore, err)
+			}
+			candidate.toolMgr.ApprovalMgr.WorkspacePromptFunc = func(string) (tools.WorkspaceApprovalResult, error) {
+				t.Error("model switch requested another primary workspace approval")
+				return tools.WorkspaceApprovalResult{}, nil
+			}
+
+			plan := responseModelSwapPlan{
+				enabled: true, previousProvider: "mock", previousModel: "old-model", previousEffort: "medium",
+				requestedProvider: "mock", requestedModel: tc.requestedModel, requestedEffort: "high",
+			}
+			swap, err := srv.beginResponseModelSwap(ctx, sess.ID, plan, []llm.Message{llm.UserText("continue")})
+			if swap != nil {
+				t.Cleanup(swap.markRolledBack)
+			}
+			if tc.removeWorkspace {
+				if err == nil || swap != nil {
+					t.Fatalf("workspace restoration should fail: swap=%p err=%v", swap, err)
+				}
+				if current, ok := manager.Get(sess.ID); !ok || current != previous {
+					t.Fatalf("rollback runtime = %p, want previous %p", current, previous)
+				}
+				if !candProvider.closed.Load() || prevProvider.closed.Load() {
+					t.Fatalf("rollback cleanup: candidate closed=%v, previous closed=%v", candProvider.closed.Load(), prevProvider.closed.Load())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := swap.candidate.toolMgr.BaseDir(); !sameServePath(got, project.CanonicalDir) {
+				t.Fatalf("candidate working directory = %q, want %q", got, project.CanonicalDir)
+			}
+			approval := swap.candidate.toolMgr.ApprovalMgr
+			capabilities := approval.WorkspaceCapabilities()
+			if len(capabilities) != 1 || !capabilities[0].Primary || capabilities[0].Status != "confirmed" || !sameServePath(capabilities[0].Path, project.CanonicalDir) {
+				t.Fatalf("candidate lost confirmed primary workspace: %#v", capabilities)
+			}
+			if outcome, err := approval.CheckPathApproval(tools.ReadFileToolName, path, path, false); err != nil || outcome != tools.ProceedAlways {
+				t.Fatalf("resumed path approval: outcome=%v err=%v", outcome, err)
+			}
+			grant, err := approval.GrantWorkspace(ctx, project.CanonicalDir, session.WorkspaceAccessWrite, "continue work in the same project")
+			if err != nil || grant.Changed || !grant.Persisted || !grant.Capability.Primary {
+				t.Fatalf("grant of existing primary was not idempotent: %#v, err=%v", grant, err)
+			}
+			grantsAfter, err := store.ListWorkspaceGrants(ctx, sess.ID)
+			if err != nil || !reflect.DeepEqual(grantsAfter, grantsBefore) {
+				t.Fatalf("swap changed persisted grants: before=%#v after=%#v err=%v", grantsBefore, grantsAfter, err)
+			}
+		})
 	}
 }
 

@@ -82,6 +82,9 @@ export async function checkTour(browser, origin, results) {
     assert.equal(await dialog.count(), 0);
 
     await page.emulateMedia({ reducedMotion: 'reduce' });
+    // emulateMedia returns before Chromium necessarily dispatches the matchMedia
+    // change event. Wait for the handler's observable result, not a fixed delay.
+    await tour.locator('[data-tour-rotation]:disabled').waitFor({ state: 'attached' });
     assert.ok(await tour.getByRole('button', { name: 'Start automatic slideshow' }).isDisabled());
     await moveOutside();
     await page.clock.runFor(16000);

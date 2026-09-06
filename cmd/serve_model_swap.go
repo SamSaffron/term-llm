@@ -241,6 +241,14 @@ func (s *serveServer) beginResponseModelSwap(ctx context.Context, sessionID stri
 	if err != nil {
 		return nil, err
 	}
+	// A replacement runtime must restore the same session workspace as a
+	// normal resume before MCP setup or any tool execution.
+	if err := s.ensureRuntimeBaseDirForSession(ctx, sessionID, candidate); err != nil {
+		if rollback != nil {
+			rollback()
+		}
+		return nil, err
+	}
 	if err := s.ensureRuntimeMCPForSession(ctx, sessionID, candidate); err != nil {
 		if rollback != nil {
 			rollback()

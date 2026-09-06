@@ -161,14 +161,36 @@ func (commitRootCoordinator) Acquire(ctx context.Context, root string) (func(), 
 	return release, nil
 }
 
-func (s *serveServer) commitBusy(sessionID string, includeChildRuns bool) bool {
+type serveCommitBlocker struct {
+	sessionID string
+	activity  string
+}
+
+func (b *serveCommitBlocker) message(ctx context.Context, s *serveServer, sessionID string) string {
+	if b.sessionID == sessionID {
+		return "this session has " + b.activity + "; wait for it to finish before using Git commit"
+	}
+	label := fmt.Sprintf("%q", b.sessionID)
+	if s.store != nil {
+		if sess, err := s.store.Get(ctx, b.sessionID); err == nil && sess != nil {
+			if title := sess.PreferredShortTitle(); title != "" {
+				label = fmt.Sprintf("%q (%s)", title, b.sessionID)
+			}
+		}
+	}
+	return fmt.Sprintf("the checkout is busy: another session %s sharing this checkout has %s; wait for it to finish before using Git commit", label, b.activity)
+}
+
+// commitBlocker checks the whole checkout, not just the requested session.
+// Return the owner so an idle session is not incorrectly described as busy.
+func (s *serveServer) commitBlocker(sessionID string, includeChildRuns bool) *serveCommitBlocker {
 	checkout := ""
 	if _, dir, err := s.commitSession(context.Background(), sessionID); err == nil {
 		checkout = canonicalCommitCheckout(dir)
 	}
 	if s.sessionMgr != nil {
 		if rt, ok := s.sessionMgr.Get(sessionID); ok && rt != nil && rt.hasActiveRun() {
-			return true
+			return &serveCommitBlocker{sessionID: sessionID, activity: "an active response"}
 		}
 		if checkout != "" {
 			s.sessionMgr.mu.Lock()
@@ -182,7 +204,7 @@ func (s *serveServer) commitBusy(sessionID string, includeChildRuns bool) bool {
 					continue
 				}
 				if _, dir, err := s.commitSession(context.Background(), id); err == nil && canonicalCommitCheckout(dir) == checkout {
-					return true
+					return &serveCommitBlocker{sessionID: id, activity: "an active response"}
 				}
 			}
 		}
@@ -203,11 +225,11 @@ func (s *serveServer) commitBusy(sessionID string, includeChildRuns bool) bool {
 	s.skillRunsMu.Unlock()
 	for _, id := range activeSkillSessions {
 		if id == sessionID {
-			return true
+			return &serveCommitBlocker{sessionID: id, activity: "an active skill run"}
 		}
 		if checkout != "" {
 			if _, dir, err := s.commitSession(context.Background(), id); err == nil && canonicalCommitCheckout(dir) == checkout {
-				return true
+				return &serveCommitBlocker{sessionID: id, activity: "an active skill run"}
 			}
 		}
 	}
@@ -220,7 +242,7 @@ func (s *serveServer) commitBusy(sessionID string, includeChildRuns bool) bool {
 				active := run.Status == "running" || run.Status == "cancelling"
 				run.mu.Unlock()
 				if active {
-					return true
+					return &serveCommitBlocker{sessionID: run.SessionID, activity: "an active commit workflow"}
 				}
 			}
 		}
@@ -228,10 +250,10 @@ func (s *serveServer) commitBusy(sessionID string, includeChildRuns bool) bool {
 	for _, operation := range s.commitOperations {
 		matches := operation.SessionID == sessionID || (checkout != "" && operation.checkoutRoot == checkout)
 		if matches && (operation.Status == "queued" || operation.Status == "running") {
-			return true
+			return &serveCommitBlocker{sessionID: operation.SessionID, activity: "a queued or running Git operation"}
 		}
 	}
-	return false
+	return nil
 }
 
 func canonicalCommitCheckout(dir string) string {
@@ -314,8 +336,8 @@ func writeCommitError(w http.ResponseWriter, err error) {
 }
 
 func (s *serveServer) handleCommitStatus(w http.ResponseWriter, r *http.Request, sessionID string) {
-	if s.commitBusy(sessionID, true) {
-		writeOpenAIError(w, http.StatusConflict, "conflict_error", "the session is busy; wait for active responses, skills, or commit runs")
+	if blocker := s.commitBlocker(sessionID, true); blocker != nil {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", blocker.message(r.Context(), s, sessionID))
 		return
 	}
 	_, repo, err := s.commitRepository(r.Context(), sessionID)
@@ -335,8 +357,8 @@ func (s *serveServer) handleCommitStage(w http.ResponseWriter, r *http.Request, 
 	if !decodeCommitJSON(w, r, &body) {
 		return
 	}
-	if s.commitBusy(sessionID, true) {
-		writeOpenAIError(w, http.StatusConflict, "conflict_error", "the session is busy")
+	if blocker := s.commitBlocker(sessionID, true); blocker != nil {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", blocker.message(r.Context(), s, sessionID))
 		return
 	}
 	_, repo, err := s.commitRepository(r.Context(), sessionID)
@@ -361,8 +383,8 @@ func (s *serveServer) handleCreateCommitRun(w http.ResponseWriter, r *http.Reque
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "kind must be scope or message")
 		return
 	}
-	if s.commitBusy(sessionID, false) {
-		writeOpenAIError(w, http.StatusConflict, "conflict_error", "the session is busy")
+	if blocker := s.commitBlocker(sessionID, false); blocker != nil {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", blocker.message(r.Context(), s, sessionID))
 		return
 	}
 	sess, dir, err := s.commitSession(r.Context(), sessionID)
@@ -609,8 +631,8 @@ func (s *serveServer) handleCommitPublishPlan(w http.ResponseWriter, r *http.Req
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "kind must be push or pr")
 		return
 	}
-	if s.commitBusy(sessionID, true) {
-		writeCommitError(w, errCommitCheckoutBusy)
+	if blocker := s.commitBlocker(sessionID, true); blocker != nil {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", blocker.message(r.Context(), s, sessionID))
 		return
 	}
 	_, repo, err := s.commitRepository(r.Context(), sessionID)
@@ -673,7 +695,7 @@ func (s *serveServer) handleCreateCommitOperation(w http.ResponseWriter, r *http
 		return
 	}
 	s.commitMu.Unlock()
-	if s.commitBusy(sessionID, true) {
+	if blocker := s.commitBlocker(sessionID, true); blocker != nil {
 		s.commitMu.Lock()
 		existing := s.findOperationByKeyLocked(sessionID, key)
 		if existing != nil && existing.RequestHash == hash {
@@ -683,7 +705,7 @@ func (s *serveServer) handleCreateCommitOperation(w http.ResponseWriter, r *http
 			return
 		}
 		s.commitMu.Unlock()
-		writeOpenAIError(w, http.StatusConflict, "conflict_error", "the session is busy")
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", blocker.message(r.Context(), s, sessionID))
 		return
 	}
 	_, repo, err := s.commitRepository(r.Context(), sessionID)
