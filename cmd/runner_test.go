@@ -2,12 +2,15 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
@@ -294,5 +297,221 @@ func TestCmdRunnerPrepareUsesBorrowedEngineProvider(t *testing.T) {
 	}
 	if !env.runtime.borrowedEngine {
 		t.Fatal("borrowed engine should preserve provider conversation state")
+	}
+}
+
+func TestCmdRunnerResumeRetainsHistoryAndRejectsMissingSource(t *testing.T) {
+	for _, exists := range []bool{true, false} {
+		t.Run(fmt.Sprint(exists), func(t *testing.T) {
+			store := newServeRuntimeTestStore()
+			const sid = "resume-source"
+			if exists {
+				if err := store.Create(context.Background(), &session.Session{ID: sid, Provider: "mock", Model: "mock-model", Status: session.StatusActive}); err != nil {
+					t.Fatal(err)
+				}
+				if err := store.AddMessage(context.Background(), sid, &session.Message{SessionID: sid, Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "original unfinished task"}}, TextContent: "original unfinished task", Sequence: -1}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			provider := llm.NewMockProvider("mock").AddTextResponse("continued")
+			cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model"}}}
+			runner := newCmdRunner(cfg, cmdRunnerOptions{Store: store})
+			noTools := false
+			_, err := runner.Run(context.Background(), runpkg.Request{Platform: runpkg.PlatformJob, SessionID: sid, Resume: true, Persist: true, Messages: []llm.Message{{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "internal continuation"}}}}, ProviderInstance: provider, Cwd: t.TempDir(), IncludeConfiguredTools: &noTools}, nil)
+			requests := provider.RecordedRequests()
+			if !exists {
+				if err == nil || len(requests) != 0 {
+					t.Fatalf("missing resume source ran: err=%v calls=%d", err, len(requests))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(requests) != 1 {
+				t.Fatalf("provider calls=%d", len(requests))
+			}
+			found := false
+			for _, msg := range requests[0].Messages {
+				if strings.Contains(llm.MessageText(msg), "original unfinished task") {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("Resume dropped the original transcript")
+			}
+		})
+	}
+}
+
+type runnerUncooperativeTool struct{ started, release chan struct{} }
+
+func (t *runnerUncooperativeTool) Spec() llm.ToolSpec {
+	return llm.ToolSpec{Name: "hold_cleanup", Description: "test actual execution lifetime", Schema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}}
+}
+func (t *runnerUncooperativeTool) Preview(json.RawMessage) string { return "" }
+func (t *runnerUncooperativeTool) Execute(context.Context, json.RawMessage) (llm.ToolOutput, error) {
+	close(t.started)
+	<-t.release
+	return llm.ToolOutput{}, nil
+}
+
+func TestCmdRunnerCompletionWaitsForActualToolExit(t *testing.T) {
+	tool := &runnerUncooperativeTool{started: make(chan struct{}), release: make(chan struct{})}
+	released := false
+	defer func() {
+		if !released {
+			close(tool.release)
+		}
+	}()
+	provider := llm.NewMockProvider("mock").AddToolCall("held", "hold_cleanup", map[string]any{}).AddTextResponse("done")
+	cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model"}}}
+	runner := newCmdRunner(cfg, cmdRunnerOptions{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	returned := make(chan error, 1)
+	engineDone := make(chan struct{})
+	noTools := false
+	go func() {
+		_, err := runner.Run(ctx, runpkg.Request{Platform: runpkg.PlatformJob, Prompt: "work", ProviderInstance: provider, Cwd: t.TempDir(), DeferSession: true, ExtraTools: []llm.ToolSpec{tool.Spec()}, IncludeConfiguredTools: &noTools, OnEngineReady: func(e *llm.Engine) { e.RegisterTool(tool) }, OnEngineDone: func(*llm.Engine) { close(engineDone) }}, nil)
+		returned <- err
+	}()
+	select {
+	case <-tool.started:
+	case err := <-returned:
+		t.Fatalf("runner returned before tool started: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("tool not started")
+	}
+	cancel()
+	select {
+	case <-engineDone:
+		t.Fatal("engine completion preceded actual tool exit")
+	case err := <-returned:
+		t.Fatalf("job returned with Execute still running: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(tool.release)
+	released = true
+	select {
+	case <-returned:
+	case <-time.After(3 * time.Second):
+		t.Fatal("runner did not finish after tool exit")
+	}
+	select {
+	case <-engineDone:
+	default:
+		t.Fatal("completion hook missing")
+	}
+}
+
+func TestCmdRunnerProgressiveResumeRetainsHistoryAndRejectsMissingSource(t *testing.T) {
+	for _, exists := range []bool{true, false} {
+		t.Run(fmt.Sprint(exists), func(t *testing.T) {
+			store := newServeRuntimeTestStore()
+			const sid = "resume-source"
+			if exists {
+				if err := store.Create(context.Background(), &session.Session{ID: sid, Provider: "mock", Model: "mock-model", Status: session.StatusActive}); err != nil {
+					t.Fatal(err)
+				}
+				if err := store.AddMessage(context.Background(), sid, &session.Message{SessionID: sid, Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "original unfinished task"}}, TextContent: "original unfinished task", Sequence: -1}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			provider := llm.NewMockProvider("mock").AddTextResponse("continued")
+			cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model"}}}
+			runner := newCmdRunner(cfg, cmdRunnerOptions{Store: store})
+			noTools := false
+			_, err := runner.Run(context.Background(), runpkg.Request{Platform: runpkg.PlatformJob, SessionID: sid, Resume: true, Progressive: &runpkg.ProgressiveOptions{StopWhen: "done"}, Persist: true, Messages: []llm.Message{{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "internal continuation"}}}}, ProviderInstance: provider, Cwd: t.TempDir(), IncludeConfiguredTools: &noTools}, nil)
+			requests := provider.RecordedRequests()
+			if !exists {
+				if err == nil || len(requests) != 0 {
+					t.Fatalf("missing resume source ran: err=%v calls=%d", err, len(requests))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(requests) < 1 {
+				t.Fatalf("provider calls=%d", len(requests))
+			}
+			found := false
+			for _, msg := range requests[0].Messages {
+				if strings.Contains(llm.MessageText(msg), "original unfinished task") {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("Resume dropped the original transcript")
+			}
+		})
+	}
+}
+
+type progressiveFailingMessageStore struct {
+	session.Store
+	role    llm.Role
+	failure error
+}
+
+func (s *progressiveFailingMessageStore) AddMessage(ctx context.Context, id string, message *session.Message) error {
+	if message.Role == s.role {
+		return s.failure
+	}
+	return s.Store.AddMessage(ctx, id, message)
+}
+
+func TestCmdRunnerProgressivePersistenceFailureIsNotSuccess(t *testing.T) {
+	for _, role := range []llm.Role{llm.RoleUser, llm.RoleAssistant} {
+		t.Run(string(role), func(t *testing.T) {
+			failure := errors.New("fixture transcript write failure")
+			store := &progressiveFailingMessageStore{Store: newServeRuntimeTestStore(), role: role, failure: failure}
+			provider := llm.NewMockProvider("mock").AddTextResponse("answer").AddTextResponse("final answer")
+			cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model"}}}
+			runner := newCmdRunner(cfg, cmdRunnerOptions{Store: store})
+			noTools := false
+			_, err := runner.Run(context.Background(), runpkg.Request{Platform: runpkg.PlatformJob, SessionID: "failure-source", Persist: true, Progressive: &runpkg.ProgressiveOptions{StopWhen: "done"}, Prompt: "original task", ProviderInstance: provider, Cwd: t.TempDir(), IncludeConfiguredTools: &noTools}, nil)
+			if !errors.Is(err, failure) {
+				t.Fatalf("persistence failure swallowed: %v", err)
+			}
+			if role == llm.RoleUser && len(provider.RecordedRequests()) != 0 {
+				t.Fatal("provider invoked without durable original input")
+			}
+		})
+	}
+}
+
+func TestProgressiveResumeInputKeepsChangedPolicyAndUserInput(t *testing.T) {
+	history := []llm.Message{llm.SystemText("policy"), llm.SystemText("conversation summary"), llm.UserText("task")}
+	input := []llm.Message{llm.SystemText("policy"), llm.SystemText("updated policy"), llm.UserText("task")}
+	got := progressiveResumeInput(history, input)
+	if len(got) != 2 || llm.MessageText(got[0]) != "updated policy" || got[1].Role != llm.RoleUser {
+		t.Fatalf("incorrect resume deduplication: %+v", got)
+	}
+	if len(history) != 3 || len(input) != 3 {
+		t.Fatal("mutated source transcript/input")
+	}
+}
+
+func TestCmdRunnerPreservesRequestModelBoundary(t *testing.T) {
+	cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model"}}}
+	provider := llm.NewMockProvider("mock")
+	provider.AddTextResponse("must not execute")
+	engine := newEngine(provider, cfg)
+	runner := newCmdRunner(cfg, cmdRunnerOptions{}).(*cmdRunner)
+	boundaryErr := errors.New("parked boundary")
+	calls := 0
+	_, err := runner.Run(context.Background(), runpkg.Request{Platform: runpkg.PlatformTelegram, Cwd: t.TempDir(), Messages: []llm.Message{llm.UserText("work")}, Engine: engine, ProviderInstance: provider, DeferSession: true, DisableRuntimePersistence: true, ModelBoundary: func(context.Context) error { calls++; return boundaryErr }}, eventSinkFunc(nil))
+	if calls != 1 || err == nil {
+		t.Fatalf("boundary calls=%d err=%v", calls, err)
+	}
+	if len(provider.RecordedRequests()) != 0 {
+		t.Fatal("boundary error still issued provider request")
+	}
+	calls = 0
+	_, err = runner.Run(context.Background(), runpkg.Request{Platform: runpkg.PlatformWeb, Cwd: t.TempDir(), Messages: []llm.Message{llm.UserText("work")}, Engine: engine, ProviderInstance: provider, DeferSession: true, ModelBoundary: func(context.Context) error { calls++; return nil }}, eventSinkFunc(nil))
+	if err == nil || calls != 0 || len(provider.RecordedRequests()) != 0 {
+		t.Fatal("runtime-owned boundary accepted unpersisted input")
 	}
 }

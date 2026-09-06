@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/process"
+	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -35,11 +36,14 @@ func captureExecHints() (string, string) {
 }
 
 type webExecRun struct {
-	boundaries int
-	run        *responseRun
-	request    llm.Request
-	ctx        context.Context
-	parked     bool
+	boundaries  int
+	run         *responseRun
+	engine      *llm.Engine
+	request     llm.Request
+	ctx         context.Context
+	parked      bool
+	interrupted bool
+	settled     bool
 }
 
 type webExecCoordinator struct {
@@ -47,14 +51,19 @@ type webExecCoordinator struct {
 	// wait for failed exec and accidentally start a new drain afterwards.
 	requested                        atomic.Bool
 	ready                            bool
-	safeTool                         func(llm.Tool) bool // test seam; nil uses concrete built-in types
+	mode                             string
+	gates                            []*restart.Gate
+	reopen                           []func()
 	quarantined                      bool
+	interruptionID                   string
+	frozen                           map[*llm.Engine]llm.SteeringTransition
 	mu                               sync.Mutex
 	server                           *serveServer
 	ctx                              context.Context
 	store                            session.ExecHandoffStore
 	service, executable, unsupported string
 	runs                             map[string]*webExecRun
+	retired                          map[*llm.Engine]struct{} // cancelled callers can outlive their response
 	handlers                         int
 	draining                         bool
 	release                          chan struct{}
@@ -63,7 +72,7 @@ type webExecCoordinator struct {
 }
 
 func newWebExecCoordinator(ctx context.Context, s *serveServer, unsupported string) *webExecCoordinator {
-	process.State("serve web", "starting", "")
+	process.State("serve", "starting", "")
 	executable, err := os.Executable()
 	if err != nil {
 		unsupported = "cannot resolve serving executable"
@@ -71,9 +80,6 @@ func newWebExecCoordinator(ctx context.Context, s *serveServer, unsupported stri
 	// Resolve once, before an updater can replace/unlink the installed binary.
 	if resolved, e := filepath.EvalSymlinks(executable); e == nil {
 		executable = resolved
-	}
-	if s.cfgRef != nil && s.cfgRef.Serve.AutoTitle {
-		unsupported = "automatic title providers are independently owned; disable serve.auto_title"
 	}
 	store, ok := session.AsExecHandoffStore(s.store)
 	if !ok || !session.SupportsAtomicResponseRunTranscriptFencing(s.store) {
@@ -88,14 +94,14 @@ func newWebExecCoordinator(ctx context.Context, s *serveServer, unsupported stri
 	s.responseOwnerOnce.Do(func() { s.responseOwnerInstanceID = "owner_" + uuid.NewString() })
 	sum := sha256.Sum256([]byte(strings.Join(os.Args, "\x00") + "\x00" + s.startupDir))
 	service += ":" + hex.EncodeToString(sum[:])
-	return &webExecCoordinator{server: s, ctx: ctx, store: store, service: service, executable: executable, unsupported: unsupported, runs: make(map[string]*webExecRun), timeout: 20 * time.Second, exec: execWebProcess}
+	return &webExecCoordinator{mode: "serve web", server: s, ctx: ctx, store: store, service: service, executable: executable, unsupported: unsupported, runs: make(map[string]*webExecRun), timeout: 10 * time.Second, exec: execWebProcess}
 }
 
 func (c *webExecCoordinator) reject(reason string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.unsupported = reason
-	process.State("serve web", "unsupported", reason)
+	process.State(c.processMode(), "unsupported", reason)
 	if c.draining {
 		c.abortLocked()
 	}
@@ -104,40 +110,67 @@ func (c *webExecCoordinator) abortLocked() {
 	if c.quarantined {
 		return
 	}
+	if c.server != nil && c.server.jobsV2 != nil {
+		if err := c.server.jobsV2.rollbackLLMRestart(); err != nil {
+			process.State(c.processMode(), "failed", err.Error())
+		}
+	}
+	if c.interruptionID != "" && c.store != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := c.store.DiscardExecHandoff(ctx, c.interruptionID, c.server.responseOwnerID())
+		cancel()
+		if err != nil {
+			c.quarantined = true
+			process.State(c.processMode(), "failed", "cannot discard restart intent")
+			return
+		}
+		c.interruptionID = ""
+	}
+	for engine := range c.frozen {
+		if engine.ActiveToolExecutions() != 0 {
+			c.quarantined = true
+			process.State(c.processMode(), "failed", "cancelled execution has not exited; replacement refused")
+			return
+		}
+	}
+	for engine, owner := range c.frozen {
+		engine.ReleaseSteeringFreeze(owner, false)
+	}
+	clear(c.frozen)
 	if c.draining {
+		for id, run := range c.runs {
+			if run.interrupted && !run.settled && run.ctx.Err() == nil {
+				// Preparation may fail before cancellation was ever issued.
+				// Rollback must not leave a live run labelled interrupted.
+				run.interrupted = false
+			}
+			if run.interrupted && run.settled {
+				delete(c.runs, id)
+			}
+		}
 		close(c.release)
 		c.draining = false
-		process.State("serve web", "failed", "restart aborted; original process retained")
+		if c.server != nil && c.server.jobsV2 != nil {
+			c.server.jobsV2.reopenAfterRestart()
+		}
+		for _, reopen := range c.reopen {
+			reopen()
+		}
+		c.reopen = nil
+		if c.server != nil && c.server.jobsV2 != nil {
+			c.server.jobsV2.notifyWorkers(c.server.jobsV2.workers)
+			c.server.jobsV2.notifyScheduler()
+		}
+		process.State(c.processMode(), "failed", "restart aborted; original process retained")
 	}
 }
 
-// Unsupported owned activities taint this boot conservatively. We do not try
-// to kill children or infer that a returned shell/custom tool has no descendants.
-func (c *webExecCoordinator) observeTool(rt *serveRuntime, ev llm.Event) {
+// Native providers retain their own execution loops. Ordinary tools need no
+// type/name allowlist: replacement freezes engine admission and joins actual
+// Execute lifetimes, including tools whose cancelled caller already returned.
+func (c *webExecCoordinator) observeTool(_ *serveRuntime, ev llm.Event) {
 	if ev.Type == llm.EventToolActivity {
 		c.reject("provider-managed native activity is unsupported")
-		return
-	}
-	if ev.Type != llm.EventToolExecStart {
-		return
-	}
-	tool, ok := rt.engine.Tools().Get(ev.ToolName)
-	safe := webExecSafeTool
-	if c.safeTool != nil {
-		safe = c.safeTool
-	}
-	if !ok || !safe(tool) {
-		c.reject("an unsupported tool or independently owned activity ran in this boot")
-	}
-}
-
-// Names are not authority: custom/skill tools can replace a built-in name.
-func webExecSafeTool(tool llm.Tool) bool {
-	switch tool.(type) {
-	case *tools.ReadFileTool, *tools.WriteFileTool, *tools.EditFileTool, *tools.GlobTool, *tools.GrepTool, *tools.UpdatePlanTool:
-		return true
-	default:
-		return false
 	}
 }
 
@@ -162,7 +195,7 @@ func releaseWebExecTicket(ctx context.Context) {
 func (c *webExecCoordinator) handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, c.server.cfg.basePath)
-		if strings.HasPrefix(path, "/v1/") || strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/admin/") || strings.HasPrefix(path, "/widgets/") {
+		if strings.HasPrefix(path, "/v1/") || strings.HasPrefix(path, "/v2/") || strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/admin/") || strings.HasPrefix(path, "/widgets/") {
 			// Reuse the real auth policy before any admission/taint effects.
 			admitted := false
 			authRequest := r.Clone(r.Context())
@@ -172,14 +205,17 @@ func (c *webExecCoordinator) handler(next http.Handler) http.Handler {
 				return
 			}
 		}
-		unsafe := strings.Contains(path, "/shell") || (strings.Contains(path, "/widgets") && c.server.widgetsMgr != nil) || strings.HasPrefix(path, "/api/sessions/")
+		unsafe := strings.Contains(path, "/shell") || strings.HasPrefix(path, "/api/sessions/")
 		mutation := r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions
 		cancel := strings.HasSuffix(path, "/cancel")
-		if mutation && path != "/v1/responses" && path != "/v1/sessions" && !strings.HasSuffix(path, "/attention/seen") && !cancel {
+		jobsMutation := c.server.jobsV2 != nil && (path == "/v2/jobs" || strings.HasPrefix(path, "/v2/jobs/") || path == "/v2/runs" || strings.HasPrefix(path, "/v2/runs/"))
+		if mutation && !jobsMutation && !(c.server.widgetsMgr != nil && strings.HasPrefix(path, "/widgets/")) && path != "/v1/responses" && path != "/v1/sessions" && !strings.HasSuffix(path, "/attention/seen") && !cancel {
 			unsafe = true
 		}
 		c.mu.Lock()
-		if cancel {
+		// Job cancellation has its own durable status CAS, including handoff
+		// revocation. Stopping one job must not abort replacement of the process.
+		if cancel && !jobsMutation {
 			c.abortLocked()
 		}
 		if c.draining && mutation && !cancel {
@@ -192,7 +228,7 @@ func (c *webExecCoordinator) handler(next http.Handler) http.Handler {
 			c.unsupported = "unsupported owned HTTP activity in this boot"
 			c.abortLocked()
 		}
-		readStream := r.Method == http.MethodGet && (path == "/v1/events" || (strings.HasPrefix(path, "/v1/responses/") && strings.HasSuffix(path, "/events")))
+		readStream := r.Method == http.MethodGet && (path == "/v1/events" || path == "/v1/events/poll" || (strings.HasPrefix(path, "/v1/responses/") && strings.HasSuffix(path, "/events")))
 		if readStream {
 			c.mu.Unlock()
 			next.ServeHTTP(w, r)
@@ -222,7 +258,13 @@ func (c *webExecCoordinator) register(run *responseRun, ctx context.Context, rt 
 	}
 	copyReq.ApprovalTranscriptPrefix = nil
 	copyReq.ModelBoundary = nil
-	entry := &webExecRun{run: run, request: copyReq, ctx: ctx}
+	// Drop completed retired engines; never retain a whole boot's idle runtimes.
+	for engine := range c.retired {
+		if engine.ActiveToolExecutions() == 0 {
+			delete(c.retired, engine)
+		}
+	}
+	entry := &webExecRun{run: run, engine: rt.engine, request: copyReq, ctx: ctx}
 	run.webExec = c
 	c.runs[run.id] = entry
 	req.ModelBoundary = func(ctx context.Context) error {
@@ -258,15 +300,15 @@ func (c *webExecCoordinator) register(run *responseRun, ctx context.Context, rt 
 func (c *webExecCoordinator) settled(id string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if entry := c.runs[id]; entry != nil {
-		// Cancelled Execute implementations may still own side effects.
-		entry.run.mu.Lock()
-		complete := entry.run.status == "completed"
-		entry.run.mu.Unlock()
-		if !complete {
-			c.unsupported = "a cancelled or failed invocation may still own work"
-			c.abortLocked()
+	if entry := c.runs[id]; entry != nil && entry.interrupted && c.draining {
+		entry.settled = true
+		return
+	}
+	if entry := c.runs[id]; entry != nil && entry.engine != nil && entry.engine.ActiveToolExecutions() != 0 {
+		if c.retired == nil {
+			c.retired = make(map[*llm.Engine]struct{})
 		}
+		c.retired[entry.engine] = struct{}{}
 	}
 	delete(c.runs, id)
 }
@@ -287,7 +329,7 @@ func (c *webExecCoordinator) request() {
 		return
 	}
 	if c.unsupported != "" {
-		process.State("serve web", "unsupported", c.unsupported)
+		process.State(c.processMode(), "unsupported", c.unsupported)
 		log.Printf("[reload] SIGUSR2 rejected: %s", c.unsupported)
 		return
 	}
@@ -295,12 +337,15 @@ func (c *webExecCoordinator) request() {
 		return
 	}
 	if !c.ready {
-		process.State("serve web", "deferred", "web startup is not ready")
+		process.State(c.processMode(), "deferred", "web startup is not ready")
 		log.Printf("[reload] SIGUSR2 rejected: web startup is not ready")
 		return
 	}
 	c.draining = true
-	process.State("serve web", "draining", "")
+	for _, gate := range c.gates {
+		c.reopen = append(c.reopen, gate.Pause())
+	}
+	process.State(c.processMode(), "draining", "")
 	c.release = make(chan struct{})
 	started = true
 	go c.drain(c.release)
@@ -324,12 +369,25 @@ func (c *webExecCoordinator) drain(generation chan struct{}) {
 			return
 		case <-timer.C:
 			c.mu.Lock()
-			if c.release == generation {
-				c.abortLocked()
-				log.Printf("[reload] drain timed out; work left running")
+			if c.release != generation || !c.draining {
+				c.mu.Unlock()
+				return
 			}
+			if c.interruptionID != "" {
+				c.abortLocked()
+				log.Printf("[reload] cancellation did not settle; replacement refused")
+				c.mu.Unlock()
+				return
+			}
+			if err := c.interruptLocked(); err != nil {
+				c.abortLocked()
+				log.Printf("[reload] cannot prepare interruption: %v", err)
+				c.mu.Unlock()
+				return
+			}
+			timer.Reset(c.timeout)
 			c.mu.Unlock()
-			return
+			continue
 		case <-tick.C:
 		}
 		c.mu.Lock()
@@ -338,8 +396,20 @@ func (c *webExecCoordinator) drain(generation chan struct{}) {
 			return
 		}
 		ready := c.handlers == 0
+		for _, gate := range c.gates {
+			if !gate.Drained() {
+				ready = false
+			}
+		}
+		if c.server != nil {
+			c.server.autoTitleMu.Lock()
+			if len(c.server.autoTitleFlights) != 0 {
+				ready = false
+			}
+			c.server.autoTitleMu.Unlock()
+		}
 		for _, r := range c.runs {
-			if !r.parked {
+			if !r.parked && !(r.interrupted && r.settled && r.engine.ActiveToolExecutions() == 0) {
 				ready = false
 			}
 		}
@@ -360,6 +430,11 @@ func (c *webExecCoordinator) drain(generation chan struct{}) {
 func (c *webExecCoordinator) replaceLocked() error {
 	if c.ctx.Err() != nil {
 		return c.ctx.Err()
+	}
+	if c.server.jobsV2 != nil {
+		if err := c.server.jobsV2.llmRestartFailure(); err != nil {
+			return err
+		}
 	}
 	if info, err := os.Stat(c.executable); err != nil || info.IsDir() || info.Mode()&0111 == 0 {
 		return errors.New("installed executable is unavailable or not executable")
@@ -390,35 +465,49 @@ func (c *webExecCoordinator) replaceLocked() error {
 	}
 	ctx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
 	defer cancel()
-	id := uuid.NewString()
-	var entries []session.ExecHandoff
-	for _, r := range c.runs {
-		if webExecRunCancelled(r) {
-			return context.Canceled
+	if c.server.widgetsMgr != nil {
+		if err := c.server.widgetsMgr.StopAllAndWait(ctx); err != nil {
+			return fmt.Errorf("join widgets: %w", err)
 		}
-		rev, err := c.server.transcriptRev(ctx, r.run.sessionID)
-		if err != nil {
-			return err
-		}
-		saved := r.request
-		saved.MaxTurns -= r.boundaries - 1
-		if saved.MaxTurns <= 0 {
-			return errors.New("no model turn budget remains")
-		}
-		request, err := json.Marshal(saved)
-		if err != nil {
-			return err
-		}
-		entries = append(entries, session.ExecHandoff{ID: id, ServiceID: c.service, SourceOwnerID: c.server.responseOwnerID(), SessionID: r.run.sessionID, SourceResponseID: r.run.id, SourceFence: r.run.fencingToken, CheckpointRev: rev, Request: request})
 	}
-	if err := c.store.PrepareExecHandoff(ctx, entries); err != nil {
-		return fmt.Errorf("durable checkpoint: %w", err)
+	id := c.interruptionID
+	if id == "" {
+		id = uuid.NewString()
+	}
+	if err := c.freezeEnginesLocked(id); err != nil {
+		return err
+	}
+	for engine, owner := range c.frozen {
+		if err := engine.WaitSteeringSettlement(ctx, owner); err != nil {
+			return fmt.Errorf("join tool execution: %w", err)
+		}
+	}
+	entries, err := c.handoffEntriesLocked(ctx, id, true)
+	if err != nil {
+		return err
+	}
+	if c.interruptionID == "" {
+		if err := c.store.PrepareExecHandoff(ctx, entries); err != nil {
+			return fmt.Errorf("durable checkpoint: %w", err)
+		}
+	} else {
+		interrupted := make([]session.ExecHandoff, 0, len(entries))
+		for _, h := range entries {
+			var state session.ExecRequestState
+			_ = json.Unmarshal(h.Request, &state)
+			if state.Interrupted {
+				interrupted = append(interrupted, h)
+			}
+		}
+		if err := c.store.SealExecInterruption(ctx, interrupted); err != nil {
+			return fmt.Errorf("seal interrupted checkpoint: %w", err)
+		}
 	}
 	// Admission and Stop are serialized through mu. TERM and invocation deadlines
 	// remain authoritative even while persistence was in progress.
-	err := c.ctx.Err()
+	err = c.ctx.Err()
 	for _, r := range c.runs {
-		if webExecRunCancelled(r) {
+		if !r.interrupted && webExecRunCancelled(r) {
 			err = context.Canceled
 		}
 	}
@@ -486,10 +575,11 @@ func (c *webExecCoordinator) resumeSession(h session.ExecHandoff) error {
 	if rt.provider.Capabilities().InlineToolLoop || rt.mcpManagerSnapshot() != nil {
 		return errors.New("replacement provider does not support safe continuation")
 	}
-	var req llm.Request
-	if err = json.Unmarshal(h.Request, &req); err != nil {
+	var saved execSavedRequest
+	if err = json.Unmarshal(h.Request, &saved); err != nil {
 		return err
 	}
+	req := saved.Request
 	// Re-resolve selected tools from the replacement registry, retaining
 	// the original request's tool selection without trusting old schemas.
 	for i, spec := range req.Tools {
@@ -500,6 +590,9 @@ func (c *webExecCoordinator) resumeSession(h session.ExecHandoff) error {
 		req.Tools[i] = tool.Spec()
 	}
 	message := llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "[Internal web hot-reload recovery]\nContinue the unfinished user task from this durable model boundary. This is not a new user message. All preceding tool results are persisted; do not replay those actions. No pending or unknown action is authorized for replay. Tools remain available for the remaining task. Do not initiate another restart."}}}
+	if saved.Interrupted {
+		message = llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "[Internal hot-reload recovery after cancellation]\n" + llm.SteeringInterruptionNotice + "\nThe restart grace period expired. Continue the unfinished task; verify interrupted side effects before repeating them. This is not user Stop and not a new user message. Do not restart again."}}}
+	}
 	_, err = c.server.startResponseRun(rt, true, false, []llm.Message{message}, req, h.SessionID, startResponseRunOptions{uiSession: true, previousResponseID: h.SourceResponseID, execRestartID: h.ID, execServiceID: h.ServiceID})
 	if err != nil {
 		return fmt.Errorf("admit self-exec continuation: %w", err)
@@ -519,8 +612,127 @@ func webExecRunCancelled(entry *webExecRun) bool {
 // publishReady is called only after HTTP startup and response lifecycle setup.
 func (c *webExecCoordinator) publishReady() {
 	if c.unsupported != "" {
-		process.State("serve web", "unsupported", c.unsupported)
+		process.State(c.processMode(), "unsupported", c.unsupported)
 	} else {
-		process.State("serve web", "ready", "")
+		process.State(c.processMode(), "ready", "")
 	}
+}
+
+func (c *webExecCoordinator) processMode() string {
+	if c.mode != "" {
+		return c.mode
+	}
+	return "serve"
+}
+
+type execSavedRequest struct {
+	llm.Request
+	session.ExecRequestState
+}
+
+func (c *webExecCoordinator) freezeEnginesLocked(id string) error {
+	if c.frozen == nil {
+		c.frozen = make(map[*llm.Engine]llm.SteeringTransition)
+	}
+	engines := make(map[*llm.Engine]struct{}, len(c.runs)+len(c.retired))
+	for _, r := range c.runs {
+		if r.engine != nil {
+			engines[r.engine] = struct{}{}
+		}
+	}
+	for engine := range c.retired {
+		engines[engine] = struct{}{}
+	}
+	for engine := range engines {
+		if _, exists := c.frozen[engine]; exists {
+			continue
+		}
+		owner := llm.SteeringTransition{OperationID: id, Fence: 1}
+		if err := engine.FreezeExecution(owner); err != nil {
+			return fmt.Errorf("freeze execution: %w", err)
+		}
+		c.frozen[engine] = owner
+	}
+	return nil
+}
+
+func (c *webExecCoordinator) handoffEntriesLocked(ctx context.Context, id string, settled bool) ([]session.ExecHandoff, error) {
+	var entries []session.ExecHandoff
+	for _, r := range c.runs {
+		if r.run == nil {
+			return nil, errors.New("missing response ownership")
+		}
+		if !r.interrupted && webExecRunCancelled(r) {
+			return nil, context.Canceled
+		}
+		if r.interrupted && settled {
+			r.run.mu.Lock()
+			failed := r.run.durableHandoffErr != ""
+			r.run.mu.Unlock()
+			if !r.settled || failed {
+				return nil, errors.New("interrupted response persistence has not settled")
+			}
+		}
+		rev, err := c.server.transcriptRev(ctx, r.run.sessionID)
+		if err != nil {
+			return nil, err
+		}
+		saved := execSavedRequest{Request: r.request, ExecRequestState: session.ExecRequestState{Interrupted: r.interrupted, Settled: r.interrupted && settled}}
+		saved.MaxTurns -= max(0, r.boundaries-1)
+		if saved.MaxTurns <= 0 {
+			return nil, errors.New("no model turn budget remains")
+		}
+		request, err := json.Marshal(saved)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, session.ExecHandoff{ID: id, ServiceID: c.service, SourceOwnerID: c.server.responseOwnerID(), SessionID: r.run.sessionID, SourceResponseID: r.run.id, SourceFence: r.run.fencingToken, CheckpointRev: rev, Request: request})
+	}
+	return entries, nil
+}
+
+// Grace expiry follows steering: freeze dispatch, durably authorize the internal
+// interruption, cancel the source, then join actual execution before adoption.
+func (c *webExecCoordinator) interruptLocked() error {
+	if c.store == nil || c.server == nil {
+		return errors.New("no durable restart owner")
+	}
+	id := uuid.NewString()
+	if err := c.freezeEnginesLocked(id); err != nil {
+		return err
+	}
+	for _, r := range c.runs {
+		if !r.parked {
+			if r.run == nil || r.engine == nil || webExecRunCancelled(r) {
+				return errors.New("source already stopped")
+			}
+			r.interrupted = true
+		}
+	}
+	ctx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
+	defer cancel()
+	entries, err := c.handoffEntriesLocked(ctx, id, false)
+	if err != nil {
+		return err
+	}
+	if err := c.store.PrepareExecHandoff(ctx, entries); err != nil {
+		return err
+	}
+	c.interruptionID = id
+	if c.server.jobsV2 != nil {
+		setup := jobsRestartSetup{Store: c.server.store, RestartID: id, Service: c.service, Instance: process.Instance()}
+		if err := c.server.jobsV2.beginLLMRestart(ctx, setup); err != nil {
+			return err
+		}
+		if err := c.server.jobsV2.interruptProgramsForRestart(); err != nil {
+			return fmt.Errorf("cancel program jobs for restart: %w", err)
+		}
+	}
+	process.State(c.processMode(), "cancelling", "grace period elapsed; waiting for actual execution settlement")
+	for _, r := range c.runs {
+		if r.interrupted {
+			r.run.cancelRun()
+		}
+	}
+	return nil
 }

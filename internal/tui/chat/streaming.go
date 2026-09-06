@@ -510,6 +510,10 @@ func (m *Model) ensureContextMessages() {
 }
 
 func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
+	if m.processReload.pending || m.processReload.owner.OperationID != "" {
+		return m.showFooterWarning("Restart cleanup is still draining; draft retained.")
+	}
+
 	if m.directShellRun != nil {
 		return m.showFooterWarning("Wait for the shell command to finish or press Esc to cancel it.")
 	}

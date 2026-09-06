@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/agents"
@@ -105,11 +107,23 @@ func (r *cmdRunner) Run(ctx context.Context, req runpkg.Request, sink runpkg.Eve
 		return runpkg.Result{}, err
 	}
 	defer env.Close()
+	if source, ok := ctx.Value(jobsExecutionContextKey{}).(*jobsLLMExecution); ok {
+		source.bind(env)
+		defer source.capture()
+	}
 	if env.req.OnEngineReady != nil {
 		env.req.OnEngineReady(env.engine)
 	}
 	if env.req.OnEngineDone != nil {
 		defer env.req.OnEngineDone(env.engine)
+	}
+
+	// The response loop can return a synthetic cancellation while Execute is
+	// still cleaning up. Do not publish engine completion, close its resources,
+	// or let a job owner release its restart gate until the real call returns.
+	// Borrowed engines are settled by their caller's existing lifetime owner.
+	if !env.runtime.borrowedEngine {
+		defer func() { _ = env.engine.WaitToolSettlement(context.Background()) }()
 	}
 
 	collector := &runnerEventCollector{sink: sink}
@@ -153,6 +167,13 @@ func resolvedRunnerApprovalMode(defaults cmdRunnerOptions, req runpkg.Request) t
 func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg.EventSink) (*cmdRunEnvironment, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if req.Resume {
+		if strings.TrimSpace(req.SessionID) == "" || req.DeferSession || req.ReplaceHistory {
+			return nil, fmt.Errorf("resume requires an existing session ID and preserved history")
+		}
+		req.Persist = true
+		req.Stateful = true
 	}
 	if req.Platform == "" {
 		req.Platform = runpkg.PlatformConsole
@@ -322,30 +343,31 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		runtimeStore = nil
 	}
 	runtime = &serveRuntime{
-		provider:            provider,
-		providerKey:         cfg.DefaultProvider,
-		engine:              engine,
-		toolMgr:             toolMgr,
-		toolDiscovery:       cfg.ToolDiscovery,
-		store:               runtimeStore,
-		goalStore:           store,
-		baseSystemPrompt:    baseSystemPrompt,
-		systemPrompt:        settings.SystemPrompt,
-		search:              settings.Search,
-		forceExternalSearch: forceExternalSearch,
-		maxTurns:            settings.MaxTurns,
-		debug:               r.defaults.Debug || req.Debug,
-		debugRaw:            r.defaults.DebugRaw || req.DebugRaw,
-		autoCompact:         cfg.AutoCompact,
-		borrowedEngine:      borrowedEngine,
-		skipProviderCleanup: !providerOwned,
-		defaultModel:        modelName,
-		approvalDefault:     approvalMode,
-		yoloMode:            yoloMode,
-		toolsSetting:        settings.Tools,
-		mcpSetting:          settings.MCP,
-		agentName:           agentName,
-		platform:            templatePlatform(req.Platform),
+		provider:                 provider,
+		providerKey:              cfg.DefaultProvider,
+		engine:                   engine,
+		toolMgr:                  toolMgr,
+		toolDiscovery:            cfg.ToolDiscovery,
+		store:                    runtimeStore,
+		goalStore:                store,
+		baseSystemPrompt:         baseSystemPrompt,
+		systemPrompt:             settings.SystemPrompt,
+		search:                   settings.Search,
+		forceExternalSearch:      forceExternalSearch,
+		maxTurns:                 settings.MaxTurns,
+		debug:                    r.defaults.Debug || req.Debug,
+		debugRaw:                 r.defaults.DebugRaw || req.DebugRaw,
+		autoCompact:              cfg.AutoCompact,
+		borrowedEngine:           borrowedEngine,
+		persistenceOwnedByCaller: req.DisableRuntimePersistence,
+		skipProviderCleanup:      !providerOwned,
+		defaultModel:             modelName,
+		approvalDefault:          approvalMode,
+		yoloMode:                 yoloMode,
+		toolsSetting:             settings.Tools,
+		mcpSetting:               settings.MCP,
+		agentName:                agentName,
+		platform:                 templatePlatform(req.Platform),
 	}
 	if agent != nil {
 		runtime.platformMessages = agent.PlatformMessages
@@ -359,6 +381,9 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	runtime.compactionCB = req.OnCompaction
 	runtime.syntheticUserCB = req.OnSyntheticUserMessage
 
+	if req.Resume && store == nil {
+		return nil, fmt.Errorf("resume requires session storage")
+	}
 	var sess *session.Session
 	if store != nil && !req.DeferSession {
 		sess, err = r.ensureRunSession(ctx, store, req, provider, cfg.DefaultProvider, modelName, agentName, settings)
@@ -414,6 +439,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	}
 
 	llmReq := llm.Request{
+		ModelBoundary:            req.ModelBoundary,
 		Model:                    modelName,
 		SessionID:                req.SessionID,
 		WorkingDir:               settings.BaseDir,
@@ -597,6 +623,11 @@ func (r *cmdRunner) ensureRunSession(ctx context.Context, store session.Store, r
 	}
 	if existing, err := store.Get(ctx, req.SessionID); err == nil && existing != nil {
 		return existing, nil
+	} else if req.Resume {
+		if err != nil {
+			return nil, fmt.Errorf("load resume session %q: %w", req.SessionID, err)
+		}
+		return nil, fmt.Errorf("resume session %q does not exist", req.SessionID)
 	}
 	name := strings.TrimSpace(req.SessionName)
 	summary := name
@@ -658,8 +689,39 @@ func (r *cmdRunner) runProgressive(ctx context.Context, runtime *serveRuntime, e
 	if runtime.systemPrompt != "" && !containsSystemMessage(messages) {
 		messages = append([]llm.Message{llm.SystemText(runtime.systemPrompt)}, messages...)
 	}
-	llmReq.Messages = messages
+	// Only the new input suffix is appended to persistence below. Restoring
+	// provider history must not duplicate the original user turn in the store.
+	if req.Resume {
+		active, err := session.LoadActiveMessages(ctx, store, sess)
+		if err != nil {
+			return runpkg.Result{}, fmt.Errorf("restore progressive resume history: %w", err)
+		}
+		history := make([]llm.Message, 0, len(active)+len(messages))
+		for _, row := range active {
+			history = append(history, row.ToLLMMessage())
+		}
+		messages = progressiveResumeInput(history, messages)
+		llmReq.Messages = append(history, messages...)
+	} else {
+		llmReq.Messages = messages
+	}
 
+	var persistenceMu sync.Mutex
+	var persistenceErr error
+	recordPersistence := func(err error) error {
+		if err == nil {
+			return nil
+		}
+		persistenceMu.Lock()
+		if persistenceErr == nil {
+			persistenceErr = err
+		}
+		persistenceMu.Unlock()
+		if source, ok := ctx.Value(jobsExecutionContextKey{}).(*jobsLLMExecution); ok {
+			source.failCheckpoint(err)
+		}
+		return err
+	}
 	persistResponseCompleted := req.OnResponseCompleted
 	persistTurnCompleted := req.OnTurnCompleted
 	persistSyntheticUserMessage := req.OnSyntheticUserMessage
@@ -670,12 +732,17 @@ func (r *cmdRunner) runProgressive(ctx context.Context, runtime *serveRuntime, e
 	}
 	if persistStore != nil && sess != nil {
 		for _, msg := range messages {
-			_ = persistStore.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, msg, -1))
+			if err := persistStore.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, msg, -1)); err != nil {
+				return runpkg.Result{}, recordPersistence(err)
+			}
 			if msg.Role == llm.RoleUser {
-				_ = persistStore.IncrementUserTurns(ctx, sess.ID)
+				if err := persistStore.IncrementUserTurns(ctx, sess.ID); err != nil {
+					return runpkg.Result{}, recordPersistence(err)
+				}
 			}
 		}
-		persistResponseCompleted = func(cbCtx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
+		persistResponseCompleted = func(cbCtx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) (callbackErr error) {
+			defer func() { recordPersistence(callbackErr) }()
 			sessionMsg := session.NewMessage(sess.ID, assistantMsg, -1)
 			sessionMsg.DurationMs = time.Since(turnStartTime).Milliseconds()
 			if err := persistStore.AddMessage(cbCtx, sess.ID, sessionMsg); err != nil {
@@ -686,7 +753,8 @@ func (r *cmdRunner) runProgressive(ctx context.Context, runtime *serveRuntime, e
 			}
 			return nil
 		}
-		persistTurnCompleted = func(cbCtx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
+		persistTurnCompleted = func(cbCtx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) (callbackErr error) {
+			defer func() { recordPersistence(callbackErr) }()
 			for _, msg := range turnMessages {
 				sessionMsg := session.NewMessage(sess.ID, msg, -1)
 				if msg.Role == llm.RoleAssistant {
@@ -697,6 +765,7 @@ func (r *cmdRunner) runProgressive(ctx context.Context, runtime *serveRuntime, e
 				}
 			}
 			if err := persistStore.UpdateMetrics(cbCtx, sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens); err != nil {
+				recordPersistence(err)
 				log.Printf("[runner] session UpdateMetrics failed for %s: %v", sess.ID, err)
 			}
 			if total, count := engine.ContextEstimateBaseline(); total > 0 {
@@ -709,7 +778,8 @@ func (r *cmdRunner) runProgressive(ctx context.Context, runtime *serveRuntime, e
 			}
 			return nil
 		}
-		persistSyntheticUserMessage = func(cbCtx context.Context, msg llm.Message) error {
+		persistSyntheticUserMessage = func(cbCtx context.Context, msg llm.Message) (callbackErr error) {
+			defer func() { recordPersistence(callbackErr) }()
 			turnStartTime = time.Now()
 			if err := persistStore.AddMessage(cbCtx, sess.ID, session.NewMessage(sess.ID, msg, -1)); err != nil {
 				return err
@@ -721,18 +791,49 @@ func (r *cmdRunner) runProgressive(ctx context.Context, runtime *serveRuntime, e
 		}
 	}
 
+	var resumePassHadWork, resumePassHadCommit bool
+	var passEnd func(progressivePassResult)
+	var finalizationReason string
+	var finalizationStart func(string, llm.Request) error
+	var firstPassMaxTurns *int
+	var passStart func(context.Context, llm.Request) (context.Context, func(), error)
+	if checkpoint, ok := ctx.Value(jobsRestartContextKey{}).(*jobsRestartCheckpoint); ok && checkpoint.PassTurnLimit > 0 {
+		finalizationReason = checkpoint.FinalizationReason
+		resumePassHadWork, resumePassHadCommit = checkpoint.PassHadWork, checkpoint.PassHadCommit
+		remaining := checkpoint.RemainingTurns
+		firstPassMaxTurns = &remaining
+		llmReq.MaxTurns = checkpoint.PassTurnLimit
+	}
+	if source, ok := ctx.Value(jobsExecutionContextKey{}).(*jobsLLMExecution); ok {
+		passStart = source.beginProgressivePass
+		passEnd = source.endProgressivePass
+		finalizationStart = source.beginFinalization
+	}
 	progressiveResult, err := runProgressiveSession(ctx, engine, llmReq, progressiveRunOptions{
-		StopWhen:               progressiveStopWhen(strings.TrimSpace(req.Progressive.StopWhen)),
-		ContinueWith:           req.Progressive.ContinueWith,
-		SessionID:              req.SessionID,
-		ForceNamedFinalization: provider != nil && provider.Capabilities().SupportsToolChoice,
-		OnSyntheticUserMessage: persistSyntheticUserMessage,
-		OnResponseCompleted:    persistResponseCompleted,
-		OnTurnCompleted:        persistTurnCompleted,
+		ResumePassHadWork:        resumePassHadWork,
+		ResumePassHadCommit:      resumePassHadCommit,
+		OnPassEnd:                passEnd,
+		ResumeFinalizationReason: finalizationReason,
+		OnFinalizationStart:      finalizationStart,
+		FirstPassMaxTurns:        firstPassMaxTurns,
+		OnPassStart:              passStart,
+		StopWhen:                 progressiveStopWhen(strings.TrimSpace(req.Progressive.StopWhen)),
+		ContinueWith:             req.Progressive.ContinueWith,
+		SessionID:                req.SessionID,
+		ForceNamedFinalization:   provider != nil && provider.Capabilities().SupportsToolChoice,
+		OnSyntheticUserMessage:   persistSyntheticUserMessage,
+		OnResponseCompleted:      persistResponseCompleted,
+		OnTurnCompleted:          persistTurnCompleted,
 		OnEvent: func(ev llm.Event) error {
 			return collector.Event(ev)
 		},
 	})
+	persistenceMu.Lock()
+	storedErr := persistenceErr
+	persistenceMu.Unlock()
+	if storedErr != nil {
+		err = errors.Join(err, fmt.Errorf("persist progressive transcript: %w", storedErr))
+	}
 	if persistStore != nil && sess != nil {
 		status := session.StatusComplete
 		switch progressiveResult.ExitReason {
@@ -906,4 +1007,25 @@ func (c *runnerEventCollector) Result(sessionID string) runpkg.Result {
 		InputTokens:  c.input,
 		OutputTokens: c.output,
 	}
+}
+
+// Drop only an identical plain-text system message already in the active
+// transcript. Changed policy, summaries, multimodal data and user input survive.
+func progressiveResumeInput(history, input []llm.Message) []llm.Message {
+	result := make([]llm.Message, 0, len(input))
+	for _, msg := range input {
+		duplicate := false
+		if msg.Role == llm.RoleSystem && len(msg.Parts) == 1 && msg.Parts[0].Type == llm.PartText {
+			for _, prior := range history {
+				if prior.Role == llm.RoleSystem && len(prior.Parts) == 1 && prior.Parts[0].Type == llm.PartText && prior.Parts[0].Text == msg.Parts[0].Text {
+					duplicate = true
+					break
+				}
+			}
+		}
+		if !duplicate {
+			result = append(result, msg)
+		}
+	}
+	return result
 }

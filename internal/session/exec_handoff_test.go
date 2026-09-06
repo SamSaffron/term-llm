@@ -111,3 +111,54 @@ func TestExecHandoffRejectsMemoryStore(t *testing.T) {
 		t.Fatal("in-memory store advertised durable exec handoff")
 	}
 }
+
+func TestExecInterruptedHandoffRequiresPreparedAndSettledSource(t *testing.T) {
+	for _, variant := range []string{"resume", "unsealed", "unprepared", "discarded", "user advanced"} {
+		t.Run(variant, func(t *testing.T) {
+			store, ctx, sid := newAttentionTestStore(t)
+			lease := admitAttentionRun(t, store, ctx, sid, "source", "boot-A", 0)
+			h := ExecHandoff{ID: "restart", ServiceID: "service", SourceOwnerID: "boot-A", SessionID: sid, SourceResponseID: "source", SourceFence: lease.FencingToken, Request: []byte(`{"restart_interrupted":true}`)}
+			if variant != "unprepared" {
+				if err := store.PrepareExecHandoff(ctx, []ExecHandoff{h}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			a := ResponseRunAdmission{ResponseID: "replacement", SessionID: sid, OwnerInstanceID: "boot-B", ExecRestartID: h.ID, ExecServiceID: h.ServiceID}
+			if _, err := store.AdmitResponseRun(ctx, a); !errors.Is(err, ErrExecHandoffConflict) {
+				t.Fatalf("unsettled source accepted: %v", err)
+			}
+			if _, err := store.FinalizeResponseRun(ctx, ResponseRunTerminal{ResponseID: "source", OwnerInstanceID: "boot-A", FencingToken: lease.FencingToken, Outcome: ResponseRunCancelled}); err != nil {
+				t.Fatal(err)
+			}
+			if variant == "discarded" {
+				if err := store.DiscardExecHandoff(ctx, h.ID, h.SourceOwnerID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if variant == "user advanced" {
+				admitAttentionRun(t, store, ctx, sid, "new-user-run", "boot-A", 0)
+			}
+			if variant != "unsealed" {
+				h.Request = []byte(`{"restart_interrupted":true,"restart_settled":true}`)
+				err := store.SealExecInterruption(ctx, []ExecHandoff{h})
+				if variant != "resume" {
+					if !errors.Is(err, ErrExecHandoffConflict) {
+						t.Fatalf("invalid seal: %v", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err := store.AdmitResponseRun(ctx, a)
+			if variant == "unsealed" {
+				if !errors.Is(err, ErrExecHandoffConflict) {
+					t.Fatalf("cancel without seal accepted: %v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}

@@ -27,6 +27,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/mentions"
+	"github.com/samsaffron/term-llm/internal/process"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/runboundary"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -387,6 +388,8 @@ type Model struct {
 
 	// reloadRequested signals the caller to re-exec the binary (e.g. after an upgrade).
 	// The session ID to resume is stored in reloadSessionID.
+	processReload   processReload
+	processResume   bool
 	reloadRequested bool
 	reloadSessionID string
 
@@ -1927,6 +1930,10 @@ func (m *Model) startupWorkspaceApprovalCmd() tea.Cmd {
 }
 
 func (m *Model) initialAutoSendCmd() tea.Cmd {
+	if m.processResume || m.processReload.state.Draft != "" || len(m.processReload.state.Files) > 0 || len(m.processReload.state.Images) > 0 {
+		return func() tea.Msg { return processResumeMsg{} }
+	}
+
 	// Branch command auto-send: submit only when the command included a message.
 	// When path notes are active Init moves this into queuedBranchSend instead.
 	if m.branchAutoSend != "" {
@@ -2135,7 +2142,7 @@ func (m *Model) waitStreamDone(cancelBranch bool) bool {
 		case <-time.After(streamCancelMaxWait):
 		}
 	}
-	return m.runtimeOperations.sealAndWait(streamCancelMaxWait)
+	return m.runtimeOperations.sealAndWait(streamCancelMaxWait) && (m.engine == nil || m.engine.ActiveToolExecutions() == 0)
 }
 
 // WaitRuntimeOperations waits without a deadline after the gate was sealed.
@@ -2327,6 +2334,25 @@ func (m *Model) flushBeforeExternalUI(done chan<- struct{}) (tea.Model, tea.Cmd)
 
 // Update handles messages
 func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
+	if key, ok := msg.(tea.KeyPressMsg); ok && m.processReload.pending && (key.String() == "esc" || key.String() == "ctrl+c") {
+		m.processReload.pending = false
+		m.processReload.state.Continue = false
+		process.State("chat", "ready", "restart cancelled by user")
+	}
+	switch msg.(type) {
+	case ProcessReloadMsg:
+		if m.processReload.pending || m.processReload.owner.OperationID != "" || m.reloadRequested {
+			return m, nil
+		}
+		m.processReload = processReload{pending: true, started: time.Now()}
+		process.State("chat", "draining", "")
+		return m.handleProcessReload()
+	case processReloadTick:
+		return m.handleProcessReload()
+	case processResumeMsg:
+		return m.resumeAfterProcessReload()
+	}
+
 	if failed, ok := msg.(steeringStartFailedMsg); ok {
 		if failed.generation != m.streamGeneration || failed.operationID != m.steeringHandoff {
 			return m, nil

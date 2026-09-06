@@ -66,6 +66,37 @@ func (e *Engine) FreezeSteering(owner SteeringTransition) ([]QueuedSteering, err
 	return entries, nil
 }
 
+// FreezeExecution closes model/tool admission for lifecycle operations without
+// requiring queued user steering. It reuses the same ownership fence and actual
+// tool-lifetime accounting as steering: cancelling a caller is not settlement.
+// The caller must park its response loop first, then WaitSteeringSettlement,
+// and release with consume=false if replacement fails.
+func (e *Engine) FreezeExecution(owner SteeringTransition) error {
+	_, err := e.FreezeExecutionSnapshot(owner)
+	return err
+}
+
+// FreezeExecutionSnapshot preserves already submitted steering atomically with
+// closing dispatch, so lifecycle cancellation cannot lose or duplicate it.
+func (e *Engine) FreezeExecutionSnapshot(owner SteeringTransition) ([]QueuedSteering, error) {
+	e.callbackMu.Lock()
+	defer e.callbackMu.Unlock()
+	if owner.OperationID == "" || owner.Fence <= 0 || e.steeringTransition != nil {
+		return nil, ErrSteeringTransition
+	}
+	e.steeringTransition = &owner
+	e.steeringTransitionDone = make(chan struct{})
+	return append([]QueuedSteering(nil), e.pendingSteering...), nil
+}
+
+// ActiveToolExecutions counts actual Execute calls, including calls whose
+// cancelled parent already returned a synthetic result.
+func (e *Engine) ActiveToolExecutions() int {
+	e.callbackMu.RLock()
+	defer e.callbackMu.RUnlock()
+	return e.activeSteeringTools
+}
+
 // ReleaseSteeringFreeze rolls admission back without moving input or changing
 // identity. On successful handoff, consume removes only this owner's snapshot.
 func (e *Engine) ReleaseSteeringFreeze(owner SteeringTransition, consume bool) bool {
@@ -145,6 +176,21 @@ func (e *Engine) WaitSteeringSettlement(ctx context.Context, owner SteeringTrans
 	}
 	done := e.steeringToolsSettled
 	e.callbackMu.RUnlock()
+	return waitToolSettlement(ctx, done)
+}
+
+// WaitToolSettlement joins actual Execute calls after the owning response loop
+// has stopped. It does not close admission: owners must stop that loop first,
+// or use FreezeExecution and WaitSteeringSettlement while parking a live loop.
+// A cancelled context bounds the wait, never counts outstanding work as done.
+func (e *Engine) WaitToolSettlement(ctx context.Context) error {
+	e.callbackMu.RLock()
+	done := e.steeringToolsSettled
+	e.callbackMu.RUnlock()
+	return waitToolSettlement(ctx, done)
+}
+
+func waitToolSettlement(ctx context.Context, done <-chan struct{}) error {
 	if done == nil {
 		return nil
 	}

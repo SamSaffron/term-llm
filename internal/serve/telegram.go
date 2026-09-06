@@ -25,6 +25,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/image"
 	"github.com/samsaffron/term-llm/internal/llm"
 	memorystore "github.com/samsaffron/term-llm/internal/memory"
+	"github.com/samsaffron/term-llm/internal/restart"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -370,7 +371,8 @@ func recordTelegramUpload(cfg *config.Config, agent, sessionID, mimeType, captio
 }
 
 type TelegramPlatform struct {
-	cfg config.TelegramServeConfig
+	receiver telegramReceiver
+	cfg      config.TelegramServeConfig
 }
 
 // NewTelegramPlatform creates a new TelegramPlatform with the given config.
@@ -506,35 +508,68 @@ func (p *TelegramPlatform) Run(ctx context.Context, cfg *config.Config, settings
 		messageSlots:     make(chan struct{}, telegramMaxConcurrentHandlers),
 	}
 
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = telegramUpdateLongPollSeconds
-	updates := bot.GetUpdatesChan(u)
+	defer mgr.closeAllSessions()
+	return p.receiver.run(ctx, bot, func(pollCtx context.Context, update tgbotapi.Update) bool {
+		return mgr.acceptUpdate(ctx, pollCtx, bot, update)
+	})
+}
 
-	for {
-		select {
-		case <-ctx.Done():
-			mgr.closeAllSessions()
-			bot.StopReceivingUpdates()
-			return nil
-		case update, ok := <-updates:
-			if !ok {
-				return nil
-			}
-			if update.Message == nil {
-				continue
-			}
-			if !mgr.acquireMessageSlot(ctx) {
-				mgr.closeAllSessions()
-				bot.StopReceivingUpdates()
-				return nil
-			}
-			admission := mgr.admitMessage(update.Message)
-			go func(msg *tgbotapi.Message, admission *telegramMessageAdmission) {
-				defer mgr.releaseMessageSlot()
-				mgr.handleMessageWithAdmission(ctx, bot, msg, admission)
-			}(update.Message, admission)
-		}
+// acceptUpdate is shared by polling and recovered input. Admission cancellation
+// must not cancel already accepted handlers, which belong to the platform ctx.
+func (m *telegramSessionMgr) acceptUpdate(ctx, admissionCtx context.Context, bot telegramBot, update tgbotapi.Update) bool {
+	if update.Message == nil {
+		return true
 	}
+	if !m.acquireMessageSlotFor(admissionCtx, ctx) {
+		return false
+	}
+	if admissionCtx.Err() != nil || ctx.Err() != nil {
+		m.releaseMessageSlot()
+		return false
+	}
+	release, admitted := m.restartGate.Enter()
+	if !admitted {
+		m.releaseMessageSlot()
+		return false
+	}
+	finishUpdate, duplicate, err := m.inbox.begin(update)
+	if err != nil || duplicate {
+		release()
+		m.releaseMessageSlot()
+		if err != nil {
+			log.Printf("[telegram] cannot retain accepted update %d: %v", update.UpdateID, err)
+		}
+		return duplicate
+	}
+	admission := m.admitMessage(update.Message)
+	go func(msg *tgbotapi.Message, admission *telegramMessageAdmission) {
+		defer m.releaseMessageSlot()
+		defer release()
+		defer finishUpdate()
+		handlerCtx := context.WithValue(ctx, telegramInboxContextKey{}, telegramInboxReceipt{inbox: &m.inbox, id: update.UpdateID})
+		m.handleMessageWithAdmission(handlerCtx, bot, msg, admission)
+	}(update.Message, admission)
+	return true
+}
+
+// admitRecoveredInputs advances only after ownership has transferred to the
+// normal handler path. A failed admission retains that update and its suffix;
+// retrying must not replay the already admitted prefix. The lifecycle owner
+// keeps this queue and manager alive, and calls this before resuming polling.
+func (m *telegramSessionMgr) admitRecoveredInputs(ctx, admissionCtx context.Context, bot telegramBot, pending *[]tgbotapi.Update) error {
+	for len(*pending) > 0 {
+		if !m.acceptUpdate(ctx, admissionCtx, bot, (*pending)[0]) {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := admissionCtx.Err(); err != nil {
+				return err
+			}
+			return fmt.Errorf("Telegram recovered input admission is paused")
+		}
+		*pending = (*pending)[1:]
+	}
+	return nil
 }
 
 func buildAllowedSet(ids []int64) map[int64]struct{} {
@@ -554,6 +589,10 @@ func buildAllowedUsernameSet(names []string) map[string]struct{} {
 }
 
 func (m *telegramSessionMgr) acquireMessageSlot(ctx context.Context) bool {
+	return m.acquireMessageSlotFor(ctx, ctx)
+}
+
+func (m *telegramSessionMgr) acquireMessageSlotFor(ctx, lifetime context.Context) bool {
 	slots := m.messageSlots
 	if slots == nil {
 		slots = make(chan struct{}, telegramMaxConcurrentHandlers)
@@ -562,6 +601,8 @@ func (m *telegramSessionMgr) acquireMessageSlot(ctx context.Context) bool {
 	select {
 	case slots <- struct{}{}:
 		return true
+	case <-lifetime.Done():
+		return false
 	case <-ctx.Done():
 		return false
 	}
@@ -628,6 +669,7 @@ func (a *telegramMessageAdmission) release() {
 
 // telegramSession holds per-chat conversation state.
 type telegramSession struct {
+	restoredExecution     *telegramExecutionState // unpublished continuation work from authenticated handoff
 	mu                    sync.Mutex
 	activityMu            sync.Mutex // protects lastActivity without blocking behind an active stream
 	runtime               *SessionRuntime
@@ -635,20 +677,22 @@ type telegramSession struct {
 	systemPromptPersisted bool
 	runtimeStale          atomic.Bool // a detached runner may still own runtime; reset before reuse
 	cleanupOnce           sync.Once
-	carryoverContext      string // one-time context carried from the previous replaced session
+	cleanupDone           chan struct{} // protected by cancelMu; closes after actual Cleanup returns
+	carryoverContext      string        // one-time context carried from the previous replaced session
 	carryoverContextLabel string
 	carryoverMessageCount int // number of restored prior-session messages at the start of history; not persisted to this session
 	meta                  *session.Session
 	lastActivity          time.Time
 
-	cancelMu      sync.Mutex         // protects active stream state and task/tool tracking
-	streamCancel  context.CancelFunc // cancels the active stream's context
-	streamEngine  *llm.Engine        // active runner engine for mid-stream steering
-	streamToken   chan struct{}      // identifies callbacks owned by the active stream
-	runnerDone    <-chan struct{}    // closes when a detached runner no longer owns runtime
-	replyDone     chan struct{}      // closed when streamReply exits
-	currentTask   string             // text from the user message that started the active stream
-	toolsRanNames []string           // tool names executed during the active stream
+	cancelMu       sync.Mutex             // protects active stream state and task/tool tracking
+	streamCancel   context.CancelFunc     // user cancellation; revokes restart continuation
+	restartControl *telegramStreamControl // guarded by cancelMu; retained for handoff revocation
+	streamEngine   *llm.Engine            // active runner engine for mid-stream steering
+	streamToken    chan struct{}          // identifies callbacks owned by the active stream
+	runnerDone     <-chan struct{}        // closes when a detached runner no longer owns runtime
+	replyDone      chan struct{}          // closed when streamReply exits
+	currentTask    string                 // text from the user message that started the active stream
+	toolsRanNames  []string               // tool names executed during the active stream
 
 	streamProseLen atomic.Int64
 	streamToolCnt  atomic.Int32
@@ -657,6 +701,8 @@ type telegramSession struct {
 
 // telegramSessionMgr manages per-chat sessions.
 type telegramSessionMgr struct {
+	inbox                telegramInbox
+	restartGate          restart.Gate
 	mu                   sync.Mutex
 	sessions             map[int64]*telegramSession
 	cfg                  *config.Config
@@ -1053,7 +1099,14 @@ func closeTelegramSession(sess *telegramSession) {
 }
 
 func (m *telegramSessionMgr) closeTelegramSession(sess *telegramSession) {
-	closeTelegramSessionWithTimeout(sess, m.sessionShutdownTimeout())
+	release := m.restartGate.TrackChild()
+	done := closeTelegramSessionWithTimeout(sess, m.sessionShutdownTimeout())
+	select {
+	case <-done:
+		release()
+	default:
+		go func() { <-done; release() }()
+	}
 }
 
 func (m *telegramSessionMgr) interruptGrace() time.Duration {
@@ -1070,20 +1123,30 @@ func (m *telegramSessionMgr) sessionShutdownTimeout() time.Duration {
 	return telegramSessionShutdownFallbackTimeout
 }
 
-func closeTelegramSessionWithTimeout(sess *telegramSession, wait time.Duration) {
+func closeTelegramSessionWithTimeout(sess *telegramSession, wait time.Duration) <-chan struct{} {
 	if sess == nil {
-		return
+		done := make(chan struct{})
+		close(done)
+		return done
 	}
 	if wait <= 0 {
 		wait = telegramSessionShutdownFallbackTimeout
 	}
 
 	sess.cancelMu.Lock()
+	if sess.cleanupDone == nil {
+		sess.cleanupDone = make(chan struct{})
+	}
+	cleanupDone := sess.cleanupDone
 	cancelFn := sess.streamCancel
+	control := sess.restartControl
 	doneCh := sess.replyDone
 	runnerDone := sess.runnerDone
 	sess.cancelMu.Unlock()
 
+	if control != nil {
+		control.stop()
+	}
 	if cancelFn != nil {
 		cancelFn()
 	}
@@ -1097,6 +1160,7 @@ func closeTelegramSessionWithTimeout(sess *telegramSession, wait time.Duration) 
 
 	cleanup := func() {
 		sess.cleanupOnce.Do(func() {
+			defer close(cleanupDone)
 			if sess.runtime != nil && sess.runtime.Cleanup != nil {
 				sess.runtime.Cleanup()
 			}
@@ -1114,9 +1178,10 @@ func closeTelegramSessionWithTimeout(sess *telegramSession, wait time.Duration) 
 				cleanup()
 			}()
 		}
-		return
+		return cleanupDone
 	}
 	cleanup()
+	return cleanupDone
 }
 
 func (m *telegramSessionMgr) runStoreOp(ctx context.Context, sessionID, op string, fn func(context.Context) error) bool {
@@ -1188,7 +1253,8 @@ func newTelegramStoreOpQueue(mgr *telegramSessionMgr, sessionID string) *telegra
 		done:      make(chan struct{}),
 		closedCh:  make(chan struct{}),
 	}
-	go q.run()
+	release := mgr.restartGate.TrackChild()
+	go func() { defer release(); q.run() }()
 	return q
 }
 
@@ -1390,6 +1456,10 @@ func (m *telegramSessionMgr) handleMessageWithAdmission(ctx context.Context, bot
 
 	chatID := msg.Chat.ID
 	if !admission.wait(ctx) {
+		return
+	}
+
+	if !startTelegramInboxReceipt(ctx) {
 		return
 	}
 
@@ -1665,6 +1735,31 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 }
 
 func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot botSender, sess *telegramSession, chatID int64, userMsg llm.Message, releaseAdmission func()) error {
+	return m.streamReplyTurn(ctx, bot, sess, chatID, userMsg, releaseAdmission, 0, false, nil)
+}
+
+// streamReplyContinuation is only for a sealed internal restart handoff. It
+// consumes the remaining model-turn allowance without creating a new user turn.
+// Delivery restoration and authorization belong to the restart adapter.
+func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot botSender, sess *telegramSession, chatID int64, instruction string, remainingTurns int, reply *telegramReplyCursor) error {
+	if remainingTurns <= 0 {
+		return fmt.Errorf("Telegram continuation has no remaining model turns")
+	}
+	if strings.TrimSpace(instruction) == "" {
+		return fmt.Errorf("Telegram continuation instruction is empty")
+	}
+	if reply != nil && (reply.MessageID <= 0 || (reply.NeedNewMessage && reply.Prefix != "")) {
+		return fmt.Errorf("invalid Telegram reply cursor")
+	}
+	message := llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: instruction}}}
+	return m.streamReplyTurn(ctx, bot, sess, chatID, message, nil, remainingTurns, true, reply)
+}
+
+func (m *telegramSessionMgr) streamReplyTurn(ctx context.Context, bot botSender, sess *telegramSession, chatID int64, userMsg llm.Message, releaseAdmission func(), remainingTurns int, continuation bool, reply *telegramReplyCursor) error {
+	maxTurns := m.settings.MaxTurns
+	if continuation {
+		maxTurns = remainingTurns
+	}
 	// We acquire the session lock for the entire streaming call so that
 	// concurrent messages from the same chat are serialised.
 	sess.mu.Lock()
@@ -1676,15 +1771,40 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 		return fmt.Errorf("telegram runtime is not initialized")
 	}
 
+	if continuation {
+		if err := m.prepareRestoredSteering(ctx, sess); err != nil {
+			return err
+		}
+	} else {
+		// A newer user turn supersedes an unstarted recovered continuation.
+		sess.restoredExecution = nil
+	}
+
 	// Create a cancellable child context so new messages can interrupt the stream.
-	streamCtx, streamCancel := context.WithCancel(ctx)
+	control := newTelegramStreamControl(ctx)
+	streamCtx, streamCancel := control.ctx, control.close
 	defer streamCancel()
 
+	actualDone := make(chan struct{})
+	releaseExecution := m.restartGate.TrackChild()
+	joinStarted := false
+	defer func() {
+		if !joinStarted {
+			close(actualDone)
+			releaseExecution()
+		}
+	}()
+	executionEngine := sess.runtime.Engine
 	replyDone := make(chan struct{})
 	streamToken := make(chan struct{})
 	sess.cancelMu.Lock()
-	sess.streamCancel = streamCancel
+	if sess.restartControl != nil {
+		sess.restartControl.stop()
+	}
+	sess.restartControl = control
+	sess.streamCancel = control.stop
 	sess.replyDone = replyDone
+	sess.runnerDone = actualDone
 	sess.streamToken = streamToken
 	sess.cancelMu.Unlock()
 	defer func() {
@@ -1765,21 +1885,27 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 		}
 		storeUserMsg := &session.Message{
 			SessionID:   sess.meta.ID,
-			Role:        llm.RoleUser,
+			Role:        userMsg.Role,
 			Parts:       userMsg.Parts,
 			TextContent: userText,
 			CreatedAt:   time.Now(),
 			Sequence:    -1,
 		}
-		if !m.runStoreOp(ctx, sess.meta.ID, "AddMessage(user)", func(storeCtx context.Context) error {
+		inputOp := "AddMessage(user)"
+		if continuation {
+			inputOp = "AddMessage(continuation)"
+		}
+		if !m.runStoreOp(ctx, sess.meta.ID, inputOp, func(storeCtx context.Context) error {
 			return m.store.AddMessage(storeCtx, sess.meta.ID, storeUserMsg)
 		}) {
 			turnPersistenceDegraded = true
 		}
-		m.runStoreOp(ctx, sess.meta.ID, "IncrementUserTurns", func(storeCtx context.Context) error {
-			return m.store.IncrementUserTurns(storeCtx, sess.meta.ID)
-		})
-		if sess.meta.Summary == "" {
+		if !continuation {
+			m.runStoreOp(ctx, sess.meta.ID, "IncrementUserTurns", func(storeCtx context.Context) error {
+				return m.store.IncrementUserTurns(storeCtx, sess.meta.ID)
+			})
+		}
+		if !continuation && sess.meta.Summary == "" {
 			sess.meta.Summary = session.TruncateSummary(userText)
 			m.runStoreOp(ctx, sess.meta.ID, "Update(summary)", func(storeCtx context.Context) error {
 				return m.store.Update(storeCtx, sess.meta)
@@ -1793,6 +1919,14 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 		})
 	}
 
+	if continuation && (m.store == nil || sess.meta == nil || turnPersistenceDegraded) {
+		return fmt.Errorf("Telegram continuation input was not durably committed")
+	}
+
+	var modelBoundary llm.ModelBoundaryCallback
+	if _, durable := session.AsCommandHandoffStore(m.store); durable && !turnPersistenceDegraded && sess.runtime.Provider != nil && !sess.runtime.Provider.Capabilities().InlineToolLoop {
+		modelBoundary = control.modelBoundary
+	}
 	// The turn is now durably ordered and its cancellation state is visible.
 	// Let the next same-chat message inspect or interrupt it before provider output completes.
 	if releaseAdmission != nil {
@@ -1900,6 +2034,29 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 			}()
 		})
 	}
+	var joinOnce sync.Once
+	startExecutionJoin := func() {
+		joinOnce.Do(func() {
+			joinStarted = true
+			startStreamClose()
+			producer, consumer := runnerDone, streamConsumerDone
+			go func() {
+				defer releaseExecution()
+				defer close(actualDone)
+				if producer != nil {
+					<-producer
+				}
+				if consumer != nil {
+					<-consumer
+				}
+				<-streamCloseDone
+				if executionEngine != nil {
+					_ = executionEngine.WaitToolSettlement(context.Background())
+				}
+			}()
+		})
+	}
+	defer startExecutionJoin()
 	cleanupDetached := false
 	markCleanupDetached := func() {
 		if cleanupDetached {
@@ -1910,29 +2067,20 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 		log.Printf("[telegram] stream for chat %d did not stop after cancellation; detaching and resetting runtime before reuse", chatID)
 	}
 	waitForCleanup := func(waitCtx context.Context) bool {
-		for _, done := range []<-chan struct{}{streamCloseDone, streamConsumerDone, runnerDone} {
-			if done == nil {
-				continue
-			}
-			select {
-			case <-done:
-			case <-waitCtx.Done():
-				markCleanupDetached()
-				return false
-			}
+		startExecutionJoin()
+		select {
+		case <-actualDone:
+			return true
+		case <-waitCtx.Done():
+			markCleanupDetached()
+			return false
 		}
-		return true
 	}
 	if m.settings.Runner != nil {
 		pipe := runpkg.NewEventPipe(streamCtx, ui.DefaultStreamBufferSize)
 		stream = pipe
 		done := make(chan struct{})
 		runnerDone = done
-		sess.cancelMu.Lock()
-		if sess.streamToken == streamToken {
-			sess.runnerDone = done
-		}
-		sess.cancelMu.Unlock()
 		search := m.settings.Search
 		forceExternalSearch := m.settings.ForceExternalSearch
 		go func() {
@@ -1949,14 +2097,17 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 				Persist:                   false,
 				Tools:                     m.settings.Tools,
 				MCP:                       m.settings.MCP,
-				MaxTurns:                  m.settings.MaxTurns,
+				MaxTurns:                  maxTurns,
 				Search:                    &search,
 				Debug:                     m.settings.Debug,
 				DebugRaw:                  m.settings.DebugRaw,
 				ForceExternalSearch:       &forceExternalSearch,
 				OnResponseCompleted:       responseCompletedCB,
 				OnTurnCompleted:           turnCompletedCB,
+				ModelBoundary:             modelBoundary,
 				OnEngineReady: func(engine *llm.Engine) {
+					control.bind(engine, maxTurns)
+					executionEngine = engine
 					sess.cancelMu.Lock()
 					if sess.streamToken == streamToken {
 						sess.streamEngine = engine
@@ -1974,10 +2125,12 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 			pipe.CloseWithError(runErr)
 		}()
 	} else {
+		control.bind(sess.runtime.Engine, maxTurns)
 		req := llm.Request{
+			ModelBoundary:       modelBoundary,
 			SessionID:           sessionID,
 			Messages:            messages,
-			MaxTurns:            m.settings.MaxTurns,
+			MaxTurns:            maxTurns,
 			Debug:               m.settings.Debug,
 			DebugRaw:            m.settings.DebugRaw,
 			Search:              m.settings.Search,
@@ -2000,11 +2153,6 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 			}
 			return fmt.Errorf("stream: %w", err)
 		}
-		sess.cancelMu.Lock()
-		if sess.streamToken == streamToken {
-			sess.runnerDone = streamCloseDone
-		}
-		sess.cancelMu.Unlock()
 	}
 	defer func() {
 		streamCancel()
@@ -2018,9 +2166,17 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 	}()
 
 	// Send placeholder message to obtain a message ID for live editing.
-	placeholder, err := bot.Send(tgbotapi.NewMessage(chatID, "⏳"))
-	if err != nil {
-		return fmt.Errorf("send placeholder: %w", err)
+	var placeholder tgbotapi.Message
+	replyPrefix := ""
+	if reply != nil && !reply.NeedNewMessage {
+		placeholder.MessageID = reply.MessageID
+		replyPrefix = reply.Prefix
+	} else {
+		var err error
+		placeholder, err = bot.Send(tgbotapi.NewMessage(chatID, "⏳"))
+		if err != nil {
+			return fmt.Errorf("send placeholder: %w", err)
+		}
 	}
 
 	var (
@@ -2046,6 +2202,13 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 		lastEventPing    = make(chan struct{}, 1)
 		watchdogTimedOut atomic.Bool
 	)
+
+	var pendingMedia []llm.MediaArtifact
+	if reply != nil {
+		collectedImages = append([]string(nil), reply.Images...)
+		collectedMedia = append([]llm.MediaArtifact(nil), reply.Media...)
+		pendingMedia = append([]llm.MediaArtifact(nil), reply.PendingMedia...)
+	}
 
 	watchdogTimeout := m.streamEventTimeout
 	if watchdogTimeout <= 0 {
@@ -2079,19 +2242,6 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 
 	// Goroutine: consume stream events.
 	streamConsumerDone = make(chan struct{})
-	if runnerDone == nil {
-		streamCleanupDone := make(chan struct{})
-		go func() {
-			<-streamConsumerDone
-			<-streamCloseDone
-			close(streamCleanupDone)
-		}()
-		sess.cancelMu.Lock()
-		if sess.streamToken == streamToken {
-			sess.runnerDone = streamCleanupDone
-		}
-		sess.cancelMu.Unlock()
-	}
 	go func() {
 		defer close(streamConsumerDone)
 		for {
@@ -2391,7 +2541,7 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 		// otherwise duplicate or reorder the repaired snapshot.
 		queueDrained := drainCallbackStoreQueue()
 		queueDegraded := callbackStoreQueue != nil && callbackStoreQueue.isDegraded()
-		if partial == "" && len(producedSnapshot) == 0 && !turnPersistenceDegraded && !queueDegraded {
+		if partial == "" && len(producedSnapshot) == 0 && !turnPersistenceDegraded && !queueDegraded && !control.restarting() {
 			return
 		}
 
@@ -2453,7 +2603,7 @@ loop:
 			break loop
 		case <-ticker.C:
 			textMu.Lock()
-			full, toolDisplay, phase := textBuf.String(), activeToolDisplay(activeTools), activePhase
+			full, toolDisplay, phase := replyPrefix+textBuf.String(), activeToolDisplay(activeTools), activePhase
 			textMu.Unlock()
 
 			prose := ""
@@ -2536,7 +2686,7 @@ loop:
 		drained := stopStreamWithCleanupTimeout()
 
 		textMu.Lock()
-		partial := textBuf.String()
+		partial := replyPrefix + textBuf.String()
 		textMu.Unlock()
 
 		// Edit the Telegram message to show partial text + interrupted marker.
@@ -2544,15 +2694,20 @@ loop:
 		if msgStart < len(partial) {
 			display = partial[msgStart:]
 		}
+		marker := "interrupted"
+		if control.restarting() {
+			marker = "restarting"
+		}
 		if display == "" {
-			display = "(interrupted)"
+			display = "(" + marker + ")"
 		} else {
-			display += "\n\n_(interrupted)_"
+			display += "\n\n_(" + marker + ")_"
 		}
 		if needNewMsg {
 			newMsg, sendErr := bot.Send(tgbotapi.NewMessage(chatID, "⏳"))
 			if sendErr == nil {
 				currentMsgID = newMsg.MessageID
+				needNewMsg = false
 			}
 		}
 		sendEdit(currentMsgID, display, true)
@@ -2561,6 +2716,15 @@ loop:
 		// after every producer has stopped mutating the callback snapshot.
 		if drained {
 			salvagePartialHistory(streamCtx, "AddMessage(assistant_interrupt_fallback)")
+			// A failed new-message send can have been accepted remotely without
+			// returning its ID. Do not publish a replayable cursor in that case.
+			if control.restarting() && !needNewMsg {
+				prefix := ""
+				if msgStart < len(partial) {
+					prefix = partial[msgStart:]
+				}
+				control.reply.Store(&telegramReplyCursor{MessageID: currentMsgID, Prefix: prefix, NeedNewMessage: needNewMsg, Images: append([]string(nil), collectedImages...), Media: append([]llm.MediaArtifact(nil), collectedMedia...), PendingMedia: mergeTelegramPendingMedia(pendingMedia, referencedTelegramMedia(partial, collectedMedia))})
+			}
 		}
 
 		if m.store != nil && sess.meta != nil {
@@ -2606,7 +2770,7 @@ loop:
 		finalOtherTypes[k] = v
 	}
 	imagesToSend := append([]string(nil), collectedImages...)
-	mediaToSend := referencedTelegramMedia(full, collectedMedia)
+	mediaToSend := mergeTelegramPendingMedia(pendingMedia, referencedTelegramMedia(full, collectedMedia))
 	textMu.Unlock()
 
 	finalDeliveryCtx, cancelFinalDelivery := context.WithTimeout(ctx, telegramFinalDeliveryTimeout)
@@ -2614,8 +2778,9 @@ loop:
 	var finalDeliveryErr error
 
 	prose := ""
-	if msgStart < len(full) {
-		prose = full[msgStart:]
+	displayFull := replyPrefix + full
+	if msgStart < len(displayFull) {
+		prose = displayFull[msgStart:]
 		prose = telegramMediaMarkdownPattern.ReplaceAllString(prose, "$1")
 	}
 	switch {
@@ -2828,6 +2993,9 @@ func collectUserText(msg llm.Message) string {
 }
 
 func normalizeUserMessageForHistory(msg llm.Message) llm.Message {
+	if msg.Role == llm.RoleDeveloper {
+		return msg
+	}
 	text := extractMessageTextWithPlaceholders(msg)
 	if text == "" {
 		return llm.UserText("")
@@ -3066,4 +3234,26 @@ func formatElapsed(elapsed time.Duration) string {
 		return fmt.Sprintf("%dm %ds", mins, secs)
 	}
 	return fmt.Sprintf("%ds", secs)
+}
+
+// Both slices contain only not-yet-sent artifacts. Keep earlier references in
+// their original order, without resending an artifact referenced again after
+// continuation. This must never be seeded with already delivered media.
+func mergeTelegramPendingMedia(prior, current []llm.MediaArtifact) []llm.MediaArtifact {
+	result := make([]llm.MediaArtifact, 0, len(prior)+len(current))
+	seen := make(map[string]bool)
+	for _, items := range [][]llm.MediaArtifact{prior, current} {
+		for _, item := range items {
+			key := strings.ToLower(strings.TrimSpace(item.Reference))
+			if key == "" {
+				key = item.PublishedPath()
+			}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			result = append(result, item)
+		}
+	}
+	return result
 }

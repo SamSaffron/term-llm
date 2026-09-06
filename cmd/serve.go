@@ -22,6 +22,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/filetrack"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mentions"
+	"github.com/samsaffron/term-llm/internal/process"
 	projectpkg "github.com/samsaffron/term-llm/internal/project"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/serve"
@@ -823,23 +824,19 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		}
 
 		unsupportedExec := ""
-		if !hasWeb || hasAPI || hasJobs || hasTelegram {
-			unsupportedExec = "only standalone serve web supports SIGUSR2"
-		}
-		if widgetsMgr != nil {
-			unsupportedExec = "widget ownership is unsupported; start with --disable-widgets"
-		}
-		if serveWebRTC || strings.TrimSpace(serveHubURL) != "" {
-			unsupportedExec = "Hub and WebRTC transports are not yet supported"
+		if hasTelegram {
+			unsupportedExec = "Telegram lifecycle not yet attached"
 		}
 		s.webExec = newWebExecCoordinator(ctx, s, unsupportedExec)
+		s.webExec.mode = "serve " + strings.Join(platformNames, ",")
 		defer installWebExecSignal(ctx, s.webExec)()
 		if hasJobs {
-			jobsV2, err = newServeJobsV2Manager(cfg, serveJobsWorkers, resolvedApproval, s.notifyJobsV2RunDone)
+			jobsV2, err = newServeJobsV2Manager(cfg, serveJobsWorkers, resolvedApproval, s.notifyJobsV2RunDone, jobsRestartSetup{Store: store, RestartID: execRestartHint, Service: s.webExec.service, Instance: process.Instance()})
 			if err != nil {
 				return fmt.Errorf("initialize jobs v2 manager: %w", err)
 			}
 			s.jobsV2 = jobsV2
+			s.webExec.gates = append(s.webExec.gates, &jobsV2.restartGate)
 		}
 		sessionMgr.onEvict = func(rt *serveRuntime) {
 			for _, rid := range rt.getResponseIDs() {

@@ -335,9 +335,24 @@ func Restart(ctx context.Context, r Record, wait bool) (Record, error) {
 			return r, ctx.Err()
 		case <-tick.C:
 		}
+		// pidfd readiness is authoritative for process exit. A transient procfs
+		// read failure during replacement is not proof that the target died.
+		poll := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+		if _, err := unix.Poll(poll, 0); err != nil {
+			if errors.Is(err, unix.EINTR) {
+				continue
+			}
+			return r, err
+		}
+		if poll[0].Revents != 0 {
+			return r, errors.New("process exited before restart completed")
+		}
 		start, err = identity(r.PID)
-		if err != nil || start != r.Start {
-			return r, errors.New("process exited or identity changed")
+		if err != nil {
+			continue
+		}
+		if start != r.Start {
+			return r, errors.New("process identity changed")
 		}
 		next, e := read(root, filename(r))
 		if e != nil {

@@ -1,220 +1,98 @@
-# Process signals
+# Signals and planned process replacement
 
-This matrix describes application handlers, not a promise that every operating
-system exposes every signal. **Universal safe restart is work in progress, not
-implemented by the current PR.** Unix executables now register one process-wide
-SIGUSR2 listener at command entry, before argument parsing or configuration.
-Without an installed mode owner, signals are coalesced into a logged `deferred`
-status and the original invocation continues; normal command completion logs
-`finished`. No arguments, stdin, mutations, or tool calls are replayed. These
-logs are not the planned authoritative generation registry or a readiness API.
-Other unhandled signals retain Go/OS defaults and inherited dispositions.
+SIGUSR2 requests a planned self-exec; it is not configuration reload or permission
+to replay a command. Successful exec keeps the OS PID and generates a fresh
+executable-instance UUID. The installed executable is resolved before replacement;
+resume state stays in SQLite, with only a random lookup ID in the replacement
+environment. Startup removes that hint before launching tools. Argv does not grow
+`--resume` flags.
 
-## Handler matrix
+## Current implementation scope
 
-| Mode | SIGINT / SIGTERM | SIGHUP | SIGUSR1 | SIGUSR2 |
-| --- | --- | --- | --- | --- |
-| Standalone `serve web` | Cancels the serve context and enters shutdown | No reload handler | Stops widget subprocesses when widgets are enabled; their manager remains available | Cooperative self-exec, subject to the restrictions below |
-| Web combined with API, jobs or Telegram | Same shared serve shutdown | No reload handler | Same widget handling when enabled | Logged rejection; no restart |
-| `serve api`, `serve jobs`, `serve telegram` without web | Same shared serve shutdown | No reload handler | No application handler | Logged rejection; no restart |
-| `serve mcp` | Cancels the MCP context and enters shutdown | No reload handler | No application handler | Logged rejection; no restart |
-| `serve hub` | No application shutdown signal handler; Go/OS default disposition | No reload handler | No application handler | Logged rejection; no restart |
-| Chat/TUI, ask, exec, loop, edit, image/music/embed, benchmark | Existing per-command cancellation/terminal handling, unchanged | Unchanged | Unchanged | Nonfatal deferred; no resume implementation yet |
-| Stdio `mcp-server`, MCP clients, maintenance/CRUD, completion, external editors and subprocess wrappers | Existing per-command handling, unchanged | Unchanged | Unchanged | Nonfatal deferred; finishes original invocation without replay |
+This PR remains work in progress toward process-wide support. Do not describe
+nonfatal signal handling as successful restart in an unsupported mode.
 
-Deferred semantics are a safety floor, **not** completed long-lived-mode restart
-support. Jobs, Telegram, Hub, TUI, proxy/MCP and combined serve still require
-mode-specific checkpoint/admission/ownership integration. Even a successful
-command completion is not evidence that detached descendants have finished.
+| Mode | Current SIGUSR2 behaviour |
+|---|---|
+| Web / API | Drain admitted work, checkpoint, self-exec, resume eligible responses. Default natural grace is 10 seconds; then cancel through the existing cancellation path and join actual execution before resuming. |
+| Jobs, alone or alongside web/API | Pause scheduler/worker admission and account for running jobs and completion notifications. Programs finishing within grace are not replayed. After grace, running programs use ordinary durable cancellation and their actual exit gates replacement; never-started claims remain queued. Arbitrary programs are not automatically replayed. Persistent ordinary LLM jobs checkpoint and resume the same run/session after forced cancellation; failed exec reclaims the checkpoint in the original process. Progressive/native-provider parity and no-persistence handling still need verification. |
+| Chat/TUI | Uses the existing `/reload` lifecycle through the UI message loop, with a 10-second grace and normal interruption. Restores foreground session, draft and attachments through SQLite, preserving argv. Foreground interrupted tasks receive an internal continuation, not a fabricated user message. Background-session continuation remains incomplete. |
+| Web reverse Hub / WebRTC transports | Requests use the same admission fence as direct HTTP. Passive event streams do not block replacement. Sockets close on exec and clients reconnect; current-source combined-transport browser proof is still required. |
+| Web widgets | Reuses StopAll with verified child exit. The manager remains available for lazy restart if exec fails. No success is claimed when child exit is unacknowledged. |
+| Standalone Hub | Drain local mutation handlers; after 10 seconds cancel and join them before same-PID self-exec. Remote work remains node-owned. Sandbox dashboard and replacement proof passes. |
+| MCP HTTP (`serve mcp`) | Drain full mutation responses and actual tool execution, including detached descendants. After 10 seconds cancel and join before exec. Clients reinitialize after replacement; the generated bearer token is preserved. Active-shell sandbox proof passes. |
+| Telegram, stdio MCP, other long-lived commands | Early listener handles SIGUSR2 nonfatally, but complete lifecycle/recovery adapters are not yet implemented. |
+| Short-lived maintenance/CRUD/one-shot commands | Deferred without replay. Natural completion does not execute the command again. |
 
-USR1/USR2 handling is compiled for AIX, Darwin, DragonFly BSD, FreeBSD, illumos,
-Linux, NetBSD, OpenBSD and Solaris. Other platforms compile no-op installers.
-The same-PID browser integration has been exercised on Linux. Windows does not
-provide these Unix controls. Chat/TUI, ask and exec have the process-wide
-nonfatal listener but do not yet have resumable lifecycle owners.
+Native inline provider loops, MCP-owned resources and some independently owned
+mutation APIs still have explicit restart exclusions. Those are unfinished
+ownership integrations, not a universal restart guarantee.
 
-SIGINT/SIGTERM handling is unchanged: the shared serve context registers
-`os.Interrupt` and `syscall.SIGTERM`. HTTP shutdown uses a ten-second context;
-MCP shutdown uses five seconds. Shutdown is **not** a promise that every external
-side effect has completed. Shell SIGHUP/SIGTERM calls target child shell sessions
-or process groups, not server configuration reloads. SIGWINCH/SIGCONT terminal
-handlers do not implement restarts.
+## Other signals
 
-## Supported first slice
+- SIGINT/SIGTERM retain existing shutdown/cancellation behaviour. Web/API/jobs and
+  Telegram use the shared serve shutdown context. TUI restores terminal ownership;
+  a raw-mode Ctrl+C key remains a UI event distinct from an OS signal.
+- SIGHUP has no new configuration-reload contract. Do not send it expecting reload.
+  Tool-child HUP cleanup is not a serving reload handler.
+- SIGUSR1 retains widget-stop behaviour when widget support installs its handler.
+- Standalone Hub uses graceful SIGINT/SIGTERM HTTP shutdown; shutdown takes
+  precedence over a pending process replacement.
+- The process signal dispatcher is installed before command configuration on Unix.
+  Duplicate requests coalesce at their lifecycle owner. Unsupported modes retain
+  the original invocation rather than dying or blindly repeating side effects.
+- Windows has no Unix SIGUSR2/self-exec support. Linux is the tested discovery and
+  pidfd-targeting platform; other Unix process-discovery support is not implemented.
 
-SIGUSR2 is deliberately narrower than all the activities a web server can own:
+## Grace, cancellation and safety
 
-- Standalone, direct-HTTP `serve web`, with writable SQLite sessions and atomic
-  response/transcript fencing. No `--no-session`, mixed platforms, Hub routing,
-  WebRTC, widgets, or independently owned automatic title providers.
-- Set `serve.auto_title: false` in the service's configuration and start with
-  `--disable-widgets`. Those defaults are **not** silently changed by the signal.
-- Stateful, streaming Responses runs with an explicit turn budget (the web
-  request handler supplies one). Native inline-loop providers, MCP runtimes,
-  model swaps, steering rushes and skill-run setup are rejected.
-- Completed calls to the concrete built-in `read_file`, `write_file`, `edit_file`,
-  `glob`, `grep` and `update_plan` tools can precede a restart boundary. Merely
-  naming a custom tool `write_file` does not make it safe.
-- Shells, custom/child tools, native provider activities, side questions,
-  independently owned mutation APIs, and cancelled/failed invocations make the
-  current boot ineligible. A shell returning is not proof that it left no
-  descendants. Rejection does not kill it or disable ordinary chat operation.
+For response-owning web/API and foreground TUI work:
 
-The unsupported-activity record is intentionally conservative and persists for
-that boot. Returning from a tool or closing its UI is not used to infer external
-quiescence. Enabling more modes/tools requires an ownership and drain protocol,
-not just another name in an allow-list. Opening read-only views or acknowledging
-attention does not invalidate eligibility; unauthorized requests cannot do so.
+1. Stop new admission and allow up to **10 seconds** to reach a durable boundary.
+2. If grace expires, authorize the internal restart interruption before cancelling.
+3. Use normal steering-style cancellation and wait for actual execution to exit.
+   A synthetic cancellation result is not proof that Tool.Execute returned.
+4. Seal the interrupted transcript checkpoint, then exec and admit continuation.
+5. A further bounded settlement wait refuses replacement if cleanup does not finish.
+   No SIGKILL of the main process is used to fabricate a clean checkpoint.
 
-## Deployment limitation: Hub, WebRTC and widgets
+User Stop differs from internal restart cancellation: Stop revokes automatic
+continuation. Cancelled sources can only be resumed through a prepared and sealed
+restart intent; unrelated cancelled, superseded or unsealed sources are rejected.
+On recovery the model is told that interrupted external effects may have happened
+and must be checked before repetition. Tools are available for remaining work.
 
-**This slice does not self-reload a deployed web using Hub reverse routing,
-WebRTC and widgets.** Such a process logs a rejection and keeps running. The
-local browser evidence below is not evidence for that deployment.
+The engine reuses its execution/steering freeze and actual-tool lifetime accounting;
+there is no ordinary-tool name allowlist. Concurrent/child execution must settle,
+even when its caller already received cancellation. Program/native subprocess
+cleanup is a separate ownership responsibility, not something inferred from a name.
 
-The reverse connector now has a joinable `Stop(ctx)` owner. Cancellation closes
-its socket to wake reads/writes; completion joins the reconnect loop, ping loop
-and forwarded requests. A deadline reports a failed join and never authorizes
-exec. Tests include a transport that observes cancellation but cannot yet return;
-Stop must not claim completion. This joins the forwarding client, **not** the
-server-side mutation: an HTTP client returning does not prove its backend handler
-finished. Existing reconnect tests now join their connectors before cleanup.
+A failed exec does not count as successful restart. A parked invocation can be
+released; an already cancelled invocation remains interrupted. Failure to discard
+an intent or verify execution settlement keeps the affected restart quarantined
+rather than reopening unsafe execution.
 
-WebRTC `peer.Close` still only cancels its context; it does not acknowledge
-completion of transport handlers.
-Widget `CloseContext` is a one-way, best-effort shutdown that may return on its
-deadline and escalates subprocess termination; it is not a reversible drain.
-Simply invoking these shutdown methods before exec would not establish safe
-quiescence or restore the old service after exec failure.
+## Explicit handoffs
 
-Supporting the deployed combination needs joinable transport owners, mutation
-admission across transport teardown, restartable widget ownership (with an
-explicit policy for external effects), and failed-exec rollback. Browser HTTPS
-fallback/reconnection must be exercised through a sandbox Hub and WebRTC relay,
-including ambiguous mutation delivery: automatic transport fallback is not a
-proof of exactly-once request admission. These changes and their combined
-browser proof remain required before this PR can claim universal restart.
+Web response handoffs bind restart ID, logical service identity, source boot/fence,
+session and transcript revision. Acceptance and replacement-run admission are one
+SQLite transaction. A grace-expired interruption must first have been prepared
+while the source was running, then sealed only after cancellation/persistence
+settled. Source-ID Stop follows accepted replacement edges.
 
-## Lifecycle
+TUI command handoffs use one-shot private SQLite metadata with source instance,
+service/argv/cwd identity, foreground session revision, and serialized UI state.
+They are consumed by a different instance, not selected through a PID match.
+A missing environment hint never resurrects old unfinished sessions.
 
-1. **Coalesce and gate.** Signals received by the installed handler before web
-   startup/recovery is ready are rejected, not queued. A signal then starts one
-   drain generation. Duplicate signals
-   during it do not queue another restart. New mutations receive HTTP 503 with
-   `Retry-After`; existing handlers are accounted for. Response streams transfer
-   ownership to their tracked engine. Read-only event streams remain connected
-   until exec. Stop remains available and preempts draining.
-2. **Reach a model boundary.** An engine finishes its current provider/tool turn
-   and persists the results before parking, without cancelling its tools. It can
-   also park before its first provider request once the real input is durable.
-   Initial/turn persistence failures cannot acknowledge a safe boundary. A
-   naturally completed answer is not automatically continued.
-3. **Abort rather than force.** The drain waits up to 20 seconds. Stuck tools,
-   approvals and providers are not killed to meet that deadline. Timeout releases
-   parked invocations and reopens admission. SIGINT/SIGTERM preempts the drain and
-   follows the existing shutdown path instead of restarting.
-4. **Prepare a durable batch.** Once every tracked engine is parked or settled
-   and other handlers are idle, a bounded five-second checkpoint phase verifies
-   the source leases, transcript revisions and absence of pending steering. All
-   selected sessions share a random restart UUID. Preparation itself neither
-   fences nor cancels the source engines.
-5. **Self-exec.** The process executes the executable pathname captured at serve
-   startup, using the original argv. It does not run a build, deploy, supervisor,
-   shell, or second server process. Successful exec retains the PID and replaces
-   memory. The installed pathname must remain present and executable; updating
-   the captured file atomically is supported. Repointing a different symlink is
-   not an executable-selection mechanism. No sockets are inherited.
-6. **Acquire and consume.** The replacement captures and unsets
-   `TERM_LLM_RESTART_ID` and `TERM_LLM_RESTART_SERVICE_ID` before commands or tools
-   run. It binds the same listener **before** consuming any intent. A stable
-   service UUID is bound to the serving argv and startup directory, and each
-   boot has a fresh UUID owner. PID reuse is not ownership. SQLite checks the
-   service, distinct boot, live source lease, transcript revision and latest
-   response fence. Consuming each intent, fencing its source and admitting the
-   replacement response happen in one writer transaction.
-7. **Continue the same chat.** Recovery injects an internal **developer** message,
-   not a fabricated user bubble. The replacement loads the persisted transcript
-   and re-resolves the original selected tools from its own registry, retaining
-   the remaining explicit turn budget. Completed actions are not dispatched
-   again. The model can call tools for the unfinished task. This is a new model
-   invocation, not restoration of a Go stack or replay of unknown pending calls.
-   The browser's existing reconnect/session reconciliation finds the replacement
-   run and preserves local drafts. Stop addressed to a source response follows
-   only its explicit restart-continuation chain, never an unrelated newer turn.
+The restart lookup hint is not a credential or authorization. Existing Hub
+credential hand-back and auto-generated MCP HTTP bearer tokens use separate
+exec-only environment entries, removed at startup before tool children launch.
+Handoff claims remain synchronous correctness operations; they are not moved into
+the advisory registry publisher. Admission is at-most-once, not a claim of exactly-once
+external side effects or guaranteed completion after a second crash.
 
-Handoff IDs are lookup hints, not authentication. They are neither HTTP inputs
-nor a general crash-recovery queue. Without the startup hint, no intent is
-implicitly resumed. Consumed, expired, cancelled, advanced or differently owned
-intents cannot be admitted again. Lookup expires after five minutes; the live
-source lease normally imposes a tighter startup window. If a session cannot be
-safely admitted after exec, it remains available for inspection/manual
-continuation; failure does not terminate other already-admitted recoveries.
-
-## Failure behavior
-
-If executable selection, checkpointing or `exec` fails, the current process
-remains alive. A failed exec discards its unconsumed intents and releases the
-original, still tool-capable invocations. If discarding the intent also fails,
-the service enters a safe paused state: mutation admission stays closed and
-parked work is **not** silently released. Reads and Stop remain available; an
-operator must address persistence health or perform an ordinary shutdown.
-
-Scrubbed Hub credentials needed by a replacement are restored only in the
-private environment passed to self-exec, using the existing reload helpers.
-Restart hints and those credentials are never deliberately installed in the
-ambient environment inherited by tool children. Do not export restart hints,
-copy them between services, or use them as a manual resume API.
-
-A successful OS exec cannot roll back a replacement that subsequently fails to
-start (for example, invalid new configuration). Install a compatible binary and
-check health; a failed startup does not authorize replaying an old intent.
-
-## Example
-
-For a **test or explicitly authorized service**, configure:
-
-```yaml
-serve:
-  auto_title: false
-```
-
-Start a supported web instance, for example:
-
-```sh
-term-llm serve web --disable-widgets --tools read_file,write_file,edit_file,grep,glob
-```
-
-After atomically installing an updated executable at the captured pathname,
-send SIGUSR2 to the **verified PID of that service**:
-
-```sh
-kill -USR2 "$verified_web_service_pid"
-```
-
-Do not use a broad `pkill` pattern. A logged rejection or timeout is not a
-successful reload. Check health/version and the continued session; do not resend
-user input to simulate recovery. This feature grants no permission to restart
-production or to deploy a binary.
-
-## Verification
-
-Focused regression checks:
-
-```sh
-go test -race ./internal/llm ./internal/session ./cmd \
-  -run 'Test(ModelBoundary|ExecHandoff|WebExec)' -count=1
-```
-
-The isolated Linux browser fixture uses a local scripted OpenAI-compatible
-endpoint and real built-in file tools: atomic A→B install, SIGUSR2, unchanged
-PID, distinct durable boot owners, one pre-restart tool result, working
-post-restart tools, same-chat recovery, unsent draft preservation and the next
-user turn. It also exercises simultaneous sessions, a quiet reload with no
-replayed continuation, and a real shell child verifying that restart hints were
-scrubbed. Private fixture homes, transcripts, logs and screenshots are not
-repository assets and must not be published.
-
-## Local process discovery and restart commands (Linux)
+## Operator commands (Linux)
 
 ```sh
 term-llm process list
@@ -223,33 +101,24 @@ term-llm process restart 123 --timeout 2m
 term-llm process restart-all --timeout 2m
 ```
 
-Discovery is opt-in through running binaries that publish process records. Older
-binaries are not found by scanning arbitrary command lines and are never signalled
-by these commands. Records are owner-private under
-`$XDG_RUNTIME_DIR/term-llm-processes`, falling back to the user's cache directory.
-They contain PID, OS process-start identity, random executable-instance UUID,
-build identity, mode and last reported lifecycle phase, not arguments or tokens.
+Only binaries publishing validated owner-private records are discovered. Older
+binaries and arbitrary command lines are not scanned and signalled. Records live
+under `$XDG_RUNTIME_DIR/term-llm-processes`, falling back to the user's cache dir.
+They contain PID, kernel boot/process-start identity, instance UUID, build, mode
+and last reported lifecycle phase—not argv or tokens.
 
-Publication runs in a goroutine after a 25 ms grace period rather than blocking
-command startup on filesystem I/O. Commands that exit during that period cancel
-publication without opening procfs or the registry. Discovery is therefore eventually
-consistent: a just-started process can be absent briefly. Status is advisory, not a live health probe. Discovery validates
-process ownership, kernel boot/start identity and non-zombie state, and removes
-stale records under the same lock used by publishers. Normal exit asks the single
-publisher to stop and remove its own instance's record; cleanup cannot race a late
-writer into recreating that record after cleanup. Advisory publication does not
-replace synchronous durable resume-intent writes before exec.
+Publication runs in a goroutine after a **25 ms** grace period. Short commands
+exiting before filesystem work begins do not wait for it. Discovery is eventually
+consistent and status is advisory, not a live health probe. List validates ownership,
+PID reuse and zombie state; stale records are removed under the publisher lock.
+The publisher owns both writing and cleanup so it cannot write after its cleanup.
 
-`restart` binds a Linux pidfd and revalidates the discovered instance before sending
-SIGUSR2. There is no numeric-PID kill fallback if pidfd is unavailable. By default
-it waits for a different instance UUID, the same OS process lifetime, the installed
-executable's Go build identity, matching mode, and reported `ready` state. Self-exec
-keeps the PID. Exit, unsupported/deferred handling, wrong build or timeout returns
-an error; `--no-wait` reports only that the signal was sent, not restart success.
+Restart opens a Linux pidfd and revalidates the snapshot before SIGUSR2. It waits
+for a new instance, the installed Go build identity, matching mode and reported
+ready state. pidfd readiness—not a transient procfs read failure—is authoritative
+for death. There is no unsafe numeric-kill fallback when pidfd is unavailable.
 
-`restart-all` discovers once, excludes itself, requests restarts concurrently and
-prints ordered per-process results. It does not rescan and restart replacements.
-Any selected process that cannot restart makes the command fail rather than being
-silently counted as success. Modes without a resumable lifecycle owner remain
-unsupported/deferred as described above; these commands do not make those modes
-resumable by themselves.
+`restart-all` snapshots once, excludes itself, requests concurrently and reports
+ordered per-process outcomes. Unsupported/deferred outcomes are errors, not silent
+success. `--no-wait` reports only signal delivery. Nothing here installs a binary;
+install it atomically first, then request replacement.

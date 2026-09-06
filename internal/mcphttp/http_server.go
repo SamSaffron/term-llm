@@ -83,11 +83,12 @@ type ToolSpec struct {
 // Server runs an MCP server over HTTP with token-based authentication.
 // It exposes tools to local CLI transports and executes them using the provided executor.
 type Server struct {
-	server    *http.Server
-	listener  net.Listener
-	authToken string
-	executor  ToolExecutor
-	debug     bool
+	middleware func(http.Handler) http.Handler
+	server     *http.Server
+	listener   net.Listener
+	authToken  string
+	executor   ToolExecutor
+	debug      bool
 
 	mu      sync.Mutex
 	running bool
@@ -207,7 +208,11 @@ func (s *Server) startInternal(host string, port int, token string, tools []Tool
 	// Chain: logging -> auth -> mcp handler
 	mux.Handle("/mcp", s.loggingMiddleware(s.authMiddleware(mcpHandler)))
 
-	s.server = &http.Server{Handler: mux}
+	var handler http.Handler = mux
+	if s.middleware != nil {
+		handler = s.middleware(handler)
+	}
+	s.server = &http.Server{Handler: handler}
 	s.running = true
 
 	// Use a channel to capture immediate startup errors
@@ -394,3 +399,7 @@ func ParseMCPToolName(mcpName string) string {
 	}
 	return mcpName
 }
+
+// SetMiddleware wraps the full HTTP lifetime, not just tool execution. Configure
+// it before Start; process owners use it to drain responses before replacement.
+func (s *Server) SetMiddleware(wrap func(http.Handler) http.Handler) { s.middleware = wrap }

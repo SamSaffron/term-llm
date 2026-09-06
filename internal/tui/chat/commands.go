@@ -1312,6 +1312,9 @@ func (m *Model) cmdQuit() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) cmdReload() (tea.Model, tea.Cmd) {
+	if m.mainRunManager.ActiveCount() > 0 && !m.streaming {
+		return m.showFooterWarning("Wait for background sessions to finish before reloading.")
+	}
 	if m.branchContextInFlight() {
 		return m.showSystemMessage("Cannot reload while path notes are being created. Cancel first (Esc).")
 	}

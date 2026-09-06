@@ -233,3 +233,118 @@ func TestRushUsesNormalContinuationAcrossProviders(t *testing.T) {
 		})
 	}
 }
+
+func TestExecutionFreezeJoinsCancelledToolWithoutUserSteering(t *testing.T) {
+	tool := newContextIgnoringTool(1)
+	released := false
+	defer func() {
+		if !released {
+			close(tool.release)
+		}
+	}()
+	engine := NewEngine(NewMockProvider("custom"), NewToolRegistry())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	returned := make(chan error, 1)
+	go func() {
+		_, err, _ := engine.executeToolWithCancellation(ctx, tool, json.RawMessage(`{}`))
+		returned <- err
+	}()
+	select {
+	case <-tool.started:
+	case <-time.After(time.Second):
+		t.Fatal("tool never started")
+	}
+	owner := SteeringTransition{OperationID: "process-restart", Fence: 1}
+	if err := engine.FreezeExecution(owner); err != nil {
+		t.Fatal(err)
+	}
+	defer engine.ReleaseSteeringFreeze(owner, false)
+	if err := engine.FreezeExecution(owner); !errors.Is(err, ErrSteeringTransition) {
+		t.Fatalf("second owner accepted: %v", err)
+	}
+	cancel()
+	select {
+	case err := <-returned:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("caller result %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled caller did not return")
+	}
+	if engine.ActiveToolExecutions() != 1 {
+		t.Fatal("synthetic cancellation hid actual execution")
+	}
+	if err := engine.WaitSteeringSettlement(ctx, owner); !errors.Is(err, context.Canceled) {
+		t.Fatalf("joined too early: %v", err)
+	}
+	if !engine.SteeringTransitioning() {
+		t.Fatal("wait failure removed admission fence")
+	}
+	close(tool.release)
+	released = true
+	joined, joinCancel := context.WithTimeout(context.Background(), time.Second)
+	defer joinCancel()
+	if err := engine.WaitSteeringSettlement(joined, owner); err != nil {
+		t.Fatal(err)
+	}
+	if engine.ActiveToolExecutions() != 0 {
+		t.Fatal("tool count not settled")
+	}
+	if !engine.ReleaseSteeringFreeze(owner, false) {
+		t.Fatal("rollback failed")
+	}
+	if err := engine.beginSteeringTool(joined); err != nil {
+		t.Fatalf("rollback didn't reopen tool admission: %v", err)
+	}
+	engine.actualSteeringToolDone()
+}
+
+func TestWaitToolSettlementAfterCancelledResponse(t *testing.T) {
+	tool := newContextIgnoringTool(1)
+	released := false
+	defer func() {
+		if !released {
+			close(tool.release)
+		}
+	}()
+	engine := NewEngine(NewMockProvider("custom"), NewToolRegistry())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	returned := make(chan struct{})
+	go func() {
+		_, _, _ = engine.executeToolWithCancellation(ctx, tool, json.RawMessage(`{}`))
+		close(returned)
+	}()
+	select {
+	case <-tool.started:
+	case <-time.After(time.Second):
+		t.Fatal("tool not started")
+	}
+	cancel()
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("synthetic cancellation not returned")
+	}
+	if err := engine.WaitToolSettlement(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("premature settlement: %v", err)
+	}
+	settled := make(chan error, 1)
+	go func() { settled <- engine.WaitToolSettlement(context.Background()) }()
+	select {
+	case <-settled:
+		t.Fatal("joined before real tool exit")
+	default:
+	}
+	close(tool.release)
+	released = true
+	select {
+	case err := <-settled:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("actual exit did not release settlement")
+	}
+}

@@ -108,6 +108,8 @@ type fakeBotSender struct {
 	mu             sync.Mutex
 	sent           []string // text of each successful Send call, in order
 	edits          []string // text of each successful EditMessageText call, in order
+	editIDs        []int
+	newMessages    int
 	overLimitEdits []string // rejected edit texts that exceeded maxEditRunes
 	nextID         int      // auto-incrementing MessageID
 	sendErr        error    // if non-nil, returned on the very first Send call
@@ -128,6 +130,7 @@ func (f *fakeBotSender) Send(c tgbotapi.Chattable) (tgbotapi.Message, error) {
 	var text string
 	switch v := c.(type) {
 	case tgbotapi.MessageConfig:
+		f.newMessages++
 		text = v.Text
 	case tgbotapi.EditMessageTextConfig:
 		text = v.Text
@@ -136,6 +139,7 @@ func (f *fakeBotSender) Send(c tgbotapi.Chattable) (tgbotapi.Message, error) {
 			return tgbotapi.Message{}, fmt.Errorf("telegram: message is too long")
 		}
 		f.edits = append(f.edits, text)
+		f.editIDs = append(f.editIDs, v.MessageID)
 	}
 	f.sent = append(f.sent, text)
 
@@ -2090,6 +2094,14 @@ func TestTelegramSessionMgrResetSessionIfCurrent_CancelsActiveStream(t *testing.
 		t.Fatal("streamReply did not stop after session reset")
 	}
 
+	original.cancelMu.Lock()
+	cleanupDone := original.cleanupDone
+	original.cancelMu.Unlock()
+	select {
+	case <-cleanupDone:
+	case <-time.After(time.Second):
+		t.Fatal("deferred runtime cleanup did not complete")
+	}
 	if cleanupCalls.Load() != 1 {
 		t.Fatalf("cleanup calls = %d, want 1", cleanupCalls.Load())
 	}
@@ -4273,5 +4285,72 @@ func TestHandleMessage_PhotoInterruptCancelsAndPreservesImage(t *testing.T) {
 		if strings.Contains(text, "Noted") {
 			t.Fatalf("photo was acknowledged as an steering instead of a replacement: %v", bot.allTexts())
 		}
+	}
+}
+
+func TestTelegramRestartGateWaitsForActualToolAndRetiredRuntime(t *testing.T) {
+	old := telegramRunnerCleanupTimeout
+	telegramRunnerCleanupTimeout = 20 * time.Millisecond
+	defer func() { telegramRunnerCleanupTimeout = old }()
+	h := testutil.NewEngineHarness()
+	started, release := make(chan struct{}), make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+	h.Registry.Register(&testutil.MockTool{SpecData: llm.ToolSpec{Name: "uncooperative", Schema: map[string]interface{}{"type": "object"}}, ExecuteFn: func(context.Context, json.RawMessage) (llm.ToolOutput, error) {
+		close(started)
+		<-release
+		return llm.TextOutput("settled"), nil
+	}})
+	h.Provider.AddToolCall("held", "uncooperative", map[string]any{})
+	var cleaned atomic.Int32
+	sess := &telegramSession{runtime: &SessionRuntime{Engine: h.Engine, ProviderName: "mock", ModelName: "mock", Cleanup: func() { cleaned.Add(1) }}}
+	mgr := &telegramSessionMgr{settings: Settings{MaxTurns: 5}, tickerInterval: time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	returned := make(chan error, 1)
+	go func() { returned <- mgr.streamReply(ctx, &fakeBotSender{}, sess, 42, llm.UserText("work")) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("tool did not start")
+	}
+	reopen := mgr.restartGate.Pause()
+	defer reopen()
+	cancel()
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("UI cancellation did not return within cleanup bound")
+	}
+	if mgr.restartGate.Drained() {
+		t.Fatal("synthetic cancellation released restart ownership")
+	}
+	if !sess.runtimeStale.Load() {
+		t.Fatal("unsettled runtime remained reusable")
+	}
+	mgr.closeTelegramSession(sess)
+	if cleaned.Load() != 0 {
+		t.Fatal("runtime cleanup raced actual tool execution")
+	}
+	sess.cancelMu.Lock()
+	done := sess.cleanupDone
+	sess.cancelMu.Unlock()
+	close(release)
+	released = true
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("retired runtime cleanup not acknowledged")
+	}
+	deadline := time.Now().Add(time.Second)
+	for !mgr.restartGate.Drained() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !mgr.restartGate.Drained() || cleaned.Load() != 1 {
+		t.Fatalf("ownership not settled: drained=%v cleanup=%d", mgr.restartGate.Drained(), cleaned.Load())
 	}
 }

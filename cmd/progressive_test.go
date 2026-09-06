@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -415,5 +416,127 @@ func TestNewProgressTrackerFromMessagesSeedsCommittedProgress(t *testing.T) {
 	}
 	if len(tracker.pending) != 0 {
 		t.Fatalf("pending progress calls = %d, want 0", len(tracker.pending))
+	}
+}
+
+func TestProgressiveRestartFirstPassKeepsSubsequentFullBudget(t *testing.T) {
+	provider := llm.NewMockProvider("mock")
+	provider.AddToolCall("progress", "update_progress", map[string]any{"state": map[string]any{"step": "saved"}, "message": "saved"})
+	provider.AddTextResponse("first pass complete")
+	provider.AddTextResponse("no more work")
+	provider.AddToolCall("final", "finalize_progress", map[string]any{"state": map[string]any{"step": "final"}, "message": "done"})
+	engine := llm.NewEngine(provider, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	first := 3
+	var limits []int
+	_, err := runProgressiveSession(ctx, engine, llm.Request{Messages: []llm.Message{llm.UserText("work")}, MaxTurns: 8, ToolChoice: llm.ToolChoice{Mode: llm.ToolChoiceAuto}}, progressiveRunOptions{StopWhen: progressiveStopWhenTimeout, FirstPassMaxTurns: &first, OnPassStart: func(ctx context.Context, req llm.Request) (context.Context, func(), error) {
+		limits = append(limits, req.TurnLimit())
+		return ctx, func() {}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(limits) != 3 || limits[0] != 3 || limits[1] != 8 || limits[2] != 8 {
+		t.Fatalf("pass budgets=%v, want resumed=3 then full=8,8", limits)
+	}
+}
+
+func TestProgressiveResumeFinalizationPreservesPhaseAndPrompt(t *testing.T) {
+	for _, variant := range []string{"resume", "exhausted", "already-final"} {
+		t.Run(variant, func(t *testing.T) {
+			name := "update_progress"
+			remaining := 2
+			if variant == "already-final" {
+				name = "finalize_progress"
+			}
+			if variant == "exhausted" {
+				remaining = 0
+			}
+			history := []llm.Message{
+				llm.UserText("original task"),
+				{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "saved", Name: name, Arguments: json.RawMessage(`{"state":{"step":"saved"},"message":"saved"}`)}}}},
+				{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "saved", Name: name, Content: "ok"}}}},
+				{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "partial final prose"}}},
+				llm.UserText("already persisted finalization prompt"),
+			}
+			provider := llm.NewMockProvider("mock").AddToolCall("final", "finalize_progress", map[string]any{"state": map[string]any{"step": "finished"}, "message": "finished"})
+			engine := llm.NewEngine(provider, nil)
+			synthetic := 0
+			result, err := runProgressiveSession(context.Background(), engine, llm.Request{Messages: history, MaxTurns: 8, Tools: []llm.ToolSpec{{Name: "shell"}}}, progressiveRunOptions{ResumeFinalizationReason: exitReasonNatural, FirstPassMaxTurns: &remaining, OnSyntheticUserMessage: func(context.Context, llm.Message) error { synthetic++; return nil }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if synthetic != 0 {
+				t.Fatal("replayed synthetic finalization prompt")
+			}
+			requests := provider.RecordedRequests()
+			if variant != "resume" {
+				if len(requests) != 0 {
+					t.Fatal("exhausted/already committed finalization invoked provider")
+				}
+				if variant == "already-final" && !result.Finalized {
+					t.Fatal("lost committed finalization")
+				}
+				if result.Progress["step"] != "saved" {
+					t.Fatal("lost saved progress")
+				}
+				return
+			}
+			if !result.Finalized || result.Progress["step"] != "finished" {
+				t.Fatalf("did not finish prior finalization: %+v", result)
+			}
+			if len(requests) != 1 || requests[0].MaxTurns != 2 {
+				t.Fatalf("wrong resumed finalization budget: %+v", requests)
+			}
+			if len(requests[0].Tools) != 1 || requests[0].Tools[0].Name != "finalize_progress" {
+				t.Fatal("resumed finalization admitted ordinary work tools")
+			}
+			users := 0
+			for _, message := range requests[0].Messages {
+				if message.Role == llm.RoleUser {
+					users++
+				}
+			}
+			if users != 2 {
+				t.Fatalf("changed original user history: %d user messages", users)
+			}
+		})
+	}
+}
+
+func TestProgressiveExhaustedResumeAdvancesWithoutCallingSpentPass(t *testing.T) {
+	for _, hadWork := range []bool{false, true} {
+		t.Run(fmt.Sprint(hadWork), func(t *testing.T) {
+			provider := llm.NewMockProvider("mock").AddTextResponse("done").AddTextResponse("final prose")
+			engine := llm.NewEngine(provider, nil)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			remaining := 0
+			var limits []int
+			synthetic := 0
+			_, err := runProgressiveSession(ctx, engine, llm.Request{Messages: []llm.Message{llm.UserText("original")}, MaxTurns: 7}, progressiveRunOptions{StopWhen: progressiveStopWhenTimeout, FirstPassMaxTurns: &remaining, ResumePassHadWork: hadWork, OnPassStart: func(ctx context.Context, r llm.Request) (context.Context, func(), error) {
+				limits = append(limits, r.TurnLimit())
+				return ctx, func() {}, nil
+			}, OnSyntheticUserMessage: func(context.Context, llm.Message) error { synthetic++; return nil }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			expected := 1
+			if hadWork {
+				expected = 2
+			}
+			if len(limits) != expected || len(provider.RecordedRequests()) != expected {
+				t.Fatalf("spent pass executed or continuation lost: limits=%v requests=%d", limits, len(provider.RecordedRequests()))
+			}
+			for _, limit := range limits {
+				if limit != 7 {
+					t.Fatalf("future pass lost full limit: %v", limits)
+				}
+			}
+			if synthetic != expected {
+				t.Fatalf("wrong pass transition prompts: %d", synthetic)
+			}
+		})
 	}
 }

@@ -33,14 +33,21 @@ type askProgressiveOptions struct {
 }
 
 type progressiveRunOptions struct {
-	StopWhen               progressiveStopWhen
-	ContinueWith           string
-	SessionID              string
-	ForceNamedFinalization bool
-	OnEvent                func(llm.Event) error
-	OnSyntheticUserMessage func(context.Context, llm.Message) error
-	OnResponseCompleted    llm.ResponseCompletedCallback
-	OnTurnCompleted        llm.TurnCompletedCallback
+	ResumePassHadWork        bool
+	ResumePassHadCommit      bool
+	OnPassEnd                func(progressivePassResult)
+	ResumeFinalizationReason string
+	OnFinalizationStart      func(string, llm.Request) error
+	FirstPassMaxTurns        *int
+	OnPassStart              func(context.Context, llm.Request) (context.Context, func(), error)
+	StopWhen                 progressiveStopWhen
+	ContinueWith             string
+	SessionID                string
+	ForceNamedFinalization   bool
+	OnEvent                  func(llm.Event) error
+	OnSyntheticUserMessage   func(context.Context, llm.Message) error
+	OnResponseCompleted      llm.ResponseCompletedCallback
+	OnTurnCompleted          llm.TurnCompletedCallback
 }
 
 type progressiveRunResult struct {
@@ -243,13 +250,52 @@ func runProgressiveSession(ctx context.Context, engine *llm.Engine, req llm.Requ
 	mainCtx, cancelMainCtx, reserve, hasTimeoutBudget := progressiveWorkContext(ctx)
 	defer cancelMainCtx()
 
+	if opts.ResumeFinalizationReason != "" {
+		reason := opts.ResumeFinalizationReason
+		for i := len(history) - 1; i >= 0; i-- {
+			if history[i].Role == llm.RoleAssistant && llm.MessageText(history[i]) != "" {
+				lastText = llm.MessageText(history[i])
+				break
+			}
+		}
+		if tracker.latest != nil && tracker.latest.Final {
+			return buildProgressiveRunResult(opts.SessionID, reason, true, tracker.latest, lastText), nil
+		}
+		if opts.FirstPassMaxTurns != nil {
+			if *opts.FirstPassMaxTurns <= 0 {
+				return buildProgressiveRunResult(opts.SessionID, reason, false, tracker.latest, lastText), nil
+			}
+			req.MaxTurns = *opts.FirstPassMaxTurns
+		}
+		finalized, text := attemptProgressiveFinalization(ctx, engine, finalizeTool, req, history, opts, tracker, reserve, reason)
+		if text != "" {
+			lastText = text
+		}
+		return buildProgressiveRunResult(opts.SessionID, reason, finalized, tracker.latest, lastText), nil
+	}
+	firstPass := true
 	for {
 		passReq := req
+		if firstPass && opts.FirstPassMaxTurns != nil {
+			passReq.MaxTurns = *opts.FirstPassMaxTurns
+		}
+		wasFirst := firstPass
+		firstPass = false
 		passReq.Messages = append([]llm.Message(nil), history...)
 		passReq.Tools = append([]llm.ToolSpec(nil), req.Tools...)
 		passReq.Tools = append(passReq.Tools, updateTool.Spec())
 
-		passResult, err := runProgressivePass(mainCtx, engine, passReq, opts, tracker)
+		var passResult progressivePassResult
+		var err error
+		if !(wasFirst && opts.FirstPassMaxTurns != nil && *opts.FirstPassMaxTurns <= 0) {
+			passResult, err = runProgressivePass(mainCtx, engine, passReq, opts, tracker)
+		}
+		if wasFirst {
+			passResult.hadNonProgressTool = passResult.hadNonProgressTool || opts.ResumePassHadWork
+			if opts.ResumePassHadCommit && passResult.newCommitCount == 0 {
+				passResult.newCommitCount = 1
+			}
+		}
 		if passResult.lastText != "" {
 			lastText = passResult.lastText
 		}
@@ -329,7 +375,18 @@ func newProgressTrackerFromMessages(messages []llm.Message) *progressTracker {
 	return tracker
 }
 
-func runProgressivePass(ctx context.Context, engine *llm.Engine, req llm.Request, opts progressiveRunOptions, tracker *progressTracker) (progressivePassResult, error) {
+func runProgressivePass(ctx context.Context, engine *llm.Engine, req llm.Request, opts progressiveRunOptions, tracker *progressTracker) (result progressivePassResult, resultErr error) {
+	if opts.OnPassEnd != nil {
+		defer func() { opts.OnPassEnd(result) }()
+	}
+	if opts.OnPassStart != nil {
+		owned, release, err := opts.OnPassStart(ctx, req)
+		if err != nil {
+			return progressivePassResult{}, err
+		}
+		ctx = owned
+		defer release()
+	}
 	var produced []llm.Message
 	var text strings.Builder
 	var hadNonProgressTool bool
@@ -426,19 +483,26 @@ func attemptProgressiveFinalization(parentCtx context.Context, engine *llm.Engin
 	}
 	defer finalizeCancel()
 
-	finalPrompt := buildProgressiveFinalizePrompt(tracker.latest)
-	finalizeMsg := llm.UserText(finalPrompt)
-	if opts.OnSyntheticUserMessage != nil {
-		msgCtx, cancel := progressiveSyntheticUserMessageContext(finalizeCtx)
-		err := opts.OnSyntheticUserMessage(msgCtx, finalizeMsg)
-		cancel()
-		if err != nil {
+	if opts.OnFinalizationStart != nil {
+		if err := opts.OnFinalizationStart(exitReason, baseReq); err != nil {
 			return false, ""
 		}
 	}
-
 	finalReq := baseReq
-	finalReq.Messages = append(append([]llm.Message(nil), history...), finalizeMsg)
+	finalReq.Messages = append([]llm.Message(nil), history...)
+	if opts.ResumeFinalizationReason == "" {
+		finalPrompt := buildProgressiveFinalizePrompt(tracker.latest)
+		finalizeMsg := llm.UserText(finalPrompt)
+		if opts.OnSyntheticUserMessage != nil {
+			msgCtx, cancel := progressiveSyntheticUserMessageContext(finalizeCtx)
+			err := opts.OnSyntheticUserMessage(msgCtx, finalizeMsg)
+			cancel()
+			if err != nil {
+				return false, ""
+			}
+		}
+		finalReq.Messages = append(finalReq.Messages, finalizeMsg)
+	}
 	finalReq.Search = false
 	finalReq.ForceExternalSearch = false
 	finalReq.ParallelToolCalls = false

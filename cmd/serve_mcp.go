@@ -13,6 +13,8 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcphttp"
+	"github.com/samsaffron/term-llm/internal/process"
+	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/search"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -139,7 +141,13 @@ func resolveServeMCPApprovalMode(cmd *cobra.Command, cfg *config.Config) (resolv
 }
 
 func runServeMCP(cmd *cobra.Command, args []string) error {
-	defer installWebExecSignal(cmd.Context(), &webExecCoordinator{ctx: cmd.Context(), unsupported: "SIGUSR2 requires standalone serve web"})()
+	ctx, stop := signal.NotifyContextWithParent(cmd.Context())
+	defer stop()
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	owner := &processExecOwner{ctx: ctx, mode: "serve mcp", executable: executable, grace: 10 * time.Second, cancels: make(map[uint64]context.CancelFunc), exec: execWebProcess}
 
 	if serveMCPTools == "" {
 		return fmt.Errorf("--tools is required\n\nExamples:\n  term-llm serve mcp --tools all\n  term-llm serve mcp --tools read_file,grep,glob,shell")
@@ -270,6 +278,12 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 
 	// Build executor that routes to the right tool.
 	executor := func(ctx context.Context, name string, args json.RawMessage) (mcphttp.ToolResult, error) {
+		workCtx, release, err := owner.child(ctx)
+		if err != nil {
+			return mcphttp.ToolResult{}, err
+		}
+		defer release()
+		ctx = workCtx
 		// Check web tools first.
 		if name == mcpWebSearchToolName && webSearchTool != nil {
 			out, err := webSearchTool.Execute(ctx, args)
@@ -301,6 +315,9 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 	// Resolve auth token.
 	token := strings.TrimSpace(serveMCPToken)
 	if token == "" {
+		token = mcpReloadToken
+	}
+	if token == "" {
 		generated, err := generateServeToken()
 		if err != nil {
 			return fmt.Errorf("generate auth token: %w", err)
@@ -311,14 +328,19 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 	// Start MCP server.
 	server := mcphttp.NewServer(executor)
 	server.SetDebug(serveMCPDebug)
-
-	ctx, stop := signal.NotifyContext()
-	defer stop()
+	server.SetMiddleware(owner.handler)
 
 	url, actualToken, err := server.StartOnAddress(serveMCPHost, serveMCPPort, token, mcpTools)
 	if err != nil {
 		return fmt.Errorf("start MCP server: %w", err)
 	}
+
+	owner.exec = func(path string, args, env []string) error {
+		return execWebProcess(path, args, append(env, "TERM_LLM_MCP_RELOAD_TOKEN="+token))
+	}
+	unbind := restart.Default.Bind(owner.request)
+	defer unbind()
+	process.State("serve mcp", "ready", "")
 
 	// Print server info.
 	toolNames := make([]string, len(mcpTools))

@@ -90,3 +90,16 @@ func (p *Publisher) Stop() {
 }
 
 var ErrUnsupported = errors.New("safe process discovery/restart requires Linux procfs and pidfd support")
+
+// Instance returns the in-memory executable incarnation without registry I/O.
+func Instance() string {
+	currentMu.RLock()
+	p := current
+	currentMu.RUnlock()
+	if p == nil {
+		return ""
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.record.Instance
+}

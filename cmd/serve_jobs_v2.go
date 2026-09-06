@@ -23,6 +23,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
+	"github.com/samsaffron/term-llm/internal/restart"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -166,6 +167,7 @@ func jobsV2JobToRequest(req jobsV2Job) jobsV2JobRequest {
 }
 
 type jobsV2Run struct {
+	restart      *jobsRestartCheckpoint
 	ID           string          `json:"id"`
 	JobID        string          `json:"job_id"`
 	Attempt      int             `json:"attempt"`
@@ -201,17 +203,19 @@ type jobsV2RunEvent struct {
 }
 
 type jobsV2RunResult struct {
-	ExitCode     int
-	Stdout       string
-	Stderr       string
-	Thinking     string
-	Response     string
-	SessionID    string
-	TurnCount    int    // number of LLM turns taken
-	InputTokens  int    // total input tokens consumed
-	OutputTokens int    // total output tokens generated
-	ExitReason   string // see exit reason constants
-	Truncated    bool   // true when exit_reason is "max_turns_exceeded"
+	restartPass        *progressivePassResult
+	restartBudgetTurns *int
+	ExitCode           int
+	Stdout             string
+	Stderr             string
+	Thinking           string
+	Response           string
+	SessionID          string
+	TurnCount          int    // number of LLM turns taken
+	InputTokens        int    // total input tokens consumed
+	OutputTokens       int    // total output tokens generated
+	ExitReason         string // see exit reason constants
+	Truncated          bool   // true when exit_reason is "max_turns_exceeded"
 }
 
 // progressWriter receives real-time progress updates from a running job.
@@ -495,11 +499,15 @@ func classifyRunError(err error, result jobsV2RunResult) (exitReason string, tru
 }
 
 type jobsV2Manager struct {
-	db         *sql.DB
-	workers    int
-	workerID   string
-	runners    map[jobsV2RunnerType]jobsV2Runner
-	notifyDone jobsV2RunDoneNotifier
+	restartDriver   jobsRestartDriver
+	llmExecutions   sync.Map
+	restartGate     restart.Gate
+	restartPrograms bool // protected by mu; no new program starts after grace
+	db              *sql.DB
+	workers         int
+	workerID        string
+	runners         map[jobsV2RunnerType]jobsV2Runner
+	notifyDone      jobsV2RunDoneNotifier
 	// Idle timers are only fallbacks; job/run mutations wake the loops immediately.
 	schedulerIdleDelay time.Duration
 	workerIdleDelay    time.Duration
@@ -527,7 +535,7 @@ func newJobsV2Manager(dbPath string, workers int, llmExec serveJobsExecutor) (*j
 	return newJobsV2ManagerWithNotifier(dbPath, workers, llmExec, nil)
 }
 
-func newJobsV2ManagerWithNotifier(dbPath string, workers int, llmExec serveJobsExecutor, notifyDone jobsV2RunDoneNotifier) (*jobsV2Manager, error) {
+func newJobsV2ManagerWithNotifier(dbPath string, workers int, llmExec serveJobsExecutor, notifyDone jobsV2RunDoneNotifier, beforeRecover ...func(*jobsV2Manager) error) (*jobsV2Manager, error) {
 	if workers < 0 {
 		workers = 1
 	}
@@ -590,6 +598,13 @@ func newJobsV2ManagerWithNotifier(dbPath string, workers int, llmExec serveJobsE
 		notifyCancel:  notifyCancel,
 	}
 
+	for _, setup := range beforeRecover {
+		if err := setup(mgr); err != nil {
+			notifyCancel()
+			db.Close()
+			return nil, err
+		}
+	}
 	if err := mgr.recoverRuns(); err != nil {
 		notifyCancel()
 		_ = db.Close()
@@ -612,6 +627,9 @@ func newJobsV2ManagerWithNotifier(dbPath string, workers int, llmExec serveJobsE
 }
 
 func (m *jobsV2Manager) recoverRuns() error {
+	if err := m.recoverUnstartedLLMClaims(context.Background()); err != nil {
+		return fmt.Errorf("recover unstarted LLM continuation: %w", err)
+	}
 	rows, err := m.db.Query(`SELECT id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at FROM job_runs_v2 WHERE status IN (?, ?) ORDER BY created_at ASC`, jobsV2RunClaimed, jobsV2RunRunning)
 	if err != nil {
 		return fmt.Errorf("load interrupted runs: %w", err)
@@ -825,12 +843,19 @@ func (m *jobsV2Manager) schedulerLoop() {
 			return
 		}
 
+		release, admitted := m.restartGate.Enter()
+		if !admitted {
+			resetTimer(timer, m.schedulerIdleDelay)
+			continue
+		}
 		now := time.Now().UTC()
 		if err := m.scheduleDueRuns(now); err != nil {
+			release()
 			resetTimer(timer, jobsV2SchedulerErrorDelay)
 			continue
 		}
 		if err := m.maybeRunCleanup(now); err != nil {
+			release()
 			resetTimer(timer, jobsV2SchedulerErrorDelay)
 			continue
 		}
@@ -838,6 +863,7 @@ func (m *jobsV2Manager) schedulerLoop() {
 		if err != nil {
 			delay = jobsV2SchedulerErrorDelay
 		}
+		release()
 		resetTimer(timer, delay)
 	}
 }
@@ -1042,8 +1068,16 @@ func (m *jobsV2Manager) workerLoop() {
 		default:
 		}
 
+		release, admitted := m.restartGate.Enter()
+		if !admitted {
+			if !m.waitForWorkerWake(m.workerIdleDelay) {
+				return
+			}
+			continue
+		}
 		run, ok, err := m.claimNextRun()
 		if err != nil {
+			release()
 			if !m.waitForWorkerWake(jobsV2WorkerErrorDelay) {
 				return
 			}
@@ -1051,12 +1085,14 @@ func (m *jobsV2Manager) workerLoop() {
 		}
 		if ok {
 			m.executeRun(run)
+			release()
 			continue
 		}
 		delay, err := m.nextWorkerDelayWithError(time.Now().UTC())
 		if err != nil {
 			delay = jobsV2WorkerErrorDelay
 		}
+		release()
 		if !m.waitForWorkerWake(delay) {
 			return
 		}
@@ -1272,6 +1308,10 @@ func (m *jobsV2Manager) claimNextRun() (jobsV2Run, bool, error) {
 		return jobsV2Run{}, false, nil
 	}
 
+	run.restart, err = takeLLMRestart(context.Background(), tx, run.ID)
+	if err != nil {
+		return jobsV2Run{}, false, err
+	}
 	if err := tx.Commit(); err != nil {
 		return jobsV2Run{}, false, err
 	}
@@ -1282,7 +1322,13 @@ func (m *jobsV2Manager) claimNextRun() (jobsV2Run, bool, error) {
 }
 
 func (m *jobsV2Manager) requeueClaimedRunAfterShutdown(runID string) {
-	res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = ?, worker_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ? AND worker_id = ?`, jobsV2RunQueued, runID, jobsV2RunClaimed, m.workerID)
+	tx, err := m.db.Begin()
+	if err != nil {
+		log.Printf("jobs v2: begin unstarted requeue: %v", err)
+		return
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`UPDATE job_runs_v2 SET status = ?, worker_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ? AND worker_id = ?`, jobsV2RunQueued, runID, jobsV2RunClaimed, m.workerID)
 	if err != nil {
 		log.Printf("jobs v2: failed to requeue unstarted run %q during shutdown: %v", runID, err)
 		return
@@ -1295,12 +1341,26 @@ func (m *jobsV2Manager) requeueClaimedRunAfterShutdown(runID string) {
 	if affected == 0 {
 		return
 	}
+	if _, err = tx.Exec(`UPDATE job_restart_checkpoints SET phase='ready' WHERE run_id=? AND phase='claimed'`, runID); err != nil {
+		log.Printf("jobs v2: restore unstarted checkpoint: %v", err)
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		log.Printf("jobs v2: commit unstarted requeue: %v", err)
+		return
+	}
 	if err := m.addRunEvent(runID, "requeued", "run returned to queue during worker shutdown", map[string]any{"worker_id": m.workerID}); err != nil {
 		log.Printf("jobs v2: failed to record shutdown requeue event for run %q: %v", runID, err)
 	}
 }
 
 func (m *jobsV2Manager) executeRun(run jobsV2Run) {
+	defer func() {
+		if err := m.recoverRolledBackLLMJobs(); err != nil {
+			log.Printf("jobs v2: failed restart recovery: %v", err)
+		}
+	}()
+
 	// Avoid turning a claim into a terminal failure when shutdown had already won
 	// before this worker began admission. Keep the check below as well: shutdown
 	// can still race with loading the job and preparing its context.
@@ -1310,6 +1370,10 @@ func (m *jobsV2Manager) executeRun(run jobsV2Run) {
 	}
 
 	job, err := m.GetJob(run.JobID)
+	if run.restart != nil {
+		job = run.restart.Job
+		err = nil
+	}
 	if err != nil {
 		m.finishRunWithRetry(run.ID, jobsV2RunFailed, jobsV2RunResult{}, fmt.Errorf("load job: %w", err), run.Attempt)
 		return
@@ -1321,13 +1385,46 @@ func (m *jobsV2Manager) executeRun(run jobsV2Run) {
 		return
 	}
 
+	// Bind the persisted conversation to this run before any provider/tool work.
+	// A worker lost mid-run must not leave its transcript undiscoverable or
+	// recover by allocating a different session and replaying the original task.
+	if job.RunnerType == jobsV2RunnerLLM {
+		var cfg jobsV2LLMConfig
+		if err := json.Unmarshal(job.RunnerConfig, &cfg); err != nil {
+			m.finishRunWithRetry(run.ID, jobsV2RunFailed, jobsV2RunResult{}, err, run.Attempt)
+			return
+		}
+		if run.restart != nil {
+			cfg.SessionID = run.restart.SessionID
+			cfg.MaxTurns = run.restart.RemainingTurns
+		}
+		if cfg.sessionPersistenceEnabled() {
+			cfg.SessionID = cfg.effectiveSessionID()
+			run.SessionID = cfg.SessionID
+			raw, err := json.Marshal(cfg)
+			if err != nil {
+				m.finishRunWithRetry(run.ID, jobsV2RunFailed, jobsV2RunResult{}, err, run.Attempt)
+				return
+			}
+			// Per-execution copy only: recurring jobs need distinct sessions.
+			job.RunnerConfig = raw
+		}
+	}
+
 	timeout := time.Duration(job.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	deadline := time.Now().Add(timeout)
+	if run.restart != nil {
+		deadline = run.restart.Deadline
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	if run.restart != nil {
+		ctx = context.WithValue(ctx, jobsRestartContextKey{}, run.restart)
+	}
 	m.mu.Lock()
-	if m.closed {
+	if m.closed || (m.restartPrograms && job.RunnerType == jobsV2RunnerProgram) {
 		m.mu.Unlock()
 		cancel()
 		m.requeueClaimedRunAfterShutdown(run.ID)
@@ -1343,7 +1440,7 @@ func (m *jobsV2Manager) executeRun(run jobsV2Run) {
 	}()
 
 	started := time.Now().UTC()
-	res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = ?, started_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?`, jobsV2RunRunning, started, run.ID, jobsV2RunClaimed)
+	res, err := m.startJobRun(run, started)
 	if err != nil {
 		m.finishRunWithRetry(run.ID, jobsV2RunFailed, jobsV2RunResult{}, fmt.Errorf("mark run running: %w", err), run.Attempt)
 		return
@@ -1371,7 +1468,43 @@ func (m *jobsV2Manager) executeRun(run jobsV2Run) {
 			_ = m.addRunEvent(run.ID, eventType, message, data)
 		}
 	}
-	result, runErr := runner.Run(ctx, job, pw)
+	// Registration and the claimed->running database transition are separate.
+	// Recheck after that transition so grace expiry cannot miss a late start.
+	m.mu.Lock()
+	if m.restartPrograms && job.RunnerType == jobsV2RunnerProgram {
+		cancel()
+	}
+	m.mu.Unlock()
+	var source *jobsLLMExecution
+	if job.RunnerType == jobsV2RunnerLLM {
+		source = &jobsLLMExecution{manager: m, ctx: ctx, cancel: cancel, checkpoint: jobsRestartCheckpoint{RunID: run.ID, SessionID: run.SessionID, Job: job, Deadline: deadline}}
+		ctx = context.WithValue(ctx, jobsExecutionContextKey{}, source)
+		m.llmExecutions.Store(run.ID, source)
+		defer m.llmExecutions.CompareAndDelete(run.ID, source)
+	}
+	var result jobsV2RunResult
+	runErr := ctx.Err()
+	if run.restart != nil && run.restart.RemainingTurns <= 0 && run.restart.PassTurnLimit == 0 {
+		result.ExitReason = exitReasonMaxTurns
+		result.Truncated = true
+	} else if runErr == nil {
+		result, runErr = runner.Run(ctx, job, pw)
+	}
+	if source != nil {
+		parked, sealErr := source.seal(&result)
+		if parked {
+			return
+		} // Internal interruption is not job completion.
+		if sealErr != nil {
+			m.noteLLMRestartFailure(run.ID, sealErr)
+			log.Printf("jobs v2: restart checkpoint refused for %s: %v", run.ID, sealErr)
+		}
+	}
+	if run.restart != nil {
+		result.TurnCount += run.TurnCount
+		result.InputTokens += run.InputTokens
+		result.OutputTokens += run.OutputTokens
+	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		m.finishRunWithRetry(run.ID, jobsV2RunTimedOut, result, context.DeadlineExceeded, run.Attempt)
 		return
@@ -1444,7 +1577,7 @@ func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result j
 		errText = runErr.Error()
 	}
 	cancelledErrText := context.Canceled.Error()
-	res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = CASE WHEN status = ? THEN ? ELSE ? END, finished_at = ?, exit_code = ?, error = CASE WHEN status = ? THEN ? ELSE ? END, stdout = ?, stderr = ?, thinking = ?, response = ?, session_id = ?, exit_reason = CASE WHEN status = ? THEN ? ELSE ? END, truncated = ?, turn_count = ?, input_tokens = ?, output_tokens = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN (?, ?, ?, ?)`,
+	res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = CASE WHEN status = ? THEN ? ELSE ? END, finished_at = ?, exit_code = ?, error = CASE WHEN status = ? THEN ? ELSE ? END, stdout = ?, stderr = ?, thinking = ?, response = ?, session_id = COALESCE(NULLIF(?, ''), session_id), exit_reason = CASE WHEN status = ? THEN ? ELSE ? END, truncated = ?, turn_count = ?, input_tokens = ?, output_tokens = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN (?, ?, ?, ?)`,
 		jobsV2RunCancelRequested, jobsV2RunCancelled, status,
 		now, result.ExitCode,
 		jobsV2RunCancelRequested, cancelledErrText, errText,
@@ -1465,6 +1598,9 @@ func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result j
 		return err
 	}
 	status = run.Status
+	// Early failures may have no runner result, but the pre-execution session
+	// binding remains authoritative for events and completion notifications.
+	result.SessionID = run.SessionID
 	exitReason = run.ExitReason
 	truncated = run.Truncated
 	errText = run.Error
@@ -1522,8 +1658,10 @@ func (m *jobsV2Manager) enqueueRunDoneNotification(run jobsV2Run, status jobsV2R
 	if m == nil || m.notifyDone == nil || !jobsV2NotifyTerminalStatus(status) {
 		return
 	}
+	release := m.restartGate.TrackChild()
 	m.wg.Add(1)
 	go func() {
+		defer release()
 		defer m.wg.Done()
 		m.notifyRunDone(run, status, result, exitReason, truncated, errText)
 	}()
@@ -2917,8 +3055,15 @@ func (s *serveServer) handleRunV2ByID(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, run)
 }
 
-func newServeJobsV2Manager(cfg *config.Config, workers int, approval resolvedApprovalMode, notifyDone jobsV2RunDoneNotifier) (*jobsV2Manager, error) {
-	return newJobsV2ManagerWithNotifier("", workers, newServeJobsExecutor(cfg, approval), notifyDone)
+func newServeJobsV2Manager(cfg *config.Config, workers int, approval resolvedApprovalMode, notifyDone jobsV2RunDoneNotifier, setups ...jobsRestartSetup) (*jobsV2Manager, error) {
+	return newJobsV2ManagerWithNotifier("", workers, newServeJobsExecutor(cfg, approval), notifyDone, func(m *jobsV2Manager) error {
+		for _, setup := range setups {
+			if err := m.recoverLLMRestarts(context.Background(), setup, false); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func queryBool(r *http.Request, key string) bool {
@@ -3115,7 +3260,7 @@ func newServeJobsExecutor(baseCfg *config.Config, approval resolvedApprovalMode)
 
 		runner := newCmdRunner(baseCfg, serveJobsRunnerOptions(approval))
 
-		result, err := runner.Run(ctx, runpkg.Request{
+		request := runpkg.Request{
 			Platform:        runpkg.PlatformJob,
 			AgentName:       cfg.AgentName,
 			Prompt:          cfg.Instructions,
@@ -3134,7 +3279,51 @@ func newServeJobsExecutor(baseCfg *config.Config, approval resolvedApprovalMode)
 			SystemMessage:   cfg.SystemMessage,
 			Skills:          cfg.Skills,
 			Progressive:     progressive,
-		}, eventSinkFunc(onEvent))
+		}
+		if checkpoint, ok := ctx.Value(jobsRestartContextKey{}).(*jobsRestartCheckpoint); ok {
+			request.Resume = true
+			request.Prompt = ""
+			request.Messages = []llm.Message{{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: llm.SteeringInterruptionNotice + "\nThe process was replaced after its restart grace. Continue the unfinished task, checking interrupted effects before repeating them. This is internal recovery, not user Stop or new user input. Do not restart again."}}}}
+			for _, pending := range checkpoint.Pending {
+				request.Messages = append(request.Messages, pending.Message)
+			}
+		}
+		result, err := runner.Run(ctx, request, eventSinkFunc(onEvent))
 		return serveJobsExecResult{Progressive: progressiveFromRunResult(result.Progressive)}, err
 	}
 }
+
+// interruptProgramsForRestart uses the ordinary durable cancellation path. An
+// arbitrary program has no safe instruction pointer to resume: never replay it.
+// Runs not yet started remain queued. LLM runs require a separate session handoff.
+func (m *jobsV2Manager) interruptProgramsForRestart() error {
+	m.mu.Lock()
+	m.restartPrograms = true
+	m.mu.Unlock()
+	rows, err := m.db.Query(`SELECT r.id FROM job_runs_v2 r JOIN jobs_v2 j ON j.id=r.job_id WHERE j.runner_type=? AND r.status IN (?,?)`, jobsV2RunnerProgram, jobsV2RunRunning, jobsV2RunCancelRequested)
+	if err != nil {
+		return err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if _, err = m.CancelRun(id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *jobsV2Manager) reopenAfterRestart() { m.mu.Lock(); m.restartPrograms = false; m.mu.Unlock() }

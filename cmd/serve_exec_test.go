@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -67,7 +68,6 @@ func TestWebExecFailedExecReleasesToolCapableRun(t *testing.T) {
 	c := newWebExecCoordinator(ctx, s, "")
 	s.webExec = c
 	c.ready = true
-	c.safeTool = func(tool llm.Tool) bool { _, ok := tool.(*webExecTestTool); return ok }
 	attempted := make(chan struct{})
 	var attemptedID string
 	var execCalls atomic.Int64
@@ -307,8 +307,110 @@ func TestWebExecStartupReadiness(t *testing.T) {
 	}
 }
 
-func TestWebExecDoesNotTrustToolNames(t *testing.T) {
-	if webExecSafeTool(&webExecTestTool{}) {
-		t.Fatal("custom tool claiming write_file was trusted")
+func TestWebExecGraceCancelsAndSealsBeforeReplacement(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	sid := session.NewID()
+	if err := store.Create(ctx, &session.Session{ID: sid, Provider: "mock", Model: "mock", Origin: session.OriginWeb, CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	tool := &webExecTestTool{entered: make(chan struct{}), release: make(chan struct{})}
+	provider := llm.NewMockProvider("mock").AddToolCall("slow", "write_file", map[string]any{}).AddTextResponse("must not run before replacement")
+	registry := llm.NewToolRegistry()
+	registry.Register(tool)
+	rt := &serveRuntime{provider: provider, providerKey: "mock", engine: llm.NewEngine(provider, registry), defaultModel: "mock", store: store}
+	rt.Touch()
+	s := &serveServer{store: store, shutdownCh: make(chan struct{}), responseRuns: newServeResponseRunManager()}
+	defer s.responseRuns.Close()
+	defer func() {
+		if s.responseLifecycleCancel != nil {
+			s.responseLifecycleCancel()
+			s.responseLifecycleWG.Wait()
+		}
+	}()
+	c := newWebExecCoordinator(ctx, s, "")
+	s.webExec = c
+	c.ready = true
+	c.timeout = 30 * time.Millisecond
+	attempted := make(chan error, 1)
+	c.exec = func(_ string, _ []string, _ []string) error {
+		entries, e := store.ReadExecHandoff(ctx, c.interruptionID, c.service)
+		if e == nil && len(entries) != 1 {
+			e = fmt.Errorf("expected one intent, got %d", len(entries))
+		}
+		if e == nil {
+			var state session.ExecRequestState
+			e = json.Unmarshal(entries[0].Request, &state)
+			if e == nil && (!state.Interrupted || !state.Settled) {
+				e = errors.New("interruption not sealed")
+			}
+			if e == nil && rt.engine.ActiveToolExecutions() != 0 {
+				e = errors.New("exec before actual tool returned")
+			}
+		}
+		attempted <- e
+		return errors.New("fixture replacement unavailable")
+	}
+	run, err := s.startResponseRun(rt, true, false, []llm.Message{llm.UserText("work")}, llm.Request{SessionID: sid, Tools: []llm.ToolSpec{tool.Spec()}, MaxTurns: 10}, sid, startResponseRunOptions{uiSession: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-tool.entered:
+	case <-time.After(time.Second):
+		t.Fatal("tool did not start")
+	}
+	c.request()
+	select {
+	case err := <-attempted:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("grace did not cancel/join/replace")
+	}
+	select {
+	case <-run.settled:
+	case <-time.After(time.Second):
+		t.Fatal("source did not settle")
+	}
+	if tool.calls.Load() != 1 {
+		t.Fatalf("operation replayed %d times", tool.calls.Load())
+	}
+}
+
+func TestWebExecEventPollDoesNotHoldDrainOpen(t *testing.T) {
+	c := &webExecCoordinator{server: &serveServer{}}
+	called := false
+	handler := c.handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.handlers != 0 {
+			t.Fatal("passive event polling counted as owned mutation work")
+		}
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/v1/events/poll", nil))
+	if !called {
+		t.Fatal("poll not served")
+	}
+}
+
+func TestWebExecJobStopDoesNotAbortProcessRestart(t *testing.T) {
+	c := &webExecCoordinator{ctx: context.Background(), server: &serveServer{jobsV2: &jobsV2Manager{}}, draining: true, release: make(chan struct{})}
+	called := false
+	handler := c.handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true; w.WriteHeader(http.StatusOK) }))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v2/runs/job-run/cancel", nil))
+	if !called || response.Code != http.StatusOK {
+		t.Fatal("job Stop blocked by process drain")
+	}
+	if !c.draining {
+		t.Fatal("stopping one job aborted whole-process restart")
 	}
 }

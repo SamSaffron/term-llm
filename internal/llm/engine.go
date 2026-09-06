@@ -40,6 +40,9 @@ const (
 	toolHeartbeatInterval              = 10 * time.Second
 )
 
+// TurnLimit reports the effective request budget used by the engine.
+func (r Request) TurnLimit() int { return getMaxTurns(r) }
+
 // getMaxTurns returns the max turns from request, with fallback to default
 func getMaxTurns(req Request) int {
 	if req.MaxTurns > 0 {
@@ -124,6 +127,7 @@ type FileTrackingRunLifecycle interface {
 }
 
 type Engine struct {
+	modelTurns       atomic.Int64
 	provider         Provider
 	tools            *ToolRegistry
 	debugLogger      *DebugLogger
@@ -2388,6 +2392,7 @@ func (e *Engine) runSimpleScratchpad(ctx context.Context, req Request, send even
 		e.applyPendingServiceTier(&req)
 		providerReq := e.prepareProviderRequest(req)
 		e.clearInlineFlush()
+		e.modelTurns.Add(1)
 		stream, err := e.provider.Stream(ctx, providerReq)
 		if err != nil {
 			return err
@@ -3130,6 +3135,7 @@ turnLoop:
 		if err := e.awaitSteeringDispatch(ctx); err != nil {
 			return err
 		}
+		e.modelTurns.Add(1)
 		stream, err := e.provider.Stream(ctx, providerReq)
 		if err != nil {
 			// Reactive compaction: if this is a context overflow error, try compacting and retrying (once)
@@ -5211,3 +5217,7 @@ func (s *cleanupStream) cleanupOnce() (err error) {
 	})
 	return err
 }
+
+// ModelTurns counts provider calls started by this engine, independently of
+// optional usage chunks. Lifecycle owners use differences for restart budgets.
+func (e *Engine) ModelTurns() int64 { return e.modelTurns.Load() }

@@ -205,8 +205,7 @@ func (m *Manager) StopMount(mount string) error {
 	if !ok {
 		return fmt.Errorf("widget %q not found", mount)
 	}
-	e.stopProcess()
-	return nil
+	return e.stopProcess()
 }
 
 // StopAll stops every loaded widget process without closing the manager. Widgets
@@ -593,14 +592,14 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 	return nil
 }
 
-func (e *widgetEntry) stopProcess() {
+func (e *widgetEntry) stopProcess() error {
 	e.startMu.Lock()
 	defer e.startMu.Unlock()
-	e.stopProcessLocked()
+	return e.stopProcessLocked()
 }
 
 // stopProcessLocked requires startMu to be held.
-func (e *widgetEntry) stopProcessLocked() {
+func (e *widgetEntry) stopProcessLocked() error {
 	e.mu.Lock()
 	proc := e.proc
 	done := e.procDone
@@ -615,17 +614,35 @@ func (e *widgetEntry) stopProcessLocked() {
 	defer removeSocket(mode, socketID)
 
 	if proc == nil {
-		return
+		return nil
 	}
 	killProcessGroup(proc, syscall.SIGTERM)
 	if done == nil {
-		return
+		e.mu.Lock()
+		e.proc, e.procDone, e.state, e.errMsg = proc, done, stateError, "widget process has no exit acknowledgement"
+		e.mu.Unlock()
+		return fmt.Errorf("widget process has no exit acknowledgement")
 	}
 	select {
 	case <-done:
+		return nil
 	case <-time.After(3 * time.Second):
 		killProcessGroup(proc, syscall.SIGKILL)
 	}
+	select {
+	case <-done:
+		return nil
+	case <-time.After(3 * time.Second):
+		// Retain ownership if even SIGKILL has not produced a wait acknowledgement.
+		e.mu.Lock()
+		e.proc = proc
+		e.procDone = done
+		e.state = stateError
+		e.errMsg = "widget process did not acknowledge exit"
+		e.mu.Unlock()
+		return fmt.Errorf("widget process did not acknowledge exit")
+	}
+
 }
 
 func removeSocket(mode, widgetID string) {
@@ -730,4 +747,32 @@ func freePort() (int, error) {
 	}
 	defer l.Close()
 	return l.Addr().(*net.TCPAddr).Port, nil
+}
+
+// StopAllAndWait is the restart form of StopAll: it reports whether every child
+// actually exited. It does not close the manager; failed exec retains lazy start.
+// The caller must fence proxied request admission while taking this checkpoint.
+func (m *Manager) StopAllAndWait(ctx context.Context) error {
+	m.mu.RLock()
+	entries := make([]*widgetEntry, 0, len(m.entries))
+	for _, e := range m.entries {
+		entries = append(entries, e)
+	}
+	m.mu.RUnlock()
+	results := make(chan error, len(entries))
+	for _, e := range entries {
+		go func() { results <- e.stopProcess() }()
+	}
+	var first error
+	for range entries {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-results:
+			if first == nil && err != nil {
+				first = err
+			}
+		}
+	}
+	return first
 }

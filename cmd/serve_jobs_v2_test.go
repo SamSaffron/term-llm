@@ -2419,3 +2419,200 @@ func TestJobsV2ListJobsIncludesLastRunSummary(t *testing.T) {
 		t.Fatalf("LastRun = %+v, want failed run_new with error", jobs[0].LastRun)
 	}
 }
+
+func TestJobsV2RestartCancelsProgramAndWaitsForActualReturn(t *testing.T) {
+	mgr, err := newJobsV2Manager(":memory:", 0, nil)
+	if err != nil {
+		t.Fatalf("newJobsV2Manager failed: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name:          "cancel-claimed-race",
+		Enabled:       true,
+		RunnerType:    jobsV2RunnerProgram,
+		RunnerConfig:  json.RawMessage(`{"command":"echo","args":["x"]}`),
+		TriggerType:   jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+	run, err := mgr.TriggerJob(job.ID)
+	if err != nil {
+		t.Fatalf("TriggerJob failed: %v", err)
+	}
+	if _, err := mgr.db.Exec(`UPDATE job_runs_v2 SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?`, jobsV2RunClaimed, run.ID, jobsV2RunQueued); err != nil {
+		t.Fatalf("mark run claimed: %v", err)
+	}
+
+	runnerStarted := make(chan struct{})
+	cancelObserved := make(chan struct{})
+	releaseRunner := make(chan struct{})
+	runnerDone := make(chan struct{})
+	defer func() {
+		select {
+		case <-releaseRunner:
+		default:
+			close(releaseRunner)
+		}
+	}()
+	mgr.runners[jobsV2RunnerProgram] = jobsV2RunnerFunc(func(ctx context.Context, job jobsV2Job, pw progressWriter) (jobsV2RunResult, error) {
+		close(runnerStarted)
+		<-ctx.Done()
+		close(cancelObserved)
+		<-releaseRunner
+		return jobsV2RunResult{}, ctx.Err()
+	})
+
+	release, ok := mgr.restartGate.Enter()
+	if !ok {
+		t.Fatal("gate unexpectedly paused")
+	}
+	go func() {
+		defer release()
+		mgr.executeRun(run)
+		close(runnerDone)
+	}()
+	select {
+	case <-runnerStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner did not start")
+	}
+
+	reopen := mgr.restartGate.Pause()
+	defer reopen()
+	if err := mgr.interruptProgramsForRestart(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-cancelObserved:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner did not observe cancellation")
+	}
+
+	if mgr.restartGate.Drained() {
+		t.Fatal("cancelled caller was mistaken for settled runner")
+	}
+	close(releaseRunner)
+	select {
+	case <-runnerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner did not finish")
+	}
+	finished, err := mgr.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("GetRun failed: %v", err)
+	}
+	if finished.Status != jobsV2RunCancelled {
+		t.Fatalf("finished status = %s, want %s", finished.Status, jobsV2RunCancelled)
+	}
+}
+
+func TestJobsV2RestartKeepsUnstartedProgramQueuedAndReopens(t *testing.T) {
+	mgr, err := newJobsV2Manager(":memory:", 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+	job, err := mgr.CreateJob(jobsV2Job{Name: "late-restart-claim", Enabled: true, RunnerType: jobsV2RunnerProgram, RunnerConfig: json.RawMessage(`{"command":"true"}`), TriggerType: jobsV2TriggerManual, TriggerConfig: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := mgr.TriggerJob(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := func() {
+		t.Helper()
+		if _, err := mgr.db.Exec(`UPDATE job_runs_v2 SET status=?, worker_id=? WHERE id=?`, jobsV2RunClaimed, mgr.workerID, run.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	calls := 0
+	mgr.runners[jobsV2RunnerProgram] = jobsV2RunnerFunc(func(context.Context, jobsV2Job, progressWriter) (jobsV2RunResult, error) {
+		calls++
+		return jobsV2RunResult{}, nil
+	})
+	claim()
+	if err := mgr.interruptProgramsForRestart(); err != nil {
+		t.Fatal(err)
+	}
+	mgr.executeRun(run)
+	queued, err := mgr.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 || queued.Status != jobsV2RunQueued {
+		t.Fatalf("unstarted program executed or lost: calls=%d status=%s", calls, queued.Status)
+	}
+	mgr.reopenAfterRestart()
+	claim()
+	mgr.executeRun(run)
+	completed, err := mgr.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || completed.Status != jobsV2RunSucceeded {
+		t.Fatalf("failed restart left admission blocked: calls=%d status=%s", calls, completed.Status)
+	}
+}
+
+func TestJobsV2SessionBoundBeforeExecutionAndRetainedOnFailure(t *testing.T) {
+	mgr, err := newJobsV2Manager(":memory:", 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+	raw, _ := json.Marshal(jobsV2LLMConfig{AgentName: "fixture", Instructions: "do not replay", Cwd: t.TempDir()})
+	job, err := mgr.CreateJob(jobsV2Job{Name: "durable-run-binding", Enabled: true, RunnerType: jobsV2RunnerLLM, RunnerConfig: raw, TriggerType: jobsV2TriggerManual, TriggerConfig: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		run, err := mgr.TriggerJob(job.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := mgr.db.Exec(`UPDATE job_runs_v2 SET status=?,worker_id=? WHERE id=?`, jobsV2RunClaimed, mgr.workerID, run.ID); err != nil {
+			t.Fatal(err)
+		}
+		var bound string
+		mgr.runners[jobsV2RunnerLLM] = jobsV2RunnerFunc(func(_ context.Context, execution jobsV2Job, _ progressWriter) (jobsV2RunResult, error) {
+			var cfg jobsV2LLMConfig
+			if err := json.Unmarshal(execution.RunnerConfig, &cfg); err != nil {
+				t.Fatal(err)
+			}
+			live, err := mgr.GetRun(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.SessionID == "" || cfg.SessionID != live.SessionID || live.Status != jobsV2RunRunning {
+				t.Fatalf("missing atomic pre-execution binding: cfg=%q run=%q status=%s", cfg.SessionID, live.SessionID, live.Status)
+			}
+			bound = cfg.SessionID
+			return jobsV2RunResult{}, errors.New("fixture failure before producing result")
+		})
+		mgr.executeRun(run)
+		finished, err := mgr.GetRun(run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bound == "" || finished.SessionID != bound || seen[bound] {
+			t.Fatalf("binding lost/reused: %q -> %q", bound, finished.SessionID)
+		}
+		seen[bound] = true
+	}
+	stored, err := mgr.GetJob(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg jobsV2LLMConfig
+	if err := json.Unmarshal(stored.RunnerConfig, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SessionID != "" {
+		t.Fatal("per-run session leaked into recurring job configuration")
+	}
+}

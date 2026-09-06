@@ -16,6 +16,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/filelock"
 	"github.com/samsaffron/term-llm/internal/hub"
 	"github.com/samsaffron/term-llm/internal/passkeyauth"
+	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -153,7 +154,8 @@ func lockHubPasskeyState(authFile string) (func() error, error) {
 }
 
 func runServeHub(cmd *cobra.Command, args []string) error {
-	defer installWebExecSignal(cmd.Context(), &webExecCoordinator{ctx: cmd.Context(), unsupported: "SIGUSR2 requires standalone serve web"})()
+	ctx, stop := signal.NotifyContextWithParent(cmd.Context())
+	defer stop()
 
 	authMode, err := resolveHubAuthMode(serveHubAuthMode)
 	if err != nil {
@@ -344,7 +346,7 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 	if s.registrationToken != "" {
 		fmt.Fprintln(out, "  registration: enabled")
 	}
-	return srv.ListenAndServe()
+	return serveHTTPWithRestart(ctx, "serve hub", srv)
 }
 
 var hubOutputIsTerminal = func(w any) bool { f, ok := w.(interface{ Fd() uintptr }); return ok && term.IsTerminal(int(f.Fd())) }

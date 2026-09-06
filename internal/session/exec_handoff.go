@@ -19,12 +19,26 @@ type ExecHandoff struct {
 	Request                                                   []byte
 }
 
+// ExecRequestState is orchestration metadata in the saved request envelope.
+// Preparation can authorize an interruption, but only settlement can seal it.
+type ExecRequestState struct {
+	Interrupted bool `json:"restart_interrupted,omitempty"`
+	Settled     bool `json:"restart_settled,omitempty"`
+}
+
+func execRequestState(raw []byte) ExecRequestState {
+	var state ExecRequestState
+	_ = json.Unmarshal(raw, &state)
+	return state
+}
+
 var ErrExecHandoffConflict = errors.New("session: stale or consumed self-exec handoff")
 
 type ExecHandoffStore interface {
 	PrepareExecHandoff(context.Context, []ExecHandoff) error
 	ReadExecHandoff(context.Context, string, string) ([]ExecHandoff, error)
 	DiscardExecHandoff(context.Context, string, string) error
+	SealExecInterruption(context.Context, []ExecHandoff) error
 	ExecContinuation(context.Context, string, string) (string, error)
 }
 
@@ -74,6 +88,9 @@ func (s *SQLiteStore) PrepareExecHandoff(ctx context.Context, entries []ExecHand
 		if h.ID == "" || h.ServiceID == "" || h.SourceOwnerID == "" {
 			return ErrExecHandoffConflict
 		}
+		if execRequestState(h.Request).Settled {
+			return ErrExecHandoffConflict
+		}
 		if err = validateExecSource(ctx, tx, h); err != nil {
 			return err
 		}
@@ -86,7 +103,9 @@ func (s *SQLiteStore) PrepareExecHandoff(ctx context.Context, entries []ExecHand
 
 func validateExecSource(ctx context.Context, tx *sql.Tx, h ExecHandoff) error {
 	var valid int
-	err := tx.QueryRowContext(ctx, `SELECT 1 FROM sessions s JOIN serve_response_lifecycle r ON r.session_id=s.id WHERE s.id=? AND s.transcript_rev=? AND r.response_id=? AND r.owner_instance_id=? AND r.fencing_token=? AND r.state='running' AND r.lease_expires_at>CAST((julianday('now')-2440587.5)*86400000 AS INTEGER) AND NOT EXISTS(SELECT 1 FROM session_pending_steering p WHERE p.session_id=s.id) AND NOT EXISTS(SELECT 1 FROM session_rush_operations q WHERE q.session_id=s.id AND q.status IN ('interrupting','waiting_for_settlement','starting')) AND NOT EXISTS(SELECT 1 FROM serve_response_lifecycle n WHERE n.session_id=s.id AND n.fencing_token>r.fencing_token)`, h.SessionID, h.CheckpointRev, h.SourceResponseID, h.SourceOwnerID, h.SourceFence).Scan(&valid)
+	state := execRequestState(h.Request)
+	interrupted := state.Interrupted && state.Settled
+	err := tx.QueryRowContext(ctx, `SELECT 1 FROM sessions s JOIN serve_response_lifecycle r ON r.session_id=s.id WHERE s.id=? AND s.transcript_rev=? AND r.response_id=? AND r.owner_instance_id=? AND r.fencing_token=? AND ((?=0 AND r.state='running' AND r.lease_expires_at>CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)) OR (?=1 AND r.state='cancelled')) AND NOT EXISTS(SELECT 1 FROM session_pending_steering p WHERE p.session_id=s.id) AND NOT EXISTS(SELECT 1 FROM session_rush_operations q WHERE q.session_id=s.id AND q.status IN ('interrupting','waiting_for_settlement','starting')) AND NOT EXISTS(SELECT 1 FROM serve_response_lifecycle n WHERE n.session_id=s.id AND n.fencing_token>r.fencing_token)`, h.SessionID, h.CheckpointRev, h.SourceResponseID, h.SourceOwnerID, h.SourceFence, interrupted, interrupted).Scan(&valid)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrExecHandoffConflict
 	}
@@ -120,12 +139,16 @@ func (s *SQLiteStore) DiscardExecHandoff(ctx context.Context, id, owner string) 
 // UUID alone authorizes adoption. Service, boot, lease and transcript must match.
 func consumeExecHandoffTx(ctx context.Context, tx *sql.Tx, a ResponseRunAdmission) error {
 	var h ExecHandoff
-	err := tx.QueryRowContext(ctx, `SELECT restart_id,service_id,source_owner_id,session_id,source_response_id,source_fence,checkpoint_rev FROM serve_exec_handoffs WHERE restart_id=? AND service_id=? AND session_id=? AND consumed=0 AND created_at>CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)-300000`, a.ExecRestartID, a.ExecServiceID, a.SessionID).Scan(&h.ID, &h.ServiceID, &h.SourceOwnerID, &h.SessionID, &h.SourceResponseID, &h.SourceFence, &h.CheckpointRev)
+	err := tx.QueryRowContext(ctx, `SELECT restart_id,service_id,source_owner_id,session_id,source_response_id,source_fence,checkpoint_rev,request FROM serve_exec_handoffs WHERE restart_id=? AND service_id=? AND session_id=? AND consumed=0 AND created_at>CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)-300000`, a.ExecRestartID, a.ExecServiceID, a.SessionID).Scan(&h.ID, &h.ServiceID, &h.SourceOwnerID, &h.SessionID, &h.SourceResponseID, &h.SourceFence, &h.CheckpointRev, &h.Request)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrExecHandoffConflict
 	}
 	if err != nil {
 		return err
+	}
+	state := execRequestState(h.Request)
+	if state.Interrupted && !state.Settled {
+		return ErrExecHandoffConflict
 	}
 	if h.SourceOwnerID == a.OwnerInstanceID {
 		return ErrExecHandoffConflict
@@ -158,4 +181,39 @@ func (s *SQLiteStore) ExecContinuation(ctx context.Context, source, service stri
 		source = next
 	}
 	return "", ErrExecHandoffConflict
+}
+
+// SealExecInterruption advances only an already authorized interruption, after
+// the source transcript and actual execution have settled. Merely encountering
+// a cancelled response never authorizes restart continuation.
+func (s *SQLiteStore) SealExecInterruption(ctx context.Context, entries []ExecHandoff) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE metadata SET value=value WHERE key='serve_response_fencing_token'`); err != nil {
+		return err
+	}
+	for _, h := range entries {
+		var stored []byte
+		err := tx.QueryRowContext(ctx, `SELECT request FROM serve_exec_handoffs WHERE restart_id=? AND service_id=? AND source_owner_id=? AND session_id=? AND source_response_id=? AND source_fence=? AND consumed=0`, h.ID, h.ServiceID, h.SourceOwnerID, h.SessionID, h.SourceResponseID, h.SourceFence).Scan(&stored)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrExecHandoffConflict
+		}
+		if err != nil {
+			return err
+		}
+		before, after := execRequestState(stored), execRequestState(h.Request)
+		if !before.Interrupted || before.Settled || !after.Interrupted || !after.Settled {
+			return ErrExecHandoffConflict
+		}
+		if err := validateExecSource(ctx, tx, h); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE serve_exec_handoffs SET checkpoint_rev=?,request=? WHERE restart_id=? AND session_id=? AND consumed=0`, h.CheckpointRev, h.Request, h.ID, h.SessionID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }

@@ -17,6 +17,8 @@ import (
 	"github.com/samsaffron/term-llm/internal/exitcode"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/samsaffron/term-llm/internal/process"
+	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/skills"
@@ -229,6 +231,10 @@ func legacyTerminalProgressEnabled(cfg *config.Config) bool {
 }
 
 func runChat(cmd *cobra.Command, args []string) error {
+	// Resolve the installed path before an updater can unlink the old executable.
+	if exe, err := os.Executable(); err == nil {
+		chatReloadExecutable = exe
+	}
 	interactive := chatOwnsTerminalHost()
 	if len(chatAutoSend) == 0 && !interactive {
 		return fmt.Errorf("chat requires an interactive terminal; use --auto-send for non-interactive execution")
@@ -451,6 +457,17 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	}()
 	failureCleanup = append(failureCleanup, storeCleanup)
 
+	var processReloadState *chat.ProcessReloadState
+	if handoff, state, reloadErr := consumeChatReload(store); reloadErr != nil {
+		return nil, fmt.Errorf("consume process reload: %w", reloadErr)
+	} else if handoff != nil {
+		resumeRequested = true
+		resumeID = handoff.SessionID
+		initialText = ""
+		handoverAutoSend = ""
+		chatAutoSend = nil // original --auto-send argv must not submit its task again
+		processReloadState = state
+	}
 	var sess *session.Session
 	if resumeRequested {
 		if store == nil {
@@ -819,6 +836,9 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 			relaunchHandoff.branchAutoSend = ""
 		}
 	}
+	if processReloadState != nil {
+		model.SetProcessReloadState(*processReloadState)
+	}
 	model.SetSideQuestionProviderFactory(func(providerKey, modelName string) (llm.Provider, error) {
 		if strings.TrimSpace(providerKey) == "" {
 			providerKey = provider.Name()
@@ -1156,6 +1176,9 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	programModel := newChatProgramModel(rt.model, lifecycleReporter)
 	p := tea.NewProgram(programModel, opts...)
 	rt.model.SetProgram(p)
+	unbindRestart := restart.Default.Bind(func() { go p.Send(chat.ProcessReloadMsg{}) })
+	defer unbindRestart()
+	process.State("chat", "ready", "")
 
 	// In-process session switching: /fork, /thread, /tree branches, and
 	// /resume selections swap the visible model inside this running program
@@ -1268,11 +1291,19 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	// successor immediately republishes them without an idle gap. If Exec fails,
 	// this function returns and runChat's bounded deferred close releases them.
 	if finalModel.WantsReload() {
+		if !cur.model.WaitStreamDone() || mainRuns.ActiveCount() != 0 {
+			process.State("chat", "failed", "runtime work did not settle")
+			return "", "", fmt.Errorf("reload refused: runtime work did not settle")
+		}
+		id, service, saveErr := saveChatReload(cur.store, finalModel.ReloadSessionID(), finalModel.ProcessReloadState())
+		if saveErr != nil {
+			return "", "", saveErr
+		}
 		cur.cleanupResources()
-		sessionID := finalModel.ReloadSessionID()
-		if execErr := execReload(sessionID); execErr != nil {
-			// exec failed (shouldn't happen on Unix) — fall through and exit normally
-			fmt.Fprintf(cmd.ErrOrStderr(), "reload: %v\n", execErr)
+		process.State("chat", "replacing", "")
+		if execErr := execReload(id, service); execErr != nil {
+			process.State("chat", "failed", execErr.Error())
+			return "", "", fmt.Errorf("reload: %w", execErr)
 		}
 		return "", "", nil
 	}

@@ -263,6 +263,13 @@ func readJobsV2Version(db jobsV2MarkerReader) (int, error) {
 }
 
 func initJobsV2Schema(ctx context.Context, db *sql.DB) error {
+	if err := initJobsV2BaseSchema(ctx, db); err != nil {
+		return err
+	}
+	return initJobsRestartJournal(ctx, db)
+}
+
+func initJobsV2BaseSchema(ctx context.Context, db *sql.DB) error {
 	version, err := readJobsV2Version(db)
 	if err == nil {
 		if version == jobsV2SchemaVersion {

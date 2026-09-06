@@ -109,8 +109,11 @@ type Request struct {
 	OnTurnCompleted        llm.TurnCompletedCallback
 	OnCompaction           llm.CompactionCallback
 	OnSyntheticUserMessage func(context.Context, llm.Message) error
-	OnEngineReady          func(*llm.Engine)
-	OnEngineDone           func(*llm.Engine)
+	// ModelBoundary is a request-scoped engine cooperation point, not a
+	// persistence acknowledgement. Native inline loops cannot provide it.
+	ModelBoundary llm.ModelBoundaryCallback
+	OnEngineReady func(*llm.Engine)
+	OnEngineDone  func(*llm.Engine)
 
 	Progressive *ProgressiveOptions
 

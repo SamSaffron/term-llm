@@ -24,71 +24,72 @@ import (
 )
 
 type serveRuntime struct {
-	mu                     sync.Mutex
-	goalMu                 sync.Mutex
-	interruptMu            sync.Mutex
-	steeringMutationMu     sync.Mutex
-	responseMu             sync.Mutex // guards lastResponseID and responseIDs
-	askUserMu              sync.Mutex
-	approvalMu             sync.Mutex
-	approvalModeMu         sync.Mutex
-	mcpManagerMu           sync.RWMutex
-	uiStateMu              sync.Mutex
-	compactionIdentityMu   sync.Mutex
-	provider               llm.Provider
-	providerKey            string
-	engine                 *llm.Engine
-	toolMgr                *tools.ToolManager
-	mcpManager             *mcp.Manager
-	toolDiscovery          config.ToolDiscoveryConfig
-	store                  session.Store
-	goalStore              session.Store
-	syntheticUserCB        func(context.Context, llm.Message) error
-	baseSystemPrompt       string // agent-resolved prompt before workspace skill metadata
-	systemPrompt           string
-	history                []llm.Message
-	historyPersisted       bool // history matches the persisted active transcript and can safely append next turn
-	search                 bool
-	toolsSetting           string
-	mcpSetting             string
-	agentName              string
-	sessionMeta            *session.Session
-	forceExternalSearch    bool
-	maxTurns               int
-	toolMap                map[string]string
-	debug                  bool
-	debugRaw               bool
-	autoCompact            bool
-	borrowedEngine         bool
-	skipProviderCleanup    bool
-	defaultModel           string
-	approvalDefault        tools.ApprovalMode
-	yoloMode               bool
-	compacting             atomic.Bool
-	lastUsedUnixNano       atomic.Int64
-	activeInterrupt        *runtimeInterruptState
-	steeringCalls          map[string]*runtimeSteeringCall
-	lastResponseID         string
-	responseIDs            []string
-	cumulativeUsage        llm.Usage
-	pendingAskUsers        map[string]*servePendingAskUser
-	askUserFunc            func(context.Context, []tools.AskUserQuestion) ([]tools.AskUserAnswer, error)
-	assistantSnapshotCB    llm.AssistantSnapshotCallback
-	responseCompletedCB    llm.ResponseCompletedCallback
-	turnCompletedCB        llm.TurnCompletedCallback
-	compactionCB           llm.CompactionCallback
-	pendingCompactions     []runtimeCompactionIdentity
-	pendingApprovals       map[string]*servePendingApproval
-	approvalEventFunc      func(event string, data map[string]any) error
-	approvalCtx            context.Context
-	pauseResponseTimeout   func() func()
-	refreshResponseTimeout func()
-	lastUIRunError         string
-	platform               string
-	platformMessages       agents.PlatformMessagesConfig
-	lastInjectedPlatform   string
-	sideQuestion           sideQuestionRuntime
-	sideProviderFactory    func(providerKey, model string) (llm.Provider, error)
+	mu                       sync.Mutex
+	goalMu                   sync.Mutex
+	interruptMu              sync.Mutex
+	steeringMutationMu       sync.Mutex
+	responseMu               sync.Mutex // guards lastResponseID and responseIDs
+	askUserMu                sync.Mutex
+	approvalMu               sync.Mutex
+	approvalModeMu           sync.Mutex
+	mcpManagerMu             sync.RWMutex
+	uiStateMu                sync.Mutex
+	compactionIdentityMu     sync.Mutex
+	provider                 llm.Provider
+	providerKey              string
+	engine                   *llm.Engine
+	toolMgr                  *tools.ToolManager
+	mcpManager               *mcp.Manager
+	toolDiscovery            config.ToolDiscoveryConfig
+	store                    session.Store
+	goalStore                session.Store
+	syntheticUserCB          func(context.Context, llm.Message) error
+	baseSystemPrompt         string // agent-resolved prompt before workspace skill metadata
+	systemPrompt             string
+	history                  []llm.Message
+	historyPersisted         bool // history matches the persisted active transcript and can safely append next turn
+	search                   bool
+	toolsSetting             string
+	mcpSetting               string
+	agentName                string
+	sessionMeta              *session.Session
+	forceExternalSearch      bool
+	maxTurns                 int
+	toolMap                  map[string]string
+	debug                    bool
+	debugRaw                 bool
+	autoCompact              bool
+	borrowedEngine           bool
+	persistenceOwnedByCaller bool // platform runner owns its transcript callbacks and restart fence
+	skipProviderCleanup      bool
+	defaultModel             string
+	approvalDefault          tools.ApprovalMode
+	yoloMode                 bool
+	compacting               atomic.Bool
+	lastUsedUnixNano         atomic.Int64
+	activeInterrupt          *runtimeInterruptState
+	steeringCalls            map[string]*runtimeSteeringCall
+	lastResponseID           string
+	responseIDs              []string
+	cumulativeUsage          llm.Usage
+	pendingAskUsers          map[string]*servePendingAskUser
+	askUserFunc              func(context.Context, []tools.AskUserQuestion) ([]tools.AskUserAnswer, error)
+	assistantSnapshotCB      llm.AssistantSnapshotCallback
+	responseCompletedCB      llm.ResponseCompletedCallback
+	turnCompletedCB          llm.TurnCompletedCallback
+	compactionCB             llm.CompactionCallback
+	pendingCompactions       []runtimeCompactionIdentity
+	pendingApprovals         map[string]*servePendingApproval
+	approvalEventFunc        func(event string, data map[string]any) error
+	approvalCtx              context.Context
+	pauseResponseTimeout     func() func()
+	refreshResponseTimeout   func()
+	lastUIRunError           string
+	platform                 string
+	platformMessages         agents.PlatformMessagesConfig
+	lastInjectedPlatform     string
+	sideQuestion             sideQuestionRuntime
+	sideProviderFactory      func(providerKey, model string) (llm.Provider, error)
 }
 
 type runtimeCompactionIdentity struct {
@@ -2394,7 +2395,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 			producedMu.Lock()
 			durable := persisted && initialPersisted && !assistantSnapshotDirty && !assistantSnapshotNeedsReconcile && lastAppendedIdx == len(produced)
 			producedMu.Unlock()
-			if !durable {
+			if !rt.persistenceOwnedByCaller && !durable {
 				return fmt.Errorf("web restart boundary has unpersisted transcript data")
 			}
 			return boundary(boundaryCtx)
