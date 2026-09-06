@@ -20,8 +20,8 @@ web:
       link: "Explore the workspace"
     - id: hub
       label: Hub
-      caption: "One place for your machines, conversations, and cross-node agent work."
-      alt: "Hub dashboard with MacBook Pro, Build server and Research box nodes, plus delegated work."
+      caption: "Pick up finished agent work across your machines, all in one place."
+      alt: "Hub dashboard with two completed sessions ready for review above MacBook Pro, Build server and Research box nodes."
       url: "/guides/hub/"
       link: "Explore Hub"
     - id: worktrees

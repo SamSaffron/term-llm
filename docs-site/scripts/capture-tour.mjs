@@ -76,19 +76,27 @@ try {
       return json({});
     });
     if (scene === 'hub') {
-      const nodes = [['macbook', 'MacBook Pro', 'developer', ['Review retries', 'Plan API migration']], ['build', 'Build server', 'developer', ['Run tests', 'Investigate flaky tests']], ['research', 'Research box', 'web-researcher', ['Research hosting', 'Summarize release notes']]].map(([id, name, agent, titles], index) => ({
+      const hubNow = now * 1000;
+      const completed = [
+        { node_id: 'build', node_name: 'Build server', session_id: 'build-0', session_number: 1, title: 'Retry regression tests passed', outcome: 'completed', terminal_at: new Date(hubNow - 120000).toISOString(), attention_seq: 7, resume_path: '/node/build/ui/chat/1' },
+        { node_id: 'research', node_name: 'Research box', session_id: 'research-0', session_number: 1, title: 'Deployment comparison ready', outcome: 'completed', terminal_at: new Date(hubNow - 240000).toISOString(), attention_seq: 12, resume_path: '/node/research/ui/chat/1' },
+      ];
+      const nodes = [['macbook', 'MacBook Pro', 'developer', ['Review retries', 'Plan API migration']], ['build', 'Build server', 'developer', ['Retry tests passed', 'Investigate flaky tests']], ['research', 'Research box', 'web-researcher', ['Deployment comparison', 'Summarize release notes']]].map(([id, name, agent, titles], index) => ({
         id, name, source: 'local', connection: index ? 'reverse' : 'direct', url: `http://${id}.example.test:8080`, base_path: '/ui', proxy_path: `/node/${id}/ui/`, new_session_path: `/node/${id}/ui/?new=1`, has_token: true,
         status: { reachable: true, state: 'ready', latency_ms: [4, 18, 32][index], agent, capabilities: ['web', 'jobs', 'shell'] },
-        sessions: { count_label: `${[8, 12, 6][index]} sessions`, active_count: 1, unseen_count: 0, input_required_count: 0, attention_capability: 'supported', attention_last_success_at: Date.now(), recent: titles.map((title, j) => ({ id: `${id}-${j}`, number: j + 1, short_title: title, active_run: j === 0, message_count: 8 + j * 4, last_message_at: (now - 60) * 1000, resume_path: `/node/${id}/ui/chat/${j + 1}` })) },
+        sessions: { count_label: `${[8, 12, 6][index]} sessions`, active_count: index ? 0 : 1, unseen_count: index ? 1 : 0, input_required_count: 0, attention_capability: 'supported', attention_last_success_at: hubNow, recent: titles.map((title, j) => ({ id: `${id}-${j}`, number: j + 1, short_title: title, active_run: index === 0 && j === 0, message_count: 8 + j * 4, last_message_at: hubNow - 120000, resume_path: `/node/${id}/ui/chat/${j + 1}` })) },
       }));
+      const attention = { total_running: 1, total_input_required: 0, total_unseen: 2, input_required: [], inbox: completed, has_more: false, nodes: nodes.map(node => ({ node_id: node.id, node_name: node.name, capability_state: 'supported', stale: false, last_success_at: new Date(hubNow).toISOString(), running_count: node.sessions.active_count, input_required_count: 0, unseen_count: node.sessions.unseen_count, has_green_indicator: !!node.sessions.unseen_count })) };
       await page.route('**/api/**', route => {
         const path = new URL(route.request().url()).pathname;
-        const data = path.endsWith('/nodes') ? { nodes } : path.endsWith('/attention') ? { total_running: 3, total_input_required: 0, total_unseen: 0, nodes: [], input_required: [], inbox: [], has_more: false } : path.endsWith('/delegations') ? { delegations: [
-          { id: 'build-check', origin_node: 'macbook', target_node: 'build', agent_name: 'developer', prompt: 'Run the integration suite against the retry fix and report any regressions.', status: 'running', depth: 1, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+        const data = path.endsWith('/nodes') ? { nodes } : path.endsWith('/attention') ? attention : path.endsWith('/delegations') ? { delegations: [
+          { id: 'build-check', origin_node: 'macbook', target_node: 'build', agent_name: 'developer', prompt: 'Run the integration suite against the retry fix and report any regressions.', status: 'succeeded', depth: 1, response: 'All three retry regression tests passed.', created_at: new Date(hubNow - 300000).toISOString(), updated_at: new Date(hubNow - 120000).toISOString() },
         ] } : {};
         return route.fulfill({ contentType: 'application/json', body: JSON.stringify(data) });
       });
       await page.goto(hub);
+      await page.getByRole('heading', { name: 'Ready to review', exact: true }).waitFor();
+      if (await page.getByRole('region', { name: 'Ready to review' }).locator('.attention-row').count() !== 2) throw new Error('Hub preview must show two completed sessions ready for review');
       await page.getByRole('heading', { name: 'MacBook Pro', exact: true }).waitFor();
     } else {
       await page.goto(new URL('chat/1', base).href);
