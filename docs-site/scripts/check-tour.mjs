@@ -3,6 +3,9 @@ import path from 'node:path';
 import { stat } from 'node:fs/promises';
 import AxeBuilder from '@axe-core/playwright';
 
+const scenes = ['review', 'hub', 'worktrees', 'agents', 'shell', 'terminal'];
+const imageTheme = (id, theme) => id === 'terminal' ? 'dark' : theme;
+
 export async function checkTour(browser, origin, results) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'light' });
   const page = await context.newPage();
@@ -21,7 +24,7 @@ export async function checkTour(browser, origin, results) {
       await tour.scrollIntoViewIfNeeded();
       await page.waitForTimeout(150); // Allow the native IntersectionObserver to report visibility.
     };
-    assert.equal(await tour.getByRole('tab').count(), 5);
+    assert.equal(await tour.getByRole('tab').count(), scenes.length);
     assert.equal(await tour.getByRole('tabpanel').count(), 1);
     await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'instant' }));
     await page.waitForTimeout(150);
@@ -46,6 +49,8 @@ export async function checkTour(browser, origin, results) {
     await tour.getByRole('button', { name: 'Start automatic slideshow' }).click();
     await moveOutside();
     await page.clock.runFor(5100);
+    assert.equal((await selected()).trim(), 'Terminal', 'Autoplay includes the terminal scene');
+    await page.clock.runFor(5100);
     assert.equal((await selected()).trim(), 'Review', 'Autoplay wraps from last to first');
     await page.waitForTimeout(750);
     assert.equal(await tour.locator('.tour-panels').evaluate(el => Math.round(new DOMMatrix(getComputedStyle(el).transform).m41)), -900, 'Wrap snaps to the real first slide after the edge copy');
@@ -54,39 +59,44 @@ export async function checkTour(browser, origin, results) {
     await page.keyboard.press('ArrowRight');
     assert.equal((await selected()).trim(), 'Shell');
     await page.keyboard.press('ArrowRight');
+    assert.equal((await selected()).trim(), 'Terminal');
+    await page.keyboard.press('ArrowRight');
     assert.equal((await selected()).trim(), 'Review');
     await page.keyboard.press('End');
-    assert.equal((await selected()).trim(), 'Shell');
+    assert.equal((await selected()).trim(), 'Terminal');
     await page.keyboard.press('Home');
     assert.equal((await selected()).trim(), 'Review');
 
     // Every scene must load both theme assets, with a matching original-image link.
     for (const theme of ['light', 'dark']) {
       await page.getByLabel('Color theme').selectOption(theme);
-      for (const id of ['review', 'hub', 'worktrees', 'agents', 'shell']) {
+      for (const id of scenes) {
         await page.locator(`#tour-tab-${id}`).click();
         await page.clock.runFor(300);
         const panel = page.locator(`#tour-panel-${id}`);
         const image = panel.locator('img');
         await image.evaluate(img => img.decode());
-        assert.ok((await image.evaluate(img => img.currentSrc)).endsWith(`/tour/${id}-${theme}-900.webp`));
-        assert.ok((await panel.locator('[data-tour-image]').getAttribute('href')).endsWith(`/tour/${id}-${theme}.webp`));
+        assert.ok((await image.evaluate(img => img.currentSrc)).endsWith(`/tour/${id}-${imageTheme(id, theme)}-900.webp`));
+        assert.ok((await panel.locator('[data-tour-image]').getAttribute('href')).endsWith(`/tour/${id}-${imageTheme(id, theme)}.webp`));
         const scan = await new AxeBuilder({ page }).include('[data-product-tour]').withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
         assert.deepEqual(scan.violations, [], `Tour accessibility: ${id}, ${theme}`);
       }
     }
-    const imageLink = page.locator('#tour-panel-shell [data-tour-image]');
-    await imageLink.click();
-    const dialog = page.getByRole('dialog', { name: 'Shell — full-size screenshot' });
-    assert.ok(await dialog.isVisible());
-    await dialog.locator('img').evaluate(img => img.decode());
-    assert.ok((await dialog.locator('img').evaluate(img => img.currentSrc)).endsWith('/shell-dark.webp'));
-    assert.ok((await dialog.getByRole('link', { name: 'Open original' }).getAttribute('href')).endsWith('/shell-dark.webp'));
-    const scan = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
-    assert.deepEqual(scan.violations, [], 'Screenshot dialog accessibility');
-    await page.keyboard.press('Escape');
-    assert.ok(await imageLink.evaluate(el => el === document.activeElement));
-    assert.equal(await dialog.count(), 0);
+    for (const [id, label] of [['shell', 'Shell'], ['terminal', 'Terminal']]) {
+      await page.locator(`#tour-tab-${id}`).click();
+      const imageLink = page.locator(`#tour-panel-${id} [data-tour-image]`);
+      await imageLink.click();
+      const dialog = page.getByRole('dialog', { name: `${label} — full-size screenshot` });
+      assert.ok(await dialog.isVisible());
+      await dialog.locator('img').evaluate(img => img.decode());
+      assert.ok((await dialog.locator('img').evaluate(img => img.currentSrc)).endsWith(`/${id}-dark.webp`));
+      assert.ok((await dialog.getByRole('link', { name: 'Open original' }).getAttribute('href')).endsWith(`/${id}-dark.webp`));
+      const scan = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
+      assert.deepEqual(scan.violations, [], `Screenshot dialog accessibility: ${id}`);
+      await page.keyboard.press('Escape');
+      assert.ok(await imageLink.evaluate(el => el === document.activeElement));
+      assert.equal(await dialog.count(), 0);
+    }
 
     await page.emulateMedia({ reducedMotion: 'reduce' });
     // emulateMedia returns before Chromium necessarily dispatches the matchMedia
@@ -95,7 +105,7 @@ export async function checkTour(browser, origin, results) {
     assert.ok(await tour.getByRole('button', { name: 'Start automatic slideshow' }).isDisabled());
     await moveOutside();
     await page.clock.runFor(16000);
-    assert.equal((await selected()).trim(), 'Shell', 'Reduced motion disables automatic rotation');
+    assert.equal((await selected()).trim(), 'Terminal', 'Reduced motion disables automatic rotation');
     for (const [width, height] of [[1440, 900], [1280, 800], [390, 844], [320, 740]]) {
       await page.setViewportSize({ width, height });
       await page.getByLabel('Color theme').selectOption('light');
@@ -137,24 +147,24 @@ export async function checkTour(browser, origin, results) {
     await swipe(120);
     await selected('review');
     await swipe(120);
-    await selected('shell');
-    assert.ok(Math.abs((await page.locator('#tour-panel-shell').boundingBox()).x - (await page.locator('.tour-window').boundingBox()).x) < 1, 'Reduced-motion wrap shows the real interactive slide, not an inert copy');
+    await selected('terminal');
+    assert.ok(Math.abs((await page.locator('#tour-panel-terminal').boundingBox()).x - (await page.locator('.tour-window').boundingBox()).x) < 1, 'Reduced-motion wrap shows the real interactive slide, not an inert copy');
     assert.equal(await page.locator('[data-tour-lightbox]').evaluate(el => el.open), false, 'A swipe must not open the image');
     const before = await page.evaluate(() => scrollY);
     await swipe(0, -100);
     await page.waitForFunction(y => scrollY > y + 20, before);
-    await selected('shell');
+    await selected('terminal');
     await tour.scrollIntoViewIfNeeded();
     await page.screenshot({ path: path.join(results, 'tour-swipe-mobile.png') });
   } finally {
     await mobile.close();
   }
   // Prevent accidental reintroduction of multi-hundred-KB PNG previews.
-  for (const id of ['review', 'hub', 'worktrees', 'agents', 'shell']) {
-    for (const theme of ['light', 'dark']) {
-      const prefix = new URL(`../static/images/tour/${id}-${theme}`, import.meta.url).href;
+  for (const id of scenes) {
+    for (const theme of id === 'terminal' ? ['dark'] : ['light', 'dark']) {
+      const prefix = new URL(`../static/images/tour/${id}-${imageTheme(id, theme)}`, import.meta.url).href;
       assert.ok((await stat(new URL(`${prefix}-900.webp`))).size < 45000, 'Preview image budget');
-      assert.ok((await stat(new URL(`${prefix}.webp`))).size < 120000, 'Lossless full-size image budget');
+      assert.ok((await stat(new URL(`${prefix}.webp`))).size < (id === 'terminal' ? 180000 : 120000), 'Lossless full-size image budget');
     }
   }
   const fallback = await browser.newContext({ javaScriptEnabled: false, colorScheme: 'light' });
@@ -163,7 +173,7 @@ export async function checkTour(browser, origin, results) {
     await page.goto(origin);
     assert.ok(await page.locator('#tour-panel-review').isVisible());
     assert.equal(await page.locator('.tour-controls:visible').count(), 0);
-    assert.equal(await page.locator('.tour-fallback a').count(), 5);
+    assert.equal(await page.locator('.tour-fallback a').count(), scenes.length);
     for (const link of await page.locator('.tour-fallback a').all()) {
       const response = await page.request.get(new URL(await link.getAttribute('href'), origin).href);
       assert.equal(response.status(), 200);
@@ -171,5 +181,5 @@ export async function checkTour(browser, origin, results) {
   } finally {
     await fallback.close();
   }
-  console.log('✓ Five-scene tour: sliding, pointer autoplay, dots, pause, keyboard, themes, enlargement, reduced motion, compact viewports, native touch swipes, image budgets and no-JS fallback');
+  console.log('✓ Six-scene tour: sliding, pointer autoplay, dots, pause, keyboard, themes, enlargement, reduced motion, compact viewports, native touch swipes, image budgets and no-JS fallback');
 }

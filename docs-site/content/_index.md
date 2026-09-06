@@ -42,6 +42,13 @@ web:
       alt: "Browser terminal beside a conversation, showing illustrative passing regression tests."
       url: "/guides/web-ui-and-api/#interactive-shell"
       link: "Explore the shell"
+    - id: terminal
+      label: Terminal
+      image_theme: dark
+      caption: "Work with the developer agent in your terminal, with inline diffs and Playwright MCP enabled."
+      alt: "term-llm chat @developer --mcp playwright showing a retry.go edit, an inline diff, and the MCP status in the terminal footer."
+      url: "/guides/agents/"
+      link: "Explore terminal agents"
   features:
     - title: "Keep work in context"
       text: "Organize conversations by project, return to saved sessions, and work in isolated Git worktrees."

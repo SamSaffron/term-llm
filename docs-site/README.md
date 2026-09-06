@@ -90,18 +90,32 @@ npm --prefix docs-site run capture:product
 
 ### Homepage product tour
 
-The five-scene carousel is configured in `content/_index.md` under `web.slides`.
+The six-scene carousel is configured in `content/_index.md` under `web.slides`.
 Images live in `static/images/tour/`, with matching light/dark WebP variants. Lossless 2560×1360 originals keep UI text
 pixel-identical; high-quality 900px previews use responsive `srcset` delivery.
 The browser chooses the appropriate resolution for its viewport and pixel density.
 The existing `web-workspace-*.png` images remain available for documentation pages.
+
+The **Terminal** slide uses the approved real CLI capture with Playwright MCP.
+Its `image_theme: dark` override keeps the same terminal appearance in both site
+themes without duplicating the assets. To optimize a replacement approved capture:
+
+```bash
+python3 scripts/optimize-tour.py --terminal-source path/to/approved-terminal.png
+```
+
+Run that command from `docs-site/`. The input must be 2560×1360. It produces
+`terminal-dark.webp` and `terminal-dark-900.webp`; ordinary browser recaptures
+leave these files unchanged. The full-size terminal image has a separate 180 KB
+budget to preserve the approved text and ANSI colors losslessly; previews retain
+the shared 45 KB limit.
 
 Capture/optimization requires Python 3 with Pillow (`python3 -m pip install Pillow`)
 in addition to the existing Node/Playwright tools. Capture PNGs are kept in ignored
 `test-results/tour-source/`; `scripts/optimize-tour.py` produces the deployed WebPs.
 The build does not require Pillow; optimized assets are committed.
 
-To regenerate the tour, use the isolated web server setup above and also start
+To regenerate the five browser scenes, use the isolated web server setup above and also start
 an isolated Hub before capturing. Run this in the same shell, while the web
 server and `demo_home` still exist:
 
@@ -130,7 +144,7 @@ interval. The small icon button explicitly pauses/resumes rotation. Keyboard
 interaction and image enlargement pause it; reduced motion disables automatic
 rotation and slide animation. Horizontal mobile swipes move between scenes,
 while vertical gestures scroll the page. Inert edge copies make looping seamless.
-Without JavaScript, the opening image and links to all five originals remain.
+Without JavaScript, the opening image and links to all six originals remain.
 `npm test` covers these behaviors, native touch input, theme assets, image-size
 budgets, enlargement, and compact MacBook/mobile viewports.
 
