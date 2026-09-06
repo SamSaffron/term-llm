@@ -118,6 +118,31 @@ kbd { font-size: 0.75rem; color: var(--muted); }
 .product-shot img { width: 100%; }
 .product-shot figcaption { margin-top: 0.85rem; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; color: var(--muted); font-size: 0.75rem; }
 .product-shot figcaption a { white-space: nowrap; }
+/* A compact product tour; all images share an aspect ratio to avoid layout shifts. */
+.product-tour { max-width: 900px; margin-inline: auto; }
+.tour-controls { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.8rem; }
+.tour-tabs { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+.tour-tabs button, .tour-rotation { min-height: 40px; border: 1px solid transparent; border-radius: 6px; background: transparent; padding: 0.4rem 0.75rem; font-size: 0.8rem; color: var(--muted); }
+.tour-tabs button:hover, .tour-rotation:hover { background: var(--subtle); color: var(--text); }
+.tour-tabs [aria-selected="true"] { background: var(--accent-soft); color: var(--accent); border-color: var(--border); font-weight: 650; }
+.tour-rotation { flex-shrink: 0; }
+.tour-panel img { aspect-ratio: 1280 / 680; object-fit: contain; background: var(--surface); }
+.tour-panel figcaption { min-height: 2.6rem; align-content: start; }
+.tour-panel figcaption > span { flex: 1 1 28rem; }
+.tour-note, .tour-fallback { color: var(--muted); font-size: 0.75rem; text-align: center; margin: 0.5rem 0 0; }
+.tour-lightbox { width: min(1800px, 96vw); max-width: 96vw; max-height: 96vh; padding: 1rem; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 10px; }
+.tour-lightbox::backdrop { background: rgb(0 0 0 / 72%); }
+.tour-lightbox-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 0.8rem; }
+.tour-lightbox h2 { font-size: 1rem; }
+.tour-original { margin-left: auto; font-size: 0.8rem; white-space: nowrap; }
+@media (max-width: 480px) { .tour-lightbox-header { flex-wrap: wrap; } .tour-lightbox h2 { flex-basis: 100%; } .tour-original { margin-left: 0; margin-right: auto; } }
+.tour-lightbox img { width: 100%; max-height: calc(96vh - 6rem); object-fit: contain; }
+@media (max-width: 480px) {
+  .tour-controls { align-items: flex-start; }
+  .tour-tabs { gap: 0.1rem; }
+  .tour-tabs button, .tour-rotation { padding-inline: 0.5rem; }
+  .tour-panel figcaption { min-height: 5.5rem; }
+}
 .home-section { padding-block: 5.5rem; }
 .section-tinted { background: var(--subtle); border-block: 1px solid var(--border); }
 .section-heading { max-width: 710px; margin-bottom: 2.6rem; }

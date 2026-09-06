@@ -699,3 +699,32 @@ func TestGeminiCLIProviderIsNotBuiltIn(t *testing.T) {
 		t.Fatalf("NewProviderByName error = %v, want %q", err, wantErr)
 	}
 }
+
+func TestProviderCompletionsRevealEffortsProgressively(t *testing.T) {
+	for _, tc := range []struct{ provider, model string }{
+		{"openai", "gpt-5.4"},
+		{"claude-bin", "opus"},
+		{"anthropic", "claude-opus-4-8"},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			cfg := &config.Config{Providers: map[string]config.ProviderConfig{
+				tc.provider: {Models: []string{tc.model}},
+			}}
+			prefix := tc.provider + ":"
+			for _, partial := range []string{"", tc.model[:len(tc.model)-1]} {
+				got := GetProviderCompletions(prefix+partial, false, cfg)
+				if len(got) != 1 || got[0] != prefix+tc.model {
+					t.Fatalf("initial completion for %q = %v", partial, got)
+				}
+			}
+			got := GetProviderCompletions(prefix+tc.model, false, cfg)
+			if !containsModelID(got, prefix+tc.model+"-low") {
+				t.Fatalf("full model should reveal low effort: %v", got)
+			}
+			got = GetProviderCompletions(prefix+tc.model+"-l", false, cfg)
+			if len(got) != 1 || got[0] != prefix+tc.model+"-low" {
+				t.Fatalf("partial effort completion = %v", got)
+			}
+		})
+	}
+}

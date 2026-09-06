@@ -321,6 +321,24 @@ func staticChatGPTModelInfo(id string) (ModelInfo, bool) {
 	return ModelInfo{}, false
 }
 
+// chatGPTModelServiceTier peels off -fast only when the resolved base model
+// advertises priority service. Exact catalog IDs and unsupported names stay literal.
+func chatGPTModelServiceTier(model string) (string, string) {
+	model = strings.TrimSpace(model)
+	if !strings.HasSuffix(model, "-fast") {
+		return model, ""
+	}
+	if info, ok := chatGPTCachedModelInfo(model); ok && info.ID == model {
+		return model, ""
+	}
+	candidate := strings.TrimSuffix(model, "-fast")
+	base, _ := BaseModelAndEffortForProvider("chatgpt", candidate)
+	if info, ok := chatGPTCachedModelInfo(base); ok && info.ID == base && ModelSupportsFast(info) {
+		return candidate, ServiceTierFast
+	}
+	return model, ""
+}
+
 func chatGPTCachedModelInfo(model string) (ModelInfo, bool) {
 	model = strings.ToLower(strings.TrimSpace(model))
 	if model == "" {

@@ -88,6 +88,43 @@ npm --prefix docs-site run capture:product
 
 `capture-product.mjs` intercepts the API with fixture data and captures both OS themes. It rejects non-loopback URLs. Set `DOCS_PRODUCT_URL` if using a different local port or base path. Check both captures visually after an app UI update.
 
+### Homepage product tour
+
+The five-scene carousel is configured in `content/_index.md` under `web.slides`.
+Images live in `static/images/tour/`, with matching `-light.png` and `-dark.png`
+variants. They are 2560×1360 captures displayed at up to 900 CSS pixels wide.
+The existing `web-workspace-*.png` images remain available for documentation pages.
+
+To regenerate the tour, use the isolated web server setup above and also start
+an isolated Hub before capturing. Run this in the same shell, while the web
+server and `demo_home` still exist:
+
+```bash
+(
+  cd "$demo_home/workspace"
+  exec env -i PATH="$PATH" HOME="$demo_home" \
+    XDG_CONFIG_HOME="$demo_home/config" XDG_DATA_HOME="$demo_home/hub-data" \
+    XDG_CACHE_HOME="$demo_home/cache" \
+    "$binary" serve hub --host 127.0.0.1 --port 18766 --auth none
+) &
+hub_pid=$!
+trap 'kill "$server_pid" "$hub_pid" 2>/dev/null; wait "$server_pid" "$hub_pid" 2>/dev/null; rm -rf "$demo_home"' EXIT
+# Once both servers are listening:
+npm --prefix docs-site run capture:tour
+```
+
+`DOCS_PRODUCT_URL` and `DOCS_HUB_URL` override the two loopback URLs. The capture
+script uses fixture APIs and an isolated terminal-output stream; it makes no
+model calls or real cross-node delegations. The illustrative activity label on
+the homepage must remain. Inspect both themes after changing fixtures or the UI.
+
+The tour advances every eight seconds only while at least half visible. Hover
+pauses temporarily; keyboard focus, tab selection, and image enlargement stop
+rotation until Play is pressed. Reduced motion disables automatic rotation.
+Without JavaScript, the opening image and links to all five originals remain.
+`npm test` exercises these behaviors along with keyboard controls, matching theme
+assets, enlargement, and compact MacBook/mobile viewports.
+
 Regenerate the 1200×630 social image independently:
 
 ```bash

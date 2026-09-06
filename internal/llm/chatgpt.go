@@ -57,11 +57,6 @@ func NewChatGPTProvider(model string) (*ChatGPTProvider, error) {
 // NewChatGPTProviderWithOptions creates a new ChatGPT provider with optional transport settings.
 // If credentials are not available or expired, it will prompt the user to authenticate.
 func NewChatGPTProviderWithOptions(model string, opts ChatGPTProviderOptions) (*ChatGPTProvider, error) {
-	if model == "" {
-		model = chatGPTDefaultModel
-	}
-	actualModel, effort := parseModelEffortForProvider("chatgpt", model)
-
 	// Try to load existing credentials
 	creds, err := credentials.GetChatGPTCredentials()
 	if err != nil {
@@ -86,15 +81,7 @@ func NewChatGPTProviderWithOptions(model string, opts ChatGPTProviderOptions) (*
 		}
 	}
 
-	return &ChatGPTProvider{
-		creds:            creds,
-		model:            actualModel,
-		effort:           effort,
-		useWebSocket:     opts.UseWebSocket,
-		serviceTier:      NormalizeServiceTier(opts.ServiceTier),
-		fileUploadPolicy: cloneFileUploadPolicy(opts.FileUploadPolicy),
-		responsesOptions: opts.Responses,
-	}, nil
+	return NewChatGPTProviderWithCredsAndOptions(creds, model, opts), nil
 }
 
 // NewChatGPTProviderWithCreds creates a ChatGPT provider with pre-loaded credentials.
@@ -107,13 +94,14 @@ func NewChatGPTProviderWithCredsAndOptions(creds *credentials.ChatGPTCredentials
 	if model == "" {
 		model = chatGPTDefaultModel
 	}
+	model, tier := chatGPTModelServiceTier(model)
 	actualModel, effort := parseModelEffortForProvider("chatgpt", model)
 	return &ChatGPTProvider{
 		creds:            creds,
 		model:            actualModel,
 		effort:           effort,
 		useWebSocket:     opts.UseWebSocket,
-		serviceTier:      NormalizeServiceTier(opts.ServiceTier),
+		serviceTier:      NormalizeServiceTier(firstNonEmpty(tier, opts.ServiceTier)),
 		fileUploadPolicy: cloneFileUploadPolicy(opts.FileUploadPolicy),
 		responsesOptions: opts.Responses,
 	}
@@ -217,7 +205,8 @@ func (p *ChatGPTProvider) NativeToolDiscoverySupport(model string) NativeToolDis
 	if p == nil || !p.useWebSocket {
 		return NativeToolDiscoverySupport{Reason: "ChatGPT native tool discovery requires Responses WebSocket transport"}
 	}
-	actualModel, _ := parseModelEffortForProvider("chatgpt", chooseModel(model, p.model))
+	model, _ = chatGPTModelServiceTier(chooseModel(model, p.model))
+	actualModel, _ := parseModelEffortForProvider("chatgpt", model)
 	if actualModel != "gpt-5.6-luna" {
 		return NativeToolDiscoverySupport{Reason: fmt.Sprintf("ChatGPT native tool discovery is verified only for gpt-5.6-luna, not %s", actualModel)}
 	}
@@ -246,8 +235,8 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 	}
 
 	// Effort precedence: req.ReasoningEffort wins over model suffix, which wins over provider-level effort.
-	reqModel, reqEffort := parseModelEffortForProvider("chatgpt", req.Model)
-	model := chooseModel(reqModel, p.model)
+	reqModel, tier := chatGPTModelServiceTier(chooseModel(req.Model, p.model))
+	model, reqEffort := parseModelEffortForProvider("chatgpt", reqModel)
 	effort := p.effort
 	if reqEffort != "" {
 		effort = reqEffort
@@ -313,13 +302,9 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 		ForceWebSocket: req.NativeToolDiscovery != nil || messagesContainDiscoveryParts(req.Messages),
 	}
 
-	if serviceTier := p.serviceTier; req.ServiceTierSet || strings.TrimSpace(req.ServiceTier) != "" {
-		serviceTier = NormalizeServiceTier(req.ServiceTier)
-		if serviceTier != "" {
-			responsesReq.ServiceTier = serviceTier
-		}
-	} else if serviceTier != "" {
-		responsesReq.ServiceTier = serviceTier
+	responsesReq.ServiceTier = firstNonEmpty(tier, p.serviceTier)
+	if req.ServiceTierSet || strings.TrimSpace(req.ServiceTier) != "" {
+		responsesReq.ServiceTier = NormalizeServiceTier(req.ServiceTier)
 	}
 
 	if req.ToolChoice.Mode != "" {

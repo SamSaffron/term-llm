@@ -44,6 +44,12 @@ func ProviderFlagCompletion(cmd *cobra.Command, args []string, toComplete string
 	if !strings.Contains(toComplete, ":") {
 		return completions, providerFlagCompletionDirective(cfg, toComplete)
 	}
+	// Keep expandable model choices open for the next completion stage.
+	for _, completion := range completions {
+		if len(llm.GetProviderCompletions(completion, false, cfg)) > 1 {
+			return completions, cobra.ShellCompDirectiveNoFileComp | cobra.ShellCompDirectiveNoSpace
+		}
+	}
 	return completions, cobra.ShellCompDirectiveNoFileComp
 }
 

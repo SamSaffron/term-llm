@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import AxeBuilder from "@axe-core/playwright";
+import { checkTour } from "./check-tour.mjs";
 
 // Keep the credentials inventory complete when a built-in provider is added.
 // Read the registry rather than maintaining another independent provider list.
@@ -159,7 +160,7 @@ try {
   await page.getByLabel("Color theme").selectOption("light");
   await page.reload();
   assert.equal(await page.locator("html").evaluate((el) => getComputedStyle(el).colorScheme), "light");
-  assert.ok((await page.locator(".product-shot img").evaluate((img) => img.currentSrc)).endsWith("web-workspace-light.png"));
+  assert.ok((await page.locator(".product-shot img").first().evaluate((img) => img.currentSrc)).endsWith("/tour/review-light.png"));
   await page.getByLabel("Color theme").selectOption("system");
   assert.equal(await page.locator("html").evaluate((el) => getComputedStyle(el).colorScheme), "dark");
   await page.emulateMedia({ colorScheme: "light" });
@@ -295,6 +296,7 @@ try {
   await failurePage.locator("#search-modal-ui input").waitFor();
   await failures.close();
   console.log("✓ No-JavaScript navigation/install, blocked storage/clipboard, and search retry");
+  await checkTour(browser, origin, results);
   assert.deepEqual(errors, [], "Browser JavaScript errors");
   await context.close();
   console.log(`All checks passed. Screenshots: ${path.relative(process.cwd(), results)}`);

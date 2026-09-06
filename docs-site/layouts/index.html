@@ -10,15 +10,35 @@
   {{ with .Params.web }}
   <section id="web-workspace" class="web-section container" aria-labelledby="web-title">
     <div class="workspace-launch"><span class="status-dot" aria-hidden="true"></span><span>One command. A complete workspace.</span>{{ partial "command.html" (dict "command" .command "label" "Start the web interface") }}</div>
-    <figure class="product-shot">
-      <a href="/images/web-workspace-light.png" class="screenshot-link" aria-label="View full-size browser workspace screenshot">
-        <picture>
-          <source srcset="/images/web-workspace-dark.png" media="(prefers-color-scheme: dark)" data-theme-image="dark">
-          <img src="/images/web-workspace-light.png" width="1440" height="940" alt="term-llm browser workspace with saved conversations in the sidebar, an agent code review in the center, and a live file diff panel on the right." fetchpriority="high">
-        </picture>
-      </a>
-      <figcaption>{{ .caption }} <a href="/guides/web-ui-and-api/">Explore the web interface →</a></figcaption>
-    </figure>
+    <div class="product-tour" data-product-tour role="region" aria-label="Product tour">
+      <div class="tour-controls" hidden>
+        <div class="tour-tabs" role="tablist" aria-label="Explore term-llm">
+          {{ range $index, $slide := .slides }}
+          <button type="button" id="tour-tab-{{ .id }}" role="tab" aria-controls="tour-panel-{{ .id }}" aria-selected="{{ if eq $index 0 }}true{{ else }}false{{ end }}" tabindex="{{ if eq $index 0 }}0{{ else }}-1{{ end }}">{{ .label }}</button>
+          {{ end }}
+        </div>
+        <button type="button" class="tour-rotation" data-tour-rotation aria-label="Pause automatic slideshow">Pause <span aria-hidden="true">Ⅱ</span></button>
+      </div>
+      <div class="tour-panels">
+        {{ range $index, $slide := .slides }}
+        <figure class="product-shot tour-panel" id="tour-panel-{{ .id }}" data-tour-panel{{ if ne $index 0 }} hidden{{ end }}>
+          <a href="/images/tour/{{ .id }}-light.png" class="screenshot-link" aria-label="View full-size {{ .label }} screenshot" data-tour-image>
+            <picture>
+              <source srcset="/images/tour/{{ .id }}-dark.png" media="(prefers-color-scheme: dark)" data-theme-image="dark">
+              <img src="/images/tour/{{ .id }}-light.png" width="2560" height="1360" alt="{{ .alt }}" {{ if eq $index 0 }}fetchpriority="high"{{ else }}loading="lazy"{{ end }}>
+            </picture>
+          </a>
+          <figcaption><span>{{ .caption }}</span><a href="{{ .url }}">{{ .link }} →</a></figcaption>
+        </figure>
+        {{ end }}
+      </div>
+      <p class="tour-note">{{ .caption }} Click a picture to enlarge.</p>
+      <noscript><p class="tour-fallback">More screenshots: {{ range $index, $slide := .slides }}{{ if $index }} · {{ end }}<a href="/images/tour/{{ .id }}-light.png">{{ .label }}</a>{{ end }}</p></noscript>
+    </div>
+    <dialog class="tour-lightbox" data-tour-lightbox aria-labelledby="tour-lightbox-title">
+      <div class="tour-lightbox-header"><h2 id="tour-lightbox-title">Product screenshot</h2><a class="tour-original" data-tour-original href="/images/tour/review-light.png" target="_blank" rel="noopener">Open original ↗</a><button type="button" class="quiet-button" data-tour-close aria-label="Close screenshot">Close <kbd>Esc</kbd></button></div>
+      <picture><source data-tour-large-dark data-theme-image="dark" media="not all"><img data-tour-large-image alt=""></picture>
+    </dialog>
     <div class="section-heading web-heading"><p class="eyebrow">{{ .eyebrow }}</p><h2 id="web-title">{{ .title }}</h2><p>{{ .description }}</p></div>
     <div class="feature-grid">{{ range .features }}<div class="feature"><h3><a href="{{ .url }}">{{ .title }} <span aria-hidden="true">↗</span></a></h3><p>{{ .text }}</p></div>{{ end }}</div>
   </section>

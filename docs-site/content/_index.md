@@ -10,7 +10,38 @@ web:
   title: "Not just a chat window. Your working environment."
   description: "Run one command to open a full interface for agent work: persistent conversations, projects and worktrees, live file diffs, and an interactive shell. All served from your own machine."
   command: "term-llm serve web"
-  caption: "The term-llm browser interface, shown with an illustrative review session."
+  caption: "Real interface. Illustrative conversations and activity."
+  slides:
+    - id: review
+      label: Review
+      caption: "Review code in an isolated worktree, with the diff beside the conversation."
+      alt: "Code review in the fix-retry-backoff worktree with an expanded retry.go diff."
+      url: "/guides/web-ui-and-api/#live-diff-sidebar"
+      link: "Explore the workspace"
+    - id: hub
+      label: Hub
+      caption: "One place for your machines, conversations, and cross-node agent work."
+      alt: "Hub dashboard with MacBook Pro, Build server and Research box nodes, plus delegated work."
+      url: "/guides/hub/"
+      link: "Explore Hub"
+    - id: worktrees
+      label: Worktrees
+      caption: "Keep parallel work separate. Pick a checkout or create a new worktree."
+      alt: "Worktree picker showing the root checkout and three named isolated worktrees."
+      url: "/guides/web-ui-and-api/#project-aware-responses-and-worktrees"
+      link: "Explore worktrees"
+    - id: agents
+      label: Agents
+      caption: "Give specialists focused tasks and follow their contributions in one conversation."
+      alt: "Developer conversation showing completed codebase and reviewer agent tasks."
+      url: "/guides/agents/"
+      link: "Meet the agents"
+    - id: shell
+      label: Shell
+      caption: "Run commands in the same worktree, with a real terminal docked beside chat."
+      alt: "Browser terminal beside a conversation, showing illustrative passing regression tests."
+      url: "/guides/web-ui-and-api/#interactive-shell"
+      link: "Explore the shell"
   features:
     - title: "Keep work in context"
       text: "Organize conversations by project, return to saved sessions, and work in isolated Git worktrees."

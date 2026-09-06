@@ -7,7 +7,7 @@
     const dark = root.dataset.theme === "dark" || (!root.dataset.theme && colorPreference.matches);
     document.querySelectorAll("[data-theme-image]").forEach((source) => {
       source.media = dark ? "all" : "not all";
-      const link = source.closest("a");
+      const link = source.closest("a") || source.closest("[data-tour-lightbox]")?.querySelector("[data-tour-original]");
       if (link) link.href = dark ? source.srcset : source.parentElement.querySelector("img").src;
     });
   }
@@ -76,6 +76,101 @@
         activate(tabs[next], true);
       });
     });
+  });
+
+  // Labeled, keyboard-operable screenshot tour. Never rotate while someone is
+  // reading with the pointer/keyboard, viewing an image, or outside the viewport.
+  document.querySelectorAll("[data-product-tour]").forEach((tour) => {
+    const tabs = [...tour.querySelectorAll('[role="tab"]')];
+    const panels = [...tour.querySelectorAll("[data-tour-panel]")];
+    const rotation = tour.querySelector("[data-tour-rotation]");
+    const lightbox = document.querySelector("[data-tour-lightbox]");
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let active = 0;
+    let paused = reducedMotion.matches;
+    let hovered = false;
+    let inView = false;
+    let timer;
+    let imageTrigger;
+    function schedule() {
+      clearTimeout(timer);
+      rotation.disabled = reducedMotion.matches;
+      rotation.title = reducedMotion.matches ? "Automatic rotation is disabled by your reduced-motion preference." : "";
+      rotation.textContent = paused ? "Play ▷" : "Pause Ⅱ";
+      rotation.setAttribute("aria-label", paused ? "Start automatic slideshow" : "Pause automatic slideshow");
+      if (paused || reducedMotion.matches || hovered || !inView || document.hidden || tour.contains(document.activeElement) || lightbox.open) return;
+      timer = setTimeout(() => activate((active + 1) % panels.length), 8000);
+    }
+    function activate(index, manual = false, focus = false) {
+      if (manual) paused = true;
+      const changed = active !== index;
+      active = index;
+      tabs.forEach((tab, i) => {
+        const selected = i === index;
+        tab.setAttribute("aria-selected", String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+        panels[i].hidden = !selected;
+      });
+      if (changed && !reducedMotion.matches) panels[index].querySelector("picture").animate?.([{ opacity: 0.35 }, { opacity: 1 }], { duration: 250 });
+      if (focus) tabs[index].focus();
+      schedule();
+    }
+    panels.forEach((panel, i) => {
+      panel.setAttribute("role", "tabpanel");
+      panel.setAttribute("aria-labelledby", tabs[i].id);
+    });
+    tour.querySelector(".tour-controls").hidden = false;
+    tabs.forEach((tab, i) => {
+      tab.addEventListener("click", () => activate(i, true));
+      tab.addEventListener("keydown", (event) => {
+        let next;
+        if (event.key === "ArrowRight") next = (i + 1) % tabs.length;
+        if (event.key === "ArrowLeft") next = (i - 1 + tabs.length) % tabs.length;
+        if (event.key === "Home") next = 0;
+        if (event.key === "End") next = tabs.length - 1;
+        if (next === undefined) return;
+        event.preventDefault();
+        activate(next, true, true);
+      });
+    });
+    rotation.addEventListener("click", () => { paused = !paused; schedule(); });
+    // Keyboard focus stops rotation until the reader explicitly presses Play.
+    tour.addEventListener("focusin", (event) => {
+      if (event.target !== rotation) paused = true;
+      schedule();
+    });
+    tour.addEventListener("focusout", () => setTimeout(schedule, 0));
+    tour.addEventListener("pointerenter", (event) => { if (event.pointerType === "mouse") { hovered = true; schedule(); } });
+    tour.addEventListener("pointerleave", () => { hovered = false; schedule(); });
+    document.addEventListener("visibilitychange", schedule);
+    reducedMotion.addEventListener("change", () => { if (reducedMotion.matches) paused = true; schedule(); });
+    if ("IntersectionObserver" in window) {
+      new IntersectionObserver(([entry]) => { inView = entry.isIntersecting && entry.intersectionRatio >= 0.5; schedule(); }, { threshold: 0.5 }).observe(tour);
+    }
+    tour.querySelectorAll("[data-tour-image]").forEach((link) => {
+      link.addEventListener("click", (event) => {
+        if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || typeof lightbox.showModal !== "function") return;
+        event.preventDefault();
+        paused = true;
+        imageTrigger = link;
+        const image = link.querySelector("img");
+        const large = lightbox.querySelector("[data-tour-large-image]");
+        large.src = image.src;
+        large.alt = image.alt;
+        lightbox.querySelector("[data-tour-large-dark]").srcset = link.querySelector("source").srcset;
+        document.getElementById("tour-lightbox-title").textContent = `${tabs[active].textContent.trim()} — full-size screenshot`;
+        syncThemeImages();
+        lightbox.showModal();
+        schedule();
+      });
+    });
+    lightbox.querySelector("[data-tour-close]").addEventListener("click", () => lightbox.close());
+    lightbox.addEventListener("click", (event) => {
+      const box = lightbox.getBoundingClientRect();
+      if (event.target === lightbox && (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom)) lightbox.close();
+    });
+    lightbox.addEventListener("close", () => { imageTrigger?.focus(); schedule(); });
+    activate(0);
   });
 
   const copyStatus = document.getElementById("copy-status");

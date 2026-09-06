@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"slices"
 	"sort"
 	"strings"
 
@@ -419,14 +420,28 @@ func EffortVariantsFor(model string) []string {
 }
 
 func resolveProviderModelEntries(provider string) []ModelEntry {
-	if entries := ProviderModels[provider]; len(entries) > 0 {
-		return entries
-	}
 	resolved := resolveProviderType(provider)
-	if resolved != provider {
-		return ProviderModels[resolved]
+	entries := ProviderModels[provider]
+	if len(entries) == 0 {
+		entries = ProviderModels[resolved]
 	}
-	return nil
+	if resolved == "chatgpt" {
+		if models, _, err := cachedChatGPTModelFacts(); err == nil {
+			merged := make([]ModelEntry, 0, len(models)+len(entries))
+			seen := make(map[string]bool, len(models))
+			for _, model := range models {
+				merged = append(merged, ModelEntry{ID: model.ID, InputLimit: model.InputLimit, OutputLimit: model.OutputLimit, ReasoningEfforts: model.ReasoningEfforts})
+				seen[model.ID] = true
+			}
+			for _, entry := range entries {
+				if !seen[entry.ID] {
+					merged = append(merged, entry)
+				}
+			}
+			return merged
+		}
+	}
+	return entries
 }
 
 func reasoningEffortsForProviderBaseModel(provider, baseModel string) []string {
@@ -1028,11 +1043,25 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 			models = ExpandWithEffortVariantsForProvider(provider, models)
 		}
 
-		// Filter by prefix and return as provider:model
+		// Reveal suffixes only after their parent model name is fully typed.
 		var completions []string
 		for _, model := range models {
+			if !isImage {
+				base, effort := BaseModelAndEffortForProvider(provider, model)
+				if effort != "" && !strings.HasPrefix(modelPrefix, base) {
+					continue
+				}
+			}
 			if strings.HasPrefix(model, modelPrefix) {
 				completions = append(completions, provider+":"+model)
+			}
+			if !isImage && config.InferProviderType(provider, configuredProviderType) == config.ProviderTypeChatGPT && strings.HasPrefix(modelPrefix, model) {
+				fast := model + "-fast"
+				if strings.HasPrefix(fast, modelPrefix) && !slices.Contains(models, fast) {
+					if _, tier := chatGPTModelServiceTier(fast); tier != "" {
+						completions = append(completions, provider+":"+fast)
+					}
+				}
 			}
 		}
 		return completions

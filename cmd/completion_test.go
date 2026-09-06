@@ -311,3 +311,26 @@ func TestProviderFlagCompletionDirectiveFinishesConfiguredEffortProfile(t *testi
 		t.Fatalf("invalid effort prefix directive = %v, want %v", got, wantBare)
 	}
 }
+
+func TestProviderFlagCompletionProgressiveSpacing(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	for _, tc := range []struct {
+		prefix  string
+		noSpace bool
+	}{
+		{"claude-bin:", true},
+		{"claude-bin:op", true},
+		{"claude-bin:opus", true},
+		{"claude-bin:opus-l", false},
+		{"claude-bin:opus-low", false},
+		{"claude-bin:haiku", false},
+		{"openai:gpt-5.4", true},
+		{"openai:gpt-5.4-low", false},
+	} {
+		_, directive := ProviderFlagCompletion(nil, nil, tc.prefix)
+		if got := directive&cobra.ShellCompDirectiveNoSpace != 0; got != tc.noSpace {
+			t.Errorf("%s: no-space = %v, want %v", tc.prefix, got, tc.noSpace)
+		}
+	}
+}
