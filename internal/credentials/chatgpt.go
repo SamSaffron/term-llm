@@ -136,13 +136,34 @@ func removeChatGPTCredentials(credPath string) error {
 }
 
 // RefreshChatGPTCredentials refreshes the access token using the refresh token.
-// Remote OAuth I/O deliberately runs outside the process and file locks. A
-// short compare-and-swap commit prevents a stale refresh from overwriting a
-// concurrent login, logout, or refresh.
-func RefreshChatGPTCredentials(creds *ChatGPTCredentials) error {
+// A separate file lock serializes refresh exchanges across goroutines and
+// processes. Remote OAuth I/O stays outside the short credential mutation lock,
+// so login and logout remain responsive. The generation-aware commit below
+// prevents a stale refresh from overwriting those concurrent mutations.
+func RefreshChatGPTCredentials(creds *ChatGPTCredentials) (err error) {
 	if creds == nil {
 		return fmt.Errorf("missing ChatGPT credentials")
 	}
+	credPath, err := getChatGPTCredentialsPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(credPath), 0700); err != nil {
+		return fmt.Errorf("failed to create credentials directory: %w", err)
+	}
+	// Acquire ownership before loading the disk generation, and retain it
+	// through commit so waiters reuse the replacement rather than exchanging
+	// the same single-use refresh token. Never wait with the mutation lock held.
+	unlock, err := lockChatGPTCredentials(credPath + ".refresh.lock")
+	if err != nil {
+		return fmt.Errorf("failed to lock ChatGPT refresh: %w", err)
+	}
+	defer func() {
+		if unlockErr := unlock(); err == nil && unlockErr != nil {
+			err = fmt.Errorf("failed to unlock ChatGPT refresh: %w", unlockErr)
+		}
+	}()
+
 	base := *creds
 	hadStored := false
 	if err := withChatGPTCredentialsLock(func(credPath string) error {

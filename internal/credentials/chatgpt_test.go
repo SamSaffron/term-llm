@@ -1,7 +1,9 @@
 package credentials
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -287,7 +289,7 @@ func TestRefreshChatGPTCredentialsUsesDiskGenerationAsCASBaseline(t *testing.T) 
 	}
 }
 
-func TestConcurrentChatGPTInvalidGrantAdoptsSiblingRefresh(t *testing.T) {
+func TestConcurrentChatGPTRefreshCoalescesExchanges(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	initial := &ChatGPTCredentials{AccessToken: "old", RefreshToken: "refresh", ExpiresAt: time.Now().Add(-time.Hour).Unix(), AccountID: "account"}
 	if err := SaveChatGPTCredentials(initial); err != nil {
@@ -298,9 +300,7 @@ func TestConcurrentChatGPTInvalidGrantAdoptsSiblingRefresh(t *testing.T) {
 	t.Cleanup(func() { refreshChatGPTToken = oldRefresh })
 	var calls atomic.Int32
 	firstStarted := make(chan struct{})
-	secondStarted := make(chan struct{})
 	releaseFirst := make(chan struct{})
-	releaseSecond := make(chan struct{})
 	refreshChatGPTToken = func(string) (*oauth.ChatGPTTokenResponse, error) {
 		switch calls.Add(1) {
 		case 1:
@@ -308,9 +308,8 @@ func TestConcurrentChatGPTInvalidGrantAdoptsSiblingRefresh(t *testing.T) {
 			<-releaseFirst
 			return &oauth.ChatGPTTokenResponse{AccessToken: "fresh", RefreshToken: "rotated", ExpiresIn: 3600}, nil
 		case 2:
-			close(secondStarted)
-			<-releaseSecond
-			return nil, errors.New("invalid_grant")
+			// Reject a duplicate immediately, before the winner can commit.
+			return nil, oauth.ErrChatGPTRefreshTokenInvalid
 		default:
 			return nil, errors.New("unexpected refresh")
 		}
@@ -322,28 +321,106 @@ func TestConcurrentChatGPTInvalidGrantAdoptsSiblingRefresh(t *testing.T) {
 	go func() { errA <- RefreshChatGPTCredentials(&a) }()
 	<-firstStarted
 	go func() { errB <- RefreshChatGPTCredentials(&b) }()
-	<-secondStarted
-	close(releaseFirst)
-
-	deadline := time.Now().Add(time.Second)
-	for {
-		stored, err := GetChatGPTCredentials()
-		if err == nil && stored.AccessToken == "fresh" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("sibling refresh was not committed")
-		}
-		time.Sleep(time.Millisecond)
+	select {
+	case err := <-errB:
+		t.Errorf("sibling returned before successful refresh was released: %v", err)
+		errB <- err
+	case <-time.After(150 * time.Millisecond):
 	}
-	close(releaseSecond)
+	close(releaseFirst)
 	if err := <-errA; err != nil {
 		t.Fatal(err)
 	}
 	if err := <-errB; err != nil {
-		t.Fatalf("invalid-grant sibling did not adopt committed refresh: %v", err)
+		t.Fatalf("sibling did not adopt committed refresh: %v", err)
+	}
+	if calls.Load() != 1 {
+		t.Errorf("refresh calls = %d, want one exchange", calls.Load())
+	}
+	if a.AccessToken != "fresh" || a.RefreshToken != "rotated" {
+		t.Fatalf("winner credentials = %+v", a)
 	}
 	if b.AccessToken != "fresh" || b.RefreshToken != "rotated" {
 		t.Fatalf("sibling credentials = %+v", b)
+	}
+}
+
+func TestChatGPTRefreshCoalescesProcesses(t *testing.T) {
+	if role := os.Getenv("TERM_LLM_CHATGPT_REFRESH_HELPER"); role != "" {
+		creds, err := GetChatGPTCredentials()
+		if err != nil {
+			t.Fatal(err)
+		}
+		stateDir := os.Getenv("TERM_LLM_CHATGPT_REFRESH_STATE")
+		oldRefresh := refreshChatGPTToken
+		defer func() { refreshChatGPTToken = oldRefresh }()
+		refreshChatGPTToken = func(string) (*oauth.ChatGPTTokenResponse, error) {
+			if role != "holder" {
+				return nil, oauth.ErrChatGPTRefreshTokenInvalid
+			}
+			if err := os.WriteFile(filepath.Join(stateDir, "started"), nil, 0600); err != nil {
+				return nil, err
+			}
+			waitForTestFile(t, filepath.Join(stateDir, "release"))
+			return &oauth.ChatGPTTokenResponse{AccessToken: "fresh", RefreshToken: "rotated", ExpiresIn: 3600}, nil
+		}
+		if err := os.WriteFile(filepath.Join(stateDir, role+"-attempting"), nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := RefreshChatGPTCredentials(creds); err != nil {
+			t.Fatal(err)
+		}
+		if creds.AccessToken != "fresh" || creds.RefreshToken != "rotated" {
+			t.Fatalf("credentials = %+v, want rotated credentials", creds)
+		}
+		return
+	}
+
+	configDir, stateDir := t.TempDir(), t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	if err := SaveChatGPTCredentials(&ChatGPTCredentials{
+		AccessToken: "old", RefreshToken: "refresh", ExpiresAt: time.Now().Add(-time.Hour).Unix(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	start := func(role string) <-chan error {
+		t.Helper()
+		cmd := exec.Command(os.Args[0], "-test.run=^TestChatGPTRefreshCoalescesProcesses$", "-test.timeout=15s")
+		cmd.Env = append(os.Environ(),
+			"TERM_LLM_CHATGPT_REFRESH_HELPER="+role,
+			"TERM_LLM_CHATGPT_REFRESH_STATE="+stateDir,
+		)
+		var output bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &output, &output
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = cmd.Process.Kill() })
+		done := make(chan error, 1)
+		go func() {
+			err := cmd.Wait()
+			if err != nil {
+				err = fmt.Errorf("%s: %w\n%s", role, err, output.String())
+			}
+			done <- err
+		}()
+		return done
+	}
+	holder := start("holder")
+	waitForTestFile(t, filepath.Join(stateDir, "started"))
+	contender := start("contender")
+	waitForTestFile(t, filepath.Join(stateDir, "contender-attempting"))
+	select {
+	case err := <-contender:
+		t.Fatalf("contender returned before refresh commit: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "release"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, done := range []<-chan error{holder, contender} {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
 	}
 }
