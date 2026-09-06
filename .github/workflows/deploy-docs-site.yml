@@ -95,12 +95,14 @@ jobs:
             mkdir -p /var/www/term-llm /etc/nginx/sites-available /etc/nginx/sites-enabled
             rsync -a --delete /root/term-llm-release/site/ /var/www/term-llm/
 
-            cp /root/term-llm-release/ops/nginx/term-llm-http.conf /etc/nginx/sites-available/term-llm.conf
-            ln -sfn /etc/nginx/sites-available/term-llm.conf /etc/nginx/sites-enabled/term-llm.conf
-            nginx -t
-            systemctl reload nginx
-
+            # Only bootstrap HTTP on first install; ordinary deploys retain HTTPS.
+            # App snippets and their webroots are owned by independent deploys.
+            mkdir -p /etc/nginx/term-llm-locations.d
             if [ ! -f /etc/letsencrypt/live/term-llm.com/fullchain.pem ]; then
+              cp /root/term-llm-release/ops/nginx/term-llm-http.conf /etc/nginx/sites-available/term-llm.conf
+              ln -sfn /etc/nginx/sites-available/term-llm.conf /etc/nginx/sites-enabled/term-llm.conf
+              nginx -t
+              systemctl reload nginx
               certbot certonly \
                 --webroot \
                 -w /var/www/term-llm \
@@ -111,5 +113,6 @@ jobs:
             fi
 
             cp /root/term-llm-release/ops/nginx/term-llm.conf /etc/nginx/sites-available/term-llm.conf
+            ln -sfn /etc/nginx/sites-available/term-llm.conf /etc/nginx/sites-enabled/term-llm.conf
             nginx -t
             systemctl reload nginx
