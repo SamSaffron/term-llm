@@ -1,7 +1,8 @@
+import { lazyComponent } from './lazyComponent';
 import { useDiffHighlighting } from './useDiffHighlighting';
 import { computed } from '@preact/signals';
 import { memo } from './memo';
-import type { ComponentChildren, ComponentType } from 'preact';
+import type { ComponentChildren } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { useEventCallback } from './useEventCallback';
 import { useStore } from '../app/context';
@@ -28,29 +29,10 @@ import { useMediaQuery } from './useMediaQuery';
 const EMPTY_COMMENTS: ReviewCommentEntry[] = [];
 const EMPTY_DIFF_LINES: DiffLine[] = [];
 
-let loadedMarkdownPreview: ComponentType<MarkdownFilePreviewProps> | null = null;
-let markdownPreviewImport: Promise<ComponentType<MarkdownFilePreviewProps>> | null = null;
-
-function LazyMarkdownFilePreview(props: MarkdownFilePreviewProps) {
-  const [Preview, setPreview] = useState<ComponentType<MarkdownFilePreviewProps> | null>(
-    () => loadedMarkdownPreview,
-  );
-  useEffect(() => {
-    if (Preview) return;
-    markdownPreviewImport ||= import('./MarkdownFilePreview').then(
-      ({ MarkdownFilePreview }) => MarkdownFilePreview,
-    );
-    let live = true;
-    void markdownPreviewImport.then((component) => {
-      loadedMarkdownPreview = component;
-      if (live) setPreview(() => component);
-    });
-    return () => {
-      live = false;
-    };
-  }, [Preview]);
-  return Preview ? <Preview {...props} /> : <div class="diff-loading">Loading preview…</div>;
-}
+const LazyMarkdownFilePreview = lazyComponent<MarkdownFilePreviewProps>(
+  () => import('./MarkdownFilePreview').then(({ MarkdownFilePreview }) => MarkdownFilePreview),
+  <div class="diff-loading">Loading preview…</div>,
+);
 
 function activeDiffScroller(list: HTMLElement | null, fullscreenPath: string): HTMLElement | null {
   if (!list) return null;

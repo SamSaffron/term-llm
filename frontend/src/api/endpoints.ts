@@ -1,4 +1,4 @@
-import type { APIClient } from './client';
+import type { APIClient, RequestControls } from './client';
 import type { ApprovalMode, Goal, MCPOAuthFlow, MCPResponse } from '../domain/types';
 import type { MentionSearchResponse } from '../domain/completions';
 
@@ -71,6 +71,20 @@ export interface CreateBlankSessionResponse {
 const steeringAPI = () => import('./steering');
 const encoded = (value: string): string => encodeURIComponent(value);
 const sessionHeaders = (id: string): Record<string, string> => ({ 'X-Term-LLM-Session-ID': id });
+// Keep ordinary session POSTs identical; idempotent mutations and streams retain
+// their explicit request construction and policies below.
+const sessionPost = <T = Record<string, unknown>>(
+  api: APIClient,
+  id: string,
+  path: string,
+  body: unknown,
+  controls?: Pick<RequestControls, 'retries' | 'timeoutMs'>,
+): Promise<T> =>
+  api.json<T>(
+    `/v1/sessions/${encoded(id)}/${path}`,
+    { method: 'POST', headers: sessionHeaders(id), body: JSON.stringify(body) },
+    { policy: 'mutation', auth: 'session', ...controls },
+  );
 // Review data may come from the session's node rather than the shell host. The
 // node's embedded UI hash is not authoritative for the browser's shell assets.
 const sessionReviewRead = { auth: 'session', versionCheck: false } as const;
@@ -162,11 +176,7 @@ export const endpoints = (api: APIClient) => ({
   sessionState: (id: string, signal?: AbortSignal) =>
     api.get<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/state`, signal),
   createSessionShare: (id: string, body: unknown) =>
-    api.json<SessionShareResponse>(
-      `/v1/sessions/${encoded(id)}/shares`,
-      { method: 'POST', headers: sessionHeaders(id), body: JSON.stringify(body) },
-      { policy: 'mutation', auth: 'session', retries: 0, timeoutMs: 0 },
-    ),
+    sessionPost<SessionShareResponse>(api, id, 'shares', body, { retries: 0, timeoutMs: 0 }),
   commitPublishPlan: (id: string, kind: 'push' | 'pr') =>
     api.get<Record<string, unknown>>(
       `/v1/sessions/${encoded(id)}/commit/publish-plan?kind=${kind}`,
@@ -175,18 +185,8 @@ export const endpoints = (api: APIClient) => ({
     ),
   commitStatus: (id: string, signal?: AbortSignal) =>
     api.get<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/commit/status`, signal),
-  commitStage: (id: string, body: unknown) =>
-    api.json<Record<string, unknown>>(
-      `/v1/sessions/${encoded(id)}/commit/stage`,
-      { method: 'POST', headers: sessionHeaders(id), body: JSON.stringify(body) },
-      { policy: 'mutation', auth: 'session' },
-    ),
-  createCommitRun: (id: string, body: unknown) =>
-    api.json<Record<string, unknown>>(
-      `/v1/sessions/${encoded(id)}/commit-runs`,
-      { method: 'POST', headers: sessionHeaders(id), body: JSON.stringify(body) },
-      { policy: 'mutation', auth: 'session' },
-    ),
+  commitStage: (id: string, body: unknown) => sessionPost(api, id, 'commit/stage', body),
+  createCommitRun: (id: string, body: unknown) => sessionPost(api, id, 'commit-runs', body),
   commitRun: (id: string, runId: string, signal?: AbortSignal) =>
     api.get<Record<string, unknown>>(
       `/v1/sessions/${encoded(id)}/commit-runs/${encoded(runId)}`,
@@ -210,15 +210,10 @@ export const endpoints = (api: APIClient) => ({
       signal,
     ),
   markAttentionSeen: (id: string, storeInstanceId: string, throughSeq: number) =>
-    api.json<Record<string, unknown>>(
-      `/v1/sessions/${encoded(id)}/attention/seen`,
-      {
-        method: 'POST',
-        headers: sessionHeaders(id),
-        body: JSON.stringify({ store_instance_id: storeInstanceId, through_seq: throughSeq }),
-      },
-      { policy: 'mutation', auth: 'session' },
-    ),
+    sessionPost(api, id, 'attention/seen', {
+      store_instance_id: storeInstanceId,
+      through_seq: throughSeq,
+    }),
   createResponse: (
     body: unknown,
     sessionId: string,
@@ -252,15 +247,7 @@ export const endpoints = (api: APIClient) => ({
     );
   },
   shellCreate: (id: string, cols: number, rows: number) =>
-    api.json<ShellCreateResponse>(
-      `/v1/sessions/${encoded(id)}/shell`,
-      {
-        method: 'POST',
-        headers: sessionHeaders(id),
-        body: JSON.stringify({ cols, rows }),
-      },
-      { policy: 'mutation', auth: 'session' },
-    ),
+    sessionPost<ShellCreateResponse>(api, id, 'shell', { cols, rows }),
   shellStream: (id: string, shellId: string, offset: number, signal: AbortSignal) =>
     api.request(
       `/v1/sessions/${encoded(id)}/shell/stream?shell_id=${encoded(shellId)}&offset=${offset}`,
@@ -268,44 +255,24 @@ export const endpoints = (api: APIClient) => ({
       { policy: 'stream', retries: 0, timeoutMs: 0, auth: 'session' },
     ),
   shellInput: (id: string, shellId: string, data: string) =>
-    api.json<ShellInputResponse>(
-      `/v1/sessions/${encoded(id)}/shell/input`,
-      {
-        method: 'POST',
-        headers: sessionHeaders(id),
-        body: JSON.stringify({ shell_id: shellId, data }),
-      },
-      { policy: 'mutation', auth: 'session' },
-    ),
+    sessionPost<ShellInputResponse>(api, id, 'shell/input', { shell_id: shellId, data }),
   shellResize: (id: string, shellId: string, cols: number, rows: number) =>
-    api.json<void>(
-      `/v1/sessions/${encoded(id)}/shell/resize`,
-      {
-        method: 'POST',
-        headers: sessionHeaders(id),
-        body: JSON.stringify({ shell_id: shellId, cols, rows }),
-      },
-      { policy: 'mutation', auth: 'session' },
-    ),
+    sessionPost<void>(api, id, 'shell/resize', { shell_id: shellId, cols, rows }),
   shellCollaboration: (id: string, shellId: string, enabled: boolean) =>
-    api.json<ShellCollaborationSnapshot>(
-      `/v1/sessions/${encoded(id)}/shell/collaboration`,
-      {
-        method: 'POST',
-        headers: sessionHeaders(id),
-        body: JSON.stringify({ shell_id: shellId, enabled }),
-      },
-      { policy: 'mutation', auth: 'session', timeoutMs: 3000 },
+    sessionPost<ShellCollaborationSnapshot>(
+      api,
+      id,
+      'shell/collaboration',
+      { shell_id: shellId, enabled },
+      { timeoutMs: 3000 },
     ),
   shellInterrupt: (id: string, shellId: string, commandId: string) =>
-    api.json<ShellCollaborationSnapshot>(
-      `/v1/sessions/${encoded(id)}/shell/interrupt`,
-      {
-        method: 'POST',
-        headers: sessionHeaders(id),
-        body: JSON.stringify({ shell_id: shellId, command_id: commandId }),
-      },
-      { policy: 'mutation', auth: 'session', timeoutMs: 5000 },
+    sessionPost<ShellCollaborationSnapshot>(
+      api,
+      id,
+      'shell/interrupt',
+      { shell_id: shellId, command_id: commandId },
+      { timeoutMs: 5000 },
     ),
   shellClose: (id: string, shellId: string) =>
     api.json<void>(

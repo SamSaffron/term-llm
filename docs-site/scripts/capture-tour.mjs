@@ -1,6 +1,6 @@
 // Homepage carousel scenes: real UI, illustrative fixtures, no model calls.
 // Use isolated loopback web/Hub servers as described in docs-site/README.md.
-// Captures both themes at 2x resolution into the production tour image directory.
+// Captures both themes at 2x resolution into the ignored source directory for optimize-tour.py.
 import { chromium } from 'playwright';
 import { mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -11,7 +11,7 @@ const hub = process.env.DOCS_HUB_URL || 'http://127.0.0.1:18766/';
 for (const value of [base, hub]) {
   if (!['localhost', '127.0.0.1', '[::1]'].includes(new URL(value).hostname)) throw new Error('Use isolated loopback servers only');
 }
-const output = fileURLToPath(new URL('../static/images/tour/', import.meta.url));
+const output = fileURLToPath(new URL('../test-results/tour-source/', import.meta.url));
 await mkdir(output, { recursive: true });
 const now = Math.floor(Date.now() / 1000);
 const worktreeDir = '/workspace/worktrees/fix-retry-backoff';

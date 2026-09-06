@@ -1,6 +1,7 @@
 import { Marked } from 'marked';
 import type { MarkdownSourceBlock } from './types';
 import { sanitizeMarkdownHTML } from './markdown';
+import { escapeHTML, markdownHooks } from './markdown-hooks';
 
 interface BlockToken {
   type: string;
@@ -16,37 +17,8 @@ export interface RenderedMarkdownSourceBlock extends MarkdownSourceBlock {
   html: string;
 }
 
-const escapeHTML = (value: unknown): string =>
-  String(value || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-
 const documentMarked = new Marked({ gfm: true, breaks: false });
-documentMarked.use({
-  renderer: {
-    link({ href, title, tokens }) {
-      const label = this.parser.parseInline(tokens);
-      const safeTitle = title ? ` title="${escapeHTML(title)}"` : '';
-      return `<a href="${escapeHTML(href)}"${safeTitle} target="_blank" rel="noopener noreferrer">${label}</a>`;
-    },
-  },
-  walkTokens(token) {
-    if (token.type === 'del' && !token.raw.startsWith('~~')) {
-      const mutable = token as unknown as {
-        type: string;
-        text: string;
-        raw: string;
-        tokens?: unknown;
-      };
-      mutable.type = 'text';
-      mutable.text = mutable.raw;
-      delete mutable.tokens;
-    }
-  },
-});
+documentMarked.use(markdownHooks);
 
 interface ProtectedSource {
   source: string;

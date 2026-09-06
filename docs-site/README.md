@@ -91,9 +91,15 @@ npm --prefix docs-site run capture:product
 ### Homepage product tour
 
 The five-scene carousel is configured in `content/_index.md` under `web.slides`.
-Images live in `static/images/tour/`, with matching `-light.png` and `-dark.png`
-variants. They are 2560×1360 captures displayed at up to 900 CSS pixels wide.
+Images live in `static/images/tour/`, with matching light/dark WebP variants. Lossless 2560×1360 originals keep UI text
+pixel-identical; high-quality 900px previews use responsive `srcset` delivery.
+The browser chooses the appropriate resolution for its viewport and pixel density.
 The existing `web-workspace-*.png` images remain available for documentation pages.
+
+Capture/optimization requires Python 3 with Pillow (`python3 -m pip install Pillow`)
+in addition to the existing Node/Playwright tools. Capture PNGs are kept in ignored
+`test-results/tour-source/`; `scripts/optimize-tour.py` produces the deployed WebPs.
+The build does not require Pillow; optimized assets are committed.
 
 To regenerate the tour, use the isolated web server setup above and also start
 an isolated Hub before capturing. Run this in the same shell, while the web
@@ -118,12 +124,15 @@ script uses fixture APIs and an isolated terminal-output stream; it makes no
 model calls or real cross-node delegations. The illustrative activity label on
 the homepage must remain. Inspect both themes after changing fixtures or the UI.
 
-The tour advances every eight seconds only while at least half visible. Hover
-pauses temporarily; keyboard focus, tab selection, and image enlargement stop
-rotation until Play is pressed. Reduced motion disables automatic rotation.
+The tour slides every five seconds while its picture area is visible, including
+when the pointer rests over it. Tabs and dots select a scene and restart the
+interval. The small icon button explicitly pauses/resumes rotation. Keyboard
+interaction and image enlargement pause it; reduced motion disables automatic
+rotation and slide animation. Horizontal mobile swipes move between scenes,
+while vertical gestures scroll the page. Inert edge copies make looping seamless.
 Without JavaScript, the opening image and links to all five originals remain.
-`npm test` exercises these behaviors along with keyboard controls, matching theme
-assets, enlargement, and compact MacBook/mobile viewports.
+`npm test` covers these behaviors, native touch input, theme assets, image-size
+budgets, enlargement, and compact MacBook/mobile viewports.
 
 Regenerate the 1200×630 social image independently:
 

@@ -194,24 +194,26 @@
   min-width: 0;
 }
 
-.widget-card-name {
-  min-width: 0;
+.widget-card-name,
+.widget-card-meta,
+.widget-card-error {
   overflow: hidden;
-  color: var(--text);
-  font-size: 0.86rem;
-  font-weight: 700;
-  letter-spacing: -0.01em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.widget-card-name {
+  min-width: 0;
+  color: var(--text);
+  font-size: 0.86rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
 .widget-card-meta,
 .widget-card-error {
-  overflow: hidden;
   font-size: 0.75rem;
   line-height: 1.3;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .widget-card-meta {

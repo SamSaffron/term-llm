@@ -1,5 +1,6 @@
+import { SearchField, SettingsSelect } from './FormFields';
 import { memo } from './memo';
-import type { ComponentType } from 'preact';
+import { lazyComponent } from './lazyComponent';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import { errorMessage } from '../domain/text';
@@ -12,46 +13,12 @@ import { ProjectAssignment } from './ProjectAssignment';
 import { Worktrees } from './Worktrees';
 import { CommitModal } from './CommitModal';
 
-let loadedShareModal: ComponentType | null = null;
-let shareModalImport: Promise<ComponentType> | null = null;
-let loadedApprovalsModal: ComponentType | null = null;
-let approvalsModalImport: Promise<ComponentType> | null = null;
-
-function LazyShareModal() {
-  const [Modal, setModal] = useState<ComponentType | null>(() => loadedShareModal);
-  useEffect(() => {
-    if (Modal) return;
-    shareModalImport ||= import('./ShareModal').then(({ ShareModal }) => ShareModal);
-    let live = true;
-    void shareModalImport.then((component) => {
-      loadedShareModal = component;
-      if (live) setModal(() => component);
-    });
-    return () => {
-      live = false;
-    };
-  }, [Modal]);
-  return Modal ? <Modal /> : null;
-}
-
-function LazyApprovalsModal() {
-  const [Modal, setModal] = useState<ComponentType | null>(() => loadedApprovalsModal);
-  useEffect(() => {
-    if (Modal) return;
-    approvalsModalImport ||= import('./ApprovalsModal').then(
-      ({ ApprovalsModal }) => ApprovalsModal,
-    );
-    let live = true;
-    void approvalsModalImport.then((component) => {
-      loadedApprovalsModal = component;
-      if (live) setModal(() => component);
-    });
-    return () => {
-      live = false;
-    };
-  }, [Modal]);
-  return Modal ? <Modal /> : null;
-}
+const LazyShareModal = lazyComponent(() =>
+  import('./ShareModal').then(({ ShareModal }) => ShareModal),
+);
+const LazyApprovalsModal = lazyComponent(() =>
+  import('./ApprovalsModal').then(({ ApprovalsModal }) => ApprovalsModal),
+);
 
 function Settings() {
   const store = useStore();
@@ -71,96 +38,71 @@ function Settings() {
   };
   return (
     <Overlay title="Settings" close={!store.authRequired.value}>
-      <div class="settings-field">
-        <label class="settings-label" for="providerSelect">
-          Provider
-        </label>
-        <select
-          class="settings-select"
-          id="providerSelect"
-          value={provider}
-          onChange={(event) => {
-            setProvider(event.currentTarget.value);
-            setModel('');
-            void store.loadModels(event.currentTarget.value).catch(() => undefined);
-          }}
-        >
-          <option value="">Auto (server default)</option>
-          {store.providers.value.map((entry) => (
-            <option value={entry.id} key={entry.id}>
-              {entry.name}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div class="settings-field">
-        <label class="settings-label" for="modelSelect">
-          Model
-        </label>
-        <select
-          class="settings-select"
-          id="modelSelect"
-          value={model}
-          onChange={(event) => setModel(event.currentTarget.value)}
-        >
-          <option value="">Auto (server default)</option>
-          {store.models.value.map((entry) => (
-            <option value={entry.id} key={entry.id}>
-              {entry.name || entry.id}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div class="settings-field">
-        <label class="settings-label" for="effortSelect">
-          Effort
-        </label>
-        <select
-          class="settings-select"
-          id="effortSelect"
-          value={effort}
-          onChange={(event) => setEffort(event.currentTarget.value)}
-        >
-          {['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map((value) => (
-            <option value={value} key={value}>
-              {value || 'Auto (server default)'}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div class="settings-field">
-        <label class="settings-label" for="reasoningModeSelect">
-          Reasoning mode
-        </label>
-        <select
-          class="settings-select"
-          id="reasoningModeSelect"
-          value={reasoning}
-          onChange={(event) => setReasoning(event.currentTarget.value)}
-        >
-          <option value="standard">Standard</option>
-          <option value="pro">Pro</option>
-        </select>
-      </div>
+      <SettingsSelect
+        id="providerSelect"
+        label="Provider"
+        value={provider}
+        onChange={(event) => {
+          setProvider(event.currentTarget.value);
+          setModel('');
+          void store.loadModels(event.currentTarget.value).catch(() => undefined);
+        }}
+      >
+        <option value="">Auto (server default)</option>
+        {store.providers.value.map((entry) => (
+          <option value={entry.id} key={entry.id}>
+            {entry.name}
+          </option>
+        ))}
+      </SettingsSelect>
+      <SettingsSelect
+        id="modelSelect"
+        label="Model"
+        value={model}
+        onChange={(event) => setModel(event.currentTarget.value)}
+      >
+        <option value="">Auto (server default)</option>
+        {store.models.value.map((entry) => (
+          <option value={entry.id} key={entry.id}>
+            {entry.name || entry.id}
+          </option>
+        ))}
+      </SettingsSelect>
+      <SettingsSelect
+        id="effortSelect"
+        label="Effort"
+        value={effort}
+        onChange={(event) => setEffort(event.currentTarget.value)}
+      >
+        {['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map((value) => (
+          <option value={value} key={value}>
+            {value || 'Auto (server default)'}
+          </option>
+        ))}
+      </SettingsSelect>
+      <SettingsSelect
+        id="reasoningModeSelect"
+        label="Reasoning mode"
+        value={reasoning}
+        onChange={(event) => setReasoning(event.currentTarget.value)}
+      >
+        <option value="standard">Standard</option>
+        <option value="pro">Pro</option>
+      </SettingsSelect>
       {store.config.agentNames.length > 1 && (
-        <div class="settings-field">
-          <label class="settings-label" for="agentSelect">
-            Agent
-          </label>
-          <select
-            class="settings-select"
-            id="agentSelect"
-            value={agent}
-            onChange={(event) => setAgent(event.currentTarget.value)}
-          >
-            <option value="">Default</option>
-            {store.config.agentNames.map((name) => (
-              <option value={name} key={name}>
-                {name}
-              </option>
-            ))}
-          </select>
-        </div>
+        <SettingsSelect
+          id="agentSelect"
+          label="Agent"
+          value={agent}
+          onChange={(event) => setAgent(event.currentTarget.value)}
+        >
+          <option value="">Default</option>
+          {store.config.agentNames.map((name) => (
+            <option value={name} key={name}>
+              {name}
+            </option>
+          ))}
+        </SettingsSelect>
       )}
       <div class="settings-field">
         <label class="settings-label" for="authTokenInput">
@@ -767,21 +709,14 @@ function MCP() {
         )}
       </div>
       {!state.loading && state.servers.length > 0 && (
-        <label class="mcp-server-search">
-          <span class="mcp-server-search-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-              <circle cx="11" cy="11" r="7" />
-              <path d="m16.5 16.5 4 4" />
-            </svg>
-          </span>
-          <input
-            type="search"
-            aria-label="Filter MCP servers"
-            value={query}
-            placeholder="Filter servers…"
-            onInput={(event) => setQuery(event.currentTarget.value)}
-          />
-        </label>
+        <SearchField
+          className="mcp-server-search"
+          iconPath="m16.5 16.5 4 4"
+          aria-label="Filter MCP servers"
+          value={query}
+          placeholder="Filter servers…"
+          onInput={(event) => setQuery(event.currentTarget.value)}
+        />
       )}
       <div class="mcp-server-list" aria-busy={state.loading ? 'true' : undefined}>
         {state.loading ? (
@@ -1084,22 +1019,14 @@ function Widgets() {
         )}
       </div>
       {showSearch && (
-        <label class="widgets-modal-search">
-          <span class="widgets-modal-search-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-              <circle cx="11" cy="11" r="7" />
-              <path d="m16 16 4 4" />
-            </svg>
-          </span>
-          <input
-            type="search"
-            aria-label="Filter widgets"
-            value={query}
-            placeholder="Find a widget…"
-            autoFocus
-            onInput={(event) => setQuery(event.currentTarget.value)}
-          />
-        </label>
+        <SearchField
+          className="widgets-modal-search"
+          aria-label="Filter widgets"
+          value={query}
+          placeholder="Find a widget…"
+          autoFocus
+          onInput={(event) => setQuery(event.currentTarget.value)}
+        />
       )}
       <div class="widget-grid">
         {widgets.length === 0 ? (
@@ -1336,29 +1263,21 @@ function BranchTree() {
         Open an existing path, or start a new one from an earlier message.
       </p>
       {showSearch && (
-        <label class="branch-tree-search">
-          <span class="branch-tree-search-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-              <circle cx="11" cy="11" r="7" />
-              <path d="m16 16 4 4" />
-            </svg>
-          </span>
-          <input
-            type="search"
-            aria-label="Filter conversation paths and messages"
-            value={query}
-            placeholder="Find a path or message…"
-            autoFocus
-            onInput={(event) => setQuery(event.currentTarget.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Escape' && query) {
-                event.preventDefault();
-                event.stopPropagation();
-                setQuery('');
-              }
-            }}
-          />
-        </label>
+        <SearchField
+          className="branch-tree-search"
+          aria-label="Filter conversation paths and messages"
+          value={query}
+          placeholder="Find a path or message…"
+          autoFocus
+          onInput={(event) => setQuery(event.currentTarget.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape' && query) {
+              event.preventDefault();
+              event.stopPropagation();
+              setQuery('');
+            }
+          }}
+        />
       )}
       <div class="branch-tree-list">
         {visibleNodes.length > 0 && (

@@ -878,15 +878,6 @@ export class AppStore {
     return this.sessionStore.sessionFrom(value);
   }
 
-  private mergeSession(
-    existing: Session | undefined,
-    incoming: Session,
-    replaceMessages = false,
-    preserveLiveState = false,
-  ): Session {
-    return this.sessionStore.mergeSession(existing, incoming, replaceMessages, preserveLiveState);
-  }
-
   private applySidebar(data: Record<string, unknown>): void {
     this.sessionStore.applySidebar(data);
   }
@@ -962,12 +953,6 @@ export class AppStore {
   }
   private reconcileDraftStorage(id: string): void {
     this.composer.reconcileStorage(id);
-  }
-  private restoreDraftFor(id: string): void {
-    this.composer.restore(id, 'draft');
-  }
-  private syncRuntimeFromSession(session: Session): void {
-    this.composer.syncRuntimeFromSession(session);
   }
 
   async resolveAndSelectSession(id: string, replace = false): Promise<void> {
@@ -1047,14 +1032,6 @@ export class AppStore {
     await this.runEngine.cancelSteering(id);
   }
 
-  private retireCommittedIntents(sessionId: string, messages: Message[]): void {
-    this.runEngine.retireCommittedIntents(sessionId, messages);
-  }
-
-  private reconcileLoadedIntents(sessionId: string, messages: Message[], active: boolean): void {
-    this.runEngine.reconcileLoadedIntents(sessionId, messages, active);
-  }
-
   private trackIntent(sessionId: string, intent: PendingIntentRegistry[string][number]): void {
     this.runEngine.trackIntent(sessionId, intent);
   }
@@ -1073,10 +1050,6 @@ export class AppStore {
 
   retryAttachment(id: string | undefined): void {
     this.composer.retryAttachment(id);
-  }
-
-  private releaseAttachmentResources(attachments: Attachment[], deleteBlobs: boolean): void {
-    this.composer.releaseResources(attachments, deleteBlobs);
   }
 
   removeAttachment(id: string | undefined): void {
@@ -1148,44 +1121,6 @@ export class AppStore {
     await this.notificationController.disable();
   }
 
-  private upsertInteraction(
-    kind: InteractionRecord['kind'],
-    sessionId: string,
-    responseId: string,
-    requestId: string,
-    prompt: ApprovalPrompt | AskUserPrompt,
-  ): string {
-    return this.interactionStore.upsert(kind, sessionId, responseId, requestId, prompt);
-  }
-
-  private resolveInteractionRecord(
-    kind: InteractionRecord['kind'],
-    sessionId: string,
-    responseId: string,
-    requestId: string,
-    outcome: string,
-    resolvedAt = Date.now(),
-  ): void {
-    this.interactionStore.resolve(kind, sessionId, responseId, requestId, outcome, resolvedAt);
-  }
-
-  private interactionFor(
-    kind: InteractionRecord['kind'],
-    sessionId: string,
-    requestId: string,
-    responseId = '',
-  ): InteractionRecord | null {
-    return this.interactionStore.find(kind, sessionId, requestId, responseId);
-  }
-
-  private shouldOpenInteraction(
-    kind: InteractionRecord['kind'],
-    sessionId: string,
-    requestId: string,
-  ): boolean {
-    return this.interactionStore.shouldOpen(kind, sessionId, requestId);
-  }
-
   dismissInteraction(
     kind: InteractionRecord['kind'],
     promptOverride?: ApprovalPrompt | AskUserPrompt,
@@ -1212,10 +1147,6 @@ export class AppStore {
     cancelled = false,
   ): Promise<void> {
     await this.interactionStore.decideApproval(choice, resumeAuto, promptOverride, cancelled);
-  }
-
-  private resetSideQuestion(): void {
-    this.sideQuestions.reset();
   }
 
   openSideQuestion(question = ''): boolean {

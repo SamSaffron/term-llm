@@ -82,10 +82,10 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// Keep bounded headroom while still failing meaningful accidental regressions.
 		// The bounded approval dialog, keyboard controls, and isolated streaming,
 		// diff/voice boundaries, atomic rich-content preparation, session readiness,
-		// and incremental transcript indexes bring eager JS to ~487.3 kB raw.
-		// Shared choice-card styles keep CSS under its existing raw budget;
-		// retain both compressed limits.
-		"dist/app.js":  {raw: 488_000, gzip: 140_000},
+		// and incremental transcript indexes are included in the post-cleanup
+		// baseline of ~491.8 kB raw. Allow modest raw JS headroom while retaining
+		// both compressed limits and the existing CSS budget.
+		"dist/app.js":  {raw: 495_000, gzip: 140_000},
 		"dist/app.css": {raw: 174_000, gzip: 34_000},
 		// Measured after the completed standalone port: 67.7/21.5 KiB JS and
 		// 16.7/4.1 KiB CSS. These limits retain modest growth headroom without

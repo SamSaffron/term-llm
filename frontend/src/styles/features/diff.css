@@ -470,9 +470,6 @@
 }
 
 .diff-row {
-  display: flex;
-  align-items: stretch;
-
   /* Wrap long lines instead of pushing them off-screen. */
   white-space: pre-wrap;
   transition: box-shadow var(--panel-fade-duration) ease;
@@ -586,7 +583,6 @@
   min-width: 0;
   padding-left: 0.55em;
   overflow-wrap: anywhere; /* break unbroken tokens so nothing scrolls off-screen */
-  color: var(--syntax-text);
 }
 
 /* System-aware GitHub syntax colors. The highlight module is shared by
@@ -991,8 +987,7 @@
 
 .diff-comment-cancel,
 .diff-comment-send,
-.diff-comment-send-more,
-.diff-comment-follow-up {
+.diff-comment-send-more {
   appearance: none;
   display: inline-flex;
   align-items: center;
@@ -1022,8 +1017,7 @@
   padding-block: calc(0.35rem + 1px) calc(0.35rem - 1px);
 }
 
-.diff-comment-cancel:hover,
-.diff-comment-follow-up:hover {
+.diff-comment-cancel:hover {
   border-color: var(--border-strong);
   background: var(--surface-3);
 }
@@ -1055,16 +1049,14 @@
 
 .diff-comment-cancel:focus-visible,
 .diff-comment-send:focus-visible,
-.diff-comment-send-more:focus-visible,
-.diff-comment-follow-up:focus-visible {
+.diff-comment-send-more:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
 .diff-comment-cancel:disabled,
 .diff-comment-send:disabled,
-.diff-comment-send-more:disabled,
-.diff-comment-follow-up:disabled {
+.diff-comment-send-more:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
@@ -1118,10 +1110,6 @@
 .diff-comment-send-option small {
   color: var(--text-muted);
   font-size: 0.68rem;
-}
-
-.diff-comment-follow-up {
-  margin-top: 0.5rem;
 }
 
 .diff-comment-history-item.queued {

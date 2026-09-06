@@ -2,38 +2,9 @@ import DOMPurify from 'dompurify';
 import { marked, Renderer } from 'marked';
 import { findStableMarkdownBoundary, isInCodeBlockFast } from './markdown-streaming';
 
-const escapeHTML = (value: unknown): string =>
-  String(value || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+import { escapeHTML, externalLink, markdownHooks } from './markdown-hooks';
 
-marked.use({
-  gfm: true,
-  breaks: true,
-  renderer: {
-    link({ href, title, tokens }) {
-      const label = this.parser.parseInline(tokens);
-      const safeTitle = title ? ` title="${escapeHTML(title)}"` : '';
-      return `<a href="${escapeHTML(href)}"${safeTitle} target="_blank" rel="noopener noreferrer">${label}</a>`;
-    },
-  },
-  walkTokens(token) {
-    if (token.type === 'del' && !token.raw.startsWith('~~')) {
-      const mutable = token as unknown as {
-        type: string;
-        text: string;
-        raw: string;
-        tokens?: unknown;
-      };
-      mutable.type = 'text';
-      mutable.text = mutable.raw;
-      delete mutable.tokens;
-    }
-  },
-});
+marked.use({ gfm: true, breaks: true, ...markdownHooks });
 
 // Keep math delimiters intact until the optional KaTeX pass. Placeholders are
 // escaped text, never HTML, so sanitizer policy remains authoritative.
@@ -68,11 +39,7 @@ export type MarkdownMediaResolver = (reference: string) => MarkdownMediaTarget |
 
 function mediaRenderer(resolveMedia: MarkdownMediaResolver): Renderer {
   const renderer = new Renderer();
-  renderer.link = function ({ href, title, tokens }) {
-    const label = this.parser.parseInline(tokens);
-    const safeTitle = title ? ` title="${escapeHTML(title)}"` : '';
-    return `<a href="${escapeHTML(href)}"${safeTitle} target="_blank" rel="noopener noreferrer">${label}</a>`;
-  };
+  renderer.link = externalLink;
   const defaultImage = renderer.image.bind(renderer);
   renderer.image = function (token) {
     const prefix = 'term-llm-media://';

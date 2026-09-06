@@ -27,7 +27,7 @@ console.log(`✓ All ${providerNames.length} built-in providers have credentials
 const site = path.resolve(fileURLToPath(new URL("../../.cache/docs-site/", import.meta.url)));
 const results = fileURLToPath(new URL("../test-results/", import.meta.url));
 await mkdir(results, { recursive: true });
-const types = { ".html": "text/html", ".css": "text/css", ".js": "text/javascript", ".json": "application/json", ".png": "image/png", ".svg": "image/svg+xml", ".wasm": "application/wasm" };
+const types = { ".html": "text/html", ".css": "text/css", ".js": "text/javascript", ".json": "application/json", ".png": "image/png", ".webp": "image/webp", ".svg": "image/svg+xml", ".wasm": "application/wasm" };
 const server = createServer(async (request, response) => {
   try {
     let pathname = decodeURIComponent(new URL(request.url, "http://localhost").pathname);
@@ -64,7 +64,7 @@ try {
       return {
         ids: [...doc.querySelectorAll("[id]")].map((node) => node.id),
         links: [...doc.querySelectorAll("a[href]")].map((node) => node.getAttribute("href")),
-        assets: [...doc.querySelectorAll("img[src], script[src], link[rel='stylesheet'], source[srcset]")].map((node) => node.getAttribute("src") || node.getAttribute("href") || node.getAttribute("srcset")),
+        assets: [...doc.querySelectorAll("img[src], script[src], link[rel='stylesheet'], source[srcset]")].flatMap((node) => [node.getAttribute("src") || node.getAttribute("href"), ...(node.getAttribute("srcset") || "").split(",").map((candidate) => candidate.trim().split(/\s+/)[0])].filter(Boolean)),
         headings: doc.querySelectorAll("h1").length,
         article: !!doc.querySelector("article.markdown"),
         currentNav: doc.querySelector('.docs-navigation [aria-current="page"]')?.getAttribute("href"),
@@ -160,7 +160,7 @@ try {
   await page.getByLabel("Color theme").selectOption("light");
   await page.reload();
   assert.equal(await page.locator("html").evaluate((el) => getComputedStyle(el).colorScheme), "light");
-  assert.ok((await page.locator(".product-shot img").first().evaluate((img) => img.currentSrc)).endsWith("/tour/review-light.png"));
+  assert.ok((await page.locator("#tour-panel-review img").evaluate((img) => img.currentSrc)).endsWith("/tour/review-light-900.webp"));
   await page.getByLabel("Color theme").selectOption("system");
   assert.equal(await page.locator("html").evaluate((el) => getComputedStyle(el).colorScheme), "dark");
   await page.emulateMedia({ colorScheme: "light" });

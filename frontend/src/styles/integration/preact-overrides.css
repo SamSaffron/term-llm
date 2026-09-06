@@ -548,11 +548,6 @@
   white-space: normal;
 }
 
-.diff-comment-trigger svg {
-  width: 0.85rem;
-  height: 0.85rem;
-}
-
 .diff-loading,
 .diff-empty {
   padding: 1rem 0.75rem;

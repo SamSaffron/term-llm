@@ -8,7 +8,7 @@
     document.querySelectorAll("[data-theme-image]").forEach((source) => {
       source.media = dark ? "all" : "not all";
       const link = source.closest("a") || source.closest("[data-tour-lightbox]")?.querySelector("[data-tour-original]");
-      if (link) link.href = dark ? source.srcset : source.parentElement.querySelector("img").src;
+      if (link) link.href = dark ? (source.dataset.fullImage || source.srcset) : (source.parentElement.querySelector("img").dataset.fullImage || source.parentElement.querySelector("img").src);
     });
   }
   if (themeSelect) {
@@ -78,8 +78,8 @@
     });
   });
 
-  // Labeled, keyboard-operable screenshot tour. Never rotate while someone is
-  // reading with the pointer/keyboard, viewing an image, or outside the viewport.
+  // Sliding screenshot tour. Pointer hover does not stop autoplay; explicit
+  // pause, keyboard interaction, reduced motion and offscreen state still do.
   document.querySelectorAll("[data-product-tour]").forEach((tour) => {
     const tabs = [...tour.querySelectorAll('[role="tab"]')];
     const panels = [...tour.querySelectorAll("[data-tour-panel]")];
@@ -88,7 +88,36 @@
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
     let active = 0;
     let paused = reducedMotion.matches;
-    let hovered = false;
+    const track = tour.querySelector(".tour-panels");
+    const viewport = tour.querySelector(".tour-window");
+    const dots = [...tour.querySelectorAll("[data-tour-dot]")];
+    let gesture;
+    let suppressClickUntil = 0;
+    let visualIndex = 1;
+    // Inert edge copies let autoplay and swipes wrap without travelling backwards
+    // through the entire gallery. Never duplicate IDs or expose copies to AT.
+    function edgeCopy(panel) {
+      const copy = panel.cloneNode(true);
+      copy.removeAttribute("id");
+      copy.removeAttribute("data-tour-panel");
+      copy.querySelectorAll("[id]").forEach(el => el.removeAttribute("id"));
+      copy.hidden = false;
+      copy.inert = true;
+      copy.setAttribute("aria-hidden", "true");
+      copy.classList.add("tour-clone");
+      return copy;
+    }
+    track.prepend(edgeCopy(panels[panels.length - 1]));
+    track.append(edgeCopy(panels[0]));
+    function position(index, instant = false) {
+      if (instant) track.style.transition = "none";
+      visualIndex = index;
+      track.style.transform = `translateX(-${index * 100}%)`;
+      if (instant) { void track.offsetWidth; track.style.transition = ""; }
+    }
+    track.addEventListener("transitionend", (event) => {
+      if (event.target === track && event.propertyName === "transform" && (visualIndex === 0 || visualIndex === panels.length + 1)) position(active + 1, true);
+    });
     let inView = false;
     let timer;
     let imageTrigger;
@@ -96,32 +125,42 @@
       clearTimeout(timer);
       rotation.disabled = reducedMotion.matches;
       rotation.title = reducedMotion.matches ? "Automatic rotation is disabled by your reduced-motion preference." : "";
-      rotation.textContent = paused ? "Play ▷" : "Pause Ⅱ";
+      rotation.dataset.paused = String(paused || reducedMotion.matches);
       rotation.setAttribute("aria-label", paused ? "Start automatic slideshow" : "Pause automatic slideshow");
-      if (paused || reducedMotion.matches || hovered || !inView || document.hidden || tour.contains(document.activeElement) || lightbox.open) return;
-      timer = setTimeout(() => activate((active + 1) % panels.length), 8000);
+      if (paused || reducedMotion.matches || gesture || !inView || document.hidden || lightbox.open) return;
+      timer = setTimeout(() => activate((active + 1) % panels.length, false, 1), 5000);
     }
-    function activate(index, manual = false, focus = false) {
-      if (manual) paused = true;
-      const changed = active !== index;
+    function activate(index, focus = false, direction = 0) {
+      if (visualIndex === 0 || visualIndex === panels.length + 1) position(active + 1, true);
+      const previous = active;
       active = index;
       tabs.forEach((tab, i) => {
         const selected = i === index;
         tab.setAttribute("aria-selected", String(selected));
         tab.tabIndex = selected ? 0 : -1;
-        panels[i].hidden = !selected;
+        panels[i].hidden = false;
+        panels[i].inert = !selected;
+        panels[i].setAttribute("aria-hidden", String(!selected));
+        if (selected) dots[i].setAttribute("aria-current", "true");
+        else dots[i].removeAttribute("aria-current");
       });
-      if (changed && !reducedMotion.matches) panels[index].querySelector("picture").animate?.([{ opacity: 0.35 }, { opacity: 1 }], { duration: 250 });
-      if (focus) tabs[index].focus();
+      const wrapNext = direction === 1 && previous === panels.length - 1 && index === 0;
+      const wrapPrevious = direction === -1 && previous === 0 && index === panels.length - 1;
+      position(reducedMotion.matches ? index + 1 : wrapNext ? panels.length + 1 : wrapPrevious ? 0 : index + 1, reducedMotion.matches);
+      if (focus) { paused = true; tabs[index].focus(); }
       schedule();
     }
     panels.forEach((panel, i) => {
       panel.setAttribute("role", "tabpanel");
       panel.setAttribute("aria-labelledby", tabs[i].id);
     });
+    tour.classList.add("is-ready");
+    position(1, true);
     tour.querySelector(".tour-controls").hidden = false;
+    tour.querySelector(".tour-pagination").hidden = false;
+    dots.forEach((dot, i) => dot.addEventListener("click", () => activate(i)));
     tabs.forEach((tab, i) => {
-      tab.addEventListener("click", () => activate(i, true));
+      tab.addEventListener("click", () => activate(i));
       tab.addEventListener("keydown", (event) => {
         let next;
         if (event.key === "ArrowRight") next = (i + 1) % tabs.length;
@@ -130,34 +169,50 @@
         if (event.key === "End") next = tabs.length - 1;
         if (next === undefined) return;
         event.preventDefault();
-        activate(next, true, true);
+        activate(next, true);
       });
     });
     rotation.addEventListener("click", () => { paused = !paused; schedule(); });
     // Keyboard focus stops rotation until the reader explicitly presses Play.
     tour.addEventListener("focusin", (event) => {
-      if (event.target !== rotation) paused = true;
+      if (event.target !== rotation && event.target.matches(":focus-visible")) paused = true;
       schedule();
     });
     tour.addEventListener("focusout", () => setTimeout(schedule, 0));
-    tour.addEventListener("pointerenter", (event) => { if (event.pointerType === "mouse") { hovered = true; schedule(); } });
-    tour.addEventListener("pointerleave", () => { hovered = false; schedule(); });
+    viewport.addEventListener("pointerdown", (event) => {
+      if (event.pointerType === "mouse" || !event.isPrimary) return;
+      gesture = { x: event.clientX, y: event.clientY, id: event.pointerId };
+      schedule();
+    });
+    viewport.addEventListener("pointercancel", () => { gesture = null; schedule(); });
+    viewport.addEventListener("pointerup", (event) => {
+      if (!gesture || event.pointerId !== gesture.id) return;
+      const dx = event.clientX - gesture.x;
+      const dy = event.clientY - gesture.y;
+      gesture = null;
+      if (Math.abs(dx) >= 50 && Math.abs(dx) > Math.abs(dy) * 1.3) {
+        const direction = dx < 0 ? 1 : -1;
+        suppressClickUntil = performance.now() + 500;
+        activate((active + direction + panels.length) % panels.length, false, direction);
+      } else schedule();
+    });
     document.addEventListener("visibilitychange", schedule);
-    reducedMotion.addEventListener("change", () => { if (reducedMotion.matches) paused = true; schedule(); });
+    reducedMotion.addEventListener("change", () => { if (reducedMotion.matches) { paused = true; position(active + 1, true); } schedule(); });
     if ("IntersectionObserver" in window) {
-      new IntersectionObserver(([entry]) => { inView = entry.isIntersecting && entry.intersectionRatio >= 0.5; schedule(); }, { threshold: 0.5 }).observe(tour);
+      new IntersectionObserver(([entry]) => { inView = entry.isIntersecting && entry.intersectionRatio >= 0.15; schedule(); }, { threshold: 0.15 }).observe(viewport);
     }
     tour.querySelectorAll("[data-tour-image]").forEach((link) => {
       link.addEventListener("click", (event) => {
+        if (performance.now() < suppressClickUntil) { event.preventDefault(); return; }
         if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || typeof lightbox.showModal !== "function") return;
         event.preventDefault();
         paused = true;
         imageTrigger = link;
         const image = link.querySelector("img");
         const large = lightbox.querySelector("[data-tour-large-image]");
-        large.src = image.src;
+        large.src = image.dataset.fullImage || image.src;
         large.alt = image.alt;
-        lightbox.querySelector("[data-tour-large-dark]").srcset = link.querySelector("source").srcset;
+        lightbox.querySelector("[data-tour-large-dark]").srcset = link.querySelector("source").dataset.fullImage || link.querySelector("source").srcset;
         document.getElementById("tour-lightbox-title").textContent = `${tabs[active].textContent.trim()} — full-size screenshot`;
         syncThemeImages();
         lightbox.showModal();

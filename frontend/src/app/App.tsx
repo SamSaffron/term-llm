@@ -67,40 +67,9 @@ function ShellOverlayLoader({ store }: { store: AppStore }) {
       current = false;
     };
   }, []);
-  if (error)
-    return (
-      <section {...overlayProps}>
-        <header class="shell-overlay-header">
-          <div class="shell-overlay-heading">
-            <span class="shell-prompt-mark" aria-hidden="true">
-              &gt;_
-            </span>
-            <div class="shell-title-block">
-              <div class="shell-title-row">
-                <h1>Shell</h1>
-                <span class="shell-status shell-status-error">
-                  <span class="shell-status-dot" aria-hidden="true" />
-                  Could not load
-                </span>
-              </div>
-            </div>
-          </div>
-          <div class="shell-overlay-actions">
-            <button class="btn shell-back" type="button" onClick={() => store.shellStore.back()}>
-              <Icon name="arrow-left" />
-              <span>{layout === 'fullscreen' ? 'Back to chat' : 'Hide terminal'}</span>
-            </button>
-          </div>
-        </header>
-        <div class="shell-error" role="alert">
-          {error}
-        </div>
-      </section>
-    );
-  return Overlay ? (
-    <Overlay store={store} />
-  ) : (
-    <section {...overlayProps} aria-busy="true">
+  if (Overlay && !error) return <Overlay store={store} />;
+  return (
+    <section {...overlayProps} aria-busy={error ? undefined : 'true'}>
       <header class="shell-overlay-header">
         <div class="shell-overlay-heading">
           <span class="shell-prompt-mark" aria-hidden="true">
@@ -109,9 +78,9 @@ function ShellOverlayLoader({ store }: { store: AppStore }) {
           <div class="shell-title-block">
             <div class="shell-title-row">
               <h1>Shell</h1>
-              <span class="shell-status">
+              <span class={`shell-status${error ? ' shell-status-error' : ''}`}>
                 <span class="shell-status-dot" aria-hidden="true" />
-                Loading…
+                {error ? 'Could not load' : 'Loading…'}
               </span>
             </div>
           </div>
@@ -123,6 +92,11 @@ function ShellOverlayLoader({ store }: { store: AppStore }) {
           </button>
         </div>
       </header>
+      {error && (
+        <div class="shell-error" role="alert">
+          {error}
+        </div>
+      )}
     </section>
   );
 }

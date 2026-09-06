@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { highlight, highlightDiffLine } from './rich-highlight';
 import { decorateRichContent, renderMarkdown, stableMarkdownBoundary } from './markdown';
-import { applyDocumentURLPolicy } from './markdown-document';
+import { applyDocumentURLPolicy, markdownDocumentBlocks } from './markdown-document';
 import {
   analyzeStreamingMarkdown,
   elasticStreamingFrameDelay,
@@ -18,6 +18,33 @@ import {
 } from './completions';
 
 describe('markdown security and streaming', () => {
+  it('shares link hardening while retaining each parser’s existing tilde behavior', () => {
+    const source = '~literal~ ~~deleted~~ [**label**](https://example.com/?a=1&b=2 "a & b")';
+    for (const [html, documentMode] of [
+      [renderMarkdown(source), false],
+      [renderMarkdown(source, () => undefined), false],
+      [
+        markdownDocumentBlocks(source)
+          .map((block) => block.html)
+          .join(''),
+        true,
+      ],
+    ] as const) {
+      const root = document.createElement('div');
+      root.innerHTML = html;
+      // Documents use lexer/parser directly, which does not invoke walkTokens.
+      expect([...root.querySelectorAll('del')].map((node) => node.textContent)).toEqual(
+        documentMode ? ['literal', 'deleted'] : ['deleted'],
+      );
+      if (!documentMode) expect(root.textContent).toContain('~literal~');
+      const link = root.querySelector('a')!;
+      expect(link.getAttribute('href')).toBe('https://example.com/?a=1&b=2');
+      expect(link.getAttribute('title')).toBe('a & b');
+      expect(link.getAttribute('target')).toBe('_blank');
+      expect(link.getAttribute('rel')).toBe('noopener noreferrer');
+      expect(link.querySelector('strong')?.textContent).toBe('label');
+    }
+  });
   it('resolves registered term-llm media references with contextual alt text', () => {
     const reference = '0123456789abcdef0123456789abcdef';
     const resolve = (value: string) =>

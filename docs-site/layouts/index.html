@@ -17,26 +17,32 @@
           <button type="button" id="tour-tab-{{ .id }}" role="tab" aria-controls="tour-panel-{{ .id }}" aria-selected="{{ if eq $index 0 }}true{{ else }}false{{ end }}" tabindex="{{ if eq $index 0 }}0{{ else }}-1{{ end }}">{{ .label }}</button>
           {{ end }}
         </div>
-        <button type="button" class="tour-rotation" data-tour-rotation aria-label="Pause automatic slideshow">Pause <span aria-hidden="true">Ⅱ</span></button>
       </div>
-      <div class="tour-panels">
+      <div class="tour-window"><div class="tour-panels">
         {{ range $index, $slide := .slides }}
         <figure class="product-shot tour-panel" id="tour-panel-{{ .id }}" data-tour-panel{{ if ne $index 0 }} hidden{{ end }}>
-          <a href="/images/tour/{{ .id }}-light.png" class="screenshot-link" aria-label="View full-size {{ .label }} screenshot" data-tour-image>
+          <a href="/images/tour/{{ .id }}-light.webp" class="screenshot-link" aria-label="View full-size {{ .label }} screenshot" data-tour-image>
             <picture>
-              <source srcset="/images/tour/{{ .id }}-dark.png" media="(prefers-color-scheme: dark)" data-theme-image="dark">
-              <img src="/images/tour/{{ .id }}-light.png" width="2560" height="1360" alt="{{ .alt }}" {{ if eq $index 0 }}fetchpriority="high"{{ else }}loading="lazy"{{ end }}>
+              <source srcset="/images/tour/{{ .id }}-dark-900.webp 900w, /images/tour/{{ .id }}-dark.webp 2560w" sizes="(max-width: 948px) calc(100vw - 48px), 900px" data-full-image="/images/tour/{{ .id }}-dark.webp" media="(prefers-color-scheme: dark)" data-theme-image="dark">
+              <img src="/images/tour/{{ .id }}-light-900.webp" srcset="/images/tour/{{ .id }}-light-900.webp 900w, /images/tour/{{ .id }}-light.webp 2560w" sizes="(max-width: 948px) calc(100vw - 48px), 900px" data-full-image="/images/tour/{{ .id }}-light.webp" width="2560" height="1360" alt="{{ .alt }}" {{ if eq $index 0 }}fetchpriority="high"{{ else }}loading="lazy"{{ end }}>
             </picture>
           </a>
           <figcaption><span>{{ .caption }}</span><a href="{{ .url }}">{{ .link }} →</a></figcaption>
         </figure>
         {{ end }}
       </div>
-      <p class="tour-note">{{ .caption }} Click a picture to enlarge.</p>
-      <noscript><p class="tour-fallback">More screenshots: {{ range $index, $slide := .slides }}{{ if $index }} · {{ end }}<a href="/images/tour/{{ .id }}-light.png">{{ .label }}</a>{{ end }}</p></noscript>
+      </div>
+      <div class="tour-pagination" hidden>
+        <div class="tour-dots" aria-label="Choose a screenshot">
+          {{ range $index, $slide := .slides }}<button type="button" data-tour-dot="{{ $index }}" aria-label="Show {{ .label }} screenshot"{{ if eq $index 0 }} aria-current="true"{{ end }}><span aria-hidden="true"></span></button>{{ end }}
+        </div>
+        <button type="button" class="tour-rotation" data-tour-rotation aria-label="Pause automatic slideshow"><svg class="tour-pause-icon" viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M6 4v12M14 4v12" fill="none" stroke="currentColor" stroke-width="2.5"/></svg><svg class="tour-play-icon" viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="m6 3 11 7-11 7Z" fill="currentColor"/></svg></button>
+      </div>
+      <p class="tour-note">Real interface · Illustrative activity</p>
+      <noscript><p class="tour-fallback">More screenshots: {{ range $index, $slide := .slides }}{{ if $index }} · {{ end }}<a href="/images/tour/{{ .id }}-light.webp">{{ .label }}</a>{{ end }}</p></noscript>
     </div>
     <dialog class="tour-lightbox" data-tour-lightbox aria-labelledby="tour-lightbox-title">
-      <div class="tour-lightbox-header"><h2 id="tour-lightbox-title">Product screenshot</h2><a class="tour-original" data-tour-original href="/images/tour/review-light.png" target="_blank" rel="noopener">Open original ↗</a><button type="button" class="quiet-button" data-tour-close aria-label="Close screenshot">Close <kbd>Esc</kbd></button></div>
+      <div class="tour-lightbox-header"><h2 id="tour-lightbox-title">Product screenshot</h2><a class="tour-original" data-tour-original href="/images/tour/review-light.webp" target="_blank" rel="noopener">Open original ↗</a><button type="button" class="quiet-button" data-tour-close aria-label="Close screenshot">Close <kbd>Esc</kbd></button></div>
       <picture><source data-tour-large-dark data-theme-image="dark" media="not all"><img data-tour-large-image alt=""></picture>
     </dialog>
     <div class="section-heading web-heading"><p class="eyebrow">{{ .eyebrow }}</p><h2 id="web-title">{{ .title }}</h2><p>{{ .description }}</p></div>

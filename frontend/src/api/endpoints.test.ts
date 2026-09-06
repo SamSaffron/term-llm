@@ -2,6 +2,63 @@ import { describe, expect, it, vi } from 'vitest';
 import type { APIClient } from './client';
 import { endpoints } from './endpoints';
 
+describe('session mutation request contracts', () => {
+  it('preserves paths, ownership, bodies and controls for shared POST requests', async () => {
+    const json = vi.fn(async () => ({}));
+    const routes = endpoints({ json } as unknown as APIClient);
+    const id = 'session/one';
+    const body = { selected: ['file'] };
+    const cases: Array<[() => Promise<unknown>, string, unknown, Record<string, unknown>]> = [
+      [() => routes.commitStage(id, body), 'commit/stage', body, {}],
+      [() => routes.createCommitRun(id, body), 'commit-runs', body, {}],
+      [
+        () => routes.markAttentionSeen(id, 'store', 42),
+        'attention/seen',
+        { store_instance_id: 'store', through_seq: 42 },
+        {},
+      ],
+      [() => routes.shellCreate(id, 100, 30), 'shell', { cols: 100, rows: 30 }, {}],
+      [
+        () => routes.shellInput(id, 'sh', 'text'),
+        'shell/input',
+        { shell_id: 'sh', data: 'text' },
+        {},
+      ],
+      [
+        () => routes.shellResize(id, 'sh', 80, 24),
+        'shell/resize',
+        { shell_id: 'sh', cols: 80, rows: 24 },
+        {},
+      ],
+      [
+        () => routes.shellCollaboration(id, 'sh', true),
+        'shell/collaboration',
+        { shell_id: 'sh', enabled: true },
+        { timeoutMs: 3000 },
+      ],
+      [
+        () => routes.shellInterrupt(id, 'sh', 'cmd'),
+        'shell/interrupt',
+        { shell_id: 'sh', command_id: 'cmd' },
+        { timeoutMs: 5000 },
+      ],
+      [() => routes.createSessionShare(id, body), 'shares', body, { retries: 0, timeoutMs: 0 }],
+    ];
+    for (const [call, path, payload, controls] of cases) {
+      await call();
+      expect(json).toHaveBeenLastCalledWith(
+        `/v1/sessions/session%2Fone/${path}`,
+        {
+          method: 'POST',
+          headers: { 'X-Term-LLM-Session-ID': id },
+          body: JSON.stringify(payload),
+        },
+        { policy: 'mutation', auth: 'session', ...controls },
+      );
+    }
+  });
+});
+
 describe('commit publishing endpoints', () => {
   it('previews with a network-sized timeout and submits an idempotent operation', async () => {
     const get = vi.fn(async () => ({}));

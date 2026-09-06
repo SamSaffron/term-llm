@@ -358,22 +358,22 @@
   min-width: 0;
 }
 
-.project-choice-name {
+.project-choice-name,
+.project-choice-path {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.project-choice-name {
   font-size: 0.82rem;
 }
 
 .project-choice-path {
-  min-width: 0;
-  overflow: hidden;
   color: var(--text-muted);
   font: 0.7rem/1.35 var(--font-mono);
   font-variant-ligatures: none;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .project-choice-badges {

@@ -17,6 +17,35 @@ export class APIError extends Error {
   }
 }
 
+function responseError(
+  body: string,
+  status: number,
+  fallback: string,
+  topLevelCode = true,
+): APIError {
+  let message = body || fallback;
+  let type = '';
+  try {
+    const parsed = JSON.parse(body) as {
+      error?: string | { message?: string; type?: string; code?: string };
+      message?: string;
+      type?: string;
+      code?: string;
+    };
+    if (typeof parsed.error === 'object') {
+      message = parsed.error.message || message;
+      type = parsed.error.type || parsed.error.code || '';
+    } else {
+      message = parsed.error || parsed.message || message;
+      // XHR uploads historically ignore a top-level code (but accept nested codes).
+      type = parsed.type || (topLevelCode ? parsed.code : '') || '';
+    }
+  } catch {
+    /* Preserve plain-text and malformed error responses. */
+  }
+  return new APIError(message, status, body, type);
+}
+
 export interface TransportHooks {
   getToken(): string;
   onAuthRequired(): void;
@@ -275,26 +304,7 @@ export class APIClient {
     const response = await this.request(path, init, policyOrControls);
     if (!response.ok) {
       const body = await response.text();
-      let message = body || `${response.status} ${response.statusText}`;
-      let type = '';
-      try {
-        const parsed = JSON.parse(body) as {
-          error?: string | { message?: string; type?: string; code?: string };
-          message?: string;
-          type?: string;
-          code?: string;
-        };
-        if (typeof parsed.error === 'object') {
-          message = parsed.error.message || message;
-          type = parsed.error.type || parsed.error.code || '';
-        } else {
-          message = parsed.error || parsed.message || message;
-          type = parsed.type || parsed.code || '';
-        }
-      } catch {
-        /* Plain text error. */
-      }
-      throw new APIError(message, response.status, body, type);
+      throw responseError(body, response.status, `${response.status} ${response.statusText}`);
     }
     if ([204, 205, 304].includes(response.status)) return undefined as T;
     return response.json() as Promise<T>;
@@ -391,25 +401,9 @@ export class APIClient {
         }
         if (xhr.status < 200 || xhr.status >= 300) {
           const raw = xhr.responseText || '';
-          let message = raw || `Upload returned ${xhr.status}`;
-          let type = '';
-          try {
-            const parsed = JSON.parse(raw) as {
-              error?: string | { message?: string; type?: string; code?: string };
-              message?: string;
-              type?: string;
-            };
-            if (typeof parsed.error === 'object') {
-              message = parsed.error.message || message;
-              type = parsed.error.type || parsed.error.code || '';
-            } else {
-              message = parsed.error || parsed.message || message;
-              type = parsed.type || '';
-            }
-          } catch {
-            /* Plain text response. */
-          }
-          finish(() => reject(new APIError(message, xhr.status, raw, type)));
+          finish(() =>
+            reject(responseError(raw, xhr.status, `Upload returned ${xhr.status}`, false)),
+          );
           return;
         }
         this.hooks.onNetworkState?.('online');
