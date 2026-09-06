@@ -7,6 +7,8 @@ export interface ApprovalPolicyResponse {
   default_mode: ApprovalMode;
   requested_mode: ApprovalMode;
   effective_mode: ApprovalMode;
+  /** Omitted by older servers, which always exposed these controls. */
+  controls_available?: boolean;
   guardian_available: boolean;
   guardian_auto_suspended: boolean;
 }
