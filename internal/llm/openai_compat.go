@@ -47,13 +47,17 @@ var defaultHTTPClient = newStreamingHTTPClient()
 // OpenAICompatProvider implements Provider for OpenAI-compatible APIs
 // Used by Ollama, LM Studio, and other compatible servers.
 type OpenAICompatProvider struct {
-	baseURL           string // Base URL - /chat/completions is appended
-	chatURL           string // Full chat URL - used as-is (optional, overrides baseURL)
-	apiKey            string // Optional, most servers ignore it
-	model             string
-	effort            string // reasoning effort: "low", "medium", "high", "xhigh", or ""
-	name              string // Display name: "Ollama", "LM Studio", etc.
-	headers           map[string]string
+	baseURL string // Base URL - /chat/completions is appended
+	chatURL string // Full chat URL - used as-is (optional, overrides baseURL)
+	apiKey  string // Optional, most servers ignore it
+	model   string
+	effort  string // reasoning effort: "low", "medium", "high", "xhigh", or ""
+	name    string // Display name: "Ollama", "LM Studio", etc.
+	headers map[string]string
+	// requestHeaders supplies per-request headers that are unknown when the
+	// provider is constructed (for example a gateway's per-conversation session
+	// attribution). Values here override the static headers above.
+	requestHeaders    func(ctx context.Context) map[string]string
 	noStreamOptions   bool                         // If true, don't send stream_options (for servers that reject it)
 	vllmThinking      bool                         // If true, send vLLM thinking controls instead of reasoning_effort
 	vllmThinkingParam string                       // Optional chat_template_kwargs key override ("thinking" for DeepSeek, "enable_thinking" for Qwen)
@@ -338,18 +342,31 @@ func (p *OpenAICompatProvider) makeRequest(ctx context.Context, method, endpoint
 		return nil, err
 	}
 
+	p.applyHeaders(ctx, httpReq)
+
+	return defaultHTTPClient.Do(httpReq)
+}
+
+// applyHeaders sets the common request headers: content type, optional bearer
+// auth, the provider's static headers, and any per-request headers.
+func (p *OpenAICompatProvider) applyHeaders(ctx context.Context, httpReq *http.Request) {
 	httpReq.Header.Set("Content-Type", "application/json")
 	if p.apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 	}
-	for key, value := range p.headers {
+	setNonEmptyHeaders(httpReq.Header, p.headers)
+	if p.requestHeaders != nil {
+		setNonEmptyHeaders(httpReq.Header, p.requestHeaders(ctx))
+	}
+}
+
+func setNonEmptyHeaders(header http.Header, values map[string]string) {
+	for key, value := range values {
 		if value == "" {
 			continue
 		}
-		httpReq.Header.Set(key, value)
+		header.Set(key, value)
 	}
-
-	return defaultHTTPClient.Do(httpReq)
 }
 
 func (p *OpenAICompatProvider) makeChatRequest(ctx context.Context, req oaiChatRequest) (*http.Response, error) {
@@ -375,16 +392,7 @@ func (p *OpenAICompatProvider) makeRequestToURL(ctx context.Context, method, url
 		return nil, err
 	}
 
-	httpReq.Header.Set("Content-Type", "application/json")
-	if p.apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	}
-	for key, value := range p.headers {
-		if value == "" {
-			continue
-		}
-		httpReq.Header.Set(key, value)
-	}
+	p.applyHeaders(ctx, httpReq)
 
 	return defaultHTTPClient.Do(httpReq)
 }

@@ -435,6 +435,7 @@ func fetchOpenCodeGoProviderUsage(ctx context.Context, apiKey string) (*Provider
 		return nil, fmt.Errorf("create OpenCode Go usage request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	applyOpenCodeGoAttributionHeaders(req.Header, "")
 
 	client := providerUsageHTTPClient
 	if client == nil {

@@ -271,7 +271,7 @@ func fetchOpenCodeGoModels(ctx context.Context, client *http.Client, apiKey, bas
 		body []byte
 		err  error
 	}
-	fetch := func(url, authHeader string, ch chan<- result) {
+	fetch := func(url, authHeader string, opencodeAPI bool, ch chan<- result) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			ch <- result{err: err}
@@ -279,6 +279,11 @@ func fetchOpenCodeGoModels(ctx context.Context, client *http.Client, apiKey, bas
 		}
 		if authHeader != "" {
 			req.Header.Set("Authorization", authHeader)
+		}
+		if opencodeAPI {
+			// Only the live OpenCode endpoint is their own API; the public
+			// catalog mirror gets no client or session attribution.
+			applyOpenCodeGoAttributionHeaders(req.Header, "")
 		}
 		resp, err := client.Do(req)
 		if err != nil {
@@ -298,9 +303,9 @@ func fetchOpenCodeGoModels(ctx context.Context, client *http.Client, apiKey, bas
 		liveAuth = "Bearer " + apiKey
 	}
 	liveCh, catalogCh := make(chan result, 1), make(chan result, 1)
-	go fetch(strings.TrimRight(baseURL, "/")+"/models", liveAuth, liveCh)
+	go fetch(strings.TrimRight(baseURL, "/")+"/models", liveAuth, true, liveCh)
 	// Never forward the subscription credential to the separate catalog origin.
-	go fetch(catalogURL, "", catalogCh)
+	go fetch(catalogURL, "", false, catalogCh)
 	liveResult, catalogResult := <-liveCh, <-catalogCh
 	if liveResult.err != nil {
 		return opencodeGoFetchResult{}, fmt.Errorf("list OpenCode Go models: %w", liveResult.err)

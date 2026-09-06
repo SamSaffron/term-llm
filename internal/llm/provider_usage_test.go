@@ -400,6 +400,12 @@ func TestFetchProviderUsageOpenCodeGo(t *testing.T) {
 		if got := req.Header.Get("Authorization"); got != "Bearer go-key" {
 			t.Fatalf("Authorization = %q", got)
 		}
+		if got := req.Header.Get(openCodeGoClientHeader); got != openCodeGoClientID {
+			t.Fatalf("%s = %q, want %q", openCodeGoClientHeader, got, openCodeGoClientID)
+		}
+		if got := req.Header.Get(openCodeGoSessionHeader); !validOpenCodeGoSessionID(got) {
+			t.Fatalf("%s = %q, want a header-safe fallback ID", openCodeGoSessionHeader, got)
+		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Status:     "200 OK",

@@ -470,6 +470,93 @@ func TestConfigureContextManagementRefreshesOpenCodeGoMetadata(t *testing.T) {
 	}
 }
 
+func TestOpenCodeGoSendsSessionAttributionHeaders(t *testing.T) {
+	for _, tc := range []struct {
+		model    string
+		wantPath string
+	}{
+		{model: "chat-model", wantPath: "/chat/completions"},
+		{model: "messages-model", wantPath: "/v1/messages"},
+		{model: "responses-model", wantPath: "/responses"},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			t.Setenv("XDG_CACHE_HOME", t.TempDir())
+			server, recorder := newOpenCodeGoTestServer(t)
+			defer server.Close()
+			provider := newOpenCodeGoProvider("test-key", tc.model, server.URL, server.URL+"/catalog", server.Client())
+
+			drainOpenCodeGoStream(t, mustOpenCodeGoStream(t, provider, Request{
+				SessionID: "session-abc",
+				Messages:  []Message{UserText("hello")},
+			}))
+			request := recorder.lastInferenceRequest(t)
+			if request.Path != tc.wantPath {
+				t.Fatalf("path = %q, want %q", request.Path, tc.wantPath)
+			}
+			if got := request.Header.Get(openCodeGoSessionHeader); got != "session-abc" {
+				t.Fatalf("%s = %q, want session-abc", openCodeGoSessionHeader, got)
+			}
+			if got := request.Header.Get(openCodeGoClientHeader); got != openCodeGoClientID {
+				t.Fatalf("%s = %q, want %q", openCodeGoClientHeader, got, openCodeGoClientID)
+			}
+
+			// Requests without a session ID still carry one, stable for this process.
+			drainOpenCodeGoStream(t, mustOpenCodeGoStream(t, provider, Request{Messages: []Message{UserText("hello")}}))
+			first := recorder.lastInferenceRequest(t).Header.Get(openCodeGoSessionHeader)
+			if !validOpenCodeGoSessionID(first) {
+				t.Fatalf("fallback session = %q, want a header-safe ID", first)
+			}
+			drainOpenCodeGoStream(t, mustOpenCodeGoStream(t, provider, Request{
+				SessionID: "bad session\nid",
+				Messages:  []Message{UserText("hello")},
+			}))
+			if second := recorder.lastInferenceRequest(t).Header.Get(openCodeGoSessionHeader); second != first {
+				t.Fatalf("unsafe session ID = %q, want stable fallback %q", second, first)
+			}
+		})
+	}
+}
+
+func TestOpenCodeGoCatalogSendsAttributionHeadersToLiveEndpointOnly(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	server, recorder := newOpenCodeGoTestServer(t)
+	defer server.Close()
+	provider := newOpenCodeGoProvider("test-key", "chat-model", server.URL, server.URL+"/catalog", server.Client())
+	if _, err := provider.ListModels(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	live := recorder.lastRequestForPath(t, "/models")
+	if got := live.Header.Get(openCodeGoClientHeader); got != openCodeGoClientID {
+		t.Fatalf("live catalog %s = %q, want %q", openCodeGoClientHeader, got, openCodeGoClientID)
+	}
+	if got := live.Header.Get(openCodeGoSessionHeader); !validOpenCodeGoSessionID(got) {
+		t.Fatalf("live catalog %s = %q, want a header-safe fallback ID", openCodeGoSessionHeader, got)
+	}
+	mirror := recorder.lastRequestForPath(t, "/catalog")
+	if got := mirror.Header.Get(openCodeGoClientHeader); got != "" {
+		t.Fatalf("public catalog mirror %s = %q, want unset", openCodeGoClientHeader, got)
+	}
+	if got := mirror.Header.Get(openCodeGoSessionHeader); got != "" {
+		t.Fatalf("public catalog mirror %s = %q, want unset", openCodeGoSessionHeader, got)
+	}
+
+	// Model listing is public, but the live endpoint is still OpenCode's API.
+	unauthenticated := newOpenCodeGoProvider("", "chat-model", server.URL, server.URL+"/catalog", server.Client())
+	if _, err := unauthenticated.ListModels(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	publicLive := recorder.lastRequestForPath(t, "/models")
+	if got := publicLive.Header.Get("Authorization"); got != "" {
+		t.Fatalf("unauthenticated live catalog Authorization = %q, want unset", got)
+	}
+	if got := publicLive.Header.Get(openCodeGoClientHeader); got != openCodeGoClientID {
+		t.Fatalf("unauthenticated live catalog %s = %q, want %q", openCodeGoClientHeader, got, openCodeGoClientID)
+	}
+	if got := publicLive.Header.Get(openCodeGoSessionHeader); got != live.Header.Get(openCodeGoSessionHeader) {
+		t.Fatalf("unauthenticated live catalog %s = %q, want fallback %q", openCodeGoSessionHeader, got, live.Header.Get(openCodeGoSessionHeader))
+	}
+}
+
 func mustOpenCodeGoStream(t *testing.T, provider *OpenCodeGoProvider, req Request) Stream {
 	t.Helper()
 	stream, err := provider.Stream(context.Background(), req)

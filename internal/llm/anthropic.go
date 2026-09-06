@@ -255,7 +255,10 @@ func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (St
 	return p.streamStandardForModel(ctx, req, model, reasoningEffort, p.thinkingBudget, p.useAdaptive, true)
 }
 
-func (p *AnthropicProvider) streamStandardForModel(ctx context.Context, req Request, model, reasoningEffort string, thinkingBudget int64, useAdaptive, includeOutputEffort bool) (Stream, error) {
+// streamStandardForModel streams a Messages request. Trailing request options
+// let callers attach per-request transport concerns (for example a gateway's
+// session attribution headers) that are not known when the client is built.
+func (p *AnthropicProvider) streamStandardForModel(ctx context.Context, req Request, model, reasoningEffort string, thinkingBudget int64, useAdaptive, includeOutputEffort bool, extraOpts ...option.RequestOption) (Stream, error) {
 	if req.MaxOutputTokens > 0 && thinkingBudget >= int64(req.MaxOutputTokens) {
 		thinkingBudget = int64(req.MaxOutputTokens - 1)
 	}
@@ -325,6 +328,7 @@ func (p *AnthropicProvider) streamStandardForModel(ctx context.Context, req Requ
 		if p.use1m {
 			streamOpts = append(streamOpts, option.WithHeaderAdd("anthropic-beta", the1mBetaHeader))
 		}
+		streamOpts = append(streamOpts, extraOpts...)
 		stream := p.client.Messages.NewStreaming(ctx, params, streamOpts...)
 		for stream.Next() {
 			event := stream.Current()
