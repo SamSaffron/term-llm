@@ -827,11 +827,13 @@ term-llm persists streamed reasoning and replays it as assistant `reasoning` on 
 
 ## Dynamic secrets and endpoints
 
-term-llm supports dynamic resolution for some config values:
+term-llm supports dynamic resolution for config values, so `config.yaml` can be tracked in dotfiles without storing a single plaintext secret:
 
 - `op://...` for 1Password secret references
 - `srv://...` for DNS SRV-based endpoint discovery
-- `$()` for command-based resolution
+- `file://path` and `file://path#json.path` for file contents or a JSON field
+- `$(...)` for command output (any secret manager with a CLI)
+- `${VAR}` / `$VAR` for environment variables
 
 Example:
 
@@ -844,7 +846,43 @@ providers:
     api_key: "op://Infrastructure/vLLM Cluster/credential?account=company.1password.com"
 ```
 
-These values are resolved lazily when term-llm actually needs them. Endpoint resolution applies to both provider `url` and `base_url`; `embed.ollama.base_url` uses the same resolver when the embedding provider is created.
+### Where it applies
+
+Every credential in `config.yaml` accepts these forms:
+
+| Setting | Notes |
+| --- | --- |
+| `providers.<name>.api_key`, `url`, `base_url`, `env.*` | Also `access_key_id`, `secret_access_key`, `session_token` for Bedrock |
+| `image.<provider>.api_key` | gemini, openai, xai, venice, flux, openrouter |
+| `audio.<provider>.api_key`, `music.<provider>.api_key` | venice, gemini, elevenlabs |
+| `transcription.<provider>.api_key` | venice, elevenlabs |
+| `embed.<provider>.api_key`, `embed.ollama.base_url` | openai, gemini, jina, voyage |
+| `search.<provider>.api_key`, `search.google.cx`, `search.exa_mcp.url` | exa, exa_mcp, perplexity, parallel, tavily, brave, google |
+| `serve.telegram.token` | |
+| `serve.web_push.vapid_public_key`, `vapid_private_key` | |
+
+MCP servers in `mcp.json` accept the same syntax in `headers`, `env`, and `oauth.client_secret`:
+
+```json
+{
+  "servers": {
+    "example": {
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "$(op read \"op://Private/Example MCP/token\")" }
+    }
+  }
+}
+```
+
+In `mcp.json` maps, only explicitly deferred forms (`op://`, `srv://`, `file://`, `$(...)`, `${VAR}`) are resolved; a literal value beginning with `$` is passed through unchanged.
+
+### Resolution is lazy
+
+Nothing is resolved when the config loads. A value is only resolved when the feature that needs it actually runs, so an `op://` key under `image.venice` never prompts 1Password unless you generate an image, and a vault-backed `search.brave.api_key` is not touched until a web search happens.
+
+Availability checks ("is web search configured?", "does Telegram need setup?") deliberately inspect configuration without resolving, so they never trigger a vault unlock. Successful resolutions are memoized for the life of the process, so a long-running `term-llm serve` unlocks each secret at most once.
+
+Failures surface at the point of use with the config key in the error, for example `image.venice.api_key: 1password: failed to read ...`.
 
 ## WebRTC direct routing config
 

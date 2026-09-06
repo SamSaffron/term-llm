@@ -161,9 +161,9 @@ func runAudio(cmd *cobra.Command, args []string) error {
 }
 
 func runVeniceAudio(cmd *cobra.Command, cfg *config.Config, text string, temperature, topP *float64) error {
-	apiKey := strings.TrimSpace(cfg.Audio.Venice.APIKey)
-	if apiKey == "" {
-		apiKey = strings.TrimSpace(cfg.Image.Venice.APIKey)
+	apiKey, err := config.ResolveFirstCredential(cfg.Audio.VeniceKey(), cfg.Image.VeniceKey())
+	if err != nil {
+		return fmt.Errorf("venice audio credentials: %w", err)
 	}
 	if apiKey == "" {
 		return fmt.Errorf("VENICE_API_KEY not configured. Set environment variable or add to audio.venice.api_key in config")
@@ -200,9 +200,9 @@ func runVeniceAudio(cmd *cobra.Command, cfg *config.Config, text string, tempera
 }
 
 func runGeminiAudio(cmd *cobra.Command, cfg *config.Config, text string, temperature, topP *float64) error {
-	apiKey := strings.TrimSpace(cfg.Audio.Gemini.APIKey)
-	if apiKey == "" {
-		apiKey = strings.TrimSpace(cfg.Image.Gemini.APIKey)
+	apiKey, err := config.ResolveFirstCredential(cfg.Audio.GeminiKey(), cfg.Image.GeminiKey())
+	if err != nil {
+		return fmt.Errorf("gemini audio credentials: %w", err)
 	}
 	if apiKey == "" {
 		geminiProvider, err := cfg.GetResolvedProviderConfig("gemini")
@@ -256,7 +256,10 @@ func runGeminiAudio(cmd *cobra.Command, cfg *config.Config, text string, tempera
 }
 
 func runElevenLabsAudio(cmd *cobra.Command, cfg *config.Config, text string) error {
-	apiKey := strings.TrimSpace(cfg.Audio.ElevenLabs.APIKey)
+	apiKey, err := cfg.Audio.ElevenLabsKey().Resolve()
+	if err != nil {
+		return fmt.Errorf("elevenlabs audio credentials: %w", err)
+	}
 	if apiKey == "" {
 		elevenLabsProvider, err := cfg.GetResolvedProviderConfig("elevenlabs")
 		if err != nil {

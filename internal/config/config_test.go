@@ -1553,47 +1553,41 @@ func TestSave_QuotesSpecialYAMLValues(t *testing.T) {
 	}
 }
 
-func TestResolveSearchCredentialsParallel(t *testing.T) {
+func TestSearchCredentialsParallel(t *testing.T) {
 	t.Setenv("PARALLEL_API_KEY", "env-key")
 
 	fallback := SearchConfig{}
-	resolveSearchCredentials(&fallback)
-	if fallback.Parallel.APIKey != "env-key" {
-		t.Fatalf("Parallel API key = %q, want env fallback", fallback.Parallel.APIKey)
+	if got, err := fallback.ParallelKey().Resolve(); err != nil || got != "env-key" {
+		t.Fatalf("Parallel API key = %q (err %v), want env fallback", got, err)
 	}
 
 	explicitEnv := SearchConfig{Parallel: SearchParallelConfig{APIKey: "${PARALLEL_API_KEY}"}}
-	resolveSearchCredentials(&explicitEnv)
-	if explicitEnv.Parallel.APIKey != "env-key" {
-		t.Fatalf("expanded Parallel API key = %q, want env-key", explicitEnv.Parallel.APIKey)
+	if got, err := explicitEnv.ParallelKey().Resolve(); err != nil || got != "env-key" {
+		t.Fatalf("expanded Parallel API key = %q (err %v), want env-key", got, err)
 	}
 
 	explicit := SearchConfig{Parallel: SearchParallelConfig{APIKey: "config-key"}}
-	resolveSearchCredentials(&explicit)
-	if explicit.Parallel.APIKey != "config-key" {
-		t.Fatalf("explicit Parallel API key = %q, want config-key", explicit.Parallel.APIKey)
+	if got, err := explicit.ParallelKey().Resolve(); err != nil || got != "config-key" {
+		t.Fatalf("explicit Parallel API key = %q (err %v), want config-key", got, err)
 	}
 }
 
-func TestResolveSearchCredentialsExaMCPEnvFallbackOnlyForOfficialURL(t *testing.T) {
+func TestSearchCredentialsExaMCPEnvFallbackOnlyForOfficialURL(t *testing.T) {
 	t.Setenv("EXA_API_KEY", "env-key")
 
 	official := SearchConfig{}
-	resolveSearchCredentials(&official)
-	if official.ExaMCP.APIKey != "env-key" {
-		t.Fatalf("official Exa MCP API key = %q, want env fallback", official.ExaMCP.APIKey)
+	if got, err := official.ExaMCPKey().Resolve(); err != nil || got != "env-key" {
+		t.Fatalf("official Exa MCP API key = %q (err %v), want env fallback", got, err)
 	}
 
 	custom := SearchConfig{ExaMCP: SearchExaMCPConfig{URL: "https://mcp.example.test/mcp"}}
-	resolveSearchCredentials(&custom)
-	if custom.ExaMCP.APIKey != "" {
-		t.Fatalf("custom Exa MCP API key = %q, want no implicit env fallback", custom.ExaMCP.APIKey)
+	if got, err := custom.ExaMCPKey().Resolve(); err != nil || got != "" {
+		t.Fatalf("custom Exa MCP API key = %q (err %v), want no implicit env fallback", got, err)
 	}
 
 	explicit := SearchConfig{ExaMCP: SearchExaMCPConfig{URL: "https://mcp.example.test/mcp", APIKey: "${EXA_API_KEY}"}}
-	resolveSearchCredentials(&explicit)
-	if explicit.ExaMCP.APIKey != "env-key" {
-		t.Fatalf("explicit custom Exa MCP API key = %q, want expanded env value", explicit.ExaMCP.APIKey)
+	if got, err := explicit.ExaMCPKey().Resolve(); err != nil || got != "env-key" {
+		t.Fatalf("explicit custom Exa MCP API key = %q (err %v), want expanded env value", got, err)
 	}
 }
 

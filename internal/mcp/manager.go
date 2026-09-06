@@ -15,6 +15,7 @@ import (
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
 )
@@ -690,7 +691,13 @@ func oauthOptionsForServer(server ServerConfig) mcpoauth.Options {
 		options.Scopes = append([]string(nil), server.OAuth.Scopes...)
 		options.ScopesConfigured = server.OAuth.Scopes != nil
 		options.ClientIDMetadataURL = server.OAuth.ClientIDMetadataURL
-		if server.OAuth.ClientSecretEnv != "" {
+		if strings.TrimSpace(server.OAuth.ClientSecret) != "" {
+			// Deferred values (op://, file://, $()) resolve here, at the point
+			// an OAuth flow actually needs the secret.
+			if secret, err := config.ResolveDeferred(server.OAuth.ClientSecret); err == nil {
+				options.ClientSecret = strings.TrimSpace(secret)
+			}
+		} else if server.OAuth.ClientSecretEnv != "" {
 			options.ClientSecret = os.Getenv(server.OAuth.ClientSecretEnv)
 		}
 	}

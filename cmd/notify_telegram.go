@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -37,7 +36,10 @@ func runNotifyTelegram(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	token := strings.TrimSpace(cfg.Serve.Telegram.Token)
+	token, err := cfg.Serve.Telegram.TokenRef().Resolve()
+	if err != nil {
+		return fmt.Errorf("serve.telegram.token: %w", err)
+	}
 	if token == "" {
 		return fmt.Errorf("telegram token is not configured (serve.telegram.token)")
 	}

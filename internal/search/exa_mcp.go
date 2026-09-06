@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -24,6 +25,13 @@ const (
 type ExaMCPClient struct {
 	url    string
 	apiKey string
+
+	// resolve, when set, supplies the endpoint and API key on first use so
+	// deferred credentials (op://, file://, $()) are only resolved when a
+	// search or fetch actually happens.
+	resolve     func() (string, string, error)
+	resolveOnce sync.Once
+	resolveErr  error
 }
 
 func NewExaMCPClient(url, apiKey string) *ExaMCPClient {
@@ -86,7 +94,31 @@ func (e *ExaMCPClient) FetchURL(ctx context.Context, url string) (string, error)
 	return out, nil
 }
 
+// ensureResolved resolves deferred endpoint/credential configuration once.
+func (e *ExaMCPClient) ensureResolved() error {
+	if e.resolve == nil {
+		return nil
+	}
+	e.resolveOnce.Do(func() {
+		url, apiKey, err := e.resolve()
+		if err != nil {
+			e.resolveErr = err
+			return
+		}
+		if strings.TrimSpace(url) == "" {
+			url = defaultExaMCPURL
+		}
+		e.url = url
+		e.apiKey = apiKey
+	})
+	return e.resolveErr
+}
+
 func (e *ExaMCPClient) callTool(ctx context.Context, tool string, args json.RawMessage) (string, error) {
+	if err := e.ensureResolved(); err != nil {
+		return "", fmt.Errorf("exa mcp configuration: %w", err)
+	}
+
 	arguments := map[string]any{}
 	if err := json.Unmarshal(args, &arguments); err != nil {
 		return "", fmt.Errorf("invalid exa mcp tool arguments: %w", err)

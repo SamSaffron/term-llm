@@ -68,7 +68,10 @@ func NewEmbeddingProvider(cfg *config.Config, providerOverride string) (Embeddin
 
 	switch provider {
 	case "openai":
-		apiKey := cfg.Embed.OpenAI.APIKey
+		apiKey, err := cfg.Embed.OpenAIKey().Resolve()
+		if err != nil {
+			return nil, fmt.Errorf("embed.openai.api_key: %w", err)
+		}
 		if apiKey == "" {
 			return nil, fmt.Errorf("OPENAI_API_KEY not configured. Set environment variable or add to embed.openai.api_key in config")
 		}
@@ -111,7 +114,10 @@ func NewEmbeddingProvider(cfg *config.Config, providerOverride string) (Embeddin
 		return p, nil
 
 	case "gemini":
-		apiKey := cfg.Embed.Gemini.APIKey
+		apiKey, err := cfg.Embed.GeminiKey().Resolve()
+		if err != nil {
+			return nil, fmt.Errorf("embed.gemini.api_key: %w", err)
+		}
 		if apiKey == "" {
 			return nil, fmt.Errorf("GEMINI_API_KEY not configured. Set environment variable or add to embed.gemini.api_key in config")
 		}
@@ -122,7 +128,10 @@ func NewEmbeddingProvider(cfg *config.Config, providerOverride string) (Embeddin
 		return p, nil
 
 	case "jina":
-		apiKey := cfg.Embed.Jina.APIKey
+		apiKey, err := cfg.Embed.JinaKey().Resolve()
+		if err != nil {
+			return nil, fmt.Errorf("embed.jina.api_key: %w", err)
+		}
 		if apiKey == "" {
 			return nil, fmt.Errorf("JINA_API_KEY not configured. Get a free key at https://jina.ai/embeddings/ and set JINA_API_KEY or add to embed.jina.api_key in config")
 		}
@@ -133,7 +142,10 @@ func NewEmbeddingProvider(cfg *config.Config, providerOverride string) (Embeddin
 		return p, nil
 
 	case "voyage":
-		apiKey := cfg.Embed.Voyage.APIKey
+		apiKey, err := cfg.Embed.VoyageKey().Resolve()
+		if err != nil {
+			return nil, fmt.Errorf("embed.voyage.api_key: %w", err)
+		}
 		if apiKey == "" {
 			return nil, fmt.Errorf("VOYAGE_API_KEY not configured. Set environment variable or add to embed.voyage.api_key in config")
 		}
@@ -144,15 +156,12 @@ func NewEmbeddingProvider(cfg *config.Config, providerOverride string) (Embeddin
 		return p, nil
 
 	case "ollama":
-		baseURL := cfg.Embed.Ollama.BaseURL
+		baseURL, err := cfg.Embed.OllamaBaseURLRef().Resolve()
+		if err != nil {
+			return nil, fmt.Errorf("embed.ollama.base_url: %w", err)
+		}
 		if baseURL == "" {
 			baseURL = config.DefaultEmbedOllamaBaseURL
-		} else {
-			var err error
-			baseURL, err = config.ResolveValue(baseURL)
-			if err != nil {
-				return nil, fmt.Errorf("embed.ollama.base_url: %w", err)
-			}
 		}
 		p := NewOllamaProvider(baseURL)
 		if model != "" {
@@ -177,10 +186,12 @@ func inferEmbeddingProvider(cfg *config.Config) string {
 	if cfg == nil {
 		return ""
 	}
-	if strings.TrimSpace(cfg.Embed.Gemini.APIKey) != "" {
+	// Availability checks must not resolve deferred credentials: inferring a
+	// provider should never unlock a vault.
+	if cfg.Embed.GeminiKey().Configured() {
 		return "gemini"
 	}
-	if strings.TrimSpace(cfg.Embed.OpenAI.APIKey) != "" {
+	if cfg.Embed.OpenAIKey().Configured() {
 		return "openai"
 	}
 	return ""

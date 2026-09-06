@@ -72,7 +72,10 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 
 	switch provider {
 	case "gemini":
-		apiKey := cfg.Image.Gemini.APIKey
+		apiKey, err := cfg.Image.GeminiKey().Resolve()
+		if err != nil {
+			return nil, fmt.Errorf("image.gemini.api_key: %w", err)
+		}
 		if apiKey == "" {
 			return nil, fmt.Errorf("GEMINI_API_KEY not configured. Set environment variable or add to image.gemini.api_key in config")
 		}
@@ -85,7 +88,10 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 		return NewGeminiProvider(apiKey, model, cfg.Image.Gemini.ImageSize), nil
 
 	case "openai":
-		apiKey := cfg.Image.OpenAI.APIKey
+		apiKey, err := cfg.Image.OpenAIKey().Resolve()
+		if err != nil {
+			return nil, fmt.Errorf("image.openai.api_key: %w", err)
+		}
 		if apiKey == "" {
 			return nil, fmt.Errorf("OPENAI_API_KEY not configured. Set environment variable or add to image.openai.api_key in config")
 		}
@@ -101,7 +107,10 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 		return NewChatGPTProvider(model)
 
 	case "xai", "grok":
-		apiKey := cfg.Image.XAI.APIKey
+		apiKey, err := cfg.Image.XAIKey().Resolve()
+		if err != nil {
+			return nil, fmt.Errorf("image.xai.api_key: %w", err)
+		}
 		if apiKey == "" {
 			return nil, fmt.Errorf("XAI_API_KEY not configured. Set environment variable or add to image.xai.api_key in config")
 		}
@@ -111,7 +120,10 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 		return NewXAIProvider(apiKey, model), nil
 
 	case "venice":
-		apiKey := cfg.Image.Venice.APIKey
+		apiKey, err := cfg.Image.VeniceKey().Resolve()
+		if err != nil {
+			return nil, fmt.Errorf("image.venice.api_key: %w", err)
+		}
 		if apiKey == "" {
 			return nil, fmt.Errorf("VENICE_API_KEY not configured. Set environment variable or add to image.venice.api_key in config")
 		}
@@ -122,14 +134,20 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 		return NewVeniceProvider(apiKey, model, editModel, cfg.Image.Venice.Resolution), nil
 
 	case "flux", "bfl":
-		apiKey := cfg.Image.Flux.APIKey
+		apiKey, err := cfg.Image.FluxKey().Resolve()
+		if err != nil {
+			return nil, fmt.Errorf("image.flux.api_key: %w", err)
+		}
 		if apiKey == "" {
 			return nil, fmt.Errorf("BFL_API_KEY not configured. Set environment variable or add to image.flux.api_key in config")
 		}
 		return NewFluxProvider(apiKey, model), nil
 
 	case "openrouter":
-		apiKey := cfg.Image.OpenRouter.APIKey
+		apiKey, err := cfg.Image.OpenRouterKey().Resolve()
+		if err != nil {
+			return nil, fmt.Errorf("image.openrouter.api_key: %w", err)
+		}
 		if apiKey == "" {
 			return nil, fmt.Errorf("OPENROUTER_API_KEY not configured. Set environment variable or add to image.openrouter.api_key in config")
 		}

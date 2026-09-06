@@ -162,12 +162,9 @@ func runMusic(cmd *cobra.Command, args []string) error {
 }
 
 func runVeniceMusic(cmd *cobra.Command, cfg *config.Config, req music.Request) error {
-	apiKey := strings.TrimSpace(cfg.Music.Venice.APIKey)
-	if apiKey == "" {
-		apiKey = strings.TrimSpace(cfg.Audio.Venice.APIKey)
-	}
-	if apiKey == "" {
-		apiKey = strings.TrimSpace(cfg.Image.Venice.APIKey)
+	apiKey, err := config.ResolveFirstCredential(cfg.Music.VeniceKey(), cfg.Audio.VeniceKey(), cfg.Image.VeniceKey())
+	if err != nil {
+		return fmt.Errorf("venice music credentials: %w", err)
 	}
 	if apiKey == "" {
 		return fmt.Errorf("VENICE_API_KEY not configured. Set environment variable or add to music.venice.api_key in config")
@@ -186,9 +183,9 @@ func runVeniceMusic(cmd *cobra.Command, cfg *config.Config, req music.Request) e
 }
 
 func runElevenLabsMusic(cmd *cobra.Command, cfg *config.Config, req music.Request) error {
-	apiKey := strings.TrimSpace(cfg.Music.ElevenLabs.APIKey)
-	if apiKey == "" {
-		apiKey = strings.TrimSpace(cfg.Audio.ElevenLabs.APIKey)
+	apiKey, err := config.ResolveFirstCredential(cfg.Music.ElevenLabsKey(), cfg.Audio.ElevenLabsKey())
+	if err != nil {
+		return fmt.Errorf("elevenlabs music credentials: %w", err)
 	}
 	if apiKey == "" {
 		elevenLabsProvider, err := cfg.GetResolvedProviderConfig("elevenlabs")

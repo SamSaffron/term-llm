@@ -56,8 +56,17 @@ func runNotifyBroadcast(cmd *cobra.Command, args []string) error {
 	var errs []string
 	sent := 0
 
-	// Telegram: send if token is configured and chat-id provided
-	token := strings.TrimSpace(cfg.Serve.Telegram.Token)
+	// Telegram: send if token is configured and chat-id provided. Resolution
+	// failures are reported alongside other platform errors rather than
+	// aborting web push.
+	token := ""
+	if notifyTelegramChatID != 0 && cfg.Serve.Telegram.TokenRef().Configured() {
+		resolved, tokenErr := cfg.Serve.Telegram.TokenRef().Resolve()
+		if tokenErr != nil {
+			errs = append(errs, fmt.Sprintf("serve.telegram.token: %v", tokenErr))
+		}
+		token = resolved
+	}
 	if token != "" && notifyTelegramChatID != 0 {
 		parseMode, err := normalizeTelegramParseMode(notifyTelegramParseMode)
 		if err != nil {
@@ -73,7 +82,7 @@ func runNotifyBroadcast(cmd *cobra.Command, args []string) error {
 	}
 
 	// Web Push: send if VAPID keys are configured
-	if cfg.Serve.WebPush.VAPIDPublicKey != "" && cfg.Serve.WebPush.VAPIDPrivateKey != "" {
+	if webPushConfigured(cfg) {
 		n, webErrs := sendWebPushAll(cmd.Context(), cfg, message, cmd.ErrOrStderr())
 		sent += n
 		errs = append(errs, webErrs...)

@@ -353,7 +353,7 @@ func (s *serveServer) buildIndexHTML() []byte {
 		headSnippet += `<script>window.TERM_LLM_HUB=` + string(hubEscaped) + `;</script>`
 	}
 	if s.cfgRef != nil {
-		if vapidKey := s.cfgRef.Serve.WebPush.VAPIDPublicKey; vapidKey != "" {
+		if vapidKey := webPushPublicKey(s.cfgRef); vapidKey != "" {
 			vapidEscaped, _ := json.Marshal(vapidKey)
 			headSnippet += `<script>window.TERM_LLM_VAPID_PUBLIC_KEY=` + string(vapidEscaped) + `;</script>`
 		}
@@ -4158,7 +4158,7 @@ func (s *serveServer) handlePushSubscribe(w http.ResponseWriter, r *http.Request
 	}
 	publicKey := ""
 	if s.cfgRef != nil {
-		publicKey = strings.TrimSpace(s.cfgRef.Serve.WebPush.VAPIDPublicKey)
+		publicKey = webPushPublicKey(s.cfgRef)
 		if publicKey == "" {
 			writeOpenAIError(w, http.StatusServiceUnavailable, "unsupported_error", "web push is not configured")
 			return
