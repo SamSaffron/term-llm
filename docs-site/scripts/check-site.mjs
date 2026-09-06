@@ -89,6 +89,8 @@ try {
       if (!link || /^(mailto:|tel:|data:)/.test(link)) continue;
       const url = new URL(link, base);
       if (url.origin !== "https://term-llm.com") continue;
+      // The interactive learning app is deployed separately, not emitted by Hugo.
+      if (url.href === "https://term-llm.com/learn") continue;
       let target = path.join(site, decodeURIComponent(url.pathname));
       if (url.pathname.endsWith("/")) target = path.join(target, "index.html");
       try { await stat(target); } catch (_) { broken.push(`${path.relative(site, filename)} → ${link}`); continue; }
@@ -135,6 +137,9 @@ try {
   }
   await page.goto(origin);
   await noOverflow();
+  const tryLink = page.getByRole("navigation", { name: "Primary", exact: true }).getByRole("link", { name: "Try", exact: true });
+  assert.equal(await tryLink.getAttribute("href"), "https://term-llm.com/learn");
+  assert.ok(await tryLink.isVisible(), "Try link should be visible in the desktop header");
   assert.equal(await page.locator(".terminal-demo .command-block code").textContent(), 'term-llm exec "list files"');
   assert.ok(await page.locator(".exec-options li").count() > 1, "Exec should show a choice of commands, not a single output");
   assert.equal(await page.locator(".exec-options .highlighted").count(), 1);
@@ -241,6 +246,9 @@ try {
       const override = await page.addStyleTag({ content: `body { font-family: ${font}; }` });
       await noOverflow(font);
       await page.locator(".mobile-menu summary").click();
+      const mobileTryLink = page.getByRole("navigation", { name: "Mobile primary", exact: true }).getByRole("link", { name: "Try", exact: true });
+      assert.equal(await mobileTryLink.getAttribute("href"), "https://term-llm.com/learn");
+      assert.ok(await mobileTryLink.isVisible(), "Try link should be visible in the open mobile menu");
       await noOverflow(`${font}, open menu`);
       await page.locator(".mobile-menu summary").click();
       await override.evaluate((element) => element.remove());

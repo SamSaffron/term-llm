@@ -44,7 +44,10 @@ func TestCreateStdioTransport_InheritsEnv(t *testing.T) {
 		},
 	}
 
-	transport := client.createStdioTransport(context.Background())
+	transport, stdioErr := client.createStdioTransport(context.Background())
+	if stdioErr != nil {
+		t.Fatalf("createStdioTransport: %v", stdioErr)
+	}
 	ct, ok := transport.(*sdkmcp.CommandTransport)
 	if !ok {
 		t.Fatal("expected sdkmcp.CommandTransport")
@@ -85,7 +88,10 @@ func TestCreateStdioTransport_NoEnvNil(t *testing.T) {
 		},
 	}
 
-	transport := client.createStdioTransport(context.Background())
+	transport, stdioErr := client.createStdioTransport(context.Background())
+	if stdioErr != nil {
+		t.Fatalf("createStdioTransport: %v", stdioErr)
+	}
 	ct, ok := transport.(*sdkmcp.CommandTransport)
 	if !ok {
 		t.Fatal("expected sdkmcp.CommandTransport")
@@ -107,7 +113,10 @@ func TestCreateStdioTransport_EmptyEnvNil(t *testing.T) {
 		},
 	}
 
-	transport := client.createStdioTransport(context.Background())
+	transport, stdioErr := client.createStdioTransport(context.Background())
+	if stdioErr != nil {
+		t.Fatalf("createStdioTransport: %v", stdioErr)
+	}
 	ct, ok := transport.(*sdkmcp.CommandTransport)
 	if !ok {
 		t.Fatal("expected sdkmcp.CommandTransport")
@@ -155,7 +164,10 @@ func TestCreateStdioTransport_EnvOverridesParent(t *testing.T) {
 		},
 	}
 
-	transport := client.createStdioTransport(context.Background())
+	transport, stdioErr := client.createStdioTransport(context.Background())
+	if stdioErr != nil {
+		t.Fatalf("createStdioTransport: %v", stdioErr)
+	}
 	ct := transport.(*sdkmcp.CommandTransport)
 
 	// The overridden value should appear (last wins in exec.Cmd)
@@ -465,7 +477,10 @@ func TestCreateStdioTransport_ConfiguresDetachedProcessGroupCancellation(t *test
 		},
 	}
 
-	transport := client.createStdioTransport(context.Background())
+	transport, stdioErr := client.createStdioTransport(context.Background())
+	if stdioErr != nil {
+		t.Fatalf("createStdioTransport: %v", stdioErr)
+	}
 	ct := transport.(*sdkmcp.CommandTransport)
 
 	if ct.Command.Cancel == nil {

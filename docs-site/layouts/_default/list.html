@@ -5,7 +5,7 @@
     <div class="doc-intro markdown">{{ .Content }}</div>
   </header>
   {{ if eq .Section "guides" }}
-    {{ range site.Data.navigation.groups }}
+    {{ range hugo.Data.navigation.groups }}
       {{ if eq .section "guides" }}
         <section class="guide-group" aria-labelledby="group-{{ .title | anchorize }}">
           <h2 id="group-{{ .title | anchorize }}">{{ .title }}</h2>

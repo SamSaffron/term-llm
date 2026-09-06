@@ -37,7 +37,7 @@ func runNotifyWeb(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if cfg.Serve.WebPush.VAPIDPublicKey == "" || cfg.Serve.WebPush.VAPIDPrivateKey == "" {
+	if !webPushConfigured(cfg) {
 		return fmt.Errorf("VAPID keys not configured (run 'term-llm serve web' to auto-generate)")
 	}
 
@@ -55,6 +55,49 @@ func runNotifyWeb(cmd *cobra.Command, args []string) error {
 		}
 	}
 	return nil
+}
+
+// webPushConfigured reports whether both VAPID keys are configured, without
+// resolving deferred values (op://, file://, $()).
+func webPushConfigured(cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	return cfg.Serve.WebPush.PublicKeyRef().Configured() && cfg.Serve.WebPush.PrivateKeyRef().Configured()
+}
+
+// webPushKeys resolves the VAPID keypair on demand.
+func webPushKeys(cfg *config.Config) (publicKey string, privateKey string, err error) {
+	if cfg == nil {
+		return "", "", fmt.Errorf("web push is not configured")
+	}
+	publicKey, err = cfg.Serve.WebPush.PublicKeyRef().Resolve()
+	if err != nil {
+		return "", "", fmt.Errorf("serve.web_push.vapid_public_key: %w", err)
+	}
+	if publicKey == "" {
+		return "", "", fmt.Errorf("serve.web_push.vapid_public_key resolved to an empty value")
+	}
+	privateKey, err = cfg.Serve.WebPush.PrivateKeyRef().Resolve()
+	if err != nil {
+		return "", "", fmt.Errorf("serve.web_push.vapid_private_key: %w", err)
+	}
+	if privateKey == "" {
+		return "", "", fmt.Errorf("serve.web_push.vapid_private_key resolved to an empty value")
+	}
+	return publicKey, privateKey, nil
+}
+
+// webPushPublicKey distinguishes an unavailable secret from an absent setting.
+func webPushPublicKey(cfg *config.Config) (string, error) {
+	if cfg == nil {
+		return "", nil
+	}
+	key, err := cfg.Serve.WebPush.PublicKeyRef().Resolve()
+	if err != nil {
+		return "", fmt.Errorf("serve.web_push.vapid_public_key: %w", err)
+	}
+	return key, nil
 }
 
 func webPushKeyID(publicKey string) string {
@@ -98,9 +141,14 @@ func sendWebPushAll(ctx context.Context, cfg *config.Config, message string, err
 
 	subject := normalizeWebPushSubject(cfg.Serve.WebPush.Subject)
 
+	publicKey, privateKey, keyErr := webPushKeys(cfg)
+	if keyErr != nil {
+		return 0, []string{keyErr.Error()}
+	}
+
 	opts := &webpush.Options{
-		VAPIDPublicKey:  cfg.Serve.WebPush.VAPIDPublicKey,
-		VAPIDPrivateKey: cfg.Serve.WebPush.VAPIDPrivateKey,
+		VAPIDPublicKey:  publicKey,
+		VAPIDPrivateKey: privateKey,
 		Subscriber:      subject,
 		TTL:             60,
 	}

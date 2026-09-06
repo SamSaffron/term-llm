@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -34,7 +35,7 @@ func completionPushEventID(responseID, subscriptionID string) string {
 
 func (s *serveServer) validateCompletionPushTarget(ctx context.Context, id string) (string, error) {
 	store, ok := session.AsPushSubscriptionLifecycleStore(s.store)
-	if !ok || s.cfgRef == nil || strings.TrimSpace(s.cfgRef.Serve.WebPush.VAPIDPublicKey) == "" {
+	if !ok || s.cfgRef == nil || !s.cfgRef.Serve.WebPush.PublicKeyRef().Configured() {
 		return "", fmt.Errorf("completion notifications are unavailable")
 	}
 	sub, err := store.GetPushSubscription(ctx, strings.TrimSpace(id))
@@ -44,7 +45,14 @@ func (s *serveServer) validateCompletionPushTarget(ctx context.Context, id strin
 	if sub == nil || sub.Status != "active" {
 		return "", fmt.Errorf("completion notification subscription is stale or missing")
 	}
-	if sub.VAPIDKeyID != webPushKeyID(s.cfgRef.Serve.WebPush.VAPIDPublicKey) {
+	publicKey, err := webPushPublicKey(s.cfgRef)
+	if err != nil {
+		return "", fmt.Errorf("completion notifications are temporarily unavailable: %w", err)
+	}
+	if publicKey == "" {
+		return "", fmt.Errorf("completion notifications are unavailable")
+	}
+	if sub.VAPIDKeyID != webPushKeyID(publicKey) {
 		_ = store.MarkPushSubscriptionStale(ctx, sub.ID, "vapid_rotated", "server push key changed")
 		return "", fmt.Errorf("completion notification subscription uses an old server key")
 	}
@@ -89,7 +97,7 @@ func (s *serveServer) enqueueCompletionPush(responseID, sessionID, subscriptionI
 
 func (s *serveServer) startCompletionPushDispatcher() {
 	outbox, ok := session.AsCompletionPushOutboxStore(s.store)
-	if !ok || s.cfgRef == nil || strings.TrimSpace(s.cfgRef.Serve.WebPush.VAPIDPublicKey) == "" || strings.TrimSpace(s.cfgRef.Serve.WebPush.VAPIDPrivateKey) == "" {
+	if !ok || !webPushConfigured(s.cfgRef) {
 		return
 	}
 	if s.completionPushWake == nil {
@@ -123,8 +131,13 @@ func (s *serveServer) dispatchCompletionPushes(outbox session.CompletionPushOutb
 	if !ok {
 		return
 	}
+	publicKey, privateKey, keyErr := webPushKeys(s.cfgRef)
+	if keyErr != nil {
+		log.Printf("warning: completion push deferred: %v", keyErr)
+		return
+	}
 	opts := &webpush.Options{
-		VAPIDPublicKey: s.cfgRef.Serve.WebPush.VAPIDPublicKey, VAPIDPrivateKey: s.cfgRef.Serve.WebPush.VAPIDPrivateKey,
+		VAPIDPublicKey: publicKey, VAPIDPrivateKey: privateKey,
 		Subscriber: normalizeWebPushSubject(s.cfgRef.Serve.WebPush.Subject), TTL: 300,
 	}
 	for _, item := range items {
@@ -133,7 +146,7 @@ func (s *serveServer) dispatchCompletionPushes(outbox session.CompletionPushOutb
 			s.retryCompletionPush(ctx, outbox, item, getErr)
 			continue
 		}
-		if sub == nil || sub.Status != "active" || sub.VAPIDKeyID != webPushKeyID(s.cfgRef.Serve.WebPush.VAPIDPublicKey) {
+		if sub == nil || sub.Status != "active" || sub.VAPIDKeyID != webPushKeyID(publicKey) {
 			_ = outbox.MarkCompletionPushDead(ctx, item.ID, "subscription is stale or missing")
 			continue
 		}

@@ -216,12 +216,11 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 	// Build web tools.
 	var webSearchTool *llm.WebSearchTool
 	if wantWebSearch {
-		searcher, searchErr := search.NewSearcher(cfg)
-		if searchErr != nil {
+		if searchErr := search.Available(cfg); searchErr != nil {
 			log.Printf("warning: search provider not configured, skipping web_search: %v", searchErr)
 			wantWebSearch = false
 		} else {
-			webSearchTool = llm.NewWebSearchTool(searcher)
+			webSearchTool = llm.NewWebSearchTool(search.NewLazySearcher(cfg))
 		}
 	}
 

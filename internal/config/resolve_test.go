@@ -113,3 +113,84 @@ func TestResolveValue_FileJSONFragment(t *testing.T) {
 		t.Fatalf("ResolveValue(file#nested.value) = %q, want %q", got, "xyz")
 	}
 }
+
+func TestResolveValueFileYAMLFragment(t *testing.T) {
+	for _, ext := range []string{".yml", ".yaml", ".YAML"} {
+		t.Run(ext, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "secrets"+ext)
+			content := "# Private secrets\nopenai: 'sk-test'\nshared: &token quoted-secret\nnested:\n  token: *token\n  number: '012345'\n"
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for fragment, want := range map[string]string{"openai": "sk-test", "nested.token": "quoted-secret", "nested.number": "012345"} {
+				got, err := ResolveValue("file://" + path + "#" + fragment)
+				if err != nil || got != want {
+					t.Fatalf("%s = %q, %v; want %q", fragment, got, err, want)
+				}
+			}
+			got, err := ResolveValue("file://" + path)
+			if err != nil || got != strings.TrimSpace(content) {
+				t.Fatalf("whole file = %q, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestResolveValueFileYAMLErrors(t *testing.T) {
+	for _, tc := range []struct{ name, content, fragment string }{
+		{"syntax", "token: [", "token"},
+		{"duplicate", "token: one\ntoken: two", "token"},
+		{"missing", "token: one", "missing"},
+		{"non-mapping", "token: one", "token.nested"},
+		{"empty-path", "token: one", "token..nested"},
+		{"multiple-documents", "token: one\n---\ntoken: two", "token"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "secrets.yml")
+			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ResolveValue("file://" + path + "#" + tc.fragment); err == nil {
+				t.Fatal("expected fragment resolution error")
+			}
+		})
+	}
+}
+
+func TestResolveValueFileNullFragment(t *testing.T) {
+	for _, tc := range []struct{ name, content string }{
+		{"null.json", `{"token":null}`},
+		{"null.yml", "token: null"},
+		{"empty.yaml", "token:"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), tc.name)
+			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ref := Cred("file://" + path + "#token")
+			if got, err := ref.Resolve(); err == nil || got != "" || !strings.Contains(err.Error(), "is null") {
+				t.Fatalf("null fragment = %q, %v", got, err)
+			}
+			// JSON is valid YAML too. Repairing the source must work without reset.
+			if err := os.WriteFile(path, []byte(`{"token":"repaired"}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := ref.Resolve(); err != nil || got != "repaired" {
+				t.Fatalf("repaired fragment = %q, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestResolveValueFileYAMLScalarAndMixedKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.yml")
+	if err := os.WriteFile(path, []byte("123: ignored\nport: 8080\nenabled: true\ntoken: quoted-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for field, want := range map[string]string{"port": "8080", "enabled": "true", "token": "quoted-token"} {
+		if got, err := ResolveValue("file://" + path + "#" + field); err != nil || got != want {
+			t.Fatalf("%s = %q, %v", field, got, err)
+		}
+	}
+}

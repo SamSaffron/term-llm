@@ -1525,7 +1525,7 @@ func TestServeWebHubFlagsInjectContext(t *testing.T) {
 		hubNodeID:   "jarvis",
 		hubNodeName: "Jarvis",
 	}}
-	html := string(srv.buildIndexHTML())
+	html := string(srv.buildIndexHTML(""))
 	if !strings.Contains(html, `window.TERM_LLM_HUB={"nodeId":"jarvis","nodeName":"Jarvis","url":"http://127.0.0.1:8090/"}`) {
 		t.Errorf("index missing hub context: %s", html[:min(600, len(html))])
 	}
@@ -1535,7 +1535,7 @@ func TestServeWebHubFlagsInjectContext(t *testing.T) {
 // needles (see hubRebaseUIPrefix).
 func TestHubRebaseNeedlesMatchServeOutput(t *testing.T) {
 	srv := &serveServer{cfg: serveServerConfig{basePath: "/chat"}}
-	html := srv.buildIndexHTML()
+	html := srv.buildIndexHTML("")
 	rewritten, baseHits, prefixHits := hubRebaseUIPrefix(html, "/chat", "/node/x")
 	if baseHits == 0 || prefixHits == 0 {
 		t.Fatalf("rebase needles drifted: baseHits=%d prefixHits=%d", baseHits, prefixHits)

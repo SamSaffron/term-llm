@@ -373,7 +373,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	hasTelegram := platformContains(platformNames, "telegram")
 
 	// Auto-generate VAPID keys for web push if not already configured.
-	if hasWeb && (cfg.Serve.WebPush.VAPIDPublicKey == "" || cfg.Serve.WebPush.VAPIDPrivateKey == "") {
+	if hasWeb && !webPushConfigured(cfg) {
 		privKey, pubKey, genErr := webpush.GenerateVAPIDKeys()
 		if genErr != nil {
 			return fmt.Errorf("generate VAPID keys: %w", genErr)
@@ -1424,7 +1424,7 @@ type serveServer struct {
 	pathNotesProviderFactory func(providerName, model string) (llm.Provider, error)
 	widgetsMgr               *widgets.Manager
 	extensions               *serveExtensions
-	indexHTMLOnce            sync.Once
+	indexHTMLMu              sync.Mutex
 	cachedIndexHTML          []byte
 	worktreeRootOnce         sync.Once
 	worktreeRoot             string

@@ -269,7 +269,10 @@ func (s *serveServer) notifyQueuedAgentTelegram(ctx context.Context, chatID int6
 	if s == nil || s.cfgRef == nil || chatID == 0 || strings.TrimSpace(message) == "" {
 		return nil
 	}
-	token := strings.TrimSpace(s.cfgRef.Serve.Telegram.Token)
+	token, err := s.cfgRef.Serve.Telegram.TokenRef().Resolve()
+	if err != nil {
+		return fmt.Errorf("serve.telegram.token: %w", err)
+	}
 	if token == "" {
 		return nil
 	}

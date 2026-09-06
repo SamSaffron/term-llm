@@ -3,7 +3,7 @@
     <summary>Browse documentation</summary>
     <nav aria-label="Documentation">
       {{ $current := . }}
-      {{ range site.Data.navigation.groups }}
+      {{ range hugo.Data.navigation.groups }}
         <div class="nav-group">
           <p>{{ .title }}</p>
           {{ $section := .section }}

@@ -9,7 +9,7 @@ groups:
   - title: Browser workspace
     section: guides
     description: A complete interface for conversations, projects, and agent work.
-    pages: [web-ui-and-api, widgets]
+    pages: [web-ui-and-api, widgets, extensions]
   - title: Agents and automation
     section: guides
     description: Give repeatable work its own instructions, tools, and schedule.
@@ -17,7 +17,7 @@ groups:
   - title: Models and tools
     section: guides
     description: Connect external tools and build on the runtime.
-    pages: [mcp-servers, serve-mcp, text-embeddings]
+    pages: [secret-management, mcp-servers, serve-mcp, text-embeddings]
   - title: Web and deployment
     section: guides
     description: Run on your own infrastructure and reach your agents remotely.

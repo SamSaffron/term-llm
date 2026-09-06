@@ -1,10 +1,10 @@
 # term-llm site
 
-The product homepage and documentation are built with **Hugo 0.145.0**. The site is static: no frontend framework, hosted search service, remote fonts, or runtime package installation is required in production.
+The product homepage and documentation are built with **Hugo Extended 0.165.0**, matching the pinned version in the docs deployment workflow. The site is static: no frontend framework, hosted search service, remote fonts, or runtime package installation is required in production.
 
 ## Develop
 
-Run from the repository root with Hugo and Node.js 24 or newer installed:
+Run from the repository root with Hugo and Node.js 24 or newer installed. With mise, install and select the matching Hugo version using `mise use --global hugo-extended@0.165.0`.
 
 ```bash
 npm --prefix docs-site ci
@@ -18,7 +18,7 @@ npm --prefix docs-site run build
 python3 -m http.server 1313 --bind 127.0.0.1 --directory .cache/docs-site
 ```
 
-The build writes to `.cache/docs-site/`, including `/pagefind/` assets. `package-lock.json` pins the search builder and browser validation tools. Deployment uses the same build and validation commands before publishing.
+The build cleans its destination before writing to `.cache/docs-site/`, so removed pages cannot linger in local validation or deployment output. Pagefind then creates `/pagefind/` assets. `package-lock.json` pins the search builder and browser validation tools. Deployment uses the same build and validation commands before publishing.
 
 ## Validate
 

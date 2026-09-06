@@ -312,13 +312,30 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *serveServer) renderIndexHTML() []byte {
-	s.indexHTMLOnce.Do(func() {
-		s.cachedIndexHTML = s.buildIndexHTML()
-	})
-	return s.cachedIndexHTML
+	s.indexHTMLMu.Lock()
+	cached := s.cachedIndexHTML
+	s.indexHTMLMu.Unlock()
+	if cached != nil {
+		return cached
+	}
+	// Resolve outside the HTML lock. The credential cache shares concurrent
+	// lookups, so a vault failure does not serialize a queue of page requests.
+	publicKey, err := webPushPublicKey(s.cfgRef)
+	html := s.buildIndexHTML(publicKey)
+	s.indexHTMLMu.Lock()
+	defer s.indexHTMLMu.Unlock()
+	if s.cachedIndexHTML != nil {
+		return s.cachedIndexHTML
+	}
+	if err == nil && (publicKey != "" || s.cfgRef == nil || !s.cfgRef.Serve.WebPush.PublicKeyRef().Configured()) {
+		s.cachedIndexHTML = html
+	}
+	// A locked vault must not permanently remove push support from the shell.
+	// Serve the rest of the UI and retry the key on the next page request.
+	return html
 }
 
-func (s *serveServer) buildIndexHTML() []byte {
+func (s *serveServer) buildIndexHTML(vapidKey string) []byte {
 	// Inject UI prefix so JS can prefix all API calls with it.
 	// Also inject VAPID public key for web push if configured.
 	var headSnippet string
@@ -352,11 +369,9 @@ func (s *serveServer) buildIndexHTML() []byte {
 		})
 		headSnippet += `<script>window.TERM_LLM_HUB=` + string(hubEscaped) + `;</script>`
 	}
-	if s.cfgRef != nil {
-		if vapidKey := s.cfgRef.Serve.WebPush.VAPIDPublicKey; vapidKey != "" {
-			vapidEscaped, _ := json.Marshal(vapidKey)
-			headSnippet += `<script>window.TERM_LLM_VAPID_PUBLIC_KEY=` + string(vapidEscaped) + `;</script>`
-		}
+	if vapidKey != "" {
+		vapidEscaped, _ := json.Marshal(vapidKey)
+		headSnippet += `<script>window.TERM_LLM_VAPID_PUBLIC_KEY=` + string(vapidEscaped) + `;</script>`
 	}
 	_, pushPersistent := session.AsPushSubscriptionLifecycleStore(s.store)
 	headSnippet += `<script>window.TERM_LLM_PUSH_SUPPORTED=` + strconv.FormatBool(pushPersistent) + `;</script>`
@@ -4158,7 +4173,12 @@ func (s *serveServer) handlePushSubscribe(w http.ResponseWriter, r *http.Request
 	}
 	publicKey := ""
 	if s.cfgRef != nil {
-		publicKey = strings.TrimSpace(s.cfgRef.Serve.WebPush.VAPIDPublicKey)
+		var err error
+		publicKey, err = webPushPublicKey(s.cfgRef)
+		if err != nil {
+			writeOpenAIError(w, http.StatusServiceUnavailable, "unsupported_error", "web push key is temporarily unavailable")
+			return
+		}
 		if publicKey == "" {
 			writeOpenAIError(w, http.StatusServiceUnavailable, "unsupported_error", "web push is not configured")
 			return

@@ -1,10 +1,12 @@
 package config
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/procutil"
+	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -27,7 +30,7 @@ var (
 // - op://vault/item/field -> 1Password secret (via `op read`)
 // - srv://record/path -> DNS SRV lookup + path (always HTTPS)
 // - file://path -> file contents (trimmed)
-// - file://path#key or file://path#nested.path -> JSON field from file contents
+// - file://path#key or file://path#nested.path -> JSON or YAML (.yml/.yaml) field
 // - $(...) -> shell command output
 // - ${VAR} or $VAR -> environment variable
 // - literal string -> returned as-is
@@ -138,29 +141,48 @@ func resolveFile(fileURL string) (string, error) {
 	}
 
 	var parsed any
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		return "", fmt.Errorf("file: failed to parse JSON in %s for fragment %q: %w", path, fragment, err)
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".yml", ".yaml":
+		decoder := yaml.NewDecoder(bytes.NewReader(data))
+		if err := decoder.Decode(&parsed); err != nil {
+			return "", fmt.Errorf("file: failed to parse YAML in %s for fragment %q: %w", path, fragment, err)
+		}
+		var extra any
+		if err := decoder.Decode(&extra); err != io.EOF {
+			return "", fmt.Errorf("file: expected one YAML document in %s", path)
+		}
+	default:
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			return "", fmt.Errorf("file: failed to parse JSON in %s for fragment %q: %w", path, fragment, err)
+		}
 	}
-	value, err := lookupJSONFragment(parsed, fragment)
+	value, err := lookupFileFragment(parsed, fragment)
 	if err != nil {
 		return "", fmt.Errorf("file: %w", err)
 	}
 	return strings.TrimSpace(value), nil
 }
 
-func lookupJSONFragment(v any, fragment string) (string, error) {
+func lookupFileFragment(v any, fragment string) (string, error) {
 	parts := strings.Split(fragment, ".")
 	cur := v
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" {
-			return "", fmt.Errorf("invalid JSON fragment %q", fragment)
+			return "", fmt.Errorf("invalid file fragment %q", fragment)
 		}
-		obj, ok := cur.(map[string]any)
-		if !ok {
+		var next any
+		var ok bool
+		switch obj := cur.(type) {
+		case map[string]any:
+			next, ok = obj[part]
+		case map[any]any:
+			// YAML uses this representation if a sibling key is non-string.
+			// Fragments still select string keys, without coercing numeric keys.
+			next, ok = obj[part]
+		default:
 			return "", fmt.Errorf("fragment %q does not resolve to an object before %q", fragment, part)
 		}
-		next, ok := obj[part]
 		if !ok {
 			return "", fmt.Errorf("fragment %q not found", fragment)
 		}
@@ -170,7 +192,9 @@ func lookupJSONFragment(v any, fragment string) (string, error) {
 	switch x := cur.(type) {
 	case string:
 		return x, nil
-	case float64, bool, nil:
+	case nil:
+		return "", fmt.Errorf("fragment %q is null", fragment)
+	case float64, bool:
 		return fmt.Sprintf("%v", x), nil
 	default:
 		b, err := json.Marshal(x)

@@ -116,18 +116,16 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 		if err != nil {
 			return "", err
 		}
-		apiKey := cfg.Transcription.Venice.APIKey
-		if apiKey == "" {
-			apiKey = cfg.Audio.Venice.APIKey
-		}
-		if apiKey == "" {
-			apiKey = cfg.Image.Venice.APIKey
+		apiKey, err := config.ResolveFirstCredential(
+			cfg.Transcription.VeniceKey(),
+			cfg.Audio.VeniceKey(),
+			cfg.Image.VeniceKey(),
+		)
+		if err != nil {
+			return "", fmt.Errorf("venice transcription credentials: %w", err)
 		}
 		if apiKey == "" && veniceProvider != nil {
 			apiKey = veniceProvider.ResolvedAPIKey
-		}
-		if apiKey == "" {
-			apiKey = os.Getenv("VENICE_API_KEY")
 		}
 		if apiKey == "" {
 			return "", fmt.Errorf("transcription provider %q has no API key configured (transcription.venice.api_key, VENICE_API_KEY, audio.venice.api_key, image.venice.api_key, or providers.venice.api_key)", providerName)
@@ -157,18 +155,15 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 		if err != nil {
 			return "", err
 		}
-		apiKey := cfg.Transcription.ElevenLabs.APIKey
-		if apiKey == "" {
-			apiKey = cfg.Audio.ElevenLabs.APIKey
+		apiKey, err := config.ResolveFirstCredential(
+			cfg.Transcription.ElevenLabsKey(),
+			cfg.Audio.ElevenLabsKey(),
+		)
+		if err != nil {
+			return "", fmt.Errorf("elevenlabs transcription credentials: %w", err)
 		}
 		if apiKey == "" && elevenLabsProvider != nil {
 			apiKey = elevenLabsProvider.ResolvedAPIKey
-		}
-		if apiKey == "" {
-			apiKey = os.Getenv("ELEVENLABS_API_KEY")
-		}
-		if apiKey == "" {
-			apiKey = os.Getenv("XI_API_KEY")
 		}
 		if apiKey == "" {
 			return "", fmt.Errorf("transcription provider %q has no API key configured (transcription.elevenlabs.api_key, ELEVENLABS_API_KEY, XI_API_KEY, audio.elevenlabs.api_key, or providers.elevenlabs.api_key)", providerName)

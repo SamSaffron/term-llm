@@ -768,7 +768,7 @@ func TestBuildIndexHTMLBootstrapsWorktreeCapabilityAndReusesGitRoot(t *testing.T
 
 func TestBuildIndexHTMLDisablesLocationSharing(t *testing.T) {
 	srv := &serveServer{cfg: serveServerConfig{basePath: "/ui", locationSharingDisabled: true}}
-	body := string(srv.buildIndexHTML())
+	body := string(srv.buildIndexHTML(""))
 	if !strings.Contains(body, `TERM_LLM_LOCATION_SHARING_ENABLED=false`) {
 		t.Fatal("index should disable location sharing when configured")
 	}
@@ -6324,7 +6324,7 @@ description: "Safe sidebar description"
 		t.Fatalf("sideload exposed filesystem or command configuration: %s", sideloadRec.Body.String())
 	}
 
-	index := string(srv.buildIndexHTML())
+	index := string(srv.buildIndexHTML(""))
 	for _, sensitive := range []string{"private-widget-id", "Startup Metrics", "Safe sidebar description", widgetsDir} {
 		if strings.Contains(index, sensitive) {
 			t.Fatalf("public bootstrap HTML exposed widget status/config value %q", sensitive)

@@ -121,7 +121,10 @@ func runVideo(cmd *cobra.Command, args []string) error {
 	}
 	initThemeFromConfig(cfg)
 
-	apiKey := strings.TrimSpace(cfg.Image.Venice.APIKey)
+	apiKey, err := cfg.Image.VeniceKey().Resolve()
+	if err != nil {
+		return fmt.Errorf("image.venice.api_key: %w", err)
+	}
 	if apiKey == "" {
 		return fmt.Errorf("VENICE_API_KEY not configured. Set environment variable or add to image.venice.api_key in config")
 	}

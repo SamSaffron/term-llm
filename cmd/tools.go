@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"log"
 
 	"github.com/samsaffron/term-llm/internal/config"
@@ -11,8 +12,10 @@ import (
 
 func defaultToolRegistry(cfg *config.Config) *llm.ToolRegistry {
 	registry := llm.NewToolRegistry()
-	searcher, err := search.NewSearcher(cfg)
-	if err != nil {
+	var searcher search.Searcher = search.NewLazySearcher(cfg)
+	if err := search.Available(cfg); err != nil {
+		// Preserve the existing fallback for absent configuration, but never
+		// substitute a provider when an explicitly deferred secret fails.
 		log.Printf("Warning: search provider error: %v, falling back to DuckDuckGo", err)
 		searcher = search.NewDuckDuckGoLite(nil)
 	}
@@ -28,7 +31,17 @@ func newReadURLToolForConfig(cfg *config.Config) *llm.ReadURLTool {
 	case "", "jina":
 		return llm.NewReadURLTool()
 	case "exa_mcp":
-		return llm.NewReadURLToolWithFetcher(search.NewExaMCPClient(cfg.Search.ExaMCP.URL, cfg.Search.ExaMCP.APIKey))
+		return llm.NewReadURLToolWithFetcher(search.NewLazyExaMCPClient(func() (string, string, error) {
+			url, err := cfg.Search.ExaMCPURLRef().Resolve()
+			if err != nil {
+				return "", "", fmt.Errorf("search.exa_mcp.url: %w", err)
+			}
+			apiKey, err := cfg.Search.ExaMCPKey(url).Resolve()
+			if err != nil {
+				return "", "", fmt.Errorf("search.exa_mcp.api_key: %w", err)
+			}
+			return url, apiKey, nil
+		}))
 	case "none":
 		return nil
 	default:

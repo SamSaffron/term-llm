@@ -42,7 +42,7 @@ These are **text/agent providers**. [Image](/guides/image-generation/), [audio](
 
 ## Credentials
 
-Config paths below are relative to `$XDG_CONFIG_HOME/term-llm/`, normally `~/.config/term-llm/`. Use `term-llm config path` to locate your file. Provider-specific API keys can also be supplied in `providers.<name>.api_key` with the normal [deferred credential resolution](/reference/configuration/).
+Config paths below are relative to `$XDG_CONFIG_HOME/term-llm/`, normally `~/.config/term-llm/`. Use `term-llm config path` to locate your file. Provider-specific API keys can also be supplied in `providers.<name>.api_key` with the normal [deferred credential resolution](/guides/secret-management/).
 
 | Provider | Authentication / setup | Notes |
 |---|---|---|

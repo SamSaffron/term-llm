@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
 	"github.com/samsaffron/term-llm/internal/procutil"
@@ -208,7 +209,7 @@ func (c *Client) start(ctx, processCtx context.Context) error {
 }
 
 // createStdioTransport creates a stdio transport for command-based servers.
-func (c *Client) createStdioTransport(ctx context.Context) mcp.Transport {
+func (c *Client) createStdioTransport(ctx context.Context) (mcp.Transport, error) {
 	processCtx, processCancel := context.WithCancel(ctx)
 	c.mu.Lock()
 	c.processCancel = processCancel
@@ -223,12 +224,17 @@ func (c *Client) createStdioTransport(ctx context.Context) mcp.Transport {
 	c.stdioStderr = stderr
 	c.mu.Unlock()
 	if len(c.config.Env) > 0 {
+		env, err := config.ResolveDeferredMap(c.config.Env)
+		if err != nil {
+			processCancel()
+			return nil, fmt.Errorf("mcp server %s: env: %w", c.name, err)
+		}
 		cmd.Env = os.Environ()
-		for k, v := range c.config.Env {
+		for k, v := range env {
 			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
 		}
 	}
-	return &mcp.CommandTransport{Command: cmd}
+	return &mcp.CommandTransport{Command: cmd}, nil
 }
 
 func (c *Client) withStdioStderr(err error) error {
@@ -252,7 +258,7 @@ func (c *Client) createTransport(ctx context.Context) (mcp.Transport, error) {
 	if c.config.TransportType() == "http" {
 		return c.createHTTPTransport()
 	}
-	return c.createStdioTransport(ctx), nil
+	return c.createStdioTransport(ctx)
 }
 
 // createHTTPTransport creates an HTTP transport for URL-based servers.
@@ -273,10 +279,16 @@ func (c *Client) createHTTPTransport() (mcp.Transport, error) {
 	httpClient := &http.Client{Transport: baseTransport}
 
 	// If headers are specified, wrap the transport with a custom round tripper.
+	// Header values support deferred resolution (op://, file://, $(), ${VAR})
+	// and are only resolved here, when the server is actually connected.
 	if len(c.config.Headers) > 0 {
+		headers, err := config.ResolveDeferredMap(c.config.Headers)
+		if err != nil {
+			return nil, fmt.Errorf("mcp server %s: headers: %w", c.name, err)
+		}
 		httpClient.Transport = &headerTransport{
 			base:    baseTransport,
-			headers: c.config.Headers,
+			headers: headers,
 		}
 	}
 
@@ -288,24 +300,12 @@ func (c *Client) createHTTPTransport() (mcp.Transport, error) {
 	}
 
 	if c.automaticOAuthEnabled() {
-		oauthConfig := c.config.OAuth
-		// The OAuth handler talks to the authorization server (metadata,
-		// registration, token, refresh), not just the MCP endpoint. Custom
-		// per-server headers such as API keys must never be sent there, so it
-		// gets a client without the headerTransport wrapper.
-		options := mcpoauth.Options{HTTPClient: &http.Client{Transport: baseTransport}}
-		if oauthConfig != nil {
-			options.ClientID = oauthConfig.ClientID
-			options.Scopes = append([]string(nil), oauthConfig.Scopes...)
-			options.ScopesConfigured = oauthConfig.Scopes != nil
-			options.ClientIDMetadataURL = oauthConfig.ClientIDMetadataURL
-			if oauthConfig.ClientSecretEnv != "" {
-				options.ClientSecret = os.Getenv(oauthConfig.ClientSecretEnv)
-				if options.ClientSecret == "" {
-					return nil, fmt.Errorf("OAuth client secret environment variable %s is not set", oauthConfig.ClientSecretEnv)
-				}
-			}
+		// Authorization-server requests must not inherit MCP endpoint headers.
+		options, err := oauthOptionsForServer(c.config)
+		if err != nil {
+			return nil, fmt.Errorf("mcp server %s: %w", c.name, err)
 		}
+		options.HTTPClient = &http.Client{Transport: baseTransport}
 		coordinator := c.oauthCoordinator
 		if coordinator == nil {
 			coordinator = mcpoauth.DefaultCoordinator()

@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "hugo --destination ../.cache/docs-site && pagefind --site ../.cache/docs-site",
+    "build": "hugo --cleanDestinationDir --destination ../.cache/docs-site && pagefind --site ../.cache/docs-site",
     "test": "npm run build && node scripts/check-site.mjs",
     "capture:product": "node scripts/capture-product.mjs",
     "capture:tour": "node scripts/capture-tour.mjs && python3 scripts/optimize-tour.py"

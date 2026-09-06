@@ -662,7 +662,7 @@ providers:
 `providers.<name>.env` values support the same resolution rules as other deferred config values:
 
 - `file://path` → trimmed file contents
-- `file://path#json.path` → JSON field extracted from the file
+- `file://path#nested.field` → field extracted from a JSON or YAML (`.yml` / `.yaml`) file
 - `op://...` → 1Password secret lookup
 - `$()` → command output
 - `${VAR}` / `$VAR` → environment variable expansion
@@ -827,13 +827,13 @@ term-llm persists streamed reasoning and replays it as assistant `reasoning` on 
 
 ## Dynamic secrets and endpoints
 
-term-llm supports dynamic resolution for some config values:
+Keep API keys and tokens out of public config by storing references rather than literal secrets:
 
-- `op://...` for 1Password secret references
-- `srv://...` for DNS SRV-based endpoint discovery
-- `$()` for command-based resolution
-
-Example:
+- `op://...` reads from 1Password.
+- `$(...)` captures a secret-manager command's output, including macOS Keychain and Linux Secret Service lookups.
+- `file://path#nested.field` reads a JSON or YAML field from a private file; without a fragment, it reads the whole file as trimmed text.
+- `${VAR}` / `$VAR` reads an environment variable in supported config fields.
+- `srv://...` discovers an HTTPS endpoint through DNS SRV records.
 
 ```yaml
 providers:
@@ -844,7 +844,9 @@ providers:
     api_key: "op://Infrastructure/vLLM Cluster/credential?account=company.1password.com"
 ```
 
-These values are resolved lazily when term-llm actually needs them. Endpoint resolution applies to both provider `url` and `base_url`; `embed.ollama.base_url` uses the same resolver when the embedding provider is created.
+Deferred vault, file, command, and DNS references resolve when needed, not when config loads. Endpoint resolution applies to provider `url` and `base_url` and to the additional endpoints listed in the guide. Successful deferred feature-credential lookups are cached; restart long-running processes after rotating secrets.
+
+See **[Secret management](/guides/secret-management/)** for supported settings, MCP-specific syntax, failure and fallback behavior, and complete recipes for 1Password, macOS Keychain, Linux keyrings, and a private `secrets.yml`.
 
 ## WebRTC direct routing config
 
@@ -885,6 +887,7 @@ When edit retries fail, diagnostics can capture prompts, partial responses, and 
 
 ## Related pages
 
+- [Secret management](/guides/secret-management/)
 - [Providers and models](/reference/providers-and-models/)
 - [Search](/guides/search/)
 - [Sessions](/reference/sessions/)

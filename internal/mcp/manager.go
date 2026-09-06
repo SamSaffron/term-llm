@@ -15,6 +15,7 @@ import (
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
 )
@@ -588,11 +589,11 @@ func (m *Manager) StartOAuth(ctx context.Context, name string, startOptions ...O
 	if len(startOptions) > 0 {
 		options = startOptions[0]
 	}
-	coordinator := m.oauthCoordinatorOrDefault()
-	oauthOptions := oauthOptionsForServer(server)
-	if server.OAuth != nil && server.OAuth.ClientSecretEnv != "" && oauthOptions.ClientSecret == "" {
-		return nil, fmt.Errorf("OAuth client secret environment variable %s is not set", server.OAuth.ClientSecretEnv)
+	oauthOptions, err := oauthOptionsForServer(server)
+	if err != nil {
+		return nil, fmt.Errorf("mcp server %s: %w", name, err)
 	}
+	coordinator := m.oauthCoordinatorOrDefault()
 	flow, err := coordinator.Start(ctx, server.URL, oauthOptions, options.RedirectURL, options.Force)
 	if err != nil {
 		return nil, err
@@ -683,18 +684,32 @@ func automaticOAuthForServer(server ServerConfig) bool {
 	return true
 }
 
-func oauthOptionsForServer(server ServerConfig) mcpoauth.Options {
+func oauthOptionsForServer(server ServerConfig) (mcpoauth.Options, error) {
 	options := mcpoauth.Options{}
 	if server.OAuth != nil {
 		options.ClientID = server.OAuth.ClientID
 		options.Scopes = append([]string(nil), server.OAuth.Scopes...)
 		options.ScopesConfigured = server.OAuth.Scopes != nil
 		options.ClientIDMetadataURL = server.OAuth.ClientIDMetadataURL
-		if server.OAuth.ClientSecretEnv != "" {
-			options.ClientSecret = os.Getenv(server.OAuth.ClientSecretEnv)
+		if strings.TrimSpace(server.OAuth.ClientSecret) != "" {
+			// Deferred values (op://, file://, $()) resolve here, at the point
+			// an OAuth flow actually needs the secret.
+			secret, err := config.ResolveDeferred(server.OAuth.ClientSecret)
+			if err != nil {
+				return options, fmt.Errorf("oauth.client_secret: %w", err)
+			}
+			options.ClientSecret = strings.TrimSpace(secret)
+			if options.ClientSecret == "" {
+				return options, fmt.Errorf("oauth.client_secret resolved to an empty value")
+			}
+		} else if server.OAuth.ClientSecretEnv != "" {
+			options.ClientSecret = strings.TrimSpace(os.Getenv(server.OAuth.ClientSecretEnv))
+			if options.ClientSecret == "" {
+				return options, fmt.Errorf("OAuth client secret environment variable %s is not set", server.OAuth.ClientSecretEnv)
+			}
 		}
 	}
-	return options
+	return options, nil
 }
 
 func isAuthenticationRequired(err error) bool {

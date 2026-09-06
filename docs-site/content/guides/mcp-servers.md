@@ -81,7 +81,7 @@ The resulting registration and grant are stored in `$XDG_CONFIG_HOME/term-llm/mc
 
 Use `term-llm mcp logout example` to attempt RFC 7009 revocation and remove the local grant. `--local-only` skips the remote attempt. Logout is safe to repeat.
 
-An explicit `Authorization` header remains authoritative and disables automatic OAuth for that server. Stdio servers continue to use their configured environment. Optional OAuth client configuration belongs in `mcp.json`, while the secret itself stays in the named environment variable:
+An explicit `Authorization` header remains authoritative and disables automatic OAuth for that server. Stdio servers continue to use their configured environment. When both `client_secret` and `client_secret_env` are set, `client_secret` takes precedence; an unresolvable or empty explicit secret is an error, not a fallback to the environment. Optional OAuth client configuration belongs in `mcp.json`, while the secret itself stays outside it — either in the named environment variable (`client_secret_env`) or as a deferred `client_secret` value such as `op://...`, `file://...` or `$(...)`:
 
 ```json
 {
@@ -173,6 +173,35 @@ MCP servers are stored in `~/.config/term-llm/mcp.json`:
   }
 }
 ```
+
+### Keeping secrets out of `mcp.json`
+
+`headers`, `env`, and `oauth.client_secret` values support deferred resolution, so the file itself can be tracked in dotfiles:
+
+```json
+{
+  "servers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "op://Private/GitHub/token"
+      }
+    },
+    "authenticated-api": {
+      "type": "http",
+      "url": "https://api.example.com/mcp",
+      "headers": {
+        "Authorization": "$(my-secret-tool read api-token)"
+      }
+    }
+  }
+}
+```
+
+Accepted forms are `op://`, `srv://`, `file://` (optionally with `#nested.field` for a JSON or YAML file), `$(...)` and `${VAR}`. A bare `$VAR` stays literal; `${VAR}` is an explicit environment reference. References replace the entire value: `Bearer ${TOKEN}` is not interpolated, so resolve the complete authorization header instead. Values are resolved when the server is connected, not when the config is read, and non-empty successful deferred results are memoized for the life of the process. Empty results from explicitly deferred header or environment values are errors; literal empty values are still allowed. Restart long-running processes after rotating secrets.
+
+Only use trusted `mcp.json` files: `$(...)` executes shell commands with your user permissions. See [Secret management](/guides/secret-management/) for 1Password, macOS Keychain, and Linux keyring recipes, or [keep config and MCP credentials in one private `secrets.yml`](/guides/secret-management/#keep-all-your-configured-secrets-in-secretsyml).
 
 ### Deferred tool discovery
 

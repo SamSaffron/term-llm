@@ -40,10 +40,13 @@ type ServerConfig struct {
 }
 
 // OAuthConfig customizes automatic OAuth for a remote MCP server. Client
-// secrets are referenced through the environment and are never stored in
-// mcp.json.
+// secrets should be referenced through the environment or a deferred value
+// (op://, file://, $()) rather than stored literally in mcp.json.
 type OAuthConfig struct {
-	ClientID            string   `json:"client_id,omitempty"`
+	ClientID string `json:"client_id,omitempty"`
+	// ClientSecret supports deferred resolution (op://, file://, $(), ${VAR})
+	// and is resolved only when the server connects or starts an OAuth flow.
+	ClientSecret        string   `json:"client_secret,omitempty"`
 	ClientSecretEnv     string   `json:"client_secret_env,omitempty"`
 	Scopes              []string `json:"scopes,omitempty"`
 	ClientIDMetadataURL string   `json:"client_id_metadata_url,omitempty"`

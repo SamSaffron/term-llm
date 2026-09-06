@@ -588,3 +588,36 @@ func waitForServerStatus(t *testing.T, manager *Manager, name string, want Serve
 	t.Fatalf("timed out waiting for status %s; last status=%s err=%v", want, status, err)
 	return status, err
 }
+
+func TestOAuthOptionsDeferredSecret(t *testing.T) {
+	t.Setenv("TERM_LLM_OAUTH_SECRET", "  env-secret\n")
+	path := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(path, []byte("file-secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, secret, env, want string
+		wantErr                 bool
+	}{
+		{name: "public client"},
+		{name: "environment", env: "TERM_LLM_OAUTH_SECRET", want: "env-secret"},
+		{name: "explicit precedence", secret: "file://" + path, env: "TERM_LLM_OAUTH_SECRET", want: "file-secret"},
+		{name: "missing file", secret: "file://" + path + "-missing", wantErr: true},
+		{name: "empty reference", secret: "${TERM_LLM_OAUTH_UNSET}", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("TERM_LLM_OAUTH_UNSET", "")
+			server := ServerConfig{URL: "https://example.test/mcp", OAuth: &OAuthConfig{ClientSecret: tc.secret, ClientSecretEnv: tc.env}}
+			options, err := oauthOptionsForServer(server)
+			if (err != nil) != tc.wantErr || (!tc.wantErr && options.ClientSecret != tc.want) {
+				t.Fatalf("options secret=%q error=%v", options.ClientSecret, err)
+			}
+			if tc.wantErr {
+				manager := NewManagerWithConfig(&Config{Servers: map[string]ServerConfig{"example": server}})
+				if _, err := manager.StartOAuth(context.Background(), "example"); err == nil || !strings.Contains(err.Error(), "oauth.client_secret") {
+					t.Fatalf("StartOAuth should fail before network access: %v", err)
+				}
+			}
+		})
+	}
+}

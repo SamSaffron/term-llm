@@ -382,7 +382,9 @@ func (p *TelegramPlatform) Name() string { return "telegram" }
 
 // NeedsSetup returns true when the bot token is missing.
 func (p *TelegramPlatform) NeedsSetup() bool {
-	return strings.TrimSpace(p.cfg.Token) == ""
+	// Configured() deliberately avoids resolving op://, file:// or $() values:
+	// deciding whether setup is needed must not unlock a vault.
+	return !p.cfg.TokenRef().Configured()
 }
 
 // RunSetup runs an interactive wizard that collects and persists bot credentials.
@@ -465,7 +467,10 @@ func (p *TelegramPlatform) RunSetup() error {
 
 // Run starts the Telegram bot loop, blocking until ctx is cancelled.
 func (p *TelegramPlatform) Run(ctx context.Context, cfg *config.Config, settings Settings) error {
-	token := strings.TrimSpace(p.cfg.Token)
+	token, err := p.cfg.TokenRef().Resolve()
+	if err != nil {
+		return fmt.Errorf("serve.telegram.token: %w", err)
+	}
 	if token == "" {
 		return fmt.Errorf("telegram bot token is not configured; run with --setup to configure")
 	}

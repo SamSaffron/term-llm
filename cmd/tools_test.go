@@ -1,7 +1,11 @@
 package cmd
 
 import (
+	"context"
+	"encoding/json"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
@@ -60,4 +64,26 @@ func TestDefaultToolRegistryCanDisableFetch(t *testing.T) {
 func readURLToolHasFetcher(tool *llm.ReadURLTool) bool {
 	v := reflect.ValueOf(tool).Elem().FieldByName("fetcher")
 	return !v.IsNil()
+}
+
+func TestDefaultToolRegistrySearchFallbackOnlyForAbsentCredentials(t *testing.T) {
+	t.Setenv("BRAVE_API_KEY", "")
+	cfg := &config.Config{}
+	cfg.Search.Provider = "brave"
+	registry := defaultToolRegistry(cfg)
+	tool, ok := registry.Get("web_search")
+	if !ok {
+		t.Fatal("search tool absent")
+	}
+	// Match the existing reader wiring tests without issuing a real search.
+	searcher := reflect.ValueOf(tool).Elem().FieldByName("searcher")
+	if got := searcher.Elem().Type().String(); got != "*search.DuckDuckGoLite" {
+		t.Fatalf("unconfigured searcher = %s", got)
+	}
+	cfg.Search.Brave.APIKey = "file://" + filepath.Join(t.TempDir(), "missing")
+	registry = defaultToolRegistry(cfg)
+	tool, _ = registry.Get("web_search")
+	if _, err := tool.Execute(context.Background(), json.RawMessage(`{"query":""}`)); err == nil || !strings.Contains(err.Error(), "search.brave.api_key") {
+		t.Fatalf("configured credential failure must not fall back: %v", err)
+	}
 }
