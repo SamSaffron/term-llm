@@ -33,8 +33,13 @@ class FakeDataChannel {
   }
 }
 
+type SignalingStage = 'session' | 'offer' | 'answer';
+type NegotiationFault = SignalingStage | 'connect' | 'rejected';
+
 interface Harness {
   channels: FakeDataChannel[];
+  signalingRequests: { stage: SignalingStage; signal: AbortSignal }[];
+  setFault(fault?: NegotiationFault): void;
   cleanup(): void;
   fetch: ReturnType<typeof vi.fn>;
   apiCalls(): number;
@@ -46,8 +51,9 @@ const flush = async (): Promise<void> => {
   for (let index = 0; index < 20; index += 1) await Promise.resolve();
 };
 
-async function enabledHarness(): Promise<Harness> {
+async function enabledHarness(fault?: NegotiationFault): Promise<Harness> {
   const channels: FakeDataChannel[] = [];
+  const signalingRequests: Harness['signalingRequests'] = [];
   let signalingOnline = true;
   let httpsAPICalls = 0;
   let transportRecoveries = 0;
@@ -60,8 +66,12 @@ async function enabledHarness(): Promise<Harness> {
     onicecandidate: ((event: RTCPeerConnectionIceEvent) => unknown) | null = null;
     onicegatheringstatechange: (() => unknown) | null = null;
 
+    channel: FakeDataChannel | null = null;
+
     createDataChannel(): RTCDataChannel {
       const channel = new FakeDataChannel();
+      channel.readyState = 'connecting';
+      this.channel = channel;
       channels.push(channel);
       return channel as unknown as RTCDataChannel;
     }
@@ -72,21 +82,45 @@ async function enabledHarness(): Promise<Harness> {
       this.localDescription = offer;
     }
     async setRemoteDescription(): Promise<void> {
-      /* no-op */
+      if (this.channel && fault !== 'connect') this.channel.readyState = 'open';
     }
     close(): void {
-      /* no-op */
+      this.channel?.close();
     }
   }
 
-  const fetch = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
+  const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = input instanceof Request ? input.url : String(input);
-    if (url.endsWith('/session')) {
+    const stage = url.endsWith('/session')
+      ? 'session'
+      : url.includes('/signal?')
+        ? 'answer'
+        : url.endsWith('/signal')
+          ? 'offer'
+          : null;
+    if (stage) {
+      const signal = init?.signal;
+      if (!signal) throw new Error('Signaling requests must have an owned deadline');
+      signalingRequests.push({ stage, signal });
+      if (fault === stage) {
+        // Model fetch cancellation, not a promise that ignores its AbortSignal.
+        return new Promise<Response>((_resolve, reject) => {
+          if (signal.aborted) reject(signal.reason);
+          else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      }
+    }
+    if (stage === 'session') {
       if (!signalingOnline) throw new TypeError('simulated signaling outage');
       return Response.json({ session_id: 'signal-session' });
     }
-    if (url.includes('/signal?')) return Response.json({ type: 'answer', sdp: 'fake-answer' });
-    if (url.endsWith('/signal')) return new Response(null, { status: 200 });
+    if (stage === 'answer')
+      return Response.json(
+        fault === 'rejected'
+          ? { type: 'rejected', reason: 'capacity' }
+          : { type: 'answer', sdp: 'fake-answer' },
+      );
+    if (stage === 'offer') return new Response(null, { status: 200 });
     if (url.includes('/v1/')) httpsAPICalls += 1;
     return Response.json({ sessions: [] });
   });
@@ -104,12 +138,18 @@ async function enabledHarness(): Promise<Harness> {
   window.addEventListener('term-llm:transport-fallback', recovery);
   const uninstall = installWebRTC();
   await flush();
-  expect(channels).toHaveLength(1);
-  expect(channels[0].onclose).toBeTypeOf('function');
-  expect(window.fetch).not.toBe(fetch);
+  if (!fault) {
+    expect(channels).toHaveLength(1);
+    expect(channels[0].onclose).toBeTypeOf('function');
+    expect(window.fetch).not.toBe(fetch);
+  }
 
   return {
     channels,
+    signalingRequests,
+    setFault: (value) => {
+      fault = value;
+    },
     fetch,
     apiCalls: () => httpsAPICalls,
     recoveries: () => transportRecoveries,
@@ -145,6 +185,89 @@ afterEach(() => {
 });
 
 describe('WebRTC platform bridge', () => {
+  // These replace the browser-to-Go ICE smoke assertions: exercise the real
+  // negotiation owner, but control signaling, peer state, and time explicitly.
+  it.each(['session', 'offer', 'answer', 'connect'] as const)(
+    'keeps HTTPS usable through a hung %s and recovers after its deadline',
+    async (stage) => {
+      const harness = await enabledHarness(stage);
+      cleanupRTC = harness.cleanup;
+      const request = harness.signalingRequests.find((request) => request.stage === stage);
+      if (stage !== 'connect') expect(request?.signal.aborted).toBe(false);
+      const failedChannels = [...harness.channels];
+
+      await expect(window.fetch('/ui/v1/sessions/status')).resolves.toMatchObject({ ok: true });
+      expect(harness.apiCalls()).toBe(1);
+      await vi.advanceTimersByTimeAsync(7_999);
+      expect(harness.signalingRequests.filter(({ stage }) => stage === 'session')).toHaveLength(1);
+      if (stage !== 'connect') expect(request?.signal.aborted).toBe(false);
+      else expect(failedChannels[0].readyState).toBe('connecting');
+
+      await vi.advanceTimersByTimeAsync(1);
+      if (stage !== 'connect') {
+        expect(request?.signal.aborted).toBe(true);
+        expect(request?.signal.reason).toMatchObject({ name: 'TimeoutError' });
+      }
+      for (const channel of failedChannels) expect(channel.readyState).toBe('closed');
+      expect(vi.getTimerCount()).toBe(1); // Only the owned retry remains.
+      await expect(window.fetch('/ui/v1/sessions/status')).resolves.toMatchObject({ ok: true });
+      expect(harness.apiCalls()).toBe(2);
+
+      harness.setFault();
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(harness.signalingRequests.filter(({ stage }) => stage === 'session')).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(harness.signalingRequests.filter(({ stage }) => stage === 'session')).toHaveLength(2);
+      const channel = harness.channels.at(-1)!;
+      expect(channel.readyState).toBe('open');
+      expect(vi.getTimerCount()).toBe(0);
+
+      // Prove fetch actually uses the recovered channel, not merely that a
+      // peer was allocated (or fetch was rebound to the original HTTPS fetch).
+      const response = window.fetch('/ui/v1/sessions/status');
+      const frame = channel.sent.at(-1)!;
+      expect(frame.path).toBe('/ui/v1/sessions/status');
+      channel.receive({ id: frame.id, type: 'done', status: 200 });
+      await expect(response).resolves.toMatchObject({ ok: true });
+      expect(harness.apiCalls()).toBe(2);
+    },
+  );
+
+  it('cleans up an offer timeout and admission rejection before a later generation recovers', async () => {
+    const harness = await enabledHarness('offer');
+    cleanupRTC = harness.cleanup;
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(harness.channels[0].readyState).toBe('closed');
+
+    harness.setFault('rejected');
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(harness.channels).toHaveLength(2);
+    expect(harness.channels[1].readyState).toBe('closed');
+    expect(vi.getTimerCount()).toBe(1);
+    await expect(window.fetch('/ui/v1/sessions/status')).resolves.toMatchObject({ ok: true });
+    expect(harness.apiCalls()).toBe(1);
+
+    harness.setFault();
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(harness.channels).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(harness.channels).toHaveLength(3);
+    expect(vi.getTimerCount()).toBe(0);
+    const channel = harness.channels[2];
+    const response = window.fetch('/ui/v1/sessions/status');
+    const frame = channel.sent.at(-1)!;
+    expect(frame.path).toBe('/ui/v1/sessions/status');
+    channel.receive({ id: frame.id, type: 'done', status: 200 });
+    await expect(response).resolves.toMatchObject({ ok: true });
+    expect(harness.apiCalls()).toBe(1);
+    // Dead peers cannot tear down the recovered generation.
+    harness.channels[0].close();
+    harness.channels[1].close();
+    expect(channel.readyState).toBe('open');
+    expect(harness.recoveries()).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('uses a 1 second first-frame timeout for reads and 5 seconds for mutations', () => {
     window.__TERM_LLM_WEBRTC_TESTING__ = true;
     window.__WEBRTC_ENABLED__ = false;

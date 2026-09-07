@@ -16,12 +16,6 @@ export default defineConfig({
     video: 'retain-on-failure',
     launchOptions: {
       executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || undefined,
-      // The isolated browser-to-Go smoke uses host ICE candidates without STUN.
-      // CI runners cannot reliably resolve Chromium's multicast .local names.
-      // Keep real ICE/DTLS/SCTP coverage without depending on multicast routing.
-      args: process.env.TERM_LLM_WEBRTC_RELAY_URL
-        ? ['--disable-features=WebRtcHideLocalIpsWithMdns']
-        : [],
     },
   },
   projects: [
