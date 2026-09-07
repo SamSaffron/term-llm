@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 	"unicode/utf8"
 
@@ -1617,6 +1618,141 @@ func TestCollaborativeShellRealPTYErrexitFailsClosed(t *testing.T) {
 	}
 }
 
+// Cancellation is a protocol/state-machine contract, not a test of OS job-control
+// timing. Keep real PTY persistence coverage below, but drive interruption and
+// recovery with explicit markers and a fake clock (including failed recovery).
+func TestCollaborativeShellCommandCancellation(t *testing.T) {
+	for _, action := range []string{"interrupt", "timeout", "disable", "close"} {
+		for _, recover := range []bool{true, false} {
+			if action == "close" && !recover {
+				continue // A closed terminal cannot be probed.
+			}
+			name := action + "/recovered"
+			if !recover {
+				name = action + "/recovery_failed"
+			} else if action == "close" {
+				name = action
+			}
+			t.Run(name, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					manager := newServeShellManager(time.Minute, func(string) bool { return true })
+					defer manager.Close()
+					shell := newServeShell("sh_cancel", "session", "/")
+					process := &bufferedServeShellProcess{done: make(chan serveShellExit)}
+					shell.process = process
+					shell.collaborationEnabled = true
+					shell.collaborationState = serveShellCollaborationReady
+					manager.mu.Lock()
+					manager.shells["session"] = shell
+					manager.mu.Unlock()
+					controller := &serveCollaborativeShellController{manager: func() (*serveShellManager, error) { return manager, nil }}
+					resultC := make(chan tools.ShellResult, 1)
+					errC := make(chan error, 1)
+					go func() {
+						result, err := controller.Execute(context.Background(), "session", tools.SharedShellArgs{
+							Command: "long-running-command", TimeoutSeconds: 1, ExpectedShellID: shell.id, OutputLimit: 1024,
+						})
+						resultC <- result
+						errC <- err
+					}()
+					synctest.Wait()
+					writes := process.snapshotWrites()
+					if len(writes) != 1 {
+						t.Fatalf("command writes = %q", writes)
+					}
+					nonce := serveShellTestNoncePattern.FindString(string(writes[0]))
+					if nonce == "" {
+						t.Fatal("command nonce missing")
+					}
+					shell.appendOutput([]byte("\x1b]7770;P;" + nonce + "\x07\x1b]7770;B;" + nonce + "\x07running"))
+					synctest.Wait() // Execute has consumed P/B and is waiting for E.
+					shell.mu.Lock()
+					commandID := shell.commandID
+					shell.mu.Unlock()
+					operationC := make(chan error, 1)
+					switch action {
+					case "interrupt":
+						go func() { operationC <- shell.interruptCommand(context.Background(), commandID) }()
+					case "disable":
+						go func() { operationC <- shell.disableCollaboration(context.Background()) }()
+					case "timeout":
+						time.Sleep(time.Second) // Fake time: expire the command's own deadline.
+					case "close":
+						shell.close()
+					}
+					synctest.Wait()
+					if action != "close" {
+						writes = process.snapshotWrites()
+						if len(writes) != 2 || !bytes.Equal(writes[1], []byte{3}) {
+							t.Fatalf("expected one Ctrl+C after command, writes = %q", writes)
+						}
+						time.Sleep(75 * time.Millisecond) // Advance the recovery settling interval.
+						synctest.Wait()
+						writes = process.snapshotWrites()
+						if len(writes) != 3 {
+							t.Fatalf("recovery probe writes = %q", writes)
+						}
+						probeNonce := serveShellTestNoncePattern.FindString(string(writes[2]))
+						if probeNonce == "" || probeNonce == nonce {
+							t.Fatal("recovery must use a fresh nonce")
+						}
+						// A late marker from the canceled command must not establish recovery.
+						shell.appendOutput([]byte("\x1b]7770;P;" + nonce + "\x07"))
+						synctest.Wait()
+						select {
+						case result := <-resultC:
+							t.Fatalf("command completed before recovery: %+v", result)
+						case err := <-operationC:
+							t.Fatalf("cancellation operation completed before recovery: %v", err)
+						default:
+						}
+						if recover {
+							shell.appendOutput([]byte("\x1b]7770;P;" + probeNonce + "\x07"))
+						} else {
+							time.Sleep(2 * time.Second) // No probe reply: exhaust the recovery deadline.
+						}
+						synctest.Wait()
+					}
+					result, err := <-resultC, <-errC
+					if action == "interrupt" || action == "disable" {
+						if err := <-operationC; err != nil {
+							t.Fatalf("%s: %v", action, err)
+						}
+					}
+					wantState, wantEnabled := serveShellCollaborationReady, true
+					if action == "close" {
+						if tools.CollaborativeShellErrorKind(err) != "shell_exited" || shell.interruptWriteCount() != 0 {
+							t.Fatalf("close result = %+v, %v; interrupts = %d", result, err, shell.interruptWriteCount())
+						}
+					} else {
+						if result.Canceled != (action != "timeout") || result.TimedOut != (action == "timeout") || result.RecoveryFailed != !recover || result.Stdout != "running" {
+							t.Fatalf("%s result = %+v, %v", action, result, err)
+						}
+						if recover && err != nil || !recover && tools.CollaborativeShellErrorKind(err) != "recovery_failed" {
+							t.Fatalf("recovery error = %v", err)
+						}
+						if shell.interruptWriteCount() != 1 {
+							t.Fatalf("Ctrl+C writes = %d", shell.interruptWriteCount())
+						}
+						if !recover {
+							wantState = serveShellCollaborationDesynchronized
+						}
+					}
+					if action == "close" || action == "disable" {
+						wantState, wantEnabled = serveShellCollaborationOff, false
+					}
+					shell.mu.Lock()
+					state, enabled, commandID := shell.collaborationState, shell.collaborationEnabled, shell.commandID
+					shell.mu.Unlock()
+					if state != wantState || enabled != wantEnabled || commandID != "" || len(shell.commandLease) != 1 {
+						t.Fatalf("state=%s enabled=%t command=%q lease=%d", state, enabled, commandID, len(shell.commandLease))
+					}
+				})
+			})
+		}
+	}
+}
+
 func TestCollaborativeShellRealPTYStatePersistence(t *testing.T) {
 	if !platformServeShellSupported() {
 		t.Skip("PTY unsupported")
@@ -1772,145 +1908,5 @@ func TestCollaborativeShellRealPTYStatePersistence(t *testing.T) {
 	}
 	if result, err := <-interactive, <-interactiveErr; err != nil || !strings.Contains(result.Stdout, "answer=human reply") {
 		t.Fatalf("interactive result = %+v, %v", result, err)
-	}
-
-	interruptedResult := make(chan tools.ShellResult, 1)
-	interruptedErr := make(chan error, 1)
-	go func() {
-		result, err := controller.Execute(ctx, "session", tools.SharedShellArgs{
-			Command: "sh -c 'printf __child_running__; sleep 5'", TimeoutSeconds: 10, ExpectedShellID: shell.id, OutputLimit: 1 << 20,
-		})
-		interruptedResult <- result
-		interruptedErr <- err
-	}()
-	var runningCommandID string
-	deadline = time.Now().Add(2 * time.Second)
-	for runningCommandID == "" && time.Now().Before(deadline) {
-		shell.mu.Lock()
-		// Wait for the foreground child to start, not merely allocation of a
-		// command ID or B marker before the shell forks its foreground job.
-		if bytes.Contains(shell.capture, []byte("__child_running__")) {
-			runningCommandID = shell.commandID
-		}
-		shell.mu.Unlock()
-		if runningCommandID == "" {
-			time.Sleep(time.Millisecond)
-		}
-	}
-	interruptCtx, interruptCancel := context.WithTimeout(context.Background(), 3*time.Second)
-	if err := shell.interruptCommand(interruptCtx, runningCommandID); err != nil {
-		interruptCancel()
-		t.Fatal(err)
-	}
-	interruptCancel()
-	if result, err := <-interruptedResult, <-interruptedErr; err != nil || !result.Canceled {
-		t.Fatalf("interrupt result = %+v, %v", result, err)
-	}
-	if got := shell.interruptWriteCount(); got != 1 {
-		t.Fatalf("interrupt wrote Ctrl+C %d times", got)
-	}
-
-	timed, err := controller.Execute(ctx, "session", tools.SharedShellArgs{
-		Command: "sleep 5", TimeoutSeconds: 1, ExpectedShellID: shell.id, OutputLimit: 1 << 20,
-	})
-	if err != nil || !timed.TimedOut {
-		t.Fatalf("timeout result = %+v, %v", timed, err)
-	}
-	if got := shell.interruptWriteCount(); got != 2 {
-		t.Fatalf("timeout wrote cumulative Ctrl+C %d times", got)
-	}
-	shell.mu.Lock()
-	state := shell.collaborationState
-	shell.mu.Unlock()
-	if state != serveShellCollaborationReady {
-		t.Fatalf("state after recovered timeout = %s", state)
-	}
-
-	disabledResult := make(chan tools.ShellResult, 1)
-	disabledErr := make(chan error, 1)
-	go func() {
-		result, err := controller.Execute(ctx, "session", tools.SharedShellArgs{
-			Command: "sh -c 'printf __child_running__; sleep 5'", TimeoutSeconds: 10, ExpectedShellID: shell.id, OutputLimit: 1 << 20,
-		})
-		disabledResult <- result
-		disabledErr <- err
-	}()
-	runningCommandID = ""
-	deadline = time.Now().Add(2 * time.Second)
-	for runningCommandID == "" && time.Now().Before(deadline) {
-		shell.mu.Lock()
-		// Wait for the foreground child to start, not merely allocation of a
-		// command ID or B marker before the shell forks its foreground job.
-		if bytes.Contains(shell.capture, []byte("__child_running__")) {
-			runningCommandID = shell.commandID
-		}
-		shell.mu.Unlock()
-		if runningCommandID == "" {
-			time.Sleep(time.Millisecond)
-		}
-	}
-	disableCtx, disableCancel := context.WithTimeout(context.Background(), 3*time.Second)
-	if err := shell.disableCollaboration(disableCtx); err != nil {
-		disableCancel()
-		t.Fatal(err)
-	}
-	disableCancel()
-	if result, err := <-disabledResult, <-disabledErr; err != nil || !result.Canceled {
-		t.Fatalf("disable result = %+v, %v", result, err)
-	}
-	if got := shell.interruptWriteCount(); got != 3 {
-		t.Fatalf("disable wrote cumulative Ctrl+C %d times", got)
-	}
-	shell.mu.Lock()
-	state, enabled := shell.collaborationState, shell.collaborationEnabled
-	shell.mu.Unlock()
-	if state != serveShellCollaborationOff || enabled {
-		t.Fatalf("state after disable = %s enabled=%t", state, enabled)
-	}
-	probeCtx, cancel = context.WithTimeout(context.Background(), 750*time.Millisecond)
-	if err := shell.probe(probeCtx); err != nil {
-		cancel()
-		t.Fatalf("re-enable probe: %v", err)
-	}
-	cancel()
-	shell.mu.Lock()
-	shell.transitionCollaborationLocked(serveShellCollaborationReady, true, "collaboration", "")
-	shell.mu.Unlock()
-
-	exitResult := make(chan error, 1)
-	go func() {
-		_, err := controller.Execute(ctx, "session", tools.SharedShellArgs{
-			Command: "sh -c 'printf __child_running__; sleep 5'", TimeoutSeconds: 10, ExpectedShellID: shell.id, OutputLimit: 1 << 20,
-		})
-		exitResult <- err
-	}()
-	runningCommandID = ""
-	deadline = time.Now().Add(2 * time.Second)
-	for runningCommandID == "" && time.Now().Before(deadline) {
-		shell.mu.Lock()
-		// Wait for the foreground child to start, not merely allocation of a
-		// command ID or B marker before the shell forks its foreground job.
-		if bytes.Contains(shell.capture, []byte("__child_running__")) {
-			runningCommandID = shell.commandID
-		}
-		shell.mu.Unlock()
-		if runningCommandID == "" {
-			time.Sleep(time.Millisecond)
-		}
-	}
-	if runningCommandID == "" {
-		t.Fatal("terminal-close command did not start")
-	}
-	shell.close()
-	err = <-exitResult
-	if tools.CollaborativeShellErrorKind(err) != "shell_exited" {
-		t.Fatalf("terminal-close command error = %v", err)
-	}
-	shell.mu.Lock()
-	state = shell.collaborationState
-	enabled = shell.collaborationEnabled
-	shell.mu.Unlock()
-	if state != serveShellCollaborationOff || enabled {
-		t.Fatalf("state after shell exit = %s enabled=%t", state, enabled)
 	}
 }
