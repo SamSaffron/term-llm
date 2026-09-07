@@ -728,3 +728,31 @@ func TestProviderCompletionsRevealEffortsProgressively(t *testing.T) {
 		})
 	}
 }
+
+func TestImageCompletionsIncludeConfiguredEndpoints(t *testing.T) {
+	cfg := &config.Config{Providers: map[string]config.ProviderConfig{
+		"janus":     {Type: config.ProviderTypeOpenAICompat, Model: "Janus-Pro-1B", Models: []string{"Janus-Pro-1B", "another-image-model"}},
+		"demo":      {Type: config.ProviderTypeOpenAICompat, Model: "canned"},
+		"text-only": {Type: config.ProviderTypeAnthropic, Model: "text-model"},
+		"openai":    {Type: config.ProviderTypeOpenAICompat, Model: "not-an-image-model", Models: []string{"not-an-image-model"}},
+	}}
+	for _, name := range []string{"janus", "demo"} {
+		got := GetProviderCompletions(name, true, cfg)
+		if !containsModelID(got, name) {
+			t.Errorf("missing custom image provider %s: %v", name, got)
+		}
+	}
+	if got := GetProviderCompletions("text-only", true, cfg); len(got) != 0 {
+		t.Errorf("non-image provider offered: %v", got)
+	}
+	got := GetProviderCompletions("janus:", true, cfg)
+	for _, want := range []string{"janus:Janus-Pro-1B", "janus:another-image-model"} {
+		if !containsModelID(got, want) {
+			t.Errorf("missing %s in %v", want, got)
+		}
+	}
+	got = GetProviderCompletions("openai:", true, cfg)
+	if containsModelID(got, "openai:not-an-image-model") {
+		t.Errorf("custom text config shadows built-in image models: %v", got)
+	}
+}

@@ -636,7 +636,7 @@ embed:
   provider: gemini
 ```
 
-Each feature block can hold provider-specific credentials and defaults. The image, audio, music, transcription, and embedding providers are independent of the main text provider.
+Each feature block can hold provider-specific credentials and defaults. The image, audio, music, transcription, and embedding providers are independent of the main text provider. `image.provider` also accepts a named `providers` entry with `type: openai_compatible`, an API `base_url`, and a `model`; see [local image providers](/guides/image-generation/#local-and-openai-compatible-image-providers).
 
 ## Provider-specific environment overrides
 

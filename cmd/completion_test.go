@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -15,6 +17,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
 func TestShellCompletionSkipsInheritedPprofServer(t *testing.T) {
@@ -332,5 +335,33 @@ func TestProviderFlagCompletionProgressiveSpacing(t *testing.T) {
 		if got := directive&cobra.ShellCompDirectiveNoSpace != 0; got != tc.noSpace {
 			t.Errorf("%s: no-space = %v, want %v", tc.prefix, got, tc.noSpace)
 		}
+	}
+}
+
+func TestImageCompletionLoadsNamedProviderConfig(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir, err := config.GetConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	text := "default_provider: debug\nimage:\n  provider: janus\nproviders:\n  janus:\n    type: openai_compatible\n    base_url: http://127.0.0.1:8080/v1\n    model: Janus-Pro-1B\n"
+	if err = os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(text), 0600); err != nil {
+		t.Fatal(err)
+	}
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	got, _ := ImageProviderFlagCompletion(nil, nil, "janus")
+	if !slices.Contains(got, "janus") {
+		t.Fatalf("provider completion = %v", got)
+	}
+	got, _ = ImageProviderFlagCompletion(nil, nil, "janus:")
+	if !slices.Contains(got, "janus:Janus-Pro-1B") {
+		t.Fatalf("model completion = %v", got)
+	}
+	if got := configValueCompletions("image.provider", "janus"); !slices.Contains(got, "janus") {
+		t.Fatalf("config completion = %v", got)
 	}
 }

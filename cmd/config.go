@@ -1265,7 +1265,7 @@ func configValueCompletions(key, toComplete string) []string {
 		return completions
 
 	case "image.provider":
-		providers := []string{"gemini", "openai", "chatgpt", "xai", "venice", "flux", "openrouter", "debug"}
+		providers := llm.GetConfiguredImageProviderNames(cfg)
 		var completions []string
 		for _, p := range providers {
 			if strings.HasPrefix(p, toComplete) {

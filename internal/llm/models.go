@@ -930,15 +930,34 @@ func GetImageProviderNames() []string {
 	return []string{"debug", "gemini", "openai", "chatgpt", "xai", "venice", "flux", "openrouter"}
 }
 
+func isCustomImageProvider(name string, pc config.ProviderConfig) bool {
+	return !slices.Contains(GetImageProviderNames(), name) && name != "grok" && name != "bfl" && config.InferProviderType(name, pc.Type) == config.ProviderTypeOpenAICompat
+}
+
+// GetConfiguredImageProviderNames includes named OpenAI-compatible endpoints.
+// Built-in names (and their aliases) keep their existing image configuration.
+func GetConfiguredImageProviderNames(cfg *config.Config) []string {
+	names := GetImageProviderNames()
+	if cfg != nil {
+		for name, pc := range cfg.Providers {
+			if isCustomImageProvider(name, pc) {
+				names = append(names, name)
+			}
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
 // GetProviderCompletions returns completions for the --provider flag
 // It handles both provider-only and provider:model completion scenarios.
-// For LLM providers, pass a config to include custom provider names.
+// Pass a config to include custom provider names and model lists.
 func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config) []string {
 	var providerNames []string
 	var getModelIDs func(string) []string
 
 	if isImage {
-		providerNames = GetImageProviderNames()
+		providerNames = GetConfiguredImageProviderNames(cfg)
 		getModelIDs = func(p string) []string { return ImageProviderModels[p] }
 	} else {
 		providerNames = GetProviderNames(cfg)
@@ -960,7 +979,7 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 		var configBaseURL string
 		var configuredProviderType config.ProviderType
 		if cfg != nil {
-			if providerCfg, ok := cfg.Providers[provider]; ok {
+			if providerCfg, ok := cfg.Providers[provider]; ok && (!isImage || isCustomImageProvider(provider, providerCfg)) {
 				configModels = providerCfg.Models
 				configModel = providerCfg.Model
 				configBaseURL = providerCfg.BaseURL
