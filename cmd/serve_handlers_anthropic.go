@@ -57,6 +57,10 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 	replaceHistory := true
 
 	sessionID := resolveRequestSessionID(r)
+	if err := s.validateRequestSessionID(ctx, sessionID); err != nil {
+		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
 	if sessionID == "" {
 		sessionID = ensureSessionID(w)
 	}

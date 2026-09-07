@@ -45,6 +45,10 @@ func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	sessionID := resolveRequestSessionID(r)
+	if err := s.validateRequestSessionID(ctx, sessionID); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
 	if sessionID == "" {
 		sessionID = ensureSessionID(w)
 	}

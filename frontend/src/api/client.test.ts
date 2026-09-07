@@ -9,6 +9,30 @@ const config = readInjectedConfig({
 } as Window);
 
 describe('API transport', () => {
+  it('uses numeric routes only for known legacy sessions on this server', () => {
+    const api = new APIClient(config, { getToken: () => '', onAuthRequired: vi.fn() });
+    for (const id of ['chat/session', 'chat\\session', '.', '..']) {
+      api.registerSession({ id, number: 16 });
+      expect(api.url(`/v1/sessions/${encodeURIComponent(id)}/state`)).toBe(
+        '/ui/v1/sessions/16/state',
+      );
+    }
+    api.registerSession({ id: 'safe-session', number: 17 });
+    api.registerSession({ id: 'unknown/session' });
+    api.registerSession({ id: 'zero/session', number: 0 });
+    expect(api.url('/v1/sessions/safe-session/state')).toBe('/ui/v1/sessions/safe-session/state');
+    expect(api.url('/v1/sessions/unknown%2Fsession/state')).toBe(
+      '/ui/v1/sessions/unknown%2Fsession/state',
+    );
+    expect(api.url('/v1/sessions/zero%2Fsession/state')).toBe(
+      '/ui/v1/sessions/zero%2Fsession/state',
+    );
+    const other = new APIClient(config, { getToken: () => '', onAuthRequired: vi.fn() });
+    expect(other.url('/v1/sessions/chat%2Fsession/state')).toBe(
+      '/ui/v1/sessions/chat%2Fsession/state',
+    );
+  });
+
   it('adds auth/version headers and preserves the base path', async () => {
     const request = vi.fn(
       async () =>
