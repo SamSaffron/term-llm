@@ -21,6 +21,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/filetrack"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mentions"
+	"github.com/samsaffron/term-llm/internal/passkeyauth"
 	projectpkg "github.com/samsaffron/term-llm/internal/project"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/serve"
@@ -160,9 +161,9 @@ func init() {
 	serveCmd.Flags().BoolVar(&serveAllowNoAuth, "no-auth", false, "Disable auth (only allowed on loopback host)")
 	serveCmd.Flags().BoolVar(&serveAllowNoAuth, "allow-no-auth", false, "Disable auth (alias for --no-auth)")
 	_ = serveCmd.Flags().MarkHidden("allow-no-auth")
-	serveCmd.Flags().StringVar(&serveAuthMode, "auth", "bearer", "Auth mode: bearer or none")
+	serveCmd.Flags().StringVar(&serveAuthMode, "auth", "bearer", "Auth mode: bearer, passkey (web only), or none")
 	serveCmd.Flags().StringVar(&serveBasePath, "base-path", "/ui", "URL prefix the UI uses for session URLs (e.g. /chat)")
-	serveCmd.Flags().StringVar(&servePublicURL, "public-url", "", "Browser-visible URL for OAuth callbacks (defaults to $TERM_LLM_SERVE_PUBLIC_URL or the authenticated request origin)")
+	serveCmd.Flags().StringVar(&servePublicURL, "public-url", "", "Browser-visible URL required for passkeys, also used for OAuth callbacks (defaults to $TERM_LLM_SERVE_PUBLIC_URL or the authenticated request origin)")
 	serveCmd.Flags().StringVar(&serveTitle, "title", "", "Override the web UI sidebar title (defaults to agent name or Chat)")
 	serveCmd.Flags().BoolVar(&serveDisableLocationSharing, "disable-location-sharing", false, "Hide the web UI action for sharing the browser's current location")
 	serveCmd.Flags().StringArrayVar(&serveCORSOrigins, "cors-origin", nil, "Allowed CORS origin (repeatable, or '*' for all)")
@@ -313,12 +314,20 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	if err != nil {
 		return err
 	}
+	var passkeyEndpoint passkeyauth.Endpoint
+	if authMode == "passkey" {
+		passkeyEndpoint, err = resolveWebPasskeyEndpoint(cmd)
+		if err != nil {
+			return err
+		}
+		serveBasePath, servePublicURL = passkeyEndpoint.BasePath, passkeyEndpoint.URL.String()
+	}
 	requireAuth := authMode != "none"
 	if !requireAuth && !isLoopbackHost(serveHost) {
 		return fmt.Errorf("--auth none is only allowed on loopback hosts (got %q)", serveHost)
 	}
 
-	token, tokenSource, err := resolveServeToken(serveToken, os.Getenv("TERM_LLM_SERVE_TOKEN"), requireAuth, generateServeToken)
+	token, tokenSource, err := resolveServeToken(serveToken, os.Getenv("TERM_LLM_SERVE_TOKEN"), authMode == "bearer", generateServeToken)
 	if err != nil {
 		return err
 	}
@@ -371,6 +380,26 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	hasWeb := platformContains(platformNames, "web")
 	hasAPI := platformContains(platformNames, "api")
 	hasTelegram := platformContains(platformNames, "telegram")
+	var browserAuth *browserPasskeyHandler
+	var bootstrapDisplay string
+	if authMode == "passkey" {
+		if !hasWeb || len(platformNames) != 1 {
+			return fmt.Errorf("--auth passkey supports serve web only (no additional platforms)")
+		}
+		if err := validateWebPasskeyConfigPath(cmd, passkeyEndpoint, cfg.Serve.BasePath); err != nil {
+			return err
+		}
+		var closePasskeys func() error
+		browserAuth, bootstrapDisplay, closePasskeys, err = openWebPasskeys(cmd, passkeyEndpoint)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if err := closePasskeys(); err != nil {
+				log.Printf("passkey state close: %v", err)
+			}
+		}()
+	}
 
 	// Auto-generate VAPID keys for web push if not already configured.
 	if hasWeb && !webPushConfigured(cfg) {
@@ -391,7 +420,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	}
 
 	// Apply config fallback for base-path if not set via flag
-	if !cmd.Flags().Changed("base-path") && cfg.Serve.BasePath != "" {
+	if authMode != "passkey" && !cmd.Flags().Changed("base-path") && cfg.Serve.BasePath != "" {
 		serveBasePath = cfg.Serve.BasePath
 	}
 	serveBasePath, err = normalizeBasePath(serveBasePath)
@@ -773,6 +802,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		}
 
 		s = &serveServer{
+			browserAuth: browserAuth,
 			cfg: serveServerConfig{
 				host:                    serveHost,
 				port:                    servePort,
@@ -888,8 +918,10 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		}
 
 		fmt.Fprintf(cmd.ErrOrStderr(), "term-llm serve listening on http://%s:%d\n", serveHost, servePort)
-		fmt.Fprintf(cmd.ErrOrStderr(), "auth: %s\n", authSummary(requireAuth))
-		if requireAuth {
+		if browserAuth == nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "auth: %s\n", authSummary(requireAuth))
+		}
+		if authMode == "bearer" {
 			switch tokenSource {
 			case tokenSourceGenerated:
 				fmt.Fprintf(cmd.ErrOrStderr(), "token: %s (auto-generated; export TERM_LLM_SERVE_TOKEN to persist)\n", token)
@@ -907,6 +939,9 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			fmt.Fprintf(cmd.ErrOrStderr(), "model: %s\n", modelName)
 		}
 		fmt.Fprintf(cmd.ErrOrStderr(), "response timeout: %s\n", humanDuration(responseTimeout))
+		if browserAuth != nil {
+			printWebPasskeyStatus(cmd, browserAuth, bootstrapDisplay)
+		}
 	}
 
 	// Start non-web platforms concurrently.
@@ -1116,8 +1151,8 @@ func resolveServeAuthMode(authFlagSet bool, authMode string, allowNoAuthSet bool
 	if mode == "" {
 		mode = "bearer"
 	}
-	if mode != "bearer" && mode != "none" {
-		return "", fmt.Errorf("invalid --auth %q (must be bearer or none)", authMode)
+	if mode != "bearer" && mode != "none" && mode != "passkey" {
+		return "", fmt.Errorf("invalid --auth %q (must be bearer, passkey, or none)", authMode)
 	}
 
 	if allowNoAuthSet {
@@ -1343,6 +1378,7 @@ func normalizeBasePath(raw string) (string, error) {
 }
 
 type serveServer struct {
+	browserAuth              *browserPasskeyHandler
 	cfg                      serveServerConfig
 	sessionMgr               *serveSessionManager
 	jobsV2                   *jobsV2Manager
@@ -1517,6 +1553,12 @@ func (s *serveServer) httpHandler() http.Handler {
 	// basePath is stripped by http.StripPrefix on the outer mux when mounted,
 	// so handlers see /v1/..., /images/..., / etc. without the prefix.
 	inner := http.NewServeMux()
+	if s.browserAuth != nil {
+		s.browserAuth.registerPasskeyRoutes(inner)
+		inner.HandleFunc("/auth/security", s.browserAuth.handleSecurityPage)
+		inner.HandleFunc("/dist/hub.js", handleBrowserAuthAsset)
+		inner.HandleFunc("/dist/hub.css", handleBrowserAuthAsset)
+	}
 
 	inner.HandleFunc("/healthz", s.handleHealth)
 	inner.HandleFunc("/v1/providers", s.auth(s.cors(s.handleProviders)))
@@ -1592,7 +1634,11 @@ func (s *serveServer) httpHandler() http.Handler {
 	// Go's ServeMux auto-redirects basePath (no slash) → basePath/.
 	prefix := s.cfg.basePath
 	mux := http.NewServeMux()
-	mux.Handle(prefix+"/", http.StripPrefix(prefix, inner))
+	var handler http.Handler = inner
+	if s.browserAuth != nil {
+		handler = s.browserAuth.passkeyAuth(handler)
+	}
+	mux.Handle(prefix+"/", http.StripPrefix(prefix, handler))
 
 	if s.cfg.ui {
 		mux.HandleFunc("/", s.cors(func(w http.ResponseWriter, r *http.Request) {

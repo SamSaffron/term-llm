@@ -1,5 +1,6 @@
 import { render } from 'preact';
 import { HubClient } from '../api/hub-client';
+import { SecurityApp } from './components/SecurityApp';
 import { AuthApp } from './components/AuthApp';
 import { BearerLogin } from './components/BearerLogin';
 import { HubApp } from './components/HubApp';
@@ -24,6 +25,10 @@ function bootstrap(): void {
         store={new HubStore(client, config.passkeyAuth ? browserPasskeyPlatform() : undefined)}
         clipboard={browserClipboard()}
       />
+    );
+  } else if (config.page === 'security') {
+    application = (
+      <SecurityApp config={config} store={new HubStore(client, browserPasskeyPlatform())} />
     );
   } else if (config.page === 'passkey-auth') {
     application = (

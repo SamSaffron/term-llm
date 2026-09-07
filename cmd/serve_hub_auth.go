@@ -14,7 +14,7 @@ const hubAuthCookieName = "term_llm_hub_token"
 func (s *hubServer) handler() http.Handler {
 	mux := http.NewServeMux()
 	if s.passkey != nil {
-		s.registerPasskeyRoutes(mux)
+		s.browserAuth().registerPasskeyRoutes(mux)
 	}
 	mux.HandleFunc("/healthz", s.handleHubHealth)
 	mux.HandleFunc("/dist/hub.js", s.handleHubAsset)
@@ -36,7 +36,7 @@ func (s *hubServer) handler() http.Handler {
 
 func (s *hubServer) auth(next http.Handler) http.Handler {
 	if s.authMode == "passkey" && s.passkey != nil {
-		return s.passkeyAuth(next)
+		return s.browserAuth().passkeyAuth(next)
 	}
 	if !s.requireAuth {
 		return next

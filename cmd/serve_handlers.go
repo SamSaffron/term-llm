@@ -63,8 +63,12 @@ func (s *serveServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // healthIdentityTrusted reports whether the health request may receive node
 // identity fields: either auth is disabled (loopback-only serves), or the
-// request carries the serve's bearer token.
+// request carries a valid bearer token or passkey browser session.
 func (s *serveServer) healthIdentityTrusted(r *http.Request) bool {
+	if s.browserAuth != nil {
+		_, ok := s.browserAuth.authenticatePasskeyRequest(r)
+		return ok
+	}
 	if !s.cfg.requireAuth {
 		return true
 	}
@@ -340,6 +344,9 @@ func (s *serveServer) buildIndexHTML(vapidKey string) []byte {
 	// Also inject VAPID public key for web push if configured.
 	var headSnippet string
 	escaped, _ := json.Marshal(s.cfg.basePath)
+	if s.browserAuth != nil {
+		headSnippet += `<script>window.TERM_LLM_AUTH_MODE="passkey";</script>`
+	}
 	headSnippet += `<script>window.TERM_LLM_UI_PREFIX=` + string(escaped) + `;</script>`
 	versionEscaped, _ := json.Marshal(serveui.AssetVersion())
 	headSnippet += `<script>window.TERM_LLM_UI_VERSION=` + string(versionEscaped) + `;</script>`
@@ -3104,6 +3111,15 @@ func (s *serveServer) handleSessionMetadataPatch(w http.ResponseWriter, r *http.
 }
 
 func (s *serveServer) auth(next http.HandlerFunc) http.HandlerFunc {
+	if s.browserAuth != nil {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if p, ok := hubPrincipal(r); !ok || p.SessionID == "" {
+				writeOpenAIError(w, http.StatusUnauthorized, "invalid_session", "Passkey authentication is required")
+				return
+			}
+			next(w, r)
+		}
+	}
 	if !s.cfg.requireAuth {
 		return next
 	}

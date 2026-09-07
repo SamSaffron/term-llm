@@ -3,6 +3,7 @@ import type { ApprovalMode, Project } from '../domain/types';
 declare global {
   interface Window {
     TERM_LLM_UI_PREFIX?: string;
+    TERM_LLM_AUTH_MODE?: string;
     TERM_LLM_UI_VERSION?: string;
     TERM_LLM_SIDEBAR_SESSIONS?: string[] | string;
     TERM_LLM_AGENT_NAME?: string;
@@ -36,6 +37,7 @@ export interface HubContext {
 }
 
 export interface AppConfig {
+  passkeyAuth?: boolean;
   prefix: string;
   version: string;
   sidebarCategories: string[];
@@ -76,6 +78,7 @@ export function readInjectedConfig(target: Window = window): AppConfig {
       : 'prompt';
   return {
     prefix,
+    passkeyAuth: target.TERM_LLM_AUTH_MODE === 'passkey',
     version: String(target.TERM_LLM_UI_VERSION || ''),
     sidebarCategories: parseSidebarCategories(target.TERM_LLM_SIDEBAR_SESSIONS),
     agentName: String(target.TERM_LLM_AGENT_NAME || ''),

@@ -56,7 +56,7 @@ test('adds a host-recovery passkey without deleting credentials', async ({ page,
   expect(verified).toBe(true);
   const grantDataStatus = await page.evaluate(async () => (await fetch('../api/nodes')).status);
   expect(grantDataStatus).toBe(401);
-  await page.evaluate(() => sessionStorage.setItem('term_llm_hub_grant_verified', '1'));
+  await page.evaluate(() => sessionStorage.setItem('term_llm_hub_grant_verified:/hub', '1'));
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Add a recovery passkey' })).toBeVisible();
   await page.getByLabel('Passkey name').fill('Virtual recovery key');

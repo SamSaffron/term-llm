@@ -6,11 +6,11 @@ import (
 	"github.com/samsaffron/term-llm/internal/passkeyauth"
 )
 
-func (s *hubServer) hasGrantSession(r *http.Request, grants *passkeyauth.Grants, cookieName string) bool {
+func (s *browserPasskeyHandler) hasGrantSession(r *http.Request, grants *passkeyauth.Grants, cookieName string) bool {
 	if grants == nil {
 		return false
 	}
-	cookie, err := r.Cookie(cookieName)
+	cookie, err := r.Cookie(s.cookieName(cookieName))
 	if err != nil {
 		return false
 	}
@@ -18,24 +18,28 @@ func (s *hubServer) hasGrantSession(r *http.Request, grants *passkeyauth.Grants,
 	return err == nil
 }
 
-func (s *hubServer) bootstrapAvailable(r *http.Request) bool {
+func (s *browserPasskeyHandler) bootstrapAvailable(r *http.Request) bool {
 	return s.passkey != nil && s.passkey.store.CredentialCount() == 0 && (s.passkey.bootstrap.Enabled() || s.hasGrantSession(r, s.passkey.bootstrap, hubBootstrapCookieName))
 }
 
-func (s *hubServer) recoveryAvailable(r *http.Request) bool {
+func (s *browserPasskeyHandler) recoveryAvailable(r *http.Request) bool {
 	return s.passkey != nil && s.passkey.store.CredentialCount() > 0 && s.passkey.recovery != nil && (s.passkey.recovery.Enabled() || s.hasGrantSession(r, s.passkey.recovery, hubRecoveryCookieName))
 }
 
-func (s *hubServer) handlePasskeyPage(w http.ResponseWriter, r *http.Request) {
+func (s *browserPasskeyHandler) handlePasskeyPage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	appName, operatorName := "Hub", "Hub administrator"
+	if s.web {
+		appName, operatorName = "term-llm", "your Web UI"
+	}
 	page := &hubPasskeyPageConfig{
 		Mode:        "login",
 		Title:       "Sign in",
-		Heading:     "Sign in to Hub",
+		Heading:     "Sign in to " + appName,
 		Description: "Use an enrolled passkey to continue.",
 		Button:      "Sign in with a passkey",
 	}
@@ -47,8 +51,8 @@ func (s *hubServer) handlePasskeyPage(w http.ResponseWriter, r *http.Request) {
 		}
 		page.Mode = "setup"
 		page.Title = "Set up passkey"
-		page.Heading = "Set up Hub administrator"
-		page.Description = "Enter the one-time code shown by the Hub process, then create your first passkey."
+		page.Heading = "Set up " + operatorName
+		page.Description = "Enter the one-time code shown by the " + appName + " process, then create your first passkey."
 		page.Button = "Verify and create passkey"
 		page.NeedsCode = true
 		page.NeedsName = true
@@ -61,7 +65,7 @@ func (s *hubServer) handlePasskeyPage(w http.ResponseWriter, r *http.Request) {
 		page.Mode = "recover"
 		page.Title = "Recover access"
 		page.Heading = "Add a recovery passkey"
-		page.Description = "Enter the short-lived recovery secret configured on the Hub host."
+		page.Description = "Enter the short-lived recovery secret configured on the " + appName + " host."
 		page.Button = "Verify and add passkey"
 		page.NeedsCode = true
 		page.NeedsName = true
@@ -75,7 +79,7 @@ func (s *hubServer) handlePasskeyPage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	s.writeHubShell(w, r, http.StatusOK, page.Title+" - term-llm Hub", hubPageConfig{
+	s.writeHubShell(w, r, http.StatusOK, page.Title+" - term-llm", hubPageConfig{
 		Page:        "passkey-auth",
 		AuthMode:    "passkey",
 		BasePath:    s.basePath,

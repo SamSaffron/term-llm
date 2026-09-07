@@ -32,6 +32,42 @@ const (
 	hubAuthBodyLimit           = 64 << 10
 )
 
+// browserPasskeyHandler is the single HTTP authentication implementation for Hub
+// and Web. Application-specific routing exceptions are supplied only by Hub.
+type browserPasskeyHandler struct {
+	passkey         *hubPasskeyRuntime
+	basePath        string
+	token           func() string // Hub's explicit bearer compatibility; always nil for Web.
+	web             bool
+	publicPath      func(string) string
+	publicURLString func(*url.URL) string
+	writeHubShell   func(http.ResponseWriter, *http.Request, int, string, hubPageConfig)
+	bypass          func(*http.Request) bool
+	prepare         func(*http.Request) *http.Request
+}
+
+func (s *hubServer) browserAuth() *browserPasskeyHandler {
+	return &browserPasskeyHandler{passkey: s.passkey, basePath: s.basePath, token: func() string { return s.token },
+		publicPath: s.publicPath, publicURLString: s.publicURLString, writeHubShell: s.writeHubShell,
+		bypass: func(r *http.Request) bool { return hubNodeAuthRoute(r) || hubRegistrationRoute(r) },
+		prepare: func(r *http.Request) *http.Request {
+			if hubDelegationOperatorRoute(r) {
+				r = r.Clone(r.Context())
+				r.Header = r.Header.Clone()
+				r.Header.Del("Authorization")
+			}
+			return r
+		}}
+}
+
+// cookieName keeps Web and Hub sessions/ceremonies separate even on one host.
+func (s *browserPasskeyHandler) cookieName(name string) string {
+	if s.web {
+		return strings.Replace(name, "term_llm_hub_", "term_llm_web_", 1)
+	}
+	return name
+}
+
 type hubPasskeyRuntime struct {
 	endpoint      passkeyauth.Endpoint
 	store         *passkeyauth.Store
@@ -52,21 +88,21 @@ func hubPrincipal(r *http.Request) (passkeyauth.Principal, bool) {
 	return p, ok
 }
 
-func newHubPasskeyRuntime(endpoint passkeyauth.Endpoint, store *passkeyauth.Store, sessions *passkeyauth.Sessions, bootstrap, recovery *passkeyauth.Grants, peerResolver *hubClientPeerResolver) (*hubPasskeyRuntime, error) {
+func newHubPasskeyRuntime(endpoint passkeyauth.Endpoint, store *passkeyauth.Store, sessions *passkeyauth.Sessions, bootstrap, recovery *passkeyauth.Grants, peerResolver *hubClientPeerResolver, displayName string) (*hubPasskeyRuntime, error) {
 	if store == nil || sessions == nil || bootstrap == nil || recovery == nil {
 		return nil, fmt.Errorf("passkey credential, session, and grant stores are required")
 	}
 	if peerResolver == nil {
 		peerResolver, _ = newHubClientPeerResolver(nil)
 	}
-	rp, err := passkeyauth.NewRelyingParty(passkeyauth.RelyingPartyOptions{Endpoint: endpoint, DisplayName: hubPasskeyRPDisplayName})
+	rp, err := passkeyauth.NewRelyingParty(passkeyauth.RelyingPartyOptions{Endpoint: endpoint, DisplayName: displayName})
 	if err != nil {
 		return nil, err
 	}
 	return &hubPasskeyRuntime{endpoint: endpoint, store: store, rp: rp, sessions: sessions, ceremonies: passkeyauth.NewCeremonies(nil, nil), bootstrap: bootstrap, recovery: recovery, limiter: newHubAuthLimiter(nil), peerResolver: peerResolver}, nil
 }
 
-func (s *hubServer) registerPasskeyRoutes(mux *http.ServeMux) {
+func (s *browserPasskeyHandler) registerPasskeyRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/auth/login", s.handlePasskeyPage)
 	mux.HandleFunc("/auth/setup", s.handlePasskeyPage)
 	mux.HandleFunc("/auth/recover", s.handlePasskeyPage)
@@ -89,7 +125,7 @@ func (s *hubServer) registerPasskeyRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/auth/credentials", s.handleCredentials)
 }
 
-func (s *hubServer) passkeyAPIAllowed(w http.ResponseWriter, r *http.Request) bool {
+func (s *browserPasskeyHandler) passkeyAPIAllowed(w http.ResponseWriter, r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		if !strings.EqualFold(strings.TrimSpace(r.Header.Get("Origin")), s.passkey.endpoint.Origin) || strings.EqualFold(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")), "cross-site") || strings.EqualFold(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")), "same-site") {
 			writeOpenAIError(w, http.StatusForbidden, "invalid_origin", "request origin is not allowed")
@@ -178,21 +214,21 @@ func writeHubAuthJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func (s *hubServer) handleBootstrapVerify(w http.ResponseWriter, r *http.Request) {
+func (s *browserPasskeyHandler) handleBootstrapVerify(w http.ResponseWriter, r *http.Request) {
 	if s.passkey.store.CredentialCount() != 0 {
 		http.NotFound(w, r)
 		return
 	}
 	s.handleGrantVerify(w, r, s.passkey.bootstrap, hubBootstrapCookieName)
 }
-func (s *hubServer) handleRecoveryVerify(w http.ResponseWriter, r *http.Request) {
+func (s *browserPasskeyHandler) handleRecoveryVerify(w http.ResponseWriter, r *http.Request) {
 	if s.passkey.store.CredentialCount() == 0 || s.passkey.recovery == nil {
 		http.NotFound(w, r)
 		return
 	}
 	s.handleGrantVerify(w, r, s.passkey.recovery, hubRecoveryCookieName)
 }
-func (s *hubServer) handleGrantVerify(w http.ResponseWriter, r *http.Request, g *passkeyauth.Grants, cookieName string) {
+func (s *browserPasskeyHandler) handleGrantVerify(w http.ResponseWriter, r *http.Request, g *passkeyauth.Grants, cookieName string) {
 	if !requireJSONPost(w, r) || !s.passkeyAPIAllowed(w, r) {
 		return
 	}
@@ -202,7 +238,7 @@ func (s *hubServer) handleGrantVerify(w http.ResponseWriter, r *http.Request, g 
 	if !decodeHubAuthJSON(w, r, &in) {
 		return
 	}
-	if cookie, cookieErr := r.Cookie(cookieName); cookieErr == nil {
+	if cookie, cookieErr := r.Cookie(s.cookieName(cookieName)); cookieErr == nil {
 		if _, grantErr := g.Authenticate(cookie.Value); grantErr == nil {
 			writeHubAuthJSON(w, http.StatusOK, map[string]any{"ok": true})
 			return
@@ -217,29 +253,29 @@ func (s *hubServer) handleGrantVerify(w http.ResponseWriter, r *http.Request, g 
 	writeHubAuthJSON(w, http.StatusOK, map[string]any{"ok": true, "expires_at": grant.ExpiresAt})
 }
 
-func (s *hubServer) grantFromCookie(r *http.Request, g *passkeyauth.Grants, name string) (string, string, error) {
-	c, err := r.Cookie(name)
+func (s *browserPasskeyHandler) grantFromCookie(r *http.Request, g *passkeyauth.Grants, name string) (string, string, error) {
+	c, err := r.Cookie(s.cookieName(name))
 	if err != nil {
 		return "", "", passkeyauth.ErrInvalidGrant
 	}
 	id, err := g.Authenticate(c.Value)
 	return id, c.Value, err
 }
-func (s *hubServer) handleBootstrapRegisterBegin(w http.ResponseWriter, r *http.Request) {
+func (s *browserPasskeyHandler) handleBootstrapRegisterBegin(w http.ResponseWriter, r *http.Request) {
 	if s.passkey.store.CredentialCount() != 0 {
 		http.NotFound(w, r)
 		return
 	}
 	s.handleGrantRegisterBegin(w, r, s.passkey.bootstrap, hubBootstrapCookieName, hubLoginCeremonyCookieName, passkeyauth.CeremonyBootstrap)
 }
-func (s *hubServer) handleRecoveryRegisterBegin(w http.ResponseWriter, r *http.Request) {
+func (s *browserPasskeyHandler) handleRecoveryRegisterBegin(w http.ResponseWriter, r *http.Request) {
 	if s.passkey.store.CredentialCount() == 0 {
 		http.NotFound(w, r)
 		return
 	}
 	s.handleGrantRegisterBegin(w, r, s.passkey.recovery, hubRecoveryCookieName, hubRegistrationCookieName, passkeyauth.CeremonyRecovery)
 }
-func (s *hubServer) handleGrantRegisterBegin(w http.ResponseWriter, r *http.Request, g *passkeyauth.Grants, grantCookie, ceremonyCookie string, kind passkeyauth.CeremonyKind) {
+func (s *browserPasskeyHandler) handleGrantRegisterBegin(w http.ResponseWriter, r *http.Request, g *passkeyauth.Grants, grantCookie, ceremonyCookie string, kind passkeyauth.CeremonyKind) {
 	if !requireJSONPost(w, r) || !s.passkeyAPIAllowed(w, r) {
 		return
 	}
@@ -272,21 +308,21 @@ func (s *hubServer) handleGrantRegisterBegin(w http.ResponseWriter, r *http.Requ
 	s.setShortCookie(w, ceremonyCookie, ceremony.CookieToken)
 	writeHubAuthJSON(w, http.StatusOK, options)
 }
-func (s *hubServer) handleBootstrapRegisterFinish(w http.ResponseWriter, r *http.Request) {
+func (s *browserPasskeyHandler) handleBootstrapRegisterFinish(w http.ResponseWriter, r *http.Request) {
 	if s.passkey.store.CredentialCount() != 0 {
 		writeOpenAIError(w, http.StatusConflict, "already_configured", "the first passkey was already enrolled")
 		return
 	}
 	s.handleGrantRegisterFinish(w, r, s.passkey.bootstrap, hubBootstrapCookieName, hubLoginCeremonyCookieName, passkeyauth.CeremonyBootstrap, true)
 }
-func (s *hubServer) handleRecoveryRegisterFinish(w http.ResponseWriter, r *http.Request) {
+func (s *browserPasskeyHandler) handleRecoveryRegisterFinish(w http.ResponseWriter, r *http.Request) {
 	if s.passkey.store.CredentialCount() == 0 {
 		http.NotFound(w, r)
 		return
 	}
 	s.handleGrantRegisterFinish(w, r, s.passkey.recovery, hubRecoveryCookieName, hubRegistrationCookieName, passkeyauth.CeremonyRecovery, false)
 }
-func (s *hubServer) handleGrantRegisterFinish(w http.ResponseWriter, r *http.Request, g *passkeyauth.Grants, grantCookie, ceremonyCookie string, kind passkeyauth.CeremonyKind, bootstrap bool) {
+func (s *browserPasskeyHandler) handleGrantRegisterFinish(w http.ResponseWriter, r *http.Request, g *passkeyauth.Grants, grantCookie, ceremonyCookie string, kind passkeyauth.CeremonyKind, bootstrap bool) {
 	if !requireJSONPost(w, r) || !s.passkeyAPIAllowed(w, r) {
 		return
 	}
@@ -295,7 +331,7 @@ func (s *hubServer) handleGrantRegisterFinish(w http.ResponseWriter, r *http.Req
 		writeOpenAIError(w, http.StatusUnauthorized, "invalid_grant", "invalid setup session")
 		return
 	}
-	cc, err := r.Cookie(ceremonyCookie)
+	cc, err := r.Cookie(s.cookieName(ceremonyCookie))
 	if err != nil {
 		writeOpenAIError(w, http.StatusUnauthorized, "invalid_ceremony", "invalid registration ceremony")
 		return
@@ -351,31 +387,31 @@ func (s *hubServer) handleGrantRegisterFinish(w http.ResponseWriter, r *http.Req
 		s.setSessionCookie(w, issued)
 		writeHubAuthJSON(w, http.StatusCreated, map[string]any{"ok": true, "redirect": s.publicPath("/")})
 	} else {
-		log.Printf("Hub passkey recovery enrolled a replacement credential")
+		log.Printf("Passkey recovery enrolled a replacement credential")
 		writeHubAuthJSON(w, http.StatusCreated, map[string]any{"ok": true, "redirect": s.publicPath("/auth/login")})
 	}
 }
 
-func (s *hubServer) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request) {
+func (s *browserPasskeyHandler) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request) {
 	s.handleLoginBegin(w, r, passkeyauth.CeremonyLogin, hubLoginCeremonyCookieName, "")
 }
 func requireHubOperatorSession(w http.ResponseWriter, r *http.Request) (passkeyauth.Principal, bool) {
 	p, ok := hubPrincipal(r)
 	if !ok || p.SessionID == "" {
-		writeOpenAIError(w, http.StatusUnauthorized, "invalid_session", "Hub browser session is required")
+		writeOpenAIError(w, http.StatusUnauthorized, "invalid_session", "Browser session is required")
 		return passkeyauth.Principal{}, false
 	}
 	return p, true
 }
 
-func (s *hubServer) handlePasskeyReauthBegin(w http.ResponseWriter, r *http.Request) {
+func (s *browserPasskeyHandler) handlePasskeyReauthBegin(w http.ResponseWriter, r *http.Request) {
 	p, ok := requireHubOperatorSession(w, r)
 	if !ok {
 		return
 	}
 	s.handleLoginBegin(w, r, passkeyauth.CeremonyReauth, hubReauthCookieName, p.SessionID)
 }
-func (s *hubServer) handleLoginBegin(w http.ResponseWriter, r *http.Request, kind passkeyauth.CeremonyKind, cookieName, sessionID string) {
+func (s *browserPasskeyHandler) handleLoginBegin(w http.ResponseWriter, r *http.Request, kind passkeyauth.CeremonyKind, cookieName, sessionID string) {
 	if !requireJSONPost(w, r) || !s.passkeyAPIAllowed(w, r) {
 		return
 	}
@@ -403,13 +439,13 @@ func (s *hubServer) handleLoginBegin(w http.ResponseWriter, r *http.Request, kin
 	s.setShortCookie(w, cookieName, ceremony.CookieToken)
 	writeHubAuthJSON(w, http.StatusOK, options)
 }
-func (s *hubServer) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request) {
+func (s *browserPasskeyHandler) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 	s.handleLoginFinish(w, r, passkeyauth.CeremonyLogin, hubLoginCeremonyCookieName, false)
 }
-func (s *hubServer) handlePasskeyReauthFinish(w http.ResponseWriter, r *http.Request) {
+func (s *browserPasskeyHandler) handlePasskeyReauthFinish(w http.ResponseWriter, r *http.Request) {
 	s.handleLoginFinish(w, r, passkeyauth.CeremonyReauth, hubReauthCookieName, true)
 }
-func (s *hubServer) handleLoginFinish(w http.ResponseWriter, r *http.Request, kind passkeyauth.CeremonyKind, cookieName string, reauth bool) {
+func (s *browserPasskeyHandler) handleLoginFinish(w http.ResponseWriter, r *http.Request, kind passkeyauth.CeremonyKind, cookieName string, reauth bool) {
 	if !requireJSONPost(w, r) || !s.passkeyAPIAllowed(w, r) {
 		return
 	}
@@ -423,7 +459,7 @@ func (s *hubServer) handleLoginFinish(w http.ResponseWriter, r *http.Request, ki
 		}
 		sessionID = principal.SessionID
 	}
-	cookie, err := r.Cookie(cookieName)
+	cookie, err := r.Cookie(s.cookieName(cookieName))
 	if err != nil {
 		writeOpenAIError(w, http.StatusUnauthorized, "invalid_ceremony", "invalid authentication ceremony")
 		return
@@ -474,33 +510,35 @@ func (s *hubServer) handleLoginFinish(w http.ResponseWriter, r *http.Request, ki
 	writeHubAuthJSON(w, http.StatusOK, map[string]any{"ok": true, "redirect": ceremony.Meta})
 }
 
-func (s *hubServer) writePasskeySessionCreateError(w http.ResponseWriter, err error) {
+func (s *browserPasskeyHandler) writePasskeySessionCreateError(w http.ResponseWriter, err error) {
 	if errors.Is(err, passkeyauth.ErrSessionCapacity) {
-		writeOpenAIError(w, http.StatusServiceUnavailable, "session_capacity", "session capacity reached; remove the Hub sessions file to sign out all browsers")
+		writeOpenAIError(w, http.StatusServiceUnavailable, "session_capacity", "session capacity reached; remove the sessions file to sign out all browsers")
 		return
 	}
-	log.Printf("hub passkey session creation failed: %v", err)
+	log.Printf("passkey session creation failed: %v", err)
 	writeOpenAIError(w, http.StatusInternalServerError, "session_store_error", "session could not be durably created")
 }
 
-func (s *hubServer) handlePasskeySession(w http.ResponseWriter, r *http.Request) {
+func (s *browserPasskeyHandler) handlePasskeySession(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
 	p, ok := hubPrincipal(r)
 	if !ok || p.SessionID == "" {
-		writeOpenAIError(w, http.StatusUnauthorized, "invalid_session", "Hub passkey authentication is required")
+		w.Header().Set("X-Term-LLM-Login-URL", s.publicPath("/auth/login"))
+		writeOpenAIError(w, http.StatusUnauthorized, "invalid_session", "Passkey authentication is required")
 		return
 	}
 	info, err := s.passkey.sessions.Info(p)
 	if err != nil {
-		writeOpenAIError(w, http.StatusUnauthorized, "invalid_session", "Hub passkey authentication is required")
+		w.Header().Set("X-Term-LLM-Login-URL", s.publicPath("/auth/login"))
+		writeOpenAIError(w, http.StatusUnauthorized, "invalid_session", "Passkey authentication is required")
 		return
 	}
 	writeHubAuthJSON(w, http.StatusOK, map[string]any{"administrator": s.passkey.store.User().Name, "session": info, "recently_authenticated": s.passkey.sessions.HasRecentAuth(p), "active_sessions": s.passkey.sessions.Count()})
 }
-func (s *hubServer) handlePasskeyLogout(w http.ResponseWriter, r *http.Request) {
+func (s *browserPasskeyHandler) handlePasskeyLogout(w http.ResponseWriter, r *http.Request) {
 	if !requireJSONPost(w, r) || !s.passkeyAPIAllowed(w, r) {
 		return
 	}
@@ -513,7 +551,7 @@ func (s *hubServer) handlePasskeyLogout(w http.ResponseWriter, r *http.Request) 
 		if errors.Is(err, passkeyauth.ErrInvalidSession) {
 			writeOpenAIError(w, http.StatusUnauthorized, "invalid_session", "invalid session")
 		} else {
-			log.Printf("hub passkey session logout persistence failed: %v", err)
+			log.Printf("passkey session logout persistence failed: %v", err)
 			writeOpenAIError(w, http.StatusInternalServerError, "session_store_error", "session could not be durably revoked")
 		}
 		return
@@ -521,7 +559,7 @@ func (s *hubServer) handlePasskeyLogout(w http.ResponseWriter, r *http.Request) 
 	s.clearCookie(w, hubSessionCookieName)
 	writeHubAuthJSON(w, http.StatusOK, map[string]any{"ok": true, "redirect": s.publicPath("/auth/login")})
 }
-func (s *hubServer) handlePasskeyRevokeOthers(w http.ResponseWriter, r *http.Request) {
+func (s *browserPasskeyHandler) handlePasskeyRevokeOthers(w http.ResponseWriter, r *http.Request) {
 	if !requireJSONPost(w, r) || !s.passkeyAPIAllowed(w, r) {
 		return
 	}
@@ -534,7 +572,7 @@ func (s *hubServer) handlePasskeyRevokeOthers(w http.ResponseWriter, r *http.Req
 		if errors.Is(err, passkeyauth.ErrInvalidSession) {
 			writeOpenAIError(w, http.StatusUnauthorized, "invalid_session", "invalid session")
 		} else {
-			log.Printf("hub passkey session revocation persistence failed: %v", err)
+			log.Printf("passkey session revocation persistence failed: %v", err)
 			writeOpenAIError(w, http.StatusInternalServerError, "session_store_error", "sessions could not be durably revoked")
 		}
 		return
@@ -550,7 +588,7 @@ type publicCredential struct {
 	LastUsedAt  time.Time `json:"last_used_at"`
 }
 
-func (s *hubServer) handleCredentials(w http.ResponseWriter, r *http.Request) {
+func (s *browserPasskeyHandler) handleCredentials(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
@@ -564,7 +602,7 @@ func (s *hubServer) handleCredentials(w http.ResponseWriter, r *http.Request) {
 	}
 	writeHubAuthJSON(w, http.StatusOK, map[string]any{"credentials": out})
 }
-func (s *hubServer) handleCredentialItem(w http.ResponseWriter, r *http.Request) {
+func (s *browserPasskeyHandler) handleCredentialItem(w http.ResponseWriter, r *http.Request) {
 	if !s.passkeyAPIAllowed(w, r) {
 		return
 	}
@@ -602,7 +640,7 @@ func (s *hubServer) handleCredentialItem(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		if _, err := s.passkey.sessions.RevokeCredential(c.RecordID); err != nil {
-			log.Printf("hub passkey credential session revocation persistence failed: %v", err)
+			log.Printf("passkey credential session revocation persistence failed: %v", err)
 			writeOpenAIError(w, http.StatusInternalServerError, "session_store_error", "credential removed, but its sessions could not be durably revoked")
 			return
 		}
@@ -612,7 +650,7 @@ func (s *hubServer) handleCredentialItem(w http.ResponseWriter, r *http.Request)
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
 }
-func (s *hubServer) handleAdditionalRegisterBegin(w http.ResponseWriter, r *http.Request) {
+func (s *browserPasskeyHandler) handleAdditionalRegisterBegin(w http.ResponseWriter, r *http.Request) {
 	if !requireJSONPost(w, r) || !s.passkeyAPIAllowed(w, r) {
 		return
 	}
@@ -648,7 +686,7 @@ func (s *hubServer) handleAdditionalRegisterBegin(w http.ResponseWriter, r *http
 	s.setShortCookie(w, hubRegistrationCookieName, ceremony.CookieToken)
 	writeHubAuthJSON(w, 200, options)
 }
-func (s *hubServer) handleAdditionalRegisterFinish(w http.ResponseWriter, r *http.Request) {
+func (s *browserPasskeyHandler) handleAdditionalRegisterFinish(w http.ResponseWriter, r *http.Request) {
 	if !requireJSONPost(w, r) || !s.passkeyAPIAllowed(w, r) {
 		return
 	}
@@ -656,7 +694,7 @@ func (s *hubServer) handleAdditionalRegisterFinish(w http.ResponseWriter, r *htt
 	if !ok {
 		return
 	}
-	cookie, err := r.Cookie(hubRegistrationCookieName)
+	cookie, err := r.Cookie(s.cookieName(hubRegistrationCookieName))
 	if err != nil {
 		writeOpenAIError(w, 401, "invalid_ceremony", "invalid registration ceremony")
 		return
@@ -693,52 +731,66 @@ func (s *hubServer) handleAdditionalRegisterFinish(w http.ResponseWriter, r *htt
 	writeHubAuthJSON(w, 201, publicCredential{saved.RecordID, saved.DisplayName, saved.WebAuthn.Transport, saved.CreatedAt, saved.LastUsedAt})
 }
 
-func (s *hubServer) setShortCookie(w http.ResponseWriter, name, value string) {
-	http.SetCookie(w, &http.Cookie{Name: name, Value: value, Path: s.passkey.endpoint.CookiePath, HttpOnly: true, Secure: s.passkey.endpoint.Secure, SameSite: http.SameSiteStrictMode, MaxAge: 300, Expires: time.Now().Add(5 * time.Minute)})
+func (s *browserPasskeyHandler) setShortCookie(w http.ResponseWriter, name, value string) {
+	http.SetCookie(w, &http.Cookie{Name: s.cookieName(name), Value: value, Path: s.passkey.endpoint.CookiePath, HttpOnly: true, Secure: s.passkey.endpoint.Secure, SameSite: http.SameSiteStrictMode, MaxAge: 300, Expires: time.Now().Add(5 * time.Minute)})
 }
-func (s *hubServer) setSessionCookie(w http.ResponseWriter, issued passkeyauth.IssuedSession) {
+func (s *browserPasskeyHandler) setSessionCookie(w http.ResponseWriter, issued passkeyauth.IssuedSession) {
 	max := int(passkeyauth.SessionAbsoluteLifetime.Seconds())
 	if max < 1 {
 		max = 1
 	}
-	http.SetCookie(w, &http.Cookie{Name: hubSessionCookieName, Value: issued.Token, Path: s.passkey.endpoint.CookiePath, HttpOnly: true, Secure: s.passkey.endpoint.Secure, SameSite: http.SameSiteStrictMode, MaxAge: max, Expires: issued.Info.AbsoluteExpiresAt})
+	http.SetCookie(w, &http.Cookie{Name: s.cookieName(hubSessionCookieName), Value: issued.Token, Path: s.passkey.endpoint.CookiePath, HttpOnly: true, Secure: s.passkey.endpoint.Secure, SameSite: http.SameSiteStrictMode, MaxAge: max, Expires: issued.Info.AbsoluteExpiresAt})
 }
-func (s *hubServer) clearCookie(w http.ResponseWriter, name string) {
+func (s *browserPasskeyHandler) clearCookie(w http.ResponseWriter, name string) {
 	path := s.publicPath("/")
 	if s.passkey != nil {
 		path = s.passkey.endpoint.CookiePath
 	}
-	http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: path, HttpOnly: true, Secure: s.passkey != nil && s.passkey.endpoint.Secure, SameSite: http.SameSiteStrictMode, MaxAge: -1, Expires: time.Unix(1, 0)})
+	http.SetCookie(w, &http.Cookie{Name: s.cookieName(name), Value: "", Path: path, HttpOnly: true, Secure: s.passkey != nil && s.passkey.endpoint.Secure, SameSite: http.SameSiteStrictMode, MaxAge: -1, Expires: time.Unix(1, 0)})
 }
 
-func (s *hubServer) passkeyAuth(next http.Handler) http.Handler {
+func (s *browserPasskeyHandler) passkeyAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Web passkeys are same-origin only. Never forward anonymous preflights
+		// into widget or extension proxies, even if those accept arbitrary verbs.
+		if s.web && r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/auth/") {
 			w.Header().Set("Cache-Control", "no-store")
 			w.Header().Add("Vary", "Origin")
 		}
 		r = r.WithContext(context.WithValue(r.Context(), hubExpectedOriginKey{}, s.passkey.endpoint.Origin))
-		if legacy, err := r.Cookie(hubAuthCookieName); err == nil && legacy.Value != "" {
-			s.clearCookie(w, hubAuthCookieName)
+		legacyName := hubAuthCookieName
+		if s.web {
+			legacyName = "term_llm_token"
 		}
-		if r.Method == http.MethodOptions || r.URL.Path == "/healthz" || hubNodeAuthRoute(r) || hubRegistrationRoute(r) || passkeyPublicRoute(r.URL.Path) {
+		if legacy, err := r.Cookie(legacyName); err == nil && legacy.Value != "" {
+			if s.web {
+				// The old Web cookie was scoped without a trailing slash (plus an
+				// older image-only cookie), unlike the new session cookie.
+				for _, path := range []string{s.basePath, s.basePath + "/images"} {
+					http.SetCookie(w, &http.Cookie{Name: legacyName, Path: path, MaxAge: -1, HttpOnly: true, Secure: s.passkey.endpoint.Secure, SameSite: http.SameSiteStrictMode})
+				}
+			} else {
+				s.clearCookie(w, legacyName)
+			}
+		}
+		if (r.Method == http.MethodOptions && !s.web) || r.URL.Path == "/healthz" || (s.bypass != nil && s.bypass(r)) || passkeyPublicRoute(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
 		if p, ok := s.authenticatePasskeyRequest(r); ok {
 			if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions && p.SessionID != "" {
 				w.Header().Add("Vary", "Origin")
-				if !strings.EqualFold(strings.TrimSpace(r.Header.Get("Origin")), s.passkey.endpoint.Origin) {
-					writeOpenAIError(w, http.StatusForbidden, "invalid_origin", "request origin is not allowed")
+				if !s.passkeyAPIAllowed(w, r) {
 					return
 				}
 			}
 			r = withHubPrincipal(r, p)
-			if hubDelegationOperatorRoute(r) {
-				clone := r.Clone(r.Context())
-				clone.Header = r.Header.Clone()
-				clone.Header.Del("Authorization")
-				r = clone
+			if s.prepare != nil {
+				r = s.prepare(r)
 			}
 			next.ServeHTTP(w, r)
 			return
@@ -755,12 +807,13 @@ func (s *hubServer) passkeyAuth(next http.Handler) http.Handler {
 			http.Redirect(w, r, target, http.StatusSeeOther)
 			return
 		}
-		if strings.HasPrefix(r.URL.Path, "/node/") {
+		if !s.web && strings.HasPrefix(r.URL.Path, "/node/") {
 			w.Header().Set("X-Term-LLM-Login-URL", s.publicPath("/auth/login"))
 			writeOpenAIError(w, http.StatusUnauthorized, "hub_auth_required", "Hub passkey authentication is required")
 			return
 		}
-		writeOpenAIError(w, http.StatusUnauthorized, "invalid_session", "Hub passkey authentication is required")
+		w.Header().Set("X-Term-LLM-Login-URL", s.publicPath("/auth/login"))
+		writeOpenAIError(w, http.StatusUnauthorized, "invalid_session", "Passkey authentication is required")
 	})
 }
 
@@ -775,13 +828,13 @@ func passkeyPublicRoute(path string) bool {
 		return false
 	}
 }
-func (s *hubServer) authenticatePasskeyRequest(r *http.Request) (passkeyauth.Principal, bool) {
-	if c, err := r.Cookie(hubSessionCookieName); err == nil {
+func (s *browserPasskeyHandler) authenticatePasskeyRequest(r *http.Request) (passkeyauth.Principal, bool) {
+	if c, err := r.Cookie(s.cookieName(hubSessionCookieName)); err == nil {
 		if p, err := s.passkey.sessions.Authenticate(c.Value); err == nil {
 			return p, true
 		}
 	}
-	if s.token != "" && hubTokenMatches(s.token, bearerTokenFromHeader(r)) {
+	if s.token != nil && hubTokenMatches(s.token(), bearerTokenFromHeader(r)) {
 		return passkeyauth.Principal{CredentialRecordID: "bearer"}, true
 	}
 	return passkeyauth.Principal{}, false

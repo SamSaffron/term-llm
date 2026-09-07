@@ -18,12 +18,15 @@ export class AuthStore {
   ) {}
 
   private grantVerified(): boolean {
-    return this.storage.getItem(grantVerifiedStorageKey) === '1';
+    return (
+      this.storage.getItem(`${grantVerifiedStorageKey}:${this.client.config.basePath}`) === '1'
+    );
   }
 
   private setGrantVerified(value: boolean): void {
-    if (value) this.storage.setItem(grantVerifiedStorageKey, '1');
-    else this.storage.removeItem(grantVerifiedStorageKey);
+    if (value)
+      this.storage.setItem(`${grantVerifiedStorageKey}:${this.client.config.basePath}`, '1');
+    else this.storage.removeItem(`${grantVerifiedStorageKey}:${this.client.config.basePath}`);
   }
 
   private async registerWithGrant(

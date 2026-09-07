@@ -164,6 +164,10 @@ jobs:
         timeout-minutes: 5
         run: scripts/hub_passkey_smoke.sh
 
+      - name: Web passkey browser smoke
+        timeout-minutes: 5
+        run: scripts/web_passkey_smoke.sh
+
   frontend:
     runs-on: ubuntu-latest
     steps:

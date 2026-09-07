@@ -79,6 +79,11 @@ func (s *hubServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *hubServer) writeHubShell(w http.ResponseWriter, r *http.Request, status int, title string, config hubPageConfig) {
+	writeBrowserAuthShell(w, r, status, title, config)
+}
+
+func writeBrowserAuthShell(w http.ResponseWriter, r *http.Request, status int, title string, config hubPageConfig) {
+	publicPath := func(p string) string { return config.BasePath + p }
 	encoded, err := json.Marshal(config)
 	if err != nil {
 		http.Error(w, "could not encode Hub configuration", http.StatusInternalServerError)
@@ -86,8 +91,8 @@ func (s *hubServer) writeHubShell(w http.ResponseWriter, r *http.Request, status
 	}
 	view := hubShellView{
 		Title:        title,
-		StyleURL:     s.publicPath("/dist/hub.css") + "?v=" + url.QueryEscape(serveui.HubAssetVersion()),
-		ScriptURL:    s.publicPath("/dist/hub.js"),
+		StyleURL:     publicPath("/dist/hub.css") + "?v=" + url.QueryEscape(serveui.HubAssetVersion()),
+		ScriptURL:    publicPath("/dist/hub.js"),
 		ConfigJSON:   string(encoded),
 		Dashboard:    config.Page == "dashboard",
 		BearerLogin:  config.Page == "bearer-login",
@@ -117,6 +122,10 @@ func (s *hubServer) writeHubShell(w http.ResponseWriter, r *http.Request, status
 }
 
 func (s *hubServer) handleHubAsset(w http.ResponseWriter, r *http.Request) {
+	handleBrowserAuthAsset(w, r)
+}
+
+func handleBrowserAuthAsset(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
 		w.WriteHeader(http.StatusMethodNotAllowed)

@@ -39,7 +39,7 @@ func configureTestPasskeyHub(t *testing.T, s *hubServer, base string) *hubServer
 		t.Fatal(err)
 	}
 	recovery, _ := passkeyauth.NewGrants(passkeyauth.GrantRecovery, nil, nil, nil)
-	runtime, err := newHubPasskeyRuntime(endpoint, store, sessions, bootstrap, recovery, nil)
+	runtime, err := newHubPasskeyRuntime(endpoint, store, sessions, bootstrap, recovery, nil, hubPasskeyRPDisplayName)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestHubPasskeySessionCookieAttributes(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := httptest.NewRecorder()
-	s.setSessionCookie(w, issued)
+	s.browserAuth().setSessionCookie(w, issued)
 	cookies := w.Result().Cookies()
 	if len(cookies) != 1 {
 		t.Fatal(cookies)
@@ -272,7 +272,7 @@ func TestHubPasskeySessionCookieAttributes(t *testing.T) {
 		t.Fatalf("non-opaque cookie %q", c.Value)
 	}
 	clear := httptest.NewRecorder()
-	s.clearCookie(clear, hubSessionCookieName)
+	s.browserAuth().clearCookie(clear, hubSessionCookieName)
 	cleared := clear.Result().Cookies()[0]
 	if cleared.Name != c.Name || cleared.Path != c.Path || cleared.MaxAge >= 0 || !cleared.Expires.Before(time.Now()) || cleared.Secure != c.Secure || cleared.SameSite != c.SameSite {
 		t.Fatalf("clear cookie mismatch: set=%+v clear=%+v", c, cleared)
@@ -551,7 +551,7 @@ func TestNewHubPasskeyRuntimeRequiresStateStores(t *testing.T) {
 		"recovery":  {s.passkey.store, s.passkey.sessions, s.passkey.bootstrap, nil},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := newHubPasskeyRuntime(s.passkey.endpoint, args.store, args.sessions, args.bootstrap, args.recovery, nil); err == nil {
+			if _, err := newHubPasskeyRuntime(s.passkey.endpoint, args.store, args.sessions, args.bootstrap, args.recovery, nil, hubPasskeyRPDisplayName); err == nil {
 				t.Fatal("accepted incomplete passkey runtime state")
 			}
 		})

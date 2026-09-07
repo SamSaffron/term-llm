@@ -1,4 +1,4 @@
-export type HubPageKind = 'dashboard' | 'passkey-auth' | 'bearer-login';
+export type HubPageKind = 'dashboard' | 'passkey-auth' | 'bearer-login' | 'security';
 export type HubAuthMode = 'none' | 'bearer' | 'passkey';
 export type HubPasskeyMode = 'setup' | 'login' | 'recover';
 
@@ -22,7 +22,7 @@ export interface HubConfig {
   };
 }
 
-const pageKinds = new Set<HubPageKind>(['dashboard', 'passkey-auth', 'bearer-login']);
+const pageKinds = new Set<HubPageKind>(['dashboard', 'passkey-auth', 'bearer-login', 'security']);
 const authModes = new Set<HubAuthMode>(['none', 'bearer', 'passkey']);
 const passkeyModes = new Set<HubPasskeyMode>(['setup', 'login', 'recover']);
 

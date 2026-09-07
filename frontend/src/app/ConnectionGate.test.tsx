@@ -256,3 +256,19 @@ it.each(['capabilities', 'models'] as const)(
     expect(localStorage.getItem(store.keys.token)).toBeNull();
   },
 );
+
+it('uses passkey sign-in instead of resurrecting a stored bearer token', async () => {
+  localStorage.setItem('term_llm_token', 'old-server-token');
+  store = new AppStore(
+    readInjectedConfig({ TERM_LLM_UI_PREFIX: '/ui', TERM_LLM_AUTH_MODE: 'passkey' } as Window),
+  );
+  expect(store.token.value).toBe('');
+  expect(localStorage.getItem('term_llm_token')).toBeNull();
+  const { ConnectionGate } = await import('../components/ConnectionGate');
+  render(<ConnectionGate store={store} />);
+  expect(screen.queryByLabelText('Server token')).not.toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'Sign in with a passkey' })).toHaveAttribute(
+    'href',
+    `/ui/auth/login?return=${encodeURIComponent(location.pathname + location.search)}`,
+  );
+});

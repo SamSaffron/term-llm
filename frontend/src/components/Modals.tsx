@@ -290,19 +290,32 @@ function Settings() {
         hidden={activeTab !== 'connection'}
         class="settings-panel settings-panel-connection"
       >
-        <div class="settings-field">
-          <label class="settings-label" for="authTokenInput">
-            Bearer token
-          </label>
-          <input
-            id="authTokenInput"
-            type="password"
-            value={token}
-            placeholder="paste your bearer token"
-            autoComplete="off"
-            onInput={(event) => setToken(event.currentTarget.value)}
-          />
-        </div>
+        {store.config.passkeyAuth ? (
+          <div class="settings-field">
+            <p>Signed in with a passkey. No bearer token is stored in this browser.</p>
+            <a
+              class="btn"
+              onClick={() => store.composer.persist()}
+              href={`${store.config.prefix}/auth/security?return=${encodeURIComponent(location.pathname)}`}
+            >
+              Manage passkeys and sessions
+            </a>
+          </div>
+        ) : (
+          <div class="settings-field">
+            <label class="settings-label" for="authTokenInput">
+              Bearer token
+            </label>
+            <input
+              id="authTokenInput"
+              type="password"
+              value={token}
+              placeholder="paste your bearer token"
+              autoComplete="off"
+              onInput={(event) => setToken(event.currentTarget.value)}
+            />
+          </div>
+        )}
       </div>
       <div
         id="settings-extensions-panel"
@@ -314,7 +327,7 @@ function Settings() {
         {extensionsVisited && <LazyExtensionSettings />}
       </div>
       {saveError && <p role="alert">{saveError}</p>}
-      {(activeTab === 'model' || activeTab === 'connection') && (
+      {(activeTab === 'model' || (activeTab === 'connection' && !store.config.passkeyAuth)) && (
         <>
           <div class="modal-actions">
             <button

@@ -76,7 +76,8 @@ export class AppStoreServices {
     readonly storage: Storage,
   ) {
     this.keys = migrateScopedStorage(storage, config.hub);
-    this.token = signal(storage.getItem(this.keys.token) || '');
+    if (config.passkeyAuth) storage.removeItem(this.keys.token);
+    this.token = signal(config.passkeyAuth ? '' : storage.getItem(this.keys.token) || '');
     syncTokenCookie(config.prefix, this.token.value);
     this.api = new APIClient(config, {
       getToken: () => this.token.value,

@@ -34,6 +34,26 @@ export function ConnectionGate({ store }: { store: AppStore }) {
       setBusy(false);
     }
   };
+  if (store.config.passkeyAuth)
+    return (
+      <main class="connection-gate">
+        <div class="connection-card">
+          <div class="connection-brand">
+            <span aria-hidden="true">&gt;_</span> term-llm
+          </div>
+          <h1 ref={heading} tabIndex={-1}>
+            Sign in to continue
+          </h1>
+          <p>Sign in with your passkey. Your saved conversations stay on the server.</p>
+          <a
+            class="btn primary"
+            href={`${store.config.prefix}/auth/login?return=${encodeURIComponent(location.pathname + location.search)}`}
+          >
+            Sign in with a passkey
+          </a>
+        </div>
+      </main>
+    );
   return (
     <main class="connection-gate">
       <div class="connection-card">

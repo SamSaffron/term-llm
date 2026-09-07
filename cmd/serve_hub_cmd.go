@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -245,58 +246,19 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("resolve Hub passkey auth file: %w", err)
 			}
 		}
-		unlockPasskeyState, err := lockHubPasskeyState(authFile)
-		if err != nil {
-			return err
-		}
-		defer unlockPasskeyState()
-		authStore, err := passkeyauth.OpenStore(passkeyauth.StoreOptions{Path: authFile, RPID: endpoint.RPID, UserName: hubPasskeyUserName, Warnf: func(format string, args ...any) { fmt.Fprintf(cmd.ErrOrStderr(), "SECURITY: "+format+"\n", args...) }})
-		if err != nil {
-			return err
-		}
-		sessionFile := filepath.Join(filepath.Dir(authFile), "sessions.json")
-		sessions, err := passkeyauth.OpenSessions(passkeyauth.SessionsOptions{
-			Path:            sessionFile,
-			RPID:            endpoint.RPID,
-			UserID:          authStore.User().ID,
-			ValidCredential: authStore.HasCredential,
-			Warnf:           func(format string, args ...any) { fmt.Fprintf(cmd.ErrOrStderr(), "SECURITY: "+format+"\n", args...) },
+		var closePasskeys func() error
+		s.passkey, bootstrapDisplay, closePasskeys, err = openBrowserPasskeys(cmd, endpoint, authFile, browserPasskeyOptions{
+			userName: hubPasskeyUserName, trustedProxies: serveHubPasskeyTrustedProxies,
+			bootstrap: resolveHubBootstrapSecret, recovery: resolveHubRecoverySecret,
 		})
 		if err != nil {
 			return err
 		}
-		defer sessions.Close()
-		bootstrapSecret, display, err := resolveHubBootstrapSecret(cmd, authStore.CredentialCount() == 0)
-		if err != nil {
-			return err
-		}
-		bootstrapDisplay = display
-		bootstrapGrants, err := passkeyauth.NewGrants(passkeyauth.GrantBootstrap, bootstrapSecret, nil, nil)
-		for i := range bootstrapSecret {
-			bootstrapSecret[i] = 0
-		}
-		if err != nil {
-			return err
-		}
-		recoverySecret, err := resolveHubRecoverySecret(authStore.CredentialCount() > 0)
-		if err != nil {
-			return err
-		}
-		recoveryGrants, err := passkeyauth.NewGrants(passkeyauth.GrantRecovery, recoverySecret, nil, nil)
-		for i := range recoverySecret {
-			recoverySecret[i] = 0
-		}
-		if err != nil {
-			return err
-		}
-		peerResolver, err := newHubClientPeerResolver(serveHubPasskeyTrustedProxies)
-		if err != nil {
-			return err
-		}
-		s.passkey, err = newHubPasskeyRuntime(endpoint, authStore, sessions, bootstrapGrants, recoveryGrants, peerResolver)
-		if err != nil {
-			return err
-		}
+		defer func() {
+			if err := closePasskeys(); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "passkey state close: %v\n", err)
+			}
+		}()
 	}
 	addr := net.JoinHostPort(serveHubHost, strconv.Itoa(serveHubPort))
 	srv := &http.Server{Addr: addr, Handler: s.handler()}
@@ -369,12 +331,15 @@ func resolveHubAuthMode(raw string) (string, error) {
 	return mode, nil
 }
 func resolveHubBootstrapSecret(cmd *cobra.Command, needed bool) ([]byte, string, error) {
-	env := os.Getenv("TERM_LLM_HUB_BOOTSTRAP_TOKEN")
-	_ = os.Unsetenv("TERM_LLM_HUB_BOOTSTRAP_TOKEN")
+	return resolveBrowserBootstrapSecret(cmd, needed, serveHubBootstrapTokenFile, "TERM_LLM_HUB_BOOTSTRAP_TOKEN", serveHubPrintBootstrapToken, cmd.OutOrStdout())
+}
+func resolveBrowserBootstrapSecret(cmd *cobra.Command, needed bool, file, envName string, printSecret bool, output io.Writer) ([]byte, string, error) {
+	env := os.Getenv(envName)
+	_ = os.Unsetenv(envName)
 	if !needed {
 		return nil, "", nil
 	}
-	if p := strings.TrimSpace(serveHubBootstrapTokenFile); p != "" {
+	if p := strings.TrimSpace(file); p != "" {
 		secret, err := passkeyauth.ReadPrivateSecretFile(p)
 		return secret, "", err
 	}
@@ -385,9 +350,9 @@ func resolveHubBootstrapSecret(cmd *cobra.Command, needed bool) ([]byte, string,
 		}
 		return secret, "", nil
 	}
-	interactive := hubOutputIsTerminal(cmd.OutOrStdout())
-	if !interactive && !serveHubPrintBootstrapToken {
-		return nil, "", fmt.Errorf("first-passkey setup requires --passkey-bootstrap-token-file or TERM_LLM_HUB_BOOTSTRAP_TOKEN when output is non-interactive (or explicitly use --print-passkey-bootstrap-token)")
+	interactive := hubOutputIsTerminal(output)
+	if !interactive && !printSecret {
+		return nil, "", fmt.Errorf("first-passkey setup requires --passkey-bootstrap-token-file or %s when output is non-interactive (or explicitly use --print-passkey-bootstrap-token)", envName)
 	}
 	secret, display, err := passkeyauth.GenerateBootstrapSecret(nil)
 	if err != nil {
@@ -399,12 +364,15 @@ func resolveHubBootstrapSecret(cmd *cobra.Command, needed bool) ([]byte, string,
 	return secret, display, nil
 }
 func resolveHubRecoverySecret(enabled bool) ([]byte, error) {
-	env := os.Getenv("TERM_LLM_HUB_RECOVERY_TOKEN")
-	_ = os.Unsetenv("TERM_LLM_HUB_RECOVERY_TOKEN")
+	return resolveBrowserRecoverySecret(enabled, serveHubRecoveryTokenFile, "TERM_LLM_HUB_RECOVERY_TOKEN")
+}
+func resolveBrowserRecoverySecret(enabled bool, file, envName string) ([]byte, error) {
+	env := os.Getenv(envName)
+	_ = os.Unsetenv(envName)
 	if !enabled {
 		return nil, nil
 	}
-	if p := strings.TrimSpace(serveHubRecoveryTokenFile); p != "" {
+	if p := strings.TrimSpace(file); p != "" {
 		return passkeyauth.ReadPrivateSecretFile(p)
 	}
 	if strings.TrimSpace(env) == "" {

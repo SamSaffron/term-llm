@@ -14,8 +14,9 @@ function memoryStorage(initial = new Map<string, string>()) {
 
 describe('Hub AuthStore', () => {
   it('re-verifies once when a remembered grant has expired', async () => {
-    const storage = memoryStorage(new Map([[grantVerifiedStorageKey, '1']]));
+    const storage = memoryStorage(new Map([[`${grantVerifiedStorageKey}:/hub`, '1']]));
     const client = {
+      config: { basePath: '/hub' },
       beginGrantRegistration: vi
         .fn()
         .mockRejectedValueOnce(new HubAPIError(401, 'expired grant'))
@@ -33,12 +34,13 @@ describe('Hub AuthStore', () => {
     expect(client.beginGrantRegistration).toHaveBeenCalledTimes(2);
     expect(client.verifyGrant).toHaveBeenCalledWith('/api/auth/bootstrap', 'new-code');
     expect(client.finishGrantRegistration).toHaveBeenCalledOnce();
-    expect(storage.getItem(grantVerifiedStorageKey)).toBeNull();
+    expect(storage.getItem(`${grantVerifiedStorageKey}:/hub`)).toBeNull();
     expect(navigate).toHaveBeenCalledWith('/hub/');
   });
 
   it('maps passkey cancellation and allows another submission', async () => {
     const client = {
+      config: { basePath: '/hub' },
       beginLogin: vi.fn(async () => ({ publicKey: {} })),
     } as unknown as HubClient;
     const platform = {

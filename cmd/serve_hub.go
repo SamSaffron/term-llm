@@ -89,14 +89,18 @@ func (s *hubServer) publicPath(path string) string {
 // publicURLString rebases an internal URL (normally from a stripped request)
 // onto the browser-visible hub mount, preserving query and fragment data.
 func (s *hubServer) publicURLString(u *url.URL) string {
+	return browserReturnURL(u, s.publicPath)
+}
+
+func browserReturnURL(u *url.URL, publicPath func(string) string) string {
 	if u == nil {
-		return s.publicPath("/")
+		return publicPath("/")
 	}
 	path := u.EscapedPath()
 	if path == "" {
 		path = "/"
 	}
-	out := s.publicPath(path)
+	out := publicPath(path)
 	if u.RawQuery != "" {
 		out += "?" + u.RawQuery
 	}

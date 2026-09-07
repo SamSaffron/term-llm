@@ -323,6 +323,92 @@ term-llm serve web --auth none --host 127.0.0.1
 
 `--allow-no-auth` and `--auth none` are only valid for loopback use. Non-loopback listeners require authentication; use HTTPS and a stable token when exposing a server remotely.
 
+## Optional passkey authentication (Web only)
+
+Bearer authentication remains the default. To use passkeys and private browser
+session cookies instead, opt in explicitly:
+
+```bash
+term-llm serve web --auth passkey --public-url http://localhost:8080/ui/
+```
+
+Open the **Web UI URL printed by the command**, enter the one-time setup code
+shown in the terminal, name your passkey, and approve creation in your browser or
+password manager. The code expires after ten minutes and can enroll exactly one
+initial passkey. Later visits use your existing browser session or offer passkey
+sign-in. You do not copy or store a permanent bearer token in the browser.
+
+Use a browser/authenticator that supports passkeys (a platform authenticator,
+password manager, security key, or supported phone-assisted flow). On Linux,
+platform-authenticator availability depends on your browser and password manager.
+
+### Origin and deployment
+
+`--public-url` (or `TERM_LLM_SERVE_PUBLIC_URL`) is required and fixes the browser
+origin and WebAuthn relying-party identity. HTTPS with a stable domain is required
+except for `http://localhost[:port]`. **Use `localhost`, not `127.0.0.1`, in the
+browser URL**; the backend still binds to loopback by default. Remote examples:
+
+```bash
+# Terminate HTTPS at your reverse proxy; keep the backend on loopback.
+term-llm serve web --auth passkey --public-url https://chat.example.com/ui/
+```
+
+The non-root mount path (such as `/ui/`) is derived from the public URL. An
+explicit `--base-path`, or `serve.base_path` from configuration when the flag is
+absent, must match it. Changing the hostname changes the passkey
+identity. Request Host/forwarding headers never determine the authentication
+origin. Behind a proxy, `--passkey-trusted-proxy IP_OR_CIDR` can explicitly trust
+its forwarded client address for rate limiting; this does not trust its origin.
+
+This initial mode supports **`serve web` alone, direct same-origin access**.
+Additional platforms, Hub integration, WebRTC, and `--cors-origin` are not
+supported. `--token` and `TERM_LLM_SERVE_TOKEN` are rejected rather than silently
+leaving a second authentication path open. For bearer-authenticated API clients,
+continue using the default bearer mode. Passkeys identify one shared operator,
+not separate users or isolated workspaces.
+
+### Passkeys, sessions, and recovery
+
+In the Web UI, open **Settings → Connection → Manage passkeys and sessions** to
+add, rename, or remove passkeys, revoke other browser sessions, or sign out.
+Adding/removing a passkey requires a fresh assertion; the last passkey cannot be
+removed. Enroll a second passkey as a backup.
+
+Credentials are stored under `<data-dir>/web-auth/auth.json`; browser sessions
+are stored alongside them. Both are separate from Hub authentication state.
+`--passkey-auth-file` can override the credential location; its directory must be
+private (0700 on Unix). State is locked against overlapping processes. Valid
+browser sessions survive restarts, with a 12-hour idle and seven-day absolute
+lifetime. Cookies are HttpOnly, SameSite=Strict, path-scoped, and Secure on HTTPS.
+Sign out revokes the current session; "Revoke other sessions" leaves the current
+one signed in. Expiry offers a passkey sign-in link, with a mount-scoped return
+path to your conversation. No bearer token is sent in browser Authorization
+headers or retained in its token storage in this mode. Session revocation does
+not undo actions already authorized or completed.
+
+For unattended first startup, provide a private bootstrap-secret file instead of
+printing an enrollment credential into logs:
+
+```bash
+# Create once in a private directory; do not overwrite an existing secret.
+(umask 077; openssl rand -base64 32 > bootstrap-secret)
+term-llm serve web --auth passkey --public-url http://localhost:8080/ui/ \
+  --passkey-bootstrap-token-file ./bootstrap-secret
+```
+
+Enter that file's value on `/ui/auth/setup`, then remove the file after enrollment.
+`TERM_LLM_SERVE_BOOTSTRAP_TOKEN` is also supported and scrubbed from the process
+environment. The explicit `--print-passkey-bootstrap-token` escape hatch permits
+printing a generated code to redirected output; treat those logs as temporary
+enrollment credentials.
+
+If all enrolled passkeys become inaccessible, restart with a private
+`--passkey-recovery-token-file` (or `TERM_LLM_SERVE_RECOVERY_TOKEN`), open
+`/ui/auth/recover`, and enter that short-lived secret to enroll a recovery passkey.
+Remove the recovery secret and restart without it when finished. Recovery does
+not silently disable authentication or delete existing credentials.
+
 ## Run as a systemd user service
 
 For a persistent Linux deployment, the repository includes a complete
