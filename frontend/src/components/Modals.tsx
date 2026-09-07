@@ -50,7 +50,7 @@ function Settings() {
   const store = useStore();
   const [tab, setTab] = useState('model');
   const [extensionsVisited, setExtensionsVisited] = useState(false);
-  const activeTab = store.authRequired.value ? 'connection' : tab;
+  const activeTab = tab;
   const tabs = ['Model', 'Interface', 'Extensions', 'Connection'];
   const selectTab = (name: string) => {
     setTab(name);
@@ -62,52 +62,60 @@ function Settings() {
   const [effort, setEffort] = useState(store.selectedEffort.value);
   const [reasoning, setReasoning] = useState(store.selectedReasoningMode.value);
   const [agent, setAgent] = useState(store.selectedAgent.value);
-  const save = () => {
-    store.setPreference('provider', provider);
-    store.setPreference('model', model);
-    store.setPreference('effort', effort);
-    store.setPreference('reasoning', reasoning);
-    store.setPreference('agent', agent);
-    store.saveSettings(token);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const save = async () => {
+    if (saving) return;
+    setSaving(true);
+    setSaveError('');
+    try {
+      store.setPreference('provider', provider);
+      store.setPreference('model', model);
+      store.setPreference('effort', effort);
+      store.setPreference('reasoning', reasoning);
+      store.setPreference('agent', agent);
+      await store.saveSettings(token);
+    } catch (error) {
+      setSaveError(errorMessage(error));
+    } finally {
+      setSaving(false);
+    }
   };
   return (
-    <Overlay title="Settings" className="settings-modal" close={!store.authRequired.value}>
-      {!store.authRequired.value && (
-        <div class="settings-tabs" role="tablist" aria-label="Settings sections">
-          {tabs.map((label, index) => {
-            const name = label.toLowerCase();
-            return (
-              <button
-                type="button"
-                role="tab"
-                id={`settings-${name}-tab`}
-                aria-controls={`settings-${name}-panel`}
-                aria-selected={activeTab === name}
-                tabIndex={activeTab === name ? 0 : -1}
-                onClick={() => selectTab(name)}
-                onKeyDown={(event) => {
-                  let next: number;
-                  if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
-                  else if (event.key === 'ArrowLeft')
-                    next = (index + tabs.length - 1) % tabs.length;
-                  else if (event.key === 'Home') next = 0;
-                  else if (event.key === 'End') next = tabs.length - 1;
-                  else return;
-                  event.preventDefault();
-                  selectTab(tabs[next].toLowerCase());
-                  document.getElementById(`settings-${tabs[next].toLowerCase()}-tab`)?.focus();
-                }}
-              >
-                {label}
-              </button>
-            );
-          })}
-        </div>
-      )}
+    <Overlay title="Settings" className="settings-modal" dismissDisabled={saving}>
+      <div class="settings-tabs" role="tablist" aria-label="Settings sections">
+        {tabs.map((label, index) => {
+          const name = label.toLowerCase();
+          return (
+            <button
+              type="button"
+              role="tab"
+              id={`settings-${name}-tab`}
+              aria-controls={`settings-${name}-panel`}
+              aria-selected={activeTab === name}
+              tabIndex={activeTab === name ? 0 : -1}
+              onClick={() => selectTab(name)}
+              onKeyDown={(event) => {
+                let next: number;
+                if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
+                else if (event.key === 'ArrowLeft') next = (index + tabs.length - 1) % tabs.length;
+                else if (event.key === 'Home') next = 0;
+                else if (event.key === 'End') next = tabs.length - 1;
+                else return;
+                event.preventDefault();
+                selectTab(tabs[next].toLowerCase());
+                document.getElementById(`settings-${tabs[next].toLowerCase()}-tab`)?.focus();
+              }}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
       <div
         id="settings-model-panel"
         role="tabpanel"
-        aria-labelledby={store.authRequired.value ? undefined : 'settings-model-tab'}
+        aria-labelledby="settings-model-tab"
         hidden={activeTab !== 'model'}
         class="settings-panel settings-panel-model"
       >
@@ -181,7 +189,7 @@ function Settings() {
       <div
         id="settings-interface-panel"
         role="tabpanel"
-        aria-labelledby={store.authRequired.value ? undefined : 'settings-interface-tab'}
+        aria-labelledby="settings-interface-tab"
         hidden={activeTab !== 'interface'}
         class="settings-panel settings-panel-interface"
       >
@@ -278,7 +286,7 @@ function Settings() {
       <div
         id="settings-connection-panel"
         role="tabpanel"
-        aria-labelledby={store.authRequired.value ? undefined : 'settings-connection-tab'}
+        aria-labelledby="settings-connection-tab"
         hidden={activeTab !== 'connection'}
         class="settings-panel settings-panel-connection"
       >
@@ -305,22 +313,21 @@ function Settings() {
       >
         {extensionsVisited && <LazyExtensionSettings />}
       </div>
+      {saveError && <p role="alert">{saveError}</p>}
       {(activeTab === 'model' || activeTab === 'connection') && (
         <>
           <div class="modal-actions">
-            {!store.authRequired.value && (
-              <button
-                class="btn"
-                type="button"
-                onClick={() => {
-                  store.modal.value = '';
-                }}
-              >
-                Cancel
-              </button>
-            )}
-            <button class="btn primary" type="button" onClick={save}>
-              Save
+            <button
+              class="btn"
+              type="button"
+              onClick={() => {
+                store.modal.value = '';
+              }}
+            >
+              Cancel
+            </button>
+            <button class="btn primary" type="button" onClick={save} disabled={saving}>
+              {saving ? 'Saving…' : 'Save'}
             </button>
           </div>
         </>

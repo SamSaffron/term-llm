@@ -1,14 +1,12 @@
 import { batch, signal, type ReadonlySignal, type Signal } from '@preact/signals';
 import type { Session } from '../domain/types';
-import type { Modal, RuntimeOption } from './store-types';
+import type { RuntimeOption } from './store-types';
 import { listFrom } from './store-utils';
 import type { AppStoreServices } from './app-store-services';
 
 export interface RuntimeStoreOptions {
   activeSession: ReadonlySignal<Session | null>;
   streaming: ReadonlySignal<boolean>;
-  modal: Signal<Modal>;
-  bootstrap: () => Promise<void>;
 }
 
 /** Owns provider/model discovery and persisted runtime preferences. */
@@ -189,13 +187,6 @@ export class RuntimeStore {
         })
         .catch((error) => this.services.toast(error, 'error'));
     }
-  }
-
-  saveSettings(token: string): void {
-    this.services.setToken(token);
-    this.services.authRequired.value = false;
-    this.options.modal.value = '';
-    void this.options.bootstrap();
   }
 
   dispose(): void {

@@ -2,6 +2,7 @@ term-llm
 .claude/settings.local.json
 .cache/*
 .gocache/*
+tmp/*
 *.lock
 !frontend/package-lock.json
 frontend/node_modules/

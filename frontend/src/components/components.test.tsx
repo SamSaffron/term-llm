@@ -5456,21 +5456,6 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByLabelText('Effort')).toHaveValue('high');
   });
 
-  it('keeps authentication directly accessible without settings tabs', () => {
-    const store = createStore();
-    store.modal.value = 'settings';
-    store.authRequired.value = true;
-    render(
-      <StoreContext.Provider value={store}>
-        <Modals />
-      </StoreContext.Provider>,
-    );
-    expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Bearer token')).toBeVisible();
-    expect(screen.queryByRole('combobox', { name: 'Provider' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Save', exact: true })).toBeVisible();
-  });
-
   it('never renders a background-session interaction over the active conversation', () => {
     const store = createStore();
     store.activeSessionId.value = 's2';

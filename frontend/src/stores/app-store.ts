@@ -154,6 +154,7 @@ export class AppStore {
   readonly connected: Signal<boolean>;
   readonly authRequired: Signal<boolean>;
   readonly startup = signal('Loading your chat shell…');
+  readonly startupFailed = signal(false);
   readonly startupDone = signal(false);
   readonly sidebarCollapsed: Signal<boolean>;
   readonly sidebarOpen: Signal<boolean>;
@@ -240,7 +241,7 @@ export class AppStore {
     readonly config: AppConfig,
     readonly storage: Storage = localStorage,
   ) {
-    this.services = new AppStoreServices(config, storage, this.modal);
+    this.services = new AppStoreServices(config, storage);
     this.keys = this.services.keys;
     this.api = this.services.api;
     this.endpoints = this.services.endpoints;
@@ -297,8 +298,6 @@ export class AppStore {
     this.runtime = new RuntimeStore(this.services, {
       activeSession: this.activeSession,
       streaming: streamingProxy,
-      modal: this.modal,
-      bootstrap: () => this.bootstrap(),
     });
     this.providers = this.runtime.providers;
     this.models = this.runtime.models;
@@ -576,11 +575,30 @@ export class AppStore {
     });
   }
 
-  async bootstrap(): Promise<void> {
-    this.installLifecycle();
-    this.startup.value = 'Connecting to term-llm…';
+  async connect(token: string): Promise<void> {
+    const previousToken = this.token.peek();
+    const candidate = token.trim();
+    // Probe without changing credentials used by background requests.
+    await this.endpoints.verifyToken(candidate);
+    this.services.setToken(candidate);
     try {
-      const capabilities = await this.endpoints.capabilities().catch(() => ({}));
+      await this.bootstrap(true);
+    } catch (error) {
+      if (error instanceof APIError && [401, 403].includes(error.status))
+        this.services.setToken(previousToken);
+      throw error;
+    }
+  }
+
+  async bootstrap(propagateError = false): Promise<void> {
+    this.startupFailed.value = false;
+    this.startup.value = 'Connecting to term-llm…';
+    const optional = (error: unknown) => {
+      if (error instanceof APIError && [401, 403].includes(error.status)) throw error;
+      return {};
+    };
+    try {
+      const capabilities = await this.endpoints.capabilities().catch(optional);
       this.applyCapabilities(capabilities);
       this.serverEventFeedEnabled = eventFeedCapability(capabilities);
       if (this.serverEventFeedEnabled) await this.serverEventCoordinator.prepare();
@@ -594,28 +612,36 @@ export class AppStore {
       ]);
       this.applyProviders(providers);
       this.applySidebar(sidebar);
-      await this.loadModels().catch(() => undefined);
-      const routed = sessionIDFromLocation(this.config.prefix);
-      const forceNew = new URLSearchParams(location.search).get('new') === '1';
-      const restoreDraft = !routed && Boolean(this.storage.getItem(this.keys.draftSessionActive));
-      const preferred =
-        forceNew || restoreDraft
-          ? ''
-          : routed || this.storage.getItem(this.keys.activeSession) || '';
-      const session =
-        forceNew || restoreDraft
-          ? null
-          : this.sessions.value.find(
-              (entry) => entry.id === preferred || String(entry.number || '') === preferred,
-            ) ||
-            this.sessions.value[0] ||
-            null;
-      if (session) await this.selectSession(session, true);
-      else this.newChat(true, this.storage.getItem(this.keys.lastProject) || '', false);
+      await this.loadModels().catch(optional);
+      // Route hydration is first-load work. Reauthentication and Settings saves
+      // must not reselect the chat or restore over the live unsent composer.
+      if (!this.startupDone.peek()) {
+        const routed = sessionIDFromLocation(this.config.prefix);
+        const forceNew = new URLSearchParams(location.search).get('new') === '1';
+        const restoreDraft = !routed && Boolean(this.storage.getItem(this.keys.draftSessionActive));
+        const preferred =
+          forceNew || restoreDraft
+            ? ''
+            : routed || this.storage.getItem(this.keys.activeSession) || '';
+        const session =
+          forceNew || restoreDraft
+            ? null
+            : this.sessions.value.find(
+                (entry) => entry.id === preferred || String(entry.number || '') === preferred,
+              ) ||
+              this.sessions.value[0] ||
+              null;
+        if (session) await this.selectSession(session, true);
+        else this.newChat(true, this.storage.getItem(this.keys.lastProject) || '', false);
+      }
       this.serverEventCoordinator.updateInterest(this.activeSessionId.peek());
       this.connected.value = true;
       this.networkState.value = 'online';
+      this.authRequired.value = false;
       this.startupDone.value = true;
+      // Do not enroll notifications or install background API checks before login.
+      if (this.lifecycleInstalled) void this.notificationController.reconcile();
+      this.installLifecycle();
       this.serverEventCoordinator.flushBuffered();
       this.startStatusPoll();
       this.tabSyncCoordinator.flushPending();
@@ -624,10 +650,10 @@ export class AppStore {
     } catch (error) {
       this.startup.value = error instanceof Error ? error.message : 'Could not load the chat UI.';
       this.connected.value = false;
-      if (error instanceof APIError && [401, 403].includes(error.status)) {
+      this.startupFailed.value = true;
+      if (error instanceof APIError && [401, 403].includes(error.status))
         this.authRequired.value = true;
-        this.modal.value = 'settings';
-      }
+      if (propagateError) throw error;
     }
   }
 
@@ -1108,8 +1134,10 @@ export class AppStore {
   ): void {
     this.runtime.setPreference(name, value, commit);
   }
-  saveSettings(token: string): void {
-    this.runtime.saveSettings(token);
+  async saveSettings(token: string): Promise<void> {
+    if (token.trim() !== this.token.peek()) await this.connect(token);
+    else await this.bootstrap(true);
+    this.modal.value = '';
   }
   async enableNotifications(): Promise<void> {
     await this.notificationController.enable();

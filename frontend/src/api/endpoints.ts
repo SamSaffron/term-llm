@@ -102,6 +102,13 @@ export const endpoints = (api: APIClient) => ({
   capabilities: () => api.get<Record<string, unknown>>('/v1/capabilities'),
   sharingCapabilities: () => api.get<SharingCapabilitiesResponse>('/v1/sharing/capabilities'),
   providers: () => api.get<Record<string, unknown>>('/v1/providers'),
+  verifyToken: (token: string) =>
+    api.json<Record<string, unknown>>(
+      '/v1/providers',
+      { headers: { Authorization: `Bearer ${token}` } },
+      // Explicit header, but no shared-token injection or global auth side effects.
+      { auth: 'ignore', retries: 0 },
+    ),
   models: (provider = '', signal?: AbortSignal) =>
     api.get<Record<string, unknown>>(
       `/v1/models${provider ? `?provider=${encoded(provider)}` : ''}`,

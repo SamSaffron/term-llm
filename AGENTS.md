@@ -2,6 +2,7 @@
 
 ## Working Approach
 - Work from the repository root. Find the owning package, nearby tests, and an existing pattern with `rg` before editing.
+- Use `./tmp` for scratch space; it is gitignored.
 - Make the smallest coherent change; remove superseded paths unless compatibility is required and documented.
 - Never change user config, credentials, caches, or generated artifacts to make tests pass.
 - Before finishing, inspect `git diff`, run checks for every touched area, and report commands and omissions.

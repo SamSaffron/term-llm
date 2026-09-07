@@ -3,6 +3,7 @@ import { Component, type ComponentChildren, type ComponentType } from 'preact';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { StoreContext } from './context';
 import type { AppStore, Toast } from '../stores/app-store';
+import { lazyComponent } from '../components/lazyComponent';
 import { Sidebar } from '../components/Sidebar';
 import { Header } from '../components/Header';
 import { Transcript } from '../components/Transcript';
@@ -13,6 +14,25 @@ import { Lightbox } from '../components/Lightbox';
 import { Icon } from '../components/Icon';
 import { useMediaQuery } from '../components/useMediaQuery';
 import { installVisualViewportSizing } from '../platform/browser';
+
+const ConnectionGate = lazyComponent<{ store: AppStore }>(
+  () =>
+    import('../components/ConnectionGate')
+      .then((module) => module.ConnectionGate)
+      .catch(() => ({ store }) => (
+        <div class="startup-splash">
+          <div class="startup-card" role="alert">
+            <p>Could not load sign-in.</p>
+            <button class="btn primary" onClick={() => void store.hardRefresh()}>
+              Reload
+            </button>
+          </div>
+        </div>
+      )),
+  <div class="startup-splash" role="status">
+    <div class="startup-card">Loading sign-in…</div>
+  </div>,
+);
 
 const toastIcon = (kind: Toast['kind']) =>
   kind === 'success' ? 'check' : kind === 'error' ? 'alert-circle' : 'info';
@@ -120,7 +140,7 @@ export function App({ store }: { store: AppStore }) {
       bind('--shell-dock-right-size', () => store.shellStore.dockRightSize.value),
     ];
     return () => dispose.forEach((stop) => stop());
-  }, [store, diffWidth]);
+  }, [store, diffWidth, store.authRequired.value, store.startupDone.value]);
   const session = store.activeSession.value;
   const shellVisible = store.shellStore.visible.value;
   const shellLayout = store.shellStore.layout.value;
@@ -141,6 +161,7 @@ export function App({ store }: { store: AppStore }) {
     void store.bootstrap();
     const removeViewportSizing = installVisualViewportSizing();
     const shortcut = (event: KeyboardEvent) => {
+      if (store.authRequired.peek()) return;
       const mac = /Mac|iPhone|iPad|iPod/.test(navigator.platform);
       const primary = mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
       if (
@@ -169,7 +190,14 @@ export function App({ store }: { store: AppStore }) {
   return (
     <ErrorBoundary>
       <StoreContext.Provider value={store}>
-        <div class="toast-region" id="toastRegion" aria-label="Notifications" aria-live="polite">
+        {store.authRequired.value && <ConnectionGate store={store} />}
+        <div
+          hidden={store.authRequired.value}
+          class="toast-region"
+          id="toastRegion"
+          aria-label="Notifications"
+          aria-live="polite"
+        >
           {store.toasts.value.map((toast) => (
             <div
               key={toast.id}
@@ -189,7 +217,7 @@ export function App({ store }: { store: AppStore }) {
             </div>
           ))}
         </div>
-        {!store.startupDone.value && (
+        {!store.startupDone.value && !store.authRequired.value && (
           <div class="startup-splash" id="startupSplash" role="status" aria-live="polite">
             <div class="startup-card">
               <div class="startup-mark" aria-hidden="true">
@@ -199,29 +227,47 @@ export function App({ store }: { store: AppStore }) {
               <div class="startup-subtitle" id="startupStatus">
                 {store.startup.value}
               </div>
-              <div class="startup-spinner" aria-hidden="true" />
+              {store.startupFailed.value ? (
+                <button class="btn primary" onClick={() => void store.bootstrap()}>
+                  Retry
+                </button>
+              ) : (
+                <div class="startup-spinner" aria-hidden="true" />
+              )}
             </div>
           </div>
         )}
-        <div
-          class={`app ${store.sidebarCollapsed.value ? 'sidebar-collapsed' : ''} ${diffOpen.value ? 'diff-open' : ''} ${diffMaximized.value ? 'diff-maximized' : ''} ${store.planVisible.value ? 'plan-open' : ''} ${shellVisible && shellLayout === 'bottom' ? 'shell-docked-bottom' : ''} ${shellVisible && shellLayout === 'right' ? 'shell-docked-right' : ''}`}
-          id="appShell"
-          ref={shell}
-          aria-hidden={!store.startupDone.value || shellFullscreen || undefined}
-          inert={shellFullscreen || undefined}
-        >
-          <Sidebar />
-          <main class="main" id="appMain">
-            <Header />
-            <Transcript />
-            <Composer />
-          </main>
-          <DiffSidebar />
-          <PlanSurface />
-        </div>
-        <Modals />
-        <Lightbox />
-        {shellVisible && <ShellOverlayLoader store={store} />}
+        {store.startupDone.value && (
+          <div
+            style={{ display: store.authRequired.value ? 'none' : 'contents' }}
+            inert={store.authRequired.value || undefined}
+            aria-hidden={store.authRequired.value || undefined}
+          >
+            <div
+              class={`app ${store.sidebarCollapsed.value ? 'sidebar-collapsed' : ''} ${diffOpen.value ? 'diff-open' : ''} ${diffMaximized.value ? 'diff-maximized' : ''} ${store.planVisible.value ? 'plan-open' : ''} ${shellVisible && shellLayout === 'bottom' ? 'shell-docked-bottom' : ''} ${shellVisible && shellLayout === 'right' ? 'shell-docked-right' : ''}`}
+              id="appShell"
+              ref={shell}
+              aria-hidden={shellFullscreen || undefined}
+              inert={shellFullscreen || undefined}
+            >
+              <Sidebar />
+              <main class="main" id="appMain">
+                <Header />
+                <Transcript />
+                <Composer />
+              </main>
+              <DiffSidebar />
+              <PlanSurface />
+            </div>
+            {!store.authRequired.value && (
+              <>
+                <Modals />
+                <Lightbox />
+              </>
+            )}
+            {shellVisible && <ShellOverlayLoader store={store} />}
+          </div>
+        )}
       </StoreContext.Provider>
     </ErrorBoundary>
   );

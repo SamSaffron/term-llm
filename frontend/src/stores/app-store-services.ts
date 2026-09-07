@@ -6,7 +6,7 @@ import { errorMessage } from '../domain/text';
 import { hardRefreshAssets, syncTokenCookie } from '../platform/browser';
 import { NotificationController, type NotificationState } from '../platform/notifications';
 import { migrateScopedStorage, type StorageKeys } from '../platform/storage';
-import type { Modal, Toast } from './store-types';
+import type { Toast } from './store-types';
 import { uuid } from './store-utils';
 
 export interface StoreDiagnostics {
@@ -74,7 +74,6 @@ export class AppStoreServices {
   constructor(
     readonly config: AppConfig,
     readonly storage: Storage,
-    modal: Signal<Modal>,
   ) {
     this.keys = migrateScopedStorage(storage, config.hub);
     this.token = signal(storage.getItem(this.keys.token) || '');
@@ -83,7 +82,6 @@ export class AppStoreServices {
       getToken: () => this.token.value,
       onAuthRequired: () => {
         this.authRequired.value = true;
-        modal.value = 'settings';
       },
       onNetworkState: (state) => {
         this.networkState.value = state;

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { APIClient } from './client';
+import { APIClient } from './client';
+import { readInjectedConfig } from '../app/config';
 import { endpoints } from './endpoints';
 
 describe('session mutation request contracts', () => {
@@ -270,4 +271,22 @@ describe('branch tree endpoint', () => {
       { policy: 'mutation', timeoutMs: 150_000 },
     );
   });
+});
+
+it('verifies an explicit token without using or invalidating the shared session credential', async () => {
+  const onAuthRequired = vi.fn();
+  const fetch = vi
+    .spyOn(globalThis, 'fetch')
+    .mockResolvedValue(new Response('Rejected', { status: 401 }));
+  const client = new APIClient(readInjectedConfig({ TERM_LLM_UI_PREFIX: '/ui' } as Window), {
+    getToken: () => 'existing-session-token',
+    onAuthRequired,
+  });
+  await expect(endpoints(client).verifyToken('candidate-token')).rejects.toMatchObject({
+    status: 401,
+  });
+  expect(fetch).toHaveBeenCalledOnce();
+  const headers = new Headers(fetch.mock.calls[0][1]?.headers);
+  expect(headers.get('Authorization')).toBe('Bearer candidate-token');
+  expect(onAuthRequired).not.toHaveBeenCalled();
 });

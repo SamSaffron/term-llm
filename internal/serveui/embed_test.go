@@ -86,8 +86,10 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// baseline of ~491.8 kB raw. Extension recovery, ordered loading and the
 		// lazy Interface-settings entry add ~3.9 kB raw; the panel and its CSS
 		// load only on demand. Allow modest headroom for the combined features
-		// with bounded CSS headroom for responsive steering controls.
-		"dist/app.js":  {raw: 499_000, gzip: 142_000},
+		// with bounded CSS headroom for responsive steering controls. Token-gate
+		// wiring, verified credential replacement, and startup retry bring the
+		// eager shell to ~499.4 kB; the gate UI and its CSS remain lazy-loaded.
+		"dist/app.js":  {raw: 500_000, gzip: 142_500},
 		"dist/app.css": {raw: 175_000, gzip: 34_000},
 		// Measured after the completed standalone port: 67.7/21.5 KiB JS and
 		// 16.7/4.1 KiB CSS. These limits retain modest growth headroom without
