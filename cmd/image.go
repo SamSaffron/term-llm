@@ -56,6 +56,7 @@ Examples:
   term-llm image "add a hat" -i clipboard           # edit from clipboard
   term-llm image "combine these" -i a.png -i b.png  # multi-image (Gemini/OpenRouter)
   term-llm image "sunset over mountains" --provider flux
+  term-llm image "a pelican riding a bike" --provider local-images
   term-llm image "logo design" -o ./output.png --no-display
   term-llm image "robot cat" -o - | term-llm video "animate it" -i -
   echo "a sunset" | term-llm image                  # prompt from stdin`,
@@ -65,7 +66,7 @@ Examples:
 
 func init() {
 	imageCmd.Flags().StringArrayVarP(&imageInputs, "input", "i", nil, "Input image(s) to edit (can be specified multiple times)")
-	imageCmd.Flags().StringVarP(&imageProvider, "provider", "p", "", "Override provider (debug, gemini, openai, chatgpt, xai, venice, flux, openrouter)")
+	imageCmd.Flags().StringVarP(&imageProvider, "provider", "p", "", "Override image provider (built-in or configured openai_compatible name)")
 	imageCmd.Flags().StringVarP(&imageOutput, "output", "o", "", "Custom output path")
 	imageCmd.Flags().StringVarP(&imageSize, "size", "s", "", "Image resolution (must be 1K, 2K, or 4K)")
 	imageCmd.Flags().BoolVar(&imageNoDisplay, "no-display", false, "Skip terminal display")

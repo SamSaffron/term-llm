@@ -189,7 +189,8 @@ func providerFlagCompletionDirective(cfg *config.Config, toComplete string) cobr
 
 // ImageProviderFlagCompletion handles --provider flag completion for image commands
 func ImageProviderFlagCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-	completions := llm.GetProviderCompletions(toComplete, true, nil)
+	cfg, _ := config.Load()
+	completions := llm.GetProviderCompletions(toComplete, true, cfg)
 
 	// If completing provider name (no colon), don't add space so user can type ":"
 	if !strings.Contains(toComplete, ":") {

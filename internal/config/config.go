@@ -181,7 +181,7 @@ type ProviderConfig struct {
 	MaxOutputTokens int `mapstructure:"max_output_tokens"`
 
 	// Custom endpoint configuration
-	BaseURL string `mapstructure:"base_url"` // Base URL for Anthropic-compatible or OpenAI-compatible providers
+	BaseURL string `mapstructure:"base_url"` // API root for Anthropic/OpenAI-compatible providers, including compatible Images APIs
 
 	// OpenAI-compatible specific
 	URL               string `mapstructure:"url"`                 // Full URL - used as-is without appending endpoint
@@ -957,7 +957,7 @@ func (c *Config) ValidateApprovalModes() error {
 
 // ImageConfig configures image generation settings
 type ImageConfig struct {
-	Provider   string                `mapstructure:"provider"`   // default image provider: gemini, openai, chatgpt, xai, venice, flux, openrouter, debug
+	Provider   string                `mapstructure:"provider"`   // built-in image provider or named providers entry with type: openai_compatible
 	OutputDir  string                `mapstructure:"output_dir"` // default save directory
 	Gemini     ImageGeminiConfig     `mapstructure:"gemini"`
 	OpenAI     ImageOpenAIConfig     `mapstructure:"openai"`

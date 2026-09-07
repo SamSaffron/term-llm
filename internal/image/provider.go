@@ -160,7 +160,7 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 		return NewDebugProvider(cfg.Image.Debug.Delay), nil
 
 	default:
-		return nil, fmt.Errorf("unknown image provider: %s (valid: debug, gemini, openai, chatgpt, xai, venice, flux, openrouter)", provider)
+		return newConfiguredImageProvider(cfg, provider, model)
 	}
 }
 

@@ -152,7 +152,11 @@ func (p *OpenAIProvider) Edit(ctx context.Context, req EditRequest) (*ImageResul
 }
 
 func (p *OpenAIProvider) doRequest(httpReq *http.Request) (*ImageResult, error) {
-	resp, err := openaiHTTPClient.Do(httpReq)
+	return doOpenAIImageRequest(openaiHTTPClient, httpReq)
+}
+
+func doOpenAIImageRequest(client *http.Client, httpReq *http.Request) (*ImageResult, error) {
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -196,7 +200,7 @@ func (p *OpenAIProvider) doRequest(httpReq *http.Request) (*ImageResult, error) 
 		if err != nil {
 			return nil, fmt.Errorf("failed to create image URL request: %w", err)
 		}
-		resp, err := openaiHTTPClient.Do(fetchReq)
+		resp, err := client.Do(fetchReq)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch image URL: %w", err)
 		}
