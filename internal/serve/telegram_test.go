@@ -4275,3 +4275,146 @@ func TestHandleMessage_PhotoInterruptCancelsAndPreservesImage(t *testing.T) {
 		}
 	}
 }
+
+// Exercise the Telegram/runner handoff directly; the runtime's compaction
+// algorithm is covered separately by TestServeRuntimeCompactionCallbackUpdatesActiveContext.
+type telegramCompactionRunner struct {
+	requests  [][]llm.Message
+	failFirst bool
+}
+
+func (r *telegramCompactionRunner) Run(ctx context.Context, req runpkg.Request, sink runpkg.EventSink) (runpkg.Result, error) {
+	r.requests = append(r.requests, append([]llm.Message(nil), req.Messages...))
+	emit := func(text string) error {
+		msg := llm.AssistantText(text)
+		if err := req.OnResponseCompleted(ctx, 0, msg, llm.TurnMetrics{}); err != nil {
+			return err
+		}
+		return req.OnTurnCompleted(ctx, 0, []llm.Message{msg}, llm.TurnMetrics{})
+	}
+	if len(r.requests) == 1 {
+		if err := emit("before compaction"); err != nil {
+			return runpkg.Result{}, err
+		}
+		if req.OnCompaction != nil {
+			// Two compactions in one run must use the latest boundary, without
+			// dropping pre-boundary output from the transcript.
+			for _, summary := range []string{"superseded summary", "[Context Compaction] compact summary"} {
+				if err := req.OnCompaction(ctx, &llm.CompactionResult{NewMessages: []llm.Message{
+					llm.SystemText("be helpful"), llm.UserText(summary), llm.AssistantText("retained tail"),
+				}}); err != nil {
+					return runpkg.Result{}, err
+				}
+			}
+		}
+		if r.failFirst {
+			return runpkg.Result{}, errors.New("failure after compaction")
+		}
+	}
+	text := fmt.Sprintf("answer %d", len(r.requests))
+	if err := emit(text); err != nil {
+		return runpkg.Result{}, err
+	}
+	sink.Event(llm.Event{Type: llm.EventTextDelta, Text: text})
+	return runpkg.Result{}, nil
+}
+
+func TestStreamReply_RetainsCompactedContextAndFullTranscript(t *testing.T) {
+	for _, tc := range []struct {
+		failFirst       bool
+		failPersistence bool
+	}{{}, {failFirst: true}, {failPersistence: true}, {failFirst: true, failPersistence: true}} {
+		t.Run(fmt.Sprintf("error=%v/persistence_failure=%v", tc.failFirst, tc.failPersistence), func(t *testing.T) {
+			h := testutil.NewEngineHarness()
+			store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "test.db")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			runner := &telegramCompactionRunner{failFirst: tc.failFirst}
+			var turnStore session.Store = store
+			if tc.failPersistence {
+				turnStore = &failingTelegramTurnStore{Store: store, failRole: llm.RoleAssistant, failAfter: 1}
+			}
+			mgr := &telegramSessionMgr{
+				sessions: make(map[int64]*telegramSession), store: turnStore, tickerInterval: 10 * time.Millisecond,
+				settings: Settings{MaxTurns: 5, Store: turnStore, SystemPrompt: "be helpful", Runner: runner,
+					NewSession: func(context.Context) (*SessionRuntime, error) {
+						return &SessionRuntime{Engine: h.Engine, ProviderName: "mock", ModelName: "test"}, nil
+					},
+				},
+			}
+			ctx := context.Background()
+			sess, err := mgr.getOrCreate(ctx, 42)
+			if err != nil {
+				t.Fatal(err)
+			}
+			bot := &fakeBotSender{}
+			prefix := strings.Repeat("oversized historical prefix ", 2000)
+			firstErr := mgr.streamReply(ctx, bot, sess, 42, llm.UserText(prefix))
+			if !tc.failFirst && firstErr != nil {
+				t.Fatal(firstErr)
+			}
+			for _, input := range []string{"second input", "third input"} {
+				if err := mgr.streamReply(ctx, bot, sess, 42, llm.UserText(input)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			textOf := func(messages []llm.Message) string {
+				var b strings.Builder
+				for _, msg := range messages {
+					b.WriteString(telegramMessageVisibleText(msg))
+					b.WriteByte('\n')
+				}
+				return b.String()
+			}
+			for i, req := range runner.requests[1:] {
+				text := textOf(req)
+				for _, want := range []string{"be helpful", "[Context Compaction] compact summary", "retained tail", "second input"} {
+					if !strings.Contains(text, want) {
+						t.Fatalf("request %d missing %q: %s", i+2, want, text)
+					}
+				}
+				for _, stale := range []string{"oversized historical prefix", "before compaction", "superseded summary"} {
+					if strings.Contains(text, stale) {
+						t.Fatalf("request %d resurrected %q", i+2, stale)
+					}
+				}
+				if len(text) > 1000 {
+					t.Fatalf("next request remains oversized: %d bytes", len(text))
+				}
+			}
+			if !tc.failFirst && strings.Count(textOf(runner.requests[1]), "answer 1") != 1 {
+				t.Fatal("post-compaction assistant response lost or duplicated")
+			}
+			t.Logf("provider context text: first=%d bytes, second=%d bytes", len(textOf(runner.requests[0])), len(textOf(runner.requests[1])))
+			third := textOf(runner.requests[2])
+			if strings.Count(third, "answer 2") != 1 || !strings.Contains(third, "third input") {
+				t.Fatalf("subsequent turn lost or duplicated: %s", third)
+			}
+			msgs, err := store.GetMessages(ctx, sess.meta.ID, 0, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var transcript []llm.Message
+			for _, msg := range msgs {
+				transcript = append(transcript, msg.ToLLMMessage())
+			}
+			text := textOf(transcript)
+			for _, want := range []string{prefix, "before compaction", "second input", "answer 2", "third input", "answer 3"} {
+				if strings.Count(text, want) != 1 {
+					t.Fatalf("transcript lost or duplicated %q", want[:min(len(want), 50)])
+				}
+			}
+			if tc.failPersistence {
+				failed, replacements := turnStore.(*failingTelegramTurnStore).stats()
+				if !failed || replacements == 0 {
+					t.Fatal("test did not exercise transcript reconciliation")
+				}
+			}
+			if strings.Contains(text, "compact summary") {
+				t.Fatal("active-context replacement leaked into transcript")
+			}
+		})
+	}
+}
