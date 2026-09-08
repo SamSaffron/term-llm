@@ -2419,3 +2419,24 @@ func TestJobsV2ListJobsIncludesLastRunSummary(t *testing.T) {
 		t.Fatalf("LastRun = %+v, want failed run_new with error", jobs[0].LastRun)
 	}
 }
+
+func TestJobsV2DatabaseHasOneLiveRecoveryOwner(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jobs.db")
+	first, err := newJobsV2Manager(path, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	if second, err := newJobsV2Manager(path, 0, nil); err == nil {
+		second.Close()
+		t.Fatal("second manager could recover a live owner's database")
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	next, err := newJobsV2Manager(path, 0, nil)
+	if err != nil {
+		t.Fatal("closed owner retained lock:", err)
+	}
+	defer next.Close()
+}

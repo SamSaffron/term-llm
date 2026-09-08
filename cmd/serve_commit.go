@@ -17,6 +17,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/commitworkflow"
 	"github.com/samsaffron/term-llm/internal/gitcommit"
+	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/worktree"
@@ -375,6 +376,11 @@ func (s *serveServer) handleCommitStage(w http.ResponseWriter, r *http.Request, 
 }
 
 func (s *serveServer) handleCreateCommitRun(w http.ResponseWriter, r *http.Request, sessionID string) {
+	workCtx, release, ok := admitServeWork(w, r)
+	if !ok {
+		return
+	}
+	defer release()
 	var body commitRunBody
 	if !decodeCommitJSON(w, r, &body) {
 		return
@@ -405,7 +411,7 @@ func (s *serveServer) handleCreateCommitRun(w http.ResponseWriter, r *http.Reque
 	if s.cfgRef != nil {
 		agentName = s.cfgRef.Commit.EffectiveMessageAgent()
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(workCtx)
 	run := &serveCommitRun{ID: "commit_run_" + randomSuffix(), SessionID: sessionID, Kind: body.Kind, Status: "running", AgentName: agentName, StartedAt: time.Now().UTC(), checkoutRoot: canonicalCommitCheckout(dir), cancel: cancel}
 	s.commitMu.Lock()
 	if s.commitStopping {
@@ -444,7 +450,7 @@ func (s *serveServer) handleCreateCommitRun(w http.ResponseWriter, r *http.Reque
 	s.commitRuns[run.ID] = run
 	s.commitRunsWG.Add(1)
 	s.commitMu.Unlock()
-	go func() {
+	_ = restart.Default.Go(ctx, func(ctx context.Context) {
 		defer s.commitRunsWG.Done()
 		defer cancel()
 		request := commitworkflow.Request{ParentSessionID: sess.ID, CheckoutDir: dir, AgentName: agentName, Intent: body.Intent, ScopeSummary: body.ScopeSummary, ExpectedFingerprint: body.ExpectedFingerprint, ExpectedStatusToken: body.ExpectedStatusToken, Runner: runner, Progress: func(_ string, event tools.SubagentEvent) {
@@ -492,7 +498,7 @@ func (s *serveServer) handleCreateCommitRun(w http.ResponseWriter, r *http.Reque
 		}
 		run.cancel = nil
 		run.mu.Unlock()
-	}()
+	})
 	snapshot := run.snapshot()
 	snapshot["events_url"] = "/v1/sessions/" + sessionID + "/commit-runs/" + run.ID + "/events"
 	writeJSON(w, http.StatusAccepted, snapshot)
@@ -533,6 +539,7 @@ func (s *serveServer) handleCancelCommitRun(w http.ResponseWriter, _ *http.Reque
 	writeJSON(w, http.StatusAccepted, run.snapshot())
 }
 func (s *serveServer) handleCommitRunEvents(w http.ResponseWriter, r *http.Request, sessionID, runID string) {
+	restart.Passive(r.Context())
 	run := s.commitRun(sessionID, runID)
 	if run == nil {
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "commit run not found")
@@ -649,6 +656,11 @@ func (s *serveServer) handleCommitPublishPlan(w http.ResponseWriter, r *http.Req
 }
 
 func (s *serveServer) handleCreateCommitOperation(w http.ResponseWriter, r *http.Request, sessionID string) {
+	workCtx, release, ok := admitServeWork(w, r)
+	if !ok {
+		return
+	}
+	defer release()
 	if err := requireJSONContentType(r); err != nil {
 		writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
 		return
@@ -755,7 +767,7 @@ func (s *serveServer) handleCreateCommitOperation(w http.ResponseWriter, r *http
 	s.commitOperationsWG.Add(1)
 	initialSnapshot := *op
 	s.commitMu.Unlock()
-	go func() {
+	_ = restart.Default.Go(workCtx, func(ctx context.Context) {
 		defer s.commitOperationsWG.Done()
 		s.commitMu.Lock()
 		op.Status = "running"
@@ -766,10 +778,10 @@ func (s *serveServer) handleCreateCommitOperation(w http.ResponseWriter, r *http
 		var publishResult *gitcommit.PublishResult
 		var commitErr error
 		if body.Publish != nil {
-			published, err := repo.Publish(context.Background(), body.Kind, *body.Publish)
+			published, err := repo.Publish(ctx, body.Kind, *body.Publish)
 			publishResult, commitErr = &published, err
 		} else {
-			result, commitErr = repo.Commit(context.Background(), body.Message, body.ExpectedFingerprint)
+			result, commitErr = repo.Commit(ctx, body.Message, body.ExpectedFingerprint)
 		}
 		s.commitMu.Lock()
 		op.PublishResult = publishResult
@@ -792,7 +804,7 @@ func (s *serveServer) handleCreateCommitOperation(w http.ResponseWriter, r *http
 		}
 		s.persistCommitOperationsLocked(context.Background(), sessionID)
 		s.commitMu.Unlock()
-	}()
+	})
 	writeJSON(w, http.StatusAccepted, initialSnapshot)
 }
 func (s *serveServer) handleGetCommitOperation(w http.ResponseWriter, r *http.Request, sessionID, operationID string) {

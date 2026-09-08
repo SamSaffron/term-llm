@@ -204,7 +204,7 @@ func (m *Model) handleCopyResult(msg copyResultMsg) (tea.Model, tea.Cmd) {
 
 	m.copyStatusSeq++
 	seq := m.copyStatusSeq
-	return m, tea.Tick(copyStatusDuration, func(time.Time) tea.Msg {
+	return m, m.presentationTick(copyStatusDuration, func(time.Time) tea.Msg {
 		return copyStatusClearMsg{seq: seq}
 	})
 }

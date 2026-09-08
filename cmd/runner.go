@@ -12,6 +12,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
+	"github.com/samsaffron/term-llm/internal/restart"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -100,6 +101,11 @@ func (env *cmdRunEnvironment) Close() {
 }
 
 func (r *cmdRunner) Run(ctx context.Context, req runpkg.Request, sink runpkg.EventSink) (runpkg.Result, error) {
+	ctx, release, reloadErr := restart.Default.Activity(ctx)
+	if reloadErr != nil {
+		return runpkg.Result{}, reloadErr
+	}
+	defer release()
 	env, err := r.prepare(ctx, req, sink)
 	if err != nil {
 		return runpkg.Result{}, err
@@ -435,6 +441,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		ApprovalTranscriptPrefix: append([]llm.Message(nil), req.ApprovalTranscriptPrefix...),
 	}
 
+	llmReq.Resume = req.Continuation
 	inputMessages := requestInputMessages(req)
 	if role := strings.TrimSpace(req.ApprovalRole); role != "" {
 		for i := range inputMessages {

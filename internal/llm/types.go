@@ -227,6 +227,7 @@ func (o ResponsesOptions) IsZero() bool {
 
 // Request represents a single model turn.
 type Request struct {
+	Resume     *Continuation `json:"-"` // Internal same-invocation execution checkpoint.
 	Model      string
 	SessionID  string // Optional session ID for provider-side continuity/caching hints
 	WorkingDir string // Optional working directory for local subprocess providers

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -399,6 +400,7 @@ func writeServeEventCursorSSE(w io.Writer, instanceID string, sequence uint64) e
 }
 
 func (s *serveServer) handleEvents(w http.ResponseWriter, r *http.Request) {
+	restart.Passive(r.Context())
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
@@ -509,6 +511,7 @@ type serveEventPollResponse struct {
 }
 
 func (s *serveServer) handleEventPoll(w http.ResponseWriter, r *http.Request) {
+	restart.Passive(r.Context())
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")

@@ -5,9 +5,6 @@ package cmd
 import (
 	"os"
 	"strings"
-	"syscall"
-
-	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 // execReload replaces the current process with a fresh instance of the same
@@ -17,41 +14,30 @@ import (
 //
 // On success this function never returns.  On failure it returns an error.
 func execReload(sessionID string) error {
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-
-	// Rebuild argv, stripping any existing --resume / -r flags.
-	newArgs := []string{os.Args[0]}
-	skipNext := false
-	for _, arg := range os.Args[1:] {
-		if skipNext {
-			skipNext = false
-			continue
-		}
-		if arg == "--resume" || arg == "-r" {
-			skipNext = true
-			continue
-		}
-		if strings.HasPrefix(arg, "--resume=") || strings.HasPrefix(arg, "-r=") {
-			continue
-		}
-		newArgs = append(newArgs, arg)
-	}
-
-	if sessionID != "" {
-		// Use --resume=ID (not --resume ID) because the flag has NoOptDefVal set,
-		// which means cobra treats the next positional arg as a separate argument
-		// rather than the flag value when the two-arg form is used.
-		newArgs = append(newArgs, "--resume="+sessionID)
-	}
-
 	// Re-exec'ing the SAME binary: hand back any env-provided hub delegation
 	// and registration tokens that startup scrubbed from the environment, or the
 	// next generation would silently lose hub access. This env goes only to
 	// ourselves, never to tool subprocesses.
-	reloadEnv := append(os.Environ(), tools.HubDelegationEnviron()...)
-	reloadEnv = append(reloadEnv, hubRegistrationEnviron()...)
-	return syscall.Exec(exe, newArgs, reloadEnv)
+	return replaceProcess(reloadExecutable, chatReloadArgs(os.Args, sessionID), processReloadEnviron())
+}
+
+// --resume has NoOptDefVal: a bare --resume/-r never consumes the next token.
+// Keep positional arguments after -- literal, and insert the resume flag before it.
+func chatReloadArgs(args []string, sessionID string) []string {
+	newArgs := []string{args[0]}
+	var positional []string
+	for i, arg := range args[1:] {
+		if arg == "--" {
+			positional = args[i+1:]
+			break
+		}
+		if arg == "--resume" || arg == "-r" || strings.HasPrefix(arg, "--resume=") || strings.HasPrefix(arg, "-r=") {
+			continue
+		}
+		newArgs = append(newArgs, arg)
+	}
+	if sessionID != "" {
+		newArgs = append(newArgs, "--resume="+sessionID)
+	}
+	return append(newArgs, positional...)
 }

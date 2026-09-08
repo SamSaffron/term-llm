@@ -19,10 +19,12 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/filelock"
 	"github.com/samsaffron/term-llm/internal/jobs"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
+	"github.com/samsaffron/term-llm/internal/restart"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -495,11 +497,12 @@ func classifyRunError(err error, result jobsV2RunResult) (exitReason string, tru
 }
 
 type jobsV2Manager struct {
-	db         *sql.DB
-	workers    int
-	workerID   string
-	runners    map[jobsV2RunnerType]jobsV2Runner
-	notifyDone jobsV2RunDoneNotifier
+	releaseOwner func() error
+	db           *sql.DB
+	workers      int
+	workerID     string
+	runners      map[jobsV2RunnerType]jobsV2Runner
+	notifyDone   jobsV2RunDoneNotifier
 	// Idle timers are only fallbacks; job/run mutations wake the loops immediately.
 	schedulerIdleDelay time.Duration
 	workerIdleDelay    time.Duration
@@ -544,6 +547,23 @@ func newJobsV2ManagerWithNotifier(dbPath string, workers int, llmExec serveJobsE
 		}
 	}
 
+	// One live owner per jobs database. Recovery must not mark another process's
+	// running jobs worker-lost. The close-on-exec lock survives until replacement.
+	unlock := func() error { return nil }
+	if dbPath != ":memory:" {
+		var lockErr error
+		unlock, lockErr = filelock.TryLock(dbPath + ".owner.lock")
+		if lockErr != nil {
+			return nil, fmt.Errorf("jobs database already owned: %w", lockErr)
+		}
+	}
+	adopted := false
+	defer func() {
+		if !adopted {
+			_ = unlock()
+		}
+	}()
+
 	dsn := dbPath
 	if strings.Contains(dsn, "?") {
 		dsn += "&"
@@ -567,7 +587,7 @@ func newJobsV2ManagerWithNotifier(dbPath string, workers int, llmExec serveJobsE
 
 	notifyCtx, notifyCancel := context.WithCancel(context.Background())
 	mgr := &jobsV2Manager{
-		db:                 db,
+		releaseOwner: unlock, db: db,
 		workers:            workers,
 		workerID:           "worker_" + randomSuffix(),
 		notifyDone:         notifyDone,
@@ -608,6 +628,7 @@ func newJobsV2ManagerWithNotifier(dbPath string, workers int, llmExec serveJobsE
 		go mgr.workerLoop()
 	}
 
+	adopted = true
 	return mgr, nil
 }
 
@@ -802,7 +823,11 @@ func (m *jobsV2Manager) CloseContext(ctx context.Context) error {
 	}()
 	select {
 	case <-waitDone:
-		return m.db.Close()
+		err := m.db.Close()
+		if m.releaseOwner != nil {
+			err = errors.Join(err, m.releaseOwner())
+		}
+		return err
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -928,6 +953,11 @@ func minDuration(a, b time.Duration) time.Duration {
 }
 
 func (m *jobsV2Manager) maybeRunCleanup(now time.Time) error {
+	_, release, reloadErr := restart.Default.Root(context.Background())
+	if reloadErr != nil {
+		return reloadErr
+	}
+	defer release()
 	if m.cleanupInterval <= 0 {
 		return nil
 	}
@@ -1042,7 +1072,7 @@ func (m *jobsV2Manager) workerLoop() {
 		default:
 		}
 
-		run, ok, err := m.claimNextRun()
+		ok, err := m.runNextOwned()
 		if err != nil {
 			if !m.waitForWorkerWake(jobsV2WorkerErrorDelay) {
 				return
@@ -1050,7 +1080,6 @@ func (m *jobsV2Manager) workerLoop() {
 			continue
 		}
 		if ok {
-			m.executeRun(run)
 			continue
 		}
 		delay, err := m.nextWorkerDelayWithError(time.Now().UTC())
@@ -1061,6 +1090,21 @@ func (m *jobsV2Manager) workerLoop() {
 			return
 		}
 	}
+}
+
+func (m *jobsV2Manager) runNextOwned() (bool, error) {
+	ctx, release, err := restart.Default.Root(context.Background())
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	run, ok, err := m.claimNextRun()
+	if ok && err == nil {
+		ctx, finish := restart.Default.Cancellable(ctx)
+		defer finish()
+		m.executeRunContext(ctx, run)
+	}
+	return ok, err
 }
 
 func (m *jobsV2Manager) waitForWorkerWake(delay time.Duration) bool {
@@ -1130,6 +1174,11 @@ func (m *jobsV2Manager) notifyWorkers(n int) {
 }
 
 func (m *jobsV2Manager) scheduleDueRuns(now time.Time) error {
+	_, release, reloadErr := restart.Default.Root(context.Background())
+	if reloadErr != nil {
+		return reloadErr
+	}
+	defer release()
 	rows, err := m.db.Query(`SELECT id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, schedule_timezone, concurrency_policy, max_concurrent_runs, retry_policy, timeout_seconds, misfire_policy, labels, next_run_at, created_at, updated_at FROM jobs_v2 WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ? ORDER BY next_run_at ASC LIMIT 200`, now.UTC())
 	if err != nil {
 		return err
@@ -1300,7 +1349,9 @@ func (m *jobsV2Manager) requeueClaimedRunAfterShutdown(runID string) {
 	}
 }
 
-func (m *jobsV2Manager) executeRun(run jobsV2Run) {
+func (m *jobsV2Manager) executeRun(run jobsV2Run) { m.executeRunContext(context.Background(), run) }
+
+func (m *jobsV2Manager) executeRunContext(parent context.Context, run jobsV2Run) {
 	// Avoid turning a claim into a terminal failure when shutdown had already won
 	// before this worker began admission. Keep the check below as well: shutdown
 	// can still race with loading the job and preparing its context.
@@ -1325,7 +1376,7 @@ func (m *jobsV2Manager) executeRun(run jobsV2Run) {
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -1523,10 +1574,12 @@ func (m *jobsV2Manager) enqueueRunDoneNotification(run jobsV2Run, status jobsV2R
 		return
 	}
 	m.wg.Add(1)
-	go func() {
+	if err := restart.Default.Go(context.Background(), func(context.Context) {
 		defer m.wg.Done()
 		m.notifyRunDone(run, status, result, exitReason, truncated, errText)
-	}()
+	}); err != nil {
+		m.wg.Done()
+	}
 }
 
 const (

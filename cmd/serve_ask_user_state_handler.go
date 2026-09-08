@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	planpkg "github.com/samsaffron/term-llm/internal/plan"
+	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -106,7 +108,7 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 		if op, err := rushStore.LatestRush(r.Context(), sessionID); err == nil {
 			if transition := s.ensureResponseRuns().steeringTransition(sessionID); transition != nil {
 				if failed := transition.failure.Load(); failed != nil {
-					go s.finishSteeringRush(rushStore, transition, failed.status, failed.reason)
+					_ = restart.Default.Go(r.Context(), func(context.Context) { s.finishSteeringRush(rushStore, transition, failed.status, failed.reason) })
 				}
 			}
 

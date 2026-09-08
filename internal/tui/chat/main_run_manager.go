@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/runboundary"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -47,6 +48,9 @@ type MainRunSnapshot struct {
 // Execute must publish normalized stream events through emit and return only
 // after provider/tool work and persistence callbacks have stopped.
 type MainRunExecution struct {
+	Reloadable bool
+	Context    context.Context // optional admission ownership, independent of UI cancellation
+
 	RunID               string
 	SteeringOperationID string
 	Execute             func(ctx context.Context, emit func(ui.StreamEvent)) error
@@ -182,7 +186,26 @@ func (m *MainRunManager) Start(sessionID string, execution MainRunExecution) (Ma
 			return MainRunSnapshot{}, fmt.Errorf("session %s already has an active run", sessionID)
 		}
 	}
-	runCtx, runCancel := context.WithCancel(m.ctx)
+	ownerCtx := m.ctx
+	if execution.Context != nil {
+		ownerCtx = restart.Inherit(m.ctx, execution.Context)
+	}
+	ownerCtx, release, ownershipErr := restart.Child(ownerCtx)
+	if ownershipErr != nil {
+		m.mu.Unlock()
+		return MainRunSnapshot{}, ownershipErr
+	}
+	closeTask := func() {}
+	if execution.Reloadable {
+		ownerCtx, closeTask = restart.Default.NewTask(ownerCtx)
+		restart.CurrentTask(ownerCtx).SetSuspendAllowed(func() bool {
+			m.mu.RLock()
+			defer m.mu.RUnlock()
+			_, visible := m.uiSinks[sessionID]
+			return visible
+		})
+	}
+	runCtx, runCancel := context.WithCancel(ownerCtx)
 	if execution.Cancel != nil {
 		providerCancel := execution.Cancel
 		baseCancel := runCancel
@@ -212,7 +235,7 @@ func (m *MainRunManager) Start(sessionID string, execution MainRunExecution) (Ma
 	m.mu.Unlock()
 	m.signalChanged()
 
-	go m.execute(run, execution)
+	go func() { defer closeTask(); defer release(); m.execute(run, execution) }()
 	return snapshotMainRun(run), nil
 }
 
@@ -826,4 +849,23 @@ func snapshotMainRunLocked(run *mainRunState) MainRunSnapshot {
 		snapshot.CompletedMessages = boundary.Messages
 	}
 	return snapshot
+}
+
+// UnsettledCount includes final persistence and resource cleanup after the active
+// flag is cleared. Reload cannot use presentation activity as an exit barrier.
+func (m *MainRunManager) UnsettledCount() int {
+	if m == nil {
+		return 0
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	count := 0
+	for _, run := range m.runs {
+		select {
+		case <-run.done:
+		default:
+			count++
+		}
+	}
+	return count
 }

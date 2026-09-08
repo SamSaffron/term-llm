@@ -22,6 +22,8 @@ type SessionRuntime struct {
 
 // Settings holds per-platform runtime settings derived from CLI flags and config.
 type Settings struct {
+	// Ready releases process startup ownership after the platform can reload.
+	Ready        func()
 	SystemPrompt string
 	IdleTimeout  time.Duration
 	// TelegramCarryoverChars controls how many trailing characters from the

@@ -23,6 +23,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/mentions"
 	"github.com/samsaffron/term-llm/internal/passkeyauth"
 	projectpkg "github.com/samsaffron/term-llm/internal/project"
+	"github.com/samsaffron/term-llm/internal/restart"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/serve"
 	servehttp "github.com/samsaffron/term-llm/internal/serve/http"
@@ -327,7 +328,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		return fmt.Errorf("--auth none is only allowed on loopback hosts (got %q)", serveHost)
 	}
 
-	token, tokenSource, err := resolveServeToken(serveToken, os.Getenv("TERM_LLM_SERVE_TOKEN"), authMode == "bearer", generateServeToken)
+	token, tokenSource, err := resolveServeToken(serveToken, os.Getenv("TERM_LLM_SERVE_TOKEN"), authMode == "bearer", restoreOrGenerateServeToken)
 	if err != nil {
 		return err
 	}
@@ -549,7 +550,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	}
 
 	if projectsEnabled {
-		go func() {
+		_ = restart.Default.Go(ctx, func(ctx context.Context) {
 			reconcileCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 			defer cancel()
 			claimed, reconcileErr := projectpkg.ReconcileAll(reconcileCtx, store)
@@ -558,7 +559,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			} else if claimed > 0 {
 				log.Printf("project history reconciled (claimed=%d)", claimed)
 			}
-		}()
+		})
 	}
 
 	forceExternalSearch := resolveForceExternalSearch(cfg, serveNativeSearch, serveNoNativeSearch)
@@ -947,13 +948,26 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	// Start non-web platforms concurrently.
 	var wg sync.WaitGroup
 	for _, p := range platforms {
+		platformCtx, startingDone, err := restart.Default.Root(ctx)
+		if err != nil {
+			return err
+		}
+		settings := serveSettings
+		var readyOnce sync.Once
+		settings.Ready = func() { readyOnce.Do(startingDone) }
 		wg.Add(1)
 		go func(p serve.Platform) {
 			defer wg.Done()
-			runPlatformSupervisor(ctx, cfg, serveSettings, p, servePlatformInitialRetryDelay)
+			defer settings.Ready()
+			runPlatformSupervisor(platformCtx, cfg, settings, p, servePlatformInitialRetryDelay)
 		}(p)
 	}
 
+	stopReload, reloadErr := bindProcessReload(ctx, "TERM_LLM_SERVE_RELOAD_TOKEN="+token)
+	if reloadErr != nil {
+		return reloadErr
+	}
+	defer stopReload()
 	<-ctx.Done()
 
 	if registeredHubURL != "" && registeredHubNodeID != "" && hubRegistrationToken != "" {
@@ -980,7 +994,22 @@ func runPlatformSupervisor(ctx context.Context, cfg *config.Config, settings ser
 	retryDelay := initialRetryDelay
 	for {
 		startedAt := time.Now()
-		err := platform.Run(ctx, cfg, settings)
+		attemptCtx, release, admitErr := restart.Default.Root(ctx)
+		if admitErr != nil {
+			if restart.Default.WaitReady(ctx) != nil {
+				return
+			}
+			continue
+		}
+		attemptSettings := settings
+		attemptSettings.Ready = func() {
+			release()
+			if settings.Ready != nil {
+				settings.Ready()
+			}
+		}
+		err := platform.Run(attemptCtx, cfg, attemptSettings)
+		attemptSettings.Ready()
 		if ctx.Err() != nil {
 			return
 		}
@@ -1202,6 +1231,15 @@ func resolveServeToken(flagValue, envValue string, requireAuth bool, generate fu
 	return t, tokenSourceGenerated, nil
 }
 
+// Only the fallback token comes from private reload state. Explicit flags and
+// the user's public environment keep their normal precedence.
+func restoreOrGenerateServeToken() (string, error) {
+	if serveReloadToken != "" {
+		return serveReloadToken, nil
+	}
+	return generateServeToken()
+}
+
 func generateServeToken() (string, error) {
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
@@ -1378,7 +1416,10 @@ func normalizeBasePath(raw string) (string, error) {
 }
 
 type serveServer struct {
+	reloadRunsUnregister     func()
 	browserAuth              *browserPasskeyHandler
+	reloadHTTPOnce           sync.Once
+	reloadHTTP               *restart.HTTPTransport
 	cfg                      serveServerConfig
 	sessionMgr               *serveSessionManager
 	jobsV2                   *jobsV2Manager
@@ -1490,9 +1531,18 @@ func (s *serveServer) fileTrackStore() *filetrack.Store {
 	return fileTrackingStore(s.cfgRef)
 }
 
-func (s *serveServer) Start() error {
+func (s *serveServer) Start() (startErr error) {
+	defer func() {
+		if startErr != nil && s.reloadRunsUnregister != nil {
+			s.reloadRunsUnregister()
+			s.reloadRunsUnregister = nil
+		}
+	}()
 	s.shutdownCh = make(chan struct{})
 	s.shutdownOnce = sync.Once{}
+	if err := s.installWebReload(); err != nil {
+		return fmt.Errorf("restore response continuations: %w", err)
+	}
 	s.autoTitleMu.Lock()
 	if s.autoTitleCancel != nil {
 		s.autoTitleCancel()
@@ -1513,6 +1563,8 @@ func (s *serveServer) Start() error {
 	s.server = &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", s.cfg.host, s.cfg.port),
 		Handler:           s.httpHandler(),
+		ConnContext:       s.reloadTransport().ConnContext,
+		ConnState:         s.reloadTransport().ConnState,
 		ReadHeaderTimeout: serveReadHeaderTimeout,
 		IdleTimeout:       serveIdleTimeout,
 		// Do not set server-wide WriteTimeout: long-lived SSE streams are valid.
@@ -1626,7 +1678,7 @@ func (s *serveServer) httpHandler() http.Handler {
 	// the canonical /v2/* API paths. The shared base-path wrapper is still used
 	// for web/UI surfaces where the browser and API must live under one prefix.
 	if s.jobsV2 != nil && !s.cfg.ui && !s.cfg.api {
-		return inner
+		return s.reloadTransport().Handler(inner)
 	}
 
 	// Outer mux: mount everything under basePath.
@@ -1646,7 +1698,12 @@ func (s *serveServer) httpHandler() http.Handler {
 		}))
 	}
 
-	return mux
+	return s.reloadTransport().Handler(mux)
+}
+
+func (s *serveServer) reloadTransport() *restart.HTTPTransport {
+	s.reloadHTTPOnce.Do(func() { s.reloadHTTP = &restart.HTTPTransport{Coordinator: restart.Default} })
+	return s.reloadHTTP
 }
 
 // contextWithShutdown returns a derived context that is cancelled when either
@@ -1669,6 +1726,10 @@ func (s *serveServer) contextWithShutdown(ctx context.Context) (context.Context,
 }
 
 func (s *serveServer) Stop(ctx context.Context) error {
+	if s.reloadRunsUnregister != nil {
+		s.reloadRunsUnregister()
+		s.reloadRunsUnregister = nil
+	}
 	// Signal all SSE handlers and direct child runs to return immediately so
 	// server shutdown cannot outlive the session store they persist into.
 	s.shutdownOnce.Do(func() {

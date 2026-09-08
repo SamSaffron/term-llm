@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/samsaffron/term-llm/internal/restart"
 )
 
 func localHubConnectBase(host string, port int) string {
@@ -127,11 +128,19 @@ func hubReverseConnectOnce(ctx context.Context, hubURL, nodeID, token, localBase
 			}
 			continue
 		}
-		reqCtx, cancel := context.WithCancel(ctx)
+		reqCtx, release, reloadErr := restart.Default.Activity(ctx)
+		if reloadErr != nil {
+			writeMu.Lock()
+			_ = conn.WriteJSON(hubReverseResponse{Type: hubReverseFrameResponseStart, ID: req.ID, Status: 503, Error: reloadErr.Error()})
+			writeMu.Unlock()
+			continue
+		}
+		reqCtx, cancel := context.WithCancel(reqCtx)
 		activeMu.Lock()
 		active[req.ID] = cancel
 		activeMu.Unlock()
 		go func(req hubReverseRequest, reqCtx context.Context, cancel context.CancelFunc) {
+			defer release()
 			defer func() {
 				activeMu.Lock()
 				delete(active, req.ID)
@@ -196,6 +205,9 @@ func handleHubReverseRequest(ctx context.Context, frame hubReverseRequest, token
 		return
 	}
 	defer resp.Body.Close()
+	if hubResponseIsPassive(frame.Method, resp.Header) {
+		restart.Passive(ctx)
+	}
 	if err := writeFrame(hubReverseResponse{Type: hubReverseFrameResponseStart, ID: frame.ID, Status: resp.StatusCode, Header: resp.Header.Clone()}); err != nil {
 		return
 	}

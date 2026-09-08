@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/samsaffron/term-llm/internal/hub"
+	"github.com/samsaffron/term-llm/internal/restart"
 )
 
 var (
@@ -56,6 +57,11 @@ func (s *hubServer) checkDelegationCaps(ctx context.Context, origin, target hub.
 // entries can stop pinning in-flight caps, but keeps the cap-recovery path
 // bounded with a small worker pool and short child deadlines.
 func (s *hubServer) refreshActiveDelegations(ctx context.Context, originID, targetID string) {
+	ctx, release, reloadErr := restart.Default.Activity(ctx)
+	if reloadErr != nil {
+		return
+	}
+	defer release()
 	records, err := s.delegations.List()
 	if err != nil {
 		return

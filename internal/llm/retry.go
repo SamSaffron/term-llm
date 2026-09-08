@@ -625,3 +625,9 @@ func calculateRetryBackoff(config RetryConfig, attempt int, err error) time.Dura
 
 	return delay
 }
+
+func (r *RetryProvider) RequestReloadFlush() {
+	if flusher, ok := r.inner.(interface{ RequestReloadFlush() }); ok {
+		flusher.RequestReloadFlush()
+	}
+}

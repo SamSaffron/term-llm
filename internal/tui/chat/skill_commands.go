@@ -221,7 +221,7 @@ func (m *Model) startNextQueuedMainSkill() tea.Cmd {
 		return nil
 	}
 	if m.worktreeOperationBusy() {
-		return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg {
+		return m.presentationTick(100*time.Millisecond, func(time.Time) tea.Msg {
 			return queuedMainSkillRetryMsg{}
 		})
 	}

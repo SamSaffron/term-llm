@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/lifecycle"
+	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/termhost"
 	"github.com/samsaffron/term-llm/internal/tui/chat"
 )
@@ -34,9 +36,13 @@ type chatLifecycleReporter interface {
 // session can be delivered to the replacement model and mutate the wrong
 // conversation.
 type chatProgramModel struct {
-	model      chatProgramChild
-	generation uint64
-	reporter   lifecycleSnapshotReporter
+	reloadCommands    *chatCommandScope
+	reloadCtx         context.Context
+	reloadReady       chan struct{}
+	reloadBusyRelease func()
+	model             chatProgramChild
+	generation        uint64
+	reporter          lifecycleSnapshotReporter
 
 	lifecycleReported      bool
 	lifecycleSnapshot      lifecycle.Snapshot
@@ -80,13 +86,33 @@ func finalChatModel(model tea.Model) (*chat.Model, error) {
 }
 
 func (m *chatProgramModel) Init() tea.Cmd {
+	if m != nil && m.reloadCommands != nil {
+		defer func() { m.syncReloadBusy(); close(m.reloadReady) }()
+	}
 	if m == nil || m.model == nil {
 		return nil
 	}
-	return batchChatProgramCmds(scopeChatProgramCmd(m.model.Init(), m.generation), m.initialLifecycleCmd)
+	return batchChatProgramCmds(m.scope(m.model.Init()), m.initialLifecycleCmd)
 }
 
 func (m *chatProgramModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	if m != nil && m.reloadCommands != nil {
+		if _, inspect := message.(chat.ReloadInspectMsg); !inspect {
+			_, release, err := restart.Default.Activity(context.Background())
+			if err != nil {
+				// Only passive UI messages can remain once quiescence is committed. Keep
+				// them for failed-exec recovery without blocking that recovery's barrier.
+				return m, scopeChatProgramCmd(chat.PassiveCommand(func() tea.Msg {
+					if restart.Default.WaitReady(m.reloadCtx) != nil {
+						return nil
+					}
+					return message
+				}), m.generation)
+			}
+			defer func() { m.syncReloadBusy(); release() }()
+		}
+	}
+
 	if m == nil || m.model == nil {
 		return m, nil
 	}
@@ -105,13 +131,13 @@ func (m *chatProgramModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	updated, cmd := m.model.Update(message)
 	next, ok := updated.(chatProgramChild)
 	if !ok || next == nil {
-		return m, batchChatProgramCmds(scopeChatProgramCmd(cmd, m.generation), m.publishLifecycle(false))
+		return m, batchChatProgramCmds(m.scope(cmd), m.publishLifecycle(false))
 	}
 	if !sameChatProgramChild(next, m.model) {
 		m.model = next
 		m.generation++
 	}
-	return m, batchChatProgramCmds(scopeChatProgramCmd(cmd, m.generation), m.publishLifecycle(false))
+	return m, batchChatProgramCmds(m.scope(cmd), m.publishLifecycle(false))
 }
 
 func sameChatProgramChild(left, right chatProgramChild) bool {
@@ -189,7 +215,7 @@ func (m *chatProgramModel) View() tea.View {
 	}
 	if onMouse := view.OnMouse; onMouse != nil {
 		view.OnMouse = func(message tea.MouseMsg) tea.Cmd {
-			return scopeChatProgramCmd(onMouse(message), generation)
+			return m.scope(onMouse(message))
 		}
 	}
 	return view
@@ -198,12 +224,28 @@ func (m *chatProgramModel) View() tea.View {
 // scopeChatProgramCmd recursively preserves Bubble Tea's control messages
 // (Batch, Sequence, Quit, Exec, renderer commands) while tagging application
 // messages with their originating child generation.
-func scopeChatProgramCmd(cmd tea.Cmd, generation uint64) tea.Cmd {
+func scopeChatProgramCmd(cmd tea.Cmd, generation uint64, ownership ...*chatCommandScope) tea.Cmd {
 	if cmd == nil {
 		return nil
 	}
+	var lease *chatCommandLease
+	if len(ownership) > 0 {
+		lease = ownership[0].reserve()
+		if lease == nil {
+			return nil
+		}
+	}
 	return func() tea.Msg {
+		if lease != nil {
+			if !lease.start() {
+				return nil
+			}
+			defer lease.finish()
+		}
 		message := cmd()
+		if passive, ok := message.(chat.PassiveCommandMsg); ok {
+			return tea.BatchMsg{scopeChatProgramCmd(passive.Command, generation)}
+		}
 		if message == nil {
 			return nil
 		}
@@ -211,7 +253,7 @@ func scopeChatProgramCmd(cmd tea.Cmd, generation uint64) tea.Cmd {
 			scoped := make(tea.BatchMsg, 0, len(batch))
 			for _, nested := range batch {
 				if nested != nil {
-					scoped = append(scoped, scopeChatProgramCmd(nested, generation))
+					scoped = append(scoped, scopeChatProgramCmd(nested, generation, ownership...))
 				}
 			}
 			return scoped
@@ -228,7 +270,7 @@ func scopeChatProgramCmd(cmd tea.Cmd, generation uint64) tea.Cmd {
 				for i := 0; i < value.Len(); i++ {
 					child, ok := value.Index(i).Interface().(tea.Cmd)
 					if ok && child != nil {
-						nested = append(nested, scopeChatProgramCmd(child, generation))
+						nested = append(nested, scopeChatProgramCmd(child, generation, ownership...))
 					}
 				}
 				return tea.Sequence(nested...)()

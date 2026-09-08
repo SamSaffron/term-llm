@@ -17,6 +17,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/exitcode"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/samsaffron/term-llm/internal/process"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/skills"
@@ -250,6 +251,19 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 	handoverAutoSend := ""
 	relaunchHandoff := chatRelaunchHandoff{}
+	var restored chat.ReloadState
+	if ok, err := process.RestoreState("chat", &restored); err != nil {
+		return err
+	} else if ok {
+		initialText = ""
+		chatAutoSend = nil
+		resumeRequested = restored.Meta == nil
+		resumeID = restored.SessionID
+		if restored.Provider != "" && restored.Model != "" {
+			chatProvider = restored.Provider + ":" + restored.Model
+		}
+		relaunchHandoff.reloadState = &restored
+	}
 	mainRuns := chat.NewMainRunManager(ctx)
 	defer mainRuns.Close(5 * time.Second)
 	launchConfig, err := loadConfigWithSetup()
@@ -303,6 +317,7 @@ type chatProgramInput struct {
 }
 
 type chatRelaunchHandoff struct {
+	reloadState     *chat.ReloadState
 	branchPrefill   string
 	branchPathNotes *chat.BranchPathNotesRequest
 	branchAutoSend  string
@@ -1153,7 +1168,19 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	// to the tea.View that composed them; stdout remains renderer-owned. The host
 	// model keeps the Program stable across session-model replacements and drops
 	// delayed command results from models that are no longer visible.
+	reloadEnabled := chatOwnsTerminalHost()
+	if reloadEnabled {
+		rt.model.EnableProcessReload()
+	}
+	if relaunchHandoff != nil && relaunchHandoff.reloadState != nil {
+		rt.model.RestoreReloadState(*relaunchHandoff.reloadState)
+		relaunchHandoff.reloadState = nil
+	}
 	programModel := newChatProgramModel(rt.model, lifecycleReporter)
+	if reloadEnabled {
+		programModel.reloadCommands = &chatCommandScope{}
+		programModel.reloadReady = make(chan struct{})
+	}
 	p := tea.NewProgram(programModel, opts...)
 	rt.model.SetProgram(p)
 
@@ -1178,6 +1205,9 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		}
 		next.model.SetProgram(p)
 		next.model.SetSessionSwitcher(switcher)
+		if reloadEnabled {
+			next.model.EnableProcessReload()
+		}
 
 		runtimeMu.Lock()
 		if programDone {
@@ -1232,7 +1262,13 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		}
 	}()
 
+	stopReload := func() {}
+	if reloadEnabled {
+		stopReload = bindChatReload(ctx, p, programModel, lifecycleReporter)
+	}
+	defer stopReload()
 	programFinalModel, runErr := p.Run()
+	stopReload()
 	currentRuntime().restoreTitle()
 	restoreLifecycleOSC(lifecycleReporter)
 
@@ -1277,12 +1313,11 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		return "", "", nil
 	}
 
-	// Print resume hint after alt-screen has been dismissed.
-	// Re-fetch the session so we get the latest LLMTurns written during streaming.
-	if nextResumeID == "" && cur.store != nil && cur.sess != nil && cur.sess.ID != "" {
-		if refreshed, fetchErr := cur.store.Get(context.Background(), cur.sess.ID); fetchErr == nil && refreshed != nil && refreshed.LLMTurns >= 1 {
-			fmt.Fprintf(os.Stdout, "\n💬 Resume: %s\n", chatResumeCommand(refreshed))
-		}
+	// The model creates fresh sessions; cur.sess is only the launch-time resume
+	// input and remains nil for a new chat. Read the final model's identity.
+	// Print only after the renderer has released the terminal.
+	if nextResumeID == "" {
+		printChatResumeHint(cmd.OutOrStdout(), cur.store, finalModel.SessionID())
 	}
 
 	return nextResumeID, nextHandoverAutoSend, nil
@@ -1379,6 +1414,18 @@ func effectiveSessionDirectory(sess *session.Session) string {
 	}
 	cwd, _ := os.Getwd()
 	return cwd
+}
+
+func printChatResumeHint(w io.Writer, store session.Store, sessionID string) {
+	if store == nil || sessionID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	refreshed, err := store.Get(ctx, sessionID)
+	if err == nil && refreshed != nil && (refreshed.UserTurns > 0 || refreshed.LLMTurns > 0) {
+		fmt.Fprintf(w, "\n💬 Resume: %s\n", chatResumeCommand(refreshed))
+	}
 }
 
 func chatResumeCommand(sess *session.Session) string {

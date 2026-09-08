@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/samsaffron/term-llm/internal/restart"
 )
 
 // ContentPartType identifies an MCP tool-result content block.
@@ -88,6 +89,12 @@ type Server struct {
 	authToken string
 	executor  ToolExecutor
 	debug     bool
+
+	// HandlerMiddleware is installed before serving. Set only before Start.
+	// Tool descendants must retain request ownership if they outlive the handler.
+	HandlerMiddleware func(http.Handler) http.Handler
+	// ConnState observes transport completion, after response buffers flush.
+	ConnState func(net.Conn, http.ConnState)
 
 	mu      sync.Mutex
 	running bool
@@ -167,6 +174,12 @@ func (s *Server) startInternal(host string, port int, token string, tools []Tool
 			Description: tool.Description,
 			InputSchema: tool.Schema, // Pass map directly - SDK handles marshaling
 		}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			// The SDK may stop waiting before a cancelled executor actually returns.
+			ctx, release, ownershipErr := restart.Child(ctx)
+			if ownershipErr != nil {
+				return nil, ownershipErr
+			}
+			defer release()
 			// Execute the tool using the provided executor
 			argsJSON, err := json.Marshal(req.Params.Arguments)
 			if err != nil {
@@ -205,9 +218,13 @@ func (s *Server) startInternal(host string, port int, token string, tools []Tool
 
 	mux := http.NewServeMux()
 	// Chain: logging -> auth -> mcp handler
-	mux.Handle("/mcp", s.loggingMiddleware(s.authMiddleware(mcpHandler)))
+	var handler http.Handler = mcpHandler
+	if s.HandlerMiddleware != nil {
+		handler = s.HandlerMiddleware(handler)
+	}
+	mux.Handle("/mcp", s.loggingMiddleware(s.authMiddleware(handler)))
 
-	s.server = &http.Server{Handler: mux}
+	s.server = &http.Server{Handler: mux, ConnState: s.ConnState}
 	s.running = true
 
 	// Use a channel to capture immediate startup errors

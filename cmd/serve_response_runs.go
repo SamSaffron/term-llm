@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/runboundary"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -122,6 +123,7 @@ type responseRunResolvedInteraction struct {
 }
 
 type responseRun struct {
+	reloadContinuation      *webRunContinuation
 	settled                 chan struct{}
 	rushStateful            bool
 	rushRequest             llm.Request
@@ -132,6 +134,7 @@ type responseRun struct {
 	sessionID               string
 	previousResponseID      string
 	clientMessageID         string
+	idempotencyKey          string
 	idempotencyScope        string
 	requestFingerprint      string
 	anchorRowID             int64 // latest durable completed boundary; zero means unavailable
@@ -196,6 +199,7 @@ type responseRun struct {
 }
 
 type startResponseRunOptions struct {
+	resume                     *webRunContinuation
 	onInitialInput             func()
 	rush                       *session.RushOperation
 	previousResponseID         string
@@ -885,7 +889,9 @@ func (r *responseRun) appendEventLocked(event string, payload map[string]any, te
 		if event == "response.failed" {
 			outcome = "failed"
 		}
-		r.terminalNotifyOnce.Do(func() { go r.terminalNotify(outcome) })
+		r.terminalNotifyOnce.Do(func() {
+			_ = restart.Default.Go(context.Background(), func(context.Context) { r.terminalNotify(outcome) })
+		})
 	}
 	return nil
 }
@@ -2410,6 +2416,11 @@ func (s *serveServer) startResponseLifecycle() {
 }
 
 func (s *serveServer) sweepAndRenewResponseLifecycle(ctx context.Context, lifecycle session.ServeResponseLifecycleStore, processOwnerID string) {
+	ctx, release, err := restart.Default.Activity(ctx)
+	if err != nil {
+		return
+	}
+	defer release()
 	interactionStore, interactionProjectionSupported := session.AsResponseRunInteractionStore(s.store)
 	type ownedRun struct {
 		run                 *responseRun
@@ -2528,6 +2539,20 @@ func responseRunClaimMatches(claim responseRunIdempotencyClaim, fingerprint stri
 }
 
 func (m *responseRunManager) createOrGetByIdempotency(run *responseRun, idempotencyKey string) (*responseRun, bool, error) {
+	return m.registerRun(run, idempotencyKey, false)
+}
+
+// restore registers an existing invocation, not a new admission. Its epoch and
+// idempotency claim must match both the retained replay and the durable lease.
+func (m *responseRunManager) restore(run *responseRun) error {
+	if run == nil || run.runEpoch <= 0 {
+		return errors.New("restored response requires an existing run epoch")
+	}
+	_, _, err := m.registerRun(run, run.idempotencyKey, true)
+	return err
+}
+
+func (m *responseRunManager) registerRun(run *responseRun, idempotencyKey string, restoring bool) (*responseRun, bool, error) {
 	if run == nil || strings.TrimSpace(run.id) == "" {
 		return nil, false, fmt.Errorf("response run id is required")
 	}
@@ -2543,6 +2568,9 @@ func (m *responseRunManager) createOrGetByIdempotency(run *responseRun, idempote
 	}
 	if key != "" {
 		if claim, ok := m.idempotencyByKey[key]; ok {
+			if restoring {
+				return nil, false, errResponseRunKeyConflict
+			}
 			if !responseRunClaimMatches(claim, run.requestFingerprint) {
 				return nil, false, errResponseRunKeyConflict
 			}
@@ -2558,13 +2586,11 @@ func (m *responseRunManager) createOrGetByIdempotency(run *responseRun, idempote
 	if _, exists := m.runs[run.id]; exists {
 		return nil, false, fmt.Errorf("response run %q already exists", run.id)
 	}
-	previousEpoch := m.nextEpochBySession[run.sessionID]
-	nextEpoch := previousEpoch + 1
-	if now := time.Now().UnixMicro(); nextEpoch < now {
-		nextEpoch = now
+	if !restoring {
+		run.runEpoch = max(m.nextEpochBySession[run.sessionID]+1, time.Now().UnixMicro())
 	}
-	m.nextEpochBySession[run.sessionID] = nextEpoch
-	run.runEpoch = nextEpoch
+	m.nextEpochBySession[run.sessionID] = max(m.nextEpochBySession[run.sessionID], run.runEpoch)
+	run.idempotencyKey = strings.TrimSpace(idempotencyKey)
 	m.runs[run.id] = run
 	if key != "" {
 		m.idempotencyByKey[key] = responseRunIdempotencyClaim{runID: run.id, sessionID: run.sessionID, fingerprint: strings.TrimSpace(run.requestFingerprint)}
@@ -3672,12 +3698,12 @@ func (s *serveServer) handleResponseByID(w http.ResponseWriter, r *http.Request)
 		// The cancellation request is accepted once it is recorded above. Provider,
 		// tool, and steering cleanup can wind down without holding the HTTP
 		// acknowledgement open.
-		go func() {
+		_ = restart.Default.Go(r.Context(), func(context.Context) {
 			if cancel != nil {
 				cancel()
 			}
 			s.discardPendingSteeringForResponseRun(run)
-		}()
+		})
 		return
 	}
 
@@ -3685,6 +3711,7 @@ func (s *serveServer) handleResponseByID(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.ResponseWriter, run *responseRun, after int64) {
+	restart.Passive(ctx)
 	w = newStreamingResponseWriter(w, serveStreamWriteTimeout)
 	subscription := run.subscribe(after)
 	if subscription.snapshotRequired {
@@ -3847,22 +3874,20 @@ func (s *serveServer) projectResponseInteractionState(store session.ResponseRunI
 	if store == nil || state.ResponseID == "" || state.OwnerInstanceID == "" || state.FencingToken <= 0 {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_ = restart.Default.Go(context.Background(), func(ctx context.Context) {
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 		if err := store.SetResponseRunInteractionState(ctx, state); err != nil && !errors.Is(err, session.ErrResponseRunLeaseLost) {
 			log.Printf("[serve] response interaction projection failed for %.12s: %v", state.ResponseID, err)
 		}
-	}()
+	})
 }
 
 func (s *serveServer) configureResponseRunRevision(run *responseRun, sessionID string) {
 	if run == nil {
 		return
 	}
-	run.coarseEvent = func(event string, payload map[string]any) {
-		s.publishResponseRunEvent(run, event, payload)
-	}
+	s.configureResponseRunCallbacks(run, sessionID)
 	startedCtx, startedCancel := context.WithTimeout(context.Background(), responseRunRevisionReadTimeout)
 	configured := false
 	compactReadAllowed := true
@@ -3893,6 +3918,10 @@ func (s *serveServer) configureResponseRunRevision(run *responseRun, sessionID s
 		}
 	}
 	startedCancel()
+}
+
+func (s *serveServer) configureResponseRunCallbacks(run *responseRun, sessionID string) {
+	run.coarseEvent = func(event string, payload map[string]any) { s.publishResponseRunEvent(run, event, payload) }
 	run.finalRevReader = func() (int64, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), responseRunRevisionReadTimeout)
 		defer cancel()
@@ -3929,6 +3958,9 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	}
 
 	respID := "resp_" + randomSuffix()
+	if options.resume != nil {
+		respID = options.resume.View.Id
+	}
 	if options.rush != nil {
 		respID = options.rush.ReplacementResponseID
 	}
@@ -3948,8 +3980,32 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	//  - serve.response_timeout bounds inactivity until the next completed LLM
 	//    response, excluding time spent waiting for an interactive answer.
 	runCtx, runTimer := newResponseRunTimer(s.responseTimeout())
+	runCtx, releaseReload, reloadErr := restart.Default.Root(runCtx)
+	if reloadErr != nil {
+		runTimer.stop()
+		return nil, reloadErr
+	}
+	launched := false
+	defer func() {
+		if !launched {
+			releaseReload()
+		}
+	}()
 	cancel := runTimer.stop
 	run := newResponseRun(respID, sessionID, options.previousResponseID, model, created, cancel)
+	if options.resume != nil {
+		run = restoreWebRun(options.resume, cancel)
+		created = run.created
+	}
+	closeTask := func() {}
+	if options.rush == nil && options.modelSwap == nil {
+		runCtx, closeTask = restart.Default.NewTask(runCtx)
+	}
+	defer func() {
+		if !launched {
+			closeTask()
+		}
+	}()
 	run.settled = make(chan struct{})
 	run.rushStateful = stateful && !replaceHistory
 	run.rushRequest = llmReq
@@ -3959,13 +4015,11 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			runCtx = context.WithValue(runCtx, rushInitialInputKey{}, options.onInitialInput)
 		}
 	}
-	run.idempotencyScope = strings.TrimSpace(options.idempotencyScope)
-	run.requestFingerprint = strings.TrimSpace(options.requestFingerprint)
-	if subscriptionID := strings.TrimSpace(options.notificationSubscriptionID); subscriptionID != "" {
-		run.terminalNotify = func(outcome string) {
-			s.enqueueCompletionPush(run.id, run.sessionID, subscriptionID, outcome, time.Now().UTC())
-		}
+	if options.resume == nil {
+		run.idempotencyScope = strings.TrimSpace(options.idempotencyScope)
+		run.requestFingerprint = strings.TrimSpace(options.requestFingerprint)
 	}
+	s.configureResponseRunNotification(run, options.notificationSubscriptionID)
 	for i := len(inputMessages) - 1; i >= 0; i-- {
 		if inputMessages[i].Role == llm.RoleUser && strings.TrimSpace(inputMessages[i].ClientMessageID) != "" {
 			run.clientMessageID = strings.TrimSpace(inputMessages[i].ClientMessageID)
@@ -3973,8 +4027,19 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		}
 	}
 	runCtx = withResponseRunContext(runCtx, run)
-	s.configureResponseRunRevision(run, sessionID)
-	createdRun, duplicate, err := mgr.createOrGetByIdempotency(run, options.idempotencyKey)
+	if options.resume == nil {
+		s.configureResponseRunRevision(run, sessionID)
+	} else {
+		s.configureResponseRunCallbacks(run, sessionID)
+	}
+	createdRun := run
+	var duplicate bool
+	var err error
+	if options.resume != nil {
+		err = mgr.restore(run)
+	} else {
+		createdRun, duplicate, err = mgr.createOrGetByIdempotency(run, options.idempotencyKey)
+	}
 	if err != nil {
 		cancel()
 		if options.onDone != nil {
@@ -4011,15 +4076,21 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	if lifecycle, ok := session.AsServeResponseLifecycleStore(s.store); ok && sessionID != "" && s.shutdownCh != nil {
 		ownerID := s.responseOwnerID()
 		admitCtx, admitCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		lease, admitErr := lifecycle.AdmitResponseRun(admitCtx, session.ResponseRunAdmission{
-			ResponseID:      respID,
-			SessionID:       sessionID,
-			RunEpoch:        run.runEpoch,
-			OwnerInstanceID: ownerID,
-			StartedRev:      run.startedRev,
-			StartedAt:       time.Unix(created, 0).UTC(),
-			LeaseDuration:   30 * time.Second,
-		})
+		var lease session.ResponseRunLease
+		var admitErr error
+		if options.resume != nil {
+			lease, admitErr = lifecycle.RenewResponseRunLease(admitCtx, respID, ownerID, run.fencingToken)
+		} else {
+			lease, admitErr = lifecycle.AdmitResponseRun(admitCtx, session.ResponseRunAdmission{
+				ResponseID:      respID,
+				SessionID:       sessionID,
+				RunEpoch:        run.runEpoch,
+				OwnerInstanceID: ownerID,
+				StartedRev:      run.startedRev,
+				StartedAt:       time.Unix(created, 0).UTC(),
+				LeaseDuration:   30 * time.Second,
+			})
+		}
 		admitCancel()
 		if admitErr != nil {
 			cancel()
@@ -4029,61 +4100,8 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			}
 			return nil, fmt.Errorf("admit durable response run: %w", admitErr)
 		}
-		if admitErr == nil {
-			s.attentionDiagnostics.LifecycleAdmissions.Add(1)
-			run.mu.Lock()
-			run.ownerInstanceID = ownerID
-			run.fencingToken = lease.FencingToken
-			run.leaseExpiresAt = lease.LeaseExpiresAt
-			run.atomicTranscriptFencing = session.SupportsAtomicResponseRunTranscriptFencing(s.store)
-			run.mu.Unlock()
-			run.validateLifecycle = func() error {
-				validateCtx, validateCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer validateCancel()
-				return lifecycle.ValidateResponseRunLease(validateCtx, respID, ownerID, lease.FencingToken)
-			}
-			run.checkpointLifecycle = func(finalRev int64, outputCount int) error {
-				checkpointCtx, checkpointCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer checkpointCancel()
-				return lifecycle.CheckpointResponseRun(checkpointCtx, session.ResponseRunCheckpoint{
-					ResponseID: respID, OwnerInstanceID: ownerID, FencingToken: lease.FencingToken,
-					FinalRev: finalRev, DurableOutputCount: outputCount,
-				})
-			}
-			run.finalizeLifecycle = func(outcome session.ResponseRunState, finalRev int64, outputCount int) (session.AttentionState, error) {
-				terminal := session.ResponseRunTerminal{ResponseID: respID, OwnerInstanceID: ownerID,
-					FencingToken: lease.FencingToken, Outcome: outcome, FinalRev: finalRev,
-					DurableOutputCount: outputCount, EndedAt: time.Now().UTC()}
-				finalizeCtx, finalizeCancel := context.WithTimeout(context.Background(), 6*time.Second)
-				defer finalizeCancel()
-				var attention session.AttentionState
-				var finalizeErr error
-				for attempt := 0; attempt < 2; attempt++ {
-					attention, finalizeErr = lifecycle.FinalizeResponseRun(finalizeCtx, terminal)
-					if finalizeErr == nil || errors.Is(finalizeErr, session.ErrResponseRunLeaseLost) || errors.Is(finalizeErr, context.Canceled) || errors.Is(finalizeErr, context.DeadlineExceeded) {
-						break
-					}
-					select {
-					case <-finalizeCtx.Done():
-						finalizeErr = finalizeCtx.Err()
-						break
-					case <-time.After(100 * time.Millisecond):
-					}
-				}
-				if finalizeErr == nil {
-					s.attentionDiagnostics.LifecycleFinalized.Add(1)
-					if attention.ResponseID == respID && attention.LatestAttentionSeq > 0 {
-						s.attentionDiagnostics.MarkerWrites.Add(1)
-					}
-				}
-				return attention, finalizeErr
-			}
-			if interactionStore, supported := session.AsResponseRunInteractionStore(s.store); supported {
-				run.interactionStateChanged = func(state session.ResponseRunInteractionState) {
-					s.projectResponseInteractionState(interactionStore, state)
-				}
-			}
-		}
+		s.attentionDiagnostics.LifecycleAdmissions.Add(1)
+		s.configureResponseRunLifecycle(run, lifecycle, ownerID, lease)
 	}
 
 	if options.uiSession {
@@ -4103,9 +4121,11 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	if options.modelSwap != nil && options.modelSwap.plan.enabled {
 		createdResponse["provider"] = options.modelSwap.plan.requestedProvider
 	}
-	if err := run.appendEvent("response.created", map[string]any{
-		"response": createdResponse,
-	}); err != nil {
+	var createdErr error
+	if options.resume == nil {
+		createdErr = run.appendEvent("response.created", map[string]any{"response": createdResponse})
+	}
+	if err := createdErr; err != nil {
 		cancel()
 		mgr.clearActiveRun(sessionID, respID)
 		mgr.delete(respID)
@@ -4116,6 +4136,8 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	}
 
 	if err := mgr.start(func() {
+		defer closeTask()
+		defer func() { releaseReload() }()
 		defer close(run.settled)
 		defer cancel()
 		if options.onDone != nil {
@@ -4156,12 +4178,38 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		}
 
 		streamState := newResponseRunStreamState(model, llmReq.ReasoningEffort)
-		runtimeRunCtx := withServeRuntimeSetup(runCtx, options.runtimeSetup)
-		result, err := runtime.RunWithEventsAndStart(runtimeRunCtx, stateful, replaceHistory, inputMessages, llmReq, func() {
-			mgr.setActiveRun(sessionID, respID)
-		}, func(ev llm.Event) error {
-			return s.appendResponseRunEvent(runtime, run, streamState, ev)
-		})
+		if options.resume != nil {
+			streamState = options.resume.streamState()
+		}
+		var result serveRunResult
+		var totalUsage llm.Usage
+		if options.resume != nil {
+			totalUsage = options.resume.View.Usage
+		}
+		var err error
+		for {
+			runtimeRunCtx := withServeRuntimeSetup(runCtx, options.runtimeSetup)
+			result, err = runtime.RunWithEventsAndStart(runtimeRunCtx, stateful, replaceHistory, inputMessages, llmReq, func() {
+				mgr.setActiveRun(sessionID, respID)
+			}, func(ev llm.Event) error { return s.appendResponseRunEvent(runtime, run, streamState, ev) })
+			totalUsage.Add(result.Usage)
+			result.Usage = totalUsage
+			var suspended *llm.SuspendedError
+			if !errors.As(err, &suspended) {
+				break
+			}
+			run.mu.Lock()
+			run.usage, run.sessionUsage = result.Usage, result.SessionUsage
+			run.mu.Unlock()
+			runCtx, err = s.pauseResponseRun(run, runtime, streamState, suspended.Continuation, stateful, options, runCtx, &releaseReload, runTimer)
+			if err != nil {
+				break
+			}
+			llmReq = suspended.Continuation.Request
+			llmReq.Resume = suspended.Continuation
+			inputMessages = nil
+			replaceHistory = false
+		}
 		if err != nil {
 			runTimedOut := responseRunTimedOut(runCtx)
 			if errors.Is(err, context.Canceled) && !runTimedOut {
@@ -4272,5 +4320,72 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		return nil, err
 	}
 
+	launched = true
 	return run, nil
+}
+
+func (s *serveServer) configureResponseRunNotification(run *responseRun, subscriptionID string) {
+	if subscriptionID = strings.TrimSpace(subscriptionID); subscriptionID != "" {
+		run.terminalNotify = func(outcome string) {
+			s.enqueueCompletionPush(run.id, run.sessionID, subscriptionID, outcome, time.Now().UTC())
+		}
+	}
+}
+
+// configureResponseRunLifecycle binds callbacks to an existing owner/fence. It
+// never admits a new run, so restore failures can terminalize only their own row.
+func (s *serveServer) configureResponseRunLifecycle(run *responseRun, lifecycle session.ServeResponseLifecycleStore, ownerID string, lease session.ResponseRunLease) {
+	respID := run.id
+	run.mu.Lock()
+	run.ownerInstanceID = ownerID
+	run.fencingToken = lease.FencingToken
+	run.leaseExpiresAt = lease.LeaseExpiresAt
+	run.atomicTranscriptFencing = session.SupportsAtomicResponseRunTranscriptFencing(s.store)
+	run.mu.Unlock()
+	run.validateLifecycle = func() error {
+		validateCtx, validateCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer validateCancel()
+		return lifecycle.ValidateResponseRunLease(validateCtx, respID, ownerID, lease.FencingToken)
+	}
+	run.checkpointLifecycle = func(finalRev int64, outputCount int) error {
+		checkpointCtx, checkpointCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer checkpointCancel()
+		return lifecycle.CheckpointResponseRun(checkpointCtx, session.ResponseRunCheckpoint{
+			ResponseID: respID, OwnerInstanceID: ownerID, FencingToken: lease.FencingToken,
+			FinalRev: finalRev, DurableOutputCount: outputCount,
+		})
+	}
+	run.finalizeLifecycle = func(outcome session.ResponseRunState, finalRev int64, outputCount int) (session.AttentionState, error) {
+		terminal := session.ResponseRunTerminal{ResponseID: respID, OwnerInstanceID: ownerID,
+			FencingToken: lease.FencingToken, Outcome: outcome, FinalRev: finalRev,
+			DurableOutputCount: outputCount, EndedAt: time.Now().UTC()}
+		finalizeCtx, finalizeCancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer finalizeCancel()
+		var attention session.AttentionState
+		var finalizeErr error
+		for attempt := 0; attempt < 2; attempt++ {
+			attention, finalizeErr = lifecycle.FinalizeResponseRun(finalizeCtx, terminal)
+			if finalizeErr == nil || errors.Is(finalizeErr, session.ErrResponseRunLeaseLost) || errors.Is(finalizeErr, context.Canceled) || errors.Is(finalizeErr, context.DeadlineExceeded) {
+				break
+			}
+			select {
+			case <-finalizeCtx.Done():
+				finalizeErr = finalizeCtx.Err()
+				break
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+		if finalizeErr == nil {
+			s.attentionDiagnostics.LifecycleFinalized.Add(1)
+			if attention.ResponseID == respID && attention.LatestAttentionSeq > 0 {
+				s.attentionDiagnostics.MarkerWrites.Add(1)
+			}
+		}
+		return attention, finalizeErr
+	}
+	if interactionStore, supported := session.AsResponseRunInteractionStore(s.store); supported {
+		run.interactionStateChanged = func(state session.ResponseRunInteractionState) {
+			s.projectResponseInteractionState(interactionStore, state)
+		}
+	}
 }

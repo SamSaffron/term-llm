@@ -16,6 +16,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/restart"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
@@ -739,6 +740,11 @@ func writeServeIsolatedSkillResponse(w http.ResponseWriter, sessionID string, ru
 }
 
 func (s *serveServer) startServeIsolatedSkill(w http.ResponseWriter, r *http.Request, sess *session.Session, activation *skills.Activation, clientMessageID string) {
+	workCtx, release, ok := admitServeWork(w, r)
+	if !ok {
+		return
+	}
+	defer release()
 	if existing := s.serveSkillRunByClientMessageID(sess.ID, clientMessageID); existing != nil {
 		writeServeIsolatedSkillResponse(w, sess.ID, existing)
 		return
@@ -758,7 +764,7 @@ func (s *serveServer) startServeIsolatedSkill(w http.ResponseWriter, r *http.Req
 	}
 	runID := "skill_" + randomSuffix()
 	childSessionID := session.NewID()
-	runCtx, cancel := context.WithCancel(context.Background())
+	runCtx, cancel := context.WithCancel(workCtx)
 	run := newServeSkillRun(runID, sess.ID, childSessionID, activation, cancel)
 	run.ClientMessageID = strings.TrimSpace(clientMessageID)
 	if registerErr := s.registerServeSkillRun(run); registerErr != nil {
@@ -808,7 +814,7 @@ func (s *serveServer) startServeIsolatedSkill(w http.ResponseWriter, r *http.Req
 			Resources:           append([]string(nil), activation.Resources...),
 		},
 	}
-	go func() {
+	_ = restart.Default.Go(runCtx, func(runCtx context.Context) {
 		defer s.skillRunsWG.Done()
 		defer cancel()
 		result, runErr := runner.RunChild(runCtx, request, func(_ string, event tools.SubagentEvent) {
@@ -824,7 +830,7 @@ func (s *serveServer) startServeIsolatedSkill(w http.ResponseWriter, r *http.Req
 		}
 		s.publishEvent(serveEventInput{Type: serveEventChildrenChanged, SessionID: childSessionID, ParentSessionID: sess.ID, Reason: reason})
 		s.scheduleServeSkillRunCleanup(run)
-	}()
+	})
 
 	writeServeIsolatedSkillResponse(w, sess.ID, run)
 }
@@ -898,6 +904,7 @@ func (s *serveServer) handleSessionSkillRun(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *serveServer) streamServeSkillRunEvents(w http.ResponseWriter, r *http.Request, run *serveSkillRun) {
+	restart.Passive(r.Context())
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "streaming is unsupported")

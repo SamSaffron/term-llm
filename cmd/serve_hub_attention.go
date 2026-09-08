@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/hub"
+	"github.com/samsaffron/term-llm/internal/restart"
 )
 
 const (
@@ -161,6 +162,11 @@ func hubAttentionErrorSummary(err error) string {
 }
 
 func (s *hubServer) collectAttention(ctx context.Context) int {
+	ctx, release, err := restart.Default.Activity(ctx)
+	if err != nil {
+		return 0
+	}
+	defer release()
 	nodes, _ := s.registry.Nodes()
 	current := make(map[string]struct{}, len(nodes))
 	semaphore := make(chan struct{}, 8)

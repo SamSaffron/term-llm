@@ -27,15 +27,14 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/mentions"
+	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
+	render "github.com/samsaffron/term-llm/internal/render/chat"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/runboundary"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/sessiontitle"
 	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/subagentview"
-
-	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
-	render "github.com/samsaffron/term-llm/internal/render/chat"
-	"github.com/samsaffron/term-llm/internal/sessiontitle"
 	"github.com/samsaffron/term-llm/internal/termimage"
 	"github.com/samsaffron/term-llm/internal/tooldiscovery"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -143,6 +142,9 @@ type RuntimeSystemContext struct {
 }
 
 type Model struct {
+	reloadContinuation *llm.Continuation
+	reloadEnabled      bool
+	autoSendPending    bool
 	// Dimensions
 	width  int
 	height int
@@ -1389,7 +1391,7 @@ func (m *Model) beginAltScreenResizeReflow() tea.Cmd {
 	m.resizeReflowPending = true
 	m.resizeReflowGeneration++
 	generation := m.resizeReflowGeneration
-	return tea.Tick(resizeReflowDebounce, func(time.Time) tea.Msg {
+	return m.presentationTick(resizeReflowDebounce, func(time.Time) tea.Msg {
 		return resizeReflowMsg{generation: generation}
 	})
 }
@@ -1933,6 +1935,7 @@ func (m *Model) initialAutoSendCmd() tea.Cmd {
 		m.textarea.SetValue(m.branchAutoSend)
 		m.branchAutoSend = ""
 		m.updateTextareaHeight()
+		m.autoSendPending = true
 		return func() tea.Msg { return autoSendMsg{} }
 	}
 
@@ -1941,6 +1944,7 @@ func (m *Model) initialAutoSendCmd() tea.Cmd {
 		m.textarea.SetValue(m.handoverAutoSend)
 		m.handoverAutoSend = ""
 		m.updateTextareaHeight()
+		m.autoSendPending = true
 		return func() tea.Msg { return autoSendMsg{} }
 	}
 
@@ -1949,6 +1953,7 @@ func (m *Model) initialAutoSendCmd() tea.Cmd {
 		m.textarea.SetValue(m.autoSendQueue[0])
 		m.autoSendQueue = m.autoSendQueue[1:]
 		m.updateTextareaHeight()
+		m.autoSendPending = true
 		return func() tea.Msg { return autoSendMsg{} }
 	}
 	return nil
@@ -1958,7 +1963,7 @@ func (m *Model) mainRunStatusCmd() tea.Cmd {
 	if m.mainRunManager == nil {
 		return nil
 	}
-	return tea.Tick(time.Second, func(time.Time) tea.Msg {
+	return m.presentationTick(time.Second, func(time.Time) tea.Msg {
 		return BackgroundRunsMsg{Count: m.mainRunManager.ActiveCount(), owner: m}
 	})
 }
@@ -1968,7 +1973,10 @@ func (m *Model) Init() tea.Cmd {
 	// Update textarea height for any initial text
 	m.updateTextareaHeight()
 
-	baseCmds := []tea.Cmd{textarea.Blink, m.spinner.Tick}
+	baseCmds := []tea.Cmd{m.passiveCommand(textarea.Blink), m.passiveCommand(m.spinner.Tick)}
+	if m.reloadContinuation != nil {
+		baseCmds = append(baseCmds, func() tea.Msg { return ReloadResumeMsg{} })
+	}
 	if (!m.fastMetadataLoaded || m.fastMetadataStale) && !m.fastMetadataLoading {
 		if cmd := m.loadModelMetadataCmd(); cmd != nil {
 			baseCmds = append(baseCmds, cmd)
@@ -2036,13 +2044,13 @@ func (m *Model) listenForMCPStatusUpdates() tea.Cmd {
 	if m == nil || m.mcpStatusChan == nil {
 		return nil
 	}
-	return func() tea.Msg {
+	return m.passiveCommand(func() tea.Msg {
 		update, ok := <-m.mcpStatusChan
 		if !ok {
 			return nil
 		}
 		return mcpStatusUpdateMsg{update: update}
-	}
+	})
 }
 
 // RequestedResumeSessionID returns a pending session ID to relaunch, if any.
@@ -2327,6 +2335,16 @@ func (m *Model) flushBeforeExternalUI(done chan<- struct{}) (tea.Model, tea.Cmd)
 
 // Update handles messages
 func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
+	if _, ok := msg.(ReloadResumeMsg); ok {
+		return m.resumeAfterReload()
+	}
+	if inspect, ok := msg.(ReloadInspectMsg); ok {
+		m.inspectReload(inspect)
+		return m, nil
+	}
+	if m.reloadBlocksInput(msg) {
+		return m, nil
+	}
 	if failed, ok := msg.(steeringStartFailedMsg); ok {
 		if failed.generation != m.streamGeneration || failed.operationID != m.steeringHandoff {
 			return m, nil
@@ -2637,7 +2655,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		if (m.streaming || m.directShellRun != nil || m.sideQuestion.Running || m.branchContextInFlight() || m.sessionTransition != nil || m.commitBusy()) && !m.pausedForExternalUI {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
-			cmds = append(cmds, cmd)
+			cmds = append(cmds, m.passiveCommand(cmd))
 		}
 
 	case tickMsg:
@@ -3005,14 +3023,14 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	case ui.WaveTickMsg:
 		if m.tracker != nil {
 			if cmd := m.tracker.HandleWaveTick(); cmd != nil {
-				cmds = append(cmds, cmd)
+				cmds = append(cmds, m.passiveCommand(cmd))
 			}
 		}
 
 	case ui.WavePauseMsg:
 		if m.tracker != nil {
 			if cmd := m.tracker.HandleWavePause(); cmd != nil {
-				cmds = append(cmds, cmd)
+				cmds = append(cmds, m.passiveCommand(cmd))
 			}
 		}
 
@@ -3029,6 +3047,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		return m, m.initialAutoSendCmd()
 
 	case autoSendMsg:
+		m.autoSendPending = false
 		// Auto-send has no editable recovery loop. Fail fast and retain the queued
 		// input instead of silently dropping it and waiting forever for a stream.
 		if _, err := m.agentMentionDelegationContext(m.textarea.Value()); err != nil {
@@ -3077,7 +3096,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 					if m.streamPerf != nil {
 						m.streamPerf.RecordSmoothTickScheduled()
 					}
-					cmds = append(cmds, ui.SmoothTick())
+					cmds = append(cmds, m.passiveCommand(ui.SmoothTick()))
 				}
 			}
 			if m.streamPerf != nil {
@@ -3107,6 +3126,10 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 
 		switch ev.Type {
 		case ui.StreamEventError:
+			var suspended *llm.SuspendedError
+			if errors.As(ev.Err, &suspended) {
+				return m.suspendForReload(suspended.Continuation)
+			}
 			m.applyAllPendingCompactionsToUI(msg.generation)
 			if ev.Err != nil {
 				m.setRetryStatus("")
@@ -3352,7 +3375,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 					if m.streamPerf != nil {
 						m.streamPerf.RecordSmoothTickScheduled()
 					}
-					cmds = append(cmds, ui.SmoothTick())
+					cmds = append(cmds, m.passiveCommand(ui.SmoothTick()))
 				}
 			} else {
 				// Fallback: direct display if no smooth buffer
@@ -3914,7 +3937,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		var cmd tea.Cmd
 		m.textarea, cmd = m.textarea.Update(msg)
 		if cmd != nil {
-			cmds = append(cmds, cmd)
+			cmds = append(cmds, m.passiveCommand(cmd))
 		}
 	}
 
@@ -3953,7 +3976,7 @@ func (m *Model) maybeScheduleStreamRenderTick() tea.Cmd {
 
 	delay := m.streamRenderMinInterval - elapsed
 	m.streamRenderTickPending = true
-	return tea.Tick(delay, func(time.Time) tea.Msg {
+	return m.presentationTick(delay, func(time.Time) tea.Msg {
 		return streamRenderTickMsg{}
 	})
 }

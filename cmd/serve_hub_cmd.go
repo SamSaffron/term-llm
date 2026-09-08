@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -12,11 +14,14 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/appdata"
 	"github.com/samsaffron/term-llm/internal/filelock"
 	"github.com/samsaffron/term-llm/internal/hub"
 	"github.com/samsaffron/term-llm/internal/passkeyauth"
+	"github.com/samsaffron/term-llm/internal/restart"
+	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -261,7 +266,8 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 		}()
 	}
 	addr := net.JoinHostPort(serveHubHost, strconv.Itoa(serveHubPort))
-	srv := &http.Server{Addr: addr, Handler: s.handler()}
+	transport := &restart.HTTPTransport{Coordinator: restart.Default}
+	srv := &http.Server{Addr: addr, Handler: transport.Handler(s.handler()), ConnContext: transport.ConnContext, ConnState: transport.ConnState}
 
 	out := cmd.OutOrStdout()
 	if authMode == "passkey" {
@@ -304,7 +310,38 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 	if s.registrationToken != "" {
 		fmt.Fprintln(out, "  registration: enabled")
 	}
-	return srv.ListenAndServe()
+	ctx, stop := signal.NotifyContextWithParent(cmd.Context())
+	defer stop()
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	finished := make(chan error, 1)
+	go func() { finished <- srv.Serve(listener) }()
+	stopReload, err := bindProcessReload(ctx, "TERM_LLM_HUB_TOKEN="+token)
+	if err != nil {
+		_ = srv.Close()
+		<-finished
+		return err
+	}
+	defer stopReload()
+	select {
+	case err := <-finished:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+		stopReload()
+		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		err := srv.Shutdown(shutdown)
+		if err != nil {
+			_ = srv.Close()
+		}
+		<-finished
+		return err
+	}
 }
 
 var hubOutputIsTerminal = func(w any) bool { f, ok := w.(interface{ Fd() uintptr }); return ok && term.IsTerminal(int(f.Fd())) }

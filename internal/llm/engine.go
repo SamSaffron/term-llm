@@ -22,6 +22,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/appdata"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
+	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/usage"
 )
 
@@ -353,6 +354,11 @@ func NewEngine(provider Provider, tools *ToolRegistry) *Engine {
 	// Wire up tool executors for providers that expose term-llm tools over an external bridge.
 	if setter, ok := provider.(ToolExecutorSetter); ok {
 		setter.SetToolExecutor(func(ctx context.Context, name string, args json.RawMessage) (ToolOutput, error) {
+			ctx, release, err := restart.Child(ctx)
+			if err != nil {
+				return ToolOutput{}, err
+			}
+			defer release()
 			tool, ok := e.tools.Get(name)
 			if !ok {
 				return ToolOutput{}, fmt.Errorf("tool not found: %s", name)
@@ -2004,6 +2010,17 @@ func (e *Engine) prepareRequestContext(ctx context.Context, req *Request) {
 
 // Stream returns a stream, applying external tools when needed.
 func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
+	if resume := req.Resume; resume != nil {
+		req = resume.Request
+		req.Resume = resume
+		if len(resume.ProviderState) > 0 {
+			if importer, ok := e.provider.(ProviderStateImporter); ok {
+				if err := importer.ImportProviderState(resume.ProviderState); err != nil {
+					return nil, fmt.Errorf("restore provider continuation: %w", err)
+				}
+			}
+		}
+	}
 	ctx = withDebugDiagnosticSink(ctx, e.debugLogger)
 	// Until this request is proven agentic, it has no boundary at which it can
 	// consume steering. This also clears accepting state left by a prior run.
@@ -2097,7 +2114,7 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	// Providers with a true mid-generation interrupt also need the loop when no
 	// tools are exposed: the next provider turn is where the queued steer is
 	// committed and delivered after the interrupted turn.
-	useLoop := caps.ToolCalls && (len(req.Tools) > 0 || planner != nil || e.providerSupportsImmediateInterruption())
+	useLoop := restart.CurrentTask(ctx) != nil || req.Resume != nil || (caps.ToolCalls && (len(req.Tools) > 0 || planner != nil || e.providerSupportsImmediateInterruption()))
 
 	if useLoop {
 		e.beginSteeringRun(getMaxTurns(req) > 1)
@@ -2672,7 +2689,53 @@ func restoreToolDiscoveryReplay(messages []Message, replay []Part) []Message {
 	return cleaned
 }
 
-func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) error {
+func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) (returnErr error) {
+	task := restart.CurrentTask(ctx)
+	if req.Ephemeral || (task != nil && !task.Claim(e)) {
+		task = nil
+	}
+	if task != nil && e.provider.Capabilities().InlineToolLoop {
+		if flusher, ok := e.provider.(interface{ RequestReloadFlush() }); ok {
+			task.OnRequest(func() {
+				if task.Pending() {
+					flusher.RequestReloadFlush()
+				}
+			})
+			defer task.OnRequest(nil)
+		}
+	}
+	defer task.Release(e)
+	ctx, finishStep := task.Step(ctx)
+	defer finishStep()
+	resume := req.Resume
+	req.Resume = nil
+	nextTurn := 0
+	baseMessageCount := len(req.Messages)
+	providerInFlight := false
+	if resume != nil {
+		nextTurn = resume.Turn
+		baseMessageCount = resume.BaseMessageCount
+	}
+	var checkpointErr error
+	defer func() {
+		var alreadySuspended *SuspendedError
+		if returnErr == nil || errors.As(returnErr, &alreadySuspended) {
+			return
+		}
+		if task.Pending() && interruptedForRestart(ctx) && !e.provider.Capabilities().InlineToolLoop {
+			e.waitActualTools()
+			if checkpointErr != nil {
+				returnErr = checkpointErr
+				return
+			}
+			returnErr = e.suspend(req, nextTurn, nil, true, baseMessageCount)
+			var checkpoint *SuspendedError
+			if providerInFlight && errors.As(returnErr, &checkpoint) {
+				checkpoint.Continuation.DiscardPartial = true
+				_ = send.Send(Event{Type: EventAttemptDiscard, ProviderTurnIndex: nextTurn, ProviderTurnIndexSet: true})
+			}
+		}
+	}()
 	ctx = withResponsesWebSocketContinuationLifetime(ctx)
 	defer e.markSteeringRunNonConsuming()
 	runID := e.beginToolRun()
@@ -2713,6 +2776,26 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 	turnCallback := e.getTurnCallback()
 	responseCallback := e.getResponseCallback()
 	snapshotCallback := e.getSnapshotCallback()
+	if task != nil {
+		if persist := turnCallback; persist != nil {
+			turnCallback = func(ctx context.Context, turn int, messages []Message, metrics TurnMetrics) error {
+				err := persist(ctx, turn, messages, metrics)
+				if err != nil && checkpointErr == nil {
+					checkpointErr = err
+				}
+				return err
+			}
+		}
+		if persist := responseCallback; persist != nil {
+			responseCallback = func(ctx context.Context, turn int, message Message, metrics TurnMetrics) error {
+				err := persist(ctx, turn, message, metrics)
+				if err != nil && checkpointErr == nil {
+					checkpointErr = err
+				}
+				return err
+			}
+		}
+	}
 
 	e.callbackMu.RLock()
 	compactionConfig := e.compactionConfig
@@ -2980,8 +3063,30 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 		}
 		return fallback, reason
 	}
+	if resume != nil && len(resume.Pending) > 0 {
+		if task.Pending() {
+			return e.suspend(req, resume.Turn, resume.Pending, resume.Interrupted, baseMessageCount, resume.PendingMetrics)
+		}
+		nextTurn = resume.Turn + 1
+		if err := e.resumePending(ctx, &req, resume, send, turnCallback); err != nil {
+			return err
+		}
+		for _, call := range resume.Pending {
+			name := call.Name
+			if mapped := req.ToolMap[name]; mapped != "" {
+				name = mapped
+			}
+			if e.tools.IsFinishingTool(name) {
+				return sendDone()
+			}
+		}
+	}
 turnLoop:
-	for attempt := 0; attempt < maxTurns; attempt++ {
+	for attempt := nextTurn; attempt < maxTurns; attempt++ {
+		nextTurn = attempt
+		if task.Pending() && checkpointErr == nil {
+			return e.suspend(req, attempt, nil, false, baseMessageCount)
+		}
 		// The final provider turn has no later agentic boundary. Reject arrivals
 		// throughout that stream instead of accepting steering it cannot consume.
 		e.beginSteeringRun(attempt < maxTurns-1)
@@ -3094,9 +3199,13 @@ turnLoop:
 		}
 
 		e.clearInlineFlush()
+		if task.Pending() && checkpointErr == nil {
+			return e.suspend(req, attempt, nil, false, baseMessageCount)
+		}
 		if err := e.awaitSteeringDispatch(ctx); err != nil {
 			return err
 		}
+		providerInFlight = true
 		stream, err := e.provider.Stream(ctx, providerReq)
 		if err != nil {
 			// Reactive compaction: if this is a context overflow error, try compacting and retrying (once)
@@ -3887,6 +3996,9 @@ turnLoop:
 			}
 		}
 		stream.Close()
+		if ctx.Err() == nil {
+			providerInFlight = false
+		}
 
 		// Exit promptly if caller cancelled while we were streaming.
 		if err := ctx.Err(); err != nil {
@@ -4221,6 +4333,10 @@ turnLoop:
 		// Call responseCallback BEFORE tool execution to persist assistant message
 		// This ensures the message is saved even if tool execution fails/crashes
 		responseHandled := callResponseCompletedCallback(ctx, responseCallback, attempt, assistantMsg, turnMetrics)
+		if task.Pending() && checkpointErr == nil && (responseHandled || responseCallback == nil) {
+			req.Messages = append(req.Messages, assistantMsg)
+			return e.suspend(req, attempt, registered, false, baseMessageCount, turnMetrics)
+		}
 
 		// ToolMap: swap client tool names to mapped server names for execution.
 		// We save original names keyed by call ID so we can restore them on
@@ -4283,6 +4399,7 @@ turnLoop:
 
 		req.Messages = append(req.Messages, assistantMsg)
 		req.Messages = append(req.Messages, toolResults...)
+		nextTurn = attempt + 1
 
 		// Call turn completed callback with tool results for incremental persistence
 		if turnCallback != nil {
@@ -4526,7 +4643,12 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, paralle
 
 	workerCtx := ContextWithApprovalTranscript(ctx, transcript)
 	for worker := 0; worker < workerCount; worker++ {
+		workerCtx, release, err := restart.Child(workerCtx)
+		if err != nil {
+			return nil, err
+		}
 		go func() {
+			defer release()
 			for {
 				if err := ctx.Err(); err != nil {
 					return
@@ -4622,12 +4744,18 @@ type toolExecutionResult struct {
 // context cannot keep the engine blocked after the caller cancels. The buffered
 // result channel lets an abandoned invocation finish without blocking later.
 func (e *Engine) executeToolWithCancellation(ctx context.Context, tool Tool, args json.RawMessage) (ToolOutput, error, any) {
+	ctx, release, err := restart.Child(ctx)
+	if err != nil {
+		return ToolOutput{}, err, nil
+	}
 	if err := e.beginSteeringTool(ctx); err != nil {
+		release()
 		return ToolOutput{}, err, nil
 	}
 
 	results := make(chan toolExecutionResult, 1)
 	go func() {
+		defer release()
 		defer e.actualSteeringToolDone()
 		result := toolExecutionResult{}
 		defer func() {

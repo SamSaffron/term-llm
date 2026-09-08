@@ -18,6 +18,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
+	"github.com/samsaffron/term-llm/internal/restart"
 )
 
 // ServerStatus represents the current state of an MCP server.
@@ -59,6 +60,8 @@ type serverStartup struct {
 
 // Manager handles MCP server lifecycle and provides tools to LLM.
 type Manager struct {
+	reloadMu          sync.Mutex
+	reloadUnregister  func()
 	config            *Config
 	clients           map[string]*Client
 	statuses          map[string]*ServerState
@@ -322,6 +325,12 @@ func (m *Manager) ServerStatus(name string) (ServerStatus, error) {
 
 // Enable starts an MCP server in the background (non-blocking).
 func (m *Manager) Enable(ctx context.Context, name string) error {
+	ctx, release, reloadErr := restart.Default.Activity(ctx)
+	if reloadErr != nil {
+		return reloadErr
+	}
+	defer release()
+	m.registerReload()
 	m.mu.Lock()
 	if m.config == nil {
 		m.mu.Unlock()
@@ -373,7 +382,7 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 	m.sendStatus(name, StatusStarting, nil)
 
 	// Start in background
-	go func() {
+	_ = restart.Default.Go(ctx, func(context.Context) {
 		cancelProcessOnStartupDone := context.AfterFunc(startupCtx, processCancel)
 
 		err := client.start(startupCtx, processCtx)
@@ -446,7 +455,7 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 				go m.watchSession(name, client, session)
 			}
 		}
-	}()
+	})
 
 	return nil
 }
@@ -718,6 +727,11 @@ func isAuthenticationRequired(err error) bool {
 
 // StopAll stops all running MCP servers.
 func (m *Manager) StopAll() {
+	m.unregisterReload()
+	_ = m.stopAll()
+}
+
+func (m *Manager) stopAll() error {
 	m.mu.Lock()
 	clients := make([]*Client, 0, len(m.clients))
 	for _, c := range m.clients {
@@ -735,12 +749,14 @@ func (m *Manager) StopAll() {
 	handler := m.catalogueHandler
 	m.mu.Unlock()
 
+	var stopErr error
 	for _, c := range clients {
-		_ = c.Stop()
+		stopErr = errors.Join(stopErr, c.Stop())
 	}
 	if handler != nil {
 		handler(CatalogueEvent{Snapshot: copyCatalogueSnapshot(snapshot)})
 	}
+	return stopErr
 }
 
 // AllTools returns a copy-safe legacy projection of the complete namespaced catalogue.
@@ -789,6 +805,11 @@ func (m *Manager) CallCatalogTool(ctx context.Context, serverName, toolName, exe
 }
 
 func (m *Manager) callCatalogTool(ctx context.Context, serverName, toolName, displayName string, args json.RawMessage) (llm.ToolOutput, error) {
+	ctx, release, reloadErr := restart.Default.Activity(ctx)
+	if reloadErr != nil {
+		return llm.ToolOutput{}, reloadErr
+	}
+	defer release()
 	m.mu.RLock()
 	state, ok := m.statuses[serverName]
 	if !ok || state.Status != StatusReady || state.Client == nil {

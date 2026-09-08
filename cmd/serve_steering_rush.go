@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -347,13 +348,13 @@ func (s *serveServer) finishSteeringRush(store session.RushStore, t *serveSteeri
 		})
 	default:
 		t.waitOnce.Do(func() {
-			go func() {
+			_ = restart.Default.Go(ctx, func(context.Context) {
 				select {
 				case <-t.source.settled:
 					s.finishSteeringRush(store, t, status, reason)
 				case <-s.shutdownCh:
 				}
-			}()
+			})
 		})
 	}
 }

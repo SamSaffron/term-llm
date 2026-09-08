@@ -13,6 +13,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcphttp"
+	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/search"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -267,6 +268,13 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 
 	// Build executor that routes to the right tool.
 	executor := func(ctx context.Context, name string, args json.RawMessage) (mcphttp.ToolResult, error) {
+		// Own the executor independently of the SDK handler: disconnect/cancellation
+		// may end the HTTP response while a tool is still finishing its effects.
+		ctx, release, err := restart.Default.Enter(ctx)
+		if err != nil {
+			return mcphttp.ToolResult{}, err
+		}
+		defer release()
 		// Check web tools first.
 		if name == mcpWebSearchToolName && webSearchTool != nil {
 			out, err := webSearchTool.Execute(ctx, args)
@@ -298,6 +306,9 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 	// Resolve auth token.
 	token := strings.TrimSpace(serveMCPToken)
 	if token == "" {
+		token = mcpReloadToken
+	}
+	if token == "" {
 		generated, err := generateServeToken()
 		if err != nil {
 			return fmt.Errorf("generate auth token: %w", err)
@@ -308,14 +319,27 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 	// Start MCP server.
 	server := mcphttp.NewServer(executor)
 	server.SetDebug(serveMCPDebug)
+	server.HandlerMiddleware = restart.Default.Handler
+	server.ConnState = restart.Default.HTTPConnections()
 
-	ctx, stop := signal.NotifyContext()
+	ctx, stop := signal.NotifyContextWithParent(cmd.Context())
 	defer stop()
 
 	url, actualToken, err := server.StartOnAddress(serveMCPHost, serveMCPPort, token, mcpTools)
 	if err != nil {
 		return fmt.Errorf("start MCP server: %w", err)
 	}
+
+	// MCP HTTP is stateless. Keep listeners live until exec (Go sockets are
+	// close-on-exec), so a failed exec leaves the original service usable.
+	stopReload, err := bindProcessReload(ctx, "TERM_LLM_MCP_RELOAD_TOKEN="+actualToken)
+	if err != nil {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = server.Stop(stopCtx)
+		return err
+	}
+	defer stopReload()
 
 	// Print server info.
 	toolNames := make([]string, len(mcpTools))

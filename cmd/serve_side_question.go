@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/sidequestion"
 )
@@ -285,6 +286,11 @@ func equivalentMessage(a, b llm.Message) bool {
 }
 
 func (rt *serveRuntime) startSideQuestion(input sideQuestionStart) (<-chan sideQuestionEventMsg, error) {
+	workCtx, release, reloadErr := restart.Default.Root(context.Background())
+	if reloadErr != nil {
+		return nil, reloadErr
+	}
+	defer release()
 	question := strings.TrimSpace(input.Question)
 	if question == "" {
 		return nil, errors.New("question is required")
@@ -356,7 +362,7 @@ func (rt *serveRuntime) startSideQuestion(input sideQuestionStart) (<-chan sideQ
 	}
 	sq.generation++
 	generation := sq.generation
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(workCtx)
 	done := make(chan struct{})
 	events := make(chan sideQuestionEventMsg, 64)
 	sq.running = true
@@ -374,7 +380,7 @@ func (rt *serveRuntime) startSideQuestion(input sideQuestionStart) (<-chan sideQ
 		Messages:  messages,
 		Responses: &llm.ResponsesOptions{ReasoningMode: reasoningMode},
 	}
-	go func() {
+	_ = restart.Default.Go(ctx, func(ctx context.Context) {
 		defer close(done)
 		defer close(events)
 		defer func() {
@@ -437,7 +443,7 @@ func (rt *serveRuntime) startSideQuestion(input sideQuestionStart) (<-chan sideQ
 			default:
 			}
 		}
-	}()
+	})
 	return events, nil
 }
 

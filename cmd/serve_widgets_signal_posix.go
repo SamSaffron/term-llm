@@ -9,6 +9,7 @@ import (
 	ossignal "os/signal"
 	"syscall"
 
+	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/widgets"
 )
 
@@ -25,7 +26,11 @@ func installWidgetStopSignal(ctx context.Context, manager *widgets.Manager) func
 				return
 			case <-ch:
 				log.Printf("[widget] received SIGUSR1, stopping all widgets")
-				manager.StopAll()
+				_, release, err := restart.Default.Activity(ctx)
+				if err == nil {
+					manager.StopAll()
+					release()
+				}
 			}
 		}
 	}()

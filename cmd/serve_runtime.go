@@ -2430,6 +2430,23 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 				if persisted {
 					rt.persistStatus(ctx, req.SessionID, statusForRunError(ev.Err))
 				}
+				var suspended *llm.SuspendedError
+				if errors.As(ev.Err, &suspended) {
+					if suspended.Continuation.DiscardPartial {
+						history := suspended.Continuation.Request.Messages
+						if persisted && !rt.persistSnapshot(ctx, req.SessionID, history) {
+							return serveRunResult{}, fmt.Errorf("persist interrupted model boundary")
+						}
+						if stateful {
+							rt.history = history
+							rt.historyPersisted = persisted
+						}
+						runErr = nil // Do not salvage the discarded partial assistant again.
+					}
+					rt.cumulativeUsage.Add(result.Usage)
+					result.SessionUsage = rt.cumulativeUsage
+					return result, ev.Err
+				}
 				return serveRunResult{}, ev.Err
 			}
 		}
@@ -2602,6 +2619,10 @@ func hasUserMessage(messages []llm.Message) bool {
 }
 
 func statusForRunError(err error) session.SessionStatus {
+	var suspended *llm.SuspendedError
+	if errors.As(err, &suspended) {
+		return session.StatusActive
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return session.StatusInterrupted
 	}

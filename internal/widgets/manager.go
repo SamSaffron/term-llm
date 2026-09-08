@@ -17,9 +17,9 @@ import (
 	"syscall"
 	"time"
 
-	"golang.org/x/net/http/httpguts"
-
 	"github.com/samsaffron/term-llm/internal/procutil"
+	"github.com/samsaffron/term-llm/internal/restart"
+	"golang.org/x/net/http/httpguts"
 )
 
 const (
@@ -69,8 +69,9 @@ func (e *widgetEntry) setError(err error) error {
 
 // Manager discovers and manages widget sub-processes.
 type Manager struct {
-	widgetsDir string
-	basePath   string
+	reloadUnregister func()
+	widgetsDir       string
+	basePath         string
 
 	mu       sync.RWMutex
 	entries  map[string]*widgetEntry // mount → entry
@@ -96,6 +97,9 @@ func NewManager(widgetsDir, basePath string) *Manager {
 		shutdownCancel: shutdownCancel,
 	}
 	m.scan()
+	m.reloadUnregister = restart.Default.Register(&restart.Resource{Prepare: func(ctx context.Context) (func(context.Context), error) {
+		return nil, m.StopAllAndWait(ctx) // manager stays open; requests lazily restart stopped widgets
+	}})
 	go m.idleLoop()
 	return m
 }
@@ -205,8 +209,7 @@ func (m *Manager) StopMount(mount string) error {
 	if !ok {
 		return fmt.Errorf("widget %q not found", mount)
 	}
-	e.stopProcess()
-	return nil
+	return e.stopProcess()
 }
 
 // StopAll stops every loaded widget process without closing the manager. Widgets
@@ -277,6 +280,13 @@ func forwardedProto(proto string, tls bool) string {
 // Proxy forwards r to the widget identified by mount.
 // The path in r must already have the /widgets/<mount> prefix stripped.
 func (m *Manager) Proxy(mount string, w http.ResponseWriter, r *http.Request) {
+	ctx, release, reloadErr := restart.Default.Root(r.Context())
+	if reloadErr != nil {
+		http.Error(w, reloadErr.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	defer release()
+	r = r.WithContext(ctx)
 	m.mu.RLock()
 	e, ok := m.entries[mount]
 	m.mu.RUnlock()
@@ -593,14 +603,14 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 	return nil
 }
 
-func (e *widgetEntry) stopProcess() {
+func (e *widgetEntry) stopProcess() error {
 	e.startMu.Lock()
 	defer e.startMu.Unlock()
-	e.stopProcessLocked()
+	return e.stopProcessLocked()
 }
 
 // stopProcessLocked requires startMu to be held.
-func (e *widgetEntry) stopProcessLocked() {
+func (e *widgetEntry) stopProcessLocked() (err error) {
 	e.mu.Lock()
 	proc := e.proc
 	done := e.procDone
@@ -612,19 +622,41 @@ func (e *widgetEntry) stopProcessLocked() {
 	e.proxy = nil
 	e.port = 0
 	e.mu.Unlock()
-	defer removeSocket(mode, socketID)
+	// A failed stop retains the process and its socket for recovery.
+	defer func() {
+		if err == nil {
+			removeSocket(mode, socketID)
+		}
+	}()
 
 	if proc == nil {
-		return
+		return nil
 	}
 	killProcessGroup(proc, syscall.SIGTERM)
 	if done == nil {
-		return
+		e.mu.Lock()
+		e.proc, e.procDone, e.state, e.errMsg = proc, done, stateError, "widget process has no exit acknowledgement"
+		e.mu.Unlock()
+		return fmt.Errorf("widget process has no exit acknowledgement")
 	}
 	select {
 	case <-done:
+		return nil
 	case <-time.After(3 * time.Second):
 		killProcessGroup(proc, syscall.SIGKILL)
+	}
+	select {
+	case <-done:
+		return nil
+	case <-time.After(3 * time.Second):
+		// Retain ownership if even SIGKILL has not produced a wait acknowledgement.
+		e.mu.Lock()
+		e.proc = proc
+		e.procDone = done
+		e.state = stateError
+		e.errMsg = "widget process did not acknowledge exit"
+		e.mu.Unlock()
+		return fmt.Errorf("widget process did not acknowledge exit")
 	}
 }
 
@@ -657,6 +689,11 @@ func (m *Manager) idleLoop() {
 }
 
 func (m *Manager) reapIdle() {
+	_, release, err := restart.Default.Activity(context.Background())
+	if err != nil {
+		return
+	}
+	defer release()
 	m.mu.RLock()
 	type idleWidget struct {
 		entry *widgetEntry
@@ -686,6 +723,9 @@ func (m *Manager) Close() {
 // when ctx is cancelled. Widget process stops are best-effort and are issued in
 // parallel so one slow stop does not consume the whole serve shutdown budget.
 func (m *Manager) CloseContext(ctx context.Context) {
+	if m.reloadUnregister != nil {
+		m.reloadUnregister()
+	}
 	m.stopOnce.Do(func() {
 		m.mu.Lock()
 		m.shuttingDown = true
@@ -730,4 +770,33 @@ func freePort() (int, error) {
 	}
 	defer l.Close()
 	return l.Addr().(*net.TCPAddr).Port, nil
+}
+
+// StopAllAndWait is the restart form of StopAll: it reports whether every child
+// actually exited. It does not close the manager; failed exec retains lazy start.
+// The caller must fence proxied request admission while taking this checkpoint.
+func (m *Manager) StopAllAndWait(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.RLock()
+	entries := make([]*widgetEntry, 0, len(m.entries))
+	for _, e := range m.entries {
+		entries = append(entries, e)
+	}
+	m.mu.RUnlock()
+	results := make(chan error, len(entries))
+	for _, e := range entries {
+		go func() { results <- e.stopProcess() }()
+	}
+	var first error
+	for range entries {
+		if err := <-results; first == nil && err != nil {
+			first = err
+		}
+	}
+	if first != nil {
+		return first
+	}
+	return ctx.Err()
 }

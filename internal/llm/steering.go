@@ -171,3 +171,10 @@ func SteeringOriginForMessage(message Message) SteeringOrigin {
 	}
 	return SteeringOriginUser
 }
+
+// ActiveToolExecutions counts actual Execute lifetimes, not cancelled callers.
+func (e *Engine) ActiveToolExecutions() int {
+	e.callbackMu.RLock()
+	defer e.callbackMu.RUnlock()
+	return e.activeSteeringTools
+}

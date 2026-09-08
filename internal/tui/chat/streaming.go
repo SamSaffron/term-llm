@@ -13,6 +13,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/muesli/reflow/wordwrap"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/restart"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/runboundary"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -803,8 +804,19 @@ func (m *Model) beginUserResponse(content, userDisplay string, preSendCmds []tea
 }
 
 func (m *Model) startStream(content string) tea.Cmd {
+	continuation := m.reloadContinuation
+	m.reloadContinuation = nil
 	steeringOperationID := m.steeringHandoff
-	ctx, cancel := context.WithCancel(m.rootContext())
+	ctx := m.rootContext()
+	release := func() {}
+	if m.reloadEnabled {
+		var err error
+		ctx, release, err = restart.Default.Activity(ctx)
+		if err != nil {
+			return func() tea.Msg { return streamEventMsg{event: ui.ErrorEvent(err), generation: m.streamGeneration} }
+		}
+	}
+	ctx, cancel := context.WithCancel(ctx)
 	sessionID := m.SessionID()
 	m.streamGeneration++
 	m.discardPendingCompactionsBeforeGeneration(m.streamGeneration)
@@ -819,6 +831,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 	m.setStreamCancelRequested(false)
 
 	return func() tea.Msg {
+		defer release()
 		// Mark session as active when starting a new stream
 		if m.store != nil && m.sess != nil {
 			_ = m.store.UpdateStatus(ctx, m.sess.ID, session.StatusActive)
@@ -881,6 +894,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 		m.engine.ClearPendingRequestServiceTier()
 		serviceTier, serviceTierSet := m.currentServiceTier()
 		req := llm.Request{
+			Resume:                  continuation,
 			SessionID:               m.sess.ID,
 			WorkingDir:              m.effectiveWorkingDir(),
 			Model:                   strings.TrimSpace(m.modelName),
@@ -943,6 +957,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 				searchEnabled := m.searchEnabled
 				forceExternalSearch := m.forceExternalSearch
 				runReq := runpkg.Request{
+					Continuation:              continuation,
 					Platform:                  runpkg.PlatformChat,
 					AgentName:                 m.agentName,
 					Messages:                  messages,
@@ -999,6 +1014,8 @@ func (m *Model) startStream(content string) tea.Cmd {
 			}
 			runSessionID := req.SessionID
 			snapshot, err := m.mainRunManager.Start(runSessionID, MainRunExecution{
+				Reloadable:          m.reloadEnabled,
+				Context:             ctx,
 				SteeringOperationID: steeringOperationID,
 				RunID: func() string {
 					if steeringOperationID != "" {
@@ -1052,7 +1069,10 @@ func (m *Model) startStream(content string) tea.Cmd {
 						return
 					}
 					status := session.StatusComplete
-					if runErr != nil {
+					var suspended *llm.SuspendedError
+					if errors.As(runErr, &suspended) {
+						status = session.StatusActive
+					} else if runErr != nil {
 						status = session.StatusError
 						if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
 							status = session.StatusInterrupted
@@ -1507,7 +1527,7 @@ func (m *Model) estimateContextTokensCached() int {
 }
 
 func (m *Model) tickEvery() tea.Cmd {
-	return tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
+	return m.presentationTick(1*time.Second, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
 }

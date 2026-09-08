@@ -1484,6 +1484,18 @@ func TestStreamReply_StreamEventErrorReturnsError(t *testing.T) {
 	}
 }
 
+// A provider emitting a chunk does not mean the engine/reply consumer has read it.
+func waitTelegramPartialReply(t *testing.T, bot *fakeBotSender) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(bot.lastText(), "partial answer") {
+		if time.Now().After(deadline) {
+			t.Fatal("partial answer never reached reply")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestStreamReply_PersistsInterruptedPartialAssistantReply(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "telegram-interrupt.db")
 	baseStore, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
@@ -1528,6 +1540,7 @@ func TestStreamReply_PersistsInterruptedPartialAssistantReply(t *testing.T) {
 		t.Fatal("provider never emitted first chunk")
 	}
 
+	waitTelegramPartialReply(t, bot)
 	sess.cancelMu.Lock()
 	cancel := sess.streamCancel
 	sess.cancelMu.Unlock()
@@ -1611,14 +1624,16 @@ func TestStreamReply_ReconcilesCanceledParentContext(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	replyDone := make(chan error, 1)
+	bot := &fakeBotSender{}
 	go func() {
-		replyDone <- mgr.streamReply(ctx, &fakeBotSender{}, sess, 42, llm.UserText("hi"))
+		replyDone <- mgr.streamReply(ctx, bot, sess, 42, llm.UserText("hi"))
 	}()
 	select {
 	case <-provider.firstChunkSent:
 	case <-time.After(5 * time.Second):
 		t.Fatal("provider never emitted first chunk")
 	}
+	waitTelegramPartialReply(t, bot)
 	cancel()
 	select {
 	case err := <-replyDone:

@@ -229,6 +229,10 @@ type cliToolBridgeState struct {
 	inlineFlushPending atomic.Bool
 }
 
+// RequestReloadFlush asks the next completed tool result to yield the provider
+// loop. Unlike native steering interruption, it never cancels the current tool.
+func (s *cliToolBridgeState) RequestReloadFlush() { s.requestInlineFlush() }
+
 func (s *cliToolBridgeState) requestInlineFlush() {
 	if s == nil {
 		return

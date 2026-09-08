@@ -14,6 +14,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/samsaffron/term-llm/internal/hub"
+	"github.com/samsaffron/term-llm/internal/restart"
 )
 
 // Reverse node connections let a private node dial out to a public Hub. The
@@ -575,6 +576,7 @@ func (s *hubServer) handleReverseConnect(w http.ResponseWriter, r *http.Request)
 		http.Error(w, fmt.Sprintf("node %q is not configured for reverse connection", node.ID), http.StatusForbidden)
 		return
 	}
+	restart.Passive(r.Context()) // registration socket is passive; forwarded operations have their own owner
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {

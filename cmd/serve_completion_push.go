@@ -12,6 +12,7 @@ import (
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
+	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -121,7 +122,12 @@ func (s *serveServer) startCompletionPushDispatcher() {
 }
 
 func (s *serveServer) dispatchCompletionPushes(outbox session.CompletionPushOutboxStore) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	base, release, err := restart.Default.Activity(context.Background())
+	if err != nil {
+		return
+	}
+	defer release()
+	ctx, cancel := context.WithTimeout(base, 20*time.Second)
 	defer cancel()
 	items, err := outbox.ListDueCompletionPushes(ctx, time.Now().UTC(), 25)
 	if err != nil || len(items) == 0 {

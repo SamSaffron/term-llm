@@ -12,6 +12,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/lifecycle"
 	"github.com/samsaffron/term-llm/internal/procutil"
+	"github.com/samsaffron/term-llm/internal/restart"
 )
 
 type commandSink struct {
@@ -65,6 +66,11 @@ func (s *commandSink) Send(ctx context.Context, event lifecycle.Event) error {
 }
 
 func runCommand(ctx context.Context, path string, args []string, stdin []byte) error {
+	ctx, release, reloadErr := restart.Default.Activity(ctx)
+	if reloadErr != nil {
+		return reloadErr
+	}
+	defer release()
 	command := exec.CommandContext(ctx, path, args...)
 	command.Stdin = bytes.NewReader(stdin)
 	// Leave stdout and stderr nil so os/exec attaches direct os.DevNull files.

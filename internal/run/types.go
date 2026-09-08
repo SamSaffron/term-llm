@@ -44,7 +44,8 @@ type ProgressiveResult struct {
 // capabilities) but not presentation details; presentation belongs to EventSink
 // implementations owned by each platform.
 type Request struct {
-	Platform string
+	Continuation *llm.Continuation // Resume the same execution, without injecting user input.
+	Platform     string
 
 	AgentName string
 	Prompt    string

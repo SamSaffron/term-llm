@@ -611,7 +611,7 @@ func (m *Model) scheduleTitleFallbackCmd() tea.Cmd {
 	if sessionID == "" {
 		return nil
 	}
-	return tea.Tick(liveTitleFallbackDelay, func(time.Time) tea.Msg {
+	return m.presentationTick(liveTitleFallbackDelay, func(time.Time) tea.Msg {
 		return titleFallbackTickMsg{sessionID: sessionID}
 	})
 }

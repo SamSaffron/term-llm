@@ -97,9 +97,11 @@ func (rt *serveRuntime) awaitAskUser(ctx context.Context, questions []tools.AskU
 	if callID == "" {
 		return nil, fmt.Errorf("ask_user missing tool call id")
 	}
-	pending, _ := rt.prepareAskUser(callID, questions)
+	// Pause before publishing the prompt: once visible, the user is waiting and
+	// the response watchdog must not expire between publication and suspension.
 	resumeResponseTimeout := rt.pauseForInteractiveWait()
 	defer resumeResponseTimeout()
+	pending, _ := rt.prepareAskUser(callID, questions)
 	defer rt.removePendingAskUser(callID, pending)
 
 	select {

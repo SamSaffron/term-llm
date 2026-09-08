@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -558,4 +559,48 @@ func TestWidgetChildHTTPServer(t *testing.T) {
 		_, _ = w.Write([]byte("ok"))
 	})
 	log.Fatal(http.Serve(listener, handler))
+}
+
+func TestWidgetStopKeepsSocketUntilExitAcknowledged(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process groups are Unix-specific")
+	}
+	for _, acknowledged := range []bool{false, true} {
+		t.Run(fmt.Sprint("acknowledged=", acknowledged), func(t *testing.T) {
+			// Point the test manifest at a private fixture, not a real widget socket.
+			socket := filepath.Join(t.TempDir(), "widget.sock")
+			id, err := filepath.Rel(socketRuntimeDir, strings.TrimSuffix(socket, ".sock"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(socket, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			child := exec.Command("sleep", "60")
+			child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			if err := child.Start(); err != nil {
+				t.Fatal(err)
+			}
+			var done chan struct{}
+			if acknowledged {
+				done = make(chan struct{})
+				go func() { _ = child.Wait(); close(done) }()
+				t.Cleanup(func() { _ = child.Process.Kill(); <-done })
+			} else {
+				t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })
+			}
+			e := &widgetEntry{manifest: &Manifest{ID: id, Command: []string{"fixture", "$SOCKET"}}, proc: child.Process, procDone: done, state: stateRunning}
+			err = e.stopProcess()
+			_, statErr := os.Stat(socket)
+			if acknowledged {
+				if err != nil || !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("acknowledged exit did not remove socket: %v %v", err, statErr)
+				}
+			} else {
+				if err == nil || statErr != nil || e.proc != child.Process {
+					t.Fatalf("unacknowledged exit lost process/socket: %v %v", err, statErr)
+				}
+			}
+		})
+	}
 }

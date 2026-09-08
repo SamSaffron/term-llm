@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"runtime"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/exitcode"
 	pprofserver "github.com/samsaffron/term-llm/internal/pprof"
+	"github.com/samsaffron/term-llm/internal/process"
+	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/terminaltext"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/samsaffron/term-llm/internal/update"
@@ -65,6 +68,7 @@ create media, and automate recurring work—from your terminal or browser.`,
 	SilenceErrors:     true,
 	SilenceUsage:      true,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		process.State(cmd.CommandPath(), "deferred", "invocation is not yet reloadable; never replayed")
 		if shellCompletionExecution(cmd) {
 			return nil
 		}
@@ -200,7 +204,18 @@ func stopProfiling() error {
 }
 
 func Execute() {
-	if err := executeWithArgs(os.Args[1:]); err != nil {
+	restart.Default.Observe = func(s restart.Status) {
+		process.Report(s.Phase, s.Attempt, s.Error)
+		if s.Error != "" {
+			log.Printf("[reload] %s: %s", s.Phase, s.Error)
+		}
+	}
+	stopReload := restart.Default.Listen()
+	publisher := process.Start(versionString(), reloadExecutable)
+	err := executeWithArgs(os.Args[1:])
+	stopReload()
+	publisher.Stop()
+	if err != nil {
 		writeRootError(rootCmd.ErrOrStderr(), err)
 		if exitErr, ok := err.(exitcode.ExitError); ok {
 			os.Exit(exitErr.Code)

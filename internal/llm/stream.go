@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"sync"
+
+	"github.com/samsaffron/term-llm/internal/restart"
 )
 
 var errEventStreamClosed = errors.New("stream closed")
@@ -93,11 +95,18 @@ func newEventStream(ctx context.Context, run func(context.Context, eventSender) 
 // blocking resources before the stream goroutine (for example, an HTTP response
 // body whose request used the parent context) can use the hook to unblock reads.
 func newEventStreamWithCancelHook(ctx context.Context, cancelHook func(), run func(context.Context, eventSender) error) Stream {
+	if cancelHook != nil {
+		cancelHook = sync.OnceFunc(cancelHook)
+	}
+	ctx, release, ownershipErr := restart.Child(ctx)
 	streamCtx, cancel := context.WithCancel(ctx)
 	ch := make(chan Event, 16)
 	terminalErr := make(chan error, 1)
 	done := make(chan struct{})
 	go func() {
+		if release != nil {
+			defer release()
+		}
 		defer close(done)
 		defer func() {
 			if r := recover(); r != nil && streamCtx.Err() == nil {
@@ -114,6 +123,13 @@ func newEventStreamWithCancelHook(ctx context.Context, cancelHook func(), run fu
 			close(terminalErr)
 			close(ch)
 		}()
+		if ownershipErr != nil {
+			if cancelHook != nil {
+				cancelHook()
+			}
+			terminalErr <- ownershipErr
+			return
+		}
 		sender := eventSender{ctx: streamCtx, ch: ch}
 		if err := run(streamCtx, sender); err != nil && streamCtx.Err() == nil {
 			// If the consumer has stopped draining and the buffer is full, preserve the

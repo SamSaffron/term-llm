@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/restart"
 )
 
 const (
@@ -510,6 +512,11 @@ func (m *serveShellManager) create(sessionID, cwd string, cols, rows int) (*serv
 		m.mu.Unlock()
 		current.close()
 	}
+	workCtx, release, reloadErr := restart.Default.Root(context.Background())
+	if reloadErr != nil {
+		return nil, false, reloadErr
+	}
+	defer release()
 	id, err := newServeShellID()
 	if err != nil {
 		return nil, false, err
@@ -529,7 +536,7 @@ func (m *serveShellManager) create(sessionID, cwd string, cols, rows int) (*serv
 	}
 	m.shells[sessionID] = shell
 	m.mu.Unlock()
-	go shell.watchExit()
+	_ = restart.Default.Go(workCtx, func(context.Context) { shell.watchExit() })
 	return shell, true, nil
 }
 

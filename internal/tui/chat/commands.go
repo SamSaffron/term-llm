@@ -22,6 +22,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/mcp"
 	projectpkg "github.com/samsaffron/term-llm/internal/project"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
+	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/terminaltext"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -739,7 +740,7 @@ func (m *Model) showFooterMessageWithToneFor(content string, tone string, durati
 	}
 	m.footerMessageSeq++
 	seq := m.footerMessageSeq
-	return m, tea.Tick(duration, func(time.Time) tea.Msg {
+	return m, m.presentationTick(duration, func(time.Time) tea.Msg {
 		return footerMessageClearMsg{Seq: seq}
 	})
 }
@@ -1312,6 +1313,11 @@ func (m *Model) cmdQuit() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) cmdReload() (tea.Model, tea.Cmd) {
+	if m.reloadEnabled {
+		m.setTextareaValue("")
+		restart.Default.Request()
+		return m, nil
+	}
 	if m.branchContextInFlight() {
 		return m.showSystemMessage("Cannot reload while path notes are being created. Cancel first (Esc).")
 	}

@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/hub"
+	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/widgets"
 )
 
@@ -176,6 +177,9 @@ func (s *hubServer) handleReverseNodeProxy(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(resp.StatusCode)
 	bodyWriter := io.Writer(w)
 	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if hubResponseIsPassive(r.Method, resp.Header) {
+		restart.Passive(r.Context())
+	}
 	if strings.HasPrefix(contentType, "text/event-stream") || resp.Header.Get("Content-Length") == "" {
 		bodyWriter = &hubFlushingWriter{dst: w, controller: http.NewResponseController(w)}
 	}
@@ -350,6 +354,15 @@ func hubReadHTMLBodyForRebase(body io.ReadCloser) (data []byte, overLimit bool, 
 	return data, false, nil
 }
 
+// Response-run SSE is a subscription even when opened by POST. The node's
+// streamResponseRunEvents already detached it from the separately owned producer.
+// Other POST streams may still execute work and must retain their ownership.
+func hubResponseIsPassive(method string, header http.Header) bool {
+	return strings.HasPrefix(strings.ToLower(header.Get("Content-Type")), "text/event-stream") &&
+		(method == http.MethodGet ||
+			(header.Get("X-Response-ID") != "" && header.Get("X-Term-LLM-Response-Status") != ""))
+}
+
 // hubRebaseProxyResponse rewrites the node's baked-in base path onto the hub
 // mount (/node/<id>, or /<base-path>/node/<id> when mounted under a prefix)
 // for HTML documents, fixes redirect Location headers, and injects the
@@ -362,6 +375,9 @@ func hubReadHTMLBodyForRebase(body io.ReadCloser) (data []byte, overLimit bool, 
 // the injected hub context tells the browser how to rebase node-authored
 // /images/ and /files/ links found in those bodies.
 func hubRebaseProxyResponse(resp *http.Response) error {
+	if resp.Request != nil && hubResponseIsPassive(resp.Request.Method, resp.Header) {
+		restart.Passive(resp.Request.Context())
+	}
 	t := hubProxyTargetFrom(resp.Request.Context())
 	if t == nil {
 		return nil

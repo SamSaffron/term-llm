@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/sessiontitle"
 )
@@ -31,6 +32,11 @@ func (s *serveServer) scheduleAutoTitle(sessionID, providerKey string) {
 		return
 	}
 
+	workCtx, release, err := restart.Default.Root(context.Background())
+	if err != nil {
+		return
+	}
+	defer release()
 	s.autoTitleMu.Lock()
 	if s.autoTitleStopping {
 		s.autoTitleMu.Unlock()
@@ -61,7 +67,7 @@ func (s *serveServer) scheduleAutoTitle(sessionID, providerKey string) {
 	s.autoTitleWG.Add(1)
 	s.autoTitleMu.Unlock()
 
-	go func() {
+	_ = restart.Default.Go(workCtx, func(workCtx context.Context) {
 		defer s.autoTitleWG.Done()
 		defer func() {
 			s.autoTitleMu.Lock()
@@ -69,10 +75,12 @@ func (s *serveServer) scheduleAutoTitle(sessionID, providerKey string) {
 			s.autoTitleMu.Unlock()
 		}()
 
-		ctx, cancel := context.WithTimeout(baseCtx, serveAutoTitleTimeout)
+		ctx, cancel := context.WithTimeout(workCtx, serveAutoTitleTimeout)
+		stopCancel := context.AfterFunc(baseCtx, cancel)
+		defer stopCancel()
 		defer cancel()
 		s.runAutoTitle(ctx, sessionID, providerKey)
-	}()
+	})
 }
 
 func (s *serveServer) runAutoTitle(ctx context.Context, sessionID, providerKey string) {
