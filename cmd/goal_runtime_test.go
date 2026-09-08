@@ -154,12 +154,15 @@ func TestRunnerActiveGoalBudgetExhaustionPausesAfterWrapup(t *testing.T) {
 
 func TestRunnerActiveGoalCancelPausesGoal(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	store := newGoalTestStore(t)
 	goal := session.NewGoal("cancel me", 0, time.Now())
 	createGoalTestSession(t, store, "sess-goal-cancel", goal)
 
-	provider := llm.NewMockProvider("mock")
-	provider.AddTurn(llm.MockTurn{Text: "never", Delay: 200 * time.Millisecond})
+	// Wait until the provider is actually running, not an assumed 20 ms setup
+	// window. Cancellation during SQLite setup can discard its in-memory DB.
+	provider := newShutdownBlockingProvider()
+	close(provider.release) // Recv blocks only on cancellation, not extra cleanup.
 
 	runner := newCmdRunner(goalTestConfig(), cmdRunnerOptions{Store: store}).(*cmdRunner)
 	done := make(chan error, 1)
@@ -173,7 +176,15 @@ func TestRunnerActiveGoalCancelPausesGoal(t *testing.T) {
 		}, eventSinkFunc(nil))
 		done <- err
 	}()
-	time.Sleep(20 * time.Millisecond)
+	select {
+	case <-provider.started:
+	case err := <-done:
+		t.Fatalf("runner stopped before provider admission: %v", err)
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("provider did not start")
+	}
 	cancel()
 	<-done
 

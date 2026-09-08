@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 	"unicode/utf8"
 
@@ -2863,121 +2864,125 @@ func TestStreamReply_UncooperativeCleanupIsBounded(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			started := make(chan struct{})
-			release := make(chan struct{})
-			stopped := make(chan struct{})
-			released := false
-			defer func() {
-				if !released {
-					close(release)
-				}
-			}()
-
-			mgr := tc.newMgr(started, release, stopped)
-			mgr.interruptGracePeriod = time.Millisecond
-			mgr.fastProviderFactory = func() llm.Provider {
-				return llm.NewMockProvider("classifier").AddTextResponse("cancel")
-			}
-			sess, err := mgr.getOrCreate(context.Background(), 42)
-			if err != nil {
-				t.Fatalf("getOrCreate failed: %v", err)
-			}
-			bot := &fakeBotSender{}
-			replyResult := make(chan error, 1)
-			go func() {
-				replyResult <- mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("first request"))
-			}()
-
-			select {
-			case <-started:
-			case <-time.After(time.Second):
-				t.Fatal("first response did not start")
-			}
-
-			sess.cancelMu.Lock()
-			cancelStream := sess.streamCancel
-			replyDone := sess.replyDone
-			sess.cancelMu.Unlock()
-			if cancelStream == nil || replyDone == nil {
-				t.Fatal("active response did not publish cancellation state")
-			}
-			nextDone := make(chan struct{})
-			sendNext := func() {
-				mgr.handleMessage(context.Background(), bot, &tgbotapi.Message{
-					From: &tgbotapi.User{ID: 7, UserName: "sam"},
-					Chat: &tgbotapi.Chat{ID: 42},
-					Text: "next request",
-				})
-				close(nextDone)
-			}
-			if tc.incoming {
-				go sendNext()
-			} else if !tc.watchdog {
-				cancelStream()
-			}
-
-			start := time.Now()
-			select {
-			case err := <-replyResult:
-				if tc.watchdog {
-					if err == nil || !strings.Contains(err.Error(), "stream timed out") {
-						t.Fatalf("streamReply error = %v, want watchdog timeout", err)
+			// All channels and goroutines belong to this fake-clock bubble. Real
+			// scheduler delays cannot expire the watchdog or cleanup deadlines.
+			synctest.Test(t, func(t *testing.T) {
+				started := make(chan struct{})
+				release := make(chan struct{})
+				stopped := make(chan struct{})
+				released := false
+				defer func() {
+					if !released {
+						close(release)
 					}
-				} else if err != nil {
-					t.Fatalf("streamReply returned error after interrupt: %v", err)
+				}()
+
+				mgr := tc.newMgr(started, release, stopped)
+				mgr.interruptGracePeriod = time.Millisecond
+				mgr.fastProviderFactory = func() llm.Provider {
+					return llm.NewMockProvider("classifier").AddTextResponse("cancel")
 				}
-			case <-time.After(time.Second):
-				t.Fatal("streamReply remained blocked on uncooperative cleanup")
-			}
-			if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-				t.Fatalf("streamReply cleanup took %s, want bounded cleanup", elapsed)
-			}
-			if !sess.runtimeStale.Load() {
-				t.Fatal("uncooperative cleanup did not mark runtime stale")
-			}
-			select {
-			case <-replyDone:
-			default:
-				t.Fatal("replyDone was not closed after detached cleanup")
-			}
+				sess, err := mgr.getOrCreate(context.Background(), 42)
+				if err != nil {
+					t.Fatalf("getOrCreate failed: %v", err)
+				}
+				bot := &fakeBotSender{}
+				replyResult := make(chan error, 1)
+				go func() {
+					replyResult <- mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("first request"))
+				}()
 
-			lockAcquired := make(chan struct{})
-			go func() {
-				sess.mu.Lock()
-				sess.mu.Unlock()
-				close(lockAcquired)
-			}()
-			select {
-			case <-lockAcquired:
-			case <-time.After(time.Second):
-				t.Fatal("session mutex remained locked after detached cleanup")
-			}
+				select {
+				case <-started:
+				case <-time.After(time.Second):
+					t.Fatal("first response did not start")
+				}
 
-			if !tc.incoming {
-				go sendNext()
-			}
-			select {
-			case <-nextDone:
-			case <-time.After(time.Second):
-				t.Fatal("replacement session did not process the next message")
-			}
-			mgr.mu.Lock()
-			replacement := mgr.sessions[42]
-			mgr.mu.Unlock()
-			if replacement == sess {
-				t.Fatal("stale runtime was reused for the next message")
-			}
-			if got := bot.lastText(); got != "replacement answer" {
-				t.Fatalf("replacement response = %q, want replacement answer", got)
-			}
+				sess.cancelMu.Lock()
+				cancelStream := sess.streamCancel
+				replyDone := sess.replyDone
+				sess.cancelMu.Unlock()
+				if cancelStream == nil || replyDone == nil {
+					t.Fatal("active response did not publish cancellation state")
+				}
+				nextDone := make(chan struct{})
+				sendNext := func() {
+					mgr.handleMessage(context.Background(), bot, &tgbotapi.Message{
+						From: &tgbotapi.User{ID: 7, UserName: "sam"},
+						Chat: &tgbotapi.Chat{ID: 42},
+						Text: "next request",
+					})
+					close(nextDone)
+				}
+				if tc.incoming {
+					go sendNext()
+				} else if !tc.watchdog {
+					cancelStream()
+				}
 
-			close(release)
-			released = true
-			select {
-			case <-stopped:
-			case <-time.After(time.Second):
-				t.Fatal("detached cleanup did not finish after test release")
-			}
+				start := time.Now()
+				select {
+				case err := <-replyResult:
+					if tc.watchdog {
+						if err == nil || !strings.Contains(err.Error(), "stream timed out") {
+							t.Fatalf("streamReply error = %v, want watchdog timeout", err)
+						}
+					} else if err != nil {
+						t.Fatalf("streamReply returned error after interrupt: %v", err)
+					}
+				case <-time.After(time.Second):
+					t.Fatal("streamReply remained blocked on uncooperative cleanup")
+				}
+				if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+					t.Fatalf("streamReply cleanup took %s, want bounded cleanup", elapsed)
+				}
+				if !sess.runtimeStale.Load() {
+					t.Fatal("uncooperative cleanup did not mark runtime stale")
+				}
+				select {
+				case <-replyDone:
+				default:
+					t.Fatal("replyDone was not closed after detached cleanup")
+				}
+
+				lockAcquired := make(chan struct{})
+				go func() {
+					sess.mu.Lock()
+					sess.mu.Unlock()
+					close(lockAcquired)
+				}()
+				select {
+				case <-lockAcquired:
+				case <-time.After(time.Second):
+					t.Fatal("session mutex remained locked after detached cleanup")
+				}
+
+				if !tc.incoming {
+					go sendNext()
+				}
+				select {
+				case <-nextDone:
+				case <-time.After(time.Second):
+					t.Fatal("replacement session did not process the next message")
+				}
+				mgr.mu.Lock()
+				replacement := mgr.sessions[42]
+				mgr.mu.Unlock()
+				if replacement == sess {
+					t.Fatal("stale runtime was reused for the next message")
+				}
+				if got := bot.lastText(); got != "replacement answer" {
+					t.Fatalf("replacement response = %q, want replacement answer", got)
+				}
+
+				close(release)
+				released = true
+				select {
+				case <-stopped:
+				case <-time.After(time.Second):
+					t.Fatal("detached cleanup did not finish after test release")
+				}
+			})
 		})
 	}
 }

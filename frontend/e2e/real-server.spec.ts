@@ -1,4 +1,44 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test as base, type Page } from '@playwright/test';
+
+interface ResponseGate {
+  prompt: string;
+  waitStarted(): Promise<void>;
+  release(): Promise<void>;
+}
+
+const test = base.extend<{ responseGate: ResponseGate }>({
+  responseGate: async ({ request }, runTest) => {
+    const created = await request.post('__browser_fixture/response-gates');
+    expect(created.status()).toBe(201);
+    const { prompt } = (await created.json()) as { prompt: string };
+    const path = `__browser_fixture/response-gates/${encodeURIComponent(prompt)}`;
+    const release = async () => {
+      expect((await request.post(`${path}/release`)).status()).toBe(204);
+    };
+    try {
+      await runTest({
+        prompt,
+        waitStarted: async () => {
+          expect((await request.get(`${path}/started`)).status()).toBe(204);
+        },
+        release,
+      });
+    } finally {
+      // Also unblock the provider after a failed assertion. Releasing twice is safe.
+      await release();
+    }
+  },
+});
+
+async function reconcileRunningResponse(page: Page): Promise<void> {
+  // Exercise the authoritative refresh that used to be left to a two-second
+  // sleep. The provider remains blocked regardless of browser/runner speed.
+  const refreshed = page.waitForResponse((response) =>
+    new URL(response.url()).pathname.endsWith('/v1/sessions/status'),
+  );
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await (await refreshed).finished();
+}
 
 async function waitForSessionIdle(page: Page, sessionID: string): Promise<void> {
   await expect
@@ -380,30 +420,39 @@ test('a suspended same-context tab resumes through authoritative reconciliation'
   await second.close();
 });
 
-test('a newly sent plain HTTPS response keeps its owned stream', async ({ page }, testInfo) => {
+test('a newly sent plain HTTPS response keeps its owned stream', async ({
+  page,
+  responseGate,
+}, testInfo) => {
   test.skip(testInfo.project.name !== 'desktop', 'plain HTTPS admission race is covered once');
   test.setTimeout(30_000);
   await page.goto('./?new=1&no_webrtc=1');
-  await page.getByRole('textbox', { name: 'Message' }).fill('sleep 5 response transport probe');
+  await page.getByRole('textbox', { name: 'Message' }).fill(responseGate.prompt);
   await page.getByRole('button', { name: 'Send message' }).click();
+  await responseGate.waitStarted();
 
   await expect(page.locator('#stopBtn')).toBeVisible({ timeout: 5_000 });
   const unknown = page.getByRole('status', { name: 'Response status is unknown' });
   await expect(unknown).toBeHidden();
-  await page.waitForTimeout(2_000);
+  await reconcileRunningResponse(page);
   await expect(page.locator('#stopBtn')).toBeVisible();
   await expect(unknown).toBeHidden();
+  await responseGate.release();
   await expect(page.getByRole('heading', { name: 'Debug Provider Output' }).last()).toBeVisible({
     timeout: 15_000,
   });
 });
 
-test('reloading a running HTTPS session never presents it as idle', async ({ page }, testInfo) => {
+test('reloading a running HTTPS session never presents it as idle', async ({
+  page,
+  responseGate,
+}, testInfo) => {
   test.skip(testInfo.project.name !== 'desktop', 'running-session reload is covered once');
   test.setTimeout(30_000);
   await page.goto('./?new=1&no_webrtc=1');
-  await page.getByRole('textbox', { name: 'Message' }).fill('sleep 8 reload running response');
+  await page.getByRole('textbox', { name: 'Message' }).fill(responseGate.prompt);
   await page.getByRole('button', { name: 'Send message' }).click();
+  await responseGate.waitStarted();
   await expect(page.locator('#stopBtn')).toBeVisible({ timeout: 5_000 });
 
   await page.reload();
@@ -413,9 +462,10 @@ test('reloading a running HTTPS session never presents it as idle', async ({ pag
   await expect(page.getByRole('button', { name: 'Response is running' })).toBeEnabled();
   await expect(page.getByPlaceholder('Steer conversation…')).toBeVisible();
   await expect(unknown).toBeHidden();
-  await page.waitForTimeout(2_000);
+  await reconcileRunningResponse(page);
   await expect(page.locator('#stopBtn')).toBeVisible();
   await expect(unknown).toBeHidden();
+  await responseGate.release();
   await expect(page.getByRole('heading', { name: 'Debug Provider Output' }).last()).toBeVisible({
     timeout: 15_000,
   });
@@ -424,6 +474,7 @@ test('reloading a running HTTPS session never presents it as idle', async ({ pag
 test('a disconnected mobile response stream cannot keep claiming work is running', async ({
   context,
   page,
+  responseGate,
 }, testInfo) => {
   test.skip(testInfo.project.name !== 'mobile', 'mobile disconnect recovery is covered once');
   test.setTimeout(45_000);
@@ -439,8 +490,9 @@ test('a disconnected mobile response stream cannot keep claiming work is running
     };
   });
   await page.goto('./?new=1');
-  await page.getByRole('textbox', { name: 'Message' }).fill('sleep 5 response transport probe');
+  await page.getByRole('textbox', { name: 'Message' }).fill(responseGate.prompt);
   await page.getByRole('button', { name: 'Send message' }).click();
+  await responseGate.waitStarted();
   await expect(page.locator('#stopBtn')).toBeVisible();
   // Chat routes prefer a human-facing numeric slug; resolve it to the durable
   // session ID used by status and response APIs.
@@ -477,6 +529,8 @@ test('a disconnected mobile response stream cannot keep claiming work is running
   await expect(page.locator('#stopBtn')).toBeHidden({ timeout: 5_000 });
   await expect(page.getByRole('status', { name: 'Response status is unknown' })).toBeHidden();
 
+  // Finish on the server while the browser is still disconnected.
+  await responseGate.release();
   await expect
     .poll(
       async () => {

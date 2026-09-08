@@ -251,6 +251,9 @@ func (d *DebugProvider) Stream(ctx context.Context, req Request) (Stream, error)
 
 		// Parse prompt for tool command(s)
 		prompt := getLastUserPrompt(req.Messages)
+		if err := waitDebugBrowserFixture(ctx, prompt); err != nil {
+			return err
+		}
 
 		// Check for sleep prefix (e.g., "sleep 5 read README.md")
 		prompt = parseSleepPrefix(ctx, prompt)

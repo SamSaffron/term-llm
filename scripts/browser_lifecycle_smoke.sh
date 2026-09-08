@@ -50,6 +50,8 @@ cleanup() {
 trap cleanup EXIT
 
 cd "$root"
+# The gate implementation and its tests do not exist in production builds.
+go test -race -tags browserfixture ./internal/llm -run '^TestDebugBrowserGate$'
 npm --prefix frontend run build
 mkdir -p "$home/config/term-llm"
 cat >"$home/config/term-llm/config.yaml" <<'YAML'

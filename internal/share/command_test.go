@@ -24,9 +24,18 @@ func commandTestPublisher(t *testing.T, mode string, timeout time.Duration) *Com
 	if err != nil {
 		t.Fatal(err)
 	}
+	configureCommandTestHelper(t, mode)
+	return publisher
+}
+
+// Helper processes inherit this before their race runtime starts. Keep race
+// detection enabled, but do not charge its default one-second exit sleep against
+// the helper protocol's operation deadline. Preserve other caller race options.
+func configureCommandTestHelper(t *testing.T, mode string) {
+	t.Helper()
+	t.Setenv("GORACE", os.Getenv("GORACE")+" atexit_sleep_ms=0")
 	t.Setenv("TERM_LLM_SHARE_HELPER", "1")
 	t.Setenv("TERM_LLM_SHARE_HELPER_MODE", mode)
-	return publisher
 }
 
 func commandTestRequest() Request {
@@ -189,8 +198,7 @@ func TestCommandPublisherResolvesRelativePATHExecutableBeforeBundleCWD(t *testin
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", relativeBin)
-	t.Setenv("TERM_LLM_SHARE_HELPER", "1")
-	t.Setenv("TERM_LLM_SHARE_HELPER_MODE", "valid")
+	configureCommandTestHelper(t, "valid")
 	publisher, err := NewCommandPublisher([]string{filepath.Base(helper), "-test.run=^TestCommandHelperProcess$", "--", "prefix argument"}, time.Second)
 	if err != nil {
 		t.Fatal(err)

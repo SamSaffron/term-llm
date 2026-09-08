@@ -20,6 +20,27 @@ import (
 // production binary has no fixture endpoint or trigger surface.
 func init() {
 	registerServeBrowserFixtureRoutes = func(mux *http.ServeMux, server *serveServer) {
+		mux.HandleFunc("POST /__browser_fixture/response-gates", func(w http.ResponseWriter, r *http.Request) {
+			gate := llm.NewDebugBrowserGate()
+			writeJSON(w, http.StatusCreated, map[string]string{"prompt": gate.Prompt})
+		})
+		mux.HandleFunc("GET /__browser_fixture/response-gates/{prompt}/started", func(w http.ResponseWriter, r *http.Request) {
+			gate, ok := llm.LookupDebugBrowserGate(r.PathValue("prompt"))
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			if gate.WaitStarted(r.Context()) != nil {
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})
+		mux.HandleFunc("POST /__browser_fixture/response-gates/{prompt}/release", func(w http.ResponseWriter, r *http.Request) {
+			if gate, ok := llm.LookupDebugBrowserGate(r.PathValue("prompt")); ok {
+				gate.Release()
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})
 		mux.HandleFunc("/__browser_fixture/ask-user", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodPost {
 				w.Header().Set("Allow", http.MethodPost)
