@@ -296,3 +296,76 @@ func TestCmdRunnerPrepareUsesBorrowedEngineProvider(t *testing.T) {
 		t.Fatal("borrowed engine should preserve provider conversation state")
 	}
 }
+
+// cmdRunnerDiscoveryPlanner stands in for a connected MCP planner: its schema
+// is deliberately absent from the engine's static registry.
+type cmdRunnerDiscoveryPlanner struct {
+	llm.ToolSurfacePlanner
+}
+
+func (*cmdRunnerDiscoveryPlanner) BeginRun(_ context.Context, _ llm.Provider, req *llm.Request, _ string) (string, error) {
+	req.Tools = append(req.Tools, llm.ToolSpec{Name: "mcp_status", Description: "Read MCP status", Schema: map[string]any{"type": "object"}})
+	return "", nil
+}
+
+func (*cmdRunnerDiscoveryPlanner) PrepareTurn(context.Context, llm.Provider, *llm.Request, string, int, int) (string, error) {
+	return "", nil
+}
+
+func (*cmdRunnerDiscoveryPlanner) EndRun(string) {}
+
+func TestCmdRunnerBorrowedEngineDiscovery(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		configuredTools   bool
+		explicitDiscovery bool
+		wantTool          bool
+	}{
+		{name: "ask handoff", explicitDiscovery: true, wantTool: true},
+		{name: "auxiliary request stays tool free"},
+		{name: "configured MCP still enables discovery", configuredTools: true, wantTool: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model"}}}
+			provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+			engine := newEngine(provider, cfg)
+			engine.SetToolSurfacePlanner(&cmdRunnerDiscoveryPlanner{})
+			runner := newCmdRunner(cfg, cmdRunnerOptions{}).(*cmdRunner)
+			_, err := runner.Run(context.Background(), runpkg.Request{
+				Platform:               runpkg.PlatformConsole,
+				Messages:               []llm.Message{llm.UserText("check status")},
+				Engine:                 engine,
+				ProviderInstance:       provider,
+				Cwd:                    t.TempDir(),
+				DeferSession:           true,
+				MCP:                    "already-connected",
+				NoSearch:               true,
+				IncludeConfiguredTools: &tc.configuredTools,
+				EnableToolDiscovery:    tc.explicitDiscovery,
+			}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			requests := provider.RecordedRequests()
+			if len(requests) != 1 {
+				t.Fatalf("provider requests = %d, want 1", len(requests))
+			}
+			found := false
+			for _, tool := range requests[0].Tools {
+				found = found || tool.Name == "mcp_status"
+			}
+			if found != tc.wantTool {
+				t.Fatalf("MCP tool visible = %v, want %v; provider tools = %+v", found, tc.wantTool, requests[0].Tools)
+			}
+			if !tc.configuredTools {
+				wantCount := 0
+				if tc.wantTool {
+					wantCount = 1
+				}
+				if len(requests[0].Tools) != wantCount {
+					t.Fatalf("unexpected configured tools: %+v", requests[0].Tools)
+				}
+			}
+		})
+	}
+}

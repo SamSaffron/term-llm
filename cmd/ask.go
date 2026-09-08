@@ -863,6 +863,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		DisableExternalWebFetch:     askNoWebFetch,
 		ExtraTools:                  append([]llm.ToolSpec(nil), req.Tools...),
 		IncludeConfiguredTools:      &includeConfiguredTools,
+		EnableToolDiscovery:         req.EnableToolDiscovery,
 		OnAssistantSnapshot:         assistantSnapshotCallback,
 		OnResponseCompleted:         responseCompletedCallback,
 		OnTurnCompleted:             turnCompletedCallback,

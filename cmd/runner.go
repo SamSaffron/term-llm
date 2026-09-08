@@ -421,7 +421,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		Tools:                    toolSpecs,
 		ToolChoice:               toolChoice,
 		LastTurnToolChoice:       lastTurnToolChoice,
-		EnableToolDiscovery:      strings.TrimSpace(settings.MCP) != "",
+		EnableToolDiscovery:      req.EnableToolDiscovery || strings.TrimSpace(settings.MCP) != "",
 		ParallelToolCalls:        true,
 		Search:                   settings.Search,
 		ForceExternalSearch:      forceExternalSearch,

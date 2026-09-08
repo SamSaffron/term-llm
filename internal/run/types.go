@@ -104,6 +104,10 @@ type Request struct {
 	LastTurnForceToolName   string
 	IncludeConfiguredTools  *bool
 
+	// EnableToolDiscovery opts into an already-installed engine planner without
+	// loading configured tools or opening another MCP connection.
+	EnableToolDiscovery bool
+
 	OnAssistantSnapshot    llm.AssistantSnapshotCallback
 	OnResponseCompleted    llm.ResponseCompletedCallback
 	OnTurnCompleted        llm.TurnCompletedCallback
