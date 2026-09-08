@@ -12,9 +12,11 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/mcp"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/runboundary"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tooldiscovery"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -1358,4 +1360,43 @@ func TestBeginUserResponseKeepsRunClockSeparateFromGoalElapsed(t *testing.T) {
 
 func withinGoalSeedTolerance(got, want time.Duration) bool {
 	return got >= want-2*time.Second && got <= want+2*time.Second
+}
+
+func TestRunnerStreamPropagatesDiscoveryOptIn(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		name := "without planner"
+		if enabled {
+			name = "with planner"
+		}
+		t.Run(name, func(t *testing.T) {
+			m := newTestChatModel(false)
+			if enabled {
+				planner, err := tooldiscovery.NewPlanner(m.config.ToolDiscovery, mcp.NewManagerWithConfig(&mcp.Config{}), m.engine)
+				if err != nil {
+					t.Fatal(err)
+				}
+				m.discoveryPlanner = planner
+			}
+			runner := &capturingChatRunner{requests: make(chan runpkg.Request, 1)}
+			m.SetRunner(runner)
+			done := make(chan any, 1)
+			go func() { done <- m.startStream("check status")() }()
+			select {
+			case req := <-runner.requests:
+				if req.EnableToolDiscovery != enabled {
+					t.Errorf("EnableToolDiscovery = %v, want %v", req.EnableToolDiscovery, enabled)
+				}
+				if req.IncludeConfiguredTools == nil || *req.IncludeConfiguredTools {
+					t.Error("chat must not reload configured tools")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("runner did not receive request")
+			}
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("stream command did not finish")
+			}
+		})
+	}
 }

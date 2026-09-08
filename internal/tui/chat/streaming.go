@@ -979,6 +979,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 					DisableExternalWebFetch:   m.disableExternalWebFetch,
 					ExtraTools:                reqTools,
 					IncludeConfiguredTools:    &includeConfiguredTools,
+					EnableToolDiscovery:       req.EnableToolDiscovery,
 					ServiceTier:               serviceTier,
 					ServiceTierSet:            serviceTierSet,
 					OnAssistantSnapshot:       assistantSnapshotCB,
