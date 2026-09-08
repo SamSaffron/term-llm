@@ -36,8 +36,10 @@ test('crosses the real browser-to-Go capability and validation boundary', async 
             content: [
               {
                 type: 'input_image',
-                filename: 'unsafe.svg',
-                image_url: 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=',
+                // SVG uploads are valid generic files, even though models cannot
+                // consume them as images. Invalid base64 must still be rejected.
+                filename: 'malformed.svg',
+                image_url: 'data:image/svg+xml;base64,!!!!',
               },
             ],
           },
@@ -61,7 +63,7 @@ test('crosses the real browser-to-Go capability and validation boundary', async 
     long_poll: true,
   });
   expect(result.invalidStatus).toBe(400);
-  expect(JSON.stringify(result.invalidBody)).toContain('unsupported attachment type');
+  expect(JSON.stringify(result.invalidBody)).toContain('decode base64');
 });
 
 test('prepares a selected file in the browser and sends its typed part to Go', async ({
