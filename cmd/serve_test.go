@@ -5912,6 +5912,12 @@ func TestHandleFile_ServesFileAndRejectsTraversal(t *testing.T) {
 	if got := rr.Body.String(); got != indexHTML {
 		t.Fatalf("index.html body = %q, want %q", got, indexHTML)
 	}
+	if got := rr.Header().Get("Content-Security-Policy"); got != "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'" {
+		t.Fatalf("unsafe file CSP: %q", got)
+	}
+	if got := rr.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("file nosniff = %q", got)
+	}
 
 	// Nested index.html — same redirect trap.
 	req = httptest.NewRequest(http.MethodGet, "/files/qwen36-go-benchmark/index.html", nil)

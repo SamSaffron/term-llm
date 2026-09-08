@@ -566,6 +566,11 @@ func serveResolvedFile(w http.ResponseWriter, r *http.Request, absFile string) {
 		http.NotFound(w, r)
 		return
 	}
+	// Uploaded/generated HTML and SVG must not execute with the UI's origin.
+	// A response-local sandbox preserves inline previews without granting scripts,
+	// same-origin access, navigation, or network access to active documents.
+	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
 }
 

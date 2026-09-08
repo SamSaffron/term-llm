@@ -49,23 +49,15 @@ test('creates a Dracula workspace, manages extensions, and repairs a broken them
   const before = await readFile(configPath, 'utf8');
   expect(before).toContain('enabled: []');
   await writeFile(configPath, before.replace('enabled: []', 'enabled: [dracula, studio-clock]'));
-  const active = await api('activate', {});
+  // Arm the load wait before activation: the idle browser reloads asynchronously.
+  // Reading the old document while that happens can destroy an evaluate context.
+  const [, active] = await Promise.all([page.waitForEvent('load'), api('activate', {})]);
   expect(active.enabled).toEqual(['dracula', 'studio-clock']);
-  // No manual refresh: the activation request reloads this idle browser.
-  await expect
-    .poll(() =>
-      page.evaluate(() =>
-        getComputedStyle(document.documentElement).getPropertyValue('--bg').trim(),
-      ),
-    )
-    .toBe('#282a36');
+  // No manual refresh: verify the automatic reload applied both extensions.
+  await expect(page.locator('html')).toHaveCSS('--bg', '#282a36');
   await expect(page.locator('.studio-clock')).toHaveCount(1);
-  await expect
-    .poll(() => page.locator('#root').evaluate((root) => getComputedStyle(root).backgroundColor))
-    .toBe('rgb(40, 42, 54)');
-  await expect
-    .poll(() => page.locator('#root').evaluate((root) => getComputedStyle(root).color))
-    .toBe('rgb(248, 248, 242)');
+  await expect(page.locator('#root')).toHaveCSS('background-color', 'rgb(40, 42, 54)');
+  await expect(page.locator('#root')).toHaveCSS('color', 'rgb(248, 248, 242)');
   await page
     .getByRole('textbox', { name: 'Message' })
     .fill('My midnight workspace: calm colors, clear code, and a little room to think.');
@@ -134,7 +126,11 @@ test('creates a Dracula workspace, manages extensions, and repairs a broken them
   await recovery.getByRole('button', { name: 'Disable all', exact: true }).click();
   await recovery.getByRole('button', { name: 'Save configuration', exact: true }).click();
   await expect.poll(async () => (await api('status')).enabled).toEqual([]);
-  await recovery.getByRole('button', { name: 'Exit safe mode and reload' }).click();
+  await Promise.all([
+    recovery.waitForEvent('load'),
+    recovery.getByRole('button', { name: 'Exit safe mode and reload' }).click(),
+  ]);
+  await expect(recovery).not.toHaveURL(/safe-mode/);
   await expect(recovery.getByRole('textbox', { name: 'Message' })).toBeVisible();
   await expect(recovery.locator('.studio-clock')).toHaveCount(0);
   await writeFile(cssPath, original);
