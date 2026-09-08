@@ -1,7 +1,25 @@
 name: extension-builder
 description: "Make the web interface yours with CSS and JavaScript extensions"
-agents_md: "false"
-skills: "none"
+agents_md: "true"
+skills: "all"
 tools:
-  enabled: [ui_get_source, ui_extensions, ui_activate_extensions, read_file, write_file, edit_file, glob, grep, ask_user]
-max_turns: 100
+  enabled: [ui_get_source, ui_extensions, ui_activate_extensions, read_file, write_file, edit_file, glob, grep, ask_user, shell, show_media, view_image, image_generate, spawn_agent, update_plan]
+
+spawn:
+  allowed_agents:
+    - codebase
+    - web-researcher
+    - reviewer
+  agent_models:
+    codebase: fast
+  max_parallel: 3
+  max_depth: 1
+  timeout: 600
+
+shell:
+  allow:
+    - "pwd"
+    - "node --check *"
+
+search: true
+max_turns: 200

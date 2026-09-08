@@ -163,7 +163,7 @@ func TestBuiltinAgentConfigs(t *testing.T) {
 	}
 }
 
-func TestOnlyDeveloperBuiltinOptsIntoUpdatePlan(t *testing.T) {
+func TestBuiltinUpdatePlanOptIns(t *testing.T) {
 	entries, err := fs.ReadDir(builtinFS, "builtin")
 	if err != nil {
 		t.Fatal(err)
@@ -183,6 +183,10 @@ func TestOnlyDeveloperBuiltinOptsIntoUpdatePlan(t *testing.T) {
 			}
 			if strings.Contains(agent.SystemPrompt, "update_plan") {
 				t.Fatalf("developer prompt contains ungated update_plan guidance")
+			}
+		} else if entry.Name() == "extension-builder" {
+			if !hasPlan {
+				t.Fatalf("extension-builder update_plan opt-in missing")
 			}
 		} else if hasPlan || strings.Contains(agent.SystemPrompt, "update_plan") {
 			t.Fatalf("builtin %s unexpectedly opts into update_plan", entry.Name())
@@ -439,6 +443,93 @@ func TestDeveloperBuiltinCanSpawnDocumentedSubagents(t *testing.T) {
 	}
 	if !strings.Contains(agent.SystemPrompt, "Parallel `codebase` discovery is okay and encouraged") {
 		t.Errorf("developer prompt should encourage parallel codebase discovery")
+	}
+}
+
+func TestExtensionBuilderBuiltinContract(t *testing.T) {
+	agent, err := getBuiltinAgent("extension-builder")
+	if err != nil {
+		t.Fatalf("getBuiltinAgent(extension-builder): %v", err)
+	}
+	if err := agent.Validate(); err != nil {
+		t.Fatalf("Validate(): %v", err)
+	}
+	if agent.AgentsMd != "true" || agent.Skills != "all" || !agent.Search {
+		t.Errorf("want repository instructions, all skills and search; got AgentsMd=%q Skills=%q Search=%v", agent.AgentsMd, agent.Skills, agent.Search)
+	}
+	if agent.MaxTurns != 200 {
+		t.Errorf("MaxTurns = %d, want 200", agent.MaxTurns)
+	}
+	for _, tool := range []string{
+		"ui_get_source", "ui_extensions", "ui_activate_extensions",
+		"read_file", "write_file", "edit_file", "glob", "grep", "ask_user",
+		"shell", "show_media", "view_image", "image_generate", "spawn_agent", "update_plan",
+	} {
+		if !stringSliceContains(agent.Tools.Enabled, tool) {
+			t.Errorf("Tools.Enabled = %#v, missing %q", agent.Tools.Enabled, tool)
+		}
+	}
+	wantAllowed := []string{"codebase", "web-researcher", "reviewer"}
+	if len(agent.Spawn.AllowedAgents) != len(wantAllowed) {
+		t.Errorf("Spawn.AllowedAgents = %#v, want only %v", agent.Spawn.AllowedAgents, wantAllowed)
+	}
+	for _, name := range wantAllowed {
+		if !stringSliceContains(agent.Spawn.AllowedAgents, name) {
+			t.Errorf("Spawn.AllowedAgents missing %q", name)
+		}
+		if !strings.Contains(agent.SystemPrompt, "`"+name+"`") {
+			t.Errorf("prompt should document subagent %q", name)
+		}
+	}
+	if agent.Spawn.MaxParallel != 3 || agent.Spawn.MaxDepth != 1 || agent.Spawn.DefaultTimeout != 600 {
+		t.Errorf("unexpected spawn limits: %#v", agent.Spawn)
+	}
+	if agent.Spawn.AgentModels["codebase"] != "fast" {
+		t.Errorf("codebase model = %q, want fast", agent.Spawn.AgentModels["codebase"])
+	}
+	if agent.Shell.AutoRun {
+		t.Error("Shell.AutoRun = true, want false")
+	}
+	wantShell := []string{"pwd", "node --check *"}
+	if len(agent.Shell.Allow) != len(wantShell) {
+		t.Errorf("Shell.Allow = %#v, want only %v", agent.Shell.Allow, wantShell)
+	}
+	for _, command := range wantShell {
+		if !stringSliceContains(agent.Shell.Allow, command) {
+			t.Errorf("Shell.Allow missing %q", command)
+		}
+	}
+}
+
+func TestExtensionBuilderPromptGuidance(t *testing.T) {
+	agent, err := getBuiltinAgent("extension-builder")
+	if err != nil {
+		t.Fatalf("getBuiltinAgent(extension-builder): %v", err)
+	}
+
+	// Check key contracts and lessons without pinning entire paragraphs.
+	checks := []struct {
+		name string
+		want []string
+	}{
+		{"scope", []string{"builder_write_access", "builder_access_error", "Never edit the main config", "not shell authority", "application source/generated assets"}},
+		{"delegation", []string{"bounded, read-only tasks", "children do not inherit", "codebase/reviewer lack ui_get_source", "writes and activation in the parent"}},
+		{"bundle", []string{"format_version: 1", "browser-ready ES modules", "activate(ui)", "onSessionChanged(callback)", "insertComposerText(text)", "do not move Preact-owned nodes"}},
+		{"input", []string{"latest-wins timestamp", "No rendering, layout reads", "growing queues", "shortcut interception or focus changes"}},
+		{"layout", []string{"control-relative CSS anchoring", "overflow clipping", "stacking contexts", "old sizing/visibility heuristics", "before guessing again"}},
+		{"animation", []string{"respect reduced motion", "randomness at state transitions", "without duplicate listeners", "do not assume the host calls a returned cleanup function"}},
+		{"verification", []string{"user-confirmed fixes", "syntax checks/tests", "typing/paste/IME", "do not establish visual correctness", "what remains unverified"}},
+		{"activation", []string{"ui_activate_extensions", "drafts/attachments are clear", "safe-mode tabs never auto-activate", "CLI overrides remain authoritative", "?safe-mode=1", "--disable-extensions"}},
+		{"publishing", []string{"Git checkout outside the served bundle", "private reference uploads", "destination, visibility and license attribution", "actual results"}},
+	}
+	for _, check := range checks {
+		t.Run(check.name, func(t *testing.T) {
+			for _, want := range check.want {
+				if !strings.Contains(agent.SystemPrompt, want) {
+					t.Errorf("prompt missing %q", want)
+				}
+			}
+		})
 	}
 }
 
