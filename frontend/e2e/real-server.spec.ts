@@ -64,12 +64,15 @@ test('crosses the real browser-to-Go capability and validation boundary', async 
   expect(JSON.stringify(result.invalidBody)).toContain('unsupported attachment type');
 });
 
-test('prepares a selected file in the browser and sends its typed part to Go', async ({ page }) => {
+test('prepares a selected file in the browser and sends its typed part to Go', async ({
+  page,
+  isMobile,
+}) => {
   await page.goto('./');
-  const newChat = page.locator('#newChatBtn');
-  if (!(await newChat.isVisible()))
-    await page.getByRole('button', { name: 'Open sidebar' }).click();
-  await newChat.click();
+  // Choose the layout from the browser fixture, not a visibility snapshot taken
+  // before Preact may have mounted. Locator clicks wait for their controls.
+  if (isMobile) await page.getByRole('button', { name: 'Open sidebar' }).click();
+  await page.locator('#newChatBtn').click();
   await page.locator('#fileInput').setInputFiles({
     name: 'browser-fixture.txt',
     mimeType: 'text/plain',
