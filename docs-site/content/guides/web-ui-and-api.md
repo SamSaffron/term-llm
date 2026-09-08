@@ -409,6 +409,17 @@ If all enrolled passkeys become inaccessible, restart with a private
 Remove the recovery secret and restart without it when finished. Recovery does
 not silently disable authentication or delete existing credentials.
 
+## Run persistently on macOS or Linux
+
+```bash
+term-llm service install web
+```
+
+The native per-user installer defaults to passkeys and preserves existing account
+state. It supports custom bearer/Hub-connected launches, lifecycle commands, and
+both launchd and systemd. See [Background services](/guides/background-services/).
+Existing manually installed units are not overwritten automatically.
+
 ## Run as a systemd user service
 
 For a persistent Linux deployment, the repository includes a complete

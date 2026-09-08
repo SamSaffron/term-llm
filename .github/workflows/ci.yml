@@ -168,6 +168,13 @@ jobs:
         timeout-minutes: 5
         run: scripts/web_passkey_smoke.sh
 
+      - name: Isolated native service runner smoke
+        timeout-minutes: 5
+        run: |
+          mkdir -p tmp
+          go build -o tmp/service-smoke .
+          python3 scripts/service_smoke.py tmp/service-smoke
+
   frontend:
     runs-on: ubuntu-latest
     steps:

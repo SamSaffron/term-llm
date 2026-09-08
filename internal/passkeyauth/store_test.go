@@ -315,3 +315,35 @@ func FuzzStoreDecoding(f *testing.F) {
 		_, _ = OpenStore(StoreOptions{Path: path, RPID: "hub.example"})
 	})
 }
+
+func TestReadOnlyStoreDoesNotInitializeOrRewrite(t *testing.T) {
+	path := filepath.Join(privateTempDir(t), "auth.json")
+	if _, err := OpenStore(StoreOptions{Path: path, RPID: "localhost", ReadOnly: true}); err == nil {
+		t.Fatal("read-only opened missing store")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("read-only initialized store")
+	}
+	store, err := OpenStore(StoreOptions{Path: path, RPID: "localhost"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.CommitFirstCredential(testCredential(1), "primary"); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(path)
+	inspect, err := OpenStore(StoreOptions{Path: path, RPID: "localhost", ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspect.CredentialCount() != 1 {
+		t.Fatal("incorrect read-only count")
+	}
+	if _, err = inspect.AddCredential(testCredential(2), "other"); err == nil {
+		t.Fatal("read-only persisted a credential")
+	}
+	after, _ := os.ReadFile(path)
+	if string(before) != string(after) {
+		t.Fatal("read-only changed persistent state")
+	}
+}

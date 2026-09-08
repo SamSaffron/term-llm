@@ -34,8 +34,8 @@ func resolveWebPasskeyEndpoint(cmd *cobra.Command) (passkeyauth.Endpoint, error)
 	if serveToken != "" || os.Getenv("TERM_LLM_SERVE_TOKEN") != "" {
 		return passkeyauth.Endpoint{}, fmt.Errorf("--auth passkey does not accept --token or TERM_LLM_SERVE_TOKEN; use bearer mode for API clients")
 	}
-	if serveWebRTC || serveHubURL != "" || serveHubRegister || strings.EqualFold(strings.TrimSpace(serveHubConnect), "reverse") || len(serveCORSOrigins) > 0 {
-		return passkeyauth.Endpoint{}, fmt.Errorf("--auth passkey supports direct, same-origin Web access only; Hub, WebRTC and --cors-origin are not supported")
+	if err := validateWebPasskeyTransport(serveWebRTC, serveHubURL, serveHubRegister, serveHubConnect, serveCORSOrigins); err != nil {
+		return passkeyauth.Endpoint{}, err
 	}
 	publicURL := strings.TrimSpace(servePublicURL)
 	if publicURL == "" {
@@ -118,4 +118,12 @@ func printWebPasskeyStatus(cmd *cobra.Command, auth *browserPasskeyHandler, disp
 		}
 		fmt.Fprintln(out, "The setup code expires in 10 minutes and can create exactly one passkey.")
 	}
+}
+
+// Shared by foreground serve and the native-service launch validator.
+func validateWebPasskeyTransport(webRTC bool, hubURL string, register bool, connect string, cors []string) error {
+	if webRTC || hubURL != "" || register || strings.EqualFold(strings.TrimSpace(connect), "reverse") || len(cors) > 0 {
+		return fmt.Errorf("--auth passkey supports direct, same-origin Web access only; Hub, WebRTC and --cors-origin are not supported")
+	}
+	return nil
 }

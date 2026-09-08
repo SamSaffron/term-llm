@@ -56,6 +56,11 @@ term-llm chat
 term-llm serve web
 ```
 
+Want it running without a terminal? Use `term-llm service install web` (or `hub`).
+See [background services](https://term-llm.com/guides/background-services/) for
+macOS/Linux setup and custom authentication.
+
+
 If you already have a provider key:
 
 ```bash

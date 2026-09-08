@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -918,7 +920,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			fmt.Fprintf(cmd.ErrOrStderr(), "hub reverse: connecting %s to %s\n", reverseHubNodeID, reverseHubURL)
 		}
 
-		fmt.Fprintf(cmd.ErrOrStderr(), "term-llm serve listening on http://%s:%d\n", serveHost, servePort)
+		fmt.Fprintf(cmd.ErrOrStderr(), "term-llm serve listening on http://%s\n", net.JoinHostPort(serveHost, strconv.Itoa(servePort)))
 		if browserAuth == nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "auth: %s\n", authSummary(requireAuth))
 		}
@@ -927,9 +929,9 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			case tokenSourceGenerated:
 				fmt.Fprintf(cmd.ErrOrStderr(), "token: %s (auto-generated; export TERM_LLM_SERVE_TOKEN to persist)\n", token)
 			case tokenSourceEnv:
-				fmt.Fprintf(cmd.ErrOrStderr(), "token: %s (from $TERM_LLM_SERVE_TOKEN)\n", token)
+				fmt.Fprintln(cmd.ErrOrStderr(), "token: configured via $TERM_LLM_SERVE_TOKEN (redacted)")
 			default:
-				fmt.Fprintf(cmd.ErrOrStderr(), "token: %s\n", token)
+				fmt.Fprintln(cmd.ErrOrStderr(), "token: configured via --token (redacted)")
 			}
 		}
 		fmt.Fprintf(cmd.ErrOrStderr(), "ui: %v\n", s.cfg.ui)
@@ -1561,7 +1563,7 @@ func (s *serveServer) Start() (startErr error) {
 	s.mentionsByRoot = nil
 	s.mentionsCacheMu.Unlock()
 	s.server = &http.Server{
-		Addr:              fmt.Sprintf("%s:%d", s.cfg.host, s.cfg.port),
+		Addr:              net.JoinHostPort(s.cfg.host, strconv.Itoa(s.cfg.port)),
 		Handler:           s.httpHandler(),
 		ConnContext:       s.reloadTransport().ConnContext,
 		ConnState:         s.reloadTransport().ConnState,

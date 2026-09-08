@@ -22,6 +22,18 @@ bearer as an operator/admin credential: anyone holding it can add nodes and make
 the Hub connect to addresses reachable from the Hub host. Use `--auth none` only
 for loopback-only local development.
 
+## Run as a persistent user service
+
+```bash
+term-llm service install hub
+# Or, behind an independently configured HTTPS reverse proxy:
+term-llm service install hub -- --public-url https://hub.example.com/hub/
+```
+
+The managed Hub defaults to passkeys on loopback port 8090 at `/hub/`, and can
+coexist with a managed Web service. See [Background services](/guides/background-services/)
+for credentials, registration, launchd/systemd lifecycle, and deployment limits.
+
 ## Passkey authentication
 
 Bearer authentication remains the default for compatibility. Public human-facing

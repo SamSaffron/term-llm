@@ -35,6 +35,8 @@ type storeFile struct {
 }
 
 type StoreOptions struct {
+	// ReadOnly refuses to initialize a missing store, for service status checks.
+	ReadOnly  bool
 	Path      string
 	RPID      string
 	UserName  string
@@ -45,6 +47,7 @@ type StoreOptions struct {
 }
 
 type Store struct {
+	readOnly             bool
 	mu                   sync.Mutex
 	path, rpID, userName string
 	now                  func() time.Time
@@ -78,7 +81,7 @@ func OpenStore(opts StoreOptions) (*Store, error) {
 		opts.WriteFile = config.WriteFileAtomicallyNoFollow
 	}
 	opts.UserName = userName
-	s := &Store{path: opts.Path, rpID: opts.RPID, userName: opts.UserName, now: opts.Now, random: opts.Random, warnf: opts.Warnf, writeFile: opts.WriteFile}
+	s := &Store{readOnly: opts.ReadOnly, path: opts.Path, rpID: opts.RPID, userName: opts.UserName, now: opts.Now, random: opts.Random, warnf: opts.Warnf, writeFile: opts.WriteFile}
 	if err := s.open(); err != nil {
 		return nil, err
 	}
@@ -88,7 +91,7 @@ func OpenStore(opts StoreOptions) (*Store, error) {
 func (s *Store) open() error {
 	info, err := os.Lstat(s.path)
 	if err != nil {
-		if !os.IsNotExist(err) {
+		if !os.IsNotExist(err) || s.readOnly {
 			return fmt.Errorf("inspect passkey auth store: %w", err)
 		}
 		id, err := randomToken(s.random, 32)
@@ -212,6 +215,9 @@ func validateProtocolCredential(credential webauthn.Credential) error {
 }
 
 func (s *Store) writeLocked() error {
+	if s.readOnly {
+		return fmt.Errorf("passkey store is read-only")
+	}
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return fmt.Errorf("create passkey auth directory: %w", err)
 	}
