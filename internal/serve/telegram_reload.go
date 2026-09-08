@@ -19,6 +19,7 @@ type telegramReloadChat struct {
 	ChatID           int64
 	Meta             *session.Session
 	History          []llm.Message
+	ActiveHistory    []llm.Message
 	PromptPersisted  bool
 	CarryoverContext string
 	CarryoverLabel   string
@@ -95,7 +96,7 @@ func (m *telegramSessionMgr) runPolling(ctx context.Context, bot *tgbotapi.BotAP
 			sess.activityMu.Lock()
 			lastActivity := sess.lastActivity
 			sess.activityMu.Unlock()
-			saved.Chats = append(saved.Chats, telegramReloadChat{ChatID: id, Meta: sess.meta, History: sess.history, PromptPersisted: sess.systemPromptPersisted, CarryoverContext: sess.carryoverContext, CarryoverLabel: sess.carryoverContextLabel, CarryoverCount: sess.carryoverMessageCount, LastActivity: lastActivity})
+			saved.Chats = append(saved.Chats, telegramReloadChat{ChatID: id, Meta: sess.meta, History: sess.history, ActiveHistory: sess.activeHistory, PromptPersisted: sess.systemPromptPersisted, CarryoverContext: sess.carryoverContext, CarryoverLabel: sess.carryoverContextLabel, CarryoverCount: sess.carryoverMessageCount, LastActivity: lastActivity})
 			sess.mu.Unlock()
 		}
 		return process.SaveState(kind, saved)

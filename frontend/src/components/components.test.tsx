@@ -3602,7 +3602,14 @@ describe('Preact-owned chat surfaces', () => {
     store.draftActive.value = true;
     store.prompt.value = 'Keep my unsent message';
     store.modal.value = 'approvals';
-    store.endpoints.approvalPolicy = vi.fn();
+    store.endpoints.approvalPolicy = vi.fn(async () => ({
+      default_mode: 'prompt' as const,
+      requested_mode: 'prompt' as const,
+      effective_mode: 'prompt' as const,
+      guardian_available: true,
+      guardian_auto_suspended: false,
+      controls_available: true,
+    }));
     store.endpoints.createBlankSession = vi.fn(async () => ({
       session: {
         id: 'prepared',
@@ -3631,6 +3638,7 @@ describe('Preact-owned chat surfaces', () => {
     expect(store.endpoints.approvalPolicy).not.toHaveBeenCalled();
     await userEvent.click(auto);
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(store.endpoints.approvalPolicy).toHaveBeenCalledWith('prepared'));
     await waitFor(() =>
       expect(store.endpoints.setApprovalMode).toHaveBeenCalledWith('prepared', 'auto'),
     );
@@ -3646,6 +3654,14 @@ describe('Preact-owned chat surfaces', () => {
     store.draftActive.value = true;
     store.modal.value = 'approvals';
     store.ensureSession = vi.fn(async () => '');
+    store.endpoints.approvalPolicy = vi.fn(async () => ({
+      default_mode: 'prompt' as const,
+      requested_mode: 'prompt' as const,
+      effective_mode: 'prompt' as const,
+      guardian_available: true,
+      guardian_auto_suspended: false,
+      controls_available: true,
+    }));
     store.endpoints.setApprovalMode = vi.fn(async () => {
       throw new Error('Guardian auto-approval is unavailable');
     });
@@ -3668,6 +3684,41 @@ describe('Preact-owned chat surfaces', () => {
     expect(store.modal.value).toBe('approvals');
     expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
   });
+
+  it.each([false, true])(
+    'disables approval changes without managed tools (draft=%s)',
+    async (draft) => {
+      const store = createStore();
+      if (draft) {
+        store.draftActive.value = true;
+        store.ensureSession = vi.fn(async () => 'prepared');
+      }
+      store.modal.value = 'approvals';
+      store.endpoints.approvalPolicy = vi.fn(async () => ({
+        default_mode: 'auto' as const,
+        requested_mode: 'auto' as const,
+        effective_mode: 'auto' as const,
+        guardian_available: false,
+        guardian_auto_suspended: false,
+        controls_available: false,
+      }));
+      store.endpoints.setApprovalMode = vi.fn();
+      render(
+        <StoreContext.Provider value={store}>
+          <Modals />
+        </StoreContext.Provider>,
+      );
+
+      if (draft) await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+      expect(
+        await screen.findByText(/This conversation has no tools that require approval/),
+      ).toBeVisible();
+      for (const option of screen.getAllByRole('radio')) expect(option).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+      expect(screen.queryByText(/Guardian is unavailable/)).not.toBeInTheDocument();
+      expect(store.endpoints.setApprovalMode).not.toHaveBeenCalled();
+    },
+  );
 
   it('hides and rejects approval controls when the server launched in Yolo', async () => {
     const store = createStore();

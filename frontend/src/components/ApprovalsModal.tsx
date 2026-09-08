@@ -28,7 +28,8 @@ export function ApprovalsModal() {
       : session?.approvalRequestedMode || store.config.approvalMode || 'prompt';
   const [mode, setMode] = useState(reportedMode);
   const [saving, setSaving] = useState(false);
-  const [loading, setLoading] = useState(Boolean(sessionId) && !session?.approvalRequestedMode);
+  const [loading, setLoading] = useState(Boolean(sessionId));
+  const [controlsAvailable, setControlsAvailable] = useState<boolean | null>(null);
   const [error, setError] = useState('');
   const dirty = useRef(false);
   const submitting = useRef(false);
@@ -40,12 +41,16 @@ export function ApprovalsModal() {
     }
     let live = true;
     dirty.current = false;
+    setControlsAvailable(null);
     setError('');
     setLoading(true);
     void store.endpoints
       .approvalPolicy(sessionId)
       .then((value) => {
-        if (live) applyPolicy(store, sessionId, value);
+        if (live) {
+          applyPolicy(store, sessionId, value);
+          setControlsAvailable(value.controls_available !== false);
+        }
       })
       .catch((value: unknown) => {
         if (live) setError(errorMessage(value));
@@ -61,6 +66,10 @@ export function ApprovalsModal() {
     if (!dirty.current) setMode(reportedMode);
   }, [reportedMode]);
   useEffect(() => {
+    if (!loading && controlsAvailable !== false && !dirty.current) {
+      modeInputs.current[mode]?.focus({ preventScroll: true });
+      return;
+    }
     const focused = document.activeElement;
     if (
       focused instanceof HTMLInputElement &&
@@ -68,18 +77,27 @@ export function ApprovalsModal() {
       focused.value !== mode
     )
       modeInputs.current[mode]?.focus({ preventScroll: true });
-  }, [mode]);
+  }, [mode, controlsAvailable, loading]);
   const save = async () => {
     if (submitting.current) return;
     submitting.current = true;
     setSaving(true);
     setError('');
     try {
+      if (controlsAvailable === false) return;
       const targetSessionId = sessionId || (await store.ensureSession());
       if (!targetSessionId)
         throw new Error('Could not prepare approval settings. Please try again.');
+      if (!sessionId && controlsAvailable == null) {
+        const policy = await store.endpoints.approvalPolicy(targetSessionId);
+        applyPolicy(store, targetSessionId, policy);
+        const available = policy.controls_available !== false;
+        setControlsAvailable(available);
+        if (!available) return;
+      }
       const value = await store.endpoints.setApprovalMode(targetSessionId, mode);
       applyPolicy(store, targetSessionId, value);
+      setControlsAvailable(value.controls_available !== false);
       store.modal.value = '';
     } catch (value) {
       setError(errorMessage(value));
@@ -118,15 +136,24 @@ export function ApprovalsModal() {
                 value={value}
                 checked={mode === value}
                 autoFocus={
-                  mode === value && !(value === 'auto' && session?.guardianAvailable === false)
+                  mode === value &&
+                  controlsAvailable !== false &&
+                  !(value === 'auto' && session?.guardianAvailable === false)
                 }
                 aria-describedby={
-                  value === 'auto' && session?.guardianAvailable === false
-                    ? 'approvalGuardianUnavailable'
-                    : undefined
+                  controlsAvailable === false
+                    ? 'approvalControlsUnavailable'
+                    : controlsAvailable === true &&
+                        value === 'auto' &&
+                        session?.guardianAvailable === false
+                      ? 'approvalGuardianUnavailable'
+                      : undefined
                 }
                 disabled={
-                  loading || saving || (value === 'auto' && session?.guardianAvailable === false)
+                  loading ||
+                  saving ||
+                  controlsAvailable === false ||
+                  (value === 'auto' && session?.guardianAvailable === false)
                 }
                 onChange={() => {
                   dirty.current = true;
@@ -140,12 +167,18 @@ export function ApprovalsModal() {
             </label>
           ))}
         </div>
-        {session?.guardianAutoSuspended && (
+        {controlsAvailable === true && session?.guardianAutoSuspended && (
           <div class="approval-mode-notice" role="status">
             Guardian auto-approval is paused. Select Auto and save to resume it.
           </div>
         )}
-        {session?.guardianAvailable === false && (
+        {controlsAvailable === false && (
+          <div id="approvalControlsUnavailable" class="approval-mode-notice" role="status">
+            This conversation has no tools that require approval. Choose a tool-enabled agent to
+            configure approval behavior.
+          </div>
+        )}
+        {controlsAvailable === true && session?.guardianAvailable === false && (
           <div id="approvalGuardianUnavailable" class="approval-mode-notice" role="status">
             Guardian is unavailable for this runtime, so Auto cannot be selected.
           </div>
@@ -164,7 +197,11 @@ export function ApprovalsModal() {
           >
             Cancel
           </button>
-          <button class="btn primary" type="submit" disabled={loading || saving}>
+          <button
+            class="btn primary"
+            type="submit"
+            disabled={loading || saving || controlsAvailable === false}
+          >
             {loading
               ? 'Loading…'
               : saving

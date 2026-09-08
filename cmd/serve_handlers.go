@@ -1993,15 +1993,10 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 	}
 
 	requestedSessionID := parts[0]
-	sessionID := requestedSessionID
-	// If the path segment is purely numeric, resolve via session number.
-	if num, err := strconv.ParseInt(sessionID, 10, 64); err == nil && num > 0 && s.store != nil {
-		sess, err := s.store.GetByNumber(r.Context(), num)
-		if err != nil || sess == nil {
-			http.NotFound(w, r)
-			return
-		}
-		sessionID = sess.ID
+	sessionID, resolveErr := s.resolveSessionPathID(r.Context(), requestedSessionID)
+	if resolveErr != nil {
+		http.NotFound(w, r)
+		return
 	}
 	suffix := ""
 	if len(parts) > 1 {

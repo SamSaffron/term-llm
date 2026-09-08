@@ -6,6 +6,40 @@ import { testConfig, testSession } from './store-test-fixtures';
 beforeEach(() => localStorage.clear());
 
 describe('SessionStore', () => {
+  it('routes legacy session requests by number while preserving their saved identity', async () => {
+    const fetcher = vi.fn(async () => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetcher);
+    const store = new AppStore({ ...testConfig, prefix: '/node/jarvis' });
+    try {
+      const id = 'chat/session';
+      const legacy = store.sessionStore.sessionFrom({ id, number: 16 });
+      expect(legacy.id).toBe(id);
+      await store.endpoints.sessionState(id);
+      await store.endpoints.compact(id);
+      await store.endpoints.sideQuestionState(id);
+      await store.endpoints.createSessionShare(id, { scope: 'conversation' });
+      expect(fetcher.mock.calls.map((call) => (call as unknown as [string])[0])).toEqual([
+        '/node/jarvis/v1/sessions/16/state',
+        '/node/jarvis/v1/sessions/16/runtime/compact',
+        '/node/jarvis/api/sessions/16/side-question',
+        '/node/jarvis/v1/sessions/16/shares',
+      ]);
+      const [, shareInit] = fetcher.mock.calls[3] as unknown as [string, RequestInit];
+      expect((shareInit.headers as Headers).get('X-Term-LLM-Session-ID')).toBe(id);
+      expect(store.api.url('/node/jarvis/v1/sessions/chat%2Fsession/skills?path=a%2Fb')).toBe(
+        '/node/jarvis/v1/sessions/16/skills?path=a%2Fb',
+      );
+      expect(store.api.url('https://other.test/v1/sessions/chat%2Fsession/state')).toBe(
+        'https://other.test/v1/sessions/chat%2Fsession/state',
+      );
+      expect(store.api.url('/v1/projects/chat%2Fsession/worktrees')).toBe(
+        '/node/jarvis/v1/projects/chat%2Fsession/worktrees',
+      );
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('merges attention watermarks monotonically without clearing a newer marker', () => {
     const store = new AppStore(testConfig);
     try {

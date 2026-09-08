@@ -18,6 +18,7 @@ func runtimeApprovalPolicy(rt *serveRuntime) map[string]any {
 		"default_mode":            tools.ModePrompt.String(),
 		"requested_mode":          tools.ModePrompt.String(),
 		"effective_mode":          tools.ModePrompt.String(),
+		"controls_available":      false,
 		"guardian_available":      false,
 		"guardian_auto_suspended": false,
 	}
@@ -31,6 +32,7 @@ func runtimeApprovalPolicy(rt *serveRuntime) map[string]any {
 		return policy
 	}
 	mgr := rt.toolMgr.ApprovalMgr
+	policy["controls_available"] = true
 	policy["requested_mode"] = mgr.RequestedApprovalMode().String()
 	policy["effective_mode"] = mgr.ApprovalMode().String()
 	policy["guardian_available"] = mgr.GuardianReviewerAvailable()

@@ -195,16 +195,37 @@ export interface UploadControls {
 }
 
 export class APIClient {
+  private readonly sessionRoutes = new Map<string, string>();
+
   constructor(
     readonly config: AppConfig,
     private hooks: TransportHooks,
   ) {}
 
+  // Preserve saved identities in headers/bodies, but use the existing numeric
+  // route for legacy IDs that cannot safely occupy a URL path segment.
+  registerSession<T extends { id: string; number?: number }>(session: T): T {
+    const { id, number = 0 } = session;
+    if (/[/\\]|^\.\.?$|\p{Cc}/u.test(id) && Number.isSafeInteger(number) && number > 0) {
+      this.sessionRoutes.set(encodeURIComponent(id), String(number));
+    }
+    return session;
+  }
+
   url(path: string): string {
     if (/^https?:\/\//.test(path)) return path;
     const prefix = this.config.prefix.replace(/\/+$/, '');
-    if (path === prefix || path.startsWith(`${prefix}/`)) return path;
-    return `${prefix}${path.startsWith('/') ? path : `/${path}`}`;
+    if (path === prefix) return path;
+    const relative = path.startsWith(`${prefix}/`) ? path.slice(prefix.length) : path;
+    const rooted = relative.startsWith('/') ? relative : `/${relative}`;
+    const routed = rooted.replace(
+      /^(\/(?:v1|api)\/sessions\/)([^/?#]+)/,
+      (match, base: string, id: string) => {
+        const number = this.sessionRoutes.get(id);
+        return number ? base + number : match;
+      },
+    );
+    return `${prefix}${routed}`;
   }
 
   async request(

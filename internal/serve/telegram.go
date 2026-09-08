@@ -609,7 +609,8 @@ type telegramSession struct {
 	mu                    sync.Mutex
 	activityMu            sync.Mutex // protects lastActivity without blocking behind an active stream
 	runtime               *SessionRuntime
-	history               []llm.Message
+	history               []llm.Message // full transcript for persistence/reconciliation
+	activeHistory         []llm.Message // non-nil after compaction; provider context only
 	systemPromptPersisted bool
 	runtimeStale          atomic.Bool // a detached runner may still own runtime; reset before reuse
 	cleanupOnce           sync.Once
@@ -713,6 +714,7 @@ func (m *telegramSessionMgr) getOrCreate(ctx context.Context, chatID int64) (*te
 	if restoring {
 		created.meta = saved.Meta
 		created.history = saved.History
+		created.activeHistory = saved.ActiveHistory
 		created.systemPromptPersisted = saved.PromptPersisted
 		created.carryoverContext = saved.CarryoverContext
 		created.carryoverContextLabel = saved.CarryoverLabel
@@ -1706,9 +1708,13 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 	// Extract text from the user message for persistence and display.
 	userText := collectUserText(userMsg)
 
-	// Build full message list: system + history + new user turn.
-	messages := make([]llm.Message, 0, len(sess.history)+3)
-	historyHasSystem := containsSystemMsg(sess.history)
+	// Build provider context independently of the durable transcript.
+	history := sess.history
+	if sess.activeHistory != nil {
+		history = sess.activeHistory
+	}
+	messages := make([]llm.Message, 0, len(history)+3)
+	historyHasSystem := containsSystemMsg(history)
 	if m.settings.SystemPrompt != "" && !historyHasSystem {
 		messages = append(messages, llm.SystemText(m.settings.SystemPrompt))
 	}
@@ -1725,7 +1731,7 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 	if devText := m.settings.PlatformMessages.For("telegram"); devText != "" {
 		messages = append(messages, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: devText}}})
 	}
-	messages = append(messages, sess.history...)
+	messages = append(messages, history...)
 	messages = append(messages, userMsg)
 	if resume != nil {
 		messages = resume.Engine.Request.Messages
@@ -1812,6 +1818,37 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 		turnMetrics                llm.TurnMetrics
 		turnCount                  int
 	)
+	// Keep all produced messages for the transcript, but only append messages
+	// produced after the latest compaction to the replacement provider context.
+	var activeHistory []llm.Message
+	activeProducedStart := 0
+	if sess.activeHistory != nil {
+		activeHistory = append([]llm.Message{}, sess.activeHistory...)
+		if resume == nil {
+			activeHistory = append(activeHistory, normalizeUserMessageForHistory(userMsg))
+		}
+	}
+	compactionCB := func(_ context.Context, result *llm.CompactionResult) error {
+		if result == nil {
+			return nil
+		}
+		producedMu.Lock()
+		defer producedMu.Unlock()
+		activeHistory = append([]llm.Message{}, result.NewMessages...)
+		activeProducedStart = len(produced)
+		return nil
+	}
+	updateActiveHistory := func(fallback string) {
+		producedMu.Lock()
+		defer producedMu.Unlock()
+		if activeHistory == nil {
+			return
+		}
+		sess.activeHistory = append(append([]llm.Message{}, activeHistory...), produced[activeProducedStart:]...)
+		if fallback != "" {
+			sess.activeHistory = append(sess.activeHistory, llm.AssistantText(fallback))
+		}
+	}
 	if resume != nil {
 		turnMetrics = resume.Metrics
 		turnCount = resume.Turns
@@ -1884,6 +1921,8 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 		defer sess.runtime.Engine.SetResponseCompletedCallback(nil)
 		sess.runtime.Engine.SetTurnCompletedCallback(turnCompletedCB)
 		defer sess.runtime.Engine.SetTurnCompletedCallback(nil)
+		sess.runtime.Engine.SetCompactionCallback(compactionCB)
+		defer sess.runtime.Engine.SetCompactionCallback(nil)
 	}
 
 	streamDone := make(chan error, 1)
@@ -1968,6 +2007,7 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 				ForceExternalSearch:       &forceExternalSearch,
 				OnResponseCompleted:       responseCompletedCB,
 				OnTurnCompleted:           turnCompletedCB,
+				OnCompaction:              compactionCB,
 				OnEngineReady: func(engine *llm.Engine) {
 					sess.cancelMu.Lock()
 					if sess.streamToken == streamToken {
@@ -2424,6 +2464,7 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 		queueDrained := drainCallbackStoreQueue()
 		queueDegraded := callbackStoreQueue != nil && callbackStoreQueue.isDegraded()
 		if partial == "" && len(producedSnapshot) == 0 && !turnPersistenceDegraded && !queueDegraded {
+			updateActiveHistory("")
 			return
 		}
 
@@ -2449,6 +2490,11 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 				newHistory = append(newHistory, assistantMsg)
 			}
 		}
+		activeFallback := ""
+		if !assistantTextCaptured {
+			activeFallback = partial
+		}
+		updateActiveHistory(activeFallback)
 		sess.history = newHistory
 		sess.activityMu.Lock()
 		sess.lastActivity = time.Now()
@@ -2569,6 +2615,18 @@ loop:
 			return fmt.Errorf("Telegram continuation cleanup did not settle")
 		}
 		history := suspended.Continuation.Request.Messages
+		updateActiveHistory("")
+		if sess.activeHistory != nil {
+			// The continuation is provider context, not the full transcript.
+			// Preserve pre-compaction messages when checkpointing for reload.
+			history = append([]llm.Message{}, sess.history...)
+			if resume == nil {
+				history = append(history, normalizeUserMessageForHistory(userMsg))
+			}
+			producedMu.Lock()
+			history = append(history, produced...)
+			producedMu.Unlock()
+		}
 		if m.store != nil && sess.meta != nil {
 			if !m.reconcileTelegramTranscript(context.WithoutCancel(ctx), sess, history, true, "ReplaceMessages(reload_boundary)") {
 				return fmt.Errorf("persist Telegram continuation boundary")
@@ -2814,6 +2872,11 @@ loop:
 		}
 		newHistory = append(newHistory, llm.AssistantText(full))
 	}
+	activeFallback := ""
+	if len(produced) == 0 {
+		activeFallback = full
+	}
+	updateActiveHistory(activeFallback)
 	sess.history = newHistory
 	sess.activityMu.Lock()
 	sess.lastActivity = time.Now()

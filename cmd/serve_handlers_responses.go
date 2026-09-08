@@ -262,6 +262,11 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	// previous_response_id continues a conversation; no previous response means a
 	// fresh conversation, even if a session_id header is reused for persistence.
 	headerSessionID := resolveRequestSessionID(r)
+	if err := s.validateRequestSessionID(ctx, headerSessionID); err != nil {
+		status, errorType, message := sessionIDErrorResponse(err)
+		writeOpenAIError(w, status, errorType, message)
+		return
+	}
 	draftID := strings.TrimSpace(r.Header.Get(requestDraftIDHeader))
 	if draftID != "" && (!isFirstPartyUIResponseRequest(r) || headerSessionID != "" || req.PreviousResponseID != "" || !validResponseDraftID(draftID)) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "draft id is only valid for a first-party new conversation")

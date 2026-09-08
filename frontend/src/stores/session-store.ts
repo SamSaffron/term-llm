@@ -231,7 +231,7 @@ export class SessionStore {
   }
 
   sessionFrom(value: Record<string, unknown>): Session {
-    return sanitizeSessionFrom(this.services.config, value);
+    return this.services.api.registerSession(sanitizeSessionFrom(this.services.config, value));
   }
 
   mergeSession(

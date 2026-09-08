@@ -30,7 +30,7 @@ func TestHandleSessionApprovalModeReportsAndChangesRuntimePolicy(t *testing.T) {
 
 	get := httptest.NewRecorder()
 	server.handleSessionByID(get, httptest.NewRequest(http.MethodGet, "/v1/sessions/approval-session/runtime/approvals", nil))
-	if get.Code != http.StatusOK || !strings.Contains(get.Body.String(), `"default_mode":"auto"`) || !strings.Contains(get.Body.String(), `"effective_mode":"auto"`) {
+	if get.Code != http.StatusOK || !strings.Contains(get.Body.String(), `"default_mode":"auto"`) || !strings.Contains(get.Body.String(), `"effective_mode":"auto"`) || !strings.Contains(get.Body.String(), `"controls_available":true`) {
 		t.Fatalf("GET status/body = %d %s", get.Code, get.Body.String())
 	}
 
@@ -40,6 +40,19 @@ func TestHandleSessionApprovalModeReportsAndChangesRuntimePolicy(t *testing.T) {
 	server.handleSessionByID(post, request)
 	if post.Code != http.StatusOK || approval.ApprovalMode() != tools.ModeYolo || !strings.Contains(post.Body.String(), `"requested_mode":"yolo"`) {
 		t.Fatalf("POST status/body/mode = %d %s %s", post.Code, post.Body.String(), approval.ApprovalMode())
+	}
+}
+
+func TestHandleSessionApprovalModeReportsUnavailableWithoutManagedTools(t *testing.T) {
+	manager := newServeSessionManager(time.Minute, 10, nil)
+	defer manager.Close()
+	putTestSession(manager, "tool-less-session", &serveRuntime{})
+	server := &serveServer{sessionMgr: manager}
+
+	response := httptest.NewRecorder()
+	server.handleSessionByID(response, httptest.NewRequest(http.MethodGet, "/v1/sessions/tool-less-session/runtime/approvals", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"controls_available":false`) {
+		t.Fatalf("GET status/body = %d %s", response.Code, response.Body.String())
 	}
 }
 

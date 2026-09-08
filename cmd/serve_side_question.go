@@ -544,8 +544,8 @@ func (s *serveServer) handleSideQuestion(w http.ResponseWriter, r *http.Request)
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "not found")
 		return
 	}
-	sessionID := strings.TrimSpace(parts[0])
-	if sessionID == "" || s.sessionMgr == nil {
+	sessionID, err := s.resolveSessionPathID(r.Context(), strings.TrimSpace(parts[0]))
+	if err != nil || sessionID == "" || s.sessionMgr == nil {
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
 		return
 	}
