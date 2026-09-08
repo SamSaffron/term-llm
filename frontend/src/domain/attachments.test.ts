@@ -4,7 +4,7 @@ import { DEFAULT_ATTACHMENT_POLICY, attachmentAccept, validateAttachmentFile } f
 const file = (name: string, type: string, size: number) => ({ name, type, size }) as File;
 
 describe('attachment selection policy', () => {
-  it('rejects empty, oversized, unsupported, and excess files at selection', () => {
+  it('rejects empty, oversized, and excess files at selection', () => {
     expect(
       validateAttachmentFile(file('empty.txt', 'text/plain', 0), 0, DEFAULT_ATTACHMENT_POLICY)
         ?.code,
@@ -16,9 +16,6 @@ describe('attachment selection policy', () => {
         DEFAULT_ATTACHMENT_POLICY,
       )?.code,
     ).toBe('too_large');
-    expect(validateAttachmentFile(file('bad.exe', '', 1), 0, DEFAULT_ATTACHMENT_POLICY)?.code).toBe(
-      'unsupported',
-    );
     expect(
       validateAttachmentFile(
         file('ok.txt', 'text/plain', 1),
@@ -32,6 +29,15 @@ describe('attachment selection policy', () => {
     expect(
       validateAttachmentFile(file('source.go', '', 10), 0, DEFAULT_ATTACHMENT_POLICY),
     ).toBeNull();
-    expect(attachmentAccept(DEFAULT_ATTACHMENT_POLICY)).toContain('.go');
+    expect(attachmentAccept(DEFAULT_ATTACHMENT_POLICY)).toBe('');
   });
+});
+
+it.each([
+  ['archive.zip', 'application/zip'],
+  ['unknown.weird', 'application/x-unknown'],
+  ['binary', ''],
+  ['icon.svg', 'image/svg+xml'],
+])('accepts arbitrary upload %s', (name, type) => {
+  expect(validateAttachmentFile(file(name, type, 123), 0, DEFAULT_ATTACHMENT_POLICY)).toBeNull();
 });

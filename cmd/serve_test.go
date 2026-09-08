@@ -1563,9 +1563,9 @@ func TestParseResponsesInput_FileUploadSavesToDisk(t *testing.T) {
 	if perm := info.Mode().Perm(); perm&0o077 != 0 {
 		t.Fatalf("file permissions = %o, want no group/other access", perm)
 	}
-	// Verify prompt fallback does not leak the upload storage path.
-	if strings.Contains(msg.Parts[0].Text, dataHome) || strings.Contains(msg.Parts[0].Text, entries[0].Name()) {
-		t.Fatalf("parts[0].text leaks upload path: %q", msg.Parts[0].Text)
+	// Non-native fallback must expose a usable saved path to tools.
+	if !strings.Contains(msg.Parts[0].Text, msg.Parts[0].FilePath) {
+		t.Fatalf("parts[0].text missing upload path: %q", msg.Parts[0].Text)
 	}
 }
 
@@ -1604,20 +1604,6 @@ func TestParseResponsesInput_TextFileUploadEmbedsFallback(t *testing.T) {
 	}
 }
 
-func TestParseResponsesInput_UnsupportedImageIsRejected(t *testing.T) {
-	// image/svg+xml is not a supported LLM image type and must fail at the
-	// protocol boundary instead of silently changing into a saved-file prompt.
-	b64 := "PHN2Zz48L3N2Zz4=" // base64 of "<svg></svg>"
-	payload := json.RawMessage(`[
-		{"type":"message","role":"user","content":[
-			{"type":"input_image","image_url":"data:image/svg+xml;base64,` + b64 + `","filename":"icon.svg"}
-		]}
-	]`)
-	_, _, err := parseResponsesInput(payload)
-	if err == nil || !strings.Contains(err.Error(), `unsupported attachment type "image/svg+xml"`) {
-		t.Fatalf("parseResponsesInput error = %v, want unsupported attachment type", err)
-	}
-}
 func TestParseResponsesInput_InvalidBase64ReturnsError(t *testing.T) {
 
 	payload := json.RawMessage(`[

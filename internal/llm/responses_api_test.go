@@ -3029,3 +3029,28 @@ func TestResponsesClient_OnAuthRetry_UsesJSONErrorMessageAfterReauth(t *testing.
 		t.Fatalf("unexpected re-authentication error:\n got: %q\nwant: %q", err.Error(), want)
 	}
 }
+
+func TestBuildResponsesInput_FileFallbackIncludesPathAndMetadata(t *testing.T) {
+	for _, mediaType := range []string{"application/zip", "application/x-unknown", "application/pdf"} {
+		t.Run(mediaType, func(t *testing.T) {
+			policy := DefaultPortableTextFileUploadPolicy()
+			part := Part{Type: PartFile, Text: "legacy fallback without a path", FilePath: "/tmp/uploads/user-file", FileData: &ToolFileData{Filename: "user-file", MediaType: mediaType, Base64: "AP8BgA==", SizeBytes: 4}}
+			input := BuildResponsesInputWithFilePolicy([]Message{{Role: RoleUser, Parts: []Part{part}}}, &policy)
+			if len(input) != 1 {
+				t.Fatalf("input = %#v", input)
+			}
+			text, ok := input[0].Content.(string)
+			if !ok {
+				t.Fatalf("unsupported native payload: %#v", input)
+			}
+			for _, want := range []string{"user-file", mediaType, "4 bytes", part.FilePath, "Contents are not included"} {
+				if !strings.Contains(text, want) {
+					t.Fatalf("text %q missing %q", text, want)
+				}
+			}
+			if strings.Contains(text, part.FileData.Base64) {
+				t.Fatalf("binary embedded: %q", text)
+			}
+		})
+	}
+}

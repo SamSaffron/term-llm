@@ -393,8 +393,8 @@ func (s *serveServer) handleCapabilities(w http.ResponseWriter, r *http.Request)
 		"attachments": map[string]any{
 			"max_count":  maxAttachments,
 			"max_bytes":  maxAttachmentBytes,
-			"mime_types": attachmentMediaTypes(),
-			"extensions": attachmentExtensions(),
+			"mime_types": []string{"*/*"},
+			"extensions": []string{},
 		},
 	}
 	if attention, ok := session.AsAttentionStore(s.store); ok {

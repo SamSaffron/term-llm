@@ -153,3 +153,17 @@ func ExtractEmbeddedFileNames(content string) []string {
 	}
 	return names
 }
+
+// FormatUploadedFileNotice describes an upload without embedding its contents.
+// The local path lets tools inspect files the model cannot consume natively.
+func FormatUploadedFileNotice(filename, mediaType, localPath string, sizeBytes int64) string {
+	mediaType = NormalizeMediaType(mediaType)
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
+	}
+	notice := fmt.Sprintf("[User uploaded file: %q (MIME type: %q, size: %d bytes). Contents are not included in model context.", EmbeddedFileDisplayName(filename), mediaType, sizeBytes)
+	if localPath != "" {
+		notice += fmt.Sprintf(" Saved local path: %q. Use available file or shell tools to inspect it.", localPath)
+	}
+	return notice + "]\n\n"
+}

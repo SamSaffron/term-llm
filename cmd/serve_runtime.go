@@ -692,6 +692,10 @@ func steeringFingerprint(msg llm.Message, displayText string, delivery interrupt
 	for i := range parts {
 		// Parsing inline attachments can materialize them at a fresh temporary path
 		// on each transport retry. The content fields are the stable identity.
+		if file := parts[i].FileData; parts[i].Type == llm.PartFile && file != nil &&
+			parts[i].Text == llm.FormatUploadedFileNotice(file.Filename, file.MediaType, parts[i].FilePath, file.SizeBytes) {
+			parts[i].Text = llm.FormatUploadedFileNotice(file.Filename, file.MediaType, "", file.SizeBytes)
+		}
 		parts[i].ImagePath = ""
 		parts[i].FilePath = ""
 	}

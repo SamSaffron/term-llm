@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import * as draftBlobs from '../platform/draft-blobs';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readDrafts, saveDraft } from '../platform/storage';
 import { AppStore } from './app-store';
 import { testConfig, testSession } from './store-test-fixtures';
@@ -87,4 +88,45 @@ describe('ComposerStore', () => {
       store.dispose();
     }
   });
+});
+
+it.each([
+  ['archive.zip', 'application/zip', 'input_file'],
+  ['unknown.weird', 'application/octet-stream', 'input_file'],
+  ['icon.svg', 'image/svg+xml', 'input_file'],
+  ['scan.tiff', 'image/tiff', 'input_file'],
+  ['photo.png', 'image/png', 'input_image'],
+])('serializes %s with the appropriate content type', async (name, type, expected) => {
+  const store = new AppStore(testConfig);
+  try {
+    const dataURL = `data:${type};base64,AAH/`;
+    const input = await store.composer.attachmentInput({ name, type, dataURL, status: 'ready' });
+    expect(input.type).toBe(expected);
+    expect(input[expected === 'input_image' ? 'image_url' : 'file_data']).toBe(dataURL);
+    expect(input.filename).toBe(name);
+    expect(store.composer.attachmentAccept.value).toBe('');
+  } finally {
+    store.dispose();
+  }
+});
+
+it.each([
+  ['archive.zip', 'application/zip'],
+  ['unknown.weird', ''],
+  ['scan.tiff', 'image/tiff'],
+])('prepares arbitrary %s bytes without trying to decode an image', async (name, type) => {
+  vi.spyOn(draftBlobs, 'blobChecksum').mockResolvedValue('test-checksum');
+  const store = new AppStore(testConfig);
+  try {
+    store.composer.addAttachments([new File([new Uint8Array([0, 255, 1, 128])], name, { type })]);
+    await vi.waitFor(() => expect(store.composer.attachments.value[0]?.status).toBe('ready'));
+    const attachment = store.composer.attachments.value[0]!;
+    expect(attachment.previewURL).toBeFalsy();
+    expect(attachment.size).toBe(4);
+    const input = await store.composer.attachmentInput(attachment);
+    expect(input.type).toBe('input_file');
+    expect(String(input.file_data)).toMatch(/;base64,AP8BgA==$/);
+  } finally {
+    store.dispose();
+  }
 });

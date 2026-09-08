@@ -16,7 +16,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -132,47 +131,6 @@ const (
 	maxAttachmentBytes = 20 << 20 // 20 MB per file (decoded)
 )
 
-var supportedAttachmentExtensions = map[string]struct{}{
-	".jpg": {}, ".jpeg": {}, ".png": {}, ".gif": {}, ".webp": {}, ".pdf": {},
-	".txt": {}, ".md": {}, ".markdown": {}, ".json": {}, ".csv": {}, ".yaml": {},
-	".yml": {}, ".xml": {}, ".go": {}, ".js": {}, ".jsx": {}, ".ts": {}, ".tsx": {},
-	".py": {}, ".rb": {}, ".rs": {}, ".java": {}, ".c": {}, ".h": {}, ".cpp": {},
-	".hpp": {}, ".mp3": {}, ".wav": {}, ".ogg": {}, ".mp4": {}, ".webm": {},
-}
-
-var supportedAttachmentMediaTypes = map[string]struct{}{
-	"image/jpeg": {}, "image/png": {}, "image/gif": {}, "image/webp": {},
-	"application/pdf": {}, "text/plain": {}, "text/markdown": {}, "application/json": {},
-	"text/csv": {}, "audio/mpeg": {}, "audio/wav": {}, "audio/ogg": {},
-	"video/mp4": {}, "video/webm": {},
-}
-
-func attachmentMediaTypes() []string {
-	values := make([]string, 0, len(supportedAttachmentMediaTypes))
-	for value := range supportedAttachmentMediaTypes {
-		values = append(values, value)
-	}
-	sort.Strings(values)
-	return values
-}
-
-func attachmentExtensions() []string {
-	values := make([]string, 0, len(supportedAttachmentExtensions))
-	for value := range supportedAttachmentExtensions {
-		values = append(values, value)
-	}
-	sort.Strings(values)
-	return values
-}
-
-func supportedAttachment(filename, mediaType string) bool {
-	if _, ok := supportedAttachmentExtensions[strings.ToLower(filepath.Ext(filename))]; ok {
-		return true
-	}
-	_, ok := supportedAttachmentMediaTypes[llm.NormalizeMediaType(mediaType)]
-	return ok
-}
-
 func stripBase64Newlines(b64Data string) string {
 	if !strings.ContainsAny(b64Data, "\r\n") {
 		return b64Data
@@ -213,17 +171,6 @@ func decodeUploadedFile(filename, b64Data string) ([]byte, error) {
 		return nil, fmt.Errorf("decode base64: %w", err)
 	}
 	return raw[:n], nil
-}
-
-// saveUploadedFile decodes base64 data and writes it to the uploads directory,
-// returning the full filesystem path. The final filename includes a random suffix
-// created atomically by os.CreateTemp.
-func saveUploadedFile(filename, b64Data string) (string, error) {
-	raw, err := decodeUploadedFile(filename, b64Data)
-	if err != nil {
-		return "", err
-	}
-	return saveUploadedBytes(filename, raw)
 }
 
 func uploadFilenameForMediaType(prefix, mediaType string) string {
@@ -316,14 +263,17 @@ func normalizeUploadMediaType(filename, mediaType string, raw []byte) string {
 	if mediaType == "application/octet-stream" && isTextUploadExtension(filename) && !bytes.Contains(raw, []byte{0}) && utf8.Valid(raw) {
 		mediaType = "text/plain"
 	}
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
+	}
 	return mediaType
 }
 
-func uploadFallbackText(filename, mediaType string, raw []byte) string {
+func uploadFallbackText(filename, mediaType, path string, raw []byte) string {
 	if text, ok := textUploadContent(filename, mediaType, raw); ok {
 		return llm.FormatEmbeddedFileText(filename, mediaType, text)
 	}
-	return fmt.Sprintf("[User uploaded file: %s — saved locally]\n\n", llm.EmbeddedFileDisplayName(filename))
+	return llm.FormatUploadedFileNotice(filename, mediaType, path, int64(len(raw)))
 }
 
 func textUploadContent(filename, mediaType string, raw []byte) (string, bool) {
@@ -670,23 +620,15 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 						ImagePath: path,
 					})
 				} else {
-					if !supportedAttachment(filename, mt) {
-						return llm.Message{}, fmt.Errorf("unsupported attachment type %q for %q", mt, filename)
-					}
 					fileCount++
 					if fileCount > maxAttachments {
 						return llm.Message{}, fmt.Errorf("too many attachments (max %d)", maxAttachments)
 					}
-					if filename == "" {
-						filename = "image"
+					filePart, err := parseUploadedFilePart(filename, mt, b64)
+					if err != nil {
+						return llm.Message{}, err
 					}
-					if _, err := saveUploadedFile(filename, b64); err != nil {
-						return llm.Message{}, fmt.Errorf("save attachment %q: %w", filename, err)
-					}
-					llmParts = append(llmParts, llm.Part{
-						Type: llm.PartText,
-						Text: fmt.Sprintf("[User uploaded file: %s — saved locally]\n\n", llm.EmbeddedFileDisplayName(filename)),
-					})
+					llmParts = append(llmParts, filePart)
 				}
 			case "input_file":
 				fileData := jsonString(part["file_data"])
@@ -707,30 +649,11 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 				if fileCount > maxAttachments {
 					return llm.Message{}, fmt.Errorf("too many attachments (max %d)", maxAttachments)
 				}
-				cleanB64 := stripBase64Newlines(b64)
-				raw, err := decodeUploadedFile(displayFilename, cleanB64)
+				filePart, err := parseUploadedFilePart(displayFilename, mt, b64)
 				if err != nil {
-					return llm.Message{}, fmt.Errorf("decode attachment %q: %w", displayFilename, err)
+					return llm.Message{}, err
 				}
-				mt = normalizeUploadMediaType(displayFilename, mt, raw)
-				if !supportedAttachment(displayFilename, mt) {
-					return llm.Message{}, fmt.Errorf("unsupported attachment type %q for %q", mt, displayFilename)
-				}
-				path, err := saveUploadedBytes(displayFilename, raw)
-				if err != nil {
-					return llm.Message{}, fmt.Errorf("save attachment %q: %w", displayFilename, err)
-				}
-				llmParts = append(llmParts, llm.Part{
-					Type: llm.PartFile,
-					Text: uploadFallbackText(displayFilename, mt, raw),
-					FileData: &llm.ToolFileData{
-						MediaType: mt,
-						Base64:    cleanB64,
-						Filename:  displayFilename,
-						SizeBytes: int64(len(raw)),
-					},
-					FilePath: path,
-				})
+				llmParts = append(llmParts, filePart)
 			}
 		}
 		if len(llmParts) > 0 {
@@ -935,4 +858,26 @@ func randomSuffix() string {
 		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return base64.RawURLEncoding.EncodeToString(buf)
+}
+
+// parseUploadedFilePart stores any file independently of provider comprehension.
+// Providers decide whether FileData can travel natively; Text is the safe fallback.
+func parseUploadedFilePart(filename, mediaType, b64 string) (llm.Part, error) {
+	filename = llm.EmbeddedFileDisplayName(filename)
+	b64 = stripBase64Newlines(b64)
+	raw, err := decodeUploadedFile(filename, b64)
+	if err != nil {
+		return llm.Part{}, fmt.Errorf("decode attachment %q: %w", filename, err)
+	}
+	mediaType = normalizeUploadMediaType(filename, mediaType, raw)
+	path, err := saveUploadedBytes(filename, raw)
+	if err != nil {
+		return llm.Part{}, fmt.Errorf("save attachment %q: %w", filename, err)
+	}
+	return llm.Part{
+		Type:     llm.PartFile,
+		Text:     uploadFallbackText(filename, mediaType, path, raw),
+		FileData: &llm.ToolFileData{MediaType: mediaType, Base64: b64, Filename: filename, SizeBytes: int64(len(raw))},
+		FilePath: path,
+	}, nil
 }
