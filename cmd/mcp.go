@@ -56,11 +56,16 @@ Examples:
 }
 
 var mcpAddCmd = &cobra.Command{
-	Use:   "add <name-or-url>",
-	Short: "Add an MCP server from the registry or URL",
-	Long: `Add an MCP server by searching the registry or connecting to a URL.
+	Use:   "add <name-or-url> | add <name> -- <command> [args...]",
+	Short: "Add an MCP server from the registry, URL, or local command",
+	Long: `Add an MCP server by searching the registry, connecting to a URL,
+or registering a local stdio command.
 
-The argument can be:
+For a local command, supply a configuration name followed by -- and the
+executable and its arguments. Arguments are stored as provided, without shell
+interpretation. The command is not started until the server is used.
+
+The registry or URL argument can be:
   - A URL like https://example.com/mcp (HTTP transport)
   - A package name like @playwright/mcp
   - A search term like playwright
@@ -68,8 +73,10 @@ The argument can be:
 Examples:
   term-llm mcp add https://developers.openai.com/mcp
   term-llm mcp add @playwright/mcp
-  term-llm mcp add playwright`,
-	Args: cobra.ExactArgs(1),
+  term-llm mcp add playwright
+  term-llm mcp add my-server -- /path/to/binary mcp
+  term-llm mcp add my-server -- "/path with spaces/binary" mcp --port 1234`,
+	Args: validateMCPAddArgs,
 	RunE: mcpAdd,
 }
 
@@ -304,8 +311,24 @@ func mcpBrowse(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func validateMCPAddArgs(cmd *cobra.Command, args []string) error {
+	if cmd.ArgsLenAtDash() < 0 {
+		return cobra.ExactArgs(1)(cmd, args)
+	}
+	if cmd.ArgsLenAtDash() != 1 || len(args) < 2 {
+		return fmt.Errorf("local command requires: mcp add <name> -- <command> [args...]")
+	}
+	if strings.TrimSpace(args[0]) == "" || strings.TrimSpace(args[1]) == "" {
+		return fmt.Errorf("server name and command must not be empty")
+	}
+	return nil
+}
+
 func mcpAdd(cmd *cobra.Command, args []string) error {
 	name := args[0]
+	if cmd.ArgsLenAtDash() == 1 {
+		return mcpAddCommand(cmd, name, args[1:])
+	}
 
 	// Check if it's a URL
 	if strings.HasPrefix(name, "http://") || strings.HasPrefix(name, "https://") {
@@ -314,6 +337,29 @@ func mcpAdd(cmd *cobra.Command, args []string) error {
 
 	// Otherwise, search the registry
 	return mcpAddFromRegistry(name)
+}
+
+// mcpAddCommand registers a stdio server without executing the command.
+func mcpAddCommand(cmd *cobra.Command, name string, command []string) error {
+	cfg, err := mcp.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	if _, exists := cfg.Servers[name]; exists {
+		return fmt.Errorf("server '%s' already exists in config", name)
+	}
+	cfg.AddServer(name, mcp.ServerConfig{
+		Command: command[0],
+		Args:    command[1:],
+	})
+	if err := cfg.Save(); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+	path, _ := mcp.DefaultConfigPath()
+	cmd.Printf("Added '%s' to %s\n", name, path)
+	cmd.Printf("Try it with: term-llm mcp info %s\n", name)
+	cmd.Printf("Use with: term-llm [ask|exec|edit|chat] --mcp %s ...\n", name)
+	return nil
 }
 
 // mcpAddURL adds an MCP server from a URL (HTTP transport).

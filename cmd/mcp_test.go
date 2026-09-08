@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -223,5 +224,112 @@ func TestFormatSchemaParams(t *testing.T) {
 				t.Errorf("formatSchemaParams() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func newMCPAddTestCommand() *cobra.Command {
+	cmd := &cobra.Command{Use: mcpAddCmd.Use, Args: mcpAddCmd.Args, RunE: mcpAddCmd.RunE}
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	return cmd
+}
+
+func TestMCPAddCommand(t *testing.T) {
+	for _, command := range [][]string{
+		{"/path/to/binary", "mcp"},
+		{"binary"},
+		{"/path with spaces/binary", "mcp", "--port", "1234", "--help", "--", "", "a b", "$HOME", "a;b"},
+	} {
+		t.Run(strings.Join(command, " "), func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			cmd := newMCPAddTestCommand()
+			cmd.SetArgs(append([]string{"local", "--"}, command...))
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := mcp.LoadConfig()
+			if err != nil {
+				t.Fatal(err)
+			}
+			server, ok := cfg.Servers["local"]
+			if !ok || server.Command != command[0] || server.TransportType() != "stdio" {
+				t.Fatalf("saved server = %+v", server)
+			}
+			if !slices.Equal(server.Args, command[1:]) {
+				t.Fatalf("saved args = %q, want %q", server.Args, command[1:])
+			}
+		})
+	}
+}
+
+func TestMCPAddArgs(t *testing.T) {
+	for _, tt := range []struct {
+		args  []string
+		valid bool
+	}{
+		{[]string{"playwright"}, true},
+		{[]string{"@playwright/mcp"}, true},
+		{[]string{"https://example.com/mcp"}, true},
+		{[]string{"local", "--", "binary", "mcp"}, true},
+		{nil, false},
+		{[]string{"local", "binary", "mcp"}, false},
+		{[]string{"local", "--"}, false},
+		{[]string{"--", "binary", "mcp"}, false},
+		{[]string{"local", "extra", "--", "binary"}, false},
+		{[]string{"", "--", "binary"}, false},
+		{[]string{"local", "--", " "}, false},
+	} {
+		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
+			cmd := newMCPAddTestCommand()
+			// Exercise Cobra parsing and validation without registry/network access.
+			cmd.RunE = func(*cobra.Command, []string) error { return nil }
+			cmd.SetArgs(tt.args)
+			err := cmd.Execute()
+			if (err == nil) != tt.valid {
+				t.Fatalf("error = %v, valid = %v", err, tt.valid)
+			}
+		})
+	}
+}
+
+func TestMCPAddCommandPreservesConfig(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	cfg := &mcp.Config{Servers: map[string]mcp.ServerConfig{
+		"existing": {Command: "original", Args: []string{"mcp"}},
+	}}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	path, err := mcp.DefaultConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := newMCPAddTestCommand()
+	cmd.SetArgs([]string{"existing", "--", "replacement"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("duplicate error = %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("duplicate registration changed config")
+	}
+	cmd = newMCPAddTestCommand()
+	cmd.SetArgs([]string{"new", "--", "another"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := mcp.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Servers) != 2 || loaded.Servers["existing"].Command != "original" || !slices.Equal(loaded.Servers["existing"].Args, []string{"mcp"}) {
+		t.Fatalf("existing server not preserved: %+v", loaded.Servers)
 	}
 }
