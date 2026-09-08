@@ -463,3 +463,107 @@ func marshalInlineImageParts(t *testing.T, count int) json.RawMessage {
 	}
 	return content
 }
+
+func TestArbitraryUploadsPreserveFallbackAndReplay(t *testing.T) {
+	for _, tc := range []struct {
+		name, mime, kind string
+		raw              []byte
+	}{
+		{"archive.zip", "application/zip", "input_file", []byte{'P', 'K', 3, 4, 0, 255}},
+		{"unknown.weird", "application/x-unknown", "input_file", []byte{0, 255, 1, 128}},
+		{"binary", "", "input_file", []byte{0, 255, 1, 128}},
+		{"icon.svg", "image/svg+xml", "input_image", []byte("<svg></svg>")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("XDG_DATA_HOME", t.TempDir())
+			key := "file_data"
+			if tc.kind == "input_image" {
+				key = "image_url"
+			}
+			content, _ := json.Marshal([]map[string]string{{"type": tc.kind, "filename": "../../" + tc.name, key: "data:" + tc.mime + ";base64," + base64.StdEncoding.EncodeToString(tc.raw)}})
+			msg, err := parseUserMessageContent(content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			part := msg.Parts[0]
+			if part.Type != llm.PartFile || part.FileData == nil || part.FileData.Filename != tc.name || part.FileData.SizeBytes != int64(len(tc.raw)) {
+				t.Fatalf("part = %+v", part)
+			}
+			if !pathWithinDir(part.FilePath, serveUploadsDir()) {
+				t.Fatalf("unsafe path: %s", part.FilePath)
+			}
+			raw, err := os.ReadFile(part.FilePath)
+			if err != nil || !bytes.Equal(raw, tc.raw) {
+				t.Fatalf("saved bytes = %v, err = %v", raw, err)
+			}
+			info, _ := os.Stat(part.FilePath)
+			if info.Mode().Perm() != 0600 {
+				t.Fatalf("permissions = %o", info.Mode().Perm())
+			}
+			for _, text := range []string{tc.name, part.FilePath, part.FileData.MediaType, fmt.Sprintf("%d bytes", len(tc.raw)), "Contents are not included"} {
+				if !strings.Contains(part.Text, text) {
+					t.Fatalf("fallback %q missing %q", part.Text, text)
+				}
+			}
+			if strings.Contains(part.Text, string(tc.raw)) {
+				t.Fatalf("raw contents embedded: %q", part.Text)
+			}
+			stored := session.NewMessage("upload-test", msg, 0)
+			encoded, err := stored.PartsJSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var replay session.Message
+			if err := replay.SetPartsFromJSON(encoded); err != nil {
+				t.Fatal(err)
+			}
+			if replay.Parts[0].Text != part.Text || replay.Parts[0].FilePath != part.FilePath || replay.Parts[0].FileData.Base64 != part.FileData.Base64 {
+				t.Fatal("lost file on replay")
+			}
+			for _, policy := range []llm.FileUploadPolicy{llm.DefaultOpenAIResponsesFileUploadPolicy(), llm.DefaultPortableTextFileUploadPolicy()} {
+				input := llm.BuildResponsesInputWithFilePolicy([]llm.Message{{Role: llm.RoleUser, Parts: replay.Parts}}, &policy)
+				if len(input) != 1 || input[0].Content != part.Text {
+					t.Fatalf("provider payload = %#v", input)
+				}
+			}
+			// Retrying an interjection creates a different saved path, not a different request.
+			retry, err := parseUserMessageContent(content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			first, err := steeringFingerprint(msg, "", interruptDelivery(""))
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := steeringFingerprint(retry, "", interruptDelivery(""))
+			if err != nil || first != second {
+				t.Fatalf("unstable retry fingerprint: %v", err)
+			}
+		})
+	}
+}
+
+func TestArbitraryUploadsKeepValidationLimits(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	for _, tc := range []struct {
+		name, data, want string
+		count            int
+	}{
+		{"count", "AP8BgA==", "too many attachments", maxAttachments + 1},
+		{"size", strings.Repeat("AAAA", (maxAttachmentBytes/3)+1), "exceeds 20 MB limit", 1},
+		{"base64", "!!!!", "decode base64", 1},
+		{"empty", "", "empty or malformed", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parts := make([]map[string]string, tc.count)
+			for i := range parts {
+				parts[i] = map[string]string{"type": "input_file", "filename": "binary.weird", "file_data": "data:application/octet-stream;base64," + tc.data}
+			}
+			content, _ := json.Marshal(parts)
+			_, err := parseUserMessageContent(content)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}

@@ -382,6 +382,7 @@ type ApprovalManager struct {
 	toolAllowMu        sync.RWMutex
 	extensionDirectory string              // host-scoped file access for the built-in web extension-builder only
 	toolReadDirs       map[string][]string // per-tool read allowlist, e.g. routed view_image uploads
+	readFiles          map[string]struct{} // explicit session-local file reads; never directory or shell grants
 
 	workspaceMu            sync.RWMutex
 	primaryWorkspace       string // canonical proposal; grants no authority by itself
@@ -470,6 +471,43 @@ func NewApprovalManager(perms *ToolPermissions) *ApprovalManager {
 		guardianConsecutiveLimit: 3,
 		guardianTotalLimit:       20,
 	}
+}
+
+// AddReadFile grants read-only access to one existing regular file in this session.
+// Descendants inherit the grant; siblings, directories, writes and shell commands do not.
+func (m *ApprovalManager) AddReadFile(path string) error {
+	resolved, err := canonicalizePath(path)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("read grant requires a regular file: %s", path)
+	}
+	m.toolAllowMu.Lock()
+	defer m.toolAllowMu.Unlock()
+	if m.readFiles == nil {
+		m.readFiles = make(map[string]struct{})
+	}
+	m.readFiles[resolved] = struct{}{}
+	return nil
+}
+
+func (m *ApprovalManager) isExplicitReadFile(path string) bool {
+	resolved, err := canonicalizePath(path)
+	if err != nil {
+		return false
+	}
+	m.toolAllowMu.RLock()
+	_, allowed := m.readFiles[resolved]
+	m.toolAllowMu.RUnlock()
+	if allowed {
+		return true
+	}
+	return m.parent != nil && m.parent.isExplicitReadFile(resolved)
 }
 
 // AddToolReadDir adds a per-tool read-only directory allowlist entry. Unlike
@@ -865,6 +903,10 @@ func (m *ApprovalManager) getProjectApprovals(path string) *ProjectApprovals {
 // Returns (outcome, true, nil) when a decision is made, or (Cancel, false, nil)
 // when prompting is still required.
 func (m *ApprovalManager) checkPathApprovalNoPrompt(toolName, path, absPath string, isWrite bool) (ConfirmOutcome, bool, error) {
+	if !isWrite && m.isExplicitReadFile(path) {
+		return ProceedOnce, true, nil
+	}
+
 	// Session workspace capabilities are root-owned and inherited immediately by
 	// all descendants. They authorize file operations only; shell checks never
 	// consult this set.

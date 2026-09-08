@@ -9,6 +9,7 @@ import (
 	"html"
 	"io"
 	"log"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -642,6 +643,7 @@ func (rt *serveRuntime) releaseClaimedPendingSteering(ctx context.Context, sessi
 		if !exists || entry.OwnerKind == "rush" {
 			continue // Committed or exclusively owned by a rush.
 		}
+		rt.grantUploadedFileReads([]llm.Message{entry.Message})
 		_, status := rt.engine.QueueSteeringWithStatus(llm.QueuedSteering{
 			ID: entry.ID, Message: entry.Message, DisplayText: entry.DisplayText, Origin: entry.Origin,
 		})
@@ -692,6 +694,10 @@ func steeringFingerprint(msg llm.Message, displayText string, delivery interrupt
 	for i := range parts {
 		// Parsing inline attachments can materialize them at a fresh temporary path
 		// on each transport retry. The content fields are the stable identity.
+		if file := parts[i].FileData; parts[i].Type == llm.PartFile && file != nil &&
+			parts[i].Text == llm.FormatUploadedFileNotice(file.Filename, file.MediaType, parts[i].FilePath, file.SizeBytes) {
+			parts[i].Text = llm.FormatUploadedFileNotice(file.Filename, file.MediaType, "", file.SizeBytes)
+		}
 		parts[i].ImagePath = ""
 		parts[i].FilePath = ""
 	}
@@ -707,6 +713,42 @@ func steeringFingerprint(msg llm.Message, displayText string, delivery interrupt
 	}
 	sum := sha256.Sum256(payload)
 	return fmt.Sprintf("%x", sum), nil
+}
+
+// grantUploadedFileReads restores grants from structured user attachments, never
+// from model text or tool results. Resolve symlinks before checking upload ownership.
+func (rt *serveRuntime) grantUploadedFileReads(messages []llm.Message) {
+	if rt.toolMgr == nil || rt.toolMgr.ApprovalMgr == nil {
+		return
+	}
+	root, err := filepath.EvalSymlinks(serveUploadsDir())
+	if err != nil || root == "" {
+		return
+	}
+	for _, msg := range messages {
+		if msg.Role != llm.RoleUser {
+			continue
+		}
+		for _, part := range msg.Parts {
+			path := ""
+			switch part.Type {
+			case llm.PartFile:
+				path = part.FilePath
+			case llm.PartImage:
+				path = part.ImagePath
+			}
+			if path == "" {
+				continue
+			}
+			resolved, err := filepath.EvalSymlinks(path)
+			if err != nil || !pathWithinDir(resolved, root) {
+				continue
+			}
+			if err := rt.toolMgr.ApprovalMgr.AddReadFile(resolved); err != nil {
+				log.Printf("[serve] grant uploaded file read: %v", err)
+			}
+		}
+	}
 }
 
 func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, displayText string, steeringID string, fastProvider llm.Provider, delivery interruptDelivery, origins ...llm.SteeringOrigin) (llm.InterruptAction, bool, error) {
@@ -836,6 +878,7 @@ func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, d
 				break
 			}
 		}
+		rt.grantUploadedFileReads([]llm.Message{msg})
 		_, queueStatus := rt.engine.QueueSteeringWithStatus(entry)
 		switch queueStatus {
 		case llm.SteeringQueueTransitioning, llm.SteeringQueueRushOwned, llm.SteeringQueueFollowUpOwned, llm.SteeringQueueCommitted:
@@ -1702,6 +1745,8 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	if persisted && stateful && !replaceHistory {
 		rt.restoreProviderState(ctx, req.SessionID)
 	}
+	rt.grantUploadedFileReads(baseHistory)
+	rt.grantUploadedFileReads(inputMessages)
 	turnIndex := countUserMessages(baseHistory)
 
 	var injectedPlatform string

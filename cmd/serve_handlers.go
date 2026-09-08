@@ -566,6 +566,11 @@ func serveResolvedFile(w http.ResponseWriter, r *http.Request, absFile string) {
 		http.NotFound(w, r)
 		return
 	}
+	// Uploaded/generated HTML and SVG must not execute with the UI's origin.
+	// A response-local sandbox preserves inline previews without granting scripts,
+	// same-origin access, navigation, or network access to active documents.
+	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
 }
 
@@ -595,7 +600,7 @@ func (s *serveServer) handleFile(w http.ResponseWriter, r *http.Request) {
 // ensureFileServeable makes the given file available from the configured
 // files-dir when it already comes from an approved source directory. Approved
 // sources are: the files-dir itself, the image output directory, the uploads
-// directory used by saveUploadedFile, and any directory granted to tools via
+// directory used by saveUploadedBytes, and any directory granted to tools via
 // --write-dir or cfg.Tools.WriteDirs. Tool output in those locations is
 // operator- or server-sanctioned, so republishing it under /files/ respects
 // the documented --files-dir contract while still blocking tool results that
@@ -724,7 +729,7 @@ func (s *serveServer) ensureFileServeable(filePath string) (string, bool) {
 // ensureImageServeable makes the given image path servable via /images/ by
 // copying it into the configured image output directory when the source is
 // already under an approved location (image output dir itself, the uploads
-// dir used by saveUploadedFile, or any operator-granted tool write-dir).
+// dir used by saveUploadedBytes, or any operator-granted tool write-dir).
 // Tool-reported paths outside every approved dir are rejected so arbitrary
 // host files can't be republished through /images/. Returns the serveable
 // path and true on success, or ("", false) otherwise.
@@ -864,7 +869,7 @@ func (s *serveServer) ensureImageServeable(imgPath string) (string, bool) {
 }
 
 // serveUploadsDir returns the first-party uploads directory used by
-// saveUploadedFile. Returns empty string if the data dir is unavailable.
+// saveUploadedBytes. Returns empty string if the data dir is unavailable.
 func serveUploadsDir() string {
 	dataDir, err := session.GetDataDir()
 	if err != nil {

@@ -8,56 +8,8 @@ export interface AttachmentPolicy {
 export const DEFAULT_ATTACHMENT_POLICY: AttachmentPolicy = Object.freeze({
   maxCount: 10,
   maxBytes: 20 * 1024 * 1024,
-  mimeTypes: [
-    'image/jpeg',
-    'image/png',
-    'image/gif',
-    'image/webp',
-    'application/pdf',
-    'text/plain',
-    'text/markdown',
-    'application/json',
-    'text/csv',
-    'audio/mpeg',
-    'audio/wav',
-    'audio/ogg',
-    'video/mp4',
-    'video/webm',
-  ],
-  extensions: [
-    '.jpg',
-    '.jpeg',
-    '.png',
-    '.gif',
-    '.webp',
-    '.pdf',
-    '.txt',
-    '.md',
-    '.markdown',
-    '.json',
-    '.csv',
-    '.yaml',
-    '.yml',
-    '.xml',
-    '.go',
-    '.js',
-    '.jsx',
-    '.ts',
-    '.tsx',
-    '.py',
-    '.rb',
-    '.rs',
-    '.java',
-    '.c',
-    '.h',
-    '.cpp',
-    '.hpp',
-    '.mp3',
-    '.wav',
-    '.ogg',
-    '.mp4',
-    '.webm',
-  ],
+  mimeTypes: ['*/*'],
+  extensions: [],
 });
 
 export interface AttachmentValidationError {
@@ -89,7 +41,11 @@ export function validateAttachmentFile(
     };
   const mime = file.type.toLowerCase();
   const extension = attachmentExtension(file.name);
-  if (!policy.mimeTypes.includes(mime) && !policy.extensions.includes(extension))
+  if (
+    !policy.mimeTypes.includes('*/*') &&
+    !policy.mimeTypes.includes(mime) &&
+    !policy.extensions.includes(extension)
+  )
     return {
       code: 'unsupported',
       message: `${file.name}: this file type is not supported.`,
@@ -98,5 +54,11 @@ export function validateAttachmentFile(
 }
 
 export function attachmentAccept(policy: AttachmentPolicy): string {
+  if (policy.mimeTypes.includes('*/*')) return '';
   return [...new Set([...policy.mimeTypes, ...policy.extensions])].join(',');
+}
+
+// Only these formats are prepared and sent as native model images.
+export function isNativeImageType(type: string): boolean {
+  return ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(type.toLowerCase());
 }

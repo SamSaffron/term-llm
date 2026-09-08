@@ -4,6 +4,7 @@ import {
   DEFAULT_ATTACHMENT_POLICY,
   attachmentAccept,
   validateAttachmentFile,
+  isNativeImageType,
   type AttachmentPolicy,
 } from '../domain/attachments';
 import { blobChecksum, blobToDataURL, DraftBlobStore } from '../platform/draft-blobs';
@@ -241,7 +242,7 @@ export class ComposerStore {
       throw new Error(attachment.error || `${attachment.name} is not ready to send.`);
     const data = attachment.dataURL || attachment.url || '';
     if (!data) throw new Error(`Could not materialize ${attachment.name}`);
-    if (attachment.type.startsWith('image/'))
+    if (isNativeImageType(attachment.type))
       return {
         type: 'input_image',
         image_url: data,
@@ -296,7 +297,7 @@ export class ComposerStore {
       this.updateAttachment(attachmentId, { progress: 0.5 });
       let width: number | undefined;
       let height: number | undefined;
-      if (source.type.startsWith('image/')) {
+      if (isNativeImageType(source.type)) {
         previewURL = URL.createObjectURL(source);
         const dimensions = await new Promise<{ width: number; height: number }>(
           (resolve, reject) => {
@@ -381,7 +382,7 @@ export class ComposerStore {
         return;
       }
       const dataURL = await blobToDataURL(record.blob);
-      const previewURL = record.mime.startsWith('image/')
+      const previewURL = isNativeImageType(record.mime)
         ? URL.createObjectURL(record.blob)
         : undefined;
       if (!owns()) {

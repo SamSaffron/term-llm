@@ -675,14 +675,7 @@ func responseFileTextFallback(part Part, policy *FileUploadPolicy) string {
 	if active.AllowsTextEmbed(part.FileData.MediaType, toolFileSizeBytes(part.FileData)) {
 		return part.Text
 	}
-	filename := strings.TrimSpace(part.FileData.Filename)
-	if filename == "" {
-		filename = "upload"
-	}
-	if part.FilePath != "" {
-		return "[User uploaded file: " + filename + " — saved locally]\n\n"
-	}
-	return "[User uploaded file: " + filename + "]\n\n"
+	return FormatUploadedFileNotice(part.FileData.Filename, part.FileData.MediaType, part.FilePath, toolFileSizeBytes(part.FileData))
 }
 
 func buildResponsesAssistantItems(parts []Part) []ResponsesInputItem {
