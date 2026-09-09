@@ -609,15 +609,164 @@ func TestParseMCPToolName(t *testing.T) {
 	}{
 		{"mcp__term-llm__read_file", "read_file"},
 		{"mcp__term-llm__shell", "shell"},
-		{"mcp__other__tool", "mcp__other__tool"}, // Different server prefix
+		{"mcp__other__tool", "mcp__other__tool"},
 		{"regular_tool", "regular_tool"},
 		{"", ""},
 	}
-
 	for _, tc := range tests {
-		result := ParseMCPToolName(tc.input)
-		if result != tc.expected {
+		if result := ParseMCPToolName(tc.input); result != tc.expected {
 			t.Errorf("ParseMCPToolName(%q) = %q, want %q", tc.input, result, tc.expected)
 		}
+	}
+}
+
+type bearerRoundTripper struct {
+	token string
+	base  http.RoundTripper
+}
+
+func (t bearerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	clone := req.Clone(req.Context())
+	clone.Header = req.Header.Clone()
+	clone.Header.Set("Authorization", "Bearer "+t.token)
+	return t.base.RoundTrip(clone)
+}
+
+func connectTestMCPClient(t *testing.T, url, token string, opts *mcp.ClientOptions) *mcp.ClientSession {
+	t.Helper()
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, opts)
+	httpClient := &http.Client{Transport: bearerRoundTripper{token: token, base: http.DefaultTransport}}
+	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{
+		Endpoint:             url,
+		HTTPClient:           httpClient,
+		DisableStandaloneSSE: true,
+	}, nil)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	return session
+}
+
+func TestServerPublishesParallelHintAndPreservesClaudeToolUseID(t *testing.T) {
+	var gotID string
+	server := NewServer(func(ctx context.Context, _ string, _ json.RawMessage) (ToolResult, error) {
+		gotID = ToolCallIDFromContext(ctx)
+		return ToolResult{Content: "ok"}, nil
+	})
+	url, token, err := server.Start(context.Background(), []ToolSpec{
+		{Name: "spawn_agent", Schema: map[string]any{"type": "object"}, Parallelizable: true},
+		{Name: "shell", Schema: map[string]any{"type": "object"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Stop(context.Background()) })
+	session := connectTestMCPClient(t, url, token, nil)
+
+	listed, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	for _, tool := range listed.Tools {
+		switch tool.Name {
+		case "spawn_agent":
+			if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
+				t.Fatalf("spawn_agent annotations = %#v, want private parallel hint", tool.Annotations)
+			}
+		case "shell":
+			if tool.Annotations != nil && tool.Annotations.ReadOnlyHint {
+				t.Fatalf("shell incorrectly published as read-only: %#v", tool.Annotations)
+			}
+		}
+	}
+
+	params := &mcp.CallToolParams{Name: "spawn_agent", Arguments: map[string]any{}}
+	params.Meta = mcp.Meta{"claudecode/toolUseId": "toolu_model_owned"}
+	if _, err := session.CallTool(context.Background(), params); err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if gotID != "toolu_model_owned" {
+		t.Fatalf("executor call ID = %q", gotID)
+	}
+}
+
+func TestServerSuppressesPrivateParallelHintOnNonLoopbackBind(t *testing.T) {
+	server := NewServer(func(context.Context, string, json.RawMessage) (ToolResult, error) {
+		return ToolResult{Content: "ok"}, nil
+	})
+	url, token, err := server.StartOnAddress("0.0.0.0", 0, "", []ToolSpec{{
+		Name: "shell", Schema: map[string]any{"type": "object"}, Parallelizable: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Stop(context.Background()) })
+	url = strings.Replace(url, "0.0.0.0", "127.0.0.1", 1)
+	session := connectTestMCPClient(t, url, token, nil)
+	listed, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Tools) != 1 {
+		t.Fatalf("listed tools = %d, want 1", len(listed.Tools))
+	}
+	if annotations := listed.Tools[0].Annotations; annotations != nil && annotations.ReadOnlyHint {
+		t.Fatalf("non-loopback annotations = %#v, want no private parity hint", annotations)
+	}
+}
+
+func TestServerSendsProgressForLongRunningTool(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := NewServer(func(ctx context.Context, _ string, _ json.RawMessage) (ToolResult, error) {
+		close(started)
+		select {
+		case <-release:
+			return ToolResult{Content: "done"}, nil
+		case <-ctx.Done():
+			return ToolResult{}, ctx.Err()
+		}
+	})
+	server.progressInterval = 10 * time.Millisecond
+	url, token, err := server.Start(context.Background(), []ToolSpec{{Name: "slow", Schema: map[string]any{"type": "object"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Stop(context.Background()) })
+
+	progress := make(chan *mcp.ProgressNotificationParams, 1)
+	session := connectTestMCPClient(t, url, token, &mcp.ClientOptions{
+		ProgressNotificationHandler: func(_ context.Context, req *mcp.ProgressNotificationClientRequest) {
+			select {
+			case progress <- req.Params:
+			default:
+			}
+		},
+	})
+	params := &mcp.CallToolParams{Name: "slow", Arguments: map[string]any{}}
+	params.SetProgressToken("progress-1")
+	result := make(chan error, 1)
+	go func() {
+		_, err := session.CallTool(context.Background(), params)
+		result <- err
+	}()
+	<-started
+	select {
+	case notification := <-progress:
+		if notification.ProgressToken != "progress-1" || notification.Message == "" {
+			t.Fatalf("progress = %#v", notification)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no progress notification received")
+	}
+	close(release)
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("CallTool: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("tool call did not complete")
 	}
 }

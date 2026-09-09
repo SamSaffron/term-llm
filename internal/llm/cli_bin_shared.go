@@ -198,6 +198,8 @@ func (e *CLICommandError) DebugFields() map[string]any {
 }
 
 type cliToolRequest struct {
+	// ctx owns request admission and bridge waiting. Once ack succeeds, the engine
+	// owns execution as committed work even if the MCP transport disconnects.
 	ctx    context.Context
 	callID string
 	name   string
@@ -215,6 +217,9 @@ type cliTurnBridge struct {
 	toolReqCh chan cliToolRequest
 	// done closes when the active CLI subprocess turn exits.
 	done chan struct{}
+	// seenCallIDs is turn-scoped: IDs must be unique while one model turn can
+	// have concurrent requests, but a later CLI subprocess may legitimately reuse one.
+	seenCallIDs map[string]struct{}
 }
 
 // cliToolBridgeState is embedded by local CLI providers. The MCP server can
@@ -282,16 +287,39 @@ type cliToolResultFormatter func(ToolOutput) mcphttp.ToolResult
 // the engine remains the sole owner of tool execution and event emission.
 func (s *cliToolBridgeState) wrappedResultExecutor(format cliToolResultFormatter) mcphttp.ToolExecutor {
 	return func(ctx context.Context, name string, args json.RawMessage) (mcphttp.ToolResult, error) {
+		modelCallID := strings.TrimSpace(mcphttp.ToolCallIDFromContext(ctx))
 		s.eventsMu.Lock()
 		bridge := s.currentBridge
 		events := s.currentEvents
-		s.eventsMu.Unlock()
-
 		if bridge == nil || events == nil {
+			s.eventsMu.Unlock()
 			return mcphttp.ToolResult{}, fmt.Errorf("tool execution rejected: no active stream bridge for tool call %q", name)
 		}
+		if bridge.seenCallIDs == nil {
+			bridge.seenCallIDs = make(map[string]struct{})
+		}
+		callID := modelCallID
+		if callID != "" {
+			if _, duplicate := bridge.seenCallIDs[callID]; duplicate {
+				s.eventsMu.Unlock()
+				return mcphttp.ToolResult{}, fmt.Errorf("tool execution rejected: duplicate tool call ID %q", callID)
+			}
+		} else {
+			for {
+				callID = fmt.Sprintf("mcp-%s-%d", name, mcpCallCounter.Add(1))
+				if _, duplicate := bridge.seenCallIDs[callID]; !duplicate {
+					break
+				}
+			}
+		}
+		bridge.seenCallIDs[callID] = struct{}{}
+		s.eventsMu.Unlock()
+		releaseReservation := func() {
+			s.eventsMu.Lock()
+			delete(bridge.seenCallIDs, callID)
+			s.eventsMu.Unlock()
+		}
 
-		callID := fmt.Sprintf("mcp-%s-%d", name, mcpCallCounter.Add(1))
 		responseChan := make(chan ToolExecutionResponse, 1)
 		req := cliToolRequest{
 			ctx:      ctx,
@@ -305,14 +333,17 @@ func (s *cliToolBridgeState) wrappedResultExecutor(format cliToolResultFormatter
 		select {
 		case bridge.toolReqCh <- req:
 		case <-bridge.done:
+			releaseReservation()
 			return mcphttp.ToolResult{}, fmt.Errorf("tool execution rejected: stream closed during tool call %q", name)
 		case <-ctx.Done():
+			releaseReservation()
 			return mcphttp.ToolResult{}, ctx.Err()
 		}
 
 		select {
 		case err := <-req.ack:
 			if err != nil {
+				releaseReservation()
 				return mcphttp.ToolResult{}, err
 			}
 		case <-bridge.done:
@@ -750,7 +781,17 @@ func messagesContainPriorAssistantTurn(messages []Message) bool {
 func mcpToolSpecs(tools []ToolSpec) []mcphttp.ToolSpec {
 	out := make([]mcphttp.ToolSpec, len(tools))
 	for i, tool := range tools {
-		out[i] = mcphttp.ToolSpec{Name: tool.Name, Description: tool.Description, Schema: tool.Schema}
+		out[i] = mcphttp.ToolSpec{
+			Name:        tool.Name,
+			Description: tool.Description,
+			Schema:      tool.Schema,
+			// Parity play: native/API providers can execute every tool call in a
+			// model-authored parallel batch. Claude Code currently gates equivalent
+			// MCP overlap on readOnlyHint, so all tools on this private term-llm
+			// bridge opt into that scheduling signal. term-llm remains responsible
+			// for actual permissions, approvals, and bounded execution.
+			Parallelizable: true,
+		}
 	}
 	return out
 }

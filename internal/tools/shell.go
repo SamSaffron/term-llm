@@ -17,6 +17,11 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
+const (
+	defaultShellTimeoutSeconds = 30
+	maxShellTimeoutSeconds     = 3600
+)
+
 // ShellTool implements the shell tool.
 type ShellTool struct {
 	approval  *ApprovalManager
@@ -256,8 +261,9 @@ func (t *ShellTool) Spec() llm.ToolSpec {
 		},
 		"timeout_seconds": map[string]interface{}{
 			"type":        "integer",
-			"description": "Command timeout in seconds (default: 30, max: 300)",
-			"default":     30,
+			"description": "Command timeout in seconds (default: 30, max: 3600)",
+			"default":     defaultShellTimeoutSeconds,
+			"maximum":     maxShellTimeoutSeconds,
 		},
 		"env": map[string]interface{}{
 			"type":                 "object",
@@ -370,10 +376,10 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 		}
 		timeout := a.TimeoutSeconds
 		if timeout <= 0 {
-			timeout = 30
+			timeout = defaultShellTimeoutSeconds
 		}
-		if timeout > 300 {
-			timeout = 300
+		if timeout > maxShellTimeoutSeconds {
+			timeout = maxShellTimeoutSeconds
 		}
 		if t.approval != nil {
 			outcome, err := t.approval.CheckSharedShellApprovalWithContext(ctx, a.Command, approvalTranscriptFromContext(ctx))
@@ -496,12 +502,12 @@ func (t *ShellTool) executeLocal(ctx context.Context, args json.RawMessage) (llm
 	}
 
 	// Set timeout
-	timeout := 30
+	timeout := defaultShellTimeoutSeconds
 	if a.TimeoutSeconds > 0 {
 		timeout = a.TimeoutSeconds
 	}
-	if timeout > 300 {
-		timeout = 300
+	if timeout > maxShellTimeoutSeconds {
+		timeout = maxShellTimeoutSeconds
 	}
 
 	// workDir was resolved before approval and is the exact exec.Cmd.Dir below.

@@ -40,6 +40,10 @@ const claudeDiagnosticLineMaxBytes = cliDiagnosticLineMaxBytes
 // in a failure event. The full length and SHA-256 are always logged.
 const claudeDiagnosticStdinMaxBytes = 128 * 1024
 
+// claudeMCPToolTimeoutMillis covers spawn_agent's one-hour schema maximum plus
+// cleanup and model-loop headroom without changing user configuration.
+const claudeMCPToolTimeoutMillis = 65 * 60 * 1000
+
 // forcedClaudeCodeIsolationEnv disables Claude Code surfaces that can inject
 // first-party prompt/tool behavior into claude-bin runs. term-llm owns tools,
 // memory, background jobs, and project instructions for this provider; Claude
@@ -1534,8 +1538,9 @@ func (p *ClaudeBinProvider) createHTTPMCPConfig(ctx context.Context, tools []Too
 	mcpConfig := map[string]any{
 		"mcpServers": map[string]any{
 			"term-llm": map[string]any{
-				"type": "http",
-				"url":  url,
+				"type":    "http",
+				"url":     url,
+				"timeout": claudeMCPToolTimeoutMillis,
 				"headers": map[string]string{
 					"Authorization": "Bearer " + token,
 				},

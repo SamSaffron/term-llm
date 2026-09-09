@@ -9,6 +9,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -79,16 +80,72 @@ type ToolSpec struct {
 	Name        string
 	Description string
 	Schema      map[string]interface{}
+	// Parallelizable is a private loopback-bridge scheduling hint used for
+	// execution parity with native/API providers. Claude Code currently overlaps
+	// MCP calls only when readOnlyHint is true; this does not alter term-llm's
+	// permissions, approvals, or execution policy.
+	Parallelizable bool
+}
+
+const defaultToolProgressInterval = 30 * time.Second
+
+type toolRequestMetaKey struct{}
+
+type toolRequestMeta struct {
+	callID string
+}
+
+// ToolCallIDFromContext returns the model-authored tool-use ID supplied by a
+// local CLI client, when available.
+func ToolCallIDFromContext(ctx context.Context) string {
+	meta, _ := ctx.Value(toolRequestMetaKey{}).(toolRequestMeta)
+	return meta.callID
+}
+
+func startToolProgress(ctx context.Context, req *mcp.CallToolRequest, interval time.Duration) func() {
+	if req == nil || req.Session == nil || req.Params == nil {
+		return func() {}
+	}
+	token := req.Params.GetProgressToken()
+	if token == nil || interval <= 0 {
+		return func() {}
+	}
+	progressCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		var progress float64
+		for {
+			select {
+			case <-ticker.C:
+				progress++
+				_ = req.Session.NotifyProgress(progressCtx, &mcp.ProgressNotificationParams{
+					ProgressToken: token,
+					Progress:      progress,
+					Message:       "term-llm tool execution is still running",
+				})
+			case <-progressCtx.Done():
+				return
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 // Server runs an MCP server over HTTP with token-based authentication.
 // It exposes tools to local CLI transports and executes them using the provided executor.
 type Server struct {
-	server    *http.Server
-	listener  net.Listener
-	authToken string
-	executor  ToolExecutor
-	debug     bool
+	server           *http.Server
+	listener         net.Listener
+	authToken        string
+	executor         ToolExecutor
+	debug            bool
+	progressInterval time.Duration
 
 	// HandlerMiddleware is installed before serving. Set only before Start.
 	// Tool descendants must retain request ownership if they outlive the handler.
@@ -104,7 +161,8 @@ type Server struct {
 // The executor function is called to execute tool calls.
 func NewServer(executor ToolExecutor) *Server {
 	return &Server{
-		executor: executor,
+		executor:         executor,
+		progressInterval: defaultToolProgressInterval,
 	}
 }
 
@@ -165,14 +223,30 @@ func (s *Server) startInternal(host string, port int, token string, tools []Tool
 		Version: "1.0.0",
 	}, nil)
 
+	// The parity annotation deliberately overloads readOnlyHint and therefore
+	// must never escape the private loopback bridge onto a remotely reachable MCP
+	// catalogue, even if a caller accidentally sets Parallelizable there. Trust
+	// the concrete bound address rather than a caller-supplied hostname.
+	boundAddr, _ := listener.Addr().(*net.TCPAddr)
+	allowPrivateParallelHints := boundAddr != nil && boundAddr.IP.IsLoopback()
+
 	// Register tools with actual execution
 	for _, tool := range tools {
 		toolName := tool.Name // capture for closure
+		var annotations *mcp.ToolAnnotations
+		if tool.Parallelizable && allowPrivateParallelHints {
+			// Parity play: Claude Code currently uses readOnlyHint as its only MCP
+			// concurrency gate. The private CLI bridge uses that scheduling signal
+			// to match native/API parallel tool-call behavior; term-llm still owns
+			// every permission, approval, and execution decision.
+			annotations = &mcp.ToolAnnotations{ReadOnlyHint: true}
+		}
 
 		mcpServer.AddTool(&mcp.Tool{
 			Name:        tool.Name,
 			Description: tool.Description,
 			InputSchema: tool.Schema, // Pass map directly - SDK handles marshaling
+			Annotations: annotations,
 		}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			// The SDK may stop waiting before a cancelled executor actually returns.
 			ctx, release, ownershipErr := restart.Child(ctx)
@@ -180,6 +254,14 @@ func (s *Server) startInternal(host string, port int, token string, tools []Tool
 				return nil, ownershipErr
 			}
 			defer release()
+			if req == nil || req.Params == nil {
+				return nil, errors.New("invalid call tool request: missing parameters")
+			}
+			if rawID, ok := req.Params.Meta["claudecode/toolUseId"].(string); ok && strings.TrimSpace(rawID) != "" {
+				ctx = context.WithValue(ctx, toolRequestMetaKey{}, toolRequestMeta{callID: strings.TrimSpace(rawID)})
+			}
+			stopProgress := startToolProgress(ctx, req, s.progressInterval)
+			defer stopProgress()
 			// Execute the tool using the provided executor
 			argsJSON, err := json.Marshal(req.Params.Arguments)
 			if err != nil {

@@ -34,6 +34,10 @@ func TestShellTool_Spec(t *testing.T) {
 			t.Errorf("schema should have %s property", p)
 		}
 	}
+	timeoutSchema, ok := props["timeout_seconds"].(map[string]interface{})
+	if !ok || timeoutSchema["maximum"] != maxShellTimeoutSeconds {
+		t.Fatalf("timeout schema = %#v, want maximum %d", timeoutSchema, maxShellTimeoutSeconds)
+	}
 	for _, p := range []string{"affected_paths", "output_claims"} {
 		if _, ok := props[p]; ok {
 			t.Errorf("disabled tracking schema should not have %s property", p)
@@ -398,12 +402,12 @@ func TestShellTool_Timeout(t *testing.T) {
 		}
 	})
 
-	t.Run("timeout clamped to max 300", func(t *testing.T) {
+	t.Run("timeout clamped to max 3600", func(t *testing.T) {
 		tool := NewShellTool(nil, nil, DefaultOutputLimits())
-		// 500 > 300 max, should be clamped but still work for a fast command
+		// 5000 > 3600 max, should be clamped but still work for a fast command.
 		args := mustMarshalShellArgs(ShellArgs{
 			Command:        "echo ok",
-			TimeoutSeconds: 500,
+			TimeoutSeconds: 5000,
 		})
 		output, err := tool.Execute(context.Background(), args)
 		if err != nil {

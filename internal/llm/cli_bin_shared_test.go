@@ -553,3 +553,15 @@ func TestNewCLICommandRejectsInvalidWorkingDirectory(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPToolSpecsHintAllToolsForProviderParity(t *testing.T) {
+	specs := mcpToolSpecs([]ToolSpec{{Name: "spawn_agent"}, {Name: "shell"}, {Name: "read_file"}})
+	if len(specs) != 3 {
+		t.Fatalf("specs = %d", len(specs))
+	}
+	for _, spec := range specs {
+		if !spec.Parallelizable {
+			t.Errorf("%s Parallelizable = false, want true for CLI bridge parity", spec.Name)
+		}
+	}
+}

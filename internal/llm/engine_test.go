@@ -1572,7 +1572,7 @@ func TestExecuteToolCallsReturnsOnContextCancel(t *testing.T) {
 	}
 }
 
-func TestHandleSyncToolExecutionReturnsOnContextCancel(t *testing.T) {
+func TestExecuteSingleToolCallOutcomeReturnsOnContextCancel(t *testing.T) {
 	t.Parallel()
 
 	tool := newContextIgnoringTool(1)
@@ -1583,20 +1583,10 @@ func TestHandleSyncToolExecutionReturnsOnContextCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	event := Event{
-		ToolCallID:   "sync-call-1",
-		Tool:         &ToolCall{ID: "sync-call-1", Name: "context_ignoring_tool", Arguments: json.RawMessage(`{}`)},
-		ToolResponse: make(chan ToolExecutionResponse, 1),
-	}
-
-	type syncExecutionResult struct {
-		call ToolCall
-		err  error
-	}
-	resultCh := make(chan syncExecutionResult, 1)
+	call := ToolCall{ID: "sync-call-1", Name: "context_ignoring_tool", Arguments: json.RawMessage(`{}`)}
+	resultCh := make(chan toolCallOutcome, 1)
 	go func() {
-		call, _, err := engine.handleSyncToolExecution(ctx, event, eventSender{}, false, false)
-		resultCh <- syncExecutionResult{call: call, err: err}
+		resultCh <- engine.executeSingleToolCallOutcomeSafe(ctx, call, eventSender{}, false, false)
 	}()
 
 	select {
@@ -1607,19 +1597,33 @@ func TestHandleSyncToolExecutionReturnsOnContextCancel(t *testing.T) {
 
 	cancel()
 	select {
-	case result := <-resultCh:
-		if result.call.ID != event.ToolCallID {
-			t.Fatalf("call ID = %q, want %q", result.call.ID, event.ToolCallID)
+	case outcome := <-resultCh:
+		if outcome.call.ID != call.ID {
+			t.Fatalf("call ID = %q, want %q", outcome.call.ID, call.ID)
 		}
-		if !errors.Is(result.err, context.Canceled) {
-			t.Fatalf("error = %v, want context cancellation", result.err)
+		if !errors.Is(outcome.err, context.Canceled) {
+			t.Fatalf("error = %v, want context cancellation", outcome.err)
 		}
 	case <-time.After(200 * time.Millisecond):
-		t.Fatal("handleSyncToolExecution did not return promptly after cancellation")
+		t.Fatal("executeSingleToolCallOutcomeSafe did not return promptly after cancellation")
 	}
 }
 
-// namedTool is a simple tool with a configurable name for testing
+func TestExecuteSingleToolCallOutcomeAllowsSuggestCommandsPassthrough(t *testing.T) {
+	t.Parallel()
+
+	engine := NewEngine(&fakeProvider{}, NewToolRegistry())
+	call := ToolCall{ID: "suggest-1", Name: SuggestCommandsToolName, Arguments: json.RawMessage(`{"commands":["go test ./..."]}`)}
+	outcome := engine.executeSingleToolCallOutcome(context.Background(), call, eventSender{}, false, false)
+	if outcome.err != nil {
+		t.Fatalf("passthrough error = %v", outcome.err)
+	}
+	if outcome.output.Content != "OK" {
+		t.Fatalf("passthrough output = %q, want OK", outcome.output.Content)
+	}
+}
+
+// namedTool is a simple tool with a configurable name for testing.
 type namedTool struct {
 	name string
 }

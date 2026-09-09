@@ -2689,6 +2689,8 @@ func restoreToolDiscoveryReplay(messages []Message, replay []Part) []Message {
 }
 
 func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) (returnErr error) {
+	syncBridgeCtx, cancelSyncBridges := context.WithCancel(ctx)
+	defer cancelSyncBridges()
 	task := restart.CurrentTask(ctx)
 	if req.Ephemeral || (task != nil && !task.Claim(e)) {
 		task = nil
@@ -3080,6 +3082,18 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) (re
 			}
 		}
 	}
+	var activeSyncTools *syncToolSupervisor
+	defer func() {
+		if activeSyncTools == nil {
+			return
+		}
+		cause := returnErr
+		if cause == nil {
+			cause = context.Canceled
+		}
+		activeSyncTools.abort(cause)
+	}()
+
 turnLoop:
 	for attempt := nextTurn; attempt < maxTurns; attempt++ {
 		nextTurn = attempt
@@ -3261,6 +3275,54 @@ turnLoop:
 		var finishingToolExecuted bool // Track if a finishing tool was executed (agent done)
 		var syncToolCalls []ToolCall   // Track sync tool calls for message building
 		var syncToolResults []Message  // Track sync tool results for message building
+		var syncTools *syncToolSupervisor
+		ensureSyncTools := func() *syncToolSupervisor {
+			if syncTools == nil {
+				syncTools = newSyncToolSupervisor(syncBridgeCtx, req.ParallelToolCalls)
+				activeSyncTools = syncTools
+			}
+			return syncTools
+		}
+		absorbSyncOutcomes := func(outcomes []toolCallOutcome) {
+			for _, outcome := range outcomes {
+				syncToolCalls = append(syncToolCalls, outcome.call)
+				syncToolResults = append(syncToolResults, outcome.message())
+				if e.tools.IsFinishingTool(outcome.call.Name) {
+					finishingToolExecuted = true
+				}
+			}
+		}
+		foldCompletedSyncTools := func() {
+			if syncTools != nil {
+				absorbSyncOutcomes(syncTools.settleCompleted())
+			}
+		}
+		settleSyncTools := func() {
+			if syncTools != nil {
+				absorbSyncOutcomes(syncTools.settle(ctx))
+				if activeSyncTools == syncTools {
+					activeSyncTools = nil
+				}
+			}
+		}
+		abortSyncTools := func(cause error) {
+			if syncTools != nil {
+				absorbSyncOutcomes(syncTools.abort(cause))
+				if activeSyncTools == syncTools {
+					activeSyncTools = nil
+				}
+			}
+		}
+		finishSyncToolsAfterStreamFailure := func(cause error) {
+			if syncToolsExecuted && ctx.Err() == nil {
+				// Once the model has dispatched a side-effecting tool, transport
+				// failure does not revoke that committed work. Drain its real outcome
+				// before fallback/recovery so a retry cannot overlap detached effects.
+				settleSyncTools()
+				return
+			}
+			abortSyncTools(cause)
+		}
 		capabilities := e.provider.Capabilities()
 		inlineToolLoop := capabilities.InlineToolLoop
 		preserveInlineToolOrder := inlineToolLoop && capabilities.OrderedInlineToolEvents
@@ -3352,6 +3414,7 @@ turnLoop:
 			if !isCommittedStreamRecoveryError(cause) {
 				return false, nil
 			}
+			settleSyncTools()
 			if len(toolCalls) == 0 && !syncToolsExecuted {
 				return false, nil
 			}
@@ -3592,6 +3655,7 @@ turnLoop:
 		}
 		for {
 			if chaosErr := e.consumeChaosFailure(); chaosErr != nil {
+				finishSyncToolsAfterStreamFailure(chaosErr)
 				stream.Close()
 				if fallback, reason := requestNativeFallback(chaosErr, scratchpadCommitted || len(toolCalls) > 0 || syncToolsExecuted); fallback {
 					if scratchpadHasDiscardableOutput {
@@ -3628,6 +3692,7 @@ turnLoop:
 				break
 			}
 			if err != nil {
+				finishSyncToolsAfterStreamFailure(err)
 				stream.Close()
 				if compactionConfig != nil && isContextOverflowError(err) && !reactiveCompactionDone && textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && len(toolCalls) == 0 && len(syncToolCalls) == 0 {
 					reactiveCompactionDone = true
@@ -3681,6 +3746,7 @@ turnLoop:
 				return err
 			}
 			if event.Type == EventError && event.Err != nil {
+				finishSyncToolsAfterStreamFailure(event.Err)
 				stream.Close()
 				if compactionConfig != nil && isContextOverflowError(event.Err) && !reactiveCompactionDone && textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && len(toolCalls) == 0 && len(syncToolCalls) == 0 {
 					reactiveCompactionDone = true
@@ -3925,35 +3991,48 @@ turnLoop:
 						ProviderTurnIndex:    attempt,
 						ProviderTurnIndexSet: true,
 					}
-					pendingSyncCalls := append(append([]ToolCall(nil), syncToolCalls...), *event.Tool)
+					supervisor := ensureSyncTools()
+					foldCompletedSyncTools()
+					pendingSyncCalls := append(append([]ToolCall(nil), syncToolCalls...), supervisor.pendingCalls()...)
+					pendingSyncCalls = append(pendingSyncCalls, *event.Tool)
 					fireSnapshot(pendingSyncCalls)
 					if err := send.Send(forwardEvent); err != nil {
 						return err
 					}
 
-					// Handle synchronous execution: emit events to TUI and send result back.
-					// CLI-bridge providers (claude-bin, grok-bin, cursor-bin) execute
-					// inline and never reach executeToolCalls, so the approval transcript
-					// must be attached here or guardian reviews with no evidence.
-					syncToolCtx := ContextWithApprovalTranscript(ctx, buildApprovalTranscript(
-						req.ApprovalTranscriptPrefix, req.Messages, buildPartialAssistant(pendingSyncCalls), syncToolResults...))
-					call, result, execErr := e.handleSyncToolExecution(syncToolCtx, event, send, req.Debug, req.DebugRaw)
+					// Synchronous CLI requests are supervised children of this provider
+					// turn. Dispatch never blocks the event loop, allowing sibling MCP
+					// calls to reach the same executor concurrently.
+					call := *event.Tool
+					call.ToolInfo = e.getToolPreview(call)
+					if event.ToolInfo != "" {
+						call.ToolInfo = event.ToolInfo
+					}
+					committedResults := append([]Message(nil), syncToolResults...)
+					approvalAssistant := buildPartialAssistant(pendingSyncCalls)
 					syncToolsExecuted = true
-					syncToolCalls = append(syncToolCalls, call)
 					if preserveInlineToolOrder {
-						previewed := e.withToolPreview([]ToolCall{call})[0]
-						inlineSyncParts = append(inlineSyncParts, Part{Type: PartToolCall, ToolCall: &previewed})
+						inlineCall := call
+						inlineSyncParts = append(inlineSyncParts, Part{Type: PartToolCall, ToolCall: &inlineCall})
 					}
-					// Build result message for this tool call
-					if execErr != nil {
-						syncToolResults = append(syncToolResults, toolErrorMessageWithGuardian(call.ID, call.Name, execErr.Error(), nil, result.GuardianReviews))
-					} else {
-						syncToolResults = append(syncToolResults, ToolResultMessageFromOutput(call.ID, call.Name, result, nil))
-					}
-					// Check if this was a finishing tool (signals agent completion)
-					if e.tools.IsFinishingTool(event.Tool.Name) {
-						finishingToolExecuted = true
-					}
+					response := event.ToolResponse
+					supervisor.dispatch(call, func(toolCtx context.Context) toolCallOutcome {
+						_, evidenceOutcomes := supervisor.evidenceFor(call.ID)
+						approvalResults := append([]Message(nil), committedResults...)
+						for _, prior := range evidenceOutcomes {
+							approvalResults = append(approvalResults, prior.message())
+						}
+						transcript := buildApprovalTranscript(
+							req.ApprovalTranscriptPrefix, req.Messages, approvalAssistant, approvalResults...)
+						send.TrySend(Event{Type: EventToolExecStart, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: call.ToolInfo, ToolArgs: call.Arguments})
+						return e.executeSingleToolCallOutcomeSafe(
+							ContextWithApprovalTranscript(toolCtx, transcript), call, send, req.Debug, req.DebugRaw)
+					}, func(outcome toolCallOutcome) {
+						select {
+						case response <- ToolExecutionResponse{Result: outcome.output, Err: outcome.err}:
+						case <-ctx.Done():
+						}
+					})
 					continue
 				}
 				// Normal async collection for other providers.
@@ -3994,6 +4073,7 @@ turnLoop:
 				return err
 			}
 		}
+		settleSyncTools()
 		stream.Close()
 		if ctx.Err() == nil {
 			providerInFlight = false
@@ -4586,151 +4666,139 @@ func withoutProviderReplayParts(msg Message) Message {
 	return msg
 }
 
-// executeToolCalls executes multiple tool calls, potentially in parallel.
-// Note: When executing in parallel, EventToolExecStart/EventToolExecEnd events
-// are emitted from concurrent goroutines. While the channel is thread-safe, events
-// may arrive in non-deterministic order. Consumers should use ToolCallID to correlate
-// start/end events rather than relying on ordering.
-func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, parallel bool, send eventSender, debug bool, debugRaw bool, transcriptOpt ...[]Message) ([]Message, error) {
-	var transcript []Message
-	if len(transcriptOpt) > 0 {
-		transcript = transcriptOpt[0]
+// toolCallOutcome is the provider-neutral result of one engine-owned tool
+// execution. Both API providers and synchronous CLI bridges adapt this same
+// value to their respective result protocols.
+type toolCallOutcome struct {
+	call   ToolCall
+	output ToolOutput
+	err    error
+}
+
+func (o toolCallOutcome) message() Message {
+	if o.err != nil {
+		return toolErrorMessageWithGuardian(o.call.ID, o.call.Name, fmt.Sprintf("Error: %v", o.err), o.call.ThoughtSig, o.output.GuardianReviews)
 	}
-	// Cancellation must still yield a result message for every announced call:
-	// the caller persists the assistant message with its tool calls, and a turn
-	// with dangling tool calls breaks conversation resume on strict providers.
+	return ToolResultMessageFromOutput(o.call.ID, o.call.Name, o.output, o.call.ThoughtSig)
+}
+
+// executeToolCallOutcomes executes one model-authored batch. Outcomes retain
+// dispatch order even when workers finish out of order. Cancellation returns
+// promptly with a terminal outcome for every announced call.
+func (e *Engine) executeToolCallOutcomes(ctx context.Context, calls []ToolCall, parallel bool, send eventSender, debug bool, debugRaw bool, transcript []Message) ([]toolCallOutcome, error) {
+	outcomes := make([]toolCallOutcome, len(calls))
 	if err := ctx.Err(); err != nil {
-		return cancelledToolCallMessages(calls, err), nil
+		for i, call := range calls {
+			outcomes[i] = toolCallOutcome{call: call, err: err}
+		}
+		return outcomes, nil
+	}
+	if len(calls) == 0 {
+		return outcomes, nil
 	}
 
-	// Fast path: single call
-	if len(calls) == 1 {
-		return e.executeSingleToolCallSafe(ContextWithApprovalTranscript(ctx, transcript), calls[0], send, debug, debugRaw)
-	}
-
-	if !parallel {
-		results := make([]Message, 0, len(calls))
-		toolCtx := ContextWithApprovalTranscript(ctx, transcript)
+	toolCtx := ContextWithApprovalTranscript(ctx, transcript)
+	if len(calls) == 1 || !parallel {
 		for i, call := range calls {
 			if err := ctx.Err(); err != nil {
-				return append(results, cancelledToolCallMessages(calls[i:], err)...), nil
+				for j := i; j < len(calls); j++ {
+					outcomes[j] = toolCallOutcome{call: calls[j], err: err}
+				}
+				break
 			}
-			msgs, err := e.executeSingleToolCallSafe(toolCtx, call, send, debug, debugRaw)
-			if err != nil {
-				return nil, err
-			}
-			msg := ToolErrorMessage(call.ID, call.Name, "tool returned no result", call.ThoughtSig)
-			if len(msgs) > 0 {
-				msg = msgs[0]
-			}
-			results = append(results, msg)
+			outcomes[i] = e.executeSingleToolCallOutcomeSafe(toolCtx, call, send, debug, debugRaw)
 		}
-		return results, nil
+		return outcomes, nil
 	}
 
-	// Parallel execution for multiple calls (events may arrive out of order), but
-	// cap worker count so a single model turn cannot flood the process with tool
-	// executions all at once.
-	type toolResult struct {
+	type indexedOutcome struct {
 		index   int
-		message Message
+		outcome toolCallOutcome
 	}
-
-	resultChan := make(chan toolResult, len(calls))
+	resultChan := make(chan indexedOutcome, len(calls))
 	workerCount := maxParallelToolWorkers(len(calls))
 	var nextCall atomic.Uint32
-
-	workerCtx := ContextWithApprovalTranscript(ctx, transcript)
 	for worker := 0; worker < workerCount; worker++ {
-		workerCtx, release, err := restart.Child(workerCtx)
+		workerCtx, release, err := restart.Child(toolCtx)
 		if err != nil {
 			return nil, err
 		}
 		go func() {
 			defer release()
 			for {
-				if err := ctx.Err(); err != nil {
+				if ctx.Err() != nil {
 					return
 				}
-
 				idx := int(nextCall.Add(1)) - 1
 				if idx >= len(calls) {
 					return
 				}
-
-				if err := ctx.Err(); err != nil {
+				if ctx.Err() != nil {
 					return
 				}
-
-				call := calls[idx]
-				msgs, _ := e.executeSingleToolCallSafe(workerCtx, call, send, debug, debugRaw)
-				msg := ToolErrorMessage(call.ID, call.Name, "tool returned no result", call.ThoughtSig)
-				if len(msgs) > 0 {
-					msg = msgs[0]
-				}
-				resultChan <- toolResult{index: idx, message: msg}
+				resultChan <- indexedOutcome{index: idx, outcome: e.executeSingleToolCallOutcomeSafe(workerCtx, calls[idx], send, debug, debugRaw)}
 			}
 		}()
 	}
 
-	// Collect results and maintain original order. If the caller cancels while
-	// non-cooperative tools are still running, return promptly instead of waiting
-	// for every goroutine to finish. The buffered channel is sized for one result
-	// per tool, so late tool completions cannot block after cancellation.
-	results := make([]Message, len(calls))
 	for remaining := len(calls); remaining > 0; remaining-- {
 		select {
-		case r := <-resultChan:
-			results[r.index] = r.message
+		case result := <-resultChan:
+			outcomes[result.index] = result.outcome
 		case <-ctx.Done():
-			// Keep any results that finished before cancellation, then
-			// synthesize cancelled results for the rest so every announced
-			// call stays paired with a result in the persisted turn.
 			for drained := false; !drained; {
 				select {
-				case r := <-resultChan:
-					results[r.index] = r.message
+				case result := <-resultChan:
+					outcomes[result.index] = result.outcome
 				default:
 					drained = true
 				}
 			}
-			for i := range results {
-				if results[i].Role == "" {
-					results[i] = cancelledToolCallMessage(calls[i], ctx.Err())
+			for i := range outcomes {
+				if outcomes[i].call.ID == "" {
+					outcomes[i] = toolCallOutcome{call: calls[i], err: ctx.Err()}
 				}
 			}
-			return results, nil
+			return outcomes, nil
 		}
 	}
-
-	return results, nil
+	return outcomes, nil
 }
 
-// cancelledToolCallMessage synthesizes the error result for a tool call that
-// was skipped or abandoned because the context was cancelled.
-func cancelledToolCallMessage(call ToolCall, err error) Message {
-	return ToolErrorMessage(call.ID, call.Name, fmt.Sprintf("Error: %v", err), call.ThoughtSig)
-}
-
-func cancelledToolCallMessages(calls []ToolCall, err error) []Message {
-	msgs := make([]Message, 0, len(calls))
-	for _, call := range calls {
-		msgs = append(msgs, cancelledToolCallMessage(call, err))
+// executeToolCalls executes multiple tool calls, potentially in parallel.
+func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, parallel bool, send eventSender, debug bool, debugRaw bool, transcriptOpt ...[]Message) ([]Message, error) {
+	var transcript []Message
+	if len(transcriptOpt) > 0 {
+		transcript = transcriptOpt[0]
 	}
-	return msgs
+	outcomes, err := e.executeToolCallOutcomes(ctx, calls, parallel, send, debug, debugRaw, transcript)
+	if err != nil {
+		return nil, err
+	}
+	messages := make([]Message, len(outcomes))
+	for i, outcome := range outcomes {
+		messages[i] = outcome.message()
+	}
+	return messages, nil
 }
 
-// executeSingleToolCallSafe wraps executeSingleToolCall with panic recovery.
-func (e *Engine) executeSingleToolCallSafe(ctx context.Context, call ToolCall, send eventSender, debug bool, debugRaw bool) (msgs []Message, err error) {
+// executeSingleToolCallOutcomeSafe wraps execution with panic recovery.
+func (e *Engine) executeSingleToolCallOutcomeSafe(ctx context.Context, call ToolCall, send eventSender, debug bool, debugRaw bool) (outcome toolCallOutcome) {
 	defer func() {
 		if r := recover(); r != nil {
-			errMsg := fmt.Sprintf("Error: tool panicked: %v", r)
+			err := fmt.Errorf("tool panicked: %v", r)
 			sendToolExecEnd(send, Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolSuccess: false})
-			msgs = []Message{ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig)}
-			err = nil
+			outcome = toolCallOutcome{call: call, err: err}
 		}
 	}()
-	return e.executeSingleToolCall(ctx, call, send, debug, debugRaw)
+	return e.executeSingleToolCallOutcome(ctx, call, send, debug, debugRaw)
+}
+
+// executeSingleToolCallSafe is retained as the message adapter used by callers
+// that execute one call outside a complete batch.
+func (e *Engine) executeSingleToolCallSafe(ctx context.Context, call ToolCall, send eventSender, debug bool, debugRaw bool) ([]Message, error) {
+	outcome := e.executeSingleToolCallOutcomeSafe(ctx, call, send, debug, debugRaw)
+	return []Message{outcome.message()}, nil
 }
 
 type toolExecutionResult struct {
@@ -4830,14 +4898,30 @@ func sendToolExecEnd(send eventSender, event Event) {
 	send.TrySend(event)
 }
 
-// executeSingleToolCall executes a single tool call and returns the result message.
+// executeSingleToolCall is the historical message adapter used by focused
+// tests and non-batch callers.
 func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, send eventSender, debug bool, debugRaw bool) ([]Message, error) {
+	outcome := e.executeSingleToolCallOutcome(ctx, call, send, debug, debugRaw)
+	return []Message{outcome.message()}, nil
+}
+
+// executeSingleToolCallOutcome executes a single tool call and retains its
+// structured output for both transcript and bridge result adapters.
+func (e *Engine) executeSingleToolCallOutcome(ctx context.Context, call ToolCall, send eventSender, debug bool, debugRaw bool) toolCallOutcome {
 	tool, ok := e.tools.Get(call.Name)
 	if !ok {
+		// suggest_commands is a structured-output passthrough used by exec mode;
+		// observing the call arguments is the execution, so no registry tool runs.
+		if call.Name == SuggestCommandsToolName {
+			output := TextOutput("OK")
+			DebugToolResult(debug, call.ID, call.Name, output.Content)
+			sendToolExecEnd(send, Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: true})
+			return toolCallOutcome{call: call, output: output}
+		}
 		errMsg := fmt.Sprintf("Error: tool not registered: %s", call.Name)
 		DebugToolResult(debug, call.ID, call.Name, errMsg)
 		sendToolExecEnd(send, Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false})
-		return []Message{ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig)}, nil
+		return toolCallOutcome{call: call, err: fmt.Errorf("tool not registered: %s", call.Name)}
 	}
 
 	// Check ordinary execution policy first. A planner may separately authorise
@@ -4853,7 +4937,7 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, send 
 		errMsg := fmt.Sprintf("Error: tool '%s' is not in the active skill's allowed-tools list", call.Name)
 		DebugToolResult(debug, call.ID, call.Name, errMsg)
 		sendToolExecEnd(send, Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false})
-		return []Message{ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig)}, nil
+		return toolCallOutcome{call: call, err: fmt.Errorf("tool '%s' is not in the active skill's allowed-tools list", call.Name)}
 	}
 
 	// Add call ID to context for spawn_agent event bubbling
@@ -4882,7 +4966,7 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, send 
 		errMsg := fmt.Sprintf("Error: %v", err)
 		DebugToolResult(debug, call.ID, call.Name, errMsg)
 		sendToolExecEnd(send, Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolSuccess: false})
-		return []Message{toolErrorMessageWithGuardian(call.ID, call.Name, errMsg, call.ThoughtSig, output.GuardianReviews)}, nil
+		return toolCallOutcome{call: call, output: output, err: err}
 	}
 
 	DebugToolResult(debug, call.ID, call.Name, output.Content)
@@ -4903,99 +4987,7 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, send 
 		ToolImages:                 output.Images,
 		ToolMedia:                  append([]MediaArtifact(nil), output.Media...),
 	})
-	return []Message{ToolResultMessageFromOutput(call.ID, call.Name, output, call.ThoughtSig)}, nil
-}
-
-// handleSyncToolExecution handles synchronous tool execution for bridged providers.
-// It emits EventToolExecStart/End to the outer channel (for TUI) and sends the result
-// back to the provider via the response channel.
-// Returns the tool call, result content string, and any error that occurred during execution.
-func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, send eventSender, debug bool, debugRaw bool) (ToolCall, ToolOutput, error) {
-	call := event.Tool
-	callID := call.ID
-
-	// Get tool preview info
-	info := e.getToolPreview(*call)
-	if event.ToolInfo != "" {
-		info = event.ToolInfo
-	}
-
-	// Emit start event to TUI (non-blocking to avoid deadlock if consumer is slow)
-	send.TrySend(Event{
-		Type:       EventToolExecStart,
-		ToolCallID: callID,
-		ToolName:   call.Name,
-		ToolInfo:   info,
-		ToolArgs:   call.Arguments,
-	})
-
-	// Look up and execute the tool
-	tool, ok := e.tools.Get(call.Name)
-	var result ToolOutput
-	var err error
-
-	if !ok {
-		// suggest_commands is a passthrough tool - it captures structured output
-		// and doesn't need actual execution. Just return success.
-		if call.Name == SuggestCommandsToolName {
-			result = TextOutput("OK")
-		} else {
-			err = fmt.Errorf("tool not found: %s", call.Name)
-		}
-	} else if !e.IsToolAllowed(call.Name) {
-		err = fmt.Errorf("tool '%s' is not in the active skill's allowed-tools list", call.Name)
-	} else {
-		toolCtx := ContextWithCallID(ctx, callID)
-		toolCtx, guardianReviews := ContextWithGuardianReviewCapture(toolCtx)
-		var panicValue any
-		result, err, panicValue = e.executeToolWithCancellation(toolCtx, tool, call.Arguments)
-		result.GuardianReviews = guardianReviews()
-		if panicValue != nil {
-			err = fmt.Errorf("Error: tool panicked: %v", panicValue)
-		}
-	}
-
-	// Truncate large tool outputs (global limit, then compaction limit).
-	if err == nil {
-		result = e.applyToolOutputTruncation(result)
-	}
-
-	// Debug logging
-	if err != nil {
-		DebugToolResult(debug, callID, call.Name, fmt.Sprintf("Error: %v", err))
-	} else {
-		DebugToolResult(debug, callID, call.Name, result.Content)
-		DebugRawToolResult(debugRaw, callID, call.Name, result.Content)
-	}
-	// Emit end event to TUI (non-blocking to avoid deadlock if consumer is slow)
-	send.TrySend(Event{
-		Type:                       EventToolExecEnd,
-		ToolCallID:                 callID,
-		ToolName:                   call.Name,
-		ToolInfo:                   info,
-		ToolSuccess:                err == nil && !result.TimedOut && !result.IsError,
-		ToolOutput:                 result.Content,
-		ToolDiffs:                  result.Diffs,
-		ToolFileChanges:            result.FileChanges,
-		ToolFilesystemObservations: result.FilesystemObservations,
-		ToolOutputClaimDiagnostics: result.OutputClaimDiagnostics,
-		ToolImages:                 result.Images,
-		ToolMedia:                  append([]MediaArtifact(nil), result.Media...),
-	})
-
-	// Send the result back to the provider bridge.
-	// Use select to avoid blocking if context is canceled and receiver has exited
-	select {
-	case event.ToolResponse <- ToolExecutionResponse{Result: result, Err: err}:
-	case <-ctx.Done():
-		// Best-effort: abandon send if context canceled
-	}
-
-	// Ensure call has the proper ID (may have been generated)
-	returnCall := *call
-	returnCall.ID = callID
-	returnCall.ToolInfo = info
-	return returnCall, result, err
+	return toolCallOutcome{call: call, output: output}
 }
 
 func (e *Engine) withToolPreview(calls []ToolCall) []ToolCall {
