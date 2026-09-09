@@ -1,6 +1,7 @@
 import type {
   ApprovalMode,
   Attachment,
+  ContextUsage,
   DiffComment,
   GuardianReview,
   MediaArtifact,
@@ -28,6 +29,29 @@ const text = (value: unknown): string =>
   typeof value === 'string' ? value : value == null ? '' : String(value);
 const record = (value: unknown): Record<string, unknown> | null =>
   Boolean(value) && typeof value === 'object' ? (value as Record<string, unknown>) : null;
+
+export function sanitizeContextUsage(value: unknown): ContextUsage | undefined {
+  const source = record(value);
+  if (!source) return undefined;
+  const tokenCount = (value: unknown): number => {
+    if (typeof value !== 'number' && typeof value !== 'string') return Number.NaN;
+    if (typeof value === 'string' && !value.trim()) return Number.NaN;
+    const number = Number(value);
+    return Number.isFinite(number) ? Math.trunc(number) : Number.NaN;
+  };
+  const usedTokens = tokenCount(source.used_tokens ?? source.usedTokens);
+  const inputLimit = tokenCount(source.input_limit ?? source.inputLimit);
+  const cachedInputTokens = tokenCount(source.cached_input_tokens ?? source.cachedInputTokens);
+  if (![usedTokens, inputLimit, cachedInputTokens].some((number) => Number.isFinite(number)))
+    return undefined;
+  return {
+    usedTokens: Number.isFinite(usedTokens) ? Math.max(0, usedTokens) : 0,
+    ...(Number.isFinite(inputLimit) && inputLimit > 0 ? { inputLimit } : {}),
+    cachedInputTokens: Number.isFinite(cachedInputTokens) ? Math.max(0, cachedInputTokens) : 0,
+    estimated: source.estimated !== false,
+  };
+}
+
 const mediaArtifacts = (value: unknown, rebase: (value: string) => string): MediaArtifact[] => {
   if (!Array.isArray(value)) return [];
   return value
@@ -772,6 +796,9 @@ export function sanitizeSession(
       ? { interactionRequiredSince: timestamp(source.interaction_required_since) }
       : {}),
     usage: (record(source.usage) as Session['usage']) || undefined,
+    ...(Object.hasOwn(source, 'context_usage') || Object.hasOwn(source, 'contextUsage')
+      ? { contextUsage: sanitizeContextUsage(source.context_usage ?? source.contextUsage) ?? null }
+      : {}),
     goal: (record(source.goal) as Session['goal']) || null,
     fileChangeSummary: fileSummary
       ? {

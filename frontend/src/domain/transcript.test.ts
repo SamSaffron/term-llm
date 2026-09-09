@@ -3,6 +3,7 @@ import {
   convertServerMessages,
   indexTranscriptTurns,
   mergeDurableProjection,
+  sanitizeContextUsage,
   sanitizeSession,
   olderTranscriptAnchors,
   windowTranscript,
@@ -453,6 +454,12 @@ describe('transcript domain', () => {
       title: '',
       pinned: 1,
       file_change_summary: { file_count: 2, adds: 7, dels: 3, git: true },
+      context_usage: {
+        used_tokens: 135_000,
+        input_limit: 372_000,
+        cached_input_tokens: 51_900_000,
+        estimated: true,
+      },
       messages: [],
     });
     expect(session).toMatchObject({
@@ -463,6 +470,12 @@ describe('transcript domain', () => {
       pinned: true,
       created: 1_700_000_000_000,
       fileChangeSummary: { fileCount: 2, additions: 7, deletions: 3, git: true },
+      contextUsage: {
+        usedTokens: 135_000,
+        inputLimit: 372_000,
+        cachedInputTokens: 51_900_000,
+        estimated: true,
+      },
     });
     expect(session).not.toHaveProperty('approvalDefaultMode');
     expect(
@@ -479,6 +492,26 @@ describe('transcript domain', () => {
       approvalEffectiveMode: 'prompt',
       guardianAutoSuspended: true,
     });
+  });
+
+  it('sanitizes context usage without turning missing values into zero', () => {
+    expect(sanitizeContextUsage(null)).toBeUndefined();
+    expect(sanitizeContextUsage({})).toBeUndefined();
+    expect(
+      sanitizeContextUsage({
+        used_tokens: null,
+        input_limit: null,
+        cached_input_tokens: null,
+      }),
+    ).toBeUndefined();
+    expect(
+      sanitizeContextUsage({
+        usedTokens: -3.8,
+        inputLimit: 0,
+        cachedInputTokens: 4.9,
+        estimated: false,
+      }),
+    ).toEqual({ usedTokens: 0, cachedInputTokens: 4, estimated: false });
   });
 
   it('prefers server-resolved titles while retaining editable generated metadata', () => {

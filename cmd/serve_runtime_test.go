@@ -1073,6 +1073,13 @@ func TestServeRuntimeRunPersistsTurnMetricsAndContextEstimate(t *testing.T) {
 	defer llm.RegisterConfigLimits(nil)
 
 	store := newServeRuntimeTestStore()
+	store.sessions["sess-metrics"] = &session.Session{
+		ID:                "sess-metrics",
+		Provider:          "serve-runtime-metrics",
+		ProviderKey:       "serve-runtime-metrics",
+		Model:             "metrics-model",
+		CachedInputTokens: 100,
+	}
 	provider := &serveRuntimeMetricsProvider{}
 	tool := &serveRuntimeTestTool{}
 	registry := llm.NewToolRegistry()
@@ -1099,6 +1106,18 @@ func TestServeRuntimeRunPersistsTurnMetricsAndContextEstimate(t *testing.T) {
 	if got := result.Text.String(); got != "done" {
 		t.Fatalf("result text = %q, want done", got)
 	}
+	if result.ContextUsage == nil {
+		t.Fatal("result context usage is nil")
+	}
+	if got := result.ContextUsage.UsedTokens; got != 11 {
+		t.Fatalf("context used tokens = %d, want 11", got)
+	}
+	if got := result.ContextUsage.InputLimit; got != 1000 {
+		t.Fatalf("context input limit = %d, want 1000", got)
+	}
+	if got := result.ContextUsage.CachedInputTokens; got != 103 {
+		t.Fatalf("context cached input tokens = %d, want 103", got)
+	}
 	stored, err := store.Get(context.Background(), "sess-metrics")
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
@@ -1109,8 +1128,8 @@ func TestServeRuntimeRunPersistsTurnMetricsAndContextEstimate(t *testing.T) {
 	if stored.ToolCalls != 1 {
 		t.Fatalf("stored ToolCalls = %d, want 1", stored.ToolCalls)
 	}
-	if stored.InputTokens != 17 || stored.CachedInputTokens != 3 || stored.CacheWriteTokens != 2 || stored.OutputTokens != 9 {
-		t.Fatalf("stored tokens = input %d cached %d cache_write %d output %d, want 17/3/2/9", stored.InputTokens, stored.CachedInputTokens, stored.CacheWriteTokens, stored.OutputTokens)
+	if stored.InputTokens != 17 || stored.CachedInputTokens != 103 || stored.CacheWriteTokens != 2 || stored.OutputTokens != 9 {
+		t.Fatalf("stored tokens = input %d cached %d cache_write %d output %d, want 17/103/2/9", stored.InputTokens, stored.CachedInputTokens, stored.CacheWriteTokens, stored.OutputTokens)
 	}
 	if stored.LastTotalTokens != 11 || stored.LastMessageCount != 4 {
 		t.Fatalf("stored context estimate = total %d count %d, want 11/4", stored.LastTotalTokens, stored.LastMessageCount)

@@ -8561,6 +8561,16 @@ func TestHandleResponses_IncludesSessionUsage(t *testing.T) {
 	if _, ok := sessionUsage["output_tokens"]; !ok {
 		t.Fatalf("session_usage missing output_tokens")
 	}
+	contextUsage, ok := resp["context_usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("context_usage missing from response")
+	}
+	if used, _ := contextUsage["used_tokens"].(float64); used <= 0 {
+		t.Fatalf("context_usage used_tokens = %v, want positive estimate", contextUsage["used_tokens"])
+	}
+	if estimated, _ := contextUsage["estimated"].(bool); !estimated {
+		t.Fatalf("context_usage estimated = %v, want true", contextUsage["estimated"])
+	}
 }
 
 func TestHandleResponses_UnknownPreviousResponseIDReturnsError(t *testing.T) {
@@ -10076,6 +10086,13 @@ func TestStreamResponses_IncludesResponseIDAndSessionUsage(t *testing.T) {
 	}
 	if _, ok := sessionUsage["input_tokens"]; !ok {
 		t.Fatalf("session_usage missing input_tokens")
+	}
+	contextUsage, ok := response["context_usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("streaming response missing context_usage")
+	}
+	if used, _ := contextUsage["used_tokens"].(float64); used <= 0 {
+		t.Fatalf("context_usage used_tokens = %v, want positive estimate", contextUsage["used_tokens"])
 	}
 }
 

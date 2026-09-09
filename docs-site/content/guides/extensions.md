@@ -93,6 +93,15 @@ export function activate(ui) {
   ui.onSessionChanged((sessionId) => {
     label.title = sessionId || 'New conversation';
   });
+
+  ui.onContextUsageChanged((usage) => {
+    if (!usage) {
+      label.textContent = '';
+      return;
+    }
+    const limit = usage.inputLimit ? `/${usage.inputLimit}` : '';
+    label.textContent = `~${usage.usedTokens}${limit}`;
+  });
 }
 ```
 
@@ -102,7 +111,11 @@ The host provides:
 - `mount`: a dedicated element outside Preact ownership for your extension.
 - `getContext()`: the current session ID, frontend asset version and app prefix.
 - `onSessionChanged(callback)`: subscribes immediately and on changes; returns an unsubscribe function.
+- `getContextUsage()`: the active session's latest approximate context snapshot, or `null`. The snapshot contains `usedTokens`, optional `inputLimit`, cumulative `cachedInputTokens`, and `estimated`.
+- `onContextUsageChanged(callback)`: delivers that snapshot immediately and after session loads, changes, or completed responses; returns an unsubscribe function.
 - `insertComposerText(text)`: appends draft text without submitting it.
+
+Context usage deliberately differs from aggregate response usage: `usedTokens` approximates current context occupancy, while `cachedInputTokens` is cumulative session accounting. Keep an approximation marker such as `~`, and omit percentages when `inputLimit` is unavailable.
 
 Direct DOM access is allowed, but prefer CSS and dedicated mounts to moving Preact-owned nodes. Private selectors may change between releases. Canvas-rendered terminal content does not automatically restyle when CSS changes.
 

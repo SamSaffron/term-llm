@@ -359,7 +359,7 @@ func responsesFinalResponse(result serveRunResult, model string, respID string, 
 		})
 	}
 
-	return map[string]any{
+	response := map[string]any{
 		"id":            respID,
 		"object":        "response",
 		"created":       created,
@@ -367,5 +367,7 @@ func responsesFinalResponse(result serveRunResult, model string, respID string, 
 		"output":        output,
 		"usage":         responsesUsagePayload(result.Usage),
 		"session_usage": responsesUsagePayload(result.SessionUsage),
+		"context_usage": result.ContextUsage,
 	}
+	return response
 }

@@ -44,6 +44,7 @@ function sameIdentityList<T>(left: T[], right: T[]): boolean {
 
 const TRANSCRIPT_ONLY_SESSION_FIELDS = [
   'usage',
+  'contextUsage',
   'goal',
   'mcpServers',
   'mcpEnabled',
@@ -314,6 +315,8 @@ export class SessionStore {
         ? (incoming.activeRun ?? existing.activeRun)
         : incoming.activeRun,
       usage: incoming.usage || existing.usage,
+      contextUsage:
+        incoming.contextUsage === undefined ? existing.contextUsage : incoming.contextUsage,
       goal: incoming.goal ?? existing.goal,
       transcriptRev: incoming.transcriptRev ?? existing.transcriptRev,
       messageBodiesRev:

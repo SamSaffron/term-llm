@@ -1,6 +1,7 @@
-import { effect, signal } from '@preact/signals';
+import { computed, effect, signal } from '@preact/signals';
 import type { AppStore } from './app-store';
 import type { AppConfig } from '../app/config';
+import type { ContextUsage } from '../domain/types';
 
 export interface WebExtension {
   id: string;
@@ -64,12 +65,18 @@ export interface ExtensionHost {
   mount: HTMLElement;
   getContext(): { sessionId: string; version: string; prefix: string };
   onSessionChanged(callback: (sessionId: string) => void): () => void;
+  getContextUsage(): Readonly<ContextUsage> | null;
+  onContextUsageChanged(callback: (usage: Readonly<ContextUsage> | null) => void): () => void;
   insertComposerText(text: string): void;
 }
 
 export function extensionHost(store: AppStore, id: string): ExtensionHost {
   const root = document.getElementById('root')!;
   const mount = document.createElement('div');
+  const contextUsage = computed(() => store.activeSession.value?.contextUsage ?? null);
+  const publicContextUsage = (
+    usage: ContextUsage | null = contextUsage.peek(),
+  ): Readonly<ContextUsage> | null => (usage ? Object.freeze({ ...usage }) : null);
   mount.dataset.extension = id;
   document.getElementById('extension-mount')!.append(mount);
   return Object.freeze({
@@ -82,6 +89,9 @@ export function extensionHost(store: AppStore, id: string): ExtensionHost {
     }),
     onSessionChanged: (callback: (id: string) => void) =>
       effect(() => callback(store.activeSessionId.value)),
+    getContextUsage: publicContextUsage,
+    onContextUsageChanged: (callback: (usage: Readonly<ContextUsage> | null) => void) =>
+      effect(() => callback(publicContextUsage(contextUsage.value))),
     insertComposerText: (text: string) => {
       store.composer.prompt.value += String(text);
     },

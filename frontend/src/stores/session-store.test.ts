@@ -102,6 +102,25 @@ describe('SessionStore', () => {
     }
   });
 
+  it('preserves omitted context usage and clears an authoritative null snapshot', () => {
+    const store = new AppStore(testConfig);
+    try {
+      const usage = {
+        usedTokens: 100,
+        inputLimit: 1000,
+        cachedInputTokens: 20,
+        estimated: true,
+      };
+      const current = testSession({ contextUsage: usage });
+      expect(store.sessionStore.mergeSession(current, testSession()).contextUsage).toEqual(usage);
+      expect(
+        store.sessionStore.mergeSession(current, testSession({ contextUsage: null })).contextUsage,
+      ).toBeNull();
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('resets attention watermarks when the node store identity changes', () => {
     const store = new AppStore(testConfig);
     try {
@@ -222,6 +241,12 @@ describe('SessionStore', () => {
         ...current,
         messages: [{ id: 'm1', role: 'user', content: 'hydrated', created: 1 }],
         transcriptRev: 2,
+        contextUsage: {
+          usedTokens: 100,
+          inputLimit: 1000,
+          cachedInputTokens: 20,
+          estimated: true,
+        },
       }));
 
       expect(store.sidebarSessions.value[0]).toBe(sidebarSession);

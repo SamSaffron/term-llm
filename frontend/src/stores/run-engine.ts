@@ -15,6 +15,7 @@ import {
   mergeDurableProjection,
   convertServerMessages,
   olderTranscriptAnchors,
+  sanitizeContextUsage,
 } from '../domain/transcript';
 import type {
   ActiveRun,
@@ -1097,6 +1098,9 @@ export class RunEngine {
           ),
         };
       runtimePatch.usage = (recordValue(response.session_usage) || next.usage) as Session['usage'];
+    }
+    if (event.type === 'response.completed' && Object.hasOwn(response, 'context_usage')) {
+      runtimePatch.contextUsage = sanitizeContextUsage(response.context_usage) ?? null;
     }
     this.runs.value = { ...this.runs.value, [sessionId]: next };
     if (Object.keys(runtimePatch).length)

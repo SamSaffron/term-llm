@@ -2,10 +2,15 @@ import { signal } from '@preact/signals';
 import { testSession } from './store-test-fixtures';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readInjectedConfig } from '../app/config';
-import { extensionRuntime, initializeExtensionRecovery, recoveryURL } from './extension-runtime';
+import {
+  extensionHost,
+  extensionRuntime,
+  initializeExtensionRecovery,
+  recoveryURL,
+} from './extension-runtime';
 import { updateSessionRoute } from '../platform/routing';
 import { loadExtensions, watchExtensionActivation } from '../api/extensions';
-import type { AppStore } from './app-store';
+import { AppStore } from './app-store';
 
 beforeEach(() => {
   sessionStorage.clear();
@@ -14,6 +19,48 @@ beforeEach(() => {
   extensionRuntime.loaded.value = [];
   extensionRuntime.errors.value = [];
 });
+describe('extension host', () => {
+  it('exposes context usage and subscribes only to context changes', () => {
+    document.body.innerHTML = '<div id="root"></div><div id="extension-mount"></div>';
+    const store = new AppStore(readInjectedConfig());
+    const session = testSession({ id: 'session' });
+    store.sessions.value = [session];
+    store.activeSessionId.value = session.id;
+    const host = extensionHost(store, 'context-meter');
+    const snapshots: Array<ReturnType<typeof host.getContextUsage>> = [];
+    const unsubscribe = host.onContextUsageChanged((usage) => snapshots.push(usage));
+
+    expect(host.getContextUsage()).toBeNull();
+    expect(snapshots).toEqual([null]);
+
+    store.sessionStore.patch(session.id, { title: 'Unrelated change' });
+    expect(snapshots).toHaveLength(1);
+
+    const contextUsage = {
+      usedTokens: 135_000,
+      inputLimit: 372_000,
+      cachedInputTokens: 51_900_000,
+      estimated: true,
+    };
+    store.sessionStore.patch(session.id, { contextUsage });
+    expect(host.getContextUsage()).toEqual(contextUsage);
+    expect(Object.isFrozen(host.getContextUsage())).toBe(true);
+    expect(snapshots).toEqual([null, contextUsage]);
+
+    store.sessions.value = [...store.sessions.value, testSession({ id: 'other' })];
+    store.activeSessionId.value = 'other';
+    expect(host.getContextUsage()).toBeNull();
+    expect(snapshots).toEqual([null, contextUsage, null]);
+
+    unsubscribe();
+    store.sessionStore.patch('other', {
+      contextUsage: { ...contextUsage, usedTokens: 136_000 },
+    });
+    expect(snapshots).toHaveLength(3);
+    store.dispose();
+  });
+});
+
 describe('extension recovery', () => {
   it('bypasses all extension requests, not just script execution', async () => {
     history.replaceState(null, '', '/ui/?safe-mode=1');

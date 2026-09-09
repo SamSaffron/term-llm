@@ -504,6 +504,15 @@ func TestHandleSessionsSelectedTranscriptSideloadMatchesTranscriptEndpointsAndIs
 }
 
 func TestHandleSessionsMessageCountMatchesConversationAcrossSelectedTranscriptResponses(t *testing.T) {
+	llm.RegisterConfigLimits([]llm.ConfigModelLimit{{Provider: "mock", Model: "mock-model", InputLimit: 4000}})
+	defer llm.RegisterConfigLimits(nil)
+	if usage := persistedContextUsage(&session.Session{Provider: "mock", Model: "mock-model"}, ""); usage != nil {
+		t.Fatalf("context usage without a persisted baseline = %+v, want nil", usage)
+	}
+	if usage := persistedContextUsage(&session.Session{Provider: "mock", Model: "mock-model", LastTotalTokens: 10}, ""); usage == nil || usage.InputLimit != 4000 {
+		t.Fatalf("provider fallback context usage = %+v, want input limit 4000", usage)
+	}
+
 	srv, store, sess := newTranscriptHandlerServer(t)
 	ctx := context.Background()
 	messages := []*session.Message{
@@ -596,6 +605,9 @@ func TestHandleSessionsMessageCountMatchesConversationAcrossSelectedTranscriptRe
 	}
 	if normal.SelectedSession.Model != sess.Model {
 		t.Fatalf("selected session model=%q, want %q", normal.SelectedSession.Model, sess.Model)
+	}
+	if usage := normal.SelectedSession.ContextUsage; usage == nil || usage.UsedTokens != 1234 || usage.InputLimit != 4000 || !usage.Estimated {
+		t.Fatalf("selected session context usage=%+v, want used=1234 limit=4000 estimated", usage)
 	}
 
 	selectedByID := requestSessions("/v1/sessions?selected_session=" + sess.ID + "&selected_only=1&include_transcript=1")

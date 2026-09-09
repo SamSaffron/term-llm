@@ -1507,11 +1507,39 @@ func (rt *serveRuntime) snapshotHistory() []llm.Message {
 	return history
 }
 
+type serveContextUsage struct {
+	UsedTokens        int  `json:"used_tokens"`
+	InputLimit        int  `json:"input_limit,omitempty"`
+	CachedInputTokens int  `json:"cached_input_tokens,omitempty"`
+	Estimated         bool `json:"estimated"`
+}
+
+func contextUsageSnapshot(engine *llm.Engine, messages []llm.Message, cachedInputTokens int) *serveContextUsage {
+	if engine == nil {
+		return nil
+	}
+	usedTokens := engine.LastTotalTokens()
+	if usedTokens <= 0 && messages != nil {
+		usedTokens = engine.EstimateTokens(messages)
+	}
+	inputLimit := engine.InputLimit()
+	if usedTokens <= 0 && inputLimit <= 0 && cachedInputTokens <= 0 {
+		return nil
+	}
+	return &serveContextUsage{
+		UsedTokens:        usedTokens,
+		InputLimit:        inputLimit,
+		CachedInputTokens: cachedInputTokens,
+		Estimated:         true,
+	}
+}
+
 type serveRunResult struct {
 	Text         strings.Builder
 	ToolCalls    []llm.ToolCall
 	Usage        llm.Usage
 	SessionUsage llm.Usage
+	ContextUsage *serveContextUsage
 }
 
 type serveRuntimeSetupContextKey struct{}
@@ -2619,6 +2647,11 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		rt.persistProviderState(ctx, req.SessionID)
 	}
 
+	cachedInputTokens := result.SessionUsage.CachedInputTokens
+	if rt.sessionMeta != nil && rt.sessionMeta.ID == req.SessionID && rt.sessionMeta.CachedInputTokens > cachedInputTokens {
+		cachedInputTokens = rt.sessionMeta.CachedInputTokens
+	}
+	result.ContextUsage = contextUsageSnapshot(rt.engine, newHistory, cachedInputTokens)
 	return result, nil
 }
 

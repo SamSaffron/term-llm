@@ -1258,6 +1258,26 @@ type webSelectedSessionEntry struct {
 	webSessionEntry
 	FileChangeSummary webFileChangeSummary `json:"file_change_summary"`
 	PlanSummary       *webPlanSummary      `json:"plan_summary"`
+	ContextUsage      *serveContextUsage   `json:"context_usage"`
+}
+
+func persistedContextUsage(sess *session.Session, provider string) *serveContextUsage {
+	if sess == nil || sess.LastTotalTokens <= 0 {
+		return nil
+	}
+	if strings.TrimSpace(provider) == "" {
+		provider = strings.TrimSpace(sess.ProviderKey)
+	}
+	if strings.TrimSpace(provider) == "" {
+		provider = strings.TrimSpace(sess.Provider)
+	}
+	inputLimit := llm.InputLimitForProviderModel(provider, sess.Model)
+	return &serveContextUsage{
+		UsedTokens:        sess.LastTotalTokens,
+		InputLimit:        inputLimit,
+		CachedInputTokens: sess.CachedInputTokens,
+		Estimated:         true,
+	}
 }
 
 func (s *serveServer) webSessionEntryFromSummary(sess session.SessionSummary) webSessionEntry {
@@ -1358,6 +1378,7 @@ func (s *serveServer) selectedWebSession(ctx context.Context, selector string, s
 	}
 
 	var selected webSessionEntry
+	var selectedMeta *session.Session
 	if number, err := strconv.ParseInt(selector, 10, 64); err == nil && number > 0 {
 		for _, summary := range summaries {
 			if summary.Number == number {
@@ -1370,6 +1391,7 @@ func (s *serveServer) selectedWebSession(ctx context.Context, selector string, s
 			if err != nil || sess == nil {
 				return nil, nil
 			}
+			selectedMeta = sess
 			selected = s.webSessionEntryFromSession(sess)
 		}
 	} else {
@@ -1384,11 +1406,18 @@ func (s *serveServer) selectedWebSession(ctx context.Context, selector string, s
 			if err != nil || sess == nil {
 				return nil, nil
 			}
+			selectedMeta = sess
 			selected = s.webSessionEntryFromSession(sess)
 		}
 	}
 
 	result := &webSelectedSessionEntry{webSessionEntry: selected}
+	if selectedMeta == nil {
+		selectedMeta, _ = s.store.Get(ctx, selected.ID)
+	}
+	if selectedMeta != nil {
+		result.ContextUsage = persistedContextUsage(selectedMeta, selected.Provider)
+	}
 	if attention, ok := session.AsAttentionStore(s.store); ok {
 		if state, err := attention.GetAttention(ctx, selected.ID); err == nil {
 			applyWebSessionAttention(&result.webSessionEntry, state)

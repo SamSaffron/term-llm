@@ -655,6 +655,7 @@ func (r *responseRun) appendLifecycleFailureLocked(payload map[string]any, lifec
 	response["error"] = map[string]any{"type": r.errorType, "message": r.errorMessage}
 	delete(response, "usage")
 	delete(response, "session_usage")
+	delete(response, "context_usage")
 	if appendErr := r.appendEventLocked("response.failed", payload, true); appendErr != nil {
 		return errors.Join(lifecycleErr, appendErr)
 	}
@@ -680,6 +681,7 @@ func (r *responseRun) complete(payload map[string]any, usage llm.Usage, sessionU
 			response["status"] = "cancelled"
 			delete(response, "usage")
 			delete(response, "session_usage")
+			delete(response, "context_usage")
 		}
 		if err := r.finalizeLifecycleLocked(session.ResponseRunCancelled); err != nil {
 			return r.appendLifecycleFailureLocked(payload, err)
@@ -701,6 +703,7 @@ func (r *responseRun) complete(payload map[string]any, usage llm.Usage, sessionU
 			response["error"] = map[string]any{"type": r.errorType, "message": r.errorMessage}
 			delete(response, "usage")
 			delete(response, "session_usage")
+			delete(response, "context_usage")
 		}
 		if err := r.finalizeLifecycleLocked(session.ResponseRunFailed); err != nil {
 			return r.appendLifecycleFailureLocked(payload, err)
@@ -3532,16 +3535,18 @@ func (s *serveServer) storeCompletedResponseRun(runtime *serveRuntime, sessionID
 	if durableID != "" {
 		completedID = durableID
 	}
+	completedResponse := map[string]any{
+		"id":            completedID,
+		"object":        "response",
+		"created":       created,
+		"model":         model,
+		"status":        "completed",
+		"usage":         usagePayload(result.Usage),
+		"session_usage": usagePayload(result.SessionUsage),
+		"context_usage": result.ContextUsage,
+	}
 	if err := run.complete(map[string]any{
-		"response": map[string]any{
-			"id":            completedID,
-			"object":        "response",
-			"created":       created,
-			"model":         model,
-			"status":        "completed",
-			"usage":         usagePayload(result.Usage),
-			"session_usage": usagePayload(result.SessionUsage),
-		},
+		"response": completedResponse,
 	}, result.Usage, result.SessionUsage); err != nil {
 		cleanup()
 		return "", err
@@ -4309,6 +4314,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			"status":        "completed",
 			"usage":         usagePayload(result.Usage),
 			"session_usage": usagePayload(result.SessionUsage),
+			"context_usage": result.ContextUsage,
 		}
 		if finalEffortSet {
 			completeResponse["reasoning_effort"] = finalEffort

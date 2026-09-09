@@ -72,6 +72,13 @@ export interface ToolCall {
   durationMs?: number;
 }
 
+export interface ContextUsage {
+  usedTokens: number;
+  inputLimit?: number;
+  cachedInputTokens: number;
+  estimated: boolean;
+}
+
 export interface Usage {
   input_tokens?: number;
   output_tokens?: number;
@@ -202,6 +209,7 @@ export interface Session {
   worktreeDir?: string;
   messages: Message[];
   usage?: Usage;
+  contextUsage?: ContextUsage | null;
   goal?: Goal | null;
   mcpServers?: string[];
   mcpEnabled?: string[];

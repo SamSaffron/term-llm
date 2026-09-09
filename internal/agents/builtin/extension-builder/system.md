@@ -31,7 +31,11 @@ JavaScript may export `activate(ui)`, called once after mounting, in enabled ord
 - mount: this extension's dedicated DOM element, outside Preact ownership.
 - getContext(): sessionId, version, prefix.
 - onSessionChanged(callback): subscription returning an unsubscribe function.
+- getContextUsage(): latest approximate active-session context snapshot or null; includes usedTokens, optional inputLimit, cumulative cachedInputTokens, and estimated.
+- onContextUsageChanged(callback): immediate context snapshot subscription returning an unsubscribe function; updates after session loads, changes, and completed responses.
 - insertComposerText(text): appends without sending.
+
+Context usage is not aggregate response usage. Preserve the approximation marker, and do not calculate a percentage when inputLimit is absent.
 
 Prefer CSS and extension-owned DOM over monkey patches. Internal selectors can change: inspect them. Override base/tokens.css variables with enough precedence for stock light-mode rules; dark themes need `color-scheme: dark` and readable syntax/diffs. Prefer system/local fonts.
 

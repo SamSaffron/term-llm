@@ -4289,6 +4289,35 @@ describe('AppStore compatibility behavior', () => {
       activeProvider: 'anthropic',
       activeEffort: 'medium',
     });
+    store.applyResponseEvent(active.id, {
+      type: 'response.completed',
+      response_id: 'r1',
+      run_epoch: 1,
+      sequence_number: 3,
+      response: {
+        id: 'r1',
+        status: 'completed',
+        model: 'gpt-next',
+        usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+        session_usage: { input_tokens: 30, output_tokens: 5, total_tokens: 35 },
+        context_usage: {
+          used_tokens: 135_000,
+          input_limit: 372_000,
+          cached_input_tokens: 51_900_000,
+          estimated: true,
+        },
+      },
+    });
+    expect(store.activeSession.value).toMatchObject({
+      usage: { total_tokens: 35 },
+      contextUsage: {
+        usedTokens: 135_000,
+        inputLimit: 372_000,
+        cachedInputTokens: 51_900_000,
+        estimated: true,
+      },
+    });
+    store.dispose();
   });
 
   it('loads managed worktree patches into the rich diff state', async () => {
