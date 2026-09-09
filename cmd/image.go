@@ -25,6 +25,9 @@ var (
 	imageProvider    string
 	imageOutput      string
 	imageSize        string
+	imageAspectRatio string
+	imageQuality     string
+	imageBackground  string
 	imageNoDisplay   bool
 	imageNoClipboard bool
 	imageNoSave      bool
@@ -69,6 +72,9 @@ func init() {
 	imageCmd.Flags().StringVarP(&imageProvider, "provider", "p", "", "Override image provider (built-in or configured openai_compatible name)")
 	imageCmd.Flags().StringVarP(&imageOutput, "output", "o", "", "Custom output path")
 	imageCmd.Flags().StringVarP(&imageSize, "size", "s", "", "Image resolution (must be 1K, 2K, or 4K)")
+	imageCmd.Flags().StringVar(&imageAspectRatio, "aspect-ratio", "", "Image aspect ratio (for example 1:1, 16:9, or 9:16)")
+	imageCmd.Flags().StringVarP(&imageQuality, "quality", "q", "", "Image quality (auto, low, medium, high, xhigh, or max)")
+	imageCmd.Flags().StringVar(&imageBackground, "background", "", "Image background (auto, opaque, or transparent)")
 	imageCmd.Flags().BoolVar(&imageNoDisplay, "no-display", false, "Skip terminal display")
 	imageCmd.Flags().BoolVar(&imageNoClipboard, "no-clipboard", false, "Skip clipboard copy")
 	imageCmd.Flags().BoolVar(&imageNoSave, "no-save", false, "Don't save to default location (use with -o)")
@@ -110,6 +116,15 @@ func runImage(cmd *cobra.Command, args []string) error {
 
 	// Validate --size flag
 	if err := image.ValidateSize(imageSize); err != nil {
+		return err
+	}
+	if err := image.ValidateAspectRatio(imageAspectRatio); err != nil {
+		return err
+	}
+	if err := image.ValidateQuality(imageQuality); err != nil {
+		return err
+	}
+	if err := image.ValidateBackground(imageBackground); err != nil {
 		return err
 	}
 
@@ -176,6 +191,9 @@ func runImage(cmd *cobra.Command, args []string) error {
 				Prompt:      prompt,
 				InputImages: inputImages,
 				Size:        imageSize,
+				AspectRatio: imageAspectRatio,
+				Quality:     imageQuality,
+				Background:  imageBackground,
 				Debug:       imageDebug,
 				DebugRaw:    debugRaw,
 			})
@@ -190,10 +208,13 @@ func runImage(cmd *cobra.Command, args []string) error {
 		// Generate mode
 		result, err = runImageWithSpinner(ctx, provider, func(generateCtx context.Context) (*image.ImageResult, error) {
 			return provider.Generate(generateCtx, image.GenerateRequest{
-				Prompt:   prompt,
-				Size:     imageSize,
-				Debug:    imageDebug,
-				DebugRaw: debugRaw,
+				Prompt:      prompt,
+				Size:        imageSize,
+				AspectRatio: imageAspectRatio,
+				Quality:     imageQuality,
+				Background:  imageBackground,
+				Debug:       imageDebug,
+				DebugRaw:    debugRaw,
 			})
 		}, "Generating image")
 		if err != nil {

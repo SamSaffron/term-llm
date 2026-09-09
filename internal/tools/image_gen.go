@@ -54,6 +54,8 @@ type ImageGenerateArgs struct {
 	InputImages     []string `json:"input_images,omitempty"`      // Multiple paths for multi-image editing
 	Size            string   `json:"size,omitempty"`              // Resolution: "1K", "2K", "4K"
 	AspectRatio     string   `json:"aspect_ratio,omitempty"`      // e.g., "16:9", "4:3"
+	Quality         string   `json:"quality,omitempty"`           // auto, low, medium, high, xhigh, max
+	Background      string   `json:"background,omitempty"`        // auto, opaque, transparent
 	OutputPath      string   `json:"output_path,omitempty"`       // Save location
 	ShowImage       *bool    `json:"show_image,omitempty"`        // Display via icat (default: true)
 	CopyToClipboard *bool    `json:"copy_to_clipboard,omitempty"` // Copy to clipboard (default: true)
@@ -81,8 +83,17 @@ func (t *ImageGenerateTool) Spec() llm.ToolSpec {
 		},
 		"aspect_ratio": map[string]interface{}{
 			"type":        "string",
-			"description": "Aspect ratio, e.g., '1:1', '16:9', '4:3' (default: '1:1')",
-			"default":     "1:1",
+			"description": "Aspect ratio, e.g. '1:1', '16:9', '4:3' (default: provider choice)",
+		},
+		"quality": map[string]interface{}{
+			"type":        "string",
+			"enum":        image.ValidQualities,
+			"description": "Image quality; provider/model support varies",
+		},
+		"background": map[string]interface{}{
+			"type":        "string",
+			"enum":        image.ValidBackgrounds,
+			"description": "Image background mode; transparent requires provider/model support",
 		},
 		"output_path": map[string]interface{}{
 			"type":        "string",
@@ -140,6 +151,15 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 	}
 
 	if err := image.ValidateSize(a.Size); err != nil {
+		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
+	}
+	if err := image.ValidateAspectRatio(a.AspectRatio); err != nil {
+		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
+	}
+	if err := image.ValidateQuality(a.Quality); err != nil {
+		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
+	}
+	if err := image.ValidateBackground(a.Background); err != nil {
 		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
 	}
 
@@ -295,6 +315,8 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 			InputImages: inputImages,
 			Size:        a.Size,
 			AspectRatio: a.AspectRatio,
+			Quality:     a.Quality,
+			Background:  a.Background,
 		})
 		if err != nil {
 			return llm.TextOutput(formatToolError(NewToolErrorf(ErrImageGenFailed, "image edit failed: %v", err))), nil
@@ -305,6 +327,8 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 			Prompt:      a.Prompt,
 			Size:        a.Size,
 			AspectRatio: a.AspectRatio,
+			Quality:     a.Quality,
+			Background:  a.Background,
 		})
 		if err != nil {
 			return llm.TextOutput(formatToolError(NewToolErrorf(ErrImageGenFailed, "image generation failed: %v", err))), nil

@@ -57,6 +57,8 @@ func TestChatGPTProviderGenerateUsesCodexImagesEndpoint(t *testing.T) {
 		Prompt:      "a blue square",
 		Size:        "2K",
 		AspectRatio: "16:9",
+		Quality:     "low",
+		Background:  "transparent",
 	})
 	if err != nil {
 		t.Fatalf("Generate returned error: %v", err)
@@ -88,7 +90,7 @@ func TestChatGPTProviderGenerateUsesCodexImagesEndpoint(t *testing.T) {
 	if payload.Model != "gpt-image-2.5-flare" || payload.Prompt != "a blue square" {
 		t.Fatalf("unexpected payload: %+v", payload)
 	}
-	if payload.Background != "auto" || payload.Quality != "auto" || payload.Size != "2560x1440" {
+	if payload.Background != "transparent" || payload.Quality != "low" || payload.Size != "2560x1440" {
 		t.Fatalf("unexpected image options: %+v", payload)
 	}
 }
@@ -107,6 +109,8 @@ func TestChatGPTProviderEditUsesJSONImageURLs(t *testing.T) {
 	result, err := provider.Edit(context.Background(), EditRequest{
 		Prompt:      "make it red",
 		InputImages: []InputImage{{Data: input, Path: "input.png"}},
+		Quality:     "high",
+		Background:  "opaque",
 	})
 	if err != nil {
 		t.Fatalf("Edit returned error: %v", err)
@@ -126,7 +130,7 @@ func TestChatGPTProviderEditUsesJSONImageURLs(t *testing.T) {
 	if payload.Images[0].ImageURL != wantURL {
 		t.Fatalf("image URL = %q, want %q", payload.Images[0].ImageURL, wantURL)
 	}
-	if payload.Size != "auto" || payload.Model != "gpt-image-2.5-flare" {
+	if payload.Size != "auto" || payload.Model != "gpt-image-2.5-flare" || payload.Quality != "high" || payload.Background != "opaque" {
 		t.Fatalf("unexpected payload: %+v", payload)
 	}
 }

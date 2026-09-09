@@ -100,6 +100,8 @@ func TestOpenAIProviderGenerateUsesConfiguredModel(t *testing.T) {
 		Prompt:      "a neon fox",
 		Size:        "4K",
 		AspectRatio: "16:9",
+		Quality:     "xhigh",
+		Background:  "transparent",
 	})
 	if err != nil {
 		t.Fatalf("Generate returned error: %v", err)
@@ -109,6 +111,9 @@ func TestOpenAIProviderGenerateUsesConfiguredModel(t *testing.T) {
 	}
 	if captured.Size != "3840x2160" {
 		t.Fatalf("size = %q, want %q", captured.Size, "3840x2160")
+	}
+	if captured.Quality != "xhigh" || captured.Background != "transparent" {
+		t.Fatalf("quality/background = %q/%q", captured.Quality, captured.Background)
 	}
 }
 
@@ -153,6 +158,8 @@ func TestOpenAIProviderEditUsesConfiguredModelAndMultipleImages(t *testing.T) {
 		},
 		Size:        "2K",
 		AspectRatio: "9:16",
+		Quality:     "high",
+		Background:  "opaque",
 	})
 	if err != nil {
 		t.Fatalf("Edit returned error: %v", err)
@@ -170,6 +177,8 @@ func TestOpenAIProviderEditUsesConfiguredModelAndMultipleImages(t *testing.T) {
 	var (
 		model      string
 		size       string
+		quality    string
+		background string
 		imageCount int
 	)
 	for {
@@ -189,6 +198,10 @@ func TestOpenAIProviderEditUsesConfiguredModelAndMultipleImages(t *testing.T) {
 			model = string(data)
 		case "size":
 			size = string(data)
+		case "quality":
+			quality = string(data)
+		case "background":
+			background = string(data)
 		case "image[]":
 			imageCount++
 		}
@@ -198,6 +211,9 @@ func TestOpenAIProviderEditUsesConfiguredModelAndMultipleImages(t *testing.T) {
 	}
 	if size != "1440x2560" {
 		t.Fatalf("multipart size = %q, want %q", size, "1440x2560")
+	}
+	if quality != "high" || background != "opaque" {
+		t.Fatalf("multipart quality/background = %q/%q", quality, background)
 	}
 	if imageCount != 2 {
 		t.Fatalf("image count = %d, want 2", imageCount)

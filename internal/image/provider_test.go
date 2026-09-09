@@ -109,6 +109,32 @@ func TestNewImageProviderGrokAliasRemainsXAIAPIKeyProvider(t *testing.T) {
 	}
 }
 
+func TestValidateImageOptions(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		value   string
+		valid   func(string) error
+		wantErr bool
+	}{
+		{"empty quality", "", ValidateQuality, false},
+		{"max quality", "max", ValidateQuality, false},
+		{"bad quality", "ultra", ValidateQuality, true},
+		{"transparent background", "transparent", ValidateBackground, false},
+		{"bad background", "checkerboard", ValidateBackground, true},
+		{"empty ratio", "", ValidateAspectRatio, false},
+		{"landscape ratio", "16:9", ValidateAspectRatio, false},
+		{"wide ratio", "4:1", ValidateAspectRatio, false},
+		{"zero ratio", "16:0", ValidateAspectRatio, true},
+		{"malformed ratio", "wide", ValidateAspectRatio, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.valid(tc.value); (err != nil) != tc.wantErr {
+				t.Fatalf("validation error = %v, wantErr=%v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateSize(t *testing.T) {
 	tests := []struct {
 		size    string

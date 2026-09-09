@@ -71,8 +71,8 @@ func (p *ChatGPTProvider) Generate(ctx context.Context, req GenerateRequest) (*I
 	payload := chatGPTImageGenerationRequest{
 		Model:      p.model,
 		Prompt:     req.Prompt,
-		Background: chatGPTImageBackgroundAuto,
-		Quality:    chatGPTImageQualityAuto,
+		Background: imageOption(req.Background, chatGPTImageBackgroundAuto),
+		Quality:    imageOption(req.Quality, chatGPTImageQualityAuto),
 		Size:       chatGPTImageSize(req.Size, req.AspectRatio),
 	}
 	debug := req.Debug || req.DebugRaw
@@ -96,8 +96,8 @@ func (p *ChatGPTProvider) Edit(ctx context.Context, req EditRequest) (*ImageResu
 		}},
 		Model:      p.model,
 		Prompt:     req.Prompt,
-		Background: chatGPTImageBackgroundAuto,
-		Quality:    chatGPTImageQualityAuto,
+		Background: imageOption(req.Background, chatGPTImageBackgroundAuto),
+		Quality:    imageOption(req.Quality, chatGPTImageQualityAuto),
 		Size:       chatGPTImageSize(req.Size, req.AspectRatio),
 	}
 	debug := req.Debug || req.DebugRaw

@@ -27,6 +27,9 @@ By default, images are:
 | `--provider` | `-p` | Override a built-in image provider or configured OpenAI-compatible provider name |
 | `--output` | `-o` | Custom output path; `-` writes image bytes to stdout for pipelines. |
 | `--size` | `-s` | Requested resolution: `1K`, `2K`, or `4K`; provider/model support varies. |
+| `--aspect-ratio` | | Requested ratio such as `1:1`, `16:9`, or `9:16`; provider/model support varies. |
+| `--quality` | `-q` | `auto`, `low`, `medium`, `high`, `xhigh`, or `max`; provider/model support varies. |
+| `--background` | | `auto`, `opaque`, or `transparent`; provider/model support varies. |
 | `--no-spinner` | | Disable the interactive progress display. |
 | `--no-display` | | Skip terminal display |
 | `--no-clipboard` | | Skip clipboard copy |
@@ -41,6 +44,8 @@ term-llm image "cyberpunk cityscape at night"
 term-llm image "minimalist logo" --provider flux
 term-llm image "futuristic city" --provider xai              # uses Grok image model
 term-llm image "storybook fox in the snow" --provider chatgpt:gpt-image-2.5-sunburst
+term-llm image "fast transparent icon" --provider chatgpt --quality low --background transparent
+term-llm image "cinematic skyline" --provider chatgpt --aspect-ratio 16:9 --quality high
 term-llm image "watercolor painting" -o ./art.png
 
 # Edit existing image (not supported by xAI)
@@ -70,6 +75,8 @@ term-llm image "landscape" --no-display         # don't show in terminal
 Image generation has its own provider selection and config. Where supported, image-specific keys can differ from text-provider keys; normal environment/config fallback still applies. ChatGPT reuses the same OAuth login as text. The listed model names are shipped defaults or examples, not a live availability or pricing guarantee.
 
 **ChatGPT image provider:** log in with `term-llm auth login chatgpt`, then use `term-llm image --provider chatgpt "..."` for subscription-backed GPT Image 2.5 Flare generation without an API key. Select Sunburst for more precise, slower work with `--provider chatgpt:gpt-image-2.5-sunburst`. Existing `gpt-5.4-mini` and `gpt-5.4` image settings are migrated to the Flare default because those language-model values belonged to the retired Responses API hop.
+
+Both the CLI and the `image_generate` tool can request quality, background mode, size, and aspect ratio. The built-in ChatGPT and OpenAI image providers pass quality and background through; other providers retain their provider-specific defaults. Size and aspect ratio remain requests rather than guarantees: the ChatGPT subscription backend may return its native dimensions.
 
 **Editing limits:** xAI does not support editing. ChatGPT accepts one input image. Venice supports one-image editing and multi-image editing with up to three inputs, subject to the selected model. Venice uses `image.venice.edit_model` when set; otherwise it derives the edit model by appending `-edit` to the generation model (unless already present). Gemini and OpenRouter also expose multi-image editing; upstream model limits still apply.
 
