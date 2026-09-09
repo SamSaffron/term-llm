@@ -372,6 +372,10 @@ func (s *serveServer) configureRuntimeSkillsForDirLocked(rt *serveRuntime, dir s
 }
 
 func configureRuntimeSkillsMetadataLocked(rt *serveRuntime, setup *skills.Setup) {
+	if selected := rt.inputs.Load(); selected != nil {
+		rt.systemPrompt = selected.Prompt
+		return
+	}
 	basePrompt := rt.baseSystemPrompt
 	if basePrompt == "" {
 		basePrompt = rt.systemPrompt

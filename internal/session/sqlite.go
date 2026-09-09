@@ -24,6 +24,7 @@ import (
 
 // SQLiteStore implements Store using SQLite.
 type SQLiteStore struct {
+	inputInstanceID          string
 	db                       *sql.DB
 	readDB                   *sql.DB
 	responseRunReadDB        *sql.DB
@@ -462,6 +463,9 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get db path: %w", err)
 	}
+
+	// Retain the resolved identity even if a caller later changes process CWD.
+	cfg.Path = dbPath
 
 	// Ensure directory exists for file-backed databases.
 	if dbPath != ":memory:" && !cfg.ReadOnly {

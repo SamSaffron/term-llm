@@ -498,20 +498,35 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		return nil, err
 	}
 
+	var inputTicket *sessionInputTicket
+	var selectedInputs *sessionInputSelection
+	if sess != nil {
+		if _, supported := session.AsSessionInputRefresher(store); supported {
+			inputTicket, err = processSessionInputs.acquire(ctx, store, sess.ID, inputBinding(effectiveAgent, runtimeDir))
+			if err != nil {
+				return nil, err
+			}
+			defer inputTicket.fail()
+			selectedInputs = inputTicket.selected()
+		}
+	}
 	// Resolve all settings: CLI > agent > config (resume overrides applied below).
 	settings, err := ResolveSettingsInDir(cfg, agent, CLIFlags{
-		Provider:      chatProvider,
-		Tools:         chatTools,
-		ReadDirs:      chatReadDirs,
-		WriteDirs:     chatWriteDirs,
-		ShellAllow:    chatShellAllow,
-		MCP:           chatMCP,
-		SystemMessage: chatSystemMessage,
-		MaxTurns:      chatMaxTurns,
-		MaxTurnsSet:   cmd.Flags().Changed("max-turns"),
-		Search:        chatSearch,
-		NoSearch:      chatNoSearch,
-		Platform:      "chat",
+		Provider:         chatProvider,
+		inputs:           selectedInputs,
+		ToolsSet:         cmd.Flags().Changed("tools"),
+		SystemMessageSet: cmd.Flags().Changed("system"),
+		Tools:            chatTools,
+		ReadDirs:         chatReadDirs,
+		WriteDirs:        chatWriteDirs,
+		ShellAllow:       chatShellAllow,
+		MCP:              chatMCP,
+		SystemMessage:    chatSystemMessage,
+		MaxTurns:         chatMaxTurns,
+		MaxTurnsSet:      cmd.Flags().Changed("max-turns"),
+		Search:           chatSearch,
+		NoSearch:         chatNoSearch,
+		Platform:         "chat",
 	}, cfg.Chat.Provider, cfg.Chat.Model, rawConfigInstructions, cfg.Chat.MaxTurns, 200, runtimeDir)
 	if err != nil {
 		return nil, err
@@ -522,7 +537,9 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	// Saved session settings win on resume.
 	if sess != nil {
 		settings.Search = sess.Search
-		settings.Tools = sess.Tools
+		if inputTicket == nil {
+			settings.Tools = sess.Tools
+		}
 		settings.MCP = sess.MCP
 		settings.SessionID = sess.ID
 	}
@@ -691,6 +708,9 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 
 	// Store resolved instructions in config for chat TUI
 	cfg.Chat.Instructions = InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)
+	if selectedInputs != nil {
+		cfg.Chat.Instructions = selectedInputs.Prompt
+	}
 
 	RegisterSkillToolWithEngine(engine, toolMgr, skillsSetup)
 
@@ -730,6 +750,19 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	}
 	providerKey := cfg.DefaultProvider
 
+	if inputTicket != nil {
+		if inputTicket.owner {
+			result, refreshErr := func() (session.SessionInputRefreshResult, error) {
+				refresher, _ := session.AsSessionInputRefresher(store)
+				return refresher.RefreshSessionInputs(ctx, sess.ID, cfg.Chat.Instructions, settings.Tools, equalSessionTools)
+			}()
+			if refreshErr != nil {
+				return nil, refreshErr
+			}
+			settings.Tools = result.Tools
+		}
+		sess.Tools = settings.Tools
+	}
 	// Normalize resumed session metadata to canonical provider key + active model.
 	agentName := ""
 	if agent != nil {
@@ -883,6 +916,14 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	}
 
 	built = true
+	if inputTicket != nil && inputTicket.owner {
+		inputTicket.finish(sessionInputSelection{BasePrompt: settings.SystemPrompt, Prompt: cfg.Chat.Instructions, Tools: settings.Tools})
+	}
+	if _, supported := session.AsSessionInputRefresher(store); supported {
+		model.SetSessionInputsObserver(func(bound *session.Session, prompt, toolsSetting string) {
+			registerOwnedSessionInputs(store, bound, sessionInputSelection{BasePrompt: prompt, Prompt: prompt, Tools: toolsSetting})
+		})
+	}
 	return &chatSessionRuntime{
 		model:            model,
 		store:            store,

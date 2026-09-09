@@ -70,6 +70,14 @@ func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		defer runtime.Close()
 	}
 
+	if stateful && s.sessionMgr != nil {
+		release, admissionErr := s.sessionMgr.admitSynchronousActivity(sessionID, runtime)
+		if admissionErr != nil {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", admissionErr.Error())
+			return
+		}
+		defer release()
+	}
 	populateMissingToolResultNames(messages, runtime.snapshotHistory())
 
 	search := runtime.search

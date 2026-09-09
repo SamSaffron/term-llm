@@ -312,6 +312,7 @@ type Model struct {
 	skillDynamicToolNames        []string
 	skillDynamicEnginePrevious   map[string]llm.Tool
 	skillDynamicRegistryPrevious map[string]llm.Tool
+	sessionInputsObserver        func(*session.Session, string, string)
 	systemPromptOverridden       bool
 	systemPromptOverride         string
 	guardianReviewerRefresh      func(providerKey, modelName string) error
@@ -3979,4 +3980,16 @@ func (m *Model) maybeScheduleStreamRenderTick() tea.Cmd {
 	return m.presentationTick(delay, func(time.Time) tea.Msg {
 		return streamRenderTickMsg{}
 	})
+}
+
+// SetSessionInputsObserver reports successful owning-surface context selections.
+// Persistence remains the caller's responsibility; borrowed engines do not use it.
+func (m *Model) SetSessionInputsObserver(observer func(*session.Session, string, string)) {
+	m.sessionInputsObserver = observer
+	m.notifySessionInputs()
+}
+func (m *Model) notifySessionInputs() {
+	if m.sessionInputsObserver != nil && m.sess != nil && m.config != nil {
+		m.sessionInputsObserver(m.sess, m.config.Chat.Instructions, m.toolsStr)
+	}
 }

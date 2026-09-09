@@ -13,9 +13,11 @@ func (rt *serveRuntime) hasActiveSideQuestion() bool {
 }
 
 // hasActiveActivity protects runtime lifecycle operations from retiring a
-// runtime while either its main response or private side request is active.
+// runtime while admitted synchronous work, a main response, or a private side
+// request is active. Admission covers setup before runOnce claims rt.mu and
+// the gaps between goal/fallback turns without locking out metadata writes.
 func (rt *serveRuntime) hasActiveActivity() bool {
-	return rt.compacting.Load() || rt.hasActiveRun() || rt.hasActiveSideQuestion()
+	return rt.admittedActivity.Load() > 0 || rt.compacting.Load() || rt.hasActiveRun() || rt.hasActiveSideQuestion()
 }
 
 func (rt *serveRuntime) clearLastUIRunError() {

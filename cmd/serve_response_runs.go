@@ -3942,6 +3942,13 @@ func (s *serveServer) responseRunContinuationID(ctx context.Context, runtime *se
 }
 
 func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, options startResponseRunOptions) (*responseRun, error) {
+	if stateful && s.sessionMgr != nil && sessionID != "" {
+		release, err := s.sessionMgr.pinCurrentRuntime(sessionID, runtime)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
+	}
 	mgr := s.ensureResponseRuns()
 
 	if t := mgr.steeringTransition(sessionID); t != nil && (options.rush == nil || options.rush.RequestID != t.owner.OperationID) {

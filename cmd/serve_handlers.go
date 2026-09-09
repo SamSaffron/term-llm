@@ -2625,7 +2625,7 @@ func (s *serveServer) handleSessionRuntimeGoal(w http.ResponseWriter, r *http.Re
 	}
 	sess, err := s.store.Get(r.Context(), sessionID)
 	if (err != nil || sess == nil) && s.sessionMgr != nil {
-		if rt, rtErr := s.sessionMgr.GetOrCreate(r.Context(), sessionID); rtErr == nil && rt != nil {
+		if rt, rtErr := s.metadataRuntime(r.Context(), sessionID); rtErr == nil && rt != nil {
 			if !rt.mu.TryLock() {
 				writeOpenAIError(w, http.StatusConflict, "conflict_error", "session is busy; retry after the active response finishes")
 				return
@@ -2934,6 +2934,18 @@ func (s *serveServer) handleSessionTitleRefine(w http.ResponseWriter, r *http.Re
 	}
 
 	if !req.Preview {
+		releaseInputs, lockErr := s.lockSessionInputMetadata(sessionID)
+		if lockErr != nil {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", lockErr.Error())
+			return
+		}
+		defer releaseInputs()
+		current, loadErr := s.store.Get(r.Context(), sessionID)
+		if loadErr != nil || current == nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to reload session metadata")
+			return
+		}
+		sess = current
 		sess.Name = ""
 		sess.GeneratedShortTitle = cand.ShortTitle
 		sess.GeneratedLongTitle = cand.LongTitle
@@ -3045,6 +3057,12 @@ func (s *serveServer) handleSessionMetadataPatch(w http.ResponseWriter, r *http.
 		return
 	}
 
+	releaseInputs, lockErr := s.lockSessionInputMetadata(sessionID)
+	if lockErr != nil {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", lockErr.Error())
+		return
+	}
+	defer releaseInputs()
 	sess, err := s.store.Get(r.Context(), sessionID)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to load session")
@@ -3609,25 +3627,51 @@ func runtimeHasAgent(rt *serveRuntime, agentName string) bool {
 	return rt != nil && runtimeAgentName(rt) == normalizeRuntimeAgent(agentName)
 }
 
-func (s *serveServer) createRequestRuntime(ctx context.Context, providerName, modelName, agentName string) (*serveRuntime, error) {
+func (s *serveServer) createRequestRuntime(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
+	if request.SessionID != "" && !request.fresh {
+		key, keyErr := sessionInputKey(s.store, request.SessionID)
+		if keyErr != nil {
+			return nil, keyErr
+		}
+		c := processSessionInputs
+		c.mu.Lock()
+		entry := c.entries[key]
+		if entry != nil && entry.selection != nil {
+			if normalizeRuntimeAgent(request.Agent) != normalizeRuntimeAgent(entry.binding.Agent) || (request.RuntimeDir != "" && request.RuntimeDir != entry.binding.Dir) {
+				c.mu.Unlock()
+				return nil, fmt.Errorf("session input binding differs from the prepared conversation")
+			}
+			if request.Inputs == nil {
+				request.Inputs = entry.selection
+			}
+			if request.RuntimeDir == "" {
+				request.RuntimeDir = entry.binding.Dir
+			}
+		}
+		c.mu.Unlock()
+	}
+	agentName := request.Agent
 	var (
 		rt  *serveRuntime
 		err error
 	)
 	if s.agentRuntimeFactory != nil {
-		rt, err = s.agentRuntimeFactory(ctx, providerName, modelName, agentName)
+		rt, err = s.agentRuntimeFactory(ctx, request)
 	} else {
 		if strings.TrimSpace(agentName) != "" {
 			return nil, fmt.Errorf("per-conversation agents are unavailable")
 		}
 		if s.runtimeFactory != nil {
-			rt, err = s.runtimeFactory(ctx, providerName, modelName)
+			rt, err = s.runtimeFactory(ctx, request)
 		} else {
 			rt, err = s.sessionMgr.factory(ctx)
 		}
 	}
 	if err != nil {
 		return nil, err
+	}
+	if rt != nil {
+		rt.inputs.Store(request.Inputs)
 	}
 	if !runtimeHasAgent(rt, agentName) {
 		if rt != nil {
@@ -3662,10 +3706,18 @@ func (s *serveServer) createRequestRuntime(ctx context.Context, providerName, mo
 	return rt, nil
 }
 
+// metadataRuntime never elects a refresh owner. Durable identity still reaches
+// the typed factory so an already-selected pair survives metadata-only warming.
+func (s *serveServer) metadataRuntime(ctx context.Context, sessionID string) (*serveRuntime, error) {
+	request := serveRuntimeRequest{SessionID: sessionID, Agent: s.requestedRuntimeAgent(ctx, sessionID, "")}
+	return s.sessionMgr.GetOrCreateWith(ctx, sessionID, func(ctx context.Context) (*serveRuntime, error) { return s.createRequestRuntime(ctx, request) })
+}
+
 func (s *serveServer) runtimeForRequest(ctx context.Context, sessionID string) (*serveRuntime, bool, error) {
 	agentName := s.requestedRuntimeAgent(ctx, sessionID, "")
+	selectedInputs := processSessionInputs.ready(s.store, sessionID)
 	create := func(ctx context.Context) (*serveRuntime, error) {
-		return s.createRequestRuntime(ctx, "", "", agentName)
+		return s.createRequestRuntime(ctx, serveRuntimeRequest{SessionID: sessionID, Provider: "", Model: "", Agent: agentName})
 	}
 	if sessionID == "" {
 		// Ephemeral stateless runtime (fresh per request for isolation)
@@ -3680,7 +3732,9 @@ func (s *serveServer) runtimeForRequest(ctx context.Context, sessionID string) (
 	// durable agent is authoritative across daemon restarts and metadata races:
 	// never reuse an idle runtime created for a different agent identity.
 	rt, err := s.sessionMgr.ReplaceIdleWith(ctx, sessionID,
-		func(existing *serveRuntime) bool { return !runtimeHasAgent(existing, agentName) },
+		func(existing *serveRuntime) bool {
+			return !runtimeHasAgent(existing, agentName) || !runtimeHasSelectedInputs(existing, selectedInputs)
+		},
 		create,
 	)
 	if err != nil {
@@ -3791,8 +3845,9 @@ func (s *serveServer) runtimeForProviderModelRequest(ctx context.Context, sessio
 	providerName = strings.TrimSpace(providerName)
 	modelName = strings.TrimSpace(modelName)
 	agentName := s.requestedRuntimeAgent(ctx, sessionID, "")
+	selectedInputs := processSessionInputs.ready(s.store, sessionID)
 	if sessionID == "" {
-		rt, err := s.createRequestRuntime(ctx, providerName, modelName, agentName)
+		rt, err := s.createRequestRuntime(ctx, serveRuntimeRequest{SessionID: sessionID, Provider: providerName, Model: modelName, Agent: agentName})
 		if err != nil {
 			return nil, false, err
 		}
@@ -3816,9 +3871,11 @@ func (s *serveServer) runtimeForProviderModelRequest(ctx context.Context, sessio
 	// matches the durable session. This is the continuation path used after a
 	// daemon restart as well as for an already-warm web session.
 	rt, err := s.sessionMgr.ReplaceIdleWith(ctx, sessionID,
-		func(existing *serveRuntime) bool { return !runtimeHasAgent(existing, agentName) },
+		func(existing *serveRuntime) bool {
+			return !runtimeHasAgent(existing, agentName) || !runtimeHasSelectedInputs(existing, selectedInputs)
+		},
 		func(ctx context.Context) (*serveRuntime, error) {
-			return s.createRequestRuntime(ctx, providerName, modelName, agentName)
+			return s.createRequestRuntime(ctx, serveRuntimeRequest{SessionID: sessionID, Provider: providerName, Model: modelName, Agent: agentName})
 		},
 	)
 	if err != nil {
@@ -3846,6 +3903,13 @@ func (s *serveServer) runtimeForFreshProviderRequest(ctx context.Context, sessio
 }
 
 func (s *serveServer) runtimeForFreshAgentProviderRequest(ctx context.Context, sessionID string, providerName string, requestedAgent string) (*serveRuntime, bool, error) {
+	if sessionID != "" {
+		operation := s.sessionMgr.sessionOperation(sessionID)
+		if !operation.TryLock() {
+			return nil, false, errServeSessionBusy
+		}
+		defer operation.Unlock()
+	}
 	defaultProvider := ""
 	if s.cfgRef != nil {
 		defaultProvider = strings.TrimSpace(s.cfgRef.DefaultProvider)
@@ -3866,7 +3930,7 @@ func (s *serveServer) runtimeForFreshAgentProviderRequest(ctx context.Context, s
 	create := s.sessionMgr.factory
 	if agentName != "" || factoryProvider != "" || s.agentRuntimeFactory != nil {
 		create = func(ctx context.Context) (*serveRuntime, error) {
-			return s.createRequestRuntime(ctx, factoryProvider, "", agentName)
+			return s.createRequestRuntime(ctx, serveRuntimeRequest{SessionID: sessionID, Provider: factoryProvider, Model: "", Agent: agentName, fresh: true})
 		}
 	}
 	if sessionID == "" {
@@ -3895,6 +3959,9 @@ func (s *serveServer) runtimeForFreshAgentProviderRequest(ctx context.Context, s
 	if existingProvider != "" && desiredProvider != "" && existingProvider != desiredProvider {
 		return nil, false, fmt.Errorf("session %q already uses provider %q (requested %q)", sessionID, existingProvider, desiredProvider)
 	}
+	// This is an explicit whole-history replacement, not compatibility access
+	// to an existing conversation. It discards readiness without selecting.
+	processSessionInputs.invalidate(s.store, sessionID)
 	return rt, true, nil
 }
 
@@ -3946,6 +4013,11 @@ func (s *serveServer) ensurePersistedSessionForProjectBinding(ctx context.Contex
 // otherwise use when Run creates the row).
 func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID string, rt *serveRuntime, clientModel, clientEffort, reasoningMode string, syncReasoningMode bool, worktreeDir string, useDefaultWorkspace bool) {
 	if s.store == nil || sessionID == "" || rt == nil {
+		return
+	}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.retiredInputs.Load() {
 		return
 	}
 	providerKey := strings.TrimSpace(rt.providerKey)
@@ -4036,14 +4108,16 @@ func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID
 			} else if sess.CWD != "" {
 				applyRuntimeRootBaseDir(ctx, s.store, sessionID, rt, sess.CWD)
 			}
-			rt.mu.Lock()
 			rt.sessionMeta = sess
-			rt.mu.Unlock()
 			return
 		}
 	}
 
 	changed := false
+	if selected := rt.inputs.Load(); selected != nil && sess.Tools != selected.Tools {
+		sess.Tools = selected.Tools
+		changed = true
+	}
 	persistedAgent := normalizeRuntimeAgent(sess.Agent)
 	runtimeAgent := runtimeAgentName(rt)
 	if persistedAgent != runtimeAgent {
@@ -4125,14 +4199,19 @@ func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID
 	} else if acceptedRoot != "" {
 		applyRuntimeRootBaseDir(ctx, s.store, sessionID, rt, acceptedRoot)
 	}
-	rt.mu.Lock()
 	rt.sessionMeta = sess
-	rt.mu.Unlock()
 }
 
 func (s *serveServer) syncPersistedSessionReasoningMode(ctx context.Context, sessionID string, rt *serveRuntime, reasoningMode string) {
 	if s.store == nil || sessionID == "" {
 		return
+	}
+	if rt != nil {
+		rt.mu.Lock()
+		defer rt.mu.Unlock()
+		if rt.retiredInputs.Load() {
+			return
+		}
 	}
 	reasoningMode = strings.ToLower(strings.TrimSpace(reasoningMode))
 	sess, err := s.store.Get(ctx, sessionID)
@@ -4145,9 +4224,7 @@ func (s *serveServer) syncPersistedSessionReasoningMode(ctx context.Context, ses
 		return
 	}
 	if rt != nil {
-		rt.mu.Lock()
 		rt.sessionMeta = sess
-		rt.mu.Unlock()
 	}
 }
 

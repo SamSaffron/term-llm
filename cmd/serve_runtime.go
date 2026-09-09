@@ -25,6 +25,11 @@ import (
 )
 
 type serveRuntime struct {
+	admittedActivity       atomic.Int32     // synchronous owners, including setup and between-turn gaps
+	retiredInputs          atomic.Bool      // obsolete after committed input replacement
+	settings               *SessionSettings // immutable construction settings, for idle refresh replacement only
+	agentSkills            string
+	inputs                 atomic.Pointer[sessionInputSelection]
 	mu                     sync.Mutex
 	goalMu                 sync.Mutex
 	interruptMu            sync.Mutex
@@ -982,6 +987,9 @@ func (rt *serveRuntime) restorePersistedHistory(ctx context.Context, sess *sessi
 	}
 	rt.history = llmMsgs
 	rt.historyPersisted = true
+	if rt.inputs.Load() != nil {
+		applyPersistedContextEstimate(rt.engine, sess)
+	}
 	return true
 }
 
@@ -1883,6 +1891,9 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	messages = append(messages, inputMessages...)
 
 	req.Messages = messages
+	if selected := rt.inputs.Load(); selected != nil {
+		req.Messages = session.ProjectSelectedSessionPrompt(req.Messages, selected.Prompt)
+	}
 	// The runtime's restored session/worktree binding is authoritative for both
 	// local tools and local CLI providers. Keep caller-supplied values only when
 	// this runtime has no explicit base directory.
@@ -2726,3 +2737,7 @@ func lastUserText(messages []llm.Message) string {
 	}
 	return ""
 }
+
+// selectedSessionInputs snapshots immutable preparation metadata for candidate
+// construction without racing explicit workspace controls.
+func (rt *serveRuntime) selectedSessionInputs() *sessionInputSelection { return rt.inputs.Load() }

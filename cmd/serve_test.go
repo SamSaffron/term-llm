@@ -510,7 +510,8 @@ func TestHandleResponsesAcceptsDedicatedAgentForFreshThread(t *testing.T) {
 	defer srv.sessionMgr.Close()
 	srv.cfg.agentName = "jarvis"
 	var createdAgent string
-	srv.agentRuntimeFactory = func(ctx context.Context, _, _, agentName string) (*serveRuntime, error) {
+	srv.agentRuntimeFactory = func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
+		agentName := request.Agent
 		createdAgent = agentName
 		runtime, err := srv.sessionMgr.factory(ctx)
 		if runtime != nil {
@@ -543,7 +544,8 @@ func TestRuntimeForFreshAgentProviderRequestUsesSelectedAgent(t *testing.T) {
 	srv := &serveServer{
 		cfg:        serveServerConfig{},
 		sessionMgr: mgr,
-		agentRuntimeFactory: func(_ context.Context, _, _, agentName string) (*serveRuntime, error) {
+		agentRuntimeFactory: func(_ context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
+			agentName := request.Agent
 			createdAgent = agentName
 			return &serveRuntime{agentName: agentName}, nil
 		},
@@ -581,10 +583,11 @@ func TestRuntimeForProviderRequestReplacesMismatchedCachedAgent(t *testing.T) {
 		cfgRef:     &config.Config{DefaultProvider: "test"},
 		store:      store,
 		sessionMgr: mgr,
-		runtimeFactory: func(context.Context, string, string) (*serveRuntime, error) {
+		runtimeFactory: func(_ context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
 			return nil, errors.New("generic runtime factory should not be used")
 		},
-		agentRuntimeFactory: func(_ context.Context, _, _, agentName string) (*serveRuntime, error) {
+		agentRuntimeFactory: func(_ context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
+			agentName := request.Agent
 			created++
 			return &serveRuntime{agentName: agentName, maxTurns: 2000}, nil
 		},
@@ -604,10 +607,10 @@ func TestRuntimeForProviderRequestReplacesMismatchedCachedAgent(t *testing.T) {
 }
 
 func TestCreateRequestRuntimeRejectsWrongAgentIdentity(t *testing.T) {
-	srv := &serveServer{agentRuntimeFactory: func(context.Context, string, string, string) (*serveRuntime, error) {
+	srv := &serveServer{agentRuntimeFactory: func(_ context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
 		return &serveRuntime{agentName: ""}, nil
 	}}
-	if _, err := srv.createRequestRuntime(context.Background(), "", "", "developer"); err == nil || !strings.Contains(err.Error(), "does not match requested agent") {
+	if _, err := srv.createRequestRuntime(context.Background(), serveRuntimeRequest{Provider: "", Model: "", Agent: "developer"}); err == nil || !strings.Contains(err.Error(), "does not match requested agent") {
 		t.Fatalf("createRequestRuntime error = %v, want identity mismatch", err)
 	}
 }
@@ -9098,7 +9101,8 @@ func TestHandleResponses_PreviousResponseIDRestoresPersistedProviderAfterRuntime
 		cfgRef:     &config.Config{DefaultProvider: "default"},
 		sessionMgr: manager,
 		store:      store,
-		runtimeFactory: func(ctx context.Context, providerName string, model string) (*serveRuntime, error) {
+		runtimeFactory: func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
+			providerName := request.Provider
 			createNum := otherCreates.Add(1)
 			return newRuntime(providerName, fmt.Sprintf("%s response %d", providerName, createNum)), nil
 		},
@@ -9196,7 +9200,9 @@ func TestHandleResponses_ChainedRequestWithoutModelSwapRemainsPinnedToPersistedR
 		cfgRef:     &config.Config{DefaultProvider: "default"},
 		sessionMgr: manager,
 		store:      store,
-		runtimeFactory: func(ctx context.Context, providerName string, modelName string) (*serveRuntime, error) {
+		runtimeFactory: func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
+			providerName := request.Provider
+			modelName := request.Model
 			return newRuntime(providerName, modelName), nil
 		},
 	}
@@ -9273,10 +9279,15 @@ func TestHandleResponses_ModelSwapNaiveSuccessCommitsTargetRuntime(t *testing.T)
 		cfgRef:     &config.Config{DefaultProvider: "default"},
 		sessionMgr: manager,
 		store:      store,
-		runtimeFactory: func(ctx context.Context, providerName string, modelName string) (*serveRuntime, error) {
+		runtimeFactory: func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
+			providerName := request.Provider
+			modelName := request.Model
 			return newRuntime(providerName, modelName), nil
 		},
-		agentRuntimeFactory: func(ctx context.Context, providerName string, modelName string, agentName string) (*serveRuntime, error) {
+		agentRuntimeFactory: func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
+			providerName := request.Provider
+			modelName := request.Model
+			agentName := request.Agent
 			runtime := newRuntime(providerName, modelName)
 			runtime.agentName = agentName
 			return runtime, nil
@@ -9431,7 +9442,9 @@ func TestHandleResponses_ModelSwapNaiveFailureFallsBackToHandover(t *testing.T) 
 		cfgRef:     &config.Config{DefaultProvider: "default"},
 		sessionMgr: manager,
 		store:      store,
-		runtimeFactory: func(ctx context.Context, providerName string, modelName string) (*serveRuntime, error) {
+		runtimeFactory: func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
+			providerName := request.Provider
+			modelName := request.Model
 			return newRuntime(providerName, modelName), nil
 		},
 	}
@@ -9538,7 +9551,9 @@ func TestHandleResponses_ModelSwapFallbackFailureRollsBackOriginalRuntimeAndHist
 		cfgRef:     &config.Config{DefaultProvider: "default"},
 		sessionMgr: manager,
 		store:      store,
-		runtimeFactory: func(ctx context.Context, providerName string, modelName string) (*serveRuntime, error) {
+		runtimeFactory: func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
+			providerName := request.Provider
+			modelName := request.Model
 			return newRuntime(providerName, modelName), nil
 		},
 	}
@@ -9670,7 +9685,8 @@ func TestHandleResponses_FreshConversationReusedSessionIDUpdatesPersistedProvide
 		cfgRef:     &config.Config{DefaultProvider: "default"},
 		sessionMgr: manager,
 		store:      store,
-		runtimeFactory: func(ctx context.Context, providerName string, model string) (*serveRuntime, error) {
+		runtimeFactory: func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
+			providerName := request.Provider
 			createNum := otherCreates.Add(1)
 			return newRuntime(providerName, fmt.Sprintf("%s response %d", providerName, createNum)), nil
 		},
@@ -9767,7 +9783,8 @@ func TestHandleResponses_FreshConversationWithoutProviderUsesDefaultNotPersisted
 		cfgRef:     &config.Config{DefaultProvider: "default"},
 		sessionMgr: manager,
 		store:      store,
-		runtimeFactory: func(ctx context.Context, providerName string, model string) (*serveRuntime, error) {
+		runtimeFactory: func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
+			providerName := request.Provider
 			if providerName == "" || providerName == "default" {
 				createNum := defaultCreates.Add(1)
 				return newRuntime("default", createNum), nil
@@ -9865,7 +9882,8 @@ func TestFreshProviderRequest_ConcurrentReplace(t *testing.T) {
 	srv := &serveServer{
 		cfgRef:     &config.Config{DefaultProvider: "default"},
 		sessionMgr: manager,
-		runtimeFactory: func(ctx context.Context, providerName string, model string) (*serveRuntime, error) {
+		runtimeFactory: func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
+			providerName := request.Provider
 			return newRuntime(providerName), nil
 		},
 	}
@@ -12186,7 +12204,8 @@ func TestServeServer_RuntimeForProviderRequest_StatefulRespectsRequestCancel(t *
 
 	srv := &serveServer{
 		sessionMgr: mgr,
-		runtimeFactory: func(ctx context.Context, providerName string, model string) (*serveRuntime, error) {
+		runtimeFactory: func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
+			providerName := request.Provider
 			if providerName != "test-provider" {
 				return nil, fmt.Errorf("expected provider test-provider, got %q", providerName)
 			}
@@ -12911,7 +12930,8 @@ func TestHandleResponses_WithProviderField(t *testing.T) {
 	srv := &serveServer{
 		cfgRef:     &config.Config{DefaultProvider: "mock"},
 		sessionMgr: manager,
-		runtimeFactory: func(ctx context.Context, providerName string, model string) (*serveRuntime, error) {
+		runtimeFactory: func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
+			providerName := request.Provider
 			engine := llm.NewEngine(provider, nil)
 			rt := &serveRuntime{
 				provider:     provider,

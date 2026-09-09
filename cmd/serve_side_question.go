@@ -611,7 +611,13 @@ func (s *serveServer) handleSideQuestion(w http.ResponseWriter, r *http.Request)
 		writeOpenAIError(w, status, errorType, err.Error())
 		return
 	}
+	releaseAdmission, admissionErr := s.sessionMgr.pinCurrentRuntime(sessionID, rt)
+	if admissionErr != nil {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", admissionErr.Error())
+		return
+	}
 	events, err := rt.startSideQuestion(input)
+	releaseAdmission()
 	if err != nil {
 		status, errorType := http.StatusInternalServerError, "server_error"
 		message := strings.ToLower(err.Error())

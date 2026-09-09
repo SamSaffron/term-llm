@@ -1229,6 +1229,7 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 
 	// Persist new session and infer its registered project from the CWD.
 	persistNewTUISession(context.Background(), m.store, m.sess)
+	m.notifySessionInputs()
 
 	// Clear conversation messages and input
 	m.messages = nil
@@ -2229,6 +2230,7 @@ func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
 
 	// Persist new session and infer its registered project from the CWD.
 	persistNewTUISession(context.Background(), m.store, m.sess)
+	m.notifySessionInputs()
 
 	// Clear conversation messages and input
 	m.messages = nil
@@ -4122,6 +4124,9 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 		return m.showFooterError(fmt.Sprintf("Handover failed to set current session: %v", err))
 	}
 
+	if m.sessionInputsObserver != nil {
+		m.sessionInputsObserver(newSess, targetSystemPrompt, newSess.Tools)
+	}
 	// Mark the source session complete only after the target session is fully
 	// committed and current. Failure here is best-effort and should not undo the
 	// successful handover.

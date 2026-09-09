@@ -84,7 +84,7 @@ func TestBeginResponseModelSwapRestoresWorkspace(t *testing.T) {
 			t.Cleanup(manager.Close)
 			srv.sessionMgr = manager
 			putTestSession(manager, sess.ID, previous)
-			srv.runtimeFactory = func(context.Context, string, string) (*serveRuntime, error) {
+			srv.runtimeFactory = func(_ context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
 				// The previous runtime has already been restored by this point.
 				// Make only the candidate's workspace initialization fail.
 				if tc.removeWorkspace {

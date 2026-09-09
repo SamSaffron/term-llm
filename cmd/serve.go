@@ -598,12 +598,22 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		}
 		return s.shellManager()
 	}}
-	agentRuntimeFactory := func(ctx context.Context, providerName string, providerModel string, requestedAgent string) (*serveRuntime, error) {
+	agentRuntimeFactory := func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
+		providerName, providerModel, requestedAgent := request.Provider, request.Model, request.Agent
 		runtimeAgent := strings.TrimSpace(serveAgent)
 		if runtimeAgent == "" {
 			runtimeAgent = strings.TrimSpace(requestedAgent)
 		}
+		runtimeApprovalMode := resolvedApproval.Mode
+		if request.approvalMode != nil {
+			runtimeApprovalMode = *request.approvalMode
+		}
 		runner := &cmdRunner{baseCfg: cfg, defaults: cmdRunnerOptions{
+			Inputs:              request.Inputs,
+			RestoreSettings:     request.settings,
+			RestoreAgentSkills:  request.agentSkills,
+			ToolsSet:            cmd.Flags().Changed("tools"),
+			SystemMessageSet:    cmd.Flags().Changed("system"),
 			Provider:            serveProvider,
 			Tools:               serveTools,
 			ReadDirs:            append([]string(nil), serveReadDirs...),
@@ -616,7 +626,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			NoSearch:            serveNoSearch,
 			NativeSearch:        serveNativeSearch,
 			NoNativeSearch:      serveNoNativeSearch,
-			ApprovalMode:        resolvedApproval.Mode,
+			ApprovalMode:        runtimeApprovalMode,
 			ApprovalModeSet:     true,
 			ApprovalSource:      resolvedApproval.Source,
 			ApprovalHeadless:    true,
@@ -629,6 +639,8 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			Store:               store,
 		}}
 		env, err := runner.prepare(ctx, runpkg.Request{
+			SessionID:    request.SessionID,
+			Cwd:          request.RuntimeDir,
 			Platform:     runpkg.PlatformWeb,
 			AgentName:    runtimeAgent,
 			Provider:     strings.TrimSpace(providerName),
@@ -688,11 +700,11 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		return runtime, nil
 	}
 
-	runtimeFactory := func(ctx context.Context, providerName string, providerModel string) (*serveRuntime, error) {
-		return agentRuntimeFactory(ctx, providerName, providerModel, "")
+	runtimeFactory := func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
+		return agentRuntimeFactory(ctx, request)
 	}
 	factory := func(ctx context.Context) (*serveRuntime, error) {
-		return runtimeFactory(ctx, "", "")
+		return runtimeFactory(ctx, serveRuntimeRequest{})
 	}
 	sessionMgr := newServeSessionManager(serveSessionTTL, serveSessionMax, factory)
 	defer func() {
@@ -1488,8 +1500,8 @@ type serveServer struct {
 	webrtcMu                 sync.RWMutex
 	webrtcPeer               webrtcpkg.Peer
 	webrtcHeadSnippet        string // injected into index.html <head>; empty when WebRTC disabled
-	runtimeFactory           func(ctx context.Context, providerName string, model string) (*serveRuntime, error)
-	agentRuntimeFactory      func(ctx context.Context, providerName string, model string, agentName string) (*serveRuntime, error)
+	runtimeFactory           func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error)
+	agentRuntimeFactory      func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error)
 	titleProviderFactory     func(*config.Config) (llm.Provider, error)
 	autoTitleProviderFactory func(string) (llm.Provider, error)
 	autoTitleMu              sync.Mutex

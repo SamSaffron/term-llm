@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"github.com/samsaffron/term-llm/internal/session"
 	"net/http"
 	"strings"
 )
@@ -48,7 +49,12 @@ func (s *serveServer) handleCreateWebSession(w http.ResponseWriter, r *http.Requ
 		writeWorkspaceError(w, err)
 		return
 	}
-	runtime, _, err := s.runtimeForFreshAgentProviderRequest(r.Context(), sessionID, req.Provider, req.Agent)
+	var runtime *serveRuntime
+	if _, supported := session.AsSessionInputRefresher(s.store); supported {
+		runtime, err = s.prepareUIRuntime(r.Context(), serveRuntimeRequest{SessionID: sessionID, Provider: req.Provider, Model: req.Model, Agent: req.Agent, RefreshInputs: true}, binding)
+	} else {
+		runtime, _, err = s.runtimeForFreshAgentProviderRequest(r.Context(), sessionID, req.Provider, req.Agent)
+	}
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return

@@ -20,11 +20,12 @@ type serveSessionManager struct {
 	onEvict           func(rt *serveRuntime) // called when a session is evicted
 	retirementTimeout time.Duration
 
-	mu       sync.Mutex
-	sessions map[string]*serveRuntime
-	creating map[string]*sessionCreateInFlight
-	closed   bool
-	stopCh   chan struct{}
+	preparationSlots int
+	mu               sync.Mutex
+	sessions         map[string]*serveRuntime
+	creating         map[string]*sessionCreateInFlight
+	closed           bool
+	stopCh           chan struct{}
 
 	// Per-session operation locks keep runtime installation/replacement and
 	// metadata mutations ordered without holding the process-wide map mutex.
@@ -73,7 +74,7 @@ func (m *serveSessionManager) lockIdleMetadataMutation(id string) (*serveRuntime
 		return nil, nil, errServeSessionBusy
 	}
 	rt := m.sessions[id]
-	if rt != nil && (rt.hasActiveRun() || !rt.mu.TryLock()) {
+	if rt != nil && (rt.hasActiveActivity() || !rt.mu.TryLock()) {
 		m.mu.Unlock()
 		m.reserved.Delete(id)
 		unlockOperation()
@@ -175,7 +176,7 @@ func (m *serveSessionManager) retireRuntime(rt *serveRuntime) {
 }
 
 func (m *serveSessionManager) evictOldestIdleLocked() *serveRuntime {
-	if len(m.sessions) < m.max {
+	if len(m.sessions)+m.preparationSlots < m.max {
 		return nil
 	}
 
@@ -204,7 +205,7 @@ func (m *serveSessionManager) evictOldestIdleLocked() *serveRuntime {
 }
 
 func (m *serveSessionManager) makeRoomForNewSessionLocked() (*serveRuntime, error) {
-	if len(m.sessions) < m.max {
+	if len(m.sessions)+m.preparationSlots < m.max {
 		return nil, nil
 	}
 

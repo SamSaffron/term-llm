@@ -144,7 +144,7 @@ func TestExtensionBuilderEngineInstallsAndEnablesExtension(t *testing.T) {
 		AddToolCall("enable", tools.WriteFileToolName, map[string]any{"path": filepath.Join(dir, extensions.SettingsFile), "content": "enabled: [dracula, moon]\n"}).
 		AddToolCall("activate", tools.UIActivateToolName, map[string]any{}).AddTextResponse("Your moonlit interface is ready; automatic activation is requested.")
 	var runtime *serveRuntime
-	server := &serveServer{extensions: e, agentRuntimeFactory: func(context.Context, string, string, string) (*serveRuntime, error) {
+	server := &serveServer{extensions: e, agentRuntimeFactory: func(_ context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
 		settings := SessionSettings{Tools: "ui_get_source,ui_extensions,ui_activate_extensions,read_file,write_file,edit_file", BaseDir: filepath.Dir(e.configPath), PrimaryWorkspace: filepath.Dir(e.configPath)}
 		engine, mgr, err := newServeEngineWithTools(&config.Config{}, settings, provider, "mock", "mock-model", false, false, nil, nil)
 		if err != nil {
@@ -153,7 +153,7 @@ func TestExtensionBuilderEngineInstallsAndEnablesExtension(t *testing.T) {
 		runtime = &serveRuntime{provider: provider, providerKey: "mock", defaultModel: "mock-model", agentName: "extension-builder", extensionBuilder: true, engine: engine, toolMgr: mgr}
 		return runtime, nil
 	}}
-	rt, err := server.createRequestRuntime(context.Background(), "mock", "mock-model", "extension-builder")
+	rt, err := server.createRequestRuntime(context.Background(), serveRuntimeRequest{Provider: "mock", Model: "mock-model", Agent: "extension-builder"})
 	if err != nil {
 		t.Fatal(err)
 	}

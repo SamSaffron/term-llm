@@ -415,6 +415,7 @@ func (m *Model) applyRuntimeDirectory(dir, worktreeDir string) error {
 	m.resetContextEstimateBaseline(context.Background())
 	m.pendingTerminalDirectory = dir
 	m.resetMentionsForRoot(dir)
+	m.notifySessionInputs()
 	return nil
 }
 

@@ -10,6 +10,12 @@ import (
 )
 
 func (s *serveServer) streamUIResponses(w http.ResponseWriter, r *http.Request, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution, idempotencyKey, idempotencyScope, requestFingerprint, notificationSubscriptionID string, onDone func()) {
+	// Eligibility was handled before factory/tool selection. This is only a
+	// consistency check for a pointer that could have been retired meanwhile.
+	if selected := processSessionInputs.ready(s.store, sessionID); selected != nil && runtime.selectedSessionInputs() != selected {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", "session runtime changed before admission")
+		return
+	}
 	// Persist session in the store so the client gets the session number in
 	// headers before the streaming body begins. This is a store-only operation
 	// that does NOT mutate runtime state (safe without rt.mu).

@@ -273,22 +273,31 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 	skillsSetup := SetupSkills(&cfg.Skills, askSkills, agentSkills, cmd.ErrOrStderr())
 
+	// Durable identity must be known before expanding the two refreshable
+	// inputs. In particular, includes must not resolve against the launch CWD.
+	var deferredInputs *sessionInputSelection
+	if cmd.Flags().Changed("resume") {
+		deferredInputs = &sessionInputSelection{}
+	}
 	// Resolve all settings: CLI > agent > config
 	settings, err := ResolveSettings(cfg, agent, CLIFlags{
-		Provider:        askProvider,
-		Tools:           askTools,
-		ReadDirs:        askReadDirs,
-		WriteDirs:       askWriteDirs,
-		ShellAllow:      askShellAllow,
-		MCP:             askMCP,
-		SystemMessage:   askSystemMessage,
-		MaxTurns:        askMaxTurns,
-		MaxTurnsSet:     cmd.Flags().Changed("max-turns"),
-		MaxOutputTokens: askMaxOutputTokens,
-		Search:          askSearch,
-		NoSearch:        askNoSearch,
-		Files:           askFiles,
-		Platform:        "console",
+		inputs:           deferredInputs,
+		Provider:         askProvider,
+		ToolsSet:         cmd.Flags().Changed("tools"),
+		SystemMessageSet: cmd.Flags().Changed("system"),
+		Tools:            askTools,
+		ReadDirs:         askReadDirs,
+		WriteDirs:        askWriteDirs,
+		ShellAllow:       askShellAllow,
+		MCP:              askMCP,
+		SystemMessage:    askSystemMessage,
+		MaxTurns:         askMaxTurns,
+		MaxTurnsSet:      cmd.Flags().Changed("max-turns"),
+		MaxOutputTokens:  askMaxOutputTokens,
+		Search:           askSearch,
+		NoSearch:         askNoSearch,
+		Files:            askFiles,
+		Platform:         "console",
 	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 50)
 	if err != nil {
 		return err
@@ -307,6 +316,8 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}()
 	var sess *session.Session
 	var sessionMessages []llm.Message
+	var inputTicket *sessionInputTicket
+	var selectedInputs *sessionInputSelection
 
 	// Handle --resume flag - apply session settings before tool/MCP setup
 	resuming := cmd.Flags().Changed("resume")
@@ -335,6 +346,12 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		// Mark session as active since we're resuming it for a new turn
 		_ = store.UpdateStatus(ctx, sess.ID, session.StatusActive)
 
+		if _, supported := session.AsSessionInputRefresher(store); !supported {
+			settings.SystemPrompt, settings.Tools, err = resolveSessionPromptTools(cfg, agent, CLIFlags{Tools: askTools, ToolsSet: cmd.Flags().Changed("tools"), SystemMessage: askSystemMessage, SystemMessageSet: cmd.Flags().Changed("system"), Files: askFiles, Platform: "console"}, cfg.Ask.Instructions, settings.BaseDir, settings.Provider, settings.Model)
+			if err != nil {
+				return err
+			}
+		}
 		// Apply session settings for flags not explicitly set on CLI
 		// (unconditionally - session may have had search/tools/MCP disabled)
 		if !cmd.Flags().Changed("search") {
@@ -362,12 +379,30 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		// Load active session history (post-compaction when a boundary exists).
-		if sessionMsgs, loadErr := session.LoadActiveMessages(ctx, store, sess); loadErr == nil {
-			for _, msg := range sessionMsgs {
-				sessionMessages = append(sessionMessages, msg.ToLLMMessage())
+		if _, supported := session.AsSessionInputRefresher(store); supported {
+			inputTicket, err = processSessionInputs.acquire(ctx, store, sess.ID, inputBinding(sess.Agent, settings.BaseDir))
+			if err != nil {
+				return err
+			}
+			defer inputTicket.fail()
+			selectedInputs = inputTicket.selected()
+			if selectedInputs != nil {
+				settings.SystemPrompt, settings.Tools = selectedInputs.BasePrompt, selectedInputs.Tools
+			} else {
+				resumedAgent, loadErr := LoadAgent(sess.Agent, cfg)
+				if loadErr != nil {
+					return loadErr
+				}
+				settings.SystemPrompt, settings.Tools, err = resolveSessionPromptTools(cfg, resumedAgent, CLIFlags{
+					Provider: askProvider, Tools: askTools, ToolsSet: cmd.Flags().Changed("tools"),
+					SystemMessage: askSystemMessage, SystemMessageSet: cmd.Flags().Changed("system"), Files: askFiles, Platform: "console",
+				}, cfg.Ask.Instructions, settings.BaseDir, cfg.Ask.Provider, cfg.Ask.Model)
+				if err != nil {
+					return err
+				}
 			}
 		}
+
 	}
 
 	// Resolve session ID early so tool wiring can capture it
@@ -377,7 +412,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 	sessionID = ensureRequestSessionID(sessionID, resuming)
 	settings.SessionID = sessionID
+	baseInputPrompt := settings.SystemPrompt
 	settings.SystemPrompt = InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)
+	if selectedInputs != nil {
+		settings.SystemPrompt = selectedInputs.Prompt
+	}
 	alignSettingsToActiveProvider(&settings, cfg, provider)
 
 	// Initialize local tools if we have any
@@ -490,6 +529,37 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		_ = store.Create(ctx, sess)
 	}
 
+	if inputTicket != nil {
+		if inputTicket.owner {
+			refresher, _ := session.AsSessionInputRefresher(store)
+			result, refreshErr := refresher.RefreshSessionInputs(ctx, sess.ID, settings.SystemPrompt, settings.Tools, equalSessionTools)
+			if refreshErr != nil {
+				return refreshErr
+			}
+			settings.Tools = result.Tools
+		}
+		sess.Tools = settings.Tools
+	}
+	if !resuming && sess != nil {
+		registerOwnedSessionInputs(store, sess, sessionInputSelection{BasePrompt: baseInputPrompt, Prompt: settings.SystemPrompt, Tools: settings.Tools})
+	}
+	if resuming {
+		// Load active session history (post-compaction when a boundary exists).
+		if sessionMsgs, loadErr := session.LoadActiveMessages(ctx, store, sess); loadErr != nil && inputTicket != nil {
+			return fmt.Errorf("load refreshed session history: %w", loadErr)
+		} else if loadErr == nil {
+			for _, msg := range sessionMsgs {
+				sessionMessages = append(sessionMessages, msg.ToLLMMessage())
+			}
+		}
+	}
+
+	if inputTicket != nil {
+		if inputTicket.owner {
+			inputTicket.finish(sessionInputSelection{BasePrompt: baseInputPrompt, Prompt: settings.SystemPrompt, Tools: settings.Tools})
+		}
+		sessionMessages = session.ProjectSelectedSessionPrompt(sessionMessages, settings.SystemPrompt)
+	}
 	// Sequence numbers are now auto-allocated by the store (pass Sequence: -1)
 
 	// Use system prompt from resolved settings (already expanded)

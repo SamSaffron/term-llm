@@ -378,7 +378,9 @@ func (s *serveServer) handleWorktreeSwitch(w http.ResponseWriter, r *http.Reques
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", "could not switch the conversation workspace")
 		return
 	}
+	processSessionInputs.invalidate(s.store, sessionID)
 	if rt != nil {
+		rt.inputs.Store(nil)
 		resolved := *persisted
 		rt.sessionMeta = &resolved
 		s.configureRuntimeSkillsForDirLocked(rt, targetDir)
@@ -509,7 +511,9 @@ func (s *serveServer) moveCleanupCallerToRoot(ctx context.Context, sessionID, wo
 		}
 		return nil, fmt.Errorf("persist root workspace: %w", err)
 	}
+	processSessionInputs.invalidate(s.store, sessionID)
 	if rt != nil {
+		rt.inputs.Store(nil)
 		resolved = *persisted
 		rt.sessionMeta = &resolved
 		s.configureRuntimeSkillsForDirLocked(rt, root)

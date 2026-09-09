@@ -153,7 +153,8 @@ func newWebReloadTestServer(t *testing.T) *serveServer {
 	t.Helper()
 	srv := &serveServer{responseRuns: newServeResponseRunManager()}
 	srv.sessionMgr = newServeSessionManager(time.Hour, 10, nil)
-	srv.runtimeFactory = func(_ context.Context, provider, _ string) (*serveRuntime, error) {
+	srv.runtimeFactory = func(_ context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
+		provider := request.Provider
 		if provider == "missing" {
 			return nil, errors.New("provider removed during upgrade")
 		}

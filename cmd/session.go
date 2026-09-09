@@ -92,20 +92,23 @@ type SessionSettings struct {
 
 // CLIFlags holds the CLI flag values that can override settings.
 type CLIFlags struct {
-	Provider        string
-	Tools           string
-	ReadDirs        []string
-	WriteDirs       []string
-	ShellAllow      []string
-	MCP             string
-	SystemMessage   string
-	MaxTurns        int
-	MaxTurnsSet     bool // true if --max-turns was explicitly set
-	MaxOutputTokens int  // 0 = use provider default
-	Search          bool
-	NoSearch        bool
-	Files           []string // files passed via -f flag, used for agent template expansion (e.g., {{.Files}})
-	Platform        string   // runtime surface for template expansion (e.g., chat, console, web, telegram, jobs)
+	Provider         string
+	Tools            string
+	ToolsSet         bool
+	SystemMessageSet bool
+	inputs           *sessionInputSelection
+	ReadDirs         []string
+	WriteDirs        []string
+	ShellAllow       []string
+	MCP              string
+	SystemMessage    string
+	MaxTurns         int
+	MaxTurnsSet      bool // true if --max-turns was explicitly set
+	MaxOutputTokens  int  // 0 = use provider default
+	Search           bool
+	NoSearch         bool
+	Files            []string // files passed via -f flag, used for agent template expansion (e.g., {{.Files}})
+	Platform         string   // runtime surface for template expansion (e.g., chat, console, web, telegram, jobs)
 }
 
 // LoadAgent loads and validates an agent by name or path.
@@ -183,7 +186,6 @@ func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags,
 		return SessionSettings{}, err
 	}
 	s := SessionSettings{}
-	fileTrackingEnabled := cfg != nil && cfg.FileTracking.Enabled
 	if agent != nil {
 		s.AgentName = agent.Name
 		s.PlanGuidance = agent.Name == "developer" && agent.Source == agents.SourceBuiltin
@@ -201,19 +203,6 @@ func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags,
 		}
 	}
 	// CLI provider flag is handled separately via applyProviderOverridesWithAgent
-
-	// Tools: CLI > agent
-	if cli.Tools != "" {
-		s.Tools = cli.Tools
-	} else if agent != nil {
-		if agent.HasEnabledList() {
-			s.Tools = strings.Join(agent.Tools.Enabled, ",")
-		} else if agent.HasDisabledList() {
-			allTools := tools.StandardToolNames()
-			enabledTools := agent.GetEnabledTools(allTools)
-			s.Tools = strings.Join(enabledTools, ",")
-		}
-	}
 
 	// Read/Write/Shell dirs: CLI > agent
 	if len(cli.ReadDirs) > 0 {
@@ -266,61 +255,6 @@ func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags,
 		}
 	}
 
-	// System prompt: CLI > agent > config
-	if cli.SystemMessage != "" {
-		templateCtx := agents.NewTemplateContextForTemplateInDir(cli.SystemMessage, runtimeDir).WithFiles(cli.Files).WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model).WithFileTracking(fileTrackingEnabled)
-		expanded, err := expandSystemPromptWithIncludes(cli.SystemMessage, templateCtx, runtimeDir, runtimeDir)
-		if err != nil {
-			return s, fmt.Errorf("expand --system prompt: %w", err)
-		}
-		s.SystemPrompt = expanded
-	} else {
-		usedAgentPrompt := false
-		if agent != nil {
-			projectInstructions := ""
-			if agent.ShouldLoadProjectInstructions() {
-				projectInstructions = agents.DiscoverProjectInstructionsInDir(runtimeDir)
-			}
-
-			// Use the agent branch only when it can actually produce a prompt. This
-			// lets agents_md:true agents without system.md use AGENTS.md as their prompt,
-			// while preserving the config fallback when auto agents request project
-			// instructions but none exist.
-			if strings.TrimSpace(agent.SystemPrompt) != "" || projectInstructions != "" {
-				usedAgentPrompt = true
-				if strings.TrimSpace(agent.SystemPrompt) != "" {
-					templateCtx, includeBaseDir, err := agentPromptTemplateContextAndBaseDirInDir(agent, cli.Files, runtimeDir)
-					if err != nil {
-						return s, fmt.Errorf("prepare agent system prompt context: %w", err)
-					}
-					templateCtx = templateCtx.WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model).WithFileTracking(fileTrackingEnabled)
-					expanded, err := expandSystemPromptWithIncludes(agent.SystemPrompt, templateCtx, includeBaseDir, runtimeDir)
-					if err != nil {
-						return s, fmt.Errorf("expand agent system prompt: %w", err)
-					}
-					s.SystemPrompt = expanded
-				}
-
-				if projectInstructions != "" {
-					if strings.TrimSpace(s.SystemPrompt) == "" {
-						s.SystemPrompt = projectInstructions
-					} else {
-						s.SystemPrompt += "\n\n---\n\n" + projectInstructions
-					}
-				}
-			}
-		}
-
-		if !usedAgentPrompt {
-			templateCtx := agents.NewTemplateContextForTemplateInDir(configInstructions, runtimeDir).WithFiles(cli.Files).WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model).WithFileTracking(fileTrackingEnabled)
-			expanded, err := expandSystemPromptWithIncludes(configInstructions, templateCtx, runtimeDir, runtimeDir)
-			if err != nil {
-				return s, fmt.Errorf("expand config system prompt: %w", err)
-			}
-			s.SystemPrompt = expanded
-		}
-	}
-
 	// Max turns: CLI (if set) > agent > config > default
 	if cli.MaxTurnsSet {
 		s.MaxTurns = cli.MaxTurns
@@ -347,7 +281,14 @@ func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags,
 		s.InsightsExpansion = agent.Memory.InsightsExpansion
 		s.InsightsMaxTokens = agent.Memory.InsightsMaxTokens
 	}
-	s.SystemPrompt = injectInsightsMetadata(s.SystemPrompt, s.AgentName, s.InsightsExpansion, s.InsightsMaxTokens)
+	if cli.inputs != nil {
+		s.SystemPrompt, s.Tools = cli.inputs.BasePrompt, cli.inputs.Tools
+	} else {
+		s.SystemPrompt, s.Tools, err = resolveSessionPromptTools(cfg, agent, cli, configInstructions, runtimeDir, s.Provider, s.Model)
+		if err != nil {
+			return s, err
+		}
+	}
 
 	// Keep a canonical runtime directory for relative paths and shell cwd, but do
 	// not turn it into authority here. Local launchers and explicit request/session
@@ -356,6 +297,96 @@ func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags,
 	s.ShellWorkingDir = runtimeDir
 
 	return s, nil
+}
+
+// resolveSessionPromptTools resolves only the two refreshable inputs. Callers
+// resuming durable history must supply the saved agent and canonical directory.
+func resolveSessionPromptTools(cfg *config.Config, agent *agents.Agent, cli CLIFlags, configInstructions, runtimeDir, provider, model string) (string, string, error) {
+	s := SessionSettings{Provider: provider, Model: model}
+	if agent != nil {
+		if agent.Provider != "" {
+			s.Provider = agent.Provider
+		}
+		if agent.Model != "" {
+			s.Model = agent.Model
+		}
+	}
+	fileTrackingEnabled := cfg != nil && cfg.FileTracking.Enabled
+	if agent != nil {
+		s.AgentName = agent.Name
+		s.InsightsExpansion = agent.Memory.InsightsExpansion
+		s.InsightsMaxTokens = agent.Memory.InsightsMaxTokens
+	}
+	// Tools: CLI > agent
+	if cli.ToolsSet || cli.Tools != "" {
+		s.Tools = cli.Tools
+	} else if agent != nil {
+		if agent.HasEnabledList() {
+			s.Tools = strings.Join(agent.Tools.Enabled, ",")
+		} else if agent.HasDisabledList() {
+			allTools := tools.StandardToolNames()
+			enabledTools := agent.GetEnabledTools(allTools)
+			s.Tools = strings.Join(enabledTools, ",")
+		}
+	}
+
+	// System prompt: CLI > agent > config
+	if cli.SystemMessageSet || cli.SystemMessage != "" {
+		templateCtx := agents.NewTemplateContextForTemplateInDir(cli.SystemMessage, runtimeDir).WithFiles(cli.Files).WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model).WithFileTracking(fileTrackingEnabled)
+		expanded, err := expandSystemPromptWithIncludes(cli.SystemMessage, templateCtx, runtimeDir, runtimeDir)
+		if err != nil {
+			return "", "", fmt.Errorf("expand --system prompt: %w", err)
+		}
+		s.SystemPrompt = expanded
+	} else {
+		usedAgentPrompt := false
+		if agent != nil {
+			projectInstructions := ""
+			if agent.ShouldLoadProjectInstructions() {
+				projectInstructions = agents.DiscoverProjectInstructionsInDir(runtimeDir)
+			}
+
+			// Use the agent branch only when it can actually produce a prompt. This
+			// lets agents_md:true agents without system.md use AGENTS.md as their prompt,
+			// while preserving the config fallback when auto agents request project
+			// instructions but none exist.
+			if strings.TrimSpace(agent.SystemPrompt) != "" || projectInstructions != "" {
+				usedAgentPrompt = true
+				if strings.TrimSpace(agent.SystemPrompt) != "" {
+					templateCtx, includeBaseDir, err := agentPromptTemplateContextAndBaseDirInDir(agent, cli.Files, runtimeDir)
+					if err != nil {
+						return "", "", fmt.Errorf("prepare agent system prompt context: %w", err)
+					}
+					templateCtx = templateCtx.WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model).WithFileTracking(fileTrackingEnabled)
+					expanded, err := expandSystemPromptWithIncludes(agent.SystemPrompt, templateCtx, includeBaseDir, runtimeDir)
+					if err != nil {
+						return "", "", fmt.Errorf("expand agent system prompt: %w", err)
+					}
+					s.SystemPrompt = expanded
+				}
+
+				if projectInstructions != "" {
+					if strings.TrimSpace(s.SystemPrompt) == "" {
+						s.SystemPrompt = projectInstructions
+					} else {
+						s.SystemPrompt += "\n\n---\n\n" + projectInstructions
+					}
+				}
+			}
+		}
+
+		if !usedAgentPrompt {
+			templateCtx := agents.NewTemplateContextForTemplateInDir(configInstructions, runtimeDir).WithFiles(cli.Files).WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model).WithFileTracking(fileTrackingEnabled)
+			expanded, err := expandSystemPromptWithIncludes(configInstructions, templateCtx, runtimeDir, runtimeDir)
+			if err != nil {
+				return "", "", fmt.Errorf("expand config system prompt: %w", err)
+			}
+			s.SystemPrompt = expanded
+		}
+	}
+
+	s.SystemPrompt = injectInsightsMetadata(s.SystemPrompt, s.AgentName, s.InsightsExpansion, s.InsightsMaxTokens)
+	return s.SystemPrompt, s.Tools, nil
 }
 
 func injectInsightsMetadata(instructions, agentName string, enabled bool, maxTokens int) string {

@@ -55,7 +55,7 @@ func (s *serveServer) handleSessionMCPOAuth(w http.ResponseWriter, r *http.Reque
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session runtime is unavailable")
 		return
 	}
-	rt, err := s.sessionMgr.GetOrCreate(r.Context(), sessionID)
+	rt, err := s.metadataRuntime(r.Context(), sessionID)
 	if err != nil || rt == nil {
 		status := http.StatusInternalServerError
 		if err != nil && strings.Contains(err.Error(), "busy") {

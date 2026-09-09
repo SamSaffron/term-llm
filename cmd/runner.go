@@ -19,6 +19,11 @@ import (
 )
 
 type cmdRunnerOptions struct {
+	RestoreSettings    *SessionSettings
+	RestoreAgentSkills *string
+	Inputs             *sessionInputSelection
+	ToolsSet           bool
+	SystemMessageSet   bool
 	Provider           string
 	Fast               bool
 	ConfigSet          bool
@@ -215,6 +220,17 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		return nil, err
 	}
 
+	if prior := r.defaults.RestoreSettings; prior != nil && req.Engine == nil {
+		selected := settings
+		settings = *prior
+		settings.SystemPrompt, settings.Tools = selected.SystemPrompt, selected.Tools
+		settings.BaseDir, settings.ShellWorkingDir = selected.BaseDir, selected.ShellWorkingDir
+		settings.PrimaryWorkspace = selected.PrimaryWorkspace
+		settings.RequireExplicitWorkingDir = selected.RequireExplicitWorkingDir
+	}
+	if r.defaults.RestoreAgentSkills != nil {
+		agentSkills = *r.defaults.RestoreAgentSkills
+	}
 	settings.SessionID = req.SessionID
 	if suffix := strings.TrimSpace(req.SystemSuffix); suffix != "" {
 		settings.SystemPrompt = strings.TrimSpace(settings.SystemPrompt) + "\n\n" + suffix
@@ -222,6 +238,11 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	baseSystemPrompt := appendChildSkillSystemContext(settings.SystemPrompt, req.ChildSkill)
 	skillsSetup := SetupSkillsInDir(&cfg.Skills, req.Skills, agentSkills, r.errWriter(), settings.BaseDir)
 	settings.SystemPrompt = InjectSkillsMetadata(baseSystemPrompt, skillsSetup)
+	if req.Engine != nil {
+		settings.SystemPrompt = req.SystemMessage
+	} else if r.defaults.Inputs != nil {
+		settings.SystemPrompt = r.defaults.Inputs.Prompt
+	}
 
 	modelName := activeModel(cfg)
 	provider := req.ProviderInstance
@@ -328,6 +349,8 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		runtimeStore = nil
 	}
 	runtime = &serveRuntime{
+		settings:            &settings,
+		agentSkills:         agentSkills,
 		provider:            provider,
 		providerKey:         cfg.DefaultProvider,
 		engine:              engine,
@@ -519,20 +542,27 @@ func (r *cmdRunner) resolveSettings(cfg *config.Config, agent *agents.Agent, req
 	if !configuredTools {
 		mcpFlag = ""
 	}
+	inputs := r.defaults.Inputs
+	if req.Engine != nil {
+		inputs = &sessionInputSelection{BasePrompt: req.SystemMessage, Prompt: req.SystemMessage, Tools: req.Tools}
+	}
 	settings, err := ResolveSettingsInDir(cfg, agent, CLIFlags{
-		Provider:        providerFlag,
-		Tools:           toolsFlag,
-		ReadDirs:        readDirs,
-		WriteDirs:       writeDirs,
-		ShellAllow:      shellAllow,
-		MCP:             mcpFlag,
-		SystemMessage:   systemMessage,
-		MaxTurns:        maxTurns,
-		MaxTurnsSet:     maxTurnsSet,
-		MaxOutputTokens: req.MaxOutputTokens,
-		Search:          search,
-		NoSearch:        noSearch,
-		Platform:        templatePlatform(req.Platform),
+		inputs:           inputs,
+		ToolsSet:         r.defaults.ToolsSet,
+		SystemMessageSet: r.defaults.SystemMessageSet,
+		Provider:         providerFlag,
+		Tools:            toolsFlag,
+		ReadDirs:         readDirs,
+		WriteDirs:        writeDirs,
+		ShellAllow:       shellAllow,
+		MCP:              mcpFlag,
+		SystemMessage:    systemMessage,
+		MaxTurns:         maxTurns,
+		MaxTurnsSet:      maxTurnsSet,
+		MaxOutputTokens:  req.MaxOutputTokens,
+		Search:           search,
+		NoSearch:         noSearch,
+		Platform:         templatePlatform(req.Platform),
 	}, cmdProvider, cmdModel, cmdInstructions, cmdMaxTurns, defaultMaxTurns, req.Cwd)
 	if err != nil {
 		return SessionSettings{}, err

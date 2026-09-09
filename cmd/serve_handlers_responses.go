@@ -33,6 +33,7 @@ func (l *followUpClaimLease) Release() {
 }
 
 type resolvedResponsesRequest struct {
+	firstParty                 bool
 	req                        responsesCreateRequest
 	inputMessages              []llm.Message
 	replaceHistory             bool
@@ -405,6 +406,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.handleResolvedResponses(w, r, ctx, resolvedResponsesRequest{
+		firstParty:                 firstParty,
 		req:                        req,
 		inputMessages:              inputMessages,
 		replaceHistory:             replaceHistory,
@@ -644,6 +646,23 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 	if freshConversation && freshProvider == "" {
 		freshProvider = defaultProvider
 	}
+	if rr.firstParty && sessionID != "" {
+		if _, supported := session.AsSessionInputRefresher(s.store); supported {
+
+			prepared, prepareErr := s.prepareUIRuntime(ctx, serveRuntimeRequest{
+				SessionID: sessionID, Provider: freshProvider, Model: req.Model, Agent: req.Agent, RefreshInputs: true, fresh: freshConversation,
+			}, workspaceBinding)
+			var workspaceErr *serveWorkspaceError
+			if errors.As(prepareErr, &workspaceErr) {
+				writeWorkspaceError(w, prepareErr)
+				return
+			}
+			if handleRuntimeErr(prepareErr) {
+				return
+			}
+			runtime, stateful = prepared, true
+		}
+	}
 	if swapPlan.enabled {
 		previousRuntime, previousStateful, getErr := s.runtimeForProviderModelRequest(ctx, sessionID, swapPlan.previousProvider, swapPlan.previousModel)
 		if handleRuntimeErr(getErr) {
@@ -690,7 +709,9 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		}
 	} else {
 		var err error
-		if previousResponseID != "" || rr.durableRuntime {
+		if runtime != nil {
+			// Already prepared before request tool projection and model swap.
+		} else if previousResponseID != "" || rr.durableRuntime {
 			runtime, stateful, err = s.runtimeForProviderRequest(ctx, sessionID, reqProvider)
 		} else {
 			runtime, stateful, err = s.runtimeForFreshAgentProviderRequest(ctx, sessionID, freshProvider, req.Agent)
@@ -957,6 +978,18 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	if stateful && s.sessionMgr != nil {
+		var retained *serveRuntime
+		if modelSwapExec != nil {
+			retained = modelSwapExec.previous
+		}
+		releaseAdmission, admissionErr := s.sessionMgr.admitSynchronousActivity(sessionID, runtime, retained)
+		if admissionErr != nil {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", admissionErr.Error())
+			return
+		}
+		defer releaseAdmission()
+	}
 	result, _, err := s.runResponseWithModelSwapFallback(ctx, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, modelSwapExec)
 	if err != nil {
 		if errors.Is(err, errServeSessionBusy) {

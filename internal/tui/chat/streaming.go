@@ -1460,7 +1460,11 @@ func (m *Model) buildMessages() []llm.Message {
 	compIdx := m.compactionIdx
 	m.messagesMu.Unlock()
 
-	return session.LLMActiveMessages(snapshot, compIdx, m.config.Chat.Instructions)
+	messages := session.LLMActiveMessages(snapshot, compIdx, m.config.Chat.Instructions)
+	if m.sessionInputsObserver != nil {
+		messages = session.ProjectSelectedSessionPrompt(messages, m.config.Chat.Instructions)
+	}
+	return messages
 }
 
 func (m *Model) buildMessagesForStream() []llm.Message {

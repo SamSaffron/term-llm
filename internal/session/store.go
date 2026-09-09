@@ -93,6 +93,55 @@ type Store interface {
 	Close() error
 }
 
+// SessionInputRefreshResult describes the narrowly committed input changes.
+// Tools retains the stored spelling when the configured tool sets are equal.
+type SessionInputRefreshResult struct {
+	Tools        string
+	ToolsChanged bool
+	Messages     []Message
+}
+
+func (r SessionInputRefreshResult) Changed() bool { return r.ToolsChanged || len(r.Messages) > 0 }
+
+// SessionInputRefresher atomically updates application-owned leading prompts
+// and configured local tools, invalidating all provider continuations on change.
+// equalTools must be a pure comparison; it can be called again on busy retry.
+type SessionInputRefresher interface {
+	RefreshSessionInputs(context.Context, string, string, string, func(string, string) bool) (SessionInputRefreshResult, error)
+}
+
+func AsSessionInputRefresher(store Store) (SessionInputRefresher, bool) {
+	if logging, ok := store.(*LoggingStore); ok {
+		return AsSessionInputRefresher(logging.Store)
+	}
+	refresher, ok := store.(SessionInputRefresher)
+	return refresher, ok
+}
+
+// SessionInputStoreIdentity returns a stable process-cache namespace without
+// retaining stores. File databases share a namespace; isolated stores do not.
+func SessionInputStoreIdentity(store Store) (string, error) {
+	if logging, ok := store.(*LoggingStore); ok {
+		return SessionInputStoreIdentity(logging.Store)
+	}
+	if sqlite, ok := store.(*SQLiteStore); ok {
+		path, err := ResolveDBPath(sqlite.cfg.Path)
+		if err != nil {
+			return "", err
+		}
+		if path != ":memory:" && !strings.Contains(path, "mode=memory") {
+			return path, nil
+		}
+		sqlite.storeInstanceMu.Lock()
+		defer sqlite.storeInstanceMu.Unlock()
+		if sqlite.inputInstanceID == "" {
+			sqlite.inputInstanceID = NewID()
+		}
+		return "memory:" + sqlite.inputInstanceID, nil
+	}
+	return fmt.Sprintf("%T:%p", store, store), nil
+}
+
 // StoreChange is one durable, monotonically ordered coarse mutation emitted by
 // SQLite triggers. It lets other processes observe shared-store changes without
 // rescanning the session catalog.

@@ -42,7 +42,7 @@ func (rt *serveRuntime) compactSession(ctx context.Context, sessionID string) (*
 	history := make([]llm.Message, 0, len(rt.history))
 	for _, message := range rt.history {
 		if message.Role == llm.RoleSystem {
-			if systemPrompt == "" {
+			if systemPrompt == "" && rt.inputs.Load() == nil {
 				systemPrompt = strings.TrimSpace(llm.MessageText(message))
 			}
 			continue

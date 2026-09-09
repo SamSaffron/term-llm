@@ -235,7 +235,7 @@ func (s *serveServer) beginResponseModelSwap(ctx context.Context, sessionID stri
 		agentName = s.requestedRuntimeAgent(ctx, sessionID, "")
 	}
 	create := func(ctx context.Context) (*serveRuntime, error) {
-		return s.createRequestRuntime(ctx, plan.requestedProvider, plan.requestedModel, agentName)
+		return s.createRequestRuntime(ctx, serveRuntimeRequest{SessionID: sessionID, Provider: plan.requestedProvider, Model: plan.requestedModel, Agent: agentName, Inputs: previous.selectedSessionInputs()})
 	}
 	candidate, retainedPrevious, commit, rollback, err := s.sessionMgr.BeginSwap(ctx, sessionID, create)
 	if err != nil {
@@ -381,7 +381,7 @@ func (s *serveServer) runModelSwapHandover(ctx context.Context, exec *responseMo
 	provider := llm.Provider(nil)
 	var helper *serveRuntime
 	if s.runtimeFactory != nil {
-		rt, err := s.runtimeFactory(ctx, exec.plan.previousProvider, previousModel)
+		rt, err := s.runtimeFactory(ctx, serveRuntimeRequest{Provider: exec.plan.previousProvider, Model: previousModel})
 		if err != nil {
 			return nil, err
 		}

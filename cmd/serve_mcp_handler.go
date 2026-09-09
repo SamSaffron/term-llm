@@ -655,7 +655,7 @@ func (s *serveServer) handleSessionMCP(w http.ResponseWriter, r *http.Request, s
 		return
 	}
 
-	rt, err := s.sessionMgr.GetOrCreate(r.Context(), sessionID)
+	rt, err := s.metadataRuntime(r.Context(), sessionID)
 	if err != nil {
 		// Listing configured servers does not require a mutable runtime. A session
 		// operation can briefly reserve a brand-new runtime before any response has

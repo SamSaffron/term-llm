@@ -31,6 +31,12 @@ func (s *serveServer) handleSessionRuntimeCompact(w http.ResponseWriter, r *http
 		writeOpenAIError(w, status, errorType, err.Error())
 		return
 	}
+	releaseAdmission, admissionErr := s.sessionMgr.admitSynchronousActivity(sessionID, rt)
+	if admissionErr != nil {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", admissionErr.Error())
+		return
+	}
+	defer releaseAdmission()
 	result, err := rt.compactSession(r.Context(), sessionID)
 	if err != nil {
 		switch {
