@@ -3945,6 +3945,9 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	if stateful && s.sessionMgr != nil && sessionID != "" {
 		release, err := s.sessionMgr.pinCurrentRuntime(sessionID, runtime)
 		if err != nil {
+			if options.onDone != nil {
+				options.onDone()
+			}
 			return nil, err
 		}
 		defer release()

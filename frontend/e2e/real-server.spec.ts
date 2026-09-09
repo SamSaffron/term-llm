@@ -106,15 +106,10 @@ test('crosses the real browser-to-Go capability and validation boundary', async 
   expect(JSON.stringify(result.invalidBody)).toContain('decode base64');
 });
 
-test('prepares a selected file in the browser and sends its typed part to Go', async ({
-  page,
-  isMobile,
-}) => {
-  await page.goto('./');
-  // Choose the layout from the browser fixture, not a visibility snapshot taken
-  // before Preact may have mounted. Locator clicks wait for their controls.
-  if (isMobile) await page.getByRole('button', { name: 'Open sidebar' }).click();
-  await page.locator('#newChatBtn').click();
+test('prepares a selected file in the browser and sends its typed part to Go', async ({ page }) => {
+  // Enter compose mode through the route rather than racing the new-chat button
+  // against the initial asynchronous session-list hydration.
+  await page.goto('./?new=1');
   await page.locator('#fileInput').setInputFiles({
     name: 'browser-fixture.txt',
     mimeType: 'text/plain',
@@ -145,15 +140,13 @@ test('prepares a selected file in the browser and sends its typed part to Go', a
 
 test('sends a real uncommitted diff comment through the browser and Go protocol', async ({
   page,
+  responseGate,
 }, testInfo) => {
   test.skip(testInfo.project.name === 'mobile', 'real diff protocol is covered once');
-  await page.goto('./');
-  await page.locator('#newChatBtn').click();
-  await page.getByRole('textbox', { name: 'Message' }).fill('Create review fixture runtime');
+  await page.goto('./?new=1');
+  await page.getByRole('textbox', { name: 'Message' }).fill(responseGate.prompt);
   await page.getByRole('button', { name: 'Send message' }).click();
-  await expect(page.getByRole('heading', { name: 'Debug Provider Output' }).last()).toBeVisible({
-    timeout: 15_000,
-  });
+  await responseGate.waitStarted();
   const sessionID = await page.evaluate(async () => {
     const selected = decodeURIComponent(location.pathname.match(/\/chat\/([^/]+)/)?.[1] || '');
     const query = new URLSearchParams({ selected_only: '1', selected_session: selected });
@@ -162,6 +155,7 @@ test('sends a real uncommitted diff comment through the browser and Go protocol'
     };
     return body.selected_session?.id || '';
   });
+  expect(sessionID).not.toBe('');
   const fixtureStatus = await page.evaluate(async (id) => {
     const response = await fetch(`${window.TERM_LLM_UI_PREFIX}/__browser_fixture/file-change`, {
       method: 'POST',
@@ -188,10 +182,14 @@ test('sends a real uncommitted diff comment through the browser and Go protocol'
   await file.locator('.diff-file-row').click();
   await file.getByRole('button', { name: 'Comment on line 2' }).click();
   await file.getByRole('textbox', { name: 'Inline comment' }).fill('Keep this fixture change.');
-  const responseHeadings = page.getByRole('heading', { name: 'Debug Provider Output' });
-  const responseCount = await responseHeadings.count();
   await file.getByRole('button', { name: 'Send now' }).click();
-  await expect(responseHeadings).toHaveCount(responseCount + 1, { timeout: 15_000 });
+  await responseGate.release();
+  await expect(page.getByRole('heading', { name: 'Debug Provider Output' }).last()).toBeVisible({
+    timeout: 15_000,
+  });
+  await waitForSessionIdle(page, sessionID);
+
+  await expect(page.locator('#stopBtn')).toBeHidden({ timeout: 15_000 });
 
   const durable = await page.evaluate(async () => {
     const selected = decodeURIComponent(location.pathname.match(/\/chat\/([^/]+)/)?.[1] || '');
@@ -268,8 +266,7 @@ test('recovers and resolves an ask-user request across real same-context tabs', 
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name === 'mobile', 'real two-tab control plane is covered once');
-  await page.goto('./');
-  await page.locator('#newChatBtn').click({ force: true });
+  await page.goto('./?new=1');
   await page.getByRole('textbox', { name: 'Message' }).fill('Create interaction fixture runtime');
   await page.getByRole('button', { name: 'Send message' }).click();
   await expect(page.getByRole('heading', { name: 'Debug Provider Output' }).last()).toBeVisible({

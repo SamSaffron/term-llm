@@ -221,6 +221,38 @@ func TestSessionInputSynchronousAdmissionProtectsSetupAndRollback(t *testing.T) 
 	}
 }
 
+func TestResponseRunAdmissionFailureReleasesFollowUpClaim(t *testing.T) {
+	srv := newTestServeServer()
+	t.Cleanup(srv.sessionMgr.Close)
+	const sessionID = "response-admission-failure"
+	if _, err := srv.sessionMgr.GetOrCreate(context.Background(), sessionID); err != nil {
+		t.Fatal(err)
+	}
+
+	var released atomic.Int32
+	out := httptest.NewRecorder()
+	started := srv.streamResponseRun(
+		context.Background(),
+		out,
+		&serveRuntime{}, // Deliberately not the runtime installed for sessionID.
+		true,
+		false,
+		[]llm.Message{llm.UserText("follow up")},
+		llm.Request{SessionID: sessionID},
+		sessionID,
+		startResponseRunOptions{onDone: func() { released.Add(1) }},
+	)
+	if started {
+		t.Fatal("streamResponseRun started with an obsolete runtime")
+	}
+	if out.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body=%s", out.Code, http.StatusConflict, out.Body.String())
+	}
+	if released.Load() != 1 {
+		t.Fatalf("follow-up release calls = %d, want 1", released.Load())
+	}
+}
+
 func TestSessionInputSynchronousAdmissionReleasedOnRunFailure(t *testing.T) {
 	for _, failure := range []string{"provider error", "cancelled context", "busy runtime"} {
 		t.Run(failure, func(t *testing.T) {

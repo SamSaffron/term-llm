@@ -48,7 +48,7 @@ func (s *serveServer) streamResponseRun(ctx context.Context, w http.ResponseWrit
 		}
 		status := http.StatusInternalServerError
 		errType := "server_error"
-		if errors.Is(err, errResponseRunKeyConflict) {
+		if errors.Is(err, errResponseRunKeyConflict) || errors.Is(err, errServeSessionBusy) {
 			status = http.StatusConflict
 			errType = "conflict_error"
 		}
