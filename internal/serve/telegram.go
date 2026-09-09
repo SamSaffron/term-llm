@@ -2487,11 +2487,9 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 		// otherwise duplicate or reorder the repaired snapshot.
 		queueDrained := drainCallbackStoreQueue()
 		queueDegraded := callbackStoreQueue != nil && callbackStoreQueue.isDegraded()
-		if partial == "" && len(producedSnapshot) == 0 && !turnPersistenceDegraded && !queueDegraded {
-			updateActiveHistory("")
-			return
-		}
 
+		// Even without assistant output, the accepted user message must enter
+		// live history so a retry sees it and later reconciliation retains it.
 		assistantTextCaptured := telegramAssistantTextCaptured(producedSnapshot, partial)
 		newHistory := make([]llm.Message, 0, len(sess.history)+2+len(producedSnapshot))
 		newHistory = append(newHistory, sess.history...)
