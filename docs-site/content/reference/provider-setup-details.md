@@ -95,7 +95,7 @@ If you have a ChatGPT Plus or Pro subscription, you can use the `chatgpt` provid
 term-llm ask --provider chatgpt "explain this code"
 term-llm ask --provider chatgpt:gpt-5.6-sol-max "hard code question"
 term-llm ask --provider chatgpt:gpt-5.6-luna-medium "quick code question"
-term-llm image --provider chatgpt:gpt-5.4 "storybook fox in the snow"
+term-llm image --provider chatgpt:gpt-image-2.5-sunburst "storybook fox in the snow"
 ```
 
 On first use, you'll be prompted to authenticate via browser. Credentials are stored locally and refreshed automatically.

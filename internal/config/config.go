@@ -982,10 +982,10 @@ type ImageOpenAIConfig struct {
 	Model  string `mapstructure:"model"`
 }
 
-// ImageChatGPTConfig configures ChatGPT image generation via the chatgpt.com
-// backend's built-in image_generation tool (OAuth, no API key required).
+// ImageChatGPTConfig configures subscription-backed image generation through
+// the ChatGPT Codex Images API (OAuth, no API key required).
 type ImageChatGPTConfig struct {
-	Model string `mapstructure:"model"` // e.g., gpt-5.4-mini (default) or gpt-5.4
+	Model string `mapstructure:"model"` // e.g., gpt-image-2.5-flare (default) or gpt-image-2.5-sunburst
 }
 
 // ImageXAIConfig configures xAI (Grok) image generation

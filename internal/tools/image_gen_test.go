@@ -118,6 +118,25 @@ func TestImageGenAutoApprove_SymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestImageGenerateToolRejectsInvalidImageOptions(t *testing.T) {
+	cfg := &config.Config{Image: config.ImageConfig{Provider: "debug", OutputDir: t.TempDir()}}
+	tool := NewImageGenerateTool(nil, cfg, "debug", nil, "", "")
+	for _, args := range []ImageGenerateArgs{
+		{Prompt: "test", Quality: "ultra"},
+		{Prompt: "test", Background: "checkerboard"},
+		{Prompt: "test", AspectRatio: "16:0"},
+	} {
+		raw, _ := json.Marshal(args)
+		out, err := tool.Execute(context.Background(), raw)
+		if err != nil {
+			t.Fatalf("Execute returned error: %v", err)
+		}
+		if !strings.Contains(out.Content, "INVALID_PARAMS") {
+			t.Fatalf("expected invalid params for %+v, got %q", args, out.Content)
+		}
+	}
+}
+
 func TestImageGenerateTool_RequiresApprovalForDefaultOutputDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := &config.Config{

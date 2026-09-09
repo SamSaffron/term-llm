@@ -3,6 +3,7 @@ package image
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
@@ -19,6 +20,8 @@ type GenerateRequest struct {
 	Prompt      string
 	Size        string // Normalized resolution: "1K", "2K", "4K"; providers translate or ignore
 	AspectRatio string // e.g. "1:1", "16:9", "9:16"; providers translate or ignore
+	Quality     string // "auto", "low", "medium", "high", "xhigh", or "max"; provider/model support varies
+	Background  string // "auto", "opaque", or "transparent"; provider/model support varies
 	Debug       bool
 	DebugRaw    bool
 }
@@ -35,6 +38,8 @@ type EditRequest struct {
 	InputImages []InputImage // Input images for editing (supports multiple for some providers)
 	Size        string       // Normalized resolution: "1K", "2K", "4K"; providers translate or ignore
 	AspectRatio string       // e.g. "1:1", "16:9", "9:16"; providers translate or ignore
+	Quality     string       // "auto", "low", "medium", "high", "xhigh", or "max"; provider/model support varies
+	Background  string       // "auto", "opaque", or "transparent"; provider/model support varies
 	Debug       bool
 	DebugRaw    bool
 }
@@ -178,6 +183,51 @@ func parseImageProviderModel(s string) (string, string) {
 
 // ValidSizes are the normalized image size values accepted by the system.
 var ValidSizes = []string{"1K", "2K", "4K"}
+
+// ValidateAspectRatio checks for a positive W:H ratio.
+func ValidateAspectRatio(aspectRatio string) error {
+	if aspectRatio == "" {
+		return nil
+	}
+	parts := strings.Split(aspectRatio, ":")
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid aspect ratio %q (expected W:H, for example 16:9)", aspectRatio)
+	}
+	width, widthErr := strconv.Atoi(parts[0])
+	height, heightErr := strconv.Atoi(parts[1])
+	if widthErr != nil || heightErr != nil || width <= 0 || height <= 0 {
+		return fmt.Errorf("invalid aspect ratio %q (dimensions must be positive integers)", aspectRatio)
+	}
+	return nil
+}
+
+// ValidQualities are the image quality values accepted by the CLI and tool.
+var ValidQualities = []string{"auto", "low", "medium", "high", "xhigh", "max"}
+
+// ValidateQuality checks that quality is a recognized normalized value.
+func ValidateQuality(quality string) error {
+	return validateImageOption("quality", quality, ValidQualities)
+}
+
+// ValidBackgrounds are the image background modes accepted by the CLI and tool.
+var ValidBackgrounds = []string{"auto", "opaque", "transparent"}
+
+// ValidateBackground checks that background is a recognized mode.
+func ValidateBackground(background string) error {
+	return validateImageOption("background", background, ValidBackgrounds)
+}
+
+func validateImageOption(name, value string, valid []string) error {
+	if value == "" {
+		return nil
+	}
+	for _, candidate := range valid {
+		if value == candidate {
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid %s %q (valid: %s)", name, value, strings.Join(valid, ", "))
+}
 
 // ValidateSize checks that size is a recognized normalized value.
 // Returns nil for empty string (no size requested). Returns an error for invalid values.

@@ -79,7 +79,8 @@ func (p *OpenAIProvider) Generate(ctx context.Context, req GenerateRequest) (*Im
 		Model:        p.model,
 		Prompt:       req.Prompt,
 		Size:         openaiSizeFromRequest(p.model, req.Size, req.AspectRatio),
-		Quality:      openaiQualityAuto,
+		Quality:      imageOption(req.Quality, openaiQualityAuto),
+		Background:   req.Background,
 		OutputFormat: openaiFormatPNG,
 		N:            1,
 	}
@@ -126,11 +127,15 @@ func (p *OpenAIProvider) Edit(ctx context.Context, req EditRequest) (*ImageResul
 		"model":         p.model,
 		"prompt":        req.Prompt,
 		"size":          openaiSizeFromRequest(p.model, req.Size, req.AspectRatio),
-		"quality":       openaiQualityAuto,
+		"quality":       imageOption(req.Quality, openaiQualityAuto),
+		"background":    req.Background,
 		"output_format": openaiFormatPNG,
 		"n":             "1",
 	}
 	for key, value := range fields {
+		if value == "" {
+			continue
+		}
 		if err := writer.WriteField(key, value); err != nil {
 			return nil, fmt.Errorf("failed to write form field %q: %w", key, err)
 		}
@@ -228,6 +233,7 @@ type openaiGenerateRequest struct {
 	Prompt       string `json:"prompt"`
 	Size         string `json:"size"`
 	Quality      string `json:"quality"`
+	Background   string `json:"background,omitempty"`
 	OutputFormat string `json:"output_format"`
 	N            int    `json:"n"`
 }
@@ -246,6 +252,13 @@ type openaiError struct {
 	Message string `json:"message"`
 	Type    string `json:"type"`
 	Code    string `json:"code"`
+}
+
+func imageOption(value, fallback string) string {
+	if value = strings.TrimSpace(value); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func openaiSizeFromRequest(model, size, aspectRatio string) string {

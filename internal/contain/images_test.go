@@ -79,7 +79,7 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 		if rel == "entrypoint.sh" && (!strings.Contains(string(data), "skills:") || !strings.Contains(string(data), "enabled: true") || !strings.Contains(string(data), "auto_invoke: true")) {
 			t.Fatalf("entrypoint missing first-boot skills config generation")
 		}
-		if rel == "entrypoint.sh" && !strings.Contains(string(data), "chatgpt:gpt-5.4-mini") {
+		if rel == "entrypoint.sh" && !strings.Contains(string(data), "chatgpt:gpt-image-2.5-flare") {
 			t.Fatalf("entrypoint missing ChatGPT image provider bootstrap")
 		}
 		if rel == "entrypoint.sh" && !strings.Contains(string(data), "model: gpt-5.6-sol-medium") {
