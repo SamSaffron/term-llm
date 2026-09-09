@@ -21,7 +21,18 @@ export interface ResponseProjection {
   usage: Usage | null;
   fileChangeRevision: number;
   pendingGuardian: Record<string, GuardianReview[]>;
-  modelSwap?: { stage: string; content: string };
+  modelSwap?: {
+    stage: string;
+    content: string;
+    fromProvider: string;
+    fromModel: string;
+    fromEffort: string;
+    toProvider: string;
+    toModel: string;
+    toEffort: string;
+    swapStatus: string;
+    swapStrategy: string;
+  };
   phase?: string;
   retry?: { attempt: number; delayMs: number; error: string };
 }
@@ -623,6 +634,8 @@ export function reduceResponse(
     }
     case 'response.model_swap.progress': {
       const stage = text(event.stage);
+      const carry = (value: unknown, previous: string | undefined) =>
+        text(value).trim() || previous || '';
       return {
         ...next,
         // Completion/failure is represented by the durable inline marker or the
@@ -632,6 +645,16 @@ export function reduceResponse(
           : {
               stage,
               content: text(event.text || event.message || event.content) || 'Switching model…',
+              fromProvider: carry(event.previous_provider, projection.modelSwap?.fromProvider),
+              fromModel: carry(event.previous_model, projection.modelSwap?.fromModel),
+              fromEffort: carry(event.previous_effort, projection.modelSwap?.fromEffort),
+              toProvider: carry(event.target_provider, projection.modelSwap?.toProvider),
+              toModel: carry(event.target_model, projection.modelSwap?.toModel),
+              toEffort: carry(event.target_effort, projection.modelSwap?.toEffort),
+              swapStatus: 'started',
+              swapStrategy: stage.startsWith('handover_')
+                ? 'handover'
+                : projection.modelSwap?.swapStrategy || '',
             },
       };
     }

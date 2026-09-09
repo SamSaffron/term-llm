@@ -1994,6 +1994,73 @@ describe('Preact-owned chat surfaces', () => {
     expect(boundary?.textContent).not.toContain('↔');
   });
 
+  it('renders a live model switch with the same structured boundary', () => {
+    const store = createStore();
+    store.runs.value = {
+      s1: {
+        ...initialProjection({
+          responseId: 'response-1',
+          sessionId: 's1',
+          epoch: 1,
+          status: 'streaming',
+          lastSequence: 1,
+          startedRev: 0,
+          reconnects: 0,
+        }),
+        modelSwap: {
+          stage: 'naive_start',
+          content:
+            'Switching model: chatgpt:gpt-6-astra → chatgpt:gpt-5.6-sol; trying existing context…',
+          fromProvider: 'chatgpt',
+          fromModel: 'gpt-6-astra',
+          fromEffort: 'high',
+          toProvider: 'chatgpt',
+          toModel: 'gpt-5.6-sol',
+          toEffort: 'high',
+          swapStatus: 'started',
+          swapStrategy: '',
+        },
+      },
+    };
+    store.runEngine.markResponseTransportActive('s1', 'response-1');
+
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+
+    const boundary = container.querySelector('.model-swap-divider[role="status"]');
+    expect(boundary).toHaveClass('model-swap-divider', 'transient');
+    expect(boundary?.querySelector('.visually-hidden')).toHaveTextContent(
+      'Switching from chatgpt:gpt-6-astra to chatgpt:gpt-5.6-sol',
+    );
+    expect(boundary?.querySelector('.model-swap-from')).toHaveTextContent('chatgpt:gpt-6-astra');
+    expect(boundary?.querySelector('.model-swap-to')).toHaveTextContent('chatgpt:gpt-5.6-sol');
+    expect(boundary?.querySelector('.model-swap-detail')).toHaveTextContent('switching');
+    expect(container).not.toHaveTextContent('trying existing context');
+
+    act(() => {
+      const current = store.runs.value.s1;
+      store.runs.value = {
+        ...store.runs.value,
+        s1: {
+          ...current,
+          modelSwap: {
+            ...current.modelSwap!,
+            stage: 'handover_start',
+            swapStrategy: 'handover',
+          },
+        },
+      };
+    });
+    const handover = container.querySelector('.model-swap-divider[role="status"]');
+    expect(handover?.querySelector('.visually-hidden')).toHaveTextContent(
+      'Switching from chatgpt:gpt-6-astra to chatgpt:gpt-5.6-sol using handover',
+    );
+    expect(handover?.querySelector('.model-swap-detail')).toHaveTextContent('handover');
+  });
+
   it('shows the active plan step as the live response activity', () => {
     const store = createStore();
     store.runs.value = {

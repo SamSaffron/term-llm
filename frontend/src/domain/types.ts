@@ -102,6 +102,15 @@ export interface Message {
   lineCount?: number;
   expanded?: boolean;
   activeBoundary?: boolean;
+  boundaryId?: string;
+  fromProvider?: string;
+  fromModel?: string;
+  fromEffort?: string;
+  toProvider?: string;
+  toModel?: string;
+  toEffort?: string;
+  swapStatus?: string;
+  swapStrategy?: string;
   diffComments?: DiffComment[];
   [key: string]: unknown;
 }

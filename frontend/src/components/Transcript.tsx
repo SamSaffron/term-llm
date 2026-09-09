@@ -749,6 +749,82 @@ function legacyModelSwapText(content: string) {
     .replace(/^Model switch:\s*/i, '');
 }
 
+interface ModelSwapPresentation {
+  id?: string;
+  content: string;
+  fromProvider?: string;
+  fromModel?: string;
+  fromEffort?: string;
+  toProvider?: string;
+  toModel?: string;
+  toEffort?: string;
+  swapStatus?: string;
+  swapStrategy?: string;
+}
+
+function ModelSwapBoundary({
+  swap,
+  transient = false,
+}: {
+  swap: ModelSwapPresentation;
+  transient?: boolean;
+}) {
+  const fromModel = String(swap.fromModel || '').trim();
+  const toModel = String(swap.toModel || '').trim();
+  const effortChanged = String(swap.fromEffort || '').trim() !== String(swap.toEffort || '').trim();
+  const structured = Boolean(fromModel && toModel);
+  const from = structured
+    ? modelIdentity(swap.fromProvider, fromModel, swap.fromEffort, effortChanged)
+    : '';
+  const to = structured
+    ? modelIdentity(swap.toProvider, toModel, swap.toEffort, effortChanged)
+    : '';
+  const failed = swap.swapStatus === 'failed';
+  const started = swap.swapStatus === 'started';
+  const handover = swap.swapStrategy === 'handover';
+  const handoverDetail = handover ? ' using handover' : '';
+  const accessibleLabel = structured
+    ? failed
+      ? `Switch from ${from} to ${to} failed; continuing on ${from}`
+      : started
+        ? `Switching from ${from} to ${to}${handoverDetail}`
+        : `Model changed from ${from} to ${to}${handoverDetail}`
+    : legacyModelSwapText(swap.content);
+  const Boundary = transient ? 'div' : 'article';
+  const classes = ['message', 'model-swap-divider', failed && 'failed', transient && 'transient']
+    .filter(Boolean)
+    .join(' ');
+  return (
+    <Boundary
+      class={classes}
+      data-message-id={transient ? undefined : swap.id}
+      role={transient ? 'status' : undefined}
+    >
+      <span class="visually-hidden">{accessibleLabel}</span>
+      <span class="model-swap-line" aria-hidden="true" />
+      <span class="model-swap-label" aria-hidden="true">
+        {structured ? (
+          <>
+            <span class="model-swap-from">{from}</span>
+            <span class="model-swap-arrow" aria-hidden="true">
+              {failed ? '↛' : '→'}
+            </span>
+            <span class="model-swap-to">{to}</span>
+            {(failed || handover || started) && (
+              <span class="model-swap-detail">
+                {failed ? 'failed' : handover ? 'handover' : 'switching'}
+              </span>
+            )}
+          </>
+        ) : (
+          legacyModelSwapText(swap.content)
+        )}
+      </span>
+      <span class="model-swap-line" aria-hidden="true" />
+    </Boundary>
+  );
+}
+
 const MessageRow = memo(function MessageRow({
   message,
   streaming,
@@ -804,55 +880,7 @@ const MessageRow = memo(function MessageRow({
         </div>
       </article>
     );
-  if (message.role === 'model-swap') {
-    const fromModel = String(message.fromModel || '').trim();
-    const toModel = String(message.toModel || '').trim();
-    const effortChanged =
-      String(message.fromEffort || '').trim() !== String(message.toEffort || '').trim();
-    const structured = Boolean(fromModel && toModel);
-    const from = structured
-      ? modelIdentity(message.fromProvider, fromModel, message.fromEffort, effortChanged)
-      : '';
-    const to = structured
-      ? modelIdentity(message.toProvider, toModel, message.toEffort, effortChanged)
-      : '';
-    const failed = message.swapStatus === 'failed';
-    const started = message.swapStatus === 'started';
-    const handover = message.swapStrategy === 'handover';
-    const accessibleLabel = structured
-      ? failed
-        ? `Switch from ${from} to ${to} failed; continuing on ${from}`
-        : started
-          ? `Switching from ${from} to ${to}`
-          : `Model changed from ${from} to ${to}${handover ? ' using handover' : ''}`
-      : legacyModelSwapText(message.content);
-    return (
-      <article
-        class={`message model-swap-divider ${failed ? 'failed' : ''}`}
-        data-message-id={message.id}
-        aria-label={accessibleLabel}
-      >
-        <span class="model-swap-line" aria-hidden="true" />
-        <span class="model-swap-label">
-          {structured ? (
-            <>
-              <span class="model-swap-from">{from}</span>
-              <span class="model-swap-arrow" aria-hidden="true">
-                {failed ? '↛' : '→'}
-              </span>
-              <span class="model-swap-to">{to}</span>
-              {(failed || handover) && (
-                <span class="model-swap-detail">{failed ? 'failed' : 'handover'}</span>
-              )}
-            </>
-          ) : (
-            legacyModelSwapText(message.content)
-          )}
-        </span>
-        <span class="model-swap-line" aria-hidden="true" />
-      </article>
-    );
-  }
+  if (message.role === 'model-swap') return <ModelSwapBoundary swap={message} />;
   if (message.role === 'phase')
     return (
       <article class="message phase" data-message-id={message.id}>
@@ -1337,11 +1365,7 @@ export function Transcript() {
             {activeRun.phase}
           </div>
         )}
-        {activeRun?.modelSwap && (
-          <div class="message model-swap transient" role="status">
-            {activeRun.modelSwap.content}
-          </div>
-        )}
+        {activeRun?.modelSwap && <ModelSwapBoundary swap={activeRun.modelSwap} transient />}
         {livenessUnknown && (
           <div
             class="streaming-indicator streaming-indicator-unknown"

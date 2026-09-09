@@ -191,10 +191,25 @@ describe('response projection', () => {
       initialProjection(run),
       event('response.model_swap.progress', 1, {
         stage: 'naive_start',
-        message: 'Switching model…',
+        message:
+          'Switching model: chatgpt:gpt-6-astra → chatgpt:gpt-5.6-sol; trying existing context…',
+        previous_provider: 'chatgpt',
+        previous_model: 'gpt-6-astra',
+        previous_effort: 'high',
+        target_provider: 'chatgpt',
+        target_model: 'gpt-5.6-sol',
+        target_effort: 'high',
       }),
     );
-    expect(projection.modelSwap?.content).toBe('Switching model…');
+    expect(projection.modelSwap).toMatchObject({
+      content:
+        'Switching model: chatgpt:gpt-6-astra → chatgpt:gpt-5.6-sol; trying existing context…',
+      fromProvider: 'chatgpt',
+      fromModel: 'gpt-6-astra',
+      toProvider: 'chatgpt',
+      toModel: 'gpt-5.6-sol',
+      swapStatus: 'started',
+    });
 
     projection = reduceResponse(
       projection,
@@ -252,6 +267,43 @@ describe('response projection', () => {
     );
     projection = reduceResponse(projection, event('response.completed', 10));
     expect(projection.modelSwap).toBeUndefined();
+  });
+
+  it('keeps structured model identities across progress stages', () => {
+    let projection = reduceResponse(
+      initialProjection(run),
+      event('response.model_swap.progress', 1, {
+        stage: 'naive_start',
+        message: 'Trying existing context…',
+        previous_provider: 'chatgpt',
+        previous_model: 'gpt-6-astra',
+        target_provider: 'chatgpt',
+        target_model: 'gpt-5.6-sol',
+      }),
+    );
+
+    projection = reduceResponse(
+      projection,
+      event('response.model_swap.progress', 2, {
+        stage: 'handover_start',
+        message: 'Preparing handover…',
+        previous_provider: '',
+        previous_model: '',
+        previous_effort: '',
+        target_provider: '',
+        target_model: '',
+        target_effort: '',
+      }),
+    );
+
+    expect(projection.modelSwap).toMatchObject({
+      fromProvider: 'chatgpt',
+      fromModel: 'gpt-6-astra',
+      toProvider: 'chatgpt',
+      toModel: 'gpt-5.6-sol',
+      swapStatus: 'started',
+      swapStrategy: 'handover',
+    });
   });
 
   it('projects steering image attachments before transcript reload', () => {
