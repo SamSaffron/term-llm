@@ -336,8 +336,22 @@ func (r *ContentRenderer) RenderMessages(messages []session.Message) (string, []
 		b.WriteString(content)
 		currentLine += lineCount
 	}
+	// Keep call context local to this render and turn. CLI providers can store
+	// several calls in one assistant row followed by separate result rows. Repeat
+	// the matching call at its first result rather than inventing a parallel timeline.
+	calls := make(map[string]*llm.ToolCall)
 	for i := 0; i < len(messages); {
 		msg := messages[i]
+		if msg.Role == llm.RoleUser || isInspectorCompactionSummaryMessage(msg) || boundaryMarkerIndex == i {
+			clear(calls)
+		}
+		if msg.Role == llm.RoleAssistant {
+			for _, part := range msg.Parts {
+				if part.Type == llm.PartToolCall && part.ToolCall != nil && part.ToolCall.ID != "" {
+					calls[part.ToolCall.ID] = part.ToolCall
+				}
+			}
+		}
 		if isInspectorCompactionSummaryMessage(msg) {
 			compactionSummaryOrdinal++
 			isActiveBoundary := boundaryMarkerIndex == i
@@ -365,8 +379,20 @@ func (r *ContentRenderer) RenderMessages(messages []session.Message) (string, []
 		}
 
 		msgID := fmt.Sprintf("msg-%d", i)
+		var content string
+		var msgItems []ContentItem
+		var lineCount int
+		if msg.Role == llm.RoleTool {
+			content, msgItems = r.renderToolResultsWithCalls(msg, msgID, currentLine, calls)
+			lineCount = visualLineCount(content)
+		} else {
+			content, msgItems, lineCount = r.renderMessageWithItems(msg, msgID, currentLine)
+		}
+		if content == "" {
+			i++
+			continue
+		}
 		beginBlock()
-		content, msgItems, lineCount := r.renderMessageWithItems(msg, msgID, currentLine)
 		b.WriteString(content)
 		currentLine += lineCount
 		items = append(items, msgItems...)
@@ -1148,6 +1174,10 @@ func (r *ContentRenderer) renderToolCall(tc *llm.ToolCall) string {
 
 // renderToolCallWithItem renders a tool call with truncation tracking
 func (r *ContentRenderer) renderToolCallWithItem(tc *llm.ToolCall, itemID string, startLine int) (string, *ContentItem) {
+	return r.renderToolCallWithLabel(tc, itemID, startLine, "Tool Call: ")
+}
+
+func (r *ContentRenderer) renderToolCallWithLabel(tc *llm.ToolCall, itemID string, startLine int, label string) (string, *ContentItem) {
 	theme := r.styles.Theme()
 	var b strings.Builder
 	lineCount := 0
@@ -1157,7 +1187,7 @@ func (r *ContentRenderer) renderToolCallWithItem(tc *llm.ToolCall, itemID string
 	idStyle := lipgloss.NewStyle().Foreground(theme.Muted)
 
 	b.WriteString(lipgloss.NewStyle().Foreground(theme.Border).Render("┌ "))
-	b.WriteString(headerStyle.Render("Tool Call: "))
+	b.WriteString(headerStyle.Render(label))
 	b.WriteString(lipgloss.NewStyle().Foreground(theme.Primary).Render(tc.Name))
 	b.WriteString(" ")
 	b.WriteString(idStyle.Render("[" + truncateID(tc.ID) + "]"))
@@ -1240,6 +1270,13 @@ func (r *ContentRenderer) renderToolResults(msg session.Message) string {
 
 // renderToolResultsWithItems renders tool results with truncation tracking
 func (r *ContentRenderer) renderToolResultsWithItems(msg session.Message, msgID string, startLine int) (string, []ContentItem) {
+	return r.renderToolResultsWithCalls(msg, msgID, startLine, nil)
+}
+
+// renderToolResultsWithCalls adds independently expandable call context beside
+// each result. The original assistant row remains a faithful view of storage.
+// Matched entries are consumed from calls so context is shown once per call.
+func (r *ContentRenderer) renderToolResultsWithCalls(msg session.Message, msgID string, startLine int, calls map[string]*llm.ToolCall) (string, []ContentItem) {
 	theme := r.styles.Theme()
 	var b strings.Builder
 	var items []ContentItem
@@ -1249,6 +1286,17 @@ func (r *ContentRenderer) renderToolResultsWithItems(msg session.Message, msgID 
 		if part.Type == llm.PartToolResult && part.ToolResult != nil {
 			tr := part.ToolResult
 			itemID := fmt.Sprintf("%s-tr-%d-%s", msgID, i, tr.ID)
+			if tc := calls[tr.ID]; tc != nil && (tr.Name == "" || tc.Name == tr.Name) {
+				callBlock, item := r.renderToolCallWithLabel(tc, itemID+"-call", currentLine, "Tool Call (context): ")
+				b.WriteString(callBlock)
+				b.WriteString("\n")
+				currentLine += visualLineCount(callBlock)
+				if item != nil {
+					item.EndLine = currentLine
+					items = append(items, *item)
+				}
+				delete(calls, tr.ID)
+			}
 			lineCount := 0
 
 			// Tool result header
