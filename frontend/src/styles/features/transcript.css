@@ -5,6 +5,9 @@
   min-width: 0;
   flex: 1;
   overflow: hidden auto;
+
+  /* Prepending history is anchored explicitly by Transcript. */
+  overflow-anchor: none;
   padding: 1.25rem calc(1.1rem + var(--safe-right)) 1rem calc(1.1rem + var(--safe-left));
   position: relative;
   z-index: var(--z-local-raised);

@@ -192,6 +192,11 @@ export const endpoints = (api: APIClient) => ({
     api.get<Record<string, unknown>>(
       `/v1/sessions?selected_only=1&include_transcript=1&include_widget_status=1&selected_session=${encoded(id)}`,
     ),
+  transcriptBodies: (id: string, anchors: number[], signal?: AbortSignal) =>
+    api.get<Record<string, unknown>>(
+      `/v1/sessions/${encoded(id)}/transcript/bodies?ids=${anchors.join(',')}`,
+      signal,
+    ),
   sessionState: (id: string, signal?: AbortSignal) =>
     api.get<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/state`, signal),
   createSessionShare: (id: string, body: unknown) =>

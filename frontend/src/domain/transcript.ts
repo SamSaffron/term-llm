@@ -631,6 +631,24 @@ export function convertServerMessages(
   );
 }
 
+/** Startup bodies contain only a tail; retain the index's earlier turn anchors. */
+export function olderTranscriptAnchors(sideload: Record<string, unknown>): number[] {
+  const rows = record(record(sideload.index)?.rows);
+  const ids = Array.isArray(rows?.ids) ? rows.ids.map(Number) : [];
+  const roles = text(rows?.roles);
+  const bodies = record(sideload.bodies);
+  const messages = Array.isArray(bodies?.messages) ? bodies.messages : [];
+  const loadedIDs = new Set(messages.map((message) => Number(record(message)?.id)));
+  const firstLoaded = ids.findIndex((id) => loadedIDs.has(id));
+  return ids.filter(
+    (id, ordinal) =>
+      Number.isSafeInteger(id) &&
+      id > 0 &&
+      (firstLoaded < 0 || ordinal < firstLoaded) &&
+      (ordinal === 0 || roles[ordinal] === 'u'),
+  );
+}
+
 export function sanitizeSession(
   source: Record<string, unknown>,
   options: ConvertOptions = {},
@@ -822,6 +840,7 @@ export function windowTranscript(
     start -= 1;
     if (messages[start].role === 'user') turns += 1;
   }
+  if (start === 0) return [{ type: 'messages', key: 'all', messages }];
   const visible = messages.slice(start);
   return [
     {

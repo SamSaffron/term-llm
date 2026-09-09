@@ -49,6 +49,7 @@ const TRANSCRIPT_ONLY_SESSION_FIELDS = [
   'mcpEnabled',
   'transcriptRev',
   'messageBodiesRev',
+  'olderTranscriptAnchors',
   'lastResponseId',
   'activeResponseId',
   'activeModel',
@@ -262,9 +263,23 @@ export class SessionStore {
       existing.attentionSeq !== undefined ||
       incoming.attentionSeq !== undefined,
     );
+    // A selected-session refresh sideloads only the tail. At the same revision,
+    // keep already materialized history rather than collapsing back to nine turns.
+    const prefixEnd = existing.messages.findIndex(
+      (message) => message.id === incoming.messages[0]?.id,
+    );
+    const preserveHistory =
+      replaceMessages &&
+      !storeReplaced &&
+      incoming.messageBodiesRev !== undefined &&
+      incoming.messageBodiesRev === existing.messageBodiesRev &&
+      prefixEnd >= 0 &&
+      incoming.olderTranscriptAnchors !== undefined &&
+      existing.olderTranscriptAnchors !== undefined;
     return {
       ...existing,
       ...incoming,
+      ...(preserveHistory ? { olderTranscriptAnchors: existing.olderTranscriptAnchors } : {}),
       ...(hasAttention
         ? {
             attentionStoreInstanceId:
@@ -286,7 +301,11 @@ export class SessionStore {
             attentionUnseen: attentionSeq > seenThroughSeq,
           }
         : {}),
-      messages: replaceMessages || incoming.messages.length ? incoming.messages : existing.messages,
+      messages: preserveHistory
+        ? [...existing.messages.slice(0, prefixEnd), ...incoming.messages]
+        : replaceMessages || incoming.messages.length
+          ? incoming.messages
+          : existing.messages,
       lastResponseId: incoming.lastResponseId || existing.lastResponseId,
       activeResponseId: preserveLiveState
         ? incoming.activeResponseId || existing.activeResponseId

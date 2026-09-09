@@ -4,6 +4,7 @@ import {
   indexTranscriptTurns,
   mergeDurableProjection,
   sanitizeSession,
+  olderTranscriptAnchors,
   windowTranscript,
 } from './transcript';
 import type { Message } from './types';
@@ -497,6 +498,32 @@ describe('transcript domain', () => {
       generatedShortTitle: 'Older generated title',
       generatedLongTitle: 'Older generated detail',
     });
+  });
+
+  it('retains earlier turn anchors from the full index, including a leading assistant turn', () => {
+    expect(
+      olderTranscriptAnchors({
+        index: { rows: { ids: [1, 2, 3, 4, 5, 6], roles: 'auatua' } },
+        bodies: { messages: [{ id: 5 }, { id: 6 }] },
+      }),
+    ).toEqual([1, 2]);
+    expect(olderTranscriptAnchors({ bodies: { messages: [{ id: 5 }] } })).toEqual([]);
+    expect(
+      olderTranscriptAnchors({
+        index: { rows: { ids: [1, 2], roles: 'ua' } },
+        bodies: { messages: [] },
+      }),
+    ).toEqual([1]);
+  });
+
+  it('does not leave a zero-message gap after every turn is revealed', () => {
+    const messages = Array.from({ length: 200 }, (_, index): Message => ({
+      id: String(index),
+      role: index % 2 === 0 ? 'user' : 'assistant',
+      content: String(index),
+      created: index,
+    }));
+    expect(windowTranscript(messages, 100)).toEqual([{ type: 'messages', key: 'all', messages }]);
   });
 
   it('windows old turns behind a stable gap and always keeps the tail', () => {

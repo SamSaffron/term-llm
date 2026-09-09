@@ -746,3 +746,68 @@ test('queues separate steering, removes a selected row, and rushes without losin
   await expect(input).toHaveValue('new unsent draft');
   expect(pending.map((entry) => entry.text)).toEqual(['first guidance', 'second guidance']);
 });
+
+test('infinitely loads older transcript turns and preserves the visible row', async ({ page }) => {
+  await mockAPI(page);
+  const messages = Array.from({ length: 200 }, (_, index) => ({
+    id: index + 1,
+    sequence: index,
+    role: index % 2 === 0 ? 'user' : 'assistant',
+    parts: [{ type: 'text', text: `History message ${index}` }],
+  }));
+  const pages: number[][] = [];
+  await page.route('**/v1/sessions?**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('selected_only') !== '1') return route.fallback();
+    await route.fulfill({
+      json: {
+        selected_session: session('s1', 'Long history', 1),
+        selected_transcript: {
+          index: { rev: 7, rows: { ids: messages.map((row) => row.id), roles: 'ua'.repeat(100) } },
+          bodies: { rev: 7, messages: messages.slice(-18) },
+        },
+      },
+    });
+  });
+  await page.route('**/v1/sessions/s1/transcript/bodies?**', async (route) => {
+    const anchors = new URL(route.request().url()).searchParams.get('ids')!.split(',').map(Number);
+    pages.push(anchors);
+    await route.fulfill({
+      json: {
+        rev: 7,
+        messages: messages.filter((row) =>
+          anchors.includes(row.role === 'user' ? row.id : row.id - 1),
+        ),
+      },
+    });
+  });
+  await page.goto('./chat/s1');
+  await expect(page.getByText('History message 199', { exact: true })).toBeVisible();
+  expect(pages).toHaveLength(0);
+  const viewport = page.locator('#chatScroll');
+  const anchor = page.locator('[data-message-id="srv_seq_182"]');
+  const initialTop = await viewport.evaluate((element) => {
+    element.scrollTop = 0;
+    return element.querySelector('[data-message-id="srv_seq_182"]')!.getBoundingClientRect().top;
+  });
+  await expect(page.getByText('History message 164', { exact: true })).toBeAttached();
+  await expect
+    .poll(async () => Math.abs((await anchor.boundingBox())!.y - initialTop))
+    .toBeLessThan(3);
+  for (let pageNumber = 1; pageNumber < 11; pageNumber++) {
+    await viewport.evaluate((element) => {
+      element.scrollTop = 0;
+    });
+    await expect.poll(() => pages.length).toBe(pageNumber + 1);
+    await expect(page.getByRole('button', { name: 'Loading earlier messages…' })).toHaveCount(0);
+  }
+  await viewport.evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  await expect(page.getByText('History message 0', { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Load earlier messages', exact: true }),
+  ).toHaveCount(0);
+  expect(pages.flat()).toHaveLength(91);
+  expect(new Set(pages.flat()).size).toBe(91);
+});

@@ -200,6 +200,8 @@ export interface Session {
   transcriptRev?: number;
   /** Revision of the durable message bodies currently installed in messages. */
   messageBodiesRev?: number;
+  /** Unloaded turn anchors preceding the installed bodies, in transcript order. */
+  olderTranscriptAnchors?: number[];
   attentionStoreInstanceId?: string;
   attentionSeq?: number;
   attentionResponseId?: string;

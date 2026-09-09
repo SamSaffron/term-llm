@@ -11,7 +11,11 @@ import {
 } from '../domain/response';
 import { applyRuntimeToRequest, defaultProvider } from '../domain/runtime';
 import { errorMessage } from '../domain/text';
-import { mergeDurableProjection, convertServerMessages } from '../domain/transcript';
+import {
+  mergeDurableProjection,
+  convertServerMessages,
+  olderTranscriptAnchors,
+} from '../domain/transcript';
 import type {
   ActiveRun,
   ApprovalPrompt,
@@ -1259,6 +1263,7 @@ export class RunEngine {
           transcript_rev: bodies.rev ?? source.transcript_rev ?? source.rev,
           messages: listFrom(bodies, 'messages', 'items'),
         }),
+        olderTranscriptAnchors: olderTranscriptAnchors(sideload || {}),
         ...(Number.isFinite(incomingRevision) ? { messageBodiesRev: incomingRevision } : {}),
       };
       const incomingRev = incoming.messageBodiesRev || 0;

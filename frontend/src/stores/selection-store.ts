@@ -8,6 +8,7 @@ import type {
   Goal,
   Session,
 } from '../domain/types';
+import { olderTranscriptAnchors } from '../domain/transcript';
 import { planSummary } from '../domain/plan';
 import { updateSessionRoute } from '../platform/routing';
 import type { TabEventType } from '../platform/tab-sync';
@@ -40,6 +41,9 @@ export interface SelectionStoreHost {
 export class SelectionStore {
   private epoch = 0;
   readonly headerLoading = signal(false);
+  readonly historyLoading = signal('');
+  readonly historyError = signal('');
+  private historyRequest: AbortController | undefined;
   private headerDeadline: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
@@ -61,6 +65,7 @@ export class SelectionStore {
 
   dispose(): void {
     ++this.epoch;
+    this.cancelHistoryRequest();
     clearTimeout(this.headerDeadline);
   }
 
@@ -76,6 +81,7 @@ export class SelectionStore {
     this.composer.releaseResources(this.composer.attachments.peek(), false);
     this.sideQuestions.reset();
     const epoch = ++this.epoch;
+    this.cancelHistoryRequest();
     clearTimeout(this.headerDeadline);
     batch(() => {
       this.headerLoading.value = true;
@@ -154,6 +160,7 @@ export class SelectionStore {
     this.composer.releaseResources(this.composer.attachments.peek(), false);
     this.sideQuestions.reset();
     ++this.epoch;
+    this.cancelHistoryRequest();
     clearTimeout(this.headerDeadline);
     this.headerLoading.value = false;
     const currentSession = this.sessionsStore.activeSession.peek();
@@ -210,6 +217,86 @@ export class SelectionStore {
     }
   }
 
+  private cancelHistoryRequest(): void {
+    this.historyRequest?.abort();
+    this.historyRequest = undefined;
+    this.historyLoading.value = '';
+    this.historyError.value = '';
+  }
+
+  async loadOlderMessages(beforePrepend?: (turns: number) => void): Promise<void> {
+    const session = this.sessionsStore.activeSession.peek();
+    const anchors = session?.olderTranscriptAnchors;
+    if (!session || !anchors?.length || this.historyLoading.peek() === session.id) return;
+    this.cancelHistoryRequest();
+    const request = new AbortController();
+    this.historyRequest = request;
+    const epoch = this.epoch;
+    // Keep requests well below the server's 32-turn materialization ceiling.
+    const requested = anchors.slice(-9);
+    const revision = session.messageBodiesRev ?? session.transcriptRev ?? 0;
+    this.historyLoading.value = session.id;
+    const stillCurrent = () => {
+      const current = this.sessionsStore.activeSession.peek();
+      return (
+        this.historyRequest === request &&
+        epoch === this.epoch &&
+        current?.id === session.id &&
+        current.olderTranscriptAnchors === anchors &&
+        (current.messageBodiesRev ?? current.transcriptRev ?? 0) === revision
+      );
+    };
+    const refreshHistory = async () => {
+      await this.loadSession(session.id, epoch);
+      // A busy/failed refresh must not cause an unbounded automatic reload loop.
+      // Let the user retry against the refreshed index explicitly.
+      if (
+        this.historyRequest === request &&
+        epoch === this.epoch &&
+        this.sessionsStore.activeSessionId.peek() === session.id
+      ) {
+        this.historyError.value = session.id;
+      }
+    };
+    try {
+      const bodies = await this.services.endpoints.transcriptBodies(
+        session.id,
+        requested,
+        request.signal,
+      );
+      if (!stillCurrent()) return;
+      if (bodies.rev == null || !Number.isFinite(Number(bodies.rev))) {
+        throw new Error('Transcript bodies missing revision');
+      }
+      if (Number(bodies.rev) !== revision) {
+        // Undo and compaction can change earlier turns. Refresh instead of mixing revisions.
+        await refreshHistory();
+        return;
+      }
+      const rows = listFrom(bodies, 'messages', 'items');
+      const returnedIDs = new Set(rows.map((row) => Number(row.id)));
+      if (!requested.every((id) => returnedIDs.has(id))) throw new Error('Incomplete history page');
+      // The endpoint expands anchors to complete turns, so conversion never splits tool groups.
+      const prefix = this.sessionsStore.sessionFrom({ id: session.id, messages: rows }).messages;
+      beforePrepend?.(requested.length);
+      this.sessionsStore.update(session.id, (current) => ({
+        ...current,
+        messages: [...prefix, ...current.messages],
+        olderTranscriptAnchors: anchors.slice(0, -requested.length),
+      }));
+    } catch (error) {
+      if (stillCurrent()) {
+        if (error instanceof APIError && error.status === 409) await refreshHistory();
+        else this.historyError.value = session.id;
+      }
+    } finally {
+      if (this.historyRequest === request) {
+        this.historyRequest = undefined;
+        this.historyLoading.value = '';
+      }
+    }
+  }
+
   async loadSession(id: string, epoch = this.epoch): Promise<void> {
     const sampledAskUser = this.interactions.askUser.peek();
     const sampledApproval = this.interactions.approval.peek();
@@ -220,6 +307,7 @@ export class SelectionStore {
         this.services.endpoints.selectedSession(id),
       ]);
       if (epoch !== this.epoch || this.sessionsStore.activeSessionId.peek() !== id) return;
+      this.historyError.value = '';
       const selectedSource = recordValue(selected.selected_session) || {};
       const sideload = recordValue(selected.selected_transcript) || {};
       const bodies = recordValue(sideload.bodies) || {};
@@ -238,6 +326,7 @@ export class SelectionStore {
           transcript_rev: bodies.rev ?? selectedSource.transcript_rev ?? selectedSource.rev,
           messages: serverMessages,
         }),
+        olderTranscriptAnchors: olderTranscriptAnchors(sideload),
         ...(Number.isFinite(selectedRevision) ? { messageBodiesRev: selectedRevision } : {}),
       };
       const currentIndex = this.sessionsStore.sessions.value.findIndex(

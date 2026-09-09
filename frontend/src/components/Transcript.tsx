@@ -1054,7 +1054,9 @@ export function Transcript() {
     }, 60_000);
     return () => clearInterval(timer);
   }, [clock]);
-  const anchorHeight = useRef(0);
+  const historySentinel = useRef<HTMLButtonElement>(null);
+  const localExpanding = useRef(false);
+  const prependAnchor = useRef<{ id: string; top: number } | null>(null);
   const messages = store.visibleMessages.value;
   const sessionId = store.activeSession.value?.id;
   const resolverCache = useRef<{
@@ -1085,6 +1087,71 @@ export function Transcript() {
     () => windowTranscript(messages, turnLimit, nearTail),
     [messages, turnLimit, nearTail],
   );
+  const localGap = runs.find((run) => run.type === 'gap');
+  const olderAnchors = store.activeSession.value?.olderTranscriptAnchors;
+  const hasEarlier = Boolean(localGap || olderAnchors?.length);
+  const historyLoading = store.selectionStore.historyLoading.value === sessionId;
+  const historyError = store.selectionStore.historyError.value === sessionId;
+  const capturePrependAnchor = useCallback(() => {
+    const element = scroll.current;
+    if (!element) return;
+    stickToTail.current = false;
+    programmaticScrollTops.current = [];
+    const top = element.getBoundingClientRect().top;
+    const row = [...element.querySelectorAll<HTMLElement>('[data-message-id]')].find(
+      (candidate) => candidate.getBoundingClientRect().bottom >= top,
+    );
+    prependAnchor.current = row
+      ? { id: row.dataset.messageId!, top: row.getBoundingClientRect().top }
+      : null;
+  }, []);
+  const loadEarlier = useCallback(() => {
+    if (historyLoading || localExpanding.current) return;
+    if (localGap) {
+      localExpanding.current = true;
+      capturePrependAnchor();
+      setTurnLimit((value) => value + 80);
+    } else if (olderAnchors?.length) {
+      void store.selectionStore.loadOlderMessages((turns) => {
+        capturePrependAnchor();
+        // Keep the newly fetched turns mounted even after crossing the local window limit.
+        setTurnLimit((value) => value + turns);
+      });
+    }
+  }, [capturePrependAnchor, historyLoading, localGap, olderAnchors, store]);
+  const maybeLoadEarlier = useCallback(() => {
+    const sentinel = historySentinel.current;
+    const element = scroll.current;
+    if (stickToTail.current || historyError || !sentinel || !element) return;
+    const sentinelRect = sentinel.getBoundingClientRect();
+    const top = element.getBoundingClientRect().top;
+    if (sentinelRect.bottom >= top - 240 && sentinelRect.top <= top + 240) loadEarlier();
+  }, [historyError, loadEarlier]);
+  useEffect(() => {
+    const sentinel = historySentinel.current;
+    const root = scroll.current;
+    if (
+      !sentinel ||
+      !root ||
+      historyLoading ||
+      historyError ||
+      typeof IntersectionObserver !== 'function'
+    )
+      return;
+    let active = true;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (active && !stickToTail.current && entries.some((entry) => entry.isIntersecting))
+          loadEarlier();
+      },
+      { root, rootMargin: '240px 0px 0px 0px' },
+    );
+    observer.observe(sentinel);
+    return () => {
+      active = false;
+      observer.disconnect();
+    };
+  }, [hasEarlier, historyLoading, historyError, loadEarlier]);
   useEffect(() => {
     setTurnLimit(80);
   }, [store.activeSession.value?.id]);
@@ -1093,6 +1160,8 @@ export function Transcript() {
     const contents = content.current;
     if (!element || !contents) return;
 
+    prependAnchor.current = null;
+    localExpanding.current = false;
     stickToTail.current = true;
     setNearTail(true);
     const scrollToTail = () => {
@@ -1135,11 +1204,16 @@ export function Transcript() {
   }, [messages]);
   useLayoutEffect(() => {
     const element = scroll.current;
-    if (element && anchorHeight.current) {
-      element.scrollTop += element.scrollHeight - anchorHeight.current;
-      anchorHeight.current = 0;
+    const anchor = prependAnchor.current;
+    if (element && anchor) {
+      const row = [...element.querySelectorAll<HTMLElement>('[data-message-id]')].find(
+        (candidate) => candidate.dataset.messageId === anchor.id,
+      );
+      if (row) element.scrollTop += row.getBoundingClientRect().top - anchor.top;
     }
-  }, [turnLimit]);
+    prependAnchor.current = null;
+    localExpanding.current = false;
+  }, [turnLimit, messages]);
   const activeRun = store.activeProjection.value;
   const activity = activeRun
     ? responseActivity(activeRun, store.currentPlan.value, activeRun.run.status)
@@ -1166,6 +1240,7 @@ export function Transcript() {
         if (event.deltaY < 0) {
           stickToTail.current = false;
           programmaticScrollTops.current = [];
+          maybeLoadEarlier();
         }
       }}
       onTouchStart={(event) => {
@@ -1176,6 +1251,7 @@ export function Transcript() {
         if (nextY !== undefined && touchY.current !== null && nextY > touchY.current) {
           stickToTail.current = false;
           programmaticScrollTops.current = [];
+          maybeLoadEarlier();
         }
         touchY.current = nextY ?? null;
       }}
@@ -1200,6 +1276,7 @@ export function Transcript() {
         } else if (distanceFromTail <= 0) stickToTail.current = true;
 
         setNearTail(distanceFromTail < 96);
+        maybeLoadEarlier();
       }}
     >
       <div
@@ -1215,42 +1292,45 @@ export function Transcript() {
             <NewChatControls />
           </div>
         )}
+        {hasEarlier && (
+          <button
+            ref={historySentinel}
+            class="transcript-gap"
+            style={{ height: `${localGap?.height || 72}px` }}
+            disabled={historyLoading}
+            onClick={loadEarlier}
+          >
+            {historyLoading
+              ? 'Loading earlier messages…'
+              : historyError
+                ? 'Couldn’t load earlier messages. Retry'
+                : 'Load earlier messages'}
+          </button>
+        )}
         {runs.map((run) =>
-          run.type === 'gap' ? (
-            <button
-              key={run.key}
-              class="transcript-gap"
-              style={{ height: `${run.height}px` }}
-              onClick={() => {
-                anchorHeight.current = scroll.current?.scrollHeight || 0;
-                setTurnLimit((value) => value + 80);
-              }}
-            >
-              Load {run.count} earlier messages
-            </button>
-          ) : (
-            run.messages?.map((message) => {
-              const context = rowContexts.get(message);
-              const streaming = Boolean(
-                store.streaming.value &&
-                activeRun &&
-                message.role === 'assistant' &&
-                message.responseId === activeRun.run.responseId &&
-                ['connecting', 'streaming'].includes(activeRun.run.status),
-              );
-              return (
-                <MessageRow
-                  key={message.id}
-                  message={message}
-                  streaming={streaming}
-                  responseText={context?.responseText || message.content}
-                  copyTarget={context?.copyTarget === true}
-                  resolveMedia={resolverForMessage(message.id, mediaByReference)}
-                  clock={clock}
-                />
-              );
-            })
-          ),
+          run.type === 'gap'
+            ? null
+            : run.messages?.map((message) => {
+                const context = rowContexts.get(message);
+                const streaming = Boolean(
+                  store.streaming.value &&
+                  activeRun &&
+                  message.role === 'assistant' &&
+                  message.responseId === activeRun.run.responseId &&
+                  ['connecting', 'streaming'].includes(activeRun.run.status),
+                );
+                return (
+                  <MessageRow
+                    key={message.id}
+                    message={message}
+                    streaming={streaming}
+                    responseText={context?.responseText || message.content}
+                    copyTarget={context?.copyTarget === true}
+                    resolveMedia={resolverForMessage(message.id, mediaByReference)}
+                    clock={clock}
+                  />
+                );
+              }),
         )}
         {activeRun?.phase && (
           <div class="message phase transient" role="status">
