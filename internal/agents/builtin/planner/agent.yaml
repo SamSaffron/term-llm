@@ -1,5 +1,6 @@
 name: planner
 description: "Plan and break down complex tasks before implementation"
+time_grounding: true
 skills: "all"
 
 tools:

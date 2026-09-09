@@ -1628,7 +1628,12 @@ func (p *ClaudeBinProvider) renderConversationParts(messages []Message) []string
 		case RoleDeveloper:
 			// Claude CLI has no native developer role. Buffer the text and prepend
 			// it into the next user turn wrapped in <developer> tags.
-			pendingDev = collectTextParts(msg.Parts)
+			if text := collectTextParts(msg.Parts); text != "" {
+				if pendingDev != "" {
+					pendingDev += "\n\n"
+				}
+				pendingDev += text
+			}
 		case RoleUser:
 			var userParts []string
 			if pendingDev != "" {
@@ -1875,7 +1880,12 @@ func (p *ClaudeBinProvider) buildStreamJsonInput(messages []Message, sessionID s
 	for _, msg := range emitMessages {
 		switch msg.Role {
 		case RoleDeveloper:
-			pendingDev = collectTextParts(msg.Parts)
+			if text := collectTextParts(msg.Parts); text != "" {
+				if pendingDev != "" {
+					pendingDev += "\n\n"
+				}
+				pendingDev += text
+			}
 		case RoleUser:
 			blocks := buildSDKUserContentBlocks(msg.Parts)
 			if pendingDev != "" {

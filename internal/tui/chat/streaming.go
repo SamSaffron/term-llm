@@ -451,13 +451,17 @@ func (m *Model) prependMessage(msg session.Message) {
 }
 
 func (m *Model) insertDeveloperMessage(msg session.Message) {
-	insertAt := 0
-	for insertAt < len(m.messages) && m.messages[insertAt].Role == llm.RoleSystem {
-		insertAt++
-	}
-	m.messages = append(m.messages[:insertAt], append([]session.Message{msg}, m.messages[insertAt:]...)...)
+	m.messages = append(m.messages, msg)
 	m.invalidateHistoryCache()
 	m.resetContextEstimateBaseline(context.Background())
+}
+
+func (m *Model) conversationMessages() []llm.Message {
+	messages := make([]llm.Message, 0, len(m.messages))
+	for i := range m.messages {
+		messages = append(messages, m.messages[i].ToLLMMessage())
+	}
+	return messages
 }
 
 func (m *Model) ensureContextMessages() {
@@ -465,7 +469,6 @@ func (m *Model) ensureContextMessages() {
 	for _, msg := range m.messages {
 		if msg.Role == llm.RoleSystem {
 			hasSystemMsg = true
-			break
 		}
 	}
 
@@ -484,19 +487,33 @@ func (m *Model) ensureContextMessages() {
 		m.prependMessage(*sysMsg)
 	}
 
+	start := time.Now()
+	existingMessages := m.conversationMessages()
+	_, hasStart := llm.ConversationStartFrom(existingMessages)
+	canBegin := !hasStart
+	for _, message := range existingMessages {
+		if message.Role == llm.RoleUser || message.Role == llm.RoleAssistant || message.Role == llm.RoleTool {
+			canBegin = false
+			break
+		}
+	}
+	if canBegin && m.currentAgent.TimeGroundingEnabled() {
+		startMsg := session.NewMessage(m.sess.ID, llm.ConversationStartMessage(start), -1)
+		startMsg.CreatedAt = start
+		if m.store != nil {
+			_ = m.store.AddMessage(context.Background(), m.sess.ID, startMsg)
+		}
+		m.insertDeveloperMessage(*startMsg)
+	}
+
 	if !m.shouldInjectPlatformDeveloperMessage() {
 		return
 	}
 
 	devText := strings.TrimSpace(m.platformDeveloperMessage)
-	devMsg := &session.Message{
-		SessionID:   m.sess.ID,
-		Role:        llm.RoleDeveloper,
-		Parts:       []llm.Part{{Type: llm.PartText, Text: devText}},
-		TextContent: devText,
-		CreatedAt:   time.Now(),
-		Sequence:    -1,
-	}
+	platformMessage := llm.PlatformContextMessage(devText)
+	devMsg := session.NewMessage(m.sess.ID, platformMessage, -1)
+	devMsg.CreatedAt = time.Now()
 	if m.store != nil {
 		_ = m.store.AddMessage(context.Background(), m.sess.ID, devMsg)
 	}
@@ -585,7 +602,8 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	// fork fallback.
 	m.activeBranchAnchorID = lastSafeBranchMessageID(m.messages)
 
-	// Ensure system/platform context messages exist before the user turn.
+	// Ensure system, immutable start-time, and platform context messages exist
+	// before the first user turn.
 	m.ensureContextMessages()
 
 	// Deferred model-switch markers from non-submitting shortcuts (Ctrl+R) are

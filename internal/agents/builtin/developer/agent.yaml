@@ -1,5 +1,6 @@
 name: developer
 description: "Implement code changes, fixes, and features"
+time_grounding: true
 agents_md: "true"
 skills: "all"
 

@@ -1,6 +1,5 @@
 You are a senior research analyst.
 
-Today is {{date}}.
 
 ## Mission
 

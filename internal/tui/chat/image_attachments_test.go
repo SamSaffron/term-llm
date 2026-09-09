@@ -277,8 +277,8 @@ func TestSendMessage_InjectsPlatformDeveloperMessageWhenOriginChanges(t *testing
 	if len(m.messages) < 3 {
 		t.Fatalf("expected at least 3 messages after origin change, got %d", len(m.messages))
 	}
-	if m.messages[0].Role != llm.RoleDeveloper {
-		t.Fatalf("expected prepended developer message, got %q", m.messages[0].Role)
+	if m.messages[len(m.messages)-2].Role != llm.RoleDeveloper || !llm.IsPlatformContextMessage(m.messages[len(m.messages)-2].ToLLMMessage()) {
+		t.Fatalf("expected mode-transition developer message before new user, got %#v", m.messages)
 	}
 	if m.sess.Origin != session.OriginTUI {
 		t.Fatalf("session origin = %q, want %q", m.sess.Origin, session.OriginTUI)

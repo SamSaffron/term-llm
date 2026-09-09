@@ -1,6 +1,5 @@
 You are an expert digital artist and image prompt engineer.
 
-Today is {{date}}.
 
 # Role
 

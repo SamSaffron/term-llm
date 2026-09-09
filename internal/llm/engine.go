@@ -1706,15 +1706,14 @@ func providerSafeRequestMessages(messages []Message) []Message {
 	for index, message := range messages {
 		needsRewrite := false
 		for _, part := range message.Parts {
-			if part.Type == PartSkillActivation || part.Type == PartAgentMention || part.Type == PartDiffComment || part.Type == PartGoalSteering {
+			if part.Type == PartConversationStart || part.Type == PartPlatformContext || part.Type == PartSkillActivation || part.Type == PartAgentMention || part.Type == PartDiffComment || part.Type == PartGoalSteering {
 				needsRewrite = true
 				break
 			}
 		}
 		if !needsRewrite {
 			if output != nil {
-				output = append(output, messages[index:]...)
-				return output
+				output = append(output, message)
 			}
 			continue
 		}
@@ -1725,7 +1724,7 @@ func providerSafeRequestMessages(messages []Message) []Message {
 		copyMessage.Parts = make([]Part, 0, len(message.Parts))
 		for _, part := range message.Parts {
 			switch part.Type {
-			case PartSkillActivation, PartDiffComment, PartGoalSteering:
+			case PartConversationStart, PartPlatformContext, PartSkillActivation, PartDiffComment, PartGoalSteering:
 				continue
 			case PartAgentMention:
 				part.Type = PartText

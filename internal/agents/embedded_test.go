@@ -651,6 +651,25 @@ func TestContainBuiltinRecipeSecretsStayOutOfCompose(t *testing.T) {
 	}
 }
 
+func TestBuiltinTimeGroundingIsExplicitOnlyForTimeAwareAgents(t *testing.T) {
+	timeAware := map[string]bool{
+		"active-review": true, "agent-builder": true, "artist": true,
+		"changelog": true, "codebase": true, "commit-message": true,
+		"contain": true, "developer": true, "editor": true,
+		"extension-builder": true, "planner": true, "reviewer": true,
+		"shell": true, "web-researcher": true, "widget-builder": true,
+	}
+	for _, name := range builtinAgentNames {
+		agent, err := getBuiltinAgent(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := agent.TimeGroundingEnabled(), timeAware[name]; got != want {
+			t.Errorf("%s TimeGroundingEnabled() = %v, want %v", name, got, want)
+		}
+	}
+}
+
 func TestGetBuiltinAgentNames(t *testing.T) {
 	names := GetBuiltinAgentNames()
 

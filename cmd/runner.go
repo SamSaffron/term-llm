@@ -696,6 +696,12 @@ func (r *cmdRunner) runProgressive(ctx context.Context, runtime *serveRuntime, e
 	if runtime.systemPrompt != "" && !containsSystemMessage(messages) {
 		messages = append([]llm.Message{llm.SystemText(runtime.systemPrompt)}, messages...)
 	}
+	if platformText := runtime.platformMessages.For(runtime.platform); platformText != "" {
+		messages = llm.InsertPlatformContext(messages, []llm.Message{llm.PlatformContextMessage(platformText)})
+	}
+	if runtime.timeGroundingEnabled() && req.Continuation == nil && (sess == nil || sess.UserTurns == 0) {
+		messages = llm.BeginConversation(messages, time.Now())
+	}
 	llmReq.Messages = messages
 
 	persistResponseCompleted := req.OnResponseCompleted

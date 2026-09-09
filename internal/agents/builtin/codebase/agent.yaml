@@ -1,5 +1,6 @@
 name: codebase
 description: "Answer questions about source code repositories"
+time_grounding: true
 agents_md: "true"
 skills: "all"
 

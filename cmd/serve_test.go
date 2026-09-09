@@ -4327,7 +4327,7 @@ func TestServeRuntimeRun_ReinjectsPlatformDeveloperMessageAfterFailedFirstRun(t 
 	if len(rt.history) < 3 {
 		t.Fatalf("history len = %d, want at least 3 after successful run", len(rt.history))
 	}
-	if rt.history[0].Role != llm.RoleDeveloper || rt.history[0].Parts[0].Text != devText {
+	if rt.history[0].Role != llm.RoleDeveloper || llm.MessageText(rt.history[0]) != devText || !llm.IsPlatformContextMessage(rt.history[0]) {
 		t.Fatalf("history missing injected developer message: %+v", rt.history)
 	}
 }

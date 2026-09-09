@@ -730,6 +730,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		Tools:                  settings.Tools,
 		MCP:                    settings.MCP,
 		Agent:                  agentName,
+		TimeGrounding:          settings.TimeGrounding,
 		PlatformMessages:       agentPlatformMsgs,
 		Store:                  store,
 		Runner: newCmdRunner(cfg, cmdRunnerOptions{

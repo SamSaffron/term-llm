@@ -720,7 +720,7 @@ func buildCLIConversationPrompt(messages []Message, render func([]Message) []str
 }
 
 // conversationFinalTurnStart returns the index where the latest user turn
-// begins, including an immediately preceding developer message.
+// begins, including its contiguous preceding developer-context block.
 func conversationFinalTurnStart(messages []Message) int {
 	lastUser := -1
 	for i, msg := range messages {
@@ -731,10 +731,11 @@ func conversationFinalTurnStart(messages []Message) int {
 	if lastUser <= 0 {
 		return 0
 	}
-	if messages[lastUser-1].Role == RoleDeveloper {
-		return lastUser - 1
+	start := lastUser
+	for start > 0 && messages[start-1].Role == RoleDeveloper {
+		start--
 	}
-	return lastUser
+	return start
 }
 
 func messagesContainPriorAssistantTurn(messages []Message) bool {

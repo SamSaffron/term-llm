@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
@@ -855,6 +856,96 @@ func TestStreamReply_TextOnly(t *testing.T) {
 	last := bot.lastText()
 	if last != "Hello" {
 		t.Errorf("lastText = %q; want %q", last, "Hello")
+	}
+}
+
+func TestStreamReply_TimeAndPlatformContextRemainStableAcrossTurns(t *testing.T) {
+	h := testutil.NewEngineHarness()
+	h.Provider.AddTextResponse("first answer")
+	h.Provider.AddTextResponse("second answer")
+
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "telegram.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	mgr := &telegramSessionMgr{
+		sessions:       make(map[int64]*telegramSession),
+		store:          store,
+		tickerInterval: 5 * time.Millisecond,
+		settings: Settings{
+			MaxTurns:         5,
+			Store:            store,
+			TimeGrounding:    true,
+			PlatformMessages: agents.PlatformMessagesConfig{Telegram: "telegram context"},
+			NewSession: func(context.Context) (*SessionRuntime, error) {
+				return &SessionRuntime{Engine: h.Engine, ProviderName: "mock", ModelName: "test"}, nil
+			},
+		},
+	}
+	sess, err := mgr.getOrCreate(context.Background(), 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bot := &fakeBotSender{}
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("first question")); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(telegramReloadChat{
+		ChatID: 42, Meta: sess.meta, History: sess.history, ActiveHistory: sess.activeHistory,
+		PromptPersisted: sess.systemPromptPersisted,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved telegramReloadChat
+	if err := json.Unmarshal(encoded, &saved); err != nil {
+		t.Fatal(err)
+	}
+	delete(mgr.sessions, 42)
+	mgr.restored = map[int64]telegramReloadChat{42: saved}
+	sess, err = mgr.getOrCreate(context.Background(), 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("second question")); err != nil {
+		t.Fatal(err)
+	}
+
+	start, ok := llm.ConversationStartFrom(sess.history)
+	if !ok {
+		t.Fatal("Telegram history has no conversation-start context")
+	}
+	startText := llm.MessageText(start)
+	for i, req := range h.Provider.RecordedRequests() {
+		startCount, platformCount := 0, 0
+		for _, message := range req.Messages {
+			if message.Role != llm.RoleDeveloper {
+				continue
+			}
+			switch llm.MessageText(message) {
+			case startText:
+				startCount++
+			case "telegram context":
+				platformCount++
+			}
+		}
+		if startCount != 1 || platformCount != 1 {
+			t.Fatalf("request %d context counts = (start %d, platform %d), want (1, 1): %#v", i, startCount, platformCount, req.Messages)
+		}
+	}
+	persisted, err := store.GetMessages(context.Background(), sess.meta.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startCount := 0
+	for _, message := range persisted {
+		if llm.IsConversationStartMessage(message.ToLLMMessage()) {
+			startCount++
+		}
+	}
+	if startCount != 1 {
+		t.Fatalf("persisted conversation-start count = %d, want 1: %#v", startCount, persisted)
 	}
 }
 

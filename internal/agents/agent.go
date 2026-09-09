@@ -68,8 +68,9 @@ type Agent struct {
 	Skills string `yaml:"skills,omitempty"`
 
 	// Behavior
-	MaxTurns int  `yaml:"max_turns,omitempty"`
-	Search   bool `yaml:"search,omitempty"` // Enable web search tools
+	MaxTurns      int   `yaml:"max_turns,omitempty"`
+	Search        bool  `yaml:"search,omitempty"`         // Enable web search tools
+	TimeGrounding *bool `yaml:"time_grounding,omitempty"` // Add immutable conversation-start time context (default false)
 
 	// DefaultPrompt is used when agent is invoked without a message
 	DefaultPrompt string `yaml:"default_prompt,omitempty"`
@@ -135,6 +136,12 @@ type Agent struct {
 	// Source info
 	Source     AgentSource `yaml:"-"`
 	SourcePath string      `yaml:"-"`
+}
+
+// TimeGroundingEnabled reports whether new conversations should receive the
+// immutable developer timestamp. Agents must opt in explicitly.
+func (a *Agent) TimeGroundingEnabled() bool {
+	return a != nil && a.TimeGrounding != nil && *a.TimeGrounding
 }
 
 // AgentSource indicates where an agent was loaded from.

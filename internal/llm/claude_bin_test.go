@@ -2271,13 +2271,14 @@ func TestBuildConversationPrompt_DropsSystemMessages(t *testing.T) {
 func TestBuildConversationPrompt_DeveloperRole(t *testing.T) {
 	p := NewClaudeBinProvider("sonnet", nil)
 	msgs := []Message{
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "Conversation started at a fixed time."}}},
 		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "You have access to /root/Files/"}}},
 		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "list the files"}}},
 	}
 	out := p.buildConversationPrompt(msgs)
 
-	// Developer text must be wrapped in <developer> tags and prepended to the user turn.
-	expected := "User: <developer>\nYou have access to /root/Files/\n</developer>\nlist the files"
+	// Consecutive developer messages must share one wrapper before the user turn.
+	expected := "User: <developer>\nConversation started at a fixed time.\n\nYou have access to /root/Files/\n</developer>\nlist the files"
 	if out != expected {
 		t.Errorf("unexpected output:\ngot:  %q\nwant: %q", out, expected)
 	}
@@ -2307,6 +2308,8 @@ func TestBuildConversationPrompt_WrapsReplayedHistory(t *testing.T) {
 	msgs := []Message{
 		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "first question"}}},
 		{Role: RoleAssistant, Parts: []Part{{Type: PartText, Text: "first answer"}}},
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "platform transition"}}},
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "time anchor"}}},
 		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "latest question"}}},
 	}
 	out := p.buildConversationPrompt(msgs)
@@ -2325,8 +2328,8 @@ func TestBuildConversationPrompt_WrapsReplayedHistory(t *testing.T) {
 		t.Fatalf("latest question leaked into history block: %q", out)
 	}
 	tail := out[closeIdx:]
-	if !strings.Contains(tail, "User: latest question") {
-		t.Fatalf("latest question missing from final turn: %q", out)
+	if !strings.Contains(tail, "User: <developer>") || !strings.Contains(tail, "platform transition") || !strings.Contains(tail, "time anchor") || !strings.Contains(tail, "latest question") {
+		t.Fatalf("latest developer block and question missing from final turn: %q", out)
 	}
 	if !strings.Contains(tail, "responding only to the user's most recent message") {
 		t.Fatalf("replay instruction missing: %q", out)
@@ -2354,6 +2357,7 @@ func TestBuildConversationPrompt_SingleTurnNoFraming(t *testing.T) {
 func TestBuildStreamJsonInput_DeveloperRole(t *testing.T) {
 	p := NewClaudeBinProvider("sonnet", nil)
 	msgs := []Message{
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "Conversation started at a fixed time."}}},
 		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "You have access to /root/Files/"}}},
 		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "list the files"}}},
 	}
@@ -2378,8 +2382,8 @@ func TestBuildStreamJsonInput_DeveloperRole(t *testing.T) {
 	if devBlock.Type != "text" {
 		t.Errorf("expected first block type 'text', got %q", devBlock.Type)
 	}
-	if !strings.Contains(devBlock.Text, "<developer>") || !strings.Contains(devBlock.Text, "/root/Files/") {
-		t.Errorf("expected developer-wrapped text, got %q", devBlock.Text)
+	if !strings.Contains(devBlock.Text, "<developer>") || !strings.Contains(devBlock.Text, "Conversation started at a fixed time.") || !strings.Contains(devBlock.Text, "/root/Files/") {
+		t.Errorf("expected both developer messages in wrapped text, got %q", devBlock.Text)
 	}
 	userBlock := msg.Message.Content[1]
 	if userBlock.Text != "list the files" {

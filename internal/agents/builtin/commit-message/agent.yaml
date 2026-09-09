@@ -1,5 +1,6 @@
 name: commit-message
 description: "Write git commit messages"
+time_grounding: true
 
 default_prompt: "Write a commit message for the staged changes (or unstaged if none staged)"
 

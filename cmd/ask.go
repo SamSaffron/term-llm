@@ -577,8 +577,16 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		messages = append(messages, llm.SystemText(instructions))
 	}
 
-	// Add session history (if resuming)
+	// Add session history (if resuming).
 	messages = append(messages, sessionMessages...)
+
+	// Ground a new conversation once. This developer message is persisted with
+	// the transcript and is never regenerated when the session is resumed.
+	var conversationStartedAt time.Time
+	if !resuming && settings.TimeGrounding {
+		conversationStartedAt = time.Now()
+		messages = llm.InsertConversationStart(messages, []llm.Message{llm.ConversationStartMessage(conversationStartedAt)})
+	}
 
 	// Add new user message
 	messages = append(messages, llm.UserText(userPrompt))
@@ -717,6 +725,14 @@ func runAsk(cmd *cobra.Command, args []string) error {
 				Sequence:    -1, // Auto-allocate sequence
 			}
 			_ = store.AddMessage(ctx, sess.ID, sysMsg)
+		}
+
+		if !resuming {
+			if startMessage, ok := llm.ConversationStartFrom(messages); ok {
+				persistedStart := session.NewMessage(sess.ID, startMessage, -1)
+				persistedStart.CreatedAt = conversationStartedAt
+				_ = store.AddMessage(ctx, sess.ID, persistedStart)
+			}
 		}
 
 		userMsg := &session.Message{

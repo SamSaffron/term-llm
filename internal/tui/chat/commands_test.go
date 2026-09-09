@@ -2842,19 +2842,28 @@ func TestExecuteHandover_CreatesNewIsolatedSessionAndRequestsResume(t *testing.T
 	if len(store.compacted) != 0 || store.compactSession != "" {
 		t.Fatalf("handover must not compact any session, compactSession=%q compacted=%d", store.compactSession, len(store.compacted))
 	}
-	if len(store.added) != len(expectedResult.NewMessages) {
-		t.Fatalf("expected %d reconstructed messages to be added, got %d", len(expectedResult.NewMessages), len(store.added))
+	added := withoutConversationStartMessages(store.added)
+	startCount := len(store.added) - len(added)
+	if startCount != 0 {
+		t.Fatalf("default-off target persisted conversation start count = %d, want 0", startCount)
 	}
-	for i, msg := range store.added {
+	expectedCount := len(expectedResult.NewMessages)
+	if _, ok := llm.ConversationStartFrom(expectedResult.NewMessages); ok {
+		expectedCount--
+	}
+	if len(added) != expectedCount {
+		t.Fatalf("expected %d reconstructed messages to be added, got %d", expectedCount, len(added))
+	}
+	for i, msg := range added {
 		if msg.SessionID != newSess.ID {
 			t.Fatalf("added message %d session ID = %q, want %q", i, msg.SessionID, newSess.ID)
 		}
 	}
-	if store.added[0].Role != llm.RoleSystem || store.added[0].TextContent != targetAgent.SystemPrompt {
-		t.Fatalf("first added message = role %q text %q, want target system prompt", store.added[0].Role, store.added[0].TextContent)
+	if added[0].Role != llm.RoleSystem || added[0].TextContent != targetAgent.SystemPrompt {
+		t.Fatalf("first added message = role %q text %q, want target system prompt", added[0].Role, added[0].TextContent)
 	}
-	if !strings.Contains(store.added[1].TextContent, "handover doc") || !strings.Contains(store.added[1].TextContent, "@source -> @target") {
-		t.Fatalf("handover message missing document/source-target prefix: %q", store.added[1].TextContent)
+	if !strings.Contains(added[1].TextContent, "handover doc") || !strings.Contains(added[1].TextContent, "@source -> @target") {
+		t.Fatalf("handover message missing document/source-target prefix: %q", added[1].TextContent)
 	}
 	if len(rm.messages) != len(oldMessages) {
 		t.Fatalf("old in-memory messages length changed: got %d want %d", len(rm.messages), len(oldMessages))
@@ -2930,29 +2939,34 @@ func TestExecuteHandover_PersistsResolvedTargetSystemPromptWithAgentsMdFirst(t *
 	if len(store.created) != 1 {
 		t.Fatalf("expected exactly one new session, got %d", len(store.created))
 	}
-	if len(store.added) != len(expectedResult.NewMessages) {
-		t.Fatalf("expected %d handover context messages to be persisted, got %d", len(expectedResult.NewMessages), len(store.added))
+	added := withoutConversationStartMessages(store.added)
+	expectedCount := len(expectedResult.NewMessages)
+	if _, ok := llm.ConversationStartFrom(expectedResult.NewMessages); ok {
+		expectedCount--
+	}
+	if len(added) != expectedCount {
+		t.Fatalf("expected %d handover context messages to be persisted, got %d", expectedCount, len(added))
 	}
 
-	if store.added[0].Role != llm.RoleSystem {
-		t.Fatalf("first persisted message role = %q, want system", store.added[0].Role)
+	if added[0].Role != llm.RoleSystem {
+		t.Fatalf("first persisted message role = %q, want system", added[0].Role)
 	}
-	if store.added[0].TextContent != wantPrompt {
-		t.Fatalf("first persisted system prompt = %q, want resolved target prompt %q", store.added[0].TextContent, wantPrompt)
+	if added[0].TextContent != wantPrompt {
+		t.Fatalf("first persisted system prompt = %q, want resolved target prompt %q", added[0].TextContent, wantPrompt)
 	}
-	if strings.Contains(store.added[0].TextContent, "stale raw prompt") {
-		t.Fatalf("persisted system prompt used stale handover result prompt: %q", store.added[0].TextContent)
+	if strings.Contains(added[0].TextContent, "stale raw prompt") {
+		t.Fatalf("persisted system prompt used stale handover result prompt: %q", added[0].TextContent)
 	}
-	if store.added[0].Sequence != 0 {
-		t.Fatalf("first persisted system sequence = %d, want 0", store.added[0].Sequence)
+	if added[0].Sequence != 0 {
+		t.Fatalf("first persisted system sequence = %d, want 0", added[0].Sequence)
 	}
-	if len(store.added) < 2 || store.added[1].Role != llm.RoleUser || !strings.Contains(store.added[1].TextContent, "handover doc") {
-		t.Fatalf("expected handover document immediately after system prompt, got %#v", store.added)
+	if len(added) < 2 || added[1].Role != llm.RoleUser || !strings.Contains(added[1].TextContent, "handover doc") {
+		t.Fatalf("expected handover document immediately after system prompt, got %#v", added)
 	}
 
-	active := session.LLMActiveMessages(store.added, 0, wantPrompt)
-	if len(active) != len(store.added) {
-		t.Fatalf("active message count = %d, want %d", len(active), len(store.added))
+	active := session.LLMActiveMessages(added, 0, wantPrompt)
+	if len(active) != len(added) {
+		t.Fatalf("active message count = %d, want %d", len(active), len(added))
 	}
 	if active[0].Role != llm.RoleSystem || llm.MessageText(active[0]) != wantPrompt {
 		t.Fatalf("active first message = role %q text %q, want resolved target system prompt", active[0].Role, llm.MessageText(active[0]))
@@ -3008,17 +3022,18 @@ func TestExecuteHandover_PersistsAgentsMdSystemPromptWhenTargetPromptEmpty(t *te
 	if cmd == nil || !rm.quitting {
 		t.Fatal("expected executeHandover to request relaunch")
 	}
-	if len(store.added) != 3 {
-		t.Fatalf("expected system + handover user + ack to be persisted, got %d messages: %#v", len(store.added), store.added)
+	added := withoutConversationStartMessages(store.added)
+	if len(added) != 3 {
+		t.Fatalf("expected system + handover user + ack to be persisted, got %d messages: %#v", len(added), added)
 	}
-	if store.added[0].Role != llm.RoleSystem || store.added[0].TextContent != "AGENTS-only instructions" {
-		t.Fatalf("first persisted message = role %q text %q, want AGENTS.md-only system prompt", store.added[0].Role, store.added[0].TextContent)
+	if added[0].Role != llm.RoleSystem || added[0].TextContent != "AGENTS-only instructions" {
+		t.Fatalf("first persisted message = role %q text %q, want AGENTS.md-only system prompt", added[0].Role, added[0].TextContent)
 	}
-	if store.added[0].Sequence != 0 {
-		t.Fatalf("first persisted system sequence = %d, want 0", store.added[0].Sequence)
+	if added[0].Sequence != 0 {
+		t.Fatalf("first persisted system sequence = %d, want 0", added[0].Sequence)
 	}
-	if store.added[1].Role != llm.RoleUser || !strings.Contains(store.added[1].TextContent, "handover doc") {
-		t.Fatalf("expected handover document immediately after system prompt, got %#v", store.added[1])
+	if added[1].Role != llm.RoleUser || !strings.Contains(added[1].TextContent, "handover doc") {
+		t.Fatalf("expected handover document immediately after system prompt, got %#v", added[1])
 	}
 }
 

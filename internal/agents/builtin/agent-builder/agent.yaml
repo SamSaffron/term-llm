@@ -1,5 +1,6 @@
 name: agent-builder
 description: "Create and edit custom agents interactively"
+time_grounding: true
 skills: "all"
 
 tools:

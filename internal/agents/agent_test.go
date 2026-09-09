@@ -8,6 +8,27 @@ import (
 	"testing"
 )
 
+func TestAgentTimeGroundingDefaultsOffAndAllowsOptIn(t *testing.T) {
+	enabled := true
+	disabled := false
+	for _, tc := range []struct {
+		name  string
+		agent *Agent
+		want  bool
+	}{
+		{name: "nil agent", want: false},
+		{name: "omitted", agent: &Agent{}, want: false},
+		{name: "enabled", agent: &Agent{TimeGrounding: &enabled}, want: true},
+		{name: "disabled", agent: &Agent{TimeGrounding: &disabled}, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.agent.TimeGroundingEnabled(); got != tc.want {
+				t.Fatalf("TimeGroundingEnabled() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadFromDir(t *testing.T) {
 	// Create temp directory with agent files
 	tmpDir := t.TempDir()
@@ -21,6 +42,7 @@ func TestLoadFromDir(t *testing.T) {
 description: "A test agent"
 provider: anthropic
 model: claude-sonnet-4-5
+time_grounding: false
 tools:
   enabled: [read, glob, grep]
 shell:
@@ -60,6 +82,9 @@ mcp:
 	}
 	if agent.Model != "claude-sonnet-4-5" {
 		t.Errorf("Model = %q, want %q", agent.Model, "claude-sonnet-4-5")
+	}
+	if agent.TimeGroundingEnabled() {
+		t.Error("TimeGroundingEnabled() = true, want false from YAML")
 	}
 	if len(agent.Tools.Enabled) != 3 {
 		t.Errorf("len(Tools.Enabled) = %d, want 3", len(agent.Tools.Enabled))

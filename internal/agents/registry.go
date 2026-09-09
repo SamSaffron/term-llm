@@ -364,6 +364,7 @@ tools:
 
 # Behavior
 # max_turns: 10
+# time_grounding: true  # Add an immutable conversation-start timestamp
 
 # MCP servers to auto-connect
 # mcp:
@@ -376,8 +377,6 @@ tools:
 
 	// Create system.md
 	systemMD := fmt.Sprintf(`You are a helpful assistant for the {{git_repo}} project.
-
-Current local date: {{weekday}} {{date}} ({{timezone}}).
 
 Use relative paths; the working directory may change. Do not rely on old absolute paths.
 

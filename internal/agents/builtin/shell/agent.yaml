@@ -1,5 +1,6 @@
 name: shell
 description: "Shell command helper"
+time_grounding: true
 
 tools:
   enabled: [shell, read_file]

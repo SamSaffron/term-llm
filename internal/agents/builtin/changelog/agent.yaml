@@ -1,5 +1,6 @@
 name: changelog
 description: "Generate human-readable reports on interesting activity in a git repo"
+time_grounding: true
 agents_md: "true"
 skills: "all"
 

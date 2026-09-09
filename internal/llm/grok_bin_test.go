@@ -377,6 +377,25 @@ func TestGrokResumeMessagesKeepsDeferredSteering(t *testing.T) {
 	}
 }
 
+func TestGrokPromptsAccumulateConsecutiveDeveloperMessages(t *testing.T) {
+	messages := []Message{
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "web mode context"}}},
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "fixed time context"}}},
+		UserText("continue"),
+	}
+	acp, err := buildGrokACPPrompt(messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := string(acp); !strings.Contains(text, "web mode context") || !strings.Contains(text, "fixed time context") {
+		t.Fatalf("ACP prompt lost developer context: %s", text)
+	}
+	parts := strings.Join(renderGrokConversationParts(messages), "\n")
+	if !strings.Contains(parts, "web mode context") || !strings.Contains(parts, "fixed time context") {
+		t.Fatalf("conversation prompt lost developer context: %s", parts)
+	}
+}
+
 func TestGrokRecoveryMessagesBoundsReplayAndKeepsLatestUser(t *testing.T) {
 	messages := []Message{
 		SystemText("system prompt remains session metadata"),

@@ -67,6 +67,7 @@ type serveRuntime struct {
 	debugRaw               bool
 	autoCompact            bool
 	borrowedEngine         bool
+	borrowedStart          []llm.Message // immutable anchor retained by stateless runs sharing provider state
 	skipProviderCleanup    bool
 	defaultModel           string
 	approvalDefault        tools.ApprovalMode
@@ -96,6 +97,10 @@ type serveRuntime struct {
 	lastInjectedPlatform   string
 	sideQuestion           sideQuestionRuntime
 	sideProviderFactory    func(providerKey, model string) (llm.Provider, error)
+}
+
+func (rt *serveRuntime) timeGroundingEnabled() bool {
+	return rt != nil && rt.settings != nil && rt.settings.TimeGrounding
 }
 
 type runtimeCompactionIdentity struct {
@@ -1757,11 +1762,54 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	rt.grantUploadedFileReads(inputMessages)
 	turnIndex := countUserMessages(baseHistory)
 
+	// Capture wall-clock grounding exactly once at the first conversational turn.
+	// Persisted histories carry the marked developer message across reloads. A
+	// borrowed stateless runtime keeps the same anchor while it shares provider
+	// conversation state; owned stateless requests are independent conversations.
+	combinedMessages := make([]llm.Message, 0, len(baseHistory)+len(inputMessages))
+	combinedMessages = append(combinedMessages, baseHistory...)
+	combinedMessages = append(combinedMessages, inputMessages...)
+	if rt.timeGroundingEnabled() {
+		switch {
+		case stateful:
+			noRecordedTurns := rt.sessionMeta == nil || rt.sessionMeta.UserTurns == 0
+			if _, exists := llm.ConversationStartFrom(combinedMessages); !exists && noRecordedTurns {
+				begun := llm.BeginConversation(combinedMessages, time.Now())
+				if start, ok := llm.ConversationStartFrom(begun); ok {
+					inputMessages = llm.InsertConversationStart(inputMessages, []llm.Message{start})
+				}
+			}
+		case rt.borrowedEngine:
+			if start, ok := llm.ConversationStartFrom(combinedMessages); ok {
+				rt.borrowedStart = []llm.Message{start}
+			} else if len(rt.borrowedStart) > 0 {
+				inputMessages = llm.InsertConversationStart(inputMessages, rt.borrowedStart)
+			} else {
+				inputMessages = llm.BeginConversation(inputMessages, time.Now())
+				if start, ok := llm.ConversationStartFrom(inputMessages); ok {
+					rt.borrowedStart = []llm.Message{start}
+				}
+			}
+		default:
+			inputMessages = llm.BeginConversation(inputMessages, time.Now())
+		}
+	}
+
 	var injectedPlatform string
 	if devText := rt.platformMessages.For(rt.platform); devText != "" && rt.lastInjectedPlatform != rt.platform {
-		devMsg := llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: devText}}}
-		inputMessages = append([]llm.Message{devMsg}, inputMessages...)
-		injectedPlatform = rt.platform
+		if existing, ok := llm.PlatformContextFrom(inputMessages); ok && strings.TrimSpace(llm.MessageText(existing)) == strings.TrimSpace(devText) {
+			// Surface-owned transcripts (TUI and Telegram) already carry this
+			// boundary. Record it after success without injecting a duplicate.
+			injectedPlatform = rt.platform
+		} else {
+			devMsg := llm.PlatformContextMessage(devText)
+			inputMessages = append([]llm.Message{devMsg}, inputMessages...)
+			injectedPlatform = rt.platform
+		}
+	}
+
+	if injectedPlatform != "" {
+		req.IncludeDeveloperInContinuation = true
 	}
 
 	if stateful && !replaceHistory && hasUserMessage(inputMessages) && collaborationBinding.Required {
@@ -2564,11 +2612,46 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		rt.historyPersisted = true
 	}
 
+	if injectedPlatform != "" && stateful {
+		rt.persistPlatformOrigin(ctx, req.SessionID, injectedPlatform)
+	}
 	if persisted && stateful {
 		rt.persistProviderState(ctx, req.SessionID)
 	}
 
 	return result, nil
+}
+
+func (rt *serveRuntime) persistPlatformOrigin(ctx context.Context, sessionID, platform string) {
+	if rt == nil || rt.store == nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	origin := sessionOriginForPlatform(platform)
+	if origin == "" {
+		return
+	}
+	dbCtx, cancel := inlinePersistContext(ctx, 10*time.Second)
+	defer cancel()
+	meta := rt.sessionMeta
+	if meta == nil || meta.ID != sessionID {
+		var err error
+		meta, err = rt.store.Get(dbCtx, sessionID)
+		if err != nil || meta == nil {
+			return
+		}
+	}
+	if meta.Origin == origin {
+		return
+	}
+	updated := *meta
+	updated.Origin = origin
+	if err := rt.store.Update(dbCtx, &updated); err != nil {
+		log.Printf("[serve] session platform origin update failed for %s: %v", sessionID, err)
+		return
+	}
+	if rt.sessionMeta != nil && rt.sessionMeta.ID == sessionID {
+		*rt.sessionMeta = updated
+	}
 }
 
 func (rt *serveRuntime) restorePlatformInjectionStateFromHistory() {
@@ -2583,6 +2666,16 @@ func (rt *serveRuntime) restorePlatformInjectionStateFromHistory() {
 	if devText == "" {
 		return
 	}
+	if rt.sessionMeta != nil && rt.sessionMeta.Origin != "" && rt.sessionMeta.Origin != sessionOriginForPlatform(platform) {
+		return
+	}
+	if latest, ok := llm.PlatformContextFrom(rt.history); ok {
+		if strings.TrimSpace(llm.MessageText(latest)) == devText {
+			rt.lastInjectedPlatform = platform
+		}
+		return
+	}
+	// Compatibility for sessions persisted before platform messages were marked.
 	for _, msg := range rt.history {
 		if msg.Role == llm.RoleDeveloper && strings.TrimSpace(llm.MessageText(msg)) == devText {
 			rt.lastInjectedPlatform = platform

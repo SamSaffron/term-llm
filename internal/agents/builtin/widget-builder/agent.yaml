@@ -1,5 +1,6 @@
 name: widget-builder
 description: "Build, edit, and debug term-llm Web UI widgets"
+time_grounding: true
 agents_md: "false"
 skills: "all"
 

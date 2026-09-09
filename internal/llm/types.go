@@ -297,20 +297,22 @@ const (
 type PartType string
 
 const (
-	PartText            PartType = "text"
-	PartImage           PartType = "image"
-	PartFile            PartType = "file"
-	PartToolCall        PartType = "tool_call"
-	PartToolResult      PartType = "tool_result"
-	PartToolActivity    PartType = "tool_activity"    // Persisted display-only provider-managed tool activity; never sent to providers.
-	PartProviderReplay  PartType = "provider_replay"  // Hidden provider protocol state; never rendered/exported.
-	PartDiscoveryCall   PartType = "discovery_call"   // Provider-neutral native discovery call, translated only by capable adapters.
-	PartDiscoveryOutput PartType = "discovery_output" // Trusted schemas selected by the local planner for a discovery call.
-	PartSkillActivation PartType = "skill_activation" // Persisted direct-activation provenance; never sent to providers.
-	PartAgentMention    PartType = "agent_mention"    // Provider-visible delegation instruction; excluded from human-visible text surfaces.
-	PartPathNote        PartType = "path_note"        // Persisted branch-context provenance; adjacent text is sent as developer context.
-	PartDiffComment     PartType = "diff_comment"     // Persisted inline-diff anchor metadata; never sent to providers.
-	PartGoalSteering    PartType = "goal_steering"    // Persisted marker for synthetic active-goal user prompts; adjacent text is sent to providers but hidden from human transcripts.
+	PartText              PartType = "text"
+	PartImage             PartType = "image"
+	PartFile              PartType = "file"
+	PartToolCall          PartType = "tool_call"
+	PartToolResult        PartType = "tool_result"
+	PartToolActivity      PartType = "tool_activity"      // Persisted display-only provider-managed tool activity; never sent to providers.
+	PartProviderReplay    PartType = "provider_replay"    // Hidden provider protocol state; never rendered/exported.
+	PartDiscoveryCall     PartType = "discovery_call"     // Provider-neutral native discovery call, translated only by capable adapters.
+	PartDiscoveryOutput   PartType = "discovery_output"   // Trusted schemas selected by the local planner for a discovery call.
+	PartSkillActivation   PartType = "skill_activation"   // Persisted direct-activation provenance; never sent to providers.
+	PartAgentMention      PartType = "agent_mention"      // Provider-visible delegation instruction; excluded from human-visible text surfaces.
+	PartPathNote          PartType = "path_note"          // Persisted branch-context provenance; adjacent text is sent as developer context.
+	PartDiffComment       PartType = "diff_comment"       // Persisted inline-diff anchor metadata; never sent to providers.
+	PartGoalSteering      PartType = "goal_steering"      // Persisted marker for synthetic active-goal user prompts; adjacent text is sent to providers but hidden from human transcripts.
+	PartConversationStart PartType = "conversation_start" // Persisted immutable time anchor for the conversation; marker is never sent to providers.
+	PartPlatformContext   PartType = "platform_context"   // Persisted active interaction-mode context; marker is never sent to providers.
 )
 
 // Message holds a role with structured parts.

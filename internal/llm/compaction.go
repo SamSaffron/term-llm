@@ -156,25 +156,38 @@ func estimateSingleMessageTokens(msg Message) int {
 // prevents hard/soft modes from drifting and avoids duplicating recent context
 // inside the extractive <PREVIOUS_TURNS> block.
 type preparedCompactionContext struct {
-	SummaryMessages []Message
-	RecentMessages  []Message
+	SummaryMessages   []Message
+	RecentMessages    []Message
+	ConversationStart []Message
+	PlatformContext   []Message
 }
 
 func prepareCompactionContext(messages []Message, config CompactionConfig, skipBrief string) preparedCompactionContext {
+	var conversationStart []Message
+	if message, ok := ConversationStartFrom(messages); ok {
+		conversationStart = []Message{message}
+	}
+	var platformContext []Message
+	if message, ok := PlatformContextFrom(messages); ok {
+		platformContext = []Message{message}
+	}
+	prepared := preparedCompactionContext{ConversationStart: conversationStart, PlatformContext: platformContext}
 	source := filterCompactionControlMessages(messages, skipBrief)
 	if len(source) == 0 {
-		return preparedCompactionContext{}
+		return prepared
 	}
 
 	budget := effectiveRecentRawTokenBudget(config)
 	turns := effectiveRecentRawTurns(config)
 	if budget <= 0 || turns <= 0 || len(source) <= 1 {
-		return preparedCompactionContext{SummaryMessages: source}
+		prepared.SummaryMessages = source
+		return prepared
 	}
 
 	start := selectRecentRawSuffixStart(source, budget, turns)
 	if start <= 0 || start >= len(source) {
-		return preparedCompactionContext{SummaryMessages: source}
+		prepared.SummaryMessages = source
+		return prepared
 	}
 
 	summaryMessages := source[:start]
@@ -182,14 +195,18 @@ func prepareCompactionContext(messages []Message, config CompactionConfig, skipB
 		// If the split would leave nothing meaningful to summarize, keep the old
 		// summary-only behavior. This avoids compacting tiny one-turn histories into
 		// summary+duplicate raw messages.
-		return preparedCompactionContext{SummaryMessages: source}
+		prepared.SummaryMessages = source
+		return prepared
 	}
 
 	recent := sanitizeRecentRawSuffix(source[start:])
 	if len(recent) == 0 {
-		return preparedCompactionContext{SummaryMessages: source}
+		prepared.SummaryMessages = source
+		return prepared
 	}
-	return preparedCompactionContext{SummaryMessages: summaryMessages, RecentMessages: recent}
+	prepared.SummaryMessages = summaryMessages
+	prepared.RecentMessages = recent
+	return prepared
 }
 
 func filterCompactionControlMessages(messages []Message, skipBrief string) []Message {
@@ -507,6 +524,8 @@ func compactionResultFromBriefPrepared(systemPrompt, brief string, prepared prep
 	combined.WriteString(summaryClose)
 	summary := strings.TrimRight(combined.String(), "\n")
 	newMessages := reconstructHistory(systemPrompt, summary, prepared.RecentMessages)
+	newMessages = InsertPlatformContext(newMessages, prepared.PlatformContext)
+	newMessages = InsertConversationStart(newMessages, prepared.ConversationStart)
 	return &CompactionResult{
 		Summary:        summary,
 		NewMessages:    newMessages,
@@ -1674,8 +1693,10 @@ func Handover(ctx context.Context, provider Provider, model, currentSystemPrompt
 		return nil, fmt.Errorf("handover produced empty document")
 	}
 
-	// Reconstruct messages for the new agent with the new system prompt.
+	// Reconstruct messages for the new agent with the new system prompt while
+	// retaining the immutable conversation-start anchor across a model handover.
 	newMessages := ReconstructHandoverHistory(newSystemPrompt, collected.Text, sourceAgent, targetAgent)
+	newMessages = InsertConversationStart(newMessages, messages)
 
 	return &HandoverResult{
 		Document:    collected.Text,

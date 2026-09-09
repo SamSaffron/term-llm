@@ -182,6 +182,29 @@ func countString(values []string, want string) int {
 	return count
 }
 
+func TestResolveSettingsTimeGroundingDefaultsOffAndAllowsAgentOptIn(t *testing.T) {
+	enabled := true
+	for _, tc := range []struct {
+		name  string
+		agent *agents.Agent
+		want  bool
+	}{
+		{name: "no agent", want: false},
+		{name: "agent default", agent: &agents.Agent{Name: "default"}, want: false},
+		{name: "agent opt in", agent: &agents.Agent{Name: "time-aware", TimeGrounding: &enabled}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			settings, err := ResolveSettingsInDir(&config.Config{}, tc.agent, CLIFlags{}, "", "", "", 0, 50, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if settings.TimeGrounding != tc.want {
+				t.Fatalf("TimeGrounding = %v, want %v", settings.TimeGrounding, tc.want)
+			}
+		})
+	}
+}
+
 func TestResolveSettingsEnablesPlanGuidanceOnlyForBuiltinDeveloper(t *testing.T) {
 	cfg := &config.Config{}
 	for _, tc := range []struct {

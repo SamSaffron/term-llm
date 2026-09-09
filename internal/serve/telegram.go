@@ -606,19 +606,20 @@ func (a *telegramMessageAdmission) release() {
 
 // telegramSession holds per-chat conversation state.
 type telegramSession struct {
-	mu                    sync.Mutex
-	activityMu            sync.Mutex // protects lastActivity without blocking behind an active stream
-	runtime               *SessionRuntime
-	history               []llm.Message // full transcript for persistence/reconciliation
-	activeHistory         []llm.Message // non-nil after compaction; provider context only
-	systemPromptPersisted bool
-	runtimeStale          atomic.Bool // a detached runner may still own runtime; reset before reuse
-	cleanupOnce           sync.Once
-	carryoverContext      string // one-time context carried from the previous replaced session
-	carryoverContextLabel string
-	carryoverMessageCount int // number of restored prior-session messages at the start of history; not persisted to this session
-	meta                  *session.Session
-	lastActivity          time.Time
+	mu                         sync.Mutex
+	activityMu                 sync.Mutex // protects lastActivity without blocking behind an active stream
+	runtime                    *SessionRuntime
+	history                    []llm.Message // full transcript for persistence/reconciliation
+	activeHistory              []llm.Message // non-nil after compaction; provider context only
+	systemPromptPersisted      bool
+	conversationStartPersisted bool
+	runtimeStale               atomic.Bool // a detached runner may still own runtime; reset before reuse
+	cleanupOnce                sync.Once
+	carryoverContext           string // one-time context carried from the previous replaced session
+	carryoverContextLabel      string
+	carryoverMessageCount      int // number of restored prior-session messages at the start of history; not persisted to this session
+	meta                       *session.Session
+	lastActivity               time.Time
 
 	cancelMu      sync.Mutex         // protects active stream state and task/tool tracking
 	streamCancel  context.CancelFunc // cancels the active stream's context
@@ -715,6 +716,7 @@ func (m *telegramSessionMgr) getOrCreate(ctx context.Context, chatID int64) (*te
 		created.meta = saved.Meta
 		created.history = saved.History
 		created.activeHistory = saved.ActiveHistory
+		_, created.conversationStartPersisted = llm.ConversationStartFrom(created.history)
 		created.systemPromptPersisted = saved.PromptPersisted
 		created.carryoverContext = saved.CarryoverContext
 		created.carryoverContextLabel = saved.CarryoverLabel
@@ -1010,6 +1012,7 @@ func (m *telegramSessionMgr) newSession(ctx context.Context, chatID int64) (*tel
 	if m.store != nil {
 		m.restoreHistoryFromDB(ctx, chatID, sess)
 	}
+	_, sess.conversationStartPersisted = llm.ConversationStartFrom(sess.history)
 
 	return sess, nil
 }
@@ -1311,6 +1314,9 @@ func (m *telegramSessionMgr) reconcileTelegramTranscript(ctx context.Context, se
 	}
 	if includeSystemPrompt {
 		sess.systemPromptPersisted = true
+	}
+	if _, ok := llm.ConversationStartFrom(replacementHistory); ok {
+		sess.conversationStartPersisted = true
 	}
 	return true
 }
@@ -1708,7 +1714,15 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 	// Extract text from the user message for persistence and display.
 	userText := collectUserText(userMsg)
 
-	// Build provider context independently of the durable transcript.
+	// Build provider context independently of the durable transcript. Telegram
+	// owns the immutable start anchor because its per-turn runner runtimes are
+	// recreated and therefore cannot reliably retain a borrowed start time.
+	if m.settings.TimeGrounding {
+		sess.history = llm.BeginConversation(sess.history, time.Now())
+		if sess.activeHistory != nil {
+			sess.activeHistory = llm.InsertConversationStart(sess.activeHistory, sess.history)
+		}
+	}
 	history := sess.history
 	if sess.activeHistory != nil {
 		history = sess.activeHistory
@@ -1729,7 +1743,7 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 	}
 	// Inject platform developer message for telegram.
 	if devText := m.settings.PlatformMessages.For("telegram"); devText != "" {
-		messages = append(messages, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: devText}}})
+		messages = append(messages, llm.PlatformContextMessage(devText))
 	}
 	messages = append(messages, history...)
 	messages = append(messages, userMsg)
@@ -1767,6 +1781,16 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 				return m.store.AddMessage(storeCtx, sess.meta.ID, sysMsg)
 			}) {
 				sess.systemPromptPersisted = true
+			} else {
+				turnPersistenceDegraded = true
+			}
+		}
+		if start, ok := llm.ConversationStartFrom(sess.history); ok && !sess.conversationStartPersisted {
+			startMsg := session.NewMessage(sess.meta.ID, start, -1)
+			if m.runStoreOp(ctx, sess.meta.ID, "AddMessage(conversation_start)", func(storeCtx context.Context) error {
+				return m.store.AddMessage(storeCtx, sess.meta.ID, startMsg)
+			}) {
+				sess.conversationStartPersisted = true
 			} else {
 				turnPersistenceDegraded = true
 			}

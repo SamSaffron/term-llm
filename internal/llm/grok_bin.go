@@ -1245,7 +1245,12 @@ func buildGrokACPPrompt(messages []Message) ([]byte, error) {
 		case RoleSystem, RoleEvent:
 			continue
 		case RoleDeveloper:
-			pendingDeveloper = collectTextParts(message.Parts)
+			if text := collectTextParts(message.Parts); text != "" {
+				if pendingDeveloper != "" {
+					pendingDeveloper += "\n\n"
+				}
+				pendingDeveloper += text
+			}
 		case RoleUser:
 			if pendingDeveloper != "" {
 				blocks = append(blocks, grokACPContent{Type: "text", Text: "<developer>\n" + pendingDeveloper + "\n</developer>\n\n"})
@@ -1323,7 +1328,12 @@ func renderGrokConversationParts(messages []Message) []string {
 	for _, message := range messages {
 		switch message.Role {
 		case RoleDeveloper:
-			pendingDeveloper = collectTextParts(message.Parts)
+			if text := collectTextParts(message.Parts); text != "" {
+				if pendingDeveloper != "" {
+					pendingDeveloper += "\n\n"
+				}
+				pendingDeveloper += text
+			}
 		case RoleUser:
 			var parts []string
 			if pendingDeveloper != "" {

@@ -277,6 +277,95 @@ type resetTrackingProvider struct {
 
 func (p *resetTrackingProvider) ResetConversation() { p.resets++ }
 
+func TestServeRuntimeDoesNotDuplicateSurfaceOwnedPlatformContext(t *testing.T) {
+	const platformText = "chat platform context"
+	provider := llm.NewMockProvider("mock").AddTextResponse("answer")
+	rt := &serveRuntime{
+		provider: provider, engine: llm.NewEngine(provider, nil), platform: "chat",
+		platformMessages: agents.PlatformMessagesConfig{Chat: platformText},
+	}
+	input := []llm.Message{llm.PlatformContextMessage(platformText), llm.UserText("hello")}
+	if _, err := rt.Run(context.Background(), false, false, input, llm.Request{}); err != nil {
+		t.Fatal(err)
+	}
+	requests := provider.RecordedRequests()
+	if len(requests) != 1 {
+		t.Fatalf("requests = %d, want 1", len(requests))
+	}
+	count := 0
+	for _, message := range requests[0].Messages {
+		if message.Role == llm.RoleDeveloper && llm.MessageText(message) == platformText {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("platform context count = %d, want 1; messages = %#v", count, requests[0].Messages)
+	}
+	if !requests[0].IncludeDeveloperInContinuation {
+		t.Fatal("surface-owned platform transition did not enable continuation delivery")
+	}
+}
+
+func TestServeRuntimeHonorsTimeGroundingOptOut(t *testing.T) {
+	ctx := context.Background()
+	store := newServeRuntimeTestStore()
+	provider := llm.NewMockProvider("mock").AddTextResponse("answer")
+	rt := &serveRuntime{
+		provider: provider, engine: llm.NewEngine(provider, nil), store: store, defaultModel: "mock",
+		settings: &SessionSettings{TimeGrounding: false},
+	}
+	if _, err := rt.Run(ctx, true, false, []llm.Message{llm.UserText("question")}, llm.Request{SessionID: "timeless"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, request := range provider.RecordedRequests() {
+		for _, message := range request.Messages {
+			if strings.Contains(llm.MessageText(message), "Conversation started at") {
+				t.Fatalf("opted-out runtime sent time grounding: %#v", request.Messages)
+			}
+		}
+	}
+	stored, err := store.GetMessages(ctx, "timeless", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range stored {
+		if llm.IsConversationStartMessage(stored[i].ToLLMMessage()) {
+			t.Fatalf("opted-out runtime persisted time grounding: %#v", stored)
+		}
+	}
+}
+
+func TestServeRuntimeFirstTurnAddsStartAfterPreseededDeveloperContext(t *testing.T) {
+	ctx := context.Background()
+	store := newServeRuntimeTestStore()
+	sess := &session.Session{ID: "preseeded-start", Provider: "mock", Model: "mock", Status: session.StatusActive}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "preseeded context"}}}, -1)); err != nil {
+		t.Fatal(err)
+	}
+	provider := llm.NewMockProvider("mock").AddTextResponse("answer")
+	rt := &serveRuntime{provider: provider, engine: llm.NewEngine(provider, nil), store: store, defaultModel: "mock", settings: &SessionSettings{TimeGrounding: true}}
+	if _, err := rt.Run(ctx, true, false, []llm.Message{llm.UserText("question")}, llm.Request{SessionID: sess.ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	stored, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startCount := 0
+	for i := range stored {
+		if llm.IsConversationStartMessage(stored[i].ToLLMMessage()) {
+			startCount++
+		}
+	}
+	if startCount != 1 {
+		t.Fatalf("conversation start count = %d; messages = %#v", startCount, stored)
+	}
+}
+
 func TestServeRuntimeBorrowedEnginePreservesProviderConversation(t *testing.T) {
 	provider := &resetTrackingProvider{MockProvider: llm.NewMockProvider("mock").AddTextResponse("one").AddTextResponse("two")}
 	rt := &serveRuntime{
@@ -284,6 +373,7 @@ func TestServeRuntimeBorrowedEnginePreservesProviderConversation(t *testing.T) {
 		engine:         llm.NewEngine(provider, nil),
 		borrowedEngine: true,
 		defaultModel:   "mock-model",
+		settings:       &SessionSettings{TimeGrounding: true},
 	}
 	for _, prompt := range []string{"first", "second"} {
 		if _, err := rt.Run(context.Background(), false, false, []llm.Message{llm.UserText(prompt)}, llm.Request{}); err != nil {
@@ -296,10 +386,16 @@ func TestServeRuntimeBorrowedEnginePreservesProviderConversation(t *testing.T) {
 	if len(provider.Requests) != 2 {
 		t.Fatalf("provider requests = %d, want 2", len(provider.Requests))
 	}
+	var startText string
 	for i, want := range []string{"first", "second"} {
 		request := provider.Requests[i]
-		if len(request.Messages) != 1 || llm.MessageText(request.Messages[0]) != want {
-			t.Fatalf("provider request %d messages = %#v, want only %q", i, request.Messages, want)
+		if len(request.Messages) != 2 || request.Messages[0].Role != llm.RoleDeveloper || llm.MessageText(request.Messages[1]) != want {
+			t.Fatalf("provider request %d messages = %#v, want start context then %q", i, request.Messages, want)
+		}
+		if i == 0 {
+			startText = llm.MessageText(request.Messages[0])
+		} else if got := llm.MessageText(request.Messages[0]); got != startText {
+			t.Fatalf("borrowed conversation start changed: first %q, second %q", startText, got)
 		}
 	}
 }
@@ -2242,6 +2338,60 @@ func TestServeRuntimeTerminalHandoffPersistsTaggedPartialOutput(t *testing.T) {
 				t.Fatalf("handoff = valid:%v count:%d rev:%d", run.durableHandoff, run.durableOutputCount, run.finalRev)
 			}
 		})
+	}
+}
+
+func TestServeRuntimePlatformTransitionSurvivesEvictionWithoutReinjection(t *testing.T) {
+	const sessionID = "sess-web-tui-web"
+	store := newServeRuntimeTestStore()
+	meta := &session.Session{
+		ID: sessionID, Provider: "mock", Model: "test-model", Mode: session.ModeChat,
+		Origin: session.OriginTUI, UserTurns: 2, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := store.Create(context.Background(), meta); err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range []llm.Message{
+		llm.PlatformContextMessage("web context"), llm.UserText("web turn"), llm.AssistantText("web answer"),
+		llm.PlatformContextMessage("tui context"), llm.UserText("tui turn"), llm.AssistantText("tui answer"),
+	} {
+		if err := store.AddMessage(context.Background(), sessionID, session.NewMessage(sessionID, message, -1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	run := func(answer, prompt string) {
+		t.Helper()
+		provider := llm.NewMockProvider("mock").AddTextResponse(answer)
+		rt := &serveRuntime{
+			provider: provider, providerKey: provider.Name(), engine: llm.NewEngine(provider, nil),
+			store: store, platform: "web", platformMessages: agents.PlatformMessagesConfig{Web: "web context", Chat: "tui context"},
+			defaultModel: "test-model",
+		}
+		if _, err := rt.Run(context.Background(), true, false, []llm.Message{llm.UserText(prompt)}, llm.Request{SessionID: sessionID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("third answer", "back on web")
+	if got, err := store.Get(context.Background(), sessionID); err != nil || got.Origin != session.OriginWeb {
+		messages, _ := store.GetMessages(context.Background(), sessionID, 0, 0)
+		t.Fatalf("origin after web transition = %#v, %v; messages = %#v", got, err, messages)
+	}
+	run("fourth answer", "still on web")
+
+	messages, err := store.GetMessages(context.Background(), sessionID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	webCount := 0
+	for _, message := range messages {
+		providerMessage := message.ToLLMMessage()
+		if llm.IsPlatformContextMessage(providerMessage) && llm.MessageText(providerMessage) == "web context" {
+			webCount++
+		}
+	}
+	if webCount != 2 {
+		t.Fatalf("persisted web transition count = %d, want 2: %#v", webCount, messages)
 	}
 }
 

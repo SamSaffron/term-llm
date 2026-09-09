@@ -1,5 +1,6 @@
 name: active-review
 description: "Review code and implement fixes using sub-agents"
+time_grounding: true
 agents_md: "true"
 skills: "all"
 

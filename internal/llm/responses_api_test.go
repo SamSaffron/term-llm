@@ -2033,13 +2033,14 @@ func TestBuildResponsesContinuationInput_IncludesDeveloperPolicyForLatestUser(t 
 	messages := []Message{
 		UserText("old question"),
 		AssistantText("old answer"),
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "web platform transition"}}},
 		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "private branch policy"}}},
 		UserText("branch request"),
 	}
 
 	got := buildResponsesContinuationInputWithFilePolicy(messages, nil, true)
-	if len(got) != 2 || got[0].Role != "developer" || got[1].Role != "user" {
-		t.Fatalf("continuation input = %+v, want developer policy plus latest user", got)
+	if len(got) != 3 || got[0].Role != "developer" || got[0].Content != "web platform transition" || got[1].Role != "developer" || got[2].Role != "user" {
+		t.Fatalf("continuation input = %+v, want complete developer block plus latest user", got)
 	}
 	withoutPolicy := BuildResponsesContinuationInput(messages)
 	if len(withoutPolicy) != 1 || withoutPolicy[0].Role != "user" {

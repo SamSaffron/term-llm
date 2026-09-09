@@ -1656,6 +1656,46 @@ func (t *finishingNamedTool) IsFinishingTool() bool {
 	return true
 }
 
+func TestEngineStripsConversationStartMarkersAcrossRequest(t *testing.T) {
+	provider := NewMockProvider("mock").AddTextResponse("ok")
+	engine := NewEngine(provider, nil)
+	first := ConversationStartMessage(time.Date(2026, time.January, 2, 3, 4, 0, 0, time.UTC))
+	second := ConversationStartMessage(time.Date(2026, time.January, 2, 3, 5, 0, 0, time.UTC))
+	messages := []Message{first, UserText("hello"), second, UserText("again")}
+	stream, err := engine.Stream(context.Background(), Request{Messages: messages})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	for {
+		_, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatal(recvErr)
+		}
+	}
+
+	requests := provider.RecordedRequests()
+	if len(requests) != 1 || len(requests[0].Messages) != 4 {
+		t.Fatalf("provider requests = %#v", requests)
+	}
+	for _, message := range requests[0].Messages {
+		for _, part := range message.Parts {
+			if part.Type == PartConversationStart {
+				t.Fatalf("marker reached provider: %#v", requests[0].Messages)
+			}
+		}
+	}
+	if got := MessageText(requests[0].Messages[0]); got != MessageText(first) {
+		t.Fatalf("developer text = %q, want %q", got, MessageText(first))
+	}
+	if !IsConversationStartMessage(messages[0]) || !IsConversationStartMessage(messages[2]) {
+		t.Fatalf("source messages mutated: %#v", messages)
+	}
+}
+
 func TestEngineStripsSkillProvenanceFromProviderRequest(t *testing.T) {
 	provider := NewMockProvider("mock").AddTextResponse("ok")
 	engine := NewEngine(provider, nil)

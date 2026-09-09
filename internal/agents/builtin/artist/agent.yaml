@@ -1,5 +1,6 @@
 name: artist
 description: "Image generation and editing expert"
+time_grounding: true
 
 agents_md: "false"
 

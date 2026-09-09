@@ -84,6 +84,7 @@ type SessionSettings struct {
 	MaxTurns        int
 	MaxOutputTokens int // 0 = use provider default
 	Search          bool
+	TimeGrounding   bool
 
 	// Memory / insights
 	InsightsExpansion bool
@@ -189,6 +190,7 @@ func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags,
 	if agent != nil {
 		s.AgentName = agent.Name
 		s.PlanGuidance = agent.Name == "developer" && agent.Source == agents.SourceBuiltin
+		s.TimeGrounding = agent.TimeGroundingEnabled()
 	}
 
 	// Provider/model: CLI > agent > config

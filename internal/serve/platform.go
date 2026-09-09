@@ -40,6 +40,7 @@ type Settings struct {
 	Tools               string
 	MCP                 string
 	Agent               string
+	TimeGrounding       bool
 	PlatformMessages    agents.PlatformMessagesConfig
 	Store               session.Store
 	Runner              runpkg.Runner

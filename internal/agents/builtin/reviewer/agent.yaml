@@ -1,5 +1,6 @@
 name: reviewer
 description: "Code review assistant (read-only)"
+time_grounding: true
 agents_md: "true"
 skills: "all"
 

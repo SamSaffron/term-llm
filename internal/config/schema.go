@@ -53,7 +53,7 @@ const (
 	DefaultChatMaxTurns    = 200
 	DefaultExecSuggestions = 3
 
-	DefaultAssistantInstructions = "You are a helpful assistant. Today's date is {{date}}."
+	DefaultAssistantInstructions = "You are a helpful assistant."
 	DefaultChatTerminalTitle     = "smart"
 	DefaultLifecycleOSC          = "off"
 	DefaultLifecycleSinkTimeout  = "2s"

@@ -526,8 +526,10 @@ func buildResponsesContinuationInputWithFilePolicy(messages []Message, policy *F
 		for i := len(messages) - 1; i >= 0; i-- {
 			if messages[i].Role == RoleUser {
 				start = i
-				if includeDeveloper && i > 0 && messages[i-1].Role == RoleDeveloper {
-					start = i - 1
+				if includeDeveloper {
+					for start > 0 && messages[start-1].Role == RoleDeveloper {
+						start--
+					}
 				}
 				break
 			}

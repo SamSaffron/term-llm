@@ -4105,6 +4105,29 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 		_ = m.store.Delete(context.Background(), newSess.ID)
 	}
 
+	// Carry the source conversation's immutable time anchor through reconstructed
+	// handover history. Legacy source sessions fall back to their persisted
+	// creation time rather than being mislabeled with handover or reload time.
+	sourceMessages := make([]llm.Message, 0, len(m.messages))
+	for i := range m.messages {
+		sourceMessages = append(sourceMessages, m.messages[i].ToLLMMessage())
+	}
+	if platformText := targetAgent.PlatformMessages.For("chat"); platformText != "" {
+		result.NewMessages = llm.InsertPlatformContext(result.NewMessages, []llm.Message{llm.PlatformContextMessage(platformText)})
+	}
+	if targetAgent.TimeGroundingEnabled() {
+		result.NewMessages = llm.InsertConversationStart(result.NewMessages, sourceMessages)
+		if _, ok := llm.ConversationStartFrom(result.NewMessages); !ok {
+			start := newSess.CreatedAt
+			if m.sess != nil && !m.sess.CreatedAt.IsZero() {
+				start = m.sess.CreatedAt
+			}
+			result.NewMessages = llm.InsertConversationStart(result.NewMessages, []llm.Message{llm.ConversationStartMessage(start)})
+		}
+	} else {
+		result.NewMessages = llm.WithoutConversationStart(result.NewMessages)
+	}
+
 	// Persist the target agent's resolved system prompt first, followed by the
 	// conversational handover context. Keeping the system prompt at sequence 0 is
 	// required so every resume/reload sees the target agent's prompt before the

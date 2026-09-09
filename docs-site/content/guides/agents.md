@@ -138,14 +138,32 @@ shell:
   scripts:                         # named shortcuts (auto-approved)
     build: "npm run build"
 
-search: true   # enables web_search and read_url tools
-max_turns: 50   # agentic loop limit; CLI --max-turns overrides this
+search: true          # enables web_search and read_url tools
+max_turns: 50         # agentic loop limit; CLI --max-turns overrides this
+time_grounding: true  # optional fixed conversation-start timestamp
 
 mcp:
   - name: github
 ```
 
 Built-in agents that currently default to `search: true`: `agent-builder`, `web-researcher`, `developer`, `editor`, `shell`, `contain`.
+
+## Time grounding
+
+Time grounding is disabled unless an agent explicitly opts in:
+
+```yaml
+name: release-assistant
+time_grounding: true
+```
+
+When enabled, term-llm captures the local wall-clock time once, immediately before the conversation's first user turn, and adds it as a `developer` message. The message identifies the value as the fixed **conversation start time**; it is not regenerated on later turns and does not claim to show the current time.
+
+The marked start message is part of the durable conversation context. It keeps the same timestamp through normal turns, context compaction, persistence reloads, provider continuation, branches, and handovers to another time-grounded agent. If a handover target has time grounding disabled, the target conversation does not receive the time anchor.
+
+Time grounding and [platform developer messages](#platform-developer-messages) are independent. An opted-in agent may receive both messages, and neither replaces the other.
+
+Date and time template variables such as `{{date}}`, `{{time}}`, and `{{datetime}}` remain available for compatibility, but they are expanded whenever a system prompt is rendered. Do not use them to establish conversation time: a prompt rebuilt after reload or compaction can produce a newer value and contradict earlier context. Prefer `time_grounding: true` for temporal grounding.
 
 ## Handing a conversation to another agent
 
@@ -240,7 +258,7 @@ output_tool:
 
 ## Platform developer messages
 
-When term-llm serves an agent on different platforms (web UI, Telegram, CLI chat, background jobs), each platform may need different behavioral guidance. The `platform_messages` block in `agent.yaml` lets you inject a developer-role message at the start of every new session, keyed by platform.
+When term-llm runs an agent on different platforms (web UI, Telegram, CLI chat, background jobs), each platform may need different behavioral guidance. The `platform_messages` block in `agent.yaml` adds marked developer-role context keyed by platform.
 
 ```yaml
 platform_messages:
@@ -263,7 +281,9 @@ Supported platform keys:
 | `chat_developer_message` | CLI chat | `term-llm chat` |
 | `jobs_developer_message` | Scheduled/background jobs | `term-llm serve --platform jobs` |
 
-Messages are injected as `developer` role messages before the first user turn. If no message is configured for the active platform, nothing is injected. Each key is optional. Define only the platforms you need.
+The configured text is injected as a `developer` message before the first user turn on that platform. When an existing conversation moves between surfaces—for example, Web → CLI chat → Web—term-llm records a new message at each actual transition. The latest marked message is the effective platform context. Runtime eviction or process reload does not duplicate the current transition, and compaction retains the latest platform context.
+
+If no message is configured for the active platform, nothing is injected. Each key is optional; define only the platforms you need. Platform context may appear next to time grounding and other developer messages. Provider adapters preserve the complete consecutive developer-message block, including continuation paths for providers that maintain server-side conversation state.
 
 ## System prompt file includes
 

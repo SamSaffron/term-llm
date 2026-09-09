@@ -1,5 +1,6 @@
 name: web-researcher
 description: "Information gathering with web search"
+time_grounding: true
 
 tools:
   enabled: [read_file, glob, grep]

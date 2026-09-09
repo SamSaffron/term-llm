@@ -1,5 +1,6 @@
 name: extension-builder
 description: "Make the web interface yours with CSS and JavaScript extensions"
+time_grounding: true
 agents_md: "true"
 skills: "all"
 tools:

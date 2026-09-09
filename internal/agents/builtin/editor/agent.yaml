@@ -1,5 +1,6 @@
 name: editor
 description: "File editing assistant"
+time_grounding: true
 agents_md: "true"
 skills: "all"
 
