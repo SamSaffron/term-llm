@@ -1491,8 +1491,8 @@ func TestGetDefaultsIncludeChatGPTImageModel(t *testing.T) {
 	if !ok {
 		t.Fatalf("image.chatgpt.model default has unexpected type %T", defaults["image.chatgpt.model"])
 	}
-	if got != "gpt-5.4-mini" {
-		t.Fatalf("image.chatgpt.model = %q, want %q", got, "gpt-5.4-mini")
+	if got != "gpt-image-2.5-flare" {
+		t.Fatalf("image.chatgpt.model = %q, want %q", got, "gpt-image-2.5-flare")
 	}
 	if !KnownKeys["image.chatgpt.model"] {
 		t.Fatal("KnownKeys missing image.chatgpt.model")

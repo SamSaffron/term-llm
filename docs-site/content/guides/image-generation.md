@@ -40,7 +40,7 @@ By default, images are:
 term-llm image "cyberpunk cityscape at night"
 term-llm image "minimalist logo" --provider flux
 term-llm image "futuristic city" --provider xai              # uses Grok image model
-term-llm image "storybook fox in the snow" --provider chatgpt:gpt-5.4
+term-llm image "storybook fox in the snow" --provider chatgpt:gpt-image-2.5-sunburst
 term-llm image "watercolor painting" -o ./art.png
 
 # Edit existing image (not supported by xAI)
@@ -60,8 +60,8 @@ term-llm image "landscape" --no-display         # don't show in terminal
 | Provider | Models | Environment Variable | Config Key |
 |----------|--------|---------------------|------------|
 | Gemini (default) | gemini-2.5-flash-image | `GEMINI_API_KEY` | `image.gemini.api_key` |
-| OpenAI | gpt-image-2, gpt-image-1.5, gpt-image-1-mini | `OPENAI_API_KEY` | `image.openai.api_key` |
-| ChatGPT | gpt-5.4-mini, gpt-5.4 | — (uses ChatGPT OAuth) | `image.chatgpt.model` |
+| OpenAI | gpt-image-2.5-flare, gpt-image-2.5-sunburst, gpt-image-2, gpt-image-1.5, gpt-image-1-mini | `OPENAI_API_KEY` | `image.openai.api_key` |
+| ChatGPT | gpt-image-2.5-flare (default), gpt-image-2.5-sunburst, gpt-image-2 | — (uses ChatGPT OAuth) | `image.chatgpt.model` |
 | xAI | grok-2-image-1212 | `XAI_API_KEY` | `image.xai.api_key` |
 | Venice | nano-banana-pro | `VENICE_API_KEY` | `image.venice.api_key` |
 | Flux | flux-2-pro, flux-2-max, flux-kontext-pro | `BFL_API_KEY` | `image.flux.api_key` |
@@ -69,7 +69,7 @@ term-llm image "landscape" --no-display         # don't show in terminal
 
 Image generation has its own provider selection and config. Where supported, image-specific keys can differ from text-provider keys; normal environment/config fallback still applies. ChatGPT reuses the same OAuth login as text. The listed model names are shipped defaults or examples, not a live availability or pricing guarantee.
 
-**ChatGPT image provider:** log in with `term-llm auth login chatgpt`, then you can use `term-llm image --provider chatgpt:gpt-5.4 "..."` for subscription-backed image generation without an API key.
+**ChatGPT image provider:** log in with `term-llm auth login chatgpt`, then use `term-llm image --provider chatgpt "..."` for subscription-backed GPT Image 2.5 Flare generation without an API key. Select Sunburst for more precise, slower work with `--provider chatgpt:gpt-image-2.5-sunburst`. Existing `gpt-5.4-mini` and `gpt-5.4` image settings are migrated to the Flare default because those language-model values belonged to the retired Responses API hop.
 
 **Editing limits:** xAI does not support editing. ChatGPT accepts one input image. Venice supports one-image editing and multi-image editing with up to three inputs, subject to the selected model. Venice uses `image.venice.edit_model` when set; otherwise it derives the edit model by appending `-edit` to the generation model (unless already present). Gemini and OpenRouter also expose multi-image editing; upstream model limits still apply.
 

@@ -66,7 +66,7 @@ const (
 	DefaultImageOutputDir        = "~/Pictures/term-llm"
 	DefaultImageGeminiModel      = "gemini-2.5-flash-image"
 	DefaultImageOpenAIModel      = "gpt-image-2"
-	DefaultImageChatGPTModel     = "gpt-5.4-mini"
+	DefaultImageChatGPTModel     = "gpt-image-2.5-flare"
 	DefaultImageXAIModel         = "grok-2-image-1212"
 	DefaultImageVeniceModel      = "nano-banana-pro"
 	DefaultImageVeniceResolution = "2K"

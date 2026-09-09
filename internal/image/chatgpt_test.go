@@ -3,13 +3,13 @@ package image
 import (
 	"context"
 	"encoding/base64"
-	"fmt"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/credentials"
 )
 
 type chatGPTImageRoundTripper func(*http.Request) (*http.Response, error)
@@ -18,239 +18,179 @@ func (f chatGPTImageRoundTripper) RoundTrip(r *http.Request) (*http.Response, er
 	return f(r)
 }
 
-// newMockChatGPTProvider builds a ChatGPTProvider wired to an in-memory HTTP
-// round-tripper that returns the given SSE body. Used for unit tests that
-// exercise generate/edit without touching real credentials.
-func newMockChatGPTProvider(sseBody string) *ChatGPTProvider {
-	client := &llm.ResponsesClient{
-		BaseURL:            "https://example.test/responses",
-		GetAuthHeader:      func() string { return "Bearer test-token" },
-		DisableServerState: true,
-		HTTPClient: &http.Client{
-			Transport: chatGPTImageRoundTripper(func(*http.Request) (*http.Response, error) {
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Status:     "200 OK",
-					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-					Body:       io.NopCloser(strings.NewReader(sseBody)),
-				}, nil
-			}),
-		},
-	}
+func newMockChatGPTProvider(roundTrip chatGPTImageRoundTripper) *ChatGPTProvider {
 	return &ChatGPTProvider{
-		client: client,
-		model:  "gpt-5.4-mini",
+		creds:            &credentials.ChatGPTCredentials{AccessToken: "test-token", AccountID: "test-account"},
+		client:           &http.Client{Transport: roundTrip},
+		model:            "gpt-image-2.5-flare",
+		generateEndpoint: "https://example.test/images/generations",
+		editEndpoint:     "https://example.test/images/edits",
 	}
 }
 
-func TestChatGPTProvider_Generate_ReturnsDecodedImage(t *testing.T) {
-	payload := []byte("mock-png-bytes")
-	encoded := base64.StdEncoding.EncodeToString(payload)
-	sse := "event: response.output_item.done\n" +
-		"data: {\"item\":{\"type\":\"image_generation_call\",\"status\":\"completed\",\"result\":\"" + encoded + "\",\"revised_prompt\":\"a blue square\"}}\n\n" +
-		"event: response.completed\n" +
-		"data: {\"response\":{\"id\":\"resp_1\"}}\n\n" +
-		"data: [DONE]\n\n"
-
-	p := newMockChatGPTProvider(sse)
-	result, err := p.Generate(context.Background(), GenerateRequest{Prompt: "a blue square"})
-	if err != nil {
-		t.Fatalf("Generate returned error: %v", err)
-	}
-	if string(result.Data) != string(payload) {
-		t.Errorf("decoded data mismatch: got %q, want %q", string(result.Data), string(payload))
-	}
-	if result.MimeType != "image/png" {
-		t.Errorf("mime type: got %q, want image/png", result.MimeType)
-	}
-}
-
-func TestChatGPTProvider_Edit_RequiresInputImage(t *testing.T) {
-	p := newMockChatGPTProvider("data: [DONE]\n\n")
-	_, err := p.Edit(context.Background(), EditRequest{Prompt: "make it red"})
-	if err == nil {
-		t.Fatal("expected error when no input image provided")
-	}
-}
-
-func TestChatGPTProvider_Edit_RejectsMultipleImages(t *testing.T) {
-	p := newMockChatGPTProvider("data: [DONE]\n\n")
-	_, err := p.Edit(context.Background(), EditRequest{
-		Prompt: "combine these",
-		InputImages: []InputImage{
-			{Data: []byte("a"), Path: "a.png"},
-			{Data: []byte("b"), Path: "b.png"},
-		},
+func chatGPTImageSuccess(data []byte) *http.Response {
+	body, _ := json.Marshal(map[string]any{
+		"created": 1,
+		"data": []map[string]string{{
+			"b64_json": base64.StdEncoding.EncodeToString(data),
+		}},
+		"output_format": "png",
 	})
-	if err == nil {
-		t.Fatal("expected error when more than one input image provided")
-	}
-	if !strings.Contains(err.Error(), "single") {
-		t.Errorf("error %q should mention 'single image'", err.Error())
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(string(body))),
 	}
 }
 
-func TestChatGPTProvider_Edit_SendsInputImageDataURL(t *testing.T) {
+func TestChatGPTProviderGenerateUsesCodexImagesEndpoint(t *testing.T) {
+	var captured *http.Request
 	var capturedBody []byte
-	client := &llm.ResponsesClient{
-		BaseURL:            "https://example.test/responses",
-		GetAuthHeader:      func() string { return "Bearer test-token" },
-		DisableServerState: true,
-		HTTPClient: &http.Client{
-			Transport: chatGPTImageRoundTripper(func(req *http.Request) (*http.Response, error) {
-				if req.Body != nil {
-					b, _ := io.ReadAll(req.Body)
-					capturedBody = b
-				}
-				resultB64 := base64.StdEncoding.EncodeToString([]byte("edited"))
-				sse := "event: response.output_item.done\n" +
-					"data: {\"item\":{\"type\":\"image_generation_call\",\"result\":\"" + resultB64 + "\"}}\n\n" +
-					"event: response.completed\n" +
-					"data: {\"response\":{\"id\":\"resp_edit\"}}\n\n" +
-					"data: [DONE]\n\n"
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Status:     "200 OK",
-					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-					Body:       io.NopCloser(strings.NewReader(sse)),
-				}, nil
-			}),
-		},
-	}
-	p := &ChatGPTProvider{client: client, model: "gpt-5.4-mini"}
-
-	src := []byte("original-bytes")
-	_, err := p.Edit(context.Background(), EditRequest{
-		Prompt:      "make it red",
-		InputImages: []InputImage{{Data: src, Path: "input.png"}},
+	provider := newMockChatGPTProvider(func(req *http.Request) (*http.Response, error) {
+		captured = req
+		capturedBody, _ = io.ReadAll(req.Body)
+		return chatGPTImageSuccess([]byte("mock-png-bytes")), nil
 	})
-	if err != nil {
-		t.Fatalf("Edit returned error: %v", err)
-	}
-	body := string(capturedBody)
-	if !strings.Contains(body, "input_image") {
-		t.Error("request body should include input_image content part")
-	}
-	wantDataURL := fmt.Sprintf("data:image/png;base64,%s", base64.StdEncoding.EncodeToString(src))
-	if !strings.Contains(body, wantDataURL) {
-		t.Errorf("request body missing expected data URL\nwant fragment: %s", wantDataURL)
-	}
-	if !strings.Contains(body, "\"tool_choice\":{\"type\":\"image_generation\"}") {
-		t.Errorf("request body missing image_generation tool_choice; got: %s", body)
-	}
-}
 
-func TestDecorateChatGPTPrompt(t *testing.T) {
-	base := "a red square"
-	tests := []struct {
-		name        string
-		size        string
-		aspectRatio string
-		wantEqual   string
-		wantContain []string
-	}{
-		{name: "no hints", wantEqual: base},
-		{name: "whitespace only", size: "   ", aspectRatio: "\t", wantEqual: base},
-		{name: "unknown size dropped", size: "8K", wantEqual: base},
-		{
-			name:        "size only",
-			size:        "2K",
-			wantContain: []string{base, "2048×2048", "(2K)"},
-		},
-		{
-			name:        "aspect ratio only",
-			aspectRatio: "16:9",
-			wantContain: []string{base, "Aspect ratio: 16:9."},
-		},
-		{
-			name:        "size and aspect ratio",
-			size:        "4K",
-			aspectRatio: "1:1",
-			wantContain: []string{base, "4096×4096", "Aspect ratio: 1:1."},
-		},
-		{
-			name:        "lowercase size normalized",
-			size:        "1k",
-			wantContain: []string{base, "1024×1024", "(1K)"},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := decorateChatGPTPrompt(base, tt.size, tt.aspectRatio)
-			if tt.wantEqual != "" && got != tt.wantEqual {
-				t.Errorf("decorateChatGPTPrompt(%q, %q, %q) = %q, want %q",
-					base, tt.size, tt.aspectRatio, got, tt.wantEqual)
-			}
-			for _, sub := range tt.wantContain {
-				if !strings.Contains(got, sub) {
-					t.Errorf("decorateChatGPTPrompt output missing %q\ngot: %q", sub, got)
-				}
-			}
-		})
-	}
-}
-
-func TestChatGPTSizeHint(t *testing.T) {
-	tests := map[string]string{
-		"1K":  "Target resolution: approximately 1024×1024 pixels (1K).",
-		"2K":  "Target resolution: approximately 2048×2048 pixels (2K).",
-		"4K":  "Target resolution: approximately 4096×4096 pixels (4K).",
-		"1k":  "Target resolution: approximately 1024×1024 pixels (1K).",
-		"8K":  "",
-		"":    "",
-		"foo": "",
-	}
-	for in, want := range tests {
-		t.Run(in, func(t *testing.T) {
-			if got := chatGPTSizeHint(in); got != want {
-				t.Errorf("chatGPTSizeHint(%q) = %q, want %q", in, got, want)
-			}
-		})
-	}
-}
-
-func TestChatGPTProvider_Generate_IncludesSizeHintInRequestBody(t *testing.T) {
-	var capturedBody []byte
-	client := &llm.ResponsesClient{
-		BaseURL:            "https://example.test/responses",
-		GetAuthHeader:      func() string { return "Bearer test-token" },
-		DisableServerState: true,
-		HTTPClient: &http.Client{
-			Transport: chatGPTImageRoundTripper(func(req *http.Request) (*http.Response, error) {
-				if req.Body != nil {
-					b, _ := io.ReadAll(req.Body)
-					capturedBody = b
-				}
-				resultB64 := base64.StdEncoding.EncodeToString([]byte("png"))
-				sse := "event: response.output_item.done\n" +
-					"data: {\"item\":{\"type\":\"image_generation_call\",\"result\":\"" + resultB64 + "\"}}\n\n" +
-					"event: response.completed\n" +
-					"data: {\"response\":{\"id\":\"resp_size\"}}\n\n" +
-					"data: [DONE]\n\n"
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Status:     "200 OK",
-					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-					Body:       io.NopCloser(strings.NewReader(sse)),
-				}, nil
-			}),
-		},
-	}
-	p := &ChatGPTProvider{client: client, model: "gpt-5.4-mini"}
-
-	_, err := p.Generate(context.Background(), GenerateRequest{
-		Prompt:      "a red square",
-		Size:        "4K",
+	result, err := provider.Generate(context.Background(), GenerateRequest{
+		Prompt:      "a blue square",
+		Size:        "2K",
 		AspectRatio: "16:9",
 	})
 	if err != nil {
 		t.Fatalf("Generate returned error: %v", err)
 	}
-	body := string(capturedBody)
-	if !strings.Contains(body, "4096") {
-		t.Errorf("request body missing 4K resolution hint; got: %s", body)
+	if string(result.Data) != "mock-png-bytes" || result.MimeType != "image/png" {
+		t.Fatalf("unexpected result: %+v", result)
 	}
-	if !strings.Contains(body, "16:9") {
-		t.Errorf("request body missing aspect ratio hint; got: %s", body)
+	if captured.URL.String() != provider.generateEndpoint {
+		t.Fatalf("URL = %q, want %q", captured.URL, provider.generateEndpoint)
+	}
+	for key, want := range map[string]string{
+		"Authorization":      "Bearer test-token",
+		"ChatGPT-Account-ID": "test-account",
+		"originator":         "term-llm",
+		"Accept":             "application/json",
+	} {
+		if got := captured.Header.Get(key); got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
+	}
+	if got := captured.Header.Get("User-Agent"); !strings.HasPrefix(got, "term-llm/") {
+		t.Errorf("User-Agent = %q, want term-llm version", got)
+	}
+
+	var payload chatGPTImageGenerationRequest
+	if err := json.Unmarshal(capturedBody, &payload); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	if payload.Model != "gpt-image-2.5-flare" || payload.Prompt != "a blue square" {
+		t.Fatalf("unexpected payload: %+v", payload)
+	}
+	if payload.Background != "auto" || payload.Quality != "auto" || payload.Size != "2560x1440" {
+		t.Fatalf("unexpected image options: %+v", payload)
+	}
+}
+
+func TestChatGPTProviderEditUsesJSONImageURLs(t *testing.T) {
+	var capturedBody []byte
+	provider := newMockChatGPTProvider(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() != "https://example.test/images/edits" {
+			t.Fatalf("URL = %q", req.URL)
+		}
+		capturedBody, _ = io.ReadAll(req.Body)
+		return chatGPTImageSuccess([]byte("edited")), nil
+	})
+
+	input := []byte("original-bytes")
+	result, err := provider.Edit(context.Background(), EditRequest{
+		Prompt:      "make it red",
+		InputImages: []InputImage{{Data: input, Path: "input.png"}},
+	})
+	if err != nil {
+		t.Fatalf("Edit returned error: %v", err)
+	}
+	if string(result.Data) != "edited" {
+		t.Fatalf("result = %q", result.Data)
+	}
+
+	var payload chatGPTImageEditRequest
+	if err := json.Unmarshal(capturedBody, &payload); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	if len(payload.Images) != 1 {
+		t.Fatalf("images = %d, want 1", len(payload.Images))
+	}
+	wantURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(input)
+	if payload.Images[0].ImageURL != wantURL {
+		t.Fatalf("image URL = %q, want %q", payload.Images[0].ImageURL, wantURL)
+	}
+	if payload.Size != "auto" || payload.Model != "gpt-image-2.5-flare" {
+		t.Fatalf("unexpected payload: %+v", payload)
+	}
+}
+
+func TestChatGPTProviderEditValidatesInputCount(t *testing.T) {
+	provider := newMockChatGPTProvider(func(*http.Request) (*http.Response, error) {
+		t.Fatal("unexpected HTTP request")
+		return nil, nil
+	})
+	if _, err := provider.Edit(context.Background(), EditRequest{Prompt: "red"}); err == nil {
+		t.Fatal("expected missing input error")
+	}
+	_, err := provider.Edit(context.Background(), EditRequest{
+		Prompt: "combine",
+		InputImages: []InputImage{
+			{Data: []byte("a"), Path: "a.png"},
+			{Data: []byte("b"), Path: "b.png"},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "single image") {
+		t.Fatalf("expected single-image error, got %v", err)
+	}
+}
+
+func TestChatGPTProviderReturnsStatusError(t *testing.T) {
+	provider := newMockChatGPTProvider(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Status:     "400 Bad Request",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"detail":"unsupported model"}`)),
+		}, nil
+	})
+	_, err := provider.Generate(context.Background(), GenerateRequest{Prompt: "test"})
+	if err == nil || !strings.Contains(err.Error(), "unsupported model") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNormalizeChatGPTImageModel(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{"", "gpt-image-2.5-flare"},
+		{"gpt-5.4-mini", "gpt-image-2.5-flare"},
+		{"gpt-5.4", "gpt-image-2.5-flare"},
+		{"gpt-image-2.5-sunburst", "gpt-image-2.5-sunburst"},
+	} {
+		if got := normalizeChatGPTImageModel(tc.input); got != tc.want {
+			t.Errorf("normalizeChatGPTImageModel(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestChatGPTImageSize(t *testing.T) {
+	for _, tc := range []struct {
+		size, aspectRatio, want string
+	}{
+		{"", "", "auto"},
+		{"1K", "", "1024x1024"},
+		{"", "16:9", "1280x720"},
+		{"2K", "16:9", "2560x1440"},
+		{"4K", "9:16", "2160x3840"},
+	} {
+		if got := chatGPTImageSize(tc.size, tc.aspectRatio); got != tc.want {
+			t.Errorf("chatGPTImageSize(%q, %q) = %q, want %q", tc.size, tc.aspectRatio, got, tc.want)
+		}
 	}
 }

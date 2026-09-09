@@ -102,7 +102,7 @@ providers:
   chatgpt:
     model: gpt-5.6-sol-medium
 image:
-  provider: "chatgpt:gpt-5.4-mini"
+  provider: "chatgpt:gpt-image-2.5-flare"
 CONFIG_YAML
     fi
     if [ "$provider" = "claude-bin" ]; then
