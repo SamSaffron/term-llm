@@ -50,6 +50,35 @@ func TestNewEventStreamReturnsRunErrorAfterBufferedEventsWhenBufferIsFull(t *tes
 	}
 }
 
+// A cancelled stream context must not turn a failed run into a clean EOF. The
+// consumer reports cancellation only while the run goroutine is still live, so a
+// dropped error made a failed run look successful whenever the goroutine
+// finished first.
+func TestNewEventStreamKeepsRunErrorWhenStreamContextIsCancelled(t *testing.T) {
+	wantErr := errors.New("provider failed")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	stream := newEventStream(ctx, func(ctx context.Context, send eventSender) error {
+		return wantErr
+	})
+
+	// Recv after the run goroutine has closed its channels, which is the ordering
+	// that previously reported io.EOF.
+	<-stream.(*channelStream).done
+
+	event, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv() error = %v, want nil with a terminal error event", err)
+	}
+	if event.Type != EventError {
+		t.Fatalf("Recv() event type = %v, want %v", event.Type, EventError)
+	}
+	if !errors.Is(event.Err, wantErr) {
+		t.Fatalf("Recv() event error = %v, want %v", event.Err, wantErr)
+	}
+}
+
 func TestTrySend_ClosedChannel(t *testing.T) {
 	ch := make(chan Event)
 	close(ch)

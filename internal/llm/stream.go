@@ -131,9 +131,15 @@ func newEventStreamWithCancelHook(ctx context.Context, cancelHook func(), run fu
 			return
 		}
 		sender := eventSender{ctx: streamCtx, ch: ch}
-		if err := run(streamCtx, sender); err != nil && streamCtx.Err() == nil {
+		if err := run(streamCtx, sender); err != nil {
 			// If the consumer has stopped draining and the buffer is full, preserve the
 			// terminal error for Recv() rather than dropping it and reporting clean EOF.
+			//
+			// A cancelled stream context must not discard the error either. Recv
+			// reports cancellation only while this goroutine is still running; once it
+			// closes the channels, a dropped error becomes an indistinguishable clean
+			// EOF and the caller reports a failed run as success. Keeping the error
+			// makes both orderings terminal.
 			select {
 			case ch <- Event{Type: EventError, Err: err}:
 			default:
