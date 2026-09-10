@@ -9,7 +9,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
-func (s *serveServer) streamUIResponses(w http.ResponseWriter, r *http.Request, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution, idempotencyKey, idempotencyScope, requestFingerprint, notificationSubscriptionID string, onDone func()) {
+func (s *serveServer) streamUIResponses(w http.ResponseWriter, r *http.Request, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution, idempotencyKey, idempotencyScope, requestFingerprint, notificationSubscriptionID string, onDone, onAdmissionDone func()) {
 	// Eligibility was handled before factory/tool selection. This is only a
 	// consistency check for a pointer that could have been retired meanwhile.
 	if selected := processSessionInputs.ready(s.store, sessionID); selected != nil && runtime.selectedSessionInputs() != selected {
@@ -36,6 +36,7 @@ func (s *serveServer) streamUIResponses(w http.ResponseWriter, r *http.Request, 
 		requestFingerprint:         requestFingerprint,
 		notificationSubscriptionID: notificationSubscriptionID,
 		onDone:                     onDone,
+		onAdmissionDone:            onAdmissionDone,
 	})
 }
 
@@ -54,6 +55,9 @@ func (s *serveServer) streamResponseRun(ctx context.Context, w http.ResponseWrit
 		}
 		writeOpenAIError(w, status, errType, err.Error())
 		return false
+	}
+	if options.onAdmissionDone != nil {
+		options.onAdmissionDone()
 	}
 	w.Header().Set("x-response-id", run.id)
 	s.streamResponseRunEvents(ctx, w, run, 0)

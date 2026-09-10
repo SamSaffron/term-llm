@@ -442,6 +442,21 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 	previousResponseID := rr.previousResponseID
 	previousDurable := rr.previousDurable
 	freshConversation := rr.freshConversation
+	idempotencyKey := strings.TrimSpace(rr.idempotencyKey)
+	idempotencyScope := strings.TrimSpace(rr.idempotencyScope)
+	if idempotencyScope == "" {
+		idempotencyScope = sessionID
+	}
+	releaseAdmission := func() {}
+	if req.Stream && idempotencyKey != "" {
+		var err error
+		releaseAdmission, err = s.ensureResponseRuns().admitIdempotency(ctx, idempotencyScope, idempotencyKey)
+		if err != nil {
+			writeOpenAIError(w, http.StatusServiceUnavailable, "server_error", err.Error())
+			return
+		}
+		defer releaseAdmission()
+	}
 	workspaceBinding, workspaceErr := s.resolveWorkspace(ctx, serveWorkspaceRequest{
 		SessionID: sessionID, ProjectID: req.ProjectID, WorktreeDir: req.WorktreeDir,
 		FirstPartyUI: isFirstPartyUIResponseRequest(r), FreshConversation: freshConversation, AllowNoProject: req.NoProject,
@@ -449,11 +464,6 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 	if workspaceErr != nil {
 		writeWorkspaceError(w, workspaceErr)
 		return
-	}
-	idempotencyKey := strings.TrimSpace(rr.idempotencyKey)
-	idempotencyScope := strings.TrimSpace(rr.idempotencyScope)
-	if idempotencyScope == "" {
-		idempotencyScope = sessionID
 	}
 	if req.Stream && idempotencyKey != "" {
 		// Streaming response runs retain their event log for the response-run
@@ -469,6 +479,7 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 			w.Header().Set("x-session-id", run.sessionID)
 			w.Header().Set("x-response-id", run.id)
 			s.setReplaySessionNumberHeader(ctx, w, run.sessionID)
+			releaseAdmission()
 			s.streamResponseRunEvents(ctx, w, run, 0)
 			return
 		}
@@ -971,9 +982,9 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 			claimsTransferred = true
 		}
 		if rr.uiStream && stateful {
-			s.streamUIResponses(w, r, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec, runIdempotencyKey, rr.idempotencyScope, rr.requestFingerprint, rr.notificationSubscriptionID, claimsDone)
+			s.streamUIResponses(w, r, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec, runIdempotencyKey, rr.idempotencyScope, rr.requestFingerprint, rr.notificationSubscriptionID, claimsDone, releaseAdmission)
 		} else {
-			started := s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec, runIdempotencyKey, rr.idempotencyScope, rr.requestFingerprint, rr.notificationSubscriptionID, claimsDone)
+			started := s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec, runIdempotencyKey, rr.idempotencyScope, rr.requestFingerprint, rr.notificationSubscriptionID, claimsDone, releaseAdmission)
 			if !stateful && started {
 				cleanupRuntime = false
 			}
@@ -1242,7 +1253,7 @@ func appendResponsePassthroughTools(serverTools []llm.ToolSpec, passthroughTools
 	return serverTools
 }
 
-func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution, idempotencyKey, idempotencyScope, requestFingerprint, notificationSubscriptionID string, onDone func()) bool {
+func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution, idempotencyKey, idempotencyScope, requestFingerprint, notificationSubscriptionID string, onDone, onAdmissionDone func()) bool {
 	return s.streamResponseRun(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, startResponseRunOptions{
 		previousResponseID:         previousResponseID,
 		resetResponseIDsOnSuccess:  resetResponseIDsOnSuccess,
@@ -1252,5 +1263,6 @@ func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter
 		requestFingerprint:         requestFingerprint,
 		notificationSubscriptionID: notificationSubscriptionID,
 		onDone:                     onDone,
+		onAdmissionDone:            onAdmissionDone,
 	})
 }

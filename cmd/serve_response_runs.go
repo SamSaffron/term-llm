@@ -211,6 +211,7 @@ type startResponseRunOptions struct {
 	requestFingerprint         string
 	notificationSubscriptionID string
 	onDone                     func()
+	onAdmissionDone            func() // release request preparation before streaming events
 	runtimeSetup               func(*llm.Request) error
 }
 
@@ -2124,18 +2125,19 @@ type responseRunIdempotencyClaim struct {
 }
 
 type responseRunManager struct {
-	mu                  sync.Mutex
-	runs                map[string]*responseRun
-	activeBySession     map[string]string
-	idempotencyByKey    map[string]responseRunIdempotencyClaim
-	cleanupTimers       map[string]*time.Timer
-	nextEpochBySession  map[string]int64
-	terminalRetention   time.Duration
-	runWG               sync.WaitGroup
-	closed              bool
-	steeringTransitions sync.Map
-	boundaries          sync.Map // map[session ID]*sync.Mutex
-	idempotencyReplays  atomic.Uint64
+	mu                    sync.Mutex
+	runs                  map[string]*responseRun
+	activeBySession       map[string]string
+	idempotencyByKey      map[string]responseRunIdempotencyClaim
+	idempotencyAdmissions map[string]chan struct{}
+	cleanupTimers         map[string]*time.Timer
+	nextEpochBySession    map[string]int64
+	terminalRetention     time.Duration
+	runWG                 sync.WaitGroup
+	closed                bool
+	steeringTransitions   sync.Map
+	boundaries            sync.Map // map[session ID]*sync.Mutex
+	idempotencyReplays    atomic.Uint64
 }
 
 type responseRunDiagnostics struct {
@@ -2539,6 +2541,40 @@ func (m *responseRunManager) create(run *responseRun) error {
 func responseRunClaimMatches(claim responseRunIdempotencyClaim, fingerprint string) bool {
 	fingerprint = strings.TrimSpace(fingerprint)
 	return fingerprint == "" || claim.fingerprint == "" || claim.fingerprint == fingerprint
+}
+
+// admitIdempotency serializes preparation of the same logical request, not its
+// execution. The owner releases after run admission (or a preparation failure),
+// so retries can replay a live run without racing runtime/workspace setup.
+func (m *responseRunManager) admitIdempotency(ctx context.Context, scope, key string) (func(), error) {
+	claimKey := responseRunIdempotencyScope(scope, key)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		m.mu.Lock()
+		if pending, ok := m.idempotencyAdmissions[claimKey]; ok {
+			m.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-pending:
+				continue
+			}
+		}
+		if m.idempotencyAdmissions == nil {
+			m.idempotencyAdmissions = make(map[string]chan struct{})
+		}
+		pending := make(chan struct{})
+		m.idempotencyAdmissions[claimKey] = pending
+		m.mu.Unlock()
+		return sync.OnceFunc(func() {
+			m.mu.Lock()
+			delete(m.idempotencyAdmissions, claimKey)
+			close(pending)
+			m.mu.Unlock()
+		}), nil
+	}
 }
 
 func (m *responseRunManager) createOrGetByIdempotency(run *responseRun, idempotencyKey string) (*responseRun, bool, error) {

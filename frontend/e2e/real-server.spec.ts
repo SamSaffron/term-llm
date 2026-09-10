@@ -224,41 +224,48 @@ test('separate browser contexts replay one idempotent response mutation', async 
   test.skip(testInfo.project.name === 'mobile', 'separate-context idempotency is covered once');
   const firstContext = await browser.newContext();
   const secondContext = await browser.newContext();
-  const first = await firstContext.newPage();
-  const second = await secondContext.newPage();
-  await Promise.all([first.goto('./?new=1'), second.goto('./?new=1')]);
-  const operation = `browser-idempotency-${Date.now()}`;
-  const sessionID = `sess_browser_idempotency_${Date.now()}`;
-  const submit = (page: typeof first) =>
-    page.evaluate(
-      async ({ key, session }) => {
-        const response = await fetch('v1/responses', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Idempotency-Key': key,
-            session_id: session,
-          },
-          body: JSON.stringify({
-            model: 'fast',
-            input: 'one logical mutation',
-            stream: true,
-            client_message_id: key,
-          }),
-        });
-        return {
-          status: response.status,
-          responseID: response.headers.get('x-response-id') || '',
-          body: await response.text(),
-        };
-      },
-      { key: operation, session: sessionID },
-    );
-  const [left, right] = await Promise.all([submit(first), submit(second)]);
-  expect([left.status, right.status].every((status) => status === 200)).toBe(true);
-  expect(left.responseID).not.toBe('');
-  expect(right.responseID).toBe(left.responseID);
-  await Promise.all([firstContext.close(), secondContext.close()]);
+  try {
+    const first = await firstContext.newPage();
+    const second = await secondContext.newPage();
+    await Promise.all([first.goto('./?new=1'), second.goto('./?new=1')]);
+    const operation = `browser-idempotency-${Date.now()}`;
+    const sessionID = `sess_browser_idempotency_${Date.now()}`;
+    const submit = (page: typeof first) =>
+      page.evaluate(
+        async ({ key, session }) => {
+          const response = await fetch('v1/responses', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Idempotency-Key': key,
+              session_id: session,
+            },
+            body: JSON.stringify({
+              model: 'fast',
+              input: 'one logical mutation',
+              stream: true,
+              client_message_id: key,
+            }),
+          });
+          return {
+            status: response.status,
+            responseID: response.headers.get('x-response-id') || '',
+            body: await response.text(),
+          };
+        },
+        { key: operation, session: sessionID },
+      );
+    const [left, right] = await Promise.all([submit(first), submit(second)]);
+    for (const result of [left, right]) {
+      expect(result.status, JSON.stringify(result)).toBe(200);
+      expect(result.responseID, JSON.stringify(result)).not.toBe('');
+      expect(result.body).toContain('event: response.completed');
+      expect(result.body).not.toContain('event: response.failed');
+    }
+    expect(right.responseID).toBe(left.responseID);
+  } finally {
+    await Promise.all([firstContext.close(), secondContext.close()]);
+  }
 });
 
 test('recovers and resolves an ask-user request across real same-context tabs', async ({
