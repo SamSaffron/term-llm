@@ -1,6 +1,7 @@
 import type { ComponentChildren, JSX } from 'preact';
 import { useId, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { observePopoverPosition, positionPopover } from '../platform/browser';
+import { containPopoverScroll } from '../platform/popover-scroll';
 
 export interface ChipPickerOption {
   value: string;
@@ -111,12 +112,16 @@ export function ChipPicker({
     const panel = popover.current;
     positionPopover(trigger.current, panel, true);
     const stopPositioning = observePopoverPosition(trigger.current, panel, true);
+    const stopScrollContainment = containPopoverScroll(panel);
     if (filterable) panel.querySelector<HTMLInputElement>('.chip-popover-filter')?.focus();
     else {
       const items = [...panel.querySelectorAll<HTMLButtonElement>('.chip-popover-item')];
       (items.find((item) => item.dataset.value === value) || items[0])?.focus();
     }
-    return stopPositioning;
+    return () => {
+      stopPositioning();
+      stopScrollContainment();
+    };
   }, [filterable, open, value]);
 
   if (!selected) return null;

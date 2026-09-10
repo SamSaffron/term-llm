@@ -952,6 +952,7 @@ func (s *serveServer) validatedSpawnChildID(parentSessionID, childSessionID stri
 }
 
 type sessionMessagePartEntry struct {
+	CreatedAt       int64                          `json:"created_at,omitempty"`
 	Type            string                         `json:"type"`
 	Text            string                         `json:"text,omitempty"`
 	SkillActivation *llm.SkillActivationProvenance `json:"skill_activation,omitempty"`
@@ -1895,8 +1896,9 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 				}
 				if text != "" {
 					entry.Parts = append(entry.Parts, sessionMessagePartEntry{
-						Type: "text",
-						Text: text,
+						Type:      "text",
+						Text:      text,
+						CreatedAt: p.CreatedAt,
 					})
 				}
 			case llm.PartImage:
@@ -1933,6 +1935,7 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 				if p.ToolCall != nil {
 					pe := sessionMessagePartEntry{
 						Type:            "tool_call",
+						CreatedAt:       p.CreatedAt,
 						ToolName:        p.ToolCall.Name,
 						ToolCallID:      p.ToolCall.ID,
 						ToolError:       failedToolCalls[p.ToolCall.ID],

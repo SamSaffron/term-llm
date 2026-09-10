@@ -3335,7 +3335,7 @@ turnLoop:
 				inlineSyncParts[n-1].Text += text
 				return
 			}
-			inlineSyncParts = append(inlineSyncParts, Part{Type: PartText, Text: text})
+			inlineSyncParts = append(inlineSyncParts, Part{Type: PartText, Text: text, CreatedAt: time.Now().UnixMilli()})
 		}
 		buildOrderedInlineAssistant := func(parts []Part) Message {
 			return buildInterleavedAssistantMessageWithReasoningMetadata(
@@ -3371,7 +3371,7 @@ turnLoop:
 			if preserveInlineToolOrder && len(partial) > 0 {
 				parts := append([]Part(nil), inlineSyncParts...)
 				latest := e.withToolPreview(partial[len(partial)-1:])[0]
-				parts = append(parts, Part{Type: PartToolCall, ToolCall: &latest})
+				parts = append(parts, Part{Type: PartToolCall, ToolCall: &latest, CreatedAt: time.Now().UnixMilli()})
 				msg = buildOrderedInlineAssistant(parts)
 			} else {
 				msg = buildAssistantMessageWithReasoningMetadata(
@@ -4013,7 +4013,7 @@ turnLoop:
 					syncToolsExecuted = true
 					if preserveInlineToolOrder {
 						inlineCall := call
-						inlineSyncParts = append(inlineSyncParts, Part{Type: PartToolCall, ToolCall: &inlineCall})
+						inlineSyncParts = append(inlineSyncParts, Part{Type: PartToolCall, ToolCall: &inlineCall, CreatedAt: time.Now().UnixMilli()})
 					}
 					response := event.ToolResponse
 					supervisor.dispatch(call, func(toolCtx context.Context) toolCallOutcome {

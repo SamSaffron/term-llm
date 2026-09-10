@@ -666,6 +666,7 @@ function Attachments({ message }: { message: Message }) {
 function MessageTime({ created, clock }: { created: number; clock: ReadonlySignal<number> }) {
   // The minute clock belongs to the transcript, but only timestamp leaves read it.
   void clock.value;
+  if (!created) return null;
   return <time title={new Date(created).toLocaleString()}>{relativeTime(created)}</time>;
 }
 

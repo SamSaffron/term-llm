@@ -1943,6 +1943,21 @@ describe('Preact-owned chat surfaces', () => {
     }
   });
 
+  it('does not render a fabricated timestamp for an untimed legacy inline segment', () => {
+    const store = createStore();
+    store.sessions.value = store.sessions.value.map((session) => ({
+      ...session,
+      messages: [{ id: 'untimed', role: 'assistant', content: 'Legacy final answer', created: 0 }],
+    }));
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+    expect(screen.getByText('Legacy final answer')).toBeInTheDocument();
+    expect(container.querySelector('.message-meta time')).toBeNull();
+  });
+
   it('renders keyed messages, sanitized markdown and expandable tool details', async () => {
     const store = createStore();
     render(

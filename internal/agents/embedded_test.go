@@ -397,6 +397,16 @@ func TestReviewerBuiltinUsesGitHubPRDiffForPRReviews(t *testing.T) {
 	}
 }
 
+func TestDeveloperBuiltinCanGenerateImages(t *testing.T) {
+	agent, err := getBuiltinAgent("developer")
+	if err != nil {
+		t.Fatalf("getBuiltinAgent(developer): %v", err)
+	}
+	if !stringSliceContains(agent.Tools.Enabled, "image_generate") {
+		t.Fatalf("developer tools.enabled = %#v, want image_generate", agent.Tools.Enabled)
+	}
+}
+
 func TestDeveloperBuiltinCanSpawnDocumentedSubagents(t *testing.T) {
 	agent, err := getBuiltinAgent("developer")
 	if err != nil {

@@ -412,6 +412,7 @@ func IsEncryptedReasoningDelta(event Event) bool {
 type Part struct {
 	Type                      PartType
 	Text                      string
+	CreatedAt                 int64          `json:",omitempty"` // Display-only first-observed Unix milliseconds for an ordered inline part.
 	ReasoningContent          string         // Reasoning summary text or provider thinking content (classified by ReasoningKind)
 	ReasoningSummaryParts     []string       // Display-safe Responses reasoning summary array elements, when provider supplies structure
 	ReasoningItemID           string         // Responses API reasoning item ID for replay

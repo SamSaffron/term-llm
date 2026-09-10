@@ -8,9 +8,380 @@ import {
   olderTranscriptAnchors,
   windowTranscript,
 } from './transcript';
+import { initialProjection, reduceResponse } from './response';
 import type { Message } from './types';
 
 describe('transcript domain', () => {
+  function inlineTranscript(texts = ['before', 'between', 'after'], responseId = 'inline') {
+    const parts = texts.flatMap((content, index) => [
+      { type: 'text', text: content },
+      { type: 'tool_call', tool_call_id: `call-${index}`, tool_name: 'shell' },
+    ]);
+    const durable = convertServerMessages([
+      {
+        id: 42,
+        role: 'assistant',
+        response_id: responseId,
+        assistant_segment_ordinal: 0,
+        segment_start_sequence: 1,
+        segment_end_sequence: 1,
+        parts,
+      },
+    ]);
+    let projection = initialProjection({
+      responseId,
+      sessionId: 'session',
+      epoch: 1,
+      status: 'streaming',
+      lastSequence: 0,
+      startedRev: 0,
+      reconnects: 0,
+    });
+    let sequence = 0;
+    const emit = (type: string, payload: Record<string, unknown>) => {
+      projection = reduceResponse(projection, {
+        type,
+        response_id: responseId,
+        run_epoch: 1,
+        sequence_number: ++sequence,
+        ...payload,
+      });
+    };
+    texts.forEach((content, index) => {
+      if (index) emit('response.output_text.new_segment', { assistant_segment_ordinal: index });
+      emit('response.output_text.delta', { assistant_segment_ordinal: index, delta: content });
+      emit('response.output_item.added', {
+        item: { type: 'function_call', call_id: `call-${index}`, name: 'shell' },
+      });
+      emit('response.tool_exec.end', { call_id: `call-${index}`, output: 'ok' });
+    });
+    return { durable, projected: projection.messages };
+  }
+
+  it.each([
+    ['before', 'between', 'after'],
+    ['repeated', 'repeated', 'repeated'],
+  ])('merges inline text/tool parts without repeating commentary (%j)', (...texts) => {
+    const { durable, projected } = inlineTranscript(texts);
+    const merged = mergeDurableProjection(durable, projected);
+    expect(merged.map((message) => message.role)).toEqual(durable.map((message) => message.role));
+    expect(
+      merged.filter((message) => message.role === 'assistant').map((message) => message.content),
+    ).toEqual(texts);
+    expect(merged.flatMap((message) => message.tools || []).map((tool) => tool.id)).toEqual([
+      'call-0',
+      'call-1',
+      'call-2',
+    ]);
+    expect(
+      merged.filter((message) => message.role === 'assistant').map((message) => message.id),
+    ).toEqual(
+      durable.filter((message) => message.role === 'assistant').map((message) => message.id),
+    );
+    // Snapshot recovery changes presentation IDs, not response/tool identity.
+    expect(
+      mergeDurableProjection(
+        durable,
+        projected.map((message, index) => ({
+          ...message,
+          id: `recovered-${index}`,
+        })),
+      ),
+    ).toEqual(merged);
+  });
+
+  it.each(['live ahead', 'durable ahead'])(
+    'keeps the newest anchored inline text: %s',
+    (variant) => {
+      const { durable, projected } = inlineTranscript();
+      const saved = durable.find((message) => message.content === 'between')!;
+      const live = projected.find((message) => message.content === 'between')!;
+      if (variant === 'live ahead') live.content += ' suffix';
+      else saved.content += ' suffix';
+      const merged = mergeDurableProjection(durable, projected);
+      expect(
+        merged.filter((message) => message.role === 'assistant').map((message) => message.content),
+      ).toEqual(['before', 'between suffix', 'after']);
+      expect(merged.find((message) => message.content === 'between suffix')?.id).toBe(saved.id);
+    },
+  );
+
+  it('keeps an unsaved inline tail after its durable tool boundary', () => {
+    const { durable, projected } = inlineTranscript();
+    const merged = mergeDurableProjection(durable.slice(0, 4), projected);
+    expect(
+      merged.filter((message) => message.role === 'assistant').map((message) => message.content),
+    ).toEqual(['before', 'between', 'after']);
+    expect(merged.map((message) => message.role)).toEqual(durable.map((message) => message.role));
+  });
+
+  it('does not collide with later provider turns whose ordinals overlap inline segments', () => {
+    const { durable, projected } = inlineTranscript();
+    const marker: Message = {
+      id: 'switch',
+      role: 'model-swap',
+      content: 'switched',
+      created: 1,
+      boundaryId: 'boundary',
+    };
+    const later: Message = {
+      id: 'later',
+      role: 'assistant',
+      content: 'next provider turn',
+      created: 2,
+      responseId: 'inline',
+      assistantSegmentOrdinal: 1,
+      segmentEndSequence: 30,
+    };
+    const merged = mergeDurableProjection(
+      [...durable, marker, later],
+      [...projected, marker, { ...later, id: 'live-later', assistantSegmentOrdinal: 3 }],
+    );
+    expect(merged.filter((message) => message.content === 'between')).toHaveLength(1);
+    expect(merged.filter((message) => message.content === 'next provider turn')).toHaveLength(1);
+    expect(merged.findIndex((message) => message.id === 'later')).toBeGreaterThan(
+      merged.indexOf(marker),
+    );
+  });
+
+  it.each(['user', 'compaction-boundary'] as const)(
+    'matches inline continuations after %s',
+    (role) => {
+      const { durable, projected } = inlineTranscript();
+      const boundary: Message = {
+        id: 'boundary',
+        role,
+        content: 'boundary',
+        created: 1,
+        ...(role === 'user' ? { clientMessageId: 'steer-1' } : { compactionSeq: 12 }),
+      };
+      const saved: Message = {
+        id: 'saved-tail',
+        role: 'assistant',
+        content: 'continued',
+        created: 1,
+        responseId: 'inline',
+        assistantSegmentOrdinal: 1,
+      };
+      const merged = mergeDurableProjection(
+        [...durable, boundary, saved],
+        [...projected, boundary, { ...saved, id: 'live-tail', assistantSegmentOrdinal: 4 }],
+      );
+      expect(
+        merged.filter((message) => message.role === 'assistant').map((message) => message.content),
+      ).toEqual(['before', 'between', 'after', 'continued']);
+    },
+  );
+
+  it('matches text after tool-only provider turns without assuming contiguous ordinals', () => {
+    const { durable, projected } = inlineTranscript();
+    // A tool-only prefix does not consume a text segment, but provider turn
+    // indices can still advance. Adjacent call identity survives either form.
+    const saved = durable.slice(1);
+    const live = projected
+      .slice(1)
+      .map((message) =>
+        message.role === 'assistant'
+          ? { ...message, assistantSegmentOrdinal: (message.assistantSegmentOrdinal || 0) + 7 }
+          : message,
+      );
+    const merged = mergeDurableProjection(saved, live);
+    expect(merged.map((message) => message.role)).toEqual(saved.map((message) => message.role));
+    expect(
+      merged.filter((message) => message.role === 'assistant').map((message) => message.content),
+    ).toEqual(['between', 'after']);
+  });
+
+  it('scopes inline tool boundaries to their response even when call IDs repeat', () => {
+    const first = inlineTranscript(undefined, 'first');
+    const second = inlineTranscript(undefined, 'second');
+    const merged = mergeDurableProjection([...first.durable, ...second.durable], second.projected);
+    expect(merged.filter((message) => message.role === 'assistant')).toHaveLength(6);
+    expect(merged.filter((message) => message.content === 'between')).toHaveLength(2);
+  });
+
+  it('preserves per-part times and leaves unknown legacy segment times unset', () => {
+    const start = 1_800_000_000_000;
+    const parts = [
+      { type: 'text', text: 'before', created_at: start },
+      { type: 'tool_call', tool_call_id: 'a', tool_name: 'shell', created_at: start + 1000 },
+      { type: 'text', text: 'final', created_at: start + 600_000 },
+    ];
+    const saved = { id: 1, role: 'assistant', created_at: start, parts };
+    expect(convertServerMessages([saved]).map((message) => message.created)).toEqual([
+      start,
+      start + 1000,
+      start + 600_000,
+    ]);
+    expect(
+      convertServerMessages([
+        { ...saved, parts: parts.map(({ created_at: _time, ...part }) => part) },
+      ]).map((message) => message.created),
+    ).toEqual([start, 0, 0]);
+  });
+
+  it('does not replace live segment times with the inline row start during handoff', () => {
+    const { durable, projected } = inlineTranscript();
+    const times = [1_800_000_000_000, 1_800_000_060_000, 1_800_000_600_000];
+    let index = 0;
+    for (const message of projected)
+      if (message.role === 'assistant') message.created = times[index++];
+    const merged = mergeDurableProjection(durable, projected);
+    expect(
+      merged.filter((message) => message.role === 'assistant').map((message) => message.created),
+    ).toEqual(times);
+    const saved = durable.find((message) => message.content === 'after')!;
+    saved.created = times[2] - 500;
+    saved.segmentCreatedAt = saved.created;
+    expect(
+      mergeDurableProjection(durable, projected).find((message) => message.content === 'after')
+        ?.created,
+    ).toBe(times[2] - 500);
+  });
+
+  it('matches a legacy result without a response ID only to an unambiguous call in its turn', () => {
+    const converted = convertServerMessages([
+      {
+        id: 1,
+        role: 'assistant',
+        response_id: 'r1',
+        parts: [
+          { type: 'tool_call', tool_call_id: 'a', tool_name: 'shell' },
+          { type: 'text', text: 'final' },
+        ],
+      },
+      {
+        id: 2,
+        role: 'tool',
+        parts: [
+          { type: 'tool_result', tool_call_id: 'a', tool_name: 'shell', output: 'legacy result' },
+        ],
+      },
+    ]);
+    expect(converted.map((message) => message.role)).toEqual(['tool-group', 'assistant']);
+    expect(converted[0].tools?.[0].result).toBe('legacy result');
+  });
+
+  it.each([
+    { guardian_reviews: [{ outcome: 'approved', message: 'safe', model: 'guardian' }] },
+    { images: ['/image.png'] },
+    { media: [{ url: '/video.mp4', type: 'video/mp4' }] },
+    { tool_error: true },
+  ])('attaches delayed inline results to their original calls (%j)', (metadata) => {
+    const converted = convertServerMessages([
+      {
+        id: 1,
+        role: 'assistant',
+        response_id: 'r1',
+        parts: [
+          { type: 'text', text: 'before' },
+          { type: 'tool_call', tool_call_id: 'a', tool_name: 'shell' },
+          { type: 'text', text: 'between' },
+          { type: 'tool_call', tool_call_id: 'b', tool_name: 'shell' },
+          { type: 'text', text: 'final answer' },
+        ],
+      },
+      ...['a', 'b'].map((id, index) => ({
+        id: index + 2,
+        role: 'tool',
+        response_id: 'r1',
+        parts: [
+          {
+            type: 'tool_result',
+            tool_call_id: id,
+            tool_name: 'shell',
+            output: `result ${id}`,
+            ...metadata,
+          },
+        ],
+      })),
+    ]);
+    expect(converted.map((message) => message.role)).toEqual([
+      'assistant',
+      'tool-group',
+      'assistant',
+      'tool-group',
+      'assistant',
+    ]);
+    expect(converted.at(-1)?.content).toBe('final answer');
+    const tools = converted.flatMap((message) => message.tools || []);
+    expect(tools.map((tool) => [tool.id, tool.result])).toEqual([
+      ['a', 'result a'],
+      ['b', 'result b'],
+    ]);
+    expect(tools[0].status).toBe('tool_error' in metadata ? 'error' : 'done');
+    if ('guardian_reviews' in metadata) expect(tools[0].guardianReviews).toHaveLength(1);
+    if ('images' in metadata) expect(tools[0].images).toEqual(['/image.png']);
+    if ('media' in metadata) expect(tools[0].media?.[0].url).toBe('/video.mp4');
+  });
+
+  it('keeps a completed answer after 58 reviewed shell results without creating another group', () => {
+    const calls = Array.from({ length: 58 }, (_, index) => `shell-${index}`);
+    const converted = convertServerMessages([
+      {
+        id: 1,
+        role: 'assistant',
+        response_id: 'r1',
+        parts: [
+          ...calls.map((id) => ({ type: 'tool_call', tool_call_id: id, tool_name: 'shell' })),
+          { type: 'text', text: 'final answer' },
+        ],
+      },
+      ...calls.map((id, index) => ({
+        id: index + 2,
+        role: 'tool',
+        response_id: 'r1',
+        parts: [
+          {
+            type: 'tool_result',
+            tool_call_id: id,
+            tool_name: 'shell',
+            guardian_reviews: [{ outcome: 'approved', message: 'safe', model: 'guardian' }],
+          },
+        ],
+      })),
+    ]);
+    expect(converted.map((message) => message.role)).toEqual(['tool-group', 'assistant']);
+    expect(converted[0].tools).toHaveLength(58);
+    expect(converted[0].tools?.every((tool) => tool.guardianReviews?.length === 1)).toBe(true);
+    expect(converted[1].content).toBe('final answer');
+  });
+
+  it('does not attach delayed results to the same call ID from another response', () => {
+    const converted = convertServerMessages([
+      {
+        id: 1,
+        role: 'assistant',
+        response_id: 'first',
+        parts: [
+          { type: 'tool_call', tool_call_id: 'shared', tool_name: 'shell' },
+          { type: 'text', text: 'first answer' },
+        ],
+      },
+      {
+        id: 2,
+        role: 'assistant',
+        response_id: 'second',
+        parts: [{ type: 'tool_call', tool_call_id: 'shared', tool_name: 'shell' }],
+      },
+      {
+        id: 3,
+        role: 'tool',
+        response_id: 'first',
+        parts: [
+          {
+            type: 'tool_result',
+            tool_call_id: 'shared',
+            tool_name: 'shell',
+            output: 'first result',
+          },
+        ],
+      },
+    ]);
+    expect(converted[0].tools?.[0].result).toBe('first result');
+    expect(converted[2].tools?.[0].result).toBeUndefined();
+  });
+
   it('preserves live shell execution and timing over assumed-complete history', () => {
     const durable = convertServerMessages([
       {

@@ -447,6 +447,11 @@ func TestEngineOrchestration_InlineSyncToolLoopPersistsEventOrder(t *testing.T) 
 	if parts[0].Type != PartText || parts[0].Text != "before tool" || parts[1].Type != PartToolCall || parts[2].Type != PartText || parts[2].Text != "inline final" {
 		t.Fatalf("assistant parts = %+v, want text/tool/text", parts)
 	}
+	for i, part := range parts {
+		if part.CreatedAt <= 0 || (i > 0 && part.CreatedAt < parts[i-1].CreatedAt) {
+			t.Fatalf("inline part %d has missing or decreasing timestamp: %d", i, part.CreatedAt)
+		}
+	}
 }
 
 func TestEngineOrchestration_InlineSyncToolLoopOrderedEventsPreservesToolThenFinalText(t *testing.T) {

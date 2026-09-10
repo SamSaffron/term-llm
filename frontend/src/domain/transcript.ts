@@ -307,6 +307,15 @@ export function convertServerMessages(
   const output: Message[] = [];
   const rebase = options.rebaseAssetURL || ((value: string) => value);
   let group: Message | null = null;
+  // Inline loops persist their ordered assistant parts before separate result
+  // rows. A final answer may already have flushed the originating tool group.
+  const toolLocations = new Map<string, { group: Message; tool: ToolCall }>();
+  const unscopedToolLocations = new Map<string, { group: Message; tool: ToolCall } | null>();
+  let legacyTurn = 0;
+  const toolKey = (message: ServerMessage, callID: string): string => {
+    const responseID = message.response_id ?? message.responseId;
+    return JSON.stringify([responseID || '', responseID ? null : legacyTurn, callID]);
+  };
   let pendingCompaction = -1;
   const flush = () => {
     if (!group) return;
@@ -323,7 +332,9 @@ export function convertServerMessages(
           content: '',
           tools: [],
           status: 'done',
-          created: created(message),
+          created:
+            optionalTimestamp(message.parts?.[partIndex]?.created_at) ||
+            (partIndex === 0 ? created(message) : 0),
         },
         message,
       );
@@ -335,6 +346,10 @@ export function convertServerMessages(
 
   for (const message of input || []) {
     const role = text(message.role);
+    if (role === 'user') {
+      legacyTurn++;
+      unscopedToolLocations.clear();
+    }
     const parts = Array.isArray(message.parts) ? message.parts : [];
     const messageID = baseID(message);
     const at = created(message);
@@ -518,7 +533,10 @@ export function convertServerMessages(
               id: `${messageID}_text_${index}`,
               role: 'assistant',
               content: text(part.text),
-              created: at,
+              // A legacy inline row only timestamps its beginning. Do not label
+              // every later segment with that time when its own time is unknown.
+              created: optionalTimestamp(part.created_at) || (index === 0 ? at : 0),
+              segmentCreatedAt: optionalTimestamp(part.created_at),
             },
             message,
           ),
@@ -561,6 +579,13 @@ export function convertServerMessages(
             arguments: text(part.tool_arguments || part.arguments) || tool.arguments,
             status: failed ? 'error' : tool.status,
           });
+        const location = { group: current, tool };
+        toolLocations.set(toolKey(message, callID), location);
+        const prior = unscopedToolLocations.get(callID);
+        unscopedToolLocations.set(
+          callID,
+          unscopedToolLocations.has(callID) && prior?.tool !== tool ? null : location,
+        );
         tool.resultStatus = failed
           ? 'error'
           : part.type === 'tool_activity'
@@ -589,14 +614,20 @@ export function convertServerMessages(
         continue;
       }
       if (part.type === 'tool_result') {
-        const current = group;
         const callID = text(part.tool_call_id || part.call_id);
+        const location = callID
+          ? toolLocations.get(toolKey(message, callID)) ||
+            (!(message.response_id ?? message.responseId)
+              ? unscopedToolLocations.get(callID)
+              : undefined)
+          : undefined;
+        const current = location?.group || (!callID ? group : null);
         const name = text(part.tool_name || part.name);
         const images = Array.isArray(part.images)
           ? part.images.map((url) => rebase(text(url))).filter(Boolean)
           : [];
         const media = mediaArtifacts(part.media, rebase);
-        let tool = current ? findTool(current, callID, name) : undefined;
+        let tool = location?.tool || (current ? findTool(current, callID, name) : undefined);
         const reviews = guardianReviews(part.guardian_reviews);
         const askAnswer =
           callID && !part.tool_error && name === 'ask_user'
@@ -610,6 +641,8 @@ export function convertServerMessages(
           status: 'done',
         };
         if (!target.tools!.includes(tool)) target.tools!.push(tool);
+        if (callID && !location)
+          toolLocations.set(toolKey(message, callID), { group: target, tool });
         tool.status = part.tool_error || part.is_error ? 'error' : 'done';
         tool.resultStatus = tool.status === 'error' ? 'error' : 'success';
         tool.result = text(part.output || part.result || part.tool_info || part.text);
@@ -880,6 +913,76 @@ export function windowTranscript(
   ];
 }
 
+// Inline-loop providers persist several text/tool segments in one assistant row.
+// Its ordinal and sequence range describe the row, not every text part. Match
+// those parts through adjacent tool boundaries before using ordinal identity.
+function matchAssistantSegments(durable: Message[], projected: Message[]) {
+  const boundaryKeys = (rows: Message[], index: number): string[] => {
+    const message = rows[index];
+    const keys: string[] = [];
+    for (const [offset, side] of [
+      [-1, 'after'],
+      [1, 'before'],
+    ] as const) {
+      const neighbor = rows[index + offset];
+      if (!neighbor) continue;
+      if (neighbor.role === 'tool-group' && neighbor.responseId === message.responseId) {
+        const tool = offset < 0 ? neighbor.tools?.at(-1) : neighbor.tools?.[0];
+        if (tool?.id) keys.push(JSON.stringify([message.responseId, side, 'tool', tool.id]));
+      } else if (neighbor.role === 'model-swap' && neighbor.boundaryId) {
+        keys.push(JSON.stringify([message.responseId, side, 'model', neighbor.boundaryId]));
+      } else if (neighbor.role === 'user' && neighbor.clientMessageId) {
+        keys.push(JSON.stringify([message.responseId, side, 'user', neighbor.clientMessageId]));
+      } else if (neighbor.role === 'compaction' || neighbor.role === 'compaction-boundary') {
+        const sequence = Number(neighbor.compactionSeq ?? neighbor.serverSeq);
+        if (Number.isSafeInteger(sequence) && sequence >= 0)
+          keys.push(JSON.stringify([message.responseId, side, 'compaction', sequence]));
+      }
+    }
+    return keys;
+  };
+  const boundaries = new Map<string, Message>();
+  projected.forEach((message, index) => {
+    if (message.role !== 'assistant' || !message.responseId) return;
+    for (const key of boundaryKeys(projected, index)) boundaries.set(key, message);
+  });
+  const matches = new Map<Message, Message>();
+  const anchored = new Set<Message>();
+  const adopted = new Set<Message>();
+  durable.forEach((message, index) => {
+    if (message.role !== 'assistant' || !message.responseId) return;
+    const candidates = boundaryKeys(durable, index)
+      .map((key) => boundaries.get(key))
+      .filter((candidate): candidate is Message => Boolean(candidate));
+    const candidate = candidates[0];
+    if (!candidate || candidates.some((other) => other !== candidate) || matches.has(candidate))
+      return;
+    matches.set(candidate, message);
+    anchored.add(candidate);
+    adopted.add(message);
+  });
+  const ordinalKey = (message: Message) =>
+    JSON.stringify([message.responseId, message.assistantSegmentOrdinal || 0]);
+  const ordinals = new Map<string, Message | null>();
+  for (const message of durable) {
+    if (message.role !== 'assistant' || !message.responseId) continue;
+    const key = ordinalKey(message);
+    ordinals.set(key, ordinals.has(key) ? null : message);
+  }
+  for (const message of projected) {
+    if (message.role !== 'assistant' || !message.responseId || matches.has(message)) continue;
+    const candidate = ordinals.get(ordinalKey(message));
+    if (!candidate || adopted.has(candidate)) continue;
+    matches.set(message, candidate);
+    adopted.add(candidate);
+  }
+  const isNewer = (message: Message, saved: Message): boolean =>
+    anchored.has(message)
+      ? message.content.length > saved.content.length && message.content.startsWith(saved.content)
+      : Number(message.segmentEndSequence || 0) > Number(saved.segmentEndSequence || 0);
+  return { matches, anchored, isNewer };
+}
+
 export function mergeDurableProjection(durable: Message[], projected: Message[]): Message[] {
   // A model change is a hard provider-turn boundary. Older servers may not have
   // persisted that boundary, allowing conversion to coalesce tools from both
@@ -964,11 +1067,16 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
     }
   }
   const clientIDs = new Set(durableRows.map((message) => message.clientMessageId).filter(Boolean));
-  const responseSegments = new Map(
-    durableRows
-      .filter((message) => message.role === 'assistant' && message.responseId)
-      .map((message) => [`${message.responseId}:${message.assistantSegmentOrdinal || 0}`, message]),
-  );
+  const {
+    matches: responseSegments,
+    anchored,
+    isNewer: isNewerSegment,
+  } = matchAssistantSegments(durableRows, projected);
+  const assistantTimes = new Map<Message, number>();
+  for (const [live, saved] of responseSegments) {
+    if (anchored.has(live) && !saved.segmentCreatedAt && live.created > 0)
+      assistantTimes.set(saved, live.created);
+  }
   const allToolIDs = new Set(
     durableRows.flatMap((message) => message.tools || []).map((tool) => tool.id),
   );
@@ -1056,13 +1164,8 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
     )
       return false;
     if (message.role === 'assistant' && message.responseId) {
-      const durableSegment = responseSegments.get(
-        `${message.responseId}:${message.assistantSegmentOrdinal || 0}`,
-      );
-      if (durableSegment)
-        return (
-          Number(message.segmentEndSequence || 0) > Number(durableSegment.segmentEndSequence || 0)
-        );
+      const durableSegment = responseSegments.get(message);
+      if (durableSegment) return isNewerSegment(message, durableSegment);
     }
     if (
       message.role === 'tool-group' &&
@@ -1077,8 +1180,7 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
   const durableAnchorFor = (message: Message): Message | undefined => {
     const adopted = adoptedCompactions.get(message) || adoptedModelSwaps.get(message);
     if (adopted) return adopted;
-    if (message.role === 'assistant' && message.responseId)
-      return responseSegments.get(`${message.responseId}:${message.assistantSegmentOrdinal || 0}`);
+    if (message.role === 'assistant' && message.responseId) return responseSegments.get(message);
     if (message.role === 'tool-group') {
       for (const tool of message.tools || []) {
         const durableMessage = durableToolMessage(message, tool);
@@ -1125,16 +1227,14 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
       continue;
     }
     if (message.role === 'assistant' && message.responseId) {
-      const durableSegment = responseSegments.get(
-        `${message.responseId}:${message.assistantSegmentOrdinal || 0}`,
-      );
+      const durableSegment = responseSegments.get(message);
       const index = durableSegment ? output.indexOf(durableSegment) : -1;
       if (durableSegment && index >= 0) {
         output[index] = {
           ...durableSegment,
           ...message,
           id: durableSegment.id,
-          created: durableSegment.created,
+          created: assistantTimes.get(durableSegment) || durableSegment.created,
           durableRowId: durableSegment.durableRowId,
           durableSourceRowIds: durableSegment.durableSourceRowIds,
         };
@@ -1196,5 +1296,8 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
       );
     } else output.splice(insertionIndex, 0, message);
   }
-  return output.map((message) => patchedTools.get(message) || message);
+  return output.map((message) => {
+    const created = assistantTimes.get(message);
+    return patchedTools.get(message) || (created ? { ...message, created } : message);
+  });
 }
