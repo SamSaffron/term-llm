@@ -369,7 +369,7 @@ func installUserService(cmd *cobra.Command, kind string, args []string, opts ser
 		}
 		return nil
 	}
-	if err = e.native.Start(cmd.Context(), kind, oldErr == nil && (!reflect.DeepEqual(old, spec) || len(imported) > 0 || code != "")); err != nil {
+	if err = e.native.Reconcile(cmd.Context(), kind, oldErr == nil && (!reflect.DeepEqual(old, spec) || len(imported) > 0 || code != "")); err != nil {
 		return err
 	}
 	if err = waitUserService(cmd.Context(), spec, e.native); err != nil {

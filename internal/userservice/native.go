@@ -67,6 +67,9 @@ func (n Native) run(ctx context.Context, name string, args ...string) ([]byte, e
 	}
 	out, err := f(ctx, name, args...)
 	if err != nil {
+		if detail := strings.TrimSpace(string(out)); detail != "" {
+			return out, fmt.Errorf("%s %s failed: %w\n%s", name, strings.Join(args, " "), err, detail)
+		}
 		return out, fmt.Errorf("%s %s failed: %w", name, strings.Join(args, " "), err)
 	}
 	return out, nil
@@ -192,7 +195,18 @@ func (n Native) Install(s Spec, specPath string) error {
 	}
 	return config.WriteFileAtomicallyNoFollow(path, data, 0600)
 }
+
+// Start starts or restarts the process without replacing its native registration.
 func (n Native) Start(ctx context.Context, kind string, restart bool) error {
+	return n.start(ctx, kind, restart, false)
+}
+
+// Reconcile starts an installed service, reloading its native definition when changed.
+func (n Native) Reconcile(ctx context.Context, kind string, changed bool) error {
+	return n.start(ctx, kind, changed, changed)
+}
+
+func (n Native) start(ctx context.Context, kind string, restart, reload bool) error {
 	if n.OS == "linux" {
 		if _, err := n.run(ctx, "systemctl", "--user", "daemon-reload"); err != nil {
 			return err
@@ -213,7 +227,7 @@ func (n Native) Start(ctx context.Context, kind string, restart bool) error {
 		return err
 	}
 	_, loaded := n.run(ctx, "launchctl", "print", target)
-	if loaded == nil && restart {
+	if loaded == nil && reload {
 		if _, err := n.run(ctx, "launchctl", "bootout", target); err != nil {
 			return err
 		}
@@ -223,7 +237,13 @@ func (n Native) Start(ctx context.Context, kind string, restart bool) error {
 		_, err := n.run(ctx, "launchctl", "bootstrap", n.domain(), n.Path(kind))
 		return err
 	}
-	_, err := n.run(ctx, "launchctl", "kickstart", target)
+	// Let launchd replace the process in-place. Bootout followed immediately by
+	// bootstrap can race with teardown and leave an ordinary restart unloaded.
+	args := []string{"kickstart"}
+	if restart {
+		args = append(args, "-k")
+	}
+	_, err := n.run(ctx, "launchctl", append(args, target)...)
 	return err
 }
 func (n Native) Stop(ctx context.Context, kind string) error {

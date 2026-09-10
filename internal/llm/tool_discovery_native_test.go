@@ -31,7 +31,7 @@ func TestChatGPTNativeToolDiscoveryCapabilityIsExact(t *testing.T) {
 	}
 }
 
-func TestChatGPTDiscoveryWireTranslationCoalescesNamespaceChildrenAndPreservesOutputSchema(t *testing.T) {
+func TestChatGPTDiscoveryWireTranslationCoalescesNamespaceChildren(t *testing.T) {
 	call := &ToolDiscoveryCall{ID: "search-1", Arguments: json.RawMessage(`{"query":"shipping ETA"}`)}
 	namespace := func(child string) *ToolNamespaceIdentity {
 		return &ToolNamespaceIdentity{Name: "federation", ChildName: child, Description: "Federated logistics tools."}
@@ -95,8 +95,8 @@ func TestChatGPTDiscoveryWireTranslationCoalescesNamespaceChildrenAndPreservesOu
 	if first["defer_loading"] != true || first["name"] != "shipping_eta" || second["name"] != "track_shipment" {
 		t.Fatalf("loaded children = %#v", children)
 	}
-	if _, ok := first["output_schema"].(map[string]any); !ok {
-		t.Fatalf("namespace child lost output_schema: %#v", first)
+	if _, ok := first["output_schema"]; ok {
+		t.Fatalf("namespace child advertised unsupported output_schema: %#v", first)
 	}
 	ordinary := BuildResponsesTools([]ToolSpec{output.Tools[0].Spec})
 	raw, _ := json.Marshal(ordinary[0])
@@ -107,6 +107,81 @@ func TestChatGPTDiscoveryWireTranslationCoalescesNamespaceChildrenAndPreservesOu
 	}
 	if _, exists := ordinaryWire["defer_loading"]; exists {
 		t.Fatalf("ordinary top-level tool gained defer_loading: %#v", ordinaryWire)
+	}
+}
+
+func TestResponsesContentOnlyToolOmitsOutputSchema(t *testing.T) {
+	spec := ToolSpec{
+		Name:   "cua-driver__list_windows",
+		Schema: map[string]any{"type": "object"},
+		OutputSchema: map[string]any{"type": "object", "properties": map[string]any{
+			"windows": map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
+		}},
+	}
+	// MCP content is human-readable, not necessarily JSON matching its output schema.
+	input := BuildResponsesInput([]Message{
+		{Role: RoleAssistant, Parts: []Part{{Type: PartToolCall, ToolCall: &ToolCall{
+			ID: "call_windows", Name: spec.Name, Arguments: json.RawMessage(`{}`),
+		}}}},
+		{Role: RoleTool, Parts: []Part{{
+			Type: PartToolResult, ToolResult: &ToolResult{
+				ID: "call_windows", Name: spec.Name, Content: "Found 0 window(s).",
+				ContentParts: []ToolContentPart{{Type: ToolContentPartText, Text: "Found 0 window(s)."}},
+			},
+		}}}})
+	if len(input) != 2 || input[1].Output != "Found 0 window(s)." {
+		t.Fatalf("tool result = %#v", input)
+	}
+	for _, mode := range []string{"ordinary", "programmatic", "discovered", "namespace"} {
+		t.Run(mode, func(t *testing.T) {
+			selected := spec
+			var wire any
+			switch mode {
+			case "ordinary":
+				wire = BuildResponsesTools([]ToolSpec{selected})
+			case "programmatic":
+				wire = BuildResponsesToolsWithOptions([]ToolSpec{selected}, ProgrammaticToolCallingOptions{Enabled: true})
+			default:
+				if mode == "namespace" {
+					selected.Namespace = &ToolNamespaceIdentity{Name: "cua-driver", ChildName: "list_windows"}
+				}
+				raw, err := buildResponsesDiscoveryOutputItem(ToolDiscoveryOutput{
+					CallID: "search", Tools: []DiscoveredTool{{Spec: selected}},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				wire = raw
+			}
+			raw, err := json.Marshal(wire)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded any
+			if err := json.Unmarshal(raw, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			var check func(any)
+			check = func(value any) {
+				switch value := value.(type) {
+				case map[string]any:
+					if _, exists := value["output_schema"]; exists {
+						t.Fatalf("content-only result cannot fulfill output_schema: %s", raw)
+					}
+					for _, child := range value {
+						check(child)
+					}
+				case []any:
+					for _, child := range value {
+						check(child)
+					}
+				}
+			}
+			check(decoded)
+			if selected.OutputSchema == nil {
+				t.Fatal("provider serialization removed catalogue output schema")
+			}
+		})
 	}
 }
 

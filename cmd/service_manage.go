@@ -115,7 +115,9 @@ func manageUserService(cmd *cobra.Command, action string, args []string) error {
 			}
 		}
 		if action == "restart" {
-			fmt.Fprintln(cmd.OutOrStdout(), "Restarting interrupts active work.")
+			fmt.Fprintf(cmd.OutOrStdout(), "Restarting %s service; active work will be interrupted.\n", kind)
+		} else {
+			fmt.Fprintf(cmd.OutOrStdout(), "Starting %s service.\n", kind)
 		}
 		if !e.native.Running(cmd.Context(), kind) {
 			if err := checkUserServicePort(spec); err != nil {
@@ -126,6 +128,10 @@ func manageUserService(cmd *cobra.Command, action string, args []string) error {
 		if err == nil {
 			err = waitUserService(cmd.Context(), spec, e.native)
 		}
+		if err != nil {
+			return fmt.Errorf("could not %s %s service; inspect 'term-llm service status %s' and 'term-llm service logs %s': %w", action, kind, kind, kind, err)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "%s service is ready: %s\n", kind, spec.URL)
 	case "setup", "recover":
 		if spec.Auth != "passkey" {
 			return fmt.Errorf("%s uses %s authentication", kind, spec.Auth)

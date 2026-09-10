@@ -196,7 +196,10 @@ type ResponsesContentPart struct {
 	FileData string `json:"file_data,omitempty"`
 }
 
-// ResponsesTool represents a tool definition in Open Responses format
+// ResponsesTool represents a tool definition in Open Responses format.
+// Output schemas are intentionally omitted: tool results carry ordinary content,
+// not guaranteed schema-conforming JSON (including MCP results and tool errors).
+// The same restriction applies to ResponsesNamespaceFunctionTool.
 type ResponsesTool struct {
 	Type           string                 `json:"type"`
 	Name           string                 `json:"name"`
@@ -204,7 +207,6 @@ type ResponsesTool struct {
 	Parameters     map[string]interface{} `json:"parameters"`
 	Strict         bool                   `json:"strict,omitempty"`
 	AllowedCallers []string               `json:"allowed_callers,omitempty"`
-	OutputSchema   map[string]interface{} `json:"output_schema,omitempty"`
 }
 
 // ResponsesNamespace is the native Responses namespace shape returned from a
@@ -223,7 +225,6 @@ type ResponsesNamespaceFunctionTool struct {
 	Parameters     map[string]interface{} `json:"parameters"`
 	Strict         bool                   `json:"strict,omitempty"`
 	AllowedCallers []string               `json:"allowed_callers,omitempty"`
-	OutputSchema   map[string]interface{} `json:"output_schema,omitempty"`
 	DeferLoading   bool                   `json:"defer_loading"`
 }
 
@@ -825,7 +826,6 @@ func BuildResponsesToolsWithOptions(specs []ToolSpec, ptc ProgrammaticToolCallin
 			Parameters:     params,
 			Strict:         strict,
 			AllowedCallers: allowed,
-			OutputSchema:   deepCopyMap(spec.OutputSchema),
 		})
 	}
 	if ptc.Enabled {

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/xml"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -80,7 +82,7 @@ func TestNativeLifecycle(t *testing.T) {
 					t.Fatal(joined)
 				}
 			} else {
-				if !strings.Contains(joined, "launchctl bootout gui/1000/com.term-llm.hub") || !strings.Contains(joined, "launchctl bootstrap gui/1000") {
+				if !strings.Contains(joined, "launchctl kickstart -k gui/1000/com.term-llm.hub") || strings.Contains(joined, "launchctl bootstrap") {
 					t.Fatal(joined)
 				}
 			}
@@ -186,5 +188,80 @@ func TestLoadedForeignDefinitionIsNotAdopted(t *testing.T) {
 	n.Run = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
 	if err := n.CheckLoaded(context.Background(), "web", "/our/service.json"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDarwinStartAndReconcile(t *testing.T) {
+	for _, tc := range []struct {
+		name                       string
+		loaded, restart, reconcile bool
+		want                       []string
+	}{
+		{"start loaded", true, false, false, []string{"kickstart gui/501/com.term-llm.web"}},
+		{"restart loaded", true, true, false, []string{"kickstart -k gui/501/com.term-llm.web"}},
+		{"start unloaded", false, false, false, []string{"bootstrap"}},
+		{"restart unloaded", false, true, false, []string{"bootstrap"}},
+		{"reconcile changed", true, true, true, []string{"bootout gui/501/com.term-llm.web", "bootstrap"}},
+		{"reconcile unchanged", true, false, true, []string{"kickstart gui/501/com.term-llm.web"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []string
+			n := Native{OS: "darwin", Home: t.TempDir(), UID: 501}
+			n.Run = func(_ context.Context, exe string, args ...string) ([]byte, error) {
+				if exe != "launchctl" {
+					t.Fatalf("unexpected executable %s", exe)
+				}
+				calls = append(calls, strings.Join(args, " "))
+				if args[0] == "print" && !tc.loaded {
+					return nil, errors.New("not loaded")
+				}
+				return nil, nil
+			}
+			var err error
+			if tc.reconcile {
+				err = n.Reconcile(context.Background(), "web", tc.restart)
+			} else {
+				err = n.Start(context.Background(), "web", tc.restart)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"enable gui/501/com.term-llm.web", "print gui/501/com.term-llm.web"}
+			for _, call := range tc.want {
+				if call == "bootstrap" {
+					call = "bootstrap gui/501 " + n.Path("web")
+				}
+				want = append(want, call)
+			}
+			if !reflect.DeepEqual(calls, want) {
+				t.Fatalf("calls = %v, want %v", calls, want)
+			}
+		})
+	}
+}
+
+func TestDarwinStartFailureDiagnostics(t *testing.T) {
+	for _, failAt := range []string{"enable", "bootstrap", "kickstart"} {
+		t.Run(failAt, func(t *testing.T) {
+			failure := errors.New("exit status 5")
+			var calls []string
+			n := Native{OS: "darwin", Home: t.TempDir(), UID: 501, Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+				calls = append(calls, args[0])
+				if args[0] == failAt {
+					return []byte("  launchd diagnostic\n"), failure
+				}
+				if args[0] == "print" && failAt == "bootstrap" {
+					return nil, errors.New("not loaded")
+				}
+				return nil, nil
+			}}
+			err := n.Start(context.Background(), "web", true)
+			if !errors.Is(err, failure) || !strings.Contains(err.Error(), "launchd diagnostic") || !strings.Contains(err.Error(), "launchctl "+failAt) {
+				t.Fatalf("missing failure details: %v", err)
+			}
+			if calls[len(calls)-1] != failAt {
+				t.Fatalf("continued after failure: %v", calls)
+			}
+		})
 	}
 }

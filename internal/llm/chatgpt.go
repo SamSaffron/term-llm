@@ -486,7 +486,6 @@ func buildResponsesDiscoveryOutputItem(output ToolDiscoveryOutput) (json.RawMess
 			Parameters:     openAIParametersFromToolSchema(selected.Spec.Schema, selected.Spec.Strict),
 			Strict:         selected.Spec.Strict,
 			AllowedCallers: append([]string(nil), selected.Spec.AllowedCallers...),
-			OutputSchema:   deepCopyMap(selected.Spec.OutputSchema),
 			DeferLoading:   true,
 		}
 		if index, exists := namespaceIndexes[identity.Name]; exists {

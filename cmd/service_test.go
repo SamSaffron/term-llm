@@ -178,3 +178,24 @@ func TestServiceReadinessRequiresNativeProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestServiceSelection(t *testing.T) {
+	for _, kind := range []string{"web", "hub"} {
+		t.Run(kind, func(t *testing.T) {
+			e := serviceEnvironment{native: userservice.Native{OS: "darwin", Home: t.TempDir()}}
+			path := e.native.Path(kind)
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			for _, args := range [][]string{nil, {kind}} {
+				got, err := e.selectKind(args)
+				if err != nil || got != kind {
+					t.Fatalf("selectKind(%v) = %q, %v", args, got, err)
+				}
+			}
+		})
+	}
+}
