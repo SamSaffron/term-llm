@@ -12862,6 +12862,9 @@ func TestHandleModels_ReportsConfiguredReasoningDefault(t *testing.T) {
 		if model["id"] != "deepseek-ai/DeepSeek-V4-Flash" {
 			continue
 		}
+		if model["display_name"] != "deepseek-v4-flash" {
+			t.Fatalf("display_name = %#v, want configured alias", model["display_name"])
+		}
 		if model["default_reasoning_effort"] != "high" {
 			t.Fatalf("default_reasoning_effort = %#v", model["default_reasoning_effort"])
 		}

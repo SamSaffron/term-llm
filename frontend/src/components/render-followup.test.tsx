@@ -45,6 +45,33 @@ function deferred<T>() {
 }
 
 describe('second-pass rendering and atomic presentation', () => {
+  it('prefers the provider-specific model display name without changing the selected ID', async () => {
+    const store = createStore();
+    const id = 'deepseek-ai/DeepSeek-V4-Flash';
+    store.selectedProvider.value = 'deepseek';
+    store.selectedModel.value = id;
+    store.endpoints.models = vi.fn(async (provider) => ({
+      data: [{ id, display_name: provider === 'deepseek' ? 'deepseek-v4-flash' : 'other-alias' }],
+    }));
+    render(
+      <StoreContext.Provider value={store}>
+        <Header />
+      </StoreContext.Provider>,
+    );
+    expect(
+      screen.getByRole('button', { name: /Runtime settings: deepseek-ai\/DeepSeek-V4-Flash/ }),
+    ).toBeInTheDocument();
+    await act(async () => {
+      await store.loadModels('deepseek');
+      await store.loadModels('other');
+    });
+    expect(
+      screen.getByRole('button', { name: /Runtime settings: deepseek-v4-flash/ }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Runtime settings: other-alias/ })).toBeNull();
+    expect(store.selectedModel.value).toBe(id);
+  });
+
   it('uses a pending runtime boundary, then cached provider-specific capabilities', async () => {
     const store = createStore();
     store.providers.value = [

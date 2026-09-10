@@ -3415,6 +3415,11 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 				return "term-llm"
 			}(),
 		}
+		if modelConfig, ok := config.ModelConfigForProviderModel(s.cfgRef, effectiveName, m.ID); ok {
+			if alias := strings.TrimSpace(modelConfig.Alias); alias != "" {
+				item["display_name"] = alias
+			}
+		}
 		if m.InputLimit > 0 {
 			item["input_limit"] = m.InputLimit
 		}

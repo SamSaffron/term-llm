@@ -67,7 +67,7 @@ function RuntimePicker() {
     setOpen(false);
     trigger.current?.focus({ preventScroll: true });
   };
-  const baseDisplayModel = compactModelLabel(split.model) || 'Auto';
+  const baseDisplayModel = compactModelLabel(model?.name || split.model) || 'Auto';
   const displayModel = runtimePending
     ? 'Loading runtime…'
     : `${baseDisplayModel}${fast && !/-fast$/i.test(baseDisplayModel) ? '-fast' : ''}`;
