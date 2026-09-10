@@ -81,10 +81,10 @@ func (s *serveServer) resolveWorkspace(ctx context.Context, req serveWorkspaceRe
 		return serveWorkspaceBinding{}, workspaceError(http.StatusBadRequest, "project_required", "choose a project before starting a conversation")
 	}
 	if req.ProjectID == "" {
-		// An explicit No project selection uses the persisted immutable snapshot,
-		// or the server startup directory for a new conversation, without adding
-		// project provenance.
-		if req.AllowNoProject && req.FirstPartyUI {
+		// A first-party continuation omits no_project, but must retain the same
+		// immutable workspace snapshot selected by its initial request.
+		// Only explicit fresh No project requests may select the startup directory.
+		if req.FirstPartyUI && (req.AllowNoProject || (!req.FreshConversation && persisted != nil)) {
 			if persisted != nil {
 				persistedWorktree := strings.TrimSpace(persisted.WorktreeDir)
 				if req.WorktreeDir != "" && !sameServePath(req.WorktreeDir, persistedWorktree) {
@@ -113,8 +113,8 @@ func (s *serveServer) resolveWorkspace(ctx context.Context, req serveWorkspaceRe
 				return serveWorkspaceBinding{RootDir: root, RuntimeDir: root}, nil
 			}
 		}
-		// Third-party omission and legacy null-project resumes retain their existing
-		// unbound/explicit behavior. A first-party UI may not use an arbitrary path
+		// Third-party omission retains its existing unbound/explicit behavior.
+		// A first-party UI may not use an arbitrary path
 		// as a substitute for selecting a registry project.
 		if req.WorktreeDir != "" && req.FirstPartyUI {
 			return serveWorkspaceBinding{}, workspaceError(http.StatusBadRequest, "project_required", "worktree_dir requires project_id")

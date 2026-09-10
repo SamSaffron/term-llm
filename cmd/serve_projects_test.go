@@ -371,6 +371,22 @@ func TestResolveWorkspacePolicyAndImmutableBinding(t *testing.T) {
 	if err != nil || persistedNoProject.ProjectID != "" || !sameServePath(persistedNoProject.CWD, noProjectRoot) {
 		t.Fatalf("persisted no-project workspace = %#v, %v", persistedNoProject, err)
 	}
+	// Follow-ups omit no_project. They must retain the first turn's input binding,
+	// even if the server's default directory subsequently changes.
+	srv.startupDir = t.TempDir()
+	continued, err := srv.resolveWorkspace(ctx, serveWorkspaceRequest{SessionID: noProjectShell.ID, FirstPartyUI: true})
+	if err != nil || continued != binding {
+		t.Fatalf("continued no-project workspace = %#v, %v; want %#v", continued, err, binding)
+	}
+	external, err := srv.resolveWorkspace(ctx, serveWorkspaceRequest{SessionID: noProjectShell.ID})
+	if err != nil || external != (serveWorkspaceBinding{}) {
+		t.Fatalf("external omission must remain unbound: %#v, %v", external, err)
+	}
+	_, err = srv.resolveWorkspace(ctx, serveWorkspaceRequest{SessionID: noProjectShell.ID, FirstPartyUI: true, WorktreeDir: t.TempDir()})
+	var conflict *serveWorkspaceError
+	if !errors.As(err, &conflict) || conflict.Code != "workspace_conflict" {
+		t.Fatalf("continued no-project worktree conflict = %v", err)
+	}
 	now = time.Now()
 	sess := &session.Session{ID: "bound", Provider: "mock", Model: "mock", Mode: session.ModeChat, Origin: session.OriginWeb, CreatedAt: now, UpdatedAt: now, Status: session.StatusActive}
 	if err := store.Create(ctx, sess); err != nil {
@@ -1947,5 +1963,45 @@ func TestInitializeProjectsRootAndReadOnlyFallbackPolicy(t *testing.T) {
 	}
 	if _, _, err := initializeServeProjects(context.Background(), store, root, true, true, &warnings); err == nil || !strings.Contains(err.Error(), "filesystem root") {
 		t.Fatalf("strict root startup error = %v", err)
+	}
+}
+
+// Pre-admission UI failures must be HTTP rejections: without admission headers,
+// a synthetic 200 failure stream looks like an unknown send to the browser.
+func TestUIResponseInputBindingConflictRejectsSend(t *testing.T) {
+	srv, store := newServeProjectTestServer(t)
+	ctx := context.Background()
+	sess := &session.Session{ID: "binding-conflict", Provider: "mock", ProviderKey: "mock", Model: "mock", CWD: t.TempDir()}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+	ticket, err := processSessionInputs.acquire(ctx, store, sess.ID, inputBinding("", t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket.finish(sessionInputSelection{Prompt: "original"})
+	t.Cleanup(func() {
+		processSessionInputs.invalidate(store, sess.ID)
+		if srv.responseRuns != nil {
+			srv.responseRuns.Close()
+		}
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	req.Header.Set("X-Term-LLM-UI-Version", "test")
+	rec := httptest.NewRecorder()
+	srv.handleResolvedResponses(rec, req, ctx, resolvedResponsesRequest{
+		firstParty: true, sessionID: sess.ID,
+		req:           responsesCreateRequest{Stream: true, ClientMessageID: "unsent"},
+		inputMessages: []llm.Message{llm.UserText("follow-up")},
+	})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "session input binding changed") || !strings.Contains(rec.Body.String(), "conflict_error") {
+		t.Fatalf("missing actionable binding error: %s", rec.Body.String())
+	}
+	rows, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("rejected send was committed: %v, %v", rows, err)
 	}
 }

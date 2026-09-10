@@ -526,7 +526,10 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 			return false
 		}
 		if errors.Is(err, errServeSessionBusy) {
-			if req.Stream {
+			// No UI send has been admitted yet. Return a definitive rejection so
+			// the browser restores the composer instead of retrying a headerless
+			// synthetic failure stream as an unknown-outcome send.
+			if req.Stream && !isFirstPartyUIResponseRequest(r) {
 				model := strings.TrimSpace(req.Model)
 				if model == "" {
 					if existing, ok := s.sessionMgr.Get(sessionID); ok && existing != nil {
