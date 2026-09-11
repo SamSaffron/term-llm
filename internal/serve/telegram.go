@@ -27,7 +27,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/restart"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -1717,79 +1716,10 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 	// consumes one-shot carryover and establishes the stable start anchor.
 	messages := m.prepareRequestHistory(sess, userMsg, resume, time.Now())
 
-	sessionID := ""
-	if sess.meta != nil {
-		sessionID = sess.meta.ID
-	}
-	if sessionID != "" {
-		streamCtx = tools.ContextWithQueueAgentOrigin(streamCtx, tools.QueueAgentOriginContext{
-			Origin:         tools.QueueAgentOriginTelegram,
-			SessionID:      sessionID,
-			TelegramChatID: chatID,
-		})
-	}
+	streamCtx, sessionID := telegramStreamContext(streamCtx, sess, chatID)
 
-	// Persist incoming messages before streaming.
-	turnPersistenceDegraded := false
-	includeSystemPromptOnReconcile := sess.systemPromptPersisted
-	if resume == nil && m.store != nil && sess.meta != nil {
-		if m.settings.SystemPrompt != "" && !sess.systemPromptPersisted {
-			includeSystemPromptOnReconcile = true
-			sysMsg := &session.Message{
-				SessionID:   sess.meta.ID,
-				Role:        llm.RoleSystem,
-				Parts:       []llm.Part{{Type: llm.PartText, Text: m.settings.SystemPrompt}},
-				TextContent: m.settings.SystemPrompt,
-				CreatedAt:   time.Now(),
-				Sequence:    -1,
-			}
-			if m.runStoreOp(ctx, sess.meta.ID, "AddMessage(system)", func(storeCtx context.Context) error {
-				return m.store.AddMessage(storeCtx, sess.meta.ID, sysMsg)
-			}) {
-				sess.systemPromptPersisted = true
-			} else {
-				turnPersistenceDegraded = true
-			}
-		}
-		if start, ok := llm.ConversationStartFrom(sess.history); ok && !sess.conversationStartPersisted {
-			startMsg := session.NewMessage(sess.meta.ID, start, -1)
-			if m.runStoreOp(ctx, sess.meta.ID, "AddMessage(conversation_start)", func(storeCtx context.Context) error {
-				return m.store.AddMessage(storeCtx, sess.meta.ID, startMsg)
-			}) {
-				sess.conversationStartPersisted = true
-			} else {
-				turnPersistenceDegraded = true
-			}
-		}
-		storeUserMsg := &session.Message{
-			SessionID:   sess.meta.ID,
-			Role:        llm.RoleUser,
-			Parts:       userMsg.Parts,
-			TextContent: userText,
-			CreatedAt:   time.Now(),
-			Sequence:    -1,
-		}
-		if !m.runStoreOp(ctx, sess.meta.ID, "AddMessage(user)", func(storeCtx context.Context) error {
-			return m.store.AddMessage(storeCtx, sess.meta.ID, storeUserMsg)
-		}) {
-			turnPersistenceDegraded = true
-		}
-		m.runStoreOp(ctx, sess.meta.ID, "IncrementUserTurns", func(storeCtx context.Context) error {
-			return m.store.IncrementUserTurns(storeCtx, sess.meta.ID)
-		})
-		if sess.meta.Summary == "" {
-			sess.meta.Summary = session.TruncateSummary(userText)
-			m.runStoreOp(ctx, sess.meta.ID, "Update(summary)", func(storeCtx context.Context) error {
-				return m.store.Update(storeCtx, sess.meta)
-			})
-		}
-		m.runStoreOp(ctx, sess.meta.ID, "SetCurrent", func(storeCtx context.Context) error {
-			return m.store.SetCurrent(storeCtx, sess.meta.ID)
-		})
-		m.runStoreOp(ctx, sess.meta.ID, "UpdateStatus(active)", func(storeCtx context.Context) error {
-			return m.store.UpdateStatus(storeCtx, sess.meta.ID, session.StatusActive)
-		})
-	}
+	// Persist incoming messages before admission is released.
+	turnPersistenceDegraded, includeSystemPromptOnReconcile := m.persistTurnStart(ctx, sess, userMsg, userText, resume)
 
 	// The turn is now durably ordered and its cancellation state is visible.
 	// Let the next same-chat message inspect or interrupt it before provider output completes.
@@ -1810,14 +1740,9 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 	)
 	// Keep all produced messages for the transcript, but only append messages
 	// produced after the latest compaction to the replacement provider context.
-	var activeHistory []llm.Message
+	activeHistory := initialTelegramActiveHistory(sess, userMsg, resume)
 	activeProducedStart := 0
-	if sess.activeHistory != nil {
-		activeHistory = append([]llm.Message{}, sess.activeHistory...)
-		if resume == nil {
-			activeHistory = append(activeHistory, normalizeUserMessageForHistory(userMsg))
-		}
-	}
+
 	compactionCB := func(_ context.Context, result *llm.CompactionResult) error {
 		if result == nil {
 			return nil
@@ -2298,190 +2223,25 @@ loop:
 		}
 	}
 
+	finalizer := telegramReplyFinalizer{
+		manager: m, bot: bot, sess: sess, chatID: chatID, user: userMsg, resume: resume,
+		events: events, presentation: presentation, producedMu: &producedMu, produced: &produced,
+		metrics: &turnMetrics, turnCount: &turnCount, callbackStoreQueue: callbackStoreQueue,
+		drainCallbackStoreQueue: drainCallbackStoreQueue, updateActiveHistory: updateActiveHistory,
+		salvagePartialHistory: salvagePartialHistory, stopStreamWithCleanupTimeout: stopStreamWithCleanupTimeout,
+		turnPersistenceDegraded: &turnPersistenceDegraded, includeSystemPromptOnReconcile: includeSystemPromptOnReconcile,
+	}
 	var suspended *llm.SuspendedError
 	if errors.As(streamErr, &suspended) {
-		if !stopStreamWithCleanupTimeout() || !drainCallbackStoreQueue() {
-			return fmt.Errorf("Telegram continuation cleanup did not settle")
-		}
-		history := suspended.Continuation.Request.Messages
-		updateActiveHistory("")
-		if sess.activeHistory != nil {
-			// The continuation is provider context, not the full transcript.
-			// Preserve pre-compaction messages when checkpointing for reload.
-			history = append([]llm.Message{}, sess.history...)
-			if resume == nil {
-				history = append(history, normalizeUserMessageForHistory(userMsg))
-			}
-			producedMu.Lock()
-			history = append(history, produced...)
-			producedMu.Unlock()
-		}
-		if m.store != nil && sess.meta != nil {
-			if !m.reconcileTelegramTranscript(context.WithoutCancel(ctx), sess, history, true, "ReplaceMessages(reload_boundary)") {
-				return fmt.Errorf("persist Telegram continuation boundary")
-			}
-		}
-		sess.history = history
-		snapshot := events.Snapshot()
-		messageID, messageStart, needNewMessage := presentation.checkpoint()
-		saved := &telegramContinuation{Engine: suspended.Continuation, MessageID: messageID, Text: snapshot.Text, MessageStart: messageStart, NeedNewMessage: needNewMessage, Images: snapshot.Images, Media: snapshot.Media, Metrics: turnMetrics, Turns: turnCount}
-		if suspended.Continuation.DiscardPartial {
-			saved.Text = suspended.Continuation.CommittedText()
-			saved.MessageStart = min(saved.MessageStart, len(saved.Text))
-		}
-		m.mu.Lock()
-		if m.pendingReload == nil {
-			m.pendingReload = make(map[int64]*telegramContinuation)
-		}
-		m.pendingReload[chatID] = saved
-		m.mu.Unlock()
-		return nil
+		return finalizer.finishSuspension(ctx, suspended)
 	}
-
 	if userInterrupted {
-		// Stop and drain anything already in flight so history and persistence
-		// snapshots include the final callback-produced messages. If cleanup does
-		// not finish promptly, detach it and avoid racing the stale producer.
-		drained := stopStreamWithCleanupTimeout()
-
-		partial := events.Text()
-
-		presentation.renderInterrupted(partial)
-
-		// Preserve partial history so conversation context isn't lost, but only
-		// after every producer has stopped mutating the callback snapshot.
-		if drained {
-			salvagePartialHistory(streamCtx, "AddMessage(assistant_interrupt_fallback)")
-		}
-
-		if m.store != nil && sess.meta != nil {
-			m.runStoreOpWithTimeout(sess.meta.ID, "UpdateStatus(interrupted)", func(storeCtx context.Context) error {
-				return m.store.UpdateStatus(storeCtx, sess.meta.ID, session.StatusInterrupted)
-			})
-		}
-		return nil
+		return finalizer.finishInterrupt(streamCtx)
 	}
-
 	if streamErr != nil {
-		drained := stopStreamWithCleanupTimeout()
-		if drained {
-			salvagePartialHistory(streamCtx, "AddMessage(assistant_error_fallback)")
-		}
-		if strings.Contains(streamErr.Error(), "stream timed out") {
-			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "⌛ Response timed out — please try again."))
-		}
-		if m.store != nil && sess.meta != nil {
-			m.runStoreOpWithTimeout(sess.meta.ID, "UpdateStatus(stream_error)", func(storeCtx context.Context) error {
-				return m.store.UpdateStatus(storeCtx, sess.meta.ID, session.StatusError)
-			})
-		}
-		return streamErr
+		return finalizer.finishStreamError(streamCtx, streamErr)
 	}
-
-	// Final edit: show full remaining text without cursor.
-	snapshot := events.Snapshot()
-	full, ran := snapshot.Text, snapshot.ToolsRan
-	finalTextDeltas, finalReasoningDeltas := snapshot.TextDeltas, snapshot.ReasoningDeltas
-	finalToolStarts, finalToolEnds, finalToolCalls := snapshot.ToolStarts, snapshot.ToolEnds, snapshot.ToolCalls
-	finalPhaseEvents, finalUsageEvents, finalDoneEvents := snapshot.PhaseEvents, snapshot.UsageEvents, snapshot.DoneEvents
-	finalRetryEvents, finalErrorEvents, finalOtherEvents := snapshot.RetryEvents, snapshot.ErrorEvents, snapshot.OtherEvents
-	finalOtherTypes := snapshot.OtherTypes
-	imagesToSend := snapshot.Images
-	mediaToSend := referencedTelegramMedia(full, snapshot.Media)
-
-	finalDeliveryCtx, cancelFinalDelivery := context.WithTimeout(ctx, telegramFinalDeliveryTimeout)
-	defer cancelFinalDelivery()
-	var finalDeliveryErr error
-
-	finalDeliveryErr = presentation.finalizeText(finalDeliveryCtx, full, ran)
-	if full == "" && (m.settings.Debug || m.settings.DebugRaw) {
-		log.Printf("[telegram] empty assistant text for chat %d (toolsRan=%v, text_delta=%d, reasoning_delta=%d, tool_start=%d, tool_end=%d, tool_call=%d, phase=%d, usage=%d, done=%d, retry=%d, error=%d, other=%d, other_types=%v)",
-			chatID,
-			ran,
-			finalTextDeltas,
-			finalReasoningDeltas,
-			finalToolStarts,
-			finalToolEnds,
-			finalToolCalls,
-			finalPhaseEvents,
-			finalUsageEvents,
-			finalDoneEvents,
-			finalRetryEvents,
-			finalErrorEvents,
-			finalOtherEvents,
-			finalOtherTypes,
-		)
-	}
-
-	presentation.deliverMedia(imagesToSend, mediaToSend)
-
-	// Persist history: base + user message + produced (assistant + tool results).
-	newHistory := make([]llm.Message, 0, len(sess.history)+2+len(produced))
-	newHistory = append(newHistory, sess.history...)
-	if resume == nil {
-		newHistory = append(newHistory, normalizeUserMessageForHistory(userMsg))
-	}
-	producedMu.Lock()
-	newHistory = append(newHistory, produced...)
-	producedMu.Unlock()
-	// Fallback: if the callback didn't fire (no tools), record the text directly.
-	if len(produced) == 0 && full != "" {
-		if m.store != nil && sess.meta != nil {
-			assistantMsg := session.NewMessage(sess.meta.ID, llm.AssistantText(full), -1)
-			if !m.runStoreOp(ctx, sess.meta.ID, "AddMessage(assistant_fallback)", func(storeCtx context.Context) error {
-				return m.store.AddMessage(storeCtx, sess.meta.ID, assistantMsg)
-			}) {
-				turnPersistenceDegraded = true
-			}
-		}
-		newHistory = append(newHistory, llm.AssistantText(full))
-	}
-	activeFallback := ""
-	if len(produced) == 0 {
-		activeFallback = full
-	}
-	updateActiveHistory(activeFallback)
-	sess.history = newHistory
-	sess.activityMu.Lock()
-	sess.lastActivity = time.Now()
-	sess.activityMu.Unlock()
-	if callbackStoreQueue != nil {
-		queueDrained := drainCallbackStoreQueue()
-		if queueDrained && (turnPersistenceDegraded || callbackStoreQueue.isDegraded()) {
-			m.reconcileTelegramTranscript(ctx, sess, newHistory, includeSystemPromptOnReconcile, "ReplaceMessages(callback_reconcile)")
-		}
-	}
-	if m.store != nil && sess.meta != nil {
-		producedMu.Lock()
-		metricsSnapshot := turnMetrics
-		turnsSnapshot := turnCount
-		producedMu.Unlock()
-		if turnsSnapshot > 0 || metricsSnapshot.ToolCalls != 0 || metricsSnapshot.InputTokens != 0 || metricsSnapshot.OutputTokens != 0 || metricsSnapshot.CachedInputTokens != 0 || metricsSnapshot.CacheWriteTokens != 0 {
-			m.runStoreOpWithoutCancel(ctx, sess.meta.ID, "UpdateMetrics", func(storeCtx context.Context) error {
-				return m.store.UpdateMetrics(storeCtx, sess.meta.ID, turnsSnapshot, metricsSnapshot.ToolCalls, metricsSnapshot.InputTokens, metricsSnapshot.OutputTokens, metricsSnapshot.CachedInputTokens, metricsSnapshot.CacheWriteTokens)
-			})
-		}
-		if total, count := sess.runtime.Engine.ContextEstimateBaseline(); total > 0 {
-			sess.meta.LastTotalTokens = total
-			sess.meta.LastMessageCount = count
-			m.runStoreOpWithoutCancel(ctx, sess.meta.ID, "UpdateContextEstimate", func(storeCtx context.Context) error {
-				return m.store.UpdateContextEstimate(storeCtx, sess.meta.ID, total, count)
-			})
-		}
-	}
-	if m.store != nil && sess.meta != nil {
-		m.runStoreOp(ctx, sess.meta.ID, "UpdateStatus(active_end)", func(storeCtx context.Context) error {
-			return m.store.UpdateStatus(storeCtx, sess.meta.ID, session.StatusActive)
-		})
-		m.runStoreOp(ctx, sess.meta.ID, "SetCurrent(end)", func(storeCtx context.Context) error {
-			return m.store.SetCurrent(storeCtx, sess.meta.ID)
-		})
-	}
-
-	if finalDeliveryErr != nil {
-		return fmt.Errorf("deliver complete Telegram response: %w", finalDeliveryErr)
-	}
-	return nil
+	return finalizer.finishSuccess(ctx)
 }
 
 func containsSystemMsg(msgs []llm.Message) bool {
