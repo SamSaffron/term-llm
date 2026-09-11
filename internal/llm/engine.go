@@ -2798,257 +2798,14 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) (re
 		}
 	}
 
-	e.callbackMu.RLock()
-	compactionConfig := e.compactionConfig
-	inputLimit := e.inputLimit
-	e.callbackMu.RUnlock()
-
-	// Propagate provider-effective input limit into compaction config so
-	// Compact() uses the correct limit instead of canonical model limits.
-	if compactionConfig != nil && inputLimit > 0 {
-		cc := *compactionConfig
-		cc.InputLimit = inputLimit
-		compactionConfig = &cc
-	}
-
-	// Capture system prompt for re-injection after compaction.
-	// Use a local variable to avoid a data race with ResetConversation,
-	// which writes e.systemPrompt="" under callbackMu on the UI goroutine.
-	var systemPrompt string
-	if inputLimit > 0 {
-		for _, msg := range req.Messages {
-			if msg.Role == RoleSystem {
-				systemPrompt = collectTextParts(msg.Parts)
-				break
-			}
-		}
-	}
-
-	var reactiveCompactionDone bool // prevents infinite retry if compacted context still overflows
-	var recoveredToolWork bool      // tracks whether any tool-work recovery happened this run
+	compaction := newRunCompactionController(ctx, e, &req, send)
+	var recoveredToolWork bool
 	var recoveredToolCallIDs map[string]bool
 	var recoveredAtMessageCount = -1
 	var recoveryPriorErr error
-	var uncommittedStreamRetries int // retries for failed provider attempts whose assistant output never crossed a commit boundary
+	var uncommittedStreamRetries int
 	var uncommittedPriorErr error
-	var softCheckpointInjected bool
-	var softCheckpointInProgress bool
-	var softCompactionUsage Usage
-	var softCheckpointOriginalMessages []Message
-	var softCheckpointPrepared preparedCompactionContext
-	var softCheckpointOriginalCount int
-	var resumeAfterCompaction bool
-	softThresholdRatio, hardThresholdRatio := effectiveCompactionThresholdRatios(compactionConfig)
-	contextThresholdState := func(messages []Message) (estimate, soft, hard int) {
-		if compactionConfig == nil || inputLimit <= 0 {
-			return 0, 0, 0
-		}
-		return e.estimatedTokens(messages), int(float64(inputLimit) * softThresholdRatio), int(float64(inputLimit) * hardThresholdRatio)
-	}
-	softCompactionThresholdReached := func(messages []Message) bool {
-		est, soft, _ := contextThresholdState(messages)
-		return soft > 0 && est >= soft
-	}
-	hardCompactionThresholdReached := func(messages []Message) bool {
-		est, _, hard := contextThresholdState(messages)
-		return hard > 0 && est >= hard
-	}
-	canCompactBeforeTurn := func(messages []Message) bool {
-		// Do not compact a brand-new one-shot request. Once there is prior
-		// conversation history (anything before the latest user/tool turn), the
-		// first provider turn of a resumed/continued stream must be eligible too;
-		// otherwise a large user follow-up can overflow before attempt > 0.
-		nonSystem := nonSystemMessages(messages)
-		return len(nonSystem) > 1
-	}
-	applyCompaction := func(result *CompactionResult) bool {
-		if result != nil {
-			result.NewMessages = restoreToolDiscoveryReplay(result.NewMessages, collectToolDiscoveryReplay(req.Messages))
-		}
-		if err := e.PrepareCompactionContext(ctx, req.SessionID, req.Tools, result); err != nil {
-			// Plan restoration is optional context enhancement. Never discard an
-			// already-generated compaction result or wedge a session at its limit
-			// because the plan store is temporarily unavailable.
-			slog.Warn("compaction plan restoration failed; continuing without it", "error", err)
-		}
-		if cb := e.getCompactionCallback(); cb != nil {
-			if cbErr := cb(ctx, result); cbErr != nil {
-				slog.Debug("compaction callback failed", "error", cbErr)
-				return false
-			}
-		}
-		// The compacted transcript replaces the conversation context. Clear any
-		// provider-side server state (for example Responses previous_response_id) so
-		// the next request sends the compacted summary instead of continuing from a
-		// stale pre-compaction server transcript.
-		resetProviderConversation(e.provider)
-		req.Messages = result.ActiveMessages()
-		resumeAfterCompaction = true
-		e.callbackMu.Lock()
-		e.lastTotalTokens = 0
-		e.lastMessageCount = 0
-		e.callbackMu.Unlock()
-		// This structural event is emitted only after the owner callback, if any,
-		// has synchronously applied the replacement context. Consumers can use its
-		// stream position as the exact boundary between pre- and post-compaction
-		// output.
-		if err := send.Send(Event{Type: EventCompaction}); err != nil {
-			slog.Debug("send compaction boundary failed", "error", err)
-		}
-		return true
-	}
-	resetSoftCheckpointState := func() {
-		softCheckpointInProgress = false
-		softCompactionUsage = Usage{}
-		softCheckpointOriginalMessages = nil
-		softCheckpointPrepared = preparedCompactionContext{}
-		softCheckpointOriginalCount = 0
-	}
-	beginSoftCheckpoint := func() {
-		softCheckpointInjected = true
-		softCheckpointInProgress = true
-		softCompactionUsage = Usage{}
-		softCheckpointOriginalMessages = append([]Message(nil), req.Messages...)
-		nonSystem := nonSystemMessages(softCheckpointOriginalMessages)
-		softCheckpointPrepared = prepareCompactionContext(nonSystem, *compactionConfig, "")
-		softCheckpointOriginalCount = len(nonSystem)
-	}
-	restoreAfterSoftCompactionFailure := func() {
-		if len(req.Messages) > 0 && strings.TrimSpace(MessageText(req.Messages[len(req.Messages)-1])) == strings.TrimSpace(contextContinuationBriefPrompt) {
-			req.Messages = req.Messages[:len(req.Messages)-1]
-		}
-		req.Tools = append([]ToolSpec(nil), originalTools...)
-		req.ToolChoice = originalToolChoice
-		resetProviderConversation(e.provider)
-		resetSoftCheckpointState()
-	}
-	messagesWithoutTrailingBriefPrompt := func() []Message {
-		messages := append([]Message(nil), req.Messages...)
-		if len(messages) > 0 && strings.TrimSpace(MessageText(messages[len(messages)-1])) == strings.TrimSpace(contextContinuationBriefPrompt) {
-			messages = messages[:len(messages)-1]
-		}
-		return messages
-	}
-	applySoftHardFallback := func() bool {
-		if compactionConfig == nil {
-			return false
-		}
-		fallbackMessages := softCheckpointOriginalMessages
-		if len(fallbackMessages) == 0 {
-			fallbackMessages = messagesWithoutTrailingBriefPrompt()
-		}
-		result, err := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(fallbackMessages), *compactionConfig)
-		if err != nil {
-			slog.Debug("soft compaction hard fallback failed", "error", err)
-			return false
-		}
-		if !softCompactionUsage.IsZero() {
-			result.Usage.Add(softCompactionUsage)
-		}
-		if !applyCompaction(result) {
-			return false
-		}
-		resetSoftCheckpointState()
-		req.Messages = append(req.Messages, UserText(contextContinuationPrompt))
-		req.Tools = append([]ToolSpec(nil), originalTools...)
-		req.ToolChoice = originalToolChoice
-		return true
-	}
-	maybeCompactAfterLLMCall := func(pending []Message) bool {
-		if compactionConfig == nil || !canCompactBeforeTurn(req.Messages) {
-			return false
-		}
-		candidate := append(append([]Message(nil), req.Messages...), pending...)
-		pendingHasToolCall := false
-		for _, msg := range pending {
-			for _, part := range msg.Parts {
-				if part.ToolCall != nil {
-					pendingHasToolCall = true
-					break
-				}
-			}
-			if pendingHasToolCall {
-				break
-			}
-		}
-		// Prefer compacting at clean end-of-turn boundaries (soft threshold). If
-		// the LLM just returned tool calls, hold off until the hard threshold so we
-		// don't unnecessarily compact while a tool call is loose. At the hard
-		// threshold we must compact now, then replay the tool call/result into the
-		// new compacted conversation.
-		shouldCompact := softCompactionThresholdReached(candidate)
-		if pendingHasToolCall {
-			shouldCompact = hardCompactionThresholdReached(candidate)
-		}
-		if !shouldCompact {
-			return false
-		}
-		if err := send.Send(Event{Type: EventPhase, Text: PhaseCompactingSummarizeHistory}); err != nil {
-			slog.Debug("send compaction phase failed", "error", err)
-			return false
-		}
-		result, err := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
-		if err != nil {
-			slog.Debug("post-response compaction failed", "error", err)
-			return false
-		}
-		return applyCompaction(result)
-	}
-	applyPendingRequestModelSwitch := func(attempt int) error {
-		pending := e.drainPendingRequestRuntimeSwitch()
-		if pending.model == "" && pending.reasoningEffort == "" {
-			return nil
-		}
-		targetModel := pending.model
-		if targetModel == "" {
-			targetModel = req.Model
-		}
-		targetEffort := pending.reasoningEffort
-		previousModel := strings.TrimSpace(req.Model)
-		previousEffort := strings.TrimSpace(req.ReasoningEffort)
-		if targetModel == previousModel && targetEffort == previousEffort {
-			return nil
-		}
-		if previousModel == "" || targetModel == "" {
-			return fmt.Errorf("model switch requires complete runtime identity: %q -> %q", previousModel, targetModel)
-		}
-		req.Model = targetModel
-		req.ReasoningEffort = targetEffort
-		modelSwitchOrdinal++
-		change := RuntimeSwitch{
-			PreviousModel:           previousModel,
-			PreviousReasoningEffort: previousEffort,
-			Model:                   targetModel,
-			ReasoningEffort:         targetEffort,
-			ProviderTurnIndex:       attempt,
-			BoundaryID:              fmt.Sprintf("%s:model-switch:%d", runID, modelSwitchOrdinal),
-		}
-		if runtimeSwitchCallback := e.getRuntimeSwitchCallback(); runtimeSwitchCallback != nil {
-			cbCtx, cancel := callbackContext(ctx)
-			err := runtimeSwitchCallback(cbCtx, change)
-			cancel()
-			if err != nil {
-				return fmt.Errorf("persist model switch boundary: %w", err)
-			}
-		}
-		if err := send.Send(Event{
-			Type:                    EventModelSwitch,
-			Text:                    targetModel,
-			Model:                   targetModel,
-			ReasoningEffort:         targetEffort,
-			PreviousModel:           previousModel,
-			PreviousReasoningEffort: previousEffort,
-			ProviderTurnIndex:       attempt,
-			ProviderTurnIndexSet:    true,
-			ModelSwitchBoundaryID:   change.BoundaryID,
-		}); err != nil {
-			return err
-		}
-		if req.DebugRaw {
-			DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), req, fmt.Sprintf("Request model switched before turn %d", attempt))
-		}
-		return nil
-	}
+
 	requestNativeFallback := func(cause error, committed bool) (bool, string) {
 		if req.NativeToolDiscovery == nil || cause == nil || errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) || isContextOverflowError(cause) {
 			return false, ""
@@ -3135,41 +2892,16 @@ turnLoop:
 			}
 		}
 
-		// Pre-turn compaction check. This must also run on attempt 0 when the
-		// request already contains prior conversation history (for example after a
-		// user sends a new message in a long chat or after resuming a session). The
-		// old attempt>0 guard skipped exactly that case and allowed oversized first
-		// turns to hit the provider before auto-compaction had a chance to run.
-		if compactionConfig != nil && canCompactBeforeTurn(req.Messages) {
-			if hardCompactionThresholdReached(req.Messages) {
-				if err := send.Send(Event{Type: EventPhase, Text: PhaseCompactingSummarizeHistory}); err != nil {
-					return err
-				}
-				result, err := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
-				if err == nil {
-					applyCompaction(result)
-				}
-				// On error: continue with full context (best effort)
-			} else if !softCheckpointInjected && len(req.Tools) > 0 && softCompactionThresholdReached(req.Messages) {
-				if err := send.Send(Event{Type: EventPhase, Text: PhaseCompactingWriteBrief}); err != nil {
-					return err
-				}
-				beginSoftCheckpoint()
-				req.Messages = append(req.Messages, UserText(contextContinuationBriefPrompt))
-				if e.provider.Capabilities().SupportsToolChoice {
-					req.ToolChoice = ToolChoice{Mode: ToolChoiceNone}
-				} else {
-					req.Tools = nil
-				}
-			}
+		if err := compaction.beforeTurn(originalTools, originalToolChoice); err != nil {
+			return err
 		}
 		// Warning when compaction is disabled but tracking detects high usage
-		if compactionConfig == nil && inputLimit > 0 && !e.contextNoticeEmitted.Load() && attempt > 0 {
-			threshold := int(float64(inputLimit) * defaultThresholdRatio)
+		if compaction.config == nil && compaction.inputLimit > 0 && !e.contextNoticeEmitted.Load() && attempt > 0 {
+			threshold := int(float64(compaction.inputLimit) * defaultThresholdRatio)
 			est := e.estimatedTokens(req.Messages)
 			if est >= threshold {
 				e.contextNoticeEmitted.Store(true)
-				pct := int(100 * float64(est) / float64(inputLimit))
+				pct := int(100 * float64(est) / float64(compaction.inputLimit))
 				if err := send.Send(Event{Type: EventPhase, Text: fmt.Sprintf(WarningPhasePrefix+"context is %d%% full. Add auto_compact: true to your config to enable automatic compaction.", pct)}); err != nil {
 					return err
 				}
@@ -3181,19 +2913,16 @@ turnLoop:
 			if req.LastTurnToolChoice != nil {
 				req.ToolChoice = *req.LastTurnToolChoice
 			}
-		} else if attempt > 0 && !softCheckpointInProgress {
+		} else if attempt > 0 && !compaction.softActive {
 			// Ensure we are in Auto mode for follow-up turns in the loop
 			req.ToolChoice = ToolChoice{Mode: ToolChoiceAuto}
 		}
 
-		if resumeAfterCompaction && !softCheckpointInProgress {
-			resumeAfterCompaction = false
-			if err := send.Send(Event{Type: EventPhase, Text: PhaseCompactingResumeTask}); err != nil {
-				return err
-			}
+		if err := compaction.emitResumePhase(); err != nil {
+			return err
 		}
 
-		if err := applyPendingRequestModelSwitch(attempt); err != nil {
+		if err := e.applyPendingRequestModelSwitch(ctx, &req, send, runID, &modelSwitchOrdinal, attempt); err != nil {
 			return err
 		}
 
@@ -3222,29 +2951,29 @@ turnLoop:
 		stream, err := e.provider.Stream(ctx, providerReq)
 		if err != nil {
 			// Reactive compaction: if this is a context overflow error, try compacting and retrying (once)
-			if compactionConfig != nil && isContextOverflowError(err) && !reactiveCompactionDone {
-				reactiveCompactionDone = true
+			if compaction.config != nil && isContextOverflowError(err) && !compaction.reactiveDone {
+				compaction.reactiveDone = true
 				if err := send.Send(Event{Type: EventPhase, Text: PhaseCompactingSummarizeHistory}); err != nil {
 					return err
 				}
-				if softCheckpointInProgress {
-					if applySoftHardFallback() {
+				if compaction.softActive {
+					if compaction.applySoftHardFallback(originalTools, originalToolChoice) {
 						attempt--
 						continue
 					}
 				} else {
-					result, compactErr := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
-					if compactErr == nil && applyCompaction(result) {
+					result, compactErr := Compact(ctx, e.provider, req.Model, compaction.systemPrompt, nonSystemMessages(req.Messages), *compaction.config)
+					if compactErr == nil && compaction.apply(result) {
 						attempt-- // Retry this turn
 						continue
 					}
 				}
 			}
-			if softCheckpointInProgress {
-				restoreAfterSoftCompactionFailure()
+			if compaction.softActive {
+				compaction.restoreSoftFailure(originalTools, originalToolChoice)
 			}
 			// Warn when compaction is disabled and we hit context overflow
-			if compactionConfig == nil && inputLimit > 0 && !e.contextNoticeEmitted.Load() && isContextOverflowError(err) {
+			if compaction.config == nil && compaction.inputLimit > 0 && !e.contextNoticeEmitted.Load() && isContextOverflowError(err) {
 				e.contextNoticeEmitted.Store(true)
 				if err := send.Send(Event{Type: EventPhase, Text: WarningPhasePrefix + "context overflow. Add auto_compact: true to your config to enable automatic compaction."}); err != nil {
 					return err
@@ -3459,7 +3188,7 @@ turnLoop:
 					)
 				}
 				assistantMsg = attachProviderReplayParts(assistantMsg, providerReplayParts)
-				maybeCompactAfterLLMCall(append([]Message{assistantMsg}, syncToolResults...))
+				compaction.maybeAfterResponse(append([]Message{assistantMsg}, syncToolResults...))
 				req.Messages = append(req.Messages, assistantMsg)
 				req.Messages = append(req.Messages, syncToolResults...)
 				recoveredAtMessageCount = len(req.Messages)
@@ -3471,7 +3200,7 @@ turnLoop:
 					_ = turnCallback(cbCtx, attempt, turnMessages, turnMetrics)
 					cancel()
 				}
-				if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+				if err := e.applyPendingRequestModelSwitch(ctx, &req, send, runID, &modelSwitchOrdinal, attempt+1); err != nil {
 					return false, err
 				}
 				return true, nil
@@ -3517,7 +3246,7 @@ turnLoop:
 				)
 				assistantMsg = attachProviderReplayParts(assistantMsg, providerReplayParts)
 				if len(assistantMsg.Parts) > 0 {
-					maybeCompactAfterLLMCall([]Message{assistantMsg})
+					compaction.maybeAfterResponse([]Message{assistantMsg})
 					req.Messages = append(req.Messages, assistantMsg)
 					recoveredAtMessageCount = len(req.Messages)
 					if turnCallback != nil {
@@ -3539,7 +3268,7 @@ turnLoop:
 				reasoningKind,
 			)
 			assistantMsg = attachProviderReplayParts(assistantMsg, providerReplayParts)
-			maybeCompactAfterLLMCall([]Message{assistantMsg})
+			compaction.maybeAfterResponse([]Message{assistantMsg})
 			responseHandled := callResponseCompletedCallback(ctx, responseCallback, attempt, assistantMsg, turnMetrics)
 
 			var origNameByID map[string]string
@@ -3614,7 +3343,7 @@ turnLoop:
 				recoveryCompleted = true
 				return true, nil
 			}
-			if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+			if err := e.applyPendingRequestModelSwitch(ctx, &req, send, runID, &modelSwitchOrdinal, attempt+1); err != nil {
 				return false, err
 			}
 			return true, nil
@@ -3648,8 +3377,8 @@ turnLoop:
 			// Drop all attempt-local assistant output. Nothing from this provider
 			// attempt crossed a durable boundary, so replaying the same request is safe.
 			scratchpadHasDiscardableOutput = false
-			if softCheckpointInProgress {
-				softCompactionUsage = Usage{}
+			if compaction.softActive {
+				compaction.softUsage = Usage{}
 			}
 			return true, nil
 		}
@@ -3694,19 +3423,19 @@ turnLoop:
 			if err != nil {
 				finishSyncToolsAfterStreamFailure(err)
 				stream.Close()
-				if compactionConfig != nil && isContextOverflowError(err) && !reactiveCompactionDone && textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && len(toolCalls) == 0 && len(syncToolCalls) == 0 {
-					reactiveCompactionDone = true
+				if compaction.config != nil && isContextOverflowError(err) && !compaction.reactiveDone && textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && len(toolCalls) == 0 && len(syncToolCalls) == 0 {
+					compaction.reactiveDone = true
 					if sendErr := send.Send(Event{Type: EventPhase, Text: PhaseCompactingSummarizeHistory}); sendErr != nil {
 						return sendErr
 					}
-					if softCheckpointInProgress {
-						if applySoftHardFallback() {
+					if compaction.softActive {
+						if compaction.applySoftHardFallback(originalTools, originalToolChoice) {
 							attempt--
 							continue turnLoop
 						}
 					} else {
-						result, compactErr := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
-						if compactErr == nil && applyCompaction(result) {
+						result, compactErr := Compact(ctx, e.provider, req.Model, compaction.systemPrompt, nonSystemMessages(req.Messages), *compaction.config)
+						if compactErr == nil && compaction.apply(result) {
 							attempt-- // Retry this turn
 							continue turnLoop
 						}
@@ -3740,27 +3469,27 @@ turnLoop:
 				} else if recovered {
 					continue turnLoop
 				}
-				if softCheckpointInProgress {
-					restoreAfterSoftCompactionFailure()
+				if compaction.softActive {
+					compaction.restoreSoftFailure(originalTools, originalToolChoice)
 				}
 				return err
 			}
 			if event.Type == EventError && event.Err != nil {
 				finishSyncToolsAfterStreamFailure(event.Err)
 				stream.Close()
-				if compactionConfig != nil && isContextOverflowError(event.Err) && !reactiveCompactionDone && textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && len(toolCalls) == 0 && len(syncToolCalls) == 0 {
-					reactiveCompactionDone = true
+				if compaction.config != nil && isContextOverflowError(event.Err) && !compaction.reactiveDone && textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && len(toolCalls) == 0 && len(syncToolCalls) == 0 {
+					compaction.reactiveDone = true
 					if sendErr := send.Send(Event{Type: EventPhase, Text: PhaseCompactingSummarizeHistory}); sendErr != nil {
 						return sendErr
 					}
-					if softCheckpointInProgress {
-						if applySoftHardFallback() {
+					if compaction.softActive {
+						if compaction.applySoftHardFallback(originalTools, originalToolChoice) {
 							attempt--
 							continue turnLoop
 						}
 					} else {
-						result, compactErr := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
-						if compactErr == nil && applyCompaction(result) {
+						result, compactErr := Compact(ctx, e.provider, req.Model, compaction.systemPrompt, nonSystemMessages(req.Messages), *compaction.config)
+						if compactErr == nil && compaction.apply(result) {
 							attempt-- // Retry this turn
 							continue turnLoop
 						}
@@ -3794,8 +3523,8 @@ turnLoop:
 				} else if recovered {
 					continue turnLoop
 				}
-				if softCheckpointInProgress {
-					restoreAfterSoftCompactionFailure()
+				if compaction.softActive {
+					compaction.restoreSoftFailure(originalTools, originalToolChoice)
 				}
 				return event.Err
 			}
@@ -3812,8 +3541,8 @@ turnLoop:
 				reasoningKind = ""
 				providerReplayParts = nil
 				turnMetrics = TurnMetrics{}
-				if softCheckpointInProgress {
-					softCompactionUsage = Usage{}
+				if compaction.softActive {
+					compaction.softUsage = Usage{}
 					continue
 				}
 				if err := stageOrSendModelEvent(event); err != nil {
@@ -3836,7 +3565,7 @@ turnLoop:
 				continue
 			}
 			if event.Type == EventDiscoveryCall && event.DiscoveryCall != nil {
-				if softCheckpointInProgress {
+				if compaction.softActive {
 					return fmt.Errorf("provider emitted native tool discovery during internal compaction")
 				}
 				nativePlanner, ok := planner.(NativeToolDiscoveryPlanner)
@@ -3866,8 +3595,8 @@ turnLoop:
 			}
 			// Track usage metrics
 			if event.Type == EventUsage && event.Use != nil {
-				if softCheckpointInProgress {
-					softCompactionUsage.Add(*event.Use)
+				if compaction.softActive {
+					compaction.softUsage.Add(*event.Use)
 				} else {
 					turnMetrics.InputTokens += event.Use.InputTokens
 					turnMetrics.OutputTokens += event.Use.OutputTokens
@@ -3880,7 +3609,7 @@ turnLoop:
 				// OutputTokens gives the baseline for the next turn's input estimate
 				// (the model's output becomes assistant-message input on the next turn).
 				// All providers normalise to this convention — see Usage type docs.
-				if inputLimit > 0 {
+				if compaction.inputLimit > 0 {
 					messageCount := len(req.Messages)
 					// Usage total includes the assistant output from this provider turn.
 					// That output becomes assistant-message input on the next request, so
@@ -3894,7 +3623,7 @@ turnLoop:
 					e.lastMessageCount = messageCount
 					e.callbackMu.Unlock()
 				}
-				if softCheckpointInProgress {
+				if compaction.softActive {
 					continue
 				}
 				if err := stageOrSendModelEvent(event); err != nil {
@@ -3906,7 +3635,7 @@ turnLoop:
 			if event.Type == EventTextDelta && event.Text != "" {
 				textBuilder.WriteString(event.Text)
 				appendInlineText(event.Text)
-				if softCheckpointInProgress {
+				if compaction.softActive {
 					continue
 				}
 				if err := stageOrSendModelEvent(event); err != nil {
@@ -3933,7 +3662,7 @@ turnLoop:
 					reasoningEncryptedContent = event.ReasoningEncryptedContent
 					reasoningKind = MergeReasoningKind(reasoningKind, event.ReasoningKind)
 				}
-				if softCheckpointInProgress {
+				if compaction.softActive {
 					continue
 				}
 				if err := stageOrSendModelEvent(event); err != nil {
@@ -3941,7 +3670,7 @@ turnLoop:
 				}
 				continue
 			}
-			if event.Type == EventToolCall && softCheckpointInProgress {
+			if event.Type == EventToolCall && compaction.softActive {
 				// The continuation-brief turn is internal and explicitly forbids tools.
 				// If a provider ignores tool_choice=none, discard the tool call and let
 				// the no-brief fallback compact hard at the end of the stream.
@@ -4101,7 +3830,7 @@ turnLoop:
 				return uncommittedPriorErr
 			}
 			// No tools called - check if we should restore original tool choice and retry once
-			if originalToolChoice.Mode == ToolChoiceName && !restoredToolChoice && !softCheckpointInjected {
+			if originalToolChoice.Mode == ToolChoiceName && !restoredToolChoice && !compaction.softInjected {
 				req.ToolChoice = originalToolChoice
 				restoredToolChoice = true
 				continue
@@ -4121,30 +3850,30 @@ turnLoop:
 					reasoningKind,
 				)
 				finalMsg = attachProviderReplayParts(finalMsg, providerReplayParts)
-				if softCheckpointInProgress {
+				if compaction.softActive {
 					brief := continuationBriefFromAssistantMessage(finalMsg)
-					if brief != "" && compactionConfig != nil && softCheckpointOriginalCount > 0 {
-						result := compactionResultFromBriefPrepared(systemPrompt, brief, softCheckpointPrepared, softCheckpointOriginalCount, *compactionConfig)
+					if brief != "" && compaction.config != nil && compaction.softOriginalCount > 0 {
+						result := compactionResultFromBriefPrepared(compaction.systemPrompt, brief, compaction.softPrepared, compaction.softOriginalCount, *compaction.config)
 						result.Model = strings.TrimSpace(req.Model)
-						result.Usage = softCompactionUsage
-						if applyCompaction(result) {
-							resetSoftCheckpointState()
+						result.Usage = compaction.softUsage
+						if compaction.apply(result) {
+							compaction.resetSoft()
 							req.Messages = append(req.Messages, UserText(contextContinuationPrompt))
 							req.Tools = append([]ToolSpec(nil), originalTools...)
 							req.ToolChoice = originalToolChoice
 							attempt-- // brief/compaction is internal work; do not consume a normal agent turn
 							continue
 						}
-					} else if compactionConfig != nil {
+					} else if compaction.config != nil {
 						if err := send.Send(Event{Type: EventPhase, Text: PhaseCompactingSummarizeHistory}); err != nil {
 							return err
 						}
-						if applySoftHardFallback() {
+						if compaction.applySoftHardFallback(originalTools, originalToolChoice) {
 							attempt--
 							continue
 						}
 					}
-					restoreAfterSoftCompactionFailure()
+					compaction.restoreSoftFailure(originalTools, originalToolChoice)
 					attempt-- // retry the task without treating the internal brief as a user-visible response
 					continue
 				}
@@ -4155,29 +3884,29 @@ turnLoop:
 						_ = turnCallback(cbCtx, attempt, []Message{finalMsg}, turnMetrics)
 						cancel()
 					}
-					if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+					if err := e.applyPendingRequestModelSwitch(ctx, &req, send, runID, &modelSwitchOrdinal, attempt+1); err != nil {
 						return err
 					}
 					continue
 				}
-				maybeCompactAfterLLMCall([]Message{finalMsg})
+				compaction.maybeAfterResponse([]Message{finalMsg})
 				if turnCallback != nil {
 					cbCtx, cancel := callbackContext(ctx)
 					_ = turnCallback(cbCtx, attempt, []Message{finalMsg}, turnMetrics)
 					cancel()
 				}
 			}
-			if softCheckpointInProgress {
-				if compactionConfig != nil {
+			if compaction.softActive {
+				if compaction.config != nil {
 					if err := send.Send(Event{Type: EventPhase, Text: PhaseCompactingSummarizeHistory}); err != nil {
 						return err
 					}
-					if applySoftHardFallback() {
+					if compaction.applySoftHardFallback(originalTools, originalToolChoice) {
 						attempt--
 						continue
 					}
 				}
-				restoreAfterSoftCompactionFailure()
+				compaction.restoreSoftFailure(originalTools, originalToolChoice)
 				attempt--
 				continue
 			}
@@ -4186,7 +3915,7 @@ turnLoop:
 				return err
 			}
 			if continued {
-				if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+				if err := e.applyPendingRequestModelSwitch(ctx, &req, send, runID, &modelSwitchOrdinal, attempt+1); err != nil {
 					return err
 				}
 				continue
@@ -4219,7 +3948,7 @@ turnLoop:
 				)
 			}
 			assistantMsg = attachProviderReplayParts(assistantMsg, providerReplayParts)
-			maybeCompactAfterLLMCall(append([]Message{assistantMsg}, syncToolResults...))
+			compaction.maybeAfterResponse(append([]Message{assistantMsg}, syncToolResults...))
 			req.Messages = append(req.Messages, assistantMsg)
 			req.Messages = append(req.Messages, syncToolResults...)
 
@@ -4247,7 +3976,7 @@ turnLoop:
 				return nil
 			}
 			if !inlineToolLoop {
-				if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+				if err := e.applyPendingRequestModelSwitch(ctx, &req, send, runID, &modelSwitchOrdinal, attempt+1); err != nil {
 					return err
 				}
 			}
@@ -4267,7 +3996,7 @@ turnLoop:
 					}
 				}
 				if pendingTools || continued {
-					if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+					if err := e.applyPendingRequestModelSwitch(ctx, &req, send, runID, &modelSwitchOrdinal, attempt+1); err != nil {
 						return err
 					}
 					continue
@@ -4309,7 +4038,7 @@ turnLoop:
 					}
 				}
 				if !inlineToolLoop {
-					if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+					if err := e.applyPendingRequestModelSwitch(ctx, &req, send, runID, &modelSwitchOrdinal, attempt+1); err != nil {
 						return err
 					}
 				}
@@ -4363,7 +4092,7 @@ turnLoop:
 			)
 			finalMsg = attachProviderReplayParts(finalMsg, providerReplayParts)
 			if len(finalMsg.Parts) > 0 {
-				maybeCompactAfterLLMCall([]Message{finalMsg})
+				compaction.maybeAfterResponse([]Message{finalMsg})
 				if turnCallback != nil {
 					cbCtx, cancel := callbackContext(ctx)
 					_ = turnCallback(cbCtx, attempt, []Message{finalMsg}, turnMetrics)
@@ -4375,7 +4104,7 @@ turnLoop:
 				return err
 			}
 			if continued {
-				if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+				if err := e.applyPendingRequestModelSwitch(ctx, &req, send, runID, &modelSwitchOrdinal, attempt+1); err != nil {
 					return err
 				}
 				continue
@@ -4407,7 +4136,7 @@ turnLoop:
 		)
 		assistantMsg = attachProviderReplayParts(assistantMsg, providerReplayParts)
 
-		maybeCompactAfterLLMCall([]Message{assistantMsg})
+		compaction.maybeAfterResponse([]Message{assistantMsg})
 
 		// Call responseCallback BEFORE tool execution to persist assistant message
 		// This ensures the message is saved even if tool execution fails/crashes
@@ -4502,7 +4231,7 @@ turnLoop:
 			}
 			return nil
 		}
-		if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+		if err := e.applyPendingRequestModelSwitch(ctx, &req, send, runID, &modelSwitchOrdinal, attempt+1); err != nil {
 			return err
 		}
 
@@ -4532,7 +4261,7 @@ turnLoop:
 					return err
 				}
 			}
-			if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+			if err := e.applyPendingRequestModelSwitch(ctx, &req, send, runID, &modelSwitchOrdinal, attempt+1); err != nil {
 				return err
 			}
 		}
