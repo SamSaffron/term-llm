@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -110,6 +111,67 @@ func TestCompletionPushTimeoutDoesNotStarveOutbox(t *testing.T) {
 				assertRow("slow", status, attempt)
 			}
 			assertRow("healthy", "delivered", 1)
+		})
+	}
+}
+
+func TestCompletionPushTitleIdentifiesNode(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     serveServerConfig
+		outcome string
+		want    string
+	}{
+		{"no node identity keeps original wording", serveServerConfig{}, "completed", "Response complete"},
+		{"ui title labels the node", serveServerConfig{uiTitle: "workshop"}, "completed", "workshop: Response complete"},
+		{"hub node name when no title", serveServerConfig{hubNodeName: "artist"}, "completed", "artist: Response complete"},
+		{"hub node id as last resort", serveServerConfig{hubNodeID: "node-7"}, "completed", "node-7: Response complete"},
+		{"title wins over hub fields", serveServerConfig{uiTitle: "Studio", hubNodeName: "artist"}, "completed", "Studio: Response complete"},
+		{"blank title falls through", serveServerConfig{uiTitle: "   ", hubNodeName: "artist"}, "completed", "artist: Response complete"},
+		{"failures are labelled too", serveServerConfig{uiTitle: "workshop"}, "failed", "workshop: Response failed"},
+		{"failures without identity are unchanged", serveServerConfig{}, "failed", "Response failed"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "sessions.db")
+			store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+
+			sub, err := store.UpsertPushSubscription(context.Background(), &session.PushSubscription{
+				Endpoint: "https://push.example/node", KeyP256DH: "key", KeyAuth: "auth",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			s := &serveServer{store: store, cfg: tc.cfg}
+			s.enqueueCompletionPush("resp-1", "sess-1", sub.ID, tc.outcome, time.Now())
+
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+
+			var raw []byte
+			if err := db.QueryRow(`SELECT payload FROM completion_push_outbox WHERE response_id = ?`, "resp-1").Scan(&raw); err != nil {
+				t.Fatalf("no push enqueued: %v", err)
+			}
+			var payload completionPushPayload
+			if err := json.Unmarshal(raw, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Title != tc.want {
+				t.Errorf("title = %q, want %q", payload.Title, tc.want)
+			}
+			// The body is intentionally left alone; only the title gains the label.
+			if payload.Body == "" {
+				t.Error("body should not be empty")
+			}
 		})
 	}
 }

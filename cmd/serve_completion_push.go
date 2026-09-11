@@ -60,6 +60,26 @@ func (s *serveServer) validateCompletionPushTarget(ctx context.Context, id strin
 	return sub.ID, nil
 }
 
+// completionPushLabel returns a short label identifying the node that produced
+// a completion notification, or "" when this deployment has no node identity
+// configured.
+//
+// A Hub fronts several nodes and every node sends byte-identical notification
+// text, so once more than one node has a push subscription the notifications
+// are indistinguishable until you open one. The payload already carries a
+// node-specific URL, but the visible title does not.
+//
+// agentName is deliberately not consulted: nearly every deployment passes
+// --agent, and single-node users should keep the original wording.
+func (c serveServerConfig) completionPushLabel() string {
+	for _, candidate := range []string{c.uiTitle, c.hubNodeName, c.hubNodeID} {
+		if label := strings.TrimSpace(candidate); label != "" {
+			return label
+		}
+	}
+	return ""
+}
+
 func (s *serveServer) enqueueCompletionPush(responseID, sessionID, subscriptionID, outcome string, createdAt time.Time) {
 	outbox, ok := session.AsCompletionPushOutboxStore(s.store)
 	if !ok || strings.TrimSpace(subscriptionID) == "" || (outcome != "completed" && outcome != "failed") {
@@ -71,6 +91,9 @@ func (s *serveServer) enqueueCompletionPush(responseID, sessionID, subscriptionI
 	if outcome == "failed" {
 		title = "Response failed"
 		body = "Your term-llm response stopped with an error."
+	}
+	if label := s.cfg.completionPushLabel(); label != "" {
+		title = label + ": " + title
 	}
 	base := strings.TrimSuffix(s.cfg.basePath, "/")
 	if base == "" {
