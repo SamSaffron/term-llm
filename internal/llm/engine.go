@@ -2892,7 +2892,7 @@ turnLoop:
 			}
 		}
 
-		if err := compaction.beforeTurn(originalTools, originalToolChoice); err != nil {
+		if err := compaction.beforeTurn(); err != nil {
 			return err
 		}
 		// Warning when compaction is disabled but tracking detects high usage

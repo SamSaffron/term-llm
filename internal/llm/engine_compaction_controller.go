@@ -192,7 +192,7 @@ func (c *runCompactionController) maybeAfterResponse(pending []Message) bool {
 	return c.apply(result)
 }
 
-func (c *runCompactionController) beforeTurn(originalTools []ToolSpec, originalChoice ToolChoice) error {
+func (c *runCompactionController) beforeTurn() error {
 	if c.config == nil || !c.eligible(c.req.Messages) {
 		return nil
 	}

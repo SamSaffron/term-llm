@@ -11,10 +11,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
-// serveRunPersistence owns transcript state shared by engine callbacks during
-// one runOnce invocation. Its lifetime ends after final reconciliation. It does
-// not own the runtime lock, checkout lease, activity reservation, engine stream,
-// cancellation, or callback installation/removal.
+// serveRunSpec gives the run's durability modes explicit names at construction.
 type serveRunSpec struct {
 	stateful       bool
 	persisted      bool
@@ -22,6 +19,10 @@ type serveRunSpec struct {
 	batchInitial   bool
 }
 
+// serveRunPersistence owns transcript state shared by engine callbacks during
+// one runOnce invocation. Its lifetime ends after final reconciliation. It does
+// not own the runtime lock, checkout lease, activity reservation, engine stream,
+// cancellation, or callback installation/removal.
 type serveRunPersistence struct {
 	rt                                  *serveRuntime
 	sessionID                           string
