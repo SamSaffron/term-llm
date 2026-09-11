@@ -2291,7 +2291,7 @@
       "module": ".",
       "package": "llm",
       "path": "internal/llm/engine_turn_recovery.go",
-      "lines": 281
+      "lines": 285
     },
     {
       "module": ".",
@@ -7694,8 +7694,8 @@
       "receiver": "*Engine",
       "name": "recoverCommittedTurn",
       "complexity": 47,
-      "lines": 239,
-      "file_lines": 281
+      "lines": 243,
+      "file_lines": 285
     },
     {
       "module": ".",

@@ -42,8 +42,17 @@ existing renderer mutex remains held and does not flush or invoke callbacks.
 
 ## Verification
 
-Focused owner suites and the complete engine suite pass. Nested renderer and
-runtime modules pass build, test, vet, and race verification. Renderer fuzzing
-and terminal cross-builds pass. Final root build, isolated full tests, vet, root
-race suites, ratchet verification, report consistency, and the requested group
-review are recorded after completion.
+Focused owner suites and the complete engine suite passed. Nested renderer and
+runtime modules passed build, test, vet, and race verification with
+`VERIFY_RACE=1 scripts/verify_nested_modules.sh`; renderer fuzzing and terminal
+cross-builds also passed. Root verification completed with `make build`, an
+isolated `go test ./...`, `go vet ./...`, the core and Telegram race suites, and
+`make complexity`. The first core race run exposed the existing
+`TestMockProvider_CancelDuringDelay` scheduling flake; ten immediate race reruns
+passed, as did the subsequent owner and engine suites.
+
+`BenchmarkProviderStreamScratchpad/Simple` remained 23 allocations and about
+11.2 KiB/op. The agentic case measured 56 allocations and about 14.1 KiB/op
+versus 37 allocations and 12.6 KiB/op at the base revision; measured latency was
+within run variance. This tradeoff is recorded explicitly because the turn
+state is now carried across independently testable ownership boundaries.

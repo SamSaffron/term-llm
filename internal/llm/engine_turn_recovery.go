@@ -40,8 +40,16 @@ type engineTurnRecovery struct {
 }
 
 func (e *Engine) recoverCommittedTurn(r *engineTurnRecovery, cause error) (bool, error) {
+	if !isCommittedStreamRecoveryError(cause) {
+		return false, nil
+	}
+	// Snapshot callback-produced sync outcomes only after settlement. Failure
+	// handlers normally settle first; keeping this order makes recovery robust if
+	// supervisor settlement becomes non-idempotent in the future.
+	r.settleSyncTools()
+
 	ctx, req, send, attempt := r.ctx, *r.req, r.send, r.attempt
-	settleSyncTools, toolCalls, syncToolsExecuted := r.settleSyncTools, *r.toolCalls, *r.syncToolsExecuted
+	toolCalls, syncToolsExecuted := *r.toolCalls, *r.syncToolsExecuted
 	recoveredToolCallIDs, recoveredToolWork := *r.recoveredToolCallIDs, *r.recoveredToolWork
 	recoveredAtMessageCount, recoveryPriorErr := *r.recoveredAtMessageCount, *r.recoveryPriorErr
 	syncToolCalls, syncToolResults := *r.syncToolCalls, *r.syncToolResults
@@ -70,10 +78,6 @@ func (e *Engine) recoverCommittedTurn(r *engineTurnRecovery, cause error) (bool,
 		compaction.req = r.req
 	}()
 
-	if !isCommittedStreamRecoveryError(cause) {
-		return false, nil
-	}
-	settleSyncTools()
 	if len(toolCalls) == 0 && !syncToolsExecuted {
 		return false, nil
 	}
