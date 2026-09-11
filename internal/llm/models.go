@@ -374,9 +374,17 @@ var ImageProviderModels = map[string][]string{
 	"openai":     {"gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2", "gpt-image-1.5", "gpt-image-1-mini"},
 	"chatgpt":    {"gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2"},
 	"xai":        {"grok-2-image", "grok-2-image-1212"},
-	"venice":     {"nano-banana-pro", "nano-banana-2", "flux-2-pro", "flux-2-max", "gpt-image-1-5", "imagineart-1.5-pro", "recraft-v4", "recraft-v4-pro", "seedream-v4", "seedream-v5-lite", "qwen-image", "qwen-image-2", "qwen-image-2-pro", "grok-imagine-image", "grok-imagine-image-pro", "hunyuan-image-v3", "venice-sd35", "hidream", "chroma", "z-image-turbo", "wan-2-7-text-to-image", "wan-2-7-pro-text-to-image", "lustify-sdxl", "lustify-v7", "lustify-v8", "wai-Illustrious", "bria-bg-remover", "qwen-edit", "nano-banana-pro-edit", "nano-banana-2-edit", "flux-2-max-edit", "gpt-image-1-5-edit", "seedream-v4-edit", "seedream-v5-lite-edit", "qwen-image-2-edit", "qwen-image-2-pro-edit", "grok-imagine-edit", "firered-image-edit"},
 	"flux":       {"flux-2-pro", "flux-kontext-pro", "flux-2-max"},
 	"openrouter": {"google/gemini-2.5-flash-image", "google/gemini-3-pro-image-preview", "openai/gpt-5-image", "openai/gpt-5-image-mini", "bytedance-seed/seedream-4.5", "black-forest-labs/flux.2-pro"},
+}
+
+// GetImageModelIDs returns model suggestions for image provider selection.
+// Venice uses a live catalog; other providers use their curated model lists.
+func GetImageModelIDs(provider string, cfg *config.Config) []string {
+	if provider == "venice" {
+		return GetVeniceImageModelIDs(cfg, "")
+	}
+	return ImageProviderModels[provider]
 }
 
 // defaultEffortVariants are the legacy standard effort levels for GPT-5-family
@@ -958,7 +966,7 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 
 	if isImage {
 		providerNames = GetConfiguredImageProviderNames(cfg)
-		getModelIDs = func(p string) []string { return ImageProviderModels[p] }
+		getModelIDs = func(p string) []string { return GetImageModelIDs(p, cfg) }
 	} else {
 		providerNames = GetProviderNames(cfg)
 		getModelIDs = ProviderModelIDs

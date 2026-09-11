@@ -1387,21 +1387,15 @@ func configValueCompletions(key, toComplete string) []string {
 		}
 	}
 
-	// Image model completions
-	if key == "image.gemini.model" {
-		return filterPrefix(llm.ImageProviderModels["gemini"], toComplete)
-	}
-	if key == "image.openai.model" {
-		return filterPrefix(llm.ImageProviderModels["openai"], toComplete)
-	}
-	if key == "image.chatgpt.model" {
-		return filterPrefix(llm.ImageProviderModels["chatgpt"], toComplete)
-	}
-	if key == "image.flux.model" {
-		return filterPrefix(llm.ImageProviderModels["flux"], toComplete)
-	}
-	if key == "image.venice.model" {
-		return filterPrefix(llm.ImageProviderModels["venice"], toComplete)
+	// Image model completions. Venice distinguishes generation from editing.
+	switch key {
+	case "image.venice.model":
+		return filterPrefix(llm.GetVeniceImageModelIDs(cfg, "image"), toComplete)
+	case "image.venice.edit_model":
+		return filterPrefix(llm.GetVeniceImageModelIDs(cfg, "inpaint"), toComplete)
+	case "image.gemini.model", "image.openai.model", "image.chatgpt.model", "image.flux.model":
+		provider := strings.Split(key, ".")[1]
+		return filterPrefix(llm.GetImageModelIDs(provider, cfg), toComplete)
 	}
 
 	return nil

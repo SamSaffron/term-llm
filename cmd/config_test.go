@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/samsaffron/term-llm/internal/cache"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
@@ -189,6 +190,29 @@ func TestEffectiveApprovalConfigValue(t *testing.T) {
 		}
 		if !ok || got != tc.want {
 			t.Fatalf("effectiveApprovalConfigValue(%q) = %q, %t; want %q, true", tc.key, got, ok, tc.want)
+		}
+	}
+}
+
+func TestVeniceImageConfigModelCompletions(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("VENICE_API_KEY", "")
+	if err := cache.WriteModelInfoCache("venice-image", []cache.CachedModel{
+		{ID: "discovered-image", Type: "image"},
+		{ID: "discovered-edit", Type: "inpaint"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string][]string{
+		"image.venice.model":      {"discovered-image"},
+		"image.venice.edit_model": {"discovered-edit"},
+	} {
+		if got := configValueCompletions(key, "discovered-"); !reflect.DeepEqual(got, want) {
+			t.Errorf("configValueCompletions(%q) = %v, want %v", key, got, want)
 		}
 	}
 }

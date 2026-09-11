@@ -18,8 +18,15 @@ type ModelCache struct {
 	FetchedAt  time.Time     `json:"fetched_at"`
 }
 
+// ImageModelConstraints distinguishes known native sizing (an empty Resolutions
+// list) from missing metadata (a nil CachedModel.ImageConstraints pointer).
+type ImageModelConstraints struct {
+	Resolutions []string `json:"resolutions,omitempty"`
+}
+
 type CachedModel struct {
 	ID                string           `json:"id"`
+	Type              string           `json:"type,omitempty"`
 	DisplayName       string           `json:"display_name,omitempty"`
 	Created           int64            `json:"created,omitempty"`
 	OwnedBy           string           `json:"owned_by,omitempty"`
@@ -32,6 +39,8 @@ type CachedModel struct {
 	ReasoningBudgets  map[string]int64 `json:"reasoning_budgets,omitempty"`
 	Protocol          string           `json:"protocol,omitempty"`
 	Deprecated        bool             `json:"deprecated,omitempty"`
+
+	ImageConstraints *ImageModelConstraints `json:"image_constraints,omitempty"`
 }
 
 func getCacheDir() (string, error) {

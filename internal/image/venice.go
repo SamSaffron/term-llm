@@ -38,8 +38,8 @@ var (
 
 // VeniceProvider implements ImageProvider using Venice AI's native image API.
 // - Text-to-image: POST /image/generate (JSON, returns base64 in JSON)
-// - Single image edit: POST /image/edit (multipart/form-data, returns raw PNG)
-// - Multi-image edit: POST /image/multi-edit (JSON with base64 images, returns raw PNG)
+// - Single image edit: POST /image/edit (multipart/form-data, returns raw image bytes)
+// - Explicit quality or multiple inputs: POST /image/multi-edit (JSON, raw image bytes)
 type VeniceProvider struct {
 	apiKey     string
 	model      string
@@ -91,20 +91,18 @@ func (p *VeniceProvider) editModel() string {
 // Generate calls POST /image/generate — text-to-image.
 // Response: JSON { "images": ["<base64>"] }
 func (p *VeniceProvider) Generate(ctx context.Context, req GenerateRequest) (*ImageResult, error) {
-	resolution := p.resolution
-	if req.Size != "" {
-		resolution = req.Size
+	options, err := p.requestOptions(ctx, p.model, req.Size, req.AspectRatio, req.Quality)
+	if err != nil {
+		return nil, err
 	}
 
 	genReq := veniceGenerateRequest{
-		Model:         p.model,
-		Prompt:        req.Prompt,
-		Resolution:    resolution,
-		SafeMode:      false,
-		HideWatermark: true,
-		Steps:         20,
-		CFGScale:      7,
-		Format:        "png",
+		veniceImageOptions: options,
+		Model:              p.model,
+		Prompt:             req.Prompt,
+		SafeMode:           false,
+		HideWatermark:      true,
+		Format:             "png",
 	}
 
 	jsonBody, err := json.Marshal(genReq)
@@ -128,9 +126,9 @@ func (p *VeniceProvider) Generate(ctx context.Context, req GenerateRequest) (*Im
 }
 
 // Edit dispatches to the appropriate endpoint:
-// - 1 image  → POST /image/edit   (multipart/form-data)
-// - 2-3 images → POST /image/multi-edit (JSON with base64 images array)
-// Both return raw PNG binary.
+// - 1 image with default quality → POST /image/edit (multipart/form-data)
+// - Explicit quality or 2-3 images → POST /image/multi-edit (JSON)
+// Both request PNG output; response bytes determine the actual MIME type.
 func (p *VeniceProvider) Edit(ctx context.Context, req EditRequest) (*ImageResult, error) {
 	if len(req.InputImages) == 0 {
 		return nil, fmt.Errorf("no input image provided")
@@ -139,14 +137,22 @@ func (p *VeniceProvider) Edit(ctx context.Context, req EditRequest) (*ImageResul
 		return nil, fmt.Errorf("Venice supports at most 3 input images, got %d", len(req.InputImages))
 	}
 
-	if len(req.InputImages) == 1 {
-		return p.singleEdit(ctx, req)
+	options, err := p.requestOptions(ctx, p.editModel(), req.Size, req.AspectRatio, req.Quality)
+	if err != nil {
+		return nil, err
 	}
-	return p.multiEdit(ctx, req)
+	// The single-edit endpoint rejects quality (in JSON and multipart) despite
+	// its docs. Multi-edit accepts one input and honors quality; route explicitly
+	// rather than silently dropping the option or retrying a billable request.
+	if len(req.InputImages) == 1 && options.Quality == "" {
+		return p.singleEdit(ctx, req, options)
+	}
+	return p.multiEdit(ctx, req, options)
 }
 
-// singleEdit calls POST /image/edit with multipart/form-data.
-func (p *VeniceProvider) singleEdit(ctx context.Context, req EditRequest) (*ImageResult, error) {
+// singleEdit calls POST /image/edit with multipart/form-data for edits using
+// the model's default quality. Explicit quality uses multiEdit, even for one input.
+func (p *VeniceProvider) singleEdit(ctx context.Context, req EditRequest, options veniceImageOptions) (*ImageResult, error) {
 	img := req.InputImages[0]
 	debugRaw := req.Debug || req.DebugRaw
 
@@ -165,15 +171,28 @@ func (p *VeniceProvider) singleEdit(ctx context.Context, req EditRequest) (*Imag
 		return nil, fmt.Errorf("failed to write image data: %w", err)
 	}
 
-	writer.WriteField("modelId", p.editModel())
-	writer.WriteField("prompt", req.Prompt)
+	fields := map[string]string{
+		"modelId":       p.editModel(),
+		"prompt":        req.Prompt,
+		"resolution":    options.Resolution,
+		"aspect_ratio":  options.AspectRatio,
+		"output_format": "png",
+	}
+	for key, value := range fields {
+		if value == "" {
+			continue
+		}
+		if err := writer.WriteField(key, value); err != nil {
+			return nil, fmt.Errorf("failed to write form field %q: %w", key, err)
+		}
+	}
 
 	if err := writer.Close(); err != nil {
 		return nil, fmt.Errorf("failed to close multipart writer: %w", err)
 	}
 
-	debugRawImageLog(debugRaw, "Venice Request", "POST %s\nmultipart/form-data modelId=%s prompt=%q image=%s (%d bytes, %s)",
-		veniceEditEndpoint, p.editModel(), req.Prompt, filepath.Base(img.Path), len(img.Data), mimeType)
+	debugRawImageLog(debugRaw, "Venice Request", "POST %s\nmultipart/form-data modelId=%s prompt=%q resolution=%s aspect_ratio=%s image=%s (%d bytes, %s)",
+		veniceEditEndpoint, p.editModel(), req.Prompt, options.Resolution, options.AspectRatio, filepath.Base(img.Path), len(img.Data), mimeType)
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", veniceEditEndpoint, &body)
 	if err != nil {
@@ -186,8 +205,8 @@ func (p *VeniceProvider) singleEdit(ctx context.Context, req EditRequest) (*Imag
 }
 
 // multiEdit calls POST /image/multi-edit with JSON body.
-// Images are sent as base64-encoded strings. Response is raw PNG binary.
-func (p *VeniceProvider) multiEdit(ctx context.Context, req EditRequest) (*ImageResult, error) {
+// Images are sent as base64-encoded strings. Response contains raw image bytes.
+func (p *VeniceProvider) multiEdit(ctx context.Context, req EditRequest, options veniceImageOptions) (*ImageResult, error) {
 	debugRaw := req.Debug || req.DebugRaw
 
 	images := make([]string, len(req.InputImages))
@@ -196,9 +215,11 @@ func (p *VeniceProvider) multiEdit(ctx context.Context, req EditRequest) (*Image
 	}
 
 	multiReq := veniceMultiEditRequest{
-		ModelID: p.editModel(),
-		Images:  images,
-		Prompt:  req.Prompt,
+		veniceImageOptions: options,
+		ModelID:            p.editModel(),
+		Images:             images,
+		Prompt:             req.Prompt,
+		OutputFormat:       "png",
 	}
 
 	jsonBody, err := json.Marshal(multiReq)
@@ -207,8 +228,8 @@ func (p *VeniceProvider) multiEdit(ctx context.Context, req EditRequest) (*Image
 	}
 
 	// Log truncated body (base64 images are huge)
-	debugRawImageLog(debugRaw, "Venice Request", "POST %s\nmodelId=%s prompt=%q images=%d (body %d bytes)",
-		veniceMultiEditEndpoint, p.editModel(), req.Prompt, len(images), len(jsonBody))
+	debugRawImageLog(debugRaw, "Venice Request", "POST %s\nmodelId=%s prompt=%q resolution=%s aspect_ratio=%s quality=%s images=%d (body %d bytes)",
+		veniceMultiEditEndpoint, p.editModel(), req.Prompt, options.Resolution, options.AspectRatio, options.Quality, len(images), len(jsonBody))
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", veniceMultiEditEndpoint, bytes.NewReader(jsonBody))
 	if err != nil {
@@ -256,10 +277,10 @@ func (p *VeniceProvider) doJSONRequest(httpReq *http.Request, debugRaw bool) (*I
 		return nil, fmt.Errorf("failed to decode image: %w", err)
 	}
 	debugRawImageLog(debugRaw, "Venice Decoded", "image_bytes=%d", len(imageData))
-	return &ImageResult{Data: imageData, MimeType: "image/png"}, nil
+	return veniceImageResult(imageData)
 }
 
-// doRawRequest handles responses that are raw PNG binary.
+// doRawRequest handles responses that contain raw image bytes.
 func (p *VeniceProvider) doRawRequest(httpReq *http.Request, debugRaw bool) (*ImageResult, error) {
 	resp, err := veniceHTTPClient.Do(httpReq)
 	if err != nil {
@@ -283,26 +304,66 @@ func (p *VeniceProvider) doRawRequest(httpReq *http.Request, debugRaw bool) (*Im
 		return nil, providerhttp.NewStatusError("Venice", resp, body)
 	}
 
-	return &ImageResult{Data: body, MimeType: "image/png"}, nil
+	return veniceImageResult(body)
+}
+
+// Venice can return JPEG even when PNG was requested. Detect the actual bytes
+// so saving and subsequent edits use the right extension and MIME type.
+func veniceImageResult(data []byte) (*ImageResult, error) {
+	mimeType := http.DetectContentType(data)
+	if !strings.HasPrefix(mimeType, "image/") {
+		return nil, fmt.Errorf("Venice returned non-image data (%s)", mimeType)
+	}
+	return &ImageResult{Data: data, MimeType: mimeType}, nil
+}
+
+// veniceImageOptions is shared by generation and both edit transports.
+// Omitted quality and aspect ratio let Venice use the selected model's defaults.
+// Sampling settings (steps/cfg_scale) are deliberately left to the model, too.
+type veniceImageOptions struct {
+	Resolution  string `json:"resolution,omitempty"`
+	AspectRatio string `json:"aspect_ratio,omitempty"`
+	Quality     string `json:"quality,omitempty"`
+}
+
+func (p *VeniceProvider) requestOptions(ctx context.Context, model, size, aspectRatio, quality string) (veniceImageOptions, error) {
+	switch quality {
+	case "", "auto":
+		quality = ""
+	case "low", "medium", "high":
+		// Only quality-aware models use this; other Venice models ignore it.
+	default:
+		return veniceImageOptions{}, fmt.Errorf("unsupported Venice image quality %q (valid: auto, low, medium, high)", quality)
+	}
+	if size == "" {
+		size = p.resolution
+	}
+	// Native-size models (such as Muse) reject resolution, even "1K".
+	// Only known constraints justify omitting it; unavailable metadata must
+	// not silently discard a requested size for a tiered model.
+	if constraints := p.modelConstraints(ctx, model); constraints != nil && len(constraints.Resolutions) == 0 {
+		size = ""
+	}
+	return veniceImageOptions{Resolution: size, AspectRatio: aspectRatio, Quality: quality}, nil
 }
 
 // Venice API request/response types
 
 type veniceGenerateRequest struct {
+	veniceImageOptions
 	Model         string `json:"model"`
 	Prompt        string `json:"prompt"`
-	Resolution    string `json:"resolution"`
 	SafeMode      bool   `json:"safe_mode"`
 	HideWatermark bool   `json:"hide_watermark"`
-	Steps         int    `json:"steps"`
-	CFGScale      int    `json:"cfg_scale"`
 	Format        string `json:"format"`
 }
 
 type veniceMultiEditRequest struct {
-	ModelID string   `json:"modelId"`
-	Images  []string `json:"images"`
-	Prompt  string   `json:"prompt"`
+	veniceImageOptions
+	ModelID      string   `json:"modelId"`
+	Images       []string `json:"images"`
+	Prompt       string   `json:"prompt"`
+	OutputFormat string   `json:"output_format"`
 }
 
 type veniceGenerateResponse struct {
