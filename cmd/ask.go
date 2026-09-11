@@ -23,8 +23,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
-	"github.com/samsaffron/term-llm/internal/prompt"
-	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
@@ -181,6 +179,16 @@ func init() {
 }
 
 func runAsk(cmd *cobra.Command, args []string) error {
+	// runAsk may be invoked repeatedly in-process by tests and embedders. Keep
+	// compatibility globals invocation-scoped even though Cobra owns the flags.
+	originalAgent, originalApproval := askAgent, askApproval
+	originalYolo, originalAuto := askYolo, askAuto
+	originalText, originalPorcelain := askText, askPorcelain
+	defer func() {
+		askAgent, askApproval = originalAgent, originalApproval
+		askYolo, askAuto = originalYolo, originalAuto
+		askText, askPorcelain = originalText, originalPorcelain
+	}()
 	// Extract @agent from args if present
 	atAgent, filteredArgs := ExtractAgentFromArgs(args)
 	if atAgent != "" && askAgent == "" {
@@ -315,7 +323,6 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		storeCleanup()
 	}()
 	var sess *session.Session
-	var sessionMessages []llm.Message
 	var inputTicket *sessionInputTicket
 	var selectedInputs *sessionInputSelection
 
@@ -478,151 +485,23 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Read files if provided
-	var files []input.FileContent
-	if len(askFiles) > 0 {
-		files, err = input.ReadFiles(askFiles)
-		if err != nil {
-			return fmt.Errorf("failed to read files: %w", err)
-		}
-	}
-
-	// Read stdin if available
-	stdinContent, err := input.ReadStdin()
+	userPrompt, err := readAskPrompt(question, askFiles)
 	if err != nil {
-		return fmt.Errorf("failed to read stdin: %w", err)
+		return err
 	}
-
-	userPrompt := prompt.AskUserPrompt(question, files, stdinContent)
-
-	// Create new session if not resuming
-	if !resuming && store != nil {
-		if sessionID == "" {
-			sessionID = session.NewID()
-		}
-		modelName := ""
-		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
-			modelName = providerCfg.Model
-		}
-		if modelName == "" {
-			modelName = extractModelFromProviderName(provider.Name())
-		}
-		agentName := ""
-		if agent != nil {
-			agentName = agent.Name
-		}
-		sess = &session.Session{
-			ID:           sessionID,
-			Provider:     provider.Name(),
-			Model:        modelName,
-			Mode:         session.ModeAsk,
-			Agent:        agentName,
-			CreatedAt:    time.Now(),
-			UpdatedAt:    time.Now(),
-			Search:       settings.Search,
-			Tools:        settings.Tools,
-			MCP:          settings.MCP,
-			ApprovalMode: approvalModeForColdPersistence(resolvedApproval.Mode),
-			Status:       session.StatusActive,
-		}
-		sess.CWD = settings.PrimaryWorkspace
-		_ = store.Create(ctx, sess)
+	preparedConversation, err := prepareAskConversation(ctx, cfg, provider, agent, store, sess, sessionID, resuming, settings, inputTicket, baseInputPrompt, userPrompt, resolvedApproval.Mode)
+	if err != nil {
+		return err
 	}
-
-	if inputTicket != nil {
-		if inputTicket.owner {
-			refresher, _ := session.AsSessionInputRefresher(store)
-			result, refreshErr := refresher.RefreshSessionInputs(ctx, sess.ID, settings.SystemPrompt, settings.Tools, equalSessionTools)
-			if refreshErr != nil {
-				return refreshErr
-			}
-			settings.Tools = result.Tools
-		}
-		sess.Tools = settings.Tools
-	}
-	if !resuming && sess != nil {
-		registerOwnedSessionInputs(store, sess, sessionInputSelection{BasePrompt: baseInputPrompt, Prompt: settings.SystemPrompt, Tools: settings.Tools})
-	}
-	if resuming {
-		// Load active session history (post-compaction when a boundary exists).
-		if sessionMsgs, loadErr := session.LoadActiveMessages(ctx, store, sess); loadErr != nil && inputTicket != nil {
-			return fmt.Errorf("load refreshed session history: %w", loadErr)
-		} else if loadErr == nil {
-			for _, msg := range sessionMsgs {
-				sessionMessages = append(sessionMessages, msg.ToLLMMessage())
-			}
-		}
-	}
-
-	if inputTicket != nil {
-		if inputTicket.owner {
-			inputTicket.finish(sessionInputSelection{BasePrompt: baseInputPrompt, Prompt: settings.SystemPrompt, Tools: settings.Tools})
-		}
-		sessionMessages = session.ProjectSelectedSessionPrompt(sessionMessages, settings.SystemPrompt)
-	}
-	// Sequence numbers are now auto-allocated by the store (pass Sequence: -1)
-
-	// Use system prompt from resolved settings (already expanded)
-	instructions := settings.SystemPrompt
-
-	// Build messages in correct order: system -> history -> new user
-	// Providers expect system message first
-	var messages []llm.Message
-
-	// Check if session history already starts with a system message
-	historyHasSystem := len(sessionMessages) > 0 && sessionMessages[0].Role == llm.RoleSystem
-
-	if instructions != "" && !historyHasSystem {
-		// Add system message first (only if not already in history)
-		messages = append(messages, llm.SystemText(instructions))
-	}
-
-	// Add session history (if resuming).
-	messages = append(messages, sessionMessages...)
-
-	// Ground a new conversation once. This developer message is persisted with
-	// the transcript and is never regenerated when the session is resumed.
-	var conversationStartedAt time.Time
-	if !resuming && settings.TimeGrounding {
-		conversationStartedAt = time.Now()
-		messages = llm.InsertConversationStart(messages, []llm.Message{llm.ConversationStartMessage(conversationStartedAt)})
-	}
-
-	// Add new user message
-	messages = append(messages, llm.UserText(userPrompt))
+	sess, sessionID, settings = preparedConversation.session, preparedConversation.sessionID, preparedConversation.settings
+	messages, instructions := preparedConversation.messages, preparedConversation.instructions
+	historyHasSystem, conversationStartedAt := preparedConversation.historyHasSystem, preparedConversation.startedAt
 
 	debugMode := askDebug
 	if sess != nil {
 		sessionID = sess.ID
 	}
-	req := llm.Request{
-		SessionID:               sessionID,
-		WorkingDir:              settings.BaseDir,
-		Messages:                messages,
-		EnableToolDiscovery:     mcpManager != nil,
-		Search:                  settings.Search,
-		ForceExternalSearch:     resolveForceExternalSearch(cfg, askNativeSearch, askNoNativeSearch),
-		DisableExternalWebFetch: askNoWebFetch,
-		ParallelToolCalls:       true,
-		MaxTurns:                settings.MaxTurns,
-		MaxOutputTokens:         settings.MaxOutputTokens,
-		Debug:                   debugMode,
-		DebugRaw:                debugRaw,
-	}
-
-	// Add tools to request if any are registered (local, MCP, or output tool)
-	if toolMgr != nil || mcpManager != nil || outputTool != nil {
-		specs := llm.ToolSpecsForRequest(engine.Tools(), settings.Search)
-		var approvalMgr *tools.ApprovalManager
-		if toolMgr != nil {
-			approvalMgr = toolMgr.ApprovalMgr
-		}
-		specs = tools.FilterToolSpecsForApprovalMode(specs, approvalMgr)
-		if len(specs) > 0 {
-			req.Tools = specs
-			req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
-		}
-	}
+	req := buildAskRequest(cfg, settings, sessionID, messages, engine, toolMgr, mcpManager, outputTool, debugMode, debugRaw)
 
 	// Check if we're in a TTY and can use terminal markdown rendering
 	if askPorcelain {
@@ -677,7 +556,6 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 	streamEvents := adapter.Events()
 
-	var teaProgram *tea.Program
 	if !useRichRenderer && toolMgr != nil {
 		// Non-TUI mode: set up approval UI directly (no tea.Program to pause)
 		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
@@ -687,13 +565,6 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			return tools.RunFileApprovalUI(path, isWrite)
 		}
 		toolMgr.ApprovalMgr.WorkspacePromptFunc = tools.RunWorkspaceApprovalUI
-	}
-
-	runRenderer := func(ctx context.Context, events <-chan ui.StreamEvent) error {
-		if teaProgram != nil {
-			return runAskStreamProgram(ctx, teaProgram)
-		}
-		return streamWithRenderer(ctx, cfg, events, store, sess)
 	}
 
 	// Save user message BEFORE streaming (incremental save)
@@ -976,413 +847,50 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	if askProgressive {
-		bridge := newAskProgressiveBridge(ui.DefaultStreamBufferSize)
-		if sess != nil {
-			bridge.Stats().SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.ToolCalls, sess.LLMTurns+sess.CompactionCount)
-		}
-		bridge.Stats().SetModel(activeModel(cfg))
-		stats = bridge.Stats()
-		events := wrapStreamEvents(bridge.Events())
-		var porcelainDrainDone <-chan struct{}
-		if askPorcelain && !askJSON {
-			drained := make(chan struct{})
-			porcelainDrainDone = drained
-			go func() {
-				defer close(drained)
-				for event := range events {
-					if event.Type == ui.StreamEventGuardian {
-						writeGuardianStatus(cmd.ErrOrStderr(), event.Guardian)
-					}
-				}
-			}()
-		}
-
-		progressiveRunReq := baseRunReq
-		progressiveRunReq.Progressive = &runpkg.ProgressiveOptions{
-			Timeout:      progressiveOpts.Timeout,
-			StopWhen:     string(progressiveOpts.StopWhen),
-			ContinueWith: progressiveOpts.ContinueWith,
-		}
-		runProgressive := func() askProgressiveRunResult {
-			bridge.Stats().RequestStart()
-			sink := askProgressiveRunnerSink{
-				bridge: bridge,
-				onGuardian: func(event tools.GuardianEvent) {
-					if !event.Usage.BillableCountersZero() && store != nil && sess != nil {
-						u := event.Usage
-						_ = store.UpdateMetrics(context.Background(), sess.ID, 0, 0, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
-					}
-				},
-			}
-			runResult, runErr := askRunner.Run(ctx, progressiveRunReq, sink)
-			applyRunResult(runResult)
-			result := progressiveRunResult{}
-			if runResult.Progressive != nil {
-				result = *progressiveFromRunResult(runResult.Progressive)
-			}
-			if runErr != nil {
-				bridge.CloseError(runErr)
-			} else {
-				bridge.CloseSuccess()
-			}
-			return askProgressiveRunResult{Result: result, Err: runErr}
-		}
-
-		if useRichRenderer && toolMgr != nil {
-			_, teaProgram = newAskRendererProgram(cfg, toolMgr, store, sess, events)
-		}
-
-		var progressiveRun askProgressiveRunResult
-		var jsonStreamErr error
-		if askJSON {
-			if err := emitSessionStarted(jsonEmit, jsonInfo); err != nil {
-				return err
-			}
-		}
-		if askPorcelain && !askJSON {
-			progressiveRun = runProgressive()
-			if porcelainDrainDone != nil {
-				<-porcelainDrainDone
-			}
-		} else {
-			runCh := make(chan askProgressiveRunResult, 1)
-			go func() {
-				runCh <- runProgressive()
-			}()
-			displayCtx := context.WithoutCancel(ctx)
-			switch {
-			case askJSON:
-				var writeErr error
-				jsonTotalTokens, jsonStreamErr, writeErr = streamJSONEvents(displayCtx, events, jsonEmit)
-				err = writeErr
-			case useRichRenderer:
-				err = runRenderer(displayCtx, events)
-			default:
-				err = streamPlainText(displayCtx, events, false, cmd.ErrOrStderr())
-			}
-			if err != nil {
-				// The consumer died; unblock the producer so <-runCh
-				// cannot deadlock behind a full bridge buffer.
-				bridge.Stop()
-			}
-			progressiveRun = <-runCh
-		}
-		tools.ClearAskUserHooks() // Safe to call even if hooks weren't set
-
-		if err != nil {
-			if askJSON {
-				_ = emitFatalError(jsonEmit, stats, err)
-			}
-			return err
-		}
-
-		progressiveResult = progressiveRun.Result
-		if progressiveRun.Err != nil {
-			if store != nil && sess != nil {
-				_ = store.UpdateStatus(context.Background(), sess.ID, session.StatusError)
-			}
-			return fmt.Errorf("progressive run failed: %w", progressiveRun.Err)
-		}
+		var captureOutput func(string) error
 		if outputTool != nil {
-			if err := ensureOutputToolCaptured(ctx, provider, engine.Tools(), outputToolFinalizationReq(), outputTool, progressiveOutputText(progressiveResult)); err != nil {
-				if store != nil && sess != nil {
-					_ = store.UpdateStatus(context.Background(), sess.ID, session.StatusError)
-				}
-				if askJSON {
-					_ = emitFatalError(jsonEmit, stats, err)
-				}
-				return err
+			captureOutput = func(text string) error {
+				return ensureOutputToolCaptured(ctx, provider, engine.Tools(), outputToolFinalizationReq(), outputTool, text)
 			}
 		}
-		progressiveStatus := session.StatusComplete
-		switch progressiveResult.ExitReason {
-		case exitReasonTimeout, exitReasonCancelled:
-			progressiveStatus = session.StatusInterrupted
-		}
-		if progressiveRun.Err != nil && progressiveStatus != session.StatusInterrupted {
-			progressiveStatus = session.StatusError
-		}
-		if store != nil && sess != nil {
-			_ = store.UpdateStatus(context.Background(), sess.ID, progressiveStatus)
-			_ = store.SetCurrent(context.Background(), sess.ID)
-		}
-
-		if askJSON {
-			if err := emitProgressiveResult(jsonEmit, progressiveResult); err != nil {
-				return fmt.Errorf("emit progressive result: %w", err)
-			}
-			jsonFinalPending = true
-			if jsonStreamErr != nil {
-				if err := emitFinal(jsonEmit, stats, jsonTotalTokens); err != nil {
-					return fmt.Errorf("emit final: %w", err)
-				}
-				jsonFinalPending = false
-				return jsonStreamErr
-			}
-		} else if askPorcelain {
-			if err := json.NewEncoder(cmd.OutOrStdout()).Encode(progressiveResult); err != nil {
-				return fmt.Errorf("encode progressive result: %w", err)
-			}
+		execution, executionErr := (&askProgressiveExecution{
+			ctx: ctx, cmd: cmd, cfg: cfg, toolMgr: toolMgr, store: store, session: sess,
+			runner: askRunner, request: baseRunReq, options: progressiveOpts, applyResult: applyRunResult,
+			wrapEvents: wrapStreamEvents, useRichRenderer: useRichRenderer, jsonEmit: jsonEmit, jsonInfo: jsonInfo,
+			captureOutput: captureOutput,
+		}).run()
+		stats, progressiveResult = execution.stats, execution.progressive
+		jsonTotalTokens, jsonFinalPending = execution.jsonTotalTokens, execution.jsonFinalPending
+		if executionErr != nil {
+			return executionErr
 		}
 	} else {
 		streamEvents = wrapStreamEvents(streamEvents)
-
-		if useRichRenderer && toolMgr != nil {
-			_, teaProgram = newAskRendererProgram(cfg, toolMgr, store, sess, streamEvents)
+		execution, executionErr := (&askStreamingExecution{
+			ctx: ctx, cmd: cmd, cfg: cfg, toolMgr: toolMgr, store: store, session: sess,
+			events: streamEvents, adapter: adapter, runner: askRunner, request: baseRunReq,
+			applyResult: applyRunResult, persistence: askPersistence, collector: collector,
+			turnStart: turnStartTime, jsonEmit: jsonEmit, jsonInfo: jsonInfo, useRichRenderer: useRichRenderer,
+		}).run()
+		stats = execution.stats
+		jsonTotalTokens = execution.jsonTotalTokens
+		jsonFinalPending = execution.jsonFinalPending
+		if executionErr != nil {
+			return executionErr
 		}
-
-		stats = adapter.Stats()
-		streamCtx, cancelStream := context.WithCancel(ctx)
-		defer cancelStream()
-		type runnerStreamResult struct {
-			result   runpkg.Result
-			err      error
-			detached bool
-		}
-		streamResultChan := make(chan runnerStreamResult, 1)
-		go func() {
-			pipe := runpkg.NewEventPipe(streamCtx, ui.DefaultStreamBufferSize)
-			runnerResultChan := make(chan runnerStreamResult, 1)
-			runnerDone := make(chan struct{})
-			go func() {
-				result, runErr := askRunner.Run(streamCtx, baseRunReq, pipe)
-				runnerResultChan <- runnerStreamResult{result: result, err: runErr}
-				close(runnerDone)
-				pipe.CloseWithError(runErr)
-			}()
-			adapter.ProcessStream(streamCtx, pipe)
-			select {
-			case <-runnerDone:
-				// The producer completed normally; do not turn a successful run
-				// into an interruption before the renderer drains its final events.
-			default:
-				cancelStream()
-			}
-			cleanupTimeout := askRunnerCleanupTimeout
-			if cleanupTimeout <= 0 {
-				cleanupTimeout = runpkg.DefaultRunnerCleanupTimeout
-			}
-			if !runpkg.WaitForRunnerDone(context.Background(), runnerDone, cleanupTimeout) {
-				detachErr := streamCtx.Err()
-				if detachErr == nil {
-					detachErr = context.Canceled
-				}
-				streamResultChan <- runnerStreamResult{err: detachErr, detached: true}
-				fmt.Fprintf(cmd.ErrOrStderr(), "warning: runner did not stop within %s after stream cancellation; detaching\n", cleanupTimeout)
-				return
-			}
-			streamResultChan <- <-runnerResultChan
-		}()
-		waitStreamResult := func() runnerStreamResult {
-			streamResult := <-streamResultChan
-			if !streamResult.detached {
-				applyRunResult(streamResult.result)
-			}
-			return streamResult
-		}
-
-		var jsonStreamErr error
-		switch {
-		case askJSON:
-			if err := emitSessionStarted(jsonEmit, jsonInfo); err != nil {
-				cancelStream()
-				waitStreamResult()
-				return err
-			}
-			var writeErr error
-			jsonTotalTokens, jsonStreamErr, writeErr = streamJSONEvents(streamCtx, streamEvents, jsonEmit)
-			err = writeErr
-			jsonFinalPending = true
-		case useRichRenderer:
-			err = runRenderer(streamCtx, streamEvents)
-		default:
-			err = streamPlainText(streamCtx, streamEvents, askPorcelain, cmd.ErrOrStderr())
-		}
-		tools.ClearAskUserHooks() // Safe to call even if hooks weren't set
-
-		finishInterrupted := func() error {
-			if askPersistence != nil && collector != nil {
-				dbCtx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 5*time.Second)
-				_ = askPersistence.persistInterrupted(dbCtx, collector.Text(), time.Since(turnStartTime).Milliseconds())
-				cancel()
-			}
-			if store != nil && sess != nil {
-				_ = store.UpdateStatus(context.Background(), sess.ID, session.StatusInterrupted)
-				_ = store.SetCurrent(context.Background(), sess.ID)
-			}
-			if askJSON && jsonFinalPending {
-				if err := emitFinal(jsonEmit, stats, jsonTotalTokens); err != nil {
-					return fmt.Errorf("emit final: %w", err)
-				}
-				jsonFinalPending = false
-			}
+		if execution.skipFinalization {
 			return nil
 		}
-
-		isInterruptedErr := func(e error) bool {
-			return errors.Is(e, context.Canceled) || errors.Is(e, context.DeadlineExceeded)
-		}
-
-		var streamErr error
-		streamDone := false
-		if err != nil {
-			cancelStream()
-			streamErr = waitStreamResult().err
-			streamDone = true
-			if isInterruptedErr(err) || isInterruptedErr(streamErr) {
-				return finishInterrupted()
-			}
-			if askJSON && !isTerminalFlushed(err) {
-				_ = emitFatalError(jsonEmit, stats, err)
-				jsonFinalPending = false
-			}
-			return err
-		}
-		if askJSON && jsonStreamErr != nil {
-			cancelStream()
-			if !streamDone {
-				streamErr = waitStreamResult().err
-				streamDone = true
-			}
-			if isInterruptedErr(jsonStreamErr) {
-				return finishInterrupted()
-			}
-			if emitErr := emitFinal(jsonEmit, stats, jsonTotalTokens); emitErr != nil {
-				return fmt.Errorf("emit final: %w", emitErr)
-			}
-			jsonFinalPending = false
-			return &terminalFlushedError{err: jsonStreamErr}
-		}
-
-		if !streamDone {
-			streamErr = waitStreamResult().err
-		}
-		if streamErr != nil {
-			// Update session status based on error type
-			if store != nil && sess != nil {
-				if isInterruptedErr(streamErr) {
-					_ = store.UpdateStatus(context.Background(), sess.ID, session.StatusInterrupted)
-				} else {
-					_ = store.UpdateStatus(context.Background(), sess.ID, session.StatusError)
-				}
-			}
-			if isInterruptedErr(streamErr) {
-				return finishInterrupted()
-			}
-			err := fmt.Errorf("streaming failed: %w", streamErr)
-			if askJSON {
-				_ = emitFatalError(jsonEmit, stats, err)
-				jsonFinalPending = false
-			}
-			return err
-		}
-		// Session completion is marked after output_tool finalization below.
 	}
 
-	if collector != nil {
-		collector.Wait()
-	}
+	return (&askFinalization{
+		ctx: ctx, cmd: cmd, collector: collector, outputTool: outputTool, outputRequest: outputToolFinalizationReq,
+		progressive: askProgressive, progressiveResult: progressiveResult, provider: provider, engine: engine,
+		store: store, session: sess, agent: agent, json: askJSON, jsonEmit: jsonEmit, stats: stats,
+		jsonTotalTokens: jsonTotalTokens, jsonFinalPending: jsonFinalPending, compactionUsages: &compactionUsages,
+		showStats: showStats, config: cfg,
+	}).run()
 
-	if outputTool != nil {
-		var assistantText string
-		if collector != nil {
-			assistantText = collector.Text()
-		} else if askProgressive {
-			assistantText = progressiveOutputText(progressiveResult)
-		}
-		if err := ensureOutputToolCaptured(ctx, provider, engine.Tools(), outputToolFinalizationReq(), outputTool, assistantText); err != nil {
-			if store != nil && sess != nil {
-				_ = store.UpdateStatus(ctx, sess.ID, session.StatusError)
-			}
-			if askJSON {
-				_ = emitFatalError(jsonEmit, stats, err)
-				jsonFinalPending = false
-			}
-			return err
-		}
-	}
-
-	// Update session status to complete after required output-tool finalization.
-	if store != nil && sess != nil {
-		_ = store.UpdateStatus(ctx, sess.ID, session.StatusComplete)
-		_ = store.SetCurrent(ctx, sess.ID)
-	}
-
-	// Run on_complete handler if configured
-	if agent != nil && agent.OnComplete != "" {
-		var output string
-		if outputTool != nil {
-			output = outputTool.Value() // Tool output is the required return channel.
-			if !outputTool.Captured() {
-				err := fmt.Errorf("output tool %q did not produce a value", outputTool.Name())
-				if askJSON {
-					_ = emitFatalError(jsonEmit, stats, err)
-					jsonFinalPending = false
-				}
-				return err
-			}
-		} else if collector != nil {
-			output = collector.Text() // Fallback to text when no output tool is configured.
-		} else if askProgressive {
-			output = progressiveOutputText(progressiveResult)
-		}
-
-		if output != "" {
-			if askJSON {
-				if err := emitOnCompleteStarted(jsonEmit); err != nil {
-					return err
-				}
-				result, err := runOnCompleteCapture(agent.OnComplete, output)
-				if result.Stdout != "" {
-					if emitErr := emitOnCompleteOutput(jsonEmit, result.Stdout); emitErr != nil {
-						return emitErr
-					}
-				}
-				if err != nil {
-					if emitErr := emitOnCompleteFailed(jsonEmit, result.Stderr, err); emitErr != nil {
-						return emitErr
-					}
-					fmt.Fprintf(cmd.ErrOrStderr(), "warning: on_complete failed: %v\n", err)
-				} else if err := emitOnCompleteCompleted(jsonEmit, result.Stderr); err != nil {
-					return err
-				}
-			} else if err := runOnComplete(agent.OnComplete, output); err != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "warning: on_complete failed: %v\n", err)
-			}
-		}
-	} else if agent != nil && agent.Output == "commit_editmsg" {
-		// Backwards compat: keep old output: commit_editmsg (deprecated path)
-		output := ""
-		if collector != nil {
-			output = collector.Text()
-		} else if askProgressive {
-			output = progressiveOutputText(progressiveResult)
-		}
-		if output != "" {
-			if err := writeCommitEditMsg(output); err != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to write commit message: %v\n", err)
-			} else {
-				fmt.Fprintf(cmd.ErrOrStderr(), "\nCommit message written to .git/COMMIT_EDITMSG and .git/GITGUI_MSG\n")
-				fmt.Fprintf(cmd.ErrOrStderr(), "Run 'git commit' to use it.\n")
-			}
-		}
-	}
-
-	if askJSON && jsonFinalPending {
-		if err := emitFinal(jsonEmit, stats, jsonTotalTokens); err != nil {
-			return fmt.Errorf("emit final: %w", err)
-		}
-		jsonFinalPending = false
-	}
-
-	compactionUsages.merge(stats)
-	if showStats && stats != nil && !askJSON {
-		stats.Finalize()
-		setEstimatedStatsCost(stats, activeModel(cfg))
-		fmt.Fprintln(cmd.ErrOrStderr(), stats.Render())
-	}
-
-	return nil
 }
 
 type askAssistantPersistence struct {
@@ -2325,63 +1833,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tracker.ResizeStreamRenderers(m.width)
 
 	case askStreamEventMsg:
-		var innerMsg tea.Msg
-		ev := msg.event
-		switch ev.Type {
-		case ui.StreamEventRetry:
-			innerMsg = askRetryMsg{Attempt: ev.RetryAttempt, MaxAttempts: ev.RetryMax, WaitSecs: ev.RetryWait}
-		case ui.StreamEventUsage:
-			innerMsg = askUsageMsg{InputTokens: ev.InputTokens, OutputTokens: ev.OutputTokens}
-		case ui.StreamEventPhase:
-			innerMsg = askPhaseMsg(ev.Phase)
-		case ui.StreamEventToolEnd:
-			innerMsg = askToolEndMsg{CallID: ev.ToolCallID, Success: ev.ToolSuccess}
-		case ui.StreamEventToolStart:
-			innerMsg = askToolStartMsg{CallID: ev.ToolCallID, Name: ev.ToolName, Info: ev.ToolInfo, ToolArgs: ev.ToolArgs}
-		case ui.StreamEventGuardian:
-			innerMsg = askGuardianReviewMsg{Event: ev.Guardian}
-		case ui.StreamEventText:
-			innerMsg = askContentMsg(ev.Text)
-		case ui.StreamEventReasoning:
-			innerMsg = askReasoningMsg(ev)
-		case ui.StreamEventAttemptDiscard:
-			innerMsg = askAttemptDiscardMsg{}
-		case ui.StreamEventImage:
-			innerMsg = askImageMsg(ev.ImagePath)
-		case ui.StreamEventMedia:
-			if reference := strings.ToLower(strings.TrimSpace(ev.Media.Reference)); reference != "" {
-				if m.mediaByReference == nil {
-					m.mediaByReference = make(map[string]llm.MediaArtifact)
-				}
-				m.mediaByReference[reference] = ev.Media
-			}
-		case ui.StreamEventDiff:
-			innerMsg = askDiffMsg{Path: ev.DiffPath, Old: ev.DiffOld, New: ev.DiffNew, Line: ev.DiffLine, Operation: ev.DiffOperation}
-		case ui.StreamEventDone:
-			innerMsg = askDoneMsg{}
-		case ui.StreamEventError:
-			if ev.Err != nil {
-				m.streamErr = ev.Err
-				innerMsg = askCancelledMsg{}
-			}
-		}
-
-		var innerCmd tea.Cmd
-		if innerMsg != nil {
-			updated, cmd := m.Update(innerMsg)
-			m = updated.(askStreamModel)
-			innerCmd = cmd
-		}
-
-		if ev.Type != ui.StreamEventDone && (ev.Type != ui.StreamEventError || ev.Err == nil) {
-			if ev.Type == ui.StreamEventText && m.smoothTickPending {
-				m.deferredStreamRead = true
-			} else {
-				return m, ui.ComposeFlushFirstCommands(nil, []tea.Cmd{innerCmd, m.listenForStreamEvents()})
-			}
-		}
-		return m, innerCmd
-
+		return m.handleStreamEventMessage(msg)
 	case askContentMsg:
 		// Buffer text and release it in smooth word-paced ticks.
 		if m.smoothBuffer != nil {
@@ -2410,127 +1862,13 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case askReasoningMsg:
-		ev := ui.StreamEvent(msg)
-		cfg := m.reasoningConfig
-		kind := llm.NormalizeReasoningKind(ev.ReasoningKind)
-		if internalreasoning.IsDisplayable(string(kind), cfg) && internalreasoning.StatusEnabled(cfg) {
-			internalreasoning.AppendStreamItemText(m.reasoningBuilder(), &m.currentReasoningItemID, ev.ReasoningText, ev.ReasoningItemID)
-			title := strings.TrimSpace(ev.ReasoningTitle)
-			if title == "" && kind == llm.ReasoningKindSummary {
-				reasoningText := m.currentReasoningString()
-				reasoningText = internalreasoning.LimitReasoningText(string(kind), reasoningText, cfg)
-				title = internalreasoning.SummaryTitle(reasoningText, cfg)
-			}
-			if title != "" {
-				m.currentReasoningTitle = title
-			}
-			if m.retryStatus == "" && !m.tracker.HasPending() && m.currentReasoningTitle != "" {
-				phase := strings.TrimSpace(m.phase)
-				if phase == "" || phase == "Thinking" || strings.HasPrefix(phase, "Thinking:") || m.reasoningPhaseActive {
-					// Reasoning-derived status titles are already scoped by the spinner/status UI.
-					// Keep the line compact by showing the action directly instead of "Thinking: …".
-					m.phase = m.currentReasoningTitle
-					m.reasoningPhaseActive = true
-				}
-			}
-		}
-		return m, nil
-
+		return m.handleReasoningMessage(msg)
 	case askDoneMsg:
-		m.done = true // Prevent spinner from showing in final View()
-		m.resetCurrentReasoning()
-		m.smoothTickPending = false
-		m.deferredStreamRead = false
-		// Ensure we have a valid width
-		if m.width <= 0 {
-			m.width = getTerminalWidth()
-		}
-		// Flush buffered words before final segment completion.
-		m.flushSmoothBufferToTracker()
-		if m.smoothBuffer != nil {
-			m.smoothBuffer.MarkDone()
-		}
-		// Complete text segments (finalizes TextBuilder -> Text)
-		m.tracker.CompleteTextSegments(func(text string) string {
-			return m.renderMd(text)
-		})
-
-		// Force-complete any pending tools (defensive - shouldn't happen normally)
-		m.tracker.ForceCompletePendingTools()
-
-		// Flush everything remaining to scrollback
-		res := m.tracker.FlushAllRemaining(m.width, 0, m.renderMdWithWidth)
-		if res.ToPrint != "" {
-			return m, tea.Sequence(tea.Printf("%s", res.ToPrint), tea.Quit)
-		}
-		return m, tea.Quit
-
+		return m.handleDoneMessage(msg)
 	case askCancelledMsg:
-		if m.streamErr == nil {
-			m.streamErr = context.Canceled
-		}
-		m.done = true
-		m.resetCurrentReasoning()
-		m.smoothTickPending = false
-		m.deferredStreamRead = false
-		// Ensure we have a valid width
-		if m.width <= 0 {
-			m.width = getTerminalWidth()
-		}
-		// Flush buffered words so cancellation keeps latest visible text.
-		m.flushSmoothBufferToTracker()
-		if m.smoothBuffer != nil {
-			m.smoothBuffer.MarkDone()
-		}
-		// Flush whatever has been rendered so far (including partial text) to scrollback
-		res := m.tracker.FlushAllRemaining(m.width, 0, m.renderMdWithWidth)
-		if res.ToPrint != "" {
-			return m, tea.Sequence(tea.Printf("%s", res.ToPrint), tea.Quit)
-		}
-		return m, tea.Quit
-
+		return m.handleCancelledMessage(msg)
 	case ui.SmoothTickMsg:
-		if m.smoothBuffer == nil || m.done {
-			return m, nil
-		}
-		m.smoothTickPending = false
-
-		var flushCmds []tea.Cmd
-		var asyncCmds []tea.Cmd
-
-		words := m.smoothBuffer.NextWords()
-		if words != "" {
-			m.tracker.AddTextSegment(words, m.width)
-			m.contentDirty = true
-
-			// Flush as soon as we have any safe boundary to avoid duplication/corruption.
-			streamingFlushThreshold := m.streamingFlushThreshold()
-			if m.width > 0 {
-				result := m.tracker.FlushStreamingText(streamingFlushThreshold, m.width, m.renderMdWithWidth)
-				if result.ToPrint != "" {
-					m.cachedContent = "" // Invalidate cache since state changed
-					flushCmds = append(flushCmds, tea.Printf("%s", result.ToPrint))
-				}
-			}
-		}
-
-		if !m.smoothBuffer.IsDrained() {
-			if !m.smoothTickPending {
-				m.smoothTickPending = true
-				asyncCmds = append(asyncCmds, ui.SmoothTick())
-			}
-		}
-		if m.deferredStreamRead && !m.done {
-			m.deferredStreamRead = false
-			asyncCmds = append(asyncCmds, m.listenForStreamEvents())
-		}
-
-		cmd := ui.ComposeFlushFirstCommands(flushCmds, asyncCmds)
-		if cmd == nil {
-			return m, nil
-		}
-		return m, cmd
-
+		return m.handleSmoothTickMessage(msg)
 	case askUsageMsg:
 		m.totalTokens = msg.InputTokens + msg.OutputTokens
 
