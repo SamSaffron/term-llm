@@ -1752,93 +1752,15 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		rt.dropTrailingUserHistory(inputMessages)
 	}
 
-	baseHistory := make([]llm.Message, len(rt.history))
-	copy(baseHistory, rt.history)
-	rt.initializeSideQuestionSnapshot(baseHistory)
-	rt.updateSideQuestionConfig(req)
-	replacingExistingHistory := replaceHistory && len(baseHistory) > 0
-	replaceHistoryBackup := baseHistory
-	replaceUsageBackup := rt.cumulativeUsage
-	replacePlatformBackup := rt.lastInjectedPlatform
-	replacePersistedBackup := rt.historyPersisted
-	replaceSideQuestionBackup := sideQuestionStateBackup{}
-	if replaceHistory {
-		replaceSideQuestionBackup = rt.sideQuestion.backup()
-	}
-	restoreReplaceHistory := func() {
-		rt.history = replaceHistoryBackup
-		rt.cumulativeUsage = replaceUsageBackup
-		rt.lastInjectedPlatform = replacePlatformBackup
-		rt.historyPersisted = replacePersistedBackup
-		rt.sideQuestion.restore(replaceSideQuestionBackup)
-	}
-	if replaceHistory {
-		rt.sideQuestion.cancelActive()
-		rt.sideQuestion.clearHistory()
-		rt.refreshSideQuestionSnapshot(nil)
-		baseHistory = nil
-		rt.history = nil
-		rt.engine.ResetConversation()
-		rt.cumulativeUsage = llm.Usage{}
-		rt.lastInjectedPlatform = ""
-		rt.historyPersisted = false
-	}
-	if persisted && stateful && !replaceHistory {
-		rt.restoreProviderState(ctx, req.SessionID)
-	}
-	rt.grantUploadedFileReads(baseHistory)
-	rt.grantUploadedFileReads(inputMessages)
+	rushInitial := rushFromContext(ctx)
+	runSpec := serveRunSpec{stateful: stateful, persisted: persisted, replaceHistory: replaceHistory, batchInitial: collaborationBinding.Required || rushInitial != nil}
+	historyPreparation := rt.prepareRunHistory(ctx, runSpec, req.SessionID, inputMessages, &req, time.Now)
+	baseHistory := historyPreparation.baseHistory
+	inputMessages = historyPreparation.inputMessages
+	replacingExistingHistory := historyPreparation.replacingExisting
+	injectedPlatform := historyPreparation.injectedPlatform
+	restoreReplaceHistory := historyPreparation.restore
 	turnIndex := countUserMessages(baseHistory)
-
-	// Capture wall-clock grounding exactly once at the first conversational turn.
-	// Persisted histories carry the marked developer message across reloads. A
-	// borrowed stateless runtime keeps the same anchor while it shares provider
-	// conversation state; owned stateless requests are independent conversations.
-	combinedMessages := make([]llm.Message, 0, len(baseHistory)+len(inputMessages))
-	combinedMessages = append(combinedMessages, baseHistory...)
-	combinedMessages = append(combinedMessages, inputMessages...)
-	if rt.timeGroundingEnabled() {
-		switch {
-		case stateful:
-			noRecordedTurns := rt.sessionMeta == nil || rt.sessionMeta.UserTurns == 0
-			if _, exists := llm.ConversationStartFrom(combinedMessages); !exists && noRecordedTurns {
-				begun := llm.BeginConversation(combinedMessages, time.Now())
-				if start, ok := llm.ConversationStartFrom(begun); ok {
-					inputMessages = llm.InsertConversationStart(inputMessages, []llm.Message{start})
-				}
-			}
-		case rt.borrowedEngine:
-			if start, ok := llm.ConversationStartFrom(combinedMessages); ok {
-				rt.borrowedStart = []llm.Message{start}
-			} else if len(rt.borrowedStart) > 0 {
-				inputMessages = llm.InsertConversationStart(inputMessages, rt.borrowedStart)
-			} else {
-				inputMessages = llm.BeginConversation(inputMessages, time.Now())
-				if start, ok := llm.ConversationStartFrom(inputMessages); ok {
-					rt.borrowedStart = []llm.Message{start}
-				}
-			}
-		default:
-			inputMessages = llm.BeginConversation(inputMessages, time.Now())
-		}
-	}
-
-	var injectedPlatform string
-	if devText := rt.platformMessages.For(rt.platform); devText != "" && rt.lastInjectedPlatform != rt.platform {
-		if existing, ok := llm.PlatformContextFrom(inputMessages); ok && strings.TrimSpace(llm.MessageText(existing)) == strings.TrimSpace(devText) {
-			// Surface-owned transcripts (TUI and Telegram) already carry this
-			// boundary. Record it after success without injecting a duplicate.
-			injectedPlatform = rt.platform
-		} else {
-			devMsg := llm.PlatformContextMessage(devText)
-			inputMessages = append([]llm.Message{devMsg}, inputMessages...)
-			injectedPlatform = rt.platform
-		}
-	}
-
-	if injectedPlatform != "" {
-		req.IncludeDeveloperInContinuation = true
-	}
 
 	if stateful && !replaceHistory && hasUserMessage(inputMessages) && collaborationBinding.Required {
 		if activityController == nil {
@@ -1895,44 +1817,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
-	if rt.toolMgr != nil && rt.toolMgr.Registry != nil {
-		runCtx = tools.ContextWithCollaborativeShellRunBinding(runCtx, collaborationBinding)
-	}
-	askUserFunc := rt.askUserFunc
-	if askUserFunc == nil {
-		switch rt.platform {
-		case "", "web":
-			askUserFunc = rt.awaitAskUser
-		case "telegram", "jobs":
-			platform := rt.platform
-			askUserFunc = func(context.Context, []tools.AskUserQuestion) ([]tools.AskUserAnswer, error) {
-				return nil, fmt.Errorf("ask_user is not available on %s sessions", platform)
-			}
-		}
-	}
-	if askUserFunc != nil {
-		runCtx = tools.ContextWithAskUserUIFunc(runCtx, askUserFunc)
-	}
-	if rt.platform == "web" && strings.TrimSpace(req.SessionID) != "" {
-		runCtx = tools.ContextWithQueueAgentOrigin(runCtx, tools.QueueAgentOriginContext{
-			Origin:    tools.QueueAgentOriginWeb,
-			SessionID: req.SessionID,
-		})
-	}
-
-	activeModel := strings.TrimSpace(req.Model)
-	activeEffort := strings.TrimSpace(req.ReasoningEffort)
-	if activeModel == "" {
-		activeModel = strings.TrimSpace(rt.defaultModel)
-	}
-	activeModel, activeEffort = normalizeProviderModelEffort(runtimeProviderKey(rt), activeModel, activeEffort)
-	// The engine owns in-run transitions and must retain the exact model used by
-	// the preceding provider turn, even when the caller selected a runtime default
-	// rather than spelling the model in the request.
-	if activeModel != "" {
-		req.Model = activeModel
-	}
-	req.ReasoningEffort = activeEffort
+	runCtx, activeModel, activeEffort := rt.prepareRunContext(runCtx, collaborationBinding, &req)
 	var requestCancel func()
 	if responseRun := responseRunFromContext(ctx); responseRun != nil {
 		requestCancel = func() { responseRun.cancelRun() }
@@ -1983,127 +1868,20 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	// runtime default, matching the TUI's per-turn context management behavior.
 	rt.configureContextManagementForRequest(req)
 
-	var produced []llm.Message
-	var producedMu sync.Mutex
-	var lastAppendedIdx int // tracks how many produced messages have been incrementally persisted
-	assistantSnapshotDirty := false
-	assistantSnapshotNeedsReconcile := false
-
-	// Persist-as-we-go: snapshot callback fires per streamed tool call. The
-	// pending row lives at produced[pendingAssistantIdx] and is upserted in
-	// place via UpdateMessage once it has been added — so repeated snapshots
-	// replace a single logical row instead of appending duplicates. After a
-	// turn completes (turn callback for async tools, or first upsert for
-	// text-only turns) both fields reset so the next turn starts fresh.
-	pendingAssistantIdx := -1
-	var pendingAssistantMsgID int64
-	pendingAssistantTextPersisted := false
-	persistPlatformInjectionLocked := func() {
-		if injectedPlatform != "" && (stateful || persisted) {
-			rt.lastInjectedPlatform = injectedPlatform
-		}
-	}
-	buildSnapshotLocked := func() []llm.Message {
-		snapshot := make([]llm.Message, 0, len(baseHistory)+len(inputMessages)+len(produced)+1)
-		if systemPromptInjected {
-			snapshot = append(snapshot, llm.SystemText(rt.systemPrompt))
-		}
-		snapshot = append(snapshot, baseHistory...)
-		snapshot = append(snapshot, inputMessages...)
-		snapshot = append(snapshot, produced...)
-		return snapshot
-	}
-
-	compactedActiveHistory := false
-	persistProducedSnapshot := func(persistCtx context.Context) {
-		producedMu.Lock()
-		defer producedMu.Unlock()
-
-		snapshot := buildSnapshotLocked()
-		useCompactedSnapshot := compactedActiveHistory
-		if stateful {
-			rt.history = snapshot
-			rt.historyPersisted = false
-		}
-		if persisted {
-			if useCompactedSnapshot {
-				rt.historyPersisted = rt.persistCompactedSnapshot(persistCtx, req.SessionID, snapshot)
-			} else {
-				rt.historyPersisted = rt.persistSnapshot(persistCtx, req.SessionID, snapshot)
-			}
-		}
-		persistPlatformInjectionLocked()
-	}
-
-	rushInitial := rushFromContext(ctx)
-	appendOnlyPersisted := persisted && !replaceHistory && rt.historyPersisted && (!isIdentifiedUserBatch(inputMessages) || collaborationBinding.Required || rushInitial != nil)
-	initialPersisted := false
-	initialMessages := make([]llm.Message, 0, len(inputMessages)+1)
-	if systemPromptInjected {
-		initialMessages = append(initialMessages, llm.SystemText(rt.systemPrompt))
-	}
-	initialMessages = append(initialMessages, inputMessages...)
-	initialAppendedIdx := 0
-	lastAppendResult := appendMessagesResult{}
-	appendOnlyCaughtUpLocked := func() bool {
-		return appendOnlyPersisted &&
-			initialPersisted &&
-			initialAppendedIdx >= len(initialMessages) &&
-			lastAppendedIdx >= len(produced) &&
-			!assistantSnapshotDirty &&
-			!assistantSnapshotNeedsReconcile
-	}
-	appendInitialInputLocked := func(persistCtx context.Context) bool {
-		if !appendOnlyPersisted || initialAppendedIdx >= len(initialMessages) {
-			initialPersisted = true
-			return true
-		}
-		var result appendMessagesResult
-		if collaborationBinding.Required || rushInitial != nil {
-			result = rt.appendMessagesBatchDetailed(persistCtx, req.SessionID, initialMessages[initialAppendedIdx:], turnIndex)
-		} else {
-			result = rt.appendMessagesDetailed(persistCtx, req.SessionID, initialMessages[initialAppendedIdx:], turnIndex)
-		}
-		lastAppendResult = result
-		initialAppendedIdx += result.Written
-		if initialAppendedIdx < len(initialMessages) {
-			appendOnlyPersisted = false
-			rt.historyPersisted = false
-			return false
-		}
-		initialPersisted = true
-		return true
-	}
-
-	// Make the submitted user turn durable before waiting for the provider's
-	// first streaming callback. The web UI can navigate away and reload the
-	// session while the model is still thinking; if we only persist on the first
-	// assistant/tool event, the just-submitted prompt temporarily disappears.
-	// For replace-history runs with existing history, keep the old transcript
-	// until the run produces an event so an early provider failure cannot wipe it.
-	if persisted && (!replaceHistory || !replacingExistingHistory) {
-		if appendOnlyPersisted {
-			appendInitialInputLocked(ctx)
-		} else {
-			initialSnapshot := make([]llm.Message, 0, len(baseHistory)+len(inputMessages)+1)
-			if systemPromptInjected {
-				initialSnapshot = append(initialSnapshot, llm.SystemText(rt.systemPrompt))
-			}
-			initialSnapshot = append(initialSnapshot, baseHistory...)
-			initialSnapshot = append(initialSnapshot, inputMessages...)
-			initialPersisted = rt.persistInitialSnapshot(ctx, req.SessionID, initialSnapshot)
-		}
-	}
+	persistence := newServeRunPersistence(rt, req.SessionID, turnIndex, runSpec, baseHistory, inputMessages, systemPromptInjected, injectedPlatform)
+	persistence.persistInitial(ctx, replacingExistingHistory)
+	persistence.mu.Lock()
 	initialBoundaryPublished := true
-	if run := responseRunFromContext(runCtx); run != nil && appendOnlyPersisted {
-		initialBoundaryPublished = lastAppendResult.Complete && lastAppendResult.LastRowID > 0 && run.setInitialDurableBoundary(lastAppendResult.LastRowID)
+	if run := responseRunFromContext(runCtx); run != nil && persistence.appendOnlyPersisted {
+		initialBoundaryPublished = persistence.lastAppendResult.Complete && persistence.lastAppendResult.LastRowID > 0 && run.setInitialDurableBoundary(persistence.lastAppendResult.LastRowID)
 	}
+	persistence.mu.Unlock()
 	if (collaborationBinding.Required || rushInitial != nil) && !replaceHistory {
-		if initialPersisted && !initialBoundaryPublished {
+		if persistence.initialPersisted && !initialBoundaryPublished {
 			rt.history = append([]llm.Message(nil), messages...)
 			rt.historyPersisted = true
 		}
-		if !initialPersisted || !initialBoundaryPublished {
+		if !persistence.initialPersisted || !initialBoundaryPublished {
 			return serveRunResult{}, errServeSessionPersistence
 		}
 		if activityReservation != nil {
@@ -2114,147 +1892,13 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		}
 	}
 
-	// updateStateAndAppend updates in-memory history and incrementally appends
-	// only the NEW produced messages to the DB. Each append is a small atomic
-	// SQLite INSERT that survives kill -9, so at most one turn can be lost.
-	// On the first callback, it eagerly persists baseHistory + inputMessages and
-	// only starts incremental appends after that snapshot succeeds.
-	updateStateAndAppendLocked := func(persistCtx context.Context) {
-		if stateful {
-			rt.history = buildSnapshotLocked()
-			rt.historyPersisted = false
-		}
-		if persisted {
-			if appendOnlyPersisted {
-				if !appendInitialInputLocked(persistCtx) {
-					persistPlatformInjectionLocked()
-					return
-				}
-				if lastAppendedIdx < len(produced) {
-					result := rt.appendMessagesDetailed(persistCtx, req.SessionID, produced[lastAppendedIdx:], turnIndex)
-					lastAppendResult = result
-					lastAppendedIdx += result.Written
-					if lastAppendedIdx < len(produced) {
-						appendOnlyPersisted = false
-						rt.historyPersisted = false
-					}
-				}
-				persistPlatformInjectionLocked()
-				return
-			}
-			// On the first callback, persist the full base snapshot so
-			// incremental AddMessage calls have the correct starting state.
-			if !initialPersisted {
-				initialSnapshot := make([]llm.Message, 0, len(baseHistory)+len(inputMessages)+1)
-				if systemPromptInjected {
-					initialSnapshot = append(initialSnapshot, llm.SystemText(rt.systemPrompt))
-				}
-				initialSnapshot = append(initialSnapshot, baseHistory...)
-				initialSnapshot = append(initialSnapshot, inputMessages...)
-				initialPersisted = rt.persistInitialSnapshot(persistCtx, req.SessionID, initialSnapshot)
-			}
-			if initialPersisted && lastAppendedIdx < len(produced) {
-				result := rt.appendMessagesDetailed(persistCtx, req.SessionID, produced[lastAppendedIdx:], turnIndex)
-				lastAppendResult = result
-				lastAppendedIdx += result.Written
-			}
-		}
-		persistPlatformInjectionLocked()
-	}
-	var compactionUsage llm.Usage
-	var compactionUsageMu sync.Mutex
-
 	// Keep runtime-owned history in sync with engine compaction. The engine only
 	// replaces its in-flight request; without this callback serve/web would later
-	// rebuild snapshots from stale baseHistory/inputMessages/produced and
+	// rebuild snapshots from stale persistence.baseHistory/persistence.inputMessages/persistence.produced and
 	// resurrect the pre-compaction context.
 	rt.resetPendingCompactionIdentities()
 	rt.engine.SetCompactionCallback(func(cbCtx context.Context, result *llm.CompactionResult) error {
-		producedMu.Lock()
-		defer producedMu.Unlock()
-		if result == nil {
-			return nil
-		}
-		previousCompactionSeq := -1
-		previousCompactionCount := 0
-		if session.HasCompactionBoundary(rt.sessionMeta) {
-			previousCompactionSeq = rt.sessionMeta.CompactionSeq
-			previousCompactionCount = rt.sessionMeta.CompactionCount
-		}
-		handledByPlatform := rt.compactionCB != nil
-		if handledByPlatform {
-			if err := rt.compactionCB(cbCtx, result); err != nil {
-				return err
-			}
-			// Platform callbacks own persistence, but the response stream still
-			// needs the resulting durable boundary identity. Refresh the runtime
-			// snapshot after the callback has committed it.
-			if rt.store != nil && rt.sessionMeta != nil && rt.sessionMeta.ID != "" {
-				if refreshed, err := rt.store.Get(cbCtx, rt.sessionMeta.ID); err == nil && refreshed != nil {
-					rt.sessionMeta = refreshed
-				}
-			}
-		}
-		var compacted []llm.Message
-		if handledByPlatform {
-			// Platform callbacks persist only durable replacement history. Keep the
-			// runtime snapshot durable too; Engine keeps ActiveMessages in its
-			// in-flight request and restores ephemeral plan context on later streams.
-			compacted = append(compacted, result.NewMessages...)
-		} else {
-			updated, _, refreshed, err := session.ApplyCompaction(cbCtx, rt.store, rt.sessionMeta, nil, result)
-			if err != nil {
-				return err
-			}
-			if refreshed != nil {
-				rt.sessionMeta = refreshed
-			}
-			compacted = make([]llm.Message, 0, len(updated))
-			for _, msg := range updated {
-				compacted = append(compacted, msg.ToLLMMessage())
-			}
-		}
-		if session.HasCompactionBoundary(rt.sessionMeta) &&
-			(rt.sessionMeta.CompactionSeq != previousCompactionSeq || rt.sessionMeta.CompactionCount > previousCompactionCount) {
-			rt.recordPendingCompactionIdentity(rt.sessionMeta.CompactionSeq, rt.sessionMeta.CompactionCount)
-		}
-		if !result.Usage.IsZero() {
-			compactionUsageMu.Lock()
-			compactionUsage.Add(result.Usage)
-			compactionUsageMu.Unlock()
-		}
-		if !result.Usage.BillableCountersZero() && rt.store != nil && rt.sessionMeta != nil {
-			if err := rt.store.UpdateMetrics(cbCtx, rt.sessionMeta.ID, 0, 0, result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.CachedInputTokens, result.Usage.CacheWriteTokens); err == nil {
-				rt.sessionMeta.InputTokens += result.Usage.InputTokens
-				rt.sessionMeta.OutputTokens += result.Usage.OutputTokens
-				rt.sessionMeta.CachedInputTokens += result.Usage.CachedInputTokens
-				rt.sessionMeta.CacheWriteTokens += result.Usage.CacheWriteTokens
-			}
-		}
-		if !handledByPlatform && len(compacted) == 0 {
-			compacted = append(compacted, result.NewMessages...)
-		}
-		baseHistory = compacted
-		compactedActiveHistory = true
-		inputMessages = nil
-		produced = nil
-		lastAppendedIdx = 0
-		initialPersisted = persisted
-		initialAppendedIdx = len(initialMessages)
-		systemPromptInjected = false
-		pendingAssistantIdx = -1
-		pendingAssistantMsgID = 0
-		pendingAssistantTextPersisted = false
-		assistantSnapshotDirty = false
-		assistantSnapshotNeedsReconcile = false
-		if stateful {
-			rt.history = append([]llm.Message(nil), compacted...)
-			rt.historyPersisted = persisted
-			rt.refreshSideQuestionSnapshot(compacted)
-		}
-		rt.engine.SetContextEstimateBaseline(0, 0)
-		persistPlatformInjectionLocked()
-		return nil
+		return persistence.applyCompaction(cbCtx, result)
 	})
 	defer rt.engine.SetCompactionCallback(nil)
 
@@ -2262,124 +1906,9 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	// The engine invokes this only after the preceding turn callback has committed
 	// and before the target provider turn can produce output.
 	rt.engine.SetRuntimeSwitchCallback(func(cbCtx context.Context, change llm.RuntimeSwitch) error {
-		marker := llm.ModelSwapMarker{
-			FromProvider: runtimeProviderKey(rt),
-			FromModel:    change.PreviousModel,
-			FromEffort:   change.PreviousReasoningEffort,
-			ToProvider:   runtimeProviderKey(rt),
-			ToModel:      change.Model,
-			ToEffort:     change.ReasoningEffort,
-			BoundaryID:   change.BoundaryID,
-			Status:       "succeeded",
-		}
-		msg := tagResponseRunMessage(cbCtx, llm.ModelSwapEventMessage(marker), -1)
-		producedMu.Lock()
-		defer producedMu.Unlock()
-		markerIndex := len(produced)
-		produced = append(produced, msg)
-		updateStateAndAppendLocked(cbCtx)
-		if persisted && markerIndex >= lastAppendedIdx {
-			produced = produced[:markerIndex]
-			if stateful {
-				rt.history = buildSnapshotLocked()
-			}
-			return errors.New("model switch boundary was not durably persisted")
-		}
-		return nil
+		return persistence.persistRuntimeSwitch(cbCtx, change)
 	})
 	defer rt.engine.SetRuntimeSwitchCallback(nil)
-
-	// upsertPendingAssistantLocked writes (or rewrites) the in-progress
-	// assistant row for the current turn. First call inserts, subsequent calls
-	// update the same row; on ErrNotFound it re-inserts. Must hold producedMu.
-	upsertPendingAssistantLocked := func(persistCtx context.Context, assistantMsg llm.Message, finalizeText bool) {
-		firstInsert := pendingAssistantIdx < 0
-		if firstInsert {
-			pendingAssistantIdx = len(produced)
-			produced = append(produced, assistantMsg)
-			pendingAssistantTextPersisted = false
-		} else {
-			produced[pendingAssistantIdx] = assistantMsg
-		}
-		assistantSnapshotDirty = true
-		if stateful {
-			rt.history = buildSnapshotLocked()
-			rt.historyPersisted = false
-		}
-		if !persisted {
-			persistPlatformInjectionLocked()
-			return
-		}
-		if appendOnlyPersisted {
-			if !appendInitialInputLocked(persistCtx) {
-				persistPlatformInjectionLocked()
-				return
-			}
-		} else if !initialPersisted {
-			initialSnapshot := make([]llm.Message, 0, len(baseHistory)+len(inputMessages)+1)
-			if systemPromptInjected {
-				initialSnapshot = append(initialSnapshot, llm.SystemText(rt.systemPrompt))
-			}
-			initialSnapshot = append(initialSnapshot, baseHistory...)
-			initialSnapshot = append(initialSnapshot, inputMessages...)
-			initialPersisted = rt.persistInitialSnapshot(persistCtx, req.SessionID, initialSnapshot)
-			if !initialPersisted {
-				persistPlatformInjectionLocked()
-				return
-			}
-		}
-		dbCtx, cancel := inlinePersistContext(persistCtx, 10*time.Second)
-		defer cancel()
-		sessionMsg := session.NewMessage(req.SessionID, assistantMsg, -1)
-		sessionMsg.TurnIndex = turnIndex
-		if pendingAssistantMsgID != 0 {
-			sessionMsg.ID = pendingAssistantMsgID
-			_, err := runResponseRunPersistence(persistCtx, []llm.Message{assistantMsg}, func(fence session.ResponseRunFence) (int64, error) {
-				return updateResponseRunStreamingMessage(session.WithResponseRunFence(dbCtx, fence), rt.store, req.SessionID, sessionMsg, finalizeText)
-			})
-			if err == nil {
-				assistantSnapshotDirty = false
-				if finalizeText {
-					pendingAssistantTextPersisted = true
-				}
-				persistPlatformInjectionLocked()
-				return
-			}
-			if !errors.Is(err, session.ErrNotFound) {
-				assistantSnapshotNeedsReconcile = true
-				appendOnlyPersisted = false
-				rt.historyPersisted = false
-				log.Printf("[serve] session UpdateMessage failed for %s: %v", req.SessionID, err)
-				persistPlatformInjectionLocked()
-				return
-			}
-			// Row missing (e.g., compaction). Fall through to re-insert.
-			pendingAssistantMsgID = 0
-			pendingAssistantTextPersisted = false
-			sessionMsg = session.NewMessage(req.SessionID, assistantMsg, -1)
-			sessionMsg.TurnIndex = turnIndex
-		}
-		_, err := runResponseRunPersistence(persistCtx, []llm.Message{assistantMsg}, func(fence session.ResponseRunFence) (int64, error) {
-			return addResponseRunMessage(session.WithResponseRunFence(dbCtx, fence), rt.store, req.SessionID, sessionMsg)
-		})
-		if err != nil {
-			assistantSnapshotNeedsReconcile = true
-			appendOnlyPersisted = false
-			rt.historyPersisted = false
-			log.Printf("[serve] session AddMessage failed for %s: %v", req.SessionID, err)
-			persistPlatformInjectionLocked()
-			return
-		}
-		pendingAssistantMsgID = sessionMsg.ID
-		pendingAssistantTextPersisted = finalizeText
-		assistantSnapshotDirty = false
-		// Reserve produced[pendingAssistantIdx] so plain append-path writes
-		// skip it on subsequent callbacks.
-		if pendingAssistantIdx+1 > lastAppendedIdx {
-			lastAppendedIdx = pendingAssistantIdx + 1
-		}
-		persistPlatformInjectionLocked()
-	}
 
 	// Snapshot fires before each EventToolCall so partial content survives a
 	// consumer cancellation mid-turn.
@@ -2388,9 +1917,9 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		if run := responseRunFromContext(cbCtx); run != nil && run.boundary != nil {
 			run.boundary.UpdateAssistant(run.id, assistantMsg)
 		}
-		producedMu.Lock()
-		defer producedMu.Unlock()
-		upsertPendingAssistantLocked(cbCtx, assistantMsg, false)
+		persistence.mu.Lock()
+		defer persistence.mu.Unlock()
+		persistence.upsertAssistantLocked(cbCtx, assistantMsg, false)
 		if rt.assistantSnapshotCB != nil {
 			return rt.assistantSnapshotCB(cbCtx, callbackTurnIndex, assistantMsg)
 		}
@@ -2404,9 +1933,9 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		if run := responseRunFromContext(cbCtx); run != nil && run.boundary != nil {
 			run.boundary.UpdateAssistant(run.id, assistantMsg)
 		}
-		producedMu.Lock()
-		defer producedMu.Unlock()
-		upsertPendingAssistantLocked(cbCtx, assistantMsg, true)
+		persistence.mu.Lock()
+		defer persistence.mu.Unlock()
+		persistence.upsertAssistantLocked(cbCtx, assistantMsg, true)
 		if rt.responseCompletedCB != nil {
 			return rt.responseCompletedCB(cbCtx, callbackTurnIndex, assistantMsg, metrics)
 		}
@@ -2427,32 +1956,32 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 			msgs[i] = tagResponseRunMessage(cbCtx, msgs[i], callbackTurnIndex)
 		}
 		func() {
-			producedMu.Lock()
-			defer producedMu.Unlock()
-			lastAppendResult = appendMessagesResult{}
+			persistence.mu.Lock()
+			defer persistence.mu.Unlock()
+			persistence.lastAppendResult = appendMessagesResult{}
 			appendStart := 0
 			if len(msgs) > 0 && msgs[0].Role == llm.RoleAssistant {
-				upsertPendingAssistantLocked(cbCtx, msgs[0], !pendingAssistantTextPersisted)
+				persistence.upsertAssistantLocked(cbCtx, msgs[0], !persistence.pendingAssistantTextPersisted)
 				appendStart = 1
 			}
 			if appendStart < len(msgs) {
-				produced = append(produced, msgs[appendStart:]...)
-				updateStateAndAppendLocked(cbCtx)
+				persistence.produced = append(persistence.produced, msgs[appendStart:]...)
+				persistence.updateStateAndAppendLocked(cbCtx)
 			}
-			lastDurableID := pendingAssistantMsgID
-			durableComplete := persisted && initialPersisted && !assistantSnapshotDirty && !assistantSnapshotNeedsReconcile
+			lastDurableID := persistence.pendingAssistantMsgID
+			durableComplete := persisted && persistence.initialPersisted && !persistence.assistantSnapshotDirty && !persistence.assistantSnapshotNeedsReconcile
 			if appendStart < len(msgs) {
-				lastDurableID = lastAppendResult.LastRowID
-				durableComplete = durableComplete && lastAppendResult.Complete
+				lastDurableID = persistence.lastAppendResult.LastRowID
+				durableComplete = durableComplete && persistence.lastAppendResult.Complete
 			}
 			if run := responseRunFromContext(cbCtx); run != nil {
 				run.commitCompletedBoundary(callbackTurnIndex, msgs, lastDurableID, durableComplete)
 			}
-			pendingAssistantIdx = -1
-			pendingAssistantMsgID = 0
-			pendingAssistantTextPersisted = false
+			persistence.pendingAssistantIdx = -1
+			persistence.pendingAssistantMsgID = 0
+			persistence.pendingAssistantTextPersisted = false
 			if stateful {
-				rt.refreshSideQuestionSnapshot(buildSnapshotLocked())
+				rt.refreshSideQuestionSnapshot(persistence.buildSnapshotLocked())
 			}
 		}()
 
@@ -2481,31 +2010,31 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 			}
 			return
 		}
-		producedMu.Lock()
-		if len(produced) == 0 && result.Text.Len() > 0 {
-			produced = append(produced, tagResponseRunMessage(runCtx, llm.AssistantText(result.Text.String()), 0))
+		persistence.mu.Lock()
+		if len(persistence.produced) == 0 && result.Text.Len() > 0 {
+			persistence.produced = append(persistence.produced, tagResponseRunMessage(runCtx, llm.AssistantText(result.Text.String()), 0))
 		}
-		hasProduced := len(produced) > 0
-		producedMu.Unlock()
+		hasProduced := len(persistence.produced) > 0
+		persistence.mu.Unlock()
 		if !hasProduced {
-			if replaceHistory && !initialPersisted {
+			if replaceHistory && !persistence.initialPersisted {
 				restoreReplaceHistory()
 			}
 			return
 		}
 		deferCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		if appendOnlyPersisted {
-			producedMu.Lock()
-			updateStateAndAppendLocked(deferCtx)
-			caughtUp := appendOnlyCaughtUpLocked()
-			producedMu.Unlock()
+		if persistence.appendOnlyPersisted {
+			persistence.mu.Lock()
+			persistence.updateStateAndAppendLocked(deferCtx)
+			caughtUp := persistence.appendOnlyCaughtUpLocked()
+			persistence.mu.Unlock()
 			if caughtUp {
 				rt.historyPersisted = true
 				return
 			}
 		}
-		persistProducedSnapshot(deferCtx)
+		persistence.persistProducedSnapshot(deferCtx)
 	}()
 
 	stream, err := rt.engine.Stream(runCtx, req)
@@ -2588,71 +2117,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	// tool boundary, queued steering were never submitted to the provider and
 	// must remain cancellable/pending for UI recovery or explicit follow-up.
 
-	// Accumulate cumulative session-level usage, including helper calls used for
-	// any auto-compaction that happened during this run.
-	compactionUsageMu.Lock()
-	rt.cumulativeUsage.Add(compactionUsage)
-	compactionUsageMu.Unlock()
-	rt.cumulativeUsage.Add(result.Usage)
-	result.SessionUsage = rt.cumulativeUsage
-
-	var newHistory []llm.Message
-	var needFinalSnapshot bool
-	var needCompactedSnapshot bool
-	producedMu.Lock()
-	newHistory = buildSnapshotLocked()
-	synthesizedAssistant := len(produced) == 0 && result.Text.Len() > 0
-	if synthesizedAssistant {
-		assistantMsg := tagResponseRunMessage(runCtx, llm.AssistantText(result.Text.String()), 0)
-		newHistory = append(newHistory, assistantMsg)
-		if appendOnlyPersisted {
-			produced = append(produced, assistantMsg)
-		}
-	}
-	if stateful {
-		rt.history = newHistory
-		rt.historyPersisted = false
-		rt.refreshSideQuestionSnapshot(newHistory)
-		rt.updateSideQuestionConfig(req)
-	}
-	needFinalSnapshot = false
-	if persisted {
-		if appendOnlyPersisted {
-			if (assistantSnapshotDirty || assistantSnapshotNeedsReconcile) && pendingAssistantIdx >= 0 && pendingAssistantIdx < len(produced) {
-				upsertPendingAssistantLocked(ctx, produced[pendingAssistantIdx], true)
-			}
-			updateStateAndAppendLocked(ctx)
-			needFinalSnapshot = !appendOnlyCaughtUpLocked()
-		} else {
-			needFinalSnapshot = !initialPersisted || lastAppendedIdx < len(produced) || assistantSnapshotDirty || assistantSnapshotNeedsReconcile || synthesizedAssistant
-		}
-		needCompactedSnapshot = compactedActiveHistory
-	}
-	persistPlatformInjectionLocked()
-	producedMu.Unlock()
-	if needFinalSnapshot {
-		if needCompactedSnapshot {
-			rt.historyPersisted = rt.persistCompactedSnapshot(ctx, req.SessionID, newHistory)
-		} else {
-			rt.historyPersisted = rt.persistSnapshot(ctx, req.SessionID, newHistory)
-		}
-	} else if persisted {
-		rt.historyPersisted = true
-	}
-
-	if injectedPlatform != "" && stateful {
-		rt.persistPlatformOrigin(ctx, req.SessionID, injectedPlatform)
-	}
-	if persisted && stateful {
-		rt.persistProviderState(ctx, req.SessionID)
-	}
-
-	cachedInputTokens := result.SessionUsage.CachedInputTokens
-	if rt.sessionMeta != nil && rt.sessionMeta.ID == req.SessionID && rt.sessionMeta.CachedInputTokens > cachedInputTokens {
-		cachedInputTokens = rt.sessionMeta.CachedInputTokens
-	}
-	result.ContextUsage = contextUsageSnapshot(rt.engine, newHistory, cachedInputTokens)
-	return result, nil
+	return persistence.finalizeSuccess(ctx, runCtx, req, result), nil
 }
 
 func (rt *serveRuntime) persistPlatformOrigin(ctx context.Context, sessionID, platform string) {
