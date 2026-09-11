@@ -1,12 +1,12 @@
 {
   "counting_rules": "1 + if + for + range + non-default switch/select cases + \u0026\u0026 + ||; nested function literals attributed to enclosing declaration",
   "summary": {
-    "files": 906,
-    "functions": 11088,
+    "files": 917,
+    "functions": 11126,
     "median_complexity": 3,
-    "above_20": 458,
+    "above_20": 473,
     "above_50": 55,
-    "above_100": 9
+    "above_100": 0
   },
   "exceptions": [
     {
@@ -35,7 +35,7 @@
     },
     {
       "key": ".|cmd/ask.go|cmd||runAsk",
-      "complexity": 124,
+      "complexity": 100,
       "owner": "cmd/ask",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M4",
@@ -96,6 +96,14 @@
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M4",
       "origin": "existing"
+    },
+    {
+      "key": ".|cmd/ask_resume.go|cmd||prepareAskResume",
+      "complexity": 25,
+      "owner": "cmd/ask",
+      "rationale": "cmd/ask extraction owns one ordered domain responsibility; further reduction is tracked by M4",
+      "removal_milestone": "M4",
+      "origin": "extracted"
     },
     {
       "key": ".|cmd/ask_stream_update.go|cmd|askStreamModel|handleStreamEventMessage",
@@ -371,7 +379,7 @@
     },
     {
       "key": ".|cmd/serve.go|cmd||runServeLegacy",
-      "complexity": 147,
+      "complexity": 100,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -667,7 +675,7 @@
     },
     {
       "key": ".|cmd/serve_handlers_responses.go|cmd|*serveServer|handleResolvedResponses",
-      "complexity": 104,
+      "complexity": 96,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -1019,7 +1027,7 @@
     },
     {
       "key": ".|cmd/serve_runtime.go|cmd|*serveRuntime|runOnce",
-      "complexity": 123,
+      "complexity": 93,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M3",
@@ -1136,6 +1144,14 @@
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
       "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_startup.go|cmd||resolveServeStartup",
+      "complexity": 27,
+      "owner": "cmd/serve",
+      "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
     },
     {
       "key": ".|cmd/serve_steering_rush.go|cmd|*serveServer|handleSteeringRush",
@@ -1739,7 +1755,7 @@
     },
     {
       "key": ".|internal/llm/engine.go|llm|*Engine|runLoop",
-      "complexity": 441,
+      "complexity": 40,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M2",
@@ -1752,6 +1768,70 @@
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M2",
       "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/engine_run_turn.go|llm|*Engine|runProviderTurn",
+      "complexity": 100,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
+      "removal_milestone": "M2",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/engine_turn_completion.go|llm|*Engine|completeAsyncTurn",
+      "complexity": 47,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
+      "removal_milestone": "M2",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/engine_turn_completion.go|llm|*Engine|completeSyncTurn",
+      "complexity": 30,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
+      "removal_milestone": "M2",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/engine_turn_completion.go|llm|*Engine|completeTextTurn",
+      "complexity": 49,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
+      "removal_milestone": "M2",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/engine_turn_failure.go|llm|*Engine|handleEventStreamFailure",
+      "complexity": 29,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
+      "removal_milestone": "M2",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/engine_turn_failure.go|llm|*Engine|handleReceiveStreamFailure",
+      "complexity": 29,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
+      "removal_milestone": "M2",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/engine_turn_open.go|llm|*Engine|openProviderTurnStream",
+      "complexity": 48,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
+      "removal_milestone": "M2",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/llm/engine_turn_recovery.go|llm|*Engine|recoverCommittedTurn",
+      "complexity": 47,
+      "owner": "llm",
+      "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
+      "removal_milestone": "M2",
+      "origin": "extracted"
     },
     {
       "key": ".|internal/llm/factory.go|llm||NewProviderByName",
@@ -2235,7 +2315,7 @@
     },
     {
       "key": ".|internal/serve/telegram.go|serve|*telegramSessionMgr|streamReplyContinuation",
-      "complexity": 157,
+      "complexity": 100,
       "owner": "serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M6",
@@ -2515,11 +2595,19 @@
     },
     {
       "key": "internal/terminal/renderer|internal/terminal/renderer/decoder.go|uv|*EventDecoder|parseCsi",
-      "complexity": 123,
+      "complexity": 96,
       "owner": "internal/terminal/renderer",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
       "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/decoder.go|uv|*EventDecoder|parseCsiLegacyKey",
+      "complexity": 28,
+      "owner": "internal/terminal/renderer",
+      "rationale": "internal/terminal/renderer extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
     },
     {
       "key": "internal/terminal/renderer|internal/terminal/renderer/decoder.go|uv|*EventDecoder|parseDcs",
@@ -2675,11 +2763,19 @@
     },
     {
       "key": "internal/terminal/runtime|internal/terminal/runtime/cursed_renderer.go|tea|*cursedRenderer|flush",
-      "complexity": 111,
+      "complexity": 80,
       "owner": "internal/terminal/runtime",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
       "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/runtime|internal/terminal/runtime/cursed_renderer.go|tea|*cursedRenderer|updateTerminalModesLocked",
+      "complexity": 32,
+      "owner": "internal/terminal/runtime",
+      "rationale": "internal/terminal/runtime extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
     },
     {
       "key": "internal/terminal/runtime|internal/terminal/runtime/cursed_renderer_scroll.go|tea||lineScrollIndependent",
@@ -3003,7 +3099,7 @@
     },
     {
       "key": ".|internal/tui/chat/chat.go|chat|*Model|Update",
-      "complexity": 175,
+      "complexity": 75,
       "owner": "tui/chat",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M1",
@@ -3320,6 +3416,30 @@
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M1",
       "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/update_dispatch.go|chat|*Model|dispatchConversationUpdate",
+      "complexity": 34,
+      "owner": "tui/chat",
+      "rationale": "tui/chat extraction owns one ordered domain responsibility; further reduction is tracked by M1",
+      "removal_milestone": "M1",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/tui/chat/update_dispatch.go|chat|*Model|dispatchFeatureUpdate",
+      "complexity": 28,
+      "owner": "tui/chat",
+      "rationale": "tui/chat extraction owns one ordered domain responsibility; further reduction is tracked by M1",
+      "removal_milestone": "M1",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/tui/chat/update_dispatch.go|chat|*Model|dispatchTerminalUpdate",
+      "complexity": 47,
+      "owner": "tui/chat",
+      "rationale": "tui/chat extraction owns one ordered domain responsibility; further reduction is tracked by M1",
+      "removal_milestone": "M1",
+      "origin": "extracted"
     },
     {
       "key": ".|internal/tui/chat/update_input.go|chat|*Model|handleMouseMsg",
