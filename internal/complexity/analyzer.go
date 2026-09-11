@@ -230,7 +230,7 @@ func excludedDir(rel, name string) bool {
 	if strings.HasPrefix(name, ".") {
 		return true
 	}
-	return strings.HasPrefix(rel, "internal/serveui/static/dist")
+	return rel == "internal/serveui/static/dist" || strings.HasPrefix(rel, "internal/serveui/static/dist/")
 }
 
 func generated(src []byte) bool {

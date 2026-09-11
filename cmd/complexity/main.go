@@ -250,19 +250,9 @@ func check(path string, report complexity.Report) error {
 	}
 	if len(violations) != 0 {
 		sort.Strings(violations)
-		return fmt.Errorf("complexity ratchet failed:\n  %s", join(violations, "\n  "))
+		return fmt.Errorf("complexity ratchet failed:\n  %s", strings.Join(violations, "\n  "))
 	}
 	return nil
 }
 
-func join(values []string, sep string) string {
-	out := ""
-	for i, value := range values {
-		if i > 0 {
-			out += sep
-		}
-		out += value
-	}
-	return out
-}
 func fatal(err error) { fmt.Fprintln(os.Stderr, "complexity:", err); os.Exit(1) }
