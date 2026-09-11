@@ -23,8 +23,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/filetrack"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mentions"
-	"github.com/samsaffron/term-llm/internal/passkeyauth"
-	projectpkg "github.com/samsaffron/term-llm/internal/project"
 	"github.com/samsaffron/term-llm/internal/restart"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/serve"
@@ -282,81 +280,32 @@ func withServeSessionLogging(store session.Store) session.Store {
 	})
 }
 
-func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string) error {
-	startupDir, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("resolve serve startup directory: %w", err)
+func resolveServeAgentMetadata(cfg *config.Config, agent *agents.Agent, hasWeb bool) (string, []string, agents.PlatformMessagesConfig, error) {
+	if agent != nil {
+		return agent.Name, nil, agent.PlatformMessages, nil
 	}
-	if cmd.Flags().Changed("projects") && cmd.Flags().Changed("no-projects") {
-		return fmt.Errorf("--projects and --no-projects cannot be used together")
-	}
-	if servePort <= 0 || servePort > 65535 {
-		return fmt.Errorf("invalid --port %d (must be 1-65535)", servePort)
-	}
-	if serveSessionTTL <= 0 {
-		return fmt.Errorf("invalid --session-ttl %s (must be > 0)", serveSessionTTL)
-	}
-	if serveSessionMax <= 0 {
-		return fmt.Errorf("invalid --session-max %d (must be > 0)", serveSessionMax)
-	}
-	if serveTelegramCarryoverChars < 0 {
-		return fmt.Errorf("invalid --telegram-carryover-chars %d (must be >= 0)", serveTelegramCarryoverChars)
-	}
-	if serveJobsWorkers <= 0 {
-		return fmt.Errorf("invalid --jobs-workers %d (must be > 0)", serveJobsWorkers)
-	}
-	if cmd.Flags().Changed("response-timeout") && serveResponseTimeout <= 0 {
-		return fmt.Errorf("invalid --response-timeout %s (must be > 0)", serveResponseTimeout)
-	}
-	sidebarSessions, err := parseSidebarSessionCategories(serveSidebarSessions, true)
-	if err != nil {
-		return err
-	}
-
-	authMode, err := resolveServeAuthMode(cmd.Flags().Changed("auth"), serveAuthMode, cmd.Flags().Changed("no-auth") || cmd.Flags().Changed("allow-no-auth"), serveAllowNoAuth)
-	if err != nil {
-		return err
-	}
-	var passkeyEndpoint passkeyauth.Endpoint
-	if authMode == "passkey" {
-		passkeyEndpoint, err = resolveWebPasskeyEndpoint(cmd)
+	if hasWeb {
+		names, err := ListAgentNames(cfg)
 		if err != nil {
-			return err
+			return "", nil, agents.PlatformMessagesConfig{}, fmt.Errorf("list web agents: %w", err)
 		}
-		serveBasePath, servePublicURL = passkeyEndpoint.BasePath, passkeyEndpoint.URL.String()
+		return "", names, agents.PlatformMessagesConfig{}, nil
 	}
-	requireAuth := authMode != "none"
-	if !requireAuth && !isLoopbackHost(serveHost) {
-		return fmt.Errorf("--auth none is only allowed on loopback hosts (got %q)", serveHost)
-	}
+	return "", nil, agents.PlatformMessagesConfig{}, nil
+}
 
-	token, tokenSource, err := resolveServeToken(serveToken, os.Getenv("TERM_LLM_SERVE_TOKEN"), authMode == "bearer", restoreOrGenerateServeToken)
+func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string) error {
+	startup, err := resolveServeStartup(cmd)
 	if err != nil {
 		return err
 	}
-
-	serveHubConnect = strings.ToLower(strings.TrimSpace(serveHubConnect))
-	if serveHubConnect == "" {
-		serveHubConnect = "direct"
-	}
-	if serveHubConnect != "direct" && serveHubConnect != "reverse" {
-		return fmt.Errorf("invalid --hub-connect %q (use direct or reverse)", serveHubConnect)
-	}
-	hubRegistrationToken := ""
-	if serveHubRegister {
-		hubRegistrationToken = resolveServeHubRegistrationToken(serveHubRegistrationToken)
-	}
-
-	// Hub-joined nodes: hand the hub context to in-process tools and jobs-v2
-	// runs so hub_delegate/hub_check_delegation work without extra setup. The
-	// node authenticates to the hub with its own serve token. Explicit
-	// TERM_LLM_HUB_* env (captured and scrubbed at startup) wins — only gaps
-	// are filled — and the token stays in process memory, never in the
-	// process environment, browser-facing config, or injected HTML, so tool
-	// subprocesses (shell/custom/widget/MCP) cannot inherit it.
-	if hubURL, hubNodeID := strings.TrimSpace(serveHubURL), strings.TrimSpace(serveHubNodeID); hubURL != "" && hubNodeID != "" && token != "" {
-		tools.ConfigureHubDelegation(hubURL, hubNodeID, token)
-	}
+	startupDir := startup.startupDir
+	sidebarSessions := startup.sidebarSessions
+	authMode := startup.authMode
+	passkeyEndpoint := startup.passkeyEndpoint
+	requireAuth := startup.requireAuth
+	token, tokenSource := startup.token, startup.tokenSource
+	hubRegistrationToken := startup.hubRegistrationToken
 
 	ctx, stop := signal.NotifyContextWithParent(parentCtx)
 	defer stop()
@@ -502,66 +451,18 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	skillsSetup := SetupSkills(effectiveSkillsConfig, "", "", cmd.ErrOrStderr())
 	settings.SystemPrompt = InjectSkillsMetadata(baseSystemPrompt, skillsSetup)
 
-	agentName := ""
-	var availableAgentNames []string
-	var agentPlatformMsgs agents.PlatformMessagesConfig
-	if agent != nil {
-		agentName = agent.Name
-		agentPlatformMsgs = agent.PlatformMessages
-	} else if hasWeb {
-		availableAgentNames, err = ListAgentNames(cfg)
-		if err != nil {
-			return fmt.Errorf("list web agents: %w", err)
-		}
+	agentName, availableAgentNames, agentPlatformMsgs, err := resolveServeAgentMetadata(cfg, agent, hasWeb)
+	if err != nil {
+		return err
 	}
 
 	store, storeCleanup := InitSessionStore(cfg, cmd.ErrOrStderr())
 	defer storeCleanup()
 	store = withServeSessionLogging(store)
 
-	projectsRequested, projectsStrict := resolveServeProjectsRequested(
-		cmd.Flags().Changed("projects"),
-		serveProjects,
-		cmd.Flags().Changed("no-projects") && serveNoProjects,
-		cfg.Serve.Projects.Enabled,
-		hasWeb,
-	)
-	projectsEnabled, bootstrapProjectID, err := initializeServeProjects(ctx, store, startupDir, projectsRequested, projectsStrict, cmd.ErrOrStderr())
+	projectsEnabled, bootstrapProjectID, err := initializeServeProjectRuntime(ctx, cmd, cfg, store, startupDir, hasWeb, cmd.ErrOrStderr())
 	if err != nil {
 		return err
-	}
-	if hasWeb {
-		switch {
-		case projectsEnabled:
-			projectCount := 0
-			if projectStore, ok := session.AsProjectStore(store); ok {
-				if projects, listErr := projectStore.ListProjects(ctx, session.ProjectListOptions{IncludeArchived: true}); listErr == nil {
-					projectCount = len(projects)
-				}
-			}
-			bootstrapCount := 0
-			if bootstrapProjectID != "" {
-				bootstrapCount = 1
-			}
-			log.Printf("projects enabled (projects=%d bootstrap=%d bootstrap_id=%s)", projectCount, bootstrapCount, bootstrapProjectID)
-		case cmd.Flags().Changed("no-projects") || !cfg.Serve.Projects.Enabled:
-			log.Printf("projects explicitly disabled")
-		default:
-			log.Printf("projects auto-disabled")
-		}
-	}
-
-	if projectsEnabled {
-		_ = restart.Default.Go(ctx, func(ctx context.Context) {
-			reconcileCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-			defer cancel()
-			claimed, reconcileErr := projectpkg.ReconcileAll(reconcileCtx, store)
-			if reconcileErr != nil {
-				log.Printf("project history reconciliation failed: %v", reconcileErr)
-			} else if claimed > 0 {
-				log.Printf("project history reconciled (claimed=%d)", claimed)
-			}
-		})
 	}
 
 	forceExternalSearch := resolveForceExternalSearch(cfg, serveNativeSearch, serveNoNativeSearch)
@@ -570,17 +471,9 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		return fmt.Errorf("initialize media publisher: %w", err)
 	}
 
-	// Parse --tool-map entries ("ClientName:ServerName")
-	var toolMap map[string]string
-	for _, entry := range serveToolMap {
-		parts := strings.SplitN(entry, ":", 2)
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return fmt.Errorf("invalid --tool-map %q (expected ClientName:ServerName)", entry)
-		}
-		if toolMap == nil {
-			toolMap = make(map[string]string)
-		}
-		toolMap[parts[0]] = parts[1]
+	toolMap, err := parseServeToolMap(serveToolMap)
+	if err != nil {
+		return err
 	}
 
 	modelName := activeModel(cfg)
@@ -983,25 +876,8 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		return reloadErr
 	}
 	defer stopReload()
-	<-ctx.Done()
+	shutdownServe(ctx, s, &wg, registeredHubURL, registeredHubNodeID, hubRegistrationToken)
 
-	if registeredHubURL != "" && registeredHubNodeID != "" && hubRegistrationToken != "" {
-		deregisterCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		if err := unregisterServeHubNode(deregisterCtx, nil, registeredHubURL, hubRegistrationToken, registeredHubNodeID); err != nil {
-			log.Printf("hub registration: deregister %s from %s: %v", registeredHubNodeID, registeredHubURL, err)
-		} else {
-			log.Printf("hub registration: deregistered %s from %s", registeredHubNodeID, registeredHubURL)
-		}
-		cancel()
-	}
-
-	if s != nil {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = s.Stop(shutdownCtx)
-	}
-
-	wg.Wait()
 	return nil
 }
 

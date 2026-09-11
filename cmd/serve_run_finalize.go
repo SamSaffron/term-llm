@@ -2,9 +2,47 @@ package cmd
 
 import (
 	"context"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 )
+
+func (p *serveRunPersistence) reconcileFailure(ctx, runCtx context.Context, runErr error, resultText string, restoreReplaceHistory func()) {
+	if runErr == nil {
+		return
+	}
+	if !p.persisted {
+		if p.replaceHistory {
+			restoreReplaceHistory()
+		}
+		return
+	}
+	p.mu.Lock()
+	if len(p.produced) == 0 && resultText != "" {
+		p.produced = append(p.produced, tagResponseRunMessage(runCtx, llm.AssistantText(resultText), 0))
+	}
+	hasProduced := len(p.produced) > 0
+	p.mu.Unlock()
+	if !hasProduced {
+		if p.replaceHistory && !p.initialPersisted {
+			restoreReplaceHistory()
+		}
+		return
+	}
+	deferCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if p.appendOnlyPersisted {
+		p.mu.Lock()
+		p.updateStateAndAppendLocked(deferCtx)
+		caughtUp := p.appendOnlyCaughtUpLocked()
+		p.mu.Unlock()
+		if caughtUp {
+			p.rt.historyPersisted = true
+			return
+		}
+	}
+	p.persistProducedSnapshot(deferCtx)
+}
 
 // finalizeSuccess reconciles the successful transcript and accounting after the
 // engine stream has terminated. It cannot alter the first run error because it

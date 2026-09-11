@@ -1912,85 +1912,15 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 
 	// Snapshot fires before each EventToolCall so partial content survives a
 	// consumer cancellation mid-turn.
-	rt.engine.SetAssistantSnapshotCallback(func(cbCtx context.Context, callbackTurnIndex int, assistantMsg llm.Message) error {
-		assistantMsg = tagResponseRunMessage(cbCtx, assistantMsg, callbackTurnIndex)
-		if run := responseRunFromContext(cbCtx); run != nil && run.boundary != nil {
-			run.boundary.UpdateAssistant(run.id, assistantMsg)
-		}
-		persistence.mu.Lock()
-		defer persistence.mu.Unlock()
-		persistence.upsertAssistantLocked(cbCtx, assistantMsg, false)
-		if rt.assistantSnapshotCB != nil {
-			return rt.assistantSnapshotCB(cbCtx, callbackTurnIndex, assistantMsg)
-		}
-		return nil
-	})
+	rt.engine.SetAssistantSnapshotCallback(persistence.assistantSnapshot)
 	defer rt.engine.SetAssistantSnapshotCallback(nil)
 
-	rt.engine.SetResponseCompletedCallback(func(cbCtx context.Context, callbackTurnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
-		rt.refreshResponseDeadline()
-		assistantMsg = tagResponseRunMessage(cbCtx, assistantMsg, callbackTurnIndex)
-		if run := responseRunFromContext(cbCtx); run != nil && run.boundary != nil {
-			run.boundary.UpdateAssistant(run.id, assistantMsg)
-		}
-		persistence.mu.Lock()
-		defer persistence.mu.Unlock()
-		persistence.upsertAssistantLocked(cbCtx, assistantMsg, true)
-		if rt.responseCompletedCB != nil {
-			return rt.responseCompletedCB(cbCtx, callbackTurnIndex, assistantMsg, metrics)
-		}
-		return nil
-	})
+	rt.engine.SetResponseCompletedCallback(persistence.responseCompleted)
 	defer rt.engine.SetResponseCompletedCallback(nil)
 
-	// Turn callback: upsert the assistant row if present as first element, then
-	// plain-append the rest (tool results or steering). Reset pending at
-	// end of turn.
-	rt.engine.SetTurnCompletedCallback(func(cbCtx context.Context, callbackTurnIndex int, msgs []llm.Message, metrics llm.TurnMetrics) error {
-		// Text-only and inline-tool provider responses bypass ResponseCompletedCallback
-		// and deliver their assistant message here instead.
-		if len(msgs) > 0 && msgs[0].Role == llm.RoleAssistant {
-			rt.refreshResponseDeadline()
-		}
-		for i := range msgs {
-			msgs[i] = tagResponseRunMessage(cbCtx, msgs[i], callbackTurnIndex)
-		}
-		func() {
-			persistence.mu.Lock()
-			defer persistence.mu.Unlock()
-			persistence.lastAppendResult = appendMessagesResult{}
-			appendStart := 0
-			if len(msgs) > 0 && msgs[0].Role == llm.RoleAssistant {
-				persistence.upsertAssistantLocked(cbCtx, msgs[0], !persistence.pendingAssistantTextPersisted)
-				appendStart = 1
-			}
-			if appendStart < len(msgs) {
-				persistence.produced = append(persistence.produced, msgs[appendStart:]...)
-				persistence.updateStateAndAppendLocked(cbCtx)
-			}
-			lastDurableID := persistence.pendingAssistantMsgID
-			durableComplete := persisted && persistence.initialPersisted && !persistence.assistantSnapshotDirty && !persistence.assistantSnapshotNeedsReconcile
-			if appendStart < len(msgs) {
-				lastDurableID = persistence.lastAppendResult.LastRowID
-				durableComplete = durableComplete && persistence.lastAppendResult.Complete
-			}
-			if run := responseRunFromContext(cbCtx); run != nil {
-				run.commitCompletedBoundary(callbackTurnIndex, msgs, lastDurableID, durableComplete)
-			}
-			persistence.pendingAssistantIdx = -1
-			persistence.pendingAssistantMsgID = 0
-			persistence.pendingAssistantTextPersisted = false
-			if stateful {
-				rt.refreshSideQuestionSnapshot(persistence.buildSnapshotLocked())
-			}
-		}()
-
-		rt.persistTurnAccounting(cbCtx, persisted, req.SessionID, msgs, metrics)
-		if rt.turnCompletedCB != nil {
-			return rt.turnCompletedCB(cbCtx, callbackTurnIndex, msgs, metrics)
-		}
-		return nil
-	})
+	// Turn callback: upsert the assistant row if present, then append tool
+	// results or steering and reset the pending assistant at the turn boundary.
+	rt.engine.SetTurnCompletedCallback(persistence.turnCompleted)
 	defer rt.engine.SetTurnCompletedCallback(nil)
 
 	// Safety net: on error exits, persist a full snapshot so the final DB
@@ -2001,40 +1931,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	result := serveRunResult{}
 	var runErr error
 	defer func() {
-		if runErr == nil {
-			return
-		}
-		if !persisted {
-			if replaceHistory {
-				restoreReplaceHistory()
-			}
-			return
-		}
-		persistence.mu.Lock()
-		if len(persistence.produced) == 0 && result.Text.Len() > 0 {
-			persistence.produced = append(persistence.produced, tagResponseRunMessage(runCtx, llm.AssistantText(result.Text.String()), 0))
-		}
-		hasProduced := len(persistence.produced) > 0
-		persistence.mu.Unlock()
-		if !hasProduced {
-			if replaceHistory && !persistence.initialPersisted {
-				restoreReplaceHistory()
-			}
-			return
-		}
-		deferCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		defer cancel()
-		if persistence.appendOnlyPersisted {
-			persistence.mu.Lock()
-			persistence.updateStateAndAppendLocked(deferCtx)
-			caughtUp := persistence.appendOnlyCaughtUpLocked()
-			persistence.mu.Unlock()
-			if caughtUp {
-				rt.historyPersisted = true
-				return
-			}
-		}
-		persistence.persistProducedSnapshot(deferCtx)
+		persistence.reconcileFailure(ctx, runCtx, runErr, result.Text.String(), restoreReplaceHistory)
 	}()
 
 	stream, err := rt.engine.Stream(runCtx, req)

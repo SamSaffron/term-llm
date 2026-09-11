@@ -423,6 +423,35 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *serveServer) handleResponseRuntimeError(w http.ResponseWriter, r *http.Request, ctx context.Context, req responsesCreateRequest, sessionID, previousResponseID string, err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errServeSessionBusy) {
+		// No UI send has been admitted yet. Return a definitive rejection so
+		// the browser restores the composer instead of retrying a headerless
+		// synthetic failure stream as an unknown-outcome send.
+		if req.Stream && !isFirstPartyUIResponseRequest(r) {
+			model := strings.TrimSpace(req.Model)
+			if model == "" {
+				if existing, ok := s.sessionMgr.Get(sessionID); ok && existing != nil {
+					model = existing.defaultModel
+				}
+			}
+			s.streamFailedResponseRun(ctx, w, sessionID, previousResponseID, model, "conflict_error", err.Error())
+			return true
+		}
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
+		return true
+	}
+	if errors.Is(err, errServeSessionPersistence) {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
+		return true
+	}
+	writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+	return true
+}
+
 func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Request, ctx context.Context, rr resolvedResponsesRequest) {
 	req := rr.req
 	inputMessages := rr.inputMessages
@@ -498,35 +527,6 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 	defaultProvider, requestedRuntime := runtimePlan.defaultProvider, runtimePlan.requested
 	swapPlan, reqProvider := runtimePlan.swap, runtimePlan.provider
 
-	handleRuntimeErr := func(err error) bool {
-		if err == nil {
-			return false
-		}
-		if errors.Is(err, errServeSessionBusy) {
-			// No UI send has been admitted yet. Return a definitive rejection so
-			// the browser restores the composer instead of retrying a headerless
-			// synthetic failure stream as an unknown-outcome send.
-			if req.Stream && !isFirstPartyUIResponseRequest(r) {
-				model := strings.TrimSpace(req.Model)
-				if model == "" {
-					if existing, ok := s.sessionMgr.Get(sessionID); ok && existing != nil {
-						model = existing.defaultModel
-					}
-				}
-				s.streamFailedResponseRun(ctx, w, sessionID, previousResponseID, model, "conflict_error", err.Error())
-				return true
-			}
-			writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
-			return true
-		}
-		if errors.Is(err, errServeSessionPersistence) {
-			writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
-			return true
-		}
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
-		return true
-	}
-
 	var runtime *serveRuntime
 	var stateful bool
 	var modelSwapExec *responseModelSwapExecution
@@ -549,7 +549,7 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 				writeWorkspaceError(w, prepareErr)
 				return
 			}
-			if handleRuntimeErr(prepareErr) {
+			if s.handleResponseRuntimeError(w, r, ctx, req, sessionID, previousResponseID, prepareErr) {
 				return
 			}
 			runtime, stateful = prepared, true
@@ -557,7 +557,7 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 	}
 	if swapPlan.enabled {
 		previousRuntime, previousStateful, getErr := s.runtimeForProviderModelRequest(ctx, sessionID, swapPlan.previousProvider, swapPlan.previousModel)
-		if handleRuntimeErr(getErr) {
+		if s.handleResponseRuntimeError(w, r, ctx, req, sessionID, previousResponseID, getErr) {
 			return
 		}
 		// Durable message-backed response IDs were already validated against the
@@ -588,7 +588,7 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		}
 		var err error
 		modelSwapExec, err = s.beginResponseModelSwap(ctx, sessionID, swapPlan, inputMessages)
-		if handleRuntimeErr(err) {
+		if s.handleResponseRuntimeError(w, r, ctx, req, sessionID, previousResponseID, err) {
 			return
 		}
 		runtime = modelSwapExec.candidate
@@ -608,7 +608,7 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		} else {
 			runtime, stateful, err = s.runtimeForFreshAgentProviderRequest(ctx, sessionID, freshProvider, req.Agent)
 		}
-		if handleRuntimeErr(err) {
+		if s.handleResponseRuntimeError(w, r, ctx, req, sessionID, previousResponseID, err) {
 			return
 		}
 		if freshConversation {
@@ -671,7 +671,7 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 			s.unregisterResponseIDs(runtime)
 			runtime.Close()
 		}
-		handleRuntimeErr(reasoningModeErr)
+		s.handleResponseRuntimeError(w, r, ctx, req, sessionID, previousResponseID, reasoningModeErr)
 		return
 	}
 	if req.Reasoning != nil {

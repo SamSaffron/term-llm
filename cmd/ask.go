@@ -18,7 +18,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -322,109 +321,17 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 		storeCleanup()
 	}()
-	var sess *session.Session
-	var inputTicket *sessionInputTicket
-	var selectedInputs *sessionInputSelection
-
-	// Handle --resume flag - apply session settings before tool/MCP setup
-	resuming := cmd.Flags().Changed("resume")
-	if resuming {
-		if store == nil {
-			return fmt.Errorf("session storage is disabled; cannot resume")
-		}
-		resumeID := strings.TrimSpace(askResume)
-		if resumeID == "" {
-			sess, _ = store.GetCurrent(ctx)
-			if sess == nil {
-				summaries, _ := store.List(ctx, session.ListOptions{Limit: 1})
-				if len(summaries) > 0 {
-					sess, _ = store.Get(ctx, summaries[0].ID)
-				}
-			}
-		} else {
-			sess, _ = store.GetByPrefix(ctx, resumeID)
-		}
-		if sess == nil {
-			return fmt.Errorf("no session to resume")
-		}
-
-		// Update current session marker so --resume without ID targets this session
-		_ = store.SetCurrent(ctx, sess.ID)
-		// Mark session as active since we're resuming it for a new turn
-		_ = store.UpdateStatus(ctx, sess.ID, session.StatusActive)
-
-		if _, supported := session.AsSessionInputRefresher(store); !supported {
-			settings.SystemPrompt, settings.Tools, err = resolveSessionPromptTools(cfg, agent, CLIFlags{Tools: askTools, ToolsSet: cmd.Flags().Changed("tools"), SystemMessage: askSystemMessage, SystemMessageSet: cmd.Flags().Changed("system"), Files: askFiles, Platform: "console"}, cfg.Ask.Instructions, settings.BaseDir, settings.Provider, settings.Model)
-			if err != nil {
-				return err
-			}
-		}
-		// Apply session settings for flags not explicitly set on CLI
-		// (unconditionally - session may have had search/tools/MCP disabled)
-		if !cmd.Flags().Changed("search") {
-			settings.Search = sess.Search
-		}
-		if !cmd.Flags().Changed("tools") {
-			settings.Tools = sess.Tools
-		}
-		if !cmd.Flags().Changed("mcp") {
-			settings.MCP = sess.MCP
-		}
-		if agent == nil && strings.TrimSpace(sess.Agent) != "" {
-			if resumedAgent, loadAgentErr := LoadAgent(sess.Agent, cfg); loadAgentErr == nil && resumedAgent != nil {
-				settings.PlanGuidance = resumedAgent.Name == "developer" && resumedAgent.Source == agents.SourceBuiltin
-			}
-		}
-		if err := RestoreWorktreeBinding(ctx, store, sess, nil); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to restore session directory: %v\n", err)
-		}
-		if dir := effectiveSessionDirectory(sess); dir != "" {
-			if canonical, dirErr := canonicalRuntimeDir(dir); dirErr == nil {
-				settings.BaseDir = canonical
-				settings.ShellWorkingDir = canonical
-				settings.PrimaryWorkspace = canonical
-			}
-		}
-
-		if _, supported := session.AsSessionInputRefresher(store); supported {
-			inputTicket, err = processSessionInputs.acquire(ctx, store, sess.ID, inputBinding(sess.Agent, settings.BaseDir))
-			if err != nil {
-				return err
-			}
-			defer inputTicket.fail()
-			selectedInputs = inputTicket.selected()
-			if selectedInputs != nil {
-				settings.SystemPrompt, settings.Tools = selectedInputs.BasePrompt, selectedInputs.Tools
-			} else {
-				resumedAgent, loadErr := LoadAgent(sess.Agent, cfg)
-				if loadErr != nil {
-					return loadErr
-				}
-				settings.SystemPrompt, settings.Tools, err = resolveSessionPromptTools(cfg, resumedAgent, CLIFlags{
-					Provider: askProvider, Tools: askTools, ToolsSet: cmd.Flags().Changed("tools"),
-					SystemMessage: askSystemMessage, SystemMessageSet: cmd.Flags().Changed("system"), Files: askFiles, Platform: "console",
-				}, cfg.Ask.Instructions, settings.BaseDir, cfg.Ask.Provider, cfg.Ask.Model)
-				if err != nil {
-					return err
-				}
-			}
-		}
-
+	// Apply persisted settings and refreshable inputs before tool/MCP setup.
+	sess, inputTicket, selectedInputs, resuming, err := prepareAskResume(ctx, cmd, cfg, agent, store, &settings)
+	if err != nil {
+		return err
+	}
+	if inputTicket != nil {
+		defer inputTicket.fail()
 	}
 
-	// Resolve session ID early so tool wiring can capture it
-	sessionID := ""
-	if sess != nil {
-		sessionID = sess.ID
-	}
-	sessionID = ensureRequestSessionID(sessionID, resuming)
-	settings.SessionID = sessionID
-	baseInputPrompt := settings.SystemPrompt
-	settings.SystemPrompt = InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)
-	if selectedInputs != nil {
-		settings.SystemPrompt = selectedInputs.Prompt
-	}
-	alignSettingsToActiveProvider(&settings, cfg, provider)
+	// Resolve session identity before tool wiring captures it.
+	sessionID, baseInputPrompt := finalizeAskSessionSettings(&settings, sess, selectedInputs, skillsSetup, cfg, provider, resuming)
 
 	// Initialize local tools if we have any
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
