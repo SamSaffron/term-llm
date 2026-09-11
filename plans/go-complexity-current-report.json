@@ -149,7 +149,7 @@
       "module": ".",
       "package": "main",
       "path": "cmd/complexity/main.go",
-      "lines": 269
+      "lines": 259
     },
     {
       "module": ".",
@@ -965,7 +965,7 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_run_persistence.go",
-      "lines": 388
+      "lines": 389
     },
     {
       "module": ".",
@@ -6612,7 +6612,7 @@
       "name": "applyCompaction",
       "complexity": 25,
       "lines": 87,
-      "file_lines": 388
+      "file_lines": 389
     },
     {
       "module": ".",

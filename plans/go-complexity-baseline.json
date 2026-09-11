@@ -2,7 +2,7 @@
   "counting_rules": "1 + if + for + range + non-default switch/select cases + \u0026\u0026 + ||; nested function literals attributed to enclosing declaration",
   "summary": {
     "files": 906,
-    "functions": 11089,
+    "functions": 11088,
     "median_complexity": 3,
     "above_20": 458,
     "above_50": 55,

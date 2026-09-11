@@ -4,7 +4,10 @@ This document is the versioned M0 contract inventory for
 [`go-complexity-reduction.md`](go-complexity-reduction.md). The analyzer is
 `go run ./cmd/complexity`; its exact rules are emitted in every JSON report.
 The initial report is `go-complexity-baseline-initial.json`, keyed by module,
-path, package, receiver, and function rather than line number.
+path, package, receiver, and function rather than line number. The companion
+`*-report.json` artifacts retain the complete file census and functions above
+20; their summary counts record the complete function census, including
+ordinary functions omitted from the compact checked-in view.
 
 ## Scope and counting contract
 
