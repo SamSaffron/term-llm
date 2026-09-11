@@ -18,7 +18,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/samsaffron/term-llm/internal/config"
@@ -1714,42 +1713,9 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 	// Extract text from the user message for persistence and display.
 	userText := collectUserText(userMsg)
 
-	// Build provider context independently of the durable transcript. Telegram
-	// owns the immutable start anchor because its per-turn runner runtimes are
-	// recreated and therefore cannot reliably retain a borrowed start time.
-	if m.settings.TimeGrounding {
-		sess.history = llm.BeginConversation(sess.history, time.Now())
-		if sess.activeHistory != nil {
-			sess.activeHistory = llm.InsertConversationStart(sess.activeHistory, sess.history)
-		}
-	}
-	history := sess.history
-	if sess.activeHistory != nil {
-		history = sess.activeHistory
-	}
-	messages := make([]llm.Message, 0, len(history)+3)
-	historyHasSystem := containsSystemMsg(history)
-	if m.settings.SystemPrompt != "" && !historyHasSystem {
-		messages = append(messages, llm.SystemText(m.settings.SystemPrompt))
-	}
-	if sess.carryoverContext != "" {
-		label := sess.carryoverContextLabel
-		if label == "" {
-			label = "Context from previous session (tail):"
-		}
-		messages = append(messages, llm.SystemText(label+"\n"+sess.carryoverContext))
-		sess.carryoverContext = ""
-		sess.carryoverContextLabel = ""
-	}
-	// Inject platform developer message for telegram.
-	if devText := m.settings.PlatformMessages.For("telegram"); devText != "" {
-		messages = append(messages, llm.PlatformContextMessage(devText))
-	}
-	messages = append(messages, history...)
-	messages = append(messages, userMsg)
-	if resume != nil {
-		messages = resume.Engine.Request.Messages
-	}
+	// Provider context is separate from the durable transcript. The helper also
+	// consumes one-shot carryover and establishes the stable start anchor.
+	messages := m.prepareRequestHistory(sess, userMsg, resume, time.Now())
 
 	sessionID := ""
 	if sess.meta != nil {
@@ -2111,35 +2077,11 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 		}
 	}
 
+	events := newTelegramEventAccumulator(resume)
 	var (
-		textMu           sync.Mutex
-		textBuf          strings.Builder
-		activeTools      = make(map[string]string) // toolCallID → toolName
-		activePhase      string                    // most-recent EventPhase text, "" when idle
-		toolsRan         bool                      // true once any EventToolExecStart seen
-		collectedImages  []string                  // legacy image paths from tool executions
-		collectedMedia   []llm.MediaArtifact       // ordered image/video artifacts
-		textDeltas       int
-		reasoningDeltas  int
-		toolStarts       int
-		toolEnds         int
-		toolCalls        int
-		phaseEvents      int
-		usageEvents      int
-		doneEvents       int
-		retryEvents      int
-		errorEvents      int
-		otherEvents      int
-		otherTypes       = make(map[llm.EventType]int)
 		lastEventPing    = make(chan struct{}, 1)
 		watchdogTimedOut atomic.Bool
 	)
-
-	if resume != nil {
-		textBuf.WriteString(resume.Text)
-		collectedImages = append(collectedImages, resume.Images...)
-		collectedMedia = append(collectedMedia, resume.Media...)
-	}
 	watchdogTimeout := m.streamEventTimeout
 	if watchdogTimeout <= 0 {
 		watchdogTimeout = defaultStreamEventTimeout
@@ -2201,88 +2143,30 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 			case lastEventPing <- struct{}{}:
 			default:
 			}
+			proseLen := events.Apply(ev)
 			switch ev.Type {
 			case llm.EventTextDelta:
-				textMu.Lock()
-				textBuf.WriteString(ev.Text)
-				textDeltas++
-				proseLen := textBuf.Len()
-				textMu.Unlock()
 				sess.streamProseLen.Store(int64(proseLen))
-			case llm.EventReasoningDelta:
-				textMu.Lock()
-				reasoningDeltas++
-				textMu.Unlock()
 			case llm.EventToolExecStart:
-				textMu.Lock()
-				activeTools[ev.ToolCallID] = ev.ToolName
-				toolsRan = true
-				toolStarts++
-				textMu.Unlock()
 				sess.streamToolCnt.Add(1)
 				sess.streamToolName.Store(ev.ToolName)
 				sess.cancelMu.Lock()
 				sess.toolsRanNames = append(sess.toolsRanNames, ev.ToolName)
 				sess.cancelMu.Unlock()
 			case llm.EventToolExecEnd:
-				textMu.Lock()
-				delete(activeTools, ev.ToolCallID)
-				toolEnds++
-				if len(ev.ToolImages) > 0 {
-					collectedImages = append(collectedImages, ev.ToolImages...)
-				}
-				if len(ev.ToolMedia) > 0 {
-					collectedMedia = append(collectedMedia, ev.ToolMedia...)
-				}
-				textMu.Unlock()
 				if sess.streamToolCnt.Load() > 0 {
 					sess.streamToolCnt.Add(-1)
 				}
 				if sess.streamToolCnt.Load() <= 0 {
 					sess.streamToolName.Store("")
 				}
-			case llm.EventHeartbeat:
-				// No-op: presence of an event refreshes watchdog and keeps long tools alive.
-			case llm.EventPhase:
-				textMu.Lock()
-				activePhase = ev.Text
-				phaseEvents++
-				textMu.Unlock()
-			case llm.EventToolCall:
-				textMu.Lock()
-				toolCalls++
-				textMu.Unlock()
-			case llm.EventUsage:
-				textMu.Lock()
-				usageEvents++
-				textMu.Unlock()
-			case llm.EventDone:
-				textMu.Lock()
-				doneEvents++
-				textMu.Unlock()
-			case llm.EventRetry:
-				textMu.Lock()
-				retryEvents++
-				activePhase = ui.FormatRetryStatus("Retrying", ev.RetryAttempt, ev.RetryMaxAttempts, ev.RetryWaitSecs, 0, "")
-				textMu.Unlock()
-			case llm.EventSteering:
-				textMu.Lock()
-				activePhase = "📝 Considering: " + tailRunes(strings.TrimSpace(ev.Text), 80)
-				textMu.Unlock()
 			case llm.EventError:
-				textMu.Lock()
-				errorEvents++
-				textMu.Unlock()
 				if ev.Err != nil {
 					sendStreamDone(streamDone, &streamDoneOnce, ev.Err)
 					return
 				}
-			default:
-				textMu.Lock()
-				otherEvents++
-				otherTypes[ev.Type]++
-				textMu.Unlock()
 			}
+
 		}
 	})
 	interval := m.tickerInterval
@@ -2292,192 +2176,10 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	editInterval := m.editInterval
-	if editInterval <= 0 {
-		editInterval = minEditInterval
-	}
-
-	currentMsgID := placeholder.MessageID
-	msgStart := 0       // byte offset in the full text where the current Telegram message begins
-	needNewMsg := false // true when overflow happened but next placeholder not yet created
-	if resume != nil {
-		msgStart = resume.MessageStart
-		needNewMsg = resume.NeedNewMessage
-	}
-
-	var lastSentContent string
-	var lastEditTime time.Time
-	var lastSuccessfulEditTime time.Time
-	lastVisibleChange := time.Now()
-	streamStart := time.Now()
-	spinChars := []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
-	spinIdx := 0
-
-	sendEdit := func(msgID int, content string, force bool) bool {
-		content = telegramMediaMarkdownPattern.ReplaceAllString(content, "$1")
-		if !force && content == lastSentContent {
-			return false
-		}
-		if !force && !lastEditTime.IsZero() && time.Since(lastEditTime) < editInterval {
-			return false
-		}
-		edit := tgbotapi.NewEditMessageText(chatID, msgID, mdToTelegramHTML(content))
-		edit.ParseMode = tgbotapi.ModeHTML
-		if _, sendErr := bot.Send(edit); sendErr != nil {
-			if strings.Contains(sendErr.Error(), "429") || strings.Contains(sendErr.Error(), "Too Many Requests") {
-				log.Printf("[telegram] edit rate limited (chat %d): %v", chatID, sendErr)
-			}
-			return false
-		}
-		contentChanged := content != lastSentContent
-		lastSentContent = content
-		lastEditTime = time.Now()
-		lastSuccessfulEditTime = lastEditTime
-		if contentChanged {
-			lastVisibleChange = lastEditTime
-		}
-		return true
-	}
-
-	ensureCurrentMessage := func() bool {
-		if !needNewMsg {
-			return true
-		}
-		newMsg, sendErr := bot.Send(tgbotapi.NewMessage(chatID, "⏳"))
-		if sendErr != nil {
-			log.Printf("[telegram] failed to send continuation placeholder (chat %d): %v", chatID, sendErr)
-			return false
-		}
-		currentMsgID = newMsg.MessageID
-		lastSentContent = ""
-		lastEditTime = time.Time{}
-		lastVisibleChange = time.Now()
-		needNewMsg = false
-		return true
-	}
-
-	sendProseChunks := func(prose string, force bool) (string, bool) {
-		for utf8.RuneCountInString(prose) > telegramMaxMessageLen {
-			if !ensureCurrentMessage() {
-				return prose, false
-			}
-			chunk, splitAtBytes := telegramProseChunk(prose)
-			if !sendEdit(currentMsgID, chunk, force) {
-				return prose, false
-			}
-			msgStart += splitAtBytes
-			prose = prose[splitAtBytes:]
-			needNewMsg = true
-		}
-		return prose, true
-	}
-
-	waitForFinalDelay := func(deliveryCtx context.Context, delay time.Duration) error {
-		if err := deliveryCtx.Err(); err != nil {
-			return err
-		}
-		if delay <= 0 {
-			return nil
-		}
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-		select {
-		case <-timer.C:
-			return nil
-		case <-deliveryCtx.Done():
-			return deliveryCtx.Err()
-		}
-	}
-
-	waitForFinalPace := func(deliveryCtx context.Context) error {
-		if lastSuccessfulEditTime.IsZero() {
-			return nil
-		}
-		return waitForFinalDelay(deliveryCtx, time.Until(lastSuccessfulEditTime.Add(editInterval)))
-	}
-
-	sendFinal := func(deliveryCtx context.Context, chattable tgbotapi.Chattable) (tgbotapi.Message, error) {
-		var lastErr error
-		for attempt := 1; attempt <= telegramFinalDeliveryMaxAttempts; attempt++ {
-			if err := waitForFinalPace(deliveryCtx); err != nil {
-				return tgbotapi.Message{}, fmt.Errorf("pace final Telegram delivery: %w", err)
-			}
-			msg, sendErr := bot.Send(chattable)
-			if sendErr == nil {
-				return msg, nil
-			}
-			lastErr = sendErr
-			if !telegramSendErrorRetryable(sendErr) {
-				return tgbotapi.Message{}, fmt.Errorf("final Telegram delivery failed: %w", sendErr)
-			}
-			if attempt == telegramFinalDeliveryMaxAttempts {
-				break
-			}
-			retryDelay := telegramSendRetryDelay(sendErr, editInterval)
-			log.Printf("[telegram] transient final delivery failure (chat %d, attempt %d/%d), retrying in %s: %v", chatID, attempt, telegramFinalDeliveryMaxAttempts, retryDelay, sendErr)
-			if err := waitForFinalDelay(deliveryCtx, retryDelay); err != nil {
-				return tgbotapi.Message{}, fmt.Errorf("final Telegram delivery retry interrupted (%v): %w", lastErr, err)
-			}
-		}
-		return tgbotapi.Message{}, fmt.Errorf("final Telegram delivery failed after %d attempts: %w", telegramFinalDeliveryMaxAttempts, lastErr)
-	}
-
-	sendFinalEdit := func(deliveryCtx context.Context, msgID int, content string) error {
-		content = telegramMediaMarkdownPattern.ReplaceAllString(content, "$1")
-		if content == lastSentContent {
-			return nil
-		}
-		edit := tgbotapi.NewEditMessageText(chatID, msgID, mdToTelegramHTML(content))
-		edit.ParseMode = tgbotapi.ModeHTML
-		if _, err := sendFinal(deliveryCtx, edit); err != nil {
-			return err
-		}
-		contentChanged := content != lastSentContent
-		lastSentContent = content
-		lastEditTime = time.Now()
-		lastSuccessfulEditTime = lastEditTime
-		if contentChanged {
-			lastVisibleChange = lastEditTime
-		}
-		return nil
-	}
-
-	ensureFinalCurrentMessage := func(deliveryCtx context.Context) error {
-		if !needNewMsg {
-			return nil
-		}
-		newMsg, err := sendFinal(deliveryCtx, tgbotapi.NewMessage(chatID, "⏳"))
-		if err != nil {
-			return fmt.Errorf("send continuation placeholder: %w", err)
-		}
-		currentMsgID = newMsg.MessageID
-		lastSentContent = ""
-		lastEditTime = time.Time{}
-		lastVisibleChange = time.Now()
-		needNewMsg = false
-		return nil
-	}
-
-	sendFinalProseChunks := func(deliveryCtx context.Context, prose string) (string, error) {
-		for utf8.RuneCountInString(prose) > telegramMaxMessageLen {
-			if err := ensureFinalCurrentMessage(deliveryCtx); err != nil {
-				return prose, err
-			}
-			chunk, splitAtBytes := telegramProseChunk(prose)
-			if err := sendFinalEdit(deliveryCtx, currentMsgID, chunk); err != nil {
-				return prose, err
-			}
-			msgStart += splitAtBytes
-			prose = prose[splitAtBytes:]
-			needNewMsg = true
-		}
-		return prose, nil
-	}
+	presentation := newTelegramPresentation(bot, chatID, placeholder.MessageID, resume, m.editInterval)
 
 	salvagePartialHistory := func(persistCtx context.Context, fallbackOp string) {
-		textMu.Lock()
-		partial := textBuf.String()
-		textMu.Unlock()
+		partial := events.Text()
 		producedMu.Lock()
 		producedSnapshot := append([]llm.Message(nil), produced...)
 		producedMu.Unlock()
@@ -2556,45 +2258,8 @@ loop:
 			streamErr = err
 			break loop
 		case <-ticker.C:
-			textMu.Lock()
-			full, toolDisplay, phase := textBuf.String(), activeToolDisplay(activeTools), activePhase
-			textMu.Unlock()
-
-			prose := ""
-			if msgStart < len(full) {
-				prose = full[msgStart:]
-			}
-
-			forceProgress := time.Since(lastVisibleChange) >= 12*time.Second
-			if prose == "" && toolDisplay == "" && phase == "" {
-				if !forceProgress {
-					continue
-				}
-				elapsed := time.Since(streamStart)
-				spin := string(spinChars[spinIdx%len(spinChars)])
-				spinIdx++
-				heartbeat := buildHeartbeatSegment("", toolDisplay, phase, spin, elapsed)
-				sendEdit(currentMsgID, heartbeat, true)
-				continue
-			}
-
-			prose, ok := sendProseChunks(prose, false)
-			if !ok {
-				continue
-			}
-
-			rendered := buildSegment(prose, toolDisplay, phase, true)
-			if forceProgress {
-				elapsed := time.Since(streamStart)
-				spin := string(spinChars[spinIdx%len(spinChars)])
-				spinIdx++
-				rendered = buildHeartbeatSegment(prose, toolDisplay, phase, spin, elapsed)
-			}
-
-			if !ensureCurrentMessage() {
-				continue
-			}
-			sendEdit(currentMsgID, rendered, forceProgress)
+			snapshot := events.Snapshot()
+			presentation.renderTick(snapshot.Text, snapshot.ToolDisplay, snapshot.Phase)
 		case <-streamCtx.Done():
 			// Distinguish server shutdown (parent ctx cancelled) from watchdog timeouts and user interrupt.
 			if ctx.Err() != nil {
@@ -2657,9 +2322,9 @@ loop:
 			}
 		}
 		sess.history = history
-		textMu.Lock()
-		saved := &telegramContinuation{Engine: suspended.Continuation, MessageID: currentMsgID, Text: textBuf.String(), MessageStart: msgStart, NeedNewMessage: needNewMsg, Images: append([]string(nil), collectedImages...), Media: append([]llm.MediaArtifact(nil), collectedMedia...), Metrics: turnMetrics, Turns: turnCount}
-		textMu.Unlock()
+		snapshot := events.Snapshot()
+		messageID, messageStart, needNewMessage := presentation.checkpoint()
+		saved := &telegramContinuation{Engine: suspended.Continuation, MessageID: messageID, Text: snapshot.Text, MessageStart: messageStart, NeedNewMessage: needNewMessage, Images: snapshot.Images, Media: snapshot.Media, Metrics: turnMetrics, Turns: turnCount}
 		if suspended.Continuation.DiscardPartial {
 			saved.Text = suspended.Continuation.CommittedText()
 			saved.MessageStart = min(saved.MessageStart, len(saved.Text))
@@ -2679,27 +2344,9 @@ loop:
 		// not finish promptly, detach it and avoid racing the stale producer.
 		drained := stopStreamWithCleanupTimeout()
 
-		textMu.Lock()
-		partial := textBuf.String()
-		textMu.Unlock()
+		partial := events.Text()
 
-		// Edit the Telegram message to show partial text + interrupted marker.
-		display := ""
-		if msgStart < len(partial) {
-			display = partial[msgStart:]
-		}
-		if display == "" {
-			display = "(interrupted)"
-		} else {
-			display += "\n\n_(interrupted)_"
-		}
-		if needNewMsg {
-			newMsg, sendErr := bot.Send(tgbotapi.NewMessage(chatID, "⏳"))
-			if sendErr == nil {
-				currentMsgID = newMsg.MessageID
-			}
-		}
-		sendEdit(currentMsgID, display, true)
+		presentation.renderInterrupted(partial)
 
 		// Preserve partial history so conversation context isn't lost, but only
 		// after every producer has stopped mutating the callback snapshot.
@@ -2732,148 +2379,41 @@ loop:
 	}
 
 	// Final edit: show full remaining text without cursor.
-	textMu.Lock()
-	full, ran := textBuf.String(), toolsRan
-	finalTextDeltas := textDeltas
-	finalReasoningDeltas := reasoningDeltas
-	finalToolStarts := toolStarts
-	finalToolEnds := toolEnds
-	finalToolCalls := toolCalls
-	finalPhaseEvents := phaseEvents
-	finalUsageEvents := usageEvents
-	finalDoneEvents := doneEvents
-	finalRetryEvents := retryEvents
-	finalErrorEvents := errorEvents
-	finalOtherEvents := otherEvents
-	finalOtherTypes := make(map[llm.EventType]int, len(otherTypes))
-	for k, v := range otherTypes {
-		finalOtherTypes[k] = v
-	}
-	imagesToSend := append([]string(nil), collectedImages...)
-	mediaToSend := referencedTelegramMedia(full, collectedMedia)
-	textMu.Unlock()
+	snapshot := events.Snapshot()
+	full, ran := snapshot.Text, snapshot.ToolsRan
+	finalTextDeltas, finalReasoningDeltas := snapshot.TextDeltas, snapshot.ReasoningDeltas
+	finalToolStarts, finalToolEnds, finalToolCalls := snapshot.ToolStarts, snapshot.ToolEnds, snapshot.ToolCalls
+	finalPhaseEvents, finalUsageEvents, finalDoneEvents := snapshot.PhaseEvents, snapshot.UsageEvents, snapshot.DoneEvents
+	finalRetryEvents, finalErrorEvents, finalOtherEvents := snapshot.RetryEvents, snapshot.ErrorEvents, snapshot.OtherEvents
+	finalOtherTypes := snapshot.OtherTypes
+	imagesToSend := snapshot.Images
+	mediaToSend := referencedTelegramMedia(full, snapshot.Media)
 
 	finalDeliveryCtx, cancelFinalDelivery := context.WithTimeout(ctx, telegramFinalDeliveryTimeout)
 	defer cancelFinalDelivery()
 	var finalDeliveryErr error
 
-	prose := ""
-	if msgStart < len(full) {
-		prose = full[msgStart:]
-		prose = telegramMediaMarkdownPattern.ReplaceAllString(prose, "$1")
-	}
-	switch {
-	case prose != "":
-		// There is new content to show in the current window.
-		prose, finalDeliveryErr = sendFinalProseChunks(finalDeliveryCtx, prose)
-		if finalDeliveryErr != nil {
-			break
-		}
-		if finalDeliveryErr = ensureFinalCurrentMessage(finalDeliveryCtx); finalDeliveryErr != nil {
-			break
-		}
-		finalDeliveryErr = sendFinalEdit(finalDeliveryCtx, currentMsgID, prose)
-	case full == "":
-		// Nothing was produced at all — show a fallback in the original placeholder.
-		fallback := "(no response)"
-		if ran {
-			fallback = "(done)"
-		}
-		finalDeliveryErr = sendFinalEdit(finalDeliveryCtx, currentMsgID, fallback)
-		if m.settings.Debug || m.settings.DebugRaw {
-			log.Printf("[telegram] empty assistant text for chat %d (toolsRan=%v, text_delta=%d, reasoning_delta=%d, tool_start=%d, tool_end=%d, tool_call=%d, phase=%d, usage=%d, done=%d, retry=%d, error=%d, other=%d, other_types=%v)",
-				chatID,
-				ran,
-				finalTextDeltas,
-				finalReasoningDeltas,
-				finalToolStarts,
-				finalToolEnds,
-				finalToolCalls,
-				finalPhaseEvents,
-				finalUsageEvents,
-				finalDoneEvents,
-				finalRetryEvents,
-				finalErrorEvents,
-				finalOtherEvents,
-				finalOtherTypes,
-			)
-		}
-		// else: prose=="" but full!="", all content already shown in previous message(s).
+	finalDeliveryErr = presentation.finalizeText(finalDeliveryCtx, full, ran)
+	if full == "" && (m.settings.Debug || m.settings.DebugRaw) {
+		log.Printf("[telegram] empty assistant text for chat %d (toolsRan=%v, text_delta=%d, reasoning_delta=%d, tool_start=%d, tool_end=%d, tool_call=%d, phase=%d, usage=%d, done=%d, retry=%d, error=%d, other=%d, other_types=%v)",
+			chatID,
+			ran,
+			finalTextDeltas,
+			finalReasoningDeltas,
+			finalToolStarts,
+			finalToolEnds,
+			finalToolCalls,
+			finalPhaseEvents,
+			finalUsageEvents,
+			finalDoneEvents,
+			finalRetryEvents,
+			finalErrorEvents,
+			finalOtherEvents,
+			finalOtherTypes,
+		)
 	}
 
-	// Send collected images as Telegram photo messages.
-	for _, imgPath := range imagesToSend {
-		imgData, readErr := os.ReadFile(imgPath)
-		if readErr != nil {
-			log.Printf("[telegram] failed to read image %s: %v", imgPath, readErr)
-			continue
-		}
-		photoMsg := tgbotapi.NewPhoto(chatID, tgbotapi.FileBytes{
-			Name:  imgPath,
-			Bytes: imgData,
-		})
-		if _, sendErr := bot.Send(photoMsg); sendErr != nil {
-			log.Printf("[telegram] failed to send image %s: %v", imgPath, sendErr)
-		}
-	}
-	for _, media := range mediaToSend {
-		mediaPath := media.PublishedPath()
-		info, statErr := os.Stat(mediaPath)
-		if statErr != nil {
-			log.Printf("[telegram] cannot access media %s: %v", mediaPath, statErr)
-			continue
-		}
-		if !info.Mode().IsRegular() {
-			log.Printf("[telegram] media is not a regular file: %s", mediaPath)
-			continue
-		}
-		if info.Size() > telegramMaxMediaUploadBytes {
-			label := strings.TrimSpace(media.Name)
-			if label == "" {
-				label = "video"
-			}
-			message := tgbotapi.NewMessage(chatID, fmt.Sprintf("%s was not sent because it exceeds Telegram's 50 MiB upload limit.", label))
-			if _, sendErr := bot.Send(message); sendErr != nil {
-				log.Printf("[telegram] failed to report oversized media %s: %v", mediaPath, sendErr)
-			}
-			continue
-		}
-		upload, openErr := os.Open(mediaPath)
-		if openErr != nil {
-			log.Printf("[telegram] cannot open media %s: %v", mediaPath, openErr)
-			continue
-		}
-		file := tgbotapi.FileReader{Name: telegramMediaFilename(media.MediaType), Reader: upload}
-		if strings.HasPrefix(strings.ToLower(media.MediaType), "image/") {
-			message := tgbotapi.NewPhoto(chatID, file)
-			message.Caption = media.Caption
-			_, sendErr := bot.Send(message)
-			_ = upload.Close()
-			if sendErr != nil {
-				log.Printf("[telegram] failed to send image media %s: %v", mediaPath, sendErr)
-			}
-			continue
-		}
-		message := tgbotapi.NewVideo(chatID, file)
-		message.Caption = media.Caption
-		_, sendErr := bot.Send(message)
-		_ = upload.Close()
-		if sendErr != nil {
-			log.Printf("[telegram] video send failed for %s, retrying as document: %v", mediaPath, sendErr)
-			fallback, fallbackOpenErr := os.Open(mediaPath)
-			if fallbackOpenErr != nil {
-				log.Printf("[telegram] cannot reopen media document %s: %v", mediaPath, fallbackOpenErr)
-				continue
-			}
-			document := tgbotapi.NewDocument(chatID, tgbotapi.FileReader{Name: telegramMediaFilename(media.MediaType), Reader: fallback})
-			document.Caption = media.Caption
-			_, documentErr := bot.Send(document)
-			_ = fallback.Close()
-			if documentErr != nil {
-				log.Printf("[telegram] failed to send media document %s: %v", mediaPath, documentErr)
-			}
-		}
-	}
+	presentation.deliverMedia(imagesToSend, mediaToSend)
 
 	// Persist history: base + user message + produced (assistant + tool results).
 	newHistory := make([]llm.Message, 0, len(sess.history)+2+len(produced))
