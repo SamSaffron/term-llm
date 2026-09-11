@@ -6047,6 +6047,47 @@ func (p *recoverTextProvider) Stream(ctx context.Context, req Request) (Stream, 
 	return &sliceStream{events: []Event{{Type: EventTextDelta, Text: "good"}, {Type: EventDone}}}, nil
 }
 
+func TestEngineRecoveryFinishingToolEndsRunOnce(t *testing.T) {
+	t.Parallel()
+
+	tool := &finishingNamedTool{name: "finish_recovery"}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	provider := &recoverToolCallProvider{
+		err:      &NonRecoverableStreamError{Err: errors.New("websocket disconnected after finishing tool call")},
+		toolName: tool.name,
+	}
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("finish after recovery")},
+		Tools:    []ToolSpec{tool.Spec()},
+		MaxTurns: 4,
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+	var doneEvents int
+	for {
+		event, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatalf("Recv() error = %v", recvErr)
+		}
+		if event.Type == EventDone {
+			doneEvents++
+		}
+	}
+	if doneEvents != 1 {
+		t.Fatalf("done events = %d, want 1", doneEvents)
+	}
+	if len(provider.calls) != 1 {
+		t.Fatalf("provider calls = %d, want 1", len(provider.calls))
+	}
+}
+
 func TestEngineRecoveryReconstructsAssistantForTurnCallbackOnly(t *testing.T) {
 	t.Parallel()
 
@@ -6281,8 +6322,9 @@ func TestEngineRecoversToolCallAfterStreamError(t *testing.T) {
 }
 
 type recoverToolCallProvider struct {
-	err   error
-	calls []Request
+	err      error
+	calls    []Request
+	toolName string
 }
 
 func (p *recoverToolCallProvider) Name() string               { return "recover-tool-call" }
@@ -6291,8 +6333,12 @@ func (p *recoverToolCallProvider) Capabilities() Capabilities { return Capabilit
 func (p *recoverToolCallProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	p.calls = append(p.calls, req)
 	if len(p.calls) == 1 {
+		toolName := p.toolName
+		if toolName == "" {
+			toolName = "count_tool"
+		}
 		return &errAfterEventsStream{
-			events: []Event{{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "count_tool", Arguments: json.RawMessage(`{}`)}}},
+			events: []Event{{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: toolName, Arguments: json.RawMessage(`{}`)}}},
 			err:    p.err,
 		}, nil
 	}
