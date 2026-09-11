@@ -289,6 +289,86 @@ func (s *cursedRenderer) writeString(str string) (int, error) {
 	return s.scr.WriteString(str) //nolint:wrapcheck
 }
 
+func (s *cursedRenderer) updateTerminalModesLocked(view View, closing bool) (shouldUpdateAltScreen bool) {
+	// Alt screen mode.
+	shouldUpdateAltScreen = (!s.hasLastView && view.AltScreen) || (s.hasLastView && s.lastView.AltScreen != view.AltScreen)
+	if shouldUpdateAltScreen {
+		// We want to enter/exit altscreen mode but defer writing the actual
+		// sequences until we flush the rest of the updates. This is because we
+		// control the cursor visibility and we need to ensure that happens
+		// after entering/exiting alt screen mode. Some terminals have
+		// different cursor visibility states for main and alt screen modes and
+		// this ensures we handle that correctly.
+		enableAltScreen(s, view.AltScreen, false)
+	}
+
+	// bracketed paste mode.
+	if !s.hasLastView || view.DisableBracketedPasteMode != s.lastView.DisableBracketedPasteMode {
+		if !view.DisableBracketedPasteMode {
+			_, _ = s.scr.WriteString(ansi.SetModeBracketedPaste)
+		} else if s.hasLastView {
+			_, _ = s.scr.WriteString(ansi.ResetModeBracketedPaste)
+		}
+	}
+
+	// report focus events mode.
+	if !s.hasLastView || s.lastView.ReportFocus != view.ReportFocus {
+		if view.ReportFocus {
+			_, _ = s.scr.WriteString(ansi.SetModeFocusEvent)
+		} else if s.hasLastView {
+			_, _ = s.scr.WriteString(ansi.ResetModeFocusEvent)
+		}
+	}
+
+	// mouse events mode.
+	if !s.hasLastView || view.MouseMode != s.lastView.MouseMode {
+		switch view.MouseMode {
+		case MouseModeNone:
+			if s.hasLastView && s.lastView.MouseMode != MouseModeNone {
+				_, _ = s.scr.WriteString(ansi.ResetModeMouseButtonEvent +
+					ansi.ResetModeMouseAnyEvent +
+					ansi.ResetModeMouseExtSgr)
+			}
+		case MouseModeCellMotion:
+			if s.hasLastView && s.lastView.MouseMode == MouseModeAllMotion {
+				_, _ = s.scr.WriteString(ansi.ResetModeMouseAnyEvent)
+			}
+			_, _ = s.scr.WriteString(ansi.SetModeMouseButtonEvent + ansi.SetModeMouseExtSgr)
+		case MouseModeAllMotion:
+			if s.hasLastView && s.lastView.MouseMode == MouseModeCellMotion {
+				_, _ = s.scr.WriteString(ansi.ResetModeMouseButtonEvent)
+			}
+			_, _ = s.scr.WriteString(ansi.SetModeMouseAnyEvent + ansi.SetModeMouseExtSgr)
+		}
+	}
+
+	// Set window title.
+	if !s.hasLastView || view.WindowTitle != s.lastView.WindowTitle {
+		if s.hasLastView || view.WindowTitle != "" {
+			_, _ = s.scr.WriteString(ansi.SetWindowTitle(view.WindowTitle))
+		}
+	}
+
+	// kitty keyboard protocol
+	if !s.hasLastView || view.KeyboardEnhancements != s.lastView.KeyboardEnhancements ||
+		view.AltScreen != s.lastView.AltScreen {
+		// NOTE: We need to reset the keyboard protocol when switching
+		// between main and alt screen. This is because the specs specify
+		// two different states for the main and alt screen.
+
+		// Enable modifyOtherKeys and Kitty keyboard protocol.
+		_, _ = s.scr.WriteString(ansi.SetModifyOtherKeys2)
+
+		kittyFlags := keyboardEnhancementsFlags(view.KeyboardEnhancements)
+		_, _ = s.scr.WriteString(ansi.KittyKeyboard(kittyFlags, 1))
+		if !closing {
+			// Request keyboard enhancements when they change
+			_, _ = s.scr.WriteString(ansi.RequestKittyKeyboard)
+		}
+	}
+	return shouldUpdateAltScreen
+}
+
 // flush implements renderer.
 func (s *cursedRenderer) flush(closing bool) (err error) {
 	s.mu.Lock()
@@ -405,83 +485,7 @@ func (s *cursedRenderer) flush(closing bool) (err error) {
 		s.cellbuf.Lines = s.cellbuf.Lines[frameHeight-s.height:]
 	}
 
-	// Alt screen mode.
-	shouldUpdateAltScreen := (!s.hasLastView && view.AltScreen) || (s.hasLastView && s.lastView.AltScreen != view.AltScreen)
-	if shouldUpdateAltScreen {
-		// We want to enter/exit altscreen mode but defer writing the actual
-		// sequences until we flush the rest of the updates. This is because we
-		// control the cursor visibility and we need to ensure that happens
-		// after entering/exiting alt screen mode. Some terminals have
-		// different cursor visibility states for main and alt screen modes and
-		// this ensures we handle that correctly.
-		enableAltScreen(s, view.AltScreen, false)
-	}
-
-	// bracketed paste mode.
-	if !s.hasLastView || view.DisableBracketedPasteMode != s.lastView.DisableBracketedPasteMode {
-		if !view.DisableBracketedPasteMode {
-			_, _ = s.scr.WriteString(ansi.SetModeBracketedPaste)
-		} else if s.hasLastView {
-			_, _ = s.scr.WriteString(ansi.ResetModeBracketedPaste)
-		}
-	}
-
-	// report focus events mode.
-	if !s.hasLastView || s.lastView.ReportFocus != view.ReportFocus {
-		if view.ReportFocus {
-			_, _ = s.scr.WriteString(ansi.SetModeFocusEvent)
-		} else if s.hasLastView {
-			_, _ = s.scr.WriteString(ansi.ResetModeFocusEvent)
-		}
-	}
-
-	// mouse events mode.
-	if !s.hasLastView || view.MouseMode != s.lastView.MouseMode {
-		switch view.MouseMode {
-		case MouseModeNone:
-			if s.hasLastView && s.lastView.MouseMode != MouseModeNone {
-				_, _ = s.scr.WriteString(ansi.ResetModeMouseButtonEvent +
-					ansi.ResetModeMouseAnyEvent +
-					ansi.ResetModeMouseExtSgr)
-			}
-		case MouseModeCellMotion:
-			if s.hasLastView && s.lastView.MouseMode == MouseModeAllMotion {
-				_, _ = s.scr.WriteString(ansi.ResetModeMouseAnyEvent)
-			}
-			_, _ = s.scr.WriteString(ansi.SetModeMouseButtonEvent + ansi.SetModeMouseExtSgr)
-		case MouseModeAllMotion:
-			if s.hasLastView && s.lastView.MouseMode == MouseModeCellMotion {
-				_, _ = s.scr.WriteString(ansi.ResetModeMouseButtonEvent)
-			}
-			_, _ = s.scr.WriteString(ansi.SetModeMouseAnyEvent + ansi.SetModeMouseExtSgr)
-		}
-	}
-
-	// Set window title.
-	if !s.hasLastView || view.WindowTitle != s.lastView.WindowTitle {
-		if s.hasLastView || view.WindowTitle != "" {
-			_, _ = s.scr.WriteString(ansi.SetWindowTitle(view.WindowTitle))
-		}
-	}
-
-	// kitty keyboard protocol
-	if !s.hasLastView || view.KeyboardEnhancements != s.lastView.KeyboardEnhancements ||
-		view.AltScreen != s.lastView.AltScreen {
-		// NOTE: We need to reset the keyboard protocol when switching
-		// between main and alt screen. This is because the specs specify
-		// two different states for the main and alt screen.
-
-		// Enable modifyOtherKeys and Kitty keyboard protocol.
-		_, _ = s.scr.WriteString(ansi.SetModifyOtherKeys2)
-
-		kittyFlags := keyboardEnhancementsFlags(view.KeyboardEnhancements)
-		_, _ = s.scr.WriteString(ansi.KittyKeyboard(kittyFlags, 1))
-		if !closing {
-			// Request keyboard enhancements when they change
-			_, _ = s.scr.WriteString(ansi.RequestKittyKeyboard)
-		}
-	}
-
+	shouldUpdateAltScreen := s.updateTerminalModesLocked(view, closing)
 	// Set terminal colors.
 	var (
 		cc, lcc  color.Color

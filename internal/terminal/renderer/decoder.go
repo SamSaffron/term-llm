@@ -544,93 +544,7 @@ func (p *EventDecoder) parseCsi(b []byte) (int, Event) {
 
 		return i, event
 	case '@', '^', '~':
-		if paramsLen == 0 {
-			return i, UnknownCsiEvent(b[:i])
-		}
-
-		param, _, _ := pa.Param(0, 0)
-		switch cmd {
-		case '~':
-			switch param {
-			case 27:
-				// XTerm modifyOtherKeys 2
-				if paramsLen != 3 {
-					return i, UnknownCsiEvent(b[:i])
-				}
-				return i, parseXTermModifyOtherKeys(pa)
-			case 200:
-				// bracketed-paste start
-				return i, PasteStartEvent{}
-			case 201:
-				// bracketed-paste end
-				return i, PasteEndEvent{}
-			}
-		}
-
-		switch param {
-		case 1, 2, 3, 4, 5, 6, 7, 8,
-			11, 12, 13, 14, 15,
-			17, 18, 19, 20, 21,
-			23, 24, 25, 26,
-			28, 29, 31, 32, 33, 34:
-			var k KeyPressEvent
-			switch param {
-			case 1:
-				if p.Legacy&flagFind != 0 {
-					k = KeyPressEvent{Code: KeyFind}
-				} else {
-					k = KeyPressEvent{Code: KeyHome}
-				}
-			case 2:
-				k = KeyPressEvent{Code: KeyInsert}
-			case 3:
-				k = KeyPressEvent{Code: KeyDelete}
-			case 4:
-				if p.Legacy&flagSelect != 0 {
-					k = KeyPressEvent{Code: KeySelect}
-				} else {
-					k = KeyPressEvent{Code: KeyEnd}
-				}
-			case 5:
-				k = KeyPressEvent{Code: KeyPgUp}
-			case 6:
-				k = KeyPressEvent{Code: KeyPgDown}
-			case 7:
-				k = KeyPressEvent{Code: KeyHome}
-			case 8:
-				k = KeyPressEvent{Code: KeyEnd}
-			case 11, 12, 13, 14, 15:
-				k = KeyPressEvent{Code: KeyF1 + rune(param-11)}
-			case 17, 18, 19, 20, 21:
-				k = KeyPressEvent{Code: KeyF6 + rune(param-17)}
-			case 23, 24, 25, 26:
-				k = KeyPressEvent{Code: KeyF11 + rune(param-23)}
-			case 28, 29:
-				k = KeyPressEvent{Code: KeyF15 + rune(param-28)}
-			case 31, 32, 33, 34:
-				k = KeyPressEvent{Code: KeyF17 + rune(param-31)}
-			}
-
-			// modifiers
-			mod, _, _ := pa.Param(1, -1)
-			if paramsLen > 1 && mod != -1 {
-				k.Mod |= KeyMod(mod - 1)
-			}
-
-			// Handle URxvt weird keys
-			switch cmd {
-			case '~':
-				// Don't forget to handle Kitty keyboard protocol
-				return i, parseKittyKeyboardExt(pa, k)
-			case '^':
-				k.Mod |= ModCtrl
-			case '@':
-				k.Mod |= ModCtrl | ModShift
-			}
-
-			return i, k
-		}
-
+		return i, p.parseCsiLegacyKey(cmd, pa, paramsLen, b[:i])
 	case 't':
 		param, _, ok := pa.Param(0, 0)
 		if !ok {
@@ -695,6 +609,96 @@ func (p *EventDecoder) parseCsi(b []byte) (int, Event) {
 		return i, winop
 	}
 	return i, UnknownCsiEvent(b[:i])
+}
+
+func (p *EventDecoder) parseCsiLegacyKey(cmd ansi.Cmd, pa ansi.Params, paramsLen int, raw []byte) Event {
+	if paramsLen == 0 {
+		return UnknownCsiEvent(raw)
+	}
+
+	param, _, _ := pa.Param(0, 0)
+	switch cmd {
+	case '~':
+		switch param {
+		case 27:
+			// XTerm modifyOtherKeys 2
+			if paramsLen != 3 {
+				return UnknownCsiEvent(raw)
+			}
+			return parseXTermModifyOtherKeys(pa)
+		case 200:
+			// bracketed-paste start
+			return PasteStartEvent{}
+		case 201:
+			// bracketed-paste end
+			return PasteEndEvent{}
+		}
+	}
+
+	switch param {
+	case 1, 2, 3, 4, 5, 6, 7, 8,
+		11, 12, 13, 14, 15,
+		17, 18, 19, 20, 21,
+		23, 24, 25, 26,
+		28, 29, 31, 32, 33, 34:
+		var k KeyPressEvent
+		switch param {
+		case 1:
+			if p.Legacy&flagFind != 0 {
+				k = KeyPressEvent{Code: KeyFind}
+			} else {
+				k = KeyPressEvent{Code: KeyHome}
+			}
+		case 2:
+			k = KeyPressEvent{Code: KeyInsert}
+		case 3:
+			k = KeyPressEvent{Code: KeyDelete}
+		case 4:
+			if p.Legacy&flagSelect != 0 {
+				k = KeyPressEvent{Code: KeySelect}
+			} else {
+				k = KeyPressEvent{Code: KeyEnd}
+			}
+		case 5:
+			k = KeyPressEvent{Code: KeyPgUp}
+		case 6:
+			k = KeyPressEvent{Code: KeyPgDown}
+		case 7:
+			k = KeyPressEvent{Code: KeyHome}
+		case 8:
+			k = KeyPressEvent{Code: KeyEnd}
+		case 11, 12, 13, 14, 15:
+			k = KeyPressEvent{Code: KeyF1 + rune(param-11)}
+		case 17, 18, 19, 20, 21:
+			k = KeyPressEvent{Code: KeyF6 + rune(param-17)}
+		case 23, 24, 25, 26:
+			k = KeyPressEvent{Code: KeyF11 + rune(param-23)}
+		case 28, 29:
+			k = KeyPressEvent{Code: KeyF15 + rune(param-28)}
+		case 31, 32, 33, 34:
+			k = KeyPressEvent{Code: KeyF17 + rune(param-31)}
+		}
+
+		// modifiers
+		mod, _, _ := pa.Param(1, -1)
+		if paramsLen > 1 && mod != -1 {
+			k.Mod |= KeyMod(mod - 1)
+		}
+
+		// Handle URxvt weird keys
+		switch cmd {
+		case '~':
+			// Don't forget to handle Kitty keyboard protocol
+			return parseKittyKeyboardExt(pa, k)
+		case '^':
+			k.Mod |= ModCtrl
+		case '@':
+			k.Mod |= ModCtrl | ModShift
+		}
+
+		return k
+	}
+	return UnknownCsiEvent(raw)
 }
 
 // parseSs3 parses a SS3 sequence.
