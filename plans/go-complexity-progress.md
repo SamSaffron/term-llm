@@ -1,7 +1,7 @@
 # Go complexity reduction progress and acceptance
 
-Owner: package maintainers for each listed subsystem  
-Base revision: `4363767c`  
+Owner: package maintainers for each listed subsystem
+Base revision: `4363767c`
 Implementation: current worktree (2026-09-11)
 
 ## Milestones

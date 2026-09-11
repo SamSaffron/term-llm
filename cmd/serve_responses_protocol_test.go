@@ -2760,7 +2760,7 @@ func TestParseAnthropicMessages_ImageContentSavesPath(t *testing.T) {
 	dataHome := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", dataHome)
 	b64 := base64.StdEncoding.EncodeToString([]byte("png bytes"))
-	content := json.RawMessage(fmt.Sprintf(`[{ 
+	content := json.RawMessage(fmt.Sprintf(`[{
 		"type":"image",
 		"source":{"type":"base64","media_type":"image/png","data":%q}
 	}]`, b64))
