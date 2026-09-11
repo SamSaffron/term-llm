@@ -1,6 +1,8 @@
 # Safe Go complexity reduction — implementation plan
 
-Status: proposed, 2026-09-11. No refactoring has been implemented by this plan.
+Status: implemented, 2026-09-11. See `go-complexity-progress.md`,
+`go-complexity-contracts.md`, and the versioned before/current reports for the
+requirement-by-requirement acceptance evidence.
 
 ## Objective and scope
 

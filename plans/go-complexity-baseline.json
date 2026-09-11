@@ -1,0 +1,3677 @@
+{
+  "counting_rules": "1 + if + for + range + non-default switch/select cases + \u0026\u0026 + ||; nested function literals attributed to enclosing declaration",
+  "summary": {
+    "files": 906,
+    "functions": 11089,
+    "median_complexity": 3,
+    "above_20": 458,
+    "above_50": 55,
+    "above_100": 9
+  },
+  "exceptions": [
+    {
+      "key": ".|cmd/agents.go|cmd||runAgentsShow",
+      "complexity": 25,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/ask.go|cmd||drainOutputToolFinalizationStream",
+      "complexity": 22,
+      "owner": "cmd/ask",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M4",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/ask.go|cmd||enableMCPServersWithFeedback",
+      "complexity": 24,
+      "owner": "cmd/ask",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M4",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/ask.go|cmd||runAsk",
+      "complexity": 124,
+      "owner": "cmd/ask",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M4",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/ask.go|cmd||streamPlainText",
+      "complexity": 49,
+      "owner": "cmd/ask",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M4",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/ask.go|cmd|askStreamModel|Update",
+      "complexity": 78,
+      "owner": "cmd/ask",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M4",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/ask_execute.go|cmd|*askStreamingExecution|run",
+      "complexity": 37,
+      "owner": "cmd/ask",
+      "rationale": "cmd/ask extraction owns one ordered domain responsibility; further reduction is tracked by M4",
+      "removal_milestone": "M4",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|cmd/ask_execute_progressive.go|cmd|*askProgressiveExecution|run",
+      "complexity": 41,
+      "owner": "cmd/ask",
+      "rationale": "cmd/ask extraction owns one ordered domain responsibility; further reduction is tracked by M4",
+      "removal_milestone": "M4",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|cmd/ask_finalize.go|cmd|*askFinalization|runCompletionHook",
+      "complexity": 21,
+      "owner": "cmd/ask",
+      "rationale": "cmd/ask extraction owns one ordered domain responsibility; further reduction is tracked by M4",
+      "removal_milestone": "M4",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|cmd/ask_prepare.go|cmd||prepareAskConversation",
+      "complexity": 25,
+      "owner": "cmd/ask",
+      "rationale": "cmd/ask extraction owns one ordered domain responsibility; further reduction is tracked by M4",
+      "removal_milestone": "M4",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|cmd/ask_progressive.go|cmd|*askProgressiveBridge|HandleEvent",
+      "complexity": 49,
+      "owner": "cmd/ask",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M4",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/ask_stream_update.go|cmd|askStreamModel|handleStreamEventMessage",
+      "complexity": 24,
+      "owner": "cmd/ask",
+      "rationale": "cmd/ask extraction owns one ordered domain responsibility; further reduction is tracked by M4",
+      "removal_milestone": "M4",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|cmd/benchmark.go|cmd||resolveBenchmarkTargets",
+      "complexity": 67,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/benchmark.go|cmd||runBenchmark",
+      "complexity": 44,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/bootstrap.go|cmd||registerModelLimits",
+      "complexity": 26,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/chat.go|cmd||buildChatSessionRuntime",
+      "complexity": 88,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/chat.go|cmd||resolveSessionProviderKey",
+      "complexity": 24,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/chat.go|cmd||runChatOnce",
+      "complexity": 28,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/chat.go|cmd||wireChatSessionUI",
+      "complexity": 28,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/config.go|cmd||configValueCompletions",
+      "complexity": 45,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/edit.go|cmd||runEdit",
+      "complexity": 28,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/edit.go|cmd||runStreamEdit",
+      "complexity": 45,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/exec.go|cmd||runExec",
+      "complexity": 34,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/exec.go|cmd|*execRunSink|Event",
+      "complexity": 39,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/goal_runtime.go|cmd|*serveRuntime|runActiveGoalLoop",
+      "complexity": 71,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/image.go|cmd||runImage",
+      "complexity": 41,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/imagetest/main.go|main||main",
+      "complexity": 24,
+      "owner": "cmd/imagetest",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/jobs.go|cmd||runJobsList",
+      "complexity": 31,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/loop.go|cmd||runLoop",
+      "complexity": 41,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/mcp.go|cmd||mcpAddFromRegistry",
+      "complexity": 24,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/mcp.go|cmd||mcpBrowse",
+      "complexity": 26,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/memory_fragments.go|cmd||runMemoryFragmentsSync",
+      "complexity": 21,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/memory_freshen.go|cmd||runMemoryUpdateRecent",
+      "complexity": 35,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/memory_mine.go|cmd||runMemoryMine",
+      "complexity": 59,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/memory_mine.go|cmd||walkMineCandidates",
+      "complexity": 23,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/memory_promote.go|cmd||runMemoryPromoteFlow",
+      "complexity": 21,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/memory_search.go|cmd||searchMemory",
+      "complexity": 22,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/memory_status.go|cmd||runMemoryStatus",
+      "complexity": 29,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/models.go|cmd||runModels",
+      "complexity": 82,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/process.go|cmd||newProcessRestartCommand",
+      "complexity": 41,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/process_progress.go|cmd|*processRestartProgress|render",
+      "complexity": 25,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/progressive.go|cmd||runProgressiveSession",
+      "complexity": 23,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/runner.go|cmd|*cmdRunner|prepare",
+      "complexity": 78,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/runner.go|cmd|*cmdRunner|resolveSettings",
+      "complexity": 22,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/runner.go|cmd|*cmdRunner|runProgressive",
+      "complexity": 34,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve.go|cmd||runServeLegacy",
+      "complexity": 147,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_approval_handler.go|cmd|*serveServer|handleSessionApproval",
+      "complexity": 24,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_ask_user_handler.go|cmd|*serveServer|handleSessionAskUser",
+      "complexity": 23,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_ask_user_state_handler.go|cmd|*serveServer|handleSessionState",
+      "complexity": 81,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_branch.go|cmd|*serveServer|handleCreateSessionBranch",
+      "complexity": 32,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_branch.go|cmd|*serveServer|handleSessionPathNotes",
+      "complexity": 26,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_browser_fixture.go|cmd||init",
+      "complexity": 34,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_children.go|cmd|*serveServer|handleSessionChildren",
+      "complexity": 28,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_commit.go|cmd|*serveServer|commitBlocker",
+      "complexity": 36,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_commit.go|cmd|*serveServer|handleCreateCommitOperation",
+      "complexity": 40,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_commit.go|cmd|*serveServer|handleCreateCommitRun",
+      "complexity": 33,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_compaction.go|cmd|*serveRuntime|compactSession",
+      "complexity": 32,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_events.go|cmd|*serveServer|handleEventPoll",
+      "complexity": 26,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_events.go|cmd|*serveServer|handleEvents",
+      "complexity": 24,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_file_changes.go|cmd||fileChangeLanguage",
+      "complexity": 42,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_file_changes.go|cmd|*serveServer|handleSessionFileChangeContent",
+      "complexity": 28,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_file_changes.go|cmd|*serveServer|handleSessionFileChanges",
+      "complexity": 28,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|createRequestRuntime",
+      "complexity": 27,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|ensureFileServeable",
+      "complexity": 27,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|ensureImageServeable",
+      "complexity": 29,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|ensureRuntimeBaseDirForSession",
+      "complexity": 29,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|handleModels",
+      "complexity": 36,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|handlePushSubscribe",
+      "complexity": 21,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|handleSessionInterrupt",
+      "complexity": 46,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|handleSessionRuntimeGoal",
+      "complexity": 37,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|handleSessionSteeringCancel",
+      "complexity": 24,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|handleSessionTitleRefine",
+      "complexity": 23,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|handleSessions",
+      "complexity": 46,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|handleUI",
+      "complexity": 21,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|runtimeForFreshAgentProviderRequest",
+      "complexity": 22,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|selectedWebSession",
+      "complexity": 23,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|sessionMessageEntries",
+      "complexity": 74,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_handlers.go|cmd|*serveServer|syncPersistedSessionRuntime",
+      "complexity": 65,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_handlers_anthropic.go|cmd|*serveServer|handleAnthropicMessages",
+      "complexity": 35,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_handlers_anthropic.go|cmd|*serveServer|streamAnthropicMessages",
+      "complexity": 22,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_handlers_chat.go|cmd|*serveServer|handleChatCompletions",
+      "complexity": 36,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_handlers_chat.go|cmd|*serveServer|streamChatCompletions",
+      "complexity": 21,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_handlers_responses.go|cmd|*serveServer|handleResolvedResponses",
+      "complexity": 104,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_handlers_responses.go|cmd|*serveServer|handleResponses",
+      "complexity": 89,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_handlers_status.go|cmd|*serveServer|handleSessionsStatus",
+      "complexity": 49,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_hub_attention.go|cmd|*hubServer|collectNodeAttentionOnce",
+      "complexity": 28,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_hub_attention.go|cmd|*hubServer|handleHubAttention",
+      "complexity": 30,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_hub_cmd.go|cmd||runServeHub",
+      "complexity": 42,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_hub_delegations.go|cmd|*hubServer|handleCreateDelegation",
+      "complexity": 30,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_hub_passkey.go|cmd|*browserPasskeyHandler|passkeyAuth",
+      "complexity": 26,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_hub_reverse_connector.go|cmd||handleHubReverseRequest",
+      "complexity": 22,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_jobs_v2.go|cmd|*jobsV2LLMRunner|Run",
+      "complexity": 39,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_jobs_v2.go|cmd|*serveServer|handleJobV2ByID",
+      "complexity": 26,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_jobs_v2_migrations.go|cmd||initJobsV2Schema",
+      "complexity": 30,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_mcp.go|cmd||runServeMCP",
+      "complexity": 43,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_mcp_handler.go|cmd|*serveRuntime|applyMCPSelectionLocked",
+      "complexity": 21,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_mcp_handler.go|cmd|*serveServer|handleSessionMCP",
+      "complexity": 21,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_mcp_oauth.go|cmd|*serveServer|handleSessionMCPOAuth",
+      "complexity": 29,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_media.go|cmd|*serveMediaPublisher|PublishMedia",
+      "complexity": 25,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_model_swap.go|cmd|*serveServer|executeResponseRunModelSwap",
+      "complexity": 30,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_projects.go|cmd||listProjectDirectories",
+      "complexity": 21,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_projects.go|cmd|*serveServer|handleProjectByID",
+      "complexity": 23,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_projects.go|cmd|*serveServer|handleProjects",
+      "complexity": 22,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_projects.go|cmd|*serveServer|handleSessionProjectAssignment",
+      "complexity": 44,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_protocol.go|cmd||jpegEXIFOrientation",
+      "complexity": 22,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_protocol.go|cmd||parseDiffCommentPart",
+      "complexity": 27,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_protocol.go|cmd||parseUserMessageContent",
+      "complexity": 40,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_protocol_anthropic.go|cmd||parseAnthropicMessages",
+      "complexity": 31,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_response_followup.go|cmd|*serveServer|claimUIFollowUp",
+      "complexity": 32,
+      "owner": "cmd/serve",
+      "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M5",
+      "removal_milestone": "M5",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|cmd/serve_response_run_event_projection.go|cmd|*serveServer|appendResponseToolExecEnd",
+      "complexity": 29,
+      "owner": "cmd/serve",
+      "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M5",
+      "removal_milestone": "M5",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|cmd/serve_response_run_events.go|cmd|*responseRun|appendEventLocked",
+      "complexity": 25,
+      "owner": "cmd/serve",
+      "rationale": "mechanically moved from .|cmd/serve_response_runs.go|cmd|*responseRun|appendEventLocked while preserving its named responsibility",
+      "removal_milestone": "M5",
+      "origin": "moved"
+    },
+    {
+      "key": ".|cmd/serve_response_run_execution.go|cmd|*serveServer|executeResponseRun",
+      "complexity": 39,
+      "owner": "cmd/serve",
+      "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M5",
+      "removal_milestone": "M5",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|cmd/serve_response_run_manager.go|cmd|*serveServer|sweepAndRenewResponseLifecycle",
+      "complexity": 24,
+      "owner": "cmd/serve",
+      "rationale": "mechanically moved from .|cmd/serve_response_runs.go|cmd|*serveServer|sweepAndRenewResponseLifecycle while preserving its named responsibility",
+      "removal_milestone": "M5",
+      "origin": "moved"
+    },
+    {
+      "key": ".|cmd/serve_response_run_recovery.go|cmd|*responseRun|recoveryPayloadLocked",
+      "complexity": 46,
+      "owner": "cmd/serve",
+      "rationale": "mechanically moved from .|cmd/serve_response_runs.go|cmd|*responseRun|recoveryPayloadLocked while preserving its named responsibility",
+      "removal_milestone": "M5",
+      "origin": "moved"
+    },
+    {
+      "key": ".|cmd/serve_response_run_recovery_events.go|cmd|*responseRun|applyRecoveryResponseToolExecEnd",
+      "complexity": 22,
+      "owner": "cmd/serve",
+      "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M5",
+      "removal_milestone": "M5",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|cmd/serve_response_run_stream.go|cmd|*serveServer|startResponseRun",
+      "complexity": 55,
+      "owner": "cmd/serve",
+      "rationale": "mechanically moved from .|cmd/serve_response_runs.go|cmd|*serveServer|startResponseRun while preserving its named responsibility",
+      "removal_milestone": "M5",
+      "origin": "moved"
+    },
+    {
+      "key": ".|cmd/serve_response_run_stream.go|cmd|*serveServer|streamResponseRunEvents",
+      "complexity": 24,
+      "owner": "cmd/serve",
+      "rationale": "mechanically moved from .|cmd/serve_response_runs.go|cmd|*serveServer|streamResponseRunEvents while preserving its named responsibility",
+      "removal_milestone": "M5",
+      "origin": "moved"
+    },
+    {
+      "key": ".|cmd/serve_responses_durable.go|cmd|*serveServer|generateBranchPathNote",
+      "complexity": 22,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M5",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_responses_durable.go|cmd|*serveServer|resolveDurableBranch",
+      "complexity": 40,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M5",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_run_finalize.go|cmd|*serveRunPersistence|finalizeSuccess",
+      "complexity": 25,
+      "owner": "cmd/serve",
+      "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M3",
+      "removal_milestone": "M3",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|cmd/serve_run_history.go|cmd|*serveRuntime|prepareRunHistory",
+      "complexity": 21,
+      "owner": "cmd/serve",
+      "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M3",
+      "removal_milestone": "M3",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|cmd/serve_run_persistence.go|cmd|*serveRunPersistence|applyCompaction",
+      "complexity": 25,
+      "owner": "cmd/serve",
+      "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M3",
+      "removal_milestone": "M3",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|cmd/serve_runtime.go|cmd|*serveRuntime|InterruptMessage",
+      "complexity": 40,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M3",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_runtime.go|cmd|*serveRuntime|appendMessagesBatchDetailed",
+      "complexity": 24,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M3",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_runtime.go|cmd|*serveRuntime|ensurePersistedSession",
+      "complexity": 23,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M3",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_runtime.go|cmd|*serveRuntime|persistSnapshotWithInitialBoundary",
+      "complexity": 24,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M3",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_runtime.go|cmd|*serveRuntime|runOnce",
+      "complexity": 123,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M3",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_session.go|cmd|*serveSessionManager|BeginSwap",
+      "complexity": 29,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M5",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_session.go|cmd|*serveSessionManager|ReplaceIdleWith",
+      "complexity": 26,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M5",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_session_inputs.go|cmd|*serveServer|prepareUIRuntime",
+      "complexity": 66,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M5",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_session_routes.go|cmd|*serveServer|routeSessionResources",
+      "complexity": 21,
+      "owner": "cmd/serve",
+      "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M5",
+      "removal_milestone": "M5",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|cmd/serve_session_routes.go|cmd|*serveServer|routeSessionRuntime",
+      "complexity": 27,
+      "owner": "cmd/serve",
+      "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M5",
+      "removal_milestone": "M5",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|cmd/serve_share.go|cmd|*serveServer|handleCreateSessionShare",
+      "complexity": 23,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_shell.go|cmd|*serveServer|handleShellStream",
+      "complexity": 26,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_shell.go|cmd|*serveShell|appendOutput",
+      "complexity": 26,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_shell_controller.go|cmd|*serveCollaborativeShellController|Execute",
+      "complexity": 36,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_shell_controller.go|cmd|*serveShell|finishCommandFailure",
+      "complexity": 44,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_shell_protocol.go|cmd||sanitizeServeShellText",
+      "complexity": 48,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_shell_protocol.go|cmd|*serveShellProtocolParser|Feed",
+      "complexity": 40,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_side_question.go|cmd|*serveRuntime|startSideQuestion",
+      "complexity": 30,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_side_question.go|cmd|*serveServer|handleSideQuestion",
+      "complexity": 38,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_steering_rush.go|cmd|*serveServer|handleSteeringRush",
+      "complexity": 38,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_steering_wire.go|cmd||normalizeSteeringObject",
+      "complexity": 22,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_transcribe.go|cmd|*serveServer|handleTranscribe",
+      "complexity": 24,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_undo_redo.go|cmd|*serveServer|handleSessionUndoRedo",
+      "complexity": 22,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_workspace_resolver.go|cmd||persistedProjectWorkspaceBinding",
+      "complexity": 21,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_workspace_resolver.go|cmd|*serveServer|bindResolvedWorkspace",
+      "complexity": 23,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_workspace_resolver.go|cmd|*serveServer|resolveWorkspace",
+      "complexity": 60,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_worktrees.go|cmd|*serveServer|activeRootRunsForWorktreeMerge",
+      "complexity": 23,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_worktrees.go|cmd|*serveServer|handleWorktreeSwitch",
+      "complexity": 28,
+      "owner": "cmd/serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/service.go|cmd||installUserService",
+      "complexity": 89,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/service_args.go|cmd||parseServiceLaunch",
+      "complexity": 48,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/service_manage.go|cmd||manageUserService",
+      "complexity": 53,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/service_manage.go|cmd||runUserService",
+      "complexity": 33,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/session.go|cmd||ResolveSettingsInDir",
+      "complexity": 28,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/session.go|cmd||resolveSessionPromptTools",
+      "complexity": 25,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/sessions_autotitle.go|cmd||runSessionsAutotitle",
+      "complexity": 34,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/sessions_share.go|cmd||runSessionsShare",
+      "complexity": 50,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/skills.go|cmd||runSkillsUpdate",
+      "complexity": 30,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/usage.go|cmd||runUsage",
+      "complexity": 27,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|cmd/video.go|cmd||runVideo",
+      "complexity": 38,
+      "owner": "cmd",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/agents/agent.go|agents|*Agent|Validate",
+      "complexity": 23,
+      "owner": "internal/agents",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/agents/template.go|agents||ExpandTemplate",
+      "complexity": 39,
+      "owner": "internal/agents",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/agyproxy/proxy.go|agyproxy||readAgyArtifact",
+      "complexity": 32,
+      "owner": "internal/agyproxy",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/audio/elevenlabs.go|audio|*ElevenLabsProvider|Generate",
+      "complexity": 21,
+      "owner": "internal/audio",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/benchmark/aggregate.go|benchmark||ComputeFits",
+      "complexity": 24,
+      "owner": "internal/benchmark",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/benchmark/measure.go|benchmark||finalizeEligibility",
+      "complexity": 22,
+      "owner": "internal/benchmark",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/benchmark/measure.go|benchmark|Runner|measure",
+      "complexity": 35,
+      "owner": "internal/benchmark",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/benchmark/runner.go|benchmark|Runner|runTarget",
+      "complexity": 34,
+      "owner": "internal/benchmark",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/cliwire/connect.go|cliwire||decodeConnectRequestMessages",
+      "complexity": 24,
+      "owner": "internal/cliwire",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/cliwire/proxy.go|cliwire||StartWithAdditionalCA",
+      "complexity": 22,
+      "owner": "internal/cliwire",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/config/config.go|config||DescribeCredentialSource",
+      "complexity": 22,
+      "owner": "internal/config",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/config/config.go|config||resolveProviderCredentials",
+      "complexity": 40,
+      "owner": "internal/config",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/config/config.go|config|*Config|ValidateLifecycle",
+      "complexity": 27,
+      "owner": "internal/config",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/contain/template.go|contain||CreateWorkspace",
+      "complexity": 31,
+      "owner": "internal/contain",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/contain/template_descriptor.go|contain||askTemplatePrompt",
+      "complexity": 26,
+      "owner": "internal/contain",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/credentials/chatgpt.go|credentials||RefreshChatGPTCredentials",
+      "complexity": 28,
+      "owner": "internal/credentials",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/credentials/grok.go|credentials||RefreshGrokCredentialsWithClient",
+      "complexity": 41,
+      "owner": "internal/credentials",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/debuglog/formatter.go|debuglog||formatEventEntry",
+      "complexity": 22,
+      "owner": "internal/debuglog",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/debuglog/formatter.go|debuglog||formatRequestEntry",
+      "complexity": 21,
+      "owner": "internal/debuglog",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/diagnostics/diagnostics.go|diagnostics||extToLang",
+      "complexity": 23,
+      "owner": "internal/diagnostics",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/edit/executor.go|edit|*StreamEditExecutor|executeOnce",
+      "complexity": 64,
+      "owner": "internal/edit",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/edit/inline_parser.go|edit|*InlineEditParser|process",
+      "complexity": 30,
+      "owner": "internal/edit",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/embedding/provider.go|embedding||NewEmbeddingProvider",
+      "complexity": 34,
+      "owner": "internal/embedding",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/extensions/manager.go|extensions||scan",
+      "complexity": 53,
+      "owner": "internal/extensions",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/filetrack/store.go|filetrack||initSchema",
+      "complexity": 40,
+      "owner": "internal/filetrack",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/filetrack/store.go|filetrack|*Store|fileDiffContentFromSpan",
+      "complexity": 21,
+      "owner": "internal/filetrack",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/filetrack/store.go|filetrack|*Store|recordChange",
+      "complexity": 67,
+      "owner": "internal/filetrack",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/gitcommit/publish.go|gitcommit|*Repository|Publish",
+      "complexity": 36,
+      "owner": "internal/gitcommit",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/gitcommit/publish.go|gitcommit|*Repository|publishPlan",
+      "complexity": 25,
+      "owner": "internal/gitcommit",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/gitcommit/status.go|gitcommit||parseStatus",
+      "complexity": 22,
+      "owner": "internal/gitcommit",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/gitdiff/gitdiff.go|gitdiff|*Repo|List",
+      "complexity": 27,
+      "owner": "internal/gitdiff",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/image/gemini.go|image||writeGeminiRequestJSON",
+      "complexity": 21,
+      "owner": "internal/image",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/image/provider.go|image||NewImageProvider",
+      "complexity": 30,
+      "owner": "internal/image",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/agy_bin.go|llm|*AgyBinProvider|Stream",
+      "complexity": 25,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/agy_bin.go|llm|*AgyBinProvider|runCommand",
+      "complexity": 27,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/anthropic.go|llm|*AnthropicProvider|streamStandardForModel",
+      "complexity": 43,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/anthropic.go|llm|*AnthropicProvider|streamWithSearch",
+      "complexity": 48,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/chatgpt.go|llm|*ChatGPTProvider|Stream",
+      "complexity": 23,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/chatgpt_context.go|llm||resolveChatGPTContext",
+      "complexity": 24,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/claude_bin.go|llm|*ClaudeBinProvider|Stream",
+      "complexity": 25,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/claude_bin.go|llm|*ClaudeBinProvider|buildCommandEnv",
+      "complexity": 24,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/claude_bin.go|llm|*ClaudeBinProvider|buildStreamJsonInput",
+      "complexity": 22,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/claude_bin.go|llm|*ClaudeBinProvider|handleClaudeLine",
+      "complexity": 47,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/claude_bin.go|llm|*ClaudeBinProvider|renderConversationParts",
+      "complexity": 26,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/claude_bin.go|llm|*ClaudeBinProvider|runClaudeCommand",
+      "complexity": 35,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/compaction.go|llm||compactToolResultSummary",
+      "complexity": 24,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/context_window.go|llm||InputLimitForProviderModel",
+      "complexity": 23,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/copilot.go|llm|*CopilotProvider|streamChatCompletions",
+      "complexity": 42,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/cursor_bin.go|llm|*CursorBinProvider|runCursorCommand",
+      "complexity": 26,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/debug.go|llm||DebugRawEvent",
+      "complexity": 24,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/debug.go|llm||DebugRawRequest",
+      "complexity": 28,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/debug_logger.go|llm|*DebugLogger|LogEvent",
+      "complexity": 31,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/debug_provider.go|llm||parseCommand",
+      "complexity": 43,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/engine.go|llm|*Engine|Stream",
+      "complexity": 39,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M2",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/engine.go|llm|*Engine|executeToolCallOutcomes",
+      "complexity": 22,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M2",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/engine.go|llm|*Engine|runLoop",
+      "complexity": 441,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M2",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/engine.go|llm|*Engine|runSimpleScratchpad",
+      "complexity": 61,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M2",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/factory.go|llm||NewProviderByName",
+      "complexity": 39,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/factory.go|llm||createProviderFromConfig",
+      "complexity": 43,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/factory.go|llm||newProviderInternal",
+      "complexity": 29,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/gemini.go|llm|*GeminiProvider|Stream",
+      "complexity": 42,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/grok_acp.go|llm|*GrokBinProvider|runGrokACP",
+      "complexity": 58,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/grok_acp.go|llm|*GrokBinProvider|startGrokACPProcess",
+      "complexity": 36,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/grok_acp.go|llm|*grokACPHandler|HandleNotification",
+      "complexity": 33,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/grok_bin.go|llm||buildGrokACPPrompt",
+      "complexity": 25,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/grok_bin.go|llm||renderGrokConversationParts",
+      "complexity": 21,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/grok_bin.go|llm|*GrokBinProvider|Stream",
+      "complexity": 21,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/grok_bin.go|llm|*GrokBinProvider|runGrokCommand",
+      "complexity": 25,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/grok_models.go|llm||loadGrokModelsCache",
+      "complexity": 25,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/json_schema_model.go|llm||parseSanitizedToolJSONSchemaMap",
+      "complexity": 24,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/models.go|llm||GetProviderCompletions",
+      "complexity": 57,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/models.go|llm||defaultReasoningEffortsForProviderModel",
+      "complexity": 28,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/ollama.go|llm||buildOllamaMessages",
+      "complexity": 37,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/ollama.go|llm|*OllamaProvider|Stream",
+      "complexity": 50,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/openai.go|llm||normalizeSchemaRecursive",
+      "complexity": 24,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/openai.go|llm|*OpenAIProvider|Stream",
+      "complexity": 27,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/openai_compat.go|llm||buildCompatMessages",
+      "complexity": 31,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/openai_compat.go|llm|*OpenAICompatProvider|Stream",
+      "complexity": 57,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/opencode_go_models.go|llm|*opencodeGoModelCatalog|loadWithFreshness",
+      "complexity": 21,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/path_notes.go|llm||GeneratePathNotes",
+      "complexity": 26,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/path_notes.go|llm||pathNoteFileOperations",
+      "complexity": 23,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/provider_usage.go|llm||normalizeGrokProviderUsage",
+      "complexity": 21,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/responses_api.go|llm||buildResponsesMessageItems",
+      "complexity": 24,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/responses_api.go|llm|*ResponsesClient|Stream",
+      "complexity": 30,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/responses_api.go|llm|*ResponsesClient|streamHTTPPrepared",
+      "complexity": 67,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/responses_event_handler.go|llm|*responsesStreamEventHandler|HandleJSONEvent",
+      "complexity": 98,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/responses_options.go|llm||validateResponsesOptions",
+      "complexity": 32,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/responses_websocket.go|llm|*ResponsesClient|ensureWebSocket",
+      "complexity": 24,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/responses_websocket.go|llm|*ResponsesClient|streamWebSocketPrepared",
+      "complexity": 43,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/retry.go|llm||isRetryable",
+      "complexity": 24,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/tool_history_sanitize.go|llm||clonePart",
+      "complexity": 23,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/tool_history_sanitize.go|llm||sanitizeToolHistorySlow",
+      "complexity": 27,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/transcribe.go|llm||TranscribeWithConfig",
+      "complexity": 47,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/venice.go|llm|*VeniceProvider|Stream",
+      "complexity": 52,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/venice_image_models.go|llm||GetVeniceImageModelIDs",
+      "complexity": 21,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/xai.go|llm|*XAIProvider|streamStandard",
+      "complexity": 50,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/llm/xai.go|llm|*XAIProvider|streamWithSearch",
+      "complexity": 32,
+      "owner": "llm",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/mcp/manager.go|mcp|*Manager|Enable",
+      "complexity": 25,
+      "owner": "internal/mcp",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/mcp/oauth/coordinator.go|oauth|*Coordinator|newHandler",
+      "complexity": 37,
+      "owner": "internal/mcp/oauth",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/mcp/sampling.go|mcp|*SamplingHandler|Handle",
+      "complexity": 26,
+      "owner": "internal/mcp",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/mcphttp/http_server.go|mcphttp|*Server|startInternal",
+      "complexity": 22,
+      "owner": "internal/mcphttp",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/memory/store.go|memory||initSchema",
+      "complexity": 33,
+      "owner": "memory",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/memory/store_embeddings.go|memory|*Store|VectorSearch",
+      "complexity": 24,
+      "owner": "memory",
+      "rationale": "mechanically moved from .|internal/memory/store.go|memory|*Store|VectorSearch while preserving its named responsibility",
+      "removal_milestone": "M7",
+      "origin": "moved"
+    },
+    {
+      "key": ".|internal/mentions/attachments.go|mentions||loadEagerAttachments",
+      "complexity": 23,
+      "owner": "internal/mentions",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/music/music.go|music|*ElevenLabsProvider|Generate",
+      "complexity": 24,
+      "owner": "internal/music",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/music/music.go|music|*VeniceProvider|Generate",
+      "complexity": 25,
+      "owner": "internal/music",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/passkeyauth/config.go|passkeyauth||ParseEndpoint",
+      "complexity": 28,
+      "owner": "internal/passkeyauth",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/passkeyauth/session.go|passkeyauth|*Sessions|open",
+      "complexity": 27,
+      "owner": "internal/passkeyauth",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/process/process_linux.go|process||RestartWithProgress",
+      "complexity": 43,
+      "owner": "internal/process",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/process/state.go|process||RestoreState",
+      "complexity": 31,
+      "owner": "internal/process",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/render/chat/message_block.go|chat|*MessageBlockRenderer|renderAssistantMessage",
+      "complexity": 32,
+      "owner": "internal/render/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/render/chat/renderer.go|chat|*Renderer|HandleEvent",
+      "complexity": 27,
+      "owner": "internal/render/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/render/markdown/ansi.go|markdown||fitColumnWidths",
+      "complexity": 21,
+      "owner": "internal/render/markdown",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/render/markdown/ansi.go|markdown|*ANSI|renderBlock",
+      "complexity": 26,
+      "owner": "internal/render/markdown",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/render/markdown/ansi.go|markdown|*ANSI|renderInline",
+      "complexity": 24,
+      "owner": "internal/render/markdown",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/search/factory.go|search||NewSearcher",
+      "complexity": 26,
+      "owner": "internal/search",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/serve/telegram.go|serve|*telegramSessionMgr|handleMessageWithAdmission",
+      "complexity": 55,
+      "owner": "serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M6",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/serve/telegram.go|serve|*telegramSessionMgr|streamReplyContinuation",
+      "complexity": 157,
+      "owner": "serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M6",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/serve/telegram_markdown.go|serve||htmlToTelegram",
+      "complexity": 41,
+      "owner": "serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M6",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/serve/telegram_reload.go|serve|*telegramSessionMgr|runPolling",
+      "complexity": 24,
+      "owner": "serve",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M6",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/session/attention.go|session|*SQLiteStore|FinalizeResponseRun",
+      "complexity": 27,
+      "owner": "session",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/session/attention.go|session|*SQLiteStore|ListAttention",
+      "complexity": 28,
+      "owner": "session",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/session/attention.go|session|*SQLiteStore|RecoverExpiredResponseRuns",
+      "complexity": 21,
+      "owner": "session",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/session/attention.go|session|*SQLiteStore|SetResponseRunInteractionState",
+      "complexity": 21,
+      "owner": "session",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/session/branch.go|session|*SQLiteStore|CreateBranch",
+      "complexity": 53,
+      "owner": "session",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/session/context_state.go|session||markCompactionDisplayTailsForPersistence",
+      "complexity": 22,
+      "owner": "session",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/session/export.go|session||ExportToMarkdown",
+      "complexity": 33,
+      "owner": "session",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/session/export_html.go|session||buildHTMLExportMessages",
+      "complexity": 27,
+      "owner": "session",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/session/handover_rename.go|session||PrettifyHandoverName",
+      "complexity": 26,
+      "owner": "session",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/session/rush.go|session|*SQLiteStore|AdmitRush",
+      "complexity": 31,
+      "owner": "session",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/session/sqlite_messages.go|session||replacementCommonPrefix",
+      "complexity": 21,
+      "owner": "session",
+      "rationale": "mechanically moved from .|internal/session/sqlite.go|session||replacementCommonPrefix while preserving its named responsibility",
+      "removal_milestone": "M7",
+      "origin": "moved"
+    },
+    {
+      "key": ".|internal/session/sqlite_messages.go|session||transcriptRowHasDisplayBody",
+      "complexity": 24,
+      "owner": "session",
+      "rationale": "mechanically moved from .|internal/session/sqlite.go|session||transcriptRowHasDisplayBody while preserving its named responsibility",
+      "removal_milestone": "M7",
+      "origin": "moved"
+    },
+    {
+      "key": ".|internal/session/sqlite_messages.go|session|*SQLiteStore|GetTranscriptSnapshot",
+      "complexity": 26,
+      "owner": "session",
+      "rationale": "mechanically moved from .|internal/session/sqlite.go|session|*SQLiteStore|GetTranscriptSnapshot while preserving its named responsibility",
+      "removal_milestone": "M7",
+      "origin": "moved"
+    },
+    {
+      "key": ".|internal/session/sqlite_messages.go|session|*SQLiteStore|UndoLastUserTurn",
+      "complexity": 29,
+      "owner": "session",
+      "rationale": "mechanically moved from .|internal/session/sqlite.go|session|*SQLiteStore|UndoLastUserTurn while preserving its named responsibility",
+      "removal_milestone": "M7",
+      "origin": "moved"
+    },
+    {
+      "key": ".|internal/session/sqlite_messages.go|session|*SQLiteStore|appendMessagesWithRush",
+      "complexity": 36,
+      "owner": "session",
+      "rationale": "mechanically moved from .|internal/session/sqlite.go|session|*SQLiteStore|appendMessagesWithRush while preserving its named responsibility",
+      "removal_milestone": "M7",
+      "origin": "moved"
+    },
+    {
+      "key": ".|internal/session/sqlite_projects.go|session|*SQLiteStore|Sidebar",
+      "complexity": 31,
+      "owner": "session",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/session/sqlite_push.go|session||scanSessionRow",
+      "complexity": 38,
+      "owner": "session",
+      "rationale": "mechanically moved from .|internal/session/sqlite.go|session||scanSessionRow while preserving its named responsibility",
+      "removal_milestone": "M7",
+      "origin": "moved"
+    },
+    {
+      "key": ".|internal/session/sqlite_push.go|session|*SQLiteStore|probeSessionColumns",
+      "complexity": 24,
+      "owner": "session",
+      "rationale": "mechanically moved from .|internal/session/sqlite.go|session|*SQLiteStore|probeSessionColumns while preserving its named responsibility",
+      "removal_milestone": "M7",
+      "origin": "moved"
+    },
+    {
+      "key": ".|internal/session/sqlite_schema.go|session||NewSQLiteStore",
+      "complexity": 22,
+      "owner": "session",
+      "rationale": "mechanically moved from .|internal/session/sqlite.go|session||NewSQLiteStore while preserving its named responsibility",
+      "removal_milestone": "M7",
+      "origin": "moved"
+    },
+    {
+      "key": ".|internal/session/sqlite_schema.go|session||initSchema",
+      "complexity": 42,
+      "owner": "session",
+      "rationale": "mechanically moved from .|internal/session/sqlite.go|session||initSchema while preserving its named responsibility",
+      "removal_milestone": "M7",
+      "origin": "moved"
+    },
+    {
+      "key": ".|internal/session/sqlite_session_inputs.go|session|*SQLiteStore|RefreshSessionInputs",
+      "complexity": 24,
+      "owner": "session",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/session/sqlite_sessions.go|session|*SQLiteStore|List",
+      "complexity": 68,
+      "owner": "session",
+      "rationale": "mechanically moved from .|internal/session/sqlite.go|session|*SQLiteStore|List while preserving its named responsibility",
+      "removal_milestone": "M7",
+      "origin": "moved"
+    },
+    {
+      "key": ".|internal/session/sqlite_sessions.go|session|*SQLiteStore|Search",
+      "complexity": 28,
+      "owner": "session",
+      "rationale": "mechanically moved from .|internal/session/sqlite.go|session|*SQLiteStore|Search while preserving its named responsibility",
+      "removal_milestone": "M7",
+      "origin": "moved"
+    },
+    {
+      "key": ".|internal/session/transcript_fallback.go|session|*FallbackTranscriptIndexer|read",
+      "complexity": 21,
+      "owner": "session",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/sessiontitle/generator.go|sessiontitle||BuildConversationSlice",
+      "complexity": 30,
+      "owner": "internal/sessiontitle",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/share/share.go|share||ValidateCapabilities",
+      "complexity": 21,
+      "owner": "internal/share",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/sidequestion/sidequestion.go|sidequestion||buildMessagesWithinBudget",
+      "complexity": 25,
+      "owner": "internal/sidequestion",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/sqliteutil/schema.go|sqliteutil||canonicalizeCreateTableColumns",
+      "complexity": 24,
+      "owner": "internal/sqliteutil",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/subagentview/completed.go|subagentview||Build",
+      "complexity": 29,
+      "owner": "internal/subagentview",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/cell.go|uv||StyleDiff",
+      "complexity": 57,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/decoder.go|uv||parseKittyKeyboard",
+      "complexity": 44,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/decoder.go|uv|*EventDecoder|Decode",
+      "complexity": 24,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/decoder.go|uv|*EventDecoder|parseCsi",
+      "complexity": 123,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/decoder.go|uv|*EventDecoder|parseDcs",
+      "complexity": 28,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/decoder.go|uv|*EventDecoder|parseOsc",
+      "complexity": 32,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/decoder.go|uv|*EventDecoder|parseSs3",
+      "complexity": 24,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/decoder.go|uv|*EventDecoder|parseStTerminated",
+      "complexity": 24,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/decoder.go|uv|*EventDecoder|parseWin32InputKeyEvent",
+      "complexity": 91,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/key.go|uv||keyMatchString",
+      "complexity": 21,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/key.go|uv|Key|Keystroke",
+      "complexity": 23,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/styled.go|uv||ReadStyle",
+      "complexity": 42,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/styled.go|uv||printString",
+      "complexity": 29,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_reader.go|uv|*eventScanner|scanEvents",
+      "complexity": 38,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_reader_windows.go|uv|*TerminalReader|serializeWin32InputRecords",
+      "complexity": 28,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_renderer.go|uv||relativeCursorMove",
+      "complexity": 58,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_renderer.go|uv|*TerminalRenderer|Render",
+      "complexity": 34,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_renderer.go|uv|*TerminalRenderer|emitRange",
+      "complexity": 22,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_renderer.go|uv|*TerminalRenderer|transformLine",
+      "complexity": 68,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_renderer_hardscroll.go|uv|*TerminalRenderer|scrollOptimize",
+      "complexity": 22,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/renderer|internal/terminal/renderer/terminal_renderer_hashmap.go|uv|*TerminalRenderer|updateHashmap",
+      "complexity": 32,
+      "owner": "internal/terminal/renderer",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/runtime|internal/terminal/runtime/cursed_renderer.go|tea||viewEquals",
+      "complexity": 24,
+      "owner": "internal/terminal/runtime",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/runtime|internal/terminal/runtime/cursed_renderer.go|tea|*cursedRenderer|close",
+      "complexity": 25,
+      "owner": "internal/terminal/runtime",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/runtime|internal/terminal/runtime/cursed_renderer.go|tea|*cursedRenderer|flush",
+      "complexity": 111,
+      "owner": "internal/terminal/runtime",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/runtime|internal/terminal/runtime/cursed_renderer_scroll.go|tea||lineScrollIndependent",
+      "complexity": 23,
+      "owner": "internal/terminal/runtime",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/runtime|internal/terminal/runtime/tea.go|tea|*Program|Run",
+      "complexity": 29,
+      "owner": "internal/terminal/runtime",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": "internal/terminal/runtime|internal/terminal/runtime/tea.go|tea|*Program|eventLoop",
+      "complexity": 33,
+      "owner": "internal/terminal/runtime",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tooldiscovery/planner.go|tooldiscovery|*Planner|restoreNativeHistory",
+      "complexity": 35,
+      "owner": "internal/tooldiscovery",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tooldiscovery/planner.go|tooldiscovery|*Planner|selectSurface",
+      "complexity": 88,
+      "owner": "internal/tooldiscovery",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tooldiscovery/search_tool.go|tooldiscovery|*Planner|activate",
+      "complexity": 53,
+      "owner": "internal/tooldiscovery",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/approval.go|tools||splitSequentialCommands",
+      "complexity": 22,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/approval.go|tools||splitShellCommands",
+      "complexity": 24,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/approval.go|tools|*ApprovalManager|CheckPathApprovalWithContext",
+      "complexity": 45,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/approval.go|tools|*ApprovalManager|CheckSharedShellApprovalWithContext",
+      "complexity": 25,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/approval.go|tools|*ApprovalManager|checkPathApprovalNoPrompt",
+      "complexity": 26,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/approval.go|tools|*ApprovalManager|checkShellApprovalWithContext",
+      "complexity": 29,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/ask_user.go|tools|*AskUserTool|Execute",
+      "complexity": 21,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/config.go|tools|ToolConfig|Merge",
+      "complexity": 21,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/custom_tool.go|tools|*CustomScriptTool|Execute",
+      "complexity": 21,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/glob.go|tools|*GlobTool|Execute",
+      "complexity": 21,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/grep.go|tools|*GrepTool|Execute",
+      "complexity": 34,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/image_gen.go|tools|*ImageGenerateTool|Execute",
+      "complexity": 65,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/read.go|tools||streamLineNumberedRange",
+      "complexity": 49,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/registry.go|tools|*LocalToolRegistry|registerTool",
+      "complexity": 27,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/run_agent_script.go|tools|*RunAgentScriptTool|Execute",
+      "complexity": 31,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/shell.go|tools||extractLeadingCd",
+      "complexity": 21,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/shell.go|tools|*ShellTool|Execute",
+      "complexity": 28,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/shell.go|tools|*ShellTool|executeLocal",
+      "complexity": 34,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/shell_track.go|tools||gitShowIndexBatch",
+      "complexity": 29,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/shell_track.go|tools||postShellTracking",
+      "complexity": 74,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/shell_track.go|tools||preShellSnapshotWithClaims",
+      "complexity": 23,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/shell_track.go|tools|*shellSnapshot|buildChangeRecord",
+      "complexity": 30,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/show_media.go|tools|*ShowMediaTool|Execute",
+      "complexity": 23,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/spawn_agent.go|tools|*SpawnAgentTool|Execute",
+      "complexity": 21,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/ui_source.go|tools|*UIGetSourceTool|Execute",
+      "complexity": 35,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/view_image.go|tools|*ViewImageTool|Execute",
+      "complexity": 21,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/workspace_capability.go|tools|*ApprovalManager|ConfigureWorkspacePersistence",
+      "complexity": 28,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/workspace_capability.go|tools|*ApprovalManager|GrantWorkspace",
+      "complexity": 27,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/workspace_capability.go|tools|*ApprovalManager|RevokeWorkspace",
+      "complexity": 25,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/workspace_capability.go|tools|*ApprovalManager|SetPrimaryWorkspaceWithContext",
+      "complexity": 34,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/workspace_capability.go|tools|*ApprovalManager|ensurePrimaryWorkspaceAccess",
+      "complexity": 37,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tools/write.go|tools|*WriteFileTool|Execute",
+      "complexity": 27,
+      "owner": "internal/tools",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/chat.go|chat||NewWithFastProviderAndApproval",
+      "complexity": 25,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/chat.go|chat|*Model|Init",
+      "complexity": 21,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/chat.go|chat|*Model|Update",
+      "complexity": 175,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/chat.go|chat|*Model|applyWindowSize",
+      "complexity": 23,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/commands.go|chat|*Model|ExecuteCommand",
+      "complexity": 60,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/commands_handover.go|chat|*Model|cmdHandover",
+      "complexity": 39,
+      "owner": "tui/chat",
+      "rationale": "mechanically moved from .|internal/tui/chat/commands.go|chat|*Model|cmdHandover while preserving its named responsibility",
+      "removal_milestone": "M1",
+      "origin": "moved"
+    },
+    {
+      "key": ".|internal/tui/chat/commands_handover.go|chat|*Model|executeHandover",
+      "complexity": 30,
+      "owner": "tui/chat",
+      "rationale": "mechanically moved from .|internal/tui/chat/commands.go|chat|*Model|executeHandover while preserving its named responsibility",
+      "removal_milestone": "M1",
+      "origin": "moved"
+    },
+    {
+      "key": ".|internal/tui/chat/commands_mcp.go|chat|*Model|cmdMcp",
+      "complexity": 31,
+      "owner": "tui/chat",
+      "rationale": "mechanically moved from .|internal/tui/chat/commands.go|chat|*Model|cmdMcp while preserving its named responsibility",
+      "removal_milestone": "M1",
+      "origin": "moved"
+    },
+    {
+      "key": ".|internal/tui/chat/commit.go|chat|*Model|handleCommitKey",
+      "complexity": 49,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/commit.go|chat|*Model|renderCommit",
+      "complexity": 56,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/commit.go|chat|*Model|updateCommit",
+      "complexity": 35,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/dialog.go|chat|*DialogModel|Update",
+      "complexity": 25,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/dialog.go|chat|*DialogModel|viewBranchTree",
+      "complexity": 26,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/dialog.go|chat|*DialogModel|viewMCPPicker",
+      "complexity": 23,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/handlers.go|chat|*Model|applyInterruptActionWithParts",
+      "complexity": 21,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/handlers.go|chat|*Model|handleKeyMsg",
+      "complexity": 84,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/handlers.go|chat|*Model|handlePasteMsg",
+      "complexity": 27,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/handlers_composer.go|chat|*Model|handleIdleTabKey",
+      "complexity": 26,
+      "owner": "tui/chat",
+      "rationale": "tui/chat extraction owns one ordered domain responsibility; further reduction is tracked by M1",
+      "removal_milestone": "M1",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/tui/chat/mentions.go|chat|*Model|acceptMentionSelection",
+      "complexity": 25,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/mentions.go|chat|*Model|renderMentionPopup",
+      "complexity": 25,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/render.go|chat|*Model|View",
+      "complexity": 43,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/render.go|chat|*Model|buildFooterLayout",
+      "complexity": 34,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/render.go|chat|*Model|overlayAltScreenPanels",
+      "complexity": 32,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/render.go|chat|*Model|overlayVisibleViewportImages",
+      "complexity": 22,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/render.go|chat|*Model|renderStatusLine",
+      "complexity": 91,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/render.go|chat|*Model|renderStreamingInline",
+      "complexity": 21,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/render.go|chat|*Model|updateCompletions",
+      "complexity": 46,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/render.go|chat|*Model|viewAltScreen",
+      "complexity": 75,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/share.go|chat|*Model|handleShareDone",
+      "complexity": 25,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/share.go|chat|*Model|startShare",
+      "complexity": 25,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/side_question.go|chat|*Model|handleSideQuestionKey",
+      "complexity": 22,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/skill_commands.go|chat|*Model|skillArgumentCompletionItems",
+      "complexity": 26,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/stats.go|chat|*Model|renderStatsModal",
+      "complexity": 42,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/steering.go|chat|*MainRunManager|Rush",
+      "complexity": 29,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/steering.go|chat|*MainRunManager|releaseFailedSteering",
+      "complexity": 21,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/sticky_user_prompt.go|chat|*Model|handleStickyUserPromptMouseClick",
+      "complexity": 25,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/sticky_user_prompt.go|chat|*Model|refreshUserPromptHover",
+      "complexity": 21,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/streaming.go|chat|*Model|attachMainRun",
+      "complexity": 33,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/streaming.go|chat|*Model|sendMessage",
+      "complexity": 25,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/streaming.go|chat|*Model|startStream",
+      "complexity": 47,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/streaming.go|chat|*Model|streamPersistenceCallbacks",
+      "complexity": 38,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/tree.go|chat|*Model|cmdTree",
+      "complexity": 50,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/update_input.go|chat|*Model|handleMouseMsg",
+      "complexity": 26,
+      "owner": "tui/chat",
+      "rationale": "tui/chat extraction owns one ordered domain responsibility; further reduction is tracked by M1",
+      "removal_milestone": "M1",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/tui/chat/update_stream_terminal.go|chat|*Model|handleStreamDone",
+      "complexity": 33,
+      "owner": "tui/chat",
+      "rationale": "tui/chat extraction owns one ordered domain responsibility; further reduction is tracked by M1",
+      "removal_milestone": "M1",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/tui/chat/update_stream_terminal.go|chat|*Model|handleStreamError",
+      "complexity": 24,
+      "owner": "tui/chat",
+      "rationale": "tui/chat extraction owns one ordered domain responsibility; further reduction is tracked by M1",
+      "removal_milestone": "M1",
+      "origin": "extracted"
+    },
+    {
+      "key": ".|internal/tui/chat/worktree.go|chat|*Model|applyRuntimeDirectory",
+      "complexity": 28,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/chat/worktree.go|chat|*Model|handleWorktreeOperationDone",
+      "complexity": 39,
+      "owner": "tui/chat",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M1",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/inspector/content.go|inspector|*ContentRenderer|RenderMessages",
+      "complexity": 22,
+      "owner": "internal/tui/inspector",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/inspector/content.go|inspector|*ContentRenderer|renderSubagentSession",
+      "complexity": 33,
+      "owner": "internal/tui/inspector",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/inspector/content.go|inspector|*ContentRenderer|renderToolResultsWithCalls",
+      "complexity": 24,
+      "owner": "internal/tui/inspector",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/mcp/browse.go|mcp|*Model|Update",
+      "complexity": 45,
+      "owner": "internal/tui/mcp",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/mcp/browse.go|mcp|*Model|View",
+      "complexity": 24,
+      "owner": "internal/tui/mcp",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/sessions/browse.go|sessions|*Model|View",
+      "complexity": 22,
+      "owner": "internal/tui/sessions",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/sessions/browse.go|sessions|*Model|doRefresh",
+      "complexity": 24,
+      "owner": "internal/tui/sessions",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/sessions/browse.go|sessions|*Model|handleKeyMsg",
+      "complexity": 30,
+      "owner": "internal/tui/sessions",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/skills/browse.go|skills||injectProvenance",
+      "complexity": 22,
+      "owner": "internal/tui/skills",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/skills/browse.go|skills|*Model|Update",
+      "complexity": 31,
+      "owner": "internal/tui/skills",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/skills/browse.go|skills|*Model|updateBrowseView",
+      "complexity": 33,
+      "owner": "internal/tui/skills",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/skills/browse.go|skills|*Model|updateInstallView",
+      "complexity": 24,
+      "owner": "internal/tui/skills",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/skills/browse.go|skills|*Model|viewBrowse",
+      "complexity": 31,
+      "owner": "internal/tui/skills",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/worktrees/browse.go|worktrees|*Model|View",
+      "complexity": 28,
+      "owner": "internal/tui/worktrees",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/tui/worktrees/browse.go|worktrees|*Model|handleKey",
+      "complexity": 38,
+      "owner": "internal/tui/worktrees",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/udiff/apply.go|udiff||updateBraceDepth",
+      "complexity": 30,
+      "owner": "internal/udiff",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/udiff/parser.go|udiff||Parse",
+      "complexity": 29,
+      "owner": "internal/udiff",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/ui/inline_diff.go|ui||PrintCompactDiff",
+      "complexity": 33,
+      "owner": "internal/ui",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/ui/media.go|ui||RenderMediaMarkdown",
+      "complexity": 21,
+      "owner": "internal/ui",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/ui/segment.go|ui||renderSegmentsWithLeadingState",
+      "complexity": 41,
+      "owner": "internal/ui",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/ui/segment.go|ui||renderToolSegmentBase",
+      "complexity": 28,
+      "owner": "internal/ui",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/ui/stream_adapter.go|ui|*StreamAdapter|ProcessStream",
+      "complexity": 78,
+      "owner": "internal/ui",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/ui/streaming/partial.go|streaming|*StreamRenderer|findSafePoint",
+      "complexity": 62,
+      "owner": "internal/ui/streaming",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/ui/subagent_helpers.go|ui||HandleSubagentProgress",
+      "complexity": 27,
+      "owner": "internal/ui",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/ui/tool_tracker.go|ui|*ToolTracker|FlushStreamingText",
+      "complexity": 56,
+      "owner": "internal/ui",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/ui/tool_tracker.go|ui|*ToolTracker|FlushToScrollback",
+      "complexity": 38,
+      "owner": "internal/ui",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/ui/unified_diff.go|ui||RenderDiffSegmentWithOperation",
+      "complexity": 56,
+      "owner": "internal/ui",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/ui/unified_diff.go|ui||printUnifiedDiffInternal",
+      "complexity": 26,
+      "owner": "internal/ui",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/ui/unified_diff.go|ui||splitAtVisibleLength",
+      "complexity": 23,
+      "owner": "internal/ui",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/ui/wizard.go|ui||RunSetupWizard",
+      "complexity": 34,
+      "owner": "internal/ui",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/uisource/source.go|uisource||published",
+      "complexity": 28,
+      "owner": "internal/uisource",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/update/upgrade.go|update||RunUpgrade",
+      "complexity": 24,
+      "owner": "internal/update",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/webrtc/peer.go|webrtc|*peer|handleOffer",
+      "complexity": 28,
+      "owner": "internal/webrtc",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/webrtc/peer.go|webrtc|*peer|runDataChannel",
+      "complexity": 25,
+      "owner": "internal/webrtc",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/widgets/manager.go|widgets|*widgetEntry|startProcess",
+      "complexity": 30,
+      "owner": "internal/widgets",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/worktree/worktree.go|worktree||Create",
+      "complexity": 34,
+      "owner": "internal/worktree",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/worktree/worktree.go|worktree||DiffContext",
+      "complexity": 32,
+      "owner": "internal/worktree",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/worktree/worktree.go|worktree||PromoteToRoot",
+      "complexity": 24,
+      "owner": "internal/worktree",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    },
+    {
+      "key": ".|internal/worktree/worktree.go|worktree||stashRootChanges",
+      "complexity": 31,
+      "owner": "internal/worktree",
+      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
+      "removal_milestone": "M7",
+      "origin": "existing"
+    }
+  ]
+}
