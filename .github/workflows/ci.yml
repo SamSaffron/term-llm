@@ -80,6 +80,9 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Check complexity ratchet
+        run: make complexity
+
       - name: Build, test, and vet nested modules
         run: scripts/verify_nested_modules.sh
 

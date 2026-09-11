@@ -1,4 +1,4 @@
-.PHONY: build frontend frontend-deps
+.PHONY: build frontend frontend-deps complexity complexity-report
 
 FRONTEND_STAMP := frontend/node_modules/.term-llm-install-stamp
 VERSION ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo dev)
@@ -17,6 +17,12 @@ frontend: frontend-deps
 	python3 scripts/build_ui_source.py
 
 frontend-deps: $(FRONTEND_STAMP)
+
+complexity:
+	go run ./cmd/complexity --check plans/go-complexity-baseline.json --threshold 20
+
+complexity-report:
+	go run ./cmd/complexity --threshold 20
 
 $(FRONTEND_STAMP): frontend/package.json frontend/package-lock.json
 	npm --prefix frontend ci
