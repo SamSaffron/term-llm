@@ -494,43 +494,9 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 	// even when reusing an existing session ID, so fresh conversations may choose
 	// new runtime settings and syncPersistedSessionRuntime will update the row.
 	// First-party UI append requests are stateful appends.
-	defaultProvider := ""
-	if s.cfgRef != nil {
-		defaultProvider = strings.TrimSpace(s.cfgRef.DefaultProvider)
-	}
-	requestedRuntime := responseRequestedRuntime(req, defaultProvider)
-	req.Model = requestedRuntime.model
-	req.ReasoningEffort = requestedRuntime.effort
-	persistedRuntime := requestedRuntime
-	if !freshConversation {
-		persistedRuntime = s.persistedRuntimeSettings(ctx, sessionID, defaultProvider)
-		if requestedRuntime.reasoningMode == "" && persistedRuntime.reasoningMode != "" {
-			if req.Reasoning == nil {
-				req.Reasoning = &responsesReasoningRequest{}
-			}
-			req.Reasoning.Mode = persistedRuntime.reasoningMode
-		}
-	}
-	swapPlan := responseModelSwapPlan{}
-	if !freshConversation {
-		swapPlan = buildResponseModelSwapPlan(req, persistedRuntime, requestedRuntime)
-	}
-
-	reqProvider := strings.TrimSpace(req.Provider)
-	if !freshConversation && !swapPlan.enabled && s.store != nil {
-		if persistedRuntime.provider != "" {
-			reqProvider = persistedRuntime.provider
-			if persistedRuntime.model != "" {
-				req.Model = persistedRuntime.model
-			}
-			req.ReasoningEffort = persistedRuntime.effort
-		}
-	}
-	if swapPlan.enabled {
-		reqProvider = swapPlan.requestedProvider
-		req.Model = swapPlan.requestedModel
-		req.ReasoningEffort = swapPlan.requestedEffort
-	}
+	runtimePlan := s.prepareResponseRuntimePlan(ctx, &req, sessionID, freshConversation)
+	defaultProvider, requestedRuntime := runtimePlan.defaultProvider, runtimePlan.requested
+	swapPlan, reqProvider := runtimePlan.swap, runtimePlan.provider
 
 	handleRuntimeErr := func(err error) bool {
 		if err == nil {
@@ -567,94 +533,6 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 	var followUpOwner *serveRuntime
 	var followUpOwnerStateful bool
 	var followUpClaims *followUpClaimLease
-
-	claimUIFollowUp := func(rt *serveRuntime, ownsSession bool) error {
-		clientMessageIDs := responseClientMessageIDs(inputMessages)
-		if !ownsSession || len(clientMessageIDs) == 0 || !isFirstPartyUIResponseRequest(r) || rt == nil {
-			return nil
-		}
-
-		rt.mu.Lock()
-		if rt.store != nil && !rt.ensurePersistedSession(ctx, sessionID, inputMessages) {
-			rt.mu.Unlock()
-			return errors.New("failed to hydrate session history before client message claim")
-		}
-		history := copyLLMMessageSlice(rt.history)
-		rt.mu.Unlock()
-
-		trailingStart := len(history)
-		for trailingStart > 0 && history[trailingStart-1].Role == llm.RoleUser {
-			trailingStart--
-		}
-		foundInHistory := make(map[string]bool, len(clientMessageIDs))
-		trailingUnanswered := make(map[string]bool, len(clientMessageIDs))
-		for i := range history {
-			id := strings.TrimSpace(history[i].ClientMessageID)
-			if id == "" {
-				continue
-			}
-			foundInHistory[id] = true
-			if i >= trailingStart {
-				trailingUnanswered[id] = true
-			}
-		}
-
-		durableMessages := make(map[string]*session.Message)
-		if rt.store != nil {
-			var lookupErr error
-			durableMessages, lookupErr = session.FindMessagesByClientMessageIDs(ctx, rt.store, sessionID, clientMessageIDs)
-			if lookupErr != nil {
-				return fmt.Errorf("lookup client_message_ids: %w", lookupErr)
-			}
-		}
-		for _, clientMessageID := range clientMessageIDs {
-			_, durableExists := durableMessages[clientMessageID]
-			if (foundInHistory[clientMessageID] || durableExists) && !trailingUnanswered[clientMessageID] {
-				return fmt.Errorf("%w: %q", errResponseClientMessageAlreadyCommitted, clientMessageID)
-			}
-		}
-
-		claims := make([]llm.SteeringClaimStatus, len(clientMessageIDs))
-		for i := range claims {
-			claims[i] = llm.SteeringClaimNotFound
-		}
-		if rt.engine != nil {
-			claims = rt.claimSteering(clientMessageIDs)
-		}
-		claimedIDs := make([]string, 0, len(clientMessageIDs))
-		hasNewClaim := false
-		hasExistingOwner := false
-		for _, claim := range claims {
-			hasNewClaim = hasNewClaim || claim == llm.SteeringClaimed
-			hasExistingOwner = hasExistingOwner || claim == llm.SteeringClaimFollowUpOwned
-		}
-		if hasNewClaim && hasExistingOwner {
-			return errServeSessionBusy
-		}
-		for i, claim := range claims {
-			switch claim {
-			case llm.SteeringClaimed:
-				claimedIDs = append(claimedIDs, clientMessageIDs[i])
-			case llm.SteeringClaimRushOwned:
-				return errServeSessionBusy
-			case llm.SteeringClaimCommitted:
-				return fmt.Errorf("%w: %q", errResponseClientMessageAlreadyCommitted, clientMessageIDs[i])
-			case llm.SteeringClaimFollowUpOwned:
-				if !trailingUnanswered[clientMessageIDs[i]] {
-					return errServeSessionBusy
-				}
-			}
-		}
-		if len(claimedIDs) > 0 {
-			claimed := append([]string(nil), claimedIDs...)
-			followUpClaims = &followUpClaimLease{release: func() {
-				releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer releaseCancel()
-				rt.releaseClaimedPendingSteering(releaseCtx, sessionID, claimed)
-			}}
-		}
-		return nil
-	}
 
 	freshProvider := reqProvider
 	if freshConversation && freshProvider == "" {
@@ -803,7 +681,9 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		swapPlan.requestedReasoningMode = reasoningMode
 		modelSwapExec.plan.requestedReasoningMode = reasoningMode
 	}
-	if err := claimUIFollowUp(followUpOwner, followUpOwnerStateful); err != nil {
+	var claimErr error
+	followUpClaims, claimErr = s.claimUIFollowUp(ctx, isFirstPartyUIResponseRequest(r), followUpOwner, followUpOwnerStateful, sessionID, inputMessages)
+	if claimErr != nil {
 		if modelSwapExec != nil {
 			modelSwapExec.markRolledBack()
 		}
@@ -811,12 +691,12 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 			s.unregisterResponseIDs(runtime)
 			runtime.Close()
 		}
-		if errors.Is(err, errResponseClientMessageAlreadyCommitted) {
-			writeOpenAIError(w, http.StatusConflict, "client_message_already_committed", err.Error())
-		} else if errors.Is(err, errServeSessionBusy) {
-			writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
+		if errors.Is(claimErr, errResponseClientMessageAlreadyCommitted) {
+			writeOpenAIError(w, http.StatusConflict, "client_message_already_committed", claimErr.Error())
+		} else if errors.Is(claimErr, errServeSessionBusy) {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", claimErr.Error())
 		} else {
-			writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", claimErr.Error())
 		}
 		return
 	}
@@ -881,86 +761,11 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 	if !stateful {
 		runIdempotencyKey = ""
 	}
-	searchFromTools, ptcRequested, requestedTools, passthroughTools := parseRequestedTools(req.Tools)
-	search := runtime.search || searchFromTools
-	toolChoice := parseToolChoice(req.ToolChoice)
-	includeServerTools := req.IncludeServerTools || isFirstPartyUIResponseRequest(r)
-	serverTools := responseServerTools(runtime, requestedTools, includeServerTools)
-	tools := appendResponsePassthroughTools(serverTools, passthroughTools, runtime.toolMap)
-	if len(tools) == 0 {
-		toolChoice = llm.ToolChoice{}
-	}
-	parallel := true
-	if req.ParallelToolCalls != nil {
-		parallel = *req.ParallelToolCalls
-	}
-
-	reasoningEffort := normalizeReasoningEffort(req.ReasoningEffort)
-	responsesOptions := &llm.ResponsesOptions{}
-	if req.Reasoning != nil {
-		if nestedEffort := normalizeReasoningEffort(req.Reasoning.Effort); nestedEffort != "" {
-			reasoningEffort = nestedEffort
-		}
-		responsesOptions.ReasoningMode = req.Reasoning.Mode
-		responsesOptions.ReasoningContext = req.Reasoning.Context
-	}
-	if req.MultiAgent != nil {
-		responsesOptions.MultiAgent = llm.MultiAgentOptions{Enabled: req.MultiAgent.Enabled, EnabledSet: true, MaxConcurrentSubagents: req.MultiAgent.MaxConcurrentSubagents}
-	}
-	if req.PromptCacheOptions != nil {
-		responsesOptions.PromptCache = llm.PromptCacheOptions{Mode: req.PromptCacheOptions.Mode, TTL: req.PromptCacheOptions.TTL}
-	}
-	if ptcRequested {
-		responsesOptions.ProgrammaticToolCalling.Enabled = true
-		responsesOptions.ProgrammaticToolCalling.EnabledSet = true
-		for _, tool := range tools {
-			for _, caller := range tool.AllowedCallers {
-				if caller == "programmatic" {
-					responsesOptions.ProgrammaticToolCalling.Tools = append(responsesOptions.ProgrammaticToolCalling.Tools, tool.Name)
-					break
-				}
-			}
-		}
-	}
-	if responsesOptions.IsZero() {
-		responsesOptions = nil
-	}
+	llmReq := s.buildResponsesLLMRequest(req, runtime, sessionID, isFirstPartyUIResponseRequest(r))
 	if !freshConversation && req.Reasoning != nil {
 		if clearStaleReasoningMode || ((reasoningMode == "standard" || reasoningMode == "pro") && llm.SupportsReasoningMode(effectiveProvider, effectiveModel)) {
 			s.syncPersistedSessionReasoningMode(ctx, sessionID, runtime, reasoningMode)
 		}
-	}
-
-	llmReq := llm.Request{
-		SessionID:           sessionID,
-		Model:               strings.TrimSpace(req.Model),
-		ReasoningEffort:     reasoningEffort,
-		Responses:           responsesOptions,
-		Tools:               tools,
-		ToolChoice:          toolChoice,
-		ParallelToolCalls:   parallel,
-		Search:              search,
-		ForceExternalSearch: runtime.forceExternalSearch,
-		MaxTurns:            runtime.maxTurns,
-		ToolMap:             runtime.toolMap,
-		Debug:               runtime.debug,
-		DebugRaw:            runtime.debugRaw,
-	}
-	if req.ServiceTier != nil {
-		llmReq.ServiceTier = llm.NormalizeServiceTier(*req.ServiceTier)
-		llmReq.ServiceTierSet = true
-	}
-
-	if req.MaxOutputTokens > 0 {
-		llmReq.MaxOutputTokens = req.MaxOutputTokens
-	}
-	if req.Temperature != nil {
-		llmReq.Temperature = *req.Temperature
-		llmReq.TemperatureSet = true
-	}
-	if req.TopP != nil {
-		llmReq.TopP = *req.TopP
-		llmReq.TopPSet = true
 	}
 
 	if runtime.toolMgr != nil && runtime.toolMgr.Registry != nil {
@@ -992,60 +797,8 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if stateful && s.sessionMgr != nil {
-		var retained *serveRuntime
-		if modelSwapExec != nil {
-			retained = modelSwapExec.previous
-		}
-		releaseAdmission, admissionErr := s.sessionMgr.admitSynchronousActivity(sessionID, runtime, retained)
-		if admissionErr != nil {
-			writeOpenAIError(w, http.StatusConflict, "conflict_error", admissionErr.Error())
-			return
-		}
-		defer releaseAdmission()
-	}
-	result, _, err := s.runResponseWithModelSwapFallback(ctx, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, modelSwapExec)
-	if err != nil {
-		if errors.Is(err, errServeSessionBusy) {
-			writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
-			return
-		}
-		if errors.Is(err, context.DeadlineExceeded) {
-			writeOpenAIError(w, http.StatusRequestTimeout, "timeout_error", responseRunTimeoutMessage(s.responseTimeout()))
-			return
-		}
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
-		return
-	}
-
-	if s.cfg.suppressServerTools {
-		filtered := make([]llm.ToolCall, 0, len(result.ToolCalls))
-		for _, call := range result.ToolCalls {
-			if !runtime.isServerExecutedTool(call.Name) {
-				filtered = append(filtered, call)
-			}
-		}
-		result.ToolCalls = filtered
-	}
-
-	model := llmReq.Model
-	if model == "" {
-		model = runtime.defaultModel
-	}
-
-	setSessionNumberHeader(w, runtime)
-
-	created := time.Now().Unix()
-	respID, err := s.storeCompletedResponseRun(runtime, sessionID, previousResponseID, model, created, result, resetResponseIDsOnSuccess)
-	if err != nil {
-		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
-		return
-	}
-	s.scheduleAutoTitle(sessionID, runtime.providerKey)
-
-	writeJSON(w, http.StatusOK, responsesFinalResponse(result, model, respID, created))
+	s.executeSynchronousResponse(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, modelSwapExec, resetResponseIDsOnSuccess)
 }
-
 func (s *serveServer) populateResponsesToolResultNames(ctx context.Context, sessionID string, runtime *serveRuntime, messages []llm.Message) {
 	missing := missingResponsesToolResultNames(messages)
 	if len(missing) == 0 {
