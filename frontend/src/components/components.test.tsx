@@ -5549,6 +5549,37 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument();
   });
 
+  it('shows pending goal saves and keeps failures visible for retry', async () => {
+    const store = createStore();
+    store.modal.value = 'goal';
+    let reject!: (error: Error) => void;
+    store.saveGoal = vi.fn(
+      () =>
+        new Promise<void>((_resolve, fail) => {
+          reject = fail;
+        }),
+    );
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+    fireEvent.input(screen.getByRole('textbox'), { target: { value: 'Finish the task' } });
+    const button = screen.getByRole('button', { name: 'Set goal' });
+    act(() => {
+      fireEvent.click(button);
+      fireEvent.click(button);
+    });
+    expect(store.saveGoal).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('button', { name: 'Saving…' })).toBeDisabled();
+    await act(async () => {
+      reject(new Error('Goal save denied'));
+    });
+    expect(screen.getByRole('alert')).toHaveTextContent('Goal save denied');
+    expect(screen.getByRole('button', { name: 'Set goal' })).toBeEnabled();
+    expect(store.modal.value).toBe('goal');
+  });
+
   it('separates settings into keyboard-accessible tabs and preserves edits', async () => {
     const store = createStore();
     store.modal.value = 'settings';
@@ -6463,6 +6494,37 @@ describe('Preact-owned chat surfaces', () => {
       await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toHaveFocus());
     } finally {
       revoke.mockRestore();
+    }
+  });
+
+  it('reports lightbox clipboard failures', async () => {
+    const store = createStore();
+    const descriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: vi.fn(async () => {
+          throw new Error('Clipboard denied');
+        }),
+      },
+    });
+    try {
+      store.lightbox.value = { src: 'https://example.com/image.png', type: 'image' };
+      render(
+        <StoreContext.Provider value={store}>
+          <Lightbox />
+        </StoreContext.Provider>,
+      );
+      await userEvent.click(screen.getByRole('button', { name: 'Copy URL' }));
+      await waitFor(() =>
+        expect(store.toasts.value).toEqual([
+          expect.objectContaining({ kind: 'error', message: 'Clipboard denied' }),
+        ]),
+      );
+      expect(store.lightbox.value).not.toBeNull();
+    } finally {
+      if (descriptor) Object.defineProperty(navigator, 'clipboard', descriptor);
+      else Reflect.deleteProperty(navigator, 'clipboard');
     }
   });
 

@@ -1247,6 +1247,7 @@ export class RunEngine {
     targetRev = 0,
     expectedResponseId = '',
     preserveLiveRun = false,
+    propagateError = false,
   ): Promise<void> {
     try {
       const steeringRevision = this.steeringRevision;
@@ -1333,7 +1334,8 @@ export class RunEngine {
         const lastResponseId = String(state.lastResponseId || state.last_response_id || '').trim();
         this.sessionStore.patch(sessionId, { lastResponseId: lastResponseId || null });
       }
-    } catch {
+    } catch (error) {
+      if (propagateError) throw error;
       /* Status polling will retry durable reconciliation. */
     }
   }

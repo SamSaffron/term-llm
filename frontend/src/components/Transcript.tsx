@@ -918,9 +918,12 @@ const MessageRow = memo(function MessageRow({
             message.runId && (
               <button
                 class="text-action"
+                disabled={store.skillStore.cancelling.value.has(String(message.runId))}
                 onClick={() => void store.cancelSkill(String(message.runId))}
               >
-                Cancel
+                {store.skillStore.cancelling.value.has(String(message.runId))
+                  ? 'Cancelling…'
+                  : 'Cancel'}
               </button>
             )}
           {message.childSessionId && (

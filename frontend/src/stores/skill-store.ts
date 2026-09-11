@@ -1,5 +1,6 @@
 import { signal, type ReadonlySignal, type Signal } from '@preact/signals';
 import { APIError, decodeSSE } from '../api/client';
+import { errorMessage } from '../domain/text';
 import { initialProjection } from '../domain/response';
 import type { ActiveRun, Message, Session } from '../domain/types';
 import type { Modal } from './store-types';
@@ -15,7 +16,7 @@ export interface SkillStoreHost {
   updateSession: (id: string, updater: (session: Session) => Session) => void;
   setRun: (sessionId: string, run: ReturnType<typeof initialProjection>) => void;
   patchSession: (id: string, patch: Partial<Session>) => void;
-  refreshSessionMessages: (sessionId: string) => Promise<void>;
+  refreshSessionMessages: (sessionId: string, propagateError?: boolean) => Promise<void>;
   trackIntent: (
     sessionId: string,
     intent: { id: string; clientMessageId: string; content: string; created: number },
@@ -27,6 +28,8 @@ export interface SkillStoreHost {
 /** Owns skill discovery and isolated skill-run stream lifecycles. */
 export class SkillStore {
   readonly skills = signal<Record<string, unknown>[]>([]);
+
+  readonly cancelling = signal<ReadonlySet<string>>(new Set());
 
   private readonly runAborts = new Map<string, AbortController>();
   private readonly runCursors = new Map<
@@ -185,7 +188,12 @@ export class SkillStore {
   }
   async invokeSkill(name: string, args: string): Promise<void> {
     const session = this.host.activeSession.value;
-    if (!session) return;
+    if (!session) {
+      if (!this.host.prompt.value)
+        this.host.prompt.value = `/${name}${args.trim() ? ` ${args.trim()}` : ''}`;
+      this.services.toast('Start a conversation before running a skill.', 'error');
+      return;
+    }
     const skill = this.skills.peek().find((entry) => String(entry.name || '') === name);
     if (this.host.streaming.peek() && skill?.execution !== 'isolated') {
       this.services.toast(
@@ -273,15 +281,41 @@ export class SkillStore {
   }
   async cancelSkill(runId: string): Promise<void> {
     const session = this.host.activeSession.value;
-    if (!session) return;
-    this.updateSkillRunMessage(session.id, runId, {
-      status: 'cancelling',
-      progress: 'Cancelling…',
-    });
-    await this.services.endpoints.cancelSkillRun(session.id, runId);
-    if (this.runCursors.has(runId))
-      await this.reconcileSkillRun(runId).catch(() => this.host.refreshSessionMessages(session.id));
-    else await this.host.refreshSessionMessages(session.id);
+    if (!session) {
+      this.services.toast('Open this skill’s conversation before cancelling it.', 'error');
+      return;
+    }
+    if (this.cancelling.peek().has(runId)) return;
+    this.cancelling.value = new Set([...this.cancelling.peek(), runId]);
+    try {
+      // Do not claim cancellation is underway until the server accepts it.
+      try {
+        await this.services.endpoints.cancelSkillRun(session.id, runId);
+      } catch (error) {
+        this.services.toast(error, 'error');
+        return;
+      }
+      this.updateSkillRunMessage(session.id, runId, {
+        status: 'cancelling',
+        progress: 'Cancelling…',
+      });
+      try {
+        if (this.runCursors.has(runId))
+          await this.reconcileSkillRun(runId).catch(() =>
+            this.host.refreshSessionMessages(session.id, true),
+          );
+        else await this.host.refreshSessionMessages(session.id, true);
+      } catch (error) {
+        this.services.toast(
+          `Cancellation was accepted, but the transcript could not refresh: ${errorMessage(error)}`,
+          'error',
+        );
+      }
+    } finally {
+      const pending = new Set(this.cancelling.peek());
+      pending.delete(runId);
+      this.cancelling.value = pending;
+    }
   }
 
   dispose(): void {

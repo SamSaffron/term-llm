@@ -41,6 +41,7 @@ export class BranchStore {
   async refresh(
     sessionId = this.options.activeSessionId.peek(),
     includeBranchPoints = false,
+    reportError = false,
   ): Promise<Record<string, unknown> | null> {
     if (!sessionId) {
       this.tree.value = null;
@@ -55,8 +56,9 @@ export class BranchStore {
       this.tree.value = tree;
       this.pathCount.value = Math.max(1, Number(tree.path_count) || 1);
       return tree;
-    } catch {
+    } catch (error) {
       if (this.options.activeSessionId.peek() === sessionId) {
+        if (reportError) this.services.toast(error, 'error');
         this.tree.value = null;
         this.pathCount.value = 0;
       }
@@ -66,7 +68,13 @@ export class BranchStore {
 
   async load(): Promise<void> {
     const sessionId = this.options.activeSessionId.peek();
-    const tree = await this.refresh(sessionId, true);
+    if (!sessionId) {
+      this.tree.value = null;
+      this.pathCount.value = 0;
+      this.services.toast('Start a conversation before opening its paths.', 'error');
+      return;
+    }
+    const tree = await this.refresh(sessionId, true, true);
     if (tree) this.options.modal.value = 'branch';
   }
 
@@ -112,7 +120,10 @@ export class BranchStore {
   ): Promise<boolean> {
     if (this.busy.peek()) return false;
     const session = this.options.activeSession.value;
-    if (!session) return false;
+    if (!session) {
+      this.services.toast('Select a conversation before creating a path.', 'error');
+      return false;
+    }
 
     const anchor = Number(messageId) || 0;
     const signature = `${session.id}\u0000${anchor}`;

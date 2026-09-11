@@ -1016,14 +1016,25 @@ function GoalModal() {
   const current = store.goal.value;
   const [objective, setObjective] = useState(current?.objective || '');
   const [budget, setBudget] = useState(current?.token_budget ? String(current.token_budget) : '');
-  const save = () =>
-    void store.saveGoal({
-      objective: objective.trim(),
-      token_budget: Number(budget) || undefined,
-      status: 'active',
-    });
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const savingRef = useRef(false);
+  const save = async (goal: Parameters<typeof store.saveGoal>[0]) => {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    setSaveError('');
+    try {
+      await store.saveGoal(goal);
+    } catch (error) {
+      setSaveError(errorMessage(error));
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  };
   return (
-    <Overlay title="Session goal">
+    <Overlay title="Session goal" dismissDisabled={saving}>
       <p>Set a persistent objective the agent can keep pursuing across automatic continuations.</p>
       <label class="settings-label">Objective</label>
       <textarea
@@ -1039,25 +1050,36 @@ function GoalModal() {
         value={budget}
         onInput={(event) => setBudget(event.currentTarget.value)}
       />
+      {saveError && <p role="alert">{saveError}</p>}
       <div class="modal-actions goal-actions">
         {current && (
-          <button class="btn" onClick={() => void store.saveGoal({ action: 'clear' })}>
+          <button class="btn" disabled={saving} onClick={() => void save({ action: 'clear' })}>
             Clear
           </button>
         )}
         {current?.status === 'paused' ? (
-          <button class="btn" onClick={() => void store.saveGoal({ action: 'resume' })}>
+          <button class="btn" disabled={saving} onClick={() => void save({ action: 'resume' })}>
             Resume
           </button>
         ) : (
           current && (
-            <button class="btn" onClick={() => void store.saveGoal({ action: 'pause' })}>
+            <button class="btn" disabled={saving} onClick={() => void save({ action: 'pause' })}>
               Pause
             </button>
           )
         )}
-        <button class="btn primary" disabled={!objective.trim()} onClick={save}>
-          Set goal
+        <button
+          class="btn primary"
+          disabled={saving || !objective.trim()}
+          onClick={() =>
+            void save({
+              objective: objective.trim(),
+              token_budget: Number(budget) || undefined,
+              status: 'active',
+            })
+          }
+        >
+          {saving ? 'Saving…' : 'Set goal'}
         </button>
       </div>
     </Overlay>

@@ -367,6 +367,7 @@ function DiffAction({
   value: () => string | Promise<string>;
   disabled?: boolean;
 }) {
+  const store = useStore();
   const [copied, setCopied] = useState(false);
   const timer = useRef<number | undefined>(undefined);
   useEffect(
@@ -388,8 +389,8 @@ function DiffAction({
         setCopied(false);
         timer.current = undefined;
       }, 700);
-    } catch {
-      /* Copy actions fail silently like the legacy control. */
+    } catch (error) {
+      store.toast(error, 'error');
     }
   };
   return (

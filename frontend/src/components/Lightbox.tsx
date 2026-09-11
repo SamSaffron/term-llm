@@ -309,7 +309,7 @@ export function Lightbox() {
             class="lightbox-btn"
             type="button"
             aria-label="Copy URL"
-            onClick={() => void copyText(current.src)}
+            onClick={() => void copyText(current.src).catch((error) => store.toast(error, 'error'))}
           >
             <Icon name="copy" />
           </button>

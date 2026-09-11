@@ -4,6 +4,7 @@ import { errorMessage } from '../domain/text';
 import type { MCPOAuthFlow, MCPServer, Session } from '../domain/types';
 import type { AppStoreServices } from './app-store-services';
 import { normalizeMCPState } from './store-utils';
+import { copyText } from '../platform/clipboard';
 
 export interface MCPOAuthUIState {
   flowId: string;
@@ -236,7 +237,12 @@ export class MCPStore {
 
   async copyOAuthLink(name: string): Promise<void> {
     const url = this.state.value.oauth[name]?.authorizationURL;
-    if (url) await navigator.clipboard.writeText(url);
+    try {
+      if (!url) throw new Error('Authorization link is unavailable. Start authorization again.');
+      await copyText(url);
+    } catch (error) {
+      this.services.toast(error, 'error');
+    }
   }
 
   private schedulePoll(name: string, flowId: string): void {

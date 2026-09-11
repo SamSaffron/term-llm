@@ -291,6 +291,132 @@ describe('AppStore compatibility behavior', () => {
     store.dispose();
   });
 
+  it('materializes a new chat before saving its goal without sending the draft', async () => {
+    const store = new AppStore(config);
+    store.prompt.value = 'keep this draft';
+    store.selectedAgent.value = 'developer';
+    store.projectsEnabled.value = true;
+    store.activeProjectId.value = 'project-1';
+    store.modal.value = 'goal';
+    store.endpoints.createBlankSession = vi.fn(async () => ({ session: { ...session() } }));
+    store.endpoints.goal = vi.fn(async () => ({}));
+    const goal = { objective: 'Finish the task', token_budget: 10000, status: 'active' as const };
+
+    await store.saveGoal(goal);
+
+    expect(store.endpoints.createBlankSession).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: 'developer', project_id: 'project-1' }),
+    );
+    expect(store.endpoints.goal).toHaveBeenCalledWith('s1', {
+      action: 'set',
+      objective: goal.objective,
+      token_budget: 10000,
+    });
+    expect(store.goal.value).toEqual(goal);
+    expect(store.modal.value).toBe('');
+    expect(store.draftActive.value).toBe(false);
+    expect(store.prompt.value).toBe('keep this draft');
+    expect(store.activeSession.value?.messages).toEqual([]);
+
+    await store.saveGoal({ ...goal, objective: 'Updated goal' });
+    expect(store.endpoints.createBlankSession).toHaveBeenCalledTimes(1);
+    store.dispose();
+  });
+
+  it('keeps the goal dialog open and reports blank-session creation failures', async () => {
+    const store = new AppStore(config);
+    store.modal.value = 'goal';
+    store.endpoints.createBlankSession = vi.fn(async () => {
+      throw new Error('Creation failed');
+    });
+    store.endpoints.goal = vi.fn(async () => ({}));
+
+    await expect(
+      store.saveGoal({ objective: 'Finish the task', status: 'active' }),
+    ).rejects.toThrow('Creation failed');
+
+    expect(store.endpoints.goal).not.toHaveBeenCalled();
+    expect(store.modal.value).toBe('goal');
+    expect(store.goal.value).toBeNull();
+    expect(store.toasts.value).toHaveLength(0);
+    store.dispose();
+  });
+
+  it.each([
+    { objective: 'Finish the task', status: 'active' as const },
+    { action: 'clear' },
+    { action: 'pause' },
+    { action: 'resume' },
+  ])('rejects goal commands without an active session: %j', async (command) => {
+    const store = new AppStore(config);
+    store.modal.value = 'goal';
+    const previous = { objective: 'Keep this goal', status: 'active' as const };
+    store.goal.value = previous;
+    store.endpoints.goal = vi.fn(async () => ({}));
+
+    await expect(store.goalStore.save(command)).rejects.toThrow('without an active session');
+
+    expect(store.endpoints.goal).not.toHaveBeenCalled();
+    expect(store.goal.value).toEqual(previous);
+    expect(store.modal.value).toBe('goal');
+    store.dispose();
+  });
+
+  it('reuses the newly created session after a goal-save failure', async () => {
+    const store = new AppStore(config);
+    store.modal.value = 'goal';
+    store.endpoints.createBlankSession = vi.fn(async () => ({ session: { ...session() } }));
+    store.endpoints.goal = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Save failed'))
+      .mockResolvedValueOnce({});
+    const goal = { objective: 'Keep trying', status: 'active' as const };
+    await expect(store.saveGoal(goal)).rejects.toThrow('Save failed');
+    expect(store.goal.value).toBeNull();
+    expect(store.modal.value).toBe('goal');
+    await store.saveGoal(goal);
+    expect(store.endpoints.createBlankSession).toHaveBeenCalledTimes(1);
+    expect(store.goal.value).toEqual(goal);
+    store.dispose();
+  });
+
+  it('does not apply a saved goal to a different selected conversation', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session(), { ...session(), id: 's2' }];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    const pending = deferred<Record<string, unknown>>();
+    store.endpoints.goal = vi.fn(() => pending.promise);
+    const saving = store.saveGoal({ objective: 'For s1', status: 'active' });
+    await vi.waitFor(() => expect(store.endpoints.goal).toHaveBeenCalled());
+    store.activeSessionId.value = 's2';
+    store.modal.value = 'settings';
+    pending.resolve({});
+    await saving;
+    expect(store.goal.value).toBeNull();
+    expect(store.modal.value).toBe('settings');
+    store.dispose();
+  });
+
+  it('leaves goal state unchanged when saving fails so it can be retried', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.modal.value = 'goal';
+    store.endpoints.goal = vi.fn(async () => {
+      throw new Error('Save failed');
+    });
+
+    await expect(
+      store.saveGoal({ objective: 'Finish the task', status: 'active' }),
+    ).rejects.toThrow('Save failed');
+
+    expect(store.modal.value).toBe('goal');
+    expect(store.goal.value).toBeNull();
+    store.dispose();
+  });
+
   it('detaches and hides a bound shell before selecting or creating a conversation', async () => {
     const store = new AppStore(config);
     const first = session();
@@ -5334,6 +5460,159 @@ describe('AppStore compatibility behavior', () => {
     expect(store.branchPathCount.value).toBe(1);
     expect(store.modal.value).toBe('branch');
     expect(store.branchTree.value?.branch_points).toHaveLength(1);
+  });
+
+  it('reports explicit path loading failures while keeping background refresh best-effort', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.endpoints.tree = vi.fn(async () => {
+      throw new Error('Tree unavailable');
+    });
+    await store.refreshBranchTree();
+    expect(store.toasts.value).toHaveLength(0);
+    await store.loadBranchTree();
+    expect(store.toasts.value).toEqual([
+      expect.objectContaining({ kind: 'error', message: 'Tree unavailable' }),
+    ]);
+    expect(store.modal.value).toBe('');
+    store.dispose();
+  });
+
+  it.each(['paths', 'invoke skill', 'cancel skill', 'copy OAuth link'])(
+    'reports unavailable prerequisites for %s',
+    async (action) => {
+      const store = new AppStore(config);
+      if (action === 'paths') await store.loadBranchTree();
+      else if (action === 'invoke skill') await store.invokeSkill('review', '');
+      else if (action === 'cancel skill') await store.cancelSkill('run-1');
+      else await store.copyMCPOAuthLink('server');
+      expect(store.toasts.value).toEqual([expect.objectContaining({ kind: 'error' })]);
+      store.dispose();
+    },
+  );
+
+  it('does not mark a skill cancelling when the cancellation request fails', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [
+      {
+        ...session(),
+        messages: [
+          {
+            id: 'skill-1',
+            created: 1,
+            role: 'skill-run',
+            content: '',
+            runId: 'run-1',
+            status: 'running',
+          },
+        ],
+      },
+    ];
+    store.activeSessionId.value = 's1';
+    store.endpoints.cancelSkillRun = vi.fn(async () => {
+      throw new Error('Cancel failed');
+    });
+    await store.cancelSkill('run-1');
+    expect(store.activeSession.value?.messages[0].status).toBe('running');
+    expect(store.toasts.value).toEqual([
+      expect.objectContaining({ kind: 'error', message: 'Cancel failed' }),
+    ]);
+    store.dispose();
+  });
+
+  it('deduplicates pending skill cancellations and distinguishes refresh failure', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    const pending = deferred<Record<string, unknown>>();
+    store.endpoints.cancelSkillRun = vi.fn(() => pending.promise);
+    store.endpoints.selectedSession = vi.fn(async () => {
+      throw new Error('Refresh failed');
+    });
+    const cancelling = store.cancelSkill('run-1');
+    expect(store.skillStore.cancelling.value.has('run-1')).toBe(true);
+    await store.cancelSkill('run-1');
+    expect(store.endpoints.cancelSkillRun).toHaveBeenCalledTimes(1);
+    pending.resolve({});
+    await cancelling;
+    expect(store.skillStore.cancelling.value.size).toBe(0);
+    expect(store.toasts.value).toEqual([
+      expect.objectContaining({
+        message: expect.stringContaining('Cancellation was accepted, but'),
+      }),
+    ]);
+    store.dispose();
+  });
+
+  it('preserves a rejected skill invocation in the composer', async () => {
+    const store = new AppStore(config);
+    await store.invokeSkill('review', 'some args');
+    expect(store.prompt.value).toBe('/review some args');
+    store.dispose();
+  });
+
+  it('copies OAuth links with the legacy clipboard fallback', async () => {
+    const store = new AppStore(config);
+    store.mcpStore.state.value = {
+      ...store.mcpStore.state.value,
+      oauth: {
+        server: {
+          authorizationURL: 'https://example.com/oauth',
+          flowId: 'flow',
+          state: 'pending',
+          error: '',
+          popupBlocked: true,
+        },
+      },
+    };
+    const clipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const exec = Object.getOwnPropertyDescriptor(document, 'execCommand');
+    const copy = vi.fn(() => true);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: copy });
+    try {
+      await store.copyMCPOAuthLink('server');
+      expect(copy).toHaveBeenCalledWith('copy');
+      expect(store.toasts.value).toHaveLength(0);
+      copy.mockReturnValue(false);
+      await store.copyMCPOAuthLink('server');
+      expect(store.toasts.value).toEqual([
+        expect.objectContaining({ message: 'Clipboard unavailable', kind: 'error' }),
+      ]);
+    } finally {
+      if (clipboard) Object.defineProperty(navigator, 'clipboard', clipboard);
+      else Reflect.deleteProperty(navigator, 'clipboard');
+      if (exec) Object.defineProperty(document, 'execCommand', exec);
+      else Reflect.deleteProperty(document, 'execCommand');
+      store.dispose();
+    }
+  });
+
+  it('reports location permission denial without changing the draft', async () => {
+    const store = new AppStore(config);
+    store.prompt.value = 'keep this draft';
+    const descriptor = Object.getOwnPropertyDescriptor(navigator, 'geolocation');
+    Object.defineProperty(navigator, 'geolocation', {
+      configurable: true,
+      value: {
+        getCurrentPosition: (
+          _success: unknown,
+          failure: (error: { code: number; message: string }) => void,
+        ) => failure({ code: 1, message: 'Location denied' }),
+      },
+    });
+    try {
+      await store.shareLocation();
+      expect(store.prompt.value).toBe('keep this draft');
+      expect(store.toasts.value).toEqual([
+        expect.objectContaining({ kind: 'error', message: 'Location denied' }),
+      ]);
+    } finally {
+      if (descriptor) Object.defineProperty(navigator, 'geolocation', descriptor);
+      else Reflect.deleteProperty(navigator, 'geolocation');
+      store.dispose();
+    }
   });
 
   it('starts normal and isolated skill runs from their server responses', async () => {

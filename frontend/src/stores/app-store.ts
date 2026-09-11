@@ -475,7 +475,8 @@ export class AppStore {
         this.runs.value = { ...this.runs.peek(), [sessionId]: projection };
       },
       patchSession: (id, patch) => this.sessionStore.patch(id, patch),
-      refreshSessionMessages: (sessionId) => this.refreshSessionMessages(sessionId),
+      refreshSessionMessages: (sessionId, propagateError = false) =>
+        this.refreshSessionMessages(sessionId, 0, '', false, propagateError),
       trackIntent: (sessionId, intent) => this.trackIntent(sessionId, intent),
       retireIntent: (sessionId, clientMessageId) => this.retireIntent(sessionId, clientMessageId),
       streamResponse: (responseId, sessionId, sequence) =>
@@ -1021,8 +1022,15 @@ export class AppStore {
     targetRev = 0,
     responseId = '',
     preserveLiveRun = false,
+    propagateError = false,
   ): Promise<void> {
-    await this.runEngine.refreshSessionMessages(sessionId, targetRev, responseId, preserveLiveRun);
+    await this.runEngine.refreshSessionMessages(
+      sessionId,
+      targetRev,
+      responseId,
+      preserveLiveRun,
+      propagateError,
+    );
     if (this.activeSessionId.peek() === sessionId) void this.acknowledgeSelectedAttention();
   }
 
@@ -1208,19 +1216,28 @@ export class AppStore {
     await this.mcpStore.copyOAuthLink(name);
   }
   async saveGoal(goal: Goal | { action: string }): Promise<void> {
-    await this.goalStore.save(goal);
+    const sessionId = 'objective' in goal ? await this.materializeSession() : undefined;
+    await this.goalStore.save(goal, sessionId);
   }
 
   async shareLocation(): Promise<void> {
     if (!this.config.locationSharing || !navigator.geolocation)
       return this.toast('Location sharing is unavailable.', 'error');
-    const position = await new Promise<GeolocationPosition>((resolve, reject) =>
-      navigator.geolocation.getCurrentPosition(resolve, reject, {
-        enableHighAccuracy: false,
-        timeout: 10_000,
-      }),
-    );
-    this.prompt.value += `${this.prompt.value ? '\n' : ''}Current location: ${position.coords.latitude.toFixed(6)}, ${position.coords.longitude.toFixed(6)}`;
+    try {
+      const position = await new Promise<GeolocationPosition>((resolve, reject) =>
+        navigator.geolocation.getCurrentPosition(
+          resolve,
+          (error) => reject(new Error(error.message || 'Location is unavailable.')),
+          {
+            enableHighAccuracy: false,
+            timeout: 10_000,
+          },
+        ),
+      );
+      this.prompt.value += `${this.prompt.value ? '\n' : ''}Current location: ${position.coords.latitude.toFixed(6)}, ${position.coords.longitude.toFixed(6)}`;
+    } catch (error) {
+      this.toast(error, 'error');
+    }
   }
 
   async refreshBranchTree(
@@ -1419,8 +1436,17 @@ export class AppStore {
     if (this.shellStore.show(draft ? '' : session?.id || '') && !draft) this.prompt.value = '';
   }
 
-  // Materialize the current draft without sending a message (shell and approval controls).
+  // Materialize the current draft without sending a message (shell, approval controls, and goals).
   async ensureSession(): Promise<string> {
+    try {
+      return await this.materializeSession();
+    } catch (error) {
+      this.toast(error, 'error');
+      return '';
+    }
+  }
+
+  private async materializeSession(): Promise<string> {
     const active = this.activeSession.peek();
     if (active && !this.draftActive.peek()) return active.id;
     if (this.sessionCreationPromise) return this.sessionCreationPromise;
@@ -1453,9 +1479,6 @@ export class AppStore {
         this.composer.persist();
         this.publishSessionChange('session-upserted', durable.id);
         return durable.id;
-      } catch (error) {
-        this.toast(error, 'error');
-        return '';
       } finally {
         this.sessionCreationPromise = null;
       }
