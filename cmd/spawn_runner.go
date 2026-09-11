@@ -466,7 +466,7 @@ type spawnRunSink struct {
 	model    string
 
 	mu       sync.Mutex
-	output   strings.Builder
+	output   runnerOutput
 	started  bool
 	doneSent bool
 }
@@ -507,7 +507,7 @@ func (s *spawnRunSink) Output() string {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.output.String()
+	return s.output.response.String()
 }
 
 func (s *spawnRunSink) Event(event llm.Event) {
@@ -516,9 +516,7 @@ func (s *spawnRunSink) Event(event llm.Event) {
 	}
 	s.Start()
 	s.mu.Lock()
-	if event.Type == llm.EventTextDelta {
-		s.output.WriteString(event.Text)
-	}
+	s.output.Event(event)
 	s.mu.Unlock()
 	if s.cb == nil || s.callID == "" {
 		return
