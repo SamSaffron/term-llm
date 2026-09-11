@@ -4173,11 +4173,10 @@ describe('AppStore compatibility behavior', () => {
       const store = new AppStore(config);
       const internals = store as unknown as {
         refreshStatus(): Promise<void>;
-        scheduleTitleReconciliation(sessionId: string): void;
       };
       internals.refreshStatus = vi.fn(async () => undefined);
 
-      internals.scheduleTitleReconciliation('s1');
+      store.runEngine.scheduleTitleReconciliation('s1');
       await vi.advanceTimersByTimeAsync(2_000);
       expect(internals.refreshStatus).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(6_000);

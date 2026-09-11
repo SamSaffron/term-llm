@@ -496,10 +496,6 @@ export class AppStore {
       this.planStore,
       this.goalStore,
       this.widgetStore,
-      {
-        publishSessionChange: (type, sessionId, responseId, revision, operationId) =>
-          this.publishSessionChange(type, sessionId, responseId, revision, operationId),
-      },
     );
     this.tabSyncCoordinator = new TabSyncCoordinator(this.services, {
       startupDone: this.startupDone,
@@ -1018,14 +1014,6 @@ export class AppStore {
 
   applyResponseEvent(sessionId: string, event: ResponseEvent, owner?: StreamSupervisor): void {
     this.runEngine.applyResponseEvent(sessionId, event, owner);
-  }
-
-  private scheduleTitleReconciliation(
-    sessionId: string,
-    responseId = this.sessions.peek().find((entry) => entry.id === sessionId)?.lastResponseId || '',
-    streamGeneration = this.runEngine.currentSupervisor(sessionId)?.generation || 0,
-  ): void {
-    this.runEngine.scheduleTitleReconciliation(sessionId, responseId, streamGeneration);
   }
 
   private async refreshSessionMessages(

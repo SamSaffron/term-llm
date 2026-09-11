@@ -68,6 +68,7 @@ export default defineConfig({
   plugins: [deterministicStyles(), preact()],
   publicDir: false,
   build: {
+    chunkSizeWarningLimit: 550,
     outDir: resolve(import.meta.dirname, '../internal/serveui/static/dist'),
     emptyOutDir: true,
     manifest: false,

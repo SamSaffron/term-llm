@@ -1,3 +1,4 @@
+import { relativeTime } from '../domain/time';
 import { createTranscriptIndexes } from '../domain/transcript-indexes';
 import { createMessageMediaResolvers } from '../domain/media-resolvers';
 import { signal, type ReadonlySignal } from '@preact/signals';
@@ -9,7 +10,7 @@ import { useStore } from '../app/context';
 import { Markdown } from './Markdown';
 import { ChipPicker } from './ChipPicker';
 import { Icon } from './Icon';
-import { copyText } from '../platform/browser';
+import { copyText } from '../platform/clipboard';
 import { rebaseHubAssetURL } from '../app/config';
 import type { MarkdownMediaResolver } from '../domain/markdown';
 import { responseActivity } from '../domain/activity';
@@ -48,13 +49,6 @@ function openMediaGallery(store: AppStore, src: string, type: 'image' | 'video')
   store.lightbox.value = { ...items[index], items, index };
 }
 
-function relativeTime(value: number): string {
-  const seconds = Math.max(0, Math.round((Date.now() - value) / 1000));
-  if (seconds < 60) return 'now';
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
-  return `${Math.floor(seconds / 86400)}d`;
-}
 function parseToolArguments(
   raw: string,
 ): { entries: [string, unknown][]; fallback: string } | null {
@@ -667,7 +661,11 @@ function MessageTime({ created, clock }: { created: number; clock: ReadonlySigna
   // The minute clock belongs to the transcript, but only timestamp leaves read it.
   void clock.value;
   if (!created) return null;
-  return <time title={new Date(created).toLocaleString()}>{relativeTime(created)}</time>;
+  return (
+    <time title={new Date(created).toLocaleString()}>
+      {relativeTime(created, { compact: true })}
+    </time>
+  );
 }
 
 function MessageMeta({ message, clock }: { message: Message; clock: ReadonlySignal<number> }) {

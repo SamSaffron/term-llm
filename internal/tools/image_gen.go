@@ -49,16 +49,15 @@ func NewImageGenerateTool(approval *ApprovalManager, cfg *config.Config, provide
 
 // ImageGenerateArgs are the arguments for image_generate.
 type ImageGenerateArgs struct {
-	Prompt          string   `json:"prompt"`
-	InputImage      string   `json:"input_image,omitempty"`       // Single path for editing/variation (backward compat)
-	InputImages     []string `json:"input_images,omitempty"`      // Multiple paths for multi-image editing
-	Size            string   `json:"size,omitempty"`              // Resolution: "1K", "2K", "4K"
-	AspectRatio     string   `json:"aspect_ratio,omitempty"`      // e.g., "16:9", "4:3"
-	Quality         string   `json:"quality,omitempty"`           // auto, low, medium, high, xhigh, max
-	Background      string   `json:"background,omitempty"`        // auto, opaque, transparent
-	OutputPath      string   `json:"output_path,omitempty"`       // Save location
-	ShowImage       *bool    `json:"show_image,omitempty"`        // Display via icat (default: true)
-	CopyToClipboard *bool    `json:"copy_to_clipboard,omitempty"` // Copy to clipboard (default: true)
+	Prompt      string   `json:"prompt"`
+	InputImage  string   `json:"input_image,omitempty"`  // Single path for editing/variation (backward compat)
+	InputImages []string `json:"input_images,omitempty"` // Multiple paths for multi-image editing
+	Size        string   `json:"size,omitempty"`         // Resolution: "1K", "2K", "4K"
+	AspectRatio string   `json:"aspect_ratio,omitempty"` // e.g., "16:9", "4:3"
+	Quality     string   `json:"quality,omitempty"`      // auto, low, medium, high, xhigh, max
+	Background  string   `json:"background,omitempty"`   // auto, opaque, transparent
+	OutputPath  string   `json:"output_path,omitempty"`  // Save location
+	ShowImage   *bool    `json:"show_image,omitempty"`   // Display via icat (default: true)
 }
 
 func (t *ImageGenerateTool) Spec() llm.ToolSpec {
@@ -105,11 +104,6 @@ func (t *ImageGenerateTool) Spec() llm.ToolSpec {
 		props["show_image"] = map[string]interface{}{
 			"type":        "boolean",
 			"description": "Display generated image via terminal (icat) (default: true)",
-			"default":     true,
-		}
-		props["copy_to_clipboard"] = map[string]interface{}{
-			"type":        "boolean",
-			"description": "Copy generated image to system clipboard (default: true)",
 			"default":     true,
 		}
 	}
@@ -396,12 +390,6 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 	// tool schema, so ignore stale/legacy show_image:false arguments there.
 	showImage := t.serveMode || a.ShowImage == nil || *a.ShowImage
 
-	// Copy to clipboard if requested (default: true, disabled in serve mode)
-	copyClipboard := !t.serveMode && (a.CopyToClipboard == nil || *a.CopyToClipboard)
-	if copyClipboard {
-		image.CopyToClipboard(outputPath, result.Data)
-	}
-
 	// Build result. Keep model-facing text semantic: the UI receives
 	// output.Images out-of-band and owns rendering the image artifact. Avoid
 	// returning a public web image URL here, otherwise models tend to embed the
@@ -427,9 +415,6 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 		sb.WriteString(fmt.Sprintf("Dimensions: ~%dx%d\n", width, height))
 	}
 	sb.WriteString(fmt.Sprintf("Provider: %s\n", provider.Name()))
-	if copyClipboard {
-		sb.WriteString("Copied to clipboard: yes\n")
-	}
 
 	output := llm.ToolOutput{Content: sb.String()}
 	if showImage {

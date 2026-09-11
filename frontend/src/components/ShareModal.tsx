@@ -6,7 +6,7 @@ import type {
   ShareVisibility,
 } from '../api/endpoints';
 import { errorMessage } from '../domain/text';
-import { copyText } from '../platform/browser';
+import { copyText } from '../platform/clipboard';
 import { Overlay } from './Overlay';
 import '../styles/features/share.css';
 

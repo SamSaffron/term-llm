@@ -1,3 +1,4 @@
+import { relativeTime } from '../domain/time';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import { APIError } from '../api/client';
@@ -37,15 +38,6 @@ const timestamp = (value: unknown): number => {
   if (!value) return 0;
   const parsed = new Date(String(value)).getTime();
   return Number.isFinite(parsed) ? parsed : 0;
-};
-
-const relativeActivity = (value: number): string => {
-  const difference = Math.max(0, Date.now() - value);
-  if (difference < 45_000) return 'just now';
-  if (difference < 3_600_000) return `${Math.max(1, Math.floor(difference / 60_000))}m ago`;
-  if (difference < 86_400_000) return `${Math.max(1, Math.floor(difference / 3_600_000))}h ago`;
-  if (difference < 604_800_000) return `${Math.max(1, Math.floor(difference / 86_400_000))}d ago`;
-  return new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 };
 
 function recoveryOffer(error: unknown): WorktreeRecoveryOffer | null {
@@ -151,7 +143,7 @@ function WorktreeOption({
   const created = timestamp(row.created_at);
   const activity = latestConversationActivity || lastBound || created;
   const activityLabel = activity
-    ? `${latestConversationActivity ? 'Active' : lastBound ? 'Last used' : 'Created'} ${relativeActivity(activity)}`
+    ? `${latestConversationActivity ? 'Active' : lastBound ? 'Last used' : 'Created'} ${relativeTime(activity, { justNowThreshold: 45_000 })}`
     : '';
   const dirty = Number(row.dirty_files || 0);
   const mainAhead = Number(row.main_ahead || 0);

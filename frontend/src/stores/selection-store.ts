@@ -11,7 +11,6 @@ import type {
 import { olderTranscriptAnchors } from '../domain/transcript';
 import { planSummary } from '../domain/plan';
 import { updateSessionRoute } from '../platform/routing';
-import type { TabEventType } from '../platform/tab-sync';
 import type { AppStoreServices } from './app-store-services';
 import type { SessionStore } from './session-store';
 import type { ComposerStore } from './composer-store';
@@ -26,16 +25,6 @@ import type { PlanStore } from './plan-store';
 import type { GoalStore } from './goal-store';
 import type { WidgetStore } from './widget-store';
 import { approvalPrompt, askUserPrompt, listFrom, recordValue } from './store-utils';
-
-export interface SelectionStoreHost {
-  publishSessionChange: (
-    type?: TabEventType,
-    sessionId?: string,
-    responseId?: string,
-    revision?: number,
-    operationId?: string,
-  ) => void;
-}
 
 /** Owns navigation, selection generations, and authoritative session hydration. */
 export class SelectionStore {
@@ -60,7 +49,6 @@ export class SelectionStore {
     private readonly plans: PlanStore,
     private readonly goals: GoalStore,
     private readonly widgets: WidgetStore,
-    private readonly host: SelectionStoreHost,
   ) {}
 
   dispose(): void {

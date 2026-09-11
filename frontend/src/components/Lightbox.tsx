@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
-import { copyText } from '../platform/browser';
+import { copyText } from '../platform/clipboard';
 import { overlayManager } from '../platform/overlay-manager';
 import { Icon } from './Icon';
 import { trapOverlayFocus } from './Overlay';

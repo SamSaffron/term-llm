@@ -16,7 +16,7 @@ import {
   linesFromHunks,
   unifiedPatchForFile,
 } from '../domain/diff';
-import { copyText } from '../platform/browser';
+import { copyText } from '../platform/clipboard';
 import { rebaseHubAssetURL } from '../app/config';
 import { planSummary } from '../domain/plan';
 import { Icon } from './Icon';

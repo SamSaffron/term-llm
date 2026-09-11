@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/image"
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
@@ -16,7 +15,7 @@ import (
 type ShowImageTool struct {
 	approval  *ApprovalManager
 	config    *ToolConfig
-	serveMode bool // When true, strip clipboard param from spec
+	serveMode bool // When true, use platform-neutral description
 }
 
 // NewShowImageTool creates a new ShowImageTool.
@@ -29,9 +28,8 @@ func NewShowImageTool(approval *ApprovalManager, configs ...*ToolConfig) *ShowIm
 
 // ShowImageArgs are the arguments for show_image.
 type ShowImageArgs struct {
-	FilePath        string `json:"file_path"`
-	CopyToClipboard *bool  `json:"copy_to_clipboard,omitempty"` // Default: true
-	Prompt          string `json:"prompt,omitempty"`            // Steering prompt for image analysis
+	FilePath string `json:"file_path"`
+	Prompt   string `json:"prompt,omitempty"` // Steering prompt for image analysis
 }
 
 var showImageSupportedFormats = map[string]bool{
@@ -54,15 +52,9 @@ func (t *ShowImageTool) Spec() llm.ToolSpec {
 			"description": "Optional question or instruction to guide image analysis (e.g., 'What text is visible?' or 'Describe the colors used')",
 		},
 	}
-	desc := "Display an image to the user via terminal (icat) and optionally copy to clipboard."
+	desc := "Display an image to the user via terminal (icat)."
 	if t.serveMode {
 		desc = "Display an image to the user."
-	} else {
-		props["copy_to_clipboard"] = map[string]any{
-			"type":        "boolean",
-			"description": "Also copy the image to system clipboard (default: true)",
-			"default":     true,
-		}
 	}
 	return llm.ToolSpec{
 		Name:        ShowImageToolName,
@@ -128,25 +120,11 @@ func (t *ShowImageTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrUnsupportedFormat, "unsupported format: %s (supported: PNG, JPEG, GIF, WebP, BMP)", ext))), nil
 	}
 
-	// Copy to clipboard if requested (default: true, disabled in serve mode)
-	copyClipboard := !t.serveMode && (a.CopyToClipboard == nil || *a.CopyToClipboard)
-	if copyClipboard {
-		// Read file data for clipboard
-		data, err := os.ReadFile(resolvedPath)
-		if err != nil {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to read image for clipboard: %v", err))), nil
-		}
-		image.CopyToClipboard(resolvedPath, data)
-	}
-
 	// Build result
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Image: %s\n", a.FilePath))
 	sb.WriteString(fmt.Sprintf("Size: %d bytes\n", info.Size()))
 	sb.WriteString(fmt.Sprintf("Format: %s\n", strings.TrimPrefix(ext, ".")))
-	if copyClipboard {
-		sb.WriteString("Copied to clipboard: yes\n")
-	}
 	if a.Prompt != "" {
 		sb.WriteString(fmt.Sprintf("Focus: %s\n", a.Prompt))
 	}

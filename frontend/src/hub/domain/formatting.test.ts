@@ -35,6 +35,15 @@ describe('Hub formatting', () => {
     ).toBe('2 decisions waiting · 1 message');
   });
 
+  it.each([undefined, 0, -1, 'invalid date'])('ignores invalid session time %s', (value) => {
+    expect(relativeSessionTime(value)).toBe('');
+  });
+
+  it('accepts ISO session timestamps', () => {
+    const now = Date.parse('2026-09-02T12:00:00Z');
+    expect(relativeSessionTime('2026-09-02T11:55:00Z', now)).toBe('5m ago');
+  });
+
   it('uses the documented resume fallback and active counts', () => {
     expect(
       nodeResumePath(

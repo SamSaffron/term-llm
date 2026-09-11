@@ -1,4 +1,4 @@
-import { copyText } from '../platform/browser';
+import { copyText } from '../platform/clipboard';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import {
   analyzeStreamingMarkdown,

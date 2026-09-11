@@ -92,5 +92,3 @@ export function Drawer({
     </div>
   );
 }
-
-export const Sheet = Drawer;

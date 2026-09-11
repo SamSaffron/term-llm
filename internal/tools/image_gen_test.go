@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm"
 )
 
 func TestImageGenAutoApprove_SymlinkEscape(t *testing.T) {
@@ -377,11 +379,11 @@ func TestImageGenerateTool_ServeModeStripsTerminalParams(t *testing.T) {
 	cfg := &config.Config{}
 	tool := NewImageGenerateTool(nil, cfg, "", nil, "", "")
 
-	// Default: has copy_to_clipboard and show_image
+	// Default: exposes display control, but never clipboard access.
 	spec := tool.Spec()
 	props := spec.Schema["properties"].(map[string]interface{})
-	if _, ok := props["copy_to_clipboard"]; !ok {
-		t.Error("expected copy_to_clipboard in default spec")
+	if _, ok := props["copy_to_clipboard"]; ok {
+		t.Error("clipboard access must not be exposed in tool specs")
 	}
 	if _, ok := props["show_image"]; !ok {
 		t.Error("expected show_image in default spec")
@@ -406,17 +408,17 @@ func TestImageGenerateTool_ServeModeStripsTerminalParams(t *testing.T) {
 	}
 }
 
-func TestShowImageTool_ServeModeStripsClipboard(t *testing.T) {
+func TestShowImageTool_NeverExposesClipboard(t *testing.T) {
 	tool := NewShowImageTool(nil)
 
-	// Default: has copy_to_clipboard
+	// Terminal mode must not expose clipboard access.
 	spec := tool.Spec()
 	props := spec.Schema["properties"].(map[string]any)
-	if _, ok := props["copy_to_clipboard"]; !ok {
-		t.Error("expected copy_to_clipboard in default spec")
+	if _, ok := props["copy_to_clipboard"]; ok {
+		t.Error("clipboard access must not be exposed in tool specs")
 	}
-	if !strings.Contains(spec.Description, "clipboard") {
-		t.Error("expected clipboard mention in default description")
+	if strings.Contains(spec.Description, "clipboard") {
+		t.Error("clipboard should not be mentioned in default description")
 	}
 
 	// Serve mode: stripped
@@ -480,5 +482,62 @@ func TestImageGenAutoApprove_EvalSymlinksFailure(t *testing.T) {
 	// Should NOT succeed - the file doesn't exist and should not be auto-approved
 	if !strings.Contains(out.Content, "FILE_NOT_FOUND") && !strings.Contains(out.Content, "PERMISSION_DENIED") {
 		t.Errorf("expected error for non-existent file (not auto-approved), got: %s", out.Content)
+	}
+}
+
+// Tool calls must not mutate the clipboard, even when an old conversation
+// supplies the removed copy_to_clipboard argument.
+func TestImageToolsDoNotCopyToClipboard(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("clipboard command sentinels use shell scripts")
+	}
+	binDir := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "clipboard-called")
+	t.Setenv("CLIPBOARD_TEST_MARKER", marker)
+	for _, name := range []string{"wl-copy", "xclip", "osascript", "pbcopy"} {
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte("#!/bin/sh\nprintf called > \"$CLIPBOARD_TEST_MARKER\"\n"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", binDir)
+
+	for _, serveMode := range []bool{false, true} {
+		for _, clipboardArg := range []string{"omitted", "false", "true"} {
+			t.Run(fmt.Sprintf("serve=%t/clipboard=%s", serveMode, clipboardArg), func(t *testing.T) {
+				outputDir := t.TempDir()
+				cfg := &config.Config{Image: config.ImageConfig{Provider: "debug", OutputDir: outputDir}}
+				generate := NewImageGenerateTool(nil, cfg, "debug", nil, "", "")
+				generate.serveMode = serveMode
+				show := NewShowImageTool(nil)
+				show.serveMode = serveMode
+				inputPath := filepath.Join(outputDir, "input.png")
+				if err := os.WriteFile(inputPath, []byte("image data"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				for _, tool := range []llm.Tool{generate, show} {
+					args := map[string]any{"prompt": "a cat", "file_path": inputPath}
+					if clipboardArg != "omitted" {
+						args["copy_to_clipboard"] = clipboardArg == "true"
+					}
+					raw, err := json.Marshal(args)
+					if err != nil {
+						t.Fatal(err)
+					}
+					out, err := tool.Execute(context.Background(), raw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(out.Images) == 0 {
+						t.Fatalf("%s did not return an image: %s", tool.Spec().Name, out.Content)
+					}
+					if strings.Contains(out.Content, "Copied to clipboard:") {
+						t.Errorf("unexpected clipboard claim: %s", out.Content)
+					}
+					if _, err := os.Stat(marker); !os.IsNotExist(err) {
+						t.Fatalf("%s invoked a clipboard command (stat error: %v)", tool.Spec().Name, err)
+					}
+				}
+			})
+		}
 	}
 }

@@ -106,26 +106,6 @@ export async function registerServiceWorker(
   }
 }
 
-export async function copyText(text: string): Promise<void> {
-  if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text);
-  const textarea = document.createElement('textarea');
-  textarea.value = text;
-  textarea.readOnly = true;
-  textarea.setAttribute('aria-hidden', 'true');
-  textarea.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0';
-  const previous = document.activeElement as HTMLElement | null;
-  document.body.append(textarea);
-  textarea.focus();
-  textarea.select();
-  textarea.setSelectionRange(0, textarea.value.length);
-  try {
-    if (!document.execCommand('copy')) throw new Error('Clipboard unavailable');
-  } finally {
-    textarea.remove();
-    previous?.focus({ preventScroll: true });
-  }
-}
-
 export async function hardRefreshAssets(
   config: AppConfig,
   registration?: ServiceWorkerRegistration | null,

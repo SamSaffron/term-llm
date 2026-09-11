@@ -1,18 +1,10 @@
+import { relativeTime } from '../../domain/time';
 import type { HubNode, HubNodeSession } from './types';
-
-const minute = 60_000;
-const hour = 60 * minute;
-const day = 24 * hour;
 
 export function relativeSessionTime(value: number | string | undefined, now = Date.now()): string {
   const timestamp = typeof value === 'string' ? Date.parse(value) : Number(value);
   if (!Number.isFinite(timestamp) || timestamp <= 0) return '';
-  const diff = Math.max(0, now - timestamp);
-  if (diff < minute) return 'just now';
-  if (diff < hour) return `${Math.floor(diff / minute)}m ago`;
-  if (diff < day) return `${Math.floor(diff / hour)}h ago`;
-  if (diff < 7 * day) return `${Math.floor(diff / day)}d ago`;
-  return new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return relativeTime(timestamp, { now });
 }
 
 export function countLabel(count: number, singular: string, plural = `${singular}s`): string {

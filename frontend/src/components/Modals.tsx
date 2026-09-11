@@ -1,4 +1,3 @@
-import type { ComponentType } from 'preact';
 import { SearchField, SettingsSelect } from './FormFields';
 import { memo } from './memo';
 import { lazyComponent } from './lazyComponent';
@@ -13,31 +12,13 @@ import { Markdown } from './Markdown';
 import { ProjectAssignment } from './ProjectAssignment';
 import { Worktrees } from './Worktrees';
 import { CommitModal } from './CommitModal';
-let loadedExtensionSettings: ComponentType | null = null;
-let extensionSettingsImport: Promise<ComponentType> | null = null;
-function LazyExtensionSettings() {
-  const [Panel, setPanel] = useState<ComponentType | null>(() => loadedExtensionSettings);
-  const [error, setError] = useState('');
-  useEffect(() => {
-    if (Panel) return;
-    let live = true;
-    extensionSettingsImport ||= import('./ExtensionSettings').then(
-      ({ ExtensionSettings }) => ExtensionSettings,
-    );
-    void extensionSettingsImport
-      .then((component) => {
-        loadedExtensionSettings = component;
-        if (live) setPanel(() => component);
-      })
-      .catch(() => {
-        if (live) setError('Could not load extension settings. Reload the page to retry.');
-      });
-    return () => {
-      live = false;
-    };
-  }, [Panel]);
-  return Panel ? <Panel /> : <p>{error || 'Loading extension settings…'}</p>;
-}
+const LazyExtensionSettings = lazyComponent(
+  () =>
+    import('./ExtensionSettings')
+      .then(({ ExtensionSettings }) => ExtensionSettings)
+      .catch(() => () => <p>Could not load extension settings. Reload the page to retry.</p>),
+  <p>Loading extension settings…</p>,
+);
 
 const LazyShareModal = lazyComponent(() =>
   import('./ShareModal').then(({ ShareModal }) => ShareModal),

@@ -70,9 +70,8 @@ func TestWireImageRecorderIsLazyAndRecordsWithAttribution(t *testing.T) {
 		t.Fatal("image_generate tool not found")
 	}
 	args, err := json.Marshal(tools.ImageGenerateArgs{
-		Prompt:          "a reliable robot",
-		ShowImage:       boolPointer(false),
-		CopyToClipboard: boolPointer(false),
+		Prompt:    "a reliable robot",
+		ShowImage: boolPointer(false),
 	})
 	if err != nil {
 		t.Fatalf("marshal arguments: %v", err)

@@ -489,8 +489,7 @@ func (r *LocalToolRegistry) BaseDir() string {
 }
 
 // SetServeMode marks tools as running in serve (web/telegram) mode.
-// This strips terminal-only params like copy_to_clipboard and show_image
-// from tool specs and disables clipboard operations during execution.
+// This strips terminal-only params like show_image from tool specs.
 // imageBaseURL is retained for compatibility with older callers; generated
 // images are now reported through ToolOutput.Images and served by the
 // response-stream/session layers.
