@@ -417,7 +417,7 @@ func TestDeveloperBuiltinCanSpawnDocumentedSubagents(t *testing.T) {
 		t.Fatalf("developer tools.enabled = %#v, want spawn_agent", agent.Tools.Enabled)
 	}
 
-	wantAllowed := []string{"codebase", "web-researcher", "reviewer"}
+	wantAllowed := []string{"developer", "codebase", "web-researcher", "reviewer"}
 	for _, name := range wantAllowed {
 		if !stringSliceContains(agent.Spawn.AllowedAgents, name) {
 			t.Errorf("developer spawn.allowed_agents = %#v, missing %q", agent.Spawn.AllowedAgents, name)

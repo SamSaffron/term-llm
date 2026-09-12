@@ -91,7 +91,7 @@ func TestRuntimeAgentMentionCapabilityUsesBuiltinAgentSpawnPolicy(t *testing.T) 
 		active string
 		want   []string
 	}{
-		{active: "developer", want: []string{"codebase", "reviewer", "web-researcher"}},
+		{active: "developer", want: []string{"codebase", "developer", "reviewer", "web-researcher"}},
 		{active: "active-review", want: []string{"developer", "reviewer"}},
 	}
 	for _, tt := range tests {

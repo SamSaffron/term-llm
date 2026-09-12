@@ -9,6 +9,7 @@ tools:
 
 spawn:
   allowed_agents:
+    - developer
     - codebase
     - web-researcher
     - reviewer
