@@ -393,7 +393,12 @@ function SubagentProgressLine({ tool, labelled = false }: { tool: ToolCall; labe
   }
   return parts.length ? (
     <div class="tool-progress">
-      {labelled && <strong>{name}: </strong>}
+      {labelled && (
+        <strong>
+          {name}
+          {tool.status === 'running' ? ' · running' : ''}:{' '}
+        </strong>
+      )}
       {parts.join(' · ')}
     </div>
   ) : null;
@@ -599,10 +604,9 @@ function ToolGroup({
   const delegations = visible.filter(
     (tool) => tool.subagentProgress || tool.name === 'wait_for_jobs',
   );
-  const previews = [
-    ...delegations.filter((tool) => tool.status === 'running'),
-    ...delegations.filter((tool) => tool.status !== 'running'),
-  ];
+  const previews = delegations.slice(0, 3);
+  const hiddenPreviews = delegations.slice(previews.length);
+  const hiddenRunning = hiddenPreviews.filter((tool) => tool.status === 'running').length;
   const runningTimedStartedAt =
     runningTools.length > 0 &&
     runningTools.every(
@@ -646,11 +650,15 @@ function ToolGroup({
         </span>
       </button>
       {!expanded &&
-        previews
-          .slice(0, 3)
-          .map((tool) => <SubagentProgressLine key={tool.id} tool={tool} labelled />)}
-      {!expanded && previews.length > 3 && (
-        <div class="tool-progress">{previews.length - 3} more delegations · expand to view</div>
+        previews.map((tool) => <SubagentProgressLine key={tool.id} tool={tool} labelled />)}
+      {!expanded && hiddenPreviews.length > 0 && (
+        <div class="tool-progress">
+          <button class="text-action" type="button" onClick={toggle}>
+            {hiddenPreviews.length} more{' '}
+            {hiddenPreviews.length === 1 ? 'delegation' : 'delegations'}
+            {hiddenRunning > 0 ? ` · ${hiddenRunning} running` : ''} · expand to view
+          </button>
+        </div>
       )}
       <div class={`tool-group-details ${expanded ? 'open' : ''}`}>
         {(expanded || visited) &&

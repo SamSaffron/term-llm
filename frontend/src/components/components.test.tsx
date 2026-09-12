@@ -6,6 +6,7 @@ import { App } from '../app/App';
 import { AppStore } from '../stores/app-store';
 import { APIError } from '../api/client';
 import type { SessionShareResponse } from '../api/endpoints';
+import type { ToolCall } from '../domain/types';
 import { Transcript } from './Transcript';
 import { Composer } from './Composer';
 import { Markdown } from './Markdown';
@@ -2968,7 +2969,7 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
     expect(container.querySelector('.tool-group-card > .tool-progress')).toHaveTextContent(
-      'spawn_agent: 12 tool calls · 2 active · shell',
+      'spawn_agent · running: 12 tool calls · 2 active · shell',
     );
     expect(container.querySelector('.tool-group-card')).toHaveTextContent(
       'stopped waiting for 2 jobs',
@@ -2987,6 +2988,152 @@ describe('Preact-owned chat surfaces', () => {
       'queued as detached job',
     );
     expect(container.querySelector('[data-tool-id="queue-error"] .tool-progress')).toBeNull();
+  });
+
+  it('keeps collapsed delegation previews chronological as running statuses transition', async () => {
+    const store = createStore();
+    const tools: ToolCall[] = [
+      {
+        id: 'spawn-early',
+        name: 'spawn_agent',
+        status: 'running',
+        subagentProgress: {
+          seq: 1,
+          state: 'running',
+          callsStarted: 1,
+          callsActive: 1,
+          currentTool: 'alpha',
+        },
+      },
+      {
+        id: 'wait-later',
+        name: 'wait_for_jobs',
+        arguments: '{"run_ids":["r1"]}',
+        status: 'running',
+        subagentProgress: {
+          seq: 2,
+          state: 'running',
+          callsStarted: 2,
+          callsActive: 1,
+          currentTool: 'beta',
+        },
+      },
+      {
+        id: 'spawn-third',
+        name: 'spawn_agent',
+        status: 'done',
+        subagentProgress: {
+          seq: 3,
+          state: 'completed',
+          callsStarted: 3,
+          callsActive: 0,
+          currentTool: 'gamma',
+        },
+      },
+      {
+        id: 'spawn-hidden',
+        name: 'spawn_agent',
+        status: 'running',
+        subagentProgress: {
+          seq: 4,
+          state: 'running',
+          callsStarted: 4,
+          callsActive: 1,
+          currentTool: 'delta',
+        },
+      },
+    ];
+    store.sessions.value[0].messages = [
+      {
+        id: 'delegation-order',
+        role: 'tool-group',
+        content: '',
+        created: Date.now(),
+        tools,
+      },
+    ];
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+    const previewText = () =>
+      Array.from(container.querySelectorAll('.tool-group-card > .tool-progress > strong')).map(
+        (label) => label.parentElement?.textContent,
+      );
+    expect(previewText()).toEqual([
+      'spawn_agent · running: 1 tool call · 1 active · alpha',
+      'wait_for_jobs · running: waiting for 1 job · 2 tool calls · 1 active · beta · jobs keep running if stopped',
+      'spawn_agent: 3 tool calls · gamma',
+    ]);
+
+    await act(() => {
+      const group = store.sessions.peek()[0].messages[0];
+      store.sessionStore.patch('s1', {
+        messages: [
+          {
+            ...group,
+            tools: [
+              {
+                ...tools[0],
+                status: 'done',
+                subagentProgress: {
+                  ...tools[0].subagentProgress!,
+                  state: 'completed',
+                  callsActive: 0,
+                },
+              },
+              ...tools.slice(1),
+            ],
+          },
+        ],
+      });
+    });
+    expect(previewText()).toEqual([
+      'spawn_agent: 1 tool call · alpha',
+      'wait_for_jobs · running: waiting for 1 job · 2 tool calls · 1 active · beta · jobs keep running if stopped',
+      'spawn_agent: 3 tool calls · gamma',
+    ]);
+  });
+
+  it('indicates active delegations hidden by the collapsed preview limit and expands them', () => {
+    const store = createStore();
+    store.sessions.value[0].messages = [
+      {
+        id: 'active-overflow',
+        role: 'tool-group',
+        content: '',
+        created: Date.now(),
+        tools: Array.from({ length: 5 }, (_, index) => ({
+          id: `spawn-${index + 1}`,
+          name: 'spawn_agent',
+          status: 'running' as const,
+          subagentProgress: {
+            seq: index + 1,
+            state: 'running' as const,
+            callsStarted: index + 1,
+            callsActive: 1,
+            currentTool: `tool-${index + 1}`,
+          },
+        })),
+      },
+    ];
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+    expect(container.querySelectorAll('.tool-group-card > .tool-progress > strong')).toHaveLength(
+      3,
+    );
+    fireEvent.click(
+      screen.getByRole('button', { name: '2 more delegations · 2 running · expand to view' }),
+    );
+    expect(screen.getByRole('button', { name: /5 tool calls/ })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    expect(container.querySelectorAll('[data-tool-id^="spawn-"]')).toHaveLength(5);
   });
 
   it('shows a frozen duration beside a completed spawn-agent status', () => {
