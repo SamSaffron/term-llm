@@ -9,6 +9,7 @@ import type {
 export type Modal =
   | ''
   | 'settings'
+  | 'stats'
   | 'rename'
   | 'ask-user'
   | 'approval'

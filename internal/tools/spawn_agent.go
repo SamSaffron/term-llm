@@ -67,23 +67,26 @@ const (
 
 // SubagentEvent represents an event from a running subagent.
 type SubagentEvent struct {
-	Type         SubagentEventType   // "init", "text", "tool_start", "tool_end", "phase", "usage", "done"
-	Text         string              // for "text" events
-	ToolName     string              // for tool events
-	ToolCallID   string              // nested tool invocation ID
-	ToolArgs     json.RawMessage     // nested tool arguments
-	Guardian     *GuardianEvent      // for guardian events
-	ToolInfo     string              // for tool events
-	ToolOutput   string              // for "tool_end" events - text content
-	Diffs        []llm.DiffData      // for "tool_end" events - structured diffs
-	Images       []string            // for "tool_end" events - legacy image paths
-	Media        []llm.MediaArtifact // for "tool_end" events - ordered image/video artifacts
-	Success      bool                // for "tool_end" events
-	Phase        string              // for "phase" events
-	InputTokens  int                 // for "usage" events
-	OutputTokens int                 // for "usage" events
-	Provider     string              // for "init" events - provider name
-	Model        string              // for "init" events - model name
+	Type              SubagentEventType   // "init", "text", "tool_start", "tool_end", "phase", "usage", "done"
+	Text              string              // for "text" events
+	ToolName          string              // for tool events
+	ToolCallID        string              // nested tool invocation ID
+	ToolArgs          json.RawMessage     // nested tool arguments
+	Guardian          *GuardianEvent      // for guardian events
+	ToolInfo          string              // for tool events
+	ToolOutput        string              // for "tool_end" events - text content
+	Diffs             []llm.DiffData      // for "tool_end" events - structured diffs
+	Images            []string            // for "tool_end" events - legacy image paths
+	Media             []llm.MediaArtifact // for "tool_end" events - ordered image/video artifacts
+	Success           bool                // for "tool_end" events
+	Phase             string              // for "phase" events
+	InputTokens       int                 // fresh input tokens for "usage" events
+	OutputTokens      int                 // output tokens for "usage" events
+	CachedInputTokens int                 // cache-read tokens for "usage" events
+	CacheWriteTokens  int                 // cache-write tokens for "usage" events
+	Provider          string              // resolved provider for init/usage events
+	Model             string              // resolved model for init/usage events
+	Timestamp         time.Time           // authoritative child lifecycle/event time when available
 }
 
 // SubagentEventCallback is called to bubble up events from a running subagent.

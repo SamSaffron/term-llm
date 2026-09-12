@@ -182,6 +182,9 @@ func (s *serveServer) generateBranchPathNote(ctx context.Context, sourceSessionI
 	}
 	notes, err := llm.GeneratePathNotes(ctx, provider, sess.Model, source, llm.PathNotesConfig{Focus: focus})
 	if notes != nil && !notes.Usage.BillableCountersZero() {
+		if rt := s.peekStatsRuntime(sourceSessionID); rt != nil {
+			rt.recordHelperStats("path_note", sess.Model, notes.Usage)
+		}
 		_ = s.store.UpdateMetrics(ctx, sourceSessionID, 0, 0, notes.Usage.InputTokens, notes.Usage.OutputTokens, notes.Usage.CachedInputTokens, notes.Usage.CacheWriteTokens)
 	}
 	if err != nil {

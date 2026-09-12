@@ -71,6 +71,7 @@ func (rt *serveRuntime) compactSession(ctx context.Context, sessionID string) (*
 	if result == nil {
 		return nil, fmt.Errorf("compress conversation: empty result")
 	}
+	rt.recordHelperStats("compaction", result.Model, result.Usage)
 	if rt.engine != nil {
 		if err := rt.engine.PrepareCompactionContext(ctx, sessionID, rt.selectTools(nil), result); err != nil {
 			slog.Warn("plan restoration after manual serve compaction failed; continuing without it", "error", err)

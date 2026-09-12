@@ -1,3 +1,45 @@
+export interface SessionMetrics {
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens: number;
+  cache_write_tokens: number;
+  tool_calls: number;
+  llm_turns: number;
+}
+export interface StatsModel extends SessionMetrics {
+  model: string;
+  running?: boolean;
+  active_ms?: number;
+  tool_ms?: number;
+  cost_usd?: number;
+  cost_partial?: boolean;
+}
+export interface SessionStats {
+  metrics: SessionMetrics;
+  durable_metrics?: SessionMetrics;
+  active_ms?: number;
+  model_ms?: number;
+  tool_ms?: number;
+  ttft_ms?: number;
+  output_tokens_per_second?: number;
+  cost_usd?: number;
+  cost_partial?: boolean;
+  models: StatsModel[];
+  sections: Array<{ title: string; rows: Array<{ label: string; value: string }> }>;
+  scope: 'runtime_local' | 'durable_history';
+  unavailable?: string[];
+}
+export interface StatsChild extends SessionMetrics {
+  session_id: string;
+  title: string;
+  agent?: string;
+  model?: string;
+  state: string;
+  started_at?: number;
+  ended_at?: number;
+  approximate_times?: boolean;
+}
+
 import type { ExtensionStatus } from '../stores/extension-runtime';
 import type { APIClient, RequestControls } from './client';
 import type { ApprovalMode, Goal, MCPOAuthFlow, MCPResponse } from '../domain/types';
@@ -187,6 +229,13 @@ export const endpoints = (api: APIClient) => ({
       '/v1/sessions',
       { method: 'POST', body: JSON.stringify(body) },
       { policy: 'mutation', auth: 'session', retries: 0 },
+    ),
+  sessionStats: (id: string, signal?: AbortSignal) =>
+    api.get<SessionStats>(`/v1/sessions/${encoded(id)}/stats`, signal),
+  sessionChildren: (id: string, signal?: AbortSignal) =>
+    api.get<{ children: StatsChild[]; limit?: number }>(
+      `/v1/sessions/${encoded(id)}/children`,
+      signal,
     ),
   selectedSession: (id: string) =>
     api.get<Record<string, unknown>>(

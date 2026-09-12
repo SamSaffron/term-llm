@@ -20,7 +20,7 @@
 @import './features/widgets.css';
 @import './features/attachments.css';
 @import './features/drawer.css';
-@import './features/lightbox.css';
+@import './layout/mobile-shell.css';
 @import './features/side-questions.css';
 @import './features/transcript-virtualization.css';
 @import './features/toast.css';

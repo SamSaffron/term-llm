@@ -409,6 +409,7 @@ func (rt *serveRuntime) startSideQuestion(input sideQuestionStart) (<-chan sideQ
 			}
 		})
 
+		rt.recordHelperStats("side_question", model, result.Usage)
 		sq.mu.Lock()
 		sq.totalUsage.Add(result.Usage)
 		sq.requestCount++

@@ -340,6 +340,7 @@ func newServeAgentRuntime(ctx context.Context, request serveRuntimeRequest, opts
 }
 
 func serveRuntimeRunnerDefaults(opts serveAgentRuntimeOptions, request serveRuntimeRequest, approvalMode tools.ApprovalMode) cmdRunnerOptions {
+	// Leave WireSpawn unset: cmdRunner binds child persistence to this store and session.
 	return cmdRunnerOptions{
 		Inputs: request.Inputs, RestoreSettings: request.settings, RestoreAgentSkills: request.agentSkills,
 		ToolsSet: opts.cmd.Flags().Changed("tools"), SystemMessageSet: opts.cmd.Flags().Changed("system"),
@@ -347,7 +348,7 @@ func serveRuntimeRunnerDefaults(opts serveAgentRuntimeOptions, request serveRunt
 		MCP: serveMCP, SystemMessage: serveSystemMessage, MaxTurns: serveMaxTurns, Search: serveSearch, NoSearch: serveNoSearch,
 		NativeSearch: serveNativeSearch, NoNativeSearch: serveNoNativeSearch, ApprovalMode: approvalMode, ApprovalModeSet: true,
 		ApprovalSource: opts.approval.Source, ApprovalHeadless: true, ApprovalPrepare: true, ApprovalDiagnostics: serveVerbose,
-		Debug: serveDebug, DebugRaw: debugRaw, ErrWriter: opts.approvalErrWriter, WireSpawn: WireSpawnAgentRunner, Store: opts.store,
+		Debug: serveDebug, DebugRaw: debugRaw, ErrWriter: opts.approvalErrWriter, Store: opts.store,
 	}
 }
 
@@ -370,6 +371,9 @@ func configureServeRuntimeTools(runtime *serveRuntime, opts serveAgentRuntimeOpt
 		return
 	}
 	runtime.toolMgr.ApprovalMgr.GuardianEventFunc = runtime.emitGuardianReview
+	if spawn := runtime.toolMgr.GetSpawnAgentTool(); spawn != nil {
+		spawn.SetEventCallback(runtime.recordSubagentStats)
+	}
 	imageBaseURL := ""
 	if opts.hasWeb {
 		imageBaseURL = strings.TrimRight(serveBasePath, "/") + "/images/"
@@ -653,7 +657,6 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			Debug:               serveDebug,
 			DebugRaw:            debugRaw,
 			ErrWriter:           approvalErrWriter,
-			WireSpawn:           WireSpawnAgentRunner,
 			Store:               store,
 		}),
 		NewSession: func(ctx context.Context) (*serve.SessionRuntime, error) {

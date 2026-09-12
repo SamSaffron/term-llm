@@ -12,6 +12,9 @@ import { Markdown } from './Markdown';
 import { ProjectAssignment } from './ProjectAssignment';
 import { Worktrees } from './Worktrees';
 import { CommitModal } from './CommitModal';
+const LazyStatsModal = lazyComponent(() =>
+  import('./StatsModal').then(({ StatsModal }) => StatsModal),
+);
 const LazyExtensionSettings = lazyComponent(
   () =>
     import('./ExtensionSettings')
@@ -2053,6 +2056,8 @@ export function Modals() {
         ? 'ask-user'
         : store.modal.value;
   switch (modal) {
+    case 'stats':
+      return <LazyStatsModal />;
     case 'settings':
       return <Settings />;
     case 'rename':

@@ -21,5 +21,10 @@ export default defineConfig({
   projects: [
     { name: 'desktop', use: { ...devices['Desktop Chrome'] } },
     { name: 'mobile', use: { ...devices['Pixel 7'] } },
+    {
+      name: 'iphone',
+      // iPhone viewport/touch layout in the CI-supported browser, not Safari emulation.
+      use: { ...devices['iPhone 13'], browserName: 'chromium' },
+    },
   ],
 });

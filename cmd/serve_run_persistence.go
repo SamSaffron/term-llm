@@ -278,6 +278,10 @@ func (p *serveRunPersistence) applyCompaction(cbCtx context.Context, result *llm
 	if result == nil {
 		return nil
 	}
+	p.rt.recordHelperStats("compaction", result.Model, result.Usage)
+	if p.rt.statsCompactionCB != nil {
+		p.rt.statsCompactionCB(result)
+	}
 	previousCompactionSeq := -1
 	previousCompactionCount := 0
 	if session.HasCompactionBoundary(p.rt.sessionMeta) {

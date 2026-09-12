@@ -187,6 +187,7 @@ func (m *Model) handleSkillRunProgress(message skillRunProgressMsg) tea.Cmd {
 		return nil
 	}
 	event := message.Event
+	m.recordChildEventUsage(state.TrackerCallID, event)
 	if state.TrackerCallID != "" {
 		ui.HandleSubagentProgress(m.tracker, m.subagentTracker, state.TrackerCallID, event)
 	}

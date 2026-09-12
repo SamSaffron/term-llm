@@ -305,7 +305,7 @@ func TestRenderBalancedStatsWithTimingCostAndCacheWrite(t *testing.T) {
 
 	out := stats.Render()
 	for _, want := range []string{
-		"Stats: 12.3s | 24K in + 18K cached + 2.0K cache write → 1.2K out",
+		"Stats: active 1.3s | 24K in + 18K cached + 2.0K cache write → 1.2K out",
 		"TTFT 0.8s, 2400 tok/s",
 		"$0.0840",
 		"3 tools, 4 calls",
@@ -452,5 +452,56 @@ func TestSeedTotalsResetsProcessLocalState(t *testing.T) {
 		if strings.Contains(out, absent) {
 			t.Fatalf("SeedTotals retained %q: %s", absent, out)
 		}
+	}
+}
+
+func TestSessionStatsActiveTimesExcludeIdleAndRetryWait(t *testing.T) {
+	base := time.Unix(100, 0)
+	s := NewSessionStats()
+	s.requestStartAt(base)
+	live := s.SnapshotAt(base.Add(2 * time.Second))
+	if live.LLMTime != 2*time.Second || live.ToolTime != 0 {
+		t.Fatalf("live request = %+v", live)
+	}
+	if s.LLMTime != 0 {
+		t.Fatal("snapshot mutated accumulator")
+	}
+	s.addUsageAt(10, 1, 0, 0, base.Add(3*time.Second), true)
+	idle := s.SnapshotAt(base.Add(30 * time.Second))
+	if idle.LLMTime != 3*time.Second {
+		t.Fatalf("idle charged as model time: %v", idle.LLMTime)
+	}
+	s.scheduleRetryStartAt(base.Add(31*time.Second), 5*time.Second)
+	duringWait := s.SnapshotAt(base.Add(34 * time.Second))
+	if duringWait.LLMTime != 3*time.Second {
+		t.Fatalf("retry wait charged: %v", duringWait.LLMTime)
+	}
+	retried := s.SnapshotAt(base.Add(38 * time.Second))
+	if retried.LLMTime != 5*time.Second {
+		t.Fatalf("retried active time = %v", retried.LLMTime)
+	}
+}
+
+func TestSessionStatsActiveTimesSeparateTools(t *testing.T) {
+	base := time.Unix(100, 0)
+	s := NewSessionStats()
+	s.requestStartAt(base)
+	s.lastEventTime = base.Add(time.Second)
+	s.LLMTime = time.Second
+	s.inTool = true
+	live := s.SnapshotAt(base.Add(4 * time.Second))
+	if live.LLMTime != time.Second || live.ToolTime != 3*time.Second {
+		t.Fatalf("live tool timing = %+v", live)
+	}
+	s.ToolTime = 3 * time.Second
+	s.lastEventTime = base.Add(4 * time.Second)
+	s.inTool = false
+	s.requestStartTime = base.Add(4 * time.Second)
+	s.addUsageAt(10, 1, 0, 0, base.Add(6*time.Second), true)
+	if s.LLMTime != 3*time.Second || s.ToolTime != 3*time.Second {
+		t.Fatalf("completed timing = %+v", s)
+	}
+	if got := s.Render(); !strings.Contains(got, "active 6.0s") || !strings.Contains(got, "model 3.0s + tools 3.0s") {
+		t.Fatalf("render = %q", got)
 	}
 }

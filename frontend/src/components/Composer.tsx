@@ -280,6 +280,11 @@ export function Composer() {
     if (voiceBusy) return;
     const value = store.prompt.value.trim();
     const command = value.toLowerCase();
+    if (command === '/stats') {
+      store.prompt.value = '';
+      store.modal.value = 'stats';
+      return;
+    }
     if (/^\/commit(?:\s|$)/i.test(value)) {
       const intent = value.replace(/^\/commit\b/i, '').trim();
       void store.commitStore.open(intent).then((started) => {

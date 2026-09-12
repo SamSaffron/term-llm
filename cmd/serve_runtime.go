@@ -25,6 +25,8 @@ import (
 )
 
 type serveRuntime struct {
+	statsCompactionCB      func(*llm.CompactionResult)
+	stats                  serveStats
 	admittedActivity       atomic.Int32     // synchronous owners, including setup and between-turn gaps
 	retiredInputs          atomic.Bool      // obsolete after committed input replacement
 	settings               *SessionSettings // immutable construction settings, for idle refresh replacement only
@@ -45,6 +47,7 @@ type serveRuntime struct {
 	providerKey            string
 	engine                 *llm.Engine
 	toolMgr                *tools.ToolManager
+	spawnRunner            *SpawnAgentRunner // drained before provider cleanup and owned session-store closure
 	mcpManager             *mcp.Manager
 	toolDiscovery          config.ToolDiscoveryConfig
 	store                  session.Store
@@ -181,6 +184,7 @@ func (rt *serveRuntime) refreshResponseDeadline() {
 }
 
 func (rt *serveRuntime) emitGuardianReview(event tools.GuardianEvent) {
+	rt.recordHelperStats("guardian", event.Model, event.Usage)
 	message := strings.TrimSpace(event.Message)
 	if message == "" {
 		return
@@ -433,6 +437,9 @@ func (rt *serveRuntime) closeLocked() {
 	}
 	if rt.toolMgr != nil && rt.toolMgr.ApprovalMgr != nil {
 		rt.toolMgr.ApprovalMgr.Close()
+	}
+	if rt.spawnRunner != nil {
+		rt.spawnRunner.Wait()
 	}
 	if !rt.skipProviderCleanup {
 		if cleaner, ok := rt.provider.(interface{ CleanupMCP() }); ok {
@@ -1971,6 +1978,8 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 
 func (rt *serveRuntime) consumeRunStream(runCtx, persistCtx context.Context, stateful, persisted bool, req llm.Request, onEvent func(llm.Event) error) (serveRunResult, error, bool) {
 	result := serveRunResult{}
+	rt.startStats(req.Model)
+	defer rt.finishStats()
 	stream, err := rt.engine.Stream(runCtx, req)
 	if err != nil {
 		rt.persistRunError(persistCtx, req.SessionID, persisted, err)
@@ -1987,6 +1996,7 @@ func (rt *serveRuntime) consumeRunStream(runCtx, persistCtx context.Context, sta
 			rt.persistRunError(persistCtx, req.SessionID, persisted, recvErr)
 			return result, recvErr, false
 		}
+		rt.recordStatsEvent(event)
 		if onEvent != nil {
 			if err := onEvent(event); err != nil {
 				rt.persistRunError(persistCtx, req.SessionID, persisted, err)

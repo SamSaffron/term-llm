@@ -22,6 +22,7 @@ type UsageCall struct {
 	Handover          bool
 	SideQuestion      bool
 	Guardian          bool
+	Subagent          bool
 }
 
 // SessionStats tracks statistics for a session.
@@ -103,6 +104,8 @@ func (s *SessionStats) AddUsage(input, output, cached, cacheWrite int) {
 
 func (s *SessionStats) addUsageAt(input, output, cached, cacheWrite int, now time.Time, recordPerformance bool) {
 	s.stopActivityAt(now)
+	s.accrueActiveTimeAt(now)
+	s.lastEventTime = now
 	if input == 0 && output == 0 && cached == 0 && cacheWrite == 0 {
 		// Some providers emit a terminal usage event with no counters. It still
 		// completes the pending request timing, but is not a meaningful usage call.
@@ -248,7 +251,7 @@ func (s *SessionStats) DiscardUsage(input, output, cached, cacheWrite, calls int
 	s.LLMCallCount = max(0, s.LLMCallCount-calls)
 	remaining := calls
 	for i := len(s.usageCalls) - 1; i >= 0 && remaining > 0; i-- {
-		if s.usageCalls[i].Compaction || s.usageCalls[i].SideQuestion || s.usageCalls[i].Guardian {
+		if s.usageCalls[i].Compaction || s.usageCalls[i].SideQuestion || s.usageCalls[i].Guardian || s.usageCalls[i].Subagent {
 			continue
 		}
 		s.usageCalls = append(s.usageCalls[:i], s.usageCalls[i+1:]...)
@@ -263,7 +266,7 @@ func (s *SessionStats) rebuildPerCallHints() {
 	s.lastInputTokens, s.lastOutputTokens, s.peakInputTokens = 0, 0, 0
 	s.hasPerCallUsage = false
 	for _, call := range s.usageCalls {
-		if call.SideQuestion || call.Guardian {
+		if call.SideQuestion || call.Guardian || call.Subagent {
 			continue
 		}
 		total := call.InputTokens + call.CachedInputTokens + call.OutputTokens
@@ -279,6 +282,7 @@ func (s *SessionStats) requestStartAt(now time.Time) {
 	s.stopActivityAt(now)
 	s.resetPendingCall()
 	s.requestStartTime = now
+	s.lastEventTime = now
 }
 
 // ScheduleRetryStart records when a retried provider request will start. Retry
@@ -292,8 +296,10 @@ func (s *SessionStats) ScheduleRetryStart(waitSecs float64) {
 
 func (s *SessionStats) scheduleRetryStartAt(now time.Time, wait time.Duration) {
 	s.stopActivityAt(now)
+	s.accrueActiveTimeAt(now)
 	s.resetPendingCall()
 	s.requestStartTime = now.Add(wait)
+	s.lastEventTime = s.requestStartTime
 }
 
 // ObserveOutput records generation activity. This includes visible text and
@@ -339,17 +345,13 @@ func (s *SessionStats) ClearEstimatedCost() { s.estimatedCostUSD = nil }
 func (s *SessionStats) ToolStart() {
 	now := time.Now()
 	s.stopActivityAt(now)
-	if !s.inTool {
-		s.LLMTime += now.Sub(s.lastEventTime)
-	}
+	s.accrueActiveTimeAt(now)
 	s.lastEventTime, s.inTool = now, true
 	s.ToolCallCount++
 }
 func (s *SessionStats) ToolEnd() {
 	now := time.Now()
-	if s.inTool {
-		s.ToolTime += now.Sub(s.lastEventTime)
-	}
+	s.accrueActiveTimeAt(now)
 	s.lastEventTime, s.inTool = now, false
 	s.requestStartTime = now
 	s.firstActivityTime = time.Time{}
@@ -358,16 +360,44 @@ func (s *SessionStats) ToolEnd() {
 func (s *SessionStats) Finalize() {
 	now := time.Now()
 	s.stopActivityAt(now)
+	s.accrueActiveTimeAt(now)
+	s.lastEventTime = now
+	s.resetPendingCall()
+	s.inTool = false
+}
+
+// SnapshotAt returns a non-mutating view with the current active interval accrued.
+func (s SessionStats) SnapshotAt(now time.Time) SessionStats {
+	s.stopActivityAt(now)
+	s.accrueActiveTimeAt(now)
+	s.lastEventTime = now
+	return s
+}
+
+func (s *SessionStats) accrueActiveTimeAt(now time.Time) {
+	if s.lastEventTime.IsZero() || now.Before(s.lastEventTime) {
+		return
+	}
 	if s.inTool {
 		s.ToolTime += now.Sub(s.lastEventTime)
-	} else {
-		s.LLMTime += now.Sub(s.lastEventTime)
+		return
 	}
-	s.lastEventTime = now
+	if s.requestStartTime.IsZero() || now.Before(s.requestStartTime) {
+		return
+	}
+	start := s.lastEventTime
+	if start.Before(s.requestStartTime) {
+		start = s.requestStartTime
+	}
+	s.LLMTime += now.Sub(start)
 }
 
 func (s SessionStats) Render() string {
-	parts := []string{fmt.Sprintf("%.1fs", time.Since(s.StartTime).Seconds())}
+	active := s.LLMTime + s.ToolTime
+	parts := []string{fmt.Sprintf("active %.1fs", active.Seconds())}
+	if s.ToolTime > 0 {
+		parts = append(parts, fmt.Sprintf("model %.1fs + tools %.1fs", s.LLMTime.Seconds(), s.ToolTime.Seconds()))
+	}
 	tokenParts := []string{fmt.Sprintf("%s in", formatStatsTokenCount(s.InputTokens))}
 	if s.CachedInputTokens > 0 {
 		tokenParts = append(tokenParts, fmt.Sprintf("%s cached", formatStatsTokenCount(s.CachedInputTokens)))
@@ -422,4 +452,17 @@ func plural(n int, singular, plural string) string {
 		return singular
 	}
 	return plural
+}
+
+// AddSubagentUsageForModel includes delegated usage without changing parent context or timing.
+func (s *SessionStats) AddSubagentUsageForModel(model string, input, output, cached, cacheWrite int) {
+	if input == 0 && output == 0 && cached == 0 && cacheWrite == 0 {
+		return
+	}
+	s.InputTokens += input
+	s.OutputTokens += output
+	s.CachedInputTokens += cached
+	s.CacheWriteTokens += cacheWrite
+	s.LLMCallCount++
+	s.usageCalls = append(s.usageCalls, UsageCall{Model: strings.TrimSpace(model), InputTokens: input, OutputTokens: output, CachedInputTokens: cached, CacheWriteTokens: cacheWrite, Subagent: true})
 }

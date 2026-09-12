@@ -561,6 +561,16 @@ func (s *serveServer) recordModelSwapHandoverUsage(ctx context.Context, sessionI
 	// helper finishes. The candidate receives the same cumulative usage after
 	// its retry history is seeded; only one of the two runtimes survives.
 	addRuntimeUsage(exec.previous, usage)
+	model := strings.TrimSpace(exec.plan.previousModel)
+	if model == "" && exec.previous != nil {
+		model = exec.previous.defaultModel
+	}
+	if exec.previous != nil {
+		exec.previous.recordHelperStats("handover", model, usage)
+	}
+	if exec.candidate != nil && exec.candidate != exec.previous {
+		exec.candidate.recordHelperStats("handover", model, usage)
+	}
 
 	if s.store == nil || sessionID == "" || usage.BillableCountersZero() {
 		return

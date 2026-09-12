@@ -1,0 +1,197 @@
+@media (width <= 767px) {
+  body {
+    overflow: hidden;
+  }
+
+  .app {
+    grid-template-columns: 1fr;
+    height: var(--app-height);
+    min-height: var(--app-height);
+    overflow: hidden;
+  }
+
+  .app.sidebar-collapsed,
+  .app.diff-open,
+  .app.sidebar-collapsed.diff-open {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    position: fixed;
+    top: var(--app-offset-top);
+    bottom: auto;
+    left: 0;
+    height: var(--app-height);
+    width: min(280px, 85vw);
+    display: flex;
+    flex-direction: column;
+    transform: translateX(-100%);
+    transition:
+      transform var(--panel-transition-duration) var(--panel-transition-easing),
+      visibility 0s linear var(--panel-transition-duration);
+    box-shadow: none;
+    padding-top: 0;
+    padding-bottom: var(--safe-bottom);
+    visibility: hidden;
+    pointer-events: none;
+    touch-action: pan-y;
+  }
+
+  .sidebar-rail {
+    display: none;
+  }
+
+  .sidebar-panel {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .app.sidebar-collapsed .sidebar-panel {
+    display: flex;
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .sidebar.open {
+    transform: translateX(var(--panel-swipe-offset-x, 0));
+    box-shadow: 4px 0 20px rgb(0 0 0 / 28%);
+    visibility: visible;
+    pointer-events: auto;
+    transition:
+      transform var(--panel-transition-duration) var(--panel-transition-easing),
+      visibility 0s linear 0s;
+  }
+
+  .sidebar.is-swipe-dragging {
+    transition: none;
+  }
+
+  .sidebar.is-edge-swipe-opening {
+    transform: translateX(calc(-100% + var(--panel-swipe-offset-x, 0px)));
+    visibility: visible;
+    pointer-events: none;
+    transition: none;
+  }
+
+  .sidebar-close {
+    display: inline-flex;
+  }
+
+  .main {
+    height: var(--app-height);
+    min-height: 0;
+  }
+
+  .main-header {
+    padding: calc(0.5rem + var(--safe-top)) calc(0.75rem + var(--safe-right)) 0.5625rem
+      calc(0.75rem + var(--safe-left));
+    gap: 0;
+  }
+
+  .header-title-row {
+    align-items: center;
+    gap: 8px;
+    flex-wrap: nowrap;
+  }
+
+  .header-left {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .header-controls-row {
+    flex: 0 0 auto;
+    justify-content: flex-end;
+    min-width: 0;
+    margin-left: auto;
+  }
+
+  .header-controls-row .chip-trigger:not(.header-action, .narrow-header-action) {
+    line-height: 1.1;
+  }
+
+  .header-title {
+    white-space: nowrap;
+    display: block;
+  }
+
+  .mobile-menu {
+    display: inline-flex;
+    width: 33px;
+    height: 33px;
+  }
+
+  .diff-toggle {
+    flex: 0 0 auto;
+    min-width: 50px;
+  }
+
+  .header-right {
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+
+  .header-stats {
+    font-size: 0.78rem;
+    min-width: 0;
+    flex-shrink: 1;
+  }
+
+  .header-context-actions {
+    font-size: 0.78rem;
+  }
+
+  .header-controls-row .chip-trigger:not(.header-action, .narrow-header-action) {
+    padding-left: 0;
+    padding-right: 0;
+    border-radius: 0;
+  }
+
+  .header-controls-row .chip-trigger:not(.header-action, .narrow-header-action):hover,
+  .header-controls-row .chip-trigger:not(.header-action, .narrow-header-action):focus-visible,
+  .header-controls-row
+    .chip-trigger:not(.header-action, .narrow-header-action)[aria-expanded='true'] {
+    background: transparent;
+  }
+
+  .header-controls-row .model-chip[data-chip='worktree'] .chip-trigger:not(.header-action) {
+    min-height: 32px;
+    padding: 0 0.5rem;
+    border-radius: 7px;
+  }
+
+  .header-controls-row .model-chip[data-chip='worktree'] .chip-trigger:not(.header-action):hover,
+  .header-controls-row
+    .model-chip[data-chip='worktree']
+    .chip-trigger:not(.header-action):focus-visible,
+  .header-controls-row
+    .model-chip[data-chip='worktree']
+    .chip-trigger:not(.header-action)[aria-expanded='true'] {
+    background: var(--surface-3);
+  }
+
+  .model-picker {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: nowrap;
+    min-width: 0;
+  }
+
+  .chat-scroll {
+    padding: 0.8rem calc(0.75rem + var(--safe-right)) 0.7rem calc(0.75rem + var(--safe-left));
+  }
+
+  .message.user {
+    width: min(92%, 820px);
+  }
+
+  .settings-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .ask-user-question {
+    padding: 0.9rem;
+  }
+}

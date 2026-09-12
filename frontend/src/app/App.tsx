@@ -10,7 +10,7 @@ import { Transcript } from '../components/Transcript';
 import { Composer } from '../components/Composer';
 import { DiffSidebar, PlanSurface } from '../components/Panels';
 import { Modals } from '../components/Modals';
-import { Lightbox } from '../components/Lightbox';
+import { LightboxLoader } from '../components/LightboxLoader';
 import { Icon } from '../components/Icon';
 import { useMediaQuery } from '../components/useMediaQuery';
 import { installVisualViewportSizing } from '../platform/browser';
@@ -262,7 +262,7 @@ export function App({ store }: { store: AppStore }) {
             {!store.authRequired.value && (
               <>
                 <Modals />
-                <Lightbox />
+                {store.lightbox.value && <LightboxLoader />}
               </>
             )}
             {shellVisible && <ShellOverlayLoader store={store} />}

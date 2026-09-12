@@ -46,7 +46,19 @@ func terminalChildRevision(revision int64) int64 {
 	return revision
 }
 
+// webSessionMetrics contains durable counters, not request-level pricing data.
+type webSessionMetrics struct {
+	InputTokens       int `json:"input_tokens"`
+	OutputTokens      int `json:"output_tokens"`
+	CachedInputTokens int `json:"cached_input_tokens"`
+	CacheWriteTokens  int `json:"cache_write_tokens"`
+	ToolCalls         int `json:"tool_calls"`
+	LLMTurns          int `json:"llm_turns"`
+}
+
 type childRunProjection struct {
+	webSessionMetrics
+	Model             string                `json:"model,omitempty"`
 	SessionID         string                `json:"session_id"`
 	ParentSessionID   string                `json:"parent_session_id"`
 	ParentSpawnItemID int64                 `json:"parent_spawn_item_id,omitempty"`
@@ -147,17 +159,19 @@ func (s *serveServer) handleSessionChildren(w http.ResponseWriter, r *http.Reque
 	for _, child := range children {
 		durableUpdatedAt := child.UpdatedAt.UnixNano()
 		item := childRunProjection{
-			SessionID:        child.ID,
-			ParentSessionID:  parentID,
-			Title:            child.PreferredShortTitle(),
-			Agent:            child.Agent,
-			State:            child.Status,
-			Attention:        child.Status == session.StatusError,
-			Revision:         safeChildRevision(child.UpdatedAt.UnixMilli()),
-			StartedAt:        child.CreatedAt.UnixMilli(),
-			ApproximateTimes: true,
+			webSessionMetrics: webSessionMetrics{InputTokens: child.InputTokens, OutputTokens: child.OutputTokens, CachedInputTokens: child.CachedInputTokens, CacheWriteTokens: child.CacheWriteTokens, ToolCalls: child.ToolCalls, LLMTurns: child.LLMTurns},
+			Model:             child.Model,
+			SessionID:         child.ID,
+			ParentSessionID:   parentID,
+			Title:             child.PreferredShortTitle(),
+			Agent:             child.Agent,
+			State:             child.Status,
+			Attention:         child.Status == session.StatusError,
+			Revision:          safeChildRevision(child.UpdatedAt.UnixMilli()),
+			StartedAt:         child.CreatedAt.UnixMilli(),
+			ApproximateTimes:  true,
 		}
-		terminal := child.Status == session.StatusComplete || child.Status == session.StatusError
+		terminal := child.Status == session.StatusComplete || child.Status == session.StatusError || child.Status == session.StatusInterrupted
 		if spawn, ok := spawnProvenance[child.ID]; ok {
 			item.ParentSpawnItemID = spawn.ItemID
 			item.ParentSpawnCallID = spawn.CallID
@@ -244,5 +258,6 @@ func (s *serveServer) handleSessionChildren(w http.ResponseWriter, r *http.Reque
 		"parent_session_id": parentID,
 		"revision":          revision,
 		"children":          items,
+		"limit":             maxChildRunProjection,
 	})
 }

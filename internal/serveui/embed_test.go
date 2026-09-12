@@ -93,8 +93,16 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// visible-row anchoring and extension context snapshots bring the eager
 		// shell to ~504.2/143.4 kB raw/gzip. Native picker touch containment
 		// brings the shell to ~505.3/143.7 kB raw/gzip.
-		"dist/app.js":  {raw: 506_000, gzip: 144_000},
-		"dist/app.css": {raw: 175_000, gzip: 34_000},
+		// /stats command/API wiring and its lazy loader bring the eager shell
+		// to ~506.6/144.0 kB. The modal and CSS stay separately bounded below.
+		// The image viewer and its styles now load on demand. Its small loader
+		// leaves the eager shell at ~503.2/142.9 kB raw/gzip, with separate budgets below.
+		"dist/app.js":                {raw: 503_500, gzip: 143_000},
+		"dist/chunks/Lightbox.js":    {raw: 8_000, gzip: 3_200},
+		"dist/assets/Lightbox.css":   {raw: 4_000, gzip: 1_400},
+		"dist/chunks/StatsModal.js":  {raw: 8_000, gzip: 3_000},
+		"dist/assets/StatsModal.css": {raw: 5_000, gzip: 1_600},
+		"dist/app.css":               {raw: 175_000, gzip: 34_000},
 		// Measured after the completed standalone port: 67.7/21.5 KiB JS and
 		// 16.7/4.1 KiB CSS. These limits retain modest growth headroom without
 		// allowing chat-only rendering dependencies into the Hub graph.
@@ -128,6 +136,28 @@ func TestBundlePolicy(t *testing.T) {
 	}
 	if bytes.Contains(js, []byte("__TERM_LLM_TEST__")) || bytes.Contains(js, []byte("__TERM_LLM_ENABLE_TEST_BRIDGE__")) {
 		t.Fatal("production bundle contains browser test bridge")
+	}
+}
+
+func TestLightboxAssetsRemainLazy(t *testing.T) {
+	for _, asset := range []struct{ eager, lazy, marker string }{
+		{"dist/app.js", "dist/chunks/Lightbox.js", "lightbox-view-controls"},
+		{"dist/app.css", "dist/assets/Lightbox.css", ".lightbox-toolbar"},
+	} {
+		eager, err := StaticAsset(asset.eager)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lazy, err := StaticAsset(asset.lazy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(eager, []byte(asset.marker)) {
+			t.Errorf("%s unexpectedly contains image viewer code/styles", asset.eager)
+		}
+		if !bytes.Contains(lazy, []byte(asset.marker)) {
+			t.Errorf("%s is missing image viewer code/styles", asset.lazy)
+		}
 	}
 }
 

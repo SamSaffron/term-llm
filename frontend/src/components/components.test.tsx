@@ -21,6 +21,7 @@ import { initialProjection } from '../domain/response';
 import { convertServerMessages } from '../domain/transcript';
 import { markdownDocumentBlocks } from '../domain/markdown-document';
 import { readJSON } from '../platform/storage';
+import * as clipboard from '../platform/clipboard';
 
 const config: AppConfig = {
   prefix: '/ui',
@@ -6485,7 +6486,8 @@ describe('Preact-owned chat surfaces', () => {
       expect(store.attachments.value.map((attachment) => attachment.id)).toEqual(['image-one']);
       expect(revoke).toHaveBeenCalledWith('blob:image-two');
       expect(screen.getByRole('img', { name: 'one.png' })).toHaveAttribute('src', 'blob:image-one');
-      expect(screen.getByText('1 / 1')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Previous media' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Next media' })).not.toBeInTheDocument();
 
       await userEvent.click(within(dialog).getByRole('button', { name: 'Remove one.png' }));
       await waitFor(() => expect(store.lightbox.value).toBeNull());
@@ -6495,6 +6497,307 @@ describe('Preact-owned chat surfaces', () => {
     } finally {
       revoke.mockRestore();
     }
+  });
+
+  describe('lightbox gestures', () => {
+    const setup = () => {
+      const frames = new Map<number, FrameRequestCallback>();
+      let frameID = 0;
+      vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+        frames.set(++frameID, callback);
+        return frameID;
+      });
+      vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => {
+        frames.delete(id);
+      });
+      const store = createStore();
+      store.lightbox.value = { src: 'https://example.com/image.png', type: 'image' };
+      const rendered = render(
+        <StoreContext.Provider value={store}>
+          <Lightbox />
+        </StoreContext.Provider>,
+      );
+      const image = screen.getByRole('img');
+      const surface = image.parentElement!;
+      Object.defineProperties(image, {
+        offsetWidth: { value: 400, configurable: true },
+        offsetHeight: { value: 200, configurable: true },
+      });
+      vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue({
+        left: 0,
+        top: 0,
+        width: 400,
+        height: 200,
+      } as DOMRect);
+      const dispatch = (type: string, id: number, x: number, y = 100) => {
+        const event = new Event(type, { bubbles: true });
+        Object.assign(event, {
+          pointerId: id,
+          pointerType: 'touch',
+          clientX: x,
+          clientY: y,
+          button: 0,
+        });
+        surface.dispatchEvent(event);
+      };
+      const pointer = (...args: Parameters<typeof dispatch>) => act(() => dispatch(...args));
+      const flush = () =>
+        act(() => {
+          const callbacks = [...frames.values()];
+          frames.clear();
+          for (const callback of callbacks) callback(0);
+        });
+      flush();
+      return { ...rendered, store, image, surface, pointer, dispatch, flush, frames };
+    };
+
+    it('anchors an off-center pinch and continues panning after lifting a finger', () => {
+      const { image, surface, pointer, flush } = setup();
+      expect(surface).toHaveClass('lightbox-image-content');
+      pointer('pointerdown', 1, 100);
+      pointer('pointerdown', 2, 200);
+      pointer('pointermove', 2, 300);
+      flush();
+      // The image point at x=150 remains under the midpoint, now at x=200.
+      expect(image.style.transform).toBe('translate(100px, 0px) scale(2)');
+      pointer('pointerup', 2, 300);
+      pointer('pointermove', 1, 120);
+      flush();
+      expect(image.style.transform).toBe('translate(120px, 0px) scale(2)');
+      pointer('pointercancel', 1, 120);
+      pointer('pointermove', 1, 150);
+      flush();
+      expect(image.style.transform).toBe('translate(120px, 0px) scale(2)');
+    });
+
+    it('rebases from the latest pinch even when move and finger lift precede a render', () => {
+      const { image, dispatch, flush, frames } = setup();
+      act(() => {
+        dispatch('pointerdown', 1, 100, 50);
+        dispatch('pointerdown', 2, 200, 100);
+        dispatch('pointermove', 2, 300, 150);
+        dispatch('pointerup', 2, 300, 150);
+        dispatch('lostpointercapture', 2, 300, 150);
+        dispatch('pointermove', 1, 120, 60);
+        dispatch('pointermove', 1, 130, 65);
+      });
+      expect(frames.size).toBe(1);
+      flush();
+      expect(image.style.transform).toBe('translate(130px, 65px) scale(2)');
+    });
+
+    it('supports repeated pinches through 32×, bounds pan to each image axis, and clamps back to 1×', () => {
+      const { image, pointer, flush } = setup();
+      for (let i = 0; i < 6; i++) {
+        pointer('pointerdown', 1, 100);
+        pointer('pointerdown', 2, 200);
+        pointer('pointermove', 2, 300);
+        pointer('pointerup', 2, 300);
+        pointer('pointerup', 1, 100);
+      }
+      expect(image.style.transform).toContain('scale(32)');
+      expect(screen.getByRole('button', { name: 'Zoom in' })).toBeDisabled();
+      pointer('pointerdown', 1, 100);
+      pointer('pointermove', 1, 100000, 100000);
+      flush();
+      expect(image.style.transform).toBe('translate(6200px, 3100px) scale(32)');
+      pointer('pointermove', 1, -100000, -100000);
+      flush();
+      expect(image.style.transform).toBe('translate(-6200px, -3100px) scale(32)');
+      pointer('pointerup', 1, -100000);
+      pointer('pointerdown', 1, 0);
+      pointer('pointerdown', 2, 1000);
+      pointer('pointermove', 2, 0);
+      flush();
+      expect(image.style.transform).toBe('translate(0px, 0px) scale(1)');
+      expect(screen.getByRole('button', { name: 'Zoom out' })).toBeDisabled();
+      pointer('lostpointercapture', 2, 0);
+      pointer('pointermove', 2, 900);
+      flush();
+      expect(image.style.transform).toBe('translate(0px, 0px) scale(1)');
+    });
+
+    it('ignores tiny pinch-span noise and cancels pending renders on reset and unmount', () => {
+      const { image, pointer, flush, frames, unmount } = setup();
+      pointer('pointerdown', 1, 100);
+      pointer('pointerdown', 2, 101);
+      pointer('pointermove', 2, 102);
+      flush();
+      expect(image.style.transform).toBe('translate(0px, 0px) scale(1)');
+      pointer('pointermove', 2, 132);
+      flush();
+      expect(image.style.transform).toContain('scale(2)');
+      pointer('pointermove', 2, 148);
+      expect(frames.size).toBe(1);
+      fireEvent.click(screen.getByRole('button', { name: 'Reset zoom' }));
+      expect(frames.size).toBe(0);
+      flush();
+      pointer('pointermove', 2, 200);
+      expect(image.style.transform).toBe('translate(0px, 0px) scale(1)');
+      pointer('pointerdown', 1, 100);
+      pointer('pointerdown', 2, 200);
+      pointer('pointermove', 2, 300);
+      unmount();
+      expect(frames.size).toBe(0);
+    });
+
+    it('ignores touches before the image has layout dimensions', () => {
+      const { image, pointer, flush } = setup();
+      Object.defineProperty(image, 'offsetWidth', { value: 0, configurable: true });
+      pointer('pointerdown', 1, 100);
+      pointer('pointerdown', 2, 200);
+      Object.defineProperty(image, 'offsetWidth', { value: 400, configurable: true });
+      pointer('pointermove', 2, 300);
+      flush();
+      expect(image.style.transform).toBe('translate(0px, 0px) scale(1)');
+      pointer('pointerdown', 1, 100);
+      pointer('pointerdown', 2, 200);
+      pointer('pointermove', 2, 300);
+      flush();
+      expect(image.style.transform).toContain('scale(2)');
+    });
+
+    it('reclamps and rebases a zoomed drag when the viewport changes size', () => {
+      const { image, pointer, flush } = setup();
+      fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
+      pointer('pointerdown', 1, 100);
+      pointer('pointermove', 1, 1000, 1000);
+      flush();
+      expect(image.style.transform).toBe('translate(200px, 100px) scale(2)');
+      Object.defineProperties(image, { offsetWidth: { value: 200 }, offsetHeight: { value: 100 } });
+      fireEvent(window, new Event('resize'));
+      expect(image.style.transform).toBe('translate(100px, 50px) scale(2)');
+      pointer('pointermove', 1, 990, 990);
+      flush();
+      expect(image.style.transform).toBe('translate(90px, 40px) scale(2)');
+    });
+
+    it('only shows gallery navigation for multiple images, in the bottom controls', () => {
+      const { store } = setup();
+      expect(screen.queryByRole('button', { name: 'Next media' })).not.toBeInTheDocument();
+      const items = [
+        { key: 'one', src: 'https://example.com/one.png', type: 'image' as const },
+        { key: 'two', src: 'https://example.com/two.png', type: 'image' as const },
+      ];
+      act(() => {
+        store.lightbox.value = { ...items[0], items, index: 0 };
+      });
+      const next = screen.getByRole('button', { name: 'Next media' });
+      expect(next.closest('.lightbox-view-controls')).not.toBeNull();
+      expect(screen.getByRole('button', { name: 'Previous media' })).toBeDisabled();
+      fireEvent.click(next);
+      expect(screen.getByText('2 / 2')).toBeInTheDocument();
+      expect(next).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Previous media' })).not.toBeDisabled();
+    });
+
+    it('confirms a successful copy visibly and clears the confirmation after two seconds', async () => {
+      const copy = vi.spyOn(clipboard, 'copyText').mockResolvedValue(undefined);
+      setup();
+      vi.useFakeTimers();
+      try {
+        await act(async () => {
+          fireEvent.click(screen.getByRole('button', { name: 'Copy URL' }));
+        });
+        expect(copy).toHaveBeenCalledWith('https://example.com/image.png');
+        expect(screen.getByRole('button', { name: 'Copied' })).toHaveClass('copied');
+        expect(screen.getByRole('status')).toHaveTextContent('Copied');
+        act(() => {
+          vi.advanceTimersByTime(2000);
+        });
+        expect(screen.getByRole('button', { name: 'Copy URL' })).not.toHaveClass('copied');
+        expect(screen.queryByRole('status')).not.toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('shows the current zoom percentage for buttons, pinch, and reset', () => {
+      const { pointer, flush } = setup();
+      const readout = screen.getByRole('button', { name: 'Reset zoom' });
+      expect(readout).toHaveTextContent('100%');
+      fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
+      expect(readout).toHaveTextContent('200%');
+      pointer('pointerdown', 1, 100);
+      pointer('pointerdown', 2, 200);
+      pointer('pointermove', 2, 225);
+      flush();
+      expect(readout).toHaveTextContent('250%');
+      expect(readout).toHaveAttribute('title', 'Current zoom: 250%. Reset to 100%');
+      fireEvent.click(readout);
+      expect(readout).toHaveTextContent('100%');
+    });
+
+    it.each([
+      ['pixels', 0, -300],
+      ['lines', 1, -18.75],
+      ['pages', 2, -1.5],
+    ])(
+      'zooms at the wheel cursor with %s deltas and coalesces successive updates',
+      (_, deltaMode, deltaY) => {
+        const { image, surface, flush, frames } = setup();
+        const wheel = () =>
+          new WheelEvent('wheel', {
+            bubbles: true,
+            cancelable: true,
+            deltaMode,
+            deltaY,
+            clientX: 150,
+            clientY: 75,
+          });
+        const first = wheel();
+        fireEvent(surface, first);
+        fireEvent(surface, wheel());
+        expect(first.defaultPrevented).toBe(true);
+        expect(frames.size).toBe(1);
+        flush();
+        expect(image.style.transform).toBe('translate(150px, 75px) scale(4)');
+        expect(screen.getByRole('button', { name: 'Reset zoom' })).toHaveTextContent('400%');
+        fireEvent.wheel(surface, { deltaY: 300, clientX: 150, clientY: 75 });
+        flush();
+        expect(image.style.transform).toBe('translate(50px, 25px) scale(2)');
+        fireEvent.wheel(surface, { deltaY: -10000, clientX: 150, clientY: 75 });
+        flush();
+        expect(image.style.transform).toContain('scale(32)');
+        expect(screen.getByRole('button', { name: 'Reset zoom' })).toHaveTextContent('3200%');
+        fireEvent.wheel(surface, { deltaY: 10000, clientX: 150, clientY: 75 });
+        flush();
+        expect(image.style.transform).toBe('translate(0px, 0px) scale(1)');
+      },
+    );
+
+    it('does not intercept horizontal wheel input or wheel events on errors and videos', () => {
+      vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
+      vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => undefined);
+      const { store, image, surface, flush } = setup();
+      const wheel = (deltaY = -300) =>
+        new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaX: 100, deltaY });
+      const horizontal = wheel(0);
+      fireEvent(surface, horizontal);
+      expect(horizontal.defaultPrevented).toBe(false);
+      flush();
+      expect(image.style.transform).toBe('translate(0px, 0px) scale(1)');
+      fireEvent.error(image);
+      const failed = wheel();
+      fireEvent(surface, failed);
+      expect(failed.defaultPrevented).toBe(false);
+      act(() => {
+        store.lightbox.value = { src: 'https://example.com/video.mp4', type: 'video' };
+      });
+      const videoWheel = wheel();
+      fireEvent(surface, videoWheel);
+      expect(videoWheel.defaultPrevented).toBe(false);
+    });
+
+    it('reaches 32× with five zoom-button presses and resets with double-click', () => {
+      const { image } = setup();
+      for (let i = 0; i < 5; i++) fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
+      expect(image.style.transform).toBe('translate(0px, 0px) scale(32)');
+      fireEvent.click(screen.getByRole('button', { name: 'Zoom out' }));
+      expect(image.style.transform).toBe('translate(0px, 0px) scale(16)');
+      fireEvent.dblClick(image);
+      expect(image.style.transform).toBe('translate(0px, 0px) scale(1)');
+    });
   });
 
   it('reports lightbox clipboard failures', async () => {

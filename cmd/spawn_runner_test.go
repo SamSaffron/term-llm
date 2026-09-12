@@ -356,3 +356,10 @@ func TestSpawnRunnerSetupAgentToolsPropagatesAgentModels(t *testing.T) {
 		t.Fatalf("ModelOverride = %q, want fast (output %q)", capturingRunner.lastOptions.ModelOverride, out.Content)
 	}
 }
+
+func TestSubagentUsageEventRetainsCacheCounters(t *testing.T) {
+	event := subagentEventFromLLM(llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 11, OutputTokens: 7, CachedInputTokens: 13, CacheWriteTokens: 5}})
+	if event.Type != tools.SubagentEventUsage || event.InputTokens != 11 || event.OutputTokens != 7 || event.CachedInputTokens != 13 || event.CacheWriteTokens != 5 {
+		t.Fatalf("child usage event = %+v", event)
+	}
+}

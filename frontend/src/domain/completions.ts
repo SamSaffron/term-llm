@@ -38,6 +38,11 @@ export interface MentionSearchResponse {
 
 export const SLASH_COMMANDS = [
   {
+    command: '/stats',
+    description: 'Show session and subagent usage statistics',
+    streamingSafe: true,
+  },
+  {
     command: '/approvals',
     description: 'Change tool approval mode',
     streamingSafe: true,

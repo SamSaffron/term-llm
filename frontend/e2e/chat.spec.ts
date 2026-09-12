@@ -620,6 +620,240 @@ test('lightbox Escape restores focus to the media trigger', async ({ page }) => 
   await expect(trigger).toBeFocused();
 });
 
+test('lightbox mouse wheel zooms at the cursor and displays the current percentage', async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(isMobile, 'Desktop wheel deltas; mobile uses the multi-touch test below');
+  await open(page, '', { media: true });
+  await page.getByRole('button', { name: 'preview.png' }).click();
+  const image = page.getByRole('dialog', { name: 'Media preview' }).getByRole('img');
+  const readout = page.getByRole('button', { name: 'Reset zoom' });
+  await expect(readout).toHaveText('100%');
+  const initial = (await image.boundingBox())!;
+  const cursor = { x: initial.x + initial.width / 4, y: initial.y + initial.height / 4 };
+  await page.mouse.move(cursor.x, cursor.y);
+  await page.mouse.wheel(0, -300);
+  await expect(readout).toHaveText('200%');
+  const box = (await image.boundingBox())!;
+  expect(box.width / initial.width).toBeCloseTo(2);
+  expect(Math.abs(box.x + box.width / 4 - cursor.x)).toBeLessThan(1);
+  expect(Math.abs(box.y + box.height / 4 - cursor.y)).toBeLessThan(1);
+  await page.mouse.wheel(0, 300);
+  await expect(readout).toHaveText('100%');
+  await page.mouse.wheel(0, -10000);
+  await expect(readout).toHaveText('3200%');
+  expect(await page.evaluate(() => window.visualViewport!.scale)).toBe(1);
+  await readout.click();
+  await expect(readout).toHaveText('100%');
+});
+
+test('mobile lightbox pinches to 32× without focal drift or browser zoom', async ({
+  page,
+  isMobile,
+  browserName,
+}) => {
+  test.skip(!isMobile || browserName !== 'chromium', 'Exercises Chromium CDP multi-touch input');
+  await open(page, '', { media: true });
+  await page.getByRole('button', { name: 'preview.png' }).click();
+  const image = page.getByRole('dialog', { name: 'Media preview' }).getByRole('img');
+  await image.evaluate(async (node: HTMLImageElement) => {
+    node.src = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="320" height="240"><rect width="320" height="240" fill="blue"/></svg>')}`;
+    await node.decode();
+  });
+  const initial = (await image.boundingBox())!;
+  const midpoint = {
+    x: initial.x + initial.width / 2 - 20,
+    y: initial.y + initial.height / 2 - 10,
+  };
+  const focal = {
+    x: (midpoint.x - initial.x) / initial.width,
+    y: (midpoint.y - initial.y) / initial.height,
+  };
+  const cdp = await page.context().newCDPSession(page);
+  for (let step = 1; step <= 5; step++) {
+    await cdp.send('Input.dispatchTouchEvent', {
+      type: 'touchStart',
+      touchPoints: [
+        { id: 1, x: midpoint.x - 20, y: midpoint.y },
+        { id: 2, x: midpoint.x + 20, y: midpoint.y },
+      ],
+    });
+    await cdp.send('Input.dispatchTouchEvent', {
+      type: 'touchMove',
+      touchPoints: [
+        { id: 1, x: midpoint.x - 40, y: midpoint.y },
+        { id: 2, x: midpoint.x + 40, y: midpoint.y },
+      ],
+    });
+    await expect
+      .poll(async () => (await image.boundingBox())!.width / initial.width)
+      .toBeCloseTo(2 ** step, 2);
+    await expect(page.getByRole('button', { name: 'Reset zoom' })).toHaveText(
+      `${2 ** step * 100}%`,
+    );
+    const box = (await image.boundingBox())!;
+    expect(Math.abs(box.x + box.width * focal.x - midpoint.x)).toBeLessThan(1);
+    expect(Math.abs(box.y + box.height * focal.y - midpoint.y)).toBeLessThan(1);
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  }
+  await expect(page.getByRole('button', { name: 'Zoom in', exact: true })).toBeDisabled();
+  expect(await image.evaluate((node) => getComputedStyle(node).transitionDuration)).toBe('0s');
+  expect(await image.evaluate((node) => getComputedStyle(node.parentElement!).touchAction)).toBe(
+    'none',
+  );
+  expect(await page.evaluate(() => window.visualViewport!.scale)).toBe(1);
+  await page.getByRole('button', { name: 'Reset zoom' }).click();
+  await expect.poll(async () => (await image.boundingBox())!.width).toBeCloseTo(initial.width, 2);
+  await cdp.detach();
+});
+
+test('lightbox loads its module and stylesheet only when opened', async ({ page }) => {
+  const assets: string[] = [];
+  page.on('request', (request) => {
+    if (/\/(?:chunks|assets)\/Lightbox\.(?:js|css)/.test(request.url())) assets.push(request.url());
+  });
+  await open(page, '', { media: true });
+  expect(assets).toEqual([]);
+  await page.getByRole('button', { name: 'preview.png' }).click();
+  await expect(page.getByRole('dialog', { name: 'Media preview' }).getByRole('img')).toBeVisible();
+  expect(assets.some((url) => url.includes('/chunks/Lightbox.js'))).toBe(true);
+  expect(assets.some((url) => url.includes('/assets/Lightbox.css'))).toBe(true);
+});
+
+test.describe('lightbox chunk failures and handoff', () => {
+  // Fault injection must control module fetches rather than service-worker subrequests.
+  test.use({ serviceWorkers: 'block' });
+
+  test('lightbox keeps focus through a delayed module handoff and restores the trigger', async ({
+    page,
+  }) => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route('**/chunks/Lightbox.js*', async (route) => {
+      await held;
+      await route.continue();
+    });
+    await open(page, '', { media: true });
+    const trigger = page.getByRole('button', { name: 'preview.png' });
+    await trigger.click();
+    try {
+      const placeholder = page.getByRole('dialog', { name: 'Media preview' });
+      await expect(placeholder.getByRole('button', { name: 'Close Media preview' })).toBeFocused();
+    } finally {
+      release();
+    }
+    const viewer = page.getByRole('dialog', { name: 'Media preview' });
+    await expect(viewer.getByRole('img')).toBeVisible();
+    await expect(viewer).toBeFocused();
+    await viewer.press('Escape');
+    await expect(trigger).toBeFocused();
+  });
+
+  test('lightbox offers a reload and original media when its module cannot load', async ({
+    page,
+  }) => {
+    await page.route('**/chunks/Lightbox.js*', (route) => route.abort('failed'));
+    await open(page, '', { media: true });
+    await page.getByRole('button', { name: 'preview.png' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Media preview' });
+    await expect(dialog.getByRole('alert')).toContainText('Could not load the image viewer');
+    await expect(dialog.getByRole('button', { name: 'Reload page' })).toBeVisible();
+    await expect(dialog.getByRole('link', { name: 'Open original' })).toHaveAttribute(
+      'href',
+      /^data:image/,
+    );
+    await dialog.press('Escape');
+    await expect(page.getByRole('button', { name: 'preview.png' })).toBeFocused();
+  });
+
+  test('lightbox can be dismissed while its module is loading', async ({ page }) => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route('**/chunks/Lightbox.js*', async (route) => {
+      await held;
+      await route.continue();
+    });
+    await open(page, '', { media: true });
+    const trigger = page.getByRole('button', { name: 'preview.png' });
+    try {
+      await trigger.click();
+      await expect(page.getByRole('status')).toHaveText('Loading image viewer…');
+      await page.getByRole('dialog', { name: 'Media preview' }).press('Escape');
+      await expect(trigger).toBeFocused();
+    } finally {
+      release();
+    }
+    await expect(page.getByRole('dialog', { name: 'Media preview' })).toHaveCount(0);
+  });
+});
+
+test('lightbox iPhone controls fit the screen and copying shows visible feedback', async ({
+  page,
+  isMobile,
+}, testInfo) => {
+  test.skip(!isMobile, 'Mobile layout and safe-area coverage');
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: async () => undefined },
+    });
+  });
+  await open(page, '', { media: true });
+  await page.getByRole('button', { name: 'preview.png' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Media preview' });
+  const image = dialog.getByRole('img');
+  await expect(image).toBeVisible();
+  if (process.env.LIGHTBOX_PREVIEW_IMAGE) {
+    await page.route('**/lightbox-preview.png', (route) =>
+      route.fulfill({ path: process.env.LIGHTBOX_PREVIEW_IMAGE!, contentType: 'image/png' }),
+    );
+    await image.evaluate(async (node: HTMLImageElement) => {
+      node.src = '/lightbox-preview.png';
+      await node.decode();
+    });
+  }
+  // Model the notch/home-indicator insets even in a headless browser without device chrome.
+  await dialog.evaluate((node) => {
+    node.style.setProperty('--safe-top', '47px');
+    node.style.setProperty('--safe-bottom', '34px');
+  });
+  await expect(dialog.getByRole('button', { name: 'Previous media' })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Next media' })).toHaveCount(0);
+  const assertFits = async () => {
+    const width = page.viewportSize()!.width;
+    const buttons = dialog.locator('.lightbox-toolbar button, .lightbox-toolbar a');
+    for (const button of await buttons.all()) {
+      const box = (await button.boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(12);
+      expect(box.x + box.width).toBeLessThanOrEqual(width - 12);
+      expect(box.width).toBeGreaterThanOrEqual(44);
+      expect(box.height).toBeGreaterThanOrEqual(44);
+    }
+  };
+  await assertFits();
+  for (let i = 0; i < 2; i++)
+    await dialog.getByRole('button', { name: 'Zoom in', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: 'Reset zoom' })).toHaveText('400%');
+  const screenshot = (name: string) =>
+    page.screenshot({
+      path: process.env.LIGHTBOX_SCREENSHOT_DIR
+        ? `${process.env.LIGHTBOX_SCREENSHOT_DIR}/${testInfo.project.name}-${name}.png`
+        : testInfo.outputPath(`${name}.png`),
+    });
+  await screenshot('zoomed');
+  await dialog.getByRole('button', { name: 'Copy URL' }).click();
+  await expect(dialog.getByRole('status')).toHaveText('Copied');
+  await screenshot('copied');
+  await expect(dialog.getByRole('button', { name: 'Copy URL' })).toBeVisible();
+  await page.setViewportSize({ width: 320, height: 568 });
+  await assertFits();
+});
+
 test('production build does not expose the browser-test bridge', async ({ page }) => {
   await open(page, '?test_bridge=1');
   expect(await page.evaluate(() => Boolean(window.__TERM_LLM_TEST__))).toBe(false);
@@ -810,4 +1044,72 @@ test('infinitely loads older transcript turns and preserves the visible row', as
   ).toHaveCount(0);
   expect(pages.flat()).toHaveLength(91);
   expect(new Set(pages.flat()).size).toBe(91);
+});
+
+test('opens complete scrollable web stats without sending a model request', async ({ page }) => {
+  const requests = await open(page, 'chat/s1');
+  const metrics = {
+    input_tokens: 18420,
+    cached_input_tokens: 64200,
+    cache_write_tokens: 3200,
+    output_tokens: 4850,
+    tool_calls: 24,
+    llm_turns: 8,
+  };
+  await page.route('**/v1/sessions/s1/stats', (route) =>
+    route.fulfill({
+      json: {
+        scope: 'runtime_local',
+        metrics,
+        active_ms: 31400,
+        model_ms: 22000,
+        tool_ms: 9400,
+        cost_usd: 0.0421,
+        models: [
+          { ...metrics, model: 'shared-model', active_ms: 12000, tool_ms: 4000, cost_usd: 0.0234 },
+        ],
+        sections: [
+          'Current Context / Window Pressure',
+          'Tool Discovery',
+          'Cumulative Token Usage',
+          'Private Side-Question Usage',
+          'Guardian Usage',
+          'Compaction Usage',
+          'Cumulative Session Activity',
+          'Compactions',
+        ].map((title) => ({
+          title,
+          rows: Array.from({ length: 5 }, (_, i) => ({
+            label: `Detail ${i + 1}`,
+            value: `Value ${i + 1}`,
+          })),
+        })),
+      },
+    }),
+  );
+  await page.route('**/v1/sessions/s1/children', (route) =>
+    route.fulfill({ json: { children: [] } }),
+  );
+  await page.locator('#promptInput').fill('/stats');
+  await page.locator('#sendBtn').click();
+  const dialog = page.getByRole('dialog', { name: 'Chat Stats' });
+  await expect(dialog).toBeVisible();
+  await expect(page.getByText('31.4s', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Refresh statistics' }).focus();
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('region', { name: 'Subagent model usage' })).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(page.getByRole('button', { name: 'Refresh statistics' })).toBeFocused();
+  await expect(page.getByRole('rowheader', { name: 'shared-model' })).toBeVisible();
+  expect(await dialog.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(
+    true,
+  );
+  await page.getByRole('heading', { name: 'Compactions', exact: true }).scrollIntoViewIfNeeded();
+  await expect(page.getByRole('heading', { name: 'Compactions', exact: true })).toBeVisible();
+  expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  expect(
+    requests.filter((request) => request.method === 'POST' && request.url.endsWith('/responses')),
+  ).toHaveLength(0);
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
 });

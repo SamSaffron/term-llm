@@ -273,6 +273,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		store, closeStore = InitSessionStore(cfg, r.errWriter())
 	}
 	var runtime *serveRuntime
+	var spawnRunner *SpawnAgentRunner
 	cleanupOnError := true
 	defer func() {
 		if !cleanupOnError {
@@ -280,6 +281,8 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		}
 		if runtime != nil {
 			runtime.Close()
+		} else if spawnRunner != nil {
+			spawnRunner.Wait()
 		}
 		if closeStore != nil {
 			closeStore()
@@ -291,7 +294,8 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	wireSpawn := r.defaults.WireSpawn
 	if wireSpawn == nil {
 		wireSpawn = func(cfg *config.Config, toolMgr *tools.ToolManager, _ bool) error {
-			_, err := WireSpawnAgentRunnerWithStoreAndDepth(cfg, toolMgr, yoloMode, store, req.SessionID, req.Depth)
+			var err error
+			spawnRunner, err = WireSpawnAgentRunnerWithStoreAndDepth(cfg, toolMgr, yoloMode, store, req.SessionID, req.Depth)
 			return err
 		}
 	}
@@ -349,6 +353,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		runtimeStore = nil
 	}
 	runtime = &serveRuntime{
+		spawnRunner:         spawnRunner,
 		settings:            &settings,
 		agentSkills:         agentSkills,
 		provider:            provider,
@@ -387,6 +392,15 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	runtime.responseCompletedCB = req.OnResponseCompleted
 	runtime.turnCompletedCB = req.OnTurnCompleted
 	runtime.compactionCB = req.OnCompaction
+	if childSink, ok := sink.(*spawnRunSink); ok {
+		childSink.SetResolvedModel(cfg.DefaultProvider, modelName)
+		if toolMgr != nil {
+			if spawn := toolMgr.GetSpawnAgentTool(); spawn != nil {
+				spawn.SetEventCallback(childSink.ChildEvent)
+			}
+		}
+		runtime.statsCompactionCB = childSink.CompactionUsage
+	}
 	runtime.syntheticUserCB = req.OnSyntheticUserMessage
 
 	var sess *session.Session

@@ -20,6 +20,9 @@ func (m *Model) handleStreamError(msg streamEventMsg, ev ui.StreamEvent, state *
 	}
 	m.applyAllPendingCompactionsToUI(msg.generation)
 	if ev.Err != nil {
+		if m.stats != nil {
+			m.stats.Finalize()
+		}
 		m.setRetryStatus("")
 		// Flush any buffered text on error
 		if m.smoothBuffer != nil {
@@ -133,6 +136,9 @@ func (m *Model) handleStreamError(msg streamEventMsg, ev ui.StreamEvent, state *
 }
 
 func (m *Model) handleStreamDone(msg streamEventMsg, ev ui.StreamEvent, state *streamCommandBuffer) (tea.Model, tea.Cmd, bool, []tea.Cmd, []tea.Cmd) {
+	if m.stats != nil {
+		m.stats.Finalize()
+	}
 	m.applyAllPendingCompactionsToUI(msg.generation)
 	m.setRetryStatus("")
 	m.currentTokens = ev.Tokens

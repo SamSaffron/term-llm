@@ -465,10 +465,12 @@ type spawnRunSink struct {
 	provider string
 	model    string
 
-	mu       sync.Mutex
-	output   strings.Builder
-	started  bool
-	doneSent bool
+	mu             sync.Mutex
+	output         strings.Builder
+	started        bool
+	doneSent       bool
+	pendingUsage   []tools.SubagentEvent
+	usageCommitted bool
 }
 
 func (s *spawnRunSink) Start() {
@@ -484,7 +486,7 @@ func (s *spawnRunSink) Start() {
 	provider := s.provider
 	model := s.model
 	s.mu.Unlock()
-	s.cb(s.callID, tools.SubagentEvent{Type: tools.SubagentEventInit, Provider: provider, Model: model})
+	s.cb(s.callID, tools.SubagentEvent{Type: tools.SubagentEventInit, Provider: provider, Model: model, Timestamp: time.Now()})
 }
 
 func (s *spawnRunSink) Done() {
@@ -497,8 +499,13 @@ func (s *spawnRunSink) Done() {
 		return
 	}
 	s.doneSent = true
+	pending := s.pendingUsage
+	s.pendingUsage = nil
 	s.mu.Unlock()
-	s.cb(s.callID, tools.SubagentEvent{Type: tools.SubagentEventDone})
+	for _, event := range pending {
+		s.cb(s.callID, event)
+	}
+	s.cb(s.callID, tools.SubagentEvent{Type: tools.SubagentEventDone, Timestamp: time.Now()})
 }
 
 func (s *spawnRunSink) Output() string {
@@ -510,24 +517,80 @@ func (s *spawnRunSink) Output() string {
 	return s.output.String()
 }
 
+// SetResolvedModel replaces the preview identity with the actual runner model.
+func (s *spawnRunSink) SetResolvedModel(provider, model string) {
+	s.mu.Lock()
+	s.provider = provider
+	s.model = model
+	s.mu.Unlock()
+	if s.cb != nil {
+		s.cb(s.callID, tools.SubagentEvent{Type: tools.SubagentEventInit, Provider: provider, Model: model})
+	}
+}
+
+// ChildEvent preserves the identity of nested runs rather than billing them to
+// the outer child's model (which may differ).
+func (s *spawnRunSink) ChildEvent(id string, event tools.SubagentEvent) {
+	if s != nil && s.cb != nil {
+		s.cb(s.callID+"/"+id, event)
+	}
+}
+func (s *spawnRunSink) CompactionUsage(result *llm.CompactionResult) {
+	if s == nil || s.cb == nil || result == nil || result.Usage.BillableCountersZero() {
+		return
+	}
+	u := result.Usage
+	s.cb(s.callID, tools.SubagentEvent{Type: tools.SubagentEventUsage, Model: result.Model, InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, CachedInputTokens: u.CachedInputTokens, CacheWriteTokens: u.CacheWriteTokens, Timestamp: time.Now()})
+}
 func (s *spawnRunSink) Event(event llm.Event) {
 	if s == nil {
 		return
 	}
 	s.Start()
 	s.mu.Lock()
-	if event.Type == llm.EventTextDelta {
+	var pending []tools.SubagentEvent
+	switch event.Type {
+	case llm.EventTextDelta:
 		s.output.WriteString(event.Text)
+		s.usageCommitted = false
+	case llm.EventReasoningDelta:
+		s.usageCommitted = false
+	case llm.EventModelSwitch:
+		s.model = event.Model
+	case llm.EventAttemptDiscard:
+		s.output.Reset()
+		s.pendingUsage = nil
+	case llm.EventToolCall, llm.EventToolExecStart, llm.EventDiscoveryCall:
+		pending = s.pendingUsage
+		s.pendingUsage = nil
+		s.usageCommitted = true
+	case llm.EventToolExecEnd, llm.EventDiscoveryOutput:
+		pending = s.pendingUsage
+		s.pendingUsage = nil
+		s.usageCommitted = false
+	}
+	subagentEvent := subagentEventFromLLM(event)
+	subagentEvent.Timestamp = time.Now()
+	if subagentEvent.Type == tools.SubagentEventUsage {
+		subagentEvent.Provider = s.provider
+		subagentEvent.Model = s.model
+		// A discarded provisional attempt must not become billed child usage.
+		// Publish at the next durable tool boundary or completion instead.
+		if !s.usageCommitted {
+			s.pendingUsage = append(s.pendingUsage, subagentEvent)
+			subagentEvent = tools.SubagentEvent{}
+		}
 	}
 	s.mu.Unlock()
 	if s.cb == nil || s.callID == "" {
 		return
 	}
-	subagentEvent := subagentEventFromLLM(event)
-	if subagentEvent.Type == "" {
-		return
+	for _, e := range pending {
+		s.cb(s.callID, e)
 	}
-	s.cb(s.callID, subagentEvent)
+	if subagentEvent.Type != "" {
+		s.cb(s.callID, subagentEvent)
+	}
 }
 
 func (s *spawnRunSink) GuardianEvent(event tools.GuardianEvent) {
@@ -540,6 +603,15 @@ func (s *spawnRunSink) GuardianEvent(event tools.GuardianEvent) {
 
 func subagentEventFromLLM(event llm.Event) tools.SubagentEvent {
 	switch event.Type {
+	case llm.EventDiscoveryCall:
+		if event.DiscoveryCall != nil {
+			return tools.SubagentEvent{Type: tools.SubagentEventToolStart, ToolCallID: event.DiscoveryCall.ID, ToolName: "tool_search", ToolArgs: event.DiscoveryCall.Arguments}
+		}
+	case llm.EventDiscoveryOutput:
+		if event.DiscoveryOutput != nil {
+			return tools.SubagentEvent{Type: tools.SubagentEventToolEnd, ToolCallID: event.DiscoveryOutput.CallID, ToolName: "tool_search", Success: true}
+		}
+
 	case llm.EventTextDelta:
 		return tools.SubagentEvent{Type: tools.SubagentEventText, Text: event.Text}
 	case llm.EventToolExecStart:
@@ -550,7 +622,13 @@ func subagentEventFromLLM(event llm.Event) tools.SubagentEvent {
 		return tools.SubagentEvent{Type: tools.SubagentEventPhase, Phase: event.Text}
 	case llm.EventUsage:
 		if event.Use != nil {
-			return tools.SubagentEvent{Type: tools.SubagentEventUsage, InputTokens: event.Use.InputTokens, OutputTokens: event.Use.OutputTokens}
+			return tools.SubagentEvent{
+				Type:              tools.SubagentEventUsage,
+				InputTokens:       event.Use.InputTokens,
+				OutputTokens:      event.Use.OutputTokens,
+				CachedInputTokens: event.Use.CachedInputTokens,
+				CacheWriteTokens:  event.Use.CacheWriteTokens,
+			}
 		}
 	}
 	return tools.SubagentEvent{}

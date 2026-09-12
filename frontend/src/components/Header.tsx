@@ -32,15 +32,16 @@ function RuntimePicker() {
   const popover = useRef<HTMLDialogElement>(null);
   const initialFocus = useRef<HTMLButtonElement>(null);
   const locked = store.runActive.value;
-  const selectedProvider = locked
-    ? store.activeSession.value?.activeProvider || store.selectedProvider.value
-    : store.selectedProvider.value;
+  // The selected runtime is the target of an in-progress model swap. Keep it
+  // visible while the durable session still reports the previous runtime; if
+  // cancelled, the selected target remains ready for the next reply.
+  const selectedProvider =
+    store.selectedProvider.value || (locked ? store.activeSession.value?.activeProvider || '' : '');
   const provider =
     store.providers.value.find((entry) => entry.id === selectedProvider) ||
     defaultProvider(store.providers.value);
-  const selectedModel = locked
-    ? store.activeSession.value?.activeModel || store.selectedModel.value
-    : store.selectedModel.value;
+  const selectedModel =
+    store.selectedModel.value || (locked ? store.activeSession.value?.activeModel || '' : '');
   const fallbackModel = defaultModel(provider);
   const split = splitModelEffort(
     selectedModel || fallbackModel,

@@ -3,11 +3,13 @@ package ui
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
 
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -20,6 +22,14 @@ const (
 	defaultSubagentTextPreviewLines = 4         // Independent of the nested tool-call preview limit.
 )
 
+// SubagentUsageCall preserves one child provider request for request-scoped pricing.
+type SubagentUsageCall struct {
+	Provider string
+	Model    string
+	Usage    llm.Usage
+	Guardian bool
+}
+
 // SubagentProgress tracks progress from a single spawned subagent.
 type SubagentProgress struct {
 	ToolCallID     string          // Links to parent's spawn_agent call
@@ -30,16 +40,25 @@ type SubagentProgress struct {
 	CompletedTools []ToolSegment   // Completed tools (for expanded view)
 	Phase          string          // "Thinking", "Searching"
 	StartTime      time.Time
+	EndTime        time.Time
 	Done           bool
 
-	// Provider/model info (for displaying when different from parent)
-	Provider string // Provider name (e.g., "anthropic", "openai")
-	Model    string // Model name (e.g., "claude-sonnet-4-20250514")
+	// Provider/model info used for accounting. Provider/Model remain the
+	// display-only values and are blank when they match the parent.
+	ResolvedProvider string
+	ResolvedModel    string
+	Provider         string
+	Model            string
 
-	// Stats for header display
-	ToolCalls    int // Total tool calls made
-	InputTokens  int // Total input tokens
-	OutputTokens int // Total output tokens
+	// Stats retained after completion for /stats.
+	ToolCalls         int
+	InputTokens       int
+	OutputTokens      int
+	CachedInputTokens int
+	CacheWriteTokens  int
+	UsageCalls        []SubagentUsageCall
+	ToolTime          time.Duration
+	toolIntervalStart time.Time
 
 	// For preview: last N lines of text
 	previewLines    []string
@@ -62,7 +81,8 @@ type ToolSegment struct {
 // SubagentTracker tracks progress from multiple concurrent subagents.
 type SubagentTracker struct {
 	mu           sync.RWMutex
-	agents       map[string]*SubagentProgress // by ToolCallID
+	agents       map[string]*SubagentProgress // live agents by ToolCallID
+	completed    map[string]*SubagentProgress // retained accounting after inline removal
 	removed      map[string]struct{}          // tombstones for removed agents (prevents resurrection)
 	previewLines int                          // preview mode line count (default 4)
 	expanded     bool                         // true = show ALL content
@@ -76,6 +96,7 @@ type SubagentTracker struct {
 func NewSubagentTracker() *SubagentTracker {
 	return &SubagentTracker{
 		agents:       make(map[string]*SubagentProgress),
+		completed:    make(map[string]*SubagentProgress),
 		removed:      make(map[string]struct{}),
 		previewLines: defaultSubagentTextPreviewLines,
 		expanded:     false,
@@ -134,26 +155,82 @@ func (t *SubagentTracker) Get(callID string) *SubagentProgress {
 	return t.agents[callID]
 }
 
-// MarkDone marks a subagent as completed.
-func (t *SubagentTracker) MarkDone(callID string) {
+// MarkDone marks a subagent as completed using the local clock.
+func (t *SubagentTracker) MarkDone(callID string) { t.MarkDoneAt(callID, time.Now()) }
+
+// MarkDoneAt marks a subagent complete, freezes elapsed time, and closes any
+// outstanding nested-tool interval.
+func (t *SubagentTracker) MarkDoneAt(callID string, at time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if at.IsZero() {
+		at = time.Now()
+	}
 	if p := t.agents[callID]; p != nil {
+		if p.Done {
+			return
+		}
 		p.Done = true
+		p.EndTime = at
+		p.closeToolInterval(at)
 	}
 }
 
-// Remove removes a subagent from tracking (after spawn_agent completes).
-// A tombstone is added to prevent late async events from resurrecting the entry.
-// Only adds a tombstone if the callID was actually being tracked, to avoid
-// unbounded tombstone growth from non-spawn_agent tool calls.
+// Remove removes a subagent from live tracking after spawn_agent completes.
+// Its compact accounting snapshot remains available for session statistics.
 func (t *SubagentTracker) Remove(callID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if _, exists := t.agents[callID]; exists {
+	if p, exists := t.agents[callID]; exists {
+		if p.EndTime.IsZero() {
+			p.EndTime = time.Now()
+			p.closeToolInterval(p.EndTime)
+		}
+		p.Done = true
+		snapshot := *p
+		snapshot.TextBuffer = strings.Builder{}
+		snapshot.ActiveTools = nil
+		snapshot.CompletedTools = nil
+		snapshot.previewLines = nil
+		snapshot.pendingGuardian = nil
+		t.completed[callID] = &snapshot
 		delete(t.agents, callID)
 		t.removed[callID] = struct{}{} // tombstone prevents resurrection
 	}
+}
+
+// Snapshots returns stable copies of all live and completed runs. Large prose
+// buffers and previews are intentionally omitted; this API is for accounting.
+func (t *SubagentTracker) Snapshots() []SubagentProgress {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	result := make([]SubagentProgress, 0, len(t.agents)+len(t.completed))
+	appendSnapshot := func(p *SubagentProgress) {
+		if p == nil {
+			return
+		}
+		copy := *p
+		copy.TextBuffer = strings.Builder{}
+		copy.ActiveTools = nil
+		copy.CompletedTools = nil
+		copy.UsageCalls = append([]SubagentUsageCall(nil), p.UsageCalls...)
+		copy.previewLines = nil
+		copy.pendingGuardian = nil
+		result = append(result, copy)
+	}
+	for _, p := range t.agents {
+		appendSnapshot(p)
+	}
+	for _, p := range t.completed {
+		appendSnapshot(p)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].StartTime.Equal(result[j].StartTime) {
+			return result[i].ToolCallID < result[j].ToolCallID
+		}
+		return result[i].StartTime.Before(result[j].StartTime)
+	})
+	return result
 }
 
 // ActiveAgents returns all non-done subagents in order of start time.
@@ -210,11 +287,22 @@ func (t *SubagentTracker) HandleTextDelta(callID, text string) {
 
 // HandleToolStart records a tool starting in a subagent.
 func (t *SubagentTracker) HandleToolStart(callID, nestedCallID, toolName, toolInfo string, args json.RawMessage) {
+	t.HandleToolStartAt(callID, nestedCallID, toolName, toolInfo, args, time.Now())
+}
+
+// HandleToolStartAt records a nested tool start and begins union tool timing.
+func (t *SubagentTracker) HandleToolStartAt(callID, nestedCallID, toolName, toolInfo string, args json.RawMessage, at time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	p := t.agents[callID]
 	if p == nil {
 		return
+	}
+	if at.IsZero() {
+		at = time.Now()
+	}
+	if len(p.ActiveTools) == 0 {
+		p.toolIntervalStart = at
 	}
 	tool := ToolSegment{
 		CallID: nestedCallID,
@@ -232,6 +320,11 @@ func (t *SubagentTracker) HandleToolStart(callID, nestedCallID, toolName, toolIn
 
 // HandleToolEnd marks a tool as completed in a subagent.
 func (t *SubagentTracker) HandleToolEnd(callID, nestedCallID, toolName string, success bool) {
+	t.HandleToolEndAt(callID, nestedCallID, toolName, success, time.Now())
+}
+
+// HandleToolEndAt records a nested tool completion and closes union timing when idle.
+func (t *SubagentTracker) HandleToolEndAt(callID, nestedCallID, toolName string, success bool, at time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	p := t.agents[callID]
@@ -245,6 +338,9 @@ func (t *SubagentTracker) HandleToolEnd(callID, nestedCallID, toolName string, s
 			tool.Done = true
 			p.CompletedTools = append(p.CompletedTools, tool)
 			p.ActiveTools = append(p.ActiveTools[:i], p.ActiveTools[i+1:]...)
+			if len(p.ActiveTools) == 0 {
+				p.closeToolInterval(at)
+			}
 			break
 		}
 	}
@@ -255,7 +351,16 @@ func (t *SubagentTracker) HandleGuardianEvent(callID string, event tools.Guardia
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	p := t.agents[callID]
-	if p == nil || event.ToolCallID == "" {
+	if p == nil {
+		if completed := t.completed[callID]; completed != nil {
+			completed.addUsage(event.Model, "", event.Usage, true)
+		}
+		return
+	}
+	if !event.Usage.BillableCountersZero() {
+		p.addUsage(event.Model, "", event.Usage, true)
+	}
+	if event.ToolCallID == "" {
 		return
 	}
 	for i := range p.ActiveTools {
@@ -289,25 +394,27 @@ func (t *SubagentTracker) HandlePhase(callID, phase string) {
 
 // HandleUsage accumulates token usage for a subagent.
 func (t *SubagentTracker) HandleUsage(callID string, inputTokens, outputTokens int) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	p := t.agents[callID]
-	if p == nil {
-		return
-	}
-	p.InputTokens += inputTokens
-	p.OutputTokens += outputTokens
+	t.HandleUsageEvent(callID, tools.SubagentEvent{InputTokens: inputTokens, OutputTokens: outputTokens})
 }
 
 // HandleInit sets the provider and model for a subagent.
 // Only stores values if they differ from the main agent's provider/model.
 func (t *SubagentTracker) HandleInit(callID, provider, model string) {
+	t.HandleInitAt(callID, provider, model, time.Time{})
+}
+
+// HandleInitAt captures the child start timestamp when provided.
+func (t *SubagentTracker) HandleInitAt(callID, provider, model string, at time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	p := t.agents[callID]
 	if p == nil {
 		return
 	}
+	if !at.IsZero() {
+		p.StartTime = at
+	}
+	p.ResolvedProvider, p.ResolvedModel = provider, model
 	// Only store if different from main agent
 	if provider != t.mainProvider || model != t.mainModel {
 		p.Provider = provider
@@ -354,7 +461,7 @@ func (p *SubagentProgress) RenderHeader(expanded bool) string {
 	b.WriteString("  ")
 	b.WriteString(fmt.Sprintf("%d calls", p.ToolCalls))
 	b.WriteString(" · ")
-	b.WriteString(formatTokens(p.InputTokens + p.OutputTokens))
+	b.WriteString(formatTokens(p.InputTokens + p.OutputTokens + p.CachedInputTokens + p.CacheWriteTokens))
 	b.WriteString(" tokens")
 	if expanded {
 		b.WriteString("  [expanded]")
@@ -447,4 +554,70 @@ func formatTokens(n int) string {
 		return fmt.Sprintf("%.1fk", k)
 	}
 	return fmt.Sprintf("%.0fk", k)
+}
+
+// HandleUsageEvent retains full per-request usage, including cache counters.
+func (t *SubagentTracker) HandleUsageEvent(callID string, event tools.SubagentEvent) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	p := t.agents[callID]
+	if p == nil {
+		p = t.completed[callID]
+	}
+	if p == nil {
+		return
+	}
+	p.addUsage(event.Model, event.Provider, llm.Usage{InputTokens: event.InputTokens, OutputTokens: event.OutputTokens, CachedInputTokens: event.CachedInputTokens, CacheWriteTokens: event.CacheWriteTokens}, false)
+}
+func (p *SubagentProgress) addUsage(model, provider string, u llm.Usage, guardian bool) {
+	if u.BillableCountersZero() {
+		return
+	}
+	if model == "" && !guardian {
+		model = p.ResolvedModel
+	}
+	if provider == "" {
+		provider = p.ResolvedProvider
+	}
+	p.UsageCalls = append(p.UsageCalls, SubagentUsageCall{Model: model, Provider: provider, Usage: u, Guardian: guardian})
+	p.InputTokens += u.InputTokens
+	p.OutputTokens += u.OutputTokens
+	p.CachedInputTokens += u.CachedInputTokens
+	p.CacheWriteTokens += u.CacheWriteTokens
+}
+func (p *SubagentProgress) closeToolInterval(at time.Time) {
+	if at.IsZero() {
+		at = time.Now()
+	}
+	if !p.toolIntervalStart.IsZero() {
+		p.ToolTime += max(time.Duration(0), at.Sub(p.toolIntervalStart))
+		p.toolIntervalStart = time.Time{}
+	}
+}
+
+// Timing returns wall elapsed and union nested-tool time; parallel tools count once.
+func (p SubagentProgress) Timing(now time.Time) (time.Duration, time.Duration) {
+	end := p.EndTime
+	if end.IsZero() {
+		end = now
+	}
+	elapsed := max(time.Duration(0), end.Sub(p.StartTime))
+	tools := p.ToolTime
+	if !p.toolIntervalStart.IsZero() {
+		tools += max(time.Duration(0), end.Sub(p.toolIntervalStart))
+	}
+	return elapsed, min(elapsed, tools)
+}
+
+// ResolvedModel reads one run's model without copying the retained accounting history.
+func (t *SubagentTracker) ResolvedModel(callID string) string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if p := t.agents[callID]; p != nil {
+		return p.ResolvedModel
+	}
+	if p := t.completed[callID]; p != nil {
+		return p.ResolvedModel
+	}
+	return ""
 }

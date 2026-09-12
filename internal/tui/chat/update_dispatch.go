@@ -333,10 +333,7 @@ func (m *Model) dispatchConversationUpdate(message tea.Msg, cmds *[]tea.Cmd, flu
 	case HandoverRequestMsg:
 		return handledUpdate(m.handleHandoverRequest(msg))
 	case SubagentProgressMsg:
-		// Handle subagent progress events and update segment stats.
-		if msg.Event.Type == tools.SubagentEventGuardian && msg.Event.Guardian != nil {
-			m.recordGuardianUsage(context.Background(), msg.Event.Guardian.Model, msg.Event.Guardian.Usage)
-		}
+		m.recordChildEventUsage(msg.CallID, msg.Event)
 		ui.HandleSubagentProgress(m.tracker, m.subagentTracker, msg.CallID, msg.Event)
 		if msg.Event.Type == tools.SubagentEventToolEnd {
 			for _, media := range msg.Event.Media {

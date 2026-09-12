@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"time"
 
 	planpkg "github.com/samsaffron/term-llm/internal/plan"
 	"github.com/samsaffron/term-llm/internal/terminaltext"
@@ -28,21 +27,25 @@ func HandleSubagentProgress(tracker *ToolTracker, subagentTracker *SubagentTrack
 	// Get or create subagent progress entry
 	var agentName string
 	var prompt string
-	// Extract agent name from tool info (format: "agent_name") and prompt from raw args.
+	// ToolInfo is a display summary and may contain the entire prompt.
+	// Prefer the structured agent name so statistics never inherit that prose.
 	if seg := FindSegmentByCallID(tracker, callID); seg != nil {
-		if seg.ToolInfo != "" {
+		agentName, prompt = extractSpawnAgentArgs(seg)
+		if agentName == "" {
 			agentName = seg.ToolInfo
 		}
-		agentNameFromArgs, promptFromArgs := extractSpawnAgentArgs(seg)
-		if agentName == "" {
-			agentName = agentNameFromArgs
-		}
-		prompt = promptFromArgs
 	}
+
 	p := subagentTracker.GetOrCreate(callID, agentName)
 
-	// If p is nil, the subagent was already removed (late async event) - ignore it
+	// Removed runs must not reappear inline, but late usage still belongs to accounting.
 	if p == nil {
+		if event.Type == tools.SubagentEventUsage {
+			subagentTracker.HandleUsageEvent(callID, event)
+		}
+		if event.Type == tools.SubagentEventGuardian && event.Guardian != nil {
+			subagentTracker.HandleGuardianEvent(callID, *event.Guardian)
+		}
 		return
 	}
 	if p.Prompt == "" && prompt != "" {
@@ -52,13 +55,13 @@ func HandleSubagentProgress(tracker *ToolTracker, subagentTracker *SubagentTrack
 	// Update subagent state based on event type
 	switch event.Type {
 	case tools.SubagentEventInit:
-		subagentTracker.HandleInit(callID, event.Provider, event.Model)
+		subagentTracker.HandleInitAt(callID, event.Provider, event.Model, event.Timestamp)
 	case tools.SubagentEventText:
 		subagentTracker.HandleTextDelta(callID, event.Text)
 	case tools.SubagentEventToolStart:
-		subagentTracker.HandleToolStart(callID, event.ToolCallID, event.ToolName, event.ToolInfo, event.ToolArgs)
+		subagentTracker.HandleToolStartAt(callID, event.ToolCallID, event.ToolName, event.ToolInfo, event.ToolArgs, event.Timestamp)
 	case tools.SubagentEventToolEnd:
-		subagentTracker.HandleToolEnd(callID, event.ToolCallID, event.ToolName, event.Success)
+		subagentTracker.HandleToolEndAt(callID, event.ToolCallID, event.ToolName, event.Success, event.Timestamp)
 		// Process structured image/diff data from subagent events
 		for _, imagePath := range event.Images {
 			tracker.AddImageSegment(imagePath)
@@ -69,17 +72,17 @@ func HandleSubagentProgress(tracker *ToolTracker, subagentTracker *SubagentTrack
 	case tools.SubagentEventPhase:
 		subagentTracker.HandlePhase(callID, event.Phase)
 	case tools.SubagentEventUsage:
-		subagentTracker.HandleUsage(callID, event.InputTokens, event.OutputTokens)
+		subagentTracker.HandleUsageEvent(callID, event)
 	case tools.SubagentEventGuardian:
 		if event.Guardian != nil {
 			subagentTracker.HandleGuardianEvent(callID, *event.Guardian)
 		}
 	case tools.SubagentEventDone:
-		subagentTracker.MarkDone(callID)
+		subagentTracker.MarkDoneAt(callID, event.Timestamp)
 		// Store completion time so elapsed timer freezes
 		if seg := FindSegmentByCallID(tracker, callID); seg != nil {
 			if seg.SubagentEndTime.IsZero() {
-				seg.SubagentEndTime = time.Now()
+				seg.SubagentEndTime = p.EndTime
 				tracker.RecordActivity()
 				tracker.Version++
 			}
@@ -136,7 +139,7 @@ func updateSegmentFromSubagentProgress(tracker *ToolTracker, callID string, p *S
 			}
 			changed := !seg.SubagentHasProgress ||
 				seg.SubagentToolCalls != p.ToolCalls ||
-				seg.SubagentTotalTokens != p.InputTokens+p.OutputTokens ||
+				seg.SubagentTotalTokens != p.InputTokens+p.OutputTokens+p.CachedInputTokens+p.CacheWriteTokens ||
 				seg.SubagentProvider != p.Provider ||
 				seg.SubagentModel != p.Model ||
 				seg.SubagentPrompt != p.Prompt ||
@@ -147,7 +150,7 @@ func updateSegmentFromSubagentProgress(tracker *ToolTracker, callID string, p *S
 
 			seg.SubagentHasProgress = true
 			seg.SubagentToolCalls = p.ToolCalls
-			seg.SubagentTotalTokens = p.InputTokens + p.OutputTokens
+			seg.SubagentTotalTokens = p.InputTokens + p.OutputTokens + p.CachedInputTokens + p.CacheWriteTokens
 			seg.SubagentProvider = p.Provider
 			seg.SubagentModel = p.Model
 			seg.SubagentPrompt = p.Prompt

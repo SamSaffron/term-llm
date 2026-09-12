@@ -1,0 +1,141 @@
+.stats-modal {
+  width: min(960px, 100%);
+  max-height: calc(100dvh - 2rem);
+  overflow-y: auto;
+  padding: 1.5rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin: 0.2rem 0 1.25rem;
+}
+
+.stats-refresh {
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  padding: 0.4rem 0.65rem;
+  cursor: pointer;
+}
+
+.stats-refresh:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.stats-headline {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.stats-headline dt {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.stats-headline dd {
+  margin: 0.35rem 0 0;
+  font-size: 1.5rem;
+}
+
+.stats-section-title {
+  margin: 1.6rem 0 0.75rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.stats-counters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.5rem 1rem;
+  margin: 0;
+  font-size: 0.78rem;
+}
+
+.stats-counter-row {
+  display: contents;
+}
+
+.stats-counters dt {
+  color: var(--text-muted);
+}
+
+.stats-counters dd {
+  margin: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.stats-performance {
+  margin-top: 1rem;
+}
+
+.stats-table-scroll {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.stats-table-scroll:focus-visible {
+  outline: 2px solid var(--border-strong);
+  outline-offset: 2px;
+}
+
+.stats-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
+.stats-table th,
+.stats-table td {
+  padding: 0.6rem 0.65rem;
+  border-bottom: 1px solid var(--border);
+  text-align: right;
+}
+
+.stats-table th {
+  font-weight: 500;
+}
+
+.stats-table thead {
+  color: var(--text-muted);
+}
+
+.stats-table th:first-child {
+  text-align: left;
+  padding-left: 0;
+}
+
+.stats-modal .stats-note {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.stats-footnote {
+  margin-top: 1.5rem;
+}
+
+@media (width <= 520px) {
+  .stats-modal {
+    padding: 1rem;
+  }
+
+  .stats-headline {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .stats-toolbar {
+    gap: 0.5rem;
+  }
+}

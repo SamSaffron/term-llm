@@ -765,7 +765,7 @@ func TestCmdStatsOpensModalWithTotalsAndCompactions(t *testing.T) {
 		t.Fatalf("stats should open content dialog, got open=%v type=%v", rm.dialog.IsOpen(), rm.dialog.Type())
 	}
 	content := rm.dialog.Content()
-	for _, want := range []string{"Stats:", "Current Context / Window Pressure", "Current context vs cumulative history", "Current context", "Cumulative history", "Cumulative Session Token Usage", "Fresh input tokens", "Cache write tokens", "Cache hit rate:", "Total tokens", "Cumulative Session Activity", "Tool calls", "Compactions:        3", "LLM cost:           200k cache, 484 in, 1.2k out", "Last boundary:"} {
+	for _, want := range []string{"active ", "Current Context / Window Pressure", "Current context vs cumulative history", "Current context", "Cumulative history", "Cumulative Session Token Usage", "Fresh input tokens", "Cache write tokens", "Cache hit rate:", "Total tokens", "Cumulative Session Activity", "Tool calls", "Compactions:        3", "LLM cost:           200k cache, 484 in, 1.2k out", "Last boundary:"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("stats content missing %q:\n%s", want, content)
 		}
@@ -846,7 +846,7 @@ func TestStatsModalUsesEngineThresholdsAndClearCacheDenominator(t *testing.T) {
 
 	content := m.renderStatsModal()
 	for _, want := range []string{
-		"Stats:",
+		"active ",
 		"$0.1234",
 		"× Soft compact at:  700       70.0% (300 window buffer)",
 		"! Hard compact at:  850       85.0% (150 window buffer)",
@@ -856,6 +856,9 @@ func TestStatsModalUsesEngineThresholdsAndClearCacheDenominator(t *testing.T) {
 		if !strings.Contains(content, want) {
 			t.Fatalf("stats content missing %q:\n%s", want, content)
 		}
+	}
+	if strings.HasPrefix(content, "Stats:") || strings.Contains(content, "\nStats:") {
+		t.Fatalf("stats modal repeated its title:\n%s", content)
 	}
 	if strings.Contains(content, "raw pricing lookup detail") {
 		t.Fatalf("stats exposed raw pricing error:\n%s", content)
@@ -887,10 +890,14 @@ func TestStatsModalDoesNotFinalizeLiveTiming(t *testing.T) {
 
 	m := newCmdTestModel(&mockStore{})
 	m.stats = ui.NewSessionStats()
-	before := m.stats.LLMTime
-	_ = m.renderStatsModal()
-	if m.stats.LLMTime != before {
-		t.Fatalf("rendering /stats finalized live timing: before=%v after=%v", before, m.stats.LLMTime)
+	m.stats.RequestStart()
+	beforeLLM, beforeTool := m.stats.LLMTime, m.stats.ToolTime
+	content := m.renderStatsModal()
+	if m.stats.LLMTime != beforeLLM || m.stats.ToolTime != beforeTool {
+		t.Fatalf("rendering /stats mutated live timing: before=%v/%v after=%v/%v", beforeLLM, beforeTool, m.stats.LLMTime, m.stats.ToolTime)
+	}
+	if !strings.HasPrefix(content, "active ") || strings.HasPrefix(content, "Stats:") {
+		t.Fatalf("live summary = %q", content)
 	}
 }
 

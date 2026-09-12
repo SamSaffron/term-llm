@@ -469,6 +469,9 @@ func TestHandleSubagentProgress_ExtractsPromptFromSpawnArgs(t *testing.T) {
 	if seg == nil {
 		t.Fatal("segment missing")
 	}
+	if p := subagents.Get("call-1"); p == nil || p.AgentName != "codebase" {
+		t.Fatalf("agent label must use structured name, not prompt-bearing ToolInfo: %+v", p)
+	}
 	if seg.SubagentPrompt != "Find where subagent progress is rendered" {
 		t.Fatalf("SubagentPrompt = %q", seg.SubagentPrompt)
 	}

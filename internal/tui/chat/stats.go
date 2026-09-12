@@ -4,10 +4,14 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/terminaltext"
+	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -31,12 +35,12 @@ func (m *Model) liveStatsSummary() string {
 	}
 	// Price and render a value copy: opening /stats must not finalize the live
 	// timer or attach transient pricing state to the session accumulator.
-	snapshot := *m.stats
+	snapshot := m.stats.SnapshotAt(time.Now())
 	snapshot.ClearEstimatedCost()
 	if cost, err := statsCostEstimator(m.statsPricingModel(), &snapshot); err == nil {
 		snapshot.SetEstimatedCost(cost)
 	}
-	return snapshot.Render()
+	return strings.TrimPrefix(snapshot.Render(), "Stats: ")
 }
 
 func (m *Model) cmdStats() (tea.Model, tea.Cmd) {
@@ -180,6 +184,8 @@ func (m *Model) renderStatsModal() string {
 	} else {
 		b.WriteString("No token usage recorded yet.\n")
 	}
+
+	m.renderSubagentStats(&b)
 
 	var sideUsage llm.Usage
 	sideRequests := 0
@@ -483,4 +489,184 @@ func nonEmpty(values ...string) string {
 		}
 	}
 	return "unknown"
+}
+
+// renderSubagentStats reports observed process-local runs separately from restored totals.
+func (m *Model) renderSubagentStats(b *strings.Builder) {
+	var runs []ui.SubagentProgress
+	if m.subagentTracker != nil {
+		runs = m.subagentTracker.Snapshots()
+	}
+	if len(runs) == 0 {
+		return
+	}
+	type modelStats struct {
+		model          string
+		usage          llm.Usage
+		calls          []ui.SubagentUsageCall
+		elapsed, tools time.Duration
+		timed, running bool
+	}
+	byModel := map[string]*modelStats{}
+	var models []*modelStats
+	group := func(model string) *modelStats {
+		model = nonEmpty(model, "unknown")
+		if found := byModel[model]; found != nil {
+			return found
+		}
+		row := &modelStats{model: model}
+		byModel[model] = row
+		models = append(models, row)
+		return row
+	}
+	now := time.Now()
+	for _, run := range runs {
+		row := group(run.ResolvedModel)
+		elapsed, tools := run.Timing(now)
+		row.elapsed += elapsed
+		row.tools += tools
+		row.timed = true
+		row.running = row.running || !run.Done
+		for _, call := range run.UsageCalls {
+			owner := group(call.Model)
+			owner.usage.Add(call.Usage)
+			owner.calls = append(owner.calls, call)
+		}
+	}
+	b.WriteString("\nSubagent models · this process\n")
+	width := 96
+	if m.dialog != nil {
+		width = m.dialog.contentWidth() - 4
+	}
+	splitTokens := width >= 62
+	headers := []string{"Model"}
+	widths := []int{32}
+	headers = append(headers, "Time", "Tools")
+	widths = append(widths, 6, 6)
+	if splitTokens {
+		headers = append(headers, "In", "Cache", "Out")
+		widths = append(widths, 6, 6, 6)
+	} else {
+		headers = append(headers, "Tokens")
+		widths = append(widths, 7)
+	}
+	headers = append(headers, "Est. cost")
+	widths = append(widths, 10)
+	fixed := len(widths) - 1
+	for _, w := range widths[1:] {
+		fixed += w
+	}
+	widths[0] = max(1, min(widths[0], width-fixed))
+	writeRow := func(cells []string) {
+		var row strings.Builder
+		for i, cell := range cells {
+			if i > 0 {
+				row.WriteByte(' ')
+			}
+			cell = ansi.Truncate(terminaltext.SanitizeSingleLine(cell), widths[i], "…")
+			pad := strings.Repeat(" ", max(0, widths[i]-ansi.StringWidth(cell)))
+			if i == 0 {
+				row.WriteString(cell + pad)
+			} else {
+				row.WriteString(pad + cell)
+			}
+		}
+		b.WriteString(strings.TrimRight(ansi.Truncate(row.String(), max(1, width), "…"), " ") + "\n")
+	}
+	writeRow(headers)
+	partial, running, unavailable := false, false, false
+	for _, row := range models {
+		name := row.model
+		if row.running {
+			name = ansi.Truncate(name, max(1, widths[0]-1), "…") + "*"
+			running = true
+		}
+		cells := []string{name}
+		if row.timed {
+			cells = append(cells, fmt.Sprintf("%.1fs", row.elapsed.Seconds()), fmt.Sprintf("%.1fs", row.tools.Seconds()))
+		} else {
+			cells = append(cells, "—", "—")
+		}
+		u := row.usage
+		if splitTokens {
+			cells = append(cells, ui.FormatTokenCount(u.InputTokens), ui.FormatTokenCount(u.CachedInputTokens+u.CacheWriteTokens), ui.FormatTokenCount(u.OutputTokens))
+		} else {
+			cells = append(cells, ui.FormatTokenCount(u.InputTokens+u.CachedInputTokens+u.CacheWriteTokens+u.OutputTokens))
+		}
+		known, priced, unpriced := 0.0, 0, 0
+		for _, call := range row.calls {
+			stats := ui.NewSessionStats()
+			u := call.Usage
+			stats.AddSubagentUsageForModel(call.Model, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
+			if cost, err := statsCostEstimator("", stats); err == nil {
+				known += cost
+				priced++
+			} else {
+				unpriced++
+			}
+		}
+		cost := "—"
+		if priced > 0 {
+			cost = fmt.Sprintf("$%.4f", known)
+			if unpriced > 0 {
+				cost = "≥" + cost
+				partial = true
+			}
+		} else {
+			unavailable = true
+		}
+		writeRow(append(cells, cost))
+	}
+	var legend []string
+	if running {
+		legend = append(legend, "* running")
+	}
+	if partial {
+		legend = append(legend, "≥ partial cost")
+	}
+	if unavailable {
+		legend = append(legend, "— unpriced")
+	}
+	if len(runs) > 1 {
+		legend = append(legend, "time summed across runs")
+	}
+	if len(legend) > 0 {
+		b.WriteString(strings.Join(legend, " · ") + "\n")
+	}
+}
+
+func (m *Model) recordSubagentUsage(ctx context.Context, model string, u llm.Usage) {
+	if u.BillableCountersZero() {
+		return
+	}
+	if m.stats == nil {
+		m.stats = ui.NewSessionStats()
+	}
+	m.stats.AddSubagentUsageForModel(model, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
+	sessionID := sessionIDOf(m.sess)
+	if m.store != nil && sessionID != "" {
+		_ = m.store.UpdateMetrics(ctx, sessionID, 0, 0, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
+	}
+	if m.sess != nil {
+		m.sess.InputTokens += u.InputTokens
+		m.sess.OutputTokens += u.OutputTokens
+		m.sess.CachedInputTokens += u.CachedInputTokens
+		m.sess.CacheWriteTokens += u.CacheWriteTokens
+	}
+}
+
+// recordChildEventUsage shares parent accounting between spawned agents and isolated skills.
+func (m *Model) recordChildEventUsage(callID string, event tools.SubagentEvent) {
+	switch event.Type {
+	case tools.SubagentEventUsage:
+		model := event.Model
+		if model == "" && m.subagentTracker != nil {
+			model = m.subagentTracker.ResolvedModel(callID)
+		}
+		m.recordSubagentUsage(context.Background(), model, llm.Usage{InputTokens: event.InputTokens, OutputTokens: event.OutputTokens, CachedInputTokens: event.CachedInputTokens, CacheWriteTokens: event.CacheWriteTokens})
+	case tools.SubagentEventGuardian:
+		if event.Guardian != nil {
+			m.recordGuardianUsage(context.Background(), event.Guardian.Model, event.Guardian.Usage)
+		}
+	}
 }

@@ -3146,7 +3146,6 @@ func serveJobsRunnerOptions(approval resolvedApprovalMode) cmdRunnerOptions {
 		Debug:            serveDebug,
 		DebugRaw:         debugRaw,
 		ErrWriter:        io.Discard,
-		WireSpawn:        WireSpawnAgentRunner,
 	}
 }
 

@@ -1257,6 +1257,7 @@ type webSessionEntry struct {
 
 type webSelectedSessionEntry struct {
 	webSessionEntry
+	Metrics           *webSessionMetrics   `json:"metrics,omitempty"`
 	FileChangeSummary webFileChangeSummary `json:"file_change_summary"`
 	PlanSummary       *webPlanSummary      `json:"plan_summary"`
 	ContextUsage      *serveContextUsage   `json:"context_usage"`
@@ -1418,6 +1419,7 @@ func (s *serveServer) selectedWebSession(ctx context.Context, selector string, s
 	}
 	if selectedMeta != nil {
 		result.ContextUsage = persistedContextUsage(selectedMeta, selected.Provider)
+		result.Metrics = &webSessionMetrics{InputTokens: selectedMeta.InputTokens, OutputTokens: selectedMeta.OutputTokens, CachedInputTokens: selectedMeta.CachedInputTokens, CacheWriteTokens: selectedMeta.CacheWriteTokens, ToolCalls: selectedMeta.ToolCalls, LLMTurns: selectedMeta.LLMTurns}
 	}
 	if attention, ok := session.AsAttentionStore(s.store); ok {
 		if state, err := attention.GetAttention(ctx, selected.ID); err == nil {
@@ -2045,6 +2047,10 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if suffix == "stats" {
+		s.handleSessionStats(w, r, sessionID)
+		return
+	}
 	if s.routeSessionCore(w, r, sessionID, requestedSessionID, suffix) {
 		return
 	}
