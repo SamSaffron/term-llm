@@ -474,166 +474,20 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		toolMgr.ApprovalMgr.WorkspacePromptFunc = tools.RunWorkspaceApprovalUI
 	}
 
-	// Save user message BEFORE streaming (incremental save)
-	// Capture start time for duration tracking in callback
+	// Save the initial transcript and construct callbacks before streaming.
 	turnStartTime := time.Now()
-	var persistResponseCompleted llm.ResponseCompletedCallback
-	var persistTurnCompleted llm.TurnCompletedCallback
-	var persistSyntheticUserMessage func(context.Context, llm.Message) error
-	var askPersistence *askAssistantPersistence
-	if store != nil && sess != nil {
-		reasoningPersistenceCfg := config.DefaultReasoningConfig()
-		if cfg != nil {
-			reasoningPersistenceCfg = cfg.ResolveReasoning("ask")
-		}
-		askPersistence = &askAssistantPersistence{
-			store:        store,
-			sess:         sess,
-			reasoningCfg: reasoningPersistenceCfg,
-		}
-
-		// Save system message first if this is a new session with instructions
-		if instructions != "" && !historyHasSystem {
-			sysMsg := &session.Message{
-				SessionID:   sess.ID,
-				Role:        llm.RoleSystem,
-				Parts:       []llm.Part{{Type: llm.PartText, Text: instructions}},
-				TextContent: instructions,
-				CreatedAt:   time.Now(),
-				Sequence:    -1, // Auto-allocate sequence
-			}
-			_ = store.AddMessage(ctx, sess.ID, sysMsg)
-		}
-
-		if !resuming {
-			if startMessage, ok := llm.ConversationStartFrom(messages); ok {
-				persistedStart := session.NewMessage(sess.ID, startMessage, -1)
-				persistedStart.CreatedAt = conversationStartedAt
-				_ = store.AddMessage(ctx, sess.ID, persistedStart)
-			}
-		}
-
-		userMsg := &session.Message{
-			SessionID:   sess.ID,
-			Role:        llm.RoleUser,
-			Parts:       []llm.Part{{Type: llm.PartText, Text: userPrompt}},
-			TextContent: userPrompt,
-			CreatedAt:   time.Now(),
-			Sequence:    -1, // Auto-allocate sequence
-		}
-		_ = store.AddMessage(ctx, sess.ID, userMsg)
-		_ = store.IncrementUserTurns(ctx, sess.ID)
-		sess.UserTurns++ // Keep in-memory value in sync
-
-		// Update session summary from first user message
-		if sess.Summary == "" {
-			sess.Summary = session.TruncateSummary(question)
-			_ = store.Update(ctx, sess)
-		}
-
-		// Set up response callback to save assistant message immediately (before tool execution)
-		// This ensures the message is persisted even if tool execution fails/crashes.
-		// Snapshot callbacks below upsert the same row so cancellation after already
-		// printed assistant output does not lose the partial transcript on --resume.
-		persistResponseCompleted = func(ctx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
-			// Calculate duration from stream start
-			durationMs := time.Since(turnStartTime).Milliseconds()
-
-			return askPersistence.persist(ctx, assistantMsg, durationMs, true)
-		}
-
-		// Set up turn callback for tool result messages and metrics
-		persistTurnCompleted = func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
-			// Save messages (tool results, or assistant message when no tools were executed)
-			appendStart := 0
-			if len(turnMessages) > 0 && turnMessages[0].Role == llm.RoleAssistant {
-				finalizeText := true
-				askPersistence.mu.Lock()
-				if askPersistence.pendingTextSet {
-					finalizeText = false
-				}
-				askPersistence.mu.Unlock()
-				if finalizeText {
-					if err := askPersistence.persist(ctx, turnMessages[0], time.Since(turnStartTime).Milliseconds(), true); err != nil {
-						return err
-					}
-				}
-				appendStart = 1
-			}
-			for _, msg := range turnMessages[appendStart:] {
-				sessionMsg := session.NewMessageWithReasoningPolicy(sess.ID, msg, -1, reasoningPersistenceCfg)
-				// Set duration for assistant messages (when responseCallback didn't run)
-				if msg.Role == llm.RoleAssistant {
-					sessionMsg.DurationMs = time.Since(turnStartTime).Milliseconds()
-				}
-				_ = store.AddMessage(ctx, sess.ID, sessionMsg)
-			}
-			askPersistence.reset()
-			// Update metrics
-			_ = store.UpdateMetrics(ctx, sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens)
-			if total, count := engine.ContextEstimateBaseline(); total > 0 {
-				_ = store.UpdateContextEstimate(ctx, sess.ID, total, count)
-				sess.LastTotalTokens = total
-				sess.LastMessageCount = count
-			}
-			return nil
-		}
-		persistSyntheticUserMessage = func(ctx context.Context, msg llm.Message) error {
-			turnStartTime = time.Now()
-			return store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, msg, -1))
-		}
-	}
-
-	responseCompletedCallback := persistResponseCompleted
-	turnCompletedCallback := persistTurnCompleted
-	if outputTool != nil {
-		responseCompletedCallback = func(ctx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
-			if persistResponseCompleted != nil {
-				if err := persistResponseCompleted(ctx, turnIndex, assistantMsg, metrics); err != nil {
-					return err
-				}
-			}
-			outputToolMessagesMu.Lock()
-			outputToolMessages = append(outputToolMessages, assistantMsg)
-			outputToolMessagesMu.Unlock()
-			return nil
-		}
-		turnCompletedCallback = func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
-			outputToolMessagesMu.Lock()
-			outputToolMessages = append(outputToolMessages, turnMessages...)
-			outputToolMessagesMu.Unlock()
-			if persistTurnCompleted != nil {
-				return persistTurnCompleted(ctx, turnIndex, turnMessages, metrics)
-			}
-			return nil
-		}
-	}
-
-	var assistantSnapshotCallback llm.AssistantSnapshotCallback
-	if askPersistence != nil {
-		assistantSnapshotCallback = func(ctx context.Context, turnIndex int, assistantMsg llm.Message) error {
-			return askPersistence.persist(ctx, assistantMsg, time.Since(turnStartTime).Milliseconds(), false)
-		}
-	}
-
 	var compactionUsages compactionUsageCollector
-	compactionCallback := func(cbCtx context.Context, result *llm.CompactionResult) error {
-		compactionUsages.add(result)
-		if store == nil || sess == nil {
-			return nil
-		}
-		_, _, refreshed, err := session.ApplyCompaction(cbCtx, store, sess, nil, result)
-		if err != nil {
-			return err
-		}
-		if refreshed != nil {
-			sess = refreshed
-		}
-		if result != nil && !result.Usage.BillableCountersZero() {
-			_ = store.UpdateMetrics(cbCtx, sess.ID, 0, 0, result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.CachedInputTokens, result.Usage.CacheWriteTokens)
-		}
-		return nil
-	}
+	persistenceCallbacks := prepareAskPersistenceCallbacks(
+		ctx, cfg, store, &sess, engine, &turnStartTime, instructions, historyHasSystem,
+		resuming, messages, conversationStartedAt, userPrompt, question, &compactionUsages,
+	)
+	persistenceCallbacks.wrapOutputTool(outputTool != nil, &outputToolMessages, &outputToolMessagesMu)
+	askPersistence := persistenceCallbacks.persistence
+	responseCompletedCallback := persistenceCallbacks.responseCompleted
+	turnCompletedCallback := persistenceCallbacks.turnCompleted
+	persistSyntheticUserMessage := persistenceCallbacks.syntheticUser
+	assistantSnapshotCallback := persistenceCallbacks.assistantSnapshot
+	compactionCallback := persistenceCallbacks.compaction
 
 	var jsonInfo sessionInfo
 	if askJSON {
@@ -800,8 +654,177 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 }
 
+type askPersistenceCallbacks struct {
+	persistence       *askAssistantPersistence
+	responseCompleted llm.ResponseCompletedCallback
+	turnCompleted     llm.TurnCompletedCallback
+	syntheticUser     func(context.Context, llm.Message) error
+	assistantSnapshot llm.AssistantSnapshotCallback
+	compaction        llm.CompactionCallback
+}
+
+func initializeAskPersistence(ctx context.Context, cfg *config.Config, store session.Store, sess *session.Session, instructions string, historyHasSystem, resuming bool, messages []llm.Message, conversationStartedAt time.Time, userPrompt, question string) *askAssistantPersistence {
+	if store == nil || sess == nil {
+		return nil
+	}
+	reasoningCfg := config.DefaultReasoningConfig()
+	if cfg != nil {
+		reasoningCfg = cfg.ResolveReasoning("ask")
+	}
+	persistence := &askAssistantPersistence{store: store, sess: sess, reasoningCfg: reasoningCfg}
+	if instructions != "" && !historyHasSystem {
+		message := &session.Message{SessionID: sess.ID, Role: llm.RoleSystem, Parts: []llm.Part{{Type: llm.PartText, Text: instructions}}, TextContent: instructions, CreatedAt: time.Now(), Sequence: -1}
+		_ = store.AddMessage(ctx, sess.ID, message)
+	}
+	if !resuming {
+		if start, ok := llm.ConversationStartFrom(messages); ok {
+			persisted := session.NewMessage(sess.ID, start, -1)
+			persisted.CreatedAt = conversationStartedAt
+			_ = store.AddMessage(ctx, sess.ID, persisted)
+		}
+	}
+	user := &session.Message{SessionID: sess.ID, Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: userPrompt}}, TextContent: userPrompt, CreatedAt: time.Now(), Sequence: -1}
+	_ = store.AddMessage(ctx, sess.ID, user)
+	_ = store.IncrementUserTurns(ctx, sess.ID)
+	sess.UserTurns++
+	if sess.Summary == "" {
+		sess.Summary = session.TruncateSummary(question)
+		_ = store.Update(ctx, sess)
+	}
+	return persistence
+}
+
+func newAskResponseCompletedCallback(persistence *askAssistantPersistence, turnStart *time.Time) llm.ResponseCompletedCallback {
+	if persistence == nil {
+		return nil
+	}
+	return func(ctx context.Context, _ int, message llm.Message, _ llm.TurnMetrics) error {
+		return persistence.persist(ctx, message, time.Since(*turnStart).Milliseconds(), true)
+	}
+}
+
+func newAskTurnCompletedCallback(persistence *askAssistantPersistence, store session.Store, sess **session.Session, engine *llm.Engine, turnStart *time.Time) llm.TurnCompletedCallback {
+	if persistence == nil {
+		return nil
+	}
+	return func(ctx context.Context, _ int, messages []llm.Message, metrics llm.TurnMetrics) error {
+		appendStart := 0
+		if len(messages) > 0 && messages[0].Role == llm.RoleAssistant {
+			persistence.mu.Lock()
+			finalizeText := !persistence.pendingTextSet
+			persistence.mu.Unlock()
+			if finalizeText {
+				if err := persistence.persist(ctx, messages[0], time.Since(*turnStart).Milliseconds(), true); err != nil {
+					return err
+				}
+			}
+			appendStart = 1
+		}
+		current := *sess
+		for _, message := range messages[appendStart:] {
+			stored := session.NewMessageWithReasoningPolicy(current.ID, message, -1, persistence.reasoningCfg)
+			if message.Role == llm.RoleAssistant {
+				stored.DurationMs = time.Since(*turnStart).Milliseconds()
+			}
+			_ = store.AddMessage(ctx, current.ID, stored)
+		}
+		persistence.reset()
+		_ = store.UpdateMetrics(ctx, current.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens)
+		if total, count := engine.ContextEstimateBaseline(); total > 0 {
+			_ = store.UpdateContextEstimate(ctx, current.ID, total, count)
+			current.LastTotalTokens, current.LastMessageCount = total, count
+		}
+		return nil
+	}
+}
+
+func newAskSyntheticUserCallback(store session.Store, sess **session.Session, turnStart *time.Time) func(context.Context, llm.Message) error {
+	if store == nil || sess == nil || *sess == nil {
+		return nil
+	}
+	return func(ctx context.Context, message llm.Message) error {
+		*turnStart = time.Now()
+		current := *sess
+		return store.AddMessage(ctx, current.ID, session.NewMessage(current.ID, message, -1))
+	}
+}
+
+func wrapAskOutputCallbacks(response llm.ResponseCompletedCallback, turn llm.TurnCompletedCallback, messages *[]llm.Message, mu *sync.Mutex) (llm.ResponseCompletedCallback, llm.TurnCompletedCallback) {
+	wrappedResponse := func(ctx context.Context, turnIndex int, message llm.Message, metrics llm.TurnMetrics) error {
+		if response != nil {
+			if err := response(ctx, turnIndex, message, metrics); err != nil {
+				return err
+			}
+		}
+		mu.Lock()
+		*messages = append(*messages, message)
+		mu.Unlock()
+		return nil
+	}
+	wrappedTurn := func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
+		mu.Lock()
+		*messages = append(*messages, turnMessages...)
+		mu.Unlock()
+		if turn != nil {
+			return turn(ctx, turnIndex, turnMessages, metrics)
+		}
+		return nil
+	}
+	return wrappedResponse, wrappedTurn
+}
+
+func newAskAssistantSnapshotCallback(persistence *askAssistantPersistence, turnStart *time.Time) llm.AssistantSnapshotCallback {
+	if persistence == nil {
+		return nil
+	}
+	return func(ctx context.Context, _ int, message llm.Message) error {
+		return persistence.persist(ctx, message, time.Since(*turnStart).Milliseconds(), false)
+	}
+}
+
+func newAskCompactionCallback(store session.Store, sess **session.Session, usages *compactionUsageCollector) llm.CompactionCallback {
+	return func(ctx context.Context, result *llm.CompactionResult) error {
+		usages.add(result)
+		if store == nil || *sess == nil {
+			return nil
+		}
+		_, _, refreshed, err := session.ApplyCompaction(ctx, store, *sess, nil, result)
+		if err != nil {
+			return err
+		}
+		if refreshed != nil {
+			*sess = refreshed
+		}
+		if result != nil && !result.Usage.BillableCountersZero() {
+			current := *sess
+			_ = store.UpdateMetrics(ctx, current.ID, 0, 0, result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.CachedInputTokens, result.Usage.CacheWriteTokens)
+		}
+		return nil
+	}
+}
+
+func (p *askPersistenceCallbacks) wrapOutputTool(enabled bool, messages *[]llm.Message, mu *sync.Mutex) {
+	if enabled {
+		p.responseCompleted, p.turnCompleted = wrapAskOutputCallbacks(p.responseCompleted, p.turnCompleted, messages, mu)
+	}
+}
+
+func prepareAskPersistenceCallbacks(ctx context.Context, cfg *config.Config, store session.Store, sess **session.Session, engine *llm.Engine, turnStart *time.Time, instructions string, historyHasSystem, resuming bool, messages []llm.Message, conversationStartedAt time.Time, userPrompt, question string, compactionUsages *compactionUsageCollector) askPersistenceCallbacks {
+	persistence := initializeAskPersistence(ctx, cfg, store, *sess, instructions, historyHasSystem, resuming, messages, conversationStartedAt, userPrompt, question)
+	return askPersistenceCallbacks{
+		persistence:       persistence,
+		responseCompleted: newAskResponseCompletedCallback(persistence, turnStart),
+		turnCompleted:     newAskTurnCompletedCallback(persistence, store, sess, engine, turnStart),
+		syntheticUser:     newAskSyntheticUserCallback(store, sess, turnStart),
+		assistantSnapshot: newAskAssistantSnapshotCallback(persistence, turnStart),
+		compaction:        newAskCompactionCallback(store, sess, compactionUsages),
+	}
+}
+
 type askAssistantPersistence struct {
-	store        session.Store
+	store session.Store
+	// Compaction may refresh the session object, but preserves its durable ID.
+	// Callbacks that update mutable session metadata follow the separate **Session.
 	sess         *session.Session
 	reasoningCfg config.ReasoningConfig
 

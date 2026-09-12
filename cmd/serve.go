@@ -294,6 +294,106 @@ func resolveServeAgentMetadata(cfg *config.Config, agent *agents.Agent, hasWeb b
 	return "", nil, agents.PlatformMessagesConfig{}, nil
 }
 
+type serveAgentRuntimeOptions struct {
+	cfg                     *config.Config
+	cmd                     *cobra.Command
+	store                   session.Store
+	approval                resolvedApprovalMode
+	approvalErrWriter       io.Writer
+	toolMap                 map[string]string
+	mediaPublisher          *serveMediaPublisher
+	collaborationController *serveCollaborativeShellController
+	hasWeb                  bool
+}
+
+func newServeAgentRuntime(ctx context.Context, request serveRuntimeRequest, opts serveAgentRuntimeOptions) (*serveRuntime, error) {
+	runtimeAgent := strings.TrimSpace(serveAgent)
+	if runtimeAgent == "" {
+		runtimeAgent = strings.TrimSpace(request.Agent)
+	}
+	approvalMode := opts.approval.Mode
+	if request.approvalMode != nil {
+		approvalMode = *request.approvalMode
+	}
+	runner := &cmdRunner{baseCfg: opts.cfg, defaults: serveRuntimeRunnerDefaults(opts, request, approvalMode)}
+	env, err := runner.prepare(ctx, runpkg.Request{
+		SessionID: request.SessionID, Cwd: request.RuntimeDir, Platform: runpkg.PlatformWeb,
+		AgentName: runtimeAgent, Provider: strings.TrimSpace(request.Provider), Model: strings.TrimSpace(request.Model), DeferSession: true,
+	}, nil)
+	if err != nil {
+		return nil, err
+	}
+	runtime := env.runtime
+	runtime.toolMap = opts.toolMap
+	runtime.platform = "web"
+	runtime.sideProviderFactory = func(providerKey, model string) (llm.Provider, error) {
+		return llm.NewProviderByName(opts.cfg, providerKey, model)
+	}
+	runtime.configureSideQuestionContext()
+	if err := validateServeRuntimeToolMap(runtime, opts.toolMap); err != nil {
+		runtime.Close()
+		return nil, err
+	}
+	configureServeRuntimeTools(runtime, opts)
+	runtime.Touch()
+	return runtime, nil
+}
+
+func serveRuntimeRunnerDefaults(opts serveAgentRuntimeOptions, request serveRuntimeRequest, approvalMode tools.ApprovalMode) cmdRunnerOptions {
+	return cmdRunnerOptions{
+		Inputs: request.Inputs, RestoreSettings: request.settings, RestoreAgentSkills: request.agentSkills,
+		ToolsSet: opts.cmd.Flags().Changed("tools"), SystemMessageSet: opts.cmd.Flags().Changed("system"),
+		Provider: serveProvider, Tools: serveTools, ReadDirs: append([]string(nil), serveReadDirs...), WriteDirs: append([]string(nil), serveWriteDirs...), ShellAllow: append([]string(nil), serveShellAllow...),
+		MCP: serveMCP, SystemMessage: serveSystemMessage, MaxTurns: serveMaxTurns, Search: serveSearch, NoSearch: serveNoSearch,
+		NativeSearch: serveNativeSearch, NoNativeSearch: serveNoNativeSearch, ApprovalMode: approvalMode, ApprovalModeSet: true,
+		ApprovalSource: opts.approval.Source, ApprovalHeadless: true, ApprovalPrepare: true, ApprovalDiagnostics: serveVerbose,
+		Debug: serveDebug, DebugRaw: debugRaw, ErrWriter: opts.approvalErrWriter, WireSpawn: WireSpawnAgentRunner, Store: opts.store,
+	}
+}
+
+func validateServeRuntimeToolMap(runtime *serveRuntime, toolMap map[string]string) error {
+	for clientName, serverName := range toolMap {
+		if _, ok := runtime.engine.Tools().Get(serverName); ok {
+			continue
+		}
+		names := make([]string, 0)
+		for _, spec := range runtime.engine.Tools().AllSpecs() {
+			names = append(names, spec.Name)
+		}
+		return fmt.Errorf("--tool-map %s:%s: server tool %q not found (registered tools: %v)", clientName, serverName, serverName, names)
+	}
+	return nil
+}
+
+func configureServeRuntimeTools(runtime *serveRuntime, opts serveAgentRuntimeOptions) {
+	if runtime.toolMgr == nil {
+		return
+	}
+	runtime.toolMgr.ApprovalMgr.GuardianEventFunc = runtime.emitGuardianReview
+	imageBaseURL := ""
+	if opts.hasWeb {
+		imageBaseURL = strings.TrimRight(serveBasePath, "/") + "/images/"
+	}
+	runtime.toolMgr.Registry.SetServeMode(true, imageBaseURL)
+	runtime.toolMgr.Registry.SetMediaPublisher(opts.mediaPublisher)
+	if opts.hasWeb {
+		runtime.toolMgr.Registry.SetCollaborativeShellController(opts.collaborationController, tools.ShellRoutingControllerRequired)
+	} else {
+		runtime.toolMgr.Registry.SetCollaborativeShellController(nil, tools.ShellRoutingLocalOnly)
+	}
+	if opts.approval.Mode != tools.ModeYolo {
+		runtime.toolMgr.ApprovalMgr.IgnoreProjectApprovals = true
+		runtime.toolMgr.ApprovalMgr.DebugApproval = serveDebug
+		runtime.toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite, isShell bool, workDir string) (tools.ApprovalResult, error) {
+			return runtime.awaitApproval(path, isWrite, isShell, workDir)
+		}
+		runtime.toolMgr.ApprovalMgr.SharedShellPromptUIFunc = runtime.awaitSharedShellApproval
+	}
+	if opts.hasWeb {
+		runtime.toolMgr.ApprovalMgr.WorkspacePromptFunc = runtime.awaitWorkspaceApproval
+	}
+}
+
 func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string) error {
 	startup, err := resolveServeStartup(cmd)
 	if err != nil {
@@ -491,106 +591,12 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		}
 		return s.shellManager()
 	}}
+	runtimeOptions := serveAgentRuntimeOptions{
+		cfg: cfg, cmd: cmd, store: store, approval: resolvedApproval, approvalErrWriter: approvalErrWriter,
+		toolMap: toolMap, mediaPublisher: mediaPublisher, collaborationController: collaborationController, hasWeb: hasWeb,
+	}
 	agentRuntimeFactory := func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
-		providerName, providerModel, requestedAgent := request.Provider, request.Model, request.Agent
-		runtimeAgent := strings.TrimSpace(serveAgent)
-		if runtimeAgent == "" {
-			runtimeAgent = strings.TrimSpace(requestedAgent)
-		}
-		runtimeApprovalMode := resolvedApproval.Mode
-		if request.approvalMode != nil {
-			runtimeApprovalMode = *request.approvalMode
-		}
-		runner := &cmdRunner{baseCfg: cfg, defaults: cmdRunnerOptions{
-			Inputs:              request.Inputs,
-			RestoreSettings:     request.settings,
-			RestoreAgentSkills:  request.agentSkills,
-			ToolsSet:            cmd.Flags().Changed("tools"),
-			SystemMessageSet:    cmd.Flags().Changed("system"),
-			Provider:            serveProvider,
-			Tools:               serveTools,
-			ReadDirs:            append([]string(nil), serveReadDirs...),
-			WriteDirs:           append([]string(nil), serveWriteDirs...),
-			ShellAllow:          append([]string(nil), serveShellAllow...),
-			MCP:                 serveMCP,
-			SystemMessage:       serveSystemMessage,
-			MaxTurns:            serveMaxTurns,
-			Search:              serveSearch,
-			NoSearch:            serveNoSearch,
-			NativeSearch:        serveNativeSearch,
-			NoNativeSearch:      serveNoNativeSearch,
-			ApprovalMode:        runtimeApprovalMode,
-			ApprovalModeSet:     true,
-			ApprovalSource:      resolvedApproval.Source,
-			ApprovalHeadless:    true,
-			ApprovalPrepare:     true,
-			ApprovalDiagnostics: serveVerbose,
-			Debug:               serveDebug,
-			DebugRaw:            debugRaw,
-			ErrWriter:           approvalErrWriter,
-			WireSpawn:           WireSpawnAgentRunner,
-			Store:               store,
-		}}
-		env, err := runner.prepare(ctx, runpkg.Request{
-			SessionID:    request.SessionID,
-			Cwd:          request.RuntimeDir,
-			Platform:     runpkg.PlatformWeb,
-			AgentName:    runtimeAgent,
-			Provider:     strings.TrimSpace(providerName),
-			Model:        strings.TrimSpace(providerModel),
-			DeferSession: true,
-		}, nil)
-		if err != nil {
-			return nil, err
-		}
-		runtime := env.runtime
-		runtime.toolMap = toolMap
-		runtime.platform = "web"
-		runtime.sideProviderFactory = func(providerKey, model string) (llm.Provider, error) {
-			return llm.NewProviderByName(cfg, providerKey, model)
-		}
-		runtime.configureSideQuestionContext()
-
-		// Validate --tool-map targets exist as registered server tools.
-		// This runs after MCP registration so mapped MCP tools are visible.
-		for clientName, serverName := range toolMap {
-			if _, ok := runtime.engine.Tools().Get(serverName); !ok {
-				names := make([]string, 0)
-				for _, spec := range runtime.engine.Tools().AllSpecs() {
-					names = append(names, spec.Name)
-				}
-				runtime.Close()
-				return nil, fmt.Errorf("--tool-map %s:%s: server tool %q not found (registered tools: %v)", clientName, serverName, serverName, names)
-			}
-		}
-
-		if runtime.toolMgr != nil {
-			runtime.toolMgr.ApprovalMgr.GuardianEventFunc = runtime.emitGuardianReview
-			imageBaseURL := ""
-			if hasWeb {
-				imageBaseURL = strings.TrimRight(serveBasePath, "/") + "/images/"
-			}
-			runtime.toolMgr.Registry.SetServeMode(true, imageBaseURL)
-			runtime.toolMgr.Registry.SetMediaPublisher(mediaPublisher)
-			if hasWeb {
-				runtime.toolMgr.Registry.SetCollaborativeShellController(collaborationController, tools.ShellRoutingControllerRequired)
-			} else {
-				runtime.toolMgr.Registry.SetCollaborativeShellController(nil, tools.ShellRoutingLocalOnly)
-			}
-			if !resolvedYolo {
-				runtime.toolMgr.ApprovalMgr.IgnoreProjectApprovals = true
-				runtime.toolMgr.ApprovalMgr.DebugApproval = serveDebug
-				runtime.toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
-					return runtime.awaitApproval(path, isWrite, isShell, workDir)
-				}
-				runtime.toolMgr.ApprovalMgr.SharedShellPromptUIFunc = runtime.awaitSharedShellApproval
-			}
-			if hasWeb {
-				runtime.toolMgr.ApprovalMgr.WorkspacePromptFunc = runtime.awaitWorkspaceApproval
-			}
-		}
-		runtime.Touch()
-		return runtime, nil
+		return newServeAgentRuntime(ctx, request, runtimeOptions)
 	}
 
 	runtimeFactory := func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error) {

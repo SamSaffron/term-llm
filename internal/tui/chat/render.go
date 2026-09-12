@@ -1269,241 +1269,267 @@ func (m *Model) statusLineGoalPart() (string, session.GoalStatus) {
 	return text, goal.Status
 }
 
-// renderStatusLine renders a tiny status line showing model and options
-func (m *Model) renderStatusLine() string {
+type statusLineStyles struct {
+	muted   lipgloss.Style
+	success lipgloss.Style
+	error   lipgloss.Style
+	warning lipgloss.Style
+}
+
+func (m *Model) statusStyles() statusLineStyles {
 	theme := m.styles.Theme()
-	mutedStyle := lipgloss.NewStyle().Foreground(theme.Muted)
-	successStyle := lipgloss.NewStyle().Foreground(theme.Success)
-	errorStyle := lipgloss.NewStyle().Foreground(theme.Error)
-	warningStyle := lipgloss.NewStyle().Foreground(theme.Warning)
-
-	// Active path-note generation owns the right-aligned activity status. Transient
-	// notices (for example, that an early message was queued) remain represented
-	// by the in-stream activity row instead of displacing its spinner.
-	if m.footerMessage != "" && !m.branchContextInFlight() {
-		style := mutedStyle
-		switch m.footerMessageTone {
-		case "muted":
-			style = mutedStyle
-		case "success":
-			style = successStyle
-		case "warning":
-			style = warningStyle
-		case "error":
-			style = errorStyle
-		default:
-			lower := strings.ToLower(strings.TrimSpace(m.footerMessage))
-			if strings.HasPrefix(lower, "failed") ||
-				strings.HasPrefix(lower, "cannot") ||
-				strings.HasPrefix(lower, "invalid") ||
-				strings.HasPrefix(lower, "unknown") ||
-				strings.HasPrefix(lower, "no ") ||
-				strings.HasPrefix(lower, "not enough") ||
-				strings.HasPrefix(lower, "file access denied") {
-				style = errorStyle
-			}
-		}
-		return m.wrapFooterLine(style.Render(m.footerMessage))
+	return statusLineStyles{
+		muted:   lipgloss.NewStyle().Foreground(theme.Muted),
+		success: lipgloss.NewStyle().Foreground(theme.Success),
+		error:   lipgloss.NewStyle().Foreground(theme.Error),
+		warning: lipgloss.NewStyle().Foreground(theme.Warning),
 	}
+}
 
+func newStatusSegment(text string, priority int, essential bool) statusSegment {
+	return statusSegment{text: text, width: lipgloss.Width(text), priority: priority, essential: essential}
+}
+
+// renderStatusLine renders a tiny status line showing model and options.
+func (m *Model) renderStatusLine() string {
+	styles := m.statusStyles()
+	if message, ok := m.statusFooterMessage(styles); ok {
+		return message
+	}
 	width := m.width
 	if width <= 0 {
 		width = 80
 	}
 
-	const sepText = " · "
-	sep := mutedStyle.Render(sepText)
-	sepWidth := lipgloss.Width(sep)
-	seg := func(text string, priority int, essential bool) statusSegment {
-		return statusSegment{text: text, width: lipgloss.Width(text), priority: priority, essential: essential}
-	}
-
 	usageLong, usageShort := m.statusLineUsageParts()
+	base := m.statusLineBaseSegments(styles, usageLong)
+	candidates := m.statusLineCandidates(styles, statusSegmentVariants(base), usageLong, usageShort)
+	m.decorateStatusLineCandidates(styles.muted, candidates)
+	right := m.statusLineStreamingVariants(styles.muted)
+	if len(right) == 0 {
+		right = []string{""}
+	}
+	return fitStatusLine(candidates, right, styles.muted.Render(" · "), width)
+}
 
-	baseSegments := make([]statusSegment, 0, 10)
+func (m *Model) statusFooterMessage(styles statusLineStyles) (string, bool) {
+	if m.footerMessage == "" || m.branchContextInFlight() {
+		return "", false
+	}
+	style := styles.muted
+	switch m.footerMessageTone {
+	case "success":
+		style = styles.success
+	case "warning":
+		style = styles.warning
+	case "error":
+		style = styles.error
+	case "muted":
+	default:
+		lower := strings.ToLower(strings.TrimSpace(m.footerMessage))
+		if footerMessageLooksLikeError(lower) {
+			style = styles.error
+		}
+	}
+	return m.wrapFooterLine(style.Render(m.footerMessage)), true
+}
+
+func footerMessageLooksLikeError(message string) bool {
+	prefixes := []string{"failed", "cannot", "invalid", "unknown", "no ", "not enough", "file access denied"}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(message, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Model) statusLineBaseSegments(styles statusLineStyles, usageLong string) []statusSegment {
+	segments := make([]statusSegment, 0, 10)
 	if m.agentName != "" {
-		baseSegments = append(baseSegments, seg(mutedStyle.Render(m.agentName), 0, true))
+		segments = append(segments, newStatusSegment(styles.muted.Render(m.agentName), 0, true))
 	}
 	model := shortenModelName(m.displayModelName())
-	if model == "" && m.providerName != "" {
+	if model == "" {
 		model = m.providerName
 	}
 	if model != "" {
-		baseSegments = append(baseSegments, seg(mutedStyle.Render(model), 0, true))
+		segments = append(segments, newStatusSegment(styles.muted.Render(model), 0, true))
 	}
 	if m.sess != nil && strings.EqualFold(m.sess.ReasoningMode, "pro") {
-		baseSegments = append(baseSegments, seg(successStyle.Render("pro"), 25, false))
+		segments = append(segments, newStatusSegment(styles.success.Render("pro"), 25, false))
 	}
-	if worktreeLabel := m.statusLineWorktreePart(); worktreeLabel != "" {
-		baseSegments = append(baseSegments, seg(successStyle.Render(worktreeLabel), 0, true))
+	if label := m.statusLineWorktreePart(); label != "" {
+		segments = append(segments, newStatusSegment(styles.success.Render(label), 0, true))
 	}
+	segments = m.appendStatusModeSegments(segments, styles)
+	segments = m.appendStatusActivitySegments(segments, styles)
+	if usageLong != "" {
+		usage := newStatusSegment(styles.muted.Render(usageLong), 50, true)
+		usage.isUsage = true
+		segments = append(segments, usage)
+	}
+	return segments
+}
+
+func (m *Model) appendStatusModeSegments(segments []statusSegment, styles statusLineStyles) []statusSegment {
 	switch m.currentApprovalMode() {
 	case tools.ModeAuto:
-		baseSegments = append(baseSegments, seg(successStyle.Render("auto"), 40, false))
+		segments = append(segments, newStatusSegment(styles.success.Render("auto"), 40, false))
 	case tools.ModeYolo:
-		baseSegments = append(baseSegments, seg(mutedStyle.Render("yolo"), 40, false))
+		segments = append(segments, newStatusSegment(styles.muted.Render("yolo"), 40, false))
 	}
 	if m.searchEnabled {
-		baseSegments = append(baseSegments, seg(successStyle.Render("web"), 30, false))
+		segments = append(segments, newStatusSegment(styles.success.Render("web"), 30, false))
 	}
 	if m.fastMode {
-		baseSegments = append(baseSegments, seg(successStyle.Render("fast"), 30, false))
+		segments = append(segments, newStatusSegment(styles.success.Render("fast"), 30, false))
 	}
 	backgroundRuns := m.backgroundRunCount
 	if backgroundRuns > 0 && m.mainRunManager != nil && m.mainRunManager.HasActive(m.SessionID()) {
 		backgroundRuns--
 	}
 	if backgroundRuns > 0 {
-		baseSegments = append(baseSegments, seg(mutedStyle.Render(fmt.Sprintf("%d bg", backgroundRuns)), 15, false))
+		segments = append(segments, newStatusSegment(styles.muted.Render(fmt.Sprintf("%d bg", backgroundRuns)), 15, false))
 	}
 	if m.directShellComposerActive() {
-		baseSegments = append(baseSegments, seg(errorStyle.Render("shell mode"), 0, true))
+		segments = append(segments, newStatusSegment(styles.error.Render("shell mode"), 0, true))
 	}
+	return segments
+}
+
+func (m *Model) appendStatusActivitySegments(segments []statusSegment, styles statusLineStyles) []statusSegment {
 	if goalText, goalStatus := m.statusLineGoalPart(); goalText != "" {
-		style := mutedStyle
+		style := styles.muted
 		switch goalStatus {
 		case session.GoalStatusActive:
-			style = successStyle
+			style = styles.success
 		case session.GoalStatusPaused, session.GoalStatusBudgetLimited, session.GoalStatusBlocked:
-			style = warningStyle
-		case session.GoalStatusComplete:
-			style = mutedStyle
+			style = styles.warning
 		}
-		baseSegments = append(baseSegments, seg(style.Render(goalText), 35, false))
+		segments = append(segments, newStatusSegment(style.Render(goalText), 35, false))
 	}
 	if len(m.files) > 0 {
-		baseSegments = append(baseSegments, seg(mutedStyle.Render(fmt.Sprintf("%d file(s)", len(m.files))), 55, false))
+		segments = append(segments, newStatusSegment(styles.muted.Render(fmt.Sprintf("%d file(s)", len(m.files))), 55, false))
 	}
 	if len(m.images) > 0 {
-		baseSegments = append(baseSegments, seg(mutedStyle.Render(fmt.Sprintf("%d image(s)", len(m.images))), 55, false))
+		segments = append(segments, newStatusSegment(styles.muted.Render(fmt.Sprintf("%d image(s)", len(m.images))), 55, false))
 	}
-	if usageLong != "" {
-		usageSeg := seg(mutedStyle.Render(usageLong), 50, true)
-		usageSeg.isUsage = true
-		baseSegments = append(baseSegments, usageSeg)
-	}
-	baseVariants := statusSegmentVariants(baseSegments)
+	return segments
+}
 
-	toolsFull, toolsShort := m.statusLineToolsParts(successStyle)
-	mcpFull, mcpShort := m.statusLineMCPParts(successStyle, mutedStyle)
-
-	rightVariants := m.statusLineStreamingVariants(mutedStyle)
-	if len(rightVariants) == 0 {
-		rightVariants = []string{""}
+func statusTextOptions(full, short string) []string {
+	if full == "" {
+		return []string{""}
 	}
+	options := []string{full}
+	if short != "" && ui.StripANSI(short) != ui.StripANSI(full) {
+		options = append(options, short)
+	}
+	return append(options, "")
+}
+
+func statusUsageOptions(full, short string) []string {
+	options := []string{full}
+	if short != "" && short != full {
+		options = append(options, short)
+	}
+	if full != "" {
+		options = append(options, "")
+	}
+	return options
+}
+
+func (m *Model) statusLineCandidates(styles statusLineStyles, bases [][]statusSegment, usageLong, usageShort string) [][]statusSegment {
+	toolsFull, toolsShort := m.statusLineToolsParts(styles.success)
+	mcpFull, mcpShort := m.statusLineMCPParts(styles.success, styles.muted)
+	toolOptions := statusTextOptions(toolsFull, toolsShort)
+	mcpOptions := statusTextOptions(mcpFull, mcpShort)
+	usageOptions := statusUsageOptions(usageLong, usageShort)
+	measurements := newStatusOptionMeasurements(styles.muted, usageOptions, toolOptions, mcpOptions)
 
 	var candidates [][]statusSegment
-	// Per-option rendered text/width/priority, computed once instead of per candidate.
-	renderedUsage := map[string]statusSegment{}
-	optionWidths := map[string]int{}
-	mcpPriorities := map[string]int{}
-	addCandidate := func(base []statusSegment, usage string, includeTools bool, toolsText string, includeMCP bool, mcpText string) {
-		segments := make([]statusSegment, 0, len(base)+2)
-		for _, segment := range base {
-			if segment.isUsage {
-				if usage == "" {
-					continue
-				}
-				rendered := renderedUsage[usage]
-				segment.text = rendered.text
-				segment.width = rendered.width
-			}
-			segments = append(segments, segment)
-		}
-		if includeTools && toolsText != "" {
-			segments = append(segments, statusSegment{text: toolsText, width: optionWidths[toolsText], priority: 20})
-		}
-		if includeMCP && mcpText != "" {
-			segments = append(segments, statusSegment{text: mcpText, width: optionWidths[mcpText], priority: mcpPriorities[mcpText]})
-		}
-		candidates = append(candidates, segments)
-	}
-
-	toolOptions := []string{""}
-	if toolsFull != "" {
-		toolOptions = []string{toolsFull}
-		if toolsShort != "" && ui.StripANSI(toolsShort) != ui.StripANSI(toolsFull) {
-			toolOptions = append(toolOptions, toolsShort)
-		}
-		toolOptions = append(toolOptions, "")
-	}
-	mcpOptions := []string{""}
-	if mcpFull != "" {
-		mcpOptions = []string{mcpFull}
-		if mcpShort != "" && ui.StripANSI(mcpShort) != ui.StripANSI(mcpFull) {
-			mcpOptions = append(mcpOptions, mcpShort)
-		}
-		mcpOptions = append(mcpOptions, "")
-	}
-	usageOptions := []string{usageLong}
-	if usageShort != "" && usageShort != usageLong {
-		usageOptions = append(usageOptions, usageShort)
-	}
-	if usageLong != "" {
-		usageOptions = append(usageOptions, "")
-	}
-
 	for _, usage := range usageOptions {
 		if usage == "" {
 			continue
 		}
-		rendered := mutedStyle.Render(usage)
-		renderedUsage[usage] = statusSegment{text: rendered, width: lipgloss.Width(rendered)}
+		candidates = appendStatusCandidateProduct(candidates, bases, usage, toolOptions, mcpOptions, measurements)
 	}
-	for _, text := range toolOptions {
-		if text != "" {
-			optionWidths[text] = lipgloss.Width(text)
+	if usageLong != "" {
+		candidates = append(candidates, []statusSegment{newStatusSegment(styles.muted.Render(usageLong), 50, false)})
+	}
+	if usageShort != "" && usageShort != usageLong {
+		candidates = append(candidates, []statusSegment{newStatusSegment(styles.muted.Render(usageShort), 50, false)})
+	}
+	candidates = appendStatusCandidateProduct(candidates, bases, "", toolOptions, mcpOptions, measurements)
+	return candidates
+}
+
+type statusOptionMeasurements struct {
+	usage         map[string]statusSegment
+	widths        map[string]int
+	mcpPriorities map[string]int
+}
+
+func newStatusOptionMeasurements(muted lipgloss.Style, usages, tools, mcps []string) statusOptionMeasurements {
+	m := statusOptionMeasurements{usage: make(map[string]statusSegment), widths: make(map[string]int), mcpPriorities: make(map[string]int)}
+	for _, usage := range usages {
+		if usage != "" {
+			rendered := muted.Render(usage)
+			m.usage[usage] = statusSegment{text: rendered, width: lipgloss.Width(rendered)}
 		}
 	}
-	for _, text := range mcpOptions {
+	for _, text := range tools {
+		if text != "" {
+			m.widths[text] = lipgloss.Width(text)
+		}
+	}
+	for _, text := range mcps {
 		if text == "" {
 			continue
 		}
-		optionWidths[text] = lipgloss.Width(text)
-		priority := 10
+		m.widths[text] = lipgloss.Width(text)
+		m.mcpPriorities[text] = 10
 		if strings.Contains(ui.StripANSI(text), "mcp:off") {
-			priority = 5
+			m.mcpPriorities[text] = 5
 		}
-		mcpPriorities[text] = priority
 	}
+	return m
+}
 
-	for _, usage := range usageOptions {
-		if usage == "" {
-			continue
-		}
-		for _, base := range baseVariants {
-			for _, toolsText := range toolOptions {
-				for _, mcpText := range mcpOptions {
-					addCandidate(base, usage, toolsText != "", toolsText, mcpText != "", mcpText)
-				}
+func appendStatusCandidateProduct(candidates [][]statusSegment, bases [][]statusSegment, usage string, tools, mcps []string, measurements statusOptionMeasurements) [][]statusSegment {
+	for _, base := range bases {
+		for _, toolText := range tools {
+			for _, mcpText := range mcps {
+				candidates = append(candidates, buildStatusCandidate(base, usage, toolText, mcpText, measurements))
 			}
 		}
 	}
-	if usageLong != "" {
-		candidates = append(candidates, []statusSegment{seg(mutedStyle.Render(usageLong), 50, false)})
-	}
-	if usageShort != "" && usageShort != usageLong {
-		candidates = append(candidates, []statusSegment{seg(mutedStyle.Render(usageShort), 50, false)})
-	}
-	if usageLong != "" {
-		for _, base := range baseVariants {
-			for _, toolsText := range toolOptions {
-				for _, mcpText := range mcpOptions {
-					addCandidate(base, "", toolsText != "", toolsText, mcpText != "", mcpText)
-				}
-			}
-		}
-	}
-	if usageLong == "" {
-		for _, base := range baseVariants {
-			for _, toolsText := range toolOptions {
-				for _, mcpText := range mcpOptions {
-					addCandidate(base, "", toolsText != "", toolsText, mcpText != "", mcpText)
-				}
-			}
-		}
-	}
+	return candidates
+}
 
+func buildStatusCandidate(base []statusSegment, usage, tools, mcp string, measurements statusOptionMeasurements) []statusSegment {
+	segments := make([]statusSegment, 0, len(base)+2)
+	for _, segment := range base {
+		if segment.isUsage {
+			if usage == "" {
+				continue
+			}
+			rendered := measurements.usage[usage]
+			segment.text, segment.width = rendered.text, rendered.width
+		}
+		segments = append(segments, segment)
+	}
+	if tools != "" {
+		segments = append(segments, statusSegment{text: tools, width: measurements.widths[tools], priority: 20})
+	}
+	if mcp != "" {
+		segments = append(segments, statusSegment{text: mcp, width: measurements.widths[mcp], priority: measurements.mcpPriorities[mcp]})
+	}
+	return segments
+}
+
+func (m *Model) decorateStatusLineCandidates(muted lipgloss.Style, candidates [][]statusSegment) {
 	if m.selection.Active {
 		start, end := m.selection.Normalized()
 		lines := end.Line - start.Line + 1
@@ -1511,38 +1537,38 @@ func (m *Model) renderStatusLine() string {
 			lines = 0
 		}
 		if lines > 0 {
-			hintSeg := seg(mutedStyle.Render(fmt.Sprintf("%d lines · ctrl+y:copy", lines)), 60, false)
-			for i := range candidates {
-				candidates[i] = append(candidates[i], hintSeg)
-			}
+			appendStatusSegment(candidates, newStatusSegment(muted.Render(fmt.Sprintf("%d lines · ctrl+y:copy", lines)), 60, false))
 		}
 	}
 	if m.copyStatus != "" {
-		copySeg := seg(mutedStyle.Render(m.copyStatus), 60, false)
-		for i := range candidates {
-			candidates[i] = append(candidates[i], copySeg)
-		}
+		appendStatusSegment(candidates, newStatusSegment(muted.Render(m.copyStatus), 60, false))
 	}
+}
 
+func appendStatusSegment(candidates [][]statusSegment, segment statusSegment) {
+	for i := range candidates {
+		candidates[i] = append(candidates[i], segment)
+	}
+}
+
+func fitStatusLine(candidates [][]statusSegment, rightVariants []string, separator string, width int) string {
+	separatorWidth := lipgloss.Width(separator)
 	rightWidths := make([]int, len(rightVariants))
 	for i, right := range rightVariants {
 		rightWidths[i] = lipgloss.Width(right)
-	}
-	for ri, right := range rightVariants {
 		for _, candidate := range candidates {
-			line, ok := composeStatusLine(candidate, sep, sepWidth, right, rightWidths[ri], width)
-			if ok {
+			if line, ok := composeStatusLine(candidate, separator, separatorWidth, right, rightWidths[i], width); ok {
 				return line
 			}
 		}
 	}
-
 	right := rightVariants[len(rightVariants)-1]
 	rightWidth := rightWidths[len(rightWidths)-1]
 	if rightWidth >= width {
 		return ansi.Cut(right, 0, width)
 	}
-	left := joinStatusSegments(dropStatusSegments(candidates[len(candidates)-1], width-rightWidth-1, sep, sepWidth), sep)
+	fallback := candidates[len(candidates)-1]
+	left := joinStatusSegments(dropStatusSegments(fallback, width-rightWidth-1, separator, separatorWidth), separator)
 	line, ok := composeStatusLineText(left, right, width)
 	if ok {
 		return line

@@ -2,6 +2,7 @@ package uv
 
 import (
 	"image/color"
+	"reflect"
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
@@ -582,6 +583,15 @@ func TestParseControl(t *testing.T) {
 	}
 }
 
+func BenchmarkParseCsiArrow(b *testing.B) {
+	var decoder EventDecoder
+	sequence := []byte("\x1b[A")
+	b.ReportAllocs()
+	for b.Loop() {
+		_, _ = decoder.parseCsi(sequence)
+	}
+}
+
 // TestWin32Functions tests Win32-related functions
 func TestWin32Functions(t *testing.T) {
 	// Test ensureKeyCase
@@ -691,7 +701,7 @@ func TestWin32Functions(t *testing.T) {
 				kd:   true,
 				cs:   0,
 				rc:   1,
-				want: KeyPressEvent{Code: 'a', Text: "a"},
+				want: KeyPressEvent{Code: 'a', BaseCode: 'a', Text: "a"},
 			},
 			{
 				name: "key release",
@@ -701,7 +711,7 @@ func TestWin32Functions(t *testing.T) {
 				kd:   false,
 				cs:   0,
 				rc:   1,
-				want: KeyReleaseEvent{Code: 'a', Text: "a"},
+				want: KeyReleaseEvent{Code: 'a', BaseCode: 'a', Text: "a"},
 			},
 			{
 				name: "function key",
@@ -711,7 +721,7 @@ func TestWin32Functions(t *testing.T) {
 				kd:   true,
 				cs:   0,
 				rc:   1,
-				want: KeyPressEvent{Code: KeyF1},
+				want: KeyPressEvent{Code: KeyF1, BaseCode: KeyF1},
 			},
 			{
 				name: "enter key",
@@ -721,25 +731,51 @@ func TestWin32Functions(t *testing.T) {
 				kd:   true,
 				cs:   0,
 				rc:   1,
-				want: KeyPressEvent{Code: KeyEnter},
+				want: KeyPressEvent{Code: KeyEnter, BaseCode: KeyEnter},
+			},
+			{
+				name: "VT input control rune preserves sentinel layout",
+				vk:   0,
+				uc:   '\x1b',
+				kd:   true,
+				cs:   xwindows.CAPSLOCK_ON,
+				rc:   1,
+				want: KeyPressEvent{Code: 0, BaseCode: '\x1b', Mod: ModCapsLock},
+			},
+			{
+				name: "UTF-16 surrogate preserves sentinel layout",
+				vk:   0,
+				uc:   rune(0xD83D),
+				kd:   true,
+				rc:   1,
+				want: KeyPressEvent{Code: 0, BaseCode: rune(0xD83D)},
+			},
+			{
+				name: "shift and caps cancel letter case",
+				vk:   0x41,
+				uc:   'a',
+				kd:   true,
+				cs:   xwindows.SHIFT_PRESSED | xwindows.CAPSLOCK_ON,
+				rc:   1,
+				want: KeyPressEvent{Code: 'a', BaseCode: 'a', Text: "a", Mod: ModShift | ModCapsLock},
+			},
+			{
+				name: "repeat key presses are marked",
+				vk:   0x41,
+				uc:   'a',
+				kd:   true,
+				rc:   2,
+				want: MultiEvent{
+					KeyPressEvent{Code: 'a', BaseCode: 'a', Text: "a"},
+					KeyPressEvent{Code: 'a', BaseCode: 'a', Text: "a", IsRepeat: true},
+				},
 			},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				got := p.parseWin32InputKeyEvent(tt.vk, tt.sc, tt.uc, tt.kd, tt.cs, tt.rc)
-				if got == nil {
-					t.Fatal("parseWin32InputKeyEvent returned nil")
-				}
-				// Basic type check
-				switch tt.want.(type) {
-				case KeyPressEvent:
-					if _, ok := got.(KeyPressEvent); !ok {
-						t.Errorf("expected KeyPressEvent, got %T", got)
-					}
-				case KeyReleaseEvent:
-					if _, ok := got.(KeyReleaseEvent); !ok {
-						t.Errorf("expected KeyReleaseEvent, got %T", got)
-					}
+				if !reflect.DeepEqual(got, tt.want) {
+					t.Errorf("parseWin32InputKeyEvent() = %#v, want %#v", got, tt.want)
 				}
 			})
 		}

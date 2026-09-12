@@ -452,20 +452,99 @@ func (s *serveServer) handleResponseRuntimeError(w http.ResponseWriter, r *http.
 	return true
 }
 
-func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Request, ctx context.Context, rr resolvedResponsesRequest) {
-	req := rr.req
-	inputMessages := rr.inputMessages
-	if isFirstPartyUIResponseRequest(r) && len(responseClientMessageIDs(inputMessages)) == 0 {
-		clientMessageID := strings.TrimSpace(req.ClientMessageID)
-		if clientMessageID != "" {
-			for i := len(inputMessages) - 1; i >= 0; i-- {
-				if inputMessages[i].Role == llm.RoleUser {
-					inputMessages[i].ClientMessageID = clientMessageID
-					break
+func (s *serveServer) validateRuntimePreviousResponse(w http.ResponseWriter, ctx context.Context, sessionID, previousResponseID string, previousDurable bool, runtime *serveRuntime, stateful bool, inputMessages []llm.Message) bool {
+	if previousResponseID == "" {
+		return true
+	}
+	if !previousDurable {
+		lastResponseID := runtime.getLastResponseID()
+		if lastResponseID == "" {
+			if latest, ok := s.sessionToResponse.Load(sessionID); ok {
+				if value, ok := latest.(string); ok {
+					lastResponseID = strings.TrimSpace(value)
 				}
 			}
 		}
+		if lastResponseID != "" && previousResponseID != lastResponseID {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", fmt.Sprintf("previous_response_id %q is stale; latest is %q", previousResponseID, lastResponseID))
+			if !stateful {
+				s.unregisterResponseIDs(runtime)
+				runtime.Close()
+			}
+			return false
+		}
 	}
+	s.populateResponsesToolResultNames(ctx, sessionID, runtime, inputMessages)
+	return true
+}
+
+func (s *serveServer) prepareResolvedResponseAdmission(w http.ResponseWriter, r *http.Request, ctx context.Context, rr resolvedResponsesRequest, inputMessages []llm.Message, sessionID, idempotencyScope, idempotencyKey string) (serveWorkspaceBinding, func(), bool) {
+	release := func() {}
+	keepAdmission := false
+	defer func() {
+		if !keepAdmission {
+			release()
+		}
+	}()
+	if isFirstPartyUIResponseRequest(r) && len(responseClientMessageIDs(inputMessages)) == 0 {
+		assignFinalResponseClientMessageID(inputMessages, rr.req.ClientMessageID)
+	}
+	if rr.req.Stream && idempotencyKey != "" {
+		admissionRelease, err := s.ensureResponseRuns().admitIdempotency(ctx, idempotencyScope, idempotencyKey)
+		if err != nil {
+			writeOpenAIError(w, http.StatusServiceUnavailable, "server_error", err.Error())
+			return serveWorkspaceBinding{}, func() {}, true
+		}
+		release = admissionRelease
+	}
+	binding, err := s.resolveWorkspace(ctx, serveWorkspaceRequest{
+		SessionID: sessionID, ProjectID: rr.req.ProjectID, WorktreeDir: rr.req.WorktreeDir,
+		FirstPartyUI: isFirstPartyUIResponseRequest(r), FreshConversation: rr.freshConversation, AllowNoProject: rr.req.NoProject,
+	})
+	if err != nil {
+		writeWorkspaceError(w, err)
+		return serveWorkspaceBinding{}, func() {}, true
+	}
+	if rr.req.Stream && idempotencyKey != "" {
+		run, found, replayErr := s.ensureResponseRuns().getByIdempotencyClaim(idempotencyScope, idempotencyKey, rr.requestFingerprint)
+		if errors.Is(replayErr, errResponseRunKeyConflict) {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", replayErr.Error())
+			return serveWorkspaceBinding{}, func() {}, true
+		}
+		if found {
+			w.Header().Set("x-session-id", run.sessionID)
+			w.Header().Set("x-response-id", run.id)
+			s.setReplaySessionNumberHeader(ctx, w, run.sessionID)
+			keepAdmission = true
+			release()
+			s.streamResponseRunEvents(ctx, w, run, 0)
+			return serveWorkspaceBinding{}, func() {}, true
+		}
+	}
+	if s.commitActiveForSession(ctx, sessionID) {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", "a commit workflow is active for this session or checkout")
+		return serveWorkspaceBinding{}, func() {}, true
+	}
+	keepAdmission = true
+	return binding, release, false
+}
+
+func assignFinalResponseClientMessageID(messages []llm.Message, clientMessageID string) {
+	clientMessageID = strings.TrimSpace(clientMessageID)
+	if clientMessageID == "" {
+		return
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == llm.RoleUser {
+			messages[i].ClientMessageID = clientMessageID
+			return
+		}
+	}
+}
+
+func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Request, ctx context.Context, rr resolvedResponsesRequest) {
+	req := rr.req
+	inputMessages := rr.inputMessages
 	replaceHistory := rr.replaceHistory
 	sessionID := rr.sessionID
 	previousResponseID := rr.previousResponseID
@@ -476,47 +555,11 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 	if idempotencyScope == "" {
 		idempotencyScope = sessionID
 	}
-	releaseAdmission := func() {}
-	if req.Stream && idempotencyKey != "" {
-		var err error
-		releaseAdmission, err = s.ensureResponseRuns().admitIdempotency(ctx, idempotencyScope, idempotencyKey)
-		if err != nil {
-			writeOpenAIError(w, http.StatusServiceUnavailable, "server_error", err.Error())
-			return
-		}
-		defer releaseAdmission()
-	}
-	workspaceBinding, workspaceErr := s.resolveWorkspace(ctx, serveWorkspaceRequest{
-		SessionID: sessionID, ProjectID: req.ProjectID, WorktreeDir: req.WorktreeDir,
-		FirstPartyUI: isFirstPartyUIResponseRequest(r), FreshConversation: freshConversation, AllowNoProject: req.NoProject,
-	})
-	if workspaceErr != nil {
-		writeWorkspaceError(w, workspaceErr)
+	workspaceBinding, releaseAdmission, stop := s.prepareResolvedResponseAdmission(w, r, ctx, rr, inputMessages, sessionID, idempotencyScope, idempotencyKey)
+	if stop {
 		return
 	}
-	if req.Stream && idempotencyKey != "" {
-		// Streaming response runs retain their event log for the response-run
-		// retention window, so an idempotency replay can attach directly without
-		// rebuilding runtime/provider state. The stored fingerprint prevents a key
-		// from silently replaying a semantically different request.
-		run, found, replayErr := s.ensureResponseRuns().getByIdempotencyClaim(idempotencyScope, idempotencyKey, rr.requestFingerprint)
-		if errors.Is(replayErr, errResponseRunKeyConflict) {
-			writeOpenAIError(w, http.StatusConflict, "conflict_error", replayErr.Error())
-			return
-		}
-		if found {
-			w.Header().Set("x-session-id", run.sessionID)
-			w.Header().Set("x-response-id", run.id)
-			s.setReplaySessionNumberHeader(ctx, w, run.sessionID)
-			releaseAdmission()
-			s.streamResponseRunEvents(ctx, w, run, 0)
-			return
-		}
-	}
-	if s.commitActiveForSession(ctx, sessionID) {
-		writeOpenAIError(w, http.StatusConflict, "conflict_error", "a commit workflow is active for this session or checkout")
-		return
-	}
+	defer releaseAdmission()
 	// Chained requests are locked to the persisted provider/model/
 	// reasoning_effort unless the client explicitly asks for a mid-conversation
 	// model swap. External bare session_id requests start a fresh conversation,
@@ -560,31 +603,8 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		if s.handleResponseRuntimeError(w, r, ctx, req, sessionID, previousResponseID, getErr) {
 			return
 		}
-		// Durable message-backed response IDs were already validated against the
-		// persisted session tail before we selected a runtime. Do not reject them
-		// because an in-memory runtime still remembers an older ephemeral response
-		// ID from before a restart/resume.
-		if previousResponseID != "" {
-			if !previousDurable {
-				lastRespID := previousRuntime.getLastResponseID()
-				if lastRespID == "" {
-					if latest, ok := s.sessionToResponse.Load(sessionID); ok {
-						if latestStr, ok := latest.(string); ok {
-							lastRespID = strings.TrimSpace(latestStr)
-						}
-					}
-				}
-				if lastRespID != "" && previousResponseID != lastRespID {
-					writeOpenAIError(w, http.StatusConflict, "conflict_error",
-						fmt.Sprintf("previous_response_id %q is stale; latest is %q", previousResponseID, lastRespID))
-					if !previousStateful {
-						s.unregisterResponseIDs(previousRuntime)
-						previousRuntime.Close()
-					}
-					return
-				}
-			}
-			s.populateResponsesToolResultNames(ctx, sessionID, previousRuntime, inputMessages)
+		if !s.validateRuntimePreviousResponse(w, ctx, sessionID, previousResponseID, previousDurable, previousRuntime, previousStateful, inputMessages) {
+			return
 		}
 		var err error
 		modelSwapExec, err = s.beginResponseModelSwap(ctx, sessionID, swapPlan, inputMessages)
@@ -619,31 +639,8 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 			req.Model, req.ReasoningEffort = normalizeProviderModelEffort(providerForNormalization, req.Model, req.ReasoningEffort)
 		}
 
-		// Enforce chaining from the latest in-memory response only for ephemeral
-		// response IDs. Durable message-backed IDs are checked against the persisted
-		// message tail in resolveDurablePreviousResponseID; the runtime can have an
-		// older lastResponseID after a restart or history reload.
-		if previousResponseID != "" {
-			if !previousDurable {
-				lastRespID := runtime.getLastResponseID()
-				if lastRespID == "" {
-					if latest, ok := s.sessionToResponse.Load(sessionID); ok {
-						if latestStr, ok := latest.(string); ok {
-							lastRespID = strings.TrimSpace(latestStr)
-						}
-					}
-				}
-				if lastRespID != "" && previousResponseID != lastRespID {
-					writeOpenAIError(w, http.StatusConflict, "conflict_error",
-						fmt.Sprintf("previous_response_id %q is stale; latest is %q", previousResponseID, lastRespID))
-					if !stateful {
-						s.unregisterResponseIDs(runtime)
-						runtime.Close()
-					}
-					return
-				}
-			}
-			s.populateResponsesToolResultNames(ctx, sessionID, runtime, inputMessages)
+		if !s.validateRuntimePreviousResponse(w, ctx, sessionID, previousResponseID, previousDurable, runtime, stateful, inputMessages) {
+			return
 		}
 		followUpOwner = runtime
 		followUpOwnerStateful = stateful

@@ -2,9 +2,260 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 )
+
+func TestResponsesDoneTextCompletesPartialAndUnstreamedParts(t *testing.T) {
+	handler := newResponsesStreamEventHandler(&ResponsesClient{}, 0, false, "test", false, "", false)
+	events := make(chan Event, 4)
+	send := eventSender{ctx: context.Background(), ch: events}
+
+	_, err := handler.HandleJSONEvent([]byte(`{
+		"type":"response.output_text.delta","output_index":0,"delta":"hel"
+	}`), "response.output_text.delta", send)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = handler.HandleJSONEvent([]byte(`{
+		"type":"response.output_item.done","output_index":0,
+		"item":{"type":"message","role":"assistant","content":[
+			{"type":"output_text","text":"hello"},
+			{"type":"output_text","text":" world"}
+		]}
+	}`), "response.output_item.done", send)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"hel", "lo", " world"}
+	for i, text := range want {
+		event := <-events
+		if event.Type != EventTextDelta || event.Text != text {
+			t.Fatalf("event %d = %+v, want text %q", i, event, text)
+		}
+	}
+}
+
+func TestResponsesDoneTextMismatchDoesNotHideLaterParts(t *testing.T) {
+	handler := newResponsesStreamEventHandler(&ResponsesClient{}, 0, false, "test", false, "", false)
+	events := make(chan Event, 3)
+	send := eventSender{ctx: context.Background(), ch: events}
+
+	if _, err := handler.HandleJSONEvent([]byte(`{
+		"type":"response.output_text.delta","output_index":0,"delta":"abc"
+	}`), "response.output_text.delta", send); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handler.HandleJSONEvent([]byte(`{
+		"type":"response.output_item.done","output_index":0,
+		"item":{"type":"message","role":"assistant","content":[
+			{"type":"output_text","text":"abd"},
+			{"type":"output_text","text":"later"}
+		]}
+	}`), "response.output_item.done", send); err != nil {
+		t.Fatal(err)
+	}
+
+	if event := <-events; event.Type != EventTextDelta || event.Text != "abc" {
+		t.Fatalf("streamed event = %+v", event)
+	}
+	if event := <-events; event.Type != EventTextDelta || event.Text != "later" {
+		t.Fatalf("later part event = %+v, want unstreamed later part", event)
+	}
+	select {
+	case event := <-events:
+		t.Fatalf("unexpected mismatch fallback event: %+v", event)
+	default:
+	}
+}
+
+func TestResponsesDoneTextUsesItemIDAcrossOutputIndexDrift(t *testing.T) {
+	handler := newResponsesStreamEventHandler(&ResponsesClient{}, 0, false, "test", false, "", false)
+	events := make(chan Event, 2)
+	send := eventSender{ctx: context.Background(), ch: events}
+
+	if _, err := handler.HandleJSONEvent([]byte(`{
+		"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"delta":"complete"
+	}`), "response.output_text.delta", send); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handler.HandleJSONEvent([]byte(`{
+		"type":"response.output_item.done","output_index":1,
+		"item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"complete"}]}
+	}`), "response.output_item.done", send); err != nil {
+		t.Fatal(err)
+	}
+
+	if event := <-events; event.Type != EventTextDelta || event.Text != "complete" {
+		t.Fatalf("streamed event = %+v", event)
+	}
+	select {
+	case event := <-events:
+		t.Fatalf("item-id reconciliation duplicated text: %+v", event)
+	default:
+	}
+}
+
+func TestResponsesTextBuildersDoNotAliasReusedOutputIndex(t *testing.T) {
+	handler := newResponsesStreamEventHandler(&ResponsesClient{}, 0, false, "test", false, "", false)
+	events := make(chan Event, 8)
+	send := eventSender{ctx: context.Background(), ch: events}
+
+	for _, data := range []string{
+		`{"type":"response.output_text.delta","item_id":"msg_1","output_index":1,"delta":"first"}`,
+		`{"type":"response.output_text.delta","item_id":"msg_2","output_index":1,"delta":"second"}`,
+		`{"type":"response.output_text.delta","item_id":"msg_1","output_index":1,"delta":" late"}`,
+		`{"type":"response.output_text.delta","output_index":1,"delta":" anonymous"}`,
+		`{"type":"response.output_item.done","output_index":1,"item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"first late more"}]}}`,
+		`{"type":"response.output_item.done","output_index":1,"item":{"id":"msg_2","type":"message","role":"assistant","content":[{"type":"output_text","text":"second anonymous"}]}}`,
+		`{"type":"response.output_item.done","output_index":1,"item":{"id":"msg_3","type":"message","role":"assistant","content":[{"type":"output_text","text":"third"}]}}`,
+	} {
+		var envelope struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal([]byte(data), &envelope); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := handler.HandleJSONEvent([]byte(data), envelope.Type, send); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for i, want := range []string{"first", "second", " late", " anonymous", " more", "third"} {
+		if event := <-events; event.Type != EventTextDelta || event.Text != want {
+			t.Fatalf("event %d = %+v, want %q", i, event, want)
+		}
+	}
+	select {
+	case event := <-events:
+		t.Fatalf("reused output index aliased item text: %+v", event)
+	default:
+	}
+}
+
+func TestResponsesDoneTextDoesNotDuplicateSameItemDelta(t *testing.T) {
+	handler := newResponsesStreamEventHandler(&ResponsesClient{}, 0, false, "test", false, "", false)
+	events := make(chan Event, 2)
+	send := eventSender{ctx: context.Background(), ch: events}
+
+	_, err := handler.HandleJSONEvent([]byte(`{
+		"type":"response.output_text.delta","output_index":0,"delta":"complete"
+	}`), "response.output_text.delta", send)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = handler.HandleJSONEvent([]byte(`{
+		"type":"response.output_item.done","output_index":0,
+		"item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"complete"}]}
+	}`), "response.output_item.done", send)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event := <-events; event.Type != EventTextDelta || event.Text != "complete" {
+		t.Fatalf("text event = %+v", event)
+	}
+	select {
+	case duplicate := <-events:
+		t.Fatalf("done fallback duplicated streamed text: %+v", duplicate)
+	default:
+	}
+}
+
+func TestResponsesDuplicateDoneItemDoesNotRepeatSuffix(t *testing.T) {
+	handler := newResponsesStreamEventHandler(&ResponsesClient{}, 0, false, "test", false, "", false)
+	events := make(chan Event, 3)
+	send := eventSender{ctx: context.Background(), ch: events}
+
+	if _, err := handler.HandleJSONEvent([]byte(`{
+		"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"delta":"first"
+	}`), "response.output_text.delta", send); err != nil {
+		t.Fatal(err)
+	}
+	done := []byte(`{
+		"type":"response.output_item.done","output_index":0,
+		"item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"first more"}]}
+	}`)
+	for i := 0; i < 2; i++ {
+		if _, err := handler.HandleJSONEvent(done, "response.output_item.done", send); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for i, want := range []string{"first", " more"} {
+		if event := <-events; event.Type != EventTextDelta || event.Text != want {
+			t.Fatalf("event %d = %+v, want %q", i, event, want)
+		}
+	}
+	select {
+	case event := <-events:
+		t.Fatalf("duplicate done item repeated text: %+v", event)
+	default:
+	}
+	if len(handler.replayItems) != 1 {
+		t.Fatalf("replay items = %d, want one copy of duplicate done item", len(handler.replayItems))
+	}
+	if len(handler.outputItems) != 1 {
+		t.Fatalf("output items = %d, want one copy of duplicate done item", len(handler.outputItems))
+	}
+}
+
+func TestResponsesDoneMessagePreservesHiddenVisibilityFromAddedItem(t *testing.T) {
+	handler := newResponsesStreamEventHandler(&ResponsesClient{}, 0, false, "test", false, "", false)
+	events := make(chan Event, 3)
+	send := eventSender{ctx: context.Background(), ch: events}
+
+	if completed, err := handler.HandleJSONEvent([]byte(`{
+		"type":"response.output_item.added","output_index":2,
+		"item":{"id":"msg_worker","type":"message","agent":"/worker"}
+	}`), "response.output_item.added", send); err != nil || completed {
+		t.Fatalf("added item completed=%t error=%v", completed, err)
+	}
+	if completed, err := handler.HandleJSONEvent([]byte(`{
+		"type":"response.output_text.delta","item_id":"msg_worker","output_index":3,"delta":"hidden worker "
+	}`), "response.output_text.delta", send); err != nil || completed {
+		t.Fatalf("delta item completed=%t error=%v", completed, err)
+	}
+	if completed, err := handler.HandleJSONEvent([]byte(`{
+		"type":"response.output_item.done","output_index":3,
+		"item":{"id":"msg_worker","type":"message","role":"assistant","content":[{"type":"output_text","text":"hidden worker output"}]}
+	}`), "response.output_item.done", send); err != nil || completed {
+		t.Fatalf("done item completed=%t error=%v", completed, err)
+	}
+	select {
+	case event := <-events:
+		t.Fatalf("hidden output emitted event: %+v", event)
+	default:
+	}
+}
+
+func TestResponsesDoneTextFallbackIsScopedToOutputItem(t *testing.T) {
+	handler := newResponsesStreamEventHandler(&ResponsesClient{}, 0, false, "test", false, "", false)
+	events := make(chan Event, 4)
+	send := eventSender{ctx: context.Background(), ch: events}
+
+	if completed, err := handler.HandleJSONEvent([]byte(`{
+		"type":"response.output_text.delta","output_index":0,"delta":"first"
+	}`), "response.output_text.delta", send); err != nil || completed {
+		t.Fatalf("text delta completed=%t error=%v", completed, err)
+	}
+	if completed, err := handler.HandleJSONEvent([]byte(`{
+		"type":"response.output_item.done","output_index":1,
+		"item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"second"}]}
+	}`), "response.output_item.done", send); err != nil || completed {
+		t.Fatalf("done item completed=%t error=%v", completed, err)
+	}
+
+	first := <-events
+	second := <-events
+	if first.Type != EventTextDelta || first.Text != "first" {
+		t.Fatalf("first event = %+v", first)
+	}
+	if second.Type != EventTextDelta || second.Text != "second" {
+		t.Fatalf("second event = %+v, want fallback text for its own output item", second)
+	}
+}
 
 func TestResponsesUsageSeparatesCacheReadsAndWrites(t *testing.T) {
 	handler := newResponsesStreamEventHandler(&ResponsesClient{}, 0, false, "test", false, "", false)
@@ -74,7 +325,7 @@ func TestResponsesUsageClampsInconsistentUncachedInput(t *testing.T) {
 	completed, err := handler.HandleJSONEvent([]byte(`{
 		"type":"response.completed",
 		"response":{"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":90,"cache_write_tokens":20}}}
-	}`), "response.completed", eventSender{})
+	}`), "response.completed", eventSender{ctx: context.Background()})
 	if err != nil || !completed {
 		t.Fatalf("HandleJSONEvent() completed=%t error=%v", completed, err)
 	}

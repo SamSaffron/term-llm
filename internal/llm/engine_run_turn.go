@@ -59,6 +59,187 @@ type providerTurnFrame struct {
 	recoveryCompleted              bool
 }
 
+type providerTurnSyncTools struct {
+	engine    *Engine
+	ctx       context.Context
+	bridgeCtx context.Context
+	run       *providerTurnRunFrame
+	turn      *providerTurnFrame
+}
+
+func (s *providerTurnSyncTools) ensure() *syncToolSupervisor {
+	if s.turn.syncTools == nil {
+		s.turn.syncTools = newSyncToolSupervisor(s.bridgeCtx, s.run.req.ParallelToolCalls)
+		s.run.activeSyncTools = s.turn.syncTools
+	}
+	return s.turn.syncTools
+}
+
+func (s *providerTurnSyncTools) absorb(outcomes []toolCallOutcome) {
+	for _, outcome := range outcomes {
+		s.turn.syncToolCalls = append(s.turn.syncToolCalls, outcome.call)
+		s.turn.syncToolResults = append(s.turn.syncToolResults, outcome.message())
+		if s.engine.tools.IsFinishingTool(outcome.call.Name) {
+			s.turn.finishingToolExecuted = true
+		}
+	}
+}
+
+func (s *providerTurnSyncTools) foldCompleted() {
+	if s.turn.syncTools != nil {
+		s.absorb(s.turn.syncTools.settleCompleted())
+	}
+}
+
+func (s *providerTurnSyncTools) settle() {
+	if s.turn.syncTools == nil {
+		return
+	}
+	s.absorb(s.turn.syncTools.settle(s.ctx))
+	if s.run.activeSyncTools == s.turn.syncTools {
+		s.run.activeSyncTools = nil
+	}
+}
+
+func (s *providerTurnSyncTools) abort(cause error) {
+	if s.turn.syncTools == nil {
+		return
+	}
+	s.absorb(s.turn.syncTools.abort(cause))
+	if s.run.activeSyncTools == s.turn.syncTools {
+		s.run.activeSyncTools = nil
+	}
+}
+
+func (s *providerTurnSyncTools) finishAfterStreamFailure(cause error) {
+	// Once a side-effecting synchronous tool was dispatched, a transport failure
+	// cannot revoke it. Drain its real outcome before fallback/retry so detached
+	// effects never overlap a second execution of the same turn.
+	if s.turn.syncToolsExecuted && s.ctx.Err() == nil {
+		s.settle()
+		return
+	}
+	s.abort(cause)
+}
+
+type providerTurnToolEvents struct {
+	engine                  *Engine
+	ctx                     context.Context
+	send                    eventSender
+	run                     *providerTurnRunFrame
+	turn                    *providerTurnFrame
+	syncTools               *providerTurnSyncTools
+	planner                 ToolSurfacePlanner
+	runID                   string
+	attempt                 int
+	preserveInlineToolOrder bool
+	flushScratchpad         func() error
+	fireSnapshot            func([]ToolCall)
+	buildPartialAssistant   func([]ToolCall) Message
+}
+
+func (h *providerTurnToolEvents) handle(event Event, softCompaction bool) (bool, error) {
+	if event.Type != EventToolCall {
+		return false, nil
+	}
+	if softCompaction {
+		return true, nil
+	}
+	if event.Tool == nil {
+		return false, nil
+	}
+	if err := h.resolveAndNormalize(&event); err != nil {
+		return true, err
+	}
+	if err := h.flushScratchpad(); err != nil {
+		return true, err
+	}
+	if event.ToolResponse != nil {
+		return true, h.handleSync(event)
+	}
+	return true, h.handleAsync(event)
+}
+
+func (h *providerTurnToolEvents) resolveAndNormalize(event *Event) error {
+	if event.Tool.Namespace != "" {
+		if h.planner == nil {
+			return fmt.Errorf("provider emitted namespace tool call %q/%q without an active discovery planner", event.Tool.Namespace, event.Tool.ChildName)
+		}
+		resolved, err := h.planner.ResolveProviderToolCall(h.runID, *event.Tool)
+		if err != nil {
+			return fmt.Errorf("resolve provider namespace tool call: %w", err)
+		}
+		event.Tool = &resolved
+		event.ToolName = resolved.Name
+	}
+	call := *event.Tool
+	callID := call.ID
+	if strings.TrimSpace(callID) == "" {
+		callID = event.ToolCallID
+	}
+	if strings.TrimSpace(callID) == "" {
+		callID = newSyntheticToolCallID()
+	}
+	call.ID = callID
+	event.Tool, event.ToolCallID = &call, callID
+	return nil
+}
+
+func (h *providerTurnToolEvents) handleSync(event Event) error {
+	forward := Event{Type: EventToolCall, ToolCallID: event.ToolCallID, ToolName: event.ToolName, Tool: event.Tool, ProviderTurnIndex: h.attempt, ProviderTurnIndexSet: true}
+	supervisor := h.syncTools.ensure()
+	h.syncTools.foldCompleted()
+	pending := append(append([]ToolCall(nil), h.turn.syncToolCalls...), supervisor.pendingCalls()...)
+	pending = append(pending, *event.Tool)
+	h.fireSnapshot(pending)
+	if err := h.send.Send(forward); err != nil {
+		return err
+	}
+	call := *event.Tool
+	call.ToolInfo = h.engine.getToolPreview(call)
+	if event.ToolInfo != "" {
+		call.ToolInfo = event.ToolInfo
+	}
+	committedResults := append([]Message(nil), h.turn.syncToolResults...)
+	approvalAssistant := h.buildPartialAssistant(pending)
+	h.turn.syncToolsExecuted = true
+	if h.preserveInlineToolOrder {
+		inlineCall := call
+		h.turn.inlineSyncParts = append(h.turn.inlineSyncParts, Part{Type: PartToolCall, ToolCall: &inlineCall, CreatedAt: time.Now().UnixMilli()})
+	}
+	response := event.ToolResponse
+	supervisor.dispatch(call, func(toolCtx context.Context) toolCallOutcome {
+		_, evidence := supervisor.evidenceFor(call.ID)
+		approvalResults := append([]Message(nil), committedResults...)
+		for _, prior := range evidence {
+			approvalResults = append(approvalResults, prior.message())
+		}
+		transcript := buildApprovalTranscript(h.run.req.ApprovalTranscriptPrefix, h.run.req.Messages, approvalAssistant, approvalResults...)
+		h.send.TrySend(Event{Type: EventToolExecStart, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: call.ToolInfo, ToolArgs: call.Arguments})
+		return h.engine.executeSingleToolCallOutcomeSafe(ContextWithApprovalTranscript(toolCtx, transcript), call, h.send, h.run.req.Debug, h.run.req.DebugRaw)
+	}, func(outcome toolCallOutcome) {
+		select {
+		case response <- ToolExecutionResponse{Result: outcome.output, Err: outcome.err}:
+		case <-h.ctx.Done():
+		}
+	})
+	return nil
+}
+
+func (h *providerTurnToolEvents) handleAsync(event Event) error {
+	info := event.ToolInfo
+	if info == "" {
+		info = event.Tool.ToolInfo
+	}
+	if info == "" {
+		info = h.engine.getToolPreview(*event.Tool)
+	}
+	event.Tool.ToolInfo = info
+	h.turn.toolCalls = append(h.turn.toolCalls, *event.Tool)
+	h.fireSnapshot(h.turn.toolCalls)
+	return h.send.Send(Event{Type: EventToolCall, ToolCallID: event.ToolCallID, ToolName: event.Tool.Name, Tool: event.Tool, ToolInfo: info, ProviderTurnIndex: h.attempt, ProviderTurnIndexSet: true})
+}
+
 // engineRunTurnContext borrows run-loop state for exactly one provider turn;
 // runProviderTurn writes every mutable value back before it returns.
 type engineRunTurnContext struct {
@@ -137,53 +318,7 @@ func (e *Engine) runProviderTurn(state *engineRunTurnContext, attempt int) error
 
 	// Collect tool calls and model output for this provider attempt.
 	turn := &providerTurnFrame{}
-	ensureSyncTools := func() *syncToolSupervisor {
-		if turn.syncTools == nil {
-			turn.syncTools = newSyncToolSupervisor(syncBridgeCtx, run.req.ParallelToolCalls)
-			run.activeSyncTools = turn.syncTools
-		}
-		return turn.syncTools
-	}
-	absorbSyncOutcomes := func(outcomes []toolCallOutcome) {
-		for _, outcome := range outcomes {
-			turn.syncToolCalls = append(turn.syncToolCalls, outcome.call)
-			turn.syncToolResults = append(turn.syncToolResults, outcome.message())
-			if e.tools.IsFinishingTool(outcome.call.Name) {
-				turn.finishingToolExecuted = true
-			}
-		}
-	}
-	foldCompletedSyncTools := func() {
-		if turn.syncTools != nil {
-			absorbSyncOutcomes(turn.syncTools.settleCompleted())
-		}
-	}
-	settleSyncTools := func() {
-		if turn.syncTools != nil {
-			absorbSyncOutcomes(turn.syncTools.settle(ctx))
-			if run.activeSyncTools == turn.syncTools {
-				run.activeSyncTools = nil
-			}
-		}
-	}
-	abortSyncTools := func(cause error) {
-		if turn.syncTools != nil {
-			absorbSyncOutcomes(turn.syncTools.abort(cause))
-			if run.activeSyncTools == turn.syncTools {
-				run.activeSyncTools = nil
-			}
-		}
-	}
-	finishSyncToolsAfterStreamFailure := func(cause error) {
-		if turn.syncToolsExecuted && ctx.Err() == nil {
-			// Once the model has dispatched a side-effecting tool, transport
-			// failure does not revoke that committed work. Drain its real outcome
-			// before fallback/recovery so a retry cannot overlap detached effects.
-			settleSyncTools()
-			return
-		}
-		abortSyncTools(cause)
-	}
+	syncTools := &providerTurnSyncTools{engine: e, ctx: ctx, bridgeCtx: syncBridgeCtx, run: run, turn: turn}
 	capabilities := e.provider.Capabilities()
 	inlineToolLoop := capabilities.InlineToolLoop
 	preserveInlineToolOrder := inlineToolLoop && capabilities.OrderedInlineToolEvents
@@ -268,7 +403,7 @@ func (e *Engine) runProviderTurn(state *engineRunTurnContext, attempt int) error
 	// tool result, append both to run.req.Messages, and let the next loop iteration
 	// continue from that journaled state.
 	recovery := engineTurnRecovery{
-		ctx: ctx, req: &run.req, send: send, attempt: attempt, settleSyncTools: settleSyncTools,
+		ctx: ctx, req: &run.req, send: send, attempt: attempt, settleSyncTools: syncTools.settle,
 		toolCalls: &turn.toolCalls, syncToolsExecuted: &turn.syncToolsExecuted, recoveredToolCallIDs: &run.recoveredToolCallIDs,
 		recoveredToolWork: &run.recoveredToolWork, recoveredAtMessageCount: &run.recoveredAtMessageCount, recoveryPriorErr: &run.recoveryPriorErr,
 		syncToolCalls: &turn.syncToolCalls, syncToolResults: &turn.syncToolResults, preserveInlineToolOrder: preserveInlineToolOrder,
@@ -292,8 +427,13 @@ func (e *Engine) runProviderTurn(state *engineRunTurnContext, attempt int) error
 		recoveredToolWork: &run.recoveredToolWork, recoveredAtMessageCount: &run.recoveredAtMessageCount,
 		toolCalls: &turn.toolCalls, syncToolCalls: &turn.syncToolCalls, textBuilder: &turn.textBuilder, reasoningBuilder: &turn.reasoningBuilder, syncToolsExecuted: &turn.syncToolsExecuted,
 		scratchpadCommitted: &turn.scratchpadCommitted, scratchpadHasDiscardableOutput: &turn.scratchpadHasDiscardableOutput,
-		finishSyncToolsAfterStreamFailure: finishSyncToolsAfterStreamFailure, planner: planner, runID: runID,
+		finishSyncToolsAfterStreamFailure: syncTools.finishAfterStreamFailure, planner: planner, runID: runID,
 		retry: retryState, recovery: recovery, recoveryCompleted: &turn.recoveryCompleted,
+	}
+	toolEvents := &providerTurnToolEvents{
+		engine: e, ctx: ctx, send: send, run: run, turn: turn, syncTools: syncTools,
+		planner: planner, runID: runID, attempt: attempt, preserveInlineToolOrder: preserveInlineToolOrder,
+		flushScratchpad: flushScratchpad, fireSnapshot: fireSnapshot, buildPartialAssistant: buildPartialAssistant,
 	}
 	for {
 		if chaosErr := e.consumeChaosFailure(); chaosErr != nil {
@@ -451,121 +591,8 @@ func (e *Engine) runProviderTurn(state *engineRunTurnContext, attempt int) error
 			}
 			continue
 		}
-		if event.Type == EventToolCall && compaction.softActive {
-			// The continuation-brief turn is internal and explicitly forbids tools.
-			// If a provider ignores tool_choice=none, discard the tool call and let
-			// the no-brief fallback compact hard at the end of the stream.
-			continue
-		}
-		if event.Type == EventToolCall && event.Tool != nil {
-			if event.Tool.Namespace != "" {
-				if planner == nil {
-					return fmt.Errorf("provider emitted namespace tool call %q/%q without an active discovery planner", event.Tool.Namespace, event.Tool.ChildName)
-				}
-				resolved, err := planner.ResolveProviderToolCall(runID, *event.Tool)
-				if err != nil {
-					return fmt.Errorf("resolve provider namespace tool call: %w", err)
-				}
-				event.Tool = &resolved
-				event.ToolName = resolved.Name
-			}
-			// Normalize every provider path before snapshotting, forwarding, or
-			// execution. Tool.ID is canonical because it is persisted, executed,
-			// and echoed to provider protocols; synthesize it only when the
-			// provider omitted both representations. Copy the provider-owned value
-			// before normalizing it.
-			toolCall := *event.Tool
-			toolCallID := toolCall.ID
-			if strings.TrimSpace(toolCallID) == "" {
-				toolCallID = event.ToolCallID
-			}
-			if strings.TrimSpace(toolCallID) == "" {
-				toolCallID = newSyntheticToolCallID()
-			}
-			toolCall.ID = toolCallID
-			event.Tool = &toolCall
-			event.ToolCallID = toolCallID
-			if err := flushScratchpad(); err != nil {
-				return err
-			}
-			// Check if this is a synchronous tool execution request from a provider bridge.
-			if event.ToolResponse != nil {
-				// Forward the EventToolCall so consumers can see tool calls (e.g., exec.go needs
-				// to see suggest_commands calls to parse suggestions from the arguments).
-				// Create a copy without ToolResponse to avoid confusion.
-				forwardEvent := Event{
-					Type:                 EventToolCall,
-					ToolCallID:           event.ToolCallID,
-					ToolName:             event.ToolName,
-					Tool:                 event.Tool,
-					ProviderTurnIndex:    attempt,
-					ProviderTurnIndexSet: true,
-				}
-				supervisor := ensureSyncTools()
-				foldCompletedSyncTools()
-				pendingSyncCalls := append(append([]ToolCall(nil), turn.syncToolCalls...), supervisor.pendingCalls()...)
-				pendingSyncCalls = append(pendingSyncCalls, *event.Tool)
-				fireSnapshot(pendingSyncCalls)
-				if err := send.Send(forwardEvent); err != nil {
-					return err
-				}
-
-				// Synchronous CLI requests are supervised children of this provider
-				// turn. Dispatch never blocks the event loop, allowing sibling MCP
-				// calls to reach the same executor concurrently.
-				call := *event.Tool
-				call.ToolInfo = e.getToolPreview(call)
-				if event.ToolInfo != "" {
-					call.ToolInfo = event.ToolInfo
-				}
-				committedResults := append([]Message(nil), turn.syncToolResults...)
-				approvalAssistant := buildPartialAssistant(pendingSyncCalls)
-				turn.syncToolsExecuted = true
-				if preserveInlineToolOrder {
-					inlineCall := call
-					turn.inlineSyncParts = append(turn.inlineSyncParts, Part{Type: PartToolCall, ToolCall: &inlineCall, CreatedAt: time.Now().UnixMilli()})
-				}
-				response := event.ToolResponse
-				supervisor.dispatch(call, func(toolCtx context.Context) toolCallOutcome {
-					_, evidenceOutcomes := supervisor.evidenceFor(call.ID)
-					approvalResults := append([]Message(nil), committedResults...)
-					for _, prior := range evidenceOutcomes {
-						approvalResults = append(approvalResults, prior.message())
-					}
-					transcript := buildApprovalTranscript(
-						run.req.ApprovalTranscriptPrefix, run.req.Messages, approvalAssistant, approvalResults...)
-					send.TrySend(Event{Type: EventToolExecStart, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: call.ToolInfo, ToolArgs: call.Arguments})
-					return e.executeSingleToolCallOutcomeSafe(
-						ContextWithApprovalTranscript(toolCtx, transcript), call, send, run.req.Debug, run.req.DebugRaw)
-				}, func(outcome toolCallOutcome) {
-					select {
-					case response <- ToolExecutionResponse{Result: outcome.output, Err: outcome.err}:
-					case <-ctx.Done():
-					}
-				})
-				continue
-			}
-			// Normal async collection for other providers.
-			info := event.ToolInfo
-			if info == "" {
-				info = event.Tool.ToolInfo
-			}
-			if info == "" {
-				info = e.getToolPreview(*event.Tool)
-			}
-			event.Tool.ToolInfo = info
-			turn.toolCalls = append(turn.toolCalls, *event.Tool)
-
-			fireSnapshot(turn.toolCalls)
-			if err := send.Send(Event{
-				Type:                 EventToolCall,
-				ToolCallID:           toolCallID,
-				ToolName:             event.Tool.Name,
-				Tool:                 event.Tool,
-				ToolInfo:             info,
-				ProviderTurnIndex:    attempt,
-				ProviderTurnIndexSet: true,
-			}); err != nil {
+		if handled, err := toolEvents.handle(event, compaction.softActive); handled {
+			if err != nil {
 				return err
 			}
 			continue
@@ -583,7 +610,7 @@ func (e *Engine) runProviderTurn(state *engineRunTurnContext, attempt int) error
 			return err
 		}
 	}
-	settleSyncTools()
+	syncTools.settle()
 	stream.Close()
 	if ctx.Err() == nil {
 		run.providerInFlight = false

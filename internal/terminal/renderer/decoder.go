@@ -332,283 +332,262 @@ func (p *EventDecoder) parseCsi(b []byte) (int, Event) {
 		return 2, KeyPressEvent{Code: rune(b[1]), Mod: ModAlt}
 	}
 
-	var cmd ansi.Cmd
 	var params [parser.MaxParamsSize]ansi.Param
-	var paramsLen int
+	i, cmd, paramsLen, event, done := p.scanCsiSequence(b, params[:])
+	if done {
+		return i, event
+	}
+	pa := ansi.Params(params[:paramsLen])
+	raw := b[:i]
+	switch cmd {
+	case 'y' | '?'<<parser.PrefixShift | '$'<<parser.IntermedShift,
+		'c' | '?'<<parser.PrefixShift, 'c' | '>'<<parser.PrefixShift,
+		'u' | '?'<<parser.PrefixShift, 'R' | '?'<<parser.PrefixShift,
+		'y' | '$'<<parser.IntermedShift:
+		return i, parseCsiReport(cmd, pa, raw)
+	case 'm' | '<'<<parser.PrefixShift, 'M' | '<'<<parser.PrefixShift,
+		'm' | '>'<<parser.PrefixShift, 'n' | '?'<<parser.PrefixShift,
+		'I', 'O':
+		return i, parseCsiTerminalEvent(cmd, pa, paramsLen, raw)
+	case 'R', 'a', 'b', 'c', 'd', 'A', 'B', 'C', 'D', 'E', 'F', 'H', 'P', 'Q', 'S', 'Z':
+		return i, parseCsiCursorKey(cmd, pa, paramsLen, raw)
+	case 'M':
+		if i+3 > len(b) {
+			return i, UnknownCsiEvent(raw)
+		}
+		return i + 3, parseX10MouseEvent(append(raw, b[i:i+3]...))
+	case 'u':
+		if paramsLen == 0 {
+			return i, UnknownCsiEvent(raw)
+		}
+		return i, parseKittyKeyboard(pa)
+	case '_':
+		return i, p.parseCsiWin32Input(pa, paramsLen, raw)
+	case '@', '^', '~':
+		return i, p.parseCsiLegacyKey(cmd, pa, paramsLen, raw)
+	case 't':
+		return i, parseCsiWindowOperation(pa, paramsLen, raw)
+	default:
+		return i, UnknownCsiEvent(raw)
+	}
+}
 
-	var i int
+func (p *EventDecoder) scanCsiSequence(b []byte, params []ansi.Param) (int, ansi.Cmd, int, Event, bool) {
+	var cmd ansi.Cmd
+	i := 0
 	if b[i] == ansi.CSI || b[i] == ansi.ESC {
 		i++
 	}
 	if i < len(b) && b[i-1] == ansi.ESC && b[i] == '[' {
 		i++
 	}
-
-	// Initial CSI byte
 	if i < len(b) && b[i] >= '<' && b[i] <= '?' {
 		cmd |= ansi.Cmd(b[i]) << parser.PrefixShift
 	}
+	i, paramsLen := scanParams(b, i, params)
 
-	i, paramsLen = scanParams(b, i, params[:])
-
-	// Scan intermediate bytes in the range 0x20-0x2F
-	var intermed byte
+	var intermediate byte
 	for ; i < len(b) && b[i] >= 0x20 && b[i] <= 0x2F; i++ {
-		intermed = b[i]
+		intermediate = b[i]
 	}
-
-	// Set the intermediate byte
-	cmd |= ansi.Cmd(intermed) << parser.IntermedShift
-
-	// Scan final byte in the range 0x40-0x7E
+	cmd |= ansi.Cmd(intermediate) << parser.IntermedShift
 	if i >= len(b) || b[i] < 0x40 || b[i] > 0x7E {
-		// Special case for URxvt keys
-		// CSI <number> $ is an invalid sequence, but URxvt uses it for
-		// shift modified keys.
-		if intermed == '$' && b[i-1] == '$' {
+		if intermediate == '$' && b[i-1] == '$' {
 			buf := slices.Clone(b[:i-1])
-			n, ev := p.parseCsi(append(buf, '~'))
-			if k, ok := ev.(KeyPressEvent); ok {
-				k.Mod |= ModShift
-				return n, k
+			n, event := p.parseCsi(append(buf, '~'))
+			if key, ok := event.(KeyPressEvent); ok {
+				key.Mod |= ModShift
+				return n, 0, 0, key, true
 			}
 		}
-		return i, UnknownEvent(b[:i])
+		return i, 0, 0, UnknownEvent(b[:i]), true
 	}
-
-	// Add the final byte
 	cmd |= ansi.Cmd(b[i])
 	i++
+	return i, cmd, paramsLen, nil, false
+}
 
-	pa := ansi.Params(params[:paramsLen])
+func parseCsiReport(cmd ansi.Cmd, params ansi.Params, raw []byte) Event {
 	switch cmd {
 	case 'y' | '?'<<parser.PrefixShift | '$'<<parser.IntermedShift:
-		// Report Mode (DECRPM)
-		mode, _, ok := pa.Param(0, -1)
-		if !ok || mode == -1 {
-			break
-		}
-		value, _, ok := pa.Param(1, 0)
-		if !ok {
-			break
-		}
-		return i, ModeReportEvent{Mode: ansi.DECMode(mode), Value: ansi.ModeSetting(value)}
+		return parseCsiModeReport(params, true, raw)
+	case 'y' | '$'<<parser.IntermedShift:
+		return parseCsiModeReport(params, false, raw)
 	case 'c' | '?'<<parser.PrefixShift:
-		// Primary Device Attributes
-		return i, parsePrimaryDevAttrs(pa)
+		return parsePrimaryDevAttrs(params)
 	case 'c' | '>'<<parser.PrefixShift:
-		// Secondary Device Attributes
-		return i, parseSecondaryDevAttrs(pa)
+		return parseSecondaryDevAttrs(params)
 	case 'u' | '?'<<parser.PrefixShift:
-		// Kitty keyboard flags
-		flags, _, _ := pa.Param(0, -1)
-		return i, KeyboardEnhancementsEvent{flags}
+		flags, _, _ := params.Param(0, -1)
+		return KeyboardEnhancementsEvent{flags}
 	case 'R' | '?'<<parser.PrefixShift:
-		// This report may return a third parameter representing the page
-		// number, but we don't really need it.
-		row, _, _ := pa.Param(0, 1)
-		col, _, ok := pa.Param(1, 1)
-		if !ok {
-			break
+		row, _, _ := params.Param(0, 1)
+		col, _, ok := params.Param(1, 1)
+		if ok {
+			return CursorPositionEvent{Y: row - 1, X: col - 1}
 		}
-		return i, CursorPositionEvent{Y: row - 1, X: col - 1}
+	}
+	return UnknownCsiEvent(raw)
+}
+
+func parseCsiModeReport(params ansi.Params, dec bool, raw []byte) Event {
+	mode, _, ok := params.Param(0, -1)
+	if !ok || mode == -1 {
+		return UnknownCsiEvent(raw)
+	}
+	value, _, ok := params.Param(1, 0)
+	if !ok {
+		return UnknownCsiEvent(raw)
+	}
+	if dec {
+		return ModeReportEvent{Mode: ansi.DECMode(mode), Value: ansi.ModeSetting(value)}
+	}
+	return ModeReportEvent{Mode: ansi.ANSIMode(mode), Value: ansi.ModeSetting(value)}
+}
+
+func parseCsiTerminalEvent(cmd ansi.Cmd, params ansi.Params, paramsLen int, raw []byte) Event {
+	switch cmd {
 	case 'm' | '<'<<parser.PrefixShift, 'M' | '<'<<parser.PrefixShift:
-		// Handle SGR mouse
 		if paramsLen == 3 {
-			return i, parseSGRMouseEvent(cmd, pa)
+			return parseSGRMouseEvent(cmd, params)
 		}
 	case 'm' | '>'<<parser.PrefixShift:
-		// XTerm modifyOtherKeys
-		mok, _, ok := pa.Param(0, 0)
-		if !ok || mok != 4 {
-			break
+		mok, _, mokOK := params.Param(0, 0)
+		value, _, valueOK := params.Param(1, -1)
+		if mokOK && mok == 4 && valueOK && value != -1 {
+			return ModifyOtherKeysEvent{value}
 		}
-		val, _, ok := pa.Param(1, -1)
-		if !ok || val == -1 {
-			break
-		}
-		return i, ModifyOtherKeysEvent{val}
 	case 'n' | '?'<<parser.PrefixShift:
-		report, _, _ := pa.Param(0, -1)
-		darkLight, _, _ := pa.Param(1, -1)
-		switch report {
-		case 997: // [ansi.LightDarkReport]
-			switch darkLight {
-			case 1:
-				return i, DarkColorSchemeEvent{}
-			case 2:
-				return i, LightColorSchemeEvent{}
-			}
+		report, _, _ := params.Param(0, -1)
+		scheme, _, _ := params.Param(1, -1)
+		if report == 997 && scheme == 1 {
+			return DarkColorSchemeEvent{}
+		}
+		if report == 997 && scheme == 2 {
+			return LightColorSchemeEvent{}
 		}
 	case 'I':
-		return i, FocusEvent{}
+		return FocusEvent{}
 	case 'O':
-		return i, BlurEvent{}
-	case 'R':
-		// Cursor position report OR modified F3
-		row, _, rok := pa.Param(0, 1)
-		col, _, cok := pa.Param(1, 1)
-		if paramsLen == 2 && rok && cok {
-			m := CursorPositionEvent{Y: row - 1, X: col - 1}
-			if row == 1 && col-1 <= int(ModMeta|ModShift|ModAlt|ModCtrl) {
-				// XXX: We cannot differentiate between cursor position report and
-				// CSI 1 ; <mod> R (which is modified F3) when the cursor is at the
-				// row 1. In this case, we report both messages.
-				//
-				// For a non ambiguous cursor position report, use
-				// [ansi.RequestExtendedCursorPosition] (DECXCPR) instead.
-				return i, MultiEvent{KeyPressEvent{Code: KeyF3, Mod: KeyMod(col - 1)}, m}
-			}
-
-			return i, m
-		}
-
-		if paramsLen != 0 {
-			break
-		}
-
-		// Unmodified key F3 (CSI R)
-		fallthrough
-	case 'a', 'b', 'c', 'd', 'A', 'B', 'C', 'D', 'E', 'F', 'H', 'P', 'Q', 'S', 'Z':
-		var k KeyPressEvent
-		switch cmd {
-		case 'a', 'b', 'c', 'd':
-			k = KeyPressEvent{Code: KeyUp + rune(cmd-'a'), Mod: ModShift}
-		case 'A', 'B', 'C', 'D':
-			k = KeyPressEvent{Code: KeyUp + rune(cmd-'A')}
-		case 'E':
-			k = KeyPressEvent{Code: KeyBegin}
-		case 'F':
-			k = KeyPressEvent{Code: KeyEnd}
-		case 'H':
-			k = KeyPressEvent{Code: KeyHome}
-		case 'P', 'Q', 'R', 'S':
-			k = KeyPressEvent{Code: KeyF1 + rune(cmd-'P')}
-		case 'Z':
-			k = KeyPressEvent{Code: KeyTab, Mod: ModShift}
-		}
-		id, _, _ := pa.Param(0, 1)
-		mod, _, _ := pa.Param(1, 1)
-		if paramsLen > 2 && !pa[1].HasMore() || id != 1 {
-			break
-		}
-		if paramsLen > 1 && id == 1 && mod != -1 {
-			// CSI 1 ; <modifiers> A
-			k.Mod |= KeyMod(mod - 1)
-		}
-		// Don't forget to handle Kitty keyboard protocol
-		return i, parseKittyKeyboardExt(pa, k)
-	case 'M':
-		// Handle X10 mouse
-		if i+3 > len(b) {
-			return i, UnknownCsiEvent(b[:i])
-		}
-		return i + 3, parseX10MouseEvent(append(b[:i], b[i:i+3]...))
-	case 'y' | '$'<<parser.IntermedShift:
-		// Report Mode (DECRPM)
-		mode, _, ok := pa.Param(0, -1)
-		if !ok || mode == -1 {
-			break
-		}
-		val, _, ok := pa.Param(1, 0)
-		if !ok {
-			break
-		}
-		return i, ModeReportEvent{Mode: ansi.ANSIMode(mode), Value: ansi.ModeSetting(val)}
-	case 'u':
-		// Kitty keyboard protocol & CSI u (fixterms)
-		if paramsLen == 0 {
-			return i, UnknownCsiEvent(b[:i])
-		}
-		return i, parseKittyKeyboard(pa)
-	case '_':
-		// Win32 Input Mode
-		if paramsLen != 6 {
-			return i, UnknownCsiEvent(b[:i])
-		}
-
-		vk, _, _ := pa.Param(0, 0)
-		sc, _, _ := pa.Param(1, 0)
-		uc, _, _ := pa.Param(2, 0)
-		kd, _, _ := pa.Param(3, 0)
-		cs, _, _ := pa.Param(4, 0)
-		rc, _, _ := pa.Param(5, 0)
-		event := p.parseWin32InputKeyEvent(
-			uint16(vk),         //nolint:gosec // Vk wVirtualKeyCode
-			uint16(sc),         //nolint:gosec // Sc wVirtualScanCode
-			rune(uc),           // Uc UnicodeChar
-			kd == 1,            // Kd bKeyDown
-			uint32(cs),         //nolint:gosec // Cs dwControlKeyState
-			max(1, uint16(rc)), //nolint:gosec // Rc wRepeatCount
-		)
-
-		return i, event
-	case '@', '^', '~':
-		return i, p.parseCsiLegacyKey(cmd, pa, paramsLen, b[:i])
-	case 't':
-		param, _, ok := pa.Param(0, 0)
-		if !ok {
-			break
-		}
-
-		switch param {
-		case 4: // Report Terminal window size in pixels.
-			if paramsLen == 3 {
-				height, _, hOk := pa.Param(1, 0)
-				width, _, wOk := pa.Param(2, 0)
-				if !hOk || !wOk {
-					break
-				}
-				return i, PixelSizeEvent{Width: width, Height: height}
-			}
-		case 6: // Report Terminal character cell size.
-			if paramsLen == 3 {
-				height, _, hOk := pa.Param(1, 0)
-				width, _, wOk := pa.Param(2, 0)
-				if !hOk || !wOk {
-					break
-				}
-				return i, CellSizeEvent{Width: width, Height: height}
-			}
-		case 8: // Report Terminal Window size in cells.
-			if paramsLen == 3 {
-				height, _, hOk := pa.Param(1, 0)
-				width, _, wOk := pa.Param(2, 0)
-				if !hOk || !wOk {
-					break
-				}
-				return i, WindowSizeEvent{Width: width, Height: height}
-			}
-		case 48: // In band terminal size report.
-			if paramsLen == 5 {
-				cellHeight, _, chOk := pa.Param(1, 0)
-				cellWidth, _, cwOk := pa.Param(2, 0)
-				pixelHeight, _, phOk := pa.Param(3, 0)
-				pixelWidth, _, pwOk := pa.Param(4, 0)
-				if !chOk || !cwOk || !phOk || !pwOk {
-					break
-				}
-				return i, MultiEvent{
-					WindowSizeEvent{Width: cellWidth, Height: cellHeight},
-					PixelSizeEvent{Width: pixelWidth, Height: pixelHeight},
-				}
-			}
-		}
-
-		// Any other window operation event.
-
-		var winop WindowOpEvent
-		winop.Op = param
-		for j := 1; j < paramsLen; j++ {
-			val, _, ok := pa.Param(j, 0)
-			if ok {
-				winop.Args = append(winop.Args, val)
-			}
-		}
-
-		return i, winop
+		return BlurEvent{}
 	}
-	return i, UnknownCsiEvent(b[:i])
+	return UnknownCsiEvent(raw)
+}
+
+func parseCsiCursorKey(cmd ansi.Cmd, params ansi.Params, paramsLen int, raw []byte) Event {
+	if cmd == 'R' && paramsLen != 0 {
+		if event, ok := parseCsiCursorPositionOrF3(params, paramsLen); ok {
+			return event
+		}
+		return UnknownCsiEvent(raw)
+	}
+	var key KeyPressEvent
+	switch cmd {
+	case 'a', 'b', 'c', 'd':
+		key = KeyPressEvent{Code: KeyUp + rune(cmd-'a'), Mod: ModShift}
+	case 'A', 'B', 'C', 'D':
+		key = KeyPressEvent{Code: KeyUp + rune(cmd-'A')}
+	case 'E':
+		key = KeyPressEvent{Code: KeyBegin}
+	case 'F':
+		key = KeyPressEvent{Code: KeyEnd}
+	case 'H':
+		key = KeyPressEvent{Code: KeyHome}
+	case 'P', 'Q', 'R', 'S':
+		key = KeyPressEvent{Code: KeyF1 + rune(cmd-'P')}
+	case 'Z':
+		key = KeyPressEvent{Code: KeyTab, Mod: ModShift}
+	}
+	id, _, _ := params.Param(0, 1)
+	mod, _, _ := params.Param(1, 1)
+	if paramsLen > 2 && !params[1].HasMore() || id != 1 {
+		return UnknownCsiEvent(raw)
+	}
+	if paramsLen > 1 && mod != -1 {
+		key.Mod |= KeyMod(mod - 1)
+	}
+	return parseKittyKeyboardExt(params, key)
+}
+
+func parseCsiCursorPositionOrF3(params ansi.Params, paramsLen int) (Event, bool) {
+	row, _, rowOK := params.Param(0, 1)
+	col, _, colOK := params.Param(1, 1)
+	if paramsLen == 2 && rowOK && colOK {
+		position := CursorPositionEvent{Y: row - 1, X: col - 1}
+		if row == 1 && col-1 <= int(ModMeta|ModShift|ModAlt|ModCtrl) {
+			return MultiEvent{KeyPressEvent{Code: KeyF3, Mod: KeyMod(col - 1)}, position}, true
+		}
+		return position, true
+	}
+	return nil, false
+}
+
+func (p *EventDecoder) parseCsiWin32Input(params ansi.Params, paramsLen int, raw []byte) Event {
+	if paramsLen != 6 {
+		return UnknownCsiEvent(raw)
+	}
+	vk, _, _ := params.Param(0, 0)
+	sc, _, _ := params.Param(1, 0)
+	uc, _, _ := params.Param(2, 0)
+	kd, _, _ := params.Param(3, 0)
+	cs, _, _ := params.Param(4, 0)
+	rc, _, _ := params.Param(5, 0)
+	return p.parseWin32InputKeyEvent(
+		uint16(vk),         //nolint:gosec // Vk wVirtualKeyCode
+		uint16(sc),         //nolint:gosec // Sc wVirtualScanCode
+		rune(uc),           // Uc UnicodeChar
+		kd == 1,            // Kd bKeyDown
+		uint32(cs),         //nolint:gosec // Cs dwControlKeyState
+		max(1, uint16(rc)), //nolint:gosec // Rc wRepeatCount
+	)
+}
+
+func parseCsiWindowOperation(params ansi.Params, paramsLen int, raw []byte) Event {
+	operation, _, ok := params.Param(0, 0)
+	if !ok {
+		return UnknownCsiEvent(raw)
+	}
+	if event, ok := parseCsiWindowSize(operation, params, paramsLen); ok {
+		return event
+	}
+	winop := WindowOpEvent{Op: operation}
+	for i := 1; i < paramsLen; i++ {
+		if value, _, ok := params.Param(i, 0); ok {
+			winop.Args = append(winop.Args, value)
+		}
+	}
+	return winop
+}
+
+func parseCsiWindowSize(operation int, params ansi.Params, paramsLen int) (Event, bool) {
+	if operation == 48 && paramsLen == 5 {
+		cellHeight, _, chOK := params.Param(1, 0)
+		cellWidth, _, cwOK := params.Param(2, 0)
+		pixelHeight, _, phOK := params.Param(3, 0)
+		pixelWidth, _, pwOK := params.Param(4, 0)
+		if chOK && cwOK && phOK && pwOK {
+			return MultiEvent{WindowSizeEvent{Width: cellWidth, Height: cellHeight}, PixelSizeEvent{Width: pixelWidth, Height: pixelHeight}}, true
+		}
+		return nil, false
+	}
+	if paramsLen != 3 {
+		return nil, false
+	}
+	height, _, heightOK := params.Param(1, 0)
+	width, _, widthOK := params.Param(2, 0)
+	if !heightOK || !widthOK {
+		return nil, false
+	}
+	switch operation {
+	case 4:
+		return PixelSizeEvent{Width: width, Height: height}, true
+	case 6:
+		return CellSizeEvent{Width: width, Height: height}, true
+	case 8:
+		return WindowSizeEvent{Width: width, Height: height}, true
+	default:
+		return nil, false
+	}
 }
 
 func (p *EventDecoder) parseCsiLegacyKey(cmd ansi.Cmd, pa ansi.Params, paramsLen int, raw []byte) Event {
@@ -1854,11 +1833,19 @@ func parseTermcap(data []byte) CapabilityEvent {
 // we need to handle key encoding and properly parse the key event.
 func (p *EventDecoder) parseWin32InputKeyEvent(vkc uint16, _ uint16, r rune, keyDown bool, cks uint32, repeatCount uint16) (event Event) {
 	defer func() {
-		// Respect the repeat count.
+		// A coalesced KEY_EVENT_RECORD includes the initial key event. Mark only
+		// subsequent key presses as repeats while preserving release events.
 		if repeatCount > 1 {
-			var multi MultiEvent
+			multi := make(MultiEvent, 0, repeatCount)
 			for i := 0; i < int(repeatCount); i++ {
-				multi = append(multi, event)
+				repeated := event
+				if i > 0 {
+					if key, ok := repeated.(KeyPressEvent); ok {
+						key.IsRepeat = true
+						repeated = key
+					}
+				}
+				multi = append(multi, repeated)
 			}
 			event = multi
 		}
@@ -1869,175 +1856,15 @@ func (p *EventDecoder) parseWin32InputKeyEvent(vkc uint16, _ uint16, r rune, key
 		}
 	}()
 
-	var key Key
-	switch {
-	case vkc == 0:
-		// This is either a UTF-16 encoded pair, or an escape sequence waiting
-		// to be decoded.
+	if vkc == 0 {
+		key := Key{Code: 0, BaseCode: r, Mod: translateControlKeyState(cks)}
 		if keyDown {
-			return KeyPressEvent{Code: 0, BaseCode: r, Mod: translateControlKeyState(cks)}
+			return KeyPressEvent(key)
 		}
-		return KeyReleaseEvent{Code: 0, BaseCode: r, Mod: translateControlKeyState(cks)}
-	case vkc == xwindows.VK_BACK:
-		key.BaseCode = KeyBackspace
-	case vkc == xwindows.VK_TAB:
-		key.BaseCode = KeyTab
-	case vkc == xwindows.VK_RETURN:
-		key.BaseCode = KeyEnter
-	case vkc == xwindows.VK_SHIFT:
-		//nolint:nestif
-		if cks&xwindows.SHIFT_PRESSED != 0 {
-			if cks&xwindows.ENHANCED_KEY != 0 {
-				key.BaseCode = KeyRightShift
-			} else {
-				key.BaseCode = KeyLeftShift
-			}
-		} else if p.lastCks&xwindows.SHIFT_PRESSED != 0 {
-			if p.lastCks&xwindows.ENHANCED_KEY != 0 {
-				key.BaseCode = KeyRightShift
-			} else {
-				key.BaseCode = KeyLeftShift
-			}
-		}
-	case vkc == xwindows.VK_CONTROL:
-		if cks&xwindows.LEFT_CTRL_PRESSED != 0 {
-			key.BaseCode = KeyLeftCtrl
-		} else if cks&xwindows.RIGHT_CTRL_PRESSED != 0 {
-			key.BaseCode = KeyRightCtrl
-		} else if p.lastCks&xwindows.LEFT_CTRL_PRESSED != 0 {
-			key.BaseCode = KeyLeftCtrl
-		} else if p.lastCks&xwindows.RIGHT_CTRL_PRESSED != 0 {
-			key.BaseCode = KeyRightCtrl
-		}
-	case vkc == xwindows.VK_MENU:
-		if cks&xwindows.LEFT_ALT_PRESSED != 0 {
-			key.BaseCode = KeyLeftAlt
-		} else if cks&xwindows.RIGHT_ALT_PRESSED != 0 {
-			key.BaseCode = KeyRightAlt
-		} else if p.lastCks&xwindows.LEFT_ALT_PRESSED != 0 {
-			key.BaseCode = KeyLeftAlt
-		} else if p.lastCks&xwindows.RIGHT_ALT_PRESSED != 0 {
-			key.BaseCode = KeyRightAlt
-		}
-	case vkc == xwindows.VK_PAUSE:
-		key.BaseCode = KeyPause
-	case vkc == xwindows.VK_CAPITAL:
-		key.BaseCode = KeyCapsLock
-	case vkc == xwindows.VK_ESCAPE:
-		key.BaseCode = KeyEscape
-	case vkc == xwindows.VK_SPACE:
-		key.BaseCode = KeySpace
-	case vkc == xwindows.VK_PRIOR:
-		key.BaseCode = KeyPgUp
-	case vkc == xwindows.VK_NEXT:
-		key.BaseCode = KeyPgDown
-	case vkc == xwindows.VK_END:
-		key.BaseCode = KeyEnd
-	case vkc == xwindows.VK_HOME:
-		key.BaseCode = KeyHome
-	case vkc == xwindows.VK_LEFT:
-		key.BaseCode = KeyLeft
-	case vkc == xwindows.VK_UP:
-		key.BaseCode = KeyUp
-	case vkc == xwindows.VK_RIGHT:
-		key.BaseCode = KeyRight
-	case vkc == xwindows.VK_DOWN:
-		key.BaseCode = KeyDown
-	case vkc == xwindows.VK_SELECT:
-		key.BaseCode = KeySelect
-	case vkc == xwindows.VK_SNAPSHOT:
-		key.BaseCode = KeyPrintScreen
-	case vkc == xwindows.VK_INSERT:
-		key.BaseCode = KeyInsert
-	case vkc == xwindows.VK_DELETE:
-		key.BaseCode = KeyDelete
-	case vkc >= '0' && vkc <= '9':
-		key.BaseCode = rune(vkc)
-	case vkc >= 'A' && vkc <= 'Z':
-		// Convert to lowercase.
-		key.BaseCode = rune(vkc) + 32
-	case vkc == xwindows.VK_LWIN:
-		key.BaseCode = KeyLeftSuper
-	case vkc == xwindows.VK_RWIN:
-		key.BaseCode = KeyRightSuper
-	case vkc == xwindows.VK_APPS:
-		key.BaseCode = KeyMenu
-	case vkc >= xwindows.VK_NUMPAD0 && vkc <= xwindows.VK_NUMPAD9:
-		key.BaseCode = rune(vkc-xwindows.VK_NUMPAD0) + KeyKp0
-		key.Text = string('0' + (rune(vkc) - xwindows.VK_NUMPAD0))
-	case vkc == xwindows.VK_MULTIPLY:
-		key.BaseCode = KeyKpMultiply
-		key.Text = "*"
-	case vkc == xwindows.VK_ADD:
-		key.BaseCode = KeyKpPlus
-		key.Text = "+"
-	case vkc == xwindows.VK_SEPARATOR:
-		key.BaseCode = KeyKpComma
-		key.Text = ","
-	case vkc == xwindows.VK_SUBTRACT:
-		key.BaseCode = KeyKpMinus
-		key.Text = "-"
-	case vkc == xwindows.VK_DECIMAL:
-		key.BaseCode = KeyKpDecimal
-		key.Text = "."
-	case vkc == xwindows.VK_DIVIDE:
-		key.BaseCode = KeyKpDivide
-		key.Text = "/"
-	case vkc >= xwindows.VK_F1 && vkc <= xwindows.VK_F24:
-		key.BaseCode = rune(vkc-xwindows.VK_F1) + KeyF1
-	case vkc == xwindows.VK_NUMLOCK:
-		key.BaseCode = KeyNumLock
-	case vkc == xwindows.VK_SCROLL:
-		key.BaseCode = KeyScrollLock
-	case vkc == xwindows.VK_LSHIFT:
-		key.BaseCode = KeyLeftShift
-	case vkc == xwindows.VK_RSHIFT:
-		key.BaseCode = KeyRightShift
-	case vkc == xwindows.VK_LCONTROL:
-		key.BaseCode = KeyLeftCtrl
-	case vkc == xwindows.VK_RCONTROL:
-		key.BaseCode = KeyRightCtrl
-	case vkc == xwindows.VK_LMENU:
-		key.BaseCode = KeyLeftAlt
-	case vkc == xwindows.VK_RMENU:
-		key.BaseCode = KeyRightAlt
-	case vkc == xwindows.VK_VOLUME_MUTE:
-		key.BaseCode = KeyMute
-	case vkc == xwindows.VK_VOLUME_DOWN:
-		key.BaseCode = KeyLowerVol
-	case vkc == xwindows.VK_VOLUME_UP:
-		key.BaseCode = KeyRaiseVol
-	case vkc == xwindows.VK_MEDIA_NEXT_TRACK:
-		key.BaseCode = KeyMediaNext
-	case vkc == xwindows.VK_MEDIA_PREV_TRACK:
-		key.BaseCode = KeyMediaPrev
-	case vkc == xwindows.VK_MEDIA_STOP:
-		key.BaseCode = KeyMediaStop
-	case vkc == xwindows.VK_MEDIA_PLAY_PAUSE:
-		key.BaseCode = KeyMediaPlayPause
-	case vkc == xwindows.VK_OEM_1:
-		key.BaseCode = ';'
-	case vkc == xwindows.VK_OEM_PLUS:
-		key.BaseCode = '+'
-	case vkc == xwindows.VK_OEM_COMMA:
-		key.BaseCode = ','
-	case vkc == xwindows.VK_OEM_MINUS:
-		key.BaseCode = '-'
-	case vkc == xwindows.VK_OEM_PERIOD:
-		key.BaseCode = '.'
-	case vkc == xwindows.VK_OEM_2:
-		key.BaseCode = '/'
-	case vkc == xwindows.VK_OEM_3:
-		key.BaseCode = '`'
-	case vkc == xwindows.VK_OEM_4:
-		key.BaseCode = '['
-	case vkc == xwindows.VK_OEM_5:
-		key.BaseCode = '\\'
-	case vkc == xwindows.VK_OEM_6:
-		key.BaseCode = ']'
-	case vkc == xwindows.VK_OEM_7:
-		key.BaseCode = '\''
+		return KeyReleaseEvent(key)
 	}
+
+	key := p.win32InputKey(vkc, cks)
 
 	// AltGr is left ctrl + right alt. On non-US keyboards, this is used to type
 	// special characters and produce printable events.
@@ -2071,6 +1898,233 @@ func (p *EventDecoder) parseWin32InputKeyEvent(vkc uint16, _ uint16, r rune, key
 	return KeyReleaseEvent(key)
 }
 
+func (p *EventDecoder) win32InputKey(vkc uint16, cks uint32) Key {
+	if code, ok := p.win32ModifierKeyCode(vkc, cks); ok {
+		return Key{BaseCode: code}
+	}
+	if code, ok := win32EditingKeyCode(vkc); ok {
+		return Key{BaseCode: code}
+	}
+	if code, ok := win32NavigationKeyCode(vkc); ok {
+		return Key{BaseCode: code}
+	}
+	if key, ok := win32PrintableKey(vkc); ok {
+		return key
+	}
+	if key, ok := win32KeypadKey(vkc); ok {
+		return key
+	}
+	if code, ok := win32SystemKeyCode(vkc); ok {
+		return Key{BaseCode: code}
+	}
+	if code, ok := win32OEMKeyCode(vkc); ok {
+		return Key{BaseCode: code}
+	}
+	return Key{}
+}
+
+func (p *EventDecoder) win32ModifierKeyCode(vkc uint16, cks uint32) (rune, bool) {
+	switch vkc {
+	case xwindows.VK_SHIFT:
+		state := cks
+		if state&xwindows.SHIFT_PRESSED == 0 {
+			state = p.lastCks
+		}
+		if state&xwindows.SHIFT_PRESSED == 0 {
+			return 0, true
+		}
+		if state&xwindows.ENHANCED_KEY != 0 {
+			return KeyRightShift, true
+		}
+		return KeyLeftShift, true
+	case xwindows.VK_CONTROL:
+		state := cks
+		if state&(xwindows.LEFT_CTRL_PRESSED|xwindows.RIGHT_CTRL_PRESSED) == 0 {
+			state = p.lastCks
+		}
+		if state&xwindows.LEFT_CTRL_PRESSED != 0 {
+			return KeyLeftCtrl, true
+		}
+		if state&xwindows.RIGHT_CTRL_PRESSED != 0 {
+			return KeyRightCtrl, true
+		}
+		return 0, true
+	case xwindows.VK_MENU:
+		state := cks
+		if state&(xwindows.LEFT_ALT_PRESSED|xwindows.RIGHT_ALT_PRESSED) == 0 {
+			state = p.lastCks
+		}
+		if state&xwindows.LEFT_ALT_PRESSED != 0 {
+			return KeyLeftAlt, true
+		}
+		if state&xwindows.RIGHT_ALT_PRESSED != 0 {
+			return KeyRightAlt, true
+		}
+		return 0, true
+	case xwindows.VK_LSHIFT:
+		return KeyLeftShift, true
+	case xwindows.VK_RSHIFT:
+		return KeyRightShift, true
+	case xwindows.VK_LCONTROL:
+		return KeyLeftCtrl, true
+	case xwindows.VK_RCONTROL:
+		return KeyRightCtrl, true
+	case xwindows.VK_LMENU:
+		return KeyLeftAlt, true
+	case xwindows.VK_RMENU:
+		return KeyRightAlt, true
+	default:
+		return 0, false
+	}
+}
+
+func win32EditingKeyCode(vkc uint16) (rune, bool) {
+	switch vkc {
+	case xwindows.VK_BACK:
+		return KeyBackspace, true
+	case xwindows.VK_TAB:
+		return KeyTab, true
+	case xwindows.VK_RETURN:
+		return KeyEnter, true
+	case xwindows.VK_PAUSE:
+		return KeyPause, true
+	case xwindows.VK_CAPITAL:
+		return KeyCapsLock, true
+	case xwindows.VK_ESCAPE:
+		return KeyEscape, true
+	case xwindows.VK_SPACE:
+		return KeySpace, true
+	case xwindows.VK_SELECT:
+		return KeySelect, true
+	case xwindows.VK_SNAPSHOT:
+		return KeyPrintScreen, true
+	case xwindows.VK_INSERT:
+		return KeyInsert, true
+	case xwindows.VK_DELETE:
+		return KeyDelete, true
+	default:
+		return 0, false
+	}
+}
+
+func win32NavigationKeyCode(vkc uint16) (rune, bool) {
+	switch vkc {
+	case xwindows.VK_PRIOR:
+		return KeyPgUp, true
+	case xwindows.VK_NEXT:
+		return KeyPgDown, true
+	case xwindows.VK_END:
+		return KeyEnd, true
+	case xwindows.VK_HOME:
+		return KeyHome, true
+	case xwindows.VK_LEFT:
+		return KeyLeft, true
+	case xwindows.VK_UP:
+		return KeyUp, true
+	case xwindows.VK_RIGHT:
+		return KeyRight, true
+	case xwindows.VK_DOWN:
+		return KeyDown, true
+	default:
+		return 0, false
+	}
+}
+
+func win32PrintableKey(vkc uint16) (Key, bool) {
+	if vkc >= '0' && vkc <= '9' {
+		return Key{BaseCode: rune(vkc)}, true
+	}
+	if vkc >= 'A' && vkc <= 'Z' {
+		return Key{BaseCode: rune(vkc) + ('a' - 'A')}, true
+	}
+	return Key{}, false
+}
+
+func win32KeypadKey(vkc uint16) (Key, bool) {
+	if vkc >= xwindows.VK_NUMPAD0 && vkc <= xwindows.VK_NUMPAD9 {
+		return Key{BaseCode: rune(vkc-xwindows.VK_NUMPAD0) + KeyKp0, Text: string('0' + rune(vkc-xwindows.VK_NUMPAD0))}, true
+	}
+	switch vkc {
+	case xwindows.VK_MULTIPLY:
+		return Key{BaseCode: KeyKpMultiply, Text: "*"}, true
+	case xwindows.VK_ADD:
+		return Key{BaseCode: KeyKpPlus, Text: "+"}, true
+	case xwindows.VK_SEPARATOR:
+		return Key{BaseCode: KeyKpComma, Text: ","}, true
+	case xwindows.VK_SUBTRACT:
+		return Key{BaseCode: KeyKpMinus, Text: "-"}, true
+	case xwindows.VK_DECIMAL:
+		return Key{BaseCode: KeyKpDecimal, Text: "."}, true
+	case xwindows.VK_DIVIDE:
+		return Key{BaseCode: KeyKpDivide, Text: "/"}, true
+	default:
+		return Key{}, false
+	}
+}
+
+func win32SystemKeyCode(vkc uint16) (rune, bool) {
+	if vkc >= xwindows.VK_F1 && vkc <= xwindows.VK_F24 {
+		return rune(vkc-xwindows.VK_F1) + KeyF1, true
+	}
+	switch vkc {
+	case xwindows.VK_NUMLOCK:
+		return KeyNumLock, true
+	case xwindows.VK_SCROLL:
+		return KeyScrollLock, true
+	case xwindows.VK_LWIN:
+		return KeyLeftSuper, true
+	case xwindows.VK_RWIN:
+		return KeyRightSuper, true
+	case xwindows.VK_APPS:
+		return KeyMenu, true
+	case xwindows.VK_VOLUME_MUTE:
+		return KeyMute, true
+	case xwindows.VK_VOLUME_DOWN:
+		return KeyLowerVol, true
+	case xwindows.VK_VOLUME_UP:
+		return KeyRaiseVol, true
+	case xwindows.VK_MEDIA_NEXT_TRACK:
+		return KeyMediaNext, true
+	case xwindows.VK_MEDIA_PREV_TRACK:
+		return KeyMediaPrev, true
+	case xwindows.VK_MEDIA_STOP:
+		return KeyMediaStop, true
+	case xwindows.VK_MEDIA_PLAY_PAUSE:
+		return KeyMediaPlayPause, true
+	default:
+		return 0, false
+	}
+}
+
+func win32OEMKeyCode(vkc uint16) (rune, bool) {
+	switch vkc {
+	case xwindows.VK_OEM_1:
+		return ';', true
+	case xwindows.VK_OEM_PLUS:
+		return '+', true
+	case xwindows.VK_OEM_COMMA:
+		return ',', true
+	case xwindows.VK_OEM_MINUS:
+		return '-', true
+	case xwindows.VK_OEM_PERIOD:
+		return '.', true
+	case xwindows.VK_OEM_2:
+		return '/', true
+	case xwindows.VK_OEM_3:
+		return '`', true
+	case xwindows.VK_OEM_4:
+		return '[', true
+	case xwindows.VK_OEM_5:
+		return '\\', true
+	case xwindows.VK_OEM_6:
+		return ']', true
+	case xwindows.VK_OEM_7:
+		return '\'', true
+	default:
+		return 0, false
+	}
+}
+
 // ensureKeyCase ensures that the key's text is in the correct case based on the
 // control key state.
 func ensureKeyCase(key Key, cks uint32) Key {
@@ -2080,7 +2134,7 @@ func ensureKeyCase(key Key, cks uint32) Key {
 
 	hasShift := cks&xwindows.SHIFT_PRESSED != 0
 	hasCaps := cks&xwindows.CAPSLOCK_ON != 0
-	if hasShift || hasCaps {
+	if hasShift != hasCaps {
 		if unicode.IsLower(key.Code) {
 			key.ShiftedCode = unicode.ToUpper(key.Code)
 			key.Text = string(key.ShiftedCode)

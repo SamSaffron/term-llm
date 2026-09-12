@@ -1658,6 +1658,128 @@ func telegramCleanupTimeout() time.Duration {
 	return runpkg.DefaultRunnerCleanupTimeout
 }
 
+func startTelegramStreamClose(stream llm.Stream, done chan struct{}, once *sync.Once) {
+	startTelegramStreamCloseWithCoordinator(restart.Default, stream, done, once)
+}
+
+func startTelegramStreamCloseWithCoordinator(coordinator *restart.Coordinator, stream llm.Stream, done chan struct{}, once *sync.Once) {
+	once.Do(func() {
+		if stream == nil {
+			close(done)
+			return
+		}
+		closeStream := func(context.Context) {
+			_ = stream.Close()
+			close(done)
+		}
+		if err := coordinator.Go(context.Background(), closeStream); err != nil {
+			// Restart admission may be sealed, but Close is arbitrary provider code
+			// and must remain asynchronous so the caller's cleanup timeout can detach.
+			go closeStream(context.Background())
+		}
+	})
+}
+
+func startTelegramRunnerWithCoordinator(coordinator *restart.Coordinator, ctx context.Context, pipe *runpkg.EventPipe, done chan struct{}, run func(context.Context) error) error {
+	err := coordinator.Go(ctx, func(runCtx context.Context) {
+		defer close(done)
+		pipe.CloseWithError(run(runCtx))
+	})
+	if err != nil {
+		close(done)
+		pipe.CloseWithError(err)
+	}
+	return err
+}
+
+func startTelegramStreamWatchdog(ctx context.Context, cancel context.CancelFunc, timeout time.Duration, ping <-chan struct{}, done chan<- error, doneOnce *sync.Once, timedOut *atomic.Bool) {
+	go func() {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		for {
+			select {
+			case <-ping:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(timeout)
+			case <-timer.C:
+				timedOut.Store(true)
+				sendStreamDone(done, doneOnce, fmt.Errorf("stream timed out: no events for %s", timeout))
+				cancel()
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
+func startTelegramStreamConsumerWithCoordinator(coordinator *restart.Coordinator, ctx context.Context, stream llm.Stream, events *telegramEventAccumulator, sess *telegramSession, ping chan<- struct{}, done chan<- error, doneOnce *sync.Once, consumerDone chan struct{}) error {
+	return coordinator.Go(ctx, func(context.Context) {
+		defer close(consumerDone)
+		for {
+			event, err := stream.Recv()
+			if err == io.EOF {
+				sendStreamDone(done, doneOnce, nil)
+				return
+			}
+			if err != nil {
+				sendStreamDone(done, doneOnce, err)
+				return
+			}
+			select {
+			case ping <- struct{}{}:
+			default:
+			}
+			proseLen := events.Apply(event)
+			if applyTelegramStreamActivity(sess, event, proseLen) {
+				sendStreamDone(done, doneOnce, event.Err)
+				return
+			}
+		}
+	})
+}
+
+func launchTelegramStreamConsumer(ctx context.Context, stream llm.Stream, events *telegramEventAccumulator, sess *telegramSession, ping chan<- struct{}, done chan<- error, doneOnce *sync.Once, consumerDone chan struct{}) error {
+	return launchTelegramStreamConsumerWithCoordinator(restart.Default, ctx, stream, events, sess, ping, done, doneOnce, consumerDone)
+}
+
+func launchTelegramStreamConsumerWithCoordinator(coordinator *restart.Coordinator, ctx context.Context, stream llm.Stream, events *telegramEventAccumulator, sess *telegramSession, ping chan<- struct{}, done chan<- error, doneOnce *sync.Once, consumerDone chan struct{}) error {
+	err := startTelegramStreamConsumerWithCoordinator(coordinator, ctx, stream, events, sess, ping, done, doneOnce, consumerDone)
+	if err != nil {
+		close(consumerDone)
+		sendStreamDone(done, doneOnce, fmt.Errorf("start telegram stream consumer: %w", err))
+	}
+	return err
+}
+
+func applyTelegramStreamActivity(sess *telegramSession, event llm.Event, proseLen int) bool {
+	switch event.Type {
+	case llm.EventTextDelta:
+		sess.streamProseLen.Store(int64(proseLen))
+	case llm.EventToolExecStart:
+		sess.streamToolCnt.Add(1)
+		sess.streamToolName.Store(event.ToolName)
+		sess.cancelMu.Lock()
+		sess.toolsRanNames = append(sess.toolsRanNames, event.ToolName)
+		sess.cancelMu.Unlock()
+	case llm.EventToolExecEnd:
+		if sess.streamToolCnt.Load() > 0 {
+			sess.streamToolCnt.Add(-1)
+		}
+		if sess.streamToolCnt.Load() <= 0 {
+			sess.streamToolName.Store("")
+		}
+	case llm.EventError:
+		return event.Err != nil
+	}
+	return false
+}
+
 // streamReply streams an LLM response back to the chat via live message editing.
 func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, sess *telegramSession, chatID int64, userMsg llm.Message) error {
 	return m.streamReplyWithAdmission(ctx, bot, sess, chatID, userMsg, nil)
@@ -1849,16 +1971,7 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 	streamCloseDone := make(chan struct{})
 	var streamCloseOnce sync.Once
 	startStreamClose := func() {
-		streamCloseOnce.Do(func() {
-			if stream == nil {
-				close(streamCloseDone)
-				return
-			}
-			_ = restart.Default.Go(context.Background(), func(context.Context) {
-				_ = stream.Close()
-				close(streamCloseDone)
-			})
-		})
+		startTelegramStreamClose(stream, streamCloseDone, &streamCloseOnce)
 	}
 	cleanupDetached := false
 	markCleanupDetached := func() {
@@ -1895,8 +2008,7 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 		sess.cancelMu.Unlock()
 		search := m.settings.Search
 		forceExternalSearch := m.settings.ForceExternalSearch
-		_ = restart.Default.Go(streamCtx, func(streamCtx context.Context) {
-			defer close(done)
+		_ = startTelegramRunnerWithCoordinator(restart.Default, streamCtx, pipe, done, func(streamCtx context.Context) error {
 			_, runErr := m.settings.Runner.Run(streamCtx, runpkg.Request{
 				Platform: runpkg.PlatformTelegram,
 				Continuation: func() *llm.Continuation {
@@ -1938,7 +2050,7 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 					sess.cancelMu.Unlock()
 				},
 			}, pipe)
-			pipe.CloseWithError(runErr)
+			return runErr
 		})
 	} else {
 		req := llm.Request{
@@ -2012,30 +2124,7 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 		watchdogTimeout = defaultStreamEventTimeout
 	}
 
-	// Watchdog: cancel stream if no events arrive for watchdogTimeout.
-	go func() {
-		t := time.NewTimer(watchdogTimeout)
-		defer t.Stop()
-		for {
-			select {
-			case <-lastEventPing:
-				if !t.Stop() {
-					select {
-					case <-t.C:
-					default:
-					}
-				}
-				t.Reset(watchdogTimeout)
-			case <-t.C:
-				watchdogTimedOut.Store(true)
-				sendStreamDone(streamDone, &streamDoneOnce, fmt.Errorf("stream timed out: no events for %s", watchdogTimeout))
-				streamCancel()
-				return
-			case <-streamCtx.Done():
-				return
-			}
-		}
-	}()
+	startTelegramStreamWatchdog(streamCtx, streamCancel, watchdogTimeout, lastEventPing, streamDone, &streamDoneOnce, &watchdogTimedOut)
 
 	// Goroutine: consume stream events.
 	streamConsumerDone = make(chan struct{})
@@ -2052,48 +2141,9 @@ func (m *telegramSessionMgr) streamReplyContinuation(ctx context.Context, bot bo
 		}
 		sess.cancelMu.Unlock()
 	}
-	_ = restart.Default.Go(streamCtx, func(streamCtx context.Context) {
-		defer close(streamConsumerDone)
-		for {
-			ev, recvErr := stream.Recv()
-			if recvErr == io.EOF {
-				sendStreamDone(streamDone, &streamDoneOnce, nil)
-				return
-			}
-			if recvErr != nil {
-				sendStreamDone(streamDone, &streamDoneOnce, recvErr)
-				return
-			}
-			select {
-			case lastEventPing <- struct{}{}:
-			default:
-			}
-			proseLen := events.Apply(ev)
-			switch ev.Type {
-			case llm.EventTextDelta:
-				sess.streamProseLen.Store(int64(proseLen))
-			case llm.EventToolExecStart:
-				sess.streamToolCnt.Add(1)
-				sess.streamToolName.Store(ev.ToolName)
-				sess.cancelMu.Lock()
-				sess.toolsRanNames = append(sess.toolsRanNames, ev.ToolName)
-				sess.cancelMu.Unlock()
-			case llm.EventToolExecEnd:
-				if sess.streamToolCnt.Load() > 0 {
-					sess.streamToolCnt.Add(-1)
-				}
-				if sess.streamToolCnt.Load() <= 0 {
-					sess.streamToolName.Store("")
-				}
-			case llm.EventError:
-				if ev.Err != nil {
-					sendStreamDone(streamDone, &streamDoneOnce, ev.Err)
-					return
-				}
-			}
-
-		}
-	})
+	// Consumer admission failure is delivered through streamDone so the common
+	// finalizer can reconcile the durable user turn and clear presentation state.
+	_ = launchTelegramStreamConsumer(streamCtx, stream, events, sess, lastEventPing, streamDone, &streamDoneOnce, streamConsumerDone)
 	interval := m.tickerInterval
 	if interval <= 0 {
 		interval = 500 * time.Millisecond

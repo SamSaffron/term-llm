@@ -2,10 +2,10 @@
   "counting_rules": "1 + if + for + range + non-default switch/select cases + \u0026\u0026 + ||; nested function literals attributed to enclosing declaration",
   "summary": {
     "files": 917,
-    "functions": 11126,
+    "functions": 11223,
     "median_complexity": 3,
-    "above_20": 473,
-    "above_50": 55,
+    "above_20": 469,
+    "above_50": 51,
     "above_100": 0
   },
   "exceptions": [
@@ -35,7 +35,7 @@
     },
     {
       "key": ".|cmd/ask.go|cmd||runAsk",
-      "complexity": 100,
+      "complexity": 73,
       "owner": "cmd/ask",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M4",
@@ -379,7 +379,7 @@
     },
     {
       "key": ".|cmd/serve.go|cmd||runServeLegacy",
-      "complexity": 100,
+      "complexity": 89,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -675,7 +675,7 @@
     },
     {
       "key": ".|cmd/serve_handlers_responses.go|cmd|*serveServer|handleResolvedResponses",
-      "complexity": 96,
+      "complexity": 69,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -1027,7 +1027,7 @@
     },
     {
       "key": ".|cmd/serve_runtime.go|cmd|*serveRuntime|runOnce",
-      "complexity": 93,
+      "complexity": 59,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M3",
@@ -1771,7 +1771,7 @@
     },
     {
       "key": ".|internal/llm/engine_run_turn.go|llm|*Engine|runProviderTurn",
-      "complexity": 100,
+      "complexity": 72,
       "owner": "llm",
       "rationale": "llm extraction owns one ordered domain responsibility; further reduction is tracked by M2",
       "removal_milestone": "M2",
@@ -2058,14 +2058,6 @@
       "origin": "existing"
     },
     {
-      "key": ".|internal/llm/responses_event_handler.go|llm|*responsesStreamEventHandler|HandleJSONEvent",
-      "complexity": 98,
-      "owner": "llm",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
       "key": ".|internal/llm/responses_options.go|llm||validateResponsesOptions",
       "complexity": 32,
       "owner": "llm",
@@ -2315,7 +2307,7 @@
     },
     {
       "key": ".|internal/serve/telegram.go|serve|*telegramSessionMgr|streamReplyContinuation",
-      "complexity": 100,
+      "complexity": 82,
       "owner": "serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M6",
@@ -2594,14 +2586,6 @@
       "origin": "existing"
     },
     {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/decoder.go|uv|*EventDecoder|parseCsi",
-      "complexity": 96,
-      "owner": "internal/terminal/renderer",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
       "key": "internal/terminal/renderer|internal/terminal/renderer/decoder.go|uv|*EventDecoder|parseCsiLegacyKey",
       "complexity": 28,
       "owner": "internal/terminal/renderer",
@@ -2636,14 +2620,6 @@
     {
       "key": "internal/terminal/renderer|internal/terminal/renderer/decoder.go|uv|*EventDecoder|parseStTerminated",
       "complexity": 24,
-      "owner": "internal/terminal/renderer",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M7",
-      "origin": "existing"
-    },
-    {
-      "key": "internal/terminal/renderer|internal/terminal/renderer/decoder.go|uv|*EventDecoder|parseWin32InputKeyEvent",
-      "complexity": 91,
       "owner": "internal/terminal/renderer",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -3268,14 +3244,6 @@
     {
       "key": ".|internal/tui/chat/render.go|chat|*Model|overlayVisibleViewportImages",
       "complexity": 22,
-      "owner": "tui/chat",
-      "rationale": "existing debt retained at its original declaration; complexity may only decrease",
-      "removal_milestone": "M1",
-      "origin": "existing"
-    },
-    {
-      "key": ".|internal/tui/chat/render.go|chat|*Model|renderStatusLine",
-      "complexity": 91,
       "owner": "tui/chat",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M1",
