@@ -362,7 +362,8 @@ func (r *Reviewer) turnMessages(policy string, req Request, mode PromptMode) []l
 }
 
 func (r *Reviewer) runReviewRequest(ctx context.Context, messages []llm.Message) (string, llm.Usage, error) {
-	stream, err := r.Provider.Stream(ctx, llm.Request{Model: r.Model, Messages: messages, MaxOutputTokens: 2000, Temperature: 0, TemperatureSet: true})
+	// Use model defaults: some reviewer models reject explicit temperature control.
+	stream, err := r.Provider.Stream(ctx, llm.Request{Model: r.Model, Messages: messages, MaxOutputTokens: 2000})
 	if err != nil {
 		return "", llm.Usage{}, err
 	}
