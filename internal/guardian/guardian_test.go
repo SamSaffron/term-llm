@@ -8,6 +8,31 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
+func TestReviewerUsesDefaultSampling(t *testing.T) {
+	provider := llm.NewMockProvider("guardian").
+		AddTurn(llm.MockTurn{Text: `{"outcome":"allow"}`}).
+		AddTurn(llm.MockTurn{Text: `{"outcome":"deny","rationale":"not authorized"}`})
+	reviewer := &Reviewer{Provider: provider, Model: "guardian-model", Policy: "policy"}
+
+	for i, wantAllowed := range []bool{true, false} {
+		decision, err := reviewer.Review(context.Background(), Request{Command: "echo ok"})
+		if err != nil {
+			t.Fatalf("Review %d: %v", i, err)
+		}
+		if decision.Allowed() != wantAllowed {
+			t.Fatalf("Review %d allowed = %v, want %v", i, decision.Allowed(), wantAllowed)
+		}
+	}
+	if len(provider.Requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(provider.Requests))
+	}
+	for i, req := range provider.Requests {
+		if req.TemperatureSet || req.Temperature != 0 {
+			t.Errorf("request %d forces temperature; guardian must support models without temperature control", i)
+		}
+	}
+}
+
 func TestReviewerReportsProviderUsage(t *testing.T) {
 	provider := llm.NewMockProvider("guardian").AddTurn(llm.MockTurn{
 		Text:  `{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ok"}`,
