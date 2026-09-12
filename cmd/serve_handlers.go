@@ -936,44 +936,52 @@ func boundedWebSpawnAgentOutput(output string) string {
 	return boundedWebSpawnAgentText(output, maxWebSpawnAgentOutputBytes, "\n… (output truncated)")
 }
 
-func (s *serveServer) validatedSpawnChildID(parentSessionID, childSessionID string) string {
+func (s *serveServer) validatedSpawnChild(parentSessionID, childSessionID string) *session.Session {
 	parentSessionID = strings.TrimSpace(parentSessionID)
 	childSessionID = strings.TrimSpace(childSessionID)
 	if s == nil || s.store == nil || parentSessionID == "" || childSessionID == "" || childSessionID == parentSessionID {
-		return ""
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	child, err := s.store.Get(ctx, childSessionID)
 	if err != nil || child == nil || child.ParentID != parentSessionID {
-		return ""
+		return nil
 	}
-	return childSessionID
+	return child
+}
+
+func (s *serveServer) validatedSpawnChildID(parentSessionID, childSessionID string) string {
+	if child := s.validatedSpawnChild(parentSessionID, childSessionID); child != nil {
+		return child.ID
+	}
+	return ""
 }
 
 type sessionMessagePartEntry struct {
-	CreatedAt       int64                          `json:"created_at,omitempty"`
-	Type            string                         `json:"type"`
-	Text            string                         `json:"text,omitempty"`
-	SkillActivation *llm.SkillActivationProvenance `json:"skill_activation,omitempty"`
-	PathNote        *llm.PathNoteProvenance        `json:"path_note,omitempty"`
-	DiffComment     *llm.DiffComment               `json:"diff_comment,omitempty"`
-	ModelSwap       *llm.ModelSwapMarker           `json:"model_swap,omitempty"`
-	ToolName        string                         `json:"tool_name,omitempty"`
-	ToolInfo        string                         `json:"tool_info,omitempty"`
-	ToolArgs        string                         `json:"tool_arguments,omitempty"`
-	ToolCallID      string                         `json:"tool_call_id,omitempty"`
-	ToolStatus      string                         `json:"tool_status,omitempty"`
-	AskUserSummary  string                         `json:"ask_user_summary,omitempty"`
-	ImageURL        string                         `json:"image_url,omitempty"`
-	Images          []string                       `json:"images,omitempty"`
-	Media           []webMediaEntry                `json:"media,omitempty"`
-	ToolError       bool                           `json:"tool_error,omitempty"`
-	GuardianReviews []llm.GuardianReview           `json:"guardian_reviews,omitempty"`
-	SpawnAgent      *tools.SpawnAgentResult        `json:"spawn_agent,omitempty"`
-	MimeType        string                         `json:"mime_type,omitempty"`
-	Width           int                            `json:"width,omitempty"`
-	Height          int                            `json:"height,omitempty"`
+	CreatedAt           int64                          `json:"created_at,omitempty"`
+	Type                string                         `json:"type"`
+	Text                string                         `json:"text,omitempty"`
+	SkillActivation     *llm.SkillActivationProvenance `json:"skill_activation,omitempty"`
+	PathNote            *llm.PathNoteProvenance        `json:"path_note,omitempty"`
+	DiffComment         *llm.DiffComment               `json:"diff_comment,omitempty"`
+	ModelSwap           *llm.ModelSwapMarker           `json:"model_swap,omitempty"`
+	ToolName            string                         `json:"tool_name,omitempty"`
+	ToolInfo            string                         `json:"tool_info,omitempty"`
+	ToolArgs            string                         `json:"tool_arguments,omitempty"`
+	ToolCallID          string                         `json:"tool_call_id,omitempty"`
+	ToolStatus          string                         `json:"tool_status,omitempty"`
+	AskUserSummary      string                         `json:"ask_user_summary,omitempty"`
+	ImageURL            string                         `json:"image_url,omitempty"`
+	Images              []string                       `json:"images,omitempty"`
+	Media               []webMediaEntry                `json:"media,omitempty"`
+	ToolError           bool                           `json:"tool_error,omitempty"`
+	GuardianReviews     []llm.GuardianReview           `json:"guardian_reviews,omitempty"`
+	SpawnAgent          *tools.SpawnAgentResult        `json:"spawn_agent,omitempty"`
+	SpawnAgentToolCalls *int                           `json:"spawn_agent_tool_calls,omitempty"`
+	MimeType            string                         `json:"mime_type,omitempty"`
+	Width               int                            `json:"width,omitempty"`
+	Height              int                            `json:"height,omitempty"`
 }
 
 type sessionMessageEntry struct {
@@ -1954,6 +1962,7 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 					isAskUserResult := p.ToolResult.Name == tools.AskUserToolName
 					isSpawnAgentResult := p.ToolResult.Name == tools.SpawnAgentToolName || spawnAgentToolCalls[p.ToolResult.ID]
 					var spawnResult *tools.SpawnAgentResult
+					var spawnToolCalls *int
 					if isSpawnAgentResult {
 						if parsed, err := tools.ParseSpawnAgentResult(p.ToolResult.Content); err == nil {
 							spawnResult = &parsed
@@ -1964,7 +1973,7 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 							spawnResult.Output = boundedWebSpawnAgentOutput(spawnResult.Output)
 							spawnResult.Error = boundedWebSpawnAgentText(spawnResult.Error, 16*1024, "… (error truncated)")
 							spawnResult.AgentName = boundedWebSpawnAgentText(spawnResult.AgentName, 256, "…")
-							spawnResult.SessionID = s.validatedSpawnChildID(parentSessionID, spawnResult.SessionID)
+							spawnToolCalls = s.validatedSpawnToolCalls(parentSessionID, spawnResult)
 						}
 					}
 					includeResult := p.ToolResult.IsError || len(p.ToolResult.Images) > 0 || len(p.ToolResult.Media) > 0 || len(p.ToolResult.GuardianReviews) > 0 || isPlanResult || isAskUserResult || spawnResult != nil
@@ -1976,12 +1985,13 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 						toolName = tools.SpawnAgentToolName
 					}
 					pe := sessionMessagePartEntry{
-						Type:            "tool_result",
-						ToolName:        toolName,
-						ToolCallID:      p.ToolResult.ID,
-						ToolError:       p.ToolResult.IsError || (spawnResult != nil && spawnResult.Error != ""),
-						GuardianReviews: append([]llm.GuardianReview(nil), p.ToolResult.GuardianReviews...),
-						SpawnAgent:      spawnResult,
+						Type:                "tool_result",
+						ToolName:            toolName,
+						ToolCallID:          p.ToolResult.ID,
+						ToolError:           p.ToolResult.IsError || (spawnResult != nil && spawnResult.Error != ""),
+						GuardianReviews:     append([]llm.GuardianReview(nil), p.ToolResult.GuardianReviews...),
+						SpawnAgent:          spawnResult,
+						SpawnAgentToolCalls: spawnToolCalls,
 					}
 					if isAskUserResult {
 						pe.AskUserSummary = askUserResultSummary(p.ToolResult.Content)
@@ -3972,3 +3982,13 @@ func (s *serveServer) handlePushSubscribe(w http.ResponseWriter, r *http.Request
 // ---------------------------------------------------------------------------
 // POST /v1/messages — Anthropic Messages API
 // ---------------------------------------------------------------------------
+
+func (s *serveServer) validatedSpawnToolCalls(parentSessionID string, result *tools.SpawnAgentResult) *int {
+	if child := s.validatedSpawnChild(parentSessionID, result.SessionID); child != nil {
+		result.SessionID = child.ID
+		count := child.ToolCalls
+		return &count
+	}
+	result.SessionID = ""
+	return nil
+}

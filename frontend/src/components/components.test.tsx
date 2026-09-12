@@ -2900,6 +2900,95 @@ describe('Preact-owned chat surfaces', () => {
     },
   );
 
+  it('renders compact spawn, wait, and detached queue progress summaries', () => {
+    const store = createStore();
+    store.sessions.value[0].messages = [
+      {
+        id: 'progress-tools',
+        role: 'tool-group',
+        content: '',
+        created: Date.now(),
+        tools: [
+          {
+            id: 'spawn-1',
+            name: 'spawn_agent',
+            status: 'running',
+            subagentProgress: {
+              seq: 3,
+              state: 'running',
+              phase: 'running_tools',
+              callsStarted: 12,
+              callsActive: 2,
+              currentTool: 'shell',
+            },
+          },
+          {
+            id: 'wait-1',
+            name: 'wait_for_jobs',
+            arguments: '{"run_ids":["r1","r2"]}',
+            status: 'cancelled',
+            subagentProgress: {
+              seq: 4,
+              state: 'cancelled',
+              callsStarted: 3,
+              callsActive: 0,
+            },
+          },
+          {
+            id: 'wait-error',
+            name: 'wait_for_jobs',
+            arguments: '{"job_ids":["j1"]}',
+            status: 'error',
+            resultStatus: 'error',
+            subagentProgress: {
+              seq: 5,
+              state: 'failed',
+              callsStarted: 0,
+              callsActive: 0,
+            },
+          },
+          {
+            id: 'queue-1',
+            name: 'queue_agent',
+            status: 'done',
+            resultStatus: 'success',
+          },
+          {
+            id: 'queue-error',
+            name: 'queue_agent',
+            status: 'error',
+            resultStatus: 'error',
+          },
+        ],
+      },
+    ];
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+    expect(container.querySelector('.tool-group-card > .tool-progress')).toHaveTextContent(
+      'spawn_agent: 12 tool calls · 2 active · shell',
+    );
+    expect(container.querySelector('.tool-group-card')).toHaveTextContent(
+      'stopped waiting for 2 jobs',
+    );
+    fireEvent.click(screen.getByRole('button', { name: /5 tool calls/ }));
+    expect(container.querySelector('[data-tool-id="spawn-1"] .tool-progress')).toHaveTextContent(
+      '12 tool calls · 2 active · shell',
+    );
+    expect(container.querySelector('[data-tool-id="wait-1"] .tool-progress')).toHaveTextContent(
+      'stopped waiting for 2 jobs · 3 tool calls · jobs keep running if stopped',
+    );
+    expect(container.querySelector('[data-tool-id="wait-error"] .tool-progress')).toHaveTextContent(
+      'failed to wait for 1 job · 0 tool calls · jobs keep running if stopped',
+    );
+    expect(container.querySelector('[data-tool-id="queue-1"] .tool-progress')).toHaveTextContent(
+      'queued as detached job',
+    );
+    expect(container.querySelector('[data-tool-id="queue-error"] .tool-progress')).toBeNull();
+  });
+
   it('shows a frozen duration beside a completed spawn-agent status', () => {
     const store = createStore();
     store.sessions.value[0].messages = [

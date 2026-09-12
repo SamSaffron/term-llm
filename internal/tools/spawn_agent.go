@@ -87,6 +87,11 @@ type SubagentEvent struct {
 	Provider          string              // resolved provider for init/usage events
 	Model             string              // resolved model for init/usage events
 	Timestamp         time.Time           // authoritative child lifecycle/event time when available
+	Deadline          time.Time           // independently enforced child/run deadline when available
+	RunID             string              // queued run identity; never model-provided display text
+	JobID             string              // queued job identity
+	EventID           int64               // monotonic persisted queued-event identity; zero for synchronous events
+	ProgressTruncated bool                // queued event history could not be read completely
 }
 
 // SubagentEventCallback is called to bubble up events from a running subagent.
@@ -467,14 +472,19 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	var runResult SpawnAgentRunResult
 	var err error
 
-	// Get callback and call ID for event bubbling. Always use the callback runner
-	// path so nested media can be retained on the parent tool result even when no
-	// live progress consumer is installed.
+	// Snapshot callbacks at execution admission. The context callback is owned by
+	// this parent execution; the tool callback is lifetime-scoped (for stats and
+	// other process-wide observers).
 	externalCallback := t.GetEventCallback()
+	executionCallback := SubagentEventCallbackFromContext(ctx)
+	// Descendants bubble through the child sink, which qualifies their IDs. Do
+	// not also deliver their raw call IDs to this parent's context callback.
+	childCtx = ContextWithSubagentEventCallback(childCtx, nil)
 	callID := llm.CallIDFromContext(ctx)
 	var mediaMu sync.Mutex
 	var nestedMedia []llm.MediaArtifact
 	cb := func(eventCallID string, event SubagentEvent) {
+		event.Deadline, _ = childCtx.Deadline()
 		if event.Type == SubagentEventToolEnd && len(event.Media) > 0 {
 			mediaMu.Lock()
 			nestedMedia = append(nestedMedia, event.Media...)
@@ -483,6 +493,7 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 		if externalCallback != nil && callID != "" {
 			externalCallback(eventCallID, event)
 		}
+		emitExecutionSubagentEvent(executionCallback, callID, eventCallID, event)
 	}
 	modelOverride := requestedModel
 	if modelOverride == "" {
@@ -587,4 +598,10 @@ func (t *SpawnAgentTool) formatErrorWithPartialResult(errType ToolErrorType, mes
 	}
 	data, _ := json.Marshal(result)
 	return string(data)
+}
+
+func emitExecutionSubagentEvent(callback SubagentEventCallback, callID, eventCallID string, event SubagentEvent) {
+	if callback != nil && callID != "" {
+		callback(eventCallID, event)
+	}
 }

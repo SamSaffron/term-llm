@@ -94,6 +94,8 @@ type serveRuntime struct {
 	approvalCtx            context.Context
 	pauseResponseTimeout   func() func()
 	refreshResponseTimeout func()
+	subagentProgress       *serveSubagentProgress
+	subagentProgressOwner  uint64
 	lastUIRunError         string
 	platform               string
 	platformMessages       agents.PlatformMessagesConfig
@@ -180,6 +182,51 @@ func (rt *serveRuntime) refreshResponseDeadline() {
 	rt.approvalMu.Unlock()
 	if refresh != nil {
 		refresh()
+	}
+}
+
+func (rt *serveRuntime) beginSubagentProgress(callID, toolName string) {
+	if rt == nil {
+		return
+	}
+	rt.approvalMu.Lock()
+	progress := rt.subagentProgress
+	rt.approvalMu.Unlock()
+	if progress != nil {
+		progress.begin(callID, toolName)
+	}
+}
+
+func (rt *serveRuntime) finishSubagentProgress(callID string, success bool) {
+	if rt == nil {
+		return
+	}
+	rt.approvalMu.Lock()
+	progress := rt.subagentProgress
+	ctx := rt.approvalCtx
+	rt.approvalMu.Unlock()
+	if progress != nil {
+		progress.finish(callID, success, ctx != nil && ctx.Err() != nil)
+	}
+}
+
+func (rt *serveRuntime) subagentProgressCallback() tools.SubagentEventCallback {
+	if rt == nil {
+		return nil
+	}
+	rt.approvalMu.Lock()
+	progress, owner := rt.subagentProgress, rt.subagentProgressOwner
+	rt.approvalMu.Unlock()
+	if progress == nil {
+		return nil
+	}
+	return func(callID string, event tools.SubagentEvent) {
+		rt.approvalMu.Lock()
+		current, currentOwner := rt.subagentProgress, rt.subagentProgressOwner
+		rt.approvalMu.Unlock()
+		if current == progress && currentOwner == owner {
+			progress.observe(callID, event)
+		}
 	}
 }
 

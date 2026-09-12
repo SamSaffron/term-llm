@@ -144,10 +144,8 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 		r.applyRecoveryResponseOutputItemAdded(event, payload)
 	case "response.output_item.done":
 		r.applyRecoveryResponseOutputItemDone(event, payload)
-	case "response.tool_exec.start":
-		r.applyRecoveryResponseToolExecStart(event, payload)
-	case "response.tool_exec.end":
-		r.applyRecoveryResponseToolExecEnd(event, payload)
+	case "response.tool_exec.start", "response.tool_exec.progress", "response.tool_exec.end":
+		r.applyRecoveryToolExec(event, payload)
 	case "response.completed":
 		r.applyRecoveryResponseCompleted(event, payload)
 	case "response.cancelled":
@@ -439,6 +437,7 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 				if tool.AskUserAnswer != "" {
 					toolEntry["askUserAnswer"] = tool.AskUserAnswer
 				}
+				tool.appendSubagentRecovery(toolEntry)
 				if len(tool.GuardianReviews) > 0 {
 					reviews := make([]map[string]any, 0, len(tool.GuardianReviews))
 					for _, review := range tool.GuardianReviews {
@@ -723,4 +722,20 @@ func (m *responseRunManager) latestRun(sessionID string) *responseRun {
 		}
 	}
 	return latest
+}
+
+func (tool responseRunRecoveryTool) appendSubagentRecovery(entry map[string]any) {
+	if len(tool.SubagentProgress) > 0 {
+		entry["subagentProgress"] = cloneJSONMap(tool.SubagentProgress)
+	}
+}
+func (r *responseRun) applyRecoveryToolExec(event string, payload map[string]any) {
+	switch event {
+	case "response.tool_exec.start":
+		r.applyRecoveryResponseToolExecStart(event, payload)
+	case "response.tool_exec.progress":
+		r.applyRecoveryResponseToolExecProgress(event, payload)
+	case "response.tool_exec.end":
+		r.applyRecoveryResponseToolExecEnd(event, payload)
+	}
 }

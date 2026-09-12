@@ -30,8 +30,13 @@ func (rt *serveRuntime) prepareRunContext(ctx context.Context, collaboration too
 	if askUser != nil {
 		ctx = tools.ContextWithAskUserUIFunc(ctx, askUser)
 	}
-	if rt.platform == "web" && strings.TrimSpace(req.SessionID) != "" {
-		ctx = tools.ContextWithQueueAgentOrigin(ctx, tools.QueueAgentOriginContext{Origin: tools.QueueAgentOriginWeb, SessionID: req.SessionID})
+	if rt.platform == "web" {
+		if callback := rt.subagentProgressCallback(); callback != nil {
+			ctx = tools.ContextWithSubagentEventCallback(ctx, callback)
+		}
+		if strings.TrimSpace(req.SessionID) != "" {
+			ctx = tools.ContextWithQueueAgentOrigin(ctx, tools.QueueAgentOriginContext{Origin: tools.QueueAgentOriginWeb, SessionID: req.SessionID})
+		}
 	}
 	model, effort := strings.TrimSpace(req.Model), strings.TrimSpace(req.ReasoningEffort)
 	if model == "" {

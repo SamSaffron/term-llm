@@ -50,6 +50,33 @@ export interface MediaArtifact {
   caption?: string;
 }
 
+export interface SubagentProgressChild {
+  id: string;
+  state: string;
+  callsStarted: number;
+  callsActive: number;
+  currentTool?: string;
+  callsTruncated?: boolean;
+  runId?: string;
+  jobId?: string;
+}
+
+export interface SubagentProgress {
+  seq: number;
+  state: 'starting' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
+  phase?:
+    'starting' | 'thinking' | 'running_tools' | 'responding' | 'compacting' | 'queued' | 'waiting';
+  callsStarted: number;
+  callsActive: number;
+  currentTool?: string;
+  lastActivityAt?: number;
+  children?: SubagentProgressChild[];
+  childrenTruncated?: number;
+  callsTruncated?: boolean;
+  runId?: string;
+  jobId?: string;
+}
+
 export interface ToolCall {
   id: string;
   /** Response-local output item identity; call id remains the canonical execution identity. */
@@ -66,6 +93,7 @@ export interface ToolCall {
   media?: MediaArtifact[];
   guardianReviews?: GuardianReview[];
   subagent?: Record<string, unknown>;
+  subagentProgress?: SubagentProgress;
   /** Execution timing in milliseconds. Running recovery snapshots are re-anchored locally. */
   startedAt?: number;
   endedAt?: number;

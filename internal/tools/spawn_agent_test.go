@@ -16,17 +16,54 @@ import (
 
 type mediaEventMockRunner struct {
 	*mockRunner
-	media llm.MediaArtifact
+	media             llm.MediaArtifact
+	inheritedCallback bool
 }
 
 func (r *mediaEventMockRunner) RunAgentWithCallback(ctx context.Context, agentName, prompt string, depth int, callID string, cb SubagentEventCallback) (SpawnAgentRunResult, error) {
+	r.inheritedCallback = SubagentEventCallbackFromContext(ctx) != nil
 	cb(callID, SubagentEvent{Type: SubagentEventToolEnd, ToolName: ShowMediaToolName, Media: []llm.MediaArtifact{r.media}, Success: true})
 	return r.mockRunner.RunAgent(ctx, agentName, prompt, depth)
 }
 
 func (r *mediaEventMockRunner) RunAgentWithCallbackAndOptions(ctx context.Context, agentName, prompt string, depth int, callID string, cb SubagentEventCallback, opts SpawnAgentRunOptions) (SpawnAgentRunResult, error) {
+	r.inheritedCallback = SubagentEventCallbackFromContext(ctx) != nil
 	cb(callID, SubagentEvent{Type: SubagentEventToolEnd, ToolName: ShowMediaToolName, Media: []llm.MediaArtifact{r.media}, Success: true})
 	return r.mockRunner.RunAgentWithOptions(ctx, agentName, prompt, depth, opts)
+}
+
+func TestSpawnAgentToolUsesExecutionScopedEventCallback(t *testing.T) {
+	tool := NewSpawnAgentTool(DefaultSpawnConfig(), 0)
+	runner := &mediaEventMockRunner{mockRunner: newMockRunner()}
+	tool.SetRunner(runner)
+	var event SubagentEvent
+	ctx := ContextWithSubagentEventCallback(context.Background(), func(_ string, observed SubagentEvent) { event = observed })
+	ctx = llm.ContextWithCallID(ctx, "parent-call")
+	if _, err := tool.Execute(ctx, makeSpawnArgs("reviewer", "inspect", 10)); err != nil {
+		t.Fatal(err)
+	}
+	if runner.inheritedCallback {
+		t.Fatal("child inherited raw parent callback; nested IDs must bubble through child sink")
+	}
+	if event.Type != SubagentEventToolEnd {
+		t.Fatalf("execution callback event = %#v", event)
+	}
+}
+
+func TestSpawnAgentToolAddsVerifiedDeadlineToCallbackEvents(t *testing.T) {
+	tool := NewSpawnAgentTool(DefaultSpawnConfig(), 0)
+	tool.SetRunner(&mediaEventMockRunner{mockRunner: newMockRunner()})
+	var event SubagentEvent
+	tool.SetEventCallback(func(_ string, observed SubagentEvent) { event = observed })
+	before := time.Now().Add(9 * time.Second)
+	ctx := llm.ContextWithCallID(context.Background(), "parent-call")
+	if _, err := tool.Execute(ctx, makeSpawnArgs("reviewer", "inspect", 10)); err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now().Add(11 * time.Second)
+	if event.Deadline.Before(before) || event.Deadline.After(after) {
+		t.Fatalf("callback deadline = %v, want enforced child deadline between %v and %v", event.Deadline, before, after)
+	}
 }
 
 func TestSpawnAgentToolRetainsNestedMediaOnResult(t *testing.T) {

@@ -267,6 +267,28 @@ func (r *responseRun) applyRecoveryResponseToolExecStart(event string, payload m
 	}
 }
 
+func (r *responseRun) applyRecoveryResponseToolExecProgress(event string, payload map[string]any) {
+	callID := stringValue(payload["call_id"])
+	if callID == "" {
+		return
+	}
+	for messageIndex := len(r.recoveryMessages) - 1; messageIndex >= 0; messageIndex-- {
+		group := &r.recoveryMessages[messageIndex]
+		if group.Role != "tool-group" {
+			continue
+		}
+		for toolIndex := range group.Tools {
+			if group.Tools[toolIndex].ID == callID {
+				currentSeq := responseRunInt64Value(group.Tools[toolIndex].SubagentProgress["seq"], 0)
+				if responseRunInt64Value(payload["seq"], 0) > currentSeq {
+					group.Tools[toolIndex].SubagentProgress = cloneJSONMap(payload)
+				}
+				return
+			}
+		}
+	}
+}
+
 func (r *responseRun) applyRecoveryResponseToolExecEnd(event string, payload map[string]any) {
 	images := stringSliceValue(payload["images"])
 	media := mediaEntriesFromValue(payload["media"])

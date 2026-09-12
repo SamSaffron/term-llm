@@ -93,6 +93,9 @@ func (s *serveServer) appendResponseToolCall(runtime *serveRuntime, run *respons
 }
 
 func (s *serveServer) appendResponseToolExecStart(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev llm.Event) error {
+	if runtime != nil {
+		runtime.beginSubagentProgress(ev.ToolCallID, ev.ToolName)
+	}
 	// ask_user is a user-facing control event, not tool metadata. Emit its
 	// prompt even when server-executed tool details are hidden; otherwise the
 	// live web stream stalls until a reload recovers the pending prompt.
@@ -129,6 +132,7 @@ func (s *serveServer) appendResponseToolExecStart(runtime *serveRuntime, run *re
 }
 
 func (s *serveServer) appendResponseToolExecEnd(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev llm.Event) error {
+	runtime.finishSubagentProgress(ev.ToolCallID, ev.ToolSuccess)
 	if ev.ToolName == tools.AskUserToolName && runtime != nil {
 		runtime.clearPendingAskUser(ev.ToolCallID)
 	}

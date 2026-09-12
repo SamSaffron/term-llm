@@ -8,6 +8,7 @@ import type {
   GuardianReview,
   MediaArtifact,
   Message,
+  SubagentProgress,
   ToolCall,
   Usage,
 } from './types';
@@ -62,6 +63,69 @@ const text = (value: unknown): string =>
 const number = (value: unknown, fallback = 0): number =>
   Number.isFinite(Number(value)) ? Math.trunc(Number(value)) : fallback;
 const clone = <T>(value: T): T => structuredClone(value);
+
+const subagentStates = ['starting', 'running', 'waiting', 'completed', 'failed', 'cancelled'];
+const subagentPhases = [
+  'starting',
+  'thinking',
+  'running_tools',
+  'responding',
+  'compacting',
+  'queued',
+  'waiting',
+];
+
+export function responseSubagentProgress(value: unknown): SubagentProgress | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const source = value as Record<string, unknown>;
+  const state = text(source.state) as SubagentProgress['state'];
+  if (!subagentStates.includes(state)) return undefined;
+  const result: SubagentProgress = {
+    seq: Math.max(0, number(source.seq)),
+    state,
+    callsStarted: Math.max(0, number(source.calls_started ?? source.callsStarted)),
+    callsActive: Math.max(0, number(source.calls_active ?? source.callsActive)),
+  };
+  const phase = text(source.phase) as SubagentProgress['phase'];
+  if (phase && subagentPhases.includes(phase)) result.phase = phase;
+  const currentTool = text(source.current_tool ?? source.currentTool);
+  if (currentTool) result.currentTool = currentTool;
+  const lastActivityAt = number(source.last_activity_at ?? source.lastActivityAt);
+  if (lastActivityAt > 0) result.lastActivityAt = lastActivityAt;
+  const childrenTruncated = number(source.children_truncated ?? source.childrenTruncated);
+  if (childrenTruncated > 0) result.childrenTruncated = childrenTruncated;
+  if (source.calls_truncated === true || source.callsTruncated === true)
+    result.callsTruncated = true;
+  const runId = text(source.run_id ?? source.runId);
+  const jobId = text(source.job_id ?? source.jobId);
+  if (runId) result.runId = runId;
+  if (jobId) result.jobId = jobId;
+  if (Array.isArray(source.children)) {
+    result.children = source.children
+      .filter((child): child is Record<string, unknown> =>
+        Boolean(child && typeof child === 'object'),
+      )
+      .slice(0, 8)
+      .map((child) => {
+        const entry = {
+          id: text(child.id),
+          state: text(child.state),
+          callsStarted: Math.max(0, number(child.calls_started ?? child.callsStarted)),
+          callsActive: Math.max(0, number(child.calls_active ?? child.callsActive)),
+        } as NonNullable<SubagentProgress['children']>[number];
+        const tool = text(child.current_tool ?? child.currentTool);
+        if (tool) entry.currentTool = tool;
+        if (child.calls_truncated === true || child.callsTruncated === true)
+          entry.callsTruncated = true;
+        const childRunId = text(child.run_id ?? child.runId);
+        const childJobId = text(child.job_id ?? child.jobId);
+        if (childRunId) entry.runId = childRunId;
+        if (childJobId) entry.jobId = childJobId;
+        return entry;
+      });
+  }
+  return result;
+}
 
 function responseAttachments(value: unknown): Attachment[] | undefined {
   if (!Array.isArray(value)) return undefined;
@@ -479,6 +543,26 @@ export function reduceResponse(
         retry: undefined,
       };
     }
+    case 'response.tool_exec.progress': {
+      const id = text(event.call_id || event.tool_call_id || event.item_id);
+      let entry: ToolCall;
+      [messages, entry] = tool(
+        messages,
+        responseId,
+        id,
+        text(event.tool_name || event.name || event.tool),
+        projection.pendingGuardian,
+      );
+      const progress = responseSubagentProgress(event);
+      if (!progress || progress.seq <= (entry.subagentProgress?.seq || 0)) return next;
+      return {
+        ...next,
+        messages: patchTool(messages, id, {
+          name: text(event.tool_name || event.name || event.tool) || entry.name,
+          subagentProgress: progress,
+        }),
+      };
+    }
     case 'response.tool_exec.end': {
       const id = text(event.call_id || event.tool_call_id || event.item_id);
       let entry: ToolCall;
@@ -501,6 +585,20 @@ export function reduceResponse(
           : startedAt
             ? Math.max(0, endedAt - startedAt)
             : undefined;
+      const progress = entry.subagentProgress;
+      const terminalProgress = progress
+        ? {
+            ...progress,
+            state:
+              progress.state === 'cancelled'
+                ? ('cancelled' as const)
+                : failed
+                  ? ('failed' as const)
+                  : ('completed' as const),
+            callsActive: 0,
+            currentTool: undefined,
+          }
+        : undefined;
       messages = patchTool(messages, id, {
         name: text(event.tool_name || event.name || event.tool) || entry.name,
         arguments: text(event.tool_arguments) || entry.arguments,
@@ -510,6 +608,7 @@ export function reduceResponse(
         startedAt,
         endedAt,
         durationMs,
+        subagentProgress: terminalProgress,
         askUserAnswer:
           !failed &&
           (text(event.tool_name || event.name || event.tool) || entry.name) === 'ask_user'
@@ -834,6 +933,7 @@ export const RESPONSE_EVENT_TYPES = [
   'response.function_call_arguments.delta',
   'response.output_item.done',
   'response.tool_exec.start',
+  'response.tool_exec.progress',
   'response.tool_exec.end',
   'response.guardian.review',
   'response.steering',
