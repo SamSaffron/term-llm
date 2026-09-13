@@ -11,6 +11,19 @@ import (
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
+func handleRemovedSubagentProgress(subagentTracker *SubagentTracker, callID string, event tools.SubagentEvent, p *SubagentProgress) bool {
+	if p != nil {
+		return false
+	}
+	if event.Type == tools.SubagentEventUsage {
+		subagentTracker.HandleUsageEvent(callID, event)
+	}
+	if event.Type == tools.SubagentEventGuardian && event.Guardian != nil {
+		subagentTracker.HandleGuardianEvent(callID, *event.Guardian)
+	}
+	return true
+}
+
 // HandleSubagentProgress processes subagent events and updates both the subagent tracker
 // and the corresponding spawn_agent segment's stats. This is shared logic used by both
 // the ask command (streaming mode) and the chat TUI.
@@ -39,13 +52,7 @@ func HandleSubagentProgress(tracker *ToolTracker, subagentTracker *SubagentTrack
 	p := subagentTracker.GetOrCreate(callID, agentName)
 
 	// Removed runs must not reappear inline, but late usage still belongs to accounting.
-	if p == nil {
-		if event.Type == tools.SubagentEventUsage {
-			subagentTracker.HandleUsageEvent(callID, event)
-		}
-		if event.Type == tools.SubagentEventGuardian && event.Guardian != nil {
-			subagentTracker.HandleGuardianEvent(callID, *event.Guardian)
-		}
+	if handleRemovedSubagentProgress(subagentTracker, callID, event, p) {
 		return
 	}
 	if p.Prompt == "" && prompt != "" {

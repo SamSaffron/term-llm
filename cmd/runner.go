@@ -161,6 +161,29 @@ func resolvedRunnerApprovalMode(defaults cmdRunnerOptions, req runpkg.Request) t
 	return tools.ModePrompt
 }
 
+func prepareRunnerAgent(agent *agents.Agent, req runpkg.Request) (*agents.Agent, string, string, string, string) {
+	if agent == nil {
+		return nil, "", "", "", ""
+	}
+	if req.HostOutputTool != nil {
+		agentCopy := *agent
+		agentCopy.Output = ""
+		agentCopy.OnComplete = ""
+		agentCopy.OutputTool = agents.OutputToolConfig{Name: req.HostOutputTool.Name, Param: req.HostOutputTool.Param, Description: req.HostOutputTool.Description, Schema: req.HostOutputTool.Schema}
+		agent = &agentCopy
+	}
+	if model := strings.TrimSpace(req.Model); model != "" {
+		agentCopy := *agent
+		agentCopy.Model = model
+		agent = &agentCopy
+	}
+	return agent, agent.Provider, agent.Model, agent.Skills, agent.Name
+}
+
+func includeConfiguredRunnerTools(req runpkg.Request) bool {
+	return req.IncludeConfiguredTools == nil || *req.IncludeConfiguredTools
+}
+
 func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg.EventSink) (*cmdRunEnvironment, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -178,25 +201,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		return nil, fmt.Errorf("agent %q not found", req.AgentName)
 	}
 
-	agentProvider, agentModel, agentSkills, agentName := "", "", "", ""
-	if agent != nil {
-		if req.HostOutputTool != nil {
-			agentCopy := *agent
-			agentCopy.Output = ""
-			agentCopy.OnComplete = ""
-			agentCopy.OutputTool = agents.OutputToolConfig{Name: req.HostOutputTool.Name, Param: req.HostOutputTool.Param, Description: req.HostOutputTool.Description, Schema: req.HostOutputTool.Schema}
-			agent = &agentCopy
-		}
-		if model := strings.TrimSpace(req.Model); model != "" {
-			agentCopy := *agent
-			agentCopy.Model = model
-			agent = &agentCopy
-		}
-		agentProvider = agent.Provider
-		agentModel = agent.Model
-		agentSkills = agent.Skills
-		agentName = agent.Name
-	}
+	agent, agentProvider, agentModel, agentSkills, agentName := prepareRunnerAgent(agent, req)
 	providerFlag := strings.TrimSpace(req.Provider)
 	if providerFlag == "" {
 		providerFlag = strings.TrimSpace(r.defaults.Provider)
@@ -430,10 +435,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		runtime.setMCPManager(mgr)
 	}
 
-	configuredTools := true
-	if req.IncludeConfiguredTools != nil {
-		configuredTools = *req.IncludeConfiguredTools
-	}
+	configuredTools := includeConfiguredRunnerTools(req)
 	var toolSpecs []llm.ToolSpec
 	if configuredTools {
 		toolSpecs = runtime.selectTools(nil)

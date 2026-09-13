@@ -12,6 +12,12 @@ import (
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
+func (m *Model) finalizeStreamStats() {
+	if m.stats != nil {
+		m.stats.Finalize()
+	}
+}
+
 func (m *Model) handleStreamError(msg streamEventMsg, ev ui.StreamEvent, state *streamCommandBuffer, streamEventStart time.Time) (tea.Model, tea.Cmd, bool, []tea.Cmd, []tea.Cmd) {
 	var suspended *llm.SuspendedError
 	if errors.As(ev.Err, &suspended) {
@@ -20,9 +26,7 @@ func (m *Model) handleStreamError(msg streamEventMsg, ev ui.StreamEvent, state *
 	}
 	m.applyAllPendingCompactionsToUI(msg.generation)
 	if ev.Err != nil {
-		if m.stats != nil {
-			m.stats.Finalize()
-		}
+		m.finalizeStreamStats()
 		m.setRetryStatus("")
 		// Flush any buffered text on error
 		if m.smoothBuffer != nil {
@@ -136,9 +140,7 @@ func (m *Model) handleStreamError(msg streamEventMsg, ev ui.StreamEvent, state *
 }
 
 func (m *Model) handleStreamDone(msg streamEventMsg, ev ui.StreamEvent, state *streamCommandBuffer) (tea.Model, tea.Cmd, bool, []tea.Cmd, []tea.Cmd) {
-	if m.stats != nil {
-		m.stats.Finalize()
-	}
+	m.finalizeStreamStats()
 	m.applyAllPendingCompactionsToUI(msg.generation)
 	m.setRetryStatus("")
 	m.currentTokens = ev.Tokens

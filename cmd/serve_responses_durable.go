@@ -152,6 +152,16 @@ func branchContextRequestValues(requested *responsesBranchContextRequest) (strin
 	return mode, focus, 0, ""
 }
 
+func (s *serveServer) recordPathNoteUsage(ctx context.Context, sourceSessionID, model string, notes *llm.PathNotesResult) {
+	if notes == nil || notes.Usage.BillableCountersZero() {
+		return
+	}
+	if rt := s.peekStatsRuntime(sourceSessionID); rt != nil {
+		rt.recordHelperStats("path_note", model, notes.Usage)
+	}
+	_ = s.store.UpdateMetrics(ctx, sourceSessionID, 0, 0, notes.Usage.InputTokens, notes.Usage.OutputTokens, notes.Usage.CachedInputTokens, notes.Usage.CacheWriteTokens)
+}
+
 func (s *serveServer) generateBranchPathNote(ctx context.Context, sourceSessionID string, source []llm.Message, mode, focus string) (*session.BranchPathNote, int, string) {
 	if mode == "" || mode == "none" || mode == "clean" || len(source) == 0 {
 		return nil, 0, ""
@@ -181,12 +191,7 @@ func (s *serveServer) generateBranchPathNote(ctx context.Context, sourceSessionI
 		return nil, http.StatusConflict, "branch context generation is unavailable"
 	}
 	notes, err := llm.GeneratePathNotes(ctx, provider, sess.Model, source, llm.PathNotesConfig{Focus: focus})
-	if notes != nil && !notes.Usage.BillableCountersZero() {
-		if rt := s.peekStatsRuntime(sourceSessionID); rt != nil {
-			rt.recordHelperStats("path_note", sess.Model, notes.Usage)
-		}
-		_ = s.store.UpdateMetrics(ctx, sourceSessionID, 0, 0, notes.Usage.InputTokens, notes.Usage.OutputTokens, notes.Usage.CachedInputTokens, notes.Usage.CacheWriteTokens)
-	}
+	s.recordPathNoteUsage(ctx, sourceSessionID, sess.Model, notes)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, http.StatusRequestTimeout, "branch context generation was cancelled"

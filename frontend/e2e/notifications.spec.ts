@@ -5,7 +5,11 @@ for (const route of ['', 'chat/9']) {
     context,
     page,
     baseURL,
-  }) => {
+  }, testInfo) => {
+    test.skip(
+      testInfo.project.name === 'iphone',
+      'non-standalone iPhone notification enrollment is intentionally unsupported',
+    );
     const origin = new URL(baseURL!).origin;
     const expectedURL = new URL('chat/e2e-session', baseURL).href;
     await context.grantPermissions(['notifications'], { origin });

@@ -119,6 +119,10 @@ func childSpawnProvenanceForParent(ctx context.Context, store session.Store, par
 	return provenance
 }
 
+func terminalChildStatus(status session.SessionStatus) bool {
+	return status == session.StatusComplete || status == session.StatusError || status == session.StatusInterrupted
+}
+
 func (s *serveServer) handleSessionChildren(w http.ResponseWriter, r *http.Request, parentID string) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
@@ -171,7 +175,7 @@ func (s *serveServer) handleSessionChildren(w http.ResponseWriter, r *http.Reque
 			StartedAt:         child.CreatedAt.UnixMilli(),
 			ApproximateTimes:  true,
 		}
-		terminal := child.Status == session.StatusComplete || child.Status == session.StatusError || child.Status == session.StatusInterrupted
+		terminal := terminalChildStatus(child.Status)
 		if spawn, ok := spawnProvenance[child.ID]; ok {
 			item.ParentSpawnItemID = spawn.ItemID
 			item.ParentSpawnCallID = spawn.CallID
