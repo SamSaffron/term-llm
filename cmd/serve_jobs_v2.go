@@ -23,7 +23,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/jobs"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
-	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/restart"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -389,18 +388,13 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 	if delegationID := hubDelegationIDFromJobLabels(job.Labels); delegationID != "" {
 		ctx = tools.WithHubDelegationID(ctx, delegationID)
 	}
-	var thinkingBuilder strings.Builder
-	var thinkingItemID string
-	var responseBuilder strings.Builder
+	var output runnerOutput
 	progressTracker := newProgressTracker()
 	execResult, err := r.exec(ctx, cfg, func(ev llm.Event) {
+		if ev.Type != llm.EventTextDelta || !cfg.Progressive {
+			output.Event(ev)
+		}
 		switch ev.Type {
-		case llm.EventReasoningDelta:
-			internalreasoning.AppendStreamItemText(&thinkingBuilder, &thinkingItemID, ev.Text, ev.ReasoningItemID)
-		case llm.EventTextDelta:
-			if !cfg.Progressive {
-				responseBuilder.WriteString(ev.Text)
-			}
 		case llm.EventToolCall:
 			if ev.Tool != nil && cfg.Progressive && isProgressToolName(ev.Tool.Name) {
 				progressTracker.observeToolCall(strings.TrimSpace(ev.Tool.ID), strings.TrimSpace(ev.Tool.Name), ev.Tool.Arguments)
@@ -413,7 +407,7 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 				// Flush accumulated response to DB after each turn so callers can see partial output.
 				if pw != nil {
 					if !cfg.Progressive {
-						pw("response_flush", responseBuilder.String(), nil)
+						pw("response_flush", output.response.String(), nil)
 					}
 					pw("turn_complete", fmt.Sprintf("turn %d complete (%d in, %d out tokens)", res.TurnCount, ev.Use.InputTokens, ev.Use.OutputTokens), map[string]any{
 						"turn":          res.TurnCount,
@@ -444,7 +438,7 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 					if message == "" {
 						message = "progress updated"
 					}
-					envelope := buildProgressiveRunResult(cfg.SessionID, "", commit.Final, commit, responseBuilder.String())
+					envelope := buildProgressiveRunResult(cfg.SessionID, "", commit.Final, commit, output.response.String())
 					pw("progress_update", message, envelope)
 				}
 				return
@@ -466,9 +460,9 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 			}
 		}
 	})
-	res.Thinking = thinkingBuilder.String()
+	res.Thinking = output.thinking.String()
 	if !cfg.Progressive {
-		res.Response = responseBuilder.String()
+		res.Response = output.response.String()
 	}
 	if execResult.Progressive != nil {
 		if strings.TrimSpace(execResult.Progressive.SessionID) == "" {

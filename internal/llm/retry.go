@@ -318,15 +318,15 @@ func retryCall[T any](ctx context.Context, config RetryConfig, run func() (T, er
 		if err == nil {
 			return result, nil
 		}
+		// Only the caller context tells us whether the run has expired.
+		// Transport timeouts may also wrap context.DeadlineExceeded.
+		if ctx.Err() != nil {
+			return zero, ctx.Err()
+		}
 		if !isRetryable(err) {
 			return zero, err
 		}
 		lastErr = err
-
-		// Don't retry if context is already cancelled.
-		if ctx.Err() != nil {
-			return zero, ctx.Err()
-		}
 
 		// Don't retry if this was the last count-limited attempt.
 		if config.MaxAttempts > 0 && attempt >= config.MaxAttempts {
@@ -485,9 +485,15 @@ func isRetryable(err error) bool {
 		return false
 	}
 
-	// Never retry if the context itself has been cancelled or deadline exceeded.
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+	// Explicit cancellation is not transient. Caller deadlines are checked by retryCall.
+	if errors.Is(err, context.Canceled) {
 		return false
+	}
+
+	// Attempt-level deadlines (including dial and response-header timeouts)
+	// are retryable while the caller context is still live.
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
 	}
 
 	// Stream framing / terminal marker failures are transient transport failures.

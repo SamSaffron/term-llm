@@ -1032,6 +1032,128 @@ func TestStreamReply_ReconcilesTranscriptAfterTurnWriteFailure(t *testing.T) {
 	}
 }
 
+// cancelBeforeOutputProvider blocks the initial provider call before any response
+// callback, then delegates subsequent requests to the recording mock.
+type cancelBeforeOutputProvider struct {
+	*llm.MockProvider
+	started chan struct{}
+	calls   atomic.Int32
+}
+
+func (p *cancelBeforeOutputProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	if p.calls.Add(1) == 1 {
+		close(p.started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return p.MockProvider.Stream(ctx, req)
+}
+
+func TestStreamReply_PreservesUserBeforeAnyOutput(t *testing.T) {
+	for _, interrupted := range []bool{false, true} {
+		for _, image := range []bool{false, true} {
+			t.Run(fmt.Sprintf("interrupted=%v/image=%v", interrupted, image), func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "telegram.db")})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer store.Close()
+				mock := llm.NewMockProvider("mock")
+				var provider llm.Provider = mock
+				started := make(chan struct{})
+				if interrupted {
+					provider = &cancelBeforeOutputProvider{MockProvider: mock, started: started}
+				} else {
+					mock.AddError(errors.New("upstream unavailable"))
+				}
+				mock.AddTextResponse("recovered")
+				mgr := &telegramSessionMgr{
+					sessions: make(map[int64]*telegramSession), store: store,
+					settings: Settings{MaxTurns: 5, Store: store, NewSession: func(context.Context) (*SessionRuntime, error) {
+						return &SessionRuntime{Engine: llm.NewEngine(provider, llm.NewToolRegistry()), ProviderName: "mock", ModelName: "test"}, nil
+					}},
+				}
+				sess, err := mgr.getOrCreate(ctx, 42)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if sess.activeHistory != nil {
+					t.Fatal("expected nil active history")
+				}
+				user := llm.UserText("explain this request")
+				if image {
+					user = llm.UserImageMessage("image/jpeg", "data", "explain this request")
+				}
+				wantText := collectUserText(normalizeUserMessageForHistory(user))
+				done := make(chan error, 1)
+				go func() { done <- mgr.streamReply(ctx, &fakeBotSender{}, sess, 42, user) }()
+				if interrupted {
+					select {
+					case <-started:
+					case <-ctx.Done():
+						t.Fatal("provider did not start")
+					}
+					sess.cancelMu.Lock()
+					stop := sess.streamCancel
+					sess.cancelMu.Unlock()
+					stop()
+				}
+				select {
+				case err := <-done:
+					if interrupted && err != nil {
+						t.Fatalf("interrupt: %v", err)
+					}
+					if !interrupted && err == nil {
+						t.Fatal("expected provider error")
+					}
+				case <-ctx.Done():
+					t.Fatal("turn did not settle")
+				}
+				if len(sess.history) != 1 || collectUserText(sess.history[0]) != wantText {
+					t.Fatalf("history = %#v, want only accepted user request %q", sess.history, wantText)
+				}
+				assertPersisted := func(want int) {
+					t.Helper()
+					msgs, err := store.GetMessages(ctx, sess.meta.ID, 0, 0)
+					if err != nil {
+						t.Fatal(err)
+					}
+					count := 0
+					for _, msg := range msgs {
+						if msg.Role == llm.RoleUser && strings.Contains(msg.TextContent, "explain this request") {
+							count++
+						}
+					}
+					if len(msgs) != want || count != 1 {
+						t.Fatalf("persisted transcript = %#v, want %d messages and original request exactly once", msgs, want)
+					}
+				}
+				assertPersisted(1)
+				if err := mgr.streamReply(ctx, &fakeBotSender{}, sess, 42, llm.UserText("try again")); err != nil {
+					t.Fatal(err)
+				}
+				requests := mock.RecordedRequests()
+				request := requests[len(requests)-1]
+				var users []string
+				for _, msg := range request.Messages {
+					if msg.Role == llm.RoleUser {
+						users = append(users, collectUserText(msg))
+					}
+				}
+				if len(users) != 2 || users[0] != wantText || users[1] != "try again" {
+					t.Fatalf("retry user context = %q", users)
+				}
+				if !mgr.reconcileTelegramTranscript(ctx, sess, sess.history, false, "ReplaceMessages(test)") {
+					t.Fatal("reconciliation failed")
+				}
+				assertPersisted(3)
+			})
+		}
+	}
+}
+
 func TestStreamReply_ReconcilesDegradedCallbackQueueAfterStreamError(t *testing.T) {
 	h := testutil.NewEngineHarness()
 	h.AddMockTool("my_tool", "tool output")
@@ -2866,10 +2988,9 @@ func TestStreamReply_WatchdogTimeoutIsNotTreatedAsUserInterrupt(t *testing.T) {
 	}
 
 	sess.mu.Lock()
-	historyLen := len(sess.history)
-	sess.mu.Unlock()
-	if historyLen != 2 {
-		t.Fatalf("watchdog timeout should not persist partial history; got %d messages", historyLen)
+	defer sess.mu.Unlock()
+	if len(sess.history) != 3 || sess.history[2].Role != llm.RoleUser || collectUserText(sess.history[2]) != "hello" {
+		t.Fatalf("watchdog timeout should retain the accepted user request without assistant output; got %#v", sess.history)
 	}
 }
 

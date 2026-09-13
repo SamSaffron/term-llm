@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -782,5 +785,125 @@ func TestRetryProviderListModelsUnsupportedWhenInnerLacksMethod(t *testing.T) {
 	_, err := lister.ListModels(context.Background())
 	if !errors.Is(err, ErrListModelsUnsupported) {
 		t.Fatalf("got err %v, want ErrListModelsUnsupported", err)
+	}
+}
+
+func TestRetryProvider_ResponseHeaderTimeout(t *testing.T) {
+	release := make(chan struct{})
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			// Hold headers until the transport cancels the timed-out request.
+			_, _ = io.Copy(io.Discard, r.Body)
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer server.Close()
+	defer close(release)
+	client := newStreamingHTTPClient()
+	client.Transport.(*http.Transport).ResponseHeaderTimeout = 50 * time.Millisecond
+	defer client.CloseIdleConnections()
+	original := defaultHTTPClient
+	defaultHTTPClient = client
+	defer func() { defaultHTTPClient = original }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	provider := WrapWithRetry(NewOpenAICompatProvider(server.URL, "", "test-model", "Test"), RetryConfig{
+		MaxAttempts: 2, BaseBackoff: time.Millisecond, MaxBackoff: time.Millisecond,
+	})
+	stream, err := provider.Stream(ctx, Request{Messages: []Message{UserText("hello")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	var text strings.Builder
+	var retries int
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == EventError {
+			t.Fatalf("stream failed after %d requests (parent error: %v): %v", requests.Load(), ctx.Err(), event.Err)
+		}
+		if event.Type == EventTextDelta {
+			text.WriteString(event.Text)
+		}
+		if event.Type == EventRetry {
+			retries++
+		}
+	}
+	if requests.Load() != 2 || retries != 1 || text.String() != "hello" {
+		t.Fatalf("requests=%d retries=%d text=%q; want 2, 1, hello", requests.Load(), retries, text.String())
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("parent context expired: %v", ctx.Err())
+	}
+}
+
+func TestRetryCall_DeadlineErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		expired      bool
+		canceled     bool
+		committed    bool
+		budget       time.Duration
+		wantAttempts int
+	}{
+		{name: "live parent", wantAttempts: 2},
+		{name: "expired parent", expired: true, wantAttempts: 1},
+		{name: "canceled parent", canceled: true, wantAttempts: 1},
+		{name: "committed timeout", committed: true, wantAttempts: 1},
+		{name: "exhausted budget", budget: time.Nanosecond, wantAttempts: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tc.expired {
+				var expire context.CancelFunc
+				ctx, expire = context.WithDeadline(ctx, time.Now().Add(-time.Second))
+				defer expire()
+			}
+			var attempts, retries int
+			_, err := retryCall(ctx, RetryConfig{
+				MaxAttempts: 2, MaxElapsedTime: tc.budget, BaseBackoff: time.Millisecond, MaxBackoff: time.Millisecond,
+			}, func() (struct{}, error) {
+				attempts++
+				if attempts == 2 {
+					return struct{}{}, nil
+				}
+				if tc.canceled {
+					cancel()
+				}
+				err := fmt.Errorf("request failed: %w", context.DeadlineExceeded)
+				if tc.committed {
+					err = &committedError{err}
+				}
+				return struct{}{}, err
+			}, func(retryInfo) error { retries++; return nil })
+			if attempts != tc.wantAttempts || retries != tc.wantAttempts-1 {
+				t.Fatalf("attempts=%d retries=%d; want %d, %d", attempts, retries, tc.wantAttempts, tc.wantAttempts-1)
+			}
+			if tc.wantAttempts == 2 {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil {
+				t.Fatal("expected error")
+			}
+			if tc.canceled && !errors.Is(err, context.Canceled) {
+				t.Fatalf("expected cancellation, got %v", err)
+			}
+		})
 	}
 }

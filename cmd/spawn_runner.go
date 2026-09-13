@@ -466,7 +466,7 @@ type spawnRunSink struct {
 	model    string
 
 	mu             sync.Mutex
-	output         strings.Builder
+	output         runnerOutput
 	started        bool
 	doneSent       bool
 	pendingUsage   []tools.SubagentEvent
@@ -514,7 +514,7 @@ func (s *spawnRunSink) Output() string {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.output.String()
+	return s.output.response.String()
 }
 
 // SetResolvedModel replaces the preview identity with the actual runner model.
@@ -548,17 +548,16 @@ func (s *spawnRunSink) Event(event llm.Event) {
 	}
 	s.Start()
 	s.mu.Lock()
+	s.output.Event(event)
 	var pending []tools.SubagentEvent
 	switch event.Type {
 	case llm.EventTextDelta:
-		s.output.WriteString(event.Text)
 		s.usageCommitted = false
 	case llm.EventReasoningDelta:
 		s.usageCommitted = false
 	case llm.EventModelSwitch:
 		s.model = event.Model
 	case llm.EventAttemptDiscard:
-		s.output.Reset()
 		s.pendingUsage = nil
 	case llm.EventToolCall, llm.EventToolExecStart, llm.EventDiscoveryCall:
 		pending = s.pendingUsage
