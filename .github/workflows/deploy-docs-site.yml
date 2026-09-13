@@ -53,7 +53,7 @@ jobs:
           retention-days: 7
 
       - name: Prepare release directories
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.5
         with:
           host: 143.198.76.107
           username: root
@@ -84,7 +84,7 @@ jobs:
           strip_components: 2
 
       - name: Install nginx config, issue cert, and swap webroot
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.5
         with:
           host: 143.198.76.107
           username: root
