@@ -61,40 +61,59 @@ func (rt *serveRuntime) finishStats() {
 	}
 	a.running = false
 }
+func (a *serveStats) startTool(s *ui.SessionStats, id string) {
+	if a.tools[id] || a.ended[id] {
+		return
+	}
+	if a.tools == nil {
+		a.tools = map[string]bool{}
+	}
+	a.tools[id] = true
+	s.ToolStart()
+}
+
+func (a *serveStats) endTool(s *ui.SessionStats, id string) {
+	// Only an observed start can close a tool interval. Duplicate or unmatched
+	// ends must not restart model timing or discard usage.
+	if !a.tools[id] {
+		return
+	}
+	if a.ended == nil {
+		a.ended = map[string]bool{}
+	}
+	a.ended[id] = true
+	delete(a.tools, id)
+	if len(a.tools) == 0 {
+		s.ToolEnd()
+	}
+	a.attempt = llm.Usage{}
+	a.attemptCalls = 0
+	a.committed = false
+}
+
+func (a *serveStats) discardAttempt(s *ui.SessionStats) {
+	// Keep time spent on a failed attempt, even when it produced no usage.
+	// DiscardUsage resets pending timing, so accrue it first. Copying the
+	// snapshot back also preserves an overlapping native-tool interval.
+	*s = s.SnapshotAt(time.Now())
+	u := a.attempt
+	s.DiscardUsage(u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens, a.attemptCalls)
+	if len(a.tools) == 0 {
+		// Some provider fallbacks discard without an EventRetry. Start the
+		// replacement attempt now; a subsequent retry reschedules past backoff.
+		s.RequestStart()
+	}
+	a.attempt = llm.Usage{}
+	a.attemptCalls = 0
+	a.committed = false
+}
+
 func (rt *serveRuntime) recordStatsEvent(e llm.Event) {
 	a := &rt.stats
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.init()
 	s := a.stats
-	start := func(id string) {
-		if a.tools[id] || a.ended[id] {
-			return
-		}
-		if a.tools == nil {
-			a.tools = map[string]bool{}
-		}
-		a.tools[id] = true
-		s.ToolStart()
-	}
-	end := func(id string) {
-		// Only an observed start can close a tool interval. Duplicate or
-		// unmatched ends must not restart model timing or discard usage.
-		if !a.tools[id] {
-			return
-		}
-		if a.ended == nil {
-			a.ended = map[string]bool{}
-		}
-		a.ended[id] = true
-		delete(a.tools, id)
-		if len(a.tools) == 0 {
-			s.ToolEnd()
-		}
-		a.attempt = llm.Usage{}
-		a.attemptCalls = 0
-		a.committed = false
-	}
 	switch e.Type {
 	case llm.EventTextDelta, llm.EventReasoningDelta:
 		a.committed = false
@@ -108,22 +127,22 @@ func (rt *serveRuntime) recordStatsEvent(e llm.Event) {
 		a.attempt = llm.Usage{}
 		a.attemptCalls = 0
 		if e.Tool != nil {
-			start(e.Tool.ID)
+			a.startTool(s, e.Tool.ID)
 		}
 	case llm.EventToolExecStart:
-		start(e.ToolCallID)
+		a.startTool(s, e.ToolCallID)
 	case llm.EventToolExecEnd:
-		end(e.ToolCallID)
+		a.endTool(s, e.ToolCallID)
 	case llm.EventDiscoveryCall:
 		if e.DiscoveryCall != nil {
 			a.committed = true
 			a.attempt = llm.Usage{}
 			a.attemptCalls = 0
-			start(e.DiscoveryCall.ID)
+			a.startTool(s, e.DiscoveryCall.ID)
 		}
 	case llm.EventDiscoveryOutput:
 		if e.DiscoveryOutput != nil {
-			end(e.DiscoveryOutput.CallID)
+			a.endTool(s, e.DiscoveryOutput.CallID)
 		}
 	case llm.EventUsage:
 		s.GenerationEnd()
@@ -139,20 +158,7 @@ func (rt *serveRuntime) recordStatsEvent(e llm.Event) {
 		a.retries++
 		s.ScheduleRetryStart(e.RetryWaitSecs)
 	case llm.EventAttemptDiscard:
-		// Keep time spent on a failed attempt, even when it produced no usage.
-		// DiscardUsage resets pending timing, so accrue it first. Copying the
-		// snapshot back also preserves an overlapping native-tool interval.
-		*s = s.SnapshotAt(time.Now())
-		u := a.attempt
-		s.DiscardUsage(u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens, a.attemptCalls)
-		if len(a.tools) == 0 {
-			// Some provider fallbacks discard without an EventRetry. Start the
-			// replacement attempt now; a subsequent retry reschedules past backoff.
-			s.RequestStart()
-		}
-		a.attempt = llm.Usage{}
-		a.attemptCalls = 0
-		a.committed = false
+		a.discardAttempt(s)
 	case llm.EventDone, llm.EventError:
 		s.Finalize()
 		a.running = false
@@ -222,40 +228,22 @@ func statsMetrics(s *ui.SessionStats) webSessionMetrics {
 	return webSessionMetrics{InputTokens: s.InputTokens, OutputTokens: s.OutputTokens, CachedInputTokens: s.CachedInputTokens, CacheWriteTokens: s.CacheWriteTokens, ToolCalls: s.ToolCallCount, LLMTurns: s.LLMCallCount}
 }
 func statsMS(d time.Duration) *int64 { n := d.Milliseconds(); return &n }
-func (rt *serveRuntime) statsSnapshot() *serveStatsResponse {
-	a := &rt.stats
-	a.mu.Lock()
-	if a.stats == nil {
-		a.mu.Unlock()
-		return nil
-	}
-	now := time.Now()
-	s := a.stats.SnapshotAt(now)
-	calls, _ := s.UsageCalls()
-	runs := a.children.Snapshots()
-	started := make(map[string]bool, len(a.childrenStarted))
-	for id, observed := range a.childrenStarted {
-		started[id] = observed
-	}
-	retries, running := a.retries, a.running
-	handoverUsage, handoverCalls := a.handoverUsage, a.handoverCalls
-	a.mu.Unlock()
-	out := &serveStatsResponse{Metrics: statsMetrics(&s), Scope: "runtime_local", Models: []serveStatsModel{}, Sections: []serveStatsSection{}, ActiveMS: statsMS(s.LLMTime + s.ToolTime), ModelMS: statsMS(s.LLMTime), ToolMS: statsMS(s.ToolTime)}
-	var ttft, gen time.Duration
+func appendMainCallStats(out *serveStatsResponse, calls []ui.UsageCall) {
+	var ttft, generation time.Duration
 	observed, tokens := 0, 0
 	var cost float64
 	priced, unpriced := 0, 0
-	for _, c := range calls {
-		if c.ObservedOutput && c.GenerationTime > 0 {
+	for _, call := range calls {
+		if call.ObservedOutput && call.GenerationTime > 0 {
 			observed++
-			ttft += c.TTFT
-			gen += c.GenerationTime
-			tokens += c.OutputTokens
+			ttft += call.TTFT
+			generation += call.GenerationTime
+			tokens += call.OutputTokens
 		}
 		one := ui.NewSessionStats()
-		one.AddSubagentUsageForModel(c.Model, c.InputTokens, c.OutputTokens, c.CachedInputTokens, c.CacheWriteTokens)
-		if v, err := ui.EstimateSessionStatsCost(one, ""); err == nil {
-			cost += v
+		one.AddSubagentUsageForModel(call.Model, call.InputTokens, call.OutputTokens, call.CachedInputTokens, call.CacheWriteTokens)
+		if value, err := ui.EstimateSessionStatsCost(one, ""); err == nil {
+			cost += value
 			priced++
 		} else {
 			unpriced++
@@ -263,13 +251,16 @@ func (rt *serveRuntime) statsSnapshot() *serveStatsResponse {
 	}
 	if observed > 0 {
 		out.TTFTMS = statsMS(ttft / time.Duration(observed))
-		v := float64(tokens) / gen.Seconds()
-		out.OutputTokensPerSecond = &v
+		value := float64(tokens) / generation.Seconds()
+		out.OutputTokensPerSecond = &value
 	}
 	if priced > 0 {
 		out.CostUSD = &cost
 	}
 	out.CostPartial = unpriced > 0
+}
+
+func appendSubagentModelStats(out *serveStatsResponse, runs []ui.SubagentProgress, started map[string]bool, now time.Time) {
 	groups := map[string]*serveStatsModel{}
 	costs := map[string]*ui.SessionStats{}
 	group := func(model string) *serveStatsModel {
@@ -299,54 +290,81 @@ func (rt *serveRuntime) statsSnapshot() *serveStatsResponse {
 				*row.ToolMS += toolTime.Milliseconds()
 			}
 		}
-		for _, c := range run.UsageCalls {
-			r := group(c.Model)
-			u := c.Usage
-			r.InputTokens += u.InputTokens
-			r.OutputTokens += u.OutputTokens
-			r.CachedInputTokens += u.CachedInputTokens
-			r.CacheWriteTokens += u.CacheWriteTokens
-			r.LLMTurns++
-			costs[r.Model].AddSubagentUsageForModel(c.Model, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
+		for _, call := range run.UsageCalls {
+			row := group(call.Model)
+			u := call.Usage
+			row.InputTokens += u.InputTokens
+			row.OutputTokens += u.OutputTokens
+			row.CachedInputTokens += u.CachedInputTokens
+			row.CacheWriteTokens += u.CacheWriteTokens
+			row.LLMTurns++
+			costs[row.Model].AddSubagentUsageForModel(call.Model, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
 		}
 	}
 	keys := make([]string, 0, len(groups))
-	for k := range groups {
-		keys = append(keys, k)
+	for key := range groups {
+		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	for _, k := range keys {
-		r := groups[k]
-		cs, _ := costs[k].UsageCalls()
+	for _, key := range keys {
+		row := groups[key]
+		calls, _ := costs[key].UsageCalls()
 		known, priced, missing := 0.0, 0, 0
-		for _, c := range cs {
+		for _, call := range calls {
 			one := ui.NewSessionStats()
-			one.AddSubagentUsageForModel(c.Model, c.InputTokens, c.OutputTokens, c.CachedInputTokens, c.CacheWriteTokens)
-			if v, err := ui.EstimateSessionStatsCost(one, ""); err == nil {
-				known += v
+			one.AddSubagentUsageForModel(call.Model, call.InputTokens, call.OutputTokens, call.CachedInputTokens, call.CacheWriteTokens)
+			if value, err := ui.EstimateSessionStatsCost(one, ""); err == nil {
+				known += value
 				priced++
 			} else {
 				missing++
 			}
 		}
 		if priced > 0 {
-			r.CostUSD = &known
+			row.CostUSD = &known
 		}
-		r.CostPartial = missing > 0
-		out.Models = append(out.Models, *r)
+		row.CostPartial = missing > 0
+		out.Models = append(out.Models, *row)
 	}
+}
+
+func appendHelperUsageSections(out *serveStatsResponse, calls []ui.UsageCall) {
 	for _, kind := range []string{"Private Side-Question Usage", "Guardian Usage", "Compaction Usage"} {
-		var u llm.Usage
-		n := 0
-		for _, c := range calls {
-			match := kind == "Private Side-Question Usage" && c.SideQuestion || kind == "Guardian Usage" && c.Guardian || kind == "Compaction Usage" && c.Compaction
+		var usage llm.Usage
+		count := 0
+		for _, call := range calls {
+			match := kind == "Private Side-Question Usage" && call.SideQuestion || kind == "Guardian Usage" && call.Guardian || kind == "Compaction Usage" && call.Compaction
 			if match {
-				n++
-				u.Add(llm.Usage{InputTokens: c.InputTokens, OutputTokens: c.OutputTokens, CachedInputTokens: c.CachedInputTokens, CacheWriteTokens: c.CacheWriteTokens})
+				count++
+				usage.Add(llm.Usage{InputTokens: call.InputTokens, OutputTokens: call.OutputTokens, CachedInputTokens: call.CachedInputTokens, CacheWriteTokens: call.CacheWriteTokens})
 			}
 		}
-		out.Sections = append(out.Sections, statsUsageSection(kind, n, u))
+		out.Sections = append(out.Sections, statsUsageSection(kind, count, usage))
 	}
+}
+
+func (rt *serveRuntime) statsSnapshot() *serveStatsResponse {
+	a := &rt.stats
+	a.mu.Lock()
+	if a.stats == nil {
+		a.mu.Unlock()
+		return nil
+	}
+	now := time.Now()
+	s := a.stats.SnapshotAt(now)
+	calls, _ := s.UsageCalls()
+	runs := a.children.Snapshots()
+	started := make(map[string]bool, len(a.childrenStarted))
+	for id, observed := range a.childrenStarted {
+		started[id] = observed
+	}
+	retries, running := a.retries, a.running
+	handoverUsage, handoverCalls := a.handoverUsage, a.handoverCalls
+	a.mu.Unlock()
+	out := &serveStatsResponse{Metrics: statsMetrics(&s), Scope: "runtime_local", Models: []serveStatsModel{}, Sections: []serveStatsSection{}, ActiveMS: statsMS(s.LLMTime + s.ToolTime), ModelMS: statsMS(s.LLMTime), ToolMS: statsMS(s.ToolTime)}
+	appendMainCallStats(out, calls)
+	appendSubagentModelStats(out, runs, started, now)
+	appendHelperUsageSections(out, calls)
 	out.Sections = append(out.Sections, statsUsageSection("Handover / Path-Note Usage", handoverCalls, handoverUsage))
 	out.Sections = append(out.Sections, serveStatsSection{Title: "Runtime Activity", Rows: []serveStatsRow{statsRow("Retries", retries), statsRow("Running", running), statsRow("LLM calls", s.LLMCallCount), statsRow("Tool calls", s.ToolCallCount)}})
 	return out

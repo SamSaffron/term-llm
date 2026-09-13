@@ -57,6 +57,8 @@ const (
 	defaultResponseRunReplayLimit      = 2048
 	defaultResponseRunSubscriberBuffer = 256
 	defaultServeRequestTimeout         = 30 * time.Minute
+	responseRunHoldGrace               = 30 * time.Second
+	maxResponseRunDelegationHold       = time.Hour + responseRunHoldGrace
 )
 
 var (
@@ -81,8 +83,27 @@ func (realResponseRunClock) AfterFunc(delay time.Duration, fn func()) responseRu
 	return time.AfterFunc(delay, fn)
 }
 
+type responseRunTimerHold struct {
+	extend  func(time.Time)
+	release func()
+}
+
+type responseRunTimerHoldState struct {
+	timer       *responseRunTimer
+	resume      func()
+	handle      responseRunTimerHandle
+	expiresAt   time.Time
+	absoluteCap time.Time
+	generation  uint64
+}
+
+func noopResponseRunTimerHold() responseRunTimerHold {
+	return responseRunTimerHold{extend: func(time.Time) {}, release: func() {}}
+}
+
 // responseRunTimer bounds inactivity between the user request and each completed
-// LLM response. Interactive waits pause the current inactivity window.
+// LLM response. Interactive waits and verified, deadline-bounded delegations
+// pause the current inactivity window.
 type responseRunTimer struct {
 	mu         sync.Mutex
 	cancel     context.CancelCauseFunc
@@ -93,6 +114,7 @@ type responseRunTimer struct {
 	activeAt   time.Time
 	generation uint64
 	pauses     int
+	holds      map[*responseRunTimerHoldState]struct{}
 	stopped    bool
 }
 
@@ -208,6 +230,126 @@ func (t *responseRunTimer) resume() {
 	}
 }
 
+func (t *responseRunTimer) holdUntil(deadline time.Time) responseRunTimerHold {
+	if t == nil || deadline.IsZero() {
+		return noopResponseRunTimerHold()
+	}
+	now := t.clock.Now()
+	absoluteCap := now.Add(maxResponseRunDelegationHold)
+	expiresAt := deadline.Add(responseRunHoldGrace)
+	if expiresAt.After(absoluteCap) {
+		expiresAt = absoluteCap
+	}
+	if !expiresAt.After(now) {
+		return noopResponseRunTimerHold()
+	}
+
+	resume := t.pause()
+	state := &responseRunTimerHoldState{timer: t, resume: resume, expiresAt: expiresAt, absoluteCap: absoluteCap}
+	t.mu.Lock()
+	if t.stopped {
+		t.mu.Unlock()
+		return noopResponseRunTimerHold()
+	}
+	if t.holds == nil {
+		t.holds = make(map[*responseRunTimerHoldState]struct{})
+	}
+	t.holds[state] = struct{}{}
+	t.armHoldLocked(state)
+	t.mu.Unlock()
+
+	return responseRunTimerHold{
+		extend:  state.extend,
+		release: state.release,
+	}
+}
+
+func (t *responseRunTimer) armHoldLocked(state *responseRunTimerHoldState) {
+	state.generation++
+	generation := state.generation
+	delay := state.expiresAt.Sub(t.clock.Now())
+	if delay < 0 {
+		delay = 0
+	}
+	state.handle = t.clock.AfterFunc(delay, func() {
+		t.mu.Lock()
+		if t.stopped || state.generation != generation {
+			t.mu.Unlock()
+			return
+		}
+		if _, ok := t.holds[state]; !ok {
+			t.mu.Unlock()
+			return
+		}
+		delete(t.holds, state)
+		state.handle = nil
+		resume := state.resume
+		state.resume = nil
+		t.mu.Unlock()
+		if resume != nil {
+			resume() // Expiry preserves the frozen inactivity budget.
+		}
+	})
+}
+
+func (state *responseRunTimerHoldState) extend(deadline time.Time) {
+	if state == nil || state.timer == nil || deadline.IsZero() {
+		return
+	}
+	t := state.timer
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.stopped {
+		return
+	}
+	if _, ok := t.holds[state]; !ok {
+		return // Released or expired holds cannot be revived.
+	}
+	if !t.clock.Now().Before(state.expiresAt) {
+		return // The deadline is final even if its scheduled callback is delayed.
+	}
+	expiresAt := deadline.Add(responseRunHoldGrace)
+	if expiresAt.After(state.absoluteCap) {
+		expiresAt = state.absoluteCap
+	}
+	if !expiresAt.After(state.expiresAt) {
+		return
+	}
+	if state.handle != nil {
+		state.handle.Stop()
+	}
+	state.expiresAt = expiresAt
+	t.armHoldLocked(state)
+}
+
+func (state *responseRunTimerHoldState) release() {
+	if state == nil || state.timer == nil {
+		return
+	}
+	t := state.timer
+	t.mu.Lock()
+	if _, ok := t.holds[state]; !ok {
+		t.mu.Unlock()
+		return
+	}
+	delete(t.holds, state)
+	state.generation++
+	if state.handle != nil {
+		state.handle.Stop()
+		state.handle = nil
+	}
+	resume := state.resume
+	state.resume = nil
+	stopped := t.stopped
+	t.mu.Unlock()
+	if stopped || resume == nil {
+		return
+	}
+	// A normally completed delegation gives the parent a fresh, finite window.
+	t.refresh()
+	resume()
+}
+
 func (t *responseRunTimer) stop() {
 	if t == nil {
 		return
@@ -221,6 +363,15 @@ func (t *responseRunTimer) stop() {
 	t.generation++
 	if t.timer != nil {
 		t.timer.Stop()
+	}
+	for hold := range t.holds {
+		hold.generation++
+		if hold.handle != nil {
+			hold.handle.Stop()
+			hold.handle = nil
+		}
+		hold.resume = nil
+		delete(t.holds, hold)
 	}
 	t.mu.Unlock()
 	t.cancel(nil)

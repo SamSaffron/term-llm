@@ -28,23 +28,7 @@ func (s *serveServer) executeResponseRun(runCtx context.Context, releaseReload, 
 		}()
 	}
 
-	// Wire approval event callback so PromptUIFunc can emit SSE events
-	runtime.approvalMu.Lock()
-	runtime.approvalEventFunc = func(event string, data map[string]any) error {
-		return run.appendEvent(event, data)
-	}
-	runtime.approvalCtx = runCtx
-	runtime.pauseResponseTimeout = runTimer.pause
-	runtime.refreshResponseTimeout = runTimer.refresh
-	runtime.approvalMu.Unlock()
-	defer func() {
-		runtime.approvalMu.Lock()
-		runtime.approvalEventFunc = nil
-		runtime.approvalCtx = nil
-		runtime.pauseResponseTimeout = nil
-		runtime.refreshResponseTimeout = nil
-		runtime.approvalMu.Unlock()
-	}()
+	defer s.bindResponseRunCallbacks(runCtx, runtime, run, runTimer)()
 
 	if options.modelSwap != nil && options.modelSwap.plan.enabled {
 		s.executeResponseRunModelSwap(runCtx, runtime, run, stateful, replaceHistory, inputMessages, llmReq, sessionID, respID, model, created, options)
@@ -185,4 +169,40 @@ func (s *serveServer) executeResponseRun(runCtx context.Context, releaseReload, 
 		return
 	}
 	s.scheduleAutoTitle(sessionID, runtime.providerKey)
+}
+
+func (s *serveServer) bindResponseRunCallbacks(runCtx context.Context, runtime *serveRuntime, run *responseRun, runTimer *responseRunTimer) func() {
+	progress := newServeSubagentProgress(realResponseRunClock{}, func(event string, data map[string]any) error {
+		if s.suppressResponseRunServerToolEvent(runtime, stringValue(data["tool_name"])) {
+			return nil
+		}
+		return run.appendEvent(event, data)
+	}, runTimer.holdUntil)
+
+	// Wire run-scoped callbacks. Each execution gets a monotonically increasing
+	// owner so a delayed callback cannot target a later run that reused a call ID.
+	runtime.approvalMu.Lock()
+	runtime.approvalEventFunc = func(event string, data map[string]any) error {
+		return run.appendEvent(event, data)
+	}
+	runtime.approvalCtx = runCtx
+	runtime.pauseResponseTimeout = runTimer.pause
+	runtime.refreshResponseTimeout = runTimer.refresh
+	runtime.subagentProgressOwner++
+	runtime.subagentProgress = progress
+	progressOwner := runtime.subagentProgressOwner
+	runtime.approvalMu.Unlock()
+	return func() {
+		runtime.approvalMu.Lock()
+		if runtime.subagentProgress == progress && runtime.subagentProgressOwner == progressOwner {
+			runtime.subagentProgress = nil
+		}
+		runtime.approvalEventFunc = nil
+		runtime.approvalCtx = nil
+		runtime.pauseResponseTimeout = nil
+		runtime.refreshResponseTimeout = nil
+		runtime.approvalMu.Unlock()
+		progress.close()
+	}
+
 }

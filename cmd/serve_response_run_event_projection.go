@@ -53,6 +53,9 @@ func (s *serveServer) appendResponseToolCall(runtime *serveRuntime, run *respons
 	// streamed segment identities remain aligned end to end.
 	if s.suppressResponseRunServerToolEvent(runtime, ev.Tool.Name) {
 		state.toolsSeen = true
+		if runtime != nil {
+			runtime.beginSubagentProgress(ev.Tool.ID, ev.Tool.Name)
+		}
 		return nil
 	}
 	state.toolsSeen = true
@@ -88,11 +91,20 @@ func (s *serveServer) appendResponseToolCall(runtime *serveRuntime, run *respons
 	if err := run.appendEvent("response.output_item.done", done); err != nil {
 		return err
 	}
+	if runtime != nil {
+		// EventToolCall is delivered losslessly before execution. Start delegation
+		// tracking after its recovery row exists, as a fallback for the
+		// best-effort execution-start event under engine backpressure.
+		runtime.beginSubagentProgress(ev.Tool.ID, ev.Tool.Name)
+	}
 	state.outputIndex++
 	return nil
 }
 
 func (s *serveServer) appendResponseToolExecStart(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev llm.Event) error {
+	if runtime != nil {
+		runtime.beginSubagentProgress(ev.ToolCallID, ev.ToolName)
+	}
 	// ask_user is a user-facing control event, not tool metadata. Emit its
 	// prompt even when server-executed tool details are hidden; otherwise the
 	// live web stream stalls until a reload recovers the pending prompt.
@@ -129,6 +141,7 @@ func (s *serveServer) appendResponseToolExecStart(runtime *serveRuntime, run *re
 }
 
 func (s *serveServer) appendResponseToolExecEnd(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev llm.Event) error {
+	runtime.finishSubagentProgress(ev.ToolCallID, ev.ToolSuccess)
 	if ev.ToolName == tools.AskUserToolName && runtime != nil {
 		runtime.clearPendingAskUser(ev.ToolCallID)
 	}

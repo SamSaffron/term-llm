@@ -25,6 +25,26 @@ type QueueAgentOriginContext struct {
 }
 
 type queueAgentOriginContextKey struct{}
+type subagentEventCallbackContextKey struct{}
+
+// ContextWithSubagentEventCallback installs a request-scoped, trusted progress
+// sink. It is used by spawn_agent and wait_for_jobs; arguments cannot replace it.
+// A nil callback masks an inherited sink at a child execution boundary.
+func ContextWithSubagentEventCallback(ctx context.Context, callback SubagentEventCallback) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, subagentEventCallbackContextKey{}, callback)
+}
+
+// SubagentEventCallbackFromContext returns the runtime-owned progress sink.
+func SubagentEventCallbackFromContext(ctx context.Context) SubagentEventCallback {
+	if ctx == nil {
+		return nil
+	}
+	callback, _ := ctx.Value(subagentEventCallbackContextKey{}).(SubagentEventCallback)
+	return callback
+}
 
 // ContextWithQueueAgentOrigin stores trusted queue_agent notification origin
 // metadata in ctx for the duration of a request.

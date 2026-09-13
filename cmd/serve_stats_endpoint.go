@@ -64,12 +64,7 @@ func (s *serveServer) peekStatsRuntime(id string) *serveRuntime {
 	defer s.sessionMgr.mu.Unlock()
 	return s.sessionMgr.sessions[id]
 }
-func (s *serveServer) handleSessionStats(w http.ResponseWriter, r *http.Request, id string) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", "GET")
-		writeOpenAIError(w, 405, "method_not_allowed", "method not allowed")
-		return
-	}
+func (s *serveServer) loadStatsInputs(w http.ResponseWriter, r *http.Request, id string) (*session.Session, []session.Message, *serveRuntime, bool) {
 	var meta *session.Session
 	var messages []session.Message
 	if s.store != nil {
@@ -77,16 +72,16 @@ func (s *serveServer) handleSessionStats(w http.ResponseWriter, r *http.Request,
 		meta, err = s.store.Get(r.Context(), id)
 		if err != nil && !errors.Is(err, session.ErrNotFound) {
 			writeOpenAIError(w, 500, "server_error", "failed to read session")
-			return
+			return nil, nil, nil, false
 		}
 		if meta == nil {
 			http.NotFound(w, r)
-			return
+			return nil, nil, nil, false
 		}
 		messages, err = s.store.GetMessages(r.Context(), id, 0, 0)
 		if err != nil {
 			writeOpenAIError(w, 500, "server_error", "failed to read session history")
-			return
+			return nil, nil, nil, false
 		}
 	}
 	rt := s.peekStatsRuntime(id)
@@ -97,15 +92,19 @@ func (s *serveServer) handleSessionStats(w http.ResponseWriter, r *http.Request,
 		}
 		// Parts (including tool arguments/results) remain mutable after the
 		// run lock is released; detach them before estimating the snapshot.
-		for i, m := range sidequestion.CloneMessages(rt.history) {
-			messages = append(messages, *session.NewMessage(id, m, i))
+		for i, message := range sidequestion.CloneMessages(rt.history) {
+			messages = append(messages, *session.NewMessage(id, message, i))
 		}
 		rt.mu.Unlock()
 	}
 	if meta == nil && rt == nil {
 		http.NotFound(w, r)
-		return
+		return nil, nil, nil, false
 	}
+	return meta, messages, rt, true
+}
+
+func statsResponseForRuntime(rt *serveRuntime) *serveStatsResponse {
 	var out *serveStatsResponse
 	if rt != nil {
 		out = rt.statsSnapshot()
@@ -127,6 +126,18 @@ func (s *serveServer) handleSessionStats(w http.ResponseWriter, r *http.Request,
 			out.Unavailable = append(out.Unavailable, "cost_usd")
 		}
 	}
+	return out
+}
+
+func estimateStatsMessageTokens(messages []session.Message) int {
+	llmMessages := make([]llm.Message, 0, len(messages))
+	for _, message := range messages {
+		llmMessages = append(llmMessages, message.ToLLMMessage())
+	}
+	return llm.EstimateMessageTokens(llmMessages)
+}
+
+func appendStatsContextSections(out *serveStatsResponse, meta *session.Session, messages []session.Message, rt *serveRuntime, id string) []session.Message {
 	used, limit, soft, hard := 0, 0, 0, 0
 	compactEnabled := false
 	provider, model := "unknown", "unknown"
@@ -143,9 +154,9 @@ func (s *serveServer) handleSessionStats(w http.ResponseWriter, r *http.Request,
 		limit = llm.InputLimitForProviderModel(provider, model)
 		if session.HasCompactionBoundary(meta) {
 			active = nil
-			for _, m := range messages {
-				if m.Sequence >= meta.CompactionSeq {
-					active = append(active, m)
+			for _, message := range messages {
+				if message.Sequence >= meta.CompactionSeq {
+					active = append(active, message)
 				}
 			}
 		}
@@ -158,13 +169,13 @@ func (s *serveServer) handleSessionStats(w http.ResponseWriter, r *http.Request,
 			limit = n
 		}
 		soft, hard, compactEnabled = rt.engine.CompactionThresholds()
-		if d, ok := rt.engine.ToolDiscoveryDiagnostics(id); ok {
-			rows := []serveStatsRow{statsRow("Mode configured/resolved", d.ConfiguredMode+" / "+d.ResolvedMode), statsRow("Strategy configured/resolved", d.ConfiguredStrategy+" / "+d.Strategy), statsRow("Mode reason", d.Reason), statsRow("Strategy reason", d.StrategyReason), statsRow("Native fallback", fmt.Sprintf("%d (%s)", d.FallbackCount, d.FallbackReason)), statsRow("Pinned MCP", fmt.Sprintf("%d tools, ~%d tokens", d.PinnedCount, d.PinnedTokens)), statsRow("Active MCP", fmt.Sprintf("%d tools, ~%d tokens", d.ActiveMCPCount, d.ActiveMCPTokens)), statsRow("Deferred MCP", fmt.Sprintf("%d tools, ~%d tokens avoided", d.DeferredCount, d.DeferredTokens)), statsRow("Dynamic working set", fmt.Sprintf("%d/%d tools", d.DynamicActive, d.DynamicLimit)), statsRow("Working-set evictions", d.EvictionCount)}
-			for _, v := range d.RecentEvictions {
-				rows = append(rows, statsRow("Recent eviction", v.Name+" — "+v.Reason))
+		if diagnostics, ok := rt.engine.ToolDiscoveryDiagnostics(id); ok {
+			rows := []serveStatsRow{statsRow("Mode configured/resolved", diagnostics.ConfiguredMode+" / "+diagnostics.ResolvedMode), statsRow("Strategy configured/resolved", diagnostics.ConfiguredStrategy+" / "+diagnostics.Strategy), statsRow("Mode reason", diagnostics.Reason), statsRow("Strategy reason", diagnostics.StrategyReason), statsRow("Native fallback", fmt.Sprintf("%d (%s)", diagnostics.FallbackCount, diagnostics.FallbackReason)), statsRow("Pinned MCP", fmt.Sprintf("%d tools, ~%d tokens", diagnostics.PinnedCount, diagnostics.PinnedTokens)), statsRow("Active MCP", fmt.Sprintf("%d tools, ~%d tokens", diagnostics.ActiveMCPCount, diagnostics.ActiveMCPTokens)), statsRow("Deferred MCP", fmt.Sprintf("%d tools, ~%d tokens avoided", diagnostics.DeferredCount, diagnostics.DeferredTokens)), statsRow("Dynamic working set", fmt.Sprintf("%d/%d tools", diagnostics.DynamicActive, diagnostics.DynamicLimit)), statsRow("Working-set evictions", diagnostics.EvictionCount)}
+			for _, value := range diagnostics.RecentEvictions {
+				rows = append(rows, statsRow("Recent eviction", value.Name+" — "+value.Reason))
 			}
-			for _, v := range d.Recent {
-				rows = append(rows, statsRow("Recent activation", v.Name+" — "+v.Reason))
+			for _, value := range diagnostics.Recent {
+				rows = append(rows, statsRow("Recent activation", value.Name+" — "+value.Reason))
 			}
 			out.Sections = append(out.Sections, serveStatsSection{"Tool Discovery", rows})
 		} else {
@@ -175,19 +186,12 @@ func (s *serveServer) handleSessionStats(w http.ResponseWriter, r *http.Request,
 		out.Unavailable = append(out.Unavailable, "tool_discovery", "compaction_thresholds")
 		out.Sections = append(out.Sections, serveStatsSection{"Tool Discovery", []serveStatsRow{statsRow("Availability", "unavailable — no runtime retained")}})
 	}
-	estimate := func(ms []session.Message) int {
-		llmMessages := make([]llm.Message, 0, len(ms))
-		for _, m := range ms {
-			llmMessages = append(llmMessages, m.ToLLMMessage())
-		}
-		return llm.EstimateMessageTokens(llmMessages)
-	}
 	source := "last reported context"
 	if used <= 0 {
-		used = estimate(active)
+		used = estimateStatsMessageTokens(active)
 		source = "message estimate (excludes request-only tool schemas and prompt overhead)"
 	}
-	history := max(used, estimate(messages))
+	history := max(used, estimateStatsMessageTokens(messages))
 	pressure := []serveStatsRow{statsRow("Provider / model", provider+" / "+model), statsRow("Current context", used), statsRow("Context source", source), statsRow("Cumulative history (estimated)", history), statsRow("Outside context (estimated)", max(0, history-used))}
 	if limit > 0 {
 		pressure = append(pressure, statsRow("Input limit", limit), statsRow("Window used", fmt.Sprintf("%.1f%%", 100*float64(used)/float64(limit))), statsRow("Free space", max(0, limit-used)))
@@ -205,11 +209,15 @@ func (s *serveServer) handleSessionStats(w http.ResponseWriter, r *http.Request,
 			statsRow("Hard compact at", hard), statsRow("Hard window buffer", max(0, limit-hard)))
 	}
 	out.Sections = append(out.Sections, serveStatsSection{"Current Context / Window Pressure", pressure})
-	u := out.Metrics
-	out.Sections = append(out.Sections, statsUsageSection("Cumulative Token Usage · "+out.Scope, u.LLMTurns, llm.Usage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, CachedInputTokens: u.CachedInputTokens, CacheWriteTokens: u.CacheWriteTokens}))
+	usage := out.Metrics
+	out.Sections = append(out.Sections, statsUsageSection("Cumulative Token Usage · "+out.Scope, usage.LLMTurns, llm.Usage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CachedInputTokens: usage.CachedInputTokens, CacheWriteTokens: usage.CacheWriteTokens}))
+	return active
+}
+
+func appendStatsActivitySections(out *serveStatsResponse, meta *session.Session, messages, active []session.Message, rt *serveRuntime) {
 	roles := map[llm.Role]int{}
-	for _, m := range active {
-		roles[m.Role]++
+	for _, message := range active {
+		roles[message.Role]++
 	}
 	activity := []serveStatsRow{statsRow("Active messages", len(active)), statsRow("User messages", roles[llm.RoleUser]), statsRow("Assistant messages", roles[llm.RoleAssistant]), statsRow("Tool messages", roles[llm.RoleTool])}
 	if meta != nil {
@@ -229,5 +237,20 @@ func (s *serveServer) handleSessionStats(w http.ResponseWriter, r *http.Request,
 		activity = append(activity, statsRow("Compacting", rt.compacting.Load()), statsRow("Admitted activity", rt.admittedActivity.Load()))
 	}
 	out.Sections = append(out.Sections, serveStatsSection{"Cumulative Session Activity", activity}, serveStatsSection{"Availability", []serveStatsRow{statsRow("Scope", out.Scope), statsRow("Runtime accounting", "Since this runtime was created; resets on eviction, replacement or process restart. Historical detail is unavailable."), statsRow("Models", "Subagent billing models only; helper usage is attributed to its actual model. Times sum across child runs."), statsRow("Timing", "Main request and tool time only; failed-attempt time retained, idle and retry backoff excluded. Parallel tool time is wall-clock union, not summed calls. TTFT and throughput use retained observed-output calls."), statsRow("Cost", "Local per-request estimates; missing prices are unavailable, partial costs are lower bounds.")}})
+}
+
+func (s *serveServer) handleSessionStats(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeOpenAIError(w, 405, "method_not_allowed", "method not allowed")
+		return
+	}
+	meta, messages, rt, ok := s.loadStatsInputs(w, r, id)
+	if !ok {
+		return
+	}
+	out := statsResponseForRuntime(rt)
+	active := appendStatsContextSections(out, meta, messages, rt, id)
+	appendStatsActivitySections(out, meta, messages, active, rt)
 	writeJSON(w, 200, out)
 }

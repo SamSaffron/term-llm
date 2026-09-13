@@ -1623,6 +1623,53 @@ func TestExecuteSingleToolCallOutcomeAllowsSuggestCommandsPassthrough(t *testing
 	}
 }
 
+func TestSendToolExecEndKeepsDelegationTerminalsUnderBackpressure(t *testing.T) {
+	for _, toolName := range []string{reliableSpawnAgentTerminalName, reliableWaitForJobsTerminalName} {
+		t.Run(toolName, func(t *testing.T) {
+			ch := make(chan Event, 1)
+			ch <- Event{Type: EventHeartbeat}
+			sender := eventSender{ctx: context.Background(), ch: ch}
+			started := make(chan struct{})
+			returned := make(chan struct{})
+			go func() {
+				close(started)
+				sendToolExecEnd(sender, Event{Type: EventToolExecEnd, ToolCallID: "call-1", ToolName: toolName})
+				close(returned)
+			}()
+			<-started
+
+			select {
+			case <-returned:
+				t.Fatal("delegation terminal was dropped from a full event channel")
+			default:
+			}
+			<-ch
+			select {
+			case event := <-ch:
+				if event.Type != EventToolExecEnd || event.ToolName != toolName {
+					t.Fatalf("terminal event = %#v", event)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("delegation terminal was not delivered after capacity became available")
+			}
+			select {
+			case <-returned:
+			case <-time.After(time.Second):
+				t.Fatal("terminal sender remained blocked after delivery")
+			}
+		})
+	}
+}
+
+func TestSendToolExecEndKeepsOrdinaryTerminalsBestEffort(t *testing.T) {
+	ch := make(chan Event, 1)
+	ch <- Event{Type: EventHeartbeat}
+	sendToolExecEnd(eventSender{ctx: context.Background(), ch: ch}, Event{Type: EventToolExecEnd, ToolName: "shell"})
+	if event := <-ch; event.Type != EventHeartbeat {
+		t.Fatalf("full channel was changed by best-effort terminal: %#v", event)
+	}
+}
+
 // namedTool is a simple tool with a configurable name for testing.
 type namedTool struct {
 	name string
@@ -2824,7 +2871,7 @@ func TestExecuteToolCallsParallelDoesNotBlockOnFullToolExecEndBuffer(t *testing.
 func TestSpawnAgentToolExecEndWaitsForEventCapacity(t *testing.T) {
 	t.Parallel()
 
-	tool := &terminalDeliveryTool{name: reliableToolTerminalName, executed: make(chan struct{})}
+	tool := &terminalDeliveryTool{name: reliableSpawnAgentTerminalName, executed: make(chan struct{})}
 	registry := NewToolRegistry()
 	registry.Register(tool)
 	engine := NewEngine(&fakeProvider{}, registry)
@@ -2837,7 +2884,7 @@ func TestSpawnAgentToolExecEndWaitsForEventCapacity(t *testing.T) {
 	go func() {
 		messages, _ := engine.executeSingleToolCall(
 			ctx,
-			ToolCall{ID: "spawn-1", Name: reliableToolTerminalName, Arguments: json.RawMessage(`{}`)},
+			ToolCall{ID: "spawn-1", Name: reliableSpawnAgentTerminalName, Arguments: json.RawMessage(`{}`)},
 			eventSender{ctx: ctx, ch: events},
 			false,
 			false,

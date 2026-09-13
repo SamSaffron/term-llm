@@ -332,6 +332,78 @@ function LegacyToolImages({ tool }: { tool: ToolCall }) {
   );
 }
 
+function progressJobCount(tool: ToolCall): number {
+  try {
+    const args = JSON.parse(tool.arguments || '{}') as Record<string, unknown>;
+    return (
+      (Array.isArray(args.run_ids) ? args.run_ids.length : 0) +
+      (Array.isArray(args.job_ids) ? args.job_ids.length : 0)
+    );
+  } catch {
+    return 0;
+  }
+}
+
+const progressPhaseLabels: Record<string, string> = {
+  starting: 'starting',
+  thinking: 'thinking',
+  running_tools: 'running tools',
+  responding: 'responding',
+  compacting: 'compacting',
+  queued: 'queued',
+  waiting: 'waiting',
+};
+
+function SubagentProgressLine({ tool, labelled = false }: { tool: ToolCall; labelled?: boolean }) {
+  const name = tool.name.toLowerCase();
+  const progress = tool.subagentProgress;
+  if (name === 'queue_agent') {
+    return tool.status === 'done' && tool.resultStatus !== 'error' ? (
+      <div class="tool-progress">queued as detached job</div>
+    ) : null;
+  }
+  if (name !== 'spawn_agent' && name !== 'wait_for_jobs') return null;
+  const parts: string[] = [];
+  if (progress) {
+    const count = `${progress.callsStarted.toLocaleString()}${progress.callsTruncated ? '+' : ''}`;
+    parts.push(`${count} tool ${progress.callsStarted === 1 ? 'call' : 'calls'}`);
+    if (progress.callsActive > 0) parts.push(`${progress.callsActive} active`);
+    if (progress.currentTool) parts.push(progress.currentTool);
+    else if (
+      !['completed', 'failed', 'cancelled'].includes(progress.state) &&
+      progress.phase &&
+      progressPhaseLabels[progress.phase]
+    )
+      parts.push(progressPhaseLabels[progress.phase]);
+  }
+  if (name === 'wait_for_jobs') {
+    const count = progressJobCount(tool);
+    if (count > 0) {
+      const action =
+        tool.status === 'running'
+          ? 'waiting'
+          : tool.status === 'cancelled'
+            ? 'stopped waiting'
+            : tool.status === 'error' || tool.resultStatus === 'error'
+              ? 'failed to wait'
+              : 'waited';
+      parts.unshift(`${action} for ${count} ${count === 1 ? 'job' : 'jobs'}`);
+    }
+    parts.push('jobs keep running if stopped');
+  }
+  return parts.length ? (
+    <div class="tool-progress">
+      {labelled && (
+        <strong>
+          {name}
+          {tool.status === 'running' ? ' · running' : ''}:{' '}
+        </strong>
+      )}
+      {parts.join(' · ')}
+    </div>
+  ) : null;
+}
+
 const Tool = memo(function Tool({
   tool,
   expanded: controlledExpanded,
@@ -432,6 +504,7 @@ const Tool = memo(function Tool({
             {status}
           </span>
         </button>
+        <SubagentProgressLine tool={tool} />
         <LegacyToolImages tool={tool} />
         {expanded && (
           <div class="tool-details open">
@@ -527,6 +600,13 @@ function ToolGroup({
   const names = [...new Set(visible.map((tool) => tool.name))];
   const stopped = !running && visible.some((tool) => tool.status === 'cancelled');
   const runningTools = visible.filter((tool) => tool.status === 'running');
+  // Delegation progress must remain visible when the ordinary tool group is collapsed.
+  const delegations = visible.filter(
+    (tool) => tool.subagentProgress || tool.name === 'wait_for_jobs',
+  );
+  const previews = delegations.slice(0, 3);
+  const hiddenPreviews = delegations.slice(previews.length);
+  const hiddenRunning = hiddenPreviews.filter((tool) => tool.status === 'running').length;
   const runningTimedStartedAt =
     runningTools.length > 0 &&
     runningTools.every(
@@ -569,6 +649,17 @@ function ToolGroup({
           )}
         </span>
       </button>
+      {!expanded &&
+        previews.map((tool) => <SubagentProgressLine key={tool.id} tool={tool} labelled />)}
+      {!expanded && hiddenPreviews.length > 0 && (
+        <div class="tool-progress">
+          <button class="text-action" type="button" onClick={toggle}>
+            {hiddenPreviews.length} more{' '}
+            {hiddenPreviews.length === 1 ? 'delegation' : 'delegations'}
+            {hiddenRunning > 0 ? ` · ${hiddenRunning} running` : ''} · expand to view
+          </button>
+        </div>
+      )}
       <div class={`tool-group-details ${expanded ? 'open' : ''}`}>
         {(expanded || visited) &&
           visible.map((tool) => (

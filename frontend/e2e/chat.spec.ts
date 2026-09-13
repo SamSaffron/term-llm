@@ -319,7 +319,10 @@ test('shell terminal fills the viewport and follows height changes', async ({ pa
 test('loads, navigates sessions, opens settings and preserves normal namespace hygiene', async ({
   page,
 }, testInfo) => {
-  test.skip(testInfo.project.name === 'mobile', 'desktop session navigation is covered separately');
+  test.skip(
+    testInfo.project.name !== 'desktop',
+    'desktop session navigation is covered separately',
+  );
   await open(page);
   await expect(page.getByRole('heading', { name: 'Second chat' })).toBeVisible();
   await page.getByRole('button', { name: 'First chat', exact: true }).click();
@@ -340,7 +343,7 @@ test('loads, navigates sessions, opens settings and preserves normal namespace h
 test('turns a durable completion indicator off only after a visible revision-gated visit', async ({
   page,
 }, testInfo) => {
-  test.skip(testInfo.project.name === 'mobile', 'desktop sidebar attention flow');
+  test.skip(testInfo.project.name !== 'desktop', 'desktop sidebar attention flow');
   const requests = await open(page, '', { attention: true });
   const ready = page.getByRole('button', {
     name: 'First chat — Completed, not yet visited',
@@ -363,7 +366,7 @@ test('turns a durable completion indicator off only after a visible revision-gat
 test('desktop shell uses authored controls, message hierarchy and diff rows', async ({
   page,
 }, testInfo) => {
-  test.skip(testInfo.project.name === 'mobile', 'desktop visual structure');
+  test.skip(testInfo.project.name !== 'desktop', 'desktop visual structure');
   await open(page);
   const sessionButton = page.getByRole('button', { name: 'First chat', exact: true });
   await expect(sessionButton).toHaveCSS('display', 'flex');
@@ -395,7 +398,7 @@ test('desktop shell uses authored controls, message hierarchy and diff rows', as
 });
 
 test('collapses file-change counts to an icon at narrow widths', async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name === 'mobile', 'narrow desktop breakpoint');
+  test.skip(testInfo.project.name !== 'desktop', 'narrow desktop breakpoint');
   await page.setViewportSize({ width: 850, height: 800 });
   await open(page);
 
@@ -584,7 +587,7 @@ test('mobile floating surfaces dismiss from their outside area and restore inter
 
 test('same-context tabs retain independent session drafts', async ({ context, page }, testInfo) => {
   test.skip(
-    testInfo.project.name === 'mobile',
+    testInfo.project.name !== 'desktop',
     'multi-tab storage is covered once in desktop Chromium',
   );
   const second = await context.newPage();

@@ -25,13 +25,13 @@ func TestSessionMessageEntriesProjectsSuccessfulSpawnAgentResult(t *testing.T) {
 		*session.NewMessage("parent", llm.ToolResultMessage("spawn-1", tools.SpawnAgentToolName, string(content), nil), 1),
 	}
 	store := newServeRuntimeTestStore()
-	store.sessions["child-1"] = &session.Session{ID: "child-1", ParentID: "parent"}
+	store.sessions["child-1"] = &session.Session{ID: "child-1", ParentID: "parent", ToolCalls: 12}
 	entries := (&serveServer{store: store}).sessionMessageEntries(messages)
 	if len(entries) != 2 || len(entries[1].Parts) != 1 {
 		t.Fatalf("entries = %#v", entries)
 	}
 	part := entries[1].Parts[0]
-	if part.SpawnAgent == nil || part.SpawnAgent.Output != "durable review" || part.SpawnAgent.SessionID != "child-1" || part.ToolError {
+	if part.SpawnAgent == nil || part.SpawnAgent.Output != "durable review" || part.SpawnAgent.SessionID != "child-1" || part.ToolError || part.SpawnAgentToolCalls == nil || *part.SpawnAgentToolCalls != 12 {
 		t.Fatalf("spawn projection = %#v", part)
 	}
 }
@@ -56,8 +56,8 @@ func TestSessionMessageEntriesOmitsUnvalidatedSpawnChildLinks(t *testing.T) {
 			store.sessions[tc.childID] = &session.Session{ID: tc.childID, ParentID: tc.childParent}
 			entries := (&serveServer{store: store}).sessionMessageEntries(messages)
 			part := entries[1].Parts[0]
-			if part.SpawnAgent == nil || part.SpawnAgent.Output != "safe output" || part.SpawnAgent.SessionID != "" {
-				t.Fatalf("unvalidated link survived projection: %#v", part.SpawnAgent)
+			if part.SpawnAgent == nil || part.SpawnAgent.Output != "safe output" || part.SpawnAgent.SessionID != "" || part.SpawnAgentToolCalls != nil {
+				t.Fatalf("unvalidated link or count survived projection: %#v", part)
 			}
 		})
 	}

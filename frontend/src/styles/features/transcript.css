@@ -890,6 +890,15 @@
   font-variant-numeric: tabular-nums;
 }
 
+.tool-progress {
+  padding: 0 0.75rem 0.58rem;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .tool-details {
   border-top: 1px solid var(--border);
   padding: 0.58rem 0.75rem 0.72rem;

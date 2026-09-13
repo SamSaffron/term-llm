@@ -31,6 +31,7 @@ type responseRunRecoveryTool struct {
 	Images             []string
 	Media              []webMediaEntry
 	GuardianReviews    []map[string]any
+	SubagentProgress   map[string]any
 }
 
 type responseRunRecoveryMessage struct {

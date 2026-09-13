@@ -1,3 +1,4 @@
+import { responseSubagentProgress } from './response';
 import type {
   ApprovalMode,
   Attachment,
@@ -561,11 +562,15 @@ export function convertServerMessages(
           const endedAt = optionalTimestamp(part.ended_at ?? part.endedAt);
           const rawDuration = part.duration_ms ?? part.durationMs;
           const durationMs = rawDuration == null ? undefined : Math.max(0, Number(rawDuration));
+          const progress = responseSubagentProgress(
+            part.subagentProgress ?? part.subagent_progress,
+          );
           tool = {
             id: callID,
             name,
             arguments: text(part.tool_arguments || part.arguments),
             status: failed ? 'error' : awaitsResult ? 'running' : 'done',
+            ...(progress ? { subagentProgress: progress } : {}),
             ...(startedAt || (name === 'spawn_agent' && awaitsResult)
               ? { startedAt: startedAt || at }
               : {}),
@@ -573,12 +578,19 @@ export function convertServerMessages(
             ...(durationMs !== undefined && Number.isFinite(durationMs) ? { durationMs } : {}),
           };
           current.tools!.push(tool);
-        } else
+        } else {
+          const progress = responseSubagentProgress(
+            part.subagentProgress ?? part.subagent_progress,
+          );
           Object.assign(tool, {
             name: text(part.tool_name || part.name) || tool.name,
             arguments: text(part.tool_arguments || part.arguments) || tool.arguments,
             status: failed ? 'error' : tool.status,
+            ...(progress && progress.seq > (tool.subagentProgress?.seq || 0)
+              ? { subagentProgress: progress }
+              : {}),
           });
+        }
         const location = { group: current, tool };
         toolLocations.set(toolKey(message, callID), location);
         const prior = unscopedToolLocations.get(callID);
@@ -676,6 +688,14 @@ export function convertServerMessages(
             durationMs,
             childSessionId: text(spawn.session_id),
           };
+          if (part.spawn_agent_tool_calls != null) {
+            tool.subagentProgress = {
+              seq: 0,
+              state: tool.status === 'error' ? 'failed' : 'completed',
+              callsStarted: Math.max(0, Number(part.spawn_agent_tool_calls) || 0),
+              callsActive: 0,
+            };
+          }
         }
       }
     }

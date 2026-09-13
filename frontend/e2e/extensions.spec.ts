@@ -84,9 +84,12 @@ test('creates a Dracula workspace, manages extensions, and repairs a broken them
   expect((await submission).postDataJSON().ui_context.loaded).toEqual(['dracula', 'studio-clock']);
   await expect(page.getByRole('heading', { name: 'Debug Provider Output' }).last()).toBeVisible();
 
-  // Active service workers must never retain extension assets.
+  // Active service workers must never retain extension assets. An absent worker
+  // also satisfies this boundary (for example, non-standalone iPhone mode).
   await page.evaluate(async () => {
-    if ('serviceWorker' in navigator) await navigator.serviceWorker.ready;
+    if ('serviceWorker' in navigator && (await navigator.serviceWorker.getRegistration())) {
+      await navigator.serviceWorker.ready;
+    }
   });
   await page.reload();
   await expect(page.locator('.studio-clock')).toHaveCount(1);

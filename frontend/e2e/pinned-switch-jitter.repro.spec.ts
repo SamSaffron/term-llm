@@ -155,7 +155,7 @@ for (const projects of [false, true]) {
     page,
   }, testInfo) => {
     test.skip(
-      testInfo.project.name === 'mobile',
+      testInfo.project.name !== 'desktop',
       'desktop sidebar remains visible while switching',
     );
     await mockCleanroomAPI(page, projects);

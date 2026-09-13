@@ -97,7 +97,10 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// to ~506.6/144.0 kB. The modal and CSS stay separately bounded below.
 		// The image viewer and its styles now load on demand. Its small loader
 		// leaves the eager shell at ~503.2/142.9 kB raw/gzip, with separate budgets below.
-		"dist/app.js":                {raw: 503_500, gzip: 143_000},
+		// Inline delegation progress is eager transcript code. Measured with the
+		// Go gzip level-6 check below: 492,084 raw / 143,629 compressed bytes.
+		// Keep the raw cap and add only 1,500 compressed bytes (871 headroom).
+		"dist/app.js":                {raw: 503_500, gzip: 144_500},
 		"dist/chunks/Lightbox.js":    {raw: 8_000, gzip: 3_200},
 		"dist/assets/Lightbox.css":   {raw: 4_000, gzip: 1_400},
 		"dist/chunks/StatsModal.js":  {raw: 8_000, gzip: 3_000},

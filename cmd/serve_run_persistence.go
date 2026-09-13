@@ -272,16 +272,20 @@ func (p *serveRunPersistence) compactionUsageSnapshot() llm.Usage {
 	return p.compactionUsage
 }
 
+func (p *serveRunPersistence) recordCompactionStats(result *llm.CompactionResult) {
+	p.rt.recordHelperStats("compaction", result.Model, result.Usage)
+	if p.rt.statsCompactionCB != nil {
+		p.rt.statsCompactionCB(result)
+	}
+}
+
 func (p *serveRunPersistence) applyCompaction(cbCtx context.Context, result *llm.CompactionResult) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if result == nil {
 		return nil
 	}
-	p.rt.recordHelperStats("compaction", result.Model, result.Usage)
-	if p.rt.statsCompactionCB != nil {
-		p.rt.statsCompactionCB(result)
-	}
+	p.recordCompactionStats(result)
 	previousCompactionSeq := -1
 	previousCompactionCount := 0
 	if session.HasCompactionBoundary(p.rt.sessionMeta) {

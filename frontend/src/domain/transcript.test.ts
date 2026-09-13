@@ -12,6 +12,35 @@ import { initialProjection, reduceResponse } from './response';
 import type { Message } from './types';
 
 describe('transcript domain', () => {
+  it('restores completed spawn tool-call totals from validated history projection', () => {
+    const messages = convertServerMessages([
+      {
+        id: 1,
+        role: 'assistant',
+        parts: [{ type: 'tool_call', tool_call_id: 'spawn-1', tool_name: 'spawn_agent' }],
+      },
+      {
+        id: 2,
+        role: 'tool',
+        parts: [
+          {
+            type: 'tool_result',
+            tool_call_id: 'spawn-1',
+            tool_name: 'spawn_agent',
+            spawn_agent: { agent_name: 'developer', session_id: 'child' },
+            spawn_agent_tool_calls: 12,
+          },
+        ],
+      },
+    ]);
+    expect(messages.flatMap((message) => message.tools || [])[0].subagentProgress).toEqual({
+      seq: 0,
+      state: 'completed',
+      callsStarted: 12,
+      callsActive: 0,
+    });
+  });
+
   function inlineTranscript(texts = ['before', 'between', 'after'], responseId = 'inline') {
     const parts = texts.flatMap((content, index) => [
       { type: 'text', text: content },

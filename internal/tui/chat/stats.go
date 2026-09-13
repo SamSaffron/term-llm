@@ -491,6 +491,46 @@ func nonEmpty(values ...string) string {
 	return "unknown"
 }
 
+func subagentStatsCost(calls []ui.SubagentUsageCall) (string, bool, bool) {
+	known, priced, unpriced := 0.0, 0, 0
+	for _, call := range calls {
+		stats := ui.NewSessionStats()
+		u := call.Usage
+		stats.AddSubagentUsageForModel(call.Model, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
+		if cost, err := statsCostEstimator("", stats); err == nil {
+			known += cost
+			priced++
+		} else {
+			unpriced++
+		}
+	}
+	if priced == 0 {
+		return "—", false, true
+	}
+	cost := fmt.Sprintf("$%.4f", known)
+	if unpriced > 0 {
+		return "≥" + cost, true, false
+	}
+	return cost, false, false
+}
+
+func subagentStatsLegend(runCount int, running, partial, unavailable bool) string {
+	var legend []string
+	if running {
+		legend = append(legend, "* running")
+	}
+	if partial {
+		legend = append(legend, "≥ partial cost")
+	}
+	if unavailable {
+		legend = append(legend, "— unpriced")
+	}
+	if runCount > 1 {
+		legend = append(legend, "time summed across runs")
+	}
+	return strings.Join(legend, " · ")
+}
+
 // renderSubagentStats reports observed process-local runs separately from restored totals.
 func (m *Model) renderSubagentStats(b *strings.Builder) {
 	var runs []ui.SubagentProgress
@@ -593,45 +633,13 @@ func (m *Model) renderSubagentStats(b *strings.Builder) {
 		} else {
 			cells = append(cells, ui.FormatTokenCount(u.InputTokens+u.CachedInputTokens+u.CacheWriteTokens+u.OutputTokens))
 		}
-		known, priced, unpriced := 0.0, 0, 0
-		for _, call := range row.calls {
-			stats := ui.NewSessionStats()
-			u := call.Usage
-			stats.AddSubagentUsageForModel(call.Model, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
-			if cost, err := statsCostEstimator("", stats); err == nil {
-				known += cost
-				priced++
-			} else {
-				unpriced++
-			}
-		}
-		cost := "—"
-		if priced > 0 {
-			cost = fmt.Sprintf("$%.4f", known)
-			if unpriced > 0 {
-				cost = "≥" + cost
-				partial = true
-			}
-		} else {
-			unavailable = true
-		}
+		cost, costPartial, costUnavailable := subagentStatsCost(row.calls)
+		partial = partial || costPartial
+		unavailable = unavailable || costUnavailable
 		writeRow(append(cells, cost))
 	}
-	var legend []string
-	if running {
-		legend = append(legend, "* running")
-	}
-	if partial {
-		legend = append(legend, "≥ partial cost")
-	}
-	if unavailable {
-		legend = append(legend, "— unpriced")
-	}
-	if len(runs) > 1 {
-		legend = append(legend, "time summed across runs")
-	}
-	if len(legend) > 0 {
-		b.WriteString(strings.Join(legend, " · ") + "\n")
+	if legend := subagentStatsLegend(len(runs), running, partial, unavailable); legend != "" {
+		b.WriteString(legend + "\n")
 	}
 }
 

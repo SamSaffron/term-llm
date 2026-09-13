@@ -3,12 +3,17 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/llm"
 )
 
 func TestQueueAgentCreatesAndTriggersJobsBackedLLMJob(t *testing.T) {
@@ -265,16 +270,15 @@ func TestWaitForJobsPollsUntilTerminal(t *testing.T) {
 			if r.URL.Query().Get("summary") != "true" {
 				t.Fatalf("poll should request a summary, got query %q", r.URL.RawQuery)
 			}
-			count := atomic.AddInt32(&summaryPolls, 1)
-			if count == 1 {
-				writeJSON(t, w, jobsV2AgentRunsListResponse{Data: []jobsV2AgentRunResponse{{ID: "run_123", JobID: "job_123", Status: "running"}}})
-				return
-			}
+			atomic.AddInt32(&summaryPolls, 1)
+			writeJSON(t, w, jobsV2AgentRunsListResponse{Data: []jobsV2AgentRunResponse{{ID: "run_123", JobID: "job_123", Status: "running"}}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/runs/run_123" && r.URL.Query().Get("summary") == "true":
+			atomic.AddInt32(&summaryPolls, 1)
 			exitCode := 0
 			turnCount := 1
 			inputTokens := 10
 			outputTokens := 3
-			writeJSON(t, w, jobsV2AgentRunsListResponse{Data: []jobsV2AgentRunResponse{{
+			writeJSON(t, w, jobsV2AgentRunResponse{
 				ID:           "run_123",
 				JobID:        "job_123",
 				Status:       "succeeded",
@@ -285,7 +289,7 @@ func TestWaitForJobsPollsUntilTerminal(t *testing.T) {
 				ExitCode:     &exitCode,
 				StartedAt:    "2026-06-07T07:15:51.314202856Z",
 				FinishedAt:   "2026-06-07T07:16:49.259958355Z",
-			}}})
+			})
 		case r.Method == http.MethodGet && r.URL.Path == "/v2/runs/run_123":
 			if r.URL.RawQuery != "" {
 				t.Fatalf("terminal output fetch should be full, got query %q", r.URL.RawQuery)
@@ -426,6 +430,151 @@ func TestWaitForRunReportsTerminalDetailFetchFailure(t *testing.T) {
 	}
 }
 
+func TestWaitForJobsMarksPollingAndCancellationFailuresAsToolErrors(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		server http.HandlerFunc
+		ctx    func() context.Context
+	}{
+		{
+			name: "polling failure",
+			server: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte("unavailable"))
+			},
+			ctx: context.Background,
+		},
+		{
+			name: "caller cancellation",
+			server: func(w http.ResponseWriter, _ *http.Request) {
+				writeJSON(t, w, jobsV2AgentRunResponse{ID: "run_123", JobID: "job_123", Status: "running"})
+			},
+			ctx: func() context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(test.server)
+			defer server.Close()
+			tool := NewWaitForJobsToolWithClient(&jobsBackedAgentClient{baseURL: server.URL, httpClient: server.Client()})
+			tool.pollIntervalOverride = time.Millisecond
+			out, err := tool.Execute(test.ctx(), json.RawMessage(`{"run_ids":["run_123"]}`))
+			if err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+			if !out.IsError {
+				t.Fatalf("poll failure returned successful tool output: %#v", out)
+			}
+			var results []QueuedJobResult
+			if err := json.Unmarshal([]byte(out.Content), &results); err != nil || len(results) != 1 || results[0].Status != "failed" || results[0].Error == "" {
+				t.Fatalf("failure JSON = %#v, decode error = %v", results, err)
+			}
+		})
+	}
+}
+
+func TestWaitForJobsEmitsSanitizedCursorProgress(t *testing.T) {
+	var summaryPolls atomic.Int32
+	var eventQueries []string
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v2/runs/run_progress" && r.URL.Query().Get("summary") == "true":
+			status := "running"
+			if summaryPolls.Add(1) > 1 {
+				status = "succeeded"
+			}
+			writeJSON(t, w, jobsV2AgentRunResponse{ID: "run_progress", JobID: "job_progress", Status: status, StartedAt: now.Format(time.RFC3339Nano), FinishedAt: now.Add(time.Second).Format(time.RFC3339Nano)})
+		case r.URL.Path == "/v2/jobs/job_progress":
+			writeJSON(t, w, jobsV2AgentJobResponse{ID: "job_progress", TimeoutSeconds: 60})
+		case r.URL.Path == "/v2/runs/run_progress/events":
+			eventQueries = append(eventQueries, r.URL.RawQuery)
+			if r.URL.Query().Get("since_id") == "0" {
+				writeJSON(t, w, jobsV2AgentRunEventsResponse{Data: []jobsV2AgentRunEvent{
+					{ID: 1, EventType: "tool_start", Data: json.RawMessage(`{"id":"tool-1","tool":"shell","info":"secret args"}`), CreatedAt: now},
+					{ID: 2, EventType: "progress_update", Data: json.RawMessage(`{"message":"secret output"}`), CreatedAt: now},
+					{ID: 3, EventType: "tool_end", Data: json.RawMessage(`{"id":"tool-1","tool":"shell","success":true}`), CreatedAt: now},
+				}})
+			} else {
+				writeJSON(t, w, jobsV2AgentRunEventsResponse{})
+			}
+		case r.URL.Path == "/v2/runs/run_progress" && r.URL.RawQuery == "":
+			writeJSON(t, w, jobsV2AgentRunResponse{ID: "run_progress", JobID: "job_progress", Status: "succeeded"})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+	client := &jobsBackedAgentClient{baseURL: server.URL, httpClient: server.Client()}
+	tool := NewWaitForJobsToolWithClient(client)
+	tool.pollIntervalOverride = time.Millisecond
+	var events []SubagentEvent
+	ctx := ContextWithSubagentEventCallback(llm.ContextWithCallID(context.Background(), "wait-call"), func(callID string, event SubagentEvent) {
+		if callID != "wait-call/run_progress" {
+			t.Errorf("callID = %q", callID)
+		}
+		events = append(events, event)
+	})
+	if _, err := tool.Execute(ctx, json.RawMessage(`{"run_ids":["run_progress"]}`)); err != nil {
+		t.Fatal(err)
+	}
+	var starts, ends int
+	for _, event := range events {
+		switch event.Type {
+		case SubagentEventToolStart:
+			starts++
+			if len(event.ToolArgs) != 0 || event.ToolInfo != "" || event.Text != "" {
+				t.Fatalf("translated start leaked payload: %#v", event)
+			}
+		case SubagentEventToolEnd:
+			ends++
+		}
+	}
+	if starts != 1 || ends != 1 {
+		t.Fatalf("translated starts=%d ends=%d events=%#v", starts, ends, events)
+	}
+	if len(eventQueries) < 2 || !strings.Contains(eventQueries[0], "since_id=0") || !strings.Contains(eventQueries[1], "since_id=3") {
+		t.Fatalf("event cursor queries = %#v", eventQueries)
+	}
+	for _, query := range eventQueries {
+		if strings.Contains(query, "offset=") || !strings.Contains(query, "limit=200") {
+			t.Fatalf("unbounded/rescanning event query %q", query)
+		}
+	}
+}
+
+func TestWaitForJobsPinsJobRunAfterResolution(t *testing.T) {
+	var listCalls atomic.Int32
+	var exactCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v2/runs":
+			listCalls.Add(1)
+			writeJSON(t, w, jobsV2AgentRunsListResponse{Data: []jobsV2AgentRunResponse{{ID: "run_first", JobID: "job_1", Status: "running"}}})
+		case r.URL.Path == "/v2/runs/run_first" && r.URL.Query().Get("summary") == "true":
+			exactCalls.Add(1)
+			writeJSON(t, w, jobsV2AgentRunResponse{ID: "run_first", JobID: "job_1", Status: "succeeded"})
+		case r.URL.Path == "/v2/runs/run_first":
+			writeJSON(t, w, jobsV2AgentRunResponse{ID: "run_first", JobID: "job_1", Status: "succeeded"})
+		default:
+			t.Fatalf("unexpected request: %s", r.URL.String())
+		}
+	}))
+	defer server.Close()
+	client := &jobsBackedAgentClient{baseURL: server.URL, httpClient: server.Client()}
+	tool := NewWaitForJobsToolWithClient(client)
+	tool.pollIntervalOverride = time.Millisecond
+	if _, err := tool.Execute(context.Background(), json.RawMessage(`{"job_ids":["job_1"]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if listCalls.Load() != 1 || exactCalls.Load() != 1 {
+		t.Fatalf("list calls=%d exact calls=%d, want pinned exact polling", listCalls.Load(), exactCalls.Load())
+	}
+}
+
 func TestWaitForJobsMultipleRunsCollectsCompletedSibling(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -482,7 +631,7 @@ func TestQueueAgentSurfacesJobsErrorBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("queue Execute() error = %v", err)
 	}
-	if !strings.Contains(out.Content, "llm runner_config.cwd is required") {
+	if !out.IsError || !strings.Contains(out.Content, "llm runner_config.cwd is required") {
 		t.Fatalf("output did not include jobs error body: %s", out.Content)
 	}
 }
@@ -515,5 +664,167 @@ func writeJSON(t *testing.T, w http.ResponseWriter, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(value); err != nil {
 		t.Fatalf("encode response: %v", err)
+	}
+}
+
+func TestWaitForJobsDrainsTerminalProgressBeyondPollBudget(t *testing.T) {
+	const count = 701 // More than three 200-event pages, but within the total terminal bound.
+	now := time.Now().UTC()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v2/runs/run_history/events":
+			cursor, _ := strconv.Atoi(r.URL.Query().Get("since_id"))
+			events := []jobsV2AgentRunEvent{}
+			for id := cursor + 1; id <= count && len(events) < queuedAgentProgressPageSize; id++ {
+				events = append(events, jobsV2AgentRunEvent{ID: int64(id), EventType: "tool_start", Data: json.RawMessage(fmt.Sprintf(`{"id":"tool-%d","tool":"shell"}`, id)), CreatedAt: now})
+			}
+			writeJSON(t, w, jobsV2AgentRunEventsResponse{Data: events})
+		case r.URL.Path == "/v2/jobs/job_history":
+			writeJSON(t, w, jobsV2AgentJobResponse{ID: "job_history", TimeoutSeconds: 3600})
+		case r.URL.Path == "/v2/runs/run_history":
+			writeJSON(t, w, jobsV2AgentRunResponse{ID: "run_history", JobID: "job_history", Status: "succeeded", StartedAt: now.Format(time.RFC3339Nano)})
+		default:
+			t.Errorf("unexpected request %s", r.URL)
+		}
+	}))
+	defer server.Close()
+	client := &jobsBackedAgentClient{baseURL: server.URL, httpClient: server.Client()}
+	starts, done := 0, 0
+	_, err := client.waitForRunWithProgress(context.Background(), "run_history", time.Hour, "wait", func(_ string, event SubagentEvent) {
+		if event.Type == SubagentEventToolStart {
+			starts++
+		}
+		if event.Type == SubagentEventDone {
+			done++
+			if event.ProgressTruncated {
+				t.Error("complete bounded history marked truncated")
+			}
+		}
+	})
+	if err != nil || starts != count || done != 1 {
+		t.Fatalf("starts=%d done=%d err=%v", starts, done, err)
+	}
+}
+
+func TestWaitForJobsBoundsTerminalProgressReplayAndMarksCountsTruncated(t *testing.T) {
+	const available = queuedAgentProgressPageSize*queuedAgentProgressPagesPerPoll*queuedAgentTerminalDrainPasses + 1
+	const expected = available - 1
+	var eventRequests atomic.Int32
+	now := time.Now().UTC()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v2/runs/run_bounded/events":
+			eventRequests.Add(1)
+			cursor, _ := strconv.Atoi(r.URL.Query().Get("since_id"))
+			events := make([]jobsV2AgentRunEvent, 0, queuedAgentProgressPageSize)
+			for id := cursor + 1; id <= available && len(events) < queuedAgentProgressPageSize; id++ {
+				events = append(events, jobsV2AgentRunEvent{ID: int64(id), EventType: "tool_start", Data: json.RawMessage(fmt.Sprintf(`{"id":"tool-%d","tool":"shell"}`, id)), CreatedAt: now})
+			}
+			writeJSON(t, w, jobsV2AgentRunEventsResponse{Data: events})
+		case r.URL.Path == "/v2/jobs/job_bounded":
+			writeJSON(t, w, jobsV2AgentJobResponse{ID: "job_bounded", TimeoutSeconds: 3600})
+		case r.URL.Path == "/v2/runs/run_bounded":
+			writeJSON(t, w, jobsV2AgentRunResponse{ID: "run_bounded", JobID: "job_bounded", Status: "succeeded", StartedAt: now.Format(time.RFC3339Nano)})
+		default:
+			t.Errorf("unexpected request %s", r.URL)
+		}
+	}))
+	defer server.Close()
+	client := &jobsBackedAgentClient{baseURL: server.URL, httpClient: server.Client()}
+	starts, done := 0, 0
+	truncated := false
+	_, err := client.waitForRunWithProgress(context.Background(), "run_bounded", time.Hour, "wait", func(_ string, event SubagentEvent) {
+		switch event.Type {
+		case SubagentEventToolStart:
+			starts++
+		case SubagentEventDone:
+			done++
+			truncated = event.ProgressTruncated
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if starts != expected || done != 1 || !truncated {
+		t.Fatalf("starts=%d done=%d truncated=%v, want %d exact prefix events and explicit truncation", starts, done, truncated, expected)
+	}
+	wantRequests := int32(queuedAgentProgressPagesPerPoll * queuedAgentTerminalDrainPasses)
+	if got := eventRequests.Load(); got != wantRequests {
+		t.Fatalf("event requests=%d, want bounded %d", got, wantRequests)
+	}
+}
+
+func TestWaitForJobsBoundsProgressResponseBytes(t *testing.T) {
+	var eventRequests atomic.Int32
+	now := time.Now().UTC()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v2/runs/run_oversized/events":
+			eventRequests.Add(1)
+			payload := `{"data":[{"id":1,"event_type":"progress_update","data":{"message":"` + strings.Repeat("x", queuedAgentProgressResponseBytes) + `"}}]}`
+			_, _ = w.Write([]byte(payload))
+		case r.URL.Path == "/v2/jobs/job_oversized":
+			writeJSON(t, w, jobsV2AgentJobResponse{ID: "job_oversized", TimeoutSeconds: 3600})
+		case r.URL.Path == "/v2/runs/run_oversized":
+			writeJSON(t, w, jobsV2AgentRunResponse{ID: "run_oversized", JobID: "job_oversized", Status: "succeeded", StartedAt: now.Format(time.RFC3339Nano)})
+		default:
+			t.Errorf("unexpected request %s", r.URL)
+		}
+	}))
+	defer server.Close()
+	client := &jobsBackedAgentClient{baseURL: server.URL, httpClient: server.Client()}
+	done, truncated := 0, false
+	_, err := client.waitForRunWithProgress(context.Background(), "run_oversized", time.Hour, "wait", func(_ string, event SubagentEvent) {
+		if event.Type == SubagentEventDone {
+			done++
+			truncated = event.ProgressTruncated
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eventRequests.Load() != 1 || done != 1 || !truncated {
+		t.Fatalf("requests=%d done=%d truncated=%v", eventRequests.Load(), done, truncated)
+	}
+}
+
+func TestWaitForJobsTerminalReplayHonorsCancellation(t *testing.T) {
+	var eventRequests atomic.Int32
+	now := time.Now().UTC()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v2/runs/run_cancel/events":
+			eventRequests.Add(1)
+			events := make([]jobsV2AgentRunEvent, 0, queuedAgentProgressPageSize)
+			for id := 1; id <= queuedAgentProgressPageSize; id++ {
+				events = append(events, jobsV2AgentRunEvent{ID: int64(id), EventType: "tool_start", Data: json.RawMessage(fmt.Sprintf(`{"id":"tool-%d","tool":"shell"}`, id)), CreatedAt: now})
+			}
+			writeJSON(t, w, jobsV2AgentRunEventsResponse{Data: events})
+		case r.URL.Path == "/v2/jobs/job_cancel":
+			writeJSON(t, w, jobsV2AgentJobResponse{ID: "job_cancel", TimeoutSeconds: 3600})
+		case r.URL.Path == "/v2/runs/run_cancel":
+			writeJSON(t, w, jobsV2AgentRunResponse{ID: "run_cancel", JobID: "job_cancel", Status: "succeeded", StartedAt: now.Format(time.RFC3339Nano)})
+		default:
+			t.Errorf("unexpected request %s", r.URL)
+		}
+	}))
+	defer server.Close()
+	client := &jobsBackedAgentClient{baseURL: server.URL, httpClient: server.Client()}
+	ctx, cancel := context.WithCancel(context.Background())
+	starts, done := 0, 0
+	_, err := client.waitForRunWithProgress(ctx, "run_cancel", time.Hour, "wait", func(_ string, event SubagentEvent) {
+		if event.Type == SubagentEventToolStart {
+			starts++
+			cancel()
+		}
+		if event.Type == SubagentEventDone {
+			done++
+		}
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error=%v, want cancellation", err)
+	}
+	if eventRequests.Load() != 1 || starts != 1 || done != 0 {
+		t.Fatalf("requests=%d starts=%d done=%d", eventRequests.Load(), starts, done)
 	}
 }

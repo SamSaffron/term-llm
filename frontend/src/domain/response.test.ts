@@ -34,6 +34,7 @@ describe('response projection', () => {
         'response.output_item.added',
         'response.function_call_arguments.delta',
         'response.tool_exec.start',
+        'response.tool_exec.progress',
         'response.tool_exec.end',
         'response.guardian.review',
         'response.compaction',
@@ -50,6 +51,48 @@ describe('response projection', () => {
       ]),
     );
     expect(new Set(RESPONSE_EVENT_TYPES).size).toBe(RESPONSE_EVENT_TYPES.length);
+  });
+
+  it('accepts early absolute subagent progress, rejects stale seq, and folds terminal state', () => {
+    let projection = reduceResponse(
+      initialProjection(run),
+      event('response.tool_exec.progress', 1, {
+        call_id: 'spawn-early',
+        tool_name: 'spawn_agent',
+        seq: 2,
+        state: 'running',
+        phase: 'running_tools',
+        calls_started: 12,
+        calls_active: 2,
+        current_tool: 'shell',
+      }),
+    );
+    expect(projection.messages[0].tools?.[0].subagentProgress).toMatchObject({
+      seq: 2,
+      callsStarted: 12,
+      callsActive: 2,
+      currentTool: 'shell',
+    });
+    projection = reduceResponse(
+      projection,
+      event('response.tool_exec.progress', 2, {
+        call_id: 'spawn-early',
+        seq: 1,
+        state: 'running',
+        calls_started: 99,
+        calls_active: 99,
+      }),
+    );
+    expect(projection.messages[0].tools?.[0].subagentProgress?.callsStarted).toBe(12);
+    projection = reduceResponse(
+      projection,
+      event('response.tool_exec.end', 3, { call_id: 'spawn-early', success: true }),
+    );
+    expect(projection.messages[0].tools?.[0].subagentProgress).toMatchObject({
+      state: 'completed',
+      callsStarted: 12,
+      callsActive: 0,
+    });
   });
 
   it('tracks authoritative tool timing without resetting the original start', () => {

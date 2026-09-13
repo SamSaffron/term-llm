@@ -5,6 +5,7 @@ import { APIError, decodeSSE } from '../api/client';
 import {
   initialProjection,
   reduceResponse,
+  responseSubagentProgress,
   ResponseProtocolError,
   type ResponseEvent,
   type ResponseProjection,
@@ -1483,6 +1484,9 @@ export class RunEngine {
                 const durationMs =
                   rawDuration == null ? undefined : Math.max(0, Number(rawDuration));
                 const reportedStart = Number(tool.startedAt ?? tool.started_at) || undefined;
+                const subagentProgress = responseSubagentProgress(
+                  tool.subagentProgress ?? tool.subagent_progress,
+                );
                 const startedAt =
                   status === 'running' && durationMs !== undefined && Number.isFinite(durationMs)
                     ? recoveredAt - durationMs
@@ -1492,6 +1496,7 @@ export class RunEngine {
                   id: String(tool.id || ''),
                   name: String(tool.name || 'tool'),
                   status,
+                  ...(subagentProgress ? { subagentProgress } : {}),
                   ...(startedAt ? { startedAt } : {}),
                   ...(Number(tool.endedAt ?? tool.ended_at)
                     ? { endedAt: Number(tool.endedAt ?? tool.ended_at) }

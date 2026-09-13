@@ -10,9 +10,11 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -23,6 +25,10 @@ const (
 	defaultQueuedAgentPollInterval      = 5
 	queuedAgentTriggerReconcileTimeout  = 2 * time.Second
 	queuedAgentTriggerReconcileInterval = 50 * time.Millisecond
+	queuedAgentProgressPageSize         = 200
+	queuedAgentProgressPagesPerPoll     = 3
+	queuedAgentTerminalDrainPasses      = 4
+	queuedAgentProgressResponseBytes    = 1 << 20
 	defaultJobsServerBaseURL            = "http://127.0.0.1:8080"
 	QueueAgentEphemeralJobLabelKey      = "term_llm_queue_agent"
 	QueueAgentEphemeralJobLabelValue    = "ephemeral"
@@ -88,7 +94,19 @@ type jobsV2AgentJobPayload struct {
 }
 
 type jobsV2AgentJobResponse struct {
-	ID string `json:"id"`
+	ID             string `json:"id"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
+}
+
+type jobsV2AgentRunEvent struct {
+	ID        int64           `json:"id"`
+	EventType string          `json:"event_type"`
+	Data      json.RawMessage `json:"data"`
+	CreatedAt time.Time       `json:"created_at"`
+}
+
+type jobsV2AgentRunEventsResponse struct {
+	Data []jobsV2AgentRunEvent `json:"data"`
 }
 
 type jobsV2AgentRunResponse struct {
@@ -176,14 +194,14 @@ func (t *QueueAgentTool) Spec() llm.ToolSpec {
 func (t *QueueAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
 	var a QueueAgentArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return llm.TextOutput(formatQueuedAgentError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err))), nil
+		return queuedAgentErrorOutput(formatQueuedAgentError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err))), nil
 	}
 	agentName := strings.TrimSpace(a.AgentName)
 	if agentName == "" {
-		return llm.TextOutput(formatQueuedAgentError(ErrInvalidParams, "agent_name is required")), nil
+		return queuedAgentErrorOutput(formatQueuedAgentError(ErrInvalidParams, "agent_name is required")), nil
 	}
 	if strings.TrimSpace(a.Prompt) == "" {
-		return llm.TextOutput(formatQueuedAgentError(ErrInvalidParams, "prompt is required")), nil
+		return queuedAgentErrorOutput(formatQueuedAgentError(ErrInvalidParams, "prompt is required")), nil
 	}
 	timeout := a.Timeout
 	if timeout <= 0 {
@@ -197,13 +215,13 @@ func (t *QueueAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	}
 	cwd, err := queueAgentCwd(a.Cwd, t.config)
 	if err != nil {
-		return llm.TextOutput(formatQueuedAgentError(ErrInvalidParams, err.Error())), nil
+		return queuedAgentErrorOutput(formatQueuedAgentError(ErrInvalidParams, err.Error())), nil
 	}
 
 	origin, _ := QueueAgentOriginFromContext(ctx)
 	job, err := t.client.createAgentJob(ctx, agentName, a.Prompt, strings.TrimSpace(a.Model), cwd, timeout, a.NotifyWhenDone, origin)
 	if err != nil {
-		return llm.TextOutput(formatQueuedAgentError(ErrExecutionFailed, err.Error())), nil
+		return queuedAgentErrorOutput(formatQueuedAgentError(ErrExecutionFailed, err.Error())), nil
 	}
 	run, err := t.client.triggerJob(ctx, job.ID)
 	if err != nil {
@@ -220,7 +238,7 @@ func (t *QueueAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 		if reconcileErr == nil && found && reconciledRun.ID != "" {
 			run = reconciledRun
 		} else {
-			return llm.TextOutput(formatQueuedAgentTriggerPartialResult(job.ID, agentName, err, reconcileErr)), nil
+			return queuedAgentErrorOutput(formatQueuedAgentTriggerPartialResult(job.ID, agentName, err, reconcileErr)), nil
 		}
 	}
 
@@ -286,10 +304,10 @@ func (t *WaitForJobsTool) Spec() llm.ToolSpec {
 func (t *WaitForJobsTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
 	var a WaitForJobsArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return llm.TextOutput(formatQueuedAgentError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err))), nil
+		return queuedAgentErrorOutput(formatQueuedAgentError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err))), nil
 	}
 	if len(a.JobIDs) == 0 && len(a.RunIDs) == 0 {
-		return llm.TextOutput(formatQueuedAgentError(ErrInvalidParams, "job_ids or run_ids is required")), nil
+		return queuedAgentErrorOutput(formatQueuedAgentError(ErrInvalidParams, "job_ids or run_ids is required")), nil
 	}
 	pollInterval := time.Duration(a.PollIntervalSeconds) * time.Second
 	if pollInterval <= 0 {
@@ -300,19 +318,24 @@ func (t *WaitForJobsTool) Execute(ctx context.Context, args json.RawMessage) (ll
 	}
 
 	results := make([]QueuedJobResult, len(a.RunIDs)+len(a.JobIDs))
+	var waitFailed atomic.Bool
+	progress := SubagentEventCallbackFromContext(ctx)
+	waitCallID := llm.CallIDFromContext(ctx)
 	var wg sync.WaitGroup
 	for i, runID := range a.RunIDs {
 		runID = strings.TrimSpace(runID)
 		if runID == "" {
 			results[i] = QueuedJobResult{Status: "not_found", Error: "blank run_id"}
+			waitFailed.Store(true)
 			continue
 		}
 		wg.Add(1)
 		go func(i int, runID string) {
 			defer wg.Done()
-			run, err := t.client.waitForRun(ctx, runID, pollInterval)
+			run, err := t.client.waitForRunWithProgress(ctx, runID, pollInterval, waitCallID, progress)
 			if err != nil {
 				results[i] = QueuedJobResult{RunID: runID, Status: "failed", Error: err.Error()}
+				waitFailed.Store(true)
 				return
 			}
 			results[i] = queuedJobResultFromJobsRun("", run)
@@ -324,14 +347,16 @@ func (t *WaitForJobsTool) Execute(ctx context.Context, args json.RawMessage) (ll
 		jobID = strings.TrimSpace(jobID)
 		if jobID == "" {
 			results[i] = QueuedJobResult{Status: "not_found", Error: "blank job_id"}
+			waitFailed.Store(true)
 			continue
 		}
 		wg.Add(1)
 		go func(i int, jobID string) {
 			defer wg.Done()
-			run, err := t.client.waitForJob(ctx, jobID, pollInterval)
+			run, err := t.client.waitForJobWithProgress(ctx, jobID, pollInterval, waitCallID, progress)
 			if err != nil {
 				results[i] = QueuedJobResult{JobID: jobID, Status: "failed", Error: err.Error()}
+				waitFailed.Store(true)
 				return
 			}
 			results[i] = queuedJobResultFromJobsRun(jobID, run)
@@ -339,7 +364,9 @@ func (t *WaitForJobsTool) Execute(ctx context.Context, args json.RawMessage) (ll
 	}
 	wg.Wait()
 	data, _ := json.Marshal(results)
-	return llm.TextOutput(string(data)), nil
+	output := llm.TextOutput(string(data))
+	output.IsError = waitFailed.Load()
+	return output, nil
 }
 
 func (t *WaitForJobsTool) Preview(args json.RawMessage) string {
@@ -440,15 +467,62 @@ func (c *jobsBackedAgentClient) triggerJob(ctx context.Context, jobID string) (j
 }
 
 func (c *jobsBackedAgentClient) waitForRun(ctx context.Context, runID string, pollInterval time.Duration) (jobsV2AgentRunResponse, error) {
+	return c.waitForRunWithProgress(ctx, runID, pollInterval, "", nil)
+}
+
+func (c *jobsBackedAgentClient) waitForRunWithProgress(ctx context.Context, runID string, pollInterval time.Duration, waitCallID string, callback SubagentEventCallback) (jobsV2AgentRunResponse, error) {
+	run, err := c.getRunSummary(ctx, runID)
+	if err != nil {
+		return jobsV2AgentRunResponse{}, err
+	}
+	return c.waitForPinnedRun(ctx, run, pollInterval, waitCallID, callback)
+}
+
+func (c *jobsBackedAgentClient) waitForPinnedRun(ctx context.Context, run jobsV2AgentRunResponse, pollInterval time.Duration, waitCallID string, callback SubagentEventCallback) (jobsV2AgentRunResponse, error) {
 	if pollInterval <= 0 {
 		pollInterval = defaultQueuedAgentPollInterval * time.Second
 	}
+	runID := strings.TrimSpace(run.ID)
+	if runID == "" {
+		return jobsV2AgentRunResponse{}, fmt.Errorf("jobs server returned run without id")
+	}
+	jobID := strings.TrimSpace(run.JobID)
+	childID := waitCallID
+	if childID != "" {
+		childID += "/" + runID
+	}
+	timeoutSeconds := 0
+	if callback != nil && childID != "" && jobID != "" {
+		if job, err := c.getJob(ctx, jobID); err == nil {
+			timeoutSeconds = job.TimeoutSeconds
+		}
+	}
+	cursor := int64(0)
+	emitStatus := queuedStatusEmitter(childID, runID, jobID, timeoutSeconds, callback)
+	emitStatus(run)
+	progressTruncated := false
+	terminalDrainPasses := 0
 	for {
-		run, err := c.getRunSummary(ctx, runID)
-		if err != nil {
-			return jobsV2AgentRunResponse{}, err
+		if err := ctx.Err(); err != nil {
+			return run, err
+		}
+		var moreEvents, truncatedThisPoll bool
+		cursor, moreEvents, truncatedThisPoll = c.pollRunProgressEvents(ctx, run, timeoutSeconds, childID, cursor, callback)
+		progressTruncated = progressTruncated || truncatedThisPoll
+		if err := ctx.Err(); err != nil {
+			return run, err
 		}
 		if isQueuedAgentTerminalStatus(run.Status) {
+			if moreEvents {
+				terminalDrainPasses++
+				if terminalDrainPasses < queuedAgentTerminalDrainPasses {
+					continue // Bounded, no-sleep terminal drain for accurate prefix totals.
+				}
+				progressTruncated = true
+			}
+			if callback != nil && childID != "" {
+				callback(childID, SubagentEvent{Type: SubagentEventDone, Timestamp: parseQueuedAgentTime(run.FinishedAt), RunID: runID, JobID: jobID, ProgressTruncated: progressTruncated})
+			}
 			return c.getTerminalRun(ctx, run)
 		}
 		timer := time.NewTimer(pollInterval)
@@ -458,7 +532,122 @@ func (c *jobsBackedAgentClient) waitForRun(ctx context.Context, runID string, po
 			return run, ctx.Err()
 		case <-timer.C:
 		}
+		var err error
+		run, err = c.getRunSummary(ctx, runID)
+		if err != nil {
+			return jobsV2AgentRunResponse{}, err
+		}
+		emitStatus(run)
 	}
+}
+
+func (c *jobsBackedAgentClient) pollRunProgressEvents(ctx context.Context, run jobsV2AgentRunResponse, timeoutSeconds int, childID string, cursor int64, callback SubagentEventCallback) (nextCursor int64, moreEvents, truncated bool) {
+	if callback == nil || childID == "" {
+		return cursor, false, false
+	}
+	nextCursor, moreEvents, err := c.emitRunProgressEvents(ctx, run, timeoutSeconds, childID, cursor, callback)
+	// Progress is best effort and status polling remains authoritative. Any
+	// skipped history is nevertheless reported on the terminal snapshot.
+	return nextCursor, moreEvents, err != nil
+}
+
+func queuedRunDeadline(startedAt time.Time, timeoutSeconds int) time.Time {
+	if startedAt.IsZero() || timeoutSeconds <= 0 {
+		return time.Time{}
+	}
+	return startedAt.Add(time.Duration(timeoutSeconds) * time.Second)
+}
+
+func parseQueuedAgentTime(value string) time.Time {
+	parsed, _ := time.Parse(time.RFC3339Nano, strings.TrimSpace(value))
+	return parsed
+}
+
+func (c *jobsBackedAgentClient) getJob(ctx context.Context, jobID string) (jobsV2AgentJobResponse, error) {
+	var job jobsV2AgentJobResponse
+	if err := c.doJSON(ctx, http.MethodGet, "/v2/jobs/"+url.PathEscape(jobID), nil, &job); err != nil {
+		return jobsV2AgentJobResponse{}, err
+	}
+	if job.ID == "" {
+		job.ID = jobID
+	}
+	return job, nil
+}
+
+func (c *jobsBackedAgentClient) emitRunProgressEvents(ctx context.Context, run jobsV2AgentRunResponse, timeoutSeconds int, childID string, cursor int64, callback SubagentEventCallback) (int64, bool, error) {
+	initialCursor := cursor
+	for page := 0; page < queuedAgentProgressPagesPerPoll; page++ {
+		if err := ctx.Err(); err != nil {
+			return cursor, false, err
+		}
+		events, err := c.getRunEvents(ctx, run.ID, cursor)
+		if err != nil {
+			return cursor, false, err
+		}
+		sort.Slice(events, func(i, j int) bool { return events[i].ID < events[j].ID })
+		pageCursor := cursor
+		for _, persisted := range events {
+			if err := ctx.Err(); err != nil {
+				return cursor, false, err
+			}
+			if persisted.ID <= cursor {
+				continue
+			}
+			if event, ok := queuedSubagentEvent(run, timeoutSeconds, persisted); ok {
+				callback(childID, event)
+			}
+			// Advance only after this event has been inspected/emitted. Unknown
+			// event types are skipped safely and never become liveness evidence.
+			cursor = persisted.ID
+		}
+		if len(events) < queuedAgentProgressPageSize || cursor == pageCursor {
+			return cursor, false, nil
+		}
+	}
+	return cursor, cursor > initialCursor, nil
+}
+
+func (c *jobsBackedAgentClient) getRunEvents(ctx context.Context, runID string, cursor int64) ([]jobsV2AgentRunEvent, error) {
+	var response jobsV2AgentRunEventsResponse
+	path := "/v2/runs/" + url.PathEscape(runID) + "/events?since_id=" + strconv.FormatInt(cursor, 10) + "&limit=" + strconv.Itoa(queuedAgentProgressPageSize)
+	if err := c.doJSONWithLimit(ctx, http.MethodGet, path, nil, &response, queuedAgentProgressResponseBytes); err != nil {
+		return nil, err
+	}
+	return response.Data, nil
+}
+
+func queuedSubagentEvent(run jobsV2AgentRunResponse, timeoutSeconds int, persisted jobsV2AgentRunEvent) (SubagentEvent, bool) {
+	var data struct {
+		ID           string `json:"id"`
+		Tool         string `json:"tool"`
+		Success      bool   `json:"success"`
+		Text         string `json:"text"`
+		InputTokens  int    `json:"input_tokens"`
+		OutputTokens int    `json:"output_tokens"`
+	}
+	_ = json.Unmarshal(persisted.Data, &data)
+	event := SubagentEvent{
+		Timestamp: persisted.CreatedAt,
+		Deadline:  queuedRunDeadline(parseQueuedAgentTime(run.StartedAt), timeoutSeconds),
+		RunID:     run.ID,
+		JobID:     run.JobID,
+		EventID:   persisted.ID,
+	}
+	switch persisted.EventType {
+	case "queued", "claimed":
+		event.Type, event.Phase = SubagentEventPhase, persisted.EventType
+	case "tool_start":
+		event.Type, event.ToolCallID, event.ToolName = SubagentEventToolStart, data.ID, data.Tool
+	case "tool_end":
+		event.Type, event.ToolCallID, event.ToolName, event.Success = SubagentEventToolEnd, data.ID, data.Tool, data.Success
+	case "phase":
+		event.Type, event.Phase = SubagentEventPhase, data.Text
+	case "turn_complete":
+		event.Type, event.InputTokens, event.OutputTokens = SubagentEventUsage, data.InputTokens, data.OutputTokens
+	default:
+		return SubagentEvent{}, false
+	}
+	return event, true
 }
 
 func (c *jobsBackedAgentClient) getRun(ctx context.Context, runID string) (jobsV2AgentRunResponse, error) {
@@ -496,6 +685,10 @@ func (c *jobsBackedAgentClient) getTerminalRun(ctx context.Context, terminal job
 }
 
 func (c *jobsBackedAgentClient) waitForJob(ctx context.Context, jobID string, pollInterval time.Duration) (jobsV2AgentRunResponse, error) {
+	return c.waitForJobWithProgress(ctx, jobID, pollInterval, "", nil)
+}
+
+func (c *jobsBackedAgentClient) waitForJobWithProgress(ctx context.Context, jobID string, pollInterval time.Duration, waitCallID string, callback SubagentEventCallback) (jobsV2AgentRunResponse, error) {
 	if pollInterval <= 0 {
 		pollInterval = defaultQueuedAgentPollInterval * time.Second
 	}
@@ -504,16 +697,15 @@ func (c *jobsBackedAgentClient) waitForJob(ctx context.Context, jobID string, po
 		if err != nil {
 			return jobsV2AgentRunResponse{}, err
 		}
-		if found && isQueuedAgentTerminalStatus(run.Status) {
-			return c.getTerminalRun(ctx, run)
+		if found {
+			// Pin the first resolved run. A later trigger for the same job must not
+			// silently change which execution this wait observes.
+			return c.waitForPinnedRun(ctx, run, pollInterval, waitCallID, callback)
 		}
 		timer := time.NewTimer(pollInterval)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			if found {
-				return run, ctx.Err()
-			}
 			return jobsV2AgentRunResponse{JobID: jobID}, ctx.Err()
 		case <-timer.C:
 		}
@@ -576,7 +768,15 @@ func (c *jobsBackedAgentClient) doJSON(ctx context.Context, method, path string,
 	return c.doJSONWithHeaders(ctx, method, path, payload, out, nil)
 }
 
+func (c *jobsBackedAgentClient) doJSONWithLimit(ctx context.Context, method, path string, payload any, out any, maxResponseBytes int64) error {
+	return c.doJSONWithHeadersAndLimit(ctx, method, path, payload, out, nil, maxResponseBytes)
+}
+
 func (c *jobsBackedAgentClient) doJSONWithHeaders(ctx context.Context, method, path string, payload any, out any, headers map[string]string) error {
+	return c.doJSONWithHeadersAndLimit(ctx, method, path, payload, out, headers, 0)
+}
+
+func (c *jobsBackedAgentClient) doJSONWithHeadersAndLimit(ctx context.Context, method, path string, payload any, out any, headers map[string]string, maxResponseBytes int64) error {
 	var body io.Reader
 	if payload != nil {
 		data, err := json.Marshal(payload)
@@ -606,9 +806,16 @@ func (c *jobsBackedAgentClient) doJSONWithHeaders(ctx context.Context, method, p
 		return err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	responseBody := io.Reader(resp.Body)
+	if maxResponseBytes > 0 {
+		responseBody = io.LimitReader(resp.Body, maxResponseBytes+1)
+	}
+	data, err := io.ReadAll(responseBody)
 	if err != nil {
 		return err
+	}
+	if maxResponseBytes > 0 && int64(len(data)) > maxResponseBytes {
+		return fmt.Errorf("jobs %s %s response exceeds %d-byte limit", method, path, maxResponseBytes)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("jobs %s %s failed: %s", method, path, jobsErrorMessage(resp.StatusCode, data))
@@ -759,4 +966,33 @@ func formatQueuedAgentError(errType ToolErrorType, message string) string {
 		},
 	})
 	return string(data)
+}
+
+// Preserve structured errors and partial job identity while marking the tool execution failed.
+func queuedAgentErrorOutput(content string) llm.ToolOutput {
+	output := llm.TextOutput(content)
+	output.IsError = true
+	return output
+}
+
+func queuedStatusEmitter(childID, runID, jobID string, timeoutSeconds int, callback SubagentEventCallback) func(jobsV2AgentRunResponse) {
+	lastStatusEvidence := ""
+	return func(current jobsV2AgentRunResponse) {
+		if callback == nil || childID == "" {
+			return
+		}
+		signature := strings.ToLower(strings.TrimSpace(current.Status)) + "|" + strings.TrimSpace(current.StartedAt)
+		if signature == lastStatusEvidence {
+			return
+		}
+		lastStatusEvidence = signature
+		timestamp := parseQueuedAgentTime(current.StartedAt)
+		deadline := queuedRunDeadline(timestamp, timeoutSeconds)
+		switch strings.ToLower(strings.TrimSpace(current.Status)) {
+		case "running":
+			callback(childID, SubagentEvent{Type: SubagentEventInit, Timestamp: timestamp, Deadline: deadline, RunID: runID, JobID: jobID})
+		case "queued", "claimed":
+			callback(childID, SubagentEvent{Type: SubagentEventPhase, Phase: strings.ToLower(strings.TrimSpace(current.Status)), Timestamp: timestamp, Deadline: deadline, RunID: runID, JobID: jobID})
+		}
+	}
 }
