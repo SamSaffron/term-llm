@@ -772,7 +772,7 @@ func TestClassifiedCancelPreservesCompletedToolContextForFollowUp(t *testing.T) 
 		t.Fatalf("InterruptMessage: %v", err)
 	}
 	if action != llm.InterruptCancel {
-		t.Fatalf("action = %q, want cancel", action)
+		t.Fatalf("action = %v, want cancel", action)
 	}
 
 	waitForServeCondition(t, 2*time.Second, func() bool {

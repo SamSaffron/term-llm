@@ -29,7 +29,7 @@ import (
 	pionlog "github.com/pion/logging"
 	"github.com/pion/sctp"
 	"github.com/pion/sdp/v3"
-	"github.com/pion/stun/v3"
+	"github.com/pion/stun/v4"
 )
 
 const (

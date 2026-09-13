@@ -845,7 +845,7 @@ func TestHandleKeyMsg_ShiftTabAutoApprovesActiveApprovalPrompt(t *testing.T) {
 	select {
 	case result := <-doneCh:
 		if result.Choice != tools.ApprovalChoiceOnce {
-			t.Fatalf("expected active approval to proceed once, got %q", result.Choice)
+			t.Fatalf("expected active approval to proceed once, got %v", result.Choice)
 		}
 	default:
 		t.Fatal("expected active approval prompt to receive a result")
@@ -874,7 +874,7 @@ func TestUpdate_ApprovalRequestAutoApprovesWhenYoloAlreadyEnabled(t *testing.T) 
 	select {
 	case result := <-doneCh:
 		if result.Choice != tools.ApprovalChoiceOnce {
-			t.Fatalf("expected yolo approval to proceed once, got %q", result.Choice)
+			t.Fatalf("expected yolo approval to proceed once, got %v", result.Choice)
 		}
 	default:
 		t.Fatal("expected approval request to auto-approve in yolo mode")

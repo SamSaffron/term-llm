@@ -80,6 +80,16 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Check go mod tidy
+        run: |
+          for module in . internal/reflow internal/terminal/renderer internal/terminal/runtime; do
+            echo "checking $module"
+            (cd "$module" && go mod tidy -diff)
+          done
+
+      - name: Vulnerability scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
       - name: Check complexity ratchet
         run: make complexity
 
@@ -163,7 +173,7 @@ jobs:
 
       - name: Install Playwright Chromium
         timeout-minutes: 10
-        run: npx --yes --package @playwright/test@1.62.1 playwright install --with-deps chromium
+        run: npx --yes --package @playwright/test@1.63.0 playwright install --with-deps chromium
 
       - name: Hub passkey browser smoke
         timeout-minutes: 5

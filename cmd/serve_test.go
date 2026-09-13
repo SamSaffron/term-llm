@@ -3293,7 +3293,7 @@ func TestInterruptMessagePersistsPendingUntilDurableCommit(t *testing.T) {
 		context.Background(), llm.UserText("change course"), "change course", "web-pending-1", nil, interruptDeliverySteer,
 	)
 	if err != nil || action != llm.InterruptSteer {
-		t.Fatalf("InterruptMessage action=%q err=%v", action, err)
+		t.Fatalf("InterruptMessage action=%v err=%v", action, err)
 	}
 	pendingStore, ok := session.AsPendingSteeringStore(store)
 	if !ok {

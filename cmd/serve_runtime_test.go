@@ -1346,7 +1346,7 @@ func TestServeRuntimeInterruptCancelMarksResponseRunCancellationRequested(t *tes
 		t.Fatalf("InterruptMessage: %v", err)
 	}
 	if action != llm.InterruptCancel {
-		t.Fatalf("action = %q, want cancel", action)
+		t.Fatalf("action = %v, want cancel", action)
 	}
 	if pending := rt.engine.ListPendingSteering(); len(pending) != 0 {
 		t.Fatalf("classified cancel retained engine steering: %#v", pending)
