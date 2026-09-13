@@ -98,6 +98,9 @@ func (s *serveSubagentProgress) observe(callID string, event tools.SubagentEvent
 	}
 	root := s.roots[rootID]
 	if root == nil {
+		root = s.adoptVerifiedRootLocked(rootID, childID, event)
+	}
+	if root == nil {
 		s.mu.Unlock()
 		return
 	}
@@ -311,6 +314,30 @@ func (s *serveSubagentProgress) rootLocked(callID string) *subagentProgressRoot 
 	return root
 }
 
+func (s *serveSubagentProgress) adoptVerifiedRootLocked(rootID, childID string, event tools.SubagentEvent) *subagentProgressRoot {
+	toolName := ""
+	switch {
+	case childID == "" && event.Type == tools.SubagentEventInit && !event.Deadline.IsZero():
+		// spawn_agent stamps every direct child event with its enforced context
+		// deadline, which is not supplied by the model.
+		toolName = tools.SpawnAgentToolName
+	case childID != "" && event.RunID != "":
+		// wait_for_jobs qualifies callbacks with its pinned jobs-v2 run ID.
+		toolName = tools.WaitForJobsToolName
+	default:
+		return nil
+	}
+	root := s.rootLocked(rootID)
+	if root == nil {
+		return nil
+	}
+	root.toolName = toolName
+	if toolName == tools.WaitForJobsToolName {
+		root.state, root.phase = "waiting", "waiting"
+	}
+	return root
+}
+
 func (s *serveSubagentProgress) childLocked(root *subagentProgressRoot, childID string, event tools.SubagentEvent) *subagentProgressChild {
 	if childID == "" {
 		return nil
@@ -334,7 +361,7 @@ func reduceChildToolStart(child *subagentProgressChild, identity, name string) {
 	if _, duplicate := child.seenCalls[identity]; duplicate {
 		return
 	}
-	if len(child.seenCalls) >= serveSubagentMaxSeenCalls {
+	if child.callsStarted >= serveSubagentMaxSeenCalls {
 		child.callsTruncated = true
 		return
 	}
@@ -385,6 +412,13 @@ func boundedSubagentToolName(value string) string {
 	return value
 }
 
+func subagentToolIdentity(callID, toolCallID, toolName string) string {
+	if toolCallID != "" {
+		return callID + "\x00" + toolCallID
+	}
+	return callID + "\x00" + boundedSubagentToolName(toolName)
+}
+
 func anyActiveTool(active map[string]string) string {
 	for _, name := range active {
 		return name
@@ -409,15 +443,7 @@ func (s *serveSubagentProgress) reduceEventLocked(root *subagentProgressRoot, ca
 		s.reduceToolStartLocked(root, child, callID, childID, event)
 		boundary = true
 	case tools.SubagentEventToolEnd:
-		identity := callID + "\x00" + event.ToolCallID
-		if childID == "" || root.toolName == tools.WaitForJobsToolName {
-			delete(root.activeTools, identity)
-			root.currentTool = anyActiveTool(root.activeTools)
-		}
-		if child != nil {
-			delete(child.activeTools, identity)
-			child.currentTool = anyActiveTool(child.activeTools)
-		}
+		s.reduceToolEndLocked(root, child, callID, childID, event)
 		boundary = true
 	case tools.SubagentEventPhase:
 		if phase := sanitizedSubagentPhase(event.Phase); phase != "" {
@@ -449,16 +475,35 @@ func (s *serveSubagentProgress) reduceEventLocked(root *subagentProgressRoot, ca
 	return release, boundary, true
 }
 
+func (s *serveSubagentProgress) reduceToolEndLocked(root *subagentProgressRoot, child *subagentProgressChild, callID, childID string, event tools.SubagentEvent) {
+	identity := subagentToolIdentity(callID, event.ToolCallID, event.ToolName)
+	retireFallback := event.ToolCallID == ""
+	if childID == "" || root.toolName == tools.WaitForJobsToolName {
+		delete(root.activeTools, identity)
+		if retireFallback {
+			// Provider-native tools do not always supply call IDs. Once their
+			// matching end arrives, permit a later call with the same name to
+			// count as a distinct invocation.
+			delete(root.seenCalls, identity)
+		}
+		root.currentTool = anyActiveTool(root.activeTools)
+	}
+	if child != nil {
+		delete(child.activeTools, identity)
+		if retireFallback {
+			delete(child.seenCalls, identity)
+		}
+		child.currentTool = anyActiveTool(child.activeTools)
+	}
+}
+
 func (s *serveSubagentProgress) reduceToolStartLocked(root *subagentProgressRoot, child *subagentProgressChild, callID, childID string, event tools.SubagentEvent) {
 	name := boundedSubagentToolName(event.ToolName)
-	identity := callID + "\x00" + event.ToolCallID
-	if event.ToolCallID == "" {
-		identity = callID + "\x00" + name
-	}
+	identity := subagentToolIdentity(callID, event.ToolCallID, name)
 	aggregateRoot := childID == "" || root.toolName == tools.WaitForJobsToolName
 	if aggregateRoot {
 		if _, duplicate := root.seenCalls[identity]; !duplicate {
-			if len(root.seenCalls) >= serveSubagentMaxSeenCalls {
+			if root.callsStarted >= serveSubagentMaxSeenCalls {
 				root.callsTruncated = true
 			} else {
 				root.seenCalls[identity] = struct{}{}

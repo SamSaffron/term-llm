@@ -407,23 +407,30 @@ func (t *SpawnAgentTool) PermittedAgentNames() ([]string, error) {
 	return permitted, nil
 }
 
+func spawnAgentErrorOutput(content string, timedOut bool) llm.ToolOutput {
+	output := llm.TextOutput(content)
+	output.IsError = true
+	output.TimedOut = timedOut
+	return output
+}
+
 // Execute runs the spawn_agent tool.
 func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
 	var a SpawnAgentArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return llm.TextOutput(t.formatError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err))), nil
+		return spawnAgentErrorOutput(t.formatError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err)), false), nil
 	}
 
 	// Validate arguments
 	if a.AgentName == "" {
-		return llm.TextOutput(t.formatError(ErrInvalidParams, "agent_name is required")), nil
+		return spawnAgentErrorOutput(t.formatError(ErrInvalidParams, "agent_name is required"), false), nil
 	}
 	if a.Prompt == "" {
-		return llm.TextOutput(t.formatError(ErrInvalidParams, "prompt is required")), nil
+		return spawnAgentErrorOutput(t.formatError(ErrInvalidParams, "prompt is required"), false), nil
 	}
 	requestedModel := a.Model
 	if requestedModel != "" && !isQualifiedSpawnModel(requestedModel) {
-		return llm.TextOutput(t.formatError(ErrInvalidParams, "model must use exact provider:model format; omit it to use the configured/default model")), nil
+		return spawnAgentErrorOutput(t.formatError(ErrInvalidParams, "model must use exact provider:model format; omit it to use the configured/default model"), false), nil
 	}
 
 	runner, currentDepth, policyErr := t.localSpawnPolicy(a.AgentName)
@@ -433,7 +440,7 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 		if errors.As(policyErr, &typed) {
 			errType = typed.typeName
 		}
-		return llm.TextOutput(t.formatError(errType, policyErr.Error())), nil
+		return spawnAgentErrorOutput(t.formatError(errType, policyErr.Error()), false), nil
 	}
 
 	// Determine timeout.
@@ -456,11 +463,11 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	case t.semaphore <- struct{}{}:
 		defer func() { <-t.semaphore }()
 	case <-ctx.Done():
-		// Distinguish between deadline exceeded (timeout) and manual cancellation
+		// Distinguish between deadline exceeded (timeout) and manual cancellation.
 		if ctx.Err() == context.DeadlineExceeded {
-			return llm.TextOutput(t.formatError(ErrTimeout, "context deadline exceeded while waiting for agent slot")), nil
+			return spawnAgentErrorOutput(t.formatError(ErrTimeout, "context deadline exceeded while waiting for agent slot"), true), nil
 		}
-		return llm.TextOutput(t.formatError(ErrExecutionFailed, "context cancelled while waiting for agent slot")), nil
+		return spawnAgentErrorOutput(t.formatError(ErrExecutionFailed, "context cancelled while waiting for agent slot"), false), nil
 	}
 
 	// Create child context with timeout
@@ -511,7 +518,12 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	duration := time.Since(start).Milliseconds()
 
 	if err != nil {
-		return llm.TextOutput(t.formatErrorWithPartialResult(classifySpawnAgentError(err, ctx, childCtx), spawnAgentErrorMessage(err, ctx, childCtx, a.AgentName, timeout), duration, runResult)), nil
+		errType := classifySpawnAgentError(err, ctx, childCtx)
+		output := spawnAgentErrorOutput(t.formatErrorWithPartialResult(errType, spawnAgentErrorMessage(err, ctx, childCtx, a.AgentName, timeout), duration, runResult), errType == ErrTimeout)
+		mediaMu.Lock()
+		output.Media = llm.NormalizeMedia(append([]llm.MediaArtifact(nil), nestedMedia...), nil)
+		mediaMu.Unlock()
+		return output, nil
 	}
 
 	// Return success result

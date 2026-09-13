@@ -405,6 +405,9 @@ func TestSpawnAgentTool_PreservesPartialRunResultOnError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if !result.IsError || result.TimedOut {
+		t.Fatalf("execution failure flags = IsError:%v TimedOut:%v, want true/false", result.IsError, result.TimedOut)
+	}
 
 	r := parseResult(t, result.Content)
 	if r.Type != string(ErrExecutionFailed) {
@@ -426,6 +429,9 @@ func TestSpawnAgentTool_PreservesPartialRunResultOnTimeoutError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if !result.IsError || !result.TimedOut {
+		t.Fatalf("timeout flags = IsError:%v TimedOut:%v, want true/true", result.IsError, result.TimedOut)
+	}
 
 	r := parseResult(t, result.Content)
 	if r.Type != string(ErrTimeout) {
@@ -436,6 +442,45 @@ func TestSpawnAgentTool_PreservesPartialRunResultOnTimeoutError(t *testing.T) {
 	}
 	if r.SessionID != "child-session-timeout" {
 		t.Fatalf("expected child session ID to be preserved, got %q", r.SessionID)
+	}
+}
+
+func TestSpawnAgentStructuredFailureEmitsUnsuccessfulEngineTerminal(t *testing.T) {
+	tool := NewSpawnAgentTool(SpawnConfig{MaxDepth: 5, MaxParallel: 1, DefaultTimeout: 300}, 0)
+	tool.SetRunner(newMockRunner().SetOutput("partial findings").SetSessionID("child-failed").SetError(errors.New("boom")))
+	provider := llm.NewMockProvider("mock").
+		AddToolCall("spawn-failed", SpawnAgentToolName, SpawnAgentArgs{AgentName: "codebase", Prompt: "inspect"}).
+		AddTextResponse("recovered")
+	engine := llm.NewEngine(provider, nil)
+	engine.RegisterTool(tool)
+	stream, err := engine.Stream(context.Background(), llm.Request{
+		Messages: []llm.Message{llm.UserText("inspect")},
+		Tools:    []llm.ToolSpec{tool.Spec()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	var terminal *llm.Event
+	for {
+		event, recvErr := stream.Recv()
+		if errors.Is(recvErr, io.EOF) {
+			break
+		}
+		if recvErr != nil {
+			t.Fatal(recvErr)
+		}
+		if event.Type == llm.EventToolExecEnd && event.ToolCallID == "spawn-failed" {
+			copy := event
+			terminal = &copy
+		}
+	}
+	if terminal == nil {
+		t.Fatal("missing spawn_agent terminal event")
+	}
+	if terminal.ToolSuccess || !strings.Contains(terminal.ToolOutput, `"type":"`+string(ErrExecutionFailed)+`"`) || !strings.Contains(terminal.ToolOutput, `"session_id":"child-failed"`) {
+		t.Fatalf("terminal = %#v", *terminal)
 	}
 }
 

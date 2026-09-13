@@ -460,7 +460,7 @@ Relevant options include:
 - `--tools`, `--read-dir`, `--write-dir`, `--shell-allow`
 - `--base-path`
 - `--title` (overrides the web UI sidebar title; also configurable as `serve.title`)
-- `--response-timeout` (maximum inactivity before the first or next completed LLM response, default `30m`; each completed LLM response refreshes the clock, and interactive approval or `ask_user` waits pause it; also configurable as `serve.response_timeout` with Go durations like `45m` or `1h`)
+- `--response-timeout` (maximum inactivity before the first or next completed LLM response, default `30m`; each completed LLM response refreshes the clock, interactive approval or `ask_user` waits pause it, and verified deadline-bounded subagent or queued delegations pause it for at most one hour plus a 30-second completion grace each; also configurable as `serve.response_timeout` with Go durations like `45m` or `1h`)
 - `--cors-origin`
 - `--webrtc`, `--webrtc-signaling-url`, `--webrtc-token` (see [WebRTC direct routing](/guides/webrtc-direct-routing/))
 

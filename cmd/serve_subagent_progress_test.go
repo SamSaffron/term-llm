@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -45,6 +46,130 @@ func TestServeSubagentProgressParentDoesNotTimeoutWhileChildRuns(t *testing.T) {
 	if len(payloads) == 0 {
 		t.Fatal("no progress snapshots emitted")
 	}
+}
+
+func TestResponseToolCallStartsDelegationWhenExecStartIsLost(t *testing.T) {
+	for _, toolName := range []string{tools.SpawnAgentToolName, tools.WaitForJobsToolName} {
+		t.Run(toolName, func(t *testing.T) {
+			clock := newFakeResponseRunClock()
+			ctx, timer := newResponseRunTimerWithClock(time.Minute, clock)
+			defer timer.stop()
+			run := newResponseRun("response-start-fallback", "session", "", "mock", clock.Now().Unix(), func() {})
+			progress := newServeSubagentProgress(clock, run.appendEvent, timer.holdUntil)
+			defer progress.close()
+			runtime := &serveRuntime{subagentProgress: progress, approvalCtx: context.Background()}
+			server := &serveServer{}
+			state := newResponseRunStreamState("mock", "")
+			callID := toolName + "-lossy-start"
+
+			if err := server.appendResponseRunEvent(runtime, run, state, llm.Event{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: callID, Name: toolName}}); err != nil {
+				t.Fatal(err)
+			}
+			if progress.roots[callID] == nil {
+				t.Fatal("lossless tool-call event did not create progress root")
+			}
+			event := tools.SubagentEvent{Type: tools.SubagentEventInit, Timestamp: clock.Now(), Deadline: clock.Now().Add(time.Hour)}
+			if toolName == tools.WaitForJobsToolName {
+				event.RunID = "run-1"
+				event.EventID = 1
+			}
+			progress.observe(callID, event)
+			clock.Advance(2 * time.Minute)
+			if ctx.Err() != nil {
+				t.Fatalf("lost exec-start also lost delegation hold: %v", context.Cause(ctx))
+			}
+			if err := server.appendResponseRunEvent(runtime, run, state, llm.Event{Type: llm.EventToolExecEnd, ToolCallID: callID, ToolName: toolName, ToolSuccess: true}); err != nil {
+				t.Fatal(err)
+			}
+			if progress.roots[callID] != nil {
+				t.Fatal("terminal event did not clear progress root")
+			}
+			clock.Advance(59 * time.Second)
+			if ctx.Err() != nil {
+				t.Fatalf("released hold did not grant a fresh inactivity window: %v", context.Cause(ctx))
+			}
+			clock.Advance(2 * time.Second)
+			if !responseRunTimedOut(ctx) {
+				t.Fatalf("released hold left parent unbounded: %v", context.Cause(ctx))
+			}
+		})
+	}
+}
+
+func TestServeSubagentProgressAdoptsVerifiedEventBeforeStartProjection(t *testing.T) {
+	now := time.Now()
+	for _, test := range []struct {
+		name, callID, rootID, toolName string
+		event                          tools.SubagentEvent
+	}{
+		{name: "spawn", callID: "spawn-race", rootID: "spawn-race", toolName: tools.SpawnAgentToolName, event: tools.SubagentEvent{Type: tools.SubagentEventInit, Deadline: now.Add(time.Hour)}},
+		{name: "wait", callID: "wait-race/run-1", rootID: "wait-race", toolName: tools.WaitForJobsToolName, event: tools.SubagentEvent{Type: tools.SubagentEventInit, Timestamp: now, Deadline: now.Add(time.Hour), RunID: "run-1"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			progress := newServeSubagentProgress(nil, nil, func(time.Time) responseRunTimerHold { return noopResponseRunTimerHold() })
+			defer progress.close()
+			progress.observe(test.callID, test.event)
+			root := progress.roots[test.rootID]
+			if root == nil || root.toolName != test.toolName || root.hold == nil {
+				t.Fatalf("adopted root = %#v, want verified %s root with hold", root, test.toolName)
+			}
+		})
+	}
+
+	progress := newServeSubagentProgress(nil, nil, nil)
+	defer progress.close()
+	progress.observe("unverified", tools.SubagentEvent{Type: tools.SubagentEventToolStart, ToolName: "shell"})
+	if progress.roots["unverified"] != nil {
+		t.Fatal("unverified callback created a progress root")
+	}
+}
+
+func TestServeSubagentProgressNativeToolsWithoutCallIDsHaveCompleteLifecycle(t *testing.T) {
+	progress := newServeSubagentProgress(nil, nil, nil)
+	defer progress.close()
+	progress.begin("spawn-native", tools.SpawnAgentToolName)
+
+	for i := 1; i <= 2; i++ {
+		progress.observe("spawn-native", tools.SubagentEvent{Type: tools.SubagentEventToolStart, ToolName: "web_search"})
+		root := progress.roots["spawn-native"]
+		if root.callsStarted != i || len(root.activeTools) != 1 || root.currentTool != "web_search" {
+			t.Fatalf("native start %d: calls=%d active=%d current=%q", i, root.callsStarted, len(root.activeTools), root.currentTool)
+		}
+		progress.observe("spawn-native", tools.SubagentEvent{Type: tools.SubagentEventToolEnd, ToolName: "web_search", Success: true})
+		if len(root.activeTools) != 0 || root.currentTool != "" {
+			t.Fatalf("native end %d left active lifecycle: active=%#v current=%q", i, root.activeTools, root.currentTool)
+		}
+	}
+}
+
+func TestSpawnAgentFailedTerminalMatchesLiveAndRecoveryState(t *testing.T) {
+	run := newResponseRun("response-failed-spawn", "session", "", "mock", time.Now().Unix(), func() {})
+	progress := newServeSubagentProgress(nil, run.appendEvent, nil)
+	defer progress.close()
+	runtime := &serveRuntime{subagentProgress: progress, approvalCtx: context.Background()}
+	server := &serveServer{}
+	state := newResponseRunStreamState("mock", "")
+	if err := server.appendResponseRunEvent(runtime, run, state, llm.Event{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "spawn-failed", Name: tools.SpawnAgentToolName}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.appendResponseRunEvent(runtime, run, state, llm.Event{Type: llm.EventToolExecEnd, ToolCallID: "spawn-failed", ToolName: tools.SpawnAgentToolName, ToolSuccess: false}); err != nil {
+		t.Fatal(err)
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	for _, message := range run.recoveryMessages {
+		for _, tool := range message.Tools {
+			if tool.ID != "spawn-failed" {
+				continue
+			}
+			if tool.Status != "error" || stringValue(tool.SubagentProgress["state"]) != "failed" {
+				t.Fatalf("recovered tool status=%q progress=%#v, want error/failed", tool.Status, tool.SubagentProgress)
+			}
+			return
+		}
+	}
+	t.Fatal("failed spawn missing from recovery projection")
 }
 
 func TestServeSubagentProgressStuckChildCannotHoldPastDeadline(t *testing.T) {

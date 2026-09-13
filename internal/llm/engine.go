@@ -3205,19 +3205,23 @@ func toolErrorMessageWithGuardian(id, name, text string, thoughtSig []byte, revi
 	return message
 }
 
-const reliableToolTerminalName = "spawn_agent"
+const (
+	reliableSpawnAgentTerminalName  = "spawn_agent"
+	reliableWaitForJobsTerminalName = "wait_for_jobs"
+)
 
-// sendToolExecEnd keeps spawn-agent completion lossless. Its child session can
-// become terminal before the parent tool result is durable, so dropping this
-// event leaves Web clients with only an in-flight placeholder until every
-// parallel tool returns. Other tool ends remain best-effort to preserve the
-// existing worker backpressure behavior.
+// sendToolExecEnd keeps delegation completion lossless. A child session or
+// queued run can become terminal before the parent tool result is durable, so
+// dropping either event leaves Web clients with an in-flight placeholder and
+// an unreleased response timer hold. Other tool ends remain best-effort to
+// preserve the existing worker backpressure behavior.
 func sendToolExecEnd(send eventSender, event Event) {
-	if event.ToolName == reliableToolTerminalName {
+	switch event.ToolName {
+	case reliableSpawnAgentTerminalName, reliableWaitForJobsTerminalName:
 		_ = send.Send(event)
-		return
+	default:
+		send.TrySend(event)
 	}
-	send.TrySend(event)
 }
 
 // executeSingleToolCall is the historical message adapter used by focused

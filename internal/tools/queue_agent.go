@@ -25,9 +25,10 @@ const (
 	defaultQueuedAgentPollInterval      = 5
 	queuedAgentTriggerReconcileTimeout  = 2 * time.Second
 	queuedAgentTriggerReconcileInterval = 50 * time.Millisecond
-	queuedAgentProgressStaleWindow      = 15 * time.Minute
 	queuedAgentProgressPageSize         = 200
 	queuedAgentProgressPagesPerPoll     = 3
+	queuedAgentTerminalDrainPasses      = 4
+	queuedAgentProgressResponseBytes    = 1 << 20
 	defaultJobsServerBaseURL            = "http://127.0.0.1:8080"
 	QueueAgentEphemeralJobLabelKey      = "term_llm_queue_agent"
 	QueueAgentEphemeralJobLabelValue    = "ephemeral"
@@ -499,20 +500,28 @@ func (c *jobsBackedAgentClient) waitForPinnedRun(ctx context.Context, run jobsV2
 	cursor := int64(0)
 	emitStatus := queuedStatusEmitter(childID, runID, jobID, timeoutSeconds, callback)
 	emitStatus(run)
+	progressTruncated := false
+	terminalDrainPasses := 0
 	for {
-		moreEvents := false
-		var progressErr error
-		if callback != nil && childID != "" {
-			cursor, moreEvents, progressErr = c.emitRunProgressEvents(ctx, run, timeoutSeconds, childID, cursor, callback)
-			// Progress is best effort. Status polling remains authoritative and
-			// preserves the tool's existing fail-fast behavior.
+		if err := ctx.Err(); err != nil {
+			return run, err
+		}
+		var moreEvents, truncatedThisPoll bool
+		cursor, moreEvents, truncatedThisPoll = c.pollRunProgressEvents(ctx, run, timeoutSeconds, childID, cursor, callback)
+		progressTruncated = progressTruncated || truncatedThisPoll
+		if err := ctx.Err(); err != nil {
+			return run, err
 		}
 		if isQueuedAgentTerminalStatus(run.Status) {
 			if moreEvents {
-				continue // Drain terminal history without sleeping so totals converge.
+				terminalDrainPasses++
+				if terminalDrainPasses < queuedAgentTerminalDrainPasses {
+					continue // Bounded, no-sleep terminal drain for accurate prefix totals.
+				}
+				progressTruncated = true
 			}
 			if callback != nil && childID != "" {
-				callback(childID, SubagentEvent{Type: SubagentEventDone, Timestamp: parseQueuedAgentTime(run.FinishedAt), RunID: runID, JobID: jobID, ProgressTruncated: progressErr != nil})
+				callback(childID, SubagentEvent{Type: SubagentEventDone, Timestamp: parseQueuedAgentTime(run.FinishedAt), RunID: runID, JobID: jobID, ProgressTruncated: progressTruncated})
 			}
 			return c.getTerminalRun(ctx, run)
 		}
@@ -530,6 +539,16 @@ func (c *jobsBackedAgentClient) waitForPinnedRun(ctx context.Context, run jobsV2
 		}
 		emitStatus(run)
 	}
+}
+
+func (c *jobsBackedAgentClient) pollRunProgressEvents(ctx context.Context, run jobsV2AgentRunResponse, timeoutSeconds int, childID string, cursor int64, callback SubagentEventCallback) (nextCursor int64, moreEvents, truncated bool) {
+	if callback == nil || childID == "" {
+		return cursor, false, false
+	}
+	nextCursor, moreEvents, err := c.emitRunProgressEvents(ctx, run, timeoutSeconds, childID, cursor, callback)
+	// Progress is best effort and status polling remains authoritative. Any
+	// skipped history is nevertheless reported on the terminal snapshot.
+	return nextCursor, moreEvents, err != nil
 }
 
 func queuedRunDeadline(startedAt time.Time, timeoutSeconds int) time.Time {
@@ -558,6 +577,9 @@ func (c *jobsBackedAgentClient) getJob(ctx context.Context, jobID string) (jobsV
 func (c *jobsBackedAgentClient) emitRunProgressEvents(ctx context.Context, run jobsV2AgentRunResponse, timeoutSeconds int, childID string, cursor int64, callback SubagentEventCallback) (int64, bool, error) {
 	initialCursor := cursor
 	for page := 0; page < queuedAgentProgressPagesPerPoll; page++ {
+		if err := ctx.Err(); err != nil {
+			return cursor, false, err
+		}
 		events, err := c.getRunEvents(ctx, run.ID, cursor)
 		if err != nil {
 			return cursor, false, err
@@ -565,6 +587,9 @@ func (c *jobsBackedAgentClient) emitRunProgressEvents(ctx context.Context, run j
 		sort.Slice(events, func(i, j int) bool { return events[i].ID < events[j].ID })
 		pageCursor := cursor
 		for _, persisted := range events {
+			if err := ctx.Err(); err != nil {
+				return cursor, false, err
+			}
 			if persisted.ID <= cursor {
 				continue
 			}
@@ -585,7 +610,7 @@ func (c *jobsBackedAgentClient) emitRunProgressEvents(ctx context.Context, run j
 func (c *jobsBackedAgentClient) getRunEvents(ctx context.Context, runID string, cursor int64) ([]jobsV2AgentRunEvent, error) {
 	var response jobsV2AgentRunEventsResponse
 	path := "/v2/runs/" + url.PathEscape(runID) + "/events?since_id=" + strconv.FormatInt(cursor, 10) + "&limit=" + strconv.Itoa(queuedAgentProgressPageSize)
-	if err := c.doJSON(ctx, http.MethodGet, path, nil, &response); err != nil {
+	if err := c.doJSONWithLimit(ctx, http.MethodGet, path, nil, &response, queuedAgentProgressResponseBytes); err != nil {
 		return nil, err
 	}
 	return response.Data, nil
@@ -743,7 +768,15 @@ func (c *jobsBackedAgentClient) doJSON(ctx context.Context, method, path string,
 	return c.doJSONWithHeaders(ctx, method, path, payload, out, nil)
 }
 
+func (c *jobsBackedAgentClient) doJSONWithLimit(ctx context.Context, method, path string, payload any, out any, maxResponseBytes int64) error {
+	return c.doJSONWithHeadersAndLimit(ctx, method, path, payload, out, nil, maxResponseBytes)
+}
+
 func (c *jobsBackedAgentClient) doJSONWithHeaders(ctx context.Context, method, path string, payload any, out any, headers map[string]string) error {
+	return c.doJSONWithHeadersAndLimit(ctx, method, path, payload, out, headers, 0)
+}
+
+func (c *jobsBackedAgentClient) doJSONWithHeadersAndLimit(ctx context.Context, method, path string, payload any, out any, headers map[string]string, maxResponseBytes int64) error {
 	var body io.Reader
 	if payload != nil {
 		data, err := json.Marshal(payload)
@@ -773,9 +806,16 @@ func (c *jobsBackedAgentClient) doJSONWithHeaders(ctx context.Context, method, p
 		return err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	responseBody := io.Reader(resp.Body)
+	if maxResponseBytes > 0 {
+		responseBody = io.LimitReader(resp.Body, maxResponseBytes+1)
+	}
+	data, err := io.ReadAll(responseBody)
 	if err != nil {
 		return err
+	}
+	if maxResponseBytes > 0 && int64(len(data)) > maxResponseBytes {
+		return fmt.Errorf("jobs %s %s response exceeds %d-byte limit", method, path, maxResponseBytes)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("jobs %s %s failed: %s", method, path, jobsErrorMessage(resp.StatusCode, data))
