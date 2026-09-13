@@ -395,15 +395,17 @@ for (const decision of ['Approve', 'Deny'] as const) {
   });
 }
 
-test('a suspended same-context tab resumes through authoritative reconciliation', async ({
-  context,
+test('a suspended tab resumes through authoritative reconciliation', async ({
+  browser,
   page,
+  baseURL,
 }, testInfo) => {
-  test.skip(testInfo.project.name === 'mobile', 'real same-context suspension is covered once');
-  const second = await context.newPage();
+  test.skip(testInfo.project.name !== 'desktop', 'real tab suspension is covered once');
+  const secondaryContext = await browser.newContext({ baseURL });
+  const second = await secondaryContext.newPage();
   await Promise.all([page.goto('./?new=1'), second.goto('./')]);
   const before = await second.locator('.session-row').count();
-  const cdp = await context.newCDPSession(second);
+  const cdp = await secondaryContext.newCDPSession(second);
   await cdp.send('Page.setWebLifecycleState', { state: 'frozen' });
 
   await page
@@ -422,6 +424,7 @@ test('a suspended same-context tab resumes through authoritative reconciliation'
     .poll(() => second.locator('.session-row').count(), { timeout: 15_000 })
     .toBeGreaterThan(before);
   await second.close();
+  await secondaryContext.close();
 });
 
 test('a newly sent plain HTTPS response keeps its owned stream', async ({
