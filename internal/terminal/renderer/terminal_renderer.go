@@ -1206,8 +1206,12 @@ func (s *TerminalRenderer) Render(newbuf *RenderBuffer) {
 	newWidth, newHeight := newbuf.Width(), newbuf.Height()
 	curWidth, curHeight := s.curbuf.Width(), s.curbuf.Height()
 
-	if curWidth != newWidth || curHeight != newHeight {
+	geometryChanged := curWidth != newWidth || curHeight != newHeight
+	fullscreen := s.flags.Contains(tFullscreen)
+
+	if geometryChanged {
 		s.oldhash, s.newhash = nil, nil
+		s.reconcileResize(curWidth, curHeight, newWidth, newHeight)
 	}
 
 	// TODO: Investigate whether this is necessary. Theoretically, terminals
@@ -1256,14 +1260,10 @@ func (s *TerminalRenderer) Render(newbuf *RenderBuffer) {
 		var changedLines int
 		var i int
 
-		if s.flags.Contains(tFullscreen) {
-			nonEmpty = min(curHeight, newHeight)
-		} else {
-			nonEmpty = newHeight
-		}
+		nonEmpty = newHeight
 
 		nonEmpty = s.clearBottom(newbuf, nonEmpty)
-		for i = 0; i < nonEmpty && i < newHeight; i++ {
+		for i = 0; i < nonEmpty; i++ {
 			if newbuf.Touched == nil || i >= len(newbuf.Touched) || (newbuf.Touched[i] != nil &&
 				(newbuf.Touched[i].FirstCell != -1 || newbuf.Touched[i].LastCell != -1)) {
 				s.transformLine(newbuf, i)
@@ -1276,7 +1276,7 @@ func (s *TerminalRenderer) Render(newbuf *RenderBuffer) {
 		}
 	}
 
-	if !s.flags.Contains(tFullscreen) && (curWidth != newWidth || curHeight != newHeight) {
+	if !fullscreen && geometryChanged {
 		s.move(newbuf, 0, newHeight-1)
 	}
 
@@ -1287,7 +1287,7 @@ func (s *TerminalRenderer) Render(newbuf *RenderBuffer) {
 	resetTouchedLines(newbuf.Touched)
 	resetTouchedLines(s.curbuf.Touched)
 
-	if curWidth != newWidth || curHeight != newHeight {
+	if !fullscreen && geometryChanged {
 		// Resize the old buffer to match the new buffer.
 		s.curbuf.Resize(newWidth, newHeight)
 		// Sync new lines to old lines
@@ -1297,6 +1297,26 @@ func (s *TerminalRenderer) Render(newbuf *RenderBuffer) {
 	}
 
 	s.updatePen(nil) // nil indicates a blank cell with no styles
+}
+
+// reconcileResize discards the retained model when a resize invalidates what it
+// believes is on the physical screen, and resizes it otherwise so the diff below
+// walks every row of the new screen.
+//
+// A width shrink rewraps in emulator-defined ways, and a height change is no
+// safer: a grown terminal refills rows from its own scrollback, so a row that
+// was blank can return holding content this renderer never painted. Fullscreen
+// mode owns every cell it is about to clear, so it repaints completely; inline
+// mode shares the screen with preceding output and keeps its partial clear plus
+// the post-diff model resize instead.
+func (s *TerminalRenderer) reconcileResize(curWidth, curHeight, newWidth, newHeight int) {
+	if !s.flags.Contains(tFullscreen) {
+		return
+	}
+	if newWidth < curWidth || newHeight != curHeight {
+		s.clear = true
+	}
+	s.curbuf.Resize(newWidth, newHeight)
 }
 
 // Erase marks the screen to be fully erased on the next render.
@@ -1467,8 +1487,6 @@ func relativeCursorMove(s *TerminalRenderer, newbuf *RenderBuffer, fx, fy, tx, t
 					if cell != nil && cell.Width > 0 {
 						ovw += cell.String()
 						i += cell.Width - 1
-					} else {
-						ovw += " "
 					}
 				}
 			}

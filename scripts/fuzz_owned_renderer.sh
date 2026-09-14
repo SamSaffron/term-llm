@@ -12,6 +12,7 @@ parse_time=${FUZZ_PARSE_TIME:-15s}
 decode_loop_time=${FUZZ_DECODE_LOOP_TIME:-15s}
 decode_overread_time=${FUZZ_DECODE_OVERREAD_TIME:-15s}
 decode_introducer_time=${FUZZ_DECODE_INTRODUCER_TIME:-15s}
+styled_draw_time=${FUZZ_STYLED_DRAW_TIME:-15s}
 
 runtime_dir="$(dirname "$0")/../internal/terminal/runtime"
 renderer_dir="$(dirname "$0")/../internal/terminal/renderer"
@@ -25,3 +26,4 @@ renderer_dir="$(dirname "$0")/../internal/terminal/renderer"
 (cd "$renderer_dir" && go test -run '^$' -fuzz '^FuzzDecodeConsumesInputWithinBounds$' -fuzztime="$decode_loop_time" .)
 (cd "$renderer_dir" && go test -run '^$' -fuzz '^FuzzDecodeIgnoresBytesBeyondLength$' -fuzztime="$decode_overread_time" .)
 (cd "$renderer_dir" && go test -run '^$' -fuzz '^FuzzDecodeC1IntroducerMatchesEscForm$' -fuzztime="$decode_introducer_time" .)
+(cd "$renderer_dir" && go test -run '^$' -fuzz '^FuzzStyledStringDrawStaysInBounds$' -fuzztime="$styled_draw_time" .)

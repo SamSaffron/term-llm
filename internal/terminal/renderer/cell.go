@@ -45,8 +45,9 @@ func NewCell(method WidthMethod, gr string) *Cell {
 	}
 }
 
-// String returns the string content of the cell excluding any styles, links,
-// and escape sequences.
+// String returns the string content of the cell, excluding styles and links.
+// A cell may carry a zero-width pass-through sequence (APC, DCS, SOS or PM)
+// written in front of a glyph, so the content is not always plain text.
 func (c *Cell) String() string {
 	return c.Content
 }

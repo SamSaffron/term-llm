@@ -111,15 +111,17 @@ func (s *StyledString) Bounds() Rectangle {
 	return Rect(0, 0, w, h)
 }
 
-// oversizedCSIParams returns the length of a CSI sequence with enough parameter
-// separators to overflow x/ansi's fixed 32-entry parser buffer. A zero result
-// means the input is not such a sequence.
-func oversizedCSIParams[T []byte | string](str T) int {
+// oversizedParamSequence returns the length of a CSI or DCS sequence with enough
+// parameter separators to overflow x/ansi's fixed 32-entry parser buffer, which
+// indexes one past it and panics. Both sequence types parse their parameters
+// into that buffer, so both need the same guard. A zero result means the input
+// is not such a sequence.
+func oversizedParamSequence[T []byte | string](str T) int {
 	start := 0
 	switch {
-	case len(str) >= 2 && str[0] == '\x1b' && str[1] == '[':
+	case len(str) >= 2 && str[0] == ansi.ESC && (str[1] == '[' || str[1] == 'P'):
 		start = 2
-	case len(str) >= 1 && str[0] == 0x9b:
+	case len(str) >= 1 && (str[0] == ansi.CSI || str[0] == ansi.DCS):
 		start = 1
 	default:
 		return 0
@@ -142,6 +144,90 @@ func oversizedCSIParams[T []byte | string](str T) int {
 		return len(str)
 	}
 	return 0
+}
+
+// malformedSequenceLen returns the length of a control sequence at the start of
+// str that the parser cannot resolve, leaving the caller to skip it and continue
+// with the text that follows. A zero result means str starts with a sequence the
+// parser handles.
+func malformedSequenceLen[T []byte | string](str T) int {
+	if n := belTerminatedStringSequence(str); n > 0 {
+		return n
+	}
+	return oversizedParamSequence(str)
+}
+
+// belTerminatedStringSequence returns the length of a string sequence (APC,
+// DCS, SOS, PM) at the start of str whose payload ends in BEL and never reaches
+// ST, or zero when str does not begin with one.
+//
+// The parser only ends these sequences on ST, so it hands back everything up to
+// the end of the input as payload and any text after the BEL is swallowed along
+// with the malformed sequence. The sequence cannot be carried either: a terminal
+// waiting for ST would swallow the cells painted after it. Both problems go away
+// by accepting the BEL as the terminator the parser does not: the introducer and
+// its payload are dropped, and parsing resumes just past the BEL.
+//
+// Sequences that do reach ST are untouched. The scan stops at each byte that can
+// end the sequence by itself, so an ST, a C1 ST, CAN or SUB leaves the sequence
+// to the parser exactly as before.
+func belTerminatedStringSequence[T []byte | string](str T) int {
+	start := stringSequenceIntroducerLen(str)
+	if start == 0 {
+		return 0
+	}
+	bel := -1
+	for i := start; i < len(str); i++ {
+		switch str[i] {
+		case ansi.BEL:
+			if bel < 0 {
+				bel = i
+			}
+		case ansi.ESC, ansi.ST, ansi.CAN, ansi.SUB:
+			// Any of these settles the sequence: an ST (or the ESC that may
+			// begin one) carries it, and CAN or SUB end it as a parser would.
+			// The BEL in the payload is only payload in those cases.
+			return 0
+		}
+	}
+	if bel < 0 {
+		return 0
+	}
+	return bel + 1
+}
+
+// stringSequenceIntroducerLen returns the length of the string sequence
+// introducer at the start of str, or zero when str starts with anything else.
+func stringSequenceIntroducerLen[T []byte | string](str T) int {
+	if len(str) == 0 {
+		return 0
+	}
+	if str[0] == ansi.ESC {
+		if len(str) > 1 && (str[1] == '_' || str[1] == 'P' || str[1] == 'X' || str[1] == '^') {
+			return 2
+		}
+		return 0
+	}
+	if str[0] == ansi.APC || str[0] == ansi.DCS || str[0] == ansi.SOS || str[0] == ansi.PM {
+		return 1
+	}
+	return 0
+}
+
+// passThrough reports whether a zero-width sequence is safe to carry in a
+// cell's content and replay to the terminal.
+func passThrough[T []byte | string](seq T) bool {
+	if !ansi.HasApcPrefix(seq) && !ansi.HasDcsPrefix(seq) &&
+		!ansi.HasSosPrefix(seq) && !ansi.HasPmPrefix(seq) {
+		return false
+	}
+	return terminated(seq)
+}
+
+// terminated reports whether a string-type sequence ended with two-byte ST.
+func terminated[T []byte | string](seq T) bool {
+	n := len(seq)
+	return n >= 2 && seq[n-1] == '\\' && seq[n-2] == ansi.ESC
 }
 
 // printString draws a string starting at the given position. If s is nil, it
@@ -174,11 +260,15 @@ func printString[T []byte | string](
 	var style Style
 	var link Link
 	var state byte
+	lastX, lastY := -1, -1 // last cell written, for folding in trailing pass-through sequences
+	var pending []byte     // pass-through sequences awaiting a cell to ride on
 	for len(str) > 0 {
-		if n := oversizedCSIParams(str); n > 0 {
-			// x/ansi's fixed-size parameter buffer panics when a CSI contains
-			// more parameters than it can retain. Treat such an unreasonable
-			// control sequence as malformed and continue with following text.
+		if n := malformedSequenceLen(str); n > 0 {
+			// x/ansi's fixed-size parameter buffer panics when a CSI or DCS
+			// contains more parameters than it can retain, and a string
+			// sequence whose payload ends in BEL never terminates for the
+			// parser at all. Neither can be carried into a cell: treat them as
+			// malformed and continue with the text that follows.
 			p.Reset()
 			state = 0
 			str = str[n:]
@@ -197,7 +287,9 @@ func printString[T []byte | string](
 				if y >= len(lines) {
 					lines = append(lines, Line{})
 				}
+				carryPending(&pending, &cell)
 				lines[y] = append(lines[y], cell)
+				lastX, lastY = len(lines[y])-1, y
 				x += width
 			} else {
 				// Drawing to screen: handle wrapping, truncation, and bounds
@@ -210,15 +302,21 @@ func printString[T []byte | string](
 				pos := Pos(x, y)
 				if pos.In(bounds) {
 					if truncate && tailc.Width > 0 && x+cell.Width > bounds.Max.X-tailc.Width {
-						// Truncate the string and append the tail if any.
+						// Truncate the string and append the tail if any. The
+						// sequences carried in front of the dropped glyph ride
+						// on the tail cell, which is written here.
 						cell = tailc
 						cell.Style = style
 						cell.Link = link
+						carryPending(&pending, &cell)
 						s.SetCell(x, y, &cell)
+						lastX, lastY = x, y
 						x += tailc.Width
 					} else {
 						// Print the cell to the screen
+						carryPending(&pending, &cell)
 						s.SetCell(x, y, &cell)
+						lastX, lastY = x, y
 						x += width
 					}
 				}
@@ -237,12 +335,7 @@ func printString[T []byte | string](
 				// Hyperlinks
 				ReadLink(p.Data(), &link)
 			case ansi.Equal(seq, T("\n")):
-				if s == nil {
-					// When building lines, we need to ensure empty lines are represented.
-					if y >= len(lines) {
-						lines = append(lines, Line{})
-					}
-				}
+				lines = appendLineSlot(s, lines, y)
 				y++
 				// Always treat a NL as CR-LF similar to Termios ONLCR.
 				fallthrough
@@ -252,8 +345,8 @@ func printString[T []byte | string](
 				} else {
 					x = bounds.Min.X
 				}
-			default:
-				cell.Content += string(seq)
+			case passThrough(seq):
+				pending = append(pending, string(seq)...)
 			}
 		}
 
@@ -261,18 +354,89 @@ func printString[T []byte | string](
 		state = newState
 		str = str[n:]
 
-		if y >= bounds.Max.Y {
+		if s != nil && y >= bounds.Max.Y {
 			// We've reached the bottom of the bounds, stop processing further
 			// lines.
 			break
 		}
 	}
 
-	// Make sure to set the last cell if it's not empty.
-	if !cell.IsZero() && s != nil {
-		s.SetCell(x, y, &cell)
-	}
+	// Pass-through sequences left at the end have no following glyph to carry
+	// them, so preserve them on the last cell written, or on a zero-width cell
+	// of their own when the string wrote no cell at all.
+	lines = foldPendingSequences(s, lines, &cell, lastX, lastY, y, pending)
 
+	// Draw that zero-width cell where the cursor stopped, as long as it is
+	// inside the area the caller asked for.
+	writeTrailingCell(s, x, y, bounds, &cell)
+
+	return lines
+}
+
+// appendLineSlot records empty line slots for leading or consecutive newlines
+// while building lines for a nil screen. It is a no-op when drawing to a screen.
+func appendLineSlot(s Screen, lines Lines, y int) Lines {
+	if s == nil && y >= len(lines) {
+		return append(lines, Line{})
+	}
+	return lines
+}
+
+// carryPending prepends the pass-through sequences waiting for a glyph to the
+// given cell and clears the accumulator. A carried sequence is zero-width: it
+// rides in front of the glyph without changing how the cell measures.
+//
+// Call it only where the cell is written. A sequence consumed by a cell that is
+// never drawn is a sequence the caller never gets back, which is why the
+// accumulator is emptied here rather than when the glyph is decoded.
+func carryPending(pending *[]byte, cell *Cell) {
+	if len(*pending) == 0 {
+		return
+	}
+	*pending = append(*pending, cell.Content...)
+	cell.Content = string(*pending)
+	*pending = (*pending)[:0]
+}
+
+// writeTrailingCell draws the zero-width cell that a sequence-only string left
+// behind. A sequence with no cell to ride on is not drawn outside the bounds:
+// the caller asked for that rectangle only, and the sequence has no cell inside
+// it to go on.
+func writeTrailingCell(s Screen, x, y int, bounds Rectangle, cell *Cell) {
+	if s == nil || cell.IsZero() || !Pos(x, y).In(bounds) {
+		return
+	}
+	s.SetCell(x, y, cell)
+}
+
+// foldPendingSequences preserves pass-through sequences that had no following
+// glyph to ride on by attaching them to the last cell written. A string that
+// wrote no cell at all leaves them in cell instead: the caller draws that
+// zero-width cell where the cursor stopped, and while building lines it is
+// appended to the line the cursor stopped on, so a sequence-only string still
+// yields the line it was drawn to.
+func foldPendingSequences(s Screen, lines Lines, cell *Cell, lastX, lastY, y int, pending []byte) Lines {
+	if len(pending) == 0 {
+		return lines
+	}
+	if s == nil {
+		if lastY >= 0 && lastY < len(lines) && lastX >= 0 && lastX < len(lines[lastY]) {
+			lines[lastY][lastX].Content += string(pending)
+			return lines
+		}
+		lines = appendLineSlot(nil, lines, y)
+		lines[y] = append(lines[y], Cell{Content: string(pending)})
+		return lines
+	}
+	if lastX >= 0 {
+		if prev := s.CellAt(lastX, lastY); prev != nil {
+			folded := *prev
+			folded.Content += string(pending)
+			s.SetCell(lastX, lastY, &folded)
+		}
+		return lines
+	}
+	cell.Content = string(pending)
 	return lines
 }
 
@@ -385,7 +549,7 @@ func ReadStyle(params ansi.Params, pen *Style) {
 
 // ReadLink reads a hyperlink escape sequence from a data buffer into link.
 func ReadLink(p []byte, link *Link) {
-	params := bytes.Split(p, []byte{';'})
+	params := bytes.SplitN(p, []byte{';'}, 3)
 	if len(params) != 3 {
 		return
 	}

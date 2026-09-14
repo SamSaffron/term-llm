@@ -352,15 +352,23 @@ const (
 	ProgressBarWarning
 )
 
-// String return a human-readable value for the given [ProgressBarState].
+// String returns a human-readable name for the given [ProgressBarState].
+// Values outside the known range return "Unknown".
 func (s ProgressBarState) String() string {
-	return [...]string{
-		"None",
-		"Default",
-		"Error",
-		"Indeterminate",
-		"Warning",
-	}[s]
+	switch s {
+	case ProgressBarNone:
+		return "None"
+	case ProgressBarDefault:
+		return "Default"
+	case ProgressBarError:
+		return "Error"
+	case ProgressBarIndeterminate:
+		return "Indeterminate"
+	case ProgressBarWarning:
+		return "Warning"
+	default:
+		return "Unknown"
+	}
 }
 
 // ProgressBar represents the terminal progress bar.
@@ -1003,6 +1011,7 @@ func (p *Program) Run() (returnModel Model, returnErr error) {
 	if p.renderer == nil {
 		r := newCursedRenderer(p.output, p.environ, p.width, p.height)
 		r.setLogger(p.logger)
+		r.setNoInput(p.disableInput)
 		mapNl := runtime.GOOS != "windows" && p.ttyInput == nil
 		r.setOptimizations(p.useHardTabs, p.useBackspace, mapNl)
 		p.renderer = r
@@ -1283,8 +1292,10 @@ func (p *Program) RestoreTerminal() error {
 	if err := p.initTerminal(); err != nil {
 		return err
 	}
-	if err := p.initInputReader(false); err != nil {
-		return err
+	if !p.disableInput {
+		if err := p.initInputReader(false); err != nil {
+			return err
+		}
 	}
 
 	p.startRenderer()
