@@ -716,6 +716,8 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 				return fmt.Errorf("%s streaming error: %w", p.name, err)
 			}
 
+			DebugRawSection(req.DebugRaw, p.name+" SSE Event", string(data))
+
 			var chatResp oaiChatResponse
 			if err := json.Unmarshal(data, &chatResp); err != nil {
 				return fmt.Errorf("%s streaming error: invalid JSON chunk: %w", p.name, err)
@@ -755,6 +757,12 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 					if reasoningDelta == "" {
 						reasoningDelta = choice.Delta.ReasoningContent
 					}
+					if reasoningDelta != "" {
+						reasoningBuilder.WriteString(reasoningDelta)
+						if err := send.Send(Event{Type: EventReasoningDelta, Text: reasoningDelta, ReasoningKind: ReasoningKindRaw}); err != nil {
+							return err
+						}
+					}
 					if content, ok := choice.Delta.Content.(string); ok && content != "" {
 						// Some OpenAI-compatible reasoning models emit a pure-whitespace
 						// assistant content prefix (commonly "\n\n") in the same delta as
@@ -770,12 +778,6 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 							if err := send.Send(Event{Type: EventTextDelta, Text: content}); err != nil {
 								return err
 							}
-						}
-					}
-					if reasoningDelta != "" {
-						reasoningBuilder.WriteString(reasoningDelta)
-						if err := send.Send(Event{Type: EventReasoningDelta, Text: reasoningDelta, ReasoningKind: ReasoningKindRaw}); err != nil {
-							return err
 						}
 					}
 					if len(choice.Delta.ToolCalls) > 0 {

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -335,6 +336,117 @@ func TestOpenAICompatStream_AllowsLargeSSEDataLines(t *testing.T) {
 	}
 	if !sawDone {
 		t.Fatal("expected EventDone")
+	}
+}
+
+func TestOpenAICompatStream_DebugRawSSE(t *testing.T) {
+	const mixed = `{"choices":[{"delta":{"content":"Well","reasoning_content":"."}}]}`
+	for _, payload := range []string{mixed, `{"choices":invalid}`} {
+		for _, enabled := range []bool{false, true} {
+			t.Run(fmt.Sprintf("payload=%s/debug=%t", payload, enabled), func(t *testing.T) {
+				// Do not parallelize: raw diagnostics write to process stderr.
+				capture, err := os.CreateTemp(t.TempDir(), "stderr")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer capture.Close()
+				original := os.Stderr
+				os.Stderr = capture
+				defer func() { os.Stderr = original }()
+
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "text/event-stream")
+					fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", payload)
+				}))
+				defer server.Close()
+				provider := NewOpenAICompatProvider(server.URL, "", "test-model", "Test")
+				stream, err := provider.Stream(context.Background(), Request{
+					DebugRaw: enabled,
+					Messages: []Message{{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "hello"}}}},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer stream.Close()
+				for {
+					_, err := stream.Recv()
+					if err != nil {
+						break
+					}
+				}
+				output, err := os.ReadFile(capture.Name())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if enabled {
+					if !strings.Contains(string(output), "Test SSE Event") || !strings.Contains(string(output), payload) {
+						t.Fatalf("missing raw SSE payload in diagnostics: %s", output)
+					}
+				} else if len(output) != 0 {
+					t.Fatalf("unexpected diagnostics with DebugRaw disabled: %s", output)
+				}
+			})
+		}
+	}
+}
+
+func TestOpenAICompatStream_EmitsReasoningBeforeContentWithinDelta(t *testing.T) {
+	for _, reasoningField := range []string{"reasoning", "reasoning_content"} {
+		t.Run(reasoningField, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprintf(w,
+					"data: {\"choices\":[{\"delta\":{%q:\"before\"}}]}\n\n"+
+						"data: {\"choices\":[{\"delta\":{\"content\":\"Sure\",%q:\".\"}}]}\n\n"+
+						"data: {\"choices\":[{\"delta\":{\"content\":\" after\"}}]}\n\n"+
+						"data: [DONE]\n\n",
+					reasoningField, reasoningField,
+				)
+			}))
+			defer server.Close()
+
+			provider := NewOpenAICompatProvider(server.URL, "", "test-model", "Test")
+			stream, err := provider.Stream(context.Background(), Request{
+				Messages: []Message{{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "hello"}}}},
+			})
+			if err != nil {
+				t.Fatalf("stream: %v", err)
+			}
+			defer stream.Close()
+
+			var gotEvents []string
+			var gotReasoning, gotText strings.Builder
+			for {
+				event, err := stream.Recv()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatalf("recv: %v", err)
+				}
+				switch event.Type {
+				case EventReasoningDelta:
+					gotReasoning.WriteString(event.Text)
+					gotEvents = append(gotEvents, "reasoning:"+event.Text)
+				case EventTextDelta:
+					gotText.WriteString(event.Text)
+					gotEvents = append(gotEvents, "text:"+event.Text)
+				case EventError:
+					t.Fatalf("unexpected stream error: %v", event.Err)
+				}
+			}
+
+			wantEvents := []string{"reasoning:before", "reasoning:.", "text:Sure", "text: after"}
+			if fmt.Sprint(gotEvents) != fmt.Sprint(wantEvents) {
+				t.Fatalf("delta events = %v, want %v", gotEvents, wantEvents)
+			}
+			if gotReasoning.String() != "before." {
+				t.Fatalf("reasoning = %q, want %q", gotReasoning.String(), "before.")
+			}
+			if gotText.String() != "Sure after" {
+				t.Fatalf("text = %q, want %q", gotText.String(), "Sure after")
+			}
+		})
 	}
 }
 
