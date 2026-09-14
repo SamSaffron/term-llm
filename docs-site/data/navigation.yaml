@@ -21,7 +21,7 @@ groups:
   - title: Web and deployment
     section: guides
     description: Run on your own infrastructure and reach your agents remotely.
-    pages: [hub, dv-hub, agent-containers, telegram-bot, webrtc-direct-routing]
+    pages: [hub, dv-hub, background-services, agent-containers, telegram-bot, webrtc-direct-routing]
   - title: Media
     section: guides
     description: Work with images, speech, music, and video.
