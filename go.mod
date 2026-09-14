@@ -27,7 +27,10 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/mattn/go-runewidth v0.0.30
-	github.com/modelcontextprotocol/go-sdk v1.7.1-0.20260825122737-c68ad9a4e6e1
+	// Pre-release: the 1.8 line carries the SEP-2575 discover/listen work this
+	// client depends on. It replaces an untagged pseudo-version, so this is a
+	// step toward reproducibility; re-pin to v1.8.0 once that is tagged.
+	github.com/modelcontextprotocol/go-sdk v1.8.0-pre.2
 	github.com/muesli/cancelreader v0.2.2
 	github.com/muesli/reflow v0.3.0
 	github.com/openai/openai-go v1.12.0
@@ -125,7 +128,7 @@ require (
 	github.com/tinylib/msgp v1.6.4 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
+	github.com/xo/terminfo v1.0.0 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect

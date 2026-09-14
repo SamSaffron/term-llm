@@ -45,7 +45,7 @@ jobs:
 
       - name: Upload docs validation diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: docs-validation-screenshots
           path: docs-site/test-results/
@@ -53,7 +53,7 @@ jobs:
           retention-days: 7
 
       - name: Prepare release directories
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.5
         with:
           host: 143.198.76.107
           username: root
@@ -64,7 +64,7 @@ jobs:
             mkdir -p /root/term-llm-release/site /root/term-llm-release/ops/nginx
 
       - name: Upload built site
-        uses: appleboy/scp-action@v0.1.7
+        uses: appleboy/scp-action@v1.0.0
         with:
           host: 143.198.76.107
           username: root
@@ -74,7 +74,7 @@ jobs:
           strip_components: 1
 
       - name: Upload nginx configuration
-        uses: appleboy/scp-action@v0.1.7
+        uses: appleboy/scp-action@v1.0.0
         with:
           host: 143.198.76.107
           username: root
@@ -84,7 +84,7 @@ jobs:
           strip_components: 2
 
       - name: Install nginx config, issue cert, and swap webroot
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.5
         with:
           host: 143.198.76.107
           username: root
