@@ -43,6 +43,11 @@ func getChatGPTCredentialsPath() (string, error) {
 	return filepath.Join(configDir, "term-llm", "chatgpt_oauth.json"), nil
 }
 
+// ChatGPTCredentialsPath returns where ChatGPT OAuth credentials are stored.
+func ChatGPTCredentialsPath() (string, error) {
+	return getChatGPTCredentialsPath()
+}
+
 // GetChatGPTCredentials retrieves the ChatGPT OAuth credentials from storage.
 // Returns an error if credentials don't exist or are invalid.
 func GetChatGPTCredentials() (*ChatGPTCredentials, error) {

@@ -54,6 +54,11 @@ func getGrokCredentialsPath() (string, error) {
 	return filepath.Join(configDir, "term-llm", grokCredentialsFile), nil
 }
 
+// GrokCredentialsPath returns where Grok OAuth credentials are stored.
+func GrokCredentialsPath() (string, error) {
+	return getGrokCredentialsPath()
+}
+
 func GetGrokCredentials() (*GrokCredentials, error) {
 	path, err := getGrokCredentialsPath()
 	if err != nil {

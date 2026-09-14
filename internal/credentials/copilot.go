@@ -37,6 +37,11 @@ func getCopilotCredentialsPath() (string, error) {
 	return filepath.Join(configDir, "term-llm", "copilot_oauth.json"), nil
 }
 
+// CopilotCredentialsPath returns where Copilot OAuth credentials are stored.
+func CopilotCredentialsPath() (string, error) {
+	return getCopilotCredentialsPath()
+}
+
 // GetCopilotCredentials retrieves the Copilot OAuth credentials from storage.
 // Returns an error if credentials don't exist or are invalid.
 func GetCopilotCredentials() (*CopilotCredentials, error) {
