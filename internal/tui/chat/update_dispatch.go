@@ -307,6 +307,7 @@ func (m *Model) dispatchConversationUpdate(message tea.Msg, cmds *[]tea.Cmd, flu
 		if msg.sess != nil {
 			m.sess = msg.sess
 			m.messages = msg.messages
+			m.noteTranscriptRev(context.Background())
 			m.seedStatsFromSession()
 			m.configureContextManagementForSession()
 			m.resetTitleGenerationStateForSession()

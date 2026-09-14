@@ -394,7 +394,8 @@ func (m *Model) handleStreamSteering(msg streamEventMsg, ev ui.StreamEvent, stat
 	m.scrollToBottom = true
 	// Persist steered message to session store, preserving structured parts.
 	if m.store != nil {
-		m.persistSteering(context.Background(), ev.Text, ev.Message)
+		// The steering row belongs to the running turn, so it carries its fence.
+		m.persistSteering(m.activeTurnLease.Load().context(context.Background()), ev.Text, ev.Message)
 	}
 
 }

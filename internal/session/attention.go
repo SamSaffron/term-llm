@@ -98,6 +98,33 @@ func nextFencingToken(ctx context.Context, tx *sql.Tx) (int64, error) {
 	return token, nil
 }
 
+// foreignTurnOwnerTx reports a live running lease on the session held by an
+// owner other than ownerID. The grace term matches RenewResponseRunLease, so an
+// abandoned lease stops blocking exactly when a sweeper would orphan it.
+func foreignTurnOwnerTx(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, sessionID, ownerID string) (string, error) {
+	var owner string
+	err := q.QueryRowContext(ctx, `SELECT owner_instance_id FROM serve_response_lifecycle
+		WHERE session_id = ? AND state = 'running' AND owner_instance_id <> ?
+		  AND lease_expires_at + ? > CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
+		LIMIT 1`, sessionID, ownerID, responseRunOrphanGrace.Milliseconds()).Scan(&owner)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read session turn owner: %w", err)
+	}
+	return owner, nil
+}
+
+func (s *SQLiteStore) ForeignTurnOwner(ctx context.Context, sessionID, ownerID string) (string, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return "", nil
+	}
+	return foreignTurnOwnerTx(ctx, s.queryDB(), sessionID, ownerID)
+}
+
 func (s *SQLiteStore) AdmitResponseRun(ctx context.Context, admission ResponseRunAdmission) (ResponseRunLease, error) {
 	if strings.TrimSpace(admission.ResponseID) == "" || strings.TrimSpace(admission.SessionID) == "" || strings.TrimSpace(admission.OwnerInstanceID) == "" {
 		return ResponseRunLease{}, errors.New("session: invalid response run admission")
@@ -119,6 +146,15 @@ func (s *SQLiteStore) AdmitResponseRun(ctx context.Context, admission ResponseRu
 	token, err := nextFencingToken(ctx, tx)
 	if err != nil {
 		return ResponseRunLease{}, fmt.Errorf("allocate response run fence: %w", err)
+	}
+	// The fencing token allocation above took the write lock, so competing
+	// admissions are serialized behind this ownership check.
+	owner, err := foreignTurnOwnerTx(ctx, tx, admission.SessionID, admission.OwnerInstanceID)
+	if err != nil {
+		return ResponseRunLease{}, err
+	}
+	if owner != "" {
+		return ResponseRunLease{}, fmt.Errorf("%w: %s", ErrSessionTurnOwned, owner)
 	}
 	leaseExpiresAt := now.Add(leaseDuration)
 	result, err := tx.ExecContext(ctx, `INSERT INTO serve_response_lifecycle(
@@ -305,13 +341,17 @@ func checkpointResponseRunFenceTx(ctx context.Context, exec responseRunFenceExec
 	if !ok {
 		return nil
 	}
+	// The grace term matches admission and renewal: a write is allowed exactly
+	// while no other owner could have been admitted, so a delayed renewal does
+	// not reject output that nobody else can conflict with.
 	result, err := exec.ExecContext(ctx, `UPDATE serve_response_lifecycle
 		SET final_rev = MAX(final_rev, ?), durable_output_count = MAX(durable_output_count, ?),
 		    updated_at = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
 		WHERE response_id = ? AND session_id = ? AND state = 'running'
 		  AND owner_instance_id = ? AND fencing_token = ?
-		  AND lease_expires_at > CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)`,
-		finalRev, fence.DurableOutputCount, fence.ResponseID, sessionID, fence.OwnerInstanceID, fence.FencingToken)
+		  AND lease_expires_at + ? > CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)`,
+		finalRev, fence.DurableOutputCount, fence.ResponseID, sessionID, fence.OwnerInstanceID, fence.FencingToken,
+		responseRunOrphanGrace.Milliseconds())
 	if err != nil {
 		return fmt.Errorf("fence response transcript write: %w", err)
 	}

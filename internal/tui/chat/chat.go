@@ -158,6 +158,17 @@ type Model struct {
 	store    session.Store     // Session storage backend
 	sess     *session.Session  // Current session
 	messages []session.Message // In-memory messages for current session
+	// Durable claims on this session's turn, so another process (a web server on
+	// the same database) cannot run a turn in it concurrently. sendMessage claims
+	// one before its first write and hands it to startStream; the running turn's
+	// claim stays reachable for suspend/reload.
+	pendingTurnLease atomic.Pointer[turnLease]
+	activeTurnLease  atomic.Pointer[turnLease]
+	// knownTranscriptRev is the durable revision this process is synchronized
+	// with; a different revision at turn start that this process's store did
+	// not produce means another process wrote.
+	knownTranscriptRev    atomic.Int64
+	transcriptRevObserved atomic.Bool
 	// pendingTerminalDirectory is emitted as OSC 7 after a successful runtime
 	// directory change, keeping terminal workspace metadata in sync without a
 	// process-wide chdir.
@@ -842,6 +853,7 @@ func (m *Model) reloadMessagesFromStore(ctx context.Context) error {
 	m.compactionIdx = compactionIdx
 	m.messagesMu.Unlock()
 	m.invalidateHistoryCache()
+	m.noteTranscriptRev(ctx)
 	return nil
 }
 
@@ -1166,6 +1178,7 @@ func NewWithFastProviderAndApproval(cfg *config.Config, provider llm.Provider, f
 		selectedSteering:         -1,
 	}
 	model.agentMentionEngine.Store(engine)
+	model.noteTranscriptRev(context.Background())
 	if internalreasoning.RawDisplayBlocked(reasoningCfg) {
 		model.SetFooterWarning("Raw reasoning display is disabled. Set reasoning.raw=true or TERM_LLM_SHOW_RAW_REASONING=1 to allow it.")
 		model.reasoningRawWarned = true

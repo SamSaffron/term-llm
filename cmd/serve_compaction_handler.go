@@ -31,6 +31,10 @@ func (s *serveServer) handleSessionRuntimeCompact(w http.ResponseWriter, r *http
 		writeOpenAIError(w, status, errorType, err.Error())
 		return
 	}
+	if s.foreignTurnActive(r.Context(), sessionID) {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", "cannot mutate the transcript while work is active")
+		return
+	}
 	releaseAdmission, admissionErr := s.sessionMgr.admitSynchronousActivity(sessionID, rt)
 	if admissionErr != nil {
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", admissionErr.Error())

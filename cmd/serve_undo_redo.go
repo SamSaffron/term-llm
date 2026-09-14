@@ -74,7 +74,7 @@ func (s *serveServer) handleSessionUndoRedo(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if s.responseRuns != nil && s.responseRuns.activeRunID(sessionID) != "" {
+	if s.transcriptWorkActive(r.Context(), sessionID) {
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", "cannot mutate the transcript while work is active")
 		return
 	}

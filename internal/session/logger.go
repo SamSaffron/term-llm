@@ -472,6 +472,15 @@ func (s *LoggingStore) TranscriptRev(ctx context.Context, sessionID string) (int
 	return rev, err
 }
 
+// OwnTranscriptRev delegates process-local revision tracking.
+func (s *LoggingStore) OwnTranscriptRev(sessionID string) (int64, bool) {
+	reporter, ok := s.Store.(OwnTranscriptRevReporter)
+	if !ok {
+		return 0, false
+	}
+	return reporter.OwnTranscriptRev(sessionID)
+}
+
 // CreateBranch preserves the optional branching capability through the logging decorator.
 func (s *LoggingStore) CreateBranch(ctx context.Context, sourceSessionID string, opts CreateBranchOptions) (BranchResult, error) {
 	store, ok := s.Store.(ConversationBranchStore)

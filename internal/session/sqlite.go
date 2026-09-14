@@ -10,6 +10,7 @@ import (
 // SQLiteStore implements Store using SQLite.
 type SQLiteStore struct {
 	inputInstanceID          string
+	ownTranscriptRevs        sync.Map // session ID -> last transcript revision this store instance produced
 	db                       *sql.DB
 	readDB                   *sql.DB
 	responseRunReadDB        *sql.DB

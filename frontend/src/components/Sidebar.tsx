@@ -769,10 +769,11 @@ function SidebarViewSwitch({ disabled = false }: { disabled?: boolean }) {
 }
 
 function isSidebarSessionVisible(session: Session): boolean {
-  // TUI-origin sessions include native background-agent runs. They remain
-  // addressable directly and through spawn-agent links, but should not make a
-  // web sidebar shared with the terminal look like an agent process monitor.
-  return session.origin !== 'tui';
+  // Parentless one-shot and background terminal runs (ask, jobs, goals) stay
+  // hidden so a sidebar shared with the terminal does not become an agent
+  // process monitor. Interactive terminal chats are first-class sessions and
+  // may be continued from the web whenever their turn is free.
+  return session.origin !== 'tui' || !session.mode || session.mode === 'chat';
 }
 
 export function Sidebar() {

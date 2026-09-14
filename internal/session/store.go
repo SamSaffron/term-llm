@@ -203,6 +203,9 @@ const (
 var (
 	ErrResponseRunLeaseLost = errors.New("session: response run lease lost")
 	ErrAttentionConflict    = errors.New("session: attention generation conflict")
+	// ErrSessionTurnOwned reports that another process holds a live running
+	// lease on the session, so this process may not start a turn in it.
+	ErrSessionTurnOwned = errors.New("session: turn is owned by another process")
 )
 
 // ResponseRunAdmission durably accounts for a run before provider work starts.
@@ -339,6 +342,9 @@ type ServeResponseLifecycleStore interface {
 	CheckpointResponseRun(context.Context, ResponseRunCheckpoint) error
 	FinalizeResponseRun(context.Context, ResponseRunTerminal) (AttentionState, error)
 	RecoverExpiredResponseRuns(context.Context, int) ([]AttentionState, error)
+	// ForeignTurnOwner reports the owner of a live running lease on the session
+	// held by someone other than ownerID; it returns "" when none exists.
+	ForeignTurnOwner(ctx context.Context, sessionID, ownerID string) (string, error)
 }
 
 // ResponseRunInteractionState is the level-triggered, payload-free projection of
@@ -487,7 +493,7 @@ type loggingServeResponseLifecycleStore struct {
 
 func (s *loggingServeResponseLifecycleStore) AdmitResponseRun(ctx context.Context, value ResponseRunAdmission) (ResponseRunLease, error) {
 	result, err := s.store.AdmitResponseRun(ctx, value)
-	if err != nil && !errors.Is(err, ErrNotFound) {
+	if err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrSessionTurnOwned) {
 		s.logger.logOnce("AdmitResponseRun", err)
 	}
 	return result, err
@@ -524,6 +530,13 @@ func (s *loggingServeResponseLifecycleStore) RecoverExpiredResponseRuns(ctx cont
 	result, err := s.store.RecoverExpiredResponseRuns(ctx, limit)
 	if err != nil {
 		s.logger.logOnce("RecoverExpiredResponseRuns", err)
+	}
+	return result, err
+}
+func (s *loggingServeResponseLifecycleStore) ForeignTurnOwner(ctx context.Context, sessionID, ownerID string) (string, error) {
+	result, err := s.store.ForeignTurnOwner(ctx, sessionID, ownerID)
+	if err != nil {
+		s.logger.logOnce("ForeignTurnOwner", err)
 	}
 	return result, err
 }
@@ -982,6 +995,13 @@ type TranscriptIndexer interface {
 	GetTranscriptSnapshot(ctx context.Context, sessionID string) (TranscriptSnapshot, error)
 	GetMessagesByTranscriptRanges(ctx context.Context, sessionID string, ranges []TranscriptRange) (rev int64, messages []Message, err error)
 	TranscriptRev(ctx context.Context, sessionID string) (int64, error)
+}
+
+// OwnTranscriptRevReporter is optional: a store that tracks the revisions this
+// process produced lets a caller distinguish its own writes from another
+// process's without recording every write site.
+type OwnTranscriptRevReporter interface {
+	OwnTranscriptRev(sessionID string) (int64, bool)
 }
 
 // TranscriptVersionReporter distinguishes a current revisioned schema from an

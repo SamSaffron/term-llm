@@ -1714,6 +1714,55 @@ func TestStartResponseRun_BusyConcurrentRunKeepsActiveSessionTracking(t *testing
 	}, "active response run cleanup")
 }
 
+func TestStreamResponseRunConflictsWhenAnotherProcessOwnsTheTurn(t *testing.T) {
+	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	sess := &session.Session{ID: session.NewID(), Provider: "mock", ProviderKey: "mock", Model: "mock-model", Mode: session.ModeChat, Origin: session.OriginTUI}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+	// A terminal process already owns this session's turn.
+	if _, err := store.AdmitResponseRun(ctx, session.ResponseRunAdmission{ResponseID: "tui_turn", SessionID: sess.ID,
+		RunEpoch: 1, OwnerInstanceID: "tui-owner", StartedAt: time.Now(), LeaseDuration: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := llm.NewMockProvider("mock").AddTextResponse("must not run")
+	rt := &serveRuntime{provider: provider, providerKey: "mock", engine: llm.NewEngine(provider, nil), defaultModel: "mock-model", store: store}
+	rt.Touch()
+	srv := &serveServer{store: store, responseRuns: newServeResponseRunManager(), shutdownCh: make(chan struct{})}
+	t.Cleanup(func() {
+		if srv.responseLifecycleCancel != nil {
+			srv.responseLifecycleCancel()
+			srv.responseLifecycleWG.Wait()
+		}
+		srv.responseRuns.Close()
+	})
+
+	recorder := httptest.NewRecorder()
+	if srv.streamResponseRun(ctx, recorder, rt, true, false, []llm.Message{llm.UserText("from the web")},
+		llm.Request{SessionID: sess.ID, Model: "mock-model"}, sess.ID, startResponseRunOptions{uiSession: true}) {
+		t.Fatal("stream started while another process owned the turn")
+	}
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "conflict_error") {
+		t.Fatalf("foreign turn status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if active := srv.responseRuns.activeRunID(sess.ID); active != "" {
+		t.Fatalf("rejected start retained active run %q", active)
+	}
+	page, err := store.ListAttention(ctx, session.AttentionListOptions{Kind: session.AttentionKindRunning})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].ResponseID != "tui_turn" {
+		t.Fatalf("durable running rows = %+v", page.Items)
+	}
+}
+
 func TestServeSessionManager_Get_ExistingSession(t *testing.T) {
 	factory := func(ctx context.Context) (*serveRuntime, error) {
 		rt := &serveRuntime{}

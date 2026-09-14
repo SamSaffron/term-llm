@@ -629,6 +629,15 @@ func (s *serveServer) responseRunContinuationID(ctx context.Context, runtime *se
 	return continuationID
 }
 
+// admitResponseRunError maps durable admission failures to the caller's error
+// contract: a turn owned by another process is a busy conflict, not a server error.
+func admitResponseRunError(err error) error {
+	if errors.Is(err, session.ErrSessionTurnOwned) {
+		return fmt.Errorf("%w: another process owns this session's turn", errServeSessionBusy)
+	}
+	return fmt.Errorf("admit durable response run: %w", err)
+}
+
 func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, options startResponseRunOptions) (*responseRun, error) {
 	if stateful && s.sessionMgr != nil && sessionID != "" {
 		release, err := s.sessionMgr.pinCurrentRuntime(sessionID, runtime)
@@ -796,7 +805,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			if options.onDone != nil {
 				options.onDone()
 			}
-			return nil, fmt.Errorf("admit durable response run: %w", admitErr)
+			return nil, admitResponseRunError(admitErr)
 		}
 		s.attentionDiagnostics.LifecycleAdmissions.Add(1)
 		s.configureResponseRunLifecycle(run, lifecycle, ownerID, lease)

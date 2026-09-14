@@ -4240,7 +4240,7 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.queryByRole('link', { name: 'Back to Hub' })).not.toBeInTheDocument();
   });
 
-  it('keeps terminal-origin agent sessions out of the default sidebar', () => {
+  it('shows terminal chats but keeps terminal one-shot runs out of the sidebar', () => {
     const store = createStore();
     store.sessions.value = [
       ...store.sessions.value,
@@ -4249,6 +4249,14 @@ describe('Preact-owned chat surfaces', () => {
         id: 'agent-session',
         title: 'Background agent investigation',
         origin: 'tui',
+        mode: 'ask',
+      },
+      {
+        ...store.sessions.value[0],
+        id: 'terminal-chat',
+        title: 'Terminal conversation',
+        origin: 'tui',
+        mode: 'chat',
       },
     ];
     render(
@@ -4258,6 +4266,7 @@ describe('Preact-owned chat surfaces', () => {
     );
 
     expect(screen.getByText('Test')).toBeInTheDocument();
+    expect(screen.getByText('Terminal conversation')).toBeInTheDocument();
     expect(screen.queryByText('Background agent investigation')).not.toBeInTheDocument();
   });
   it('shows server-observed running state before this tab attaches to the stream', () => {

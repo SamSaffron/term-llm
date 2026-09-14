@@ -7,6 +7,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/session"
 )
 
 const defaultServeSessionRetirementTimeout = 2 * time.Second
@@ -755,4 +757,28 @@ func (m *serveSessionManager) CloseContext(ctx context.Context) {
 		}
 		rt.CloseContext(ctx)
 	}
+}
+
+// transcriptWorkActive reports work that must block a transcript mutation: a
+// run in this process's memory or a durable turn lease held by another process.
+func (s *serveServer) transcriptWorkActive(ctx context.Context, sessionID string) bool {
+	return (s.responseRuns != nil && s.responseRuns.activeRunID(sessionID) != "") || s.foreignTurnActive(ctx, sessionID)
+}
+
+// foreignTurnActive reports a live durable turn lease on the session held by
+// another process (a TUI or a second server on the same database). It is a
+// preflight for transcript mutations that are not response runs, which have no
+// fence of their own.
+func (s *serveServer) foreignTurnActive(ctx context.Context, sessionID string) bool {
+	if s == nil || sessionID == "" {
+		return false
+	}
+	lifecycle, ok := session.AsServeResponseLifecycleStore(s.store)
+	if !ok {
+		return false
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	owner, err := lifecycle.ForeignTurnOwner(lookupCtx, sessionID, s.responseOwnerID())
+	return err == nil && owner != ""
 }

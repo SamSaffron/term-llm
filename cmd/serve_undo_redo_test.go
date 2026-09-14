@@ -204,6 +204,38 @@ func TestServeUndoRejectsActiveWorkAndStaleClient(t *testing.T) {
 	}
 }
 
+func TestServeUndoRejectsForeignProcessTurn(t *testing.T) {
+	srv, store, _, _, sessionID := newServeUndoRedoTest(t)
+	addServeUndoRedoMessage(t, store, sessionID, llm.UserText("prompt"))
+	state, err := store.TranscriptMutationState(context.Background(), sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A terminal process holds the durable turn lease; nothing is active in this
+	// server's memory.
+	lease, err := store.AdmitResponseRun(context.Background(), session.ResponseRunAdmission{ResponseID: "tui_turn",
+		SessionID: sessionID, RunEpoch: 1, OwnerInstanceID: "tui-owner", StartedAt: time.Now(), LeaseDuration: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := requestServeUndoRedo(t, srv, sessionID, "undo", state)
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "work is active") {
+		t.Fatalf("foreign turn status/body = %d %s", rr.Code, rr.Body.String())
+	}
+	messages, err := store.GetMessages(context.Background(), sessionID, 0, 0)
+	if err != nil || len(messages) != 1 {
+		t.Fatalf("foreign turn mutated transcript len=%d err=%v", len(messages), err)
+	}
+
+	if _, err := store.FinalizeResponseRun(context.Background(), session.ResponseRunTerminal{ResponseID: "tui_turn",
+		OwnerInstanceID: "tui-owner", FencingToken: lease.FencingToken, Outcome: session.ResponseRunCompleted}); err != nil {
+		t.Fatal(err)
+	}
+	if rr := requestServeUndoRedo(t, srv, sessionID, "undo", state); rr.Code != http.StatusOK {
+		t.Fatalf("undo after released turn status/body = %d %s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestServeUndoWorksWithoutCachedRuntimeOrRuntimeFactory(t *testing.T) {
 	srv, store, _, _, sessionID := newServeUndoRedoTest(t)
 	addServeUndoRedoMessage(t, store, sessionID, llm.UserText("storage only"))

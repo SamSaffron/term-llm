@@ -151,6 +151,7 @@ func (m *Model) streamPersistenceCallbacks(streamStart time.Time) (llm.Assistant
 				return sessionMsg.ID, true
 			}
 			if !errors.Is(err, session.ErrNotFound) {
+				m.handleFencedWriteError(err)
 				return 0, false
 			}
 			m.pendingAssistantMsgID = 0
@@ -161,6 +162,7 @@ func (m *Model) streamPersistenceCallbacks(streamStart time.Time) (llm.Assistant
 			sessionMsg.DurationMs = time.Since(streamStart).Milliseconds()
 		}
 		if err := m.store.AddMessage(ctx, streamSess.ID, sessionMsg); err != nil {
+			m.handleFencedWriteError(err)
 			return 0, false
 		}
 		m.pendingAssistantMsgID = sessionMsg.ID
@@ -224,6 +226,7 @@ func (m *Model) streamPersistenceCallbacks(streamStart time.Time) (llm.Assistant
 				}
 				sessionMsg := session.NewMessageWithReasoningPolicy(streamSess.ID, msg, -1, reasoningCfg)
 				if err := m.store.AddMessage(ctx, streamSess.ID, sessionMsg); err != nil || sessionMsg.ID <= 0 {
+					m.handleFencedWriteError(err)
 					persistComplete = false
 					continue
 				}
@@ -527,6 +530,42 @@ func (m *Model) ensureContextMessages() {
 	}
 }
 
+// claimPendingTurnLease claims the session's turn for the send that follows,
+// before anything about that turn is persisted or applied. A claim that never
+// reaches startStream must not linger as a running row, so a displaced claim is
+// released.
+func (m *Model) claimPendingTurnLease() error {
+	lease, err := m.acquireTurnLease(m.rootContext(), m.SessionID())
+	if err != nil {
+		return err
+	}
+	if lease != nil {
+		m.releaseTurnLease(m.pendingTurnLease.Swap(lease), session.ResponseRunCancelled)
+	}
+	return nil
+}
+
+// persistUserTurn appends the user row as the first fenced write of the claimed
+// turn and keeps the session's turn bookkeeping in sync.
+func (m *Model) persistUserTurn(userMsg *session.Message, content string) {
+	if m.store == nil {
+		return
+	}
+	userCtx := m.pendingTurnLease.Load().context(context.Background())
+	if err := m.store.AddMessage(userCtx, m.sess.ID, userMsg); err == nil && userMsg.ID > 0 {
+		// The active user is the first completed and durable boundary of this run.
+		m.messages[len(m.messages)-1].ID = userMsg.ID
+		m.activeBranchAnchorID = userMsg.ID
+	}
+	_ = m.store.IncrementUserTurns(context.Background(), m.sess.ID)
+	m.sess.UserTurns++ // Keep in-memory value in sync
+	// Update session summary from first user message
+	if m.sess.Summary == "" {
+		m.sess.Summary = session.TruncateSummary(content)
+		_ = m.store.Update(context.Background(), m.sess)
+	}
+}
+
 func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	if m.directShellRun != nil {
 		return m.showFooterWarning("Wait for the shell command to finish or press Esc to cancel it.")
@@ -547,6 +586,12 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 		return m.showFooterWarning("Wait for the current worktree operation to finish before sending.")
 	}
 	m.clearFooterMessage()
+	// Claim this session's turn before anything about it is persisted or
+	// applied. A turn owned by another process, or a transcript another process
+	// already changed, leaves the composer and the session untouched.
+	if err := m.claimPendingTurnLease(); err != nil {
+		return m.showFooterWarning(turnLeaseRefusal(err))
+	}
 	var preSendCmds []tea.Cmd
 	if cmd := m.applyPendingStreamModelSwitch(); cmd != nil {
 		preSendCmds = append(preSendCmds, cmd)
@@ -622,20 +667,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	}
 	m.messages = append(m.messages, *userMsg)
 	m.invalidateHistoryCache()
-	if m.store != nil {
-		if err := m.store.AddMessage(context.Background(), m.sess.ID, userMsg); err == nil && userMsg.ID > 0 {
-			// The active user is the first completed and durable boundary of this run.
-			m.messages[len(m.messages)-1].ID = userMsg.ID
-			m.activeBranchAnchorID = userMsg.ID
-		}
-		_ = m.store.IncrementUserTurns(context.Background(), m.sess.ID)
-		m.sess.UserTurns++ // Keep in-memory value in sync
-		// Update session summary from first user message
-		if m.sess.Summary == "" {
-			m.sess.Summary = session.TruncateSummary(content)
-			_ = m.store.Update(context.Background(), m.sess)
-		}
-	}
+	m.persistUserTurn(userMsg, content)
 
 	if cmd := m.scheduleTitleFallbackCmd(); cmd != nil {
 		preSendCmds = append(preSendCmds, cmd)
@@ -821,6 +853,47 @@ func (m *Model) beginUserResponse(content, userDisplay string, preSendCmds []tea
 	return m, cmd
 }
 
+// claimStreamTurnLease takes the claim sendMessage made before its first write,
+// or claims the turn for resumed and synthetic turns (reload resume, steering
+// flush, direct shell). A displaced active claim is released, never leaked.
+func (m *Model) claimStreamTurnLease(ctx context.Context, sessionID string) (*turnLease, error) {
+	lease := m.pendingTurnLease.Swap(nil)
+	if lease == nil {
+		claimed, err := m.acquireTurnLease(ctx, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		lease = claimed
+	}
+	if lease != nil {
+		m.releaseTurnLease(m.activeTurnLease.Swap(lease), session.ResponseRunCancelled)
+	}
+	return lease, nil
+}
+
+// finalizeMainRunTurn writes the terminal status while this process still owns
+// the turn, then releases the lease; releasing first would let a successor's
+// Active status be overwritten by this stale terminal write. A suspended run
+// keeps its lease for suspendForReload, which still rewrites under its fence.
+func (m *Model) finalizeMainRunTurn(lease *turnLease, sessionID string, runErr error) {
+	status := session.StatusComplete
+	var suspended *llm.SuspendedError
+	if errors.As(runErr, &suspended) {
+		status = session.StatusActive
+	} else if runErr != nil {
+		status = session.StatusError
+		if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
+			status = session.StatusInterrupted
+		}
+	}
+	if m.store != nil {
+		_ = m.store.UpdateStatus(context.Background(), sessionID, status)
+	}
+	if suspended == nil {
+		m.releaseTurnLease(lease, turnLeaseOutcome(runErr))
+	}
+}
+
 func (m *Model) startStream(content string) tea.Cmd {
 	continuation := m.reloadContinuation
 	m.reloadContinuation = nil
@@ -831,6 +904,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 		var err error
 		ctx, release, err = restart.Default.Activity(ctx)
 		if err != nil {
+			m.releaseTurnLease(m.pendingTurnLease.Swap(nil), session.ResponseRunCancelled)
 			return func() tea.Msg { return streamEventMsg{event: ui.ErrorEvent(err), generation: m.streamGeneration} }
 		}
 	}
@@ -850,6 +924,10 @@ func (m *Model) startStream(content string) tea.Cmd {
 
 	return func() tea.Msg {
 		defer release()
+		lease, err := m.claimStreamTurnLease(ctx, sessionID)
+		if err != nil {
+			return streamEventMsg{event: ui.ErrorEvent(errors.New(turnLeaseRefusal(err))), generation: streamGeneration}
+		}
 		// Mark session as active when starting a new stream
 		if m.store != nil && m.sess != nil {
 			_ = m.store.UpdateStatus(ctx, m.sess.ID, session.StatusActive)
@@ -1029,6 +1107,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 
 		if m.mainRunManager != nil {
 			if err := ctx.Err(); err != nil {
+				m.releaseTurnLease(lease, session.ResponseRunCancelled)
 				return streamEventMsg{event: ui.ErrorEvent(err), generation: streamGeneration}
 			}
 			runSessionID := req.SessionID
@@ -1043,6 +1122,10 @@ func (m *Model) startStream(content string) tea.Cmd {
 					return ""
 				}(),
 				Execute: func(runCtx context.Context, emit func(ui.StreamEvent)) error {
+					// Every transcript write of this run inherits the lease fence, so
+					// a run that loses ownership cannot commit late output.
+					runCtx = lease.context(runCtx)
+					lease.startRenewals(runCtx, func() { m.mainRunManager.Cancel(runSessionID) })
 					runCtx = tools.ContextWithAskUserUIFunc(runCtx, func(promptCtx context.Context, questions []tools.AskUserQuestion) ([]tools.AskUserAnswer, error) {
 						done := make(chan []tools.AskUserAnswer, 1)
 						if err := m.mainRunManager.DeliverUI(runSessionID, AskUserRequestMsg{Questions: questions, DoneCh: done}); err != nil {
@@ -1083,22 +1166,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 					<-done
 					return runErr
 				},
-				Finalize: func(runErr error) {
-					if m.store == nil {
-						return
-					}
-					status := session.StatusComplete
-					var suspended *llm.SuspendedError
-					if errors.As(runErr, &suspended) {
-						status = session.StatusActive
-					} else if runErr != nil {
-						status = session.StatusError
-						if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
-							status = session.StatusInterrupted
-						}
-					}
-					_ = m.store.UpdateStatus(context.Background(), runSessionID, status)
-				},
+				Finalize: func(runErr error) { m.finalizeMainRunTurn(lease, runSessionID, runErr) },
 				QueueSteering: func(steering llm.QueuedSteering) llm.SteeringQueueStatus {
 					steering.Message.ClientMessageID = steering.ID
 					if store, ok := session.AsPendingSteeringStore(m.store); ok {
@@ -1132,6 +1200,8 @@ func (m *Model) startStream(content string) tea.Cmd {
 			})
 			if err != nil {
 				cancel()
+				// A rejected start never reaches Finalize, so the claim is released here.
+				m.releaseTurnLease(lease, session.ResponseRunCancelled)
 				if steeringOperationID != "" {
 					return steeringStartFailedMsg{generation: streamGeneration, operationID: steeringOperationID, err: err}
 				}
@@ -1145,9 +1215,18 @@ func (m *Model) startStream(content string) tea.Cmd {
 		// process-scoped manager.
 		done := make(chan struct{})
 		m.streamDone = done
+		legacyCtx := lease.context(ctx)
+		lease.startRenewals(legacyCtx, cancel)
 		go func() {
 			defer close(done)
-			runWithAdapter(ctx, adapter)
+			defer func() {
+				outcome := session.ResponseRunCompleted
+				if legacyCtx.Err() != nil {
+					outcome = session.ResponseRunCancelled
+				}
+				m.releaseTurnLease(lease, outcome)
+			}()
+			runWithAdapter(legacyCtx, adapter)
 		}()
 		return m.listenForStreamEventsSync(streamGeneration)
 	}

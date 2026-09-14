@@ -3162,6 +3162,33 @@ describe('AppStore compatibility behavior', () => {
     expect(internals.locallyStoppedResponses.has('old-response')).toBe(false);
   });
 
+  it('marks a turn owned by another process active without attaching to a stream', async () => {
+    const store = new AppStore(config);
+    try {
+      store.sessions.value = [session()];
+      store.activeSessionId.value = 's1';
+      const internals = store as unknown as {
+        refreshStatus(): Promise<void>;
+        resumeResponse(sessionId: string, responseId: string): Promise<void>;
+      };
+      internals.resumeResponse = vi.fn(async () => undefined);
+      // A terminal process owns the turn, so the server reports activity without
+      // handing this browser a response to attach to.
+      store.endpoints.sessionStatus = vi.fn(async () => ({
+        sessions: [{ id: 's1', active_run: true }],
+      }));
+
+      await internals.refreshStatus();
+
+      expect(store.sessions.value[0]).toMatchObject({ activeRun: true });
+      expect(store.sessions.value[0].activeResponseId).toBeFalsy();
+      expect(internals.resumeResponse).not.toHaveBeenCalled();
+      expect(store.runs.value).toEqual({});
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('rolls back an optimistic message when the response was never accepted', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];

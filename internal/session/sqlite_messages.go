@@ -145,6 +145,7 @@ func (s *SQLiteStore) appendMessagesWithRush(ctx context.Context, sessionID stri
 			return fmt.Errorf("commit transaction: %w", err)
 		}
 		committed = true
+		s.noteOwnTranscriptRev(sessionID, rev)
 		for i, msg := range messages {
 			msg.ID = ids[i]
 			msg.Sequence = firstSequence + i
@@ -209,6 +210,7 @@ func (s *SQLiteStore) addMessageExplicitSequence(ctx context.Context, sessionID 
 	if err := tx.Commit(); err != nil {
 		return 0, 0, fmt.Errorf("commit transaction: %w", err)
 	}
+	s.noteOwnTranscriptRev(sessionID, rev)
 	return id, rev, nil
 }
 
@@ -249,6 +251,7 @@ func (s *SQLiteStore) addMessageAutoSequence(ctx context.Context, sessionID stri
 		return 0, 0, 0, fmt.Errorf("commit transaction: %w", err)
 	}
 	committed = true
+	s.noteOwnTranscriptRev(sessionID, rev)
 	return id, sequence, rev, nil
 }
 
@@ -291,6 +294,35 @@ func (s *SQLiteStore) bumpTranscriptRevPreservingRedo(ctx context.Context, exece
 		return 0, fmt.Errorf("bump transcript revision: %w", err)
 	}
 	return rev, nil
+}
+
+// noteOwnTranscriptRev records a revision only after its transaction committed;
+// a rolled-back bump must never be mistaken for this process's write.
+func (s *SQLiteStore) noteOwnTranscriptRev(sessionID string, rev int64) {
+	if rev > 0 {
+		s.ownTranscriptRevs.Store(sessionID, rev)
+	}
+}
+
+// commitWithOwnTranscriptRev commits, then records the revision as this
+// process's own; a failed commit records nothing.
+func (s *SQLiteStore) commitWithOwnTranscriptRev(tx *sql.Tx, sessionID string, rev int64) error {
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.noteOwnTranscriptRev(sessionID, rev)
+	return nil
+}
+
+// OwnTranscriptRev reports the transcript revision this store instance last
+// produced for the session, so a process can tell its own writes from another
+// process's when deciding whether its loaded history is still current.
+func (s *SQLiteStore) OwnTranscriptRev(sessionID string) (int64, bool) {
+	rev, ok := s.ownTranscriptRevs.Load(sessionID)
+	if !ok {
+		return 0, false
+	}
+	return rev.(int64), true
 }
 
 func (s *SQLiteStore) insertMessageAndBumpSession(ctx context.Context, execer sqliteQueryExecer, sessionID string, msg *Message, partsJSON string, sequence int) (int64, int64, error) {
@@ -412,6 +444,7 @@ func (s *SQLiteStore) updateMessage(ctx context.Context, sessionID string, msg *
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit transaction: %w", err)
 		}
+		s.noteOwnTranscriptRev(sessionID, rev)
 		committedRev = rev
 		return nil
 	})
@@ -466,10 +499,15 @@ func (s *SQLiteStore) PersistCompactionTailHints(ctx context.Context, sessionID 
 		if changed == 0 {
 			return tx.Commit()
 		}
-		if _, err := s.bumpTranscriptRev(ctx, tx, sessionID); err != nil {
+		rev, err := s.bumpTranscriptRev(ctx, tx, sessionID)
+		if err != nil {
 			return err
 		}
-		return tx.Commit()
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		s.noteOwnTranscriptRev(sessionID, rev)
+		return nil
 	})
 }
 
@@ -495,12 +533,17 @@ func (s *SQLiteStore) ClearCompactionBoundary(ctx context.Context, id string) er
 		if err != nil {
 			return fmt.Errorf("count cleared compaction boundaries: %w", err)
 		}
+		var rev int64
 		if changed > 0 {
-			if _, err := s.bumpTranscriptRev(ctx, tx, id); err != nil {
+			if rev, err = s.bumpTranscriptRev(ctx, tx, id); err != nil {
 				return err
 			}
 		}
-		return tx.Commit()
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		s.noteOwnTranscriptRev(id, rev)
+		return nil
 	})
 }
 
@@ -589,6 +632,7 @@ func (s *SQLiteStore) ReplaceMessagesWithTranscriptRev(ctx context.Context, sess
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+		s.noteOwnTranscriptRev(sessionID, rev)
 		committedRev = rev
 		return nil
 	})
@@ -674,6 +718,7 @@ func (s *SQLiteStore) ReplaceCompactedMessagesWithTranscriptRev(ctx context.Cont
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+		s.noteOwnTranscriptRev(sessionID, rev)
 		committedRev = rev
 		return nil
 	})
@@ -983,11 +1028,15 @@ func (s *SQLiteStore) CompactMessages(ctx context.Context, sessionID string, mes
 			startSeq, now, sessionID); err != nil {
 			return fmt.Errorf("update compaction_seq: %w", err)
 		}
-		if _, err := s.bumpTranscriptRev(ctx, tx, sessionID); err != nil {
+		rev, err := s.bumpTranscriptRev(ctx, tx, sessionID)
+		if err != nil {
 			return err
 		}
-
-		return tx.Commit()
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		s.noteOwnTranscriptRev(sessionID, rev)
+		return nil
 	})
 }
 
@@ -1374,6 +1423,7 @@ func (s *SQLiteStore) UndoLastUserTurn(ctx context.Context, sessionID string, ex
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return TranscriptMutationResult{}, fmt.Errorf("commit undo: %w", err)
 	}
+	s.noteOwnTranscriptRev(sessionID, rev)
 	return TranscriptMutationResult{TranscriptMutationState: post, UserText: userText, AttachmentsOmitted: attachmentsOmitted}, nil
 }
 
@@ -1444,7 +1494,8 @@ func (s *SQLiteStore) RedoLastUserTurn(ctx context.Context, sessionID string, ex
 	if _, err := conn.ExecContext(ctx, `DELETE FROM session_redo WHERE session_id = ? AND stack_pos = ?`, sessionID, stackPos); err != nil {
 		return TranscriptMutationResult{}, fmt.Errorf("consume redo suffix: %w", err)
 	}
-	if _, err := s.bumpTranscriptRevPreservingRedo(ctx, conn, sessionID); err != nil {
+	rev, err := s.bumpTranscriptRevPreservingRedo(ctx, conn, sessionID)
+	if err != nil {
 		return TranscriptMutationResult{}, err
 	}
 	post, err := transcriptMutationState(ctx, conn, sessionID)
@@ -1454,6 +1505,7 @@ func (s *SQLiteStore) RedoLastUserTurn(ctx context.Context, sessionID string, ex
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return TranscriptMutationResult{}, fmt.Errorf("commit redo: %w", err)
 	}
+	s.noteOwnTranscriptRev(sessionID, rev)
 	return TranscriptMutationResult{TranscriptMutationState: post}, nil
 }
 

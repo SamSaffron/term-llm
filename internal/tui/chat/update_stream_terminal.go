@@ -233,6 +233,7 @@ func (m *Model) handleStreamDone(msg streamEventMsg, ev ui.StreamEvent, state *s
 			m.compactionIdx = compactionIdx
 			m.messagesMu.Unlock()
 			m.invalidateHistoryCache()
+			m.noteTranscriptRev(ctx)
 			if cmd := m.loadPersistedSubagentsCmd(); cmd != nil {
 				state.cmds = append(state.cmds, cmd)
 			}

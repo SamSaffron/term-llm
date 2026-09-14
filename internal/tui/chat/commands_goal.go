@@ -473,6 +473,7 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 
 	// Persist new session and infer its registered project from the CWD.
 	persistNewTUISession(context.Background(), m.store, m.sess)
+	m.noteTranscriptRev(context.Background())
 	m.notifySessionInputs()
 
 	// Clear conversation messages and input

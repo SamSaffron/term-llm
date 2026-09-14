@@ -50,6 +50,10 @@ type ReloadState struct {
 	SideResponse string
 	Meta         *session.Session  `json:",omitempty"`
 	Messages     []session.Message `json:",omitempty"`
+	// TranscriptRev is the durable revision the suspended process was
+	// synchronized with, so the successor can tell a write that landed during
+	// the handoff from its own history.
+	TranscriptRev int64 `json:",omitempty"`
 }
 type ReloadInspectMsg struct {
 	Context context.Context
@@ -97,6 +101,9 @@ func (m *Model) inspectReload(msg ReloadInspectMsg) {
 			result.State.Meta = m.sess
 			result.State.Messages = append([]session.Message(nil), m.messages...)
 		}
+		if m.transcriptRevObserved.Load() {
+			result.State.TranscriptRev = m.knownTranscriptRev.Load()
+		}
 	}
 	select {
 	case msg.Reply <- result:
@@ -110,6 +117,10 @@ func (m *Model) RestoreReloadState(state ReloadState) {
 		m.sess = state.Meta
 		m.messages = state.Messages
 		m.invalidateHistoryCache()
+	}
+	if state.TranscriptRev > 0 && m.SessionID() == state.SessionID {
+		m.knownTranscriptRev.Store(state.TranscriptRev)
+		m.transcriptRevObserved.Store(true)
 	}
 	m.branchPrefill = state.Draft
 	m.files, m.images = state.Files, state.Images
@@ -155,20 +166,26 @@ func (m *Model) suspendForReload(saved *llm.Continuation) (tea.Model, tea.Cmd) {
 		m.smoothBuffer.Reset()
 	}
 	m.smoothTickPending = false
+	// The suspended run kept its lease so this replacement still commits under
+	// its fence; the successor process claims the turn again on resume.
+	lease := m.activeTurnLease.Load()
 	if m.store != nil {
 		if saved.DiscardPartial {
 			messages := make([]session.Message, 0, len(saved.Request.Messages))
 			for i, message := range saved.Request.Messages {
 				messages = append(messages, *session.NewMessage(m.SessionID(), message, i))
 			}
-			if err := m.store.ReplaceMessages(context.Background(), m.SessionID(), messages); err != nil {
+			if err := m.store.ReplaceMessages(lease.context(context.Background()), m.SessionID(), messages); err != nil {
+				m.releaseTurnLease(lease, session.ResponseRunCancelled)
 				return m.showFooterError(err.Error())
 			}
 		}
+		m.releaseTurnLease(lease, session.ResponseRunCancelled)
 		if err := m.reloadMessagesFromStore(context.Background()); err != nil {
 			return m.showFooterError(err.Error())
 		}
 	} else {
+		m.releaseTurnLease(lease, session.ResponseRunCancelled)
 		m.messages = nil
 		for _, message := range saved.Request.Messages {
 			if message.Role != llm.RoleSystem {

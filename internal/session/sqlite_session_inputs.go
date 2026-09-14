@@ -85,8 +85,9 @@ func (s *SQLiteStore) RefreshSessionInputs(ctx context.Context, id, prompt, sele
 			}
 			result.Tools = selectedTools
 		}
+		var rev int64
 		if len(result.Messages) > 0 {
-			if _, err := tx.ExecContext(ctx, `UPDATE sessions SET transcript_rev=transcript_rev+1 WHERE id=?`, id); err != nil {
+			if rev, err = s.bumpTranscriptRevPreservingRedo(ctx, tx, id); err != nil {
 				return err
 			}
 		}
@@ -95,7 +96,7 @@ func (s *SQLiteStore) RefreshSessionInputs(ctx context.Context, id, prompt, sele
 				return err
 			}
 		}
-		return tx.Commit()
+		return s.commitWithOwnTranscriptRev(tx, id, rev)
 	})
 	if err != nil {
 		return SessionInputRefreshResult{}, fmt.Errorf("refresh session inputs: %w", err)

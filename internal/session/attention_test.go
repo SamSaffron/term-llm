@@ -150,6 +150,120 @@ func TestSharedStoreRecoveryFencesOtherProcessTranscriptWriter(t *testing.T) {
 	}
 }
 
+func TestAdmitResponseRunRejectsForeignTurnOwner(t *testing.T) {
+	cases := []struct {
+		name    string
+		prepare func(t *testing.T, store *SQLiteStore, ctx context.Context, sessionID string)
+		owner   string
+		wantErr error
+	}{
+		{
+			name: "foreign running lease blocks admission",
+			prepare: func(t *testing.T, store *SQLiteStore, ctx context.Context, sessionID string) {
+				admitAttentionRun(t, store, ctx, sessionID, "resp_a", "owner-a", 0)
+			},
+			owner:   "owner-b",
+			wantErr: ErrSessionTurnOwned,
+		},
+		{
+			name: "same owner may admit again",
+			prepare: func(t *testing.T, store *SQLiteStore, ctx context.Context, sessionID string) {
+				admitAttentionRun(t, store, ctx, sessionID, "resp_a", "owner-a", 0)
+			},
+			owner: "owner-a",
+		},
+		{
+			name: "finalized lease releases the session",
+			prepare: func(t *testing.T, store *SQLiteStore, ctx context.Context, sessionID string) {
+				lease := admitAttentionRun(t, store, ctx, sessionID, "resp_a", "owner-a", 0)
+				if _, err := store.FinalizeResponseRun(ctx, ResponseRunTerminal{ResponseID: "resp_a",
+					OwnerInstanceID: "owner-a", FencingToken: lease.FencingToken, Outcome: ResponseRunCompleted}); err != nil {
+					t.Fatal(err)
+				}
+			},
+			owner: "owner-b",
+		},
+		{
+			name: "expired foreign lease stops blocking",
+			prepare: func(t *testing.T, store *SQLiteStore, ctx context.Context, sessionID string) {
+				admitAttentionRun(t, store, ctx, sessionID, "resp_a", "owner-a", 0)
+				if _, err := store.db.ExecContext(ctx, `UPDATE serve_response_lifecycle SET lease_expires_at = ?
+					WHERE response_id = ?`, time.Now().Add(-time.Minute).UnixMilli(), "resp_a"); err != nil {
+					t.Fatal(err)
+				}
+			},
+			owner: "owner-b",
+		},
+		{
+			name:  "free session admits",
+			owner: "owner-b",
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			store, ctx, sessionID := newAttentionTestStore(t)
+			if testCase.prepare != nil {
+				testCase.prepare(t, store, ctx, sessionID)
+			}
+			_, err := store.AdmitResponseRun(ctx, ResponseRunAdmission{ResponseID: "resp_b", SessionID: sessionID,
+				RunEpoch: 2, OwnerInstanceID: testCase.owner, StartedAt: time.Now(), LeaseDuration: time.Minute})
+			if testCase.wantErr != nil {
+				if !errors.Is(err, testCase.wantErr) {
+					t.Fatalf("admission error = %v, want %v", err, testCase.wantErr)
+				}
+				var count int
+				if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM serve_response_lifecycle
+					WHERE response_id = ?`, "resp_b").Scan(&count); err != nil {
+					t.Fatal(err)
+				}
+				if count != 0 {
+					t.Fatalf("rejected admission left %d lifecycle rows", count)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("admission error = %v, want nil", err)
+			}
+		})
+	}
+}
+
+func TestForeignTurnOwnerReportsOtherProcessOnly(t *testing.T) {
+	store, ctx, sessionID := newAttentionTestStore(t)
+	if owner, err := store.ForeignTurnOwner(ctx, sessionID, "owner-b"); err != nil || owner != "" {
+		t.Fatalf("idle session owner = %q, %v", owner, err)
+	}
+	admitAttentionRun(t, store, ctx, sessionID, "resp_a", "owner-a", 0)
+	if owner, err := store.ForeignTurnOwner(ctx, sessionID, "owner-b"); err != nil || owner != "owner-a" {
+		t.Fatalf("foreign owner = %q, %v", owner, err)
+	}
+	if owner, err := store.ForeignTurnOwner(ctx, sessionID, "owner-a"); err != nil || owner != "" {
+		t.Fatalf("own lease reported as foreign: %q, %v", owner, err)
+	}
+}
+
+func TestLoggingStorePreservesTurnOwnedSentinel(t *testing.T) {
+	store, ctx, sessionID := newAttentionTestStore(t)
+	admitAttentionRun(t, store, ctx, sessionID, "resp_a", "owner-a", 0)
+	warnings := 0
+	logging := NewLoggingStore(store, func(string, ...any) { warnings++ })
+	lifecycle, ok := AsServeResponseLifecycleStore(logging)
+	if !ok {
+		t.Fatal("logging store does not expose the lifecycle capability")
+	}
+	_, err := lifecycle.AdmitResponseRun(ctx, ResponseRunAdmission{ResponseID: "resp_b", SessionID: sessionID,
+		RunEpoch: 2, OwnerInstanceID: "owner-b", StartedAt: time.Now(), LeaseDuration: time.Minute})
+	if !errors.Is(err, ErrSessionTurnOwned) {
+		t.Fatalf("wrapped admission error = %v, want %v", err, ErrSessionTurnOwned)
+	}
+	if warnings != 0 {
+		t.Fatalf("expected conflict logged %d warnings", warnings)
+	}
+	if owner, err := lifecycle.ForeignTurnOwner(ctx, sessionID, "owner-b"); err != nil || owner != "owner-a" {
+		t.Fatalf("wrapped foreign owner = %q, %v", owner, err)
+	}
+}
+
 func TestGetAttentionBatchChunksBeyondSQLiteVariableLimit(t *testing.T) {
 	store, ctx, firstID := newAttentionTestStore(t)
 	lastID := NewID()
@@ -213,6 +327,34 @@ func TestOwnerCanFinalizeAfterLeaseExpiryBeforeOrphanCAS(t *testing.T) {
 		FencingToken: lease.FencingToken, Outcome: ResponseRunCompleted, FinalRev: 2})
 	if err != nil || !state.Unseen || state.Outcome != ResponseRunCompleted {
 		t.Fatalf("owned finalization inside recovery grace = %+v, %v", state, err)
+	}
+}
+
+func TestOwnTranscriptRevIsRecordedOnlyForCommittedWrites(t *testing.T) {
+	store, ctx, sessionID := newAttentionTestStore(t)
+	if _, ok := store.OwnTranscriptRev(sessionID); ok {
+		t.Fatal("own revision reported before any write")
+	}
+	rev, err := store.AddMessageWithTranscriptRev(ctx, sessionID, &Message{Role: llm.RoleUser, TextContent: "mine", Sequence: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if own, ok := store.OwnTranscriptRev(sessionID); !ok || own != rev {
+		t.Fatalf("own revision after commit = %d,%v want %d", own, ok, rev)
+	}
+	// A write rejected by the fence rolls back its revision bump; it must not
+	// leave an own-revision that a later foreign write could coincide with.
+	lease := admitAttentionRun(t, store, ctx, sessionID, "resp_lost", "owner", 0)
+	if _, err := store.FinalizeResponseRun(ctx, ResponseRunTerminal{ResponseID: "resp_lost", OwnerInstanceID: "owner",
+		FencingToken: lease.FencingToken, Outcome: ResponseRunCancelled}); err != nil {
+		t.Fatal(err)
+	}
+	fencedCtx := WithResponseRunFence(ctx, ResponseRunFence{ResponseID: "resp_lost", OwnerInstanceID: "owner", FencingToken: lease.FencingToken})
+	if _, err := store.AddMessageWithTranscriptRev(fencedCtx, sessionID, &Message{Role: llm.RoleAssistant, TextContent: "late", Sequence: -1}); !errors.Is(err, ErrResponseRunLeaseLost) {
+		t.Fatalf("fenced write after loss = %v", err)
+	}
+	if own, ok := store.OwnTranscriptRev(sessionID); !ok || own != rev {
+		t.Fatalf("own revision after rolled-back write = %d,%v want %d", own, ok, rev)
 	}
 }
 
