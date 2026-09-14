@@ -877,6 +877,203 @@ func (s *Store) RecordAttributedChange(ctx context.Context, rec ChangeRecord) (*
 	return s.recordChange(ctx, rec, true)
 }
 
+func changeKindForRecord(rec ChangeRecord) (kind string, skip bool) {
+	switch {
+	case rec.BeforeMissing && rec.AfterMissing:
+		return "", true
+	case rec.BeforeMissing:
+		return KindCreate, false
+	case rec.AfterMissing:
+		return KindDelete, false
+	default:
+		if !rec.BeforeUnknown && !rec.AfterUnknown && bytes.Equal(rec.Before, rec.After) {
+			return "", true
+		}
+		return KindModify, false
+	}
+}
+
+type changeContentPlan struct {
+	beforeSize    int64
+	afterSize     int64
+	hasBefore     bool
+	hasAfter      bool
+	isBinary      bool
+	isImage       bool
+	retain        bool
+	contentStatus string
+}
+
+func changeContentSize(missing, unknown bool, content []byte, sizeHint int64) (size int64, hasContent bool) {
+	if unknown {
+		return sizeHint, false
+	}
+	if missing {
+		return 0, false
+	}
+	return int64(len(content)), true
+}
+
+func classifyChangeContent(rec ChangeRecord, kind string, maxFileBytes int) changeContentPlan {
+	beforeSize, hasBefore := changeContentSize(rec.BeforeMissing, rec.BeforeUnknown, rec.Before, rec.BeforeSizeHint)
+	afterSize, hasAfter := changeContentSize(rec.AfterMissing, rec.AfterUnknown, rec.After, rec.AfterSizeHint)
+	plan := changeContentPlan{
+		beforeSize: beforeSize,
+		afterSize:  afterSize,
+		hasBefore:  hasBefore,
+		hasAfter:   hasAfter,
+	}
+
+	_, plan.isImage = imageChangeMediaType(kind, rec.Before, rec.After)
+	plan.isBinary = plan.isImage || (plan.hasBefore && isBinaryContent(rec.Before)) || (plan.hasAfter && isBinaryContent(rec.After))
+
+	// A change is either fully retained (all sides the kind needs are stored)
+	// or metadata-only. Mixed retention would complicate baseline resolution
+	// for marginal benefit. Browser-renderable images are the sole binary
+	// exception: retaining them lets the web diff show the actual before/after.
+	plan.retain = (!plan.isBinary || plan.isImage) && !rec.BeforeUnknown && !rec.AfterUnknown
+	plan.contentStatus = ContentRetained
+	if plan.isImage {
+		plan.contentStatus = ContentRetainedImage
+	} else if plan.isBinary {
+		plan.contentStatus = ContentBinaryUnrenderable
+	}
+	if rec.BeforeUnknown && rec.AfterUnknown {
+		plan.contentStatus = ContentBothUnknown
+	} else if rec.BeforeUnknown {
+		plan.contentStatus = ContentBeforeUnknown
+	} else if rec.AfterUnknown {
+		plan.contentStatus = ContentAfterUnknown
+	}
+	if plan.retain && plan.hasBefore && len(rec.Before) > maxFileBytes {
+		plan.retain = false
+		plan.contentStatus = ContentOversized
+	}
+	if plan.retain && plan.hasAfter && len(rec.After) > maxFileBytes {
+		plan.retain = false
+		plan.contentStatus = ContentOversized
+	}
+	return plan
+}
+
+func (s *Store) applySessionBudget(ctx context.Context, sessionID string, plan *changeContentPlan) error {
+	if !plan.retain {
+		return nil
+	}
+	used, err := s.sessionBytesUsed(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if used+plan.beforeSize+plan.afterSize > int64(s.maxSessionBytes) {
+		plan.retain = false
+		plan.contentStatus = ContentSessionBudget
+	}
+	return nil
+}
+
+func countChangeLines(kind string, rec ChangeRecord) (adds, dels int) {
+	switch kind {
+	case KindCreate:
+		adds, _ = CountAddsDels(nil, rec.After)
+	case KindDelete:
+		_, dels = CountAddsDels(rec.Before, nil)
+	default:
+		adds, dels = CountAddsDels(rec.Before, rec.After)
+	}
+	return adds, dels
+}
+
+func (s *Store) reserveTotalBudgetCheck(retainedBytes int64) bool {
+	s.totalMu.Lock()
+	checkTotalBudget := s.totalBudgetCheckDue(retainedBytes)
+	if checkTotalBudget {
+		s.uncheckedTotalBytes = 0
+		s.uncheckedTotalRecordCount = 0
+	} else {
+		// Reserve this accounting before I/O. Failed writes may trigger an earlier
+		// check, which is conservative and avoids cross-session synchronization.
+		s.uncheckedTotalBytes += retainedBytes
+		s.uncheckedTotalRecordCount++
+	}
+	s.totalMu.Unlock()
+	return checkTotalBudget
+}
+
+func insertFileChangeTx(ctx context.Context, tx *sql.Tx, rec ChangeRecord, change *Change, plan changeContentPlan) error {
+	if plan.retain {
+		if plan.hasBefore {
+			h, err := insertBlob(ctx, tx, rec.Before)
+			if err != nil {
+				return err
+			}
+			change.BeforeHash = h
+		}
+		if plan.hasAfter {
+			h, err := insertBlob(ctx, tx, rec.After)
+			if err != nil {
+				return err
+			}
+			change.AfterHash = h
+		}
+	}
+
+	err := tx.QueryRowContext(ctx, `
+		INSERT INTO file_changes
+			(session_id, run_id, seq, path, kind, tool_name, tool_call_id,
+			 before_hash, after_hash, before_size, after_size,
+			 adds, dels, truncated, is_binary, provenance, claim_kind,
+			 claim_pattern, claim_literal, claim_coverage, baseline_state,
+			 content_status, event_seq)
+		VALUES
+			(?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM file_changes WHERE session_id = ?),
+			 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		RETURNING seq`,
+		rec.SessionID, nullString(rec.RunID), rec.SessionID,
+		rec.Path, change.Kind, rec.ToolName, rec.ToolCallID,
+		nullString(change.BeforeHash), nullString(change.AfterHash), change.BeforeSize, change.AfterSize,
+		change.Adds, change.Dels, boolInt(change.Truncated), boolInt(change.IsBinary), rec.Provenance,
+		nullString(rec.ClaimKind), nullString(rec.ClaimPattern), boolInt(rec.ClaimLiteral),
+		rec.ClaimCoverage, rec.BaselineState, change.ContentStatus, change.EventSeq,
+	).Scan(&change.Seq)
+	if err != nil {
+		return fmt.Errorf("insert file change: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) enforceTotalBudgetTx(ctx context.Context, tx *sql.Tx, sessionID string, seq int64) (bool, error) {
+	pruned, err := s.enforceTotalBudget(ctx, tx)
+	if err != nil {
+		return false, fmt.Errorf("enforce total budget: %w", err)
+	}
+	var exists bool
+	if err := tx.QueryRowContext(ctx,
+		"SELECT EXISTS(SELECT 1 FROM file_changes WHERE session_id = ? AND seq = ?)",
+		sessionID, seq).Scan(&exists); err != nil {
+		return false, fmt.Errorf("verify recorded file change: %w", err)
+	}
+	if !exists {
+		return false, fmt.Errorf("file history database is over its total budget; change not retained")
+	}
+	return pruned, nil
+}
+
+func (s *Store) updateSessionBytesCache(sessionID string, retain, pruned bool, retainedBytes int64) {
+	if pruned {
+		// Budget enforcement pruned at least one session, invalidating cached
+		// retained-byte totals. The next write will reload only what it needs.
+		s.mu.Lock()
+		s.sessionBytes = make(map[string]int64)
+		s.mu.Unlock()
+	} else if retain {
+		s.mu.Lock()
+		if _, ok := s.sessionBytes[sessionID]; ok {
+			s.sessionBytes[sessionID] += retainedBytes
+		}
+		s.mu.Unlock()
+	}
+}
+
 func (s *Store) recordChange(ctx context.Context, rec ChangeRecord, requireAttributed bool) (*Change, error) {
 	rec.Path = normalizePath(rec.Path)
 	if rec.SessionID == "" || rec.Path == "" {
@@ -892,19 +1089,9 @@ func (s *Store) recordChange(ctx context.Context, rec ChangeRecord, requireAttri
 		return nil, err
 	}
 
-	var kind string
-	switch {
-	case rec.BeforeMissing && rec.AfterMissing:
+	kind, skip := changeKindForRecord(rec)
+	if skip {
 		return nil, nil
-	case rec.BeforeMissing:
-		kind = KindCreate
-	case rec.AfterMissing:
-		kind = KindDelete
-	default:
-		kind = KindModify
-		if !rec.BeforeUnknown && !rec.AfterUnknown && bytes.Equal(rec.Before, rec.After) {
-			return nil, nil
-		}
 	}
 
 	// Sequence and per-session budget decisions need ordering only within the
@@ -915,73 +1102,14 @@ func (s *Store) recordChange(ctx context.Context, rec ChangeRecord, requireAttri
 		rec.BaselineState = s.resolveAttributedBaseline(ctx, rec)
 	}
 
-	hasBefore := !rec.BeforeMissing && !rec.BeforeUnknown
-	hasAfter := !rec.AfterMissing && !rec.AfterUnknown
-
-	var beforeSize, afterSize int64
-	switch {
-	case hasBefore:
-		beforeSize = int64(len(rec.Before))
-	case rec.BeforeUnknown:
-		beforeSize = rec.BeforeSizeHint
-	}
-	switch {
-	case hasAfter:
-		afterSize = int64(len(rec.After))
-	case rec.AfterUnknown:
-		afterSize = rec.AfterSizeHint
-	}
-
-	_, isImage := imageChangeMediaType(kind, rec.Before, rec.After)
-	isBinary := isImage || (hasBefore && isBinaryContent(rec.Before)) || (hasAfter && isBinaryContent(rec.After))
-
-	// A change is either fully retained (all sides the kind needs are stored)
-	// or metadata-only. Mixed retention would complicate baseline resolution
-	// for marginal benefit. Browser-renderable images are the sole binary
-	// exception: retaining them lets the web diff show the actual before/after.
-	retain := (!isBinary || isImage) && !rec.BeforeUnknown && !rec.AfterUnknown
-	contentStatus := ContentRetained
-	if isImage {
-		contentStatus = ContentRetainedImage
-	} else if isBinary {
-		contentStatus = ContentBinaryUnrenderable
-	}
-	if rec.BeforeUnknown && rec.AfterUnknown {
-		contentStatus = ContentBothUnknown
-	} else if rec.BeforeUnknown {
-		contentStatus = ContentBeforeUnknown
-	} else if rec.AfterUnknown {
-		contentStatus = ContentAfterUnknown
-	}
-	if retain && hasBefore && len(rec.Before) > s.maxFileBytes {
-		retain = false
-		contentStatus = ContentOversized
-	}
-	if retain && hasAfter && len(rec.After) > s.maxFileBytes {
-		retain = false
-		contentStatus = ContentOversized
-	}
-	if retain {
-		used, err := s.sessionBytesUsed(ctx, rec.SessionID)
-		if err != nil {
-			return nil, err
-		}
-		if used+beforeSize+afterSize > int64(s.maxSessionBytes) {
-			retain = false
-			contentStatus = ContentSessionBudget
-		}
+	plan := classifyChangeContent(rec, kind, s.maxFileBytes)
+	if err := s.applySessionBudget(ctx, rec.SessionID, &plan); err != nil {
+		return nil, err
 	}
 
 	var adds, dels int
-	if retain && !isImage {
-		switch kind {
-		case KindCreate:
-			adds, _ = CountAddsDels(nil, rec.After)
-		case KindDelete:
-			_, dels = CountAddsDels(rec.Before, nil)
-		default:
-			adds, dels = CountAddsDels(rec.Before, rec.After)
-		}
+	if plan.retain && !plan.isImage {
+		adds, dels = countChangeLines(kind, rec)
 	}
 
 	change := &Change{
@@ -990,12 +1118,12 @@ func (s *Store) recordChange(ctx context.Context, rec ChangeRecord, requireAttri
 		Kind:             kind,
 		ToolName:         rec.ToolName,
 		ToolCallID:       rec.ToolCallID,
-		BeforeSize:       beforeSize,
-		AfterSize:        afterSize,
+		BeforeSize:       plan.beforeSize,
+		AfterSize:        plan.afterSize,
 		Adds:             adds,
 		Dels:             dels,
-		Truncated:        !retain,
-		IsBinary:         isBinary,
+		Truncated:        !plan.retain,
+		IsBinary:         plan.isBinary,
 		Provenance:       rec.Provenance,
 		Provenances:      []string{rec.Provenance},
 		ClaimKind:        rec.ClaimKind,
@@ -1003,27 +1131,15 @@ func (s *Store) recordChange(ctx context.Context, rec ChangeRecord, requireAttri
 		ClaimLiteral:     rec.ClaimLiteral,
 		ClaimCoverage:    rec.ClaimCoverage,
 		BaselineState:    rec.BaselineState,
-		ContentStatus:    contentStatus,
-		ContentAvailable: retain,
+		ContentStatus:    plan.contentStatus,
+		ContentAvailable: plan.retain,
 	}
 
 	retainedBytes := int64(0)
-	if retain {
-		retainedBytes = beforeSize + afterSize
+	if plan.retain {
+		retainedBytes = plan.beforeSize + plan.afterSize
 	}
-	s.totalMu.Lock()
-	checkTotalBudget := s.totalBudgetCheckDue(retainedBytes)
-	if checkTotalBudget {
-		s.uncheckedTotalBytes = 0
-		s.uncheckedTotalRecordCount = 0
-	} else {
-		// Reserve this accounting before I/O. Failed writes may trigger an earlier
-		// check, which is conservative and avoids cross-session synchronization.
-		s.uncheckedTotalBytes += retainedBytes
-		s.uncheckedTotalRecordCount++
-	}
-	s.totalMu.Unlock()
-
+	checkTotalBudget := s.reserveTotalBudgetCheck(retainedBytes)
 	if checkTotalBudget {
 		s.pruneMu.Lock()
 		defer s.pruneMu.Unlock()
@@ -1041,60 +1157,15 @@ func (s *Store) recordChange(ctx context.Context, rec ChangeRecord, requireAttri
 	if err != nil {
 		return nil, err
 	}
-
-	if retain {
-		if hasBefore {
-			h, err := insertBlob(ctx, tx, rec.Before)
-			if err != nil {
-				return nil, err
-			}
-			change.BeforeHash = h
-		}
-		if hasAfter {
-			h, err := insertBlob(ctx, tx, rec.After)
-			if err != nil {
-				return nil, err
-			}
-			change.AfterHash = h
-		}
-	}
-
-	err = tx.QueryRowContext(ctx, `
-		INSERT INTO file_changes
-			(session_id, run_id, seq, path, kind, tool_name, tool_call_id,
-			 before_hash, after_hash, before_size, after_size,
-			 adds, dels, truncated, is_binary, provenance, claim_kind,
-			 claim_pattern, claim_literal, claim_coverage, baseline_state,
-			 content_status, event_seq)
-		VALUES
-			(?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM file_changes WHERE session_id = ?),
-			 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		RETURNING seq`,
-		rec.SessionID, nullString(rec.RunID), rec.SessionID,
-		rec.Path, kind, rec.ToolName, rec.ToolCallID,
-		nullString(change.BeforeHash), nullString(change.AfterHash), beforeSize, afterSize,
-		adds, dels, boolInt(change.Truncated), boolInt(isBinary), rec.Provenance,
-		nullString(rec.ClaimKind), nullString(rec.ClaimPattern), boolInt(rec.ClaimLiteral),
-		rec.ClaimCoverage, rec.BaselineState, contentStatus, change.EventSeq,
-	).Scan(&change.Seq)
-	if err != nil {
-		return nil, fmt.Errorf("insert file change: %w", err)
+	if err := insertFileChangeTx(ctx, tx, rec, change, plan); err != nil {
+		return nil, err
 	}
 
 	var totalBudgetPruned bool
 	if checkTotalBudget {
-		totalBudgetPruned, err = s.enforceTotalBudget(ctx, tx)
+		totalBudgetPruned, err = s.enforceTotalBudgetTx(ctx, tx, rec.SessionID, change.Seq)
 		if err != nil {
-			return nil, fmt.Errorf("enforce total budget: %w", err)
-		}
-		var exists bool
-		if err := tx.QueryRowContext(ctx,
-			"SELECT EXISTS(SELECT 1 FROM file_changes WHERE session_id = ? AND seq = ?)",
-			rec.SessionID, change.Seq).Scan(&exists); err != nil {
-			return nil, fmt.Errorf("verify recorded file change: %w", err)
-		}
-		if !exists {
-			return nil, fmt.Errorf("file history database is over its total budget; change not retained")
+			return nil, err
 		}
 	}
 
@@ -1102,22 +1173,7 @@ func (s *Store) recordChange(ctx context.Context, rec ChangeRecord, requireAttri
 		return nil, fmt.Errorf("commit file change: %w", err)
 	}
 
-	if checkTotalBudget && totalBudgetPruned {
-		// Budget enforcement pruned at least one session, invalidating cached
-		// retained-byte totals. The next write will reload only what it needs.
-		s.mu.Lock()
-		s.sessionBytes = make(map[string]int64)
-		s.mu.Unlock()
-	} else {
-		if retain {
-			s.mu.Lock()
-			if _, ok := s.sessionBytes[rec.SessionID]; ok {
-				s.sessionBytes[rec.SessionID] += retainedBytes
-			}
-			s.mu.Unlock()
-		}
-	}
-
+	s.updateSessionBytesCache(rec.SessionID, plan.retain, totalBudgetPruned, retainedBytes)
 	return change, nil
 }
 

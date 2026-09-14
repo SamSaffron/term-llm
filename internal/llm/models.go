@@ -975,128 +975,157 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 	// Check if user has typed a colon (wants model completion)
 	if strings.Contains(toComplete, ":") {
 		parts := strings.SplitN(toComplete, ":", 2)
-		provider := parts[0]
-		modelPrefix := parts[1]
-
-		// Get models for completion
-		var models []string
-
-		// Check if config has a models list for this provider
-		var configModels []string
-		var configModel string
-		var configBaseURL string
-		var configuredProviderType config.ProviderType
-		if cfg != nil {
-			if providerCfg, ok := cfg.Providers[provider]; ok && (!isImage || isCustomImageProvider(provider, providerCfg)) {
-				configModels = providerCfg.Models
-				configModel = providerCfg.Model
-				configBaseURL = providerCfg.BaseURL
-				configuredProviderType = providerCfg.Type
-			}
-		}
-
-		if len(configModels) > 0 {
-			// ChatGPT model metadata augments, rather than replaces, discovery.
-			if !isImage && config.InferProviderType(provider, configuredProviderType) == config.ProviderTypeChatGPT {
-				configModels = append(append([]string(nil), configModels...), ProviderModelIDs("chatgpt")...)
-			}
-			// Use config-defined models list, plus configured model (deduped)
-			seen := make(map[string]bool)
-			if configModel != "" {
-				models = append(models, configModel)
-				seen[configModel] = true
-			}
-			for _, m := range configModels {
-				if !seen[m] {
-					models = append(models, m)
-					seen[m] = true
-				}
-			}
-		} else {
-			// Resolve provider type, including configured custom aliases.
-			providerType := string(config.InferProviderType(provider, configuredProviderType))
-
-			// For LLM (non-image) openrouter, fetch models from API cache
-			if !isImage && (providerType == "openrouter" || provider == "openrouter") {
-				apiKey := resolvedProviderAPIKey(cfg, provider)
-				if cachedModels := GetCachedOpenRouterModels(apiKey); len(cachedModels) > 0 {
-					models = cachedModels
-				} else {
-					models = getModelIDs("openrouter")
-				}
-			} else if !isImage && providerType == "venice" {
-				apiKey := resolvedProviderAPIKey(cfg, provider)
-				models = GetCachedVeniceModels(apiKey)
-				if len(models) == 0 && configModel != "" {
-					models = []string{configModel}
-				}
-			} else if !isImage && providerType == "zen" {
-				models = GetCachedZenModels()
-				if len(models) > 0 {
-					models = ExpandCachedZenReasoningVariants(models)
-				} else {
-					models = getModelIDs("zen")
-				}
-				if len(models) == 0 && configModel != "" {
-					models = []string{configModel}
-				}
-			} else if !isImage && providerType == "opencode-go" {
-				apiKey := resolvedProviderAPIKey(cfg, provider)
-				models = GetCachedOpenCodeGoModelsForAPIKey(apiKey)
-				if len(models) == 0 && configModel != "" {
-					models = []string{configModel}
-				}
-			} else if !isImage && providerType == "ollama" {
-				models = GetCachedOllamaModels(configBaseURL)
-				models = ExpandCachedOllamaReasoningVariants(configBaseURL, models)
-				if len(models) == 0 && configModel != "" {
-					models = []string{configModel}
-				}
-			} else {
-				models = getModelIDs(providerType)
-				if len(models) == 0 {
-					models = getModelIDs(provider)
-				}
-				if len(models) == 0 && configModel != "" {
-					models = []string{configModel}
-				} else if len(models) == 0 {
-					return nil
-				}
-			}
-		}
-
-		// Expand provider-specific effort variants for tab-completion.
-		if !isImage {
-			models = ExpandWithEffortVariantsForProvider(provider, models)
-		}
-
-		// Reveal suffixes only after their parent model name is fully typed.
-		var completions []string
-		for _, model := range models {
-			if !isImage {
-				base, effort := BaseModelAndEffortForProvider(provider, model)
-				if effort != "" && !strings.HasPrefix(modelPrefix, base) {
-					continue
-				}
-			}
-			if strings.HasPrefix(model, modelPrefix) {
-				completions = append(completions, provider+":"+model)
-			}
-			if !isImage && config.InferProviderType(provider, configuredProviderType) == config.ProviderTypeChatGPT && strings.HasPrefix(modelPrefix, model) {
-				fast := model + "-fast"
-				if strings.HasPrefix(fast, modelPrefix) && !slices.Contains(models, fast) {
-					if _, tier := chatGPTModelServiceTier(fast); tier != "" {
-						completions = append(completions, provider+":"+fast)
-					}
-				}
-			}
-		}
-		return completions
+		return completeProviderModels(parts[0], parts[1], isImage, cfg, getModelIDs)
 	}
 
-	// No colon - offer provider names and configured effort profiles, filtered
-	// by what the user typed. Profile capabilities come directly from the
-	// selected model's config rather than a provider-wide hardcoded list.
+	return completeProviderNames(toComplete, isImage, cfg, providerNames)
+}
+
+func completeProviderModels(provider, modelPrefix string, isImage bool, cfg *config.Config, getModelIDs func(string) []string) []string {
+	providerCfg := providerConfigForCompletion(provider, isImage, cfg)
+	models, configured := configuredCompletionModels(provider, isImage, providerCfg)
+	if !configured {
+		var continueCompletion bool
+		models, continueCompletion = completionModelCandidates(provider, isImage, providerCfg, cfg, getModelIDs)
+		if !continueCompletion {
+			return nil
+		}
+	}
+
+	// Expand provider-specific effort variants for tab-completion.
+	if !isImage {
+		models = ExpandWithEffortVariantsForProvider(provider, models)
+	}
+
+	// Reveal suffixes only after their parent model name is fully typed.
+	var completions []string
+	for _, model := range models {
+		if !isImage {
+			base, effort := BaseModelAndEffortForProvider(provider, model)
+			if effort != "" && !strings.HasPrefix(modelPrefix, base) {
+				continue
+			}
+		}
+		if strings.HasPrefix(model, modelPrefix) {
+			completions = append(completions, provider+":"+model)
+		}
+		if !isImage && config.InferProviderType(provider, providerCfg.Type) == config.ProviderTypeChatGPT && strings.HasPrefix(modelPrefix, model) {
+			fast := model + "-fast"
+			if strings.HasPrefix(fast, modelPrefix) && !slices.Contains(models, fast) {
+				if _, tier := chatGPTModelServiceTier(fast); tier != "" {
+					completions = append(completions, provider+":"+fast)
+				}
+			}
+		}
+	}
+	return completions
+}
+
+func providerConfigForCompletion(provider string, isImage bool, cfg *config.Config) config.ProviderConfig {
+	if cfg == nil {
+		return config.ProviderConfig{}
+	}
+	providerCfg, ok := cfg.Providers[provider]
+	if !ok {
+		return config.ProviderConfig{}
+	}
+	if isImage && !isCustomImageProvider(provider, providerCfg) {
+		return config.ProviderConfig{}
+	}
+	return providerCfg
+}
+
+func configuredCompletionModels(provider string, isImage bool, providerCfg config.ProviderConfig) ([]string, bool) {
+	configModels := providerCfg.Models
+	if len(configModels) == 0 {
+		return nil, false
+	}
+
+	// ChatGPT model metadata augments, rather than replaces, discovery.
+	if !isImage && config.InferProviderType(provider, providerCfg.Type) == config.ProviderTypeChatGPT {
+		configModels = append(append([]string(nil), configModels...), ProviderModelIDs("chatgpt")...)
+	}
+
+	// Use config-defined models list, plus configured model (deduped)
+	var models []string
+	seen := make(map[string]bool)
+	if providerCfg.Model != "" {
+		models = append(models, providerCfg.Model)
+		seen[providerCfg.Model] = true
+	}
+	for _, model := range configModels {
+		if !seen[model] {
+			models = append(models, model)
+			seen[model] = true
+		}
+	}
+	return models, true
+}
+
+func completionModelCandidates(provider string, isImage bool, providerCfg config.ProviderConfig, cfg *config.Config, getModelIDs func(string) []string) ([]string, bool) {
+	providerType := string(config.InferProviderType(provider, providerCfg.Type))
+	if !isImage {
+		switch {
+		case providerType == "openrouter" || provider == "openrouter":
+			apiKey := resolvedProviderAPIKey(cfg, provider)
+			if cachedModels := GetCachedOpenRouterModels(apiKey); len(cachedModels) > 0 {
+				return cachedModels, true
+			}
+			return getModelIDs("openrouter"), true
+		case providerType == "venice":
+			apiKey := resolvedProviderAPIKey(cfg, provider)
+			models := GetCachedVeniceModels(apiKey)
+			if len(models) == 0 && providerCfg.Model != "" {
+				models = []string{providerCfg.Model}
+			}
+			return models, true
+		case providerType == "zen":
+			models := GetCachedZenModels()
+			if len(models) > 0 {
+				models = ExpandCachedZenReasoningVariants(models)
+			} else {
+				models = getModelIDs("zen")
+			}
+			if len(models) == 0 && providerCfg.Model != "" {
+				models = []string{providerCfg.Model}
+			}
+			return models, true
+		case providerType == "opencode-go":
+			apiKey := resolvedProviderAPIKey(cfg, provider)
+			models := GetCachedOpenCodeGoModelsForAPIKey(apiKey)
+			if len(models) == 0 && providerCfg.Model != "" {
+				models = []string{providerCfg.Model}
+			}
+			return models, true
+		case providerType == "ollama":
+			models := GetCachedOllamaModels(providerCfg.BaseURL)
+			models = ExpandCachedOllamaReasoningVariants(providerCfg.BaseURL, models)
+			if len(models) == 0 && providerCfg.Model != "" {
+				models = []string{providerCfg.Model}
+			}
+			return models, true
+		}
+	}
+	return defaultCompletionModelCandidates(provider, providerType, providerCfg.Model, getModelIDs)
+}
+
+func defaultCompletionModelCandidates(provider, providerType, configModel string, getModelIDs func(string) []string) ([]string, bool) {
+	models := getModelIDs(providerType)
+	if len(models) == 0 {
+		models = getModelIDs(provider)
+	}
+	if len(models) == 0 && configModel != "" {
+		models = []string{configModel}
+	} else if len(models) == 0 {
+		return nil, false
+	}
+	return models, true
+}
+
+func completeProviderNames(toComplete string, isImage bool, cfg *config.Config, providerNames []string) []string {
+	// Offer provider names and configured effort profiles, filtered by what the
+	// user typed. Profile capabilities come directly from the selected model's
+	// config rather than a provider-wide hardcoded list.
 	var completions []string
 	for _, name := range providerNames {
 		if strings.HasPrefix(name, toComplete) {

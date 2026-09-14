@@ -104,77 +104,128 @@ func scan(dir string, ids []string) (*Snapshot, error) {
 			continue
 		}
 		id := d.Name()
-		e := Entry{ID: id}
-		data, err := readBounded(root, path.Join(id, "extension.yaml"), 64<<10)
-		if os.IsNotExist(err) {
+		e, files, ok := loadExtensionEntry(root, id)
+		if !ok {
 			continue
 		}
-		if err == nil {
-			err = yaml.Unmarshal(data, &e.Manifest)
-		}
-		if err == nil && (e.Title == "" || e.FormatVersion != 1 || (e.CSS == "" && e.JS == "")) {
-			err = fmt.Errorf("title, format_version: 1 and a css or js entry are required")
-		}
-		if err == nil && ((e.CSS != "" && (!safePath(e.CSS) || path.Ext(e.CSS) != ".css")) || (e.JS != "" && (!safePath(e.JS) || (path.Ext(e.JS) != ".js" && path.Ext(e.JS) != ".mjs")))) {
-			err = fmt.Errorf("entry points must be relative CSS/JS paths")
-		}
-		files := map[string][]byte{}
-		if err == nil {
-			count := 0
-			size := 0
-			err = fs.WalkDir(root.FS(), id, func(p string, d fs.DirEntry, walkErr error) error {
-				if walkErr != nil {
-					return walkErr
-				}
-				if d.Type()&os.ModeSymlink != 0 {
-					return fmt.Errorf("symlinks are not supported: %s", d.Name())
-				}
-				if d.IsDir() {
-					return nil
-				}
-				rel := strings.TrimPrefix(p, id+"/")
-				if !safePath(rel) || !supported(rel) {
-					return nil
-				}
-				count++
-				if count > MaxFiles {
-					return fmt.Errorf("too many assets (limit %d)", MaxFiles)
-				}
-				b, err := readBounded(root, p, MaxBytes)
-				if err != nil {
-					return err
-				}
-				size += len(b)
-				if size > MaxBytes {
-					return fmt.Errorf("extension exceeds %d bytes", MaxBytes)
-				}
-				files[id+"/"+rel] = b
-				return nil
-			})
-			for _, entry := range []string{e.CSS, e.JS} {
-				if entry != "" && files[id+"/"+entry] == nil && err == nil {
-					err = fmt.Errorf("entry point %s is missing", entry)
-				}
-			}
-		}
-		if err != nil {
-			e.Error = err.Error()
-		} else {
+		if e.Error == "" {
 			// Only enabled assets consume snapshot memory or become web-accessible.
-			for _, enabled := range ids {
-				if enabled == id {
-					for name, b := range files {
-						total += len(b)
-						if total > MaxBytes {
-							return nil, fmt.Errorf("enabled extensions exceed %d bytes", MaxBytes)
-						}
-						s.assets[name] = b
-					}
-				}
+			total, err = s.addEnabledAssets(id, files, ids, total)
+			if err != nil {
+				return nil, err
 			}
 		}
 		s.Entries = append(s.Entries, e)
 	}
+	s.collectErrors(ids)
+	s.Generation = snapshotGeneration(s, ids)
+	return s, nil
+}
+
+// loadExtensionEntry reads, validates and walks a single extension directory.
+// A failure is reported through the entry's Error field; ok is false when the
+// directory has no extension.yaml and is therefore not an extension at all.
+func loadExtensionEntry(root *os.Root, id string) (Entry, map[string][]byte, bool) {
+	e := Entry{ID: id}
+	data, err := readBounded(root, path.Join(id, "extension.yaml"), 64<<10)
+	if os.IsNotExist(err) {
+		return Entry{}, nil, false
+	}
+	if err == nil {
+		err = yaml.Unmarshal(data, &e.Manifest)
+	}
+	if err == nil {
+		err = validateExtensionManifest(&e)
+	}
+	var files map[string][]byte
+	if err == nil {
+		files, err = walkExtensionAssets(root, id)
+	}
+	if err == nil {
+		for _, entry := range []string{e.CSS, e.JS} {
+			if entry != "" && files[id+"/"+entry] == nil && err == nil {
+				err = fmt.Errorf("entry point %s is missing", entry)
+			}
+		}
+	}
+	if err != nil {
+		e.Error = err.Error()
+	}
+	return e, files, true
+}
+
+// validateExtensionManifest reports the first manifest validation failure. A
+// read or unmarshal failure is reported by the caller instead, so only a fully
+// parsed manifest is validated here.
+func validateExtensionManifest(e *Entry) error {
+	if e.Title == "" || e.FormatVersion != 1 || (e.CSS == "" && e.JS == "") {
+		return fmt.Errorf("title, format_version: 1 and a css or js entry are required")
+	}
+	if (e.CSS != "" && (!safePath(e.CSS) || path.Ext(e.CSS) != ".css")) || (e.JS != "" && (!safePath(e.JS) || (path.Ext(e.JS) != ".js" && path.Ext(e.JS) != ".mjs"))) {
+		return fmt.Errorf("entry points must be relative CSS/JS paths")
+	}
+	return nil
+}
+
+// walkExtensionAssets captures every supported file of one extension, bounded
+// by the per-file, per-extension and file-count limits.
+func walkExtensionAssets(root *os.Root, id string) (map[string][]byte, error) {
+	files := map[string][]byte{}
+	count := 0
+	size := 0
+	err := fs.WalkDir(root.FS(), id, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symlinks are not supported: %s", d.Name())
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel := strings.TrimPrefix(p, id+"/")
+		if !safePath(rel) || !supported(rel) {
+			return nil
+		}
+		count++
+		if count > MaxFiles {
+			return fmt.Errorf("too many assets (limit %d)", MaxFiles)
+		}
+		b, err := readBounded(root, p, MaxBytes)
+		if err != nil {
+			return err
+		}
+		size += len(b)
+		if size > MaxBytes {
+			return fmt.Errorf("extension exceeds %d bytes", MaxBytes)
+		}
+		files[id+"/"+rel] = b
+		return nil
+	})
+	return files, err
+}
+
+// addEnabledAssets copies one enabled extension's assets into the snapshot and
+// returns the updated running total of enabled bytes. Disabled extensions keep
+// their files out of snapshot memory and off the web surface.
+func (s *Snapshot) addEnabledAssets(id string, files map[string][]byte, ids []string, total int) (int, error) {
+	for _, enabled := range ids {
+		if enabled == id {
+			for name, b := range files {
+				total += len(b)
+				if total > MaxBytes {
+					return total, fmt.Errorf("enabled extensions exceed %d bytes", MaxBytes)
+				}
+				s.assets[name] = b
+			}
+		}
+	}
+	return total, nil
+}
+
+// collectErrors records the enabled extensions that failed to load or that do
+// not exist in the scanned directory.
+func (s *Snapshot) collectErrors(ids []string) {
 	for _, id := range ids {
 		found := false
 		for _, e := range s.Entries {
@@ -189,6 +240,11 @@ func scan(dir string, ids []string) (*Snapshot, error) {
 			s.Errors = append(s.Errors, id+": extension not found")
 		}
 	}
+}
+
+// snapshotGeneration hashes enabled ids, their entry points and their asset
+// contents so any edit produces a new client-visible generation.
+func snapshotGeneration(s *Snapshot, ids []string) string {
 	h := sha256.New()
 	for _, id := range ids {
 		fmt.Fprintf(h, "%s\x00", id)
@@ -207,8 +263,7 @@ func scan(dir string, ids []string) (*Snapshot, error) {
 		fmt.Fprintf(h, "%s\x00%d\x00", k, len(s.assets[k]))
 		h.Write(s.assets[k])
 	}
-	s.Generation = hex.EncodeToString(h.Sum(nil))[:20]
-	return s, nil
+	return hex.EncodeToString(h.Sum(nil))[:20]
 }
 func readBounded(root *os.Root, p string, limit int) ([]byte, error) {
 	info, err := root.Lstat(p)

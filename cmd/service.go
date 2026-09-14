@@ -184,62 +184,13 @@ func installUserService(cmd *cobra.Command, kind string, args []string, opts ser
 	if !opts.custom && oldErr == nil {
 		args = old.Args
 	}
-	spec, err := parseServiceLaunch(kind, args)
-	if err != nil {
-		return err
-	}
-	spec.Environment = map[string]string{}
-	for _, entry := range os.Environ() {
-		k, v, _ := strings.Cut(entry, "=")
-		if userservice.EnvironmentKey(k) {
-			spec.Environment[k] = v
-		}
-	}
-	spec.Environment["HOME"] = e.home
-	for _, key := range []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"} {
-		v := spec.Environment[key]
-		if v != "" && !filepath.IsAbs(v) {
-			return fmt.Errorf("%s must be absolute", key)
-		}
-	}
-	spec.Directory = e.home
+	var oldSpec *userservice.Spec
 	if oldErr == nil {
-		spec.Directory = old.Directory
-		spec.Secrets = append([]string(nil), old.Secrets...)
-		spec.Environment = old.Environment
-		spec.Binary = old.Binary
+		oldSpec = &old
 	}
-	if opts.directory != "" {
-		spec.Directory, err = filepath.Abs(opts.directory)
-		if err != nil {
-			return err
-		}
-	}
-	if opts.binary != "" {
-		spec.Binary, err = filepath.Abs(opts.binary)
-	} else {
-		spec.Binary, err = os.Executable()
-	}
+	spec, err := buildServiceInstallSpec(e, kind, args, opts, oldSpec)
 	if err != nil {
 		return err
-	}
-	if info, err := os.Stat(spec.Binary); err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
-		return fmt.Errorf("service binary must be an executable file: %s", spec.Binary)
-	}
-	if info, err := os.Stat(spec.Directory); err != nil || !info.IsDir() {
-		return fmt.Errorf("working directory does not exist: %s", spec.Directory)
-	}
-	if spec.Auth == "passkey" && spec.AuthFile == "" {
-		data := spec.Environment["XDG_DATA_HOME"]
-		if data == "" {
-			data = filepath.Join(spec.Environment["HOME"], ".local", "share")
-		}
-		sub := "web-auth"
-		if kind == "hub" {
-			sub = "hub"
-		}
-		spec.AuthFile = filepath.Join(data, "term-llm", sub, "auth.json")
-		spec.Args = append(spec.Args, "--passkey-auth-file", spec.AuthFile)
 	}
 	if err = spec.Validate(); err != nil {
 		return err
@@ -248,12 +199,7 @@ func installUserService(cmd *cobra.Command, kind string, args []string, opts ser
 		return err
 	}
 	if opts.dryRun {
-		data, err := e.native.Render(spec, path)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Service: %s\nAuth: %s\nURL: %s\nWorking directory: %s\nNative file: %s\n\n%s", kind, spec.Auth, spec.URL, spec.Directory, e.native.Path(kind), data)
-		return nil
+		return printServiceDryRun(cmd, e, kind, spec, path)
 	}
 
 	if !opts.noStart {
@@ -265,83 +211,22 @@ func installUserService(cmd *cobra.Command, kind string, args []string, opts ser
 		}
 	}
 	// Probe whenever there cannot be a known managed listener on this bind.
-	if !opts.noStart && (oldErr != nil || old.Host != spec.Host || old.Port != spec.Port || !e.native.Running(cmd.Context(), kind)) {
+	if shouldProbeServiceInstallPort(cmd, e, kind, spec, old, oldErr, opts) {
 		if err := checkUserServicePort(spec); err != nil {
 			return err
 		}
 	}
 
-	count := 0
-	if spec.Auth == "passkey" {
-		count, err = serviceCredentialCount(spec)
-		if err != nil {
-			return err
-		}
+	count, err := countServiceInstallCredentials(spec)
+	if err != nil {
+		return err
 	}
-	imported := map[string]string{}
-	if opts.secretsFile != "" {
-		imported, err = userservice.ImportSecrets(opts.secretsFile)
-		if err != nil {
-			return err
-		}
+	imported, names, err := collectServiceSecrets(cmd, e, kind, spec, opts)
+	if err != nil {
+		return err
 	}
-	for _, name := range opts.secretNames {
-		if !userservice.SecretName(name) {
-			return fmt.Errorf("unsupported credential name %q", name)
-		}
-		value, err := promptServiceSecret(cmd, name)
-		if err != nil {
-			return err
-		}
-		imported[name] = value
-	}
-	names := map[string]bool{}
-	for _, name := range spec.Secrets {
-		names[name] = true
-	}
-	tokenName := serviceTokenName(kind)
-	if spec.Auth == "passkey" && kind == "web" {
-		if _, ok := imported[tokenName]; ok {
-			return fmt.Errorf("Web passkeys cannot use a bearer credential")
-		}
-		delete(names, tokenName)
-	}
-	if spec.Auth == "bearer" && !names[tokenName] && imported[tokenName] == "" {
-		value, err := generateServeToken()
-		if err != nil {
-			return err
-		}
-		imported[tokenName] = value
-		fmt.Fprintln(cmd.OutOrStdout(), "Generated a stable bearer token (not printed; use service token "+kind+").")
-	}
-	if spec.Register && !names[hubRegistrationTokenEnv] && imported[hubRegistrationTokenEnv] == "" {
-		value, err := promptServiceSecret(cmd, hubRegistrationTokenEnv)
-		if err != nil {
-			return fmt.Errorf("reverse registration requires --secret %s or --secrets-file: %w", hubRegistrationTokenEnv, err)
-		}
-		imported[hubRegistrationTokenEnv] = value
-	}
-	for name, value := range imported {
-		if err = e.credentials(kind).Put(cmd.Context(), name, value); err != nil {
-			return err
-		}
-		names[name] = true
-	}
-	spec.Secrets = nil
-	for name := range names {
-		spec.Secrets = append(spec.Secrets, name)
-	}
-	sort.Strings(spec.Secrets)
-	var ambient []string
-	for _, entry := range os.Environ() {
-		name, _, _ := strings.Cut(entry, "=")
-		if userservice.SecretName(name) && !names[name] {
-			ambient = append(ambient, name)
-		}
-	}
-	if len(ambient) > 0 {
-		sort.Strings(ambient)
-		fmt.Fprintf(cmd.ErrOrStderr(), "Terminal credentials not imported: %s. If needed, use --secret NAME or --secrets-file.\n", strings.Join(ambient, ", "))
+	if err = storeServiceSecrets(cmd, e, kind, &spec, imported, names); err != nil {
+		return err
 	}
 	if _, err = e.credentials(kind).Load(cmd.Context(), spec.Secrets); err != nil {
 		return err
@@ -363,18 +248,190 @@ func installUserService(cmd *cobra.Command, kind string, args []string, opts ser
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Installed %s user service. Configuration: %s\n", kind, path)
 	if opts.noStart {
-		fmt.Fprintf(cmd.OutOrStdout(), "Not started. Run: term-llm service start %s\n", kind)
-		if code != "" {
-			printServiceEnrollment(cmd, spec, code, false)
-		}
+		reportServiceNotStarted(cmd, spec, kind, code)
 		return nil
 	}
-	if err = e.native.Reconcile(cmd.Context(), kind, oldErr == nil && (!reflect.DeepEqual(old, spec) || len(imported) > 0 || code != "")); err != nil {
+	if err = e.native.Reconcile(cmd.Context(), kind, serviceInstallNeedsRestart(oldErr, old, spec, imported, code)); err != nil {
 		return err
 	}
 	if err = waitUserService(cmd.Context(), spec, e.native); err != nil {
 		return fmt.Errorf("service installed but not ready; inspect 'term-llm service logs %s': %w", kind, err)
 	}
+	reportServiceInstalled(cmd, e, spec, kind, code, opts)
+	return nil
+}
+
+func buildServiceInstallSpec(e serviceEnvironment, kind string, args []string, opts serviceInstallOptions, old *userservice.Spec) (userservice.Spec, error) {
+	spec, err := parseServiceLaunch(kind, args)
+	if err != nil {
+		return userservice.Spec{}, err
+	}
+	spec.Environment = map[string]string{}
+	for _, entry := range os.Environ() {
+		k, v, _ := strings.Cut(entry, "=")
+		if userservice.EnvironmentKey(k) {
+			spec.Environment[k] = v
+		}
+	}
+	spec.Environment["HOME"] = e.home
+	for _, key := range []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"} {
+		v := spec.Environment[key]
+		if v != "" && !filepath.IsAbs(v) {
+			return userservice.Spec{}, fmt.Errorf("%s must be absolute", key)
+		}
+	}
+	spec.Directory = e.home
+	if old != nil {
+		spec.Directory = old.Directory
+		spec.Secrets = append([]string(nil), old.Secrets...)
+		spec.Environment = old.Environment
+		spec.Binary = old.Binary
+	}
+	if opts.directory != "" {
+		spec.Directory, err = filepath.Abs(opts.directory)
+		if err != nil {
+			return userservice.Spec{}, err
+		}
+	}
+	if opts.binary != "" {
+		spec.Binary, err = filepath.Abs(opts.binary)
+	} else {
+		spec.Binary, err = os.Executable()
+	}
+	if err != nil {
+		return userservice.Spec{}, err
+	}
+	if info, err := os.Stat(spec.Binary); err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+		return userservice.Spec{}, fmt.Errorf("service binary must be an executable file: %s", spec.Binary)
+	}
+	if info, err := os.Stat(spec.Directory); err != nil || !info.IsDir() {
+		return userservice.Spec{}, fmt.Errorf("working directory does not exist: %s", spec.Directory)
+	}
+	defaultServiceAuthFile(&spec, kind)
+	return spec, nil
+}
+
+func defaultServiceAuthFile(spec *userservice.Spec, kind string) {
+	if spec.Auth == "passkey" && spec.AuthFile == "" {
+		data := spec.Environment["XDG_DATA_HOME"]
+		if data == "" {
+			data = filepath.Join(spec.Environment["HOME"], ".local", "share")
+		}
+		sub := "web-auth"
+		if kind == "hub" {
+			sub = "hub"
+		}
+		spec.AuthFile = filepath.Join(data, "term-llm", sub, "auth.json")
+		spec.Args = append(spec.Args, "--passkey-auth-file", spec.AuthFile)
+	}
+}
+
+func printServiceDryRun(cmd *cobra.Command, e serviceEnvironment, kind string, spec userservice.Spec, path string) error {
+	data, err := e.native.Render(spec, path)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Service: %s\nAuth: %s\nURL: %s\nWorking directory: %s\nNative file: %s\n\n%s", kind, spec.Auth, spec.URL, spec.Directory, e.native.Path(kind), data)
+	return nil
+}
+
+func shouldProbeServiceInstallPort(cmd *cobra.Command, e serviceEnvironment, kind string, spec, old userservice.Spec, oldErr error, opts serviceInstallOptions) bool {
+	return !opts.noStart && (oldErr != nil || old.Host != spec.Host || old.Port != spec.Port || !e.native.Running(cmd.Context(), kind))
+}
+
+func countServiceInstallCredentials(spec userservice.Spec) (int, error) {
+	if spec.Auth == "passkey" {
+		return serviceCredentialCount(spec)
+	}
+	return 0, nil
+}
+
+func collectServiceSecrets(cmd *cobra.Command, e serviceEnvironment, kind string, spec userservice.Spec, opts serviceInstallOptions) (map[string]string, map[string]bool, error) {
+	imported := map[string]string{}
+	if opts.secretsFile != "" {
+		var err error
+		imported, err = userservice.ImportSecrets(opts.secretsFile)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	for _, name := range opts.secretNames {
+		if !userservice.SecretName(name) {
+			return nil, nil, fmt.Errorf("unsupported credential name %q", name)
+		}
+		value, err := promptServiceSecret(cmd, name)
+		if err != nil {
+			return nil, nil, err
+		}
+		imported[name] = value
+	}
+	names := map[string]bool{}
+	for _, name := range spec.Secrets {
+		names[name] = true
+	}
+	tokenName := serviceTokenName(kind)
+	if spec.Auth == "passkey" && kind == "web" {
+		if _, ok := imported[tokenName]; ok {
+			return nil, nil, fmt.Errorf("Web passkeys cannot use a bearer credential")
+		}
+		delete(names, tokenName)
+	}
+	if spec.Auth == "bearer" && !names[tokenName] && imported[tokenName] == "" {
+		value, err := generateServeToken()
+		if err != nil {
+			return nil, nil, err
+		}
+		imported[tokenName] = value
+		fmt.Fprintln(cmd.OutOrStdout(), "Generated a stable bearer token (not printed; use service token "+kind+").")
+	}
+	if spec.Register && !names[hubRegistrationTokenEnv] && imported[hubRegistrationTokenEnv] == "" {
+		value, err := promptServiceSecret(cmd, hubRegistrationTokenEnv)
+		if err != nil {
+			return nil, nil, fmt.Errorf("reverse registration requires --secret %s or --secrets-file: %w", hubRegistrationTokenEnv, err)
+		}
+		imported[hubRegistrationTokenEnv] = value
+	}
+	return imported, names, nil
+}
+
+func storeServiceSecrets(cmd *cobra.Command, e serviceEnvironment, kind string, spec *userservice.Spec, imported map[string]string, names map[string]bool) error {
+	for name, value := range imported {
+		if err := e.credentials(kind).Put(cmd.Context(), name, value); err != nil {
+			return err
+		}
+		names[name] = true
+	}
+	spec.Secrets = nil
+	for name := range names {
+		spec.Secrets = append(spec.Secrets, name)
+	}
+	sort.Strings(spec.Secrets)
+	var ambient []string
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if userservice.SecretName(name) && !names[name] {
+			ambient = append(ambient, name)
+		}
+	}
+	if len(ambient) > 0 {
+		sort.Strings(ambient)
+		fmt.Fprintf(cmd.ErrOrStderr(), "Terminal credentials not imported: %s. If needed, use --secret NAME or --secrets-file.\n", strings.Join(ambient, ", "))
+	}
+	return nil
+}
+
+func reportServiceNotStarted(cmd *cobra.Command, spec userservice.Spec, kind, code string) {
+	fmt.Fprintf(cmd.OutOrStdout(), "Not started. Run: term-llm service start %s\n", kind)
+	if code != "" {
+		printServiceEnrollment(cmd, spec, code, false)
+	}
+}
+
+func serviceInstallNeedsRestart(oldErr error, old, spec userservice.Spec, imported map[string]string, code string) bool {
+	return oldErr == nil && (!reflect.DeepEqual(old, spec) || len(imported) > 0 || code != "")
+}
+
+func reportServiceInstalled(cmd *cobra.Command, e serviceEnvironment, spec userservice.Spec, kind, code string, opts serviceInstallOptions) {
 	fmt.Fprintf(cmd.OutOrStdout(), "Running: %s\nAutostart: at login\n", spec.URL)
 	if e.native.OS == "linux" {
 		fmt.Fprintln(cmd.OutOrStdout(), `For availability after logout/before login, optionally run: sudo loginctl enable-linger "$USER"`)
@@ -394,12 +451,11 @@ func installUserService(cmd *cobra.Command, kind string, args []string, opts ser
 			if code != "" {
 				target = strings.TrimRight(target, "/") + "/auth/setup"
 			}
-			if err = openBrowser(target); err != nil {
+			if err := openBrowser(target); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Open %s manually: %v\n", target, err)
 			}
 		}
 	}
-	return nil
 }
 func serviceInteractive(cmd *cobra.Command) bool {
 	f, ok := cmd.InOrStdin().(*os.File)

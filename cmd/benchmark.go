@@ -382,6 +382,53 @@ func resolveBenchmarkTargets(ctx context.Context, cfg *config.Config, providerFl
 		model = "gpt-5.6-luna"
 	}
 
+	models, modelInfoByID, skipped, err := resolveBenchmarkModels(ctx, cfg, providerKey, providerCfg, configured, providerType, model, localOllama)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var plans []benchmarkTargetPlan
+	if assumedContextLimit > 0 {
+		skipped = append(skipped, benchmark.AssumedContextLimitLimitation(assumedContextLimit))
+	}
+	for _, selectedModel := range models {
+		selectedModel = config.UpstreamModelForProviderModel(cfg, providerKey, selectedModel)
+		modelContext := resolveBenchmarkModelContext(cfg, providerKey, providerCfg, selectedModel, modelInfoByID, localOllama, assumedContextLimit)
+		filtered := filterBenchmarkScenarios(providerKey, selectedModel, scenarios, capabilities, modelContext, localOllama, &skipped)
+		targetCapabilities, reasoningExpected := benchmarkReasoningExpected(providerType, providerCfg, selectedModel, capabilities)
+		reportedNumCtx := 0
+		if localOllama {
+			reportedNumCtx = modelContext.configuredContext
+			if reportedNumCtx == 0 {
+				reportedNumCtx = modelContext.discoveredNumCtx
+			}
+		}
+		target := benchmark.Target{
+			ProviderKey:         providerKey,
+			ProviderType:        string(providerType),
+			RequestedModel:      selectedModel,
+			Capabilities:        targetCapabilities,
+			InputLimit:          modelContext.inputLimit,
+			ConfiguredNumCtx:    reportedNumCtx,
+			AssumedContextLimit: assumedContextLimit,
+			ServiceTier:         providerCfg.ServiceTier,
+			ReasoningExpected:   reasoningExpected,
+		}
+		if len(filtered) == 0 {
+			target.Error = "no benchmark input targets fit the model/context limits"
+		}
+		if target.Error == "" && mode == "long-context" && modelContext.inputLimit == 0 && modelContext.effectiveOllamaContext == 0 && !explicitInputs {
+			target.Error = "long-context benchmark requires a known input limit or explicit --input-tokens"
+		}
+		plans = append(plans, benchmarkTargetPlan{target: target, scenarios: filtered})
+	}
+	return plans, skipped, nil
+}
+
+// resolveBenchmarkModels determines which models a target provider run covers and
+// returns their metadata. Local Ollama providers may enumerate installed models;
+// the returned skipped messages stay in the order the caller reports them.
+func resolveBenchmarkModels(ctx context.Context, cfg *config.Config, providerKey string, providerCfg config.ProviderConfig, configured bool, providerType config.ProviderType, model string, localOllama bool) ([]string, map[string]llm.ModelInfo, []string, error) {
 	models := []string{model}
 	modelInfoByID := make(map[string]llm.ModelInfo)
 	var skipped []string
@@ -390,7 +437,7 @@ func resolveBenchmarkTargets(ctx context.Context, cfg *config.Config, providerFl
 		listed, err := listBenchmarkModels(ctx, cfg, providerKey)
 		if err != nil {
 			if model == "" {
-				return nil, nil, fmt.Errorf("list local Ollama models for %q: %w", providerKey, err)
+				return nil, nil, nil, fmt.Errorf("list local Ollama models for %q: %w", providerKey, err)
 			}
 			skipped = append(skipped, fmt.Sprintf("could not inspect local Ollama model metadata for %s:%s: %v", providerKey, model, err))
 		} else {
@@ -408,7 +455,7 @@ func resolveBenchmarkTargets(ctx context.Context, cfg *config.Config, providerFl
 				modelInfoByID[id] = info
 			}
 			if model == "" && len(models) == 0 {
-				return nil, nil, fmt.Errorf("local Ollama provider %q returned no installed models", providerKey)
+				return nil, nil, nil, fmt.Errorf("local Ollama provider %q returned no installed models", providerKey)
 			}
 		}
 	}
@@ -422,105 +469,99 @@ func resolveBenchmarkTargets(ctx context.Context, cfg *config.Config, providerFl
 	models = uniqueNonEmpty(models)
 	if len(models) == 0 {
 		if configured {
-			return nil, nil, fmt.Errorf("provider %q has no configured model", providerKey)
+			return nil, nil, nil, fmt.Errorf("provider %q has no configured model", providerKey)
 		}
-		return nil, nil, fmt.Errorf("provider %q requires an explicit model", providerKey)
+		return nil, nil, nil, fmt.Errorf("provider %q requires an explicit model", providerKey)
 	}
+	return models, modelInfoByID, skipped, nil
+}
 
-	var plans []benchmarkTargetPlan
-	if assumedContextLimit > 0 {
-		skipped = append(skipped, benchmark.AssumedContextLimitLimitation(assumedContextLimit))
-	}
-	for _, selectedModel := range models {
-		selectedModel = config.UpstreamModelForProviderModel(cfg, providerKey, selectedModel)
-		inputLimit := llm.InputLimitForProviderModel(providerKey, selectedModel)
-		discoveredNumCtx := 0
-		if info := modelInfoByID[selectedModel]; info.ID != "" {
-			if info.InputLimit > 0 {
-				inputLimit = info.InputLimit
-			}
-			if localOllama {
-				discoveredNumCtx = info.ConfiguredContext
-			}
+// benchmarkModelContext holds the per-model context numbers resolved for one
+// benchmark target, so filtering and target construction read the same values.
+type benchmarkModelContext struct {
+	inputLimit             int
+	configuredContext      int
+	discoveredNumCtx       int
+	effectiveOllamaContext int
+	contextLimitSource     string
+}
+
+// resolveBenchmarkModelContext applies the configured model metadata, provider
+// num_ctx and assumed-limit precedence for a single selected model.
+func resolveBenchmarkModelContext(cfg *config.Config, providerKey string, providerCfg config.ProviderConfig, selectedModel string, modelInfoByID map[string]llm.ModelInfo, localOllama bool, assumedContextLimit int) benchmarkModelContext {
+	modelContext := benchmarkModelContext{inputLimit: llm.InputLimitForProviderModel(providerKey, selectedModel)}
+	if info := modelInfoByID[selectedModel]; info.ID != "" {
+		if info.InputLimit > 0 {
+			modelContext.inputLimit = info.InputLimit
 		}
-		configuredContext := providerCfg.ContextWindow
-		if modelConfig, ok := config.ModelConfigForProviderModel(cfg, providerKey, selectedModel); ok && modelConfig.ContextWindow > 0 {
-			configuredContext = modelConfig.ContextWindow
-			inputLimit = modelConfig.ContextWindow
-			if modelConfig.MaxOutputTokens > 0 && modelConfig.MaxOutputTokens < modelConfig.ContextWindow {
-				inputLimit = modelConfig.ContextWindow - modelConfig.MaxOutputTokens
-			}
-		}
-		if providerCfg.NumCtx != nil && *providerCfg.NumCtx > 0 {
-			configuredContext = *providerCfg.NumCtx
-		}
-		effectiveOllamaContext := configuredContext
-		contextLimitSource := "configured Ollama context"
-		if effectiveOllamaContext == 0 && discoveredNumCtx > 0 {
-			effectiveOllamaContext = discoveredNumCtx
-			contextLimitSource = "Ollama model num_ctx"
-		}
-		if assumedContextLimit > 0 && (effectiveOllamaContext == 0 || assumedContextLimit < effectiveOllamaContext) {
-			effectiveOllamaContext = assumedContextLimit
-			contextLimitSource = "assumed Ollama context limit"
-		}
-		filtered := make([]benchmark.Scenario, 0, len(scenarios))
-		for _, scenario := range scenarios {
-			if capabilities.MinimumOutputTokens > 0 && scenario.OutputTokens < capabilities.MinimumOutputTokens {
-				skipped = append(skipped, fmt.Sprintf("raising %s:%s output ceiling from %d to provider-safe minimum %d", providerKey, selectedModel, scenario.OutputTokens, capabilities.MinimumOutputTokens))
-				scenario.OutputTokens = capabilities.MinimumOutputTokens
-			}
-			if inputLimit > 0 && scenario.InputTokens+512 > inputLimit {
-				skipped = append(skipped, fmt.Sprintf("skipping %s:%s target %d above conservative effective input limit %d", providerKey, selectedModel, scenario.InputTokens, inputLimit))
-				continue
-			}
-			if localOllama && effectiveOllamaContext > 0 && scenario.InputTokens+scenario.OutputTokens+512 > effectiveOllamaContext {
-				skipped = append(skipped, fmt.Sprintf("skipping %s:%s target %d because input + output/template headroom exceeds %s %d", providerKey, selectedModel, scenario.InputTokens, contextLimitSource, effectiveOllamaContext))
-				continue
-			}
-			if localOllama && effectiveOllamaContext == 0 && scenario.InputTokens+scenario.OutputTokens+512 > 4_096 {
-				skipped = append(skipped, fmt.Sprintf("skipping %s:%s target %d because Ollama context is not configured; only requests fitting the conservative 4096-token floor are safe", providerKey, selectedModel, scenario.InputTokens))
-				continue
-			}
-			filtered = append(filtered, scenario)
-		}
-		targetCapabilities := capabilities
-		reasoningExpected := providerType == config.ProviderTypeChatGPT || strings.HasSuffix(strings.ToLower(selectedModel), "-think")
-		if providerType == config.ProviderTypeClaudeBin {
-			_, modelEffort := llm.BaseModelAndEffortForProvider(string(providerType), selectedModel)
-			reasoningExpected = modelEffort != ""
-			targetCapabilities.SupportsReasoningEffort = len(llm.ReasoningEffortsForProviderModel(string(providerType), selectedModel)) > 0
-		}
-		if (providerCfg.Think != nil && *providerCfg.Think) || strings.TrimSpace(providerCfg.ThinkLevel) != "" {
-			reasoningExpected = true
-		}
-		reportedNumCtx := 0
 		if localOllama {
-			reportedNumCtx = configuredContext
-			if reportedNumCtx == 0 {
-				reportedNumCtx = discoveredNumCtx
-			}
+			modelContext.discoveredNumCtx = info.ConfiguredContext
 		}
-		target := benchmark.Target{
-			ProviderKey:         providerKey,
-			ProviderType:        string(providerType),
-			RequestedModel:      selectedModel,
-			Capabilities:        targetCapabilities,
-			InputLimit:          inputLimit,
-			ConfiguredNumCtx:    reportedNumCtx,
-			AssumedContextLimit: assumedContextLimit,
-			ServiceTier:         providerCfg.ServiceTier,
-			ReasoningExpected:   reasoningExpected,
-		}
-		if len(filtered) == 0 {
-			target.Error = "no benchmark input targets fit the model/context limits"
-		}
-		if target.Error == "" && mode == "long-context" && inputLimit == 0 && effectiveOllamaContext == 0 && !explicitInputs {
-			target.Error = "long-context benchmark requires a known input limit or explicit --input-tokens"
-		}
-		plans = append(plans, benchmarkTargetPlan{target: target, scenarios: filtered})
 	}
-	return plans, skipped, nil
+	modelContext.configuredContext = providerCfg.ContextWindow
+	if modelConfig, ok := config.ModelConfigForProviderModel(cfg, providerKey, selectedModel); ok && modelConfig.ContextWindow > 0 {
+		modelContext.configuredContext = modelConfig.ContextWindow
+		modelContext.inputLimit = modelConfig.ContextWindow
+		if modelConfig.MaxOutputTokens > 0 && modelConfig.MaxOutputTokens < modelConfig.ContextWindow {
+			modelContext.inputLimit = modelConfig.ContextWindow - modelConfig.MaxOutputTokens
+		}
+	}
+	if providerCfg.NumCtx != nil && *providerCfg.NumCtx > 0 {
+		modelContext.configuredContext = *providerCfg.NumCtx
+	}
+	modelContext.effectiveOllamaContext = modelContext.configuredContext
+	modelContext.contextLimitSource = "configured Ollama context"
+	if modelContext.effectiveOllamaContext == 0 && modelContext.discoveredNumCtx > 0 {
+		modelContext.effectiveOllamaContext = modelContext.discoveredNumCtx
+		modelContext.contextLimitSource = "Ollama model num_ctx"
+	}
+	if assumedContextLimit > 0 && (modelContext.effectiveOllamaContext == 0 || assumedContextLimit < modelContext.effectiveOllamaContext) {
+		modelContext.effectiveOllamaContext = assumedContextLimit
+		modelContext.contextLimitSource = "assumed Ollama context limit"
+	}
+	return modelContext
+}
+
+// filterBenchmarkScenarios keeps the scenarios that fit the resolved limits and
+// appends user-facing skip/raise messages to skipped in encounter order.
+func filterBenchmarkScenarios(providerKey, selectedModel string, scenarios []benchmark.Scenario, capabilities benchmark.AdapterCapabilities, modelContext benchmarkModelContext, localOllama bool, skipped *[]string) []benchmark.Scenario {
+	filtered := make([]benchmark.Scenario, 0, len(scenarios))
+	for _, scenario := range scenarios {
+		if capabilities.MinimumOutputTokens > 0 && scenario.OutputTokens < capabilities.MinimumOutputTokens {
+			*skipped = append(*skipped, fmt.Sprintf("raising %s:%s output ceiling from %d to provider-safe minimum %d", providerKey, selectedModel, scenario.OutputTokens, capabilities.MinimumOutputTokens))
+			scenario.OutputTokens = capabilities.MinimumOutputTokens
+		}
+		if modelContext.inputLimit > 0 && scenario.InputTokens+512 > modelContext.inputLimit {
+			*skipped = append(*skipped, fmt.Sprintf("skipping %s:%s target %d above conservative effective input limit %d", providerKey, selectedModel, scenario.InputTokens, modelContext.inputLimit))
+			continue
+		}
+		if localOllama && modelContext.effectiveOllamaContext > 0 && scenario.InputTokens+scenario.OutputTokens+512 > modelContext.effectiveOllamaContext {
+			*skipped = append(*skipped, fmt.Sprintf("skipping %s:%s target %d because input + output/template headroom exceeds %s %d", providerKey, selectedModel, scenario.InputTokens, modelContext.contextLimitSource, modelContext.effectiveOllamaContext))
+			continue
+		}
+		if localOllama && modelContext.effectiveOllamaContext == 0 && scenario.InputTokens+scenario.OutputTokens+512 > 4_096 {
+			*skipped = append(*skipped, fmt.Sprintf("skipping %s:%s target %d because Ollama context is not configured; only requests fitting the conservative 4096-token floor are safe", providerKey, selectedModel, scenario.InputTokens))
+			continue
+		}
+		filtered = append(filtered, scenario)
+	}
+	return filtered
+}
+
+// benchmarkReasoningExpected returns a copy of the adapter capabilities with any
+// per-model reasoning adjustment applied, plus whether a reasoning run is expected.
+func benchmarkReasoningExpected(providerType config.ProviderType, providerCfg config.ProviderConfig, selectedModel string, capabilities benchmark.AdapterCapabilities) (benchmark.AdapterCapabilities, bool) {
+	targetCapabilities := capabilities
+	reasoningExpected := providerType == config.ProviderTypeChatGPT || strings.HasSuffix(strings.ToLower(selectedModel), "-think")
+	if providerType == config.ProviderTypeClaudeBin {
+		_, modelEffort := llm.BaseModelAndEffortForProvider(string(providerType), selectedModel)
+		reasoningExpected = modelEffort != ""
+		targetCapabilities.SupportsReasoningEffort = len(llm.ReasoningEffortsForProviderModel(string(providerType), selectedModel)) > 0
+	}
+	if (providerCfg.Think != nil && *providerCfg.Think) || strings.TrimSpace(providerCfg.ThinkLevel) != "" {
+		reasoningExpected = true
+	}
+	return targetCapabilities, reasoningExpected
 }
 
 func benchmarkUsesLocalOllama(providerKey string, providerType config.ProviderType) bool {

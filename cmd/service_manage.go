@@ -41,27 +41,10 @@ func manageUserService(cmd *cobra.Command, action string, args []string) error {
 		return err
 	}
 	if action == "open" {
-		if spec.Auth == "passkey" {
-			count, err := serviceCredentialCount(spec)
-			if err != nil {
-				return err
-			}
-			if count == 0 {
-				return fmt.Errorf("enrollment is pending; run term-llm service setup %s", kind)
-			}
-		}
-		return openBrowser(spec.URL)
+		return openUserService(spec, kind)
 	}
 	if action == "token" {
-		if spec.Auth != "bearer" {
-			return fmt.Errorf("%s uses %s authentication; no managed browser bearer token", kind, spec.Auth)
-		}
-		token, err := e.credentials(kind).Get(cmd.Context(), serviceTokenName(kind))
-		if err != nil {
-			return err
-		}
-		fmt.Fprintln(cmd.OutOrStdout(), token)
-		return nil
+		return printUserServiceToken(cmd, e, spec, kind)
 	}
 	if _, err := os.Stat(e.native.Path(kind)); err != nil {
 		return fmt.Errorf("%s is not registered; run service install %s", kind, kind)
@@ -79,95 +62,139 @@ func manageUserService(cmd *cobra.Command, action string, args []string) error {
 	}
 	switch action {
 	case "stop":
-		err = e.native.Stop(cmd.Context(), kind)
+		err = stopUserService(cmd, e, kind)
 	case "uninstall":
-		err = e.native.Remove(cmd.Context(), kind, path)
-		if err == nil {
-			if removeErr := os.Remove(filepath.Join(e.dir(kind), "enrollment.json")); removeErr != nil && !os.IsNotExist(removeErr) {
-				return removeErr
-			}
-		}
-		if err == nil {
-			fmt.Fprintf(cmd.OutOrStdout(), "Removed %s registration. Preserved configuration, conversations, passkeys and service credentials at %s.\n", kind, e.dir(kind))
-		}
+		err = uninstallUserService(cmd, e, kind, path)
 	case "start", "restart":
-		if action == "restart" {
-			enabled, err := e.native.Enabled(cmd.Context(), kind)
-			if err != nil {
-				return err
-			}
-			if !enabled {
-				return fmt.Errorf("%s autostart is disabled; use service start %s", kind, kind)
-			}
-		}
-		if _, err = e.credentials(kind).Load(cmd.Context(), spec.Secrets); err != nil {
-			return err
-		}
-		if spec.Auth == "passkey" {
-			count, err := serviceCredentialCount(spec)
-			if err != nil {
-				return err
-			}
-			if count == 0 {
-				if _, err = os.Stat(filepath.Join(e.dir(kind), "enrollment.json")); err != nil {
-					return fmt.Errorf("first-passkey enrollment is pending; run service setup %s", kind)
-				}
-			}
-		}
-		if action == "restart" {
-			fmt.Fprintf(cmd.OutOrStdout(), "Restarting %s service; active work will be interrupted.\n", kind)
-		} else {
-			fmt.Fprintf(cmd.OutOrStdout(), "Starting %s service.\n", kind)
-		}
-		if !e.native.Running(cmd.Context(), kind) {
-			if err := checkUserServicePort(spec); err != nil {
-				return err
-			}
-		}
-		err = e.native.Start(cmd.Context(), kind, action == "restart")
-		if err == nil {
-			err = waitUserService(cmd.Context(), spec, e.native)
-		}
-		if err != nil {
-			return fmt.Errorf("could not %s %s service; inspect 'term-llm service status %s' and 'term-llm service logs %s': %w", action, kind, kind, kind, err)
-		}
-		fmt.Fprintf(cmd.OutOrStdout(), "%s service is ready: %s\n", kind, spec.URL)
+		err = startUserService(cmd, e, spec, kind, action)
 	case "setup", "recover":
-		if spec.Auth != "passkey" {
-			return fmt.Errorf("%s uses %s authentication", kind, spec.Auth)
-		}
-		count, err := serviceCredentialCount(spec)
-		if err != nil {
-			return err
-		}
-		if action == "setup" && count > 0 {
-			fmt.Fprintf(cmd.OutOrStdout(), "Passkeys are already enrolled. Sign in at %s\n", spec.URL)
-			return nil
-		}
-		if action == "recover" && count == 0 {
-			return fmt.Errorf("no passkeys are enrolled; use service setup %s", kind)
-		}
-		fmt.Fprintln(cmd.OutOrStdout(), "Restarting to load a fresh enrollment capability; active work will be interrupted.")
-		if !e.native.Running(cmd.Context(), kind) {
-			if err := checkUserServicePort(spec); err != nil {
-				return err
-			}
-		}
-		code, err := e.newEnrollment(spec, action == "recover", count)
-		if err != nil {
-			return err
-		}
-		if err = e.native.Start(cmd.Context(), kind, true); err != nil {
-			return err
-		}
-		if err = waitUserService(cmd.Context(), spec, e.native); err != nil {
-			return err
-		}
-		printServiceEnrollment(cmd, spec, code, action == "recover")
+		err = setupUserService(cmd, e, spec, kind, action)
 	default:
 		return fmt.Errorf("unknown service operation")
 	}
 	return err
+}
+
+func openUserService(spec userservice.Spec, kind string) error {
+	if spec.Auth == "passkey" {
+		count, err := serviceCredentialCount(spec)
+		if err != nil {
+			return err
+		}
+		if count == 0 {
+			return fmt.Errorf("enrollment is pending; run term-llm service setup %s", kind)
+		}
+	}
+	return openBrowser(spec.URL)
+}
+
+func printUserServiceToken(cmd *cobra.Command, e serviceEnvironment, spec userservice.Spec, kind string) error {
+	if spec.Auth != "bearer" {
+		return fmt.Errorf("%s uses %s authentication; no managed browser bearer token", kind, spec.Auth)
+	}
+	token, err := e.credentials(kind).Get(cmd.Context(), serviceTokenName(kind))
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), token)
+	return nil
+}
+
+func stopUserService(cmd *cobra.Command, e serviceEnvironment, kind string) error {
+	return e.native.Stop(cmd.Context(), kind)
+}
+
+func uninstallUserService(cmd *cobra.Command, e serviceEnvironment, kind, path string) error {
+	err := e.native.Remove(cmd.Context(), kind, path)
+	if err == nil {
+		if removeErr := os.Remove(filepath.Join(e.dir(kind), "enrollment.json")); removeErr != nil && !os.IsNotExist(removeErr) {
+			return removeErr
+		}
+	}
+	if err == nil {
+		fmt.Fprintf(cmd.OutOrStdout(), "Removed %s registration. Preserved configuration, conversations, passkeys and service credentials at %s.\n", kind, e.dir(kind))
+	}
+	return err
+}
+
+func startUserService(cmd *cobra.Command, e serviceEnvironment, spec userservice.Spec, kind, action string) error {
+	if action == "restart" {
+		enabled, err := e.native.Enabled(cmd.Context(), kind)
+		if err != nil {
+			return err
+		}
+		if !enabled {
+			return fmt.Errorf("%s autostart is disabled; use service start %s", kind, kind)
+		}
+	}
+	if _, err := e.credentials(kind).Load(cmd.Context(), spec.Secrets); err != nil {
+		return err
+	}
+	if spec.Auth == "passkey" {
+		count, err := serviceCredentialCount(spec)
+		if err != nil {
+			return err
+		}
+		if count == 0 {
+			if _, err := os.Stat(filepath.Join(e.dir(kind), "enrollment.json")); err != nil {
+				return fmt.Errorf("first-passkey enrollment is pending; run service setup %s", kind)
+			}
+		}
+	}
+	if action == "restart" {
+		fmt.Fprintf(cmd.OutOrStdout(), "Restarting %s service; active work will be interrupted.\n", kind)
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "Starting %s service.\n", kind)
+	}
+	if !e.native.Running(cmd.Context(), kind) {
+		if err := checkUserServicePort(spec); err != nil {
+			return err
+		}
+	}
+	err := e.native.Start(cmd.Context(), kind, action == "restart")
+	if err == nil {
+		err = waitUserService(cmd.Context(), spec, e.native)
+	}
+	if err != nil {
+		return fmt.Errorf("could not %s %s service; inspect 'term-llm service status %s' and 'term-llm service logs %s': %w", action, kind, kind, kind, err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "%s service is ready: %s\n", kind, spec.URL)
+	return nil
+}
+
+func setupUserService(cmd *cobra.Command, e serviceEnvironment, spec userservice.Spec, kind, action string) error {
+	if spec.Auth != "passkey" {
+		return fmt.Errorf("%s uses %s authentication", kind, spec.Auth)
+	}
+	count, err := serviceCredentialCount(spec)
+	if err != nil {
+		return err
+	}
+	if action == "setup" && count > 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "Passkeys are already enrolled. Sign in at %s\n", spec.URL)
+		return nil
+	}
+	if action == "recover" && count == 0 {
+		return fmt.Errorf("no passkeys are enrolled; use service setup %s", kind)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "Restarting to load a fresh enrollment capability; active work will be interrupted.")
+	if !e.native.Running(cmd.Context(), kind) {
+		if err := checkUserServicePort(spec); err != nil {
+			return err
+		}
+	}
+	code, err := e.newEnrollment(spec, action == "recover", count)
+	if err != nil {
+		return err
+	}
+	if err = e.native.Start(cmd.Context(), kind, true); err != nil {
+		return err
+	}
+	if err = waitUserService(cmd.Context(), spec, e.native); err != nil {
+		return err
+	}
+	printServiceEnrollment(cmd, spec, code, action == "recover")
+	return nil
 }
 
 func showUserService(cmd *cobra.Command, e serviceEnvironment, kind string) error {

@@ -98,8 +98,8 @@ func runModels(cmd *cobra.Command, args []string) error {
 	}
 
 	// Get provider config - handle built-in providers that may not be explicitly configured
-	providerCfg, ok := cfg.Providers[providerName]
-	if ok {
+	providerCfg, configured := cfg.Providers[providerName]
+	if configured {
 		if err := cfg.ResolveProviderCredentials(providerName); err != nil {
 			return fmt.Errorf("provider %q: %w", providerName, err)
 		}
@@ -111,7 +111,7 @@ func runModels(cmd *cobra.Command, args []string) error {
 
 	// Infer provider type - only use config type if provider is configured
 	var providerType config.ProviderType
-	if ok {
+	if configured {
 		providerType = config.InferProviderType(providerName, providerCfg.Type)
 	} else {
 		providerType = config.InferProviderType(providerName, "")
@@ -120,146 +120,17 @@ func runModels(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// For built-in providers without explicit config, continue for providers that
-	// can authenticate via environment/default credentials. Otherwise fall back to
-	// static model lists when available.
-	if !ok {
-		if !modelListSupportedTypes[providerType] {
-			if staticModels := llm.ResolveProviderModelIDs(providerName); len(staticModels) > 0 {
-				return printStaticModels(providerName, staticModels)
-			}
-			return fmt.Errorf("provider '%s' is not configured", providerName)
-		}
+	handled, err := handleUnsupportedModelListProvider(providerName, providerType, configured)
+	if handled {
+		return err
 	}
 
-	if !modelListSupportedTypes[providerType] {
-		// Fall back to static model list if available
-		if staticModels := llm.ResolveProviderModelIDs(providerName); len(staticModels) > 0 {
-			return printStaticModels(providerName, staticModels)
-		}
-		return fmt.Errorf("provider '%s' (type: %s) does not support model listing.\n"+
-			"Model listing is supported for: %s", providerName, providerType, strings.Join(supportedModelListProviderTypes(), ", "))
+	lister, err := newModelLister(providerName, providerType, providerCfg, configured)
+	if err != nil {
+		return err
 	}
 
-	// Create provider to query models
-	var lister ModelLister
-	switch providerType {
-	case config.ProviderTypeAnthropic:
-		provider, err := llm.NewAnthropicProviderWithBaseURL(providerCfg.ResolvedAPIKey, providerCfg.Model, providerCfg.Credentials, providerCfg.BaseURL)
-		if err != nil {
-			return fmt.Errorf("anthropic: %w", err)
-		}
-		lister = provider
-	case config.ProviderTypeOpenAI:
-		apiKey := providerCfg.ResolvedAPIKey
-		if apiKey == "" {
-			apiKey = os.Getenv("OPENAI_API_KEY")
-		}
-		if apiKey == "" {
-			return fmt.Errorf("openai API key not configured. Set OPENAI_API_KEY or configure api_key")
-		}
-		lister = llm.NewOpenAIProvider(apiKey, providerCfg.Model)
-	case config.ProviderTypeChatGPT:
-		provider, err := llm.NewChatGPTProvider(providerCfg.Model)
-		if err != nil {
-			return fmt.Errorf("chatgpt provider: %w", err)
-		}
-		lister = provider
-	case config.ProviderTypeCopilot:
-		// Copilot uses OAuth - create provider which will prompt for auth if needed
-		model := ""
-		if ok {
-			model = providerCfg.Model
-		}
-		provider, err := llm.NewCopilotProvider(model)
-		if err != nil {
-			return fmt.Errorf("copilot provider: %w", err)
-		}
-		lister = provider
-	case config.ProviderTypeCursorBin:
-		lister = llm.NewCursorBinProvider(providerCfg.Model, providerCfg.Env)
-	case config.ProviderTypeGrokBin:
-		lister = llm.NewGrokBinProvider(providerCfg.Model, providerCfg.Env)
-	case config.ProviderTypeAgyBin:
-		lister = llm.NewAgyBinProvider(providerCfg.Model, providerCfg.Env)
-	case config.ProviderTypeOpenRouter:
-		apiKey := providerCfg.ResolvedAPIKey
-		if apiKey == "" {
-			apiKey = os.Getenv("OPENROUTER_API_KEY")
-		}
-		if apiKey == "" {
-			return fmt.Errorf("openrouter API key not configured. Set OPENROUTER_API_KEY or configure api_key")
-		}
-		lister = llm.NewOpenRouterProvider(apiKey, "", providerCfg.AppURL, providerCfg.AppTitle)
-	case config.ProviderTypeOpenAICompat, config.ProviderTypeVLLM:
-		if providerCfg.BaseURL == "" {
-			return fmt.Errorf("provider '%s' requires base_url to be configured", providerName)
-		}
-		lister = llm.NewOpenAICompatProvider(providerCfg.BaseURL, providerCfg.ResolvedAPIKey, "", providerName)
-	case config.ProviderTypeOllama:
-		lister = llm.NewOllamaChatProvider(providerCfg.BaseURL, providerCfg.Model, llm.OllamaOptions{})
-	case config.ProviderTypeZen:
-		lister = llm.NewZenProvider(providerCfg.ResolvedAPIKey, "")
-	case config.ProviderTypeOpenCodeGo:
-		apiKey := providerCfg.ResolvedAPIKey
-		if apiKey == "" {
-			apiKey = os.Getenv("OPENCODE_API_KEY")
-		}
-		// The Go model and metadata endpoints are public; a key is required only
-		// when the returned provider is used for inference.
-		lister = llm.NewOpenCodeGoProviderWithBaseURL(apiKey, providerCfg.Model, providerCfg.BaseURL)
-	case config.ProviderTypeGrok:
-		model := providerCfg.Model
-		provider, err := llm.NewGrokProvider(model)
-		if err != nil {
-			return fmt.Errorf("grok provider: %w", err)
-		}
-		lister = provider
-	case config.ProviderTypeXAI:
-		apiKey := providerCfg.ResolvedAPIKey
-		if apiKey == "" {
-			apiKey = os.Getenv("XAI_API_KEY")
-		}
-		if apiKey == "" {
-			return fmt.Errorf("xAI API key not configured. Set XAI_API_KEY or configure api_key")
-		}
-		lister = llm.NewXAIProvider(apiKey, providerCfg.Model)
-	case config.ProviderTypeVenice:
-		apiKey := providerCfg.ResolvedAPIKey
-		if apiKey == "" {
-			apiKey = os.Getenv("VENICE_API_KEY")
-		}
-		if apiKey == "" {
-			return fmt.Errorf("Venice API key not configured. Set VENICE_API_KEY or configure api_key")
-		}
-		lister = llm.NewVeniceProvider(apiKey, providerCfg.Model)
-	case config.ProviderTypeNearAI:
-		apiKey := providerCfg.ResolvedAPIKey
-		if apiKey == "" {
-			apiKey = os.Getenv("NEARAI_API_KEY")
-		}
-		lister = llm.NewNearAIProvider(apiKey, providerCfg.Model)
-	case config.ProviderTypeSambaNova:
-		apiKey := providerCfg.ResolvedAPIKey
-		if apiKey == "" {
-			apiKey = os.Getenv("SAMBANOVA_API_KEY")
-		}
-		if apiKey == "" {
-			return fmt.Errorf("SambaNova API key not configured. Set SAMBANOVA_API_KEY or configure api_key")
-		}
-		lister = llm.NewSambaNovaProvider(apiKey, providerCfg.Model)
-	}
-
-	// Copilot may need interactive device auth (up to 5 minutes)
-	timeout := 10 * time.Second
-	if providerType == config.ProviderTypeCopilot {
-		timeout = 6 * time.Minute
-	} else if providerType == config.ProviderTypeChatGPT || providerType == config.ProviderTypeGrok {
-		timeout = 30 * time.Second
-	} else if providerType == config.ProviderTypeCursorBin || providerType == config.ProviderTypeGrokBin || providerType == config.ProviderTypeAgyBin {
-		timeout = 45 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), modelListTimeout(providerType))
 	defer cancel()
 
 	var models []llm.ModelInfo
@@ -270,17 +141,8 @@ func runModels(cmd *cobra.Command, args []string) error {
 	} else {
 		models, err = lister.ListModels(ctx)
 	}
-	if err == nil && providerType == config.ProviderTypeOpenRouter {
-		llm.RefreshOpenRouterCacheSync(providerCfg.ResolvedAPIKey, models)
-	}
-	if err == nil && providerType == config.ProviderTypeCursorBin {
-		llm.RefreshCursorBinCacheSync(models)
-	}
-	if err == nil && providerType == config.ProviderTypeGrokBin {
-		llm.RefreshGrokBinCacheSync(models)
-	}
-	if err == nil && providerType == config.ProviderTypeAgyBin {
-		llm.RefreshAgyBinCacheSync(models)
+	if err == nil {
+		refreshModelListCaches(providerType, providerCfg.ResolvedAPIKey, models)
 	}
 	if err != nil {
 		// Provide helpful error messages for common issues
@@ -304,6 +166,185 @@ func runModels(cmd *cobra.Command, args []string) error {
 		return enc.Encode(models)
 	}
 
+	return printModelList(providerName, providerType, models)
+}
+
+func handleUnsupportedModelListProvider(providerName string, providerType config.ProviderType, configured bool) (bool, error) {
+	if modelListSupportedTypes[providerType] {
+		return false, nil
+	}
+
+	if staticModels := llm.ResolveProviderModelIDs(providerName); len(staticModels) > 0 {
+		return true, printStaticModels(providerName, staticModels)
+	}
+	if !configured {
+		return true, fmt.Errorf("provider '%s' is not configured", providerName)
+	}
+	return true, fmt.Errorf("provider '%s' (type: %s) does not support model listing.\n"+
+		"Model listing is supported for: %s", providerName, providerType, strings.Join(supportedModelListProviderTypes(), ", "))
+}
+
+func newModelLister(providerName string, providerType config.ProviderType, providerCfg config.ProviderConfig, configured bool) (ModelLister, error) {
+	switch providerType {
+	case config.ProviderTypeAnthropic:
+		return newAnthropicModelLister(providerCfg)
+	case config.ProviderTypeOpenAI, config.ProviderTypeOpenRouter, config.ProviderTypeXAI, config.ProviderTypeVenice, config.ProviderTypeSambaNova:
+		return newAPIKeyModelLister(providerType, providerCfg)
+	case config.ProviderTypeChatGPT:
+		return newChatGPTModelLister(providerCfg.Model)
+	case config.ProviderTypeCopilot:
+		return newCopilotModelLister(providerCfg.Model, configured)
+	case config.ProviderTypeCursorBin:
+		return llm.NewCursorBinProvider(providerCfg.Model, providerCfg.Env), nil
+	case config.ProviderTypeGrokBin:
+		return llm.NewGrokBinProvider(providerCfg.Model, providerCfg.Env), nil
+	case config.ProviderTypeAgyBin:
+		return llm.NewAgyBinProvider(providerCfg.Model, providerCfg.Env), nil
+	case config.ProviderTypeOpenAICompat, config.ProviderTypeVLLM:
+		return newOpenAICompatibleModelLister(providerName, providerCfg)
+	case config.ProviderTypeOllama:
+		return llm.NewOllamaChatProvider(providerCfg.BaseURL, providerCfg.Model, llm.OllamaOptions{}), nil
+	case config.ProviderTypeZen:
+		return llm.NewZenProvider(providerCfg.ResolvedAPIKey, ""), nil
+	case config.ProviderTypeOpenCodeGo:
+		apiKey := modelListAPIKey(providerCfg.ResolvedAPIKey, "OPENCODE_API_KEY")
+		// The Go model and metadata endpoints are public; a key is required only
+		// when the returned provider is used for inference.
+		return llm.NewOpenCodeGoProviderWithBaseURL(apiKey, providerCfg.Model, providerCfg.BaseURL), nil
+	case config.ProviderTypeGrok:
+		return newGrokModelLister(providerCfg.Model)
+	case config.ProviderTypeNearAI:
+		apiKey := modelListAPIKey(providerCfg.ResolvedAPIKey, "NEARAI_API_KEY")
+		return llm.NewNearAIProvider(apiKey, providerCfg.Model), nil
+	default:
+		return nil, nil
+	}
+}
+
+func newAnthropicModelLister(providerCfg config.ProviderConfig) (ModelLister, error) {
+	provider, err := llm.NewAnthropicProviderWithBaseURL(providerCfg.ResolvedAPIKey, providerCfg.Model, providerCfg.Credentials, providerCfg.BaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic: %w", err)
+	}
+	return provider, nil
+}
+
+func newChatGPTModelLister(model string) (ModelLister, error) {
+	provider, err := llm.NewChatGPTProvider(model)
+	if err != nil {
+		return nil, fmt.Errorf("chatgpt provider: %w", err)
+	}
+	return provider, nil
+}
+
+func newCopilotModelLister(configuredModel string, configured bool) (ModelLister, error) {
+	// Copilot uses OAuth - create provider which will prompt for auth if needed
+	model := ""
+	if configured {
+		model = configuredModel
+	}
+	provider, err := llm.NewCopilotProvider(model)
+	if err != nil {
+		return nil, fmt.Errorf("copilot provider: %w", err)
+	}
+	return provider, nil
+}
+
+func newOpenAICompatibleModelLister(providerName string, providerCfg config.ProviderConfig) (ModelLister, error) {
+	if providerCfg.BaseURL == "" {
+		return nil, fmt.Errorf("provider '%s' requires base_url to be configured", providerName)
+	}
+	return llm.NewOpenAICompatProvider(providerCfg.BaseURL, providerCfg.ResolvedAPIKey, "", providerName), nil
+}
+
+func newGrokModelLister(model string) (ModelLister, error) {
+	provider, err := llm.NewGrokProvider(model)
+	if err != nil {
+		return nil, fmt.Errorf("grok provider: %w", err)
+	}
+	return provider, nil
+}
+
+func newAPIKeyModelLister(providerType config.ProviderType, providerCfg config.ProviderConfig) (ModelLister, error) {
+	switch providerType {
+	case config.ProviderTypeOpenAI:
+		apiKey, err := requiredModelListAPIKey(providerCfg.ResolvedAPIKey, "OPENAI_API_KEY", "openai")
+		if err != nil {
+			return nil, err
+		}
+		return llm.NewOpenAIProvider(apiKey, providerCfg.Model), nil
+	case config.ProviderTypeOpenRouter:
+		apiKey, err := requiredModelListAPIKey(providerCfg.ResolvedAPIKey, "OPENROUTER_API_KEY", "openrouter")
+		if err != nil {
+			return nil, err
+		}
+		return llm.NewOpenRouterProvider(apiKey, "", providerCfg.AppURL, providerCfg.AppTitle), nil
+	case config.ProviderTypeXAI:
+		apiKey, err := requiredModelListAPIKey(providerCfg.ResolvedAPIKey, "XAI_API_KEY", "xAI")
+		if err != nil {
+			return nil, err
+		}
+		return llm.NewXAIProvider(apiKey, providerCfg.Model), nil
+	case config.ProviderTypeVenice:
+		apiKey, err := requiredModelListAPIKey(providerCfg.ResolvedAPIKey, "VENICE_API_KEY", "Venice")
+		if err != nil {
+			return nil, err
+		}
+		return llm.NewVeniceProvider(apiKey, providerCfg.Model), nil
+	case config.ProviderTypeSambaNova:
+		apiKey, err := requiredModelListAPIKey(providerCfg.ResolvedAPIKey, "SAMBANOVA_API_KEY", "SambaNova")
+		if err != nil {
+			return nil, err
+		}
+		return llm.NewSambaNovaProvider(apiKey, providerCfg.Model), nil
+	default:
+		return nil, nil
+	}
+}
+
+func modelListAPIKey(configuredKey, envVar string) string {
+	if configuredKey != "" {
+		return configuredKey
+	}
+	return os.Getenv(envVar)
+}
+
+func requiredModelListAPIKey(configuredKey, envVar, label string) (string, error) {
+	apiKey := modelListAPIKey(configuredKey, envVar)
+	if apiKey == "" {
+		return "", fmt.Errorf("%s API key not configured. Set %s or configure api_key", label, envVar)
+	}
+	return apiKey, nil
+}
+
+func modelListTimeout(providerType config.ProviderType) time.Duration {
+	// Copilot may need interactive device auth (up to 5 minutes)
+	if providerType == config.ProviderTypeCopilot {
+		return 6 * time.Minute
+	}
+	if providerType == config.ProviderTypeChatGPT || providerType == config.ProviderTypeGrok {
+		return 30 * time.Second
+	}
+	if providerType == config.ProviderTypeCursorBin || providerType == config.ProviderTypeGrokBin || providerType == config.ProviderTypeAgyBin {
+		return 45 * time.Second
+	}
+	return 10 * time.Second
+}
+
+func refreshModelListCaches(providerType config.ProviderType, apiKey string, models []llm.ModelInfo) {
+	switch providerType {
+	case config.ProviderTypeOpenRouter:
+		llm.RefreshOpenRouterCacheSync(apiKey, models)
+	case config.ProviderTypeCursorBin:
+		llm.RefreshCursorBinCacheSync(models)
+	case config.ProviderTypeGrokBin:
+		llm.RefreshGrokBinCacheSync(models)
+	case config.ProviderTypeAgyBin:
+		llm.RefreshAgyBinCacheSync(models)
+	}
+}
+
+func printModelList(providerName string, providerType config.ProviderType, models []llm.ModelInfo) error {
 	// Pretty print
 	fmt.Printf("Available models from %s:\n\n", providerName)
 

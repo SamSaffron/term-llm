@@ -140,39 +140,14 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
 	}
 
-	if a.Prompt == "" {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "prompt is required"))), nil
-	}
-
-	if err := image.ValidateSize(a.Size); err != nil {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
-	}
-	if err := image.ValidateAspectRatio(a.AspectRatio); err != nil {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
-	}
-	if err := image.ValidateQuality(a.Quality); err != nil {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
-	}
-	if err := image.ValidateBackground(a.Background); err != nil {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
+	if toolErr := validateImageGenerateArgs(a); toolErr != nil {
+		return llm.TextOutput(formatToolError(toolErr)), nil
 	}
 
 	if a.OutputPath != "" {
-		resolvedOutputPath, err := resolveToolPathWithConfig(a.OutputPath, true, t.toolConfig)
-		if err != nil {
-			if toolErr, ok := err.(*ToolError); ok {
-				return llm.TextOutput(formatToolError(toolErr)), nil
-			}
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to resolve output path: %v", err))), nil
-		}
-		if t.approval != nil {
-			outcome, err := t.approval.CheckPathApprovalWithContext(ctx, ImageGenerateToolName, resolvedOutputPath, a.OutputPath, true)
-			if err != nil {
-				return pathApprovalErrorOutput("", err), nil
-			}
-			if outcome == Cancel {
-				return pathApprovalErrorOutput("", NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.OutputPath)), nil
-			}
+		resolvedOutputPath, errOut := t.approveOutputPath(ctx, a)
+		if errOut != nil {
+			return *errOut, nil
 		}
 		// Keep the resolved path for downstream comparisons/writes.
 		a.OutputPath = resolvedOutputPath
@@ -189,23 +164,11 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 	}
 	resolvedOutputDir, err := resolveToolPathWithConfig(outputDir, true, t.toolConfig)
 	if err != nil {
-		if toolErr, ok := err.(*ToolError); ok {
-			return llm.TextOutput(formatToolError(toolErr)), nil
-		}
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to resolve output directory: %v", err))), nil
+		return toolPathErrorOutput(err, "failed to resolve output directory"), nil
 	}
 
-	if t.approval != nil {
-		needOutputDirApproval := a.OutputPath == "" || filepath.Clean(filepath.Dir(a.OutputPath)) != filepath.Clean(resolvedOutputDir)
-		if needOutputDirApproval {
-			outcome, err := t.approval.CheckPathApprovalWithContext(ctx, ImageGenerateToolName, resolvedOutputDir, resolvedOutputDir, true)
-			if err != nil {
-				return pathApprovalErrorOutput("", err), nil
-			}
-			if outcome == Cancel {
-				return pathApprovalErrorOutput("", NewToolErrorf(ErrPermissionDenied, "access denied: %s", resolvedOutputDir)), nil
-			}
-		}
+	if errOut := t.approveOutputDir(ctx, resolvedOutputDir, a.OutputPath); errOut != nil {
+		return *errOut, nil
 	}
 
 	// Create image provider
@@ -214,8 +177,6 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrImageGenFailed, "failed to create image provider: %v", err))), nil
 	}
 
-	var result *image.ImageResult
-
 	// Consolidate input_image and input_images into a single slice
 	var inputPaths []string
 	if a.InputImage != "" {
@@ -223,148 +184,26 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 	}
 	inputPaths = append(inputPaths, a.InputImages...)
 
+	var result *image.ImageResult
+	var opErr *llm.ToolOutput
+
 	// Check if this is an edit or generation
 	if len(inputPaths) > 0 {
-		// Check read permissions for all input images via approval manager.
-		resolvedInputPaths := make([]string, 0, len(inputPaths))
-		if t.approval != nil {
-			debug := t.approval.DebugApproval
-			for _, inputPath := range inputPaths {
-				resolvedInput, inputErr := resolveToolPathWithConfig(inputPath, false, t.toolConfig)
-				if inputErr == nil && strings.HasPrefix(resolvedInput, resolvedOutputDir+string(filepath.Separator)) {
-					if debug {
-						log.Printf("[image_generate] auto-approved input %q (inside output dir %q)", inputPath, resolvedOutputDir)
-					}
-					resolvedInputPaths = append(resolvedInputPaths, resolvedInput)
-					continue
-				}
-				if debug && inputErr != nil {
-					log.Printf("[image_generate] resolveToolPath input=%v — falling through to approval check", inputErr)
-				}
-
-				outcome, err := t.approval.CheckPathApprovalWithContext(ctx, ImageGenerateToolName, inputPath, inputPath, false)
-				if debug {
-					log.Printf("[image_generate] CheckPathApproval input=%q → outcome=%v err=%v", inputPath, outcome, err)
-				}
-				if err != nil {
-					return pathApprovalErrorOutput("", err), nil
-				}
-				if outcome == Cancel {
-					return pathApprovalErrorOutput("", NewToolErrorf(ErrPermissionDenied, "access denied: %s", inputPath)), nil
-				}
-
-				resolvedInput, err = resolveToolPathWithConfig(inputPath, false, t.toolConfig)
-				if err != nil {
-					if toolErr, ok := err.(*ToolError); ok {
-						return llm.TextOutput(formatToolError(toolErr)), nil
-					}
-					return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to resolve input image: %v", err))), nil
-				}
-				resolvedInputPaths = append(resolvedInputPaths, resolvedInput)
-			}
-		} else {
-			for _, inputPath := range inputPaths {
-				resolvedInput, err := resolveToolPathWithConfig(inputPath, false, t.toolConfig)
-				if err != nil {
-					if toolErr, ok := err.(*ToolError); ok {
-						return llm.TextOutput(formatToolError(toolErr)), nil
-					}
-					return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to resolve input image: %v", err))), nil
-				}
-				resolvedInputPaths = append(resolvedInputPaths, resolvedInput)
-			}
+		resolvedInputPaths, errOut := t.resolveInputImages(ctx, inputPaths, resolvedOutputDir)
+		if errOut != nil {
+			return *errOut, nil
 		}
-
-		inputPaths = resolvedInputPaths
-
-		// Check if provider supports editing
-		if !provider.SupportsEdit() {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrImageGenFailed, "provider %s does not support image editing", provider.Name()))), nil
-		}
-
-		// Check if multi-image is supported when multiple images provided
-		if len(inputPaths) > 1 && !provider.SupportsMultiImage() {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrImageGenFailed, "provider %s does not support multiple input images", provider.Name()))), nil
-		}
-
-		// Read all input images
-		var inputImages []image.InputImage
-		for _, inputPath := range inputPaths {
-			inputData, err := os.ReadFile(inputPath)
-			if err != nil {
-				if os.IsNotExist(err) {
-					return llm.TextOutput(formatToolError(NewToolError(ErrFileNotFound, inputPath))), nil
-				}
-				return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to read input image: %v", err))), nil
-			}
-			inputImages = append(inputImages, image.InputImage{
-				Data: inputData,
-				Path: inputPath,
-			})
-		}
-
-		// Edit image
-		result, err = provider.Edit(ctx, image.EditRequest{
-			Prompt:      a.Prompt,
-			InputImages: inputImages,
-			Size:        a.Size,
-			AspectRatio: a.AspectRatio,
-			Quality:     a.Quality,
-			Background:  a.Background,
-		})
-		if err != nil {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrImageGenFailed, "image edit failed: %v", err))), nil
-		}
+		result, opErr = t.editImage(ctx, provider, a, resolvedInputPaths)
 	} else {
-		// Generate new image
-		result, err = provider.Generate(ctx, image.GenerateRequest{
-			Prompt:      a.Prompt,
-			Size:        a.Size,
-			AspectRatio: a.AspectRatio,
-			Quality:     a.Quality,
-			Background:  a.Background,
-		})
-		if err != nil {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrImageGenFailed, "image generation failed: %v", err))), nil
-		}
+		result, opErr = t.generateImage(ctx, provider, a)
+	}
+	if opErr != nil {
+		return *opErr, nil
 	}
 
-	// Determine output path
-	outputPath := a.OutputPath
-
-	var servedPath string
-
-	if outputPath == "" {
-		outputPath, err = image.SaveImage(result.Data, resolvedOutputDir, a.Prompt)
-		if err != nil {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to save image: %v", err))), nil
-		}
-		servedPath = outputPath
-	} else {
-		outputPath, err = resolveToolPathWithConfig(outputPath, true, t.toolConfig)
-		if err != nil {
-			if toolErr, ok := err.(*ToolError); ok {
-				return llm.TextOutput(formatToolError(toolErr)), nil
-			}
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to resolve output path: %v", err))), nil
-		}
-
-		// Write to requested location
-		dir := filepath.Dir(outputPath)
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create directory: %v", err))), nil
-		}
-		if err := os.WriteFile(outputPath, result.Data, 0644); err != nil {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to write image: %v", err))), nil
-		}
-
-		// Also copy into outputDir so the web UI can serve it
-		var saveErr error
-		servedPath, saveErr = image.SaveImage(result.Data, resolvedOutputDir, a.Prompt)
-		if saveErr != nil {
-			// Non-fatal: fall back to outputPath (web UI may not work but file is saved)
-			servedPath = outputPath
-		}
+	outputPath, servedPath, saveErrOut := t.saveImageResult(a, result, resolvedOutputDir)
+	if saveErrOut != nil {
+		return *saveErrOut, nil
 	}
 
 	// Get image dimensions (approximate from data size)
@@ -394,6 +233,252 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 	// output.Images out-of-band and owns rendering the image artifact. Avoid
 	// returning a public web image URL here, otherwise models tend to embed the
 	// same image again in markdown after the client already displayed it.
+	output := llm.ToolOutput{Content: t.describeImageResult(a, result, provider.Name(), outputPath, servedPath, width, height)}
+	if showImage {
+		output.Images = []string{servedPath}
+	}
+
+	return output, nil
+}
+
+// toolPathErrorOutput renders a path resolution failure for the model. Path
+// resolvers return structured ToolErrors, which are kept verbatim; any other
+// error keeps the caller's context prefix.
+func toolPathErrorOutput(err error, context string) llm.ToolOutput {
+	if toolErr, ok := err.(*ToolError); ok {
+		return llm.TextOutput(formatToolError(toolErr))
+	}
+	return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "%s: %v", context, err)))
+}
+
+// validateImageGenerateArgs applies the prompt and option checks in their
+// original order and returns the first failure.
+func validateImageGenerateArgs(a ImageGenerateArgs) *ToolError {
+	if a.Prompt == "" {
+		return NewToolError(ErrInvalidParams, "prompt is required")
+	}
+	if err := image.ValidateSize(a.Size); err != nil {
+		return NewToolError(ErrInvalidParams, err.Error())
+	}
+	if err := image.ValidateAspectRatio(a.AspectRatio); err != nil {
+		return NewToolError(ErrInvalidParams, err.Error())
+	}
+	if err := image.ValidateQuality(a.Quality); err != nil {
+		return NewToolError(ErrInvalidParams, err.Error())
+	}
+	if err := image.ValidateBackground(a.Background); err != nil {
+		return NewToolError(ErrInvalidParams, err.Error())
+	}
+	return nil
+}
+
+// approveOutputPath resolves a requested output path and requires read/write
+// approval for it. The resolved path is returned for downstream comparisons and
+// writes; a non-nil output means the caller must return it to the model.
+func (t *ImageGenerateTool) approveOutputPath(ctx context.Context, a ImageGenerateArgs) (string, *llm.ToolOutput) {
+	resolvedOutputPath, err := resolveToolPathWithConfig(a.OutputPath, true, t.toolConfig)
+	if err != nil {
+		out := toolPathErrorOutput(err, "failed to resolve output path")
+		return "", &out
+	}
+	if t.approval != nil {
+		outcome, err := t.approval.CheckPathApprovalWithContext(ctx, ImageGenerateToolName, resolvedOutputPath, a.OutputPath, true)
+		if err != nil {
+			out := pathApprovalErrorOutput("", err)
+			return "", &out
+		}
+		if outcome == Cancel {
+			out := pathApprovalErrorOutput("", NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.OutputPath))
+			return "", &out
+		}
+	}
+	return resolvedOutputPath, nil
+}
+
+// approveOutputDir requires approval for the configured output directory when
+// the resolved output path does not already live in it.
+func (t *ImageGenerateTool) approveOutputDir(ctx context.Context, resolvedOutputDir, outputPath string) *llm.ToolOutput {
+	if t.approval == nil {
+		return nil
+	}
+	needOutputDirApproval := outputPath == "" || filepath.Clean(filepath.Dir(outputPath)) != filepath.Clean(resolvedOutputDir)
+	if !needOutputDirApproval {
+		return nil
+	}
+	outcome, err := t.approval.CheckPathApprovalWithContext(ctx, ImageGenerateToolName, resolvedOutputDir, resolvedOutputDir, true)
+	if err != nil {
+		out := pathApprovalErrorOutput("", err)
+		return &out
+	}
+	if outcome == Cancel {
+		out := pathApprovalErrorOutput("", NewToolErrorf(ErrPermissionDenied, "access denied: %s", resolvedOutputDir))
+		return &out
+	}
+	return nil
+}
+
+// resolveInputImages resolves each input image path, consulting the approval
+// manager when one is configured. Paths inside the output directory are
+// auto-approved; everything else is re-resolved only after approval succeeds.
+func (t *ImageGenerateTool) resolveInputImages(ctx context.Context, inputPaths []string, resolvedOutputDir string) ([]string, *llm.ToolOutput) {
+	resolvedInputPaths := make([]string, 0, len(inputPaths))
+	if t.approval == nil {
+		for _, inputPath := range inputPaths {
+			resolvedInput, err := resolveToolPathWithConfig(inputPath, false, t.toolConfig)
+			if err != nil {
+				out := toolPathErrorOutput(err, "failed to resolve input image")
+				return nil, &out
+			}
+			resolvedInputPaths = append(resolvedInputPaths, resolvedInput)
+		}
+		return resolvedInputPaths, nil
+	}
+
+	debug := t.approval.DebugApproval
+	for _, inputPath := range inputPaths {
+		resolvedInput, inputErr := resolveToolPathWithConfig(inputPath, false, t.toolConfig)
+		if inputErr == nil && strings.HasPrefix(resolvedInput, resolvedOutputDir+string(filepath.Separator)) {
+			if debug {
+				log.Printf("[image_generate] auto-approved input %q (inside output dir %q)", inputPath, resolvedOutputDir)
+			}
+			resolvedInputPaths = append(resolvedInputPaths, resolvedInput)
+			continue
+		}
+		if debug && inputErr != nil {
+			log.Printf("[image_generate] resolveToolPath input=%v — falling through to approval check", inputErr)
+		}
+
+		outcome, err := t.approval.CheckPathApprovalWithContext(ctx, ImageGenerateToolName, inputPath, inputPath, false)
+		if debug {
+			log.Printf("[image_generate] CheckPathApproval input=%q → outcome=%v err=%v", inputPath, outcome, err)
+		}
+		if err != nil {
+			out := pathApprovalErrorOutput("", err)
+			return nil, &out
+		}
+		if outcome == Cancel {
+			out := pathApprovalErrorOutput("", NewToolErrorf(ErrPermissionDenied, "access denied: %s", inputPath))
+			return nil, &out
+		}
+
+		resolvedInput, err = resolveToolPathWithConfig(inputPath, false, t.toolConfig)
+		if err != nil {
+			out := toolPathErrorOutput(err, "failed to resolve input image")
+			return nil, &out
+		}
+		resolvedInputPaths = append(resolvedInputPaths, resolvedInput)
+	}
+	return resolvedInputPaths, nil
+}
+
+// editImage reads the approved input images and asks the provider to edit them.
+func (t *ImageGenerateTool) editImage(ctx context.Context, provider image.ImageProvider, a ImageGenerateArgs, inputPaths []string) (*image.ImageResult, *llm.ToolOutput) {
+	// Check if provider supports editing
+	if !provider.SupportsEdit() {
+		out := llm.TextOutput(formatToolError(NewToolErrorf(ErrImageGenFailed, "provider %s does not support image editing", provider.Name())))
+		return nil, &out
+	}
+
+	// Check if multi-image is supported when multiple images provided
+	if len(inputPaths) > 1 && !provider.SupportsMultiImage() {
+		out := llm.TextOutput(formatToolError(NewToolErrorf(ErrImageGenFailed, "provider %s does not support multiple input images", provider.Name())))
+		return nil, &out
+	}
+
+	// Read all input images
+	var inputImages []image.InputImage
+	for _, inputPath := range inputPaths {
+		inputData, err := os.ReadFile(inputPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				out := llm.TextOutput(formatToolError(NewToolError(ErrFileNotFound, inputPath)))
+				return nil, &out
+			}
+			out := llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to read input image: %v", err)))
+			return nil, &out
+		}
+		inputImages = append(inputImages, image.InputImage{
+			Data: inputData,
+			Path: inputPath,
+		})
+	}
+
+	// Edit image
+	result, err := provider.Edit(ctx, image.EditRequest{
+		Prompt:      a.Prompt,
+		InputImages: inputImages,
+		Size:        a.Size,
+		AspectRatio: a.AspectRatio,
+		Quality:     a.Quality,
+		Background:  a.Background,
+	})
+	if err != nil {
+		out := llm.TextOutput(formatToolError(NewToolErrorf(ErrImageGenFailed, "image edit failed: %v", err)))
+		return nil, &out
+	}
+	return result, nil
+}
+
+// generateImage asks the provider for a new image.
+func (t *ImageGenerateTool) generateImage(ctx context.Context, provider image.ImageProvider, a ImageGenerateArgs) (*image.ImageResult, *llm.ToolOutput) {
+	result, err := provider.Generate(ctx, image.GenerateRequest{
+		Prompt:      a.Prompt,
+		Size:        a.Size,
+		AspectRatio: a.AspectRatio,
+		Quality:     a.Quality,
+		Background:  a.Background,
+	})
+	if err != nil {
+		out := llm.TextOutput(formatToolError(NewToolErrorf(ErrImageGenFailed, "image generation failed: %v", err)))
+		return nil, &out
+	}
+	return result, nil
+}
+
+// saveImageResult writes the image to the requested path, or into the output
+// directory when none was requested, and returns the saved path plus the path
+// served to clients.
+func (t *ImageGenerateTool) saveImageResult(a ImageGenerateArgs, result *image.ImageResult, resolvedOutputDir string) (outputPath, servedPath string, errOut *llm.ToolOutput) {
+	outputPath = a.OutputPath
+
+	if outputPath == "" {
+		saved, err := image.SaveImage(result.Data, resolvedOutputDir, a.Prompt)
+		if err != nil {
+			out := llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to save image: %v", err)))
+			return "", "", &out
+		}
+		return saved, saved, nil
+	}
+
+	resolvedOutputPath, err := resolveToolPathWithConfig(outputPath, true, t.toolConfig)
+	if err != nil {
+		out := toolPathErrorOutput(err, "failed to resolve output path")
+		return "", "", &out
+	}
+	outputPath = resolvedOutputPath
+
+	// Write to requested location
+	dir := filepath.Dir(outputPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		out := llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create directory: %v", err)))
+		return "", "", &out
+	}
+	if err := os.WriteFile(outputPath, result.Data, 0644); err != nil {
+		out := llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to write image: %v", err)))
+		return "", "", &out
+	}
+
+	// Also copy into outputDir so the web UI can serve it
+	servedPath, saveErr := image.SaveImage(result.Data, resolvedOutputDir, a.Prompt)
+	if saveErr != nil {
+		// Non-fatal: fall back to outputPath (web UI may not work but file is saved)
+		servedPath = outputPath
+	}
+	return outputPath, servedPath, nil
+}
+
+// describeImageResult builds the model-facing result text for a saved image.
+func (t *ImageGenerateTool) describeImageResult(a ImageGenerateArgs, result *image.ImageResult, providerName, outputPath, servedPath string, width, height int) string {
 	var sb strings.Builder
 	if t.serveMode {
 		sb.WriteString("Generated image successfully.\n")
@@ -414,14 +499,8 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 	if width > 0 && height > 0 {
 		sb.WriteString(fmt.Sprintf("Dimensions: ~%dx%d\n", width, height))
 	}
-	sb.WriteString(fmt.Sprintf("Provider: %s\n", provider.Name()))
-
-	output := llm.ToolOutput{Content: sb.String()}
-	if showImage {
-		output.Images = []string{servedPath}
-	}
-
-	return output, nil
+	sb.WriteString(fmt.Sprintf("Provider: %s\n", providerName))
+	return sb.String()
 }
 
 // estimateImageDimensions provides rough estimates based on file size.
