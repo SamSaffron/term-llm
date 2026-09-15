@@ -14,7 +14,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
-func TestHandleSessionsStatusTranscriptUpdatedAtChangesOnMessageUpdate(t *testing.T) {
+func TestHandleSessionsStatusActivityChangesOnMessageUpdate(t *testing.T) {
 	ctx := context.Background()
 	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
 	if err != nil {
@@ -81,8 +81,8 @@ func TestHandleSessionsStatusTranscriptUpdatedAtChangesOnMessageUpdate(t *testin
 	if second.MsgCount != first.MsgCount {
 		t.Fatalf("message_count changed after UpdateMessage: before=%d after=%d", first.MsgCount, second.MsgCount)
 	}
-	if second.LastMessageAt != first.LastMessageAt {
-		t.Fatalf("last_message_at changed after UpdateMessage: before=%d after=%d", first.LastMessageAt, second.LastMessageAt)
+	if second.LastMessageAt <= first.LastMessageAt {
+		t.Fatalf("last_message_at did not advance after UpdateMessage: before=%d after=%d", first.LastMessageAt, second.LastMessageAt)
 	}
 }
 

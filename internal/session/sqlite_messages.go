@@ -425,12 +425,21 @@ func (s *SQLiteStore) updateMessage(ctx context.Context, sessionID string, msg *
 			return ErrNotFound
 		}
 
-		// Bump session updated_at so sidebar sort reflects the snapshot.
-		// Intentionally do NOT touch last_message_at — the message was
-		// already counted at AddMessage time; updates shouldn't re-order.
-		if _, err := tx.ExecContext(ctx,
+		// Keep visible conversation activity tied to the latest persisted response
+		// snapshot, not the time its assistant row was first created. Streaming
+		// responses can run for minutes; leaving last_message_at at AddMessage time
+		// makes the sidebar effectively sort those conversations by turn start.
+		now := time.Now()
+		bumpLastMessageAt := s.hasLastMessageAt && !msg.CompactionTail && (msg.Role == "user" || msg.Role == "assistant")
+		if bumpLastMessageAt {
+			if _, err := tx.ExecContext(ctx,
+				"UPDATE sessions SET updated_at = ?, last_message_at = ? WHERE id = ?",
+				now, now, sessionID); err != nil {
+				return fmt.Errorf("update session activity timestamp: %w", err)
+			}
+		} else if _, err := tx.ExecContext(ctx,
 			"UPDATE sessions SET updated_at = ? WHERE id = ?",
-			time.Now(), sessionID); err != nil {
+			now, sessionID); err != nil {
 			return fmt.Errorf("update session timestamp: %w", err)
 		}
 		rev, err := s.bumpTranscriptRev(ctx, tx, sessionID)
