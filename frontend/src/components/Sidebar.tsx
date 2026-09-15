@@ -814,14 +814,14 @@ export function Sidebar() {
     };
   }, [mobile, mobileOpen]);
   const catalog = store.sidebarSessions.value;
+  const projectsEnabled = store.projectsEnabled.value;
   const standalone = catalog.filter(
-    (session) => !session.projectId && isSidebarSessionVisible(session),
+    (session) => (!projectsEnabled || !session.projectId) && isSidebarSessionVisible(session),
   );
   const sessionByID = new Map(catalog.map((session) => [session.id, session]));
   const recent = store.recentSessions.value
     .map((summary) => sessionByID.get(summary.id) || summary)
     .filter(isSidebarSessionVisible);
-  const projectsEnabled = store.projectsEnabled.value;
   const activeRecent = projectsEnabled
     ? catalog.find((session) => session.id === store.activeSessionId.peek())
     : undefined;

@@ -603,6 +603,29 @@ describe('Preact-owned chat surfaces', () => {
     } as unknown as MediaQueryList);
   });
 
+  it('shows project-assigned conversations when project navigation is disabled', () => {
+    const store = createStore();
+    store.projectsEnabled.value = false;
+    store.sessions.value = [
+      {
+        ...store.sessions.value[0],
+        title: 'Historical project chat',
+        projectId: 'project-1',
+        projectName: 'Project',
+      },
+    ];
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Sidebar />
+      </StoreContext.Provider>,
+    );
+
+    expect(
+      screen.getByRole('button', { name: 'Historical project chat', exact: true }),
+    ).toBeVisible();
+  });
+
   it('only animates sidebar groups after a user expands them', async () => {
     const store = createStore();
     store.projectsEnabled.value = true;
