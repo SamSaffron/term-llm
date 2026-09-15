@@ -629,6 +629,20 @@ func (s *LoggingStore) UpdateMetrics(ctx context.Context, id string, llmTurns, t
 	return err
 }
 
+// RecordModelUsage wraps Store.RecordModelUsage with error logging.
+func (s *LoggingStore) RecordModelUsage(ctx context.Context, sessionID string, usage ModelUsage) error {
+	err := s.Store.RecordModelUsage(ctx, sessionID, usage)
+	s.logOnce("RecordModelUsage", err)
+	return err
+}
+
+// ListModelUsage wraps Store.ListModelUsage with error logging.
+func (s *LoggingStore) ListModelUsage(ctx context.Context, sessionID string) ([]ModelUsage, error) {
+	entries, err := s.Store.ListModelUsage(ctx, sessionID)
+	s.logOnce("ListModelUsage", err)
+	return entries, err
+}
+
 // UpdateContextEstimate wraps Store.UpdateContextEstimate with error logging.
 func (s *LoggingStore) UpdateContextEstimate(ctx context.Context, id string, lastTotalTokens, lastMessageCount int) error {
 	err := s.Store.UpdateContextEstimate(ctx, id, lastTotalTokens, lastMessageCount)

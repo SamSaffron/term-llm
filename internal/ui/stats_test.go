@@ -505,3 +505,25 @@ func TestSessionStatsActiveTimesSeparateTools(t *testing.T) {
 		t.Fatalf("render = %q", got)
 	}
 }
+
+// Work time is read at a glance: a session that ran for an hour should not be
+// reported in thousands of seconds, and a fast first token should not read 0s.
+func TestFormatStatsDuration(t *testing.T) {
+	for _, tc := range []struct {
+		d    time.Duration
+		want string
+	}{
+		{d: 0, want: "0.0s"},
+		{d: 400 * time.Millisecond, want: "0.4s"},
+		{d: 22300 * time.Millisecond, want: "22.3s"},
+		{d: 59900 * time.Millisecond, want: "59.9s"},
+		{d: 442 * time.Second, want: "7m22s"},
+		// The shared compact format rounds to the nearest second.
+		{d: 2247900 * time.Millisecond, want: "37m28s"},
+		{d: 3977300 * time.Millisecond, want: "1h06m17s"},
+	} {
+		if got := FormatStatsDuration(tc.d); got != tc.want {
+			t.Fatalf("FormatStatsDuration(%v) = %q, want %q", tc.d, got, tc.want)
+		}
+	}
+}

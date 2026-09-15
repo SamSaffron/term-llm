@@ -167,7 +167,21 @@ func (f *telegramReplyFinalizer) persistMetrics(ctx context.Context) {
 		f.producedMu.Unlock()
 		if turns > 0 || metrics.ToolCalls != 0 || metrics.InputTokens != 0 || metrics.OutputTokens != 0 || metrics.CachedInputTokens != 0 || metrics.CacheWriteTokens != 0 {
 			f.manager.runStoreOpWithoutCancel(ctx, f.sess.meta.ID, "UpdateMetrics", func(storeCtx context.Context) error {
-				return f.manager.store.UpdateMetrics(storeCtx, f.sess.meta.ID, turns, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens)
+				if err := f.manager.store.UpdateMetrics(storeCtx, f.sess.meta.ID, turns, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens); err != nil {
+					return err
+				}
+				// Attribute only after the aggregate bucket accepted the same
+				// tokens, so the per-model rows can never exceed it.
+				return f.manager.store.RecordModelUsage(storeCtx, f.sess.meta.ID, session.ModelUsage{
+					Model:             f.sess.meta.Model,
+					Kind:              session.ModelUsageMain,
+					InputTokens:       metrics.InputTokens,
+					OutputTokens:      metrics.OutputTokens,
+					CachedInputTokens: metrics.CachedInputTokens,
+					CacheWriteTokens:  metrics.CacheWriteTokens,
+					LLMTurns:          turns,
+					ToolCalls:         metrics.ToolCalls,
+				})
 			})
 		}
 		if total, count := f.sess.runtime.Engine.ContextEstimateBaseline(); total > 0 {

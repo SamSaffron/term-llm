@@ -130,8 +130,14 @@ func TestServeStatsSubagentBillingAndTiming(t *testing.T) {
 	if got.Metrics.InputTokens != 30 || got.Metrics.OutputTokens != 84 {
 		t.Fatalf("parent totals %+v", got.Metrics)
 	}
-	if got.CostUSD == nil || math.Abs(*got.CostUSD-(*main.CostUSD+*guardian.CostUSD)) > 1e-12 {
-		t.Fatal("per-model pricing mismatch")
+	// Delegated requests keep their per-model price, but the runtime's own cost
+	// excludes them: each one also bills its own child session, which the stats
+	// endpoint adds separately. Counting both would double every delegated turn.
+	if main.CostUSD == nil || *main.CostUSD <= 0 {
+		t.Fatalf("delegated row lost its price: %+v", main)
+	}
+	if got.CostUSD == nil || math.Abs(*got.CostUSD-*guardian.CostUSD) > 1e-12 {
+		t.Fatalf("runtime cost = %v, want the session's own spend only", got.CostUSD)
 	}
 }
 
@@ -317,8 +323,19 @@ func TestServeStatsChildSinkDiscardAndActualModels(t *testing.T) {
 	want.AddSubagentUsageForModel("gpt-5.6-sol", 5, 0, 0, 0)
 	want.AddSubagentUsageForModel("gpt-5.6-luna", 2, 0, 0, 0)
 	price, err := ui.EstimateSessionStatsCost(want, "")
-	if err != nil || got.CostUSD == nil || *got.CostUSD != price {
-		t.Fatalf("child price %+v want %v err %v", got.CostUSD, price, err)
+	if err != nil {
+		t.Fatalf("price delegated usage: %v", err)
+	}
+	// Delegated spend belongs to the child sessions, so it is priced per model
+	// here and left out of the runtime's own cost.
+	var rows float64
+	for _, row := range got.Models {
+		if row.CostUSD != nil {
+			rows += *row.CostUSD
+		}
+	}
+	if rows != price || got.CostUSD != nil {
+		t.Fatalf("child price rows=%v want %v, runtime cost %v want none", rows, price, got.CostUSD)
 	}
 }
 
@@ -397,15 +414,19 @@ func TestServeStatsPricesRequestsBeforeModelAggregation(t *testing.T) {
 		rt.recordSubagentStats("child", tools.SubagentEvent{Type: tools.SubagentEventUsage, Model: "gpt-5.6-sol", InputTokens: 200000, OutputTokens: 10000})
 	}
 	got := rt.statsSnapshot()
-	if got.CostUSD == nil || math.Abs(*got.CostUSD-2.6) > 1e-9 {
-		t.Fatalf("per-request tier pricing %+v", got)
+	// Two 200k requests are priced separately, so the tier that a single
+	// aggregated 400k request would cross is never applied.
+	if len(got.Models) != 1 || got.Models[0].CostUSD == nil || math.Abs(*got.Models[0].CostUSD-2.0) > 1e-9 {
+		t.Fatalf("per-request tier pricing %+v", got.Models)
 	}
 	if len(got.Models) != 1 || got.Models[0].ActiveMS != nil {
 		t.Fatalf("usage without init must not fabricate timing: %+v", got.Models)
 	}
 	// An unknown Guardian model is never silently priced as the parent/child.
+	// Guardian spend is the session's own, so it reaches the runtime cost —
+	// unpriced here, which only marks the total as a lower bound.
 	rt.recordSubagentStats("child", tools.SubagentEvent{Type: tools.SubagentEventGuardian, Guardian: &tools.GuardianEvent{Usage: llm.Usage{InputTokens: 1}}})
-	if got := rt.statsSnapshot(); !got.CostPartial || got.CostUSD == nil || math.Abs(*got.CostUSD-2.6) > 1e-9 {
+	if got := rt.statsSnapshot(); !got.CostPartial || got.CostUSD != nil {
 		t.Fatalf("unknown Guardian fallback %+v", got)
 	}
 }
@@ -515,7 +536,9 @@ func TestServeStatsCompactionContextContract(t *testing.T) {
 
 func TestServeStatsConcurrentDiscardAndSnapshotIsolation(t *testing.T) {
 	rt := &serveRuntime{}
-	rt.recordSubagentStats("child", tools.SubagentEvent{Type: tools.SubagentEventUsage, Model: "unknown", InputTokens: 7})
+	// A distinct child model keeps the delegated row separable from the
+	// guardian row: per-model rows group every billing kind for one model.
+	rt.recordSubagentStats("child", tools.SubagentEvent{Type: tools.SubagentEventUsage, Model: "child-model", InputTokens: 7})
 	retained := rt.statsSnapshot()
 	want, err := json.Marshal(retained)
 	if err != nil {

@@ -3293,6 +3293,9 @@ func (s *serveServer) createRequestRuntime(ctx context.Context, request serveRun
 	}
 	if rt != nil {
 		rt.inputs.Store(request.Inputs)
+		if request.swapCandidate {
+			rt.swapCandidate.Store(true)
+		}
 	}
 	if !runtimeHasAgent(rt, agentName) {
 		if rt != nil {
@@ -3327,18 +3330,101 @@ func (s *serveServer) createRequestRuntime(ctx context.Context, request serveRun
 	return rt, nil
 }
 
+// persistedRuntimeIdentity returns the durable provider/model pair for a
+// session. Runtimes warmed by endpoints that carry no requested identity must
+// still bind the session's own provider: a runtime created with the global
+// default provider is cached for the session and later reused for chat turns,
+// which would silently run the session's model against the wrong provider.
+// The model is only reported alongside its provider so the pair stays coherent.
+func (s *serveServer) persistedRuntimeIdentity(ctx context.Context, sessionID string) (string, string) {
+	if s.store == nil || strings.TrimSpace(sessionID) == "" {
+		return "", ""
+	}
+	sess, err := s.store.Get(ctx, sessionID)
+	if err != nil && !errors.Is(err, session.ErrNotFound) {
+		// A transient lookup failure would otherwise mint a default-provider
+		// runtime for a session pinned elsewhere, which is the bug this
+		// resolution exists to prevent. Say so rather than failing silently.
+		log.Printf("[serve] durable runtime identity unavailable for %s: %v", sessionID, err)
+	}
+	if err != nil || sess == nil {
+		return "", ""
+	}
+	// Resolve rather than trust the stored spelling: the key is compared with a
+	// runtime's canonical key and handed to provider construction, and a
+	// provider that is no longer configured must read as unknown instead of
+	// failing every endpoint that warms a runtime.
+	provider := resolveSessionProviderKey(s.cfgRef, sess)
+	if provider == "" {
+		return "", ""
+	}
+	return provider, strings.TrimSpace(sess.Model)
+}
+
+// runtimeReplacementPredicate decides whether a cached runtime may keep serving
+// a session. Identity is durable: the agent, the prepared inputs and the
+// provider all have to match, because a later turn reuses whatever runtime is
+// installed — including one warmed by a status poll, which is how a session's
+// model came to run against the default provider.
+//
+// The manager only ever applies this to idle runtimes, so an in-flight turn,
+// side question or compaction is never yanked out from under its run.
+func runtimeReplacementPredicate(agentName string, selectedInputs *sessionInputSelection, provider string) func(*serveRuntime) bool {
+	return func(existing *serveRuntime) bool {
+		if !runtimeHasAgent(existing, agentName) || !runtimeHasSelectedInputs(existing, selectedInputs) {
+			return true
+		}
+		return !runtimeKeepsSessionIdentity(existing, provider)
+	}
+}
+
+// runtimeKeepsSessionIdentity reports whether an installed runtime may keep
+// serving a session whose durable provider is the given one.
+//
+// A swap candidate is kept even when the durable row still names another
+// provider: it is running ahead of the row it will write, and retiring it
+// mid-swap strands the swap. Every other runtime is held to the session's
+// durable provider, including one warmed by a status poll.
+func runtimeKeepsSessionIdentity(rt *serveRuntime, provider string) bool {
+	if rt != nil && rt.swapCandidate.Load() {
+		return true
+	}
+	return runtimeServesProvider(rt, provider)
+}
+
+// runtimeServesProvider reports whether a cached runtime may serve a request for
+// the given provider.
+//
+// A request that names no provider accepts any runtime, and a runtime that
+// cannot name its own provider is accepted rather than discarded: a runtime
+// built from configuration always carries a key (the default provider when no
+// identity was requested — the poisoned case this guards), so an empty one means
+// "unknown", and rebuilding on every unknown would thrash runtimes that are
+// perfectly able to serve the request. Keys are matched case-insensitively: a
+// persisted key and a resolved one need only name the same provider.
+func runtimeServesProvider(rt *serveRuntime, provider string) bool {
+	provider = strings.TrimSpace(provider)
+	existing := runtimeProviderKey(rt)
+	if provider == "" || existing == "" {
+		return true
+	}
+	return strings.EqualFold(existing, provider)
+}
+
 // metadataRuntime never elects a refresh owner. Durable identity still reaches
 // the typed factory so an already-selected pair survives metadata-only warming.
 func (s *serveServer) metadataRuntime(ctx context.Context, sessionID string) (*serveRuntime, error) {
-	request := serveRuntimeRequest{SessionID: sessionID, Agent: s.requestedRuntimeAgent(ctx, sessionID, "")}
+	provider, model := s.persistedRuntimeIdentity(ctx, sessionID)
+	request := serveRuntimeRequest{SessionID: sessionID, Provider: provider, Model: model, Agent: s.requestedRuntimeAgent(ctx, sessionID, "")}
 	return s.sessionMgr.GetOrCreateWith(ctx, sessionID, func(ctx context.Context) (*serveRuntime, error) { return s.createRequestRuntime(ctx, request) })
 }
 
 func (s *serveServer) runtimeForRequest(ctx context.Context, sessionID string) (*serveRuntime, bool, error) {
 	agentName := s.requestedRuntimeAgent(ctx, sessionID, "")
 	selectedInputs := processSessionInputs.ready(s.store, sessionID)
+	provider, model := s.persistedRuntimeIdentity(ctx, sessionID)
 	create := func(ctx context.Context) (*serveRuntime, error) {
-		return s.createRequestRuntime(ctx, serveRuntimeRequest{SessionID: sessionID, Provider: "", Model: "", Agent: agentName})
+		return s.createRequestRuntime(ctx, serveRuntimeRequest{SessionID: sessionID, Provider: provider, Model: model, Agent: agentName})
 	}
 	if sessionID == "" {
 		// Ephemeral stateless runtime (fresh per request for isolation)
@@ -3353,9 +3439,7 @@ func (s *serveServer) runtimeForRequest(ctx context.Context, sessionID string) (
 	// durable agent is authoritative across daemon restarts and metadata races:
 	// never reuse an idle runtime created for a different agent identity.
 	rt, err := s.sessionMgr.ReplaceIdleWith(ctx, sessionID,
-		func(existing *serveRuntime) bool {
-			return !runtimeHasAgent(existing, agentName) || !runtimeHasSelectedInputs(existing, selectedInputs)
-		},
+		runtimeReplacementPredicate(agentName, selectedInputs, provider),
 		create,
 	)
 	if err != nil {
@@ -3488,13 +3572,13 @@ func (s *serveServer) runtimeForProviderModelRequest(ctx context.Context, sessio
 			}
 		}
 	}
-	// Atomically replace an idle cached runtime whose agent identity no longer
-	// matches the durable session. This is the continuation path used after a
-	// daemon restart as well as for an already-warm web session.
+	// Atomically replace an idle cached runtime whose identity no longer matches
+	// the durable session. This is the continuation path used after a daemon
+	// restart as well as for an already-warm web session, so an idle runtime
+	// left on another provider is rebuilt here rather than rejected as a
+	// conflict by the checks below.
 	rt, err := s.sessionMgr.ReplaceIdleWith(ctx, sessionID,
-		func(existing *serveRuntime) bool {
-			return !runtimeHasAgent(existing, agentName) || !runtimeHasSelectedInputs(existing, selectedInputs)
-		},
+		runtimeReplacementPredicate(agentName, selectedInputs, providerName),
 		func(ctx context.Context) (*serveRuntime, error) {
 			return s.createRequestRuntime(ctx, serveRuntimeRequest{SessionID: sessionID, Provider: providerName, Model: modelName, Agent: agentName})
 		},

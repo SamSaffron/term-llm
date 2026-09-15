@@ -8,6 +8,8 @@ export interface SessionMetrics {
 }
 export interface StatsModel extends SessionMetrics {
   model: string;
+  /** Why the model was billed: main, guardian, compaction, side_question, handover, subagent. */
+  kinds?: string[];
   running?: boolean;
   active_ms?: number;
   tool_ms?: number;
@@ -24,8 +26,13 @@ export interface SessionStats {
   output_tokens_per_second?: number;
   cost_usd?: number;
   cost_partial?: boolean;
+  /** Recorded tokens that no per-model row claims (pre-attribution history). */
+  unattributed?: SessionMetrics;
   models: StatsModel[];
-  sections: Array<{ title: string; rows: Array<{ label: string; value: string }> }>;
+  sections: Array<{
+    title: string;
+    rows: Array<{ label: string; value: string; exact?: string }>;
+  }>;
   scope: 'runtime_local' | 'durable_history';
   unavailable?: string[];
 }
@@ -38,6 +45,8 @@ export interface StatsChild extends SessionMetrics {
   started_at?: number;
   ended_at?: number;
   approximate_times?: boolean;
+  cost_usd?: number;
+  cost_partial?: boolean;
 }
 
 import type { ExtensionStatus } from '../stores/extension-runtime';

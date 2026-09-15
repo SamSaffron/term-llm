@@ -42,7 +42,8 @@ const runtime: SessionStats = {
     rows: [{ label: `${title} detail`, value: 'retained detail' }],
   })),
 };
-function fixture(data: SessionStats = runtime, fail = false) {
+const childIDs: Array<{ id: string; cost?: number }> = [{ id: 'a' }, { id: 'b' }];
+function fixture(data: SessionStats = runtime, fail = false, childSessions = childIDs) {
   const store = new AppStore({
     prefix: '/ui',
     version: 'v1',
@@ -69,9 +70,10 @@ function fixture(data: SessionStats = runtime, fail = false) {
     return data;
   });
   store.endpoints.sessionChildren = vi.fn(async () => ({
-    children: ['a', 'b'].map((id) => ({
+    children: childSessions.map((child) => ({
       ...metrics,
-      session_id: id,
+      session_id: child.id,
+      cost_usd: child.cost,
       title: 'Prompt-bearing agent title',
       model: 'shared-model',
       state: 'complete',
@@ -100,13 +102,13 @@ describe('web stats', () => {
   it('shows all runtime sections, work time, performance and model billing without agent prose', async () => {
     const store = fixture();
     expect(await screen.findByText('31.3s')).toBeTruthy();
-    for (const text of ['22.4s', '8.9s', '0.5s', '42.0 tokens/s', '≥$0.1234'])
+    for (const text of ['22.4s', '8.9s', '0.5s', '42.0 tokens/s', '≥$0.12'])
       expect(screen.getByText(text)).toBeTruthy();
     for (const title of sections)
       expect(screen.getByRole('heading', { name: title, exact: true })).toBeTruthy();
-    const table = screen.getByRole('table');
+    const table = screen.getByRole('region', { name: 'Model usage' });
     expect(within(table).getByRole('rowheader', { name: /shared-model/ })).toBeTruthy();
-    expect(within(table).getByText('$0.0234')).toBeTruthy();
+    expect(within(table).getByText('$0.02')).toBeTruthy();
     expect(screen.queryByText('Prompt-bearing agent title')).toBeNull();
     fireEvent.click(screen.getByText('Refresh statistics'));
     expect(store.endpoints.sessionStats).toHaveBeenCalledTimes(2);
@@ -114,17 +116,142 @@ describe('web stats', () => {
   it('keeps durable history separate and does not invent historical cost or active time', async () => {
     fixture({ ...runtime, durable_metrics: { ...metrics, input_tokens: 9999 } });
     await screen.findByText('Recorded parent-session totals');
-    expect(screen.getByText('9,999')).toBeTruthy();
+    expect(screen.getByText('10K')).toBeTruthy();
     expect(screen.getByText(/do not add/)).toBeTruthy();
   });
-  it('groups historical child counters by model, with missing pricing and timing', async () => {
-    fixture({ metrics, scope: 'durable_history', models: [], sections: [] });
+  it('prices child sessions and omits only the columns they never record', async () => {
+    fixture({ metrics, scope: 'durable_history', models: [], sections: [] }, false, [
+      { id: 'a', cost: 1.5 },
+      { id: 'b', cost: 2.25 },
+    ]);
     await screen.findByText('Recorded history');
-    const table = screen.getByRole('table');
+    const table = screen.getByRole('region', { name: 'Child session usage' });
     expect(within(table).getAllByRole('rowheader')).toHaveLength(1);
-    expect(within(table).getByText('2,468')).toBeTruthy();
-    expect(within(table).getAllByText('—')).toHaveLength(3);
+    expect(within(table).getByText('2.5K')).toBeTruthy();
+    // Delegated spend is real money and is reported per model.
+    expect(within(table).getByText('$3.75')).toBeTruthy();
+    // Children keep no clock, so those columns are absent rather than dashed.
+    expect(within(table).queryAllByText('—')).toHaveLength(0);
+    for (const column of ['Time', 'Tools'])
+      expect(within(table).queryByRole('columnheader', { name: column })).toBeNull();
     expect(screen.queryByText('3.0s')).toBeNull();
+  });
+  it("reports the session's own recorded model, not only its children", async () => {
+    fixture({
+      metrics,
+      scope: 'durable_history',
+      models: [
+        {
+          ...metrics,
+          input_tokens: 5720,
+          cached_input_tokens: 35795091,
+          model: 'opus',
+          kinds: ['main', 'subagent'],
+        },
+      ],
+      sections: [],
+    });
+    await screen.findByText('Recorded history');
+    const models = screen.getByRole('region', { name: 'Model usage' });
+    expect(
+      within(models).getByRole('rowheader', { name: /opus\s*\(session, delegated\)/ }),
+    ).toBeTruthy();
+    const cacheRead = within(models).getByText('35.8M');
+    expect(cacheRead.getAttribute('title')).toBe('35,795,091');
+    // Recorded history retains no request boundaries, so it must not invent a price.
+    expect(within(models).getAllByText('—')).toHaveLength(3);
+    // Child counters stay in their own table so delegated tokens are not doubled.
+    expect(screen.getByRole('region', { name: 'Child session usage' })).toBeTruthy();
+  });
+  it('explains why an old session has no per-model rows', async () => {
+    fixture({ metrics, scope: 'durable_history', models: [], sections: [] });
+    expect(await screen.findByText(/No recorded per-model usage/)).toBeTruthy();
+    expect(screen.getByText(/only combined totals exist/)).toBeTruthy();
+  });
+  it('surfaces recorded tokens that no model row claims', async () => {
+    fixture({
+      metrics,
+      scope: 'durable_history',
+      models: [],
+      sections: [],
+      unattributed: { ...metrics, input_tokens: 955470 },
+    });
+    const heading = await screen.findByText('Not attributed to a model');
+    const section = heading.closest('section');
+    expect(section).toBeTruthy();
+    expect(within(section!).getByText('955.5K')).toBeTruthy();
+    // Turn and tool counts carry no model provenance, so they are not shown as
+    // an observed zero.
+    expect(within(section!).queryByText('Assistant turns')).toBeNull();
+    expect(within(section!).getByText(/already in the session totals/)).toBeTruthy();
+  });
+  it('drops headline tiles a session cannot report instead of showing dashes', async () => {
+    fixture({ metrics, scope: 'durable_history', models: [], sections: [], cost_usd: 12.5 });
+    await screen.findByText('Recorded history');
+    const terms = screen.queryAllByRole('term').map((node) => node.textContent);
+    for (const label of ['Active', 'Model', 'Tools', 'Time to first token', 'Output speed'])
+      expect(terms).not.toContain(label);
+    // Cost spans every runtime the session ever had, so it is still reported.
+    expect(screen.getByText('Est. cost (session)')).toBeTruthy();
+    expect(screen.getByText('$12.50')).toBeTruthy();
+  });
+  it('abbreviates every count and keeps the exact value on hover', async () => {
+    fixture({
+      ...runtime,
+      metrics: { ...metrics, input_tokens: 1234, cached_input_tokens: 79960407 },
+      models: [{ ...metrics, model: 'opus', cached_input_tokens: 79960407, cost_usd: 0.004 }],
+      sections: [
+        {
+          title: 'Current Context / Window Pressure',
+          rows: [
+            { label: 'Current context', value: '173.2K', exact: '173,217' },
+            { label: 'Context source', value: 'message estimate' },
+          ],
+        },
+      ],
+    });
+    const context = await screen.findByText('173.2K');
+    expect(context.getAttribute('title')).toBe('173,217');
+    // A row that is not a count keeps its text and gains no title.
+    expect(screen.getByText('message estimate').getAttribute('title')).toBeNull();
+    const table = screen.getByRole('region', { name: 'Model usage' });
+    const cacheRead = within(table).getByText('80M');
+    expect(cacheRead.getAttribute('title')).toBe('79,960,407');
+    // Sub-cent spend is still spend, but fractions of a cent do not help.
+    expect(within(table).getByText('<$0.01')).toBeTruthy();
+  });
+  it('opens without stealing focus for a refresh nobody asked for', async () => {
+    fixture();
+    await screen.findByText('31.3s');
+    const refresh = screen.getByText('Refresh statistics');
+    await waitFor(() =>
+      expect((document.activeElement as HTMLElement | null)?.getAttribute('role')).toBe('dialog'),
+    );
+    expect(document.activeElement).not.toBe(refresh);
+  });
+  it('reads long work times as minutes and hours, exact on hover', async () => {
+    fixture({
+      ...runtime,
+      active_ms: 3_977_300,
+      model_ms: 2_247_900,
+      tool_ms: 442_000,
+      ttft_ms: 400,
+    });
+    const active = await screen.findByText('1h06m');
+    expect(active.getAttribute('title')).toBe('3977.3s');
+    expect(screen.getByText('37m27s')).toBeTruthy();
+    expect(screen.getByText('7m22s')).toBeTruthy();
+    // Sub-second times keep their tenth: 0s would hide a fast first token.
+    expect(screen.getByText('0.4s')).toBeTruthy();
+  });
+  it('shows a dash, not zero, for a child nobody could price', async () => {
+    fixture({ metrics, scope: 'durable_history', models: [], sections: [] }, false, [
+      { id: 'unpriced' },
+    ]);
+    await screen.findByText('Recorded history');
+    const table = screen.getByRole('region', { name: 'Child session usage' });
+    expect(within(table).getByText('—')).toBeTruthy();
+    expect(within(table).queryByText('$0.00')).toBeNull();
   });
   it('reports fetch errors and offers retry', async () => {
     fixture(runtime, true);
@@ -141,9 +268,11 @@ describe('web stats', () => {
       sections: [],
     }));
     fireEvent.click(screen.getByText('Refresh statistics'));
-    await screen.findByText('No observed subagent usage.');
+    await screen.findByText(/No observed per-model usage\./);
     expect(screen.queryByText('NaN')).toBeNull();
-    expect(screen.getAllByText('0')).toHaveLength(6);
+    // Missing counters render as an omitted section, not a block of zeros.
+    expect(screen.queryByText('Token usage')).toBeNull();
+    expect(screen.queryByText('0')).toBeNull();
   });
   it('aborts stale requests when the session changes', async () => {
     const store = fixture();

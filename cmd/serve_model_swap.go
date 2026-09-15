@@ -235,7 +235,7 @@ func (s *serveServer) beginResponseModelSwap(ctx context.Context, sessionID stri
 		agentName = s.requestedRuntimeAgent(ctx, sessionID, "")
 	}
 	create := func(ctx context.Context) (*serveRuntime, error) {
-		return s.createRequestRuntime(ctx, serveRuntimeRequest{SessionID: sessionID, Provider: plan.requestedProvider, Model: plan.requestedModel, Agent: agentName, Inputs: previous.selectedSessionInputs()})
+		return s.createRequestRuntime(ctx, serveRuntimeRequest{SessionID: sessionID, Provider: plan.requestedProvider, Model: plan.requestedModel, Agent: agentName, Inputs: previous.selectedSessionInputs(), swapCandidate: true})
 	}
 	candidate, retainedPrevious, commit, rollback, err := s.sessionMgr.BeginSwap(ctx, sessionID, create)
 	if err != nil {
@@ -581,6 +581,7 @@ func (s *serveServer) recordModelSwapHandoverUsage(ctx context.Context, sessionI
 		log.Printf("[serve] failed to persist model-swap handover usage for %s: %v", sessionID, err)
 		return
 	}
+	recordStoreModelUsage(dbCtx, s.store, sessionID, model, session.ModelUsageHandover, usage, 1, 0)
 	if exec.previous != nil {
 		exec.previous.mu.Lock()
 		if meta := exec.previous.sessionMeta; meta != nil {

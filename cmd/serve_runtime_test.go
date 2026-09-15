@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -185,6 +186,7 @@ type serveRuntimeTestStore struct {
 	sessions                   map[string]*session.Session
 	messages                   map[string][]session.Message
 	current                    string
+	modelUsage                 map[string]session.ModelUsage
 	replaceCalls               int
 	replaceFailures            map[int]error
 	replaceMessagesHook        func(context.Context, string, []session.Message) error
@@ -738,6 +740,52 @@ func (s *serveRuntimeTestStore) UpdateMetrics(ctx context.Context, id string, ll
 	}
 	s.updateMetricsCalls++
 	return nil
+}
+
+func (s *serveRuntimeTestStore) RecordModelUsage(ctx context.Context, sessionID string, usage session.ModelUsage) error {
+	if usage.RecordsNoWork() {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.modelUsage == nil {
+		s.modelUsage = map[string]session.ModelUsage{}
+	}
+	model := usage.Model
+	if model == "" {
+		model = session.UnknownUsageModel
+	}
+	key := sessionID + "\x00" + model + "\x00" + string(usage.Kind)
+	row := s.modelUsage[key]
+	row.Model, row.Kind = model, usage.Kind
+	row.InputTokens += usage.InputTokens
+	row.OutputTokens += usage.OutputTokens
+	row.CachedInputTokens += usage.CachedInputTokens
+	row.CacheWriteTokens += usage.CacheWriteTokens
+	row.LLMTurns += usage.LLMTurns
+	row.ToolCalls += usage.ToolCalls
+	row.LLMMS += usage.LLMMS
+	row.ToolMS += usage.ToolMS
+	s.modelUsage[key] = row
+	return nil
+}
+
+func (s *serveRuntimeTestStore) ListModelUsage(ctx context.Context, sessionID string) ([]session.ModelUsage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []session.ModelUsage
+	for key, row := range s.modelUsage {
+		if strings.HasPrefix(key, sessionID+"\x00") {
+			out = append(out, row)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Model != out[j].Model {
+			return out[i].Model < out[j].Model
+		}
+		return out[i].Kind < out[j].Kind
+	})
+	return out, nil
 }
 
 func (s *serveRuntimeTestStore) UpdateContextEstimate(ctx context.Context, id string, lastTotalTokens, lastMessageCount int) error {

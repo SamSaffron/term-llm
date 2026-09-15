@@ -172,10 +172,14 @@ func (c *sessionInputCoordinator) ready(store session.Store, id string) *session
 }
 
 type serveRuntimeRequest struct {
-	settings                                      *SessionSettings
-	agentSkills                                   *string
-	approvalMode                                  *tools.ApprovalMode
-	fresh                                         bool
+	settings     *SessionSettings
+	agentSkills  *string
+	approvalMode *tools.ApprovalMode
+	fresh        bool
+	// swapCandidate marks the runtime a model swap is installing. Such a
+	// runtime deliberately runs a provider the session row does not name yet,
+	// so it must not be "corrected" back before its first turn persists.
+	swapCandidate                                 bool
 	SessionID, Provider, Model, Agent, RuntimeDir string
 	RefreshInputs                                 bool
 	Inputs                                        *sessionInputSelection

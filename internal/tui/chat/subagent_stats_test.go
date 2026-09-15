@@ -1,7 +1,7 @@
 package chat
 
 import (
-	"errors"
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -36,7 +36,7 @@ func TestSubagentStatsTotalsAndCompletedDetails(t *testing.T) {
 	send(tools.SubagentEvent{Type: tools.SubagentEventDone, Timestamp: start.Add(5 * time.Second)})
 	m.subagentTracker.Remove("child")
 	modal := m.renderStatsModal()
-	for _, want := range []string{"Subagent models · this process", "5.0s", "Est. cost"} {
+	for _, want := range []string{"Models · this process", "5.0s", "Est. cost"} {
 		if !strings.Contains(modal, want) {
 			t.Fatalf("missing %q in %s", want, modal)
 		}
@@ -98,15 +98,20 @@ func TestLateSubagentGuardianUsageRetainedWithoutResurrection(t *testing.T) {
 }
 
 func TestSubagentStatsCompactTable(t *testing.T) {
-	original := statsCostEstimator
-	statsCostEstimator = func(_ string, stats *ui.SessionStats) (float64, error) {
-		calls, _ := stats.UsageCalls()
-		if len(calls) > 0 && calls[0].Model == "priced-model" && calls[0].OutputTokens != 1 {
-			return 0.0068, nil
+	original := statsCallPricer
+	statsCallPricer = func(calls []ui.UsageCall, _ string) ui.SessionStatsCostEstimate {
+		var estimate ui.SessionStatsCostEstimate
+		for _, call := range calls {
+			if call.Model == "priced-model" && call.OutputTokens != 1 {
+				estimate.CostUSD += 0.0068
+				estimate.Priced++
+				continue
+			}
+			estimate.Unpriced++
 		}
-		return 0, errors.New("unpriced")
+		return estimate
 	}
-	t.Cleanup(func() { statsCostEstimator = original })
+	t.Cleanup(func() { statsCallPricer = original })
 	for _, width := range []int{104, 80, 56} {
 		t.Run(fmt.Sprint(width), func(t *testing.T) {
 			m := newTestChatModel(true)
@@ -116,13 +121,17 @@ func TestSubagentStatsCompactTable(t *testing.T) {
 			p.Prompt = "Run sleep 1 then return a lengthy description that must never enter the table"
 			start := time.Unix(100, 0)
 			m.subagentTracker.HandleInitAt("child", "anthropic", "priced-model", start)
+			// Route usage through the production path so the request ledger and
+			// the tracker agree, exactly as SubagentProgressMsg does at runtime.
+			m.recordChildEventUsage("child", tools.SubagentEvent{Type: tools.SubagentEventUsage, InputTokens: 12000, CachedInputTokens: 4600, OutputTokens: 157})
 			m.subagentTracker.HandleUsageEvent("child", tools.SubagentEvent{InputTokens: 12000, CachedInputTokens: 4600, OutputTokens: 157})
+			m.recordChildEventUsage("child", tools.SubagentEvent{Type: tools.SubagentEventUsage, Model: "priced-model", OutputTokens: 1})
 			m.subagentTracker.HandleUsageEvent("child", tools.SubagentEvent{Model: "priced-model", OutputTokens: 1})
 			m.subagentTracker.HandleToolStartAt("child", "shell", "shell", "", nil, start.Add(time.Second))
 			m.subagentTracker.HandleToolEndAt("child", "shell", "shell", true, start.Add(5900*time.Millisecond))
 			m.subagentTracker.MarkDoneAt("child", start.Add(10700*time.Millisecond))
 			var b strings.Builder
-			m.renderSubagentStats(&b)
+			m.renderModelStats(&b)
 			out := b.String()
 			for _, want := range []string{"priced-model", "Time", "Tools", "10.7s", "4.9s", "≥$", "≥ partial cost"} {
 				if !strings.Contains(out, want) {
@@ -150,18 +159,52 @@ func TestSubagentStatsCompactTable(t *testing.T) {
 func TestSubagentStatsOmitsEmptySection(t *testing.T) {
 	m := newTestChatModel(true)
 	var b strings.Builder
-	m.renderSubagentStats(&b)
+	m.renderModelStats(&b)
 	if b.Len() != 0 {
-		t.Fatalf("empty subagent section adds noise: %q", b.String())
+		t.Fatalf("empty model section adds noise: %q", b.String())
+	}
+}
+
+// The session's own model is usually the largest spender. Sourcing the table
+// from the subagent tracker hid it entirely.
+func TestModelStatsIncludesSessionOwnModel(t *testing.T) {
+	original := statsCallPricer
+	statsCallPricer = func(calls []ui.UsageCall, _ string) ui.SessionStatsCostEstimate {
+		var estimate ui.SessionStatsCostEstimate
+		for _, call := range calls {
+			estimate.CostUSD += float64(call.OutputTokens) * 0.01
+			estimate.Priced++
+		}
+		return estimate
+	}
+	t.Cleanup(func() { statsCallPricer = original })
+	m := newTestChatModel(true)
+	m.dialog.SetSize(104, 40)
+	m.subagentTracker = ui.NewSubagentTracker()
+	m.stats.SetModel("opus")
+	m.stats.AddUsage(5720, 149063, 35795091, 465243)
+	m.recordSubagentUsage(context.Background(), "haiku", llm.Usage{InputTokens: 300, OutputTokens: 22112})
+	var b strings.Builder
+	m.renderModelStats(&b)
+	out := b.String()
+	for _, want := range []string{"opus (session)", "haiku (delegated)", "$1490.6300", "$221.1200"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q:\n%s", want, out)
+		}
 	}
 }
 
 func TestSubagentStatsGroupsRunsByBillingModel(t *testing.T) {
-	original := statsCostEstimator
-	statsCostEstimator = func(_ string, stats *ui.SessionStats) (float64, error) {
-		return float64(stats.InputTokens) * 0.001, nil
+	original := statsCallPricer
+	statsCallPricer = func(calls []ui.UsageCall, _ string) ui.SessionStatsCostEstimate {
+		var estimate ui.SessionStatsCostEstimate
+		for _, call := range calls {
+			estimate.CostUSD += float64(call.InputTokens) * 0.001
+			estimate.Priced++
+		}
+		return estimate
 	}
-	t.Cleanup(func() { statsCostEstimator = original })
+	t.Cleanup(func() { statsCallPricer = original })
 	m := newTestChatModel(true)
 	m.dialog.SetSize(104, 40)
 	m.subagentTracker = ui.NewSubagentTracker()
@@ -170,11 +213,14 @@ func TestSubagentStatsGroupsRunsByBillingModel(t *testing.T) {
 		m.subagentTracker.GetOrCreate(id, id)
 		m.subagentTracker.HandleInitAt(id, "provider", "shared-model", start)
 		m.subagentTracker.HandleUsageEvent(id, tools.SubagentEvent{Model: "shared-model", InputTokens: 100, OutputTokens: 10})
+		m.recordChildEventUsage(id, tools.SubagentEvent{Type: tools.SubagentEventUsage, Model: "shared-model", InputTokens: 100, OutputTokens: 10})
 		m.subagentTracker.MarkDoneAt(id, start.Add(5*time.Second))
 	}
-	m.subagentTracker.HandleGuardianEvent("reviewer", tools.GuardianEvent{Model: "guardian-model", Usage: llm.Usage{InputTokens: 50, OutputTokens: 5}})
+	guardian := tools.GuardianEvent{Model: "guardian-model", Usage: llm.Usage{InputTokens: 50, OutputTokens: 5}}
+	m.subagentTracker.HandleGuardianEvent("reviewer", guardian)
+	m.recordChildEventUsage("reviewer", tools.SubagentEvent{Type: tools.SubagentEventGuardian, Guardian: &guardian})
 	var b strings.Builder
-	m.renderSubagentStats(&b)
+	m.renderModelStats(&b)
 	out := b.String()
 	if strings.Count(out, "shared-model") != 1 || strings.Count(out, "guardian-model") != 1 {
 		t.Fatalf("models not grouped:\n%s", out)
@@ -188,5 +234,26 @@ func TestSubagentStatsGroupsRunsByBillingModel(t *testing.T) {
 		if strings.Contains(out, name) {
 			t.Fatalf("agent leaked into model breakdown:\n%s", out)
 		}
+	}
+}
+
+// The TUI modal had the same wall of all-zero helper blocks as the web modal.
+func TestStatsModalOmitsSectionsWithNoRecordedActivity(t *testing.T) {
+	m := newTestChatModel(true)
+	m.sess = &session.Session{ID: "quiet"}
+	modal := m.renderStatsModal()
+	for _, absent := range []string{"Private Side-Question Usage", "Guardian Usage", "Compactions"} {
+		if strings.Contains(modal, absent) {
+			t.Fatalf("%q emitted with no activity:\n%s", absent, modal)
+		}
+	}
+
+	m.recordGuardianUsage(context.Background(), "haiku", llm.Usage{InputTokens: 7238, OutputTokens: 12})
+	modal = m.renderStatsModal()
+	if !strings.Contains(modal, "Guardian Usage") {
+		t.Fatalf("guardian section missing after a guardian review:\n%s", modal)
+	}
+	if strings.Contains(modal, "Private Side-Question Usage") {
+		t.Fatalf("side-question section emitted with no activity:\n%s", modal)
 	}
 }

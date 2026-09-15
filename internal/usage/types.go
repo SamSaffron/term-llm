@@ -21,6 +21,11 @@ type UsageEntry struct {
 	CostUSD             float64 // Pre-calculated cost if available
 	Provider            string  // Usage data source, such as ProviderClaudeCode or ProviderTermLLM
 	TrackedExternallyBy string  // External tracker name, or empty for direct API usage
+	// PreAggregated marks counters summed over many requests. Long-context
+	// pricing applies per request, so a summed bucket must never be repriced at
+	// the tiered rate: a session of small requests would be billed as one
+	// enormous one, at up to double the real rate.
+	PreAggregated bool
 }
 
 // TotalTokens returns the sum of all token types

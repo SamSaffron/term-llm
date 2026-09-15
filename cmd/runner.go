@@ -757,6 +757,11 @@ func (r *cmdRunner) runProgressive(ctx context.Context, runtime *serveRuntime, e
 			}
 			if err := persistStore.UpdateMetrics(cbCtx, sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens); err != nil {
 				log.Printf("[runner] session UpdateMetrics failed for %s: %v", sess.ID, err)
+			} else {
+				recordStoreModelUsage(cbCtx, persistStore, sess.ID, sess.Model, session.ModelUsageMain, llm.Usage{
+					InputTokens: metrics.InputTokens, OutputTokens: metrics.OutputTokens,
+					CachedInputTokens: metrics.CachedInputTokens, CacheWriteTokens: metrics.CacheWriteTokens,
+				}, 1, metrics.ToolCalls)
 			}
 			if total, count := engine.ContextEstimateBaseline(); total > 0 {
 				if err := persistStore.UpdateContextEstimate(cbCtx, sess.ID, total, count); err != nil {

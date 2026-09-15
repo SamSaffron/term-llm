@@ -17,6 +17,10 @@ import (
 
 var statsCostEstimator = estimateStatsCost
 
+// statsCallPricer is the seam tests replace to price retained requests without
+// touching the real price table.
+var statsCallPricer = ui.PriceUsageCalls
+
 func (m *Model) exitStatsSummary() string {
 	if m == nil || !m.showStats || m.stats == nil || m.stats.LLMCallCount <= 0 {
 		return ""
@@ -176,16 +180,22 @@ func (m *Model) renderStatsModal() string {
 		if inputCategories > 0 {
 			b.WriteString(fmt.Sprintf("Cache hit rate:     %.1f%% (cache read / (fresh + read + write input))\n", percent(m.stats.CachedInputTokens, inputCategories)))
 		}
-		if cost, err := statsCostEstimator(m.statsPricingModel(), m.stats); err == nil {
-			b.WriteString(fmt.Sprintf("Estimated cost:     $%.4f\n", cost))
-		} else {
+		// A single unknown model must not blank the whole session's cost.
+		estimate, err := ui.EstimateSessionStatsCostDetailed(m.stats, m.statsPricingModel())
+		switch {
+		case err != nil || estimate.Priced == 0:
 			b.WriteString("Estimated cost:     unavailable\n")
+		case estimate.Partial():
+			b.WriteString(fmt.Sprintf("Estimated cost:     ≥$%.4f (%d of %d requests unpriced)\n",
+				estimate.CostUSD, estimate.Unpriced, estimate.Unpriced+estimate.Priced))
+		default:
+			b.WriteString(fmt.Sprintf("Estimated cost:     $%.4f\n", estimate.CostUSD))
 		}
 	} else {
 		b.WriteString("No token usage recorded yet.\n")
 	}
 
-	m.renderSubagentStats(&b)
+	m.renderModelStats(&b)
 
 	var sideUsage llm.Usage
 	sideRequests := 0
@@ -202,22 +212,24 @@ func (m *Model) renderStatsModal() string {
 			})
 		}
 	}
-	b.WriteString("\nPrivate Side-Question Usage\n")
-	b.WriteString(fmt.Sprintf("Requests:           %d\n", sideRequests))
-	b.WriteString(fmt.Sprintf("Successful history: %d\n", len(m.sideQuestion.History)))
-	b.WriteString(fmt.Sprintf("Fresh input tokens: %s\n", ui.FormatTokenCount(sideUsage.InputTokens)))
-	b.WriteString(fmt.Sprintf("Cache read tokens:  %s\n", ui.FormatTokenCount(sideUsage.CachedInputTokens)))
-	b.WriteString(fmt.Sprintf("Output tokens:      %s\n", ui.FormatTokenCount(sideUsage.OutputTokens)))
+	// Helper sections are omitted entirely when the helper never ran: a wall of
+	// zeros buries the counters that do carry data.
+	if sideRequests > 0 || len(m.sideQuestion.History) > 0 {
+		b.WriteString("\nPrivate Side-Question Usage\n")
+		b.WriteString(fmt.Sprintf("Requests:           %d\n", sideRequests))
+		b.WriteString(fmt.Sprintf("Successful history: %d\n", len(m.sideQuestion.History)))
+		b.WriteString(fmt.Sprintf("Fresh input tokens: %s\n", ui.FormatTokenCount(sideUsage.InputTokens)))
+		b.WriteString(fmt.Sprintf("Cache read tokens:  %s\n", ui.FormatTokenCount(sideUsage.CachedInputTokens)))
+		b.WriteString(fmt.Sprintf("Output tokens:      %s\n", ui.FormatTokenCount(sideUsage.OutputTokens)))
+	}
 
-	b.WriteString("\nGuardian Usage\n")
-	if m.stats != nil {
+	if m.stats != nil && m.stats.GuardianLLMCallCount > 0 {
+		b.WriteString("\nGuardian Usage\n")
 		b.WriteString(fmt.Sprintf("Requests:           %d\n", m.stats.GuardianLLMCallCount))
 		b.WriteString(fmt.Sprintf("Fresh input tokens: %s\n", ui.FormatTokenCount(m.stats.GuardianInputTokens)))
 		b.WriteString(fmt.Sprintf("Cache read tokens:  %s\n", ui.FormatTokenCount(m.stats.GuardianCachedInputTokens)))
 		b.WriteString(fmt.Sprintf("Cache write tokens: %s\n", ui.FormatTokenCount(m.stats.GuardianCacheWriteTokens)))
 		b.WriteString(fmt.Sprintf("Output tokens:      %s\n", ui.FormatTokenCount(m.stats.GuardianOutputTokens)))
-	} else {
-		b.WriteString("Requests:           0\n")
 	}
 
 	b.WriteString("\nCumulative Session Activity\n")
@@ -231,21 +243,24 @@ func (m *Model) renderStatsModal() string {
 	}
 	b.WriteString(fmt.Sprintf("Active messages:    %d (user %d, assistant %d, tool %d)\n", len(activeMessages), roleCounts[string(llm.RoleUser)], roleCounts[string(llm.RoleAssistant)], roleCounts[string(llm.RoleTool)]))
 
-	b.WriteString("\nCompactions\n")
 	compactionCount := 0
 	compactionSeq := -1
 	if m.sess != nil {
 		compactionCount = m.sess.CompactionCount
 		compactionSeq = m.sess.CompactionSeq
 	}
-	b.WriteString(fmt.Sprintf("Compactions:        %d\n", compactionCount))
-	if m.stats != nil && m.stats.CompactionLLMCallCount > 0 {
-		b.WriteString(fmt.Sprintf("LLM cost:           %s\n", formatCompactionUsage(m.stats)))
-	}
-	if session.HasCompactionBoundary(m.sess) || m.compactionIdx > 0 {
-		b.WriteString(fmt.Sprintf("Last boundary:      seq %d (%d messages hidden from active context)\n", compactionSeq, m.compactionIdx))
-	} else {
-		b.WriteString("Last boundary:      none\n")
+	compacted := session.HasCompactionBoundary(m.sess) || m.compactionIdx > 0
+	if compactionCount > 0 || compacted || (m.stats != nil && m.stats.CompactionLLMCallCount > 0) {
+		b.WriteString("\nCompactions\n")
+		b.WriteString(fmt.Sprintf("Compactions:        %d\n", compactionCount))
+		if m.stats != nil && m.stats.CompactionLLMCallCount > 0 {
+			b.WriteString(fmt.Sprintf("LLM cost:           %s\n", formatCompactionUsage(m.stats)))
+		}
+		if compacted {
+			b.WriteString(fmt.Sprintf("Last boundary:      seq %d (%d messages hidden from active context)\n", compactionSeq, m.compactionIdx))
+		} else {
+			b.WriteString("Last boundary:      none\n")
+		}
 	}
 
 	return b.String()
@@ -256,6 +271,40 @@ func sessionIDOf(sess *session.Session) string {
 		return ""
 	}
 	return sess.ID
+}
+
+// statsUsageModel names the session's own billing model for durable attribution.
+// Unlike statsPricingModel it keeps the effort suffix, so recorded history can
+// distinguish the variants a session actually ran.
+func (m *Model) statsUsageModel() string {
+	if model := strings.TrimSpace(m.modelName); model != "" {
+		return model
+	}
+	if m.sess != nil {
+		return strings.TrimSpace(m.sess.Model)
+	}
+	return ""
+}
+
+// recordDurableModelUsage attributes a share of the session's durable totals to
+// the model that actually spent it. UpdateMetrics keeps only the aggregate
+// session bucket, which mixes main turns with guardian, compaction, handover
+// and delegated work; without this row the session's own model is absent from
+// every recorded-history breakdown.
+func (m *Model) recordDurableModelUsage(ctx context.Context, sessionID, model string, kind session.ModelUsageKind, u llm.Usage, llmTurns, toolCalls int) {
+	if m.store == nil || sessionID == "" || u.BillableCountersZero() {
+		return
+	}
+	_ = m.store.RecordModelUsage(ctx, sessionID, session.ModelUsage{
+		Model:             model,
+		Kind:              kind,
+		InputTokens:       u.InputTokens,
+		OutputTokens:      u.OutputTokens,
+		CachedInputTokens: u.CachedInputTokens,
+		CacheWriteTokens:  u.CacheWriteTokens,
+		LLMTurns:          llmTurns,
+		ToolCalls:         toolCalls,
+	})
 }
 
 type compactionAppliedMsg struct {
@@ -278,7 +327,9 @@ func (m *Model) recordGuardianUsage(ctx context.Context, model string, u llm.Usa
 	m.stats.AddGuardianUsageForModel(model, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
 	sessionID := sessionIDOf(m.sess)
 	if m.store != nil && sessionID != "" {
-		_ = m.store.UpdateMetrics(ctx, sessionID, 0, 0, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
+		if err := m.store.UpdateMetrics(ctx, sessionID, 0, 0, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens); err == nil {
+			m.recordDurableModelUsage(ctx, sessionID, model, session.ModelUsageGuardian, u, 1, 0)
+		}
 	}
 	if m.sess != nil {
 		m.sess.InputTokens += u.InputTokens
@@ -297,7 +348,9 @@ func (m *Model) recordHandoverUsage(ctx context.Context, sessionID, model string
 	}
 	m.stats.AddHandoverUsageForModel(model, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
 	if m.store != nil && sessionID != "" {
-		_ = m.store.UpdateMetrics(ctx, sessionID, 0, 0, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
+		if err := m.store.UpdateMetrics(ctx, sessionID, 0, 0, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens); err == nil {
+			m.recordDurableModelUsage(ctx, sessionID, model, session.ModelUsageHandover, u, 1, 0)
+		}
 	}
 	if m.sess != nil && (sessionID == "" || m.sess.ID == sessionID) {
 		m.sess.InputTokens += u.InputTokens
@@ -312,7 +365,11 @@ func (m *Model) recordPathNoteUsage(ctx context.Context, sessionID string, u llm
 		return
 	}
 	if m.store != nil && sessionID != "" {
-		_ = m.store.UpdateMetrics(ctx, sessionID, 0, 0, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
+		if err := m.store.UpdateMetrics(ctx, sessionID, 0, 0, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens); err == nil {
+			// Path notes run on the session's own model; there is no separate
+			// helper model to attribute them to.
+			m.recordDurableModelUsage(ctx, sessionID, m.statsUsageModel(), session.ModelUsageHandover, u, 1, 0)
+		}
 	}
 	if m.sess != nil && (sessionID == "" || m.sess.ID == sessionID) {
 		m.sess.InputTokens += u.InputTokens
@@ -328,7 +385,9 @@ func (m *Model) recordCompactionUsage(ctx context.Context, sessionID, model stri
 	}
 	m.stats.AddCompactionUsageForModel(model, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
 	if !u.BillableCountersZero() && m.store != nil && sessionID != "" {
-		_ = m.store.UpdateMetrics(ctx, sessionID, 0, 0, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
+		if err := m.store.UpdateMetrics(ctx, sessionID, 0, 0, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens); err == nil {
+			m.recordDurableModelUsage(ctx, sessionID, model, session.ModelUsageCompaction, u, 1, 0)
+		}
 	}
 	if !u.BillableCountersZero() && m.sess != nil && (sessionID == "" || m.sess.ID == sessionID) {
 		m.sess.InputTokens += u.InputTokens
@@ -491,27 +550,36 @@ func nonEmpty(values ...string) string {
 	return "unknown"
 }
 
-func subagentStatsCost(calls []ui.SubagentUsageCall) (string, bool, bool) {
-	known, priced, unpriced := 0.0, 0, 0
-	for _, call := range calls {
-		stats := ui.NewSessionStats()
-		u := call.Usage
-		stats.AddSubagentUsageForModel(call.Model, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
-		if cost, err := statsCostEstimator("", stats); err == nil {
-			known += cost
-			priced++
-		} else {
-			unpriced++
-		}
-	}
-	if priced == 0 {
+// modelStatsCost prices one model's retained requests. Each request is priced
+// on its own because tiered rates apply per request, but the price table is
+// resolved once for the whole row.
+// fallbackModel prices the session's own turns that completed before a model
+// switch was observed; helper and delegated calls never borrow it.
+func modelStatsCost(calls []ui.UsageCall, fallbackModel string) (string, bool, bool) {
+	estimate := statsCallPricer(calls, fallbackModel)
+	if estimate.Priced == 0 {
 		return "—", false, true
 	}
-	cost := fmt.Sprintf("$%.4f", known)
-	if unpriced > 0 {
+	cost := fmt.Sprintf("$%.4f", estimate.CostUSD)
+	if estimate.Partial() {
 		return "≥" + cost, true, false
 	}
 	return cost, false, false
+}
+
+// modelStatsKinds summarises why a model was billed, in a stable order.
+func modelStatsKinds(kinds map[string]bool) string {
+	labels := map[string]string{
+		"main": "session", "guardian": "guardian", "compaction": "compaction",
+		"side_question": "side question", "handover": "handover", "subagent": "delegated",
+	}
+	var present []string
+	for _, kind := range []string{"main", "guardian", "compaction", "side_question", "handover", "subagent"} {
+		if kinds[kind] {
+			present = append(present, labels[kind])
+		}
+	}
+	return strings.Join(present, ", ")
 }
 
 func subagentStatsLegend(runCount int, running, partial, unavailable bool) string {
@@ -531,19 +599,29 @@ func subagentStatsLegend(runCount int, running, partial, unavailable bool) strin
 	return strings.Join(legend, " · ")
 }
 
-// renderSubagentStats reports observed process-local runs separately from restored totals.
-func (m *Model) renderSubagentStats(b *strings.Builder) {
+// renderModelStats reports observed process-local spend per model.
+//
+// Tokens come from the retained request ledger rather than the subagent
+// tracker. The tracker only knows about delegated runs, so sourcing the table
+// from it hid the session's own model entirely — usually the largest spender.
+// The tracker still supplies timing, which exists only for delegated runs.
+func (m *Model) renderModelStats(b *strings.Builder) {
+	var calls []ui.UsageCall
+	if m.stats != nil {
+		calls, _ = m.stats.UsageCalls()
+	}
 	var runs []ui.SubagentProgress
 	if m.subagentTracker != nil {
 		runs = m.subagentTracker.Snapshots()
 	}
-	if len(runs) == 0 {
+	if len(calls) == 0 && len(runs) == 0 {
 		return
 	}
 	type modelStats struct {
 		model          string
 		usage          llm.Usage
-		calls          []ui.SubagentUsageCall
+		calls          []ui.UsageCall
+		kinds          map[string]bool
 		elapsed, tools time.Duration
 		timed, running bool
 	}
@@ -554,12 +632,21 @@ func (m *Model) renderSubagentStats(b *strings.Builder) {
 		if found := byModel[model]; found != nil {
 			return found
 		}
-		row := &modelStats{model: model}
+		row := &modelStats{model: model, kinds: map[string]bool{}}
 		byModel[model] = row
 		models = append(models, row)
 		return row
 	}
 	now := time.Now()
+	for _, call := range calls {
+		row := group(call.Model)
+		row.usage.Add(llm.Usage{
+			InputTokens: call.InputTokens, OutputTokens: call.OutputTokens,
+			CachedInputTokens: call.CachedInputTokens, CacheWriteTokens: call.CacheWriteTokens,
+		})
+		row.calls = append(row.calls, call)
+		row.kinds[call.Kind()] = true
+	}
 	for _, run := range runs {
 		row := group(run.ResolvedModel)
 		elapsed, tools := run.Timing(now)
@@ -567,13 +654,8 @@ func (m *Model) renderSubagentStats(b *strings.Builder) {
 		row.tools += tools
 		row.timed = true
 		row.running = row.running || !run.Done
-		for _, call := range run.UsageCalls {
-			owner := group(call.Model)
-			owner.usage.Add(call.Usage)
-			owner.calls = append(owner.calls, call)
-		}
 	}
-	b.WriteString("\nSubagent models · this process\n")
+	b.WriteString("\nModels · this process\n")
 	width := 96
 	if m.dialog != nil {
 		width = m.dialog.contentWidth() - 4
@@ -617,13 +699,16 @@ func (m *Model) renderSubagentStats(b *strings.Builder) {
 	partial, running, unavailable := false, false, false
 	for _, row := range models {
 		name := row.model
+		if kinds := modelStatsKinds(row.kinds); kinds != "" {
+			name += " (" + kinds + ")"
+		}
 		if row.running {
 			name = ansi.Truncate(name, max(1, widths[0]-1), "…") + "*"
 			running = true
 		}
 		cells := []string{name}
 		if row.timed {
-			cells = append(cells, fmt.Sprintf("%.1fs", row.elapsed.Seconds()), fmt.Sprintf("%.1fs", row.tools.Seconds()))
+			cells = append(cells, ui.FormatStatsDuration(row.elapsed), ui.FormatStatsDuration(row.tools))
 		} else {
 			cells = append(cells, "—", "—")
 		}
@@ -633,7 +718,7 @@ func (m *Model) renderSubagentStats(b *strings.Builder) {
 		} else {
 			cells = append(cells, ui.FormatTokenCount(u.InputTokens+u.CachedInputTokens+u.CacheWriteTokens+u.OutputTokens))
 		}
-		cost, costPartial, costUnavailable := subagentStatsCost(row.calls)
+		cost, costPartial, costUnavailable := modelStatsCost(row.calls, m.statsPricingModel())
 		partial = partial || costPartial
 		unavailable = unavailable || costUnavailable
 		writeRow(append(cells, cost))
@@ -653,7 +738,9 @@ func (m *Model) recordSubagentUsage(ctx context.Context, model string, u llm.Usa
 	m.stats.AddSubagentUsageForModel(model, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
 	sessionID := sessionIDOf(m.sess)
 	if m.store != nil && sessionID != "" {
-		_ = m.store.UpdateMetrics(ctx, sessionID, 0, 0, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
+		if err := m.store.UpdateMetrics(ctx, sessionID, 0, 0, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens); err == nil {
+			m.recordDurableModelUsage(ctx, sessionID, model, session.ModelUsageSubagent, u, 1, 0)
+		}
 	}
 	if m.sess != nil {
 		m.sess.InputTokens += u.InputTokens

@@ -422,4 +422,4 @@ CREATE INDEX IF NOT EXISTS session_attention_unseen
     WHERE latest_attention_seq > seen_through_seq;
 `
 
-const canonicalSessionSchema = schema + projectsSchemaV47 + changeLogSchemaV52 + attentionSchemaV54 + rushSchemaV57
+const canonicalSessionSchema = schema + projectsSchemaV47 + changeLogSchemaV52 + attentionSchemaV54 + rushSchemaV57 + modelUsageSchemaV58

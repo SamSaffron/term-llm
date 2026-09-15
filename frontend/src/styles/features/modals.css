@@ -61,6 +61,14 @@
   overscroll-behavior: contain;
 }
 
+/* The dialog is a programmatic focus target, not something the user tabs to:
+   opening one would otherwise paint a focus ring around the whole modal. The
+   focus trap and the ring on the controls inside it are unaffected. */
+.modal:focus,
+.modal:focus-visible {
+  outline: none;
+}
+
 .modal h2 {
   margin: 0 0 0.8rem;
   font-size: 1.05rem;

@@ -32,6 +32,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/samsaffron/term-llm/internal/usage"
 	webrtcpkg "github.com/samsaffron/term-llm/internal/webrtc"
 	"github.com/samsaffron/term-llm/internal/widgets"
 	"github.com/spf13/cobra"
@@ -1474,6 +1475,9 @@ func (s *serveServer) Start() (startErr error) {
 	if s.cfg.ui {
 		s.prewarmUIAssetCache()
 	}
+	// Cost estimates read a cached rate card; refreshing it here keeps a
+	// long-running server from pricing months-old rates.
+	usage.RefreshDirectoryInBackground(context.Background())
 
 	errCh := make(chan error, 1)
 	go func() {

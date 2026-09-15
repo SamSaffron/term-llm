@@ -340,6 +340,7 @@ func (p *serveRunPersistence) applyCompaction(cbCtx context.Context, result *llm
 			p.rt.sessionMeta.OutputTokens += result.Usage.OutputTokens
 			p.rt.sessionMeta.CachedInputTokens += result.Usage.CachedInputTokens
 			p.rt.sessionMeta.CacheWriteTokens += result.Usage.CacheWriteTokens
+			p.rt.recordDurableModelUsage(cbCtx, p.rt.sessionMeta.ID, result.Model, session.ModelUsageCompaction, result.Usage, 1, 0)
 		}
 	}
 	if !handledByPlatform && len(compacted) == 0 {

@@ -104,6 +104,7 @@ func (rt *serveRuntime) compactSession(ctx context.Context, sessionID string) (*
 			rt.sessionMeta.OutputTokens += result.Usage.OutputTokens
 			rt.sessionMeta.CachedInputTokens += result.Usage.CachedInputTokens
 			rt.sessionMeta.CacheWriteTokens += result.Usage.CacheWriteTokens
+			rt.recordDurableModelUsage(ctx, rt.sessionMeta.ID, result.Model, session.ModelUsageCompaction, result.Usage, 1, 0)
 		}
 	}
 	if rt.engine != nil {

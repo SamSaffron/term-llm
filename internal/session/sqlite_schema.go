@@ -147,7 +147,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // Increment when adding new migrations.
 const (
 	projectSchemaVersion = 47
-	schemaVersion        = 57
+	schemaVersion        = 59
 )
 
 // migration represents a schema migration.
@@ -1236,6 +1236,41 @@ var migrations = []migration{
 		up: func(db schemaExecutor) error {
 			_, err := db.Exec(rushSchemaV57)
 			return err
+		},
+	},
+	{
+		version:     58,
+		description: "durable per-model usage attribution",
+		up: func(db schemaExecutor) error {
+			_, err := db.Exec(modelUsageSchemaV58)
+			return err
+		},
+	},
+	{
+		version:     59,
+		description: "durable per-model timing",
+		up: func(db schemaExecutor) error {
+			// An intermediate build stamped version 58 without ever creating
+			// the table, so recreate it before altering. The DDL is
+			// CREATE TABLE IF NOT EXISTS and already carries both columns.
+			if _, err := db.Exec(modelUsageSchemaV58); err != nil {
+				return err
+			}
+			// Fresh databases already carry these columns from the canonical
+			// schema, so the migration has to be idempotent.
+			for _, column := range []string{"llm_ms", "tool_ms"} {
+				exists, err := sqliteutil.ColumnExists(db, "session_model_usage", column)
+				if err != nil {
+					return err
+				}
+				if exists {
+					continue
+				}
+				if _, err := db.Exec("ALTER TABLE session_model_usage ADD COLUMN " + column + " INTEGER NOT NULL DEFAULT 0"); err != nil {
+					return err
+				}
+			}
+			return nil
 		},
 	},
 }

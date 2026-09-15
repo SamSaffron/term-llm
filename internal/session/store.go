@@ -75,6 +75,11 @@ type Store interface {
 
 	// Metrics operations (for incremental session saving)
 	UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int) error
+	// RecordModelUsage attributes a share of the session totals to one model.
+	// UpdateMetrics keeps the undifferentiated session bucket; this keeps the
+	// per-model breakdown that recorded history cannot otherwise reconstruct.
+	RecordModelUsage(ctx context.Context, sessionID string, usage ModelUsage) error
+	ListModelUsage(ctx context.Context, sessionID string) ([]ModelUsage, error)
 	UpdateContextEstimate(ctx context.Context, id string, lastTotalTokens, lastMessageCount int) error
 	UpdateStatus(ctx context.Context, id string, status SessionStatus) error
 	IncrementUserTurns(ctx context.Context, id string) error

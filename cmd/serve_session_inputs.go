@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,6 +37,11 @@ func (s *serveServer) prepareUIRuntime(ctx context.Context, request serveRuntime
 	}
 	defer ticket.fail()
 	request.Inputs = ticket.selected()
+	// Reuse is judged against the session's durable provider, never the
+	// requested one: a mid-conversation model swap deliberately asks for a
+	// different provider and owns the transition itself, while a runtime that
+	// disagrees with the durable session is the poisoned one that must go.
+	durableProvider, durableModel := s.persistedRuntimeIdentity(ctx, request.SessionID)
 	// A ready selection is not an idle-only operation. Follow-ups and side
 	// activity must reach their normal admission paths without preparing again.
 	// Later execution still verifies runtime identity under the admission pin.
@@ -44,7 +50,7 @@ func (s *serveServer) prepareUIRuntime(ctx context.Context, request serveRuntime
 		m.mu.Lock()
 		current := m.sessions[request.SessionID]
 		_, reserved := m.reserved.Load(request.SessionID)
-		if !m.closed && !reserved && m.creating[request.SessionID] == nil && ticket.current() && runtimeHasSelectedInputs(current, request.Inputs) {
+		if !m.closed && !reserved && m.creating[request.SessionID] == nil && ticket.current() && runtimeKeepsSessionIdentity(current, durableProvider) && runtimeHasSelectedInputs(current, request.Inputs) {
 			current.Touch()
 			m.mu.Unlock()
 			return current, nil
@@ -59,7 +65,7 @@ func (s *serveServer) prepareUIRuntime(ctx context.Context, request serveRuntime
 	if !ticket.current() {
 		return nil, errServeSessionBusy
 	}
-	if old != nil && request.Inputs != nil && old.inputs.Load() == request.Inputs {
+	if old != nil && request.Inputs != nil && old.inputs.Load() == request.Inputs && runtimeKeepsSessionIdentity(old, durableProvider) {
 		old.Touch()
 		return old, nil
 	}
@@ -86,8 +92,19 @@ func (s *serveServer) prepareUIRuntime(ctx context.Context, request serveRuntime
 		defer m.retireRuntime(evicted)
 	}
 	if old != nil && !request.fresh {
-		request.Provider = runtimeProviderKey(old)
-		request.Model = old.defaultModel
+		// Rebuild on the identity the runtime should have had. Copying it from
+		// the installed runtime is what let a runtime warmed on the default
+		// provider keep the session, so the durable identity wins when it is
+		// known and the installed one is only a fallback.
+		if strings.TrimSpace(request.Provider) == "" || !runtimeKeepsSessionIdentity(old, durableProvider) {
+			// Reuse the identity read once above: a second lookup that fails
+			// would hand the rebuild an empty provider and bind the session to
+			// the configured default, which is the bug this guards.
+			request.Provider, request.Model = runtimeProviderKey(old), old.defaultModel
+			if durableProvider != "" {
+				request.Provider, request.Model = durableProvider, durableModel
+			}
+		}
 		if old.settings != nil {
 			prior := *old.settings
 			prior.Search, prior.MCP, prior.MaxTurns = old.search, old.mcpSetting, old.maxTurns

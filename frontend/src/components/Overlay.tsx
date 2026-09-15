@@ -39,6 +39,7 @@ export function Overlay({
   onEscape,
   className = '',
   id,
+  focusContent = true,
 }: {
   title: string;
   children: preact.ComponentChildren;
@@ -49,6 +50,10 @@ export function Overlay({
   onEscape?: () => void;
   className?: string;
   id?: string;
+  // focusContent=false keeps the opening focus on the dialog itself. A report
+  // has nothing to fill in, so focusing its first button only paints a ring on
+  // an action the reader did not ask for.
+  focusContent?: boolean;
 }) {
   const store = useContext(StoreContext);
   const overlay = useRef<HTMLDivElement>(null);
@@ -73,15 +78,18 @@ export function Overlay({
   useLayoutEffect(() => {
     token.current = overlayManager.acquire(undefined, overlay.current);
     const focusFrame = requestAnimationFrame(() => {
-      const target =
-        dialog.current?.querySelector<HTMLElement>('[autofocus]:not([disabled])') ||
-        [
-          ...(dialog.current?.querySelectorAll<HTMLElement>(
-            'button:not([disabled]):not([data-overlay-close]),input:not([disabled]),select:not([disabled]),textarea:not([disabled])',
-          ) || []),
-        ].find((item) => !item.closest('[hidden], [inert]')) ||
-        dialog.current?.querySelector<HTMLElement>('[data-overlay-close]:not([disabled])') ||
-        dialog.current;
+      const explicit = dialog.current?.querySelector<HTMLElement>('[autofocus]:not([disabled])');
+      const firstControl = focusContent
+        ? [
+            ...(dialog.current?.querySelectorAll<HTMLElement>(
+              'button:not([disabled]):not([data-overlay-close]),input:not([disabled]),select:not([disabled]),textarea:not([disabled])',
+            ) || []),
+          ].find((item) => !item.closest('[hidden], [inert]'))
+        : undefined;
+      const fallback = focusContent
+        ? dialog.current?.querySelector<HTMLElement>('[data-overlay-close]:not([disabled])')
+        : undefined;
+      const target = explicit || firstControl || fallback || dialog.current;
       target?.focus();
     });
     return () => {
@@ -89,6 +97,9 @@ export function Overlay({
       if (token.current) overlayManager.release(token.current);
       token.current = null;
     };
+    // Opening focus is a mount-time decision; re-running would re-acquire the
+    // overlay token.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return (
     <div

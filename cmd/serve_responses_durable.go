@@ -159,7 +159,9 @@ func (s *serveServer) recordPathNoteUsage(ctx context.Context, sourceSessionID, 
 	if rt := s.peekStatsRuntime(sourceSessionID); rt != nil {
 		rt.recordHelperStats("path_note", model, notes.Usage)
 	}
-	_ = s.store.UpdateMetrics(ctx, sourceSessionID, 0, 0, notes.Usage.InputTokens, notes.Usage.OutputTokens, notes.Usage.CachedInputTokens, notes.Usage.CacheWriteTokens)
+	if err := s.store.UpdateMetrics(ctx, sourceSessionID, 0, 0, notes.Usage.InputTokens, notes.Usage.OutputTokens, notes.Usage.CachedInputTokens, notes.Usage.CacheWriteTokens); err == nil {
+		recordStoreModelUsage(ctx, s.store, sourceSessionID, model, session.ModelUsageHandover, notes.Usage, 1, 0)
+	}
 }
 
 func (s *serveServer) generateBranchPathNote(ctx context.Context, sourceSessionID string, source []llm.Message, mode, focus string) (*session.BranchPathNote, int, string) {

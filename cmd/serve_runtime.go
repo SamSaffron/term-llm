@@ -25,26 +25,31 @@ import (
 )
 
 type serveRuntime struct {
-	statsCompactionCB      func(*llm.CompactionResult)
-	stats                  serveStats
-	admittedActivity       atomic.Int32     // synchronous owners, including setup and between-turn gaps
-	retiredInputs          atomic.Bool      // obsolete after committed input replacement
-	settings               *SessionSettings // immutable construction settings, for idle refresh replacement only
-	agentSkills            string
-	inputs                 atomic.Pointer[sessionInputSelection]
-	mu                     sync.Mutex
-	goalMu                 sync.Mutex
-	interruptMu            sync.Mutex
-	steeringMutationMu     sync.Mutex
-	responseMu             sync.Mutex // guards lastResponseID and responseIDs
-	askUserMu              sync.Mutex
-	approvalMu             sync.Mutex
-	approvalModeMu         sync.Mutex
-	mcpManagerMu           sync.RWMutex
-	uiStateMu              sync.Mutex
-	compactionIdentityMu   sync.Mutex
-	provider               llm.Provider
-	providerKey            string
+	statsCompactionCB    func(*llm.CompactionResult)
+	stats                serveStats
+	admittedActivity     atomic.Int32     // synchronous owners, including setup and between-turn gaps
+	retiredInputs        atomic.Bool      // obsolete after committed input replacement
+	settings             *SessionSettings // immutable construction settings, for idle refresh replacement only
+	agentSkills          string
+	inputs               atomic.Pointer[sessionInputSelection]
+	mu                   sync.Mutex
+	goalMu               sync.Mutex
+	interruptMu          sync.Mutex
+	steeringMutationMu   sync.Mutex
+	responseMu           sync.Mutex // guards lastResponseID and responseIDs
+	askUserMu            sync.Mutex
+	approvalMu           sync.Mutex
+	approvalModeMu       sync.Mutex
+	mcpManagerMu         sync.RWMutex
+	uiStateMu            sync.Mutex
+	compactionIdentityMu sync.Mutex
+	provider             llm.Provider
+	providerKey          string
+	// swapCandidate marks the runtime a model swap is installing. It runs a
+	// provider the session row does not name until its first turn persists, so
+	// it must survive a status poll in that window. Request handlers read it
+	// while the swap sets it, so it is atomic.
+	swapCandidate          atomic.Bool
 	engine                 *llm.Engine
 	toolMgr                *tools.ToolManager
 	spawnRunner            *SpawnAgentRunner // drained before provider cleanup and owned session-store closure
@@ -1432,6 +1437,16 @@ func (rt *serveRuntime) persistTurnAccounting(ctx context.Context, persisted boo
 		rt.sessionMeta.OutputTokens += metrics.OutputTokens
 		rt.sessionMeta.CachedInputTokens += metrics.CachedInputTokens
 		rt.sessionMeta.CacheWriteTokens += metrics.CacheWriteTokens
+		// Hold the turn's clock until the row is written: a turn with no
+		// billable counters, or a failed write, must leave the time for the
+		// next turn that does reach the store.
+		timing := rt.pendingTurnTiming()
+		if rt.recordDurableModelUsageTimed(ctx, sessionID, rt.usageModel(), session.ModelUsageMain, llm.Usage{
+			InputTokens: metrics.InputTokens, OutputTokens: metrics.OutputTokens,
+			CachedInputTokens: metrics.CachedInputTokens, CacheWriteTokens: metrics.CacheWriteTokens,
+		}, 1, metrics.ToolCalls, timing) {
+			rt.commitTurnTiming(timing)
+		}
 	}
 	if rt.engine == nil {
 		return

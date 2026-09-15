@@ -122,8 +122,9 @@
   line-height: 1.5;
 }
 
-.stats-footnote {
-  margin-top: 1.5rem;
+.stats-model-kinds {
+  color: var(--text-muted);
+  font-weight: 400;
 }
 
 @media (width <= 520px) {

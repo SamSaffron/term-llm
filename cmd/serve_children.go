@@ -74,6 +74,10 @@ type childRunProjection struct {
 	StartedAt         int64                 `json:"started_at,omitempty"`
 	EndedAt           int64                 `json:"ended_at,omitempty"`
 	ApproximateTimes  bool                  `json:"approximate_times,omitempty"`
+	// A delegated run spends real money on its own session row. Pricing it here
+	// is what lets the parent report what the work actually cost.
+	CostUSD     *float64 `json:"cost_usd,omitempty"`
+	CostPartial bool     `json:"cost_partial,omitempty"`
 }
 
 type childSpawnProvenance struct {
@@ -175,6 +179,7 @@ func (s *serveServer) handleSessionChildren(w http.ResponseWriter, r *http.Reque
 			StartedAt:         child.CreatedAt.UnixMilli(),
 			ApproximateTimes:  true,
 		}
+		item.CostUSD, item.CostPartial = aggregateCost(child.Model, item.webSessionMetrics)
 		terminal := terminalChildStatus(child.Status)
 		if spawn, ok := spawnProvenance[child.ID]; ok {
 			item.ParentSpawnItemID = spawn.ItemID

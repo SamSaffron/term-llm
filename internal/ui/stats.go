@@ -25,6 +25,27 @@ type UsageCall struct {
 	Subagent          bool
 }
 
+// Kind names why the request was billed. The values deliberately match the
+// session.ModelUsageKind constants so observed and recorded breakdowns label
+// the same spend identically. The flags are mutually exclusive by
+// construction; an unflagged call is the session's own turn.
+func (c UsageCall) Kind() string {
+	switch {
+	case c.Compaction:
+		return "compaction"
+	case c.Handover:
+		return "handover"
+	case c.SideQuestion:
+		return "side_question"
+	case c.Guardian:
+		return "guardian"
+	case c.Subagent:
+		return "subagent"
+	default:
+		return "main"
+	}
+}
+
 // SessionStats tracks statistics for a session.
 type SessionStats struct {
 	StartTime         time.Time
@@ -97,6 +118,12 @@ func (s *SessionStats) SeedTotals(input, output, cached, cacheWrite, toolCalls, 
 
 // SetModel sets the model attached to subsequently completed usage calls.
 func (s *SessionStats) SetModel(model string) { s.currentModel = strings.TrimSpace(model) }
+
+// Model reports the model that completed usage calls are billed to. It follows
+// the request and any mid-run model switch, which is what durable attribution
+// has to record: the session's configured model is not necessarily the one that
+// ran the turn.
+func (s *SessionStats) Model() string { return s.currentModel }
 
 func (s *SessionStats) AddUsage(input, output, cached, cacheWrite int) {
 	s.addUsageAt(input, output, cached, cacheWrite, time.Now(), true)
@@ -251,7 +278,11 @@ func (s *SessionStats) DiscardUsage(input, output, cached, cacheWrite, calls int
 	s.LLMCallCount = max(0, s.LLMCallCount-calls)
 	remaining := calls
 	for i := len(s.usageCalls) - 1; i >= 0 && remaining > 0; i-- {
-		if s.usageCalls[i].Compaction || s.usageCalls[i].SideQuestion || s.usageCalls[i].Guardian || s.usageCalls[i].Subagent {
+		// Helper categories are billed independently of the main attempt, so a
+		// rollback of that attempt must never consume them. Handover belongs
+		// here too: it is real spend that outlives the attempt it ran beside.
+		call := s.usageCalls[i]
+		if call.Compaction || call.SideQuestion || call.Guardian || call.Subagent || call.Handover {
 			continue
 		}
 		s.usageCalls = append(s.usageCalls[:i], s.usageCalls[i+1:]...)
@@ -266,7 +297,7 @@ func (s *SessionStats) rebuildPerCallHints() {
 	s.lastInputTokens, s.lastOutputTokens, s.peakInputTokens = 0, 0, 0
 	s.hasPerCallUsage = false
 	for _, call := range s.usageCalls {
-		if call.SideQuestion || call.Guardian || call.Subagent {
+		if call.SideQuestion || call.Guardian || call.Subagent || call.Handover {
 			continue
 		}
 		total := call.InputTokens + call.CachedInputTokens + call.OutputTokens
@@ -394,9 +425,9 @@ func (s *SessionStats) accrueActiveTimeAt(now time.Time) {
 
 func (s SessionStats) Render() string {
 	active := s.LLMTime + s.ToolTime
-	parts := []string{fmt.Sprintf("active %.1fs", active.Seconds())}
+	parts := []string{"active " + FormatStatsDuration(active)}
 	if s.ToolTime > 0 {
-		parts = append(parts, fmt.Sprintf("model %.1fs + tools %.1fs", s.LLMTime.Seconds(), s.ToolTime.Seconds()))
+		parts = append(parts, "model "+FormatStatsDuration(s.LLMTime)+" + tools "+FormatStatsDuration(s.ToolTime))
 	}
 	tokenParts := []string{fmt.Sprintf("%s in", formatStatsTokenCount(s.InputTokens))}
 	if s.CachedInputTokens > 0 {
@@ -422,7 +453,7 @@ func (s SessionStats) Render() string {
 	}
 	performance := []string{}
 	if firstTTFT > 0 {
-		performance = append(performance, fmt.Sprintf("TTFT %.1fs", firstTTFT.Seconds()))
+		performance = append(performance, "TTFT "+FormatStatsDuration(firstTTFT))
 	}
 	if generated > 0 && generationTime > 0 {
 		performance = append(performance, fmt.Sprintf("%.0f tok/s", float64(generated)/generationTime.Seconds()))
@@ -447,6 +478,17 @@ func (s SessionStats) Render() string {
 }
 
 func formatStatsTokenCount(n int) string { return strings.Replace(FormatTokenCount(n), "k", "K", 1) }
+
+// FormatStatsDuration renders elapsed work time. Seconds stop being readable
+// after a minute or two, so anything longer uses the compact elapsed format
+// already used for progress; below a minute the tenth still matters, which that
+// format cannot express (a 0.4s time to first token would read as 0s).
+func FormatStatsDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+	return FormatElapsedDuration(d)
+}
 func plural(n int, singular, plural string) string {
 	if n == 1 {
 		return singular

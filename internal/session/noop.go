@@ -96,6 +96,14 @@ func (s *NoopStore) UpdateMetrics(ctx context.Context, id string, llmTurns, tool
 	return nil
 }
 
+func (s *NoopStore) RecordModelUsage(ctx context.Context, sessionID string, usage ModelUsage) error {
+	return nil
+}
+
+func (s *NoopStore) ListModelUsage(ctx context.Context, sessionID string) ([]ModelUsage, error) {
+	return nil, nil
+}
+
 func (s *NoopStore) UpdateContextEstimate(ctx context.Context, id string, lastTotalTokens, lastMessageCount int) error {
 	return nil
 }

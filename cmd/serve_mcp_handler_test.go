@@ -46,6 +46,9 @@ func TestMain(m *testing.M) {
 		}
 	}
 	for key, value := range map[string]string{
+		// No test may reach the network for a rate card, and none may have its
+		// prices swapped by a refresh that lands mid-run.
+		"TERM_LLM_OFFLINE":    "1",
 		"GIT_CONFIG_GLOBAL":   "/dev/null",
 		"GIT_CONFIG_NOSYSTEM": "1",
 		"GIT_AUTHOR_NAME":     "Test User",
@@ -57,6 +60,19 @@ func TestMain(m *testing.M) {
 			fmt.Fprintf(os.Stderr, "set %s: %v\n", key, err)
 			os.Exit(1)
 		}
+	}
+
+	// Cost assertions read a cached model-price directory. Point it at a temp
+	// directory so a developer's refreshed catalog cannot change the rates a
+	// test prices with.
+	cacheHome, err := os.MkdirTemp("", "term-llm-cmd-test-cache-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create temp XDG_CACHE_HOME: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.Setenv("XDG_CACHE_HOME", cacheHome); err != nil {
+		fmt.Fprintf(os.Stderr, "set XDG_CACHE_HOME: %v\n", err)
+		os.Exit(1)
 	}
 
 	dataHome, err := os.MkdirTemp("", "term-llm-cmd-test-data-*")
