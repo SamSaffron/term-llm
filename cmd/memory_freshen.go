@@ -298,7 +298,11 @@ func runMemoryUpdateRecentRequest(ctx context.Context, engine *llm.Engine, model
 		}
 	}
 
-	return strings.TrimSpace(b.String()), nil
+	content := strings.TrimSpace(b.String())
+	if content == "" {
+		return "", fmt.Errorf("update-recent generation returned empty text; recent.md and checkpoints are unchanged; retry the update")
+	}
+	return content, nil
 }
 
 func runMemoryCompactRecentRequest(ctx context.Context, engine *llm.Engine, model, candidateRecent string, targetTokens, targetChars int) (string, error) {
@@ -338,7 +342,11 @@ func runMemoryCompactRecentRequest(ctx context.Context, engine *llm.Engine, mode
 		}
 	}
 
-	return strings.TrimSpace(b.String()), nil
+	content := strings.TrimSpace(b.String())
+	if content == "" {
+		return "", fmt.Errorf("update-recent compaction returned empty text; recent.md and checkpoints are unchanged; retry the update")
+	}
+	return content, nil
 }
 
 func fitUpdatedRecentWithinBudget(ctx context.Context, engine *llm.Engine, model, updatedRecent string, targetTokens, targetChars, highWaterChars int) (string, error) {
