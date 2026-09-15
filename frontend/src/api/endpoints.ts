@@ -1,3 +1,14 @@
+export interface LiveSessionStartResponse {
+  live_id: string;
+  session_id: string;
+  sdp: string;
+}
+
+export interface LiveSessionStopResponse {
+  live_id: string;
+  status: 'ended';
+}
+
 export interface SessionMetrics {
   input_tokens: number;
   output_tokens: number;
@@ -328,6 +339,32 @@ export const endpoints = (api: APIClient) => ({
         : { policy: 'mutation', retries: 0, timeoutMs: 0, auth: 'session' },
     );
   },
+  liveStart: (sdp: string, sessionId: string) =>
+    api.json<LiveSessionStartResponse>(
+      '/v1/live/sessions',
+      { method: 'POST', body: JSON.stringify({ sdp, session_id: sessionId }) },
+      { policy: 'mutation', auth: 'session', retries: 0, timeoutMs: 0 },
+    ),
+  liveStop: (liveId: string) =>
+    api.delete<LiveSessionStopResponse>(`/v1/live/sessions/${encoded(liveId)}`),
+  liveSignal: (liveId: string, frame: string) =>
+    api.json<{ ok: true }>(
+      `/v1/live/sessions/${encoded(liveId)}/signal`,
+      { method: 'POST', body: frame },
+      { policy: 'mutation', auth: 'session', retries: 0 },
+    ),
+  liveText: (liveId: string, text: string) =>
+    api.json<{ ok: true }>(
+      `/v1/live/sessions/${encoded(liveId)}/text`,
+      { method: 'POST', body: JSON.stringify({ text }) },
+      { policy: 'mutation', auth: 'session', retries: 0 },
+    ),
+  liveEvents: (liveId: string, after: number, signal: AbortSignal) =>
+    api.request(
+      `/v1/live/sessions/${encoded(liveId)}/events${after > 0 ? `?after=${after}` : ''}`,
+      { signal, headers: { Accept: 'text/event-stream' } },
+      { policy: 'stream', retries: 0, timeoutMs: 0, auth: 'session' },
+    ),
   shellCreate: (id: string, cols: number, rows: number) =>
     sessionPost<ShellCreateResponse>(api, id, 'shell', { cols, rows }),
   shellStream: (id: string, shellId: string, offset: number, signal: AbortSignal) =>

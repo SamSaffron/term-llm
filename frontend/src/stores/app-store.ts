@@ -51,6 +51,7 @@ import { RunEngine } from './run-engine';
 import { SelectionStore } from './selection-store';
 import { CommitStore } from './commit-store';
 import { ShellStore } from './shell-store';
+import { LiveStore } from './live-store';
 import type {
   DiffState,
   HubAgent,
@@ -117,6 +118,7 @@ export class AppStore {
   readonly selectionStore: SelectionStore;
   readonly commitStore: CommitStore;
   readonly shellStore: ShellStore;
+  readonly liveStore: LiveStore;
   readonly keys: StorageKeys;
   readonly api: APIClient;
   readonly endpoints: Endpoints;
@@ -290,6 +292,7 @@ export class AppStore {
       storage,
       this.keys.shellLayout,
     );
+    this.liveStore = new LiveStore(this.endpoints, () => this.materializeSession());
     this.showWidgets = signal(storage.getItem(this.keys.showWidgetsSidebar) !== '0');
     // The legacy boolean was optimistic and is never authoritative. Enrollment
     // is reconstructed from browser and server state below.
@@ -867,6 +870,7 @@ export class AppStore {
       worktrees.enabled === true || (worktrees.enabled === undefined && this.config.worktrees);
     this.sessionStore.applyCapabilities(projectsEnabled, worktreesEnabled);
     this.shellStore.enabled.value = recordValue(data.shell)?.enabled === true;
+    this.liveStore.applyCapability(data.live);
     const attachments = recordValue(data.attachments);
     if (attachments) {
       const maxCount = Number(attachments.max_count);
@@ -952,7 +956,10 @@ export class AppStore {
   }
 
   async selectSession(session: Session, replace = false): Promise<void> {
-    if (session.id !== this.activeSessionId.peek()) this.shellStore.back();
+    if (session.id !== this.activeSessionId.peek()) {
+      this.shellStore.back();
+      void this.liveStore.stop();
+    }
     await this.selectionStore.selectSession(session, replace);
     this.serverEventCoordinator.updateInterest(this.activeSessionId.peek());
     void this.acknowledgeSelectedAttention();
@@ -960,6 +967,7 @@ export class AppStore {
 
   newChat(replace = false, projectId?: string, persistCurrent = true): void {
     this.shellStore.back();
+    void this.liveStore.stop();
     this.selectionStore.newChat(replace, projectId, persistCurrent);
     this.serverEventCoordinator.updateInterest('');
   }
@@ -980,6 +988,7 @@ export class AppStore {
 
   async resolveAndSelectSession(id: string, replace = false): Promise<void> {
     this.shellStore.back();
+    void this.liveStore.stop();
     await this.selectionStore.resolveAndSelectSession(id, replace);
   }
 
@@ -1426,6 +1435,7 @@ export class AppStore {
     this.composer.dispose();
     this.tabSyncCoordinator.dispose();
     this.serverEventCoordinator.dispose();
+    this.liveStore.dispose();
     this.shellStore.dispose();
     this.services.dispose();
   }

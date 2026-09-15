@@ -481,6 +481,7 @@ type Config struct {
 	Audio           AudioConfig               `mapstructure:"audio"`
 	Music           MusicConfig               `mapstructure:"music"`
 	Transcription   TranscriptionConfig       `mapstructure:"transcription"`
+	Live            LiveConfig                `mapstructure:"live"`
 	Embed           EmbedConfig               `mapstructure:"embed"`
 	Search          SearchConfig              `mapstructure:"search"`
 	Reasoning       ReasoningConfig           `mapstructure:"reasoning"`
@@ -1096,6 +1097,92 @@ type TranscriptionElevenLabsConfig struct {
 	Model  string `mapstructure:"model"`
 }
 
+// LiveConfig configures live (bidirectional voice) sessions. Top-level fields
+// describe how term-llm behaves regardless of who provides the voice; the
+// per-provider blocks carry vendor-specific models, voices, and endpoints.
+type LiveConfig struct {
+	Enabled      bool              `mapstructure:"enabled"`      // live voice sessions are opt-in
+	Provider     string            `mapstructure:"provider"`     // live provider: codex or chatgpt
+	Instructions string            `mapstructure:"instructions"` // optional replacement for the voice-model prompt
+	IdleTimeout  string            `mapstructure:"idle_timeout"` // close a live session after this much silence
+	Codex        LiveCodexConfig   `mapstructure:"codex"`
+	ChatGPT      LiveChatGPTConfig `mapstructure:"chatgpt"`
+}
+
+// LiveCodexConfig configures live voice negotiated by a local Codex
+// executable. Codex owns call creation and the provider control channel; it
+// authenticates with term-llm's stored ChatGPT OAuth tokens, which are passed
+// to an isolated ephemeral process and never written to Codex storage.
+type LiveCodexConfig struct {
+	Path string `mapstructure:"path"` // executable name resolved on PATH, or an absolute path
+}
+
+// LiveChatGPTConfig configures gpt-live over the ChatGPT backend. Credentials
+// come from the stored OAuth session, so there is no api_key here.
+type LiveChatGPTConfig struct {
+	Model           string `mapstructure:"model"`
+	Voice           string `mapstructure:"voice"`
+	CallBaseURL     string `mapstructure:"call_base_url"`
+	SidebandBaseURL string `mapstructure:"sideband_base_url"`
+}
+
+// LiveChatGPTVoices returns a copy of the V3/frameless voice family supported
+// by the ChatGPT live transport.
+func LiveChatGPTVoices() []string {
+	return append([]string(nil), liveChatGPTVoices...)
+}
+
+var liveChatGPTVoices = []string{
+	"juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol", "cove",
+}
+
+// ValidateVoice accepts the V3/frameless voice family. V2 voices such as marin
+// and cedar cause the backend to return a misleading access-denied response.
+func (c LiveChatGPTConfig) ValidateVoice() error {
+	voice := strings.TrimSpace(c.Voice)
+	if voice == "" {
+		return nil
+	}
+	for _, supported := range liveChatGPTVoices {
+		if voice == supported {
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid live.chatgpt.voice %q: live V3 requires one of %s (default %s)", c.Voice, strings.Join(liveChatGPTVoices, ", "), DefaultLiveChatGPTVoice)
+}
+
+// ResolvedIdleTimeout returns the configured idle timeout, falling back to the
+// default when unset or unparseable.
+func (c LiveConfig) ResolvedIdleTimeout() time.Duration {
+	value := strings.TrimSpace(c.IdleTimeout)
+	if value == "" {
+		value = DefaultLiveIdleTimeout
+	}
+	timeout, err := time.ParseDuration(value)
+	if err != nil || timeout <= 0 {
+		timeout, _ = time.ParseDuration(DefaultLiveIdleTimeout)
+	}
+	return timeout
+}
+
+// ValidateLive rejects unusable live settings before a session is attempted.
+func (c *Config) ValidateLive() error {
+	if value := strings.TrimSpace(c.Live.IdleTimeout); value != "" {
+		timeout, err := time.ParseDuration(value)
+		if err != nil || timeout <= 0 {
+			return fmt.Errorf("invalid live.idle_timeout %q: expected a duration greater than zero", c.Live.IdleTimeout)
+		}
+	}
+	switch strings.TrimSpace(c.Live.Provider) {
+	case "", LiveProviderChatGPT:
+		return c.Live.ChatGPT.ValidateVoice()
+	case LiveProviderCodex:
+	default:
+		return fmt.Errorf("invalid live.provider %q: expected %q or %q", c.Live.Provider, LiveProviderCodex, LiveProviderChatGPT)
+	}
+	return nil
+}
+
 // EmbedConfig configures text embedding generation
 type EmbedConfig struct {
 	Provider  string            `mapstructure:"provider"`   // default embedding provider: gemini, openai, chatgpt, venice, jina, voyage, ollama
@@ -1235,6 +1322,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.ValidateShare(); err != nil {
+		return nil, err
+	}
+	if err := cfg.ValidateLive(); err != nil {
 		return nil, err
 	}
 

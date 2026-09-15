@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
@@ -1630,5 +1631,86 @@ func TestApprovalModesAreOptionalAndValidated(t *testing.T) {
 	invalid := &Config{Serve: ServeConfig{MCP: ServeMCPConfig{ApprovalMode: "yolo"}}}
 	if err := invalid.ValidateApprovalModes(); err == nil || !strings.Contains(err.Error(), `invalid serve.mcp.approval_mode "yolo": expected prompt or auto`) {
 		t.Fatalf("invalid config error = %v", err)
+	}
+}
+
+func TestLiveDefaultsAreOffAndChatGPTBacked(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Live.Enabled {
+		t.Fatal("live.enabled must default to false")
+	}
+	if cfg.Live.Provider != LiveProviderChatGPT {
+		t.Fatalf("live.provider = %q, want chatgpt without a Codex dependency", cfg.Live.Provider)
+	}
+	if cfg.Live.ChatGPT.Model != DefaultLiveChatGPTModel {
+		t.Fatalf("live.chatgpt.model = %q", cfg.Live.ChatGPT.Model)
+	}
+	if cfg.Live.ChatGPT.Voice != "cove" {
+		t.Fatalf("live.chatgpt.voice = %q, want the V3 default cove", cfg.Live.ChatGPT.Voice)
+	}
+	if cfg.Live.ChatGPT.CallBaseURL != DefaultLiveChatGPTCallBaseURL {
+		t.Fatalf("live.chatgpt.call_base_url = %q", cfg.Live.ChatGPT.CallBaseURL)
+	}
+	if cfg.Live.ChatGPT.SidebandBaseURL != DefaultLiveChatGPTSidebandBaseURL {
+		t.Fatalf("live.chatgpt.sideband_base_url = %q", cfg.Live.ChatGPT.SidebandBaseURL)
+	}
+	if got := cfg.Live.ResolvedIdleTimeout(); got != 10*time.Minute {
+		t.Fatalf("live idle timeout = %s", got)
+	}
+}
+
+func TestLiveConfigOverridesAndValidation(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+
+	dir := filepath.Join(configDir, "term-llm")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := "live:\n  enabled: true\n  idle_timeout: 45s\n  instructions: be brief\n  chatgpt:\n    model: gpt-live-next\n    voice: maple\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Live.Enabled || cfg.Live.Instructions != "be brief" {
+		t.Fatalf("live config = %#v", cfg.Live)
+	}
+	if cfg.Live.ChatGPT.Model != "gpt-live-next" || cfg.Live.ChatGPT.Voice != "maple" {
+		t.Fatalf("live chatgpt config = %#v", cfg.Live.ChatGPT)
+	}
+	if got := cfg.Live.ResolvedIdleTimeout(); got != 45*time.Second {
+		t.Fatalf("live idle timeout = %s", got)
+	}
+
+	invalid := &Config{Live: LiveConfig{IdleTimeout: "soon"}}
+	if err := invalid.ValidateLive(); err == nil || !strings.Contains(err.Error(), "invalid live.idle_timeout") {
+		t.Fatalf("invalid idle timeout error = %v", err)
+	}
+	unsupported := &Config{Live: LiveConfig{Provider: "elevenlabs"}}
+	if err := unsupported.ValidateLive(); err == nil || !strings.Contains(err.Error(), "invalid live.provider") {
+		t.Fatalf("unsupported provider error = %v", err)
+	}
+	for _, provider := range []string{"", LiveProviderChatGPT} {
+		wrongVoice := &Config{Live: LiveConfig{Provider: provider, ChatGPT: LiveChatGPTConfig{Voice: "marin"}}}
+		if err := wrongVoice.ValidateLive(); err == nil || !strings.Contains(err.Error(), "invalid live.chatgpt.voice") {
+			t.Fatalf("V2 voice validation for provider %q = %v", provider, err)
+		}
+	}
+	// The alternative transport uses Codex's voice default, not this override.
+	codex := &Config{Live: LiveConfig{Provider: LiveProviderCodex, ChatGPT: LiveChatGPTConfig{Voice: "marin"}}}
+	if err := codex.ValidateLive(); err != nil {
+		t.Fatalf("unused chatgpt voice must not reject the Codex provider: %v", err)
 	}
 }

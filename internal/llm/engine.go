@@ -1706,7 +1706,7 @@ func providerSafeRequestMessages(messages []Message) []Message {
 	for index, message := range messages {
 		needsRewrite := false
 		for _, part := range message.Parts {
-			if part.Type == PartConversationStart || part.Type == PartPlatformContext || part.Type == PartSkillActivation || part.Type == PartAgentMention || part.Type == PartDiffComment || part.Type == PartGoalSteering {
+			if part.Type == PartDisplayText || part.Type == PartConversationStart || part.Type == PartPlatformContext || part.Type == PartSkillActivation || part.Type == PartAgentMention || part.Type == PartDiffComment || part.Type == PartGoalSteering {
 				needsRewrite = true
 				break
 			}
@@ -1724,7 +1724,7 @@ func providerSafeRequestMessages(messages []Message) []Message {
 		copyMessage.Parts = make([]Part, 0, len(message.Parts))
 		for _, part := range message.Parts {
 			switch part.Type {
-			case PartConversationStart, PartPlatformContext, PartSkillActivation, PartDiffComment, PartGoalSteering:
+			case PartDisplayText, PartConversationStart, PartPlatformContext, PartSkillActivation, PartDiffComment, PartGoalSteering:
 				continue
 			case PartAgentMention:
 				part.Type = PartText
@@ -2747,6 +2747,9 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) (re
 		e.endToolRun(runID)
 	}()
 	ctx = ContextWithToolRunID(ctx, runID)
+	// Bridge tools intentionally outlive restart step cancellation, but must
+	// carry the same tracking identity as ordinary engine-managed tools.
+	syncBridgeCtx = ContextWithToolRunID(syncBridgeCtx, runID)
 	var planner ToolSurfacePlanner
 	if req.EnableToolDiscovery {
 		planner = e.currentToolPlanner()

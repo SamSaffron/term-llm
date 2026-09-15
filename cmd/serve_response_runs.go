@@ -185,6 +185,7 @@ type responseRun struct {
 }
 
 type startResponseRunOptions struct {
+	live                       *liveSession // pins settings authority to this call, not whichever call is current later
 	resume                     *webRunContinuation
 	onInitialInput             func()
 	rush                       *session.RushOperation

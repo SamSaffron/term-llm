@@ -21,6 +21,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/filetrack"
+	"github.com/samsaffron/term-llm/internal/live"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mentions"
 	"github.com/samsaffron/term-llm/internal/restart"
@@ -1421,6 +1422,12 @@ type serveServer struct {
 	shellsMu                 sync.Mutex
 	shells                   *serveShellManager
 	shellsClosed             bool
+	liveMu                   sync.Mutex
+	liveSessions             map[string]*liveSession
+	liveByChat               map[string]string
+	liveClosed               bool
+	liveProviderInstance     live.Provider
+	liveProviderFactory      func(config.LiveConfig) (live.Provider, error) // test seam; nil → live.NewProvider
 }
 
 // fileTrackStore returns the file-change history store, or nil when file
@@ -1525,6 +1532,8 @@ func (s *serveServer) httpHandler() http.Handler {
 	inner.HandleFunc("/v1/chat/completions", s.auth(s.cors(s.handleChatCompletions)))
 	inner.HandleFunc("/v1/messages", s.auth(s.cors(s.handleAnthropicMessages)))
 	inner.HandleFunc("/v1/transcribe", s.auth(s.cors(s.handleTranscribe)))
+	inner.HandleFunc("/v1/live/sessions", s.auth(s.cors(s.handleLiveSessions)))
+	inner.HandleFunc("/v1/live/sessions/", s.auth(s.cors(s.handleLiveSessionByID)))
 	if s.jobsV2 != nil {
 		inner.HandleFunc("/v2/jobs", s.auth(s.cors(s.handleJobsV2)))
 		inner.HandleFunc("/v2/jobs/", s.auth(s.cors(s.handleJobV2ByID)))
@@ -1641,6 +1650,7 @@ func (s *serveServer) Stop(ctx context.Context) error {
 			close(s.shutdownCh)
 		}
 	})
+	s.closeLiveSessions(ctx)
 	s.closeShellManager()
 	s.stopEventWatcher()
 	// Synchronize with a concurrently starting lifecycle loop, or permanently

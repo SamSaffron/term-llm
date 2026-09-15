@@ -14,6 +14,7 @@ import {
 } from '../domain/completions';
 import { validateAttachmentFile } from '../domain/attachments';
 import { VoiceOperation, type VoiceSnapshot } from '../platform/voice';
+import type { LiveStore } from '../stores/live-store';
 import { Icon } from './Icon';
 import { useMenuKeyboard } from './Menu';
 import { requestTranscriptScrollToTail } from './transcript-scroll';
@@ -110,6 +111,45 @@ function VoiceStatus({
   );
 }
 
+function LiveStatus({ live }: { live: LiveStore }) {
+  const phase = live.phase.value;
+  if (phase === 'idle' || phase === 'ended') return null;
+  const partial = live.partialAssistant.value || live.partialUser.value;
+  const working = live.working.value;
+  const error = live.lastError.value;
+  return (
+    <div
+      id="liveStatus"
+      class={`live-status live-status-${phase}`}
+      aria-live="polite"
+      role={phase === 'failed' ? 'alert' : 'status'}
+    >
+      <span
+        class={working || phase === 'connecting' ? 'live-status-spinner' : 'live-status-dot'}
+        aria-hidden="true"
+      />
+      <div class="live-status-content">
+        <span class="live-status-copy">
+          {phase === 'requesting-permission' && 'Requesting microphone access…'}
+          {phase === 'connecting' && 'Connecting live voice…'}
+          {phase === 'listening' && 'Listening…'}
+          {phase === 'speaking' && 'Speaking…'}
+          {phase === 'working' && 'Working on your request…'}
+          {phase === 'failed' && 'Live voice needs attention.'}
+        </span>
+        {partial && <span class="live-status-transcript">{partial}</span>}
+        {error && <span class="live-status-error">{error}</span>}
+      </div>
+      {working && <span class="live-status-working">Working…</span>}
+      {live.active.value && (
+        <button type="button" class="btn live-status-stop" onClick={() => void live.stop()}>
+          Stop
+        </button>
+      )}
+    </div>
+  );
+}
+
 let loadedQueuePreview: ComponentType<{ selectedSteering: string | null }> | null = null;
 let queuePreviewImport: Promise<ComponentType<{ selectedSteering: string | null }>> | null = null;
 
@@ -155,6 +195,12 @@ export function Composer() {
     [voice, voiceSnapshot],
   );
   useEffect(() => () => voice.dispose(), [voice]);
+  useEffect(
+    () => () => {
+      void store.liveStore.stop();
+    },
+    [store],
+  );
   useLayoutEffect(() => resizePrompt(textarea.current), [store.prompt.value]);
 
   const session = store.draftActive.value ? null : store.activeSession.value;
@@ -368,12 +414,28 @@ export function Composer() {
       void store.invokeSkill(skill.name, skill.args);
       return;
     }
+    // Typed text while Live is active and standard steering is available must
+    // use store.steer (no liveStore.sendText) to avoid duplicate model
+    // delegation. Idle Live text still goes to voice.
+    if (liveTextMode && !store.canSteer.peek()) {
+      requestTranscriptScrollToTail();
+      void store.liveStore.sendText(value).then((sent) => {
+        if (store.prompt.peek().trim() !== value) return;
+        if (sent) store.prompt.value = '';
+        else void store.send();
+      });
+      return;
+    }
     requestTranscriptScrollToTail();
     if (canSteer) void store.steer(value);
     else void store.send();
   };
   const startVoice = () => {
     void voice.start(composerOwner, cursor);
+  };
+  const toggleLiveCall = () => {
+    if (store.liveStore.active.peek()) void store.liveStore.stop();
+    else void store.liveStore.start();
   };
   const pending = store.steering.value.filter(
     (entry) => entry.sessionId === store.activeSession.value?.id,
@@ -416,25 +478,46 @@ export function Composer() {
   const voiceBusy = ['requesting-permission', 'recording', 'preparing', 'transcribing'].includes(
     voiceState.phase,
   );
+  const liveActive = store.liveStore.active.value;
   const hasDraft = Boolean(store.prompt.value.trim()) || store.attachments.value.length > 0;
+  // An empty composer has nothing to send, so the send control becomes the Live
+  // button. A running turn keeps its progress indicator, and an open call always
+  // keeps its stop control.
+  const liveButton =
+    !hasDraft &&
+    (liveActive ||
+      (store.liveStore.enabled.value && store.liveStore.capability.value.supported && !runActive));
+  const liveTextMode =
+    liveActive &&
+    !canSteer &&
+    Boolean(store.prompt.value.trim()) &&
+    store.attachments.value.length === 0;
   const sendPending = store.sendPending.value;
   const sendBlocked = store.sendBlocked.value;
   const attachmentBlocked = store.attachments.value.some(
     (attachment) => attachment.status === 'preparing' || attachment.status === 'error',
   );
-  const steering = canSteer && hasDraft;
-  const loading = runActive && !hasDraft;
-  const sendLabel = bindingBlocked
-    ? 'Project unavailable'
-    : sendPending
-      ? 'Sending message'
-      : loading
-        ? 'Response is running'
-        : sendBlocked
-          ? 'Checking whether sent'
-          : steering
-            ? 'Steer'
-            : 'Send message';
+  const steering = !liveTextMode && canSteer && hasDraft;
+  const loading = !liveButton && !liveTextMode && runActive && !hasDraft;
+  const sendLabel = liveButton
+    ? liveActive
+      ? 'Stop live voice'
+      : store.liveStore.phase.value === 'failed'
+        ? 'Retry live voice'
+        : 'Start live voice'
+    : liveTextMode
+      ? 'Send text to live voice'
+      : bindingBlocked
+        ? 'Project unavailable'
+        : sendPending
+          ? 'Sending message'
+          : loading
+            ? 'Response is running'
+            : sendBlocked
+              ? 'Checking whether sent'
+              : steering
+                ? 'Steer'
+                : 'Send message';
   const inspectDraggedFiles = (files: FileList | null): string => {
     let count = store.attachments.peek().length;
     for (const candidate of Array.from(files || [])) {
@@ -528,6 +611,7 @@ export function Composer() {
             <div role="status">Pending steering…</div>
           ))}
         <VoiceStatus snapshot={voiceSnapshot} voice={voice} />
+        <LiveStatus live={store.liveStore} />
         {!voiceState.capability.supported && (
           <span class="voice-unsupported" id="voiceUnsupported">
             {voiceState.capability.reason}
@@ -905,28 +989,36 @@ export function Composer() {
               aria-label="Record voice message"
               aria-describedby={!voiceState.capability.supported ? 'voiceUnsupported' : undefined}
               disabled={
-                !voiceState.capability.supported || voiceBusy || voiceState.phase === 'failed'
+                !voiceState.capability.supported ||
+                voiceBusy ||
+                voiceState.phase === 'failed' ||
+                liveActive
               }
               onClick={startVoice}
             >
               <Icon name="microphone" />
             </button>
             <button
-              class={`send-btn ${loading ? 'loading' : ''} ${steering ? 'steer' : ''}`}
+              class={`send-btn ${liveButton ? 'live' : ''} ${liveButton && ['listening', 'speaking'].includes(store.liveStore.phase.value) ? 'live-pulse' : ''} ${loading || (liveButton && store.liveStore.phase.value === 'working') ? 'loading' : ''} ${steering ? 'steer' : ''}`}
               id="sendBtn"
               type="button"
               title={sendLabel}
               aria-label={sendLabel}
+              aria-pressed={liveButton ? liveActive : undefined}
               disabled={
-                (sendBlocked && !loading) ||
-                voiceBusy ||
-                bindingBlocked ||
-                attachmentBlocked ||
-                (!hasDraft && !loading)
+                liveButton
+                  ? !liveActive && (voiceBusy || bindingBlocked)
+                  : liveTextMode
+                    ? false
+                    : (sendBlocked && !loading) ||
+                      voiceBusy ||
+                      bindingBlocked ||
+                      attachmentBlocked ||
+                      (!hasDraft && !loading)
               }
-              onClick={sendOrCommand}
+              onClick={liveButton ? toggleLiveCall : sendOrCommand}
             >
-              <Icon class="arrow" name={steering ? 'steer' : 'send'} />
+              <Icon class="arrow" name={liveButton ? 'live' : steering ? 'steer' : 'send'} />
               <span class="spinner" aria-hidden="true" />
             </button>
           </div>

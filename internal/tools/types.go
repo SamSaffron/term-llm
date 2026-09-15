@@ -178,7 +178,7 @@ func StandardToolNames() []string {
 // configuration behaves consistently with the historical allowlist.
 func ValidToolNames() []string {
 	names := StandardToolNames()
-	for _, name := range []string{HubDelegateToolName, HubCheckDelegationToolName, ManageWorkspaceToolName, UpdatePlanToolName, UIGetSourceToolName, UIExtensionsToolName, UIActivateToolName} {
+	for _, name := range []string{HubDelegateToolName, HubCheckDelegationToolName, ManageWorkspaceToolName, UpdatePlanToolName, LiveSettingsToolName, UIGetSourceToolName, UIExtensionsToolName, UIActivateToolName} {
 		found := false
 		for _, existing := range names {
 			if existing == name {
@@ -218,6 +218,7 @@ var validToolNames = map[string]bool{
 	InitiateHandoverToolName:   true,
 	ManageWorkspaceToolName:    true,
 	UpdatePlanToolName:         true,
+	LiveSettingsToolName:       true,
 	HubDelegateToolName:        true,
 	HubCheckDelegationToolName: true,
 }
@@ -247,7 +248,7 @@ func GetToolKind(specName string) ToolKind {
 		return KindAgent
 	case RunAgentScriptToolName:
 		return KindExecute
-	case UpdatePlanToolName, ManageWorkspaceToolName, UIExtensionsToolName, UIActivateToolName:
+	case LiveSettingsToolName, UpdatePlanToolName, ManageWorkspaceToolName, UIExtensionsToolName, UIActivateToolName:
 		return KindSessionState
 	case ActivateSkillToolName:
 		return KindSkill

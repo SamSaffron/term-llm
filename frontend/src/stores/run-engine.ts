@@ -1136,6 +1136,49 @@ export class RunEngine {
       const clientID = String(event.client_message_id || event.steering_id || '');
       this.setSteering(this.steering.value.filter((entry) => entry.id !== clientID));
     }
+    if (event.type === 'response.steering.queued') {
+      const clientID = String(event.client_message_id || event.steering_id || '').trim();
+      if (clientID) {
+        // A late queued receipt must never resurrect an ID already consumed
+        // into the projection or durable transcript (queued may race committed
+        // response.steering). Check both before creating immediate pending UI.
+        const committed = new Set(
+          [
+            ...(this.sessionStore.sessions.peek().find((session) => session.id === sessionId)
+              ?.messages || []),
+            ...(next.messages || []),
+          ]
+            .map((message) => message.clientMessageId)
+            .filter((id): id is string => Boolean(id)),
+        );
+        if (!committed.has(clientID)) {
+          const existing = this.steering.peek().find((entry) => entry.id === clientID);
+          if (!existing) {
+            const content = String(event.text ?? event.content ?? event.message ?? '').trim();
+            this.setSteering([
+              ...this.steering.peek(),
+              { id: clientID, sessionId, content, state: 'pending' },
+            ]);
+          } else if (existing.state === 'sending') {
+            this.setSteering(
+              this.steering
+                .peek()
+                .map((entry) =>
+                  entry.id === clientID ? { ...entry, state: 'pending' as const } : entry,
+                ),
+            );
+          }
+          // Admission invalidates an earlier empty-queue capability snapshot,
+          // exactly like typed steering admission in steering-actions.
+          const capability = this.steeringCapabilities.peek()[sessionId];
+          if (capability?.protocol === 1 && capability.unavailable_reason === 'no_user_steering')
+            this.steeringCapabilities.value = {
+              ...this.steeringCapabilities.peek(),
+              [sessionId]: { ...capability, can_rush: true, unavailable_reason: undefined },
+            };
+        }
+      }
+    }
     if (
       event.type === 'response.approval.resolved' ||
       event.type === 'response.ask_user.resolved'

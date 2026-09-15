@@ -105,6 +105,7 @@ type serveRuntime struct {
 	platform               string
 	platformMessages       agents.PlatformMessagesConfig
 	lastInjectedPlatform   string
+	liveContext            func() (string, bool) // call-scoped context; accessed under mu
 	sideQuestion           sideQuestionRuntime
 	sideProviderFactory    func(providerKey, model string) (llm.Provider, error)
 }
@@ -148,6 +149,7 @@ func (rt *serveRuntime) takePendingCompactionIdentity() (sequence, count int, ok
 }
 
 type runtimeInterruptState struct {
+	responseRun            *responseRun
 	cancel                 context.CancelFunc
 	requestCancel          func()
 	done                   chan struct{}
@@ -820,6 +822,8 @@ func (rt *serveRuntime) grantUploadedFileReads(messages []llm.Message) {
 	}
 }
 
+var errSteeringRunFinished = errors.New("steering run is no longer consuming")
+
 func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, displayText string, steeringID string, fastProvider llm.Provider, delivery interruptDelivery, origins ...llm.SteeringOrigin) (llm.InterruptAction, bool, error) {
 	steeringID = strings.TrimSpace(steeringID)
 	if delivery == "" {
@@ -874,7 +878,7 @@ func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, d
 			delete(rt.steeringCalls, steeringID)
 		}
 		rt.interruptMu.Unlock()
-		return llm.InterruptSteer, false, fmt.Errorf("session has no active stream")
+		return llm.InterruptSteer, false, fmt.Errorf("session has no active stream: %w", errSteeringRunFinished)
 	}
 	cancel := state.cancel
 	requestCancel := state.requestCancel
@@ -953,22 +957,49 @@ func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, d
 		case llm.SteeringQueueTransitioning, llm.SteeringQueueRushOwned, llm.SteeringQueueFollowUpOwned, llm.SteeringQueueCommitted:
 			resultErr = fmt.Errorf("steering %q is already %s", steeringID, queueStatus)
 		case llm.SteeringQueueRunFinished:
-			resultErr = fmt.Errorf("active run finished before steering %q could be consumed", steeringID)
+			resultErr = fmt.Errorf("active run finished before steering %q could be consumed: %w", steeringID, errSteeringRunFinished)
 		}
 		if resultErr != nil && removePendingSteering != nil {
 			removePendingSteering(context.WithoutCancel(ctx), steeringID)
 		}
+		state.publishSteeringAdmission(entry, resultErr)
 		rt.steeringMutationMu.Unlock()
 	}
-	if call != nil {
-		rt.interruptMu.Lock()
-		call.action = action
-		call.err = resultErr
-		call.completedAt = time.Now()
-		close(call.done)
-		rt.interruptMu.Unlock()
-	}
+	rt.completeSteeringCall(steeringID, call, action, resultErr)
 	return action, false, resultErr
+}
+
+// publishSteeringAdmission is a receipt, not a transcript boundary. The engine
+// may already have committed this ID; clients reconcile it against consumed IDs.
+func (state *runtimeInterruptState) publishSteeringAdmission(entry llm.QueuedSteering, admissionErr error) {
+	if admissionErr != nil || state.responseRun == nil || entry.ID == "" {
+		return
+	}
+	text := entry.DisplayText
+	if text == "" {
+		text = llm.MessageAttachmentSummary(entry.Message)
+	}
+	if err := state.responseRun.appendEvent("response.steering.queued", map[string]any{
+		"client_message_id": entry.ID, "text": text,
+	}); err != nil {
+		// Never encourage callers to retry guidance that has already been admitted.
+		log.Printf("[serve] publish pending steering %s: %v", entry.ID, err)
+	}
+}
+
+func (rt *serveRuntime) completeSteeringCall(id string, call *runtimeSteeringCall, action llm.InterruptAction, err error) {
+	if call == nil {
+		return
+	}
+	rt.interruptMu.Lock()
+	defer rt.interruptMu.Unlock()
+	call.action, call.err, call.completedAt = action, err, time.Now()
+	// A finish/admission race did not accept the intent; let the same ID retry
+	// against the next owner rather than permanently caching a transient failure.
+	if errors.Is(err, errSteeringRunFinished) {
+		delete(rt.steeringCalls, id)
+	}
+	close(call.done)
 }
 
 // ensureSessionInStore creates the session record in the database if it doesn't
@@ -1906,6 +1937,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		requestCancel = func() { responseRun.cancelRun() }
 	}
 	intState := &runtimeInterruptState{
+		responseRun:     responseRunFromContext(ctx),
 		cancel:          runCancel,
 		requestCancel:   requestCancel,
 		done:            make(chan struct{}),

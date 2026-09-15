@@ -6,14 +6,33 @@ import "strings"
 // active interaction surface. The marker lets compaction retain only the latest
 // mode context while provider projection sends only its text.
 func PlatformContextMessage(text string) Message {
+	return PlatformContextMessageForMode(text, "")
+}
+
+// PlatformContextMessageForMode records an optional interaction mode alongside
+// the context. The mode is persistence metadata, not provider-facing text.
+func PlatformContextMessageForMode(text, mode string) Message {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return Message{}
 	}
 	return Message{Role: RoleDeveloper, Parts: []Part{
-		{Type: PartPlatformContext},
+		{Type: PartPlatformContext, Text: mode},
 		{Type: PartText, Text: text},
 	}}
+}
+
+// PlatformContextMode returns the explicit mode marker without parsing prompts.
+func PlatformContextMode(message Message) string {
+	if !IsPlatformContextMessage(message) {
+		return ""
+	}
+	for _, part := range message.Parts {
+		if part.Type == PartPlatformContext {
+			return part.Text
+		}
+	}
+	return ""
 }
 
 // IsPlatformContextMessage reports whether message is marked platform context.

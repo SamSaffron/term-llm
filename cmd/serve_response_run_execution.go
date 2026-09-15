@@ -47,6 +47,7 @@ func (s *serveServer) executeResponseRun(runCtx context.Context, releaseReload, 
 	var err error
 	for {
 		runtimeRunCtx := withServeRuntimeSetup(runCtx, options.runtimeSetup)
+		runtimeRunCtx = withLiveSettingsContext(runtimeRunCtx, options.live)
 		result, err = runtime.RunWithEventsAndStart(runtimeRunCtx, stateful, replaceHistory, inputMessages, llmReq, func() {
 			mgr.setActiveRun(sessionID, respID)
 		}, func(ev llm.Event) error { return s.appendResponseRunEvent(runtime, run, streamState, ev) })

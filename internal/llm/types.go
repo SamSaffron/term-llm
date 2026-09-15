@@ -312,6 +312,7 @@ const (
 	PartDiffComment       PartType = "diff_comment"       // Persisted inline-diff anchor metadata; never sent to providers.
 	PartGoalSteering      PartType = "goal_steering"      // Persisted marker for synthetic active-goal user prompts; adjacent text is sent to providers but hidden from human transcripts.
 	PartConversationStart PartType = "conversation_start" // Persisted immutable time anchor for the conversation; marker is never sent to providers.
+	PartDisplayText       PartType = "display_text"       // Persistence-only visible text; never sent to providers.
 	PartPlatformContext   PartType = "platform_context"   // Persisted active interaction-mode context; marker is never sent to providers.
 )
 

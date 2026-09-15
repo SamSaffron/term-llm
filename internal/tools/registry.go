@@ -303,10 +303,8 @@ func (r *LocalToolRegistry) registerTool(specName string) error {
 		tool = NewInitiateHandoverTool()
 	case ManageWorkspaceToolName:
 		tool = NewManageWorkspaceTool(r.approval, r.config)
-	case UpdatePlanToolName:
-		controller := NewPlanController(nil)
-		controller.SetPromptGuidance(r.config.PlanGuidance)
-		tool = NewUpdatePlanTool(controller)
+	case LiveSettingsToolName, UpdatePlanToolName:
+		tool = r.newSessionStateTool(specName)
 	default:
 		return NewToolErrorf(ErrInvalidParams, "unimplemented tool: %s", specName)
 	}
@@ -316,6 +314,16 @@ func (r *LocalToolRegistry) registerTool(specName string) error {
 		r.applyCollaborativeShellLocked()
 	}
 	return nil
+}
+
+// newSessionStateTool constructs non-filesystem, session-bound state controls.
+func (r *LocalToolRegistry) newSessionStateTool(name string) llm.Tool {
+	if name == LiveSettingsToolName {
+		return &LiveSettingsTool{}
+	}
+	controller := NewPlanController(nil)
+	controller.SetPromptGuidance(r.config.PlanGuidance)
+	return NewUpdatePlanTool(controller)
 }
 
 // SetViewImageVisionProvider switches view_image into routed-vision mode. If

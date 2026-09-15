@@ -97,6 +97,19 @@ const (
 	DefaultMusicPollInterval     = "2s"
 	DefaultMusicPollTimeout      = "10m"
 
+	// LiveProviderCodex optionally negotiates through a local Codex executable.
+	LiveProviderCodex = "codex"
+	// LiveProviderChatGPT speaks the realtime protocol directly using ChatGPT OAuth.
+	LiveProviderChatGPT = "chatgpt"
+
+	DefaultLiveProvider               = LiveProviderChatGPT
+	DefaultLiveCodexPath              = "codex"
+	DefaultLiveIdleTimeout            = "10m"
+	DefaultLiveChatGPTModel           = "gpt-live-1-codex"
+	DefaultLiveChatGPTVoice           = "cove"
+	DefaultLiveChatGPTCallBaseURL     = "https://chatgpt.com/backend-api/codex"
+	DefaultLiveChatGPTSidebandBaseURL = "https://api.openai.com/v1"
+
 	DefaultTranscriptionProvider        = "openai"
 	DefaultTranscriptionOpenAIModel     = "whisper-1"
 	DefaultTranscriptionMistralModel    = "voxtral-mini-latest"
@@ -260,6 +273,16 @@ var keySpecs = []KeySpec{
 	def("transcription.venice.model", DefaultTranscriptionVeniceModel),
 	optional("transcription.elevenlabs.api_key", sensitive()),
 	def("transcription.elevenlabs.model", DefaultTranscriptionElevenLabsModel),
+
+	def("live.enabled", false),
+	def("live.provider", DefaultLiveProvider),
+	optional("live.instructions"),
+	def("live.idle_timeout", DefaultLiveIdleTimeout),
+	def("live.codex.path", DefaultLiveCodexPath),
+	def("live.chatgpt.model", DefaultLiveChatGPTModel),
+	def("live.chatgpt.voice", DefaultLiveChatGPTVoice),
+	def("live.chatgpt.call_base_url", DefaultLiveChatGPTCallBaseURL),
+	def("live.chatgpt.sideband_base_url", DefaultLiveChatGPTSidebandBaseURL),
 
 	optional("embed.provider"),
 	def("embed.batch_size", 32),

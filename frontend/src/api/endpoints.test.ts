@@ -140,6 +140,43 @@ describe('shell endpoints', () => {
   });
 });
 
+describe('live voice endpoints', () => {
+  it('uses authenticated signaling, text, delete, and replayable SSE routes', async () => {
+    const json = vi.fn(async () => ({}));
+    const remove = vi.fn(async () => ({}));
+    const request = vi.fn(async () => new Response());
+    const routes = endpoints({ json, delete: remove, request } as unknown as APIClient);
+    const controller = new AbortController();
+
+    await routes.liveStart('offer-sdp', 'session/one');
+    expect(json).toHaveBeenLastCalledWith(
+      '/v1/live/sessions',
+      {
+        method: 'POST',
+        body: JSON.stringify({ sdp: 'offer-sdp', session_id: 'session/one' }),
+      },
+      { policy: 'mutation', auth: 'session', retries: 0, timeoutMs: 0 },
+    );
+
+    await routes.liveText('live/one', 'hello');
+    expect(json).toHaveBeenLastCalledWith(
+      '/v1/live/sessions/live%2Fone/text',
+      { method: 'POST', body: JSON.stringify({ text: 'hello' }) },
+      { policy: 'mutation', auth: 'session', retries: 0 },
+    );
+
+    await routes.liveStop('live/one');
+    expect(remove).toHaveBeenCalledWith('/v1/live/sessions/live%2Fone');
+
+    await routes.liveEvents('live/one', 7, controller.signal);
+    expect(request).toHaveBeenCalledWith(
+      '/v1/live/sessions/live%2Fone/events?after=7',
+      { signal: controller.signal, headers: { Accept: 'text/event-stream' } },
+      { policy: 'stream', retries: 0, timeoutMs: 0, auth: 'session' },
+    );
+  });
+});
+
 describe('file change endpoints', () => {
   it('fetches encoded raw text with version pinning and cancellation', async () => {
     const response = new Response('# Plan\n', {

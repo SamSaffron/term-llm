@@ -3752,6 +3752,119 @@ describe('Preact-owned chat surfaces', () => {
     expect(trigger).toHaveFocus();
   });
 
+  it('switches the composer action between send and live voice when the draft changes', async () => {
+    const store = createStore();
+    store.liveStore.enabled.value = true;
+    store.liveStore.capability.value = { supported: true, reason: '' };
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    // An empty composer has nothing to send, so the control is the Live button
+    // itself: enabled and prominent, with no separate opt-in.
+    const live = screen.getByRole('button', { name: 'Start live voice' });
+    expect(live).toBeEnabled();
+    expect(live).toHaveClass('live');
+    expect(live.querySelector('svg')).toBeInTheDocument();
+
+    const input = screen.getByRole('textbox', { name: 'Message' });
+    await userEvent.type(input, 'hello');
+    expect(screen.getByRole('button', { name: 'Send message' })).not.toHaveClass('live');
+    await userEvent.clear(input);
+    expect(screen.getByRole('button', { name: 'Start live voice' })).toHaveClass('live');
+
+    // Without server support the composer keeps the ordinary disabled send button.
+    store.liveStore.enabled.value = false;
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled(),
+    );
+  });
+
+  it('routes typed text through an active live call and falls back to normal send on failure', async () => {
+    const store = createStore();
+    store.liveStore.enabled.value = true;
+    store.liveStore.capability.value = { supported: true, reason: '' };
+    store.liveStore.liveId.value = 'live_one';
+    store.liveStore.phase.value = 'listening';
+    store.endpoints.liveText = vi.fn(async () => ({ ok: true as const }));
+    store.send = vi.fn(async () => undefined);
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Record voice message' })).toBeDisabled();
+    const input = screen.getByRole('textbox', { name: 'Message' });
+    await userEvent.type(input, 'hello live');
+    await userEvent.click(screen.getByRole('button', { name: 'Send text to live voice' }));
+    await waitFor(() =>
+      expect(store.endpoints.liveText).toHaveBeenCalledWith('live_one', 'hello live'),
+    );
+    expect(input).toHaveValue('');
+    expect(store.send).not.toHaveBeenCalled();
+
+    vi.mocked(store.endpoints.liveText).mockRejectedValueOnce(new Error('live text failed'));
+    await userEvent.type(input, 'fallback text');
+    await userEvent.click(screen.getByRole('button', { name: 'Send text to live voice' }));
+    await waitFor(() => expect(store.send).toHaveBeenCalledOnce());
+    expect(store.liveStore.lastError.value).toBe('live text failed');
+  });
+
+  it.each([
+    ['/stats', 'stats'],
+    ['/model', 'settings'],
+    ['/goal', 'goal'],
+  ])('handles %s locally during an idle Live call', async (command, modal) => {
+    const store = createStore();
+    store.liveStore.liveId.value = 'live_one';
+    store.liveStore.phase.value = 'listening';
+    store.liveStore.sendText = vi.fn(async () => true);
+    store.send = vi.fn(async () => undefined);
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+    const input = screen.getByRole('textbox', { name: 'Message' });
+    await userEvent.type(input, command);
+    await userEvent.click(screen.getByRole('button', { name: 'Send text to live voice' }));
+    expect(store.modal.value).toBe(modal);
+    expect(store.liveStore.sendText).not.toHaveBeenCalled();
+    expect(store.send).not.toHaveBeenCalled();
+  });
+
+  it('sends typed live corrections through standard steering only', async () => {
+    const store = createStore();
+    store.liveStore.liveId.value = 'live_one';
+    store.liveStore.phase.value = 'working';
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'r1',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'streaming',
+        lastSequence: 1,
+        startedRev: 0,
+        reconnects: 0,
+      }),
+    };
+    store.runEngine.markResponseTransportActive('s1', 'r1');
+    store.steer = vi.fn(async () => undefined);
+    store.liveStore.sendText = vi.fn(async () => true);
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+    await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), 'actually a changeset');
+    await userEvent.click(screen.getByRole('button', { name: 'Steer' }));
+    expect(store.steer).toHaveBeenCalledWith('actually a changeset');
+    expect(store.liveStore.sendText).not.toHaveBeenCalled();
+  });
+
   it('uses the consistent idle composer placeholder', () => {
     const store = createStore();
     store.sessions.value = [{ ...store.sessions.value[0], agent: 'widget-builder' }];
@@ -3777,6 +3890,34 @@ describe('Preact-owned chat surfaces', () => {
       'placeholder',
       'Type a message…',
     );
+  });
+
+  it('keeps the running-response indicator instead of the live button while a turn streams', () => {
+    const store = createStore();
+    store.liveStore.enabled.value = true;
+    store.liveStore.capability.value = { supported: true, reason: '' };
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'r1',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'streaming',
+        lastSequence: 1,
+        startedRev: 0,
+        reconnects: 0,
+      }),
+    };
+    store.runEngine.markResponseTransportActive('s1', 'r1');
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    const send = screen.getByRole('button', { name: 'Response is running' });
+    expect(send).toHaveClass('loading');
+    expect(send).not.toHaveClass('live');
+    expect(screen.queryByRole('button', { name: 'Start live voice' })).not.toBeInTheDocument();
   });
 
   it('morphs the send icon into the steering icon while streaming with a draft', async () => {

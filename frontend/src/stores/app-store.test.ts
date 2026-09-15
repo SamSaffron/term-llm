@@ -291,6 +291,37 @@ describe('AppStore compatibility behavior', () => {
     store.dispose();
   });
 
+  it('materializes a new chat with its selected project before starting live voice', async () => {
+    const { LiveCall } = await import('../platform/live');
+    const start = vi.spyOn(LiveCall.prototype, 'start').mockImplementation(async (sessionId) => ({
+      live_id: 'live-test',
+      session_id: sessionId,
+      sdp: 'answer',
+    }));
+    const store = new AppStore(config);
+    const events = new ReadableStream<Uint8Array>();
+    try {
+      store.draftActive.value = true;
+      store.projectsEnabled.value = true;
+      store.activeProjectId.value = 'project-1';
+      store.selectedAgent.value = 'developer';
+      store.liveStore.applyCapability({ enabled: true, provider: 'chatgpt' });
+      store.liveStore.capability.value = { supported: true, reason: '' };
+      store.endpoints.createBlankSession = vi.fn(async () => ({ session: { ...session() } }));
+      store.endpoints.liveEvents = vi.fn(async () => new Response(events));
+      await expect(store.liveStore.start()).resolves.toBe(true);
+      expect(store.endpoints.createBlankSession).toHaveBeenCalledWith(
+        expect.objectContaining({ agent: 'developer', project_id: 'project-1' }),
+      );
+      expect(start).toHaveBeenCalledWith('s1');
+      expect(store.activeSessionId.value).toBe('s1');
+      expect(store.draftActive.value).toBe(false);
+    } finally {
+      store.dispose();
+      start.mockRestore();
+    }
+  });
+
   it('materializes a new chat before saving its goal without sending the draft', async () => {
     const store = new AppStore(config);
     store.prompt.value = 'keep this draft';
@@ -2446,6 +2477,55 @@ describe('AppStore compatibility behavior', () => {
     expect(store.runs.value.s1.pendingGuardian).toEqual({});
     expect(store.runs.value.s1.run.lastSequence).toBe(12);
     expect(internals.streamResponse).toHaveBeenCalledWith('r1', 's1', 12);
+  });
+
+  it('shows server steering admission immediately without resurrecting consumed IDs', () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'r1',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'streaming',
+        lastSequence: 0,
+        startedRev: 0,
+        reconnects: 0,
+      }),
+    };
+    store.steeringCapabilities.value = {
+      s1: { protocol: 1, can_steer: true, can_rush: false, unavailable_reason: 'no_user_steering' },
+    };
+    const apply = (type: string, sequence: number) =>
+      store.applyResponseEvent('s1', {
+        type,
+        response_id: 'r1',
+        run_epoch: 1,
+        sequence_number: sequence,
+        client_message_id: 'live-correction',
+        text: 'actually, a changeset',
+      });
+    apply('response.steering.queued', 1);
+    expect(store.steering.value).toEqual([
+      {
+        id: 'live-correction',
+        sessionId: 's1',
+        content: 'actually, a changeset',
+        state: 'pending',
+      },
+    ]);
+    expect(store.runs.value.s1.messages).toEqual([]);
+    expect(store.steeringCapabilities.value.s1.can_rush).toBe(true);
+    apply('response.steering.queued', 2);
+    expect(store.steering.value).toHaveLength(1);
+    apply('response.steering', 3);
+    expect(store.steering.value).toEqual([]);
+    expect(store.runs.value.s1.messages).toHaveLength(1);
+    apply('response.steering.queued', 4);
+    expect(store.steering.value).toEqual([]);
+    expect(store.runs.value.s1.messages).toHaveLength(1);
+    store.dispose();
   });
 
   it('hydrates durable pending steering when a session is opened in another tab', async () => {

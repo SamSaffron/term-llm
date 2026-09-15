@@ -1882,6 +1882,13 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 			result = append(result, entry)
 			continue
 		}
+		displayText := ""
+		if msg.Role == llm.RoleUser {
+			displayText = msg.DisplayText()
+		}
+		if displayText != "" {
+			entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "text", Text: displayText})
+		}
 		embeddedFiles := make(map[string]bool)
 		for _, p := range msg.Parts {
 			switch p.Type {
@@ -1893,24 +1900,7 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 					entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "diff_comment", DiffComment: &copyComment})
 				}
 			case llm.PartText:
-				text := p.Text
-				if msg.Role == llm.RoleUser {
-					for _, name := range llm.ExtractEmbeddedFileNames(text) {
-						if embeddedFiles[name] {
-							continue
-						}
-						embeddedFiles[name] = true
-						entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "file", Text: name})
-					}
-					text = llm.StripEmbeddedFileText(text)
-				}
-				if text != "" {
-					entry.Parts = append(entry.Parts, sessionMessagePartEntry{
-						Type:      "text",
-						Text:      text,
-						CreatedAt: p.CreatedAt,
-					})
-				}
+				appendSessionMessageText(&entry, msg, p, embeddedFiles, displayText)
 			case llm.PartImage:
 				if imageURL, serveablePath := s.sessionMessageImageURL(p); imageURL != "" {
 					mimeType := ""

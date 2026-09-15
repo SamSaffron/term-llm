@@ -261,6 +261,7 @@ func NewMessage(sessionID string, msg llm.Message, sequence int) *Message {
 	m.TextContent = m.ExtractTextContent()
 	if msg.DisplayText != "" {
 		m.TextContent = msg.DisplayText
+		m.Parts = append(append([]llm.Part(nil), m.Parts...), llm.Part{Type: llm.PartDisplayText, Text: msg.DisplayText})
 	}
 	if llm.IsGoalSteeringMessage(msg) {
 		// Keep provider-facing text in Parts while excluding internal steering from
@@ -352,6 +353,7 @@ func (m *Message) ToLLMMessage() llm.Message {
 	msg := llm.Message{
 		Role:                    m.Role,
 		Parts:                   providerMessageParts(m.Parts),
+		DisplayText:             m.DisplayText(),
 		ClientMessageID:         m.ClientMessageID,
 		ResponseID:              m.ResponseID,
 		AssistantSegmentOrdinal: m.AssistantSegmentOrdinal,
@@ -364,16 +366,30 @@ func (m *Message) ToLLMMessage() llm.Message {
 	return msg
 }
 
+// DisplayText returns an explicit persistence-only text override, if present.
+// It is not inferred by comparing text or parsing provider prompt strings.
+func (m *Message) DisplayText() string {
+	if m == nil {
+		return ""
+	}
+	for i := len(m.Parts) - 1; i >= 0; i-- {
+		if m.Parts[i].Type == llm.PartDisplayText {
+			return m.Parts[i].Text
+		}
+	}
+	return ""
+}
+
 func providerMessageParts(parts []llm.Part) []llm.Part {
 	for i, part := range parts {
-		if part.Type != llm.PartSkillActivation && part.Type != llm.PartAgentMention && part.Type != llm.PartPathNote && part.Type != llm.PartDiffComment && part.Type != llm.PartGoalSteering {
+		if part.Type != llm.PartDisplayText && part.Type != llm.PartSkillActivation && part.Type != llm.PartAgentMention && part.Type != llm.PartPathNote && part.Type != llm.PartDiffComment && part.Type != llm.PartGoalSteering {
 			continue
 		}
 		converted := make([]llm.Part, 0, len(parts))
 		converted = append(converted, parts[:i]...)
 		for _, candidate := range parts[i:] {
 			switch candidate.Type {
-			case llm.PartSkillActivation, llm.PartPathNote, llm.PartDiffComment, llm.PartGoalSteering:
+			case llm.PartDisplayText, llm.PartSkillActivation, llm.PartPathNote, llm.PartDiffComment, llm.PartGoalSteering:
 				continue
 			case llm.PartAgentMention:
 				candidate.Type = llm.PartText

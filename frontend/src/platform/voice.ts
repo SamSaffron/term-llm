@@ -13,6 +13,26 @@ export interface VoiceCapability {
   reason: string;
 }
 
+export function microphoneCapability(): VoiceCapability {
+  if (!globalThis.isSecureContext)
+    return { supported: false, reason: 'Voice recording requires a secure HTTPS connection.' };
+  if (!navigator.mediaDevices?.getUserMedia)
+    return { supported: false, reason: 'This browser cannot access a microphone.' };
+  return { supported: true, reason: '' };
+}
+
+// liveCapability lives beside the other media checks so the live store can ask
+// it without pulling the lazily loaded WebRTC call implementation into the
+// eager shell bundle.
+export function liveCapability(): VoiceCapability {
+  const microphone = microphoneCapability();
+  if (!microphone.supported)
+    return { ...microphone, reason: microphone.reason.replace('Voice recording', 'Live voice') };
+  if (typeof globalThis.RTCPeerConnection !== 'function')
+    return { supported: false, reason: 'This browser cannot start a live voice connection.' };
+  return { supported: true, reason: '' };
+}
+
 export interface VoiceSnapshot {
   phase: VoicePhase;
   capability: VoiceCapability;
@@ -57,10 +77,8 @@ export const VOICE_MIME_CANDIDATES = [
 ];
 
 export function voiceCapability(): VoiceCapability {
-  if (!globalThis.isSecureContext)
-    return { supported: false, reason: 'Voice recording requires a secure HTTPS connection.' };
-  if (!navigator.mediaDevices?.getUserMedia)
-    return { supported: false, reason: 'This browser cannot access a microphone.' };
+  const microphone = microphoneCapability();
+  if (!microphone.supported) return microphone;
   if (!('MediaRecorder' in window))
     return { supported: false, reason: 'This browser cannot record microphone audio.' };
   if (

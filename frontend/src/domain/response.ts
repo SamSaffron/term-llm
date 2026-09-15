@@ -707,6 +707,14 @@ export function reduceResponse(
         ],
       };
     }
+    case 'response.steering.queued': {
+      // Admission receipt: sequence and ownership are authoritative, but the
+      // user bubble is only projected on response.steering consumption. This
+      // keeps immediate pending UI in the run-engine without duplicating the
+      // transcript row, and lets a late queued receipt be ignored once the
+      // committed ID is already projected.
+      return next;
+    }
     case 'response.compaction':
       return {
         ...next,
@@ -943,6 +951,7 @@ export const RESPONSE_EVENT_TYPES = [
   'response.tool_exec.end',
   'response.guardian.review',
   'response.steering',
+  'response.steering.queued',
   'response.compaction',
   'response.phase',
   'response.model_swap.progress',

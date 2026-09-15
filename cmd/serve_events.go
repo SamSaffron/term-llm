@@ -275,7 +275,7 @@ func (s *serveServer) publishResponseRunEvent(run *responseRun, event string, pa
 		"response.completed", "response.cancelled", "response.failed",
 		"response.ask_user.prompt", "response.ask_user.resolved", "response.approval.prompt", "response.approval.resolved",
 		"response.file_change", "response.filesystem_observation", "response.output_claim_diagnostic",
-		"response.steering", "response.compaction", "response.model_switch":
+		"response.steering", "response.steering.queued", "response.compaction", "response.model_switch":
 	default:
 		return
 	}
@@ -302,7 +302,7 @@ func (s *serveServer) publishResponseRunEvent(run *responseRun, event string, pa
 	case "response.file_change", "response.filesystem_observation", "response.output_claim_diagnostic":
 		base.Type, base.Reason = serveEventFilesChanged, strings.TrimPrefix(event, "response.")
 		s.publishEvent(base)
-	case "response.steering", "response.compaction", "response.model_switch":
+	case "response.steering", "response.steering.queued", "response.compaction", "response.model_switch":
 		base.Type, base.Reason = serveEventSessionRuntimeChanged, strings.TrimPrefix(event, "response.")
 		s.publishEvent(base)
 	}

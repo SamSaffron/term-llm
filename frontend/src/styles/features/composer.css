@@ -95,6 +95,91 @@
   border-color: color-mix(in srgb, var(--success, #22c55e) 55%, var(--border));
 }
 
+.live-status {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin: 0 0.3rem 0.45rem;
+  padding: 0.65rem 0.85rem;
+  min-height: 44px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  color: var(--text);
+}
+
+.live-status-content {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.live-status-copy {
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+
+.live-status-transcript {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.86rem;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-status-error {
+  color: var(--danger);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.live-status-dot,
+.live-status-spinner {
+  flex: 0 0 auto;
+  border-radius: 999px;
+}
+
+.live-status-dot {
+  width: 10px;
+  height: 10px;
+  background: var(--accent);
+}
+
+.live-status-listening .live-status-dot,
+.live-status-speaking .live-status-dot {
+  animation: voice-pulse 1.35s infinite;
+}
+
+.live-status-spinner {
+  width: 15px;
+  height: 15px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+
+.live-status-working {
+  flex: 0 0 auto;
+  padding: 0.28rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  font-weight: 650;
+}
+
+.live-status-stop {
+  flex: 0 0 auto;
+}
+
+.live-status-failed {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+}
+
 .voice-unsupported {
   display: block;
   margin: 0 0.3rem 0.35rem;
@@ -534,6 +619,12 @@
   opacity: 1;
 }
 
+/* The Live button is the primary control on an empty composer, so it keeps the
+   full-strength send background instead of the disabled treatment. */
+.send-btn.live.live-pulse {
+  animation: voice-pulse 1.35s infinite;
+}
+
 .send-btn:disabled {
   opacity: 0.35;
   cursor: not-allowed;
@@ -574,6 +665,22 @@
     padding: 0.65rem 0.75rem;
     border-radius: 16px;
     gap: 0.6rem;
+  }
+
+  .live-status {
+    flex-wrap: wrap;
+    margin: 0 0.15rem 0.4rem;
+    padding: 0.65rem 0.75rem;
+    border-radius: 16px;
+  }
+
+  .live-status-content {
+    flex-basis: calc(100% - 2rem);
+  }
+
+  .live-status-stop {
+    min-height: 44px;
+    margin-left: auto;
   }
 
   .voice-status-copy {

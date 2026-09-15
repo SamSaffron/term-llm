@@ -1,0 +1,770 @@
+package cmd
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
+
+	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/credentials"
+	"github.com/samsaffron/term-llm/internal/live"
+	"github.com/samsaffron/term-llm/internal/llm"
+)
+
+// liveTestHarness wires a serve server to in-process fakes for the provider's
+// call-creation endpoint and control channel.
+type liveTestHarness struct {
+	server      *serveServer
+	callServer  *httptest.Server
+	wsServer    *httptest.Server
+	callHeaders chan http.Header
+	callBodies  chan []byte
+	conns       chan *websocket.Conn
+	inbound     chan string
+}
+
+func writeTestChatGPTCredentials(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "term-llm"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	creds := credentials.ChatGPTCredentials{
+		AccessToken:  "token-live",
+		RefreshToken: "refresh-live",
+		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		AccountID:    "acct-live",
+	}
+	payload, err := json.Marshal(creds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "term-llm", "chatgpt_oauth.json"), payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func newLiveTestHarness(t *testing.T, responses ...string) *liveTestHarness {
+	t.Helper()
+	writeTestChatGPTCredentials(t)
+
+	harness := &liveTestHarness{
+		callHeaders: make(chan http.Header, 4),
+		callBodies:  make(chan []byte, 4),
+		conns:       make(chan *websocket.Conn, 4),
+		inbound:     make(chan string, 64),
+	}
+	harness.callServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		harness.callHeaders <- r.Header.Clone()
+		harness.callBodies <- body
+		w.Header().Set("Location", "/v1/live/rtc_test")
+		_, _ = io.WriteString(w, "v=0\r\na=answer\r\n")
+	}))
+	t.Cleanup(harness.callServer.Close)
+
+	upgrader := websocket.Upgrader{}
+	harness.wsServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		harness.conns <- conn
+		for {
+			_, payload, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			harness.inbound <- string(payload)
+		}
+	}))
+	t.Cleanup(harness.wsServer.Close)
+
+	srv := newTestServeServer(responses...)
+	srv.cfg.ui = true
+	srv.shutdownCh = make(chan struct{})
+	// These cases cover the direct realtime protocol end to end against fakes.
+	// The optional Codex-backed provider is exercised through the relay tests.
+	srv.cfgRef = &config.Config{Live: config.LiveConfig{
+		Enabled:  true,
+		Provider: config.LiveProviderChatGPT,
+		ChatGPT: config.LiveChatGPTConfig{
+			Model:           "gpt-live-test",
+			Voice:           "cove",
+			CallBaseURL:     harness.callServer.URL,
+			SidebandBaseURL: harness.wsServer.URL,
+		},
+	}}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		srv.closeLiveSessions(ctx)
+	})
+	harness.server = srv
+	return harness
+}
+
+// browserOffer mirrors the shape a browser produces: every line, including the
+// last, ends with CRLF.
+const browserOffer = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"
+
+func (h *liveTestHarness) startLive(t *testing.T, sessionID string) (int, map[string]any) {
+	t.Helper()
+	body := fmt.Sprintf(`{"sdp":"v=0\r\na=offer\r\n","session_id":%q}`, sessionID)
+	request := httptest.NewRequest(http.MethodPost, "/v1/live/sessions", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	h.server.handleLiveSessions(recorder, request)
+	var decoded map[string]any
+	if recorder.Body.Len() > 0 {
+		_ = json.Unmarshal(recorder.Body.Bytes(), &decoded)
+	}
+	return recorder.Code, decoded
+}
+
+func (h *liveTestHarness) waitForInbound(t *testing.T, what string, match func(string) bool) string {
+	t.Helper()
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case message := <-h.inbound:
+			if match(message) {
+				return message
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s", what)
+			return ""
+		}
+	}
+}
+
+func TestLiveStartCreatesProviderCallAndReturnsAnswer(t *testing.T) {
+	harness := newLiveTestHarness(t)
+
+	status, body := harness.startLive(t, "sess_live")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, body = %v", status, body)
+	}
+	if body["sdp"] != "v=0\r\na=answer\r\n" {
+		t.Fatalf("answer sdp = %q", body["sdp"])
+	}
+	if !strings.HasPrefix(fmt.Sprint(body["live_id"]), "live_") {
+		t.Fatalf("live_id = %v", body["live_id"])
+	}
+	if body["session_id"] != "sess_live" {
+		t.Fatalf("session_id = %v", body["session_id"])
+	}
+
+	headers := <-harness.callHeaders
+	if got := headers.Get("Authorization"); got != "Bearer token-live" {
+		t.Fatalf("Authorization = %q", got)
+	}
+	if got := headers.Get("ChatGPT-Account-ID"); got != "acct-live" {
+		t.Fatalf("ChatGPT-Account-ID = %q", got)
+	}
+	if got := headers.Get("originator"); got != "term-llm" {
+		t.Fatalf("originator = %q", got)
+	}
+	if got := headers.Get("X-Session-Id"); got != "sess_live" {
+		t.Fatalf("x-session-id = %q", got)
+	}
+
+	var payload struct {
+		Session struct {
+			Model string `json:"model"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(<-harness.callBodies, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Session.Model != "gpt-live-test" {
+		t.Fatalf("model = %q", payload.Session.Model)
+	}
+
+	// The provider control channel is joined immediately after the answer.
+	select {
+	case <-harness.conns:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the control channel was never joined")
+	}
+}
+
+func TestLiveForwardsTheBrowserOfferAndAnswerVerbatim(t *testing.T) {
+	harness := newLiveTestHarness(t)
+
+	payload, err := json.Marshal(map[string]string{"sdp": browserOffer, "session_id": "sess_sdp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/live/sessions", strings.NewReader(string(payload)))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	harness.server.handleLiveSessions(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	var sent struct {
+		SDP string `json:"sdp"`
+	}
+	if err := json.Unmarshal(<-harness.callBodies, &sent); err != nil {
+		t.Fatal(err)
+	}
+	// SDP is whitespace-significant. Trimming the trailing CRLF makes the
+	// provider reject the offer with "failed to unmarshal SDP: EOF".
+	if sent.SDP != browserOffer {
+		t.Fatalf("forwarded offer = %q, want %q", sent.SDP, browserOffer)
+	}
+
+	var answered map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &answered); err != nil {
+		t.Fatal(err)
+	}
+	if answered["sdp"] != "v=0\r\na=answer\r\n" {
+		t.Fatalf("answer returned to the browser = %q", answered["sdp"])
+	}
+}
+
+func TestLiveDelegationRunsAgentTurnAndSpeaksTheAnswer(t *testing.T) {
+	harness := newLiveTestHarness(t, "There are three Go files.")
+
+	status, body := harness.startLive(t, "sess_delegate")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, body = %v", status, body)
+	}
+	conn := <-harness.conns
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"turn.done","turn":{"role":"user","transcript":"list the go files"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	delegation := `{"type":"delegation.created","item":{"id":"item_1","type":"delegation","target":"client","content":[{"type":"input_text","text":"list the go files"}]}}`
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(delegation)); err != nil {
+		t.Fatal(err)
+	}
+
+	message := harness.waitForInbound(t, "the spoken answer", func(message string) bool {
+		return strings.Contains(message, "delegation.context.append") && strings.Contains(message, "three Go files")
+	})
+	if !strings.Contains(message, `"delegation_item_id":"item_1"`) {
+		t.Fatalf("append lost the delegation id: %s", message)
+	}
+	if !strings.Contains(message, `"channel":"speakable"`) {
+		t.Fatalf("append used the wrong channel: %s", message)
+	}
+
+	runtime, ok := harness.server.sessionMgr.Get("sess_delegate")
+	if !ok {
+		t.Fatal("the delegated turn did not create a session runtime")
+	}
+	provider, ok := runtime.provider.(*llm.MockProvider)
+	if !ok {
+		t.Fatalf("unexpected provider %T", runtime.provider)
+	}
+	requests := provider.RecordedRequests()
+	if len(requests) == 0 {
+		t.Fatal("the delegated turn never reached the model")
+	}
+	prompt := lastUserMessageText(t, requests[len(requests)-1])
+	if !strings.Contains(prompt, "<input>list the go files</input>") {
+		t.Fatalf("delegated prompt = %s", prompt)
+	}
+	if !strings.Contains(prompt, "<transcript_delta>") {
+		t.Fatalf("delegated prompt lost the transcript delta: %s", prompt)
+	}
+}
+
+func TestLiveStreamsTranscriptEventsToTheBrowser(t *testing.T) {
+	harness := newLiveTestHarness(t)
+	status, body := harness.startLive(t, "sess_events")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, body = %v", status, body)
+	}
+	liveID := fmt.Sprint(body["live_id"])
+	conn := <-harness.conns
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"turn.done","turn":{"role":"assistant","transcript":"hello there"}}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	record, ok := harness.server.lookupLiveSession(liveID)
+	if !ok {
+		t.Fatal("live session was not registered")
+	}
+	waitForLiveEvent(t, record, liveEventTranscript)
+
+	stream := httptest.NewServer(http.HandlerFunc(harness.server.handleLiveSessionByID))
+	defer stream.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, stream.URL+"/v1/live/sessions/"+liveID+"/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Accept", "text/event-stream")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if got := response.Header.Get("Content-Type"); !strings.Contains(got, "text/event-stream") {
+		t.Fatalf("content type = %q", got)
+	}
+
+	reader := bufio.NewReader(response.Body)
+	var frame []string
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read event stream: %v (read %v)", err, frame)
+		}
+		line = strings.TrimRight(line, "\r\n")
+		frame = append(frame, line)
+		if strings.HasPrefix(line, "data: ") && slices.Contains(frame, "event: "+liveEventTranscript) {
+			if !strings.Contains(line, `"role":"assistant"`) || !strings.Contains(line, `"final":true`) {
+				t.Fatalf("transcript frame = %v", frame)
+			}
+			return
+		}
+		if line == "" {
+			frame = nil
+		}
+	}
+}
+
+func TestLiveRejectsSecondSessionForTheSameChatSession(t *testing.T) {
+	harness := newLiveTestHarness(t)
+	if status, body := harness.startLive(t, "sess_single"); status != http.StatusOK {
+		t.Fatalf("status = %d, body = %v", status, body)
+	}
+	status, body := harness.startLive(t, "sess_single")
+	if status != http.StatusConflict {
+		t.Fatalf("second live session status = %d, body = %v", status, body)
+	}
+}
+
+func TestLiveStopSendsSessionCloseAndIsIdempotent(t *testing.T) {
+	harness := newLiveTestHarness(t)
+	_, body := harness.startLive(t, "sess_stop")
+	liveID := fmt.Sprint(body["live_id"])
+	<-harness.conns
+
+	for attempt := 0; attempt < 2; attempt++ {
+		request := httptest.NewRequest(http.MethodDelete, "/v1/live/sessions/"+liveID, nil)
+		recorder := httptest.NewRecorder()
+		harness.server.handleLiveSessionByID(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("delete attempt %d status = %d", attempt, recorder.Code)
+		}
+	}
+	harness.waitForInbound(t, "session.close", func(message string) bool {
+		return strings.Contains(message, `"type":"session.close"`)
+	})
+	if _, ok := harness.server.lookupLiveSession(liveID); ok {
+		t.Fatal("the live session was not removed")
+	}
+}
+
+func TestLiveIsUnavailableWhenDisabled(t *testing.T) {
+	harness := newLiveTestHarness(t)
+	harness.server.cfgRef.Live.Enabled = false
+
+	status, _ := harness.startLive(t, "sess_disabled")
+	if status != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", status)
+	}
+	capability := harness.server.liveCapability(context.Background())
+	if capability["enabled"] != false {
+		t.Fatalf("capability = %v", capability)
+	}
+	if capability["provider"] != config.LiveProviderChatGPT {
+		t.Fatalf("capability provider = %v", capability["provider"])
+	}
+}
+
+func TestLiveCapabilityRequiresCredentials(t *testing.T) {
+	harness := newLiveTestHarness(t)
+	if enabled := harness.server.liveCapability(context.Background())["enabled"]; enabled != true {
+		t.Fatalf("capability with credentials = %v", enabled)
+	}
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if enabled := harness.server.liveCapability(context.Background())["enabled"]; enabled != false {
+		t.Fatalf("capability without credentials = %v", enabled)
+	}
+}
+
+// relayLiveSession is a provider session whose control channel runs through the
+// media peer, like the Codex-negotiated calls the browser relays.
+type relayLiveSession struct {
+	events   chan live.Event
+	outbound chan []byte
+	closed   chan struct{}
+	once     sync.Once
+}
+
+func (s *relayLiveSession) AnswerSDP() string         { return "v=0\r\na=relay\r\n" }
+func (s *relayLiveSession) Events() <-chan live.Event { return s.events }
+func (s *relayLiveSession) Outbound() <-chan []byte   { return s.outbound }
+func (s *relayLiveSession) Deliver(frame []byte) {
+	event, err := live.ParseEvent(frame)
+	if err != nil || event.Kind == live.EventUnknown {
+		return
+	}
+	select {
+	case s.events <- event:
+	case <-s.closed:
+	}
+}
+
+func (s *relayLiveSession) AppendDelegation(ctx context.Context, delegationID string, chunk live.DelegationChunk) error {
+	payload, err := json.Marshal(live.DelegationContextAppend(delegationID, chunk.Channel, chunk.Text))
+	if err != nil {
+		return err
+	}
+	select {
+	case s.outbound <- payload:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *relayLiveSession) AppendText(context.Context, string) error { return nil }
+
+func (s *relayLiveSession) Close(context.Context) error {
+	s.once.Do(func() { close(s.closed); close(s.events) })
+	return nil
+}
+
+type relayLiveProvider struct{ session *relayLiveSession }
+
+func (p *relayLiveProvider) Name() string                { return "relay" }
+func (p *relayLiveProvider) Ready(context.Context) error { return nil }
+func (p *relayLiveProvider) Start(context.Context, string, live.SessionOptions) (live.Session, error) {
+	return p.session, nil
+}
+
+func newRelayHarness(t *testing.T, responses ...string) (*serveServer, *relayLiveSession) {
+	t.Helper()
+	session := &relayLiveSession{
+		events:   make(chan live.Event, 16),
+		outbound: make(chan []byte, 16),
+		closed:   make(chan struct{}),
+	}
+	srv := newTestServeServer(responses...)
+	srv.cfg.ui = true
+	srv.shutdownCh = make(chan struct{})
+	srv.cfgRef = &config.Config{Live: config.LiveConfig{Enabled: true, Provider: config.LiveProviderCodex}}
+	srv.liveProviderFactory = func(config.LiveConfig) (live.Provider, error) {
+		return &relayLiveProvider{session: session}, nil
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		srv.closeLiveSessions(ctx)
+	})
+	return srv, session
+}
+
+func startRelayLive(t *testing.T, srv *serveServer, sessionID string) string {
+	t.Helper()
+	body := fmt.Sprintf(`{"sdp":%q,"session_id":%q}`, browserOffer, sessionID)
+	request := httptest.NewRequest(http.MethodPost, "/v1/live/sessions", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	srv.handleLiveSessions(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprint(decoded["live_id"])
+}
+
+func postLiveSignal(t *testing.T, srv *serveServer, liveID, frame string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, "/v1/live/sessions/"+liveID+"/signal", strings.NewReader(frame))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	srv.handleLiveSessionByID(recorder, request)
+	return recorder
+}
+
+func TestLiveRelaysDataChannelDelegationThroughAnAgentTurn(t *testing.T) {
+	srv, _ := newRelayHarness(t, "Three Go files.")
+	liveID := startRelayLive(t, srv, "sess_relay")
+
+	// The browser forwards the frames its data channel received.
+	if code := postLiveSignal(t, srv, liveID, `{"type":"turn.done","turn":{"role":"user","transcript":"list the go files"}}`).Code; code != http.StatusOK {
+		t.Fatalf("turn.done signal status = %d", code)
+	}
+	delegation := `{"type":"delegation.created","item":{"id":"item_1","type":"delegation","target":"client","content":[{"type":"input_text","text":"list the go files"}]}}`
+	if code := postLiveSignal(t, srv, liveID, delegation).Code; code != http.StatusOK {
+		t.Fatalf("delegation signal status = %d", code)
+	}
+
+	// The delegated turn's speech is published for the browser to write back to
+	// the same data channel.
+	record, ok := srv.lookupLiveSession(liveID)
+	if !ok {
+		t.Fatal("live session was not registered")
+	}
+	waitForLiveCondition(t, "the spoken answer", func() bool {
+		return strings.Contains(relayedFrames(record), "Three Go files.")
+	})
+	frames := relayedFrames(record)
+	if !strings.Contains(frames, `"delegation.context.append"`) {
+		t.Fatalf("relayed frames are not delegation appends: %s", frames)
+	}
+	if !strings.Contains(frames, `"delegation_item_id":"item_1"`) {
+		t.Fatalf("relayed frames lost the delegation id: %s", frames)
+	}
+
+	runtime, ok := srv.sessionMgr.Get("sess_relay")
+	if !ok {
+		t.Fatal("the delegated turn did not create a session runtime")
+	}
+	provider, ok := runtime.provider.(*llm.MockProvider)
+	if !ok {
+		t.Fatalf("unexpected provider %T", runtime.provider)
+	}
+	requests := provider.RecordedRequests()
+	if len(requests) == 0 {
+		t.Fatal("the delegated turn never reached the model")
+	}
+	if prompt := lastUserMessageText(t, requests[len(requests)-1]); !strings.Contains(prompt, "<input>list the go files</input>") {
+		t.Fatalf("delegated prompt = %s", prompt)
+	}
+}
+
+func TestLiveRelayPublishesOutboundFramesToTheBrowser(t *testing.T) {
+	srv, session := newRelayHarness(t)
+	liveID := startRelayLive(t, srv, "sess_relay_events")
+	record, ok := srv.lookupLiveSession(liveID)
+	if !ok {
+		t.Fatal("live session was not registered")
+	}
+
+	session.outbound <- []byte(`{"type":"session.context.append","channel":"speakable"}`)
+	waitForLiveEvent(t, record, liveEventSignal)
+
+	record.mu.Lock()
+	defer record.mu.Unlock()
+	for _, event := range record.events {
+		if event.Type != liveEventSignal {
+			continue
+		}
+		payload, err := json.Marshal(event.Data["payload"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(payload), "session.context.append") {
+			t.Fatalf("relayed payload = %s", payload)
+		}
+		return
+	}
+	t.Fatal("no relayed frame reached the browser feed")
+}
+
+func TestLiveSignalRejectsNonJSONAndUnknownSessions(t *testing.T) {
+	srv, _ := newRelayHarness(t)
+	liveID := startRelayLive(t, srv, "sess_relay_invalid")
+
+	if code := postLiveSignal(t, srv, liveID, "not json").Code; code != http.StatusBadRequest {
+		t.Fatalf("invalid frame status = %d, want 400", code)
+	}
+	if code := postLiveSignal(t, srv, "live_missing", `{"type":"session.started"}`).Code; code != http.StatusNotFound {
+		t.Fatalf("unknown session status = %d, want 404", code)
+	}
+}
+
+// relayedFrames concatenates every control frame published for the browser.
+func relayedFrames(record *liveSession) string {
+	record.mu.Lock()
+	defer record.mu.Unlock()
+	var out strings.Builder
+	for _, event := range record.events {
+		if event.Type != liveEventSignal {
+			continue
+		}
+		if payload, err := json.Marshal(event.Data["payload"]); err == nil {
+			out.Write(payload)
+		}
+	}
+	return out.String()
+}
+
+func waitForLiveEvent(t *testing.T, record *liveSession, eventType string) {
+	t.Helper()
+	waitForLiveCondition(t, "live event "+eventType, func() bool {
+		record.mu.Lock()
+		defer record.mu.Unlock()
+		for _, event := range record.events {
+			if event.Type == eventType {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+func waitForLiveCondition(t *testing.T, what string, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+func lastUserMessageText(t *testing.T, request llm.Request) string {
+	t.Helper()
+	var text strings.Builder
+	for _, message := range request.Messages {
+		if message.Role != llm.RoleUser {
+			continue
+		}
+		text.Reset()
+		for _, part := range message.Parts {
+			if part.Type == llm.PartText {
+				text.WriteString(part.Text)
+			}
+		}
+	}
+	return text.String()
+}
+
+// delayedLiveProvider models negotiation completing successfully even after
+// teardown has removed the local reservation.
+type delayedLiveProvider struct {
+	relayLiveProvider
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (p *delayedLiveProvider) Start(context.Context, string, live.SessionOptions) (live.Session, error) {
+	close(p.entered)
+	<-p.release
+	return p.session, nil
+}
+
+func TestLiveStartupAfterTeardownClosesProviderWithoutStartingController(t *testing.T) {
+	for _, shutdown := range []bool{false, true} {
+		t.Run(fmt.Sprintf("shutdown=%t", shutdown), func(t *testing.T) {
+			srv, providerSession := newRelayHarness(t)
+			provider := &delayedLiveProvider{relayLiveProvider: relayLiveProvider{session: providerSession}, entered: make(chan struct{}), release: make(chan struct{})}
+			var release sync.Once
+			defer release.Do(func() { close(provider.release) })
+			srv.liveProviderFactory = func(config.LiveConfig) (live.Provider, error) { return provider, nil }
+			payload, _ := json.Marshal(map[string]string{"session_id": "starting-call", "sdp": browserOffer})
+			req := httptest.NewRequest(http.MethodPost, "/v1/live/sessions", strings.NewReader(string(payload)))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			done := make(chan struct{})
+			go func() { defer close(done); srv.handleLiveSessions(rr, req) }()
+			select {
+			case <-provider.entered:
+			case <-time.After(2 * time.Second):
+				t.Fatal("provider did not start")
+			}
+			srv.liveMu.Lock()
+			record := srv.liveSessions[srv.liveByChat["starting-call"]]
+			srv.liveMu.Unlock()
+			if record == nil {
+				t.Fatal("no startup reservation")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			var replacement *liveSession
+			if shutdown {
+				srv.closeLiveSessions(ctx)
+			} else {
+				srv.stopLiveSession(ctx, record.id, "user")
+				replacement = newLiveSession("replacement", record.sessionID)
+				if err := srv.registerLiveSession(replacement); err != nil {
+					t.Fatal(err)
+				}
+			}
+			release.Do(func() { close(provider.release) })
+			select {
+			case <-done:
+			case <-ctx.Done():
+				t.Fatal("startup did not finish")
+			}
+			if rr.Code != http.StatusConflict {
+				t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+			}
+			select {
+			case <-providerSession.closed:
+			default:
+				t.Fatal("orphan provider session was not closed")
+			}
+			if controller, cancel := record.running(); controller != nil || cancel != nil {
+				t.Fatal("controller attached after teardown")
+			}
+			if _, ok := srv.lookupLiveSession(record.id); ok {
+				t.Fatal("cancelled reservation reappeared")
+			}
+			if replacement != nil {
+				if got, ok := srv.lookupLiveSession(replacement.id); !ok || got != replacement {
+					t.Fatal("late startup disturbed replacement call")
+				}
+			}
+		})
+	}
+}
+
+func TestLiveControllerStartAndStopAreSerialized(t *testing.T) {
+	for range 30 {
+		srv, providerSession := newRelayHarness(t)
+		record := newLiveSession("race", "start-stop")
+		if err := srv.registerLiveSession(record); err != nil {
+			t.Fatal(err)
+		}
+		gate := make(chan struct{})
+		started := make(chan bool, 1)
+		stopped := make(chan struct{})
+		go func() { <-gate; started <- srv.startLiveController(record, providerSession) }()
+		go func() { <-gate; srv.stopLiveSession(context.Background(), record.id, "user"); close(stopped) }()
+		close(gate)
+		select {
+		case ok := <-started:
+			if !ok {
+				if err := providerSession.Close(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("startup deadlocked")
+		}
+		select {
+		case <-stopped:
+		case <-time.After(2 * time.Second):
+			t.Fatal("teardown deadlocked")
+		}
+		select {
+		case <-providerSession.closed:
+		default:
+			t.Fatal("provider left open")
+		}
+		if _, ok := srv.lookupLiveSession(record.id); ok {
+			t.Fatal("call retained after stop")
+		}
+	}
+}

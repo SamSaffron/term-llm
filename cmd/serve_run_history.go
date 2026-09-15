@@ -81,16 +81,43 @@ func (rt *serveRuntime) prepareRunHistory(ctx context.Context, spec serveRunSpec
 			p.inputMessages = llm.BeginConversation(p.inputMessages, now())
 		}
 	}
-	if text := rt.platformMessages.For(rt.platform); text != "" && rt.lastInjectedPlatform != rt.platform {
-		if existing, ok := llm.PlatformContextFrom(p.inputMessages); ok && strings.TrimSpace(llm.MessageText(existing)) == strings.TrimSpace(text) {
-			p.injectedPlatform = rt.platform
-		} else {
-			p.inputMessages = append([]llm.Message{llm.PlatformContextMessage(text)}, p.inputMessages...)
-			p.injectedPlatform = rt.platform
+	p.inputMessages, p.injectedPlatform = rt.preparePlatformContext(p.inputMessages, combined, req)
+	return p
+}
+
+// preparePlatformContext records only effective mode transitions. It also
+// recognizes caller-owned context and legacy unmarked platform history.
+func (rt *serveRuntime) preparePlatformContext(input, source []llm.Message, req *llm.Request) ([]llm.Message, string) {
+	injectedPlatform := ""
+	text := rt.platformMessages.For(rt.platform)
+	previous, hasPrevious := llm.PlatformContextFrom(source)
+	mode := ""
+	if rt.liveContext != nil {
+		liveText, active := rt.liveContext()
+		text = strings.TrimSpace(text + "\n\n" + liveText)
+		mode = "text"
+		if active {
+			mode = "live"
+		}
+	} else if priorMode := llm.PlatformContextMode(previous); priorMode == "live" || priorMode == "text" {
+		// Calls do not survive runtime eviction or server restart. Explicitly reset
+		// persisted live instructions, including when a normal platform prompt exists.
+		text = strings.TrimSpace(text + "\n\n" + liveTextModeContext)
+		mode = "text"
+	}
+	matches := func(message llm.Message) bool {
+		return strings.TrimSpace(llm.MessageText(message)) == strings.TrimSpace(text) && llm.PlatformContextMode(message) == mode
+	}
+	if text != "" {
+		if existing, ok := llm.PlatformContextFrom(input); ok && matches(existing) {
+			injectedPlatform = rt.platform
+		} else if (!hasPrevious && (mode != "" || rt.lastInjectedPlatform != rt.platform)) || (hasPrevious && !matches(previous)) {
+			input = append([]llm.Message{llm.PlatformContextMessageForMode(text, mode)}, input...)
+			injectedPlatform = rt.platform
 		}
 	}
-	if p.injectedPlatform != "" {
+	if injectedPlatform != "" {
 		req.IncludeDeveloperInContinuation = true
 	}
-	return p
+	return input, injectedPlatform
 }

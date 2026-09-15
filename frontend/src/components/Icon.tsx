@@ -20,7 +20,7 @@ type IconName =
   | 'fork'
   | 'folder'
   | 'info'
-  | 'steer'
+  | 'live'
   | 'menu'
   | 'markdown'
   | 'microphone'
@@ -29,6 +29,7 @@ type IconName =
   | 'send'
   | 'settings'
   | 'share'
+  | 'steer'
   | 'trash'
   | 'widgets';
 
@@ -144,6 +145,15 @@ const paths: Record<IconName, JSX.Element> = {
       <circle cx="12" cy="12" r="9" />
       <path d="M12 11v5" />
       <path d="M12 8h.01" />
+    </>
+  ),
+  live: (
+    <>
+      <path d="M4 10v4" />
+      <path d="M8 7v10" />
+      <path d="M12 4v16" />
+      <path d="M16 7v10" />
+      <path d="M20 10v4" />
     </>
   ),
   steer: (

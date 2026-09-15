@@ -164,6 +164,26 @@ func TestLightboxAssetsRemainLazy(t *testing.T) {
 	}
 }
 
+func TestLiveVoiceCallRemainsLazy(t *testing.T) {
+	eager, err := StaticAsset("dist/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lazy, err := StaticAsset("dist/chunks/live.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The WebRTC peer for live voice is only needed once a call starts, so it
+	// must stay out of the eager shell every browser downloads.
+	const marker = "oai-events"
+	if bytes.Contains(eager, []byte(marker)) {
+		t.Error("dist/app.js unexpectedly contains the live voice WebRTC peer")
+	}
+	if !bytes.Contains(lazy, []byte(marker)) {
+		t.Error("dist/chunks/live.js is missing the live voice WebRTC peer")
+	}
+}
+
 func TestHubBundlePolicy(t *testing.T) {
 	js, err := StaticAsset("dist/hub.js")
 	if err != nil {

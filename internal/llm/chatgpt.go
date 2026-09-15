@@ -342,6 +342,23 @@ func (p *ChatGPTProvider) isolateHelperConversation() Provider {
 // its continuation state is WebSocket-connection-local and cannot be safely
 // resumed by an independently cloned helper client.
 
+// ChatGPTRequestHeaders returns the identity headers every chatgpt.com backend
+// request carries. Authorization is excluded so callers can refresh the token
+// without rebuilding the map. Shared so non-Responses callers (live voice,
+// images) cannot drift from the provider's identity.
+func ChatGPTRequestHeaders(creds *credentials.ChatGPTCredentials) map[string]string {
+	headers := map[string]string{
+		"originator": chatGPTOriginator,
+		"User-Agent": chatGPTUserAgent(),
+	}
+	if creds != nil {
+		if accountID := strings.TrimSpace(creds.AccountID); accountID != "" {
+			headers["ChatGPT-Account-ID"] = accountID
+		}
+	}
+	return headers
+}
+
 // NewChatGPTResponsesClient builds a ResponsesClient pre-configured for the
 // chatgpt.com backend endpoint, handling auth, refresh, and rate-limit error
 // parsing. Shared by the LLM provider and the image provider so both pick up
