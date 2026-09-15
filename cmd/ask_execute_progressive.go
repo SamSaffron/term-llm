@@ -59,10 +59,7 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 		bridge.Stats().RequestStart()
 		sink := askProgressiveRunnerSink{bridge: bridge, onGuardian: func(event tools.GuardianEvent) {
 			if !event.Usage.BillableCountersZero() && e.store != nil && e.session != nil {
-				u := event.Usage
-				if err := e.store.UpdateMetrics(context.Background(), e.session.ID, 0, 0, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens); err == nil {
-					recordStoreModelUsage(context.Background(), e.store, e.session.ID, event.Model, session.ModelUsageGuardian, u, 1, 0)
-				}
+				recordStoreHelperUsage(context.Background(), e.store, e.session.ID, event.Model, session.ModelUsageGuardian, event.Usage)
 			}
 		}}
 		runResult, err := e.runner.Run(e.ctx, request, sink)

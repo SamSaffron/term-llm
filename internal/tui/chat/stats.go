@@ -128,73 +128,8 @@ func (m *Model) renderStatsModal() string {
 		}
 	}
 
-	if m.engine != nil {
-		sessionID := ""
-		if m.sess != nil {
-			sessionID = m.sess.ID
-		}
-		if discovery, ok := m.engine.ToolDiscoveryDiagnostics(sessionID); ok {
-			b.WriteString("\nTool Discovery\n")
-			b.WriteString(fmt.Sprintf("Mode configured/resolved: %s / %s\n", discovery.ConfiguredMode, discovery.ResolvedMode))
-			b.WriteString(fmt.Sprintf("Strategy configured/resolved: %s / %s\n", discovery.ConfiguredStrategy, discovery.Strategy))
-			b.WriteString(fmt.Sprintf("Mode reason:          %s\n", discovery.Reason))
-			b.WriteString(fmt.Sprintf("Strategy reason:      %s\n", discovery.StrategyReason))
-			if discovery.FallbackCount > 0 {
-				b.WriteString(fmt.Sprintf("Native fallback:      %d (%s)\n", discovery.FallbackCount, discovery.FallbackReason))
-			}
-			b.WriteString(fmt.Sprintf("Pinned MCP:          %d tools, ~%s tokens\n", discovery.PinnedCount, ui.FormatTokenCount(discovery.PinnedTokens)))
-			b.WriteString(fmt.Sprintf("Active MCP:          %d tools, ~%s tokens\n", discovery.ActiveMCPCount, ui.FormatTokenCount(discovery.ActiveMCPTokens)))
-			b.WriteString(fmt.Sprintf("Deferred MCP:        %d tools, ~%s tokens avoided\n", discovery.DeferredCount, ui.FormatTokenCount(discovery.DeferredTokens)))
-			b.WriteString(fmt.Sprintf("Dynamic working set: %d/%d tools\n", discovery.DynamicActive, discovery.DynamicLimit))
-			if discovery.EvictionCount > 0 {
-				b.WriteString(fmt.Sprintf("Working-set evictions: %d\n", discovery.EvictionCount))
-			}
-			if len(discovery.RecentEvictions) > 0 {
-				b.WriteString("Recent eviction:\n")
-				for _, eviction := range discovery.RecentEvictions {
-					b.WriteString(fmt.Sprintf("  %s — %s\n", eviction.Name, eviction.Reason))
-				}
-			}
-			if len(discovery.Recent) > 0 {
-				b.WriteString("Recent activation:\n")
-				for _, activation := range discovery.Recent {
-					b.WriteString(fmt.Sprintf("  %s — %s\n", activation.Name, activation.Reason))
-				}
-			}
-		}
-	}
-
-	b.WriteString("\nCumulative Session Token Usage\n")
-	if m.stats != nil {
-		totalTokens := m.stats.InputTokens + m.stats.CachedInputTokens + m.stats.CacheWriteTokens + m.stats.OutputTokens
-		b.WriteString(fmt.Sprintf("Fresh input tokens: %s\n", ui.FormatTokenCount(m.stats.InputTokens)))
-		if m.stats.CachedInputTokens > 0 {
-			b.WriteString(fmt.Sprintf("Cache read tokens:  %s\n", ui.FormatTokenCount(m.stats.CachedInputTokens)))
-		}
-		if m.stats.CacheWriteTokens > 0 {
-			b.WriteString(fmt.Sprintf("Cache write tokens: %s\n", ui.FormatTokenCount(m.stats.CacheWriteTokens)))
-		}
-		b.WriteString(fmt.Sprintf("Output tokens:      %s\n", ui.FormatTokenCount(m.stats.OutputTokens)))
-		b.WriteString(fmt.Sprintf("Total tokens:       %s\n", ui.FormatTokenCount(totalTokens)))
-		inputCategories := m.stats.InputTokens + m.stats.CachedInputTokens + m.stats.CacheWriteTokens
-		if inputCategories > 0 {
-			b.WriteString(fmt.Sprintf("Cache hit rate:     %.1f%% (cache read / (fresh + read + write input))\n", percent(m.stats.CachedInputTokens, inputCategories)))
-		}
-		// A single unknown model must not blank the whole session's cost.
-		estimate, err := ui.EstimateSessionStatsCostDetailed(m.stats, m.statsPricingModel())
-		switch {
-		case err != nil || estimate.Priced == 0:
-			b.WriteString("Estimated cost:     unavailable\n")
-		case estimate.Partial():
-			b.WriteString(fmt.Sprintf("Estimated cost:     ≥$%.4f (%d of %d requests unpriced)\n",
-				estimate.CostUSD, estimate.Unpriced, estimate.Unpriced+estimate.Priced))
-		default:
-			b.WriteString(fmt.Sprintf("Estimated cost:     $%.4f\n", estimate.CostUSD))
-		}
-	} else {
-		b.WriteString("No token usage recorded yet.\n")
-	}
-
+	m.renderToolDiscoveryStats(&b)
+	m.renderCumulativeTokenStats(&b)
 	m.renderModelStats(&b)
 
 	var sideUsage llm.Usage
@@ -266,6 +201,81 @@ func (m *Model) renderStatsModal() string {
 	return b.String()
 }
 
+// renderToolDiscoveryStats reports how the engine resolved tool discovery for
+// this session. The whole section is omitted when the engine has no
+// diagnostics to report, rather than shown as empty headings.
+func (m *Model) renderToolDiscoveryStats(b *strings.Builder) {
+	if m.engine == nil {
+		return
+	}
+	discovery, ok := m.engine.ToolDiscoveryDiagnostics(sessionIDOf(m.sess))
+	if !ok {
+		return
+	}
+	b.WriteString("\nTool Discovery\n")
+	b.WriteString(fmt.Sprintf("Mode configured/resolved: %s / %s\n", discovery.ConfiguredMode, discovery.ResolvedMode))
+	b.WriteString(fmt.Sprintf("Strategy configured/resolved: %s / %s\n", discovery.ConfiguredStrategy, discovery.Strategy))
+	b.WriteString(fmt.Sprintf("Mode reason:          %s\n", discovery.Reason))
+	b.WriteString(fmt.Sprintf("Strategy reason:      %s\n", discovery.StrategyReason))
+	if discovery.FallbackCount > 0 {
+		b.WriteString(fmt.Sprintf("Native fallback:      %d (%s)\n", discovery.FallbackCount, discovery.FallbackReason))
+	}
+	b.WriteString(fmt.Sprintf("Pinned MCP:          %d tools, ~%s tokens\n", discovery.PinnedCount, ui.FormatTokenCount(discovery.PinnedTokens)))
+	b.WriteString(fmt.Sprintf("Active MCP:          %d tools, ~%s tokens\n", discovery.ActiveMCPCount, ui.FormatTokenCount(discovery.ActiveMCPTokens)))
+	b.WriteString(fmt.Sprintf("Deferred MCP:        %d tools, ~%s tokens avoided\n", discovery.DeferredCount, ui.FormatTokenCount(discovery.DeferredTokens)))
+	b.WriteString(fmt.Sprintf("Dynamic working set: %d/%d tools\n", discovery.DynamicActive, discovery.DynamicLimit))
+	if discovery.EvictionCount > 0 {
+		b.WriteString(fmt.Sprintf("Working-set evictions: %d\n", discovery.EvictionCount))
+	}
+	if len(discovery.RecentEvictions) > 0 {
+		b.WriteString("Recent eviction:\n")
+		for _, eviction := range discovery.RecentEvictions {
+			b.WriteString(fmt.Sprintf("  %s — %s\n", eviction.Name, eviction.Reason))
+		}
+	}
+	if len(discovery.Recent) > 0 {
+		b.WriteString("Recent activation:\n")
+		for _, activation := range discovery.Recent {
+			b.WriteString(fmt.Sprintf("  %s — %s\n", activation.Name, activation.Reason))
+		}
+	}
+}
+
+// renderCumulativeTokenStats reports the session's cumulative token counters
+// and its estimated cost.
+func (m *Model) renderCumulativeTokenStats(b *strings.Builder) {
+	b.WriteString("\nCumulative Session Token Usage\n")
+	if m.stats == nil {
+		b.WriteString("No token usage recorded yet.\n")
+		return
+	}
+	totalTokens := m.stats.InputTokens + m.stats.CachedInputTokens + m.stats.CacheWriteTokens + m.stats.OutputTokens
+	b.WriteString(fmt.Sprintf("Fresh input tokens: %s\n", ui.FormatTokenCount(m.stats.InputTokens)))
+	if m.stats.CachedInputTokens > 0 {
+		b.WriteString(fmt.Sprintf("Cache read tokens:  %s\n", ui.FormatTokenCount(m.stats.CachedInputTokens)))
+	}
+	if m.stats.CacheWriteTokens > 0 {
+		b.WriteString(fmt.Sprintf("Cache write tokens: %s\n", ui.FormatTokenCount(m.stats.CacheWriteTokens)))
+	}
+	b.WriteString(fmt.Sprintf("Output tokens:      %s\n", ui.FormatTokenCount(m.stats.OutputTokens)))
+	b.WriteString(fmt.Sprintf("Total tokens:       %s\n", ui.FormatTokenCount(totalTokens)))
+	inputCategories := m.stats.InputTokens + m.stats.CachedInputTokens + m.stats.CacheWriteTokens
+	if inputCategories > 0 {
+		b.WriteString(fmt.Sprintf("Cache hit rate:     %.1f%% (cache read / (fresh + read + write input))\n", percent(m.stats.CachedInputTokens, inputCategories)))
+	}
+	// A single unknown model must not blank the whole session's cost.
+	estimate, err := ui.EstimateSessionStatsCostDetailed(m.stats, m.statsPricingModel())
+	switch {
+	case err != nil || estimate.Priced == 0:
+		b.WriteString("Estimated cost:     unavailable\n")
+	case estimate.Partial():
+		b.WriteString(fmt.Sprintf("Estimated cost:     ≥$%.4f (%d of %d requests unpriced)\n",
+			estimate.CostUSD, estimate.Unpriced, estimate.Unpriced+estimate.Priced))
+	default:
+		b.WriteString(fmt.Sprintf("Estimated cost:     $%.4f\n", estimate.CostUSD))
+	}
+}
+
 func sessionIDOf(sess *session.Session) string {
 	if sess == nil {
 		return ""
@@ -305,6 +315,21 @@ func (m *Model) recordDurableModelUsage(ctx context.Context, sessionID, model st
 		LLMTurns:          llmTurns,
 		ToolCalls:         toolCalls,
 	})
+}
+
+// recordDurableTurnUsage records one completed assistant turn: the aggregate
+// session counters advance by that turn plus its tool calls, and the same work
+// is attributed to the session's own model. The per-model row is written only
+// when the aggregate update lands, so the breakdown never claims usage the
+// totals do not have.
+func (m *Model) recordDurableTurnUsage(ctx context.Context, sessionID string, u llm.Usage, toolCalls int) {
+	if m.store == nil {
+		return
+	}
+	if err := m.store.UpdateMetrics(ctx, sessionID, 1, toolCalls, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens); err != nil {
+		return
+	}
+	m.recordDurableModelUsage(ctx, sessionID, m.statsUsageModel(), session.ModelUsageMain, u, 1, toolCalls)
 }
 
 type compactionAppliedMsg struct {
@@ -599,45 +624,32 @@ func subagentStatsLegend(runCount int, running, partial, unavailable bool) strin
 	return strings.Join(legend, " · ")
 }
 
-// renderModelStats reports observed process-local spend per model.
-//
-// Tokens come from the retained request ledger rather than the subagent
-// tracker. The tracker only knows about delegated runs, so sourcing the table
-// from it hid the session's own model entirely — usually the largest spender.
-// The tracker still supplies timing, which exists only for delegated runs.
-func (m *Model) renderModelStats(b *strings.Builder) {
-	var calls []ui.UsageCall
-	if m.stats != nil {
-		calls, _ = m.stats.UsageCalls()
-	}
-	var runs []ui.SubagentProgress
-	if m.subagentTracker != nil {
-		runs = m.subagentTracker.Snapshots()
-	}
-	if len(calls) == 0 && len(runs) == 0 {
-		return
-	}
-	type modelStats struct {
-		model          string
-		usage          llm.Usage
-		calls          []ui.UsageCall
-		kinds          map[string]bool
-		elapsed, tools time.Duration
-		timed, running bool
-	}
-	byModel := map[string]*modelStats{}
-	var models []*modelStats
-	group := func(model string) *modelStats {
+// modelStatsRow is one model's observed process-local spend: tokens and cost
+// come from the retained request ledger, timing only from delegated runs.
+type modelStatsRow struct {
+	model          string
+	usage          llm.Usage
+	calls          []ui.UsageCall
+	kinds          map[string]bool
+	elapsed, tools time.Duration
+	timed, running bool
+}
+
+// collectModelStats groups retained requests and delegated runs by model,
+// preserving first-seen order so the table is stable between renders.
+func collectModelStats(calls []ui.UsageCall, runs []ui.SubagentProgress, now time.Time) []*modelStatsRow {
+	byModel := map[string]*modelStatsRow{}
+	var models []*modelStatsRow
+	group := func(model string) *modelStatsRow {
 		model = nonEmpty(model, "unknown")
 		if found := byModel[model]; found != nil {
 			return found
 		}
-		row := &modelStats{model: model, kinds: map[string]bool{}}
+		row := &modelStatsRow{model: model, kinds: map[string]bool{}}
 		byModel[model] = row
 		models = append(models, row)
 		return row
 	}
-	now := time.Now()
 	for _, call := range calls {
 		row := group(call.Model)
 		row.usage.Add(llm.Usage{
@@ -654,6 +666,28 @@ func (m *Model) renderModelStats(b *strings.Builder) {
 		row.tools += tools
 		row.timed = true
 		row.running = row.running || !run.Done
+	}
+	return models
+}
+
+// renderModelStats reports observed process-local spend per model.
+//
+// Tokens come from the retained request ledger rather than the subagent
+// tracker. The tracker only knows about delegated runs, so sourcing the table
+// from it hid the session's own model entirely — usually the largest spender.
+// The tracker still supplies timing, which exists only for delegated runs.
+func (m *Model) renderModelStats(b *strings.Builder) {
+	var calls []ui.UsageCall
+	if m.stats != nil {
+		calls, _ = m.stats.UsageCalls()
+	}
+	var runs []ui.SubagentProgress
+	if m.subagentTracker != nil {
+		runs = m.subagentTracker.Snapshots()
+	}
+	models := collectModelStats(calls, runs, time.Now())
+	if len(models) == 0 {
+		return
 	}
 	b.WriteString("\nModels · this process\n")
 	width := 96

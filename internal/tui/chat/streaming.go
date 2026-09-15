@@ -246,12 +246,10 @@ func (m *Model) streamPersistenceCallbacks(streamStart time.Time) (llm.Assistant
 		}
 		m.pendingMu.Unlock()
 		if m.store != nil && streamSess != nil {
-			if err := m.store.UpdateMetrics(ctx, streamSess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens); err == nil {
-				m.recordDurableModelUsage(ctx, streamSess.ID, m.statsUsageModel(), session.ModelUsageMain, llm.Usage{
-					InputTokens: metrics.InputTokens, OutputTokens: metrics.OutputTokens,
-					CachedInputTokens: metrics.CachedInputTokens, CacheWriteTokens: metrics.CacheWriteTokens,
-				}, 1, metrics.ToolCalls)
-			}
+			m.recordDurableTurnUsage(ctx, streamSess.ID, llm.Usage{
+				InputTokens: metrics.InputTokens, OutputTokens: metrics.OutputTokens,
+				CachedInputTokens: metrics.CachedInputTokens, CacheWriteTokens: metrics.CacheWriteTokens,
+			}, metrics.ToolCalls)
 			m.persistContextEstimate(ctx)
 		}
 		return nil

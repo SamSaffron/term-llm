@@ -10,6 +10,38 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
+// runtimeServingSelection returns the installed runtime when it can already
+// serve the ticket's selection, so a ready follow-up skips preparation
+// entirely. It reports nil whenever preparation still has to run: a fresh
+// request, an unselected ticket, a manager that is closed, reserving or
+// creating, or a runtime whose inputs or durable identity no longer match.
+//
+// The caller holds the ticket; this only inspects manager state under the
+// manager lock, exactly as the inline check it replaced did.
+func (s *serveServer) runtimeServingSelection(request serveRuntimeRequest, ticket *sessionInputTicket, durableProvider string) *serveRuntime {
+	if request.fresh || request.Inputs == nil {
+		return nil
+	}
+	m := s.sessionMgr
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed || m.creating[request.SessionID] != nil {
+		return nil
+	}
+	if _, reserved := m.reserved.Load(request.SessionID); reserved {
+		return nil
+	}
+	current := m.sessions[request.SessionID]
+	if !ticket.current() || !runtimeKeepsSessionIdentity(current, durableProvider) {
+		return nil
+	}
+	if !runtimeHasSelectedInputs(current, request.Inputs) {
+		return nil
+	}
+	current.Touch()
+	return current
+}
+
 // prepareUIRuntime is an owning-surface operation, never a hydration hook.
 // Election/waiting precedes operation ownership. The old idle runtime remains
 // installed until tools, persistence, and history are ready to publish together.
@@ -45,17 +77,8 @@ func (s *serveServer) prepareUIRuntime(ctx context.Context, request serveRuntime
 	// A ready selection is not an idle-only operation. Follow-ups and side
 	// activity must reach their normal admission paths without preparing again.
 	// Later execution still verifies runtime identity under the admission pin.
-	if !request.fresh && request.Inputs != nil {
-		m := s.sessionMgr
-		m.mu.Lock()
-		current := m.sessions[request.SessionID]
-		_, reserved := m.reserved.Load(request.SessionID)
-		if !m.closed && !reserved && m.creating[request.SessionID] == nil && ticket.current() && runtimeKeepsSessionIdentity(current, durableProvider) && runtimeHasSelectedInputs(current, request.Inputs) {
-			current.Touch()
-			m.mu.Unlock()
-			return current, nil
-		}
-		m.mu.Unlock()
+	if current := s.runtimeServingSelection(request, ticket, durableProvider); current != nil {
+		return current, nil
 	}
 	old, release, err := s.sessionMgr.lockIdleMetadataMutation(request.SessionID)
 	if err != nil {

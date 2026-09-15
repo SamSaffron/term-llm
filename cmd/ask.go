@@ -433,10 +433,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if !askProgressive && toolMgr != nil {
 		toolMgr.ApprovalMgr.GuardianEventFunc = func(event tools.GuardianEvent) {
 			if !event.Usage.BillableCountersZero() && store != nil && sess != nil {
-				u := event.Usage
-				if err := store.UpdateMetrics(context.Background(), sess.ID, 0, 0, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens); err == nil {
-					recordStoreModelUsage(context.Background(), store, sess.ID, event.Model, session.ModelUsageGuardian, u, 1, 0)
-				}
+				recordStoreHelperUsage(context.Background(), store, sess.ID, event.Model, session.ModelUsageGuardian, event.Usage)
 			}
 			adapter.EmitGuardian(ctx, event)
 		}
@@ -731,12 +728,10 @@ func newAskTurnCompletedCallback(persistence *askAssistantPersistence, store ses
 			_ = store.AddMessage(ctx, current.ID, stored)
 		}
 		persistence.reset()
-		if err := store.UpdateMetrics(ctx, current.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens); err == nil {
-			recordStoreModelUsage(ctx, store, current.ID, current.Model, session.ModelUsageMain, llm.Usage{
-				InputTokens: metrics.InputTokens, OutputTokens: metrics.OutputTokens,
-				CachedInputTokens: metrics.CachedInputTokens, CacheWriteTokens: metrics.CacheWriteTokens,
-			}, 1, metrics.ToolCalls)
-		}
+		recordStoreTurnUsage(ctx, store, current.ID, current.Model, session.ModelUsageMain, llm.Usage{
+			InputTokens: metrics.InputTokens, OutputTokens: metrics.OutputTokens,
+			CachedInputTokens: metrics.CachedInputTokens, CacheWriteTokens: metrics.CacheWriteTokens,
+		}, metrics.ToolCalls)
 		if total, count := engine.ContextEstimateBaseline(); total > 0 {
 			_ = store.UpdateContextEstimate(ctx, current.ID, total, count)
 			current.LastTotalTokens, current.LastMessageCount = total, count
@@ -804,9 +799,7 @@ func newAskCompactionCallback(store session.Store, sess **session.Session, usage
 		}
 		if result != nil && !result.Usage.BillableCountersZero() {
 			current := *sess
-			if err := store.UpdateMetrics(ctx, current.ID, 0, 0, result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.CachedInputTokens, result.Usage.CacheWriteTokens); err == nil {
-				recordStoreModelUsage(ctx, store, current.ID, result.Model, session.ModelUsageCompaction, result.Usage, 1, 0)
-			}
+			recordStoreHelperUsage(ctx, store, current.ID, result.Model, session.ModelUsageCompaction, result.Usage)
 		}
 		return nil
 	}

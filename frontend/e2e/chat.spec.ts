@@ -1100,7 +1100,7 @@ test('opens complete scrollable web stats without sending a model request', asyn
   await expect(page.getByText('31.4s', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Refresh statistics' }).focus();
   await page.keyboard.press('Tab');
-  await expect(page.getByRole('region', { name: 'Subagent model usage' })).toBeFocused();
+  await expect(page.getByRole('region', { name: 'Model usage' })).toBeFocused();
   await page.keyboard.press('Shift+Tab');
   await expect(page.getByRole('button', { name: 'Refresh statistics' })).toBeFocused();
   await expect(page.getByRole('rowheader', { name: 'shared-model' })).toBeVisible();

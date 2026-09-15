@@ -29,3 +29,31 @@ func recordStoreModelUsage(ctx context.Context, store session.Store, sessionID, 
 		ToolCalls:         toolCalls,
 	})
 }
+
+// recordStoreTurnUsage records a main assistant turn: the aggregate session
+// counters advance by one turn plus its tool calls, and the same work is
+// attributed to the model that ran it. The per-model row is written only when
+// the aggregate update lands, so the breakdown never claims usage the totals
+// do not have.
+func recordStoreTurnUsage(ctx context.Context, store session.Store, sessionID, model string, kind session.ModelUsageKind, u llm.Usage, toolCalls int) {
+	if store == nil {
+		return
+	}
+	if err := store.UpdateMetrics(ctx, sessionID, 1, toolCalls, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens); err != nil {
+		return
+	}
+	recordStoreModelUsage(ctx, store, sessionID, model, kind, u, 1, toolCalls)
+}
+
+// recordStoreHelperUsage records guardian, compaction and similar helper work.
+// Helpers spend tokens without advancing the session's own turn or tool
+// counters, but they still own a model row so their spend is attributable.
+func recordStoreHelperUsage(ctx context.Context, store session.Store, sessionID, model string, kind session.ModelUsageKind, u llm.Usage) {
+	if store == nil {
+		return
+	}
+	if err := store.UpdateMetrics(ctx, sessionID, 0, 0, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens); err != nil {
+		return
+	}
+	recordStoreModelUsage(ctx, store, sessionID, model, kind, u, 1, 0)
+}

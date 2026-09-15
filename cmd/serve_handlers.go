@@ -3291,12 +3291,7 @@ func (s *serveServer) createRequestRuntime(ctx context.Context, request serveRun
 	if err != nil {
 		return nil, err
 	}
-	if rt != nil {
-		rt.inputs.Store(request.Inputs)
-		if request.swapCandidate {
-			rt.swapCandidate.Store(true)
-		}
-	}
+	applyRequestRuntimeState(rt, request)
 	if !runtimeHasAgent(rt, agentName) {
 		if rt != nil {
 			rt.Close()
@@ -3328,6 +3323,20 @@ func (s *serveServer) createRequestRuntime(ctx context.Context, request serveRun
 		})
 	}
 	return rt, nil
+}
+
+// applyRequestRuntimeState installs the request's prepared inputs on a freshly
+// created runtime and carries its swap candidacy across. A candidate runs ahead
+// of the durable row it will write, so the flag has to travel with the runtime
+// or identity checks would retire it mid-swap.
+func applyRequestRuntimeState(rt *serveRuntime, request serveRuntimeRequest) {
+	if rt == nil {
+		return
+	}
+	rt.inputs.Store(request.Inputs)
+	if request.swapCandidate {
+		rt.swapCandidate.Store(true)
+	}
 }
 
 // persistedRuntimeIdentity returns the durable provider/model pair for a
