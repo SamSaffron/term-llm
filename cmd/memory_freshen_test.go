@@ -2,6 +2,11 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -12,6 +17,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/spf13/viper"
 )
 
 // -- truncateUpdateRecentText --
@@ -560,4 +566,115 @@ func contains(s, sub string) bool {
 			}
 			return false
 		}())
+}
+
+func TestMemoryUpdateRecentRejectsEmptyOutputWithoutConsumingActivity(t *testing.T) {
+	for _, compact := range []bool{false, true} {
+		for _, output := range []string{"reasoning-only", "whitespace-only"} {
+			t.Run(fmt.Sprintf("compact=%v/%s", compact, output), func(t *testing.T) {
+				viper.Reset()
+				t.Cleanup(viper.Reset)
+				ctx := context.Background()
+				dir := t.TempDir()
+				t.Setenv("HOME", dir)
+				t.Setenv("XDG_CONFIG_HOME", dir)
+				t.Setenv("XDG_CACHE_HOME", filepath.Join(dir, "cache"))
+				calls := 0
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					calls++
+					w.Header().Set("Content-Type", "text/event-stream")
+					delta := map[string]string{"reasoning_content": "thinking without an answer"}
+					if output == "whitespace-only" {
+						delta = map[string]string{"content": " \t\n\u2003 "}
+					}
+					if compact && calls == 1 {
+						delta = map[string]string{"content": strings.Repeat("oversized memory ", 100)}
+					}
+					data, err := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": delta}}})
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", data)
+				}))
+				defer server.Close()
+
+				configDir := filepath.Join(dir, "term-llm")
+				if err := os.MkdirAll(configDir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				sessionPath := filepath.Join(dir, "sessions.db")
+				cfg := fmt.Sprintf("default_provider: memory-test\nproviders:\n  memory-test:\n    type: openai_compatible\n    base_url: %s/v1\n    model: test-model\nsessions:\n  enabled: true\n  path: %s\n", server.URL, sessionPath)
+				if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(cfg), 0o600); err != nil {
+					t.Fatal(err)
+				}
+
+				oldDB, oldAgent, oldFile, oldModel := memoryDBPath, memoryAgent, memoryUpdateRecentFile, memoryUpdateRecentModel
+				oldDryRun, oldTarget := memoryDryRun, memoryUpdateRecentTargetTokens
+				memoryDBPath, memoryAgent = filepath.Join(dir, "memory.db"), "jarvis"
+				memoryUpdateRecentFile, memoryUpdateRecentModel = filepath.Join(dir, "recent.md"), "memory-test:test-model"
+				memoryDryRun, memoryUpdateRecentTargetTokens = false, 100
+				t.Cleanup(func() {
+					memoryDBPath, memoryAgent, memoryUpdateRecentFile, memoryUpdateRecentModel = oldDB, oldAgent, oldFile, oldModel
+					memoryDryRun, memoryUpdateRecentTargetTokens = oldDryRun, oldTarget
+				})
+				original := "## Current state\n\nKeep this working memory.\n"
+				if err := os.WriteFile(memoryUpdateRecentFile, []byte(original), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				sessStore, err := session.NewStore(session.Config{Enabled: true, Path: sessionPath})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer sessStore.Close()
+				sess := &session.Session{ID: session.NewID(), Agent: "jarvis", Status: session.StatusComplete, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+				if err := sessStore.Create(ctx, sess); err != nil {
+					t.Fatal(err)
+				}
+				for _, text := range []string{"already consumed", "new activity to remember"} {
+					if err := sessStore.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.UserText(text), -1)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				store, err := openMemoryStore()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer store.Close()
+				metadata := map[string]string{
+					updateRecentOffsetMetaKey(sess.ID):  "1",
+					memoryUpdateRecentMetaKey("jarvis"): time.Now().Add(-time.Hour).UTC().Format(time.RFC3339),
+				}
+				for key, value := range metadata {
+					if err := store.SetMeta(ctx, key, value); err != nil {
+						t.Fatal(err)
+					}
+				}
+				err = runMemoryUpdateRecent(memoryUpdateRecentCmd, nil)
+				if err == nil || !strings.Contains(err.Error(), "empty") {
+					t.Errorf("update error = %v, want actionable empty-output error", err)
+				}
+				wantCalls := 1
+				if compact {
+					wantCalls = 2
+				}
+				if calls != wantCalls {
+					t.Errorf("provider calls = %d, want %d", calls, wantCalls)
+				}
+				data, err := os.ReadFile(memoryUpdateRecentFile)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(data) != original {
+					t.Errorf("recent.md changed: got %q, want %q", data, original)
+				}
+				for key, want := range metadata {
+					got, err := store.GetMeta(ctx, key)
+					if err != nil || got != want {
+						t.Errorf("metadata %s = %q, %v; want %q", key, got, err, want)
+					}
+				}
+			})
+		}
+	}
 }
