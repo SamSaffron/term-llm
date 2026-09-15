@@ -350,6 +350,87 @@ func TestResponseRunTerminalizationFailureStillPublishesTerminalEvent(t *testing
 	if payload["lifecycle_recovery_required"] != true {
 		t.Fatalf("terminal fallback payload = %+v", payload)
 	}
+	if message := stringValue(mapValue(payload["error"])["message"]); !strings.Contains(message, "lifecycle could not be finalized") {
+		t.Fatalf("terminal fallback error message = %q, want the lifecycle reason", message)
+	}
+}
+
+func TestResponseRunLifecycleFailureKeepsEarlierTerminalCause(t *testing.T) {
+	run := newResponseRun("resp-double-fault", "sess-double-fault", "", "test", time.Now().Unix(), nil)
+	run.finalizeLifecycle = func(session.ResponseRunState, int64, int) (session.AttentionState, error) {
+		return session.AttentionState{}, errors.New("database unavailable")
+	}
+	if _, err := run.fail(map[string]any{
+		"response": map[string]any{"id": run.id},
+		"error":    map[string]any{"type": "timeout_error", "message": "response timed out"},
+	}, "timeout_error", "response timed out"); err == nil {
+		t.Fatal("fail unexpectedly succeeded while lifecycle finalization was broken")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(run.events[len(run.events)-1].Data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	message := stringValue(mapValue(payload["error"])["message"])
+	if !strings.Contains(message, "lifecycle could not be finalized") || !strings.Contains(message, "response timed out") {
+		t.Fatalf("double-fault message = %q, want both the lifecycle failure and the original cause", message)
+	}
+}
+
+func TestResponseRunDurableHandoffFailureCarriesReasonToClients(t *testing.T) {
+	run := newResponseRun("resp-handoff-reason", "sess-handoff-reason", "", "test", time.Now().Unix(), nil)
+	ctx := withResponseRunContext(context.Background(), run)
+	assistant := tagResponseRunMessage(ctx, llm.AssistantText("visible output"), 0)
+	finish, _ := beginResponseRunPersistence(ctx, []llm.Message{assistant})
+	finish(0, errors.New("database unavailable"))
+
+	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, llm.Usage{}, llm.Usage{}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if len(run.events) != 1 || run.events[0].Event != "response.failed" {
+		t.Fatalf("events = %+v, want a single terminal failure", run.events)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(run.events[0].Data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	message := stringValue(mapValue(payload["error"])["message"])
+	if !strings.Contains(message, "durably verified") || !strings.Contains(message, "database unavailable") {
+		t.Fatalf("terminal error message = %q, want the durable handoff reason", message)
+	}
+	response := mapValue(payload["response"])
+	if stringValue(response["status"]) != "failed" || stringValue(mapValue(response["error"])["message"]) != message {
+		t.Fatalf("response body = %+v, want the failed status and the same reason", response)
+	}
+	for _, key := range []string{"usage", "session_usage", "context_usage"} {
+		if _, present := response[key]; present {
+			t.Fatalf("response body kept %q for an unverified run: %+v", key, response)
+		}
+	}
+	errorRows := 0
+	for _, recovered := range run.recoveryMessages {
+		if recovered.Role == "error" && string(recovered.Content) == message {
+			errorRows++
+		}
+	}
+	if errorRows != 1 {
+		t.Fatalf("recovery messages = %+v, want one error row carrying the reason", run.recoveryMessages)
+	}
+}
+
+func TestResponseRunRecoveryProjectsResponseScopedFailureReason(t *testing.T) {
+	run := &responseRun{id: "resp-legacy-failure"}
+	run.applyRecoveryEventLocked("response.failed", map[string]any{
+		"response": map[string]any{
+			"id":     run.id,
+			"status": "failed",
+			"error":  map[string]any{"type": "server_error", "message": "response lifecycle could not be finalized"},
+		},
+	})
+	if len(run.recoveryMessages) != 1 ||
+		run.recoveryMessages[0].Role != "error" ||
+		string(run.recoveryMessages[0].Content) != "response lifecycle could not be finalized" {
+		t.Fatalf("recovery messages = %+v, want the response-scoped reason projected", run.recoveryMessages)
+	}
 }
 
 func TestConfigureResponseRunRevisionSkipsTrailingNonBranchableRows(t *testing.T) {

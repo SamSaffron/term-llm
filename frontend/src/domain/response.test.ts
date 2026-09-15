@@ -53,6 +53,35 @@ describe('response projection', () => {
     expect(new Set(RESPONSE_EVENT_TYPES).size).toBe(RESPONSE_EVENT_TYPES.length);
   });
 
+  it('prefers the top-level failure reason over the response body', () => {
+    const projection = reduceResponse(
+      initialProjection(run),
+      event('response.failed', 1, {
+        error: { type: 'timeout_error', message: 'response timed out' },
+        response: { id: 'r1', status: 'failed', error: { message: 'stale body reason' } },
+      }),
+    );
+    expect(projection.run.error).toBe('response timed out');
+  });
+
+  it('reads a terminal failure reason carried only on the response body', () => {
+    const projection = reduceResponse(
+      initialProjection(run),
+      event('response.failed', 1, {
+        response: {
+          id: 'r1',
+          status: 'failed',
+          error: { type: 'server_error', message: 'response persistence could not be verified' },
+        },
+      }),
+    );
+    expect(projection.run.error).toBe('response persistence could not be verified');
+    expect(projection.messages.at(-1)).toMatchObject({
+      role: 'error',
+      content: 'response persistence could not be verified',
+    });
+  });
+
   it('accepts early absolute subagent progress, rejects stale seq, and folds terminal state', () => {
     let projection = reduceResponse(
       initialProjection(run),

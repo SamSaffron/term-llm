@@ -361,8 +361,11 @@ func (r *responseRun) applyRecoveryResponseCancelled(event string, payload map[s
 
 func (r *responseRun) applyRecoveryResponseFailed(event string, payload map[string]any) {
 	r.closeToolGroupLocked()
-	errPayload := mapValue(payload["error"])
-	message := stringValue(errPayload["message"])
+	message := stringValue(mapValue(payload["error"])["message"])
+	if message == "" {
+		// Older terminal payloads recorded the reason only on the response body.
+		message = stringValue(mapValue(mapValue(payload["response"])["error"])["message"])
+	}
 	if message == "" {
 		return
 	}

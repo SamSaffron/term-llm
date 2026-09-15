@@ -311,11 +311,17 @@ function appendNotice(
     },
   ];
 }
+function errorText(source: unknown): string {
+  if (!source) return '';
+  if (typeof source === 'object') return text((source as Record<string, unknown>).message);
+  return text(source);
+}
 function eventError(event: ResponseEvent, fallback: string): string {
-  const source = event.error;
-  if (source && typeof source === 'object')
-    return text((source as Record<string, unknown>).message) || fallback;
-  return text(source || event.message) || fallback;
+  const direct = errorText(event.error) || text(event.message);
+  if (direct) return direct;
+  // Terminal payloads may carry the reason only on the OpenAI response body.
+  const response = event.response as Record<string, unknown> | undefined;
+  return (response ? errorText(response.error) : '') || fallback;
 }
 function flushPendingGuardian(
   messages: Message[],

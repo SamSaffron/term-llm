@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -313,6 +315,35 @@ func (r *responseRun) finalizeLifecycleLocked(outcome session.ResponseRunState) 
 	return nil
 }
 
+// Terminal failure payloads must carry the reason at the top level. Streaming
+// clients read event.error, and response recovery projects the same field into
+// the transcript, so a reason recorded only under response.error surfaces as a
+// bare "Response failed" notice that then vanishes on reload.
+func (r *responseRun) applyTerminalErrorPayloadLocked(payload map[string]any) {
+	if payload == nil {
+		return
+	}
+	// The run state is the single source of truth for the reason, but an empty
+	// one must never overwrite a caller's: a reasonless error is the very shape
+	// this normalization exists to prevent.
+	if r.errorMessage != "" {
+		// Both locations get their own map. Sharing one would alias the event
+		// body to the response body for any later mutation.
+		payload["error"] = map[string]any{"type": r.errorType, "message": r.errorMessage}
+	}
+	response := mapValue(payload["response"])
+	if len(response) == 0 {
+		return
+	}
+	response["status"] = "failed"
+	if r.errorMessage != "" {
+		response["error"] = map[string]any{"type": r.errorType, "message": r.errorMessage}
+	}
+	delete(response, "usage")
+	delete(response, "session_usage")
+	delete(response, "context_usage")
+}
+
 func (r *responseRun) appendLifecycleFailureLocked(payload map[string]any, lifecycleErr error) error {
 	r.status = "failed"
 	r.errorType = "server_error"
@@ -320,17 +351,17 @@ func (r *responseRun) appendLifecycleFailureLocked(payload map[string]any, lifec
 	if payload == nil {
 		payload = map[string]any{}
 	}
-	payload["lifecycle_recovery_required"] = true
-	response := mapValue(payload["response"])
-	if len(response) == 0 {
-		response = map[string]any{"id": r.id, "object": "response"}
-		payload["response"] = response
+	// A lifecycle failure that follows an earlier terminal reason is a double
+	// fault, which is exactly when the first cause is worth keeping.
+	if cause := strings.TrimSpace(stringValue(mapValue(payload["error"])["message"])); cause != "" {
+		r.errorMessage += " (after " + cause + ")"
 	}
-	response["status"] = "failed"
-	response["error"] = map[string]any{"type": r.errorType, "message": r.errorMessage}
-	delete(response, "usage")
-	delete(response, "session_usage")
-	delete(response, "context_usage")
+	log.Printf("[serve] response %s lifecycle finalization failed: %v", r.id, lifecycleErr)
+	payload["lifecycle_recovery_required"] = true
+	if len(mapValue(payload["response"])) == 0 {
+		payload["response"] = map[string]any{"id": r.id, "object": "response"}
+	}
+	r.applyTerminalErrorPayloadLocked(payload)
 	if appendErr := r.appendEventLocked("response.failed", payload, true); appendErr != nil {
 		return errors.Join(lifecycleErr, appendErr)
 	}

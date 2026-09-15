@@ -52,13 +52,11 @@ func (r *responseRun) complete(payload map[string]any, usage llm.Usage, sessionU
 		if handoff.Error != "" {
 			r.errorMessage += ": " + handoff.Error
 		}
-		if response := mapValue(payload["response"]); len(response) > 0 {
-			response["status"] = "failed"
-			response["error"] = map[string]any{"type": r.errorType, "message": r.errorMessage}
-			delete(response, "usage")
-			delete(response, "session_usage")
-			delete(response, "context_usage")
-		}
+		r.applyTerminalErrorPayloadLocked(payload)
+		// A run whose output is on screen but unverified is rare enough that the
+		// server log is the only place to correlate it with store latency.
+		log.Printf("[serve] response %s in session %s terminalized as failed (final_rev=%d outputs=%d): %s",
+			r.id, r.sessionID, r.finalRev, r.durableOutputCount, r.errorMessage)
 		if err := r.finalizeLifecycleLocked(session.ResponseRunFailed); err != nil {
 			return r.appendLifecycleFailureLocked(payload, err)
 		}
@@ -119,6 +117,10 @@ func (r *responseRun) fail(payload map[string]any, errType, errMessage string) (
 	r.errorMessage = errMessage
 	r.cancel = nil
 	r.cancelRequested = false
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	r.applyTerminalErrorPayloadLocked(payload)
 	if err := r.finalizeLifecycleLocked(session.ResponseRunFailed); err != nil {
 		return hadSubscribers, r.appendLifecycleFailureLocked(payload, err)
 	}
