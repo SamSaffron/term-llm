@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
@@ -451,7 +452,7 @@ func TestCollectMemoryUpdateRecentInputNoOpDoesNotLoadHistoricalSessions(t *test
 
 func TestCollectMemoryUpdateRecentInputExhaustedAtInputCap(t *testing.T) {
 	oldMax := memoryUpdateRecentMaxInputChars
-	memoryUpdateRecentMaxInputChars = 1
+	memoryUpdateRecentMaxInputChars = len("[Session #1 - completed]\nUser: activity")
 	t.Cleanup(func() { memoryUpdateRecentMaxInputChars = oldMax })
 
 	for _, tc := range []struct {
@@ -496,6 +497,157 @@ func TestCollectMemoryUpdateRecentInputExhaustedAtInputCap(t *testing.T) {
 	}
 }
 
+func TestCollectMemoryUpdateRecentInputPagesOversizedSession(t *testing.T) {
+	oldMax := memoryUpdateRecentMaxInputChars
+	memoryUpdateRecentMaxInputChars = 12000
+	t.Cleanup(func() { memoryUpdateRecentMaxInputChars = oldMax })
+	ctx := context.Background()
+	memStore, err := memorydb.NewStore(memorydb.Config{Path: filepath.Join(t.TempDir(), "memory.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer memStore.Close()
+	messages := make([]session.Message, 1000)
+	for i := range messages {
+		role := llm.RoleUser
+		if i%3 == 1 {
+			role = llm.RoleAssistant
+		}
+		if i%3 == 2 {
+			role = llm.RoleTool
+		}
+		messages[i] = session.Message{Role: role, TextContent: "message-" + strconv.Itoa(i) + ":" + strings.Repeat("x", 1800), Sequence: i * 2}
+	}
+	sessStore := &updateRecentCountingStore{
+		summaries: []session.SessionSummary{{ID: "long", Number: 1, Agent: "jarvis", Status: session.StatusComplete}},
+		messages:  map[string][]session.Message{"long": messages}, messageCalls: map[string]int{},
+	}
+	offset := 0
+	for batch := 0; batch < len(messages); batch++ {
+		calls := sessStore.messageCalls["long"]
+		input, err := collectMemoryUpdateRecentInput(ctx, memStore, sessStore, "jarvis", time.Time{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, limit := range sessStore.messageLimits {
+			if limit <= 0 || limit > 100 {
+				t.Fatalf("unbounded page read: limit %d", limit)
+			}
+		}
+		if len(input.Text) > memoryUpdateRecentMaxInputChars {
+			t.Fatalf("oversized input: %d bytes > %d", len(input.Text), memoryUpdateRecentMaxInputChars)
+		}
+		next := input.Offsets["long"]
+		if next <= offset {
+			t.Fatalf("no progress: offset %d -> %d", offset, next)
+		}
+		if batch == 0 && (input.Exhausted || next >= messages[len(messages)-1].Sequence+1) {
+			t.Fatal("first batch consumed oversized session")
+		}
+		if sessStore.messageCalls["long"]-calls > 2 {
+			t.Fatal("read too many pages for one batch")
+		}
+		for _, msg := range messages {
+			marker := "message-" + strconv.Itoa(msg.Sequence/2) + ":"
+			want := msg.Sequence >= offset && msg.Sequence < next && msg.Role != llm.RoleTool
+			if strings.Contains(input.Text, marker) != want {
+				t.Fatalf("batch %d: incorrect inclusion of %s (offsets %d..%d)", batch, marker, offset, next)
+			}
+		}
+		if err := memStore.SetMeta(ctx, updateRecentOffsetMetaKey("long"), strconv.Itoa(next)); err != nil {
+			t.Fatal(err)
+		}
+		offset = next
+		if input.Exhausted {
+			if offset != messages[len(messages)-1].Sequence+1 {
+				t.Fatalf("premature exhaustion at %d", offset)
+			}
+			return
+		}
+	}
+	t.Fatal("never exhausted session")
+}
+
+func TestCollectMemoryUpdateRecentInputSingleMessageBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		budget    int
+		wantError bool
+	}{
+		{"truncate UTF-8", 101, false},
+		{"header cannot fit", 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			oldMax := memoryUpdateRecentMaxInputChars
+			memoryUpdateRecentMaxInputChars = tc.budget
+			t.Cleanup(func() { memoryUpdateRecentMaxInputChars = oldMax })
+			ctx := context.Background()
+			memStore, err := memorydb.NewStore(memorydb.Config{Path: filepath.Join(t.TempDir(), "memory.db")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer memStore.Close()
+			sessStore := &updateRecentCountingStore{
+				summaries:    []session.SessionSummary{{ID: "long", Number: 1, Agent: "jarvis", Status: session.StatusComplete}},
+				messages:     map[string][]session.Message{"long": {{Role: llm.RoleAssistant, TextContent: strings.Repeat("界", 2000), Sequence: 7}}},
+				messageCalls: map[string]int{},
+			}
+			input, err := collectMemoryUpdateRecentInput(ctx, memStore, sessStore, "jarvis", time.Time{})
+			if tc.wantError {
+				if err == nil {
+					t.Fatal("expected budget error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(input.Text) > tc.budget || !utf8.ValidString(input.Text) || !strings.Contains(input.Text, "Assistant: 界") {
+				t.Fatalf("invalid bounded input: %q", input.Text)
+			}
+			if input.Offsets["long"] != 8 || !input.Exhausted {
+				t.Fatalf("no progress: %#v", input)
+			}
+			offset, err := readUpdateRecentOffset(ctx, memStore, "long")
+			if err != nil || offset != 0 {
+				t.Fatalf("collector persisted offset before successful generation: %d, %v", offset, err)
+			}
+		})
+	}
+}
+
+func TestCollectMemoryUpdateRecentInputAcrossMessagePages(t *testing.T) {
+	ctx := context.Background()
+	memStore, err := memorydb.NewStore(memorydb.Config{Path: filepath.Join(t.TempDir(), "memory.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer memStore.Close()
+	messages := make([]session.Message, 301)
+	for i := range messages {
+		messages[i] = session.Message{Role: llm.RoleTool, Sequence: i}
+	}
+	messages[100].Role = llm.RoleUser
+	messages[100].TextContent = "first page boundary"
+	messages[200].Role = llm.RoleAssistant
+	messages[200].TextContent = "second page boundary"
+	sessStore := &updateRecentCountingStore{
+		summaries: []session.SessionSummary{{ID: "paged", Number: 1, Agent: "jarvis", Status: session.StatusComplete}},
+		messages:  map[string][]session.Message{"paged": messages}, messageCalls: map[string]int{},
+	}
+	input, err := collectMemoryUpdateRecentInput(ctx, memStore, sessStore, "jarvis", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := formatUpdateRecentSessionBlock(memoryUpdateRecentSession{Number: 1, Status: session.StatusComplete}, messages)
+	if input.Text != want || !input.Exhausted || input.Offsets["paged"] != 301 {
+		t.Fatalf("incorrect paged input: %#v", input)
+	}
+	if sessStore.messageCalls["paged"] != 4 {
+		t.Fatalf("page reads = %d, want 4", sessStore.messageCalls["paged"])
+	}
+}
+
 type updateRecentCountingStore struct {
 	session.NoopStore
 	summaries       []session.SessionSummary
@@ -503,6 +655,7 @@ type updateRecentCountingStore struct {
 	listCalls       int
 	getCalls        int
 	messageCalls    map[string]int
+	messageLimits   []int
 	lastListOptions session.ListOptions
 }
 
@@ -536,13 +689,17 @@ func (s *updateRecentCountingStore) Get(_ context.Context, _ string) (*session.S
 	return nil, nil
 }
 
-func (s *updateRecentCountingStore) GetMessagesFrom(_ context.Context, sessionID string, fromSeq, _ int) ([]session.Message, error) {
+func (s *updateRecentCountingStore) GetMessagesFrom(_ context.Context, sessionID string, fromSeq, limit int) ([]session.Message, error) {
 	s.messageCalls[sessionID]++
+	s.messageLimits = append(s.messageLimits, limit)
 	messages := s.messages[sessionID]
 	result := make([]session.Message, 0, len(messages))
 	for _, message := range messages {
 		if message.Sequence >= fromSeq {
 			result = append(result, message)
+			if limit > 0 && len(result) == limit {
+				break
+			}
 		}
 	}
 	return result, nil
