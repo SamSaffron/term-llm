@@ -5,9 +5,67 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 )
+
+func TestSQLiteStoreUpdateMessageMovesSessionByLatestResponseActivity(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	base := time.Now().UTC().Add(-time.Hour)
+	first := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat, CreatedAt: base}
+	if err := store.Create(ctx, first); err != nil {
+		t.Fatalf("Create first session: %v", err)
+	}
+	streaming := NewMessage(first.ID, llm.AssistantText("response started first"), -1)
+	streaming.CreatedAt = base.Add(time.Minute)
+	if err := store.AddMessage(ctx, first.ID, streaming); err != nil {
+		t.Fatalf("AddMessage first session: %v", err)
+	}
+
+	second := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat, CreatedAt: base.Add(2 * time.Minute)}
+	if err := store.Create(ctx, second); err != nil {
+		t.Fatalf("Create second session: %v", err)
+	}
+	laterStart := NewMessage(second.ID, llm.AssistantText("response started later"), -1)
+	laterStart.CreatedAt = base.Add(3 * time.Minute)
+	if err := store.AddMessage(ctx, second.ID, laterStart); err != nil {
+		t.Fatalf("AddMessage second session: %v", err)
+	}
+
+	summaries, err := store.List(ctx, ListOptions{Limit: 2, SortByActivity: true})
+	if err != nil {
+		t.Fatalf("List before response update: %v", err)
+	}
+	if len(summaries) != 2 || summaries[0].ID != second.ID {
+		t.Fatalf("order before response update = %#v, want second session first", summaries)
+	}
+
+	streaming.Parts = []llm.Part{{Type: llm.PartText, Text: "response finished last"}}
+	streaming.TextContent = "response finished last"
+	if err := store.UpdateMessage(ctx, first.ID, streaming); err != nil {
+		t.Fatalf("UpdateMessage first session: %v", err)
+	}
+
+	summaries, err = store.List(ctx, ListOptions{Limit: 2, SortByActivity: true})
+	if err != nil {
+		t.Fatalf("List after response update: %v", err)
+	}
+	if len(summaries) != 2 || summaries[0].ID != first.ID {
+		t.Fatalf("order after response update = %#v, want first session first", summaries)
+	}
+	if !summaries[0].LastMessageAt.After(laterStart.CreatedAt) {
+		t.Fatalf("updated response activity = %v, want after later response start %v", summaries[0].LastMessageAt, laterStart.CreatedAt)
+	}
+}
 
 // TestSQLiteStoreUpdateMessageOverwrites verifies that UpdateMessage replaces
 // the content of an existing row without affecting sequence or created_at.
