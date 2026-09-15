@@ -21,6 +21,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/filetrack"
+	"github.com/samsaffron/term-llm/internal/livecall"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mentions"
 	"github.com/samsaffron/term-llm/internal/restart"
@@ -91,6 +92,7 @@ var (
 	serveHubRegistrationToken   string
 	serveProjects               bool
 	serveNoProjects             bool
+	serveLiveCodexPath          string
 )
 
 const (
@@ -128,6 +130,7 @@ All HTTP routes are mounted under --base-path (default /ui):
   POST {base}/v1/responses
   POST {base}/v1/chat/completions
   POST {base}/v1/messages
+  POST {base}/v1/live/calls  (opt-in companion backend)
   POST {base}/v1/transcribe
   GET  {base}/v1/models
   GET  {base}/healthz
@@ -157,6 +160,7 @@ Use --setup to configure credentials for the selected platforms.`,
 func init() {
 	rootCmd.AddCommand(serveCmd)
 
+	serveCmd.Flags().StringVar(&serveLiveCodexPath, "live-codex-path", "", "Opt in to live calls using this installed Codex executable (empty disables; requires auth)")
 	serveCmd.Flags().StringVar(&serveHost, "host", "127.0.0.1", "Bind host")
 	serveCmd.Flags().IntVar(&servePort, "port", 8080, "Bind port")
 	serveCmd.Flags().StringVar(&serveToken, "token", "", "Bearer token for API auth (defaults to $TERM_LLM_SERVE_TOKEN, else auto-generated)")
@@ -723,6 +727,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		s = &serveServer{
 			browserAuth: browserAuth,
 			cfg: serveServerConfig{
+				liveCodexPath:           serveLiveCodexPath,
 				host:                    serveHost,
 				port:                    servePort,
 				requireAuth:             requireAuth,
@@ -1150,6 +1155,7 @@ func generateServeToken() (string, error) {
 }
 
 type serveServerConfig struct {
+	liveCodexPath           string
 	host                    string
 	port                    int
 	requireAuth             bool
@@ -1317,6 +1323,8 @@ func normalizeBasePath(raw string) (string, error) {
 }
 
 type serveServer struct {
+	liveCallsOnce            sync.Once
+	liveCalls                *livecall.Manager
 	reloadRunsUnregister     func()
 	browserAuth              *browserPasskeyHandler
 	reloadHTTPOnce           sync.Once
@@ -1524,6 +1532,7 @@ func (s *serveServer) httpHandler() http.Handler {
 	inner.HandleFunc("/v1/responses/", s.auth(s.cors(s.handleResponseByID)))
 	inner.HandleFunc("/v1/chat/completions", s.auth(s.cors(s.handleChatCompletions)))
 	inner.HandleFunc("/v1/messages", s.auth(s.cors(s.handleAnthropicMessages)))
+	inner.HandleFunc("/v1/live/calls", s.auth(s.cors(s.handleLiveCalls)))
 	inner.HandleFunc("/v1/transcribe", s.auth(s.cors(s.handleTranscribe)))
 	if s.jobsV2 != nil {
 		inner.HandleFunc("/v2/jobs", s.auth(s.cors(s.handleJobsV2)))
@@ -1641,6 +1650,10 @@ func (s *serveServer) Stop(ctx context.Context) error {
 			close(s.shutdownCh)
 		}
 	})
+	s.liveCallsOnce.Do(func() {})
+	if s.liveCalls != nil {
+		s.liveCalls.Close()
+	}
 	s.closeShellManager()
 	s.stopEventWatcher()
 	// Synchronize with a concurrently starting lifecycle loop, or permanently
