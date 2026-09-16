@@ -2735,7 +2735,7 @@ describe('Preact-owned chat surfaces', () => {
       },
     ]);
 
-    render(
+    const { container } = render(
       <StoreContext.Provider value={store}>
         <Transcript />
       </StoreContext.Provider>,
@@ -2746,6 +2746,9 @@ describe('Preact-owned chat surfaces', () => {
     expect(status).toHaveTextContent(/^\s*0s\s*$/);
     expect(status).not.toHaveTextContent('running…');
     expect(status).not.toHaveClass('done');
+    const previews = container.querySelectorAll('.tool-group-card > .tool-progress');
+    expect(previews).toHaveLength(2);
+    previews.forEach((preview) => expect(preview).toHaveTextContent('Delegating work'));
   });
 
   it('ticks spawn-agent duration without replacing unrelated transcript DOM', async () => {
@@ -2992,25 +2995,139 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
     expect(container.querySelector('.tool-group-card > .tool-progress')).toHaveTextContent(
-      'spawn_agent · running: 12 tool calls · 2 active · shell',
+      'spawn_agent · running: Running shell · 12 tool calls · 2 active',
     );
     expect(container.querySelector('.tool-group-card')).toHaveTextContent(
-      'stopped waiting for 2 jobs',
+      'Stopped waiting for 2 jobs',
     );
     fireEvent.click(screen.getByRole('button', { name: /5 tool calls/ }));
     expect(container.querySelector('[data-tool-id="spawn-1"] .tool-progress')).toHaveTextContent(
-      '12 tool calls · 2 active · shell',
+      'Running shell · 12 tool calls · 2 active',
     );
     expect(container.querySelector('[data-tool-id="wait-1"] .tool-progress')).toHaveTextContent(
-      'stopped waiting for 2 jobs · 3 tool calls · jobs keep running if stopped',
+      'Stopped waiting for 2 jobs · 3 tool calls · jobs keep running if stopped',
     );
     expect(container.querySelector('[data-tool-id="wait-error"] .tool-progress')).toHaveTextContent(
-      'failed to wait for 1 job · 0 tool calls · jobs keep running if stopped',
+      'Failed to wait for 1 job · jobs keep running if stopped',
     );
     expect(container.querySelector('[data-tool-id="queue-1"] .tool-progress')).toHaveTextContent(
       'queued as detached job',
     );
     expect(container.querySelector('[data-tool-id="queue-error"] .tool-progress')).toBeNull();
+  });
+
+  it.each([
+    ['grep', 'Searching code'],
+    ['glob', 'Searching code'],
+    ['read_file', 'Reading files'],
+    ['shell', 'Running shell'],
+    ['web_search', 'Searching the web'],
+    ['edit_file', 'Editing files'],
+    ['write_file', 'Editing files'],
+    ['spawn_agent', 'Delegating work'],
+    ['custom_tool', 'custom_tool'],
+  ])('uses deterministic subagent activity text for %s', (currentTool, expected) => {
+    const store = createStore();
+    store.sessions.value[0].messages = [
+      {
+        id: 'activity-tool',
+        role: 'tool-group',
+        content: '',
+        created: Date.now(),
+        tools: [
+          {
+            id: 'spawn-activity',
+            name: 'spawn_agent',
+            status: 'running',
+            subagentProgress: {
+              seq: 1,
+              state: 'running',
+              phase: 'running_tools',
+              callsStarted: 1,
+              callsActive: 1,
+              currentTool,
+            },
+          },
+        ],
+      },
+    ];
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+    expect(container.querySelector('.tool-progress')).toHaveTextContent(
+      `${expected} · 1 tool call · 1 active`,
+    );
+  });
+
+  it('marks a real quiet period and distinguishes reliable transport interruption', async () => {
+    vi.useFakeTimers();
+    const now = new Date('2026-09-16T00:00:00Z').getTime();
+    vi.setSystemTime(now);
+    const store = createStore();
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'response-progress',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'streaming',
+        lastSequence: 1,
+        startedRev: 0,
+        reconnects: 0,
+      }),
+    };
+    store.sessions.value[0].messages = [
+      {
+        id: 'quiet-tool',
+        role: 'tool-group',
+        content: '',
+        created: now,
+        tools: [
+          {
+            id: 'spawn-quiet',
+            name: 'spawn_agent',
+            status: 'running',
+            startedAt: now,
+            subagentProgress: {
+              seq: 1,
+              state: 'running',
+              phase: 'thinking',
+              callsStarted: 0,
+              callsActive: 0,
+              lastActivityAt: now,
+            },
+          },
+        ],
+      },
+    ];
+    const { container, unmount } = render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+    try {
+      const quiet = container.querySelector('.tool-progress-quiet');
+      expect(quiet).toHaveTextContent('');
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15_000);
+      });
+      expect(quiet).toHaveTextContent('quiet for 15s');
+
+      const recovery = store.runEngine as unknown as {
+        markResponseRecoveryFailure(sessionId: string, responseId: string): void;
+      };
+      act(() => {
+        for (let attempt = 0; attempt < 7; attempt += 1)
+          recovery.markResponseRecoveryFailure('s1', 'response-progress');
+      });
+      expect(quiet).toHaveTextContent('updates interrupted');
+      expect(quiet).not.toHaveTextContent('quiet');
+    } finally {
+      unmount();
+      store.dispose();
+      vi.useRealTimers();
+    }
   });
 
   it('keeps collapsed delegation previews chronological as running statuses transition', async () => {
@@ -3085,9 +3202,9 @@ describe('Preact-owned chat surfaces', () => {
         (label) => label.parentElement?.textContent,
       );
     expect(previewText()).toEqual([
-      'spawn_agent · running: 1 tool call · 1 active · alpha',
-      'wait_for_jobs · running: waiting for 1 job · 2 tool calls · 1 active · beta · jobs keep running if stopped',
-      'spawn_agent: 3 tool calls · gamma',
+      'spawn_agent · running: alpha · 1 tool call · 1 active',
+      'wait_for_jobs · running: Waiting for 1 job · beta · 2 tool calls · 1 active · jobs keep running if stopped',
+      'spawn_agent: 3 tool calls',
     ]);
 
     await act(() => {
@@ -3113,9 +3230,9 @@ describe('Preact-owned chat surfaces', () => {
       });
     });
     expect(previewText()).toEqual([
-      'spawn_agent: 1 tool call · alpha',
-      'wait_for_jobs · running: waiting for 1 job · 2 tool calls · 1 active · beta · jobs keep running if stopped',
-      'spawn_agent: 3 tool calls · gamma',
+      'spawn_agent: 1 tool call',
+      'wait_for_jobs · running: Waiting for 1 job · beta · 2 tool calls · 1 active · jobs keep running if stopped',
+      'spawn_agent: 3 tool calls',
     ]);
   });
 

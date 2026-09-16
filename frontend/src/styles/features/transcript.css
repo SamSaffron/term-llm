@@ -894,6 +894,14 @@
   overflow-wrap: anywhere;
 }
 
+.tool-progress-quiet {
+  color: color-mix(in srgb, var(--text-muted) 72%, transparent);
+}
+
+.tool-progress-quiet:not(:empty)::before {
+  content: ' · ';
+}
+
 .tool-details {
   border-top: 1px solid var(--border);
   padding: 0.58rem 0.75rem 0.72rem;

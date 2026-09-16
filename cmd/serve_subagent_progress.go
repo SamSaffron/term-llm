@@ -112,12 +112,17 @@ func (s *serveSubagentProgress) observe(callID string, event tools.SubagentEvent
 	if event.RunID != "" {
 		root.runID, root.jobID = event.RunID, event.JobID
 	}
+	startedBefore := root.callsStarted
 	var boundary, known bool
 	release, boundary, known = s.reduceEventLocked(root, callID, childID, event)
 	if !known {
 		s.mu.Unlock()
 		return
 	}
+	// The starting snapshot intentionally contains no invented work. Publish the
+	// first observed tool invocation without waiting for the coalescing window so
+	// a live client can show a real non-zero count before a short child finishes.
+	firstToolStart := event.Type == tools.SubagentEventToolStart && startedBefore == 0 && root.callsStarted > startedBefore
 
 	if deadline, ok := s.holdDeadlineLocked(root, childID, event); ok && deadline.Add(responseRunHoldGrace).After(s.clock.Now()) {
 		if root.hold == nil && s.hold != nil {
@@ -127,7 +132,7 @@ func (s *serveSubagentProgress) observe(callID string, event tools.SubagentEvent
 			root.hold.extend(deadline)
 		}
 	}
-	immediate := s.scheduleFlushLocked(root, rootID, boundary)
+	immediate := s.scheduleFlushLocked(root, rootID, boundary, firstToolStart)
 	s.mu.Unlock()
 	if release != nil {
 		release.release()
@@ -522,13 +527,13 @@ func (s *serveSubagentProgress) reduceToolStartLocked(root *subagentProgressRoot
 	}
 }
 
-func (s *serveSubagentProgress) scheduleFlushLocked(root *subagentProgressRoot, rootID string, boundary bool) bool {
+func (s *serveSubagentProgress) scheduleFlushLocked(root *subagentProgressRoot, rootID string, boundary, urgent bool) bool {
 	root.dirty = true
 	delay := serveSubagentTextInterval
 	if boundary {
 		delay = serveSubagentFlushInterval
 	}
-	immediate := root.lastEmit.IsZero() || (boundary && !s.clock.Now().Before(root.lastEmit.Add(serveSubagentFlushInterval)))
+	immediate := urgent || root.lastEmit.IsZero() || (boundary && !s.clock.Now().Before(root.lastEmit.Add(serveSubagentFlushInterval)))
 	if immediate {
 		if root.flush != nil {
 			root.flush.Stop()

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -378,5 +379,39 @@ func TestServeSubagentProgressOverflowDoneDoesNotReleaseSiblingHold(t *testing.T
 	clock.Advance(2 * time.Minute)
 	if ctx.Err() != nil {
 		t.Fatalf("overflow child's completion released sibling protection: %v", context.Cause(ctx))
+	}
+}
+
+func TestServeSubagentProgressPublishesFirstToolCountBeforeChildCompletes(t *testing.T) {
+	clock := newFakeResponseRunClock()
+	run := newResponseRun("response-live-progress", "session", "", "mock", clock.Now().Unix(), func() {})
+	subscription := run.subscribe(0)
+	defer run.unsubscribe(subscription.ch)
+	progress := newServeSubagentProgress(clock, run.appendEvent, nil)
+	defer progress.close()
+
+	progress.begin("spawn-live", tools.SpawnAgentToolName)
+	initial := <-subscription.ch
+	if initial.Event != "response.tool_exec.progress" {
+		t.Fatalf("initial event = %q", initial.Event)
+	}
+
+	progress.observe("spawn-live", tools.SubagentEvent{
+		Type: tools.SubagentEventToolStart, ToolCallID: "child-tool", ToolName: "grep", Timestamp: clock.Now(),
+	})
+	select {
+	case event := <-subscription.ch:
+		var payload map[string]any
+		if err := json.Unmarshal(event.Data, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if event.Event != "response.tool_exec.progress" || responseRunInt64Value(payload["calls_started"], 0) != 1 || responseRunInt64Value(payload["calls_active"], 0) != 1 {
+			t.Fatalf("live event = %s %#v, want one active tool before completion", event.Event, payload)
+		}
+	default:
+		t.Fatal("first real tool count remained buffered until the child completed")
+	}
+	if root := progress.roots["spawn-live"]; root == nil || root.state != "running" {
+		t.Fatalf("progress root completed before terminal child event: %#v", root)
 	}
 }

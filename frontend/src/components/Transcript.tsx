@@ -345,16 +345,90 @@ function progressJobCount(tool: ToolCall): number {
 }
 
 const progressPhaseLabels: Record<string, string> = {
-  starting: 'starting',
-  thinking: 'thinking',
-  running_tools: 'running tools',
-  responding: 'responding',
-  compacting: 'compacting',
-  queued: 'queued',
-  waiting: 'waiting',
+  starting: 'Starting',
+  thinking: 'Thinking',
+  running_tools: 'Running tools',
+  responding: 'Responding',
+  compacting: 'Compacting',
+  queued: 'Queued',
+  waiting: 'Waiting',
 };
 
-function SubagentProgressLine({ tool, labelled = false }: { tool: ToolCall; labelled?: boolean }) {
+const progressToolLabels: Record<string, string> = {
+  grep: 'Searching code',
+  glob: 'Searching code',
+  read_file: 'Reading files',
+  shell: 'Running shell',
+  web_search: 'Searching the web',
+  edit_file: 'Editing files',
+  write_file: 'Editing files',
+  spawn_agent: 'Delegating work',
+};
+
+const SUBAGENT_QUIET_MS = 15_000;
+
+function SubagentQuietPeriod({
+  lastActivityAt,
+  running,
+  active,
+  interrupted,
+}: {
+  lastActivityAt?: number;
+  running: boolean;
+  active: boolean;
+  interrupted: boolean;
+}) {
+  const label = useRef<HTMLSpanElement>(null);
+  const status = useCallback(() => {
+    if (!running) return '';
+    if (interrupted) return 'updates interrupted';
+    if (!lastActivityAt) return '';
+    const quietMs = Math.max(0, Date.now() - lastActivityAt);
+    return quietMs >= SUBAGENT_QUIET_MS ? `quiet for ${formatElapsedDuration(quietMs)}` : '';
+  }, [interrupted, lastActivityAt, running]);
+  useLayoutEffect(() => {
+    const update = () => {
+      if (label.current) label.current.textContent = status();
+    };
+    update();
+    return running && active && !interrupted && lastActivityAt
+      ? subscribeElapsedClock(update)
+      : undefined;
+  }, [active, interrupted, lastActivityAt, running, status]);
+  if (!running || (!lastActivityAt && !interrupted)) return null;
+  return (
+    <span class="tool-progress-quiet" ref={label}>
+      {status()}
+    </span>
+  );
+}
+
+function subagentActivity(tool: ToolCall): string {
+  const progress = tool.subagentProgress;
+  if (progress && ['completed', 'failed', 'cancelled'].includes(progress.state)) return '';
+  if (progress?.currentTool) {
+    const current = progress.currentTool.toLowerCase();
+    return progressToolLabels[current] || progress.currentTool;
+  }
+  if (progress?.phase && progressPhaseLabels[progress.phase])
+    return progressPhaseLabels[progress.phase];
+  if (tool.status !== 'running') return '';
+  const name = tool.name.toLowerCase();
+  if (name === 'spawn_agent') return progressToolLabels.spawn_agent;
+  if (name === 'wait_for_jobs') return 'Waiting for jobs';
+  return '';
+}
+
+function SubagentProgressLine({
+  tool,
+  labelled = false,
+  tickElapsed = true,
+}: {
+  tool: ToolCall;
+  labelled?: boolean;
+  tickElapsed?: boolean;
+}) {
+  const store = useStore();
   const name = tool.name.toLowerCase();
   const progress = tool.subagentProgress;
   if (name === 'queue_agent') {
@@ -364,33 +438,36 @@ function SubagentProgressLine({ tool, labelled = false }: { tool: ToolCall; labe
   }
   if (name !== 'spawn_agent' && name !== 'wait_for_jobs') return null;
   const parts: string[] = [];
-  if (progress) {
-    const count = `${progress.callsStarted.toLocaleString()}${progress.callsTruncated ? '+' : ''}`;
-    parts.push(`${count} tool ${progress.callsStarted === 1 ? 'call' : 'calls'}`);
-    if (progress.callsActive > 0) parts.push(`${progress.callsActive} active`);
-    if (progress.currentTool) parts.push(progress.currentTool);
-    else if (
-      !['completed', 'failed', 'cancelled'].includes(progress.state) &&
-      progress.phase &&
-      progressPhaseLabels[progress.phase]
-    )
-      parts.push(progressPhaseLabels[progress.phase]);
-  }
+  const activity = subagentActivity(tool);
   if (name === 'wait_for_jobs') {
     const count = progressJobCount(tool);
     if (count > 0) {
       const action =
         tool.status === 'running'
-          ? 'waiting'
+          ? 'Waiting'
           : tool.status === 'cancelled'
-            ? 'stopped waiting'
+            ? 'Stopped waiting'
             : tool.status === 'error' || tool.resultStatus === 'error'
-              ? 'failed to wait'
-              : 'waited';
-      parts.unshift(`${action} for ${count} ${count === 1 ? 'job' : 'jobs'}`);
+              ? 'Failed to wait'
+              : 'Waited';
+      parts.push(`${action} for ${count} ${count === 1 ? 'job' : 'jobs'}`);
+    } else if (activity) {
+      parts.push(activity);
     }
-    parts.push('jobs keep running if stopped');
+  } else if (activity) {
+    parts.push(activity);
   }
+  if (name === 'wait_for_jobs' && activity && !parts.includes(activity) && progress?.currentTool)
+    parts.push(activity);
+  if (progress?.callsStarted) {
+    const count = `${progress.callsStarted.toLocaleString()}${progress.callsTruncated ? '+' : ''}`;
+    parts.push(`${count} tool ${progress.callsStarted === 1 ? 'call' : 'calls'}`);
+  }
+  if (progress && progress.callsActive > 0) parts.push(`${progress.callsActive} active`);
+  if (name === 'wait_for_jobs') parts.push('jobs keep running if stopped');
+  const running =
+    tool.status === 'running' &&
+    (!progress || !['completed', 'failed', 'cancelled'].includes(progress.state));
   return parts.length ? (
     <div class="tool-progress">
       {labelled && (
@@ -400,6 +477,12 @@ function SubagentProgressLine({ tool, labelled = false }: { tool: ToolCall; labe
         </strong>
       )}
       {parts.join(' · ')}
+      <SubagentQuietPeriod
+        lastActivityAt={progress?.lastActivityAt}
+        running={running}
+        active={tickElapsed}
+        interrupted={store.runLivenessUnknown.value}
+      />
     </div>
   ) : null;
 }
@@ -504,7 +587,7 @@ const Tool = memo(function Tool({
             {status}
           </span>
         </button>
-        <SubagentProgressLine tool={tool} />
+        <SubagentProgressLine tool={tool} tickElapsed={tickElapsed} />
         <LegacyToolImages tool={tool} />
         {expanded && (
           <div class="tool-details open">
@@ -601,9 +684,14 @@ function ToolGroup({
   const stopped = !running && visible.some((tool) => tool.status === 'cancelled');
   const runningTools = visible.filter((tool) => tool.status === 'running');
   // Delegation progress must remain visible when the ordinary tool group is collapsed.
-  const delegations = visible.filter(
-    (tool) => tool.subagentProgress || tool.name === 'wait_for_jobs',
-  );
+  const delegations = visible.filter((tool) => {
+    const name = tool.name.toLowerCase();
+    return (
+      tool.subagentProgress ||
+      name === 'wait_for_jobs' ||
+      (name === 'spawn_agent' && tool.status === 'running')
+    );
+  });
   const previews = delegations.slice(0, 3);
   const hiddenPreviews = delegations.slice(previews.length);
   const hiddenRunning = hiddenPreviews.filter((tool) => tool.status === 'running').length;
