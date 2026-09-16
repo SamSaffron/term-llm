@@ -2651,6 +2651,101 @@ func TestTelegramSessionMgrResetSession_ZeroCarryoverDisablesHistory(t *testing.
 
 // --- interrupt tests ---
 
+func TestHandleMessage_StatusIdle(t *testing.T) {
+	mgr, sess := newTestMgrAndSession(testutil.NewEngineHarness())
+	mgr.sessions[42] = sess
+	mgr.allowedUserIDs = map[int64]struct{}{7: {}}
+	sess.history = []llm.Message{llm.UserText("hello"), llm.AssistantText("hi")}
+	sess.lastActivity = time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	bot := &fakeBotSender{}
+	msg := &tgbotapi.Message{
+		Chat: &tgbotapi.Chat{ID: 42}, From: &tgbotapi.User{ID: 7}, Text: "/status",
+		Entities: []tgbotapi.MessageEntity{{Type: "bot_command", Offset: 0, Length: 7}},
+	}
+	mgr.handleMessage(context.Background(), bot, msg)
+	want := "Session active\nMessages in history: 2\nLast activity: 2026-09-16T12:00:00Z"
+	if got := bot.lastText(); got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+}
+
+func TestHandleMessage_StatusDoesNotBlockInterrupt(t *testing.T) {
+	for _, command := range []string{"/stop", "/cancel", "/reset"} {
+		t.Run(command, func(t *testing.T) {
+			h := testutil.NewEngineHarness()
+			toolStarted := make(chan struct{})
+			toolCancelled := make(chan struct{})
+			h.Registry.Register(&testutil.MockTool{
+				SpecData: llm.ToolSpec{Name: "slow_tool", Schema: map[string]interface{}{"type": "object"}},
+				ExecuteFn: func(ctx context.Context, _ json.RawMessage) (llm.ToolOutput, error) {
+					close(toolStarted)
+					<-ctx.Done()
+					close(toolCancelled)
+					return llm.TextOutput("cancelled"), ctx.Err()
+				},
+			})
+			h.Provider.AddToolCall("id-1", "slow_tool", map[string]any{})
+			h.Provider.AddTextResponse("stopped")
+			mgr, sess := newTestMgrAndSession(h)
+			mgr.sessions[42] = sess
+			mgr.allowedUserIDs = map[int64]struct{}{7: {}}
+			mgr.idleTimeout = time.Hour
+			mgr.interruptTimeout = time.Millisecond
+			sess.lastActivity = time.Now()
+			mgr.settings.NewSession = func(context.Context) (*SessionRuntime, error) {
+				return &SessionRuntime{Engine: testutil.NewEngineHarness().Engine}, nil
+			}
+			bot := &fakeBotSender{}
+			ctx, cancel := context.WithCancel(context.Background())
+			var handlers sync.WaitGroup
+			defer func() {
+				cancel()
+				handlers.Wait()
+			}()
+			runHandler := func(text string) <-chan struct{} {
+				msg := &tgbotapi.Message{Chat: &tgbotapi.Chat{ID: 42}, From: &tgbotapi.User{ID: 7}, Text: text}
+				if strings.HasPrefix(text, "/") {
+					msg.Entities = []tgbotapi.MessageEntity{{Type: "bot_command", Offset: 0, Length: len(text)}}
+				}
+				admission := mgr.admitMessage(msg)
+				done := make(chan struct{})
+				handlers.Add(1)
+				go func() {
+					defer handlers.Done()
+					defer close(done)
+					mgr.handleMessageWithAdmission(ctx, bot, msg, admission)
+				}()
+				return done
+			}
+			wait := func(done <-chan struct{}, what string) {
+				t.Helper()
+				select {
+				case <-done:
+				case <-time.After(2 * time.Second):
+					t.Fatalf("timed out waiting for %s", what)
+				}
+			}
+			turnDone := runHandler("do something slow")
+			wait(toolStarted, "tool start")
+			statusDone := runHandler("/status")
+			interruptDone := runHandler(command)
+			wait(statusDone, "status while tool is active")
+			wait(toolCancelled, "tool cancellation by "+command)
+			wait(interruptDone, "interrupt handler")
+			wait(turnDone, "original turn")
+			found := false
+			for _, text := range bot.allTexts() {
+				if strings.Contains(text, "Session busy") {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("expected busy status, got %v", bot.allTexts())
+			}
+		})
+	}
+}
+
 func TestHandleMessage_InterruptCancelsActiveStream(t *testing.T) {
 	h := testutil.NewEngineHarness()
 
