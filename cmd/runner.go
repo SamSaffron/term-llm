@@ -105,6 +105,11 @@ func (env *cmdRunEnvironment) Close() {
 }
 
 func (r *cmdRunner) Run(ctx context.Context, req runpkg.Request, sink runpkg.EventSink) (runpkg.Result, error) {
+	if req.IsSubagent {
+		// Child sessions own their transcripts, not the invoking web response's
+		// fence, durability ledger, message identity, or turn boundaries.
+		ctx = withoutResponseRunOwnership(ctx)
+	}
 	ctx, release, reloadErr := restart.Default.Activity(ctx)
 	if reloadErr != nil {
 		return runpkg.Result{}, reloadErr

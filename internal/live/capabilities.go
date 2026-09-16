@@ -20,12 +20,17 @@ type Capabilities struct {
 // ConfigCapabilities resolves the live settings that apply to a new call.
 func ConfigCapabilities(cfg config.LiveConfig) Capabilities {
 	provider := strings.TrimSpace(cfg.Provider)
-	if provider == config.LiveProviderCodex {
+	if provider == config.LiveProviderOpenAI {
+		model := strings.TrimSpace(cfg.OpenAI.Model)
+		if model == "" {
+			model = config.DefaultLiveOpenAIModel
+		}
+		voice := cfg.OpenAI.ResolvedVoice()
 		return Capabilities{
 			Provider: provider,
-			Model:    config.DefaultLiveChatGPTModel,
-			Voice:    config.DefaultLiveChatGPTVoice,
-			Voices:   []string{config.DefaultLiveChatGPTVoice},
+			Model:    model,
+			Voice:    voice,
+			Voices:   cfg.OpenAI.Voices(),
 		}
 	}
 	if provider == "" {

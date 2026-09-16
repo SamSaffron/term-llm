@@ -63,18 +63,6 @@ type Provider interface {
 	Start(ctx context.Context, offerSDP string, opts SessionOptions) (Session, error)
 }
 
-// RelaySession is a Session whose control channel is carried by the media peer
-// rather than a socket this process owns. The host pumps frames between the
-// peer and the session: inbound frames arrive through Deliver, and frames bound
-// for the provider are read from Outbound.
-type RelaySession interface {
-	Session
-	// Deliver hands one raw control frame received from the peer to the session.
-	Deliver(frame []byte)
-	// Outbound streams raw control frames the peer must forward to the provider.
-	Outbound() <-chan []byte
-}
-
 // Session is one open live call.
 type Session interface {
 	// AnswerSDP returns the provider's SDP answer for the media peer.
@@ -87,6 +75,12 @@ type Session interface {
 	AppendText(ctx context.Context, text string) error
 	// Close ends the session.
 	Close(ctx context.Context) error
+}
+
+// DelegationCompletionSession is implemented by protocols requiring a complete
+// function result rather than accepting an open-ended stream of context.
+type DelegationCompletionSession interface {
+	CompleteDelegation(ctx context.Context, delegationID string) error
 }
 
 // VoiceSession is implemented by sessions whose provider can change the audio
@@ -107,8 +101,8 @@ func NewProvider(cfg config.LiveConfig) (Provider, error) {
 // HTTP client. Tests use it to point at an in-process fake.
 func NewProviderWithClient(cfg config.LiveConfig, client *http.Client) (Provider, error) {
 	switch name := strings.TrimSpace(cfg.Provider); name {
-	case config.LiveProviderCodex:
-		return NewCodexProvider(cfg, nil), nil
+	case config.LiveProviderOpenAI:
+		return NewOpenAIProvider(cfg, client), nil
 	case "", config.LiveProviderChatGPT:
 		return NewChatGPTProvider(cfg, nil, client), nil
 	default:

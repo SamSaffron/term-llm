@@ -33,14 +33,35 @@ func TestConfigCapabilitiesDirectResolvesDefaultsAndCopiesVoices(t *testing.T) {
 	}
 }
 
-func TestConfigCapabilitiesCodexIsFixed(t *testing.T) {
-	cfg := config.LiveConfig{Provider: " codex "}
-	cfg.ChatGPT.Model = "ignored"
-	cfg.ChatGPT.Voice = "maple"
+func TestProviderRejectsRemovedCodexTransport(t *testing.T) {
+	if _, err := NewProvider(config.LiveConfig{Provider: "codex"}); err == nil {
+		t.Fatal("removed Codex transport must not be constructed")
+	}
+}
+
+func TestConfigCapabilitiesOpenAIUsesPublicDefaultsAndCannotChangeVoice(t *testing.T) {
+	cfg := config.LiveConfig{Provider: " openai "}
 	got := ConfigCapabilities(cfg)
-	wantVoices := []string{config.DefaultLiveChatGPTVoice}
-	if got.Provider != config.LiveProviderCodex || got.Model != config.DefaultLiveChatGPTModel || got.Voice != config.DefaultLiveChatGPTVoice || got.CanSetVoice || !reflect.DeepEqual(got.Voices, wantVoices) {
-		t.Fatalf("codex capabilities = %+v", got)
+	if got.Provider != config.LiveProviderOpenAI || got.Model != config.DefaultLiveOpenAIModel || got.Voice != config.DefaultLiveOpenAIVoice || got.CanSetVoice {
+		t.Fatalf("default OpenAI capabilities = %+v", got)
+	}
+	if !reflect.DeepEqual(got.Voices, config.LiveOpenAIVoices()) {
+		t.Fatalf("OpenAI voices = %v", got.Voices)
+	}
+	got.Voices[0] = "mutated"
+	if ConfigCapabilities(cfg).Voices[0] == "mutated" {
+		t.Fatal("OpenAI capability voices share mutable backing storage")
+	}
+
+	cfg.OpenAI.Model = " custom-realtime "
+	cfg.OpenAI.Voice = " cedar "
+	got = ConfigCapabilities(cfg)
+	if got.Model != "custom-realtime" || got.Voice != "cedar" || got.CanSetVoice {
+		t.Fatalf("configured OpenAI capabilities = %+v", got)
+	}
+	context := CapabilityContext(got)
+	if !strings.Contains(context, "cannot be changed during this call") {
+		t.Fatalf("OpenAI capability context = %q", context)
 	}
 }
 
@@ -64,5 +85,24 @@ func TestCapabilitiesAreJSONSafeAndContextIsAuthoritative(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(context), "token") || strings.Contains(strings.ToLower(context), "credential") {
 		t.Fatalf("capability context mentions credentials: %s", context)
+	}
+}
+
+func TestOpenAIRealtimeCapabilitiesExcludeLiveOnlyVoices(t *testing.T) {
+	cfg := config.LiveConfig{Provider: config.LiveProviderOpenAI, OpenAI: config.LiveOpenAIConfig{Model: "gpt-realtime"}}
+	got := ConfigCapabilities(cfg)
+	if got.Model != "gpt-realtime" || got.Voice != "marin" {
+		t.Fatalf("capabilities = %+v", got)
+	}
+	for _, voice := range got.Voices {
+		if voice == "quartz" {
+			t.Fatal("Live-only voice advertised for Realtime")
+		}
+	}
+	cfg.OpenAI.Model = "gpt-live-1"
+	cfg.OpenAI.Voice = "quartz"
+	got = ConfigCapabilities(cfg)
+	if got.Voice != "quartz" {
+		t.Fatalf("voice = %q", got.Voice)
 	}
 }

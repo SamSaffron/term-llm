@@ -70,6 +70,7 @@ describe('LiveCall', () => {
 
     const peer = FakePeerConnection.instances[0];
     expect(peer.createDataChannel).toHaveBeenCalledWith('oai-events', { ordered: true });
+    expect(peer.channel.onmessage).toBeNull();
     expect(peer.addTrack).toHaveBeenCalledWith(stream.getTracks()[0], stream);
     expect(startEndpoint).toHaveBeenCalledWith('offer-sdp', 'session-one');
     expect(peer.setRemoteDescription).toHaveBeenCalledWith({

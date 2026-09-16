@@ -31,11 +31,27 @@ At startup, the voice model receives the current provider/model/voice, supported
 
 The execution agent uses the normal response request's configured tools, search settings, turn limits, and engine allowlists. A narrow **`live_settings`** tool additionally lets a delegated turn inspect the call or request a supported voice with `{"voice":"maple"}`. It changes only the originating call, never saved configuration. Ordinary turns, other sessions, and subagents do not acquire control merely because the tool is registered. Ended calls reject control; old calls cannot affect replacement calls.
 
-Voice changes require an acknowledgement from the direct provider. Provider restrictions may reject changes after speech begins; timeouts and rejections are reported rather than claiming a successful switch. Supported voice names do not guarantee that mid-call changes are accepted. The optional Codex transport does not expose voice changes.
+Voice changes require an acknowledgement from the direct provider. Provider restrictions may reject changes after speech begins; timeouts and rejections are reported rather than claiming a successful switch. Supported voice names do not guarantee that mid-call changes are accepted.
 
-### Optional Codex transport
+### OpenAI API-key provider
 
-`live.provider: codex` instead negotiates through an isolated, ephemeral `codex app-server` process. This requires an executable on the server's PATH (`live.codex.path`, default `codex`); term-llm does not install or download it. The child logs in using term-llm's OAuth tokens without writing them to Codex storage or inheriting the user's Codex config. Client-managed handoffs are relayed through the browser's data channel. This is an alternative transport, not an authorization workaround. It uses Codex's default voice and the fixed `gpt-live-1-codex` model; `live.chatgpt.*` overrides apply only to the direct provider.
+To use the public OpenAI GPT-Live API instead of a ChatGPT subscription:
+
+```yaml
+live:
+  enabled: true
+  provider: openai
+  openai:
+    api_key: sk-... # or set OPENAI_API_KEY in the server environment
+    model: gpt-live-1
+    voice: marin
+```
+
+The API key stays on the server. This provider uses separately billed OpenAI API access, not ChatGPT OAuth or a Codex executable. `live.chatgpt.*` settings do not apply; in particular, `juniper` is a ChatGPT voice, not a public OpenAI Live voice.
+
+The default `gpt-live-1` uses the public Live API: JSON session creation at `/v1/live/sessions`, then an authenticated sideband at `/v1/live/sessions/{session_id}/attach`. It uses client delegation to the same execution controller as ChatGPT, receiving transcript fragments and returning speakable results and quiet progress through native Live context appends. Typed input runs through the execution backend and is mirrored into the voice session as context. Current-call voice changes are not supported; choose the voice before starting the call.
+
+For an explicitly configured model whose name contains `realtime` (for example `gpt-realtime`), term-llm retains the legacy Realtime API: `/v1/realtime/calls`, Realtime function calling, and a complete function result after the execution turn. `gpt-live-1` is never sent in Realtime mode. Both transports use API-key authentication and keep browser media on WebRTC.
 
 ## Behaviour worth knowing
 
@@ -49,8 +65,6 @@ Runaway output is not read aloud in full: the head and tail of a long reply are 
 
 Spoken-only exchanges are not written to the transcript. Delegated turns are ordinary runs, so they appear in the web UI exactly like typed messages, with their tool calls and approvals.
 
-The optional Codex transport has a hard fifteen-minute call lifetime and a four-call limit per server.
-
 A call with no control-channel traffic for `live.idle_timeout` (default ten minutes) is closed. Closing the browser tab, switching sessions, or pressing Stop ends the call and releases the microphone; `DELETE` is idempotent.
 
 The direct provider's sideband reconnects with backoff and re-resolves credentials, so a short network outage does not end the conversation. A provider session that has genuinely ended (`404`/`410`) stops it for good.
@@ -60,16 +74,19 @@ The direct provider's sideband reconnects with backoff and re-resolves credentia
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `live.enabled` | `false` | Master switch; also gates the capability the web UI reads. |
-| `live.provider` | `chatgpt` | Direct ChatGPT OAuth transport; `codex` selects the optional subprocess transport. |
-| `live.codex.path` | `codex` | Executable name resolved on PATH, or an absolute path. Used only by the Codex transport. |
+| `live.provider` | `chatgpt` | `chatgpt` uses OAuth; `openai` uses the public API with an API key. |
 | `live.instructions` | *(unset)* | Replaces the conversational prompt; host capability/session context is still appended. |
 | `live.idle_timeout` | `10m` | Idle time before the server closes a call. |
+| `live.openai.api_key` | *(unset)* | OpenAI API key; falls back to `OPENAI_API_KEY`. |
+| `live.openai.model` | `gpt-live-1` | Public GPT-Live model; explicitly named `realtime` models select the legacy Realtime transport. |
+| `live.openai.voice` | `marin` | Live: `alloy`, `ash`, `ballad`, `beacon`, `bossa`, `cedar`, `cinder`, `coral`, `delta`, `echo`, `gleam`, `marin`, `meridian`, `quartz`, `ripple`, `sage`, `shimmer`, `stone`, `tempo`, `verse`, `vesper`, or `willow`. Legacy Realtime supports only `alloy`, `ash`, `ballad`, `coral`, `echo`, `sage`, `shimmer`, `verse`, `marin`, and `cedar`. |
+| `live.openai.base_url` | `https://api.openai.com/v1` | Public API base for call creation and sideband. |
 | `live.chatgpt.model` | `gpt-live-1-codex` | Voice model for the V3/frameless protocol. |
 | `live.chatgpt.voice` | `cove` | V3 voice: `juniper`, `maple`, `spruce`, `ember`, `vale`, `breeze`, `arbor`, `sol`, or `cove`. |
 | `live.chatgpt.call_base_url` | `https://chatgpt.com/backend-api/codex` | Call-creation endpoint; overridden in tests. |
 | `live.chatgpt.sideband_base_url` | `https://api.openai.com/v1` | Control-channel endpoint; overridden in tests. |
 
-**Do not use the V2 voices `marin` or `cedar` with this protocol.** Codex V3 uses the V1 voice family, not the V2 family. Sending `marin` to this endpoint was verified to return the misleading `403 "Voice session access denied."`; changing only the voice to `cove` allowed the same account and direct client to connect and receive audio. term-llm validates the voice before making a request. If an older configuration explicitly sets `marin`, remove that override or select a supported voice.
+**For `chatgpt` only: do not use the V2 voices `marin` or `cedar` with this protocol.** ChatGPT V3 uses the V1 voice family, not the V2 family. Sending `marin` to this endpoint was verified to return the misleading `403 "Voice session access denied."`; changing only the voice to `cove` allowed the same account and direct client to connect and receive audio. term-llm validates the voice before making a request. If an older configuration explicitly sets `marin`, remove that override or select a supported voice.
 
 `live.enabled` alone is not enough for the button to appear: `/v1/capabilities` reports `live.enabled` only when the feature is on, the request is first-party, and provider readiness succeeds. Account or workspace restrictions may still prevent a call; valid ChatGPT credentials alone do not guarantee model access.
 
@@ -82,7 +99,6 @@ Live voice needs a secure context (HTTPS or localhost) because the browser will 
 | `POST /v1/live/sessions` | Exchange an SDP offer for the provider's answer and bind the call to a chat session. |
 | `DELETE /v1/live/sessions/{live_id}` | End the call; idempotent. |
 | `POST /v1/live/sessions/{live_id}/text` | Inject typed text into the running conversation. |
-| `POST /v1/live/sessions/{live_id}/signal` | Relay a browser data-channel control frame for the optional Codex transport. |
-| `GET /v1/live/sessions/{live_id}/events` | SSE stream of `live.started`, `live.transcript`, `live.delegation`, `live.signal`, `live.error`, `live.ended`, with `?after=` replay. |
+| `GET /v1/live/sessions/{live_id}/events` | SSE stream of `live.started`, `live.transcript`, `live.delegation`, `live.error`, `live.ended`, with `?after=` replay. |
 
 Only the call's own transcript and delegation state travel on that stream; delegated turns reach the browser through the normal response-run path, so an open call does not flood the shared server-event feed.

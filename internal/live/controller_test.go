@@ -221,6 +221,34 @@ func TestControllerFallsBackToSpokenTranscriptForEmptyDelegations(t *testing.T) 
 	}
 }
 
+func TestControllerDefersMetadataOnlyDelegationUntilTranscriptAndDeduplicates(t *testing.T) {
+	session := newFakeSession()
+	delegator := &fakeDelegator{}
+	controller := startController(t, session, delegator, &updateRecorder{})
+
+	metadata := Event{Kind: EventDelegationCreated, RawType: "session.delegation.created", DelegationID: "item_live"}
+	session.emit(metadata)
+	session.emit(metadata)
+	waitFor(t, "pending metadata-only delegation", func() bool {
+		controller.mu.Lock()
+		defer controller.mu.Unlock()
+		return len(controller.pendingDelegations) == 1
+	})
+	if delegator.count() != 0 {
+		t.Fatal("metadata-only delegation ran without transcript text")
+	}
+
+	session.emit(Event{Kind: EventAssistantTranscript, Role: RoleAssistant, Text: "I can help. "})
+	session.emit(Event{Kind: EventUserTranscript, Role: RoleUser, Text: "run the tests"})
+	waitFor(t, "deferred delegation", func() bool { return delegator.count() == 1 })
+	request := delegator.lastRequest()
+	if request.ID != "item_live" || request.Input != "run the tests" {
+		t.Fatalf("request = %+v", request)
+	}
+	if !strings.Contains(request.TranscriptDelta, "user: run the tests") || !strings.Contains(request.TranscriptDelta, "assistant: I can help.") {
+		t.Fatalf("transcript context = %q", request.TranscriptDelta)
+	}
+}
 func TestControllerRunsDelegationsOneAtATime(t *testing.T) {
 	session := newFakeSession()
 	var concurrent, peak atomic.Int32
@@ -530,5 +558,50 @@ func TestControllerRetriesSteeringDuringRuntimeStartup(t *testing.T) {
 	close(d.release)
 	if err := c.Close(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+type completingSession struct {
+	*fakeSession
+	completions        []string
+	outputAtCompletion string
+}
+
+func (s *completingSession) CompleteDelegation(_ context.Context, id string) error {
+	s.completions = append(s.completions, id)
+	s.outputAtCompletion = s.speakable()
+	return nil
+}
+
+func TestControllerExplicitDelegationCompletion(t *testing.T) {
+	for _, tc := range []struct {
+		name, text string
+		err        error
+	}{
+		{name: "success", text: "complete result"},
+		{name: "empty"},
+		{name: "failure", err: errors.New("tool failed")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session := &completingSession{fakeSession: newFakeSession()}
+			delegator := &fakeDelegator{run: func(_ int, emit func(DelegationChunk)) error {
+				if tc.text != "" {
+					emit(DelegationChunk{Channel: ChannelSpeakable, Text: tc.text})
+				}
+				return tc.err
+			}}
+			c := &Controller{session: session, delegator: delegator, flush: time.Hour, observe: func(Update) {}}
+			c.runDelegation(context.Background(), queuedDelegation{ID: "call_test", Input: "do work"})
+			if len(session.completions) != 1 || session.completions[0] != "call_test" {
+				t.Fatalf("completions = %v", session.completions)
+			}
+			want := tc.text
+			if tc.err != nil {
+				want = delegationFailureText(tc.err)
+			}
+			if session.outputAtCompletion != want {
+				t.Fatalf("output at completion = %q, want %q", session.outputAtCompletion, want)
+			}
+		})
 	}
 }

@@ -219,6 +219,17 @@ func withResponseRunContext(ctx context.Context, run *responseRun) context.Conte
 	return context.WithValue(ctx, responseRunContextKey{}, run)
 }
 
+// withoutResponseRunOwnership starts an independent child execution without
+// inheriting the parent's transcript ownership or persistence accounting. Keep
+// cancellation, deadlines, approvals, and progress values on the context chain.
+func withoutResponseRunOwnership(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = context.WithValue(ctx, responseRunContextKey{}, (*responseRun)(nil))
+	return session.WithResponseRunFence(ctx, session.ResponseRunFence{})
+}
+
 func tagResponseRunMessage(ctx context.Context, msg llm.Message, segmentOrdinal int) llm.Message {
 	if ctx == nil {
 		return msg

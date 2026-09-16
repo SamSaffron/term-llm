@@ -15,7 +15,6 @@ class FakeLiveCall {
   readonly stop = vi.fn(async () => {
     this.publish({ phase: 'ended', liveId: '' });
   });
-  readonly send = vi.fn();
   readonly dispose = vi.fn();
 
   subscribe(listener: (snapshot: LiveSnapshot) => void): () => void {
@@ -90,7 +89,6 @@ function setup() {
   const endpoints = {
     liveEvents: vi.fn(async () => events.response),
     liveText: vi.fn(async () => ({ ok: true as const })),
-    liveSignal: vi.fn(async () => ({ ok: true as const })),
   } as unknown as Endpoints;
   const call = new FakeLiveCall();
   const store = new LiveStore(endpoints, () => 'session-one', call);
@@ -291,40 +289,6 @@ describe('LiveStore', () => {
     await vi.waitFor(() => expect(store.phase.value).toBe('ended'));
     expect(call.stop).toHaveBeenCalledOnce();
     expect(store.liveId.value).toBe('');
-    store.dispose();
-    events.close();
-  });
-
-  it('does not relay duplicate peer events for the direct ChatGPT sideband', async () => {
-    const { store, events, endpoints } = setup();
-    store.applyCapability({ enabled: true, provider: 'chatgpt' });
-    await store.start();
-    store.relaySignal('{"type":"delegation.created"}');
-    expect(endpoints.liveSignal).not.toHaveBeenCalled();
-    store.dispose();
-    events.close();
-  });
-
-  it('relays control frames between the data channel and the server', async () => {
-    const { store, call, events, endpoints } = setup();
-    store.applyCapability({ enabled: true, provider: 'codex' });
-    await store.start();
-
-    // Frames the provider sent to the peer go to the server, which owns the
-    // conversation and runs delegated work.
-    store.relaySignal('{"type":"delegation.created"}');
-    await vi.waitFor(() =>
-      expect(endpoints.liveSignal).toHaveBeenCalledWith(
-        'live_one',
-        '{"type":"delegation.created"}',
-      ),
-    );
-
-    // Frames the server produced are written back to the same data channel.
-    events.push(1, 'live.signal', { payload: { type: 'delegation.context.append' } });
-    await vi.waitFor(() =>
-      expect(call.send).toHaveBeenCalledWith('{"type":"delegation.context.append"}'),
-    );
     store.dispose();
     events.close();
   });

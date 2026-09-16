@@ -33,22 +33,12 @@ export interface LiveSnapshot {
   retryable?: boolean;
 }
 
-// Bound the frames queued before the data channel opens; a stalled channel
-// must not grow this without limit.
-const PENDING_FRAME_LIMIT = 64;
-
 export type LiveStart = (sdp: string, sessionId: string) => Promise<LiveStartResponse>;
 export type LiveStop = (liveId: string) => Promise<LiveStopResponse>;
 
 export interface LiveCallOptions {
   peerConnectionConfig?: RTCConfiguration;
   createPeerConnection?: (config?: RTCConfiguration) => RTCPeerConnection;
-  /**
-   * Receives every control frame the provider sends on the data channel. The
-   * server owns the conversation, so frames are relayed to it rather than
-   * interpreted here.
-   */
-  onSignal?: (frame: string) => void;
 }
 
 function liveError(error: unknown): { message: string; retryable: boolean } {
@@ -76,7 +66,6 @@ export class LiveCall {
   private audio: HTMLAudioElement | null = null;
   private liveId = '';
   private cancelICEWait: (() => void) | null = null;
-  private pending: string[] = [];
   private stoppedTracks = new WeakSet<MediaStreamTrack>();
   private disposed = false;
 
@@ -166,8 +155,6 @@ export class LiveCall {
       this.peer = peer;
       const channel = peer.createDataChannel('oai-events', { ordered: true });
       this.channel = channel;
-      channel.onmessage = (event) => this.onDataMessage(event);
-      channel.onopen = () => this.flushPending();
       peer.ontrack = (event) => this.onTrack(event, generation);
       peer.onconnectionstatechange = () => {
         if (peer.connectionState === 'failed' && this.current(generation))
@@ -243,47 +230,6 @@ export class LiveCall {
     });
   }
 
-  private onDataMessage(event: MessageEvent): void {
-    if (typeof event.data !== 'string' || !event.data) return;
-    try {
-      this.options.onSignal?.(event.data);
-    } catch (error) {
-      console.debug('[live] control frame relay failed', error);
-    }
-  }
-
-  /**
-   * send writes one control frame to the provider. Frames produced before the
-   * channel opens are queued so an early server reply is not lost.
-   */
-  send(frame: string): void {
-    if (this.disposed || !frame) return;
-    const channel = this.channel;
-    if (!channel || channel.readyState !== 'open') {
-      if (this.pending.length < PENDING_FRAME_LIMIT) this.pending.push(frame);
-      return;
-    }
-    try {
-      channel.send(frame);
-    } catch (error) {
-      console.debug('[live] control frame send failed', error);
-    }
-  }
-
-  private flushPending(): void {
-    const channel = this.channel;
-    if (!channel || channel.readyState !== 'open') return;
-    const queued = this.pending;
-    this.pending = [];
-    for (const frame of queued) {
-      try {
-        channel.send(frame);
-      } catch (error) {
-        console.debug('[live] queued control frame send failed', error);
-      }
-    }
-  }
-
   private fail(error: unknown, generation: number): void {
     if (!this.current(generation)) return;
     const failure = liveError(error);
@@ -344,8 +290,6 @@ export class LiveCall {
     this.cancelICEWait?.();
     this.cancelICEWait = null;
     if (this.channel) {
-      this.channel.onmessage = null;
-      this.channel.onopen = null;
       try {
         this.channel.close();
       } catch {

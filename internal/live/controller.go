@@ -114,12 +114,13 @@ type Controller struct {
 
 	queue chan queuedDelegation
 
-	mu               sync.Mutex
-	userPartial      string
-	assistantPartial string
-	lastUserTurn     string
-	transcript       []string
-	delegationIDs    map[string]struct{}
+	mu                 sync.Mutex
+	userPartial        string
+	assistantPartial   string
+	lastUserTurn       string
+	transcript         []string
+	delegationIDs      map[string]struct{}
+	pendingDelegations []Event
 
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
@@ -221,6 +222,7 @@ func (c *Controller) handleEvent(event Event) bool {
 		c.observe(Update{Kind: UpdateStarted})
 	case EventUserTranscript:
 		c.observe(Update{Kind: UpdateTranscript, Role: RoleUser, Text: c.appendPartial(RoleUser, event.Text)})
+		c.flushPendingDelegations()
 	case EventAssistantTranscript:
 		c.observe(Update{Kind: UpdateTranscript, Role: RoleAssistant, Text: c.appendPartial(RoleAssistant, event.Text)})
 	case EventTurnDone:
@@ -247,28 +249,58 @@ func (c *Controller) handleEvent(event Event) bool {
 }
 
 func (c *Controller) enqueueDelegation(event Event) {
-	request := queuedDelegation{
-		ID:    event.DelegationID,
-		Input: strings.TrimSpace(event.Text),
-	}
 	c.mu.Lock()
-	if request.ID != "" {
-		if _, duplicate := c.delegationIDs[request.ID]; duplicate {
+	if event.DelegationID != "" {
+		if _, duplicate := c.delegationIDs[event.DelegationID]; duplicate {
 			c.mu.Unlock()
 			return
 		}
 		if c.delegationIDs == nil {
 			c.delegationIDs = make(map[string]struct{})
 		}
-		c.delegationIDs[request.ID] = struct{}{}
+		c.delegationIDs[event.DelegationID] = struct{}{}
 	}
+	c.mu.Unlock()
+	if !c.queueDelegation(event) {
+		c.mu.Lock()
+		c.pendingDelegations = append(c.pendingDelegations, event)
+		c.mu.Unlock()
+	}
+}
+
+// queueDelegation resolves metadata-only provider events against accumulated
+// transcript fragments. It returns false when no task text is available yet so
+// the event can be retried after a later user transcript delta.
+func (c *Controller) queueDelegation(event Event) bool {
+	request := queuedDelegation{
+		ID:    event.DelegationID,
+		Input: strings.TrimSpace(event.Text),
+	}
+	c.mu.Lock()
 	if request.Input == "" {
 		request.Input = strings.TrimSpace(c.userPartial)
 	}
-	if request.Input == "" {
+	if request.Input == "" && event.RawType != "session.delegation.created" {
 		request.Input = strings.TrimSpace(c.lastUserTurn)
 	}
-	request.TranscriptDelta = strings.Join(c.transcript, "\n")
+	if request.Input == "" && event.RawType == "session.delegation.created" {
+		c.mu.Unlock()
+		return false
+	}
+
+	transcript := append([]string(nil), c.transcript...)
+	if event.RawType == "session.delegation.created" {
+		if text := strings.TrimSpace(c.userPartial); text != "" {
+			transcript = append(transcript, RoleUser+": "+text)
+		}
+		if text := strings.TrimSpace(c.assistantPartial); text != "" {
+			transcript = append(transcript, RoleAssistant+": "+text)
+		}
+		c.lastUserTurn = request.Input
+		c.userPartial = ""
+		c.assistantPartial = ""
+	}
+	request.TranscriptDelta = strings.Join(transcript, "\n")
 	c.transcript = nil
 	c.mu.Unlock()
 
@@ -277,6 +309,22 @@ func (c *Controller) enqueueDelegation(event Event) {
 	case c.queue <- request:
 	default:
 		c.observe(Update{Kind: UpdateDelegation, DelegationID: request.ID, State: DelegationFailed, Text: "too many pending requests"})
+	}
+	return true
+}
+
+func (c *Controller) flushPendingDelegations() {
+	c.mu.Lock()
+	pending := c.pendingDelegations
+	c.pendingDelegations = nil
+	c.mu.Unlock()
+	for _, event := range pending {
+		if c.queueDelegation(event) {
+			continue
+		}
+		c.mu.Lock()
+		c.pendingDelegations = append(c.pendingDelegations, event)
+		c.mu.Unlock()
 	}
 }
 
@@ -321,9 +369,11 @@ func (c *Controller) runSteeringDelegations(ctx context.Context) {
 			switch {
 			case err != nil:
 				c.appendDelegation(ctx, request.ID, DelegationChunk{Channel: ChannelSpeakable, Text: delegationFailureText(err)})
+				c.completeDelegation(ctx, request.ID)
 				c.observe(Update{Kind: UpdateDelegation, DelegationID: request.ID, State: DelegationFailed, Text: err.Error()})
 			case admitted:
 				c.appendDelegation(ctx, request.ID, DelegationChunk{Channel: ChannelCommentary, Text: steeringNotice})
+				c.completeDelegation(ctx, request.ID)
 				c.observe(Update{Kind: UpdateDelegation, DelegationID: request.ID, State: DelegationDone})
 			case active == nil:
 				done := make(chan struct{})
@@ -358,6 +408,7 @@ func (c *Controller) runSteeringDelegations(ctx context.Context) {
 }
 
 func (c *Controller) runDelegation(ctx context.Context, request queuedDelegation) {
+	defer c.completeDelegation(ctx, request.ID)
 	c.observe(Update{Kind: UpdateDelegation, DelegationID: request.ID, State: DelegationRunning, Text: request.Input})
 	writer := newDelegationWriter(ctx, c, request.ID, c.flush)
 	err := c.runWithBusyRetry(ctx, request, writer)
@@ -405,6 +456,21 @@ func (c *Controller) appendDelegation(ctx context.Context, delegationID string, 
 	}
 	if err := c.session.AppendDelegation(appendCtx, delegationID, chunk); err != nil {
 		c.observe(Update{Kind: UpdateError, Text: fmt.Sprintf("failed to answer: %v", err)})
+	}
+}
+
+func (c *Controller) completeDelegation(ctx context.Context, delegationID string) {
+	session, ok := c.session.(DelegationCompletionSession)
+	if !ok {
+		return
+	}
+	if ctx.Err() != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+	}
+	if err := session.CompleteDelegation(ctx, delegationID); err != nil {
+		c.observe(Update{Kind: UpdateError, Text: fmt.Sprintf("failed to complete answer: %v", err)})
 	}
 }
 

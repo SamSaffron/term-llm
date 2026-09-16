@@ -1102,19 +1102,11 @@ type TranscriptionElevenLabsConfig struct {
 // per-provider blocks carry vendor-specific models, voices, and endpoints.
 type LiveConfig struct {
 	Enabled      bool              `mapstructure:"enabled"`      // live voice sessions are opt-in
-	Provider     string            `mapstructure:"provider"`     // live provider: codex or chatgpt
+	Provider     string            `mapstructure:"provider"`     // live provider: chatgpt or openai
 	Instructions string            `mapstructure:"instructions"` // optional replacement for the voice-model prompt
 	IdleTimeout  string            `mapstructure:"idle_timeout"` // close a live session after this much silence
-	Codex        LiveCodexConfig   `mapstructure:"codex"`
+	OpenAI       LiveOpenAIConfig  `mapstructure:"openai"`
 	ChatGPT      LiveChatGPTConfig `mapstructure:"chatgpt"`
-}
-
-// LiveCodexConfig configures live voice negotiated by a local Codex
-// executable. Codex owns call creation and the provider control channel; it
-// authenticates with term-llm's stored ChatGPT OAuth tokens, which are passed
-// to an isolated ephemeral process and never written to Codex storage.
-type LiveCodexConfig struct {
-	Path string `mapstructure:"path"` // executable name resolved on PATH, or an absolute path
 }
 
 // LiveChatGPTConfig configures gpt-live over the ChatGPT backend. Credentials
@@ -1124,6 +1116,58 @@ type LiveChatGPTConfig struct {
 	Voice           string `mapstructure:"voice"`
 	CallBaseURL     string `mapstructure:"call_base_url"`
 	SidebandBaseURL string `mapstructure:"sideband_base_url"`
+}
+
+// LiveOpenAIConfig configures public GPT-Live or legacy Realtime, independently of ChatGPT OAuth.
+type LiveOpenAIConfig struct {
+	APIKey  string `mapstructure:"api_key"`
+	Model   string `mapstructure:"model"`
+	Voice   string `mapstructure:"voice"`
+	BaseURL string `mapstructure:"base_url"`
+}
+
+// LiveOpenAIVoices returns the public GPT-Live built-in voice family.
+func LiveOpenAIVoices() []string {
+	return append(liveOpenAIRealtimeVoices(), "beacon", "bossa", "cinder", "delta", "gleam", "meridian", "quartz", "ripple", "stone", "tempo", "vesper", "willow")
+}
+
+// UsesRealtime selects the legacy transport only for an explicitly named realtime model.
+func (c LiveOpenAIConfig) UsesRealtime() bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(c.Model)), "realtime")
+}
+
+// ResolvedVoice returns the configured voice or the default shared by both APIs.
+func (c LiveOpenAIConfig) ResolvedVoice() string {
+	if voice := strings.TrimSpace(c.Voice); voice != "" {
+		return voice
+	}
+	return DefaultLiveOpenAIVoice
+}
+
+func liveOpenAIRealtimeVoices() []string {
+	return []string{"alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar"}
+}
+
+// Voices lists built-in voices for the selected model's transport.
+func (c LiveOpenAIConfig) Voices() []string {
+	if c.UsesRealtime() {
+		return liveOpenAIRealtimeVoices()
+	}
+	return LiveOpenAIVoices()
+}
+
+// ValidateVoice rejects voice names from incompatible transports.
+func (c LiveOpenAIConfig) ValidateVoice() error {
+	voice := strings.TrimSpace(c.Voice)
+	if voice == "" {
+		return nil
+	}
+	for _, supported := range c.Voices() {
+		if voice == supported {
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid live.openai.voice %q: expected one of %s", c.Voice, strings.Join(c.Voices(), ", "))
 }
 
 // LiveChatGPTVoices returns a copy of the V3/frameless voice family supported
@@ -1176,11 +1220,11 @@ func (c *Config) ValidateLive() error {
 	switch strings.TrimSpace(c.Live.Provider) {
 	case "", LiveProviderChatGPT:
 		return c.Live.ChatGPT.ValidateVoice()
-	case LiveProviderCodex:
+	case LiveProviderOpenAI:
+		return c.Live.OpenAI.ValidateVoice()
 	default:
-		return fmt.Errorf("invalid live.provider %q: expected %q or %q", c.Live.Provider, LiveProviderCodex, LiveProviderChatGPT)
+		return fmt.Errorf("invalid live.provider %q: expected %q or %q", c.Live.Provider, LiveProviderChatGPT, LiveProviderOpenAI)
 	}
-	return nil
 }
 
 // EmbedConfig configures text embedding generation

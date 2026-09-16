@@ -347,12 +347,6 @@ export const endpoints = (api: APIClient) => ({
     ),
   liveStop: (liveId: string) =>
     api.delete<LiveSessionStopResponse>(`/v1/live/sessions/${encoded(liveId)}`),
-  liveSignal: (liveId: string, frame: string) =>
-    api.json<{ ok: true }>(
-      `/v1/live/sessions/${encoded(liveId)}/signal`,
-      { method: 'POST', body: frame },
-      { policy: 'mutation', auth: 'session', retries: 0 },
-    ),
   liveText: (liveId: string, text: string) =>
     api.json<{ ok: true }>(
       `/v1/live/sessions/${encoded(liveId)}/text`,

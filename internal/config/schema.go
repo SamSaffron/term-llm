@@ -97,13 +97,15 @@ const (
 	DefaultMusicPollInterval     = "2s"
 	DefaultMusicPollTimeout      = "10m"
 
-	// LiveProviderCodex optionally negotiates through a local Codex executable.
-	LiveProviderCodex = "codex"
 	// LiveProviderChatGPT speaks the realtime protocol directly using ChatGPT OAuth.
 	LiveProviderChatGPT = "chatgpt"
+	// LiveProviderOpenAI uses the public Realtime API with an API key.
+	LiveProviderOpenAI       = "openai"
+	DefaultLiveOpenAIModel   = "gpt-live-1"
+	DefaultLiveOpenAIVoice   = "marin"
+	DefaultLiveOpenAIBaseURL = "https://api.openai.com/v1"
 
 	DefaultLiveProvider               = LiveProviderChatGPT
-	DefaultLiveCodexPath              = "codex"
 	DefaultLiveIdleTimeout            = "10m"
 	DefaultLiveChatGPTModel           = "gpt-live-1-codex"
 	DefaultLiveChatGPTVoice           = "cove"
@@ -278,7 +280,10 @@ var keySpecs = []KeySpec{
 	def("live.provider", DefaultLiveProvider),
 	optional("live.instructions"),
 	def("live.idle_timeout", DefaultLiveIdleTimeout),
-	def("live.codex.path", DefaultLiveCodexPath),
+	optional("live.openai.api_key", sensitive()),
+	def("live.openai.model", DefaultLiveOpenAIModel),
+	def("live.openai.voice", DefaultLiveOpenAIVoice),
+	def("live.openai.base_url", DefaultLiveOpenAIBaseURL),
 	def("live.chatgpt.model", DefaultLiveChatGPTModel),
 	def("live.chatgpt.voice", DefaultLiveChatGPTVoice),
 	def("live.chatgpt.call_base_url", DefaultLiveChatGPTCallBaseURL),

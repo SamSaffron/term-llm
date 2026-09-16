@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -24,7 +23,6 @@ import (
 const (
 	liveSDPLimitBytes        = 64 << 10
 	liveTextLimitBytes       = 8 << 10
-	liveSignalLimitBytes     = 64 << 10
 	liveEventHistoryLimit    = 512
 	liveSubscriberBuffer     = 64
 	liveIdleCheckInterval    = 15 * time.Second
@@ -39,10 +37,6 @@ const (
 	liveEventDelegation = "live.delegation"
 	liveEventError      = "live.error"
 	liveEventEnded      = "live.ended"
-	// liveEventSignal carries a provider control frame the browser must write
-	// to its data channel. Codex-negotiated calls keep the control channel on
-	// the peer, so the server relays through it.
-	liveEventSignal = "live.signal"
 )
 
 type liveSessionEvent struct {
@@ -62,7 +56,6 @@ type liveSession struct {
 	controller        *live.Controller
 	voiceSession      live.VoiceSession
 	capabilities      live.Capabilities
-	relay             live.RelaySession
 	cancel            context.CancelFunc
 	lastActivity      time.Time
 	ended             bool
@@ -154,14 +147,6 @@ func (l *liveSession) unsubscribe(id int) {
 		close(ch)
 	}
 	delete(l.subscriberDropped, id)
-}
-
-// relaySession returns the relay when the control channel runs through the
-// browser, or nil when this process owns it.
-func (l *liveSession) relaySession() live.RelaySession {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.relay
 }
 
 // running returns the controller, or nil while the call is still starting.
@@ -389,8 +374,6 @@ func (s *serveServer) handleLiveSessionByID(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusOK, map[string]any{"live_id": liveID, "status": "ended"})
 	case "text":
 		s.handleLiveSessionText(w, r, liveID)
-	case "signal":
-		s.handleLiveSessionSignal(w, r, liveID)
 	case "events":
 		s.handleLiveSessionEvents(w, r, liveID)
 	default:
@@ -503,55 +486,6 @@ func (s *serveServer) handleLiveSessionEvents(w http.ResponseWriter, r *http.Req
 	}
 }
 
-// pumpLiveOutbound forwards provider-bound control frames to the browser, which
-// writes them to the call's data channel.
-func pumpLiveOutbound(ctx context.Context, record *liveSession, relay live.RelaySession) {
-	outbound := relay.Outbound()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case frame, open := <-outbound:
-			if !open {
-				return
-			}
-			record.appendEvent(liveEventSignal, map[string]any{"payload": json.RawMessage(frame)})
-		}
-	}
-}
-
-// handleLiveSessionSignal accepts one control frame the browser received on its
-// data channel.
-func (s *serveServer) handleLiveSessionSignal(w http.ResponseWriter, r *http.Request, liveID string) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
-		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
-		return
-	}
-	record, ok := s.lookupLiveSession(liveID)
-	if !ok {
-		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "live session not found")
-		return
-	}
-	relay := record.relaySession()
-	if relay == nil {
-		writeOpenAIError(w, http.StatusConflict, "conflict_error", "this live session does not relay control frames")
-		return
-	}
-	frame, err := io.ReadAll(http.MaxBytesReader(w, r.Body, liveSignalLimitBytes))
-	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid control frame: "+err.Error())
-		return
-	}
-	if !json.Valid(frame) {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "control frame must be JSON")
-		return
-	}
-	relay.Deliver(frame)
-	record.touch()
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
 // observe turns controller updates into browser events.
 func (l *liveSession) observe(update live.Update) {
 	switch update.Kind {
@@ -590,16 +524,12 @@ func (s *serveServer) startLiveController(record *liveSession, providerSession l
 		Delegator: &serveLiveDelegator{server: s, sessionID: record.sessionID, live: record},
 		Observer:  record.observe,
 	})
-	relay, _ := providerSession.(live.RelaySession)
 	record.mu.Lock()
 	record.voiceSession, _ = providerSession.(live.VoiceSession)
 	record.capabilities.CanSetVoice = record.voiceSession != nil
-	record.controller, record.relay, record.cancel = controller, relay, controllerCancel
+	record.controller, record.cancel = controller, controllerCancel
 	record.mu.Unlock()
 	controller.Start(controllerCtx)
-	if relay != nil {
-		go pumpLiveOutbound(controllerCtx, record, relay)
-	}
 	go s.watchLiveIdle(record)
 	return true
 }
@@ -707,15 +637,10 @@ func (s *serveServer) closeLiveSessions(ctx context.Context) {
 	for id := range s.liveSessions {
 		ids = append(ids, id)
 	}
-	provider := s.liveProviderInstance
 	s.liveProviderInstance = nil
 	s.liveMu.Unlock()
 	for _, id := range ids {
 		s.stopLiveSession(ctx, id, "shutdown")
-	}
-	// Reap provider-owned resources, such as Codex child processes.
-	if closer, ok := provider.(interface{ Close() }); ok {
-		closer.Close()
 	}
 }
 

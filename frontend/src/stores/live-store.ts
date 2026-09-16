@@ -21,7 +21,6 @@ interface LiveCallHandle {
   readonly snapshot: LiveSnapshot;
   subscribe(listener: (snapshot: LiveSnapshot) => void): () => void;
   start(sessionId: string): Promise<LiveStartResponse | null>;
-  send(frame: string): void;
   stop(): Promise<void>;
   dispose(): void;
 }
@@ -33,7 +32,6 @@ interface LiveEventData {
   delegation_id?: string;
   state?: LiveDelegationState;
   message?: string;
-  payload?: unknown;
 }
 
 const RECENT_TURN_LIMIT = 20;
@@ -82,7 +80,6 @@ export class LiveStore {
   private eventCursor = 0;
   private streamAbort: AbortController | null = null;
   private disposed = false;
-  private relayControlFrames = false;
   private readonly activeDelegations = new Map<string, LiveDelegation>();
 
   constructor(
@@ -114,32 +111,14 @@ export class LiveStore {
       new LiveCall(
         (sdp, sessionId) => this.endpoints.liveStart(sdp, sessionId),
         this.endpoints.liveStop,
-        { onSignal: (frame) => this.relaySignal(frame) },
       ),
     );
-  }
-
-  /**
-   * relaySignal forwards a provider control frame to the server, which owns the
-   * conversation state and runs delegated work in the chat session.
-   */
-  relaySignal(frame: string): void {
-    // The direct provider already receives these events over its sideband.
-    // Relaying them would duplicate traffic and hit a non-relay session's 409.
-    if (!this.relayControlFrames) return;
-    const liveId = this.liveId.peek();
-    if (!liveId) return;
-    void this.endpoints.liveSignal(liveId, frame).catch(() => {
-      // A dropped frame is not fatal: the provider resends or the call ends,
-      // and the server-side event stream still reports the session state.
-    });
   }
 
   applyCapability(value: unknown): void {
     const capability =
       value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
     this.enabled.value = capability?.enabled === true;
-    this.relayControlFrames = capability?.provider === 'codex';
     if (!this.enabled.peek() && this.active.peek()) void this.stop();
   }
 
@@ -294,11 +273,6 @@ export class LiveStore {
   }
 
   private applyEvent(event: string, data: LiveEventData): void {
-    if (event === 'live.signal') {
-      // The server answers the provider through the peer's data channel.
-      if (data.payload !== undefined) this.call?.send(JSON.stringify(data.payload));
-      return;
-    }
     if (event === 'live.started') {
       this.phase.value = 'listening';
       return;

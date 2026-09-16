@@ -1708,9 +1708,72 @@ func TestLiveConfigOverridesAndValidation(t *testing.T) {
 			t.Fatalf("V2 voice validation for provider %q = %v", provider, err)
 		}
 	}
-	// The alternative transport uses Codex's voice default, not this override.
-	codex := &Config{Live: LiveConfig{Provider: LiveProviderCodex, ChatGPT: LiveChatGPTConfig{Voice: "marin"}}}
-	if err := codex.ValidateLive(); err != nil {
-		t.Fatalf("unused chatgpt voice must not reject the Codex provider: %v", err)
+	// Removed providers are rejected rather than silently mapped to ChatGPT.
+	removed := &Config{Live: LiveConfig{Provider: "codex"}}
+	if err := removed.ValidateLive(); err == nil || !strings.Contains(err.Error(), `expected "chatgpt" or "openai"`) {
+		t.Fatalf("removed provider validation = %v", err)
+	}
+}
+
+func TestLiveOpenAIConfig(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	dir := filepath.Join(configDir, "term-llm")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := "live:\n  enabled: true\n  provider: openai\n  openai:\n    api_key: sk-test\n  chatgpt:\n    voice: not-an-openai-voice\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Live.Provider != LiveProviderOpenAI || cfg.Live.OpenAI.APIKey != "sk-test" || cfg.Live.OpenAI.Model != DefaultLiveOpenAIModel || cfg.Live.OpenAI.Voice != DefaultLiveOpenAIVoice || cfg.Live.OpenAI.BaseURL != DefaultLiveOpenAIBaseURL {
+		t.Fatalf("unexpected OpenAI config: %#v", cfg.Live)
+	}
+	for _, voice := range append(LiveOpenAIVoices(), "", " cedar ") {
+		cfg.Live.OpenAI.Voice = voice
+		if err := cfg.ValidateLive(); err != nil {
+			t.Fatalf("voice %q: %v", voice, err)
+		}
+	}
+	cfg.Live.OpenAI.Voice = "juniper"
+	if err := cfg.ValidateLive(); err == nil || !strings.Contains(err.Error(), "live.openai.voice") {
+		t.Fatalf("ChatGPT voice validation = %v", err)
+	}
+}
+
+func TestLiveOpenAITransportAndVoices(t *testing.T) {
+	for _, tc := range []struct {
+		model    string
+		realtime bool
+	}{
+		{"", false}, {"gpt-live-1", false}, {"gpt-live-1-2026-09-15", false},
+		{"gpt-realtime", true}, {"gpt-4o-realtime-preview", true}, {" gpt-realtime-2.1 ", true},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			cfg := LiveOpenAIConfig{Model: tc.model}
+			if cfg.UsesRealtime() != tc.realtime {
+				t.Fatalf("transport for %q", tc.model)
+			}
+			if cfg.ResolvedVoice() != "marin" {
+				t.Fatalf("default voice = %q", cfg.ResolvedVoice())
+			}
+			cfg.Voice = " quartz "
+			if err := cfg.ValidateVoice(); (err != nil) != tc.realtime {
+				t.Fatalf("quartz validation = %v, realtime=%v", err, tc.realtime)
+			}
+			cfg.Voice = " cedar "
+			if err := cfg.ValidateVoice(); err != nil {
+				t.Fatal(err)
+			}
+			if cfg.ResolvedVoice() != "cedar" {
+				t.Fatalf("resolved voice = %q", cfg.ResolvedVoice())
+			}
+		})
 	}
 }
