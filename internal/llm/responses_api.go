@@ -668,14 +668,11 @@ func responseNativeFileAllowed(file *ToolFileData, policy *FileUploadPolicy) boo
 }
 
 func responseFileTextFallback(part Part, policy *FileUploadPolicy) string {
-	if part.Text == "" {
-		return ""
-	}
 	if part.FileData == nil {
 		return part.Text
 	}
 	active := effectiveResponsesFilePolicy(policy)
-	if active.AllowsTextEmbed(part.FileData.MediaType, toolFileSizeBytes(part.FileData)) {
+	if strings.TrimSpace(part.Text) != "" && active.AllowsTextEmbed(part.FileData.MediaType, toolFileSizeBytes(part.FileData)) {
 		return part.Text
 	}
 	return FormatUploadedFileNotice(part.FileData.Filename, part.FileData.MediaType, part.FilePath, toolFileSizeBytes(part.FileData))

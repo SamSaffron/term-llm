@@ -41,3 +41,16 @@ func TestEffectiveFileUploadPolicyForProviderConfig_CustomOpenAIPolicy(t *testin
 		t.Fatal("unlisted MIME type should not be native")
 	}
 }
+
+func TestDefaultResponsesFilePolicyRequiresKnownMIME(t *testing.T) {
+	policy := DefaultOpenAIResponsesFileUploadPolicy()
+	for _, mediaType := range []string{"text/x-ruby-script", "text/x-unknown", "application/x-unknown", "application/octet-stream", ""} {
+		if policy.AllowsNative(mediaType, 6) || policy.AllowsTextEmbed(mediaType, 6) {
+			t.Errorf("unknown MIME %q should use a path notice", mediaType)
+		}
+	}
+	// Non-Responses providers retain their existing portable text fallback.
+	if !DefaultPortableTextFileUploadPolicy().AllowsTextEmbed("text/x-ruby-script", 6) {
+		t.Fatal("portable text fallback changed")
+	}
+}

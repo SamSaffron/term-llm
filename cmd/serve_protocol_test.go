@@ -567,3 +567,54 @@ func TestArbitraryUploadsKeepValidationLimits(t *testing.T) {
 		})
 	}
 }
+
+func TestRubyUploadResponsesHistoryFallback(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	const filename = "bench_story_compare (1).rb"
+	const source = "puts 'benchmark source'\n"
+	content, err := json.Marshal([]map[string]string{{"type": "input_file", "filename": filename, "file_data": "data:text/x-ruby-script;base64," + base64.StdEncoding.EncodeToString([]byte(source))}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err := parseUserMessageContent(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := session.NewMessage("ruby-upload", msg, 0)
+	encoded, err := stored.PartsJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replay session.Message
+	if err := replay.SetPartsFromJSON(encoded); err != nil {
+		t.Fatal(err)
+	}
+	part := replay.Parts[0]
+	if part.Type != llm.PartFile || part.FileData == nil || part.FileData.Filename != filename || part.FileData.MediaType != "text/x-ruby-script" || part.FileData.Base64 != msg.Parts[0].FileData.Base64 {
+		t.Fatalf("lost upload/chip metadata: %+v", part)
+	}
+	raw, err := os.ReadFile(part.FilePath)
+	if err != nil || string(raw) != source {
+		t.Fatalf("saved source = %q, err = %v", raw, err)
+	}
+	messages := []llm.Message{{Role: llm.RoleUser, Parts: replay.Parts}, {Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "OK"}}}, {Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "compare it"}}}}
+	_, chatGPT := llm.BuildResponsesInputWithInstructions(messages)
+	for _, input := range [][]llm.ResponsesInputItem{llm.BuildResponsesInput(messages), chatGPT} {
+		if len(input) != 3 {
+			t.Fatalf("lost history: %#v", input)
+		}
+		text, ok := input[0].Content.(string)
+		if !ok || !strings.Contains(text, part.FilePath) || !strings.Contains(text, "Contents are not included") {
+			t.Fatalf("expected saved path notice: %#v", input[0])
+		}
+		wire, err := json.Marshal(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, forbidden := range []string{"file_data", "input_file", source, part.FileData.Base64} {
+			if strings.Contains(string(wire), forbidden) {
+				t.Fatalf("unexpected %q in payload: %s", forbidden, wire)
+			}
+		}
+	}
+}

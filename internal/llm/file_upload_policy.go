@@ -12,7 +12,6 @@ const defaultFileUploadMaxBytes int64 = 20 << 20
 
 var openAIResponsesNativeFileMIMETypes = []string{
 	"application/pdf",
-	"text/*",
 	"text/plain",
 	"text/markdown",
 	"text/csv",
@@ -32,8 +31,10 @@ var openAIResponsesNativeFileMIMETypes = []string{
 	"application/vnd.openxmlformats-officedocument.presentationml.presentation",
 }
 
-var portableTextEmbedMIMETypes = []string{
-	"text/*",
+// Responses uses explicit MIME lists: a text/* type is not necessarily a
+// supported native attachment (for example text/x-ruby-script). Unknown types
+// use a saved-path notice rather than native data or incidental legacy text.
+var responsesTextEmbedMIMETypes = []string{
 	"text/plain",
 	"text/markdown",
 	"text/csv",
@@ -47,6 +48,8 @@ var portableTextEmbedMIMETypes = []string{
 	"application/x-yaml",
 	"text/yaml",
 }
+
+var portableTextEmbedMIMETypes = append([]string{"text/*"}, responsesTextEmbedMIMETypes...)
 
 // FileUploadPolicy describes provider-level upload capabilities. Native MIME
 // types are allowed to travel as provider-native file/document inputs. Text
@@ -83,7 +86,7 @@ func DefaultOpenAIResponsesFileUploadPolicy() FileUploadPolicy {
 	return FileUploadPolicy{
 		NativeMimeTypes:    cloneStrings(openAIResponsesNativeFileMIMETypes),
 		MaxNativeBytes:     defaultFileUploadMaxBytes,
-		TextEmbedMimeTypes: cloneStrings(portableTextEmbedMIMETypes),
+		TextEmbedMimeTypes: cloneStrings(responsesTextEmbedMIMETypes),
 		MaxTextEmbedBytes:  defaultFileUploadMaxBytes,
 	}
 }

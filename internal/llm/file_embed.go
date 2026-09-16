@@ -162,8 +162,10 @@ func FormatUploadedFileNotice(filename, mediaType, localPath string, sizeBytes i
 		mediaType = "application/octet-stream"
 	}
 	notice := fmt.Sprintf("[User uploaded file: %q (MIME type: %q, size: %d bytes). Contents are not included in model context.", EmbeddedFileDisplayName(filename), mediaType, sizeBytes)
-	if localPath != "" {
+	if strings.TrimSpace(localPath) != "" {
 		notice += fmt.Sprintf(" Saved local path: %q. Use available file or shell tools to inspect it.", localPath)
+	} else {
+		notice += " No saved local path is available. Ask the user to upload the file again if its contents are needed."
 	}
 	return notice + "]\n\n"
 }

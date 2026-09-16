@@ -3055,3 +3055,62 @@ func TestBuildResponsesInput_FileFallbackIncludesPathAndMetadata(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildResponsesInput_UnsupportedTextFileUsesPath(t *testing.T) {
+	for _, mime := range []string{"text/x-ruby-script", "text/x-unknown", "application/x-unknown", "application/octet-stream", ""} {
+		for _, fallback := range []string{"", "legacy embedded source"} {
+			for _, path := range []string{"/saved/uploads/bench_story_compare (1).rb", ""} {
+				t.Run(fmt.Sprintf("%s/%s/%s", mime, fallback, path), func(t *testing.T) {
+					part := Part{Type: PartFile, Text: fallback, FilePath: path, FileData: &ToolFileData{
+						Filename: "bench_story_compare (1).rb", MediaType: mime, Base64: "cHV0cyAx", SizeBytes: 6,
+					}}
+					messages := []Message{{Role: RoleUser, Parts: []Part{part}}, {Role: RoleAssistant, Parts: []Part{{Type: PartText, Text: "OK"}}}, {Role: RoleUser, Parts: []Part{{Type: PartText, Text: "inspect that file"}}}}
+					_, chatGPT := BuildResponsesInputWithInstructions(messages)
+					for _, input := range [][]ResponsesInputItem{BuildResponsesInput(messages), chatGPT} {
+						if len(input) != 3 {
+							t.Fatalf("attachment lost: %#v", input)
+						}
+						text, ok := input[0].Content.(string)
+						if !ok {
+							t.Fatalf("unsupported native payload: %#v", input[0])
+						}
+						for _, want := range []string{part.FileData.Filename, "6 bytes", "Contents are not included"} {
+							if !strings.Contains(text, want) {
+								t.Fatalf("notice %q missing %q", text, want)
+							}
+						}
+						if path != "" {
+							if !strings.Contains(text, path) || !strings.Contains(text, "tools to inspect") {
+								t.Fatalf("missing tool path: %q", text)
+							}
+						} else if !strings.Contains(text, "No saved local path is available") || !strings.Contains(text, "upload the file again") {
+							t.Fatalf("missing recovery notice: %q", text)
+						}
+						if strings.Contains(text, "legacy embedded source") || strings.Contains(text, part.FileData.Base64) {
+							t.Fatalf("unexpected inline contents: %q", text)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestBuildResponsesInput_SupportedNativeFilesUnchanged(t *testing.T) {
+	for _, mediaType := range []string{"application/pdf", "text/plain", "text/csv", "application/json", "Text/Plain; charset=utf-8"} {
+		t.Run(mediaType, func(t *testing.T) {
+			part := Part{Type: PartFile, FilePath: "/saved/file", FileData: &ToolFileData{Filename: "file", MediaType: mediaType, Base64: "aGVsbG8="}}
+			messages := []Message{{Role: RoleUser, Parts: []Part{part}}}
+			_, chatGPT := BuildResponsesInputWithInstructions(messages)
+			for _, input := range [][]ResponsesInputItem{BuildResponsesInput(messages), chatGPT} {
+				if len(input) != 1 {
+					t.Fatalf("input = %#v", input)
+				}
+				parts, ok := input[0].Content.([]ResponsesContentPart)
+				if !ok || len(parts) != 1 || parts[0].Type != "input_file" || parts[0].Filename != "file" || parts[0].FileData != "data:"+NormalizeMediaType(mediaType)+";base64,aGVsbG8=" {
+					t.Fatalf("native file changed: %#v", input[0])
+				}
+			}
+		})
+	}
+}
