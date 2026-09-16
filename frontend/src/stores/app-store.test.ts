@@ -3074,6 +3074,74 @@ describe('AppStore compatibility behavior', () => {
     expect(store.toasts.value).toEqual([]);
   });
 
+  it('keeps sent image previews usable after composer resources are released', async () => {
+    const revoke = vi.fn();
+    vi.stubGlobal(
+      'URL',
+      class extends URL {
+        static revokeObjectURL = revoke;
+      },
+    );
+    const store = new AppStore(config);
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const accepted = deferred<Response>();
+    const dataURL = 'data:image/png;base64,aW1hZ2U=';
+    let sending: Promise<unknown> | undefined;
+    try {
+      store.sessions.value = [session()];
+      store.activeSessionId.value = 's1';
+      store.draftActive.value = false;
+      store.attachments.value = [
+        {
+          id: 'image-1',
+          name: 'photo.png',
+          type: 'image/png',
+          dataURL,
+          previewURL: 'blob:composer-preview',
+          status: 'ready',
+        },
+      ];
+      store.endpoints.createResponse = vi.fn(() => accepted.promise);
+      sending = store.send();
+      await vi.waitFor(() => expect(store.endpoints.createResponse).toHaveBeenCalledOnce());
+      expect(store.attachments.value).toEqual([]);
+      expect(store.endpoints.createResponse).toHaveBeenCalledWith(
+        expect.objectContaining({
+          input: expect.arrayContaining([
+            expect.objectContaining({
+              content: expect.arrayContaining([
+                expect.objectContaining({ type: 'input_image', image_url: dataURL }),
+              ]),
+            }),
+          ]),
+        }),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+      );
+      accepted.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(value) {
+              controller = value;
+            },
+          }),
+          { headers: { 'x-response-id': 'r1', 'x-session-id': 's1' } },
+        ),
+      );
+      await vi.waitFor(() => expect(revoke).toHaveBeenCalledWith('blob:composer-preview'));
+      const attachment = store.visibleMessages.value.find((message) => message.role === 'user')
+        ?.attachments?.[0];
+      expect(attachment).toBeDefined();
+      expect(attachment!.previewURL || attachment!.url || attachment!.dataURL).toBe(dataURL);
+    } finally {
+      store.dispose();
+      controller?.close();
+      await sending;
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('acquires the send lock before attachment materialization yields', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];
@@ -3287,6 +3355,51 @@ describe('AppStore compatibility behavior', () => {
       expect.objectContaining({ role: 'error', content: 'invalid request' }),
     ]);
     expect(store.prompt.value).toBe('never submitted');
+  });
+
+  it('sends file-only steering and clears the composer only after acceptance', async () => {
+    const store = new AppStore(config);
+    try {
+      store.sessions.value = [session()];
+      store.activeSessionId.value = 's1';
+      store.draftActive.value = false;
+      store.attachments.value = [
+        {
+          id: 'file-1',
+          name: 'archive.zip',
+          type: 'application/zip',
+          dataURL: 'data:application/zip;base64,UEsA/w==',
+          status: 'ready',
+        },
+      ];
+      const accepted = deferred<Record<string, unknown>>();
+      store.endpoints.interrupt = vi.fn(() => accepted.promise);
+      const sending = store.steer('');
+      await vi.waitFor(() => expect(store.endpoints.interrupt).toHaveBeenCalledOnce());
+      expect(store.attachments.value).toHaveLength(1);
+      expect(store.endpoints.interrupt).toHaveBeenCalledWith(
+        's1',
+        expect.objectContaining({
+          message: '',
+          delivery: 'steer',
+          content: [
+            {
+              type: 'input_file',
+              filename: 'archive.zip',
+              file_data: 'data:application/zip;base64,UEsA/w==',
+            },
+          ],
+        }),
+        expect.any(String),
+        false,
+      );
+      accepted.resolve({});
+      await sending;
+      expect(store.attachments.value).toEqual([]);
+      expect(store.steering.value[0]).toMatchObject({ content: 'archive.zip', state: 'pending' });
+    } finally {
+      store.dispose();
+    }
   });
 
   it('sends steering images even when navigation occurs before acceptance', async () => {

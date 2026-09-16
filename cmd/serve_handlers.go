@@ -1901,6 +1901,8 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 				}
 			case llm.PartText:
 				appendSessionMessageText(&entry, msg, p, embeddedFiles, displayText)
+			case llm.PartFile:
+				entry.Parts = append(entry.Parts, sessionMessageFilePart(p))
 			case llm.PartImage:
 				if imageURL, serveablePath := s.sessionMessageImageURL(p); imageURL != "" {
 					mimeType := ""

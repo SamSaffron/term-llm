@@ -461,7 +461,11 @@ export class RunEngine {
       content,
       created: Date.now(),
       clientMessageId,
-      attachments,
+      // Composer blob previews are revoked on acceptance. The transcript owns
+      // its own snapshot backed by the inline payload, not the draft's URL.
+      attachments: attachments.map(
+        ({ file: _file, previewURL: _previewURL, ...attachment }) => attachment,
+      ),
       diffComments: options.diffComments,
     };
     if (!session) {
