@@ -55,7 +55,9 @@ func (h *HTTPTransport) ConnState(conn net.Conn, state http.ConnState) {
 			return
 		}
 		entry.release = release
-	case http.StateIdle, http.StateClosed:
+	case http.StateIdle, http.StateClosed, http.StateHijacked:
+		// Hijacked connections never receive StateClosed. The handler and any
+		// Root operation retain their own tickets until their work finishes.
 		if entry.release != nil {
 			entry.release()
 			entry.release = nil
