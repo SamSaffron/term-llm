@@ -136,13 +136,15 @@ function responseAttachments(value: unknown): Attachment[] | undefined {
     .map((entry): Attachment | null => {
       const url = text(entry.url || entry.preview_url || entry.previewURL);
       const type = text(entry.type || entry.mime_type) || 'image/*';
-      if (!url) return null;
+      const mention = entry.mention === true;
+      if (!url && !mention) return null;
       const width = number(entry.width);
       const height = number(entry.height);
       return {
         name: text(entry.name || entry.filename) || 'attachment',
         type,
         url,
+        ...(mention ? { mention: true } : {}),
         ...(width > 0 && height > 0 ? { width, height } : {}),
       } satisfies Attachment;
     })

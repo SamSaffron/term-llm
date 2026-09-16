@@ -154,6 +154,15 @@ func (s *serveServer) steeringAttachmentsForEvent(msg llm.Message) []map[string]
 	var out []map[string]any
 	imageCount := 0
 	for _, part := range msg.Parts {
+		if part.Type == llm.PartFile {
+			file := sessionMessageFilePart(part)
+			out = append(out, map[string]any{
+				"name":    file.Text,
+				"type":    file.MimeType,
+				"mention": true,
+			})
+			continue
+		}
 		if part.Type != llm.PartImage {
 			continue
 		}

@@ -378,6 +378,20 @@ describe('response projection', () => {
     });
   });
 
+  it('projects file-only steering chips without a downloadable URL', () => {
+    const projection = reduceResponse(
+      initialProjection(run),
+      event('response.steering', 1, {
+        text: '',
+        client_message_id: 'steering-file',
+        attachments: [{ name: 'archive.zip', type: 'application/zip', mention: true }],
+      }),
+    );
+    expect(projection.messages[0].attachments).toEqual([
+      { name: 'archive.zip', type: 'application/zip', url: '', mention: true },
+    ]);
+  });
+
   it('projects steering image attachments before transcript reload', () => {
     const projection = reduceResponse(
       initialProjection(run),

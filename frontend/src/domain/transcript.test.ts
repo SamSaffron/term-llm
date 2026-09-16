@@ -14,6 +14,38 @@ import { initialProjection, reduceResponse } from './response';
 import type { Message } from './types';
 
 describe('transcript domain', () => {
+  it('reconciles optimistic uploads to name-only file chips without losing attachments', () => {
+    const durable = convertServerMessages([
+      {
+        id: 1,
+        role: 'user',
+        client_message_id: 'file-send',
+        parts: [
+          { type: 'text', text: 'inspect these' },
+          { type: 'file', text: 'notes.txt', mime_type: 'text/plain' },
+          { type: 'file', text: 'icon.svg', mime_type: 'image/svg+xml' },
+        ],
+      },
+    ]);
+    const merged = mergeDurableProjection(durable, [
+      {
+        id: 'pending_file-send',
+        role: 'user',
+        content: 'inspect these',
+        created: 1,
+        clientMessageId: 'file-send',
+        attachments: [
+          { name: 'notes.txt', type: 'text/plain', dataURL: 'data:text/plain;base64,bm90ZQ==' },
+        ],
+      },
+    ]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].attachments).toEqual([
+      { name: 'notes.txt', type: 'text/plain', url: '', previewURL: '', mention: true },
+      { name: 'icon.svg', type: 'image/svg+xml', url: '', previewURL: '', mention: true },
+    ]);
+  });
+
   it('restores completed spawn tool-call totals from validated history projection', () => {
     const messages = convertServerMessages([
       {
