@@ -6,6 +6,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -2409,5 +2413,30 @@ func TestHandoverEmptyMessages(t *testing.T) {
 	_, err := Handover(context.Background(), provider, "test-model", "", "", nil, "planner", "developer", config, HandoverOptions{})
 	if err == nil {
 		t.Error("Handover with nil messages should return error")
+	}
+}
+
+// The web transcript suppresses the synthetic acknowledgement by exact text and
+// cannot import this package. Go owns the string, so fail loudly here instead of
+// letting the copies drift and duplicated history reappear in the UI.
+func TestCompactionAckTextMatchesWebTranscript(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	root := filepath.Join(filepath.Dir(thisFile), "..", "..")
+	if _, err := os.Stat(filepath.Join(root, "frontend", "package.json")); err != nil {
+		t.Skipf("frontend tree unavailable: %v", err)
+	}
+	path := filepath.Join(root, "frontend", "src", "domain", "transcript.ts")
+	source, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v (did the module move? keep this guard pointed at COMPACTION_ACK_TEXT)", path, err)
+	}
+	// strconv.Quote matches the Prettier-formatted TS literal while the text
+	// stays plain ASCII containing apostrophes; revisit if that ever changes.
+	if !strings.Contains(string(source), "COMPACTION_ACK_TEXT") ||
+		!strings.Contains(string(source), strconv.Quote(CompactionAckText)) {
+		t.Fatalf("%s does not bind COMPACTION_ACK_TEXT to %q", path, CompactionAckText)
 	}
 }

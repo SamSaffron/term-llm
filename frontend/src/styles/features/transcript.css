@@ -314,11 +314,6 @@
   white-space: normal;
 }
 
-.message.compaction .message-body.active-boundary,
-.message.compaction-boundary .message-body.active-boundary {
-  border-color: rgb(229 162 16 / 45%);
-}
-
 .compaction-summary-row {
   display: flex;
   align-items: center;

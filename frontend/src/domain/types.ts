@@ -136,7 +136,13 @@ export interface Message {
   rawContent?: string;
   lineCount?: number;
   expanded?: boolean;
-  activeBoundary?: boolean;
+  /** Durable transcript sequence of the row this message was converted from. */
+  serverSeq?: number;
+  /** Session sequence where post-compaction context begins. */
+  compactionSeq?: number;
+  compactionCount?: number;
+  /** The server flagged this summary's replay tail, so no heuristic is needed. */
+  authoritativeTailSuppressed?: boolean;
   boundaryId?: string;
   fromProvider?: string;
   fromModel?: string;

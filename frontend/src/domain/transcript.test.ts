@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  COMPACTION_ACK_TEXT,
   convertServerMessages,
   indexTranscriptTurns,
   mergeDurableProjection,
   sanitizeContextUsage,
   sanitizeSession,
   olderTranscriptAnchors,
+  suppressCompactionTail,
   windowTranscript,
 } from './transcript';
 import { initialProjection, reduceResponse } from './response';
@@ -1520,6 +1522,198 @@ describe('transcript domain', () => {
     ]);
   });
 
+  it('adopts a durable summary persisted after the boundary sequence', () => {
+    const durable: Message[] = [
+      { id: 'question', role: 'user', content: 'pleas fix', created: 1, serverSeq: 207 },
+      {
+        id: 'durable-compaction',
+        role: 'compaction',
+        content: 'Context compacted',
+        rawContent: '[Context Compaction]\nsummary',
+        lineCount: 192,
+        created: 2,
+        // Platform/system rows occupy 208 and 209; the summary lands at 210.
+        serverSeq: 210,
+      },
+      {
+        id: 'durable-tools',
+        role: 'tool-group',
+        content: '',
+        created: 3,
+        responseId: 'r1',
+        tools: [{ id: 'call-1', name: 'shell', status: 'done' }],
+      },
+    ];
+    const projected: Message[] = [
+      {
+        id: 'live-compaction',
+        role: 'compaction-boundary',
+        content: 'Context compacted',
+        created: 4,
+        responseId: 'r1',
+        compactionSeq: 208,
+      },
+      {
+        id: 'live-tools',
+        role: 'tool-group',
+        content: '',
+        created: 5,
+        responseId: 'r1',
+        tools: [{ id: 'call-1', name: 'shell', status: 'running' }],
+      },
+    ];
+
+    const merged = mergeDurableProjection(durable, projected);
+    expect(merged.map((message) => message.id)).toEqual([
+      'question',
+      'durable-compaction',
+      'durable-tools',
+    ]);
+  });
+
+  it('anchors an inline assistant segment across a shifted compaction sequence', () => {
+    const durable: Message[] = [
+      {
+        id: 'durable-compaction',
+        role: 'compaction',
+        content: 'Context compacted',
+        created: 1,
+        serverSeq: 210,
+      },
+      {
+        id: 'durable-segment',
+        role: 'assistant',
+        content: 'after boundary',
+        created: 2,
+        responseId: 'r1',
+        assistantSegmentOrdinal: 0,
+        segmentEndSequence: 4,
+      },
+      {
+        id: 'durable-other-segment',
+        role: 'assistant',
+        content: 'unrelated inline segment',
+        created: 3,
+        responseId: 'r1',
+        assistantSegmentOrdinal: 0,
+        segmentEndSequence: 6,
+      },
+    ];
+    const projected: Message[] = [
+      {
+        id: 'live-compaction',
+        role: 'compaction-boundary',
+        content: 'Context compacted',
+        created: 4,
+        responseId: 'r1',
+        compactionSeq: 208,
+      },
+      {
+        id: 'live-segment',
+        role: 'assistant',
+        content: 'after boundary',
+        created: 5,
+        responseId: 'r1',
+        assistantSegmentOrdinal: 0,
+        segmentEndSequence: 4,
+      },
+    ];
+
+    expect(mergeDurableProjection(durable, projected).map((message) => message.id)).toEqual([
+      'durable-compaction',
+      'durable-segment',
+      'durable-other-segment',
+    ]);
+  });
+
+  it("does not adopt a later compaction when this boundary's summary is missing", () => {
+    // A windowed transcript can omit the summary for an earlier compaction while
+    // a later one is loaded. Adopting it would move the marker and drag pending
+    // rows across an unrelated boundary, so the live marker must stay put.
+    const durable: Message[] = [
+      {
+        id: 'later-work',
+        role: 'user',
+        content: 'second question',
+        created: 1,
+        serverSeq: 300,
+      },
+      {
+        id: 'later-compaction',
+        role: 'compaction',
+        content: 'Context compacted',
+        created: 2,
+        serverSeq: 500,
+      },
+    ];
+    const projected: Message[] = [
+      {
+        id: 'live-compaction',
+        role: 'compaction-boundary',
+        content: 'Context compacted',
+        created: 3,
+        responseId: 'r1',
+        compactionSeq: 208,
+      },
+    ];
+
+    expect(mergeDurableProjection(durable, projected).map((message) => message.id)).toEqual([
+      'later-work',
+      'later-compaction',
+      'live-compaction',
+    ]);
+  });
+
+  it('adopts several shifted compactions in live stream order', () => {
+    const durable: Message[] = [
+      {
+        id: 'first-summary',
+        role: 'compaction',
+        content: 'Context compacted',
+        created: 1,
+        serverSeq: 12,
+      },
+      {
+        id: 'between',
+        role: 'user',
+        content: 'more work',
+        created: 2,
+        serverSeq: 15,
+      },
+      {
+        id: 'second-summary',
+        role: 'compaction',
+        content: 'Context compacted',
+        created: 3,
+        serverSeq: 22,
+      },
+    ];
+    const projected: Message[] = [
+      {
+        id: 'first-live',
+        role: 'compaction-boundary',
+        content: 'Context compacted',
+        created: 4,
+        responseId: 'r1',
+        compactionSeq: 10,
+      },
+      {
+        id: 'second-live',
+        role: 'compaction-boundary',
+        content: 'Context compacted',
+        created: 5,
+        responseId: 'r1',
+        compactionSeq: 20,
+      },
+    ];
+
+    expect(mergeDurableProjection(durable, projected).map((message) => message.id)).toEqual([
+      'first-summary',
+      'between',
+      'second-summary',
+    ]);
+  });
+
   it('does not move an unrelated durable compaction into a pending live boundary', () => {
     const durable: Message[] = [
       { id: 'question', role: 'user', content: 'question', created: 1 },
@@ -1702,5 +1896,166 @@ describe('transcript domain', () => {
         name: 'demo.mp4',
       },
     ]);
+  });
+  describe('suppressCompactionTail', () => {
+    const message = (id: string, role: Message['role'], content: string): Message => ({
+      id,
+      role,
+      content,
+      created: 1,
+    });
+    const summary = (extra: Partial<Message> = {}): Message => ({
+      id: 'summary',
+      role: 'compaction',
+      content: 'Context compacted',
+      created: 1,
+      ...extra,
+    });
+
+    it('drops the replayed tail of a legacy summary without the server flag', () => {
+      const input = [
+        message('u1', 'user', 'fix the bug'),
+        message('a1', 'assistant', 'on it'),
+        summary(),
+        message('ack', 'assistant', COMPACTION_ACK_TEXT),
+        message('u1-replay', 'user', 'fix the bug'),
+        message('a1-replay', 'assistant', 'on it'),
+      ];
+
+      expect(suppressCompactionTail(input).map((entry) => entry.id)).toEqual([
+        'u1',
+        'a1',
+        'summary',
+      ]);
+    });
+
+    it('drops a lone acknowledgement when nothing else was replayed', () => {
+      const input = [
+        message('u1', 'user', 'fix the bug'),
+        summary(),
+        message('ack', 'assistant', COMPACTION_ACK_TEXT),
+      ];
+
+      expect(suppressCompactionTail(input).map((entry) => entry.id)).toEqual(['u1', 'summary']);
+    });
+
+    it('keeps repeated content when the server already suppressed the tail', () => {
+      // compaction_tail rows are gone by conversion time, so an identical
+      // earlier turn must not be mistaken for a replay and spliced away.
+      const input = [
+        message('u1', 'user', 'ping'),
+        summary({ authoritativeTailSuppressed: true }),
+        message('u2', 'user', 'ping'),
+        message('a2', 'assistant', 'pong'),
+      ];
+
+      expect(suppressCompactionTail(input).map((entry) => entry.id)).toEqual([
+        'u1',
+        'summary',
+        'u2',
+        'a2',
+      ]);
+    });
+
+    it('keeps post-compaction work that only coincidentally repeats history', () => {
+      const input = [
+        message('u1', 'user', 'ping'),
+        summary({ authoritativeTailSuppressed: true }),
+        message('u2', 'user', 'ping'),
+      ];
+
+      expect(suppressCompactionTail(input).map((entry) => entry.id)).toEqual([
+        'u1',
+        'summary',
+        'u2',
+      ]);
+    });
+
+    it('suppresses each summary when a transcript carries several', () => {
+      const input = [
+        message('u1', 'user', 'first'),
+        summary({ id: 'summary-1' }),
+        message('ack-1', 'assistant', COMPACTION_ACK_TEXT),
+        message('u1-replay', 'user', 'first'),
+        message('u2', 'user', 'second'),
+        summary({ id: 'summary-2' }),
+        message('ack-2', 'assistant', COMPACTION_ACK_TEXT),
+        message('u2-replay', 'user', 'second'),
+      ];
+
+      expect(suppressCompactionTail(input).map((entry) => entry.id)).toEqual([
+        'u1',
+        'summary-1',
+        'u2',
+        'summary-2',
+      ]);
+    });
+
+    it('still strips an unflagged acknowledgement after an authoritative tail', () => {
+      const input = [
+        message('u1', 'user', 'fix the bug'),
+        summary({ authoritativeTailSuppressed: true }),
+        message('ack', 'assistant', COMPACTION_ACK_TEXT),
+        message('u2', 'user', 'fix the bug'),
+      ];
+
+      expect(suppressCompactionTail(input).map((entry) => entry.id)).toEqual([
+        'u1',
+        'summary',
+        'u2',
+      ]);
+    });
+
+    it('keeps a genuine repeat after a server-flagged tail through conversion', () => {
+      const converted = convertServerMessages([
+        { id: 1, sequence: 207, role: 'user', parts: [{ type: 'text', text: 'pleas fix' }] },
+        {
+          id: 2,
+          sequence: 210,
+          role: 'user',
+          parts: [{ type: 'text', text: '[Context Compaction]\nsummary' }],
+        },
+        {
+          id: 3,
+          sequence: 211,
+          role: 'assistant',
+          compaction_tail: true,
+          parts: [{ type: 'text', text: COMPACTION_ACK_TEXT }],
+        },
+        {
+          id: 4,
+          sequence: 212,
+          role: 'user',
+          compaction_tail: true,
+          parts: [{ type: 'text', text: 'pleas fix' }],
+        },
+        { id: 5, sequence: 213, role: 'user', parts: [{ type: 'text', text: 'pleas fix' }] },
+      ]);
+
+      expect(converted.map((entry) => [entry.role, entry.content])).toEqual([
+        ['user', 'pleas fix'],
+        ['compaction', 'Context compacted'],
+        ['user', 'pleas fix'],
+      ]);
+      expect(converted[1].authoritativeTailSuppressed).toBe(true);
+    });
+
+    it('leaves the tail in place when the acknowledgement text drifts', () => {
+      // Guarded by TestCompactionAckTextMatchesWebTranscript in internal/llm:
+      // showing the replay is the failure mode that test exists to prevent.
+      const input = [
+        message('u1', 'user', 'fix the bug'),
+        summary(),
+        message('ack', 'assistant', 'I have reviewed the summary and will continue.'),
+        message('u1-replay', 'user', 'fix the bug'),
+      ];
+
+      expect(suppressCompactionTail(input).map((entry) => entry.id)).toEqual([
+        'u1',
+        'summary',
+        'ack',
+        'u1-replay',
+      ]);
+    });
   });
 });

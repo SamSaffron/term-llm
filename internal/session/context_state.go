@@ -324,7 +324,10 @@ func messageFingerprintSuffixPrefixOverlap(left, right []string) int {
 	return prefix[len(prefix)-1]
 }
 
-const syntheticCompactionAckText = "I've reviewed the context summary. I'll continue from where we left off."
+// syntheticCompactionAckText mirrors the acknowledgement the engine inserts
+// after a compaction summary. It is defined by the producer so tail detection
+// cannot drift from the text actually persisted.
+const syntheticCompactionAckText = llm.CompactionAckText
 
 // IsSyntheticCompactionAckMessage reports whether msg is the internal assistant
 // acknowledgement inserted after a context-compaction summary. It deliberately

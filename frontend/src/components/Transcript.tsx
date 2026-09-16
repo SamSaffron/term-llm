@@ -947,11 +947,8 @@ const MessageRow = memo(function MessageRow({
     );
   if (message.role === 'compaction' || message.role === 'compaction-boundary')
     return (
-      <article
-        class={`message compaction-boundary ${message.activeBoundary ? 'active' : ''}`}
-        data-message-id={message.id}
-      >
-        <div class={`message-body ${message.activeBoundary ? 'active-boundary' : ''}`}>
+      <article class="message compaction-boundary" data-message-id={message.id}>
+        <div class="message-body">
           <button
             type="button"
             class="compaction-toggle"

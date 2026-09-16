@@ -23,6 +23,12 @@ const (
 	maxPreviousTurnsChars     = 30_000
 )
 
+// CompactionAckText is the internal assistant acknowledgement inserted after a
+// compaction summary. Consumers detect the synthetic turn by exact text, so it
+// must have a single definition: session tail marking and the web transcript
+// both key off this literal.
+const CompactionAckText = "I've reviewed the context summary. I'll continue from where we left off."
+
 // CompactionConfig controls when and how context compaction occurs.
 type CompactionConfig struct {
 	ThresholdRatio       float64 // Legacy/default fraction of context window to trigger compaction (default 0.90)
@@ -1867,7 +1873,7 @@ func reconstructHistory(systemPrompt, summary string, recentMsgs []Message) []Me
 	// the common split-suffix case while still preventing summary-user + recent-user
 	// from being interpreted as a brand-new user request pair.
 	if len(recentMsgs) == 0 || recentMsgs[0].Role != RoleAssistant {
-		messages = append(messages, AssistantText("I've reviewed the context summary. I'll continue from where we left off."))
+		messages = append(messages, AssistantText(CompactionAckText))
 	}
 
 	messages = append(messages, recentMsgs...)

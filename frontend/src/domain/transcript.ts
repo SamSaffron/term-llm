@@ -100,8 +100,6 @@ export interface ServerMessage {
 }
 export interface ConvertOptions {
   rebaseAssetURL?: (value: string) => string;
-  compactionSeq?: number;
-  compactionCount?: number;
 }
 
 export function safeServerID(value: unknown): string {
@@ -180,17 +178,28 @@ function messageFingerprint(message: Message): string {
       message.attachments?.map((item) => [item.name, item.type, item.url || item.dataURL]) || [],
   });
 }
+// Mirrors llm.CompactionAckText in Go. The server stamps compaction_tail on the
+// replayed rows it inserts after a summary, so this literal is only the legacy
+// fallback for transcripts persisted before that flag existed.
+export const COMPACTION_ACK_TEXT =
+  "I've reviewed the context summary. I'll continue from where we left off.";
+
 export function suppressCompactionTail(messages: Message[]): Message[] {
   const output = [...messages];
   for (let marker = 0; marker < output.length; marker += 1) {
     if (output[marker].role !== 'compaction') continue;
     let start = marker + 1;
-    if (
-      output[start]?.role === 'assistant' &&
-      output[start].content.trim() ===
-        "I've reviewed the context summary. I'll continue from where we left off."
-    )
-      start += 1;
+    const hasAck =
+      output[start]?.role === 'assistant' && output[start].content.trim() === COMPACTION_ACK_TEXT;
+    if (hasAck) start += 1;
+    if (output[marker].authoritativeTailSuppressed) {
+      // The server already removed this summary's replay tail, so only an
+      // unflagged acknowledgement can be left. Running the fingerprint
+      // heuristic as well would let genuinely repeated content look like a
+      // replay and splice real rows out of the transcript.
+      if (hasAck) output.splice(marker + 1, 1);
+      continue;
+    }
     const suffix = output.slice(start).map(messageFingerprint);
     const prefix = output.slice(0, marker).map(messageFingerprint);
     let overlap = Math.min(suffix.length, prefix.length);
@@ -205,33 +214,6 @@ export function suppressCompactionTail(messages: Message[]): Message[] {
   }
   return output;
 }
-export function annotateCompactionBoundary(
-  messages: Message[],
-  sequence?: number,
-  count?: number,
-): Message[] {
-  if (!Number.isFinite(sequence) || Number(sequence) < 0 || !messages.length) return messages;
-  const index = messages.findIndex((message) => Number(message.serverSeq) >= Number(sequence));
-  if (index < 0) return messages;
-  const current = messages[index];
-  if (current.role === 'compaction') {
-    current.activeBoundary = true;
-    current.compactionSeq = sequence;
-    current.compactionCount = count;
-    return messages;
-  }
-  messages.splice(index, 0, {
-    id: `compaction_boundary_${sequence}`,
-    role: 'compaction-boundary',
-    content: 'Context compacted',
-    activeBoundary: true,
-    compactionSeq: sequence,
-    compactionCount: count,
-    created: current.created,
-  });
-  return messages;
-}
-
 function guardianReviews(value: unknown): GuardianReview[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value
@@ -701,11 +683,7 @@ export function convertServerMessages(
     }
   }
   flush();
-  return annotateCompactionBoundary(
-    suppressCompactionTail(output),
-    options.compactionSeq,
-    options.compactionCount,
-  );
+  return suppressCompactionTail(output);
 }
 
 /** Startup bodies contain only a tail; retain the index's earlier turn anchors. */
@@ -936,7 +914,13 @@ export function windowTranscript(
 // Inline-loop providers persist several text/tool segments in one assistant row.
 // Its ordinal and sequence range describe the row, not every text part. Match
 // those parts through adjacent tool boundaries before using ordinal identity.
-function matchAssistantSegments(durable: Message[], projected: Message[]) {
+function matchAssistantSegments(
+  durable: Message[],
+  projected: Message[],
+  // Durable summary rows and live boundaries can report different sequences for
+  // the same compaction, so adopted pairs supply one shared key sequence.
+  compactionKeySequence: Map<Message, number> = new Map(),
+) {
   const boundaryKeys = (rows: Message[], index: number): string[] => {
     const message = rows[index];
     const keys: string[] = [];
@@ -954,7 +938,9 @@ function matchAssistantSegments(durable: Message[], projected: Message[]) {
       } else if (neighbor.role === 'user' && neighbor.clientMessageId) {
         keys.push(JSON.stringify([message.responseId, side, 'user', neighbor.clientMessageId]));
       } else if (neighbor.role === 'compaction' || neighbor.role === 'compaction-boundary') {
-        const sequence = Number(neighbor.compactionSeq ?? neighbor.serverSeq);
+        const sequence =
+          compactionKeySequence.get(neighbor) ??
+          Number(neighbor.compactionSeq ?? neighbor.serverSeq);
         if (Number.isSafeInteger(sequence) && sequence >= 0)
           keys.push(JSON.stringify([message.responseId, side, 'compaction', sequence]));
       }
@@ -1052,13 +1038,15 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
     const value = Number(message.compactionSeq ?? message.serverSeq);
     return Number.isSafeInteger(value) && value >= 0 ? value : null;
   };
-  const durableCompactions = new Map<number, Message>();
+  // Sequenced durable rows in transcript order. Adoption needs every role here,
+  // not just compactions, so an unrelated row between the boundary sequence and
+  // a later summary can veto the match.
+  const sequencedDurableRows: Array<{ sequence: number; message: Message }> = [];
   const durableModelSwaps = new Map<string, Message>();
   for (const message of durableRows) {
-    if (message.role === 'compaction' || message.role === 'compaction-boundary') {
-      const sequence = compactionSequence(message);
-      if (sequence != null) durableCompactions.set(sequence, message);
-    }
+    const rowSequence = Number(message.serverSeq);
+    if (Number.isSafeInteger(rowSequence) && rowSequence >= 0)
+      sequencedDurableRows.push({ sequence: rowSequence, message });
     if (message.role === 'model-swap') {
       const boundaryID = String(message.boundaryId || '').trim();
       if (boundaryID) durableModelSwaps.set(boundaryID, message);
@@ -1068,11 +1056,25 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
   const adoptedDurableCompactions = new Set<Message>();
   const adoptedModelSwaps = new Map<Message, Message>();
   const adoptedDurableModelSwaps = new Set<Message>();
+  // The stream boundary carries the session sequence where post-compaction
+  // context begins, which is not always the summary row itself: platform and
+  // system rows can be persisted at that position first and are dropped during
+  // conversion. So the summary is the FIRST sequenced durable row at or after
+  // the boundary. Anything else there means this boundary's summary is missing
+  // from the loaded rows, and adopting a later compaction would relocate the
+  // marker and mis-anchor everything between the two.
+  const durableCompactionFor = (sequence: number): Message | undefined => {
+    const candidate = sequencedDurableRows.find((entry) => entry.sequence >= sequence)?.message;
+    if (!candidate || adoptedDurableCompactions.has(candidate)) return undefined;
+    return candidate.role === 'compaction' || candidate.role === 'compaction-boundary'
+      ? candidate
+      : undefined;
+  };
   for (const message of projected) {
     if (message.role === 'compaction' || message.role === 'compaction-boundary') {
       const sequence = compactionSequence(message);
-      const durableMessage = sequence == null ? undefined : durableCompactions.get(sequence);
-      if (durableMessage && !adoptedDurableCompactions.has(durableMessage)) {
+      const durableMessage = sequence == null ? undefined : durableCompactionFor(sequence);
+      if (durableMessage) {
         adoptedCompactions.set(message, durableMessage);
         adoptedDurableCompactions.add(durableMessage);
       }
@@ -1087,11 +1089,21 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
     }
   }
   const clientIDs = new Set(durableRows.map((message) => message.clientMessageId).filter(Boolean));
+  // Adopted pairs are the same compaction, so give both sides the live boundary
+  // sequence before assistant segments are matched through that neighbor. Both
+  // rows are entered so the shared key never depends on which side is read.
+  const compactionKeySequence = new Map<Message, number>();
+  for (const [live, durableMessage] of adoptedCompactions) {
+    const sequence = compactionSequence(live);
+    if (sequence == null) continue;
+    compactionKeySequence.set(live, sequence);
+    compactionKeySequence.set(durableMessage, sequence);
+  }
   const {
     matches: responseSegments,
     anchored,
     isNewer: isNewerSegment,
-  } = matchAssistantSegments(durableRows, projected);
+  } = matchAssistantSegments(durableRows, projected, compactionKeySequence);
   const assistantTimes = new Map<Message, number>();
   for (const [live, saved] of responseSegments) {
     if (anchored.has(live) && !saved.segmentCreatedAt && live.created > 0)
