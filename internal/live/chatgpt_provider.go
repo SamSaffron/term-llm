@@ -58,6 +58,9 @@ func (p *ChatGPTProvider) Ready(ctx context.Context) error { return p.ready(ctx)
 
 // Start creates the call and joins the control channel.
 func (p *ChatGPTProvider) Start(ctx context.Context, offerSDP string, opts SessionOptions) (Session, error) {
+	if err := ValidateClientTools(p.cfg, opts.ClientTools); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(offerSDP) == "" {
 		return nil, errors.New("live: empty sdp offer")
 	}

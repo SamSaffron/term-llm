@@ -255,8 +255,9 @@ func (s *serveServer) liveCapability(ctx context.Context) map[string]any {
 }
 
 type liveStartRequest struct {
-	SDP       string `json:"sdp"`
-	SessionID string `json:"session_id"`
+	ClientTools []live.ClientTool `json:"client_tools,omitempty"`
+	SDP         string            `json:"sdp"`
+	SessionID   string            `json:"session_id"`
 }
 
 type liveTextRequest struct {
@@ -277,6 +278,10 @@ func (s *serveServer) handleLiveSessions(w http.ResponseWriter, r *http.Request)
 	var request liveStartRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, liveSDPLimitBytes+liveTextLimitBytes)).Decode(&request); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid request body: "+err.Error())
+		return
+	}
+	if err := live.ValidateClientTools(s.liveConfig(), request.ClientTools); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
 	// The offer is forwarded byte for byte: SDP requires every line, including
@@ -325,6 +330,7 @@ func (s *serveServer) handleLiveSessions(w http.ResponseWriter, r *http.Request)
 	startCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), liveStartTimeout)
 	defer cancel()
 	opts := s.liveSessionOptions(startCtx, sessionID, record.capabilities)
+	opts.ClientTools = request.ClientTools
 	providerSession, err := provider.Start(startCtx, offer, opts)
 	if err != nil {
 		s.removeLiveSession(liveID)

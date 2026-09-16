@@ -3,6 +3,10 @@ import { LiveCall } from './live';
 import { liveCapability } from './voice';
 
 class FakeDataChannel {
+  readyState = 'open';
+  onerror: (() => void) | null = null;
+  onclose: (() => void) | null = null;
+  send = vi.fn();
   onmessage: ((event: MessageEvent) => unknown) | null = null;
   close = vi.fn();
 }
@@ -49,7 +53,88 @@ afterEach(() => {
 });
 
 describe('LiveCall', () => {
+  it('does not revive a call if its client-tool channel fails during signaling', async () => {
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn(async () => mediaStream()) },
+    });
+    let finish!: (value: { live_id: string; session_id: string; sdp: string }) => void;
+    const start = vi.fn(
+      () =>
+        new Promise<{ live_id: string; session_id: string; sdp: string }>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const stop = vi.fn(async (live_id: string) => ({ live_id, status: 'ended' as const }));
+    const call = new LiveCall(start, stop, {
+      clientTools: [
+        {
+          name: 'ui_test',
+          description: 'Test',
+          parameters: { type: 'object', properties: {} },
+          execute: () => null,
+        },
+      ],
+    });
+    const starting = call.start('session-one');
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(start).toHaveBeenCalledTimes(1);
+    FakePeerConnection.instances[0].channel.onerror?.();
+    finish({ live_id: 'late', session_id: 'session-one', sdp: 'answer' });
+    expect(await starting).toBeNull();
+    expect(call.snapshot.phase).toBe('failed');
+    expect(stop).toHaveBeenCalledWith('late');
+    call.dispose();
+  });
+
+  it('advertises only schemas and routes client actions on the existing channel, clearing handlers on stop', async () => {
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn(async () => mediaStream()) },
+    });
+    const start = vi.fn(async () => ({
+      live_id: 'live_ui',
+      session_id: 'session-one',
+      sdp: 'answer',
+    }));
+    const execute = vi.fn(() => ({ room: 'kitchen' }));
+    const definition = {
+      name: 'ui_navigate',
+      description: 'Navigate UI',
+      parameters: { type: 'object', properties: {} },
+    };
+    const call = new LiveCall(start, async (live_id) => ({ live_id, status: 'ended' }), {
+      clientTools: [{ ...definition, execute }],
+    });
+    await call.start('session-one');
+    expect(start).toHaveBeenCalledWith('offer-sdp', 'session-one', [definition]);
+    const channel = FakePeerConnection.instances[0].channel;
+    const receive = channel.onmessage;
+    receive?.(
+      new MessageEvent('message', {
+        data: JSON.stringify({
+          type: 'response.done',
+          response: {
+            id: 'r1',
+            status: 'completed',
+            output: [
+              { type: 'function_call', name: 'ui_navigate', call_id: 'c1', arguments: '{}' },
+            ],
+          },
+        }),
+      }),
+    );
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(channel.send).toHaveBeenCalledTimes(2);
+    await call.stop();
+    expect(channel.onmessage).toBeNull();
+    receive?.(new MessageEvent('message', { data: '{}' }));
+    expect(channel.send).toHaveBeenCalledTimes(2);
+  });
+
   it('creates an offer, posts it, applies the answer, and starts listening', async () => {
+    vi.useFakeTimers();
     const stream = mediaStream();
     Object.defineProperty(navigator, 'mediaDevices', {
       configurable: true,
@@ -71,6 +156,8 @@ describe('LiveCall', () => {
     const peer = FakePeerConnection.instances[0];
     expect(peer.createDataChannel).toHaveBeenCalledWith('oai-events', { ordered: true });
     expect(peer.channel.onmessage).toBeNull();
+    expect(peer.channel.send).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
     expect(peer.addTrack).toHaveBeenCalledWith(stream.getTracks()[0], stream);
     expect(startEndpoint).toHaveBeenCalledWith('offer-sdp', 'session-one');
     expect(peer.setRemoteDescription).toHaveBeenCalledWith({

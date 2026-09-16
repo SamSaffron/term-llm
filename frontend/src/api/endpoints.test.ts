@@ -141,6 +141,28 @@ describe('shell endpoints', () => {
 });
 
 describe('live voice endpoints', () => {
+  it('adds client schemas only when opted in, using the same startup request', async () => {
+    const json = vi.fn(async () => ({}));
+    const routes = endpoints({ json } as unknown as APIClient);
+    const tools = [
+      {
+        name: 'ui_navigate',
+        description: 'Navigate UI',
+        parameters: { type: 'object', properties: {} },
+      },
+    ];
+    await routes.liveStart('offer', 'session-one', tools);
+    expect(json).toHaveBeenCalledTimes(1);
+    expect(json).toHaveBeenCalledWith(
+      '/v1/live/sessions',
+      {
+        method: 'POST',
+        body: JSON.stringify({ sdp: 'offer', session_id: 'session-one', client_tools: tools }),
+      },
+      { policy: 'mutation', auth: 'session', retries: 0, timeoutMs: 0 },
+    );
+  });
+
   it('uses authenticated signaling, text, delete, and replayable SSE routes', async () => {
     const json = vi.fn(async () => ({}));
     const remove = vi.fn(async () => ({}));

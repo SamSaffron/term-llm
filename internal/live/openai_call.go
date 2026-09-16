@@ -58,6 +58,9 @@ type openAIOutputAudio struct {
 // the SDP offer. This path is retained for explicitly configured Realtime
 // models; GPT-Live uses its native client-delegation protocol instead.
 func openAIRealtimeSessionJSON(cfg config.LiveConfig, opts SessionOptions) (json.RawMessage, error) {
+	if err := ValidateClientTools(cfg, opts.ClientTools); err != nil {
+		return nil, err
+	}
 	if err := cfg.OpenAI.ValidateVoice(); err != nil {
 		return nil, err
 	}
@@ -91,6 +94,9 @@ func openAIRealtimeSessionJSON(cfg config.LiveConfig, opts SessionOptions) (json
 			},
 		}},
 		ToolChoice: "auto",
+	}
+	for _, tool := range opts.ClientTools {
+		payload.Tools = append(payload.Tools, openAIFunctionTool{Type: "function", Name: tool.Name, Description: tool.Description, Parameters: tool.Parameters})
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {

@@ -53,6 +53,9 @@ func (p *OpenAIProvider) Ready(ctx context.Context) error {
 // Realtime API. All other models, including the default gpt-live-1, use the
 // public GPT-Live transport.
 func (p *OpenAIProvider) Start(ctx context.Context, offerSDP string, opts SessionOptions) (Session, error) {
+	if err := ValidateClientTools(p.cfg, opts.ClientTools); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(offerSDP) == "" {
 		return nil, errors.New("live: empty sdp offer")
 	}
@@ -86,6 +89,7 @@ func (p *OpenAIProvider) startRealtime(ctx context.Context, apiKey, offerSDP str
 		return nil, err
 	}
 	session := newOpenAISession(call.AnswerSDP, channel)
+	session.clientContinuation = len(opts.ClientTools) > 0
 	if err := session.seedHistory(ctx, opts.InitialItems); err != nil {
 		channel.Close()
 		return nil, err
@@ -138,8 +142,10 @@ func (p *OpenAIProvider) baseURL() string {
 // openAISession is the legacy Realtime session implementation. GPT-Live uses
 // openAILiveSession below and never sends function outputs or response.create.
 type openAISession struct {
-	answerSDP string
-	channel   *openAISideband
+	// Opted-in browsers coordinate all function results, including delegation.
+	clientContinuation bool
+	answerSDP          string
+	channel            *openAISideband
 
 	delegationMu   sync.Mutex
 	delegations    map[string]*openAIPendingDelegation
@@ -240,6 +246,9 @@ func (s *openAISession) sendFunctionOutput(ctx context.Context, callID, output s
 		Output: output,
 	})); err != nil {
 		return err
+	}
+	if s.clientContinuation {
+		return nil
 	}
 	return s.channel.Send(ctx, openAIClientEvent{Type: "response.create"})
 }

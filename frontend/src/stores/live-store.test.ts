@@ -99,6 +99,29 @@ function setup() {
 afterEach(() => vi.useRealTimers());
 
 describe('LiveStore', () => {
+  it('replaces registrations only while idle and rejects active/disposed stores', async () => {
+    const { store, call, events } = setup();
+    await expect(
+      store.registerClientTools([
+        {
+          name: 'delegate_to_controller',
+          description: 'bad',
+          parameters: { type: 'object', properties: {} },
+          execute: () => null,
+        },
+      ]),
+    ).rejects.toThrow();
+    expect(call.dispose).not.toHaveBeenCalled();
+    await store.start();
+    await expect(store.registerClientTools([])).rejects.toThrow('before starting');
+    await store.stop();
+    await store.registerClientTools([]);
+    expect(call.dispose).toHaveBeenCalledTimes(1);
+    store.dispose();
+    events.close();
+    await expect(store.registerClientTools([])).rejects.toThrow('before starting');
+  });
+
   it('waits for a durable chat session before opening the microphone call', async () => {
     const events = eventStream();
     const endpoints = { liveEvents: vi.fn(async () => events.response) } as unknown as Endpoints;

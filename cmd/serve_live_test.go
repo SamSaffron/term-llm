@@ -619,3 +619,45 @@ func TestLiveControllerStartAndStopAreSerialized(t *testing.T) {
 		}
 	}
 }
+
+func TestLiveRejectsUnsupportedClientToolsBeforeCreatingCall(t *testing.T) {
+	harness := newLiveTestHarness(t)
+	request := httptest.NewRequest(http.MethodPost, "/v1/live/sessions", strings.NewReader(`{"sdp":"offer","session_id":"sess_ui","client_tools":[{"name":"ui_navigate","description":"Navigate UI","parameters":{"type":"object","properties":{}}}]}`))
+	recorder := httptest.NewRecorder()
+	harness.server.handleLiveSessions(recorder, request)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "client tools require") {
+		t.Fatalf("status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	select {
+	case <-harness.callBodies:
+		t.Fatal("unsupported tools caused provider network activity")
+	default:
+	}
+}
+
+type clientToolsLiveProvider struct {
+	stubLiveProvider
+	options live.SessionOptions
+}
+
+func (p *clientToolsLiveProvider) Start(_ context.Context, _ string, options live.SessionOptions) (live.Session, error) {
+	p.options = options
+	return p.session, nil
+}
+
+func TestLiveForwardsClientToolSchemasToRealtimeProvider(t *testing.T) {
+	srv, providerSession := newStubLiveHarness(t)
+	srv.cfgRef.Live.Provider = config.LiveProviderOpenAI
+	srv.cfgRef.Live.OpenAI.Model = "gpt-realtime"
+	provider := &clientToolsLiveProvider{stubLiveProvider: stubLiveProvider{session: providerSession}}
+	srv.liveProviderFactory = func(config.LiveConfig) (live.Provider, error) { return provider, nil }
+	request := httptest.NewRequest(http.MethodPost, "/v1/live/sessions", strings.NewReader(`{"sdp":"offer","session_id":"sess_ui","client_tools":[{"name":"ui_navigate","description":"Navigate UI","parameters":{"type":"object","properties":{}}}]}`))
+	recorder := httptest.NewRecorder()
+	srv.handleLiveSessions(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if len(provider.options.ClientTools) != 1 || provider.options.ClientTools[0].Name != "ui_navigate" {
+		t.Fatalf("client tools = %+v", provider.options.ClientTools)
+	}
+}

@@ -1,3 +1,4 @@
+import type { LiveClientTool } from '../platform/live-client-tools';
 import { computed, signal, type ReadonlySignal, type Signal } from '@preact/signals';
 import { decodeSSE } from '../api/client';
 import type { Endpoints } from '../api/endpoints';
@@ -74,6 +75,7 @@ export class LiveStore {
     return state === 'queued' || state === 'running';
   });
 
+  private clientTools: LiveClientTool[] = [];
   private call: LiveCallHandle | null = null;
   private unsubscribeCall: () => void = () => {};
   private generation = 0;
@@ -88,6 +90,18 @@ export class LiveStore {
     call?: LiveCallHandle,
   ) {
     if (call) this.attachCall(call);
+  }
+
+  // Registration is host-owned and only changes the next call. No global/window API.
+  async registerClientTools(tools: readonly LiveClientTool[]): Promise<void> {
+    const { snapshotClientTools } = await import('../platform/live');
+    if (this.disposed || this.active.peek())
+      throw new Error('Register client tools before starting live voice.');
+    const snapshot = snapshotClientTools(tools);
+    this.unsubscribeCall();
+    this.call?.dispose();
+    this.call = null;
+    this.clientTools = snapshot;
   }
 
   private callCapability(): LiveSnapshot['capability'] {
@@ -109,8 +123,12 @@ export class LiveStore {
     if (this.call) return this.call;
     return this.attachCall(
       new LiveCall(
-        (sdp, sessionId) => this.endpoints.liveStart(sdp, sessionId),
+        (sdp, sessionId, tools) =>
+          tools?.length
+            ? this.endpoints.liveStart(sdp, sessionId, tools)
+            : this.endpoints.liveStart(sdp, sessionId),
         this.endpoints.liveStop,
+        { clientTools: this.clientTools },
       ),
     );
   }

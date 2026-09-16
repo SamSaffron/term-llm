@@ -102,3 +102,107 @@ Live voice needs a secure context (HTTPS or localhost) because the browser will 
 | `GET /v1/live/sessions/{live_id}/events` | SSE stream of `live.started`, `live.transcript`, `live.delegation`, `live.error`, `live.ended`, with `?after=` replay. |
 
 Only the call's own transcript and delegation state travel on that stream; delegated turns reach the browser through the normal response-run path, so an open call does not flood the shared server-event feed.
+
+## Hosting-UI client tools (opt-in)
+
+A trusted hosting web UI can register named actions that the voice model calls
+without sending the request through the execution agent. This is an extension
+hook, not a built-in navigation feature: a “room” in the example below is an
+application view, not a speaker or physical device.
+
+**Supported mode:** `live.provider: openai` with an explicitly configured
+Realtime model (for example `live.openai.model: gpt-realtime`). Default public
+GPT-Live (`gpt-live-1`) and ChatGPT (`gpt-live-1-codex`) expose delegation rather
+than this named function-call contract and **do not support these tools**.
+Registering a nonempty tool list in either mode makes call startup fail with a
+clear HTTP 400; it does not silently change providers or add an agent roundtrip.
+Normal live calls with no registrations continue to work in all existing modes.
+
+Register from trusted application code before starting Live, using the hosting
+app's `LiveStore` instance (available as `app.liveStore` in the Preact app):
+
+```ts
+await app.liveStore.registerClientTools([
+  {
+    name: 'ui_navigate',
+    description: 'Switch the hosting application to a named room view.',
+    parameters: {
+      type: 'object',
+      properties: { room: { type: 'string', enum: ['overview', 'kitchen'] } },
+      required: ['room'],
+      additionalProperties: false,
+    },
+    execute(args, { signal }) {
+      // Schemas guide the model; the host must validate before side effects.
+      if (
+        Object.keys(args).length !== 1 ||
+        (args.room !== 'overview' && args.room !== 'kitchen')
+      ) throw new Error('Unknown UI room');
+      signal.throwIfAborted();
+      router.navigate(`/rooms/${args.room}`); // your application router
+      return { room: args.room };
+    },
+  },
+]);
+```
+
+`registerClientTools` replaces the registration list; pass `[]` to remove it.
+Await registration before starting a call. Registration is rejected during a
+call or after store disposal. Definitions are snapshotted for each call; callback
+closures can read current application state. Lower-level hosts can pass the same
+list as `new LiveCall(startEndpoint, stopEndpoint, { clientTools })`; their start
+callback must forward its optional third argument as `client_tools` in the
+existing `POST /v1/live/sessions` request. Only schemas are sent, never callbacks.
+This is a source-level hosting API, not a global script injection API or a
+cross-origin widget/postMessage bridge.
+
+### Validation, results, and lifetime
+
+- Names must be unique and match `ui_[A-Za-z0-9_]{1,60}`. Built-in tools cannot be
+  replaced. There are at most 16 registrations, with 1–1024-byte descriptions
+  and object schemas containing `properties`, at most 16 KiB per schema. The
+  existing total live-start HTTP body limit still applies.
+- Schemas are provider-facing JSON Schema, not a client-side validation engine.
+  The hook validates the JSON/object envelope and size; **the trusted handler
+  must validate fields, application permissions, and allowed destinations**.
+  Avoid accepting URLs, script text, or arbitrary commands. No model-provided
+  JavaScript is evaluated. These actions do not acquire server tool permissions
+  or run through server approval dialogs; the host must ask for confirmation
+  when appropriate.
+- `execute(args, { signal, callId })` may return JSON-serializable data or a
+  promise. Results use `{ ok: true, result }`; failures use `{ ok: false, error }`.
+  Arguments and encoded results are limited to 16 KiB. Thrown/rejected errors,
+  invalid JSON, unknown tools, serialization errors, and the fixed 10-second
+  handler timeout return correlated error results. Return only data safe to send
+  to the voice provider; handler error messages are also sent (bounded, no stack).
+- Only completed Realtime responses dispatch actions. Call IDs deduplicate
+  execution within one live call. Multiple function calls in one response wait
+  for all results, including built-in delegation, before one continuation.
+  In opted-in calls the browser owns function-result continuation; the server
+  still runs built-in delegation normally. Unregistered tools never invoke a
+  host callback. A call is bounded to 1,024 tracked function calls/responses;
+  restart Live if that limit is reached.
+- Stop, session switch, failed transport, and disposal abort pending callbacks
+  and discard late results. Async handlers must honor `signal` and check it
+  before side effects after an `await`: JavaScript promises cannot be forcibly
+  stopped and already completed UI changes cannot be undone by this hook.
+  Registrations are local to the hosting store, not persisted or shared across
+  tabs; calls are not replayed after reload.
+
+### Performance boundary
+
+No registrations means no client-tool data-channel listener, handler timeout,
+new polling, extra HTTP request, or function-continuation change. Tests assert
+that the default call sends only the original start arguments, installs no
+message handler, sends no data-channel frames, and leaves no new timers in the
+fake browser. The default server Realtime function-result sequence is also
+covered separately from opted-in continuation ownership.
+
+With registrations, schemas ride the existing startup request and results use
+the existing ordered WebRTC data channel. Each completed tool response uses the
+normal function-result continuation, not an additional execution-agent/model
+roundtrip. Microphone capture, audio tracks, playback, and media transport are
+unchanged. This is a structural constraint backed by mocked protocol tests,
+**not** a claim of measured zero overhead: registration adds code/schema bytes
+and opted-in control-event parsing/dispatch. Real-provider/WebRTC audio latency
+and browser lifecycle behavior still need live integration testing.

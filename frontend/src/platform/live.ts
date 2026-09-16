@@ -1,6 +1,12 @@
+import {
+  LiveClientToolSession,
+  snapshotClientTools,
+  type LiveClientTool,
+  type LiveClientToolDefinition,
+} from './live-client-tools';
 import { liveCapability, type VoiceCapability } from './voice';
 
-export { liveCapability };
+export { liveCapability, snapshotClientTools };
 
 export type LivePhase =
   | 'idle'
@@ -33,10 +39,15 @@ export interface LiveSnapshot {
   retryable?: boolean;
 }
 
-export type LiveStart = (sdp: string, sessionId: string) => Promise<LiveStartResponse>;
+export type LiveStart = (
+  sdp: string,
+  sessionId: string,
+  clientTools?: LiveClientToolDefinition[],
+) => Promise<LiveStartResponse>;
 export type LiveStop = (liveId: string) => Promise<LiveStopResponse>;
 
 export interface LiveCallOptions {
+  clientTools?: readonly LiveClientTool[];
   peerConnectionConfig?: RTCConfiguration;
   createPeerConnection?: (config?: RTCConfiguration) => RTCPeerConnection;
 }
@@ -68,12 +79,15 @@ export class LiveCall {
   private cancelICEWait: (() => void) | null = null;
   private stoppedTracks = new WeakSet<MediaStreamTrack>();
   private disposed = false;
+  private readonly clientTools: LiveClientTool[];
+  private clientToolSession: LiveClientToolSession | null = null;
 
   constructor(
     private readonly startEndpoint: LiveStart,
     private readonly stopEndpoint: LiveStop,
     private readonly options: LiveCallOptions = {},
   ) {
+    this.clientTools = snapshotClientTools(options.clientTools || []);
     this.snapshotValue = {
       phase: 'idle',
       capability: liveCapability(),
@@ -155,6 +169,27 @@ export class LiveCall {
       this.peer = peer;
       const channel = peer.createDataChannel('oai-events', { ordered: true });
       this.channel = channel;
+      if (this.clientTools.length) {
+        const tools = new LiveClientToolSession(
+          this.clientTools,
+          (event) => {
+            if (
+              !this.current(generation) ||
+              this.channel !== channel ||
+              channel.readyState !== 'open'
+            )
+              throw new Error('Live client tool channel is closed.');
+            channel.send(JSON.stringify(event));
+          },
+          (error) => this.fail(error, generation),
+        );
+        this.clientToolSession = tools;
+        channel.onmessage = (event) => tools.receive(event.data);
+        channel.onclose = () =>
+          this.fail(new Error('The live client tool channel closed.'), generation);
+        channel.onerror = () =>
+          this.fail(new Error('The live client tool channel failed.'), generation);
+      }
       peer.ontrack = (event) => this.onTrack(event, generation);
       peer.onconnectionstatechange = () => {
         if (peer.connectionState === 'failed' && this.current(generation))
@@ -172,7 +207,17 @@ export class LiveCall {
 
       const sdp = peer.localDescription?.sdp || offer.sdp || '';
       if (!sdp) throw new Error('The browser did not create a live voice offer.');
-      const started = await this.startEndpoint(sdp, sessionId);
+      const started = this.clientTools.length
+        ? await this.startEndpoint(
+            sdp,
+            sessionId,
+            this.clientTools.map(({ name, description, parameters }) => ({
+              name,
+              description,
+              parameters,
+            })),
+          )
+        : await this.startEndpoint(sdp, sessionId);
       if (!this.current(generation)) {
         if (started.live_id) void this.stopEndpoint(started.live_id).catch(() => undefined);
         return null;
@@ -240,6 +285,7 @@ export class LiveCall {
     this.update(
       {
         phase: 'failed',
+        generation: generation + 1,
         liveId: '',
         error: failure.message,
         retryable: failure.retryable,
@@ -287,9 +333,14 @@ export class LiveCall {
   }
 
   private cleanupMedia(): void {
+    this.clientToolSession?.close();
+    this.clientToolSession = null;
     this.cancelICEWait?.();
     this.cancelICEWait = null;
     if (this.channel) {
+      this.channel.onmessage = null;
+      this.channel.onclose = null;
+      this.channel.onerror = null;
       try {
         this.channel.close();
       } catch {

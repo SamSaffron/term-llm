@@ -18,6 +18,8 @@ import (
 
 // SessionOptions carries the provider-neutral inputs for a new live session.
 type SessionOptions struct {
+	// ClientTools are executed only by the browser over the existing data channel.
+	ClientTools []ClientTool
 	// SessionID is the chat session the live call is bound to. It is sent as
 	// x-session-id so provider-side logs line up with ours.
 	SessionID string

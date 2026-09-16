@@ -350,3 +350,21 @@ func TestRenderedAssetsAreGzipReadable(t *testing.T) {
 		t.Fatalf("gzip round trip failed: %v", err)
 	}
 }
+
+func TestLiveClientToolsStayInExistingLazyChunk(t *testing.T) {
+	eager, err := StaticAsset("dist/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lazy, err := StaticAsset("dist/chunks/live.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const dispatchMarker = "Unregistered live client tool."
+	if bytes.Contains(eager, []byte(dispatchMarker)) || !bytes.Contains(lazy, []byte(dispatchMarker)) {
+		t.Fatal("client tool dispatch must stay in the existing lazy live chunk")
+	}
+	if _, err := StaticAsset("dist/chunks/live-client-tools.js"); err == nil {
+		t.Fatal("unused client tools must not add a separate live-start chunk request")
+	}
+}

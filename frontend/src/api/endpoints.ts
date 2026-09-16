@@ -1,3 +1,4 @@
+import type { LiveClientToolDefinition } from '../platform/live-client-tools';
 export interface LiveSessionStartResponse {
   live_id: string;
   session_id: string;
@@ -339,10 +340,17 @@ export const endpoints = (api: APIClient) => ({
         : { policy: 'mutation', retries: 0, timeoutMs: 0, auth: 'session' },
     );
   },
-  liveStart: (sdp: string, sessionId: string) =>
+  liveStart: (sdp: string, sessionId: string, clientTools?: LiveClientToolDefinition[]) =>
     api.json<LiveSessionStartResponse>(
       '/v1/live/sessions',
-      { method: 'POST', body: JSON.stringify({ sdp, session_id: sessionId }) },
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          sdp,
+          session_id: sessionId,
+          ...(clientTools?.length ? { client_tools: clientTools } : {}),
+        }),
+      },
       { policy: 'mutation', auth: 'session', retries: 0, timeoutMs: 0 },
     ),
   liveStop: (liveId: string) =>
