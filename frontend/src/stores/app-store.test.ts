@@ -750,6 +750,58 @@ describe('AppStore compatibility behavior', () => {
     }
   });
 
+  it.each([true, false])(
+    'selects and persists a newly created draft worktree (projects: %s)',
+    async (projectsEnabled) => {
+      const store = new AppStore(config);
+      try {
+        store.projectsEnabled.value = projectsEnabled;
+        store.activeProjectId.value = 'project-1';
+        store.draftActive.value = true;
+        store.prompt.value = 'Draft prompt';
+        store.modal.value = 'worktrees';
+        const response = { worktree: { dir: '/worktrees/new-tree' } };
+        store.endpoints.createProjectWorktree = vi.fn(async () => response);
+        vi.spyOn(store.api, 'post').mockResolvedValue(response);
+        store.endpoints.projectWorktrees = vi.fn(async () => ({ worktrees: [] }));
+        store.endpoints.legacyWorktrees = vi.fn(async () => ({ worktrees: [] }));
+
+        await store.createWorktree('new-tree', true);
+
+        expect(store.selectedDraftWorktree.value).toBe('/worktrees/new-tree');
+        expect(store.currentWorktreeDir.value).toBe('/worktrees/new-tree');
+        expect(store.modal.value).toBe('');
+        expect(readDrafts(localStorage, store.keys.draftMessages)[0]).toMatchObject({
+          content: 'Draft prompt',
+          worktreeDir: '/worktrees/new-tree',
+        });
+      } finally {
+        store.dispose();
+      }
+    },
+  );
+
+  it('preserves the draft selection and picker when worktree creation fails', async () => {
+    const store = new AppStore(config);
+    try {
+      store.projectsEnabled.value = true;
+      store.activeProjectId.value = 'project-1';
+      store.draftActive.value = true;
+      store.chooseDraftWorktree('/worktrees/existing');
+      store.modal.value = 'worktrees';
+      store.endpoints.createProjectWorktree = vi.fn(async () => {
+        throw new Error('creation blocked');
+      });
+
+      await expect(store.createWorktree('new-tree', true)).rejects.toThrow('creation blocked');
+
+      expect(store.selectedDraftWorktree.value).toBe('/worktrees/existing');
+      expect(store.modal.value).toBe('worktrees');
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('dismisses a toast without waiting for its automatic timeout', () => {
     vi.useFakeTimers();
     const store = new AppStore(config);

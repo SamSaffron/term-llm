@@ -74,11 +74,22 @@ export class WorktreeStore {
 
   async create(name: string, clean = false): Promise<void> {
     const projectId = this.projectId();
+    const draftId = this.options.draftActive.value ? this.options.draftStorageId() : null;
     this.error.value = '';
     try {
-      if (this.options.projectsEnabled.value)
-        await this.services.endpoints.createProjectWorktree(projectId, { name, clean });
-      else await this.services.api.post('/v1/worktrees', { name, clean });
+      const data = this.options.projectsEnabled.value
+        ? await this.services.endpoints.createProjectWorktree(projectId, { name, clean })
+        : await this.services.api.post<Record<string, unknown>>('/v1/worktrees', { name, clean });
+      const dir = recordValue(data.worktree)?.dir;
+      if (
+        draftId !== null &&
+        this.options.draftActive.value &&
+        this.options.draftStorageId() === draftId &&
+        this.projectId() === projectId &&
+        typeof dir === 'string' &&
+        dir
+      )
+        this.chooseDraft(dir);
       await this.load();
     } catch (error) {
       throw new Error(worktreeErrorMessage(error), { cause: error });
