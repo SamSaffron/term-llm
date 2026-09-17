@@ -201,6 +201,8 @@ func emitStreamEvent(e *jsonEmitter, ev ui.StreamEvent) error {
 			"message":             guardian.Message,
 			"outcome":             guardian.Outcome,
 			"model":               guardian.Model,
+			"duration_ms":         guardian.DurationMS,
+			"state_bytes":         guardian.StateBytes,
 			"input_tokens":        u.InputTokens,
 			"output_tokens":       u.OutputTokens,
 			"cached_input_tokens": u.CachedInputTokens,

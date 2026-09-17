@@ -252,6 +252,8 @@ func (rt *serveRuntime) emitGuardianReview(event tools.GuardianEvent) {
 			"tool_call_id": event.ToolCallID,
 			"outcome":      event.Outcome,
 			"model":        event.Model,
+			"duration_ms":  event.DurationMS,
+			"state_bytes":  event.StateBytes,
 			"tool":         event.ToolName,
 			"path":         event.Path,
 			"is_write":     event.IsWrite,

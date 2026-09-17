@@ -90,6 +90,7 @@ Common entry points:
 - [MCP servers](https://term-llm.com/guides/mcp-servers/)
 - [Memory](https://term-llm.com/guides/memory/)
 - [Jobs](https://term-llm.com/guides/job-runner/)
+- [Classification providers (TypeSafe)](https://term-llm.com/guides/classify/)
 - [Text embeddings](https://term-llm.com/guides/text-embeddings/)
 - [Audio generation](https://term-llm.com/guides/audio-generation/)
 - [Music generation](https://term-llm.com/guides/music-generation/)

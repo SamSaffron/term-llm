@@ -484,6 +484,7 @@ type Config struct {
 	Live            LiveConfig                `mapstructure:"live"`
 	Embed           EmbedConfig               `mapstructure:"embed"`
 	Search          SearchConfig              `mapstructure:"search"`
+	Classify        ClassifyConfig            `mapstructure:"classify" yaml:"classify,omitempty"`
 	Reasoning       ReasoningConfig           `mapstructure:"reasoning"`
 	Theme           ThemeConfig               `mapstructure:"theme"`
 	Tools           ToolsConfig               `mapstructure:"tools"`
@@ -509,13 +510,21 @@ type ApprovalConfig struct {
 	DefaultMode string `mapstructure:"default_mode" yaml:"default_mode,omitempty"`
 }
 
+// GuardianClassifyConfig configures the optional classification reviewer.
+type GuardianClassifyConfig struct {
+	Provider      string  `mapstructure:"provider" yaml:"provider,omitempty"`
+	MinConfidence float64 `mapstructure:"min_confidence" yaml:"min_confidence"`
+}
+
 // GuardianConfig configures auto approval policy review.
 type GuardianConfig struct {
-	Provider         string `mapstructure:"provider" yaml:"provider,omitempty"`
-	Model            string `mapstructure:"model" yaml:"model,omitempty"`
-	PolicyPath       string `mapstructure:"policy_path" yaml:"policy_path,omitempty"`
-	TimeoutSeconds   int    `mapstructure:"timeout_seconds" yaml:"timeout_seconds,omitempty"`
-	ClassifyAllShell bool   `mapstructure:"classify_all_shell" yaml:"classify_all_shell,omitempty"`
+	Backend          string                 `mapstructure:"backend" yaml:"backend,omitempty"`
+	Classify         GuardianClassifyConfig `mapstructure:"classify" yaml:"classify"`
+	Provider         string                 `mapstructure:"provider" yaml:"provider,omitempty"`
+	Model            string                 `mapstructure:"model" yaml:"model,omitempty"`
+	PolicyPath       string                 `mapstructure:"policy_path" yaml:"policy_path,omitempty"`
+	TimeoutSeconds   int                    `mapstructure:"timeout_seconds" yaml:"timeout_seconds,omitempty"`
+	ClassifyAllShell bool                   `mapstructure:"classify_all_shell" yaml:"classify_all_shell,omitempty"`
 }
 
 // ServeConfig holds configuration for the serve command platforms.
@@ -1288,6 +1297,21 @@ type EmbedOllamaConfig struct {
 	Model   string `mapstructure:"model"`    // nomic-embed-text (default)
 }
 
+// ClassifyConfig selects a provider for the classification capability.
+type ClassifyConfig struct {
+	DefaultProvider string                            `mapstructure:"default_provider" yaml:"default_provider,omitempty"`
+	Providers       map[string]ClassifyProviderConfig `mapstructure:"providers" yaml:"providers,omitempty"`
+}
+
+// ClassifyProviderConfig configures a classification provider.
+type ClassifyProviderConfig struct {
+	Type           string `mapstructure:"type" yaml:"type,omitempty"`
+	APIKey         string `mapstructure:"api_key" yaml:"api_key,omitempty"`
+	Model          string `mapstructure:"model" yaml:"model,omitempty"`
+	BaseURL        string `mapstructure:"base_url" yaml:"base_url,omitempty"`
+	TimeoutSeconds int    `mapstructure:"timeout_seconds" yaml:"timeout_seconds,omitempty"`
+}
+
 // SearchConfig configures web search providers
 type SearchConfig struct {
 	Provider      string                 `mapstructure:"provider"`       // exa_mcp (default), exa, perplexity, parallel, tavily, brave, google, duckduckgo
@@ -1374,6 +1398,9 @@ func Load() (*Config, error) {
 	}
 	markReasoningConfigPresence(&cfg.Reasoning, viper.GetViper())
 	if err := cfg.ValidateCommit(); err != nil {
+		return nil, err
+	}
+	if err := cfg.Guardian.Classify.Validate(); err != nil {
 		return nil, err
 	}
 	if err := cfg.ValidateApprovalModes(); err != nil {
@@ -2608,6 +2635,18 @@ func IsKnownKey(keyPath string) bool {
 	// Check direct match
 	if KnownKeys[keyPath] {
 		return true
+	}
+
+	// Capability provider names are dynamic; fields use the canonical schema.
+	if strings.HasPrefix(keyPath, "classify.providers.") {
+		parts := strings.SplitN(keyPath, ".", 4)
+		if parts[2] == "" {
+			return false
+		}
+		if len(parts) == 3 {
+			return true
+		}
+		return KnownKeys["classify.providers.typesafe."+parts[3]]
 	}
 
 	// Check for providers.* pattern

@@ -35,7 +35,25 @@ A typical config has a few major parts:
 - per-command blocks such as `exec`, `ask`, and `edit`
 - `commit.message_agent` for the native commit workflow's scope/message agent
 - `share` for the built-in GitHub or custom command transcript publisher
-- feature-specific blocks such as `image`, `audio`, `music`, `embed`, `search`, `sessions`, `file_tracking`, `tools`, and `skills`
+- feature-specific blocks such as `image`, `audio`, `music`, `embed`, `search`, `classify`, `sessions`, `file_tracking`, `tools`, and `skills`
+
+### TypeSafe classification
+
+The standalone [`classify` command](/guides/classify/) uses `classify.providers`, separate from chat `providers`:
+
+```yaml
+classify:
+  default_provider: typesafe
+  providers:
+    typesafe:
+      type: typesafe # Optional for the built-in key
+      api_key: ${TYPESAFE_API_KEY}
+      model: jev-latest
+      base_url: https://api.typesafe.ai
+      timeout_seconds: 10
+```
+
+`classify.providers.typesafe.api_key` is a sensitive credential resolved when the command runs, or eagerly during classify-backed Guardian setup, with `TYPESAFE_API_KEY` as its environment fallback. `--provider/-p` overrides `classify.default_provider` for both `classify` and `classify models`. Aliases under `classify.providers` declare `type: typesafe`; only the selected provider’s credentials are resolved. With no config file, `TYPESAFE_API_KEY` is sufficient. `--model`, `--base-url`, and `--timeout` override these settings for `classify`. Other commands use TypeSafe for Guardian reviews only when `guardian.backend: classify` is explicitly configured. State and questions are sent to the configured endpoint; see the [privacy and input guidance](/guides/classify/#setup-and-privacy).
 
 ## Example
 
@@ -235,6 +253,7 @@ Configure Guardian review with:
 
 ```yaml
 guardian:
+  backend: llm             # default; or classify (see below)
   provider: anthropic       # optional override
   model: claude-sonnet-4-6  # optional authoritative model pin
   policy_path: ~/.config/term-llm/guardian-policy.md # optional custom policy
@@ -242,7 +261,7 @@ guardian:
   classify_all_shell: false # true sends every shell pattern through Guardian
 ```
 
-Without explicit Guardian overrides, resolution uses the configured `fast_model` for the global `default_provider`, switching to its `fast_provider` when configured. Per-command, per-surface, session, and agent provider/model overrides do not change that target. `guardian.provider` explicitly selects another provider and its fast model without following that provider's `fast_provider`; `guardian.model` pins the model on `guardian.provider` or, when omitted, on the global default provider. For compatibility, a custom or local provider with no `fast_model` uses its configured `model` before considering a built-in fast default.
+For the default `llm` backend, without explicit Guardian overrides, resolution uses the configured `fast_model` for the global `default_provider`, switching to its `fast_provider` when configured. Per-command, per-surface, session, and agent provider/model overrides do not change that target. `guardian.provider` explicitly selects another provider and its fast model without following that provider's `fast_provider`; `guardian.model` pins the model on `guardian.provider` or, when omitted, on the global default provider. For compatibility, a custom or local provider with no `fast_model` uses its configured `model` before considering a built-in fast default.
 
 In auto mode, arbitrary-execution shell patterns are suspended before matching. The mechanical set includes executable globs (`*`, `*/bin/*`) plus wildcard arguments to interpreters, shells, elevation tools, and common dispatchers. Examples include `python *`, `python *.py`, `/usr/bin/python3 *`, `node *.js`, `bash *`, `env *`, `sudo *`, `uv run *`, `npx *`, and `pipx run *`. Existing generated rules of this form continue to work after an explicit switch to prompt mode but are intentionally ignored while auto is requested. Narrow fixed commands such as `git status`, `go test *`, `npm test`, `python script.py`, `uv run pytest`, `npx eslint`, and `pipx run black` remain deterministic unless `classify_all_shell` is true. Exact configured scripts, exact session commands, and exact Guardian command/workdir approvals remain active either way.
 
@@ -252,7 +271,21 @@ Three consecutive Guardian policy denials or 20 total policy denials in the curr
 
 To override a denial deliberately, explicitly authorize the exact action in a subsequent message so Guardian can reassess it using the new trusted transcript evidence, or switch the session to prompt/yolo using existing controls. Guardian never directly offers a wildcard command pattern, directory, or repository grant after a denial.
 
-> Privacy note: Guardian review receives approval evidence, including recent transcript snippets, tool call arguments/results, and deterministic approval context. If `guardian.provider` or the selected `fast_provider` differs from the chat provider, that evidence is sent to the resolved Guardian provider as well.
+The optional classify backend uses a separately configured classification provider:
+
+```yaml
+guardian:
+  backend: classify             # llm remains the default
+  classify:
+    provider: typesafe           # optional; inherits classify.default_provider
+    min_confidence: 0.15         # inclusive range [0, 1]; calibrated default
+```
+
+Unknown backend values fail Guardian installation. The selected classify provider, endpoint and API key are resolved eagerly at setup; no review call is made until an action requires it. `guardian.provider`/`model` are LLM-only; classify uses the selected `classify.providers` model and transport timeout. Both backends retain `policy_path`, Guardian's review timeout, yolo bypass, callbacks, breaker and interactive/headless behavior. The earlier of the Guardian and classify transport deadlines wins.
+
+Classification submits three choice questions together. Allow requires outcome `allow`, risk `low`/`medium`, authorization evidence `explicit`/`implied` (mapped to Guardian's existing `high`/`medium` values), and every confidence present and at least `min_confidence`. Malformed answers, unknown choices and missing confidence are review errors; low confidence is a deterministic policy denial and counts toward the breaker. Only actual `user`/`parent_user` roles supply trusted authorization. Successful first-party `ask_user` answers are explicitly marked by the runtime as trusted user input; ordinary tool results cannot grant authority. See [Classification with TypeSafe](/guides/classify/#optional-guardian-backend) for details. Both backends expose callback latency as `duration_ms` in Guardian JSON events; classify also supplies `state_bytes` for serialized state. Unknown TypeSafe model costs remain unpriced, never borrowed from the chat model.
+
+> Privacy note: Guardian review receives approval evidence, including recent transcript snippets, tool call arguments/results, and deterministic approval context. If `guardian.provider` or the selected `fast_provider` differs from the chat provider, that evidence is sent to the resolved Guardian provider as well. With `guardian.backend: classify`, the policy, compact role-labelled transcript, omitted count, approval context and exact shell/file/directory/workspace action are sent to the selected TypeSafe endpoint, even without running the `classify` command. Compaction is not redaction; only enable this if sending that evidence is authorized.
 
 ## Per-command overrides
 

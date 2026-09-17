@@ -101,6 +101,9 @@ func approvalTranscriptFromContext(ctx context.Context) []TranscriptEntry {
 }
 
 func renderApprovalMessageText(msg llm.Message) string {
+	if approvalText := strings.TrimSpace(msg.ApprovalText); approvalText != "" {
+		return approvalText
+	}
 	var b strings.Builder
 	for _, part := range msg.Parts {
 		switch part.Type {

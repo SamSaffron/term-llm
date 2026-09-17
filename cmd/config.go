@@ -248,7 +248,13 @@ func printAnnotatedConfigFiltered(out io.Writer, defaults map[string]any, rawKey
 	printProvidersSection(out, defaults, rawKeys, rawValues, hasFile, cfg)
 
 	var keys []renderKey
-	for _, spec := range config.ConfigKeySpecs() {
+	specs := config.ConfigKeySpecs()
+	classifyNames := config.ClassifyConfig{}.ProviderNames()
+	if cfg != nil {
+		classifyNames = cfg.Classify.ProviderNames()
+	}
+	specs = append(specs, config.ClassifyKeySpecs(classifyNames)...)
+	for _, spec := range specs {
 		if !spec.ShowInConfig || (resetTemplate && !spec.ResetTemplate) {
 			continue
 		}
@@ -1198,7 +1204,11 @@ func configKeyCompletions(toComplete string) []string {
 	cfg, _ := config.Load()
 
 	keySet := make(map[string]bool)
-	for _, spec := range config.ConfigKeySpecs() {
+	specs := config.ConfigKeySpecs()
+	if cfg != nil {
+		specs = append(specs, config.ClassifyKeySpecs(cfg.Classify.ProviderNames())...)
+	}
+	for _, spec := range specs {
 		keySet[spec.Path] = true
 	}
 
@@ -1385,6 +1395,24 @@ func configValueCompletions(key, toComplete string) []string {
 			}
 			return completions
 		}
+	}
+
+	return capabilityConfigValueCompletions(cfg, key, toComplete)
+}
+
+// capabilityConfigValueCompletions completes provider choices for non-chat capabilities.
+func capabilityConfigValueCompletions(cfg *config.Config, key, toComplete string) []string {
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	if key == "guardian.backend" {
+		return filterPrefix([]string{"llm", "classify"}, toComplete)
+	}
+	if key == "classify.default_provider" || key == "guardian.classify.provider" {
+		return filterPrefix(cfg.Classify.ProviderNames(), toComplete)
+	}
+	if strings.HasPrefix(key, "classify.providers.") && strings.HasSuffix(key, ".type") {
+		return filterPrefix([]string{"typesafe"}, toComplete)
 	}
 
 	// Image model completions. Venice distinguishes generation from editing.

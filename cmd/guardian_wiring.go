@@ -12,10 +12,13 @@ import (
 	"github.com/samsaffron/term-llm/internal/guardian"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/samsaffron/term-llm/internal/typesafe"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
 var newGuardianProviderByName = llm.NewProviderByName
+
+var newGuardianClassifyClient = func(opts typesafe.Options) (classifyClient, error) { return typesafe.NewClient(opts) }
 
 const guardianReviewerPoolSize = 3
 
@@ -92,36 +95,12 @@ func installGuardianReviewerCallbacks(cfg *config.Config, approvalMgr *tools.App
 		return fail(fmt.Errorf("auto approval requires configuration and an LLM provider"))
 	}
 	approvalMgr.SetAutoHeadless(headless)
-	target, err := resolveGuardianTarget(cfg)
-	if err != nil {
-		return fail(err)
-	}
 	policy, err := guardian.LoadPolicy(cfg.Guardian.PolicyPath)
 	if err != nil {
 		return fail(fmt.Errorf("load guardian policy: %w", err))
 	}
 
-	var providerFactoryMu sync.Mutex
-	newReviewer := func() (*guardian.Reviewer, error) {
-		// NewProviderByName resolves and caches credentials in cfg. ReviewerPool
-		// may expand from multiple goroutines, so provider construction must not
-		// access that shared config map concurrently.
-		providerFactoryMu.Lock()
-		provider, err := newGuardianProviderByName(cfg, target.Provider, target.Model)
-		providerFactoryMu.Unlock()
-		if err != nil {
-			return nil, fmt.Errorf("guardian provider: %w", err)
-		}
-		if provider == nil {
-			return nil, fmt.Errorf("auto approval requires an LLM provider")
-		}
-		reviewer := &guardian.Reviewer{Provider: provider, Model: target.Model, Policy: policy}
-		if cfg.Guardian.TimeoutSeconds > 0 {
-			reviewer.Timeout = time.Duration(cfg.Guardian.TimeoutSeconds) * time.Second
-		}
-		return reviewer, nil
-	}
-	reviewerPool, err := guardian.NewReviewerPool(guardianReviewerPoolSize, newReviewer)
+	review, cleanup, err := newGuardianReview(cfg, policy)
 	if err != nil {
 		return fail(err)
 	}
@@ -131,16 +110,16 @@ func installGuardianReviewerCallbacks(cfg *config.Config, approvalMgr *tools.App
 		for _, e := range req.Transcript {
 			transcript = append(transcript, guardian.TranscriptEntry{Role: e.Role, Text: e.Text})
 		}
-		decision, err := reviewerPool.Review(ctx, guardian.Request{
+		decision, err := review(ctx, guardian.Request{
 			Command: req.Command, WorkDir: req.WorkDir, ToolName: req.ToolName, Path: req.Path,
 			Selector: req.Selector, IsWrite: req.IsWrite, IsDirectory: req.IsDirectory,
-			Transcript: transcript, ApprovalContext: req.ApprovalContext, ScopeID: req.ScopeID,
+			Transcript: transcript, ApprovalContext: req.ApprovalContext, ScopeID: req.ScopeID, ApprovalScope: req.ApprovalScope,
 			WorkspaceAccess: req.WorkspaceAccess, Reason: req.Reason,
 		})
-		result := tools.PolicyDecision{Allowed: decision.Allowed(), RiskLevel: decision.RiskLevel, UserAuthorization: decision.UserAuthorization, Rationale: decision.Rationale, Model: decision.Model, Usage: decision.Usage}
+		result := tools.PolicyDecision{Allowed: decision.Allowed(), RiskLevel: decision.RiskLevel, UserAuthorization: decision.UserAuthorization, Rationale: decision.Rationale, Model: decision.Model, Usage: decision.Usage, StateBytes: decision.StateBytes}
 		return result, err
 	}
-	approvalMgr.SetPolicyReviewFunc(reviewFunc, reviewerPool.Close)
+	approvalMgr.SetPolicyReviewFunc(reviewFunc, cleanup)
 	if approvalMgr.GuardianEventFunc == nil {
 		approvalMgr.GuardianEventFunc = func(event tools.GuardianEvent) {
 			writeGuardianStatus(os.Stderr, event)
@@ -202,4 +181,69 @@ func resolveGuardianTarget(cfg *config.Config) (guardianTarget, error) {
 		return guardianTarget{Provider: providerName, Model: model}, nil
 	}
 	return guardianTarget{}, fmt.Errorf("guardian provider %q has no fast model; set guardian.model or providers.%s.fast_model", providerName, providerName)
+}
+
+// newGuardianReview resolves the selected backend eagerly without making a review request.
+func newGuardianReview(cfg *config.Config, policy string) (func(context.Context, guardian.Request) (guardian.Decision, error), func(), error) {
+	switch strings.TrimSpace(cfg.Guardian.Backend) {
+	case "", "llm":
+		return newLLMGuardianReview(cfg, policy)
+	case "classify":
+		return newClassifyGuardianReview(cfg, policy)
+	default:
+		return nil, nil, fmt.Errorf("unknown guardian backend %q; expected llm or classify", cfg.Guardian.Backend)
+	}
+}
+
+func newLLMGuardianReview(cfg *config.Config, policy string) (func(context.Context, guardian.Request) (guardian.Decision, error), func(), error) {
+	target, err := resolveGuardianTarget(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var providerFactoryMu sync.Mutex
+	newReviewer := func() (*guardian.Reviewer, error) {
+		// NewProviderByName resolves and caches credentials in cfg. ReviewerPool
+		// may expand from multiple goroutines, so provider construction must not
+		// access that shared config map concurrently.
+		providerFactoryMu.Lock()
+		provider, err := newGuardianProviderByName(cfg, target.Provider, target.Model)
+		providerFactoryMu.Unlock()
+		if err != nil {
+			return nil, fmt.Errorf("guardian provider: %w", err)
+		}
+		if provider == nil {
+			return nil, fmt.Errorf("auto approval requires an LLM provider")
+		}
+		reviewer := &guardian.Reviewer{Provider: provider, Model: target.Model, Policy: policy}
+		if cfg.Guardian.TimeoutSeconds > 0 {
+			reviewer.Timeout = time.Duration(cfg.Guardian.TimeoutSeconds) * time.Second
+		}
+		return reviewer, nil
+	}
+	reviewerPool, err := guardian.NewReviewerPool(guardianReviewerPoolSize, newReviewer)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return reviewerPool.Review, reviewerPool.Close, nil
+}
+
+func newClassifyGuardianReview(cfg *config.Config, policy string) (func(context.Context, guardian.Request) (guardian.Decision, error), func(), error) {
+	if err := cfg.Guardian.Classify.Validate(); err != nil {
+		return nil, nil, err
+	}
+	provider, err := cfg.Classify.ResolveProvider(cfg.Guardian.Classify.Provider)
+	if err != nil {
+		return nil, nil, err
+	}
+	client, err := newTypeSafeClient(cfg, &classifyOptions{provider: cfg.Guardian.Classify.Provider}, classifyDeps{newClient: newGuardianClassifyClient})
+	if err != nil {
+		return nil, nil, fmt.Errorf("guardian classify provider: %w", err)
+	}
+	reviewer := &guardian.ClassifyReviewer{Client: client, Model: provider.Model, Policy: policy, MinConfidence: cfg.Guardian.Classify.MinConfidence}
+	if cfg.Guardian.TimeoutSeconds > 0 {
+		reviewer.Timeout = time.Duration(cfg.Guardian.TimeoutSeconds) * time.Second
+	}
+	return reviewer.Review, nil, nil
 }

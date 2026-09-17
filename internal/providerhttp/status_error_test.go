@@ -105,3 +105,12 @@ func TestRetryableStatus(t *testing.T) {
 		}
 	}
 }
+
+func TestRetryAfterSaturatesOverflow(t *testing.T) {
+	for _, name := range []string{"Retry-After", "Retry-After-Ms"} {
+		delay, ok := ParseRetryAfter(http.Header{name: {"9223372036854775807"}}, time.Now())
+		if !ok || delay != time.Duration(1<<63-1) {
+			t.Fatalf("%s: %v, %v", name, delay, ok)
+		}
+	}
+}
