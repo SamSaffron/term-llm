@@ -567,3 +567,144 @@ func TestArbitraryUploadsKeepValidationLimits(t *testing.T) {
 		})
 	}
 }
+
+// TestParseUserMessageContent_CanonicalizesUploadMediaType covers the upload the
+// bug report came from: Chrome labels .rb "text/x-ruby-script", which the
+// Responses API rejects, so the stored part must carry the accepted token while
+// the embedded body stays in Part.Text.
+func TestParseUserMessageContent_CanonicalizesUploadMediaType(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	body := "def helper\n  :ok\nend\n"
+	content, err := json.Marshal([]map[string]string{{
+		"type":      "input_file",
+		"filename":  "../../common_helper.rb",
+		"file_data": "data:text/x-ruby-script;base64," + base64.StdEncoding.EncodeToString([]byte(body)),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	msg, err := parseUserMessageContent(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.Parts) != 1 {
+		t.Fatalf("parts = %#v, want one file part", msg.Parts)
+	}
+	part := msg.Parts[0]
+	if part.Type != llm.PartFile || part.FileData == nil {
+		t.Fatalf("part = %+v", part)
+	}
+	if part.FileData.Filename != "common_helper.rb" {
+		t.Fatalf("filename = %q, want common_helper.rb", part.FileData.Filename)
+	}
+	if part.FileData.MediaType != "text/x-ruby" {
+		t.Fatalf("media type = %q, want text/x-ruby", part.FileData.MediaType)
+	}
+	if !strings.Contains(part.Text, body) || !strings.Contains(part.Text, "common_helper.rb") {
+		t.Fatalf("fallback text = %q, want the embedded ruby body", part.Text)
+	}
+
+	// The stored part must also survive a Responses replay, which is where the
+	// original 400 surfaced.
+	policy := llm.DefaultOpenAIResponsesFileUploadPolicy()
+	input := llm.BuildResponsesInputWithFilePolicy([]llm.Message{{Role: llm.RoleUser, Parts: msg.Parts}}, &policy)
+	if len(input) != 1 {
+		t.Fatalf("input = %#v, want one input item", input)
+	}
+	if _, ok := input[0].Content.(string); !ok {
+		t.Fatalf("content = %#v, want inline text instead of a native file part", input[0].Content)
+	}
+}
+
+// TestParseUploadedFilePart_TextEvidenceGatesExtensionRepair covers the two ingest
+// halves of the canonicalizer: text-like labels are embedded no matter how obscure
+// the client label, and a binary label is only overridden by a filename extension
+// once the bytes prove they are text.
+func TestParseUploadedFilePart_TextEvidenceGatesExtensionRepair(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	for _, tc := range []struct {
+		name          string
+		filename      string
+		mediaType     string
+		raw           []byte
+		wantMediaType string
+		wantBody      bool
+	}{
+		{
+			// SHOULD-FIX 4: five hardcoded application/* types used to decide
+			// this, so an extensionless application/toml upload was thrown away.
+			name:          "extensionless toml",
+			filename:      "upload",
+			mediaType:     "application/toml",
+			raw:           []byte("title = \"term-llm\"\n"),
+			wantMediaType: "application/toml",
+			wantBody:      true,
+		},
+		{
+			name:          "extensionless graphql",
+			filename:      "upload",
+			mediaType:     "application/graphql",
+			raw:           []byte("query { viewer { id } }\n"),
+			wantMediaType: "application/graphql",
+			wantBody:      true,
+		},
+		{
+			name:          "extensionless shell label",
+			filename:      "upload",
+			mediaType:     "application/x-sh",
+			raw:           []byte("set -euo pipefail\n"),
+			wantMediaType: "text/x-sh",
+			wantBody:      true,
+		},
+		{
+			// Chrome labels TypeScript source video/mp2t, but the bytes are text.
+			name:          "mpeg label on typescript source",
+			filename:      "app.ts",
+			mediaType:     "video/mp2t",
+			raw:           []byte("export const x = 1\n"),
+			wantMediaType: "text/x-typescript",
+			wantBody:      true,
+		},
+		{
+			// A real MPEG transport stream must keep its label: no text evidence.
+			name:          "mpeg label on binary transport stream",
+			filename:      "clip.ts",
+			mediaType:     "video/mp2t",
+			raw:           []byte{0x47, 0x00, 0x10, 0x00, 0xff},
+			wantMediaType: "video/mp2t",
+		},
+		{
+			name:          "image label with markdown filename",
+			filename:      "photo.md",
+			mediaType:     "image/png",
+			raw:           []byte{0x89, 'P', 'N', 'G', 0x00, 0x01},
+			wantMediaType: "image/png",
+		},
+		{
+			name:          "archive label with markdown filename",
+			filename:      "archive.md",
+			mediaType:     "application/zip",
+			raw:           []byte{'P', 'K', 0x03, 0x04, 0x00},
+			wantMediaType: "application/zip",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			part, err := parseUploadedFilePart(tc.filename, tc.mediaType, base64.StdEncoding.EncodeToString(tc.raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if part.Type != llm.PartFile || part.FileData == nil {
+				t.Fatalf("part = %+v", part)
+			}
+			if part.FileData.MediaType != tc.wantMediaType {
+				t.Fatalf("media type = %q, want %q", part.FileData.MediaType, tc.wantMediaType)
+			}
+			if got := llm.IsEmbeddedFileText(part.Text); got != tc.wantBody {
+				t.Fatalf("embedded body = %v (text = %q), want %v", got, part.Text, tc.wantBody)
+			}
+		})
+	}
+}

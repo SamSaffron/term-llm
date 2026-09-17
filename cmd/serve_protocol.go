@@ -260,8 +260,22 @@ func normalizeUploadMediaType(filename, mediaType string, raw []byte) string {
 			mediaType = detected
 		}
 	}
-	if mediaType == "application/octet-stream" && isTextUploadExtension(filename) && !bytes.Contains(raw, []byte{0}) && utf8.Valid(raw) {
+	if mediaType == "application/octet-stream" && isTextUploadExtension(filename) && rawLooksLikeText(raw) {
 		mediaType = "text/plain"
+	}
+	// Store a canonical, provider-recognized label for new uploads: Chrome reports
+	// source files with labels such as text/x-ruby-script for .rb, which the
+	// Responses API rejects outright. The extension may only override a
+	// binary-sounding label once the bytes are known to be text, so an image or
+	// archive keeps its label. Provider input builders canonicalize again, so
+	// uploads stored before this existed heal without a migration. Images keep
+	// their label so isLLMImageType keeps routing them down the image path.
+	if !isLLMImageType(mediaType) {
+		if rawLooksLikeText(raw) {
+			mediaType = llm.CanonicalTextUploadMediaType(filename, mediaType)
+		} else {
+			mediaType = llm.CanonicalUploadMediaType(filename, mediaType)
+		}
 	}
 	if mediaType == "" {
 		mediaType = "application/octet-stream"
@@ -280,7 +294,7 @@ func textUploadContent(filename, mediaType string, raw []byte) (string, bool) {
 	if len(raw) == 0 {
 		return "", true
 	}
-	if bytes.Contains(raw, []byte{0}) || !utf8.Valid(raw) {
+	if !rawLooksLikeText(raw) {
 		return "", false
 	}
 	mediaType = llm.NormalizeMediaType(mediaType)
@@ -291,16 +305,18 @@ func textUploadContent(filename, mediaType string, raw []byte) (string, bool) {
 	return "", false
 }
 
+// rawLooksLikeText reports whether upload bytes are safe to embed as prompt text.
+// Callers use it both to decide whether a file body can be inlined and, when it
+// can, to let a filename extension override a binary-sounding MIME label.
+func rawLooksLikeText(raw []byte) bool {
+	return len(raw) > 0 && !bytes.Contains(raw, []byte{0}) && utf8.Valid(raw)
+}
+
+// isTextUploadMIME reports whether a label's content is text or code. It defers to
+// the provider MIME tables so a label like application/toml is embedded instead of
+// being written off as binary.
 func isTextUploadMIME(mediaType string) bool {
-	if strings.HasPrefix(mediaType, "text/") {
-		return true
-	}
-	switch mediaType {
-	case "application/json", "application/x-ndjson", "application/xml", "application/yaml", "application/x-yaml":
-		return true
-	default:
-		return false
-	}
+	return llm.IsTextLikeMediaType(mediaType)
 }
 
 func isTextUploadExtension(filename string) bool {

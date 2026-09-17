@@ -3,6 +3,7 @@ package llm
 import (
 	"encoding/base64"
 	"mime"
+	"sort"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
@@ -10,48 +11,33 @@ import (
 
 const defaultFileUploadMaxBytes int64 = 20 << 20
 
-var openAIResponsesNativeFileMIMETypes = []string{
-	"application/pdf",
-	"text/*",
-	"text/plain",
-	"text/markdown",
-	"text/csv",
-	"text/tab-separated-values",
-	"text/html",
-	"text/xml",
-	"application/xml",
-	"application/json",
-	"application/msword",
-	"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-	"application/rtf",
-	"text/rtf",
-	"application/vnd.oasis.opendocument.text",
-	"application/vnd.ms-excel",
-	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-	"application/vnd.ms-powerpoint",
-	"application/vnd.openxmlformats-officedocument.presentationml.presentation",
-}
+// portableTextEmbedMIMETypes lists text-like types that are safe to inline as
+// ordinary text on providers without native file support, with the text/*
+// wildcard first. The wildcard is intentional: inlining text can never be
+// rejected by a provider MIME allowlist. The remaining entries are derived from
+// textLikeApplicationMIMETypes in file_mime.go so the portable fallback can never
+// be narrower than the canonicalizer's idea of text.
+var portableTextEmbedMIMETypes = portableTextEmbedMIMETypeList()
 
-var portableTextEmbedMIMETypes = []string{
-	"text/*",
-	"text/plain",
-	"text/markdown",
-	"text/csv",
-	"text/tab-separated-values",
-	"text/html",
-	"text/xml",
-	"application/xml",
-	"application/json",
-	"application/x-ndjson",
-	"application/yaml",
-	"application/x-yaml",
-	"text/yaml",
+func portableTextEmbedMIMETypeList() []string {
+	types := make([]string, 1, len(textLikeApplicationMIMETypes)+1)
+	types[0] = "text/*"
+	for mediaType := range textLikeApplicationMIMETypes {
+		types = append(types, mediaType)
+	}
+	sort.Strings(types[1:])
+	return types
 }
 
 // FileUploadPolicy describes provider-level upload capabilities. Native MIME
 // types are allowed to travel as provider-native file/document inputs. Text
 // embed MIME types are safe to inline as ordinary text on providers without
 // native file support.
+//
+// Membership in NativeMimeTypes does not guarantee native forwarding: a modest
+// text-like upload whose body is already embedded is inlined in preference to a
+// native file, because inlining cannot be rejected by a provider MIME allowlist.
+// See responsesFilePrefersTextEmbed for the exact precedence.
 type FileUploadPolicy struct {
 	NativeMimeTypes    []string
 	MaxNativeBytes     int64
@@ -76,12 +62,12 @@ func NormalizeMediaType(mediaType string) string {
 	return mediaType
 }
 
-// DefaultOpenAIResponsesFileUploadPolicy returns the native file types currently
-// documented for OpenAI Responses-style file input. The same policy is used for
+// DefaultOpenAIResponsesFileUploadPolicy returns the native file types accepted
+// by the OpenAI Responses file input API. The same policy is used for
 // ChatGPT/Grok/Copilot Responses transports unless overridden in config.
 func DefaultOpenAIResponsesFileUploadPolicy() FileUploadPolicy {
 	return FileUploadPolicy{
-		NativeMimeTypes:    cloneStrings(openAIResponsesNativeFileMIMETypes),
+		NativeMimeTypes:    cloneStrings(openAIResponsesAcceptedFileMIMETypes),
 		MaxNativeBytes:     defaultFileUploadMaxBytes,
 		TextEmbedMimeTypes: cloneStrings(portableTextEmbedMIMETypes),
 		MaxTextEmbedBytes:  defaultFileUploadMaxBytes,
@@ -222,6 +208,12 @@ func mimeAllowed(mediaType string, allowed []string) bool {
 		candidate = strings.TrimSpace(strings.ToLower(candidate))
 		if candidate == "" {
 			continue
+		}
+		// Exact matches are the common case (the default policy holds over a
+		// hundred literal tokens), so avoid NormalizeMediaType's ParseMediaType
+		// allocation for them.
+		if candidate == mediaType {
+			return true
 		}
 		if candidate == "*" || candidate == "*/*" {
 			return true

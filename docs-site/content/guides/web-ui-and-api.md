@@ -187,9 +187,9 @@ Server-side limits are authoritative: at most 10 attachments, 20 MB decoded per 
 File handling is provider-aware:
 
 - Images are sent as image parts when the selected provider supports images.
-- Providers with native file input support (currently OpenAI, ChatGPT, Grok subscription, and Copilot Responses transports by default) receive supported files as native Responses inputs. The default native MIME set covers PDF; `text/*`; JSON/XML; Word/RTF/OpenDocument text; Excel; and PowerPoint files.
-- Text-like uploads such as `txt`, `md`, `csv`, `tsv`, `json`, `yaml`, `xml`, `html`, and common code files are embedded as ordinary text when native file input is unavailable. Embedded contents are wrapped in explicit `BEGIN USER-PROVIDED FILE` / `END USER-PROVIDED FILE` markers.
-- Unsupported binary files are saved locally and represented by a marker instead of being forwarded to the provider.
+- Text-like uploads — `txt`, `md`, `json`, `yaml`, `xml`, `html`, common code files, and anything else whose bytes are plain text and smaller than 1 MB — are embedded as ordinary text. Embedded contents are wrapped in explicit `BEGIN USER-PROVIDED FILE` / `END USER-PROVIDED FILE` markers. Inlining cannot be rejected by a provider MIME allowlist, so it is preferred over native forwarding.
+- Providers with native file input support (currently OpenAI, ChatGPT, Grok subscription, and Copilot Responses transports by default) receive the remaining files as native Responses `input_file` parts: spreadsheets (CSV, TSV, IIF, Excel, Google Sheets), which keep provider-side spreadsheet handling, and binary documents. The accepted set is an exact token list transcribed from OpenAI's [file inputs guide](https://developers.openai.com/api/docs/guides/file-inputs) — PDF, Word, RTF, OpenDocument, Pages, and Google Docs; Excel, CSV, TSV, IIF, and Google Sheets; PowerPoint, Keynote, and Google Slides; and the documented text and code tokens. There are no wildcards, so a client label is canonicalized onto an accepted token first: Chrome's `text/x-ruby-script` for `.rb` becomes `text/x-ruby` instead of hard-failing every turn that replays the upload.
+- Anything the provider can neither accept natively nor embed as text (binaries, and text beyond the embed limits) is saved locally and represented by a notice naming the saved path instead of being forwarded.
 
 Do not attach secrets unless you intend the selected provider to receive them. Native file forwarding and text fallback both send file contents upstream.
 

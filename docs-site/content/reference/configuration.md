@@ -727,9 +727,10 @@ Provider configs can override which MIME types may be forwarded as native file/d
 
 Built-in defaults are conservative:
 
-- `openai`, `chatgpt`, `grok`, and `copilot` allow the native Responses MIME set by default: PDF; `text/*`; JSON and XML; Word (`.doc`/`.docx`), RTF, and OpenDocument text; Excel (`.xls`/`.xlsx`); and PowerPoint (`.ppt`/`.pptx`).
+- `openai`, `chatgpt`, `grok`, and `copilot` accept OpenAI's exact file-input token list by default: PDF; Word (`.doc`/`.docx`), RTF, OpenDocument text, Pages, and Google Docs; Excel (`.xls`/`.xlsx`), CSV, TSV, IIF, and Google Sheets; PowerPoint (`.ppt`/`.pptx`), Keynote, and Google Slides; and the documented text and code tokens (`text/x-ruby`, `text/x-python`, `application/json`, and the like). The list has no wildcards, so a client label is canonicalized onto an accepted token first — Chrome's `text/x-ruby-script` for `.rb` becomes `text/x-ruby`, which is what previously produced a permanent 400.
+- Text-like uploads smaller than 1 MB are inlined as ordinary text ahead of native forwarding, because inlining cannot be rejected by a provider MIME allowlist. Spreadsheets keep the native path so spreadsheet-specific provider handling still applies, and larger text files and binary documents travel natively.
 - Providers without an implemented native file path do not forward native file parts; they use text fallback/marker behavior instead.
-- Text-like files (`txt`, `md`, `csv`, `tsv`, `json`, `yaml`, `xml`, `html`, and common code files) can still be embedded as ordinary text on providers without native file support, wrapped in explicit begin/end file markers.
+- Anything the policy rejects falls back to a notice naming the saved local path. Text-like files (`txt`, `md`, `csv`, `tsv`, `json`, `yaml`, `xml`, `html`, and common code files) up to `max_text_embed_bytes` are still embedded as ordinary text, wrapped in explicit begin/end file markers.
 
 Example custom policy:
 

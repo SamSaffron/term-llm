@@ -154,6 +154,14 @@ func ExtractEmbeddedFileNames(content string) []string {
 	return names
 }
 
+// IsEmbeddedFileText reports whether text contains a user-provided file body
+// wrapped by FormatEmbeddedFileText, as opposed to a FormatUploadedFileNotice
+// stub or ordinary prose. Callers use it to tell "the body is already inline"
+// from "we only have a pointer to the file".
+func IsEmbeddedFileText(text string) bool {
+	return strings.Contains(text, embeddedFileBeginMarker)
+}
+
 // FormatUploadedFileNotice describes an upload without embedding its contents.
 // The local path lets tools inspect files the model cannot consume natively.
 func FormatUploadedFileNotice(filename, mediaType, localPath string, sizeBytes int64) string {

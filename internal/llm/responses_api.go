@@ -612,20 +612,20 @@ func buildResponsesMessageItems(role string, parts []Part, policy *FileUploadPol
 				items = append(items, ResponsesInputItem{Type: "message", Role: role, Content: imageParts})
 			}
 		case PartFile:
-			if part.FileData != nil && part.FileData.Base64 != "" && responseNativeFileAllowed(part.FileData, policy) {
+			switch {
+			case responsesFilePrefersTextEmbed(part, policy):
+				// The stored part already carries the file body fenced as
+				// markdown (see FormatEmbeddedFileText), so inlining it cannot be
+				// rejected by the provider's MIME allowlist. Native input_file
+				// stays reserved for binary documents and spreadsheets.
+				textBuf.WriteString(part.Text)
+			case responseNativeFileAllowed(part, policy):
 				flushText()
-				filename := strings.TrimSpace(part.FileData.Filename)
-				if filename == "" {
-					filename = "upload"
+				items = append(items, ResponsesInputItem{Type: "message", Role: role, Content: []ResponsesContentPart{responsesNativeFilePart(part)}})
+			default:
+				if text := responseFileTextFallback(part, policy); text != "" {
+					textBuf.WriteString(text)
 				}
-				mediaType := NormalizeMediaType(part.FileData.MediaType)
-				if mediaType == "" {
-					mediaType = "application/octet-stream"
-				}
-				fileParts := []ResponsesContentPart{{Type: "input_file", Filename: filename, FileData: fmt.Sprintf("data:%s;base64,%s", mediaType, part.FileData.Base64)}}
-				items = append(items, ResponsesInputItem{Type: "message", Role: role, Content: fileParts})
-			} else if text := responseFileTextFallback(part, policy); text != "" {
-				textBuf.WriteString(text)
 			}
 		case PartToolCall:
 			if part.ToolCall == nil {
@@ -658,13 +658,95 @@ func effectiveResponsesFilePolicy(policy *FileUploadPolicy) FileUploadPolicy {
 	return *policy
 }
 
-func responseNativeFileAllowed(file *ToolFileData, policy *FileUploadPolicy) bool {
+// responsesSpreadsheetMIMETypes are the upload types the builder keeps on the
+// native input_file path even when their contents are text-like: the provider
+// augments spreadsheets (formula ranges, table semantics) and a large CSV would
+// otherwise be inlined verbatim into the prompt. The Excel and Google Sheets
+// entries are not text-like to begin with; they are listed so the carve-out is
+// documented in one place.
+var responsesSpreadsheetMIMETypes = mimeSet([]string{
+	"application/csv",
+	"application/vnd.google-apps.spreadsheet",
+	"application/vnd.ms-excel",
+	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+	"application/x-iif",
+	"text/csv",
+	"text/tsv",
+	"text/x-iif",
+})
+
+// maxPreferredTextEmbedBytes caps the upload size that is inlined in preference
+// to a native input_file. Beyond it the provider's own extraction is the better
+// deal: inlining a multi-megabyte log would blow the context window on every
+// replay of that turn. Larger text uploads fall through to the native branch and
+// only then to the notice, so nothing is silently dropped.
+const maxPreferredTextEmbedBytes = 1 << 20
+
+// responsesFileMediaType returns the provider-facing media type of an upload: the
+// client/OS label canonicalized onto a token the provider recognizes, with the
+// generic binary default when nothing is known. Validation and serialization must
+// both go through this so a file can never be approved as one type and sent as
+// another.
+//
+// Only an embedded body proves the bytes are text (ingest verifies UTF-8 with no
+// NUL bytes before embedding), so only then may the filename extension override a
+// binary-sounding label.
+func responsesFileMediaType(part Part) string {
+	if part.FileData == nil {
+		return "application/octet-stream"
+	}
+	var mediaType string
+	if IsEmbeddedFileText(part.Text) {
+		mediaType = CanonicalTextUploadMediaType(part.FileData.Filename, part.FileData.MediaType)
+	} else {
+		mediaType = CanonicalUploadMediaType(part.FileData.Filename, part.FileData.MediaType)
+	}
+	if mediaType == "" {
+		return "application/octet-stream"
+	}
+	return mediaType
+}
+
+// responsesFilePrefersTextEmbed reports whether an upload should travel as plain
+// text instead of a provider-native file. It requires an embedded body: a
+// FormatUploadedFileNotice stub says only where the file lives, so treating it as
+// inline content would drop the base64 the provider could have decoded itself.
+func responsesFilePrefersTextEmbed(part Part, policy *FileUploadPolicy) bool {
+	if part.FileData == nil || !IsEmbeddedFileText(part.Text) {
+		return false
+	}
+	sizeBytes := toolFileSizeBytes(part.FileData)
+	if sizeBytes > maxPreferredTextEmbedBytes {
+		return false
+	}
+	mediaType := responsesFileMediaType(part)
+	if responsesSpreadsheetMIMETypes[mediaType] || !IsTextLikeMediaType(mediaType) {
+		return false
+	}
+	return effectiveResponsesFilePolicy(policy).AllowsTextEmbed(mediaType, sizeBytes)
+}
+
+// responsesNativeFilePart builds the input_file content part for an upload whose
+// media type has already been validated by responseNativeFileAllowed.
+func responsesNativeFilePart(part Part) ResponsesContentPart {
+	filename := strings.TrimSpace(part.FileData.Filename)
+	if filename == "" {
+		filename = "upload"
+	}
+	return ResponsesContentPart{
+		Type:     "input_file",
+		Filename: filename,
+		FileData: fmt.Sprintf("data:%s;base64,%s", responsesFileMediaType(part), part.FileData.Base64),
+	}
+}
+
+func responseNativeFileAllowed(part Part, policy *FileUploadPolicy) bool {
+	file := part.FileData
 	if file == nil || strings.TrimSpace(file.Base64) == "" {
 		return false
 	}
 	active := effectiveResponsesFilePolicy(policy)
-	mediaType := NormalizeMediaType(file.MediaType)
-	return active.AllowsNative(mediaType, toolFileSizeBytes(file))
+	return active.AllowsNative(responsesFileMediaType(part), toolFileSizeBytes(file))
 }
 
 func responseFileTextFallback(part Part, policy *FileUploadPolicy) string {
@@ -675,7 +757,7 @@ func responseFileTextFallback(part Part, policy *FileUploadPolicy) string {
 		return part.Text
 	}
 	active := effectiveResponsesFilePolicy(policy)
-	if active.AllowsTextEmbed(part.FileData.MediaType, toolFileSizeBytes(part.FileData)) {
+	if active.AllowsTextEmbed(responsesFileMediaType(part), toolFileSizeBytes(part.FileData)) {
 		return part.Text
 	}
 	return FormatUploadedFileNotice(part.FileData.Filename, part.FileData.MediaType, part.FilePath, toolFileSizeBytes(part.FileData))

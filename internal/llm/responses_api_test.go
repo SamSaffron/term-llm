@@ -191,6 +191,234 @@ func TestBuildResponsesInput_FilePolicyRejectsUnsupportedNativeMIME(t *testing.T
 		t.Fatalf("content = %#v, want text fallback for unsupported file", input[0].Content)
 	}
 }
+
+// TestBuildResponsesInput_EmbedsTextUploadsInsteadOfNativeFiles is the regression
+// test for uploads such as common_helper.rb: Chrome labels them with a MIME type
+// the API does not accept, so a native input_file made every request (and every
+// replay of the stored turn) fail with "unsupported MIME type".
+func TestBuildResponsesInput_EmbedsTextUploadsInsteadOfNativeFiles(t *testing.T) {
+	for _, tc := range []struct{ name, filename, mediaType string }{
+		{"ruby chrome label", "common_helper.rb", "text/x-ruby-script"},
+		{"ruby linux label", "common_helper.rb", "application/x-ruby"},
+		{"go label", "main.go", "text/x-go"},
+		{"python label", "tool.py", "text/x-script.python"},
+		{"shell label", "build.sh", "text/x-shellscript"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "puts 'hello'\n"
+			part := Part{
+				Type: PartFile,
+				Text: FormatEmbeddedFileText(tc.filename, tc.mediaType, body),
+				FileData: &ToolFileData{
+					MediaType: tc.mediaType,
+					Base64:    base64.StdEncoding.EncodeToString([]byte(body)),
+					Filename:  tc.filename,
+					SizeBytes: int64(len(body)),
+				},
+				FilePath: "/tmp/term-llm/" + tc.filename,
+			}
+
+			input := BuildResponsesInput([]Message{{Role: RoleUser, Parts: []Part{part}}})
+			if len(input) != 1 {
+				t.Fatalf("len(input) = %d, want 1", len(input))
+			}
+			content, ok := input[0].Content.(string)
+			if !ok {
+				t.Fatalf("content = %#v, want inline text instead of a native file part", input[0].Content)
+			}
+			if content != part.Text {
+				t.Fatalf("content = %q, want stored text %q", content, part.Text)
+			}
+			if !strings.Contains(content, body) {
+				t.Fatalf("content %q is missing the file body", content)
+			}
+			if strings.Contains(content, "Contents are not included") {
+				t.Fatalf("content discarded the embedded body: %q", content)
+			}
+		})
+	}
+}
+
+// TestBuildResponsesInput_KeepsSpreadsheetsOnNativeFilePath pins the spreadsheet
+// carve-out: CSV/TSV keep travelling as input_file so provider-side spreadsheet
+// handling still applies and a large table is not inlined verbatim.
+func TestBuildResponsesInput_KeepsSpreadsheetsOnNativeFilePath(t *testing.T) {
+	for _, tc := range []struct{ name, filename, mediaType, wantMediaType string }{
+		{"csv", "data.csv", "text/csv", "text/csv"},
+		{"tsv canonicalized", "data.tsv", "text/tab-separated-values", "text/tsv"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "name,count\napples,3\n"
+			message := Message{Role: RoleUser, Parts: []Part{{
+				Type: PartFile,
+				Text: FormatEmbeddedFileText(tc.filename, tc.mediaType, body),
+				FileData: &ToolFileData{
+					MediaType: tc.mediaType,
+					Base64:    base64.StdEncoding.EncodeToString([]byte(body)),
+					Filename:  tc.filename,
+					SizeBytes: int64(len(body)),
+				},
+				FilePath: "/tmp/term-llm/" + tc.filename,
+			}}}
+
+			input := BuildResponsesInput([]Message{message})
+			if len(input) != 1 {
+				t.Fatalf("len(input) = %d, want 1", len(input))
+			}
+			parts, ok := input[0].Content.([]ResponsesContentPart)
+			if !ok || len(parts) != 1 {
+				t.Fatalf("content = %#v, want one native file part", input[0].Content)
+			}
+			if parts[0].Type != "input_file" || parts[0].Filename != tc.filename {
+				t.Fatalf("file part = %#v", parts[0])
+			}
+			// The canonical token is both validated against the allowlist and
+			// serialized into file_data, so the two can never disagree.
+			want := fmt.Sprintf("data:%s;base64,%s", tc.wantMediaType, base64.StdEncoding.EncodeToString([]byte(body)))
+			if parts[0].FileData != want {
+				t.Fatalf("file_data = %q, want %q", parts[0].FileData, want)
+			}
+		})
+	}
+}
+
+// TestBuildResponsesInput_KeepsNativeFileWhenStoredTextIsOnlyANotice covers the
+// other half of the embed decision: ingest stores a FormatUploadedFileNotice stub
+// instead of a body whenever the upload bytes are not plain UTF-8 (UTF-16 text,
+// binary documents, ...). The notice is not inline content, so the base64 the
+// provider can decode itself must still travel as input_file rather than being
+// replaced by "Contents are not included".
+func TestBuildResponsesInput_KeepsNativeFileWhenStoredTextIsOnlyANotice(t *testing.T) {
+	for _, tc := range []struct{ name, filename, mediaType string }{
+		{"utf16 text", "notes.txt", "text/plain"},
+		{"utf16 sql", "query.sql", "text/x-sql"},
+		{"binary rtf", "brief.rtf", "application/rtf"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base64Data := base64.StdEncoding.EncodeToString([]byte{0xff, 0xfe, 0x00, 0x41, 0x00, 0x42})
+			notice := FormatUploadedFileNotice(tc.filename, tc.mediaType, "/tmp/term-llm/"+tc.filename, 6)
+			part := Part{
+				Type:     PartFile,
+				Text:     notice,
+				FilePath: "/tmp/term-llm/" + tc.filename,
+				FileData: &ToolFileData{
+					MediaType: tc.mediaType,
+					Base64:    base64Data,
+					Filename:  tc.filename,
+					SizeBytes: 6,
+				},
+			}
+
+			input := BuildResponsesInput([]Message{{Role: RoleUser, Parts: []Part{part}}})
+			if len(input) != 1 {
+				t.Fatalf("len(input) = %d, want 1", len(input))
+			}
+			if content, ok := input[0].Content.(string); ok {
+				t.Fatalf("content = %q, want a native input_file instead of the notice", content)
+			}
+			parts, ok := input[0].Content.([]ResponsesContentPart)
+			if !ok || len(parts) != 1 {
+				t.Fatalf("content = %#v, want one native file part", input[0].Content)
+			}
+			if parts[0].Type != "input_file" {
+				t.Fatalf("file part = %#v", parts[0])
+			}
+			want := fmt.Sprintf("data:%s;base64,%s", tc.mediaType, base64Data)
+			if parts[0].FileData != want {
+				t.Fatalf("file_data = %q, want %q", parts[0].FileData, want)
+			}
+		})
+	}
+}
+
+// TestBuildResponsesInput_CapsPreferredTextEmbedBySize pins the budget of the
+// preferred inline path. Inlining is now the first choice for text-like uploads,
+// so it needs its own conservative cap: a multi-megabyte log would otherwise be
+// spliced into the prompt on every replay of the turn and blow the context window
+// - the same permanently failing session the native-file repair removed.
+func TestBuildResponsesInput_CapsPreferredTextEmbedBySize(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		body       string
+		wantNative bool
+	}{
+		{"small body inlines", strings.Repeat("log line\n", 128), false},
+		{"body over the preferred cap travels natively", strings.Repeat("x", maxPreferredTextEmbedBytes+1), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			part := Part{
+				Type: PartFile,
+				Text: FormatEmbeddedFileText("server.log", "text/plain", tc.body),
+				FileData: &ToolFileData{
+					MediaType: "text/plain",
+					Base64:    base64.StdEncoding.EncodeToString([]byte(tc.body)),
+					Filename:  "server.log",
+					SizeBytes: int64(len(tc.body)),
+				},
+				FilePath: "/tmp/term-llm/server.log",
+			}
+
+			input := BuildResponsesInput([]Message{{Role: RoleUser, Parts: []Part{part}}})
+			if len(input) != 1 {
+				t.Fatalf("len(input) = %d, want 1", len(input))
+			}
+			if tc.wantNative {
+				parts, ok := input[0].Content.([]ResponsesContentPart)
+				if !ok || len(parts) != 1 || parts[0].Type != "input_file" {
+					t.Fatalf("content = %#v, want one native file part", input[0].Content)
+				}
+				want := fmt.Sprintf("data:text/plain;base64,%s", part.FileData.Base64)
+				if parts[0].FileData != want {
+					t.Fatalf("file_data = %q, want %q", parts[0].FileData, want)
+				}
+				return
+			}
+			content, ok := input[0].Content.(string)
+			if !ok || content != part.Text {
+				t.Fatalf("content = %#v, want the inline body", input[0].Content)
+			}
+			if strings.Contains(content, "Contents are not included") {
+				t.Fatalf("content discarded the embedded body: %q", content)
+			}
+		})
+	}
+}
+
+// TestBuildResponsesInput_NeverRelabelsBinaryUploadsAsText guards the canonicalizer
+// boundary: a binary MIME label with a text-looking filename must not turn into a
+// text part, because that would send data:text/markdown;base64,<png bytes>, which
+// the API accepts and the model then reads as garbage.
+func TestBuildResponsesInput_NeverRelabelsBinaryUploadsAsText(t *testing.T) {
+	png := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01, 0x02, 0x03}
+	for _, filename := range []string{"photo.md", "photo.txt"} {
+		t.Run(filename, func(t *testing.T) {
+			part := Part{
+				Type:     PartFile,
+				Text:     FormatUploadedFileNotice(filename, "image/png", "/tmp/term-llm/"+filename, int64(len(png))),
+				FilePath: "/tmp/term-llm/" + filename,
+				FileData: &ToolFileData{
+					MediaType: "image/png",
+					Base64:    base64.StdEncoding.EncodeToString(png),
+					Filename:  filename,
+					SizeBytes: int64(len(png)),
+				},
+			}
+
+			input := BuildResponsesInput([]Message{{Role: RoleUser, Parts: []Part{part}}})
+			if len(input) != 1 {
+				t.Fatalf("len(input) = %d, want 1", len(input))
+			}
+			if rendered := fmt.Sprint(input[0].Content); strings.Contains(rendered, "data:") {
+				t.Fatalf("content = %#v, want no file payload for an upload labelled image/png", input[0].Content)
+			}
+			content, ok := input[0].Content.(string)
+			if !ok || !strings.Contains(content, "Contents are not included") {
+				t.Fatalf("content = %#v, want the uploaded-file notice", input[0].Content)
+			}
+		})
+	}
+}
+
 func TestBuildResponsesInput_ToolCalls(t *testing.T) {
 	messages := []Message{
 		{Role: RoleAssistant, Parts: []Part{
