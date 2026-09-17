@@ -1,6 +1,8 @@
 package tools
 
 import (
+	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -81,6 +83,34 @@ func TestNormalizeAskUserAnswers(t *testing.T) {
 			t.Fatalf("error = %v, want duplicate selection", err)
 		}
 	})
+}
+
+func TestAskUserSuccessfulAnswerIsTrustedGuardianInput(t *testing.T) {
+	t.Parallel()
+	ctx := ContextWithAskUserUIFunc(context.Background(), func(context.Context, []AskUserQuestion) ([]AskUserAnswer, error) {
+		return []AskUserAnswer{{Selected: "Yes, delete exactly /tmp/abc"}}, nil
+	})
+	args, err := json.Marshal(AskUserArgs{Questions: []AskUserQuestion{{
+		Header: "Delete path", Question: "Delete exactly /tmp/abc?",
+		Options: []AskUserOption{{Label: "Cancel", Description: "Do not delete"}, {Label: "Yes, delete exactly /tmp/abc", Description: "Authorize this exact deletion"}},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := NewAskUserTool().Execute(ctx, args)
+	if err != nil || !strings.Contains(output.TrustedUserInput, "Yes, delete exactly /tmp/abc. Authorize this exact deletion") {
+		t.Fatalf("ask_user output = %+v, err = %v", output, err)
+	}
+	if !strings.Contains(output.Content, "Yes, delete exactly /tmp/abc") {
+		t.Fatalf("ask_user output lost answer: %s", output.Content)
+	}
+	var result AskUserResult
+	if err := json.Unmarshal([]byte(output.Content), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Questions) != 1 || result.Questions[0].Question != "Delete exactly /tmp/abc?" {
+		t.Fatalf("trusted ask_user output lost the question that was answered: %+v", result)
+	}
 }
 
 func TestAskUserAnswerSummary(t *testing.T) {

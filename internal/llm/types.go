@@ -324,6 +324,7 @@ type Message struct {
 	Parts                   []Part
 	CacheAnchor             bool   // provider should apply cache_control to this message (Anthropic-specific)
 	ApprovalRole            string `json:",omitempty"` // Optional role override for guardian/policy-review transcripts only.
+	ApprovalText            string `json:",omitempty"` // Optional canonical Guardian evidence text; providers ignore it.
 	ClientMessageID         string `json:",omitempty"` // Stable identity for first-party user intent; providers ignore it.
 	DisplayText             string `json:",omitempty"` // Optional persistence/UI text when provider-only context is present.
 	ResponseID              string `json:",omitempty"` // Stable response owner for persisted/UI projection identity; providers ignore it.
@@ -804,6 +805,7 @@ type ToolOutput struct {
 	FilesystemObservations []FilesystemObservationSummary `json:"filesystem_observations,omitempty"`
 	OutputClaimDiagnostics []OutputClaimDiagnostic        `json:"output_claim_diagnostics,omitempty"`
 	GuardianReviews        []GuardianReview               `json:"guardian_reviews,omitempty"` // Display-only Guardian audit metadata; never provider content
+	TrustedUserInput       string                         `json:"-"`                          // Canonical direct first-party human input for Guardian; empty for ordinary tool output
 	TimedOut               bool                           // Set by tools that support timeouts (e.g. shell); drives ToolSuccess=false without content sniffing
 	IsError                bool                           // Set when a tool returned an unsuccessful result (e.g. shell exit code != 0); copied to ToolResult.IsError for UI/history and provider error metadata
 }

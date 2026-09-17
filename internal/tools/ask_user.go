@@ -35,9 +35,10 @@ type AskUserAnswer struct {
 
 // AskUserResult is the complete result returned by the tool.
 type AskUserResult struct {
-	Answers []AskUserAnswer `json:"answers,omitempty"`
-	Error   string          `json:"error,omitempty"`
-	Type    string          `json:"type,omitempty"`
+	Questions []AskUserQuestion `json:"questions,omitempty"`
+	Answers   []AskUserAnswer   `json:"answers,omitempty"`
+	Error     string            `json:"error,omitempty"`
+	Type      string            `json:"type,omitempty"`
 }
 
 // AskUserArgs are the arguments passed to the ask_user tool.
@@ -136,6 +137,41 @@ func AskUserAnswerSummary(answers []AskUserAnswer) string {
 	return strings.Join(parts, " | ")
 }
 
+// AskUserApprovalEvidence renders the exact prompt-and-answer pairs as trusted
+// Guardian evidence. The runtime assigns this text a user approval role; raw tool
+// output remains an ordinary tool result for model/provider compatibility.
+func AskUserApprovalEvidence(questions []AskUserQuestion, answers []AskUserAnswer) string {
+	var evidence []string
+	for i, answer := range answers {
+		selected := strings.TrimSpace(answer.Selected)
+		if selected == "" {
+			continue
+		}
+		statement := selected
+		if i < len(questions) && !answer.IsCustom {
+			for _, option := range questions[i].Options {
+				if option.Label == answer.Selected {
+					if description := strings.TrimSpace(option.Description); description != "" {
+						statement += ". " + description
+					}
+					break
+				}
+			}
+		}
+		evidence = append(evidence, statement)
+	}
+	return strings.Join(evidence, "\n")
+}
+
+func askUserCancellationEvidence(questions []AskUserQuestion) string {
+	var b strings.Builder
+	b.WriteString("The user dismissed a first-party ask_user prompt and did not authorize the proposed action.")
+	for _, question := range questions {
+		fmt.Fprintf(&b, "\n\nQuestion declined: %s", strings.TrimSpace(question.Question))
+	}
+	return b.String()
+}
+
 // AskUserTool implements the ask_user tool.
 type AskUserTool struct{}
 
@@ -155,7 +191,8 @@ Guidelines:
 - Keep questions focused and actionable
 - Provide clear, distinct options with helpful descriptions
 - Use descriptive headers (max 12 chars) for tab navigation
-- Set multi_select: true when users should be able to select multiple options`,
+- Set multi_select: true when users should be able to select multiple options
+- When requesting authorization for an action, put the exact action and scope in the question and approval option description; a vague "yes" or "go ahead" alone may not authorize it`,
 		Schema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -290,11 +327,12 @@ func (t *AskUserTool) Execute(ctx context.Context, args json.RawMessage) (llm.To
 		// Check for cancellation
 		if err.Error() == "cancelled by user" {
 			result := AskUserResult{
-				Error: "User dismissed the question dialog",
-				Type:  "USER_CANCELLED",
+				Questions: a.Questions,
+				Error:     "User dismissed the question dialog",
+				Type:      "USER_CANCELLED",
 			}
 			data, _ := json.Marshal(result)
-			return llm.TextOutput(string(data)), nil
+			return llm.ToolOutput{Content: string(data), TrustedUserInput: askUserCancellationEvidence(a.Questions)}, nil
 		}
 		// Other errors (e.g., no TTY)
 		return llm.TextOutput(formatAskUserError(ErrExecutionFailed, err.Error())), nil
@@ -306,12 +344,12 @@ func (t *AskUserTool) Execute(ctx context.Context, args json.RawMessage) (llm.To
 	}
 
 	// Return successful result
-	result := AskUserResult{Answers: answers}
+	result := AskUserResult{Questions: a.Questions, Answers: answers}
 	data, err := json.Marshal(result)
 	if err != nil {
 		return llm.TextOutput(formatAskUserError(ErrExecutionFailed, fmt.Sprintf("failed to marshal result: %v", err))), nil
 	}
-	return llm.TextOutput(string(data)), nil
+	return llm.ToolOutput{Content: string(data), TrustedUserInput: AskUserApprovalEvidence(a.Questions, answers)}, nil
 }
 
 // Preview returns a short description of the tool call.
