@@ -3,6 +3,7 @@ package live
 import (
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -62,6 +63,23 @@ func TestConfigCapabilitiesOpenAIUsesPublicDefaultsAndCannotChangeVoice(t *testi
 	context := CapabilityContext(got)
 	if !strings.Contains(context, "cannot be changed during this call") {
 		t.Fatalf("OpenAI capability context = %q", context)
+	}
+}
+
+func TestConfigCapabilitiesGeminiUsesPCMDefaults(t *testing.T) {
+	cfg := config.LiveConfig{Provider: config.LiveProviderGemini}
+	got := ConfigCapabilities(cfg)
+	if got.Provider != config.LiveProviderGemini || got.Model != config.DefaultLiveGeminiModel || got.Voice != config.DefaultLiveGeminiVoice || got.CanSetVoice {
+		t.Fatalf("Gemini capabilities = %+v", got)
+	}
+	if !slices.Contains(got.Voices, config.DefaultLiveGeminiVoice) {
+		t.Fatalf("Gemini voices = %v", got.Voices)
+	}
+	cfg.Gemini.Model = "custom-live"
+	cfg.Gemini.Voice = "Aoede"
+	got = ConfigCapabilities(cfg)
+	if got.Model != "custom-live" || got.Voice != "Aoede" {
+		t.Fatalf("configured Gemini capabilities = %+v", got)
 	}
 }
 

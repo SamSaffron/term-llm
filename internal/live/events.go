@@ -16,12 +16,18 @@ const (
 	EventSessionUpdated EventKind = "session.updated"
 	// EventUserTranscript carries a delta of the user's speech.
 	EventUserTranscript EventKind = "user.transcript"
+	// EventUserTranscriptInterim carries a replaceable speech-recognition preview.
+	// It must never be appended to authoritative transcript or delegation context.
+	EventUserTranscriptInterim EventKind = "user.transcript.interim"
 	// EventAssistantTranscript carries a delta of the model's speech.
 	EventAssistantTranscript EventKind = "assistant.transcript"
 	// EventTurnDone reports a completed turn with its full transcript.
 	EventTurnDone EventKind = "turn.done"
 	// EventDelegationCreated asks the host to run real work.
 	EventDelegationCreated EventKind = "delegation.created"
+	// EventInterrupted reports that provider-side barge-in stopped the current
+	// model audio response. PCM transports use it to flush queued playback.
+	EventInterrupted EventKind = "interrupted"
 	// EventError carries a provider-reported error.
 	EventError EventKind = "error"
 	// EventEnded reports that the provider session finished.

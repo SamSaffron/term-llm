@@ -70,7 +70,11 @@ func (l *liveSession) settings(ctx context.Context, voice string) (live.Capabili
 // bounded tail of visible conversation. Tool results and developer/system
 // instructions are deliberately not copied into the voice conversation.
 func (s *serveServer) liveSessionOptions(ctx context.Context, sessionID string, caps live.Capabilities) live.SessionOptions {
-	opts := live.SessionOptions{SessionID: sessionID, Instructions: s.liveConfig().Instructions, Context: live.CapabilityContext(caps)}
+	debug, raw := s.liveDebugOptions()
+	opts := live.SessionOptions{
+		SessionID: sessionID, Instructions: s.liveConfig().Instructions, Context: live.CapabilityContext(caps),
+		Debug: debug, DebugRaw: raw,
+	}
 	if s.store == nil {
 		return opts
 	}

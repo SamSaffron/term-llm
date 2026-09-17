@@ -97,7 +97,7 @@
 
 .live-status {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 0.7rem;
   margin: 0 0.3rem 0.45rem;
   padding: 0.65rem 0.85rem;
@@ -108,26 +108,58 @@
   color: var(--text);
 }
 
-.live-status-content {
+.live-status-header {
   display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  gap: 0.15rem;
-  min-width: 0;
+  align-items: center;
+  gap: 0.7rem;
+  width: 100%;
 }
 
 .live-status-copy {
+  flex: 1;
+  min-width: 0;
   font-size: 0.9rem;
   font-weight: 650;
 }
 
 .live-status-transcript {
-  overflow: hidden;
+  overflow: auto;
+  max-height: 5.6em;
   color: var(--text-muted);
-  font-size: 0.86rem;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.live-status-transcript-expanded {
+  min-height: min(25dvh, 12rem);
+  max-height: min(40dvh, 24rem);
+}
+
+.live-status-turn + .live-status-turn {
+  margin-top: 0.75rem;
+}
+
+.live-status-interrupted {
+  font-size: 0.85em;
+  font-style: italic;
+}
+
+.live-status-speaker {
+  font-weight: 650;
+}
+
+.live-status-transcript-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.live-status-transcript-actions .btn {
+  font-size: 0.8rem;
 }
 
 .live-status-error {
@@ -159,17 +191,6 @@
   border: 2px solid var(--border);
   border-top-color: var(--accent);
   animation: spin 0.8s linear infinite;
-}
-
-.live-status-working {
-  flex: 0 0 auto;
-  padding: 0.28rem 0.55rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface-2);
-  color: var(--text-muted);
-  font-size: 0.76rem;
-  font-weight: 650;
 }
 
 .live-status-stop {
@@ -674,8 +695,12 @@
     border-radius: 16px;
   }
 
-  .live-status-content {
-    flex-basis: calc(100% - 2rem);
+  .live-status-transcript:not(.live-status-transcript-expanded) {
+    max-height: 4.2em;
+  }
+
+  .live-status-transcript-actions .btn {
+    min-height: 44px;
   }
 
   .live-status-stop {

@@ -38,6 +38,8 @@ const (
 	UpdateTranscript UpdateKind = "transcript"
 	// UpdateDelegation reports delegated-turn progress.
 	UpdateDelegation UpdateKind = "delegation"
+	// UpdateInterrupted tells the host to discard any buffered provider audio.
+	UpdateInterrupted UpdateKind = "interrupted"
 	// UpdateError carries a session error.
 	UpdateError UpdateKind = "error"
 	// UpdateEnded reports that the session finished.
@@ -64,6 +66,7 @@ type Update struct {
 	Role         string
 	Text         string
 	Final        bool
+	Interim      bool // replaceable UI-only recognition preview, not transcript history
 	DelegationID string
 	State        DelegationState
 }
@@ -220,6 +223,8 @@ func (c *Controller) handleEvent(event Event) bool {
 	switch event.Kind {
 	case EventSessionStarted:
 		c.observe(Update{Kind: UpdateStarted})
+	case EventUserTranscriptInterim:
+		c.observe(Update{Kind: UpdateTranscript, Role: RoleUser, Text: event.Text, Interim: true})
 	case EventUserTranscript:
 		c.observe(Update{Kind: UpdateTranscript, Role: RoleUser, Text: c.appendPartial(RoleUser, event.Text)})
 		c.flushPendingDelegations()
@@ -238,6 +243,11 @@ func (c *Controller) handleEvent(event Event) bool {
 		c.observe(Update{Kind: UpdateTranscript, Role: role, Text: text, Final: true})
 	case EventDelegationCreated:
 		c.enqueueDelegation(event)
+	case EventInterrupted:
+		c.mu.Lock()
+		c.assistantPartial = ""
+		c.mu.Unlock()
+		c.observe(Update{Kind: UpdateInterrupted})
 	case EventError:
 		if !event.ErrorHandled {
 			c.observe(Update{Kind: UpdateError, Text: event.Text})

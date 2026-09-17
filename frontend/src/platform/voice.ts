@@ -21,13 +21,26 @@ export function microphoneCapability(): VoiceCapability {
   return { supported: true, reason: '' };
 }
 
+export type LiveTransport = 'webrtc' | 'websocket_pcm' | 'http_pcm';
+
 // liveCapability lives beside the other media checks so the live store can ask
-// it without pulling the lazily loaded WebRTC call implementation into the
-// eager shell bundle.
-export function liveCapability(): VoiceCapability {
+// it without pulling the lazily loaded call implementation into the eager shell bundle.
+export function liveCapability(transport: LiveTransport = 'webrtc'): VoiceCapability {
   const microphone = microphoneCapability();
   if (!microphone.supported)
     return { ...microphone, reason: microphone.reason.replace('Voice recording', 'Live voice') };
+  if (transport === 'websocket_pcm' || transport === 'http_pcm') {
+    if (
+      (transport === 'websocket_pcm' && typeof globalThis.WebSocket !== 'function') ||
+      typeof globalThis.AudioContext !== 'function' ||
+      typeof globalThis.AudioWorkletNode !== 'function'
+    )
+      return {
+        supported: false,
+        reason: 'This browser cannot stream live PCM audio securely.',
+      };
+    return { supported: true, reason: '' };
+  }
   if (typeof globalThis.RTCPeerConnection !== 'function')
     return { supported: false, reason: 'This browser cannot start a live voice connection.' };
   return { supported: true, reason: '' };

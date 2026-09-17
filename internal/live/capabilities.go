@@ -33,6 +33,18 @@ func ConfigCapabilities(cfg config.LiveConfig) Capabilities {
 			Voices:   cfg.OpenAI.Voices(),
 		}
 	}
+	if provider == config.LiveProviderGemini {
+		model := strings.TrimSpace(cfg.Gemini.Model)
+		if model == "" {
+			model = config.DefaultLiveGeminiModel
+		}
+		return Capabilities{
+			Provider: provider,
+			Model:    model,
+			Voice:    cfg.Gemini.ResolvedVoice(),
+			Voices:   geminiLiveVoices(),
+		}
+	}
 	if provider == "" {
 		provider = config.LiveProviderChatGPT
 	}

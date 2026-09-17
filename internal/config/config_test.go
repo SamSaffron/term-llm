@@ -1710,8 +1710,41 @@ func TestLiveConfigOverridesAndValidation(t *testing.T) {
 	}
 	// Removed providers are rejected rather than silently mapped to ChatGPT.
 	removed := &Config{Live: LiveConfig{Provider: "codex"}}
-	if err := removed.ValidateLive(); err == nil || !strings.Contains(err.Error(), `expected "chatgpt" or "openai"`) {
+	if err := removed.ValidateLive(); err == nil || !strings.Contains(err.Error(), `expected "chatgpt", "openai", or "gemini"`) {
 		t.Fatalf("removed provider validation = %v", err)
+	}
+}
+
+func TestLiveGeminiConfigDefaultsSensitiveKeyAndValidation(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	if err := os.MkdirAll(filepath.Join(configDir, "term-llm"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := "live:\n  enabled: true\n  provider: gemini\n  gemini:\n    api_key: gemini-test-key\n"
+	if err := os.WriteFile(filepath.Join(configDir, "term-llm", "config.yaml"), []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Live.Provider != LiveProviderGemini || cfg.Live.Gemini.APIKey != "gemini-test-key" || cfg.Live.Gemini.Model != DefaultLiveGeminiModel || cfg.Live.Gemini.Voice != DefaultLiveGeminiVoice || cfg.Live.Gemini.BaseURL != DefaultLiveGeminiBaseURL {
+		t.Fatalf("unexpected Gemini config: %#v", cfg.Live.Gemini)
+	}
+	if err := cfg.ValidateLive(); err != nil {
+		t.Fatalf("Gemini config rejected: %v", err)
+	}
+	foundSensitive := false
+	for _, spec := range ConfigKeySpecs() {
+		if spec.Path == "live.gemini.api_key" {
+			foundSensitive = spec.Sensitive
+		}
+	}
+	if !foundSensitive {
+		t.Fatal("live.gemini.api_key is not registered as sensitive")
 	}
 }
 

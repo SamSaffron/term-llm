@@ -285,6 +285,20 @@ func TestLiveDelegationRunsAgentTurnAndSpeaksTheAnswer(t *testing.T) {
 	}
 }
 
+func TestLiveInterimTranscriptIsForwardedAsPreview(t *testing.T) {
+	record := newLiveSession("live_interim", "chat")
+	record.observe(live.Update{Kind: live.UpdateTranscript, Role: live.RoleUser, Text: "a revised guess", Interim: true})
+	events, subscriberID, _, _ := record.subscribe(0)
+	defer record.unsubscribe(subscriberID)
+	if len(events) != 1 || events[0].Type != liveEventTranscript {
+		t.Fatalf("events = %+v", events)
+	}
+	data := events[0].Data
+	if data["interim"] != true || data["final"] != false || data["text"] != "a revised guess" || data["role"] != live.RoleUser {
+		t.Fatalf("preview payload = %+v", data)
+	}
+}
+
 func TestLiveStreamsTranscriptEventsToTheBrowser(t *testing.T) {
 	harness := newLiveTestHarness(t)
 	status, body := harness.startLive(t, "sess_events")
@@ -499,6 +513,460 @@ func lastUserMessageText(t *testing.T, request llm.Request) string {
 		}
 	}
 	return text.String()
+}
+
+type stubPCMLiveSession struct {
+	events   chan live.Event
+	frames   chan live.PCMFrame
+	received chan []byte
+	closed   chan struct{}
+	once     sync.Once
+}
+
+func newStubPCMLiveSession() *stubPCMLiveSession {
+	return &stubPCMLiveSession{
+		events: make(chan live.Event, 16), frames: make(chan live.PCMFrame, 16),
+		received: make(chan []byte, 16), closed: make(chan struct{}),
+	}
+}
+
+func (s *stubPCMLiveSession) AnswerSDP() string         { return "" }
+func (s *stubPCMLiveSession) Events() <-chan live.Event { return s.events }
+func (s *stubPCMLiveSession) PCMFrames() <-chan live.PCMFrame {
+	return s.frames
+}
+func (s *stubPCMLiveSession) SendPCM(_ context.Context, pcm []byte) error {
+	s.received <- append([]byte(nil), pcm...)
+	return nil
+}
+func (s *stubPCMLiveSession) AppendDelegation(context.Context, string, live.DelegationChunk) error {
+	return nil
+}
+func (s *stubPCMLiveSession) AppendText(context.Context, string) error { return nil }
+func (s *stubPCMLiveSession) Close(context.Context) error {
+	s.once.Do(func() {
+		close(s.closed)
+		close(s.events)
+		close(s.frames)
+	})
+	return nil
+}
+
+func TestLiveDiagnosticsEndpointIsDebugGatedAndStructured(t *testing.T) {
+	t.Setenv("TERM_LLM_LIVE_DEBUG", "")
+	report := `{"sequence":1,"elapsed_ms":5000,"audio_context_state":"running","stream_open":true,"packets_received":4,"bytes_received":6400,"packets_scheduled":4,"packets_ended":3,"playback_queued_seconds":0.2,"underruns":1,"flush_interrupts":1,"flush_buffer_resets":0,"input_packets":20,"input_bytes":12800,"input_queue_drops":2,"post_count":4,"post_errors":0,"post_latency_total_ms":80,"post_latency_max_ms":25,"post_inflight":0,"input_silence_ms":10,"output_silence_ms":50}`
+
+	t.Run("disabled", func(t *testing.T) {
+		srv := newTestServeServer()
+		record := newLiveSession("live_diag_off", "session")
+		if err := srv.registerLiveSession(record); err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, "/v1/live/sessions/live_diag_off/diagnostics", strings.NewReader(report))
+		response := httptest.NewRecorder()
+		srv.handleLiveSessionByID(response, request)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("disabled status=%d body=%s", response.Code, response.Body.String())
+		}
+		if record.diagnosticReports != 0 {
+			t.Fatalf("disabled endpoint processed %d reports", record.diagnosticReports)
+		}
+	})
+
+	t.Run("enabled", func(t *testing.T) {
+		srv := newTestServeServer()
+		srv.cfg.debug = true
+		record := newLiveSession("live_diag_on", "session")
+		if err := srv.registerLiveSession(record); err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, "/v1/live/sessions/live_diag_on/diagnostics", strings.NewReader(report))
+		response := httptest.NewRecorder()
+		srv.handleLiveSessionByID(response, request)
+		if response.Code != http.StatusNoContent || record.diagnosticReports != 1 {
+			t.Fatalf("enabled status=%d reports=%d body=%s", response.Code, record.diagnosticReports, response.Body.String())
+		}
+		request = httptest.NewRequest(http.MethodPost, "/v1/live/sessions/live_diag_on/diagnostics", strings.NewReader(report))
+		response = httptest.NewRecorder()
+		srv.handleLiveSessionByID(response, request)
+		if response.Code != http.StatusNoContent || record.diagnosticReports != 1 {
+			t.Fatalf("rate limit status=%d reports=%d", response.Code, record.diagnosticReports)
+		}
+
+		bad := strings.TrimSuffix(report, "}") + `,"message":"arbitrary browser log https://secret.example/token"}`
+		request = httptest.NewRequest(http.MethodPost, "/v1/live/sessions/live_diag_on/diagnostics", strings.NewReader(bad))
+		response = httptest.NewRecorder()
+		srv.handleLiveSessionByID(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("arbitrary string status=%d body=%s", response.Code, response.Body.String())
+		}
+	})
+}
+
+func TestLiveGeminiStartReturnsPCMTransportWithoutSDP(t *testing.T) {
+	pcm := newStubPCMLiveSession()
+	srv := newTestServeServer()
+	srv.cfg.ui = true
+	srv.cfg.debug = true
+	srv.cfg.debugRaw = true
+	srv.shutdownCh = make(chan struct{})
+	srv.cfgRef = &config.Config{Live: config.LiveConfig{Enabled: true, Provider: config.LiveProviderGemini}}
+	provider := &stubPCMProvider{session: pcm, options: make(chan live.SessionOptions, 1)}
+	srv.liveProviderFactory = func(config.LiveConfig) (live.Provider, error) {
+		return provider, nil
+	}
+	t.Cleanup(func() { srv.closeLiveSessions(context.Background()) })
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/live/sessions", strings.NewReader(`{"session_id":"gemini-chat","audio_transport":"http_pcm"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	srv.handleLiveSessions(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["transport"] != "http_pcm" || body["sdp"] != "" || strings.TrimSpace(fmt.Sprint(body["audio_capability"])) == "" || body["audio_url"] != nil || body["diagnostics"] != true {
+		t.Fatalf("start response = %v", body)
+	}
+	select {
+	case opts := <-provider.options:
+		if !opts.Debug || !opts.DebugRaw {
+			t.Fatalf("diagnostic options = %+v", opts)
+		}
+	default:
+		t.Fatal("provider did not receive session options")
+	}
+	capability := srv.liveCapability(context.Background())
+	if capability["transport"] != "http_pcm" || capability["model"] != config.DefaultLiveGeminiModel {
+		t.Fatalf("capability = %v", capability)
+	}
+}
+
+type stubPCMProvider struct {
+	session *stubPCMLiveSession
+	options chan live.SessionOptions
+}
+
+func (p *stubPCMProvider) Name() string                { return config.LiveProviderGemini }
+func (p *stubPCMProvider) Ready(context.Context) error { return nil }
+func (p *stubPCMProvider) Start(_ context.Context, _ string, opts live.SessionOptions) (live.Session, error) {
+	if p.options != nil {
+		p.options <- opts
+	}
+	return p.session, nil
+}
+
+type deadlineFailingLiveResponseWriter struct {
+	header           http.Header
+	deadlines        []time.Time
+	currentDeadline  time.Time
+	writeSawDeadline bool
+	flushSawDeadline bool
+	flushErr         error
+	writes           int
+}
+
+func (w *deadlineFailingLiveResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *deadlineFailingLiveResponseWriter) Write([]byte) (int, error) {
+	w.writes++
+	w.writeSawDeadline = !w.currentDeadline.IsZero()
+	return 0, context.DeadlineExceeded
+}
+
+func (*deadlineFailingLiveResponseWriter) WriteHeader(int) {}
+func (*deadlineFailingLiveResponseWriter) Flush()          {}
+
+func (w *deadlineFailingLiveResponseWriter) FlushError() error {
+	w.flushSawDeadline = !w.currentDeadline.IsZero()
+	return w.flushErr
+}
+
+func (w *deadlineFailingLiveResponseWriter) SetWriteDeadline(deadline time.Time) error {
+	w.currentDeadline = deadline
+	w.deadlines = append(w.deadlines, deadline)
+	return nil
+}
+
+func TestLiveHTTPAudioOutputRequiresHeaderCapabilityAndDeadlinesFailedWrites(t *testing.T) {
+	pcm := newStubPCMLiveSession()
+	srv := newTestServeServer()
+	srv.cfg.ui = true
+	srv.shutdownCh = make(chan struct{})
+	record := newLiveSession("live_http_capability", "chat_http_capability")
+	if err := srv.registerLiveSession(record); err != nil {
+		t.Fatal(err)
+	}
+	if !srv.startLiveController(record, pcm) {
+		t.Fatal("controller did not start")
+	}
+	t.Cleanup(func() { srv.closeLiveSessions(context.Background()) })
+
+	token, err := record.issueAudioToken(time.Now(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryRequest := httptest.NewRequest(http.MethodGet, "/v1/live/sessions/"+record.id+"/audio/output?token="+token, nil)
+	queryResponse := httptest.NewRecorder()
+	srv.handleLiveSessionAudioOutput(queryResponse, queryRequest, record.id)
+	if queryResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("query capability status=%d body=%s", queryResponse.Code, queryResponse.Body.String())
+	}
+	record.mu.Lock()
+	attachedAfterQuery := record.audioAttached
+	record.mu.Unlock()
+	if attachedAfterQuery {
+		t.Fatal("rejected query capability consumed the one-use claim")
+	}
+
+	headerRequest := httptest.NewRequest(http.MethodGet, "/v1/live/sessions/"+record.id+"/audio/output", nil)
+	headerRequest.Header.Set("X-Term-LLM-Live-Audio-Capability", token)
+	writer := &deadlineFailingLiveResponseWriter{}
+	srv.handleLiveSessionAudioOutput(writer, headerRequest, record.id)
+	if !writer.flushSawDeadline {
+		t.Fatal("initial SSE flush did not have a write deadline")
+	}
+	if !writer.writeSawDeadline {
+		t.Fatal("failed SSE write did not have a write deadline")
+	}
+	if len(writer.deadlines) < 4 {
+		t.Fatalf("deadline operations=%v, want set+clear for initial flush and failed ready write", writer.deadlines)
+	}
+	for i, deadline := range writer.deadlines {
+		if deadline.IsZero() != (i%2 == 1) {
+			t.Fatalf("deadline %d zero=%t, want alternating set/clear: %v", i, deadline.IsZero(), writer.deadlines)
+		}
+	}
+	select {
+	case <-pcm.closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("failed deadline-bound SSE write did not disconnect the live session")
+	}
+}
+
+func TestLiveHTTPAudioOutputInitialFlushDeadlineFailureDisconnects(t *testing.T) {
+	pcm := newStubPCMLiveSession()
+	srv := newTestServeServer()
+	srv.cfg.ui = true
+	srv.shutdownCh = make(chan struct{})
+	record := newLiveSession("live_http_flush", "chat_http_flush")
+	if err := srv.registerLiveSession(record); err != nil {
+		t.Fatal(err)
+	}
+	if !srv.startLiveController(record, pcm) {
+		t.Fatal("controller did not start")
+	}
+	t.Cleanup(func() { srv.closeLiveSessions(context.Background()) })
+
+	token, err := record.issueAudioToken(time.Now(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/v1/live/sessions/"+record.id+"/audio/output", nil)
+	request.Header.Set("X-Term-LLM-Live-Audio-Capability", token)
+	writer := &deadlineFailingLiveResponseWriter{flushErr: context.DeadlineExceeded}
+	srv.handleLiveSessionAudioOutput(writer, request, record.id)
+	if !writer.flushSawDeadline {
+		t.Fatal("failed initial SSE flush did not have a write deadline")
+	}
+	if writer.writes != 0 {
+		t.Fatalf("writes after failed initial flush=%d, want 0", writer.writes)
+	}
+	select {
+	case <-pcm.closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("failed initial SSE flush did not disconnect the live session")
+	}
+}
+
+func TestLiveAudioWebSocketRequiresAuthOriginOneUseTokenAndBridgesPCM(t *testing.T) {
+	pcm := newStubPCMLiveSession()
+	srv := newTestServeServer()
+	srv.cfg.ui = true
+	srv.cfg.requireAuth = true
+	srv.cfg.token = "serve-secret"
+	srv.cfg.basePath = "/chat"
+	srv.shutdownCh = make(chan struct{})
+	srv.cfgRef = &config.Config{Live: config.LiveConfig{Enabled: true, Provider: config.LiveProviderGemini}}
+	record := newLiveSession("live_pcm", "chat_pcm")
+	if err := srv.registerLiveSession(record); err != nil {
+		t.Fatal(err)
+	}
+	if !srv.startLiveController(record, pcm) {
+		t.Fatal("controller did not start")
+	}
+	token, err := record.issueAudioToken(time.Now(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(srv.httpHandler())
+	defer ts.Close()
+	t.Cleanup(func() { srv.closeLiveSessions(context.Background()) })
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/chat/v1/live/sessions/live_pcm/audio?token=" + token
+
+	originOnly := http.Header{"Origin": []string{ts.URL}}
+	if conn, response, err := websocket.DefaultDialer.Dial(wsURL, originOnly); err == nil {
+		conn.Close()
+		t.Fatal("unauthenticated audio socket connected")
+	} else if response == nil || response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated response=%v err=%v", response, err)
+	}
+
+	headers := http.Header{"Origin": []string{ts.URL}, "Cookie": []string{"term_llm_token=serve-secret"}}
+	conn, response, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if err != nil {
+		status := 0
+		if response != nil {
+			status = response.StatusCode
+		}
+		t.Fatalf("dial status=%d: %v", status, err)
+	}
+	defer conn.Close()
+	// Valid microphone frames must reach the provider on the same socket.
+	if err := conn.WriteMessage(websocket.BinaryMessage, []byte{1, 0}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-pcm.received:
+		if string(got) != string([]byte{1, 0}) {
+			t.Fatalf("provider PCM from odd frame = %v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("complete browser PCM sample was not forwarded")
+	}
+	if err := conn.WriteMessage(websocket.BinaryMessage, []byte{2, 0, 3, 0}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-pcm.received:
+		if string(got) != string([]byte{2, 0, 3, 0}) {
+			t.Fatalf("provider PCM after odd frame = %v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("subsequent browser PCM was not forwarded")
+	}
+
+	pcm.frames <- live.PCMFrame{Audio: []byte{4, 0, 0xff}}
+	messageType, payload, err := conn.ReadMessage()
+	if err != nil || messageType != websocket.BinaryMessage || string(payload) != string([]byte{4, 0}) {
+		t.Fatalf("browser PCM from odd frame type=%d payload=%v err=%v", messageType, payload, err)
+	}
+	pcm.frames <- live.PCMFrame{Audio: []byte{5, 0, 6, 0}}
+	messageType, payload, err = conn.ReadMessage()
+	if err != nil || messageType != websocket.BinaryMessage || string(payload) != string([]byte{5, 0, 6, 0}) {
+		t.Fatalf("browser PCM after odd frame type=%d payload=%v err=%v", messageType, payload, err)
+	}
+	pcm.frames <- live.PCMFrame{Flush: true}
+	messageType, payload, err = conn.ReadMessage()
+	if err != nil || messageType != websocket.TextMessage || !strings.Contains(string(payload), `"interrupt"`) {
+		t.Fatalf("interrupt type=%d payload=%s err=%v", messageType, payload, err)
+	}
+
+	if second, secondResponse, secondErr := websocket.DefaultDialer.Dial(wsURL, headers); secondErr == nil {
+		second.Close()
+		t.Fatal("one-use audio capability was reused")
+	} else if secondResponse == nil || secondResponse.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("reuse response=%v err=%v", secondResponse, secondErr)
+	}
+	_ = conn.Close()
+	select {
+	case <-pcm.closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("audio disconnect did not close provider session")
+	}
+	waitForLiveCondition(t, "audio disconnect cleanup", func() bool {
+		_, ok := srv.lookupLiveSession(record.id)
+		return !ok
+	})
+}
+
+func TestLiveAudioWebSocketUpgradeFailureStopsClaimedSession(t *testing.T) {
+	pcm := newStubPCMLiveSession()
+	srv := newTestServeServer()
+	srv.cfg.ui = true
+	srv.shutdownCh = make(chan struct{})
+	srv.cfgRef = &config.Config{Live: config.LiveConfig{Enabled: true, Provider: config.LiveProviderGemini}}
+	record := newLiveSession("live_upgrade_failure", "chat_upgrade_failure")
+	if err := srv.registerLiveSession(record); err != nil {
+		t.Fatal(err)
+	}
+	if !srv.startLiveController(record, pcm) {
+		t.Fatal("controller did not start")
+	}
+	token, err := record.issueAudioToken(time.Now(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { srv.closeLiveSessions(context.Background()) })
+
+	request := httptest.NewRequest(http.MethodGet, "/v1/live/sessions/live_upgrade_failure/audio?token="+token, nil)
+	request.Header.Set("Sec-Fetch-Site", "same-origin")
+	// ResponseRecorder deliberately cannot hijack the connection, so Upgrade
+	// fails after the valid one-use capability has been claimed.
+	response := httptest.NewRecorder()
+	srv.handleLiveSessionAudio(response, request, record.id)
+
+	select {
+	case <-pcm.closed:
+	default:
+		t.Fatal("failed websocket upgrade left the provider session open")
+	}
+	if _, ok := srv.lookupLiveSession(record.id); ok {
+		t.Fatal("failed websocket upgrade retained the live session")
+	}
+}
+
+func TestLiveAudioWebSocketRejectsCrossOriginAndExpiredCapability(t *testing.T) {
+	pcm := newStubPCMLiveSession()
+	srv := newTestServeServer()
+	srv.cfg.ui = true
+	srv.cfg.basePath = "/chat"
+	srv.shutdownCh = make(chan struct{})
+	srv.cfgRef = &config.Config{Live: config.LiveConfig{Enabled: true, Provider: config.LiveProviderGemini}}
+	record := newLiveSession("live_origin", "chat_origin")
+	if err := srv.registerLiveSession(record); err != nil {
+		t.Fatal(err)
+	}
+	if !srv.startLiveController(record, pcm) {
+		t.Fatal("controller did not start")
+	}
+	token, err := record.issueAudioToken(time.Now(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(srv.httpHandler())
+	defer ts.Close()
+	t.Cleanup(func() { srv.closeLiveSessions(context.Background()) })
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/chat/v1/live/sessions/live_origin/audio?token=" + token
+
+	badOrigin := http.Header{"Origin": []string{"https://evil.example"}}
+	if conn, response, err := websocket.DefaultDialer.Dial(wsURL, badOrigin); err == nil {
+		conn.Close()
+		t.Fatal("cross-origin audio socket connected")
+	} else if response == nil || response.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-origin response=%v err=%v", response, err)
+	}
+	if _, ok := record.claimAudio(token, time.Now()); !ok {
+		t.Fatal("origin rejection consumed the audio capability")
+	}
+
+	expired := newLiveSession("expired", "chat")
+	expired.pcmSession = pcm
+	expiredToken, err := expired.issueAudioToken(time.Now().Add(-time.Minute), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := expired.claimAudio(expiredToken, time.Now()); ok {
+		t.Fatal("expired audio capability was accepted")
+	}
 }
 
 // delayedLiveProvider models negotiation completing successfully even after

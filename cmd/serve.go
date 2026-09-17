@@ -732,6 +732,8 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 				api:                     hasAPI,
 				suppressServerTools:     serveFilterServerTools,
 				verbose:                 serveVerbose,
+				debug:                   serveDebug || debugRaw,
+				debugRaw:                debugRaw,
 				basePath:                serveBasePath,
 				publicURL:               servePublicURL,
 				uiTitle:                 resolvedTitle,
@@ -1159,6 +1161,8 @@ type serveServerConfig struct {
 	api                     bool
 	suppressServerTools     bool
 	verbose                 bool
+	debug                   bool
+	debugRaw                bool
 	basePath                string // e.g. "/ui" or "/chat", always without trailing slash
 	publicURL               string // explicit browser-visible origin + optional prefix for OAuth callbacks
 	uiTitle                 string
@@ -1532,6 +1536,7 @@ func (s *serveServer) httpHandler() http.Handler {
 	inner.HandleFunc("/v1/chat/completions", s.auth(s.cors(s.handleChatCompletions)))
 	inner.HandleFunc("/v1/messages", s.auth(s.cors(s.handleAnthropicMessages)))
 	inner.HandleFunc("/v1/transcribe", s.auth(s.cors(s.handleTranscribe)))
+	inner.HandleFunc("GET /v1/live/sessions/{liveID}/audio", s.auth(s.handleLiveSessionAudioRoute))
 	inner.HandleFunc("/v1/live/sessions", s.auth(s.cors(s.handleLiveSessions)))
 	inner.HandleFunc("/v1/live/sessions/", s.auth(s.cors(s.handleLiveSessionByID)))
 	if s.jobsV2 != nil {

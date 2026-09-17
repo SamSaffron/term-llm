@@ -2,9 +2,10 @@
 // client for the voice model, and a controller that turns the voice model's
 // delegation requests into ordinary agent turns.
 //
-// The package is host-agnostic. A host supplies the media peer (today the
-// browser, which owns the WebRTC audio path) and a Delegator that runs the
-// delegated work; nothing here knows about HTTP handlers or a terminal UI.
+// The package is host-agnostic. A host supplies the media peer (browser WebRTC
+// for direct providers or a bounded PCM bridge for proxied providers) and a
+// Delegator that runs delegated work; nothing here knows about HTTP handlers or
+// a terminal UI.
 package live
 
 import (
@@ -29,6 +30,12 @@ type SessionOptions struct {
 	Context string
 	// InitialItems seeds the voice model with prior conversation.
 	InitialItems []InitialItem
+	// Debug enables metadata-only live transport diagnostics. DebugRaw adds
+	// sanitized inbound provider events and may include transcript text.
+	Debug    bool
+	DebugRaw bool
+	// LiveID correlates provider diagnostics with host/browser media reports.
+	LiveID string
 }
 
 // DelegationRequest is the structured input for one delegated agent turn.
@@ -77,6 +84,21 @@ type Session interface {
 	Close(ctx context.Context) error
 }
 
+// PCMFrame is provider audio or a playback-control marker. Audio is mono,
+// signed 16-bit little-endian PCM at 24 kHz. Flush discards queued playback.
+type PCMFrame struct {
+	Audio []byte
+	Flush bool
+}
+
+// PCMSession is implemented by providers whose media is proxied through the
+// term-llm server instead of negotiated directly with browser WebRTC.
+type PCMSession interface {
+	Session
+	SendPCM(ctx context.Context, pcm []byte) error
+	PCMFrames() <-chan PCMFrame
+}
+
 // DelegationCompletionSession is implemented by protocols requiring a complete
 // function result rather than accepting an open-ended stream of context.
 type DelegationCompletionSession interface {
@@ -103,6 +125,8 @@ func NewProviderWithClient(cfg config.LiveConfig, client *http.Client) (Provider
 	switch name := strings.TrimSpace(cfg.Provider); name {
 	case config.LiveProviderOpenAI:
 		return NewOpenAIProvider(cfg, client), nil
+	case config.LiveProviderGemini:
+		return NewGeminiProvider(cfg), nil
 	case "", config.LiveProviderChatGPT:
 		return NewChatGPTProvider(cfg, nil, client), nil
 	default:

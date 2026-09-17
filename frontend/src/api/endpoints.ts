@@ -1,7 +1,11 @@
 export interface LiveSessionStartResponse {
   live_id: string;
   session_id: string;
-  sdp: string;
+  transport?: 'webrtc' | 'websocket_pcm' | 'http_pcm';
+  sdp?: string;
+  audio_url?: string;
+  audio_capability?: string;
+  diagnostics?: boolean;
 }
 
 export interface LiveSessionStopResponse {
@@ -62,6 +66,7 @@ export interface StatsChild extends SessionMetrics {
 
 import type { ExtensionStatus } from '../stores/extension-runtime';
 import type { APIClient, RequestControls } from './client';
+import type { LiveEndpoints } from './live-endpoints';
 import type { ApprovalMode, Goal, MCPOAuthFlow, MCPResponse } from '../domain/types';
 import type { MentionSearchResponse } from '../domain/completions';
 
@@ -153,6 +158,15 @@ const sessionPost = <T = Record<string, unknown>>(
 // Review data may come from the session's node rather than the shell host. The
 // node's embedded UI hash is not authoritative for the browser's shell assets.
 const sessionReviewRead = { auth: 'session', versionCheck: false } as const;
+// Preserve each route's argument/result types across the lazy module boundary.
+const liveRoute =
+  <Args extends unknown[], Result>(
+    api: APIClient,
+    select: (routes: LiveEndpoints) => (...args: Args) => Promise<Result>,
+  ) =>
+  async (...args: Args): Promise<Result> =>
+    select((await import('./live-endpoints')).liveEndpoints(api))(...args);
+
 export const endpoints = (api: APIClient) => ({
   extensionsStatus: () =>
     api.get<ExtensionStatus>('/admin/extensions/status', undefined, { retries: 0 }),
@@ -339,26 +353,12 @@ export const endpoints = (api: APIClient) => ({
         : { policy: 'mutation', retries: 0, timeoutMs: 0, auth: 'session' },
     );
   },
-  liveStart: (sdp: string, sessionId: string) =>
-    api.json<LiveSessionStartResponse>(
-      '/v1/live/sessions',
-      { method: 'POST', body: JSON.stringify({ sdp, session_id: sessionId }) },
-      { policy: 'mutation', auth: 'session', retries: 0, timeoutMs: 0 },
-    ),
-  liveStop: (liveId: string) =>
-    api.delete<LiveSessionStopResponse>(`/v1/live/sessions/${encoded(liveId)}`),
-  liveText: (liveId: string, text: string) =>
-    api.json<{ ok: true }>(
-      `/v1/live/sessions/${encoded(liveId)}/text`,
-      { method: 'POST', body: JSON.stringify({ text }) },
-      { policy: 'mutation', auth: 'session', retries: 0 },
-    ),
-  liveEvents: (liveId: string, after: number, signal: AbortSignal) =>
-    api.request(
-      `/v1/live/sessions/${encoded(liveId)}/events${after > 0 ? `?after=${after}` : ''}`,
-      { signal, headers: { Accept: 'text/event-stream' } },
-      { policy: 'stream', retries: 0, timeoutMs: 0, auth: 'session' },
-    ),
+  liveStart: liveRoute(api, (routes) => routes.liveStart),
+  liveStop: liveRoute(api, (routes) => routes.liveStop),
+  liveAudioOutput: liveRoute(api, (routes) => routes.liveAudioOutput),
+  liveAudioInput: liveRoute(api, (routes) => routes.liveAudioInput),
+  liveText: liveRoute(api, (routes) => routes.liveText),
+  liveEvents: liveRoute(api, (routes) => routes.liveEvents),
   shellCreate: (id: string, cols: number, rows: number) =>
     sessionPost<ShellCreateResponse>(api, id, 'shell', { cols, rows }),
   shellStream: (id: string, shellId: string, offset: number, signal: AbortSignal) =>

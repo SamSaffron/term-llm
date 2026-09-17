@@ -158,6 +158,20 @@ describe('live voice endpoints', () => {
       { policy: 'mutation', auth: 'session', retries: 0, timeoutMs: 0 },
     );
 
+    await routes.liveStart('', 'session/one', 'http_pcm');
+    expect(json).toHaveBeenLastCalledWith(
+      '/v1/live/sessions',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          sdp: '',
+          session_id: 'session/one',
+          audio_transport: 'http_pcm',
+        }),
+      },
+      { policy: 'mutation', auth: 'session', retries: 0, timeoutMs: 0 },
+    );
+
     await routes.liveText('live/one', 'hello');
     expect(json).toHaveBeenLastCalledWith(
       '/v1/live/sessions/live%2Fone/text',
@@ -169,11 +183,79 @@ describe('live voice endpoints', () => {
     expect(remove).toHaveBeenCalledWith('/v1/live/sessions/live%2Fone');
 
     await routes.liveEvents('live/one', 7, controller.signal);
-    expect(request).toHaveBeenCalledWith(
+    expect(request).toHaveBeenLastCalledWith(
       '/v1/live/sessions/live%2Fone/events?after=7',
       { signal: controller.signal, headers: { Accept: 'text/event-stream' } },
       { policy: 'stream', retries: 0, timeoutMs: 0, auth: 'session' },
     );
+
+    await routes.liveAudioOutput('live/one', 'one-use', controller.signal);
+    expect(request).toHaveBeenLastCalledWith(
+      '/v1/live/sessions/live%2Fone/audio/output',
+      {
+        signal: controller.signal,
+        headers: {
+          Accept: 'text/event-stream',
+          'X-Term-LLM-Live-Audio-Capability': 'one-use',
+        },
+      },
+      { policy: 'stream', auth: 'session', retries: 0, timeoutMs: 0 },
+    );
+
+    const pcm = new ArrayBuffer(3_200);
+    await routes.liveAudioInput('live/one', pcm, controller.signal);
+    expect(request).toHaveBeenLastCalledWith(
+      '/v1/live/sessions/live%2Fone/audio/input',
+      {
+        method: 'POST',
+        signal: controller.signal,
+        headers: { Accept: 'application/json', 'Content-Type': 'application/octet-stream' },
+        body: pcm,
+      },
+      { policy: 'mutation', auth: 'session', retries: 0, timeoutMs: 15_000 },
+    );
+
+    const diagnostic = { sequence: 1, packets_received: 3 };
+    await routes.liveAudioInput('live/one', new ArrayBuffer(0), controller.signal, diagnostic);
+    expect(request).toHaveBeenLastCalledWith(
+      '/v1/live/sessions/live%2Fone/diagnostics',
+      {
+        method: 'POST',
+        signal: controller.signal,
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify(diagnostic),
+      },
+      { policy: 'mutation', auth: 'session', retries: 0, timeoutMs: 5_000 },
+    );
+  });
+
+  it('rebases generated audio routes through the API client Hub prefix', async () => {
+    const fetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    const api = new APIClient(
+      readInjectedConfig({ TERM_LLM_UI_PREFIX: '/node/artist' } as Window),
+      {
+        getToken: () => '',
+        onAuthRequired: vi.fn(),
+      },
+    );
+    const controller = new AbortController();
+    const routes = endpoints(api);
+
+    await routes.liveAudioOutput('live-id', 'capability', controller.signal);
+    await routes.liveAudioInput('live-id', new ArrayBuffer(3_200), controller.signal);
+    await routes.liveAudioInput('live-id', new ArrayBuffer(0), controller.signal, { sequence: 1 });
+
+    expect(fetch.mock.calls[0][0]).toBe('/node/artist/v1/live/sessions/live-id/audio/output');
+    expect(fetch.mock.calls[1][0]).toBe('/node/artist/v1/live/sessions/live-id/audio/input');
+    expect(fetch.mock.calls[2][0]).toBe('/node/artist/v1/live/sessions/live-id/diagnostics');
+    expect(
+      new Headers(fetch.mock.calls[0][1]?.headers).get('X-Term-LLM-Live-Audio-Capability'),
+    ).toBe('capability');
+    expect(fetch.mock.calls[0][1]?.credentials).toBe('same-origin');
+    expect(fetch.mock.calls[1][1]?.credentials).toBe('same-origin');
+    fetch.mockRestore();
   });
 });
 

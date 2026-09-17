@@ -111,41 +111,36 @@ function VoiceStatus({
   );
 }
 
+let loadedLiveStatus: ComponentType<{ live: LiveStore }> | null = null;
+
 function LiveStatus({ live }: { live: LiveStore }) {
   const phase = live.phase.value;
-  if (phase === 'idle' || phase === 'ended') return null;
-  const partial = live.partialAssistant.value || live.partialUser.value;
-  const working = live.working.value;
-  const error = live.lastError.value;
-  return (
-    <div
-      id="liveStatus"
-      class={`live-status live-status-${phase}`}
-      aria-live="polite"
-      role={phase === 'failed' ? 'alert' : 'status'}
-    >
-      <span
-        class={working || phase === 'connecting' ? 'live-status-spinner' : 'live-status-dot'}
-        aria-hidden="true"
-      />
-      <div class="live-status-content">
-        <span class="live-status-copy">
-          {phase === 'requesting-permission' && 'Requesting microphone access…'}
-          {phase === 'connecting' && 'Connecting live voice…'}
-          {phase === 'listening' && 'Listening…'}
-          {phase === 'speaking' && 'Speaking…'}
-          {phase === 'working' && 'Working on your request…'}
-          {phase === 'failed' && 'Live voice needs attention.'}
-        </span>
-        {partial && <span class="live-status-transcript">{partial}</span>}
-        {error && <span class="live-status-error">{error}</span>}
-      </div>
-      {working && <span class="live-status-working">Working…</span>}
-      {live.active.value && (
-        <button type="button" class="btn live-status-stop" onClick={() => void live.stop()}>
-          Stop
-        </button>
-      )}
+  const visible = phase !== 'idle' && phase !== 'ended';
+  const [Panel, setPanel] = useState(() => loadedLiveStatus);
+  useEffect(() => {
+    if (!visible || Panel) return;
+    let active = true;
+    void import('./LiveStatus')
+      .then(({ LiveStatus: component }) => {
+        loadedLiveStatus = component;
+        if (active) setPanel(() => component);
+      })
+      .catch(() => {
+        // Keep Stop available even if the optional transcript panel cannot load.
+      });
+    return () => {
+      active = false;
+    };
+  }, [visible, Panel]);
+  if (!visible) return null;
+  return Panel ? (
+    <Panel live={live} />
+  ) : (
+    <div class="live-status">
+      <span role="status">Live voice</span>
+      <button type="button" class="btn" onClick={() => void live.stop()}>
+        Stop
+      </button>
     </div>
   );
 }

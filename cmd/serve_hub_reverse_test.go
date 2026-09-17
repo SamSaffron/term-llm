@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,7 +16,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/hub"
+	"github.com/samsaffron/term-llm/internal/live"
 	"github.com/samsaffron/term-llm/internal/widgets"
 )
 
@@ -272,6 +276,200 @@ func TestHubReverseNodeProxyStreamsShellSSEIncrementally(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("first reverse SSE event was buffered until the backend response completed")
+	}
+}
+
+func TestHubReverseNodeProxyStreamsGeminiHTTPAudioRoundTrip(t *testing.T) {
+	pcm := newStubPCMLiveSession()
+	nodeServer := newTestServeServer()
+	nodeServer.cfg.ui = true
+	nodeServer.cfg.requireAuth = true
+	nodeServer.cfg.token = "node-token"
+	nodeServer.cfg.basePath = "/chat"
+	nodeServer.shutdownCh = make(chan struct{})
+	nodeServer.cfgRef = &config.Config{Live: config.LiveConfig{Enabled: true, Provider: config.LiveProviderGemini}}
+	nodeServer.liveProviderFactory = func(config.LiveConfig) (live.Provider, error) {
+		return &stubPCMProvider{session: pcm}, nil
+	}
+	nodeTS := httptest.NewServer(nodeServer.httpHandler())
+	defer nodeTS.Close()
+	defer nodeServer.closeLiveSessions(context.Background())
+
+	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
+	hubServer := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	hubTS := httptest.NewServer(hubServer.handler())
+	defer hubTS.Close()
+	connectorCtx, stopConnector := context.WithCancel(context.Background())
+	defer stopConnector()
+	go runHubReverseConnector(connectorCtx, hubTS.URL, node.ID, node.Token, nodeTS.URL, node.BasePath, nodeTS.Client())
+	waitForReverseNode(t, hubServer, node.ID)
+
+	startBody := `{"session_id":"hub-live","audio_transport":"http_pcm"}`
+	startReq, err := http.NewRequest(http.MethodPost, hubTS.URL+"/node/artist/v1/live/sessions", strings.NewReader(startBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	startReq.Header.Set("Content-Type", "application/json")
+	startResp, err := hubTS.Client().Do(startReq)
+	if err != nil {
+		t.Fatalf("start through reverse Hub: %v", err)
+	}
+	defer startResp.Body.Close()
+	if startResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(startResp.Body)
+		t.Fatalf("start status=%d body=%s", startResp.StatusCode, body)
+	}
+	var started struct {
+		LiveID          string `json:"live_id"`
+		Transport       string `json:"transport"`
+		AudioCapability string `json:"audio_capability"`
+		AudioURL        string `json:"audio_url"`
+	}
+	if err := json.NewDecoder(startResp.Body).Decode(&started); err != nil {
+		t.Fatal(err)
+	}
+	if started.LiveID == "" || started.Transport != "http_pcm" || started.AudioCapability == "" || started.AudioURL != "" {
+		t.Fatalf("start response = %+v", started)
+	}
+
+	inputPCM := []byte{1, 0, 2, 0}
+	expectedInputPCM := inputPCM
+	prematureInput, err := http.NewRequest(http.MethodPost, hubTS.URL+"/node/artist/v1/live/sessions/"+started.LiveID+"/audio/input", strings.NewReader(string(inputPCM)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prematureInput.Header.Set("Content-Type", "application/octet-stream")
+	prematureResp, err := hubTS.Client().Do(prematureInput)
+	if err != nil {
+		t.Fatalf("premature input through reverse Hub: %v", err)
+	}
+	_ = prematureResp.Body.Close()
+	if prematureResp.StatusCode != http.StatusConflict {
+		t.Fatalf("input before output attach status=%d, want 409", prematureResp.StatusCode)
+	}
+
+	outputCtx, stopOutput := context.WithCancel(context.Background())
+	defer stopOutput()
+	outputReq, err := http.NewRequestWithContext(outputCtx, http.MethodGet, hubTS.URL+"/node/artist/v1/live/sessions/"+started.LiveID+"/audio/output", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outputReq.Header.Set("Accept", "text/event-stream")
+	outputReq.Header.Set("X-Term-LLM-Live-Audio-Capability", started.AudioCapability)
+	outputResp, err := hubTS.Client().Do(outputReq)
+	if err != nil {
+		t.Fatalf("attach output through reverse Hub: %v", err)
+	}
+	defer outputResp.Body.Close()
+	if outputResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(outputResp.Body)
+		t.Fatalf("output status=%d body=%s", outputResp.StatusCode, body)
+	}
+
+	// The one-use capability permits exactly one media consumer, including when
+	// the competing consumer also traverses the reverse Hub path.
+	secondReq, err := http.NewRequest(http.MethodGet, hubTS.URL+"/node/artist/v1/live/sessions/"+started.LiveID+"/audio/output", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondReq.Header.Set("X-Term-LLM-Live-Audio-Capability", started.AudioCapability)
+	secondResp, err := hubTS.Client().Do(secondReq)
+	if err != nil {
+		t.Fatalf("second output attach: %v", err)
+	}
+	_ = secondResp.Body.Close()
+	if secondResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("second output status=%d, want 401", secondResp.StatusCode)
+	}
+
+	inputReq, err := http.NewRequest(http.MethodPost, hubTS.URL+"/node/artist/v1/live/sessions/"+started.LiveID+"/audio/input", strings.NewReader(string(inputPCM)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputReq.Header.Set("Content-Type", "application/octet-stream")
+	inputResp, err := hubTS.Client().Do(inputReq)
+	if err != nil {
+		t.Fatalf("send input through reverse Hub: %v", err)
+	}
+	_ = inputResp.Body.Close()
+	if inputResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("input status=%d, want 204", inputResp.StatusCode)
+	}
+	select {
+	case got := <-pcm.received:
+		if string(got) != string(expectedInputPCM) {
+			t.Fatalf("provider input=%v want=%v", got, expectedInputPCM)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reverse Hub did not forward complete microphone PCM samples")
+	}
+
+	followupInputPCM := []byte{7, 0, 8, 0}
+	followupInput, err := http.NewRequest(http.MethodPost, hubTS.URL+"/node/artist/v1/live/sessions/"+started.LiveID+"/audio/input", strings.NewReader(string(followupInputPCM)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	followupInput.Header.Set("Content-Type", "application/octet-stream")
+	followupResp, err := hubTS.Client().Do(followupInput)
+	if err != nil {
+		t.Fatalf("send follow-up input through reverse Hub: %v", err)
+	}
+	_ = followupResp.Body.Close()
+	if followupResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("follow-up input status=%d, want 204", followupResp.StatusCode)
+	}
+	select {
+	case got := <-pcm.received:
+		if string(got) != string(followupInputPCM) {
+			t.Fatalf("provider follow-up input=%v want=%v", got, followupInputPCM)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reverse Hub did not forward subsequent microphone PCM")
+	}
+
+	scanner := bufio.NewScanner(outputResp.Body)
+	event, data, ok := readSSEEvent(t, scanner)
+	if !ok || event != "ready" {
+		t.Fatalf("initial output event=%q data=%q ok=%t", event, data, ok)
+	}
+	outputPCM := []byte{3, 0, 4, 0, 0xff}
+	expectedOutputPCM := outputPCM[:len(outputPCM)-1]
+	pcm.frames <- live.PCMFrame{Audio: outputPCM}
+	event, data, ok = readSSEEvent(t, scanner)
+	if !ok || event != "audio" {
+		t.Fatalf("output event=%q data=%q ok=%t", event, data, ok)
+	}
+	var audioFrame struct {
+		Audio string `json:"audio"`
+	}
+	if err := json.Unmarshal([]byte(data), &audioFrame); err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(audioFrame.Audio)
+	if err != nil || string(decoded) != string(expectedOutputPCM) {
+		t.Fatalf("output PCM=%v want=%v err=%v", decoded, expectedOutputPCM, err)
+	}
+
+	followupOutputPCM := []byte{5, 0, 6, 0}
+	pcm.frames <- live.PCMFrame{Audio: followupOutputPCM}
+	event, data, ok = readSSEEvent(t, scanner)
+	if !ok || event != "audio" {
+		t.Fatalf("follow-up output event=%q data=%q ok=%t", event, data, ok)
+	}
+	if err := json.Unmarshal([]byte(data), &audioFrame); err != nil {
+		t.Fatal(err)
+	}
+	decoded, err = base64.StdEncoding.DecodeString(audioFrame.Audio)
+	if err != nil || string(decoded) != string(followupOutputPCM) {
+		t.Fatalf("follow-up output PCM=%v want=%v err=%v", decoded, followupOutputPCM, err)
+	}
+
+	stopOutput()
+	_ = outputResp.Body.Close()
+	select {
+	case <-pcm.closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("HTTP audio disconnect did not close the provider session")
 	}
 }
 

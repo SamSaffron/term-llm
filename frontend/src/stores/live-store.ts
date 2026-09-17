@@ -1,10 +1,11 @@
 import { computed, signal, type ReadonlySignal, type Signal } from '@preact/signals';
 import { decodeSSE } from '../api/client';
 import type { Endpoints } from '../api/endpoints';
-import type { LivePhase, LiveSnapshot, LiveStartResponse } from '../platform/live';
+import type { LivePhase, LiveSnapshot, LiveStartResponse, LiveTransport } from '../platform/live';
 import { liveCapability } from '../platform/voice';
 
 export interface LiveTurn {
+  interrupted?: boolean;
   role: 'user' | 'assistant';
   text: string;
 }
@@ -29,6 +30,7 @@ interface LiveEventData {
   role?: 'user' | 'assistant';
   text?: string;
   final?: boolean;
+  interim?: boolean;
   delegation_id?: string;
   state?: LiveDelegationState;
   message?: string;
@@ -74,7 +76,37 @@ export class LiveStore {
     return state === 'queued' || state === 'running';
   });
 
+  private turnSequence = 0;
+  private readonly turnOrder = new WeakMap<LiveTurn, number>();
+  private partialOrder: Partial<Record<LiveTurn['role'], number>> = {};
+
+  // Finalization is not chronological: Gemini may finalize the user's prompt
+  // after an interrupted assistant answer. Keep each turn's first-seen slot.
+  get transcriptTurns(): LiveTurn[] {
+    const turns = this.recentTurns.value.map((turn, index) => ({
+      turn,
+      order: this.turnOrder.get(turn) ?? index - RECENT_TURN_LIMIT,
+    }));
+    for (const role of ['user', 'assistant'] as const) {
+      const text = (role === 'user' ? this.partialUser : this.partialAssistant).value;
+      if (text)
+        turns.push({
+          turn: { role, text },
+          order: this.partialOrder[role] ?? Number.MAX_SAFE_INTEGER,
+        });
+    }
+    return turns.sort((a, b) => a.order - b.order).map(({ turn }) => turn);
+  }
+
+  private retainTurn(turn: LiveTurn): void {
+    this.turnOrder.set(turn, this.partialOrder[turn.role] ?? ++this.turnSequence);
+    this.recentTurns.value = [...this.recentTurns.peek(), turn]
+      .sort((a, b) => this.turnOrder.get(a)! - this.turnOrder.get(b)!)
+      .slice(-RECENT_TURN_LIMIT);
+  }
+
   private call: LiveCallHandle | null = null;
+  private transport: LiveTransport = 'webrtc';
   private unsubscribeCall: () => void = () => {};
   private generation = 0;
   private eventCursor = 0;
@@ -91,7 +123,7 @@ export class LiveStore {
   }
 
   private callCapability(): LiveSnapshot['capability'] {
-    return liveCapability();
+    return liveCapability(this.transport);
   }
 
   private attachCall(call: LiveCallHandle): LiveCallHandle {
@@ -101,16 +133,21 @@ export class LiveStore {
     return call;
   }
 
-  // ensureCall defers the WebRTC implementation to the first call so browsers
-  // that never use live voice never download it.
+  // ensureCall defers the provider-specific media implementation to the first call.
   private async ensureCall(): Promise<LiveCallHandle> {
     if (this.call) return this.call;
     const { LiveCall } = await import('../platform/live');
     if (this.call) return this.call;
     return this.attachCall(
       new LiveCall(
-        (sdp, sessionId) => this.endpoints.liveStart(sdp, sessionId),
+        (sdp, sessionId, audioTransport) =>
+          this.endpoints.liveStart(sdp, sessionId, audioTransport),
         this.endpoints.liveStop,
+        {
+          transport: this.transport,
+          openPCMOutput: this.endpoints.liveAudioOutput,
+          sendPCMInput: this.endpoints.liveAudioInput,
+        },
       ),
     );
   }
@@ -118,6 +155,20 @@ export class LiveStore {
   applyCapability(value: unknown): void {
     const capability =
       value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
+    const nextTransport: LiveTransport =
+      capability?.transport === 'http_pcm'
+        ? 'http_pcm'
+        : capability?.transport === 'websocket_pcm'
+          ? 'websocket_pcm'
+          : 'webrtc';
+    if (nextTransport !== this.transport && this.call && !this.active.peek()) {
+      this.unsubscribeCall();
+      this.call.dispose();
+      this.call = null;
+      this.unsubscribeCall = () => {};
+    }
+    this.transport = nextTransport;
+    if (!this.call) this.capability.value = this.callCapability();
     this.enabled.value = capability?.enabled === true;
     if (!this.enabled.peek() && this.active.peek()) void this.stop();
   }
@@ -139,6 +190,8 @@ export class LiveStore {
     this.partialUser.value = '';
     this.partialAssistant.value = '';
     this.recentTurns.value = [];
+    this.turnSequence = 0;
+    this.partialOrder = {};
     this.delegation.value = null;
     this.activeDelegations.clear();
     this.lastError.value = '';
@@ -280,14 +333,33 @@ export class LiveStore {
     if (event === 'live.transcript') {
       if (data.role !== 'user' && data.role !== 'assistant') return;
       const text = String(data.text || '');
+      // User previews must not erase assistant text: an interruption archives
+      // that text separately, and its event can arrive after the user preview.
       const target = data.role === 'user' ? this.partialUser : this.partialAssistant;
+      const previous = this.recentTurns.peek().at(-1);
+      if (text && this.partialOrder[data.role] === undefined)
+        this.partialOrder[data.role] = ++this.turnSequence;
+      // Some providers finalize the same partial after the interruption event.
+      // Keep its interrupted marker instead of appending an identical turn.
+      const repeatedInterrupted =
+        data.role === 'assistant' &&
+        !target.peek() &&
+        previous?.interrupted &&
+        previous.text === text;
       target.value = data.final ? '' : text;
-      if (data.final && text.trim())
-        this.recentTurns.value = [...this.recentTurns.peek(), { role: data.role, text }].slice(
-          -RECENT_TURN_LIMIT,
-        );
+      if (data.final && text.trim() && !repeatedInterrupted)
+        this.retainTurn({ role: data.role, text });
+      if (data.final || !text) delete this.partialOrder[data.role];
       if (!this.working.peek())
         this.phase.value = data.role === 'assistant' && !data.final ? 'speaking' : 'listening';
+      return;
+    }
+    if (event === 'live.interrupted') {
+      const text = this.partialAssistant.peek();
+      if (text.trim()) this.retainTurn({ role: 'assistant', text, interrupted: true });
+      delete this.partialOrder.assistant;
+      this.partialAssistant.value = '';
+      if (!this.working.peek()) this.phase.value = 'listening';
       return;
     }
     if (event === 'live.delegation') {

@@ -100,10 +100,15 @@ const (
 	// LiveProviderChatGPT speaks the realtime protocol directly using ChatGPT OAuth.
 	LiveProviderChatGPT = "chatgpt"
 	// LiveProviderOpenAI uses the public Realtime API with an API key.
-	LiveProviderOpenAI       = "openai"
+	LiveProviderOpenAI = "openai"
+	// LiveProviderGemini uses Gemini Live with server-proxied PCM audio.
+	LiveProviderGemini       = "gemini"
 	DefaultLiveOpenAIModel   = "gpt-live-1"
 	DefaultLiveOpenAIVoice   = "marin"
 	DefaultLiveOpenAIBaseURL = "https://api.openai.com/v1"
+	DefaultLiveGeminiModel   = "gemini-3.8-live"
+	DefaultLiveGeminiVoice   = "Kore"
+	DefaultLiveGeminiBaseURL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 
 	DefaultLiveProvider               = LiveProviderChatGPT
 	DefaultLiveIdleTimeout            = "10m"
@@ -284,6 +289,10 @@ var keySpecs = []KeySpec{
 	def("live.openai.model", DefaultLiveOpenAIModel),
 	def("live.openai.voice", DefaultLiveOpenAIVoice),
 	def("live.openai.base_url", DefaultLiveOpenAIBaseURL),
+	optional("live.gemini.api_key", sensitive()),
+	def("live.gemini.model", DefaultLiveGeminiModel),
+	def("live.gemini.voice", DefaultLiveGeminiVoice),
+	def("live.gemini.base_url", DefaultLiveGeminiBaseURL),
 	def("live.chatgpt.model", DefaultLiveChatGPTModel),
 	def("live.chatgpt.voice", DefaultLiveChatGPTVoice),
 	def("live.chatgpt.call_base_url", DefaultLiveChatGPTCallBaseURL),

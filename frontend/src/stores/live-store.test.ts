@@ -99,6 +99,26 @@ function setup() {
 afterEach(() => vi.useRealTimers());
 
 describe('LiveStore', () => {
+  it('selects browser PCM prerequisites from the server transport capability', () => {
+    Object.defineProperty(globalThis, 'isSecureContext', { configurable: true, value: true });
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn() },
+    });
+    vi.stubGlobal('WebSocket', class {});
+    vi.stubGlobal('AudioContext', class {});
+    vi.stubGlobal('AudioWorkletNode', class {});
+    try {
+      const store = new LiveStore({} as Endpoints, () => 'session-one');
+      store.applyCapability({ enabled: true, provider: 'gemini', transport: 'websocket_pcm' });
+      expect(store.enabled.value).toBe(true);
+      expect(store.capability.value).toEqual({ supported: true, reason: '' });
+      store.dispose();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('waits for a durable chat session before opening the microphone call', async () => {
     const events = eventStream();
     const endpoints = { liveEvents: vi.fn(async () => events.response) } as unknown as Endpoints;
@@ -184,6 +204,134 @@ describe('LiveStore', () => {
     events.push(4, 'live.delegation', { delegation_id: 'task', state: 'done' });
     await vi.waitFor(() => expect(store.working.value).toBe(false));
     expect(store.phase.value).toBe('listening');
+    store.dispose();
+    events.close();
+  });
+
+  it('replaces interim user previews without recording guesses or duplicating final text', async () => {
+    const { store, events } = setup();
+    await store.start();
+    events.push(1, 'live.transcript', { role: 'assistant', text: 'Previous answer' });
+    events.push(2, 'live.transcript', { role: 'user', text: 'open the wrong file', interim: true });
+    await vi.waitFor(() => expect(store.partialUser.value).toBe('open the wrong file'));
+    events.push(3, 'live.transcript', { role: 'user', text: 'open the right file', interim: true });
+    await vi.waitFor(() => expect(store.partialUser.value).toBe('open the right file'));
+    expect(store.recentTurns.value).toEqual([]);
+    expect(store.partialAssistant.value).toBe('Previous answer');
+
+    events.push(4, 'live.transcript', { role: 'user', text: 'Open the right file.' });
+    await vi.waitFor(() => expect(store.partialUser.value).toBe('Open the right file.'));
+    events.push(5, 'live.transcript', { role: 'user', text: 'Open the right file.', final: true });
+    await vi.waitFor(() =>
+      expect(store.recentTurns.value).toEqual([{ role: 'user', text: 'Open the right file.' }]),
+    );
+
+    events.push(6, 'live.transcript', { role: 'user', text: 'unconfirmed', interim: true });
+    await vi.waitFor(() => expect(store.partialUser.value).toBe('unconfirmed'));
+    events.push(7, 'live.transcript', { role: 'user', text: '', interim: true });
+    await vi.waitFor(() => expect(store.partialUser.value).toBe(''));
+    expect(store.recentTurns.value).toHaveLength(1);
+    events.push(8, 'live.transcript', { role: 'user', text: 'another preview', interim: true });
+    await vi.waitFor(() => expect(store.partialUser.value).toBe('another preview'));
+    await store.stop();
+    expect(store.partialUser.value).toBe('');
+    store.dispose();
+  });
+
+  it('keeps a late-finalized prompt before its interrupted answer and the following stop', async () => {
+    const { store, events } = setup();
+    await store.start();
+    events.push(1, 'live.transcript', { role: 'user', text: 'Tell me a funny story.' });
+    events.push(2, 'live.transcript', { role: 'assistant', text: 'A man bought a parrot...' });
+    events.push(3, 'live.interrupted', {});
+    await vi.waitFor(() => expect(store.recentTurns.value).toHaveLength(1));
+    expect(store.transcriptTurns).toEqual([
+      { role: 'user', text: 'Tell me a funny story.' },
+      { role: 'assistant', text: 'A man bought a parrot...', interrupted: true },
+    ]);
+    events.push(4, 'live.transcript', {
+      role: 'user',
+      text: 'Tell me a funny story.',
+      final: true,
+    });
+    events.push(5, 'live.transcript', { role: 'user', text: 'Stop.' });
+    await vi.waitFor(() => expect(store.partialUser.value).toBe('Stop.'));
+    expect(store.transcriptTurns.map((t) => t.text)).toEqual([
+      'Tell me a funny story.',
+      'A man bought a parrot...',
+      'Stop.',
+    ]);
+    events.push(6, 'live.transcript', { role: 'user', text: 'Stop.', final: true });
+    await vi.waitFor(() => expect(store.recentTurns.value).toHaveLength(3));
+    expect(store.recentTurns.value.map((t) => t.text)).toEqual([
+      'Tell me a funny story.',
+      'A man bought a parrot...',
+      'Stop.',
+    ]);
+    store.dispose();
+    events.close();
+  });
+
+  it('keeps the first position when interim text is revised and finals arrive in reverse order', async () => {
+    const { store, events } = setup();
+    await store.start();
+    events.push(1, 'live.transcript', { role: 'user', text: 'Tell me', interim: true });
+    events.push(2, 'live.transcript', { role: 'assistant', text: 'Sure' });
+    events.push(3, 'live.transcript', { role: 'user', text: 'Tell me a story', interim: true });
+    events.push(4, 'live.transcript', { role: 'assistant', text: 'Sure!', final: true });
+    events.push(5, 'live.transcript', { role: 'user', text: 'Tell me a story.', final: true });
+    await vi.waitFor(() => expect(store.recentTurns.value).toHaveLength(2));
+    expect(store.transcriptTurns).toEqual([
+      { role: 'user', text: 'Tell me a story.' },
+      { role: 'assistant', text: 'Sure!' },
+    ]);
+    store.dispose();
+    events.close();
+  });
+
+  it('retains interrupted assistant speech even when a user preview arrives first', async () => {
+    const { store, events } = setup();
+    await store.start();
+    events.push(1, 'live.transcript', {
+      role: 'assistant',
+      text: 'Here is the explanation so far',
+    });
+    events.push(2, 'live.transcript', { role: 'user', text: 'Wait', interim: true });
+    await vi.waitFor(() => expect(store.partialUser.value).toBe('Wait'));
+    expect(store.partialAssistant.value).toBe('Here is the explanation so far');
+    events.push(3, 'live.interrupted', {});
+    events.push(4, 'live.transcript', {
+      role: 'assistant',
+      text: 'Here is the explanation so far',
+      final: true,
+    });
+    await vi.waitFor(() => expect(store.partialAssistant.value).toBe(''));
+    expect(store.recentTurns.value).toEqual([
+      { role: 'assistant', text: 'Here is the explanation so far', interrupted: true },
+    ]);
+    expect(store.phase.value).toBe('listening');
+    events.push(5, 'live.transcript', {
+      role: 'user',
+      text: 'Wait, explain that bit.',
+      final: true,
+    });
+    events.push(6, 'live.transcript', { role: 'assistant', text: 'Let me clarify.' });
+    events.push(7, 'live.transcript', { role: 'assistant', text: 'Let me clarify.', final: true });
+    await vi.waitFor(() => expect(store.recentTurns.value).toHaveLength(3));
+    expect(store.recentTurns.value[0].interrupted).toBe(true);
+    expect(store.recentTurns.value[2]).toEqual({ role: 'assistant', text: 'Let me clarify.' });
+    store.dispose();
+    events.close();
+  });
+
+  it('does not duplicate completed turns or clear working state on interruption', async () => {
+    const { store, events } = setup();
+    await store.start();
+    events.push(1, 'live.transcript', { role: 'assistant', text: 'Finished answer', final: true });
+    events.push(2, 'live.delegation', { delegation_id: 'job', state: 'running' });
+    events.push(3, 'live.interrupted', {});
+    await vi.waitFor(() => expect(store.phase.value).toBe('working'));
+    expect(store.recentTurns.value).toEqual([{ role: 'assistant', text: 'Finished answer' }]);
     store.dispose();
     events.close();
   });

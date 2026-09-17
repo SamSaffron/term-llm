@@ -2,15 +2,23 @@ package cmd
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/live"
@@ -28,15 +36,25 @@ const (
 	liveIdleCheckInterval    = 15 * time.Second
 	liveCommentaryMinSpacing = 5 * time.Second
 	liveStartTimeout         = 45 * time.Second
+	liveAudioAttachTimeout   = 20 * time.Second
+	liveAudioWriteTimeout    = 10 * time.Second
+	liveAudioPongTimeout     = 45 * time.Second
+	liveAudioPingInterval    = 15 * time.Second
+	liveAudioFrameLimitBytes = 64 << 10
+	liveAudioSSEChunkBytes   = 24 << 10
+	liveDiagnosticsMaxBytes  = 8 << 10
+	liveDiagnosticsMaxCount  = 256
+	liveDiagnosticsMinGap    = time.Second
 )
 
 // Live event types streamed to the browser for one live call.
 const (
-	liveEventStarted    = "live.started"
-	liveEventTranscript = "live.transcript"
-	liveEventDelegation = "live.delegation"
-	liveEventError      = "live.error"
-	liveEventEnded      = "live.ended"
+	liveEventStarted     = "live.started"
+	liveEventTranscript  = "live.transcript"
+	liveEventDelegation  = "live.delegation"
+	liveEventInterrupted = "live.interrupted"
+	liveEventError       = "live.error"
+	liveEventEnded       = "live.ended"
 )
 
 type liveSessionEvent struct {
@@ -55,16 +73,24 @@ type liveSession struct {
 	mu                sync.Mutex
 	controller        *live.Controller
 	voiceSession      live.VoiceSession
+	pcmSession        live.PCMSession
 	capabilities      live.Capabilities
 	cancel            context.CancelFunc
 	lastActivity      time.Time
 	ended             bool
+	audioTokenHash    [sha256.Size]byte
+	audioTokenExpires time.Time
+	audioTokenSet     bool
+	audioAttached     bool
+	audioActive       bool
 	events            []liveSessionEvent
 	eventHead         int
 	nextSequence      int
 	subscribers       map[int]chan liveSessionEvent
 	subscriberDropped map[int]bool
 	nextSubscriber    int
+	diagnosticLast    time.Time
+	diagnosticReports int
 }
 
 func newLiveSession(id, sessionID string) *liveSession {
@@ -174,16 +200,83 @@ func (l *liveSession) touch() {
 	l.mu.Unlock()
 }
 
+func (l *liveSession) acceptDiagnostic(now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.ended || l.diagnosticReports >= liveDiagnosticsMaxCount {
+		return false
+	}
+	if !l.diagnosticLast.IsZero() && now.Sub(l.diagnosticLast) < liveDiagnosticsMinGap {
+		return false
+	}
+	l.diagnosticLast = now
+	l.diagnosticReports++
+	return true
+}
+
 func (l *liveSession) idleFor(now time.Time) time.Duration {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return now.Sub(l.lastActivity)
 }
 
+func (l *liveSession) issueAudioToken(now time.Time, lifetime time.Duration) (string, error) {
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return "", fmt.Errorf("generate audio capability: %w", err)
+	}
+	token := base64.RawURLEncoding.EncodeToString(secret)
+	l.mu.Lock()
+	l.audioTokenHash = sha256.Sum256([]byte(token))
+	l.audioTokenExpires = now.Add(lifetime)
+	l.audioTokenSet = true
+	l.mu.Unlock()
+	return token, nil
+}
+
+func (l *liveSession) claimAudio(token string, now time.Time) (live.PCMSession, bool) {
+	hash := sha256.Sum256([]byte(token))
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.ended || l.pcmSession == nil || !l.audioTokenSet || l.audioAttached || now.After(l.audioTokenExpires) {
+		return nil, false
+	}
+	if subtle.ConstantTimeCompare(hash[:], l.audioTokenHash[:]) != 1 {
+		return nil, false
+	}
+	l.audioTokenSet = false
+	l.audioAttached = true
+	l.audioActive = true
+	l.lastActivity = now
+	return l.pcmSession, true
+}
+
+func (l *liveSession) attachedAudio() (live.PCMSession, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.ended || !l.audioActive || l.pcmSession == nil {
+		return nil, false
+	}
+	return l.pcmSession, true
+}
+
+func (l *liveSession) releaseAudio() {
+	l.mu.Lock()
+	l.audioActive = false
+	l.mu.Unlock()
+}
+
+func (l *liveSession) audioWasAttached() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.audioAttached
+}
+
 func (l *liveSession) closeSubscribers() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.ended = true
+	l.audioActive = false
 	for id, ch := range l.subscribers {
 		delete(l.subscribers, id)
 		close(ch)
@@ -232,15 +325,12 @@ func (s *serveServer) liveProvider() (live.Provider, error) {
 // liveCapability describes live support for /v1/capabilities.
 func (s *serveServer) liveCapability(ctx context.Context) map[string]any {
 	cfg := s.liveConfig()
-	provider := strings.TrimSpace(cfg.Provider)
-	if provider == "" {
-		provider = config.DefaultLiveProvider
-	}
-	model := config.DefaultLiveChatGPTModel
-	if provider == config.LiveProviderChatGPT {
-		if configured := strings.TrimSpace(cfg.ChatGPT.Model); configured != "" {
-			model = configured
-		}
+	capabilities := live.ConfigCapabilities(cfg)
+	transport := "webrtc"
+	if capabilities.Provider == config.LiveProviderGemini {
+		// Browser WebSockets cannot traverse an existing reverse Hub connector.
+		// Ordinary streamed HTTP can, and remains usable for direct nodes too.
+		transport = "http_pcm"
 	}
 	enabled := false
 	if s.liveFeatureEnabled() {
@@ -249,18 +339,71 @@ func (s *serveServer) liveCapability(ctx context.Context) map[string]any {
 		}
 	}
 	return map[string]any{
-		"enabled": enabled, "provider": provider, "model": model,
-		"transport": "webrtc", "version": 1,
+		"enabled": enabled, "provider": capabilities.Provider, "model": capabilities.Model,
+		"transport": transport, "version": 3,
 	}
 }
 
 type liveStartRequest struct {
-	SDP       string `json:"sdp"`
-	SessionID string `json:"session_id"`
+	SDP            string `json:"sdp"`
+	SessionID      string `json:"session_id"`
+	AudioTransport string `json:"audio_transport"`
 }
 
 type liveTextRequest struct {
 	Text string `json:"text"`
+}
+
+type liveBrowserDiagnostics struct {
+	Sequence           int64   `json:"sequence"`
+	ElapsedMS          float64 `json:"elapsed_ms"`
+	AudioContextState  string  `json:"audio_context_state"`
+	StreamOpen         bool    `json:"stream_open"`
+	PacketsReceived    int64   `json:"packets_received"`
+	BytesReceived      int64   `json:"bytes_received"`
+	PacketsScheduled   int64   `json:"packets_scheduled"`
+	PacketsEnded       int64   `json:"packets_ended"`
+	PlaybackQueuedSecs float64 `json:"playback_queued_seconds"`
+	Underruns          int64   `json:"underruns"`
+	FlushInterrupts    int64   `json:"flush_interrupts"`
+	FlushBufferResets  int64   `json:"flush_buffer_resets"`
+	InputPackets       int64   `json:"input_packets"`
+	InputBytes         int64   `json:"input_bytes"`
+	InputQueueDrops    int64   `json:"input_queue_drops"`
+	PostCount          int64   `json:"post_count"`
+	PostErrors         int64   `json:"post_errors"`
+	PostLatencyTotalMS float64 `json:"post_latency_total_ms"`
+	PostLatencyMaxMS   float64 `json:"post_latency_max_ms"`
+	PostInflight       int64   `json:"post_inflight"`
+	InputSilenceMS     float64 `json:"input_silence_ms"`
+	OutputSilenceMS    float64 `json:"output_silence_ms"`
+}
+
+func (d liveBrowserDiagnostics) valid() bool {
+	const dayMS = float64((24 * time.Hour) / time.Millisecond)
+	const tenMinutesMS = float64((10 * time.Minute) / time.Millisecond)
+	if d.Sequence < 0 || d.Sequence > 1_000_000 || !liveDiagnosticNumber(d.ElapsedMS, dayMS) ||
+		!liveDiagnosticNumber(d.PlaybackQueuedSecs, 60) || !liveDiagnosticNumber(d.PostLatencyTotalMS, dayMS) ||
+		!liveDiagnosticNumber(d.PostLatencyMaxMS, tenMinutesMS) ||
+		!liveDiagnosticNumber(d.InputSilenceMS, dayMS) || !liveDiagnosticNumber(d.OutputSilenceMS, dayMS) {
+		return false
+	}
+	for _, count := range []int64{d.PacketsReceived, d.BytesReceived, d.PacketsScheduled, d.PacketsEnded, d.Underruns,
+		d.FlushInterrupts, d.FlushBufferResets, d.InputPackets, d.InputBytes, d.InputQueueDrops, d.PostCount, d.PostErrors, d.PostInflight} {
+		if count < 0 || count > 1_000_000_000 {
+			return false
+		}
+	}
+	switch d.AudioContextState {
+	case "running", "suspended", "interrupted", "closed", "unknown":
+		return true
+	default:
+		return false
+	}
+}
+
+func liveDiagnosticNumber(value, maximum float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 && value <= maximum
 }
 
 // handleLiveSessions starts a live voice call bound to a chat session.
@@ -281,15 +424,17 @@ func (s *serveServer) handleLiveSessions(w http.ResponseWriter, r *http.Request)
 	}
 	// The offer is forwarded byte for byte: SDP requires every line, including
 	// the last, to end with CRLF, so trimming it makes the provider's parser
-	// fail with EOF.
+	// fail with EOF. Gemini uses server-proxied PCM and therefore has no SDP.
 	offer := request.SDP
-	if strings.TrimSpace(offer) == "" {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "sdp is required")
-		return
-	}
-	if len(offer) > liveSDPLimitBytes {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "sdp offer is too large")
-		return
+	if strings.TrimSpace(s.liveConfig().Provider) != config.LiveProviderGemini {
+		if strings.TrimSpace(offer) == "" {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "sdp is required")
+			return
+		}
+		if len(offer) > liveSDPLimitBytes {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "sdp offer is too large")
+			return
+		}
 	}
 	sessionID := strings.TrimSpace(request.SessionID)
 	if sessionID == "" {
@@ -325,6 +470,7 @@ func (s *serveServer) handleLiveSessions(w http.ResponseWriter, r *http.Request)
 	startCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), liveStartTimeout)
 	defer cancel()
 	opts := s.liveSessionOptions(startCtx, sessionID, record.capabilities)
+	opts.LiveID = liveID
 	providerSession, err := provider.Start(startCtx, offer, opts)
 	if err != nil {
 		s.removeLiveSession(liveID)
@@ -345,9 +491,32 @@ func (s *serveServer) handleLiveSessions(w http.ResponseWriter, r *http.Request)
 	}
 
 	w.Header().Set("x-session-id", sessionID)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"live_id": liveID, "session_id": sessionID, "sdp": providerSession.AnswerSDP(),
-	})
+	response := map[string]any{
+		"live_id": liveID, "session_id": sessionID, "transport": "webrtc", "sdp": providerSession.AnswerSDP(),
+	}
+	if _, ok := providerSession.(live.PCMSession); ok {
+		if enabled, _ := s.liveDebugOptions(); enabled {
+			response["diagnostics"] = true
+		}
+		token, err := record.issueAudioToken(time.Now(), liveAudioAttachTimeout)
+		if err != nil {
+			s.stopLiveSession(context.Background(), liveID, "audio-token")
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "could not authorize the live audio transport")
+			return
+		}
+		if request.AudioTransport == "http_pcm" {
+			response["transport"] = "http_pcm"
+			response["audio_capability"] = token
+		} else {
+			// Keep the direct WebSocket media path for older/direct clients. New
+			// clients request HTTP PCM because reverse Hub tunnels do not carry
+			// WebSocket upgrades or bidirectional streaming request bodies.
+			response["transport"] = "websocket_pcm"
+			response["audio_url"] = fmt.Sprintf("%s/v1/live/sessions/%s/audio?token=%s", s.cfg.basePath, liveID, token)
+		}
+		go s.watchLiveAudioAttachment(record)
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 // handleLiveSessionByID serves DELETE, /text, and /events for one live call.
@@ -376,6 +545,14 @@ func (s *serveServer) handleLiveSessionByID(w http.ResponseWriter, r *http.Reque
 		s.handleLiveSessionText(w, r, liveID)
 	case "events":
 		s.handleLiveSessionEvents(w, r, liveID)
+	case "audio":
+		s.handleLiveSessionAudio(w, r, liveID)
+	case "audio/output":
+		s.handleLiveSessionAudioOutput(w, r, liveID)
+	case "audio/input":
+		s.handleLiveSessionAudioInput(w, r, liveID)
+	case "diagnostics":
+		s.handleLiveSessionDiagnostics(w, r, liveID)
 	default:
 		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "live session not found")
 	}
@@ -426,34 +603,30 @@ func (s *serveServer) handleLiveSessionEvents(w http.ResponseWriter, r *http.Req
 		return
 	}
 	restart.Passive(r.Context())
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	if _, ok := w.(http.Flusher); !ok {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "streaming is unsupported")
 		return
 	}
+	flushController := http.NewResponseController(w)
+	w = newStreamingResponseWriter(w, serveStreamWriteTimeout)
 	after, _ := strconv.Atoi(r.URL.Query().Get("after"))
 	replay, subscriberID, events, ended := record.subscribe(after)
 	if events != nil {
 		defer record.unsubscribe(subscriberID)
 	}
 	setSSEHeaders(w)
-	flusher.Flush()
-	// A quiet call can go minutes without an event; heartbeats keep proxies and
-	// mobile radios from dropping the stream.
-	pingMu, stopPing := sseKeepalive(r.Context(), w, flusher, serveEventHeartbeat)
-	defer stopPing()
+	if err := flushLiveSSEResponse(flushController); err != nil {
+		return
+	}
 	writeEvent := func(event liveSessionEvent) bool {
 		data, err := json.Marshal(event.Data)
 		if err != nil {
 			return false
 		}
-		pingMu.Lock()
-		defer pingMu.Unlock()
 		if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", event.Sequence, event.Type, data); err != nil {
 			return false
 		}
-		flusher.Flush()
-		return true
+		return flushLiveSSEResponse(flushController) == nil
 	}
 	for _, event := range replay {
 		if !writeEvent(event) {
@@ -463,6 +636,8 @@ func (s *serveServer) handleLiveSessionEvents(w http.ResponseWriter, r *http.Req
 	if ended {
 		return
 	}
+	heartbeat := time.NewTicker(serveEventHeartbeat)
+	defer heartbeat.Stop()
 	for {
 		select {
 		case event, open := <-events:
@@ -478,12 +653,364 @@ func (s *serveServer) handleLiveSessionEvents(w http.ResponseWriter, r *http.Req
 			if event.Type == liveEventEnded {
 				return
 			}
+		case <-heartbeat.C:
+			// Keepalive writes use the same per-write deadline as event writes. A
+			// write timeout or disconnect ends this handler instead of leaving a
+			// heartbeat goroutine retrying a dead client forever.
+			if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
+				return
+			}
+			if err := flushLiveSSEResponse(flushController); err != nil {
+				return
+			}
 		case <-r.Context().Done():
 			return
 		case <-s.shutdownCh:
 			return
 		}
 	}
+}
+
+// flushLiveSSEResponse preserves flush errors, which http.Flusher cannot expose,
+// while applying the same bounded write window as ordinary SSE writes. Some
+// synthetic or proxied writers do not support deadlines; they still flush, but
+// callers must not assume a timeout exists in that case.
+func flushLiveSSEResponse(controller *http.ResponseController) error {
+	deadlineSet := false
+	if err := controller.SetWriteDeadline(time.Now().Add(serveStreamWriteTimeout)); err == nil {
+		deadlineSet = true
+	} else if !errors.Is(err, http.ErrNotSupported) {
+		return err
+	}
+	if deadlineSet {
+		defer func() { _ = controller.SetWriteDeadline(time.Time{}) }()
+	}
+	return controller.Flush()
+}
+
+func (s *serveServer) handleLiveSessionAudioRoute(w http.ResponseWriter, r *http.Request) {
+	liveID := strings.TrimSpace(r.PathValue("liveID"))
+	if liveID == "" {
+		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "live session not found")
+		return
+	}
+	s.handleLiveSessionAudio(w, r, liveID)
+}
+
+func (s *serveServer) handleLiveSessionAudio(w http.ResponseWriter, r *http.Request, liveID string) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	fetchSite := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")))
+	if (origin == "" && fetchSite != "same-origin") || !sameOriginShellRequest(r) {
+		writeOpenAIError(w, http.StatusForbidden, "invalid_origin", "live audio must come from the first-party UI origin")
+		return
+	}
+	record, ok := s.lookupLiveSession(liveID)
+	if !ok {
+		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "live session not found")
+		return
+	}
+	pcmSession, ok := record.claimAudio(r.URL.Query().Get("token"), time.Now())
+	if !ok {
+		writeOpenAIError(w, http.StatusUnauthorized, "invalid_session", "invalid or expired live audio capability")
+		return
+	}
+	defer func() {
+		record.releaseAudio()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		s.stopLiveSession(ctx, liveID, "audio-disconnect")
+	}()
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	conn.SetReadLimit(liveAudioFrameLimitBytes)
+	_ = conn.SetReadDeadline(time.Now().Add(liveAudioPongTimeout))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(liveAudioPongTimeout))
+	})
+	readErr := make(chan error, 1)
+	go func() {
+		for {
+			messageType, payload, err := conn.ReadMessage()
+			if err != nil {
+				readErr <- err
+				return
+			}
+			_ = conn.SetReadDeadline(time.Now().Add(liveAudioPongTimeout))
+			if messageType != websocket.BinaryMessage || len(payload) == 0 {
+				continue
+			}
+			if len(payload) > liveAudioFrameLimitBytes || len(payload)%2 != 0 {
+				readErr <- errors.New("invalid live PCM input frame")
+				return
+			}
+			if err := pcmSession.SendPCM(r.Context(), payload); err != nil {
+				readErr <- err
+				return
+			}
+			record.touch()
+		}
+	}()
+
+	frames := pcmSession.PCMFrames()
+	ping := time.NewTicker(liveAudioPingInterval)
+	defer ping.Stop()
+	for {
+		select {
+		case frame, open := <-frames:
+			if !open {
+				return
+			}
+			if frame.Flush {
+				if err := writeLiveAudioControl(conn, map[string]string{"type": "interrupt"}); err != nil {
+					return
+				}
+			}
+			frame.Audio = completeLivePCMSamples(frame.Audio)
+			for len(frame.Audio) > 0 {
+				size := min(len(frame.Audio), liveAudioFrameLimitBytes)
+				if size%2 != 0 {
+					size--
+				}
+				if size == 0 {
+					break
+				}
+				_ = conn.SetWriteDeadline(time.Now().Add(liveAudioWriteTimeout))
+				err := conn.WriteMessage(websocket.BinaryMessage, frame.Audio[:size])
+				_ = conn.SetWriteDeadline(time.Time{})
+				if err != nil {
+					return
+				}
+				frame.Audio = frame.Audio[size:]
+				record.touch()
+			}
+		case <-ping.C:
+			if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(liveAudioWriteTimeout)); err != nil {
+				return
+			}
+		case <-readErr:
+			return
+		case <-r.Context().Done():
+			return
+		case <-s.shutdownCh:
+			return
+		}
+	}
+}
+
+func completeLivePCMSamples(pcm []byte) []byte {
+	if len(pcm)%2 != 0 {
+		return pcm[:len(pcm)-1]
+	}
+	return pcm
+}
+
+func writeLiveAudioControl(conn *websocket.Conn, value any) error {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	_ = conn.SetWriteDeadline(time.Now().Add(liveAudioWriteTimeout))
+	err = conn.WriteMessage(websocket.TextMessage, payload)
+	_ = conn.SetWriteDeadline(time.Time{})
+	return err
+}
+
+func liveHTTPAudioCapability(r *http.Request) string {
+	return strings.TrimSpace(r.Header.Get("X-Term-LLM-Live-Audio-Capability"))
+}
+
+// handleLiveSessionAudioOutput streams base64-encoded 24 kHz PCM and interrupt
+// markers over an ordinary HTTP response. Unlike WebSocket upgrades, this path
+// traverses deployed reverse Hub connectors and WebRTC HTTP tunnels unchanged.
+func (s *serveServer) handleLiveSessionAudioOutput(w http.ResponseWriter, r *http.Request, liveID string) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+	record, ok := s.lookupLiveSession(liveID)
+	if !ok {
+		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "live session not found")
+		return
+	}
+	pcmSession, ok := record.claimAudio(liveHTTPAudioCapability(r), time.Now())
+	if !ok {
+		writeOpenAIError(w, http.StatusUnauthorized, "invalid_session", "invalid or expired live audio capability")
+		return
+	}
+	defer func() {
+		record.releaseAudio()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		s.stopLiveSession(ctx, liveID, "audio-disconnect")
+	}()
+	if _, ok := w.(http.Flusher); !ok {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "streaming is unsupported")
+		return
+	}
+	flushController := http.NewResponseController(w)
+	w = newStreamingResponseWriter(w, serveStreamWriteTimeout)
+	restart.Passive(r.Context())
+	setSSEHeaders(w)
+	w.Header().Set("X-Accel-Buffering", "no")
+	if err := flushLiveSSEResponse(flushController); err != nil {
+		return
+	}
+	writeEvent := func(event string, data any) bool {
+		payload, err := json.Marshal(data)
+		if err != nil {
+			return false
+		}
+		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, payload); err != nil {
+			return false
+		}
+		return flushLiveSSEResponse(flushController) == nil
+	}
+	// A body-bearing first event forces response headers through reverse Hub and
+	// other buffering proxies so browser fetch resolves before microphone input.
+	if !writeEvent("ready", map[string]any{}) {
+		return
+	}
+
+	frames := pcmSession.PCMFrames()
+	heartbeat := time.NewTicker(serveEventHeartbeat)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case frame, open := <-frames:
+			if !open {
+				return
+			}
+			if frame.Flush && !writeEvent("interrupt", map[string]any{}) {
+				return
+			}
+			frame.Audio = completeLivePCMSamples(frame.Audio)
+			for len(frame.Audio) > 0 {
+				size := min(len(frame.Audio), liveAudioSSEChunkBytes)
+				if size%2 != 0 {
+					size--
+				}
+				if size == 0 {
+					break
+				}
+				encoded := base64.StdEncoding.EncodeToString(frame.Audio[:size])
+				if !writeEvent("audio", map[string]string{"audio": encoded}) {
+					return
+				}
+				frame.Audio = frame.Audio[size:]
+				record.touch()
+			}
+		case <-heartbeat.C:
+			if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
+				return
+			}
+			if err := flushLiveSSEResponse(flushController); err != nil {
+				return
+			}
+		case <-r.Context().Done():
+			return
+		case <-s.shutdownCh:
+			return
+		}
+	}
+}
+
+// handleLiveSessionAudioInput accepts one finite microphone batch. Browsers
+// serialize these small requests; reverse Hub requests therefore never require
+// an unsupported infinite or bidirectional upload body.
+func (s *serveServer) handleLiveSessionAudioInput(w http.ResponseWriter, r *http.Request, liveID string) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+	record, ok := s.lookupLiveSession(liveID)
+	if !ok {
+		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "live session not found")
+		return
+	}
+	pcmSession, attached := record.attachedAudio()
+	if !attached {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", "live audio output is not attached")
+		return
+	}
+	if r.ContentLength > liveAudioFrameLimitBytes {
+		writeOpenAIError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "live PCM input batch is too large")
+		return
+	}
+	payload, err := io.ReadAll(http.MaxBytesReader(w, r.Body, liveAudioFrameLimitBytes))
+	if err != nil {
+		writeOpenAIError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "live PCM input batch is too large")
+		return
+	}
+	if len(payload) == 0 || len(payload)%2 != 0 {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "live PCM input must be non-empty mono int16 data")
+		return
+	}
+	if err := pcmSession.SendPCM(r.Context(), payload); err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "server_error", "could not forward live PCM input: "+err.Error())
+		return
+	}
+	record.touch()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *serveServer) handleLiveSessionDiagnostics(w http.ResponseWriter, r *http.Request, liveID string) {
+	// Check the opt-in before reading, decoding, or looking up anything:
+	// disabled diagnostics have no ingestion or log-processing path.
+	if enabled, _ := s.liveDebugOptions(); !enabled {
+		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "live session not found")
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+	record, ok := s.lookupLiveSession(liveID)
+	if !ok {
+		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "live session not found")
+		return
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, liveDiagnosticsMaxBytes))
+	decoder.DisallowUnknownFields()
+	var report liveBrowserDiagnostics
+	if err := decoder.Decode(&report); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid live diagnostics report")
+		return
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid live diagnostics report")
+		return
+	}
+	if !report.valid() {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid live diagnostics report")
+		return
+	}
+	if !record.acceptDiagnostic(time.Now()) {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	// All values are fixed-schema booleans, enum values, or validated numbers;
+	// browser-provided strings, URLs, transcripts, and tokens are never logged.
+	log.Printf("[live browser] live_id=%s seq=%d elapsed_ms=%.0f audio_context=%s stream_open=%t packets_received=%d bytes_received=%d packets_scheduled=%d packets_ended=%d queued_seconds=%.3f underruns=%d flush_interrupt=%d flush_buffer_reset=%d input_packets=%d input_bytes=%d input_queue_drops=%d posts=%d post_errors=%d post_latency_total_ms=%.0f post_latency_max_ms=%.0f post_inflight=%d input_silence_ms=%.0f output_silence_ms=%.0f",
+		record.id, report.Sequence, report.ElapsedMS, report.AudioContextState, report.StreamOpen,
+		report.PacketsReceived, report.BytesReceived, report.PacketsScheduled, report.PacketsEnded, report.PlaybackQueuedSecs,
+		report.Underruns, report.FlushInterrupts, report.FlushBufferResets, report.InputPackets, report.InputBytes, report.InputQueueDrops,
+		report.PostCount, report.PostErrors, report.PostLatencyTotalMS, report.PostLatencyMaxMS, report.PostInflight,
+		report.InputSilenceMS, report.OutputSilenceMS)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // observe turns controller updates into browser events.
@@ -493,7 +1020,7 @@ func (l *liveSession) observe(update live.Update) {
 		l.appendEvent(liveEventStarted, map[string]any{})
 	case live.UpdateTranscript:
 		l.appendEvent(liveEventTranscript, map[string]any{
-			"role": update.Role, "text": update.Text, "final": update.Final,
+			"role": update.Role, "text": update.Text, "final": update.Final, "interim": update.Interim,
 		})
 	case live.UpdateDelegation:
 		data := map[string]any{"delegation_id": update.DelegationID, "state": string(update.State)}
@@ -501,6 +1028,8 @@ func (l *liveSession) observe(update live.Update) {
 			data["text"] = update.Text
 		}
 		l.appendEvent(liveEventDelegation, data)
+	case live.UpdateInterrupted:
+		l.appendEvent(liveEventInterrupted, map[string]any{})
 	case live.UpdateError:
 		l.appendEvent(liveEventError, map[string]any{"message": update.Text})
 	case live.UpdateEnded:
@@ -526,6 +1055,7 @@ func (s *serveServer) startLiveController(record *liveSession, providerSession l
 	})
 	record.mu.Lock()
 	record.voiceSession, _ = providerSession.(live.VoiceSession)
+	record.pcmSession, _ = providerSession.(live.PCMSession)
 	record.capabilities.CanSetVoice = record.voiceSession != nil
 	record.controller, record.cancel = controller, controllerCancel
 	record.mu.Unlock()
@@ -596,6 +1126,23 @@ func (s *serveServer) stopLiveSession(ctx context.Context, liveID, reason string
 	}
 	record.appendEvent(liveEventEnded, map[string]any{})
 	record.closeSubscribers()
+}
+
+// watchLiveAudioAttachment prevents an authenticated but abandoned Gemini
+// startup from retaining a provider connection indefinitely.
+func (s *serveServer) watchLiveAudioAttachment(record *liveSession) {
+	timer := time.NewTimer(liveAudioAttachTimeout)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		if _, ok := s.lookupLiveSession(record.id); !ok || record.audioWasAttached() {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		s.stopLiveSession(ctx, record.id, "audio-attach-timeout")
+		cancel()
+	case <-s.shutdownCh:
+	}
 }
 
 // watchLiveIdle closes a live call that has seen no traffic for the configured

@@ -379,8 +379,8 @@ func (s *serveServer) handleCapabilities(w http.ResponseWriter, r *http.Request)
 	}
 	shellEnabled := s.cfg.ui && platformServeShellSupported() && s.store != nil
 	liveCapability := s.liveCapability(r.Context())
-	w.Header().Set("ETag", fmt.Sprintf(`W/"projects-%t-worktrees-%t-shell-%t-live-%t-%s"`,
-		s.projectsEnabled, worktreesEnabled, shellEnabled, liveCapability["enabled"], liveCapability["provider"]))
+	w.Header().Set("ETag", fmt.Sprintf(`W/"projects-%t-worktrees-%t-shell-%t-live-%t-%s-%v-%v"`,
+		s.projectsEnabled, worktreesEnabled, shellEnabled, liveCapability["enabled"], liveCapability["provider"], liveCapability["transport"], liveCapability["version"]))
 	payload := map[string]any{
 		"projects":  map[string]bool{"enabled": s.projectsEnabled},
 		"worktrees": map[string]bool{"enabled": worktreesEnabled},

@@ -101,7 +101,9 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// shared-clock quiet-state labels, and collapsed running previews bring the
 		// eager shell to ~504.5/142.7 kB raw/gzip. Retain narrow raw headroom; the
 		// compressed cap remains unchanged.
-		"dist/app.js":                {raw: 505_000, gzip: 144_500},
+		// First-seen live transcript ordering adds ~0.74 kB to the eager store,
+		// bringing it to ~505.52 kB. The history panel remains lazy.
+		"dist/app.js":                {raw: 505_750, gzip: 144_500},
 		"dist/chunks/Lightbox.js":    {raw: 8_000, gzip: 3_200},
 		"dist/assets/Lightbox.css":   {raw: 4_000, gzip: 1_400},
 		"dist/chunks/StatsModal.js":  {raw: 8_000, gzip: 3_000},
@@ -182,6 +184,17 @@ func TestLiveVoiceCallRemainsLazy(t *testing.T) {
 	}
 	if !bytes.Contains(lazy, []byte(marker)) {
 		t.Error("dist/chunks/live.js is missing the live voice WebRTC peer")
+	}
+	endpoints, err := StaticAsset("dist/chunks/live-endpoints.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const audioMarker = "X-Term-LLM-Live-Audio-Capability"
+	if bytes.Contains(eager, []byte(audioMarker)) {
+		t.Error("dist/app.js unexpectedly contains live audio endpoint configuration")
+	}
+	if !bytes.Contains(endpoints, []byte(audioMarker)) {
+		t.Error("dist/chunks/live-endpoints.js is missing live audio endpoint configuration")
 	}
 }
 

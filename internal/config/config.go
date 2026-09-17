@@ -1102,11 +1102,12 @@ type TranscriptionElevenLabsConfig struct {
 // per-provider blocks carry vendor-specific models, voices, and endpoints.
 type LiveConfig struct {
 	Enabled      bool              `mapstructure:"enabled"`      // live voice sessions are opt-in
-	Provider     string            `mapstructure:"provider"`     // live provider: chatgpt or openai
+	Provider     string            `mapstructure:"provider"`     // live provider: chatgpt, openai, or gemini
 	Instructions string            `mapstructure:"instructions"` // optional replacement for the voice-model prompt
 	IdleTimeout  string            `mapstructure:"idle_timeout"` // close a live session after this much silence
 	OpenAI       LiveOpenAIConfig  `mapstructure:"openai"`
 	ChatGPT      LiveChatGPTConfig `mapstructure:"chatgpt"`
+	Gemini       LiveGeminiConfig  `mapstructure:"gemini"`
 }
 
 // LiveChatGPTConfig configures gpt-live over the ChatGPT backend. Credentials
@@ -1124,6 +1125,23 @@ type LiveOpenAIConfig struct {
 	Model   string `mapstructure:"model"`
 	Voice   string `mapstructure:"voice"`
 	BaseURL string `mapstructure:"base_url"`
+}
+
+// LiveGeminiConfig configures Gemini Live. The API key remains server-side;
+// browsers exchange raw PCM only with term-llm's authenticated WebSocket.
+type LiveGeminiConfig struct {
+	APIKey  string `mapstructure:"api_key"`
+	Model   string `mapstructure:"model"`
+	Voice   string `mapstructure:"voice"`
+	BaseURL string `mapstructure:"base_url"`
+}
+
+// ResolvedVoice returns the configured Gemini voice or the documented default.
+func (c LiveGeminiConfig) ResolvedVoice() string {
+	if voice := strings.TrimSpace(c.Voice); voice != "" {
+		return voice
+	}
+	return DefaultLiveGeminiVoice
 }
 
 // LiveOpenAIVoices returns the public GPT-Live built-in voice family.
@@ -1222,8 +1240,10 @@ func (c *Config) ValidateLive() error {
 		return c.Live.ChatGPT.ValidateVoice()
 	case LiveProviderOpenAI:
 		return c.Live.OpenAI.ValidateVoice()
+	case LiveProviderGemini:
+		return nil
 	default:
-		return fmt.Errorf("invalid live.provider %q: expected %q or %q", c.Live.Provider, LiveProviderChatGPT, LiveProviderOpenAI)
+		return fmt.Errorf("invalid live.provider %q: expected %q, %q, or %q", c.Live.Provider, LiveProviderChatGPT, LiveProviderOpenAI, LiveProviderGemini)
 	}
 }
 

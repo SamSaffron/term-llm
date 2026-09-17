@@ -164,6 +164,11 @@ func ResetCredentialCache() {
 	credentialCacheMu.Unlock()
 }
 
+// GeminiKey returns the Gemini Live credential.
+func (c LiveConfig) GeminiKey() CredentialRef {
+	return Cred(c.Gemini.APIKey, "GEMINI_API_KEY", "GOOGLE_API_KEY")
+}
+
 // --- Image ---------------------------------------------------------------
 
 // GeminiKey returns the Gemini image credential.
