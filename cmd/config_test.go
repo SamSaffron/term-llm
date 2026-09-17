@@ -368,3 +368,57 @@ func TestConfigShowRedactsSensitiveRawValues(t *testing.T) {
 		t.Fatalf("non-secret env key should still be rendered as config value? got:\n%s", out)
 	}
 }
+
+func TestClassifyConfigShowResetAndCompletion(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	path, err := config.GetConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte("classify:\n  default_provider: custom\n  providers:\n    custom:\n      type: typesafe\n      api_key: $(exit 1)\n      model: custom-model\n")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Classify.Providers["custom"].APIKey != "$(exit 1)" {
+		t.Fatal("credential was changed during load")
+	}
+	var root yaml.Node
+	if err := yaml.Unmarshal(raw, &root); err != nil {
+		t.Fatal(err)
+	}
+	keys := map[string]bool{"classify.default_provider": true, "classify.providers.custom.type": true, "classify.providers.custom.api_key": true, "classify.providers.custom.model": true}
+	for _, reset := range []bool{false, true} {
+		var out bytes.Buffer
+		printAnnotatedConfigFiltered(&out, config.GetDefaults(), keys, nil, &root, true, cfg, reset)
+		var parsed map[string]any
+		if err := yaml.Unmarshal(out.Bytes(), &parsed); err != nil {
+			t.Fatalf("invalid config: %v", err)
+		}
+		classify, ok := parsed["classify"].(map[string]any)
+		if !ok {
+			t.Fatal("missing classify hierarchy")
+		}
+		providers := classify["providers"].(map[string]any)
+		if _, ok := providers["custom"]; !ok {
+			t.Fatal("alias missing from rendered config")
+		}
+		if _, ok := parsed["typesafe"]; ok {
+			t.Fatal("legacy top-level block")
+		}
+	}
+	if !slices.Contains(configKeyCompletions("classify.providers.custom."), "classify.providers.custom.api_key") {
+		t.Fatal("missing alias key completion")
+	}
+	if !slices.Contains(configValueCompletions("classify.default_provider", ""), "custom") {
+		t.Fatal("missing alias value completion")
+	}
+}

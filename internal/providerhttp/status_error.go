@@ -188,7 +188,7 @@ func ParseRetryAfterMillisecondsValue(value string) (time.Duration, bool) {
 	if err != nil || ms <= 0 {
 		return 0, false
 	}
-	return time.Duration(ms) * time.Millisecond, true
+	return boundedDuration(ms, time.Millisecond), true
 }
 
 // ParseRetryAfterValue parses a Retry-After header value as either seconds or
@@ -200,7 +200,7 @@ func ParseRetryAfterValue(value string, now time.Time) (time.Duration, bool) {
 		return 0, false
 	}
 	if secs, err := strconv.ParseInt(firstRetryAfterToken(value), 10, 64); err == nil && secs > 0 {
-		return time.Duration(secs) * time.Second, true
+		return boundedDuration(secs, time.Second), true
 	}
 	if when, err := http.ParseTime(value); err == nil {
 		if now.IsZero() {
@@ -212,6 +212,15 @@ func ParseRetryAfterValue(value string, now time.Time) (time.Duration, bool) {
 		}
 	}
 	return 0, false
+}
+
+// Saturate instead of wrapping a large server delay into an earlier retry.
+func boundedDuration(value int64, unit time.Duration) time.Duration {
+	const max = time.Duration(1<<63 - 1)
+	if value > int64(max/unit) {
+		return max
+	}
+	return time.Duration(value) * unit
 }
 
 func firstRetryAfterToken(value string) string {

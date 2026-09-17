@@ -484,6 +484,7 @@ type Config struct {
 	Live            LiveConfig                `mapstructure:"live"`
 	Embed           EmbedConfig               `mapstructure:"embed"`
 	Search          SearchConfig              `mapstructure:"search"`
+	Classify        ClassifyConfig            `mapstructure:"classify" yaml:"classify,omitempty"`
 	Reasoning       ReasoningConfig           `mapstructure:"reasoning"`
 	Theme           ThemeConfig               `mapstructure:"theme"`
 	Tools           ToolsConfig               `mapstructure:"tools"`
@@ -1286,6 +1287,21 @@ type EmbedVoyageConfig struct {
 type EmbedOllamaConfig struct {
 	BaseURL string `mapstructure:"base_url"` // default: http://127.0.0.1:11434
 	Model   string `mapstructure:"model"`    // nomic-embed-text (default)
+}
+
+// ClassifyConfig selects a provider for the classification capability.
+type ClassifyConfig struct {
+	DefaultProvider string                            `mapstructure:"default_provider" yaml:"default_provider,omitempty"`
+	Providers       map[string]ClassifyProviderConfig `mapstructure:"providers" yaml:"providers,omitempty"`
+}
+
+// ClassifyProviderConfig configures a classification provider.
+type ClassifyProviderConfig struct {
+	Type           string `mapstructure:"type" yaml:"type,omitempty"`
+	APIKey         string `mapstructure:"api_key" yaml:"api_key,omitempty"`
+	Model          string `mapstructure:"model" yaml:"model,omitempty"`
+	BaseURL        string `mapstructure:"base_url" yaml:"base_url,omitempty"`
+	TimeoutSeconds int    `mapstructure:"timeout_seconds" yaml:"timeout_seconds,omitempty"`
 }
 
 // SearchConfig configures web search providers
@@ -2608,6 +2624,18 @@ func IsKnownKey(keyPath string) bool {
 	// Check direct match
 	if KnownKeys[keyPath] {
 		return true
+	}
+
+	// Capability provider names are dynamic; fields use the canonical schema.
+	if strings.HasPrefix(keyPath, "classify.providers.") {
+		parts := strings.SplitN(keyPath, ".", 4)
+		if parts[2] == "" {
+			return false
+		}
+		if len(parts) == 3 {
+			return true
+		}
+		return KnownKeys["classify.providers.typesafe."+parts[3]]
 	}
 
 	// Check for providers.* pattern

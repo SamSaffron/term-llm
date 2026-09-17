@@ -137,6 +137,10 @@ const (
 	DefaultSearchFetchProvider = "jina"
 	DefaultSearchExaMCPURL     = "https://mcp.exa.ai/mcp"
 
+	DefaultTypeSafeModel          = "jev-latest"
+	DefaultTypeSafeBaseURL        = "https://api.typesafe.ai"
+	DefaultTypeSafeTimeoutSeconds = 10
+
 	DefaultReasoningMaxSummaryChars = 12000
 	DefaultReasoningMaxRawChars     = 20000
 	DefaultReasoningHiddenLabel     = "Thinking..."
@@ -323,6 +327,13 @@ var keySpecs = []KeySpec{
 	optional("search.brave.api_key", sensitive()),
 	optional("search.google.api_key", sensitive()),
 	optional("search.google.cx"),
+
+	def("classify.default_provider", "typesafe"),
+	optional("classify.providers.typesafe.type"),
+	optional("classify.providers.typesafe.api_key", sensitive()),
+	def("classify.providers.typesafe.model", DefaultTypeSafeModel),
+	def("classify.providers.typesafe.base_url", DefaultTypeSafeBaseURL),
+	def("classify.providers.typesafe.timeout_seconds", DefaultTypeSafeTimeoutSeconds),
 
 	def("reasoning.display", ReasoningDisplayAuto),
 	def("reasoning.source", ReasoningSourceSummaryOrProviderSafe),

@@ -323,6 +323,18 @@ func (c SearchConfig) GoogleCXRef() CredentialRef {
 	return Cred(c.Google.CX, "GOOGLE_SEARCH_CX")
 }
 
+// --- Classification ------------------------------------------------------
+
+// Key returns the classification credential. TypeSafe is the supported provider type.
+func (c ClassifyProviderConfig) Key() CredentialRef {
+	return Cred(c.APIKey, "TYPESAFE_API_KEY")
+}
+
+// BaseURLRef returns the classification API endpoint.
+func (c ClassifyProviderConfig) BaseURLRef() CredentialRef {
+	return Cred(c.BaseURL)
+}
+
 // --- Serve ---------------------------------------------------------------
 
 // TokenRef returns the Telegram bot token.

@@ -35,7 +35,25 @@ A typical config has a few major parts:
 - per-command blocks such as `exec`, `ask`, and `edit`
 - `commit.message_agent` for the native commit workflow's scope/message agent
 - `share` for the built-in GitHub or custom command transcript publisher
-- feature-specific blocks such as `image`, `audio`, `music`, `embed`, `search`, `sessions`, `file_tracking`, `tools`, and `skills`
+- feature-specific blocks such as `image`, `audio`, `music`, `embed`, `search`, `classify`, `sessions`, `file_tracking`, `tools`, and `skills`
+
+### TypeSafe classification
+
+The standalone [`classify` command](/guides/classify/) uses `classify.providers`, separate from chat `providers`:
+
+```yaml
+classify:
+  default_provider: typesafe
+  providers:
+    typesafe:
+      type: typesafe # Optional for the built-in key
+      api_key: ${TYPESAFE_API_KEY}
+      model: jev-latest
+      base_url: https://api.typesafe.ai
+      timeout_seconds: 10
+```
+
+`classify.providers.typesafe.api_key` is a sensitive, lazily resolved credential with `TYPESAFE_API_KEY` as its environment fallback. `--provider/-p` overrides `classify.default_provider` for both `classify` and `classify models`. Aliases under `classify.providers` declare `type: typesafe`; only the selected provider’s credentials are resolved. With no config file, `TYPESAFE_API_KEY` is sufficient. `--model`, `--base-url`, and `--timeout` override these settings for `classify`. No TypeSafe requests are made implicitly by other commands. State and questions are sent to the configured endpoint; see the [privacy and input guidance](/guides/classify/#setup-and-privacy).
 
 ## Example
 
