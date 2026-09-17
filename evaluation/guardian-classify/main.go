@@ -1,4 +1,4 @@
-package cmd
+package main
 
 import (
 	"context"
@@ -9,9 +9,9 @@ import (
 	"os"
 	"strings"
 
+	guardianeval "github.com/samsaffron/term-llm/evaluation/guardian-classify/internal/eval"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/guardian"
-	guardianeval "github.com/samsaffron/term-llm/internal/guardian/eval"
 	"github.com/spf13/cobra"
 )
 
@@ -25,18 +25,25 @@ type guardianEvalDeps struct {
 	newReview  func(*config.Config, string) (func(context.Context, guardian.Request) (guardian.Decision, error), func(), error)
 }
 
-func init() { rootCmd.AddCommand(newGuardianCmd(guardianEvalDeps{})) }
+func main() {
+	cmd := newGuardianEvalCmd(guardianEvalDeps{})
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	if err := cmd.Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
 
-func newGuardianCmd(deps guardianEvalDeps) *cobra.Command {
+func newGuardianEvalCmd(deps guardianEvalDeps) *cobra.Command {
 	if deps.loadConfig == nil {
 		deps.loadConfig = config.Load
 	}
 	if deps.newReview == nil {
 		deps.newReview = newClassifyGuardianReview
 	}
-	parent := &cobra.Command{Use: "guardian", Short: "Inspect and evaluate Guardian policy decisions"}
 	o := &guardianEvalOptions{}
-	cmd := &cobra.Command{Use: "eval", Short: "Evaluate inert shell cases with the real classify-backed Guardian (never execute)", Args: cobra.NoArgs,
+	cmd := &cobra.Command{Use: "guardian-classify", Short: "Evaluate inert shell cases with the real classify-backed Guardian (never execute)", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error { return runGuardianEval(cmd, o, deps) },
 	}
 	f := cmd.Flags()
@@ -50,8 +57,7 @@ func newGuardianCmd(deps guardianEvalDeps) *cobra.Command {
 	f.BoolVar(&o.dry, "dry-run", false, "Print selected corpus JSONL without loading config or contacting providers")
 	f.StringVar(&o.corpus, "write-corpus", "", "Write selected corpus JSONL without provider calls ('-' for stdout; file must not exist)")
 	f.BoolVar(&o.reportOnly, "report-only", false, "Exit successfully despite mismatches or review errors")
-	parent.AddCommand(cmd)
-	return parent
+	return cmd
 }
 
 func validateGuardianEval(cmd *cobra.Command, o *guardianEvalOptions) error {
@@ -185,7 +191,7 @@ func loadGuardianEvalPolicy(deps guardianEvalDeps) (*config.Config, string, erro
 		return nil, "", fmt.Errorf("load evaluation configuration failed (details suppressed)")
 	}
 	if cfg == nil || strings.TrimSpace(cfg.Guardian.Backend) != "classify" {
-		return nil, "", fmt.Errorf("guardian eval requires guardian.backend: classify")
+		return nil, "", fmt.Errorf("guardian-classify requires guardian.backend: classify")
 	}
 	policy, err := guardian.LoadPolicy(cfg.Guardian.PolicyPath)
 	if err != nil {

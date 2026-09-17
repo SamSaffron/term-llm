@@ -1,4 +1,4 @@
-package cmd
+package main
 
 import (
 	"bytes"
@@ -11,21 +11,21 @@ import (
 	"sync/atomic"
 	"testing"
 
+	guardianeval "github.com/samsaffron/term-llm/evaluation/guardian-classify/internal/eval"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/guardian"
-	guardianeval "github.com/samsaffron/term-llm/internal/guardian/eval"
 	"github.com/samsaffron/term-llm/internal/typesafe"
 )
 
 func executeGuardianEval(deps guardianEvalDeps, input string, args ...string) (string, error) {
-	cmd := newGuardianCmd(deps)
+	cmd := newGuardianEvalCmd(deps)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
 	cmd.SetIn(strings.NewReader(input))
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
-	cmd.SetArgs(append([]string{"eval"}, args...))
+	cmd.SetArgs(args)
 	err := cmd.Execute()
 	return out.String(), err
 }
