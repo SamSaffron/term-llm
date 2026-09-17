@@ -31,7 +31,7 @@ func (s *guardianClassifyStub) Classify(ctx context.Context, req typesafe.Reques
 		panic("missing guardian deadline")
 	}
 	answers := map[string]typesafe.Answer{}
-	for id, choice := range map[string]string{"risk_level": "low", "user_authorization": "high", "outcome": "allow"} {
+	for id, choice := range map[string]string{"risk_level": "low", "user_authorization": "explicit", "outcome": "allow"} {
 		c, confidence := choice, 0.4
 		answers[id] = typesafe.Answer{Type: "choice", Choice: &c, Confidence: &confidence}
 	}

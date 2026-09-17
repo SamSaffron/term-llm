@@ -19,7 +19,7 @@ func (f classifyStub) Classify(ctx context.Context, req typesafe.Request) (*type
 }
 func testAnswers() map[string]typesafe.Answer {
 	result := map[string]typesafe.Answer{}
-	for id, choice := range map[string]string{"risk_level": "low", "user_authorization": "high", "outcome": "allow"} {
+	for id, choice := range map[string]string{"risk_level": "low", "user_authorization": "explicit", "outcome": "allow"} {
 		c, confidence := choice, 0.9
 		result[id] = typesafe.Answer{Type: "choice", Choice: &c, Confidence: &confidence}
 	}
@@ -32,7 +32,7 @@ func TestClassifyAnswerGates(t *testing.T) {
 		allowed    bool
 	}{
 		{"risk_level", "low", true}, {"risk_level", "medium", true}, {"risk_level", "high", false}, {"risk_level", "critical", false},
-		{"user_authorization", "high", true}, {"user_authorization", "medium", true}, {"user_authorization", "low", false}, {"user_authorization", "unknown", false},
+		{"user_authorization", "explicit", true}, {"user_authorization", "implied", true}, {"user_authorization", "insufficient", false}, {"user_authorization", "unknown", false},
 		{"outcome", "allow", true}, {"outcome", "deny", false},
 	} {
 		t.Run(tc.id+"/"+tc.choice, func(t *testing.T) {
