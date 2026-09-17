@@ -61,14 +61,9 @@ func htmlToTelegram(src string) string {
 
 		switch tt {
 		case html.TextToken:
-			text := tok.Data
-			if inPre {
-				// Inside <pre> blocks, write text verbatim (already HTML-escaped by goldmark).
-				sb.WriteString(text)
-			} else {
-				// goldmark already HTML-escapes text tokens; write through.
-				sb.WriteString(text)
-			}
+			// Token() decodes HTML entities, including inside preformatted blocks.
+			// Escape text again while leaving explicitly generated tags intact.
+			sb.WriteString(html.EscapeString(tok.Data))
 
 		case html.StartTagToken, html.SelfClosingTagToken:
 			tag := tok.Data
