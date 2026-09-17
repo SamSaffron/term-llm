@@ -12,7 +12,8 @@ import {
   type Completion,
   type MentionSearchResponse,
 } from '../domain/completions';
-import { validateAttachmentFile } from '../domain/attachments';
+import { attachmentIconName, validateAttachmentFile } from '../domain/attachments';
+import type { Attachment } from '../domain/types';
 import { VoiceOperation, type VoiceSnapshot } from '../platform/voice';
 import type { LiveStore } from '../stores/live-store';
 import { Icon } from './Icon';
@@ -23,6 +24,17 @@ function resizePrompt(element: HTMLTextAreaElement | null): void {
   if (!element) return;
   element.style.height = 'auto';
   if (element.value) element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
+}
+
+// Only a prepared image has a thumbnail; everything else reads through its icon.
+function attachmentThumbnail(attachment: Attachment): string {
+  return attachment.id &&
+    attachment.previewURL &&
+    attachment.type.startsWith('image/') &&
+    attachment.status !== 'preparing' &&
+    attachment.status !== 'error'
+    ? attachment.previewURL
+    : '';
 }
 
 export function insertTranscriptAtCaret(value: string, transcript: string, caret: number) {
@@ -529,17 +541,11 @@ export function Composer() {
   const openAttachmentPreview = (attachmentId: string, previewURL: string) => {
     const images = store.attachments
       .peek()
-      .filter(
-        (attachment) =>
-          attachment.id &&
-          attachment.previewURL &&
-          attachment.type.startsWith('image/') &&
-          attachment.status !== 'preparing' &&
-          attachment.status !== 'error',
-      )
-      .map((attachment) => ({
+      .map((attachment) => ({ attachment, thumb: attachmentThumbnail(attachment) }))
+      .filter((entry) => entry.thumb)
+      .map(({ attachment, thumb }) => ({
         key: attachment.id!,
-        src: attachment.previewURL!,
+        src: thumb,
         type: 'image' as const,
         name: attachment.name,
       }));
@@ -614,52 +620,56 @@ export function Composer() {
         )}
         {store.attachments.value.length > 0 && (
           <div id="attachmentsStrip" class="attachments">
-            {store.attachments.value.map((attachment) => (
-              <div class="attachment-chip" key={attachment.id}>
-                {attachment.id &&
-                  attachment.previewURL &&
-                  attachment.type.startsWith('image/') &&
-                  attachment.status !== 'preparing' &&
-                  attachment.status !== 'error' && (
+            {store.attachments.value.map((attachment) => {
+              const thumb = attachmentThumbnail(attachment);
+              return (
+                <div class="attachment-chip" key={attachment.id}>
+                  {thumb ? (
                     <button
                       class="att-preview"
                       type="button"
                       aria-label={`Preview ${attachment.name}`}
-                      onClick={() => openAttachmentPreview(attachment.id!, attachment.previewURL!)}
+                      onClick={() => openAttachmentPreview(attachment.id!, thumb)}
                     >
-                      <img src={attachment.previewURL} alt="" />
+                      <img src={thumb} alt="" />
                     </button>
+                  ) : (
+                    <Icon
+                      name={attachmentIconName(attachment.type, attachment.name)}
+                      class="att-icon"
+                    />
                   )}
-                <span class="att-name">{attachment.name}</span>
-                {attachment.status === 'preparing' && (
-                  <span class="att-status" role="status">
-                    Preparing {Math.round((attachment.progress || 0) * 100)}%
-                  </span>
-                )}
-                {attachment.status === 'error' && (
-                  <span class="att-error" role="alert">
-                    {attachment.error || 'Preparation failed'}
-                    {attachment.file && (
-                      <button
-                        type="button"
-                        aria-label={`Retry preparing ${attachment.name}`}
-                        onClick={() => store.retryAttachment(attachment.id)}
-                      >
-                        Retry
-                      </button>
-                    )}
-                  </span>
-                )}
-                <button
-                  class="att-remove close-button"
-                  type="button"
-                  aria-label={`Remove ${attachment.name}`}
-                  onClick={() => store.removeAttachment(attachment.id)}
-                >
-                  <Icon name="close" />
-                </button>
-              </div>
-            ))}
+                  <span class="att-name">{attachment.name}</span>
+                  {attachment.status === 'preparing' && (
+                    <span class="att-status" role="status">
+                      Preparing {Math.round((attachment.progress || 0) * 100)}%
+                    </span>
+                  )}
+                  {attachment.status === 'error' && (
+                    <span class="att-error" role="alert">
+                      {attachment.error || 'Preparation failed'}
+                      {attachment.file && (
+                        <button
+                          type="button"
+                          aria-label={`Retry preparing ${attachment.name}`}
+                          onClick={() => store.retryAttachment(attachment.id)}
+                        >
+                          Retry
+                        </button>
+                      )}
+                    </span>
+                  )}
+                  <button
+                    class="att-remove close-button"
+                    type="button"
+                    aria-label={`Remove ${attachment.name}`}
+                    onClick={() => store.removeAttachment(attachment.id)}
+                  >
+                    <Icon name="close" />
+                  </button>
+                </div>
+              );
+            })}
           </div>
         )}
         {store.config.approvals !== false && approvalChanged && session && (

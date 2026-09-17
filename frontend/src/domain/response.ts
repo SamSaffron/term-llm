@@ -134,10 +134,22 @@ function responseAttachments(value: unknown): Attachment[] | undefined {
       Boolean(entry && typeof entry === 'object'),
     )
     .map((entry): Attachment | null => {
-      const url = text(entry.url || entry.preview_url || entry.previewURL);
-      const type = text(entry.type || entry.mime_type) || 'image/*';
-      const mention = entry.mention === true;
+      const mime = text(entry.type || entry.mime_type);
+      const downloadURL = text(entry.download_url || entry.downloadURL || entry.file_url);
+      const url = text(
+        entry.url || entry.preview_url || entry.previewURL || entry.download_url || entry.file_url,
+      );
+      const kind = text(entry.kind);
+      const size = number(entry.size_bytes ?? entry.sizeBytes ?? entry.size);
+      // The server emits `mention` only for a chip without a downloadable URL
+      // and `kind` for every projected file, so trust either signal.
+      // Without `kind`, only a bare name — no URL of any sort and no MIME —
+      // can be a reference; a typeless media entry must not be folded in.
+      const reference = kind === 'reference' || (!kind && !url && !mime);
+      const mention = entry.mention === true || (reference && !url);
       if (!url && !mention) return null;
+      // A reference is never media, so it must not fall into the image branch.
+      const type = mime || (reference ? 'text/plain' : 'image/*');
       const width = number(entry.width);
       const height = number(entry.height);
       return {
@@ -145,6 +157,9 @@ function responseAttachments(value: unknown): Attachment[] | undefined {
         type,
         url,
         ...(mention ? { mention: true } : {}),
+        ...(reference ? { reference: true } : {}),
+        ...(size > 0 ? { size } : {}),
+        ...(downloadURL ? { downloadURL } : {}),
         ...(width > 0 && height > 0 ? { width, height } : {}),
       } satisfies Attachment;
     })

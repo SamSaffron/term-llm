@@ -46,6 +46,108 @@ describe('transcript domain', () => {
     ]);
   });
 
+  it('projects upload chips with a download URL and size, references as inert', () => {
+    const messages = convertServerMessages([
+      {
+        id: 1,
+        role: 'user',
+        parts: [
+          { type: 'text', text: 'inspect these' },
+          {
+            type: 'file',
+            text: 'archive.zip',
+            mime_type: 'application/zip',
+            file_url: '/ui/uploads/archive_a1b2.zip',
+            size_bytes: 1234,
+            kind: 'upload',
+          },
+          { type: 'file', text: 'notes.md', kind: 'reference' },
+        ],
+      },
+    ]);
+    expect(messages[0].attachments).toEqual([
+      {
+        name: 'archive.zip',
+        type: 'application/zip',
+        url: '/ui/uploads/archive_a1b2.zip',
+        previewURL: '/ui/uploads/archive_a1b2.zip',
+        mention: false,
+        size: 1234,
+        downloadURL: '/ui/uploads/archive_a1b2.zip',
+      },
+      {
+        name: 'notes.md',
+        type: 'text/plain',
+        url: '',
+        previewURL: '',
+        mention: true,
+        reference: true,
+      },
+    ]);
+  });
+
+  it('rebases the upload download URL through the Hub asset hook', () => {
+    const messages = convertServerMessages(
+      [
+        {
+          id: 1,
+          role: 'user',
+          parts: [
+            {
+              type: 'file',
+              text: 'archive.zip',
+              mime_type: 'application/zip',
+              file_url: '/ui/uploads/archive_a1b2.zip',
+              size_bytes: 1234,
+              kind: 'upload',
+            },
+          ],
+        },
+      ],
+      { rebaseAssetURL: (value) => value.replace('/ui/', '/nodes/alpha/') },
+    );
+    expect(messages[0].attachments?.[0]).toMatchObject({
+      downloadURL: '/nodes/alpha/uploads/archive_a1b2.zip',
+      url: '/nodes/alpha/uploads/archive_a1b2.zip',
+      size: 1234,
+    });
+  });
+
+  it('treats a pruned upload as a non-clickable chip, never as a reference', () => {
+    const messages = convertServerMessages([
+      {
+        id: 1,
+        role: 'user',
+        parts: [{ type: 'file', text: 'pruned.zip', mime_type: 'application/zip', kind: 'upload' }],
+      },
+    ]);
+    expect(messages[0].attachments).toEqual([
+      {
+        name: 'pruned.zip',
+        type: 'application/zip',
+        url: '',
+        previewURL: '',
+        mention: true,
+      },
+    ]);
+  });
+
+  it('falls back to a reference for legacy servers that sent only a file name', () => {
+    const messages = convertServerMessages([
+      { id: 1, role: 'user', parts: [{ type: 'file', text: 'notes.md' }] },
+    ]);
+    expect(messages[0].attachments).toEqual([
+      {
+        name: 'notes.md',
+        type: 'text/plain',
+        url: '',
+        previewURL: '',
+        mention: true,
+        reference: true,
+      },
+    ]);
+  });
+
   it('restores completed spawn tool-call totals from validated history projection', () => {
     const messages = convertServerMessages([
       {

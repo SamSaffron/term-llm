@@ -79,6 +79,14 @@
   height: 1rem;
 }
 
+.attachment-chip .att-icon {
+  display: block;
+  width: 0.95rem;
+  height: 0.95rem;
+  flex: 0 0 auto;
+  opacity: 0.8;
+}
+
 .attachment-chip .att-remove.close-button:hover:not(:disabled),
 .attachment-chip .att-remove.close-button:focus-visible {
   color: var(--danger);

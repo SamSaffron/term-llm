@@ -6,7 +6,7 @@ import { App } from '../app/App';
 import { AppStore } from '../stores/app-store';
 import { APIError } from '../api/client';
 import type { SessionShareResponse } from '../api/endpoints';
-import type { ToolCall } from '../domain/types';
+import type { Attachment, ToolCall } from '../domain/types';
 import { Transcript } from './Transcript';
 import { Composer } from './Composer';
 import { Markdown } from './Markdown';
@@ -38,8 +38,8 @@ const config: AppConfig = {
   webRTC: false,
   signalingURL: '',
 };
-const createStore = () => {
-  const store = new AppStore(config);
+const createStore = (overrides: Partial<AppConfig> = {}) => {
+  const store = new AppStore({ ...config, ...overrides });
   store.sessions.value = [
     {
       id: 's1',
@@ -1999,6 +1999,119 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.queryByText(/"path": "x"/)).not.toBeInTheDocument();
     expect(screen.getByText('ok')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Copy details' })).not.toBeInTheDocument();
+  });
+
+  const transcriptWithAttachments = (store: AppStore, attachments: Attachment[]) => {
+    store.sessions.value = [
+      {
+        ...store.sessions.value[0],
+        messages: [{ id: 'u-files', role: 'user', content: 'look', created: 1, attachments }],
+      },
+    ];
+    return render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+  };
+
+  it('renders a downloadable upload chip with a MIME icon and size', () => {
+    const store = createStore();
+    const { container } = transcriptWithAttachments(store, [
+      {
+        name: 'archive.zip',
+        type: 'application/zip',
+        downloadURL: '/ui/uploads/archive_a1b2.zip',
+        size: 1234,
+      },
+    ]);
+    const chip = container.querySelector('.message-file') as HTMLAnchorElement;
+    expect(chip.tagName).toBe('A');
+    expect(chip.getAttribute('download')).toBe('archive.zip');
+    expect(chip.getAttribute('href')).toBe('/ui/uploads/archive_a1b2.zip');
+    expect(chip.querySelector('svg')).not.toBeNull();
+    expect(chip.querySelector('.message-file-size')).toHaveTextContent('1.2 KB');
+    expect(chip.textContent).toContain('archive.zip');
+    expect(chip.getAttribute('title')).toBe('Download archive.zip · 1.2 KB');
+  });
+
+  it('rebases an upload download link through the Hub node mount', () => {
+    const store = createStore({
+      prefix: '/nodes/alpha',
+      hub: { url: '/hub/', nodeId: 'alpha', nodeBasePath: '/chat' },
+    });
+    const { container } = transcriptWithAttachments(store, [
+      {
+        name: 'notes.md',
+        type: 'text/markdown',
+        downloadURL: '/chat/uploads/notes_a1b2.md',
+        size: 3.5 * 1024 * 1024,
+      },
+    ]);
+    const chip = container.querySelector('.message-file') as HTMLAnchorElement;
+    expect(new URL(chip.getAttribute('href') || '').pathname).toBe(
+      '/nodes/alpha/uploads/notes_a1b2.md',
+    );
+    expect(chip.querySelector('.message-file-size')).toHaveTextContent('3.5 MB');
+  });
+
+  it('renders reference chips inert with a distinct glyph and an explanatory tooltip', () => {
+    const store = createStore();
+    const { container } = transcriptWithAttachments(store, [
+      { name: 'notes.md', type: 'text/markdown', reference: true },
+      {
+        name: 'archive.zip',
+        type: 'application/zip',
+        downloadURL: '/ui/uploads/archive_a1b2.zip',
+      },
+    ]);
+    const reference = container.querySelector('.message-file.is-reference') as HTMLElement;
+    const upload = container.querySelector('a.message-file') as HTMLAnchorElement;
+    expect(reference.tagName).toBe('SPAN');
+    expect(container.querySelectorAll('a.message-file')).toHaveLength(1);
+    expect(reference.querySelector('svg')).not.toBeNull();
+    expect(reference.querySelector('svg')?.outerHTML).not.toBe(
+      upload.querySelector('svg')?.outerHTML,
+    );
+    expect(reference.getAttribute('title')).toBe(
+      'Referenced file — contents are included in this message',
+    );
+    expect(reference.textContent).toBe('notes.md');
+  });
+
+  it('keeps a pruned upload visible without pretending it is a reference', () => {
+    const store = createStore();
+    const { container } = transcriptWithAttachments(store, [
+      { name: 'pruned.zip', type: 'application/zip' },
+    ]);
+    const chip = container.querySelector('.message-file') as HTMLElement;
+    expect(chip.tagName).toBe('SPAN');
+    expect(chip.classList.contains('is-reference')).toBe(false);
+    expect(chip.querySelector('svg')).not.toBeNull();
+    expect(chip.querySelector('.message-file-size')).toBeNull();
+    expect(container.querySelector('a.message-file')).toBeNull();
+  });
+
+  it('keeps an image-typed upload a download chip while real images stay previews', () => {
+    const store = createStore();
+    const { container } = transcriptWithAttachments(store, [
+      {
+        name: 'icon.svg',
+        type: 'image/svg+xml',
+        downloadURL: '/ui/uploads/icon_a1b2.svg',
+        url: '/ui/uploads/icon_a1b2.svg',
+        previewURL: '/ui/uploads/icon_a1b2.svg',
+        size: 512,
+      },
+      { name: 'shot.png', type: 'image/png', url: '/ui/images/shot.png' },
+    ]);
+    const upload = container.querySelector('a.message-file') as HTMLAnchorElement;
+    expect(upload.getAttribute('download')).toBe('icon.svg');
+    expect(upload.getAttribute('href')).toBe('/ui/uploads/icon_a1b2.svg');
+    // The upload must not be rendered as a thumbnail, which would drop the
+    // download affordance and break for formats the browser cannot decode.
+    expect(container.querySelector('img[src="/ui/uploads/icon_a1b2.svg"]')).toBeNull();
+    expect(container.querySelector('img[src="/ui/images/shot.png"]')).not.toBeNull();
   });
 
   it('renders a model switch as a quiet structured boundary', () => {
@@ -6963,6 +7076,31 @@ describe('Preact-owned chat surfaces', () => {
     } finally {
       revoke.mockRestore();
     }
+  });
+
+  it('shows a MIME icon on composer chips that have no thumbnail', () => {
+    const store = createStore();
+    store.attachments.value = [
+      { id: 'archive', name: 'archive.zip', type: 'application/zip', size: 1234, status: 'ready' },
+      {
+        id: 'image',
+        name: 'one.png',
+        type: 'image/png',
+        previewURL: 'blob:image-one',
+        status: 'ready',
+      },
+    ];
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+    const chips = container.querySelectorAll('.attachment-chip');
+    expect(chips).toHaveLength(2);
+    expect(chips[0].querySelector('svg.att-icon')).not.toBeNull();
+    expect(chips[0].querySelector('.att-preview')).toBeNull();
+    expect(chips[1].querySelector('svg.att-icon')).toBeNull();
+    expect(chips[1].querySelector('.att-preview img')).toHaveAttribute('src', 'blob:image-one');
   });
 
   it('removes attachments directly and while reviewing the draft gallery', async () => {

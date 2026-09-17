@@ -10,6 +10,7 @@ import { useStore } from '../app/context';
 import { Markdown } from './Markdown';
 import { ChipPicker } from './ChipPicker';
 import { Icon } from './Icon';
+import { attachmentIconName, formatAttachmentSize } from '../domain/attachments';
 import { copyText } from '../platform/clipboard';
 import { rebaseHubAssetURL } from '../app/config';
 import type { MarkdownMediaResolver } from '../domain/markdown';
@@ -765,6 +766,65 @@ function ToolGroup({
   );
 }
 
+function FileChip({
+  name,
+  type,
+  size,
+  href,
+  reference,
+}: {
+  name: string;
+  type: string;
+  size?: number;
+  href?: string;
+  reference?: boolean;
+}) {
+  const label = formatAttachmentSize(size);
+  // A reference chip is inert: the file's contents are already in the message.
+  if (reference)
+    return (
+      <span
+        class="message-file is-reference"
+        title="Referenced file — contents are included in this message"
+        aria-label={`${name} — referenced file, contents are included in this message`}
+      >
+        <Icon name="file-link" class="message-file-icon" />
+        {name}
+      </span>
+    );
+  const body = (
+    <>
+      <Icon name={attachmentIconName(type, name)} class="message-file-icon" />
+      {name}
+      {label && (
+        <span class="message-file-size" aria-hidden="true">
+          {label}
+        </span>
+      )}
+    </>
+  );
+  // No URL means a pruned or legacy upload: keep the chip honest but inert.
+  if (!href)
+    return (
+      <span class="message-file" title={name}>
+        {body}
+      </span>
+    );
+  return (
+    <a
+      class="message-file"
+      href={href}
+      download={name}
+      target="_blank"
+      rel="noopener"
+      title={`Download ${name}${label ? ` · ${label}` : ''}`}
+      aria-label={`Download ${name}${label ? ` (${label})` : ''}`}
+    >
+      {body}
+    </a>
+  );
+}
+
 function Attachments({ message }: { message: Message }) {
   const store = useStore();
   return (
@@ -774,12 +834,25 @@ function Attachments({ message }: { message: Message }) {
           store.config,
           attachment.previewURL || attachment.url || attachment.dataURL || '',
         );
-        if (attachment.mention && !src)
-          return (
-            <span class="message-file" key={`${attachment.name}-${index}`}>
-              {attachment.name}
-            </span>
-          );
+        const file = (
+          <FileChip
+            key={`${attachment.name}-${index}`}
+            name={attachment.name}
+            type={attachment.type}
+            size={attachment.size}
+            reference={attachment.reference}
+            href={
+              attachment.downloadURL ? rebaseHubAssetURL(store.config, attachment.downloadURL) : src
+            }
+          />
+        );
+        // A reference, a URL-less chip, and a server-hosted upload are all
+        // chips: only the image/video/audio projections below own a preview.
+        // An upload keeps its download affordance even when its MIME looks like
+        // media, which also avoids a broken <img> for formats the browser
+        // cannot decode (image/tiff, image/heic).
+        if (attachment.reference || attachment.downloadURL || (attachment.mention && !src))
+          return file;
         if (attachment.type.startsWith('image/'))
           return (
             <button
@@ -820,17 +893,7 @@ function Attachments({ message }: { message: Message }) {
           );
         if (attachment.type.startsWith('audio/'))
           return <audio key={`${attachment.name}-${index}`} src={src} controls />;
-        return (
-          <a
-            class="message-file"
-            key={`${attachment.name}-${index}`}
-            href={src}
-            target="_blank"
-            rel="noopener"
-          >
-            {attachment.name}
-          </a>
-        );
+        return file;
       })}
     </div>
   );

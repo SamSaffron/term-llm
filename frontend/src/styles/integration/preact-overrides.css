@@ -274,12 +274,47 @@
 
 .message-file {
   display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
   padding: 0.3rem 0.5rem;
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--text-muted);
   font-size: 0.8rem;
   text-decoration: none;
+}
+
+.message-file-icon {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex: none;
+  opacity: 0.8;
+}
+
+.message-file-size {
+  opacity: 0.7;
+}
+
+/* A reference chip is inert and its contents already live in the message, so it
+   reads as an annotation rather than as something to click. */
+.message-file.is-reference {
+  border-style: dashed;
+}
+
+span.message-file {
+  cursor: default;
+}
+
+a.message-file:hover,
+a.message-file:focus-visible {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+a.message-file:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .text-action {

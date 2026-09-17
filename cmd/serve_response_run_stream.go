@@ -155,12 +155,24 @@ func (s *serveServer) steeringAttachmentsForEvent(msg llm.Message) []map[string]
 	imageCount := 0
 	for _, part := range msg.Parts {
 		if part.Type == llm.PartFile {
-			file := sessionMessageFilePart(part)
-			out = append(out, map[string]any{
-				"name":    file.Text,
-				"type":    file.MimeType,
-				"mention": true,
-			})
+			file := s.sessionMessageFilePart(part)
+			attachment := map[string]any{
+				"name": file.Text,
+				"type": file.MimeType,
+				"kind": file.Kind,
+			}
+			if file.FileURL != "" {
+				attachment["file_url"] = file.FileURL
+			}
+			if file.SizeBytes > 0 {
+				attachment["size_bytes"] = file.SizeBytes
+			}
+			// mention marks a chip without a download URL, so clients that predate
+			// `kind` keep rendering a name instead of dropping the attachment.
+			if file.FileURL == "" {
+				attachment["mention"] = true
+			}
+			out = append(out, attachment)
 			continue
 		}
 		if part.Type != llm.PartImage {

@@ -1,6 +1,6 @@
 import type { JSX } from 'preact';
 
-type IconName =
+export type IconName =
   | 'add'
   | 'alert-circle'
   | 'arrow-left'
@@ -17,6 +17,12 @@ type IconName =
   | 'dock-right'
   | 'edit'
   | 'expand'
+  | 'file'
+  | 'file-archive'
+  | 'file-code'
+  | 'file-link'
+  | 'file-table'
+  | 'file-text'
   | 'fork'
   | 'folder'
   | 'info'
@@ -124,6 +130,50 @@ const paths: Record<IconName, JSX.Element> = {
       <path d="m3 21 6-6" />
       <path d="M16 21h5v-5" />
       <path d="m21 21-6-6" />
+    </>
+  ),
+  file: (
+    <>
+      <path d="M6 3h7l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" />
+      <path d="M13 3v4a1 1 0 0 0 1 1h4" />
+    </>
+  ),
+  'file-archive': (
+    <>
+      <path d="M4 7l8-4 8 4v10l-8 4-8-4Z" />
+      <path d="M4 7l8 4 8-4" />
+      <path d="M12 11v10" />
+    </>
+  ),
+  'file-code': (
+    <>
+      <path d="M6 3h7l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" />
+      <path d="M13 3v4a1 1 0 0 0 1 1h4" />
+      <path d="m10 13-2 3 2 3" />
+      <path d="m14 13 2 3-2 3" />
+    </>
+  ),
+  'file-link': (
+    <>
+      <path d="M6 3h7l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" />
+      <path d="M13 3v4a1 1 0 0 0 1 1h4" />
+      <path d="M10.5 13h-1a3 3 0 0 0 0 6h1" />
+      <path d="M12.5 13h1a3 3 0 0 1 0 6h-1" />
+    </>
+  ),
+  'file-table': (
+    <>
+      <path d="M6 3h7l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" />
+      <path d="M13 3v4a1 1 0 0 0 1 1h4" />
+      <path d="M8.5 12.5h7M8.5 16.5h7M12 12.5v7" />
+    </>
+  ),
+  'file-text': (
+    <>
+      <path d="M6 3h7l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" />
+      <path d="M13 3v4a1 1 0 0 0 1 1h4" />
+      <path d="M8 13h8" />
+      <path d="M8 17h5" />
     </>
   ),
   fork: (

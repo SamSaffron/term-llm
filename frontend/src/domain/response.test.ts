@@ -392,6 +392,50 @@ describe('response projection', () => {
     ]);
   });
 
+  it('projects steering uploads with a download URL and size', () => {
+    const projection = reduceResponse(
+      initialProjection(run),
+      event('response.steering', 1, {
+        text: '',
+        client_message_id: 'steering-upload',
+        attachments: [
+          {
+            name: 'archive.zip',
+            type: 'application/zip',
+            kind: 'upload',
+            file_url: '/ui/uploads/archive_a1b2.zip',
+            size_bytes: 1234,
+          },
+        ],
+      }),
+    );
+    expect(projection.messages[0].attachments).toEqual([
+      {
+        name: 'archive.zip',
+        type: 'application/zip',
+        url: '/ui/uploads/archive_a1b2.zip',
+        size: 1234,
+        downloadURL: '/ui/uploads/archive_a1b2.zip',
+      },
+    ]);
+  });
+
+  it('projects steering reference chips as inert without pretending to be images', () => {
+    const projection = reduceResponse(
+      initialProjection(run),
+      event('response.steering', 1, {
+        text: '',
+        client_message_id: 'steering-reference',
+        attachments: [
+          { name: 'notes.md', type: 'text/markdown', kind: 'reference', mention: true },
+        ],
+      }),
+    );
+    expect(projection.messages[0].attachments).toEqual([
+      { name: 'notes.md', type: 'text/markdown', url: '', mention: true, reference: true },
+    ]);
+  });
+
   it('projects steering image attachments before transcript reload', () => {
     const projection = reduceResponse(
       initialProjection(run),

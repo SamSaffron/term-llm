@@ -1,3 +1,5 @@
+import { liveAudioSocketSupported } from '../api/live-socket';
+
 export type VoicePhase =
   | 'idle'
   | 'requesting-permission'
@@ -31,7 +33,7 @@ export function liveCapability(transport: LiveTransport = 'webrtc'): VoiceCapabi
     return { ...microphone, reason: microphone.reason.replace('Voice recording', 'Live voice') };
   if (transport === 'websocket_pcm' || transport === 'http_pcm') {
     if (
-      (transport === 'websocket_pcm' && typeof globalThis.WebSocket !== 'function') ||
+      (transport === 'websocket_pcm' && !liveAudioSocketSupported()) ||
       typeof globalThis.AudioContext !== 'function' ||
       typeof globalThis.AudioWorkletNode !== 'function'
     )

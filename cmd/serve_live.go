@@ -619,14 +619,7 @@ func (s *serveServer) handleLiveSessionEvents(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeEvent := func(event liveSessionEvent) bool {
-		data, err := json.Marshal(event.Data)
-		if err != nil {
-			return false
-		}
-		if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", event.Sequence, event.Type, data); err != nil {
-			return false
-		}
-		return flushLiveSSEResponse(flushController) == nil
+		return writeLiveSessionEvent(w, flushController, event)
 	}
 	for _, event := range replay {
 		if !writeEvent(event) {
@@ -657,10 +650,7 @@ func (s *serveServer) handleLiveSessionEvents(w http.ResponseWriter, r *http.Req
 			// Keepalive writes use the same per-write deadline as event writes. A
 			// write timeout or disconnect ends this handler instead of leaving a
 			// heartbeat goroutine retrying a dead client forever.
-			if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
-				return
-			}
-			if err := flushLiveSSEResponse(flushController); err != nil {
+			if !writeLiveSSEKeepalive(w, flushController) {
 				return
 			}
 		case <-r.Context().Done():
@@ -669,6 +659,29 @@ func (s *serveServer) handleLiveSessionEvents(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
+}
+
+// writeLiveSessionEvent emits one buffered session event in SSE framing. It
+// reports false once the client can no longer receive events, which ends the
+// stream instead of retrying a dead connection.
+func writeLiveSessionEvent(w io.Writer, controller *http.ResponseController, event liveSessionEvent) bool {
+	data, err := json.Marshal(event.Data)
+	if err != nil {
+		return false
+	}
+	if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", event.Sequence, event.Type, data); err != nil {
+		return false
+	}
+	return flushLiveSSEResponse(controller) == nil
+}
+
+// writeLiveSSEKeepalive emits an SSE comment so idle streams keep proxies and
+// browsers from closing the response. It reports false when the client is gone.
+func writeLiveSSEKeepalive(w io.Writer, controller *http.ResponseController) bool {
+	if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
+		return false
+	}
+	return flushLiveSSEResponse(controller) == nil
 }
 
 // flushLiveSSEResponse preserves flush errors, which http.Flusher cannot expose,
@@ -737,6 +750,38 @@ func (s *serveServer) handleLiveSessionAudio(w http.ResponseWriter, r *http.Requ
 	conn.SetPongHandler(func(string) error {
 		return conn.SetReadDeadline(time.Now().Add(liveAudioPongTimeout))
 	})
+	readErr := readLiveAudioInput(r.Context(), conn, pcmSession, record)
+
+	frames := pcmSession.PCMFrames()
+	ping := time.NewTicker(liveAudioPingInterval)
+	defer ping.Stop()
+	for {
+		select {
+		case frame, open := <-frames:
+			if !open {
+				return
+			}
+			if !writeLiveAudioFrame(conn, record, frame) {
+				return
+			}
+		case <-ping.C:
+			if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(liveAudioWriteTimeout)); err != nil {
+				return
+			}
+		case <-readErr:
+			return
+		case <-r.Context().Done():
+			return
+		case <-s.shutdownCh:
+			return
+		}
+	}
+}
+
+// readLiveAudioInput forwards browser microphone frames to the provider until
+// the socket fails or a frame breaks the PCM framing contract. The returned
+// channel carries the terminating error so the writer loop can unwind.
+func readLiveAudioInput(ctx context.Context, conn *websocket.Conn, pcmSession live.PCMSession, record *liveSession) <-chan error {
 	readErr := make(chan error, 1)
 	go func() {
 		for {
@@ -753,58 +798,44 @@ func (s *serveServer) handleLiveSessionAudio(w http.ResponseWriter, r *http.Requ
 				readErr <- errors.New("invalid live PCM input frame")
 				return
 			}
-			if err := pcmSession.SendPCM(r.Context(), payload); err != nil {
+			if err := pcmSession.SendPCM(ctx, payload); err != nil {
 				readErr <- err
 				return
 			}
 			record.touch()
 		}
 	}()
+	return readErr
+}
 
-	frames := pcmSession.PCMFrames()
-	ping := time.NewTicker(liveAudioPingInterval)
-	defer ping.Stop()
-	for {
-		select {
-		case frame, open := <-frames:
-			if !open {
-				return
-			}
-			if frame.Flush {
-				if err := writeLiveAudioControl(conn, map[string]string{"type": "interrupt"}); err != nil {
-					return
-				}
-			}
-			frame.Audio = completeLivePCMSamples(frame.Audio)
-			for len(frame.Audio) > 0 {
-				size := min(len(frame.Audio), liveAudioFrameLimitBytes)
-				if size%2 != 0 {
-					size--
-				}
-				if size == 0 {
-					break
-				}
-				_ = conn.SetWriteDeadline(time.Now().Add(liveAudioWriteTimeout))
-				err := conn.WriteMessage(websocket.BinaryMessage, frame.Audio[:size])
-				_ = conn.SetWriteDeadline(time.Time{})
-				if err != nil {
-					return
-				}
-				frame.Audio = frame.Audio[size:]
-				record.touch()
-			}
-		case <-ping.C:
-			if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(liveAudioWriteTimeout)); err != nil {
-				return
-			}
-		case <-readErr:
-			return
-		case <-r.Context().Done():
-			return
-		case <-s.shutdownCh:
-			return
+// writeLiveAudioFrame sends one provider frame to the browser, split to the
+// socket frame limit and kept on 16-bit sample boundaries. It reports false
+// once the connection fails, which ends the stream.
+func writeLiveAudioFrame(conn *websocket.Conn, record *liveSession, frame live.PCMFrame) bool {
+	if frame.Flush {
+		if err := writeLiveAudioControl(conn, map[string]string{"type": "interrupt"}); err != nil {
+			return false
 		}
 	}
+	audio := completeLivePCMSamples(frame.Audio)
+	for len(audio) > 0 {
+		size := min(len(audio), liveAudioFrameLimitBytes)
+		if size%2 != 0 {
+			size--
+		}
+		if size == 0 {
+			break
+		}
+		_ = conn.SetWriteDeadline(time.Now().Add(liveAudioWriteTimeout))
+		err := conn.WriteMessage(websocket.BinaryMessage, audio[:size])
+		_ = conn.SetWriteDeadline(time.Time{})
+		if err != nil {
+			return false
+		}
+		audio = audio[size:]
+		record.touch()
+	}
+	return true
 }
 
 func completeLivePCMSamples(pcm []byte) []byte {
@@ -827,6 +858,45 @@ func writeLiveAudioControl(conn *websocket.Conn, value any) error {
 
 func liveHTTPAudioCapability(r *http.Request) string {
 	return strings.TrimSpace(r.Header.Get("X-Term-LLM-Live-Audio-Capability"))
+}
+
+// writeLiveAudioSSEEvent emits one named audio event and flushes it. It reports
+// false once the client can no longer receive audio.
+func writeLiveAudioSSEEvent(w io.Writer, controller *http.ResponseController, event string, data any) bool {
+	payload, err := json.Marshal(data)
+	if err != nil {
+		return false
+	}
+	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, payload); err != nil {
+		return false
+	}
+	return flushLiveSSEResponse(controller) == nil
+}
+
+// writeLiveAudioSSEFrame emits one provider frame as base64 audio events, split
+// to the SSE chunk limit and kept on 16-bit sample boundaries. An interrupt
+// marker precedes the audio so the browser can drop stale playback first.
+func writeLiveAudioSSEFrame(w io.Writer, controller *http.ResponseController, record *liveSession, frame live.PCMFrame) bool {
+	if frame.Flush && !writeLiveAudioSSEEvent(w, controller, "interrupt", map[string]any{}) {
+		return false
+	}
+	audio := completeLivePCMSamples(frame.Audio)
+	for len(audio) > 0 {
+		size := min(len(audio), liveAudioSSEChunkBytes)
+		if size%2 != 0 {
+			size--
+		}
+		if size == 0 {
+			break
+		}
+		encoded := base64.StdEncoding.EncodeToString(audio[:size])
+		if !writeLiveAudioSSEEvent(w, controller, "audio", map[string]string{"audio": encoded}) {
+			return false
+		}
+		audio = audio[size:]
+		record.touch()
+	}
+	return true
 }
 
 // handleLiveSessionAudioOutput streams base64-encoded 24 kHz PCM and interrupt
@@ -866,19 +936,9 @@ func (s *serveServer) handleLiveSessionAudioOutput(w http.ResponseWriter, r *htt
 	if err := flushLiveSSEResponse(flushController); err != nil {
 		return
 	}
-	writeEvent := func(event string, data any) bool {
-		payload, err := json.Marshal(data)
-		if err != nil {
-			return false
-		}
-		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, payload); err != nil {
-			return false
-		}
-		return flushLiveSSEResponse(flushController) == nil
-	}
 	// A body-bearing first event forces response headers through reverse Hub and
 	// other buffering proxies so browser fetch resolves before microphone input.
-	if !writeEvent("ready", map[string]any{}) {
+	if !writeLiveAudioSSEEvent(w, flushController, "ready", map[string]any{}) {
 		return
 	}
 
@@ -891,30 +951,11 @@ func (s *serveServer) handleLiveSessionAudioOutput(w http.ResponseWriter, r *htt
 			if !open {
 				return
 			}
-			if frame.Flush && !writeEvent("interrupt", map[string]any{}) {
+			if !writeLiveAudioSSEFrame(w, flushController, record, frame) {
 				return
-			}
-			frame.Audio = completeLivePCMSamples(frame.Audio)
-			for len(frame.Audio) > 0 {
-				size := min(len(frame.Audio), liveAudioSSEChunkBytes)
-				if size%2 != 0 {
-					size--
-				}
-				if size == 0 {
-					break
-				}
-				encoded := base64.StdEncoding.EncodeToString(frame.Audio[:size])
-				if !writeEvent("audio", map[string]string{"audio": encoded}) {
-					return
-				}
-				frame.Audio = frame.Audio[size:]
-				record.touch()
 			}
 		case <-heartbeat.C:
-			if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
-				return
-			}
-			if err := flushLiveSSEResponse(flushController); err != nil {
+			if !writeLiveSSEKeepalive(w, flushController) {
 				return
 			}
 		case <-r.Context().Done():

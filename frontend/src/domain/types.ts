@@ -19,9 +19,14 @@ export interface Attachment {
   dataURL?: string;
   previewURL?: string;
   url?: string;
+  /** Server download route for an uploaded file; absent for pruned uploads. */
+  downloadURL?: string;
   width?: number;
   height?: number;
+  /** True when no downloadable URL exists for this chip. */
   mention?: boolean;
+  /** True when the chip is an `@path` reference folded into the message text. */
+  reference?: boolean;
   file?: File;
   status?: 'preparing' | 'ready' | 'error';
   progress?: number;

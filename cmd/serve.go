@@ -732,7 +732,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 				api:                     hasAPI,
 				suppressServerTools:     serveFilterServerTools,
 				verbose:                 serveVerbose,
-				debug:                   serveDebug || debugRaw,
+				debug:                   serveDebug,
 				debugRaw:                debugRaw,
 				basePath:                serveBasePath,
 				publicURL:               servePublicURL,
@@ -1161,7 +1161,7 @@ type serveServerConfig struct {
 	api                     bool
 	suppressServerTools     bool
 	verbose                 bool
-	debug                   bool
+	debug                   bool // CLI flag verbatim; raw implies debug, so readers derive it (liveDebugOptions)
 	debugRaw                bool
 	basePath                string // e.g. "/ui" or "/chat", always without trailing slash
 	publicURL               string // explicit browser-visible origin + optional prefix for OAuth callbacks
@@ -1192,6 +1192,10 @@ func (c serveServerConfig) imagesRoute() string { return c.basePath + "/images/"
 
 // mediaRoute returns the durable media sub-route.
 func (c serveServerConfig) mediaRoute() string { return c.basePath + "/media/" }
+
+// uploadsRoute returns the first-party upload download sub-route, e.g.
+// "/ui/uploads/" or "/chat/uploads/".
+func (c serveServerConfig) uploadsRoute() string { return c.basePath + "/uploads/" }
 
 // filesRoute returns the files sub-route, e.g. "/ui/files/" or "/chat/files/".
 func (c serveServerConfig) filesRoute() string { return c.basePath + "/files/" }
@@ -1548,6 +1552,7 @@ func (s *serveServer) httpHandler() http.Handler {
 
 	inner.HandleFunc("/images/", s.auth(s.cors(s.handleImage)))
 	inner.HandleFunc("/media/", s.auth(s.cors(s.handleMedia)))
+	inner.HandleFunc("/uploads/", s.auth(s.cors(s.handleUpload)))
 	if s.cfg.filesDir != "" {
 		inner.HandleFunc("/files/", s.auth(s.cors(s.handleFile)))
 	}

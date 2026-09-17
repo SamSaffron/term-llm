@@ -103,7 +103,12 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// compressed cap remains unchanged.
 		// First-seen live transcript ordering adds ~0.74 kB to the eager store,
 		// bringing it to ~505.52 kB. The history panel remains lazy.
-		"dist/app.js":                {raw: 505_750, gzip: 144_500},
+		// Downloadable attachment chips add six inline MIME glyphs plus the
+		// MIME/extension mapping tables to the eager transcript and composer,
+		// bringing the shell to ~509.5/143.2 kB raw/gzip. The glyphs are inline
+		// SVG in the shared registry, so no sprite asset or icon dependency
+		// enters the graph.
+		"dist/app.js":                {raw: 510_500, gzip: 145_000},
 		"dist/chunks/Lightbox.js":    {raw: 8_000, gzip: 3_200},
 		"dist/assets/Lightbox.css":   {raw: 4_000, gzip: 1_400},
 		"dist/chunks/StatsModal.js":  {raw: 8_000, gzip: 3_000},

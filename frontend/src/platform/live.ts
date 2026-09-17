@@ -1,4 +1,5 @@
 import { decodeSSE } from '../api/client';
+import { liveAudioSocketOpen, openLiveAudioSocket, type LiveAudioSocket } from '../api/live-socket';
 import type { LivePCMArtifactCapture } from './live-pcm-diagnostics';
 import {
   PCM_OUTPUT_PROCESSOR_NAME,
@@ -96,7 +97,7 @@ export interface LiveCallOptions {
   sendPCMInput?: LiveAudioInput;
   peerConnectionConfig?: RTCConfiguration;
   createPeerConnection?: (config?: RTCConfiguration) => RTCPeerConnection;
-  createWebSocket?: (url: string) => WebSocket;
+  createWebSocket?: (url: string) => LiveAudioSocket;
   createAudioContext?: () => AudioContext;
   createAudioWorkletNode?: (
     context: AudioContext,
@@ -219,7 +220,7 @@ export class LiveCall {
   private peer: RTCPeerConnection | null = null;
   private channel: RTCDataChannel | null = null;
   private audio: HTMLAudioElement | null = null;
-  private socket: WebSocket | null = null;
+  private socket: LiveAudioSocket | null = null;
   private mediaAbort: AbortController | null = null;
   private pcmInputReady = false;
   private inputQueue: Uint8Array[] = [];
@@ -503,7 +504,7 @@ export class LiveCall {
       await this.openPCMHTTP(started.live_id, started.audio_capability, generation);
     } else {
       if (!started.audio_url)
-        throw new Error('The live voice server did not return a WebSocket audio endpoint.');
+        throw new Error('The live voice server did not return a socket audio endpoint.');
       await this.openPCMWebSocket(started.audio_url, generation);
     }
     if (!this.current(generation)) return null;
@@ -593,7 +594,7 @@ export class LiveCall {
     target.protocol = target.protocol === 'https:' ? 'wss:' : 'ws:';
     const socket = this.options.createWebSocket
       ? this.options.createWebSocket(target.toString())
-      : new WebSocket(target);
+      : openLiveAudioSocket(target.toString());
     this.socket = socket;
     socket.binaryType = 'arraybuffer';
     socket.onmessage = (event) => this.onPCMMessage(event, generation);
@@ -639,7 +640,7 @@ export class LiveCall {
       const socket = this.socket;
       if (
         !socket ||
-        socket.readyState !== WebSocket.OPEN ||
+        !liveAudioSocketOpen(socket) ||
         socket.bufferedAmount > PCM_SOCKET_BUFFER_LIMIT
       ) {
         if (diagnostics) diagnostics.inputQueueDrops += 1;

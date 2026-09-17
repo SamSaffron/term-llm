@@ -77,15 +77,38 @@ func TestUploadedFileRemainsVisibleAfterPersistence(t *testing.T) {
 				}
 				files := 0
 				for _, p := range body.Messages[0].Parts {
-					if p.Type == "file" && p.Text == tc.name && p.MimeType == tc.mime {
-						files++
+					// The name-only chip projected for embedded @mention context has
+					// no MIME type, so match the structured upload by name + type.
+					if p.Type != "file" || p.Text != tc.name || p.MimeType != tc.mime {
+						continue
+					}
+					files++
+					wantURL := srv.cfg.uploadsRoute() + filepath.Base(part.FilePath)
+					if p.FileURL != wantURL {
+						t.Errorf("file_url = %q, want %q", p.FileURL, wantURL)
+					}
+					if p.SizeBytes != int64(len(tc.raw)) {
+						t.Errorf("size_bytes = %d, want %d", p.SizeBytes, len(tc.raw))
+					}
+					if p.Kind != filePartKindUpload {
+						t.Errorf("kind = %q, want %q", p.Kind, filePartKindUpload)
+					}
+					// The projected URL must serve the stored bytes unchanged.
+					download := httptest.NewRecorder()
+					srv.handleUpload(download, httptest.NewRequest(http.MethodGet, p.FileURL, nil))
+					if download.Code != http.StatusOK || download.Body.String() != string(tc.raw) {
+						t.Errorf("download %s status=%d body=%q", p.FileURL, download.Code, download.Body.String())
 					}
 				}
 				if files != 1 {
 					t.Errorf("want one visible file chip, got %#v", body.Messages[0].Parts)
 				}
-				if strings.Contains(rr.Body.String(), part.FilePath) || strings.Contains(rr.Body.String(), "private file body") {
-					t.Error("history leaked provider-only file content/path")
+				// Assert against this case's own bytes, not a fixed literal, so a
+				// regression that echoed the raw or base64 body would fail here.
+				for _, secret := range []string{part.FilePath, string(tc.raw), base64.StdEncoding.EncodeToString(tc.raw)} {
+					if strings.Contains(rr.Body.String(), secret) {
+						t.Errorf("history leaked provider-only file content/path: %q", secret)
+					}
 				}
 
 				// Consumed guidance and recovery must project the same stored attachment,
@@ -98,10 +121,78 @@ func TestUploadedFileRemainsVisibleAfterPersistence(t *testing.T) {
 				recovery := run.recoveryPayloadLocked()
 				messages := recovery["messages"].([]map[string]any)
 				atts, _ := messages[0]["attachments"].([]map[string]any)
-				if len(atts) != 1 || atts[0]["name"] != tc.name || atts[0]["type"] != tc.mime || atts[0]["mention"] != true {
+				if len(atts) != 1 || atts[0]["name"] != tc.name || atts[0]["type"] != tc.mime || atts[0]["kind"] != filePartKindUpload {
 					t.Errorf("steering attachments = %#v", atts)
+				}
+				if want := srv.cfg.uploadsRoute() + filepath.Base(part.FilePath); atts[0]["file_url"] != want {
+					t.Errorf("steering file_url = %v, want %q", atts[0]["file_url"], want)
+				}
+				if atts[0]["size_bytes"] != int64(len(tc.raw)) {
+					t.Errorf("steering size_bytes = %v, want %d", atts[0]["size_bytes"], len(tc.raw))
+				}
+				if mention, ok := atts[0]["mention"]; ok {
+					t.Errorf("downloadable steering chip is marked as an inert mention: %v", mention)
 				}
 			})
 		}
+	}
+}
+
+// TestEmbeddedMentionChipIsReference checks the other half of the file chip
+// contract: a name recovered from embedded @mention context is a reference, so
+// it carries no download route and its inlined body stays out of the payload.
+func TestEmbeddedMentionChipIsReference(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	const body = "embedded reference body"
+	embedded := llm.FormatEmbeddedFileText("docs/notes.md", "text/markdown", body)
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	sess := &session.Session{ID: "mention", Provider: "mock", Model: "mock", Mode: session.ModeChat, CreatedAt: time.Now(), UpdatedAt: time.Now(), Status: session.StatusActive}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+	msg := llm.Message{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: embedded}}}
+	if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, msg, -1)); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &serveServer{store: store}
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, httptest.NewRequest(http.MethodGet, "/v1/sessions/mention/messages", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	var response sessionMessagesResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Messages) != 1 {
+		t.Fatalf("messages: %#v", response.Messages)
+	}
+	chips := 0
+	for _, p := range response.Messages[0].Parts {
+		if p.Type != "file" {
+			continue
+		}
+		chips++
+		if p.Text != "notes.md" {
+			t.Errorf("reference chip text = %q, want notes.md", p.Text)
+		}
+		if p.Kind != filePartKindReference {
+			t.Errorf("reference chip kind = %q, want %q", p.Kind, filePartKindReference)
+		}
+		if p.FileURL != "" || p.SizeBytes != 0 || p.MimeType != "" {
+			t.Errorf("reference chip exposed download metadata: %#v", p)
+		}
+	}
+	if chips != 1 {
+		t.Fatalf("want one reference chip, got %#v", response.Messages[0].Parts)
+	}
+	if strings.Contains(rr.Body.String(), body) || strings.Contains(rr.Body.String(), "--- BEGIN USER-PROVIDED FILE:") {
+		t.Error("history leaked the embedded reference body")
 	}
 }

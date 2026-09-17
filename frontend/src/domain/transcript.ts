@@ -75,6 +75,22 @@ const mediaArtifacts = (value: unknown, rebase: (value: string) => string): Medi
 
 export interface ServerPart {
   type?: string;
+  text?: string;
+  name?: string;
+  filename?: string;
+  mime_type?: string;
+  media_type?: string;
+  image_url?: string;
+  file_url?: string;
+  audio_url?: string;
+  video_url?: string;
+  url?: string;
+  /** Size of an uploaded file in bytes; omitted for `@path` references. */
+  size_bytes?: number;
+  /** `upload` or `reference`; authoritative when present. */
+  kind?: string;
+  width?: number;
+  height?: number;
   [key: string]: unknown;
 }
 export interface ServerMessage {
@@ -267,15 +283,23 @@ function attachmentsFromUser(
       ['file', 'audio', 'video'].includes(text(part.type)) &&
       (part.file_url || part.audio_url || part.video_url || part.url || part.text)
     ) {
+      const downloadURL = rebase(text(part.file_url));
       const url = rebase(text(part.file_url || part.audio_url || part.video_url || part.url));
+      const mime = text(part.mime_type || part.media_type);
+      const kind = text(part.kind);
+      const size = Number(part.size_bytes);
+      // Servers predating `kind` sent a bare name for an embedded `@path`
+      // reference, so a part with neither URL nor MIME is a reference.
+      const reference = kind === 'reference' || (part.type === 'file' && !kind && !url && !mime);
       attachments.push({
         name: text(part.filename || part.name || part.text) || text(part.type),
-        type:
-          text(part.mime_type || part.media_type) ||
-          (part.type === 'file' ? 'text/plain' : `${part.type}/*`),
+        type: mime || (part.type === 'file' ? 'text/plain' : `${part.type}/*`),
         url,
         previewURL: url,
         mention: Boolean(part.text && !url),
+        ...(size > 0 ? { size } : {}),
+        ...(downloadURL ? { downloadURL } : {}),
+        ...(reference ? { reference: true } : {}),
       });
     } else if (['text', 'output_text'].includes(text(part.type)) && part.text)
       content.push(text(part.text));

@@ -958,6 +958,14 @@ func (s *serveServer) validatedSpawnChildID(parentSessionID, childSessionID stri
 	return ""
 }
 
+// Attachment chip kinds. "upload" marks a real structured upload with a
+// first-party download route; "reference" marks a name recovered from embedded
+// @mention context whose contents travel in the prompt and are not downloadable.
+const (
+	filePartKindUpload    = "upload"
+	filePartKindReference = "reference"
+)
+
 type sessionMessagePartEntry struct {
 	CreatedAt           int64                          `json:"created_at,omitempty"`
 	Type                string                         `json:"type"`
@@ -980,6 +988,9 @@ type sessionMessagePartEntry struct {
 	SpawnAgent          *tools.SpawnAgentResult        `json:"spawn_agent,omitempty"`
 	SpawnAgentToolCalls *int                           `json:"spawn_agent_tool_calls,omitempty"`
 	MimeType            string                         `json:"mime_type,omitempty"`
+	FileURL             string                         `json:"file_url,omitempty"`
+	SizeBytes           int64                          `json:"size_bytes,omitempty"`
+	Kind                string                         `json:"kind,omitempty"`
 	Width               int                            `json:"width,omitempty"`
 	Height              int                            `json:"height,omitempty"`
 }
@@ -1902,7 +1913,7 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 			case llm.PartText:
 				appendSessionMessageText(&entry, msg, p, embeddedFiles, displayText)
 			case llm.PartFile:
-				entry.Parts = append(entry.Parts, sessionMessageFilePart(p))
+				entry.Parts = append(entry.Parts, s.sessionMessageFilePart(p))
 			case llm.PartImage:
 				if imageURL, serveablePath := s.sessionMessageImageURL(p); imageURL != "" {
 					mimeType := ""
