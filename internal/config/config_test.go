@@ -1646,6 +1646,11 @@ func TestLiveDefaultsAreOffAndChatGPTBacked(t *testing.T) {
 	if cfg.Live.Enabled {
 		t.Fatal("live.enabled must default to false")
 	}
+	// Opt-in separately from live.enabled: it puts a model turn in front of every
+	// spoken request, so enabling voice must not enable it by side effect.
+	if cfg.Live.ControlPlane {
+		t.Fatal("live.control_plane must default to false")
+	}
 	if cfg.Live.Provider != LiveProviderChatGPT {
 		t.Fatalf("live.provider = %q, want chatgpt without a Codex dependency", cfg.Live.Provider)
 	}

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Endpoints } from '../api/endpoints';
 import type { LiveSnapshot, LiveStartResponse } from '../platform/live';
-import { LiveStore } from './live-store';
+import { LiveStore, type LiveSessionChange } from './live-store';
 
 class FakeLiveCall {
   snapshot: LiveSnapshot = {
@@ -30,6 +30,11 @@ class FakeLiveCall {
     const started = { live_id: 'live_one', session_id: sessionId, sdp: 'answer' };
     this.publish({ phase: 'listening', liveId: started.live_id, sessionId });
     return started;
+  }
+
+  /** Publishes a later snapshot, as a media-layer phase change would. */
+  advance(phase: LiveSnapshot['phase']): void {
+    this.publish({ phase });
   }
 
   private publish(patch: Partial<LiveSnapshot>): void {
@@ -397,6 +402,65 @@ describe('LiveStore', () => {
     events.close();
   });
 
+  it('returns to listening without an error when a delegation is refused', async () => {
+    const { store, events } = setup();
+    await store.start();
+
+    events.push(1, 'live.delegation', {
+      delegation_id: 'delegation-refused',
+      state: 'running',
+      text: 'live_switch_session',
+    });
+    await vi.waitFor(() => expect(store.working.value).toBe(true));
+    expect(store.phase.value).toBe('working');
+
+    // A refusal means the host declined the request's form or routing and
+    // corrected the voice model. Nothing failed, so the panel must stay silent —
+    // even though the text here is the model-directed guidance that caused the bug
+    // this guards.
+    events.push(2, 'live.delegation', {
+      delegation_id: 'delegation-refused',
+      state: 'refused',
+      text: 'this is a session-control request sent as ordinary work, so the host refused it',
+    });
+    await vi.waitFor(() => expect(store.phase.value).toBe('listening'));
+    expect(store.working.value).toBe(false);
+    expect(store.lastError.value).toBe('');
+    expect(store.delegation.value).toEqual({
+      delegationId: 'delegation-refused',
+      state: 'refused',
+    });
+    store.dispose();
+    events.close();
+  });
+
+  it('still reports a failed delegation as an error', async () => {
+    const { store, events } = setup();
+    await store.start();
+
+    events.push(1, 'live.delegation', {
+      delegation_id: 'delegation-failed',
+      state: 'running',
+      text: 'switch to session 7447',
+    });
+    await vi.waitFor(() => expect(store.working.value).toBe(true));
+
+    // The other half of the split: an executor that ran and failed is a real
+    // failure, and its reason is the user's to see.
+    events.push(2, 'live.delegation', {
+      delegation_id: 'delegation-failed',
+      state: 'failed',
+      text: 'another live call is already bound to that chat session',
+    });
+    await vi.waitFor(() =>
+      expect(store.lastError.value).toBe('another live call is already bound to that chat session'),
+    );
+    expect(store.phase.value).toBe('listening');
+    expect(store.working.value).toBe(false);
+    store.dispose();
+    events.close();
+  });
+
   it('reconnects a transiently closed event stream from the last SSE sequence', async () => {
     const endpoints = {
       liveEvents: vi
@@ -423,6 +487,167 @@ describe('LiveStore', () => {
     await vi.waitFor(() => expect(store.phase.value).toBe('ended'));
     expect(store.recentTurns.value).toEqual([{ role: 'user', text: 'remember this' }]);
     store.dispose();
+  });
+
+  it('moves the binding from live.session_changed and keeps it through later call snapshots', async () => {
+    const events = eventStream();
+    const endpoints = { liveEvents: vi.fn(async () => events.response) } as unknown as Endpoints;
+    const call = new FakeLiveCall();
+    const changes: LiveSessionChange[] = [];
+    const store = new LiveStore(
+      endpoints,
+      () => 'session-one',
+      call,
+      (change) => changes.push(change),
+    );
+    store.applyCapability({ enabled: true });
+    await store.start();
+    expect(store.sessionId.value).toBe('session-one');
+
+    events.push(1, 'live.session_changed', {
+      session_id: 'session-two',
+      session_number: 42,
+      title: 'Fix reflow crash',
+    });
+    await vi.waitFor(() => expect(store.sessionId.value).toBe('session-two'));
+    expect(store.sessionNumber.value).toBe(42);
+    expect(store.sessionTitle.value).toBe('Fix reflow crash');
+    expect(changes).toEqual([
+      { sessionId: 'session-two', sessionNumber: 42, title: 'Fix reflow crash' },
+    ]);
+
+    // The media layer still reports the session it was started with. Mirroring
+    // it here would silently revert the switch on the next phase change.
+    call.advance('connecting');
+    await vi.waitFor(() => expect(store.phase.value).toBe('connecting'));
+    expect(store.sessionId.value).toBe('session-two');
+    expect(store.sessionNumber.value).toBe(42);
+
+    await store.stop();
+    expect(store.sessionId.value).toBe('');
+    expect(store.sessionNumber.value).toBe(0);
+    expect(store.sessionTitle.value).toBe('');
+    store.dispose();
+    events.close();
+  });
+
+  it('ignores a session change event that carries no session id', async () => {
+    const { store, events } = setup();
+    await store.start();
+    events.push(1, 'live.session_changed', { session_number: 42, title: 'No session id' });
+    events.push(2, 'live.transcript', { role: 'user', text: 'still here', final: true });
+    await vi.waitFor(() => expect(store.recentTurns.value).toHaveLength(1));
+    expect(store.sessionId.value).toBe('session-one');
+    expect(store.sessionNumber.value).toBe(0);
+    store.dispose();
+    events.close();
+  });
+
+  it('recovers a binding the ring buffer dropped without moving the UI', async () => {
+    const events = eventStream();
+    const endpoints = { liveEvents: vi.fn(async () => events.response) } as unknown as Endpoints;
+    const call = new FakeLiveCall();
+    const changes: LiveSessionChange[] = [];
+    const store = new LiveStore(
+      endpoints,
+      () => 'session-one',
+      call,
+      (change) => changes.push(change),
+      // Only the app can name a session; a hint carries no title.
+      (sessionId) =>
+        sessionId === 'session-two' ? { sessionNumber: 42, title: 'Fix reflow crash' } : null,
+    );
+    store.applyCapability({ enabled: true });
+    await store.start();
+
+    // `live.session_changed` never arrived; the next event still names the
+    // binding, and the stale label must not survive the move.
+    store.sessionNumber.value = 7;
+    store.sessionTitle.value = 'Left behind';
+    events.push(1, 'live.delegation', {
+      delegation_id: 'task',
+      state: 'running',
+      session_id: 'session-two',
+    });
+    await vi.waitFor(() => expect(store.sessionId.value).toBe('session-two'));
+    expect(store.sessionNumber.value).toBe(42);
+    expect(store.sessionTitle.value).toBe('Fix reflow crash');
+    // A hint is evidence of the binding, not an instruction to move: the app is
+    // told to navigate by live.session_changed alone.
+    expect(changes).toEqual([]);
+    store.dispose();
+    events.close();
+  });
+
+  it('keeps a recovered binding hint local to the store', async () => {
+    const events = eventStream();
+    const endpoints = { liveEvents: vi.fn(async () => events.response) } as unknown as Endpoints;
+    const call = new FakeLiveCall();
+    const changes: LiveSessionChange[] = [];
+    const store = new LiveStore(
+      endpoints,
+      () => 'session-one',
+      call,
+      (change) => changes.push(change),
+    );
+    store.applyCapability({ enabled: true });
+    await store.start();
+
+    // A hint snapshot taken around a switch can name the previous session; it
+    // still must not be the thing that moves the UI.
+    events.push(1, 'live.started', { session_id: 'session-two' });
+    await vi.waitFor(() => expect(store.sessionId.value).toBe('session-two'));
+    events.push(2, 'live.delegation', {
+      delegation_id: 'task',
+      state: 'running',
+      session_id: 'session-one',
+    });
+    await vi.waitFor(() => expect(store.sessionId.value).toBe('session-one'));
+    expect(changes).toEqual([]);
+
+    // The authoritative statement still hands the move to the app.
+    events.push(3, 'live.session_changed', {
+      session_id: 'session-two',
+      session_number: 2,
+      title: 'Second',
+    });
+    await vi.waitFor(() => expect(store.sessionId.value).toBe('session-two'));
+    expect(changes).toEqual([{ sessionId: 'session-two', sessionNumber: 2, title: 'Second' }]);
+
+    // A hint that agrees with the binding leaves the label it already has.
+    events.push(4, 'live.delegation', {
+      delegation_id: 'task',
+      state: 'running',
+      session_id: 'session-two',
+    });
+    await vi.waitFor(() => expect(store.working.value).toBe(true));
+    expect(store.sessionNumber.value).toBe(2);
+    expect(store.sessionTitle.value).toBe('Second');
+    store.dispose();
+    events.close();
+  });
+
+  it('leaves a recovered binding blank when nothing can name it', async () => {
+    const events = eventStream();
+    const endpoints = { liveEvents: vi.fn(async () => events.response) } as unknown as Endpoints;
+    const call = new FakeLiveCall();
+    const store = new LiveStore(endpoints, () => 'session-one', call);
+    store.applyCapability({ enabled: true });
+    await store.start();
+    store.sessionNumber.value = 7;
+    store.sessionTitle.value = 'Left behind';
+
+    events.push(1, 'live.delegation', {
+      delegation_id: 'task',
+      state: 'running',
+      session_id: 'session-unknown',
+    });
+    await vi.waitFor(() => expect(store.sessionId.value).toBe('session-unknown'));
+    // Better a gap than a label describing the session the call has left.
+    expect(store.sessionNumber.value).toBe(0);
+    expect(store.sessionTitle.value).toBe('');
+    store.dispose();
+    events.close();
   });
 
   it('surfaces live errors and ends the peer when the server sends live.ended', async () => {

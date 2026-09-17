@@ -51,7 +51,8 @@ import { RunEngine } from './run-engine';
 import { SelectionStore } from './selection-store';
 import { CommitStore } from './commit-store';
 import { ShellStore } from './shell-store';
-import { LiveStore } from './live-store';
+import { LiveStore, type LiveSessionChange } from './live-store';
+import { requestTranscriptScrollToTail } from '../components/transcript-scroll';
 import type {
   DiffState,
   HubAgent,
@@ -95,6 +96,10 @@ export interface LightboxState {
   onRemove?: (item: LightboxItem) => void;
   fallbackFocus?: () => HTMLElement | null;
 }
+
+// Only a burst of switches can still be in flight; older entries describe
+// echoes that have already been replayed or dropped by the event ring buffer.
+const OPTIMISTIC_BINDING_LIMIT = 4;
 
 export class AppStore {
   readonly services: AppStoreServices;
@@ -234,6 +239,10 @@ export class AppStore {
   private readonly attentionAcks = new Map<string, number>();
   private serverEventFeedEnabled = false;
   private readonly locallyStoppedResponses: Set<string>;
+  // Bindings this client asked the server for, newest last, with the selection
+  // generation of the navigation that asked. Their echoes are not news: see
+  // `acceptsLiveBinding`.
+  private optimisticBindings: { generation: number; liveId: string; sessionId: string }[] = [];
 
   private get selectionEpoch(): number {
     return this.selectionStore?.generation || 0;
@@ -292,7 +301,16 @@ export class AppStore {
       storage,
       this.keys.shellLayout,
     );
-    this.liveStore = new LiveStore(this.endpoints, () => this.materializeSession());
+    this.liveStore = new LiveStore(
+      this.endpoints,
+      () => this.materializeSession(),
+      undefined,
+      (change) => void this.followLiveSession(change),
+      (sessionId) => {
+        const session = this.sessions.peek().find((entry) => entry.id === sessionId);
+        return session ? { sessionNumber: session.number || 0, title: session.title } : null;
+      },
+    );
     this.showWidgets = signal(storage.getItem(this.keys.showWidgetsSidebar) !== '0');
     // The legacy boolean was optimistic and is never authoritative. Enrollment
     // is reconstructed from browser and server state below.
@@ -661,19 +679,9 @@ export class AppStore {
     if (this.lifecycleInstalled) return;
     this.lifecycleInstalled = true;
     this.notificationController.installLifecycle();
-    addEventListener(
-      'popstate',
-      () => {
-        const slug = sessionIDFromLocation(this.config.prefix);
-        const session = this.sessions.value.find(
-          (entry) => entry.id === slug || String(entry.number || '') === slug,
-        );
-        if (session) void this.selectSession(session, true);
-        else if (!slug) this.newChat(true);
-        else void this.resolveAndSelectSession(slug, true);
-      },
-      { signal: this.lifecycleAbort.signal },
-    );
+    addEventListener('popstate', () => void this.navigateFromHistory(), {
+      signal: this.lifecycleAbort.signal,
+    });
     addEventListener(
       'online',
       () => {
@@ -738,6 +746,19 @@ export class AppStore {
     );
     this.ensureSessionSyncChannel();
     this.tabSyncCoordinator.installStorageListener(this.lifecycleAbort.signal);
+  }
+
+  private async navigateFromHistory(): Promise<void> {
+    const slug = sessionIDFromLocation(this.config.prefix);
+    if (!slug) return this.newChat(true);
+    const session = this.sessions.value.find(
+      (entry) => entry.id === slug || String(entry.number || '') === slug,
+    );
+    // Both branches go through the same navigation policy as a sidebar click,
+    // so Back after a voice-initiated switch moves the call back with it —
+    // including when the session the call moved to is not in the loaded list.
+    if (session) return this.selectSession(session, true);
+    void this.resolveAndSelectSession(slug, true);
   }
 
   private ensureSessionSyncChannel(): void {
@@ -955,14 +976,166 @@ export class AppStore {
     await this.loadSession(sessionId).catch(() => undefined);
   }
 
-  async selectSession(session: Session, replace = false): Promise<void> {
-    if (session.id !== this.activeSessionId.peek()) {
+  /**
+   * The one policy for leaving the current session while a call is open: the
+   * call moves with the user. Every path that can leave a session routes
+   * through here — a sidebar click, both `popstate` branches, the voice
+   * follow-along and the branch modal — so none of them can hang up a call the
+   * others keep alive, and none of them can leave the call behind on the
+   * session the UI just left.
+   */
+  private liveNavigation(
+    targetId: string,
+    options: { keepLive?: boolean; fromLive?: boolean },
+  ): { liveId: string; previous: string; rebind: boolean } {
+    const previous = this.activeSessionId.peek();
+    const switching = targetId !== previous;
+    // `active` covers the permission/connect phases where there is no live id
+    // to rebind yet; those still hang up, exactly as before.
+    const liveId = switching && this.liveStore.active.peek() ? this.liveStore.liveId.peek() : '';
+    const rebind = Boolean(liveId) && !options.fromLive;
+    if (switching) {
+      // The shell overlay belongs to the session being left.
       this.shellStore.back();
-      void this.liveStore.stop();
+      if (!rebind && !options.keepLive) void this.liveStore.stop();
     }
-    await this.selectionStore.selectSession(session, replace);
+    return { liveId, previous, rebind };
+  }
+
+  async selectSession(
+    session: Session,
+    replace = false,
+    options: { keepLive?: boolean; fromLive?: boolean } = {},
+  ): Promise<void> {
+    const { liveId, rebind } = this.liveNavigation(session.id, options);
+    const navigating = this.selectionStore.selectSession(session, replace);
+    // The navigation bumps the selection generation synchronously; tying the
+    // rebind to that generation keeps a stale response from moving the call
+    // back after the user has already gone somewhere else.
+    if (rebind) this.rebindLiveCall(liveId, session, this.selectionStore.generation);
+    await navigating;
     this.serverEventCoordinator.updateInterest(this.activeSessionId.peek());
     void this.acknowledgeSelectedAttention();
+  }
+
+  /**
+   * Voice moved the call. Navigation is optimistic and in place: the live panel
+   * above the transcript must not move or reset, so this reuses the ordinary
+   * in-place session swap instead of a reload.
+   */
+  private async followLiveSession(change: LiveSessionChange): Promise<void> {
+    // Settle the client's own outbound switches first: an echo of one the user
+    // has already navigated past is not an instruction to move.
+    const follow = this.acceptsLiveBinding(change.sessionId);
+    if (!follow || change.sessionId === this.activeSessionId.peek()) return;
+    const sessions = this.sessions.peek();
+    const session =
+      sessions.find((entry) => entry.id === change.sessionId) ||
+      (change.sessionNumber > 0
+        ? sessions.find((entry) => entry.number === change.sessionNumber)
+        : undefined);
+    if (session) {
+      // `fromLive` suppresses the outbound rebind: the server already made this
+      // switch, and POSTing it back would be a loop waiting to happen.
+      const navigation = this.selectSession(session, false, { keepLive: true, fromLive: true });
+      // The swap bumps the selection generation synchronously, so this is the
+      // generation of the navigation just started — the property
+      // `rebindLiveCall` relies on. A newer one means the user is elsewhere now
+      // and owns the transcript.
+      const generation = this.selectionStore.generation;
+      await navigation;
+      if (generation !== this.selectionStore.generation) return;
+      this.labelRecoveredBinding(change, session);
+    } else {
+      // A session outside the loaded list still resolves by slug. `keepLive`
+      // returns the favour: the call that asked to move must survive the move,
+      // and `fromLive` keeps the resolution from posting that switch back.
+      const resolved = await this.resolveAndSelectSession(change.sessionId, false, {
+        keepLive: true,
+        fromLive: true,
+      });
+      // The resolution refuses to navigate once anything else has, so anything
+      // other than the session it selected is superseded.
+      if (!resolved || this.activeSessionId.peek() !== resolved.id) return;
+      this.labelRecoveredBinding(change, resolved);
+    }
+    requestTranscriptScrollToTail();
+  }
+
+  /**
+   * A change event names its target; an event that only identifies the binding
+   * leaves the label to the app, and the session the UI just moved to is the
+   * only label there is. Skipped when the change named its own label, when a
+   * newer change has since moved the binding, or when that binding is already
+   * labelled: this runs after an `await`, and a fresher label that arrived
+   * meanwhile must survive.
+   */
+  private labelRecoveredBinding(change: LiveSessionChange, session: Session | null): void {
+    if (change.sessionNumber || change.title) return;
+    if (this.liveStore.sessionId.peek() !== change.sessionId) return;
+    if (this.liveStore.sessionNumber.peek() || this.liveStore.sessionTitle.peek()) return;
+    const label = session || this.activeSession.peek();
+    if (!label) return;
+    this.liveStore.sessionNumber.value = label.number || 0;
+    this.liveStore.sessionTitle.value = label.title;
+  }
+
+  // Fire-and-forget: the UI has already moved, so this only settles the
+  // binding label from the response or reports a refusal.
+  private rebindLiveCall(liveId: string, session: Session, generation: number): void {
+    this.rememberOptimisticBinding(generation, session.id);
+    void this.endpoints
+      .liveSwitchSession(liveId, session.id)
+      .then((result) => {
+        // A call already bound there emits no event, so nothing can echo it.
+        if (result.no_op) this.forgetOptimisticBinding(generation);
+        if (generation !== this.selectionStore.generation) return;
+        this.liveStore.sessionId.value = String(result.session_id || session.id);
+        this.liveStore.sessionNumber.value = Number(result.session_number) || session.number || 0;
+        this.liveStore.sessionTitle.value = String(result.title || session.title || '');
+      })
+      .catch((error: unknown) => {
+        this.forgetOptimisticBinding(generation);
+        // A newer switch owns the call now; this refusal no longer applies.
+        if (generation !== this.selectionStore.generation) return;
+        this.toast(error, 'error');
+        // The user asked to be somewhere else. Leaving the call behind on the
+        // session they left is the desync the control plane exists to remove.
+        void this.liveStore.stop();
+      });
+  }
+
+  private rememberOptimisticBinding(generation: number, sessionId: string): void {
+    const liveId = this.liveStore.liveId.peek();
+    this.optimisticBindings = [
+      ...this.optimisticBindings.filter((entry) => entry.liveId === liveId),
+      { generation, liveId, sessionId },
+    ].slice(-OPTIMISTIC_BINDING_LIMIT);
+  }
+
+  private forgetOptimisticBinding(generation: number): void {
+    this.optimisticBindings = this.optimisticBindings.filter(
+      (entry) => entry.generation !== generation,
+    );
+  }
+
+  /**
+   * Whether a `live.session_changed` names a binding the UI has not already
+   * applied. The UI moves optimistically when the user asks for a switch, so
+   * the echo of that switch is not news: when the user has since asked for
+   * something newer, the echo belongs to a navigation they have already left
+   * and following it would push a second history entry for a session they are
+   * not on. Anything the UI did not ask for is news — that is the voice moving
+   * the call, and the event that makes the move visible.
+   */
+  private acceptsLiveBinding(sessionId: string): boolean {
+    const liveId = this.liveStore.liveId.peek();
+    const pending = this.optimisticBindings.filter((entry) => entry.liveId === liveId);
+    const matched = pending.filter((entry) => entry.sessionId === sessionId).at(-1);
+    // Whatever the event settles, everything up to it is accounted for; with no
+    // match the server moved the call itself and none of ours is outstanding.
+    this.optimisticBindings = matched ? pending.slice(pending.indexOf(matched) + 1) : [];
+    return !matched || matched === pending.at(-1);
   }
 
   newChat(replace = false, projectId?: string, persistCurrent = true): void {
@@ -986,10 +1159,29 @@ export class AppStore {
     this.composer.reconcileStorage(id);
   }
 
-  async resolveAndSelectSession(id: string, replace = false): Promise<void> {
-    this.shellStore.back();
-    void this.liveStore.stop();
-    await this.selectionStore.resolveAndSelectSession(id, replace);
+  /**
+   * Selects a session by id or durable number when the sidebar page does not
+   * hold it. Navigation and the call binding move together, exactly as in
+   * `selectSession`: this is the branch Back reaches after a voice-initiated
+   * switch, and hanging up a call there is the desync this all exists to
+   * remove. Returns the session that was actually selected, if any.
+   */
+  async resolveAndSelectSession(
+    id: string,
+    replace = false,
+    options: { keepLive?: boolean; fromLive?: boolean } = {},
+  ): Promise<Session | null> {
+    const { liveId, previous, rebind } = this.liveNavigation(id, options);
+    const session = await this.selectionStore.resolveAndSelectSession(id, replace);
+    this.serverEventCoordinator.updateInterest(this.activeSessionId.peek());
+    if (!session) {
+      // Nothing resolved for `id`, or the user got somewhere else first; the
+      // policy above has already dealt with the call.
+      return null;
+    }
+    if (rebind && session.id !== previous)
+      this.rebindLiveCall(liveId, session, this.selectionStore.generation);
+    return session;
   }
 
   private get steeringRevision(): number {

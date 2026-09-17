@@ -15,13 +15,29 @@ import (
 
 const liveTextModeContext = "Live voice mode is inactive. Respond normally to typed requests; previous live-mode instructions no longer apply."
 
-func (l *liveSession) executionContext() (string, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.ended {
-		return liveTextModeContext, false
+// executionContextFor scopes live-mode platform context to one chat session. It
+// deliberately re-reads the current binding on every turn instead of capturing
+// it: after the call switches from A to B, a typed turn on A must produce the
+// explicit live-mode reset rather than being told that live mode is active.
+func (l *liveSession) executionContextFor(sessionID string) func() (string, bool) {
+	return func() (string, bool) {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		if l.ended || l.sessionID != sessionID {
+			return liveTextModeContext, false
+		}
+		return liveExecutionContextText(sessionID, l.capabilitiesLocked()), true
 	}
-	return "Live voice mode is active. " + live.ExecutionInstructions + "\n" + live.CapabilityContext(l.capabilitiesLocked()) + "\nUse live_settings to inspect or request a current-call voice change; never edit saved config for this.", true
+}
+
+// liveExecutionContextText names the session this turn belongs to and the
+// call-scoped capabilities of the call driving it. It deliberately advertises no
+// control tools: those live in the voice channel, so a delegated turn must say it
+// cannot move the call rather than answering a control request as chat work.
+func liveExecutionContextText(sessionID string, caps live.Capabilities) string {
+	return "Live voice mode is active. " + live.ExecutionInstructions + "\n" + live.CapabilityContext(caps) +
+		"\nThis turn was delegated by the live voice call bound to chat session " + sessionID + "." +
+		"\nThe voice model owns this call's settings, its session directory, starting a new conversation, and moving the call to another session; never edit saved config for them."
 }
 
 // capabilitiesLocked reads provider-acknowledged state rather than assuming a
@@ -75,6 +91,13 @@ func (s *serveServer) liveSessionOptions(ctx context.Context, sessionID string, 
 		SessionID: sessionID, Instructions: s.liveConfig().Instructions, Context: live.CapabilityContext(caps),
 		Debug: debug, DebugRaw: raw,
 	}
+	// Only a host with the control plane switched on reads delegations before they
+	// become work. With it off the requests below are ordinary work in the bound
+	// session, so promising host-side handling would be a lie the voice model repeats
+	// to the user.
+	if s.liveConfig().ControlPlane {
+		opts.Context += "\n" + live.ControlPlaneContext
+	}
 	if s.store == nil {
 		return opts
 	}
@@ -126,9 +149,40 @@ func (s *serveServer) liveSessionOptions(ctx context.Context, sessionID string, 
 	return opts
 }
 
-func withLiveSettingsContext(ctx context.Context, record *liveSession) context.Context {
-	if record == nil {
+// withLiveSettingsContext installs the one call-scoped binding an ordinary
+// live-delegated run may carry: the current call's voice.
+//
+// live_settings is a registry tool an agent may legitimately list, so a delegated
+// turn can be offered its schema; the binding is what lets that call act on the
+// live call driving the session, and it is pinned to the session that started the
+// run rather than to the call's current binding, so an in-flight delegation that
+// suspends while the call switches elsewhere does not lose it. executeResponseRun
+// re-evaluates this after every approval or ask_user pause.
+//
+// The three session-control bindings are deliberately not installed here: listing
+// sessions, starting a conversation and moving the call belong to the routing lane,
+// and they are not registry tools at all, so no configuration can ask for them. A
+// chat turn that reaches one must fail rather than answer a control request as work
+// and write it into the transcript.
+func (s *serveServer) withLiveSettingsContext(ctx context.Context, record *liveSession, sessionID string) context.Context {
+	if record == nil || sessionID == "" {
 		return ctx
 	}
-	return tools.ContextWithLiveSettings(ctx, record.sessionID, record.settings)
+	return tools.ContextWithLiveSettings(ctx, sessionID, record.settings)
+}
+
+// liveSwitchSessionForTool adapts the shared switch validation to the tool
+// package's transport-free result type.
+func (s *serveServer) liveSwitchSessionForTool(record *liveSession) func(context.Context, string) (tools.LiveSessionSwitchResult, error) {
+	return func(ctx context.Context, selector string) (tools.LiveSessionSwitchResult, error) {
+		target, err := s.switchLiveSession(ctx, record, selector)
+		if err != nil {
+			return tools.LiveSessionSwitchResult{}, err
+		}
+		return tools.LiveSessionSwitchResult{
+			SessionID: target.SessionID, Number: target.Number, Title: target.Title,
+			Project: target.Project, Archived: target.Archived, Running: target.Running,
+			RunningTask: target.RunningTask, NoOp: target.NoOp, LastActivity: target.LastActivity,
+		}, nil
+	}
 }

@@ -13,6 +13,16 @@ export interface LiveSessionStopResponse {
   status: 'ended';
 }
 
+/** The chat session a live call is bound to after a rebind. */
+export interface LiveSessionSwitchResponse {
+  live_id: string;
+  session_id: string;
+  session_number: number;
+  title: string;
+  /** The call was already bound there; no switch happened. */
+  no_op?: boolean;
+}
+
 export interface SessionMetrics {
   input_tokens: number;
   output_tokens: number;
@@ -358,6 +368,7 @@ export const endpoints = (api: APIClient) => ({
   liveAudioOutput: liveRoute(api, (routes) => routes.liveAudioOutput),
   liveAudioInput: liveRoute(api, (routes) => routes.liveAudioInput),
   liveText: liveRoute(api, (routes) => routes.liveText),
+  liveSwitchSession: liveRoute(api, (routes) => routes.liveSwitchSession),
   liveEvents: liveRoute(api, (routes) => routes.liveEvents),
   shellCreate: (id: string, cols: number, rows: number) =>
     sessionPost<ShellCreateResponse>(api, id, 'shell', { cols, rows }),

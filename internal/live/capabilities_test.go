@@ -96,9 +96,17 @@ func TestCapabilitiesAreJSONSafeAndContextIsAuthoritative(t *testing.T) {
 	}
 
 	context := CapabilityContext(capabilities)
-	for _, fact := range []string{"term-llm", capabilities.Provider, capabilities.Model, capabilities.Voice, "Supported voices", "can be requested through the execution backend"} {
+	for _, fact := range []string{"term-llm", capabilities.Provider, capabilities.Model, capabilities.Voice, "Supported voices", "can be changed on request for this call only", "may prevent changes after speech begins"} {
 		if !strings.Contains(context, fact) {
 			t.Fatalf("capability context missing %q: %s", fact, context)
+		}
+	}
+	// The voice is changed by asking out loud. The context must not teach a wire form
+	// for it any more: the host routes every request itself, so there is no prefix for
+	// the voice model to learn or speak.
+	for _, forbidden := range []string{"control:", "prefix", "JSON"} {
+		if strings.Contains(context, forbidden) {
+			t.Fatalf("capability context still prescribes the removed wire format %q: %s", forbidden, context)
 		}
 	}
 	if strings.Contains(strings.ToLower(context), "token") || strings.Contains(strings.ToLower(context), "credential") {

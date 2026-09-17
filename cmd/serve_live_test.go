@@ -422,14 +422,37 @@ type stubLiveSession struct {
 	events chan live.Event
 	closed chan struct{}
 	once   sync.Once
+
+	mu        sync.Mutex
+	appended  []string
+	delegated []live.DelegationChunk
 }
 
 func (s *stubLiveSession) AnswerSDP() string         { return "v=0\r\na=answer\r\n" }
 func (s *stubLiveSession) Events() <-chan live.Event { return s.events }
-func (s *stubLiveSession) AppendDelegation(context.Context, string, live.DelegationChunk) error {
+func (s *stubLiveSession) AppendDelegation(_ context.Context, _ string, chunk live.DelegationChunk) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.delegated = append(s.delegated, chunk)
 	return nil
 }
-func (s *stubLiveSession) AppendText(context.Context, string) error { return nil }
+func (s *stubLiveSession) AppendText(_ context.Context, text string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.appended = append(s.appended, text)
+	return nil
+}
+
+// lastAppendedText returns the most recent host note, or "" when none was sent.
+func (s *stubLiveSession) lastAppendedText() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.appended) == 0 {
+		return ""
+	}
+	return s.appended[len(s.appended)-1]
+}
+
 func (s *stubLiveSession) Close(context.Context) error {
 	s.once.Do(func() { close(s.closed); close(s.events) })
 	return nil
@@ -1015,7 +1038,7 @@ func TestLiveStartupAfterTeardownClosesProviderWithoutStartingController(t *test
 				srv.closeLiveSessions(ctx)
 			} else {
 				srv.stopLiveSession(ctx, record.id, "user")
-				replacement = newLiveSession("replacement", record.sessionID)
+				replacement = newLiveSession("replacement", record.boundSession())
 				if err := srv.registerLiveSession(replacement); err != nil {
 					t.Fatal(err)
 				}

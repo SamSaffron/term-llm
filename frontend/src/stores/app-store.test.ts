@@ -6258,3 +6258,427 @@ describe('AppStore compatibility behavior', () => {
     await Promise.all([first, second]);
   });
 });
+
+describe('live voice session control', () => {
+  const liveSession = (id: string, number: number, title: string): Session => ({
+    ...session(),
+    id,
+    number,
+    title,
+  });
+
+  // Sidebar rows are projections; selecting one hydrates header sources.
+  const stubHydration = (store: AppStore): void => {
+    store.endpoints.sessionState = vi.fn(async () => ({}));
+    store.endpoints.selectedSession = vi.fn(async (id: string) => ({
+      selected_session: { id },
+      selected_transcript: { bodies: { messages: [] } },
+    }));
+    store.endpoints.skills = vi.fn(async () => ({ skills: [] }));
+    store.endpoints.tree = vi.fn(async () => ({}));
+  };
+
+  const receiveLiveEvent = (store: AppStore, event: string, data: object): void => {
+    (store.liveStore as unknown as { applyEvent(event: string, data: object): void }).applyEvent(
+      event,
+      data,
+    );
+  };
+
+  const openCall = (store: AppStore, liveId = 'live-1') => {
+    const stop = vi.fn(async () => undefined);
+    store.liveStore.stop = stop;
+    store.liveStore.liveId.value = liveId;
+    store.liveStore.sessionId.value = 's1';
+    return stop;
+  };
+
+  const switchResponse = (sessionId: string, number: number, title: string) => ({
+    live_id: 'live-1',
+    session_id: sessionId,
+    session_number: number,
+    title,
+  });
+
+  const pressBack = (store: AppStore, path: string): void => {
+    (store as unknown as { installLifecycle(): void }).installLifecycle();
+    history.replaceState(null, '', path);
+    window.dispatchEvent(new Event('popstate'));
+  };
+
+  beforeEach(() => history.replaceState(null, '', '/ui/chat/1'));
+
+  it('follows a voice-initiated switch in place without hanging up the call', async () => {
+    const store = new AppStore(config);
+    const first = liveSession('s1', 1, 'First');
+    const second = liveSession('s2', 2, 'Second');
+    store.sessions.value = [first, second];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    stubHydration(store);
+    const stop = openCall(store);
+    store.endpoints.liveSwitchSession = vi.fn(async () => switchResponse('s2', 2, 'Second'));
+    const push = vi.spyOn(history, 'pushState');
+
+    try {
+      receiveLiveEvent(store, 'live.session_changed', {
+        session_id: 's2',
+        session_number: 2,
+        title: 'Second',
+      });
+      await vi.waitFor(() => expect(store.activeSessionId.value).toBe('s2'));
+
+      // A real history entry, so Back returns to the previous session.
+      expect(push).toHaveBeenCalledWith(null, '', '/ui/chat/2');
+      expect(location.pathname).toBe('/ui/chat/2');
+      expect(stop).not.toHaveBeenCalled();
+      expect(store.liveStore.sessionId.value).toBe('s2');
+      expect(store.liveStore.sessionNumber.value).toBe(2);
+      expect(store.liveStore.sessionTitle.value).toBe('Second');
+      // Following the server's own switch must not post it back.
+      expect(store.endpoints.liveSwitchSession).not.toHaveBeenCalled();
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('adopts a binding hint without moving the UI', async () => {
+    const store = new AppStore(config);
+    const first = liveSession('s1', 1, 'First');
+    const second = liveSession('s2', 2, 'Second');
+    store.sessions.value = [first, second];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    stubHydration(store);
+    const stop = openCall(store);
+    store.endpoints.liveSwitchSession = vi.fn();
+    const push = vi.spyOn(history, 'pushState');
+
+    try {
+      // The ring buffer dropped live.session_changed, so `live.started` is the
+      // only evidence of the binding. It names the session, and the loaded list
+      // is where the label comes from.
+      receiveLiveEvent(store, 'live.started', { session_id: 's2' });
+      await vi.waitFor(() => expect(store.liveStore.sessionId.value).toBe('s2'));
+      expect(store.liveStore.sessionNumber.value).toBe(2);
+      expect(store.liveStore.sessionTitle.value).toBe('Second');
+
+      // A hint snapshotted before a switch committed can arrive carrying the
+      // session the call just left. Recovery is local: only live.session_changed
+      // may move the UI, and only the server may say the call moved.
+      receiveLiveEvent(store, 'live.delegation', {
+        delegation_id: 'task',
+        state: 'running',
+        session_id: 's1',
+      });
+      await vi.waitFor(() => expect(store.liveStore.sessionId.value).toBe('s1'));
+      expect(store.liveStore.sessionNumber.value).toBe(1);
+      expect(store.liveStore.sessionTitle.value).toBe('First');
+      expect(store.activeSessionId.value).toBe('s1');
+      expect(location.pathname).toBe('/ui/chat/1');
+      expect(push).not.toHaveBeenCalled();
+      // Following a hint would also post the switch back to the server.
+      expect(store.endpoints.liveSwitchSession).not.toHaveBeenCalled();
+      expect(stop).not.toHaveBeenCalled();
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('resolves a switch target that is not in the loaded session list', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [liveSession('s1', 1, 'First')];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    stubHydration(store);
+    store.endpoints.selectedSession = vi.fn(async () => ({
+      selected_session: { id: 'hidden', number: 9, title: 'Hidden' },
+      selected_transcript: { bodies: { messages: [] } },
+    }));
+    const stop = openCall(store);
+    store.endpoints.liveSwitchSession = vi.fn(async () => switchResponse('hidden', 9, 'Hidden'));
+
+    try {
+      receiveLiveEvent(store, 'live.session_changed', {
+        session_id: 'hidden',
+        session_number: 9,
+        title: 'Hidden',
+      });
+      await vi.waitFor(() => expect(store.activeSessionId.value).toBe('hidden'));
+      expect(location.pathname).toBe('/ui/chat/9');
+      expect(stop).not.toHaveBeenCalled();
+      // The call is already bound there; the follow-along must not ask again.
+      expect(store.endpoints.liveSwitchSession).not.toHaveBeenCalled();
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('keeps hanging up a call when the user leaves without one', async () => {
+    const store = new AppStore(config);
+    const second = liveSession('s2', 2, 'Second');
+    store.sessions.value = [liveSession('s1', 1, 'First'), second];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    stubHydration(store);
+    const stop = vi.fn(async () => undefined);
+    store.liveStore.stop = stop;
+    store.endpoints.liveSwitchSession = vi.fn();
+
+    try {
+      await store.selectSession(second);
+      expect(store.activeSessionId.value).toBe('s2');
+      expect(stop).toHaveBeenCalledOnce();
+      expect(store.endpoints.liveSwitchSession).not.toHaveBeenCalled();
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('moves an open call to the session the user selects instead of stopping it', async () => {
+    const store = new AppStore(config);
+    const second = liveSession('s2', 2, 'Second');
+    store.sessions.value = [liveSession('s1', 1, 'First'), second];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    stubHydration(store);
+    const stop = openCall(store);
+    store.endpoints.liveSwitchSession = vi.fn(async () => ({
+      live_id: 'live-1',
+      session_id: 's2',
+      session_number: 2,
+      title: 'Second',
+    }));
+
+    try {
+      await store.selectSession(second);
+      expect(store.endpoints.liveSwitchSession).toHaveBeenCalledWith('live-1', 's2');
+      expect(stop).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(store.liveStore.sessionTitle.value).toBe('Second'));
+      expect(store.liveStore.sessionId.value).toBe('s2');
+      expect(store.liveStore.sessionNumber.value).toBe(2);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('toasts and stops the call when the server refuses the rebind', async () => {
+    const store = new AppStore(config);
+    const second = liveSession('s2', 2, 'Second');
+    store.sessions.value = [liveSession('s1', 1, 'First'), second];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    stubHydration(store);
+    const stop = openCall(store);
+    store.endpoints.liveSwitchSession = vi.fn(async () => {
+      throw new APIError('Session 2 is hosting another live call.', 409, '');
+    });
+
+    try {
+      await store.selectSession(second);
+      await vi.waitFor(() => expect(stop).toHaveBeenCalledOnce());
+      expect(store.toasts.value.at(-1)).toMatchObject({
+        kind: 'error',
+        message: 'Session 2 is hosting another live call.',
+      });
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('ignores a rebind response the user has already navigated past', async () => {
+    const store = new AppStore(config);
+    const first = liveSession('s1', 1, 'First');
+    const second = liveSession('s2', 2, 'Second');
+    store.sessions.value = [first, second];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    stubHydration(store);
+    const stop = openCall(store);
+    const stale = deferred<{
+      live_id: string;
+      session_id: string;
+      session_number: number;
+      title: string;
+    }>();
+    store.endpoints.liveSwitchSession = vi
+      .fn()
+      .mockReturnValueOnce(stale.promise)
+      .mockResolvedValueOnce({
+        live_id: 'live-1',
+        session_id: 's1',
+        session_number: 1,
+        title: 'First',
+      });
+
+    try {
+      await store.selectSession(second);
+      // The user is back on the first session before the switch answers.
+      await store.selectSession(first);
+      await vi.waitFor(() => expect(store.liveStore.sessionId.value).toBe('s1'));
+      stale.resolve({ live_id: 'live-1', session_id: 's2', session_number: 2, title: 'Second' });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(store.liveStore.sessionId.value).toBe('s1');
+      expect(store.liveStore.sessionTitle.value).toBe('First');
+      expect(stop).not.toHaveBeenCalled();
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('does not walk the UI back through the echoes of superseded switches', async () => {
+    const store = new AppStore(config);
+    const first = liveSession('s1', 1, 'First');
+    const second = liveSession('s2', 2, 'Second');
+    const third = liveSession('s3', 3, 'Third');
+    const fourth = liveSession('s4', 4, 'Fourth');
+    store.sessions.value = [first, second, third, fourth];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    stubHydration(store);
+    const stop = openCall(store);
+    const toSecond = deferred<ReturnType<typeof switchResponse>>();
+    const toThird = deferred<ReturnType<typeof switchResponse>>();
+    store.endpoints.liveSwitchSession = vi
+      .fn()
+      .mockReturnValueOnce(toSecond.promise)
+      .mockReturnValueOnce(toThird.promise);
+    const push = vi.spyOn(history, 'pushState');
+
+    try {
+      // The user switched twice before the server answered either switch.
+      await store.selectSession(second);
+      await store.selectSession(third);
+      push.mockClear();
+
+      // The server answers in the order it received them: the first echo names
+      // a session the user has already left, and following it would push a
+      // second history entry for it before the second echo moved them back.
+      receiveLiveEvent(store, 'live.session_changed', {
+        session_id: 's2',
+        session_number: 2,
+        title: 'Second',
+      });
+      receiveLiveEvent(store, 'live.session_changed', {
+        session_id: 's3',
+        session_number: 3,
+        title: 'Third',
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(store.activeSessionId.value).toBe('s3');
+      expect(location.pathname).toBe('/ui/chat/3');
+      expect(push).not.toHaveBeenCalled();
+      expect(stop).not.toHaveBeenCalled();
+
+      // A binding the UI never asked for is news, and still moves the UI.
+      receiveLiveEvent(store, 'live.session_changed', {
+        session_id: 's4',
+        session_number: 4,
+        title: 'Fourth',
+      });
+      await vi.waitFor(() => expect(store.activeSessionId.value).toBe('s4'));
+      expect(push).toHaveBeenCalledWith(null, '', '/ui/chat/4');
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('leaves a switch alone once the user has moved on while it resolves', async () => {
+    const store = new AppStore(config);
+    const second = liveSession('s2', 2, 'Second');
+    store.sessions.value = [liveSession('s1', 1, 'First'), second];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    stubHydration(store);
+    const stop = openCall(store);
+    store.endpoints.liveSwitchSession = vi.fn(async () => switchResponse('s2', 2, 'Second'));
+    const resolving = deferred<Record<string, unknown>>();
+    // Only the switch target stays unresolved; the user's own navigation must
+    // not wait behind it.
+    store.endpoints.selectedSession = vi.fn(async (id: string) =>
+      id === 'hidden'
+        ? resolving.promise
+        : {
+            selected_session: { id },
+            selected_transcript: { bodies: { messages: [] } },
+          },
+    );
+    const push = vi.spyOn(history, 'pushState');
+
+    try {
+      receiveLiveEvent(store, 'live.session_changed', {
+        session_id: 'hidden',
+        session_number: 9,
+        title: 'Hidden',
+      });
+      await store.selectSession(second);
+      push.mockClear();
+
+      resolving.resolve({
+        selected_session: { id: 'hidden', number: 9, title: 'Hidden' },
+        selected_transcript: { bodies: { messages: [] } },
+      });
+      await vi.waitFor(() =>
+        expect(store.endpoints.selectedSession).toHaveBeenCalledWith('hidden'),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // The lookup finished, but its navigation is no longer the user's.
+      expect(store.activeSessionId.value).toBe('s2');
+      expect(location.pathname).toBe('/ui/chat/2');
+      expect(push).not.toHaveBeenCalled();
+      expect(stop).not.toHaveBeenCalled();
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('moves the call back when Back lands on a session in the loaded list', async () => {
+    const store = new AppStore(config);
+    const second = liveSession('s2', 2, 'Second');
+    store.sessions.value = [liveSession('s1', 1, 'First'), second];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    stubHydration(store);
+    const stop = openCall(store);
+    store.endpoints.liveSwitchSession = vi.fn(async () => switchResponse('s2', 2, 'Second'));
+
+    try {
+      pressBack(store, '/ui/chat/2');
+      await vi.waitFor(() => expect(store.activeSessionId.value).toBe('s2'));
+      expect(store.endpoints.liveSwitchSession).toHaveBeenCalledWith('live-1', 's2');
+      expect(stop).not.toHaveBeenCalled();
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('moves the call back when Back lands outside the loaded session list', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [liveSession('s1', 1, 'First')];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    stubHydration(store);
+    store.endpoints.selectedSession = vi.fn(async () => ({
+      selected_session: { id: 'hidden', number: 9, title: 'Hidden' },
+      selected_transcript: { bodies: { messages: [] } },
+    }));
+    const stop = openCall(store);
+    store.endpoints.liveSwitchSession = vi.fn(async () => switchResponse('hidden', 9, 'Hidden'));
+
+    try {
+      // Voice switched the call to a session the sidebar page does not hold;
+      // Back still means "take the call back with me".
+      pressBack(store, '/ui/chat/9');
+      await vi.waitFor(() => expect(store.activeSessionId.value).toBe('hidden'));
+      expect(store.endpoints.liveSwitchSession).toHaveBeenCalledWith('live-1', 'hidden');
+      expect(stop).not.toHaveBeenCalled();
+    } finally {
+      store.dispose();
+    }
+  });
+});

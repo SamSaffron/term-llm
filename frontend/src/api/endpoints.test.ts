@@ -179,6 +179,13 @@ describe('live voice endpoints', () => {
       { policy: 'mutation', auth: 'session', retries: 0 },
     );
 
+    await routes.liveSwitchSession('live/one', 'session/one');
+    expect(json).toHaveBeenLastCalledWith(
+      '/v1/live/sessions/live%2Fone/session',
+      { method: 'POST', body: JSON.stringify({ session_id: 'session/one' }) },
+      { policy: 'mutation', auth: 'session', retries: 0 },
+    );
+
     await routes.liveStop('live/one');
     expect(remove).toHaveBeenCalledWith('/v1/live/sessions/live%2Fone');
 

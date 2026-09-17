@@ -162,6 +162,15 @@ func (s *serveServer) newAutoTitleProvider(providerKey string) (llm.Provider, er
 	if s.autoTitleProviderFactory != nil {
 		return s.autoTitleProviderFactory(providerKey)
 	}
+	return s.fastProvider(providerKey)
+}
+
+// fastProvider resolves the cheap model behind term-llm's small background turns —
+// automatic titles and the live session assistant. The named provider wins, and the
+// configured default is the fallback, so a session pinned to a provider that cannot
+// serve a cheap turn still gets an answer instead of failing.
+func (s *serveServer) fastProvider(providerKey string) (llm.Provider, error) {
+	providerKey = strings.TrimSpace(providerKey)
 	if s.cfgRef == nil {
 		return nil, nil
 	}
@@ -181,7 +190,7 @@ func (s *serveServer) newAutoTitleProvider(providerKey string) (llm.Provider, er
 		return provider, nil
 	}
 	if firstErr != nil && fallbackErr != nil {
-		return nil, fmt.Errorf("fast title providers %q and %q unavailable: %v; %v", providerKey, fallback, firstErr, fallbackErr)
+		return nil, fmt.Errorf("fast providers %q and %q unavailable: %v; %v", providerKey, fallback, firstErr, fallbackErr)
 	}
 	if fallbackErr != nil {
 		return nil, fallbackErr

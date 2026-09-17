@@ -70,7 +70,7 @@ func ConfigCapabilities(cfg config.LiveConfig) Capabilities {
 func CapabilityContext(capabilities Capabilities) string {
 	voiceControl := "cannot be changed during this call"
 	if capabilities.CanSetVoice {
-		voiceControl = "can be requested through the execution backend using live_settings; provider restrictions may prevent changes after speech begins"
+		voiceControl = "can be changed on request for this call only; provider restrictions may prevent changes after speech begins"
 	}
 	voices := strings.Join(capabilities.Voices, ", ")
 	if voices == "" {

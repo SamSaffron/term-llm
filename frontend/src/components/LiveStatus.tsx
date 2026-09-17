@@ -17,7 +17,14 @@ export function LiveStatus({ live }: { live: LiveStore }) {
   const [following, setFollowing] = useState(true);
   const viewport = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
-  const owner = `${live.sessionId.value}:${live.liveId.value}`;
+  // The call owns the transcript, not the session: a switch inside one
+  // continuous call must not collapse or re-scroll what the user was reading.
+  const owner = live.liveId.value;
+  const sessionNumber = live.sessionNumber.value;
+  const sessionTitle = live.sessionTitle.value;
+  const binding = [sessionNumber > 0 ? `#${sessionNumber}` : '', sessionTitle]
+    .filter(Boolean)
+    .join(' · ');
 
   useLayoutEffect(() => {
     follow.current = true;
@@ -49,6 +56,9 @@ export function LiveStatus({ live }: { live: LiveStore }) {
           {phase === 'speaking' && 'Speaking…'}
           {phase === 'working' && 'Working on your request…'}
           {phase === 'failed' && 'Live voice needs attention.'}
+          {/* Inside the polite live region: a move between sessions changes
+              this text, which is how a screen reader learns the context did. */}
+          {binding && <span class="live-status-binding">Working in {binding}</span>}
         </span>
         {live.active.value && (
           <button type="button" class="btn live-status-stop" onClick={() => void live.stop()}>

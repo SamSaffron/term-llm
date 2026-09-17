@@ -1101,13 +1101,32 @@ type TranscriptionElevenLabsConfig struct {
 // describe how term-llm behaves regardless of who provides the voice; the
 // per-provider blocks carry vendor-specific models, voices, and endpoints.
 type LiveConfig struct {
-	Enabled      bool              `mapstructure:"enabled"`      // live voice sessions are opt-in
-	Provider     string            `mapstructure:"provider"`     // live provider: chatgpt, openai, or gemini
-	Instructions string            `mapstructure:"instructions"` // optional replacement for the voice-model prompt
-	IdleTimeout  string            `mapstructure:"idle_timeout"` // close a live session after this much silence
-	OpenAI       LiveOpenAIConfig  `mapstructure:"openai"`
-	ChatGPT      LiveChatGPTConfig `mapstructure:"chatgpt"`
-	Gemini       LiveGeminiConfig  `mapstructure:"gemini"`
+	Enabled      bool   `mapstructure:"enabled"`      // live voice sessions are opt-in
+	Provider     string `mapstructure:"provider"`     // live provider: chatgpt, openai, or gemini
+	Instructions string `mapstructure:"instructions"` // optional replacement for the voice-model prompt
+	IdleTimeout  string `mapstructure:"idle_timeout"` // close a live session after this much silence
+	// ControlPlane routes every delegation through a fast model that can manage the
+	// call itself — list or search sessions, move the call, change the voice —
+	// instead of the request becoming a chat turn in the bound session.
+	//
+	// Off by default, and deliberately so: it puts a fast-model turn in front of
+	// every spoken request, work included. Turn it on only when that cost is
+	// acceptable.
+	ControlPlane bool `mapstructure:"control_plane"`
+	// ControlProvider and ControlModel choose the model behind that triage turn.
+	//
+	// Left unset it follows the provider's fast model, which is also what
+	// auto-titling, interrupt classification and memory mining use: a dial retuned
+	// for one of them retunes the others. This lane has a requirement those do not
+	// share — it must call tools reliably, because a model that answers in prose
+	// instead simply sends the request on to the workspace agent — so it gets its
+	// own setting, for the same reason the guardian has one. Naming only a model
+	// keeps the provider resolution unchanged.
+	ControlProvider string            `mapstructure:"control_provider"`
+	ControlModel    string            `mapstructure:"control_model"`
+	OpenAI          LiveOpenAIConfig  `mapstructure:"openai"`
+	ChatGPT         LiveChatGPTConfig `mapstructure:"chatgpt"`
+	Gemini          LiveGeminiConfig  `mapstructure:"gemini"`
 }
 
 // LiveChatGPTConfig configures gpt-live over the ChatGPT backend. Credentials

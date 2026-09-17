@@ -46,7 +46,7 @@ func TestLiveDelegationUsesConfiguredToolsAndCleanTranscript(t *testing.T) {
 			provider.AddToolCall("probe-1", "live_probe", map[string]any{}).AddTextResponse("```go\npackage main\n```")
 			record := newLiveSession("call", "live-tools")
 			record.capabilities = live.ConfigCapabilities(config.LiveConfig{})
-			d := &serveLiveDelegator{server: s, sessionID: "live-tools", live: record}
+			d := &serveLiveDelegator{server: s, live: record}
 			var output strings.Builder
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -87,6 +87,7 @@ func TestLiveDelegationUsesConfiguredToolsAndCleanTranscript(t *testing.T) {
 				if !found {
 					t.Fatal("configured tools were omitted from voice request")
 				}
+				assertNoControlToolSchemas(t, requests)
 			}
 			if !strings.Contains(output.String(), "```go") {
 				t.Fatalf("visual output stripped: %s", output.String())
@@ -118,14 +119,16 @@ func TestLiveDelegationUsesConfiguredToolsAndCleanTranscript(t *testing.T) {
 			if !requests[0].IncludeDeveloperInContinuation {
 				t.Fatal("live developer transition omitted from continuation")
 			}
-			// The registered settings schema does not confer authority outside this run.
-			control, _ := rt.engine.Tools().Get(tools.LiveSettingsToolName)
-			if _, err := control.Execute(llm.ContextWithSessionID(context.Background(), "live-tools"), json.RawMessage(`{}`)); err == nil {
-				t.Fatal("ordinary turn acquired live authority")
-			}
-			for _, spec := range rt.selectTools(nil) {
-				if spec.Name == tools.LiveSettingsToolName {
-					t.Fatal("live schema leaked into ordinary request")
+			// The control tools belong to the control lane: they are neither
+			// registered for a delegated turn nor visible to an ordinary one.
+			for _, name := range controlToolNames() {
+				if _, ok := rt.engine.Tools().Get(name); ok {
+					t.Fatalf("%s stayed registered for the live turn", name)
+				}
+				for _, spec := range rt.selectTools(nil) {
+					if spec.Name == name {
+						t.Fatalf("%s schema leaked into ordinary request", name)
+					}
 				}
 			}
 		})
@@ -139,7 +142,7 @@ func TestLiveModeContextTransitionsAndRestart(t *testing.T) {
 	for range 6 {
 		provider.AddTextResponse("answer")
 	}
-	rt := &serveRuntime{provider: provider, engine: llm.NewEngine(provider, nil), platform: "web", liveContext: record.executionContext}
+	rt := &serveRuntime{provider: provider, engine: llm.NewEngine(provider, nil), platform: "web", liveContext: record.executionContextFor("chat")}
 	run := func() {
 		t.Helper()
 		if _, err := rt.Run(context.Background(), true, false, []llm.Message{llm.UserText("request")}, llm.Request{SessionID: "chat"}); err != nil {
@@ -296,7 +299,7 @@ func TestLiveSettingsRunsThroughDelegatedEngineContext(t *testing.T) {
 	record := newLiveSession("call-settings", "voice-settings")
 	record.capabilities = live.ConfigCapabilities(config.LiveConfig{})
 	record.voiceSession = &liveVoiceControlStub{voice: "cove"}
-	delegator := &serveLiveDelegator{server: s, sessionID: record.sessionID, live: record}
+	delegator := &serveLiveDelegator{server: s, live: record}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := delegator.Run(ctx, live.DelegationRequest{Input: "switch to Maple"}, func(live.DelegationChunk) {}); err != nil {
@@ -339,7 +342,7 @@ func TestLiveSettingsRunsThroughDelegatedEngineContext(t *testing.T) {
 }
 
 func TestLiveDelegationRejectsMissingSpeech(t *testing.T) {
-	d := &serveLiveDelegator{server: newTestServeServer(), sessionID: "empty"}
+	d := &serveLiveDelegator{server: newTestServeServer(), live: newLiveSession("call", "empty")}
 	if err := d.Run(context.Background(), live.DelegationRequest{}, func(live.DelegationChunk) {}); err == nil {
 		t.Fatal("missing speech should not persist an internal wrapper as the user request")
 	}
@@ -380,7 +383,7 @@ func TestLiveSteeringIsVisibleBeforeConsumptionAndConsumedBySameRun(t *testing.T
 	rt.engine.RegisterTool(gate)
 	provider := rt.provider.(*llm.MockProvider)
 	provider.AddToolCall("gate", "live_gate", map[string]any{}).AddTextResponse("the changeset is ready")
-	d := &serveLiveDelegator{server: s, sessionID: "live-steering", live: newLiveSession("call", "live-steering")}
+	d := &serveLiveDelegator{server: s, live: newLiveSession("call", "live-steering")}
 	idle, err := d.Steer(ctx, live.DelegationRequest{ID: "idle", Input: "not running"})
 	if idle || err != nil {
 		t.Fatalf("idle = %v, %v", idle, err)
@@ -394,7 +397,7 @@ func TestLiveSteeringIsVisibleBeforeConsumptionAndConsumedBySameRun(t *testing.T
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	run := s.ensureResponseRuns().activeRun(d.sessionID)
+	run := s.ensureResponseRuns().activeRun(d.live.boundSession())
 	if run == nil {
 		t.Fatal("missing run")
 	}
@@ -409,7 +412,7 @@ func TestLiveSteeringIsVisibleBeforeConsumptionAndConsumedBySameRun(t *testing.T
 	if len(pending) != 1 || pending[0].DisplayText != request.Input {
 		t.Fatalf("pending = %+v", pending)
 	}
-	durable, err := store.ListPendingSteering(ctx, d.sessionID)
+	durable, err := store.ListPendingSteering(ctx, d.live.boundSession())
 	if err != nil || len(durable) != 1 || durable[0].DisplayText != request.Input {
 		t.Fatalf("durable pending = %+v, %v", durable, err)
 	}
@@ -451,7 +454,7 @@ func TestLiveSteeringIsVisibleBeforeConsumptionAndConsumedBySameRun(t *testing.T
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	if s.ensureResponseRuns().latestRun(d.sessionID) != run {
+	if s.ensureResponseRuns().latestRun(d.live.boundSession()) != run {
 		t.Fatal("correction spawned a separate response")
 	}
 	requests := provider.RecordedRequests()

@@ -25,36 +25,38 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 const (
-	liveSDPLimitBytes        = 64 << 10
-	liveTextLimitBytes       = 8 << 10
-	liveEventHistoryLimit    = 512
-	liveSubscriberBuffer     = 64
-	liveIdleCheckInterval    = 15 * time.Second
-	liveCommentaryMinSpacing = 5 * time.Second
-	liveStartTimeout         = 45 * time.Second
-	liveAudioAttachTimeout   = 20 * time.Second
-	liveAudioWriteTimeout    = 10 * time.Second
-	liveAudioPongTimeout     = 45 * time.Second
-	liveAudioPingInterval    = 15 * time.Second
-	liveAudioFrameLimitBytes = 64 << 10
-	liveAudioSSEChunkBytes   = 24 << 10
-	liveDiagnosticsMaxBytes  = 8 << 10
-	liveDiagnosticsMaxCount  = 256
-	liveDiagnosticsMinGap    = time.Second
+	liveSDPLimitBytes          = 64 << 10
+	liveTextLimitBytes         = 8 << 10
+	liveEventHistoryLimit      = 512
+	liveSubscriberBuffer       = 64
+	liveIdleCheckInterval      = 15 * time.Second
+	liveCommentaryMinSpacing   = 5 * time.Second
+	liveStartTimeout           = 45 * time.Second
+	liveAudioAttachTimeout     = 20 * time.Second
+	liveAudioWriteTimeout      = 10 * time.Second
+	liveAudioPongTimeout       = 45 * time.Second
+	liveAudioPingInterval      = 15 * time.Second
+	liveAudioFrameLimitBytes   = 64 << 10
+	liveAudioSSEChunkBytes     = 24 << 10
+	liveDiagnosticsMaxBytes    = 8 << 10
+	liveDiagnosticsMaxCount    = 256
+	liveDiagnosticsMinGap      = time.Second
+	liveBindingAnnounceTimeout = 10 * time.Second
+	liveSwitchBodyLimitBytes   = 4 << 10
 )
 
 // Live event types streamed to the browser for one live call.
 const (
-	liveEventStarted     = "live.started"
-	liveEventTranscript  = "live.transcript"
-	liveEventDelegation  = "live.delegation"
-	liveEventInterrupted = "live.interrupted"
-	liveEventError       = "live.error"
-	liveEventEnded       = "live.ended"
+	liveEventStarted        = "live.started"
+	liveEventTranscript     = "live.transcript"
+	liveEventDelegation     = "live.delegation"
+	liveEventInterrupted    = "live.interrupted"
+	liveEventError          = "live.error"
+	liveEventEnded          = "live.ended"
+	liveEventSessionChanged = "live.session_changed"
 )
 
 type liveSessionEvent struct {
@@ -65,13 +67,15 @@ type liveSessionEvent struct {
 }
 
 // liveSession binds one provider voice call to one chat session and fans its
-// events out to the browser tabs watching it.
+// events out to the browser tabs watching it. The binding is mutable: the call
+// can switch which chat session it drives, so sessionID is guarded by mu.
 type liveSession struct {
-	id        string
-	sessionID string
+	id string
 
 	mu                sync.Mutex
+	sessionID         string
 	controller        *live.Controller
+	providerSession   live.Session
 	voiceSession      live.VoiceSession
 	pcmSession        live.PCMSession
 	capabilities      live.Capabilities
@@ -103,9 +107,46 @@ func newLiveSession(id, sessionID string) *liveSession {
 	}
 }
 
+// boundSession reports the chat session the call is bound to right now.
+func (l *liveSession) boundSession() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.sessionID
+}
+
+// providerSessionRef returns the provider session for host-initiated writes.
+// Callers must not hold l.mu while using it.
+func (l *liveSession) providerSessionRef() live.Session {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.providerSession
+}
+
 func (l *liveSession) appendEvent(eventType string, data map[string]any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.appendEventLocked(eventType, data)
+}
+
+// appendBindingEvent publishes an event that names the call's bound chat session.
+// The binding is read under the same lock that publishes the event: a rebind
+// completes and publishes live.session_changed inside that critical section, so
+// reading the binding with a separate acquisition would let a delegation event
+// carry the session the call has just left and drag a watching browser back to it.
+func (l *liveSession) appendBindingEvent(eventType string, data map[string]any) {
+	if data == nil {
+		data = map[string]any{}
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	data["session_id"] = l.sessionID
+	l.appendEventLocked(eventType, data)
+}
+
+// appendEventLocked publishes eventType while l.mu is already held. Callers that
+// must publish inside a wider critical section (the rebind path, so two racing
+// rebinds cannot publish out of order) use it to avoid re-locking.
+func (l *liveSession) appendEventLocked(eventType string, data map[string]any) {
 	if l.ended {
 		// The stream is terminal: a browser that reconnects must not see events
 		// published after the call ended.
@@ -354,6 +395,10 @@ type liveTextRequest struct {
 	Text string `json:"text"`
 }
 
+type liveSessionSwitchRequest struct {
+	SessionID string `json:"session_id"`
+}
+
 type liveBrowserDiagnostics struct {
 	Sequence           int64   `json:"sequence"`
 	ElapsedMS          float64 `json:"elapsed_ms"`
@@ -543,6 +588,8 @@ func (s *serveServer) handleLiveSessionByID(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusOK, map[string]any{"live_id": liveID, "status": "ended"})
 	case "text":
 		s.handleLiveSessionText(w, r, liveID)
+	case "session":
+		s.handleLiveSessionSwitch(w, r, liveID)
 	case "events":
 		s.handleLiveSessionEvents(w, r, liveID)
 	case "audio":
@@ -589,6 +636,51 @@ func (s *serveServer) handleLiveSessionText(w http.ResponseWriter, r *http.Reque
 	}
 	record.touch()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleLiveSessionSwitch moves a live call to another chat session. It shares
+// switchLiveSession with the voice tool, so both consumers apply the same
+// validation.
+func (s *serveServer) handleLiveSessionSwitch(w http.ResponseWriter, r *http.Request, liveID string) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+	record, ok := s.lookupLiveSession(liveID)
+	if !ok {
+		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "live session not found")
+		return
+	}
+	var request liveSessionSwitchRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, liveSwitchBodyLimitBytes)).Decode(&request); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid request body: "+err.Error())
+		return
+	}
+	target, err := s.switchLiveSession(r.Context(), record, request.SessionID)
+	if err != nil {
+		status, errorType, message := liveSwitchErrorResponse(err)
+		writeOpenAIError(w, status, errorType, message)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"live_id": liveID, "session_id": target.SessionID, "session_number": target.Number,
+		"title": target.Title, "no_op": target.NoOp,
+	})
+}
+
+// liveSwitchErrorResponse maps shared switch failures to HTTP. Internal
+// failures keep their details out of the response body.
+func liveSwitchErrorResponse(err error) (int, string, string) {
+	switch {
+	case errors.Is(err, errLiveTargetBusy), errors.Is(err, errLiveCallEnded):
+		return http.StatusConflict, "conflict_error", err.Error()
+	case errors.Is(err, errLiveSwitchInvalidTarget):
+		return http.StatusBadRequest, "invalid_request_error", err.Error()
+	default:
+		log.Printf("[live] session switch failed: %v", err)
+		return http.StatusInternalServerError, "server_error", "could not switch the live session"
+	}
 }
 
 func (s *serveServer) handleLiveSessionEvents(w http.ResponseWriter, r *http.Request, liveID string) {
@@ -1054,11 +1146,16 @@ func (s *serveServer) handleLiveSessionDiagnostics(w http.ResponseWriter, r *htt
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// observe turns controller updates into browser events.
+// observe turns controller updates into browser events. Events that describe the
+// call's binding carry session_id: the event ring buffer is bounded, so a
+// reconnecting tab must be able to recover the current binding from any later
+// event instead of relying on live.session_changed still being buffered. Those
+// events are published through appendBindingEvent so the id they carry is the
+// binding as of their sequence number, never an older snapshot.
 func (l *liveSession) observe(update live.Update) {
 	switch update.Kind {
 	case live.UpdateStarted:
-		l.appendEvent(liveEventStarted, map[string]any{})
+		l.appendBindingEvent(liveEventStarted, nil)
 	case live.UpdateTranscript:
 		l.appendEvent(liveEventTranscript, map[string]any{
 			"role": update.Role, "text": update.Text, "final": update.Final, "interim": update.Interim,
@@ -1068,7 +1165,7 @@ func (l *liveSession) observe(update live.Update) {
 		if strings.TrimSpace(update.Text) != "" {
 			data["text"] = update.Text
 		}
-		l.appendEvent(liveEventDelegation, data)
+		l.appendBindingEvent(liveEventDelegation, data)
 	case live.UpdateInterrupted:
 		l.appendEvent(liveEventInterrupted, map[string]any{})
 	case live.UpdateError:
@@ -1089,12 +1186,21 @@ func (s *serveServer) startLiveController(record *liveSession, providerSession l
 		return false
 	}
 	controllerCtx, controllerCancel := context.WithCancel(context.Background())
-	controller := live.NewController(live.ControllerOptions{
+	options := live.ControllerOptions{
 		Session:   providerSession,
-		Delegator: &serveLiveDelegator{server: s, sessionID: record.sessionID, live: record},
+		Delegator: &serveLiveDelegator{server: s, live: record},
 		Observer:  record.observe,
-	})
+	}
+	// Without a router every delegation is ordinary work for the bound session,
+	// which is exactly the behaviour before the control plane existed. Leaving the
+	// field nil is the whole of "off": no fast-model turn is made, nothing is
+	// triaged, and no code path downstream behaves differently.
+	if s.liveConfig().ControlPlane {
+		options.Router = &serveLiveControlExecutor{server: s, live: record}
+	}
+	controller := live.NewController(options)
 	record.mu.Lock()
+	record.providerSession = providerSession
 	record.voiceSession, _ = providerSession.(live.VoiceSession)
 	record.pcmSession, _ = providerSession.(live.PCMSession)
 	record.capabilities.CanSetVoice = record.voiceSession != nil
@@ -1115,13 +1221,14 @@ func (s *serveServer) registerLiveSession(record *liveSession) error {
 		s.liveSessions = make(map[string]*liveSession)
 		s.liveByChat = make(map[string]string)
 	}
-	if existing, ok := s.liveByChat[record.sessionID]; ok {
+	bound := record.boundSession()
+	if existing, ok := s.liveByChat[bound]; ok {
 		if _, live := s.liveSessions[existing]; live {
 			return errors.New("a live session is already active for this chat session")
 		}
 	}
 	s.liveSessions[record.id] = record
-	s.liveByChat[record.sessionID] = record.id
+	s.liveByChat[bound] = record.id
 	return nil
 }
 
@@ -1140,10 +1247,210 @@ func (s *serveServer) removeLiveSession(liveID string) *liveSession {
 		return nil
 	}
 	delete(s.liveSessions, liveID)
-	if s.liveByChat[record.sessionID] == liveID {
-		delete(s.liveByChat, record.sessionID)
+	// The binding is read while liveMu is held, so a concurrent rebind either
+	// happened before this teardown (and is removed here) or refuses because the
+	// call is already gone from liveSessions.
+	if bound := record.boundSession(); s.liveByChat[bound] == liveID {
+		delete(s.liveByChat, bound)
 	}
 	return record
+}
+
+// Live switch failures. Both the voice tool and the HTTP endpoint map these to
+// their own transport errors, so validation never diverges between them.
+var (
+	// errLiveSwitchInvalidTarget rejects a selector that is missing, unknown, or
+	// not a switchable chat session.
+	errLiveSwitchInvalidTarget = errors.New("invalid live switch target")
+	// errLiveTargetBusy rejects a target another live call is already driving.
+	errLiveTargetBusy = errors.New("another live call is already bound to that chat session")
+	// errLiveCallEnded rejects a switch on a call that is tearing down.
+	errLiveCallEnded = errors.New("the live call has ended")
+)
+
+// liveSwitchTarget is a validated destination for a voice or UI rebind.
+type liveSwitchTarget struct {
+	SessionID    string
+	Number       int64
+	Title        string
+	Project      string
+	Archived     bool
+	Running      bool
+	RunningTask  string
+	NoOp         bool
+	LastActivity time.Time
+}
+
+// rebindLiveSession points a live call at another chat session and publishes
+// live.session_changed. The caller must have resolved and validated target with
+// no live locks held. It reports the previous binding so callers can tell a real
+// move (previous != target.SessionID) from a no-op, which emits no event.
+func (s *serveServer) rebindLiveSession(record *liveSession, target liveSwitchTarget) (string, error) {
+	if record == nil || strings.TrimSpace(target.SessionID) == "" {
+		return "", fmt.Errorf("%w: a session number or id is required", errLiveSwitchInvalidTarget)
+	}
+	targetID := strings.TrimSpace(target.SessionID)
+	// Lock order is liveMu then record.mu, matching startLiveController.
+	s.liveMu.Lock()
+	defer s.liveMu.Unlock()
+	if s.liveClosed || s.liveSessions[record.id] != record {
+		return "", errLiveCallEnded
+	}
+	record.mu.Lock()
+	defer record.mu.Unlock()
+	if record.ended {
+		// The event stream is terminal, so a later binding change would be
+		// invisible to every browser. Refuse instead of moving silently.
+		return "", errLiveCallEnded
+	}
+	previous := record.sessionID
+	if targetID == previous {
+		return previous, nil
+	}
+	if other, hosted := s.liveByChat[targetID]; hosted && other != record.id {
+		if _, live := s.liveSessions[other]; live {
+			return "", errLiveTargetBusy
+		}
+	}
+	delete(s.liveByChat, previous)
+	s.liveByChat[targetID] = record.id
+	record.sessionID = targetID
+	record.lastActivity = time.Now()
+	// Publish inside the same critical section so two racing rebinds cannot emit
+	// out of order, and with the locked variant: appendEvent takes record.mu.
+	record.appendEventLocked(liveEventSessionChanged, map[string]any{
+		"session_id": targetID, "session_number": target.Number, "title": target.Title,
+	})
+	return previous, nil
+}
+
+// resolveLiveSwitchTarget validates a switch selector against the durable store
+// with no live locks held. Only a durable session number or an exact session id
+// is accepted: mapping "the reflow one" to a session is the calling agent's job
+// (session_directory first, then confirm), so a misheard word can never move the
+// call. A truncated id is exactly such a mishearing — it is rejected rather than
+// resolved, because the store's prefix lookup returns the newest match with no
+// uniqueness check and would silently bind the call to a different session.
+func (s *serveServer) resolveLiveSwitchTarget(ctx context.Context, selector string) (liveSwitchTarget, error) {
+	selector = strings.TrimSpace(selector)
+	if selector == "" {
+		return liveSwitchTarget{}, fmt.Errorf("%w: a session number or session id is required", errLiveSwitchInvalidTarget)
+	}
+	if s == nil || s.store == nil {
+		return liveSwitchTarget{}, errors.New("the session store is unavailable")
+	}
+	var (
+		sess *session.Session
+		err  error
+	)
+	if number, parseErr := strconv.ParseInt(strings.TrimPrefix(selector, "#"), 10, 64); parseErr == nil {
+		sess, err = s.store.GetByNumber(ctx, number)
+	} else {
+		sess, err = s.store.Get(ctx, selector)
+	}
+	if err != nil {
+		return liveSwitchTarget{}, fmt.Errorf("look up chat session %q: %w", selector, err)
+	}
+	if sess == nil {
+		return liveSwitchTarget{}, fmt.Errorf("%w: no chat session matches %q", errLiveSwitchInvalidTarget, selector)
+	}
+	if sess.IsSubagent || strings.TrimSpace(sess.ParentID) != "" {
+		// IsSubagent is a transient in-process flag; a durable parent link is the
+		// stored form of the same "machine-generated child session" exclusion the
+		// sidebar, search, and session_directory (ExcludeSubagents) apply, so a
+		// rejected target is also one the directory can never offer. A parented
+		// fork is not necessarily a subagent, so the message names both forms.
+		return liveSwitchTarget{}, fmt.Errorf("%w: chat session %s is a child session (subagent or fork) and cannot be driven by voice", errLiveSwitchInvalidTarget, sess.ID)
+	}
+	lastActivity := sess.UpdatedAt
+	if lastActivity.IsZero() {
+		lastActivity = sess.CreatedAt
+	}
+	return liveSwitchTarget{
+		SessionID: sess.ID, Number: sess.Number, Title: sess.PreferredShortTitle(),
+		Project: sess.ProjectName, Archived: sess.Archived, LastActivity: lastActivity,
+	}, nil
+}
+
+// switchLiveSession validates and performs one rebind for a live call. The voice
+// tool and the HTTP endpoint both call this, so they share one validation path
+// and cannot disagree about the binding.
+func (s *serveServer) switchLiveSession(ctx context.Context, record *liveSession, selector string) (liveSwitchTarget, error) {
+	if record == nil {
+		return liveSwitchTarget{}, errLiveCallEnded
+	}
+	target, err := s.resolveLiveSwitchTarget(ctx, selector)
+	if err != nil {
+		return liveSwitchTarget{}, err
+	}
+	// Running state is read before the rebind: the caller must warn that the next
+	// spoken request is routed as guidance to the target's running task instead
+	// of being answered.
+	if running := s.runningSessionIDs(ctx); running[target.SessionID] {
+		target.Running = true
+		target.RunningTask = s.lastUserMessageText(ctx, target.SessionID)
+	}
+	previous, err := s.rebindLiveSession(record, target)
+	if err != nil {
+		return liveSwitchTarget{}, err
+	}
+	target.NoOp = previous == target.SessionID
+	if !target.NoOp {
+		s.announceLiveBinding(ctx, record, target)
+	}
+	return target, nil
+}
+
+// lastUserMessageText returns the newest user-visible user request, so the agent
+// can describe what a running session is working on.
+func (s *serveServer) lastUserMessageText(ctx context.Context, sessionID string) string {
+	if s == nil || s.store == nil || sessionID == "" {
+		return ""
+	}
+	messages, err := s.getSessionMessagesPageDescending(ctx, sessionID, 0, 20)
+	if err != nil {
+		return ""
+	}
+	for _, message := range messages {
+		if message.Role != llm.RoleUser {
+			continue
+		}
+		if text := strings.TrimSpace(message.DisplayText()); text != "" {
+			return text
+		}
+		if text := strings.TrimSpace(message.TextContent); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+// announceLiveBinding pushes a short host note into the voice conversation
+// naming the new binding. liveSessionOptions already told the model the original
+// session_id, so without this note it keeps naming the old session out loud.
+// The new session's history is deliberately not re-snapshotted: that would
+// rewrite the spoken transcript and burn tokens.
+func (s *serveServer) announceLiveBinding(ctx context.Context, record *liveSession, target liveSwitchTarget) {
+	provider := record.providerSessionRef()
+	if provider == nil {
+		return
+	}
+	label := "chat session " + target.SessionID
+	if target.Number > 0 {
+		label = fmt.Sprintf("chat session #%d (%s)", target.Number, target.SessionID)
+	}
+	if title := strings.TrimSpace(target.Title); title != "" {
+		label += fmt.Sprintf(", %q", title)
+	}
+	note := "Host note: this voice call is now bound to " + label + ". The previously bound session is no longer driven by voice; speak about the new session from now on."
+	// The rebind has already happened, so the note must not be cancelled by a
+	// disconnecting client. It is still bounded, and the lifecycle lock is not
+	// held across the provider write.
+	noteCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), liveBindingAnnounceTimeout)
+	defer cancel()
+	if err := provider.AppendText(noteCtx, note); err != nil {
+		log.Printf("[live] session %s binding note: %v", record.id, err)
+	}
 }
 
 // stopLiveSession ends a live call. It is safe to call for unknown ids so
@@ -1232,29 +1539,43 @@ func (s *serveServer) closeLiveSessions(ctx context.Context) {
 	}
 }
 
-// serveLiveDelegator runs delegated voice requests as ordinary chat turns.
+// serveLiveDelegator runs delegated voice requests as ordinary chat turns. It
+// holds no cached session ID: the call's binding can change, and every
+// delegation must resolve it exactly once so one delegation stays atomic with
+// respect to a concurrent switch.
 type serveLiveDelegator struct {
-	server    *serveServer
-	sessionID string
-	live      *liveSession
+	server *serveServer
+	live   *liveSession
 }
 
 // Steer admits a voice follow-up through the same durable, run-fenced path as
 // typed steering. It never cancels a task or subscribes to its output again.
+// The controller calls this directly, outside Run, so the binding is snapshotted
+// here rather than by the caller.
 func (d *serveLiveDelegator) Steer(ctx context.Context, request live.DelegationRequest) (bool, error) {
+	sessionID := ""
+	if d.live != nil {
+		sessionID = d.live.boundSession()
+	}
+	return d.steerSession(ctx, sessionID, request)
+}
+
+// steerSession steers the task running in sessionID, which the caller resolved
+// from the binding once.
+func (d *serveLiveDelegator) steerSession(ctx context.Context, sessionID string, request live.DelegationRequest) (bool, error) {
 	if strings.TrimSpace(request.Input) == "" {
 		return false, errors.New("the voice delegation contained no request")
 	}
 	s := d.server
-	if s == nil || s.sessionMgr == nil {
+	if s == nil || s.sessionMgr == nil || sessionID == "" {
 		return false, errors.New("the session runtime is unavailable")
 	}
 	manager := s.ensureResponseRuns()
-	run := manager.activeRun(d.sessionID)
+	run := manager.activeRun(sessionID)
 	if run == nil {
 		return false, nil
 	}
-	runtime, ok := s.sessionMgr.Get(d.sessionID)
+	runtime, ok := s.sessionMgr.Get(sessionID)
 	if !ok {
 		return false, nil
 	}
@@ -1277,7 +1598,7 @@ func (d *serveLiveDelegator) Steer(ctx context.Context, request live.DelegationR
 	message := llm.UserText(live.DelegationPrompt(request.Input, request.TranscriptDelta))
 	message.DisplayText = strings.TrimSpace(request.Input)
 	var admissionErr error
-	owned := manager.withExpectedActiveRun(d.sessionID, run.id, run.runEpoch, func() {
+	owned := manager.withExpectedActiveRun(sessionID, run.id, run.runEpoch, func() {
 		_, _, admissionErr = runtime.InterruptMessage(ctx, message, message.DisplayText, id, nil, interruptDeliverySteer)
 	})
 	if !owned {
@@ -1296,7 +1617,10 @@ func (d *serveLiveDelegator) Steer(ctx context.Context, request live.DelegationR
 }
 
 // Run executes one delegation in the bound session and streams its speakable
-// output back to the voice model.
+// output back to the voice model. The binding is snapshotted once so the whole
+// delegation, including any steering it admits for itself, targets one session
+// even if the call switches mid-turn. The turn that was already running stays
+// owned by the session it started in; the switch takes effect on the next one.
 func (d *serveLiveDelegator) Run(ctx context.Context, request live.DelegationRequest, emit func(live.DelegationChunk)) error {
 	if strings.TrimSpace(request.Input) == "" {
 		return errors.New("the voice delegation contained no request")
@@ -1305,8 +1629,15 @@ func (d *serveLiveDelegator) Run(ctx context.Context, request live.DelegationReq
 	if s == nil || s.sessionMgr == nil {
 		return errors.New("the session runtime is unavailable")
 	}
-	if activeID := s.ensureResponseRuns().activeRunID(d.sessionID); activeID != "" {
-		admitted, err := d.Steer(ctx, request)
+	sessionID := ""
+	if d.live != nil {
+		sessionID = d.live.boundSession()
+	}
+	if sessionID == "" {
+		return errors.New("the live call is not bound to a chat session")
+	}
+	if activeID := s.ensureResponseRuns().activeRunID(sessionID); activeID != "" {
+		admitted, err := d.steerSession(ctx, sessionID, request)
 		if err != nil {
 			return err
 		}
@@ -1316,7 +1647,7 @@ func (d *serveLiveDelegator) Run(ctx context.Context, request live.DelegationReq
 		}
 		return live.ErrDelegationBusy
 	}
-	runtime, _, err := s.runtimeForRequest(ctx, d.sessionID)
+	runtime, _, err := s.runtimeForRequest(ctx, sessionID)
 	if err != nil {
 		if errors.Is(err, errServeSessionBusy) {
 			return live.ErrDelegationBusy
@@ -1325,24 +1656,19 @@ func (d *serveLiveDelegator) Run(ctx context.Context, request live.DelegationReq
 	}
 	previousResponseID := strings.TrimSpace(runtime.getLastResponseID())
 	if previousResponseID == "" {
-		previousResponseID = s.latestDurableResponseIDForSession(ctx, d.sessionID)
+		previousResponseID = s.latestDurableResponseIDForSession(ctx, sessionID)
 	}
 	message := llm.UserText(live.DelegationPrompt(request.Input, request.TranscriptDelta))
 	message.DisplayText = strings.TrimSpace(request.Input)
-	req := s.buildResponsesLLMRequest(responsesCreateRequest{Model: runtime.defaultModel}, runtime, d.sessionID, true)
+	req := s.buildResponsesLLMRequest(responsesCreateRequest{Model: runtime.defaultModel}, runtime, sessionID, true)
 	options := startResponseRunOptions{previousResponseID: previousResponseID, uiSession: true, live: d.live}
 	options.runtimeSetup = func(req *llm.Request) error {
 		if d.live != nil {
-			runtime.liveContext = d.live.executionContext
-			tool := &tools.LiveSettingsTool{}
-			// The tool is executable only with the call-bound context supplied above.
-			// Keep its schema out of ordinary turns and preserve engine allowlists.
-			runtime.engine.Tools().RegisterDeferred(tool)
-			req.Tools = appendResponsePassthroughTools(req.Tools, []llm.ToolSpec{tool.Spec()}, nil)
+			runtime.liveContext = d.live.executionContextFor(sessionID)
 		}
 		return nil
 	}
-	run, err := s.startResponseRun(runtime, true, false, []llm.Message{message}, req, d.sessionID, options)
+	run, err := s.startResponseRun(runtime, true, false, []llm.Message{message}, req, sessionID, options)
 	if err != nil {
 		if errors.Is(err, errServeSessionBusy) {
 			return live.ErrDelegationBusy

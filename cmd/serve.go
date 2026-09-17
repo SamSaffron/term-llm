@@ -1400,6 +1400,11 @@ type serveServer struct {
 	agentRuntimeFactory      func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error)
 	titleProviderFactory     func(*config.Config) (llm.Provider, error)
 	autoTitleProviderFactory func(string) (llm.Provider, error)
+
+	// liveControlProviderFactory is the test seam for the session assistant's
+	// provider; nil resolves it through the shared fast-provider conventions.
+	liveControlProviderFactory func(providerKey string) (llm.Provider, error)
+
 	autoTitleMu              sync.Mutex
 	autoTitleFlights         map[string]struct{}
 	autoTitleAttempts        map[string]serveAutoTitleAttempt

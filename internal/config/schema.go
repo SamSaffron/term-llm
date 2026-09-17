@@ -285,6 +285,12 @@ var keySpecs = []KeySpec{
 	def("live.provider", DefaultLiveProvider),
 	optional("live.instructions"),
 	def("live.idle_timeout", DefaultLiveIdleTimeout),
+	// Opt-in separately from live.enabled: the voice surface is useful without it,
+	// and it adds a model turn in front of every spoken request.
+	def("live.control_plane", false),
+	// Unset means "follow the provider's fast model", which is the shared dial.
+	optional("live.control_provider"),
+	optional("live.control_model"),
 	optional("live.openai.api_key", sensitive()),
 	def("live.openai.model", DefaultLiveOpenAIModel),
 	def("live.openai.voice", DefaultLiveOpenAIVoice),

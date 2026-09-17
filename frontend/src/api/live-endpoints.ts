@@ -1,5 +1,9 @@
 import type { APIClient } from './client';
-import type { LiveSessionStartResponse, LiveSessionStopResponse } from './endpoints';
+import type {
+  LiveSessionStartResponse,
+  LiveSessionStopResponse,
+  LiveSessionSwitchResponse,
+} from './endpoints';
 
 const encoded = encodeURIComponent;
 
@@ -66,6 +70,12 @@ export const liveEndpoints = (api: APIClient) => ({
     api.json<{ ok: true }>(
       `/v1/live/sessions/${encoded(liveId)}/text`,
       { method: 'POST', body: JSON.stringify({ text }) },
+      { policy: 'mutation', auth: 'session', retries: 0 },
+    ),
+  liveSwitchSession: (liveId: string, sessionId: string) =>
+    api.json<LiveSessionSwitchResponse>(
+      `/v1/live/sessions/${encoded(liveId)}/session`,
+      { method: 'POST', body: JSON.stringify({ session_id: sessionId }) },
       { policy: 'mutation', auth: 'session', retries: 0 },
     ),
   liveEvents: (liveId: string, after: number, signal: AbortSignal) =>

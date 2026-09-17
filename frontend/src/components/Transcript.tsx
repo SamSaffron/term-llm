@@ -1424,6 +1424,22 @@ export function Transcript() {
   useEffect(() => {
     setTurnLimit(80);
   }, [store.activeSession.value?.id]);
+  const liveActive = store.liveStore.active.value;
+  const fadedSession = useRef('');
+  useLayoutEffect(() => {
+    const element = scroll.current;
+    const session = store.activeSession.value?.id || '';
+    const previous = fadedSession.current;
+    fadedSession.current = session;
+    // A live call can swap the session under this transcript without a reload.
+    // Fade the transcript in so the swap is legible; a call starting or ending,
+    // or ordinary navigation, must not blink it.
+    if (!element || !liveActive || !previous || previous === session) return;
+    element.classList.remove('transcript-live-swap');
+    // Reflow between the classes so a repeated switch restarts the fade.
+    void element.offsetWidth;
+    element.classList.add('transcript-live-swap');
+  }, [store.activeSession.value?.id, liveActive]);
   useLayoutEffect(() => {
     const element = scroll.current;
     const contents = content.current;

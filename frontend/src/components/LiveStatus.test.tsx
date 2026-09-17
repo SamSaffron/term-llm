@@ -226,6 +226,68 @@ describe('LiveStatus', () => {
     expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument();
   });
 
+  it('keeps a refused delegation quiet: no error alert and no working spinner', () => {
+    const live = setup();
+    act(() => {
+      live.phase.value = 'listening';
+      live.delegation.value = { delegationId: 'refused', state: 'refused' };
+    });
+    // A refusal is a correction addressed to the voice model. The panel says
+    // nothing about it: no red alert, and no spinner left over from the request
+    // that was declined.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(document.querySelector('.live-status-error')).toBeNull();
+    expect(document.querySelector('.live-status-spinner')).toBeNull();
+    expect(screen.getByRole('status')).toHaveTextContent('Listening…');
+  });
+
+  it('keeps an expanded transcript in place when one call moves to another session', () => {
+    const live = setup();
+    const region = screen.getByRole('region', { name: 'Live transcript' });
+    Object.defineProperties(region, {
+      scrollHeight: { value: 500 },
+      clientHeight: { value: 100 },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Expand transcript' }));
+    region.scrollTop = 120;
+    fireEvent.scroll(region);
+
+    act(() => {
+      live.sessionId.value = 'another-session';
+    });
+    // The call is the transcript's identity: a switch inside it must not
+    // collapse or re-scroll what the reader was looking at.
+    expect(screen.getByRole('button', { name: 'Collapse transcript' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    expect(region.scrollTop).toBe(120);
+
+    act(() => {
+      live.liveId.value = 'next-call';
+    });
+    expect(screen.getByRole('button', { name: 'Expand transcript' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+  });
+
+  it('names the session the live call drives once the server reports it', () => {
+    const live = setup();
+    expect(screen.queryByText(/Working in/)).not.toBeInTheDocument();
+    act(() => {
+      live.sessionNumber.value = 42;
+      live.sessionTitle.value = 'Fix reflow crash';
+    });
+    // Inside the polite status region, so a move is announced as context.
+    expect(screen.getByRole('status')).toHaveTextContent('Working in #42 · Fix reflow crash');
+    expect(screen.getByText('Working in #42 · Fix reflow crash')).toBeInTheDocument();
+    act(() => {
+      live.sessionTitle.value = '';
+    });
+    expect(screen.getByText('Working in #42')).toBeInTheDocument();
+  });
+
   it('resets panel preferences for a new call and hides after ending', () => {
     const live = setup();
     fireEvent.click(screen.getByRole('button', { name: 'Expand transcript' }));

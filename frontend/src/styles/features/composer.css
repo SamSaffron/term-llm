@@ -122,6 +122,17 @@
   font-weight: 650;
 }
 
+/* Which session the voice drives. Only known once the server reports it. */
+.live-status-binding {
+  display: block;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .live-status-transcript {
   overflow: auto;
   max-height: 5.6em;
@@ -672,6 +683,28 @@
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+/* A live switch swaps the chat transcript while the live panel stays put. Only
+   the transcript fades: the panel is the fixed point the eye holds onto. */
+.chat-scroll.transcript-live-swap {
+  animation: transcript-live-swap 220ms ease-out;
+}
+
+@keyframes transcript-live-swap {
+  from {
+    opacity: 0.35;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-scroll.transcript-live-swap {
+    animation: none;
   }
 }
 

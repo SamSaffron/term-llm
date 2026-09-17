@@ -82,20 +82,14 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Collect active session IDs from in-memory state without touching runtimes.
-	activeIDs := s.activeSessionIDs()
+	// Running truth is shared with the voice session directory; see
+	// runningSessionDetail.
+	activeIDs, durableRunning := s.runningSessionDetail(r.Context())
 	attentionStore, attentionSupported := session.AsAttentionStore(s.store)
 	_, interactionProjectionSupported := session.AsResponseRunInteractionStore(s.store)
-	durableRunning := make(map[string]session.AttentionItem)
 	durableInputRequired := make(map[string]session.AttentionItem)
-	if attentionSupported {
-		durableRunning = listStatusAttention(r.Context(), attentionStore, session.AttentionKindRunning)
-		for id := range durableRunning {
-			activeIDs[id] = true
-		}
-		if interactionProjectionSupported {
-			durableInputRequired = listStatusAttention(r.Context(), attentionStore, session.AttentionKindInputRequired)
-		}
+	if attentionSupported && interactionProjectionSupported {
+		durableInputRequired = listStatusAttention(r.Context(), attentionStore, session.AttentionKindInputRequired)
 	}
 
 	runtimeInteractions := make(map[string]serveInteractionSummary)
@@ -333,6 +327,37 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
+}
+
+// runningSessionIDs is the running-session truth shared by HTTP status polling
+// and the voice session directory: in-memory active runs unioned with the
+// durable AttentionKindRunning projection of another or restarted process.
+func (s *serveServer) runningSessionIDs(ctx context.Context) map[string]bool {
+	running, _ := s.runningSessionDetail(ctx)
+	return running
+}
+
+// runningSessionDetail returns the running set plus the durable rows it was
+// derived from, so a caller that also projects durable run metadata does not
+// query the attention projection twice.
+func (s *serveServer) runningSessionDetail(ctx context.Context) (map[string]bool, map[string]session.AttentionItem) {
+	if s == nil {
+		return map[string]bool{}, nil
+	}
+	// Collect active session IDs from in-memory state without touching runtimes.
+	activeIDs := s.activeSessionIDs()
+	if s.store == nil {
+		return activeIDs, nil
+	}
+	attentionStore, ok := session.AsAttentionStore(s.store)
+	if !ok {
+		return activeIDs, nil
+	}
+	durableRunning := listStatusAttention(ctx, attentionStore, session.AttentionKindRunning)
+	for id := range durableRunning {
+		activeIDs[id] = true
+	}
+	return activeIDs, durableRunning
 }
 
 // activeSessionIDs returns the set of session IDs that have an active run,

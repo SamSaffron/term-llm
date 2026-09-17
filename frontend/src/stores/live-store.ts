@@ -10,7 +10,11 @@ export interface LiveTurn {
   text: string;
 }
 
-export type LiveDelegationState = 'queued' | 'running' | 'done' | 'failed';
+// The lifecycle a delegation reaches. `refused` is terminal like `done`: the host
+// declined the request's form or routing and corrected the voice model, which is
+// the only audience for that guidance. Nothing failed and nothing ran, so a
+// refusal must never become a user-facing error.
+export type LiveDelegationState = 'queued' | 'running' | 'done' | 'refused' | 'failed';
 
 export interface LiveDelegation {
   delegationId: string;
@@ -34,9 +38,35 @@ interface LiveEventData {
   delegation_id?: string;
   state?: LiveDelegationState;
   message?: string;
+  session_id?: string;
+  session_number?: number;
+  title?: string;
+}
+
+/** The chat session a live call drives after the server moved its binding. */
+export interface LiveSessionChange {
+  sessionId: string;
+  sessionNumber: number;
+  title: string;
+}
+
+/** How the app names a session the call was found bound to. */
+export interface LiveSessionLabel {
+  sessionNumber: number;
+  title: string;
 }
 
 const RECENT_TURN_LIMIT = 20;
+
+/**
+ * The text a terminal delegation contributes to the panel, which is the error line
+ * and nothing else. A refusal is not an error: the host declined the request's form
+ * or routing and told the voice model how to retry, so the user is owed no message
+ * for it and the model explains in its own words. Only a failure is reported.
+ */
+function delegationFailureText(state: LiveDelegationState, text?: string): string {
+  return state === 'failed' && text ? text : '';
+}
 
 const delay = (milliseconds: number, signal: AbortSignal): Promise<void> =>
   new Promise((resolve) => {
@@ -65,7 +95,12 @@ export class LiveStore {
   readonly delegation = signal<LiveDelegation | null>(null);
   readonly lastError = signal('');
   readonly liveId = signal('');
+  // The binding is owned by the store, not by the media layer: `start` seeds it
+  // and `live.session_changed` moves it. Number and title stay empty until the
+  // server reports them, which is why they are separate signals.
   readonly sessionId = signal('');
+  readonly sessionNumber = signal(0);
+  readonly sessionTitle = signal('');
   readonly active: ReadonlySignal<boolean> = computed(
     () =>
       Boolean(this.liveId.value) ||
@@ -118,6 +153,13 @@ export class LiveStore {
     private readonly endpoints: Endpoints,
     private readonly ensureSession: () => string | Promise<string>,
     call?: LiveCallHandle,
+    // LiveStore owns live state; navigation is not its job. The app decides
+    // where a moved call should take the UI — and only `live.session_changed`,
+    // the authoritative binding statement, is allowed to ask it to move.
+    private readonly onSessionChanged: (change: LiveSessionChange) => void = () => {},
+    // Binding hints carry no title, so the app names them from what it knows.
+    private readonly resolveSessionLabel: (sessionId: string) => LiveSessionLabel | null = () =>
+      null,
   ) {
     if (call) this.attachCall(call);
   }
@@ -195,6 +237,8 @@ export class LiveStore {
     this.delegation.value = null;
     this.activeDelegations.clear();
     this.lastError.value = '';
+    this.sessionNumber.value = 0;
+    this.sessionTitle.value = '';
     let call: LiveCallHandle;
     let sessionId: string;
     try {
@@ -233,6 +277,8 @@ export class LiveStore {
     } finally {
       this.liveId.value = '';
       this.sessionId.value = '';
+      this.sessionNumber.value = 0;
+      this.sessionTitle.value = '';
       this.phase.value = 'ended';
       this.delegation.value = null;
       this.activeDelegations.clear();
@@ -259,7 +305,9 @@ export class LiveStore {
     if (this.disposed) return;
     this.capability.value = snapshot.capability;
     this.liveId.value = snapshot.liveId;
-    this.sessionId.value = snapshot.sessionId;
+    // The media layer only knows the session it was started with, so mirroring
+    // it here would revert a server-side switch on the next phase change.
+    // `start` seeds the binding and `live.session_changed` moves it from then on.
     if (
       ['idle', 'requesting-permission', 'connecting', 'listening', 'failed', 'ended'].includes(
         snapshot.phase,
@@ -327,7 +375,21 @@ export class LiveStore {
 
   private applyEvent(event: string, data: LiveEventData): void {
     if (event === 'live.started') {
+      this.adoptBindingHint(data.session_id);
       this.phase.value = 'listening';
+      return;
+    }
+    // The authoritative binding statement, and the only event that carries the
+    // label the panel shows. The app follows it; nothing else moves the call.
+    if (event === 'live.session_changed') {
+      const sessionId = String(data.session_id || '');
+      if (!sessionId) return;
+      const sessionNumber = Number(data.session_number) || 0;
+      const title = String(data.title || '');
+      this.sessionId.value = sessionId;
+      this.sessionNumber.value = sessionNumber;
+      this.sessionTitle.value = title;
+      this.onSessionChanged({ sessionId, sessionNumber, title });
       return;
     }
     if (event === 'live.transcript') {
@@ -363,6 +425,7 @@ export class LiveStore {
       return;
     }
     if (event === 'live.delegation') {
+      this.adoptBindingHint(data.session_id);
       if (!data.delegation_id || !data.state) return;
       const delegationId = data.delegation_id;
       const state = data.state;
@@ -376,27 +439,34 @@ export class LiveStore {
         this.delegation.value = entry;
         this.phase.value = 'working';
       } else {
+        // The only delegation text the panel may show is a genuine failure's. A
+        // refusal's text is protocol guidance addressed to the voice model — which
+        // speaks an explanation in its own words — so it never surfaces here, in
+        // an error or anywhere else.
+        const failure = delegationFailureText(state, data.text);
         this.activeDelegations.delete(delegationId);
         const current = this.delegation.peek();
         // A follow-up may finish while the original delegation is still
         // running. Preserve the displayed original instead of clearing working.
         if (current && current.delegationId !== delegationId) {
-          if (state === 'failed' && data.text) this.lastError.value = data.text;
+          if (failure) this.lastError.value = failure;
           return;
         }
         if (this.activeDelegations.size > 0) {
           const remaining = [...this.activeDelegations.values()].at(-1)!;
           this.delegation.value = remaining;
           this.phase.value = 'working';
-          if (state === 'failed' && data.text) this.lastError.value = data.text;
+          if (failure) this.lastError.value = failure;
         } else {
           this.delegation.value = {
             delegationId,
             state,
-            ...(data.text ? { text: data.text } : {}),
+            ...(failure ? { text: failure } : {}),
           };
+          // A refusal returns to listening exactly as `done` does: the in-flight
+          // delegation is over and there is nothing left for the user to fix.
           this.phase.value = 'listening';
-          if (state === 'failed' && data.text) this.lastError.value = data.text;
+          if (failure) this.lastError.value = failure;
         }
       }
       return;
@@ -405,6 +475,30 @@ export class LiveStore {
       this.lastError.value = String(data.message || 'Live voice reported an error.');
       this.phase.value = 'failed';
     }
+  }
+
+  /**
+   * Binding recovery only, and strictly local: it may move `sessionId` and
+   * re-label it, but it must never call `onSessionChanged` and so never
+   * navigate. `live.started` and `live.delegation` report a session only as a
+   * hint — the ring buffer is bounded, so a reconnecting tab can miss
+   * `live.session_changed` entirely and never see the real switch; and a hint
+   * snapshotted before a switch was committed can legitimately arrive after one
+   * that reports the new binding. Turning either into a navigation would move
+   * the UI to a session the call is not on. `live.session_changed` is the only
+   * event that moves the UI.
+   *
+   * The hint carries no title, so the label belongs to whoever can name the
+   * session; when nobody can, it is cleared rather than left describing the
+   * session the call just left.
+   */
+  private adoptBindingHint(sessionId: unknown): void {
+    const next = String(sessionId || '');
+    if (!next || next === this.sessionId.peek()) return;
+    this.sessionId.value = next;
+    const label = this.resolveSessionLabel(next);
+    this.sessionNumber.value = label?.sessionNumber || 0;
+    this.sessionTitle.value = label?.title || '';
   }
 
   private async endFromServer(generation: number): Promise<void> {
@@ -417,6 +511,8 @@ export class LiveStore {
     }
     this.liveId.value = '';
     this.sessionId.value = '';
+    this.sessionNumber.value = 0;
+    this.sessionTitle.value = '';
     this.phase.value = 'ended';
     this.delegation.value = null;
     this.activeDelegations.clear();
@@ -443,6 +539,8 @@ export class LiveStore {
     this.call?.dispose();
     this.liveId.value = '';
     this.sessionId.value = '';
+    this.sessionNumber.value = 0;
+    this.sessionTitle.value = '';
     this.phase.value = 'ended';
   }
 }

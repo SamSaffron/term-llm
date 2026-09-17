@@ -1,6 +1,7 @@
 package live
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 )
@@ -54,7 +55,7 @@ func TestControllerInterimTranscriptIsPreviewOnly(t *testing.T) {
 	var updates []Update
 	c := NewController(ControllerOptions{Observer: func(u Update) { updates = append(updates, u) }})
 	for _, text := range []string{"open the wrong file", "open the right file"} {
-		c.handleEvent(Event{Kind: EventUserTranscriptInterim, Text: text})
+		c.handleEvent(context.Background(), Event{Kind: EventUserTranscriptInterim, Text: text})
 		got := updates[len(updates)-1]
 		if got.Kind != UpdateTranscript || !got.Interim || got.Final || got.Text != text || got.Role != RoleUser {
 			t.Fatalf("preview=%+v", got)
@@ -63,13 +64,13 @@ func TestControllerInterimTranscriptIsPreviewOnly(t *testing.T) {
 	if c.partial(RoleUser) != "" || len(c.transcript) != 0 || c.lastUserTurn != "" {
 		t.Fatal("preview leaked into delegation context")
 	}
-	c.handleEvent(Event{Kind: EventUserTranscript, Text: "open the "})
-	c.handleEvent(Event{Kind: EventUserTranscript, Text: "right file"})
+	c.handleEvent(context.Background(), Event{Kind: EventUserTranscript, Text: "open the "})
+	c.handleEvent(context.Background(), Event{Kind: EventUserTranscript, Text: "right file"})
 	got := updates[len(updates)-1]
 	if got.Interim || got.Text != "open the right file" {
 		t.Fatalf("authoritative partial=%+v", got)
 	}
-	c.handleEvent(Event{Kind: EventTurnDone, Role: RoleUser})
+	c.handleEvent(context.Background(), Event{Kind: EventTurnDone, Role: RoleUser})
 	got = updates[len(updates)-1]
 	if !got.Final || got.Interim || got.Text != "open the right file" {
 		t.Fatalf("final=%+v", got)

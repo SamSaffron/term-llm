@@ -108,12 +108,31 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// bringing the shell to ~509.5/143.2 kB raw/gzip. The glyphs are inline
 		// SVG in the shared registry, so no sprite asset or icon dependency
 		// enters the graph.
-		"dist/app.js":                {raw: 510_500, gzip: 145_000},
+		// The live voice session control plane adds the call-binding signals and
+		// session_changed follow-along to the eager live store, the in-place
+		// rebind/selection path to the app store, the panel's binding line, and
+		// the superseded-echo/generation guards that keep a stale switch from
+		// walking the UI backwards, bringing the shell to ~514.1/145.5 kB
+		// raw/gzip.
+		//
+		// Headroom is set deliberately here rather than raised a little at a time.
+		// The live-voice session work landed in three steps and each one left the
+		// cap a few hundred bytes above the measurement, which stops being a budget
+		// and becomes a tripwire: the next unrelated change fails on size without
+		// having grown anything meaningfully. These caps sit ~1% above the measured
+		// 514.1/144.2 kB, which still fails an accidental regression while leaving
+		// room for an ordinary change.
+		"dist/app.js":                {raw: 520_000, gzip: 147_000},
 		"dist/chunks/Lightbox.js":    {raw: 8_000, gzip: 3_200},
 		"dist/assets/Lightbox.css":   {raw: 4_000, gzip: 1_400},
 		"dist/chunks/StatsModal.js":  {raw: 8_000, gzip: 3_000},
 		"dist/assets/StatsModal.css": {raw: 5_000, gzip: 1_600},
-		"dist/app.css":               {raw: 175_000, gzip: 34_000},
+		// The live panel's binding line and the transcript cross-fade that runs when
+		// a voice switch swaps the session in place bring the sheet to ~174.9 kB,
+		// which is 141 bytes under the previous cap. Same reasoning as above: a cap
+		// that close to the measurement fails the next CSS change on arithmetic
+		// rather than on bloat.
+		"dist/app.css": {raw: 178_000, gzip: 34_000},
 		// Measured after the completed standalone port: 67.7/21.5 KiB JS and
 		// 16.7/4.1 KiB CSS. These limits retain modest growth headroom without
 		// allowing chat-only rendering dependencies into the Hub graph.

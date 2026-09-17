@@ -191,17 +191,30 @@ export class SelectionStore {
     this.composer.restore(this.composer.storageId(), 'draft');
   }
 
-  async resolveAndSelectSession(id: string, replace = false): Promise<void> {
+  /**
+   * Resolves a session the sidebar page does not hold and selects it. Returns
+   * the session that was actually selected, or `null` when nothing was: the id
+   * did not resolve, or the user navigated while the lookup was in flight, in
+   * which case the newer navigation owns the UI.
+   */
+  async resolveAndSelectSession(id: string, replace = false): Promise<Session | null> {
+    const epoch = this.epoch;
     try {
       const data = await this.services.endpoints.selectedSession(id);
+      if (epoch !== this.epoch) return null;
       const source = recordValue(data.selected_session);
-      if (!source) return this.newChat(replace);
+      if (!source) {
+        this.newChat(replace);
+        return null;
+      }
       const session = this.sessionsStore.sessionFrom(source);
       const existing = this.sessionsStore.sessions.value.find((entry) => entry.id === session.id);
       if (!existing) this.sessionsStore.prepend(session);
       await this.selectSession(existing || session, replace);
+      return existing || session;
     } catch (error) {
-      this.services.toast(error, 'error');
+      if (epoch === this.epoch) this.services.toast(error, 'error');
+      return null;
     }
   }
 

@@ -301,6 +301,133 @@ func TestHandleSessionsStatusAlwaysIncludesSelectedActiveAndUnresolvedSessions(t
 	}
 }
 
+// sessionsStatusEntryKeys is the documented wire shape of one status entry,
+// pinned so the runningSessionIDs extraction cannot silently add or rename a
+// projection field.
+var sessionsStatusEntryKeys = map[string]bool{
+	"id": true, "number": true, "project_id": true, "project_name": true,
+	"short_title": true, "long_title": true, "pinned": true, "active_run": true,
+	"active_response_id": true, "run_epoch": true, "started_rev": true, "started_at": true,
+	"client_message_id": true, "anchor_row_id": true, "transcript_rev": true, "message_count": true,
+	"last_message_at": true, "transcript_updated_at": true, "attention_store_instance_id": true,
+	"attention_seq": true, "attention_response_id": true, "attention_final_rev": true,
+	"seen_through_seq": true, "attention_unseen": true, "attention_outcome": true,
+	"attention_terminal_at": true, "interaction_required": true, "interaction_response_id": true,
+	"interaction_state_rev": true, "pending_interaction_count": true, "pending_interaction_kinds": true,
+	"interaction_required_since": true,
+}
+
+// TestSessionsStatusRunningProjectionMatchesRunningSessionIDs guards the
+// runningSessionIDs extraction (shared with the voice session directory): the
+// handler output is unchanged, byte-identical across calls, marks exactly the
+// sessions the shared primitive reports as running, and keeps every projection
+// field of the documented shape.
+func TestSessionsStatusRunningProjectionMatchesRunningSessionIDs(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	base := time.Now().Add(-time.Hour).Truncate(time.Millisecond)
+	for i, id := range []string{"status-run-durable", "status-run-memory", "status-idle"} {
+		if err := store.Create(ctx, &session.Session{
+			ID: id, Provider: "test", Model: "test-model", Mode: session.ModeChat,
+			CreatedAt: base.Add(time.Duration(i) * time.Minute), UpdatedAt: base.Add(time.Duration(i) * time.Minute),
+		}); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+	// Durable running row owned by another process: reachable only through the
+	// attention projection.
+	lifecycle, ok := session.AsServeResponseLifecycleStore(store)
+	if !ok {
+		t.Fatal("store does not support durable response runs")
+	}
+	if _, err := lifecycle.AdmitResponseRun(ctx, session.ResponseRunAdmission{
+		ResponseID: "durable-response", SessionID: "status-run-durable",
+		RunEpoch: 1, OwnerInstanceID: "other-process", StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runs := newServeResponseRunManager()
+	defer runs.Close()
+	runs.setActiveRun("status-run-memory", "memory-response")
+	srv := &serveServer{store: store, responseRuns: runs}
+
+	read := func() (int, string, string) {
+		t.Helper()
+		rr := httptest.NewRecorder()
+		srv.handleSessionsStatus(rr, httptest.NewRequest(http.MethodGet, "/v1/sessions/status", nil))
+		return rr.Code, rr.Body.String(), rr.Header().Get("ETag")
+	}
+	firstCode, firstBody, firstETag := read()
+	if firstCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", firstCode, firstBody)
+	}
+	secondCode, secondBody, secondETag := read()
+	if secondCode != http.StatusOK || firstBody != secondBody || firstETag != secondETag || firstETag == "" {
+		t.Fatalf("status output is not stable: %d/%d etag %q/%q", firstCode, secondCode, firstETag, secondETag)
+	}
+
+	var payload struct {
+		Sessions []map[string]json.RawMessage `json:"sessions"`
+	}
+	if err := json.Unmarshal([]byte(firstBody), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Sessions) != 3 {
+		t.Fatalf("sessions=%d body=%s", len(payload.Sessions), firstBody)
+	}
+	running := srv.runningSessionIDs(ctx)
+	if len(running) != 2 || !running["status-run-durable"] || !running["status-run-memory"] {
+		t.Fatalf("runningSessionIDs = %v", running)
+	}
+	listed := make(map[string]bool)
+	for _, entry := range payload.Sessions {
+		for key := range entry {
+			if !sessionsStatusEntryKeys[key] {
+				t.Fatalf("undocumented status field %q in %s", key, firstBody)
+			}
+		}
+		var id string
+		if err := json.Unmarshal(entry["id"], &id); err != nil {
+			t.Fatal(err)
+		}
+		listed[id] = true
+		for _, required := range []string{"id", "short_title", "long_title", "transcript_rev", "message_count", "last_message_at", "transcript_updated_at", "interaction_required"} {
+			if _, ok := entry[required]; !ok {
+				t.Fatalf("session %s lost required field %q: %s", id, required, entry[required])
+			}
+		}
+		active := false
+		if raw, ok := entry["active_run"]; ok {
+			if err := json.Unmarshal(raw, &active); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if active != running[id] {
+			t.Fatalf("session %s active_run=%t, runningSessionIDs=%t", id, active, running[id])
+		}
+		if id == "status-run-memory" {
+			var responseID string
+			if err := json.Unmarshal(entry["active_response_id"], &responseID); err != nil || responseID != "memory-response" {
+				t.Fatalf("local active response = %q, %v", responseID, err)
+			}
+		}
+		if id == "status-run-durable" {
+			if raw, ok := entry["active_response_id"]; ok {
+				t.Fatalf("non-local durable response advertised a local stream: %s", raw)
+			}
+		}
+	}
+	for id := range running {
+		if !listed[id] {
+			t.Fatalf("running session %s missing from status output", id)
+		}
+	}
+}
+
 type sessionsStatusTestEntry struct {
 	ID                  string `json:"id"`
 	Number              int64  `json:"number"`
