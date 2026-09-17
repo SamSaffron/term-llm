@@ -1,6 +1,7 @@
 package config
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -147,6 +148,45 @@ func TestClassifyAliasSchema(t *testing.T) {
 	for _, spec := range specs {
 		if strings.HasSuffix(spec.Path, ".api_key") && !spec.Sensitive {
 			t.Fatal("alias key not sensitive")
+		}
+	}
+}
+
+func TestGuardianClassifyConfig(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Guardian.Backend != "llm" || cfg.Guardian.Classify.MinConfidence != 0.15 {
+		t.Fatalf("defaults: %+v", cfg.Guardian)
+	}
+	for _, value := range []float64{0, 0.25, 1, -0.1, 1.1} {
+		viper.Set("guardian.backend", "classify")
+		viper.Set("guardian.classify.provider", "alias")
+		viper.Set("guardian.classify.min_confidence", value)
+		cfg, err = Load()
+		if value < 0 || value > 1 {
+			if err == nil {
+				t.Fatalf("accepted %g", value)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Guardian.Classify.MinConfidence != value || cfg.Guardian.Classify.Provider != "alias" {
+			t.Fatalf("%+v", cfg.Guardian)
+		}
+	}
+}
+
+func TestGuardianClassifyConfidenceRejectsNonFinite(t *testing.T) {
+	for _, value := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		if err := (GuardianClassifyConfig{MinConfidence: value}).Validate(); err == nil {
+			t.Fatalf("accepted %g", value)
 		}
 	}
 }

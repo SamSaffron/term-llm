@@ -510,13 +510,21 @@ type ApprovalConfig struct {
 	DefaultMode string `mapstructure:"default_mode" yaml:"default_mode,omitempty"`
 }
 
+// GuardianClassifyConfig configures the optional classification reviewer.
+type GuardianClassifyConfig struct {
+	Provider      string  `mapstructure:"provider" yaml:"provider,omitempty"`
+	MinConfidence float64 `mapstructure:"min_confidence" yaml:"min_confidence"`
+}
+
 // GuardianConfig configures auto approval policy review.
 type GuardianConfig struct {
-	Provider         string `mapstructure:"provider" yaml:"provider,omitempty"`
-	Model            string `mapstructure:"model" yaml:"model,omitempty"`
-	PolicyPath       string `mapstructure:"policy_path" yaml:"policy_path,omitempty"`
-	TimeoutSeconds   int    `mapstructure:"timeout_seconds" yaml:"timeout_seconds,omitempty"`
-	ClassifyAllShell bool   `mapstructure:"classify_all_shell" yaml:"classify_all_shell,omitempty"`
+	Backend          string                 `mapstructure:"backend" yaml:"backend,omitempty"`
+	Classify         GuardianClassifyConfig `mapstructure:"classify" yaml:"classify"`
+	Provider         string                 `mapstructure:"provider" yaml:"provider,omitempty"`
+	Model            string                 `mapstructure:"model" yaml:"model,omitempty"`
+	PolicyPath       string                 `mapstructure:"policy_path" yaml:"policy_path,omitempty"`
+	TimeoutSeconds   int                    `mapstructure:"timeout_seconds" yaml:"timeout_seconds,omitempty"`
+	ClassifyAllShell bool                   `mapstructure:"classify_all_shell" yaml:"classify_all_shell,omitempty"`
 }
 
 // ServeConfig holds configuration for the serve command platforms.
@@ -1390,6 +1398,9 @@ func Load() (*Config, error) {
 	}
 	markReasoningConfigPresence(&cfg.Reasoning, viper.GetViper())
 	if err := cfg.ValidateCommit(); err != nil {
+		return nil, err
+	}
+	if err := cfg.Guardian.Classify.Validate(); err != nil {
 		return nil, err
 	}
 	if err := cfg.ValidateApprovalModes(); err != nil {

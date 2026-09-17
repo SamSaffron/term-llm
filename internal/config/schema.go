@@ -185,6 +185,9 @@ var keySpecs = []KeySpec{
 
 	optional("approval.default_mode", withoutResetTemplate()),
 
+	def("guardian.backend", "llm"),
+	optional("guardian.classify.provider"),
+	def("guardian.classify.min_confidence", 0.15),
 	optional("guardian.provider"),
 	optional("guardian.model"),
 	optional("guardian.policy_path"),

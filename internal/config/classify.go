@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 )
@@ -70,4 +71,12 @@ func ClassifyKeySpecs(names []string) []KeySpec {
 		}
 	}
 	return specs
+}
+
+// Validate rejects unusable Guardian confidence thresholds, including non-finite values.
+func (c GuardianClassifyConfig) Validate() error {
+	if math.IsNaN(c.MinConfidence) || math.IsInf(c.MinConfidence, 0) || c.MinConfidence < 0 || c.MinConfidence > 1 {
+		return fmt.Errorf("guardian.classify.min_confidence must be between 0 and 1")
+	}
+	return nil
 }

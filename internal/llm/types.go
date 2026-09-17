@@ -18,14 +18,16 @@ const guardianReviewCollectorKey contextKey = "guardian_review_collector"
 // GuardianReview is display-only audit metadata for a Guardian-reviewed tool
 // invocation. Providers must continue to receive only the ordinary tool result.
 type GuardianReview struct {
-	Outcome string `json:"outcome"`
-	Message string `json:"message"`
-	Model   string `json:"model,omitempty"`
-	Tool    string `json:"tool,omitempty"`
-	Command string `json:"command,omitempty"`
-	Path    string `json:"path,omitempty"`
-	IsWrite bool   `json:"is_write,omitempty"`
-	WorkDir string `json:"workdir,omitempty"`
+	DurationMS float64 `json:"duration_ms"`
+	StateBytes int     `json:"state_bytes,omitempty"`
+	Outcome    string  `json:"outcome"`
+	Message    string  `json:"message"`
+	Model      string  `json:"model,omitempty"`
+	Tool       string  `json:"tool,omitempty"`
+	Command    string  `json:"command,omitempty"`
+	Path       string  `json:"path,omitempty"`
+	IsWrite    bool    `json:"is_write,omitempty"`
+	WorkDir    string  `json:"workdir,omitempty"`
 }
 
 type guardianReviewCollector struct {

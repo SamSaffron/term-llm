@@ -207,7 +207,7 @@ func renderCompactEntries(entries []TranscriptEntry, offset int) []compactEntry 
 		rendered = append(rendered, compactEntry{
 			rendered: renderedText,
 			size:     len(renderedText),
-			isUser:   role == "user",
+			isUser:   role == "user" || role == "parent_user",
 			isTool:   isTool,
 		})
 	}

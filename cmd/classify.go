@@ -77,8 +77,8 @@ func newClassifyCmd(deps classifyDeps) *cobra.Command {
 Select classify.default_provider from classify.providers, or override it with --provider/-p.
 
 Questions can be supplied together in a JSON/YAML file, or defined inline for
-a single choice, score, or noul. TypeSafe is called only by this command; state
-and questions are sent to the configured endpoint.`,
+a single choice, score, or noul. State and questions are sent to the configured endpoint. TypeSafe may also
+be used for automatic approvals when guardian.backend is set to classify.`,
 		Example: `  term-llm classify "Production is down" --type noul --question "Is this urgent?" --format value
   term-llm classify "My invoice is wrong" -q routing.yaml --format table
   term-llm classify --state-json -f event.json -q checks.yaml

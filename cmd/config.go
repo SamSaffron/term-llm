@@ -1405,7 +1405,10 @@ func capabilityConfigValueCompletions(cfg *config.Config, key, toComplete string
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	if key == "classify.default_provider" {
+	if key == "guardian.backend" {
+		return filterPrefix([]string{"llm", "classify"}, toComplete)
+	}
+	if key == "classify.default_provider" || key == "guardian.classify.provider" {
 		return filterPrefix(cfg.Classify.ProviderNames(), toComplete)
 	}
 	if strings.HasPrefix(key, "classify.providers.") && strings.HasSuffix(key, ".type") {
