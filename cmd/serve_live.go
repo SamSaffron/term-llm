@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
 
@@ -46,6 +47,32 @@ const (
 	liveDiagnosticsMinGap      = time.Second
 	liveBindingAnnounceTimeout = 10 * time.Second
 	liveSwitchBodyLimitBytes   = 4 << 10
+	// liveDelegationContextLimitBytes bounds the client's device-capability hint.
+	// It is client-authored prompt text that stays in the voice model's
+	// instructions for the whole call, so it is kept to a short paragraph.
+	liveDelegationContextLimitBytes = 2 << 10
+	// liveDelegationResultLimitBytes bounds one client delegation result. Larger
+	// output would be wasted: delegationWriter truncates to its head/tail policy
+	// before any of it is spoken.
+	liveDelegationResultLimitBytes = 64 << 10
+	// liveClientDelegationResendInterval re-publishes a pending request. The event
+	// ring holds 512 events and carries every interim transcript, so one publish is
+	// not a guaranteed delivery to a client that reconnects late.
+	liveClientDelegationResendInterval = 15 * time.Second
+	liveClientDelegationTimeout        = 5 * time.Minute
+	// liveClientDelegationHistoryLimit bounds the answered delegations kept per
+	// call for idempotent replay. Delegations run one at a time, so this is a long
+	// history in practice.
+	liveClientDelegationHistoryLimit = 64
+	liveDelegationFailureLimitBytes  = 1 << 10
+)
+
+// Delegation execution modes for POST /v1/live/sessions. An unknown mode is
+// rejected rather than defaulted: a client that asks for a mode this host does
+// not implement must learn that, not silently get the other one.
+const (
+	liveDelegationModeServer = "server"
+	liveDelegationModeClient = "client"
 )
 
 // Live event types streamed to the browser for one live call.
@@ -57,6 +84,10 @@ const (
 	liveEventError          = "live.error"
 	liveEventEnded          = "live.ended"
 	liveEventSessionChanged = "live.session_changed"
+	// liveEventDelegationRequested asks the authenticated client that owns this
+	// call to execute one delegation. It is published only in client delegation
+	// mode and never replaces the controller-owned live.delegation lifecycle.
+	liveEventDelegationRequested = "live.delegation_requested"
 )
 
 type liveSessionEvent struct {
@@ -87,6 +118,15 @@ type liveSession struct {
 	audioTokenSet     bool
 	audioAttached     bool
 	audioActive       bool
+	// delegationMode and delegationContext are fixed for the call: set from the
+	// start request before registerLiveSession publishes the record, read-only
+	// afterwards, so they need no lock.
+	delegationMode    string
+	delegationContext string
+	// clientDelegations holds the newest liveClientDelegationHistoryLimit
+	// delegations this call published to its client, in publish order, so a result
+	// can be matched, a replay compared, and a shutdown can unblock waiters.
+	clientDelegations []*liveClientDelegation
 	events            []liveSessionEvent
 	eventHead         int
 	nextSequence      int
@@ -163,6 +203,13 @@ func (l *liveSession) appendEventLocked(eventType string, data map[string]any) {
 	}
 	if eventType == liveEventEnded {
 		l.ended = true
+		// A terminal stream is terminal for the device too. The provider can end a
+		// call with no host teardown running (a hangup, a provider error), and a
+		// waiter left behind then holds the controller's delegation loop until its
+		// timeout while the check above silently swallows its resends.
+		for _, entry := range l.clientDelegations {
+			entry.abandonLocked()
+		}
 	}
 	for id, subscriber := range l.subscribers {
 		select {
@@ -322,6 +369,12 @@ func (l *liveSession) closeSubscribers() {
 		delete(l.subscribers, id)
 		close(ch)
 	}
+	// Teardown can reach here with no live.ended ever published — a call removed
+	// before its controller started — so this is not redundant with the abandon in
+	// appendEventLocked. Entries stay behind so a late POST is refused, not absorbed.
+	for _, entry := range l.clientDelegations {
+		entry.abandonLocked()
+	}
 }
 
 // liveConfig returns the effective live settings.
@@ -379,9 +432,12 @@ func (s *serveServer) liveCapability(ctx context.Context) map[string]any {
 			enabled = true
 		}
 	}
+	// delegation_modes is additive and "version" deliberately stays at 3: the web
+	// UI reads that number and gains nothing from client-owned delegation.
 	return map[string]any{
 		"enabled": enabled, "provider": capabilities.Provider, "model": capabilities.Model,
 		"transport": transport, "version": 3,
+		"delegation_modes": []string{liveDelegationModeServer, liveDelegationModeClient},
 	}
 }
 
@@ -389,6 +445,59 @@ type liveStartRequest struct {
 	SDP            string `json:"sdp"`
 	SessionID      string `json:"session_id"`
 	AudioTransport string `json:"audio_transport"`
+	// DelegationMode selects who executes this call's delegations: the host
+	// ("server", the default) or the authenticated client that started the call
+	// ("client").
+	DelegationMode string `json:"delegation_mode"`
+	// DelegationContext describes what the device executing delegations can do. It
+	// is prompt text, not a tool schema: tool authority stays on the device, which
+	// declares its real tools per request.
+	DelegationContext string `json:"delegation_context"`
+}
+
+// liveDelegationStart validates the delegation half of a start request. Mode and
+// context are validated together because the pairing is the security-relevant
+// part: a capability hint accepted in server mode would make the host promise
+// device tools no delegation can ever reach.
+func liveDelegationStart(request liveStartRequest) (string, string, error) {
+	mode := strings.TrimSpace(request.DelegationMode)
+	switch mode {
+	case "":
+		mode = liveDelegationModeServer
+	case liveDelegationModeServer, liveDelegationModeClient:
+	default:
+		return "", "", fmt.Errorf("delegation_mode must be %q or %q", liveDelegationModeServer, liveDelegationModeClient)
+	}
+	hint := strings.TrimSpace(request.DelegationContext)
+	if len(hint) > liveDelegationContextLimitBytes {
+		return "", "", fmt.Errorf("delegation_context must be at most %d bytes", liveDelegationContextLimitBytes)
+	}
+	if !liveDelegationContextIsPlainText(hint) {
+		return "", "", errors.New("delegation_context must be plain text")
+	}
+	if hint != "" && mode != liveDelegationModeClient {
+		return "", "", errors.New(`delegation_context is only accepted with "delegation_mode":"client"`)
+	}
+	return mode, hint, nil
+}
+
+// liveDelegationContextIsPlainText rejects control characters other than the
+// newline a client may reasonably use to separate sentences. The prompt layer
+// sanitises again; this is the transport saying no to bytes that only make sense
+// as an attempt to forge structure in a prompt or a log line.
+func liveDelegationContextIsPlainText(hint string) bool {
+	if !utf8.ValidString(hint) {
+		return false
+	}
+	for _, r := range hint {
+		if r == '\n' {
+			continue
+		}
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 type liveTextRequest struct {
@@ -481,6 +590,11 @@ func (s *serveServer) handleLiveSessions(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
+	delegationMode, delegationContext, err := liveDelegationStart(request)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
 	sessionID := strings.TrimSpace(request.SessionID)
 	if sessionID == "" {
 		sessionID = resolveRequestSessionID(r)
@@ -507,6 +621,7 @@ func (s *serveServer) handleLiveSessions(w http.ResponseWriter, r *http.Request)
 	liveID := "live_" + session.NewID()
 	record := newLiveSession(liveID, sessionID)
 	record.capabilities = live.ConfigCapabilities(s.liveConfig())
+	record.delegationMode, record.delegationContext = delegationMode, delegationContext
 	if err := s.registerLiveSession(record); err != nil {
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
 		return
@@ -514,7 +629,9 @@ func (s *serveServer) handleLiveSessions(w http.ResponseWriter, r *http.Request)
 
 	startCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), liveStartTimeout)
 	defer cancel()
-	opts := s.liveSessionOptions(startCtx, sessionID, record.capabilities)
+	// Read from the record, which is where a future re-snapshot path would have to
+	// find it: a start request is long gone by then.
+	opts := s.liveSessionOptions(startCtx, sessionID, record.capabilities, record.delegationContext)
 	opts.LiveID = liveID
 	providerSession, err := provider.Start(startCtx, offer, opts)
 	if err != nil {
@@ -538,6 +655,8 @@ func (s *serveServer) handleLiveSessions(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("x-session-id", sessionID)
 	response := map[string]any{
 		"live_id": liveID, "session_id": sessionID, "transport": "webrtc", "sdp": providerSession.AnswerSDP(),
+		// Echoed so a client can tell it got the mode it asked for, not assume it.
+		"delegation_mode": delegationMode,
 	}
 	if _, ok := providerSession.(live.PCMSession); ok {
 		if enabled, _ := s.liveDebugOptions(); enabled {
@@ -564,7 +683,8 @@ func (s *serveServer) handleLiveSessions(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, response)
 }
 
-// handleLiveSessionByID serves DELETE, /text, and /events for one live call.
+// handleLiveSessionByID serves every per-call route: DELETE, /text, /session,
+// /events, the audio transports, /diagnostics, and one client delegation result.
 func (s *serveServer) handleLiveSessionByID(w http.ResponseWriter, r *http.Request) {
 	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/live/sessions/"), "/")
 	if path == "" {
@@ -601,6 +721,19 @@ func (s *serveServer) handleLiveSessionByID(w http.ResponseWriter, r *http.Reque
 	case "diagnostics":
 		s.handleLiveSessionDiagnostics(w, r, liveID)
 	default:
+		// The split above keeps the whole remainder in one string, so the delegation
+		// result path arrives as "delegations/{delegation_id}/result" and is parsed
+		// here rather than by adding a second Cut to every other action.
+		if rest, ok := strings.CutPrefix(action, "delegations/"); ok {
+			if delegationID, ok := strings.CutSuffix(rest, "/result"); ok {
+				s.handleLiveDelegationResult(w, r, liveID, delegationID)
+				return
+			}
+			// The call exists; it is the delegation sub-path that does not. Naming the
+			// right entity keeps a client from retrying the call id.
+			writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "live delegation not found")
+			return
+		}
 		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "live session not found")
 	}
 }
@@ -1186,9 +1319,18 @@ func (s *serveServer) startLiveController(record *liveSession, providerSession l
 		return false
 	}
 	controllerCtx, controllerCancel := context.WithCancel(context.Background())
+	// The delegator is chosen by the call's mode and never changes afterwards.
+	var delegator live.Delegator = &serveLiveDelegator{server: s, live: record}
+	if record.delegationMode == liveDelegationModeClient {
+		delegator = &serveLiveClientDelegator{
+			server: s, live: record,
+			resendInterval: liveClientDelegationResendInterval,
+			timeout:        liveClientDelegationTimeout,
+		}
+	}
 	options := live.ControllerOptions{
 		Session:   providerSession,
-		Delegator: &serveLiveDelegator{server: s, live: record},
+		Delegator: delegator,
 		Observer:  record.observe,
 	}
 	// Without a router every delegation is ordinary work for the bound session,

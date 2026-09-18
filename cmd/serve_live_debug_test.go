@@ -34,7 +34,7 @@ func TestLiveDebugEnvironment(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("TERM_LLM_LIVE_DEBUG", tc.value)
 			s := &serveServer{cfg: serveServerConfig{debug: tc.flag, debugRaw: tc.rawFlag}}
-			opts := s.liveSessionOptions(context.Background(), "test", live.Capabilities{})
+			opts := s.liveSessionOptions(context.Background(), "test", live.Capabilities{}, "")
 			if opts.Debug != tc.enabled || opts.DebugRaw != tc.raw {
 				t.Fatalf("debug/raw=%t/%t, want %t/%t", opts.Debug, opts.DebugRaw, tc.enabled, tc.raw)
 			}

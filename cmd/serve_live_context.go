@@ -85,7 +85,12 @@ func (l *liveSession) settings(ctx context.Context, voice string) (live.Capabili
 // liveSessionOptions supplies only explicit, credential-free metadata and a
 // bounded tail of visible conversation. Tool results and developer/system
 // instructions are deliberately not copied into the voice conversation.
-func (s *serveServer) liveSessionOptions(ctx context.Context, sessionID string, caps live.Capabilities) live.SessionOptions {
+//
+// delegationContext is the client-authored device-capability hint, empty unless
+// the call started in client delegation mode. It is the one piece of context here
+// a client wrote, so it is never trusted as instructions: live.ClientDelegationContext
+// re-sanitises it and frames it as reported data.
+func (s *serveServer) liveSessionOptions(ctx context.Context, sessionID string, caps live.Capabilities, delegationContext string) live.SessionOptions {
 	debug, raw := s.liveDebugOptions()
 	opts := live.SessionOptions{
 		SessionID: sessionID, Instructions: s.liveConfig().Instructions, Context: live.CapabilityContext(caps),
@@ -97,6 +102,12 @@ func (s *serveServer) liveSessionOptions(ctx context.Context, sessionID string, 
 	// to the user.
 	if s.liveConfig().ControlPlane {
 		opts.Context += "\n" + live.ControlPlaneContext
+	}
+	// Without this the voice model declines device-native requests ("I can't play
+	// music") instead of delegating them, because nothing else in its context says
+	// the executor of a delegation is a phone rather than the workspace agent.
+	if hint := live.ClientDelegationContext(delegationContext); hint != "" {
+		opts.Context += "\n" + hint
 	}
 	if s.store == nil {
 		return opts

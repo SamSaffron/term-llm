@@ -261,7 +261,7 @@ func TestLiveStartupContextIsBoundedVisibleHistoryAndHostFacts(t *testing.T) {
 		}
 	}
 	s := &serveServer{store: store}
-	opts := s.liveSessionOptions(context.Background(), meta.ID, live.ConfigCapabilities(config.LiveConfig{}))
+	opts := s.liveSessionOptions(context.Background(), meta.ID, live.ConfigCapabilities(config.LiveConfig{}), "")
 	for _, fact := range []string{"term-llm", "cove", "coding-model", "my project", "/workspace"} {
 		if !strings.Contains(opts.Context, fact) {
 			t.Fatalf("missing %q: %s", fact, opts.Context)

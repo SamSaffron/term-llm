@@ -1130,7 +1130,7 @@ func TestLiveSessionOptionsPromisesHostRoutingOnlyWithTheControlPlane(t *testing
 			s := newTestServeServer()
 			s.cfgRef = &config.Config{Live: config.LiveConfig{ControlPlane: plane}}
 
-			opts := s.liveSessionOptions(context.Background(), "options-session", live.ConfigCapabilities(config.LiveConfig{}))
+			opts := s.liveSessionOptions(context.Background(), "options-session", live.ConfigCapabilities(config.LiveConfig{}), "")
 			if promised := strings.Contains(opts.Context, live.ControlPlaneContext); promised != plane {
 				t.Fatalf("host routing promised = %v with live.control_plane = %v: %s", promised, plane, opts.Context)
 			}
