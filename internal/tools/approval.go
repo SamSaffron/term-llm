@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -301,6 +302,8 @@ type PolicyReviewRequest struct {
 
 // PolicyDecision is the guardian's allow/deny verdict.
 type PolicyDecision struct {
+	DurationMS        float64
+	StateBytes        int
 	Allowed           bool
 	RiskLevel         string
 	UserAuthorization string
@@ -342,6 +345,8 @@ const (
 // GuardianEvent is a guardian review annotation correlated with the tool
 // invocation that caused the review.
 type GuardianEvent struct {
+	DurationMS float64
+	StateBytes int
 	ToolCallID string
 	ToolName   string
 	Path       string
@@ -658,11 +663,24 @@ func (m *ApprovalManager) SetPolicyReviewFunc(reviewFunc func(context.Context, P
 	}
 	m.policyReviewMu.Lock()
 	previousCleanup := m.policyReviewCleanup
-	m.policyReviewFunc = reviewFunc
+	m.policyReviewFunc = timedPolicyReview(reviewFunc)
 	m.policyReviewCleanup = cleanup
 	m.policyReviewMu.Unlock()
 	if previousCleanup != nil {
 		previousCleanup()
+	}
+}
+
+// timedPolicyReview measures the common callback boundary, including queueing and errors.
+func timedPolicyReview(review func(context.Context, PolicyReviewRequest) (PolicyDecision, error)) func(context.Context, PolicyReviewRequest) (PolicyDecision, error) {
+	if review == nil {
+		return nil
+	}
+	return func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
+		start := time.Now()
+		decision, err := review(ctx, req)
+		decision.DurationMS = float64(time.Since(start)) / float64(time.Millisecond)
+		return decision, err
 	}
 }
 
@@ -1884,6 +1902,8 @@ func (m *ApprovalManager) guardianPathDecisionEvent(ctx context.Context, toolNam
 	event := m.guardianPathEvent(ctx, toolName, path, isWrite, outcome, message)
 	event.Model = strings.TrimSpace(decision.Model)
 	event.Usage = decision.Usage
+	event.DurationMS = decision.DurationMS
+	event.StateBytes = decision.StateBytes
 	return event
 }
 
@@ -1902,6 +1922,8 @@ func (m *ApprovalManager) guardianDecisionEvent(ctx context.Context, command, wo
 	event := m.guardianEvent(ctx, command, workDir, outcome, message)
 	event.Model = strings.TrimSpace(decision.Model)
 	event.Usage = decision.Usage
+	event.DurationMS = decision.DurationMS
+	event.StateBytes = decision.StateBytes
 	return event
 }
 
@@ -1921,7 +1943,7 @@ func (m *ApprovalManager) emitGuardianEventForContext(ctx context.Context, event
 		llm.RecordGuardianReview(ctx, llm.GuardianReview{
 			Outcome: string(event.Outcome), Message: event.Message, Model: event.Model,
 			Tool: event.ToolName, Command: event.Command, Path: event.Path,
-			IsWrite: event.IsWrite, WorkDir: event.WorkDir,
+			IsWrite: event.IsWrite, WorkDir: event.WorkDir, DurationMS: event.DurationMS, StateBytes: event.StateBytes,
 		})
 	}
 	m.emitGuardianEvent(event)

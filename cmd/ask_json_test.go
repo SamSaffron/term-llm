@@ -216,7 +216,8 @@ func TestStreamJSON_GuardianReviewEvent(t *testing.T) {
 			Message:    "guardian: approved (low risk)",
 			Outcome:    tools.GuardianApproved,
 			Model:      "guardian-model",
-			Usage:      llm.Usage{InputTokens: 9, OutputTokens: 3, CachedInputTokens: 4, CacheWriteTokens: 1},
+			DurationMS: 12.5, StateBytes: 1234,
+			Usage: llm.Usage{InputTokens: 9, OutputTokens: 3, CachedInputTokens: 4, CacheWriteTokens: 1},
 		}),
 		ui.ToolEndEvent("call-1", "shell", "(git status)", true),
 		ui.DoneEvent(0),
@@ -235,6 +236,9 @@ func TestStreamJSON_GuardianReviewEvent(t *testing.T) {
 	}
 	if guardian["call_id"] != "call-1" || guardian["message"] != "guardian: approved (low risk)" || guardian["outcome"] != "approved" || guardian["model"] != "guardian-model" {
 		t.Fatalf("guardian.review payload = %+v", guardian)
+	}
+	if guardian["duration_ms"] != 12.5 || guardian["state_bytes"] != float64(1234) {
+		t.Fatalf("guardian metrics = %+v", guardian)
 	}
 	if guardian["input_tokens"] != float64(9) || guardian["output_tokens"] != float64(3) || guardian["cached_input_tokens"] != float64(4) || guardian["cache_write_tokens"] != float64(1) {
 		t.Fatalf("guardian.review usage = %+v", guardian)

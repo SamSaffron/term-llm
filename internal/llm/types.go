@@ -18,14 +18,16 @@ const guardianReviewCollectorKey contextKey = "guardian_review_collector"
 // GuardianReview is display-only audit metadata for a Guardian-reviewed tool
 // invocation. Providers must continue to receive only the ordinary tool result.
 type GuardianReview struct {
-	Outcome string `json:"outcome"`
-	Message string `json:"message"`
-	Model   string `json:"model,omitempty"`
-	Tool    string `json:"tool,omitempty"`
-	Command string `json:"command,omitempty"`
-	Path    string `json:"path,omitempty"`
-	IsWrite bool   `json:"is_write,omitempty"`
-	WorkDir string `json:"workdir,omitempty"`
+	DurationMS float64 `json:"duration_ms"`
+	StateBytes int     `json:"state_bytes,omitempty"`
+	Outcome    string  `json:"outcome"`
+	Message    string  `json:"message"`
+	Model      string  `json:"model,omitempty"`
+	Tool       string  `json:"tool,omitempty"`
+	Command    string  `json:"command,omitempty"`
+	Path       string  `json:"path,omitempty"`
+	IsWrite    bool    `json:"is_write,omitempty"`
+	WorkDir    string  `json:"workdir,omitempty"`
 }
 
 type guardianReviewCollector struct {
@@ -98,6 +100,26 @@ func ToolRunIDFromContext(ctx context.Context) string {
 }
 
 const approvalTranscriptKey contextKey = "approval_transcript"
+
+// TrustedUserInputToolName is the only tool whose output may be promoted to a
+// trusted user turn in an approval transcript. Guardian backends treat the user
+// role as authorization, so a tool that could set it would be able to author its
+// own approval. internal/tools pins this against the ask_user tool name.
+const TrustedUserInputToolName = "ask_user"
+
+// ApprovalTurnForTool reports the trusted approval turn a tool result should
+// contribute to a policy-review transcript. Only first-party ask_user output,
+// which is produced by a human answering a prompt, may speak as the user.
+func ApprovalTurnForTool(callName string, output ToolOutput) (role, text string, ok bool) {
+	if strings.TrimSpace(callName) != TrustedUserInputToolName {
+		return "", "", false
+	}
+	text = strings.TrimSpace(output.TrustedUserInput)
+	if text == "" {
+		return "", "", false
+	}
+	return string(RoleUser), text, true
+}
 
 // ContextWithApprovalTranscript returns a new context carrying the conversation
 // messages that should be used by policy reviewers for tool approval decisions.
@@ -322,6 +344,7 @@ type Message struct {
 	Parts                   []Part
 	CacheAnchor             bool   // provider should apply cache_control to this message (Anthropic-specific)
 	ApprovalRole            string `json:",omitempty"` // Optional role override for guardian/policy-review transcripts only.
+	ApprovalText            string `json:",omitempty"` // Optional canonical Guardian evidence text; providers ignore it.
 	ClientMessageID         string `json:",omitempty"` // Stable identity for first-party user intent; providers ignore it.
 	DisplayText             string `json:",omitempty"` // Optional persistence/UI text when provider-only context is present.
 	ResponseID              string `json:",omitempty"` // Stable response owner for persisted/UI projection identity; providers ignore it.
@@ -802,6 +825,7 @@ type ToolOutput struct {
 	FilesystemObservations []FilesystemObservationSummary `json:"filesystem_observations,omitempty"`
 	OutputClaimDiagnostics []OutputClaimDiagnostic        `json:"output_claim_diagnostics,omitempty"`
 	GuardianReviews        []GuardianReview               `json:"guardian_reviews,omitempty"` // Display-only Guardian audit metadata; never provider content
+	TrustedUserInput       string                         `json:"-"`                          // Canonical direct first-party human input for Guardian; empty for ordinary tool output
 	TimedOut               bool                           // Set by tools that support timeouts (e.g. shell); drives ToolSuccess=false without content sniffing
 	IsError                bool                           // Set when a tool returned an unsuccessful result (e.g. shell exit code != 0); copied to ToolResult.IsError for UI/history and provider error metadata
 }

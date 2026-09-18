@@ -17,7 +17,7 @@ groups:
   - title: Models and tools
     section: guides
     description: Connect external tools and build on the runtime.
-    pages: [secret-management, mcp-servers, serve-mcp, text-embeddings]
+    pages: [secret-management, classify, mcp-servers, serve-mcp, text-embeddings]
   - title: Web and deployment
     section: guides
     description: Run on your own infrastructure and reach your agents remotely.

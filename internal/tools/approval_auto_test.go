@@ -533,6 +533,16 @@ func TestApprovalManagerNestedChildFindsRootGuardianCallbacks(t *testing.T) {
 	}
 }
 
+func TestApprovalTranscriptUsesCanonicalTrustedUserText(t *testing.T) {
+	msg := llm.ToolResultMessage("ask-1", AskUserToolName, `{"answers":[{"selected":"OK"}]}`, nil)
+	msg.ApprovalRole = string(llm.RoleUser)
+	msg.ApprovalText = "Question: Delete exactly /tmp/abc?\nUser answer: OK, go for it"
+	entries := approvalTranscriptFromContext(llm.ContextWithApprovalTranscript(context.Background(), []llm.Message{msg}))
+	if len(entries) != 1 || entries[0].Role != "user" || entries[0].Text != msg.ApprovalText {
+		t.Fatalf("approval entries = %#v", entries)
+	}
+}
+
 func TestShellApprovalTranscriptIncludesToolCallsResultsAndApprovalRole(t *testing.T) {
 	args, err := json.Marshal(map[string]string{"command": "cat .env"})
 	if err != nil {

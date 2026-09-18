@@ -242,6 +242,8 @@ Guardian denials, contradictory allows, unavailability, timeouts, malformed resp
 
 Three consecutive policy denials or 20 total policy denials in one auto epoch suspend auto for the whole parent/child manager tree. A successful Guardian approval resets the consecutive count but not the total; reviewer transport/parse failures do not count. The threshold-triggering action remains denied, and only the next approval-bearing action uses effective prompt mode. While the suspension latch is set, shell-pattern filtering still follows the requested auto policy: arbitrary-execution patterns (or every pattern with `classify_all_shell`) cannot silently begin matching just because the effective mode is prompt. In the TUI, the first Shift+Tab after suspension explicitly resumes auto with a fresh epoch instead of jumping to yolo. In web/serve, suspended approval prompts offer a separate, unchecked **Resume Guardian auto after this decision** control; approving or denying an action without that explicit response leaves auto suspended. Suspension does not rewrite the requested/persisted policy, and a cold resume may also enter auto with a fresh epoch.
 
+Guardian reviews with an LLM by default. Setting `guardian.backend: classify` routes reviews to a TypeSafe classification provider, which returns typed risk/authorization/outcome answers instead of generated prose. Everything on this page — deterministic checks first, pattern suspension, fail-closed denials and the denial breaker — is identical for both backends; only the reviewer changes. The `guardian.provider` and `guardian.model` overrides below apply to the LLM backend only. See [Classification with TypeSafe](/guides/classify/#optional-guardian-backend).
+
 Optional Guardian overrides:
 
 ```yaml

@@ -323,6 +323,26 @@ func (c SearchConfig) GoogleCXRef() CredentialRef {
 	return Cred(c.Google.CX, "GOOGLE_SEARCH_CX")
 }
 
+// --- Classification ------------------------------------------------------
+
+// Key returns the classification credential. TypeSafe is the supported provider type.
+//
+// The shared TYPESAFE_API_KEY fallback applies only to providers that talk to
+// the default TypeSafe endpoint. A provider pointed at another host must carry
+// its own api_key, so redirecting base_url cannot silently ship the primary
+// TypeSafe credential to a third party.
+func (c ClassifyProviderConfig) Key() CredentialRef {
+	if baseURL := strings.TrimSpace(c.BaseURL); baseURL != "" && baseURL != DefaultTypeSafeBaseURL {
+		return Cred(c.APIKey)
+	}
+	return Cred(c.APIKey, "TYPESAFE_API_KEY")
+}
+
+// BaseURLRef returns the classification API endpoint.
+func (c ClassifyProviderConfig) BaseURLRef() CredentialRef {
+	return Cred(c.BaseURL)
+}
+
 // --- Serve ---------------------------------------------------------------
 
 // TokenRef returns the Telegram bot token.

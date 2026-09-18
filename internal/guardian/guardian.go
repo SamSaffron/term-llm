@@ -47,12 +47,14 @@ type Request struct {
 	ApprovalContext  string
 	Policy           string
 	PromptMode       PromptMode
+	ApprovalScope    string
 	ScopeID          string
 	WorkspaceAccess  string
 	Reason           string
 }
 
 type Decision struct {
+	StateBytes        int       `json:"-"`
 	RiskLevel         string    `json:"risk_level"`
 	UserAuthorization string    `json:"user_authorization"`
 	Outcome           string    `json:"outcome"`

@@ -35,9 +35,10 @@ type AskUserAnswer struct {
 
 // AskUserResult is the complete result returned by the tool.
 type AskUserResult struct {
-	Answers []AskUserAnswer `json:"answers,omitempty"`
-	Error   string          `json:"error,omitempty"`
-	Type    string          `json:"type,omitempty"`
+	Questions []AskUserQuestion `json:"questions,omitempty"`
+	Answers   []AskUserAnswer   `json:"answers,omitempty"`
+	Error     string            `json:"error,omitempty"`
+	Type      string            `json:"type,omitempty"`
 }
 
 // AskUserArgs are the arguments passed to the ask_user tool.
@@ -136,6 +137,56 @@ func AskUserAnswerSummary(answers []AskUserAnswer) string {
 	return strings.Join(parts, " | ")
 }
 
+// AskUserApprovalEvidence renders the displayed question and the user's own
+// selection as trusted Guardian evidence. The runtime assigns this text a user
+// approval role; raw tool output remains an ordinary tool result for
+// model/provider compatibility.
+//
+// Only runtime-authored framing and the user's choice appear here. Option labels
+// and descriptions are written by the model in its tool-call arguments, so
+// quoting a description inside the trusted user turn would let the model compose
+// its own authorization ("User authorizes rm -rf ..."). The full option set stays
+// visible to reviewers through the untrusted assistant tool call.
+func AskUserApprovalEvidence(questions []AskUserQuestion, answers []AskUserAnswer) string {
+	var evidence []string
+	for i, answer := range answers {
+		selected := strings.TrimSpace(answer.Selected)
+		if selected == "" {
+			continue
+		}
+		var b strings.Builder
+		if i < len(questions) {
+			if question := strings.TrimSpace(questions[i].Question); question != "" {
+				fmt.Fprintf(&b, "Question: %s\n", question)
+			}
+		}
+		switch {
+		case answer.IsCustom:
+			fmt.Fprintf(&b, "User typed answer: %s", selected)
+		case answer.IsMultiSelect && len(answer.SelectedList) > 0:
+			fmt.Fprintf(&b, "User selected options: %s", strings.Join(answer.SelectedList, ", "))
+		default:
+			fmt.Fprintf(&b, "User selected option: %s", selected)
+		}
+		evidence = append(evidence, b.String())
+	}
+	return strings.Join(evidence, "\n\n")
+}
+
+// askUserCancellationEvidence records a dismissal as trusted evidence. The
+// quoted prompts are model-authored, so they are explicitly attributed rather
+// than presented as something the user said.
+func askUserCancellationEvidence(questions []AskUserQuestion) string {
+	var b strings.Builder
+	b.WriteString("The user dismissed a first-party ask_user prompt and did not authorize the proposed action.")
+	for _, question := range questions {
+		if text := strings.TrimSpace(question.Question); text != "" {
+			fmt.Fprintf(&b, "\n\nDeclined prompt, written by the assistant and not by the user: %s", text)
+		}
+	}
+	return b.String()
+}
+
 // AskUserTool implements the ask_user tool.
 type AskUserTool struct{}
 
@@ -155,7 +206,8 @@ Guidelines:
 - Keep questions focused and actionable
 - Provide clear, distinct options with helpful descriptions
 - Use descriptive headers (max 12 chars) for tab navigation
-- Set multi_select: true when users should be able to select multiple options`,
+- Set multi_select: true when users should be able to select multiple options
+- When requesting authorization for an action, put the exact action and scope in the question and approval option description; a vague "yes" or "go ahead" alone may not authorize it`,
 		Schema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -290,11 +342,12 @@ func (t *AskUserTool) Execute(ctx context.Context, args json.RawMessage) (llm.To
 		// Check for cancellation
 		if err.Error() == "cancelled by user" {
 			result := AskUserResult{
-				Error: "User dismissed the question dialog",
-				Type:  "USER_CANCELLED",
+				Questions: a.Questions,
+				Error:     "User dismissed the question dialog",
+				Type:      "USER_CANCELLED",
 			}
 			data, _ := json.Marshal(result)
-			return llm.TextOutput(string(data)), nil
+			return llm.ToolOutput{Content: string(data), TrustedUserInput: askUserCancellationEvidence(a.Questions)}, nil
 		}
 		// Other errors (e.g., no TTY)
 		return llm.TextOutput(formatAskUserError(ErrExecutionFailed, err.Error())), nil
@@ -306,12 +359,12 @@ func (t *AskUserTool) Execute(ctx context.Context, args json.RawMessage) (llm.To
 	}
 
 	// Return successful result
-	result := AskUserResult{Answers: answers}
+	result := AskUserResult{Questions: a.Questions, Answers: answers}
 	data, err := json.Marshal(result)
 	if err != nil {
 		return llm.TextOutput(formatAskUserError(ErrExecutionFailed, fmt.Sprintf("failed to marshal result: %v", err))), nil
 	}
-	return llm.TextOutput(string(data)), nil
+	return llm.ToolOutput{Content: string(data), TrustedUserInput: AskUserApprovalEvidence(a.Questions, answers)}, nil
 }
 
 // Preview returns a short description of the tool call.

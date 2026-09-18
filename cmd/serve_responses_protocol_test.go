@@ -3991,9 +3991,12 @@ func TestServeRuntimeEmitGuardianReviewUsesApprovalEventStream(t *testing.T) {
 		return nil
 	}
 
-	event := tools.GuardianEvent{ToolCallID: "shell-1", Command: "rm file", WorkDir: "/tmp", Message: "guardian: denied: nope", Outcome: tools.GuardianDenied}
+	event := tools.GuardianEvent{DurationMS: 12.5, StateBytes: 1234, ToolCallID: "shell-1", Command: "rm file", WorkDir: "/tmp", Message: "guardian: denied: nope", Outcome: tools.GuardianDenied}
 	rt.emitGuardianReview(event)
 
+	if gotData["duration_ms"] != 12.5 || gotData["state_bytes"] != 1234 {
+		t.Fatalf("guardian metrics = %#v", gotData)
+	}
 	if gotEvent != "response.guardian.review" {
 		t.Fatalf("event = %q, want response.guardian.review", gotEvent)
 	}

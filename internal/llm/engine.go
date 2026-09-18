@@ -3004,7 +3004,12 @@ func (o toolCallOutcome) message() Message {
 	if o.err != nil {
 		return toolErrorMessageWithGuardian(o.call.ID, o.call.Name, fmt.Sprintf("Error: %v", o.err), o.call.ThoughtSig, o.output.GuardianReviews)
 	}
-	return ToolResultMessageFromOutput(o.call.ID, o.call.Name, o.output, o.call.ThoughtSig)
+	message := ToolResultMessageFromOutput(o.call.ID, o.call.Name, o.output, o.call.ThoughtSig)
+	if role, text, ok := ApprovalTurnForTool(o.call.Name, o.output); ok {
+		message.ApprovalRole = role
+		message.ApprovalText = text
+	}
+	return message
 }
 
 // executeToolCallOutcomes executes one model-authored batch. Outcomes retain
