@@ -105,8 +105,8 @@ func TestLiveSwitchSessionArgumentsAndFailures(t *testing.T) {
 		t.Fatalf("invalid arguments reached the host: %q", requested)
 	}
 	// session_directory reports session numbers as JSON integers, so a model that
-	// copies one straight into the call must not be rejected, and docs/live-voice.md
-	// documents {"session":42} for the same reason.
+	// copies one straight into the call must not be rejected, and the live voice
+	// guide documents {"session":42} for the same reason.
 	if _, err := tool.Execute(ctx, json.RawMessage(`{"session":42}`)); err != nil || requested != "42" {
 		t.Fatalf("integer selector = %q, %v", requested, err)
 	}

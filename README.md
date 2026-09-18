@@ -82,6 +82,7 @@ Common entry points:
 - [Configuration](https://term-llm.com/reference/configuration/)
 - [Providers and models](https://term-llm.com/reference/providers-and-models/)
 - [Web UI and API](https://term-llm.com/guides/web-ui-and-api/)
+- [Live voice](https://term-llm.com/guides/live-voice/)
 - [Web UI widgets](https://term-llm.com/guides/widgets/)
 - [Search](https://term-llm.com/guides/search/)
 - [Usage](https://term-llm.com/guides/usage/)

@@ -86,6 +86,18 @@ Type `!` as the first composer character to enter shell mode, for example `! git
 
 `/shell` remains available when you want an interactive terminal handoff rather than a captured command turn.
 
+### Steering a running conversation
+
+While a resumable conversation is running, **Enter queues steering** for the next safe boundary instead of starting a separate turn. Ordinary steering does not cancel model generation or tools, and the composer label changes from **Type a message…** to **Steer conversation…** without touching your draft.
+
+Accepted guidance stays visible until the engine consumes it. `Up` from an empty composer selects a pending row, `Delete` or `Backspace` removes that row, and `Down` past the last row returns to the composer. Selection never changes delivery order: guidance is always delivered in the order it was accepted.
+
+To skip the wait, the pending footer offers **Esc to steer right away**, or **Esc to steer all N right away** when several messages are queued. This captures every accepted, unconsumed message, interrupts the current run, waits for it to settle, and starts one replacement run carrying the original messages. Unsent text and attachments stay in the composer, and a message already consumed is not sent twice.
+
+Completion menus, dialogs, and editor Escape handling take precedence over that shortcut, and Escape during a handoff belongs to the handoff. Use `/stop` or `/cancel` to stop automatic continuation. The interface reports **Interrupting…**, then **Starting steered run…**.
+
+Steering right away cancels the current run, and cancellation does not roll back side effects: shell commands that already ran are not undone and independent background jobs keep running. The replacement run is told to inspect partial effects before repeating work.
+
 ### TUI attachments
 
 In `term-llm chat`, `Ctrl+F` or `/file <path>` attaches a local text file to the next message. Globs are supported by `/file`, and `/file clear` removes pending file attachments. The TUI reads file contents into the prompt as text, rejects binary files, and accepts text files up to 20 MB. Embedded file contents are wrapped in explicit begin/end markers so the model can tell where each attachment starts and ends. Very large text files can still exceed a model's context window or cost more tokens.

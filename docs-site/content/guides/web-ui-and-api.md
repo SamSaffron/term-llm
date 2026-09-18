@@ -5,8 +5,8 @@ description: "A complete browser workspace for conversations, projects, agent wo
 kicker: "Browser workspace"
 featured: true
 next:
-  label: WebRTC direct routing
-  url: /guides/webrtc-direct-routing/
+  label: Live voice
+  url: /guides/live-voice/
 ---
 `term-llm serve web` is a full interface for working with models and agents, not just an API with a chat box. It includes persistent conversations, project and worktree organization, model selection, tool activity, attachments, live file diffs, and an interactive shell. The interface ships inside the release binary; there is no separate web application to build or install.
 
@@ -280,6 +280,18 @@ curl -X POST "$BASE/ui/v1/sessions/$SESSION_ID/runtime/goal" \
 
 Supported actions are `set`, `edit`, `pause`, `resume`, and `clear`. `GET /ui/v1/sessions/:id/state` includes `goal` (or `null`) so clients can render status and token usage.
 
+## Steering a running response
+
+While a response is running, pressing Enter queues **steering** for the next safe boundary rather than starting a separate turn, and the composer label changes to **Steer conversation…**. Accepted messages appear as pending rows that can be removed before they are consumed, and they are delivered in the order they were accepted. The same interaction is available in terminal chat; see [Steering a running conversation](/guides/usage/#steering-a-running-conversation).
+
+Each pending message carries a **Steer now** button beside **Remove**. When several are queued, a single **Steer all now** button appears beside the last accepted message. There is no steering button in the main composer controls, and the button is hidden when the feature is unavailable for the current run. **Steer now** captures every accepted, unconsumed message, interrupts the running response, waits for its persistence and execution to settle, and starts one replacement run with separate user rows and the original message identities. Unsent text and attachments remain in the composer.
+
+**Steer now is not Stop.** It requests the same cancellation Stop does, waits for the source run to settle, then continues through the normal conversation path, so it works across HTTP, WebSocket, and CLI/ACP providers with no provider allowlist and no separate resume API. The run must be stateful and able to accept queued guidance, and the server requires durable storage for it.
+
+Running a foreground tool does not disable it. Cancellation is requested first, and the replacement waits for the tool to actually finish: a synthesized cancellation result is not evidence that an abandoned tool stopped, and nothing is force-killed. If settlement times out or persistence is uncertain, automatic continuation is blocked and the queued guidance is retained rather than lost. Cancellation does not undo shell commands or stop independent background jobs.
+
+Job notifications keep their original message identity and explicit `job_notification` origin. A queue containing only notifications does not enable user-triggered **Steer now**; an admitted mixed queue transfers the whole batch.
+
 ## Authentication
 
 By default, serve mode uses bearer-token auth.
@@ -512,6 +524,22 @@ The Web `/commit` flow uses session-bound endpoints; browsers never submit a fil
 Publishing uses the same session-bound operation lifecycle. Fetch `GET /v1/sessions/{id}/commit/publish-plan?kind=push|pr` to review the resolved branch and remote destination, then submit `kind: "push"` or `kind: "pr"` with the reviewed `publish` request to `POST .../commit-operations`. Use an `Idempotency-Key` and poll the returned operation rather than retrying with a new key. Successful publishing returns `publish_result`, including the branch and, for PRs, the PR URL. If an operation becomes `uncertain`, inspect the remote before retrying.
 
 Push uses Git; PR creation also requires an authenticated `gh` installation on the server. The server executes normal repository hooks and signing programs as the `serve` OS user with non-interactive Git prompts. Review the trust model of repositories exposed to Web sessions.
+
+## Steering API
+
+Canonical clients send `X-Term-LLM-Steering-Protocol: 1`; the canonical steering routes imply it. Discovery advertises `steering_v1`, and an unsupported explicit version returns `400`. HTTP and WebRTC share the same handler and projection, and user text and attachment contents are never rewritten.
+
+| Route | Purpose |
+| --- | --- |
+| `POST /v1/sessions/:id/steering` | Queue ordinary guidance with a stable `client_message_id`/`steering_id`, an `expected_response_id`, and a positive `expected_run_epoch`. |
+| `DELETE /v1/sessions/:id/steering/:id` | Remove pending guidance. Owned or already-committed input is not removable. |
+| `POST /v1/sessions/:id/steering/rush` | Steer now: `{request_id, expected_response_id, expected_run_epoch}`, with no draft text. |
+| `GET /v1/sessions/:id/steering/rush/:request_id` | Authoritative operation state and recovery payload. |
+| `POST /v1/sessions/:id/steering/rush/:request_id/cancel` | Stop the handoff or replacement, retaining unconsumed guidance. |
+
+The wire paths say `rush`; the control the interface presents is **Steer now**.
+
+Operations are session-scoped and keyed by a stable request ID, so retrying the same ID returns the same immutable operation and batch, including terminal results. HTTP acceptance is not proof of completion: poll the operation instead. After a server restart, an ambiguous operation is reported as blocked (`settlement_unknown`) rather than automatically replaying external work. Do not construct a fallback `/responses` request from steering-owned entries after a transport error.
 
 ## When to use web mode
 

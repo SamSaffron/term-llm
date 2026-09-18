@@ -9,7 +9,7 @@ groups:
   - title: Browser workspace
     section: guides
     description: A complete interface for conversations, projects, and agent work.
-    pages: [web-ui-and-api, widgets, extensions]
+    pages: [web-ui-and-api, live-voice, widgets, extensions]
   - title: Agents and automation
     section: guides
     description: Give repeatable work its own instructions, tools, and schedule.
@@ -21,7 +21,7 @@ groups:
   - title: Web and deployment
     section: guides
     description: Run on your own infrastructure and reach your agents remotely.
-    pages: [hub, dv-hub, background-services, agent-containers, telegram-bot, webrtc-direct-routing]
+    pages: [hub, dv-hub, background-services, process-reload, agent-containers, telegram-bot, webrtc-direct-routing]
   - title: Media
     section: guides
     description: Work with images, speech, music, and video.

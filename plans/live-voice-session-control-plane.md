@@ -523,7 +523,7 @@ separate code path.
     (UX-2);
   - then `npm --prefix frontend run format && lint && typecheck && test`.
 - `-race` across `cmd` for the binding change.
-- Docs: `docs/live-voice.md` (tools, switch semantics, event list).
+- Docs: the [Live voice guide](https://term-llm.com/guides/live-voice/) (tools, switch semantics, event list).
 
 ## Delivery: one changeset
 
@@ -560,7 +560,7 @@ bisects cleanly even inside one commit, and so a regression can be attributed:
     reusing `rebindLiveSession`, then the `AppStore.selectSession` call site with
     `fromLive` loop suppression and the generation guard.
 12. **Prompts and docs**: `internal/live/prompts.go`, `executionContext` wording,
-    `docs/live-voice.md`.
+    the [Live voice guide](https://term-llm.com/guides/live-voice/).
 
 ### File inventory
 
@@ -580,7 +580,7 @@ bisects cleanly even inside one commit, and so a regression can be attributed:
 | `frontend/src/styles/` | transcript cross-fade only |
 | `cmd/serve_live.go` (routes) | `POST /v1/live/sessions/{id}/session` action + handler |
 | `frontend/src/api/endpoints.ts` | `liveSwitchSession` route beside the other `liveRoute` entries |
-| `docs/live-voice.md` | tools, switch semantics, event list, new route in the endpoint table (`:194-207`) |
+| the [Live voice guide](https://term-llm.com/guides/live-voice/) | tools, switch semantics, event list, new route in the endpoint table (`:194-207`) |
 | tests | per the test plan below |
 
 ### Single verification gate

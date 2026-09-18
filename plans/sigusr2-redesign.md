@@ -2,7 +2,8 @@
 
 Status: historical review/proposal; its whole-turn, no-cancellation recommendation
 has been superseded by safe-point continuation and grace-period cancellation. See
-[signals.md](signals.md) for implemented behavior, verification and explicit exclusions. This review
+https://term-llm.com/guides/process-reload/ for implemented operator behavior, and
+`internal/restart/README.md` for the contributor contract and acceptance proofs. This review
 examined PR #1113 at `43895d049af7ce0b797ce63a23682d9f240cbcf3`.
 
 The PR is closed. Its complete implementation and history are preserved on local

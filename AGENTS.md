@@ -72,6 +72,16 @@ CI runs `format:check` and `lint`; do not rely on CI to rewrite files. Keep lint
 - Use `internal/llm/mock_provider.go` for scripted provider turns and recorded requests. Use `internal/testutil/harness.go` for engine-level behavior rather than invoking a live model.
 - Test observable behavior and failure paths, not implementation trivia. Avoid network access, real API keys, timing sleeps, and dependence on the user's home directory.
 
+## Package Documentation
+User-facing documentation lives in `docs-site/content/`; there is no separate `docs/` tree. Contributor rules live beside the code they govern:
+
+- `internal/sqliteutil/README.md` – adding and testing SQLite migrations
+- `internal/doctor/README.md` – adding a `term-llm doctor` check
+- `internal/restart/README.md` – reload ownership, mode adapters, and SIGUSR2 acceptance proofs
+- `internal/session/README.md` – steering persistence, ownership, and schema upgrades
+- `internal/terminal/README.md` – owned terminal architecture and verification
+- `frontend/README.md` – embedded frontends, build contract, and accessibility checks
+
 ## Common Change Paths
 ### Providers and configuration
 - Trace provider changes through the implementation, `internal/llm/factory.go`, config schema/defaults, model listing, and tests; do not update only the transport.

@@ -41,4 +41,31 @@ The chat smoke uses HTTP transport only. WebRTC timeout, admission rejection, fa
 - Source maps, manifests, hashes in filenames, and frontend test artifacts are not emitted under `static`.
 - `AssetVersion()` covers only chat assets. `HubAssetVersion()` covers exactly `hub.js` and `hub.css`; the canonical Hub module remains unversioned while directly linked Hub CSS uses its scoped version.
 
+The payload baseline's historical `app-interject.js` entry describes a previous measured asset set; it is not an active chunk name. The current Vite build emits versioned `app.js` and named chunks, including lazy steering actions and queue presentation. Do not rename baseline entries by guessing or relax its budget to mask growth.
+
 Do not edit generated `static/dist` files directly. Change TypeScript/CSS and run `make frontend`; only source and package manifests are committed.
+
+## Storage migration and rollback
+
+Drafts, queued review comments, pending intents, and attention markers are independently keyed
+records. New readers retain compatibility reads for the previous aggregate format, but all new
+writes use record keys. Rollback must **not** delete or rewrite the new record keys. An older build
+may continue reading its aggregate data while a subsequent upgrade resumes additive migration.
+Deletion tombstones must also be retained during that compatibility window so deleted legacy
+review comments and drafts are not resurrected.
+
+## Accessibility smoke checklist
+
+Run this checklist on a representative desktop and mobile build after interaction changes:
+
+- **NVDA/Firefox or Chrome:** dialog names are announced; Tab and Shift+Tab remain trapped;
+  Escape follows the documented neutral-dismiss policy; focus returns to the opener.
+- **VoiceOver/Safari:** mobile sidebar, diff drawer, plan sheet, and run center announce their
+  labels and expanded state; background chat controls cannot be activated while open.
+- **TalkBack/Chrome:** drawer actions remain above the visual keyboard and safe-area inset;
+  explicit close controls remain reachable; menus announce menu items and support sequential
+  navigation.
+- **Media:** closing a lightbox pauses video, clears playback, restores focus, and revokes only
+  object URLs owned by the lightbox.
+- **Nested surfaces:** opening an approval or media surface above another overlay makes the lower
+  surface inert until the top surface closes.

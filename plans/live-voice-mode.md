@@ -1,7 +1,7 @@
 # Live voice mode (gpt-live-1-codex) for the web UI
 
 Status: implemented, with prompt/context and tool-plumbing follow-up complete.
-See `docs/live-voice.md` for current behavior and configuration. The original
+See the [Live voice guide](https://term-llm.com/guides/live-voice/) for current behavior and configuration. The original
 design below includes historical implementation sketches; Codex citations refer
 to the `../codex` Rust checkout (`codex-rs/...` paths).
 
