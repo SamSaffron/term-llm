@@ -200,7 +200,16 @@ kbd { font-size: 0.75rem; color: var(--muted); }
 .explore-link { text-decoration: none; border-top: 1px solid var(--border); padding-top: 1rem; color: var(--text); }
 .explore-link h3 { font-size: 1rem; }
 .explore-link p { color: var(--muted); font-size: 0.875rem; margin-top: 0.7rem; }
+.community-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.25rem; }
+.community-link { display: flex; align-items: flex-start; gap: 1.1rem; padding: 1.35rem; background: var(--surface); border: 1px solid var(--border); border-radius: 9px; text-decoration: none; color: var(--text); }
+.community-link:hover { border-color: var(--accent); }
+.community-mark { flex-shrink: 0; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); }
+.community-link h3 { font-size: 1.05rem; letter-spacing: -0.015em; }
+.community-link h3 span { color: var(--accent); font-size: 0.85rem; }
+.community-link p { margin-top: 0.6rem; font-size: 0.9rem; color: var(--muted); }
 .install-section { display: grid; grid-template-columns: 0.9fr 1.1fr; gap: 4rem; border-top: 1px solid var(--border); }
+/* The tinted band above the installation section already provides the rule. */
+.section-tinted + .install-section { border-top: 0; }
 .install-steps { min-width: 0; }
 .install-steps h3 { font-size: 1rem; display: flex; align-items: center; gap: 0.6rem; margin-bottom: 1rem; }
 .install-steps h3:not(:first-child) { margin-top: 2rem; }
@@ -339,6 +348,7 @@ body.search-open { overflow: hidden; }
   .web-heading { margin-top: 3rem; }
   .terminal-section, .install-section { grid-template-columns: minmax(0, 1fr); }
   .workflow-grid { gap: 2rem; }
+  .community-grid { grid-template-columns: minmax(0, 1fr); }
   .docs-layout { display: block; padding-inline: 1.25rem; }
   .docs-sidebar { position: static; height: auto; padding: 1rem 0 0; overflow: visible; }
   .docs-navigation { border-bottom: 1px solid var(--border); }

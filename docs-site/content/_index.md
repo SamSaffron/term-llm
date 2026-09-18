@@ -130,6 +130,19 @@ install:
   shell: "curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh"
   trial: 'term-llm ask --provider zen "Explain git rebase in three sentences"'
   caveat: "Zen offers a no-API-key path to supported free models. It is a third-party hosted service; model availability and limits can change."
+community:
+  eyebrow: "Community"
+  title: "Follow the project. Join the conversation."
+  description: "Announcements and longer write-ups live on the blog. Questions, setups, and ideas live on the forum."
+  items:
+    - title: "Blog"
+      icon: "blog"
+      text: "Release notes, project updates, and write-ups on how term-llm works."
+      url: "https://blog.term-llm.com/"
+    - title: "Discuss"
+      icon: "discuss"
+      text: "Ask questions, share your setup, and talk with other term-llm users."
+      url: "https://discuss.term-llm.com/"
 explore:
   - title: "Schedule recurring work"
     text: "Run background jobs and recurring agent workflows."

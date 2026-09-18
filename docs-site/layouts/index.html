@@ -101,6 +101,19 @@
     <div class="explore-grid">{{ range .Params.explore }}<a class="explore-link" href="{{ .url }}"><h3>{{ .title }} <span aria-hidden="true">↗</span></h3><p>{{ .text }}</p></a>{{ end }}</div>
   </section>
 
+  {{ with .Params.community }}
+  <section id="community" class="home-section section-tinted" aria-labelledby="community-title"><div class="container">
+    <div class="section-heading"><p class="eyebrow">{{ .eyebrow }}</p><h2 id="community-title">{{ .title }}</h2><p>{{ .description }}</p></div>
+    <div class="community-grid">{{ range .items }}<a class="community-link" href="{{ .url }}"><span class="community-mark" aria-hidden="true">
+      {{- if eq .icon "discuss" -}}
+      <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 4h11A1.5 1.5 0 0 1 17 5.5v6a1.5 1.5 0 0 1-1.5 1.5H9.2L5.5 16v-3h-1A1.5 1.5 0 0 1 3 11.5v-6A1.5 1.5 0 0 1 4.5 4Z"/><path d="M6.5 7.5h7M6.5 10h4.5"/></svg>
+      {{- else -}}
+      <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3.5h7l4 4v8a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1Z"/><path d="M12 3.5v4h4"/><path d="M6.5 10.5h7M6.5 13h4.5"/></svg>
+      {{- end -}}
+    </span><div class="community-body"><h3>{{ .title }} <span aria-hidden="true">↗</span></h3><p>{{ .text }}</p></div></a>{{ end }}</div>
+  </div></section>
+  {{ end }}
+
   {{ with .Params.install }}
   <section id="install" class="home-section install-section container" aria-labelledby="install-title">
     <div class="section-heading"><p class="eyebrow">Get started</p><h2 id="install-title">{{ .title }}</h2><p>{{ .description }}</p><a class="text-link" href="/getting-started/installation/">All installation options →</a></div>

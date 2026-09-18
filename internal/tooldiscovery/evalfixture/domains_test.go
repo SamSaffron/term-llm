@@ -1,10 +1,8 @@
 package evalfixture
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -78,42 +76,9 @@ func TestAggregateHasExactlyTwoHundredUniqueDomainQualifiedToolsAndOracles(t *te
 	}
 }
 
-func TestOracleTaskManifestMatchesFixtureWithoutLeakingPrefixedNames(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "..", "evaluation", "mcp-tool-discovery", "oracle_tasks.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var manifest struct {
-		Tasks []struct {
-			Prompt         string `json:"prompt"`
-			RequiredTool   string `json:"required_tool"`
-			ExpectedOracle string `json:"expected_oracle"`
-		} `json:"tasks"`
-	}
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		t.Fatal(err)
-	}
-	if len(manifest.Tasks) < 2 {
-		t.Fatalf("oracle tasks = %d, want multiple scored tasks", len(manifest.Tasks))
-	}
-	known := make(map[string]string, 200)
-	for _, tool := range AggregateTools() {
-		name := "federation__" + tool.Name
-		known[name] = OracleValue(tool.Domain, tool.Definition.Name)
-	}
-	for _, task := range manifest.Tasks {
-		want, ok := known[task.RequiredTool]
-		if !ok {
-			t.Fatalf("unknown required oracle tool %q", task.RequiredTool)
-		}
-		if task.ExpectedOracle != want {
-			t.Fatalf("task %s oracle = %q, want %q", task.RequiredTool, task.ExpectedOracle, want)
-		}
-		if strings.Contains(task.Prompt, task.RequiredTool) {
-			t.Fatalf("ordinary prompt leaks exact prefixed name %q", task.RequiredTool)
-		}
-	}
-}
+// The scored oracle task manifest moved to the separate evaluation repository,
+// which owns the check that its tasks match these aggregate names and oracles.
+// The aggregate invariants that manifest relies on are covered above.
 
 func TestRequiredCatalogueProfiles(t *testing.T) {
 	for _, size := range []int{6, 12, 18, 24, 25, 32, 42, 64, 100, 200} {

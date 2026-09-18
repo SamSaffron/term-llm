@@ -121,4 +121,6 @@ scripts/fuzz_owned_renderer.sh
 FUZZ_DIFFERENTIAL_TIME=60s FUZZ_SHIFT_TIME=30s scripts/fuzz_owned_renderer.sh
 ```
 
+Go's fuzzing coordinator intermittently reports a bare `context deadline exceeded` when `-fuzztime` expires while it stops its workers; the failure names no input and reproduces on unrelated targets. The runner retries such a target once and still fails immediately for any finding that names a written input or a seed corpus entry. `go test ./scripts` covers that decision.
+
 There were no separate upstream NOTICE files at the pinned revisions.
