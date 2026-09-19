@@ -124,6 +124,7 @@ func TestBuiltinAgentConfigs(t *testing.T) {
 		{"widget-builder", true, 500, true, false, false, true},
 		{"reviewer", true, 200, true, true, true, false},
 		{"shell", true, 200, false, false, false, true},
+		{"video-editor", true, 200, true, false, false, false},
 	}
 
 	for _, tt := range tests {
@@ -258,6 +259,7 @@ func TestBuiltinPromptsUseCapabilityAwareDirectoryGuidance(t *testing.T) {
 		{name: "planner", guidance: shellGuidance},
 		{name: "reviewer", guidance: shellGuidance},
 		{name: "shell", guidance: shellGuidance},
+		{name: "video-editor", guidance: shellGuidance},
 		{name: "widget-builder", guidance: shellGuidance},
 	}
 	for _, tt := range tests {
@@ -661,6 +663,42 @@ func TestContainBuiltinRecipeSecretsStayOutOfCompose(t *testing.T) {
 	}
 }
 
+func TestBuiltinVideoEditorPreservesSourcesAndVerifiesRenders(t *testing.T) {
+	agent, err := getBuiltinAgent("video-editor")
+	if err != nil {
+		t.Fatalf("getBuiltinAgent(video-editor): %v", err)
+	}
+
+	for _, tool := range []string{"shell", "view_image", "ask_user"} {
+		if !stringSliceContains(agent.Tools.Enabled, tool) {
+			t.Errorf("video-editor tools missing %q", tool)
+		}
+	}
+	for _, command := range []string{"pwd", "ffprobe *", "sha256sum *"} {
+		if !stringSliceContains(agent.Shell.Allow, command) {
+			t.Errorf("video-editor shell.allow missing %q", command)
+		}
+	}
+	for _, command := range []string{"mkdir *", "ffmpeg *", "term-llm transcribe *"} {
+		if stringSliceContains(agent.Shell.Allow, command) {
+			t.Errorf("video-editor must prompt before running %q", command)
+		}
+	}
+	if agent.Shell.AutoRun {
+		t.Fatal("video-editor must not auto-run FFmpeg commands")
+	}
+
+	for _, guidance := range []string{
+		"Never modify, rename, move, or delete it",
+		"Use FFmpeg's `-n` flag",
+		"Every delivered file must be probed after rendering",
+	} {
+		if !strings.Contains(agent.SystemPrompt, guidance) {
+			t.Errorf("video-editor system prompt missing %q", guidance)
+		}
+	}
+}
+
 func TestBuiltinTimeGroundingIsExplicitOnlyForTimeAwareAgents(t *testing.T) {
 	timeAware := map[string]bool{
 		"active-review": true, "agent-builder": true, "artist": true,
@@ -700,6 +738,7 @@ func TestGetBuiltinAgentNames(t *testing.T) {
 		"extension-builder": true,
 		"reviewer":          true,
 		"shell":             true,
+		"video-editor":      true,
 	}
 
 	if len(names) != len(expected) {

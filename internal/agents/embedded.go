@@ -32,6 +32,7 @@ var builtinAgentNames = []string{
 	"extension-builder",
 	"reviewer",
 	"shell",
+	"video-editor",
 }
 
 // getBuiltinAgent loads a built-in agent by name.
