@@ -90,7 +90,7 @@ func TestPrepareLiveClassifyUsesThreeSecondDefault(t *testing.T) {
 		Classify: config.ClassifyConfig{Providers: map[string]config.ClassifyProviderConfig{
 			"typesafe": {Type: "typesafe", APIKey: "test", Model: "jev-latest"},
 		}},
-		Live: classifyLiveConfig(true),
+		Live: classifyLiveConfig(),
 	}
 	cfg.Live.Classify.LogDecisions = false
 	old := newLiveClassifyClient
@@ -114,7 +114,7 @@ func TestPrepareLiveClassifyClampsConfiguredTimeoutToRoutingBudget(t *testing.T)
 		Classify: config.ClassifyConfig{Providers: map[string]config.ClassifyProviderConfig{
 			"typesafe": {Type: "typesafe", APIKey: "test", Model: "jev-latest", TimeoutSeconds: 120},
 		}},
-		Live: classifyLiveConfig(true),
+		Live: classifyLiveConfig(),
 	}
 	cfg.Live.Classify.LogDecisions = false
 	old := newLiveClassifyClient
@@ -146,7 +146,7 @@ func TestPrepareLiveClassifySecuresExistingDiagnosticsDirectory(t *testing.T) {
 		Classify: config.ClassifyConfig{Providers: map[string]config.ClassifyProviderConfig{
 			"typesafe": {Type: "typesafe", APIKey: "test", Model: "jev-latest"},
 		}},
-		Live: classifyLiveConfig(true),
+		Live: classifyLiveConfig(),
 	}
 	old := newLiveClassifyClient
 	defer func() { newLiveClassifyClient = old }()
@@ -178,7 +178,7 @@ func TestPrepareLiveClassifySecuresExistingDiagnosticsDirectory(t *testing.T) {
 func TestPrepareLiveClassifyFailsAtStartupAndReloadWithoutResolvableProvider(t *testing.T) {
 	for _, phase := range []string{"startup", "reload"} {
 		t.Run(phase, func(t *testing.T) {
-			cfg := &config.Config{Live: classifyLiveConfig(true)}
+			cfg := &config.Config{Live: classifyLiveConfig()}
 			cfg.Live.Classify.Provider = "missing"
 			if _, _, err := prepareLiveClassify(cfg); err == nil || !strings.Contains(err.Error(), `classify provider "missing" is not configured`) {
 				t.Fatalf("prepareLiveClassify error = %v", err)
@@ -200,37 +200,33 @@ func TestLiveControlPlaneCompletionValues(t *testing.T) {
 	}
 }
 
-func TestStartLiveControllerInstallsClassifyRouterInShadowAndActiveModes(t *testing.T) {
-	for _, shadow := range []bool{false, true} {
-		t.Run(fmt.Sprintf("shadow=%v", shadow), func(t *testing.T) {
-			srv := newTestServeServer()
-			srv.cfgRef = &config.Config{Live: classifyLiveConfig(shadow)}
-			srv.store = newSessionDirectoryTestStore(t)
-			createDirectorySession(t, srv.store, &session.Session{ID: "controller-classify", GeneratedShortTitle: "Controller classify"})
-			called := make(chan struct{}, 1)
-			srv.liveClassifier = liveDecisionClassifierFunc(func(context.Context, liveclassify.State) (liveclassify.Decision, error) {
-				select {
-				case called <- struct{}{}:
-				default:
-				}
-				return liveclassify.Decision{Intent: liveclassify.IntentStatus, Probabilities: map[string]float64{liveclassify.IntentStatus: 0.99}}, nil
-			})
-			provider := &stubLiveSession{events: make(chan live.Event, 8), closed: make(chan struct{})}
-			record := newLiveSession("classify-controller", "controller-classify")
-			if err := srv.registerLiveSession(record); err != nil {
-				t.Fatal(err)
-			}
-			if !srv.startLiveController(record, provider) {
-				t.Fatal("controller did not start")
-			}
-			t.Cleanup(func() { srv.closeLiveSessions(context.Background()) })
-			provider.events <- live.Event{Kind: live.EventDelegationCreated, DelegationID: "classify-item", Text: "what is running"}
-			select {
-			case <-called:
-			case <-time.After(time.Second):
-				t.Fatal("classify router was not called")
-			}
-		})
+func TestStartLiveControllerInstallsClassifyRouter(t *testing.T) {
+	srv := newTestServeServer()
+	srv.cfgRef = &config.Config{Live: classifyLiveConfig()}
+	srv.store = newSessionDirectoryTestStore(t)
+	createDirectorySession(t, srv.store, &session.Session{ID: "controller-classify", GeneratedShortTitle: "Controller classify"})
+	called := make(chan struct{}, 1)
+	srv.liveClassifier = liveDecisionClassifierFunc(func(context.Context, liveclassify.State) (liveclassify.Decision, error) {
+		select {
+		case called <- struct{}{}:
+		default:
+		}
+		return liveclassify.Decision{Intent: liveclassify.IntentStatus, Probabilities: map[string]float64{liveclassify.IntentStatus: 0.99}}, nil
+	})
+	provider := &stubLiveSession{events: make(chan live.Event, 8), closed: make(chan struct{})}
+	record := newLiveSession("classify-controller", "controller-classify")
+	if err := srv.registerLiveSession(record); err != nil {
+		t.Fatal(err)
+	}
+	if !srv.startLiveController(record, provider) {
+		t.Fatal("controller did not start")
+	}
+	t.Cleanup(func() { srv.closeLiveSessions(context.Background()) })
+	provider.events <- live.Event{Kind: live.EventDelegationCreated, DelegationID: "classify-item", Text: "what is running"}
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("classify router was not called")
 	}
 }
 
@@ -257,7 +253,7 @@ func TestLiveClassifyRouterPhaseOneActions(t *testing.T) {
 	t.Run("new session", func(t *testing.T) {
 		h := newVoiceNewSessionHarness(t, "classify-new")
 		h.conversation(t, &session.Session{ID: "classify-new", GeneratedShortTitle: "Source", Agent: ""})
-		h.server.cfgRef.Live = classifyLiveConfig(false)
+		h.server.cfgRef.Live = classifyLiveConfig()
 		classifier, cleanup := testLiveClassifier(t, liveClassifyResponse(liveclassify.IntentNewSession, 0.95, 0), 0, time.Second)
 		defer cleanup()
 		router := &serveLiveClassifyRouter{server: h.server, live: h.record, classifier: classifier}
@@ -587,30 +583,21 @@ func TestLiveClassifyRouterNewSessionFailureFailsOpenOriginalInput(t *testing.T)
 	}
 }
 
-func TestLiveClassifyRouterShadowLogsWithoutAuthorityOrResolver(t *testing.T) {
-	router, srv, _, cleanup := newLiveClassifyRouterHarness(t, liveClassifyResponse(liveclassify.IntentSwitchSession, 0.99, 0))
+func TestLiveClassifyRouterLogsDecisionsAndHonoursLogState(t *testing.T) {
+	router, srv, _, cleanup := newLiveClassifyRouterHarness(t, liveClassifyResponse(liveclassify.IntentSteer, 0.99, 0))
 	defer cleanup()
-	srv.cfgRef.Live.Classify.Shadow = true
 	logRows := &recordingDecisionLog{}
 	router.decisions = logRows
-	constructed := 0
-	router.resolver = func() func(context.Context, string, live.RouteRequest) (liveSwitchResolverOutcome, error) {
-		constructed++
-		return nil
-	}
-	result, err := router.Route(context.Background(), live.RouteRequest{Input: "switch to the other session"})
-	if err != nil || result.Handled || result.Input != "switch to the other session" || constructed != 0 {
-		t.Fatalf("result=%+v constructed=%d err=%v", result, constructed, err)
+	result, err := router.Route(context.Background(), live.RouteRequest{Input: "fix the parser"})
+	if err != nil || result.Handled || result.Input != "fix the parser" {
+		t.Fatalf("result=%+v err=%v", result, err)
 	}
 	row := logRows.last()
-	if row.GatedLabel != liveclassify.IntentSwitchSession || row.ActedLabel != liveclassify.IntentSteer || len(row.StateJSON) == 0 {
+	if row.GatedLabel != liveclassify.IntentSteer || row.ActedLabel != liveclassify.IntentSteer || len(row.StateJSON) == 0 {
 		t.Fatalf("decision row = %+v", row)
 	}
-	if srv.liveConfig().ControlAuthorityAllowed() || strings.Contains(srv.liveSessionOptions(context.Background(), "source", live.Capabilities{}, "").Context, live.ControlPlaneContext) {
-		t.Fatal("shadow mode installed or advertised control authority")
-	}
 	srv.cfgRef.Live.Classify.LogState = false
-	if _, err := router.Route(context.Background(), live.RouteRequest{Input: "switch again"}); err != nil {
+	if _, err := router.Route(context.Background(), live.RouteRequest{Input: "fix it again"}); err != nil {
 		t.Fatal(err)
 	}
 	if row := logRows.last(); len(row.StateJSON) != 0 || len(row.Probabilities) == 0 {
@@ -644,7 +631,7 @@ func newLiveClassifyRouterHarnessWithDelay(t *testing.T, body string, delay, tim
 	createDirectorySession(t, store, &session.Session{ID: "source", GeneratedShortTitle: "Source"})
 	srv := newTestServeServer()
 	srv.store = store
-	srv.cfgRef = &config.Config{Live: classifyLiveConfig(false)}
+	srv.cfgRef = &config.Config{Live: classifyLiveConfig()}
 	record := newLiveSession("live-classify", "source")
 	if err := srv.registerLiveSession(record); err != nil {
 		t.Fatal(err)
@@ -652,11 +639,11 @@ func newLiveClassifyRouterHarnessWithDelay(t *testing.T, body string, delay, tim
 	return &serveLiveClassifyRouter{server: srv, live: record, classifier: classifier}, srv, record, closeHTTP
 }
 
-func classifyLiveConfig(shadow bool) config.LiveConfig {
+func classifyLiveConfig() config.LiveConfig {
 	return config.LiveConfig{
 		ControlPlane: config.LiveControlPlaneClassify,
 		Classify: config.LiveClassifyConfig{
-			Shadow: shadow, LogDecisions: true, LogState: true,
+			LogDecisions: true, LogState: true,
 			MinConfidence: config.LiveClassifyMinConfidence{Status: 0.6, NewSession: 0.7, SwitchSession: 0.7, SteerNow: 0.8, Side: 0.85},
 		},
 	}

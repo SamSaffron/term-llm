@@ -70,7 +70,7 @@ func TestLiveClassifyDefaultsAndValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Live.Classify.Shadow || !cfg.Live.Classify.LogDecisions || !cfg.Live.Classify.LogState {
+	if !cfg.Live.Classify.LogDecisions || !cfg.Live.Classify.LogState {
 		t.Fatalf("live classify defaults = %+v", cfg.Live.Classify)
 	}
 	thresholds := cfg.Live.Classify.MinConfidence

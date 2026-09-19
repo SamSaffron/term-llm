@@ -5,7 +5,7 @@ Status: **Phase 1 shipped on `feat/live-classify-router` (2026-09-19); Phase 2 r
 design is superseded; this adds a second `live.Router` implementation and a config
 selector for choosing between them.
 
-Phase 1 (this PR) ships the classifier, the selector, shadow mode, and the three
+Phase 1 (this PR) ships the classifier, the selector, the decision log, and the three
 navigation/read labels. Phase 2 (separate PR, contracts below are open) adds
 `steer_now` and `side`. The review that produced this split is summarised at the end.
 
@@ -28,7 +28,7 @@ Measured 2026-09-19 with `jev-latest` (`~/scratch/2026-09-19-intent-router/`): 3
 user prompts from the session store, no session context, all of which should reach the
 model: zero false `switch_session`/`new_session`/`cancel` above threshold. Navigation
 and status examples classified ≥ 0.88 correctly with untuned criteria. Anecdotal — it
-is the reason to build shadow mode, not a substitute for it.
+is the reason to keep the decision log, not a substitute for it.
 
 ## Taxonomy
 
@@ -46,7 +46,7 @@ Deliberately absent: `prompt` (that is `steer` when quiet), `cancel` (Phase 2, a
 which the controller reads as "use the original input"), and `backchannel` (the live
 provider's VAD and turn detection own that).
 
-In Phase 1 the classifier still asks about all six labels so the shadow log records
+In Phase 1 the classifier still asks about all six labels so the decision log records
 `steer_now`/`side` frequencies; the gate maps both to `steer` unconditionally.
 
 `steer` is the fail-open outcome of: classifier error, timeout, malformed answer,
@@ -146,18 +146,12 @@ The fourth row is the shipped policy, retained deliberately: a 0.70 intent proba
 is not evidence that discarding workspace delivery is safe. The `search` resolver
 (FTS + candidate `choice`) is cut from Phase 1.
 
-## Shadow mode
+## Decision log and authority
 
-`live.classify.shadow: true` (default on first ship). Honest description: **action
-selection is unchanged from `control_plane: off`, with added latency and
-backpressure.** It is not equivalent to no router: the request still waits on the
-classifier and occupies the routing worker (routing queue depth 4 vs delegation depth
-32; overflow refuses). Shadow never constructs the switch resolver or any mutating
-binding, and — because the host must not promise navigation it will not perform — the
-`ControlPlaneContext` sentence is **not** appended to the voice prompt in shadow, and
-`withLiveControlAuthority` installs no control bindings. Three predicates, kept
-separate in code: router installed; mutating control authority allowed; host handling
-advertised.
+Three predicates in `LiveConfig`: router installed (`RouterEnabled`), mutating control
+authority allowed (`ControlAuthorityAllowed`), host handling advertised
+(`AdvertiseControlHandling`). With shadow mode removed they agree for every backend;
+they stay separate so a future observe-only mode cannot accidentally install bindings.
 
 Decision log: `route_decisions` table — live id, bound session, bounded state JSON,
 probabilities, gated label, acted label, resolver outcome, latency, error. Surfaced by
@@ -185,7 +179,6 @@ live:
   control_plane: classify       # off | agent | classify   (bool accepted: true=agent, false=off)
   classify:
     provider: typesafe          # optional; defaults to classify.default_provider
-    shadow: true                # classify + log; act as if every label were steer
     log_decisions: true
     log_state: true
     min_confidence:
@@ -233,8 +226,7 @@ Selector migration, all of which is specified and tested:
 
 - `docs-site/content/guides/live-voice.md` "The control lane": two backends; `agent`
   is the shipped lane and its text stays, scoped as such; `classify` is the one designed
-  to stay on; the labels in user terms; shadow mode honestly described (latency and
-  backpressure, no advertised navigation); fail-open contract; what Phase 1 does not do
+  to stay on; the labels in user terms; fail-open contract; what Phase 1 does not do
   (stop, side questions, mixed requests, voice changes — the agent lane still handles
   voice via `live_settings`).
 - `docs-site/content/reference/configuration.md`: `live.control_plane` row becomes a
@@ -248,8 +240,8 @@ Selector migration, all of which is specified and tested:
 - `liveclassify`: gate table (every label × above/below × `also_request`), answer
   validation cases, state bounding, timeout.
 - Router tests with a fake TypeSafe server: each Phase 1 label's action; timeout,
-  malformed answer, unknown label → `steer` with original input; shadow → `steer` +
-  log row + no resolver constructed + no context advertised; `also_request` → whole
+  malformed answer, unknown label → `steer` with original input; decision log row written
+  and `log_state: false` honoured; `also_request` → whole
   request as `steer`; routing-queue overflow behaviour unchanged.
 - Resolver outcome matrix (five rows above) against the restricted executor,
   including tool denial for `live_new_session`/`pass_to_workspace`.
@@ -279,13 +271,15 @@ Selector migration, all of which is specified and tested:
   private must not fall through to the transcript on failure — it needs a handled
   failure answer.
 - **Mixed requests** with structured extraction and exactly-once continuation.
-- **`search` resolver**, once the shadow log shows what people actually say.
+- **`search` resolver**, once the decision log shows what people actually say.
 
 ## Review record
 
 Design review (gpt-6-astra, 2026-09-19) found four blocking issues in the first draft:
 `steer_now` mapped to a primitive that does not exist in that form and raced the
 delegation FIFO; `also_request` cannot extract a remainder; the switch resolver
-contradicted the shipped fail-open precedence; shadow was described as equivalent to
-off. All four are addressed above by deferral (`steer_now`, `side`, mixed delivery,
-`search`) or by adopting the shipped policy (resolver outcomes, honest shadow).
+contradicted the shipped fail-open precedence; a shadow mode was described as
+equivalent to off. All four are addressed above by deferral (`steer_now`, `side`, mixed
+delivery, `search`) or by adopting the shipped policy (resolver outcomes). Shadow mode
+was built and then removed before merge: Sam was not going to use it, and the three
+authority predicates only had to differ because of it.

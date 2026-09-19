@@ -117,7 +117,7 @@ type Classifier struct {
 }
 
 // Classify sends the bounded state and validates all answers needed by both
-// Phase 1 and the Phase 2 shadow measurements.
+// Phase 1 and the Phase 2 decision-log measurements.
 func (c *Classifier) Classify(ctx context.Context, state State) (Decision, error) {
 	var decision Decision
 	if c == nil || c.Client == nil {

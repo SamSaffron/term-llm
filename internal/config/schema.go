@@ -298,10 +298,9 @@ var keySpecs = []KeySpec{
 	optional("live.instructions"),
 	def("live.idle_timeout", DefaultLiveIdleTimeout),
 	// Opt-in separately from live.enabled. Agent adds a model turn before every
-	// request; classify defaults to shadow until explicitly enabled to act.
+	// request; classify adds one bounded classification call instead.
 	def("live.control_plane", string(LiveControlPlaneOff)),
 	optional("live.classify.provider"),
-	def("live.classify.shadow", true),
 	def("live.classify.log_decisions", true),
 	def("live.classify.log_state", true),
 	def("live.classify.min_confidence.status", DefaultLiveClassifyStatus),

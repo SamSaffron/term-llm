@@ -1155,7 +1155,6 @@ type LiveClassifyMinConfidence struct {
 // LiveClassifyConfig configures the low-latency live intent router.
 type LiveClassifyConfig struct {
 	Provider      string                    `mapstructure:"provider" yaml:"provider,omitempty"`
-	Shadow        bool                      `mapstructure:"shadow" yaml:"shadow"`
 	LogDecisions  bool                      `mapstructure:"log_decisions" yaml:"log_decisions"`
 	LogState      bool                      `mapstructure:"log_state" yaml:"log_state"`
 	MinConfidence LiveClassifyMinConfidence `mapstructure:"min_confidence" yaml:"min_confidence"`
@@ -1167,9 +1166,9 @@ func (c LiveConfig) RouterEnabled() bool {
 }
 
 // ControlAuthorityAllowed reports whether this configuration may install
-// mutating call/session bindings. Classifier shadow mode deliberately may not.
+// mutating call/session bindings. Both active backends may; off may not.
 func (c LiveConfig) ControlAuthorityAllowed() bool {
-	return c.ControlPlane == LiveControlPlaneAgent || (c.ControlPlane == LiveControlPlaneClassify && !c.Classify.Shadow)
+	return c.ControlPlane == LiveControlPlaneAgent || c.ControlPlane == LiveControlPlaneClassify
 }
 
 // AdvertiseControlHandling reports whether the voice prompt may promise that

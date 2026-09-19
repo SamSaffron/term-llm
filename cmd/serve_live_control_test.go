@@ -1217,7 +1217,6 @@ func TestLiveControlAuthorityIsInstalledOnlyWithTheControlPlane(t *testing.T) {
 		"off":             {live: config.LiveConfig{ControlPlane: config.LiveControlPlaneOff}},
 		"agent":           {live: config.LiveConfig{ControlPlane: config.LiveControlPlaneAgent}, allowed: true},
 		"classify active": {live: config.LiveConfig{ControlPlane: config.LiveControlPlaneClassify}, allowed: true},
-		"classify shadow": {live: config.LiveConfig{ControlPlane: config.LiveControlPlaneClassify, Classify: config.LiveClassifyConfig{Shadow: true}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := newTestServeServer()
@@ -1257,17 +1256,15 @@ func TestLiveControlAuthorityIsInstalledOnlyWithTheControlPlane(t *testing.T) {
 func TestLiveSessionOptionsPromisesHostRoutingOnlyWithTheControlPlane(t *testing.T) {
 	for name, tc := range map[string]struct {
 		plane       config.LiveControlPlane
-		shadow      bool
 		wantContext string
 	}{
 		"off":             {plane: config.LiveControlPlaneOff},
 		"agent":           {plane: config.LiveControlPlaneAgent, wantContext: live.AgentControlPlaneContext},
 		"classify active": {plane: config.LiveControlPlaneClassify, wantContext: live.ClassifyControlPlaneContext},
-		"shadow":          {plane: config.LiveControlPlaneClassify, shadow: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := newTestServeServer()
-			s.cfgRef = &config.Config{Live: config.LiveConfig{ControlPlane: tc.plane, Classify: config.LiveClassifyConfig{Shadow: tc.shadow}}}
+			s.cfgRef = &config.Config{Live: config.LiveConfig{ControlPlane: tc.plane}}
 
 			opts := s.liveSessionOptions(context.Background(), "options-session", live.ConfigCapabilities(config.LiveConfig{}), "")
 			for _, backendContext := range []string{live.AgentControlPlaneContext, live.ClassifyControlPlaneContext} {

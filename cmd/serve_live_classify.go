@@ -117,8 +117,8 @@ type serveLiveClassifyRouter struct {
 	classifier liveDecisionClassifier
 	decisions  liveDecisionLogger
 
-	// resolver is deliberately a lazy factory. Shadow mode and non-switch labels
-	// never construct an engine with mutating bindings.
+	// resolver is deliberately a lazy factory. Non-switch labels never construct
+	// an engine with mutating bindings.
 	resolver func() func(context.Context, string, live.RouteRequest) (liveSwitchResolverOutcome, error)
 }
 
@@ -193,7 +193,7 @@ func (r *serveLiveClassifyRouter) Route(ctx context.Context, request live.RouteR
 		SwitchSession: cfg.MinConfidence.SwitchSession, SteerNow: cfg.MinConfidence.SteerNow, Side: cfg.MinConfidence.Side,
 	})
 	record.GatedLabel = gated
-	result, failure := r.act(ctx, cfg, gated, sessionID, request, &record)
+	result, failure := r.act(ctx, gated, sessionID, request, &record)
 	if failure != "" {
 		routeFailure = failure
 	}
@@ -202,11 +202,11 @@ func (r *serveLiveClassifyRouter) Route(ctx context.Context, request live.RouteR
 
 // act performs the host action for a gated label. It returns the route result
 // and, when the action failed and the request fell open, the bounded error
-// category to log. Shadow mode and steer never act: the original input passes
-// through untouched.
-func (r *serveLiveClassifyRouter) act(ctx context.Context, cfg config.LiveClassifyConfig, gated string, sessionID string, request live.RouteRequest, record *liveclassify.DecisionRecord) (live.RouteResult, string) {
+// category to log. Steer never acts: the original input passes through
+// untouched.
+func (r *serveLiveClassifyRouter) act(ctx context.Context, gated string, sessionID string, request live.RouteRequest, record *liveclassify.DecisionRecord) (live.RouteResult, string) {
 	passThrough := live.RouteResult{Input: request.Input}
-	if cfg.Shadow || gated == liveclassify.IntentSteer {
+	if gated == liveclassify.IntentSteer {
 		return passThrough, ""
 	}
 	switch gated {
