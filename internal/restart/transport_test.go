@@ -62,3 +62,47 @@ func TestGeneralTransportFlushAndPassiveObserver(t *testing.T) {
 		})
 	}
 }
+
+func TestTransportHijackedConnectionReleasesOwnership(t *testing.T) {
+	c := &Coordinator{}
+	transport := &HTTPTransport{Coordinator: c}
+	conn, peer := net.Pipe()
+	defer conn.Close()
+	defer peer.Close()
+	ctx := transport.ConnContext(context.Background(), conn)
+	transport.ConnState(conn, http.StateActive)
+	exec := make(chan struct{}, 1)
+	stop, err := c.Bind(context.Background(), func(context.Context) error {
+		exec <- struct{}{}
+		return errors.New("fixture exec")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	transport.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		transport.ConnState(conn, http.StateHijacked)
+		// Only the connection ticket is released; the handler still owns work.
+		entry := ctx.Value(connectionKey{}).(*httpConnection)
+		entry.mu.Lock()
+		leaked := entry.release != nil
+		entry.mu.Unlock()
+		if leaked {
+			t.Error("hijacked connection retained its activity ticket")
+		}
+		c.mu.Lock()
+		active := c.active
+		c.mu.Unlock()
+		if active == 0 {
+			t.Error("hijack released unfinished handler ownership")
+		}
+	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil).WithContext(ctx))
+	// net/http never reports StateClosed after StateHijacked.
+	c.Request()
+	select {
+	case <-exec:
+	case <-time.After(time.Second):
+		t.Fatal("hijacked connection prevented reload after handler returned")
+	}
+	waitAttempt(t, c)
+}
