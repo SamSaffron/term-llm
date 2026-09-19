@@ -91,9 +91,10 @@ User-facing documentation lives in `docs-site/content/`; there is no separate `d
 - Wire tools through the registry in `internal/tools/` and update `internal/tools/permissions.go` when access policy changes.
 - Cover permission denial as well as successful execution.
 
-### Web UI (`internal/serveui/static/`)
-- `markdown-setup.js` is the single source of truth for marked.js configuration in both browser and Node tests. Add rendering cases to `markdown_test.js`.
-- For a new first-party asset, update the `//go:embed` inputs and render/version tables in `internal/serveui/embed.go`, plus `index.html` and `sw.js` (`SHELL_ASSETS`). Add or update `embed_test.go` coverage.
+### Web UI (`frontend/` and `internal/serveui/`)
+- Markdown configuration and sanitization live in `frontend/src/domain/markdown.ts`, with shared renderer hooks in `markdown-hooks.ts`. Add rendering cases to `frontend/src/domain/rendering.test.ts`.
+- Author frontend assets under `frontend/` and rebuild with `make frontend`; never edit generated `internal/serveui/static/dist` files. The directory is embedded recursively and asset versions are computed from embedded contents. Follow `frontend/README.md` for the separate chat/Hub build and cache contracts; Hub assets must stay out of the chat service worker.
+- For static shell assets outside `dist`, check the explicit `//go:embed` inputs in `internal/serveui/embed.go`, references in `static/index.html` and `static/sw.js`, and `embed_test.go` coverage.
 
 ## Go Style and Commits
 - Use standard `gofmt`; exported names are CamelCase and unexported names mixedCaps.

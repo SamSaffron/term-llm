@@ -67,7 +67,7 @@ term-llm loop --done "! grep -r 'React.Component' src/" --tools all \
   "Convert class components to hooks. One file at a time. Run tests after each."
 
 # Research: run until conclusion written
-term-llm loop --done-file RESEARCH.md:"## Conclusion" --tools read,write --search --max 20 \
+term-llm loop --done-file RESEARCH.md:"## Conclusion" --tools read_file,write_file --search --max 20 \
   "Research WebGPU compute shaders. Current progress: {{RESEARCH.md}}. Write a Conclusion section when done."
 
 # With an agent and iteration cap
