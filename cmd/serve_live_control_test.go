@@ -50,7 +50,129 @@ func assertNoControlToolSchemas(t *testing.T, requests []llm.Request) {
 	}
 }
 
-// TestLiveDelegatedTurnCarriesNoControlToolSchemas is the §4 regression for the
+func TestLiveSwitchResolverOutcomeMatrixAndRestrictedTools(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(*controlLaneHarness)
+		want  liveSwitchResolverOutcomeKind
+	}{
+		{
+			name: "switch succeeded",
+			setup: func(h *controlLaneHarness) {
+				createDirectorySession(t, h.store, &session.Session{ID: "resolver-target", GeneratedShortTitle: "Resolver target"})
+				h.agent.AddToolCall("switch", tools.LiveSwitchSessionToolName, map[string]any{"session": "resolver-target"}).AddTextResponse("done")
+			},
+			want: liveSwitchResolverSucceeded,
+		},
+		{
+			name: "valid switch refused",
+			setup: func(h *controlLaneHarness) {
+				createDirectorySession(t, h.store, &session.Session{ID: "resolver-busy", GeneratedShortTitle: "Busy target"})
+				other := newLiveSession("other-call", "resolver-busy")
+				if err := h.server.registerLiveSession(other); err != nil {
+					t.Fatal(err)
+				}
+				h.agent.AddToolCall("switch", tools.LiveSwitchSessionToolName, map[string]any{"session": "resolver-busy"}).AddTextResponse("refused")
+			},
+			want: liveSwitchResolverRefused,
+		},
+		{
+			name: "directory then switch succeeded",
+			setup: func(h *controlLaneHarness) {
+				createDirectorySession(t, h.store, &session.Session{ID: "resolver-after-directory", GeneratedShortTitle: "After directory"})
+				h.agent.
+					AddToolCall("directory", tools.SessionDirectoryToolName, map[string]any{"query": "after"}).
+					AddToolCall("switch", tools.LiveSwitchSessionToolName, map[string]any{"session": "resolver-after-directory"}).
+					AddTextResponse("done")
+			},
+			want: liveSwitchResolverSucceeded,
+		},
+		{
+			name: "refusal outranks directory result",
+			setup: func(h *controlLaneHarness) {
+				createDirectorySession(t, h.store, &session.Session{ID: "resolver-refused-directory", GeneratedShortTitle: "Busy candidate"})
+				other := newLiveSession("other-refusal-call", "resolver-refused-directory")
+				if err := h.server.registerLiveSession(other); err != nil {
+					t.Fatal(err)
+				}
+				h.agent.
+					AddToolCall("directory", tools.SessionDirectoryToolName, map[string]any{"query": "busy"}).
+					AddToolCall("switch", tools.LiveSwitchSessionToolName, map[string]any{"session": "resolver-refused-directory"}).
+					AddTextResponse("refused")
+			},
+			want: liveSwitchResolverRefused,
+		},
+		{
+			name: "directory without switch",
+			setup: func(h *controlLaneHarness) {
+				createDirectorySession(t, h.store, &session.Session{ID: "resolver-a", GeneratedShortTitle: "Alpha"})
+				createDirectorySession(t, h.store, &session.Session{ID: "resolver-b", GeneratedShortTitle: "Beta"})
+				h.agent.AddToolCall("directory", tools.SessionDirectoryToolName, map[string]any{}).AddTextResponse("which one")
+			},
+			want: liveSwitchResolverAmbiguous,
+		},
+		{
+			name: "invalid switch arguments",
+			setup: func(h *controlLaneHarness) {
+				h.agent.AddToolCall("invalid", tools.LiveSwitchSessionToolName, map[string]any{"title": "made up"}).AddTextResponse("I switched it")
+			},
+			want: liveSwitchResolverFailOpen,
+		},
+		{
+			name:  "prose only",
+			setup: func(h *controlLaneHarness) { h.agent.AddTextResponse("I switched it") },
+			want:  liveSwitchResolverFailOpen,
+		},
+		{
+			name: "new session denied by surface",
+			setup: func(h *controlLaneHarness) {
+				h.agent.AddToolCall("denied", tools.LiveNewSessionToolName, map[string]any{}).AddTextResponse("done")
+			},
+			want: liveSwitchResolverFailOpen,
+		},
+		{
+			name: "workspace handoff denied by surface",
+			setup: func(h *controlLaneHarness) {
+				h.agent.AddToolCall("denied", livePassToWorkspaceToolName, map[string]any{"request": "work"}).AddTextResponse("done")
+			},
+			want: liveSwitchResolverFailOpen,
+		},
+		{
+			name:  "provider error",
+			setup: func(h *controlLaneHarness) { h.agent.AddError(errors.New("provider down")) },
+			want:  liveSwitchResolverError,
+		},
+		{
+			name:  "timeout",
+			setup: func(h *controlLaneHarness) { h.agent.AddTurn(llm.MockTurn{Delay: time.Second, Text: "late"}) },
+			want:  liveSwitchResolverError,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newControlLaneHarness(t, "resolver-source")
+			tc.setup(h)
+			ctx := context.Background()
+			if tc.name == "timeout" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, 10*time.Millisecond)
+				defer cancel()
+			}
+			outcome, err := h.server.resolveLiveSwitch(ctx, h.record, "resolver-source", live.RouteRequest{Input: "switch sessions"})
+			if outcome.Kind != tc.want {
+				t.Fatalf("outcome = %+v err=%v, want %q", outcome, err, tc.want)
+			}
+			if (tc.want == liveSwitchResolverError) != (err != nil) {
+				t.Fatalf("error = %v for outcome %+v", err, outcome)
+			}
+			for _, request := range h.agent.RecordedRequests() {
+				if len(request.Tools) != 2 || request.Tools[0].Name != tools.SessionDirectoryToolName || request.Tools[1].Name != tools.LiveSwitchSessionToolName {
+					t.Fatalf("restricted schemas = %+v", request.Tools)
+				}
+			}
+		})
+	}
+}
+
 // removed safety net. The call-scoped tools now belong to the routing lane
 // alone: a delegated chat turn must neither be offered their schemas nor have
 // them executable in its engine.
@@ -217,7 +339,7 @@ func newControlLaneHarness(t *testing.T, sourceID string) *controlLaneHarness {
 	// The harness drives the router by hand, so it has to declare the same opt-in the
 	// production wiring reads: the tool authority a routing turn gets is installed
 	// only while live.control_plane is on, whatever built the router.
-	srv.cfgRef = &config.Config{Live: config.LiveConfig{ControlPlane: true}}
+	srv.cfgRef = &config.Config{Live: config.LiveConfig{ControlPlane: config.LiveControlPlaneAgent}}
 	// The directory and the transcript assertions read the same store the host
 	// server uses, so a message the routing lane wrote would be visible here.
 	srv.store = store
@@ -1088,17 +1210,24 @@ func TestLiveSessionLaneInstallsNoSessionControlBindings(t *testing.T) {
 // reached routing some other way still cannot hand a model the tools that move the
 // call, and the refusal degrades to a workspace request instead of a lost one.
 func TestLiveControlAuthorityIsInstalledOnlyWithTheControlPlane(t *testing.T) {
-	for name, plane := range map[string]bool{"off": false, "on": true} {
+	for name, tc := range map[string]struct {
+		live    config.LiveConfig
+		allowed bool
+	}{
+		"off":             {live: config.LiveConfig{ControlPlane: config.LiveControlPlaneOff}},
+		"agent":           {live: config.LiveConfig{ControlPlane: config.LiveControlPlaneAgent}, allowed: true},
+		"classify active": {live: config.LiveConfig{ControlPlane: config.LiveControlPlaneClassify}, allowed: true},
+	} {
 		t.Run(name, func(t *testing.T) {
 			s := newTestServeServer()
-			s.cfgRef = &config.Config{Live: config.LiveConfig{ControlPlane: plane}}
+			s.cfgRef = &config.Config{Live: tc.live}
 			s.store = newSessionDirectoryTestStore(t)
 			record := newLiveSession("call-authority-gate", "gate-session")
 			record.capabilities = live.ConfigCapabilities(config.LiveConfig{})
 
 			ctx := s.withLiveControlAuthority(context.Background(), record, "gate-session")
 			_, err := (&tools.SessionDirectoryTool{}).Execute(ctx, json.RawMessage(`{}`))
-			if plane {
+			if tc.allowed {
 				if err != nil {
 					t.Fatalf("the control plane could not read the directory: %v", err)
 				}
@@ -1125,14 +1254,26 @@ func TestLiveControlAuthorityIsInstalledOnlyWithTheControlPlane(t *testing.T) {
 // from host context — and a host without the flag must not make it, because there
 // those requests are ordinary work in the bound session.
 func TestLiveSessionOptionsPromisesHostRoutingOnlyWithTheControlPlane(t *testing.T) {
-	for name, plane := range map[string]bool{"off": false, "on": true} {
+	for name, tc := range map[string]struct {
+		plane       config.LiveControlPlane
+		wantContext string
+	}{
+		"off":             {plane: config.LiveControlPlaneOff},
+		"agent":           {plane: config.LiveControlPlaneAgent, wantContext: live.AgentControlPlaneContext},
+		"classify active": {plane: config.LiveControlPlaneClassify, wantContext: live.ClassifyControlPlaneContext},
+	} {
 		t.Run(name, func(t *testing.T) {
 			s := newTestServeServer()
-			s.cfgRef = &config.Config{Live: config.LiveConfig{ControlPlane: plane}}
+			s.cfgRef = &config.Config{Live: config.LiveConfig{ControlPlane: tc.plane}}
 
 			opts := s.liveSessionOptions(context.Background(), "options-session", live.ConfigCapabilities(config.LiveConfig{}), "")
-			if promised := strings.Contains(opts.Context, live.ControlPlaneContext); promised != plane {
-				t.Fatalf("host routing promised = %v with live.control_plane = %v: %s", promised, plane, opts.Context)
+			for _, backendContext := range []string{live.AgentControlPlaneContext, live.ClassifyControlPlaneContext} {
+				if got, want := strings.Contains(opts.Context, backendContext), backendContext == tc.wantContext; got != want {
+					t.Fatalf("context %q present=%v, want %v with live.control_plane=%v: %s", backendContext, got, want, tc.plane, opts.Context)
+				}
+			}
+			if tc.plane == config.LiveControlPlaneClassify && strings.Contains(opts.Context, "changing this call's voice") {
+				t.Fatalf("classify backend promised voice changes: %s", opts.Context)
 			}
 			if !strings.Contains(opts.Context, live.CapabilityContext(live.ConfigCapabilities(config.LiveConfig{}))) {
 				t.Fatalf("the host facts were lost: %s", opts.Context)
@@ -1279,6 +1420,48 @@ func TestLiveRequestSwitchesWhileATaskRuns(t *testing.T) {
 	}
 }
 
+func TestStartLiveControllerInstallsAgentRouterForSelectorAndLegacyTrue(t *testing.T) {
+	legacy, err := config.ParseLiveControlPlane(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, plane := range map[string]config.LiveControlPlane{
+		"agent":       config.LiveControlPlaneAgent,
+		"legacy true": legacy,
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := newTestServeServer()
+			srv.cfgRef = &config.Config{Live: config.LiveConfig{ControlPlane: plane}}
+			srv.store = newSessionDirectoryTestStore(t)
+			createDirectorySession(t, srv.store, &session.Session{ID: "controller-agent", GeneratedShortTitle: "Controller agent"})
+			called := make(chan struct{}, 1)
+			agent := llm.NewMockProvider("router-agent").AddToolCall("handoff", livePassToWorkspaceToolName, map[string]any{"request": "ordinary work"})
+			srv.liveControlProviderFactory = func(string) (llm.Provider, error) {
+				select {
+				case called <- struct{}{}:
+				default:
+				}
+				return agent, nil
+			}
+			provider := &stubLiveSession{events: make(chan live.Event, 8), closed: make(chan struct{})}
+			record := newLiveSession("agent-controller", "controller-agent")
+			if err := srv.registerLiveSession(record); err != nil {
+				t.Fatal(err)
+			}
+			if !srv.startLiveController(record, provider) {
+				t.Fatal("controller did not start")
+			}
+			t.Cleanup(func() { srv.closeLiveSessions(context.Background()) })
+			provider.events <- live.Event{Kind: live.EventDelegationCreated, DelegationID: "agent-item", Text: "ordinary work"}
+			select {
+			case <-called:
+			case <-time.After(time.Second):
+				t.Fatal("agent router was not called")
+			}
+		})
+	}
+}
+
 // TestLiveHandledDelegationIsAnsweredWithoutAChatTurn drives the production call path
 // end to end: a real `startLiveController` call, a real controller, and the router it
 // wires. A spoken session-management request must come back as commentary on the
@@ -1290,7 +1473,7 @@ func TestLiveHandledDelegationIsAnsweredWithoutAChatTurn(t *testing.T) {
 	harness.server.store = store
 	// The control plane is opt-in, so the production path this test drives only
 	// wires a router when it is switched on.
-	harness.server.cfgRef.Live.ControlPlane = true
+	harness.server.cfgRef.Live.ControlPlane = config.LiveControlPlaneAgent
 	stopLiveHarnessLifecycle(t, harness.server)
 	createDirectorySession(t, store, &session.Session{ID: "control-e2e", GeneratedShortTitle: "Reflow decisions"})
 	addDirectoryMessage(t, store, "control-e2e", "the reflow decision was to keep the pane resizable")
@@ -1347,7 +1530,7 @@ func TestLiveControlPlaneOffRunsEverythingInTheSessionLane(t *testing.T) {
 	harness.server.store = store
 	stopLiveHarnessLifecycle(t, harness.server)
 	createDirectorySession(t, store, &session.Session{ID: "control-off", GeneratedShortTitle: "Reflow decisions"})
-	if harness.server.cfgRef.Live.ControlPlane {
+	if harness.server.cfgRef.Live.RouterEnabled() {
 		t.Fatal("live.control_plane must be off unless a host opts in")
 	}
 	// A router that fails the test if it is ever consulted: "off" has to mean no

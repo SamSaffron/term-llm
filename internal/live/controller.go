@@ -137,6 +137,9 @@ const (
 	// request now depends on. It bounds the turn, not the worker — a router that
 	// ignores its own cancellation still holds the worker until it returns.
 	routeCallTimeout = 45 * time.Second
+	// RouteCallTimeout exposes the controller backstop to routers that must budget
+	// multiple sequential provider calls within one routing decision.
+	RouteCallTimeout = routeCallTimeout
 	// routeQueueDepth bounds how many delegations may wait for that worker. A
 	// backlog here is a voice model that has stopped listening for answers rather
 	// than a load to absorb, so the request that overflows is refused and the model
