@@ -260,11 +260,11 @@ Response creation replays `Idempotency-Key` only for stateful streaming runs, us
 term-llm maintains debug logs for troubleshooting. Use the `debug-log` command to view and manage them:
 
 ```bash
-term-llm debug-log                           # Show recent logs
-term-llm debug-log list                      # List available log files
-term-llm debug-log show [file]               # Show a specific log file
-term-llm debug-log tail                      # Show last N lines
-term-llm debug-log tail --follow             # Follow logs in real-time
+term-llm debug-log                           # List recent debug sessions
+term-llm debug-log list                      # List recent debug sessions
+term-llm debug-log show [session]            # Show a session by number or ID
+term-llm debug-log tail                      # Show current contents and follow new entries
+term-llm debug-log tail --follow=false       # Show current contents and exit
 term-llm debug-log search "pattern"          # Search logs for a pattern
 term-llm debug-log clean                     # Clean old log files
 term-llm debug-log clean --days 7            # Keep only last 7 days
@@ -275,11 +275,13 @@ term-llm debug-log status                    # Show logging status
 term-llm debug-log path                      # Print log directory path
 ```
 
+For `show` and `tail`, omit the session to select the most recent one, pass a list number (`1` is most recent), or use its session ID (the log filename without `.jsonl`), not a file path. `tail` reads all existing entries before following; it does not select the last N lines.
+
 **Key flags:**
 | Flag | Description |
 |------|-------------|
 | `--days N` | Limit to logs from last N days |
-| `--show-tools` | Include tool calls/results in output |
+| `--tools` | Highlight tool calls and arguments (`show` only) |
 | `--raw` | Show raw log entries without formatting |
 | `--json` | Output as JSON |
-| `--follow` | Follow logs in real-time (with tail) |
+| `--follow` | Follow new entries (`tail`, enabled by default); use `--follow=false` to exit after current contents |
