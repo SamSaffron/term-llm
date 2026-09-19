@@ -39,7 +39,7 @@ serve:
 
 ## Step 3: Restrict access
 
-Without an allowlist, anyone who knows your bot's username can chat with it. You almost certainly want to restrict this.
+An allowlist is required: if both `allowed_user_ids` and `allowed_usernames` are empty, all incoming messages are rejected. Configure at least one user ID or username before starting the bot.
 
 You can allowlist by **numeric user ID** (more stable) or by **username**:
 
