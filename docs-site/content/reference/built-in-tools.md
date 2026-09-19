@@ -156,10 +156,10 @@ Control which directories and commands tools can access:
 
 ```bash
 # Allow read access to specific directories
-term-llm chat --tools read,grep --read-dir /home/user/projects
+term-llm chat --tools read_file,grep --read-dir /home/user/projects
 
 # Allow write access to specific directories
-term-llm chat --tools read,write,edit --read-dir . --write-dir ./src
+term-llm chat --tools read_file,write_file,edit_file --read-dir . --write-dir ./src
 
 # Allow specific shell commands (glob patterns)
 term-llm chat --tools shell --shell-allow "git *" --shell-allow "npm test"
