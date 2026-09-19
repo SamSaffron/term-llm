@@ -50,6 +50,7 @@ term-llm ships with these built-in agents:
 | `extension-builder` | Personalizes the web interface with local CSS/JavaScript extensions and config. |
 | `reviewer` | Read-only code review with git-aware inspection tools. |
 | `shell` | General shell command helper. |
+| `video-editor` | Safely inspects, plans, previews, and renders local media with FFmpeg. |
 
 A few good starting points:
 
