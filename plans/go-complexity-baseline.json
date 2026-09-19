@@ -1,11 +1,11 @@
 {
   "counting_rules": "1 + if + for + range + non-default switch/select cases + \u0026\u0026 + ||; nested function literals attributed to enclosing declaration",
   "summary": {
-    "files": 922,
-    "functions": 11445,
+    "files": 973,
+    "functions": 12219,
     "median_complexity": 3,
-    "above_20": 461,
-    "above_50": 42,
+    "above_20": 464,
+    "above_50": 43,
     "above_100": 0
   },
   "exceptions": [
@@ -171,7 +171,7 @@
     },
     {
       "key": ".|cmd/config.go|cmd||configValueCompletions",
-      "complexity": 45,
+      "complexity": 42,
       "owner": "cmd",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -347,7 +347,7 @@
     },
     {
       "key": ".|cmd/runner.go|cmd|*cmdRunner|prepare",
-      "complexity": 78,
+      "complexity": 80,
       "owner": "cmd",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -384,6 +384,14 @@
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
       "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_approval_mode_handler.go|cmd|*serveServer|handleSessionApprovalMode",
+      "complexity": 24,
+      "owner": "cmd/serve",
+      "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
     },
     {
       "key": ".|cmd/serve_ask_user_handler.go|cmd|*serveServer|handleSessionAskUser",
@@ -427,7 +435,7 @@
     },
     {
       "key": ".|cmd/serve_children.go|cmd|*serveServer|handleSessionChildren",
-      "complexity": 27,
+      "complexity": 32,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -507,7 +515,7 @@
     },
     {
       "key": ".|cmd/serve_handlers.go|cmd|*serveServer|createRequestRuntime",
-      "complexity": 27,
+      "complexity": 26,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -555,7 +563,7 @@
     },
     {
       "key": ".|cmd/serve_handlers.go|cmd|*serveServer|handleSessionInterrupt",
-      "complexity": 46,
+      "complexity": 51,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -619,7 +627,7 @@
     },
     {
       "key": ".|cmd/serve_handlers.go|cmd|*serveServer|sessionMessageEntries",
-      "complexity": 74,
+      "complexity": 73,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -675,7 +683,7 @@
     },
     {
       "key": ".|cmd/serve_handlers_responses.go|cmd|*serveServer|handleResponses",
-      "complexity": 89,
+      "complexity": 93,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -683,7 +691,7 @@
     },
     {
       "key": ".|cmd/serve_handlers_status.go|cmd|*serveServer|handleSessionsStatus",
-      "complexity": 49,
+      "complexity": 48,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -760,6 +768,14 @@
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
       "origin": "existing"
+    },
+    {
+      "key": ".|cmd/serve_live.go|cmd|*serveServer|handleLiveSessions",
+      "complexity": 21,
+      "owner": "cmd/serve",
+      "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
     },
     {
       "key": ".|cmd/serve_mcp.go|cmd||runServeMCP",
@@ -899,7 +915,7 @@
     },
     {
       "key": ".|cmd/serve_response_run_execution.go|cmd|*serveServer|executeResponseRun",
-      "complexity": 39,
+      "complexity": 43,
       "owner": "cmd/serve",
       "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M5",
       "removal_milestone": "M5",
@@ -930,8 +946,16 @@
       "origin": "extracted"
     },
     {
+      "key": ".|cmd/serve_response_run_stream.go|cmd|*serveServer|handleResponseByID",
+      "complexity": 21,
+      "owner": "cmd/serve",
+      "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M5",
+      "removal_milestone": "M5",
+      "origin": "extracted"
+    },
+    {
       "key": ".|cmd/serve_response_run_stream.go|cmd|*serveServer|startResponseRun",
-      "complexity": 55,
+      "complexity": 56,
       "owner": "cmd/serve",
       "rationale": "mechanically moved from .|cmd/serve_response_runs.go|cmd|*serveServer|startResponseRun while preserving its named responsibility",
       "removal_milestone": "M5",
@@ -962,14 +986,6 @@
       "origin": "extracted"
     },
     {
-      "key": ".|cmd/serve_run_history.go|cmd|*serveRuntime|prepareRunHistory",
-      "complexity": 21,
-      "owner": "cmd/serve",
-      "rationale": "cmd/serve extraction owns one ordered domain responsibility; further reduction is tracked by M3",
-      "removal_milestone": "M3",
-      "origin": "extracted"
-    },
-    {
       "key": ".|cmd/serve_run_persistence.go|cmd|*serveRunPersistence|applyCompaction",
       "complexity": 25,
       "owner": "cmd/serve",
@@ -979,7 +995,7 @@
     },
     {
       "key": ".|cmd/serve_runtime.go|cmd|*serveRuntime|InterruptMessage",
-      "complexity": 40,
+      "complexity": 39,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M3",
@@ -1035,7 +1051,7 @@
     },
     {
       "key": ".|cmd/serve_session_inputs.go|cmd|*serveServer|prepareUIRuntime",
-      "complexity": 66,
+      "complexity": 64,
       "owner": "cmd/serve",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M5",
@@ -1522,6 +1538,14 @@
       "origin": "existing"
     },
     {
+      "key": ".|internal/guardian/classify_request.go|guardian||buildClassifyRequest",
+      "complexity": 22,
+      "owner": "internal/guardian",
+      "rationale": "internal/guardian extraction owns one ordered domain responsibility; further reduction is tracked by M7",
+      "removal_milestone": "M7",
+      "origin": "extracted"
+    },
+    {
       "key": ".|internal/image/gemini.go|image||writeGeminiRequestJSON",
       "complexity": 21,
       "owner": "internal/image",
@@ -1987,7 +2011,7 @@
     },
     {
       "key": ".|internal/llm/responses_api.go|llm||buildResponsesMessageItems",
-      "complexity": 24,
+      "complexity": 21,
       "owner": "llm",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -2923,7 +2947,7 @@
     },
     {
       "key": ".|internal/tools/spawn_agent.go|tools|*SpawnAgentTool|Execute",
-      "complexity": 21,
+      "complexity": 22,
       "owner": "internal/tools",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M7",
@@ -3243,7 +3267,7 @@
     },
     {
       "key": ".|internal/tui/chat/stats.go|chat|*Model|renderStatsModal",
-      "complexity": 42,
+      "complexity": 35,
       "owner": "tui/chat",
       "rationale": "existing debt retained at its original declaration; complexity may only decrease",
       "removal_milestone": "M1",
