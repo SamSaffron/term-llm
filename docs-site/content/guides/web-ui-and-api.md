@@ -41,16 +41,6 @@ term-llm serve web jobs
 term-llm serve web jobs telegram   # all platforms at once
 ```
 
-## First-time setup
-
-Use `--setup` to run the interactive credential wizard for the selected platforms:
-
-```bash
-term-llm serve web --setup
-```
-
-Re-run with `--setup` any time to update stored credentials.
-
 ## Default platforms
 
 To avoid specifying platforms every time, set them in `config.yaml`:
