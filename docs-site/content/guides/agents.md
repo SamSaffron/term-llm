@@ -315,3 +315,56 @@ Running in container: {{env:DV_CONTAINER_NAME}}
 Whitespace around the directive is allowed, for example `{{ env : DV_CONTAINER_NAME }}`. Unset environment variables expand to an empty string. Use `{{!env:DV_CONTAINER_NAME}}` to render the placeholder literally. Because values are inserted into the model-visible system prompt, avoid referencing secret env vars unless you intentionally want to send them to the model.
 
 **Agent search order:** project-local agents (`./term-llm-agents`) → user agents (`~/.config/term-llm/agents`) → configured `agents.search_paths` → built-in agents
+
+## Model-gated personal instructions
+
+Your personal instruction file `~/.config/term-llm/AGENTS.md` can carry blocks that apply to specific models only. This is for steering out per-model habits — one model over-explains, another skips tests — without those notes reaching every other model.
+
+A gate marker sits alone on a line and applies until the next marker or the end of the file:
+
+```md
+Prefer small, focused diffs.
+
+[[[claude-bin:opus]]]
+Do not use the phrase "load-bearing"; keep explanations short.
+
+[[[chatgpt:gpt-5.6-sol-high | agy-bin:gemini]]]
+State assumptions before writing code.
+
+[[[all]]]
+This applies to every model again.
+```
+
+### Spec rules
+
+- `provider:model` matches both parts. `provider:*` (or `provider:`) matches any model on that provider, and `:model` matches that model on any provider.
+- A bare token such as `opus` is matched against both the provider key and the model name.
+- Matching is case-insensitive. A spec matches a value when it is **equal to it, or a prefix of it ending on a separator** (`-`, `.`, `_`, `/`, `:`).
+- Separate multiple specs with `,` or `|`. Positive specs are OR-ed.
+- Prefix a spec with `!` to veto the block. A veto beats a matching positive spec, so `[[[claude-bin, !opus]]]` means "claude-bin and not opus".
+- `all` and `*` always match. `[[[all]]]`, `[[[*]]]`, and an empty `[[[]]]` all close a gated block.
+
+Prefix matching is deliberately strict, because a substring match would turn shared suffixes into accidental wildcards — `bin` would hit every `*-bin` provider, and `max` would hit `opus-max`, `glm-5.3-max`, and `deepseek-v4.1-flash-max` alike. So:
+
+| Spec | Matches | Does not match |
+|---|---|---|
+| `opus` | `opus`, `opus-max` | `opusculum`, `opus2`, `claude-opus-5` |
+| `gpt-5.6` | `gpt-5.6`, `gpt-5.6-sol-high` | `gpt-5.2` |
+| `max` | — | `opus-max` |
+
+Use `*` when you want a broader match: `*opus*` matches `claude-opus-5`, and `*-bin` matches every `*-bin` provider. A `*` also spans `/`, so `*/DeepSeek*` matches `deepseek-ai/DeepSeek-V4-Flash`.
+
+If a model ID itself contains a colon, write it as-is: `[[[llama3.2:latest]]]` works, and so does `[[[ollama:llama3.2:latest]]]`.
+
+### Scope and limits
+
+**Gates apply only to `~/.config/term-llm/AGENTS.md`.** Project files — `AGENTS.md`, `AGENTS.override.md`, and the `CLAUDE.md`/Copilot/Cursor fallbacks — are never filtered, so a checked-in repository file reads identically for every model, for every teammate, and for every other agent tool that loads it. A marker written in a project file is inert literal text.
+
+A gate runs to the end of the file unless you close it. Markdown headings and `---` rules do not close it. Markers inside fenced or indented code blocks are left alone, so you can document the syntax in your own file without gating it.
+
+When no model is known — previews, and any prompt built before the model is selected — markers are stripped and all content is kept.
+
+Two current limits:
+
+- Gates resolve when the system prompt is built: session start, resume, handover, and worktree change. Switching models mid-session with `/model` does not re-resolve them, so a long session keeps the blocks chosen for the model it started with.
+- Gates match the model string the session actually carries. An agent configured with an alias such as `model: fast` matches `[[[fast]]]`, not the underlying model ID.

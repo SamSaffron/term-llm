@@ -345,7 +345,7 @@ func resolveSessionPromptTools(cfg *config.Config, agent *agents.Agent, cli CLIF
 		if agent != nil {
 			projectInstructions := ""
 			if agent.ShouldLoadProjectInstructions() {
-				projectInstructions = agents.DiscoverProjectInstructionsInDir(runtimeDir)
+				projectInstructions = agents.DiscoverProjectInstructionsInDir(runtimeDir, s.Provider, s.Model)
 			}
 
 			// Use the agent branch only when it can actually produce a prompt. This

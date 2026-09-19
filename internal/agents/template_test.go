@@ -586,7 +586,7 @@ func TestLoadProjectInstructions_Hierarchy(t *testing.T) {
 		os.WriteFile(filepath.Join(sub, "AGENTS.md"), []byte("sub agents"), 0o644)
 		os.Chdir(sub)
 
-		result := loadProjectInstructions()
+		result := loadProjectInstructionSet().Resolve("", "")
 		if !strings.Contains(result, "root agents") {
 			t.Errorf("expected root AGENTS.md content, got %q", result)
 		}
@@ -609,7 +609,7 @@ func TestLoadProjectInstructions_Hierarchy(t *testing.T) {
 		os.WriteFile(filepath.Join(root, "AGENTS.override.md"), []byte("root override"), 0o644)
 		os.Chdir(root)
 
-		result := loadProjectInstructions()
+		result := loadProjectInstructionSet().Resolve("", "")
 		if !strings.Contains(result, "root override") {
 			t.Errorf("expected override content, got %q", result)
 		}
@@ -625,7 +625,7 @@ func TestLoadProjectInstructions_Hierarchy(t *testing.T) {
 		os.WriteFile(filepath.Join(root, "CLAUDE.md"), []byte("claude instructions"), 0o644)
 		os.Chdir(root)
 
-		result := loadProjectInstructions()
+		result := loadProjectInstructionSet().Resolve("", "")
 		if !strings.Contains(result, "claude instructions") {
 			t.Errorf("expected CLAUDE.md fallback, got %q", result)
 		}
@@ -638,7 +638,7 @@ func TestLoadProjectInstructions_Hierarchy(t *testing.T) {
 		os.WriteFile(filepath.Join(root, "CLAUDE.md"), []byte("claude instructions"), 0o644)
 		os.Chdir(root)
 
-		result := loadProjectInstructions()
+		result := loadProjectInstructionSet().Resolve("", "")
 		if !strings.Contains(result, "agents instructions") {
 			t.Errorf("expected AGENTS.md content, got %q", result)
 		}

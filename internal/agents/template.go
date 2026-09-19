@@ -78,10 +78,18 @@ type TemplateContext struct {
 	HandoverDir  string // XDG handover directory for the current project
 	HandoverPath string // Full handover file path (date + random slug)
 
-	// Project agent instructions (dynamically discovered)
-	// Searches in priority order: AGENTS.md, CLAUDE.md, .github/copilot-instructions.md,
-	// .cursor/rules, CONTRIBUTING.md - returns first found
+	// Project agent instructions (dynamically discovered), already resolved for
+	// the current Provider/Model. Searches in priority order: AGENTS.md,
+	// CLAUDE.md, .github/copilot-instructions.md, .cursor/rules, CONTRIBUTING.md.
+	// Callers may set this directly; a later WithLLM only recomputes it when the
+	// value came from discovery.
 	Agents string
+
+	// agentsSet preserves discovered parts so WithLLM can re-resolve user-level
+	// model gates once Provider/Model are known. Zero value means Agents was set
+	// directly and is used verbatim.
+	agentsSet       instructionSet
+	agentsSetLoaded bool
 
 	// Optional capability instructions.
 	FileTracking bool
@@ -175,7 +183,11 @@ func newTemplateContextInDir(dir string, computeGitInfo, computeGitDiffStat, com
 
 	// Only load project instructions if needed (reads files from disk)
 	if computeAgents {
-		ctx.Agents = loadProjectInstructions(dir)
+		ctx.agentsSet = loadProjectInstructionSet(dir)
+		ctx.agentsSetLoaded = true
+		// No model is known yet, so this keeps every gated block. WithLLM
+		// re-resolves once the active provider/model arrives.
+		ctx.Agents = ctx.agentsSet.Resolve(ctx.Provider, ctx.Model)
 	}
 
 	// Compute handover directory and path if needed
@@ -245,6 +257,11 @@ func (c TemplateContext) WithLLM(provider, model string) TemplateContext {
 		c.ProviderModel = c.Model
 	default:
 		c.ProviderModel = ""
+	}
+	// Discovery runs before the model is known, so user-level model gates are
+	// resolved here. A directly supplied Agents value is left untouched.
+	if c.agentsSetLoaded {
+		c.Agents = c.agentsSet.Resolve(c.Provider, c.Model)
 	}
 	return c
 }
@@ -511,7 +528,8 @@ var fallbackInstructionFiles = []string{
 	".github/CONTRIBUTING.md",         // GitHub-style location
 }
 
-// DiscoverProjectInstructions loads project instructions using a unified algorithm:
+// DiscoverProjectInstructionsInDir loads project instructions relative to dir
+// using a unified algorithm:
 //
 //  1. User-level: ~/.config/term-llm/AGENTS.md
 //  2. Project-level: hierarchical AGENTS.md from repo root → cwd
@@ -520,36 +538,63 @@ var fallbackInstructionFiles = []string{
 //
 // All found parts are joined with "\n\n---\n\n".
 // Returns empty string if nothing is found.
-func DiscoverProjectInstructions() string {
-	cwd, _ := os.Getwd()
-	return DiscoverProjectInstructionsInDir(cwd)
+//
+// Model gate markers ("[[[provider:model]]]") are honoured only in the
+// user-level file and are resolved against provider/model. Passing an empty
+// provider and model keeps every gated block and strips the markers, which is
+// the right behavior for previews. Project files are never gate-filtered, so a
+// shared repository file behaves identically for every model and for every
+// other tool that reads it.
+func DiscoverProjectInstructionsInDir(dir, provider, model string) string {
+	return loadProjectInstructionSet(dir).Resolve(provider, model)
 }
 
-// DiscoverProjectInstructionsInDir loads project instructions relative to dir.
-func DiscoverProjectInstructionsInDir(dir string) string {
-	return loadProjectInstructions(dir)
+// instructionSet keeps the user-level part separate from project parts so model
+// gating can apply to the user's own file only.
+type instructionSet struct {
+	// User is the content of ~/.config/term-llm/AGENTS.md, the only part where
+	// model gate markers are honoured.
+	User string
+	// Project holds hierarchical project files (or the fallback file) in load
+	// order. These are always passed through verbatim.
+	Project []string
 }
 
-// loadProjectInstructions implements the unified project instructions loading.
-func loadProjectInstructions(runtimeDirs ...string) string {
+// Resolve filters user-level model gates and joins every part. An empty
+// provider and model keeps all gated content and strips only the markers.
+func (s instructionSet) Resolve(provider, model string) string {
+	var parts []string
+	if user := FilterInstructionsForModel(s.User, provider, model); strings.TrimSpace(user) != "" {
+		parts = append(parts, user)
+	}
+	parts = append(parts, s.Project...)
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "\n\n---\n\n")
+}
+
+// loadProjectInstructionSet implements the unified project instructions loading
+// while preserving part provenance, so gating can apply to the user file only.
+func loadProjectInstructionSet(runtimeDirs ...string) instructionSet {
 	cwd := ""
 	if len(runtimeDirs) > 0 {
 		cwd = runtimeDirs[0]
 	} else {
 		cwd, _ = os.Getwd()
 	}
-	var parts []string
+	var set instructionSet
 
 	// 1. User-level AGENTS.md (~/.config/term-llm/AGENTS.md)
 	if configDir, err := config.GetConfigDir(); err == nil {
 		userAgentsPath := filepath.Join(configDir, "AGENTS.md")
 		if content, err := os.ReadFile(userAgentsPath); err == nil && len(content) > 0 {
-			parts = append(parts, string(content))
+			set.User = string(content)
 		}
 	}
 
 	if strings.TrimSpace(cwd) == "" {
-		return strings.Join(parts, "\n\n---\n\n")
+		return set
 	}
 	if abs, err := filepath.Abs(cwd); err == nil {
 		cwd = abs
@@ -586,19 +631,15 @@ func loadProjectInstructions(runtimeDirs ...string) string {
 	}
 
 	if len(projectParts) > 0 {
-		parts = append(parts, projectParts...)
+		set.Project = projectParts
 	} else {
 		// 3. Fallback: search cwd → root for first match
-		fallback := findFallbackInstructions(cwd, repoRoot)
-		if fallback != "" {
-			parts = append(parts, fallback)
+		if fallback := findFallbackInstructions(cwd, repoRoot); fallback != "" {
+			set.Project = []string{fallback}
 		}
 	}
 
-	if len(parts) == 0 {
-		return ""
-	}
-	return strings.Join(parts, "\n\n---\n\n")
+	return set
 }
 
 // findFallbackInstructions searches from cwd up to repoRoot for the first
