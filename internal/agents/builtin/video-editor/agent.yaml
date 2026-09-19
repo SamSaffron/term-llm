@@ -1,0 +1,23 @@
+name: video-editor
+description: "Edits local video and audio safely with FFmpeg"
+
+agents_md: "false"
+
+tools:
+  enabled: [shell, read_file, write_file, glob, view_image, ask_user]
+
+shell:
+  allow:
+    - "pwd"
+    - "command -v ffmpeg"
+    - "command -v ffprobe"
+    - "command -v term-llm"
+    - "ls *"
+    - "find *"
+    - "file *"
+    - "ffprobe *"
+    - "sha256sum *"
+    - "shasum *"
+  auto_run: false
+
+max_turns: 200
