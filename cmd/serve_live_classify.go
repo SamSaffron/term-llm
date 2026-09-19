@@ -39,6 +39,17 @@ var newLiveClassifyClient = func(options typesafe.Options) (classifyClient, erro
 	return typesafe.NewClient(options)
 }
 
+// closeLiveDecisionStore closes the decision store on server shutdown. A nil
+// store (logging disabled or classify not selected) is a no-op.
+func closeLiveDecisionStore(store *liveclassify.DecisionStore) {
+	if store == nil {
+		return
+	}
+	if err := store.Close(); err != nil {
+		log.Printf("[serve] close live decision store: %v", err)
+	}
+}
+
 func prepareLiveClassify(cfg *config.Config) (*liveclassify.Classifier, *liveclassify.DecisionStore, error) {
 	if cfg == nil || cfg.Live.ControlPlane != config.LiveControlPlaneClassify {
 		return nil, nil, nil
@@ -182,47 +193,59 @@ func (r *serveLiveClassifyRouter) Route(ctx context.Context, request live.RouteR
 		SwitchSession: cfg.MinConfidence.SwitchSession, SteerNow: cfg.MinConfidence.SteerNow, Side: cfg.MinConfidence.Side,
 	})
 	record.GatedLabel = gated
-	if cfg.Shadow || gated == liveclassify.IntentSteer {
-		return live.RouteResult{Input: request.Input}, nil
+	result, failure := r.act(ctx, cfg, gated, sessionID, request, &record)
+	if failure != "" {
+		routeFailure = failure
 	}
+	return result, nil
+}
 
+// act performs the host action for a gated label. It returns the route result
+// and, when the action failed and the request fell open, the bounded error
+// category to log. Shadow mode and steer never act: the original input passes
+// through untouched.
+func (r *serveLiveClassifyRouter) act(ctx context.Context, cfg config.LiveClassifyConfig, gated string, sessionID string, request live.RouteRequest, record *liveclassify.DecisionRecord) (live.RouteResult, string) {
+	passThrough := live.RouteResult{Input: request.Input}
+	if cfg.Shadow || gated == liveclassify.IntentSteer {
+		return passThrough, ""
+	}
 	switch gated {
 	case liveclassify.IntentStatus:
 		answer, err := r.server.liveClassifyStatus(ctx)
 		if err != nil {
-			return failOpen(liveDecisionErrorStatus, err)
+			return passThrough, liveDecisionErrorStatus
 		}
 		record.ActedLabel = gated
-		return live.RouteResult{Handled: true, Answer: answer}, nil
+		return live.RouteResult{Handled: true, Answer: answer}, ""
 	case liveclassify.IntentNewSession:
 		created, err := r.server.startLiveNewSession(ctx, r.live, tools.LiveNewSessionRequest{})
 		if err != nil {
-			return failOpen(liveDecisionErrorNewSession, fmt.Errorf("live classify new session: %w", err))
+			return passThrough, liveDecisionErrorNewSession
 		}
 		record.ActedLabel = gated
 		answer := "Started a new conversation and moved the call to it."
 		if created.SessionNumber > 0 {
 			answer = fmt.Sprintf("Started a new conversation and moved the call to session #%d.", created.SessionNumber)
 		}
-		return live.RouteResult{Handled: true, Answer: answer}, nil
+		return live.RouteResult{Handled: true, Answer: answer}, ""
 	case liveclassify.IntentSwitchSession:
 		if r.resolver == nil {
-			return failOpen(liveDecisionErrorResolver, fmt.Errorf("live switch resolver is unavailable"))
+			return passThrough, liveDecisionErrorResolver
 		}
 		outcome, err := r.resolver()(ctx, sessionID, request)
 		record.ResolverOutcome = string(outcome.Kind)
 		if err != nil {
-			return failOpen(liveDecisionErrorResolver, err)
+			return passThrough, liveDecisionErrorResolver
 		}
 		switch outcome.Kind {
 		case liveSwitchResolverSucceeded, liveSwitchResolverRefused, liveSwitchResolverAmbiguous:
 			record.ActedLabel = gated
-			return live.RouteResult{Handled: true, Answer: outcome.Answer}, nil
+			return live.RouteResult{Handled: true, Answer: outcome.Answer}, ""
 		default:
-			return live.RouteResult{Input: request.Input}, nil
+			return passThrough, ""
 		}
 	default:
-		return live.RouteResult{Input: request.Input}, nil
+		return passThrough, ""
 	}
 }
 

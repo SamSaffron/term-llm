@@ -561,6 +561,22 @@ func liveDiagnosticNumber(value, maximum float64) bool {
 }
 
 // handleLiveSessions starts a live voice call bound to a chat session.
+// liveOfferProblem validates the SDP offer for the selected provider and
+// returns the client-facing rejection, or "" when the offer is acceptable.
+// Gemini uses server-proxied PCM and therefore has no SDP to check.
+func liveOfferProblem(provider, offer string) string {
+	if strings.TrimSpace(provider) == config.LiveProviderGemini {
+		return ""
+	}
+	if strings.TrimSpace(offer) == "" {
+		return "sdp is required"
+	}
+	if len(offer) > liveSDPLimitBytes {
+		return "sdp offer is too large"
+	}
+	return ""
+}
+
 func (s *serveServer) handleLiveSessions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -580,15 +596,9 @@ func (s *serveServer) handleLiveSessions(w http.ResponseWriter, r *http.Request)
 	// the last, to end with CRLF, so trimming it makes the provider's parser
 	// fail with EOF. Gemini uses server-proxied PCM and therefore has no SDP.
 	offer := request.SDP
-	if strings.TrimSpace(s.liveConfig().Provider) != config.LiveProviderGemini {
-		if strings.TrimSpace(offer) == "" {
-			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "sdp is required")
-			return
-		}
-		if len(offer) > liveSDPLimitBytes {
-			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "sdp offer is too large")
-			return
-		}
+	if problem := liveOfferProblem(s.liveConfig().Provider, offer); problem != "" {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", problem)
+		return
 	}
 	delegationMode, delegationContext, err := liveDelegationStart(request)
 	if err != nil {

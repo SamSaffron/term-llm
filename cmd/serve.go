@@ -717,24 +717,13 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		if liveClassifyErr != nil {
 			return liveClassifyErr
 		}
-		if liveDecisionStore != nil {
-			defer func() {
-				if err := liveDecisionStore.Close(); err != nil {
-					log.Printf("[serve] close live decision store: %v", err)
-				}
-			}()
-		}
+		defer closeLiveDecisionStore(liveDecisionStore)
 
-		var widgetsMgr *widgets.Manager
-		if serveWidgetsEnabled(hasWeb, serveDisableWidgets) {
-			wDir, wErr := resolveWidgetsDir(serveWidgetsDir, cfg)
-			if wErr != nil {
-				return wErr
-			}
-			widgetsMgr = widgets.NewManager(wDir, serveBasePath)
-			defer installWidgetStopSignal(ctx, widgetsMgr)()
-			log.Printf("widgets enabled, dir: %s", wDir)
+		widgetsMgr, stopWidgets, widgetsErr := setupServeWidgets(ctx, cfg, hasWeb)
+		if widgetsErr != nil {
+			return widgetsErr
 		}
+		defer stopWidgets()
 
 		s = &serveServer{
 			browserAuth: browserAuth,
@@ -1244,6 +1233,22 @@ func serveWidgetsEnabled(hasWeb, disabled bool) bool {
 }
 
 // resolveWidgetsDir returns the widgets directory, defaulting to ~/.config/term-llm/widgets.
+// setupServeWidgets builds the widgets manager when widgets are enabled and
+// installs its stop signal. The returned stop function is always safe to defer.
+func setupServeWidgets(ctx context.Context, cfg *config.Config, hasWeb bool) (*widgets.Manager, func(), error) {
+	if !serveWidgetsEnabled(hasWeb, serveDisableWidgets) {
+		return nil, func() {}, nil
+	}
+	wDir, err := resolveWidgetsDir(serveWidgetsDir, cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	mgr := widgets.NewManager(wDir, serveBasePath)
+	stop := installWidgetStopSignal(ctx, mgr)
+	log.Printf("widgets enabled, dir: %s", wDir)
+	return mgr, stop, nil
+}
+
 func resolveWidgetsDir(flagVal string, cfg *config.Config) (string, error) {
 	if flagVal != "" {
 		return flagVal, nil
