@@ -40,18 +40,25 @@ When binding to a wildcard address (`0.0.0.0` or `::`), the printed URL uses `12
 From another terminal (or machine), add the server as an MCP endpoint:
 
 ```bash
-term-llm mcp add http://devbox:8080/mcp   # prompted for token
+term-llm mcp add http://devbox:8080/mcp
+```
+
+This registers the URL without prompting for a token. Edit the file printed by `term-llm mcp path` and set `servers.devbox.headers` to `{"Authorization":"Bearer <server-token>"}`, replacing `<server-token>` with the auth token printed by the server. Then verify and use the tools:
+
+```bash
 term-llm mcp info devbox                    # verify tools
 term-llm mcp run devbox shell command="echo hello"
 term-llm chat --mcp devbox "what files are in this directory?"
 ```
 
-Via SSH tunnel (no `--token` needed since traffic stays on localhost):
+Via SSH tunnel (the same bearer-token authentication is required):
 
 ```bash
 ssh -L 8080:localhost:8080 devbox 'term-llm serve mcp --tools all'
 term-llm mcp add http://localhost:8080/mcp
 ```
+
+Set `servers.localhost.headers` in the same config file to `{"Authorization":"Bearer <server-token>"}`, using the token printed by the tunneled server. Omitting server-side `--token` generates a token; it does not disable authentication.
 
 ## Available tools
 
