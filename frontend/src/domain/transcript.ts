@@ -766,6 +766,8 @@ export function sanitizeSession(
     mode: text(source.mode) || 'chat',
     origin: text(source.origin) || 'web',
     agent: text(source.agent),
+    parentSessionId: text(source.parent_session_id || source.parentSessionId),
+    delegated: Boolean(source.delegated),
     archived,
     pinned: Boolean(source.pinned),
     created: timestamp(source.created_at || source.created),
@@ -1176,7 +1178,12 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
     if (message.role !== 'tool-group') continue;
     for (const tool of message.tools || []) {
       const terminal = tool.endedAt !== undefined || tool.resultStatus !== undefined;
-      if (!terminal && (tool.status !== 'running' || tool.startedAt === undefined)) continue;
+      if (
+        !terminal &&
+        (tool.status !== 'running' ||
+          (tool.startedAt === undefined && tool.subagentProgress === undefined))
+      )
+        continue;
       const durableMessage = durableToolMessage(message, tool);
       const durableTool = durableMessage?.tools?.find((candidate) => candidate.id === tool.id);
       if (!durableMessage || !durableTool) continue;
@@ -1188,11 +1195,16 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
         durableTool.status === 'cancelled';
       if (durableTerminal && (!terminal || tool.status !== durableTool.status)) continue;
       // Explicit saved results own their content; only supplement their timing.
-      // A running projection owns status/start time, not finalized saved arguments.
+      // A running projection owns status, timing, and live delegation progress,
+      // not finalized saved arguments.
       const overlay: Partial<ToolCall> = durableTerminal
         ? { startedAt: tool.startedAt, endedAt: tool.endedAt, durationMs: tool.durationMs }
         : !terminal
-          ? { status: tool.status, startedAt: tool.startedAt }
+          ? {
+              status: tool.status,
+              startedAt: tool.startedAt,
+              subagentProgress: tool.subagentProgress,
+            }
           : tool;
       const defined = Object.fromEntries(
         Object.entries(overlay).filter(([, value]) => value !== undefined),

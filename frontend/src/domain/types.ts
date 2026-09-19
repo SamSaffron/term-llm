@@ -223,6 +223,10 @@ export interface Session {
   mode: string;
   origin: string;
   agent?: string;
+  /** Parent of a machine-delegated transcript; absent for top-level conversations. */
+  parentSessionId?: string;
+  /** Delegated transcripts are readable but cannot start a top-level response. */
+  delegated?: boolean;
   archived: boolean;
   pinned: boolean;
   created: number;

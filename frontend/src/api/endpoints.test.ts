@@ -60,6 +60,25 @@ describe('session mutation request contracts', () => {
   });
 });
 
+describe('delegated child provenance', () => {
+  it('uses an ETag cursor for child link discovery', async () => {
+    const request = vi.fn(async () => new Response(null, { status: 304, headers: { ETag: 'v2' } }));
+    const routes = endpoints({ request } as unknown as APIClient);
+    const controller = new AbortController();
+
+    await expect(routes.sessionChildren('parent/one', controller.signal, 'v1')).resolves.toEqual({
+      children: [],
+      __notModified: true,
+      __etag: 'v2',
+    });
+    expect(request).toHaveBeenCalledWith(
+      '/v1/sessions/parent%2Fone/children',
+      { signal: controller.signal, headers: { 'If-None-Match': 'v1' } },
+      { policy: 'safe-read' },
+    );
+  });
+});
+
 describe('commit publishing endpoints', () => {
   it('previews with a network-sized timeout and submits an idempotent operation', async () => {
     const get = vi.fn(async () => ({}));

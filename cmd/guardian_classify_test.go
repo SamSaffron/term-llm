@@ -149,6 +149,73 @@ func TestGuardianClassifyConfigRenderingAndCompletion(t *testing.T) {
 	}
 }
 
+func TestGuardianClassifyOversizeFailsClosedWithoutCallingProvider(t *testing.T) {
+	stub := &guardianClassifyStub{}
+	original := newGuardianClassifyClient
+	newGuardianClassifyClient = func(typesafe.Options) (classifyClient, error) { return stub, nil }
+	t.Cleanup(func() { newGuardianClassifyClient = original })
+	cfg := &config.Config{
+		Guardian: config.GuardianConfig{Backend: "classify", TimeoutSeconds: 2},
+		Classify: config.ClassifyConfig{Providers: map[string]config.ClassifyProviderConfig{"typesafe": {APIKey: "test-key"}}},
+	}
+	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
+	defer mgr.Close()
+	if err := applyResolvedApprovalMode(cfg, mgr, resolvedApprovalMode{Mode: tools.ModeAuto}, approvalRuntimeOptions{Headless: true}); err != nil {
+		t.Fatal(err)
+	}
+	var events []tools.GuardianEvent
+	mgr.GuardianEventFunc = func(event tools.GuardianEvent) { events = append(events, event) }
+	for i := 0; i < 3; i++ {
+		outcome, err := mgr.CheckShellApprovalWithContext(context.Background(), "echo "+strings.Repeat("x", 25000), t.TempDir(), []tools.TranscriptEntry{{Role: "user", Text: "Run the local check"}})
+		if err == nil || !strings.Contains(err.Error(), "manual approval") || outcome != tools.Cancel {
+			t.Fatalf("outcome=%v error=%v", outcome, err)
+		}
+	}
+	if stub.calls != 0 || mgr.ApprovalMode() != tools.ModeAuto {
+		t.Fatalf("budget errors must not call the provider or trip the policy-denial breaker: calls=%d mode=%s", stub.calls, mgr.ApprovalMode())
+	}
+	if len(events) != 3 {
+		t.Fatalf("events=%d, want 3", len(events))
+	}
+	for _, event := range events {
+		if event.Outcome != tools.GuardianError || event.StateBytes == 0 {
+			t.Fatalf("missing budget failure event metadata: %+v", event)
+		}
+	}
+}
+
+func TestGuardianClassifyLongHistoryStillReviewsShell(t *testing.T) {
+	stub := &guardianClassifyStub{}
+	original := newGuardianClassifyClient
+	newGuardianClassifyClient = func(typesafe.Options) (classifyClient, error) { return stub, nil }
+	t.Cleanup(func() { newGuardianClassifyClient = original })
+	cfg := &config.Config{
+		Guardian: config.GuardianConfig{Backend: "classify", TimeoutSeconds: 2},
+		Classify: config.ClassifyConfig{Providers: map[string]config.ClassifyProviderConfig{"typesafe": {APIKey: "test-key"}}},
+	}
+	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
+	defer mgr.Close()
+	if err := applyResolvedApprovalMode(cfg, mgr, resolvedApprovalMode{Mode: tools.ModeAuto}, approvalRuntimeOptions{Headless: true}); err != nil {
+		t.Fatal(err)
+	}
+	transcript := []tools.TranscriptEntry{
+		{Role: "parent_user", Text: strings.Repeat("Earlier parent task context. ", 3000)},
+		{Role: "user", Text: "Run the local regression test once more."},
+	}
+	command := "go test ./cmd -run '^TestHostedChildApprovalPolicyUsesServerDefault$' -count=1"
+	outcome, err := mgr.CheckShellApprovalWithContext(context.Background(), command, t.TempDir(), transcript)
+	if err != nil || outcome != tools.ProceedAlways || stub.calls != 1 {
+		t.Fatalf("routine shell command was blocked by history size: outcome=%v calls=%d error=%v", outcome, stub.calls, err)
+	}
+	decision, err := mgr.ReviewPolicy(context.Background(), tools.PolicyReviewRequest{
+		Command: command, Transcript: transcript,
+		ApprovalContext: strings.Repeat("session_shell_command=\"old command\" workdir=\"/work\"\n", 2000),
+	})
+	if err != nil || !decision.Allowed || stub.calls != 2 {
+		t.Fatalf("accumulated approvals blocked review: decision=%+v calls=%d error=%v", decision, stub.calls, err)
+	}
+}
+
 func TestGuardianClassifyWiringPreservesActions(t *testing.T) {
 	stub := &guardianClassifyStub{}
 	original := newGuardianClassifyClient

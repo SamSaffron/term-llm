@@ -268,6 +268,21 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, status, errorType, message)
 		return
 	}
+	// A delegated transcript is readable, not writable. A disabled composer only
+	// communicates that intent; once a child is an ordinary selectable session,
+	// every generic session action becomes reachable through this API, so the
+	// fence has to live here. Corrections use the ordinary session steering and
+	// response cancellation endpoints rather than starting a rival response.
+	//
+	// Checked again below on the resolved session ID: this early rejection keeps
+	// an explicit header from reaching any of the branch/resume machinery.
+	if delegated, delegatedErr := s.sessionIsDelegatedRun(ctx, headerSessionID); delegatedErr != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to look up session")
+		return
+	} else if delegated {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", delegatedSessionWriteMessage)
+		return
+	}
 	draftID := strings.TrimSpace(r.Header.Get(requestDraftIDHeader))
 	if draftID != "" && (!isFirstPartyUIResponseRequest(r) || headerSessionID != "" || req.PreviousResponseID != "" || !validResponseDraftID(draftID)) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "draft id is only valid for a first-party new conversation")
@@ -377,6 +392,17 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		// External Responses API semantics: no previous_response_id means the
 		// supplied input is the new whole conversation for this persisted ID.
 		replaceHistory = true
+	}
+
+	// Fence the resolved identity, not just the header. previous_response_id
+	// reaches a session by a different key, and L0 made child transcripts — and
+	// therefore their durable response IDs — ordinary things a client now holds.
+	if delegated, delegatedErr := s.sessionIsDelegatedRun(ctx, sessionID); delegatedErr != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to look up session")
+		return
+	} else if delegated {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", delegatedSessionWriteMessage)
+		return
 	}
 
 	if draftID != "" {

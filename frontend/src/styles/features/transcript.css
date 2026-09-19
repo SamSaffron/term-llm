@@ -1,5 +1,34 @@
 /* Chat transcript: messages, markdown, code blocks, math, tools and turns. */
 
+.delegated-presence {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex: 0 0 auto;
+  width: min(900px, calc(100% - 2.2rem));
+  margin: 0.7rem auto 0;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.83rem;
+  box-sizing: border-box;
+}
+
+.delegated-presence .text-action {
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.delegated-parent-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
 .chat-scroll {
   min-height: 0;
   min-width: 0;
@@ -1173,9 +1202,7 @@
 }
 
 .subagent-result {
-  margin: 0.25rem 0.75rem 0.5rem 2rem;
-  display: grid;
-  gap: 0.4rem;
+  margin: 0.5rem 0 0;
 }
 
 .subagent-result-output {

@@ -16,7 +16,10 @@ import { rebaseHubAssetURL } from '../app/config';
 import type { MarkdownMediaResolver } from '../domain/markdown';
 import { responseActivity } from '../domain/activity';
 import type { AppStore } from '../stores/app-store';
-import { TRANSCRIPT_SCROLL_TO_TAIL_EVENT } from './transcript-scroll';
+import {
+  TRANSCRIPT_SCROLL_TO_DURABLE_EVENT,
+  TRANSCRIPT_SCROLL_TO_TAIL_EVENT,
+} from './transcript-scroll';
 import { formatElapsedDuration, subscribeElapsedClock } from '../platform/elapsed-clock';
 
 function publishedMediaURL(store: AppStore, value: string): string {
@@ -404,6 +407,20 @@ function SubagentQuietPeriod({
   );
 }
 
+function subagentChildSessionId(store: AppStore, tool: ToolCall): string {
+  if (tool.name.toLowerCase() !== 'spawn_agent') return '';
+  return (
+    String(tool.subagent?.childSessionId || '') ||
+    String(
+      store.childSessionStore.children.value.find(
+        (child) =>
+          child.parent_session_id === store.activeSessionId.value &&
+          child.parent_spawn_call_id === tool.id,
+      )?.session_id || '',
+    )
+  );
+}
+
 function subagentActivity(tool: ToolCall): string {
   const progress = tool.subagentProgress;
   if (progress && ['completed', 'failed', 'cancelled'].includes(progress.state)) return '';
@@ -438,6 +455,9 @@ function SubagentProgressLine({
     ) : null;
   }
   if (name !== 'spawn_agent' && name !== 'wait_for_jobs') return null;
+  // Result metadata only arrives after completion. While a spawn is running,
+  // join its call ID to child provenance instead.
+  const childSessionId = subagentChildSessionId(store, tool);
   const parts: string[] = [];
   const activity = subagentActivity(tool);
   if (name === 'wait_for_jobs') {
@@ -469,7 +489,7 @@ function SubagentProgressLine({
   const running =
     tool.status === 'running' &&
     (!progress || !['completed', 'failed', 'cancelled'].includes(progress.state));
-  return parts.length ? (
+  return parts.length || childSessionId ? (
     <div class="tool-progress">
       {labelled && (
         <strong>
@@ -484,6 +504,20 @@ function SubagentProgressLine({
         active={tickElapsed}
         interrupted={store.runLivenessUnknown.value}
       />
+      {childSessionId && (
+        <>
+          {parts.length > 0 && ' · '}
+          <button
+            class="text-action"
+            type="button"
+            onClick={() =>
+              void store.resolveAndSelectSession(childSessionId, false, { prepend: false })
+            }
+          >
+            Open subagent
+          </button>
+        </>
+      )}
     </div>
   ) : null;
 }
@@ -619,31 +653,13 @@ const Tool = memo(function Tool({
                 <code>{tool.result}</code>
               </pre>
             )}
-            {tool.subagent && (
-              <div class="subagent-result">
-                <strong>{String(tool.subagent.agentName || 'Agent')}</strong>
-                {tool.subagent.output && (
-                  <Markdown
-                    value={String(tool.subagent.output)}
-                    className="markdown-body"
-                    resolveMedia={resolveMedia}
-                    onMedia={(source, type) => openMediaGallery(store, source, type)}
-                  />
-                )}
-                {tool.subagent.childSessionId && (
-                  <button
-                    class="text-action"
-                    onClick={() => {
-                      const session = store.sessions.value.find(
-                        (entry) => entry.id === tool.subagent?.childSessionId,
-                      );
-                      if (session) void store.selectSession(session);
-                    }}
-                  >
-                    Open child conversation
-                  </button>
-                )}
-              </div>
+            {tool.subagent?.output && (
+              <Markdown
+                value={String(tool.subagent.output)}
+                className="subagent-result markdown-body"
+                resolveMedia={resolveMedia}
+                onMedia={(source, type) => openMediaGallery(store, source, type)}
+              />
             )}
             {failureReason && (
               <div class="tool-failure-reason" role="alert">
@@ -665,6 +681,7 @@ function ToolGroup({
   tools: ToolCall[];
   resolveMedia: MarkdownMediaResolver;
 }) {
+  const store = useStore();
   const visible = tools.filter(
     (tool) =>
       !(tool.name === 'update_plan' && tool.status === 'done' && tool.resultStatus !== 'error'),
@@ -690,7 +707,8 @@ function ToolGroup({
     return (
       tool.subagentProgress ||
       name === 'wait_for_jobs' ||
-      (name === 'spawn_agent' && tool.status === 'running')
+      (name === 'spawn_agent' &&
+        (tool.status === 'running' || Boolean(subagentChildSessionId(store, tool))))
     );
   });
   const previews = delegations.slice(0, 3);
@@ -1092,7 +1110,7 @@ const MessageRow = memo(function MessageRow({
   };
   if (message.role === 'tool-group')
     return (
-      <div class="tool-group" data-message-id={message.id}>
+      <div class="tool-group" data-message-id={message.id} data-durable-id={message.durableRowId}>
         <ToolGroup tools={message.tools || []} resolveMedia={resolveMedia} />
       </div>
     );
@@ -1144,6 +1162,7 @@ const MessageRow = memo(function MessageRow({
       <article
         class={`message skill-run skill-${message.status || 'running'}`}
         data-message-id={message.id}
+        data-durable-id={message.durableRowId}
       >
         <div class="message-body">
           <strong>{String(message.skill || 'Skill')}</strong>
@@ -1168,14 +1187,13 @@ const MessageRow = memo(function MessageRow({
           {message.childSessionId && (
             <button
               class="text-action"
-              onClick={() => {
-                const child = store.sessions.value.find(
-                  (entry) => entry.id === message.childSessionId,
-                );
-                if (child) void store.selectSession(child);
-              }}
+              onClick={() =>
+                void store.resolveAndSelectSession(String(message.childSessionId || ''), false, {
+                  prepend: false,
+                })
+              }
             >
-              Open child conversation
+              Open skill run
             </button>
           )}
         </div>
@@ -1463,17 +1481,35 @@ export function Transcript() {
       setNearTail(true);
       scrollToTail();
     };
+    const scrollToDurable = (event: Event) => {
+      const durableId = Number((event as CustomEvent<unknown>).detail);
+      if (!Number.isSafeInteger(durableId) || durableId <= 0) return;
+      const row = [...element.querySelectorAll<HTMLElement>('[data-durable-id]')].find(
+        (candidate) => Number(candidate.dataset.durableId) === durableId,
+      );
+      if (!row) return;
+      stickToTail.current = false;
+      programmaticScrollTops.current = [];
+      element.scrollTop +=
+        row.getBoundingClientRect().top - element.getBoundingClientRect().top - 16;
+      setNearTail(false);
+    };
     scrollToTail();
     element.addEventListener(TRANSCRIPT_SCROLL_TO_TAIL_EVENT, forceScrollToTail);
+    element.addEventListener(TRANSCRIPT_SCROLL_TO_DURABLE_EVENT, scrollToDurable);
 
     if (typeof ResizeObserver !== 'function') {
-      return () => element.removeEventListener(TRANSCRIPT_SCROLL_TO_TAIL_EVENT, forceScrollToTail);
+      return () => {
+        element.removeEventListener(TRANSCRIPT_SCROLL_TO_TAIL_EVENT, forceScrollToTail);
+        element.removeEventListener(TRANSCRIPT_SCROLL_TO_DURABLE_EVENT, scrollToDurable);
+      };
     }
     const observer = new ResizeObserver(scrollToTail);
     observer.observe(contents);
     return () => {
       observer.disconnect();
       element.removeEventListener(TRANSCRIPT_SCROLL_TO_TAIL_EVENT, forceScrollToTail);
+      element.removeEventListener(TRANSCRIPT_SCROLL_TO_DURABLE_EVENT, scrollToDurable);
     };
   }, [store.activeSession.value?.id]);
   useLayoutEffect(() => {
@@ -1597,7 +1633,7 @@ export function Transcript() {
             ? null
             : run.messages?.map((message) => {
                 const context = rowContexts.get(message);
-                const streaming = Boolean(
+                const messageStreaming = Boolean(
                   store.streaming.value &&
                   activeRun &&
                   message.role === 'assistant' &&
@@ -1608,7 +1644,7 @@ export function Transcript() {
                   <MessageRow
                     key={message.id}
                     message={message}
-                    streaming={streaming}
+                    streaming={messageStreaming}
                     responseText={context?.responseText || message.content}
                     copyTarget={context?.copyTarget === true}
                     resolveMedia={resolverForMessage(message.id, mediaByReference)}

@@ -11,6 +11,7 @@ function harness() {
     status: vi.fn(async () => undefined),
     active: vi.fn(async () => undefined),
     files: vi.fn(async () => undefined),
+    children: vi.fn(async () => undefined),
     recovery: vi.fn(async () => undefined),
     health: vi.fn(),
   };
@@ -21,6 +22,7 @@ function harness() {
     reconcileStatus: calls.status,
     reconcileActiveSession: calls.active,
     reconcileFiles: calls.files,
+    reconcileChildren: calls.children,
     authoritativeRecovery: calls.recovery,
     eventFeedHealthChanged: calls.health,
   };
@@ -148,10 +150,36 @@ describe('ServerEventCoordinator', () => {
     coordinator.dispose();
   });
 
+  it('refreshes the active parent projection for children.changed', async () => {
+    vi.useFakeTimers();
+    const { coordinator, calls } = harness();
+    const internals = coordinator as unknown as {
+      route(event: {
+        v: 1;
+        sequence: number;
+        instanceId: string;
+        type: 'children.changed';
+        occurredAt: number;
+        parentSessionId: string;
+      }): void;
+    };
+    internals.route({
+      v: 1,
+      sequence: 6,
+      instanceId: 'evt_test',
+      type: 'children.changed',
+      occurredAt: 1,
+      parentSessionId: 'parent-1',
+    });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(calls.children).toHaveBeenCalledWith('parent-1');
+    coordinator.dispose();
+  });
+
   it('falls back to long poll when an SSE connection never flushes ready bytes', async () => {
     vi.useFakeTimers();
     const { coordinator, endpoints, diagnostics } = harness();
-    coordinator.updateInterest('s1');
+    coordinator.updateInterest('s1', 's1');
     const prepared = coordinator.prepare();
 
     await vi.advanceTimersByTimeAsync(2_100);
@@ -163,7 +191,11 @@ describe('ServerEventCoordinator', () => {
 
     expect(diagnostics).toContain('serverEventSSEJams');
     expect(diagnostics).toContain('serverEventPollFallbacks');
-    expect(endpoints.serverEventStream.mock.calls[0]?.[1]).toEqual(['session:s1', 'files:s1']);
+    expect(endpoints.serverEventStream.mock.calls[0]?.[1]).toEqual([
+      'session:s1',
+      'files:s1',
+      'children:s1',
+    ]);
     coordinator.dispose();
   });
 });

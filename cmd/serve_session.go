@@ -25,6 +25,7 @@ type serveSessionManager struct {
 	preparationSlots int
 	mu               sync.Mutex
 	sessions         map[string]*serveRuntime
+	borrowed         map[string]*serveRuntime
 	creating         map[string]*sessionCreateInFlight
 	closed           bool
 	stopCh           chan struct{}
@@ -103,6 +104,7 @@ func newServeSessionManager(ttl time.Duration, max int, factory func(context.Con
 		factory:           factory,
 		retirementTimeout: defaultServeSessionRetirementTimeout,
 		sessions:          make(map[string]*serveRuntime),
+		borrowed:          make(map[string]*serveRuntime),
 		creating:          make(map[string]*sessionCreateInFlight),
 		stopCh:            make(chan struct{}),
 	}
@@ -232,6 +234,45 @@ func (m *serveSessionManager) Get(id string) (*serveRuntime, bool) {
 		rt.Touch()
 	}
 	return rt, ok
+}
+
+// attachBorrowedRuntime exposes a caller-owned runtime to the standard session
+// control plane for the lifetime of one response run. The exact identity is
+// reserved against eviction and removed without closing; the response executor
+// remains the sole runtime owner.
+func (m *serveSessionManager) attachBorrowedRuntime(id string, rt *serveRuntime) (func(), error) {
+	if m == nil || rt == nil || id == "" {
+		return nil, errServeSessionBusy
+	}
+	op := m.sessionOperation(id)
+	op.Lock()
+	m.mu.Lock()
+	if m.closed || m.creating[id] != nil || m.sessions[id] != nil {
+		m.mu.Unlock()
+		op.Unlock()
+		return nil, errServeSessionBusy
+	}
+	if m.borrowed == nil {
+		m.borrowed = make(map[string]*serveRuntime)
+	}
+	rt.Touch()
+	m.sessions[id] = rt
+	m.borrowed[id] = rt
+	m.reserved.Store(id, struct{}{})
+	m.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			m.mu.Lock()
+			if m.sessions[id] == rt && m.borrowed[id] == rt {
+				delete(m.sessions, id)
+				delete(m.borrowed, id)
+			}
+			m.mu.Unlock()
+			m.reserved.Delete(id)
+			op.Unlock()
+		})
+	}, nil
 }
 
 func (m *serveSessionManager) GetOrCreate(ctx context.Context, id string) (*serveRuntime, error) {
@@ -742,10 +783,14 @@ func (m *serveSessionManager) CloseContext(ctx context.Context) {
 	m.closed = true
 	close(m.stopCh)
 	sessions := make([]*serveRuntime, 0, len(m.sessions))
-	for _, rt := range m.sessions {
+	for id, rt := range m.sessions {
+		if m.borrowed[id] == rt {
+			continue
+		}
 		sessions = append(sessions, rt)
 	}
 	m.sessions = map[string]*serveRuntime{}
+	m.borrowed = map[string]*serveRuntime{}
 	m.mu.Unlock()
 
 	if ctx == nil {

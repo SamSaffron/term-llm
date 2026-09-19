@@ -58,22 +58,32 @@ type webSessionMetrics struct {
 
 type childRunProjection struct {
 	webSessionMetrics
-	Model             string                `json:"model,omitempty"`
-	SessionID         string                `json:"session_id"`
-	ParentSessionID   string                `json:"parent_session_id"`
-	ParentSpawnItemID int64                 `json:"parent_spawn_item_id,omitempty"`
-	ParentSpawnCallID string                `json:"parent_spawn_call_id,omitempty"`
-	Title             string                `json:"title"`
-	Agent             string                `json:"agent,omitempty"`
-	TaskSummary       string                `json:"task_summary,omitempty"`
-	State             session.SessionStatus `json:"state"`
-	Attention         bool                  `json:"attention"`
-	ResponseID        string                `json:"response_id,omitempty"`
-	RunEpoch          int64                 `json:"run_epoch,omitempty"`
-	Revision          int64                 `json:"revision"`
-	StartedAt         int64                 `json:"started_at,omitempty"`
-	EndedAt           int64                 `json:"ended_at,omitempty"`
-	ApproximateTimes  bool                  `json:"approximate_times,omitempty"`
+	Model             string `json:"model,omitempty"`
+	SessionID         string `json:"session_id"`
+	ParentSessionID   string `json:"parent_session_id"`
+	ParentSpawnItemID int64  `json:"parent_spawn_item_id,omitempty"`
+	ParentSpawnCallID string `json:"parent_spawn_call_id,omitempty"`
+	Title             string `json:"title"`
+	// Kind separates a spawned subagent from an isolated skill run. Both are
+	// children of the same parent, and the UI must not call one the other.
+	Kind        string                `json:"kind,omitempty"`
+	Agent       string                `json:"agent,omitempty"`
+	TaskSummary string                `json:"task_summary,omitempty"`
+	State       session.SessionStatus `json:"state"`
+	Attention   bool                  `json:"attention"`
+	ResponseID  string                `json:"response_id,omitempty"`
+	RunEpoch    int64                 `json:"run_epoch,omitempty"`
+	// Live/Steerable/RunID describe this process's view of a delegated run in
+	// flight. A durable-only projection cannot distinguish "finished" from
+	// "running somewhere this server cannot see".
+	Live             bool   `json:"live,omitempty"`
+	Steerable        bool   `json:"steerable,omitempty"`
+	ChildRunID       string `json:"child_run_id,omitempty"`
+	PendingAsks      int    `json:"pending_asks,omitempty"`
+	Revision         int64  `json:"revision"`
+	StartedAt        int64  `json:"started_at,omitempty"`
+	EndedAt          int64  `json:"ended_at,omitempty"`
+	ApproximateTimes bool   `json:"approximate_times,omitempty"`
 	// A delegated run spends real money on its own session row. Pricing it here
 	// is what lets the parent report what the work actually cost.
 	CostUSD     *float64 `json:"cost_usd,omitempty"`
@@ -121,6 +131,17 @@ func childSpawnProvenanceForParent(ctx context.Context, store session.Store, par
 		}
 	}
 	return provenance
+}
+
+// delegatedChildKind reads the one durable marker that separates the two child
+// kinds. buildChildExecutionRequest names a skill run "/skill @agent: …" and a
+// spawned subagent "@agent: …"; Session.IsSubagent is set in memory but has no
+// column, so it cannot be used here.
+func delegatedChildKind(name string) string {
+	if strings.HasPrefix(strings.TrimSpace(name), "/") {
+		return "skill_run"
+	}
+	return "subagent"
 }
 
 func terminalChildStatus(status session.SessionStatus) bool {
@@ -172,6 +193,7 @@ func (s *serveServer) handleSessionChildren(w http.ResponseWriter, r *http.Reque
 			SessionID:         child.ID,
 			ParentSessionID:   parentID,
 			Title:             child.PreferredShortTitle(),
+			Kind:              delegatedChildKind(child.Name),
 			Agent:             child.Agent,
 			State:             child.Status,
 			Attention:         child.Status == session.StatusError,
@@ -224,6 +246,32 @@ func (s *serveServer) handleSessionChildren(w http.ResponseWriter, r *http.Reque
 					item.Revision = safeChildRevision(item.Revision, prompt.CreatedAt*1000)
 				}
 			}
+		}
+		// The registry supplies spawn provenance and questions routed to the
+		// parent; execution state comes from the ordinary response run.
+		if handle := s.ensureChildRuns().lookup(child.ID); handle != nil {
+			// The parent has no tool result while a spawn is in flight. Use the
+			// admitted call identity so its card can already open this child.
+			if item.ParentSpawnCallID == "" {
+				item.ParentSpawnCallID = handle.callID
+			}
+			live := handle.state()
+			item.Live = live.Live
+			item.Steerable = live.Steerable
+			item.ChildRunID = live.RunID
+			item.PendingAsks = live.PendingAsks
+			if live.StartedAt > 0 {
+				item.StartedAt = live.StartedAt
+				item.ApproximateTimes = false
+			}
+			if live.PendingAsks > 0 {
+				item.Attention = true
+			}
+			if live.Live {
+				terminal = false
+				item.EndedAt = 0
+			}
+			item.Revision = safeChildRevision(item.Revision, live.StartedAt, live.EndedAt)
 		}
 		if terminal {
 			// Attention timestamps may have advanced the projection after the first

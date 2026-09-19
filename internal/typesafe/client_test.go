@@ -90,6 +90,35 @@ func TestClassifySendsAuthAndParsesPrimitives(t *testing.T) {
 	}
 }
 
+// The 24 KB Guardian packet budget must not leak into ordinary classify calls.
+func TestClassifyClientDoesNotApplyGuardianBudget(t *testing.T) {
+	state, err := json.Marshal(strings.Repeat("large standalone input ", 3000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request Request
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if !bytes.Equal(request.State, state) {
+			t.Errorf("standalone input was changed: got %d bytes, want %d", len(request.State), len(state))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"jev-latest","answers":{"q":{"type":"noul","noul":0.9}}}`))
+	}))
+	defer server.Close()
+	client, err := NewClient(Options{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Classify(context.Background(), Request{Model: "jev-latest", State: state, Questions: validQuestions()}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestListModelsSendsAuthAndParsesModelsObject(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != modelsPath || r.Method != http.MethodGet {

@@ -20,6 +20,11 @@ import (
 
 var errSpawnAgentRunnerDraining = errors.New("spawn agent runner is shutting down")
 
+// errChildRunAbandoned marks a delegated run whose handle was released without
+// a terminal status write — a panic, or an early return added later. It only
+// ever reaches a host observer, never a model.
+var errChildRunAbandoned = errors.New("delegated run ended without a terminal status")
+
 // SpawnAgentRunner implements the tools.SpawnAgentRunner interface.
 // It loads and runs sub-agents for the spawn_agent tool.
 type SpawnAgentRunner struct {
@@ -33,6 +38,8 @@ type SpawnAgentRunner struct {
 	parentBaseDirFunc func() string // Returns the parent's current per-session BaseDir
 	publisherMu       sync.RWMutex
 	mediaPublisher    tools.MediaPublisher
+	observerMu        sync.RWMutex
+	observer          childRunObserver
 	warnFunc          func(format string, args ...any)
 	runMu             sync.Mutex
 	draining          bool
@@ -102,6 +109,28 @@ func (r *SpawnAgentRunner) currentMediaPublisher() tools.MediaPublisher {
 	r.publisherMu.RLock()
 	defer r.publisherMu.RUnlock()
 	return r.mediaPublisher
+}
+
+// SetChildRunObserver installs a host observer for delegated runs. Like
+// SetMediaPublisher it must be safe to set after the runner is installed on a
+// tool and to read concurrently from executing children, so it takes the same
+// mutex-guarded shape rather than the unsynchronised SetWarnFunc shape.
+func (r *SpawnAgentRunner) SetChildRunObserver(observer childRunObserver) {
+	if r == nil {
+		return
+	}
+	r.observerMu.Lock()
+	defer r.observerMu.Unlock()
+	r.observer = observer
+}
+
+func (r *SpawnAgentRunner) currentChildRunObserver() childRunObserver {
+	if r == nil {
+		return nil
+	}
+	r.observerMu.RLock()
+	defer r.observerMu.RUnlock()
+	return r.observer
 }
 
 func (r *SpawnAgentRunner) currentBaseDir() string {
@@ -332,7 +361,13 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 		callback = func(runID string, event tools.SubagentEvent) { cb(runID, event) }
 	}
 	result, err := r.runChildInternal(ctx, request, callback)
-	return tools.SpawnAgentRunResult{Output: result.Output, SessionID: result.ChildSessionID}, err
+	return tools.SpawnAgentRunResult{
+		Output:                  result.Output,
+		SessionID:               result.ChildSessionID,
+		Interventions:           result.Interventions,
+		InterventionDisposition: result.InterventionDisposition,
+		CancelledByUser:         result.CancelledByUser,
+	}, err
 }
 
 func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.ChildRunRequest, callback runpkg.ChildRunEventCallback) (runpkg.ChildRunResult, error) {
@@ -386,6 +421,23 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 	defer sink.Done()
 
 	search := agent.Search
+	executionRequest := r.buildChildExecutionRequest(ctx, request, childSessionID, search)
+
+	var handle childRunSession
+	if observer := r.currentChildRunObserver(); observer != nil {
+		handle = observer.ChildRunStarted(childRunInfo{
+			ChildSessionID:  childSessionID,
+			ParentSessionID: executionRequest.ParentSessionID,
+			CallID:          request.RunID,
+			Agent:           agentName,
+			Prompt:          request.Prompt,
+		})
+		if handle != nil {
+			sink.handle = handle
+			defer handle.Finish(session.StatusError, errChildRunAbandoned)
+		}
+	}
+
 	runner := newCmdRunner(r.cfg, cmdRunnerOptions{
 		ConfigSet:         true,
 		Yolo:              r.yoloMode,
@@ -393,8 +445,8 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 		ErrWriter:         io.Discard,
 		Store:             r.store,
 		ParentApprovalMgr: r.parentApprovalMgr,
+		ChildRunObserver:  r.currentChildRunObserver(),
 	})
-	executionRequest := r.buildChildExecutionRequest(ctx, request, childSessionID, search)
 	result, err := runner.Run(ctx, executionRequest, sink)
 
 	output, completionErr := completeChildAgent(agent, result, sink.Output(), executionRequest.Cwd, request.SkipOnComplete)
@@ -411,18 +463,25 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 		StartedAt:      startedAt,
 		CompletedAt:    completedAt,
 	}
+	status := session.StatusComplete
+	if errors.Is(err, context.Canceled) {
+		status = session.StatusInterrupted
+	} else if err != nil {
+		status = session.StatusError
+	}
 	if r.store != nil {
-		status := session.StatusComplete
-		if errors.Is(err, context.Canceled) {
-			status = session.StatusInterrupted
-		} else if err != nil {
-			status = session.StatusError
-		}
 		dbCtx, dbCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		if statusErr := safeStoreOp(func() error { return r.store.UpdateStatus(dbCtx, childSessionID, status) }); statusErr != nil {
 			r.warn("session UpdateStatus failed: %v", statusErr)
 		}
 		dbCancel()
+	}
+	if handle != nil {
+		handle.Finish(status, err)
+		outcome := handle.Outcome()
+		childResult.Interventions = outcome.Interventions
+		childResult.InterventionDisposition = outcome.Disposition
+		childResult.CancelledByUser = outcome.CancelledByUser
 	}
 	return childResult, err
 }
@@ -464,6 +523,9 @@ type spawnRunSink struct {
 	cb       tools.SubagentEventCallback
 	provider string
 	model    string
+	// handle is the host's view of this run. It is assigned once before the
+	// engine starts and read-only thereafter.
+	handle childRunSession
 
 	mu             sync.Mutex
 	output         runnerOutput
@@ -542,6 +604,29 @@ func (s *spawnRunSink) CompactionUsage(result *llm.CompactionResult) {
 	u := result.Usage
 	s.cb(s.callID, tools.SubagentEvent{Type: tools.SubagentEventUsage, Model: result.Model, InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, CachedInputTokens: u.CachedInputTokens, CacheWriteTokens: u.CacheWriteTokens, Timestamp: time.Now()})
 }
+
+// AskUser routes a delegated run's question to the host. A child that asks is
+// requesting interaction, so answering it violates no delegation contract.
+func (s *spawnRunSink) AskUser(ctx context.Context, questions []tools.AskUserQuestion) ([]tools.AskUserAnswer, error) {
+	if s == nil || s.handle == nil {
+		return nil, errors.New("ask_user is not available to this delegated run")
+	}
+	return s.handle.AskUser(ctx, questions)
+}
+
+// AskUserAvailable keeps the platform default in place when no host installed a
+// transport, rather than claiming a role this sink cannot fulfil.
+func (s *spawnRunSink) AskUserAvailable() bool {
+	return s != nil && s.handle != nil && s.handle.AskUserAvailable()
+}
+
+func (s *spawnRunSink) ChildRunSession() childRunSession {
+	if s == nil {
+		return nil
+	}
+	return s.handle
+}
+
 func (s *spawnRunSink) Event(event llm.Event) {
 	if s == nil {
 		return
@@ -658,10 +743,11 @@ func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engin
 			return nil, fmt.Errorf("failed to set parent approval manager: %w", err)
 		}
 	}
-	_, err = WireSpawnAgentRunnerWithStoreAndDepth(cfg, toolMgr, r.yoloMode, r.store, childSessionID, depth)
+	nested, err := WireSpawnAgentRunnerWithStoreAndDepth(cfg, toolMgr, r.yoloMode, r.store, childSessionID, depth)
 	if err != nil {
 		return nil, err
 	}
+	nested.SetChildRunObserver(r.currentChildRunObserver())
 	return toolMgr, nil
 }
 

@@ -583,6 +583,11 @@ func (m *ApprovalManager) SetParent(parent *ApprovalManager) error {
 	return nil
 }
 
+// HasParent reports whether approval policy is inherited from another manager.
+func (m *ApprovalManager) HasParent() bool {
+	return m != nil && m.parent != nil
+}
+
 // PromptLock returns the mutex used to serialize prompts.
 // When a parent is set, returns the parent's lock to ensure all
 // sub-agents share the same serialization.

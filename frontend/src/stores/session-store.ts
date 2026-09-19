@@ -83,6 +83,8 @@ export interface SessionStoreHost {
 /** Owns session/project catalog state, sidebar loading, search, and catalog mutations. */
 export class SessionStore {
   readonly sessions = signal<Session[]>([]);
+  /** The selected delegated transcript is intentionally outside the sidebar catalog. */
+  readonly transientSession = signal<Session | null>(null);
   private readonly sidebarSessionCache = new Map<string, Session>();
   private sidebarSessionList: Session[] = [];
   readonly sidebarSessions = computed(() => {
@@ -136,7 +138,11 @@ export class SessionStore {
   readonly renameTarget = signal<Session | null>(null);
   readonly projectTarget = signal<Session | null>(null);
   readonly activeSession = computed(
-    () => this.sessions.value.find((session) => session.id === this.activeSessionId.value) || null,
+    () =>
+      this.sessions.value.find((session) => session.id === this.activeSessionId.value) ||
+      (this.transientSession.value?.id === this.activeSessionId.value
+        ? this.transientSession.value
+        : null),
   );
 
   private searchAbort: AbortController | null = null;
@@ -170,12 +176,16 @@ export class SessionStore {
     this.sessions.value = this.sessions
       .peek()
       .map((session) => (session.id === id ? { ...session, ...patch } : session));
+    if (this.transientSession.peek()?.id === id)
+      this.transientSession.value = { ...this.transientSession.peek()!, ...patch };
   }
 
   update(id: string, updater: (session: Session) => Session): void {
     this.sessions.value = this.sessions
       .peek()
       .map((session) => (session.id === id ? updater(session) : session));
+    if (this.transientSession.peek()?.id === id)
+      this.transientSession.value = updater(this.transientSession.peek()!);
   }
 
   replace(sessions: Session[]): void {
@@ -215,6 +225,9 @@ export class SessionStore {
 
   activate(session: Session): void {
     this.sidebarOpen.value = false;
+    this.transientSession.value = this.sessions.peek().some((entry) => entry.id === session.id)
+      ? null
+      : session;
     this.activeSessionId.value = session.id;
     this.activeProjectId.value = session.projectId || '';
     this.draftActive.value = false;
@@ -222,6 +235,7 @@ export class SessionStore {
 
   activateDraft(projectId: string): void {
     this.sidebarOpen.value = false;
+    this.transientSession.value = null;
     this.activeSessionId.value = '';
     this.activeProjectId.value = projectId;
     this.draftActive.value = true;

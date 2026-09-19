@@ -17,6 +17,7 @@ export interface ServerEventHost {
   reconcileStatus: () => Promise<void>;
   reconcileActiveSession: (revision?: number) => Promise<void>;
   reconcileFiles: (sessionId: string) => Promise<void>;
+  reconcileChildren: (parentSessionId: string) => Promise<void>;
   authoritativeRecovery: (reason: string) => Promise<void>;
   eventFeedHealthChanged: () => void;
 }
@@ -65,6 +66,7 @@ export class ServerEventCoordinator {
   private recoveryReason = '';
   private activeRevision = 0;
   private readonly fileSessions = new Set<string>();
+  private readonly childrenParents = new Set<string>();
   private interestChannels: string[] = [];
 
   constructor(
@@ -92,9 +94,13 @@ export class ServerEventCoordinator {
     events.forEach((event) => this.route(event));
   }
 
-  updateInterest(sessionId: string): void {
+  updateInterest(sessionId: string, childrenParentId = ''): void {
     const id = sessionId.trim();
-    const next = id ? [`session:${id}`, `files:${id}`] : [];
+    const parentId = childrenParentId.trim();
+    const next = [
+      ...(id ? [`session:${id}`, `files:${id}`] : []),
+      ...(parentId ? [`children:${parentId}`] : []),
+    ];
     if (next.join(',') === this.interestChannels.join(',')) return;
     this.interestChannels = next;
     // The server filters detail events by registered channels. Reconnect from
@@ -373,6 +379,9 @@ export class ServerEventCoordinator {
       case 'files.changed':
         if (event.sessionId) this.fileSessions.add(event.sessionId);
         break;
+      case 'children.changed':
+        if (event.parentSessionId) this.childrenParents.add(event.parentSessionId);
+        break;
       case 'snapshot.required':
         this.recoveryPending = true;
         this.recoveryReason = event.reason || event.type;
@@ -390,25 +399,33 @@ export class ServerEventCoordinator {
     const active = this.activePending;
     const revision = this.activeRevision;
     const files = [...this.fileSessions];
+    const children = [...this.childrenParents];
     this.catalogPending = this.statusPending = this.activePending = false;
     this.recoveryPending = false;
     this.recoveryReason = '';
     this.activeRevision = 0;
     this.fileSessions.clear();
-    if (!recovery && !catalog && !status && !active && !files.length) {
+    this.childrenParents.clear();
+    if (!recovery && !catalog && !status && !active && !files.length && !children.length) {
       this.services.bumpDiagnostic('serverEventNoopBatches');
       return;
     }
     if (recovery) {
       await this.host.authoritativeRecovery(recoveryReason).catch(() => undefined);
-      await Promise.all(files.map((id) => this.host.reconcileFiles(id).catch(() => undefined)));
+      await Promise.all([
+        ...files.map((id) => this.host.reconcileFiles(id).catch(() => undefined)),
+        ...children.map((id) => this.host.reconcileChildren(id).catch(() => undefined)),
+      ]);
       return;
     }
     if (catalog) await this.host.reconcileCatalog().catch(() => undefined);
     if (status) await this.host.reconcileStatus().catch(() => undefined);
     if (active)
       await this.host.reconcileActiveSession(revision || undefined).catch(() => undefined);
-    await Promise.all(files.map((id) => this.host.reconcileFiles(id).catch(() => undefined)));
+    await Promise.all([
+      ...files.map((id) => this.host.reconcileFiles(id).catch(() => undefined)),
+      ...children.map((id) => this.host.reconcileChildren(id).catch(() => undefined)),
+    ]);
   }
 
   dispose(): void {

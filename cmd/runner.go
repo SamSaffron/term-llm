@@ -59,6 +59,10 @@ type cmdRunnerOptions struct {
 	WireSpawn         func(*config.Config, *tools.ToolManager, bool) error
 	Store             session.Store
 	ParentApprovalMgr *tools.ApprovalManager
+	// ChildRunObserver is the host's view of delegated runs. It must propagate
+	// into nested runners, because a runner built for a child knows nothing
+	// about serve otherwise.
+	ChildRunObserver childRunObserver
 }
 
 type cmdRunner struct {
@@ -128,6 +132,20 @@ func (r *cmdRunner) Run(ctx context.Context, req runpkg.Request, sink runpkg.Eve
 	}
 
 	collector := &runnerEventCollector{sink: sink}
+	if hosted, ok := sink.(interface{ ChildRunSession() childRunSession }); ok {
+		if child := hosted.ChildRunSession(); child != nil {
+			serveResult, runErr := child.Execute(ctx, env, collector.Event)
+			result := collector.Result(env.req.SessionID)
+			result.Provider = env.provider.Name()
+			result.Model = env.modelName
+			result.Engine = env.engine
+			result.ProviderInstance = env.provider
+			if result.Response == "" {
+				result.Response = serveResult.Text.String()
+			}
+			return result, runErr
+		}
+	}
 	if env.req.Progressive != nil {
 		return r.runProgressive(ctx, env.runtime, env.engine, env.llmReq, env.inputMessages, env.req, env.sess, env.store, env.provider, collector)
 	}
@@ -305,6 +323,10 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		wireSpawn = func(cfg *config.Config, toolMgr *tools.ToolManager, _ bool) error {
 			var err error
 			spawnRunner, err = WireSpawnAgentRunnerWithStoreAndDepth(cfg, toolMgr, yoloMode, store, req.SessionID, req.Depth)
+			// Propagate the host observer down the nesting chain here rather than
+			// inside the wiring helper: a grandchild runner is built by a child's
+			// own cmdRunner, which would otherwise lose the host entirely.
+			spawnRunner.SetChildRunObserver(r.defaults.ChildRunObserver)
 			return err
 		}
 	}
@@ -395,7 +417,10 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		runtime.platformMessages = agent.PlatformMessages
 	}
 	if askUser, ok := sink.(runpkg.AskUserPrompter); ok {
-		runtime.askUserFunc = askUser.AskUser
+		gate, gated := sink.(runpkg.AskUserPrompterGate)
+		if !gated || gate.AskUserAvailable() {
+			runtime.askUserFunc = askUser.AskUser
+		}
 	}
 	runtime.assistantSnapshotCB = req.OnAssistantSnapshot
 	runtime.responseCompletedCB = req.OnResponseCompleted

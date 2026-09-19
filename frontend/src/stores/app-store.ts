@@ -52,6 +52,7 @@ import { SelectionStore } from './selection-store';
 import { CommitStore } from './commit-store';
 import { ShellStore } from './shell-store';
 import { LiveStore, type LiveSessionChange } from './live-store';
+import { ChildSessionStore } from './child-session-store';
 import { requestTranscriptScrollToTail } from '../components/transcript-scroll';
 import type {
   DiffState,
@@ -124,6 +125,7 @@ export class AppStore {
   readonly commitStore: CommitStore;
   readonly shellStore: ShellStore;
   readonly liveStore: LiveStore;
+  readonly childSessionStore: ChildSessionStore;
   readonly keys: StorageKeys;
   readonly api: APIClient;
   readonly endpoints: Endpoints;
@@ -519,6 +521,7 @@ export class AppStore {
       this.goalStore,
       this.widgetStore,
     );
+    this.childSessionStore = new ChildSessionStore(this.services);
     this.tabSyncCoordinator = new TabSyncCoordinator(this.services, {
       startupDone: this.startupDone,
       activeSessionId: this.activeSessionId,
@@ -588,6 +591,9 @@ export class AppStore {
         if (this.diff.peek().open && this.diff.peek().sessionId === sessionId)
           await this.reviewStore.loadDiff();
       },
+      reconcileChildren: async (parentSessionId) => {
+        this.childSessionStore.childrenChanged(parentSessionId);
+      },
       authoritativeRecovery: (reason) => this.authoritativeRecovery(reason),
       eventFeedHealthChanged: () => this.startStatusPoll(),
     });
@@ -652,7 +658,7 @@ export class AppStore {
         if (session) await this.selectSession(session, true);
         else this.newChat(true, this.storage.getItem(this.keys.lastProject) || '', false);
       }
-      this.serverEventCoordinator.updateInterest(this.activeSessionId.peek());
+      this.syncSessionInterest();
       this.connected.value = true;
       this.networkState.value = 'online';
       this.authRequired.value = false;
@@ -976,6 +982,13 @@ export class AppStore {
     await this.loadSession(sessionId).catch(() => undefined);
   }
 
+  private syncSessionInterest(): void {
+    const session = this.activeSession.peek();
+    this.childSessionStore.selectSession(session);
+    const sessionId = session?.id || '';
+    this.serverEventCoordinator.updateInterest(sessionId, sessionId);
+  }
+
   /**
    * The one policy for leaving the current session while a call is open: the
    * call moves with the user. Every path that can leave a session routes
@@ -1014,7 +1027,7 @@ export class AppStore {
     // back after the user has already gone somewhere else.
     if (rebind) this.rebindLiveCall(liveId, session, this.selectionStore.generation);
     await navigating;
-    this.serverEventCoordinator.updateInterest(this.activeSessionId.peek());
+    this.syncSessionInterest();
     void this.acknowledgeSelectedAttention();
   }
 
@@ -1142,6 +1155,7 @@ export class AppStore {
     this.shellStore.back();
     void this.liveStore.stop();
     this.selectionStore.newChat(replace, projectId, persistCurrent);
+    this.childSessionStore.selectSession(null);
     this.serverEventCoordinator.updateInterest('');
   }
 
@@ -1169,11 +1183,13 @@ export class AppStore {
   async resolveAndSelectSession(
     id: string,
     replace = false,
-    options: { keepLive?: boolean; fromLive?: boolean } = {},
+    options: { keepLive?: boolean; fromLive?: boolean; prepend?: boolean } = {},
   ): Promise<Session | null> {
     const { liveId, previous, rebind } = this.liveNavigation(id, options);
-    const session = await this.selectionStore.resolveAndSelectSession(id, replace);
-    this.serverEventCoordinator.updateInterest(this.activeSessionId.peek());
+    const session = await this.selectionStore.resolveAndSelectSession(id, replace, {
+      prepend: options.prepend,
+    });
+    this.syncSessionInterest();
     if (!session) {
       // Nothing resolved for `id`, or the user got somewhere else first; the
       // policy above has already dealt with the call.
@@ -1198,8 +1214,10 @@ export class AppStore {
 
   async loadSession(id: string, epoch = this.selectionEpoch): Promise<void> {
     await this.selectionStore.loadSession(id, epoch);
-    if (this.activeSessionId.peek() === id && this.selectionEpoch === epoch)
+    if (this.activeSessionId.peek() === id && this.selectionEpoch === epoch) {
+      this.syncSessionInterest();
       void this.acknowledgeSelectedAttention();
+    }
   }
 
   async send(options: SendOptions = {}): Promise<void> {
@@ -1627,6 +1645,7 @@ export class AppStore {
     this.composer.dispose();
     this.tabSyncCoordinator.dispose();
     this.serverEventCoordinator.dispose();
+    this.childSessionStore.dispose();
     this.liveStore.dispose();
     this.shellStore.dispose();
     this.services.dispose();

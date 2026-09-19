@@ -198,8 +198,12 @@ type startResponseRunOptions struct {
 	requestFingerprint         string
 	notificationSubscriptionID string
 	onDone                     func()
+	onRuntimeDone              func() // detach borrowed runtime before executor-owned close
 	onAdmissionDone            func() // release request preparation before streaming events
 	runtimeSetup               func(*llm.Request) error
+	parentContext              context.Context
+	onEvent                    func(llm.Event) error
+	onResult                   func(serveRunResult, error)
 }
 
 type responseRunContextKey struct{}

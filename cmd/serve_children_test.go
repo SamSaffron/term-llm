@@ -138,6 +138,49 @@ func TestHandleSessionChildrenReturnsBoundedAuthoritativeProjection(t *testing.T
 	}
 }
 
+// Running calls have no spawn result yet: the registry is the only source of
+// the call-to-child relationship until the result is persisted on the parent.
+func TestHandleSessionChildrenExposesLiveSpawnCallID(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, sess := range []*session.Session{
+		{ID: "parent", Provider: "debug", Model: "fast", Mode: session.ModeChat},
+		{ID: "child", ParentID: "parent", Provider: "debug", Model: "fast", Mode: session.ModeChat},
+	} {
+		if err := store.Create(ctx, sess); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runs := newServeResponseRunManager()
+	defer runs.Close()
+	srv := &serveServer{store: store, responseRuns: runs}
+	srv.ensureChildRuns().ChildRunStarted(childRunInfo{
+		ChildSessionID: "child", ParentSessionID: "parent", CallID: "spawn-live",
+	})
+	rr := httptest.NewRecorder()
+	srv.handleSessionChildren(rr, httptest.NewRequest(http.MethodGet, "/v1/sessions/parent/children", nil), "parent")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var payload struct {
+		Children []childRunProjection `json:"children"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Children) != 1 {
+		t.Fatalf("projection = %+v", payload)
+	}
+	child := payload.Children[0]
+	if !child.Live || child.ParentSpawnCallID != "spawn-live" || child.ParentSpawnItemID != 0 {
+		t.Fatalf("live child must expose call identity without inventing a durable row: %+v", child)
+	}
+}
+
 func TestRuntimeSpawnPersistsChildForStats(t *testing.T) {
 	for _, tc := range []struct {
 		name                       string

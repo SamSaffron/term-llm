@@ -119,11 +119,18 @@ type responseRunTimer struct {
 }
 
 func newResponseRunTimer(timeout time.Duration) (context.Context, *responseRunTimer) {
-	return newResponseRunTimerWithClock(timeout, realResponseRunClock{})
+	return newResponseRunTimerFrom(context.Background(), timeout, realResponseRunClock{})
 }
 
 func newResponseRunTimerWithClock(timeout time.Duration, clock responseRunClock) (context.Context, *responseRunTimer) {
-	ctx, cancel := context.WithCancelCause(context.Background())
+	return newResponseRunTimerFrom(context.Background(), timeout, clock)
+}
+
+func newResponseRunTimerFrom(parent context.Context, timeout time.Duration, clock responseRunClock) (context.Context, *responseRunTimer) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancelCause(parent)
 	t := &responseRunTimer{
 		cancel:    cancel,
 		clock:     clock,

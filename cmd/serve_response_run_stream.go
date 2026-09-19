@@ -398,6 +398,11 @@ func (s *serveServer) handleResponseByID(w http.ResponseWriter, r *http.Request)
 			})
 			return
 		}
+		// Record user intent here, not in requestCancel: shutdown and reload
+		// cancel responses too, but must not be reported as a human Stop.
+		if cancel != nil {
+			s.ensureChildRuns().lookup(run.sessionID).recordUserCancellation()
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"id":       runID,
 			"object":   "response.cancel",
@@ -707,8 +712,15 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	//  - Explicit cancellation is available via POST /v1/responses/{id}/cancel.
 	//  - serve.response_timeout bounds inactivity until the next completed LLM
 	//    response, excluding time spent waiting for an interactive answer.
-	runCtx, runTimer := newResponseRunTimer(s.responseTimeout())
-	runCtx, releaseReload, reloadErr := restart.Default.Root(runCtx)
+	// Hosted runs inherit their caller's lifetime; HTTP runs use a detached root.
+	runCtx, runTimer := newResponseRunTimerFrom(options.parentContext, s.responseTimeout(), realResponseRunClock{})
+	var releaseReload func()
+	var reloadErr error
+	if options.parentContext != nil {
+		runCtx, releaseReload, reloadErr = restart.Default.Enter(runCtx)
+	} else {
+		runCtx, releaseReload, reloadErr = restart.Default.Root(runCtx)
+	}
 	if reloadErr != nil {
 		runTimer.stop()
 		return nil, reloadErr

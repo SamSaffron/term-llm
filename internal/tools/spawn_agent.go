@@ -22,6 +22,21 @@ type SpawnAgentArgs struct {
 	Model     string `json:"model,omitempty"`   // Optional: exact provider:model override
 }
 
+// Interventions carry a delivery disposition because queue acceptance is not
+// proof of consumption. A child can finish, fail, or be cancelled between the
+// moment a correction is accepted and the moment the agent could act on it.
+const (
+	// InterventionQueued means accepted by the child engine but not yet observed
+	// entering the conversation.
+	InterventionQueued = "queued"
+	// InterventionConsumed means the child engine committed it into the run.
+	InterventionConsumed = "consumed"
+	// InterventionUndelivered means the run ended before the child could act.
+	InterventionUndelivered = "undelivered"
+	// InterventionMixed means some corrections were consumed and some were not.
+	InterventionMixed = "mixed"
+)
+
 // SpawnAgentResult is the result returned by spawn_agent.
 type SpawnAgentResult struct {
 	AgentName string `json:"agent_name"`
@@ -30,6 +45,14 @@ type SpawnAgentResult struct {
 	Type      string `json:"type,omitempty"` // Error type for structured handling
 	Duration  int64  `json:"duration_ms,omitempty"`
 	SessionID string `json:"session_id,omitempty"` // Child session ID for inspector integration
+	// Interventions records corrections a human made to this delegated run while
+	// it was executing. They are local corrections inside the assignment this
+	// call already made; they never redefine the assignment itself.
+	Interventions []string `json:"interventions,omitempty"`
+	// InterventionDisposition is queued, consumed, undelivered, or mixed.
+	InterventionDisposition string `json:"intervention_disposition,omitempty"`
+	// CancelledByUser separates a human stop from an execution failure.
+	CancelledByUser bool `json:"cancelled_by_user,omitempty"`
 }
 
 // ParseSpawnAgentResult decodes the durable JSON contract returned by
@@ -102,6 +125,11 @@ type SubagentEventCallback func(callID string, event SubagentEvent)
 type SpawnAgentRunResult struct {
 	Output    string // Text output from the agent
 	SessionID string // Child session ID for inspector integration (empty if session tracking disabled)
+	// Interventions and their aggregate disposition are reported by hosts that
+	// can steer a live child. Hosts without that capability leave them empty.
+	Interventions           []string
+	InterventionDisposition string
+	CancelledByUser         bool
 }
 
 // SpawnAgentCatalog is the optional read-only catalog exposed by runners that
@@ -519,7 +547,14 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 
 	if err != nil {
 		errType := classifySpawnAgentError(err, ctx, childCtx)
-		output := spawnAgentErrorOutput(t.formatErrorWithPartialResult(errType, spawnAgentErrorMessage(err, ctx, childCtx, a.AgentName, timeout), duration, runResult), errType == ErrTimeout)
+		message := spawnAgentErrorMessage(err, ctx, childCtx, a.AgentName, timeout)
+		if runResult.CancelledByUser {
+			// A human stopped this child deliberately. Reporting that as a generic
+			// execution failure invites the model to retry the abandoned work.
+			errType = ErrCancelledByUser
+			message = fmt.Sprintf("agent '%s' was cancelled by the user", a.AgentName)
+		}
+		output := spawnAgentErrorOutput(t.formatErrorWithPartialResult(errType, message, duration, runResult), errType == ErrTimeout)
 		mediaMu.Lock()
 		output.Media = llm.NormalizeMedia(append([]llm.MediaArtifact(nil), nestedMedia...), nil)
 		mediaMu.Unlock()
@@ -528,10 +563,16 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 
 	// Return success result
 	result := SpawnAgentResult{
-		AgentName: a.AgentName,
-		Output:    runResult.Output,
-		Duration:  duration,
-		SessionID: runResult.SessionID,
+		AgentName:               a.AgentName,
+		Output:                  runResult.Output,
+		Duration:                duration,
+		SessionID:               runResult.SessionID,
+		Interventions:           runResult.Interventions,
+		InterventionDisposition: runResult.InterventionDisposition,
+		// A child can be stopped and still return usable partial work. Dropping
+		// the cause here would present a deliberate human stop as an ordinary
+		// completion, and the parent would treat the truncated result as final.
+		CancelledByUser: runResult.CancelledByUser,
 	}
 	data, _ := json.Marshal(result)
 	mediaMu.Lock()
@@ -602,11 +643,14 @@ func (t *SpawnAgentTool) formatErrorWithDuration(errType ToolErrorType, message 
 // formatErrorWithPartialResult formats an error result while preserving partial subagent output/session metadata.
 func (t *SpawnAgentTool) formatErrorWithPartialResult(errType ToolErrorType, message string, durationMs int64, runResult SpawnAgentRunResult) string {
 	result := SpawnAgentResult{
-		Output:    runResult.Output,
-		Error:     message,
-		Type:      string(errType),
-		Duration:  durationMs,
-		SessionID: runResult.SessionID,
+		Output:                  runResult.Output,
+		Error:                   message,
+		Type:                    string(errType),
+		Duration:                durationMs,
+		SessionID:               runResult.SessionID,
+		Interventions:           runResult.Interventions,
+		InterventionDisposition: runResult.InterventionDisposition,
+		CancelledByUser:         runResult.CancelledByUser,
 	}
 	data, _ := json.Marshal(result)
 	return string(data)

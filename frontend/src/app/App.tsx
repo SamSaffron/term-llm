@@ -8,6 +8,7 @@ import { Sidebar } from '../components/Sidebar';
 import { Header } from '../components/Header';
 import { Transcript } from '../components/Transcript';
 import { Composer } from '../components/Composer';
+import { DelegationContext } from '../components/DelegationContext';
 import { DiffSidebar, PlanSurface } from '../components/Panels';
 import { Modals } from '../components/Modals';
 import { LightboxLoader } from '../components/LightboxLoader';
@@ -253,6 +254,7 @@ export function App({ store }: { store: AppStore }) {
               <Sidebar />
               <main class="main" id="appMain">
                 <Header />
+                <DelegationContext />
                 <Transcript />
                 <Composer />
               </main>

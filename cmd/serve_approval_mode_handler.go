@@ -32,7 +32,7 @@ func runtimeApprovalPolicy(rt *serveRuntime) map[string]any {
 		return policy
 	}
 	mgr := rt.toolMgr.ApprovalMgr
-	policy["controls_available"] = true
+	policy["controls_available"] = !mgr.HasParent()
 	policy["requested_mode"] = mgr.RequestedApprovalMode().String()
 	policy["effective_mode"] = mgr.ApprovalMode().String()
 	policy["guardian_available"] = mgr.GuardianReviewerAvailable()
@@ -87,6 +87,7 @@ func (s *serveServer) handleSessionApprovalMode(w http.ResponseWriter, r *http.R
 		requestedMode = &mode
 	}
 
+	delegated := false
 	if s.store != nil {
 		sess, loadErr := s.store.Get(r.Context(), sessionID)
 		if loadErr != nil {
@@ -97,6 +98,12 @@ func (s *serveServer) handleSessionApprovalMode(w http.ResponseWriter, r *http.R
 			writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
 			return
 		}
+		delegated = sessionIsDelegatedChild(sess)
+	}
+	// Reject before preparing a cold runtime as well as while the child runs.
+	if delegated && requestedMode != nil {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", "approval policy is inherited; change it in the parent conversation")
+		return
 	}
 
 	rt, err := s.approvalRuntime(r.Context(), sessionID)
@@ -105,7 +112,11 @@ func (s *serveServer) handleSessionApprovalMode(w http.ResponseWriter, r *http.R
 		return
 	}
 	if requestedMode == nil {
-		writeJSON(w, http.StatusOK, runtimeApprovalPolicy(rt))
+		policy := runtimeApprovalPolicy(rt)
+		if delegated {
+			policy["controls_available"] = false
+		}
+		writeJSON(w, http.StatusOK, policy)
 		return
 	}
 	mode := *requestedMode
@@ -115,6 +126,10 @@ func (s *serveServer) handleSessionApprovalMode(w http.ResponseWriter, r *http.R
 	}
 	if mgr == nil {
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", "this session has no approval-managed tools")
+		return
+	}
+	if mgr.HasParent() {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", "approval policy is inherited; change it in the parent conversation")
 		return
 	}
 	if mode == tools.ModeAuto && !mgr.GuardianReviewerAvailable() {

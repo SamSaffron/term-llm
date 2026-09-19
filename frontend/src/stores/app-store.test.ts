@@ -45,6 +45,49 @@ const deferred = <T>() => {
 beforeEach(() => localStorage.clear());
 
 describe('AppStore compatibility behavior', () => {
+  it('resolves a delegated session through the standard response lifecycle without cataloging it', async () => {
+    const previousRoute = `${location.pathname}${location.search}${location.hash}`;
+    const store = new AppStore(config);
+    const parent = session();
+    const delegated = {
+      ...session(),
+      id: 'child-1',
+      title: 'Child transcript',
+      parent_session_id: parent.id,
+      delegated: true,
+      active_run: true,
+      active_response_id: 'response-1',
+    };
+    store.sessions.value = [parent];
+    store.endpoints.selectedSession = vi.fn(async () => ({
+      selected_session: delegated,
+      selected_transcript: { bodies: { rev: 1, messages: [] } },
+    }));
+    store.endpoints.sessionState = vi.fn(async () => ({
+      active_run: true,
+      active_response_id: 'response-1',
+    }));
+    store.endpoints.skills = vi.fn(async () => ({ skills: [] }));
+    store.endpoints.tree = vi.fn(async () => ({}));
+    const updateInterest = vi.spyOn(store.serverEventCoordinator, 'updateInterest');
+    const resumeResponse = vi.spyOn(store.runEngine, 'resumeResponse').mockResolvedValue(undefined);
+
+    await store.resolveAndSelectSession('child-1', false, { prepend: false });
+
+    expect(store.sessions.value.map((entry) => entry.id)).toEqual([parent.id]);
+    expect(store.sidebarSessions.value.map((entry) => entry.id)).toEqual([parent.id]);
+    expect(store.activeSession.value).toMatchObject({
+      id: 'child-1',
+      parentSessionId: parent.id,
+      delegated: true,
+      activeResponseId: 'response-1',
+    });
+    expect(resumeResponse).toHaveBeenCalledWith('child-1', 'response-1');
+    expect(updateInterest).toHaveBeenLastCalledWith('child-1', 'child-1');
+    store.dispose();
+    history.replaceState(null, '', previousRoute);
+  });
+
   it('acknowledges only the exact visible marker after final transcript bodies load', async () => {
     const store = new AppStore(config);
     store.sessions.value = [

@@ -63,6 +63,9 @@ export interface SessionStats {
 }
 export interface StatsChild extends SessionMetrics {
   session_id: string;
+  parent_session_id?: string;
+  parent_spawn_item_id?: number;
+  parent_spawn_call_id?: string;
   title: string;
   agent?: string;
   model?: string;
@@ -72,6 +75,13 @@ export interface StatsChild extends SessionMetrics {
   approximate_times?: boolean;
   cost_usd?: number;
   cost_partial?: boolean;
+}
+
+export interface SessionChildrenResponse {
+  children: StatsChild[];
+  limit?: number;
+  __etag?: string;
+  __notModified?: boolean;
 }
 
 import type { ExtensionStatus } from '../stores/extension-runtime';
@@ -276,11 +286,31 @@ export const endpoints = (api: APIClient) => ({
     ),
   sessionStats: (id: string, signal?: AbortSignal) =>
     api.get<SessionStats>(`/v1/sessions/${encoded(id)}/stats`, signal),
-  sessionChildren: (id: string, signal?: AbortSignal) =>
-    api.get<{ children: StatsChild[]; limit?: number }>(
+  sessionChildren: async (
+    id: string,
+    signal?: AbortSignal,
+    etag = '',
+  ): Promise<SessionChildrenResponse> => {
+    const response = await api.request(
       `/v1/sessions/${encoded(id)}/children`,
-      signal,
-    ),
+      { signal, headers: etag ? { 'If-None-Match': etag } : undefined },
+      { policy: 'safe-read' },
+    );
+    if (response.status === 304)
+      return {
+        children: [],
+        __notModified: true,
+        __etag: response.headers.get('ETag') || etag,
+      };
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(body || `Children request returned ${response.status}`);
+    }
+    return {
+      ...((await response.json()) as SessionChildrenResponse),
+      __etag: response.headers.get('ETag') || '',
+    };
+  },
   selectedSession: (id: string) =>
     api.get<Record<string, unknown>>(
       `/v1/sessions?selected_only=1&include_transcript=1&include_widget_status=1&selected_session=${encoded(id)}`,

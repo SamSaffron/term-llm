@@ -164,6 +164,15 @@ type AskUserPrompter interface {
 	AskUser(ctx context.Context, questions []tools.AskUserQuestion) ([]tools.AskUserAnswer, error)
 }
 
+// AskUserPrompterGate lets a sink that implements AskUserPrompter conditionally
+// decline the role at run time. A delegated run can only route questions to a
+// human when a host installed somewhere to route them to; without one the run
+// must fall back to the platform default instead of claiming a transport it
+// does not have.
+type AskUserPrompterGate interface {
+	AskUserAvailable() bool
+}
+
 // GuardianEventSink is an optional EventSink capability for guardian review
 // notices emitted by auto-approval mode.
 type GuardianEventSink interface {

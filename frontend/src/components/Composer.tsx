@@ -162,6 +162,13 @@ let queuePreviewImport: Promise<ComponentType<{ selectedSteering: string | null 
 
 export function Composer() {
   const store = useStore();
+  const session = store.activeSession.value;
+  const delegated = Boolean(session?.delegated || session?.parentSessionId);
+  return delegated && !store.runActive.value ? null : <ConversationComposer />;
+}
+
+function ConversationComposer() {
+  const store = useStore();
   const runActive = store.runActive.value;
   const canStop = store.canStop.value;
   const canSteer = store.canSteer.value;

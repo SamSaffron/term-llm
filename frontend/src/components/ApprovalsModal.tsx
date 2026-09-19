@@ -174,8 +174,9 @@ export function ApprovalsModal() {
         )}
         {controlsAvailable === false && (
           <div id="approvalControlsUnavailable" class="approval-mode-notice" role="status">
-            This conversation has no tools that require approval. Choose a tool-enabled agent to
-            configure approval behavior.
+            {session?.parentSessionId || session?.delegated
+              ? 'Approval policy is inherited from the parent conversation.'
+              : 'This conversation has no tools that require approval. Choose a tool-enabled agent to configure approval behavior.'}
           </div>
         )}
         {controlsAvailable === true && session?.guardianAvailable === false && (

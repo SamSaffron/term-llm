@@ -109,7 +109,7 @@ func (s *serveServer) appendResponseToolExecStart(runtime *serveRuntime, run *re
 	// prompt even when server-executed tool details are hidden; otherwise the
 	// live web stream stalls until a reload recovers the pending prompt.
 	if ev.ToolName == tools.AskUserToolName && runtime != nil {
-		if prompt, err := runtime.prepareAskUserFromToolArgs(ev.ToolCallID, ev.ToolArgs); err == nil {
+		if pending, prompt, err := runtime.prepareAskUserFromToolArgs(ev.ToolCallID, ev.ToolArgs); err == nil {
 			if err := run.appendEvent("response.ask_user.prompt", map[string]any{
 				"call_id":    prompt.CallID,
 				"questions":  prompt.Questions,
@@ -117,6 +117,7 @@ func (s *serveServer) appendResponseToolExecStart(runtime *serveRuntime, run *re
 			}); err != nil {
 				return err
 			}
+			pending.bindRun(run)
 		}
 	}
 	if s.suppressResponseRunServerToolEvent(runtime, ev.ToolName) {

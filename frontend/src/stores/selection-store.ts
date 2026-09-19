@@ -197,7 +197,11 @@ export class SelectionStore {
    * did not resolve, or the user navigated while the lookup was in flight, in
    * which case the newer navigation owns the UI.
    */
-  async resolveAndSelectSession(id: string, replace = false): Promise<Session | null> {
+  async resolveAndSelectSession(
+    id: string,
+    replace = false,
+    options: { prepend?: boolean } = {},
+  ): Promise<Session | null> {
     const epoch = this.epoch;
     try {
       const data = await this.services.endpoints.selectedSession(id);
@@ -209,7 +213,8 @@ export class SelectionStore {
       }
       const session = this.sessionsStore.sessionFrom(source);
       const existing = this.sessionsStore.sessions.value.find((entry) => entry.id === session.id);
-      if (!existing) this.sessionsStore.prepend(session);
+      if (!existing && options.prepend !== false && !session.delegated && !session.parentSessionId)
+        this.sessionsStore.prepend(session);
       await this.selectSession(existing || session, replace);
       return existing || session;
     } catch (error) {
@@ -334,7 +339,11 @@ export class SelectionStore {
         (session) => session.id === id || (incoming.id && session.id === incoming.id),
       );
       const current =
-        currentIndex >= 0 ? this.sessionsStore.sessions.value[currentIndex] : undefined;
+        currentIndex >= 0
+          ? this.sessionsStore.sessions.value[currentIndex]
+          : this.sessionsStore.activeSession.peek()?.id === id
+            ? this.sessionsStore.activeSession.peek() || undefined
+            : undefined;
       // selected_transcript is authoritative here, including an empty transcript.
       // Session state is authoritative for its durable continuation anchor.
       const policy = recordValue(state.approval_policy);
@@ -371,7 +380,9 @@ export class SelectionStore {
               guardianAutoSuspended: false,
             }),
       };
-      if (currentIndex >= 0 && current) this.sessionsStore.update(current.id, () => updated);
+      if (current) this.sessionsStore.update(current.id, () => updated);
+      else if (updated.delegated || updated.parentSessionId)
+        this.sessionsStore.transientSession.value = updated;
       else this.sessionsStore.prepend(updated);
       if (updated.id !== id) this.runEngine.rekeySession(id, updated.id, selectedSource);
       if (stateActiveResponseId)

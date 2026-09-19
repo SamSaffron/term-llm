@@ -51,6 +51,10 @@ const (
 	ErrUnsupportedFormat  ToolErrorType = "UNSUPPORTED_FORMAT"
 	ErrTimeout            ToolErrorType = "TIMEOUT"
 	ErrSymlinkEscape      ToolErrorType = "SYMLINK_ESCAPE"
+	// ErrCancelledByUser distinguishes a deliberate human stop from a generic
+	// execution failure. A model that cannot tell them apart retries work the
+	// user just asked it to abandon.
+	ErrCancelledByUser ToolErrorType = "CANCELLED_BY_USER"
 )
 
 // ToolError provides structured error information for retry logic.

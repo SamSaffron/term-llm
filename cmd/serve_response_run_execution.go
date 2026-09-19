@@ -27,6 +27,9 @@ func (s *serveServer) executeResponseRun(runCtx context.Context, releaseReload, 
 			s.unregisterResponseIDs(runtime)
 		}()
 	}
+	if options.onRuntimeDone != nil {
+		defer options.onRuntimeDone()
+	}
 
 	defer s.bindResponseRunCallbacks(runCtx, runtime, run, runTimer)()
 
@@ -50,7 +53,15 @@ func (s *serveServer) executeResponseRun(runCtx context.Context, releaseReload, 
 		runtimeRunCtx = s.withLiveSettingsContext(runtimeRunCtx, options.live, sessionID)
 		result, err = runtime.RunWithEventsAndStart(runtimeRunCtx, stateful, replaceHistory, inputMessages, llmReq, func() {
 			mgr.setActiveRun(sessionID, respID)
-		}, func(ev llm.Event) error { return s.appendResponseRunEvent(runtime, run, streamState, ev) })
+		}, func(ev llm.Event) error {
+			if appendErr := s.appendResponseRunEvent(runtime, run, streamState, ev); appendErr != nil {
+				return appendErr
+			}
+			if options.onEvent != nil {
+				return options.onEvent(ev)
+			}
+			return nil
+		})
 		totalUsage.Add(result.Usage)
 		result.Usage = totalUsage
 		var suspended *llm.SuspendedError
@@ -68,6 +79,9 @@ func (s *serveServer) executeResponseRun(runCtx context.Context, releaseReload, 
 		llmReq.Resume = suspended.Continuation
 		inputMessages = nil
 		replaceHistory = false
+	}
+	if options.onResult != nil {
+		options.onResult(result, err)
 	}
 	if err != nil {
 		runTimedOut := responseRunTimedOut(runCtx)

@@ -305,7 +305,20 @@ type serveAgentRuntimeOptions struct {
 	toolMap                 map[string]string
 	mediaPublisher          *serveMediaPublisher
 	collaborationController *serveCollaborativeShellController
-	hasWeb                  bool
+	// childRuns makes delegated runs readable and steerable. It is nil outside
+	// serve, which is what keeps the CLI spawn path unchanged.
+	childRuns *childRunRegistry
+	hasWeb    bool
+}
+
+func newServeAgentRuntimeFactory(opts serveAgentRuntimeOptions, server func() *serveServer) func(context.Context, serveRuntimeRequest) (*serveRuntime, error) {
+	return func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
+		// runServe creates this factory before the HTTP server. Resolve its
+		// registry at invocation, not construction, or every child inherits nil.
+		requestOpts := opts
+		requestOpts.childRuns = server().ensureChildRuns()
+		return newServeAgentRuntime(ctx, request, requestOpts)
+	}
 }
 
 func newServeAgentRuntime(ctx context.Context, request serveRuntimeRequest, opts serveAgentRuntimeOptions) (*serveRuntime, error) {
@@ -351,7 +364,17 @@ func serveRuntimeRunnerDefaults(opts serveAgentRuntimeOptions, request serveRunt
 		NativeSearch: serveNativeSearch, NoNativeSearch: serveNoNativeSearch, ApprovalMode: approvalMode, ApprovalModeSet: true,
 		ApprovalSource: opts.approval.Source, ApprovalHeadless: true, ApprovalPrepare: true, ApprovalDiagnostics: serveVerbose,
 		Debug: serveDebug, DebugRaw: debugRaw, ErrWriter: opts.approvalErrWriter, Store: opts.store,
+		ChildRunObserver: childRunObserverOrNil(opts.childRuns),
 	}
+}
+
+// childRunObserverOrNil avoids handing the runner a non-nil interface wrapping
+// a nil registry, which would make every "is a host watching?" check true.
+func childRunObserverOrNil(registry *childRunRegistry) childRunObserver {
+	if registry == nil {
+		return nil
+	}
+	return registry
 }
 
 func validateServeRuntimeToolMap(runtime *serveRuntime, toolMap map[string]string) error {
@@ -376,6 +399,7 @@ func configureServeRuntimeTools(runtime *serveRuntime, opts serveAgentRuntimeOpt
 	if spawn := runtime.toolMgr.GetSpawnAgentTool(); spawn != nil {
 		spawn.SetEventCallback(runtime.recordSubagentStats)
 	}
+
 	imageBaseURL := ""
 	if opts.hasWeb {
 		imageBaseURL = strings.TrimRight(serveBasePath, "/") + "/images/"
@@ -599,11 +623,10 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	}}
 	runtimeOptions := serveAgentRuntimeOptions{
 		cfg: cfg, cmd: cmd, store: store, approval: resolvedApproval, approvalErrWriter: approvalErrWriter,
-		toolMap: toolMap, mediaPublisher: mediaPublisher, collaborationController: collaborationController, hasWeb: hasWeb,
+		toolMap: toolMap, mediaPublisher: mediaPublisher, collaborationController: collaborationController,
+		hasWeb: hasWeb,
 	}
-	agentRuntimeFactory := func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
-		return newServeAgentRuntime(ctx, request, runtimeOptions)
-	}
+	agentRuntimeFactory := newServeAgentRuntimeFactory(runtimeOptions, func() *serveServer { return s })
 
 	runtimeFactory := func(ctx context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
 		return agentRuntimeFactory(ctx, request)
@@ -1363,6 +1386,8 @@ type serveServer struct {
 	branchPathNoteFlights    sync.Map // source/idempotency key → shared path-note helper result
 	responseRunsOnce         sync.Once
 	responseRuns             *responseRunManager
+	childRunsOnce            sync.Once
+	childRuns                *childRunRegistry
 	responseOwnerOnce        sync.Once
 	responseLifecycleOnce    sync.Once
 	responseLifecycleCancel  context.CancelFunc

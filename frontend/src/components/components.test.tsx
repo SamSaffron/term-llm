@@ -9,6 +9,7 @@ import type { SessionShareResponse } from '../api/endpoints';
 import type { Attachment, ToolCall } from '../domain/types';
 import { Transcript } from './Transcript';
 import { Composer } from './Composer';
+import { DelegationContext } from './DelegationContext';
 import { Markdown } from './Markdown';
 import { Modals } from './Modals';
 import { Sidebar } from './Sidebar';
@@ -18,7 +19,7 @@ import { ChipPicker } from './ChipPicker';
 import { Lightbox } from './Lightbox';
 import { Overlay } from './Overlay';
 import type { AppConfig } from '../app/config';
-import { initialProjection } from '../domain/response';
+import { initialProjection, reduceResponse } from '../domain/response';
 import { convertServerMessages } from '../domain/transcript';
 import { markdownDocumentBlocks } from '../domain/markdown-document';
 import { readJSON } from '../platform/storage';
@@ -88,6 +89,403 @@ const expectPasswordManagersIgnored = (element: HTMLElement) => {
 };
 
 describe('Preact-owned chat surfaces', () => {
+  it('does not show a separate subagents panel in the parent conversation', () => {
+    const store = createStore();
+    store.childSessionStore.children.value = [
+      {
+        session_id: 'child-running',
+        parent_session_id: 's1',
+        title: 'Inspect transport',
+        agent: 'researcher',
+        state: 'active',
+        input_tokens: 0,
+        output_tokens: 0,
+        cached_input_tokens: 0,
+        cache_write_tokens: 0,
+        tool_calls: 1,
+        llm_turns: 1,
+        cost_usd: 0.02,
+      },
+    ];
+
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <DelegationContext />
+      </StoreContext.Provider>,
+    );
+
+    expect(container).toBeEmptyDOMElement();
+    store.dispose();
+  });
+
+  it.each([true, false])(
+    'shows only parent navigation in a child header (parent loaded: %s)',
+    async (loaded) => {
+      const store = createStore();
+      const parent = store.sessions.value[0];
+      store.sessionStore.transientSession.value = {
+        ...parent,
+        id: 'child-1',
+        title: 'Long subagent assignment',
+        parentSessionId: parent.id,
+        delegated: true,
+      };
+      if (!loaded) store.sessions.value = [];
+      store.activeSessionId.value = 'child-1';
+      store.selectSession = vi.fn(async () => undefined);
+      store.resolveAndSelectSession = vi.fn(async () => null);
+      store.endpoints.sessionChildren = vi.fn(async () => ({ children: [] }));
+      render(
+        <StoreContext.Provider value={store}>
+          <DelegationContext />
+        </StoreContext.Provider>,
+      );
+
+      const navigation = screen.getByRole('navigation', { name: 'Parent conversation' });
+      expect(navigation.textContent).toBe(
+        `Return to parent${loaded ? parent.title : 'Parent conversation'}`,
+      );
+      await userEvent.click(within(navigation).getByRole('button', { name: 'Return to parent' }));
+      if (loaded) expect(store.selectSession).toHaveBeenCalledWith(parent);
+      else expect(store.resolveAndSelectSession).toHaveBeenCalledWith(parent.id, false);
+      store.dispose();
+    },
+  );
+
+  it('renders subagent output without a repeated agent heading or nested result wrapper', async () => {
+    const store = createStore();
+    store.sessions.value[0] = {
+      ...store.sessions.value[0],
+      messages: [
+        {
+          id: 'spawn-result',
+          role: 'tool-group',
+          content: '',
+          created: 1,
+          tools: [
+            {
+              id: 'spawn-call',
+              name: 'spawn_agent',
+              status: 'done',
+              arguments: '{"agent_name":"developer"}',
+              subagent: { agentName: 'developer', childSessionId: 'child', output: 'Done.' },
+            },
+          ],
+        },
+      ],
+    };
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+    await userEvent.click(container.querySelector('.tool-toggle')!);
+    const result = container.querySelector('.subagent-result')!;
+    expect(result).toHaveClass('markdown-body');
+    expect(within(result as HTMLElement).getByText('Done.')).toBeVisible();
+    expect(within(result as HTMLElement).queryByText('developer')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open subagent' })).toBeVisible();
+    store.dispose();
+  });
+
+  it('opens saved subagent results and skill transcripts without expanding arguments', async () => {
+    const store = createStore();
+    store.sessions.value[0] = {
+      ...store.sessions.value[0],
+      messages: [
+        {
+          id: 'spawn-row',
+          role: 'tool-group',
+          content: '',
+          created: 1,
+          durableRowId: 41,
+          tools: [
+            {
+              id: 'spawn-call',
+              name: 'spawn_agent',
+              status: 'done',
+              subagent: { childSessionId: 'child-running', agentName: 'researcher' },
+            },
+            { id: 'other-call', name: 'shell', status: 'done' },
+          ],
+        },
+        {
+          id: 'skill-row',
+          role: 'skill-run',
+          content: 'Running',
+          created: 2,
+          status: 'running',
+          childSessionId: 'skill-running',
+        },
+      ],
+    };
+    store.resolveAndSelectSession = vi.fn(async () => null);
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: 'Open subagent' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Open skill run' }));
+
+    expect(store.resolveAndSelectSession).toHaveBeenNthCalledWith(1, 'child-running', false, {
+      prepend: false,
+    });
+    expect(store.resolveAndSelectSession).toHaveBeenNthCalledWith(2, 'skill-running', false, {
+      prepend: false,
+    });
+    store.dispose();
+  });
+
+  it.each([
+    ['completed', 'done'],
+    ['failed', 'error'],
+    ['cancelled', 'cancelled'],
+  ] as const)(
+    'keeps a %s subagent link visible in a collapsed tool group',
+    async (_label, status) => {
+      const store = createStore();
+      store.sessions.value[0] = {
+        ...store.sessions.value[0],
+        messages: [
+          {
+            id: `terminal-${status}`,
+            role: 'tool-group',
+            content: '',
+            created: 1,
+            tools: [
+              {
+                id: `spawn-${status}`,
+                name: 'spawn_agent',
+                status,
+                resultStatus: status === 'error' ? 'error' : 'success',
+                subagent: { childSessionId: `child-${status}`, agentName: 'developer' },
+              },
+              { id: `shell-${status}`, name: 'shell', status: 'done' },
+            ],
+          },
+        ],
+      };
+      store.resolveAndSelectSession = vi.fn(async () => null);
+
+      render(
+        <StoreContext.Provider value={store}>
+          <Transcript />
+        </StoreContext.Provider>,
+      );
+
+      expect(screen.getByRole('button', { name: /2 tool calls/ })).toHaveAttribute(
+        'aria-expanded',
+        'false',
+      );
+      await userEvent.click(screen.getByRole('button', { name: 'Open subagent' }));
+      expect(store.resolveAndSelectSession).toHaveBeenCalledWith(`child-${status}`, false, {
+        prepend: false,
+      });
+      store.dispose();
+    },
+  );
+
+  it('keeps a durable reloaded subagent result clickable in a collapsed tool group', async () => {
+    const store = createStore();
+    store.sessions.value[0] = {
+      ...store.sessions.value[0],
+      messages: convertServerMessages([
+        {
+          id: 1,
+          response_id: 'response-1',
+          role: 'assistant',
+          parts: [
+            { type: 'tool_call', tool_call_id: 'spawn-durable', tool_name: 'spawn_agent' },
+            { type: 'tool_call', tool_call_id: 'shell-durable', tool_name: 'shell' },
+          ],
+        },
+        {
+          id: 2,
+          response_id: 'response-1',
+          role: 'tool',
+          parts: [
+            {
+              type: 'tool_result',
+              tool_call_id: 'spawn-durable',
+              tool_name: 'spawn_agent',
+              spawn_agent: { agent_name: 'developer', session_id: 'durable-child' },
+            },
+          ],
+        },
+      ]),
+    };
+    store.resolveAndSelectSession = vi.fn(async () => null);
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+
+    expect(screen.getByRole('button', { name: /2 tool calls/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Open subagent' }));
+    expect(store.resolveAndSelectSession).toHaveBeenCalledWith('durable-child', false, {
+      prepend: false,
+    });
+    store.dispose();
+  });
+
+  it.each([false, true])(
+    'links an in-flight spawn from child provenance before any result (grouped: %s)',
+    async (grouped) => {
+      const store = createStore();
+      store.sessions.value = [
+        {
+          ...store.sessions.value[0],
+          messages: [
+            {
+              id: 'running-spawn',
+              role: 'tool-group',
+              content: '',
+              created: 1,
+              tools: [
+                {
+                  id: 'spawn-live',
+                  name: 'spawn_agent',
+                  status: 'running',
+                  arguments: '{"agent_name":"developer"}',
+                },
+                ...(grouped ? [{ id: 'other-call', name: 'shell', status: 'done' as const }] : []),
+              ],
+            },
+          ],
+        },
+      ];
+      store.resolveAndSelectSession = vi.fn(async () => null);
+      render(
+        <StoreContext.Provider value={store}>
+          <Transcript />
+        </StoreContext.Provider>,
+      );
+      expect(screen.queryByRole('button', { name: 'Open subagent' })).not.toBeInTheDocument();
+
+      const child = {
+        session_id: 'live-child',
+        parent_session_id: 's1',
+        parent_spawn_call_id: 'spawn-live',
+        title: 'Developer',
+        state: 'active',
+        input_tokens: 0,
+        output_tokens: 0,
+        cached_input_tokens: 0,
+        cache_write_tokens: 0,
+        tool_calls: 0,
+        llm_turns: 0,
+      };
+      // A child must match both the selected parent and this call, not just be
+      // the newest (or only) running child. Arrival must update a memoized row.
+      act(() => {
+        store.childSessionStore.children.value = [
+          { ...child, session_id: 'wrong-parent', parent_session_id: 'another-parent' },
+          { ...child, session_id: 'wrong-call', parent_spawn_call_id: 'another-call' },
+        ];
+      });
+      expect(screen.queryByRole('button', { name: 'Open subagent' })).not.toBeInTheDocument();
+      act(() => {
+        store.childSessionStore.children.value = [
+          ...store.childSessionStore.children.peek(),
+          child,
+        ];
+      });
+      await userEvent.click(await screen.findByRole('button', { name: 'Open subagent' }));
+      expect(store.resolveAndSelectSession).toHaveBeenCalledWith('live-child', false, {
+        prepend: false,
+      });
+      expect(screen.queryByText('Arguments')).not.toBeInTheDocument();
+      store.dispose();
+    },
+  );
+
+  it('uses the standard composer controls for a live delegated response', async () => {
+    const store = createStore();
+    store.sessions.value = [
+      {
+        ...store.sessions.value[0],
+        parentSessionId: 'parent',
+        delegated: true,
+        activeRun: true,
+        activeResponseId: 'response-1',
+      },
+    ];
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'response-1',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'streaming',
+        lastSequence: 0,
+        startedRev: 0,
+        reconnects: 0,
+      }),
+    };
+    store.steeringCapabilities.value = { s1: { can_steer: true } };
+    const transport = store.runEngine as unknown as {
+      activeResponseTransports: {
+        value: Record<string, { responseId: string; generation: number }>;
+      };
+    };
+    transport.activeResponseTransports.value = {
+      s1: { responseId: 'response-1', generation: 1 },
+    };
+    store.steer = vi.fn(async () => undefined);
+    store.cancel = vi.fn(async () => undefined);
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    const textbox = screen.getByRole('textbox', { name: 'Message' });
+    expect(textbox).toHaveAttribute('placeholder', 'Steer conversation…');
+    expect(screen.getByRole('button', { name: 'Stop', exact: true })).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Stop subagent' })).not.toBeInTheDocument();
+    await userEvent.type(textbox, 'stay focused');
+    await userEvent.click(screen.getByRole('button', { name: 'Steer' }));
+    expect(store.steer).toHaveBeenCalledWith('stay focused');
+    await userEvent.click(screen.getByRole('button', { name: 'Stop', exact: true }));
+    expect(store.cancel).toHaveBeenCalledOnce();
+    store.dispose();
+  });
+
+  it('does not offer a composer after a delegated response finishes', () => {
+    const store = createStore();
+    const parent = store.sessions.value[0];
+    const child = {
+      ...parent,
+      id: 'child-1',
+      title: 'Research task',
+      parentSessionId: parent.id,
+      delegated: true,
+      activeRun: false,
+      activeResponseId: null,
+      messages: [],
+    };
+    store.sessionStore.transientSession.value = child;
+    store.activeSessionId.value = child.id;
+
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    store.dispose();
+  });
+
   it.each([
     [false, 1],
     [true, 1],
@@ -3040,6 +3438,82 @@ describe('Preact-owned chat surfaces', () => {
     },
   );
 
+  it('updates live subagent tool counts over a durable running tool row', async () => {
+    const store = createStore();
+    store.sessions.value[0].messages = [
+      {
+        id: 'durable-progress-tools',
+        role: 'tool-group',
+        responseId: 'response-progress',
+        content: '',
+        created: Date.now(),
+        tools: [
+          { id: 'spawn-progress', name: 'spawn_agent', status: 'running' },
+          { id: 'other-progress', name: 'shell', status: 'done' },
+        ],
+      },
+    ];
+    let projection = initialProjection({
+      responseId: 'response-progress',
+      sessionId: 's1',
+      epoch: 1,
+      status: 'streaming',
+      lastSequence: 0,
+      startedRev: 0,
+      reconnects: 0,
+    });
+    const emit = (type: string, sequence: number, payload: Record<string, unknown>) => {
+      projection = reduceResponse(projection, {
+        type,
+        response_id: 'response-progress',
+        run_epoch: 1,
+        sequence_number: sequence,
+        ...payload,
+      });
+    };
+    emit('response.output_item.added', 1, {
+      item: { type: 'function_call', call_id: 'spawn-progress', name: 'spawn_agent' },
+    });
+    emit('response.tool_exec.progress', 2, {
+      call_id: 'spawn-progress',
+      tool_name: 'spawn_agent',
+      seq: 1,
+      state: 'running',
+      calls_started: 1,
+      calls_active: 1,
+      current_tool: 'shell',
+    });
+    store.runs.value = { s1: projection };
+
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+    const preview = () => container.querySelector('.tool-group-card > .tool-progress');
+    expect(preview()).toHaveTextContent('Running shell · 1 tool call · 1 active');
+
+    emit('response.tool_exec.progress', 3, {
+      call_id: 'spawn-progress',
+      tool_name: 'spawn_agent',
+      seq: 2,
+      state: 'running',
+      calls_started: 2,
+      calls_active: 1,
+      current_tool: 'read_file',
+    });
+    act(() => {
+      store.runs.value = { s1: projection };
+    });
+
+    expect(preview()).toHaveTextContent('Reading files · 2 tool calls · 1 active');
+    expect(screen.getByRole('button', { name: /2 tool calls/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    store.dispose();
+  });
+
   it('renders compact spawn, wait, and detached queue progress summaries', () => {
     const store = createStore();
     store.sessions.value[0].messages = [
@@ -4432,6 +4906,36 @@ describe('Preact-owned chat surfaces', () => {
       expect(store.endpoints.setApprovalMode).not.toHaveBeenCalled();
     },
   );
+
+  it('shows inherited approval policy as read-only in a child session', async () => {
+    const store = createStore();
+    store.sessionStore.patch(store.activeSessionId.value, {
+      parentSessionId: 'parent',
+      delegated: true,
+    });
+    store.modal.value = 'approvals';
+    store.endpoints.approvalPolicy = vi.fn(async () => ({
+      default_mode: 'auto' as const,
+      requested_mode: 'auto' as const,
+      effective_mode: 'auto' as const,
+      guardian_available: true,
+      guardian_auto_suspended: false,
+      controls_available: false,
+    }));
+    store.endpoints.setApprovalMode = vi.fn();
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+    expect(
+      await screen.findByText('Approval policy is inherited from the parent conversation.'),
+    ).toBeVisible();
+    for (const option of screen.getAllByRole('radio')) expect(option).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(screen.queryByText(/no tools that require approval/)).not.toBeInTheDocument();
+    expect(store.endpoints.setApprovalMode).not.toHaveBeenCalled();
+  });
 
   it('hides and rejects approval controls when the server launched in Yolo', async () => {
     const store = createStore();

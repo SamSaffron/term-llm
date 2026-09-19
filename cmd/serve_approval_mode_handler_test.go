@@ -43,6 +43,76 @@ func TestHandleSessionApprovalModeReportsAndChangesRuntimePolicy(t *testing.T) {
 	}
 }
 
+func TestHandleSessionApprovalModeKeepsChildrenInherited(t *testing.T) {
+	parent := tools.NewApprovalManager(tools.NewToolPermissions())
+	parent.SetApprovalMode(tools.ModeAuto)
+	parent.SetPolicyReviewFunc(func(context.Context, tools.PolicyReviewRequest) (tools.PolicyDecision, error) {
+		return tools.PolicyDecision{Allowed: true}, nil
+	}, nil)
+	child := tools.NewApprovalManager(tools.NewToolPermissions())
+	if err := child.SetParent(parent); err != nil {
+		t.Fatal(err)
+	}
+	grandchild := tools.NewApprovalManager(tools.NewToolPermissions())
+	if err := grandchild.SetParent(child); err != nil {
+		t.Fatal(err)
+	}
+	manager := newServeSessionManager(time.Minute, 10, nil)
+	defer manager.Close()
+	server := &serveServer{sessionMgr: manager, approvalDefault: tools.ModeAuto}
+	for id, approval := range map[string]*tools.ApprovalManager{"child": child, "grandchild": grandchild} {
+		putTestSession(manager, id, &serveRuntime{
+			approvalDefault: tools.ModeAuto, toolMgr: &tools.ToolManager{ApprovalMgr: approval},
+		})
+		get := httptest.NewRecorder()
+		server.handleSessionApprovalMode(get, httptest.NewRequest(http.MethodGet, "/v1/sessions/"+id+"/runtime/approvals", nil), id)
+		if get.Code != http.StatusOK || !strings.Contains(get.Body.String(), `"controls_available":false`) || !strings.Contains(get.Body.String(), `"effective_mode":"auto"`) {
+			t.Fatalf("%s GET = %d %s", id, get.Code, get.Body.String())
+		}
+		for _, mode := range []string{"prompt", "auto", "yolo"} {
+			post := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+id+"/runtime/approvals", strings.NewReader(`{"mode":"`+mode+`"}`))
+			req.Header.Set("Content-Type", "application/json")
+			server.handleSessionApprovalMode(post, req, id)
+			if post.Code != http.StatusConflict || !strings.Contains(post.Body.String(), "inherited") {
+				t.Fatalf("%s POST %s = %d %s", id, mode, post.Code, post.Body.String())
+			}
+		}
+	}
+	parent.SetApprovalMode(tools.ModePrompt)
+	if child.ApprovalMode() != tools.ModePrompt || grandchild.ApprovalMode() != tools.ModePrompt {
+		t.Fatal("a rejected override pinned a child mode instead of following the parent")
+	}
+}
+
+func TestHandleSessionApprovalModeRejectsColdDelegatedOverride(t *testing.T) {
+	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Create(context.Background(), &session.Session{ID: "parent", Provider: "mock", Model: "mock"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Create(context.Background(), &session.Session{ID: "cold-child", ParentID: "parent", Provider: "mock", Model: "mock"}); err != nil {
+		t.Fatal(err)
+	}
+	created := 0
+	manager := newServeSessionManager(time.Minute, 10, func(context.Context) (*serveRuntime, error) {
+		created++
+		return &serveRuntime{}, nil
+	})
+	defer manager.Close()
+	server := &serveServer{store: store, sessionMgr: manager, approvalDefault: tools.ModeAuto}
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/sessions/cold-child/runtime/approvals", strings.NewReader(`{"mode":"yolo"}`))
+	request.Header.Set("Content-Type", "application/json")
+	server.handleSessionApprovalMode(response, request, "cold-child")
+	if response.Code != http.StatusConflict || created != 0 {
+		t.Fatalf("POST = %d %s; created %d runtimes", response.Code, response.Body.String(), created)
+	}
+}
+
 func TestHandleSessionApprovalModeReportsUnavailableWithoutManagedTools(t *testing.T) {
 	manager := newServeSessionManager(time.Minute, 10, nil)
 	defer manager.Close()

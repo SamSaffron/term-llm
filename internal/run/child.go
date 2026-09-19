@@ -70,6 +70,14 @@ type ChildRunResult struct {
 	Model          string
 	StartedAt      time.Time
 	CompletedAt    time.Time
+	// Interventions are human corrections applied to this run while it executed,
+	// with an aggregate delivery disposition. Hosts that cannot steer a live
+	// child leave both empty.
+	Interventions           []string
+	InterventionDisposition string
+	// CancelledByUser separates a deliberate human stop from ancestor
+	// cancellation or an execution failure.
+	CancelledByUser bool
 }
 
 type ChildAgentMetadata struct {

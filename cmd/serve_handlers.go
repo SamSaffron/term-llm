@@ -1272,6 +1272,14 @@ type webSessionEntry struct {
 	AttentionUnseen          bool                     `json:"attention_unseen,omitempty"`
 	AttentionOutcome         session.ResponseRunState `json:"attention_outcome,omitempty"`
 	AttentionTerminalAt      int64                    `json:"attention_terminal_at,omitempty"`
+	// ParentSessionID is read directly off the session row rather than derived
+	// by scanning the parent transcript. It is what lets a drilled-in subagent
+	// render a breadcrumb back to the conversation that delegated it.
+	ParentSessionID string `json:"parent_session_id,omitempty"`
+	// Delegated marks a run started by another session rather than by a person.
+	// The client uses it to explain a disabled composer; the server enforces the
+	// same rule independently.
+	Delegated bool `json:"delegated,omitempty"`
 }
 
 type webSelectedSessionEntry struct {
@@ -1335,25 +1343,27 @@ func (s *serveServer) webSessionEntryFromSession(sess *session.Session) webSessi
 		provider = resolveSessionProviderKey(s.cfgRef, sess)
 	}
 	return webSessionEntry{
-		Name:          sess.Name,
-		ID:            sess.ID,
-		Number:        sess.Number,
-		ShortTitle:    sess.PreferredShortTitle(),
-		LongTitle:     sess.PreferredLongTitle(),
-		Mode:          sess.Mode,
-		Origin:        sess.Origin,
-		Provider:      provider,
-		Model:         sess.Model,
-		Agent:         sess.Agent,
-		ProjectID:     sess.ProjectID,
-		ProjectName:   sess.ProjectName,
-		CWD:           sess.CWD,
-		WorktreeDir:   sess.WorktreeDir,
-		Archived:      sess.Archived,
-		Pinned:        sess.Pinned,
-		CreatedAt:     sess.CreatedAt.UnixMilli(),
-		LastMessageAt: lastMessageAt.UnixMilli(),
-		MsgCount:      sess.MessageCount,
+		Name:            sess.Name,
+		ID:              sess.ID,
+		Number:          sess.Number,
+		ShortTitle:      sess.PreferredShortTitle(),
+		LongTitle:       sess.PreferredLongTitle(),
+		Mode:            sess.Mode,
+		Origin:          sess.Origin,
+		Provider:        provider,
+		Model:           sess.Model,
+		Agent:           sess.Agent,
+		ProjectID:       sess.ProjectID,
+		ProjectName:     sess.ProjectName,
+		CWD:             sess.CWD,
+		WorktreeDir:     sess.WorktreeDir,
+		Archived:        sess.Archived,
+		Pinned:          sess.Pinned,
+		CreatedAt:       sess.CreatedAt.UnixMilli(),
+		LastMessageAt:   lastMessageAt.UnixMilli(),
+		MsgCount:        sess.MessageCount,
+		ParentSessionID: sess.ParentID,
+		Delegated:       sessionIsDelegatedChild(sess),
 	}
 }
 
@@ -2180,6 +2190,13 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 	if clientMessageID == "" {
 		clientMessageID = strings.TrimSpace(req.SteeringID)
 	}
+	var childIntervention *childRunHandle
+	if delivery == interruptDeliverySteer && clientMessageID != "" {
+		childIntervention = s.ensureChildRuns().lookup(sessionID)
+		if childIntervention != nil {
+			childIntervention.recordIntervention(clientMessageID, displayText)
+		}
+	}
 	var action llm.InterruptAction
 	var replayed bool
 	var interruptErr error
@@ -2189,6 +2206,9 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 			action, replayed, interruptErr = rt.InterruptMessage(r.Context(), msg, displayText, clientMessageID, fastProvider, delivery)
 		})
 		if !owned {
+			if childIntervention != nil {
+				childIntervention.rejectIntervention(clientMessageID)
+			}
 			writeJSON(w, http.StatusConflict, map[string]any{
 				"error": map[string]any{
 					"type": "response_owner_conflict", "message": "the active response changed",
@@ -2201,6 +2221,9 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 		action, replayed, interruptErr = rt.InterruptMessage(r.Context(), msg, displayText, clientMessageID, fastProvider, delivery)
 	}
 	if interruptErr != nil {
+		if childIntervention != nil {
+			childIntervention.rejectIntervention(clientMessageID)
+		}
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", interruptErr.Error())
 		return
 	}

@@ -184,16 +184,16 @@ func TestClassifyReviewFailureMetadata(t *testing.T) {
 	}
 }
 
-func TestClassifyStateDoesNotTruncateAction(t *testing.T) {
-	command := strings.Repeat("a", maxActionChars+100)
-	raw, err := classifyState(Request{Command: command}, DefaultPolicy)
+func TestClassifyRequestDoesNotTruncateAction(t *testing.T) {
+	command := strings.Repeat("a", 8000)
+	req, err := buildClassifyRequest(Request{Command: command}, DefaultPolicy, "jev-test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var state struct {
 		Action classifyAction `json:"action"`
 	}
-	if err := json.Unmarshal(raw, &state); err != nil {
+	if err := json.Unmarshal(req.State, &state); err != nil {
 		t.Fatal(err)
 	}
 	if state.Action.Command != command {
