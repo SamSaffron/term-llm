@@ -46,13 +46,31 @@ The execution agent uses the normal response request's configured tools, search 
 
 #### The control lane
 
-The control lane is **off by default**. Set `live.control_plane: true` to enable it. It is separate from `live.enabled` because it adds a fast-model turn in front of every spoken request.
+The control lane is selected with `live.control_plane: off|agent|classify`. It is separate from `live.enabled`; legacy booleans still load as `true=agent` and `false=off`.
 
-The flag gates only the fast-model triage turn and its tools. When it is off, no router is wired, no fast-model turn runs, and nothing reads a delegation before it enters the ordinary session lane. The delegation uses that lane's existing queue depth with no routing worker in between.
+- `off` wires no router. Delegations enter the ordinary session lane directly.
+- `agent` is the original tool-calling lane described below. It can list and search sessions, switch or create conversations, and inspect or change the voice.
+- `classify` uses the classification provider configured under `classify.providers` for cheap, stateless intent routing. It is the backend designed to stay enabled.
 
-The flag does not gate actions the browser can take on a live call. The `live.session_changed` binding, `POST /v1/live/sessions/{live_id}/session`, and the web UI's in-place follow-along after a rebind need no model or router and work with the flag off. `live_settings` is also not gated: it is an ordinary registry tool whose call-scoped binding remains available to a delegated turn, so an agent configured with it can inspect or change the voice of the call driving it.
+The selector does not gate actions the browser can take on a live call. The `live.session_changed` binding, `POST /v1/live/sessions/{live_id}/session`, and the web UI's in-place follow-along after a rebind need no model or router and work with the lane off. `live_settings` is also available to an ordinary delegated turn when that agent is configured to use it.
 
-The tradeoff is latency: enabling the lane adds one fast-model turn in front of every request, including workspace work.
+##### Classify backend
+
+The classifier labels each short spoken delegation as ordinary **work or guidance**, **status**, **start a new conversation**, **switch to an existing conversation**, **interrupt now**, or a **private side question**. Phase 1 acts only on status, new conversation, and switch. Ordinary work passes through unchanged. Interrupt-now and side-question labels are measured but also pass through unchanged until their run-ownership contracts ship.
+
+Requests longer than 40 words skip classification as a cost and latency exception, not as a safety rule. The live classifier uses a three-second default deadline. A longer explicit `classify.providers.<name>.timeout_seconds` is clamped to the controller's remaining routing budget (currently 13 seconds), leaving the 30-second switch resolver and a two-second handoff margin inside the 45-second controller backstop. A navigation request that also asks for work—“in the album chat, make the ornaments smaller”—also passes through in full: Phase 1 does not split it, extract a remainder, or promise navigate-then-continue delivery. The classify backend does not stop active work, answer private side questions, or change voices. Use the `agent` backend for current-call voice control through `live_settings`.
+
+On every classified delegation, term-llm **sends off-host to the selected classify provider** the delegation message, up to 4,096 runes of recent transcript delta, and up to 12 recent session titles (plus bounded active-run metadata).
+
+A confident status request is answered from running/recent sessions and jobs. A confident new-session request starts an empty conversation with the call's current defaults. A switch request gets a second, restricted resolver turn with only `session_directory` and `live_switch_session`; successful switches, host refusals, and ambiguous directory results are spoken, while invalid or unauthorized calls and prose-only claims prove nothing and fail open.
+
+**Classification is fail-open.** Provider errors, timeouts, malformed or unknown answers, missing probabilities, below-threshold labels, action failures, and inconclusive switch resolution all send the original input to the session lane. A missing selected classify provider or credential is different: it is a configuration error when the server starts. `SIGUSR2` reload re-execs the server and performs the same provider validation before the replacement accepts live sessions; a runtime outage after successful startup fails open per request.
+
+When `live.classify.log_decisions` is enabled, `term-llm live decisions [--since 24h]` reads the `route_decisions` audit rows. They include labels, probabilities, action/resolver outcomes, latency, and bounded error categories. With `live.classify.log_state: true`, they also include bounded speech and session titles. Rows persist until the diagnostics `live.db` file is deleted; there is no automatic retention or prune command. “Not in the chat transcript” does not mean “not stored”; disable decision logging entirely, or disable state logging while retaining aggregate routing evidence, when that persistence is inappropriate.
+
+##### Agent backend
+
+The `agent` backend adds one fast-model turn in front of every request, including workspace work. Set `live.control_plane: agent` (or legacy `true`) to enable it.
 
 **The outcome follows what the turn did, not what it wrote.** If a control tool runs, the request is session management. The router answers it to the voice model and never sends it to the session lane, even if the turn then fails, exhausts its budget before summarizing, or also tries to hand the request to the workspace agent. Tool evidence takes precedence over a handoff, because handing off a control request is exactly what this lane prevents. A mixed request such as “list my sessions and also fix the parser” therefore loses its work half.
 
@@ -93,7 +111,7 @@ Answers and handoffs run off the event loop on one worker, so transcript deltas,
 
 When a stream ends, the delegation loop drains work that is already queued. If the routing worker finishes after the loop exits, the request becomes `failed` with a reason instead of remaining `queued`, so the voice model is not left waiting for a call that has stopped answering.
 
-The voice model does not receive the routing machinery's names, tools, or wire forms. It delegates requests it cannot answer from host context in your own words, and the host decides whether they are session management. When the control lane is enabled, the ordinary host context tells the voice model that a routing model reads requests before they become work; when it is disabled, the host makes no such promise.
+The voice model does not receive the routing machinery's names, tools, or wire forms. It delegates requests it cannot answer from host context in your own words, and the host decides whether they are session management. When either backend is enabled, the ordinary host context says so; `off` makes no such promise.
 
 **A refusal is not an error.** A refusal means the host declined a request before anything ran—for example, because four requests were already waiting to be routed. Nothing failed and there is nothing for you to fix. Only the voice model receives the reason on the delegation's commentary channel and explains it in its own words. The browser receives `live.delegation` with `state:"refused"` and no `text`; like `done`, it is terminal, so the panel returns to listening without showing an error.
 

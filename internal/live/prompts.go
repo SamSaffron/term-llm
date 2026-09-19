@@ -45,16 +45,23 @@ Message prefixes you may see:
 
 Speak briefly and naturally. Do not use markdown, headings, or long lists in spoken responses.`
 
-// ControlPlaneContext is the host fact a voice conversation may only be told when
-// the control plane is switched on: that a host-side routing model reads each
-// request before it becomes work.
-//
-// It is appended through SessionOptions.Context rather than baked into
-// DefaultInstructions, because with the flag off the sentence is false — those
+// The backend-specific control-plane contexts are host facts a voice conversation
+// may only be told when the matching backend is actively handling requests.
+// They are appended through SessionOptions.Context rather than baked into
+// DefaultInstructions, because with the flag off the promises are false — those
 // requests are ordinary work in the bound session, exactly as they were before the
 // lane existed — and a static prompt cannot be both cacheable and conditional. A
 // host that leaves the flag off therefore promises nothing it will not do.
-const ControlPlaneContext = "Requests about the user's other conversations, moving this call to another session, or inspecting or changing this call's voice are read by a host-side routing model before they can become work. It either handles them itself and answers, or hands the request to the workspace agent: pass such a request along in the user's own words, with nothing to prepend, and the host decides what it needs."
+//
+// AgentControlPlaneContext describes the full tool-calling control backend.
+const AgentControlPlaneContext = "Requests about the user's other conversations, moving this call to another session, or inspecting or changing this call's voice are read by a host-side routing model before they can become work. It either handles them itself and answers, or hands the request to the workspace agent: pass such a request along in the user's own words, with nothing to prepend, and the host decides what it needs."
+
+// ClassifyControlPlaneContext describes only the Phase 1 classifier actions. It
+// deliberately promises no voice inspection or changes.
+const ClassifyControlPlaneContext = "Requests asking what sessions or scheduled jobs are running, starting a new conversation, or moving this call to another existing session are read by a host-side routing model before they can become work. It either handles them itself and answers, or hands the request to the workspace agent: pass such a request along in the user's own words, with nothing to prepend, and the host decides what it needs."
+
+// ControlPlaneContext is retained as the agent backend's compatibility name.
+const ControlPlaneContext = AgentControlPlaneContext
 
 // clientDelegationHintMaxBytes bounds the device capability hint after
 // sanitisation. It matches the host's own transport limit so the prompt layer

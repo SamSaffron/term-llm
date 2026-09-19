@@ -112,6 +112,11 @@ const (
 
 	DefaultLiveProvider               = LiveProviderChatGPT
 	DefaultLiveIdleTimeout            = "10m"
+	DefaultLiveClassifyStatus         = 0.60
+	DefaultLiveClassifyNewSession     = 0.70
+	DefaultLiveClassifySwitchSession  = 0.70
+	DefaultLiveClassifySteerNow       = 0.80
+	DefaultLiveClassifySide           = 0.85
 	DefaultLiveChatGPTModel           = "gpt-live-1-codex"
 	DefaultLiveChatGPTVoice           = "cove"
 	DefaultLiveChatGPTCallBaseURL     = "https://chatgpt.com/backend-api/codex"
@@ -292,9 +297,17 @@ var keySpecs = []KeySpec{
 	def("live.provider", DefaultLiveProvider),
 	optional("live.instructions"),
 	def("live.idle_timeout", DefaultLiveIdleTimeout),
-	// Opt-in separately from live.enabled: the voice surface is useful without it,
-	// and it adds a model turn in front of every spoken request.
-	def("live.control_plane", false),
+	// Opt-in separately from live.enabled. Agent adds a model turn before every
+	// request; classify adds one bounded classification call instead.
+	def("live.control_plane", string(LiveControlPlaneOff)),
+	optional("live.classify.provider"),
+	def("live.classify.log_decisions", true),
+	def("live.classify.log_state", true),
+	def("live.classify.min_confidence.status", DefaultLiveClassifyStatus),
+	def("live.classify.min_confidence.new_session", DefaultLiveClassifyNewSession),
+	def("live.classify.min_confidence.switch_session", DefaultLiveClassifySwitchSession),
+	def("live.classify.min_confidence.steer_now", DefaultLiveClassifySteerNow),
+	def("live.classify.min_confidence.side", DefaultLiveClassifySide),
 	// Unset means "follow the provider's fast model", which is the shared dial.
 	optional("live.control_provider"),
 	optional("live.control_model"),

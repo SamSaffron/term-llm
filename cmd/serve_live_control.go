@@ -78,6 +78,12 @@ When you hand over, pass the request through unchanged unless speech recognition
 
 When you handle it yourself, answer in one or two short sentences that will be read aloud, naming the session you acted on.`
 
+const liveSwitchResolverSystemPrompt = `You resolve one spoken request to move a term-llm voice call to an existing chat session.
+
+You have exactly two tools. Use session_directory to find candidate sessions, then call live_switch_session only with a session number or full session id returned by the directory. Never invent a target. You cannot start sessions, change voice settings, hand work to another agent, or answer unrelated requests.
+
+If one target is clear, switch and briefly confirm it by name. If there is no unique match, ask one short "which one?" question naming the best candidates. Do not claim a switch unless live_switch_session succeeded.`
+
 // serveLiveControlExecutor triages the live call's delegations: one fast-model turn
 // per delegation, with no chat session, no transcript write, and no persisted run.
 // It is the host's live.Router.
@@ -178,6 +184,177 @@ func (s *serveServer) runLiveRoute(ctx context.Context, record *liveSession, ses
 		}
 	}
 	return liveRouteResult(handoff, acted, liveControlClipAnswer(strings.TrimSpace(answer.String())), nil)
+}
+
+type liveSwitchResolverOutcomeKind string
+
+const (
+	liveSwitchResolverSucceeded liveSwitchResolverOutcomeKind = "switched"
+	liveSwitchResolverRefused   liveSwitchResolverOutcomeKind = "refused"
+	liveSwitchResolverAmbiguous liveSwitchResolverOutcomeKind = "ambiguous"
+	liveSwitchResolverFailOpen  liveSwitchResolverOutcomeKind = "fail_open"
+	liveSwitchResolverError     liveSwitchResolverOutcomeKind = "provider_error"
+)
+
+type liveSwitchResolverOutcome struct {
+	Kind   liveSwitchResolverOutcomeKind
+	Answer string
+}
+
+// resolveLiveSwitch runs the restricted second-stage agent used only after the
+// classifier has confidently selected switch_session. Its evidence, not prose,
+// determines the outcome.
+func (s *serveServer) resolveLiveSwitch(ctx context.Context, record *liveSession, sessionID string, request live.RouteRequest) (liveSwitchResolverOutcome, error) {
+	provider, err := s.newLiveControlProvider(ctx, sessionID)
+	if err != nil || provider == nil {
+		if err == nil {
+			err = errors.New("no switch resolver model is configured")
+		}
+		return liveSwitchResolverOutcome{Kind: liveSwitchResolverError}, fmt.Errorf("live switch resolver unavailable: %w", err)
+	}
+	turnCtx, cancel := context.WithTimeout(s.withLiveControlAuthority(ctx, record, sessionID), liveControlTurnTimeout)
+	defer cancel()
+	activity := &liveSwitchResolverActivity{}
+	engine, specs := newLiveToolEngine(provider, []llm.Tool{
+		&liveSwitchResolverTool{Tool: &tools.SessionDirectoryTool{}, activity: activity},
+		&liveSwitchResolverTool{Tool: &tools.LiveSwitchSessionTool{}, activity: activity},
+	})
+	stream, err := engine.Stream(turnCtx, llm.Request{
+		Messages: []llm.Message{
+			llm.SystemText(liveSwitchResolverSystemPrompt),
+			llm.UserText(s.liveControlUserMessage(ctx, sessionID, request)),
+		},
+		Ephemeral: true, SessionID: sessionID, Tools: specs,
+		MaxTurns: liveControlMaxTurns, DisableExternalWebFetch: true,
+	})
+	if err != nil {
+		return liveSwitchResolverOutcome{Kind: liveSwitchResolverError}, fmt.Errorf("live switch resolver: %w", err)
+	}
+	defer stream.Close()
+	for {
+		event, recvErr := stream.Recv()
+		if errors.Is(recvErr, io.EOF) {
+			break
+		}
+		if recvErr != nil {
+			outcome := activity.outcome()
+			if outcome.Kind != liveSwitchResolverFailOpen {
+				return outcome, nil
+			}
+			return liveSwitchResolverOutcome{Kind: liveSwitchResolverError}, fmt.Errorf("live switch resolver turn: %w", recvErr)
+		}
+		if event.Type == llm.EventError && event.Err != nil {
+			outcome := activity.outcome()
+			if outcome.Kind != liveSwitchResolverFailOpen {
+				return outcome, nil
+			}
+			return liveSwitchResolverOutcome{Kind: liveSwitchResolverError}, fmt.Errorf("live switch resolver turn: %w", event.Err)
+		}
+	}
+	return activity.outcome(), nil
+}
+
+type liveSwitchResolverActivity struct {
+	mu              sync.Mutex
+	switchOutput    string
+	switchRefusal   error
+	directoryOutput string
+}
+
+type liveSwitchResolverTool struct {
+	llm.Tool
+	activity *liveSwitchResolverActivity
+}
+
+func (t *liveSwitchResolverTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+	output, err := t.Tool.Execute(ctx, args)
+	t.activity.mu.Lock()
+	defer t.activity.mu.Unlock()
+	switch t.Tool.Spec().Name {
+	case tools.LiveSwitchSessionToolName:
+		if err == nil {
+			t.activity.switchOutput = output.Content
+		} else if !controlAttemptRejected(err) {
+			t.activity.switchRefusal = err
+		}
+	case tools.SessionDirectoryToolName:
+		if err == nil {
+			t.activity.directoryOutput = output.Content
+		}
+	}
+	return output, err
+}
+
+func (a *liveSwitchResolverActivity) outcome() liveSwitchResolverOutcome {
+	if a == nil {
+		return liveSwitchResolverOutcome{Kind: liveSwitchResolverFailOpen}
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.switchOutput != "" {
+		return liveSwitchResolverOutcome{Kind: liveSwitchResolverSucceeded, Answer: liveSwitchSuccessAnswer(a.switchOutput)}
+	}
+	if a.switchRefusal != nil {
+		return liveSwitchResolverOutcome{Kind: liveSwitchResolverRefused, Answer: liveSwitchRefusalAnswer(a.switchRefusal)}
+	}
+	if a.directoryOutput != "" {
+		return liveSwitchResolverOutcome{Kind: liveSwitchResolverAmbiguous, Answer: liveSwitchCandidatesAnswer(a.directoryOutput)}
+	}
+	return liveSwitchResolverOutcome{Kind: liveSwitchResolverFailOpen}
+}
+
+func liveSwitchSuccessAnswer(output string) string {
+	var result struct {
+		SessionID string `json:"session_id"`
+		Number    int64  `json:"session_number"`
+		Title     string `json:"title"`
+	}
+	if json.Unmarshal([]byte(output), &result) != nil {
+		return "The call was switched to the requested session."
+	}
+	label := strings.TrimSpace(result.Title)
+	if result.Number > 0 && label != "" {
+		return fmt.Sprintf("Switched the call to session #%d, %s.", result.Number, label)
+	}
+	if label != "" {
+		return "Switched the call to " + label + "."
+	}
+	if result.Number > 0 {
+		return fmt.Sprintf("Switched the call to session #%d.", result.Number)
+	}
+	return "The call was switched to the requested session."
+}
+
+func liveSwitchRefusalAnswer(err error) string {
+	return liveControlClipAnswer("I couldn't switch the call: " + strings.TrimSpace(err.Error()) + ".")
+}
+
+func liveSwitchCandidatesAnswer(output string) string {
+	var result struct {
+		Sessions []struct {
+			Number int64  `json:"number"`
+			Title  string `json:"title"`
+		} `json:"sessions"`
+	}
+	if json.Unmarshal([]byte(output), &result) != nil || len(result.Sessions) == 0 {
+		return "Which session did you mean? I couldn't find a clear match."
+	}
+	labels := make([]string, 0, min(4, len(result.Sessions)))
+	for _, candidate := range result.Sessions[:min(4, len(result.Sessions))] {
+		label := strings.TrimSpace(candidate.Title)
+		if candidate.Number > 0 && label != "" {
+			label = fmt.Sprintf("#%d %s", candidate.Number, label)
+		} else if candidate.Number > 0 {
+			label = fmt.Sprintf("#%d", candidate.Number)
+		}
+		if label != "" {
+			labels = append(labels, label)
+		}
+	}
+	if len(labels) == 0 {
+		return "Which session did you mean?"
+	}
+	return liveControlClipAnswer("Which one did you mean: " + strings.Join(labels, ", ") + "?")
 }
 
 // liveRouteResult turns a finished turn into a decision. The two things a turn can
@@ -398,18 +575,18 @@ func controlAttemptRejected(err error) bool {
 	return toolErr.Type == tools.ErrInvalidParams || toolErr.Type == tools.ErrPermissionDenied
 }
 
-// newLiveControlEngine builds the router's throwaway engine: one request's worth of
-// state, exactly the call-scoped tools plus the handoff, and an allowlist that
-// states the same surface a second time. Registration grants nothing — each control
-// tool still demands the host-built context — so the allowlist is how the lane's
-// reach stays a property of its contract rather than of whatever happens to be bound
-// in the registry.
+// newLiveControlEngine builds the general router's throwaway engine. The engine
+// helper takes the complete tool set explicitly so registration, request schemas,
+// and the allowlist can never drift apart.
 func newLiveControlEngine(provider llm.Provider, handoff *workspaceHandoff, acted *controlActivity) (*llm.Engine, []llm.ToolSpec) {
-	routerTools := liveControlTools(handoff, acted)
+	return newLiveToolEngine(provider, liveControlTools(handoff, acted))
+}
+
+func newLiveToolEngine(provider llm.Provider, registered []llm.Tool) (*llm.Engine, []llm.ToolSpec) {
 	engine := llm.NewEngine(provider, nil)
-	specs := make([]llm.ToolSpec, 0, len(routerTools))
-	allowed := make([]string, 0, len(routerTools))
-	for _, tool := range routerTools {
+	specs := make([]llm.ToolSpec, 0, len(registered))
+	allowed := make([]string, 0, len(registered))
+	for _, tool := range registered {
 		engine.RegisterTool(tool)
 		spec := tool.Spec()
 		specs = append(specs, spec)
@@ -554,7 +731,7 @@ func liveControlClipAnswer(text string) string {
 // cannot be installed by any caller.
 func (s *serveServer) withLiveControlAuthority(ctx context.Context, record *liveSession, sessionID string) context.Context {
 	ctx = s.withLiveSettingsContext(llm.ContextWithSessionID(ctx, sessionID), record, sessionID)
-	if record == nil || sessionID == "" || !s.liveConfig().ControlPlane {
+	if record == nil || sessionID == "" || !s.liveConfig().ControlAuthorityAllowed() {
 		return ctx
 	}
 	ctx = tools.ContextWithSessionDirectory(ctx, sessionID, s.sessionDirectoryForTool)

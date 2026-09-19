@@ -1,6 +1,7 @@
 package config
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,6 +13,78 @@ import (
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )
+
+func TestLiveControlPlaneSelectorCompatibility(t *testing.T) {
+	for _, tc := range []struct {
+		name, yaml string
+		want       LiveControlPlane
+		wantErr    string
+	}{
+		{name: "omitted", yaml: "", want: LiveControlPlaneOff},
+		{name: "legacy true", yaml: "live:\n  control_plane: true\n", want: LiveControlPlaneAgent},
+		{name: "legacy false", yaml: "live:\n  control_plane: false\n", want: LiveControlPlaneOff},
+		{name: "string true", yaml: "live:\n  control_plane: ' TrUe '\n", want: LiveControlPlaneAgent},
+		{name: "string false", yaml: "live:\n  control_plane: ' FALSE '\n", want: LiveControlPlaneOff},
+		{name: "agent", yaml: "live:\n  control_plane: agent\n", want: LiveControlPlaneAgent},
+		{name: "classify", yaml: "live:\n  control_plane: classify\n", want: LiveControlPlaneClassify},
+		{name: "unknown", yaml: "live:\n  control_plane: magic\n", wantErr: "invalid live.control_plane"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			viper.Reset()
+			t.Cleanup(viper.Reset)
+			if tc.yaml != "" {
+				dir, err := GetConfigDir()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tc.yaml), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg, err := Load()
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("Load error = %v, want containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Live.ControlPlane != tc.want {
+				t.Fatalf("control_plane = %q, want %q", cfg.Live.ControlPlane, tc.want)
+			}
+		})
+	}
+}
+
+func TestLiveClassifyDefaultsAndValidation(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Live.Classify.LogDecisions || !cfg.Live.Classify.LogState {
+		t.Fatalf("live classify defaults = %+v", cfg.Live.Classify)
+	}
+	thresholds := cfg.Live.Classify.MinConfidence
+	if thresholds.Status != 0.60 || thresholds.NewSession != 0.70 || thresholds.SwitchSession != 0.70 || thresholds.SteerNow != 0.80 || thresholds.Side != 0.85 {
+		t.Fatalf("live classify thresholds = %+v", thresholds)
+	}
+	for _, value := range []float64{-0.01, 1.01, math.NaN(), math.Inf(1)} {
+		invalid := cfg.Live.Classify
+		invalid.MinConfidence.Status = value
+		if err := invalid.Validate(); err == nil || !strings.Contains(err.Error(), "status") {
+			t.Fatalf("Validate(%v) = %v", value, err)
+		}
+	}
+}
 
 func TestFileTrackingDefaultsEnabledAndLoadsExplicitDisable(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -1648,8 +1721,8 @@ func TestLiveDefaultsAreOffAndChatGPTBacked(t *testing.T) {
 	}
 	// Opt-in separately from live.enabled: it puts a model turn in front of every
 	// spoken request, so enabling voice must not enable it by side effect.
-	if cfg.Live.ControlPlane {
-		t.Fatal("live.control_plane must default to false")
+	if cfg.Live.ControlPlane != LiveControlPlaneOff {
+		t.Fatal("live.control_plane must default to off")
 	}
 	if cfg.Live.Provider != LiveProviderChatGPT {
 		t.Fatalf("live.provider = %q, want chatgpt without a Codex dependency", cfg.Live.Provider)

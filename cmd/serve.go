@@ -22,6 +22,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/filetrack"
 	"github.com/samsaffron/term-llm/internal/live"
+	liveclassify "github.com/samsaffron/term-llm/internal/live/classify"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mentions"
 	"github.com/samsaffron/term-llm/internal/restart"
@@ -732,17 +733,20 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	if hasHTTP {
 		var jobsV2 *jobsV2Manager
 		serveUI := hasWeb
-
-		var widgetsMgr *widgets.Manager
-		if serveWidgetsEnabled(hasWeb, serveDisableWidgets) {
-			wDir, wErr := resolveWidgetsDir(serveWidgetsDir, cfg)
-			if wErr != nil {
-				return wErr
-			}
-			widgetsMgr = widgets.NewManager(wDir, serveBasePath)
-			defer installWidgetStopSignal(ctx, widgetsMgr)()
-			log.Printf("widgets enabled, dir: %s", wDir)
+		// This is the only serveServer construction path. Process reload re-execs
+		// the serve command, so provider resolution is validated here again before
+		// the replacement server can accept live sessions.
+		liveClassifier, liveDecisionStore, liveClassifyErr := prepareLiveClassify(cfg)
+		if liveClassifyErr != nil {
+			return liveClassifyErr
 		}
+		defer closeLiveDecisionStore(liveDecisionStore)
+
+		widgetsMgr, stopWidgets, widgetsErr := setupServeWidgets(ctx, cfg, hasWeb)
+		if widgetsErr != nil {
+			return widgetsErr
+		}
+		defer stopWidgets()
 
 		s = &serveServer{
 			browserAuth: browserAuth,
@@ -776,6 +780,8 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			jobsV2:              jobsV2,
 			cfgRef:              cfg,
 			store:               store,
+			liveClassifier:      liveClassifier,
+			liveDecisionStore:   liveDecisionStore,
 			mediaPublisher:      mediaPublisher,
 			approvalDefault:     resolvedApproval.Mode,
 			projectsEnabled:     projectsEnabled,
@@ -1250,6 +1256,22 @@ func serveWidgetsEnabled(hasWeb, disabled bool) bool {
 }
 
 // resolveWidgetsDir returns the widgets directory, defaulting to ~/.config/term-llm/widgets.
+// setupServeWidgets builds the widgets manager when widgets are enabled and
+// installs its stop signal. The returned stop function is always safe to defer.
+func setupServeWidgets(ctx context.Context, cfg *config.Config, hasWeb bool) (*widgets.Manager, func(), error) {
+	if !serveWidgetsEnabled(hasWeb, serveDisableWidgets) {
+		return nil, func() {}, nil
+	}
+	wDir, err := resolveWidgetsDir(serveWidgetsDir, cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	mgr := widgets.NewManager(wDir, serveBasePath)
+	stop := installWidgetStopSignal(ctx, mgr)
+	log.Printf("widgets enabled, dir: %s", wDir)
+	return mgr, stop, nil
+}
+
 func resolveWidgetsDir(flagVal string, cfg *config.Config) (string, error) {
 	if flagVal != "" {
 		return flagVal, nil
@@ -1429,6 +1451,8 @@ type serveServer struct {
 	// liveControlProviderFactory is the test seam for the session assistant's
 	// provider; nil resolves it through the shared fast-provider conventions.
 	liveControlProviderFactory func(providerKey string) (llm.Provider, error)
+	liveClassifier             liveDecisionClassifier
+	liveDecisionStore          *liveclassify.DecisionStore
 
 	autoTitleMu              sync.Mutex
 	autoTitleFlights         map[string]struct{}

@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/live"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -100,8 +101,12 @@ func (s *serveServer) liveSessionOptions(ctx context.Context, sessionID string, 
 	// become work. With it off the requests below are ordinary work in the bound
 	// session, so promising host-side handling would be a lie the voice model repeats
 	// to the user.
-	if s.liveConfig().ControlPlane {
-		opts.Context += "\n" + live.ControlPlaneContext
+	switch liveCfg := s.liveConfig(); {
+	case !liveCfg.AdvertiseControlHandling():
+	case liveCfg.ControlPlane == config.LiveControlPlaneAgent:
+		opts.Context += "\n" + live.AgentControlPlaneContext
+	case liveCfg.ControlPlane == config.LiveControlPlaneClassify:
+		opts.Context += "\n" + live.ClassifyControlPlaneContext
 	}
 	// Without this the voice model declines device-native requests ("I can't play
 	// music") instead of delegating them, because nothing else in its context says

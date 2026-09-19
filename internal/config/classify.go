@@ -73,6 +73,25 @@ func ClassifyKeySpecs(names []string) []KeySpec {
 	return specs
 }
 
+// Validate rejects unusable live classifier thresholds, including non-finite values.
+func (c LiveClassifyConfig) Validate() error {
+	for _, threshold := range []struct {
+		name  string
+		value float64
+	}{
+		{"status", c.MinConfidence.Status},
+		{"new_session", c.MinConfidence.NewSession},
+		{"switch_session", c.MinConfidence.SwitchSession},
+		{"steer_now", c.MinConfidence.SteerNow},
+		{"side", c.MinConfidence.Side},
+	} {
+		if math.IsNaN(threshold.value) || math.IsInf(threshold.value, 0) || threshold.value < 0 || threshold.value > 1 {
+			return fmt.Errorf("live.classify.min_confidence.%s must be between 0 and 1", threshold.name)
+		}
+	}
+	return nil
+}
+
 // Validate rejects unusable Guardian confidence thresholds, including non-finite values.
 func (c GuardianClassifyConfig) Validate() error {
 	if math.IsNaN(c.MinConfidence) || math.IsInf(c.MinConfidence, 0) || c.MinConfidence < 0 || c.MinConfidence > 1 {
