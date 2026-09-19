@@ -65,8 +65,8 @@ term-llm supports two edit strategies:
 
 | Format | Description | Best For |
 |--------|-------------|----------|
-| `replace` | Multiple parallel find/replace tool calls | Most models (default) |
-| `udiff` | Single unified diff with elision support | Codex models, large refactors |
+| `replace` | Multiple parallel find/replace tool calls | All models (default) |
+| `udiff` | Single unified diff with elision support | Explicit opt-in for large refactors |
 
 The `udiff` format uses unified diff syntax with `-...` elision to efficiently replace large code blocks without listing every line:
 
@@ -89,6 +89,8 @@ edit:
   diff_format: auto  # auto, udiff, or replace
 ```
 
-- `auto` (default): Uses `udiff` for Codex models, `replace` for others
+- `auto` (default): Uses `replace` for all models, including Codex
 - `udiff`: Always use unified diff format
 - `replace`: Always use multiple find/replace calls
+
+Use `--diff-format udiff` or `--diff-format replace` to override the configuration for one edit.

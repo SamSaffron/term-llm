@@ -29,13 +29,15 @@ term-llm skills --source claude              # Only Claude Code ecosystem skills
 term-llm skills new my-skill                 # Create new skill
 term-llm skills show git                     # Show skill content
 term-llm skills edit git                     # Edit skill
-term-llm skills copy builtin/git my-git      # Copy skill to customize
+term-llm skills copy git my-git              # Copy an installed skill to customize
 term-llm skills browse                       # Browse available skills
-term-llm skills validate my-skill            # Validate skill syntax
+term-llm skills validate "$(term-llm skills path my-skill)" # Validate a skill directory
 term-llm skills update                       # Update skills from sources
 term-llm skills path                         # Print skills directory
 term-llm skills add owner/repo               # Add skill source from GitHub
 ```
+
+Use a name from `term-llm skills` as the source for `skills copy`; no built-in skills ship with term-llm. `skills validate` takes a directory path, not a discovered skill name. Use `term-llm skills validate --all` to validate every discovered skill.
 
 ### Skill Configuration
 
@@ -196,7 +198,7 @@ skills:
   enabled: false
 ```
 
-The `--skills` flag on any command implicitly enables the system for that invocation, so `term-llm ask --skills git "..."` works even when skills are disabled in config. Agents can also enable skills via their `skills` field. All built-in agents set `skills: "all"`, so skills are active whenever you use a built-in agent.
+Supplying skill names or `all` with `--skills` implicitly enables the system for that invocation, so `term-llm ask --skills git "..."` works even when skills are disabled in config. Agents can also enable skills via their `skills` field. Some built-in agents, such as `developer` and `reviewer`, set `skills: "all"` and therefore enable skills even when the global setting is off. Agents without a `skills` override, such as `web-researcher`, inherit the global configuration. An explicit `--skills none` takes precedence over either.
 
 Full configuration reference:
 
