@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1113,7 +1114,32 @@ const (
 	LiveControlPlaneOff      LiveControlPlane = "off"
 	LiveControlPlaneAgent    LiveControlPlane = "agent"
 	LiveControlPlaneClassify LiveControlPlane = "classify"
+
+	liveControlPlaneError = "invalid live.control_plane: expected off, agent, classify, true, or false"
 )
+
+// ParseLiveControlPlane normalizes every supported legacy and selector value.
+// It is the single compatibility boundary used by file loading, validation, and
+// `term-llm config set`.
+func ParseLiveControlPlane(value any) (LiveControlPlane, error) {
+	switch typed := value.(type) {
+	case bool:
+		if typed {
+			return LiveControlPlaneAgent, nil
+		}
+		return LiveControlPlaneOff, nil
+	case string:
+		switch strings.ToLower(strings.TrimSpace(typed)) {
+		case "off", "false":
+			return LiveControlPlaneOff, nil
+		case "agent", "true":
+			return LiveControlPlaneAgent, nil
+		case "classify":
+			return LiveControlPlaneClassify, nil
+		}
+	}
+	return "", errors.New(liveControlPlaneError)
+}
 
 // LiveClassifyMinConfidence configures Phase 1 gates. steer_now and side are
 // accepted now for stable configuration but are always mapped to steer until
@@ -1297,13 +1323,15 @@ func (c LiveConfig) ResolvedIdleTimeout() time.Duration {
 
 // ValidateLive rejects unusable live settings before a session is attempted.
 func (c *Config) ValidateLive() error {
-	switch c.Live.ControlPlane {
-	case "", LiveControlPlaneOff:
-		c.Live.ControlPlane = LiveControlPlaneOff
-	case LiveControlPlaneAgent, LiveControlPlaneClassify:
-	default:
-		return fmt.Errorf("invalid live.control_plane %q: expected off, agent, or classify", c.Live.ControlPlane)
+	value := any(string(c.Live.ControlPlane))
+	if c.Live.ControlPlane == "" {
+		value = "off"
 	}
+	controlPlane, err := ParseLiveControlPlane(value)
+	if err != nil {
+		return err
+	}
+	c.Live.ControlPlane = controlPlane
 	if err := c.Live.Classify.Validate(); err != nil {
 		return err
 	}
@@ -1516,28 +1544,7 @@ func liveControlPlaneDecodeHook() mapstructure.DecodeHookFunc {
 		if to != controlPlaneType {
 			return data, nil
 		}
-		var value LiveControlPlane
-		switch typed := data.(type) {
-		case bool:
-			if typed {
-				value = LiveControlPlaneAgent
-			} else {
-				value = LiveControlPlaneOff
-			}
-		case string:
-			value = LiveControlPlane(strings.ToLower(strings.TrimSpace(typed)))
-		default:
-			return data, fmt.Errorf("live.control_plane must be off, agent, classify, true, or false")
-		}
-		if value == "" {
-			value = LiveControlPlaneOff
-		}
-		switch value {
-		case LiveControlPlaneOff, LiveControlPlaneAgent, LiveControlPlaneClassify:
-			return value, nil
-		default:
-			return data, fmt.Errorf("invalid live.control_plane %q: expected off, agent, or classify", value)
-		}
+		return ParseLiveControlPlane(data)
 	}
 }
 

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -19,6 +20,19 @@ import (
 const (
 	liveClassifyMaxWords       = 40
 	liveClassifyDefaultTimeout = 3 * time.Second
+	liveClassifyTimeoutMargin  = 2 * time.Second
+	liveClassifyMaxTimeout     = live.RouteCallTimeout - liveControlTurnTimeout - liveClassifyTimeoutMargin
+)
+
+const (
+	liveDecisionErrorRouterUnavailable = "router_unavailable"
+	liveDecisionErrorUnboundSession    = "unbound_session"
+	liveDecisionErrorProvider          = "provider_error"
+	liveDecisionErrorClassifyTimeout   = "classify_timeout"
+	liveDecisionErrorClassifyInvalid   = "classify_invalid_answer"
+	liveDecisionErrorStatus            = "status_error"
+	liveDecisionErrorNewSession        = "new_session_error"
+	liveDecisionErrorResolver          = "resolver_error"
 )
 
 var newLiveClassifyClient = func(options typesafe.Options) (classifyClient, error) {
@@ -34,12 +48,25 @@ func prepareLiveClassify(cfg *config.Config) (*liveclassify.Classifier, *livecla
 		return nil, nil, fmt.Errorf("live classify provider: %w", err)
 	}
 	options := &classifyOptions{provider: cfg.Live.Classify.Provider}
-	// The live router has a tighter first-ship latency budget than the general
-	// classify command. An explicitly non-default provider timeout remains
-	// authoritative; otherwise live uses its documented three-second deadline.
-	if provider.TimeoutSeconds == config.DefaultTypeSafeTimeoutSeconds {
-		options.timeout = liveClassifyDefaultTimeout
+	if provider.TimeoutSeconds < 0 {
+		return nil, nil, errors.New("classify provider timeout_seconds must not be negative")
 	}
+	const maxTimeoutSeconds = int64(1<<63-1) / int64(time.Second)
+	if int64(provider.TimeoutSeconds) > maxTimeoutSeconds {
+		return nil, nil, errors.New("classify provider timeout_seconds is too large")
+	}
+	// The classifier and the optional switch resolver share the controller's
+	// routing deadline. Leave enough budget for the resolver and a small handoff
+	// margin even when the selected provider has a longer explicit timeout.
+	timeout := time.Duration(provider.TimeoutSeconds) * time.Second
+	if provider.TimeoutSeconds == config.DefaultTypeSafeTimeoutSeconds {
+		timeout = liveClassifyDefaultTimeout
+	}
+	if timeout > liveClassifyMaxTimeout {
+		log.Printf("[serve] live classify timeout %s exceeds routing budget; clamping to %s", timeout, liveClassifyMaxTimeout)
+		timeout = liveClassifyMaxTimeout
+	}
+	options.timeout = timeout
 	client, err := newTypeSafeClient(cfg, options, classifyDeps{newClient: newLiveClassifyClient})
 	if err != nil {
 		return nil, nil, fmt.Errorf("live classify provider: %w", err)
@@ -51,6 +78,9 @@ func prepareLiveClassify(cfg *config.Config) (*liveclassify.Classifier, *livecla
 	diagnosticsDir := config.GetDiagnosticsDir()
 	if err := os.MkdirAll(diagnosticsDir, 0o700); err != nil {
 		return nil, nil, fmt.Errorf("create live diagnostics directory: %w", err)
+	}
+	if err := os.Chmod(diagnosticsDir, 0o700); err != nil {
+		return nil, nil, fmt.Errorf("secure live diagnostics directory: %w", err)
 	}
 	store, err := liveclassify.OpenDecisionStore(filepath.Join(diagnosticsDir, "live.db"))
 	if err != nil {
@@ -64,7 +94,7 @@ type liveDecisionClassifier interface {
 }
 
 type liveDecisionLogger interface {
-	Insert(context.Context, liveclassify.DecisionRecord) error
+	Enqueue(liveclassify.DecisionRecord) bool
 }
 
 // serveLiveClassifyRouter is the low-latency live.Router. Every internal failure
@@ -93,51 +123,51 @@ func (s *serveServer) newLiveClassifyRouter(record *liveSession) live.Router {
 
 func (r *serveLiveClassifyRouter) Route(ctx context.Context, request live.RouteRequest) (result live.RouteResult, err error) {
 	started := time.Now()
-	var routeFailure error
+	var routeFailure string
 	record := liveclassify.DecisionRecord{CreatedAt: started.UTC(), GatedLabel: liveclassify.IntentSteer, ActedLabel: liveclassify.IntentSteer}
 	cfg := config.LiveClassifyConfig{}
 	state := liveclassify.State{Message: request.Input, TranscriptDelta: request.TranscriptDelta}
 	defer func() {
 		record.Latency = time.Since(started)
-		if routeFailure != nil {
-			record.Error = routeFailure.Error()
-		}
-		if cfg.LogDecisions && r.decisions != nil {
+		record.Error = routeFailure
+		if cfg.LogDecisions && r != nil && r.decisions != nil {
 			if !cfg.LogState {
 				record.StateJSON = nil
 			}
-			if err := r.decisions.Insert(context.WithoutCancel(ctx), record); err != nil {
-				log.Printf("[serve] log live route decision: %v", err)
-			}
+			r.decisions.Enqueue(record)
 		}
 	}()
 
-	failOpen := func(err error) (live.RouteResult, error) {
-		if err != nil {
-			routeFailure = err
+	failOpen := func(category string, failure error) (live.RouteResult, error) {
+		if failure != nil {
+			routeFailure = category
 		}
 		return live.RouteResult{Input: request.Input}, nil
 	}
 	if r == nil || r.server == nil || r.live == nil {
-		return failOpen(fmt.Errorf("live classify router is unavailable"))
+		return failOpen(liveDecisionErrorRouterUnavailable, fmt.Errorf("live classify router is unavailable"))
 	}
 	r.live.touch()
 	sessionID := r.live.boundSession()
 	record.LiveID, record.BoundSession = r.live.id, sessionID
 	cfg = r.server.liveConfig().Classify
 	if sessionID == "" {
-		return failOpen(fmt.Errorf("live classify call is not bound to a chat session"))
+		return failOpen(liveDecisionErrorUnboundSession, fmt.Errorf("live classify call is not bound to a chat session"))
+	}
+	if len(strings.Fields(request.Input)) > liveClassifyMaxWords {
+		record.ResolverOutcome = "skipped_length"
+		if boundedState, marshalErr := liveclassify.MarshalState(state); marshalErr == nil {
+			record.StateJSON = boundedState
+		}
+		return live.RouteResult{Input: request.Input}, nil
 	}
 	state = r.server.liveClassifyState(ctx, sessionID, request)
 	boundedState, err := liveclassify.MarshalState(state)
 	if err == nil {
 		record.StateJSON = boundedState
 	}
-	if len(strings.Fields(request.Input)) > liveClassifyMaxWords {
-		return live.RouteResult{Input: request.Input}, nil
-	}
 	if r.classifier == nil {
-		return failOpen(fmt.Errorf("live classify provider is unavailable"))
+		return failOpen(liveDecisionErrorProvider, fmt.Errorf("live classify provider is unavailable"))
 	}
 	decision, err := r.classifier.Classify(ctx, state)
 	if len(decision.BoundedStateJSON) > 0 {
@@ -145,7 +175,7 @@ func (r *serveLiveClassifyRouter) Route(ctx context.Context, request live.RouteR
 	}
 	record.Probabilities = decision.Probabilities
 	if err != nil {
-		return failOpen(err)
+		return failOpen(liveClassifyErrorCategory(err), err)
 	}
 	gated := liveclassify.Gate(decision, liveclassify.GateConfig{
 		Status: cfg.MinConfidence.Status, NewSession: cfg.MinConfidence.NewSession,
@@ -160,14 +190,14 @@ func (r *serveLiveClassifyRouter) Route(ctx context.Context, request live.RouteR
 	case liveclassify.IntentStatus:
 		answer, err := r.server.liveClassifyStatus(ctx)
 		if err != nil {
-			return failOpen(err)
+			return failOpen(liveDecisionErrorStatus, err)
 		}
 		record.ActedLabel = gated
 		return live.RouteResult{Handled: true, Answer: answer}, nil
 	case liveclassify.IntentNewSession:
 		created, err := r.server.startLiveNewSession(ctx, r.live, tools.LiveNewSessionRequest{})
 		if err != nil {
-			return failOpen(fmt.Errorf("live classify new session: %w", err))
+			return failOpen(liveDecisionErrorNewSession, fmt.Errorf("live classify new session: %w", err))
 		}
 		record.ActedLabel = gated
 		answer := "Started a new conversation and moved the call to it."
@@ -177,12 +207,12 @@ func (r *serveLiveClassifyRouter) Route(ctx context.Context, request live.RouteR
 		return live.RouteResult{Handled: true, Answer: answer}, nil
 	case liveclassify.IntentSwitchSession:
 		if r.resolver == nil {
-			return failOpen(fmt.Errorf("live switch resolver is unavailable"))
+			return failOpen(liveDecisionErrorResolver, fmt.Errorf("live switch resolver is unavailable"))
 		}
 		outcome, err := r.resolver()(ctx, sessionID, request)
 		record.ResolverOutcome = string(outcome.Kind)
 		if err != nil {
-			return failOpen(err)
+			return failOpen(liveDecisionErrorResolver, err)
 		}
 		switch outcome.Kind {
 		case liveSwitchResolverSucceeded, liveSwitchResolverRefused, liveSwitchResolverAmbiguous:
@@ -193,6 +223,17 @@ func (r *serveLiveClassifyRouter) Route(ctx context.Context, request live.RouteR
 		}
 	default:
 		return live.RouteResult{Input: request.Input}, nil
+	}
+}
+
+func liveClassifyErrorCategory(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return liveDecisionErrorClassifyTimeout
+	case errors.Is(err, liveclassify.ErrInvalidAnswer):
+		return liveDecisionErrorClassifyInvalid
+	default:
+		return liveDecisionErrorProvider
 	}
 }
 
@@ -246,28 +287,30 @@ func (s *serveServer) liveClassifyStatus(ctx context.Context) (string, error) {
 	var activeJobs, recentJobs []string
 	if s.jobsV2 != nil {
 		jobs, _, listErr := s.jobsV2.ListJobs(100, 0)
-		if listErr != nil {
-			return "", fmt.Errorf("live status jobs: %w", listErr)
-		}
-		names := make(map[string]string, len(jobs))
-		for _, job := range jobs {
-			names[job.ID] = job.Name
-		}
 		runs, _, runsErr := s.jobsV2.ListRunSummaries("", 10, 0)
-		if runsErr != nil {
-			return "", fmt.Errorf("live status job runs: %w", runsErr)
-		}
-		for _, run := range runs {
-			name := strings.TrimSpace(names[run.JobID])
-			if name == "" {
-				name = "a scheduled job"
+		if listErr != nil || runsErr != nil {
+			if listErr != nil {
+				log.Printf("[serve] live status jobs unavailable: %v", listErr)
+			} else {
+				log.Printf("[serve] live status job runs unavailable: %v", runsErr)
 			}
-			switch run.Status {
-			case jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunRunning:
-				activeJobs = append(activeJobs, name)
-			default:
-				if len(recentJobs) < 2 {
-					recentJobs = append(recentJobs, name+" "+string(run.Status))
+		} else {
+			names := make(map[string]string, len(jobs))
+			for _, job := range jobs {
+				names[job.ID] = job.Name
+			}
+			for _, run := range runs {
+				name := strings.TrimSpace(names[run.JobID])
+				if name == "" {
+					name = "a scheduled job"
+				}
+				switch run.Status {
+				case jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunRunning:
+					activeJobs = append(activeJobs, name)
+				default:
+					if len(recentJobs) < 2 {
+						recentJobs = append(recentJobs, name+" "+string(run.Status))
+					}
 				}
 			}
 		}
@@ -290,10 +333,13 @@ func (s *serveServer) liveClassifyStatus(ctx context.Context) (string, error) {
 func liveStatusSessionLabel(entry sessionDirectoryEntry) string {
 	label := strings.TrimSpace(entry.Title)
 	if label == "" {
-		label = entry.ID
+		if entry.Number > 0 {
+			return fmt.Sprintf("session #%d", entry.Number)
+		}
+		return "an untitled session"
 	}
 	if entry.Number > 0 {
-		label = fmt.Sprintf("session #%d %s", entry.Number, label)
+		return fmt.Sprintf("session #%d %s", entry.Number, label)
 	}
 	return label
 }

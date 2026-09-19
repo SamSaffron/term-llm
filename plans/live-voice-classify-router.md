@@ -91,8 +91,10 @@ Questions (Go constants; the YAML under `~/scratch` is the dev harness):
 
 Answer validation (all → `steer`, logged): missing `intent`, wrong answer type,
 choice outside the six labels, missing/NaN/out-of-range probabilities, missing `noul`
-values. The router's own deadline is the provider's `timeout_seconds` (default 3 s),
-inside the controller's 45 s backstop.
+values. The router uses a three-second classifier deadline when the provider has the
+built-in default. Longer explicit provider timeouts are clamped to the remaining
+controller budget (currently 13 seconds), preserving the resolver's 30 seconds and
+a two-second margin inside the controller's 45-second backstop.
 
 Note the input is voice-model-authored delegation text (`Router` doc in
 `internal/live/controller.go`), not necessarily the user's verbatim words. Gates for
@@ -161,9 +163,10 @@ Decision log: `route_decisions` table — live id, bound session, bounded state 
 probabilities, gated label, acted label, resolver outcome, latency, error. Surfaced by
 `term-llm live decisions [--since]`. Privacy: this persists speech text and session
 titles outside the transcript. `log_decisions: false` disables the table; `log_state:
-false` (default true) keeps probabilities and labels but drops the state JSON. Rows are
-subject to the same retention/deletion as live diagnostics; document that "not in the
-transcript" does not mean "not stored".
+false` (default true) keeps probabilities and labels but drops the state JSON. Rows
+persist until the diagnostics `live.db` file is deleted; there is no automatic
+retention or prune command. Document that "not in the transcript" does not mean
+"not stored".
 
 ## Config
 
@@ -206,7 +209,7 @@ Selector migration, all of which is specified and tested:
   `withLiveControlAuthority`, `serve_live_context.go` advertised context) each switch
   on the appropriate predicate, not on a single truthiness check.
 - `control_plane: classify` with no resolvable classify provider is a **configuration
-  error** at startup (mirrors `guardian.backend: classify`). Runtime provider outages
+  error** at startup and after a process reload (mirrors `guardian.backend: classify`). Runtime provider outages
   are fail-open. These are different and documented as such.
 - `min_confidence` values must be finite and within [0,1] (mirrors
   `GuardianClassifyConfig.Validate`).

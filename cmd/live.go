@@ -40,10 +40,15 @@ func runLiveDecisions(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	diagnosticsDir := config.GetDiagnosticsDir()
-	if err := os.MkdirAll(diagnosticsDir, 0o700); err != nil {
-		return fmt.Errorf("create diagnostics directory: %w", err)
+	path := filepath.Join(diagnosticsDir, "live.db")
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			fmt.Fprintln(cmd.OutOrStdout(), "No decisions recorded.")
+			return nil
+		}
+		return fmt.Errorf("inspect live decision database: %w", err)
 	}
-	store, err := liveclassify.OpenDecisionStore(filepath.Join(diagnosticsDir, "live.db"))
+	store, err := liveclassify.OpenDecisionStoreReadOnly(path)
 	if err != nil {
 		return err
 	}

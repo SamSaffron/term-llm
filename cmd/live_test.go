@@ -1,8 +1,14 @@
 package cmd
 
 import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 func TestParseLiveDecisionsSince(t *testing.T) {
@@ -17,5 +23,25 @@ func TestParseLiveDecisionsSince(t *testing.T) {
 	}
 	if _, err := parseLiveDecisionsSince("yesterday", now); err == nil {
 		t.Fatal("invalid --since succeeded")
+	}
+}
+
+func TestLiveDecisionsDoesNotCreateDatabaseWhenAbsent(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	oldSince := liveDecisionsSince
+	liveDecisionsSince = ""
+	t.Cleanup(func() { liveDecisionsSince = oldSince })
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	if err := runLiveDecisions(cmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "No decisions recorded") {
+		t.Fatalf("output = %q", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(dataHome, "term-llm", "diagnostics")); !os.IsNotExist(err) {
+		t.Fatalf("diagnostics directory was created: %v", err)
 	}
 }

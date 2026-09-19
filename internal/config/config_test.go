@@ -23,6 +23,8 @@ func TestLiveControlPlaneSelectorCompatibility(t *testing.T) {
 		{name: "omitted", yaml: "", want: LiveControlPlaneOff},
 		{name: "legacy true", yaml: "live:\n  control_plane: true\n", want: LiveControlPlaneAgent},
 		{name: "legacy false", yaml: "live:\n  control_plane: false\n", want: LiveControlPlaneOff},
+		{name: "string true", yaml: "live:\n  control_plane: ' TrUe '\n", want: LiveControlPlaneAgent},
+		{name: "string false", yaml: "live:\n  control_plane: ' FALSE '\n", want: LiveControlPlaneOff},
 		{name: "agent", yaml: "live:\n  control_plane: agent\n", want: LiveControlPlaneAgent},
 		{name: "classify", yaml: "live:\n  control_plane: classify\n", want: LiveControlPlaneClassify},
 		{name: "unknown", yaml: "live:\n  control_plane: magic\n", wantErr: "invalid live.control_plane"},

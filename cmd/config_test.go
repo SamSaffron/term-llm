@@ -165,6 +165,30 @@ func TestConfigSet_AtomicWritePreservesExistingMode(t *testing.T) {
 	}
 }
 
+func TestConfigSetRejectsInvalidLiveControlPlane(t *testing.T) {
+	if err := configSet(nil, []string{"live.control_plane", "maybe"}); err == nil || err.Error() != "invalid live.control_plane: expected off, agent, classify, true, or false" {
+		t.Fatalf("configSet error = %v", err)
+	}
+}
+
+func TestConfigSetNormalizesLegacyLiveControlPlaneString(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := configSet(nil, []string{"live.control_plane", " TrUe "}); err != nil {
+		t.Fatal(err)
+	}
+	path, err := config.GetConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "control_plane: agent") {
+		t.Fatalf("config = %s", data)
+	}
+}
+
 func TestEffectiveApprovalConfigValue(t *testing.T) {
 	if got, ok, err := effectiveApprovalConfigValue("chat.approval_mode", &config.Config{}); err != nil || !ok || got != "auto (builtin_default)" {
 		t.Fatalf("blank chat effective value = %q, %t, %v; want auto builtin_default", got, ok, err)

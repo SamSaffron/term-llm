@@ -710,12 +710,19 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	if hasHTTP {
 		var jobsV2 *jobsV2Manager
 		serveUI := hasWeb
+		// This is the only serveServer construction path. Process reload re-execs
+		// the serve command, so provider resolution is validated here again before
+		// the replacement server can accept live sessions.
 		liveClassifier, liveDecisionStore, liveClassifyErr := prepareLiveClassify(cfg)
 		if liveClassifyErr != nil {
 			return liveClassifyErr
 		}
 		if liveDecisionStore != nil {
-			defer liveDecisionStore.Close()
+			defer func() {
+				if err := liveDecisionStore.Close(); err != nil {
+					log.Printf("[serve] close live decision store: %v", err)
+				}
+			}()
 		}
 
 		var widgetsMgr *widgets.Manager

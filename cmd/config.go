@@ -963,11 +963,11 @@ func configSet(cmd *cobra.Command, args []string) error {
 	key := args[0]
 	value := args[1]
 	if key == "live.control_plane" {
-		switch strings.ToLower(strings.TrimSpace(value)) {
-		case "off", "agent", "classify", "true", "false":
-		default:
-			return fmt.Errorf("invalid live.control_plane %q: expected off, agent, classify, true, or false", value)
+		controlPlane, err := config.ParseLiveControlPlane(value)
+		if err != nil {
+			return err
 		}
+		value = string(controlPlane)
 	}
 	if isApprovalConfigKey(key) {
 		if _, err := parseConfiguredApprovalMode(key, value); err != nil {

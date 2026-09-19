@@ -2,9 +2,14 @@ package cmd
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -22,11 +27,11 @@ type recordingDecisionLog struct {
 	rows []liveclassify.DecisionRecord
 }
 
-func (l *recordingDecisionLog) Insert(_ context.Context, row liveclassify.DecisionRecord) error {
+func (l *recordingDecisionLog) Enqueue(row liveclassify.DecisionRecord) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.rows = append(l.rows, row)
-	return nil
+	return true
 }
 
 func (l *recordingDecisionLog) last() liveclassify.DecisionRecord {
@@ -36,6 +41,39 @@ func (l *recordingDecisionLog) last() liveclassify.DecisionRecord {
 		return liveclassify.DecisionRecord{}
 	}
 	return l.rows[len(l.rows)-1]
+}
+
+type liveDecisionClassifierFunc func(context.Context, liveclassify.State) (liveclassify.Decision, error)
+
+func (f liveDecisionClassifierFunc) Classify(ctx context.Context, state liveclassify.State) (liveclassify.Decision, error) {
+	return f(ctx, state)
+}
+
+type countingLiveStateStore struct {
+	session.Store
+	mu    sync.Mutex
+	gets  int
+	lists int
+}
+
+func (s *countingLiveStateStore) Get(ctx context.Context, id string) (*session.Session, error) {
+	s.mu.Lock()
+	s.gets++
+	s.mu.Unlock()
+	return s.Store.Get(ctx, id)
+}
+
+func (s *countingLiveStateStore) List(ctx context.Context, options session.ListOptions) ([]session.SessionSummary, error) {
+	s.mu.Lock()
+	s.lists++
+	s.mu.Unlock()
+	return s.Store.List(ctx, options)
+}
+
+func (s *countingLiveStateStore) counts() (int, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.gets, s.lists
 }
 
 type noOpClassifyClient struct{}
@@ -71,11 +109,81 @@ func TestPrepareLiveClassifyUsesThreeSecondDefault(t *testing.T) {
 	}
 }
 
-func TestPrepareLiveClassifyFailsAtStartupWithoutResolvableProvider(t *testing.T) {
-	cfg := &config.Config{Live: classifyLiveConfig(true)}
-	cfg.Live.Classify.Provider = "missing"
-	if _, _, err := prepareLiveClassify(cfg); err == nil || !strings.Contains(err.Error(), `classify provider "missing" is not configured`) {
-		t.Fatalf("prepareLiveClassify error = %v", err)
+func TestPrepareLiveClassifyClampsConfiguredTimeoutToRoutingBudget(t *testing.T) {
+	cfg := &config.Config{
+		Classify: config.ClassifyConfig{Providers: map[string]config.ClassifyProviderConfig{
+			"typesafe": {Type: "typesafe", APIKey: "test", Model: "jev-latest", TimeoutSeconds: 120},
+		}},
+		Live: classifyLiveConfig(true),
+	}
+	cfg.Live.Classify.LogDecisions = false
+	old := newLiveClassifyClient
+	defer func() { newLiveClassifyClient = old }()
+	var captured typesafe.Options
+	newLiveClassifyClient = func(options typesafe.Options) (classifyClient, error) {
+		captured = options
+		return noOpClassifyClient{}, nil
+	}
+	if _, _, err := prepareLiveClassify(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if captured.Timeout != liveClassifyMaxTimeout {
+		t.Fatalf("timeout = %v, want %v", captured.Timeout, liveClassifyMaxTimeout)
+	}
+}
+
+func TestPrepareLiveClassifySecuresExistingDiagnosticsDirectory(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	diagnosticsDir := filepath.Join(dataHome, "term-llm", "diagnostics")
+	if err := os.MkdirAll(diagnosticsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(diagnosticsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Classify: config.ClassifyConfig{Providers: map[string]config.ClassifyProviderConfig{
+			"typesafe": {Type: "typesafe", APIKey: "test", Model: "jev-latest"},
+		}},
+		Live: classifyLiveConfig(true),
+	}
+	old := newLiveClassifyClient
+	defer func() { newLiveClassifyClient = old }()
+	newLiveClassifyClient = func(typesafe.Options) (classifyClient, error) { return noOpClassifyClient{}, nil }
+	_, store, err := prepareLiveClassify(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store == nil {
+		t.Fatal("decision store is nil")
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]os.FileMode{
+		diagnosticsDir:                           0o700,
+		filepath.Join(diagnosticsDir, "live.db"): 0o600,
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Fatalf("%s mode = %o, want %o", path, got, want)
+		}
+	}
+}
+
+func TestPrepareLiveClassifyFailsAtStartupAndReloadWithoutResolvableProvider(t *testing.T) {
+	for _, phase := range []string{"startup", "reload"} {
+		t.Run(phase, func(t *testing.T) {
+			cfg := &config.Config{Live: classifyLiveConfig(true)}
+			cfg.Live.Classify.Provider = "missing"
+			if _, _, err := prepareLiveClassify(cfg); err == nil || !strings.Contains(err.Error(), `classify provider "missing" is not configured`) {
+				t.Fatalf("prepareLiveClassify error = %v", err)
+			}
+		})
 	}
 }
 
@@ -89,6 +197,40 @@ func TestLiveControlPlaneCompletionValues(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("completions = %v, want %v", got, want)
 		}
+	}
+}
+
+func TestStartLiveControllerInstallsClassifyRouterInShadowAndActiveModes(t *testing.T) {
+	for _, shadow := range []bool{false, true} {
+		t.Run(fmt.Sprintf("shadow=%v", shadow), func(t *testing.T) {
+			srv := newTestServeServer()
+			srv.cfgRef = &config.Config{Live: classifyLiveConfig(shadow)}
+			srv.store = newSessionDirectoryTestStore(t)
+			createDirectorySession(t, srv.store, &session.Session{ID: "controller-classify", GeneratedShortTitle: "Controller classify"})
+			called := make(chan struct{}, 1)
+			srv.liveClassifier = liveDecisionClassifierFunc(func(context.Context, liveclassify.State) (liveclassify.Decision, error) {
+				select {
+				case called <- struct{}{}:
+				default:
+				}
+				return liveclassify.Decision{Intent: liveclassify.IntentStatus, Probabilities: map[string]float64{liveclassify.IntentStatus: 0.99}}, nil
+			})
+			provider := &stubLiveSession{events: make(chan live.Event, 8), closed: make(chan struct{})}
+			record := newLiveSession("classify-controller", "controller-classify")
+			if err := srv.registerLiveSession(record); err != nil {
+				t.Fatal(err)
+			}
+			if !srv.startLiveController(record, provider) {
+				t.Fatal("controller did not start")
+			}
+			t.Cleanup(func() { srv.closeLiveSessions(context.Background()) })
+			provider.events <- live.Event{Kind: live.EventDelegationCreated, DelegationID: "classify-item", Text: "what is running"}
+			select {
+			case <-called:
+			case <-time.After(time.Second):
+				t.Fatal("classify router was not called")
+			}
+		})
 	}
 }
 
@@ -143,6 +285,88 @@ func TestLiveClassifyRouterPhaseOneActions(t *testing.T) {
 	})
 }
 
+func TestLiveClassifyStatusIncludesRunningSessionAndJobs(t *testing.T) {
+	store := newSessionDirectoryTestStore(t)
+	createDirectorySession(t, store, &session.Session{ID: "status-running", GeneratedShortTitle: "Active voice work"})
+	srv := newTestServeServer()
+	srv.store = store
+	runs := srv.ensureResponseRuns()
+	runs.setActiveRun("status-running", "response-running")
+	t.Cleanup(func() { runs.clearActiveRun("status-running", "response-running") })
+
+	jobs, err := newJobsV2Manager(":memory:", 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jobs.Close()
+	srv.jobsV2 = jobs
+	activeJob, err := jobs.CreateJob(jobsV2Job{
+		Name: "active backup", Enabled: true, RunnerType: jobsV2RunnerProgram,
+		RunnerConfig: json.RawMessage(`{"command":"true"}`), TriggerType: jobsV2TriggerManual, TriggerConfig: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := jobs.TriggerJob(activeJob.ID); err != nil {
+		t.Fatal(err)
+	}
+	recentJob, err := jobs.CreateJob(jobsV2Job{
+		Name: "recent report", Enabled: true, RunnerType: jobsV2RunnerProgram,
+		RunnerConfig: json.RawMessage(`{"command":"true"}`), TriggerType: jobsV2TriggerManual, TriggerConfig: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recentRun, err := jobs.TriggerJob(recentJob.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := jobs.finishRun(recentRun.ID, jobsV2RunSucceeded, jobsV2RunResult{}, nil, recentRun.Attempt); err != nil {
+		t.Fatal(err)
+	}
+
+	answer, err := srv.liveClassifyStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Currently running:", "Active voice work", "active backup", "Recent:", "recent report succeeded"} {
+		if !strings.Contains(answer, want) {
+			t.Fatalf("status %q missing %q", answer, want)
+		}
+	}
+}
+
+func TestLiveClassifyStatusDegradesToSessionsWhenJobsUnavailable(t *testing.T) {
+	store := newSessionDirectoryTestStore(t)
+	createDirectorySession(t, store, &session.Session{ID: "status-session-only", GeneratedShortTitle: "Session fallback"})
+	jobs, err := newJobsV2Manager(":memory:", 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := jobs.Close(); err != nil {
+		t.Fatal(err)
+	}
+	srv := newTestServeServer()
+	srv.store = store
+	srv.jobsV2 = jobs
+	answer, err := srv.liveClassifyStatus(context.Background())
+	if err != nil {
+		t.Fatalf("status failed instead of degrading: %v", err)
+	}
+	if !strings.Contains(answer, "Session fallback") {
+		t.Fatalf("sessions-only status = %q", answer)
+	}
+}
+
+func TestLiveStatusSessionLabelNeverSpeaksRawID(t *testing.T) {
+	if got := liveStatusSessionLabel(sessionDirectoryEntry{ID: "private-raw-id", Number: 42}); got != "session #42" {
+		t.Fatalf("numbered title-less label = %q", got)
+	}
+	if got := liveStatusSessionLabel(sessionDirectoryEntry{ID: "private-raw-id"}); got != "an untitled session" {
+		t.Fatalf("un-numbered title-less label = %q", got)
+	}
+}
+
 func TestLiveClassifyRouterFailuresPreserveOriginalInput(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -163,6 +387,203 @@ func TestLiveClassifyRouterFailuresPreserveOriginalInput(t *testing.T) {
 				t.Fatalf("result = %+v, %v", result, err)
 			}
 		})
+	}
+}
+
+func TestLiveClassifyRouterSlowDecisionWriterNeverBlocksRouting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "live.db")
+	decisions, err := liveclassify.OpenDecisionStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	locker, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locker.Close()
+	if _, err := locker.Exec("BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	router, _, _, cleanup := newLiveClassifyRouterHarness(t, liveClassifyResponse(liveclassify.IntentSteer, 0.99, 0))
+	defer cleanup()
+	router.decisions = decisions
+	for _, input := range []string{"preserve this exact first request", "and this later request too"} {
+		started := time.Now()
+		result, routeErr := router.Route(context.Background(), live.RouteRequest{Input: input})
+		if routeErr != nil || result.Handled || result.Input != input {
+			t.Fatalf("result = %+v, err = %v", result, routeErr)
+		}
+		if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+			t.Fatalf("Route blocked on decision writer for %v", elapsed)
+		}
+	}
+	if _, err := locker.Exec("ROLLBACK"); err != nil {
+		t.Fatal(err)
+	}
+	if err := decisions.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLiveClassifyRouterDecisionInsertFailureLeavesResultUntouched(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "live.db")
+	decisions, err := liveclassify.OpenDecisionStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("DROP TABLE route_decisions"); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	router, _, _, cleanup := newLiveClassifyRouterHarness(t, liveClassifyResponse(liveclassify.IntentSteer, 0.99, 0))
+	defer cleanup()
+	router.decisions = decisions
+	const original = "return this unchanged despite the logging failure"
+	result, routeErr := router.Route(context.Background(), live.RouteRequest{Input: original})
+	if routeErr != nil || result.Handled || result.Input != original {
+		t.Fatalf("result = %+v, err = %v", result, routeErr)
+	}
+	if err := decisions.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLiveClassifyRouterLogStateFalseStoresOnlyErrorCategories(t *testing.T) {
+	const (
+		messageMarker    = "PRIVATE_MESSAGE_MARKER"
+		transcriptMarker = "PRIVATE_TRANSCRIPT_MARKER"
+		titleMarker      = "PRIVATE_TITLE_MARKER"
+		errorMarker      = "PRIVATE_PROVIDER_ERROR_MARKER"
+	)
+	cases := []struct {
+		name       string
+		classifier liveDecisionClassifier
+		resolver   func() func(context.Context, string, live.RouteRequest) (liveSwitchResolverOutcome, error)
+		want       string
+	}{
+		{
+			name: "provider error",
+			classifier: liveDecisionClassifierFunc(func(context.Context, liveclassify.State) (liveclassify.Decision, error) {
+				return liveclassify.Decision{}, errors.New(errorMarker)
+			}),
+			want: liveDecisionErrorProvider,
+		},
+		{
+			name: "invalid answer",
+			classifier: liveDecisionClassifierFunc(func(context.Context, liveclassify.State) (liveclassify.Decision, error) {
+				return liveclassify.Decision{}, fmt.Errorf("%w: %s", liveclassify.ErrInvalidAnswer, errorMarker)
+			}),
+			want: liveDecisionErrorClassifyInvalid,
+		},
+		{
+			name: "resolver error",
+			classifier: liveDecisionClassifierFunc(func(context.Context, liveclassify.State) (liveclassify.Decision, error) {
+				return liveclassify.Decision{Intent: liveclassify.IntentSwitchSession, Probabilities: map[string]float64{liveclassify.IntentSwitchSession: 0.99}}, nil
+			}),
+			resolver: func() func(context.Context, string, live.RouteRequest) (liveSwitchResolverOutcome, error) {
+				return func(context.Context, string, live.RouteRequest) (liveSwitchResolverOutcome, error) {
+					return liveSwitchResolverOutcome{Kind: liveSwitchResolverError}, errors.New(errorMarker)
+				}
+			},
+			want: liveDecisionErrorResolver,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			router, srv, _, cleanup := newLiveClassifyRouterHarness(t, liveClassifyResponse(liveclassify.IntentSteer, 0.99, 0))
+			defer cleanup()
+			srv.cfgRef.Live.Classify.LogState = false
+			current, err := srv.store.Get(context.Background(), "source")
+			if err != nil {
+				t.Fatal(err)
+			}
+			current.GeneratedShortTitle = titleMarker
+			if err := srv.store.Update(context.Background(), current); err != nil {
+				t.Fatal(err)
+			}
+			decisionsPath := filepath.Join(t.TempDir(), "live.db")
+			decisions, err := liveclassify.OpenDecisionStore(decisionsPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			router.decisions = decisions
+			router.classifier = tc.classifier
+			if tc.resolver != nil {
+				router.resolver = tc.resolver
+			}
+			result, err := router.Route(context.Background(), live.RouteRequest{Input: messageMarker, TranscriptDelta: transcriptMarker})
+			if err != nil || result.Handled || result.Input != messageMarker {
+				t.Fatalf("result = %+v, err = %v", result, err)
+			}
+			if err := decisions.Close(); err != nil {
+				t.Fatal(err)
+			}
+			reader, err := liveclassify.OpenDecisionStoreReadOnly(decisionsPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reader.Close()
+			stored, err := reader.List(context.Background(), time.Time{}, 10)
+			if err != nil || len(stored) != 1 {
+				t.Fatalf("stored rows = %+v, err = %v", stored, err)
+			}
+			row := stored[0]
+			if len(row.StateJSON) != 0 || row.Error != tc.want {
+				t.Fatalf("row = %+v", row)
+			}
+			encoded, _ := json.Marshal(row)
+			for _, marker := range []string{messageMarker, transcriptMarker, titleMarker, errorMarker} {
+				if strings.Contains(string(encoded), marker) {
+					t.Fatalf("stored row leaked %q: %s", marker, encoded)
+				}
+			}
+		})
+	}
+}
+
+func TestLiveClassifyRouterLengthSkipAvoidsSessionStore(t *testing.T) {
+	router, srv, _, cleanup := newLiveClassifyRouterHarness(t, liveClassifyResponse(liveclassify.IntentStatus, 0.99, 0))
+	defer cleanup()
+	counting := &countingLiveStateStore{Store: srv.store}
+	srv.store = counting
+	rows := &recordingDecisionLog{}
+	router.decisions = rows
+	called := false
+	router.classifier = liveDecisionClassifierFunc(func(context.Context, liveclassify.State) (liveclassify.Decision, error) {
+		called = true
+		return liveclassify.Decision{}, nil
+	})
+	words := make([]string, liveClassifyMaxWords+1)
+	for i := range words {
+		words[i] = "word"
+	}
+	input := strings.Join(words, " ")
+	result, err := router.Route(context.Background(), live.RouteRequest{Input: input})
+	if err != nil || result.Input != input || result.Handled || called {
+		t.Fatalf("result = %+v called=%v err=%v", result, called, err)
+	}
+	if gets, lists := counting.counts(); gets != 0 || lists != 0 {
+		t.Fatalf("session store reads = get:%d list:%d", gets, lists)
+	}
+	if row := rows.last(); row.ResolverOutcome != "skipped_length" {
+		t.Fatalf("decision row = %+v", row)
+	}
+}
+
+func TestLiveClassifyRouterNewSessionFailureFailsOpenOriginalInput(t *testing.T) {
+	router, srv, _, cleanup := newLiveClassifyRouterHarness(t, liveClassifyResponse(liveclassify.IntentNewSession, 0.99, 0))
+	defer cleanup()
+	if err := srv.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	const original = "start a fresh conversation"
+	result, err := router.Route(context.Background(), live.RouteRequest{Input: original})
+	if err != nil || result.Handled || result.Input != original {
+		t.Fatalf("result = %+v, err = %v", result, err)
 	}
 }
 

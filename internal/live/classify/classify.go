@@ -41,6 +41,11 @@ const (
 	MaxSessionTitleRunes = 160
 )
 
+// ErrInvalidAnswer identifies a response that arrived but did not satisfy the
+// classifier's answer contract. Callers may safely record this category without
+// persisting the provider's response body.
+var ErrInvalidAnswer = errors.New("invalid live classify answer")
+
 var intentLabels = []string{
 	IntentSteer,
 	IntentStatus,
@@ -133,13 +138,13 @@ func (c *Classifier) Classify(ctx context.Context, state State) (Decision, error
 		return decision, fmt.Errorf("live classify request: %w", err)
 	}
 	if response == nil {
-		return decision, errors.New("live classify response is nil")
+		return decision, fmt.Errorf("%w: response is nil", ErrInvalidAnswer)
 	}
 	decision.Model = response.Model
 	decision.InputTokens = response.Usage.InputTokens
 	decision.OutputTokens = response.Usage.OutputTokens
 	if err := validateAnswers(response.Answers, &decision); err != nil {
-		return decision, err
+		return decision, fmt.Errorf("%w: %v", ErrInvalidAnswer, err)
 	}
 	return decision, nil
 }
