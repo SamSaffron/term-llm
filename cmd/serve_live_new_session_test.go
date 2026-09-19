@@ -46,7 +46,7 @@ func newVoiceNewSessionHarness(t *testing.T, sourceID string, agentNames ...stri
 	srv.cfg = serveServerConfig{ui: true, agentNames: agentNames}
 	// Creating a conversation is a control-lane capability, and the authority that
 	// makes it callable is installed only while the control plane is on.
-	srv.cfgRef = &config.Config{Live: config.LiveConfig{ControlPlane: true}}
+	srv.cfgRef = &config.Config{Live: config.LiveConfig{ControlPlane: config.LiveControlPlaneAgent}}
 	// The runtime production builds for a named agent, minus the work: it reports
 	// the agent it was asked for, which is what the created row has to carry.
 	srv.agentRuntimeFactory = func(_ context.Context, request serveRuntimeRequest) (*serveRuntime, error) {

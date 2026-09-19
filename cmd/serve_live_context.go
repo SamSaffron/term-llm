@@ -100,7 +100,7 @@ func (s *serveServer) liveSessionOptions(ctx context.Context, sessionID string, 
 	// become work. With it off the requests below are ordinary work in the bound
 	// session, so promising host-side handling would be a lie the voice model repeats
 	// to the user.
-	if s.liveConfig().ControlPlane {
+	if s.liveConfig().AdvertiseControlHandling() {
 		opts.Context += "\n" + live.ControlPlaneContext
 	}
 	// Without this the voice model declines device-native requests ("I can't play

@@ -962,6 +962,13 @@ func installShellCompletion(shell string) error {
 func configSet(cmd *cobra.Command, args []string) error {
 	key := args[0]
 	value := args[1]
+	if key == "live.control_plane" {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "off", "agent", "classify", "true", "false":
+		default:
+			return fmt.Errorf("invalid live.control_plane %q: expected off, agent, classify, true, or false", value)
+		}
+	}
 	if isApprovalConfigKey(key) {
 		if _, err := parseConfiguredApprovalMode(key, value); err != nil {
 			return err
@@ -1260,6 +1267,9 @@ func configValueCompletions(key, toComplete string) []string {
 	cfg, _ := config.Load()
 
 	switch key {
+	case "live.control_plane":
+		return filterPrefix([]string{"off", "agent", "classify"}, toComplete)
+
 	case "approval.default_mode", "chat.approval_mode", "ask.approval_mode", "edit.approval_mode", "exec.approval_mode", "loop.approval_mode", "serve.approval_mode", "serve.mcp.approval_mode":
 		return filterPrefix([]string{"prompt", "auto"}, toComplete)
 
@@ -1408,7 +1418,7 @@ func capabilityConfigValueCompletions(cfg *config.Config, key, toComplete string
 	if key == "guardian.backend" {
 		return filterPrefix([]string{"llm", "classify"}, toComplete)
 	}
-	if key == "classify.default_provider" || key == "guardian.classify.provider" {
+	if key == "classify.default_provider" || key == "guardian.classify.provider" || key == "live.classify.provider" {
 		return filterPrefix(cfg.Classify.ProviderNames(), toComplete)
 	}
 	if strings.HasPrefix(key, "classify.providers.") && strings.HasSuffix(key, ".type") {

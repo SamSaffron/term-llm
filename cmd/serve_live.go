@@ -1337,8 +1337,14 @@ func (s *serveServer) startLiveController(record *liveSession, providerSession l
 	// which is exactly the behaviour before the control plane existed. Leaving the
 	// field nil is the whole of "off": no fast-model turn is made, nothing is
 	// triaged, and no code path downstream behaves differently.
-	if s.liveConfig().ControlPlane {
-		options.Router = &serveLiveControlExecutor{server: s, live: record}
+	liveCfg := s.liveConfig()
+	if liveCfg.RouterEnabled() {
+		switch liveCfg.ControlPlane {
+		case config.LiveControlPlaneAgent:
+			options.Router = &serveLiveControlExecutor{server: s, live: record}
+		case config.LiveControlPlaneClassify:
+			options.Router = s.newLiveClassifyRouter(record)
+		}
 	}
 	controller := live.NewController(options)
 	record.mu.Lock()

@@ -22,6 +22,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/filetrack"
 	"github.com/samsaffron/term-llm/internal/live"
+	liveclassify "github.com/samsaffron/term-llm/internal/live/classify"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mentions"
 	"github.com/samsaffron/term-llm/internal/restart"
@@ -709,6 +710,13 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	if hasHTTP {
 		var jobsV2 *jobsV2Manager
 		serveUI := hasWeb
+		liveClassifier, liveDecisionStore, liveClassifyErr := prepareLiveClassify(cfg)
+		if liveClassifyErr != nil {
+			return liveClassifyErr
+		}
+		if liveDecisionStore != nil {
+			defer liveDecisionStore.Close()
+		}
 
 		var widgetsMgr *widgets.Manager
 		if serveWidgetsEnabled(hasWeb, serveDisableWidgets) {
@@ -753,6 +761,8 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 			jobsV2:              jobsV2,
 			cfgRef:              cfg,
 			store:               store,
+			liveClassifier:      liveClassifier,
+			liveDecisionStore:   liveDecisionStore,
 			mediaPublisher:      mediaPublisher,
 			approvalDefault:     resolvedApproval.Mode,
 			projectsEnabled:     projectsEnabled,
@@ -1404,6 +1414,8 @@ type serveServer struct {
 	// liveControlProviderFactory is the test seam for the session assistant's
 	// provider; nil resolves it through the shared fast-provider conventions.
 	liveControlProviderFactory func(providerKey string) (llm.Provider, error)
+	liveClassifier             liveDecisionClassifier
+	liveDecisionStore          *liveclassify.DecisionStore
 
 	autoTitleMu              sync.Mutex
 	autoTitleFlights         map[string]struct{}

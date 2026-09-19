@@ -1106,6 +1106,50 @@ type TranscriptionElevenLabsConfig struct {
 	Model  string `mapstructure:"model"`
 }
 
+// LiveControlPlane selects the host-side router for live delegations.
+type LiveControlPlane string
+
+const (
+	LiveControlPlaneOff      LiveControlPlane = "off"
+	LiveControlPlaneAgent    LiveControlPlane = "agent"
+	LiveControlPlaneClassify LiveControlPlane = "classify"
+)
+
+// LiveClassifyMinConfidence configures Phase 1 gates. steer_now and side are
+// accepted now for stable configuration but are always mapped to steer until
+// Phase 2.
+type LiveClassifyMinConfidence struct {
+	Status        float64 `mapstructure:"status" yaml:"status"`
+	NewSession    float64 `mapstructure:"new_session" yaml:"new_session"`
+	SwitchSession float64 `mapstructure:"switch_session" yaml:"switch_session"`
+	SteerNow      float64 `mapstructure:"steer_now" yaml:"steer_now"`
+	Side          float64 `mapstructure:"side" yaml:"side"`
+}
+
+// LiveClassifyConfig configures the low-latency live intent router.
+type LiveClassifyConfig struct {
+	Provider      string                    `mapstructure:"provider" yaml:"provider,omitempty"`
+	Shadow        bool                      `mapstructure:"shadow" yaml:"shadow"`
+	LogDecisions  bool                      `mapstructure:"log_decisions" yaml:"log_decisions"`
+	LogState      bool                      `mapstructure:"log_state" yaml:"log_state"`
+	MinConfidence LiveClassifyMinConfidence `mapstructure:"min_confidence" yaml:"min_confidence"`
+}
+
+// RouterEnabled reports whether delegations should pass through any host router.
+func (c LiveConfig) RouterEnabled() bool {
+	return c.ControlPlane == LiveControlPlaneAgent || c.ControlPlane == LiveControlPlaneClassify
+}
+
+// ControlAuthorityAllowed reports whether this configuration may install
+// mutating call/session bindings. Classifier shadow mode deliberately may not.
+func (c LiveConfig) ControlAuthorityAllowed() bool {
+	return c.ControlPlane == LiveControlPlaneAgent || (c.ControlPlane == LiveControlPlaneClassify && !c.Classify.Shadow)
+}
+
+// AdvertiseControlHandling reports whether the voice prompt may promise that
+// navigation requests are handled outside the chat transcript.
+func (c LiveConfig) AdvertiseControlHandling() bool { return c.ControlAuthorityAllowed() }
+
 // LiveConfig configures live (bidirectional voice) sessions. Top-level fields
 // describe how term-llm behaves regardless of who provides the voice; the
 // per-provider blocks carry vendor-specific models, voices, and endpoints.
@@ -1114,14 +1158,10 @@ type LiveConfig struct {
 	Provider     string `mapstructure:"provider"`     // live provider: chatgpt, openai, or gemini
 	Instructions string `mapstructure:"instructions"` // optional replacement for the voice-model prompt
 	IdleTimeout  string `mapstructure:"idle_timeout"` // close a live session after this much silence
-	// ControlPlane routes every delegation through a fast model that can manage the
-	// call itself — list or search sessions, move the call, change the voice —
-	// instead of the request becoming a chat turn in the bound session.
-	//
-	// Off by default, and deliberately so: it puts a fast-model turn in front of
-	// every spoken request, work included. Turn it on only when that cost is
-	// acceptable.
-	ControlPlane bool `mapstructure:"control_plane"`
+	// ControlPlane selects no router, the tool-calling agent router, or the
+	// classifier-backed router. Legacy booleans decode as true=agent, false=off.
+	ControlPlane LiveControlPlane   `mapstructure:"control_plane" yaml:"control_plane"`
+	Classify     LiveClassifyConfig `mapstructure:"classify" yaml:"classify"`
 	// ControlProvider and ControlModel choose the model behind that triage turn.
 	//
 	// Left unset it follows the provider's fast model, which is also what
@@ -1257,6 +1297,16 @@ func (c LiveConfig) ResolvedIdleTimeout() time.Duration {
 
 // ValidateLive rejects unusable live settings before a session is attempted.
 func (c *Config) ValidateLive() error {
+	switch c.Live.ControlPlane {
+	case "", LiveControlPlaneOff:
+		c.Live.ControlPlane = LiveControlPlaneOff
+	case LiveControlPlaneAgent, LiveControlPlaneClassify:
+	default:
+		return fmt.Errorf("invalid live.control_plane %q: expected off, agent, or classify", c.Live.ControlPlane)
+	}
+	if err := c.Live.Classify.Validate(); err != nil {
+		return err
+	}
 	if value := strings.TrimSpace(c.Live.IdleTimeout); value != "" {
 		timeout, err := time.ParseDuration(value)
 		if err != nil || timeout <= 0 {
@@ -1408,7 +1458,8 @@ func Load() (*Config, error) {
 	}
 
 	var cfg Config
-	if err := viper.Unmarshal(&cfg, viper.DecodeHook(providerModelsDecodeHook())); err != nil {
+	decodeHook := mapstructure.ComposeDecodeHookFunc(liveControlPlaneDecodeHook(), providerModelsDecodeHook())
+	if err := viper.Unmarshal(&cfg, viper.DecodeHook(decodeHook)); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 	applyProviderModelConfigs(&cfg, providerModelConfigsFromViper(viper.GetViper()))
@@ -1457,6 +1508,37 @@ func Load() (*Config, error) {
 	// for a feature the caller is not using.
 
 	return &cfg, nil
+}
+
+func liveControlPlaneDecodeHook() mapstructure.DecodeHookFunc {
+	controlPlaneType := reflect.TypeOf(LiveControlPlane(""))
+	return func(from reflect.Type, to reflect.Type, data any) (any, error) {
+		if to != controlPlaneType {
+			return data, nil
+		}
+		var value LiveControlPlane
+		switch typed := data.(type) {
+		case bool:
+			if typed {
+				value = LiveControlPlaneAgent
+			} else {
+				value = LiveControlPlaneOff
+			}
+		case string:
+			value = LiveControlPlane(strings.ToLower(strings.TrimSpace(typed)))
+		default:
+			return data, fmt.Errorf("live.control_plane must be off, agent, classify, true, or false")
+		}
+		if value == "" {
+			value = LiveControlPlaneOff
+		}
+		switch value {
+		case LiveControlPlaneOff, LiveControlPlaneAgent, LiveControlPlaneClassify:
+			return value, nil
+		default:
+			return data, fmt.Errorf("invalid live.control_plane %q: expected off, agent, or classify", value)
+		}
+	}
 }
 
 func providerModelsDecodeHook() mapstructure.DecodeHookFunc {
