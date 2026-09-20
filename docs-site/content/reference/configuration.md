@@ -957,7 +957,7 @@ skills:
   never_auto: [expensive-api-skill]
 ```
 
-Controls the skills system: portable instruction bundles that inject task-specific context into the system prompt. Skills are disabled by default; set `enabled: true` to allow auto-invocation, or use `--skills` on any command for one-off activation. See [Skills](/guides/skills/) for the full guide.
+Controls the skills system: portable instruction bundles that inject task-specific context into the system prompt. Skills and model-driven activation are enabled by default. Set `skills.enabled: false` to disable the system in the global configuration (unless overridden by an agent or CLI flag), or use `--skills none` to disable it for one invocation. See [Skills](/guides/skills/) for the full guide.
 
 ## Diagnostics
 
