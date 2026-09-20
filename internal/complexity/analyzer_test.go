@@ -8,20 +8,102 @@ import (
 
 func TestAnalyzeCountingRulesAndInitializers(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	writeTestFile(t, root, "go.mod", "module example.com/root\n\ngo 1.25\n")
-	writeTestFile(t, root, "p/source.go", `package p
+	source := `package p
 var initFn = func(x bool) { if x || !x {} }
 func plain() {}
 func branches(a, b bool, xs []int, ch chan int) {
  if a && b {}
  for {}
  for range xs {}
- switch { case a:; default: }
- select { case <-ch:; default: }
- _ = func() { if a {} }
+ switch { case a:; case b:; default: }
+ select { case <-ch:; case <-ch:; default: }
 }
+func nested(a, b, c bool, xs []int) int {
+ if !a { return 0 }
+ for _, x := range xs {
+  if x > 0 {
+   switch {
+   case a, b:
+    if c { return x }
+   case a && b:
+   default:
+   }
+  } else if b {
+  } else {
+  }
+ }
+ return 0
+}
+func logicals(a, b, c bool) {
+ if a || b || c {}
+ if a && b || c {}
+ if a && (b || c) {}
+}
+func labels(xs []int) {
+loop:
+ for range xs {
+  for range xs {
+   continue loop
+  }
+ }
+}
+`
+	want := map[string]int{
+		"plain":    1,
+		"initFn":   3,  // base + branch + one logical sequence
+		"branches": 7,  // base + branch + logical + two loops + switch + select
+		"nested":   12, // base + guard + loop 1 + branch 2 + switch 3 + guard + logical + else-if + else
+		"logicals": 9,  // base + three branches + one, two and two sequences
+		"labels":   5,  // base + loop 1 + loop 2 + labeled continue
+	}
+	got := analyzeSource(t, source)
+	for name, complexity := range want {
+		if got[name].Complexity != complexity {
+			t.Errorf("%s complexity = %d, want %d", name, got[name].Complexity, complexity)
+		}
+	}
+}
+
+func TestAnalyzeMeasuresFunctionLiteralsSeparately(t *testing.T) {
+	t.Parallel()
+	got := analyzeSource(t, `package p
+func outer(xs []int, a bool) {
+ run(func() {
+  for _, x := range xs {
+   if x > 0 { return }
+  }
+  run(func() { if a {} })
+ })
+ defer func() { if a {} }()
+}
+func (m *model) method() { go func() { if m == nil { return } }() }
 `)
+	want := map[string]int{
+		"outer":             1, // the calls themselves carry no branching
+		"outer.func1":       3, // base + loop + guard, restarted at nesting zero
+		"outer.func1.func1": 2, // a nested literal is named within its parent
+		"outer.func2":       2,
+		"method":            1,
+		"method.func1":      2,
+	}
+	for name, complexity := range want {
+		if got[name].Complexity != complexity {
+			t.Errorf("%s complexity = %d, want %d", name, got[name].Complexity, complexity)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("measured units = %d, want %d: %v", len(got), len(want), got)
+	}
+	if got["method.func1"].Receiver != "*model" {
+		t.Errorf("literal receiver = %q, want the enclosing receiver", got["method.func1"].Receiver)
+	}
+}
+
+func analyzeSource(t *testing.T, source string) map[string]Function {
+	t.Helper()
+	root := t.TempDir()
+	writeTestFile(t, root, "go.mod", "module example.com/root\n\ngo 1.25\n")
+	writeTestFile(t, root, "p/source.go", source)
 	report, err := Analyze(root, Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -30,16 +112,7 @@ func branches(a, b bool, xs []int, ch chan int) {
 	for _, fn := range report.Functions {
 		got[fn.Name] = fn
 	}
-	if got["plain"].Complexity != 1 {
-		t.Fatalf("plain complexity = %d", got["plain"].Complexity)
-	}
-	if got["initFn"].Complexity != 3 {
-		t.Fatalf("initializer complexity = %d", got["initFn"].Complexity)
-	}
-	// base + if + && + two fors + switch case + select case + literal if
-	if got["branches"].Complexity != 8 {
-		t.Fatalf("branches complexity = %d", got["branches"].Complexity)
-	}
+	return got
 }
 
 func TestAnalyzeScopeGeneratedTestsNestedAndStableOrder(t *testing.T) {

@@ -1809,222 +1809,284 @@ func askUserResultSummary(content string) string {
 	return tools.AskUserAnswerSummary(result.Answers)
 }
 
-func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMessageEntry {
-	failedToolCalls := make(map[string]bool)
-	guardianReviewsByCall := make(map[string][]llm.GuardianReview)
-	planToolCalls := make(map[string]bool)
-	spawnAgentToolCalls := make(map[string]bool)
-	parentSessionID := ""
+type sessionMessageProjectionIndex struct {
+	failedToolCalls       map[string]bool
+	guardianReviewsByCall map[string][]llm.GuardianReview
+	planToolCalls         map[string]bool
+	spawnAgentToolCalls   map[string]bool
+	parentSessionID       string
+}
+
+func buildSessionMessageProjectionIndex(msgs []session.Message) sessionMessageProjectionIndex {
+	index := sessionMessageProjectionIndex{
+		failedToolCalls:       make(map[string]bool),
+		guardianReviewsByCall: make(map[string][]llm.GuardianReview),
+		planToolCalls:         make(map[string]bool),
+		spawnAgentToolCalls:   make(map[string]bool),
+	}
 	for _, msg := range msgs {
-		if parentSessionID == "" {
-			parentSessionID = strings.TrimSpace(msg.SessionID)
+		if index.parentSessionID == "" {
+			index.parentSessionID = strings.TrimSpace(msg.SessionID)
 		}
 		for _, part := range msg.Parts {
-			if part.Type == llm.PartToolCall && part.ToolCall != nil && part.ToolCall.ID != "" {
-				if part.ToolCall.Name == "update_plan" {
-					planToolCalls[part.ToolCall.ID] = true
-				}
-				if part.ToolCall.Name == tools.SpawnAgentToolName {
-					spawnAgentToolCalls[part.ToolCall.ID] = true
-				}
-			}
-			if part.Type == llm.PartToolResult && part.ToolResult != nil {
-				if part.ToolResult.IsError && part.ToolResult.ID != "" {
-					failedToolCalls[part.ToolResult.ID] = true
-				}
-				if part.ToolResult.ID != "" && len(part.ToolResult.GuardianReviews) > 0 {
-					guardianReviewsByCall[part.ToolResult.ID] = append(guardianReviewsByCall[part.ToolResult.ID], part.ToolResult.GuardianReviews...)
-				}
-			}
+			index.recordSessionMessagePart(part)
 		}
 	}
+	return index
+}
+
+func (index *sessionMessageProjectionIndex) recordSessionMessagePart(part llm.Part) {
+	if part.Type == llm.PartToolCall && part.ToolCall != nil && part.ToolCall.ID != "" {
+		if part.ToolCall.Name == "update_plan" {
+			index.planToolCalls[part.ToolCall.ID] = true
+		}
+		if part.ToolCall.Name == tools.SpawnAgentToolName {
+			index.spawnAgentToolCalls[part.ToolCall.ID] = true
+		}
+	}
+	if part.Type == llm.PartToolResult && part.ToolResult != nil {
+		if part.ToolResult.IsError && part.ToolResult.ID != "" {
+			index.failedToolCalls[part.ToolResult.ID] = true
+		}
+		if part.ToolResult.ID != "" && len(part.ToolResult.GuardianReviews) > 0 {
+			index.guardianReviewsByCall[part.ToolResult.ID] = append(index.guardianReviewsByCall[part.ToolResult.ID], part.ToolResult.GuardianReviews...)
+		}
+	}
+}
+
+func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMessageEntry {
+	index := buildSessionMessageProjectionIndex(msgs)
 	result := make([]sessionMessageEntry, 0, len(msgs))
 	for i := range msgs {
-		msg := &msgs[i]
-		// System, ordinary developer, and synthetic goal-steering messages are
-		// provider context rather than human-authored transcript rows. Path notes
-		// are explicitly marked and expose only their display text/provenance.
-		pathNote, isPathNote := msg.PathNoteProvenance()
-		if msg.Role == llm.RoleSystem || (msg.Role == llm.RoleDeveloper && !isPathNote) || msg.IsGoalSteering() {
+		entry, ok := s.sessionMessageEntryForMessage(&msgs[i], index)
+		if !ok {
 			continue
-		}
-		entryRole := string(msg.Role)
-		if isPathNote {
-			entryRole = "path-note"
-		}
-		entry := sessionMessageEntry{
-			ID:                   msg.ID,
-			Sequence:             msg.Sequence,
-			Role:                 entryRole,
-			CreatedAt:            msg.CreatedAt.UnixMilli(),
-			CompactionTail:       msg.CompactionTail,
-			ClientMessageID:      msg.ClientMessageID,
-			ResponseID:           msg.ResponseID,
-			SegmentStartSequence: msg.SegmentStartSequence,
-			SegmentEndSequence:   msg.SegmentEndSequence,
-		}
-		if msg.Role == llm.RoleAssistant && msg.ResponseID != "" {
-			ordinal := msg.AssistantSegmentOrdinal
-			entry.AssistantSegmentOrdinal = &ordinal
-		}
-		if isPathNote {
-			copyProvenance := *pathNote
-			copyProvenance.ReadFiles = append([]string(nil), pathNote.ReadFiles...)
-			copyProvenance.ModifiedFiles = append([]string(nil), pathNote.ModifiedFiles...)
-			entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "path_note", Text: msg.PathNoteDisplayText(), PathNote: &copyProvenance})
-			result = append(result, entry)
-			continue
-		}
-		if msg.Role == llm.RoleEvent {
-			if marker, ok := llm.ParseModelSwapMarker(msg.ToLLMMessage()); ok {
-				copyMarker := marker
-				entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "model_swap", Text: marker.DisplayText, ModelSwap: &copyMarker})
-			} else if marker, ok := llm.ParseRunErrorMarker(msg.ToLLMMessage()); ok {
-				entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "error", Text: marker.Message})
-			} else {
-				for _, p := range msg.Parts {
-					switch p.Type {
-					case llm.PartSkillActivation:
-						if p.SkillActivation != nil {
-							copyProvenance := *p.SkillActivation
-							copyProvenance.AllowedTools = append([]string(nil), p.SkillActivation.AllowedTools...)
-							entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "skill_activation", SkillActivation: &copyProvenance})
-						}
-					case llm.PartText:
-						if p.Text != "" {
-							entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "text", Text: p.Text})
-						}
-					}
-				}
-			}
-			if len(entry.Parts) == 0 {
-				entry.Parts = []sessionMessagePartEntry{}
-			}
-			result = append(result, entry)
-			continue
-		}
-		displayText := ""
-		if msg.Role == llm.RoleUser {
-			displayText = msg.DisplayText()
-		}
-		if displayText != "" {
-			entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "text", Text: displayText})
-		}
-		embeddedFiles := make(map[string]bool)
-		for _, p := range msg.Parts {
-			switch p.Type {
-			case llm.PartDiffComment:
-				if p.DiffComment != nil {
-					copyComment := *p.DiffComment
-					copyComment.ContextBefore = append([]llm.DiffCommentContextLine(nil), p.DiffComment.ContextBefore...)
-					copyComment.ContextAfter = append([]llm.DiffCommentContextLine(nil), p.DiffComment.ContextAfter...)
-					entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "diff_comment", DiffComment: &copyComment})
-				}
-			case llm.PartText:
-				appendSessionMessageText(&entry, msg, p, embeddedFiles, displayText)
-			case llm.PartFile:
-				entry.Parts = append(entry.Parts, s.sessionMessageFilePart(p))
-			case llm.PartImage:
-				if imageURL, serveablePath := s.sessionMessageImageURL(p); imageURL != "" {
-					mimeType := ""
-					if p.ImageData != nil {
-						mimeType = p.ImageData.MediaType
-					}
-					width, height := sessionMessageImageDimensions(p, serveablePath)
-					entry.Parts = append(entry.Parts, sessionMessagePartEntry{
-						Type:     "image",
-						ImageURL: imageURL,
-						MimeType: mimeType,
-						Width:    width,
-						Height:   height,
-					})
-				}
-			case llm.PartToolActivity:
-				if p.ToolActivity != nil {
-					pe := sessionMessagePartEntry{
-						Type:       "tool_activity",
-						ToolName:   p.ToolActivity.Name,
-						ToolInfo:   p.ToolActivity.Info,
-						ToolCallID: p.ToolActivity.ID,
-						ToolStatus: p.ToolActivity.Status,
-						ToolError:  p.ToolActivity.Status == llm.ToolActivityFailed,
-					}
-					if len(p.ToolActivity.Arguments) > 0 {
-						pe.ToolArgs = string(p.ToolActivity.Arguments)
-					}
-					entry.Parts = append(entry.Parts, pe)
-				}
-			case llm.PartToolCall:
-				if p.ToolCall != nil {
-					pe := sessionMessagePartEntry{
-						Type:            "tool_call",
-						CreatedAt:       p.CreatedAt,
-						ToolName:        p.ToolCall.Name,
-						ToolCallID:      p.ToolCall.ID,
-						ToolError:       failedToolCalls[p.ToolCall.ID],
-						GuardianReviews: append([]llm.GuardianReview(nil), guardianReviewsByCall[p.ToolCall.ID]...),
-					}
-					if len(p.ToolCall.Arguments) > 0 {
-						pe.ToolArgs = string(p.ToolCall.Arguments)
-					}
-					entry.Parts = append(entry.Parts, pe)
-				}
-			case llm.PartToolResult:
-				if p.ToolResult != nil {
-					isPlanResult := p.ToolResult.ID != "" && (p.ToolResult.Name == "update_plan" || planToolCalls[p.ToolResult.ID])
-					isAskUserResult := p.ToolResult.Name == tools.AskUserToolName
-					isSpawnAgentResult := p.ToolResult.Name == tools.SpawnAgentToolName || spawnAgentToolCalls[p.ToolResult.ID]
-					var spawnResult *tools.SpawnAgentResult
-					var spawnToolCalls *int
-					if isSpawnAgentResult {
-						if parsed, err := tools.ParseSpawnAgentResult(p.ToolResult.Content); err == nil {
-							spawnResult = &parsed
-						} else if parsed, displayErr := tools.ParseSpawnAgentResult(p.ToolResult.Display); displayErr == nil {
-							spawnResult = &parsed
-						}
-						if spawnResult != nil {
-							spawnResult.Output = boundedWebSpawnAgentOutput(spawnResult.Output)
-							spawnResult.Error = boundedWebSpawnAgentText(spawnResult.Error, 16*1024, "… (error truncated)")
-							spawnResult.AgentName = boundedWebSpawnAgentText(spawnResult.AgentName, 256, "…")
-							spawnToolCalls = s.validatedSpawnToolCalls(parentSessionID, spawnResult)
-						}
-					}
-					includeResult := p.ToolResult.IsError || len(p.ToolResult.Images) > 0 || len(p.ToolResult.Media) > 0 || len(p.ToolResult.GuardianReviews) > 0 || isPlanResult || isAskUserResult || spawnResult != nil
-					if !includeResult {
-						continue
-					}
-					toolName := p.ToolResult.Name
-					if toolName == "" && isSpawnAgentResult {
-						toolName = tools.SpawnAgentToolName
-					}
-					pe := sessionMessagePartEntry{
-						Type:                "tool_result",
-						ToolName:            toolName,
-						ToolCallID:          p.ToolResult.ID,
-						ToolError:           p.ToolResult.IsError || (spawnResult != nil && spawnResult.Error != ""),
-						GuardianReviews:     append([]llm.GuardianReview(nil), p.ToolResult.GuardianReviews...),
-						SpawnAgent:          spawnResult,
-						SpawnAgentToolCalls: spawnToolCalls,
-					}
-					if isAskUserResult {
-						pe.AskUserSummary = askUserResultSummary(p.ToolResult.Content)
-					}
-					if len(p.ToolResult.Images) > 0 {
-						pe.Images = s.toolImageURLs(p.ToolResult.Images)
-					}
-					if len(p.ToolResult.Media) > 0 {
-						pe.Media = s.toolMediaEntries(p.ToolResult.Media)
-					}
-					entry.Parts = append(entry.Parts, pe)
-				}
-			}
-		}
-		if len(entry.Parts) == 0 {
-			entry.Parts = []sessionMessagePartEntry{}
 		}
 		result = append(result, entry)
 	}
 	return result
+}
+
+func (s *serveServer) sessionMessageEntryForMessage(msg *session.Message, index sessionMessageProjectionIndex) (sessionMessageEntry, bool) {
+	// System, ordinary developer, and synthetic goal-steering messages are
+	// provider context rather than human-authored transcript rows. Path notes
+	// are explicitly marked and expose only their display text/provenance.
+	pathNote, isPathNote := msg.PathNoteProvenance()
+	if msg.Role == llm.RoleSystem || (msg.Role == llm.RoleDeveloper && !isPathNote) || msg.IsGoalSteering() {
+		return sessionMessageEntry{}, false
+	}
+	entryRole := string(msg.Role)
+	if isPathNote {
+		entryRole = "path-note"
+	}
+	entry := sessionMessageEntry{
+		ID:                   msg.ID,
+		Sequence:             msg.Sequence,
+		Role:                 entryRole,
+		CreatedAt:            msg.CreatedAt.UnixMilli(),
+		CompactionTail:       msg.CompactionTail,
+		ClientMessageID:      msg.ClientMessageID,
+		ResponseID:           msg.ResponseID,
+		SegmentStartSequence: msg.SegmentStartSequence,
+		SegmentEndSequence:   msg.SegmentEndSequence,
+	}
+	if msg.Role == llm.RoleAssistant && msg.ResponseID != "" {
+		ordinal := msg.AssistantSegmentOrdinal
+		entry.AssistantSegmentOrdinal = &ordinal
+	}
+	if isPathNote {
+		copyProvenance := *pathNote
+		copyProvenance.ReadFiles = append([]string(nil), pathNote.ReadFiles...)
+		copyProvenance.ModifiedFiles = append([]string(nil), pathNote.ModifiedFiles...)
+		entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "path_note", Text: msg.PathNoteDisplayText(), PathNote: &copyProvenance})
+		return entry, true
+	}
+	if msg.Role == llm.RoleEvent {
+		appendSessionMessageEventParts(&entry, msg)
+		if len(entry.Parts) == 0 {
+			entry.Parts = []sessionMessagePartEntry{}
+		}
+		return entry, true
+	}
+	displayText := ""
+	if msg.Role == llm.RoleUser {
+		displayText = msg.DisplayText()
+	}
+	if displayText != "" {
+		entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "text", Text: displayText})
+	}
+	embeddedFiles := make(map[string]bool)
+	s.appendSessionMessageParts(&entry, msg, index, embeddedFiles, displayText)
+	if len(entry.Parts) == 0 {
+		entry.Parts = []sessionMessagePartEntry{}
+	}
+	return entry, true
+}
+
+func appendSessionMessageEventParts(entry *sessionMessageEntry, msg *session.Message) {
+	if marker, ok := llm.ParseModelSwapMarker(msg.ToLLMMessage()); ok {
+		copyMarker := marker
+		entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "model_swap", Text: marker.DisplayText, ModelSwap: &copyMarker})
+	} else if marker, ok := llm.ParseRunErrorMarker(msg.ToLLMMessage()); ok {
+		entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "error", Text: marker.Message})
+	} else {
+		for _, p := range msg.Parts {
+			switch p.Type {
+			case llm.PartSkillActivation:
+				if p.SkillActivation != nil {
+					copyProvenance := *p.SkillActivation
+					copyProvenance.AllowedTools = append([]string(nil), p.SkillActivation.AllowedTools...)
+					entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "skill_activation", SkillActivation: &copyProvenance})
+				}
+			case llm.PartText:
+				if p.Text != "" {
+					entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "text", Text: p.Text})
+				}
+			}
+		}
+	}
+}
+
+func (s *serveServer) appendSessionMessageParts(entry *sessionMessageEntry, msg *session.Message, index sessionMessageProjectionIndex, embeddedFiles map[string]bool, displayText string) {
+	for _, p := range msg.Parts {
+		switch p.Type {
+		case llm.PartDiffComment:
+			appendSessionMessageDiffCommentPart(entry, p)
+		case llm.PartText:
+			appendSessionMessageText(entry, msg, p, embeddedFiles, displayText)
+		case llm.PartFile:
+			entry.Parts = append(entry.Parts, s.sessionMessageFilePart(p))
+		case llm.PartImage:
+			s.appendSessionMessageImagePart(entry, p)
+		case llm.PartToolActivity:
+			appendSessionMessageToolActivityPart(entry, p)
+		case llm.PartToolCall:
+			appendSessionMessageToolCallPart(entry, p, index)
+		case llm.PartToolResult:
+			s.appendSessionMessageToolResultPart(entry, p, index)
+		}
+	}
+}
+
+func appendSessionMessageDiffCommentPart(entry *sessionMessageEntry, p llm.Part) {
+	if p.DiffComment != nil {
+		copyComment := *p.DiffComment
+		copyComment.ContextBefore = append([]llm.DiffCommentContextLine(nil), p.DiffComment.ContextBefore...)
+		copyComment.ContextAfter = append([]llm.DiffCommentContextLine(nil), p.DiffComment.ContextAfter...)
+		entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "diff_comment", DiffComment: &copyComment})
+	}
+}
+
+func (s *serveServer) appendSessionMessageImagePart(entry *sessionMessageEntry, p llm.Part) {
+	if imageURL, serveablePath := s.sessionMessageImageURL(p); imageURL != "" {
+		mimeType := ""
+		if p.ImageData != nil {
+			mimeType = p.ImageData.MediaType
+		}
+		width, height := sessionMessageImageDimensions(p, serveablePath)
+		entry.Parts = append(entry.Parts, sessionMessagePartEntry{
+			Type:     "image",
+			ImageURL: imageURL,
+			MimeType: mimeType,
+			Width:    width,
+			Height:   height,
+		})
+	}
+}
+
+func appendSessionMessageToolActivityPart(entry *sessionMessageEntry, p llm.Part) {
+	if p.ToolActivity != nil {
+		pe := sessionMessagePartEntry{
+			Type:       "tool_activity",
+			ToolName:   p.ToolActivity.Name,
+			ToolInfo:   p.ToolActivity.Info,
+			ToolCallID: p.ToolActivity.ID,
+			ToolStatus: p.ToolActivity.Status,
+			ToolError:  p.ToolActivity.Status == llm.ToolActivityFailed,
+		}
+		if len(p.ToolActivity.Arguments) > 0 {
+			pe.ToolArgs = string(p.ToolActivity.Arguments)
+		}
+		entry.Parts = append(entry.Parts, pe)
+	}
+}
+
+func appendSessionMessageToolCallPart(entry *sessionMessageEntry, p llm.Part, index sessionMessageProjectionIndex) {
+	if p.ToolCall != nil {
+		pe := sessionMessagePartEntry{
+			Type:            "tool_call",
+			CreatedAt:       p.CreatedAt,
+			ToolName:        p.ToolCall.Name,
+			ToolCallID:      p.ToolCall.ID,
+			ToolError:       index.failedToolCalls[p.ToolCall.ID],
+			GuardianReviews: append([]llm.GuardianReview(nil), index.guardianReviewsByCall[p.ToolCall.ID]...),
+		}
+		if len(p.ToolCall.Arguments) > 0 {
+			pe.ToolArgs = string(p.ToolCall.Arguments)
+		}
+		entry.Parts = append(entry.Parts, pe)
+	}
+}
+
+func (s *serveServer) appendSessionMessageToolResultPart(entry *sessionMessageEntry, p llm.Part, index sessionMessageProjectionIndex) {
+	if p.ToolResult != nil {
+		s.appendSessionMessageToolResult(entry, p.ToolResult, index)
+	}
+}
+
+func (s *serveServer) appendSessionMessageToolResult(entry *sessionMessageEntry, result *llm.ToolResult, index sessionMessageProjectionIndex) {
+	isPlanResult := result.ID != "" && (result.Name == "update_plan" || index.planToolCalls[result.ID])
+	isAskUserResult := result.Name == tools.AskUserToolName
+	isSpawnAgentResult := result.Name == tools.SpawnAgentToolName || index.spawnAgentToolCalls[result.ID]
+	var spawnResult *tools.SpawnAgentResult
+	var spawnToolCalls *int
+	if isSpawnAgentResult {
+		spawnResult, spawnToolCalls = s.sessionMessageSpawnResult(index.parentSessionID, result)
+	}
+	includeResult := result.IsError || len(result.Images) > 0 || len(result.Media) > 0 || len(result.GuardianReviews) > 0 || isPlanResult || isAskUserResult || spawnResult != nil
+	if !includeResult {
+		return
+	}
+	toolName := result.Name
+	if toolName == "" && isSpawnAgentResult {
+		toolName = tools.SpawnAgentToolName
+	}
+	pe := sessionMessagePartEntry{
+		Type:                "tool_result",
+		ToolName:            toolName,
+		ToolCallID:          result.ID,
+		ToolError:           result.IsError || (spawnResult != nil && spawnResult.Error != ""),
+		GuardianReviews:     append([]llm.GuardianReview(nil), result.GuardianReviews...),
+		SpawnAgent:          spawnResult,
+		SpawnAgentToolCalls: spawnToolCalls,
+	}
+	if isAskUserResult {
+		pe.AskUserSummary = askUserResultSummary(result.Content)
+	}
+	if len(result.Images) > 0 {
+		pe.Images = s.toolImageURLs(result.Images)
+	}
+	if len(result.Media) > 0 {
+		pe.Media = s.toolMediaEntries(result.Media)
+	}
+	entry.Parts = append(entry.Parts, pe)
+}
+
+func (s *serveServer) sessionMessageSpawnResult(parentSessionID string, result *llm.ToolResult) (*tools.SpawnAgentResult, *int) {
+	var spawnResult *tools.SpawnAgentResult
+	var spawnToolCalls *int
+	if parsed, err := tools.ParseSpawnAgentResult(result.Content); err == nil {
+		spawnResult = &parsed
+	} else if parsed, displayErr := tools.ParseSpawnAgentResult(result.Display); displayErr == nil {
+		spawnResult = &parsed
+	}
+	if spawnResult != nil {
+		spawnResult.Output = boundedWebSpawnAgentOutput(spawnResult.Output)
+		spawnResult.Error = boundedWebSpawnAgentText(spawnResult.Error, 16*1024, "… (error truncated)")
+		spawnResult.AgentName = boundedWebSpawnAgentText(spawnResult.AgentName, 256, "…")
+		spawnToolCalls = s.validatedSpawnToolCalls(parentSessionID, spawnResult)
+	}
+	return spawnResult, spawnToolCalls
 }
 
 func (s *serveServer) writeSessionMessagesResponse(w http.ResponseWriter, r *http.Request, resp sessionMessagesResponse) {

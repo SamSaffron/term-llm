@@ -176,45 +176,97 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "input is required")
 		return
 	}
+	firstParty, identifiedUserBatch, stop := s.validateResponsesAdmissionRequest(w, r, ctx, &req, inputMessages, &replaceHistory)
+	if stop {
+		return
+	}
+
+	admission, stop := s.prepareResponsesSessionAdmission(w, r, ctx, req)
+	if stop {
+		return
+	}
+	resolved, stop := s.resolveResponsesSession(w, r, ctx, req, inputMessages, identifiedUserBatch, admission, &replaceHistory)
+	if stop {
+		return
+	}
+	notificationSubscriptionID, stop := s.validateResolvedResponsesAdmission(w, r, ctx, req, admission.draftID, resolved.sessionID)
+	if stop {
+		return
+	}
+
+	s.handleResolvedResponses(w, r, ctx, resolvedResponsesRequest{
+		firstParty:                 firstParty,
+		req:                        req,
+		inputMessages:              inputMessages,
+		replaceHistory:             replaceHistory,
+		sessionID:                  resolved.sessionID,
+		previousResponseID:         resolved.previousResponseID,
+		previousDurable:            resolved.previousDurable,
+		freshConversation:          req.PreviousResponseID == "",
+		durableRuntime:             resolved.branched,
+		uiStream:                   branchUsesFirstPartyUIStream(r, resolved.branched),
+		idempotencyKey:             admission.runIdempotencyKey,
+		idempotencyScope:           admission.draftID,
+		requestFingerprint:         admission.requestFingerprint,
+		notificationSubscriptionID: notificationSubscriptionID,
+	})
+}
+
+type responsesSessionAdmission struct {
+	headerSessionID    string
+	draftID            string
+	runIdempotencyKey  string
+	requestFingerprint string
+	reservedSessionID  string
+}
+
+type resolvedResponsesSession struct {
+	sessionID          string
+	previousResponseID string
+	previousDurable    bool
+	branched           bool
+}
+
+func (s *serveServer) validateResponsesAdmissionRequest(w http.ResponseWriter, r *http.Request, ctx context.Context, req *responsesCreateRequest, inputMessages []llm.Message, replaceHistory *bool) (bool, bool, bool) {
 	clientMessageID := strings.TrimSpace(req.ClientMessageID)
 	firstParty := isFirstPartyUIResponseRequest(r)
 	if req.UIContext != nil {
 		c := req.UIContext
 		if !firstParty || len(c.AssetVersion) > 64 || len(c.Generation) > 64 || len(c.Loaded) > 64 || c.Width < 0 || c.Width > 20000 || c.Height < 0 || c.Height > 20000 {
 			writeOpenAIError(w, 400, "invalid_request_error", "invalid UI context")
-			return
+			return false, false, true
 		}
 		for _, id := range c.Loaded {
 			if len(id) > 64 {
 				writeOpenAIError(w, 400, "invalid_request_error", "invalid UI context")
-				return
+				return false, false, true
 			}
 		}
 	}
 	req.Agent = strings.TrimSpace(req.Agent)
 	if req.Agent != "" && !firstParty {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "agent is available only to the Web UI")
-		return
+		return false, false, true
 	}
 	if req.Agent != "" && !agents.IsSafeLookupName(req.Agent) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid agent name")
-		return
+		return false, false, true
 	}
 	if req.Agent != "" && !s.cfg.agentAvailable(req.Agent) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "agent is not available")
-		return
+		return false, false, true
 	}
 	if req.NoProject && strings.TrimSpace(req.ProjectID) != "" {
 		writeProjectError(w, http.StatusBadRequest, "invalid_project_selection", "no_project and project_id are mutually exclusive")
-		return
+		return false, false, true
 	}
 	if req.NoProject && !firstParty {
 		writeProjectError(w, http.StatusBadRequest, "invalid_project_selection", "no_project is available only to the Web UI")
-		return
+		return false, false, true
 	}
 	if req.NoProject && !s.projectsEnabled {
 		writeProjectError(w, http.StatusBadRequest, "projects_disabled", "no_project is not accepted while project mode is disabled")
-		return
+		return false, false, true
 	}
 	if req.UseDefaultWorkspace && s.projectsEnabled {
 		bootstrapUsable := false
@@ -231,34 +283,37 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[serve] deprecated use_default_workspace translated to bootstrap project; refresh Web UI assets")
 		} else {
 			writeProjectError(w, http.StatusConflict, "refresh_required", "the server's project support changed; refresh to continue")
-			return
+			return false, false, true
 		}
 	}
 	if firstParty && clientMessageID == "" {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "client_message_id is required for first-party requests")
-		return
+		return false, false, true
 	}
 	if len(clientMessageID) > maxResponseClientMessageIDLength {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "client_message_id is too long")
-		return
+		return false, false, true
 	}
 	identifiedUserBatch, err := prepareResponseClientMessageIDs(inputMessages, clientMessageID, firstParty)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
-		return
+		return false, false, true
 	}
 	if identifiedUserBatch && req.PreviousResponseID != "" {
-		replaceHistory = false
+		*replaceHistory = false
 	}
 	if req.Branch && strings.TrimSpace(req.PreviousResponseID) == "" {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "branch requires previous_response_id")
-		return
+		return false, false, true
 	}
 	if req.BranchContext != nil && !req.Branch {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "branch_context requires branch=true")
-		return
+		return false, false, true
 	}
+	return firstParty, identifiedUserBatch, false
+}
 
+func (s *serveServer) prepareResponsesSessionAdmission(w http.ResponseWriter, r *http.Request, ctx context.Context, req responsesCreateRequest) (responsesSessionAdmission, bool) {
 	// External /v1/responses callers follow OpenAI-style chaining:
 	// previous_response_id continues a conversation; no previous response means a
 	// fresh conversation, even if a session_id header is reused for persistence.
@@ -266,7 +321,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	if err := s.validateRequestSessionID(ctx, headerSessionID); err != nil {
 		status, errorType, message := sessionIDErrorResponse(err)
 		writeOpenAIError(w, status, errorType, message)
-		return
+		return responsesSessionAdmission{}, true
 	}
 	// A delegated transcript is readable, not writable. A disabled composer only
 	// communicates that intent; once a child is an ordinary selectable session,
@@ -278,15 +333,15 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	// an explicit header from reaching any of the branch/resume machinery.
 	if delegated, delegatedErr := s.sessionIsDelegatedRun(ctx, headerSessionID); delegatedErr != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to look up session")
-		return
+		return responsesSessionAdmission{}, true
 	} else if delegated {
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", delegatedSessionWriteMessage)
-		return
+		return responsesSessionAdmission{}, true
 	}
 	draftID := strings.TrimSpace(r.Header.Get(requestDraftIDHeader))
 	if draftID != "" && (!isFirstPartyUIResponseRequest(r) || headerSessionID != "" || req.PreviousResponseID != "" || !validResponseDraftID(draftID)) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "draft id is only valid for a first-party new conversation")
-		return
+		return responsesSessionAdmission{}, true
 	}
 	runIdempotencyKey := responseRunIdempotencyKey(r, req)
 	requestFingerprint := ""
@@ -295,7 +350,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		requestFingerprint, fingerprintErr = responseRequestFingerprint(req)
 		if fingerprintErr != nil {
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to fingerprint response request")
-			return
+			return responsesSessionAdmission{}, true
 		}
 	}
 	reservedSessionID := ""
@@ -304,23 +359,33 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		reservedSessionID, reserveErr = s.ensureResponseRuns().reserveSessionForIdempotency(draftID, runIdempotencyKey, requestFingerprint)
 		if errors.Is(reserveErr, errResponseRunKeyConflict) {
 			writeOpenAIError(w, http.StatusConflict, "conflict_error", reserveErr.Error())
-			return
+			return responsesSessionAdmission{}, true
 		}
 		if reserveErr != nil {
 			writeOpenAIError(w, http.StatusServiceUnavailable, "server_error", reserveErr.Error())
-			return
+			return responsesSessionAdmission{}, true
 		}
 		if run, found, replayErr := s.ensureResponseRuns().getByIdempotencyClaim(draftID, runIdempotencyKey, requestFingerprint); replayErr != nil {
 			writeOpenAIError(w, http.StatusConflict, "conflict_error", replayErr.Error())
-			return
+			return responsesSessionAdmission{}, true
 		} else if found {
 			w.Header().Set("x-session-id", run.sessionID)
 			w.Header().Set("x-response-id", run.id)
 			s.setReplaySessionNumberHeader(ctx, w, run.sessionID)
 			s.streamResponseRunEvents(ctx, w, run, 0)
-			return
+			return responsesSessionAdmission{}, true
 		}
 	}
+	return responsesSessionAdmission{
+		headerSessionID:    headerSessionID,
+		draftID:            draftID,
+		runIdempotencyKey:  runIdempotencyKey,
+		requestFingerprint: requestFingerprint,
+		reservedSessionID:  reservedSessionID,
+	}, false
+}
+
+func (s *serveServer) resolveResponsesSession(w http.ResponseWriter, r *http.Request, ctx context.Context, req responsesCreateRequest, inputMessages []llm.Message, identifiedUserBatch bool, admission responsesSessionAdmission, replaceHistory *bool) (resolvedResponsesSession, bool) {
 	sessionID := ""
 	previousDurable := false
 	resolvedPreviousResponseID := req.PreviousResponseID
@@ -331,7 +396,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 			if idempotencyKey == "" {
 				idempotencyKey = responseIdempotencyKeyFromRequest(r)
 			}
-			durable, status, msg := s.resolveDurableBranch(ctx, req.PreviousResponseID, headerSessionID, inputMessages, identifiedUserBatch, req.ExpectedRev, idempotencyKey, req.BranchContext)
+			durable, status, msg := s.resolveDurableBranch(ctx, req.PreviousResponseID, admission.headerSessionID, inputMessages, identifiedUserBatch, req.ExpectedRev, idempotencyKey, req.BranchContext)
 			if status != 0 {
 				errType := "invalid_request_error"
 				if status == http.StatusConflict {
@@ -340,7 +405,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 					errType = "server_error"
 				}
 				writeOpenAIError(w, status, errType, msg)
-				return
+				return resolvedResponsesSession{}, true
 			}
 			sessionID = durable.sessionID
 			resolvedPreviousResponseID = durable.latestID
@@ -350,13 +415,13 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 			if durable.latestID != durableResponseMessagePrefix+"0" {
 				w.Header().Set("x-branch-anchor-id", durable.latestID)
 			}
-		} else if durable, status, msg := s.resolveDurablePreviousResponseID(ctx, req.PreviousResponseID, headerSessionID, inputMessages, identifiedUserBatch); status != 0 {
+		} else if durable, status, msg := s.resolveDurablePreviousResponseID(ctx, req.PreviousResponseID, admission.headerSessionID, inputMessages, identifiedUserBatch); status != 0 {
 			errType := "invalid_request_error"
 			if status == http.StatusConflict {
 				errType = "conflict_error"
 			}
 			writeOpenAIError(w, status, errType, msg)
-			return
+			return resolvedResponsesSession{}, true
 		} else if durable.sessionID != "" {
 			sessionID = durable.sessionID
 			previousDurable = true
@@ -365,25 +430,25 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error",
 					fmt.Sprintf("previous_response_id %q not found (session may have expired)", req.PreviousResponseID))
-				return
+				return resolvedResponsesSession{}, true
 			}
 			sidStr, isStr := sid.(string)
 			if !isStr || sidStr == "" {
 				writeOpenAIError(w, http.StatusInternalServerError, "server_error", "corrupted session mapping")
-				return
+				return resolvedResponsesSession{}, true
 			}
-			if headerSessionID != "" && headerSessionID != sidStr {
+			if admission.headerSessionID != "" && admission.headerSessionID != sidStr {
 				writeOpenAIError(w, http.StatusConflict, "conflict_error",
-					fmt.Sprintf("session_id %q conflicts with previous_response_id session %q", headerSessionID, sidStr))
-				return
+					fmt.Sprintf("session_id %q conflicts with previous_response_id session %q", admission.headerSessionID, sidStr))
+				return resolvedResponsesSession{}, true
 			}
 			sessionID = sidStr
 		}
 	}
 	if sessionID == "" {
-		sessionID = headerSessionID
+		sessionID = admission.headerSessionID
 		if sessionID == "" {
-			sessionID = reservedSessionID
+			sessionID = admission.reservedSessionID
 		}
 		if sessionID == "" {
 			sessionID = session.NewID()
@@ -391,62 +456,54 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("x-session-id", sessionID)
 		// External Responses API semantics: no previous_response_id means the
 		// supplied input is the new whole conversation for this persisted ID.
-		replaceHistory = true
+		*replaceHistory = true
 	}
+	return resolvedResponsesSession{
+		sessionID:          sessionID,
+		previousResponseID: resolvedPreviousResponseID,
+		previousDurable:    previousDurable,
+		branched:           branched,
+	}, false
+}
 
+func (s *serveServer) validateResolvedResponsesAdmission(w http.ResponseWriter, r *http.Request, ctx context.Context, req responsesCreateRequest, draftID, sessionID string) (string, bool) {
 	// Fence the resolved identity, not just the header. previous_response_id
 	// reaches a session by a different key, and L0 made child transcripts — and
 	// therefore their durable response IDs — ordinary things a client now holds.
 	if delegated, delegatedErr := s.sessionIsDelegatedRun(ctx, sessionID); delegatedErr != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to look up session")
-		return
+		return "", true
 	} else if delegated {
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", delegatedSessionWriteMessage)
-		return
+		return "", true
 	}
 
 	if draftID != "" {
 		if err := s.promoteDraftMCPSelection(ctx, draftID, sessionID); err != nil {
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
-			return
+			return "", true
 		}
 	}
 
 	if _, branchContextActive := s.branchNotes.Load(sessionID); branchContextActive {
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", "branch context is still being prepared")
-		return
+		return "", true
 	}
 
 	notificationSubscriptionID := ""
 	if requestedSubscriptionID := strings.TrimSpace(r.Header.Get(requestPushSubscriptionHeader)); requestedSubscriptionID != "" {
 		if !isFirstPartyUIResponseRequest(r) || !req.Stream {
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "completion notification target is only valid for first-party streaming responses")
-			return
+			return "", true
 		}
 		var targetErr error
 		notificationSubscriptionID, targetErr = s.validateCompletionPushTarget(ctx, requestedSubscriptionID)
 		if targetErr != nil {
 			writeOpenAIError(w, http.StatusConflict, "conflict_error", targetErr.Error())
-			return
+			return "", true
 		}
 	}
-
-	s.handleResolvedResponses(w, r, ctx, resolvedResponsesRequest{
-		firstParty:                 firstParty,
-		req:                        req,
-		inputMessages:              inputMessages,
-		replaceHistory:             replaceHistory,
-		sessionID:                  sessionID,
-		previousResponseID:         resolvedPreviousResponseID,
-		previousDurable:            previousDurable,
-		freshConversation:          req.PreviousResponseID == "",
-		durableRuntime:             branched,
-		uiStream:                   branchUsesFirstPartyUIStream(r, branched),
-		idempotencyKey:             runIdempotencyKey,
-		idempotencyScope:           draftID,
-		requestFingerprint:         requestFingerprint,
-		notificationSubscriptionID: notificationSubscriptionID,
-	})
+	return notificationSubscriptionID, false
 }
 
 func (s *serveServer) handleResponseRuntimeError(w http.ResponseWriter, r *http.Request, ctx context.Context, req responsesCreateRequest, sessionID, previousResponseID string, err error) bool {

@@ -70,6 +70,18 @@ type sessionState struct {
 	recentEvictions []llm.ToolEvictionDiagnostic
 }
 
+type toolSurfaceSelection struct {
+	activeSpecs    []llm.ToolSpec
+	deferredCount  int
+	pinnedCount    int
+	activeCount    int
+	pinnedTokens   int
+	activeTokens   int
+	deferredTokens int
+	activeHashes   map[string]string
+	serverDetails  []llm.ToolDiscoveryServerDiagnostic
+}
+
 // Planner owns catalogue indexing, session activation, and authoritative MCP
 // provider visibility. Engine queues are only per-run delivery.
 type Planner struct {
@@ -509,35 +521,25 @@ func (p *Planner) resolveStrategy(provider llm.Provider, model string) (Strategy
 	}
 }
 
-func (p *Planner) selectSurface(provider llm.Provider, req *llm.Request, key, runID string, beginning bool) (string, error) {
-	snapshot := p.manager.CatalogueSnapshot()
-	if snapshot == nil {
-		return "", fmt.Errorf("MCP catalogue is unavailable")
+func initialToolNameSet(specs []llm.ToolSpec) map[string]bool {
+	names := make(map[string]bool, len(specs))
+	for _, spec := range specs {
+		names[spec.Name] = true
 	}
-	initialToolNames := make(map[string]bool, len(req.Tools))
-	for _, spec := range req.Tools {
-		initialToolNames[spec.Name] = true
-	}
-	caps := provider.Capabilities()
-	if !caps.ToolCalls {
-		req.Tools = removeMCPAndSearch(req.Tools, snapshot.Tools)
-		return "", nil
-	}
+	return names
+}
 
-	engine := p.currentEngine()
-	if engine == nil {
-		return "", fmt.Errorf("tool discovery engine is unavailable")
-	}
-	authorized := make(map[string]mcp.CatalogTool, len(snapshot.Tools))
-	for _, tool := range snapshot.Tools {
+func authorizedCatalogueTools(engine *llm.Engine, tools []mcp.CatalogTool) map[string]mcp.CatalogTool {
+	authorized := make(map[string]mcp.CatalogTool, len(tools))
+	for _, tool := range tools {
 		if engine.IsToolAllowed(tool.Name) {
 			authorized[tool.Name] = tool
 		}
 	}
-	strategy, strategyReason, err := p.resolveStrategy(provider, req.Model)
-	if err != nil {
-		return "", err
-	}
+	return authorized
+}
+
+func (p *Planner) selectRunStrategy(runID string, strategy Strategy, strategyReason string) (Strategy, string) {
 	p.mu.Lock()
 	if selected := p.runStrategies[runID]; selected != "" {
 		strategy = selected
@@ -548,6 +550,130 @@ func (p *Planner) selectSurface(provider llm.Provider, req *llm.Request, key, ru
 		p.runStrategies[runID] = strategy
 	}
 	p.mu.Unlock()
+	return strategy, strategyReason
+}
+
+func sortedServerDiagnostics(diagnostics map[string]*llm.ToolDiscoveryServerDiagnostic) []llm.ToolDiscoveryServerDiagnostic {
+	names := make([]string, 0, len(diagnostics))
+	for name := range diagnostics {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	details := make([]llm.ToolDiscoveryServerDiagnostic, 0, len(names))
+	for _, name := range names {
+		details = append(details, *diagnostics[name])
+	}
+	return details
+}
+
+func buildToolSurfaceSelection(authorized map[string]mcp.CatalogTool, activeTools map[string]activeToolState, resolved Mode, strategy Strategy) toolSurfaceSelection {
+	activeSpecs := make([]llm.ToolSpec, 0, len(authorized))
+	deferredCount := 0
+	pinnedCount, activeCount := 0, 0
+	pinnedTokens, activeTokens, deferredTokens := 0, 0, 0
+	activeHashes := make(map[string]string)
+	serverDiagnostics := make(map[string]*llm.ToolDiscoveryServerDiagnostic)
+	names := make([]string, 0, len(authorized))
+	for name, tool := range authorized {
+		names = append(names, name)
+		diagnostic := serverDiagnostics[tool.Server]
+		if diagnostic == nil {
+			diagnostic = &llm.ToolDiscoveryServerDiagnostic{Name: tool.Server, ResolvedMode: string(resolved)}
+			serverDiagnostics[tool.Server] = diagnostic
+		}
+		diagnostic.Total++
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		tool := authorized[name]
+		serverDiagnostic := serverDiagnostics[tool.Server]
+		active, visible := activeTools[name]
+		if resolved == ModeEager {
+			visible = true
+		}
+		if visible {
+			activeHashes[name] = tool.SchemaHash
+			if strategy != StrategyNative || active.Pinned || resolved == ModeEager {
+				activeSpecs = append(activeSpecs, tool.ToolSpec())
+			}
+			if active.Pinned {
+				pinnedCount++
+				pinnedTokens += tool.EstimatedTokens
+				serverDiagnostic.Pinned++
+			} else {
+				activeCount++
+				activeTokens += tool.EstimatedTokens
+				serverDiagnostic.Active++
+			}
+		} else {
+			deferredCount++
+			deferredTokens += tool.EstimatedTokens
+			serverDiagnostic.Deferred++
+		}
+	}
+	serverDetails := sortedServerDiagnostics(serverDiagnostics)
+	return toolSurfaceSelection{
+		activeSpecs:    activeSpecs,
+		deferredCount:  deferredCount,
+		pinnedCount:    pinnedCount,
+		activeCount:    activeCount,
+		pinnedTokens:   pinnedTokens,
+		activeTokens:   activeTokens,
+		deferredTokens: deferredTokens,
+		activeHashes:   activeHashes,
+		serverDetails:  serverDetails,
+	}
+}
+
+func (p *Planner) applyToolSurfaceSelection(req *llm.Request, engine *llm.Engine, snapshot *mcp.CatalogueSnapshot, initialToolNames map[string]bool, base []llm.ToolSpec, resolved Mode, strategy Strategy, selection toolSurfaceSelection) {
+	req.Tools = append(base, selection.activeSpecs...)
+	req.NativeToolDiscovery = nil
+	if resolved == ModeDeferred && selection.deferredCount > 0 && strategy == StrategyPortable {
+		searchTool := &SearchTool{planner: p}
+		engine.Tools().RegisterDeferred(searchTool)
+		req.Tools = append(req.Tools, searchTool.Spec())
+	} else if resolved == ModeDeferred && strategy == StrategyNative {
+		req.NativeToolDiscovery = &llm.NativeToolDiscoveryRequest{Search: (&SearchTool{planner: p}).Spec()}
+	}
+	if resolved == ModeDeferred && selection.deferredCount > 0 {
+		ensureDeferredToolSearchInstruction(req, snapshot, selection.serverDetails)
+	}
+	toolsAdded := false
+	for _, spec := range req.Tools {
+		if !initialToolNames[spec.Name] {
+			toolsAdded = true
+			break
+		}
+	}
+	if len(req.Tools) == 0 && req.NativeToolDiscovery == nil {
+		req.ToolChoice = llm.ToolChoice{}
+	} else if req.ToolChoice.Mode == "" && (toolsAdded || req.NativeToolDiscovery != nil) {
+		req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
+	}
+}
+
+func (p *Planner) selectSurface(provider llm.Provider, req *llm.Request, key, runID string, beginning bool) (string, error) {
+	snapshot := p.manager.CatalogueSnapshot()
+	if snapshot == nil {
+		return "", fmt.Errorf("MCP catalogue is unavailable")
+	}
+	initialToolNames := initialToolNameSet(req.Tools)
+	caps := provider.Capabilities()
+	if !caps.ToolCalls {
+		req.Tools = removeMCPAndSearch(req.Tools, snapshot.Tools)
+		return "", nil
+	}
+
+	engine := p.currentEngine()
+	if engine == nil {
+		return "", fmt.Errorf("tool discovery engine is unavailable")
+	}
+	authorized := authorizedCatalogueTools(engine, snapshot.Tools)
+	strategy, strategyReason, err := p.resolveStrategy(provider, req.Model)
+	if err != nil {
+		return "", err
+	}
+	strategy, strategyReason = p.selectRunStrategy(runID, strategy, strategyReason)
 	externalHarness := strategy == StrategyDelegated
 	resolved := ResolveMode(p.mode, p.threshold, len(authorized), externalHarness)
 	removedNativeReplay := false
@@ -655,88 +781,13 @@ func (p *Planner) selectSurface(provider llm.Provider, req *llm.Request, key, ru
 	}
 
 	base := removeMCPAndSearch(req.Tools, snapshot.Tools)
-	activeSpecs := make([]llm.ToolSpec, 0, len(authorized))
-	deferredCount := 0
-	pinnedCount, activeCount := 0, 0
-	pinnedTokens, activeTokens, deferredTokens := 0, 0, 0
-	activeHashes := make(map[string]string)
-	serverDiagnostics := make(map[string]*llm.ToolDiscoveryServerDiagnostic)
-	names := make([]string, 0, len(authorized))
-	for name, tool := range authorized {
-		names = append(names, name)
-		diagnostic := serverDiagnostics[tool.Server]
-		if diagnostic == nil {
-			diagnostic = &llm.ToolDiscoveryServerDiagnostic{Name: tool.Server, ResolvedMode: string(resolved)}
-			serverDiagnostics[tool.Server] = diagnostic
-		}
-		diagnostic.Total++
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		tool := authorized[name]
-		serverDiagnostic := serverDiagnostics[tool.Server]
-		active, visible := state.active[name]
-		if resolved == ModeEager {
-			visible = true
-		}
-		if visible {
-			activeHashes[name] = tool.SchemaHash
-			if strategy != StrategyNative || active.Pinned || resolved == ModeEager {
-				activeSpecs = append(activeSpecs, tool.ToolSpec())
-			}
-			if active.Pinned {
-				pinnedCount++
-				pinnedTokens += tool.EstimatedTokens
-				serverDiagnostic.Pinned++
-			} else {
-				activeCount++
-				activeTokens += tool.EstimatedTokens
-				serverDiagnostic.Active++
-			}
-		} else {
-			deferredCount++
-			deferredTokens += tool.EstimatedTokens
-			serverDiagnostic.Deferred++
-		}
-	}
-	serverNames := make([]string, 0, len(serverDiagnostics))
-	for name := range serverDiagnostics {
-		serverNames = append(serverNames, name)
-	}
-	sort.Strings(serverNames)
-	serverDetails := make([]llm.ToolDiscoveryServerDiagnostic, 0, len(serverNames))
-	for _, name := range serverNames {
-		serverDetails = append(serverDetails, *serverDiagnostics[name])
-	}
-	req.Tools = append(base, activeSpecs...)
-	req.NativeToolDiscovery = nil
-	if resolved == ModeDeferred && deferredCount > 0 && strategy == StrategyPortable {
-		searchTool := &SearchTool{planner: p}
-		engine.Tools().RegisterDeferred(searchTool)
-		req.Tools = append(req.Tools, searchTool.Spec())
-	} else if resolved == ModeDeferred && strategy == StrategyNative {
-		req.NativeToolDiscovery = &llm.NativeToolDiscoveryRequest{Search: (&SearchTool{planner: p}).Spec()}
-	}
-	if resolved == ModeDeferred && deferredCount > 0 {
-		ensureDeferredToolSearchInstruction(req, snapshot, serverDetails)
-	}
-	toolsAdded := false
-	for _, spec := range req.Tools {
-		if !initialToolNames[spec.Name] {
-			toolsAdded = true
-			break
-		}
-	}
-	if len(req.Tools) == 0 && req.NativeToolDiscovery == nil {
-		req.ToolChoice = llm.ToolChoice{}
-	} else if req.ToolChoice.Mode == "" && (toolsAdded || req.NativeToolDiscovery != nil) {
-		req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
-	}
+	selection := buildToolSurfaceSelection(authorized, state.active, resolved, strategy)
+	p.applyToolSurfaceSelection(req, engine, snapshot, initialToolNames, base, resolved, strategy, selection)
 
 	resetReason := state.resetRequired
 	if resetReason == "" {
 		for name, oldHash := range state.sent {
-			newHash, ok := activeHashes[name]
+			newHash, ok := selection.activeHashes[name]
 			if !ok {
 				resetReason = "an already-sent MCP tool is no longer visible"
 				break
@@ -748,11 +799,11 @@ func (p *Planner) selectSurface(provider llm.Provider, req *llm.Request, key, ru
 		}
 	}
 	state.resetRequired = ""
-	for name, hash := range activeHashes {
+	for name, hash := range selection.activeHashes {
 		state.sent[name] = hash
 	}
 	for name := range state.sent {
-		if _, ok := activeHashes[name]; !ok {
+		if _, ok := selection.activeHashes[name]; !ok {
 			delete(state.sent, name)
 		}
 	}
@@ -776,23 +827,23 @@ func (p *Planner) selectSurface(provider llm.Provider, req *llm.Request, key, ru
 		FallbackReason:     state.fallbackReason,
 		CatalogueHash:      snapshot.Hash,
 		CatalogueGen:       snapshot.Generation,
-		PinnedCount:        pinnedCount,
-		ActiveMCPCount:     activeCount,
-		DeferredCount:      deferredCount,
-		PinnedTokens:       pinnedTokens,
-		ActiveMCPTokens:    activeTokens,
-		DeferredTokens:     deferredTokens,
-		DynamicActive:      activeCount,
+		PinnedCount:        selection.pinnedCount,
+		ActiveMCPCount:     selection.activeCount,
+		DeferredCount:      selection.deferredCount,
+		PinnedTokens:       selection.pinnedTokens,
+		ActiveMCPTokens:    selection.activeTokens,
+		DeferredTokens:     selection.deferredTokens,
+		DynamicActive:      selection.activeCount,
 		DynamicLimit:       p.maxActiveTools,
 		EvictionCount:      state.evictionCount,
 		Recent:             append([]llm.ToolActivationDiagnostic(nil), state.recent...),
 		RecentEvictions:    append([]llm.ToolEvictionDiagnostic(nil), state.recentEvictions...),
-		Servers:            serverDetails,
+		Servers:            selection.serverDetails,
 		ResetReason:        resetReason,
 	}
 	p.mu.Unlock()
 
-	slog.Debug("MCP tool discovery selection", "session_id", req.SessionID, "provider", provider.Name(), "model", req.Model, "catalogue_generation", snapshot.Generation, "catalogue_hash", snapshot.Hash, "configured_mode", p.mode, "resolved_mode", resolved, "strategy", strategy, "authorised", len(authorized), "active", pinnedCount+activeCount, "deferred", deferredCount, "active_tokens", pinnedTokens+activeTokens, "deferred_tokens", deferredTokens, "reset_reason", resetReason)
+	slog.Debug("MCP tool discovery selection", "session_id", req.SessionID, "provider", provider.Name(), "model", req.Model, "catalogue_generation", snapshot.Generation, "catalogue_hash", snapshot.Hash, "configured_mode", p.mode, "resolved_mode", resolved, "strategy", strategy, "authorised", len(authorized), "active", selection.pinnedCount+selection.activeCount, "deferred", selection.deferredCount, "active_tokens", selection.pinnedTokens+selection.activeTokens, "deferred_tokens", selection.deferredTokens, "reset_reason", resetReason)
 	if forced != "" && containsMCPName(snapshot.Tools, forced) && !hasTool(req.Tools, forced) {
 		return "", fmt.Errorf("selected MCP tool %q could not be made provider-visible", forced)
 	}

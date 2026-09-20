@@ -22,6 +22,8 @@ The initial assessment scanned the working tree, including uncommitted edits and
 
 Production baseline: 849 files, 10,904 named functions/methods with bodies; median complexity 3; 443 functions above 20, 58 above 50, 12 above 100. Counts use 1 + `if`, loops, non-default switch/select cases, and `&&`/`||`, attributing nested function-literal decisions to their enclosing declaration. Physical lines include comments and blanks. This is cyclomatic, not cognitive, complexity; it does not measure race freedom or test adequacy.
 
+The counting rules were revised on 2026-09-20 to weight nesting, charge a switch once, charge a logical operator sequence once, treat exiting guard clauses as flat, and measure each function literal as its own unit. Every number above, and in the milestone tables below, is under the original measure and is not comparable with current output; see "Counting revision" in [`go-complexity-contracts.md`](go-complexity-contracts.md).
+
 ## Non-negotiable safety rules
 
 - No public API, CLI output, HTTP status, event ordering, database schema, persisted format, permission policy, or provider behavior changes as part of extraction.

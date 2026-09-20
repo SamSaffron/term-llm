@@ -203,28 +203,7 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 			}
 
 		case llm.EventReasoningDelta:
-			a.attemptUsageCommitted = false
-			kind := llm.NormalizeReasoningKind(event.ReasoningKind)
-			if llm.IsEncryptedReasoningDelta(event) {
-				a.updateStats(func(stats *SessionStats) { stats.ObserveOutput() })
-				// Preserve generation timing without exposing encrypted replay data.
-				if !emit(GenerationActivityEvent()) {
-					return
-				}
-				continue
-			}
-			if event.Text == "" && event.ReasoningItemID == "" && !event.ReasoningFinal {
-				continue
-			}
-			if event.Text != "" {
-				a.updateStats(func(stats *SessionStats) { stats.ObserveOutput() })
-			}
-			title := ""
-			displayable := kind == llm.ReasoningKindSummary
-			if kind == llm.ReasoningKindSummary && event.Text != "" {
-				title = internalreasoning.ParseReasoningSummary(event.Text).Title
-			}
-			if !emit(ReasoningEvent(kind, event.Text, title, event.ReasoningItemID, event.ReasoningFinal, displayable)) {
+			if !a.processReasoningDelta(ctx, event) {
 				return
 			}
 
@@ -267,36 +246,8 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 			a.resetAttemptUsage()
 
 		case llm.EventToolCall:
-			// A tool call is a durable boundary. Usage from the provider attempt that
-			// produced it must not be rolled back by a later provisional retry discard.
-			a.markAttemptCommitted()
-			// Tool call announced during streaming - preserves interleaving order
-			if event.Tool != nil {
-				toolCallID := event.ToolCallID
-				if toolCallID == "" {
-					toolCallID = event.Tool.ID
-				}
-				// Skip if already seen (prevents double-counting with EventToolExecStart).
-				// If toolCallID is empty, don't dedupe - treat each call as unique.
-				if toolCallID != "" {
-					if _, ok := a.seenToolStarts[toolCallID]; ok {
-						continue
-					}
-					a.seenToolStarts[toolCallID] = struct{}{}
-				}
-				toolInfo := event.ToolInfo
-				if toolInfo == "" {
-					toolInfo = llm.ExtractToolInfo(*event.Tool)
-				}
-				toolArgs := event.ToolArgs
-				if len(toolArgs) == 0 {
-					toolArgs = event.Tool.Arguments
-				}
-				uiEvent := ToolStartEvent(toolCallID, event.Tool.Name, toolInfo, toolArgs)
-				if !emit(uiEvent) {
-					return
-				}
-				a.updateStats(func(stats *SessionStats) { stats.ToolStart() })
+			if !a.processToolCall(ctx, event) {
+				return
 			}
 
 		case llm.EventToolExecStart:
@@ -316,52 +267,8 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 			a.updateStats(func(stats *SessionStats) { stats.ToolStart() })
 
 		case llm.EventToolExecEnd:
-			// Skip if already seen. If toolCallID is empty, don't dedupe - treat as unique.
-			if event.ToolCallID != "" {
-				if _, ok := a.seenToolEnds[event.ToolCallID]; ok {
-					continue
-				}
-				a.seenToolEnds[event.ToolCallID] = struct{}{}
-			}
-			uiEvent := ToolEndEvent(event.ToolCallID, event.ToolName, event.ToolInfo, event.ToolSuccess)
-			if !emit(uiEvent) {
+			if !a.processToolExecEnd(ctx, event) {
 				return
-			}
-			a.updateStats(func(stats *SessionStats) { stats.ToolEnd() })
-			a.resetAttemptUsage()
-
-			// Emit image events from structured data
-			for _, imagePath := range event.ToolImages {
-				if !emit(ImageEvent(imagePath)) {
-					return
-				}
-			}
-			for _, media := range event.ToolMedia {
-				if !emit(MediaEvent(media)) {
-					return
-				}
-			}
-			// Emit diff events from structured data
-			for _, d := range event.ToolDiffs {
-				if !emit(DiffEventWithOperation(d.File, d.Old, d.New, d.Line, d.Operation)) {
-					return
-				}
-			}
-			// Emit file-change metadata events (file tracking)
-			for _, fc := range event.ToolFileChanges {
-				if !emit(FileChangeEvent(fc)) {
-					return
-				}
-			}
-			for _, observation := range event.ToolFilesystemObservations {
-				if !emit(FilesystemObservationEvent(observation)) {
-					return
-				}
-			}
-			for _, diagnostic := range event.ToolOutputClaimDiagnostics {
-				if !emit(OutputClaimDiagnosticEvent(diagnostic)) {
-					return
-				}
 			}
 
 		case llm.EventRetry:
@@ -426,6 +333,121 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 			}
 		}
 	}
+}
+
+func (a *StreamAdapter) processReasoningDelta(ctx context.Context, event llm.Event) bool {
+	a.attemptUsageCommitted = false
+	kind := llm.NormalizeReasoningKind(event.ReasoningKind)
+	if llm.IsEncryptedReasoningDelta(event) {
+		a.updateStats(func(stats *SessionStats) { stats.ObserveOutput() })
+		// Preserve generation timing without exposing encrypted replay data.
+		if !a.emit(ctx, GenerationActivityEvent()) {
+			return false
+		}
+		return true
+	}
+	if event.Text == "" && event.ReasoningItemID == "" && !event.ReasoningFinal {
+		return true
+	}
+	if event.Text != "" {
+		a.updateStats(func(stats *SessionStats) { stats.ObserveOutput() })
+	}
+	title := ""
+	displayable := kind == llm.ReasoningKindSummary
+	if kind == llm.ReasoningKindSummary && event.Text != "" {
+		title = internalreasoning.ParseReasoningSummary(event.Text).Title
+	}
+	if !a.emit(ctx, ReasoningEvent(kind, event.Text, title, event.ReasoningItemID, event.ReasoningFinal, displayable)) {
+		return false
+	}
+	return true
+}
+
+func (a *StreamAdapter) processToolCall(ctx context.Context, event llm.Event) bool {
+	// A tool call is a durable boundary. Usage from the provider attempt that
+	// produced it must not be rolled back by a later provisional retry discard.
+	a.markAttemptCommitted()
+	// Tool call announced during streaming - preserves interleaving order
+	if event.Tool == nil {
+		return true
+	}
+	toolCallID := event.ToolCallID
+	if toolCallID == "" {
+		toolCallID = event.Tool.ID
+	}
+	// Skip if already seen (prevents double-counting with EventToolExecStart).
+	// If toolCallID is empty, don't dedupe - treat each call as unique.
+	if toolCallID != "" {
+		if _, ok := a.seenToolStarts[toolCallID]; ok {
+			return true
+		}
+		a.seenToolStarts[toolCallID] = struct{}{}
+	}
+	toolInfo := event.ToolInfo
+	if toolInfo == "" {
+		toolInfo = llm.ExtractToolInfo(*event.Tool)
+	}
+	toolArgs := event.ToolArgs
+	if len(toolArgs) == 0 {
+		toolArgs = event.Tool.Arguments
+	}
+	uiEvent := ToolStartEvent(toolCallID, event.Tool.Name, toolInfo, toolArgs)
+	if !a.emit(ctx, uiEvent) {
+		return false
+	}
+	a.updateStats(func(stats *SessionStats) { stats.ToolStart() })
+	return true
+}
+
+func (a *StreamAdapter) processToolExecEnd(ctx context.Context, event llm.Event) bool {
+	// Skip if already seen. If toolCallID is empty, don't dedupe - treat as unique.
+	if event.ToolCallID != "" {
+		if _, ok := a.seenToolEnds[event.ToolCallID]; ok {
+			return true
+		}
+		a.seenToolEnds[event.ToolCallID] = struct{}{}
+	}
+	uiEvent := ToolEndEvent(event.ToolCallID, event.ToolName, event.ToolInfo, event.ToolSuccess)
+	if !a.emit(ctx, uiEvent) {
+		return false
+	}
+	a.updateStats(func(stats *SessionStats) { stats.ToolEnd() })
+	a.resetAttemptUsage()
+
+	// Emit image events from structured data
+	for _, imagePath := range event.ToolImages {
+		if !a.emit(ctx, ImageEvent(imagePath)) {
+			return false
+		}
+	}
+	for _, media := range event.ToolMedia {
+		if !a.emit(ctx, MediaEvent(media)) {
+			return false
+		}
+	}
+	// Emit diff events from structured data
+	for _, d := range event.ToolDiffs {
+		if !a.emit(ctx, DiffEventWithOperation(d.File, d.Old, d.New, d.Line, d.Operation)) {
+			return false
+		}
+	}
+	// Emit file-change metadata events (file tracking)
+	for _, fc := range event.ToolFileChanges {
+		if !a.emit(ctx, FileChangeEvent(fc)) {
+			return false
+		}
+	}
+	for _, observation := range event.ToolFilesystemObservations {
+		if !a.emit(ctx, FilesystemObservationEvent(observation)) {
+			return false
+		}
+	}
+	for _, diagnostic := range event.ToolOutputClaimDiagnostics {
+		if !a.emit(ctx, OutputClaimDiagnosticEvent(diagnostic)) {
+			return false
+		}
+	}
+	return true
 }
 
 // DiffData is an alias for llm.DiffData for backward compatibility.

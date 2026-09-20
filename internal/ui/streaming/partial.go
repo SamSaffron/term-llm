@@ -270,48 +270,7 @@ func (sr *StreamRenderer) findSafePoint(content string) int {
 
 		// Check for * or _ (italic) - single marker
 		if content[i] == '*' || content[i] == '_' {
-			// CommonMark does not treat underscores inside words as emphasis
-			// delimiters. Avoid hiding common identifiers like snake_case while
-			// streaming partial prose.
-			if content[i] == '_' && isASCIIAlnum(byteBefore(content, i)) && isASCIIAlnum(byteAfter(content, i)) {
-				i++
-				continue
-			}
-
-			marker := string(content[i])
-			start := i
-			i++
-
-			// Look for closing marker (but not **)
-			closePos := -1
-			searchPos := i
-			for searchPos < n {
-				pos := strings.Index(content[searchPos:], marker)
-				if pos == -1 {
-					break
-				}
-				actualPos := searchPos + pos
-				// Make sure it's not ** or __
-				if actualPos+1 >= n || content[actualPos+1] != content[actualPos] {
-					// Also make sure the previous char isn't the same marker, and
-					// ignore underscores inside words.
-					if (actualPos == searchPos || content[actualPos-1] != content[actualPos]) &&
-						!(content[actualPos] == '_' && isASCIIAlnum(byteBefore(content, actualPos)) && isASCIIAlnum(byteAfter(content, actualPos))) {
-						closePos = actualPos
-						break
-					}
-				}
-				searchPos = actualPos + 1
-			}
-
-			if closePos == -1 {
-				// Unclosed italic - safe point is before the marker
-				if start < safePoint {
-					safePoint = start
-				}
-			} else {
-				i = closePos + 1
-			}
+			i, safePoint = scanEmphasisDelimiter(content, i, safePoint)
 			continue
 		}
 
@@ -333,64 +292,7 @@ func (sr *StreamRenderer) findSafePoint(content string) int {
 
 		// Check for [ (link start)
 		if content[i] == '[' {
-			start := i
-			i++
-
-			// Look for ]( or ][ to confirm it's a link
-			depth := 1
-			foundClose := false
-			for i < n && depth > 0 {
-				if content[i] == '\\' && i+1 < n {
-					i += 2
-					continue
-				}
-				if content[i] == '[' {
-					depth++
-				} else if content[i] == ']' {
-					depth--
-					if depth == 0 {
-						// Check if followed by ( or [
-						if i+1 < n && (content[i+1] == '(' || content[i+1] == '[') {
-							// It's a link, find the closing ) or ]
-							opener := content[i+1]
-							closer := byte(')')
-							if opener == '[' {
-								closer = ']'
-							}
-							i += 2
-							parenDepth := 1
-							for i < n && parenDepth > 0 {
-								if content[i] == '\\' && i+1 < n {
-									i += 2
-									continue
-								}
-								if content[i] == opener {
-									parenDepth++
-								} else if content[i] == closer {
-									parenDepth--
-								}
-								i++
-							}
-							if parenDepth == 0 {
-								foundClose = true
-							}
-						} else {
-							// Just text in brackets, continue
-							foundClose = true
-							i++
-						}
-					}
-				}
-				if depth > 0 {
-					i++
-				}
-			}
-
-			if !foundClose {
-				if start < safePoint {
-					safePoint = start
-				}
-			}
+			i, safePoint = scanBracketedLink(content, i, safePoint)
 			continue
 		}
 
@@ -398,6 +300,132 @@ func (sr *StreamRenderer) findSafePoint(content string) int {
 	}
 
 	return safePoint
+}
+
+func scanEmphasisDelimiter(content string, i, safePoint int) (int, int) {
+	// CommonMark does not treat underscores inside words as emphasis
+	// delimiters. Avoid hiding common identifiers like snake_case while
+	// streaming partial prose.
+	if content[i] == '_' && isASCIIAlnum(byteBefore(content, i)) && isASCIIAlnum(byteAfter(content, i)) {
+		i++
+		return i, safePoint
+	}
+
+	marker := string(content[i])
+	start := i
+	i++
+
+	// Look for closing marker (but not **)
+	closePos := findEmphasisClose(content, i, marker)
+	if closePos == -1 {
+		// Unclosed italic - safe point is before the marker
+		if start < safePoint {
+			safePoint = start
+		}
+	} else {
+		i = closePos + 1
+	}
+	return i, safePoint
+}
+
+func findEmphasisClose(content string, searchPos int, marker string) int {
+	n := len(content)
+	closePos := -1
+	for searchPos < n {
+		pos := strings.Index(content[searchPos:], marker)
+		if pos == -1 {
+			break
+		}
+		actualPos := searchPos + pos
+		// Make sure it's not ** or __
+		if actualPos+1 >= n || content[actualPos+1] != content[actualPos] {
+			// Also make sure the previous char isn't the same marker, and
+			// ignore underscores inside words.
+			if (actualPos == searchPos || content[actualPos-1] != content[actualPos]) &&
+				!(content[actualPos] == '_' && isASCIIAlnum(byteBefore(content, actualPos)) && isASCIIAlnum(byteAfter(content, actualPos))) {
+				closePos = actualPos
+				break
+			}
+		}
+		searchPos = actualPos + 1
+	}
+	return closePos
+}
+
+func scanBracketedLink(content string, i, safePoint int) (int, int) {
+	n := len(content)
+	start := i
+	i++
+
+	// Look for ]( or ][ to confirm it's a link
+	depth := 1
+	foundClose := false
+	for i < n && depth > 0 {
+		if content[i] == '\\' && i+1 < n {
+			i += 2
+			continue
+		}
+		if content[i] == '[' {
+			depth++
+		} else if content[i] == ']' {
+			depth--
+			if depth == 0 {
+				i, foundClose = scanLinkLabelClose(content, i)
+			}
+		}
+		if depth > 0 {
+			i++
+		}
+	}
+
+	if !foundClose {
+		if start < safePoint {
+			safePoint = start
+		}
+	}
+	return i, safePoint
+}
+
+func scanLinkLabelClose(content string, i int) (int, bool) {
+	n := len(content)
+	// Check if followed by ( or [
+	if i+1 < n && (content[i+1] == '(' || content[i+1] == '[') {
+		// It's a link, find the closing ) or ]
+		return scanLinkDestination(content, i)
+	}
+
+	// Just text in brackets, continue
+	foundClose := true
+	i++
+	return i, foundClose
+}
+
+func scanLinkDestination(content string, i int) (int, bool) {
+	n := len(content)
+	opener := content[i+1]
+	closer := byte(')')
+	if opener == '[' {
+		closer = ']'
+	}
+	i += 2
+	parenDepth := 1
+	for i < n && parenDepth > 0 {
+		if content[i] == '\\' && i+1 < n {
+			i += 2
+			continue
+		}
+		if content[i] == opener {
+			parenDepth++
+		} else if content[i] == closer {
+			parenDepth--
+		}
+		i++
+	}
+	foundClose := false
+	if parenDepth == 0 {
+		foundClose = true
+	}
+	return i, foundClose
 }
 
 func byteBefore(s string, i int) byte {

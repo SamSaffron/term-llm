@@ -26,6 +26,22 @@ type webPlanSummary struct {
 	State          string `json:"state"`
 }
 
+type webSessionStateData struct {
+	response               map[string]any
+	persistedProvider      string
+	persistedModel         string
+	persistedEffort        string
+	persistedReasoningMode string
+	persistedGoal          *session.Goal
+	persistedGoalRead      bool
+	runtimeDefaultModel    string
+	runtimeMetaRead        bool
+	availability           llm.SteeringAvailability
+	pendingItems           []map[string]any
+	pendingIDs             map[string]struct{}
+	pendingAuthoritative   bool
+}
+
 func summarizeWebPlan(snapshot planpkg.Snapshot, version int64) *webPlanSummary {
 	if version <= 0 || snapshot.NormalizeAndValidate() != nil || len(snapshot.Plan) == 0 {
 		return nil
@@ -78,9 +94,40 @@ func planSnapshotStoreForWeb(store session.Store) (session.PlanSnapshotStore, bo
 }
 
 func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request, sessionID string) {
-	resp := map[string]any{
-		"active_run": false,
+	state := webSessionStateData{
+		response: map[string]any{
+			"active_run": false,
+		},
 	}
+	s.addSessionStatePlan(state.response, r, sessionID)
+
+	state.availability = llm.SteeringAvailability{Protocol: 1, UnavailableReason: "run_not_consuming"}
+	s.addSessionStateRush(state.response, r, sessionID)
+	state.pendingItems = make([]map[string]any, 0)
+	state.pendingIDs = make(map[string]struct{})
+	s.loadSessionStatePendingSteering(&state, r, sessionID)
+
+	s.addSessionStateRuntime(&state, sessionID)
+	s.addSessionStateResolvedInteractions(state.response, sessionID)
+	s.finalizeSessionStateSteering(&state)
+	s.loadSessionStatePersistedMetadata(&state, r, sessionID)
+	s.addSessionStateMetadata(&state)
+
+	if lastResponseID := s.latestDurableResponseIDForSession(r.Context(), sessionID); lastResponseID != "" {
+		state.response["lastResponseId"] = lastResponseID
+	}
+
+	s.addSessionStateActiveRun(state.response, sessionID)
+	// Sample the transcript revision after active-run state. Run finalization
+	// commits transcript rows before clearing active ownership, so an idle sample
+	// is paired with a revision that can include that final commit. Sampling in
+	// the opposite order could publish idle plus a stale pre-final revision.
+	s.addSessionStateTranscriptRev(state.response, r, sessionID)
+
+	writeJSON(w, http.StatusOK, state.response)
+}
+
+func (s *serveServer) addSessionStatePlan(resp map[string]any, r *http.Request, sessionID string) {
 	if planStore, ok := planSnapshotStoreForWeb(s.store); ok {
 		snapshot, version, err := planStore.LoadPlanSnapshot(r.Context(), sessionID)
 		switch {
@@ -97,13 +144,9 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 			}
 		}
 	}
+}
 
-	var persistedProvider, persistedModel, persistedEffort, persistedReasoningMode string
-	var persistedGoal *session.Goal
-	persistedGoalRead := false
-	var runtimeDefaultModel string
-	runtimeMetaRead := false
-	availability := llm.SteeringAvailability{Protocol: 1, UnavailableReason: "run_not_consuming"}
+func (s *serveServer) addSessionStateRush(resp map[string]any, r *http.Request, sessionID string) {
 	if rushStore, ok := session.AsRushStore(s.store); ok {
 		if op, err := rushStore.LatestRush(r.Context(), sessionID); err == nil {
 			if transition := s.ensureResponseRuns().steeringTransition(sessionID); transition != nil {
@@ -126,12 +169,12 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 			resp["active_rush"] = op
 		}
 	}
-	pendingItems := make([]map[string]any, 0)
-	pendingIDs := make(map[string]struct{})
-	pendingAuthoritative := false
+}
+
+func (s *serveServer) loadSessionStatePendingSteering(state *webSessionStateData, r *http.Request, sessionID string) {
 	if pendingStore, ok := session.AsPendingSteeringStore(s.store); ok {
 		if entries, err := pendingStore.ListPendingSteering(r.Context(), sessionID); err == nil {
-			pendingAuthoritative = true
+			state.pendingAuthoritative = true
 			for _, entry := range entries {
 				if entry.OwnerKind != "" {
 					continue
@@ -145,87 +188,108 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 				if entry.AttachmentSummary != "" {
 					item["attachment_summary"] = entry.AttachmentSummary
 				}
-				pendingItems = append(pendingItems, item)
-				pendingIDs[entry.ID] = struct{}{}
+				state.pendingItems = append(state.pendingItems, item)
+				state.pendingIDs[entry.ID] = struct{}{}
 			}
 		}
 	}
+}
 
+func (s *serveServer) addSessionStateRuntime(state *webSessionStateData, sessionID string) {
 	if s.sessionMgr != nil {
 		if rt, ok := s.sessionMgr.Get(sessionID); ok && rt != nil {
 			activeRun := rt.hasActiveRun()
-			resp["active_run"] = activeRun
+			state.response["active_run"] = activeRun
 			if s.approvalDefault != tools.ModeYolo {
-				resp["approval_policy"] = runtimeApprovalPolicy(rt)
+				state.response["approval_policy"] = runtimeApprovalPolicy(rt)
 			}
-			if prompts := rt.pendingAskUserPrompts(); len(prompts) > 0 {
-				resp["pending_ask_users"] = prompts
-				resp["pending_ask_user"] = prompts[0]
-			}
-			if approvals := rt.pendingApprovalPrompts(); len(approvals) > 0 {
-				resp["pending_approvals"] = approvals
-				resp["pending_approval"] = approvals[0]
-			}
-			if rt.engine != nil {
-				availability = rt.engine.SteeringAvailability()
-				if entries := rt.engine.ListPendingSteering(); len(entries) > 0 {
-					for _, entry := range entries {
-						if _, exists := pendingIDs[entry.ID]; exists {
-							continue
-						}
-						text := strings.TrimSpace(entry.DisplayText)
-						if text == "" {
-							text = strings.TrimSpace(llm.MessageText(entry.Message))
-						}
-						if text == "" {
-							text = strings.TrimSpace(llm.MessageAttachmentSummary(entry.Message))
-						}
-						item := map[string]any{
-							"id":     entry.ID,
-							"text":   text,
-							"status": string(entry.Status),
-						}
-						if summary := strings.TrimSpace(llm.MessageAttachmentSummary(entry.Message)); summary != "" {
-							item["attachment_summary"] = summary
-						}
-						pendingItems = append(pendingItems, item)
-						pendingIDs[entry.ID] = struct{}{}
-					}
-				}
-			}
-			if pk := strings.TrimSpace(rt.providerKey); pk != "" {
-				persistedProvider = pk
-			} else if rt.provider != nil {
-				resolved := resolveSessionProviderKey(s.cfgRef, &session.Session{
-					Provider: strings.TrimSpace(rt.provider.Name()),
-				})
-				persistedProvider = resolved
-			}
-			runtimeDefaultModel = strings.TrimSpace(rt.defaultModel)
+			s.addSessionStateRuntimePrompts(state.response, rt)
+			s.addSessionStateRuntimeSteering(state, rt)
+			s.addSessionStateRuntimeProvider(state, rt)
+			state.runtimeDefaultModel = strings.TrimSpace(rt.defaultModel)
 			// rt.mu is held for the entire duration of a run; take it only
 			// non-blockingly so state polls never stall a busy session. When
 			// the lock is held, fall through to the DB for model/effort.
-			if rt.mu.TryLock() {
-				if rt.sessionMeta != nil {
-					persistedModel = strings.TrimSpace(rt.sessionMeta.Model)
-					persistedEffort = strings.TrimSpace(rt.sessionMeta.ReasoningEffort)
-					persistedReasoningMode = strings.ToLower(strings.TrimSpace(rt.sessionMeta.ReasoningMode))
-					persistedGoal = rt.sessionMeta.Goal.Clone()
-					persistedGoalRead = true
-				}
-				mcpState := rt.mcpStateLocked()
-				resp["mcp_servers"] = mcpState.Servers
-				resp["mcp_enabled"] = mcpState.Enabled
-				rt.mu.Unlock()
-				runtimeMetaRead = true
-			}
+			s.readSessionStateRuntimeMetadata(state, rt)
 			if !activeRun {
 				if lastErr := rt.consumeLastUIRunError(); lastErr != "" {
-					resp["last_error"] = lastErr
+					state.response["last_error"] = lastErr
 				}
 			}
 		}
 	}
+}
+
+func (s *serveServer) addSessionStateRuntimePrompts(resp map[string]any, rt *serveRuntime) {
+	if prompts := rt.pendingAskUserPrompts(); len(prompts) > 0 {
+		resp["pending_ask_users"] = prompts
+		resp["pending_ask_user"] = prompts[0]
+	}
+	if approvals := rt.pendingApprovalPrompts(); len(approvals) > 0 {
+		resp["pending_approvals"] = approvals
+		resp["pending_approval"] = approvals[0]
+	}
+}
+
+func (s *serveServer) addSessionStateRuntimeSteering(state *webSessionStateData, rt *serveRuntime) {
+	if rt.engine != nil {
+		state.availability = rt.engine.SteeringAvailability()
+		if entries := rt.engine.ListPendingSteering(); len(entries) > 0 {
+			for _, entry := range entries {
+				if _, exists := state.pendingIDs[entry.ID]; exists {
+					continue
+				}
+				text := strings.TrimSpace(entry.DisplayText)
+				if text == "" {
+					text = strings.TrimSpace(llm.MessageText(entry.Message))
+				}
+				if text == "" {
+					text = strings.TrimSpace(llm.MessageAttachmentSummary(entry.Message))
+				}
+				item := map[string]any{
+					"id":     entry.ID,
+					"text":   text,
+					"status": string(entry.Status),
+				}
+				if summary := strings.TrimSpace(llm.MessageAttachmentSummary(entry.Message)); summary != "" {
+					item["attachment_summary"] = summary
+				}
+				state.pendingItems = append(state.pendingItems, item)
+				state.pendingIDs[entry.ID] = struct{}{}
+			}
+		}
+	}
+}
+
+func (s *serveServer) addSessionStateRuntimeProvider(state *webSessionStateData, rt *serveRuntime) {
+	if pk := strings.TrimSpace(rt.providerKey); pk != "" {
+		state.persistedProvider = pk
+	} else if rt.provider != nil {
+		resolved := resolveSessionProviderKey(s.cfgRef, &session.Session{
+			Provider: strings.TrimSpace(rt.provider.Name()),
+		})
+		state.persistedProvider = resolved
+	}
+}
+
+func (s *serveServer) readSessionStateRuntimeMetadata(state *webSessionStateData, rt *serveRuntime) {
+	if rt.mu.TryLock() {
+		if rt.sessionMeta != nil {
+			state.persistedModel = strings.TrimSpace(rt.sessionMeta.Model)
+			state.persistedEffort = strings.TrimSpace(rt.sessionMeta.ReasoningEffort)
+			state.persistedReasoningMode = strings.ToLower(strings.TrimSpace(rt.sessionMeta.ReasoningMode))
+			state.persistedGoal = rt.sessionMeta.Goal.Clone()
+			state.persistedGoalRead = true
+		}
+		mcpState := rt.mcpStateLocked()
+		state.response["mcp_servers"] = mcpState.Servers
+		state.response["mcp_enabled"] = mcpState.Enabled
+		rt.mu.Unlock()
+		state.runtimeMetaRead = true
+	}
+}
+
+func (s *serveServer) addSessionStateResolvedInteractions(resp map[string]any, sessionID string) {
 	if s.responseRuns != nil {
 		if run := s.responseRuns.latestRun(sessionID); run != nil {
 			if resolved := run.resolvedInteractionsSnapshot(); len(resolved) > 0 {
@@ -233,88 +297,93 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 			}
 		}
 	}
+}
+
+func (s *serveServer) finalizeSessionStateSteering(state *webSessionStateData) {
 	if _, ok := session.AsRushStore(s.store); !ok {
-		availability.CanRush = false
-		availability.UnavailableReason = "durable_store_unavailable"
+		state.availability.CanRush = false
+		state.availability.UnavailableReason = "durable_store_unavailable"
 	}
 	eligiblePending := false
-	for _, item := range pendingItems {
+	for _, item := range state.pendingItems {
 		if item["origin"] != llm.SteeringOriginJobNotification {
 			eligiblePending = true
 		}
 	}
-	if !eligiblePending && availability.CanRush {
-		availability.CanRush = false
-		availability.UnavailableReason = "no_user_steering"
+	if !eligiblePending && state.availability.CanRush {
+		state.availability.CanRush = false
+		state.availability.UnavailableReason = "no_user_steering"
 	}
-	resp["steering"] = availability
-	if pendingAuthoritative || len(pendingItems) > 0 {
-		resp["pending_steering"] = pendingItems
-		if len(pendingItems) > 0 {
-			resp["pending_steering_text"] = pendingItems[0]
+	state.response["steering"] = state.availability
+	if state.pendingAuthoritative || len(state.pendingItems) > 0 {
+		state.response["pending_steering"] = state.pendingItems
+		if len(state.pendingItems) > 0 {
+			state.response["pending_steering_text"] = state.pendingItems[0]
 		}
 	}
+}
 
+func (s *serveServer) loadSessionStatePersistedMetadata(state *webSessionStateData, r *http.Request, sessionID string) {
 	// Fall back to the DB when the runtime was not loaded (e.g. after a
 	// page reload) or we could not read sessionMeta because a run held
 	// rt.mu. The DB has the last persisted model/effort/MCP/goal selection for the session.
-	if s.store != nil && (!runtimeMetaRead || persistedProvider == "" || persistedModel == "" || !persistedGoalRead) {
+	if s.store != nil && (!state.runtimeMetaRead || state.persistedProvider == "" || state.persistedModel == "" || !state.persistedGoalRead) {
 		if sess, err := s.store.Get(r.Context(), sessionID); err == nil && sess != nil {
-			if !persistedGoalRead {
-				persistedGoal = sess.Goal.Clone()
-				persistedGoalRead = true
+			if !state.persistedGoalRead {
+				state.persistedGoal = sess.Goal.Clone()
+				state.persistedGoalRead = true
 			}
-			if enabled, ok := resp["mcp_enabled"].([]string); !ok || len(enabled) == 0 {
+			if enabled, ok := state.response["mcp_enabled"].([]string); !ok || len(enabled) == 0 {
 				if persistedMCP := parseServerList(sess.MCP); len(persistedMCP) > 0 {
-					resp["mcp_enabled"] = persistedMCP
+					state.response["mcp_enabled"] = persistedMCP
 				}
 			}
-			if persistedProvider == "" {
+			if state.persistedProvider == "" {
 				pk := strings.TrimSpace(sess.ProviderKey)
 				if pk == "" {
 					pk = resolveSessionProviderKey(s.cfgRef, sess)
 				}
-				persistedProvider = pk
+				state.persistedProvider = pk
 			}
-			if persistedModel == "" {
-				persistedModel = strings.TrimSpace(sess.Model)
+			if state.persistedModel == "" {
+				state.persistedModel = strings.TrimSpace(sess.Model)
 			}
-			if persistedEffort == "" {
-				persistedEffort = strings.TrimSpace(sess.ReasoningEffort)
+			if state.persistedEffort == "" {
+				state.persistedEffort = strings.TrimSpace(sess.ReasoningEffort)
 			}
-			if persistedReasoningMode == "" {
-				persistedReasoningMode = strings.ToLower(strings.TrimSpace(sess.ReasoningMode))
+			if state.persistedReasoningMode == "" {
+				state.persistedReasoningMode = strings.ToLower(strings.TrimSpace(sess.ReasoningMode))
 			}
 		}
 	}
+}
 
-	if persistedModel == "" {
-		persistedModel = runtimeDefaultModel
+func (s *serveServer) addSessionStateMetadata(state *webSessionStateData) {
+	if state.persistedModel == "" {
+		state.persistedModel = state.runtimeDefaultModel
 	}
-	persistedModel, persistedEffort = normalizeProviderModelEffort(persistedProvider, persistedModel, persistedEffort)
+	state.persistedModel, state.persistedEffort = normalizeProviderModelEffort(state.persistedProvider, state.persistedModel, state.persistedEffort)
 
-	if persistedProvider != "" {
-		resp["provider"] = persistedProvider
+	if state.persistedProvider != "" {
+		state.response["provider"] = state.persistedProvider
 	}
-	if persistedModel != "" {
-		resp["model"] = persistedModel
+	if state.persistedModel != "" {
+		state.response["model"] = state.persistedModel
 	}
-	if persistedEffort != "" {
-		resp["reasoning_effort"] = persistedEffort
+	if state.persistedEffort != "" {
+		state.response["reasoning_effort"] = state.persistedEffort
 	}
-	if persistedReasoningMode != "" {
-		resp["reasoning_mode"] = persistedReasoningMode
+	if state.persistedReasoningMode != "" {
+		state.response["reasoning_mode"] = state.persistedReasoningMode
 	}
-	if persistedGoal != nil && persistedGoal.Exists() {
-		resp["goal"] = persistedGoal
+	if state.persistedGoal != nil && state.persistedGoal.Exists() {
+		state.response["goal"] = state.persistedGoal
 	} else {
-		resp["goal"] = nil
+		state.response["goal"] = nil
 	}
+}
 
-	if lastResponseID := s.latestDurableResponseIDForSession(r.Context(), sessionID); lastResponseID != "" {
-		resp["lastResponseId"] = lastResponseID
-	}
-
+func (s *serveServer) addSessionStateActiveRun(resp map[string]any, sessionID string) {
 	if s.responseRuns != nil {
 		if activeResponseID := s.responseRuns.activeRunID(sessionID); activeResponseID != "" {
 			resp["active_run"] = true
@@ -333,15 +402,12 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 			}
 		}
 	}
-	// Sample the transcript revision after active-run state. Run finalization
-	// commits transcript rows before clearing active ownership, so an idle sample
-	// is paired with a revision that can include that final commit. Sampling in
-	// the opposite order could publish idle plus a stale pre-final revision.
+}
+
+func (s *serveServer) addSessionStateTranscriptRev(resp map[string]any, r *http.Request, sessionID string) {
 	if indexer, ok := s.transcriptIndexerForWeb(); ok {
 		if rev, err := indexer.TranscriptRev(r.Context(), sessionID); err == nil {
 			resp["transcript_rev"] = rev
 		}
 	}
-
-	writeJSON(w, http.StatusOK, resp)
 }

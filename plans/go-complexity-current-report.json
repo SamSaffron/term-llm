@@ -1,5 +1,5 @@
 {
-  "counting_rules": "1 + if + for + range + non-default switch/select cases + \u0026\u0026 + ||; nested function literals attributed to enclosing declaration",
+  "counting_rules": "1 + (1 + nesting depth) per if/for/range/switch/select + 1 per else or else-if + 1 per logical operator sequence + 1 per labeled break/continue/goto; a guard clause that exits is flat and does not deepen its body; switch and select count once regardless of case count; each function literal is measured separately as \u003cimmediate parent\u003e.funcN",
   "files": [
     {
       "module": ".",
@@ -23,7 +23,7 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/ask.go",
-      "lines": 2531
+      "lines": 2533
     },
     {
       "module": ".",
@@ -35,7 +35,7 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/ask_execute_progressive.go",
-      "lines": 173
+      "lines": 172
     },
     {
       "module": ".",
@@ -47,7 +47,7 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/ask_json.go",
-      "lines": 386
+      "lines": 388
     },
     {
       "module": ".",
@@ -95,7 +95,7 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/benchmark.go",
-      "lines": 749
+      "lines": 790
     },
     {
       "module": ".",
@@ -142,8 +142,20 @@
     {
       "module": ".",
       "package": "cmd",
+      "path": "cmd/child_run_observer.go",
+      "lines": 39
+    },
+    {
+      "module": ".",
+      "package": "cmd",
       "path": "cmd/child_skill.go",
       "lines": 64
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/classify.go",
+      "lines": 867
     },
     {
       "module": ".",
@@ -155,13 +167,13 @@
       "module": ".",
       "package": "main",
       "path": "cmd/complexity/main.go",
-      "lines": 259
+      "lines": 299
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/config.go",
-      "lines": 1439
+      "lines": 1477
     },
     {
       "module": ".",
@@ -180,6 +192,12 @@
       "package": "cmd",
       "path": "cmd/debug_log.go",
       "lines": 610
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/doctor.go",
+      "lines": 572
     },
     {
       "module": ".",
@@ -227,7 +245,7 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/guardian_wiring.go",
-      "lines": 206
+      "lines": 250
     },
     {
       "module": ".",
@@ -258,6 +276,12 @@
       "package": "cmd",
       "path": "cmd/lifecycle.go",
       "lines": 57
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/live.go",
+      "lines": 91
     },
     {
       "module": ".",
@@ -394,8 +418,14 @@
     {
       "module": ".",
       "package": "cmd",
+      "path": "cmd/model_usage.go",
+      "lines": 60
+    },
+    {
+      "module": ".",
+      "package": "cmd",
       "path": "cmd/models.go",
-      "lines": 407
+      "lines": 448
     },
     {
       "module": ".",
@@ -515,13 +545,19 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/runner.go",
-      "lines": 954
+      "lines": 999
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/runner_output.go",
+      "lines": 49
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve.go",
-      "lines": 1737
+      "lines": 1818
     },
     {
       "module": ".",
@@ -539,13 +575,13 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_approval_mode_handler.go",
-      "lines": 142
+      "lines": 157
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_ask_user.go",
-      "lines": 184
+      "lines": 355
     },
     {
       "module": ".",
@@ -557,7 +593,7 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_ask_user_state_handler.go",
-      "lines": 348
+      "lines": 414
     },
     {
       "module": ".",
@@ -569,7 +605,7 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_autotitle.go",
-      "lines": 204
+      "lines": 213
     },
     {
       "module": ".",
@@ -586,8 +622,14 @@
     {
       "module": ".",
       "package": "cmd",
+      "path": "cmd/serve_child_runs.go",
+      "lines": 466
+    },
+    {
+      "module": ".",
+      "package": "cmd",
       "path": "cmd/serve_children.go",
-      "lines": 249
+      "lines": 321
     },
     {
       "module": ".",
@@ -599,19 +641,19 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_compaction.go",
-      "lines": 114
+      "lines": 116
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_compaction_handler.go",
-      "lines": 63
+      "lines": 67
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_completion_push.go",
-      "lines": 213
+      "lines": 236
     },
     {
       "module": ".",
@@ -635,7 +677,7 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_handlers.go",
-      "lines": 3969
+      "lines": 4176
     },
     {
       "module": ".",
@@ -653,13 +695,13 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_handlers_responses.go",
-      "lines": 1019
+      "lines": 1102
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_handlers_status.go",
-      "lines": 357
+      "lines": 382
     },
     {
       "module": ".",
@@ -767,7 +809,7 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_jobs_v2.go",
-      "lines": 3194
+      "lines": 3187
     },
     {
       "module": ".",
@@ -780,6 +822,48 @@
       "package": "cmd",
       "path": "cmd/serve_jobs_v2_notify.go",
       "lines": 285
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_live.go",
+      "lines": 1980
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_live_classify.go",
+      "lines": 369
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_live_client_delegation.go",
+      "lines": 365
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_live_context.go",
+      "lines": 205
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_live_control.go",
+      "lines": 741
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_live_debug.go",
+      "lines": 22
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_live_new_session.go",
+      "lines": 228
     },
     {
       "module": ".",
@@ -814,8 +898,14 @@
     {
       "module": ".",
       "package": "cmd",
+      "path": "cmd/serve_message_text.go",
+      "lines": 54
+    },
+    {
+      "module": ".",
+      "package": "cmd",
       "path": "cmd/serve_model_swap.go",
-      "lines": 816
+      "lines": 827
     },
     {
       "module": ".",
@@ -839,13 +929,13 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_projects.go",
-      "lines": 1164
+      "lines": 1167
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_protocol.go",
-      "lines": 884
+      "lines": 900
     },
     {
       "module": ".",
@@ -899,61 +989,61 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_response_run_event_projection.go",
-      "lines": 333
+      "lines": 347
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_response_run_events.go",
-      "lines": 475
+      "lines": 477
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_response_run_execution.go",
-      "lines": 189
+      "lines": 224
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_response_run_manager.go",
-      "lines": 996
+      "lines": 1154
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_response_run_persistence.go",
-      "lines": 339
+      "lines": 370
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_response_run_recovery.go",
-      "lines": 727
+      "lines": 768
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_response_run_recovery_events.go",
-      "lines": 355
+      "lines": 380
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_response_run_stream.go",
-      "lines": 918
+      "lines": 960
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_response_runs.go",
-      "lines": 324
+      "lines": 341
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_responses_durable.go",
-      "lines": 487
+      "lines": 497
     },
     {
       "module": ".",
@@ -965,7 +1055,7 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_run_context.go",
-      "lines": 47
+      "lines": 52
     },
     {
       "module": ".",
@@ -977,13 +1067,13 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_run_history.go",
-      "lines": 97
+      "lines": 124
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_run_persistence.go",
-      "lines": 389
+      "lines": 398
     },
     {
       "module": ".",
@@ -995,19 +1085,25 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_runtime.go",
-      "lines": 2267
+      "lines": 2373
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_session.go",
-      "lines": 759
+      "lines": 830
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_session_create.go",
-      "lines": 82
+      "lines": 135
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_session_directory.go",
+      "lines": 221
     },
     {
       "module": ".",
@@ -1019,7 +1115,7 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_session_inputs.go",
-      "lines": 293
+      "lines": 333
     },
     {
       "module": ".",
@@ -1103,7 +1199,7 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_side_question.go",
-      "lines": 677
+      "lines": 678
     },
     {
       "module": ".",
@@ -1116,6 +1212,18 @@
       "package": "cmd",
       "path": "cmd/serve_startup.go",
       "lines": 129
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_stats.go",
+      "lines": 785
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_stats_endpoint.go",
+      "lines": 476
     },
     {
       "module": ".",
@@ -1134,6 +1242,12 @@
       "package": "cmd",
       "path": "cmd/serve_streaming_writer.go",
       "lines": 20
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_subagent_progress.go",
+      "lines": 556
     },
     {
       "module": ".",
@@ -1164,6 +1278,12 @@
       "package": "cmd",
       "path": "cmd/serve_undo_redo.go",
       "lines": 144
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_uploads.go",
+      "lines": 157
     },
     {
       "module": ".",
@@ -1205,7 +1325,7 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/service.go",
-      "lines": 522
+      "lines": 578
     },
     {
       "module": ".",
@@ -1217,7 +1337,7 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/service_manage.go",
-      "lines": 300
+      "lines": 327
     },
     {
       "module": ".",
@@ -1229,7 +1349,7 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/session_input_refresh.go",
-      "lines": 249
+      "lines": 253
     },
     {
       "module": ".",
@@ -1265,7 +1385,7 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/spawn_runner.go",
-      "lines": 631
+      "lines": 794
     },
     {
       "module": ".",
@@ -1367,7 +1487,7 @@
       "module": ".",
       "package": "agents",
       "path": "internal/agents/embedded.go",
-      "lines": 197
+      "lines": 198
     },
     {
       "module": ".",
@@ -1380,6 +1500,12 @@
       "package": "agents",
       "path": "internal/agents/include.go",
       "lines": 136
+    },
+    {
+      "module": ".",
+      "package": "agents",
+      "path": "internal/agents/instruction_filter.go",
+      "lines": 253
     },
     {
       "module": ".",
@@ -1397,7 +1523,7 @@
       "module": ".",
       "package": "agents",
       "path": "internal/agents/template.go",
-      "lines": 638
+      "lines": 679
     },
     {
       "module": ".",
@@ -1505,19 +1631,25 @@
       "module": ".",
       "package": "complexity",
       "path": "internal/complexity/analyzer.go",
-      "lines": 257
+      "lines": 462
+    },
+    {
+      "module": ".",
+      "package": "config",
+      "path": "internal/config/classify.go",
+      "lines": 102
     },
     {
       "module": ".",
       "package": "config",
       "path": "internal/config/config.go",
-      "lines": 2772
+      "lines": 3072
     },
     {
       "module": ".",
       "package": "config",
       "path": "internal/config/credentials.go",
-      "lines": 390
+      "lines": 415
     },
     {
       "module": ".",
@@ -1535,7 +1667,7 @@
       "module": ".",
       "package": "config",
       "path": "internal/config/schema.go",
-      "lines": 780
+      "lines": 850
     },
     {
       "module": ".",
@@ -1631,7 +1763,7 @@
       "module": ".",
       "package": "credentials",
       "path": "internal/credentials/chatgpt.go",
-      "lines": 276
+      "lines": 281
     },
     {
       "module": ".",
@@ -1649,13 +1781,13 @@
       "module": ".",
       "package": "credentials",
       "path": "internal/credentials/copilot.go",
-      "lines": 119
+      "lines": 124
     },
     {
       "module": ".",
       "package": "credentials",
       "path": "internal/credentials/grok.go",
-      "lines": 364
+      "lines": 369
     },
     {
       "module": ".",
@@ -1710,6 +1842,54 @@
       "package": "diff",
       "path": "internal/diff/constants.go",
       "lines": 8
+    },
+    {
+      "module": ".",
+      "package": "doctor",
+      "path": "internal/doctor/binaries.go",
+      "lines": 126
+    },
+    {
+      "module": ".",
+      "package": "doctor",
+      "path": "internal/doctor/config.go",
+      "lines": 354
+    },
+    {
+      "module": ".",
+      "package": "doctor",
+      "path": "internal/doctor/configyaml.go",
+      "lines": 263
+    },
+    {
+      "module": ".",
+      "package": "doctor",
+      "path": "internal/doctor/credentials.go",
+      "lines": 214
+    },
+    {
+      "module": ".",
+      "package": "doctor",
+      "path": "internal/doctor/database.go",
+      "lines": 467
+    },
+    {
+      "module": ".",
+      "package": "doctor",
+      "path": "internal/doctor/doctor.go",
+      "lines": 272
+    },
+    {
+      "module": ".",
+      "package": "doctor",
+      "path": "internal/doctor/mcp.go",
+      "lines": 162
+    },
+    {
+      "module": ".",
+      "package": "doctor",
+      "path": "internal/doctor/stale.go",
+      "lines": 271
     },
     {
       "module": ".",
@@ -1799,7 +1979,7 @@
       "module": ".",
       "package": "extensions",
       "path": "internal/extensions/manager.go",
-      "lines": 280
+      "lines": 335
     },
     {
       "module": ".",
@@ -1841,7 +2021,7 @@
       "module": ".",
       "package": "filetrack",
       "path": "internal/filetrack/store.go",
-      "lines": 2034
+      "lines": 2090
     },
     {
       "module": ".",
@@ -1894,8 +2074,20 @@
     {
       "module": ".",
       "package": "guardian",
+      "path": "internal/guardian/classify.go",
+      "lines": 181
+    },
+    {
+      "module": ".",
+      "package": "guardian",
+      "path": "internal/guardian/classify_request.go",
+      "lines": 268
+    },
+    {
+      "module": ".",
+      "package": "guardian",
       "path": "internal/guardian/guardian.go",
-      "lines": 458
+      "lines": 461
     },
     {
       "module": ".",
@@ -2067,6 +2259,126 @@
     },
     {
       "module": ".",
+      "package": "live",
+      "path": "internal/live/capabilities.go",
+      "lines": 81
+    },
+    {
+      "module": ".",
+      "package": "live",
+      "path": "internal/live/chatgpt_call.go",
+      "lines": 197
+    },
+    {
+      "module": ".",
+      "package": "live",
+      "path": "internal/live/chatgpt_provider.go",
+      "lines": 196
+    },
+    {
+      "module": ".",
+      "package": "live",
+      "path": "internal/live/chatgpt_session.go",
+      "lines": 97
+    },
+    {
+      "module": ".",
+      "package": "live",
+      "path": "internal/live/chatgpt_sideband.go",
+      "lines": 456
+    },
+    {
+      "module": ".",
+      "package": "liveclassify",
+      "path": "internal/live/classify/classify.go",
+      "lines": 268
+    },
+    {
+      "module": ".",
+      "package": "liveclassify",
+      "path": "internal/live/classify/gate.go",
+      "lines": 37
+    },
+    {
+      "module": ".",
+      "package": "liveclassify",
+      "path": "internal/live/classify/store.go",
+      "lines": 356
+    },
+    {
+      "module": ".",
+      "package": "live",
+      "path": "internal/live/control.go",
+      "lines": 92
+    },
+    {
+      "module": ".",
+      "package": "live",
+      "path": "internal/live/controller.go",
+      "lines": 1046
+    },
+    {
+      "module": ".",
+      "package": "live",
+      "path": "internal/live/events.go",
+      "lines": 266
+    },
+    {
+      "module": ".",
+      "package": "live",
+      "path": "internal/live/gemini_diagnostics.go",
+      "lines": 313
+    },
+    {
+      "module": ".",
+      "package": "live",
+      "path": "internal/live/gemini_protocol.go",
+      "lines": 238
+    },
+    {
+      "module": ".",
+      "package": "live",
+      "path": "internal/live/gemini_provider.go",
+      "lines": 661
+    },
+    {
+      "module": ".",
+      "package": "live",
+      "path": "internal/live/openai_call.go",
+      "lines": 355
+    },
+    {
+      "module": ".",
+      "package": "live",
+      "path": "internal/live/openai_events.go",
+      "lines": 227
+    },
+    {
+      "module": ".",
+      "package": "live",
+      "path": "internal/live/openai_provider.go",
+      "lines": 409
+    },
+    {
+      "module": ".",
+      "package": "live",
+      "path": "internal/live/openai_sideband.go",
+      "lines": 437
+    },
+    {
+      "module": ".",
+      "package": "live",
+      "path": "internal/live/prompts.go",
+      "lines": 228
+    },
+    {
+      "module": ".",
+      "package": "live",
+      "path": "internal/live/provider.go",
+      "lines": 136
+    },
+    {
+      "module": ".",
       "package": "llm",
       "path": "internal/llm/agy_bin.go",
       "lines": 946
@@ -2117,7 +2429,7 @@
       "module": ".",
       "package": "llm",
       "path": "internal/llm/chatgpt.go",
-      "lines": 628
+      "lines": 645
     },
     {
       "module": ".",
@@ -2159,7 +2471,7 @@
       "module": ".",
       "package": "llm",
       "path": "internal/llm/compaction.go",
-      "lines": 1922
+      "lines": 1928
     },
     {
       "module": ".",
@@ -2249,7 +2561,7 @@
       "module": ".",
       "package": "llm",
       "path": "internal/llm/engine.go",
-      "lines": 3622
+      "lines": 3634
     },
     {
       "module": ".",
@@ -2303,13 +2615,19 @@
       "module": ".",
       "package": "llm",
       "path": "internal/llm/file_embed.go",
-      "lines": 170
+      "lines": 178
+    },
+    {
+      "module": ".",
+      "package": "llm",
+      "path": "internal/llm/file_mime.go",
+      "lines": 436
     },
     {
       "module": ".",
       "package": "llm",
       "path": "internal/llm/file_upload_policy.go",
-      "lines": 287
+      "lines": 279
     },
     {
       "module": ".",
@@ -2435,7 +2753,7 @@
       "module": ".",
       "package": "llm",
       "path": "internal/llm/models.go",
-      "lines": 1119
+      "lines": 1148
     },
     {
       "module": ".",
@@ -2465,7 +2783,7 @@
       "module": ".",
       "package": "llm",
       "path": "internal/llm/openai_compat.go",
-      "lines": 1139
+      "lines": 1141
     },
     {
       "module": ".",
@@ -2501,7 +2819,7 @@
       "module": ".",
       "package": "llm",
       "path": "internal/llm/platform_context.go",
-      "lines": 67
+      "lines": 86
     },
     {
       "module": ".",
@@ -2525,7 +2843,7 @@
       "module": ".",
       "package": "llm",
       "path": "internal/llm/responses_api.go",
-      "lines": 2055
+      "lines": 2137
     },
     {
       "module": ".",
@@ -2561,7 +2879,7 @@
       "module": ".",
       "package": "llm",
       "path": "internal/llm/retry.go",
-      "lines": 634
+      "lines": 640
     },
     {
       "module": ".",
@@ -2669,7 +2987,7 @@
       "module": ".",
       "package": "llm",
       "path": "internal/llm/types.go",
-      "lines": 1186
+      "lines": 1211
     },
     {
       "module": ".",
@@ -3125,7 +3443,7 @@
       "module": ".",
       "package": "providerhttp",
       "path": "internal/providerhttp/status_error.go",
-      "lines": 252
+      "lines": 261
     },
     {
       "module": ".",
@@ -3293,13 +3611,13 @@
       "module": ".",
       "package": "restart",
       "path": "internal/restart/transport.go",
-      "lines": 98
+      "lines": 100
     },
     {
       "module": ".",
       "package": "run",
       "path": "internal/run/child.go",
-      "lines": 93
+      "lines": 101
     },
     {
       "module": ".",
@@ -3317,7 +3635,7 @@
       "module": ".",
       "package": "run",
       "path": "internal/run/types.go",
-      "lines": 199
+      "lines": 208
     },
     {
       "module": ".",
@@ -3419,13 +3737,13 @@
       "module": ".",
       "package": "serve",
       "path": "internal/serve/telegram.go",
-      "lines": 2571
+      "lines": 2569
     },
     {
       "module": ".",
       "package": "serve",
       "path": "internal/serve/telegram_completion.go",
-      "lines": 190
+      "lines": 204
     },
     {
       "module": ".",
@@ -3467,7 +3785,7 @@
       "module": ".",
       "package": "session",
       "path": "internal/session/attention.go",
-      "lines": 863
+      "lines": 903
     },
     {
       "module": ".",
@@ -3485,7 +3803,7 @@
       "module": ".",
       "package": "session",
       "path": "internal/session/context_state.go",
-      "lines": 447
+      "lines": 450
     },
     {
       "module": ".",
@@ -3533,13 +3851,19 @@
       "module": ".",
       "package": "session",
       "path": "internal/session/logger.go",
-      "lines": 746
+      "lines": 769
+    },
+    {
+      "module": ".",
+      "package": "session",
+      "path": "internal/session/model_usage.go",
+      "lines": 187
     },
     {
       "module": ".",
       "package": "session",
       "path": "internal/session/noop.go",
-      "lines": 138
+      "lines": 146
     },
     {
       "module": ".",
@@ -3587,13 +3911,13 @@
       "module": ".",
       "package": "session",
       "path": "internal/session/sqlite.go",
-      "lines": 425
+      "lines": 426
     },
     {
       "module": ".",
       "package": "session",
       "path": "internal/session/sqlite_messages.go",
-      "lines": 2126
+      "lines": 2187
     },
     {
       "module": ".",
@@ -3611,13 +3935,13 @@
       "module": ".",
       "package": "session",
       "path": "internal/session/sqlite_schema.go",
-      "lines": 1704
+      "lines": 1723
     },
     {
       "module": ".",
       "package": "session",
       "path": "internal/session/sqlite_session_inputs.go",
-      "lines": 105
+      "lines": 106
     },
     {
       "module": ".",
@@ -3635,7 +3959,7 @@
       "module": ".",
       "package": "session",
       "path": "internal/session/store.go",
-      "lines": 1384
+      "lines": 1409
     },
     {
       "module": ".",
@@ -3647,7 +3971,7 @@
       "module": ".",
       "package": "session",
       "path": "internal/session/types.go",
-      "lines": 538
+      "lines": 554
     },
     {
       "module": ".",
@@ -3773,7 +4097,7 @@
       "module": ".",
       "package": "sqliteutil",
       "path": "internal/sqliteutil/path.go",
-      "lines": 34
+      "lines": 57
     },
     {
       "module": ".",
@@ -3875,7 +4199,7 @@
       "module": "internal/terminal/renderer",
       "package": "uv",
       "path": "internal/terminal/renderer/buffer.go",
-      "lines": 796
+      "lines": 800
     },
     {
       "module": "internal/terminal/renderer",
@@ -3893,7 +4217,7 @@
       "module": "internal/terminal/renderer",
       "package": "uv",
       "path": "internal/terminal/renderer/cell.go",
-      "lines": 460
+      "lines": 461
     },
     {
       "module": "internal/terminal/renderer",
@@ -3905,7 +4229,7 @@
       "module": "internal/terminal/renderer",
       "package": "uv",
       "path": "internal/terminal/renderer/decoder.go",
-      "lines": 2175
+      "lines": 2174
     },
     {
       "module": "internal/terminal/renderer",
@@ -3995,7 +4319,7 @@
       "module": "internal/terminal/renderer",
       "package": "uv",
       "path": "internal/terminal/renderer/styled.go",
-      "lines": 395
+      "lines": 559
     },
     {
       "module": "internal/terminal/renderer",
@@ -4025,7 +4349,7 @@
       "module": "internal/terminal/renderer",
       "package": "uv",
       "path": "internal/terminal/renderer/terminal_renderer.go",
-      "lines": 1647
+      "lines": 1665
     },
     {
       "module": "internal/terminal/renderer",
@@ -4073,7 +4397,7 @@
       "module": "internal/terminal/renderer",
       "package": "uv",
       "path": "internal/terminal/renderer/uv.go",
-      "lines": 405
+      "lines": 413
     },
     {
       "module": "internal/terminal/runtime",
@@ -4091,7 +4415,7 @@
       "module": "internal/terminal/runtime",
       "package": "tea",
       "path": "internal/terminal/runtime/cursed_renderer.go",
-      "lines": 1042
+      "lines": 1107
     },
     {
       "module": "internal/terminal/runtime",
@@ -4187,7 +4511,7 @@
       "module": "internal/terminal/runtime",
       "package": "tea",
       "path": "internal/terminal/runtime/tea.go",
-      "lines": 1401
+      "lines": 1412
     },
     {
       "module": "internal/terminal/runtime",
@@ -4343,7 +4667,7 @@
       "module": ".",
       "package": "tooldiscovery",
       "path": "internal/tooldiscovery/planner.go",
-      "lines": 1360
+      "lines": 1411
     },
     {
       "module": ".",
@@ -4355,7 +4679,7 @@
       "module": ".",
       "package": "tools",
       "path": "internal/tools/approval.go",
-      "lines": 2500
+      "lines": 2527
     },
     {
       "module": ".",
@@ -4367,7 +4691,7 @@
       "module": ".",
       "package": "tools",
       "path": "internal/tools/ask_user.go",
-      "lines": 338
+      "lines": 391
     },
     {
       "module": ".",
@@ -4457,7 +4781,7 @@
       "module": ".",
       "package": "tools",
       "path": "internal/tools/image_gen.go",
-      "lines": 449
+      "lines": 528
     },
     {
       "module": ".",
@@ -4470,6 +4794,24 @@
       "package": "tools",
       "path": "internal/tools/initiate_handover_context.go",
       "lines": 27
+    },
+    {
+      "module": ".",
+      "package": "tools",
+      "path": "internal/tools/live_new_session.go",
+      "lines": 118
+    },
+    {
+      "module": ".",
+      "package": "tools",
+      "path": "internal/tools/live_settings.go",
+      "lines": 63
+    },
+    {
+      "module": ".",
+      "package": "tools",
+      "path": "internal/tools/live_switch_session.go",
+      "lines": 166
     },
     {
       "module": ".",
@@ -4517,13 +4859,13 @@
       "module": ".",
       "package": "tools",
       "path": "internal/tools/queue_agent.go",
-      "lines": 763
+      "lines": 999
     },
     {
       "module": ".",
       "package": "tools",
       "path": "internal/tools/queue_agent_context.go",
-      "lines": 57
+      "lines": 77
     },
     {
       "module": ".",
@@ -4535,7 +4877,7 @@
       "module": ".",
       "package": "tools",
       "path": "internal/tools/registry.go",
-      "lines": 785
+      "lines": 793
     },
     {
       "module": ".",
@@ -4552,6 +4894,12 @@
     {
       "module": ".",
       "package": "tools",
+      "path": "internal/tools/session_directory.go",
+      "lines": 225
+    },
+    {
+      "module": ".",
+      "package": "tools",
       "path": "internal/tools/set_output.go",
       "lines": 116
     },
@@ -4559,7 +4907,7 @@
       "module": ".",
       "package": "tools",
       "path": "internal/tools/shell.go",
-      "lines": 850
+      "lines": 853
     },
     {
       "module": ".",
@@ -4571,7 +4919,7 @@
       "module": ".",
       "package": "tools",
       "path": "internal/tools/shell_track.go",
-      "lines": 1349
+      "lines": 1374
     },
     {
       "module": ".",
@@ -4595,13 +4943,13 @@
       "module": ".",
       "package": "tools",
       "path": "internal/tools/spawn_agent.go",
-      "lines": 588
+      "lines": 664
     },
     {
       "module": ".",
       "package": "tools",
       "path": "internal/tools/types.go",
-      "lines": 258
+      "lines": 263
     },
     {
       "module": ".",
@@ -4655,7 +5003,7 @@
       "module": ".",
       "package": "chat",
       "path": "internal/tui/chat/chat.go",
-      "lines": 2605
+      "lines": 2618
     },
     {
       "module": ".",
@@ -4667,7 +5015,7 @@
       "module": ".",
       "package": "chat",
       "path": "internal/tui/chat/commands_goal.go",
-      "lines": 559
+      "lines": 560
     },
     {
       "module": ".",
@@ -4691,7 +5039,7 @@
       "module": ".",
       "package": "chat",
       "path": "internal/tui/chat/commands_session.go",
-      "lines": 542
+      "lines": 543
     },
     {
       "module": ".",
@@ -4853,7 +5201,7 @@
       "module": ".",
       "package": "chat",
       "path": "internal/tui/chat/process_reload.go",
-      "lines": 208
+      "lines": 225
     },
     {
       "module": ".",
@@ -4889,7 +5237,7 @@
       "module": ".",
       "package": "chat",
       "path": "internal/tui/chat/render.go",
-      "lines": 2402
+      "lines": 2438
     },
     {
       "module": ".",
@@ -4943,13 +5291,13 @@
       "module": ".",
       "package": "chat",
       "path": "internal/tui/chat/skill_runs.go",
-      "lines": 448
+      "lines": 449
     },
     {
       "module": ".",
       "package": "chat",
       "path": "internal/tui/chat/stats.go",
-      "lines": 487
+      "lines": 802
     },
     {
       "module": ".",
@@ -4973,7 +5321,7 @@
       "module": ".",
       "package": "chat",
       "path": "internal/tui/chat/streaming.go",
-      "lines": 1739
+      "lines": 1821
     },
     {
       "module": ".",
@@ -5020,6 +5368,12 @@
     {
       "module": ".",
       "package": "chat",
+      "path": "internal/tui/chat/turn_lease.go",
+      "lines": 299
+    },
+    {
+      "module": ".",
+      "package": "chat",
       "path": "internal/tui/chat/update_compaction.go",
       "lines": 75
     },
@@ -5027,7 +5381,7 @@
       "module": ".",
       "package": "chat",
       "path": "internal/tui/chat/update_dispatch.go",
-      "lines": 356
+      "lines": 354
     },
     {
       "module": ".",
@@ -5057,13 +5411,13 @@
       "module": ".",
       "package": "chat",
       "path": "internal/tui/chat/update_stream_events.go",
-      "lines": 438
+      "lines": 439
     },
     {
       "module": ".",
       "package": "chat",
       "path": "internal/tui/chat/update_stream_terminal.go",
-      "lines": 370
+      "lines": 379
     },
     {
       "module": ".",
@@ -5148,6 +5502,12 @@
       "package": "tuiutil",
       "path": "internal/tuiutil/prompt_panel.go",
       "lines": 64
+    },
+    {
+      "module": ".",
+      "package": "typesafe",
+      "path": "internal/typesafe/client.go",
+      "lines": 717
     },
     {
       "module": ".",
@@ -5267,19 +5627,19 @@
       "module": ".",
       "package": "ui",
       "path": "internal/ui/stats.go",
-      "lines": 426
+      "lines": 511
     },
     {
       "module": ".",
       "package": "ui",
       "path": "internal/ui/stats_cost.go",
-      "lines": 52
+      "lines": 104
     },
     {
       "module": ".",
       "package": "ui",
       "path": "internal/ui/stream_adapter.go",
-      "lines": 468
+      "lines": 490
     },
     {
       "module": ".",
@@ -5297,7 +5657,7 @@
       "module": ".",
       "package": "streaming",
       "path": "internal/ui/streaming/partial.go",
-      "lines": 449
+      "lines": 477
     },
     {
       "module": ".",
@@ -5321,13 +5681,13 @@
       "module": ".",
       "package": "ui",
       "path": "internal/ui/subagent_helpers.go",
-      "lines": 345
+      "lines": 355
     },
     {
       "module": ".",
       "package": "ui",
       "path": "internal/ui/subagent_tracker.go",
-      "lines": 451
+      "lines": 624
     },
     {
       "module": ".",
@@ -5416,8 +5776,14 @@
     {
       "module": ".",
       "package": "usage",
+      "path": "internal/usage/modelsdev.go",
+      "lines": 286
+    },
+    {
+      "module": ".",
+      "package": "usage",
       "path": "internal/usage/pricing.go",
-      "lines": 414
+      "lines": 631
     },
     {
       "module": ".",
@@ -5429,7 +5795,7 @@
       "module": ".",
       "package": "usage",
       "path": "internal/usage/types.go",
-      "lines": 113
+      "lines": 118
     },
     {
       "module": ".",
@@ -5509,8 +5875,17 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/agents.go",
+      "name": "runAgentsList",
+      "complexity": 23,
+      "lines": 81,
+      "file_lines": 1033
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/agents.go",
       "name": "runAgentsShow",
-      "complexity": 25,
+      "complexity": 36,
       "lines": 114,
       "file_lines": 1033
     },
@@ -5519,36 +5894,36 @@
       "package": "cmd",
       "path": "cmd/ask.go",
       "name": "drainOutputToolFinalizationStream",
-      "complexity": 22,
+      "complexity": 23,
       "lines": 47,
-      "file_lines": 2531
+      "file_lines": 2533
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/ask.go",
       "name": "enableMCPServersWithFeedback",
-      "complexity": 24,
+      "complexity": 31,
       "lines": 116,
-      "file_lines": 2531
+      "file_lines": 2533
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/ask.go",
       "name": "runAsk",
-      "complexity": 73,
-      "lines": 476,
-      "file_lines": 2531
+      "complexity": 65,
+      "lines": 475,
+      "file_lines": 2533
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/ask.go",
       "name": "streamPlainText",
-      "complexity": 49,
+      "complexity": 67,
       "lines": 201,
-      "file_lines": 2531
+      "file_lines": 2533
     },
     {
       "module": ".",
@@ -5556,9 +5931,19 @@
       "path": "cmd/ask.go",
       "receiver": "askStreamModel",
       "name": "Update",
-      "complexity": 78,
+      "complexity": 76,
       "lines": 378,
-      "file_lines": 2531
+      "file_lines": 2533
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/ask.go",
+      "receiver": "askStreamModel",
+      "name": "View",
+      "complexity": 27,
+      "lines": 80,
+      "file_lines": 2533
     },
     {
       "module": ".",
@@ -5566,7 +5951,7 @@
       "path": "cmd/ask_execute.go",
       "receiver": "*askStreamingExecution",
       "name": "run",
-      "complexity": 37,
+      "complexity": 23,
       "lines": 149,
       "file_lines": 196
     },
@@ -5576,9 +5961,9 @@
       "path": "cmd/ask_execute_progressive.go",
       "receiver": "*askProgressiveExecution",
       "name": "run",
-      "complexity": 41,
-      "lines": 138,
-      "file_lines": 173
+      "complexity": 38,
+      "lines": 137,
+      "file_lines": 172
     },
     {
       "module": ".",
@@ -5586,7 +5971,7 @@
       "path": "cmd/ask_finalize.go",
       "receiver": "*askFinalization",
       "name": "runCompletionHook",
-      "complexity": 21,
+      "complexity": 26,
       "lines": 57,
       "file_lines": 153
     },
@@ -5595,7 +5980,7 @@
       "package": "cmd",
       "path": "cmd/ask_prepare.go",
       "name": "prepareAskConversation",
-      "complexity": 25,
+      "complexity": 34,
       "lines": 70,
       "file_lines": 115
     },
@@ -5605,7 +5990,7 @@
       "path": "cmd/ask_progressive.go",
       "receiver": "*askProgressiveBridge",
       "name": "HandleEvent",
-      "complexity": 49,
+      "complexity": 50,
       "lines": 144,
       "file_lines": 288
     },
@@ -5614,44 +5999,43 @@
       "package": "cmd",
       "path": "cmd/ask_resume.go",
       "name": "prepareAskResume",
-      "complexity": 25,
+      "complexity": 33,
       "lines": 88,
       "file_lines": 121
     },
     {
       "module": ".",
       "package": "cmd",
-      "path": "cmd/ask_stream_update.go",
-      "receiver": "askStreamModel",
-      "name": "handleStreamEventMessage",
-      "complexity": 24,
-      "lines": 58,
-      "file_lines": 197
+      "path": "cmd/benchmark.go",
+      "name": "resolveBenchmarkModels",
+      "complexity": 28,
+      "lines": 47,
+      "file_lines": 790
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/benchmark.go",
       "name": "resolveBenchmarkTargets",
-      "complexity": 67,
-      "lines": 167,
-      "file_lines": 749
+      "complexity": 23,
+      "lines": 69,
+      "file_lines": 790
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/benchmark.go",
       "name": "runBenchmark",
-      "complexity": 44,
+      "complexity": 46,
       "lines": 182,
-      "file_lines": 749
+      "file_lines": 790
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/bootstrap.go",
       "name": "registerModelLimits",
-      "complexity": 26,
+      "complexity": 44,
       "lines": 93,
       "file_lines": 302
     },
@@ -5660,52 +6044,61 @@
       "package": "cmd",
       "path": "cmd/chat.go",
       "name": "buildChatSessionRuntime",
-      "complexity": 88,
+      "complexity": 89,
       "lines": 512,
       "file_lines": 1621
     },
     {
       "module": ".",
       "package": "cmd",
-      "path": "cmd/chat.go",
-      "name": "resolveSessionProviderKey",
-      "complexity": 24,
-      "lines": 67,
-      "file_lines": 1621
-    },
-    {
-      "module": ".",
-      "package": "cmd",
-      "path": "cmd/chat.go",
-      "name": "runChatOnce",
-      "complexity": 28,
-      "lines": 227,
-      "file_lines": 1621
-    },
-    {
-      "module": ".",
-      "package": "cmd",
-      "path": "cmd/chat.go",
-      "name": "wireChatSessionUI",
-      "complexity": 28,
-      "lines": 168,
-      "file_lines": 1621
+      "path": "cmd/completion.go",
+      "name": "MCPRunArgCompletion",
+      "complexity": 22,
+      "lines": 60,
+      "file_lines": 444
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/config.go",
       "name": "configValueCompletions",
-      "complexity": 45,
-      "lines": 154,
-      "file_lines": 1439
+      "complexity": 65,
+      "lines": 146,
+      "file_lines": 1477
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/config.go",
+      "name": "extractRawValues",
+      "complexity": 23,
+      "lines": 40,
+      "file_lines": 1477
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/config.go",
+      "name": "printRenderValue",
+      "complexity": 25,
+      "lines": 57,
+      "file_lines": 1477
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/config.go",
+      "name": "setYAMLValue",
+      "complexity": 22,
+      "lines": 67,
+      "file_lines": 1477
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/edit.go",
       "name": "runEdit",
-      "complexity": 28,
+      "complexity": 33,
       "lines": 163,
       "file_lines": 590
     },
@@ -5714,7 +6107,7 @@
       "package": "cmd",
       "path": "cmd/edit.go",
       "name": "runStreamEdit",
-      "complexity": 45,
+      "complexity": 38,
       "lines": 282,
       "file_lines": 590
     },
@@ -5723,7 +6116,7 @@
       "package": "cmd",
       "path": "cmd/exec.go",
       "name": "runExec",
-      "complexity": 34,
+      "complexity": 33,
       "lines": 231,
       "file_lines": 527
     },
@@ -5733,7 +6126,7 @@
       "path": "cmd/exec.go",
       "receiver": "*execRunSink",
       "name": "Event",
-      "complexity": 39,
+      "complexity": 44,
       "lines": 115,
       "file_lines": 527
     },
@@ -5743,8 +6136,18 @@
       "path": "cmd/goal_runtime.go",
       "receiver": "*serveRuntime",
       "name": "runActiveGoalLoop",
-      "complexity": 71,
+      "complexity": 57,
       "lines": 260,
+      "file_lines": 645
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/goal_runtime.go",
+      "receiver": "*serveRuntime",
+      "name": "runActiveGoalLoop.func4",
+      "complexity": 21,
+      "lines": 37,
       "file_lines": 645
     },
     {
@@ -5752,7 +6155,7 @@
       "package": "cmd",
       "path": "cmd/image.go",
       "name": "runImage",
-      "complexity": 41,
+      "complexity": 60,
       "lines": 195,
       "file_lines": 448
     },
@@ -5761,7 +6164,7 @@
       "package": "main",
       "path": "cmd/imagetest/main.go",
       "name": "main",
-      "complexity": 24,
+      "complexity": 42,
       "lines": 153,
       "file_lines": 180
     },
@@ -5770,7 +6173,7 @@
       "package": "cmd",
       "path": "cmd/jobs.go",
       "name": "runJobsList",
-      "complexity": 31,
+      "complexity": 37,
       "lines": 122,
       "file_lines": 1007
     },
@@ -5779,8 +6182,17 @@
       "package": "cmd",
       "path": "cmd/loop.go",
       "name": "runLoop",
-      "complexity": 41,
+      "complexity": 51,
       "lines": 240,
+      "file_lines": 584
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/loop.go",
+      "name": "runLoopIteration",
+      "complexity": 33,
+      "lines": 75,
       "file_lines": 584
     },
     {
@@ -5788,7 +6200,7 @@
       "package": "cmd",
       "path": "cmd/mcp.go",
       "name": "mcpAddFromRegistry",
-      "complexity": 24,
+      "complexity": 31,
       "lines": 113,
       "file_lines": 883
     },
@@ -5797,34 +6209,43 @@
       "package": "cmd",
       "path": "cmd/mcp.go",
       "name": "mcpBrowse",
-      "complexity": 26,
+      "complexity": 46,
       "lines": 116,
       "file_lines": 883
     },
     {
       "module": ".",
       "package": "cmd",
-      "path": "cmd/memory_fragments.go",
-      "name": "runMemoryFragmentsSync",
-      "complexity": 21,
-      "lines": 121,
-      "file_lines": 659
+      "path": "cmd/mcp.go",
+      "name": "mcpRun",
+      "complexity": 25,
+      "lines": 96,
+      "file_lines": 883
     },
     {
       "module": ".",
       "package": "cmd",
-      "path": "cmd/memory_freshen.go",
-      "name": "runMemoryUpdateRecent",
-      "complexity": 35,
-      "lines": 156,
-      "file_lines": 694
+      "path": "cmd/memory_mine.go",
+      "name": "buildInsightTranscript",
+      "complexity": 22,
+      "lines": 86,
+      "file_lines": 1576
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/memory_mine.go",
+      "name": "runInsightExtractionPass",
+      "complexity": 31,
+      "lines": 113,
+      "file_lines": 1576
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/memory_mine.go",
       "name": "runMemoryMine",
-      "complexity": 59,
+      "complexity": 73,
       "lines": 270,
       "file_lines": 1576
     },
@@ -5833,25 +6254,25 @@
       "package": "cmd",
       "path": "cmd/memory_mine.go",
       "name": "walkMineCandidates",
-      "complexity": 23,
+      "complexity": 25,
       "lines": 73,
       "file_lines": 1576
     },
     {
       "module": ".",
       "package": "cmd",
-      "path": "cmd/memory_promote.go",
-      "name": "runMemoryPromoteFlow",
-      "complexity": 21,
-      "lines": 95,
-      "file_lines": 381
+      "path": "cmd/memory_search.go",
+      "name": "mergeSearchCandidates",
+      "complexity": 39,
+      "lines": 72,
+      "file_lines": 482
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/memory_search.go",
       "name": "searchMemory",
-      "complexity": 22,
+      "complexity": 23,
       "lines": 89,
       "file_lines": 482
     },
@@ -5860,7 +6281,7 @@
       "package": "cmd",
       "path": "cmd/memory_status.go",
       "name": "runMemoryStatus",
-      "complexity": 29,
+      "complexity": 34,
       "lines": 122,
       "file_lines": 156
     },
@@ -5868,18 +6289,18 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/models.go",
-      "name": "runModels",
-      "complexity": 82,
-      "lines": 266,
-      "file_lines": 407
+      "name": "printModelList",
+      "complexity": 25,
+      "lines": 48,
+      "file_lines": 448
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/process.go",
-      "name": "newProcessRestartCommand",
+      "name": "newProcessRestartCommand.func2",
       "complexity": 41,
-      "lines": 156,
+      "lines": 121,
       "file_lines": 219
     },
     {
@@ -5888,7 +6309,7 @@
       "path": "cmd/process_progress.go",
       "receiver": "*processRestartProgress",
       "name": "render",
-      "complexity": 25,
+      "complexity": 39,
       "lines": 77,
       "file_lines": 169
     },
@@ -5896,10 +6317,28 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/progressive.go",
+      "name": "runProgressivePass",
+      "complexity": 27,
+      "lines": 89,
+      "file_lines": 641
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/progressive.go",
       "name": "runProgressiveSession",
-      "complexity": 23,
+      "complexity": 28,
       "lines": 83,
       "file_lines": 641
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/providers.go",
+      "name": "buildProviderList",
+      "complexity": 25,
+      "lines": 81,
+      "file_lines": 500
     },
     {
       "module": ".",
@@ -5907,9 +6346,9 @@
       "path": "cmd/runner.go",
       "receiver": "*cmdRunner",
       "name": "prepare",
-      "complexity": 78,
+      "complexity": 88,
       "lines": 329,
-      "file_lines": 954
+      "file_lines": 999
     },
     {
       "module": ".",
@@ -5917,9 +6356,9 @@
       "path": "cmd/runner.go",
       "receiver": "*cmdRunner",
       "name": "resolveSettings",
-      "complexity": 22,
+      "complexity": 21,
       "lines": 91,
-      "file_lines": 954
+      "file_lines": 999
     },
     {
       "module": ".",
@@ -5927,18 +6366,27 @@
       "path": "cmd/runner.go",
       "receiver": "*cmdRunner",
       "name": "runProgressive",
-      "complexity": 34,
-      "lines": 122,
-      "file_lines": 954
+      "complexity": 27,
+      "lines": 127,
+      "file_lines": 999
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve.go",
+      "name": "runPlatformSupervisor",
+      "complexity": 24,
+      "lines": 54,
+      "file_lines": 1818
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve.go",
       "name": "runServeLegacy",
-      "complexity": 89,
-      "lines": 492,
-      "file_lines": 1737
+      "complexity": 88,
+      "lines": 497,
+      "file_lines": 1818
     },
     {
       "module": ".",
@@ -5946,9 +6394,19 @@
       "path": "cmd/serve_approval_handler.go",
       "receiver": "*serveServer",
       "name": "handleSessionApproval",
-      "complexity": 24,
+      "complexity": 23,
       "lines": 101,
       "file_lines": 118
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_approval_mode_handler.go",
+      "receiver": "*serveServer",
+      "name": "handleSessionApprovalMode",
+      "complexity": 25,
+      "lines": 98,
+      "file_lines": 157
     },
     {
       "module": ".",
@@ -5956,7 +6414,7 @@
       "path": "cmd/serve_ask_user_handler.go",
       "receiver": "*serveServer",
       "name": "handleSessionAskUser",
-      "complexity": 23,
+      "complexity": 22,
       "lines": 99,
       "file_lines": 117
     },
@@ -5965,10 +6423,29 @@
       "package": "cmd",
       "path": "cmd/serve_ask_user_state_handler.go",
       "receiver": "*serveServer",
-      "name": "handleSessionState",
-      "complexity": 81,
-      "lines": 268,
-      "file_lines": 348
+      "name": "addSessionStateRush",
+      "complexity": 23,
+      "lines": 24,
+      "file_lines": 414
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_ask_user_state_handler.go",
+      "receiver": "*serveServer",
+      "name": "loadSessionStatePersistedMetadata",
+      "complexity": 34,
+      "lines": 34,
+      "file_lines": 414
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_branch.go",
+      "name": "webBranchTreePointsForActiveRun",
+      "complexity": 21,
+      "lines": 57,
+      "file_lines": 536
     },
     {
       "module": ".",
@@ -5976,7 +6453,7 @@
       "path": "cmd/serve_branch.go",
       "receiver": "*serveServer",
       "name": "handleCreateSessionBranch",
-      "complexity": 32,
+      "complexity": 24,
       "lines": 136,
       "file_lines": 536
     },
@@ -5993,21 +6470,12 @@
     {
       "module": ".",
       "package": "cmd",
-      "path": "cmd/serve_browser_fixture.go",
-      "name": "init",
-      "complexity": 34,
-      "lines": 187,
-      "file_lines": 208
-    },
-    {
-      "module": ".",
-      "package": "cmd",
       "path": "cmd/serve_children.go",
       "receiver": "*serveServer",
       "name": "handleSessionChildren",
-      "complexity": 28,
-      "lines": 139,
-      "file_lines": 249
+      "complexity": 61,
+      "lines": 170,
+      "file_lines": 321
     },
     {
       "module": ".",
@@ -6015,7 +6483,7 @@
       "path": "cmd/serve_commit.go",
       "receiver": "*serveServer",
       "name": "commitBlocker",
-      "complexity": 36,
+      "complexity": 44,
       "lines": 72,
       "file_lines": 870
     },
@@ -6025,7 +6493,7 @@
       "path": "cmd/serve_commit.go",
       "receiver": "*serveServer",
       "name": "handleCreateCommitOperation",
-      "complexity": 40,
+      "complexity": 33,
       "lines": 152,
       "file_lines": 870
     },
@@ -6035,7 +6503,7 @@
       "path": "cmd/serve_commit.go",
       "receiver": "*serveServer",
       "name": "handleCreateCommitRun",
-      "complexity": 33,
+      "complexity": 25,
       "lines": 128,
       "file_lines": 870
     },
@@ -6045,9 +6513,9 @@
       "path": "cmd/serve_compaction.go",
       "receiver": "*serveRuntime",
       "name": "compactSession",
-      "complexity": 32,
-      "lines": 95,
-      "file_lines": 114
+      "complexity": 34,
+      "lines": 97,
+      "file_lines": 116
     },
     {
       "module": ".",
@@ -6055,7 +6523,7 @@
       "path": "cmd/serve_events.go",
       "receiver": "*serveServer",
       "name": "handleEventPoll",
-      "complexity": 26,
+      "complexity": 40,
       "lines": 110,
       "file_lines": 845
     },
@@ -6065,7 +6533,7 @@
       "path": "cmd/serve_events.go",
       "receiver": "*serveServer",
       "name": "handleEvents",
-      "complexity": 24,
+      "complexity": 28,
       "lines": 101,
       "file_lines": 845
     },
@@ -6073,18 +6541,9 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_file_changes.go",
-      "name": "fileChangeLanguage",
-      "complexity": 42,
-      "lines": 90,
-      "file_lines": 571
-    },
-    {
-      "module": ".",
-      "package": "cmd",
-      "path": "cmd/serve_file_changes.go",
       "receiver": "*serveServer",
       "name": "handleSessionFileChangeContent",
-      "complexity": 28,
+      "complexity": 36,
       "lines": 106,
       "file_lines": 571
     },
@@ -6094,8 +6553,18 @@
       "path": "cmd/serve_file_changes.go",
       "receiver": "*serveServer",
       "name": "handleSessionFileChanges",
-      "complexity": 28,
+      "complexity": 49,
       "lines": 99,
+      "file_lines": 571
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_file_changes.go",
+      "receiver": "*serveServer",
+      "name": "sessionGitRepo",
+      "complexity": 23,
+      "lines": 55,
       "file_lines": 571
     },
     {
@@ -6105,8 +6574,8 @@
       "receiver": "*serveServer",
       "name": "createRequestRuntime",
       "complexity": 27,
-      "lines": 78,
-      "file_lines": 3969
+      "lines": 76,
+      "file_lines": 4176
     },
     {
       "module": ".",
@@ -6114,9 +6583,9 @@
       "path": "cmd/serve_handlers.go",
       "receiver": "*serveServer",
       "name": "ensureFileServeable",
-      "complexity": 27,
+      "complexity": 30,
       "lines": 119,
-      "file_lines": 3969
+      "file_lines": 4176
     },
     {
       "module": ".",
@@ -6124,9 +6593,9 @@
       "path": "cmd/serve_handlers.go",
       "receiver": "*serveServer",
       "name": "ensureImageServeable",
-      "complexity": 29,
+      "complexity": 31,
       "lines": 134,
-      "file_lines": 3969
+      "file_lines": 4176
     },
     {
       "module": ".",
@@ -6134,9 +6603,9 @@
       "path": "cmd/serve_handlers.go",
       "receiver": "*serveServer",
       "name": "ensureRuntimeBaseDirForSession",
-      "complexity": 29,
+      "complexity": 32,
       "lines": 72,
-      "file_lines": 3969
+      "file_lines": 4176
     },
     {
       "module": ".",
@@ -6144,9 +6613,9 @@
       "path": "cmd/serve_handlers.go",
       "receiver": "*serveServer",
       "name": "handleModels",
-      "complexity": 36,
+      "complexity": 55,
       "lines": 142,
-      "file_lines": 3969
+      "file_lines": 4176
     },
     {
       "module": ".",
@@ -6156,7 +6625,7 @@
       "name": "handlePushSubscribe",
       "complexity": 21,
       "lines": 99,
-      "file_lines": 3969
+      "file_lines": 4176
     },
     {
       "module": ".",
@@ -6164,9 +6633,9 @@
       "path": "cmd/serve_handlers.go",
       "receiver": "*serveServer",
       "name": "handleSessionInterrupt",
-      "complexity": 46,
-      "lines": 149,
-      "file_lines": 3969
+      "complexity": 50,
+      "lines": 162,
+      "file_lines": 4176
     },
     {
       "module": ".",
@@ -6174,9 +6643,9 @@
       "path": "cmd/serve_handlers.go",
       "receiver": "*serveServer",
       "name": "handleSessionRuntimeGoal",
-      "complexity": 37,
+      "complexity": 47,
       "lines": 111,
-      "file_lines": 3969
+      "file_lines": 4176
     },
     {
       "module": ".",
@@ -6186,7 +6655,7 @@
       "name": "handleSessionSteeringCancel",
       "complexity": 24,
       "lines": 71,
-      "file_lines": 3969
+      "file_lines": 4176
     },
     {
       "module": ".",
@@ -6194,9 +6663,9 @@
       "path": "cmd/serve_handlers.go",
       "receiver": "*serveServer",
       "name": "handleSessionTitleRefine",
-      "complexity": 23,
+      "complexity": 28,
       "lines": 118,
-      "file_lines": 3969
+      "file_lines": 4176
     },
     {
       "module": ".",
@@ -6204,9 +6673,19 @@
       "path": "cmd/serve_handlers.go",
       "receiver": "*serveServer",
       "name": "handleSessions",
-      "complexity": 46,
+      "complexity": 58,
       "lines": 144,
-      "file_lines": 3969
+      "file_lines": 4176
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_handlers.go",
+      "receiver": "*serveServer",
+      "name": "handleSessionsSearch",
+      "complexity": 21,
+      "lines": 149,
+      "file_lines": 4176
     },
     {
       "module": ".",
@@ -6214,19 +6693,9 @@
       "path": "cmd/serve_handlers.go",
       "receiver": "*serveServer",
       "name": "handleUI",
-      "complexity": 21,
-      "lines": 69,
-      "file_lines": 3969
-    },
-    {
-      "module": ".",
-      "package": "cmd",
-      "path": "cmd/serve_handlers.go",
-      "receiver": "*serveServer",
-      "name": "runtimeForFreshAgentProviderRequest",
       "complexity": 22,
-      "lines": 62,
-      "file_lines": 3969
+      "lines": 69,
+      "file_lines": 4176
     },
     {
       "module": ".",
@@ -6234,19 +6703,9 @@
       "path": "cmd/serve_handlers.go",
       "receiver": "*serveServer",
       "name": "selectedWebSession",
-      "complexity": 23,
-      "lines": 73,
-      "file_lines": 3969
-    },
-    {
-      "module": ".",
-      "package": "cmd",
-      "path": "cmd/serve_handlers.go",
-      "receiver": "*serveServer",
-      "name": "sessionMessageEntries",
-      "complexity": 74,
-      "lines": 223,
-      "file_lines": 3969
+      "complexity": 30,
+      "lines": 74,
+      "file_lines": 4176
     },
     {
       "module": ".",
@@ -6254,9 +6713,9 @@
       "path": "cmd/serve_handlers.go",
       "receiver": "*serveServer",
       "name": "syncPersistedSessionRuntime",
-      "complexity": 65,
+      "complexity": 83,
       "lines": 190,
-      "file_lines": 3969
+      "file_lines": 4176
     },
     {
       "module": ".",
@@ -6264,18 +6723,8 @@
       "path": "cmd/serve_handlers_anthropic.go",
       "receiver": "*serveServer",
       "name": "handleAnthropicMessages",
-      "complexity": 35,
+      "complexity": 43,
       "lines": 182,
-      "file_lines": 410
-    },
-    {
-      "module": ".",
-      "package": "cmd",
-      "path": "cmd/serve_handlers_anthropic.go",
-      "receiver": "*serveServer",
-      "name": "streamAnthropicMessages",
-      "complexity": 22,
-      "lines": 215,
       "file_lines": 410
     },
     {
@@ -6284,19 +6733,18 @@
       "path": "cmd/serve_handlers_chat.go",
       "receiver": "*serveServer",
       "name": "handleChatCompletions",
-      "complexity": 36,
+      "complexity": 44,
       "lines": 167,
       "file_lines": 358
     },
     {
       "module": ".",
       "package": "cmd",
-      "path": "cmd/serve_handlers_chat.go",
-      "receiver": "*serveServer",
-      "name": "streamChatCompletions",
-      "complexity": 21,
-      "lines": 176,
-      "file_lines": 358
+      "path": "cmd/serve_handlers_responses.go",
+      "name": "prepareResponseClientMessageIDs",
+      "complexity": 22,
+      "lines": 61,
+      "file_lines": 1102
     },
     {
       "module": ".",
@@ -6304,19 +6752,29 @@
       "path": "cmd/serve_handlers_responses.go",
       "receiver": "*serveServer",
       "name": "handleResolvedResponses",
-      "complexity": 69,
+      "complexity": 90,
       "lines": 254,
-      "file_lines": 1019
+      "file_lines": 1102
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_handlers_responses.go",
       "receiver": "*serveServer",
-      "name": "handleResponses",
-      "complexity": 89,
-      "lines": 278,
-      "file_lines": 1019
+      "name": "resolveResponsesSession",
+      "complexity": 31,
+      "lines": 80,
+      "file_lines": 1102
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_handlers_responses.go",
+      "receiver": "*serveServer",
+      "name": "validateResponsesAdmissionRequest",
+      "complexity": 45,
+      "lines": 85,
+      "file_lines": 1102
     },
     {
       "module": ".",
@@ -6324,9 +6782,9 @@
       "path": "cmd/serve_handlers_status.go",
       "receiver": "*serveServer",
       "name": "handleSessionsStatus",
-      "complexity": 49,
-      "lines": 286,
-      "file_lines": 357
+      "complexity": 83,
+      "lines": 280,
+      "file_lines": 382
     },
     {
       "module": ".",
@@ -6334,7 +6792,7 @@
       "path": "cmd/serve_hub_attention.go",
       "receiver": "*hubServer",
       "name": "collectNodeAttentionOnce",
-      "complexity": 28,
+      "complexity": 35,
       "lines": 83,
       "file_lines": 619
     },
@@ -6344,7 +6802,7 @@
       "path": "cmd/serve_hub_attention.go",
       "receiver": "*hubServer",
       "name": "handleHubAttention",
-      "complexity": 30,
+      "complexity": 25,
       "lines": 119,
       "file_lines": 619
     },
@@ -6353,7 +6811,7 @@
       "package": "cmd",
       "path": "cmd/serve_hub_cmd.go",
       "name": "runServeHub",
-      "complexity": 42,
+      "complexity": 48,
       "lines": 185,
       "file_lines": 443
     },
@@ -6363,18 +6821,37 @@
       "path": "cmd/serve_hub_delegations.go",
       "receiver": "*hubServer",
       "name": "handleCreateDelegation",
-      "complexity": 30,
+      "complexity": 29,
       "lines": 160,
       "file_lines": 430
     },
     {
       "module": ".",
       "package": "cmd",
+      "path": "cmd/serve_hub_delegations.go",
+      "receiver": "*hubServer",
+      "name": "handleDelegations",
+      "complexity": 24,
+      "lines": 49,
+      "file_lines": 430
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_hub_nodes.go",
+      "name": "hubPolicyMismatchDiagnostics",
+      "complexity": 26,
+      "lines": 39,
+      "file_lines": 629
+    },
+    {
+      "module": ".",
+      "package": "cmd",
       "path": "cmd/serve_hub_passkey.go",
       "receiver": "*browserPasskeyHandler",
-      "name": "passkeyAuth",
-      "complexity": 26,
-      "lines": 67,
+      "name": "passkeyAuth.func1",
+      "complexity": 27,
+      "lines": 65,
       "file_lines": 846
     },
     {
@@ -6390,11 +6867,20 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_jobs_v2.go",
+      "name": "cloneConfigForServeJob",
+      "complexity": 21,
+      "lines": 36,
+      "file_lines": 3187
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_jobs_v2.go",
       "receiver": "*jobsV2LLMRunner",
-      "name": "Run",
+      "name": "Run.func1",
       "complexity": 39,
-      "lines": 132,
-      "file_lines": 3194
+      "lines": 70,
+      "file_lines": 3187
     },
     {
       "module": ".",
@@ -6402,25 +6888,85 @@
       "path": "cmd/serve_jobs_v2.go",
       "receiver": "*serveServer",
       "name": "handleJobV2ByID",
-      "complexity": 26,
+      "complexity": 24,
       "lines": 102,
-      "file_lines": 3194
+      "file_lines": 3187
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_jobs_v2.go",
+      "receiver": "*serveServer",
+      "name": "handleRunV2ByID",
+      "complexity": 21,
+      "lines": 89,
+      "file_lines": 3187
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_jobs_v2_migrations.go",
-      "name": "initJobsV2Schema",
-      "complexity": 30,
-      "lines": 98,
+      "name": "initJobsV2Schema.func1",
+      "complexity": 27,
+      "lines": 78,
       "file_lines": 369
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_live.go",
+      "receiver": "*serveLiveDelegator",
+      "name": "streamRun",
+      "complexity": 21,
+      "lines": 47,
+      "file_lines": 1980
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_live.go",
+      "receiver": "*serveServer",
+      "name": "handleLiveSessions",
+      "complexity": 22,
+      "lines": 115,
+      "file_lines": 1980
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_live_classify.go",
+      "receiver": "*serveServer",
+      "name": "liveClassifyState",
+      "complexity": 27,
+      "lines": 32,
+      "file_lines": 369
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_live_classify.go",
+      "receiver": "*serveServer",
+      "name": "liveClassifyStatus",
+      "complexity": 38,
+      "lines": 59,
+      "file_lines": 369
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_live_context.go",
+      "receiver": "*serveServer",
+      "name": "liveSessionOptions",
+      "complexity": 21,
+      "lines": 73,
+      "file_lines": 205
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_mcp.go",
       "name": "runServeMCP",
-      "complexity": 43,
+      "complexity": 37,
       "lines": 224,
       "file_lines": 463
     },
@@ -6428,9 +6974,18 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_mcp_handler.go",
+      "name": "buildServeMCPState",
+      "complexity": 28,
+      "lines": 102,
+      "file_lines": 737
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_mcp_handler.go",
       "receiver": "*serveRuntime",
       "name": "applyMCPSelectionLocked",
-      "complexity": 21,
+      "complexity": 25,
       "lines": 74,
       "file_lines": 737
     },
@@ -6450,7 +7005,7 @@
       "path": "cmd/serve_mcp_oauth.go",
       "receiver": "*serveServer",
       "name": "handleSessionMCPOAuth",
-      "complexity": 29,
+      "complexity": 31,
       "lines": 98,
       "file_lines": 236
     },
@@ -6460,9 +7015,19 @@
       "path": "cmd/serve_media.go",
       "receiver": "*serveMediaPublisher",
       "name": "PublishMedia",
-      "complexity": 25,
+      "complexity": 24,
       "lines": 82,
       "file_lines": 278
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_mentions.go",
+      "receiver": "*serveServer",
+      "name": "resolveMentionSearchRoot",
+      "complexity": 22,
+      "lines": 51,
+      "file_lines": 455
     },
     {
       "module": ".",
@@ -6470,18 +7035,28 @@
       "path": "cmd/serve_model_swap.go",
       "receiver": "*serveServer",
       "name": "executeResponseRunModelSwap",
-      "complexity": 30,
+      "complexity": 22,
       "lines": 182,
-      "file_lines": 816
+      "file_lines": 827
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_projects.go",
       "name": "listProjectDirectories",
-      "complexity": 21,
+      "complexity": 27,
       "lines": 79,
-      "file_lines": 1164
+      "file_lines": 1167
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_projects.go",
+      "receiver": "*serveServer",
+      "name": "handleCapabilities",
+      "complexity": 26,
+      "lines": 79,
+      "file_lines": 1167
     },
     {
       "module": ".",
@@ -6489,9 +7064,9 @@
       "path": "cmd/serve_projects.go",
       "receiver": "*serveServer",
       "name": "handleProjectByID",
-      "complexity": 23,
+      "complexity": 28,
       "lines": 73,
-      "file_lines": 1164
+      "file_lines": 1167
     },
     {
       "module": ".",
@@ -6499,9 +7074,9 @@
       "path": "cmd/serve_projects.go",
       "receiver": "*serveServer",
       "name": "handleProjects",
-      "complexity": 22,
+      "complexity": 28,
       "lines": 100,
-      "file_lines": 1164
+      "file_lines": 1167
     },
     {
       "module": ".",
@@ -6509,45 +7084,82 @@
       "path": "cmd/serve_projects.go",
       "receiver": "*serveServer",
       "name": "handleSessionProjectAssignment",
-      "complexity": 44,
+      "complexity": 47,
       "lines": 163,
-      "file_lines": 1164
+      "file_lines": 1167
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_projects.go",
+      "receiver": "*serveServer",
+      "name": "handleSidebar",
+      "complexity": 25,
+      "lines": 88,
+      "file_lines": 1167
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_protocol.go",
       "name": "jpegEXIFOrientation",
-      "complexity": 22,
+      "complexity": 21,
       "lines": 40,
-      "file_lines": 884
+      "file_lines": 900
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_protocol.go",
       "name": "parseDiffCommentPart",
-      "complexity": 27,
+      "complexity": 28,
       "lines": 64,
-      "file_lines": 884
+      "file_lines": 900
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_protocol.go",
       "name": "parseUserMessageContent",
-      "complexity": 40,
+      "complexity": 63,
       "lines": 136,
-      "file_lines": 884
+      "file_lines": 900
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_protocol_anthropic.go",
       "name": "parseAnthropicMessages",
-      "complexity": 31,
+      "complexity": 73,
       "lines": 139,
       "file_lines": 333
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_protocol_chat.go",
+      "name": "parseChatMessages",
+      "complexity": 21,
+      "lines": 70,
+      "file_lines": 305
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_protocol_responses.go",
+      "name": "parseRequestedFunctionTool",
+      "complexity": 30,
+      "lines": 63,
+      "file_lines": 374
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_protocol_responses.go",
+      "name": "parseResponsesInput",
+      "complexity": 21,
+      "lines": 81,
+      "file_lines": 374
     },
     {
       "module": ".",
@@ -6555,9 +7167,19 @@
       "path": "cmd/serve_response_followup.go",
       "receiver": "*serveServer",
       "name": "claimUIFollowUp",
-      "complexity": 32,
+      "complexity": 29,
       "lines": 81,
       "file_lines": 97
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_response_request.go",
+      "receiver": "*serveServer",
+      "name": "buildResponsesLLMRequest",
+      "complexity": 22,
+      "lines": 59,
+      "file_lines": 70
     },
     {
       "module": ".",
@@ -6565,9 +7187,9 @@
       "path": "cmd/serve_response_run_event_projection.go",
       "receiver": "*serveServer",
       "name": "appendResponseToolExecEnd",
-      "complexity": 29,
-      "lines": 91,
-      "file_lines": 333
+      "complexity": 32,
+      "lines": 92,
+      "file_lines": 347
     },
     {
       "module": ".",
@@ -6575,9 +7197,9 @@
       "path": "cmd/serve_response_run_events.go",
       "receiver": "*responseRun",
       "name": "appendEventLocked",
-      "complexity": 25,
+      "complexity": 41,
       "lines": 105,
-      "file_lines": 475
+      "file_lines": 477
     },
     {
       "module": ".",
@@ -6585,19 +7207,18 @@
       "path": "cmd/serve_response_run_execution.go",
       "receiver": "*serveServer",
       "name": "executeResponseRun",
-      "complexity": 39,
-      "lines": 177,
-      "file_lines": 189
+      "complexity": 41,
+      "lines": 176,
+      "file_lines": 224
     },
     {
       "module": ".",
       "package": "cmd",
-      "path": "cmd/serve_response_run_manager.go",
-      "receiver": "*serveServer",
-      "name": "sweepAndRenewResponseLifecycle",
-      "complexity": 24,
-      "lines": 97,
-      "file_lines": 996
+      "path": "cmd/serve_response_run_persistence.go",
+      "name": "responseRunOwnedOutputKeys",
+      "complexity": 21,
+      "lines": 36,
+      "file_lines": 370
     },
     {
       "module": ".",
@@ -6605,9 +7226,9 @@
       "path": "cmd/serve_response_run_recovery.go",
       "receiver": "*responseRun",
       "name": "recoveryPayloadLocked",
-      "complexity": 46,
-      "lines": 168,
-      "file_lines": 727
+      "complexity": 27,
+      "lines": 59,
+      "file_lines": 768
     },
     {
       "module": ".",
@@ -6615,9 +7236,19 @@
       "path": "cmd/serve_response_run_recovery_events.go",
       "receiver": "*responseRun",
       "name": "applyRecoveryResponseToolExecEnd",
-      "complexity": 22,
+      "complexity": 37,
       "lines": 50,
-      "file_lines": 355
+      "file_lines": 380
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_response_run_stream.go",
+      "receiver": "*serveServer",
+      "name": "configureResponseRunRevision",
+      "complexity": 21,
+      "lines": 36,
+      "file_lines": 960
     },
     {
       "module": ".",
@@ -6625,9 +7256,9 @@
       "path": "cmd/serve_response_run_stream.go",
       "receiver": "*serveServer",
       "name": "startResponseRun",
-      "complexity": 55,
-      "lines": 220,
-      "file_lines": 918
+      "complexity": 63,
+      "lines": 227,
+      "file_lines": 960
     },
     {
       "module": ".",
@@ -6635,19 +7266,9 @@
       "path": "cmd/serve_response_run_stream.go",
       "receiver": "*serveServer",
       "name": "streamResponseRunEvents",
-      "complexity": 24,
+      "complexity": 29,
       "lines": 135,
-      "file_lines": 918
-    },
-    {
-      "module": ".",
-      "package": "cmd",
-      "path": "cmd/serve_responses_durable.go",
-      "receiver": "*serveServer",
-      "name": "generateBranchPathNote",
-      "complexity": 22,
-      "lines": 53,
-      "file_lines": 487
+      "file_lines": 960
     },
     {
       "module": ".",
@@ -6655,9 +7276,9 @@
       "path": "cmd/serve_responses_durable.go",
       "receiver": "*serveServer",
       "name": "resolveDurableBranch",
-      "complexity": 40,
+      "complexity": 36,
       "lines": 126,
-      "file_lines": 487
+      "file_lines": 497
     },
     {
       "module": ".",
@@ -6665,7 +7286,7 @@
       "path": "cmd/serve_run_finalize.go",
       "receiver": "*serveRunPersistence",
       "name": "finalizeSuccess",
-      "complexity": 25,
+      "complexity": 27,
       "lines": 57,
       "file_lines": 107
     },
@@ -6675,9 +7296,9 @@
       "path": "cmd/serve_run_history.go",
       "receiver": "*serveRuntime",
       "name": "prepareRunHistory",
-      "complexity": 21,
-      "lines": 62,
-      "file_lines": 97
+      "complexity": 26,
+      "lines": 52,
+      "file_lines": 124
     },
     {
       "module": ".",
@@ -6685,9 +7306,9 @@
       "path": "cmd/serve_run_persistence.go",
       "receiver": "*serveRunPersistence",
       "name": "applyCompaction",
-      "complexity": 25,
-      "lines": 87,
-      "file_lines": 389
+      "complexity": 30,
+      "lines": 89,
+      "file_lines": 398
     },
     {
       "module": ".",
@@ -6695,19 +7316,19 @@
       "path": "cmd/serve_runtime.go",
       "receiver": "*serveRuntime",
       "name": "InterruptMessage",
-      "complexity": 40,
-      "lines": 150,
-      "file_lines": 2267
+      "complexity": 52,
+      "lines": 144,
+      "file_lines": 2373
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_runtime.go",
       "receiver": "*serveRuntime",
-      "name": "appendMessagesBatchDetailed",
-      "complexity": 24,
-      "lines": 68,
-      "file_lines": 2267
+      "name": "appendMessagesDetailed",
+      "complexity": 27,
+      "lines": 43,
+      "file_lines": 2373
     },
     {
       "module": ".",
@@ -6715,9 +7336,9 @@
       "path": "cmd/serve_runtime.go",
       "receiver": "*serveRuntime",
       "name": "ensurePersistedSession",
-      "complexity": 23,
+      "complexity": 24,
       "lines": 92,
-      "file_lines": 2267
+      "file_lines": 2373
     },
     {
       "module": ".",
@@ -6725,9 +7346,9 @@
       "path": "cmd/serve_runtime.go",
       "receiver": "*serveRuntime",
       "name": "persistSnapshotWithInitialBoundary",
-      "complexity": 24,
+      "complexity": 40,
       "lines": 78,
-      "file_lines": 2267
+      "file_lines": 2373
     },
     {
       "module": ".",
@@ -6735,9 +7356,9 @@
       "path": "cmd/serve_runtime.go",
       "receiver": "*serveRuntime",
       "name": "runOnce",
-      "complexity": 59,
-      "lines": 236,
-      "file_lines": 2267
+      "complexity": 52,
+      "lines": 237,
+      "file_lines": 2373
     },
     {
       "module": ".",
@@ -6745,9 +7366,9 @@
       "path": "cmd/serve_session.go",
       "receiver": "*serveSessionManager",
       "name": "BeginSwap",
-      "complexity": 29,
+      "complexity": 39,
       "lines": 117,
-      "file_lines": 759
+      "file_lines": 830
     },
     {
       "module": ".",
@@ -6755,9 +7376,29 @@
       "path": "cmd/serve_session.go",
       "receiver": "*serveSessionManager",
       "name": "ReplaceIdleWith",
-      "complexity": 26,
+      "complexity": 31,
       "lines": 111,
-      "file_lines": 759
+      "file_lines": 830
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_session.go",
+      "receiver": "*serveSessionManager",
+      "name": "UnresolvedInteractionSummaries",
+      "complexity": 21,
+      "lines": 41,
+      "file_lines": 830
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_session_directory.go",
+      "receiver": "*serveServer",
+      "name": "sessionDirectory",
+      "complexity": 21,
+      "lines": 109,
+      "file_lines": 221
     },
     {
       "module": ".",
@@ -6765,9 +7406,19 @@
       "path": "cmd/serve_session_inputs.go",
       "receiver": "*serveServer",
       "name": "prepareUIRuntime",
-      "complexity": 66,
-      "lines": 208,
-      "file_lines": 293
+      "complexity": 64,
+      "lines": 215,
+      "file_lines": 333
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_session_routes.go",
+      "receiver": "*serveServer",
+      "name": "handleSessionMessagesRoute",
+      "complexity": 25,
+      "lines": 88,
+      "file_lines": 476
     },
     {
       "module": ".",
@@ -6795,7 +7446,7 @@
       "path": "cmd/serve_share.go",
       "receiver": "*serveServer",
       "name": "handleCreateSessionShare",
-      "complexity": 23,
+      "complexity": 28,
       "lines": 112,
       "file_lines": 298
     },
@@ -6805,7 +7456,7 @@
       "path": "cmd/serve_shell.go",
       "receiver": "*serveServer",
       "name": "handleShellStream",
-      "complexity": 26,
+      "complexity": 25,
       "lines": 111,
       "file_lines": 1116
     },
@@ -6815,9 +7466,19 @@
       "path": "cmd/serve_shell.go",
       "receiver": "*serveShell",
       "name": "appendOutput",
-      "complexity": 26,
+      "complexity": 35,
       "lines": 81,
       "file_lines": 1116
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_shell_collaboration.go",
+      "receiver": "*serveShell",
+      "name": "reserveActivity",
+      "complexity": 22,
+      "lines": 58,
+      "file_lines": 704
     },
     {
       "module": ".",
@@ -6825,7 +7486,7 @@
       "path": "cmd/serve_shell_controller.go",
       "receiver": "*serveCollaborativeShellController",
       "name": "Execute",
-      "complexity": 36,
+      "complexity": 43,
       "lines": 170,
       "file_lines": 571
     },
@@ -6835,7 +7496,7 @@
       "path": "cmd/serve_shell_controller.go",
       "receiver": "*serveShell",
       "name": "finishCommandFailure",
-      "complexity": 44,
+      "complexity": 46,
       "lines": 104,
       "file_lines": 571
     },
@@ -6844,7 +7505,7 @@
       "package": "cmd",
       "path": "cmd/serve_shell_protocol.go",
       "name": "sanitizeServeShellText",
-      "complexity": 48,
+      "complexity": 53,
       "lines": 121,
       "file_lines": 412
     },
@@ -6854,7 +7515,7 @@
       "path": "cmd/serve_shell_protocol.go",
       "receiver": "*serveShellProtocolParser",
       "name": "Feed",
-      "complexity": 40,
+      "complexity": 46,
       "lines": 112,
       "file_lines": 412
     },
@@ -6862,30 +7523,39 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_side_question.go",
-      "receiver": "*serveRuntime",
-      "name": "startSideQuestion",
-      "complexity": 30,
-      "lines": 161,
-      "file_lines": 677
+      "receiver": "*serveServer",
+      "name": "handleSideQuestion",
+      "complexity": 40,
+      "lines": 138,
+      "file_lines": 678
     },
     {
       "module": ".",
       "package": "cmd",
-      "path": "cmd/serve_side_question.go",
+      "path": "cmd/serve_skills.go",
       "receiver": "*serveServer",
-      "name": "handleSideQuestion",
-      "complexity": 38,
-      "lines": 138,
-      "file_lines": 677
+      "name": "skillsForServeSession",
+      "complexity": 22,
+      "lines": 60,
+      "file_lines": 1141
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/serve_startup.go",
       "name": "resolveServeStartup",
-      "complexity": 27,
+      "complexity": 26,
       "lines": 66,
       "file_lines": 129
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/serve_stats_endpoint.go",
+      "name": "appendStatsContextSections",
+      "complexity": 37,
+      "lines": 74,
+      "file_lines": 476
     },
     {
       "module": ".",
@@ -6893,7 +7563,7 @@
       "path": "cmd/serve_steering_rush.go",
       "receiver": "*serveServer",
       "name": "handleSteeringRush",
-      "complexity": 38,
+      "complexity": 34,
       "lines": 133,
       "file_lines": 361
     },
@@ -6902,7 +7572,7 @@
       "package": "cmd",
       "path": "cmd/serve_steering_wire.go",
       "name": "normalizeSteeringObject",
-      "complexity": 22,
+      "complexity": 51,
       "lines": 59,
       "file_lines": 132
     },
@@ -6912,7 +7582,7 @@
       "path": "cmd/serve_transcribe.go",
       "receiver": "*serveServer",
       "name": "handleTranscribe",
-      "complexity": 24,
+      "complexity": 34,
       "lines": 93,
       "file_lines": 165
     },
@@ -6922,7 +7592,7 @@
       "path": "cmd/serve_undo_redo.go",
       "receiver": "*serveServer",
       "name": "handleSessionUndoRedo",
-      "complexity": 22,
+      "complexity": 23,
       "lines": 83,
       "file_lines": 144
     },
@@ -6931,7 +7601,7 @@
       "package": "cmd",
       "path": "cmd/serve_workspace_resolver.go",
       "name": "persistedProjectWorkspaceBinding",
-      "complexity": 21,
+      "complexity": 22,
       "lines": 50,
       "file_lines": 329
     },
@@ -6941,7 +7611,7 @@
       "path": "cmd/serve_workspace_resolver.go",
       "receiver": "*serveServer",
       "name": "bindResolvedWorkspace",
-      "complexity": 23,
+      "complexity": 26,
       "lines": 71,
       "file_lines": 329
     },
@@ -6951,7 +7621,7 @@
       "path": "cmd/serve_workspace_resolver.go",
       "receiver": "*serveServer",
       "name": "resolveWorkspace",
-      "complexity": 60,
+      "complexity": 53,
       "lines": 134,
       "file_lines": 329
     },
@@ -6961,7 +7631,7 @@
       "path": "cmd/serve_worktrees.go",
       "receiver": "*serveServer",
       "name": "activeRootRunsForWorktreeMerge",
-      "complexity": 23,
+      "complexity": 31,
       "lines": 64,
       "file_lines": 944
     },
@@ -6980,16 +7650,16 @@
       "package": "cmd",
       "path": "cmd/service.go",
       "name": "installUserService",
-      "complexity": 89,
-      "lines": 237,
-      "file_lines": 522
+      "complexity": 31,
+      "lines": 96,
+      "file_lines": 578
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/service_args.go",
       "name": "parseServiceLaunch",
-      "complexity": 48,
+      "complexity": 44,
       "lines": 157,
       "file_lines": 177
     },
@@ -6997,26 +7667,26 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/service_manage.go",
-      "name": "manageUserService",
-      "complexity": 53,
-      "lines": 157,
-      "file_lines": 300
+      "name": "runUserService",
+      "complexity": 38,
+      "lines": 74,
+      "file_lines": 327
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/service_manage.go",
-      "name": "runUserService",
-      "complexity": 33,
-      "lines": 74,
-      "file_lines": 300
+      "name": "showUserService",
+      "complexity": 23,
+      "lines": 52,
+      "file_lines": 327
     },
     {
       "module": ".",
       "package": "cmd",
       "path": "cmd/session.go",
       "name": "ResolveSettingsInDir",
-      "complexity": 28,
+      "complexity": 36,
       "lines": 120,
       "file_lines": 1048
     },
@@ -7025,8 +7695,18 @@
       "package": "cmd",
       "path": "cmd/session.go",
       "name": "resolveSessionPromptTools",
-      "complexity": 25,
+      "complexity": 46,
       "lines": 87,
+      "file_lines": 1048
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/session.go",
+      "receiver": "*SessionSettings",
+      "name": "SetupToolManager",
+      "complexity": 21,
+      "lines": 67,
       "file_lines": 1048
     },
     {
@@ -7034,7 +7714,7 @@
       "package": "cmd",
       "path": "cmd/sessions_autotitle.go",
       "name": "runSessionsAutotitle",
-      "complexity": 34,
+      "complexity": 46,
       "lines": 142,
       "file_lines": 236
     },
@@ -7043,7 +7723,7 @@
       "package": "cmd",
       "path": "cmd/sessions_share.go",
       "name": "runSessionsShare",
-      "complexity": 50,
+      "complexity": 52,
       "lines": 158,
       "file_lines": 209
     },
@@ -7051,26 +7731,63 @@
       "module": ".",
       "package": "cmd",
       "path": "cmd/skills.go",
+      "name": "runSkillsBrowse",
+      "complexity": 31,
+      "lines": 99,
+      "file_lines": 1122
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/skills.go",
+      "name": "runSkillsList",
+      "complexity": 25,
+      "lines": 75,
+      "file_lines": 1122
+    },
+    {
+      "module": ".",
+      "package": "cmd",
+      "path": "cmd/skills.go",
       "name": "runSkillsUpdate",
-      "complexity": 30,
+      "complexity": 40,
       "lines": 192,
       "file_lines": 1122
     },
     {
       "module": ".",
       "package": "cmd",
+      "path": "cmd/spawn_runner.go",
+      "receiver": "*SpawnAgentRunner",
+      "name": "runChildInternal",
+      "complexity": 24,
+      "lines": 115,
+      "file_lines": 794
+    },
+    {
+      "module": ".",
+      "package": "cmd",
       "path": "cmd/usage.go",
       "name": "runUsage",
-      "complexity": 27,
+      "complexity": 25,
       "lines": 112,
       "file_lines": 776
     },
     {
       "module": ".",
       "package": "cmd",
+      "path": "cmd/usage_agy_bin.go",
+      "name": "normalizeAgyBinUsage",
+      "complexity": 23,
+      "lines": 64,
+      "file_lines": 358
+    },
+    {
+      "module": ".",
+      "package": "cmd",
       "path": "cmd/video.go",
       "name": "runVideo",
-      "complexity": 38,
+      "complexity": 39,
       "lines": 180,
       "file_lines": 415
     },
@@ -7080,7 +7797,7 @@
       "path": "internal/agents/agent.go",
       "receiver": "*Agent",
       "name": "Validate",
-      "complexity": 23,
+      "complexity": 24,
       "lines": 68,
       "file_lines": 638
     },
@@ -7088,18 +7805,28 @@
       "module": ".",
       "package": "agents",
       "path": "internal/agents/template.go",
-      "name": "ExpandTemplate",
-      "complexity": 39,
-      "lines": 105,
-      "file_lines": 638
+      "name": "loadProjectInstructionSet",
+      "complexity": 24,
+      "lines": 65,
+      "file_lines": 679
     },
     {
       "module": ".",
       "package": "agyproxy",
       "path": "internal/agyproxy/proxy.go",
       "name": "readAgyArtifact",
-      "complexity": 32,
+      "complexity": 24,
       "lines": 55,
+      "file_lines": 767
+    },
+    {
+      "module": ".",
+      "package": "agyproxy",
+      "path": "internal/agyproxy/proxy.go",
+      "receiver": "*Server",
+      "name": "forward",
+      "complexity": 24,
+      "lines": 89,
       "file_lines": 767
     },
     {
@@ -7116,8 +7843,17 @@
       "module": ".",
       "package": "benchmark",
       "path": "internal/benchmark/aggregate.go",
+      "name": "AggregateRuns",
+      "complexity": 37,
+      "lines": 88,
+      "file_lines": 333
+    },
+    {
+      "module": ".",
+      "package": "benchmark",
+      "path": "internal/benchmark/aggregate.go",
       "name": "ComputeFits",
-      "complexity": 24,
+      "complexity": 27,
       "lines": 119,
       "file_lines": 333
     },
@@ -7125,20 +7861,20 @@
       "module": ".",
       "package": "benchmark",
       "path": "internal/benchmark/measure.go",
-      "name": "finalizeEligibility",
-      "complexity": 22,
-      "lines": 34,
+      "receiver": "Runner",
+      "name": "measure",
+      "complexity": 46,
+      "lines": 174,
       "file_lines": 378
     },
     {
       "module": ".",
       "package": "benchmark",
-      "path": "internal/benchmark/measure.go",
-      "receiver": "Runner",
-      "name": "measure",
-      "complexity": 35,
-      "lines": 174,
-      "file_lines": 378
+      "path": "internal/benchmark/report.go",
+      "name": "writeAlignedRows",
+      "complexity": 23,
+      "lines": 34,
+      "file_lines": 723
     },
     {
       "module": ".",
@@ -7146,7 +7882,7 @@
       "path": "internal/benchmark/runner.go",
       "receiver": "Runner",
       "name": "runTarget",
-      "complexity": 34,
+      "complexity": 32,
       "lines": 167,
       "file_lines": 189
     },
@@ -7155,36 +7891,18 @@
       "package": "cliwire",
       "path": "internal/cliwire/connect.go",
       "name": "decodeConnectRequestMessages",
-      "complexity": 24,
+      "complexity": 27,
       "lines": 91,
       "file_lines": 118
-    },
-    {
-      "module": ".",
-      "package": "cliwire",
-      "path": "internal/cliwire/proxy.go",
-      "name": "StartWithAdditionalCA",
-      "complexity": 22,
-      "lines": 99,
-      "file_lines": 517
-    },
-    {
-      "module": ".",
-      "package": "config",
-      "path": "internal/config/config.go",
-      "name": "DescribeCredentialSource",
-      "complexity": 22,
-      "lines": 54,
-      "file_lines": 2772
     },
     {
       "module": ".",
       "package": "config",
       "path": "internal/config/config.go",
       "name": "resolveProviderCredentials",
-      "complexity": 40,
+      "complexity": 43,
       "lines": 125,
-      "file_lines": 2772
+      "file_lines": 3072
     },
     {
       "module": ".",
@@ -7194,14 +7912,23 @@
       "name": "ValidateLifecycle",
       "complexity": 27,
       "lines": 72,
-      "file_lines": 2772
+      "file_lines": 3072
+    },
+    {
+      "module": ".",
+      "package": "contain",
+      "path": "internal/contain/list.go",
+      "name": "reconcileDefinitions",
+      "complexity": 21,
+      "lines": 54,
+      "file_lines": 200
     },
     {
       "module": ".",
       "package": "contain",
       "path": "internal/contain/template.go",
       "name": "CreateWorkspace",
-      "complexity": 31,
+      "complexity": 34,
       "lines": 107,
       "file_lines": 462
     },
@@ -7209,35 +7936,53 @@
       "module": ".",
       "package": "contain",
       "path": "internal/contain/template_descriptor.go",
+      "name": "ResolveTemplateValues",
+      "complexity": 21,
+      "lines": 51,
+      "file_lines": 264
+    },
+    {
+      "module": ".",
+      "package": "contain",
+      "path": "internal/contain/template_descriptor.go",
       "name": "askTemplatePrompt",
-      "complexity": 26,
+      "complexity": 35,
       "lines": 81,
       "file_lines": 264
     },
     {
       "module": ".",
-      "package": "credentials",
-      "path": "internal/credentials/chatgpt.go",
-      "name": "RefreshChatGPTCredentials",
-      "complexity": 28,
-      "lines": 90,
-      "file_lines": 276
+      "package": "debuglog",
+      "path": "internal/debuglog/exporter.go",
+      "name": "formatMessageContent",
+      "complexity": 34,
+      "lines": 37,
+      "file_lines": 393
     },
     {
       "module": ".",
-      "package": "credentials",
-      "path": "internal/credentials/grok.go",
-      "name": "RefreshGrokCredentialsWithClient",
-      "complexity": 41,
-      "lines": 137,
-      "file_lines": 364
+      "package": "debuglog",
+      "path": "internal/debuglog/exporter.go",
+      "name": "redactEntry",
+      "complexity": 25,
+      "lines": 30,
+      "file_lines": 393
+    },
+    {
+      "module": ".",
+      "package": "debuglog",
+      "path": "internal/debuglog/formatter.go",
+      "name": "FormatTailEntry",
+      "complexity": 32,
+      "lines": 99,
+      "file_lines": 668
     },
     {
       "module": ".",
       "package": "debuglog",
       "path": "internal/debuglog/formatter.go",
       "name": "formatEventEntry",
-      "complexity": 22,
+      "complexity": 25,
       "lines": 110,
       "file_lines": 668
     },
@@ -7246,27 +7991,65 @@
       "package": "debuglog",
       "path": "internal/debuglog/formatter.go",
       "name": "formatRequestEntry",
-      "complexity": 21,
+      "complexity": 31,
       "lines": 86,
       "file_lines": 668
     },
     {
       "module": ".",
-      "package": "diagnostics",
-      "path": "internal/diagnostics/diagnostics.go",
-      "name": "extToLang",
+      "package": "debuglog",
+      "path": "internal/debuglog/parser.go",
+      "name": "ParseSession",
+      "complexity": 33,
+      "lines": 70,
+      "file_lines": 325
+    },
+    {
+      "module": ".",
+      "package": "debuglog",
+      "path": "internal/debuglog/parser.go",
+      "name": "parseSessionSummary",
+      "complexity": 21,
+      "lines": 66,
+      "file_lines": 325
+    },
+    {
+      "module": ".",
+      "package": "debuglog",
+      "path": "internal/debuglog/search.go",
+      "name": "Search",
       "complexity": 23,
-      "lines": 50,
-      "file_lines": 199
+      "lines": 55,
+      "file_lines": 481
+    },
+    {
+      "module": ".",
+      "package": "doctor",
+      "path": "internal/doctor/config.go",
+      "receiver": "*ConfigCheck",
+      "name": "providerFindings",
+      "complexity": 22,
+      "lines": 81,
+      "file_lines": 354
     },
     {
       "module": ".",
       "package": "edit",
       "path": "internal/edit/executor.go",
       "receiver": "*StreamEditExecutor",
-      "name": "executeOnce",
-      "complexity": 64,
-      "lines": 370,
+      "name": "executeOnce.func4",
+      "complexity": 29,
+      "lines": 121,
+      "file_lines": 759
+    },
+    {
+      "module": ".",
+      "package": "edit",
+      "path": "internal/edit/executor.go",
+      "receiver": "*StreamEditExecutor",
+      "name": "executeOnce.func7",
+      "complexity": 23,
+      "lines": 56,
       "file_lines": 759
     },
     {
@@ -7275,36 +8058,55 @@
       "path": "internal/edit/inline_parser.go",
       "receiver": "*InlineEditParser",
       "name": "process",
-      "complexity": 30,
+      "complexity": 45,
       "lines": 139,
       "file_lines": 290
+    },
+    {
+      "module": ".",
+      "package": "edit",
+      "path": "internal/edit/match.go",
+      "name": "findBlankFilteredMatch",
+      "complexity": 24,
+      "lines": 74,
+      "file_lines": 492
+    },
+    {
+      "module": ".",
+      "package": "edit",
+      "path": "internal/edit/match.go",
+      "name": "findFuzzyMatch",
+      "complexity": 24,
+      "lines": 52,
+      "file_lines": 492
+    },
+    {
+      "module": ".",
+      "package": "edit",
+      "path": "internal/edit/parser.go",
+      "receiver": "*StreamParser",
+      "name": "processInDiff",
+      "complexity": 22,
+      "lines": 84,
+      "file_lines": 572
     },
     {
       "module": ".",
       "package": "embedding",
       "path": "internal/embedding/provider.go",
       "name": "NewEmbeddingProvider",
-      "complexity": 34,
+      "complexity": 37,
       "lines": 122,
       "file_lines": 231
     },
     {
       "module": ".",
-      "package": "extensions",
-      "path": "internal/extensions/manager.go",
-      "name": "scan",
-      "complexity": 53,
-      "lines": 133,
-      "file_lines": 280
-    },
-    {
-      "module": ".",
       "package": "filetrack",
       "path": "internal/filetrack/store.go",
-      "name": "initSchema",
-      "complexity": 40,
-      "lines": 116,
-      "file_lines": 2034
+      "name": "initSchema.func1",
+      "complexity": 24,
+      "lines": 72,
+      "file_lines": 2090
     },
     {
       "module": ".",
@@ -7314,17 +8116,17 @@
       "name": "fileDiffContentFromSpan",
       "complexity": 21,
       "lines": 49,
-      "file_lines": 2034
+      "file_lines": 2090
     },
     {
       "module": ".",
       "package": "filetrack",
       "path": "internal/filetrack/store.go",
       "receiver": "*Store",
-      "name": "recordChange",
-      "complexity": 67,
-      "lines": 243,
-      "file_lines": 2034
+      "name": "listChangesFromSpans",
+      "complexity": 30,
+      "lines": 76,
+      "file_lines": 2090
     },
     {
       "module": ".",
@@ -7342,7 +8144,7 @@
       "path": "internal/gitcommit/publish.go",
       "receiver": "*Repository",
       "name": "publishPlan",
-      "complexity": 25,
+      "complexity": 31,
       "lines": 85,
       "file_lines": 325
     },
@@ -7351,7 +8153,7 @@
       "package": "gitcommit",
       "path": "internal/gitcommit/status.go",
       "name": "parseStatus",
-      "complexity": 22,
+      "complexity": 25,
       "lines": 88,
       "file_lines": 140
     },
@@ -7361,16 +8163,35 @@
       "path": "internal/gitdiff/gitdiff.go",
       "receiver": "*Repo",
       "name": "List",
-      "complexity": 27,
+      "complexity": 32,
       "lines": 94,
       "file_lines": 530
+    },
+    {
+      "module": ".",
+      "package": "guardian",
+      "path": "internal/guardian/classify_request.go",
+      "name": "buildClassifyRequest",
+      "complexity": 27,
+      "lines": 81,
+      "file_lines": 268
+    },
+    {
+      "module": ".",
+      "package": "hub",
+      "path": "internal/hub/attention_store.go",
+      "receiver": "*AttentionProjectionStore",
+      "name": "List",
+      "complexity": 22,
+      "lines": 65,
+      "file_lines": 340
     },
     {
       "module": ".",
       "package": "image",
       "path": "internal/image/gemini.go",
       "name": "writeGeminiRequestJSON",
-      "complexity": 21,
+      "complexity": 22,
       "lines": 70,
       "file_lines": 375
     },
@@ -7379,18 +8200,57 @@
       "package": "image",
       "path": "internal/image/provider.go",
       "name": "NewImageProvider",
-      "complexity": 30,
+      "complexity": 29,
       "lines": 105,
       "file_lines": 245
+    },
+    {
+      "module": ".",
+      "package": "liveclassify",
+      "path": "internal/live/classify/store.go",
+      "receiver": "*DecisionStore",
+      "name": "Close",
+      "complexity": 27,
+      "lines": 48,
+      "file_lines": 356
+    },
+    {
+      "module": ".",
+      "package": "live",
+      "path": "internal/live/gemini_diagnostics.go",
+      "name": "geminiIncomingKinds",
+      "complexity": 23,
+      "lines": 49,
+      "file_lines": 313
+    },
+    {
+      "module": ".",
+      "package": "live",
+      "path": "internal/live/gemini_diagnostics.go",
+      "receiver": "*geminiDiagnostics",
+      "name": "incomingMessage",
+      "complexity": 29,
+      "lines": 59,
+      "file_lines": 313
+    },
+    {
+      "module": ".",
+      "package": "live",
+      "path": "internal/live/gemini_provider.go",
+      "receiver": "*geminiSession",
+      "name": "handleServerContent",
+      "complexity": 24,
+      "lines": 59,
+      "file_lines": 661
     },
     {
       "module": ".",
       "package": "llm",
       "path": "internal/llm/agy_bin.go",
       "receiver": "*AgyBinProvider",
-      "name": "Stream",
-      "complexity": 25,
-      "lines": 92,
+      "name": "Stream.func1",
+      "complexity": 27,
+      "lines": 90,
       "file_lines": 946
     },
     {
@@ -7399,7 +8259,7 @@
       "path": "internal/llm/agy_bin.go",
       "receiver": "*AgyBinProvider",
       "name": "runCommand",
-      "complexity": 27,
+      "complexity": 22,
       "lines": 122,
       "file_lines": 946
     },
@@ -7407,10 +8267,27 @@
       "module": ".",
       "package": "llm",
       "path": "internal/llm/anthropic.go",
-      "receiver": "*AnthropicProvider",
-      "name": "streamStandardForModel",
-      "complexity": 43,
-      "lines": 146,
+      "name": "buildAnthropicBetaMessages",
+      "complexity": 23,
+      "lines": 53,
+      "file_lines": 1230
+    },
+    {
+      "module": ".",
+      "package": "llm",
+      "path": "internal/llm/anthropic.go",
+      "name": "buildAnthropicMessages",
+      "complexity": 23,
+      "lines": 52,
+      "file_lines": 1230
+    },
+    {
+      "module": ".",
+      "package": "llm",
+      "path": "internal/llm/anthropic.go",
+      "name": "buildAnthropicParts",
+      "complexity": 26,
+      "lines": 30,
       "file_lines": 1230
     },
     {
@@ -7418,10 +8295,29 @@
       "package": "llm",
       "path": "internal/llm/anthropic.go",
       "receiver": "*AnthropicProvider",
-      "name": "streamWithSearch",
-      "complexity": 48,
-      "lines": 191,
+      "name": "streamStandardForModel.func1",
+      "complexity": 61,
+      "lines": 141,
       "file_lines": 1230
+    },
+    {
+      "module": ".",
+      "package": "llm",
+      "path": "internal/llm/anthropic.go",
+      "receiver": "*AnthropicProvider",
+      "name": "streamWithSearch.func1",
+      "complexity": 73,
+      "lines": 189,
+      "file_lines": 1230
+    },
+    {
+      "module": ".",
+      "package": "llm",
+      "path": "internal/llm/chatgpt.go",
+      "name": "parseChatGPTRateLimitError",
+      "complexity": 21,
+      "lines": 68,
+      "file_lines": 645
     },
     {
       "module": ".",
@@ -7429,16 +8325,16 @@
       "path": "internal/llm/chatgpt.go",
       "receiver": "*ChatGPTProvider",
       "name": "Stream",
-      "complexity": 23,
+      "complexity": 25,
       "lines": 111,
-      "file_lines": 628
+      "file_lines": 645
     },
     {
       "module": ".",
       "package": "llm",
       "path": "internal/llm/chatgpt_context.go",
       "name": "resolveChatGPTContext",
-      "complexity": 24,
+      "complexity": 26,
       "lines": 66,
       "file_lines": 128
     },
@@ -7447,9 +8343,9 @@
       "package": "llm",
       "path": "internal/llm/claude_bin.go",
       "receiver": "*ClaudeBinProvider",
-      "name": "Stream",
-      "complexity": 25,
-      "lines": 107,
+      "name": "Stream.func1",
+      "complexity": 24,
+      "lines": 105,
       "file_lines": 2150
     },
     {
@@ -7458,7 +8354,7 @@
       "path": "internal/llm/claude_bin.go",
       "receiver": "*ClaudeBinProvider",
       "name": "buildCommandEnv",
-      "complexity": 24,
+      "complexity": 26,
       "lines": 62,
       "file_lines": 2150
     },
@@ -7468,7 +8364,7 @@
       "path": "internal/llm/claude_bin.go",
       "receiver": "*ClaudeBinProvider",
       "name": "buildStreamJsonInput",
-      "complexity": 22,
+      "complexity": 34,
       "lines": 87,
       "file_lines": 2150
     },
@@ -7478,7 +8374,7 @@
       "path": "internal/llm/claude_bin.go",
       "receiver": "*ClaudeBinProvider",
       "name": "handleClaudeLine",
-      "complexity": 47,
+      "complexity": 70,
       "lines": 129,
       "file_lines": 2150
     },
@@ -7488,7 +8384,7 @@
       "path": "internal/llm/claude_bin.go",
       "receiver": "*ClaudeBinProvider",
       "name": "renderConversationParts",
-      "complexity": 26,
+      "complexity": 59,
       "lines": 73,
       "file_lines": 2150
     },
@@ -7498,26 +8394,53 @@
       "path": "internal/llm/claude_bin.go",
       "receiver": "*ClaudeBinProvider",
       "name": "runClaudeCommand",
-      "complexity": 35,
+      "complexity": 31,
       "lines": 217,
       "file_lines": 2150
     },
     {
       "module": ".",
       "package": "llm",
+      "path": "internal/llm/cli_bin_shared.go",
+      "name": "drainCLIDiagnosticLines",
+      "complexity": 23,
+      "lines": 59,
+      "file_lines": 822
+    },
+    {
+      "module": ".",
+      "package": "llm",
       "path": "internal/llm/compaction.go",
       "name": "compactToolResultSummary",
-      "complexity": 24,
+      "complexity": 34,
       "lines": 72,
-      "file_lines": 1922
+      "file_lines": 1928
+    },
+    {
+      "module": ".",
+      "package": "llm",
+      "path": "internal/llm/compaction.go",
+      "name": "previousTurnEntries",
+      "complexity": 31,
+      "lines": 50,
+      "file_lines": 1928
     },
     {
       "module": ".",
       "package": "llm",
       "path": "internal/llm/context_window.go",
       "name": "InputLimitForProviderModel",
-      "complexity": 23,
+      "complexity": 24,
       "lines": 99,
+      "file_lines": 751
+    },
+    {
+      "module": ".",
+      "package": "llm",
+      "path": "internal/llm/context_window.go",
+      "name": "init",
+      "complexity": 26,
+      "lines": 40,
       "file_lines": 751
     },
     {
@@ -7525,9 +8448,9 @@
       "package": "llm",
       "path": "internal/llm/copilot.go",
       "receiver": "*CopilotProvider",
-      "name": "streamChatCompletions",
-      "complexity": 42,
-      "lines": 188,
+      "name": "streamChatCompletions.func1",
+      "complexity": 61,
+      "lines": 128,
       "file_lines": 758
     },
     {
@@ -7535,8 +8458,18 @@
       "package": "llm",
       "path": "internal/llm/cursor_bin.go",
       "receiver": "*CursorBinProvider",
+      "name": "cursorImagePaths",
+      "complexity": 35,
+      "lines": 27,
+      "file_lines": 1002
+    },
+    {
+      "module": ".",
+      "package": "llm",
+      "path": "internal/llm/cursor_bin.go",
+      "receiver": "*CursorBinProvider",
       "name": "runCursorCommand",
-      "complexity": 26,
+      "complexity": 22,
       "lines": 120,
       "file_lines": 1002
     },
@@ -7545,7 +8478,7 @@
       "package": "llm",
       "path": "internal/llm/debug.go",
       "name": "DebugRawEvent",
-      "complexity": 24,
+      "complexity": 37,
       "lines": 95,
       "file_lines": 377
     },
@@ -7554,7 +8487,7 @@
       "package": "llm",
       "path": "internal/llm/debug.go",
       "name": "DebugRawRequest",
-      "complexity": 28,
+      "complexity": 74,
       "lines": 97,
       "file_lines": 377
     },
@@ -7562,9 +8495,18 @@
       "module": ".",
       "package": "llm",
       "path": "internal/llm/debug_logger.go",
+      "name": "convertParts",
+      "complexity": 21,
+      "lines": 54,
+      "file_lines": 725
+    },
+    {
+      "module": ".",
+      "package": "llm",
+      "path": "internal/llm/debug_logger.go",
       "receiver": "*DebugLogger",
       "name": "LogEvent",
-      "complexity": 31,
+      "complexity": 51,
       "lines": 134,
       "file_lines": 725
     },
@@ -7573,9 +8515,47 @@
       "package": "llm",
       "path": "internal/llm/debug_provider.go",
       "name": "parseCommand",
-      "complexity": 43,
+      "complexity": 49,
       "lines": 214,
       "file_lines": 970
+    },
+    {
+      "module": ".",
+      "package": "llm",
+      "path": "internal/llm/debug_provider.go",
+      "name": "parseSequenceDSL",
+      "complexity": 22,
+      "lines": 54,
+      "file_lines": 970
+    },
+    {
+      "module": ".",
+      "package": "llm",
+      "path": "internal/llm/debug_provider.go",
+      "receiver": "*DebugProvider",
+      "name": "streamActionSequence",
+      "complexity": 23,
+      "lines": 45,
+      "file_lines": 970
+    },
+    {
+      "module": ".",
+      "package": "llm",
+      "path": "internal/llm/engine.go",
+      "name": "hydrateImageDataFromPaths",
+      "complexity": 23,
+      "lines": 43,
+      "file_lines": 3634
+    },
+    {
+      "module": ".",
+      "package": "llm",
+      "path": "internal/llm/engine.go",
+      "receiver": "*Engine",
+      "name": "ConfigureContextManagement",
+      "complexity": 25,
+      "lines": 51,
+      "file_lines": 3634
     },
     {
       "module": ".",
@@ -7583,9 +8563,9 @@
       "path": "internal/llm/engine.go",
       "receiver": "*Engine",
       "name": "Stream",
-      "complexity": 39,
+      "complexity": 48,
       "lines": 154,
-      "file_lines": 3622
+      "file_lines": 3634
     },
     {
       "module": ".",
@@ -7593,9 +8573,9 @@
       "path": "internal/llm/engine.go",
       "receiver": "*Engine",
       "name": "executeToolCallOutcomes",
-      "complexity": 22,
+      "complexity": 29,
       "lines": 79,
-      "file_lines": 3622
+      "file_lines": 3634
     },
     {
       "module": ".",
@@ -7603,9 +8583,9 @@
       "path": "internal/llm/engine.go",
       "receiver": "*Engine",
       "name": "runLoop",
-      "complexity": 40,
-      "lines": 174,
-      "file_lines": 3622
+      "complexity": 32,
+      "lines": 177,
+      "file_lines": 3634
     },
     {
       "module": ".",
@@ -7613,9 +8593,9 @@
       "path": "internal/llm/engine.go",
       "receiver": "*Engine",
       "name": "runSimpleScratchpad",
-      "complexity": 61,
+      "complexity": 79,
       "lines": 187,
-      "file_lines": 3622
+      "file_lines": 3634
     },
     {
       "module": ".",
@@ -7633,7 +8613,7 @@
       "path": "internal/llm/engine_turn_completion.go",
       "receiver": "*Engine",
       "name": "completeAsyncTurn",
-      "complexity": 47,
+      "complexity": 76,
       "lines": 243,
       "file_lines": 564
     },
@@ -7643,7 +8623,7 @@
       "path": "internal/llm/engine_turn_completion.go",
       "receiver": "*Engine",
       "name": "completeSyncTurn",
-      "complexity": 30,
+      "complexity": 37,
       "lines": 148,
       "file_lines": 564
     },
@@ -7653,7 +8633,7 @@
       "path": "internal/llm/engine_turn_completion.go",
       "receiver": "*Engine",
       "name": "completeTextTurn",
-      "complexity": 49,
+      "complexity": 34,
       "lines": 127,
       "file_lines": 564
     },
@@ -7663,7 +8643,7 @@
       "path": "internal/llm/engine_turn_failure.go",
       "receiver": "*Engine",
       "name": "handleEventStreamFailure",
-      "complexity": 29,
+      "complexity": 23,
       "lines": 67,
       "file_lines": 252
     },
@@ -7673,7 +8653,7 @@
       "path": "internal/llm/engine_turn_failure.go",
       "receiver": "*Engine",
       "name": "handleReceiveStreamFailure",
-      "complexity": 29,
+      "complexity": 23,
       "lines": 67,
       "file_lines": 252
     },
@@ -7683,7 +8663,7 @@
       "path": "internal/llm/engine_turn_open.go",
       "receiver": "*Engine",
       "name": "openProviderTurnStream",
-      "complexity": 48,
+      "complexity": 53,
       "lines": 135,
       "file_lines": 163
     },
@@ -7693,7 +8673,7 @@
       "path": "internal/llm/engine_turn_recovery.go",
       "receiver": "*Engine",
       "name": "recoverCommittedTurn",
-      "complexity": 47,
+      "complexity": 74,
       "lines": 243,
       "file_lines": 285
     },
@@ -7702,7 +8682,7 @@
       "package": "llm",
       "path": "internal/llm/factory.go",
       "name": "NewProviderByName",
-      "complexity": 39,
+      "complexity": 24,
       "lines": 146,
       "file_lines": 629
     },
@@ -7710,29 +8690,76 @@
       "module": ".",
       "package": "llm",
       "path": "internal/llm/factory.go",
-      "name": "createProviderFromConfig",
-      "complexity": 43,
-      "lines": 168,
+      "name": "ParseProviderModel",
+      "complexity": 22,
+      "lines": 60,
       "file_lines": 629
     },
     {
       "module": ".",
       "package": "llm",
       "path": "internal/llm/factory.go",
-      "name": "newProviderInternal",
+      "name": "createProviderFromConfig",
       "complexity": 29,
-      "lines": 96,
+      "lines": 168,
       "file_lines": 629
     },
     {
       "module": ".",
       "package": "llm",
       "path": "internal/llm/gemini.go",
-      "receiver": "*GeminiProvider",
-      "name": "Stream",
-      "complexity": 42,
-      "lines": 117,
+      "name": "buildGeminiContent",
+      "complexity": 22,
+      "lines": 43,
       "file_lines": 510
+    },
+    {
+      "module": ".",
+      "package": "llm",
+      "path": "internal/llm/gemini.go",
+      "name": "buildGeminiContents",
+      "complexity": 22,
+      "lines": 43,
+      "file_lines": 510
+    },
+    {
+      "module": ".",
+      "package": "llm",
+      "path": "internal/llm/gemini.go",
+      "receiver": "*GeminiProvider",
+      "name": "Stream.func1",
+      "complexity": 26,
+      "lines": 114,
+      "file_lines": 510
+    },
+    {
+      "module": ".",
+      "package": "llm",
+      "path": "internal/llm/gemini.go",
+      "receiver": "*GeminiProvider",
+      "name": "Stream.func1.func1",
+      "complexity": 36,
+      "lines": 32,
+      "file_lines": 510
+    },
+    {
+      "module": ".",
+      "package": "llm",
+      "path": "internal/llm/gemini_schema.go",
+      "name": "normalizeGeminiSchemaRecursive",
+      "complexity": 22,
+      "lines": 60,
+      "file_lines": 179
+    },
+    {
+      "module": ".",
+      "package": "llm",
+      "path": "internal/llm/grok_acp.go",
+      "receiver": "*GrokBinProvider",
+      "name": "grokACPDiagnosticRedactor",
+      "complexity": 28,
+      "lines": 41,
+      "file_lines": 1212
     },
     {
       "module": ".",
@@ -7740,7 +8767,7 @@
       "path": "internal/llm/grok_acp.go",
       "receiver": "*GrokBinProvider",
       "name": "runGrokACP",
-      "complexity": 58,
+      "complexity": 66,
       "lines": 224,
       "file_lines": 1212
     },
@@ -7750,7 +8777,7 @@
       "path": "internal/llm/grok_acp.go",
       "receiver": "*GrokBinProvider",
       "name": "startGrokACPProcess",
-      "complexity": 36,
+      "complexity": 32,
       "lines": 205,
       "file_lines": 1212
     },
@@ -7760,7 +8787,7 @@
       "path": "internal/llm/grok_acp.go",
       "receiver": "*grokACPHandler",
       "name": "HandleNotification",
-      "complexity": 33,
+      "complexity": 35,
       "lines": 130,
       "file_lines": 1212
     },
@@ -7769,7 +8796,7 @@
       "package": "llm",
       "path": "internal/llm/grok_bin.go",
       "name": "buildGrokACPPrompt",
-      "complexity": 25,
+      "complexity": 49,
       "lines": 67,
       "file_lines": 1575
     },
@@ -7778,7 +8805,7 @@
       "package": "llm",
       "path": "internal/llm/grok_bin.go",
       "name": "renderGrokConversationParts",
-      "complexity": 21,
+      "complexity": 48,
       "lines": 50,
       "file_lines": 1575
     },
@@ -7787,9 +8814,9 @@
       "package": "llm",
       "path": "internal/llm/grok_bin.go",
       "receiver": "*GrokBinProvider",
-      "name": "Stream",
-      "complexity": 21,
-      "lines": 79,
+      "name": "Stream.func1",
+      "complexity": 25,
+      "lines": 77,
       "file_lines": 1575
     },
     {
@@ -7798,7 +8825,7 @@
       "path": "internal/llm/grok_bin.go",
       "receiver": "*GrokBinProvider",
       "name": "runGrokCommand",
-      "complexity": 25,
+      "complexity": 21,
       "lines": 130,
       "file_lines": 1575
     },
@@ -7807,43 +8834,71 @@
       "package": "llm",
       "path": "internal/llm/grok_models.go",
       "name": "loadGrokModelsCache",
-      "complexity": 25,
+      "complexity": 24,
       "lines": 60,
       "file_lines": 484
     },
     {
       "module": ".",
       "package": "llm",
+      "path": "internal/llm/helper_stream.go",
+      "name": "CollectTextStream",
+      "complexity": 29,
+      "lines": 65,
+      "file_lines": 91
+    },
+    {
+      "module": ".",
+      "package": "llm",
       "path": "internal/llm/json_schema_model.go",
       "name": "parseSanitizedToolJSONSchemaMap",
-      "complexity": 24,
+      "complexity": 34,
       "lines": 73,
       "file_lines": 413
     },
     {
       "module": ".",
       "package": "llm",
+      "path": "internal/llm/json_schema_model.go",
+      "receiver": "*JSONSchema",
+      "name": "ToMap",
+      "complexity": 25,
+      "lines": 56,
+      "file_lines": 413
+    },
+    {
+      "module": ".",
+      "package": "llm",
       "path": "internal/llm/models.go",
-      "name": "GetProviderCompletions",
-      "complexity": 57,
-      "lines": 156,
-      "file_lines": 1119
+      "name": "completeProviderModels",
+      "complexity": 22,
+      "lines": 39,
+      "file_lines": 1148
+    },
+    {
+      "module": ".",
+      "package": "llm",
+      "path": "internal/llm/models.go",
+      "name": "completionModelCandidates",
+      "complexity": 26,
+      "lines": 46,
+      "file_lines": 1148
     },
     {
       "module": ".",
       "package": "llm",
       "path": "internal/llm/models.go",
       "name": "defaultReasoningEffortsForProviderModel",
-      "complexity": 28,
+      "complexity": 21,
       "lines": 59,
-      "file_lines": 1119
+      "file_lines": 1148
     },
     {
       "module": ".",
       "package": "llm",
       "path": "internal/llm/ollama.go",
       "name": "buildOllamaMessages",
-      "complexity": 37,
+      "complexity": 85,
       "lines": 119,
       "file_lines": 822
     },
@@ -7853,8 +8908,18 @@
       "path": "internal/llm/ollama.go",
       "receiver": "*OllamaProvider",
       "name": "Stream",
-      "complexity": 50,
+      "complexity": 34,
       "lines": 212,
+      "file_lines": 822
+    },
+    {
+      "module": ".",
+      "package": "llm",
+      "path": "internal/llm/ollama.go",
+      "receiver": "*OllamaProvider",
+      "name": "Stream.func2",
+      "complexity": 29,
+      "lines": 81,
       "file_lines": 822
     },
     {
@@ -7862,7 +8927,7 @@
       "package": "llm",
       "path": "internal/llm/openai.go",
       "name": "normalizeSchemaRecursive",
-      "complexity": 24,
+      "complexity": 38,
       "lines": 97,
       "file_lines": 625
     },
@@ -7872,7 +8937,7 @@
       "path": "internal/llm/openai.go",
       "receiver": "*OpenAIProvider",
       "name": "Stream",
-      "complexity": 27,
+      "complexity": 26,
       "lines": 115,
       "file_lines": 625
     },
@@ -7881,9 +8946,9 @@
       "package": "llm",
       "path": "internal/llm/openai_compat.go",
       "name": "buildCompatMessages",
-      "complexity": 31,
+      "complexity": 61,
       "lines": 119,
-      "file_lines": 1139
+      "file_lines": 1141
     },
     {
       "module": ".",
@@ -7891,19 +8956,29 @@
       "path": "internal/llm/openai_compat.go",
       "receiver": "*OpenAICompatProvider",
       "name": "Stream",
-      "complexity": 57,
-      "lines": 229,
-      "file_lines": 1139
+      "complexity": 31,
+      "lines": 231,
+      "file_lines": 1141
     },
     {
       "module": ".",
       "package": "llm",
-      "path": "internal/llm/opencode_go_models.go",
-      "receiver": "*opencodeGoModelCatalog",
-      "name": "loadWithFreshness",
-      "complexity": 21,
-      "lines": 75,
-      "file_lines": 638
+      "path": "internal/llm/openai_compat.go",
+      "receiver": "*OpenAICompatProvider",
+      "name": "Stream.func2",
+      "complexity": 59,
+      "lines": 119,
+      "file_lines": 1141
+    },
+    {
+      "module": ".",
+      "package": "llm",
+      "path": "internal/llm/openai_compat.go",
+      "receiver": "*OpenAICompatProvider",
+      "name": "resolveConfiguredModel",
+      "complexity": 22,
+      "lines": 49,
+      "file_lines": 1141
     },
     {
       "module": ".",
@@ -7919,7 +8994,7 @@
       "package": "llm",
       "path": "internal/llm/path_notes.go",
       "name": "pathNoteFileOperations",
-      "complexity": 23,
+      "complexity": 49,
       "lines": 57,
       "file_lines": 404
     },
@@ -7936,10 +9011,19 @@
       "module": ".",
       "package": "llm",
       "path": "internal/llm/responses_api.go",
+      "name": "buildResponsesAssistantItems",
+      "complexity": 27,
+      "lines": 72,
+      "file_lines": 2137
+    },
+    {
+      "module": ".",
+      "package": "llm",
+      "path": "internal/llm/responses_api.go",
       "name": "buildResponsesMessageItems",
-      "complexity": 24,
+      "complexity": 34,
       "lines": 71,
-      "file_lines": 2055
+      "file_lines": 2137
     },
     {
       "module": ".",
@@ -7947,9 +9031,9 @@
       "path": "internal/llm/responses_api.go",
       "receiver": "*ResponsesClient",
       "name": "Stream",
-      "complexity": 30,
+      "complexity": 29,
       "lines": 156,
-      "file_lines": 2055
+      "file_lines": 2137
     },
     {
       "module": ".",
@@ -7957,16 +9041,26 @@
       "path": "internal/llm/responses_api.go",
       "receiver": "*ResponsesClient",
       "name": "streamHTTPPrepared",
-      "complexity": 67,
+      "complexity": 45,
       "lines": 251,
-      "file_lines": 2055
+      "file_lines": 2137
+    },
+    {
+      "module": ".",
+      "package": "llm",
+      "path": "internal/llm/responses_api.go",
+      "receiver": "*ResponsesClient",
+      "name": "streamHTTPPrepared.func2",
+      "complexity": 42,
+      "lines": 124,
+      "file_lines": 2137
     },
     {
       "module": ".",
       "package": "llm",
       "path": "internal/llm/responses_options.go",
       "name": "validateResponsesOptions",
-      "complexity": 32,
+      "complexity": 24,
       "lines": 52,
       "file_lines": 124
     },
@@ -7976,7 +9070,7 @@
       "path": "internal/llm/responses_websocket.go",
       "receiver": "*ResponsesClient",
       "name": "ensureWebSocket",
-      "complexity": 24,
+      "complexity": 21,
       "lines": 105,
       "file_lines": 1534
     },
@@ -7985,26 +9079,27 @@
       "package": "llm",
       "path": "internal/llm/responses_websocket.go",
       "receiver": "*ResponsesClient",
-      "name": "streamWebSocketPrepared",
-      "complexity": 43,
-      "lines": 253,
+      "name": "streamWebSocketPrepared.func2",
+      "complexity": 38,
+      "lines": 224,
       "file_lines": 1534
     },
     {
       "module": ".",
       "package": "llm",
-      "path": "internal/llm/retry.go",
-      "name": "isRetryable",
-      "complexity": 24,
-      "lines": 63,
-      "file_lines": 634
+      "path": "internal/llm/sse.go",
+      "receiver": "*sseDecoder",
+      "name": "Next",
+      "complexity": 21,
+      "lines": 48,
+      "file_lines": 234
     },
     {
       "module": ".",
       "package": "llm",
       "path": "internal/llm/tool_history_sanitize.go",
       "name": "clonePart",
-      "complexity": 23,
+      "complexity": 25,
       "lines": 73,
       "file_lines": 356
     },
@@ -8013,8 +9108,17 @@
       "package": "llm",
       "path": "internal/llm/tool_history_sanitize.go",
       "name": "sanitizeToolHistorySlow",
-      "complexity": 27,
+      "complexity": 55,
       "lines": 132,
+      "file_lines": 356
+    },
+    {
+      "module": ".",
+      "package": "llm",
+      "path": "internal/llm/tool_history_sanitize.go",
+      "name": "toolHistoryAlreadyValid",
+      "complexity": 29,
+      "lines": 54,
       "file_lines": 356
     },
     {
@@ -8022,7 +9126,7 @@
       "package": "llm",
       "path": "internal/llm/transcribe.go",
       "name": "TranscribeWithConfig",
-      "complexity": 47,
+      "complexity": 67,
       "lines": 213,
       "file_lines": 252
     },
@@ -8031,9 +9135,9 @@
       "package": "llm",
       "path": "internal/llm/venice.go",
       "receiver": "*VeniceProvider",
-      "name": "Stream",
-      "complexity": 52,
-      "lines": 208,
+      "name": "Stream.func2",
+      "complexity": 95,
+      "lines": 138,
       "file_lines": 331
     },
     {
@@ -8041,7 +9145,7 @@
       "package": "llm",
       "path": "internal/llm/venice_image_models.go",
       "name": "GetVeniceImageModelIDs",
-      "complexity": 21,
+      "complexity": 34,
       "lines": 47,
       "file_lines": 71
     },
@@ -8050,9 +9154,9 @@
       "package": "llm",
       "path": "internal/llm/xai.go",
       "receiver": "*XAIProvider",
-      "name": "streamStandard",
-      "complexity": 50,
-      "lines": 186,
+      "name": "streamStandard.func2",
+      "complexity": 73,
+      "lines": 129,
       "file_lines": 561
     },
     {
@@ -8060,9 +9164,9 @@
       "package": "llm",
       "path": "internal/llm/xai.go",
       "receiver": "*XAIProvider",
-      "name": "streamWithSearch",
-      "complexity": 32,
-      "lines": 116,
+      "name": "streamWithSearch.func2",
+      "complexity": 37,
+      "lines": 78,
       "file_lines": 561
     },
     {
@@ -8070,9 +9174,9 @@
       "package": "mcp",
       "path": "internal/mcp/manager.go",
       "receiver": "*Manager",
-      "name": "Enable",
-      "complexity": 25,
-      "lines": 135,
+      "name": "Enable.func2",
+      "complexity": 23,
+      "lines": 74,
       "file_lines": 862
     },
     {
@@ -8081,9 +9185,19 @@
       "path": "internal/mcp/oauth/coordinator.go",
       "receiver": "*Coordinator",
       "name": "newHandler",
-      "complexity": 37,
+      "complexity": 26,
       "lines": 157,
       "file_lines": 945
+    },
+    {
+      "module": ".",
+      "package": "mcp",
+      "path": "internal/mcp/registry.go",
+      "receiver": "*RegistryServer",
+      "name": "ToServerConfig",
+      "complexity": 25,
+      "lines": 65,
+      "file_lines": 272
     },
     {
       "module": ".",
@@ -8091,28 +9205,9 @@
       "path": "internal/mcp/sampling.go",
       "receiver": "*SamplingHandler",
       "name": "Handle",
-      "complexity": 26,
+      "complexity": 23,
       "lines": 112,
       "file_lines": 417
-    },
-    {
-      "module": ".",
-      "package": "mcphttp",
-      "path": "internal/mcphttp/http_server.go",
-      "receiver": "*Server",
-      "name": "startInternal",
-      "complexity": 22,
-      "lines": 156,
-      "file_lines": 496
-    },
-    {
-      "module": ".",
-      "package": "memory",
-      "path": "internal/memory/store.go",
-      "name": "initSchema",
-      "complexity": 33,
-      "lines": 110,
-      "file_lines": 689
     },
     {
       "module": ".",
@@ -8129,9 +9224,27 @@
       "package": "mentions",
       "path": "internal/mentions/attachments.go",
       "name": "loadEagerAttachments",
-      "complexity": 23,
+      "complexity": 25,
       "lines": 70,
       "file_lines": 318
+    },
+    {
+      "module": ".",
+      "package": "mentions",
+      "path": "internal/mentions/discover.go",
+      "name": "discoverGit",
+      "complexity": 29,
+      "lines": 70,
+      "file_lines": 277
+    },
+    {
+      "module": ".",
+      "package": "mentions",
+      "path": "internal/mentions/match.go",
+      "name": "scoreCandidate",
+      "complexity": 21,
+      "lines": 51,
+      "file_lines": 146
     },
     {
       "module": ".",
@@ -8158,7 +9271,7 @@
       "package": "passkeyauth",
       "path": "internal/passkeyauth/config.go",
       "name": "ParseEndpoint",
-      "complexity": 28,
+      "complexity": 23,
       "lines": 60,
       "file_lines": 171
     },
@@ -8168,16 +9281,25 @@
       "path": "internal/passkeyauth/session.go",
       "receiver": "*Sessions",
       "name": "open",
-      "complexity": 27,
+      "complexity": 26,
       "lines": 73,
       "file_lines": 565
+    },
+    {
+      "module": ".",
+      "package": "passkeyauth",
+      "path": "internal/passkeyauth/store.go",
+      "name": "validateProtocolCredential",
+      "complexity": 21,
+      "lines": 49,
+      "file_lines": 425
     },
     {
       "module": ".",
       "package": "process",
       "path": "internal/process/process_linux.go",
       "name": "RestartWithProgress",
-      "complexity": 43,
+      "complexity": 41,
       "lines": 115,
       "file_lines": 419
     },
@@ -8186,9 +9308,57 @@
       "package": "process",
       "path": "internal/process/state.go",
       "name": "RestoreState",
-      "complexity": 31,
+      "complexity": 26,
       "lines": 87,
       "file_lines": 184
+    },
+    {
+      "module": ".",
+      "package": "prompt",
+      "path": "internal/prompt/stream_edit.go",
+      "name": "StreamEditUserPrompt",
+      "complexity": 26,
+      "lines": 66,
+      "file_lines": 381
+    },
+    {
+      "module": ".",
+      "package": "prompt",
+      "path": "internal/prompt/stream_edit.go",
+      "name": "StreamEditUserPromptLazy",
+      "complexity": 36,
+      "lines": 89,
+      "file_lines": 381
+    },
+    {
+      "module": "internal/reflow",
+      "package": "indent",
+      "path": "internal/reflow/indent/indent.go",
+      "receiver": "*Writer",
+      "name": "Write",
+      "complexity": 22,
+      "lines": 36,
+      "file_lines": 106
+    },
+    {
+      "module": "internal/reflow",
+      "package": "truncate",
+      "path": "internal/reflow/truncate/truncate.go",
+      "receiver": "*Writer",
+      "name": "Write",
+      "complexity": 36,
+      "lines": 62,
+      "file_lines": 153
+    },
+    {
+      "module": "internal/reflow",
+      "package": "wordwrap",
+      "path": "internal/reflow/wordwrap/wordwrap.go",
+      "receiver": "*WordWrap",
+      "name": "Write",
+      "complexity": 36,
+      "lines": 69,
+      "file_lines": 188
     },
     {
       "module": ".",
@@ -8196,9 +9366,28 @@
       "path": "internal/render/chat/message_block.go",
       "receiver": "*MessageBlockRenderer",
       "name": "renderAssistantMessage",
-      "complexity": 32,
+      "complexity": 89,
       "lines": 139,
       "file_lines": 874
+    },
+    {
+      "module": ".",
+      "package": "chat",
+      "path": "internal/render/chat/message_block.go",
+      "receiver": "*MessageBlockRenderer",
+      "name": "renderReasoningForPart",
+      "complexity": 25,
+      "lines": 72,
+      "file_lines": 874
+    },
+    {
+      "module": ".",
+      "package": "chat",
+      "path": "internal/render/chat/renderer.go",
+      "name": "messagePartsSignature",
+      "complexity": 26,
+      "lines": 62,
+      "file_lines": 818
     },
     {
       "module": ".",
@@ -8206,16 +9395,36 @@
       "path": "internal/render/chat/renderer.go",
       "receiver": "*Renderer",
       "name": "HandleEvent",
-      "complexity": 27,
+      "complexity": 21,
       "lines": 103,
       "file_lines": 818
+    },
+    {
+      "module": ".",
+      "package": "chat",
+      "path": "internal/render/chat/renderer.go",
+      "receiver": "*Renderer",
+      "name": "renderHistory",
+      "complexity": 28,
+      "lines": 89,
+      "file_lines": 818
+    },
+    {
+      "module": ".",
+      "package": "chat",
+      "path": "internal/render/chat/streaming.go",
+      "receiver": "*StreamingBlock",
+      "name": "Render",
+      "complexity": 34,
+      "lines": 69,
+      "file_lines": 323
     },
     {
       "module": ".",
       "package": "markdown",
       "path": "internal/render/markdown/ansi.go",
       "name": "fitColumnWidths",
-      "complexity": 21,
+      "complexity": 32,
       "lines": 85,
       "file_lines": 1306
     },
@@ -8224,29 +9433,20 @@
       "package": "markdown",
       "path": "internal/render/markdown/ansi.go",
       "receiver": "*ANSI",
-      "name": "renderBlock",
-      "complexity": 26,
-      "lines": 76,
+      "name": "renderTableGrid",
+      "complexity": 27,
+      "lines": 57,
       "file_lines": 1306
     },
     {
       "module": ".",
-      "package": "markdown",
-      "path": "internal/render/markdown/ansi.go",
-      "receiver": "*ANSI",
-      "name": "renderInline",
-      "complexity": 24,
-      "lines": 77,
-      "file_lines": 1306
-    },
-    {
-      "module": ".",
-      "package": "search",
-      "path": "internal/search/factory.go",
-      "name": "NewSearcher",
-      "complexity": 26,
-      "lines": 92,
-      "file_lines": 148
+      "package": "restart",
+      "path": "internal/restart/coordinator.go",
+      "receiver": "*Coordinator",
+      "name": "startLocked.func1",
+      "complexity": 23,
+      "lines": 53,
+      "file_lines": 342
     },
     {
       "module": ".",
@@ -8254,9 +9454,9 @@
       "path": "internal/serve/telegram.go",
       "receiver": "*telegramSessionMgr",
       "name": "handleMessageWithAdmission",
-      "complexity": 55,
+      "complexity": 74,
       "lines": 268,
-      "file_lines": 2571
+      "file_lines": 2569
     },
     {
       "module": ".",
@@ -8264,18 +9464,28 @@
       "path": "internal/serve/telegram.go",
       "receiver": "*telegramSessionMgr",
       "name": "streamReplyContinuation",
-      "complexity": 82,
-      "lines": 504,
-      "file_lines": 2571
+      "complexity": 58,
+      "lines": 502,
+      "file_lines": 2569
     },
     {
       "module": ".",
       "package": "serve",
       "path": "internal/serve/telegram_markdown.go",
       "name": "htmlToTelegram",
-      "complexity": 41,
+      "complexity": 44,
       "lines": 131,
       "file_lines": 182
+    },
+    {
+      "module": ".",
+      "package": "serve",
+      "path": "internal/serve/telegram_presentation.go",
+      "receiver": "*telegramPresentation",
+      "name": "deliverMedia",
+      "complexity": 23,
+      "lines": 70,
+      "file_lines": 339
     },
     {
       "module": ".",
@@ -8283,7 +9493,7 @@
       "path": "internal/serve/telegram_reload.go",
       "receiver": "*telegramSessionMgr",
       "name": "runPolling",
-      "complexity": 24,
+      "complexity": 26,
       "lines": 115,
       "file_lines": 213
     },
@@ -8293,9 +9503,9 @@
       "path": "internal/session/attention.go",
       "receiver": "*SQLiteStore",
       "name": "FinalizeResponseRun",
-      "complexity": 27,
+      "complexity": 25,
       "lines": 95,
-      "file_lines": 863
+      "file_lines": 903
     },
     {
       "module": ".",
@@ -8303,9 +9513,9 @@
       "path": "internal/session/attention.go",
       "receiver": "*SQLiteStore",
       "name": "ListAttention",
-      "complexity": 28,
+      "complexity": 30,
       "lines": 124,
-      "file_lines": 863
+      "file_lines": 903
     },
     {
       "module": ".",
@@ -8315,26 +9525,16 @@
       "name": "RecoverExpiredResponseRuns",
       "complexity": 21,
       "lines": 107,
-      "file_lines": 863
-    },
-    {
-      "module": ".",
-      "package": "session",
-      "path": "internal/session/attention.go",
-      "receiver": "*SQLiteStore",
-      "name": "SetResponseRunInteractionState",
-      "complexity": 21,
-      "lines": 69,
-      "file_lines": 863
+      "file_lines": 903
     },
     {
       "module": ".",
       "package": "session",
       "path": "internal/session/branch.go",
       "receiver": "*SQLiteStore",
-      "name": "CreateBranch",
-      "complexity": 53,
-      "lines": 261,
+      "name": "CreateBranch.func1",
+      "complexity": 47,
+      "lines": 235,
       "file_lines": 486
     },
     {
@@ -8342,16 +9542,16 @@
       "package": "session",
       "path": "internal/session/context_state.go",
       "name": "markCompactionDisplayTailsForPersistence",
-      "complexity": 22,
+      "complexity": 28,
       "lines": 50,
-      "file_lines": 447
+      "file_lines": 450
     },
     {
       "module": ".",
       "package": "session",
       "path": "internal/session/export.go",
       "name": "ExportToMarkdown",
-      "complexity": 33,
+      "complexity": 60,
       "lines": 191,
       "file_lines": 318
     },
@@ -8360,7 +9560,7 @@
       "package": "session",
       "path": "internal/session/export_html.go",
       "name": "buildHTMLExportMessages",
-      "complexity": 27,
+      "complexity": 41,
       "lines": 82,
       "file_lines": 548
     },
@@ -8369,7 +9569,7 @@
       "package": "session",
       "path": "internal/session/handover_rename.go",
       "name": "PrettifyHandoverName",
-      "complexity": 26,
+      "complexity": 28,
       "lines": 96,
       "file_lines": 280
     },
@@ -8379,27 +9579,29 @@
       "path": "internal/session/rush.go",
       "receiver": "*SQLiteStore",
       "name": "AdmitRush",
-      "complexity": 31,
+      "complexity": 26,
       "lines": 75,
       "file_lines": 272
     },
     {
       "module": ".",
       "package": "session",
-      "path": "internal/session/sqlite_messages.go",
-      "name": "replacementCommonPrefix",
-      "complexity": 21,
-      "lines": 68,
-      "file_lines": 2126
+      "path": "internal/session/share.go",
+      "receiver": "*ShareState",
+      "name": "Normalize",
+      "complexity": 23,
+      "lines": 42,
+      "file_lines": 88
     },
     {
       "module": ".",
       "package": "session",
       "path": "internal/session/sqlite_messages.go",
-      "name": "transcriptRowHasDisplayBody",
-      "complexity": 24,
-      "lines": 38,
-      "file_lines": 2126
+      "receiver": "*SQLiteStore",
+      "name": "GetMessagesByTranscriptRanges",
+      "complexity": 23,
+      "lines": 73,
+      "file_lines": 2187
     },
     {
       "module": ".",
@@ -8407,9 +9609,9 @@
       "path": "internal/session/sqlite_messages.go",
       "receiver": "*SQLiteStore",
       "name": "GetTranscriptSnapshot",
-      "complexity": 26,
+      "complexity": 29,
       "lines": 91,
-      "file_lines": 2126
+      "file_lines": 2187
     },
     {
       "module": ".",
@@ -8418,18 +9620,18 @@
       "receiver": "*SQLiteStore",
       "name": "UndoLastUserTurn",
       "complexity": 29,
-      "lines": 117,
-      "file_lines": 2126
+      "lines": 118,
+      "file_lines": 2187
     },
     {
       "module": ".",
       "package": "session",
       "path": "internal/session/sqlite_messages.go",
       "receiver": "*SQLiteStore",
-      "name": "appendMessagesWithRush",
-      "complexity": 36,
-      "lines": 124,
-      "file_lines": 2126
+      "name": "appendMessagesWithRush.func1",
+      "complexity": 34,
+      "lines": 101,
+      "file_lines": 2187
     },
     {
       "module": ".",
@@ -8437,7 +9639,7 @@
       "path": "internal/session/sqlite_projects.go",
       "receiver": "*SQLiteStore",
       "name": "Sidebar",
-      "complexity": 31,
+      "complexity": 29,
       "lines": 138,
       "file_lines": 572
     },
@@ -8446,7 +9648,7 @@
       "package": "session",
       "path": "internal/session/sqlite_push.go",
       "name": "scanSessionRow",
-      "complexity": 38,
+      "complexity": 45,
       "lines": 134,
       "file_lines": 717
     },
@@ -8455,9 +9657,9 @@
       "package": "session",
       "path": "internal/session/sqlite_push.go",
       "receiver": "*SQLiteStore",
-      "name": "probeSessionColumns",
-      "complexity": 24,
-      "lines": 60,
+      "name": "sessionSelectCols",
+      "complexity": 28,
+      "lines": 81,
       "file_lines": 717
     },
     {
@@ -8465,28 +9667,28 @@
       "package": "session",
       "path": "internal/session/sqlite_schema.go",
       "name": "NewSQLiteStore",
-      "complexity": 22,
+      "complexity": 24,
       "lines": 123,
-      "file_lines": 1704
+      "file_lines": 1723
     },
     {
       "module": ".",
       "package": "session",
       "path": "internal/session/sqlite_schema.go",
-      "name": "initSchema",
-      "complexity": 42,
-      "lines": 122,
-      "file_lines": 1704
+      "name": "initSchema.func1",
+      "complexity": 26,
+      "lines": 78,
+      "file_lines": 1723
     },
     {
       "module": ".",
       "package": "session",
       "path": "internal/session/sqlite_session_inputs.go",
       "receiver": "*SQLiteStore",
-      "name": "RefreshSessionInputs",
+      "name": "RefreshSessionInputs.func1",
       "complexity": 24,
-      "lines": 89,
-      "file_lines": 105
+      "lines": 83,
+      "file_lines": 106
     },
     {
       "module": ".",
@@ -8494,7 +9696,7 @@
       "path": "internal/session/sqlite_sessions.go",
       "receiver": "*SQLiteStore",
       "name": "List",
-      "complexity": 68,
+      "complexity": 89,
       "lines": 274,
       "file_lines": 1261
     },
@@ -8504,8 +9706,18 @@
       "path": "internal/session/sqlite_sessions.go",
       "receiver": "*SQLiteStore",
       "name": "Search",
-      "complexity": 28,
+      "complexity": 41,
       "lines": 156,
+      "file_lines": 1261
+    },
+    {
+      "module": ".",
+      "package": "session",
+      "path": "internal/session/sqlite_sessions.go",
+      "receiver": "*SQLiteStore",
+      "name": "Update",
+      "complexity": 21,
+      "lines": 103,
       "file_lines": 1261
     },
     {
@@ -8514,7 +9726,7 @@
       "path": "internal/session/transcript_fallback.go",
       "receiver": "*FallbackTranscriptIndexer",
       "name": "read",
-      "complexity": 21,
+      "complexity": 24,
       "lines": 85,
       "file_lines": 165
     },
@@ -8523,7 +9735,7 @@
       "package": "sessiontitle",
       "path": "internal/sessiontitle/generator.go",
       "name": "BuildConversationSlice",
-      "complexity": 30,
+      "complexity": 23,
       "lines": 104,
       "file_lines": 329
     },
@@ -8540,6 +9752,15 @@
       "module": ".",
       "package": "sidequestion",
       "path": "internal/sidequestion/sidequestion.go",
+      "name": "PrepareContextSnapshot",
+      "complexity": 30,
+      "lines": 64,
+      "file_lines": 520
+    },
+    {
+      "module": ".",
+      "package": "sidequestion",
+      "path": "internal/sidequestion/sidequestion.go",
       "name": "buildMessagesWithinBudget",
       "complexity": 25,
       "lines": 100,
@@ -8547,10 +9768,56 @@
     },
     {
       "module": ".",
+      "package": "sidequestion",
+      "path": "internal/sidequestion/sidequestion.go",
+      "name": "deepCopyMessages",
+      "complexity": 28,
+      "lines": 46,
+      "file_lines": 520
+    },
+    {
+      "module": ".",
+      "package": "sidequestion",
+      "path": "internal/sidequestion/sidequestion.go",
+      "name": "estimateSideMessageTokens",
+      "complexity": 36,
+      "lines": 39,
+      "file_lines": 520
+    },
+    {
+      "module": ".",
+      "package": "skills",
+      "path": "internal/skills/registry.go",
+      "name": "CopySkill",
+      "complexity": 29,
+      "lines": 55,
+      "file_lines": 977
+    },
+    {
+      "module": ".",
+      "package": "skills",
+      "path": "internal/skills/registry.go",
+      "receiver": "*Registry",
+      "name": "Get",
+      "complexity": 35,
+      "lines": 76,
+      "file_lines": 977
+    },
+    {
+      "module": ".",
+      "package": "sqliteutil",
+      "path": "internal/sqliteutil/schema.go",
+      "name": "SchemaSignature",
+      "complexity": 21,
+      "lines": 74,
+      "file_lines": 181
+    },
+    {
+      "module": ".",
       "package": "sqliteutil",
       "path": "internal/sqliteutil/schema.go",
       "name": "canonicalizeCreateTableColumns",
-      "complexity": 24,
+      "complexity": 25,
       "lines": 74,
       "file_lines": 181
     },
@@ -8559,37 +9826,65 @@
       "package": "subagentview",
       "path": "internal/subagentview/completed.go",
       "name": "Build",
-      "complexity": 29,
+      "complexity": 48,
       "lines": 107,
       "file_lines": 303
+    },
+    {
+      "module": ".",
+      "package": "termhost",
+      "path": "internal/termhost/registry.go",
+      "name": "discoverAll",
+      "complexity": 23,
+      "lines": 89,
+      "file_lines": 197
+    },
+    {
+      "module": "internal/terminal/renderer",
+      "package": "uv",
+      "path": "internal/terminal/renderer/buffer.go",
+      "name": "renderLine",
+      "complexity": 23,
+      "lines": 61,
+      "file_lines": 800
+    },
+    {
+      "module": "internal/terminal/renderer",
+      "package": "uv",
+      "path": "internal/terminal/renderer/buffer.go",
+      "receiver": "Line",
+      "name": "Set",
+      "complexity": 33,
+      "lines": 58,
+      "file_lines": 800
     },
     {
       "module": "internal/terminal/renderer",
       "package": "uv",
       "path": "internal/terminal/renderer/cell.go",
       "name": "StyleDiff",
-      "complexity": 57,
+      "complexity": 56,
       "lines": 151,
-      "file_lines": 460
+      "file_lines": 461
+    },
+    {
+      "module": "internal/terminal/renderer",
+      "package": "uv",
+      "path": "internal/terminal/renderer/cell.go",
+      "receiver": "*Style",
+      "name": "String",
+      "complexity": 25,
+      "lines": 59,
+      "file_lines": 461
     },
     {
       "module": "internal/terminal/renderer",
       "package": "uv",
       "path": "internal/terminal/renderer/decoder.go",
       "name": "parseKittyKeyboard",
-      "complexity": 44,
+      "complexity": 66,
       "lines": 137,
-      "file_lines": 2175
-    },
-    {
-      "module": "internal/terminal/renderer",
-      "package": "uv",
-      "path": "internal/terminal/renderer/decoder.go",
-      "receiver": "*EventDecoder",
-      "name": "Decode",
-      "complexity": 24,
-      "lines": 66,
-      "file_lines": 2175
+      "file_lines": 2174
     },
     {
       "module": "internal/terminal/renderer",
@@ -8597,9 +9892,9 @@
       "path": "internal/terminal/renderer/decoder.go",
       "receiver": "*EventDecoder",
       "name": "parseCsiLegacyKey",
-      "complexity": 28,
+      "complexity": 22,
       "lines": 89,
-      "file_lines": 2175
+      "file_lines": 2174
     },
     {
       "module": "internal/terminal/renderer",
@@ -8607,9 +9902,9 @@
       "path": "internal/terminal/renderer/decoder.go",
       "receiver": "*EventDecoder",
       "name": "parseDcs",
-      "complexity": 28,
+      "complexity": 22,
       "lines": 91,
-      "file_lines": 2175
+      "file_lines": 2174
     },
     {
       "module": "internal/terminal/renderer",
@@ -8617,66 +9912,65 @@
       "path": "internal/terminal/renderer/decoder.go",
       "receiver": "*EventDecoder",
       "name": "parseOsc",
-      "complexity": 32,
+      "complexity": 28,
       "lines": 118,
-      "file_lines": 2175
-    },
-    {
-      "module": "internal/terminal/renderer",
-      "package": "uv",
-      "path": "internal/terminal/renderer/decoder.go",
-      "receiver": "*EventDecoder",
-      "name": "parseSs3",
-      "complexity": 24,
-      "lines": 63,
-      "file_lines": 2175
-    },
-    {
-      "module": "internal/terminal/renderer",
-      "package": "uv",
-      "path": "internal/terminal/renderer/decoder.go",
-      "receiver": "*EventDecoder",
-      "name": "parseStTerminated",
-      "complexity": 24,
-      "lines": 84,
-      "file_lines": 2175
+      "file_lines": 2174
     },
     {
       "module": "internal/terminal/renderer",
       "package": "uv",
       "path": "internal/terminal/renderer/key.go",
       "name": "keyMatchString",
-      "complexity": 21,
+      "complexity": 22,
       "lines": 60,
       "file_lines": 763
     },
     {
       "module": "internal/terminal/renderer",
       "package": "uv",
-      "path": "internal/terminal/renderer/key.go",
-      "receiver": "Key",
-      "name": "Keystroke",
+      "path": "internal/terminal/renderer/key_table.go",
+      "name": "buildKeysTable",
       "complexity": 23,
-      "lines": 46,
-      "file_lines": 763
+      "lines": 382,
+      "file_lines": 665
     },
     {
       "module": "internal/terminal/renderer",
       "package": "uv",
       "path": "internal/terminal/renderer/styled.go",
       "name": "ReadStyle",
-      "complexity": 42,
+      "complexity": 28,
       "lines": 104,
-      "file_lines": 395
+      "file_lines": 559
     },
     {
       "module": "internal/terminal/renderer",
       "package": "uv",
       "path": "internal/terminal/renderer/styled.go",
       "name": "printString",
-      "complexity": 29,
-      "lines": 123,
-      "file_lines": 395
+      "complexity": 45,
+      "lines": 134,
+      "file_lines": 559
+    },
+    {
+      "module": "internal/terminal/renderer",
+      "package": "uv",
+      "path": "internal/terminal/renderer/terminal_reader.go",
+      "receiver": "*TerminalReader",
+      "name": "StreamEvents",
+      "complexity": 36,
+      "lines": 85,
+      "file_lines": 504
+    },
+    {
+      "module": "internal/terminal/renderer",
+      "package": "uv",
+      "path": "internal/terminal/renderer/terminal_reader.go",
+      "receiver": "*eventScanner",
+      "name": "encodeGraphemeBufs",
+      "complexity": 23,
+      "lines": 42,
+      "file_lines": 504
     },
     {
       "module": "internal/terminal/renderer",
@@ -8684,7 +9978,7 @@
       "path": "internal/terminal/renderer/terminal_reader.go",
       "receiver": "*eventScanner",
       "name": "scanEvents",
-      "complexity": 38,
+      "complexity": 48,
       "lines": 122,
       "file_lines": 504
     },
@@ -8694,7 +9988,7 @@
       "path": "internal/terminal/renderer/terminal_reader_windows.go",
       "receiver": "*TerminalReader",
       "name": "serializeWin32InputRecords",
-      "complexity": 28,
+      "complexity": 49,
       "lines": 127,
       "file_lines": 337
     },
@@ -8702,10 +9996,19 @@
       "module": "internal/terminal/renderer",
       "package": "uv",
       "path": "internal/terminal/renderer/terminal_renderer.go",
+      "name": "moveCursor",
+      "complexity": 24,
+      "lines": 66,
+      "file_lines": 1665
+    },
+    {
+      "module": "internal/terminal/renderer",
+      "package": "uv",
+      "path": "internal/terminal/renderer/terminal_renderer.go",
       "name": "relativeCursorMove",
-      "complexity": 58,
-      "lines": 147,
-      "file_lines": 1647
+      "complexity": 120,
+      "lines": 145,
+      "file_lines": 1665
     },
     {
       "module": "internal/terminal/renderer",
@@ -8713,9 +10016,19 @@
       "path": "internal/terminal/renderer/terminal_renderer.go",
       "receiver": "*TerminalRenderer",
       "name": "Render",
-      "complexity": 34,
+      "complexity": 30,
       "lines": 107,
-      "file_lines": 1647
+      "file_lines": 1665
+    },
+    {
+      "module": "internal/terminal/renderer",
+      "package": "uv",
+      "path": "internal/terminal/renderer/terminal_renderer.go",
+      "receiver": "*TerminalRenderer",
+      "name": "clearBottom",
+      "complexity": 27,
+      "lines": 47,
+      "file_lines": 1665
     },
     {
       "module": "internal/terminal/renderer",
@@ -8723,9 +10036,9 @@
       "path": "internal/terminal/renderer/terminal_renderer.go",
       "receiver": "*TerminalRenderer",
       "name": "emitRange",
-      "complexity": 22,
+      "complexity": 31,
       "lines": 78,
-      "file_lines": 1647
+      "file_lines": 1665
     },
     {
       "module": "internal/terminal/renderer",
@@ -8733,9 +10046,9 @@
       "path": "internal/terminal/renderer/terminal_renderer.go",
       "receiver": "*TerminalRenderer",
       "name": "transformLine",
-      "complexity": 68,
+      "complexity": 116,
       "lines": 222,
-      "file_lines": 1647
+      "file_lines": 1665
     },
     {
       "module": "internal/terminal/renderer",
@@ -8743,7 +10056,7 @@
       "path": "internal/terminal/renderer/terminal_renderer_hardscroll.go",
       "receiver": "*TerminalRenderer",
       "name": "scrollOptimize",
-      "complexity": 22,
+      "complexity": 24,
       "lines": 58,
       "file_lines": 285
     },
@@ -8752,8 +10065,18 @@
       "package": "uv",
       "path": "internal/terminal/renderer/terminal_renderer_hashmap.go",
       "receiver": "*TerminalRenderer",
+      "name": "growHunks",
+      "complexity": 34,
+      "lines": 80,
+      "file_lines": 299
+    },
+    {
+      "module": "internal/terminal/renderer",
+      "package": "uv",
+      "path": "internal/terminal/renderer/terminal_renderer_hashmap.go",
+      "receiver": "*TerminalRenderer",
       "name": "updateHashmap",
-      "complexity": 32,
+      "complexity": 45,
       "lines": 100,
       "file_lines": 299
     },
@@ -8761,20 +10084,11 @@
       "module": "internal/terminal/runtime",
       "package": "tea",
       "path": "internal/terminal/runtime/cursed_renderer.go",
-      "name": "viewEquals",
-      "complexity": 24,
-      "lines": 41,
-      "file_lines": 1042
-    },
-    {
-      "module": "internal/terminal/runtime",
-      "package": "tea",
-      "path": "internal/terminal/runtime/cursed_renderer.go",
       "receiver": "*cursedRenderer",
       "name": "close",
-      "complexity": 25,
-      "lines": 120,
-      "file_lines": 1042
+      "complexity": 40,
+      "lines": 127,
+      "file_lines": 1107
     },
     {
       "module": "internal/terminal/runtime",
@@ -8782,9 +10096,19 @@
       "path": "internal/terminal/runtime/cursed_renderer.go",
       "receiver": "*cursedRenderer",
       "name": "flush",
-      "complexity": 80,
-      "lines": 315,
-      "file_lines": 1042
+      "complexity": 82,
+      "lines": 303,
+      "file_lines": 1107
+    },
+    {
+      "module": "internal/terminal/runtime",
+      "package": "tea",
+      "path": "internal/terminal/runtime/cursed_renderer.go",
+      "receiver": "*cursedRenderer",
+      "name": "start",
+      "complexity": 24,
+      "lines": 71,
+      "file_lines": 1107
     },
     {
       "module": "internal/terminal/runtime",
@@ -8792,18 +10116,9 @@
       "path": "internal/terminal/runtime/cursed_renderer.go",
       "receiver": "*cursedRenderer",
       "name": "updateTerminalModesLocked",
-      "complexity": 32,
-      "lines": 79,
-      "file_lines": 1042
-    },
-    {
-      "module": "internal/terminal/runtime",
-      "package": "tea",
-      "path": "internal/terminal/runtime/cursed_renderer_scroll.go",
-      "name": "lineScrollIndependent",
-      "complexity": 23,
-      "lines": 53,
-      "file_lines": 295
+      "complexity": 36,
+      "lines": 64,
+      "file_lines": 1107
     },
     {
       "module": "internal/terminal/runtime",
@@ -8812,8 +10127,8 @@
       "receiver": "*Program",
       "name": "Run",
       "complexity": 29,
-      "lines": 160,
-      "file_lines": 1401
+      "lines": 161,
+      "file_lines": 1412
     },
     {
       "module": "internal/terminal/runtime",
@@ -8821,9 +10136,46 @@
       "path": "internal/terminal/runtime/tea.go",
       "receiver": "*Program",
       "name": "eventLoop",
-      "complexity": 33,
+      "complexity": 34,
       "lines": 110,
-      "file_lines": 1401
+      "file_lines": 1412
+    },
+    {
+      "module": ".",
+      "package": "tooldiscovery",
+      "path": "internal/tooldiscovery/index.go",
+      "name": "lexicalScore",
+      "complexity": 28,
+      "lines": 64,
+      "file_lines": 294
+    },
+    {
+      "module": ".",
+      "package": "tooldiscovery",
+      "path": "internal/tooldiscovery/index.go",
+      "name": "schemaTerms.func1",
+      "complexity": 31,
+      "lines": 40,
+      "file_lines": 294
+    },
+    {
+      "module": ".",
+      "package": "tooldiscovery",
+      "path": "internal/tooldiscovery/planner.go",
+      "name": "deferredToolSearchDeveloperInstruction",
+      "complexity": 26,
+      "lines": 44,
+      "file_lines": 1411
+    },
+    {
+      "module": ".",
+      "package": "tooldiscovery",
+      "path": "internal/tooldiscovery/planner.go",
+      "receiver": "*Planner",
+      "name": "alwaysLoadSet",
+      "complexity": 24,
+      "lines": 46,
+      "file_lines": 1411
     },
     {
       "module": ".",
@@ -8831,9 +10183,9 @@
       "path": "internal/tooldiscovery/planner.go",
       "receiver": "*Planner",
       "name": "restoreNativeHistory",
-      "complexity": 35,
+      "complexity": 57,
       "lines": 116,
-      "file_lines": 1360
+      "file_lines": 1411
     },
     {
       "module": ".",
@@ -8841,9 +10193,19 @@
       "path": "internal/tooldiscovery/planner.go",
       "receiver": "*Planner",
       "name": "selectSurface",
-      "complexity": 88,
-      "lines": 289,
-      "file_lines": 1360
+      "complexity": 65,
+      "lines": 197,
+      "file_lines": 1411
+    },
+    {
+      "module": ".",
+      "package": "tooldiscovery",
+      "path": "internal/tooldiscovery/planner.go",
+      "receiver": "*Planner",
+      "name": "syncCatalogue",
+      "complexity": 27,
+      "lines": 51,
+      "file_lines": 1411
     },
     {
       "module": ".",
@@ -8851,7 +10213,7 @@
       "path": "internal/tooldiscovery/search_tool.go",
       "receiver": "*Planner",
       "name": "activate",
-      "complexity": 53,
+      "complexity": 71,
       "lines": 224,
       "file_lines": 426
     },
@@ -8860,18 +10222,18 @@
       "package": "tools",
       "path": "internal/tools/approval.go",
       "name": "splitSequentialCommands",
-      "complexity": 22,
+      "complexity": 28,
       "lines": 65,
-      "file_lines": 2500
+      "file_lines": 2527
     },
     {
       "module": ".",
       "package": "tools",
       "path": "internal/tools/approval.go",
       "name": "splitShellCommands",
-      "complexity": 24,
+      "complexity": 32,
       "lines": 70,
-      "file_lines": 2500
+      "file_lines": 2527
     },
     {
       "module": ".",
@@ -8879,9 +10241,9 @@
       "path": "internal/tools/approval.go",
       "receiver": "*ApprovalManager",
       "name": "CheckPathApprovalWithContext",
-      "complexity": 45,
+      "complexity": 43,
       "lines": 165,
-      "file_lines": 2500
+      "file_lines": 2527
     },
     {
       "module": ".",
@@ -8891,7 +10253,17 @@
       "name": "CheckSharedShellApprovalWithContext",
       "complexity": 25,
       "lines": 67,
-      "file_lines": 2500
+      "file_lines": 2527
+    },
+    {
+      "module": ".",
+      "package": "tools",
+      "path": "internal/tools/approval.go",
+      "receiver": "*ApprovalManager",
+      "name": "appendApprovalContextFromChain",
+      "complexity": 21,
+      "lines": 32,
+      "file_lines": 2527
     },
     {
       "module": ".",
@@ -8899,9 +10271,9 @@
       "path": "internal/tools/approval.go",
       "receiver": "*ApprovalManager",
       "name": "checkPathApprovalNoPrompt",
-      "complexity": 26,
+      "complexity": 32,
       "lines": 90,
-      "file_lines": 2500
+      "file_lines": 2527
     },
     {
       "module": ".",
@@ -8909,9 +10281,28 @@
       "path": "internal/tools/approval.go",
       "receiver": "*ApprovalManager",
       "name": "checkShellApprovalWithContext",
-      "complexity": 29,
+      "complexity": 31,
       "lines": 107,
-      "file_lines": 2500
+      "file_lines": 2527
+    },
+    {
+      "module": ".",
+      "package": "tools",
+      "path": "internal/tools/approval.go",
+      "receiver": "*ApprovalManager",
+      "name": "handleFileApprovalResult",
+      "complexity": 29,
+      "lines": 65,
+      "file_lines": 2527
+    },
+    {
+      "module": ".",
+      "package": "tools",
+      "path": "internal/tools/ask_user.go",
+      "name": "NormalizeAskUserAnswers",
+      "complexity": 21,
+      "lines": 73,
+      "file_lines": 391
     },
     {
       "module": ".",
@@ -8919,9 +10310,39 @@
       "path": "internal/tools/ask_user.go",
       "receiver": "*AskUserTool",
       "name": "Execute",
+      "complexity": 23,
+      "lines": 102,
+      "file_lines": 391
+    },
+    {
+      "module": ".",
+      "package": "tools",
+      "path": "internal/tools/ask_user_ui.go",
+      "receiver": "*AskUserModel",
+      "name": "renderConfirm",
       "complexity": 21,
-      "lines": 101,
-      "file_lines": 338
+      "lines": 39,
+      "file_lines": 779
+    },
+    {
+      "module": ".",
+      "package": "tools",
+      "path": "internal/tools/ask_user_ui.go",
+      "receiver": "*AskUserModel",
+      "name": "renderQuestion",
+      "complexity": 27,
+      "lines": 90,
+      "file_lines": 779
+    },
+    {
+      "module": ".",
+      "package": "tools",
+      "path": "internal/tools/config.go",
+      "receiver": "*ToolConfig",
+      "name": "Validate",
+      "complexity": 26,
+      "lines": 56,
+      "file_lines": 555
     },
     {
       "module": ".",
@@ -8939,19 +10360,47 @@
       "path": "internal/tools/custom_tool.go",
       "receiver": "*CustomScriptTool",
       "name": "Execute",
-      "complexity": 21,
+      "complexity": 24,
       "lines": 115,
       "file_lines": 363
     },
     {
       "module": ".",
       "package": "tools",
-      "path": "internal/tools/glob.go",
-      "receiver": "*GlobTool",
-      "name": "Execute",
+      "path": "internal/tools/edit.go",
+      "receiver": "*EditFileTool",
+      "name": "executeDirectEdit",
       "complexity": 21,
-      "lines": 119,
-      "file_lines": 388
+      "lines": 113,
+      "file_lines": 509
+    },
+    {
+      "module": ".",
+      "package": "tools",
+      "path": "internal/tools/edit.go",
+      "receiver": "*UnifiedDiffTool",
+      "name": "Execute",
+      "complexity": 24,
+      "lines": 81,
+      "file_lines": 509
+    },
+    {
+      "module": ".",
+      "package": "tools",
+      "path": "internal/tools/grep.go",
+      "name": "enrichFileGrepGroup",
+      "complexity": 21,
+      "lines": 61,
+      "file_lines": 1448
+    },
+    {
+      "module": ".",
+      "package": "tools",
+      "path": "internal/tools/grep.go",
+      "name": "parseToPending",
+      "complexity": 25,
+      "lines": 102,
+      "file_lines": 1448
     },
     {
       "module": ".",
@@ -8959,38 +10408,47 @@
       "path": "internal/tools/grep.go",
       "receiver": "*GrepTool",
       "name": "Execute",
-      "complexity": 34,
+      "complexity": 52,
       "lines": 151,
       "file_lines": 1448
     },
     {
       "module": ".",
       "package": "tools",
-      "path": "internal/tools/image_gen.go",
-      "receiver": "*ImageGenerateTool",
+      "path": "internal/tools/manage_workspace.go",
+      "receiver": "*ManageWorkspaceTool",
       "name": "Execute",
-      "complexity": 65,
-      "lines": 289,
-      "file_lines": 449
+      "complexity": 21,
+      "lines": 57,
+      "file_lines": 155
+    },
+    {
+      "module": ".",
+      "package": "tools",
+      "path": "internal/tools/plan_edit.go",
+      "name": "FindBestMatch",
+      "complexity": 32,
+      "lines": 68,
+      "file_lines": 77
+    },
+    {
+      "module": ".",
+      "package": "tools",
+      "path": "internal/tools/queue_agent.go",
+      "receiver": "*jobsBackedAgentClient",
+      "name": "waitForPinnedRun",
+      "complexity": 22,
+      "lines": 62,
+      "file_lines": 999
     },
     {
       "module": ".",
       "package": "tools",
       "path": "internal/tools/read.go",
       "name": "streamLineNumberedRange",
-      "complexity": 49,
+      "complexity": 35,
       "lines": 199,
       "file_lines": 391
-    },
-    {
-      "module": ".",
-      "package": "tools",
-      "path": "internal/tools/registry.go",
-      "receiver": "*LocalToolRegistry",
-      "name": "registerTool",
-      "complexity": 27,
-      "lines": 71,
-      "file_lines": 785
     },
     {
       "module": ".",
@@ -8998,7 +10456,7 @@
       "path": "internal/tools/run_agent_script.go",
       "receiver": "*RunAgentScriptTool",
       "name": "Execute",
-      "complexity": 31,
+      "complexity": 32,
       "lines": 145,
       "file_lines": 248
     },
@@ -9006,20 +10464,11 @@
       "module": ".",
       "package": "tools",
       "path": "internal/tools/shell.go",
-      "name": "extractLeadingCd",
-      "complexity": 21,
-      "lines": 89,
-      "file_lines": 850
-    },
-    {
-      "module": ".",
-      "package": "tools",
-      "path": "internal/tools/shell.go",
       "receiver": "*ShellTool",
       "name": "Execute",
-      "complexity": 28,
+      "complexity": 22,
       "lines": 89,
-      "file_lines": 850
+      "file_lines": 853
     },
     {
       "module": ".",
@@ -9027,36 +10476,27 @@
       "path": "internal/tools/shell.go",
       "receiver": "*ShellTool",
       "name": "executeLocal",
-      "complexity": 34,
+      "complexity": 40,
       "lines": 196,
-      "file_lines": 850
+      "file_lines": 853
     },
     {
       "module": ".",
       "package": "tools",
       "path": "internal/tools/shell_track.go",
       "name": "gitShowIndexBatch",
-      "complexity": 29,
+      "complexity": 24,
       "lines": 99,
-      "file_lines": 1349
-    },
-    {
-      "module": ".",
-      "package": "tools",
-      "path": "internal/tools/shell_track.go",
-      "name": "postShellTracking",
-      "complexity": 74,
-      "lines": 270,
-      "file_lines": 1349
+      "file_lines": 1374
     },
     {
       "module": ".",
       "package": "tools",
       "path": "internal/tools/shell_track.go",
       "name": "preShellSnapshotWithClaims",
-      "complexity": 23,
+      "complexity": 32,
       "lines": 94,
-      "file_lines": 1349
+      "file_lines": 1374
     },
     {
       "module": ".",
@@ -9064,9 +10504,9 @@
       "path": "internal/tools/shell_track.go",
       "receiver": "*shellSnapshot",
       "name": "buildChangeRecord",
-      "complexity": 30,
+      "complexity": 21,
       "lines": 77,
-      "file_lines": 1349
+      "file_lines": 1374
     },
     {
       "module": ".",
@@ -9074,19 +10514,9 @@
       "path": "internal/tools/show_media.go",
       "receiver": "*ShowMediaTool",
       "name": "Execute",
-      "complexity": 23,
+      "complexity": 22,
       "lines": 101,
       "file_lines": 292
-    },
-    {
-      "module": ".",
-      "package": "tools",
-      "path": "internal/tools/spawn_agent.go",
-      "receiver": "*SpawnAgentTool",
-      "name": "Execute",
-      "complexity": 21,
-      "lines": 115,
-      "file_lines": 588
     },
     {
       "module": ".",
@@ -9094,7 +10524,7 @@
       "path": "internal/tools/ui_source.go",
       "receiver": "*UIGetSourceTool",
       "name": "Execute",
-      "complexity": 35,
+      "complexity": 46,
       "lines": 129,
       "file_lines": 281
     },
@@ -9104,7 +10534,7 @@
       "path": "internal/tools/view_image.go",
       "receiver": "*ViewImageTool",
       "name": "Execute",
-      "complexity": 21,
+      "complexity": 22,
       "lines": 120,
       "file_lines": 550
     },
@@ -9114,7 +10544,7 @@
       "path": "internal/tools/workspace_capability.go",
       "receiver": "*ApprovalManager",
       "name": "ConfigureWorkspacePersistence",
-      "complexity": 28,
+      "complexity": 31,
       "lines": 95,
       "file_lines": 1006
     },
@@ -9124,7 +10554,7 @@
       "path": "internal/tools/workspace_capability.go",
       "receiver": "*ApprovalManager",
       "name": "GrantWorkspace",
-      "complexity": 27,
+      "complexity": 26,
       "lines": 88,
       "file_lines": 1006
     },
@@ -9134,7 +10564,7 @@
       "path": "internal/tools/workspace_capability.go",
       "receiver": "*ApprovalManager",
       "name": "RevokeWorkspace",
-      "complexity": 25,
+      "complexity": 28,
       "lines": 77,
       "file_lines": 1006
     },
@@ -9144,7 +10574,7 @@
       "path": "internal/tools/workspace_capability.go",
       "receiver": "*ApprovalManager",
       "name": "SetPrimaryWorkspaceWithContext",
-      "complexity": 34,
+      "complexity": 31,
       "lines": 111,
       "file_lines": 1006
     },
@@ -9154,7 +10584,7 @@
       "path": "internal/tools/workspace_capability.go",
       "receiver": "*ApprovalManager",
       "name": "ensurePrimaryWorkspaceAccess",
-      "complexity": 37,
+      "complexity": 39,
       "lines": 126,
       "file_lines": 1006
     },
@@ -9164,7 +10594,7 @@
       "path": "internal/tools/write.go",
       "receiver": "*WriteFileTool",
       "name": "Execute",
-      "complexity": 27,
+      "complexity": 30,
       "lines": 148,
       "file_lines": 254
     },
@@ -9173,9 +10603,9 @@
       "package": "chat",
       "path": "internal/tui/chat/chat.go",
       "name": "NewWithFastProviderAndApproval",
-      "complexity": 25,
-      "lines": 277,
-      "file_lines": 2605
+      "complexity": 29,
+      "lines": 278,
+      "file_lines": 2618
     },
     {
       "module": ".",
@@ -9183,9 +10613,9 @@
       "path": "internal/tui/chat/chat.go",
       "receiver": "*Model",
       "name": "Init",
-      "complexity": 21,
+      "complexity": 23,
       "lines": 70,
-      "file_lines": 2605
+      "file_lines": 2618
     },
     {
       "module": ".",
@@ -9193,9 +10623,9 @@
       "path": "internal/tui/chat/chat.go",
       "receiver": "*Model",
       "name": "Update",
-      "complexity": 75,
+      "complexity": 68,
       "lines": 225,
-      "file_lines": 2605
+      "file_lines": 2618
     },
     {
       "module": ".",
@@ -9203,9 +10633,18 @@
       "path": "internal/tui/chat/chat.go",
       "receiver": "*Model",
       "name": "applyWindowSize",
-      "complexity": 23,
+      "complexity": 27,
       "lines": 100,
-      "file_lines": 2605
+      "file_lines": 2618
+    },
+    {
+      "module": ".",
+      "package": "chat",
+      "path": "internal/tui/chat/commands.go",
+      "name": "filterCommandEntries",
+      "complexity": 27,
+      "lines": 80,
+      "file_lines": 755
     },
     {
       "module": ".",
@@ -9213,7 +10652,7 @@
       "path": "internal/tui/chat/commands.go",
       "receiver": "*Model",
       "name": "ExecuteCommand",
-      "complexity": 60,
+      "complexity": 31,
       "lines": 157,
       "file_lines": 755
     },
@@ -9222,8 +10661,18 @@
       "package": "chat",
       "path": "internal/tui/chat/commands_handover.go",
       "receiver": "*Model",
+      "name": "buildHandoverSession",
+      "complexity": 25,
+      "lines": 89,
+      "file_lines": 766
+    },
+    {
+      "module": ".",
+      "package": "chat",
+      "path": "internal/tui/chat/commands_handover.go",
+      "receiver": "*Model",
       "name": "cmdHandover",
-      "complexity": 39,
+      "complexity": 60,
       "lines": 192,
       "file_lines": 766
     },
@@ -9233,7 +10682,7 @@
       "path": "internal/tui/chat/commands_handover.go",
       "receiver": "*Model",
       "name": "executeHandover",
-      "complexity": 30,
+      "complexity": 36,
       "lines": 152,
       "file_lines": 766
     },
@@ -9243,9 +10692,39 @@
       "path": "internal/tui/chat/commands_mcp.go",
       "receiver": "*Model",
       "name": "cmdMcp",
-      "complexity": 31,
+      "complexity": 24,
       "lines": 103,
       "file_lines": 467
+    },
+    {
+      "module": ".",
+      "package": "chat",
+      "path": "internal/tui/chat/commands_mcp.go",
+      "receiver": "*Model",
+      "name": "mcpShowStatus",
+      "complexity": 21,
+      "lines": 65,
+      "file_lines": 467
+    },
+    {
+      "module": ".",
+      "package": "chat",
+      "path": "internal/tui/chat/commands_session.go",
+      "receiver": "*Model",
+      "name": "cmdExport",
+      "complexity": 34,
+      "lines": 87,
+      "file_lines": 543
+    },
+    {
+      "module": ".",
+      "package": "chat",
+      "path": "internal/tui/chat/commands_skills.go",
+      "receiver": "*Model",
+      "name": "switchModelWithOptions",
+      "complexity": 21,
+      "lines": 99,
+      "file_lines": 389
     },
     {
       "module": ".",
@@ -9253,7 +10732,7 @@
       "path": "internal/tui/chat/commit.go",
       "receiver": "*Model",
       "name": "handleCommitKey",
-      "complexity": 49,
+      "complexity": 54,
       "lines": 132,
       "file_lines": 775
     },
@@ -9263,7 +10742,7 @@
       "path": "internal/tui/chat/commit.go",
       "receiver": "*Model",
       "name": "renderCommit",
-      "complexity": 56,
+      "complexity": 69,
       "lines": 195,
       "file_lines": 775
     },
@@ -9282,8 +10761,18 @@
       "package": "chat",
       "path": "internal/tui/chat/dialog.go",
       "receiver": "*DialogModel",
-      "name": "Update",
+      "name": "ShowMCPPicker",
       "complexity": 25,
+      "lines": 68,
+      "file_lines": 1305
+    },
+    {
+      "module": ".",
+      "package": "chat",
+      "path": "internal/tui/chat/dialog.go",
+      "receiver": "*DialogModel",
+      "name": "Update",
+      "complexity": 22,
       "lines": 71,
       "file_lines": 1305
     },
@@ -9293,7 +10782,7 @@
       "path": "internal/tui/chat/dialog.go",
       "receiver": "*DialogModel",
       "name": "viewBranchTree",
-      "complexity": 26,
+      "complexity": 62,
       "lines": 129,
       "file_lines": 1305
     },
@@ -9303,9 +10792,28 @@
       "path": "internal/tui/chat/dialog.go",
       "receiver": "*DialogModel",
       "name": "viewMCPPicker",
-      "complexity": 23,
+      "complexity": 25,
       "lines": 137,
       "file_lines": 1305
+    },
+    {
+      "module": ".",
+      "package": "chat",
+      "path": "internal/tui/chat/dialog.go",
+      "receiver": "*DialogModel",
+      "name": "viewStandardDialog",
+      "complexity": 33,
+      "lines": 122,
+      "file_lines": 1305
+    },
+    {
+      "module": ".",
+      "package": "chat",
+      "path": "internal/tui/chat/files.go",
+      "name": "ListFiles",
+      "complexity": 21,
+      "lines": 68,
+      "file_lines": 353
     },
     {
       "module": ".",
@@ -9313,7 +10821,7 @@
       "path": "internal/tui/chat/handlers.go",
       "receiver": "*Model",
       "name": "applyInterruptActionWithParts",
-      "complexity": 21,
+      "complexity": 29,
       "lines": 68,
       "file_lines": 1280
     },
@@ -9322,8 +10830,18 @@
       "package": "chat",
       "path": "internal/tui/chat/handlers.go",
       "receiver": "*Model",
+      "name": "cancelActiveForInterrupt",
+      "complexity": 26,
+      "lines": 72,
+      "file_lines": 1280
+    },
+    {
+      "module": ".",
+      "package": "chat",
+      "path": "internal/tui/chat/handlers.go",
+      "receiver": "*Model",
       "name": "handleKeyMsg",
-      "complexity": 84,
+      "complexity": 91,
       "lines": 321,
       "file_lines": 1280
     },
@@ -9333,8 +10851,18 @@
       "path": "internal/tui/chat/handlers.go",
       "receiver": "*Model",
       "name": "handlePasteMsg",
-      "complexity": 27,
+      "complexity": 33,
       "lines": 88,
+      "file_lines": 1280
+    },
+    {
+      "module": ".",
+      "package": "chat",
+      "path": "internal/tui/chat/handlers.go",
+      "receiver": "*Model",
+      "name": "restorePendingSteeringDraft",
+      "complexity": 27,
+      "lines": 45,
       "file_lines": 1280
     },
     {
@@ -9343,19 +10871,29 @@
       "path": "internal/tui/chat/handlers_composer.go",
       "receiver": "*Model",
       "name": "handleIdleTabKey",
-      "complexity": 26,
+      "complexity": 37,
       "lines": 82,
       "file_lines": 357
     },
     {
       "module": ".",
       "package": "chat",
-      "path": "internal/tui/chat/mentions.go",
+      "path": "internal/tui/chat/handlers_dialog.go",
       "receiver": "*Model",
-      "name": "acceptMentionSelection",
-      "complexity": 25,
-      "lines": 57,
-      "file_lines": 764
+      "name": "handleMCPPickerDialogKey",
+      "complexity": 21,
+      "lines": 50,
+      "file_lines": 294
+    },
+    {
+      "module": ".",
+      "package": "chat",
+      "path": "internal/tui/chat/image_render.go",
+      "receiver": "*Model",
+      "name": "finishPostFrameImageComposition",
+      "complexity": 22,
+      "lines": 72,
+      "file_lines": 711
     },
     {
       "module": ".",
@@ -9370,12 +10908,21 @@
     {
       "module": ".",
       "package": "chat",
+      "path": "internal/tui/chat/persisted_subagents.go",
+      "name": "discoverPersistedSubagents",
+      "complexity": 21,
+      "lines": 40,
+      "file_lines": 147
+    },
+    {
+      "module": ".",
+      "package": "chat",
       "path": "internal/tui/chat/render.go",
       "receiver": "*Model",
       "name": "View",
-      "complexity": 43,
+      "complexity": 35,
       "lines": 178,
-      "file_lines": 2402
+      "file_lines": 2438
     },
     {
       "module": ".",
@@ -9383,19 +10930,9 @@
       "path": "internal/tui/chat/render.go",
       "receiver": "*Model",
       "name": "buildFooterLayout",
-      "complexity": 34,
+      "complexity": 55,
       "lines": 150,
-      "file_lines": 2402
-    },
-    {
-      "module": ".",
-      "package": "chat",
-      "path": "internal/tui/chat/render.go",
-      "receiver": "*Model",
-      "name": "overlayAltScreenPanels",
-      "complexity": 32,
-      "lines": 126,
-      "file_lines": 2402
+      "file_lines": 2438
     },
     {
       "module": ".",
@@ -9403,9 +10940,19 @@
       "path": "internal/tui/chat/render.go",
       "receiver": "*Model",
       "name": "overlayVisibleViewportImages",
-      "complexity": 22,
+      "complexity": 27,
       "lines": 70,
-      "file_lines": 2402
+      "file_lines": 2438
+    },
+    {
+      "module": ".",
+      "package": "chat",
+      "path": "internal/tui/chat/render.go",
+      "receiver": "*Model",
+      "name": "renderAltScreenViewportLines",
+      "complexity": 22,
+      "lines": 62,
+      "file_lines": 2438
     },
     {
       "module": ".",
@@ -9413,9 +10960,9 @@
       "path": "internal/tui/chat/render.go",
       "receiver": "*Model",
       "name": "renderStreamingInline",
-      "complexity": 21,
+      "complexity": 32,
       "lines": 83,
-      "file_lines": 2402
+      "file_lines": 2438
     },
     {
       "module": ".",
@@ -9423,19 +10970,9 @@
       "path": "internal/tui/chat/render.go",
       "receiver": "*Model",
       "name": "updateCompletions",
-      "complexity": 46,
+      "complexity": 60,
       "lines": 175,
-      "file_lines": 2402
-    },
-    {
-      "module": ".",
-      "package": "chat",
-      "path": "internal/tui/chat/render.go",
-      "receiver": "*Model",
-      "name": "viewAltScreen",
-      "complexity": 75,
-      "lines": 261,
-      "file_lines": 2402
+      "file_lines": 2438
     },
     {
       "module": ".",
@@ -9450,30 +10987,10 @@
     {
       "module": ".",
       "package": "chat",
-      "path": "internal/tui/chat/share.go",
-      "receiver": "*Model",
-      "name": "startShare",
-      "complexity": 25,
-      "lines": 110,
-      "file_lines": 341
-    },
-    {
-      "module": ".",
-      "package": "chat",
-      "path": "internal/tui/chat/side_question.go",
-      "receiver": "*Model",
-      "name": "handleSideQuestionKey",
-      "complexity": 22,
-      "lines": 68,
-      "file_lines": 627
-    },
-    {
-      "module": ".",
-      "package": "chat",
       "path": "internal/tui/chat/skill_commands.go",
       "receiver": "*Model",
       "name": "skillArgumentCompletionItems",
-      "complexity": 26,
+      "complexity": 24,
       "lines": 73,
       "file_lines": 610
     },
@@ -9482,50 +10999,30 @@
       "package": "chat",
       "path": "internal/tui/chat/stats.go",
       "receiver": "*Model",
+      "name": "renderModelStats",
+      "complexity": 22,
+      "lines": 85,
+      "file_lines": 802
+    },
+    {
+      "module": ".",
+      "package": "chat",
+      "path": "internal/tui/chat/stats.go",
+      "receiver": "*Model",
       "name": "renderStatsModal",
-      "complexity": 42,
-      "lines": 199,
-      "file_lines": 487
+      "complexity": 40,
+      "lines": 147,
+      "file_lines": 802
     },
     {
       "module": ".",
       "package": "chat",
       "path": "internal/tui/chat/steering.go",
       "receiver": "*MainRunManager",
-      "name": "Rush",
-      "complexity": 29,
-      "lines": 120,
-      "file_lines": 330
-    },
-    {
-      "module": ".",
-      "package": "chat",
-      "path": "internal/tui/chat/steering.go",
-      "receiver": "*MainRunManager",
-      "name": "releaseFailedSteering",
+      "name": "Rush.func1",
       "complexity": 21,
-      "lines": 70,
+      "lines": 88,
       "file_lines": 330
-    },
-    {
-      "module": ".",
-      "package": "chat",
-      "path": "internal/tui/chat/sticky_user_prompt.go",
-      "receiver": "*Model",
-      "name": "handleStickyUserPromptMouseClick",
-      "complexity": 25,
-      "lines": 54,
-      "file_lines": 439
-    },
-    {
-      "module": ".",
-      "package": "chat",
-      "path": "internal/tui/chat/sticky_user_prompt.go",
-      "receiver": "*Model",
-      "name": "refreshUserPromptHover",
-      "complexity": 21,
-      "lines": 40,
-      "file_lines": 439
     },
     {
       "module": ".",
@@ -9533,9 +11030,9 @@
       "path": "internal/tui/chat/streaming.go",
       "receiver": "*Model",
       "name": "attachMainRun",
-      "complexity": 33,
+      "complexity": 45,
       "lines": 119,
-      "file_lines": 1739
+      "file_lines": 1821
     },
     {
       "module": ".",
@@ -9543,29 +11040,29 @@
       "path": "internal/tui/chat/streaming.go",
       "receiver": "*Model",
       "name": "sendMessage",
-      "complexity": 25,
-      "lines": 157,
-      "file_lines": 1739
+      "complexity": 26,
+      "lines": 150,
+      "file_lines": 1821
     },
     {
       "module": ".",
       "package": "chat",
       "path": "internal/tui/chat/streaming.go",
       "receiver": "*Model",
-      "name": "startStream",
-      "complexity": 47,
-      "lines": 331,
-      "file_lines": 1739
+      "name": "startStream.func4",
+      "complexity": 31,
+      "lines": 308,
+      "file_lines": 1821
     },
     {
       "module": ".",
       "package": "chat",
       "path": "internal/tui/chat/streaming.go",
       "receiver": "*Model",
-      "name": "streamPersistenceCallbacks",
-      "complexity": 38,
-      "lines": 134,
-      "file_lines": 1739
+      "name": "streamPersistenceCallbacks.func5",
+      "complexity": 21,
+      "lines": 62,
+      "file_lines": 1821
     },
     {
       "module": ".",
@@ -9573,7 +11070,7 @@
       "path": "internal/tui/chat/tree.go",
       "receiver": "*Model",
       "name": "cmdTree",
-      "complexity": 50,
+      "complexity": 56,
       "lines": 156,
       "file_lines": 839
     },
@@ -9583,9 +11080,9 @@
       "path": "internal/tui/chat/update_dispatch.go",
       "receiver": "*Model",
       "name": "dispatchConversationUpdate",
-      "complexity": 34,
-      "lines": 114,
-      "file_lines": 356
+      "complexity": 37,
+      "lines": 112,
+      "file_lines": 354
     },
     {
       "module": ".",
@@ -9593,9 +11090,9 @@
       "path": "internal/tui/chat/update_dispatch.go",
       "receiver": "*Model",
       "name": "dispatchFeatureUpdate",
-      "complexity": 28,
+      "complexity": 24,
       "lines": 101,
-      "file_lines": 356
+      "file_lines": 354
     },
     {
       "module": ".",
@@ -9603,9 +11100,9 @@
       "path": "internal/tui/chat/update_dispatch.go",
       "receiver": "*Model",
       "name": "dispatchTerminalUpdate",
-      "complexity": 47,
+      "complexity": 29,
       "lines": 117,
-      "file_lines": 356
+      "file_lines": 354
     },
     {
       "module": ".",
@@ -9620,12 +11117,22 @@
     {
       "module": ".",
       "package": "chat",
+      "path": "internal/tui/chat/update_stream_events.go",
+      "receiver": "*Model",
+      "name": "handleSmoothTick",
+      "complexity": 26,
+      "lines": 36,
+      "file_lines": 439
+    },
+    {
+      "module": ".",
+      "package": "chat",
       "path": "internal/tui/chat/update_stream_terminal.go",
       "receiver": "*Model",
       "name": "handleStreamDone",
-      "complexity": 33,
-      "lines": 235,
-      "file_lines": 370
+      "complexity": 54,
+      "lines": 237,
+      "file_lines": 379
     },
     {
       "module": ".",
@@ -9633,9 +11140,9 @@
       "path": "internal/tui/chat/update_stream_terminal.go",
       "receiver": "*Model",
       "name": "handleStreamError",
-      "complexity": 24,
-      "lines": 119,
-      "file_lines": 370
+      "complexity": 34,
+      "lines": 120,
+      "file_lines": 379
     },
     {
       "module": ".",
@@ -9643,7 +11150,7 @@
       "path": "internal/tui/chat/worktree.go",
       "receiver": "*Model",
       "name": "applyRuntimeDirectory",
-      "complexity": 28,
+      "complexity": 30,
       "lines": 90,
       "file_lines": 1191
     },
@@ -9653,7 +11160,7 @@
       "path": "internal/tui/chat/worktree.go",
       "receiver": "*Model",
       "name": "handleWorktreeOperationDone",
-      "complexity": 39,
+      "complexity": 34,
       "lines": 91,
       "file_lines": 1191
     },
@@ -9663,7 +11170,7 @@
       "path": "internal/tui/inspector/content.go",
       "receiver": "*ContentRenderer",
       "name": "RenderMessages",
-      "complexity": 22,
+      "complexity": 29,
       "lines": 118,
       "file_lines": 1620
     },
@@ -9672,8 +11179,28 @@
       "package": "inspector",
       "path": "internal/tui/inspector/content.go",
       "receiver": "*ContentRenderer",
-      "name": "renderSubagentSession",
+      "name": "renderAssistantContentWithItems",
+      "complexity": 37,
+      "lines": 60,
+      "file_lines": 1620
+    },
+    {
+      "module": ".",
+      "package": "inspector",
+      "path": "internal/tui/inspector/content.go",
+      "receiver": "*ContentRenderer",
+      "name": "renderHeader",
       "complexity": 33,
+      "lines": 119,
+      "file_lines": 1620
+    },
+    {
+      "module": ".",
+      "package": "inspector",
+      "path": "internal/tui/inspector/content.go",
+      "receiver": "*ContentRenderer",
+      "name": "renderSubagentSession",
+      "complexity": 57,
       "lines": 165,
       "file_lines": 1620
     },
@@ -9682,8 +11209,18 @@
       "package": "inspector",
       "path": "internal/tui/inspector/content.go",
       "receiver": "*ContentRenderer",
+      "name": "renderToolDefinitions",
+      "complexity": 21,
+      "lines": 79,
+      "file_lines": 1620
+    },
+    {
+      "module": ".",
+      "package": "inspector",
+      "path": "internal/tui/inspector/content.go",
+      "receiver": "*ContentRenderer",
       "name": "renderToolResultsWithCalls",
-      "complexity": 24,
+      "complexity": 56,
       "lines": 136,
       "file_lines": 1620
     },
@@ -9693,7 +11230,7 @@
       "path": "internal/tui/mcp/browse.go",
       "receiver": "*Model",
       "name": "Update",
-      "complexity": 45,
+      "complexity": 54,
       "lines": 150,
       "file_lines": 705
     },
@@ -9703,7 +11240,7 @@
       "path": "internal/tui/mcp/browse.go",
       "receiver": "*Model",
       "name": "View",
-      "complexity": 24,
+      "complexity": 43,
       "lines": 123,
       "file_lines": 705
     },
@@ -9713,7 +11250,7 @@
       "path": "internal/tui/sessions/browse.go",
       "receiver": "*Model",
       "name": "View",
-      "complexity": 22,
+      "complexity": 35,
       "lines": 121,
       "file_lines": 854
     },
@@ -9723,18 +11260,8 @@
       "path": "internal/tui/sessions/browse.go",
       "receiver": "*Model",
       "name": "doRefresh",
-      "complexity": 24,
+      "complexity": 33,
       "lines": 108,
-      "file_lines": 854
-    },
-    {
-      "module": ".",
-      "package": "sessions",
-      "path": "internal/tui/sessions/browse.go",
-      "receiver": "*Model",
-      "name": "handleKeyMsg",
-      "complexity": 30,
-      "lines": 100,
       "file_lines": 854
     },
     {
@@ -9742,7 +11269,7 @@
       "package": "skills",
       "path": "internal/tui/skills/browse.go",
       "name": "injectProvenance",
-      "complexity": 22,
+      "complexity": 47,
       "lines": 106,
       "file_lines": 1614
     },
@@ -9752,7 +11279,7 @@
       "path": "internal/tui/skills/browse.go",
       "receiver": "*Model",
       "name": "Update",
-      "complexity": 31,
+      "complexity": 35,
       "lines": 113,
       "file_lines": 1614
     },
@@ -9762,7 +11289,7 @@
       "path": "internal/tui/skills/browse.go",
       "receiver": "*Model",
       "name": "updateBrowseView",
-      "complexity": 33,
+      "complexity": 40,
       "lines": 118,
       "file_lines": 1614
     },
@@ -9772,7 +11299,7 @@
       "path": "internal/tui/skills/browse.go",
       "receiver": "*Model",
       "name": "updateInstallView",
-      "complexity": 24,
+      "complexity": 25,
       "lines": 74,
       "file_lines": 1614
     },
@@ -9782,7 +11309,7 @@
       "path": "internal/tui/skills/browse.go",
       "receiver": "*Model",
       "name": "viewBrowse",
-      "complexity": 31,
+      "complexity": 67,
       "lines": 158,
       "file_lines": 1614
     },
@@ -9792,7 +11319,7 @@
       "path": "internal/tui/worktrees/browse.go",
       "receiver": "*Model",
       "name": "View",
-      "complexity": 28,
+      "complexity": 35,
       "lines": 104,
       "file_lines": 664
     },
@@ -9802,7 +11329,7 @@
       "path": "internal/tui/worktrees/browse.go",
       "receiver": "*Model",
       "name": "handleKey",
-      "complexity": 38,
+      "complexity": 25,
       "lines": 102,
       "file_lines": 664
     },
@@ -9810,8 +11337,17 @@
       "module": ".",
       "package": "udiff",
       "path": "internal/udiff/apply.go",
+      "name": "extractSequences",
+      "complexity": 25,
+      "lines": 51,
+      "file_lines": 512
+    },
+    {
+      "module": ".",
+      "package": "udiff",
+      "path": "internal/udiff/apply.go",
       "name": "updateBraceDepth",
-      "complexity": 30,
+      "complexity": 27,
       "lines": 76,
       "file_lines": 512
     },
@@ -9820,7 +11356,7 @@
       "package": "udiff",
       "path": "internal/udiff/parser.go",
       "name": "Parse",
-      "complexity": 29,
+      "complexity": 48,
       "lines": 120,
       "file_lines": 255
     },
@@ -9828,8 +11364,17 @@
       "module": ".",
       "package": "ui",
       "path": "internal/ui/inline_diff.go",
+      "name": "CalcDiffWidth",
+      "complexity": 21,
+      "lines": 43,
+      "file_lines": 695
+    },
+    {
+      "module": ".",
+      "package": "ui",
+      "path": "internal/ui/inline_diff.go",
       "name": "PrintCompactDiff",
-      "complexity": 33,
+      "complexity": 35,
       "lines": 171,
       "file_lines": 695
     },
@@ -9838,7 +11383,7 @@
       "package": "ui",
       "path": "internal/ui/media.go",
       "name": "RenderMediaMarkdown",
-      "complexity": 21,
+      "complexity": 37,
       "lines": 74,
       "file_lines": 252
     },
@@ -9847,7 +11392,7 @@
       "package": "ui",
       "path": "internal/ui/segment.go",
       "name": "renderSegmentsWithLeadingState",
-      "complexity": 41,
+      "complexity": 78,
       "lines": 118,
       "file_lines": 1090
     },
@@ -9856,9 +11401,18 @@
       "package": "ui",
       "path": "internal/ui/segment.go",
       "name": "renderToolSegmentBase",
-      "complexity": 28,
+      "complexity": 43,
       "lines": 81,
       "file_lines": 1090
+    },
+    {
+      "module": ".",
+      "package": "ui",
+      "path": "internal/ui/smooth_buffer.go",
+      "name": "extractWordsFromBytes",
+      "complexity": 22,
+      "lines": 62,
+      "file_lines": 255
     },
     {
       "module": ".",
@@ -9866,9 +11420,9 @@
       "path": "internal/ui/stream_adapter.go",
       "receiver": "*StreamAdapter",
       "name": "ProcessStream",
-      "complexity": 78,
-      "lines": 274,
-      "file_lines": 468
+      "complexity": 62,
+      "lines": 181,
+      "file_lines": 490
     },
     {
       "module": ".",
@@ -9876,18 +11430,56 @@
       "path": "internal/ui/streaming/partial.go",
       "receiver": "*StreamRenderer",
       "name": "findSafePoint",
-      "complexity": 62,
-      "lines": 211,
-      "file_lines": 449
+      "complexity": 37,
+      "lines": 113,
+      "file_lines": 477
+    },
+    {
+      "module": ".",
+      "package": "ui",
+      "path": "internal/ui/subagent_helpers.go",
+      "name": "BuildSubagentPreview",
+      "complexity": 29,
+      "lines": 60,
+      "file_lines": 355
     },
     {
       "module": ".",
       "package": "ui",
       "path": "internal/ui/subagent_helpers.go",
       "name": "HandleSubagentProgress",
-      "complexity": 27,
-      "lines": 74,
-      "file_lines": 345
+      "complexity": 23,
+      "lines": 72,
+      "file_lines": 355
+    },
+    {
+      "module": ".",
+      "package": "ui",
+      "path": "internal/ui/subagent_tracker.go",
+      "receiver": "*SubagentProgress",
+      "name": "Render",
+      "complexity": 35,
+      "lines": 64,
+      "file_lines": 624
+    },
+    {
+      "module": ".",
+      "package": "ui",
+      "path": "internal/ui/tool_tracker.go",
+      "name": "isBlankOrANSI",
+      "complexity": 23,
+      "lines": 25,
+      "file_lines": 1438
+    },
+    {
+      "module": ".",
+      "package": "ui",
+      "path": "internal/ui/tool_tracker.go",
+      "receiver": "*ToolTracker",
+      "name": "FlushBeforeExternalUI",
+      "complexity": 23,
+      "lines": 73,
+      "file_lines": 1438
     },
     {
       "module": ".",
@@ -9895,7 +11487,7 @@
       "path": "internal/ui/tool_tracker.go",
       "receiver": "*ToolTracker",
       "name": "FlushStreamingText",
-      "complexity": 56,
+      "complexity": 65,
       "lines": 259,
       "file_lines": 1438
     },
@@ -9905,7 +11497,7 @@
       "path": "internal/ui/tool_tracker.go",
       "receiver": "*ToolTracker",
       "name": "FlushToScrollback",
-      "complexity": 38,
+      "complexity": 53,
       "lines": 126,
       "file_lines": 1438
     },
@@ -9914,7 +11506,7 @@
       "package": "ui",
       "path": "internal/ui/unified_diff.go",
       "name": "RenderDiffSegmentWithOperation",
-      "complexity": 56,
+      "complexity": 45,
       "lines": 294,
       "file_lines": 1002
     },
@@ -9922,8 +11514,17 @@
       "module": ".",
       "package": "ui",
       "path": "internal/ui/unified_diff.go",
+      "name": "RenderDiffSegmentWithOperation.func5",
+      "complexity": 28,
+      "lines": 80,
+      "file_lines": 1002
+    },
+    {
+      "module": ".",
+      "package": "ui",
+      "path": "internal/ui/unified_diff.go",
       "name": "printUnifiedDiffInternal",
-      "complexity": 26,
+      "complexity": 54,
       "lines": 167,
       "file_lines": 1002
     },
@@ -9932,7 +11533,7 @@
       "package": "ui",
       "path": "internal/ui/unified_diff.go",
       "name": "splitAtVisibleLength",
-      "complexity": 23,
+      "complexity": 27,
       "lines": 78,
       "file_lines": 1002
     },
@@ -9941,7 +11542,7 @@
       "package": "ui",
       "path": "internal/ui/wizard.go",
       "name": "RunSetupWizard",
-      "complexity": 34,
+      "complexity": 43,
       "lines": 212,
       "file_lines": 534
     },
@@ -9950,7 +11551,7 @@
       "package": "uisource",
       "path": "internal/uisource/source.go",
       "name": "published",
-      "complexity": 28,
+      "complexity": 43,
       "lines": 108,
       "file_lines": 379
     },
@@ -9965,12 +11566,20 @@
     },
     {
       "module": ".",
+      "package": "usage",
+      "path": "internal/usage/claude_loader.go",
+      "name": "getClaudePaths",
+      "complexity": 23,
+      "lines": 51,
+      "file_lines": 209
+    },
+    {
+      "module": ".",
       "package": "webrtc",
       "path": "internal/webrtc/peer.go",
-      "receiver": "*peer",
-      "name": "handleOffer",
-      "complexity": 28,
-      "lines": 222,
+      "name": "parseOffer",
+      "complexity": 26,
+      "lines": 52,
       "file_lines": 1095
     },
     {
@@ -9978,9 +11587,9 @@
       "package": "webrtc",
       "path": "internal/webrtc/peer.go",
       "receiver": "*peer",
-      "name": "runDataChannel",
-      "complexity": 25,
-      "lines": 157,
+      "name": "handleOffer",
+      "complexity": 26,
+      "lines": 222,
       "file_lines": 1095
     },
     {
@@ -9989,7 +11598,7 @@
       "path": "internal/widgets/manager.go",
       "receiver": "*widgetEntry",
       "name": "startProcess",
-      "complexity": 30,
+      "complexity": 31,
       "lines": 209,
       "file_lines": 803
     },
@@ -9998,7 +11607,7 @@
       "package": "worktree",
       "path": "internal/worktree/worktree.go",
       "name": "Create",
-      "complexity": 34,
+      "complexity": 32,
       "lines": 141,
       "file_lines": 2294
     },
@@ -10007,7 +11616,7 @@
       "package": "worktree",
       "path": "internal/worktree/worktree.go",
       "name": "DiffContext",
-      "complexity": 32,
+      "complexity": 28,
       "lines": 131,
       "file_lines": 2294
     },
@@ -10016,7 +11625,7 @@
       "package": "worktree",
       "path": "internal/worktree/worktree.go",
       "name": "PromoteToRoot",
-      "complexity": 24,
+      "complexity": 22,
       "lines": 108,
       "file_lines": 2294
     },
@@ -10024,8 +11633,17 @@
       "module": ".",
       "package": "worktree",
       "path": "internal/worktree/worktree.go",
+      "name": "listForRoot",
+      "complexity": 25,
+      "lines": 81,
+      "file_lines": 2294
+    },
+    {
+      "module": ".",
+      "package": "worktree",
+      "path": "internal/worktree/worktree.go",
       "name": "stashRootChanges",
-      "complexity": 31,
+      "complexity": 34,
       "lines": 119,
       "file_lines": 2294
     }

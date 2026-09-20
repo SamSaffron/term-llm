@@ -17,13 +17,51 @@ ordinary functions omitted from the compact checked-in view.
   `internal/terminal/runtime` modules.
 - Standard generated-file headers and repository dependency/output directories
   are excluded. `tmp`, user homes, caches, and module caches are never scanned.
-- Complexity is one plus `if`, `for`, `range`, non-default switch/select cases,
-  and `&&`/`||`. Decisions in function literals are attributed to their nearest
-  named declaration. Top-level function-valued initializers are named after the
-  initialized variable. Span and file size are physical lines.
+- Complexity is one plus a nesting-weighted score of the body (revised
+  2026-09-20; see "Counting revision" below). Top-level function-valued
+  initializers are named after the initialized variable. Span and file size are
+  physical lines.
 - The checked baseline records every existing exception above 20 with package
   owner, rationale, and removal milestone. New functions above 20 and increases
   to existing exceptions fail `make complexity`.
+
+## Counting revision (2026-09-20)
+
+The original count was plain cyclomatic complexity, which measured the *shape*
+of Go code rather than the cost of reading it: a flat fifteen-case dispatch
+scored fifteen, a five-clause guard scored five, and every callback body was
+charged to whichever function happened to pass it. Deep nesting, the thing that
+actually makes code hard to hold in one's head, was free. The analyzer now
+counts:
+
+- `1` base per measured unit.
+- `1 + nesting depth` for each `if`, `for`, `range`, `switch`, `select`.
+  Nesting is the count of enclosing control structures within the same unit.
+- `1` (flat, no nesting weight) for each `else` and each `else if`: a chain is
+  one decision, not growing depth.
+- `1` (flat) for a guard clause — an `if` with no `else` whose body ends in
+  `return`, `break`, `continue`, `goto`, or `panic` — and its body does not
+  deepen nesting. An early exit discharges a case instead of holding one open.
+- `1` per *sequence* of the same logical operator, so `a || b || c` costs one
+  and `a && b || c` costs two.
+- `1` per labeled `break`/`continue` and per `goto`.
+- Cases are free: `switch` and `select` are charged once regardless of how many
+  arms they have.
+- Each function literal is measured as its own unit named `<parent>.funcN`,
+  numbered in order of appearance within its immediate parent unit, restarting
+  at nesting zero. A literal inside a literal is therefore `f.func1.func1`, so
+  its identity survives a sibling being added elsewhere in the declaration.
+  Literals inherit the enclosing receiver for identity.
+
+Rationale and consequences: the measure now ranks dense nested code above long
+flat code. Straight-line dispatchers and provider `Stream` wrappers whose body
+is one closure fell sharply; deeply nested parsing, rendering, and HTTP state
+handlers rose. The threshold of 20 is unchanged, and the ratchet is unchanged:
+the baseline was rewritten under the new measure, preserving the ownership
+record of every exception that survived it. Exceptions that appear only because
+the measure changed are marked `"origin": "remeasured"`; they are not new code.
+Because the scale moved, complexity numbers recorded in earlier acceptance
+documents are only comparable within their own measure.
 
 ## Target contracts
 

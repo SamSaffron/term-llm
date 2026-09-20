@@ -344,112 +344,14 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 
 	messages := make([]map[string]any, 0, len(r.recoveryMessages))
 	for _, msg := range r.recoveryMessages {
-		responseID := msg.ResponseID
-		if responseID == "" {
-			responseID = r.id
-		}
-		entry := map[string]any{
-			"id":          msg.ID,
-			"role":        msg.Role,
-			"created":     msg.Created,
-			"responseId":  responseID,
-			"response_id": responseID,
-		}
-		if msg.Role == "assistant" {
-			entry["assistantSegmentOrdinal"] = msg.AssistantSegmentOrdinal
-			entry["assistant_segment_ordinal"] = msg.AssistantSegmentOrdinal
-			if msg.SegmentStartSequence > 0 {
-				entry["segment_start_sequence"] = msg.SegmentStartSequence
-			}
-			if msg.SegmentEndSequence > 0 {
-				entry["segment_end_sequence"] = msg.SegmentEndSequence
-			}
-		}
-		if msg.Role == "compaction-boundary" {
-			if msg.CompactionEventSequence > 0 {
-				entry["compaction_sequence"] = msg.CompactionEventSequence
-			}
-			if msg.DurableCompactionSeq >= 0 {
-				entry["compaction_seq"] = msg.DurableCompactionSeq
-				entry["compaction_count"] = msg.CompactionCount
-			}
-		}
-		if msg.Role == "model-swap" && msg.ModelSwap != nil {
-			entry["event_sequence"] = msg.EventSequence
-			entry["boundary_id"] = msg.ModelSwap.BoundaryID
-			entry["from_provider"] = msg.ModelSwap.FromProvider
-			entry["from_model"] = msg.ModelSwap.FromModel
-			entry["from_reasoning_effort"] = msg.ModelSwap.FromEffort
-			entry["to_provider"] = msg.ModelSwap.ToProvider
-			entry["to_model"] = msg.ModelSwap.ToModel
-			entry["to_reasoning_effort"] = msg.ModelSwap.ToEffort
-			entry["swap_status"] = msg.ModelSwap.Status
-			entry["swap_strategy"] = msg.ModelSwap.Strategy
-		}
-		if len(msg.Content) > 0 {
-			entry["content"] = string(msg.Content)
-		}
-		if msg.Status != "" {
-			entry["status"] = msg.Status
-		}
-		if msg.InterruptState != "" {
-			entry["interruptState"] = msg.InterruptState
-			entry["interrupt_state"] = msg.InterruptState
-		}
-		if msg.ClientMessageID != "" {
-			entry["clientMessageId"] = msg.ClientMessageID
-			entry["client_message_id"] = msg.ClientMessageID
-		}
+		entry := r.recoveryMessagePayloadLocked(msg)
 		if msg.Expanded {
 			entry["expanded"] = msg.Expanded
 		}
 		if len(msg.Tools) > 0 {
 			toolsPayload := make([]map[string]any, 0, len(msg.Tools))
 			for _, tool := range msg.Tools {
-				toolEntry := map[string]any{
-					"id":      tool.ID,
-					"name":    tool.Name,
-					"status":  tool.Status,
-					"created": tool.Created,
-				}
-				if tool.Arguments != "" {
-					toolEntry["arguments"] = tool.Arguments
-				}
-				if tool.ArgumentsFinalized {
-					toolEntry["argumentsFinalized"] = true
-				}
-				if tool.StartedAt > 0 {
-					toolEntry["startedAt"] = tool.StartedAt
-					durationMs := tool.DurationMs
-					if durationMs == 0 && tool.EndedAt > 0 {
-						durationMs = max(int64(0), tool.EndedAt-tool.StartedAt)
-					} else if durationMs == 0 && tool.Status == "running" {
-						durationMs = max(int64(0), time.Now().UnixMilli()-tool.StartedAt)
-					}
-					toolEntry["durationMs"] = durationMs
-				}
-				if tool.EndedAt > 0 {
-					toolEntry["endedAt"] = tool.EndedAt
-				}
-				if tool.ResultStatus != "" {
-					toolEntry["resultStatus"] = tool.ResultStatus
-				}
-				if tool.AskUserAnswer != "" {
-					toolEntry["askUserAnswer"] = tool.AskUserAnswer
-				}
-				tool.appendSubagentRecovery(toolEntry)
-				if len(tool.GuardianReviews) > 0 {
-					reviews := make([]map[string]any, 0, len(tool.GuardianReviews))
-					for _, review := range tool.GuardianReviews {
-						reviews = append(reviews, cloneJSONMap(review))
-					}
-					toolEntry["guardianReviews"] = reviews
-				}
-				if len(tool.Images) > 0 {
-					images := make([]string, len(tool.Images))
-					copy(images, tool.Images)
-					toolEntry["images"] = images
-				}
+				toolEntry := r.recoveryToolPayloadLocked(tool)
 				if len(tool.Media) > 0 {
 					toolEntry["media"] = append([]webMediaEntry(nil), tool.Media...)
 				}
@@ -458,11 +360,7 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 			entry["tools"] = toolsPayload
 		}
 		if len(msg.Attachments) > 0 {
-			atts := make([]map[string]any, 0, len(msg.Attachments))
-			for _, att := range msg.Attachments {
-				atts = append(atts, cloneJSONMap(att))
-			}
-			entry["attachments"] = atts
+			entry["attachments"] = r.recoveryAttachmentsPayloadLocked(msg.Attachments)
 		}
 		if len(msg.Usage) > 0 {
 			entry["usage"] = cloneJSONMap(msg.Usage)
@@ -471,15 +369,7 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 	}
 	recovery["messages"] = messages
 	if len(r.recoveryEvents) > 0 {
-		events := make([]map[string]any, 0, len(r.recoveryEvents))
-		for _, ev := range r.recoveryEvents {
-			entry := map[string]any{"event": ev.Event}
-			if payload := cloneJSONMap(ev.Payload); len(payload) > 0 {
-				entry["payload"] = payload
-			}
-			events = append(events, entry)
-		}
-		recovery["events"] = events
+		recovery["events"] = r.recoveryEventsPayloadLocked()
 	}
 	if len(r.resolvedInteractions) > 0 {
 		resolved := make([]map[string]any, 0, len(r.resolvedInteractions))
@@ -501,6 +391,142 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 		recovery["resolved_interactions"] = resolved
 	}
 	return recovery
+}
+
+func (r *responseRun) recoveryMessagePayloadLocked(msg responseRunRecoveryMessage) map[string]any {
+	responseID := msg.ResponseID
+	if responseID == "" {
+		responseID = r.id
+	}
+	entry := map[string]any{
+		"id":          msg.ID,
+		"role":        msg.Role,
+		"created":     msg.Created,
+		"responseId":  responseID,
+		"response_id": responseID,
+	}
+	r.appendRecoveryMessageRoleFieldsLocked(entry, msg)
+	if len(msg.Content) > 0 {
+		entry["content"] = string(msg.Content)
+	}
+	if msg.Status != "" {
+		entry["status"] = msg.Status
+	}
+	if msg.InterruptState != "" {
+		entry["interruptState"] = msg.InterruptState
+		entry["interrupt_state"] = msg.InterruptState
+	}
+	if msg.ClientMessageID != "" {
+		entry["clientMessageId"] = msg.ClientMessageID
+		entry["client_message_id"] = msg.ClientMessageID
+	}
+	return entry
+}
+
+func (r *responseRun) appendRecoveryMessageRoleFieldsLocked(entry map[string]any, msg responseRunRecoveryMessage) {
+	if msg.Role == "assistant" {
+		entry["assistantSegmentOrdinal"] = msg.AssistantSegmentOrdinal
+		entry["assistant_segment_ordinal"] = msg.AssistantSegmentOrdinal
+		if msg.SegmentStartSequence > 0 {
+			entry["segment_start_sequence"] = msg.SegmentStartSequence
+		}
+		if msg.SegmentEndSequence > 0 {
+			entry["segment_end_sequence"] = msg.SegmentEndSequence
+		}
+	}
+	if msg.Role == "compaction-boundary" {
+		if msg.CompactionEventSequence > 0 {
+			entry["compaction_sequence"] = msg.CompactionEventSequence
+		}
+		if msg.DurableCompactionSeq >= 0 {
+			entry["compaction_seq"] = msg.DurableCompactionSeq
+			entry["compaction_count"] = msg.CompactionCount
+		}
+	}
+	if msg.Role == "model-swap" && msg.ModelSwap != nil {
+		entry["event_sequence"] = msg.EventSequence
+		entry["boundary_id"] = msg.ModelSwap.BoundaryID
+		entry["from_provider"] = msg.ModelSwap.FromProvider
+		entry["from_model"] = msg.ModelSwap.FromModel
+		entry["from_reasoning_effort"] = msg.ModelSwap.FromEffort
+		entry["to_provider"] = msg.ModelSwap.ToProvider
+		entry["to_model"] = msg.ModelSwap.ToModel
+		entry["to_reasoning_effort"] = msg.ModelSwap.ToEffort
+		entry["swap_status"] = msg.ModelSwap.Status
+		entry["swap_strategy"] = msg.ModelSwap.Strategy
+	}
+}
+
+func (r *responseRun) recoveryToolPayloadLocked(tool responseRunRecoveryTool) map[string]any {
+	toolEntry := map[string]any{
+		"id":      tool.ID,
+		"name":    tool.Name,
+		"status":  tool.Status,
+		"created": tool.Created,
+	}
+	if tool.Arguments != "" {
+		toolEntry["arguments"] = tool.Arguments
+	}
+	if tool.ArgumentsFinalized {
+		toolEntry["argumentsFinalized"] = true
+	}
+	if tool.StartedAt > 0 {
+		toolEntry["startedAt"] = tool.StartedAt
+		durationMs := tool.DurationMs
+		if durationMs == 0 && tool.EndedAt > 0 {
+			durationMs = max(int64(0), tool.EndedAt-tool.StartedAt)
+		} else if durationMs == 0 && tool.Status == "running" {
+			durationMs = max(int64(0), time.Now().UnixMilli()-tool.StartedAt)
+		}
+		toolEntry["durationMs"] = durationMs
+	}
+	if tool.EndedAt > 0 {
+		toolEntry["endedAt"] = tool.EndedAt
+	}
+	if tool.ResultStatus != "" {
+		toolEntry["resultStatus"] = tool.ResultStatus
+	}
+	if tool.AskUserAnswer != "" {
+		toolEntry["askUserAnswer"] = tool.AskUserAnswer
+	}
+	tool.appendSubagentRecovery(toolEntry)
+	if len(tool.GuardianReviews) > 0 {
+		toolEntry["guardianReviews"] = r.recoveryGuardianReviewsPayloadLocked(tool.GuardianReviews)
+	}
+	if len(tool.Images) > 0 {
+		images := make([]string, len(tool.Images))
+		copy(images, tool.Images)
+		toolEntry["images"] = images
+	}
+	return toolEntry
+}
+
+func (r *responseRun) recoveryGuardianReviewsPayloadLocked(guardianReviews []map[string]any) []map[string]any {
+	reviews := make([]map[string]any, 0, len(guardianReviews))
+	for _, review := range guardianReviews {
+		reviews = append(reviews, cloneJSONMap(review))
+	}
+	return reviews
+}
+
+func (r *responseRun) recoveryAttachmentsPayloadLocked(attachments []map[string]any) []map[string]any {
+	atts := make([]map[string]any, 0, len(attachments))
+	for _, att := range attachments {
+		atts = append(atts, cloneJSONMap(att))
+	}
+	return atts
+}
+
+func (r *responseRun) recoveryEventsPayloadLocked() []map[string]any {
+	events := make([]map[string]any, 0, len(r.recoveryEvents))
+	for _, ev := range r.recoveryEvents {
+		entry := map[string]any{"event": ev.Event}
+		if payload := cloneJSONMap(ev.Payload); len(payload) > 0 {
+			entry["payload"] = payload
+		}
+		events = append(events, entry)
+	}
+	return events
 }
 
 func (r *responseRun) resolvedInteractionsSnapshot() []map[string]any {

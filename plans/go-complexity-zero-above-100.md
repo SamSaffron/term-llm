@@ -15,6 +15,14 @@ prevents a future function from crossing the target.
 Repository summary: 917 production files, 11,126 named functions/methods,
 median complexity 3, 473 above 20, 55 above 50, and **zero above 100**.
 
+> Measured under the original cyclomatic rules. The analyzer's counting was
+> revised on 2026-09-20 (see "Counting revision" in
+> [`go-complexity-contracts.md`](go-complexity-contracts.md)); under the revised
+> nesting-weighted measure the same unchanged code reported 601 above 20, 86
+> above 50, and 10 above 100. The objective recorded here was met against the
+> measure in force at the time; the remediation under the new measure is
+> recorded below.
+
 | Target | Before | After | Extracted responsibility |
 | --- | ---: | ---: | --- |
 | `cmd/ask.go:runAsk` | 124 | 100 | Resume/session settings and final session identity |
@@ -56,3 +64,46 @@ passed, as did the subsequent owner and engine suites.
 versus 37 allocations and 12.6 KiB/op at the base revision; measured latency was
 within run variance. This tradeoff is recorded explicitly because the turn
 state is now carried across independently testable ownership boundaries.
+
+## Remediation under the revised measure (2026-09-20)
+
+Re-measuring unchanged code with nesting-weighted counting put ten functions
+above 100. Eight were reduced by mechanical extraction with no behavior change:
+statement order, lock acquisition order and hold duration, defer order, HTTP
+status codes, JSON field names, event/entry ordering, and rendered output were
+all preserved, and each extracted block was placed in its owning file.
+
+| Target | Before | After | Extracted responsibility |
+| --- | ---: | ---: | --- |
+| `cmd/serve_ask_user_state_handler.go:serveServer.handleSessionState` | 176 | 2 | Plan, rush, pending steering, runtime, persisted metadata, active-run and transcript-revision sections of one state response |
+| `cmd/serve_handlers.go:serveServer.sessionMessageEntries` | 159 | 3 | Projection index, per-message entry, and per-part-kind appenders |
+| `internal/ui/stream_adapter.go:StreamAdapter.ProcessStream` | 121 | 62 | Reasoning-delta, tool-call and tool-exec-end event handlers |
+| `internal/ui/streaming/partial.go:StreamRenderer.findSafePoint` | 114 | 37 | Emphasis-delimiter and bracketed-link scanners |
+| `internal/tui/chat/render.go:Model.viewAltScreen` | 113 | 19 | History cache, tracker changes, content build, set-content, viewport refresh and cache phases |
+| `cmd/serve_response_run_recovery.go:responseRun.recoveryPayloadLocked` | 109 | 27 | Message, role-field, tool, guardian-review, attachment and event payload builders, all `Locked` |
+| `internal/tooldiscovery/planner.go:Planner.selectSurface` | 106 | 65 | Authorized catalogue, run strategy, surface selection and request application |
+| `cmd/serve_handlers_responses.go:serveServer.handleResponses` | 105 | 10 | Request admission, session admission, session resolution and resolved-identity admission |
+
+`internal/terminal/renderer/terminal_renderer.go:relativeCursorMove` (120) and
+`TerminalRenderer.transformLine` (116) were deliberately left alone. They are in
+the owned nested renderer module, where a refactor adds recorded upstream
+divergence in the hot render path; they remain baseline exceptions rather than
+being changed under a metric revision.
+
+Repository summary after the pass: 978 production files, 14,024 measured units
+(function literals are now measured separately), median 3, 601 above 20, 80
+above 50, and 2 above 100 — both the deliberately excluded renderer functions.
+
+### Coverage
+
+Every refactored function kept or improved the covered fraction of its region.
+`handleResponses` was the weakest at 62.4% and is the one place where tests were
+added rather than merely preserved: `cmd/serve_handlers_responses_admission_test.go`
+covers malformed requests, agent/project/draft/notification admission
+rejections, corrupt and conflicting previous-response mappings, and idempotency
+claim release, taking the region to 85.4% (131/210 → 193/226 statements).
+`internal/ui/stream_adapter_test.go` gained a case for the empty-reasoning and
+tool-less tool-call returns. Region coverage elsewhere: `handleSessionState`
+87.6% → 91.1%, `sessionMessageEntries` 94.7% → 95.1%, `viewAltScreen` 88.1% →
+90.6%, `selectSurface` 88.6% → 89.4%, `recoveryPayloadLocked` 88.9% → 89.7%,
+`findSafePoint` 100% → 100%, `ProcessStream` 65.1% → 65.9%.

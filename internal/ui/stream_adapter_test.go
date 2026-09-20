@@ -196,6 +196,45 @@ func TestStreamAdapterDedupesToolCallAndExecStart(t *testing.T) {
 	}
 }
 
+func TestStreamAdapterExtractedHandlersIgnoreEmptyEvents(t *testing.T) {
+	tests := []struct {
+		name          string
+		handle        func(*StreamAdapter, context.Context, llm.Event) bool
+		event         llm.Event
+		wantCommitted bool
+	}{
+		{
+			name:          "empty reasoning delta",
+			handle:        (*StreamAdapter).processReasoningDelta,
+			event:         llm.Event{Type: llm.EventReasoningDelta},
+			wantCommitted: false,
+		},
+		{
+			name:          "tool call without tool",
+			handle:        (*StreamAdapter).processToolCall,
+			event:         llm.Event{Type: llm.EventToolCall},
+			wantCommitted: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			adapter := NewStreamAdapter(1)
+			adapter.attemptUsageCommitted = !tt.wantCommitted
+
+			if !tt.handle(adapter, context.Background(), tt.event) {
+				t.Fatal("handler stopped processing")
+			}
+			if len(adapter.events) != 0 {
+				t.Fatalf("handler emitted %d events, want none", len(adapter.events))
+			}
+			if adapter.attemptUsageCommitted != tt.wantCommitted {
+				t.Fatalf("attemptUsageCommitted = %v, want %v", adapter.attemptUsageCommitted, tt.wantCommitted)
+			}
+		})
+	}
+}
+
 func TestStreamAdapterEmitsDiffOperation(t *testing.T) {
 	stream := &testStream{
 		events: []llm.Event{{

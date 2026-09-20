@@ -372,31 +372,7 @@ func (m *Model) viewAltScreen() string {
 	m.resetViewportHorizontalOffset()
 
 	// Build scrollable content with caching to avoid re-rendering unchanged content
-
-	// Check if history cache is valid.
-	// Skip expensive signature computation when the cache is already valid and
-	// dimensions/scroll haven't changed — this eliminates O(total_content_bytes)
-	// hashing on every frame during streaming.
-	historyValid := m.viewCache.historyValid &&
-		m.viewCache.historyWidth == m.width &&
-		m.viewCache.historyScrollOffset == m.scrollOffset
-	if !historyValid {
-		historySig := m.chatRenderer.CachedHistorySignature(m.messages)
-		if m.viewCache.historyValid && m.viewCache.historySignature == historySig && m.viewCache.historyWidth == m.width {
-			// Content unchanged despite invalidation (e.g. scroll offset change) — restore validity.
-			m.viewCache.historyScrollOffset = m.scrollOffset
-		} else {
-			m.resetAltScreenStreamingAppendCache()
-			m.viewCache.historyContent = m.renderHistory()
-			m.viewCache.historyLines = splitViewportContentLines(m.viewCache.historyContent)
-			m.viewCache.historyMsgCount = len(m.messages)
-			m.viewCache.historySignature = historySig
-			m.viewCache.historyWidth = m.width
-			m.viewCache.historyScrollOffset = m.scrollOffset
-			m.viewCache.historyValid = true
-			m.bumpContentVersion() // History changed
-		}
-	}
+	m.viewAltScreenEnsureHistory()
 
 	// Track whether we need to rebuild viewport content this frame.
 	// When throttled, we intentionally skip expensive content reconstruction and
@@ -405,26 +381,7 @@ func (m *Model) viewAltScreen() string {
 	var contentLines []string
 	var streamingContent string
 	usedIncrementalAppend := false
-	waveOnlyChanged := false
-	if m.streaming || m.activeSkillRunCount() > 0 {
-		if m.tracker != nil {
-			trackerVersion := m.tracker.Version
-			if m.streamPerf != nil {
-				m.streamPerf.RecordTrackerVersion(trackerVersion)
-			}
-			wavePos := m.tracker.WavePos
-			trackerChanged := trackerVersion != m.viewCache.lastTrackerVersion
-			waveChanged := wavePos != m.viewCache.lastWavePos && m.tracker.HasPending()
-			if trackerChanged {
-				m.viewCache.lastTrackerVersion = trackerVersion
-				m.viewCache.lastWavePos = wavePos
-				m.bumpContentVersion()
-			} else if waveChanged {
-				m.viewCache.lastWavePos = wavePos
-				waveOnlyChanged = true
-			}
-		}
-	}
+	waveOnlyChanged := m.viewAltScreenTrackerChanges()
 
 	// Only call SetContent if content actually changed (expensive operation)
 	// Use version comparison instead of O(n) string comparison
@@ -447,86 +404,8 @@ func (m *Model) viewAltScreen() string {
 	}
 
 	if contentChanged {
-		if m.streaming || m.activeSkillRunCount() > 0 {
-			streamingContent = m.renderStreamingInline()
-			if m.approvalModel == nil && m.askUserModel == nil && m.handoverPreview == nil {
-				contentLines, usedIncrementalAppend = m.tryAppendAltScreenStreamingContent(streamingContent)
-			}
-			if !usedIncrementalAppend {
-				contentStr = m.viewCache.historyContent + streamingContent
-				if m.approvalModel != nil {
-					contentStr += "\n" + m.approvalModel.View().Content
-				} else if m.askUserModel != nil {
-					contentStr += "\n" + m.askUserModel.View().Content
-				} else if m.handoverPreview != nil {
-					contentStr += m.handoverPreview.View()
-				}
-			}
-		} else {
-			contentStr = m.viewCache.historyContent + m.viewCache.completedStream
-			if m.directShellRun != nil {
-				contentStr += m.renderDirectShellInline()
-			}
-			if m.branchContextInFlight() {
-				contentStr += m.renderBranchPathNotesActivity()
-			}
-			switch {
-			case m.approvalModel != nil:
-				contentStr += "\n" + m.approvalModel.View().Content
-			case m.askUserModel != nil:
-				contentStr += "\n" + m.askUserModel.View().Content
-			case m.handoverPreview != nil:
-				contentStr += m.handoverPreview.View()
-			}
-			if m.err != nil {
-				contentStr += "\n" + m.renderError() + "\n"
-			}
-		}
-
-		if usedIncrementalAppend {
-			joined := strings.Join(contentLines, "\n")
-			var blocks []viewportImageBlock
-			joined, blocks = m.extractViewportImageBlocks(joined)
-			m.viewportImageBlocks = blocks
-			contentLines = splitViewportContentLines(joined)
-		} else {
-			var blocks []viewportImageBlock
-			contentStr, blocks = m.extractViewportImageBlocks(contentStr)
-			m.viewportImageBlocks = blocks
-		}
-
-		// Check if user is at bottom BEFORE setting content (which changes maxYOffset)
-		wasAtBottom := m.viewport.AtBottom()
-		firstRender := m.viewCache.lastViewportView == ""
-		setContentStart := time.Now()
-		if usedIncrementalAppend {
-			m.viewport.SetContentLines(contentLines)
-		} else {
-			m.viewport.SetContent(contentStr)
-		}
-		setContentEnd := time.Now()
-		if m.streamPerf != nil {
-			m.streamPerf.RecordDuration(durationMetricSetContent, setContentEnd.Sub(setContentStart))
-		}
-		m.viewCache.lastSetContentAt = setContentEnd
-		m.captureReasoningClickSnapshot()
-		m.viewCache.userMessageAnchors = m.chatRenderer.UserMessageAnchorsSnapshot()
-		m.viewCache.lastRenderedVersion = m.viewCache.contentVersion
-		// On first render (including resumed sessions), anchor at latest content.
-		// On subsequent renders while a parent response or isolated child is live,
-		// preserve user scroll position unless they were already at bottom.
-		if m.handoverPreview != nil && m.handoverPreview.editing {
-			m.scrollToBottom = true
-		}
-		if firstRender || ((m.streaming || m.directShellRun != nil || m.activeSkillRunCount() > 0) && wasAtBottom) || m.scrollToBottom {
-			m.viewport.GotoBottom()
-			m.scrollToBottom = false
-			m.resizeReflowRestoreAnchor = false
-		} else if m.resizeReflowRestoreAnchor {
-			maxYOffset := max(0, m.viewport.TotalLineCount()-m.viewport.Height())
-			m.viewport.SetYOffset(int(math.Round(m.resizeReflowScrollFraction * float64(maxYOffset))))
-			m.resizeReflowRestoreAnchor = false
-		}
+		contentStr, contentLines, streamingContent, usedIncrementalAppend = m.viewAltScreenBuildContent()
+		contentStr, contentLines = m.viewAltScreenSetContent(contentStr, contentLines, usedIncrementalAppend)
 	}
 
 	// Scroll to bottom after response completes (regardless of previous scroll position)
@@ -545,60 +424,15 @@ func (m *Model) viewAltScreen() string {
 	selectionChanged := m.selection != m.viewCache.lastSelection
 	needViewRender := contentChanged || waveOnlyChanged || yOffsetChanged || xOffsetChanged || sizeChanged || selectionChanged || m.viewCache.lastViewportView == ""
 	if needViewRender {
-		viewStart := time.Now()
-		if waveOnlyChanged && !contentDirty {
-			streamingContent = m.renderStreamingInline()
-			contentLines = m.renderAltScreenStreamingContentLines(streamingContent)
-			m.viewCache.lastViewportView = m.renderAltScreenViewportLines(contentLines)
-			m.viewCache.lastContentStr = ""
-			m.contentLines = contentLines
-			m.viewCache.lastContentHistoryPlusStream = true
-			m.viewCache.lastStreamingContent = streamingContent
-		} else {
-			if len(m.viewportImageBlocks) > 0 {
-				lines := contentLines
-				if len(lines) == 0 {
-					if contentStr != "" {
-						lines = splitViewportContentLines(contentStr)
-					} else if len(m.contentLines) > 0 {
-						lines = m.contentLines
-					} else {
-						lines = splitViewportContentLines(m.viewCache.lastContentStr)
-					}
-				}
-				m.viewCache.lastViewportView = m.renderAltScreenViewportLines(lines)
-			} else {
-				m.viewCache.lastViewportView = m.viewport.View()
-			}
-		}
-		if m.streamPerf != nil {
-			m.streamPerf.RecordDuration(durationMetricViewportView, time.Since(viewStart))
-		}
-		m.viewCache.lastYOffset = m.viewport.YOffset()
-		m.viewCache.lastXOffset = m.viewport.XOffset()
-		m.viewCache.lastVPWidth = m.viewport.Width()
-		m.viewCache.lastVPHeight = m.viewport.Height()
-		m.viewCache.lastSelection = m.selection
+		contentLines, streamingContent = m.viewAltScreenRefreshViewport(waveOnlyChanged, contentDirty, contentStr, contentLines, streamingContent)
 	}
 
 	// Invalidate content lines when content changes — they'll be rebuilt
 	// lazily on demand in extractSelectedText (only needed for selection).
 	if contentChanged {
-		if usedIncrementalAppend {
-			m.viewCache.lastContentStr = ""
-			m.contentLines = contentLines
-			m.viewCache.lastContentHistoryPlusStream = true
-		} else {
-			m.viewCache.lastContentStr = contentStr
-			m.contentLines = nil
-			m.viewCache.lastContentHistoryPlusStream = (m.streaming || m.activeSkillRunCount() > 0) && m.approvalModel == nil && m.askUserModel == nil && m.handoverPreview == nil
-		}
-		if m.streaming || m.activeSkillRunCount() > 0 {
-			m.viewCache.lastStreamingContent = streamingContent
-		} else {
-			m.viewCache.lastStreamingContent = ""
-		}
+		m.viewAltScreenCacheContent(usedIncrementalAppend, contentStr, contentLines, streamingContent)
 	}
+
 	// Post-process: apply selection highlight
 	viewOutput := m.viewCache.lastViewportView
 	if m.selection.Active {
@@ -624,6 +458,208 @@ func (m *Model) viewAltScreen() string {
 		}
 	}
 	return frame
+}
+
+// viewAltScreenEnsureHistory refreshes the cached transcript only when its
+// contents or rendering dimensions have changed.
+func (m *Model) viewAltScreenEnsureHistory() {
+	// Skip expensive signature computation when the cache is already valid and
+	// dimensions/scroll haven't changed — this eliminates O(total_content_bytes)
+	// hashing on every frame during streaming.
+	historyValid := m.viewCache.historyValid &&
+		m.viewCache.historyWidth == m.width &&
+		m.viewCache.historyScrollOffset == m.scrollOffset
+	if !historyValid {
+		historySig := m.chatRenderer.CachedHistorySignature(m.messages)
+		if m.viewCache.historyValid && m.viewCache.historySignature == historySig && m.viewCache.historyWidth == m.width {
+			// Content unchanged despite invalidation (e.g. scroll offset change) — restore validity.
+			m.viewCache.historyScrollOffset = m.scrollOffset
+		} else {
+			m.resetAltScreenStreamingAppendCache()
+			m.viewCache.historyContent = m.renderHistory()
+			m.viewCache.historyLines = splitViewportContentLines(m.viewCache.historyContent)
+			m.viewCache.historyMsgCount = len(m.messages)
+			m.viewCache.historySignature = historySig
+			m.viewCache.historyWidth = m.width
+			m.viewCache.historyScrollOffset = m.scrollOffset
+			m.viewCache.historyValid = true
+			m.bumpContentVersion() // History changed
+		}
+	}
+}
+
+func (m *Model) viewAltScreenTrackerChanges() bool {
+	waveOnlyChanged := false
+	if m.streaming || m.activeSkillRunCount() > 0 {
+		if m.tracker != nil {
+			trackerVersion := m.tracker.Version
+			if m.streamPerf != nil {
+				m.streamPerf.RecordTrackerVersion(trackerVersion)
+			}
+			wavePos := m.tracker.WavePos
+			trackerChanged := trackerVersion != m.viewCache.lastTrackerVersion
+			waveChanged := wavePos != m.viewCache.lastWavePos && m.tracker.HasPending()
+			if trackerChanged {
+				m.viewCache.lastTrackerVersion = trackerVersion
+				m.viewCache.lastWavePos = wavePos
+				m.bumpContentVersion()
+			} else if waveChanged {
+				m.viewCache.lastWavePos = wavePos
+				waveOnlyChanged = true
+			}
+		}
+	}
+	return waveOnlyChanged
+}
+
+func (m *Model) viewAltScreenBuildContent() (contentStr string, contentLines []string, streamingContent string, usedIncrementalAppend bool) {
+	if m.streaming || m.activeSkillRunCount() > 0 {
+		return m.viewAltScreenBuildStreamingContent()
+	}
+
+	contentStr = m.viewCache.historyContent + m.viewCache.completedStream
+	if m.directShellRun != nil {
+		contentStr += m.renderDirectShellInline()
+	}
+	if m.branchContextInFlight() {
+		contentStr += m.renderBranchPathNotesActivity()
+	}
+	switch {
+	case m.approvalModel != nil:
+		contentStr += "\n" + m.approvalModel.View().Content
+	case m.askUserModel != nil:
+		contentStr += "\n" + m.askUserModel.View().Content
+	case m.handoverPreview != nil:
+		contentStr += m.handoverPreview.View()
+	}
+	if m.err != nil {
+		contentStr += "\n" + m.renderError() + "\n"
+	}
+	return contentStr, nil, "", false
+}
+
+func (m *Model) viewAltScreenBuildStreamingContent() (contentStr string, contentLines []string, streamingContent string, usedIncrementalAppend bool) {
+	streamingContent = m.renderStreamingInline()
+	if m.approvalModel == nil && m.askUserModel == nil && m.handoverPreview == nil {
+		contentLines, usedIncrementalAppend = m.tryAppendAltScreenStreamingContent(streamingContent)
+	}
+	if !usedIncrementalAppend {
+		contentStr = m.viewCache.historyContent + streamingContent
+		if m.approvalModel != nil {
+			contentStr += "\n" + m.approvalModel.View().Content
+		} else if m.askUserModel != nil {
+			contentStr += "\n" + m.askUserModel.View().Content
+		} else if m.handoverPreview != nil {
+			contentStr += m.handoverPreview.View()
+		}
+	}
+	return contentStr, contentLines, streamingContent, usedIncrementalAppend
+}
+
+func (m *Model) viewAltScreenSetContent(contentStr string, contentLines []string, usedIncrementalAppend bool) (string, []string) {
+	if usedIncrementalAppend {
+		joined := strings.Join(contentLines, "\n")
+		var blocks []viewportImageBlock
+		joined, blocks = m.extractViewportImageBlocks(joined)
+		m.viewportImageBlocks = blocks
+		contentLines = splitViewportContentLines(joined)
+	} else {
+		var blocks []viewportImageBlock
+		contentStr, blocks = m.extractViewportImageBlocks(contentStr)
+		m.viewportImageBlocks = blocks
+	}
+
+	// Check if user is at bottom BEFORE setting content (which changes maxYOffset)
+	wasAtBottom := m.viewport.AtBottom()
+	firstRender := m.viewCache.lastViewportView == ""
+	setContentStart := time.Now()
+	if usedIncrementalAppend {
+		m.viewport.SetContentLines(contentLines)
+	} else {
+		m.viewport.SetContent(contentStr)
+	}
+	setContentEnd := time.Now()
+	if m.streamPerf != nil {
+		m.streamPerf.RecordDuration(durationMetricSetContent, setContentEnd.Sub(setContentStart))
+	}
+	m.viewCache.lastSetContentAt = setContentEnd
+	m.captureReasoningClickSnapshot()
+	m.viewCache.userMessageAnchors = m.chatRenderer.UserMessageAnchorsSnapshot()
+	m.viewCache.lastRenderedVersion = m.viewCache.contentVersion
+	// On first render (including resumed sessions), anchor at latest content.
+	// On subsequent renders while a parent response or isolated child is live,
+	// preserve user scroll position unless they were already at bottom.
+	if m.handoverPreview != nil && m.handoverPreview.editing {
+		m.scrollToBottom = true
+	}
+	if firstRender || ((m.streaming || m.directShellRun != nil || m.activeSkillRunCount() > 0) && wasAtBottom) || m.scrollToBottom {
+		m.viewport.GotoBottom()
+		m.scrollToBottom = false
+		m.resizeReflowRestoreAnchor = false
+	} else if m.resizeReflowRestoreAnchor {
+		maxYOffset := max(0, m.viewport.TotalLineCount()-m.viewport.Height())
+		m.viewport.SetYOffset(int(math.Round(m.resizeReflowScrollFraction * float64(maxYOffset))))
+		m.resizeReflowRestoreAnchor = false
+	}
+	return contentStr, contentLines
+}
+
+func (m *Model) viewAltScreenRefreshViewport(waveOnlyChanged, contentDirty bool, contentStr string, contentLines []string, streamingContent string) ([]string, string) {
+	viewStart := time.Now()
+	if waveOnlyChanged && !contentDirty {
+		streamingContent = m.renderStreamingInline()
+		contentLines = m.renderAltScreenStreamingContentLines(streamingContent)
+		m.viewCache.lastViewportView = m.renderAltScreenViewportLines(contentLines)
+		m.viewCache.lastContentStr = ""
+		m.contentLines = contentLines
+		m.viewCache.lastContentHistoryPlusStream = true
+		m.viewCache.lastStreamingContent = streamingContent
+	} else {
+		m.viewCache.lastViewportView = m.viewAltScreenViewportView(contentStr, contentLines)
+	}
+	if m.streamPerf != nil {
+		m.streamPerf.RecordDuration(durationMetricViewportView, time.Since(viewStart))
+	}
+	m.viewCache.lastYOffset = m.viewport.YOffset()
+	m.viewCache.lastXOffset = m.viewport.XOffset()
+	m.viewCache.lastVPWidth = m.viewport.Width()
+	m.viewCache.lastVPHeight = m.viewport.Height()
+	m.viewCache.lastSelection = m.selection
+	return contentLines, streamingContent
+}
+
+func (m *Model) viewAltScreenViewportView(contentStr string, contentLines []string) string {
+	if len(m.viewportImageBlocks) > 0 {
+		lines := contentLines
+		if len(lines) == 0 {
+			if contentStr != "" {
+				lines = splitViewportContentLines(contentStr)
+			} else if len(m.contentLines) > 0 {
+				lines = m.contentLines
+			} else {
+				lines = splitViewportContentLines(m.viewCache.lastContentStr)
+			}
+		}
+		return m.renderAltScreenViewportLines(lines)
+	}
+	return m.viewport.View()
+}
+
+func (m *Model) viewAltScreenCacheContent(usedIncrementalAppend bool, contentStr string, contentLines []string, streamingContent string) {
+	if usedIncrementalAppend {
+		m.viewCache.lastContentStr = ""
+		m.contentLines = contentLines
+		m.viewCache.lastContentHistoryPlusStream = true
+	} else {
+		m.viewCache.lastContentStr = contentStr
+		m.contentLines = nil
+		m.viewCache.lastContentHistoryPlusStream = (m.streaming || m.activeSkillRunCount() > 0) && m.approvalModel == nil && m.askUserModel == nil && m.handoverPreview == nil
+	}
+	if m.streaming || m.activeSkillRunCount() > 0 {
+		m.viewCache.lastStreamingContent = streamingContent
+	} else {
+		m.viewCache.lastStreamingContent = ""
+	}
 }
 
 func (m *Model) overlayAltScreenPanels(base string, footer footerLayout) string {

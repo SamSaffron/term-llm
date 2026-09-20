@@ -4,6 +4,10 @@ Owner: package maintainers for each listed subsystem
 Base revision: `4363767c`
 Implementation: current worktree (2026-09-11)
 
+> Every complexity number in this record is under the original cyclomatic
+> counting rules. The analyzer was revised on 2026-09-20; see "Counting
+> revision" in [`go-complexity-contracts.md`](go-complexity-contracts.md).
+
 ## Milestones
 
 | Milestone | Delivered ownership boundary | Initial → current target complexity / span | Test gaps / risks | Acceptance |

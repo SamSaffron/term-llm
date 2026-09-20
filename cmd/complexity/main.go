@@ -74,15 +74,32 @@ func main() {
 	}
 	s := summarize(report)
 	fmt.Printf("production=%t files=%d functions=%d median=%d above20=%d above50=%d above100=%d\n", !*includeTests, s.Files, s.Functions, s.Median, s.Above20, s.Above50, s.Above100)
-	for _, fn := range report.Functions {
-		if fn.Complexity >= *threshold {
-			name := fn.Name
-			if fn.Receiver != "" {
-				name = "(" + fn.Receiver + ")." + name
-			}
-			fmt.Printf("%4d %5d lines %s %s:%s\n", fn.Complexity, fn.Lines, fn.Module, fn.Path, name)
+	for _, fn := range worstFirst(report.Functions, *threshold) {
+		name := fn.Name
+		if fn.Receiver != "" {
+			name = "(" + fn.Receiver + ")." + name
+		}
+		fmt.Printf("%4d %5d lines %s %s:%s\n", fn.Complexity, fn.Lines, fn.Module, fn.Path, name)
+	}
+}
+
+// worstFirst orders the human report by descending complexity, then by span, so
+// the first screen is the work that matters. The JSON report and the baseline
+// keep path order, where stable diffs matter more than ranking.
+func worstFirst(functions []complexity.Function, threshold int) []complexity.Function {
+	out := make([]complexity.Function, 0, len(functions))
+	for _, fn := range functions {
+		if fn.Complexity >= threshold {
+			out = append(out, fn)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Complexity != out[j].Complexity {
+			return out[i].Complexity > out[j].Complexity
+		}
+		return out[i].Lines > out[j].Lines
+	})
+	return out
 }
 
 func summarize(report complexity.Report) summary {
@@ -119,6 +136,15 @@ func writeBase(path string, report complexity.Report) error {
 		initialBySignature[exceptionSignature(exception.Key)] = exception
 	}
 
+	recorded, err := readBaseline(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read current baseline: %w", err)
+	}
+	recordedByKey := make(map[string]baselineException, len(recorded.Exceptions))
+	for _, exception := range recorded.Exceptions {
+		recordedByKey[exception.Key] = exception
+	}
+
 	b := baseline{CountingRules: report.CountingRules, Summary: summarize(report)}
 	for _, fn := range report.Functions {
 		if fn.Complexity <= 20 {
@@ -131,6 +157,13 @@ func writeBase(path string, report complexity.Report) error {
 			Owner:      complexityOwner(fn.Path),
 			Removal:    complexityMilestone(fn),
 		}
+		if kept, ok := recordedByKey[key]; ok {
+			// An already accepted exception keeps its ownership record; only
+			// its measured score is refreshed.
+			kept.Complexity = fn.Complexity
+			b.Exceptions = append(b.Exceptions, kept)
+			continue
+		}
 		switch previous, ok := initialByKey[key]; {
 		case ok:
 			exception.Origin = "existing"
@@ -139,6 +172,13 @@ func writeBase(path string, report complexity.Report) error {
 			previous = initialBySignature[exceptionSignature(key)]
 			exception.Origin = "moved"
 			exception.Rationale = fmt.Sprintf("mechanically moved from %s while preserving its named responsibility", previous.Key)
+		case len(recordedByKey) != 0 && recorded.CountingRules != report.CountingRules:
+			// The ratchet rejects new declarations above 20, so when the measure
+			// itself changed, anything the accepted baseline never listed is
+			// above 20 only because of the new counting rules. Once the rules
+			// match again, an unrecorded key is genuinely new work.
+			exception.Origin = "remeasured"
+			exception.Rationale = fmt.Sprintf("crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; %s reduction is tracked by %s", exception.Owner, exception.Removal)
 		default:
 			exception.Origin = "extracted"
 			exception.Rationale = fmt.Sprintf("%s extraction owns one ordered domain responsibility; further reduction is tracked by %s", exception.Owner, exception.Removal)
