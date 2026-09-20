@@ -1215,7 +1215,7 @@ func TestCompletedToolPersistenceAdvancesDurableRunBoundary(t *testing.T) {
 	m := newTestChatModel(false)
 	m.store, m.sess = store, sess
 	m.activeBranchAnchorID = user.ID
-	m.runBoundary = runboundary.New("stream-run", []llm.Message{llm.UserText("question")}, user.ID, true)
+	m.runBoundary = runboundary.New("stream-run", []llm.Message{llm.UserText("question")}, user.ID, true, runboundary.ProviderContext{})
 	_, responseCompleted, turnCompleted := m.streamPersistenceCallbacks(time.Now())
 	assistant := llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-1", Name: "read_file"}}}}
 	if err := responseCompleted(ctx, 0, assistant, llm.TurnMetrics{}); err != nil {

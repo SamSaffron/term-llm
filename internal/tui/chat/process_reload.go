@@ -208,6 +208,7 @@ func (m *Model) resumeAfterReload() (tea.Model, tea.Cmd) {
 	if m.reloadContinuation == nil || m.streaming {
 		return m, nil
 	}
+	m.beginMainStreamEpoch()
 	m.streaming = true
 	// The tracker will contain only post-reload events. Keep the persisted
 	// assistant/tool prefix authoritative, as with a partial run reattachment.

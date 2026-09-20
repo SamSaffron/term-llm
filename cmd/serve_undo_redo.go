@@ -36,7 +36,9 @@ func (rt *serveRuntime) resetAfterTranscriptMutation(ctx context.Context, sessio
 	rt.lastResponseID = ""
 	rt.responseIDs = nil
 	rt.responseMu.Unlock()
-	rt.refreshSideQuestionSnapshot(nil)
+	// Undo/redo rewrites the transcript, so the lane branched from the old one
+	// and the provider state captured against it are both gone.
+	rt.invalidateSideQuestionSnapshot()
 
 	sess, err := rt.store.Get(ctx, sessionID)
 	if err != nil {
@@ -54,7 +56,9 @@ func (rt *serveRuntime) resetAfterTranscriptMutation(ctx context.Context, sessio
 	rt.historyPersisted = true
 	rt.sessionMeta = sess
 	rt.restorePlatformInjectionStateFromHistory()
-	rt.refreshSideQuestionSnapshot(history)
+	// The live provider session no longer matches the reloaded transcript, so the
+	// anchor is replay-only until the next completed turn republishes state.
+	rt.refreshSideQuestionSnapshot(rt.sideQuestionReplayBoundary(history))
 	return nil
 }
 

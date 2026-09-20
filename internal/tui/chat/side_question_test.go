@@ -376,7 +376,11 @@ func TestSideSnapshotUsesCurrentCompletedStreamingContext(t *testing.T) {
 	})
 	m.updateStreamingContextAssistant(llm.AssistantText("incomplete next response"))
 
-	got := m.sideSnapshot()
+	anchor := m.sideAnchor()
+	got := anchor.Messages
+	if anchor.Provider.Available() {
+		t.Fatalf("legacy streaming anchor published provider state: %#v", anchor.Provider)
+	}
 	if len(got) != 4 {
 		t.Fatalf("snapshot len = %d, want current completed boundary of 4: %#v", len(got), got)
 	}
@@ -420,6 +424,320 @@ func TestLateSideGenerationIgnoredAndClearConfirmed(t *testing.T) {
 	_, _ = m.Update(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
 	if len(m.sideQuestion.History) != 0 || !m.sideQuestion.Visible {
 		t.Fatal("second ctrl+x did not clear history in place")
+	}
+}
+
+// tuiForkableProvider is a live provider that can branch from a captured
+// boundary, like claude-bin.
+type tuiForkableProvider struct {
+	*llm.MockProvider
+	branch      *tuiBranchProvider
+	forkRequest []llm.Message
+	forks       int
+}
+
+var tuiForkableState = []byte(`{"session_id":"S1","messages_sent":2,"transcript_digest":"d"}`)
+
+func (p *tuiForkableProvider) ForkConversationAtBoundary(state []byte, requestMessages []llm.Message) (llm.Provider, bool) {
+	p.forks++
+	if string(state) != string(tuiForkableState) || len(requestMessages) == 0 {
+		return nil, false
+	}
+	p.forkRequest = append([]llm.Message(nil), requestMessages...)
+	return p.branch, true
+}
+
+func (p *tuiForkableProvider) ExportProviderState() ([]byte, bool) {
+	return tuiForkableState, true
+}
+
+// tuiBranchProvider is the branched session; it exports the state promotion
+// would later save under a child session id.
+type tuiBranchProvider struct {
+	*llm.MockProvider
+}
+
+func (p *tuiBranchProvider) ExportProviderState() ([]byte, bool) {
+	return []byte(`{"session_id":"S2","messages_sent":4,"transcript_digest":"d2"}`), true
+}
+
+func newTUISideLaneModel(t *testing.T) (*Model, *tuiForkableProvider, *llm.MockProvider) {
+	t.Helper()
+	m := newTestChatModel(true)
+	m.providerKey = "claude-bin"
+	m.modelName = "opus-max"
+	m.sess = &session.Session{ID: "main", WorktreeDir: t.TempDir()}
+	m.messages = []session.Message{
+		*session.NewMessage("main", llm.UserText("Refactor the widget loader."), 0),
+		*session.NewMessage("main", llm.AssistantText("Extracted loadWidget."), 1),
+	}
+	live := &tuiForkableProvider{
+		MockProvider: llm.NewMockProvider("live"),
+		branch: &tuiBranchProvider{
+			MockProvider: llm.NewMockProvider("branch").AddTextResponse("branched answer").AddTextResponse("second branched answer"),
+		},
+	}
+	m.provider = live
+	replay := llm.NewMockProvider("replay").AddTextResponse("replayed answer")
+	m.SetSideQuestionProviderFactory(func(_, _ string) (llm.Provider, error) { return replay, nil })
+	return m, live, replay
+}
+
+func TestSideQuestionBranchesTheIdleBoundaryAndReusesTheLane(t *testing.T) {
+	m, live, replay := newTUISideLaneModel(t)
+
+	_, cmd := m.cmdSide("what changed?")
+	m = runSideQuestionCommands(t, m, cmd)
+	if live.forks != 1 {
+		t.Fatalf("forks = %d, want one branch from the idle boundary", live.forks)
+	}
+	if len(replay.RecordedRequests()) != 0 {
+		t.Fatalf("an eligible branch still built a replay provider: %#v", replay.RecordedRequests())
+	}
+	branched := live.branch.RecordedRequests()
+	if len(branched) != 1 || branched[0].Ephemeral {
+		t.Fatalf("lane turn = %#v, want one non-ephemeral request", branched)
+	}
+	if len(live.RecordedRequests()) != 0 {
+		t.Fatal("the live main provider served the side question")
+	}
+	if !m.sideQuestion.Lane.Continuing() {
+		t.Fatal("lane did not retain its own session")
+	}
+	if len(m.sideQuestion.Lane.ProviderState()) == 0 {
+		t.Fatal("lane did not export the branch state promotion needs")
+	}
+	// The whole idle boundary plus policy and question must reach the seam, with
+	// the session's own project directory.
+	if len(live.forkRequest) != len(m.buildMessages())+2 {
+		t.Fatalf("seam saw %d messages, want the whole boundary plus policy and question", len(live.forkRequest))
+	}
+	if branched[0].WorkingDir != m.effectiveWorkingDir() {
+		t.Fatalf("branch working dir = %q, want %q", branched[0].WorkingDir, m.effectiveWorkingDir())
+	}
+	// The lane keeps the branch point promotion will branch the session at.
+	if anchor := m.sideQuestion.Lane.Anchor(); anchor.DurableAnchorID != m.activeBranchAnchorID {
+		t.Fatalf("lane anchor row = %d, want the model's branch anchor %d", anchor.DurableAnchorID, m.activeBranchAnchorID)
+	}
+
+	_, cmd = m.cmdSide("and the nil case?")
+	m = runSideQuestionCommands(t, m, cmd)
+	if live.forks != 1 {
+		t.Fatalf("forks = %d, want the follow-up to resume the lane", live.forks)
+	}
+	if len(live.branch.RecordedRequests()) != 2 {
+		t.Fatalf("branch requests = %d, want both lane turns", len(live.branch.RecordedRequests()))
+	}
+	if len(m.sideQuestion.History) != 2 {
+		t.Fatalf("displayed history = %d entries", len(m.sideQuestion.History))
+	}
+}
+
+func TestSideQuestionReplaysWhileAMainRunIsActive(t *testing.T) {
+	m, live, replay := newTUISideLaneModel(t)
+	m.streaming = true
+	m.setStreamingContextMessages([]llm.Message{llm.SystemText("system"), llm.UserText("in flight")})
+
+	_, cmd := m.cmdSide("what changed?")
+	m = runSideQuestionCommands(t, m, cmd)
+	if live.forks != 0 {
+		t.Fatalf("forks = %d, want no branch of an in-flight session", live.forks)
+	}
+	requests := replay.RecordedRequests()
+	if len(requests) != 1 || !requests[0].Ephemeral {
+		t.Fatalf("mid-run side question = %#v, want one isolated replay request", requests)
+	}
+	if m.sideQuestion.Lane.Continuing() {
+		t.Fatal("a replay turn established a lane session")
+	}
+}
+
+func TestSideQuestionLaneIsTornDownOnClear(t *testing.T) {
+	m, live, _ := newTUISideLaneModel(t)
+	_, cmd := m.cmdSide("what changed?")
+	m = runSideQuestionCommands(t, m, cmd)
+	if !m.sideQuestion.Lane.Continuing() {
+		t.Fatal("lane was not established")
+	}
+
+	m.clearSideQuestionHistory()
+	if m.sideQuestion.Lane.Continuing() || len(m.sideQuestion.Lane.Anchor().Messages) != 0 {
+		t.Fatal("clearing side history left the lane in place")
+	}
+
+	_, cmd = m.cmdSide("ask again")
+	m = runSideQuestionCommands(t, m, cmd)
+	if live.forks != 2 {
+		t.Fatalf("forks = %d, want a fresh branch after teardown", live.forks)
+	}
+}
+
+// Providers that run their whole tool loop inside one Stream complete a single
+// engine turn per run, so the completed boundary stays at the run's starting
+// point for its entire duration. A question asked several tool calls in must
+// still be answered from the work done so far.
+func TestSideQuestionSeesInFlightWorkDuringAnInlineToolLoopRun(t *testing.T) {
+	m, _, replay := newTUISideLaneModel(t)
+	manager := attachBlockingMainRun(t, m)
+
+	boundary, active := manager.ActiveBoundary(m.SessionID())
+	if !active {
+		t.Fatal("main run is not active")
+	}
+	started := len(boundary.Messages)
+	// One inline turn, streamed as a growing assistant message: no turn boundary
+	// is crossed while the tool loop runs.
+	manager.mu.RLock()
+	tracker := manager.runs[m.SessionID()].boundary
+	manager.mu.RUnlock()
+	tracker.UpdateAssistant("test-boundary", llm.AssistantText("step 1 done, step 2 done"))
+
+	anchor := m.sideAnchor()
+	if len(anchor.Messages) != started+1 {
+		t.Fatalf("anchor = %d messages, want the completed boundary plus the in-flight assistant", len(anchor.Messages))
+	}
+	if !strings.Contains(llm.MessageText(anchor.Messages[len(anchor.Messages)-1]), "step 2 done") {
+		t.Fatalf("anchor did not follow the in-flight run: %#v", anchor.Messages)
+	}
+	// Reading a streaming provider's resume boundary is not safe.
+	if anchor.Provider.Available() {
+		t.Fatalf("mid-run anchor published provider state: %#v", anchor.Provider)
+	}
+
+	_, cmd := m.cmdSide("what step are we on?")
+	m = runSideQuestionCommands(t, m, cmd)
+	requests := replay.RecordedRequests()
+	if len(requests) != 1 {
+		t.Fatalf("replay requests = %d", len(requests))
+	}
+	var joined strings.Builder
+	for _, message := range requests[0].Messages {
+		joined.WriteString(llm.MessageText(message))
+		joined.WriteString("\n")
+	}
+	if !strings.Contains(joined.String(), "step 2 done") {
+		t.Fatalf("mid-run side question did not see the work so far:\n%s", joined.String())
+	}
+}
+
+// Mid-run republishing must not strip the provider identity along with the
+// transport state: Claude Code keys sessions by project directory, and an
+// established lane compares that directory to decide whether it may resume.
+func TestSideQuestionKeepsProviderIdentityWhileARunIsInFlight(t *testing.T) {
+	m, live, replay := newTUISideLaneModel(t)
+	workingDir := m.effectiveWorkingDir()
+
+	_, cmd := m.cmdSide("what changed?")
+	m = runSideQuestionCommands(t, m, cmd)
+	if live.forks != 1 || !m.sideQuestion.Lane.Continuing() {
+		t.Fatalf("lane was not established: forks=%d", live.forks)
+	}
+
+	manager := attachBlockingMainRun(t, m)
+	manager.mu.RLock()
+	tracker := manager.runs[m.SessionID()].boundary
+	manager.mu.RUnlock()
+	tracker.UpdateAssistant("test-boundary", llm.AssistantText("in-flight work"))
+
+	anchor := m.sideAnchor()
+	if anchor.Provider.Available() {
+		t.Fatalf("mid-run anchor published transport state: %#v", anchor.Provider)
+	}
+	if anchor.Provider.WorkingDir != workingDir {
+		t.Fatalf("mid-run anchor dropped the project directory: %q, want %q", anchor.Provider.WorkingDir, workingDir)
+	}
+
+	_, cmd = m.cmdSide("follow up")
+	m = runSideQuestionCommands(t, m, cmd)
+	if live.forks != 1 {
+		t.Fatalf("forks = %d, want the mid-run follow-up to resume the lane", live.forks)
+	}
+	if len(live.branch.RecordedRequests()) != 2 {
+		t.Fatalf("branch requests = %d, want the follow-up on the lane's own session", len(live.branch.RecordedRequests()))
+	}
+	if len(replay.RecordedRequests()) != 0 {
+		t.Fatalf("an established lane was replaced by a replay: %#v", replay.RecordedRequests())
+	}
+}
+
+// The fork gate must observe a stream the UI has committed to but not yet handed
+// to the run manager, or a branch can still resume a session that run is about
+// to write.
+func TestSideQuestionForkGuardSeesACommittedStreamBeforeTheManagerDoes(t *testing.T) {
+	m, _, _ := newTUISideLaneModel(t)
+	guard := m.sideForkGuard()
+	if !guard() {
+		t.Fatal("guard refused while idle")
+	}
+	m.beginMainStreamEpoch()
+	if guard() {
+		t.Fatal("guard still allowed a branch after the UI committed to a stream")
+	}
+}
+
+// After the lane is torn down its session no longer holds the earlier exchange,
+// so the next question must go back to the bounded replay path and carry that
+// exchange explicitly rather than branching a session that never saw it.
+func TestSideQuestionCarriesPanelHistoryAfterTheLaneIsTornDown(t *testing.T) {
+	m, live, replay := newTUISideLaneModel(t)
+	_, cmd := m.cmdSide("what changed?")
+	m = runSideQuestionCommands(t, m, cmd)
+	if len(m.sideQuestion.History) != 1 {
+		t.Fatalf("history = %#v", m.sideQuestion.History)
+	}
+
+	// Compaction rewrote the transcript the lane branched from.
+	m.applyCompactionToUI(compactionAppliedMsg{sessionID: m.SessionID()})
+
+	_, cmd = m.cmdSide("and the nil case?")
+	m = runSideQuestionCommands(t, m, cmd)
+	if live.forks != 1 {
+		t.Fatalf("forks = %d, want no branch while the earlier exchange has to be carried", live.forks)
+	}
+	requests := replay.RecordedRequests()
+	if len(requests) != 1 {
+		t.Fatalf("replay requests = %d", len(requests))
+	}
+	var joined strings.Builder
+	for _, message := range requests[0].Messages {
+		joined.WriteString(llm.MessageText(message))
+		joined.WriteString("\n")
+	}
+	for _, want := range []string{"what changed?", "branched answer", "and the nil case?"} {
+		if !strings.Contains(joined.String(), want) {
+			t.Fatalf("replay request lost %q:\n%s", want, joined.String())
+		}
+	}
+}
+
+func TestSideQuestionLaneIsTornDownByTranscriptRewrites(t *testing.T) {
+	tests := []struct {
+		name    string
+		rewrite func(*Model)
+	}{
+		{"compaction", func(m *Model) {
+			m.applyCompactionToUI(compactionAppliedMsg{sessionID: m.SessionID()})
+		}},
+		{"undo/redo", func(m *Model) {
+			m.handleTranscriptMutationDone(transcriptMutationDoneMsg{
+				sessionID: m.SessionID(), sess: m.sess,
+			})
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _, _ := newTUISideLaneModel(t)
+			_, cmd := m.cmdSide("what changed?")
+			m = runSideQuestionCommands(t, m, cmd)
+			lane := m.sideQuestion.Lane
+			if !lane.Continuing() {
+				t.Fatal("lane was not established")
+			}
+			tc.rewrite(m)
+			if lane.Continuing() || len(lane.Anchor().Messages) != 0 {
+				t.Fatalf("%s left the lane branched from a transcript that no longer exists", tc.name)
+			}
+		})
 	}
 }
 

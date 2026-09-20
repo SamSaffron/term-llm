@@ -19,12 +19,16 @@ import (
 )
 
 type SideQuestionState struct {
-	Visible      bool
-	Running      bool
-	Question     string
-	Response     strings.Builder
-	Synthetic    bool
+	Visible   bool
+	Running   bool
+	Question  string
+	Response  strings.Builder
+	Synthetic bool
+	// History is the displayed and reload-persisted transcript. The lane owns the
+	// provider-facing transcript, which is real llm.Messages rather than
+	// flattened pairs.
 	History      []sidequestion.Entry
+	Lane         *sidequestion.Lane
 	Composer     textarea.Model
 	ComposerInit bool
 	Cancel       context.CancelFunc
@@ -53,13 +57,47 @@ func (m *Model) SetSideQuestionProviderFactory(factory func(providerKey, model s
 	m.sideProviderFactory = factory
 }
 
-func (m *Model) sideSnapshot() []llm.Message {
+// sideAnchor returns the boundary a side question branches from: the
+// provider-complete messages plus the provider state captured with them.
+func (m *Model) sideAnchor() sidequestion.Anchor {
+	anchor := m.sideBoundaryAnchor()
+	// A boundary published before provider context was carried, or by a path that
+	// had none, still has to run its side question in the session's project
+	// directory. Identity that travels with captured state is never overwritten.
+	if anchor.Provider.WorkingDir == "" {
+		anchor.Provider.WorkingDir = m.effectiveWorkingDir()
+	}
+	return anchor
+}
+
+func (m *Model) sideBoundaryAnchor() sidequestion.Anchor {
 	if m.mainRunManager != nil {
 		if boundary, active := m.mainRunManager.ActiveBoundary(m.SessionID()); active && len(boundary.Messages) > 0 {
-			return sidequestion.CloneMessages(boundary.Messages)
+			anchor := sidequestion.Anchor{
+				Messages:        sidequestion.CloneMessages(boundary.Messages),
+				Provider:        boundary.Provider,
+				DurableAnchorID: boundary.DurableAnchorID,
+				Durable:         boundary.Durable,
+			}
+			// Providers that run their whole tool loop inside one Stream complete a
+			// single turn per run, so the completed boundary stays at the run's
+			// starting point for its entire duration. Answer from the work actually
+			// done so far instead, and publish no provider state with it: a
+			// streaming provider's resume boundary must not be read, and a mid-run
+			// question takes the bounded replay path anyway.
+			// Provider identity stays: the working directory is what Claude Code
+			// keys its sessions by, and dropping it would both run the replay in
+			// the wrong project directory and make an established lane look like
+			// it had moved.
+			if live, ok := m.mainRunManager.ActiveLiveContext(m.SessionID()); ok && len(live) > len(boundary.Messages) {
+				anchor.Messages = sidequestion.CloneMessages(live)
+				anchor.Provider.State = nil
+			}
+			return anchor
 		}
 	}
-	// Legacy streams retain the prior streaming-context representation.
+	// Legacy streams retain the prior streaming-context representation. They
+	// carry no captured provider state, so they can only replay.
 	m.contextEstimateMu.Lock()
 	if m.streaming && len(m.streamingContextMessages) > 0 {
 		messages := sidequestion.CloneMessages(m.streamingContextMessages)
@@ -67,10 +105,69 @@ func (m *Model) sideSnapshot() []llm.Message {
 			messages = messages[:len(messages)-1]
 		}
 		m.contextEstimateMu.Unlock()
-		return messages
+		return sidequestion.Anchor{Messages: messages}
 	}
 	m.contextEstimateMu.Unlock()
-	return m.buildMessages()
+	// Idle: nothing is streaming, so exporting live provider state here is safe
+	// and lines up with the transcript the provider was last given.
+	return sidequestion.Anchor{
+		Messages:        m.buildMessages(),
+		Provider:        m.captureProviderContext(),
+		DurableAnchorID: m.activeBranchAnchorID,
+		Durable:         m.activeBranchAnchorID > 0,
+	}
+}
+
+// sideRunActive reports whether a main run is in flight. Branching an in-flight
+// Claude Code session has not been proven safe, so lane creation is restricted
+// to a settled boundary and mid-run questions use the bounded replay path.
+func (m *Model) sideRunActive() bool {
+	if m.streaming || m.streamCancelFunc != nil {
+		return true
+	}
+	return m.mainRunManager != nil && m.mainRunManager.HasActive(m.SessionID())
+}
+
+// sideForkGuard binds a main-run activity check that is safe to call from the
+// side-question goroutine. A prepared branch consults it again immediately
+// before it streams, so a run that starts during branch startup still routes the
+// question to the bounded replay path.
+func (m *Model) sideForkGuard() func() bool {
+	manager, sessionID := m.mainRunManager, m.SessionID()
+	epoch := &m.mainStreamEpoch
+	prepared := epoch.Load()
+	return func() bool {
+		// A stream the UI has committed to but not yet handed to the run manager
+		// is still a stream that will resume the provider's session.
+		if epoch.Load() != prepared {
+			return false
+		}
+		return manager == nil || !manager.HasActive(sessionID)
+	}
+}
+
+func (m *Model) ensureSideLane() *sidequestion.Lane {
+	if m.sideQuestion.Lane == nil {
+		m.sideQuestion.Lane = &sidequestion.Lane{}
+	}
+	return m.sideQuestion.Lane
+}
+
+// closeSideLane tears the lane down. Every boundary invalidation, panel clear
+// and panel close routes through here so a branched CLI session is never left
+// running.
+//
+// A running turn is cancelled first: Close hands an in-flight turn's provider to
+// that turn's own completion, so leaving it running would let the next question
+// start a second turn against a session the old one is still streaming.
+func (m *Model) closeSideLane() {
+	if m.sideQuestion.Running || m.sideQuestion.Done != nil {
+		m.cancelSideQuestion()
+	}
+	if lane := m.sideQuestion.Lane; lane != nil {
+		m.sideQuestion.Lane = nil
+		lane.Close()
+	}
 }
 
 func (m *Model) ensureSideComposer() {
@@ -155,20 +252,33 @@ func (m *Model) cmdSide(question string) (tea.Model, tea.Cmd) {
 	if m.sideProviderFactory == nil {
 		return m.showSystemMessage("Side questions are unavailable for this runtime")
 	}
-	provider, err := m.sideProviderFactory(m.providerKey, m.modelName)
-	if err != nil {
-		return m.showSystemMessage(fmt.Sprintf("Unable to start side question: %v", err))
-	}
-	history := append([]sidequestion.Entry(nil), m.sideQuestion.History...)
 	inputLimit := 0
 	if m.engine != nil {
 		inputLimit = m.engine.InputLimit()
 	}
-	messages, err := sidequestion.BuildMessages(m.sideSnapshot(), history, question, m.providerKey, m.modelName, inputLimit)
+	reasoningEffort := ""
+	reasoningMode := ""
+	if m.sess != nil {
+		reasoningEffort = strings.TrimSpace(m.sess.ReasoningEffort)
+		reasoningMode = strings.TrimSpace(m.sess.ReasoningMode)
+	}
+	turn, err := m.ensureSideLane().PrepareTurn(sidequestion.TurnRequest{
+		Question:        question,
+		Anchor:          m.sideAnchor(),
+		History:         append([]sidequestion.Entry(nil), m.sideQuestion.History...),
+		ProviderKey:     m.providerKey,
+		Model:           m.modelName,
+		ReasoningEffort: reasoningEffort,
+		ReasoningMode:   reasoningMode,
+		InputLimit:      inputLimit,
+		AllowFork:       !m.sideRunActive(),
+		// Re-checked on the side goroutine, so it must not read model fields. The
+		// run manager's own lock is the only safe view of main-run activity there.
+		ForkStillAllowed: m.sideForkGuard(),
+		ForkSource:       m.provider,
+		NewProvider:      m.sideProviderFactory,
+	})
 	if err != nil {
-		if cleaner, ok := provider.(llm.ProviderCleaner); ok {
-			cleaner.CleanupMCP()
-		}
 		return m.showSystemMessage(fmt.Sprintf("Unable to start side question: %v", err))
 	}
 	m.ensureSideComposer()
@@ -191,27 +301,12 @@ func (m *Model) cmdSide(question string) (tea.Model, tea.Cmd) {
 	done := make(chan struct{})
 	m.sideQuestion.Done = done
 	events := m.sideQuestion.events
-	reasoningEffort := ""
-	reasoningMode := ""
-	if m.sess != nil {
-		reasoningEffort = strings.TrimSpace(m.sess.ReasoningEffort)
-		reasoningMode = strings.TrimSpace(m.sess.ReasoningMode)
-	}
-	req := llm.Request{
-		Model:           m.modelName,
-		Messages:        messages,
-		ReasoningEffort: reasoningEffort,
-		Responses:       &llm.ResponsesOptions{ReasoningMode: reasoningMode},
-	}
 	go func() {
 		defer close(done)
 		defer close(events)
-		defer func() {
-			if cleaner, ok := provider.(llm.ProviderCleaner); ok {
-				cleaner.CleanupMCP()
-			}
-		}()
-		result, runErr := sidequestion.Run(ctx, provider, req, func(event llm.Event) {
+		// The lane owns its provider across turns and releases it itself: on a
+		// replay turn, on a failed lane turn, and on teardown.
+		result, runErr := turn.Run(ctx, func(event llm.Event) {
 			if len(events) >= cap(events)-1 {
 				return
 			}
@@ -317,9 +412,7 @@ func (m *Model) cancelSideQuestion() {
 }
 
 func (m *Model) clearSideQuestionHistory() {
-	if m.sideQuestion.Running || m.sideQuestion.Done != nil {
-		m.cancelSideQuestion()
-	}
+	m.closeSideLane()
 	m.sideQuestion.History = nil
 	m.sideQuestion.Question = ""
 	m.sideQuestion.Response.Reset()
@@ -557,7 +650,14 @@ func (m *Model) renderSideQuestionPanel() string {
 	} else if m.askUserModel != nil || m.askUserDoneCh != nil {
 		attention = " · main needs input"
 	}
-	header := ansi.Truncate("Side question · "+status+mainStatus+attention, geometry.bodyWidth, "…")
+	// A lane that holds its own provider session stops re-reading the main
+	// boundary, which is correct branch semantics but differs from a replay lane.
+	// Say so rather than letting it be invisible.
+	anchored := ""
+	if m.sideQuestion.Lane.Continuing() {
+		anchored = " · anchored"
+	}
+	header := ansi.Truncate("Side question · "+status+anchored+mainStatus+attention, geometry.bodyWidth, "…")
 	footer := sideQuestionFooter(m.sideQuestion.Running, m.sideQuestion.ConfirmClear, geometry.bodyWidth)
 	theme := m.styles.Theme()
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Primary)

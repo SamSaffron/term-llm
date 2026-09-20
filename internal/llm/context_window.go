@@ -397,6 +397,59 @@ func InputLimitForProviderModel(providerName, model string) int {
 	return configInputLimitForProvider(providerName, model)
 }
 
+// selfManagedHelperInputLimits are bounded-replay budgets for providers that
+// report ManagesOwnContext. These CLI providers deliberately publish no
+// InputLimit: term-llm never compacts them and never renders a context meter
+// for them, so a real number there would change unrelated surfaces.
+//
+// A helper request (side question, and any other one-shot bounded replay) still
+// needs a budget, and the alternative is a tiny generic fallback that silently
+// discards the whole transcript. These are conservative assumptions about the
+// session window each CLI actually accepts, not published API limits.
+var selfManagedHelperInputLimits = map[string]int{
+	string(config.ProviderTypeClaudeBin): 160_000, // Claude Code compacts around a 200K window.
+	string(config.ProviderTypeGrokBin):   160_000,
+	string(config.ProviderTypeCursorBin): 120_000, // Routed models vary; assume the smallest common window.
+	string(config.ProviderTypeAgyBin):    160_000,
+}
+
+// defaultSelfManagedHelperInputLimit bounds a helper request for a
+// context-managing provider that has no specific assumption recorded above.
+const defaultSelfManagedHelperInputLimit = 96_000
+
+// HelperInputLimitForProviderModel returns the input token budget a bounded
+// helper request may use for a provider/model pair.
+//
+// It is deliberately separate from InputLimitForProviderModel: that value feeds
+// the context meter, /models, the web context-usage endpoints and compaction
+// configuration, all of which are intentionally absent for providers that manage
+// their own context. This one exists only to size a request term-llm builds
+// itself, so it falls back to a per-provider-type assumption instead of zero.
+func HelperInputLimitForProviderModel(providerName, model string) int {
+	if limit := InputLimitForProviderModel(providerName, model); limit > 0 {
+		return limit
+	}
+	providerType := resolveProviderType(providerName)
+	if limit, ok := selfManagedHelperInputLimits[providerType]; ok {
+		return limit
+	}
+	if !providerManagesOwnContext(providerType) {
+		return 0
+	}
+	return defaultSelfManagedHelperInputLimit
+}
+
+// providerManagesOwnContext reports whether a provider type declares
+// Capabilities.ManagesOwnContext without requiring a constructed provider.
+func providerManagesOwnContext(providerType string) bool {
+	switch config.ProviderType(providerType) {
+	case config.ProviderTypeClaudeBin, config.ProviderTypeGrokBin,
+		config.ProviderTypeCursorBin, config.ProviderTypeAgyBin:
+		return true
+	}
+	return false
+}
+
 // FormatTokenCount returns a human-readable string for a token count
 // (e.g., "128K", "1M", "200K"). Returns "" for zero or negative values.
 func FormatTokenCount(tokens int) string {

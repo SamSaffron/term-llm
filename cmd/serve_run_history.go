@@ -35,14 +35,14 @@ func (p serveRunHistoryPreparation) restore() {
 func (rt *serveRuntime) prepareRunHistory(ctx context.Context, spec serveRunSpec, sessionID string, input []llm.Message, req *llm.Request, now func() time.Time) serveRunHistoryPreparation {
 	stateful, replaceHistory, persisted := spec.stateful, spec.replaceHistory, spec.persisted
 	base := append([]llm.Message(nil), rt.history...)
-	rt.initializeSideQuestionSnapshot(base)
+	rt.initializeSideQuestionSnapshot(rt.sideQuestionBoundary(base, 0, false))
 	rt.updateSideQuestionConfig(*req)
 	p := serveRunHistoryPreparation{rt: rt, baseHistory: base, inputMessages: input, replacingExisting: replaceHistory && len(base) > 0, backupHistory: base, backupUsage: rt.cumulativeUsage, backupPlatform: rt.lastInjectedPlatform, backupPersisted: rt.historyPersisted}
 	if replaceHistory {
 		p.backupSideQuestion = rt.sideQuestion.backup()
 		rt.sideQuestion.cancelActive()
 		rt.sideQuestion.clearHistory()
-		rt.refreshSideQuestionSnapshot(nil)
+		rt.invalidateSideQuestionSnapshot()
 		p.baseHistory = nil
 		rt.history = nil
 		rt.engine.ResetConversation()

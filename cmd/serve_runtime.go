@@ -1928,7 +1928,11 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		}
 		initialBoundary = append(initialBoundary, baseHistory...)
 		initialBoundary = append(initialBoundary, inputMessages...)
-		rt.refreshSideQuestionSnapshot(initialBoundary)
+		// The run is committed but not yet observable through hasActiveRun, so
+		// publishing branchable state here would let a side question branch a
+		// session this run is about to resume. Publish the messages and the
+		// provider identity only; the next completed turn republishes state.
+		rt.advanceSideQuestionTranscript(initialBoundary)
 	}
 
 	runCtx, runCancel := context.WithCancel(ctx)

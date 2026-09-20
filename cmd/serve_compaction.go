@@ -110,6 +110,9 @@ func (rt *serveRuntime) compactSession(ctx context.Context, sessionID string) (*
 	if rt.engine != nil {
 		rt.engine.SetContextEstimateBaseline(0, 0)
 	}
-	rt.refreshSideQuestionSnapshot(compacted)
+	// Compaction rewrites the transcript, so any lane branched from the previous
+	// one is gone and the live provider session no longer matches these messages.
+	rt.invalidateSideQuestionSnapshot()
+	rt.refreshSideQuestionSnapshot(rt.sideQuestionReplayBoundary(compacted))
 	return result, nil
 }

@@ -139,8 +139,10 @@ func (p *serveRunPersistence) persistInitial(ctx context.Context, replacingExist
 }
 func (p *serveRunPersistence) updateStateAndAppendLocked(ctx context.Context) {
 	if p.stateful {
-		p.rt.history = p.buildSnapshotLocked()
+		snapshot := p.buildSnapshotLocked()
+		p.rt.history = snapshot
 		p.rt.historyPersisted = false
+		p.rt.advanceSideQuestionTranscript(snapshot)
 	}
 	if p.persisted {
 		if p.appendOnlyPersisted {
@@ -187,8 +189,10 @@ func (p *serveRunPersistence) upsertAssistantLocked(ctx context.Context, assista
 	}
 	p.assistantSnapshotDirty = true
 	if p.stateful {
-		p.rt.history = p.buildSnapshotLocked()
+		snapshot := p.buildSnapshotLocked()
+		p.rt.history = snapshot
 		p.rt.historyPersisted = false
+		p.rt.advanceSideQuestionTranscript(snapshot)
 	}
 	if !p.persisted {
 		p.persistPlatformInjectionLocked()
@@ -362,7 +366,9 @@ func (p *serveRunPersistence) applyCompaction(cbCtx context.Context, result *llm
 	if p.stateful {
 		p.rt.history = append([]llm.Message(nil), compacted...)
 		p.rt.historyPersisted = p.persisted
-		p.rt.refreshSideQuestionSnapshot(compacted)
+		// Compaction replaced the transcript any lane branched from.
+		p.rt.invalidateSideQuestionSnapshot()
+		p.rt.refreshSideQuestionSnapshot(p.rt.sideQuestionReplayBoundary(compacted))
 	}
 	p.rt.engine.SetContextEstimateBaseline(0, 0)
 	p.persistPlatformInjectionLocked()

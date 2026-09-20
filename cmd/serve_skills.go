@@ -1061,7 +1061,7 @@ func (s *serveServer) persistServeSkillRunResultAtBoundary(ctx context.Context, 
 			defer runtime.mu.Unlock()
 			if contextMessage := s.persistServeSkillRunResult(run, runErr); contextMessage != nil {
 				runtime.history = append(runtime.history, *contextMessage)
-				runtime.refreshSideQuestionSnapshot(runtime.history)
+				runtime.refreshSideQuestionSnapshot(runtime.sideQuestionBoundary(runtime.history, 0, false))
 			}
 			return
 		}

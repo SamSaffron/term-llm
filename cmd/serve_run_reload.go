@@ -225,7 +225,7 @@ func restoreWebRun(saved *webRunContinuation, cancel context.CancelFunc) *respon
 	run.persistence.maxRev = saved.Ledger.MaxRev
 	run.persistence.outputKeys = saved.Ledger.OutputKeys
 	run.persistence.nextOutputID = saved.Ledger.NextOutputID
-	run.boundary = runboundary.New(run.id, saved.Boundary.Messages, saved.Boundary.DurableAnchorID, saved.Boundary.Durable)
+	run.boundary = runboundary.New(run.id, saved.Boundary.Messages, saved.Boundary.DurableAnchorID, saved.Boundary.Durable, saved.Boundary.Provider)
 	return run
 }
 func (saved *webRunContinuation) streamState() *responseRunStreamState {

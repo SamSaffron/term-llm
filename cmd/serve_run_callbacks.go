@@ -76,6 +76,9 @@ func (p *serveRunPersistence) commitCompletedTurn(ctx context.Context, turnIndex
 	p.pendingAssistantMsgID = 0
 	p.pendingAssistantTextPersisted = false
 	if p.stateful {
-		p.rt.refreshSideQuestionSnapshot(p.buildSnapshotLocked())
+		// This is the web's single provider-complete boundary: the turn's stream has
+		// returned, so exporting provider state here pairs it with the messages it
+		// belongs to instead of reading it while output is in flight.
+		p.rt.refreshSideQuestionSnapshot(p.rt.sideQuestionBoundary(p.buildSnapshotLocked(), lastDurableID, durableComplete))
 	}
 }

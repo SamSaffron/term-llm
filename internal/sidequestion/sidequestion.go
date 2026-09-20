@@ -176,7 +176,11 @@ func deepCopyMessages(messages []llm.Message) []llm.Message {
 func BuildMessages(snapshot []llm.Message, history []Entry, question, providerName, model string, runtimeInputLimit int) ([]llm.Message, error) {
 	inputLimit := runtimeInputLimit
 	if inputLimit <= 0 {
-		inputLimit = llm.InputLimitForProviderModel(providerName, model)
+		// Providers that manage their own context report no runtime input limit
+		// and no model table limit. Use the helper budget so a large CLI
+		// transcript is trimmed against a realistic number instead of collapsing
+		// into the unknown-model fallback.
+		inputLimit = llm.HelperInputLimitForProviderModel(providerName, model)
 	}
 	if inputLimit <= 0 {
 		inputLimit = fallbackSideInputLimit
@@ -462,11 +466,20 @@ func AppendHistory(history []Entry, entry Entry) []Entry {
 	return history
 }
 
-// Run performs exactly one provider request. It bypasses the agent engine so no
-// local, MCP, approval, delegation, or provider-native search capability exists.
-func Run(ctx context.Context, provider llm.Provider, req llm.Request, emit func(llm.Event)) (Result, error) {
-	req.Ephemeral = true
-	req.SessionID = ""
+// runRequest performs exactly one provider request. It bypasses the agent engine
+// so no local, MCP, approval, delegation, or provider-native search capability
+// exists. It is reached only through Turn.Run, so a side question cannot be
+// issued without a lane deciding how it reaches the model.
+//
+// ephemeral is the only thing a lane may vary: for the Responses providers it is
+// what stops a helper turn from chaining onto the live conversation, so only a
+// turn whose provider came from the boundary fork seam may pass false. Every
+// other restriction below is unconditional.
+func runRequest(ctx context.Context, provider llm.Provider, req llm.Request, ephemeral bool, emit func(llm.Event)) (Result, error) {
+	req.Ephemeral = ephemeral
+	if ephemeral {
+		req.SessionID = ""
+	}
 	req.Tools = nil
 	req.ToolMap = nil
 	req.ToolChoice = llm.ToolChoice{}

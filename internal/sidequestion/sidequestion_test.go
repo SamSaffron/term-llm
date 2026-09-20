@@ -2,6 +2,7 @@ package sidequestion
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -130,6 +131,55 @@ func TestBuildMessagesUsesRuntimeInputLimit(t *testing.T) {
 	}
 	if tokens := estimateSideMessageTokens(got); tokens > 800 {
 		t.Fatalf("tokens = %d, want runtime-derived budget <= 800", tokens)
+	}
+}
+
+func TestBuildMessagesKeepsLargeSelfManagedProviderSnapshot(t *testing.T) {
+	// claude-bin publishes no input limit and Engine.InputLimit() is zero for it,
+	// so a realistic transcript used to collapse into the unknown-model fallback
+	// and leave only the policy plus the question.
+	snapshot := []llm.Message{llm.SystemText("system prompt")}
+	for i := range 40 {
+		snapshot = append(snapshot,
+			llm.UserText(fmt.Sprintf("main question %d %s", i, strings.Repeat("detail ", 200))),
+			llm.AssistantText(fmt.Sprintf("main answer %d %s", i, strings.Repeat("reply ", 200))))
+	}
+	for _, model := range []string{"opus-max", "fable-medium", "sonnet"} {
+		t.Run(model, func(t *testing.T) {
+			got, err := BuildMessages(snapshot, nil, "what changed?", "claude-bin", model, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != len(snapshot)+2 {
+				t.Fatalf("messages = %d, want the whole %d-message snapshot plus policy and question", len(got), len(snapshot))
+			}
+			if !strings.Contains(messageText(got), "main question 0") {
+				t.Fatal("oldest main turn was trimmed away")
+			}
+		})
+	}
+}
+
+func TestBuildMessagesStillTrimsBeyondSelfManagedHelperBudget(t *testing.T) {
+	limit := llm.HelperInputLimitForProviderModel("claude-bin", "opus-max")
+	if limit <= 0 {
+		t.Fatalf("helper input limit = %d, want a positive claude-bin assumption", limit)
+	}
+	snapshot := []llm.Message{llm.SystemText("system prompt")}
+	for i := range 400 {
+		snapshot = append(snapshot,
+			llm.UserText(fmt.Sprintf("main question %d %s", i, strings.Repeat("detail ", 400))),
+			llm.AssistantText(fmt.Sprintf("main answer %d %s", i, strings.Repeat("reply ", 400))))
+	}
+	got, err := BuildMessages(snapshot, nil, "what changed?", "claude-bin", "opus-max", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tokens := estimateSideMessageTokens(got); tokens > int(float64(limit)*sideInputBudgetRatio) {
+		t.Fatalf("tokens = %d, want within the %d-token claude-bin helper budget", tokens, limit)
+	}
+	if len(got) >= len(snapshot) {
+		t.Fatalf("messages = %d, want an oversized snapshot to still be trimmed", len(got))
 	}
 }
 
@@ -343,11 +393,11 @@ func TestAppendHistoryCapsAtTwenty(t *testing.T) {
 
 func TestRunDisablesCapabilitiesAndRejectsToolCall(t *testing.T) {
 	provider := llm.NewMockProvider("mock").AddToolCall("call-1", "danger", map[string]any{"path": "/tmp/x"})
-	result, err := Run(context.Background(), provider, llm.Request{
+	result, err := runRequest(context.Background(), provider, llm.Request{
 		Search:   true,
 		Tools:    []llm.ToolSpec{{Name: "danger"}},
 		Messages: []llm.Message{llm.UserText("do it")},
-	}, nil)
+	}, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

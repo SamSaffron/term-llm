@@ -13,18 +13,22 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/restart"
+	"github.com/samsaffron/term-llm/internal/runboundary"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/sidequestion"
 )
 
 type sideQuestionRuntime struct {
-	mu              sync.Mutex
-	running         bool
-	generation      uint64
-	cancel          context.CancelFunc
-	done            chan struct{}
-	history         []sidequestion.Entry
-	mainSnapshot    []llm.Message
+	mu         sync.Mutex
+	running    bool
+	generation uint64
+	cancel     context.CancelFunc
+	done       chan struct{}
+	history    []sidequestion.Entry
+	// anchor is the main boundary a side question branches from: its messages and
+	// the provider state captured with them, as one value.
+	anchor          sidequestion.Anchor
+	lane            *sidequestion.Lane
 	snapshotReady   bool
 	context         []llm.Message
 	providerKey     string
@@ -94,16 +98,81 @@ func (rt *serveRuntime) updateSideQuestionConfig(req llm.Request) {
 		mode = strings.TrimSpace(req.Responses.ReasoningMode)
 	}
 	rt.sideQuestion.mu.Lock()
+	// New provider/model identity must never end up attached to a lane branched
+	// under the old one. The anchor keeps the identity its state belongs to, so
+	// the seam refuses on a mismatch, but the lane's own session is dropped here.
+	identityChanged := rt.sideQuestion.providerKey != providerKey || rt.sideQuestion.model != model
 	rt.sideQuestion.context = contextMessages
 	rt.sideQuestion.providerKey = providerKey
 	rt.sideQuestion.model = model
 	rt.sideQuestion.reasoningEffort = effort
 	rt.sideQuestion.reasoningMode = mode
+	lane := rt.sideQuestion.lane
+	if identityChanged {
+		rt.sideQuestion.lane = nil
+	}
 	rt.sideQuestion.mu.Unlock()
+	if identityChanged {
+		lane.Close()
+	}
 }
 
-func (rt *serveRuntime) initializeSideQuestionSnapshot(messages []llm.Message) {
-	snapshot := append([]llm.Message(nil), messages...)
+// sideQuestionProviderIdentity is the part of the provider context that is
+// always safe to publish: who the provider is and where its sessions live. It
+// carries no transport state, so it can be republished while a stream is in
+// flight.
+//
+// The working directory matters even on the replay path: Claude Code keys its
+// sessions and project configuration by directory, so dropping it would run a
+// side question somewhere else entirely.
+func (rt *serveRuntime) sideQuestionProviderIdentity() runboundary.ProviderContext {
+	identity := runboundary.ProviderContext{ProviderKey: rt.providerKey, Model: rt.defaultModel}
+	if rt.toolMgr != nil {
+		identity.WorkingDir = strings.TrimSpace(rt.toolMgr.BaseDir())
+	}
+	return identity
+}
+
+// sideQuestionReplayBoundary is a boundary that can only be replayed from: the
+// messages and the provider identity they belong to, with no transport state.
+// Transcript rewrites publish this, because the live session no longer matches
+// what the transcript says — but the replay still has to run in the session's
+// project directory.
+func (rt *serveRuntime) sideQuestionReplayBoundary(messages []llm.Message) sidequestion.Anchor {
+	return sidequestion.Anchor{
+		Messages: append([]llm.Message(nil), messages...),
+		Provider: rt.sideQuestionProviderIdentity(),
+	}
+}
+
+// captureSideQuestionProvider adds the live provider's exported transport state
+// to that identity. It is the web equivalent of the TUI's capture at the run
+// boundary, and must only be called when the provider is not streaming.
+func (rt *serveRuntime) captureSideQuestionProvider() runboundary.ProviderContext {
+	captured := rt.sideQuestionProviderIdentity()
+	if exporter, ok := rt.provider.(llm.ProviderStateExporter); ok {
+		if state, exported := exporter.ExportProviderState(); exported {
+			captured.State = state
+		}
+	}
+	return captured
+}
+
+// sideQuestionBoundary builds the boundary a side question branches from:
+// messages, the provider state captured with them, and the persisted row a
+// promoted branch would be created at — one value, assembled at one instant.
+// durableRowID is zero when no row identity is available, which is not the same
+// as row zero.
+func (rt *serveRuntime) sideQuestionBoundary(messages []llm.Message, durableRowID int64, durable bool) sidequestion.Anchor {
+	return sidequestion.Anchor{
+		Messages:        append([]llm.Message(nil), messages...),
+		Provider:        rt.captureSideQuestionProvider(),
+		DurableAnchorID: durableRowID,
+		Durable:         durable && durableRowID > 0,
+	}
+}
+
+func (rt *serveRuntime) initializeSideQuestionSnapshot(anchor sidequestion.Anchor) {
 	contextMessages := rt.sideQuestionContextLocked()
 	providerKey, model := rt.providerKey, rt.defaultModel
 	rt.sideQuestion.mu.Lock()
@@ -111,19 +180,31 @@ func (rt *serveRuntime) initializeSideQuestionSnapshot(messages []llm.Message) {
 	if rt.sideQuestion.snapshotReady {
 		return
 	}
-	rt.sideQuestion.mainSnapshot = snapshot
+	rt.sideQuestion.anchor = anchor
 	rt.sideQuestion.context = contextMessages
 	rt.sideQuestion.providerKey = providerKey
 	rt.sideQuestion.model = model
 	rt.sideQuestion.snapshotReady = true
 }
 
-func (rt *serveRuntime) refreshSideQuestionSnapshot(messages []llm.Message) {
-	snapshot := append([]llm.Message(nil), messages...)
+// refreshSideQuestionSnapshot advances the side-question anchor. Messages,
+// provider state and branch point move together, so state can never be refreshed
+// without the messages it belongs to. Pass an anchor with no provider state when
+// the runtime cannot vouch that the live provider session matches these
+// messages; that only costs the branch path, never correctness.
+func (rt *serveRuntime) refreshSideQuestionSnapshot(anchor sidequestion.Anchor) {
 	contextMessages := rt.sideQuestionContextLocked()
 	providerKey, model := rt.providerKey, rt.defaultModel
 	rt.sideQuestion.mu.Lock()
-	rt.sideQuestion.mainSnapshot = snapshot
+	// Only the path that persisted a row knows a branch point. Everything else
+	// advances messages and provider state and leaves the last known row alone,
+	// the way the TUI's durable boundary only ever advances. Invalidation clears
+	// it along with the rest of the anchor.
+	if anchor.DurableAnchorID <= 0 {
+		anchor.DurableAnchorID = rt.sideQuestion.anchor.DurableAnchorID
+		anchor.Durable = rt.sideQuestion.anchor.Durable
+	}
+	rt.sideQuestion.anchor = anchor
 	rt.sideQuestion.context = contextMessages
 	rt.sideQuestion.providerKey = providerKey
 	rt.sideQuestion.model = model
@@ -131,9 +212,55 @@ func (rt *serveRuntime) refreshSideQuestionSnapshot(messages []llm.Message) {
 	rt.sideQuestion.mu.Unlock()
 }
 
+// advanceSideQuestionTranscript republishes the in-flight transcript so a
+// question asked mid-run sees the work done so far.
+//
+// Turn completion is not frequent enough on its own: providers that run their
+// whole tool loop inside one Stream complete a single engine turn per run, so a
+// boundary that only advances there stays at the run's starting point for the
+// run's entire duration.
+//
+// It publishes provider identity but no transport state: the provider is
+// streaming, so its resume boundary must not be read here, and a mid-run
+// question takes the bounded replay path anyway. Identity has to stay, because
+// dropping the working directory would run the replay in the wrong project
+// directory and make an established lane look like it had moved. The last known
+// branch point is left alone; it still points at a persisted row.
+func (rt *serveRuntime) advanceSideQuestionTranscript(messages []llm.Message) {
+	snapshot := append([]llm.Message(nil), messages...)
+	identity := rt.sideQuestionProviderIdentity()
+	rt.sideQuestion.mu.Lock()
+	rt.sideQuestion.anchor.Messages = snapshot
+	rt.sideQuestion.anchor.Provider = identity
+	rt.sideQuestion.snapshotReady = true
+	rt.sideQuestion.mu.Unlock()
+}
+
+// invalidateSideQuestionSnapshot drops the anchor and the lane branched from it
+// after an operation that rewrote or replaced the transcript. Dropping the state
+// without the lane would leave a branch pointing at a transcript that no longer
+// exists.
+//
+// A running turn is cancelled first: Close hands an in-flight turn's provider to
+// that turn's own completion, so leaving it running would let the next question
+// start a second turn against a session the old one is still streaming.
+func (rt *serveRuntime) invalidateSideQuestionSnapshot() {
+	rt.sideQuestion.cancelActive()
+	identity := rt.sideQuestionProviderIdentity()
+	rt.sideQuestion.mu.Lock()
+	// Provider identity is not part of what a transcript rewrite invalidates, and
+	// a replay asked before the next refresh still needs the project directory.
+	rt.sideQuestion.anchor = sidequestion.Anchor{Provider: identity}
+	rt.sideQuestion.snapshotReady = true
+	lane := rt.sideQuestion.lane
+	rt.sideQuestion.lane = nil
+	rt.sideQuestion.mu.Unlock()
+	lane.Close()
+}
+
 type sideQuestionStateBackup struct {
 	history         []sidequestion.Entry
-	mainSnapshot    []llm.Message
+	anchor          sidequestion.Anchor
 	snapshotReady   bool
 	context         []llm.Message
 	providerKey     string
@@ -147,11 +274,16 @@ type sideQuestionStateBackup struct {
 	lastError       string
 }
 
+// backup round-trips the whole anchor rather than its messages alone, so a
+// rollback cannot restore a snapshot without the provider state it belongs to.
+// The lane is deliberately not part of it: a live provider branch is a lifecycle
+// object, not restorable data, so a rollback drops it and the next question
+// re-branches.
 func (sq *sideQuestionRuntime) backup() sideQuestionStateBackup {
 	sq.mu.Lock()
 	defer sq.mu.Unlock()
 	return sideQuestionStateBackup{
-		history: append([]sidequestion.Entry(nil), sq.history...), mainSnapshot: sidequestion.CloneMessages(sq.mainSnapshot),
+		history: append([]sidequestion.Entry(nil), sq.history...), anchor: sq.anchor.Clone(),
 		snapshotReady: sq.snapshotReady, context: sidequestion.CloneMessages(sq.context), providerKey: sq.providerKey,
 		model: sq.model, reasoningEffort: sq.reasoningEffort, reasoningMode: sq.reasoningMode,
 		question: sq.question, response: string(sq.response), synthetic: sq.synthetic, usage: sq.usage, lastError: sq.lastError,
@@ -160,9 +292,8 @@ func (sq *sideQuestionRuntime) backup() sideQuestionStateBackup {
 
 func (sq *sideQuestionRuntime) restore(backup sideQuestionStateBackup) {
 	sq.mu.Lock()
-	defer sq.mu.Unlock()
 	sq.history = append([]sidequestion.Entry(nil), backup.history...)
-	sq.mainSnapshot = sidequestion.CloneMessages(backup.mainSnapshot)
+	sq.anchor = backup.anchor.Clone()
 	sq.snapshotReady = backup.snapshotReady
 	sq.context = sidequestion.CloneMessages(backup.context)
 	sq.providerKey, sq.model = backup.providerKey, backup.model
@@ -170,6 +301,10 @@ func (sq *sideQuestionRuntime) restore(backup sideQuestionStateBackup) {
 	sq.question = backup.question
 	sq.response = []byte(backup.response)
 	sq.synthetic, sq.usage, sq.lastError = backup.synthetic, backup.usage, backup.lastError
+	lane := sq.lane
+	sq.lane = nil
+	sq.mu.Unlock()
+	lane.Close()
 }
 
 func (sq *sideQuestionRuntime) view() sideQuestionView {
@@ -219,7 +354,10 @@ func (sq *sideQuestionRuntime) clearHistory() {
 	sq.synthetic = false
 	sq.usage = llm.Usage{}
 	sq.lastError = ""
+	lane := sq.lane
+	sq.lane = nil
 	sq.mu.Unlock()
+	lane.Close()
 }
 
 func (sq *sideQuestionRuntime) close(ctx context.Context) {
@@ -231,9 +369,11 @@ func (sq *sideQuestionRuntime) close(ctx context.Context) {
 	sq.history = nil
 	sq.question = ""
 	sq.response = nil
-	sq.mainSnapshot = nil
+	sq.anchor = sidequestion.Anchor{}
 	sq.snapshotReady = false
 	sq.context = nil
+	lane := sq.lane
+	sq.lane = nil
 	sq.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -244,6 +384,9 @@ func (sq *sideQuestionRuntime) close(ctx context.Context) {
 		case <-ctx.Done():
 		}
 	}
+	// Close the lane after the running turn has settled so its provider is not
+	// released while a stream is still using it.
+	lane.Close()
 }
 
 type sideQuestionStart struct {
@@ -321,43 +464,46 @@ func (rt *serveRuntime) startSideQuestion(input sideQuestionStart) (<-chan sideQ
 	model := sq.model
 	reasoningEffort := sq.reasoningEffort
 	reasoningMode := sq.reasoningMode
-	sq.mu.Unlock()
-	provider, err := rt.sideProviderFactory(providerKey, model)
-	if err != nil {
-		return nil, err
-	}
-
-	sq.mu.Lock()
-	if sq.running {
-		sq.mu.Unlock()
-		if cleaner, ok := provider.(llm.ProviderCleaner); ok {
-			cleaner.CleanupMCP()
-		}
-		return nil, errors.New("A side question is already running")
-	}
 	stateGeneration := sq.generation
-	snapshot := appendMissingSideContext(sq.mainSnapshot, sq.context)
+	anchor := sq.anchor.Clone()
+	anchor.Messages = appendMissingSideContext(anchor.Messages, sq.context)
 	history := append([]sidequestion.Entry(nil), sq.history...)
+	if sq.lane == nil {
+		sq.lane = &sidequestion.Lane{}
+	}
+	lane := sq.lane
 	sq.mu.Unlock()
 
 	inputLimit := 0
 	if rt.engine != nil {
 		inputLimit = rt.engine.InputLimit()
 	}
-	messages, err := sidequestion.BuildMessages(snapshot, history, question, providerKey, model, inputLimit)
+	turn, err := lane.PrepareTurn(sidequestion.TurnRequest{
+		Question:        question,
+		Anchor:          anchor,
+		History:         history,
+		ProviderKey:     providerKey,
+		Model:           model,
+		ReasoningEffort: reasoningEffort,
+		ReasoningMode:   reasoningMode,
+		InputLimit:      inputLimit,
+		// Branching a Claude Code session the runtime still holds mid-turn has not
+		// been proven safe, so lane creation waits for a settled boundary.
+		AllowFork: !rt.hasActiveRun(),
+		// Re-checked immediately before the branch streams: a request can arrive
+		// and start a main run between preparing the branch and launching it.
+		ForkStillAllowed: func() bool { return !rt.hasActiveRun() },
+		ForkSource:       rt.provider,
+		NewProvider:      rt.sideProviderFactory,
+	})
 	if err != nil {
-		if cleaner, ok := provider.(llm.ProviderCleaner); ok {
-			cleaner.CleanupMCP()
-		}
 		return nil, err
 	}
 
 	sq.mu.Lock()
-	if sq.running || sq.generation != stateGeneration {
+	if sq.running || sq.generation != stateGeneration || sq.lane != lane {
 		sq.mu.Unlock()
-		if cleaner, ok := provider.(llm.ProviderCleaner); ok {
-			cleaner.CleanupMCP()
-		}
+		turn.Abandon()
 		return nil, errors.New("Side question state changed while preparing the request")
 	}
 	sq.generation++
@@ -375,20 +521,12 @@ func (rt *serveRuntime) startSideQuestion(input sideQuestionStart) (<-chan sideQ
 	sq.lastError = ""
 	sq.mu.Unlock()
 
-	req := llm.Request{
-		Model: model, ReasoningEffort: reasoningEffort,
-		Messages:  messages,
-		Responses: &llm.ResponsesOptions{ReasoningMode: reasoningMode},
-	}
 	_ = restart.Default.Go(ctx, func(ctx context.Context) {
 		defer close(done)
 		defer close(events)
-		defer func() {
-			if cleaner, ok := provider.(llm.ProviderCleaner); ok {
-				cleaner.CleanupMCP()
-			}
-		}()
-		result, runErr := sidequestion.Run(ctx, provider, req, func(event llm.Event) {
+		// The lane owns its provider across turns and releases it itself: after a
+		// replay turn, after a failed lane turn, and on teardown.
+		result, runErr := turn.Run(ctx, func(event llm.Event) {
 			sq.mu.Lock()
 			if generation == sq.generation {
 				switch event.Type {
@@ -511,7 +649,7 @@ func (s *serveServer) runtimeForSideQuestion(ctx context.Context, sessionID stri
 		rt.historyPersisted = true
 		rt.restorePlatformInjectionStateFromHistory()
 	}
-	rt.initializeSideQuestionSnapshot(history)
+	rt.initializeSideQuestionSnapshot(rt.sideQuestionBoundary(history, 0, false))
 	rt.updateSideQuestionConfig(llm.Request{
 		Model: model, ReasoningEffort: effort,
 		Responses: &llm.ResponsesOptions{ReasoningMode: mode},

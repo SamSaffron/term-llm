@@ -236,6 +236,9 @@ func (p *ClaudeBinProvider) ResetConversation() {
 	p.sessionID = ""
 	p.messagesSent = 0
 	p.transcriptDigest = ""
+	// There is no session left to branch from, so a pending branch request would
+	// only make the next turn ask Claude Code to fork nothing.
+	p.forkSession = false
 }
 
 func (p *ClaudeBinProvider) cloneHelperProvider() *ClaudeBinProvider {
@@ -271,6 +274,41 @@ func (p *ClaudeBinProvider) forkHelperConversation() (Provider, bool) {
 	// offset should be applied to the helper request.
 	clone.messagesSent = 0
 	clone.transcriptDigest = ""
+	clone.forkSession = true
+	return clone, true
+}
+
+// forkConversationAtBoundary branches from a captured resume boundary instead of
+// the live provider fields. Unlike forkHelperConversation the branch keeps the
+// captured transcript offset, so the caller's request may carry the parent
+// transcript and Stream delivers only the part Claude Code has not seen.
+//
+// The validation here is the whole point of the seam. If the branch were allowed
+// to discover the mismatch itself, Stream would reset the conversation and replay
+// the entire untrimmed request as fresh stdin.
+func (p *ClaudeBinProvider) ForkConversationAtBoundary(state []byte, requestMessages []Message) (Provider, bool) {
+	if p == nil || len(state) == 0 || len(requestMessages) == 0 {
+		return nil, false
+	}
+	clone := p.cloneHelperProvider()
+	if clone == nil {
+		return nil, false
+	}
+	if err := clone.ImportProviderState(state); err != nil {
+		return nil, false
+	}
+	if clone.messagesSent <= 0 || clone.messagesSent > len(requestMessages) {
+		return nil, false
+	}
+	// State written before transcript fingerprinting is unverifiable. Resuming an
+	// in-flight conversation on it is safe because that provider delivered the
+	// prefix itself; branching another request onto it is not.
+	if strings.TrimSpace(clone.transcriptDigest) == "" {
+		return nil, false
+	}
+	if claudeTranscriptDigest(requestMessages, clone.messagesSent) != clone.transcriptDigest {
+		return nil, false
+	}
 	clone.forkSession = true
 	return clone, true
 }
@@ -454,6 +492,7 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 
 		// Build the command arguments, passing events channel for tool execution routing.
 		// MCP server is kept alive across turns - caller should call CleanupMCP() when done.
+		resumedSessionID := p.sessionID
 		args, effort := p.buildArgs(ctx, req, send)
 
 		systemPrompt := p.systemPromptForTurn(req.Messages, req.Ephemeral)
@@ -533,6 +572,14 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 		if !req.Ephemeral {
 			p.messagesSent = len(req.Messages)
 			p.transcriptDigest = claudeTranscriptDigest(req.Messages, p.messagesSent)
+			// A branch owns the session Claude Code reported back to it. Continuing
+			// to pass --fork-session would branch again on every later turn, leaving
+			// an orphan session per exchange and no accumulating session for a
+			// promoted conversation to continue. Only stop forking once the CLI has
+			// actually moved us onto a different session.
+			if p.forkSession && p.sessionID != "" && p.sessionID != resumedSessionID {
+				p.forkSession = false
+			}
 		}
 
 		return send.Send(Event{Type: EventDone})

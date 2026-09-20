@@ -121,6 +121,7 @@ func (m *Model) helperCompactionConfig() llm.CompactionConfig {
 
 func (m *Model) beginHelperStream(phase string, resetRetainedTracker bool) context.Context {
 	m.clearFooterMessage()
+	m.beginMainStreamEpoch()
 	m.streaming = true
 	if resetRetainedTracker {
 		m.resetRetainedStreamTracker()
@@ -226,6 +227,10 @@ func (m *Model) switchModelWithOptions(providerModel string, opts switchModelOpt
 	if !opts.deferMarker {
 		m.pendingModelSwitch = nil
 	}
+
+	// A side lane holds a branch of the outgoing provider's session. New provider
+	// or model identity must never be attached to it.
+	m.closeSideLane()
 
 	// Update model state
 	m.provider = provider

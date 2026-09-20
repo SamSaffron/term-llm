@@ -142,7 +142,7 @@ func attachBlockingMainRun(t *testing.T, m *Model) *MainRunManager {
 	for i := range m.messages {
 		providerMessages = append(providerMessages, m.messages[i].ToLLMMessage())
 	}
-	boundary := runboundary.New("test-boundary", providerMessages, anchorID, anchorID > 0)
+	boundary := runboundary.New("test-boundary", providerMessages, anchorID, anchorID > 0, runboundary.ProviderContext{})
 	_, err := manager.Start(m.SessionID(), MainRunExecution{
 		Execute: func(ctx context.Context, _ func(ui.StreamEvent)) error {
 			<-ctx.Done()
@@ -460,7 +460,7 @@ func TestForkCommandUsesLatestDurableCompletedBoundaryWhileReplyIsActive(t *test
 	manager.mu.RLock()
 	boundary := manager.runs[m.SessionID()].boundary
 	manager.mu.RUnlock()
-	if !boundary.Commit("test-boundary", 0, []llm.Message{tool.ToLLMMessage()}) || !boundary.PublishDurable("test-boundary", 0, tool.ID) {
+	if !boundary.Commit("test-boundary", 0, []llm.Message{tool.ToLLMMessage()}, runboundary.ProviderContext{}) || !boundary.PublishDurable("test-boundary", 0, tool.ID) {
 		t.Fatal("publish completed tool boundary")
 	}
 

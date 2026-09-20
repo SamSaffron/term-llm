@@ -64,7 +64,7 @@ func (p *serveRunPersistence) finalizeSuccess(ctx, runCtx context.Context, req l
 	if p.stateful {
 		p.rt.history = history
 		p.rt.historyPersisted = false
-		p.rt.refreshSideQuestionSnapshot(history)
+		p.rt.refreshSideQuestionSnapshot(p.rt.sideQuestionBoundary(history, 0, false))
 		p.rt.updateSideQuestionConfig(req)
 	}
 	needSnapshot, compacted := false, false

@@ -40,6 +40,7 @@ type MainRunSnapshot struct {
 	DurableAnchorID    int64
 	DurableAnchorValid bool
 	CompletedMessages  []llm.Message
+	CompletedProvider  runboundary.ProviderContext
 	Done               <-chan struct{}
 	Err                error
 }
@@ -830,6 +831,28 @@ func (m *MainRunManager) ActiveBoundary(sessionID string) (runboundary.Snapshot,
 	return run.boundary.CompletedSnapshot(), true
 }
 
+// ActiveLiveContext returns an active run's in-flight context, including the
+// assistant message still being produced. It is ahead of the completed boundary
+// and carries no provider state, so it is only safe for reading, never for
+// branching.
+func (m *MainRunManager) ActiveLiveContext(sessionID string) ([]llm.Message, bool) {
+	if m == nil {
+		return nil, false
+	}
+	m.mu.RLock()
+	run := m.runs[sessionID]
+	m.mu.RUnlock()
+	if run == nil {
+		return nil, false
+	}
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if !run.active || run.boundary == nil {
+		return nil, false
+	}
+	return run.boundary.LiveSnapshot(), true
+}
+
 func snapshotMainRun(run *mainRunState) MainRunSnapshot {
 	run.mu.Lock()
 	defer run.mu.Unlock()
@@ -847,6 +870,7 @@ func snapshotMainRunLocked(run *mainRunState) MainRunSnapshot {
 		snapshot.DurableAnchorID = boundary.DurableAnchorID
 		snapshot.DurableAnchorValid = boundary.Durable
 		snapshot.CompletedMessages = boundary.Messages
+		snapshot.CompletedProvider = boundary.Provider
 	}
 	return snapshot
 }

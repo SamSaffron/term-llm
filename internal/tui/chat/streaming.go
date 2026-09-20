@@ -128,6 +128,7 @@ func (m *Model) streamPersistenceCallbacks(streamStart time.Time) (llm.Assistant
 	if boundary != nil {
 		boundaryRunID = boundary.RunID()
 	}
+	captureProvider := m.providerContextCapture()
 	staleStreamSession := func() bool {
 		return streamSessionID != "" && (m.sess == nil || m.sess.ID != streamSessionID)
 	}
@@ -233,7 +234,12 @@ func (m *Model) streamPersistenceCallbacks(streamStart time.Time) (llm.Assistant
 				lastDurableID = sessionMsg.ID
 			}
 		}
-		if boundary != nil && boundary.Commit(boundaryRunID, turnIndex, turnMessages) && persistComplete && lastDurableID > 0 {
+		// Commit is the single point where a provider-complete turn is recorded,
+		// and it runs on the run's own goroutine after the provider's stream for
+		// this turn has returned. Exporting the provider's transport state here is
+		// what keeps it paired with the messages it belongs to instead of being
+		// read concurrently with streaming.
+		if boundary != nil && boundary.Commit(boundaryRunID, turnIndex, turnMessages, captureProvider()) && persistComplete && lastDurableID > 0 {
 			boundary.PublishDurable(boundaryRunID, turnIndex, lastDurableID)
 		}
 		m.pendingMu.Lock()
@@ -377,6 +383,8 @@ func (m *Model) applyCompactionToUI(msg compactionAppliedMsg) {
 		m.engine.SetContextEstimateBaseline(0, 0)
 	}
 	m.invalidateHistoryCache()
+	// Compaction rewrites the transcript the lane branched from.
+	m.closeSideLane()
 
 	if !msg.usage.BillableCountersZero() {
 		m.recordCompactionUsage(context.Background(), msg.sessionID, msg.model, msg.usage)
@@ -780,6 +788,7 @@ func (m *Model) beginUserResponse(content, userDisplay string, preSendCmds []tea
 	m.pasteChunks = nil
 
 	// Start streaming
+	m.beginMainStreamEpoch()
 	m.streaming = true
 	m.mainRunViewComplete = true
 	// Manager sequences restart at one for every run. Clear the previous run's
@@ -949,7 +958,11 @@ func (m *Model) startStream(content string) tea.Cmd {
 		messages := m.buildMessagesForStream()
 		m.setStreamingContextMessages(messages)
 		boundaryRunID := fmt.Sprintf("%s:%d", sessionID, streamGeneration)
-		boundary := runboundary.New(boundaryRunID, messages, m.activeBranchAnchorID, m.activeBranchAnchorID > 0)
+		// Seed the run with the state captured before its first provider turn so a
+		// side question asked mid-run can still branch from the previous run's
+		// session. That state is behind these messages, which is the safe
+		// direction.
+		boundary := runboundary.New(boundaryRunID, messages, m.activeBranchAnchorID, m.activeBranchAnchorID > 0, m.captureProviderContext())
 		m.runBoundary = boundary
 
 		// The discovery planner registers MCP wrappers for execution and owns
@@ -1310,7 +1323,7 @@ func (m *Model) attachMainRun(sessionID string) tea.Cmd {
 			m.activeBranchAnchorID = snapshot.AnchorMessageID
 		}
 		if len(snapshot.CompletedMessages) > 0 {
-			m.runBoundary = runboundary.New(snapshot.RunID, snapshot.CompletedMessages, snapshot.DurableAnchorID, snapshot.DurableAnchorValid)
+			m.runBoundary = runboundary.New(snapshot.RunID, snapshot.CompletedMessages, snapshot.DurableAnchorID, snapshot.DurableAnchorValid, snapshot.CompletedProvider)
 		}
 		// Keep the true run clock for persistence and telemetry; historical goal
 		// effort is a display-only offset.
@@ -1338,6 +1351,7 @@ func (m *Model) attachMainRun(sessionID string) tea.Cmd {
 		m.mainRunCoalescer = nil
 	}
 	m.mainRunDetach = detach
+	m.beginMainStreamEpoch()
 	m.streaming = true
 	m.streamDone = snapshot.Done
 	m.streamCancelFunc = func() { m.mainRunManager.Cancel(sessionID) }

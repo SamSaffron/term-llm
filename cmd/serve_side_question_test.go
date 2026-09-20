@@ -14,9 +14,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/runboundary"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/sidequestion"
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 func TestSideQuestionDoesNotMasqueradeAsMainRun(t *testing.T) {
@@ -46,7 +49,9 @@ func TestReplaceHistoryFailureRestoresSideQuestionState(t *testing.T) {
 		providerKey: "mock", defaultModel: "m", provider: provider,
 		engine: llm.NewEngine(provider, nil), history: []llm.Message{llm.UserText("old main")},
 	}
-	rt.refreshSideQuestionSnapshot(rt.history)
+	rt.refreshSideQuestionSnapshot(sidequestion.Anchor{Messages: rt.history, Provider: runboundary.ProviderContext{
+		State: []byte(`{"session_id":"S1","messages_sent":1}`), ProviderKey: "mock", Model: "m",
+	}})
 	rt.sideQuestion.mu.Lock()
 	rt.sideQuestion.history = []sidequestion.Entry{{Question: "old side", Response: "old answer"}}
 	rt.sideQuestion.mu.Unlock()
@@ -63,10 +68,15 @@ func TestReplaceHistoryFailureRestoresSideQuestionState(t *testing.T) {
 		t.Fatalf("side history was not restored: %#v", view)
 	}
 	rt.sideQuestion.mu.Lock()
-	snapshot := sidequestion.CloneMessages(rt.sideQuestion.mainSnapshot)
+	anchor := rt.sideQuestion.anchor.Clone()
 	rt.sideQuestion.mu.Unlock()
-	if len(snapshot) != 1 || llm.MessageText(snapshot[0]) != "old main" {
-		t.Fatalf("side snapshot was not restored: %#v", snapshot)
+	if len(anchor.Messages) != 1 || llm.MessageText(anchor.Messages[0]) != "old main" {
+		t.Fatalf("side snapshot was not restored: %#v", anchor.Messages)
+	}
+	// The whole anchor round-trips, so a rollback cannot restore a snapshot
+	// without the provider state it belongs to.
+	if !anchor.Provider.Available() || !anchor.Provider.MatchesProviderModel("mock", "m") {
+		t.Fatalf("side provider context was not restored: %#v", anchor.Provider)
 	}
 }
 
@@ -76,7 +86,7 @@ func TestServeSideQuestionIsEphemeralAndToolless(t *testing.T) {
 		providerKey: "mock", defaultModel: "test-model",
 		history: []llm.Message{llm.UserText("main question"), llm.AssistantText("main answer")},
 	}
-	rt.refreshSideQuestionSnapshot(rt.history)
+	rt.refreshSideQuestionSnapshot(sidequestion.Anchor{Messages: rt.history})
 	rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return provider, nil }
 
 	events, err := rt.startSideQuestion(sideQuestionStart{Question: "clarify"})
@@ -101,6 +111,450 @@ func TestServeSideQuestionIsEphemeralAndToolless(t *testing.T) {
 	}
 }
 
+// serveForkableProvider is a live runtime provider that can branch from a
+// captured boundary, like claude-bin.
+type serveForkableProvider struct {
+	*llm.MockProvider
+	branch *serveBranchProvider
+	// deliveredPrefix stands in for claude-bin's transcript fingerprint over the
+	// messages the captured session already holds.
+	deliveredPrefix string
+	forkRequest     []llm.Message
+	forks           int
+}
+
+// serveForkableOffset is how many messages the captured state claims to have
+// delivered.
+const serveForkableOffset = 2
+
+// ForkConversationAtBoundary refuses whatever the real seam refuses: state that
+// is not ours, an offset that does not fit the request, or a request prefix that
+// no longer matches the captured fingerprint.
+func (p *serveForkableProvider) ForkConversationAtBoundary(state []byte, requestMessages []llm.Message) (llm.Provider, bool) {
+	p.forks++
+	if string(state) != string(serveForkableState) || len(requestMessages) < serveForkableOffset {
+		return nil, false
+	}
+	if messageTextOf(requestMessages[:serveForkableOffset]) != p.deliveredPrefix {
+		return nil, false
+	}
+	p.forkRequest = append([]llm.Message(nil), requestMessages...)
+	return p.branch, true
+}
+
+func (p *serveForkableProvider) ExportProviderState() ([]byte, bool) {
+	return serveForkableState, true
+}
+
+var serveForkableState = []byte(`{"session_id":"S1","messages_sent":2,"transcript_digest":"d"}`)
+
+// serveBranchProvider is the branched session; it exports the state promotion
+// would later save under a child session id.
+type serveBranchProvider struct {
+	*llm.MockProvider
+}
+
+func (p *serveBranchProvider) ExportProviderState() ([]byte, bool) {
+	return []byte(`{"session_id":"S2","messages_sent":4,"transcript_digest":"d2"}`), true
+}
+
+func newServeSideLaneRuntime(t *testing.T) (*serveRuntime, *serveForkableProvider, *llm.MockProvider) {
+	t.Helper()
+	toolCfg := tools.DefaultToolConfig()
+	toolMgr, err := tools.NewToolManager(&toolCfg, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workingDir := t.TempDir()
+	if err := toolMgr.SetBaseDir(workingDir); err != nil {
+		t.Fatal(err)
+	}
+	history := []llm.Message{llm.UserText("main question"), llm.AssistantText("main answer")}
+	live := &serveForkableProvider{
+		MockProvider:    llm.NewMockProvider("live"),
+		deliveredPrefix: messageTextOf(history[:serveForkableOffset]),
+		branch: &serveBranchProvider{
+			MockProvider: llm.NewMockProvider("branch").AddTextResponse("branched answer").AddTextResponse("second branched answer"),
+		},
+	}
+	replay := llm.NewMockProvider("replay").AddTextResponse("replayed answer")
+	rt := &serveRuntime{
+		providerKey: "claude-bin", defaultModel: "opus-max", provider: live,
+		history: history, toolMgr: toolMgr,
+	}
+	rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return replay, nil }
+	rt.refreshSideQuestionSnapshot(rt.sideQuestionBoundary(rt.history, 0, false))
+	return rt, live, replay
+}
+
+func TestServeSideQuestionBranchesTheBoundaryAndReusesTheLane(t *testing.T) {
+	rt, live, replay := newServeSideLaneRuntime(t)
+
+	events, err := rt.startSideQuestion(sideQuestionStart{Question: "clarify"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range events {
+	}
+	if live.forks != 1 {
+		t.Fatalf("forks = %d, want one branch from the captured boundary", live.forks)
+	}
+	if len(replay.RecordedRequests()) != 0 {
+		t.Fatalf("an eligible branch still built a replay provider: %#v", replay.RecordedRequests())
+	}
+	branched := live.branch.RecordedRequests()
+	if len(branched) != 1 || branched[0].Ephemeral {
+		t.Fatalf("lane turn = %#v, want one non-ephemeral request", branched)
+	}
+	if len(live.RecordedRequests()) != 0 {
+		t.Fatal("the live main provider served the side question")
+	}
+	// The runtime must hand the seam the whole anchor plus policy and question,
+	// with the project directory the captured session belongs to.
+	if len(live.forkRequest) != len(rt.history)+2 {
+		t.Fatalf("seam saw %d messages, want the anchor plus policy and question", len(live.forkRequest))
+	}
+	if branched[0].WorkingDir != rt.captureSideQuestionProvider().WorkingDir {
+		t.Fatalf("branch working dir = %q", branched[0].WorkingDir)
+	}
+	rt.sideQuestion.mu.Lock()
+	laneState := rt.sideQuestion.lane.ProviderState()
+	rt.sideQuestion.mu.Unlock()
+	if len(laneState) == 0 {
+		t.Fatal("lane did not export the branch state promotion needs")
+	}
+
+	events, err = rt.startSideQuestion(sideQuestionStart{Question: "follow up"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range events {
+	}
+	if live.forks != 1 {
+		t.Fatalf("forks = %d, want the follow-up to resume the lane", live.forks)
+	}
+	if len(live.branch.RecordedRequests()) != 2 {
+		t.Fatalf("branch requests = %d, want both lane turns", len(live.branch.RecordedRequests()))
+	}
+	if view := rt.sideQuestion.view(); len(view.History) != 2 {
+		t.Fatalf("displayed history = %#v", view.History)
+	}
+}
+
+func TestServeSideQuestionLaneIsDroppedByBoundaryInvalidation(t *testing.T) {
+	tests := []struct {
+		name       string
+		invalidate func(*serveRuntime)
+	}{
+		{"explicit invalidation", func(rt *serveRuntime) { rt.invalidateSideQuestionSnapshot() }},
+		{"clear history", func(rt *serveRuntime) { rt.sideQuestion.clearHistory() }},
+		{"close", func(rt *serveRuntime) { rt.sideQuestion.close(context.Background()) }},
+		{"rollback restore", func(rt *serveRuntime) { rt.sideQuestion.restore(rt.sideQuestion.backup()) }},
+		{"model swap", func(rt *serveRuntime) {
+			rt.defaultModel = "sonnet"
+			rt.updateSideQuestionConfig(llm.Request{Model: "sonnet"})
+		}},
+		// The transcript-rewriting paths call invalidateSideQuestionSnapshot
+		// before republishing. Assert the republish does not resurrect a lane or a
+		// provider state that no longer describes the transcript.
+		{"compaction republish", func(rt *serveRuntime) {
+			rt.invalidateSideQuestionSnapshot()
+			rt.refreshSideQuestionSnapshot(sidequestion.Anchor{Messages: []llm.Message{llm.UserText("compacted summary")}})
+		}},
+		{"undo/redo republish", func(rt *serveRuntime) {
+			rt.invalidateSideQuestionSnapshot()
+			rt.refreshSideQuestionSnapshot(sidequestion.Anchor{Messages: []llm.Message{llm.UserText("rewritten main")}})
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rt, live, _ := newServeSideLaneRuntime(t)
+			events, err := rt.startSideQuestion(sideQuestionStart{Question: "clarify"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range events {
+			}
+			rt.sideQuestion.mu.Lock()
+			lane := rt.sideQuestion.lane
+			rt.sideQuestion.mu.Unlock()
+			if lane == nil || !lane.Continuing() {
+				t.Fatal("lane was not established")
+			}
+
+			tc.invalidate(rt)
+
+			rt.sideQuestion.mu.Lock()
+			remaining := rt.sideQuestion.lane
+			rt.sideQuestion.mu.Unlock()
+			if remaining != nil {
+				t.Fatal("invalidation left the lane attached to the runtime")
+			}
+			if lane.Continuing() {
+				t.Fatal("invalidation left the branched session alive")
+			}
+			if live.forks != 1 {
+				t.Fatalf("forks = %d", live.forks)
+			}
+		})
+	}
+}
+
+// Providers that run their whole tool loop inside one Stream (claude-bin and the
+// other CLI providers) complete a single engine turn per run. Waiting for turn
+// completion to advance the side-question boundary leaves it at the run's
+// starting point for the entire run, so a question asked several tool calls in
+// is answered from a transcript where none of that work has happened.
+func TestServeSideQuestionSeesInFlightWorkDuringAnInlineToolLoopRun(t *testing.T) {
+	rt, _, replay := newServeSideLaneRuntime(t)
+	rt.history = []llm.Message{llm.UserText("count from 1 to 7")}
+	rt.refreshSideQuestionSnapshot(rt.sideQuestionBoundary(rt.history, 0, false))
+
+	persistence := newServeRunPersistence(rt, "session", 0, serveRunSpec{stateful: true},
+		rt.history, []llm.Message{llm.UserText("count from 1 to 7")}, false, "")
+
+	// One inline turn, streamed as a growing assistant message: step 1 runs, then
+	// step 2, with no turn boundary in between.
+	ctx := context.Background()
+	for _, step := range []string{"step 1 done", "step 1 done, step 2 done"} {
+		if err := persistence.assistantSnapshot(ctx, 0, llm.AssistantText(step)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rt.sideQuestion.mu.Lock()
+	anchor := rt.sideQuestion.anchor.Clone()
+	rt.sideQuestion.mu.Unlock()
+	if joined := messageTextOf(anchor.Messages); !strings.Contains(joined, "step 2 done") {
+		t.Fatalf("side-question boundary did not follow the in-flight run:\n%s", joined)
+	}
+	// Reading a streaming provider's resume boundary is not safe, and a mid-run
+	// question takes the bounded replay path anyway.
+	if anchor.Provider.Available() {
+		t.Fatalf("mid-run boundary published provider state: %#v", anchor.Provider)
+	}
+
+	rt.setActiveInterrupt(&runtimeInterruptState{done: make(chan struct{})})
+	events, err := rt.startSideQuestion(sideQuestionStart{Question: "what step are we on?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range events {
+	}
+	requests := replay.RecordedRequests()
+	if len(requests) != 1 {
+		t.Fatalf("replay requests = %d", len(requests))
+	}
+	if joined := messageTextOf(requests[0].Messages); !strings.Contains(joined, "step 2 done") {
+		t.Fatalf("mid-run side question did not see the work so far:\n%s", joined)
+	}
+}
+
+// Mid-run republishing must not strip the provider identity along with the
+// transport state: Claude Code keys sessions and project configuration by
+// directory, and an established lane compares that directory to decide whether
+// it may resume its own session.
+func TestServeSideQuestionKeepsProviderIdentityWhileARunIsInFlight(t *testing.T) {
+	rt, live, replay := newServeSideLaneRuntime(t)
+	workingDir := rt.toolMgr.BaseDir()
+	if workingDir == "" {
+		t.Fatal("test setup: expected a bound project directory")
+	}
+
+	// Establish a lane from a settled boundary.
+	events, err := rt.startSideQuestion(sideQuestionStart{Question: "clarify"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range events {
+	}
+	if live.forks != 1 {
+		t.Fatalf("forks = %d, want the lane branched once", live.forks)
+	}
+
+	// A run starts and streams; the boundary follows it.
+	rt.advanceSideQuestionTranscript(append(rt.history, llm.AssistantText("in-flight work")))
+	rt.sideQuestion.mu.Lock()
+	anchor := rt.sideQuestion.anchor.Clone()
+	rt.sideQuestion.mu.Unlock()
+	if anchor.Provider.Available() {
+		t.Fatalf("mid-run boundary published transport state: %#v", anchor.Provider)
+	}
+	if anchor.Provider.WorkingDir != workingDir || anchor.Provider.ProviderKey != "claude-bin" || anchor.Provider.Model != "opus-max" {
+		t.Fatalf("mid-run boundary dropped provider identity: %#v", anchor.Provider)
+	}
+
+	// The established lane must still recognise itself and continue its session.
+	rt.setActiveInterrupt(&runtimeInterruptState{done: make(chan struct{})})
+	events, err = rt.startSideQuestion(sideQuestionStart{Question: "follow up"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range events {
+	}
+	if live.forks != 1 {
+		t.Fatalf("forks = %d, want the mid-run follow-up to resume the lane", live.forks)
+	}
+	if len(live.branch.RecordedRequests()) != 2 {
+		t.Fatalf("branch requests = %d, want the follow-up on the lane's own session", len(live.branch.RecordedRequests()))
+	}
+	if got := live.branch.RecordedRequests()[1].WorkingDir; got != workingDir {
+		t.Fatalf("lane turn working dir = %q, want %q", got, workingDir)
+	}
+	if len(replay.RecordedRequests()) != 0 {
+		t.Fatalf("an established lane was replaced by a replay: %#v", replay.RecordedRequests())
+	}
+}
+
+// A replay still has to run in the session's project directory, whatever left
+// the boundary unbranchable.
+func TestServeSideQuestionReplayKeepsTheProjectDirectory(t *testing.T) {
+	tests := []struct {
+		name    string
+		prepare func(*serveRuntime)
+	}{
+		{"mid-run", func(rt *serveRuntime) {
+			rt.advanceSideQuestionTranscript(append(rt.history, llm.AssistantText("in-flight work")))
+			rt.setActiveInterrupt(&runtimeInterruptState{done: make(chan struct{})})
+		}},
+		{"after a transcript rewrite", func(rt *serveRuntime) {
+			rt.invalidateSideQuestionSnapshot()
+			rt.refreshSideQuestionSnapshot(rt.sideQuestionReplayBoundary([]llm.Message{llm.UserText("compacted")}))
+		}},
+		{"before the rewrite republishes anything", func(rt *serveRuntime) {
+			rt.invalidateSideQuestionSnapshot()
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rt, _, replay := newServeSideLaneRuntime(t)
+			workingDir := rt.toolMgr.BaseDir()
+			tc.prepare(rt)
+
+			events, err := rt.startSideQuestion(sideQuestionStart{Question: "what step are we on?"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range events {
+			}
+			requests := replay.RecordedRequests()
+			if len(requests) != 1 {
+				t.Fatalf("replay requests = %d", len(requests))
+			}
+			if requests[0].WorkingDir != workingDir {
+				t.Fatalf("replay working dir = %q, want %q", requests[0].WorkingDir, workingDir)
+			}
+		})
+	}
+}
+
+func messageTextOf(messages []llm.Message) string {
+	var out strings.Builder
+	for _, message := range messages {
+		out.WriteString(llm.MessageText(message))
+		out.WriteString("\n")
+	}
+	return out.String()
+}
+
+// Promotion creates the child branch at the anchor's persisted row, so a lane
+// created from a web boundary has to carry that row. Only the path that
+// persisted it may publish one; later refreshes must not erase it, and an
+// invalidation must.
+func TestServeSideQuestionAnchorCarriesTheDurableBranchPoint(t *testing.T) {
+	rt, _, _ := newServeSideLaneRuntime(t)
+
+	rt.refreshSideQuestionSnapshot(rt.sideQuestionBoundary(rt.history, 77, true))
+	if anchor := rt.sideQuestion.anchor; anchor.DurableAnchorID != 77 || !anchor.Durable {
+		t.Fatalf("persisted turn did not publish its branch point: %#v", anchor)
+	}
+
+	// A later advance that knows no row identity must not erase the last one.
+	rt.refreshSideQuestionSnapshot(rt.sideQuestionBoundary(append(rt.history, llm.UserText("more")), 0, false))
+	if anchor := rt.sideQuestion.anchor; anchor.DurableAnchorID != 77 || !anchor.Durable {
+		t.Fatalf("a stateless refresh erased the branch point: %#v", anchor)
+	}
+
+	// An incomplete persistence must never be published as branchable.
+	rt.refreshSideQuestionSnapshot(rt.sideQuestionBoundary(rt.history, 91, false))
+	if anchor := rt.sideQuestion.anchor; anchor.Durable {
+		t.Fatalf("an incomplete persistence was published as branchable: %#v", anchor)
+	}
+
+	rt.invalidateSideQuestionSnapshot()
+	if anchor := rt.sideQuestion.anchor; anchor.DurableAnchorID != 0 || anchor.Durable {
+		t.Fatalf("invalidation kept a branch point into a rewritten transcript: %#v", anchor)
+	}
+
+	// A lane created afterwards carries whatever the anchor holds.
+	rt.refreshSideQuestionSnapshot(rt.sideQuestionBoundary(rt.history, 123, true))
+	events, err := rt.startSideQuestion(sideQuestionStart{Question: "clarify"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range events {
+	}
+	rt.sideQuestion.mu.Lock()
+	lane := rt.sideQuestion.lane
+	rt.sideQuestion.mu.Unlock()
+	if anchor := lane.Anchor(); anchor.DurableAnchorID != 123 || !anchor.Durable {
+		t.Fatalf("lane anchor branch point = %#v", anchor)
+	}
+}
+
+// The web runtime must never publish a snapshot whose provider state describes a
+// different transcript. Every transcript-rewriting path drops the state.
+func TestServeSideQuestionTranscriptRewritesDropProviderState(t *testing.T) {
+	rt, _, _ := newServeSideLaneRuntime(t)
+	if !rt.sideQuestion.anchor.Provider.Available() {
+		t.Fatal("test setup: expected a branchable boundary")
+	}
+	for _, rewrite := range []struct {
+		name  string
+		apply func()
+	}{
+		{"compaction", func() {
+			rt.invalidateSideQuestionSnapshot()
+			rt.refreshSideQuestionSnapshot(sidequestion.Anchor{Messages: []llm.Message{llm.UserText("compacted")}})
+		}},
+		{"undo", func() {
+			rt.invalidateSideQuestionSnapshot()
+			rt.refreshSideQuestionSnapshot(sidequestion.Anchor{Messages: []llm.Message{llm.UserText("undone")}})
+		}},
+		{"replace history", func() { rt.invalidateSideQuestionSnapshot() }},
+	} {
+		t.Run(rewrite.name, func(t *testing.T) {
+			rt.refreshSideQuestionSnapshot(rt.sideQuestionBoundary(rt.history, 0, false))
+			rewrite.apply()
+			rt.sideQuestion.mu.Lock()
+			anchor := rt.sideQuestion.anchor
+			rt.sideQuestion.mu.Unlock()
+			if anchor.Provider.Available() {
+				t.Fatalf("%s kept provider state for a transcript that no longer exists: %#v", rewrite.name, anchor.Provider)
+			}
+		})
+	}
+}
+
+func TestServeSideQuestionReplaysWhileAMainRunIsActive(t *testing.T) {
+	rt, live, replay := newServeSideLaneRuntime(t)
+	rt.setActiveInterrupt(&runtimeInterruptState{done: make(chan struct{})})
+
+	events, err := rt.startSideQuestion(sideQuestionStart{Question: "clarify"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range events {
+	}
+	if live.forks != 0 {
+		t.Fatalf("forks = %d, want no branch of an in-flight session", live.forks)
+	}
+	requests := replay.RecordedRequests()
+	if len(requests) != 1 || !requests[0].Ephemeral {
+		t.Fatalf("mid-run side question = %#v, want one isolated replay request", requests)
+	}
+}
+
 func TestServeSideQuestionPreservesMainPrefixAndDeduplicatesRuntimeContext(t *testing.T) {
 	provider := llm.NewMockProvider("mock").AddTextResponse("answer")
 	rt := &serveRuntime{providerKey: "mock", defaultModel: "m", systemPrompt: "system", platform: "web"}
@@ -111,7 +565,7 @@ func TestServeSideQuestionPreservesMainPrefixAndDeduplicatesRuntimeContext(t *te
 		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "platform"}}},
 		llm.UserText("main question"),
 	}
-	rt.refreshSideQuestionSnapshot(mainPrefix)
+	rt.refreshSideQuestionSnapshot(sidequestion.Anchor{Messages: mainPrefix})
 
 	events, err := rt.startSideQuestion(sideQuestionStart{Question: "side question"})
 	if err != nil {
@@ -210,7 +664,7 @@ func TestServeSideFollowUpRefreshesMainContextAndKeepsPrivateHistoryChronologica
 	provider := llm.NewMockProvider("mock").AddTextResponse("first side answer").AddTextResponse("second side answer")
 	rt := &serveRuntime{providerKey: "mock", defaultModel: "m"}
 	rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return provider, nil }
-	rt.refreshSideQuestionSnapshot([]llm.Message{llm.UserText("main one"), llm.AssistantText("main answer one")})
+	rt.refreshSideQuestionSnapshot(sidequestion.Anchor{Messages: []llm.Message{llm.UserText("main one"), llm.AssistantText("main answer one")}})
 
 	events, err := rt.startSideQuestion(sideQuestionStart{Question: "first side question"})
 	if err != nil {
@@ -218,10 +672,10 @@ func TestServeSideFollowUpRefreshesMainContextAndKeepsPrivateHistoryChronologica
 	}
 	for range events {
 	}
-	rt.refreshSideQuestionSnapshot([]llm.Message{
+	rt.refreshSideQuestionSnapshot(sidequestion.Anchor{Messages: []llm.Message{
 		llm.UserText("main one"), llm.AssistantText("main answer one"),
 		llm.UserText("main two"), llm.AssistantText("main answer two"),
-	})
+	}})
 	events, err = rt.startSideQuestion(sideQuestionStart{Question: "second side question"})
 	if err != nil {
 		t.Fatal(err)

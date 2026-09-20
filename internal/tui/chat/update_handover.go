@@ -96,6 +96,7 @@ func (m *Model) handleHandoverCancel(msg handoverCancelMsg) (tea.Model, tea.Cmd)
 	m.invalidateHistoryCache()
 	// Resume the engine stream so the tool result is delivered.
 	if toolWasPending {
+		m.beginMainStreamEpoch()
 		m.streaming = true
 	}
 	return m, m.terminalTitleCmd()

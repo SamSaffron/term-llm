@@ -128,6 +128,14 @@ func (r *RetryProvider) forkHelperConversation() (Provider, bool) {
 	return &RetryProvider{inner: forked, config: r.config}, true
 }
 
+func (r *RetryProvider) ForkConversationAtBoundary(state []byte, requestMessages []Message) (Provider, bool) {
+	forked, ok := ForkHelperAtBoundary(r.inner, state, requestMessages)
+	if !ok {
+		return nil, false
+	}
+	return &RetryProvider{inner: forked, config: r.config}, true
+}
+
 // ResetConversation forwards to the inner provider if it implements
 // ResetConversation. This preserves provider-side conversation reset behavior
 // when providers are wrapped with retry logic.

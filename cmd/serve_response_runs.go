@@ -295,7 +295,10 @@ func (r *responseRun) commitCompletedBoundary(turnIndex int, messages []llm.Mess
 	boundary := r.boundary
 	runID := r.id
 	r.mu.Unlock()
-	if boundary == nil || !boundary.Commit(runID, turnIndex, messages) {
+	// The web response run's tracker exists for durable branch anchoring only.
+	// Side-question provider state is captured by refreshSideQuestionSnapshot,
+	// which is the web equivalent of the TUI's single commit point.
+	if boundary == nil || !boundary.Commit(runID, turnIndex, messages, runboundary.ProviderContext{}) {
 		return
 	}
 	if durable && rowID > 0 {
@@ -330,7 +333,7 @@ func newResponseRun(respID, sessionID, previousResponseID, model string, created
 		pendingGuardianByCall: make(map[string][]map[string]any),
 		segmentRanges:         make(map[int]responseRunSegmentRange),
 		persistence:           newResponseRunPersistenceLedger(),
-		boundary:              runboundary.New(respID, nil, 0, false),
+		boundary:              runboundary.New(respID, nil, 0, false, runboundary.ProviderContext{}),
 		compactionEnabled:     true,
 		subscribers:           make(map[int]chan responseRunEvent),
 		subscriberWarned:      make(map[int]bool),

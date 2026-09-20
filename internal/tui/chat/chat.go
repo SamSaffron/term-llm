@@ -429,6 +429,9 @@ type Model struct {
 	branchAutoSend          string
 	activeBranchAnchorID    int64
 	runBoundary             *runboundary.Tracker
+	// mainStreamEpoch advances whenever the UI commits to a stream on the live
+	// provider. Side questions read it from their own goroutine.
+	mainStreamEpoch atomic.Uint64
 
 	mainRunManager      *MainRunManager
 	mainRunLive         <-chan MainRunEvent
