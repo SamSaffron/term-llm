@@ -19,7 +19,6 @@ import (
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
@@ -194,6 +193,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		askAgent = atAgent
 	}
 
+	stdinReader, hasStdin := askCommandInput(cmd)
 	question := strings.Join(filteredArgs, " ")
 	ctx, stop := signal.NotifyContext()
 	defer stop()
@@ -233,7 +233,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	// Handle default prompt for agents invoked without a message.
 	// Allow empty question when stdin is piped (content comes from stdin).
-	if question == "" && !input.HasStdin() {
+	if question == "" && !hasStdin {
 		if agent == nil {
 			return fmt.Errorf("question required (or use @agent with a default prompt)")
 		}
@@ -330,6 +330,23 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		defer inputTicket.fail()
 	}
 
+	defaultQuestion := ""
+	if agent != nil {
+		defaultQuestion = agent.DefaultPrompt
+	}
+	preparedInput, err := prepareAskInput(question, askFiles, stdinReader, hasStdin, cfg.Ask, defaultQuestion)
+	if err != nil {
+		return err
+	}
+	question = preparedInput.question
+	keepStagedInput := false
+	defer func() {
+		if !keepStagedInput {
+			cleanupPreparedAskInput(preparedInput)
+		}
+	}()
+	addAskAutoTools(&settings, []llm.Message{preparedInput.message})
+
 	// Resolve session identity before tool wiring captures it.
 	sessionID, baseInputPrompt := finalizeAskSessionSettings(&settings, sess, selectedInputs, skillsSetup, cfg, provider, resuming)
 
@@ -392,17 +409,26 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	userPrompt, err := readAskPrompt(question, askFiles)
-	if err != nil {
-		return err
-	}
-	preparedConversation, err := prepareAskConversation(ctx, cfg, provider, agent, store, sess, sessionID, resuming, settings, inputTicket, baseInputPrompt, userPrompt, resolvedApproval.Mode)
+	preparedConversation, err := prepareAskConversation(ctx, cfg, provider, agent, store, sess, sessionID, resuming, settings, inputTicket, baseInputPrompt, preparedInput.message, resolvedApproval.Mode)
 	if err != nil {
 		return err
 	}
 	sess, sessionID, settings = preparedConversation.session, preparedConversation.sessionID, preparedConversation.settings
 	messages, instructions := preparedConversation.messages, preparedConversation.instructions
 	historyHasSystem, conversationStartedAt := preparedConversation.historyHasSystem, preparedConversation.startedAt
+	// Restore exact-file grants from structured parts only. On resume, scan the
+	// durable full history as well as the active prepared conversation so grants
+	// survive compaction boundaries without trusting text or escaped paths.
+	if resuming && store != nil && sess != nil {
+		if rows, historyErr := store.GetMessages(ctx, sess.ID, 0, 0); historyErr == nil {
+			history := make([]llm.Message, 0, len(rows))
+			for i := range rows {
+				history = append(history, rows[i].ToLLMMessage())
+			}
+			grantAskUploadedFileReads(toolMgr, history)
+		}
+	}
+	grantAskUploadedFileReads(toolMgr, messages)
 
 	debugMode := askDebug
 	if sess != nil {
@@ -478,8 +504,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	var compactionUsages compactionUsageCollector
 	persistenceCallbacks := prepareAskPersistenceCallbacks(
 		ctx, cfg, store, &sess, engine, &turnStartTime, instructions, historyHasSystem,
-		resuming, messages, conversationStartedAt, userPrompt, question, &compactionUsages,
+		resuming, messages, conversationStartedAt, preparedInput.message, question, &compactionUsages,
 	)
+	if persistenceCallbacks.persistence != nil && persistenceCallbacks.persistence.initialUserPersisted {
+		keepStagedInput = true
+	}
 	persistenceCallbacks.wrapOutputTool(outputTool != nil, &outputToolMessages, &outputToolMessagesMu)
 	askPersistence := persistenceCallbacks.persistence
 	responseCompletedCallback := persistenceCallbacks.responseCompleted
@@ -662,7 +691,7 @@ type askPersistenceCallbacks struct {
 	compaction        llm.CompactionCallback
 }
 
-func initializeAskPersistence(ctx context.Context, cfg *config.Config, store session.Store, sess *session.Session, instructions string, historyHasSystem, resuming bool, messages []llm.Message, conversationStartedAt time.Time, userPrompt, question string) *askAssistantPersistence {
+func initializeAskPersistence(ctx context.Context, cfg *config.Config, store session.Store, sess *session.Session, instructions string, historyHasSystem, resuming bool, messages []llm.Message, conversationStartedAt time.Time, userMessage llm.Message, question string) *askAssistantPersistence {
 	if store == nil || sess == nil {
 		return nil
 	}
@@ -682,12 +711,14 @@ func initializeAskPersistence(ctx context.Context, cfg *config.Config, store ses
 			_ = store.AddMessage(ctx, sess.ID, persisted)
 		}
 	}
-	user := &session.Message{SessionID: sess.ID, Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: userPrompt}}, TextContent: userPrompt, CreatedAt: time.Now(), Sequence: -1}
-	_ = store.AddMessage(ctx, sess.ID, user)
+	user := session.NewMessage(sess.ID, userMessage, -1)
+	if err := store.AddMessage(ctx, sess.ID, user); err == nil {
+		persistence.initialUserPersisted = true
+	}
 	_ = store.IncrementUserTurns(ctx, sess.ID)
 	sess.UserTurns++
 	if sess.Summary == "" {
-		sess.Summary = session.TruncateSummary(question)
+		sess.Summary = session.TruncateSummary(askInputSummary(question, userMessage))
 		_ = store.Update(ctx, sess)
 	}
 	return persistence
@@ -811,8 +842,8 @@ func (p *askPersistenceCallbacks) wrapOutputTool(enabled bool, messages *[]llm.M
 	}
 }
 
-func prepareAskPersistenceCallbacks(ctx context.Context, cfg *config.Config, store session.Store, sess **session.Session, engine *llm.Engine, turnStart *time.Time, instructions string, historyHasSystem, resuming bool, messages []llm.Message, conversationStartedAt time.Time, userPrompt, question string, compactionUsages *compactionUsageCollector) askPersistenceCallbacks {
-	persistence := initializeAskPersistence(ctx, cfg, store, *sess, instructions, historyHasSystem, resuming, messages, conversationStartedAt, userPrompt, question)
+func prepareAskPersistenceCallbacks(ctx context.Context, cfg *config.Config, store session.Store, sess **session.Session, engine *llm.Engine, turnStart *time.Time, instructions string, historyHasSystem, resuming bool, messages []llm.Message, conversationStartedAt time.Time, userMessage llm.Message, question string, compactionUsages *compactionUsageCollector) askPersistenceCallbacks {
+	persistence := initializeAskPersistence(ctx, cfg, store, *sess, instructions, historyHasSystem, resuming, messages, conversationStartedAt, userMessage, question)
 	return askPersistenceCallbacks{
 		persistence:       persistence,
 		responseCompleted: newAskResponseCompletedCallback(persistence, turnStart),
@@ -827,8 +858,9 @@ type askAssistantPersistence struct {
 	store session.Store
 	// Compaction may refresh the session object, but preserves its durable ID.
 	// Callbacks that update mutable session metadata follow the separate **Session.
-	sess         *session.Session
-	reasoningCfg config.ReasoningConfig
+	sess                 *session.Session
+	reasoningCfg         config.ReasoningConfig
+	initialUserPersisted bool
 
 	mu                 sync.Mutex
 	pendingAssistantID int64

@@ -193,6 +193,10 @@ func uploadFilenameForMediaType(prefix, mediaType string) string {
 }
 
 func saveUploadedBytes(filename string, raw []byte) (string, error) {
+	return saveUploadedBytesWithLimit(filename, raw, maxAttachmentBytes)
+}
+
+func saveUploadedBytesWithLimit(filename string, raw []byte, maxBytes int64) (string, error) {
 	dataDir, err := session.GetDataDir()
 	if err != nil {
 		return "", fmt.Errorf("get data dir: %w", err)
@@ -202,8 +206,14 @@ func saveUploadedBytes(filename string, raw []byte) (string, error) {
 		return "", fmt.Errorf("create uploads dir: %w", err)
 	}
 
-	if len(raw) > maxAttachmentBytes {
-		return "", fmt.Errorf("file %q exceeds %d MB limit", filename, maxAttachmentBytes>>20)
+	if maxBytes <= 0 {
+		return "", fmt.Errorf("invalid upload size limit %d", maxBytes)
+	}
+	if int64(len(raw)) > maxBytes {
+		if maxBytes == maxAttachmentBytes {
+			return "", fmt.Errorf("file %q exceeds %d MB limit", filename, maxBytes>>20)
+		}
+		return "", fmt.Errorf("file %q exceeds %d byte limit", filename, maxBytes)
 	}
 
 	safeName := filepath.Base(filename)

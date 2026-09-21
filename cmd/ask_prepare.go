@@ -7,9 +7,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
-	"github.com/samsaffron/term-llm/internal/prompt"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -24,25 +22,9 @@ type preparedAskConversation struct {
 	startedAt        time.Time
 }
 
-func readAskPrompt(question string, paths []string) (string, error) {
-	var files []input.FileContent
-	if len(paths) > 0 {
-		var err error
-		files, err = input.ReadFiles(paths)
-		if err != nil {
-			return "", fmt.Errorf("failed to read files: %w", err)
-		}
-	}
-	stdin, err := input.ReadStdin()
-	if err != nil {
-		return "", fmt.Errorf("failed to read stdin: %w", err)
-	}
-	return prompt.AskUserPrompt(question, files, stdin), nil
-}
-
 // prepareAskConversation establishes/refreshes durable session inputs and then
 // projects system, active history, grounding, and the new user message in order.
-func prepareAskConversation(ctx context.Context, cfg *config.Config, provider llm.Provider, agent *agents.Agent, store session.Store, sess *session.Session, sessionID string, resuming bool, settings SessionSettings, ticket *sessionInputTicket, basePrompt, userPrompt string, approval tools.ApprovalMode) (preparedAskConversation, error) {
+func prepareAskConversation(ctx context.Context, cfg *config.Config, provider llm.Provider, agent *agents.Agent, store session.Store, sess *session.Session, sessionID string, resuming bool, settings SessionSettings, ticket *sessionInputTicket, basePrompt string, userMessage llm.Message, approval tools.ApprovalMode) (preparedAskConversation, error) {
 	if !resuming && store != nil {
 		if sessionID == "" {
 			sessionID = session.NewID()
@@ -106,7 +88,7 @@ func prepareAskConversation(ctx context.Context, cfg *config.Config, provider ll
 		started = time.Now()
 		messages = llm.InsertConversationStart(messages, []llm.Message{llm.ConversationStartMessage(started)})
 	}
-	messages = append(messages, llm.UserText(userPrompt))
+	messages = append(messages, userMessage)
 	if sess != nil {
 		sessionID = sess.ID
 	}

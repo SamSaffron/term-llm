@@ -341,6 +341,18 @@ chat:
   max_turns: 200
 ```
 
+## Ask stdin limits
+
+`term-llm ask` embeds small text from stdin or `-f` directly and stages larger text, binary files, and supported images under the private app uploads directory. Configure the per-source byte thresholds under `ask`:
+
+```yaml
+ask:
+  stdin_inline_max_bytes: 10240   # 10 KiB; must be positive
+  stdin_max_bytes: 20971520       # 20 MiB hard ceiling; must be >= inline limit
+```
+
+The maximum applies independently to each resolved `-f` item and to stdin. It is enforced while reading (`max + 1` bytes), so oversized streams and regular files are rejected without being fully buffered or staged.
+
 ## Parallel tool execution
 
 Models may request many independent tool calls in a single turn, such as several `read_file`, `grep`, or `glob` calls. term-llm executes independent tool calls concurrently when parallel tool calls are enabled by the provider/request, but caps one model turn at **20 concurrently running tool calls**. Additional tool calls from the same turn are queued and run as earlier calls finish.

@@ -615,6 +615,17 @@ func TestClassifyInheritedStdin(t *testing.T) {
 	}
 }
 
+func TestClassifyUnquotedMultiwordQuestionExplainsAmbiguity(t *testing.T) {
+	srv := newClassifyTestServer(t)
+	_, err := executeClassifyTest(t, []string{"--question", "is", "it", "hello", "--type", "noul"}, "hello world\n", true, nil, srv)
+	if err == nil || !strings.Contains(err.Error(), `--question "is it hello"`) {
+		t.Fatalf("error = %v, want quoting guidance", err)
+	}
+	if len(srv.requests) != 0 {
+		t.Fatal("ambiguous input reached API")
+	}
+}
+
 func TestClassifyEmptyPipeWithDefaultStdinDetection(t *testing.T) {
 	for _, source := range []string{"positional", "file"} {
 		t.Run(source, func(t *testing.T) {

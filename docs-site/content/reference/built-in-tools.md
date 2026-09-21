@@ -36,6 +36,8 @@ term-llm exec --tools read_file,write_file,edit_file,shell,grep,glob,view_image
 | `run_agent_script` | Run a script bundled in the agent directory |
 | `activate_skill` | Activate a skill by name |
 
+For `term-llm ask`, staged stdin or `-f` text/binary data transiently enables `read_file`; PNG/JPEG/GIF/WebP sources transiently enable both `read_file` and `view_image`. These additions are merged with explicit session tools and do not rewrite the saved tool list. The staged attachment receives an exact-file grant—nearby files, paths mentioned only in text, and symlink escapes receive no automatic access and remain subject to normal approval policy.
+
 ### Indirect image understanding for text-only models
 
 For a text-only model that supports tool calls, add `vision_via` to that model's provider entry:

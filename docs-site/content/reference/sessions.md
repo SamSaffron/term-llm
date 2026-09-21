@@ -71,6 +71,8 @@ sessions:
 
 By default, session rows keep base64-encoded image data and any saved local path, so uploads remain portable. To reduce the database size, set `sessions.strip_image_base64: true`; image parts with an `ImagePath` will retain only their path and metadata.
 
+Large text, binary, or image input supplied through stdin or `-f` to `term-llm ask` is persisted as a structured attachment whose copied original remains in the app-owned uploads directory. Resuming the session restores the transient attachment tools and exact-file read grant from structured user parts; missing files are skipped safely. `--no-session` asks remove newly staged input files on exit, while successfully persisted attachments are retained for later resumes.
+
 CLI overrides:
 
 ```bash

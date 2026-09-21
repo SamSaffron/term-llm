@@ -305,6 +305,9 @@ func classifyState(cmd *cobra.Command, args []string, opts *classifyOptions, dep
 		return nil, false, errors.New("state is required as positional text, --file, or stdin")
 	}
 	if sources > 1 {
+		if stdin && positional && cmd.Flags().Changed("question") {
+			return nil, false, errors.New(`state source is ambiguous; stdin and positional state were both provided. If the positional words belong to a multi-word question, quote the flag value, for example: --question "is it hello"`)
+		}
 		return nil, false, errors.New("state source is ambiguous; use only one of positional state, --file, or stdin")
 	}
 	var data []byte

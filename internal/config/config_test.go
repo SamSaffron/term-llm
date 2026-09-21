@@ -858,6 +858,42 @@ func TestReasoningDefaultsAndKnownKeys(t *testing.T) {
 	}
 }
 
+func TestAskStdinDefaultsKnownAndValidated(t *testing.T) {
+	defaults := GetDefaults()
+	checks := map[string]any{
+		"ask.stdin_inline_max_bytes": DefaultAskStdinInlineMaxBytes,
+		"ask.stdin_max_bytes":        DefaultAskStdinMaxBytes,
+	}
+	for key, want := range checks {
+		if got := defaults[key]; got != want {
+			t.Fatalf("%s default = %#v, want %#v", key, got, want)
+		}
+		if !IsKnownKey(key) {
+			t.Fatalf("%s is not a known key", key)
+		}
+	}
+
+	for _, tc := range []struct {
+		name   string
+		inline int64
+		max    int64
+		valid  bool
+	}{
+		{name: "defaults", inline: DefaultAskStdinInlineMaxBytes, max: DefaultAskStdinMaxBytes, valid: true},
+		{name: "zero inline", inline: 0, max: 1},
+		{name: "zero max", inline: 1, max: 0},
+		{name: "max exceeds supported ceiling", inline: 1, max: DefaultAskStdinMaxBytes + 1},
+		{name: "inline exceeds max", inline: 2, max: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := (&Config{Ask: AskConfig{StdinInlineMaxBytes: tc.inline, StdinMaxBytes: tc.max}}).ValidateAsk()
+			if (err == nil) != tc.valid {
+				t.Fatalf("ValidateAsk() error = %v, valid = %v", err, tc.valid)
+			}
+		})
+	}
+}
+
 func TestChatTerminalTitleDefaultAndKnownKey(t *testing.T) {
 	defaults := GetDefaults()
 	checks := map[string]any{

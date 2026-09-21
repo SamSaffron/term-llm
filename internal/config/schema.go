@@ -49,9 +49,11 @@ type ProviderSpec struct {
 const (
 	DefaultConfigProvider = "anthropic"
 
-	DefaultAskMaxTurns     = 50
-	DefaultChatMaxTurns    = 200
-	DefaultExecSuggestions = 3
+	DefaultAskMaxTurns            = 50
+	DefaultAskStdinInlineMaxBytes = int64(10 * 1024)
+	DefaultAskStdinMaxBytes       = int64(20 * 1024 * 1024)
+	DefaultChatMaxTurns           = 200
+	DefaultExecSuggestions        = 3
 
 	DefaultAssistantInstructions = "You are a helpful assistant."
 	DefaultChatTerminalTitle     = "smart"
@@ -210,6 +212,8 @@ var keySpecs = []KeySpec{
 	optional("ask.approval_mode", withoutResetTemplate()),
 	def("ask.instructions", DefaultAssistantInstructions),
 	def("ask.max_turns", DefaultAskMaxTurns),
+	def("ask.stdin_inline_max_bytes", DefaultAskStdinInlineMaxBytes),
+	def("ask.stdin_max_bytes", DefaultAskStdinMaxBytes),
 
 	optional("chat.provider"),
 	optional("chat.model"),

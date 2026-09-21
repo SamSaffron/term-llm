@@ -44,6 +44,7 @@ type SessionSettings struct {
 
 	// Tool settings
 	Tools        string
+	AutoTools    []string // Transient tools required by structured user attachments; never persisted as configured tools.
 	ReadDirs     []string
 	WriteDirs    []string
 	ShellAllow   []string
@@ -540,11 +541,19 @@ func agentPromptTemplateContextAndBaseDirInDir(agent *agents.Agent, files []stri
 // Returns nil if no tools are enabled.
 func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *llm.Engine) (*tools.ToolManager, error) {
 	visionTarget := indirectVisionTarget(cfg, s.Provider, s.Model)
-	if s.Tools == "" && visionTarget == "" {
+	if s.Tools == "" && len(s.AutoTools) == 0 && visionTarget == "" {
 		return nil, nil
 	}
 
 	toolConfig := buildToolConfig(s.Tools, s.ReadDirs, s.WriteDirs, s.ShellAllow, cfg)
+	// AutoTools are input-scoped capabilities, not a reason to activate the
+	// global default tool set on an otherwise tool-less ask session.
+	if s.Tools == "" && len(s.AutoTools) > 0 {
+		toolConfig.Enabled = nil
+	}
+	for _, toolName := range s.AutoTools {
+		toolConfig.Enabled = appendUniqueString(toolConfig.Enabled, toolName)
+	}
 	if visionTarget != "" {
 		toolConfig.Enabled = appendUniqueString(toolConfig.Enabled, tools.ViewImageToolName)
 	}

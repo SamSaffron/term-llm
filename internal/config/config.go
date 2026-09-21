@@ -758,11 +758,13 @@ type ExecConfig struct {
 }
 
 type AskConfig struct {
-	Provider     string `mapstructure:"provider"`                                     // Override provider for ask only
-	Model        string `mapstructure:"model"`                                        // Override model for ask only
-	Instructions string `mapstructure:"instructions"`                                 // Custom system prompt for ask
-	MaxTurns     int    `mapstructure:"max_turns"`                                    // Max agentic turns (default 20)
-	ApprovalMode string `mapstructure:"approval_mode" yaml:"approval_mode,omitempty"` // Optional approval mode: prompt or auto
+	Provider            string `mapstructure:"provider"`                                                       // Override provider for ask only
+	Model               string `mapstructure:"model"`                                                          // Override model for ask only
+	Instructions        string `mapstructure:"instructions"`                                                   // Custom system prompt for ask
+	MaxTurns            int    `mapstructure:"max_turns"`                                                      // Max agentic turns (default 50)
+	StdinInlineMaxBytes int64  `mapstructure:"stdin_inline_max_bytes" yaml:"stdin_inline_max_bytes,omitempty"` // Maximum piped text bytes embedded in the prompt
+	StdinMaxBytes       int64  `mapstructure:"stdin_max_bytes" yaml:"stdin_max_bytes,omitempty"`               // Maximum piped input bytes accepted
+	ApprovalMode        string `mapstructure:"approval_mode" yaml:"approval_mode,omitempty"`                   // Optional approval mode: prompt or auto
 }
 
 type ChatConfig struct {
@@ -930,6 +932,26 @@ type EditConfig struct {
 
 type LoopConfig struct {
 	ApprovalMode string `mapstructure:"approval_mode" yaml:"approval_mode,omitempty"`
+}
+
+// ValidateAsk rejects unusable stdin limits before ask reads from the command input.
+func (c *Config) ValidateAsk() error {
+	if c == nil {
+		return nil
+	}
+	if c.Ask.StdinInlineMaxBytes <= 0 {
+		return fmt.Errorf("invalid ask.stdin_inline_max_bytes %d: expected a positive integer", c.Ask.StdinInlineMaxBytes)
+	}
+	if c.Ask.StdinMaxBytes <= 0 {
+		return fmt.Errorf("invalid ask.stdin_max_bytes %d: expected a positive integer", c.Ask.StdinMaxBytes)
+	}
+	if c.Ask.StdinMaxBytes > DefaultAskStdinMaxBytes {
+		return fmt.Errorf("invalid ask.stdin_max_bytes %d: maximum supported value is %d", c.Ask.StdinMaxBytes, DefaultAskStdinMaxBytes)
+	}
+	if c.Ask.StdinInlineMaxBytes > c.Ask.StdinMaxBytes {
+		return fmt.Errorf("invalid ask stdin limits: ask.stdin_inline_max_bytes (%d) must not exceed ask.stdin_max_bytes (%d)", c.Ask.StdinInlineMaxBytes, c.Ask.StdinMaxBytes)
+	}
+	return nil
 }
 
 // ValidateApprovalModes rejects persistent modes that would bypass approval or
@@ -1498,6 +1520,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.Guardian.Classify.Validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.ValidateAsk(); err != nil {
 		return nil, err
 	}
 	if err := cfg.ValidateApprovalModes(); err != nil {

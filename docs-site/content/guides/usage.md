@@ -235,9 +235,19 @@ term-llm ask -f code.go "explain this code"     # with file context
 term-llm ask -f code.go:50-100 "explain this function"  # specific lines
 term-llm ask -f clipboard "what is this?"       # from clipboard
 cat README.md | term-llm ask "summarize this"   # pipe stdin
+cat screenshot.png | term-llm ask "what failed?" # pipe an image
 term-llm ask --debug-raw "latest zig release"   # raw debug logs with timestamps
 term-llm ask --json "explain git rebase" | jq -c .   # JSONL event stream
+```
 
+`ask` treats redirected stdin and `-f` sources as typed input. Small UTF-8 text is embedded in the prompt exactly as before. Larger text and binary data are copied to private app-owned uploads for `read_file`; valid PNG, JPEG, GIF, and WebP input is sent as an image attachment and also made available to `view_image`. These input-required tools are added transiently to configured or explicit tools. Each source is rejected when it exceeds `ask.stdin_max_bytes`.
+
+```bash
+# The question may be omitted when the pipe supplies the input
+cat build.log | term-llm ask
+```
+
+```bash
 # Edit files
 term-llm edit "add error handling" -f main.go
 term-llm edit "refactor loop" -f utils.go:20-40  # only lines 20-40

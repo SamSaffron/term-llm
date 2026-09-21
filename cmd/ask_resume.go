@@ -54,6 +54,10 @@ func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 	if sess == nil {
 		return nil, nil, nil, true, fmt.Errorf("no session to resume")
 	}
+	// Structured attachments imply transient tools even when the raw persisted
+	// tool list is empty. Derive these before SetupToolManager; file existence is
+	// intentionally not required here because exact grants are restored later.
+	deriveAskResumeAutoTools(ctx, store, sess, settings)
 
 	_ = store.SetCurrent(ctx, sess.ID)
 	_ = store.UpdateStatus(ctx, sess.ID, session.StatusActive)
@@ -117,4 +121,19 @@ func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 		}
 	}
 	return sess, ticket, selected, true, nil
+}
+
+func deriveAskResumeAutoTools(ctx context.Context, store session.Store, sess *session.Session, settings *SessionSettings) {
+	if store == nil || sess == nil || settings == nil {
+		return
+	}
+	rows, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		return
+	}
+	history := make([]llm.Message, 0, len(rows))
+	for i := range rows {
+		history = append(history, rows[i].ToLLMMessage())
+	}
+	addAskAutoTools(settings, history)
 }
