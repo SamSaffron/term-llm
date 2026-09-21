@@ -1423,6 +1423,7 @@ type ClassifyConfig struct {
 
 // ClassifyProviderConfig configures a classification provider.
 type ClassifyProviderConfig struct {
+	SupportsImages bool   `mapstructure:"supports_images" yaml:"supports_images,omitempty"`
 	Type           string `mapstructure:"type" yaml:"type,omitempty"`
 	APIKey         string `mapstructure:"api_key" yaml:"api_key,omitempty"`
 	Model          string `mapstructure:"model" yaml:"model,omitempty"`

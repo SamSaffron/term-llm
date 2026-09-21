@@ -46,11 +46,49 @@ term-llm classify "Production is down" -p work --type noul --question "Is this u
 
 Aliases inherit TypeSafe’s model, base URL, and timeout defaults. An omitted API key falls back to `TYPESAFE_API_KEY`, but only for providers that use the default TypeSafe endpoint: a provider with its own `base_url` must declare its own `api_key`, so pointing a provider at another host can never forward your primary TypeSafe credential to it.
 
-**Privacy:** the entire state and all questions, instructions, and criteria are sent to TypeSafe (or the endpoint you explicitly configure). Do not include secrets or personal data unless you are authorized to send them. Classification is not performed locally. Raw responses can include your criteria, so handle output files as potentially sensitive. Error messages are bounded and redact the API key and full state representations. Model, type, instructions, and rubric diagnostics remain visible; redaction is not a substitute for minimizing sensitive input.
+**Privacy:** the entire state and all questions, instructions, and criteria are sent to TypeSafe (or the endpoint you explicitly configure). Do not include secrets or personal data unless you are authorized to send them. Classification runs at that endpoint, which may be a local compatible server. Attached images are also sent in full. Raw responses can include your criteria, so handle output files as potentially sensitive. Error messages are bounded and redact the API key and full state representations. Model, type, instructions, and rubric diagnostics remain visible; redaction is not a substitute for minimizing sensitive input.
 
 Use `--provider/-p` to select a provider instead of `classify.default_provider`. Use `--model`, `--base-url`, and `--timeout 5s` to override configuration for one invocation. The timeout covers the complete HTTP operation, including retries. The client retries transient HTTP errors (408, 425, 429, and 5xx including 529) up to twice. Server retry delays are respected: if a delay exceeds the two-second backoff cap or the remaining timeout, the last HTTP error is returned immediately instead of retrying early. Redirects are not followed.
 
 `--type`, `--format`, `--provider`, `--model`, `--base-url`, and `--answer` include shell completion candidates. `--model` and `--base-url` offer the selected provider's configured value alongside the built-in default, resolved from configuration without calling the API. `--answer` offers the question IDs the current flags request, read from the `--questions` file when one is given and from `--name` otherwise.
+
+## Local SystemOne-compatible endpoints and images
+
+Named providers can also point at an authenticated local SystemOne-compatible
+server. This is transport compatibility, not a model implementation in term-llm:
+the server owns prompting, image preprocessing, inference, and scoring.
+
+```yaml
+classify:
+  providers:
+    local:
+      type: typesafe
+      base_url: http://127.0.0.1:8011
+      api_key: ${LOCAL_SYSTEMONE_API_KEY}
+      model: dgemma
+      timeout_seconds: 240 # Allow a lazy server's cold start
+      supports_images: true
+```
+
+```bash
+term-llm classify "What color is this image?" -p local --image sample.png \
+  --type choice --question "Dominant color?" --option red --option blue
+```
+
+`--image` reads a **local file**, not a URL or stdin, and sends its bytes as
+`images: [{content_type, base64}]`. PNG, JPEG, and WebP are accepted, up to 4 MiB
+per image and four files; a server may impose stricter count/dimension limits.
+Image support is opt-in (`supports_images: false` by default), and unsupported
+providers fail explicitly rather than silently ignoring images. Text-only wire
+requests remain unchanged. Bearer authentication uses the named provider's own
+credential, and `--format json` preserves the server's raw response and timings.
+Requesting `--samples N` forwards an optional server-side sample count; use it
+only with an endpoint that supports this extension. The CLI does not perform
+sampling or average model outputs itself.
+
+Neither this example nor selecting `-p local` changes chat or Guardian defaults.
+Probabilities and confidence retain the server's semantics; they are not
+calibrated probabilities that a decision is correct.
 
 ## Optional Guardian backend
 
