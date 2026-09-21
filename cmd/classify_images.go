@@ -19,11 +19,18 @@ func classifyImages(paths []string) ([]typesafe.Image, error) {
 	}
 	var images []typesafe.Image
 	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("stat image: %w", err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("image must be a regular local file")
+		}
 		f, err := os.Open(path)
 		if err != nil {
 			return nil, fmt.Errorf("open image: %w", err)
 		}
-		info, err := f.Stat()
+		info, err = f.Stat()
 		if err != nil || !info.Mode().IsRegular() {
 			f.Close()
 			return nil, fmt.Errorf("image must be a regular local file")
