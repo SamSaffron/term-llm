@@ -30,7 +30,7 @@ require (
 	// Pre-release: the 1.8 line carries the SEP-2575 discover/listen work this
 	// client depends on. It replaces an untagged pseudo-version, so this is a
 	// step toward reproducibility; re-pin to v1.8.0 once that is tagged.
-	github.com/modelcontextprotocol/go-sdk v1.8.0-pre.2
+	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/muesli/cancelreader v0.2.2
 	github.com/muesli/reflow v0.3.0
 	github.com/openai/openai-go v1.12.0
