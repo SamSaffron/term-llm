@@ -10,6 +10,13 @@ import (
 	"github.com/samsaffron/term-llm/internal/typesafe"
 )
 
+func classifyProviderImages(paths []string, supported bool) ([]typesafe.Image, error) {
+	if len(paths) > 0 && !supported {
+		return nil, fmt.Errorf("selected classify provider does not support images")
+	}
+	return classifyImages(paths)
+}
+
 // Only transport framing belongs here. The endpoint validates dimensions,
 // decodes/preprocesses images and owns all model-specific behavior.
 func classifyImages(paths []string) ([]typesafe.Image, error) {

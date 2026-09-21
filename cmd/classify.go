@@ -194,10 +194,7 @@ func runClassify(cmd *cobra.Command, args []string, opts *classifyOptions, deps 
 	if model == "" {
 		model = strings.TrimSpace(provider.Model)
 	}
-	if len(opts.imageFiles) > 0 && !provider.SupportsImages {
-		return errors.New("selected classify provider does not support images")
-	}
-	images, err := classifyImages(opts.imageFiles)
+	images, err := classifyProviderImages(opts.imageFiles, provider.SupportsImages)
 	if err != nil {
 		return err
 	}
