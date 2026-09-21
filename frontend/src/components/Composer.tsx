@@ -190,7 +190,10 @@ function ConversationComposer() {
   const [dismissed, setDismissed] = useState('');
   const [dragging, setDragging] = useState(false);
   const [dragError, setDragError] = useState('');
-  const [projectMentions, setProjectMentions] = useState<MentionSearchResponse | null>(null);
+  const [projectMentions, setProjectMentions] = useState<{
+    context: string;
+    payload: MentionSearchResponse;
+  } | null>(null);
   const addMenu = useMenuKeyboard(menu, () => setMenu(false), attach);
   useEffect(
     () =>
@@ -256,10 +259,17 @@ function ConversationComposer() {
   }, [voice, voiceState, store, cursor]);
   const mention = activeMentionAtCursor(store.prompt.value, cursor);
 
+  // Mention results are revalidated in place: keep showing the previous
+  // payload while the next search is pending so the menu does not flash.
+  // Results are tagged with their search context so a project, worktree, or
+  // session switch never offers paths from the previous one.
   const mentionActive = Boolean(mention);
+  const mentionContext = `${projectId}\u0000${worktreeDir}\u0000${session?.id || ''}`;
   useEffect(() => {
-    setProjectMentions(null);
-    if (!mentionActive) return;
+    if (!mentionActive) {
+      setProjectMentions(null);
+      return;
+    }
     const controller = new AbortController();
     const source = store.prompt.value;
     const sourceCursor = cursor;
@@ -279,7 +289,7 @@ function ConversationComposer() {
         )
         .then((payload) => {
           if (!controller.signal.aborted && store.prompt.peek() === source)
-            setProjectMentions(payload);
+            setProjectMentions({ context: mentionContext, payload });
         })
         .catch((error: unknown) => {
           if ((error as { name?: string })?.name !== 'AbortError') setProjectMentions(null);
@@ -289,7 +299,16 @@ function ConversationComposer() {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [store, store.prompt.value, cursor, projectId, worktreeDir, session?.id, mentionActive]);
+  }, [
+    store,
+    store.prompt.value,
+    cursor,
+    projectId,
+    worktreeDir,
+    session?.id,
+    mentionActive,
+    mentionContext,
+  ]);
 
   const local = composerCompletions(
     store.prompt.value.slice(0, cursor),
@@ -299,11 +318,16 @@ function ConversationComposer() {
     store.shellStore.enabled.value,
     store.config.approvals !== false,
   );
-  const combined = mention ? [...local, ...mentionCompletions(projectMentions)] : local;
+  const currentMentions =
+    projectMentions?.context === mentionContext ? projectMentions.payload : null;
+  const combined = mention ? [...local, ...mentionCompletions(currentMentions, mention)] : local;
   const completions =
     dismissed === `${store.prompt.value}\u0000${cursor}`
       ? []
       : [...new Map(combined.map((entry) => [`${entry.kind}:${entry.value}`, entry])).values()];
+  // Clamp at render time so a shrunken list never highlights or applies an
+  // entry that is not displayed.
+  const activeIndex = completions.length ? Math.min(completionIndex, completions.length - 1) : 0;
   const project = store.projects.value.find((entry) => entry.id === store.activeProjectId.value);
   const bindingBlocked = store.draftActive.value && Boolean(project && project.available === false);
   const approvalChanged = Boolean(
@@ -313,9 +337,6 @@ function ConversationComposer() {
       session.guardianAutoSuspended ||
       (session.approvalRequestedMode === 'auto' && session.guardianAvailable === false)),
   );
-  useEffect(() => {
-    if (completionIndex >= completions.length) setCompletionIndex(0);
-  }, [completionIndex, completions.length]);
 
   const choose = (completion: Completion) => {
     const nextCursor = completedCursor(store.prompt.value, completion);
@@ -853,8 +874,8 @@ function ConversationComposer() {
                   id={`composer-completion-${index}`}
                   type="button"
                   role="option"
-                  aria-selected={completionIndex === index}
-                  class={`slash-command-option ${completionIndex === index ? 'selected' : ''}`}
+                  aria-selected={activeIndex === index}
+                  class={`slash-command-option ${activeIndex === index ? 'selected' : ''}`}
                   key={`${entry.kind}:${entry.value}`}
                   onMouseDown={(event) => {
                     event.preventDefault();
@@ -890,7 +911,7 @@ function ConversationComposer() {
             aria-autocomplete="list"
             aria-controls="slashCommandMenu"
             aria-activedescendant={
-              completions.length ? `composer-completion-${completionIndex}` : undefined
+              completions.length ? `composer-completion-${activeIndex}` : undefined
             }
             aria-expanded={completions.length > 0}
             value={store.prompt.value}
@@ -925,12 +946,14 @@ function ConversationComposer() {
                 event.preventDefault();
                 setCompletionIndex(
                   (index) =>
-                    (index + (event.key === 'ArrowDown' ? 1 : -1) + completions.length) %
+                    (Math.min(index, completions.length - 1) +
+                      (event.key === 'ArrowDown' ? 1 : -1) +
+                      completions.length) %
                     completions.length,
                 );
                 return;
               }
-              const selected = completions[completionIndex];
+              const selected = completions[activeIndex];
               const exactSlash =
                 selected?.kind === 'slash' &&
                 store.prompt.value.trim().toLowerCase() === selected.value.toLowerCase();

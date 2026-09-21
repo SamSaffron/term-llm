@@ -24,6 +24,7 @@ import { convertServerMessages } from '../domain/transcript';
 import { markdownDocumentBlocks } from '../domain/markdown-document';
 import { readJSON } from '../platform/storage';
 import * as clipboard from '../platform/clipboard';
+import type { MentionSearchResponse } from '../domain/completions';
 
 const config: AppConfig = {
   prefix: '/ui',
@@ -77,6 +78,31 @@ const createStore = (overrides: Partial<AppConfig> = {}) => {
   store.draftActive.value = false;
   store.endpoints.diffComments = vi.fn(async () => ({ comments: [], transcript_rev: 0 }));
   return store;
+};
+
+const mentionSearchPayload = (
+  token: { start: number; end: number; query: string },
+  paths: string[],
+): MentionSearchResponse => ({
+  active: true,
+  token: { start_utf16: token.start, end_utf16: token.end, query: token.query },
+  items: paths.map((path) => ({
+    path,
+    kind: 'file',
+    insert_text: `@${path}`,
+    segments: [{ text: path, matched: true }],
+  })),
+});
+
+type MentionSearchResolver = (payload: MentionSearchResponse) => void;
+
+// Returns the resolvers of pending mention searches so a test can hold a
+// response open and observe what the composer shows while it is in flight.
+const pendingMentionSearch = (store: AppStore): MentionSearchResolver[] => {
+  const pending: MentionSearchResolver[] = [];
+  store.endpoints.mentionSearch = (_body: unknown, _sessionId?: string, _signal?: AbortSignal) =>
+    new Promise<MentionSearchResponse>((resolve) => pending.push(resolve));
+  return pending;
 };
 
 const expectPasswordManagersIgnored = (element: HTMLElement) => {
@@ -5778,6 +5804,194 @@ describe('Preact-owned chat surfaces', () => {
       const firstSignal = search.mock.calls[0][2] as AbortSignal;
       fireEvent.input(input, { target: { value: '@jab', selectionStart: 4, selectionEnd: 4 } });
       expect(firstSignal.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps project mention results visible until the next search resolves', async () => {
+    vi.useFakeTimers();
+    try {
+      const store = createStore();
+      store.sessions.value = [{ ...store.sessions.value[0], projectId: 'project-1' }];
+      store.projectsEnabled.value = true;
+      const pending: MentionSearchResolver[] = [];
+      const search = vi.fn(
+        (_body: unknown, _sessionId?: string, _signal?: AbortSignal) =>
+          new Promise<MentionSearchResponse>((resolve) => pending.push(resolve)),
+      );
+      store.endpoints.mentionSearch = search;
+      render(
+        <StoreContext.Provider value={store}>
+          <Composer />
+        </StoreContext.Provider>,
+      );
+      const input = screen.getByRole('textbox', { name: 'Message' }) as HTMLTextAreaElement;
+      fireEvent.input(input, { target: { value: '@ja', selectionStart: 3, selectionEnd: 3 } });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      await act(async () => {
+        pending[0](mentionSearchPayload({ start: 0, end: 3, query: 'ja' }, ['jar.go']));
+      });
+      expect(screen.getByRole('option', { name: /jar\.go/ })).toBeInTheDocument();
+
+      fireEvent.input(input, { target: { value: '@jab', selectionStart: 4, selectionEnd: 4 } });
+      expect(screen.getByRole('listbox')).toBeInTheDocument();
+      expect(screen.getByRole('option', { name: /jar\.go/ })).toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      expect(search).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        pending[1](mentionSearchPayload({ start: 0, end: 4, query: 'jab' }, ['jab.go']));
+      });
+      expect(screen.getByRole('option', { name: /jab\.go/ })).toBeInTheDocument();
+      expect(screen.queryByRole('option', { name: /jar\.go/ })).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('hides project mention results that belong to a different mention token', async () => {
+    vi.useFakeTimers();
+    try {
+      const store = createStore();
+      store.sessions.value = [{ ...store.sessions.value[0], projectId: 'project-1' }];
+      store.projectsEnabled.value = true;
+      const pending = pendingMentionSearch(store);
+      render(
+        <StoreContext.Provider value={store}>
+          <Composer />
+        </StoreContext.Provider>,
+      );
+      const input = screen.getByRole('textbox', { name: 'Message' }) as HTMLTextAreaElement;
+      fireEvent.input(input, { target: { value: '@ja', selectionStart: 3, selectionEnd: 3 } });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      await act(async () => {
+        pending[0](mentionSearchPayload({ start: 0, end: 3, query: 'ja' }, ['jar.go']));
+      });
+      expect(screen.getByRole('option', { name: /jar\.go/ })).toBeInTheDocument();
+
+      fireEvent.input(input, { target: { value: 'see @ja', selectionStart: 7, selectionEnd: 7 } });
+      expect(screen.queryByRole('option', { name: /jar\.go/ })).not.toBeInTheDocument();
+      expect(screen.getByRole('option', { name: /@jarvis/ })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('drops stale project mention results when the search context changes', async () => {
+    vi.useFakeTimers();
+    try {
+      const store = createStore();
+      store.sessions.value = [
+        { ...store.sessions.value[0], projectId: 'project-1' },
+        { ...store.sessions.value[0], id: 's2', title: 'Second', projectId: 'project-2' },
+      ];
+      store.projectsEnabled.value = true;
+      const pending = pendingMentionSearch(store);
+      render(
+        <StoreContext.Provider value={store}>
+          <Composer />
+        </StoreContext.Provider>,
+      );
+      const input = screen.getByRole('textbox', { name: 'Message' }) as HTMLTextAreaElement;
+      fireEvent.input(input, { target: { value: '@ja', selectionStart: 3, selectionEnd: 3 } });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      await act(async () => {
+        pending[0](mentionSearchPayload({ start: 0, end: 3, query: 'ja' }, ['jar.go']));
+      });
+      expect(screen.getByRole('option', { name: /jar\.go/ })).toBeInTheDocument();
+
+      await act(async () => {
+        store.activeSessionId.value = 's2';
+      });
+      expect(screen.queryByRole('option', { name: /jar\.go/ })).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('replaces the live mention range when a stale project result is chosen', async () => {
+    const store = createStore();
+    store.sessions.value = [{ ...store.sessions.value[0], projectId: 'project-1' }];
+    store.projectsEnabled.value = true;
+    const pending = pendingMentionSearch(store);
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+    const input = screen.getByRole('textbox', { name: 'Message' }) as HTMLTextAreaElement;
+    fireEvent.input(input, { target: { value: '@ja', selectionStart: 3, selectionEnd: 3 } });
+    await waitFor(() => expect(pending).toHaveLength(1));
+    await act(async () => {
+      pending[0](mentionSearchPayload({ start: 0, end: 3, query: 'ja' }, ['jar.go']));
+    });
+    const option = await screen.findByRole('option', { name: /jar\.go/ });
+
+    fireEvent.input(input, { target: { value: '@jab', selectionStart: 4, selectionEnd: 4 } });
+    fireEvent.click(option);
+
+    expect(store.prompt.value).toBe('@jar.go ');
+    expect(input).toHaveValue('@jar.go ');
+  });
+
+  it('keeps the highlighted completion inside a shrunk mention list', async () => {
+    vi.useFakeTimers();
+    try {
+      const store = createStore();
+      store.sessions.value = [{ ...store.sessions.value[0], projectId: 'project-1' }];
+      store.projectsEnabled.value = true;
+      const pending = pendingMentionSearch(store);
+      render(
+        <StoreContext.Provider value={store}>
+          <Composer />
+        </StoreContext.Provider>,
+      );
+      const input = screen.getByRole('textbox', { name: 'Message' }) as HTMLTextAreaElement;
+      fireEvent.input(input, { target: { value: '@ja', selectionStart: 3, selectionEnd: 3 } });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      await act(async () => {
+        pending[0](
+          mentionSearchPayload({ start: 0, end: 3, query: 'ja' }, ['jar.go', 'jab.go', 'jam.go']),
+        );
+      });
+      fireEvent.keyDown(input, { key: 'ArrowDown' });
+      fireEvent.keyDown(input, { key: 'ArrowDown' });
+      fireEvent.keyDown(input, { key: 'ArrowDown' });
+      expect(screen.getByRole('option', { name: /jam\.go/ })).toHaveAttribute(
+        'aria-selected',
+        'true',
+      );
+
+      // Moving the caret re-searches the same token without resetting the
+      // highlight; when the shorter list arrives it must stay on a real entry.
+      input.setSelectionRange(2, 2);
+      fireEvent.keyUp(input, { key: 'ArrowLeft' });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      expect(pending).toHaveLength(2);
+      await act(async () => {
+        pending[1](mentionSearchPayload({ start: 0, end: 2, query: 'j' }, ['jar.go']));
+      });
+      expect(screen.getByRole('option', { name: /jar\.go/ })).toHaveAttribute(
+        'aria-selected',
+        'true',
+      );
+      expect(input).toHaveAttribute('aria-activedescendant', 'composer-completion-1');
+      fireEvent.keyDown(input, { key: 'Enter' });
+      // Only the token up to the caret is replaced.
+      expect(store.prompt.value).toBe('@jar.go a');
     } finally {
       vi.useRealTimers();
     }

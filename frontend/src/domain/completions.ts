@@ -179,16 +179,29 @@ export function activeMentionAtCursor(
   const before = value.slice(0, bounded);
   const lineStart = before.lastIndexOf('\n') + 1;
   const line = before.slice(lineStart);
-  const match = line.match(/(?:^|[\s。 、？！])@(?:(?:"(?:\\.|[^"\\])*)|[^\s"]*)$/u);
+  const match = line.match(/(?:^|[\s。 、？！])(@(?:"(?:\\.|[^"\\])*\\?|[^\s"]*))$/u);
   if (!match) return null;
-  const at = line.lastIndexOf('@');
-  const token = line.slice(at);
-  return { start: lineStart + at, end: bounded, query: token.slice(1).replace(/^"/, '') };
+  const token = match[1];
+  // The match is anchored to the caret, so the token start is the first @ of
+  // the run, matching internal/mentions.ActiveTokenAt rather than the last one.
+  return {
+    start: lineStart + line.length - token.length,
+    end: bounded,
+    query: token.slice(1).replace(/^"/, ''),
+  };
 }
 
-export function mentionCompletions(payload: MentionSearchResponse | null): Completion[] {
+export function mentionCompletions(
+  payload: MentionSearchResponse | null,
+  live?: { start: number; end: number } | null,
+): Completion[] {
   if (!payload?.active || !payload.token) return [];
-  const replacement = { start: payload.token.start_utf16, end: payload.token.end_utf16 };
+  // Stale results stay visible while the next search runs, so the live caret
+  // range wins. A payload for another @ token is never shown.
+  if (live && payload.token.start_utf16 !== live.start) return [];
+  const replacement = live
+    ? { start: live.start, end: live.end }
+    : { start: payload.token.start_utf16, end: payload.token.end_utf16 };
   return (payload.items || []).flatMap((item): Completion[] => {
     const path = String(item.path || '');
     const value = String(item.insert_text || '');

@@ -13,8 +13,10 @@ import {
 import {
   activeMentionAtCursor,
   applyCompletion,
+  completedCursor,
   composerCompletions,
   mentionCompletions,
+  type MentionSearchResponse,
 } from './completions';
 
 describe('markdown security and streaming', () => {
@@ -322,5 +324,34 @@ describe('composer completion', () => {
       items: [{ path: 'types.go', kind: 'file', insert_text: '@types.go', segments: [] }],
     });
     expect(applyCompletion('review @typ now', completion)).toBe('review @types.go now');
+  });
+
+  it('starts mention tokens where the server does, including quoted and repeated @', () => {
+    // internal/mentions.ActiveTokenAt scans back for a boundary @, so the token
+    // starts at the first @ of the run and quoted payloads may contain @.
+    expect(activeMentionAtCursor('@a@b', 4)).toMatchObject({ start: 0, query: 'a@b' });
+    expect(activeMentionAtCursor('see @"a@b', 9)).toMatchObject({ start: 4, query: 'a@b' });
+    expect(activeMentionAtCursor('@types/node', 11)).toMatchObject({ start: 0 });
+    expect(activeMentionAtCursor('see @"foo bar', 13)).toMatchObject({
+      start: 4,
+      query: 'foo bar',
+    });
+    // A trailing escape stays active until the quote closes, matching the server.
+    expect(activeMentionAtCursor('see @"foo\\', 10)).toMatchObject({ start: 4, query: 'foo\\' });
+    expect(activeMentionAtCursor('@"closed"', 9)).toBeNull();
+    expect(activeMentionAtCursor('me@example.com', 14)).toBeNull();
+  });
+
+  it('rebinds stale mention payloads to the live token range', () => {
+    const stale: MentionSearchResponse = {
+      active: true,
+      token: { start_utf16: 0, end_utf16: 3, query: 'ja' },
+      items: [{ path: 'jar.go', kind: 'file', insert_text: '@jar.go', segments: [] }],
+    };
+    const [completion] = mentionCompletions(stale, { start: 0, end: 4 });
+    expect(completion.replacement).toEqual({ start: 0, end: 4 });
+    expect(applyCompletion('@jab', completion)).toBe('@jar.go ');
+    expect(completedCursor('@jab', completion)).toBe('@jar.go '.length);
+    expect(mentionCompletions(stale, { start: 4, end: 7 })).toEqual([]);
   });
 });
