@@ -8,7 +8,7 @@ require (
 	github.com/charmbracelet/x/windows v0.2.2
 	github.com/muesli/cancelreader v0.2.2
 	github.com/rivo/uniseg v0.4.7
-	github.com/xo/terminfo v1.0.0
+	github.com/xo/terminfo v1.2.0
 	golang.org/x/sys v0.48.0
 )
 
