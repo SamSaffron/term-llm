@@ -4,7 +4,7 @@ Baseline SHA: `d9887abd2fe5f4f710176469b336e3da04d3c489`<br>
 Route and feature set: direct `/ui/`, WebRTC disabled<br>
 Compression: served-equivalent gzip level 6; hypothetical Brotli quality 11
 
-`scripts/measure_ui_payload.sh` measures a representative rendered production page with a fixed injected bootstrap. Initial requests are derived from the rendered HTML and the generated entry module's static import graph; service-worker cache candidates are parsed from `SHELL_ASSETS`. `frontend/payload-baseline.json` and `payload-final.json` contain the raw reproducible results and final asset SHA-256 values. The legacy control concatenates and minifies the authored JS/CSS with the same esbuild minifier used by the Vite build before applying identical compression. HTML is unchanged in that control.
+These numbers are a historical record produced by a measurement script that has since been removed. It measured a representative rendered production page with a fixed injected bootstrap. Initial requests are derived from the rendered HTML and the generated entry module's static import graph; service-worker cache candidates are parsed from `SHELL_ASSETS`. `frontend/payload-baseline.json` and `payload-final.json` contain the raw reproducible results and final asset SHA-256 values. The legacy control concatenates and minifies the authored JS/CSS with the same esbuild minifier used by the Vite build before applying identical compression. HTML is unchanged in that control.
 
 Cold navigation counts only HTML, CSS, and JavaScript. Icon/manifest and service-worker cache candidates are reported separately. First-party totals contain rendered HTML plus authored application JS/CSS. The vendor total is separate: legacy marked + DOMPurify versus the final Preact/Signals/marked/DOMPurify vendor chunk. The current generated `dist/app.js` is 171,940 raw bytes.
 
@@ -42,7 +42,7 @@ The six final requests are `rich-highlight.js`, highlight JS/CSS, `rich-katex.js
 
 ## Standalone Hub entry
 
-`scripts/measure_ui_payload.sh hub` measures the independent Hub graph without changing the chat baseline/final inclusion rules above. A Hub page makes two generated-asset requests—`dist/hub.js` and `dist/hub.css`; the HTML/bootstrap response is reported separately. Hub assets are not chat service-worker candidates. `payload-hub-phase2.json` preserves the first working standalone checkpoint (81,492 raw / 25,214 gzip-6 / 22,480 Brotli-11); `payload-hub-final.json` records the completed, reviewed port below.
+The same measurement covered the independent Hub graph without changing the chat baseline/final inclusion rules above. A Hub page makes two generated-asset requests—`dist/hub.js` and `dist/hub.css`; the HTML/bootstrap response is reported separately. Hub assets are not chat service-worker candidates. `payload-hub-phase2.json` preserves the first working standalone checkpoint (81,492 raw / 25,214 gzip-6 / 22,480 Brotli-11); `payload-hub-final.json` records the completed, reviewed port below.
 
 | Asset / compression | Raw | gzip-6 | Brotli-11 |
 |---|---:|---:|---:|

@@ -188,7 +188,7 @@ jobs:
         run: |
           mkdir -p tmp
           go build -o tmp/service-smoke .
-          python3 scripts/service_smoke.py tmp/service-smoke
+          go run ./cmd/servicesmoke tmp/service-smoke
 
   frontend:
     runs-on: ubuntu-latest

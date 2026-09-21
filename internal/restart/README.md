@@ -73,36 +73,25 @@ real signals during replacement boot, and signal restoration after failed exec.
 Registry tests cover stale identities, private directories, publisher cleanup,
 real same-PID exec and stale-instance rejection; fixtures are umask-independent.
 
-The optional isolated acceptance proof uses two real builds:
+The optional isolated acceptance harnesses that drove SIGUSR2 against two real
+installed builds have been removed. Nothing else covers what they proved, so the
+following behavior currently has **no** automated end-to-end verification:
 
-```sh
-go build -ldflags '-X github.com/samsaffron/term-llm/cmd.Version=reload-A' -o ./reload-a .
-go build -ldflags '-X github.com/samsaffron/term-llm/cmd.Version=reload-B' -o ./reload-b .
-python3 scripts/test_sigusr2_reload.py --binary-a ./reload-a --binary-b ./reload-b
-python3 scripts/test_sigusr2_modes.py --binary-a ./reload-a --binary-b ./reload-b
-python3 scripts/test_sigusr2_chat.py --binary-a ./reload-a --binary-b ./reload-b
-# Prove the Hello boundary, 30-second cancellation, and failed-exec continuation:
-python3 scripts/test_sigusr2_safe_point.py --binary-a ./reload-a --binary-b ./reload-b
-python3 scripts/test_sigusr2_safe_point.py --binary-a ./reload-a --binary-b ./reload-b --cancel
-python3 scripts/test_sigusr2_safe_point.py --binary-a ./reload-a --binary-b ./reload-b --fail-exec
-# With frontend dependencies installed, also validate replay through the web reducer:
-python3 scripts/test_sigusr2_safe_point.py --binary-a ./reload-a --binary-b ./reload-b --check-client
-# Also verify generated bearer auth survives exec without leaking to tool children:
-python3 scripts/test_sigusr2_safe_point.py --binary-a ./reload-a --binary-b ./reload-b --check-auth --check-client
-# Also exercise a symlink-based upgrade:
-python3 scripts/test_sigusr2_reload.py --binary-a ./reload-a --binary-b ./reload-b --symlink
-```
+- An in-flight shell tool executing exactly once across replacement, and the
+  complete response draining afterwards.
+- A becoming B under the same PID, generated credentials surviving exec without
+  leaking to tool children, a failed exec leaving the service usable, and the
+  real process CLI retrying successfully.
+- Combined web/jobs behavior: a concurrent web shell operation and program job,
+  terminal job persistence, and full response delivery.
+- PTY chat: an active tool, idle replacement, failed-exec terminal recovery, and
+  draft restoration.
+- The Hello boundary, the 30-second cancellation fallback, replay through the web
+  reducer, and symlink-based upgrades.
 
-It creates its own temporary HOME/XDG directories, loopback server, installed
-fixture binary and child PID. It verifies an in-flight shell tool executes once,
-the complete response drains, A becomes B with the same PID, generated credentials
-survive without leaking to children, failed exec leaves the service usable, and
-the real process CLI can successfully retry. It never targets a live service.
-
-The combined-mode proof checks a concurrent web shell operation and program job,
-terminal job persistence, full response delivery, same-PID A-to-B replacement and
-failed-exec retry. The PTY proof checks an active tool, idle replacement, failed
-exec terminal recovery and draft restoration. Telegram polling cancellation and
-rollback use a fake API in Go tests; these are not live Telegram delivery proofs.
-Hub/reverse and WebRTC have route/regression tests, not a claimed real deployment
-upgrade proof. Linux is required for the process-discovery acceptance scripts.
+Reintroduce an equivalent Linux-only proof in Go before claiming those guarantees
+again; a replacement must create its own temporary HOME/XDG directories, loopback
+server, installed fixture binary, and child PID, and must never target a live
+service. Telegram polling cancellation and rollback use a fake API in Go tests;
+these are not live Telegram delivery proofs. Hub/reverse and WebRTC have
+route/regression tests, not a claimed real deployment upgrade proof.

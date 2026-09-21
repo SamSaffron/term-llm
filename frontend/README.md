@@ -6,7 +6,7 @@ Vite emits deterministic, minified production files into `internal/serveui/stati
 
 ## Prerequisites
 
-Source builds use Node 24 or newer, npm, and Python 3 (for the deterministic private UI-authoring source archive). The archive is embedded in release binaries for on-demand extension builder inspection, not downloaded by ordinary browser sessions. The test setup supplies isolated Web Storage implementations for Node 25+, whose process-level `localStorage`/`sessionStorage` globals otherwise depend on runtime flags. CI installs dependencies from `package-lock.json` with `npm ci`.
+Source builds use Node 24 or newer and npm. The Go build step also writes the deterministic private UI-authoring source archive, which is embedded in release binaries for on-demand extension builder inspection, not downloaded by ordinary browser sessions. The test setup supplies isolated Web Storage implementations for Node 25+, whose process-level `localStorage`/`sessionStorage` globals otherwise depend on runtime flags. CI installs dependencies from `package-lock.json` with `npm ci`.
 
 From the repository root, the normal build command installs locked frontend dependencies when needed, generates both applications, and builds `./term-llm`:
 
@@ -29,7 +29,7 @@ From the repository root, `scripts/browser_lifecycle_smoke.sh` builds and starts
 
 The chat smoke uses HTTP transport only. WebRTC timeout, admission rejection, fallback, and recovery coverage lives in `src/platform/webrtc.test.ts`, using fake timers, abort-aware signaling, and a fake peer/data channel. Do not gate CI on Chromium-to-Go ICE connectivity: host candidates, mDNS, and runner UDP networking made those assertions unreliable even with a loopback signaling relay. The Go peer's admission and protocol tests remain under `internal/webrtc`.
 
-`scripts/check_frontend_network_policy.sh` fails closed unless ripgrep can scan production sources and enforces transport ownership for `fetch`, browser fetch aliases, XHR, EventSource, WebSocket, and beacon calls. Raw transports are allowed only under `src/api` and in the reviewed WebRTC platform bridge. Run `scripts/measure_ui_payload.sh baseline|final` for the chat graph and `scripts/measure_ui_payload.sh hub` for the standalone Hub entry. The fixed chat baseline and current generated results live in `payload-baseline.json` and `payload-final.json`; `payload-report.md` explains inclusion rules and deltas.
+`scripts/check_frontend_network_policy.sh` fails closed unless ripgrep can scan production sources and enforces transport ownership for `fetch`, browser fetch aliases, XHR, EventSource, WebSocket, and beacon calls. Raw transports are allowed only under `src/api` and in the reviewed WebRTC platform bridge. The fixed chat baseline and the last generated results live in `payload-baseline.json` and `payload-final.json`; `payload-report.md` explains inclusion rules and deltas. Those results are a historical record; the measurement script that produced them has been removed.
 
 ## Build contract
 

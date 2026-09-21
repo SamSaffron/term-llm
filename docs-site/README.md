@@ -15,7 +15,7 @@ Hugo previews do not generate the Pagefind search index. To exercise search, bui
 
 ```bash
 npm --prefix docs-site run build
-python3 -m http.server 1313 --bind 127.0.0.1 --directory .cache/docs-site
+npx --yes http-server .cache/docs-site --port 1313 --host 127.0.0.1
 ```
 
 The build cleans its destination before writing to `.cache/docs-site/`, so removed pages cannot linger in local validation or deployment output. Pagefind then creates `/pagefind/` assets. `package-lock.json` pins the search builder and browser validation tools. Deployment uses the same build and validation commands before publishing.
@@ -101,7 +101,7 @@ Its `image_theme: dark` override keeps the same terminal appearance in both site
 themes without duplicating the assets. To optimize a replacement approved capture:
 
 ```bash
-python3 scripts/optimize-tour.py --terminal-source path/to/approved-terminal.png
+node scripts/optimize-tour.mjs --terminal-source path/to/approved-terminal.png
 ```
 
 Run that command from `docs-site/`. The input must be 2560×1360. It produces
@@ -110,10 +110,10 @@ leave these files unchanged. The full-size terminal image has a separate 180 KB
 budget to preserve the approved text and ANSI colors losslessly; previews retain
 the shared 45 KB limit.
 
-Capture/optimization requires Python 3 with Pillow (`python3 -m pip install Pillow`)
-in addition to the existing Node/Playwright tools. Capture PNGs are kept in ignored
-`test-results/tour-source/`; `scripts/optimize-tour.py` produces the deployed WebPs.
-The build does not require Pillow; optimized assets are committed.
+Capture/optimization uses the existing Node/Playwright tools plus `sharp`, which
+`npm --prefix docs-site ci` installs. Capture PNGs are kept in ignored
+`test-results/tour-source/`; `scripts/optimize-tour.mjs` produces the deployed WebPs.
+The build does not encode images; optimized assets are committed.
 
 To regenerate the five browser scenes, use the isolated web server setup above and also start
 an isolated Hub before capturing. Run this in the same shell, while the web

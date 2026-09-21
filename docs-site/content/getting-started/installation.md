@@ -37,7 +37,7 @@ Homebrew installs the correct release binary for Apple Silicon or Intel macOS. F
 
 ### Build from source
 
-Source builds require the Go version declared in `go.mod`, Node.js 24 or newer, npm, Python 3, and Make:
+Source builds require the Go version declared in `go.mod`, Node.js 24 or newer, npm, and Make:
 
 ```bash
 git clone https://github.com/samsaffron/term-llm
@@ -46,7 +46,7 @@ make build
 ./term-llm version
 ```
 
-`make build` generates the embedded web UI and uses Python 3 to package its readable source archive before compiling the Go binary. Those generated bundles are not checked into Git, so plain `go build` from a fresh checkout is not sufficient. Use the one-line installer for a self-contained release binary without source-build dependencies.
+`make build` generates the embedded web UI and packages its readable source archive before compiling the Go binary. Those generated bundles are not checked into Git, so plain `go build` from a fresh checkout is not sufficient. Use the one-line installer for a self-contained release binary without source-build dependencies.
 
 ### Shell completions
 

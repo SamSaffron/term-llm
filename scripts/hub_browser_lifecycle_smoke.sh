@@ -7,12 +7,7 @@ if [[ ! -x "$root/frontend/node_modules/.bin/playwright" ]]; then
   exit 1
 fi
 free_port() {
-  python3 - <<'PY'
-import socket
-with socket.socket() as server:
-    server.bind(('127.0.0.1', 0))
-    print(server.getsockname()[1])
-PY
+  node "$root/scripts/free_port.mjs"
 }
 node_port="$(free_port)"
 hub_port="$(free_port)"

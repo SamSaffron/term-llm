@@ -77,7 +77,7 @@ User-facing documentation lives in `docs-site/content/`; there is no separate `d
 
 - `internal/sqliteutil/README.md` – adding and testing SQLite migrations
 - `internal/doctor/README.md` – adding a `term-llm doctor` check
-- `internal/restart/README.md` – reload ownership, mode adapters, and SIGUSR2 acceptance proofs
+- `internal/restart/README.md` – reload ownership, mode adapters, and SIGUSR2 verification coverage
 - `internal/session/README.md` – steering persistence, ownership, and schema upgrades
 - `internal/terminal/README.md` – owned terminal architecture and verification
 - `frontend/README.md` – embedded frontends, build contract, and accessibility checks

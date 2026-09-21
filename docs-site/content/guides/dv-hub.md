@@ -115,7 +115,7 @@ The node card flips from **"waiting for reverse connection"** to **connected** w
 
 ```bash
 curl -s http://127.0.0.1:8090/api/nodes -H "Authorization: Bearer hubdevtoken" \
-  | python3 -c 'import sys,json;[print(n["id"],n["status"]["state"]) for n in json.load(sys.stdin)["nodes"]]'
+  | jq -r '.nodes[] | "\(.id) \(.status.state)"'
 # my-agent connected
 ```
 

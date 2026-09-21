@@ -21,13 +21,7 @@ providers:
     model: fast
 YAML
 printf 'enabled: []\n' > "$home/config/term-llm/extensions/extensions.yaml"
-port="$(python3 - <<'PY'
-import socket
-with socket.socket() as s:
-    s.bind(('127.0.0.1', 0))
-    print(s.getsockname()[1])
-PY
-)"
+port="$(node "$root/scripts/free_port.mjs")"
 (
  cd "$home/workspace"
  exec env -u TERM_LLM_PPROF -u TERM_LLM_SERVE_HUB_URL -u TERM_LLM_SERVE_HUB_REGISTER \

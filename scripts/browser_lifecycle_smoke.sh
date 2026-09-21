@@ -13,13 +13,7 @@ fi
 if [[ -n "${TERM_LLM_SMOKE_PORT:-}" ]]; then
   port="$TERM_LLM_SMOKE_PORT"
 else
-  port="$(python3 - <<'PY'
-import socket
-with socket.socket() as server:
-    server.bind(('127.0.0.1', 0))
-    print(server.getsockname()[1])
-PY
-)"
+  port="$(node "$root/scripts/free_port.mjs")"
 fi
 url="http://127.0.0.1:${port}/ui/"
 binary="$(mktemp "${TMPDIR:-/tmp}/term-llm-browser-smoke.XXXXXX")"

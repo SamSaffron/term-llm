@@ -1,6 +1,6 @@
 // Homepage carousel scenes: real UI, illustrative fixtures, no model calls.
 // Use isolated loopback web/Hub servers as described in docs-site/README.md.
-// Captures both themes at 2x resolution into the ignored source directory for optimize-tour.py.
+// Captures both themes at 2x resolution into the ignored source directory for optimize-tour.mjs.
 import { chromium } from 'playwright';
 import { mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';

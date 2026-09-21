@@ -14,7 +14,7 @@ build: frontend
 
 frontend: frontend-deps
 	npm --prefix frontend run build
-	python3 scripts/build_ui_source.py
+	go run ./cmd/builduisource
 
 frontend-deps: $(FRONTEND_STAMP)
 
