@@ -8,6 +8,45 @@ import (
 	"time"
 )
 
+func TestAttentionProjectionRemoveSeenPreservesNewerAndOtherActivity(t *testing.T) {
+	store, err := OpenAttentionProjectionStore(filepath.Join(t.TempDir(), "attention.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	activities := []SessionActivity{
+		{SessionID: "done", Kind: "terminal_unseen", AttentionSeq: 2},
+		{SessionID: "done", Kind: "input_required"},
+		{SessionID: "done", Kind: "running"},
+		{SessionID: "other", Kind: "terminal_unseen", AttentionSeq: 1},
+	}
+	for _, node := range []string{"alpha", "alias"} {
+		if err := store.ReplaceNode(ctx, node, "store-a", "etag", activities); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.RemoveSeen(ctx, "store-a", "done", 1); err != nil {
+		t.Fatal(err)
+	}
+	remaining, _, err := store.List(ctx)
+	if err != nil || len(remaining) != 8 {
+		t.Fatalf("older acknowledgement removed newer activity: %+v, %v", remaining, err)
+	}
+	if err := store.RemoveSeen(ctx, "store-a", "done", 2); err != nil {
+		t.Fatal(err)
+	}
+	remaining, _, err = store.List(ctx)
+	if err != nil || len(remaining) != 6 {
+		t.Fatalf("remaining activity: %+v, %v", remaining, err)
+	}
+	for _, activity := range remaining {
+		if activity.Kind == "terminal_unseen" && activity.SessionID == "done" {
+			t.Fatalf("cleared activity remained: %+v", activity)
+		}
+	}
+}
+
 func TestAttentionProjectionAtomicallyReplacesAndRetainsErrors(t *testing.T) {
 	store, err := OpenAttentionProjectionStore(filepath.Join(t.TempDir(), "attention.db"))
 	if err != nil {

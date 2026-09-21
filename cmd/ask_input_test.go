@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/spf13/cobra"
 
@@ -538,6 +541,36 @@ func TestReadBoundedAskLineRangePreservesExtractLinesSemantics(t *testing.T) {
 			want := inputpkg.ExtractLines(content, tc.start, tc.end)
 			if string(got) != want {
 				t.Fatalf("range %d-%d = %q, want %q", tc.start, tc.end, got, want)
+			}
+		})
+	}
+}
+
+func TestReadBoundedAskLineRangeBoundariesAndReadErrors(t *testing.T) {
+	longLine := strings.Repeat("x", 64*1024)
+	for _, tc := range []struct {
+		name       string
+		reader     io.Reader
+		start, end int
+		maxBytes   int64
+		want       string
+		wantErr    error
+	}{
+		{name: "closed range at byte limit", reader: iotest.OneByteReader(strings.NewReader("one\ntwo")), start: 1, end: 1, maxBytes: 3, want: "one"},
+		{name: "open range includes overflowing newline", reader: iotest.OneByteReader(strings.NewReader("one\ntwo")), start: 1, maxBytes: 3, want: "one\n"},
+		{name: "skipped line exceeds buffer", reader: strings.NewReader(longLine + "\nchosen\nignored"), start: 2, end: 2, maxBytes: 6, want: "chosen"},
+		{name: "selected line exceeds buffer", reader: strings.NewReader(longLine + "\nignored"), start: 1, end: 1, maxBytes: int64(len(longLine)), want: longLine},
+		{name: "data and EOF together", reader: iotest.DataErrReader(strings.NewReader("one\ntwo")), start: 2, maxBytes: 10, want: "two"},
+		{name: "error discards partial range", reader: io.MultiReader(strings.NewReader("one"), iotest.ErrReader(io.ErrUnexpectedEOF)), start: 1, maxBytes: 10, wantErr: io.ErrUnexpectedEOF},
+		{name: "completed range ignores later error", reader: io.MultiReader(strings.NewReader("one\n"), iotest.ErrReader(io.ErrUnexpectedEOF)), start: 1, end: 1, maxBytes: 10, want: "one"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := readBoundedAskLineRange(tc.reader, tc.start, tc.end, tc.maxBytes)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("readBoundedAskLineRange error = %v, want %v", err, tc.wantErr)
+			}
+			if string(got) != tc.want {
+				t.Fatalf("range content mismatch: got %d bytes, want %d", len(got), len(tc.want))
 			}
 		})
 	}

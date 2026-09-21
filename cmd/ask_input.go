@@ -147,20 +147,9 @@ func prepareAskFiles(paths []string, askCfg config.AskConfig) (prepared []askPre
 			continue
 		}
 
-		spec, parseErr := input.ParseFileSpec(path)
-		if parseErr != nil {
-			return nil, stagedPaths, fmt.Errorf("invalid file spec %q: %w", path, parseErr)
-		}
-		expandedPath := expandAskPath(spec.Path)
-		matches, globErr := filepath.Glob(expandedPath)
-		if globErr != nil {
-			return nil, stagedPaths, fmt.Errorf("invalid glob pattern %q: %w", spec.Path, globErr)
-		}
-		if len(matches) == 0 {
-			if strings.ContainsAny(spec.Path, "*?[") {
-				continue
-			}
-			matches = []string{expandedPath}
+		spec, matches, expandErr := expandAskFileSpec(path)
+		if expandErr != nil {
+			return nil, stagedPaths, expandErr
 		}
 
 		for _, match := range matches {
@@ -191,6 +180,22 @@ func prepareAskFiles(paths []string, askCfg config.AskConfig) (prepared []askPre
 		}
 	}
 	return prepared, stagedPaths, nil
+}
+
+func expandAskFileSpec(path string) (input.FileSpec, []string, error) {
+	spec, err := input.ParseFileSpec(path)
+	if err != nil {
+		return spec, nil, fmt.Errorf("invalid file spec %q: %w", path, err)
+	}
+	expandedPath := expandAskPath(spec.Path)
+	matches, err := filepath.Glob(expandedPath)
+	if err != nil {
+		return spec, nil, fmt.Errorf("invalid glob pattern %q: %w", spec.Path, err)
+	}
+	if len(matches) == 0 && !strings.ContainsAny(spec.Path, "*?[") {
+		matches = []string{expandedPath}
+	}
+	return spec, matches, nil
 }
 
 func prepareAskFileSource(source askFileSource, askCfg config.AskConfig) (askPreparedFile, string, error) {
@@ -374,14 +379,12 @@ func readBoundedAskLineRange(reader io.Reader, startLine, endLine int, maxBytes 
 		for _, b := range buf[:n] {
 			selected := line >= start && (endLine == 0 || line <= endLine)
 			if b == '\n' {
-				if selected && (endLine == 0 || line < endLine) {
-					raw = append(raw, b)
-				}
 				line++
 				if endLine > 0 && line > endLine {
 					return raw, nil
 				}
-			} else if selected {
+			}
+			if selected {
 				raw = append(raw, b)
 			}
 			if int64(len(raw)) > maxBytes {

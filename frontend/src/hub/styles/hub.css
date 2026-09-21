@@ -1073,6 +1073,14 @@ body {
   list-style: none;
 }
 
+.attention-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
 .attention-row {
   display: flex;
   align-items: center;

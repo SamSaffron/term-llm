@@ -76,14 +76,8 @@ func resizeImageForLLMWithLogger(data []byte, mediaType string, logf imageResize
 	if currentPixels > targetPixels {
 		scale = math.Sqrt(targetPixels / currentPixels)
 	}
-	newW := int(math.Round(float64(origW) * scale))
-	newH := int(math.Round(float64(origH) * scale))
-	if newW < 1 {
-		newW = 1
-	}
-	if newH < 1 {
-		newH = 1
-	}
+	newW := max(1, int(math.Round(float64(origW)*scale)))
+	newH := max(1, int(math.Round(float64(origH)*scale)))
 
 	dst := image.NewRGBA(image.Rect(0, 0, newW, newH))
 	draw.BiLinear.Scale(dst, dst.Bounds(), img, bounds, draw.Over, nil)

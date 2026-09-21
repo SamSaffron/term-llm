@@ -208,6 +208,15 @@ func (s *AttentionProjectionStore) MarkSuccess(ctx context.Context, nodeID strin
 	return err
 }
 
+// RemoveSeen removes acknowledged completions across aliases of a session store.
+// Newer completions and conversations requiring input are preserved. Callers
+// must exclude collection of older snapshots until the acknowledgement finishes.
+func (s *AttentionProjectionStore) RemoveSeen(ctx context.Context, storeID, sessionID string, throughSeq int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM hub_session_activity
+ WHERE store_instance_id=? AND session_id=? AND kind='terminal_unseen' AND attention_seq<=?`, storeID, sessionID, throughSeq)
+	return err
+}
+
 func (s *AttentionProjectionStore) MarkUnavailable(ctx context.Context, nodeID string, lost bool) error {
 	now := time.Now().UTC().UnixMilli()
 	capability := AttentionUnavailable

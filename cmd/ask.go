@@ -18,6 +18,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
@@ -233,14 +234,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	// Handle default prompt for agents invoked without a message.
 	// Allow empty question when stdin is piped (content comes from stdin).
-	if question == "" && !hasStdin {
-		if agent == nil {
-			return fmt.Errorf("question required (or use @agent with a default prompt)")
-		}
-		if agent.DefaultPrompt == "" {
-			return fmt.Errorf("agent %q has no default prompt; provide a question", agent.Name)
-		}
-		question = agent.DefaultPrompt
+	question, err = resolveAskQuestion(question, hasStdin, agent)
+	if err != nil {
+		return err
 	}
 
 	// Apply provider overrides: CLI > agent > config
@@ -416,19 +412,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	sess, sessionID, settings = preparedConversation.session, preparedConversation.sessionID, preparedConversation.settings
 	messages, instructions := preparedConversation.messages, preparedConversation.instructions
 	historyHasSystem, conversationStartedAt := preparedConversation.historyHasSystem, preparedConversation.startedAt
-	// Restore exact-file grants from structured parts only. On resume, scan the
-	// durable full history as well as the active prepared conversation so grants
-	// survive compaction boundaries without trusting text or escaped paths.
-	if resuming && store != nil && sess != nil {
-		if rows, historyErr := store.GetMessages(ctx, sess.ID, 0, 0); historyErr == nil {
-			history := make([]llm.Message, 0, len(rows))
-			for i := range rows {
-				history = append(history, rows[i].ToLLMMessage())
-			}
-			grantAskUploadedFileReads(toolMgr, history)
-		}
-	}
-	grantAskUploadedFileReads(toolMgr, messages)
+	restoreAskUploadedFileReads(ctx, toolMgr, store, sess, resuming, messages)
 
 	debugMode := askDebug
 	if sess != nil {
@@ -680,6 +664,35 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		showStats: showStats, config: cfg,
 	}).run()
 
+}
+
+func resolveAskQuestion(question string, hasStdin bool, agent *agents.Agent) (string, error) {
+	if question != "" || hasStdin {
+		return question, nil
+	}
+	if agent == nil {
+		return "", fmt.Errorf("question required (or use @agent with a default prompt)")
+	}
+	if agent.DefaultPrompt == "" {
+		return "", fmt.Errorf("agent %q has no default prompt; provide a question", agent.Name)
+	}
+	return agent.DefaultPrompt, nil
+}
+
+// Restore exact-file grants from structured parts only. On resume, scan the
+// durable full history as well as the active prepared conversation so grants
+// survive compaction boundaries without trusting text or escaped paths.
+func restoreAskUploadedFileReads(ctx context.Context, toolMgr *tools.ToolManager, store session.Store, sess *session.Session, resuming bool, messages []llm.Message) {
+	if resuming && store != nil && sess != nil {
+		if rows, err := store.GetMessages(ctx, sess.ID, 0, 0); err == nil {
+			history := make([]llm.Message, 0, len(rows))
+			for i := range rows {
+				history = append(history, rows[i].ToLLMMessage())
+			}
+			grantAskUploadedFileReads(toolMgr, history)
+		}
+	}
+	grantAskUploadedFileReads(toolMgr, messages)
 }
 
 type askPersistenceCallbacks struct {

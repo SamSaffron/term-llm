@@ -4,15 +4,174 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/hub"
+	"github.com/samsaffron/term-llm/internal/session"
 )
+
+func installHubAttentionProjection(t *testing.T, srv *hubServer, activities []hub.SessionActivity, storeID string) {
+	t.Helper()
+	projection, err := hub.OpenAttentionProjectionStore(filepath.Join(t.TempDir(), "attention.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = projection.Close() })
+	srv.attentionStore = projection
+	if err := projection.ReplaceNode(context.Background(), "alpha", storeID, "etag", activities); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func clearHubAttention(t *testing.T, srv *hubServer, cleared, failed int) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, srv.publicPath("/api/attention/clear"), strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	srv.handler().ServeHTTP(recorder, req)
+	var result struct {
+		Cleared int `json:"cleared"`
+		Failed  int `json:"failed"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil || recorder.Code != http.StatusOK || result.Cleared != cleared || result.Failed != failed {
+		t.Fatalf("clear result: status=%d body=%s error=%v", recorder.Code, recorder.Body.String(), err)
+	}
+}
+
+func TestHubAttentionClearAllBeyondDisplayLimitAndRetainsFailures(t *testing.T) {
+	var calls atomic.Int64
+	srv := hubWithBackend(t, "/chat", func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer tkn-123" || r.Header.Get("Content-Type") != "application/json" {
+			t.Errorf("unexpected acknowledgement request: %s %s %v", r.Method, r.URL, r.Header)
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/chat/v1/sessions/"), "/attention/seen")
+		var request markAttentionSeenRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.StoreInstanceID != "store-a" || request.ThroughSeq != 42 {
+			t.Errorf("unexpected acknowledgement: %+v, %v", request, err)
+		}
+		switch id {
+		case "denied":
+			http.Error(w, "denied", http.StatusForbidden)
+		case "replaced":
+			writeJSON(w, http.StatusOK, session.AttentionState{StoreInstanceID: "different-store", SessionID: id, SeenThroughSeq: 42})
+		default:
+			writeJSON(w, http.StatusOK, session.AttentionState{StoreInstanceID: "store-a", SessionID: id, SeenThroughSeq: 42})
+		}
+	})
+	srv.basePath = "/hub"
+	activities := []hub.SessionActivity{
+		{SessionID: "denied", Kind: "terminal_unseen", AttentionSeq: 42},
+		{SessionID: "replaced", Kind: "terminal_unseen", AttentionSeq: 42},
+		{SessionID: "running", Kind: "running"},
+		{SessionID: "blocked", Kind: "input_required", PendingInteractionCount: 1},
+	}
+	for i := range 201 {
+		activities = append(activities, hub.SessionActivity{SessionID: fmt.Sprintf("done-%d", i), Kind: "terminal_unseen", AttentionSeq: 42})
+	}
+	installHubAttentionProjection(t, srv, activities, "store-a")
+	clearHubAttention(t, srv, 201, 2)
+	remaining, _, err := srv.attentionStore.List(context.Background())
+	if err != nil || len(remaining) != 4 || calls.Load() != 203 {
+		t.Fatalf("remaining=%+v calls=%d error=%v", remaining, calls.Load(), err)
+	}
+	clearHubAttention(t, srv, 0, 2)
+}
+
+func TestHubAttentionClearUsesDurableExactSequenceAndPreservesNewCompletion(t *testing.T) {
+	nodeServer, nodeStore, id, first := attentionHandlerFixture(t)
+	ctx := context.Background()
+	lease, err := nodeStore.AdmitResponseRun(ctx, session.ResponseRunAdmission{ResponseID: "resp-new", SessionID: id, RunEpoch: 2, OwnerInstanceID: "owner", StartedAt: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, err := nodeStore.FinalizeResponseRun(ctx, session.ResponseRunTerminal{ResponseID: "resp-new", OwnerInstanceID: "owner", FencingToken: lease.FencingToken, Outcome: session.ResponseRunCompleted, FinalRev: 6})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := hubWithBackend(t, "/chat", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/chat/v1/attention" {
+			nodeServer.handleAttention(w, r)
+		} else if r.URL.Path == "/chat/v1/sessions/"+id+"/attention/seen" {
+			nodeServer.handleSessionAttentionSeen(w, r, id)
+		} else {
+			t.Errorf("unexpected node request: %s", r.URL)
+			http.NotFound(w, r)
+		}
+	})
+	activities := []hub.SessionActivity{{SessionID: id, Kind: "terminal_unseen", AttentionSeq: first.LatestAttentionSeq}}
+	installHubAttentionProjection(t, srv, activities, first.StoreInstanceID)
+	// Duplicate registrations must also disappear immediately after clearing.
+	if err := srv.attentionStore.ReplaceNode(ctx, "alias", first.StoreInstanceID, "etag", activities); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.attentionStore.MarkUnavailable(ctx, "alias", true); err != nil {
+		t.Fatal(err)
+	}
+	clearHubAttention(t, srv, 1, 0)
+	remaining, _, err := srv.attentionStore.List(ctx)
+	if err != nil || len(remaining) != 0 {
+		t.Fatalf("cleared aliases: %+v, %v", remaining, err)
+	}
+	state, err := nodeStore.GetAttention(ctx, id)
+	if err != nil || !state.Unseen || state.SeenThroughSeq != first.LatestAttentionSeq {
+		t.Fatalf("newer completion was acknowledged: %+v, %v", state, err)
+	}
+	node, _ := srv.registry.Lookup("alpha")
+	if err := srv.collectNodeAttention(ctx, node); err != nil {
+		t.Fatal(err)
+	}
+	remaining, _, err = srv.attentionStore.List(ctx)
+	if err != nil || len(remaining) != 1 || remaining[0].AttentionSeq != latest.LatestAttentionSeq {
+		t.Fatalf("newer completion missing: %+v, %v", remaining, err)
+	}
+	clearHubAttention(t, srv, 1, 0)
+	if err := srv.collectNodeAttention(ctx, node); err != nil {
+		t.Fatal(err)
+	}
+	remaining, _, err = srv.attentionStore.List(ctx)
+	if err != nil || len(remaining) != 0 {
+		t.Fatalf("cleared notification returned after collection: %+v, %v", remaining, err)
+	}
+	if _, err := nodeStore.Get(ctx, id); err != nil {
+		t.Fatalf("clearing removed the conversation: %v", err)
+	}
+}
+
+func TestHubAttentionClearRequiresAuthenticatedSameOriginPost(t *testing.T) {
+	srv := newHubServer(nil, nil)
+	srv.requireAuth, srv.token = true, "secret"
+	for _, tc := range []struct {
+		name, method, token, contentType, origin string
+		status                                   int
+	}{
+		{"unauthenticated", http.MethodPost, "", "application/json", "", http.StatusUnauthorized},
+		{"get", http.MethodGet, "secret", "", "", http.StatusMethodNotAllowed},
+		{"form", http.MethodPost, "secret", "application/x-www-form-urlencoded", "", http.StatusForbidden},
+		{"cross-origin", http.MethodPost, "secret", "application/json", "https://other.example", http.StatusForbidden},
+		{"empty inbox", http.MethodPost, "secret", "application/json", "", http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, "/api/attention/clear", strings.NewReader(`{}`))
+			req.Header.Set("Authorization", "Bearer "+tc.token)
+			req.Header.Set("Content-Type", tc.contentType)
+			req.Header.Set("Origin", tc.origin)
+			recorder := httptest.NewRecorder()
+			srv.handler().ServeHTTP(recorder, req)
+			if recorder.Code != tc.status {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
 
 func TestHubAttentionCollectorInstallsBothKindsAtomically(t *testing.T) {
 	const unseenETag = `"unseen-v1"`

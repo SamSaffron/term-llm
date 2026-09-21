@@ -500,22 +500,7 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 			args = append(args, "--system-prompt", systemPrompt)
 		}
 
-		// When resuming a session, only send new messages (claude CLI has the rest).
-		// Ephemeral one-shot requests never resume and must always send their whole
-		// standalone prompt.
-		//
-		// The boundary is recorded before the engine appends this turn's assistant
-		// reply and tool results, so the tail normally leads with content Claude
-		// Code produced itself. Deliver only what is genuinely new; if filtering
-		// leaves nothing, fall back to the raw tail rather than handing the CLI an
-		// empty prompt.
-		messagesToSend := req.Messages
-		if !req.Ephemeral && p.sessionID != "" && p.messagesSent > 0 && p.messagesSent < len(req.Messages) {
-			messagesToSend = req.Messages[p.messagesSent:]
-			if delivery := claudeResumeDelivery(messagesToSend); len(delivery) > 0 {
-				messagesToSend = delivery
-			}
-		}
+		messagesToSend := p.messagesForTurn(req)
 		streamJSONSessionID := ""
 		if !req.Ephemeral {
 			streamJSONSessionID = p.sessionID
@@ -584,6 +569,25 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 
 		return send.Send(Event{Type: EventDone})
 	}), nil
+}
+
+// When resuming a session, only send new messages (claude CLI has the rest).
+// Ephemeral one-shot requests never resume and must always send their whole
+// standalone prompt.
+func (p *ClaudeBinProvider) messagesForTurn(req Request) []Message {
+	if req.Ephemeral || p.sessionID == "" || p.messagesSent <= 0 || p.messagesSent >= len(req.Messages) {
+		return req.Messages
+	}
+	// The boundary is recorded before the engine appends this turn's assistant
+	// reply and tool results, so the tail normally leads with content Claude
+	// Code produced itself. Deliver only what is genuinely new; if filtering
+	// leaves nothing, fall back to the raw tail rather than handing the CLI an
+	// empty prompt.
+	messages := req.Messages[p.messagesSent:]
+	if delivery := claudeResumeDelivery(messages); len(delivery) > 0 {
+		return delivery
+	}
+	return messages
 }
 
 func (p *ClaudeBinProvider) buildCommandEnv(effort string) []string {

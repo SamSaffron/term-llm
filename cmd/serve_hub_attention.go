@@ -19,6 +19,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/hub"
 	"github.com/samsaffron/term-llm/internal/restart"
+	"github.com/samsaffron/term-llm/internal/session"
 )
 
 const (
@@ -217,6 +218,8 @@ func (s *hubServer) collectAttention(ctx context.Context) int {
 }
 
 func (s *hubServer) collectNodeAttention(ctx context.Context, node hub.Node) error {
+	s.attentionMu.RLock()
+	defer s.attentionMu.RUnlock()
 	const maxAttempts = 2
 	var err error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
@@ -229,6 +232,81 @@ func (s *hubServer) collectNodeAttention(ctx context.Context, node hub.Node) err
 		}
 	}
 	return err
+}
+
+// handleClearHubAttention acknowledges the complete cached inbox, including
+// entries beyond the dashboard's display limit. Each acknowledgement uses the
+// captured store identity and sequence so a later completion remains unseen.
+func (s *hubServer) handleClearHubAttention(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+	if !hubBrowserRequestAllowed(r, true) {
+		writeOpenAIError(w, http.StatusForbidden, "invalid_request_error", "same-origin JSON request required")
+		return
+	}
+	if s.attentionStore == nil {
+		writeJSON(w, http.StatusOK, map[string]int{"cleared": 0, "failed": 0})
+		return
+	}
+	// An in-flight collector must finish before we remove acknowledged rows;
+	// otherwise its older snapshot could restore notifications just cleared.
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	activities, syncs, err := s.attentionStore.List(ctx)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to read Hub attention projection")
+		return
+	}
+	nodes := make(map[string]hub.Node)
+	if s.registry != nil {
+		registered, _ := s.registry.Nodes()
+		for _, node := range registered {
+			nodes[node.ID] = node
+		}
+	}
+	var cleared, failed atomic.Int64
+	work := make(chan hub.SessionActivity)
+	var workers sync.WaitGroup
+	for range 8 {
+		workers.Go(func() {
+			for activity := range work {
+				node, ok := nodes[activity.NodeID]
+				if !ok || s.clearHubAttentionItem(ctx, node, activity) != nil {
+					failed.Add(1)
+				} else {
+					cleared.Add(1)
+				}
+			}
+		})
+	}
+	for _, activity := range deduplicateHubActivities(activities, syncs) {
+		if activity.Kind == "terminal_unseen" {
+			work <- activity
+		}
+	}
+	close(work)
+	workers.Wait()
+	writeJSON(w, http.StatusOK, map[string]int64{"cleared": cleared.Load(), "failed": failed.Load()})
+}
+
+func (s *hubServer) clearHubAttentionItem(ctx context.Context, node hub.Node, activity hub.SessionActivity) error {
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	path := "/v1/sessions/" + url.PathEscape(activity.SessionID) + "/attention/seen"
+	request := markAttentionSeenRequest{StoreInstanceID: activity.StoreInstanceID, ThroughSeq: activity.AttentionSeq}
+	var state session.AttentionState
+	if err := s.doNodeJSON(ctx, node, http.MethodPost, path, request, &state); err != nil {
+		return fmt.Errorf("acknowledge node attention: %w", err)
+	}
+	if state.StoreInstanceID != activity.StoreInstanceID || state.SessionID != activity.SessionID || state.SeenThroughSeq < activity.AttentionSeq {
+		return errors.New("node did not acknowledge the requested attention marker")
+	}
+	return s.attentionStore.RemoveSeen(ctx, activity.StoreInstanceID, activity.SessionID, activity.AttentionSeq)
 }
 
 func (s *hubServer) collectNodeAttentionOnce(ctx context.Context, node hub.Node) error {
