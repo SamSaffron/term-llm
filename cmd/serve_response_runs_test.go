@@ -1806,6 +1806,35 @@ func TestResponseRunRecoveryDropsEmptyUncorrelatedGuardianNotice(t *testing.T) {
 	}
 }
 
+func TestResponseRunRecoveryKeepsGuardianNoticeBeforeLaterText(t *testing.T) {
+	run := newResponseRun("resp_guardian_order", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	if err := run.appendEvent("response.output_text.delta", map[string]any{"delta": "before"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.appendEvent("response.guardian.review", map[string]any{
+		"outcome": "warning", "message": "guardian: auto mode suspended",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.appendEvent("response.output_text.delta", map[string]any{"delta": "after"}); err != nil {
+		t.Fatal(err)
+	}
+	messages := run.recoveryPayloadLocked()["messages"].([]map[string]any)
+	roles := make([]string, 0, len(messages))
+	for _, message := range messages {
+		roles = append(roles, message["role"].(string))
+	}
+	if len(roles) != 3 || roles[0] != "assistant" || roles[1] != "guardian-notice" || roles[2] != "assistant" {
+		t.Fatalf("recovered roles = %#v", roles)
+	}
+	if content, _ := messages[0]["content"].(string); content != "before" {
+		t.Fatalf("text after the notice merged into the earlier row: %q", content)
+	}
+	if content, _ := messages[2]["content"].(string); content != "after" {
+		t.Fatalf("post-notice assistant content = %q", content)
+	}
+}
+
 func TestResponseRunRecoveryFlushesUnmatchedGuardianReviewAtTerminal(t *testing.T) {
 	run := newResponseRun("resp_guardian_orphan", "sess_test", "", "mock", time.Now().Unix(), func() {})
 	if err := run.appendEvent("response.guardian.review", map[string]any{

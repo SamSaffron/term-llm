@@ -80,6 +80,10 @@ func (r *responseRun) applyRecoveryResponseGuardianReview(event string, payload 
 		ID: r.nextRecoveryMessageIDLocked("guardian_notice"), Role: "guardian-notice",
 		Content: []byte(message), Created: time.Now().UnixMilli(),
 	})
+	// The notice is a stream position, so later text must open a new assistant
+	// row. Reusing the open one would grow a row above the notice and leave it
+	// stranded at the bottom of the recovered transcript.
+	r.currentAssistant = -1
 	return
 }
 

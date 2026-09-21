@@ -271,6 +271,31 @@ describe('transcript domain', () => {
     },
   );
 
+  it('keeps a live-only notice where the stream emitted it', () => {
+    const { durable, projected } = inlineTranscript();
+    const notice: Message = {
+      id: 'inline:guardian:1',
+      role: 'guardian-notice',
+      content: 'guardian: auto mode suspended',
+      created: 1,
+      responseId: 'inline',
+    };
+    const merged = mergeDurableProjection(durable, [
+      ...projected.slice(0, 2),
+      notice,
+      ...projected.slice(2),
+    ]);
+    expect(merged.map((message) => message.role)).toEqual([
+      'assistant',
+      'tool-group',
+      'guardian-notice',
+      'assistant',
+      'tool-group',
+      'assistant',
+      'tool-group',
+    ]);
+  });
+
   it('keeps an unsaved inline tail after its durable tool boundary', () => {
     const { durable, projected } = inlineTranscript();
     const merged = mergeDurableProjection(durable.slice(0, 4), projected);

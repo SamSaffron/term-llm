@@ -1286,6 +1286,14 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
     } else if (message.role === 'compaction' || message.role === 'compaction-boundary')
       nextBoundary = undefined;
     else if (nextBoundary) insertBefore.set(message, nextBoundary);
+    else if (message.role !== 'assistant' && message.role !== 'tool-group') {
+      // Rows the server never persists (guardian notices, run errors) have no
+      // durable twin to anchor them, so appending would drift them below every
+      // durable row that lands later. Hold them ahead of the first durable row
+      // that follows them in stream order.
+      const following = followingAnchor(message);
+      if (following) insertBefore.set(message, following);
+    }
   }
   const output = [...durableRows];
   for (const message of pending) {
