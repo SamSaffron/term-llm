@@ -14,13 +14,13 @@ require (
 	github.com/BourgeoisBear/rasterm v1.1.2
 	github.com/SherClockHolmes/webpush-go v1.4.0
 	github.com/alecthomas/chroma/v2 v2.27.0
-	github.com/anthropics/anthropic-sdk-go v1.72.0
-	github.com/aws/aws-sdk-go-v2/config v1.33.4
-	github.com/aws/aws-sdk-go-v2/credentials v1.20.4
+	github.com/anthropics/anthropic-sdk-go v1.73.0
+	github.com/aws/aws-sdk-go-v2/config v1.33.5
+	github.com/aws/aws-sdk-go-v2/credentials v1.20.5
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/creack/pty v1.1.24
-	github.com/fxamacker/cbor/v2 v2.9.3
+	github.com/fxamacker/cbor/v2 v2.9.4
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/go-webauthn/webauthn v0.18.1
@@ -34,13 +34,13 @@ require (
 	github.com/muesli/cancelreader v0.2.2
 	github.com/muesli/reflow v0.3.0
 	github.com/openai/openai-go v1.12.0
-	github.com/pion/datachannel v1.6.2
-	github.com/pion/dtls/v3 v3.1.8
-	github.com/pion/ice/v4 v4.4.2
+	github.com/pion/datachannel v1.6.3
+	github.com/pion/dtls/v3 v3.1.9
+	github.com/pion/ice/v4 v4.4.4
 	github.com/pion/logging v0.2.4
-	github.com/pion/sctp v1.11.1
-	github.com/pion/sdp/v3 v3.0.19
-	github.com/pion/stun/v4 v4.0.0
+	github.com/pion/sctp v1.11.2
+	github.com/pion/sdp/v3 v3.0.20
+	github.com/pion/stun/v4 v4.0.1
 	github.com/sahilm/fuzzy v0.1.3
 	github.com/shogoki/gotextdiff v1.22.0
 	github.com/spf13/cobra v1.10.2
@@ -55,7 +55,7 @@ require (
 	golang.org/x/sys v0.48.0
 	golang.org/x/term v0.46.0
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/sqlite v1.58.0
+	modernc.org/sqlite v1.59.0
 )
 
 replace github.com/muesli/reflow v0.3.0 => ./internal/reflow
@@ -78,7 +78,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/signin v1.10.0 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.38.0 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.43.0 // indirect
-	github.com/aws/aws-sdk-go-v2/service/sts v1.50.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sts v1.51.0 // indirect
 	github.com/aws/smithy-go v1.28.1 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
@@ -107,10 +107,10 @@ require (
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
-	github.com/pion/mdns/v2 v2.2.0 // indirect
+	github.com/pion/mdns/v2 v2.2.1 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
-	github.com/pion/transport/v4 v4.1.0 // indirect
-	github.com/pion/turn/v5 v5.1.0 // indirect
+	github.com/pion/transport/v5 v5.0.1 // indirect
+	github.com/pion/turn/v5 v5.1.2 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
@@ -137,7 +137,7 @@ require (
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
-	modernc.org/libc v1.75.6 // indirect
+	modernc.org/libc v1.75.7 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
