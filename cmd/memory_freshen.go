@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -298,7 +299,11 @@ func runMemoryUpdateRecentRequest(ctx context.Context, engine *llm.Engine, model
 		}
 	}
 
-	return strings.TrimSpace(b.String()), nil
+	content := strings.TrimSpace(b.String())
+	if content == "" {
+		return "", fmt.Errorf("update-recent generation returned empty text; recent.md and checkpoints are unchanged; retry the update")
+	}
+	return content, nil
 }
 
 func runMemoryCompactRecentRequest(ctx context.Context, engine *llm.Engine, model, candidateRecent string, targetTokens, targetChars int) (string, error) {
@@ -338,7 +343,11 @@ func runMemoryCompactRecentRequest(ctx context.Context, engine *llm.Engine, mode
 		}
 	}
 
-	return strings.TrimSpace(b.String()), nil
+	content := strings.TrimSpace(b.String())
+	if content == "" {
+		return "", fmt.Errorf("update-recent compaction returned empty text; recent.md and checkpoints are unchanged; retry the update")
+	}
+	return content, nil
 }
 
 func fitUpdatedRecentWithinBudget(ctx context.Context, engine *llm.Engine, model, updatedRecent string, targetTokens, targetChars, highWaterChars int) (string, error) {
@@ -548,26 +557,59 @@ func collectMemoryUpdateRecentInput(ctx context.Context, store *memorydb.Store, 
 			return memoryUpdateRecentInput{}, err
 		}
 
-		messages, err := sessStore.GetMessagesFrom(ctx, sess.ID, startOffset, 0)
-		if err != nil {
-			return memoryUpdateRecentInput{}, fmt.Errorf("get messages for session %s: %w", sess.ID, err)
+		const messagePageSize = 100
+		headerWritten := false
+		for {
+			messages, err := sessStore.GetMessagesFrom(ctx, sess.ID, startOffset, messagePageSize)
+			if err != nil {
+				return memoryUpdateRecentInput{}, fmt.Errorf("get messages for session %s: %w", sess.ID, err)
+			}
+			for _, msg := range messages {
+				line := formatUpdateRecentMessage(msg)
+				if line != "" {
+					prefix := "\n"
+					if !headerWritten {
+						prefix = formatUpdateRecentSessionHeader(sess) + "\n"
+						if inputBuilder.Len() > 0 {
+							prefix = "\n\n---\n\n" + prefix
+						}
+					}
+					remaining := memoryUpdateRecentMaxInputChars - inputBuilder.Len() - len(prefix)
+					if len(line) > remaining {
+						if inputBuilder.Len() > 0 {
+							// Retry this message in the next batch, without advancing its offset.
+							return memoryUpdateRecentInput{Text: inputBuilder.String(), Offsets: trackedOffsets, Exhausted: false}, nil
+						}
+						// A single message must not prevent progress. Keep the header and
+						// role, and truncate its text to the byte budget on a UTF-8 boundary.
+						role, text, _ := strings.Cut(line, ": ")
+						textBudget := remaining - len(role) - 2
+						if textBudget <= 0 {
+							return memoryUpdateRecentInput{}, fmt.Errorf("max-input-chars is too small for session %s header and message", sess.ID)
+						}
+						for textBudget > 0 && !utf8.RuneStart(text[textBudget]) {
+							textBudget--
+						}
+						if textBudget == 0 {
+							return memoryUpdateRecentInput{}, fmt.Errorf("max-input-chars is too small for session %s message text", sess.ID)
+						}
+						line = role + ": " + text[:textBudget]
+					}
+					inputBuilder.WriteString(prefix)
+					inputBuilder.WriteString(line)
+					headerWritten = true
+				}
+				// Include skipped tool/empty rows, but never unread messages.
+				startOffset = msg.Sequence + 1
+				trackedOffsets[sess.ID] = startOffset
+			}
+			if len(messages) < messagePageSize {
+				break
+			}
+			if inputBuilder.Len() >= memoryUpdateRecentMaxInputChars {
+				return memoryUpdateRecentInput{Text: inputBuilder.String(), Offsets: trackedOffsets, Exhausted: false}, nil
+			}
 		}
-		if len(messages) == 0 {
-			continue
-		}
-
-		block := formatUpdateRecentSessionBlock(sess, messages)
-		if block == "" {
-			continue
-		}
-
-		if inputBuilder.Len() > 0 {
-			inputBuilder.WriteString("\n\n---\n\n")
-		}
-		inputBuilder.WriteString(block)
-
-		lastMessage := messages[len(messages)-1]
-		trackedOffsets[sess.ID] = lastMessage.Sequence + 1
 		if inputBuilder.Len() >= memoryUpdateRecentMaxInputChars {
 			exhausted = i == len(sessions)-1
 			break
@@ -580,17 +622,8 @@ func collectMemoryUpdateRecentInput(ctx context.Context, store *memorydb.Store, 
 func formatUpdateRecentSessionBlock(sess memoryUpdateRecentSession, messages []session.Message) string {
 	lines := make([]string, 0, len(messages))
 	for _, msg := range messages {
-		switch msg.Role {
-		case llm.RoleUser:
-			text := truncateUpdateRecentText(msg.TextContent, memoryUpdateRecentUserCharCap, false)
-			if text != "" {
-				lines = append(lines, "User: "+text)
-			}
-		case llm.RoleAssistant:
-			text := truncateUpdateRecentText(msg.TextContent, memoryUpdateRecentAssistantCharCap, true)
-			if text != "" {
-				lines = append(lines, "Assistant: "+text)
-			}
+		if line := formatUpdateRecentMessage(msg); line != "" {
+			lines = append(lines, line)
 		}
 	}
 
@@ -599,16 +632,33 @@ func formatUpdateRecentSessionBlock(sess memoryUpdateRecentSession, messages []s
 	}
 
 	var b strings.Builder
-	if sess.Number > 0 {
-		b.WriteString(fmt.Sprintf("[Session #%d - %s]\n", sess.Number, updateRecentSessionState(sess.Status)))
-	} else {
-		b.WriteString(fmt.Sprintf("[Session %s - %s]\n", sess.ID, updateRecentSessionState(sess.Status)))
-	}
+	b.WriteString(formatUpdateRecentSessionHeader(sess) + "\n")
 	for _, line := range lines {
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func formatUpdateRecentSessionHeader(sess memoryUpdateRecentSession) string {
+	if sess.Number > 0 {
+		return fmt.Sprintf("[Session #%d - %s]", sess.Number, updateRecentSessionState(sess.Status))
+	}
+	return fmt.Sprintf("[Session %s - %s]", sess.ID, updateRecentSessionState(sess.Status))
+}
+
+func formatUpdateRecentMessage(msg session.Message) string {
+	switch msg.Role {
+	case llm.RoleUser:
+		if text := truncateUpdateRecentText(msg.TextContent, memoryUpdateRecentUserCharCap, false); text != "" {
+			return "User: " + text
+		}
+	case llm.RoleAssistant:
+		if text := truncateUpdateRecentText(msg.TextContent, memoryUpdateRecentAssistantCharCap, true); text != "" {
+			return "Assistant: " + text
+		}
+	}
+	return ""
 }
 
 func truncateUpdateRecentText(text string, maxChars int, ellipsis bool) string {

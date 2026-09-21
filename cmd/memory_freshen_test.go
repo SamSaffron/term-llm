@@ -2,16 +2,23 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/spf13/viper"
 )
 
 // -- truncateUpdateRecentText --
@@ -451,7 +458,7 @@ func TestCollectMemoryUpdateRecentInputNoOpDoesNotLoadHistoricalSessions(t *test
 
 func TestCollectMemoryUpdateRecentInputExhaustedAtInputCap(t *testing.T) {
 	oldMax := memoryUpdateRecentMaxInputChars
-	memoryUpdateRecentMaxInputChars = 1
+	memoryUpdateRecentMaxInputChars = len("[Session #1 - completed]\nUser: activity")
 	t.Cleanup(func() { memoryUpdateRecentMaxInputChars = oldMax })
 
 	for _, tc := range []struct {
@@ -496,6 +503,157 @@ func TestCollectMemoryUpdateRecentInputExhaustedAtInputCap(t *testing.T) {
 	}
 }
 
+func TestCollectMemoryUpdateRecentInputPagesOversizedSession(t *testing.T) {
+	oldMax := memoryUpdateRecentMaxInputChars
+	memoryUpdateRecentMaxInputChars = 12000
+	t.Cleanup(func() { memoryUpdateRecentMaxInputChars = oldMax })
+	ctx := context.Background()
+	memStore, err := memorydb.NewStore(memorydb.Config{Path: filepath.Join(t.TempDir(), "memory.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer memStore.Close()
+	messages := make([]session.Message, 1000)
+	for i := range messages {
+		role := llm.RoleUser
+		if i%3 == 1 {
+			role = llm.RoleAssistant
+		}
+		if i%3 == 2 {
+			role = llm.RoleTool
+		}
+		messages[i] = session.Message{Role: role, TextContent: "message-" + strconv.Itoa(i) + ":" + strings.Repeat("x", 1800), Sequence: i * 2}
+	}
+	sessStore := &updateRecentCountingStore{
+		summaries: []session.SessionSummary{{ID: "long", Number: 1, Agent: "jarvis", Status: session.StatusComplete}},
+		messages:  map[string][]session.Message{"long": messages}, messageCalls: map[string]int{},
+	}
+	offset := 0
+	for batch := 0; batch < len(messages); batch++ {
+		calls := sessStore.messageCalls["long"]
+		input, err := collectMemoryUpdateRecentInput(ctx, memStore, sessStore, "jarvis", time.Time{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, limit := range sessStore.messageLimits {
+			if limit <= 0 || limit > 100 {
+				t.Fatalf("unbounded page read: limit %d", limit)
+			}
+		}
+		if len(input.Text) > memoryUpdateRecentMaxInputChars {
+			t.Fatalf("oversized input: %d bytes > %d", len(input.Text), memoryUpdateRecentMaxInputChars)
+		}
+		next := input.Offsets["long"]
+		if next <= offset {
+			t.Fatalf("no progress: offset %d -> %d", offset, next)
+		}
+		if batch == 0 && (input.Exhausted || next >= messages[len(messages)-1].Sequence+1) {
+			t.Fatal("first batch consumed oversized session")
+		}
+		if sessStore.messageCalls["long"]-calls > 2 {
+			t.Fatal("read too many pages for one batch")
+		}
+		for _, msg := range messages {
+			marker := "message-" + strconv.Itoa(msg.Sequence/2) + ":"
+			want := msg.Sequence >= offset && msg.Sequence < next && msg.Role != llm.RoleTool
+			if strings.Contains(input.Text, marker) != want {
+				t.Fatalf("batch %d: incorrect inclusion of %s (offsets %d..%d)", batch, marker, offset, next)
+			}
+		}
+		if err := memStore.SetMeta(ctx, updateRecentOffsetMetaKey("long"), strconv.Itoa(next)); err != nil {
+			t.Fatal(err)
+		}
+		offset = next
+		if input.Exhausted {
+			if offset != messages[len(messages)-1].Sequence+1 {
+				t.Fatalf("premature exhaustion at %d", offset)
+			}
+			return
+		}
+	}
+	t.Fatal("never exhausted session")
+}
+
+func TestCollectMemoryUpdateRecentInputSingleMessageBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		budget    int
+		wantError bool
+	}{
+		{"truncate UTF-8", 101, false},
+		{"header cannot fit", 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			oldMax := memoryUpdateRecentMaxInputChars
+			memoryUpdateRecentMaxInputChars = tc.budget
+			t.Cleanup(func() { memoryUpdateRecentMaxInputChars = oldMax })
+			ctx := context.Background()
+			memStore, err := memorydb.NewStore(memorydb.Config{Path: filepath.Join(t.TempDir(), "memory.db")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer memStore.Close()
+			sessStore := &updateRecentCountingStore{
+				summaries:    []session.SessionSummary{{ID: "long", Number: 1, Agent: "jarvis", Status: session.StatusComplete}},
+				messages:     map[string][]session.Message{"long": {{Role: llm.RoleAssistant, TextContent: strings.Repeat("界", 2000), Sequence: 7}}},
+				messageCalls: map[string]int{},
+			}
+			input, err := collectMemoryUpdateRecentInput(ctx, memStore, sessStore, "jarvis", time.Time{})
+			if tc.wantError {
+				if err == nil {
+					t.Fatal("expected budget error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(input.Text) > tc.budget || !utf8.ValidString(input.Text) || !strings.Contains(input.Text, "Assistant: 界") {
+				t.Fatalf("invalid bounded input: %q", input.Text)
+			}
+			if input.Offsets["long"] != 8 || !input.Exhausted {
+				t.Fatalf("no progress: %#v", input)
+			}
+			offset, err := readUpdateRecentOffset(ctx, memStore, "long")
+			if err != nil || offset != 0 {
+				t.Fatalf("collector persisted offset before successful generation: %d, %v", offset, err)
+			}
+		})
+	}
+}
+
+func TestCollectMemoryUpdateRecentInputAcrossMessagePages(t *testing.T) {
+	ctx := context.Background()
+	memStore, err := memorydb.NewStore(memorydb.Config{Path: filepath.Join(t.TempDir(), "memory.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer memStore.Close()
+	messages := make([]session.Message, 301)
+	for i := range messages {
+		messages[i] = session.Message{Role: llm.RoleTool, Sequence: i}
+	}
+	messages[100].Role = llm.RoleUser
+	messages[100].TextContent = "first page boundary"
+	messages[200].Role = llm.RoleAssistant
+	messages[200].TextContent = "second page boundary"
+	sessStore := &updateRecentCountingStore{
+		summaries: []session.SessionSummary{{ID: "paged", Number: 1, Agent: "jarvis", Status: session.StatusComplete}},
+		messages:  map[string][]session.Message{"paged": messages}, messageCalls: map[string]int{},
+	}
+	input, err := collectMemoryUpdateRecentInput(ctx, memStore, sessStore, "jarvis", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := formatUpdateRecentSessionBlock(memoryUpdateRecentSession{Number: 1, Status: session.StatusComplete}, messages)
+	if input.Text != want || !input.Exhausted || input.Offsets["paged"] != 301 {
+		t.Fatalf("incorrect paged input: %#v", input)
+	}
+	if sessStore.messageCalls["paged"] != 4 {
+		t.Fatalf("page reads = %d, want 4", sessStore.messageCalls["paged"])
+	}
+}
+
 type updateRecentCountingStore struct {
 	session.NoopStore
 	summaries       []session.SessionSummary
@@ -503,6 +661,7 @@ type updateRecentCountingStore struct {
 	listCalls       int
 	getCalls        int
 	messageCalls    map[string]int
+	messageLimits   []int
 	lastListOptions session.ListOptions
 }
 
@@ -536,13 +695,17 @@ func (s *updateRecentCountingStore) Get(_ context.Context, _ string) (*session.S
 	return nil, nil
 }
 
-func (s *updateRecentCountingStore) GetMessagesFrom(_ context.Context, sessionID string, fromSeq, _ int) ([]session.Message, error) {
+func (s *updateRecentCountingStore) GetMessagesFrom(_ context.Context, sessionID string, fromSeq, limit int) ([]session.Message, error) {
 	s.messageCalls[sessionID]++
+	s.messageLimits = append(s.messageLimits, limit)
 	messages := s.messages[sessionID]
 	result := make([]session.Message, 0, len(messages))
 	for _, message := range messages {
 		if message.Sequence >= fromSeq {
 			result = append(result, message)
+			if limit > 0 && len(result) == limit {
+				break
+			}
 		}
 	}
 	return result, nil
@@ -560,4 +723,115 @@ func contains(s, sub string) bool {
 			}
 			return false
 		}())
+}
+
+func TestMemoryUpdateRecentRejectsEmptyOutputWithoutConsumingActivity(t *testing.T) {
+	for _, compact := range []bool{false, true} {
+		for _, output := range []string{"reasoning-only", "whitespace-only"} {
+			t.Run(fmt.Sprintf("compact=%v/%s", compact, output), func(t *testing.T) {
+				viper.Reset()
+				t.Cleanup(viper.Reset)
+				ctx := context.Background()
+				dir := t.TempDir()
+				t.Setenv("HOME", dir)
+				t.Setenv("XDG_CONFIG_HOME", dir)
+				t.Setenv("XDG_CACHE_HOME", filepath.Join(dir, "cache"))
+				calls := 0
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					calls++
+					w.Header().Set("Content-Type", "text/event-stream")
+					delta := map[string]string{"reasoning_content": "thinking without an answer"}
+					if output == "whitespace-only" {
+						delta = map[string]string{"content": " \t\n\u2003 "}
+					}
+					if compact && calls == 1 {
+						delta = map[string]string{"content": strings.Repeat("oversized memory ", 100)}
+					}
+					data, err := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": delta}}})
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", data)
+				}))
+				defer server.Close()
+
+				configDir := filepath.Join(dir, "term-llm")
+				if err := os.MkdirAll(configDir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				sessionPath := filepath.Join(dir, "sessions.db")
+				cfg := fmt.Sprintf("default_provider: memory-test\nproviders:\n  memory-test:\n    type: openai_compatible\n    base_url: %s/v1\n    model: test-model\nsessions:\n  enabled: true\n  path: %s\n", server.URL, sessionPath)
+				if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(cfg), 0o600); err != nil {
+					t.Fatal(err)
+				}
+
+				oldDB, oldAgent, oldFile, oldModel := memoryDBPath, memoryAgent, memoryUpdateRecentFile, memoryUpdateRecentModel
+				oldDryRun, oldTarget := memoryDryRun, memoryUpdateRecentTargetTokens
+				memoryDBPath, memoryAgent = filepath.Join(dir, "memory.db"), "jarvis"
+				memoryUpdateRecentFile, memoryUpdateRecentModel = filepath.Join(dir, "recent.md"), "memory-test:test-model"
+				memoryDryRun, memoryUpdateRecentTargetTokens = false, 100
+				t.Cleanup(func() {
+					memoryDBPath, memoryAgent, memoryUpdateRecentFile, memoryUpdateRecentModel = oldDB, oldAgent, oldFile, oldModel
+					memoryDryRun, memoryUpdateRecentTargetTokens = oldDryRun, oldTarget
+				})
+				original := "## Current state\n\nKeep this working memory.\n"
+				if err := os.WriteFile(memoryUpdateRecentFile, []byte(original), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				sessStore, err := session.NewStore(session.Config{Enabled: true, Path: sessionPath})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer sessStore.Close()
+				sess := &session.Session{ID: session.NewID(), Agent: "jarvis", Status: session.StatusComplete, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+				if err := sessStore.Create(ctx, sess); err != nil {
+					t.Fatal(err)
+				}
+				for _, text := range []string{"already consumed", "new activity to remember"} {
+					if err := sessStore.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.UserText(text), -1)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				store, err := openMemoryStore()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer store.Close()
+				metadata := map[string]string{
+					updateRecentOffsetMetaKey(sess.ID):  "1",
+					memoryUpdateRecentMetaKey("jarvis"): time.Now().Add(-time.Hour).UTC().Format(time.RFC3339),
+				}
+				for key, value := range metadata {
+					if err := store.SetMeta(ctx, key, value); err != nil {
+						t.Fatal(err)
+					}
+				}
+				err = runMemoryUpdateRecent(memoryUpdateRecentCmd, nil)
+				if err == nil || !strings.Contains(err.Error(), "empty") {
+					t.Errorf("update error = %v, want actionable empty-output error", err)
+				}
+				wantCalls := 1
+				if compact {
+					wantCalls = 2
+				}
+				if calls != wantCalls {
+					t.Errorf("provider calls = %d, want %d", calls, wantCalls)
+				}
+				data, err := os.ReadFile(memoryUpdateRecentFile)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(data) != original {
+					t.Errorf("recent.md changed: got %q, want %q", data, original)
+				}
+				for key, want := range metadata {
+					got, err := store.GetMeta(ctx, key)
+					if err != nil || got != want {
+						t.Errorf("metadata %s = %q, %v; want %q", key, got, err, want)
+					}
+				}
+			})
+		}
+	}
 }

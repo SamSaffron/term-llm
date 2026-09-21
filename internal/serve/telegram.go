@@ -1416,7 +1416,12 @@ func (m *telegramSessionMgr) handleMessageWithAdmission(ctx context.Context, bot
 				_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Error: "+err.Error()))
 				return
 			}
-			sess.mu.Lock()
+			// A turn holds mu for its entire response. Never wait for it while
+			// holding admission: that would prevent later stop/reset requests.
+			if !sess.mu.TryLock() {
+				_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Session busy\nResponse in progress. Use /stop to interrupt or /reset to clear conversation history."))
+				return
+			}
 			msgCount := len(sess.history)
 			sess.mu.Unlock()
 			sess.activityMu.Lock()

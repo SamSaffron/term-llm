@@ -137,3 +137,21 @@ func TestReferencedTelegramMediaFollowsAssistantOrder(t *testing.T) {
 		t.Fatalf("telegram prose = %q", prose)
 	}
 }
+
+func TestMdToTelegramHTMLEscapesText(t *testing.T) {
+	tests := []struct{ name, input, want string }{
+		{"inline HTML", "Use `<div>` here", "Use <code>&lt;div&gt;</code> here"},
+		{"fenced HTML", "```html\n<div>A & B</div>\n```", "<pre>&lt;div&gt;A &amp; B&lt;/div&gt;\n</pre>"},
+		{"fenced XML", "```xml\n<item key=\"value\">&amp;</item>\n```", "<pre>&lt;item key=&#34;value&#34;&gt;&amp;amp;&lt;/item&gt;\n</pre>"},
+		{"inline entities", "`& &amp; &lt; &#60;`", "<code>&amp; &amp;amp; &amp;lt; &amp;#60;</code>"},
+		{"prose entities", "A & B &amp; C &lt;tag&gt;", "A &amp; B &amp; C &lt;tag&gt;"},
+		{"supported formatting", "**A & B** and `<b>literal</b>`", "<b>A &amp; B</b> and <code>&lt;b&gt;literal&lt;/b&gt;</code>"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mdToTelegramHTML(tc.input); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
