@@ -277,10 +277,10 @@ Supported platform keys:
 
 | Key | Platform | When used |
 |---|---|---|
-| `web_developer_message` | Web UI / HTTP API | `term-llm serve --platform web` |
-| `telegram_developer_message` | Telegram bot | `term-llm serve --platform telegram` |
+| `web_developer_message` | Web UI / HTTP API | `term-llm serve web` |
+| `telegram_developer_message` | Telegram bot | `term-llm serve telegram` |
 | `chat_developer_message` | CLI chat | `term-llm chat` |
-| `jobs_developer_message` | Scheduled/background jobs | `term-llm serve --platform jobs` |
+| `jobs_developer_message` | Scheduled/background jobs | `term-llm serve jobs` |
 
 The configured text is injected as a `developer` message before the first user turn on that platform. When an existing conversation moves between surfaces—for example, Web → CLI chat → Web—term-llm records a new message at each actual transition. The latest marked message is the effective platform context. Runtime eviction or process reload does not duplicate the current transition, and compaction retains the latest platform context.
 
