@@ -15,7 +15,7 @@ term-llm config
 term-llm config edit
 term-llm config path
 term-llm config get default_provider
-term-llm config set default_provider zen
+term-llm config set default_provider openrouter
 term-llm config reset
 term-llm config completion fish
 ```
@@ -58,7 +58,7 @@ classify:
 ## Example
 
 ```yaml
-default_provider: anthropic
+default_provider: openrouter
 
 providers:
   anthropic:
@@ -98,7 +98,8 @@ providers:
       IS_SANDBOX: "1"
 
   openrouter:
-    model: x-ai/grok-code-fast-1
+    model: openrouter/free
+    fast_model: openrouter/free
     app_url: https://github.com/samsaffron/term-llm
     app_title: term-llm
 
@@ -300,12 +301,12 @@ providers:
   openai:
     model: gpt-5.6-sol
     fast_model: gpt-5.6-luna
-  zen:
-    model: mimo-v2.5-free
+  openrouter:
+    model: openrouter/free
 
 exec:
-  provider: zen
-  model: mimo-v2.5-free
+  provider: openrouter
+  model: openrouter/free
 
 ask:
   model: claude-opus-4

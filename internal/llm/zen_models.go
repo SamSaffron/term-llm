@@ -27,7 +27,7 @@ func GetCachedZenModelInfos() []ModelInfo {
 	if err != nil || cached == nil || (len(cached.ModelInfos) == 0 && len(cached.Models) == 0) {
 		return nil
 	}
-	return modelInfosFromCache(cached)
+	return filterZenModels(modelInfosFromCache(cached))
 }
 
 // GetCachedZenModels returns model IDs from the last successful Zen catalog
