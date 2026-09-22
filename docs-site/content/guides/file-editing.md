@@ -25,7 +25,6 @@ term-llm edit "use the API" -f main.go -c api/client.go  # with context files
 | `--context` | `-c` | Read-only reference file(s) (supports globs, 'clipboard') |
 | `--dry-run` | | Preview changes without applying |
 | `--provider` | | Override provider (e.g., `openai:gpt-5.2-codex`) |
-| `--per-edit` | | Prompt for each edit separately |
 | `--debug` | `-d` | Show debug information |
 
 ### Context Files
