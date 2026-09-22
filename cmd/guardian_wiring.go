@@ -3,7 +3,9 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/guardian"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/pathutil"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/typesafe"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -116,7 +119,7 @@ func installGuardianReviewerCallbacks(cfg *config.Config, approvalMgr *tools.App
 			Transcript: transcript, ApprovalContext: req.ApprovalContext, ScopeID: req.ScopeID, ApprovalScope: req.ApprovalScope,
 			WorkspaceAccess: req.WorkspaceAccess, Reason: req.Reason,
 		})
-		result := tools.PolicyDecision{Allowed: decision.Allowed(), RiskLevel: decision.RiskLevel, UserAuthorization: decision.UserAuthorization, Rationale: decision.Rationale, Model: decision.Model, Usage: decision.Usage, StateBytes: decision.StateBytes}
+		result := tools.PolicyDecision{Allowed: decision.Allowed(), RiskLevel: decision.RiskLevel, UserAuthorization: decision.UserAuthorization, Rationale: decision.Rationale, Model: decision.Model, Usage: decision.Usage, StateBytes: decision.StateBytes, Escalated: decision.Escalated}
 		return result, err
 	}
 	approvalMgr.SetPolicyReviewFunc(reviewFunc, cleanup)
@@ -134,22 +137,27 @@ type guardianTarget struct {
 }
 
 func resolveGuardianTarget(cfg *config.Config) (guardianTarget, error) {
+	return resolveGuardianTargetFor(cfg, cfg.Guardian.Provider, cfg.Guardian.Model)
+}
+
+// resolveGuardianTargetFor resolves one reviewer target. Guardian overrides are
+// authoritative. Otherwise Guardian is deliberately independent of the active
+// chat/session model: it always uses the fast model configured for the default
+// provider.
+func resolveGuardianTargetFor(cfg *config.Config, provider, model string) (guardianTarget, error) {
 	if cfg == nil {
 		return guardianTarget{}, fmt.Errorf("auto approval requires configuration and an LLM provider")
 	}
 
-	// Guardian overrides are authoritative. Otherwise Guardian is deliberately
-	// independent of the active chat/session model: it always uses the fast
-	// model configured for the default provider.
-	explicitProvider := strings.TrimSpace(cfg.Guardian.Provider) != ""
-	providerName := strings.TrimSpace(cfg.Guardian.Provider)
+	explicitProvider := strings.TrimSpace(provider) != ""
+	providerName := strings.TrimSpace(provider)
 	if providerName == "" {
 		providerName = cfg.GuardianDefaultProvider()
 	}
 	if providerName == "" {
 		return guardianTarget{}, fmt.Errorf("auto approval requires a default LLM provider or guardian.provider")
 	}
-	if model := strings.TrimSpace(cfg.Guardian.Model); model != "" {
+	if model := strings.TrimSpace(model); model != "" {
 		return guardianTarget{Provider: providerName, Model: model}, nil
 	}
 
@@ -184,7 +192,13 @@ func resolveGuardianTarget(cfg *config.Config) (guardianTarget, error) {
 }
 
 // newGuardianReview resolves the selected backend eagerly without making a review request.
-func newGuardianReview(cfg *config.Config, policy string) (func(context.Context, guardian.Request) (guardian.Decision, error), func(), error) {
+func newGuardianReview(cfg *config.Config, policy string) (guardian.ReviewFunc, func(), error) {
+	if cfg == nil {
+		return nil, nil, fmt.Errorf("auto approval requires configuration and an LLM provider")
+	}
+	if err := cfg.Guardian.Fallback.Validate(cfg.Guardian.Backend); err != nil {
+		return nil, nil, err
+	}
 	switch strings.TrimSpace(cfg.Guardian.Backend) {
 	case "", "llm":
 		return newLLMGuardianReview(cfg, policy)
@@ -195,12 +209,15 @@ func newGuardianReview(cfg *config.Config, policy string) (func(context.Context,
 	}
 }
 
-func newLLMGuardianReview(cfg *config.Config, policy string) (func(context.Context, guardian.Request) (guardian.Decision, error), func(), error) {
+func newLLMGuardianReview(cfg *config.Config, policy string) (guardian.ReviewFunc, func(), error) {
 	target, err := resolveGuardianTarget(cfg)
 	if err != nil {
 		return nil, nil, err
 	}
+	return newLLMGuardianReviewFor(cfg, policy, target)
+}
 
+func newLLMGuardianReviewFor(cfg *config.Config, policy string, target guardianTarget) (guardian.ReviewFunc, func(), error) {
 	var providerFactoryMu sync.Mutex
 	newReviewer := func() (*guardian.Reviewer, error) {
 		// NewProviderByName resolves and caches credentials in cfg. ReviewerPool
@@ -229,7 +246,7 @@ func newLLMGuardianReview(cfg *config.Config, policy string) (func(context.Conte
 	return reviewerPool.Review, reviewerPool.Close, nil
 }
 
-func newClassifyGuardianReview(cfg *config.Config, policy string) (func(context.Context, guardian.Request) (guardian.Decision, error), func(), error) {
+func newClassifyGuardianReview(cfg *config.Config, policy string) (guardian.ReviewFunc, func(), error) {
 	if err := cfg.Guardian.Classify.Validate(); err != nil {
 		return nil, nil, err
 	}
@@ -245,5 +262,57 @@ func newClassifyGuardianReview(cfg *config.Config, policy string) (func(context.
 	if cfg.Guardian.TimeoutSeconds > 0 {
 		reviewer.Timeout = time.Duration(cfg.Guardian.TimeoutSeconds) * time.Second
 	}
-	return reviewer.Review, nil, nil
+	if !cfg.Guardian.Fallback.Enabled() {
+		return reviewer.Review, nil, nil
+	}
+
+	// The fallback target is resolved and constructed eagerly, exactly like the
+	// LLM backend, so credential or provider problems surface during setup
+	// instead of on the first escalated action.
+	target, err := resolveGuardianTargetFor(cfg, cfg.Guardian.Fallback.Provider, cfg.Guardian.Fallback.Model)
+	if err != nil {
+		return nil, nil, fmt.Errorf("guardian fallback: %w", err)
+	}
+	fallback, cleanup, err := newLLMGuardianReviewFor(cfg, policy, target)
+	if err != nil {
+		return nil, nil, fmt.Errorf("guardian fallback: %w", err)
+	}
+	composite := &guardian.FallbackReviewer{
+		Classify:         reviewer,
+		Fallback:         fallback,
+		FallbackProvider: target.Provider,
+		FallbackModel:    target.Model,
+		Logger:           newGuardianEscalationLogger(cfg),
+	}
+	return composite.Review, cleanup, nil
+}
+
+// newGuardianEscalationLogger returns the escalation logger for the configured
+// fallback, or nil when logging is disabled or its default location cannot be
+// resolved. Escalation still works without a logger.
+var newGuardianEscalationLogger = func(cfg *config.Config) guardian.EscalationLogger {
+	path := strings.TrimSpace(cfg.Guardian.Fallback.LogPath)
+	if strings.EqualFold(path, "off") {
+		return nil
+	}
+	if path == "" {
+		def, err := config.GuardianEscalationLogPath()
+		if err != nil {
+			log.Printf("warning: guardian escalation log disabled: %v", err)
+			return nil
+		}
+		return guardian.NewFileEscalationLogger(def)
+	}
+	expanded, err := pathutil.Expand(path)
+	if err != nil {
+		log.Printf("warning: guardian escalation log disabled: %v", err)
+		return nil
+	}
+	// These records contain transcript evidence, so a relative path would write
+	// them into whatever directory the process happened to start in.
+	if !filepath.IsAbs(expanded) {
+		log.Printf("warning: guardian escalation log disabled: guardian.fallback.log_path must be absolute (got %q)", path)
+		return nil
+	}
+	return guardian.NewFileEscalationLogger(expanded)
 }

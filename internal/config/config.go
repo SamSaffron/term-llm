@@ -517,10 +517,19 @@ type GuardianClassifyConfig struct {
 	MinConfidence float64 `mapstructure:"min_confidence" yaml:"min_confidence"`
 }
 
+// GuardianFallbackConfig configures the optional LLM reviewer used when the
+// classify backend denies or fails.
+type GuardianFallbackConfig struct {
+	Provider string `mapstructure:"provider" yaml:"provider,omitempty"`
+	Model    string `mapstructure:"model" yaml:"model,omitempty"`
+	LogPath  string `mapstructure:"log_path" yaml:"log_path,omitempty"`
+}
+
 // GuardianConfig configures auto approval policy review.
 type GuardianConfig struct {
 	Backend          string                 `mapstructure:"backend" yaml:"backend,omitempty"`
 	Classify         GuardianClassifyConfig `mapstructure:"classify" yaml:"classify"`
+	Fallback         GuardianFallbackConfig `mapstructure:"fallback" yaml:"fallback"`
 	Provider         string                 `mapstructure:"provider" yaml:"provider,omitempty"`
 	Model            string                 `mapstructure:"model" yaml:"model,omitempty"`
 	PolicyPath       string                 `mapstructure:"policy_path" yaml:"policy_path,omitempty"`
@@ -1520,6 +1529,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.Guardian.Classify.Validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.Guardian.Fallback.Validate(cfg.Guardian.Backend); err != nil {
 		return nil, err
 	}
 	if err := cfg.ValidateAsk(); err != nil {
@@ -2742,6 +2754,25 @@ func GetDebugLogsDir() string {
 		return filepath.Join(".", "term-llm-debug") // fallback
 	}
 	return filepath.Join(homeDir, ".local", "share", "term-llm", "debug")
+}
+
+// GuardianEscalationLogPath returns the default JSONL path for Guardian
+// classify-to-LLM escalations. Uses an absolute $XDG_DATA_HOME if set,
+// otherwise ~/.local/share. Unlike the diagnostics and debug directories there
+// is no working-directory fallback: the records contain transcript evidence, so
+// an unresolvable location must surface as an error instead of being written
+// next to whatever directory the process happened to start in.
+func GuardianEscalationLogPath() (string, error) {
+	// The XDG basedir spec says a relative data home is invalid and must be
+	// ignored, so fall through to the home directory instead.
+	if xdgData := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); filepath.IsAbs(xdgData) {
+		return filepath.Join(xdgData, "term-llm", "guardian", "escalations.jsonl"), nil
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("guardian escalation log directory: %w", err)
+	}
+	return filepath.Join(homeDir, ".local", "share", "term-llm", "guardian", "escalations.jsonl"), nil
 }
 
 // KnownAgentPreferenceKeys contains valid keys for agent preference configurations

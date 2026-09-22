@@ -72,13 +72,48 @@ func classifyQuestions() map[string]typesafe.Question {
 	}
 }
 
+// classifyTrace stages. Every stage but decision means the classifier produced
+// no well-formed verdict.
+const (
+	classifyStageBuild     = "build"
+	classifyStageTransport = "transport"
+	classifyStageValidate  = "validate"
+	classifyStageDecision  = "decision"
+)
+
+// classifyTrace records the exact classifier input and the stage that produced
+// the outcome. Only the escalation path consumes it; Review ignores it.
+type classifyTrace struct {
+	Request    *typesafe.Request
+	Sent       bool
+	Stage      string
+	Answers    map[string]typesafe.Answer
+	DurationMS float64
+}
+
 func (r *ClassifyReviewer) Review(ctx context.Context, req Request) (Decision, error) {
+	decision, _, err := r.reviewTraced(ctx, req)
+	return decision, err
+}
+
+// reviewTraced runs the same review as Review while recording what was sent and
+// why the classification did not allow the action. Stages: build never sent a
+// request (missing client, unusable threshold, or request over budget),
+// transport reached the client but failed, validate received answers it could
+// not accept, and decision is a well-formed denial.
+func (r *ClassifyReviewer) reviewTraced(ctx context.Context, req Request) (Decision, classifyTrace, error) {
+	started := time.Now()
+	trace := classifyTrace{Stage: classifyStageBuild}
 	d := Decision{Model: r.Model}
+	fail := func(err error) (Decision, classifyTrace, error) {
+		trace.DurationMS = float64(time.Since(started)) / float64(time.Millisecond)
+		return d, trace, err
+	}
 	if r.Client == nil {
-		return d, fmt.Errorf("guardian classify client is nil")
+		return fail(fmt.Errorf("guardian classify client is nil"))
 	}
 	if !validConfidence(r.MinConfidence) {
-		return d, fmt.Errorf("guardian classify min_confidence must be between 0 and 1")
+		return fail(fmt.Errorf("guardian classify min_confidence must be between 0 and 1"))
 	}
 	policy := r.Policy
 	if policy == "" {
@@ -87,7 +122,9 @@ func (r *ClassifyReviewer) Review(ctx context.Context, req Request) (Decision, e
 	request, err := buildClassifyRequest(req, policy, r.Model)
 	d.StateBytes = len(request.State)
 	if err != nil {
-		return d, fmt.Errorf("guardian classify request: %w", err)
+		// A failed build attaches no request to the trace, but the partially
+		// built state still reports the budget the exact action and policy needed.
+		return fail(fmt.Errorf("guardian classify request: %w", err))
 	}
 	timeout := r.Timeout
 	if timeout <= 0 {
@@ -95,13 +132,17 @@ func (r *ClassifyReviewer) Review(ctx context.Context, req Request) (Decision, e
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	trace.Request = &request
+	trace.Stage = classifyStageTransport
+	trace.Sent = true
 	response, err := r.Client.Classify(ctx, request)
 	if err != nil {
-		return d, fmt.Errorf("guardian classify review: %w", err)
+		return fail(fmt.Errorf("guardian classify review: %w", err))
 	}
 	if response == nil {
-		return d, fmt.Errorf("guardian classify response is nil")
+		return fail(fmt.Errorf("guardian classify response is nil"))
 	}
+	trace.Answers = response.Answers
 	if response.Model != "" {
 		d.Model = response.Model
 	}
@@ -111,7 +152,14 @@ func (r *ClassifyReviewer) Review(ctx context.Context, req Request) (Decision, e
 	if response.Usage.OutputTokens != nil {
 		d.Usage.OutputTokens = *response.Usage.OutputTokens
 	}
-	return classifyDecision(d, response.Answers, r.MinConfidence)
+	trace.Stage = classifyStageValidate
+	decision, err := classifyDecision(d, response.Answers, r.MinConfidence)
+	if err != nil {
+		return fail(err)
+	}
+	trace.Stage = classifyStageDecision
+	trace.DurationMS = float64(time.Since(started)) / float64(time.Millisecond)
+	return decision, trace, nil
 }
 
 func validConfidence(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 && v <= 1 }

@@ -61,6 +61,10 @@ type Decision struct {
 	Rationale         string    `json:"rationale"`
 	Model             string    `json:"-"`
 	Usage             llm.Usage `json:"-"`
+	// Escalated reports that the classify backend denied or failed and the LLM
+	// fallback reviewer produced this verdict. It is presentation metadata and
+	// stays out of the canonical decision JSON.
+	Escalated bool `json:"-"`
 }
 
 func (d Decision) Allowed() bool { return strings.EqualFold(strings.TrimSpace(d.Outcome), "allow") }

@@ -310,6 +310,9 @@ type PolicyDecision struct {
 	Rationale         string
 	Model             string
 	Usage             llm.Usage
+	// Escalated reports that the classify backend denied or failed and the LLM
+	// fallback reviewer produced this verdict.
+	Escalated bool
 }
 
 // ApprovalRequest represents a pending approval request.
@@ -1882,10 +1885,15 @@ func formatGuardianApproval(decision PolicyDecision) string {
 		risk = "reviewed"
 	}
 	auth := humanGuardianAuthorization(decision.UserAuthorization)
-	if auth == "" {
-		return fmt.Sprintf("approved (%s risk)", risk)
+	details := risk + " risk"
+	if auth != "" {
+		details += "; " + auth
 	}
-	return fmt.Sprintf("approved (%s risk; %s)", risk, auth)
+	if decision.Escalated {
+		// The classify backend denied or failed and the LLM reviewer decided.
+		details += "; via fallback"
+	}
+	return fmt.Sprintf("approved (%s)", details)
 }
 
 func humanGuardianAuthorization(value string) string {

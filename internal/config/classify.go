@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"math"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -98,4 +99,35 @@ func (c GuardianClassifyConfig) Validate() error {
 		return fmt.Errorf("guardian.classify.min_confidence must be between 0 and 1")
 	}
 	return nil
+}
+
+// Enabled reports whether the classify fallback selects an LLM reviewer.
+func (c GuardianFallbackConfig) Enabled() bool {
+	return strings.TrimSpace(c.Provider) != "" || strings.TrimSpace(c.Model) != ""
+}
+
+// Validate rejects fallback settings that cannot take effect on the configured backend.
+func (c GuardianFallbackConfig) Validate(backend string) error {
+	enabled := c.Enabled()
+	hasLogPath := strings.TrimSpace(c.LogPath) != ""
+	if hasLogPath && !enabled {
+		return fmt.Errorf("guardian.fallback.log_path requires guardian.fallback.provider or guardian.fallback.model")
+	}
+	if (enabled || hasLogPath) && isLLMGuardianBackend(backend) {
+		return fmt.Errorf("guardian.fallback requires guardian.backend: classify")
+	}
+	// Escalation records contain transcript evidence, so a relative path that
+	// would land in the process working directory is rejected here rather than
+	// silently disabling logging at runtime. A `~` prefix is expanded later.
+	if logPath := strings.TrimSpace(c.LogPath); hasLogPath && !strings.EqualFold(logPath, "off") && !strings.HasPrefix(logPath, "~") && !filepath.IsAbs(logPath) {
+		return fmt.Errorf("guardian.fallback.log_path must be absolute, start with ~, or be off (got %q)", logPath)
+	}
+	return nil
+}
+
+// isLLMGuardianBackend reports whether a Guardian backend value means the
+// default LLM reviewer, i.e. anything that is not the classify backend.
+func isLLMGuardianBackend(backend string) bool {
+	backend = strings.TrimSpace(backend)
+	return backend == "" || backend == "llm"
 }

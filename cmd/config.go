@@ -1273,7 +1273,7 @@ func configValueCompletions(key, toComplete string) []string {
 	case "approval.default_mode", "chat.approval_mode", "ask.approval_mode", "edit.approval_mode", "exec.approval_mode", "loop.approval_mode", "serve.approval_mode", "serve.mcp.approval_mode":
 		return filterPrefix([]string{"prompt", "auto"}, toComplete)
 
-	case "default_provider", "exec.provider", "ask.provider", "chat.provider", "edit.provider", "guardian.provider":
+	case "default_provider", "exec.provider", "ask.provider", "chat.provider", "edit.provider", "guardian.provider", "guardian.fallback.provider":
 		// Provider names
 		names := llm.GetProviderNames(cfg)
 		var completions []string
