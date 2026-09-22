@@ -47,7 +47,8 @@ export class ChildSessionStore {
       );
       if (!this.current(generation) || request.signal.aborted) return;
       if (response.__etag) this.etag = response.__etag;
-      if (!response.__notModified) this.children.value = response.children || [];
+      if (!response.__notModified)
+        this.children.value = this.reconcileChildren(parentId, response.children || []);
     } catch {
       // Link discovery is optional; completed tool results still carry the child id.
     } finally {
@@ -59,6 +60,35 @@ export class ChildSessionStore {
     if (!parentId || parentId !== this.parentSessionId.peek()) return;
     this.etag = '';
     void this.refresh(parentId, this.generation);
+  }
+
+  private reconcileChildren(parentId: string, incoming: StatsChild[]): StatsChild[] {
+    // A finished child leaves the live registry before its parent tool result is
+    // persisted. During that handoff the same authoritative row can briefly omit
+    // its immutable spawn identity. Retain only that identity; incoming rows
+    // still own membership and every other field.
+    const previous = new Map(
+      this.children
+        .peek()
+        .filter((child) => child.parent_session_id === parentId)
+        .map((child) => [child.session_id, child]),
+    );
+    return incoming.map((child) => {
+      const prior = previous.get(child.session_id);
+      if (!prior || child.parent_session_id !== parentId) return child;
+      const parentSpawnCallId = child.parent_spawn_call_id || prior.parent_spawn_call_id;
+      const parentSpawnItemId = child.parent_spawn_item_id || prior.parent_spawn_item_id;
+      if (
+        parentSpawnCallId === child.parent_spawn_call_id &&
+        parentSpawnItemId === child.parent_spawn_item_id
+      )
+        return child;
+      return {
+        ...child,
+        ...(parentSpawnCallId ? { parent_spawn_call_id: parentSpawnCallId } : {}),
+        ...(parentSpawnItemId ? { parent_spawn_item_id: parentSpawnItemId } : {}),
+      };
+    });
   }
 
   private current(generation: number): boolean {

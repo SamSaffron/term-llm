@@ -70,6 +70,89 @@ describe('ChildSessionStore', () => {
     store.dispose();
   });
 
+  it('preserves Open-link provenance across the live-to-durable completion handoff', async () => {
+    const { store, endpoints } = harness();
+    store.selectSession(session());
+    await vi.waitFor(() => expect(store.children.value).toEqual([child()]));
+
+    // Finish removes the live server handle before the parent tool result is
+    // durable, so this authoritative row briefly has no spawn identity.
+    endpoints.sessionChildren.mockResolvedValueOnce({
+      children: [
+        child({
+          state: 'complete',
+          parent_spawn_call_id: undefined,
+        }),
+      ],
+      __etag: 'children-complete',
+    });
+    store.childrenChanged('parent-1');
+    await vi.waitFor(() => expect(store.children.value[0]?.state).toBe('complete'));
+    expect(store.children.value[0]?.parent_spawn_call_id).toBe('spawn-1');
+
+    // The response still owns row membership: preserving immutable provenance
+    // must not resurrect a child the server has deleted.
+    endpoints.sessionChildren.mockResolvedValueOnce({
+      children: [],
+      __etag: 'children-deleted',
+    });
+    store.childrenChanged('parent-1');
+    await vi.waitFor(() => expect(store.children.value).toEqual([]));
+    store.dispose();
+  });
+
+  it('retains missing spawn item identity while preferring newly supplied provenance', async () => {
+    const { store, endpoints } = harness();
+    endpoints.sessionChildren.mockResolvedValueOnce({
+      children: [child({ parent_spawn_item_id: 41 })],
+      __etag: 'children-with-item',
+    });
+    store.selectSession(session());
+    await vi.waitFor(() => expect(store.children.value[0]?.parent_spawn_item_id).toBe(41));
+
+    endpoints.sessionChildren.mockResolvedValueOnce({
+      children: [child({ state: 'complete', parent_spawn_call_id: undefined })],
+      __etag: 'children-without-provenance',
+    });
+    await store.refresh();
+    expect(store.children.value[0]).toMatchObject({
+      state: 'complete',
+      parent_spawn_call_id: 'spawn-1',
+      parent_spawn_item_id: 41,
+    });
+
+    endpoints.sessionChildren.mockResolvedValueOnce({
+      children: [child({ parent_spawn_call_id: 'spawn-authoritative', parent_spawn_item_id: 42 })],
+      __etag: 'children-authoritative',
+    });
+    await store.refresh();
+    expect(store.children.value[0]).toMatchObject({
+      parent_spawn_call_id: 'spawn-authoritative',
+      parent_spawn_item_id: 42,
+    });
+    store.dispose();
+  });
+
+  it('does not carry spawn provenance across parent sessions', async () => {
+    const { store, endpoints } = harness();
+    store.selectSession(session());
+    await vi.waitFor(() => expect(store.children.value).toEqual([child()]));
+
+    endpoints.sessionChildren.mockResolvedValueOnce({
+      children: [
+        child({
+          parent_session_id: 'parent-2',
+          parent_spawn_call_id: undefined,
+        }),
+      ],
+      __etag: 'children-parent-2',
+    });
+    store.selectSession(session({ id: 'parent-2' }));
+    await vi.waitFor(() => expect(store.children.value[0]?.parent_session_id).toBe('parent-2'));
+    expect(store.children.value[0]?.parent_spawn_call_id).toBeUndefined();
+    store.dispose();
+  });
+
   it('loads provenance for nested children while a delegated session is selected', async () => {
     const { store, endpoints } = harness();
 

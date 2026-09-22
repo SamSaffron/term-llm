@@ -433,6 +433,73 @@ describe('Preact-owned chat surfaces', () => {
     },
   );
 
+  it('keeps an in-flight Open subagent link through the completion provenance gap', async () => {
+    const store = createStore();
+    store.sessions.value[0] = {
+      ...store.sessions.value[0],
+      messages: [
+        {
+          id: 'handoff-spawn',
+          role: 'tool-group',
+          content: '',
+          created: 1,
+          tools: [
+            {
+              id: 'spawn-handoff',
+              name: 'spawn_agent',
+              status: 'running',
+              arguments: '{"agent_name":"developer"}',
+            },
+          ],
+        },
+      ],
+    };
+    const liveChild = {
+      session_id: 'handoff-child',
+      parent_session_id: 's1',
+      parent_spawn_call_id: 'spawn-handoff',
+      title: 'Developer',
+      state: 'active',
+      input_tokens: 0,
+      output_tokens: 0,
+      cached_input_tokens: 0,
+      cache_write_tokens: 0,
+      tool_calls: 0,
+      llm_turns: 0,
+    };
+    store.endpoints.sessionChildren = vi
+      .fn()
+      .mockResolvedValueOnce({ children: [liveChild], __etag: 'children-live' })
+      .mockResolvedValueOnce({
+        children: [
+          {
+            ...liveChild,
+            state: 'complete',
+            parent_spawn_call_id: undefined,
+          },
+        ],
+        __etag: 'children-complete',
+      });
+    store.resolveAndSelectSession = vi.fn(async () => null);
+    store.childSessionStore.selectSession(store.sessions.value[0]);
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+    expect(await screen.findByRole('button', { name: 'Open subagent' })).toBeVisible();
+
+    act(() => store.childSessionStore.childrenChanged('s1'));
+    await waitFor(() => expect(store.endpoints.sessionChildren).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(store.childSessionStore.children.value[0]?.state).toBe('complete'));
+    await userEvent.click(screen.getByRole('button', { name: 'Open subagent' }));
+    expect(store.resolveAndSelectSession).toHaveBeenCalledWith('handoff-child', false, {
+      prepend: false,
+    });
+    store.dispose();
+  });
+
   it('uses the standard composer controls for a live delegated response', async () => {
     const store = createStore();
     store.sessions.value = [
