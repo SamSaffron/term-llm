@@ -52,6 +52,7 @@ type hubServer struct {
 	attentionStore       *hub.AttentionProjectionStore
 	attentionCancel      context.CancelFunc
 	attentionWG          sync.WaitGroup
+	attentionMu          sync.RWMutex // exclude collection while acknowledging a snapshot
 	attentionDiagnostics hubAttentionDiagnostics
 
 	requireAuth       bool

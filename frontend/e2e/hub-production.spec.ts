@@ -22,6 +22,7 @@ test('Hub Preact dashboard supports mounted refresh, registration, and node muta
   let delegationRequests = 0;
   let failNodes = false;
   let emptyNodes = false;
+  let attentionCleared = false;
   let delegations: Record<string, unknown>[] = [];
   const nodeMutationResponses: Promise<string>[] = [];
   page.on('response', (response) => {
@@ -77,13 +78,18 @@ test('Hub Preact dashboard supports mounted refresh, registration, and node muta
     }
     await route.fulfill({ response, json: body });
   });
+  await page.route('**/hub/api/attention/clear', async (route) => {
+    expect(route.request().method()).toBe('POST');
+    attentionCleared = true;
+    await route.fulfill({ json: { cleared: 1, failed: 0 } });
+  });
   await page.route('**/hub/api/attention', async (route) => {
     await route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify({
         total_running: 0,
         total_input_required: 1,
-        total_unseen: 1,
+        total_unseen: attentionCleared ? 0 : 1,
         nodes: [],
         has_more: false,
         input_required: [
@@ -98,18 +104,20 @@ test('Hub Preact dashboard supports mounted refresh, registration, and node muta
             resume_path: '/hub/node/production-node/chat/fixture-input',
           },
         ],
-        inbox: [
-          {
-            node_id: 'production-node',
-            node_name: 'Production Node',
-            session_id: 'fixture-ready',
-            title: 'Fixture review',
-            outcome: 'succeeded',
-            terminal_at: new Date().toISOString(),
-            attention_seq: 1,
-            resume_path: '/hub/node/production-node/chat/fixture-ready',
-          },
-        ],
+        inbox: attentionCleared
+          ? []
+          : [
+              {
+                node_id: 'production-node',
+                node_name: 'Production Node',
+                session_id: 'fixture-ready',
+                title: 'Fixture review',
+                outcome: 'succeeded',
+                terminal_at: new Date().toISOString(),
+                attention_seq: 1,
+                resume_path: '/hub/node/production-node/chat/fixture-ready',
+              },
+            ],
       }),
     });
   });
@@ -133,6 +141,12 @@ test('Hub Preact dashboard supports mounted refresh, registration, and node muta
   await expect(page.getByRole('region', { name: 'Ready to review' })).toContainText(
     'Fixture review',
   );
+  await page.getByRole('button', { name: 'Clear all' }).click();
+  await expect(page.getByRole('region', { name: 'Ready to review' })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Needs your input' })).toContainText(
+    'Fixture question',
+  );
+  expect(page.url()).toBe(hubRoot);
   await expect(page.getByText('No delegated work yet.')).toBeVisible();
   await expect(production.getByText('Fixture active session')).toBeVisible();
   await expect(production.getByText('Fixture recent session')).toBeVisible();

@@ -586,20 +586,8 @@ func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *llm.Engin
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize tools: %w", err)
 	}
-	if visionTarget != "" {
-		visionProvider, visionModel, err := newVisionProviderForTarget(cfg, visionTarget)
-		if err != nil {
-			return nil, err
-		}
-		if uploadsDir := uploadsReadDir(); uploadsDir != "" {
-			if err := toolMgr.ApprovalMgr.AddToolReadDir(tools.ViewImageToolName, uploadsDir); err != nil {
-				return nil, fmt.Errorf("allow view_image uploads directory: %w", err)
-			}
-		}
-		toolMgr.Registry.SetViewImageVisionProvider(visionProvider, visionModel)
-		if engine != nil {
-			engine.SetIndirectVision(true)
-		}
+	if err := setupToolManagerVision(cfg, engine, toolMgr, visionTarget); err != nil {
+		return nil, err
 	}
 	wireImageRecorder(toolMgr.Registry, s.AgentName, s.SessionID)
 	wireFileRecorder(toolMgr.Registry, cfg)
@@ -613,6 +601,26 @@ func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *llm.Engin
 
 	toolMgr.SetupEngine(engine)
 	return toolMgr, nil
+}
+
+func setupToolManagerVision(cfg *config.Config, engine *llm.Engine, toolMgr *tools.ToolManager, visionTarget string) error {
+	if visionTarget == "" {
+		return nil
+	}
+	visionProvider, visionModel, err := newVisionProviderForTarget(cfg, visionTarget)
+	if err != nil {
+		return err
+	}
+	if uploadsDir := uploadsReadDir(); uploadsDir != "" {
+		if err := toolMgr.ApprovalMgr.AddToolReadDir(tools.ViewImageToolName, uploadsDir); err != nil {
+			return fmt.Errorf("allow view_image uploads directory: %w", err)
+		}
+	}
+	toolMgr.Registry.SetViewImageVisionProvider(visionProvider, visionModel)
+	if engine != nil {
+		engine.SetIndirectVision(true)
+	}
+	return nil
 }
 
 func indirectVisionTarget(cfg *config.Config, providerName, modelName string) string {

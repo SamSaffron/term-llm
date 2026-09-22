@@ -64,6 +64,7 @@ describe('HubClient', () => {
     const credential = { id: 'credential' } as SerializedPublicKeyCredential;
     const calls: Array<() => Promise<unknown>> = [
       () => client.listAttention(),
+      () => client.clearAttention(),
       () => client.listDelegations(),
       () => client.testNode({ name: '', url: '', token: '' }),
       () => client.removeNode('a/b'),
@@ -87,6 +88,7 @@ describe('HubClient', () => {
     for (const call of calls) await call();
     expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
       '/ops/api/attention',
+      '/ops/api/attention/clear',
       '/ops/api/delegations',
       '/ops/api/nodes/test',
       '/ops/api/nodes/a%2Fb',

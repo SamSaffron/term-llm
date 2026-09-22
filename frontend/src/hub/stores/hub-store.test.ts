@@ -51,6 +51,89 @@ function fakeClient(overrides: Record<string, unknown> = {}) {
 }
 
 describe('HubStore', () => {
+  it('clears once and reconciles counts without clearing input requests or newer completions', async () => {
+    let resolveClear!: (result: { cleared: number; failed: number }) => void;
+    const client = fakeClient({
+      clearAttention: vi.fn(() => new Promise((resolve) => (resolveClear = resolve))),
+    });
+    const store = new HubStore(client);
+    await store.refresh();
+    const newer = attention('New completion');
+    newer.inbox[0].attention_seq = 2;
+    newer.total_input_required = 1;
+    newer.input_required = [
+      {
+        node_id: 'alpha',
+        node_name: 'Alpha',
+        session_id: 'blocked',
+        title: 'Question',
+        pending_interaction_count: 1,
+        resume_path: '/node/alpha/chat/blocked',
+      },
+    ];
+    vi.mocked(client.listAttention).mockResolvedValue(newer);
+    const pending = store.clearAttention();
+    await store.clearAttention();
+    expect(client.clearAttention).toHaveBeenCalledOnce();
+    expect(store.clearingAttention.value).toBe(true);
+    resolveClear({ cleared: 201, failed: 0 });
+    await pending;
+    expect(store.clearingAttention.value).toBe(false);
+    expect(store.inbox.value[0].title).toBe('New completion');
+    expect(store.totalUnseen.value).toBe(1);
+    expect(store.inputRequired.value).toEqual(newer.input_required);
+    expect(store.clearAttentionError.value).toBe('');
+  });
+
+  it('retains failed clears for retry and preserves the error across polling', async () => {
+    const client = fakeClient({
+      clearAttention: vi
+        .fn()
+        .mockResolvedValueOnce({ cleared: 2, failed: 1 })
+        .mockRejectedValueOnce(new Error('offline'))
+        .mockResolvedValueOnce({ cleared: 1, failed: 0 }),
+    });
+    const store = new HubStore(client);
+    await store.refresh();
+    await store.clearAttention();
+    await store.refresh('poll');
+    expect(store.inbox.value).toHaveLength(1);
+    expect(store.clearAttentionError.value).toBe('Cleared 2. Could not clear 1. Try again.');
+    await store.clearAttention();
+    expect(store.clearAttentionError.value).toBe('Could not clear notifications: offline');
+    expect(store.inbox.value).toHaveLength(1);
+    vi.mocked(client.listAttention).mockResolvedValue({
+      ...attention(),
+      inbox: [],
+      total_unseen: 0,
+    });
+    await store.clearAttention();
+    expect(store.inbox.value).toEqual([]);
+    expect(store.totalUnseen.value).toBe(0);
+    expect(store.clearAttentionError.value).toBe('');
+  });
+
+  it('discards stale polls after clearing and ignores clear results after disposal', async () => {
+    let resolveOld!: (value: AttentionResponse) => void;
+    const client = fakeClient({
+      listAttention: vi
+        .fn()
+        .mockImplementationOnce(() => new Promise((resolve) => (resolveOld = resolve)))
+        .mockResolvedValue({ ...attention(), inbox: [], total_unseen: 0 }),
+      clearAttention: vi.fn().mockResolvedValue({ cleared: 1, failed: 0 }),
+    });
+    const store = new HubStore(client);
+    const old = store.refresh('poll');
+    await store.clearAttention();
+    resolveOld(attention('Old completion'));
+    await old;
+    expect(store.inbox.value).toEqual([]);
+    const pending = store.clearAttention();
+    store.dispose();
+    await pending;
+    expect(client.listAttention).toHaveBeenCalledTimes(2);
+  });
+
   it('retains unchanged collections across polls and replaces only changed nodes', async () => {
     let payload = { nodes: [...nodes('alpha').nodes, ...nodes('beta').nodes] };
     const client = fakeClient({ listNodes: vi.fn(async () => structuredClone(payload)) });

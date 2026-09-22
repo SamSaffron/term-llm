@@ -138,10 +138,10 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// above: a cap that close to the measurement fails the next CSS change on
 		// arithmetic rather than on bloat.
 		"dist/app.css": {raw: 180_000, gzip: 34_000},
-		// Measured after the completed standalone port: 67.7/21.5 KiB JS and
-		// 16.7/4.1 KiB CSS. These limits retain modest growth headroom without
+		// With bulk notification clearing: 72.9/23.1 kB JS and 17.4/4.4 kB CSS.
+		// These limits retain modest growth headroom without
 		// allowing chat-only rendering dependencies into the Hub graph.
-		"dist/hub.js":  {raw: 72_000, gzip: 24_000},
+		"dist/hub.js":  {raw: 74_000, gzip: 24_000},
 		"dist/hub.css": {raw: 19_000, gzip: 5_500},
 	}
 	for name, budget := range budgets {

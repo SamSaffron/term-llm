@@ -558,46 +558,20 @@ func collectMemoryUpdateRecentInput(ctx context.Context, store *memorydb.Store, 
 		}
 
 		const messagePageSize = 100
-		headerWritten := false
+		sessionStart := inputBuilder.Len()
 		for {
 			messages, err := sessStore.GetMessagesFrom(ctx, sess.ID, startOffset, messagePageSize)
 			if err != nil {
 				return memoryUpdateRecentInput{}, fmt.Errorf("get messages for session %s: %w", sess.ID, err)
 			}
 			for _, msg := range messages {
-				line := formatUpdateRecentMessage(msg)
-				if line != "" {
-					prefix := "\n"
-					if !headerWritten {
-						prefix = formatUpdateRecentSessionHeader(sess) + "\n"
-						if inputBuilder.Len() > 0 {
-							prefix = "\n\n---\n\n" + prefix
-						}
-					}
-					remaining := memoryUpdateRecentMaxInputChars - inputBuilder.Len() - len(prefix)
-					if len(line) > remaining {
-						if inputBuilder.Len() > 0 {
-							// Retry this message in the next batch, without advancing its offset.
-							return memoryUpdateRecentInput{Text: inputBuilder.String(), Offsets: trackedOffsets, Exhausted: false}, nil
-						}
-						// A single message must not prevent progress. Keep the header and
-						// role, and truncate its text to the byte budget on a UTF-8 boundary.
-						role, text, _ := strings.Cut(line, ": ")
-						textBudget := remaining - len(role) - 2
-						if textBudget <= 0 {
-							return memoryUpdateRecentInput{}, fmt.Errorf("max-input-chars is too small for session %s header and message", sess.ID)
-						}
-						for textBudget > 0 && !utf8.RuneStart(text[textBudget]) {
-							textBudget--
-						}
-						if textBudget == 0 {
-							return memoryUpdateRecentInput{}, fmt.Errorf("max-input-chars is too small for session %s message text", sess.ID)
-						}
-						line = role + ": " + text[:textBudget]
-					}
-					inputBuilder.WriteString(prefix)
-					inputBuilder.WriteString(line)
-					headerWritten = true
+				added, err := appendUpdateRecentMessage(&inputBuilder, sess, sessionStart, formatUpdateRecentMessage(msg))
+				if err != nil {
+					return memoryUpdateRecentInput{}, err
+				}
+				if !added {
+					// Retry this message in the next batch, without advancing its offset.
+					return memoryUpdateRecentInput{Text: inputBuilder.String(), Offsets: trackedOffsets, Exhausted: false}, nil
 				}
 				// Include skipped tool/empty rows, but never unread messages.
 				startOffset = msg.Sequence + 1
@@ -617,6 +591,45 @@ func collectMemoryUpdateRecentInput(ctx context.Context, store *memorydb.Store, 
 	}
 
 	return memoryUpdateRecentInput{Text: inputBuilder.String(), Offsets: trackedOffsets, Exhausted: exhausted}, nil
+}
+
+// appendUpdateRecentMessage returns false when a nonempty batch cannot fit the
+// next message. sessionStart marks where this session's first visible row will
+// go, so skipped rows do not emit a header and paged reads do not repeat it.
+func appendUpdateRecentMessage(b *strings.Builder, sess memoryUpdateRecentSession, sessionStart int, line string) (bool, error) {
+	if line == "" {
+		return true, nil
+	}
+	prefix := "\n"
+	if b.Len() == sessionStart {
+		prefix = formatUpdateRecentSessionHeader(sess) + "\n"
+		if b.Len() > 0 {
+			prefix = "\n\n---\n\n" + prefix
+		}
+	}
+	remaining := memoryUpdateRecentMaxInputChars - b.Len() - len(prefix)
+	if len(line) > remaining {
+		if b.Len() > 0 {
+			return false, nil
+		}
+		// A single message must not prevent progress. Keep the header and
+		// role, and truncate its text to the byte budget on a UTF-8 boundary.
+		role, text, _ := strings.Cut(line, ": ")
+		textBudget := remaining - len(role) - 2
+		if textBudget <= 0 {
+			return false, fmt.Errorf("max-input-chars is too small for session %s header and message", sess.ID)
+		}
+		for textBudget > 0 && !utf8.RuneStart(text[textBudget]) {
+			textBudget--
+		}
+		if textBudget == 0 {
+			return false, fmt.Errorf("max-input-chars is too small for session %s message text", sess.ID)
+		}
+		line = role + ": " + text[:textBudget]
+	}
+	b.WriteString(prefix)
+	b.WriteString(line)
+	return true, nil
 }
 
 func formatUpdateRecentSessionBlock(sess memoryUpdateRecentSession, messages []session.Message) string {

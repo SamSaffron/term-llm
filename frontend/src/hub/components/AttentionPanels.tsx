@@ -63,10 +63,21 @@ export function AttentionPanels({ store }: { store: HubStore }) {
               <h2>Ready to review</h2>
               <p>Finished conversations not yet visited.</p>
             </div>
-            <span class="delegations-count" aria-live="polite">
-              {store.totalUnseen.value} ready
-              {store.attentionHasMore.value ? ' · showing newest' : ''}
-            </span>
+            <div class="attention-actions">
+              <span class="delegations-count" aria-live="polite">
+                {store.totalUnseen.value} ready
+                {store.attentionHasMore.value ? ' · showing newest' : ''}
+              </span>
+              <button
+                type="button"
+                class="hub-btn ghost small"
+                disabled={store.clearingAttention.value}
+                onClick={() => void store.clearAttention()}
+                title="Mark all ready-to-review conversations as seen"
+              >
+                {store.clearingAttention.value ? 'Clearing…' : 'Clear all'}
+              </button>
+            </div>
           </div>
           <ul class="attention-list">
             {inbox.map((item) => (
@@ -92,6 +103,11 @@ export function AttentionPanels({ store }: { store: HubStore }) {
             ))}
           </ul>
         </section>
+      )}
+      {store.clearAttentionError.value && (
+        <p class="hub-error" role="alert">
+          {store.clearAttentionError.value}
+        </p>
       )}
     </>
   );

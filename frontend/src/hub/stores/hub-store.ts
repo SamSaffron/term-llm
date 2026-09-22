@@ -31,6 +31,8 @@ export class HubStore {
   readonly attentionHasMore = signal(false);
   readonly totalInputRequired = signal(0);
   readonly totalUnseen = signal(0);
+  readonly clearingAttention = signal(false);
+  readonly clearAttentionError = signal('');
 
   readonly initialLoading = signal(true);
   readonly refreshing = signal(false);
@@ -174,6 +176,31 @@ export class HubStore {
   openAddDialog(): void {
     this.addDialogOpen.value = true;
     this.nodeOperationResult.value = '';
+  }
+
+  async clearAttention(): Promise<void> {
+    if (this.disposed || this.clearingAttention.value) return;
+    this.clearingAttention.value = true;
+    this.clearAttentionError.value = '';
+    try {
+      const result = await this.client.clearAttention();
+      if (this.disposed) return;
+      if (result.failed > 0) {
+        this.clearAttentionError.value = `Cleared ${result.cleared}. Could not clear ${result.failed}. Try again.`;
+      }
+    } catch (error) {
+      if (this.disposed) return;
+      this.clearAttentionError.value = `Could not clear notifications: ${message(error)}`;
+    } finally {
+      if (!this.disposed) {
+        // Cancel any older poll and reconcile partial successes as well as new completions.
+        await this.refresh();
+        if (this.attentionError.value && !this.clearAttentionError.value) {
+          this.clearAttentionError.value = `Could not refresh notifications: ${this.attentionError.value}`;
+        }
+        this.clearingAttention.value = false;
+      }
+    }
   }
 
   closeAddDialog(): void {

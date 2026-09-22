@@ -9,6 +9,7 @@ import { AuthStore } from '../stores/auth-store';
 import { HubStore } from '../stores/hub-store';
 import { AddNodeDialog } from './AddNodeDialog';
 import { AuthApp } from './AuthApp';
+import { AttentionPanels } from './AttentionPanels';
 import { BearerLogin } from './BearerLogin';
 import { DelegationsPanel } from './DelegationsPanel';
 import { HubApp } from './HubApp';
@@ -42,6 +43,43 @@ function DialogFixture({ value }: { value: HubStore }) {
 }
 
 describe('Hub components', () => {
+  it('clears review notifications from the panel and exposes progress and failures', async () => {
+    const value = store();
+    value.inbox.value = [
+      {
+        node_id: 'alpha',
+        node_name: 'Alpha',
+        session_id: 'ready',
+        title: 'Ready conversation',
+        outcome: 'completed',
+        attention_seq: 1,
+        resume_path: '/node/alpha/chat/ready',
+      },
+    ];
+    value.totalUnseen.value = 1;
+    const clear = vi.spyOn(value, 'clearAttention').mockResolvedValue();
+    render(<AttentionPanels store={value} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Clear all' }));
+    expect(clear).toHaveBeenCalledOnce();
+    expect(screen.getByRole('link', { name: /Ready conversation/ })).toHaveAttribute(
+      'href',
+      '/node/alpha/chat/ready',
+    );
+    await act(() => {
+      value.clearingAttention.value = true;
+    });
+    expect(screen.getByRole('button', { name: 'Clearing…' })).toBeDisabled();
+    await act(() => {
+      value.clearAttentionError.value = 'Could not clear notifications: offline';
+    });
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not clear notifications: offline');
+    await act(() => {
+      value.inbox.value = [];
+    });
+    expect(screen.queryByRole('region', { name: 'Ready to review' })).not.toBeInTheDocument();
+    expect(screen.getByRole('alert')).toBeVisible();
+  });
+
   it('keeps closed local node cards independent of operations but disables open menu actions', async () => {
     const value = store();
     const node = {

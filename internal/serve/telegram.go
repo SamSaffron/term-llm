@@ -1461,13 +1461,7 @@ func (m *telegramSessionMgr) handleMessageWithAdmission(ctx context.Context, bot
 		}
 		defer os.Remove(voicePath)
 
-		transcriptionTimeout := m.transcriptionTimeout
-		if transcriptionTimeout <= 0 {
-			transcriptionTimeout = telegramTranscriptionTimeout
-		}
-		transcriptionCtx, cancelTranscription := context.WithTimeout(ctx, transcriptionTimeout)
-		transcript, err := llm.TranscribeWithConfig(transcriptionCtx, m.cfg, voicePath, "", "")
-		cancelTranscription()
+		transcript, err := m.transcribeVoice(ctx, voicePath)
 		if err != nil {
 			log.Printf("telegram: transcribe error: %v", err)
 			// Check if it's a config/key issue vs a transient error
@@ -1648,6 +1642,16 @@ func (m *telegramSessionMgr) handleMessageWithAdmission(ctx context.Context, bot
 		}
 		recordTelegramUpload(m.cfg, m.settings.Agent, sessionID, uploadMediaType, uploadCaption, tempImagePath)
 	}
+}
+
+func (m *telegramSessionMgr) transcribeVoice(ctx context.Context, voicePath string) (string, error) {
+	timeout := m.transcriptionTimeout
+	if timeout <= 0 {
+		timeout = telegramTranscriptionTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return llm.TranscribeWithConfig(ctx, m.cfg, voicePath, "", "")
 }
 
 func sendStreamDone(done chan<- error, once *sync.Once, err error) {

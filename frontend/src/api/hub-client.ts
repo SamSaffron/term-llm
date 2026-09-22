@@ -122,6 +122,10 @@ export class HubClient {
     return this.request('/api/attention', { signal });
   }
 
+  clearAttention(): Promise<{ cleared: number; failed: number }> {
+    return this.request('/api/attention/clear', { method: 'POST', body: {} });
+  }
+
   listDelegations(signal?: AbortSignal): Promise<DelegationsResponse> {
     return this.request('/api/delegations', { signal });
   }
