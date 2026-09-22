@@ -4,10 +4,7 @@ package hostfacts
 
 import (
 	"context"
-	"fmt"
 	"strings"
-	"syscall"
-	"time"
 )
 
 func collectPlatform(ctx context.Context, c collector, f *Facts) {
@@ -21,14 +18,4 @@ func collectPlatform(ctx context.Context, c collector, f *Facts) {
 	if out, err := c.run(ctx, "sysctl", "-n", "kern.osrelease"); err == nil {
 		f.Kernel = strings.TrimSpace(string(out))
 	}
-	if out, err := c.run(ctx, "sysctl", "-n", "hw.memsize"); err == nil {
-		fmt.Sscan(strings.TrimSpace(string(out)), &f.MemTotalBytes)
-	}
-	var st syscall.Statfs_t
-	if err := syscall.Statfs("/", &st); err == nil {
-		block := uint64(st.Bsize)
-		f.Disks = []DiskUsage{{Path: "/", Mount: "/", TotalBytes: uint64(st.Blocks) * block, FreeBytes: uint64(st.Bavail) * block}}
-	}
-	f.UptimeSeconds = -1
-	_ = time.Second
 }

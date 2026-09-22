@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
 func fixtureCollector(t *testing.T) collector {
@@ -29,15 +28,12 @@ func fixtureCollector(t *testing.T) collector {
 	write("etc/os-release", "PRETTY_NAME=TestOS\nVERSION_ID=1\n")
 	write("proc/sys/kernel/osrelease", "6.1-test\n")
 	write("proc/1/comm", "runsvdir\n")
-	write("proc/uptime", "90061.00 0\n")
-	write("proc/loadavg", "0.10 0.20 0.30 1/1 1\n")
-	write("proc/meminfo", "MemTotal: 1024 kB\nMemAvailable: 512 kB\n")
-	return collector{root: root, now: func() time.Time { return time.Unix(1, 0) }, readFile: os.ReadFile, lookPath: func(string) (string, error) { return "", errors.New("missing") }, run: func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("unexpected") }, hostname: func() (string, error) { return "Box.Example", nil }, currentUser: func() (*user.User, error) { return &user.User{Username: "tester", Uid: "1000"}, nil }}
+	return collector{root: root, readFile: os.ReadFile, lookPath: func(string) (string, error) { return "", errors.New("missing") }, run: func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("unexpected") }, hostname: func() (string, error) { return "Box.Example", nil }, currentUser: func() (*user.User, error) { return &user.User{Username: "tester", Uid: "1000"}, nil }}
 }
 
 func TestHostFactsLinuxFixtures(t *testing.T) {
 	f := collect(context.Background(), fixtureCollector(t))
-	if f.Distro != "TestOS" || f.Init != "runit" || !f.LoadKnown || f.MemTotalBytes != 1024*1024 {
+	if f.Distro != "TestOS" || f.Kernel != "6.1-test" || f.Init != "runit" || f.UID != 1000 {
 		t.Fatalf("facts = %+v", f)
 	}
 }
@@ -50,49 +46,47 @@ func TestHostFactsBudget(t *testing.T) {
 		t.Fatal("expected partial-fact warning")
 	}
 }
-func TestHostFactsSudoSkip(t *testing.T) {
+func TestHostFactsRenderIsDeterministic(t *testing.T) {
 	c := fixtureCollector(t)
-	c.currentUser = func() (*user.User, error) { return &user.User{Username: "root", Uid: "0"}, nil }
-	c.lookPath = func(name string) (string, error) {
-		if name == "sudo" {
-			return "/usr/bin/sudo", nil
-		}
-		return "", errors.New("missing")
-	}
-	c.run = func(context.Context, string, ...string) ([]byte, error) { t.Fatal("sudo ran as root"); return nil, nil }
-	f := collect(context.Background(), c)
-	if f.SudoNoPassword != nil {
-		t.Fatal("sudo result should be nil")
-	}
-}
-func TestHostFactsRender(t *testing.T) {
-	f := collect(context.Background(), fixtureCollector(t))
-	got := f.Render()
-	for _, want := range []string{"host: Box.Example", "init: runit", "load: 0.10 0.20 0.30", "term-llm:"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("render missing %q: %s", want, got)
+	first := collect(context.Background(), c).Render()
+	for _, want := range []string{"host: Box.Example", "distro: TestOS 1", "init: runit", "user: tester (uid 1000)"} {
+		if !strings.Contains(first, want) {
+			t.Errorf("render missing %q: %s", want, first)
 		}
 	}
+	for _, volatile := range []string{"load", "mem", "disk", "up:", "sudo", "collected"} {
+		if strings.Contains(first, volatile) {
+			t.Errorf("render contains volatile field %q: %s", volatile, first)
+		}
+	}
+	if second := collect(context.Background(), c).Render(); second != first {
+		t.Fatalf("render changed between collections:\n%s\n%s", first, second)
+	}
 }
-func TestHostFactsCache(t *testing.T) {
-	oldNow, oldCollect := cacheNow, cacheCollect
-	defer func() { cacheNow, cacheCollect = oldNow, oldCollect; factCache.value = "" }()
-	now := time.Unix(0, 0)
-	cacheNow = func() time.Time { return now }
+
+func TestHostFactsCacheIsProcessLifetime(t *testing.T) {
+	oldCollect := cacheCollect
+	defer func() { cacheCollect = oldCollect; factCache.value = "" }()
 	var calls atomic.Int32
+	degraded := true
 	cacheCollect = func(context.Context) Facts {
 		calls.Add(1)
-		return Facts{Hostname: "x", CollectedAt: now, UptimeSeconds: -1}
+		f := Facts{Hostname: "x"}
+		if degraded {
+			f.Warnings = []string{"probe budget: deadline exceeded"}
+		}
+		return f
 	}
 	factCache.value = ""
 	_ = RenderCached(context.Background())
-	_ = RenderCached(context.Background())
-	if calls.Load() != 1 {
-		t.Fatalf("calls=%d", calls.Load())
-	}
-	now = now.Add(61 * time.Second)
+	degraded = false
 	_ = RenderCached(context.Background())
 	if calls.Load() != 2 {
-		t.Fatalf("calls after expiry=%d", calls.Load())
+		t.Fatalf("degraded collection was cached; calls=%d", calls.Load())
+	}
+	_ = RenderCached(context.Background())
+	_ = RenderCached(context.Background())
+	if calls.Load() != 2 {
+		t.Fatalf("complete collection not reused; calls=%d", calls.Load())
 	}
 }

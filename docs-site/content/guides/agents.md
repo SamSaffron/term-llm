@@ -73,7 +73,7 @@ The resolved agent contributes its prompt, tone, provider, model, and reasoning 
 
 The built-in `sysadmin` agent uses `workspace: none`: its execution directory remains available to the shell, but it neither proposes that directory as a primary workspace nor exposes `manage_workspace`. This opt-out does not revoke separate read, write, shell, session, project, Guardian, or yolo authority. Its `read.dirs: ["/"]` grant is intentionally sensitive and authorizes host-wide file-tool reads subject to operating-system access and tool traversal limits.
 
-`{{host_facts}}` lazily renders a bounded local-host snapshot, cached for up to 60 seconds. `{{host_notes}}` loads bounded user-maintained context from `$XDG_CONFIG_HOME/term-llm/hosts/<short-hostname>.md` (or the corresponding default config directory). Notes are inserted as text and template syntax inside them is not recursively expanded.
+`{{host_facts}}` lazily renders stable local-host identity (hostname, OS, kernel, distro, init system, package managers, container/virtualization, and user), collected once per process. It contains no timestamps or resource measurements, so a prompt that uses it renders identically when a session is resumed. `{{host_notes}}` loads bounded user-maintained context from `$XDG_CONFIG_HOME/term-llm/hosts/<short-hostname>.md` (or the corresponding default config directory). Notes are inserted as text and template syntax inside them is not recursively expanded.
 
 ## Managing agents
 

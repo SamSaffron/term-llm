@@ -65,7 +65,7 @@ type TemplateContext struct {
 
 	// System
 	OS        string // Operating system
-	HostFacts string // Lazily collected host snapshot
+	HostFacts string // Lazily collected stable host identity
 	HostNotes string // Lazily loaded user-maintained host notes
 
 	// Runtime surface (chat, console, web, telegram, jobs)

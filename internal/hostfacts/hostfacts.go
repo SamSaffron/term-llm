@@ -7,24 +7,18 @@ import (
 	"os/exec"
 	"os/user"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/samsaffron/term-llm/internal/buildinfo"
 )
 
-const (
-	probeBudget = 2 * time.Second
-	cacheTTL    = 60 * time.Second
-)
-
-type DiskUsage struct {
-	Path, Mount           string
-	TotalBytes, FreeBytes uint64
-}
+// probeBudget bounds the few subprocess probes. Rendered facts are
+// deliberately limited to host identity that does not change while a process
+// runs, so a system prompt that embeds them renders identically when a session
+// is resumed and does not needlessly refresh stored prompts. Volatile state (load, memory, disk, uptime, sudo
+// credential caching) is left to live commands.
+const probeBudget = 2 * time.Second
 
 type Facts struct {
 	Hostname, OS, Distro, DistroVersion, Kernel, Arch string
@@ -33,21 +27,12 @@ type Facts struct {
 	User                                              string
 	UID                                               int
 	IsRoot                                            bool
-	SudoNoPassword                                    *bool
 	Container, Virtualization                         string
-	UptimeSeconds                                     int64
-	Load1, Load5, Load15                              float64
-	LoadKnown                                         bool
-	MemTotalBytes, MemAvailableBytes                  uint64
-	Disks                                             []DiskUsage
-	Shell, TermLLMVersion                             string
-	CollectedAt                                       time.Time
 	Warnings                                          []string
 }
 
 type collector struct {
 	root        string
-	now         func() time.Time
 	readFile    func(string) ([]byte, error)
 	lookPath    func(string) (string, error)
 	run         func(context.Context, string, ...string) ([]byte, error)
@@ -56,30 +41,18 @@ type collector struct {
 }
 
 func productionCollector() collector {
-	return collector{root: "/", now: time.Now, readFile: os.ReadFile, lookPath: exec.LookPath,
+	return collector{root: "/", readFile: os.ReadFile, lookPath: exec.LookPath,
 		run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			cmd := exec.CommandContext(ctx, name, args...)
 			cmd.Stdin = nil
-			cmd.Env = withoutEnv(os.Environ(), "SUDO_ASKPASS")
 			return cmd.Output()
 		}, hostname: os.Hostname, currentUser: user.Current}
-}
-
-func withoutEnv(env []string, key string) []string {
-	prefix := key + "="
-	out := make([]string, 0, len(env))
-	for _, value := range env {
-		if !strings.HasPrefix(value, prefix) {
-			out = append(out, value)
-		}
-	}
-	return out
 }
 
 func Collect(ctx context.Context) Facts { return collect(ctx, productionCollector()) }
 
 func collect(ctx context.Context, c collector) (facts Facts) {
-	facts.OS, facts.Arch, facts.TermLLMVersion, facts.CollectedAt = runtime.GOOS, runtime.GOARCH, buildinfo.Version, c.now()
+	facts.OS, facts.Arch = runtime.GOOS, runtime.GOARCH
 	facts.Init = "unknown"
 	facts.UID = -1
 	if h, err := c.hostname(); err == nil {
@@ -94,7 +67,6 @@ func collect(ctx context.Context, c collector) (facts Facts) {
 			facts.IsRoot = uid == 0
 		}
 	}
-	facts.Shell = os.Getenv("SHELL")
 	budgetCtx, cancel := context.WithTimeout(ctx, probeBudget)
 	defer cancel()
 	collectPlatform(budgetCtx, c, &facts)
@@ -103,24 +75,10 @@ func collect(ctx context.Context, c collector) (facts Facts) {
 			facts.PackageManagers = append(facts.PackageManagers, name)
 		}
 	}
-	if !facts.IsRoot {
-		if _, err := c.lookPath("sudo"); err == nil {
-			probeCtx, stop := context.WithTimeout(budgetCtx, time.Second)
-			_, err = c.run(probeCtx, "sudo", "-n", "true")
-			stop()
-			v := err == nil
-			facts.SudoNoPassword = &v
-			if err != nil && probeCtx.Err() != nil {
-				facts.Warnings = append(facts.Warnings, "sudo probe: "+probeCtx.Err().Error())
-			}
-		}
-	}
 	if _, err := c.lookPath("systemd-detect-virt"); err == nil {
-		probeCtx, stop := context.WithTimeout(budgetCtx, time.Second)
-		if out, err := c.run(probeCtx, "systemd-detect-virt"); err == nil {
+		if out, err := c.run(budgetCtx, "systemd-detect-virt"); err == nil {
 			facts.Virtualization = strings.TrimSpace(string(out))
 		}
-		stop()
 	}
 	if err := budgetCtx.Err(); err != nil {
 		facts.Warnings = append(facts.Warnings, "probe budget: "+err.Error())
@@ -128,6 +86,8 @@ func collect(ctx context.Context, c collector) (facts Facts) {
 	return facts
 }
 
+// Render returns a deterministic description of the host. It contains no
+// timestamps or resource measurements.
 func (f Facts) Render() string {
 	unknown := func(s string) string {
 		if strings.TrimSpace(s) == "" {
@@ -135,79 +95,36 @@ func (f Facts) Render() string {
 		}
 		return s
 	}
-	root, sudo := "no", "n/a"
+	root := "no"
 	if f.IsRoot {
 		root = "yes"
-	}
-	if f.SudoNoPassword != nil {
-		if *f.SudoNoPassword {
-			sudo = "yes"
-		} else {
-			sudo = "no"
-		}
-	}
-	load := "n/a"
-	if f.LoadKnown {
-		load = fmt.Sprintf("%.2f %.2f %.2f", f.Load1, f.Load5, f.Load15)
-	}
-	mem := "n/a"
-	if f.MemTotalBytes > 0 {
-		mem = fmt.Sprintf("%s avail / %s", formatBytes(f.MemAvailableBytes), formatBytes(f.MemTotalBytes))
 	}
 	lines := []string{
 		fmt.Sprintf("host: %s  (%s %s, %s)  distro: %s %s", unknown(f.Hostname), unknown(f.OS), unknown(f.Kernel), unknown(f.Arch), unknown(f.Distro), f.DistroVersion),
 		fmt.Sprintf("init: %s  pkg: %s  container: %s  virtualization: %s", unknown(f.Init), unknown(strings.Join(f.PackageManagers, ",")), unknown(f.Container), unknown(f.Virtualization)),
-		fmt.Sprintf("user: %s (uid %d)  root: %s  sudo -n: %s", unknown(f.User), f.UID, root, sudo),
-		fmt.Sprintf("up: %s  load: %s  mem: %s", formatDuration(f.UptimeSeconds), load, mem),
-	}
-	for _, d := range f.Disks {
-		used := 0.0
-		if d.TotalBytes > 0 {
-			used = 100 * float64(d.TotalBytes-d.FreeBytes) / float64(d.TotalBytes)
-		}
-		lines = append(lines, fmt.Sprintf("disk: %s %.0f%% used (%s free)", d.Path, used, formatBytes(d.FreeBytes)))
-	}
-	lines = append(lines, fmt.Sprintf("term-llm: %s  collected: %s", unknown(f.TermLLMVersion), f.CollectedAt.Format(time.RFC3339)))
-	if len(f.Warnings) > 0 {
-		w := append([]string(nil), f.Warnings...)
-		sort.Strings(w)
-		lines = append(lines, "warnings: "+strings.Join(w, "; "))
+		fmt.Sprintf("user: %s (uid %d)  root: %s", unknown(f.User), f.UID, root),
 	}
 	return "```text\n" + strings.Join(lines, "\n") + "\n```"
 }
 
-func formatBytes(n uint64) string {
-	const g = uint64(1 << 30)
-	if n >= g {
-		return fmt.Sprintf("%.1fG", float64(n)/float64(g))
-	}
-	return fmt.Sprintf("%dM", n/(1<<20))
-}
-func formatDuration(seconds int64) string {
-	if seconds < 0 {
-		return "n/a"
-	}
-	d := seconds / 86400
-	h := (seconds % 86400) / 3600
-	return fmt.Sprintf("%dd %dh", d, h)
-}
-
 var factCache struct {
 	sync.Mutex
-	at    time.Time
 	value string
 }
-var cacheNow = time.Now
 var cacheCollect = Collect
 
+// RenderCached collects once per process. A degraded collection (probe
+// timeouts or errors) is not cached, so a later render can complete it.
 func RenderCached(ctx context.Context) string {
 	factCache.Lock()
 	defer factCache.Unlock()
-	now := cacheNow()
-	if factCache.value != "" && now.Sub(factCache.at) < cacheTTL {
+	if factCache.value != "" {
 		return factCache.value
 	}
-	factCache.value = cacheCollect(ctx).Render()
-	factCache.at = now
-	return factCache.value
+	facts := cacheCollect(ctx)
+	rendered := facts.Render()
+	if len(facts.Warnings) == 0 {
+		factCache.value = rendered
+	}
+	return rendered
 }

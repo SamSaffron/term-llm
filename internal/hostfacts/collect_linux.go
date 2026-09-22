@@ -5,11 +5,8 @@ package hostfacts
 import (
 	"bufio"
 	"context"
-	"fmt"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"syscall"
 )
 
 func collectPlatform(ctx context.Context, c collector, f *Facts) {
@@ -37,27 +34,6 @@ func collectPlatform(ctx context.Context, c collector, f *Facts) {
 	if _, err := c.readFile(filepath.Join(c.root, "run/systemd/system")); err == nil {
 		f.Init = "systemd"
 	}
-	if b := read("proc/uptime"); b != nil {
-		fields := strings.Fields(string(b))
-		if len(fields) > 0 {
-			v, _ := strconv.ParseFloat(fields[0], 64)
-			f.UptimeSeconds = int64(v)
-		}
-	}
-	if b := read("proc/loadavg"); b != nil {
-		fields := strings.Fields(string(b))
-		if len(fields) >= 3 {
-			f.Load1, _ = strconv.ParseFloat(fields[0], 64)
-			f.Load5, _ = strconv.ParseFloat(fields[1], 64)
-			f.Load15, _ = strconv.ParseFloat(fields[2], 64)
-			f.LoadKnown = true
-		}
-	}
-	if b := read("proc/meminfo"); b != nil {
-		vals := parseMeminfo(string(b))
-		f.MemTotalBytes = vals["MemTotal"] * 1024
-		f.MemAvailableBytes = vals["MemAvailable"] * 1024
-	}
 	if _, err := c.readFile(filepath.Join(c.root, ".dockerenv")); err == nil {
 		f.Container = "docker"
 	} else if _, err := c.readFile(filepath.Join(c.root, "run/.containerenv")); err == nil {
@@ -67,12 +43,6 @@ func collectPlatform(ctx context.Context, c collector, f *Facts) {
 	}
 	if b := read("proc/version"); strings.Contains(strings.ToLower(string(b)), "microsoft") {
 		f.Container = "wsl"
-	}
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(c.root, &st); err == nil {
-		f.Disks = []DiskUsage{{Path: "/", Mount: "/", TotalBytes: st.Blocks * uint64(st.Bsize), FreeBytes: st.Bavail * uint64(st.Bsize)}}
-	} else {
-		f.Warnings = append(f.Warnings, fmt.Sprintf("statfs /: %v", err))
 	}
 	if ctx.Err() != nil {
 		f.Warnings = append(f.Warnings, "platform probes: "+ctx.Err().Error())
@@ -86,18 +56,6 @@ func parseKeyValues(s string) map[string]string {
 		line := sc.Text()
 		if i := strings.IndexByte(line, '='); i > 0 {
 			out[line[:i]] = line[i+1:]
-		}
-	}
-	return out
-}
-func parseMeminfo(s string) map[string]uint64 {
-	out := map[string]uint64{}
-	sc := bufio.NewScanner(strings.NewReader(s))
-	for sc.Scan() {
-		fields := strings.Fields(sc.Text())
-		if len(fields) >= 2 {
-			key := strings.TrimSuffix(fields[0], ":")
-			out[key], _ = strconv.ParseUint(fields[1], 10, 64)
 		}
 	}
 	return out
