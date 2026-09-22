@@ -39,15 +39,20 @@ func TestParseCursorModel(t *testing.T) {
 
 func TestCursorModelArgument(t *testing.T) {
 	tests := map[string]string{
-		"auto-smart":              "auto",
-		"grok-4.5":                "cursor-grok-4.5-high",
-		"grok-4.5-fast":           "cursor-grok-4.5-high-fast",
-		"grok-4.5-low":            "cursor-grok-4.5-low",
-		"grok-4.5-high-fast":      "cursor-grok-4.5-high-fast",
-		"grok-4.6":                "grok-4.6",
-		"grok-4.6-fast":           "grok-4.6-fast",
-		"grok-4.6-high":           "cursor-grok-4.6-high",
-		"grok-4.6-high-fast":      "cursor-grok-4.6-high-fast",
+		"auto-smart":         "auto",
+		"grok-4.5":           "cursor-grok-4.5-high",
+		"grok-4.5-fast":      "cursor-grok-4.5-high-fast",
+		"grok-4.5-low":       "cursor-grok-4.5-low",
+		"grok-4.5-high-fast": "cursor-grok-4.5-high-fast",
+		"grok-4.6":           "cursor-grok-4.6-high",
+		"grok-4.6-fast":      "cursor-grok-4.6-high-fast",
+		"grok-4.6-high":      "cursor-grok-4.6-high",
+		"grok-4.6-high-fast": "cursor-grok-4.6-high-fast",
+		// Grok 4.7 and newer are listed without Cursor's wire-only prefix.
+		"grok-4.7":                "grok-4.7-high",
+		"grok-4.7-high":           "grok-4.7-high",
+		"grok-4.7-xhigh":          "grok-4.7-xhigh",
+		"grok-4.7-high-fast":      "grok-4.7-high-fast",
 		"composer-2.5":            "composer-2.5",
 		"composer-2.5-extra-high": "composer-2.5-extra-high",
 	}

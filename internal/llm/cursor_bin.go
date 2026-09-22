@@ -116,14 +116,15 @@ func cursorModelArgument(model, effort string, fast bool) string {
 	if model == "" || model == "auto-smart" {
 		return "auto"
 	}
-	if model == "grok-4.5" && effort == "" {
-		// Cursor no longer exposes an effort-less Grok 4.5 model ID. Keep the
-		// convenient base alias and map it to the catalog's default variant.
+	if strings.HasPrefix(model, "grok-4.") && effort == "" {
+		// Cursor exposes no effort-less Grok 4.x model IDs. Keep the convenient
+		// base aliases and map them to the catalog's default variant.
 		effort = "high"
 	}
-	if strings.HasPrefix(model, "grok-") && effort != "" {
-		// Model discovery removes Cursor's wire-only prefix from Grok IDs. Add
-		// it back when selecting a concrete effort variant.
+	if effort != "" && cursorGrokWirePrefixRequired(model) {
+		// Cursor lists its Grok 4.5 and 4.6 tunings under a wire-only "cursor-"
+		// prefix that model discovery strips. Newer families (4.7 and up) are
+		// listed unprefixed, so only restore the prefix where Cursor uses it.
 		model = "cursor-" + model
 	}
 	if effort != "" {
@@ -133,6 +134,19 @@ func cursorModelArgument(model, effort string, fast bool) string {
 		model += "-fast"
 	}
 	return model
+}
+
+// cursorGrokWirePrefixedFamilies lists the Grok families Cursor still serves
+// under its "cursor-" wire prefix. Verified against `cursor-agent models`.
+var cursorGrokWirePrefixedFamilies = []string{"grok-4.5", "grok-4.6"}
+
+func cursorGrokWirePrefixRequired(model string) bool {
+	for _, family := range cursorGrokWirePrefixedFamilies {
+		if model == family || strings.HasPrefix(model, family+"-") {
+			return true
+		}
+	}
+	return false
 }
 
 func ValidateCursorBinModel(model string) error {
