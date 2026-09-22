@@ -26,7 +26,7 @@ const (
 	chatGPTOriginator = "term-llm"
 	// /codex/models requires this semver query parameter to select the catalog
 	// protocol. It is not our application identity and is never sent as a header.
-	chatGPTModelsClientVersion = "0.153.3"
+	chatGPTModelsClientVersion = "0.156.0"
 	chatGPTModelsCacheFile     = "chatgpt_models_cache_v2.json"
 	chatGPTModelsCacheTTL      = 5 * time.Minute
 	chatGPTModelsTimeout       = 5 * time.Second
