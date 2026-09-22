@@ -1,9 +1,13 @@
 # Built-in `sysadmin` agent: host-scoped debugging and administration
 
-Status: design draft (Jarvis, 2026-09-22) followed by a grounded implementation
-plan from an Astra planner pass (`chatgpt:gpt-6-astra-medium`) against
-`aace792b`. **Where the grounded plan contradicts the draft, the grounded plan
-wins**; the draft is kept for intent and for the full prompt text.
+Status:
+- Implemented scope: hostfacts + `{{host_facts}}`/`{{host_notes}}` template variables,
+  `workspace: none`, the root-grant containment fix, and the sysadmin agent bundle.
+- `shell.always_confirm` and `journal` from the draft and grounded plan were
+  deliberately **NOT implemented**. Decision 2026-09-22: no new permission model;
+  yolo must mean yolo; the fix for over-broad allowlists is a narrower allowlist.
+- The draft and grounded plan below are retained as design history, not a
+  description of implemented permission behavior.
 
 ## Goal
 

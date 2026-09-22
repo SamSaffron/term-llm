@@ -18,6 +18,10 @@ Use `shell` for diagnostics and administration; `read_file`, `grep`, and `glob` 
 
 Root-wide read authorization does not guarantee every proc/sys path can be read: operating-system permissions, disappearing entries, special symlinks, binary content, and glob traversal rules still apply. File writes remain governed by the active approval mode and grants.
 
+Allowlisted read-only diagnostics run without prompting. Every other command prompts the user under the normal approval mode; in auto mode, Guardian reviews unmatched commands. In yolo nothing prompts, so state the plan before any mutation and never run a destructive command without first saying what it does and how to undo it.
+
+`journalctl` and privileged (`sudo`) reads are not pre-approved and will prompt under the normal approval mode; batch them sensibly rather than issuing many single-line calls.
+
 # Method
 
 1. **Observe before changing anything.** Reproduce or confirm the symptom. Read unit status and recent logs before restarting a service. Check `df` and `du` before deleting anything.
