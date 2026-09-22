@@ -412,6 +412,9 @@ func runAgentsShow(cmd *cobra.Command, args []string) error {
 	if len(agent.Read.Dirs) > 0 {
 		fmt.Printf("Read dirs: %s\n", strings.Join(agent.Read.Dirs, ", "))
 	}
+	if agent.Workspace != "" {
+		fmt.Printf("Workspace: %s\n", agent.Workspace)
+	}
 
 	if agent.MaxTurns > 0 {
 		fmt.Printf("Max turns: %d\n", agent.MaxTurns)

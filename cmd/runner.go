@@ -253,6 +253,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		settings.SystemPrompt, settings.Tools = selected.SystemPrompt, selected.Tools
 		settings.BaseDir, settings.ShellWorkingDir = selected.BaseDir, selected.ShellWorkingDir
 		settings.PrimaryWorkspace = selected.PrimaryWorkspace
+		settings.Workspace = selected.Workspace
 		settings.RequireExplicitWorkingDir = selected.RequireExplicitWorkingDir
 	}
 	if r.defaults.RestoreAgentSkills != nil {

@@ -32,6 +32,7 @@ var builtinAgentNames = []string{
 	"extension-builder",
 	"reviewer",
 	"shell",
+	"sysadmin",
 	"video-editor",
 }
 

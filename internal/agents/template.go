@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/hostfacts"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -63,7 +64,9 @@ type TemplateContext struct {
 	FileCount string // Number of files
 
 	// System
-	OS string // Operating system
+	OS        string // Operating system
+	HostFacts string // Lazily collected host snapshot
+	HostNotes string // Lazily loaded user-maintained host notes
 
 	// Runtime surface (chat, console, web, telegram, jobs)
 	Platform string
@@ -100,7 +103,7 @@ type TemplateContext struct {
 // when template variables are not used.
 func NewTemplateContext() TemplateContext {
 	cwd, _ := os.Getwd()
-	return newTemplateContextInDir(cwd, true, true, true, false)
+	return newTemplateContextInDir(cwd, true, true, true, false, false, false)
 }
 
 // NewTemplateContextForTemplate creates a context, only computing expensive values
@@ -118,7 +121,9 @@ func NewTemplateContextForTemplateInDir(template, dir string) TemplateContext {
 	needsGitDiffStat := vars["git_diff_stat"]
 	needsAgents := vars["agents"]
 	needsHandoverDir := vars["handover_dir"] || vars["handover_path"]
-	return newTemplateContextInDir(dir, needsGitInfo, needsGitDiffStat, needsAgents, needsHandoverDir)
+	needsHostFacts := vars["host_facts"]
+	needsHostNotes := vars["host_notes"]
+	return newTemplateContextInDir(dir, needsGitInfo, needsGitDiffStat, needsAgents, needsHandoverDir, needsHostFacts, needsHostNotes)
 }
 
 func templateVariables(template string) map[string]bool {
@@ -132,7 +137,7 @@ func templateVariables(template string) map[string]bool {
 }
 
 // newTemplateContextInDir creates a context with optional expensive computations.
-func newTemplateContextInDir(dir string, computeGitInfo, computeGitDiffStat, computeAgents, computeHandoverDir bool) TemplateContext {
+func newTemplateContextInDir(dir string, computeGitInfo, computeGitDiffStat, computeAgents, computeHandoverDir, computeHostFacts, computeHostNotes bool) TemplateContext {
 	now := time.Now()
 	utcNow := now.UTC()
 	zoneAbbr, zoneOffsetSeconds := now.Zone()
@@ -198,6 +203,13 @@ func newTemplateContextInDir(dir string, computeGitInfo, computeGitDiffStat, com
 		if p, err := session.GetHandoverPath(ctx.Cwd, ctx.Date); err == nil {
 			ctx.HandoverPath = p
 		}
+	}
+
+	if computeHostFacts {
+		ctx.HostFacts = hostfacts.RenderCached(context.Background())
+	}
+	if computeHostNotes {
+		ctx.HostNotes = hostfacts.Notes()
 	}
 
 	return ctx
@@ -339,6 +351,10 @@ func ExpandTemplate(text string, ctx TemplateContext) string {
 			return ctx.FileCount
 		case "os":
 			return ctx.OS
+		case "host_facts":
+			return ctx.HostFacts
+		case "host_notes":
+			return ctx.HostNotes
 		case "platform":
 			if ctx.Platform == "" {
 				// Leave token untouched when platform context is unavailable.

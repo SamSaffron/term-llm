@@ -84,6 +84,7 @@ func TestIsBuiltinAgent(t *testing.T) {
 		{"widget-builder", true},
 		{"reviewer", true},
 		{"shell", true},
+		{"sysadmin", true},
 		{"nonexistent", false},
 		{"", false},
 	}
@@ -124,6 +125,7 @@ func TestBuiltinAgentConfigs(t *testing.T) {
 		{"widget-builder", true, 500, true, false, false, true},
 		{"reviewer", true, 200, true, true, true, false},
 		{"shell", true, 200, false, false, false, true},
+		{"sysadmin", true, 300, true, true, false, true},
 		{"video-editor", true, 200, true, false, false, false},
 	}
 
@@ -259,6 +261,7 @@ func TestBuiltinPromptsUseCapabilityAwareDirectoryGuidance(t *testing.T) {
 		{name: "planner", guidance: shellGuidance},
 		{name: "reviewer", guidance: shellGuidance},
 		{name: "shell", guidance: shellGuidance},
+		{name: "sysadmin", guidance: "Always use absolute paths"},
 		{name: "video-editor", guidance: shellGuidance},
 		{name: "widget-builder", guidance: shellGuidance},
 	}
@@ -705,7 +708,7 @@ func TestBuiltinTimeGroundingIsExplicitOnlyForTimeAwareAgents(t *testing.T) {
 		"changelog": true, "codebase": true, "commit-message": true,
 		"contain": true, "developer": true, "editor": true,
 		"extension-builder": true, "planner": true, "reviewer": true,
-		"shell": true, "web-researcher": true, "widget-builder": true,
+		"shell": true, "sysadmin": true, "web-researcher": true, "widget-builder": true,
 	}
 	for _, name := range builtinAgentNames {
 		agent, err := getBuiltinAgent(name)
@@ -738,6 +741,7 @@ func TestGetBuiltinAgentNames(t *testing.T) {
 		"extension-builder": true,
 		"reviewer":          true,
 		"shell":             true,
+		"sysadmin":          true,
 		"video-editor":      true,
 	}
 

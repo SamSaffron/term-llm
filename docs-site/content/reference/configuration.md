@@ -1004,3 +1004,7 @@ When edit retries fail, diagnostics can capture prompts, partial responses, and 
 - [Sessions](/reference/sessions/)
 - [Skills](/guides/skills/)
 - [Text embeddings](/guides/text-embeddings/)
+
+### Host-scoped agents
+
+An agent bundle may set `workspace: none` to retain its execution directory without treating it as a primary workspace. This suppresses primary-workspace confirmation and `manage_workspace`, but does not remove independent read, write, shell, project, Guardian, or yolo authority.

@@ -260,3 +260,7 @@ guardian:
 Without explicit Guardian overrides, Guardian uses the configured fast model for the global `default_provider`, switching to its `fast_provider` when configured. Per-command, per-surface, session, and agent provider/model overrides do not change that target. `guardian.provider` explicitly selects another provider and its fast model without following that provider's `fast_provider`; `guardian.model` is authoritative and stays paired with `guardian.provider`, or with the global default provider when no Guardian provider is set. For compatibility, a custom or local provider with no `fast_model` uses its configured `model` before considering a built-in fast default.
 
 Privacy note: Guardian review receives approval evidence, including recent transcript snippets, tool call arguments/results, and deterministic approval context. If `guardian.provider` points at a different provider than your chat session—or fast resolution selects a separate `fast_provider`—that evidence is sent to the Guardian provider too. Pin an appropriate provider/model if that routing is not acceptable.
+
+### Host-scoped workspace policy
+
+Agents may set `workspace: none` to keep a runtime shell directory without proposing it as a primary workspace. In that mode `manage_workspace` is not advertised and primary-workspace confirmation is skipped, including for inherited parent proposals. This setting does not revoke separately configured file or shell authority.
