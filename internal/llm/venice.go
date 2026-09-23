@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -122,143 +123,162 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 	}
 
 	return newEventStreamWithCancelHook(ctx, func() { _ = resp.Body.Close() }, func(ctx context.Context, send eventSender) error {
-		defer resp.Body.Close()
+		return readVeniceStream(p.name, resp.Body, send)
+	}), nil
+}
 
-		scanner := bufio.NewScanner(resp.Body)
-		buf := make([]byte, 0, 64*1024)
-		scanner.Buffer(buf, 1024*1024)
+// veniceStreamState keeps the provider's inline reasoning and tool-call state
+// across SSE deltas. Unlike the generic compat parser, Venice may put reasoning
+// in both a dedicated field and split <think> tags in content.
+type veniceStreamState struct {
+	name           string
+	send           eventSender
+	toolState      *compatToolState
+	lastUsage      *Usage
+	lastEventType  string
+	inlineThink    inlineThinkParser
+	sawVisibleText bool
+}
 
-		toolState := newCompatToolState()
-		var lastUsage *Usage
-		var lastEventType string
-		var reasoningBuilder strings.Builder
-		var inlineThink inlineThinkParser
-		sawVisibleText := false
+func readVeniceStream(name string, body io.ReadCloser, send eventSender) error {
+	defer body.Close()
 
-		for scanner.Scan() {
-			line := scanner.Text()
-			if strings.HasPrefix(line, "event: ") {
-				lastEventType = strings.TrimPrefix(line, "event: ")
-				continue
-			}
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
-			if data == "[DONE]" {
-				break
-			}
-
-			var chatResp oaiChatResponse
-			if err := json.Unmarshal([]byte(data), &chatResp); err != nil {
-				if lastEventType == "error" {
-					return fmt.Errorf("%s API error: %s", p.name, strings.TrimSpace(data))
-				}
-				lastEventType = ""
-				continue
-			}
-			if lastEventType == "error" || chatResp.Error != nil {
-				errMsg := "unknown error"
-				if chatResp.Error != nil {
-					errMsg = chatResp.Error.Message
-				}
-				return fmt.Errorf("%s API error: %s", p.name, errMsg)
-			}
-			if chatResp.Usage != nil {
-				cached := chatResp.Usage.PromptTokensDetails.CachedTokens
-				lastUsage = &Usage{
-					InputTokens:            chatResp.Usage.PromptTokens - cached,
-					OutputTokens:           chatResp.Usage.CompletionTokens,
-					CachedInputTokens:      cached,
-					ProviderRawInputTokens: chatResp.Usage.PromptTokens,
-					ProviderTotalTokens:    chatResp.Usage.TotalTokens,
-					ReasoningTokens:        chatResp.Usage.CompletionTokensDetails.ReasoningTokens,
-				}
-			}
-			for _, choice := range chatResp.Choices {
-				if choice.Delta != nil {
-					reasoningDelta := choice.Delta.Reasoning
-					if reasoningDelta == "" {
-						reasoningDelta = choice.Delta.ReasoningContent
-					}
-					if content, ok := choice.Delta.Content.(string); ok && content != "" {
-						if !shouldParseVeniceInlineThink(&inlineThink, content, sawVisibleText) {
-							if !isLeadingReasoningWhitespaceArtifact(content, reasoningDelta, sawVisibleText) {
-								if hasVisibleTextDelta(content) {
-									sawVisibleText = true
-								}
-								if err := send.Send(Event{Type: EventTextDelta, Text: content}); err != nil {
-									return err
-								}
-							}
-						} else {
-							for _, part := range inlineThink.Process(content) {
-								if part.Reasoning {
-									reasoningBuilder.WriteString(part.Text)
-									if err := send.Send(Event{Type: EventReasoningDelta, Text: part.Text, ReasoningKind: ReasoningKindRaw}); err != nil {
-										return err
-									}
-									continue
-								}
-								if !isLeadingReasoningWhitespaceArtifact(part.Text, reasoningDelta, sawVisibleText) {
-									if hasVisibleTextDelta(part.Text) {
-										sawVisibleText = true
-									}
-									if err := send.Send(Event{Type: EventTextDelta, Text: part.Text}); err != nil {
-										return err
-									}
-								}
-							}
-						}
-					}
-					if reasoningDelta != "" {
-						reasoningBuilder.WriteString(reasoningDelta)
-						if err := send.Send(Event{Type: EventReasoningDelta, Text: reasoningDelta, ReasoningKind: ReasoningKindRaw}); err != nil {
-							return err
-						}
-					}
-					if len(choice.Delta.ToolCalls) > 0 {
-						toolState.Add(choice.Delta.ToolCalls)
-					}
-				}
-			}
-			lastEventType = ""
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	state := veniceStreamState{name: name, send: send, toolState: newCompatToolState()}
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "event: ") {
+			state.lastEventType = strings.TrimPrefix(line, "event: ")
+			continue
 		}
-		if err := scanner.Err(); err != nil {
-			return fmt.Errorf("%s streaming error: %w", p.name, err)
+		if !strings.HasPrefix(line, "data: ") {
+			continue
 		}
-		for _, part := range inlineThink.Flush() {
-			if part.Reasoning {
-				reasoningBuilder.WriteString(part.Text)
-				if err := send.Send(Event{Type: EventReasoningDelta, Text: part.Text, ReasoningKind: ReasoningKindRaw}); err != nil {
-					return err
-				}
-				continue
-			}
-			if part.Text != "" {
-				if hasVisibleTextDelta(part.Text) {
-					sawVisibleText = true
-				}
-				if err := send.Send(Event{Type: EventTextDelta, Text: part.Text}); err != nil {
-					return err
-				}
-			}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
 		}
-		if err := toolState.Validate(); err != nil {
+		if err := state.processData(data); err != nil {
 			return err
 		}
-		for _, call := range toolState.Calls() {
-			if err := send.Send(Event{Type: EventToolCall, Tool: &call}); err != nil {
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("%s streaming error: %w", name, err)
+	}
+	return state.finish()
+}
+
+func (s *veniceStreamState) processData(data string) error {
+	var chatResp oaiChatResponse
+	if err := json.Unmarshal([]byte(data), &chatResp); err != nil {
+		if s.lastEventType == "error" {
+			return fmt.Errorf("%s API error: %s", s.name, strings.TrimSpace(data))
+		}
+		s.lastEventType = ""
+		return nil
+	}
+	if s.lastEventType == "error" || chatResp.Error != nil {
+		errMsg := "unknown error"
+		if chatResp.Error != nil {
+			errMsg = chatResp.Error.Message
+		}
+		return fmt.Errorf("%s API error: %s", s.name, errMsg)
+	}
+	if chatResp.Usage != nil {
+		cached := chatResp.Usage.PromptTokensDetails.CachedTokens
+		s.lastUsage = &Usage{
+			InputTokens:            chatResp.Usage.PromptTokens - cached,
+			OutputTokens:           chatResp.Usage.CompletionTokens,
+			CachedInputTokens:      cached,
+			ProviderRawInputTokens: chatResp.Usage.PromptTokens,
+			ProviderTotalTokens:    chatResp.Usage.TotalTokens,
+			ReasoningTokens:        chatResp.Usage.CompletionTokensDetails.ReasoningTokens,
+		}
+	}
+	for _, choice := range chatResp.Choices {
+		if choice.Delta != nil {
+			if err := s.processDelta(choice.Delta); err != nil {
 				return err
 			}
 		}
-		if lastUsage != nil {
-			if err := send.Send(Event{Type: EventUsage, Use: lastUsage}); err != nil {
+	}
+	s.lastEventType = ""
+	return nil
+}
+
+func (s *veniceStreamState) processDelta(delta *oaiMessage) error {
+	reasoning := delta.Reasoning
+	if reasoning == "" {
+		reasoning = delta.ReasoningContent
+	}
+	if content, ok := delta.Content.(string); ok && content != "" {
+		if shouldParseVeniceInlineThink(&s.inlineThink, content, s.sawVisibleText) {
+			for _, part := range s.inlineThink.Process(content) {
+				if part.Reasoning {
+					if err := s.sendReasoning(part.Text); err != nil {
+						return err
+					}
+				} else if err := s.sendText(part.Text, reasoning); err != nil {
+					return err
+				}
+			}
+		} else if err := s.sendText(content, reasoning); err != nil {
+			return err
+		}
+	}
+	if reasoning != "" {
+		if err := s.sendReasoning(reasoning); err != nil {
+			return err
+		}
+	}
+	if len(delta.ToolCalls) > 0 {
+		s.toolState.Add(delta.ToolCalls)
+	}
+	return nil
+}
+
+func (s *veniceStreamState) sendText(text, reasoning string) error {
+	if isLeadingReasoningWhitespaceArtifact(text, reasoning, s.sawVisibleText) {
+		return nil
+	}
+	if hasVisibleTextDelta(text) {
+		s.sawVisibleText = true
+	}
+	return s.send.Send(Event{Type: EventTextDelta, Text: text})
+}
+
+func (s *veniceStreamState) sendReasoning(text string) error {
+	return s.send.Send(Event{Type: EventReasoningDelta, Text: text, ReasoningKind: ReasoningKindRaw})
+}
+
+func (s *veniceStreamState) finish() error {
+	for _, part := range s.inlineThink.Flush() {
+		if part.Reasoning {
+			if err := s.sendReasoning(part.Text); err != nil {
+				return err
+			}
+		} else if part.Text != "" {
+			// Pending content at EOF was never paired with a reasoning delta.
+			if err := s.sendText(part.Text, ""); err != nil {
 				return err
 			}
 		}
-		return send.Send(Event{Type: EventDone})
-	}), nil
+	}
+	if err := s.toolState.Validate(); err != nil {
+		return err
+	}
+	for _, call := range s.toolState.Calls() {
+		if err := s.send.Send(Event{Type: EventToolCall, Tool: &call}); err != nil {
+			return err
+		}
+	}
+	if s.lastUsage != nil {
+		if err := s.send.Send(Event{Type: EventUsage, Use: s.lastUsage}); err != nil {
+			return err
+		}
+	}
+	return s.send.Send(Event{Type: EventDone})
 }
 
 func shouldParseVeniceInlineThink(parser *inlineThinkParser, content string, sawVisibleText bool) bool {

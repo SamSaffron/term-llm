@@ -5,11 +5,51 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
 )
+
+func TestCreateProviderFromConfigKeyProviderEnvFallback(t *testing.T) {
+	cases := []struct {
+		name   string
+		kind   config.ProviderType
+		envKey string
+		want   Provider
+	}{
+		{"zen", config.ProviderTypeZen, "ZEN_API_KEY", &ZenProvider{}},
+		{"venice", config.ProviderTypeVenice, "VENICE_API_KEY", &VeniceProvider{}},
+		{"nearai", config.ProviderTypeNearAI, "NEARAI_API_KEY", &NearAIProvider{}},
+		{"sambanova", config.ProviderTypeSambaNova, "SAMBANOVA_API_KEY", &SambaNovaProvider{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(tc.envKey, "  env-key  ")
+			provider, err := createProviderFromConfig(tc.name, &config.ProviderConfig{Type: tc.kind})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reflect.TypeOf(provider) != reflect.TypeOf(tc.want) {
+				t.Fatalf("provider type = %T, want %T", provider, tc.want)
+			}
+		})
+	}
+}
+
+func TestCreateProviderFromConfigClaudeBinPreservesHooks(t *testing.T) {
+	provider, err := createProviderFromConfig("claude-bin", &config.ProviderConfig{
+		Type: config.ProviderTypeClaudeBin, EnableHooks: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claude, ok := provider.(*ClaudeBinProvider)
+	if !ok || !claude.enableHooks {
+		t.Fatalf("provider = %T, want ClaudeBinProvider with hooks enabled", provider)
+	}
+}
 
 func TestCreateProviderFromConfigRejectsInvalidOllamaThinkLevel(t *testing.T) {
 	_, err := createProviderFromConfig("local", &config.ProviderConfig{

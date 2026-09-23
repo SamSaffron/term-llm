@@ -180,30 +180,11 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 				return nil, fmt.Errorf("provider anthropic: %w", err)
 			}
 			return WrapWithRetry(provider, DefaultRetryConfig()), nil
-		case config.ProviderTypeClaudeBin:
-			// claude-bin doesn't need API key, can create directly
-			if err := ValidateClaudeBinModel(model); err != nil {
+		case config.ProviderTypeClaudeBin, config.ProviderTypeGrokBin, config.ProviderTypeCursorBin, config.ProviderTypeAgyBin:
+			provider, err := newBinProvider(providerType, model, nil, false)
+			if err != nil {
 				return nil, err
 			}
-			provider := NewClaudeBinProvider(model, nil)
-			return WrapWithRetry(provider, DefaultRetryConfig()), nil
-		case config.ProviderTypeGrokBin:
-			if err := ValidateGrokBinModel(model); err != nil {
-				return nil, err
-			}
-			provider := NewGrokBinProvider(model, nil)
-			return WrapWithRetry(provider, DefaultRetryConfig()), nil
-		case config.ProviderTypeCursorBin:
-			if err := ValidateCursorBinModel(model); err != nil {
-				return nil, err
-			}
-			provider := NewCursorBinProvider(model, nil)
-			return WrapWithRetry(provider, DefaultRetryConfig()), nil
-		case config.ProviderTypeAgyBin:
-			if err := ValidateAgyBinModel(model); err != nil {
-				return nil, err
-			}
-			provider := NewAgyBinProvider(model, nil)
 			return WrapWithRetry(provider, DefaultRetryConfig()), nil
 		case config.ProviderTypeOpenRouter:
 			provider, err := createProviderFromConfig(name, &config.ProviderConfig{Type: config.ProviderTypeOpenRouter, Model: model, ResolvedAPIKey: os.Getenv("OPENROUTER_API_KEY")})
@@ -311,6 +292,36 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 		return nil, err
 	}
 	return WrapWithRetry(provider, DefaultRetryConfig()), nil
+}
+
+// newBinProvider validates model overrides before creating a CLI-backed provider.
+func newBinProvider(providerType config.ProviderType, model string, env map[string]string, enableHooks bool) (Provider, error) {
+	switch providerType {
+	case config.ProviderTypeClaudeBin:
+		if err := ValidateClaudeBinModel(model); err != nil {
+			return nil, err
+		}
+		provider := NewClaudeBinProvider(model, env)
+		provider.SetEnableHooks(enableHooks)
+		return provider, nil
+	case config.ProviderTypeGrokBin:
+		if err := ValidateGrokBinModel(model); err != nil {
+			return nil, err
+		}
+		return NewGrokBinProvider(model, env), nil
+	case config.ProviderTypeCursorBin:
+		if err := ValidateCursorBinModel(model); err != nil {
+			return nil, err
+		}
+		return NewCursorBinProvider(model, env), nil
+	case config.ProviderTypeAgyBin:
+		if err := ValidateAgyBinModel(model); err != nil {
+			return nil, err
+		}
+		return NewAgyBinProvider(model, env), nil
+	default:
+		return nil, fmt.Errorf("unsupported bin provider type %q", providerType)
+	}
 }
 
 // NewProviderByNameNoRetry creates the same provider as NewProviderByName but
@@ -464,6 +475,32 @@ func newProviderInternal(cfg *config.Config) (Provider, error) {
 	return createProviderFromConfig(cfg.DefaultProvider, &providerCfg)
 }
 
+// newConfiguredKeyProvider handles providers whose configured keys can fall back to an env var.
+func newConfiguredKeyProvider(name string, providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
+	var envKey string
+	var constructor func(string, string) Provider
+	switch providerType {
+	case config.ProviderTypeZen:
+		envKey, constructor = "ZEN_API_KEY", func(key, model string) Provider { return NewZenProvider(key, model) }
+	case config.ProviderTypeVenice:
+		envKey, constructor = "VENICE_API_KEY", func(key, model string) Provider { return NewVeniceProvider(key, model) }
+	case config.ProviderTypeNearAI:
+		envKey, constructor = "NEARAI_API_KEY", func(key, model string) Provider { return NewNearAIProvider(key, model) }
+	case config.ProviderTypeSambaNova:
+		envKey, constructor = "SAMBANOVA_API_KEY", func(key, model string) Provider { return NewSambaNovaProvider(key, model) }
+	default:
+		return nil, fmt.Errorf("unsupported key provider type %q", providerType)
+	}
+	apiKey := strings.TrimSpace(cfg.ResolvedAPIKey)
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(os.Getenv(envKey))
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("provider %q requires %s or explicit config", name, envKey)
+	}
+	return constructor(apiKey, cfg.Model), nil
+}
+
 // createProviderFromConfig creates a provider from a ProviderConfig.
 func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider, error) {
 	// Resolve lazy config values (op://, srv://, $()) before creating provider
@@ -508,15 +545,8 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 	case config.ProviderTypeGemini:
 		return NewGeminiProvider(cfg.ResolvedAPIKey, cfg.Model), nil
 
-	case config.ProviderTypeZen:
-		apiKey := strings.TrimSpace(cfg.ResolvedAPIKey)
-		if apiKey == "" {
-			apiKey = strings.TrimSpace(os.Getenv("ZEN_API_KEY"))
-		}
-		if apiKey == "" {
-			return nil, fmt.Errorf("provider %q requires ZEN_API_KEY or explicit config", name)
-		}
-		return NewZenProvider(apiKey, cfg.Model), nil
+	case config.ProviderTypeZen, config.ProviderTypeVenice, config.ProviderTypeNearAI, config.ProviderTypeSambaNova:
+		return newConfiguredKeyProvider(name, providerType, cfg)
 
 	case config.ProviderTypeOpenCodeGo:
 		if strings.TrimSpace(cfg.URL) != "" {
@@ -535,64 +565,11 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 		}
 		return NewXAIProvider(apiKey, cfg.Model), nil
 
-	case config.ProviderTypeVenice:
-		apiKey := strings.TrimSpace(cfg.ResolvedAPIKey)
-		if apiKey == "" {
-			apiKey = strings.TrimSpace(os.Getenv("VENICE_API_KEY"))
-		}
-		if apiKey == "" {
-			return nil, fmt.Errorf("provider %q requires VENICE_API_KEY or explicit config", name)
-		}
-		return NewVeniceProvider(apiKey, cfg.Model), nil
-
-	case config.ProviderTypeNearAI:
-		apiKey := strings.TrimSpace(cfg.ResolvedAPIKey)
-		if apiKey == "" {
-			apiKey = strings.TrimSpace(os.Getenv("NEARAI_API_KEY"))
-		}
-		if apiKey == "" {
-			return nil, fmt.Errorf("provider %q requires NEARAI_API_KEY or explicit config", name)
-		}
-		return NewNearAIProvider(apiKey, cfg.Model), nil
-
-	case config.ProviderTypeSambaNova:
-		apiKey := strings.TrimSpace(cfg.ResolvedAPIKey)
-		if apiKey == "" {
-			apiKey = strings.TrimSpace(os.Getenv("SAMBANOVA_API_KEY"))
-		}
-		if apiKey == "" {
-			return nil, fmt.Errorf("provider %q requires SAMBANOVA_API_KEY or explicit config", name)
-		}
-		return NewSambaNovaProvider(apiKey, cfg.Model), nil
-
 	case config.ProviderTypeBedrock:
 		return NewBedrockProvider(cfg.Model, cfg.Region, cfg.Profile, cfg.AccessKey, cfg.SecretKey, cfg.SessionToken, cfg.ModelMap)
 
-	case config.ProviderTypeClaudeBin:
-		if err := ValidateClaudeBinModel(cfg.Model); err != nil {
-			return nil, err
-		}
-		provider := NewClaudeBinProvider(cfg.Model, cfg.Env)
-		provider.SetEnableHooks(cfg.EnableHooks)
-		return provider, nil
-
-	case config.ProviderTypeGrokBin:
-		if err := ValidateGrokBinModel(cfg.Model); err != nil {
-			return nil, err
-		}
-		return NewGrokBinProvider(cfg.Model, cfg.Env), nil
-
-	case config.ProviderTypeCursorBin:
-		if err := ValidateCursorBinModel(cfg.Model); err != nil {
-			return nil, err
-		}
-		return NewCursorBinProvider(cfg.Model, cfg.Env), nil
-
-	case config.ProviderTypeAgyBin:
-		if err := ValidateAgyBinModel(cfg.Model); err != nil {
-			return nil, err
-		}
-		return NewAgyBinProvider(cfg.Model, cfg.Env), nil
+	case config.ProviderTypeClaudeBin, config.ProviderTypeGrokBin, config.ProviderTypeCursorBin, config.ProviderTypeAgyBin:
+		return newBinProvider(providerType, cfg.Model, cfg.Env, cfg.EnableHooks)
 
 	case config.ProviderTypeOllama:
 		thinkLevel, err := normalizeOllamaThinkLevel(cfg.ThinkLevel)
