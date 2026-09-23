@@ -7,17 +7,13 @@ import (
 )
 
 func TestZenDefaultModelFallback(t *testing.T) {
-	const want = "mimo-v2.5-free"
+	const want = "deepseek-v4-flash"
 	models := ProviderModels["zen"]
 	if len(models) == 0 || models[0].ID != want {
 		t.Fatalf("Zen fallback models = %+v, want %s first", models, want)
 	}
 	if config.DefaultProviderModel("zen") != models[0].ID {
 		t.Fatal("Zen default and fallback model disagree")
-	}
-	// MiMo's 200K context reserves 32K for output.
-	if models[0].InputLimit != 168_000 || models[0].OutputLimit != 32_000 {
-		t.Fatalf("Zen default limits = %+v, want 168K input / 32K output", models[0])
 	}
 }
 
@@ -182,7 +178,6 @@ func TestAllListedModelsHaveContextLimits(t *testing.T) {
 	exemptions := map[string]bool{
 		// Venice models with unknown upstream limits
 		"qwen3-4b": true,
-		// Zen models — all have explicit limits now
 		// claude-bin aliases (resolved internally, limits don't apply)
 		"opus": true, "opus-low": true, "opus-medium": true, "opus-high": true, "opus-xhigh": true, "opus-max": true,
 		"sonnet": true, "sonnet-low": true, "sonnet-medium": true, "sonnet-high": true,
@@ -197,8 +192,8 @@ func TestAllListedModelsHaveContextLimits(t *testing.T) {
 		// agy-bin models and limits are subscription/catalog dependent.
 		"gemini-3.6-flash-high": true, "gemini-3.6-flash-medium": true, "gemini-3.6-flash-low": true,
 		"gemini-3.5-flash-high": true, "gemini-3.1-pro-high": true,
-		// OpenRouter (slash in name, resolved via API cache)
-		"x-ai/grok-code-fast-1": true,
+		// OpenRouter routes among free models; limits come from the live catalog.
+		"openrouter/free": true,
 		// Copilot models with no known limits
 		"raptor-mini": true,
 	}

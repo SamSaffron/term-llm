@@ -131,9 +131,9 @@ var builtinProviderMeta = map[string]struct {
 	"zen": {
 		credential:         "api_key",
 		envVar:             "ZEN_API_KEY",
-		requiresKey:        false,
+		requiresKey:        true,
 		supportsListModels: true,
-		description:        "OpenCode Zen API (free tier available)",
+		description:        "OpenCode Zen API (paid models)",
 	},
 	"opencode-go": {
 		credential:         "api_key",

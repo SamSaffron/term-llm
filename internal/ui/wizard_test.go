@@ -3,6 +3,7 @@ package ui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
@@ -15,7 +16,7 @@ func TestHasTTYRejectsCI(t *testing.T) {
 	}
 }
 
-func TestDetectAvailableProvidersIncludesChatGPTCodexFirst(t *testing.T) {
+func TestDetectAvailableProvidersIncludesOpenRouterBeforeChatGPT(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	providers := detectAvailableProviders()
@@ -23,12 +24,15 @@ func TestDetectAvailableProvidersIncludesChatGPTCodexFirst(t *testing.T) {
 		t.Fatal("expected provider options")
 	}
 
-	got := providers[0]
+	if providers[0].value != "openrouter" {
+		t.Fatalf("first provider = %q, want openrouter", providers[0].value)
+	}
+	got := providers[1]
 	if got.value != "chatgpt" {
-		t.Fatalf("first provider value = %q, want %q", got.value, "chatgpt")
+		t.Fatalf("ChatGPT provider value = %q, want %q", got.value, "chatgpt")
 	}
 	if got.name != "ChatGPT (Codex) - ChatGPT OAuth" {
-		t.Fatalf("first provider name = %q, want ChatGPT (Codex) label", got.name)
+		t.Fatalf("ChatGPT provider name = %q, want ChatGPT (Codex) label", got.name)
 	}
 	if got.available {
 		t.Fatal("ChatGPT provider reported available without stored OAuth credentials")
@@ -52,8 +56,8 @@ func TestDetectAvailableProvidersMarksChatGPTReadyWithOAuthCredentials(t *testin
 	if len(providers) == 0 {
 		t.Fatal("expected provider options")
 	}
-	if got := providers[0]; got.value != "chatgpt" || !got.available {
-		t.Fatalf("first provider = %#v, want available chatgpt", got)
+	if got := providers[1]; got.value != "chatgpt" || !got.available {
+		t.Fatalf("ChatGPT provider = %#v, want available chatgpt", got)
 	}
 }
 
@@ -109,5 +113,51 @@ func TestWizardGuardianDefaultUsesSelectedProviderFastModel(t *testing.T) {
 	provider, model := wizardGuardianDefault("main", providers)
 	if provider != "control" || model != "small" {
 		t.Fatalf("wizardGuardianDefault() = %s:%s, want control:small", provider, model)
+	}
+}
+
+func TestZenSetupRequiresKey(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	for _, key := range []string{"", "test-key"} {
+		t.Setenv("ZEN_API_KEY", key)
+		for _, provider := range detectAvailableProviders() {
+			if provider.value == "zen" && provider.available != (key != "") {
+				t.Fatalf("Zen availability with key %q = %v", key, provider.available)
+			}
+		}
+	}
+}
+
+func TestHeadlessSetupRequiresConfiguredProvider(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", home)
+	t.Setenv("PATH", "")
+	for _, key := range []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "XAI_API_KEY", "VENICE_API_KEY", "NEARAI_API_KEY", "SAMBANOVA_API_KEY", "OPENROUTER_API_KEY", "ZEN_API_KEY", "OPENCODE_API_KEY"} {
+		t.Setenv(key, "")
+	}
+	if _, err := RunHeadlessSetup(); err == nil {
+		t.Fatal("expected an error without provider credentials")
+	} else {
+		for _, want := range []string{"https://openrouter.ai/pricing", "OPENROUTER_API_KEY", "--provider openrouter:openrouter/free", "limits"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("setup error missing %q: %v", want, err)
+			}
+		}
+	}
+	path, err := config.GetConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("headless setup wrote config without credentials: %v", err)
+	}
+	t.Setenv("ZEN_API_KEY", "test-key")
+	cfg, err := RunHeadlessSetup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultProvider != "zen" || cfg.Providers["zen"].Model != "deepseek-v4-flash" {
+		t.Fatalf("unexpected headless defaults: %s %+v", cfg.DefaultProvider, cfg.Providers["zen"])
 	}
 }

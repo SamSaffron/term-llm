@@ -2440,7 +2440,6 @@ func resolveProviderCredentials(name string, cfg *ProviderConfig) error {
 		if cfg.ResolvedAPIKey == "" {
 			cfg.ResolvedAPIKey = os.Getenv("ZEN_API_KEY")
 		}
-		// Empty API key is valid for free tier
 
 	case ProviderTypeOpenCodeGo:
 		cfg.ResolvedAPIKey = strings.TrimSpace(expandEnv(cfg.APIKey))
@@ -2600,11 +2599,7 @@ func DescribeCredentialSource(name string, cfg *ProviderConfig) (string, bool) {
 	case ProviderTypeOpenRouter:
 		return describeEnvKeyCredential(cfg, "OPENROUTER_API_KEY")
 	case ProviderTypeZen:
-		source, found := describeEnvKeyCredential(cfg, "ZEN_API_KEY")
-		if !found {
-			return "none (free tier)", true // Zen works without a key
-		}
-		return source, found
+		return describeEnvKeyCredential(cfg, "ZEN_API_KEY")
 	case ProviderTypeOpenCodeGo:
 		return describeEnvKeyCredential(cfg, "OPENCODE_API_KEY")
 	case ProviderTypeXAI:

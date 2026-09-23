@@ -40,13 +40,13 @@ func TestZenListModelsIncludesReasoningEfforts(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	modelsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5-nano"},{"id":"qwen3.6-plus-free"}]}`))
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5-nano"},{"id":"qwen3.6-plus"},{"id":"big-pickle"},{"id":"mimo-v2.5-free"}]}`))
 	}))
 	defer modelsServer.Close()
 
 	pricingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"opencode":{"models":{"gpt-5-nano":{"id":"gpt-5-nano","name":"GPT-5 Nano","cost":{"input":0,"output":0}}}}}`))
+		_, _ = w.Write([]byte(`{"opencode":{"models":{"gpt-5-nano":{"id":"gpt-5-nano","name":"GPT-5 Nano","cost":{"input":0.05,"output":0.4}},"qwen3.6-plus":{"id":"qwen3.6-plus","cost":{"input":1,"output":2}}}}}`))
 	}))
 	defer pricingServer.Close()
 
@@ -54,7 +54,7 @@ func TestZenListModelsIncludesReasoningEfforts(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"opencode":{"npm":"@ai-sdk/openai-compatible","api":"https://opencode.ai/zen/v1","models":{
 			"gpt-5-nano":{"id":"gpt-5-nano","reasoning_options":[{"type":"effort","values":["minimal","low","medium","high"]}]},
-			"qwen3.6-plus-free":{"id":"qwen3.6-plus-free","reasoning_options":[{"type":"toggle"},{"type":"budget_tokens","max":81920}]},
+			"qwen3.6-plus":{"id":"qwen3.6-plus","reasoning_options":[{"type":"toggle"},{"type":"budget_tokens","max":81920}]},
 			"x-preview-f-free":{"id":"x-preview-f-free","reasoning_options":[{"type":"effort","values":["low","high","max"]}]}
 		}}}`))
 	}))
@@ -75,6 +75,10 @@ func TestZenListModelsIncludesReasoningEfforts(t *testing.T) {
 		t.Fatalf("ListModels() error = %v", err)
 	}
 
+	if len(models) != 2 {
+		t.Fatalf("expected only paid models, got %+v", models)
+	}
+
 	byID := make(map[string]ModelInfo, len(models))
 	for _, m := range models {
 		byID[m.ID] = m
@@ -89,13 +93,13 @@ func TestZenListModelsIncludesReasoningEfforts(t *testing.T) {
 		t.Fatalf("gpt-5-nano efforts = %v, want %v", nano.ReasoningEfforts, want)
 	}
 
-	qwen, ok := byID["qwen3.6-plus-free"]
+	qwen, ok := byID["qwen3.6-plus"]
 	if !ok {
-		t.Fatalf("qwen3.6-plus-free missing from results: %+v", models)
+		t.Fatalf("qwen3.6-plus missing from results: %+v", models)
 	}
 	// Toggle/budget reasoning options do not accept plain effort strings.
 	if len(qwen.ReasoningEfforts) != 0 {
-		t.Fatalf("qwen3.6-plus-free efforts = %v, want none", qwen.ReasoningEfforts)
+		t.Fatalf("qwen3.6-plus efforts = %v, want none", qwen.ReasoningEfforts)
 	}
 
 	got := GetProviderCompletions("zen:", false, nil)
@@ -105,7 +109,7 @@ func TestZenListModelsIncludesReasoningEfforts(t *testing.T) {
 		"zen:gpt-5-nano-low",
 		"zen:gpt-5-nano-medium",
 		"zen:gpt-5-nano-high",
-		"zen:qwen3.6-plus-free",
+		"zen:qwen3.6-plus",
 	}
 	if !equalSlice(got, wantCompletions) {
 		t.Fatalf("Zen completions = %v, want live catalog %v", got, wantCompletions)
@@ -127,7 +131,7 @@ func TestZenListModelsPreservesEnrichedCacheWhenPricingFails(t *testing.T) {
 
 	modelsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"id":"basic-model"}]}`))
+		_, _ = w.Write([]byte(`{"data":[{"id":"basic-model"},{"id":"mimo-v2.5-free"},{"id":"big-pickle"}]}`))
 	}))
 	defer modelsServer.Close()
 	pricingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -167,7 +171,7 @@ func TestZenListModelsSurvivesCatalogFailure(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	modelsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"id":"big-pickle"}]}`))
+		_, _ = w.Write([]byte(`{"data":[{"id":"deepseek-v4-flash"}]}`))
 	}))
 	defer modelsServer.Close()
 
@@ -196,7 +200,16 @@ func TestZenListModelsSurvivesCatalogFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListModels() error = %v", err)
 	}
-	if len(models) != 1 || models[0].ID != "big-pickle" {
-		t.Fatalf("models = %+v, want [big-pickle]", models)
+	if len(models) != 1 || models[0].ID != "deepseek-v4-flash" {
+		t.Fatalf("models = %+v, want [deepseek-v4-flash]", models)
+	}
+}
+
+func TestCachedZenModelsExcludeFreeRoutes(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	RefreshZenCacheSync([]ModelInfo{{ID: "big-pickle"}, {ID: "mimo-v2.5-free"}, {ID: "deepseek-v4-flash"}})
+	got := GetCachedZenModels()
+	if len(got) != 1 || got[0] != "deepseek-v4-flash" {
+		t.Fatalf("cached Zen models = %v", got)
 	}
 }

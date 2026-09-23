@@ -23,7 +23,7 @@ next:
 term-llm serve web
 ```
 
-Open the URL printed in the terminal and follow the authentication instructions. Keep the process running while you use the browser interface; **Ctrl+C** stops it. For a first test using Zen’s supported free hosted models, use `term-llm serve web --provider zen` (availability and limits depend on Zen).
+Open the URL printed in the terminal and follow the authentication instructions. Keep the process running while you use the browser interface; **Ctrl+C** stops it. Choose a configured provider with `--provider`, or use your saved default.
 
 Start a conversation, choose a model, and ask a question. To work on code, select a project/worktree and review any workspace access requests. Live changes appear when file tracking records edits; the shell is available through `/shell`. Widgets appear after you install or create a widget application.
 

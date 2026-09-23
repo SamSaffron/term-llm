@@ -311,3 +311,33 @@ func TestNewProviderByNameNoRetryReturnsUnderlyingAdapter(t *testing.T) {
 		t.Fatalf("production provider type = %T, want *RetryProvider", wrapped)
 	}
 }
+
+func TestZenRequiresKey(t *testing.T) {
+	t.Setenv("ZEN_API_KEY", "")
+	for _, configured := range []bool{false, true} {
+		cfg := &config.Config{DefaultProvider: "zen", Providers: map[string]config.ProviderConfig{}}
+		if configured {
+			cfg.Providers["zen"] = config.ProviderConfig{Type: config.ProviderTypeZen}
+		}
+		if _, err := NewProviderByName(cfg, "zen", ""); err == nil || !strings.Contains(err.Error(), "ZEN_API_KEY") {
+			t.Fatalf("configured=%v: error = %v", configured, err)
+		}
+		if _, err := NewProvider(cfg); err == nil || !strings.Contains(err.Error(), "ZEN_API_KEY") {
+			t.Fatalf("default provider configured=%v: error=%v", configured, err)
+		}
+	}
+	t.Setenv("ZEN_API_KEY", "env-key")
+	providerFromEnv, err := NewProviderByNameNoRetry(&config.Config{}, "zen", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	zen := providerFromEnv.(*ZenProvider)
+	if zen.apiKey != "env-key" || zen.model != "deepseek-v4-flash" {
+		t.Fatal("Zen did not use environment credentials and paid default")
+	}
+
+	provider, err := createProviderFromConfig("zen", &config.ProviderConfig{Type: config.ProviderTypeZen, ResolvedAPIKey: "test-key", Model: "deepseek-v4-flash"})
+	if err != nil || provider == nil {
+		t.Fatalf("keyed Zen: provider=%v error=%v", provider, err)
+	}
+}

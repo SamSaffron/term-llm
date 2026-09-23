@@ -47,7 +47,7 @@ type ProviderSpec struct {
 }
 
 const (
-	DefaultConfigProvider = "anthropic"
+	DefaultConfigProvider = "openrouter"
 
 	DefaultAskMaxTurns            = 50
 	DefaultAskStdinInlineMaxBytes = int64(10 * 1024)
@@ -561,7 +561,7 @@ var providerSpecs = []ProviderSpec{
 	},
 	{
 		Name: "openrouter", Type: ProviderTypeOpenRouter, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
-		Defaults: []DefaultField{{"model", "x-ai/grok-code-fast-1"}, {"fast_model", "anthropic/claude-haiku-4-5"}, {"app_url", "https://github.com/samsaffron/term-llm"}, {"app_title", "term-llm"}},
+		Defaults: []DefaultField{{"model", "openrouter/free"}, {"fast_model", "openrouter/free"}, {"app_url", "https://github.com/samsaffron/term-llm"}, {"app_title", "term-llm"}},
 	},
 	{
 		Name: "xai", Type: ProviderTypeXAI, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
@@ -581,7 +581,7 @@ var providerSpecs = []ProviderSpec{
 	},
 	{
 		Name: "zen", Type: ProviderTypeZen, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
-		Defaults: []DefaultField{{"model", "mimo-v2.5-free"}, {"fast_model", "mimo-v2.5-free"}},
+		Defaults: []DefaultField{{"model", "deepseek-v4-flash"}, {"fast_model", "deepseek-v4-flash"}},
 	},
 	{
 		Name: "opencode-go", Type: ProviderTypeOpenCodeGo, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,

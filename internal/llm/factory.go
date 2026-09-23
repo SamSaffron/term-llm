@@ -205,9 +205,18 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 			}
 			provider := NewAgyBinProvider(model, nil)
 			return WrapWithRetry(provider, DefaultRetryConfig()), nil
+		case config.ProviderTypeOpenRouter:
+			provider, err := createProviderFromConfig(name, &config.ProviderConfig{Type: config.ProviderTypeOpenRouter, Model: model, ResolvedAPIKey: os.Getenv("OPENROUTER_API_KEY")})
+			if err != nil {
+				return nil, err
+			}
+			return WrapWithRetry(provider, DefaultRetryConfig()), nil
 		case config.ProviderTypeZen:
-			// zen can work without API key (free tier)
-			provider := NewZenProvider("", model)
+			apiKey := strings.TrimSpace(os.Getenv("ZEN_API_KEY"))
+			if apiKey == "" {
+				return nil, fmt.Errorf("provider %q requires ZEN_API_KEY or explicit config", name)
+			}
+			provider := NewZenProvider(apiKey, model)
 			return WrapWithRetry(provider, DefaultRetryConfig()), nil
 		case config.ProviderTypeOpenCodeGo:
 			apiKey := strings.TrimSpace(os.Getenv("OPENCODE_API_KEY"))
@@ -384,9 +393,14 @@ func newProviderInternal(cfg *config.Config) (Provider, error) {
 			return NewCursorBinProvider("", nil), nil
 		case config.ProviderTypeAgyBin:
 			return NewAgyBinProvider("", nil), nil
+		case config.ProviderTypeOpenRouter:
+			return createProviderFromConfig(cfg.DefaultProvider, &config.ProviderConfig{Type: config.ProviderTypeOpenRouter, ResolvedAPIKey: os.Getenv("OPENROUTER_API_KEY")})
 		case config.ProviderTypeZen:
-			// zen can work without API key (free tier)
-			return NewZenProvider("", ""), nil
+			apiKey := strings.TrimSpace(os.Getenv("ZEN_API_KEY"))
+			if apiKey == "" {
+				return nil, fmt.Errorf("provider %q requires ZEN_API_KEY or explicit config", cfg.DefaultProvider)
+			}
+			return NewZenProvider(apiKey, ""), nil
 		case config.ProviderTypeOpenCodeGo:
 			apiKey := strings.TrimSpace(os.Getenv("OPENCODE_API_KEY"))
 			if apiKey == "" {
@@ -486,13 +500,23 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 		return provider, nil
 
 	case config.ProviderTypeOpenRouter:
+		if strings.TrimSpace(cfg.ResolvedAPIKey) == "" {
+			return nil, fmt.Errorf("provider %q requires OPENROUTER_API_KEY or explicit config", name)
+		}
 		return NewOpenRouterProvider(cfg.ResolvedAPIKey, cfg.Model, cfg.AppURL, cfg.AppTitle), nil
 
 	case config.ProviderTypeGemini:
 		return NewGeminiProvider(cfg.ResolvedAPIKey, cfg.Model), nil
 
 	case config.ProviderTypeZen:
-		return NewZenProvider(cfg.ResolvedAPIKey, cfg.Model), nil
+		apiKey := strings.TrimSpace(cfg.ResolvedAPIKey)
+		if apiKey == "" {
+			apiKey = strings.TrimSpace(os.Getenv("ZEN_API_KEY"))
+		}
+		if apiKey == "" {
+			return nil, fmt.Errorf("provider %q requires ZEN_API_KEY or explicit config", name)
+		}
+		return NewZenProvider(apiKey, cfg.Model), nil
 
 	case config.ProviderTypeOpenCodeGo:
 		if strings.TrimSpace(cfg.URL) != "" {
