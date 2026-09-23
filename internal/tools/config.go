@@ -210,21 +210,27 @@ func (c ToolConfig) Merge(other ToolConfig) ToolConfig {
 		result.ShellWorkingDir = other.ShellWorkingDir
 	}
 
-	// Merge spawn config
-	if other.Spawn.MaxParallel > 0 {
-		result.Spawn.MaxParallel = other.Spawn.MaxParallel
+	result.Spawn = result.Spawn.merge(other.Spawn)
+
+	return result
+}
+
+func (c SpawnConfig) merge(other SpawnConfig) SpawnConfig {
+	result := c
+	if other.MaxParallel > 0 {
+		result.MaxParallel = other.MaxParallel
 	}
-	if other.Spawn.MaxDepth > 0 {
-		result.Spawn.MaxDepth = other.Spawn.MaxDepth
+	if other.MaxDepth > 0 {
+		result.MaxDepth = other.MaxDepth
 	}
-	if other.Spawn.DefaultTimeout > 0 {
-		result.Spawn.DefaultTimeout = other.Spawn.DefaultTimeout
+	if other.DefaultTimeout > 0 {
+		result.DefaultTimeout = other.DefaultTimeout
 	}
-	if len(other.Spawn.AllowedAgents) > 0 {
-		result.Spawn.AllowedAgents = other.Spawn.AllowedAgents
+	if len(other.AllowedAgents) > 0 {
+		result.AllowedAgents = other.AllowedAgents
 	}
-	if len(other.Spawn.AgentModels) > 0 {
-		result.Spawn.AgentModels = other.Spawn.AgentModels
+	if len(other.AgentModels) > 0 {
+		result.AgentModels = other.AgentModels
 	}
 
 	return result

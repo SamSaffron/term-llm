@@ -354,6 +354,11 @@ func runAgentsShow(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	showAgent(agent)
+	return nil
+}
+
+func showAgent(agent *agents.Agent) {
 	// Display agent info
 	fmt.Printf("Agent: %s\n", agent.Name)
 	fmt.Printf("Source: %s\n", agent.Source.SourceName())
@@ -366,6 +371,13 @@ func runAgentsShow(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Description: %s\n\n", agent.Description)
 	}
 
+	showAgentModel(agent)
+	showAgentTools(agent)
+	showAgentMCP(agent)
+	showAgentPrompt(agent)
+}
+
+func showAgentModel(agent *agents.Agent) {
 	// Model settings
 	if agent.Provider != "" || agent.Model != "" {
 		fmt.Println("Model:")
@@ -377,7 +389,9 @@ func runAgentsShow(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Println()
 	}
+}
 
+func showAgentTools(agent *agents.Agent) {
 	// Tool settings
 	if agent.HasEnabledList() {
 		fmt.Printf("Tools (enabled): %s\n", strings.Join(agent.Tools.Enabled, ", "))
@@ -419,7 +433,9 @@ func runAgentsShow(cmd *cobra.Command, args []string) error {
 	if agent.MaxTurns > 0 {
 		fmt.Printf("Max turns: %d\n", agent.MaxTurns)
 	}
+}
 
+func showAgentMCP(agent *agents.Agent) {
 	// MCP servers
 	if len(agent.MCP) > 0 {
 		fmt.Println()
@@ -432,7 +448,9 @@ func runAgentsShow(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
+}
 
+func showAgentPrompt(agent *agents.Agent) {
 	// System prompt
 	if agent.SystemPrompt != "" {
 		fmt.Println()
@@ -446,8 +464,6 @@ func runAgentsShow(cmd *cobra.Command, args []string) error {
 		fmt.Println(prompt)
 		fmt.Println("---")
 	}
-
-	return nil
 }
 
 func runAgentsEdit(cmd *cobra.Command, args []string) error {

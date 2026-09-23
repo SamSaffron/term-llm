@@ -458,19 +458,8 @@ func (a *Agent) Validate() error {
 		return fmt.Errorf("cannot specify both output and output_tool; use output_tool + on_complete instead")
 	}
 
-	// Validate output_tool if configured
-	if a.OutputTool.Schema != nil && a.OutputTool.Name == "" {
-		return fmt.Errorf("output_tool.name is required when output_tool.schema is configured")
-	}
-	if a.OutputTool.IsConfigured() {
-		if a.OutputTool.Param != "" && a.OutputTool.Schema != nil {
-			return fmt.Errorf("output_tool cannot configure both param and schema")
-		}
-		if a.OutputTool.Schema != nil {
-			if schemaType, ok := a.OutputTool.Schema["type"]; !ok || schemaType != "object" {
-				return fmt.Errorf("output_tool.schema must have \"type\": \"object\" at root")
-			}
-		}
+	if err := a.validateOutputTool(); err != nil {
+		return err
 	}
 
 	// Validate agents_md field
@@ -499,6 +488,23 @@ func (a *Agent) Validate() error {
 		return fmt.Errorf("handover_mode %q requires enable_handover: true", a.HandoverMode)
 	}
 
+	return nil
+}
+
+func (a *Agent) validateOutputTool() error {
+	if a.OutputTool.Schema != nil && a.OutputTool.Name == "" {
+		return fmt.Errorf("output_tool.name is required when output_tool.schema is configured")
+	}
+	if a.OutputTool.IsConfigured() {
+		if a.OutputTool.Param != "" && a.OutputTool.Schema != nil {
+			return fmt.Errorf("output_tool cannot configure both param and schema")
+		}
+		if a.OutputTool.Schema != nil {
+			if schemaType, ok := a.OutputTool.Schema["type"]; !ok || schemaType != "object" {
+				return fmt.Errorf("output_tool.schema must have \"type\": \"object\" at root")
+			}
+		}
+	}
 	return nil
 }
 

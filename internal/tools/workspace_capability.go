@@ -394,20 +394,7 @@ func (m *ApprovalManager) ensurePrimaryWorkspaceAccess(ctx context.Context, cano
 
 	// Remembered-workspace lookup may query Git. Keep it outside the shared
 	// prompt lock so repository I/O cannot block unrelated human approvals.
-	remembered := false
-	if trustStore != nil {
-		var err error
-		remembered, err = trustStore.IsTrusted(ctx, proposal)
-		if err != nil {
-			// An unreadable ledger grants no authority, but it must not disable the
-			// existing direct-human confirmation path. Remember writes still fail
-			// closed below because the user explicitly requested durable approval.
-			remembered = false
-			if m.DebugApproval {
-				log.Printf("[approval] remembered workspace lookup failed for %q: %v", proposal, err)
-			}
-		}
-	}
+	remembered := m.isRememberedWorkspace(ctx, trustStore, proposal)
 
 	promptLock := root.PromptLock()
 	promptLock.Lock()
@@ -499,6 +486,22 @@ func (m *ApprovalManager) ensurePrimaryWorkspaceAccess(ctx context.Context, cano
 	root.workspaceVersion++
 	root.workspaceMu.Unlock()
 	return nil
+}
+
+func (m *ApprovalManager) isRememberedWorkspace(ctx context.Context, trustStore workspaceTrustStore, proposal string) bool {
+	if trustStore == nil {
+		return false
+	}
+	remembered, err := trustStore.IsTrusted(ctx, proposal)
+	if err != nil {
+		// An unreadable ledger grants no authority, but must not disable the
+		// direct-human confirmation path. Remember writes still fail closed.
+		if m.DebugApproval {
+			log.Printf("[approval] remembered workspace lookup failed for %q: %v", proposal, err)
+		}
+		return false
+	}
+	return remembered
 }
 
 // IsWorkspacePathAllowed performs a race-safe, boundary-safe capability check.
