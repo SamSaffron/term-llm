@@ -43,6 +43,8 @@ func TestBuiltinSysadminShellAllowlist(t *testing.T) {
 		{"sudo -n true", true},
 		{"sudo -n -l", true},
 		{"systemctl restart nginx", false},
+		{"printenv", false},
+		{"printenv OPENAI_API_KEY", false},
 		{"journalctl --vacuum-size=1M", false},
 		{"rg --pre /tmp/x foo /etc", false},
 		{"rm -rf /tmp/x", false},
