@@ -70,20 +70,7 @@ func resizeImageForLLMWithLogger(data []byte, mediaType string, logf imageResize
 	bounds := img.Bounds()
 	origW := bounds.Dx()
 	origH := bounds.Dy()
-	targetPixels := float64(maxLLMImageBytes) / 4.0
-	currentPixels := float64(origW * origH)
-	scale := 1.0
-	if currentPixels > targetPixels {
-		scale = math.Sqrt(targetPixels / currentPixels)
-	}
-	newW := int(math.Round(float64(origW) * scale))
-	newH := int(math.Round(float64(origH) * scale))
-	if newW < 1 {
-		newW = 1
-	}
-	if newH < 1 {
-		newH = 1
-	}
+	newW, newH := llmImageDimensions(origW, origH)
 
 	dst := image.NewRGBA(image.Rect(0, 0, newW, newH))
 	draw.BiLinear.Scale(dst, dst.Bounds(), img, bounds, draw.Over, nil)
@@ -119,4 +106,22 @@ func resizeImageForLLMWithLogger(data []byte, mediaType string, logf imageResize
 		logf("[web] resizeImageForLLM: all attempts failed — sending original (%d bytes)", len(data))
 	}
 	return data, mediaType
+}
+
+func llmImageDimensions(origW, origH int) (int, int) {
+	targetPixels := float64(maxLLMImageBytes) / 4.0
+	currentPixels := float64(origW * origH)
+	scale := 1.0
+	if currentPixels > targetPixels {
+		scale = math.Sqrt(targetPixels / currentPixels)
+	}
+	newW := int(math.Round(float64(origW) * scale))
+	newH := int(math.Round(float64(origH) * scale))
+	if newW < 1 {
+		newW = 1
+	}
+	if newH < 1 {
+		newH = 1
+	}
+	return newW, newH
 }

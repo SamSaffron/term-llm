@@ -545,38 +545,7 @@ func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *llm.Engin
 		return nil, nil
 	}
 
-	toolConfig := buildToolConfig(s.Tools, s.ReadDirs, s.WriteDirs, s.ShellAllow, cfg)
-	// AutoTools are input-scoped capabilities, not a reason to activate the
-	// global default tool set on an otherwise tool-less ask session.
-	if s.Tools == "" && len(s.AutoTools) > 0 {
-		toolConfig.Enabled = nil
-	}
-	for _, toolName := range s.AutoTools {
-		toolConfig.Enabled = appendUniqueString(toolConfig.Enabled, toolName)
-	}
-	if visionTarget != "" {
-		toolConfig.Enabled = appendUniqueString(toolConfig.Enabled, tools.ViewImageToolName)
-	}
-	toolConfig.AgentDir = s.AgentDir
-	toolConfig.PlanGuidance = s.PlanGuidance
-	toolConfig.RequireExplicitWorkingDir = s.RequireExplicitWorkingDir
-	if strings.TrimSpace(s.BaseDir) != "" {
-		toolConfig.BaseDir = s.BaseDir
-		toolConfig.PrimaryWorkspace = strings.TrimSpace(s.PrimaryWorkspace)
-		if s.ShellWorkingDir == "" {
-			s.ShellWorkingDir = s.BaseDir
-		}
-	}
-	if s.ShellAutoRun {
-		toolConfig.ShellAutoRun = true
-	}
-	applySpawnConfig(&toolConfig, s.Spawn)
-	if len(s.Scripts) > 0 {
-		toolConfig.ScriptCommands = append(toolConfig.ScriptCommands, s.Scripts...)
-	}
-	if s.ShellWorkingDir != "" {
-		toolConfig.ShellWorkingDir = s.ShellWorkingDir
-	}
+	toolConfig := s.toolConfig(cfg, visionTarget)
 
 	if errs := toolConfig.Validate(); len(errs) > 0 {
 		return nil, fmt.Errorf("invalid tool config: %v", errs[0])
@@ -613,6 +582,42 @@ func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *llm.Engin
 
 	toolMgr.SetupEngine(engine)
 	return toolMgr, nil
+}
+
+func (s *SessionSettings) toolConfig(cfg *config.Config, visionTarget string) tools.ToolConfig {
+	toolConfig := buildToolConfig(s.Tools, s.ReadDirs, s.WriteDirs, s.ShellAllow, cfg)
+	// AutoTools are input-scoped capabilities, not a reason to activate the
+	// global default tool set on an otherwise tool-less ask session.
+	if s.Tools == "" && len(s.AutoTools) > 0 {
+		toolConfig.Enabled = nil
+	}
+	for _, toolName := range s.AutoTools {
+		toolConfig.Enabled = appendUniqueString(toolConfig.Enabled, toolName)
+	}
+	if visionTarget != "" {
+		toolConfig.Enabled = appendUniqueString(toolConfig.Enabled, tools.ViewImageToolName)
+	}
+	toolConfig.AgentDir = s.AgentDir
+	toolConfig.PlanGuidance = s.PlanGuidance
+	toolConfig.RequireExplicitWorkingDir = s.RequireExplicitWorkingDir
+	if strings.TrimSpace(s.BaseDir) != "" {
+		toolConfig.BaseDir = s.BaseDir
+		toolConfig.PrimaryWorkspace = strings.TrimSpace(s.PrimaryWorkspace)
+		if s.ShellWorkingDir == "" {
+			s.ShellWorkingDir = s.BaseDir
+		}
+	}
+	if s.ShellAutoRun {
+		toolConfig.ShellAutoRun = true
+	}
+	applySpawnConfig(&toolConfig, s.Spawn)
+	if len(s.Scripts) > 0 {
+		toolConfig.ScriptCommands = append(toolConfig.ScriptCommands, s.Scripts...)
+	}
+	if s.ShellWorkingDir != "" {
+		toolConfig.ShellWorkingDir = s.ShellWorkingDir
+	}
+	return toolConfig
 }
 
 func indirectVisionTarget(cfg *config.Config, providerName, modelName string) string {

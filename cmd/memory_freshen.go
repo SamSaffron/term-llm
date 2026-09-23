@@ -565,39 +565,13 @@ func collectMemoryUpdateRecentInput(ctx context.Context, store *memorydb.Store, 
 				return memoryUpdateRecentInput{}, fmt.Errorf("get messages for session %s: %w", sess.ID, err)
 			}
 			for _, msg := range messages {
-				line := formatUpdateRecentMessage(msg)
-				if line != "" {
-					prefix := "\n"
-					if !headerWritten {
-						prefix = formatUpdateRecentSessionHeader(sess) + "\n"
-						if inputBuilder.Len() > 0 {
-							prefix = "\n\n---\n\n" + prefix
-						}
-					}
-					remaining := memoryUpdateRecentMaxInputChars - inputBuilder.Len() - len(prefix)
-					if len(line) > remaining {
-						if inputBuilder.Len() > 0 {
-							// Retry this message in the next batch, without advancing its offset.
-							return memoryUpdateRecentInput{Text: inputBuilder.String(), Offsets: trackedOffsets, Exhausted: false}, nil
-						}
-						// A single message must not prevent progress. Keep the header and
-						// role, and truncate its text to the byte budget on a UTF-8 boundary.
-						role, text, _ := strings.Cut(line, ": ")
-						textBudget := remaining - len(role) - 2
-						if textBudget <= 0 {
-							return memoryUpdateRecentInput{}, fmt.Errorf("max-input-chars is too small for session %s header and message", sess.ID)
-						}
-						for textBudget > 0 && !utf8.RuneStart(text[textBudget]) {
-							textBudget--
-						}
-						if textBudget == 0 {
-							return memoryUpdateRecentInput{}, fmt.Errorf("max-input-chars is too small for session %s message text", sess.ID)
-						}
-						line = role + ": " + text[:textBudget]
-					}
-					inputBuilder.WriteString(prefix)
-					inputBuilder.WriteString(line)
-					headerWritten = true
+				stop, appendErr := appendUpdateRecentMessage(&inputBuilder, sess, &headerWritten, msg)
+				if appendErr != nil {
+					return memoryUpdateRecentInput{}, appendErr
+				}
+				if stop {
+					// Retry this message in the next batch without advancing its offset.
+					return memoryUpdateRecentInput{Text: inputBuilder.String(), Offsets: trackedOffsets, Exhausted: false}, nil
 				}
 				// Include skipped tool/empty rows, but never unread messages.
 				startOffset = msg.Sequence + 1
@@ -617,6 +591,46 @@ func collectMemoryUpdateRecentInput(ctx context.Context, store *memorydb.Store, 
 	}
 
 	return memoryUpdateRecentInput{Text: inputBuilder.String(), Offsets: trackedOffsets, Exhausted: exhausted}, nil
+}
+
+// appendUpdateRecentMessage stops before a message that cannot fit after earlier
+// messages, so the caller can retry it without advancing the durable offset.
+func appendUpdateRecentMessage(inputBuilder *strings.Builder, sess memoryUpdateRecentSession, headerWritten *bool, msg session.Message) (bool, error) {
+	line := formatUpdateRecentMessage(msg)
+	if line == "" {
+		return false, nil
+	}
+	prefix := "\n"
+	if !*headerWritten {
+		prefix = formatUpdateRecentSessionHeader(sess) + "\n"
+		if inputBuilder.Len() > 0 {
+			prefix = "\n\n---\n\n" + prefix
+		}
+	}
+	remaining := memoryUpdateRecentMaxInputChars - inputBuilder.Len() - len(prefix)
+	if len(line) > remaining {
+		if inputBuilder.Len() > 0 {
+			return true, nil
+		}
+		// A single message must not prevent progress. Keep the header and
+		// role, and truncate its text to the byte budget on a UTF-8 boundary.
+		role, text, _ := strings.Cut(line, ": ")
+		textBudget := remaining - len(role) - 2
+		if textBudget <= 0 {
+			return false, fmt.Errorf("max-input-chars is too small for session %s header and message", sess.ID)
+		}
+		for textBudget > 0 && !utf8.RuneStart(text[textBudget]) {
+			textBudget--
+		}
+		if textBudget == 0 {
+			return false, fmt.Errorf("max-input-chars is too small for session %s message text", sess.ID)
+		}
+		line = role + ": " + text[:textBudget]
+	}
+	inputBuilder.WriteString(prefix)
+	inputBuilder.WriteString(line)
+	*headerWritten = true
+	return false, nil
 }
 
 func formatUpdateRecentSessionBlock(sess memoryUpdateRecentSession, messages []session.Message) string {

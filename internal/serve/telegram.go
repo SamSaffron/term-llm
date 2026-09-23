@@ -1392,46 +1392,8 @@ func (m *telegramSessionMgr) handleMessageWithAdmission(ctx context.Context, bot
 		return
 	}
 
-	if msg.IsCommand() {
-		switch msg.Command() {
-		case "start", "help":
-			helpText := "I'm your AI assistant. Send me a message to get started!\n\n" +
-				"Commands:\n" +
-				"/reset  - Clear conversation history\n" +
-				"/status - Show session info"
-			_, _ = bot.Send(tgbotapi.NewMessage(chatID, helpText))
-			return
-
-		case "reset":
-			if _, err := m.resetSession(ctx, chatID); err != nil {
-				_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Error resetting session: "+err.Error()))
-				return
-			}
-			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Conversation history cleared."))
-			return
-
-		case "status":
-			sess, err := m.getOrCreate(ctx, chatID)
-			if err != nil {
-				_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Error: "+err.Error()))
-				return
-			}
-			// A turn holds mu for its entire response. Never wait for it while
-			// holding admission: that would prevent later stop/reset requests.
-			if !sess.mu.TryLock() {
-				_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Session busy\nResponse in progress. Use /stop to interrupt or /reset to clear conversation history."))
-				return
-			}
-			msgCount := len(sess.history)
-			sess.mu.Unlock()
-			sess.activityMu.Lock()
-			lastAct := sess.lastActivity
-			sess.activityMu.Unlock()
-			status := fmt.Sprintf("Session active\nMessages in history: %d\nLast activity: %s",
-				msgCount, lastAct.Format(time.RFC3339))
-			_, _ = bot.Send(tgbotapi.NewMessage(chatID, status))
-			return
-		}
+	if msg.IsCommand() && m.handleTelegramCommand(ctx, bot, msg) {
+		return
 	}
 
 	// Build the user message: photo or text.
@@ -1648,6 +1610,49 @@ func (m *telegramSessionMgr) handleMessageWithAdmission(ctx context.Context, bot
 		}
 		recordTelegramUpload(m.cfg, m.settings.Agent, sessionID, uploadMediaType, uploadCaption, tempImagePath)
 	}
+}
+
+// handleTelegramCommand reports whether this message was handled as a command.
+func (m *telegramSessionMgr) handleTelegramCommand(ctx context.Context, bot telegramBot, msg *tgbotapi.Message) bool {
+	chatID := msg.Chat.ID
+	switch msg.Command() {
+	case "start", "help":
+		helpText := "I'm your AI assistant. Send me a message to get started!\n\n" +
+			"Commands:\n" +
+			"/reset  - Clear conversation history\n" +
+			"/status - Show session info"
+		_, _ = bot.Send(tgbotapi.NewMessage(chatID, helpText))
+		return true
+	case "reset":
+		if _, err := m.resetSession(ctx, chatID); err != nil {
+			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Error resetting session: "+err.Error()))
+			return true
+		}
+		_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Conversation history cleared."))
+		return true
+	case "status":
+		sess, err := m.getOrCreate(ctx, chatID)
+		if err != nil {
+			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Error: "+err.Error()))
+			return true
+		}
+		// A turn holds mu for its entire response. Never wait for it while
+		// holding admission: that would prevent later stop/reset requests.
+		if !sess.mu.TryLock() {
+			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Session busy\nResponse in progress. Use /stop to interrupt or /reset to clear conversation history."))
+			return true
+		}
+		msgCount := len(sess.history)
+		sess.mu.Unlock()
+		sess.activityMu.Lock()
+		lastAct := sess.lastActivity
+		sess.activityMu.Unlock()
+		status := fmt.Sprintf("Session active\nMessages in history: %d\nLast activity: %s",
+			msgCount, lastAct.Format(time.RFC3339))
+		_, _ = bot.Send(tgbotapi.NewMessage(chatID, status))
+		return true
+	}
+	return false
 }
 
 func sendStreamDone(done chan<- error, once *sync.Once, err error) {

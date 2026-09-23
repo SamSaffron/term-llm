@@ -358,30 +358,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if toolMgr != nil && toolMgr.ApprovalMgr != nil {
 		defer toolMgr.ApprovalMgr.Close()
 	}
-	if toolMgr != nil {
-		toolMgr.Registry.SetPlanStore(store)
-		if err := toolMgr.ConfigureWorkspacePersistence(ctx, store, sessionID); err != nil {
-			return err
-		}
+	spawnRunner, err = configureAskToolManager(ctx, cmd, cfg, toolMgr, store, sessionID, resolvedApproval)
+	if err != nil {
+		return err
 	}
 	var outputTool *tools.SetOutputTool
-	if toolMgr != nil {
-		if err := applyResolvedApprovalMode(cfg, toolMgr.ApprovalMgr, resolvedApproval, approvalRuntimeOptions{}); err != nil {
-			return err
-		}
-		reportApprovalMode(cmd.ErrOrStderr(), askDebug, resolvedApproval, toolMgr.ApprovalMgr)
-
-		// PromptFunc is set in streamWithRenderer to use bubbletea UI
-
-		// Wire spawn_agent runner if enabled (with session tracking)
-		parentSessionID := sessionID
-		var wireErr error
-		spawnRunner, wireErr = WireSpawnAgentRunnerWithStore(cfg, toolMgr, resolvedYolo, store, parentSessionID)
-		if wireErr != nil {
-			return wireErr
-		}
-
-	}
 
 	if agent != nil && agent.OutputTool.IsConfigured() {
 		outputTool = registerAgentOutputTool(agent.OutputTool, toolMgr, engine)
@@ -419,16 +400,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	// Restore exact-file grants from structured parts only. On resume, scan the
 	// durable full history as well as the active prepared conversation so grants
 	// survive compaction boundaries without trusting text or escaped paths.
-	if resuming && store != nil && sess != nil {
-		if rows, historyErr := store.GetMessages(ctx, sess.ID, 0, 0); historyErr == nil {
-			history := make([]llm.Message, 0, len(rows))
-			for i := range rows {
-				history = append(history, rows[i].ToLLMMessage())
-			}
-			grantAskUploadedFileReads(toolMgr, history)
-		}
-	}
-	grantAskUploadedFileReads(toolMgr, messages)
+	grantAskResumedUploadedFileReads(ctx, store, sess, resuming, toolMgr, messages)
 
 	debugMode := askDebug
 	if sess != nil {
@@ -680,6 +652,38 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		showStats: showStats, config: cfg,
 	}).run()
 
+}
+
+func configureAskToolManager(ctx context.Context, cmd *cobra.Command, cfg *config.Config, toolMgr *tools.ToolManager, store session.Store, sessionID string, approval resolvedApprovalMode) (*SpawnAgentRunner, error) {
+	if toolMgr == nil {
+		return nil, nil
+	}
+	toolMgr.Registry.SetPlanStore(store)
+	if err := toolMgr.ConfigureWorkspacePersistence(ctx, store, sessionID); err != nil {
+		return nil, err
+	}
+	if err := applyResolvedApprovalMode(cfg, toolMgr.ApprovalMgr, approval, approvalRuntimeOptions{}); err != nil {
+		return nil, err
+	}
+	reportApprovalMode(cmd.ErrOrStderr(), askDebug, approval, toolMgr.ApprovalMgr)
+	// PromptFunc is set in streamWithRenderer to use bubbletea UI.
+	// Wire spawn_agent runner with session tracking.
+	return WireSpawnAgentRunnerWithStore(cfg, toolMgr, approval.Mode == tools.ModeYolo, store, sessionID)
+}
+
+// Restoring exact-file grants must use structured parts from both the durable
+// history (including messages beyond compaction) and the active conversation.
+func grantAskResumedUploadedFileReads(ctx context.Context, store session.Store, sess *session.Session, resuming bool, toolMgr *tools.ToolManager, messages []llm.Message) {
+	if resuming && store != nil && sess != nil {
+		if rows, err := store.GetMessages(ctx, sess.ID, 0, 0); err == nil {
+			history := make([]llm.Message, 0, len(rows))
+			for i := range rows {
+				history = append(history, rows[i].ToLLMMessage())
+			}
+			grantAskUploadedFileReads(toolMgr, history)
+		}
+	}
+	grantAskUploadedFileReads(toolMgr, messages)
 }
 
 type askPersistenceCallbacks struct {

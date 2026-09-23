@@ -509,13 +509,7 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 		// Code produced itself. Deliver only what is genuinely new; if filtering
 		// leaves nothing, fall back to the raw tail rather than handing the CLI an
 		// empty prompt.
-		messagesToSend := req.Messages
-		if !req.Ephemeral && p.sessionID != "" && p.messagesSent > 0 && p.messagesSent < len(req.Messages) {
-			messagesToSend = req.Messages[p.messagesSent:]
-			if delivery := claudeResumeDelivery(messagesToSend); len(delivery) > 0 {
-				messagesToSend = delivery
-			}
-		}
+		messagesToSend := p.messagesForClaudeTurn(req)
 		streamJSONSessionID := ""
 		if !req.Ephemeral {
 			streamJSONSessionID = p.sessionID
@@ -584,6 +578,17 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 
 		return send.Send(Event{Type: EventDone})
 	}), nil
+}
+
+func (p *ClaudeBinProvider) messagesForClaudeTurn(req Request) []Message {
+	messages := req.Messages
+	if !req.Ephemeral && p.sessionID != "" && p.messagesSent > 0 && p.messagesSent < len(messages) {
+		messages = messages[p.messagesSent:]
+		if delivery := claudeResumeDelivery(messages); len(delivery) > 0 {
+			messages = delivery
+		}
+	}
+	return messages
 }
 
 func (p *ClaudeBinProvider) buildCommandEnv(effort string) []string {

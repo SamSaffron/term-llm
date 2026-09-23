@@ -127,67 +127,76 @@ func prepareAskFiles(paths []string, askCfg config.AskConfig) (prepared []askPre
 	}()
 
 	for _, path := range paths {
-		if strings.EqualFold(path, "clipboard") {
-			content, readErr := clipboard.ReadText()
-			if readErr != nil {
-				return nil, stagedPaths, fmt.Errorf("failed to read clipboard: %w", readErr)
-			}
-			item, stagedPath, itemErr := prepareAskFileSource(askFileSource{
-				displayPath: "clipboard",
-				filename:    "clipboard.txt",
-				raw:         []byte(content),
-			}, askCfg)
-			if itemErr != nil {
-				return nil, stagedPaths, itemErr
-			}
-			prepared = append(prepared, item)
-			if stagedPath != "" {
-				stagedPaths = append(stagedPaths, stagedPath)
-			}
+		items, staged, fileErr := prepareAskFilePath(path, askCfg)
+		stagedPaths = append(stagedPaths, staged...)
+		if fileErr != nil {
+			return nil, stagedPaths, fileErr
+		}
+		prepared = append(prepared, items...)
+	}
+	return prepared, stagedPaths, nil
+}
+
+func prepareAskFilePath(path string, askCfg config.AskConfig) (prepared []askPreparedFile, stagedPaths []string, err error) {
+	if strings.EqualFold(path, "clipboard") {
+		content, readErr := clipboard.ReadText()
+		if readErr != nil {
+			return nil, nil, fmt.Errorf("failed to read clipboard: %w", readErr)
+		}
+		item, stagedPath, itemErr := prepareAskFileSource(askFileSource{
+			displayPath: "clipboard",
+			filename:    "clipboard.txt",
+			raw:         []byte(content),
+		}, askCfg)
+		if itemErr != nil {
+			return nil, nil, itemErr
+		}
+		if stagedPath != "" {
+			stagedPaths = append(stagedPaths, stagedPath)
+		}
+		return []askPreparedFile{item}, stagedPaths, nil
+	}
+
+	spec, parseErr := input.ParseFileSpec(path)
+	if parseErr != nil {
+		return nil, nil, fmt.Errorf("invalid file spec %q: %w", path, parseErr)
+	}
+	expandedPath := expandAskPath(spec.Path)
+	matches, globErr := filepath.Glob(expandedPath)
+	if globErr != nil {
+		return nil, nil, fmt.Errorf("invalid glob pattern %q: %w", spec.Path, globErr)
+	}
+	if len(matches) == 0 {
+		if strings.ContainsAny(spec.Path, "*?[") {
+			return nil, nil, nil
+		}
+		matches = []string{expandedPath}
+	}
+
+	for _, match := range matches {
+		info, statErr := os.Stat(match)
+		if statErr != nil {
+			return nil, stagedPaths, fmt.Errorf("failed to stat %q: %w", match, statErr)
+		}
+		if info.IsDir() {
 			continue
 		}
-
-		spec, parseErr := input.ParseFileSpec(path)
-		if parseErr != nil {
-			return nil, stagedPaths, fmt.Errorf("invalid file spec %q: %w", path, parseErr)
+		raw, readErr := readBoundedAskFile(match, spec, askCfg.StdinMaxBytes)
+		if readErr != nil {
+			return nil, stagedPaths, readErr
 		}
-		expandedPath := expandAskPath(spec.Path)
-		matches, globErr := filepath.Glob(expandedPath)
-		if globErr != nil {
-			return nil, stagedPaths, fmt.Errorf("invalid glob pattern %q: %w", spec.Path, globErr)
+		displayPath := formatAskFileRegion(match, spec)
+		item, stagedPath, itemErr := prepareAskFileSource(askFileSource{
+			displayPath: displayPath,
+			filename:    askFileSourceFilename(match, spec),
+			raw:         raw,
+		}, askCfg)
+		if itemErr != nil {
+			return nil, stagedPaths, itemErr
 		}
-		if len(matches) == 0 {
-			if strings.ContainsAny(spec.Path, "*?[") {
-				continue
-			}
-			matches = []string{expandedPath}
-		}
-
-		for _, match := range matches {
-			info, statErr := os.Stat(match)
-			if statErr != nil {
-				return nil, stagedPaths, fmt.Errorf("failed to stat %q: %w", match, statErr)
-			}
-			if info.IsDir() {
-				continue
-			}
-			raw, readErr := readBoundedAskFile(match, spec, askCfg.StdinMaxBytes)
-			if readErr != nil {
-				return nil, stagedPaths, readErr
-			}
-			displayPath := formatAskFileRegion(match, spec)
-			item, stagedPath, itemErr := prepareAskFileSource(askFileSource{
-				displayPath: displayPath,
-				filename:    askFileSourceFilename(match, spec),
-				raw:         raw,
-			}, askCfg)
-			if itemErr != nil {
-				return nil, stagedPaths, itemErr
-			}
-			prepared = append(prepared, item)
-			if stagedPath != "" {
-				stagedPaths = append(stagedPaths, stagedPath)
-			}
+		prepared = append(prepared, item)
+		if stagedPath != "" {
+			stagedPaths = append(stagedPaths, stagedPath)
 		}
 	}
 	return prepared, stagedPaths, nil
@@ -371,22 +380,10 @@ func readBoundedAskLineRange(reader io.Reader, startLine, endLine int, maxBytes 
 	buf := make([]byte, 32*1024)
 	for {
 		n, readErr := reader.Read(buf)
-		for _, b := range buf[:n] {
-			selected := line >= start && (endLine == 0 || line <= endLine)
-			if b == '\n' {
-				if selected && (endLine == 0 || line < endLine) {
-					raw = append(raw, b)
-				}
-				line++
-				if endLine > 0 && line > endLine {
-					return raw, nil
-				}
-			} else if selected {
-				raw = append(raw, b)
-			}
-			if int64(len(raw)) > maxBytes {
-				return raw, nil
-			}
+		var done bool
+		raw, line, done = appendBoundedAskLines(raw, buf[:n], line, start, endLine, maxBytes)
+		if done {
+			return raw, nil
 		}
 		if readErr == io.EOF {
 			return raw, nil
@@ -395,6 +392,27 @@ func readBoundedAskLineRange(reader io.Reader, startLine, endLine int, maxBytes 
 			return nil, readErr
 		}
 	}
+}
+
+func appendBoundedAskLines(raw, chunk []byte, line, start, end int, maxBytes int64) ([]byte, int, bool) {
+	for _, b := range chunk {
+		selected := line >= start && (end == 0 || line <= end)
+		if b == '\n' {
+			if selected && (end == 0 || line < end) {
+				raw = append(raw, b)
+			}
+			line++
+			if end > 0 && line > end {
+				return raw, line, true
+			}
+		} else if selected {
+			raw = append(raw, b)
+		}
+		if int64(len(raw)) > maxBytes {
+			return raw, line, true
+		}
+	}
+	return raw, line, false
 }
 
 func askSourceTooLargeError(source string, maxBytes int64) error {
