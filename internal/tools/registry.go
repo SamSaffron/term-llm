@@ -59,6 +59,8 @@ func NewLocalToolRegistry(toolConfig *ToolConfig, appConfig *config.Config, appr
 		}
 	}
 
+	approvalMgr.WorkspacePolicy = toolConfig.Workspace
+
 	r := &LocalToolRegistry{
 		config:           toolConfig,
 		permissions:      perms,
@@ -476,8 +478,10 @@ func (r *LocalToolRegistry) SetBaseDirWithContext(ctx context.Context, dir strin
 	if err != nil {
 		return err
 	}
-	if err := r.approval.SetPrimaryWorkspaceWithContext(ctx, canonical); err != nil {
-		return err
+	if r.config.Workspace != "none" {
+		if err := r.approval.SetPrimaryWorkspaceWithContext(ctx, canonical); err != nil {
+			return err
+		}
 	}
 
 	r.mu.Lock()
@@ -643,7 +647,7 @@ func (m *ToolManager) SetupEngine(engine *llm.Engine) {
 // the effective approval mode. Executors stay registered so an in-flight call
 // issued before a mode change can still complete safely.
 func FilterToolSpecsForApprovalMode(specs []llm.ToolSpec, approval *ApprovalManager) []llm.ToolSpec {
-	if approval == nil || !approval.YoloEnabled() {
+	if approval == nil || (!approval.YoloEnabled() && approval.WorkspacePolicy != "none") {
 		return specs
 	}
 	filtered := make([]llm.ToolSpec, 0, len(specs))

@@ -37,7 +37,8 @@ type SessionSettings struct {
 
 	// Agent name (if any)
 	AgentName    string
-	PlanGuidance bool // Built-in developer's callable-only update_plan guidance
+	PlanGuidance bool   // Built-in developer's callable-only update_plan guidance
+	Workspace    string // Agent workspace policy: auto/default or none
 
 	// Session ID (if any)
 	SessionID string
@@ -190,6 +191,7 @@ func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags,
 	s := SessionSettings{}
 	if agent != nil {
 		s.AgentName = agent.Name
+		s.Workspace = agent.Workspace
 		s.PlanGuidance = agent.Name == "developer" && agent.Source == agents.SourceBuiltin
 		s.TimeGrounding = agent.TimeGroundingEnabled()
 	}
@@ -599,10 +601,13 @@ func (s *SessionSettings) toolConfig(cfg *config.Config, visionTarget string) to
 	}
 	toolConfig.AgentDir = s.AgentDir
 	toolConfig.PlanGuidance = s.PlanGuidance
+	toolConfig.Workspace = s.Workspace
 	toolConfig.RequireExplicitWorkingDir = s.RequireExplicitWorkingDir
 	if strings.TrimSpace(s.BaseDir) != "" {
 		toolConfig.BaseDir = s.BaseDir
-		toolConfig.PrimaryWorkspace = strings.TrimSpace(s.PrimaryWorkspace)
+		if s.Workspace != "none" {
+			toolConfig.PrimaryWorkspace = strings.TrimSpace(s.PrimaryWorkspace)
+		}
 		if s.ShellWorkingDir == "" {
 			s.ShellWorkingDir = s.BaseDir
 		}

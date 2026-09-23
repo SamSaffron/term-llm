@@ -27,6 +27,7 @@ type ToolConfig struct {
 	Spawn           SpawnConfig `mapstructure:"spawn"`              // Spawn agent configuration
 	AgentDir        string      `mapstructure:"-"`                  // Agent source directory (set at runtime)
 	PlanGuidance    bool        `mapstructure:"-"`                  // Add built-in developer guidance only when update_plan is callable
+	Workspace       string      `mapstructure:"-"`                  // Agent workspace policy: auto/default or none
 	// BaseDir, when set, is the per-run/session working directory used to
 	// resolve relative tool paths and default process-spawn directories. It is
 	// deliberately implemented through explicit path resolution / exec.Cmd.Dir;
@@ -112,7 +113,9 @@ func (c *ToolConfig) UpdateBaseDir(dir string) {
 	mu.Lock()
 	defer mu.Unlock()
 	c.BaseDir = dir
-	c.PrimaryWorkspace = dir
+	if c.Workspace != "none" {
+		c.PrimaryWorkspace = dir
+	}
 	c.ShellWorkingDir = dir
 }
 
@@ -190,6 +193,9 @@ func (c ToolConfig) Merge(other ToolConfig) ToolConfig {
 	}
 	if other.PlanGuidance {
 		result.PlanGuidance = true
+	}
+	if other.Workspace != "" {
+		result.Workspace = other.Workspace
 	}
 	if other.BaseDir != "" {
 		result.BaseDir = other.BaseDir

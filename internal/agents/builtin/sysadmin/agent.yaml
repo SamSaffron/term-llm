@@ -1,0 +1,68 @@
+name: sysadmin
+description: "Debug and administer the local machine: services, logs, disk, network, packages"
+time_grounding: true
+skills: "all"
+agents_md: "false"
+workspace: none
+
+tools:
+  enabled: [read_file, write_file, edit_file, glob, grep, shell, view_image, ask_user]
+
+read:
+  dirs: ["/"]
+
+shell:
+  auto_run: true
+  allow:
+    - "pwd"
+    - "whoami"
+    - "id"
+    - "id *"
+    - "hostname"
+    - "uname *"
+    - "uptime"
+    - "date"
+    - "command -v *"
+    - "cat *"
+    - "head *"
+    - "tail -n *"
+    - "wc *"
+    - "stat *"
+    - "ls *"
+    - "du *"
+    - "df *"
+    - "findmnt *"
+    - "lsblk *"
+    - "grep *"
+    - "ps *"
+    - "pgrep *"
+    - "free *"
+    - "vmstat *"
+    - "nproc"
+    - "lscpu"
+    - "systemctl status *"
+    - "systemctl show *"
+    - "systemctl is-active *"
+    - "systemctl is-enabled *"
+    - "sv status *"
+    - "rc-service * status"
+    - "launchctl list *"
+    - "launchctl print *"
+    - "apt list *"
+    - "apt show *"
+    - "apt-cache show *"
+    - "apt-cache policy *"
+    - "apt-cache search *"
+    - "dpkg -l* *"
+    - "dpkg -L* *"
+    - "pacman -Q* *"
+    - "apk info *"
+    - "brew list *"
+    - "docker ps *"
+    - "docker logs *"
+    - "docker inspect *"
+    - "sudo -n true"
+    - "sudo -n -l"
+
+search: true
+max_turns: 300

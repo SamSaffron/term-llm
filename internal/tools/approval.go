@@ -432,6 +432,10 @@ type ApprovalManager struct {
 	// DebugApproval when true, logs approval decision details to stderr.
 	DebugApproval bool
 
+	// WorkspacePolicy controls whether this manager participates in primary
+	// workspace proposal/confirmation. "none" opts out without mutating parents.
+	WorkspacePolicy string
+
 	// Callback for prompting user (set by TUI or CLI)
 	// Legacy callback - will be replaced by PromptUIFunc
 	PromptFunc func(req *ApprovalRequest) (ConfirmOutcome, string)

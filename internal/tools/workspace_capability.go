@@ -351,7 +351,7 @@ var ErrWorkspaceApprovalCancelled = errors.New("workspace approval cancelled")
 // access. Remembered workspaces and already-confirmed sessions return without a
 // visible prompt; yolo remains an in-memory bypass and never persists trust.
 func (m *ApprovalManager) EnsurePrimaryWorkspaceAccess(ctx context.Context) error {
-	if m == nil || m.YoloEnabled() {
+	if m == nil || m.WorkspacePolicy == "none" || m.YoloEnabled() {
 		return nil
 	}
 	root := m.root()
@@ -372,6 +372,9 @@ func (m *ApprovalManager) EnsurePrimaryWorkspaceAccess(ctx context.Context) erro
 // lock gives concurrent parent/child first accesses one human prompt and one result.
 // Proactive prompts leave cancellation undecided so first access can ask again.
 func (m *ApprovalManager) ensurePrimaryWorkspaceAccess(ctx context.Context, canonicalPath string, latchCancellation bool) error {
+	if m == nil || m.WorkspacePolicy == "none" {
+		return nil
+	}
 	root := m.root()
 	if root == nil {
 		return nil

@@ -60,6 +60,9 @@ type Agent struct {
 	Read  ReadConfig  `yaml:"read,omitempty"`
 	Spawn SpawnConfig `yaml:"spawn,omitempty"`
 
+	// Workspace controls primary workspace binding. Values: "", "auto", or "none".
+	Workspace string `yaml:"workspace,omitempty"`
+
 	// Skills override for this agent.
 	// Values: "" (use global config), "all"/"*" (enable all), "none" (disable),
 	// or comma-separated skill names (e.g. "git,docker").
@@ -430,6 +433,9 @@ func (a *Agent) String() string {
 func (a *Agent) Validate() error {
 	if a.Name == "" {
 		return fmt.Errorf("agent name is required")
+	}
+	if a.Workspace != "" && a.Workspace != "auto" && a.Workspace != "none" {
+		return fmt.Errorf("invalid workspace policy %q (valid: auto, none)", a.Workspace)
 	}
 
 	// Can't have both enabled and disabled lists

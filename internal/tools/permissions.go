@@ -200,7 +200,7 @@ func (p *ToolPermissions) isPathInDirs(resolvedPath string, dirs []string) bool 
 			resolvedDir = absDir
 		}
 
-		if strings.HasPrefix(resolvedPath, resolvedDir+string(filepath.Separator)) || resolvedPath == resolvedDir {
+		if pathWithinWorkspace(resolvedPath, resolvedDir) {
 			return true
 		}
 	}

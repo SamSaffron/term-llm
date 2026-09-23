@@ -50,6 +50,7 @@ term-llm ships with these built-in agents:
 | `extension-builder` | Personalizes the web interface with local CSS/JavaScript extensions and config. |
 | `reviewer` | Read-only code review with git-aware inspection tools. |
 | `shell` | General shell command helper. |
+| `sysadmin` | Diagnoses and administers the local host with host facts and host-wide reads. |
 | `video-editor` | Safely inspects, plans, previews, and renders local media with FFmpeg. |
 
 A few good starting points:
@@ -67,6 +68,12 @@ A few good starting points:
 Native `/commit` resolves `commit-message` through the normal registry, so a project-local or user agent with that name shadows the builtin. You can instead set `commit.message_agent` to another registered lookup name. The same resolution is used by TUI and Web.
 
 The resolved agent contributes its prompt, tone, provider, model, and reasoning style to two specialized child phases: read-only whole-file scope planning and staged-only message drafting. The host overlays the safety contract for both phases. Configured write/custom tools, broad file reads, custom output tools, and `on_complete` are disabled; a small turn cap and host-owned typed finishing tool replace them. In particular, `/commit` never runs the builtin's legacy `commit_editmsg` side effect or a custom agent's completion hook before user review. Missing or invalid configured agents are reported without silently falling back, and manual file/message entry stays available.
+
+### Host-scoped agents
+
+The built-in `sysadmin` agent uses `workspace: none`: its execution directory remains available to the shell, but it neither proposes that directory as a primary workspace nor exposes `manage_workspace`. This opt-out does not revoke separate read, write, shell, session, project, Guardian, or yolo authority. Its `read.dirs: ["/"]` grant is intentionally sensitive and authorizes host-wide file-tool reads subject to operating-system access and tool traversal limits. The agent also has web search enabled, and `read_url` has no approval gate, so text the agent reads (a log line, a config comment) could in principle steer it into fetching a URL containing host data. On `chat`, `ask`, and `loop`, pass `--no-web-fetch` to keep `web_search` but drop `read_url`. `printenv` is not pre-approved because it exposes credentials from the environment.
+
+`{{host_facts}}` lazily renders stable local-host identity (hostname, OS, kernel, distro, init system, package managers, container/virtualization, and user), collected once per process. It contains no timestamps or resource measurements, so a prompt that uses it renders identically when a session is resumed. `{{host_notes}}` loads bounded user-maintained context from `$XDG_CONFIG_HOME/term-llm/hosts/<short-hostname>.md` (or the corresponding default config directory). Notes are inserted as text and template syntax inside them is not recursively expanded.
 
 ## Managing agents
 

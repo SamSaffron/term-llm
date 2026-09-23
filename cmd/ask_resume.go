@@ -80,6 +80,7 @@ func prepareAskResume(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 	if agent == nil && strings.TrimSpace(sess.Agent) != "" {
 		if resumedAgent, err := LoadAgent(sess.Agent, cfg); err == nil && resumedAgent != nil {
 			settings.PlanGuidance = resumedAgent.Name == "developer" && resumedAgent.Source == agents.SourceBuiltin
+			settings.Workspace = resumedAgent.Workspace
 		}
 	}
 	if err := RestoreWorktreeBinding(ctx, store, sess, nil); err != nil {
