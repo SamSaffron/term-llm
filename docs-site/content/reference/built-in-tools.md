@@ -86,10 +86,12 @@ tools:
     - name: job_status
       description: "List all registered jobs and their last run result."
       script: scripts/job-status.sh
+      call: json
 
     - name: job_run
       description: "Trigger a scheduled job to run immediately."
       script: scripts/job-run.sh
+      call: json
       input:
         type: object
         properties:
@@ -102,6 +104,7 @@ tools:
     - name: job_history
       description: "Fetch recent run history for a job."
       script: scripts/job-history.py
+      call: json
       input:
         type: object
         properties:
@@ -117,7 +120,7 @@ tools:
         DB_PATH: /var/lib/myapp/jobs.db
 ```
 
-Put the declarations above in the agent's `agent.yaml`, not the global config. Scripts receive the LLM's arguments as **JSON on stdin**. For example, make `scripts/job-history.py` executable and parameterize SQL rather than interpolating model-supplied values:
+Put the declarations above in the agent's `agent.yaml`, not the global config. With `call: json`, scripts receive the LLM's arguments as **JSON on stdin**. For example, make `scripts/job-history.py` executable and parameterize SQL rather than interpolating model-supplied values:
 
 ```python
 #!/usr/bin/env python3
@@ -146,6 +149,7 @@ Custom tools run from the session working directory when the session is bound to
 | `name` | ✓ | Tool name shown to LLM. Must match `^[a-z][a-z0-9_]*$`, no collisions with built-in names |
 | `description` | ✓ | Description passed to LLM in the tool spec |
 | `script` | ✓ | Path to script, relative to the agent directory (e.g. `scripts/foo.sh`) |
+| `call` | | Argument passing mode: `args` (default) passes named flags (`--key value`); `positional` passes positional values; `json` sends JSON on stdin |
 | `input` | | JSON Schema for parameters. Must be `type: object` at root. If omitted, tool takes no parameters |
 | `timeout_seconds` | | Execution timeout (default 30, max 300) |
 | `env` | | Extra environment variables to set when running the script |
