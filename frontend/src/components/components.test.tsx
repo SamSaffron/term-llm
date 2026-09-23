@@ -89,6 +89,114 @@ const expectPasswordManagersIgnored = (element: HTMLElement) => {
 };
 
 describe('Preact-owned chat surfaces', () => {
+  it('focuses the composer and preserves typing from the page', async () => {
+    const store = createStore();
+    store.prompt.value = 'Draft: ';
+    const { unmount } = render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+    const textbox = screen.getByRole('textbox', { name: 'Message' });
+    await userEvent.keyboard('Hello');
+    expect(textbox).toHaveFocus();
+    expect(textbox).toHaveValue('Draft: Hello');
+    expect(store.prompt.value).toBe('Draft: Hello');
+    unmount();
+    fireEvent.keyDown(document.body, { key: 'x' });
+    expect(store.prompt.value).toBe('Draft: Hello');
+    store.dispose();
+  });
+
+  it('leaves keyboard input with other controls and overlays', async () => {
+    const store = createStore();
+    const { container, rerender } = render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+        <input aria-label="Search" />
+        <div contentEditable="plaintext-only" tabIndex={0}>
+          Editable
+        </div>
+        <button>Action</button>
+        <div class="shell-overlay" tabIndex={0}>
+          Terminal
+        </div>
+        <div role="menu" tabIndex={0}>
+          Menu
+        </div>
+      </StoreContext.Provider>,
+    );
+    for (const target of [
+      screen.getByRole('textbox', { name: 'Search' }),
+      container.querySelector('[contenteditable]')!,
+      screen.getByRole('button', { name: 'Action' }),
+      screen.getByText('Terminal'),
+      screen.getByRole('menu'),
+    ]) {
+      (target as HTMLElement).focus();
+      fireEvent.keyDown(target, { key: 'a' });
+      expect(target).toHaveFocus();
+      expect(store.prompt.value).toBe('');
+    }
+    rerender(
+      <StoreContext.Provider value={store}>
+        <Composer />
+        <Overlay title="Dialog" onClose={() => undefined}>
+          Dialog content
+        </Overlay>
+      </StoreContext.Provider>,
+    );
+    fireEvent.keyDown(document.body, { key: 'a' });
+    expect(store.prompt.value).toBe('');
+    store.dispose();
+  });
+
+  it('preserves diff navigation shortcuts while the diff panel is open', () => {
+    const store = createStore();
+    store.diff.value = { ...store.diff.peek(), open: true };
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+    fireEvent.keyDown(document.body, { key: '[' });
+    fireEvent.keyDown(document.body, { key: ']' });
+    expect(store.prompt.value).toBe('');
+    expect(screen.getByRole('textbox', { name: 'Message' })).not.toHaveFocus();
+    store.diff.value = { ...store.diff.peek(), open: false };
+    fireEvent.keyDown(document.body, { key: '[' });
+    expect(store.prompt.value).toBe('[');
+    store.dispose();
+  });
+
+  it('ignores shortcuts, composition, handled events and an inert composer', () => {
+    const store = createStore();
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+    for (const options of [
+      { key: 'a', ctrlKey: true },
+      { key: 'a', metaKey: true },
+      { key: 'a', altKey: true },
+      { key: 'a', isComposing: true },
+      { key: 'Dead' },
+      { key: 'Enter' },
+      { key: 'Tab' },
+      { key: ' ' },
+    ])
+      fireEvent.keyDown(document.body, options);
+    const handled = new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true });
+    handled.preventDefault();
+    document.body.dispatchEvent(handled);
+    expect(store.prompt.value).toBe('');
+    container.setAttribute('inert', '');
+    fireEvent.keyDown(document.body, { key: 'a' });
+    expect(store.prompt.value).toBe('');
+    store.dispose();
+  });
+
   it('does not show a separate subagents panel in the parent conversation', () => {
     const store = createStore();
     store.childSessionStore.children.value = [

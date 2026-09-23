@@ -234,6 +234,18 @@ async function open(
   return requests;
 }
 
+test('typing on the page focuses the composer without losing or duplicating characters', async ({
+  page,
+}) => {
+  await open(page);
+  const input = page.getByRole('textbox', { name: 'Message' });
+  await input.fill('Draft: ');
+  await input.evaluate((element) => element.blur());
+  await page.keyboard.type('Hello');
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue('Draft: Hello');
+});
+
 test('lazy-loads the capability-gated interactive shell overlay', async ({ page }) => {
   const requests = await open(page, '', { shell: true });
   const composer = page.getByRole('textbox', { name: 'Message' });
