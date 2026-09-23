@@ -64,8 +64,5 @@ shell:
     - "sudo -n true"
     - "sudo -n -l"
 
-# Host-wide reads run without prompting, so this agent must not also have an
-# unapproved outbound channel: web_search/read_url stay off unless the user
-# explicitly enables search for a session.
-search: false
+search: true
 max_turns: 300

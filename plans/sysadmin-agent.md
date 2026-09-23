@@ -104,11 +104,9 @@ added.
   `view_image`, `ask_user`. No spawning.
 - `read.dirs: ["/"]`, `workspace: none`, `agents_md: false`,
   `time_grounding: true`, `max_turns: 300`.
-- **`search: false`.** Host-wide reads need no approval, and `web_search` /
-  `read_url` have no approval gate. Together they would let instructions
-  injected via a log or config file read secrets and send them out without a
-  single prompt. Users enable search per session (`-s`) when they need it; the
-  prompt forbids putting host data into URLs or queries.
+- `search: true`: looking up error messages and upstream docs is core
+  sysadmin work. The prompt forbids putting host data into URLs or queries;
+  see Known limitations for the residual risk.
 - `shell.auto_run: true` with a read-only allowlist:
   identity (`whoami`, `id`, `hostname`, `uname *`, `uptime`, `date`,
   `command -v *`), files (`cat *`, `head *`, `tail -n *`, `wc *`, `stat *`,
@@ -153,7 +151,7 @@ Adding a pattern requires checking every option the prefix can reach.
   no volatile fields, process-lifetime cache with degraded-collection retry,
   host key sanitisation, notes path/literal content.
 - `internal/agents`: lazy host variables, expansion, builtin sysadmin config
-  (workspace none, no search, no spawning, prompt variables), builtin tables.
+  (workspace none, search on, no spawning, prompt variables), builtin tables.
 - `internal/tools`: root read grant, workspace none on rebind, inherited parent
   proposal not prompted or mutated, `manage_workspace` omitted, and
   `TestBuiltinSysadminShellAllowlist` covering intended matches and every
@@ -167,6 +165,8 @@ Adding a pattern requires checking every option the prefix can reach.
   over-broad allowlist.
 - **Change journal** (`journal: true`, JSONL of executed commands). Not policy,
   but new framework without a demonstrated need.
+- **`search: false` by default.** Closes the fetch path but removes web lookup,
+  which the agent needs; rejected in favour of search on plus documentation.
 - **Volatile host snapshot** in the system prompt or a start-of-conversation
   developer message. The former churns prompts on resume; the latter needs a
   new agent flag threaded through every conversation-start path to save one
@@ -176,8 +176,14 @@ Adding a pattern requires checking every option the prefix can reach.
 
 - Host-wide unprompted reads mean the model and stored transcripts can see
   sensitive files, process arguments, and container environments
-  (`docker inspect`). That is the agent's job; the mitigation is no outbound
-  channel by default, not less reading.
+  (`docker inspect`). That is the agent's job.
+- Search is on and `read_url` has no approval gate, so unprompted host reads
+  plus an unprompted fetch form a possible injection-to-exfiltration path. The
+  mitigations are the prompt rule, keeping `printenv` off the allowlist, and
+  `--no-web-fetch` (`chat`/`ask`/`loop`) for users who want `web_search`
+  without `read_url`. Closing
+  it structurally would need an approval gate on `read_url`, a separate change
+  for all agents.
 - Anything outside the allowlist prompts, including compound commands with
   redirections (`sudo -n true >/dev/null && …`). Expected behaviour.
 - The Go complexity ratchet flags small increases in the touched functions;

@@ -125,7 +125,7 @@ func TestBuiltinAgentConfigs(t *testing.T) {
 		{"widget-builder", true, 500, true, false, false, true},
 		{"reviewer", true, 200, true, true, true, false},
 		{"shell", true, 200, false, false, false, true},
-		{"sysadmin", true, 300, true, true, false, false},
+		{"sysadmin", true, 300, true, true, false, true},
 		{"video-editor", true, 200, true, false, false, false},
 	}
 

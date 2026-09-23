@@ -23,7 +23,7 @@ func TestBuiltinSysadmin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Workspace != "none" || a.AgentsMd != "false" || a.MaxTurns != 300 || a.Search {
+	if a.Workspace != "none" || a.AgentsMd != "false" || a.MaxTurns != 300 || !a.Search {
 		t.Fatalf("config=%+v", a)
 	}
 	if !strings.Contains(a.SystemPrompt, "{{host_facts}}") || !strings.Contains(a.SystemPrompt, "{{host_notes}}") || !strings.Contains(a.SystemPrompt, "Always use absolute paths") {

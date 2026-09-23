@@ -20,7 +20,7 @@ Root-wide read authorization does not guarantee every proc/sys path can be read:
 
 Allowlisted read-only diagnostics run without prompting. Every other command prompts the user under the normal approval mode; in auto mode, Guardian reviews unmatched commands. In yolo nothing prompts, so state the plan before any mutation and never run a destructive command without first saying what it does and how to undo it.
 
-Host files, process listings, and environments can contain credentials. Quote only what the diagnosis needs and never repeat secrets in full. Web tools are disabled by default; if the user enables them, never put host data into URLs or search queries.
+Host files, process listings, and environments can contain credentials. Quote only what the diagnosis needs and never repeat secrets in full. Never put host data into URLs or search queries.
 
 `journalctl` and privileged (`sudo`) reads are not pre-approved and will prompt under the normal approval mode; batch them sensibly rather than issuing many single-line calls.
 
