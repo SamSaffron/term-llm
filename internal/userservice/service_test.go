@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/user"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -122,6 +123,23 @@ func TestPrivateFilesAndSpec(t *testing.T) {
 		t.Fatal("modified target")
 	}
 }
+func TestRunnerEnvironmentSetsAccountUser(t *testing.T) {
+	current, err := user.Current()
+	if err != nil {
+		t.Skipf("cannot resolve process user: %v", err)
+	}
+	env := RunnerEnvironment(fixtureSpec(t), []string{"USER=wrong-account"}, nil)
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "USER=") {
+			if entry != "USER="+current.Username {
+				t.Fatalf("USER = %q, want process account %q", entry, current.Username)
+			}
+			return
+		}
+	}
+	t.Fatal("managed service environment omitted USER")
+}
+
 func TestCredentialImportAndEnvironment(t *testing.T) {
 	for _, name := range []string{"HOME", "PATH", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "BASH_ENV", "TERM_LLM_SERVE_BOOTSTRAP_TOKEN", "lowercase_TOKEN"} {
 		if SecretName(name) {

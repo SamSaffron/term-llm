@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 
@@ -146,6 +147,12 @@ func Save(path string, s Spec) error {
 // or loader hooks. Dynamic desktop/session endpoints come from the supervisor.
 func RunnerEnvironment(s Spec, inherited []string, secrets map[string]string) []string {
 	env := map[string]string{}
+	// Some CLIs (including Claude Code on macOS) need USER to locate the
+	// signed-in account. launchd does not supply it to user agents, so derive
+	// it from the process identity rather than trusting the installer's shell.
+	if current, err := user.Current(); err == nil {
+		env["USER"] = current.Username
+	}
 	for _, entry := range inherited {
 		k, v, ok := strings.Cut(entry, "=")
 		if !ok {
