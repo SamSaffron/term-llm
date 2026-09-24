@@ -191,6 +191,73 @@ func TestLoadedForeignDefinitionIsNotAdopted(t *testing.T) {
 	}
 }
 
+func TestDarwinSubmittedJobOwnership(t *testing.T) {
+	s := fixtureSpec(t)
+	home := t.TempDir()
+	n := Native{OS: "darwin", Home: home, UID: 501}
+	specPath := filepath.Join(t.TempDir(), "private", "service.json")
+	if err := PrivateDir(filepath.Dir(specPath)); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(specPath, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.Install(s, specPath); err != nil {
+		t.Fatal(err)
+	}
+	args := serviceArgs(s.Binary, s.Kind, specPath)
+	for _, tc := range []struct {
+		name, path, program string
+		args                []string
+		wantOK              bool
+	}{
+		{"managed submission", "(submitted by smd.344)", s.Binary, args, true},
+		{"old binary during reinstall", "(submitted by smd.344)", "/opt/old/term-llm", serviceArgs("/opt/old/term-llm", s.Kind, specPath), true},
+		{"foreign submission", "(submitted by smd.344)", "/usr/bin/foreign", serviceArgs("/usr/bin/foreign", s.Kind, "/foreign/service.json"), false},
+		{"mismatched program", "(submitted by smd.344)", "/usr/bin/foreign", args, false},
+		{"extra argument", "(submitted by smd.344)", s.Binary, append(append([]string(nil), args...), "extra"), false},
+		{"relative program", "(submitted by smd.344)", "term-llm", serviceArgs("term-llm", s.Kind, specPath), false},
+		{"missing arguments", "(submitted by smd.344)", s.Binary, nil, false},
+		{"unknown source", "(other source)", s.Binary, args, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output := "gui/501/com.term-llm.web = {\n\tpath = " + tc.path + "\n\tmanaged_by = com.apple.xpc.ServiceManagement\n\tprogram = " + tc.program + "\n"
+			if tc.args != nil {
+				output += "\targuments = {\n\t\t" + strings.Join(tc.args, "\n\t\t") + "\n\t}\n"
+			}
+			output += "\tinherited environment = {\n\t\tPATH => /usr/bin\n\t}\n}\n"
+			n.Run = func(context.Context, string, ...string) ([]byte, error) { return []byte(output), nil }
+			err := n.CheckLoaded(context.Background(), s.Kind, specPath)
+			if (err == nil) != tc.wantOK {
+				t.Fatalf("CheckLoaded error = %v, wantOK %v", err, tc.wantOK)
+			}
+			if !tc.wantOK && strings.Contains(err.Error(), "open (submitted by") {
+				t.Fatalf("tried to read submission description: %v", err)
+			}
+		})
+	}
+	output := "gui/501/com.term-llm.web = {\n\tpath = (submitted by smd.344)\n\tprogram = " + s.Binary + "\n\targuments = {\n\t\t" + strings.Join(args, "\n\t\t") + "\n\t}\n}\n"
+	n.Run = func(context.Context, string, ...string) ([]byte, error) { return []byte(output), nil }
+	if err := os.Remove(specPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.CheckLoaded(context.Background(), s.Kind, specPath); err != nil {
+		t.Fatalf("rejected managed job when saved spec needs repair: %v", err)
+	}
+	if err := os.WriteFile(n.Path(s.Kind), []byte("foreign plist"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.CheckLoaded(context.Background(), s.Kind, specPath); err == nil {
+		t.Fatal("accepted unowned on-disk service")
+	}
+	if err := os.Remove(n.Path(s.Kind)); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.CheckLoaded(context.Background(), s.Kind, specPath); err == nil {
+		t.Fatal("accepted loaded job without an installed managed definition")
+	}
+}
+
 func TestDarwinStartAndReconcile(t *testing.T) {
 	for _, tc := range []struct {
 		name                       string

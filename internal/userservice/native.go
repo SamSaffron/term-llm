@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -85,11 +86,15 @@ func xmlText(s string) string {
 	return b.String()
 }
 
+func serviceArgs(binary, kind, specPath string) []string {
+	return []string{binary, "service", "run", kind, "--spec", specPath}
+}
+
 func (n Native) Render(s Spec, specPath string) ([]byte, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
-	args := []string{s.Binary, "service", "run", s.Kind, "--spec", specPath}
+	args := serviceArgs(s.Binary, s.Kind, specPath)
 	keys := make([]string, 0, len(s.Environment))
 	for key := range s.Environment {
 		keys = append(keys, key)
@@ -324,6 +329,49 @@ func (n Native) Enabled(ctx context.Context, kind string) (bool, error) {
 	return !strings.Contains(string(out), `"`+n.Label(kind)+`" => true`), nil
 }
 
+func launchdArguments(output string) []string {
+	lines := strings.Split(output, "\n")
+	for i, line := range lines {
+		if line != "\targuments = {" {
+			continue
+		}
+		var args []string
+		for _, entry := range lines[i+1:] {
+			entry = strings.TrimSpace(entry)
+			if entry == "}" {
+				return args
+			}
+			args = append(args, entry)
+		}
+		break
+	}
+	return nil
+}
+
+func (n Native) checkSubmittedJob(kind, specPath, source, output string) error {
+	if !strings.HasPrefix(source, "(submitted by ") || !strings.HasSuffix(source, ")") {
+		return fmt.Errorf("existing launchd job %s has no verifiable managed definition (source: %q); it will not be replaced", n.Label(kind), source)
+	}
+	if _, err := os.Stat(n.Path(kind)); err != nil {
+		return fmt.Errorf("existing launchd job %s has no installed managed definition: %w", n.Label(kind), err)
+	}
+	if err := n.CheckOwned(kind, specPath); err != nil {
+		return err
+	}
+	args := launchdArguments(output)
+	program := ""
+	for _, line := range strings.Split(output, "\n") {
+		if value, ok := strings.CutPrefix(line, "\tprogram = "); ok {
+			program = value
+			break
+		}
+	}
+	if len(args) == 6 && filepath.IsAbs(args[0]) && program == args[0] && slices.Equal(args[1:], serviceArgs("", kind, specPath)[1:]) {
+		return nil
+	}
+	return fmt.Errorf("existing launchd job %s has no verifiable managed definition (source: %q; loaded program or arguments differ); it will not be replaced", n.Label(kind), source)
+}
+
 // CheckLoaded also checks the supervisor's actual source, which may be outside
 // this shell's XDG_CONFIG_HOME or overridden in a runtime unit directory.
 func (n Native) CheckLoaded(ctx context.Context, kind, specPath string) error {
@@ -345,8 +393,10 @@ func (n Native) CheckLoaded(ctx context.Context, kind, specPath string) error {
 				break
 			}
 		}
-		if source == "" {
-			return fmt.Errorf("existing launchd job %s has no verifiable managed definition", n.Label(kind))
+		if !filepath.IsAbs(source) {
+			// ServiceManagement can report a submission description instead of a
+			// plist path. Never treat it as a filename or trust the label alone.
+			return n.checkSubmittedJob(kind, specPath, source, string(out))
 		}
 	}
 	if source == "" {
