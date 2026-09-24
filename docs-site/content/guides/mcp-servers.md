@@ -28,6 +28,8 @@ term-llm ask --mcp github "list my open PRs"
 term-llm chat --mcp playwright,filesystem
 ```
 
+MCP startup feedback uses plain lines in CI and when input or output is redirected. Set `TERM_LLM_NO_SPINNER=1` to disable the startup animation in a terminal as well.
+
 ### MCP Commands
 
 | Command | Description |

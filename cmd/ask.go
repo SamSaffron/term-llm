@@ -2317,8 +2317,14 @@ func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *l
 		return nil, fmt.Errorf("MCP servers not configured: %s. Add them with: term-llm mcp add <name>", strings.Join(missing, ", "))
 	}
 
+	output, _ := errWriter.(*os.File)
+	animate := !terminalpolicy.EnvironmentEnabled(os.Getenv("TERM_LLM_NO_SPINNER")) && terminalpolicy.Interactive(os.Stdin, output)
+
 	// Show starting message
 	fmt.Fprintf(errWriter, "Starting MCP: %s", strings.Join(serverNames, ", "))
+	if !animate {
+		fmt.Fprintln(errWriter)
+	}
 
 	// Enable all servers (async)
 	var enableErrors []string
@@ -2329,7 +2335,9 @@ func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *l
 	}
 
 	if len(enableErrors) > 0 {
-		fmt.Fprintf(errWriter, "\n")
+		if animate {
+			fmt.Fprintln(errWriter)
+		}
 		return nil, fmt.Errorf("failed to start MCP servers: %s", strings.Join(enableErrors, "; "))
 	}
 
@@ -2351,8 +2359,10 @@ func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *l
 		if allReady {
 			break
 		}
-		fmt.Fprintf(errWriter, "\r%s Starting MCP: %s", spinChars[spinIdx], strings.Join(serverNames, ", "))
-		spinIdx = (spinIdx + 1) % len(spinChars)
+		if animate {
+			fmt.Fprintf(errWriter, "\r%s Starting MCP: %s", spinChars[spinIdx], strings.Join(serverNames, ", "))
+			spinIdx = (spinIdx + 1) % len(spinChars)
+		}
 		time.Sleep(80 * time.Millisecond)
 	}
 
@@ -2370,7 +2380,9 @@ func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *l
 	}
 
 	if len(failedServers) > 0 {
-		fmt.Fprintf(errWriter, "\n")
+		if animate {
+			fmt.Fprintln(errWriter)
+		}
 		return nil, fmt.Errorf("MCP servers failed to start: %s", strings.Join(failedServers, "; "))
 	}
 
@@ -2388,9 +2400,14 @@ func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *l
 
 	// Show result
 	if len(tools) > 0 {
-		fmt.Fprintf(errWriter, "\r✓ MCP ready: %d tools from %s\n\n", len(tools), strings.Join(serverNames, ", "))
+		if animate {
+			fmt.Fprint(errWriter, "\r")
+		}
+		fmt.Fprintf(errWriter, "✓ MCP ready: %d tools from %s\n\n", len(tools), strings.Join(serverNames, ", "))
 	} else {
-		fmt.Fprintf(errWriter, "\n")
+		if animate {
+			fmt.Fprintln(errWriter)
+		}
 		return nil, fmt.Errorf("MCP servers started but no tools available from: %s", strings.Join(serverNames, ", "))
 	}
 
