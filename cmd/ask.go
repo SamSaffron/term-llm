@@ -2320,6 +2320,13 @@ func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *l
 	// Show starting message
 	fmt.Fprintf(errWriter, "Starting MCP: %s", strings.Join(serverNames, ", "))
 
+	ready := false
+	defer func() {
+		if !ready {
+			mcpManager.StopAll()
+		}
+	}()
+
 	// Enable all servers (async)
 	var enableErrors []string
 	for _, server := range serverNames {
@@ -2336,10 +2343,9 @@ func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *l
 	// Wait for servers with spinner animation
 	spinChars := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 	spinIdx := 0
-	timeout := 10 * time.Second
-	deadline := time.Now().Add(timeout)
 
-	for time.Now().Before(deadline) {
+	// The manager owns the startup deadline and reports expiry as StatusFailed.
+	for {
 		allReady := true
 		for _, name := range mcpManager.EnabledServers() {
 			status, _ := mcpManager.ServerStatus(name)
@@ -2364,6 +2370,9 @@ func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *l
 			errMsg := "unknown error"
 			if err != nil {
 				errMsg = err.Error()
+				if errors.Is(err, context.DeadlineExceeded) {
+					errMsg = "startup timed out: " + errMsg
+				}
 			}
 			failedServers = append(failedServers, fmt.Sprintf("%s (%s)", name, errMsg))
 		}
@@ -2381,7 +2390,6 @@ func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *l
 		discoveryCfg = opts.ToolDiscovery
 	}
 	if _, err := tooldiscovery.NewPlanner(discoveryCfg, mcpManager, engine); err != nil {
-		mcpManager.StopAll()
 		return nil, fmt.Errorf("configure MCP tool discovery: %w", err)
 	}
 	tools := mcpManager.AllTools()
@@ -2394,6 +2402,7 @@ func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *l
 		return nil, fmt.Errorf("MCP servers started but no tools available from: %s", strings.Join(serverNames, ", "))
 	}
 
+	ready = true
 	return mcpManager, nil
 }
 
