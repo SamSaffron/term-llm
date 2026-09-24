@@ -19,6 +19,21 @@ describe('Hub config', () => {
     ).toThrow('passkey page configuration');
   });
 
+  it('requires an S256 challenge for native sign-in approval', () => {
+    const native = (challenge: unknown) =>
+      parseHubConfig({
+        page: 'passkey-auth',
+        authMode: 'passkey',
+        basePath: '/hub',
+        passkey: { mode: 'native', challenge },
+      });
+    const challenge = 'A'.repeat(43);
+    expect(native(challenge).passkey).toMatchObject({ mode: 'native', challenge });
+    for (const bad of [undefined, '', 'A'.repeat(42), `${'A'.repeat(42)}!`]) {
+      expect(() => native(bad)).toThrow('native sign-in challenge');
+    }
+  });
+
   it('reads escaped server configuration from the mount data attribute', () => {
     const root = document.createElement('div');
     root.dataset.hubConfig = JSON.stringify({

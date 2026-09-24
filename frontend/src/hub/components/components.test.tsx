@@ -392,4 +392,39 @@ describe('Hub components', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Sign in with a passkey' }));
     await screen.findByText(/cancelled or timed out/);
   });
+
+  it('replaces the waiting state after handing a native sign-in to the app', async () => {
+    const client = {
+      authorizeNative: vi.fn(async () => ({ redirect: 'termllm-auth://callback?code=c&state=s' })),
+    } as unknown as HubClient;
+    const passkeys = { available: () => true } as unknown as PasskeyPlatform;
+    const navigate = vi.fn();
+    const authStore = new AuthStore(client, passkeys, sessionStorage, navigate);
+    render(
+      <AuthApp
+        config={{
+          ...dashboardConfig,
+          page: 'passkey-auth',
+          authMode: 'passkey',
+          passkey: {
+            mode: 'native',
+            title: 'Approve app sign-in',
+            heading: 'Sign in the term-llm app',
+            description: 'Only continue if you just started this sign-in.',
+            button: 'Approve sign-in',
+            needsCode: false,
+            needsName: false,
+            defaultName: '',
+            challenge: 'A'.repeat(43),
+          },
+        }}
+        store={authStore}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Approve sign-in' }));
+    await screen.findByText(/You can close this window/);
+    expect(navigate).toHaveBeenCalledWith('termllm-auth://callback?code=c&state=s');
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.queryByText(/Waiting for your passkey/)).toBeNull();
+  });
 });

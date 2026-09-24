@@ -36,6 +36,7 @@ type hubPasskeyPageConfig struct {
 	NeedsCode   bool   `json:"needsCode"`
 	NeedsName   bool   `json:"needsName"`
 	DefaultName string `json:"defaultName"`
+	Challenge   string `json:"challenge,omitempty"`
 }
 
 type hubShellView struct {

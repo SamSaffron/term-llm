@@ -95,6 +95,11 @@ remain process-local and must be renewed after a restart. Hub retains at most 1,
 active browser sessions; if that defensive limit is ever reached, stop Hub and
 remove `sessions.json` to sign out every browser before restarting.
 
+Native clients sign in to a passkey Hub through the system browser using the
+same approval flow as the Web UI, under the Hub mount (for example
+`/hub/auth/native/{challenge}`). See
+[Native app sign-in](/guides/web-ui-and-api/#native-app-sign-in).
+
 ### Reverse proxy example
 
 Terminate TLS at the proxy while keeping the Hub backend on loopback. The

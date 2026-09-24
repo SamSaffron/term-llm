@@ -140,8 +140,9 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		"dist/app.css": {raw: 180_000, gzip: 34_000},
 		// Measured after the completed standalone port: 67.7/21.5 KiB JS and
 		// 16.7/4.1 KiB CSS. These limits retain modest growth headroom without
-		// allowing chat-only rendering dependencies into the Hub graph.
-		"dist/hub.js":  {raw: 72_000, gzip: 24_000},
+		// allowing chat-only rendering dependencies into the Hub graph. The
+		// native-app sign-in approval flow brought JS to 72.5/23.5 KiB.
+		"dist/hub.js":  {raw: 74_000, gzip: 25_000},
 		"dist/hub.css": {raw: 19_000, gzip: 5_500},
 	}
 	for name, budget := range budgets {

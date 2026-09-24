@@ -7,11 +7,29 @@ export function AuthApp({ config, store }: { config: HubConfig; store: AuthStore
   const [code, setCode] = useState('');
   const [displayName, setDisplayName] = useState(page?.defaultName ?? '');
   if (!page) throw new Error('Hub passkey configuration is missing.');
+  if (store.handedOff.value) {
+    return (
+      <div class="hub-auth">
+        <main class="auth-card">
+          <h1>Continue in the app</h1>
+          <p role="status">
+            The app is finishing sign-in. You can close this window. If the app did not open, start
+            sign-in again from the app.
+          </p>
+        </main>
+      </div>
+    );
+  }
   const submit = (event: Event) => {
     event.preventDefault();
     const requested =
       new URLSearchParams(window.location.search).get('return') || hubPath(config.basePath, '/');
-    void store.submit(page.mode, { code, displayName, returnPath: requested });
+    void store.submit(page.mode, {
+      code,
+      displayName,
+      returnPath: requested,
+      challenge: page.challenge,
+    });
   };
   return (
     <div class="hub-auth">

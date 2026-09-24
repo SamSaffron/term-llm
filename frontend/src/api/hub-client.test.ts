@@ -77,10 +77,13 @@ describe('HubClient', () => {
       () => client.verifyGrant('/api/auth/recovery', 'code'),
       () => client.beginGrantRegistration('/api/auth/bootstrap', 'Primary'),
       () => client.finishGrantRegistration('/api/auth/recovery', credential),
+      () =>
+        client.finishGrantRegistration('/api/auth/bootstrap', credential, '/ops/auth/native/a b'),
       () => client.beginLogin('/hub/node/alpha/'),
       () => client.finishLogin(credential),
       () => client.beginReauthentication(),
       () => client.finishReauthentication(credential),
+      () => client.authorizeNative('challenge'),
       () => client.beginAdditionalRegistration('Backup'),
       () => client.finishAdditionalRegistration(credential),
     ];
@@ -100,10 +103,12 @@ describe('HubClient', () => {
       '/ops/api/auth/recovery/verify',
       '/ops/api/auth/bootstrap/register/begin',
       '/ops/api/auth/recovery/register/finish',
+      '/ops/api/auth/bootstrap/register/finish?return=%2Fops%2Fauth%2Fnative%2Fa%20b',
       '/ops/api/auth/login/begin',
       '/ops/api/auth/login/finish',
       '/ops/api/auth/reauth/begin',
       '/ops/api/auth/reauth/finish',
+      '/ops/api/auth/native/authorize',
       '/ops/api/auth/credentials/register/begin',
       '/ops/api/auth/credentials/register/finish',
     ]);
@@ -173,5 +178,23 @@ describe('HubClient', () => {
     );
     await expect(client.verifyGrant('/api/auth/bootstrap', 'bad')).rejects.toThrow('invalid code');
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('leaves native approval 401s to the approval page but keeps the default elsewhere', async () => {
+    const navigate = vi.fn();
+    const fetcher = vi.fn(async () => jsonResponse({ error: { message: 'expired' } }, 401));
+    const client = new HubClient(
+      { basePath: '/hub', authMode: 'passkey' },
+      { fetch: fetcher as unknown as typeof fetch, navigate },
+    );
+    const credential = { id: 'credential' } as SerializedPublicKeyCredential;
+    await expect(client.authorizeNative('challenge')).rejects.toBeInstanceOf(HubAPIError);
+    await expect(client.beginReauthentication(false)).rejects.toBeInstanceOf(HubAPIError);
+    await expect(client.finishReauthentication(credential, false)).rejects.toBeInstanceOf(
+      HubAPIError,
+    );
+    expect(navigate).not.toHaveBeenCalled();
+    await expect(client.beginReauthentication()).rejects.toBeInstanceOf(HubAPIError);
+    expect(navigate).toHaveBeenCalledWith('/hub/auth/login');
   });
 });

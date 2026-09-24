@@ -1,6 +1,6 @@
 export type HubPageKind = 'dashboard' | 'passkey-auth' | 'bearer-login' | 'security';
 export type HubAuthMode = 'none' | 'bearer' | 'passkey';
-export type HubPasskeyMode = 'setup' | 'login' | 'recover';
+export type HubPasskeyMode = 'setup' | 'login' | 'recover' | 'native';
 
 export interface HubConfig {
   page: HubPageKind;
@@ -19,12 +19,14 @@ export interface HubConfig {
     needsCode: boolean;
     needsName: boolean;
     defaultName: string;
+    challenge?: string;
   };
 }
 
 const pageKinds = new Set<HubPageKind>(['dashboard', 'passkey-auth', 'bearer-login', 'security']);
 const authModes = new Set<HubAuthMode>(['none', 'bearer', 'passkey']);
-const passkeyModes = new Set<HubPasskeyMode>(['setup', 'login', 'recover']);
+const passkeyModes = new Set<HubPasskeyMode>(['setup', 'login', 'recover', 'native']);
+const nativeChallengePattern = /^[A-Za-z0-9_-]{43}$/;
 
 export function normalizeHubBasePath(value: unknown): string {
   const raw = String(value ?? '').trim();
@@ -79,7 +81,14 @@ export function parseHubConfig(value: unknown): HubConfig {
       needsCode: bool(values.needsCode),
       needsName: bool(values.needsName),
       defaultName: String(values.defaultName || ''),
+      challenge: String(values.challenge || ''),
     };
+    if (
+      config.passkey.mode === 'native' &&
+      !nativeChallengePattern.test(config.passkey.challenge ?? '')
+    ) {
+      throw new Error('Hub native sign-in challenge is invalid.');
+    }
   }
   if (
     config.page === 'bearer-login' &&

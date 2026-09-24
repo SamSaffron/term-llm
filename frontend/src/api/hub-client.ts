@@ -19,11 +19,13 @@ import type {
 
 export class HubAPIError extends Error {
   readonly status: number;
+  readonly type: string;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, type = '') {
     super(message);
     this.name = 'HubAPIError';
     this.status = status;
+    this.type = type;
   }
 }
 
@@ -39,6 +41,11 @@ interface RequestOptions {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function errorType(value: unknown): string {
+  if (!isRecord(value) || !isRecord(value.error)) return '';
+  return typeof value.error.type === 'string' ? value.error.type : '';
 }
 
 function errorMessage(value: unknown, fallback: string): string {
@@ -107,7 +114,7 @@ export class HubClient {
         typeof value === 'string' && value.trim()
           ? value.trim()
           : `Hub request failed (${response.status}).`;
-      throw new HubAPIError(response.status, errorMessage(value, fallback));
+      throw new HubAPIError(response.status, errorMessage(value, fallback), errorType(value));
     }
     if (value === undefined)
       throw new HubAPIError(response.status, 'Hub returned an empty response.');
@@ -196,8 +203,12 @@ export class HubClient {
   finishGrantRegistration(
     prefix: '/api/auth/bootstrap' | '/api/auth/recovery',
     credential: SerializedPublicKeyCredential,
+    returnPath = '',
   ): Promise<RedirectResponse> {
-    return this.request(`${prefix}/register/finish`, {
+    // The server validates the return path against its mount and uses it only
+    // after first-passkey setup (recovery always continues to sign-in).
+    const query = returnPath ? `?return=${encodeURIComponent(returnPath)}` : '';
+    return this.request(`${prefix}/register/finish${query}`, {
       method: 'POST',
       body: credential,
       redirectOnUnauthorized: false,
@@ -220,12 +231,32 @@ export class HubClient {
     });
   }
 
-  beginReauthentication(): Promise<WebAuthnRequestWireOptions> {
-    return this.request('/api/auth/reauth/begin', { method: 'POST', body: {} });
+  beginReauthentication(redirectOnUnauthorized = true): Promise<WebAuthnRequestWireOptions> {
+    return this.request('/api/auth/reauth/begin', {
+      method: 'POST',
+      body: {},
+      redirectOnUnauthorized,
+    });
   }
 
-  finishReauthentication(credential: SerializedPublicKeyCredential): Promise<{ ok: boolean }> {
-    return this.request('/api/auth/reauth/finish', { method: 'POST', body: credential });
+  finishReauthentication(
+    credential: SerializedPublicKeyCredential,
+    redirectOnUnauthorized = true,
+  ): Promise<{ ok: boolean }> {
+    return this.request('/api/auth/reauth/finish', {
+      method: 'POST',
+      body: credential,
+      redirectOnUnauthorized,
+    });
+  }
+
+  // The native approval page handles 401 itself so sign-in returns to it.
+  authorizeNative(challenge: string): Promise<RedirectResponse> {
+    return this.request('/api/auth/native/authorize', {
+      method: 'POST',
+      body: { challenge },
+      redirectOnUnauthorized: false,
+    });
   }
 
   beginAdditionalRegistration(displayName: string): Promise<WebAuthnCreationWireOptions> {

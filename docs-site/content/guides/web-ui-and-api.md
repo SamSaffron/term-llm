@@ -411,6 +411,48 @@ If all enrolled passkeys become inaccessible, restart with a private
 Remove the recovery secret and restart without it when finished. Recovery does
 not silently disable authentication or delete existing credentials.
 
+### Native app sign-in
+
+Native clients (such as the term-llm iOS app) cannot run WebAuthn for an
+arbitrary self-hosted origin, so they sign in through the system browser and
+receive their own session. The same routes exist under a passkey Hub's mount.
+Paths below are relative to the public URL (for example `/ui/`):
+
+1. The app generates a random `code_verifier` (43–128 characters of
+   `A–Z a–z 0–9 - . _ ~`, as in RFC 7636) and opens
+   `auth/native/{challenge}` in the system browser (on iOS,
+   `ASWebAuthenticationSession`), where
+   `challenge = base64url(sha256(code_verifier))` without padding.
+2. If the browser has no session, the server sends it through passkey sign-in
+   (or first-passkey setup) and back to the same page.
+3. The page asks the operator to approve the sign-in. **Opening the URL never
+   issues a code.** Approval requires a click and a fresh passkey assertion.
+   When the browser just signed in or enrolled its first passkey through step
+   2, that ceremony counts for this one approval (and nothing else), so the
+   operator is prompted for a passkey only once.
+4. The browser is redirected to
+   `termllm-auth://callback?code={code}&state={challenge}`. The app should
+   check that `state` equals its challenge. If the page stays open (for
+   example in a desktop browser), it tells the operator to continue in the app.
+5. The app sends `POST api/auth/native/redeem` with
+   `{"code": "…", "code_verifier": "…"}`, `Content-Type: application/json`, and
+   an `Origin` header equal to the public URL's origin. Success returns
+   `{"ok": true}` and sets a new session cookie. That cookie has the same
+   lifetime and flags as any browser session and appears in session management.
+
+Codes are single-use, expire after 60 seconds, and are bound to the challenge
+and to the mount that approved them. A wrong or missing verifier consumes the
+code, so an intercepted callback is useless without the verifier. Pending codes
+live only in server memory; a restart invalidates them and the app must start
+sign-in again. The approval granted by signing in through step 2 applies only
+to that link's challenge. Approval attempts with an invalid challenge or
+session count toward the same per-client authentication rate limit as sign-in
+and redemption. Codes also fail if the approving browser session
+is revoked first. Every code needs its own passkey assertion, so a session can't
+use this flow to extend itself without the operator. The app's session is
+independent of the browser session: signing out of one leaves the other signed
+in. Use **Revoke other sessions** to end both.
+
 ## Run persistently on macOS or Linux
 
 ```bash
