@@ -93,7 +93,7 @@ All fields live under `serve.telegram` in `config.yaml`:
 | `token` | string | — | Bot token from BotFather. Required. |
 | `allowed_user_ids` | list of int | — | Numeric Telegram user IDs allowed to use the bot. |
 | `allowed_usernames` | list of string | — | Telegram usernames allowed to use the bot (without `@`). |
-| `idle_timeout` | int (minutes) | — | Close idle sessions after this many minutes. |
+| `idle_timeout` | int (minutes) | — | Currently overridden in CLI `serve` launches by `--session-ttl` (default `30m`). To set a two-hour idle timeout, use `term-llm serve telegram --session-ttl 2h`. |
 | `interrupt_timeout` | int (seconds) | 3 | How long to wait for an in-flight response to stop before interrupting. |
 
 ## CLI flags
