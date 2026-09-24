@@ -117,7 +117,7 @@ term-llm edit --mcp github -f main.go "update based on latest API"
 # Multiple servers (comma-separated)
 term-llm chat --mcp playwright,filesystem,github
 
-# In chat, toggle servers with Ctrl+M
+# In chat, open the MCP picker with Ctrl+T; press Enter to toggle a server.
 ```
 
 ### Running Tools Directly
