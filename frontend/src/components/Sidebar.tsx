@@ -10,6 +10,7 @@ import { compareSessionsByActivity } from '../stores/store-utils';
 import { Icon } from './Icon';
 import { trapOverlayFocus } from './Overlay';
 import { useMenuKeyboard } from './Menu';
+import { useChatShortcuts } from './useChatShortcuts';
 import { useMediaQuery } from './useMediaQuery';
 import { useEdgeSwipeOpen, useSwipeDismiss } from './useSwipeDismiss';
 
@@ -231,7 +232,15 @@ function SessionMenu({
   );
 }
 
-function SessionRow({ session, showProject = false }: { session: Session; showProject?: boolean }) {
+function SessionRow({
+  session,
+  showProject = false,
+  shortcutEligible = true,
+}: {
+  session: Session;
+  showProject?: boolean;
+  shortcutEligible?: boolean;
+}) {
   const store = useStore();
   const row = useRef<HTMLDivElement>(null);
   const [hiding, setHiding] = useState(false);
@@ -309,6 +318,9 @@ function SessionRow({ session, showProject = false }: { session: Session; showPr
     >
       <button
         class={`session-btn ${active ? 'active' : ''}`}
+        data-chat-shortcut-eligible={
+          shortcutEligible && !session.archived && !hiding ? '' : undefined
+        }
         type="button"
         aria-label={`${session.title || session.name || 'New chat'}${attentionLabel ? ` — ${attentionLabel}` : ''}`}
         aria-current={active ? 'page' : undefined}
@@ -467,6 +479,7 @@ function NoProjectGroup({ sessions }: { sessions: Session[] }) {
         activeSession && (
           <div class="session-group-collapsed-active">
             <SessionRow
+              shortcutEligible={false}
               session={
                 store.sessions.value.find((session) => session.id === activeSession.id) ||
                 activeSession
@@ -613,7 +626,7 @@ function ProjectGroup({ project }: { project: Project }) {
       ) : (
         activeSession && (
           <div class="project-session-list">
-            <SessionRow session={activeSession} />
+            <SessionRow session={activeSession} shortcutEligible={false} />
           </div>
         )
       )}
@@ -655,7 +668,7 @@ function ProjectsGroup({ projects }: { projects: Project[] }) {
       ) : (
         collapsedActiveSession && (
           <div class="session-group-collapsed-active">
-            <SessionRow session={collapsedActiveSession} />
+            <SessionRow session={collapsedActiveSession} shortcutEligible={false} />
           </div>
         )
       )}
@@ -783,6 +796,7 @@ export function Sidebar() {
   const mobile = useMediaQuery('(max-width: 767px)');
   const overlayRoot = useRef<HTMLDivElement>(null);
   const sidebar = useRef<HTMLElement>(null);
+  useChatShortcuts(sidebar);
   const overlayToken = useRef<symbol | null>(null);
   useSwipeDismiss(sidebar, {
     enabled: mobile && mobileOpen,

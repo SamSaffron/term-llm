@@ -234,6 +234,72 @@ async function open(
   return requests;
 }
 
+test('normal browser tabs retain Cmd-number and do not show chat shortcut hints', async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'desktop keyboard interaction');
+  await page.addInitScript(() =>
+    Object.defineProperty(navigator, 'platform', { get: () => 'MacIntel' }),
+  );
+  await open(page);
+  const sidebar = page.locator('#sidebar');
+  await page.keyboard.down('Meta');
+  await expect(sidebar).not.toHaveAttribute('data-show-chat-shortcuts');
+  await expect(sidebar.locator('[aria-keyshortcuts]')).toHaveCount(0);
+  const consumed = await page.evaluate(() => {
+    const event = new KeyboardEvent('keydown', {
+      key: '2',
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    document.body.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  expect(consumed).toBe(false);
+  await expect(page.getByRole('heading', { name: 'Second chat' })).toBeVisible();
+  await page.keyboard.up('Meta');
+});
+
+test('Cmd-number switches chats immediately and holding Cmd reveals the matching hints', async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'desktop keyboard interaction');
+  // Chromium does not emulate display-mode through Emulation.setEmulatedMedia.
+  // Supply the installed-window media result while exercising real key events.
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'platform', { get: () => 'MacIntel' });
+    const matchMedia = window.matchMedia.bind(window);
+    window.matchMedia = (query) => {
+      const media = matchMedia(query);
+      if (query === '(display-mode: standalone)')
+        Object.defineProperty(media, 'matches', { value: true });
+      return media;
+    };
+  });
+  await open(page);
+  const sidebar = page.locator('#sidebar');
+  const first = page.getByRole('button', { name: 'Second chat', exact: true });
+  const second = page.getByRole('button', { name: 'First chat', exact: true });
+  await expect(first).toHaveAttribute('aria-keyshortcuts', 'Meta+1');
+  await expect(second).toHaveAttribute('aria-keyshortcuts', 'Meta+2');
+  await expect(sidebar).not.toHaveAttribute('data-show-chat-shortcuts');
+  const input = page.getByRole('textbox', { name: 'Message' });
+  await input.fill('An unsent draft');
+  await page.keyboard.press('Meta+2');
+  await expect(page.getByRole('heading', { name: 'First chat' })).toBeVisible();
+  await page.keyboard.press('Meta+1');
+  await expect(page.getByRole('heading', { name: 'Second chat' })).toBeVisible();
+  await expect(input).toHaveValue('An unsent draft');
+  await page.keyboard.down('Meta');
+  await expect(sidebar).toHaveAttribute('data-show-chat-shortcuts');
+  await expect
+    .poll(() => first.evaluate((el) => getComputedStyle(el, '::after').content))
+    .toBe('"⌘1"');
+  await page.keyboard.up('Meta');
+  await expect(sidebar).not.toHaveAttribute('data-show-chat-shortcuts');
+});
+
 test('lazy-loads the capability-gated interactive shell overlay', async ({ page }) => {
   const requests = await open(page, '', { shell: true });
   const composer = page.getByRole('textbox', { name: 'Message' });
