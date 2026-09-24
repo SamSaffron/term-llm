@@ -63,10 +63,11 @@ first passkey. The code is never put in a URL or page. Redirected output,
 systemd, and containers must use a private secret file:
 
 ```bash
-openssl rand -base64 32 | sudo install -m 600 /dev/stdin /run/secrets/term-llm-hub-bootstrap
+BOOTSTRAP_SECRET=$(mktemp)
+openssl rand -base64 32 > "$BOOTSTRAP_SECRET"
 term-llm serve hub --auth passkey \
   --public-url https://hub.example.com/hub/ \
-  --passkey-bootstrap-token-file /run/secrets/term-llm-hub-bootstrap
+  --passkey-bootstrap-token-file "$BOOTSTRAP_SECRET"
 ```
 
 `TERM_LLM_HUB_BOOTSTRAP_TOKEN` is also supported and is scrubbed from the
