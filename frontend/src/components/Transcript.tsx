@@ -1346,6 +1346,9 @@ export function Transcript() {
   const prependAnchor = useRef<{ id: string; top: number } | null>(null);
   const messages = store.visibleMessages.value;
   const sessionId = store.activeSession.value?.id;
+  const hydratingTranscript = Boolean(
+    sessionId && store.selectionStore.transcriptLoading.value === sessionId,
+  );
   const resolverCache = useRef<{
     sessionId: string | undefined;
     store: AppStore;
@@ -1606,13 +1609,25 @@ export function Transcript() {
         ref={content}
         data-session-id={store.activeSession.value?.id || ''}
       >
-        {!messages.length && (
-          <div class="empty-chat">
-            <h2>{store.config.title || 'How can I help?'}</h2>
-            <p>Start a conversation with your agent.</p>
-            <NewChatControls />
-          </div>
-        )}
+        {!messages.length &&
+          (hydratingTranscript ? (
+            <div
+              class="transcript-loading"
+              role="status"
+              aria-label="Loading conversation"
+              aria-busy="true"
+            >
+              <span class="transcript-loading-row" />
+              <span class="transcript-loading-row" />
+              <span class="transcript-loading-row" />
+            </div>
+          ) : (
+            <div class="empty-chat">
+              <h2>{store.config.title || 'How can I help?'}</h2>
+              <p>Start a conversation with your agent.</p>
+              <NewChatControls />
+            </div>
+          ))}
         {hasEarlier && (
           <button
             ref={historySentinel}
