@@ -42,11 +42,22 @@ const (
 	RoleAssistant = "assistant"
 )
 
-// Channels accepted by outbound context appends.
+// Channels for delegated output. Providers name these lanes differently, and
+// the names collide, so ours describe behavior rather than any one wire:
+//
+//   - ChannelSpeakable is text the voice model should say, paraphrased. ChatGPT:
+//     channel "speakable" (also its default when omitted). GPT-Live:
+//     session.commentary.append.
+//   - ChannelQuiet is context the voice model absorbs without speaking it when it
+//     arrives, and may use in a later reply. ChatGPT: channel "commentary".
+//     GPT-Live: session.thinking.append.
 const (
-	ChannelSpeakable  = "speakable"
-	ChannelCommentary = "commentary"
+	ChannelSpeakable = "speakable"
+	ChannelQuiet     = "quiet"
 )
+
+// chatGPTQuietChannel is ChatGPT's wire name for ChannelQuiet.
+const chatGPTQuietChannel = "commentary"
 
 // MaxAppendBytes is the largest UTF-8 payload a single context append carries.
 const MaxAppendBytes = 500
@@ -227,9 +238,11 @@ func SessionClose() Outbound {
 	return Outbound{Type: "session.close"}
 }
 
+// normalizeChannel maps a channel to ChatGPT's wire value; anything that is not
+// quiet is spoken.
 func normalizeChannel(channel string) string {
-	if channel == ChannelCommentary {
-		return ChannelCommentary
+	if channel == ChannelQuiet {
+		return chatGPTQuietChannel
 	}
 	return ChannelSpeakable
 }

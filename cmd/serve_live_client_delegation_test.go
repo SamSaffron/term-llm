@@ -679,7 +679,7 @@ func TestLiveClientDelegationWaitsForABusySessionThroughTheController(t *testing
 		harness.session.mu.Lock()
 		defer harness.session.mu.Unlock()
 		for _, chunk := range harness.session.delegated {
-			if chunk.Channel == live.ChannelCommentary && strings.Contains(chunk.Text, "Still finishing") {
+			if chunk.Channel == live.ChannelQuiet && strings.Contains(chunk.Text, "Still finishing") {
 				return true
 			}
 		}

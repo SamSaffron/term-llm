@@ -34,7 +34,6 @@ const (
 	liveEventHistoryLimit      = 512
 	liveSubscriberBuffer       = 64
 	liveIdleCheckInterval      = 15 * time.Second
-	liveCommentaryMinSpacing   = 5 * time.Second
 	liveStartTimeout           = 45 * time.Second
 	liveAudioAttachTimeout     = 20 * time.Second
 	liveAudioWriteTimeout      = 10 * time.Second
@@ -1800,7 +1799,7 @@ func (d *serveLiveDelegator) Run(ctx context.Context, request live.DelegationReq
 			return err
 		}
 		if admitted {
-			emit(live.DelegationChunk{Channel: live.ChannelCommentary, Text: "Guidance queued for the running task."})
+			emit(live.DelegationChunk{Channel: live.ChannelQuiet, Text: "Guidance queued for the running task."})
 			return nil
 		}
 		return live.ErrDelegationBusy
@@ -1840,9 +1839,12 @@ func (d *serveLiveDelegator) Run(ctx context.Context, request live.DelegationReq
 }
 
 // streamRun consumes one run's event stream, reconnecting from the last
-// sequence when a slow subscriber is dropped.
+// sequence when a slow subscriber is dropped. A ticker drives progress notes
+// through quiet stretches, when no event arrives to prompt them.
 func (d *serveLiveDelegator) streamRun(ctx context.Context, run *responseRun, emit func(live.DelegationChunk)) error {
-	reporter := &liveToolCommentary{emit: emit}
+	progress := newLiveProgress(emit, time.Now)
+	ticker := time.NewTicker(liveProgressTick)
+	defer ticker.Stop()
 	after := int64(0)
 	for {
 		subscription := run.subscribe(after)
@@ -1850,16 +1852,16 @@ func (d *serveLiveDelegator) streamRun(ctx context.Context, run *responseRun, em
 			return errors.New("the response stream fell too far behind")
 		}
 		events := subscription.ch
-		for _, event := range subscription.replay {
-			after = event.Sequence
-			done, err := d.applyRunEvent(event, emit, reporter)
-			if done {
-				if events != nil {
-					run.unsubscribe(events)
-				}
-				return err
+		// A replayed backlog, and whatever reached the subscription meanwhile, is
+		// folded before anything is announced, so a prompt answered within it is
+		// never spoken as still pending.
+		if done, err := d.applyRunBacklog(subscription.replay, events, &after, emit, progress); done {
+			if events != nil {
+				run.unsubscribe(events)
 			}
+			return err
 		}
+		progress.tick()
 		if events == nil {
 			return liveRunStatusError(subscription.status)
 		}
@@ -1869,17 +1871,25 @@ func (d *serveLiveDelegator) streamRun(ctx context.Context, run *responseRun, em
 			case <-ctx.Done():
 				run.unsubscribe(events)
 				return ctx.Err()
+			case <-ticker.C:
+				// The ticker can win the select over queued events; fold them
+				// first so the tick sees the state they leave.
+				if done, err := d.applyRunBacklog(nil, events, &after, emit, progress); done {
+					run.unsubscribe(events)
+					return err
+				}
+				progress.tick()
 			case event, open := <-events:
 				if !open {
 					closed = true
 					continue
 				}
-				after = event.Sequence
-				done, err := d.applyRunEvent(event, emit, reporter)
+				done, err := d.applyRunBacklog([]responseRunEvent{event}, events, &after, emit, progress)
 				if done {
 					run.unsubscribe(events)
 					return err
 				}
+				progress.tick()
 				if d.live != nil {
 					d.live.touch()
 				}
@@ -1889,9 +1899,43 @@ func (d *serveLiveDelegator) streamRun(ctx context.Context, run *responseRun, em
 	}
 }
 
+// liveRunDrainLimit bounds how many already-queued events one batch folds, so
+// a stream that never pauses still lets progress tick.
+const liveRunDrainLimit = 256
+
+// applyRunBacklog applies events already in hand, then every event the
+// subscription already holds, so progress is ticked on the state the batch
+// leaves: a prompt and its answer that arrive together are never announced. It
+// never waits for an event; a nil or closed channel ends the batch, and the
+// caller's next receive sees the close.
+func (d *serveLiveDelegator) applyRunBacklog(backlog []responseRunEvent, events <-chan responseRunEvent, after *int64, emit func(live.DelegationChunk), progress *liveProgress) (bool, error) {
+	for _, event := range backlog {
+		*after = event.Sequence
+		if done, err := d.applyRunEvent(event, emit, progress); done {
+			return true, err
+		}
+	}
+	for range liveRunDrainLimit {
+		select {
+		case event, open := <-events:
+			if !open {
+				return false, nil
+			}
+			*after = event.Sequence
+			if done, err := d.applyRunEvent(event, emit, progress); done {
+				return true, err
+			}
+		default:
+			return false, nil
+		}
+	}
+	return false, nil
+}
+
 // applyRunEvent maps one run event to voice output and reports whether the run
-// reached a terminal state.
-func (d *serveLiveDelegator) applyRunEvent(event responseRunEvent, emit func(live.DelegationChunk), reporter *liveToolCommentary) (bool, error) {
+// reached a terminal state. Progress state is updated but not ticked; the
+// caller decides when notes are due.
+func (d *serveLiveDelegator) applyRunEvent(event responseRunEvent, emit func(live.DelegationChunk), progress *liveProgress) (bool, error) {
 	switch event.Event {
 	case "response.output_text.delta":
 		var payload struct {
@@ -1900,15 +1944,6 @@ func (d *serveLiveDelegator) applyRunEvent(event responseRunEvent, emit func(liv
 		if err := json.Unmarshal(event.Data, &payload); err == nil && payload.Delta != "" {
 			emit(live.DelegationChunk{Channel: live.ChannelSpeakable, Text: payload.Delta})
 		}
-	case "response.tool_exec.start":
-		var payload struct {
-			ToolName string `json:"tool_name"`
-		}
-		if err := json.Unmarshal(event.Data, &payload); err == nil {
-			reporter.toolStarted(payload.ToolName)
-		}
-	case "response.approval.prompt":
-		reporter.approvalRequested()
 	case "response.completed":
 		return true, nil
 	case "response.cancelled":
@@ -1916,6 +1951,7 @@ func (d *serveLiveDelegator) applyRunEvent(event responseRunEvent, emit func(liv
 	case "response.failed":
 		return true, liveRunFailure(event.Data)
 	}
+	progress.observe(event)
 	return false, nil
 }
 
@@ -1946,34 +1982,4 @@ func liveRunStatusError(status string) error {
 	default:
 		return errors.New("the request failed")
 	}
-}
-
-// liveToolCommentary keeps spoken progress notes sparse: the voice model only
-// needs enough to fill a silence, not a running tool log.
-type liveToolCommentary struct {
-	emit       func(live.DelegationChunk)
-	lastTool   string
-	lastSpoken time.Time
-	approval   bool
-}
-
-func (c *liveToolCommentary) toolStarted(name string) {
-	name = strings.TrimSpace(name)
-	if name == "" || name == c.lastTool {
-		return
-	}
-	if time.Since(c.lastSpoken) < liveCommentaryMinSpacing && c.lastTool != "" {
-		return
-	}
-	c.lastTool = name
-	c.lastSpoken = time.Now()
-	c.emit(live.DelegationChunk{Channel: live.ChannelCommentary, Text: "Running " + name + "…"})
-}
-
-func (c *liveToolCommentary) approvalRequested() {
-	if c.approval {
-		return
-	}
-	c.approval = true
-	c.emit(live.DelegationChunk{Channel: live.ChannelCommentary, Text: "Waiting for your approval in the app."})
 }

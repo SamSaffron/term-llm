@@ -563,7 +563,9 @@ func (s *geminiSession) AppendDelegation(ctx context.Context, delegationID strin
 		return errors.New("live: Gemini delegation is missing an id")
 	}
 	text := strings.TrimSpace(chunk.Text)
-	if text == "" {
+	if text == "" || chunk.Progress {
+		// Progress describes work still running; the tool response is only sent
+		// at completion, when that note is stale and would crowd out the result.
 		return nil
 	}
 	s.mu.Lock()
@@ -588,7 +590,7 @@ func (s *geminiSession) AppendDelegation(ctx context.Context, delegationID strin
 	if pending.text.Len() > 0 {
 		pending.text.WriteByte('\n')
 	}
-	if chunk.Channel == ChannelCommentary {
+	if chunk.Channel == ChannelQuiet {
 		pending.text.WriteString("[Progress update] ")
 	}
 	pending.text.WriteString(text)

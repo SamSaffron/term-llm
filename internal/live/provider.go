@@ -53,10 +53,16 @@ type InitialItem struct {
 }
 
 // DelegationChunk is a piece of delegated-turn output sent back to the voice
-// model. Channel is ChannelSpeakable or ChannelCommentary.
+// model. Channel is ChannelSpeakable or ChannelQuiet.
 type DelegationChunk struct {
 	Text    string
 	Channel string
+	// Progress marks an interim note about work still running rather than part
+	// of the delegation's result. It is only worth delivering while the work is
+	// in flight, so it is sent without batching, and a transport that can only
+	// hand the voice model one final result (OpenAI Realtime, Gemini) drops it
+	// instead of burying stale notes in that result.
+	Progress bool
 }
 
 // Provider creates live sessions for one vendor.

@@ -30,7 +30,14 @@ For the `chatgpt` and `openai` providers, the browser owns the WebRTC audio path
 
 **term-llm negotiates the call.** The `chatgpt` provider exchanges the browser's SDP offer with the ChatGPT backend, then joins the call's sideband WebSocket using the same account. The model is `gpt-live-1-codex`, using the V3/frameless protocol and its default voice, `cove`.
 
-**term-llm owns the conversation.** When the voice model sends `delegation.created` on the sideband, term-llm's live controller passes the spoken request and recent spoken context as structured data. The host starts a normal response run in the bound session with the same engine, tools, and approvals. It batches streamed assistant text into `delegation.context.append` frames and returns them over the sideband so the model can speak the result. Tool starts and approval prompts use the commentary channel, allowing the model to explain what is happening instead of going silent.
+**term-llm owns the conversation.** When the voice model sends `delegation.created` on the sideband, term-llm's live controller passes the spoken request and recent spoken context as structured data. The host starts a normal response run in the bound session with the same engine, tools, and approvals. It batches streamed assistant text into `delegation.context.append` frames and returns them over the sideband so the model can speak the result.
+
+While the run works, term-llm also sends progress notes rendered by fixed templates from the run's events, never by a model:
+
+- **`[STATUS]` snapshots** use the quiet lane, which the voice model reads without speaking it on arrival: the `commentary` channel on ChatGPT, or `session.thinking.append` on GPT-Live. They list the running tool and its short description (with credential-like tokens redacted), the last tool's outcome and duration, subagent counters, and totals. They are capped at 256 bytes and sent when the state changes, at most every 4 seconds, with a refresh every 15 seconds while a tool keeps running, so the voice model can answer "what's it doing?" accurately.
+- **`[PROGRESS]` notes** use the spoken lane: the `speakable` channel on ChatGPT, or `session.commentary.append` on GPT-Live. One is sent after 15 seconds without speech, then at most every 30 seconds. Another is sent immediately when the run waits for your approval or an answer.
+
+The OpenAI Realtime and Gemini transports return a delegation's output only once it completes, so they drop these notes rather than adding stale progress to the result.
 
 Requests *about* the call rather than *within* the bound session never become chat turns when the control lane is enabled. A fast routing model reads every delegation first and either answers a session-management request itself or hands it to the workspace agent. Asking which sessions are running, moving the call, or changing the voice therefore leaves no message or run in the bound session and does not extend its provider history, including in the session the call leaves. With the control lane disabled—the default—there is no router, and those requests run as ordinary work in the bound session.
 
