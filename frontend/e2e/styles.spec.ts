@@ -50,8 +50,8 @@ test('diff layout retains grid rows, line markers and comment placement', async 
 
 test('MCP, widget and project labels retain ellipsis clipping', async ({ page }) => {
   const classes = [
-    'mcp-server-name',
-    'mcp-server-subtitle',
+    'mcp-row-name',
+    'mcp-row-meta',
     'widget-card-name',
     'widget-card-meta',
     'widget-card-error',
@@ -60,6 +60,10 @@ test('MCP, widget and project labels retain ellipsis clipping', async ({ page })
   ];
   await page.setContent(classes.map((name) => `<div class="${name}">Long label</div>`).join(''));
   await page.addStyleTag({ content: css });
+  // The MCP modal loads its stylesheet separately from the main app stylesheet.
+  await page.addStyleTag({
+    content: stylesheet(resolve(import.meta.dirname, '../src/styles/features/mcp.css')),
+  });
   for (const name of classes) {
     await expect(page.locator(`.${name}`)).toHaveCSS('overflow', 'hidden');
     await expect(page.locator(`.${name}`)).toHaveCSS('text-overflow', 'ellipsis');
