@@ -35,6 +35,8 @@ type classifyDeps struct {
 }
 
 type classifyOptions struct {
+	samples          int
+	imageFiles       []string
 	provider         string
 	stateFile        string
 	stateJSON        bool
@@ -106,6 +108,8 @@ be used for automatic approvals when guardian.backend is set to classify.`,
 }
 
 func addClassifyFlags(cmd *cobra.Command, opts *classifyOptions) {
+	cmd.Flags().IntVar(&opts.samples, "samples", 0, "Optional server-side sample count (compatible endpoints only)")
+	cmd.Flags().StringArrayVar(&opts.imageFiles, "image", nil, "Local PNG, JPEG, or WebP file (repeatable; requires provider supports_images)")
 	cmd.Flags().StringVarP(&opts.stateFile, "file", "f", "", "Read state from file ('-' for stdin)")
 	cmd.Flags().BoolVar(&opts.stateJSON, "state-json", false, "Treat state input as JSON instead of a JSON string")
 	cmd.Flags().StringVarP(&opts.questionsFile, "questions", "q", "", "Questions JSON/YAML file ('-' for stdin when state is not stdin)")
@@ -190,7 +194,11 @@ func runClassify(cmd *cobra.Command, args []string, opts *classifyOptions, deps 
 	if model == "" {
 		model = strings.TrimSpace(provider.Model)
 	}
-	req := typesafe.Request{State: state, Model: model, Questions: questions}
+	images, err := classifyProviderImages(opts.imageFiles, provider.SupportsImages)
+	if err != nil {
+		return err
+	}
+	req := typesafe.Request{State: state, Model: model, Questions: questions, Images: images, Samples: opts.samples}
 	client, err := newTypeSafeClient(cfg, opts, deps)
 	if err != nil {
 		return err
@@ -259,10 +267,13 @@ func newTypeSafeClient(cfg *config.Config, opts *classifyOptions, deps classifyD
 		}
 		timeout = time.Duration(provider.TimeoutSeconds) * time.Second
 	}
-	return deps.newClient(typesafe.Options{APIKey: apiKey, BaseURL: baseURL, Timeout: timeout})
+	return deps.newClient(typesafe.Options{APIKey: apiKey, BaseURL: baseURL, Timeout: timeout, SupportsImages: provider.SupportsImages})
 }
 
 func validateClassifyEarlyFlags(cmd *cobra.Command, opts *classifyOptions) error {
+	if cmd.Flags().Changed("samples") && opts.samples < 1 {
+		return errors.New("--samples must be positive")
+	}
 	if cmd.Flags().Changed("timeout") && opts.timeout <= 0 {
 		return errors.New("--timeout must be greater than 0")
 	}
