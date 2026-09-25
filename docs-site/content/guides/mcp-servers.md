@@ -28,6 +28,8 @@ term-llm ask --mcp github "list my open PRs"
 term-llm chat --mcp playwright,filesystem
 ```
 
+`ask` uses the MCP manager’s 30-second startup timeout, or an earlier command deadline. If startup times out, the error names the affected servers.
+
 ### MCP Commands
 
 | Command | Description |
