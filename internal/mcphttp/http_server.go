@@ -260,6 +260,9 @@ func (s *Server) startInternal(host string, port int, token string, tools []Tool
 			if rawID, ok := req.Params.Meta["claudecode/toolUseId"].(string); ok && strings.TrimSpace(rawID) != "" {
 				ctx = context.WithValue(ctx, toolRequestMetaKey{}, toolRequestMeta{callID: strings.TrimSpace(rawID)})
 			}
+			if response, ok := ctx.Value(toolResponseKey{}).(*toolResponse); ok {
+				response.start()
+			}
 			stopProgress := startToolProgress(ctx, req, s.progressInterval)
 			defer stopProgress()
 			// Execute the tool using the provided executor
@@ -300,7 +303,7 @@ func (s *Server) startInternal(host string, port int, token string, tools []Tool
 
 	mux := http.NewServeMux()
 	// Chain: logging -> auth -> mcp handler
-	var handler http.Handler = mcpHandler
+	var handler http.Handler = toolResponseMiddleware(mcpHandler)
 	if s.HandlerMiddleware != nil {
 		handler = s.HandlerMiddleware(handler)
 	}
