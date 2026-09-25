@@ -42,6 +42,7 @@ func (s *browserPasskeyHandler) handlePasskeyPage(w http.ResponseWriter, r *http
 		Heading:     "Sign in to " + appName,
 		Description: "Use an enrolled passkey to continue.",
 		Button:      "Sign in with a passkey",
+		Origin:      s.passkey.endpoint.Origin,
 	}
 	switch r.URL.Path {
 	case "/auth/setup":

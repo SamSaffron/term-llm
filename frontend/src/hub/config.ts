@@ -20,6 +20,8 @@ export interface HubConfig {
     needsName: boolean;
     defaultName: string;
     challenge?: string;
+    /** Configured WebAuthn origin; empty when the server did not supply one. */
+    origin: string;
   };
 }
 
@@ -44,6 +46,21 @@ export function hubPath(basePath: string, value: string): string {
 
 function bool(value: unknown): boolean {
   return value === true;
+}
+
+function parseOrigin(value: unknown): string {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error('Hub passkey origin is invalid.');
+  }
+  if ((parsed.protocol !== 'https:' && parsed.protocol !== 'http:') || parsed.origin !== raw) {
+    throw new Error('Hub passkey origin is invalid.');
+  }
+  return raw;
 }
 
 export function parseHubConfig(value: unknown): HubConfig {
@@ -82,6 +99,7 @@ export function parseHubConfig(value: unknown): HubConfig {
       needsName: bool(values.needsName),
       defaultName: String(values.defaultName || ''),
       challenge: String(values.challenge || ''),
+      origin: parseOrigin(values.origin),
     };
     if (
       config.passkey.mode === 'native' &&

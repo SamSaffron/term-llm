@@ -170,6 +170,7 @@ func (s *browserPasskeyHandler) handleNativeHandoff(w http.ResponseWriter, r *ht
 			Description: "The term-llm app on this device is asking to sign in to " + appName + ". Only continue if you just started this sign-in. Confirm with your passkey to approve.",
 			Button:      "Approve with a passkey",
 			Challenge:   challenge,
+			Origin:      s.passkey.endpoint.Origin,
 		},
 	})
 }

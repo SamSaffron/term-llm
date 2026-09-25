@@ -384,6 +384,7 @@ describe('Hub components', () => {
             needsCode: false,
             needsName: false,
             defaultName: '',
+            origin: '',
           },
         }}
         store={authStore}
@@ -391,6 +392,42 @@ describe('Hub components', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Sign in with a passkey' }));
     await screen.findByText(/cancelled or timed out/);
+  });
+
+  it('links to the configured origin instead of offering a doomed passkey ceremony', () => {
+    const authStore = new AuthStore(
+      {} as HubClient,
+      {} as PasskeyPlatform,
+      sessionStorage,
+      vi.fn(),
+    );
+    render(
+      <AuthApp
+        config={{
+          ...dashboardConfig,
+          page: 'passkey-auth',
+          authMode: 'passkey',
+          passkey: {
+            mode: 'login',
+            title: 'Sign in',
+            heading: 'Sign in to term-llm',
+            description: 'Use a passkey.',
+            button: 'Sign in with a passkey',
+            needsCode: false,
+            needsName: false,
+            defaultName: '',
+            origin: 'https://term.example',
+          },
+        }}
+        store={authStore}
+        canonicalURL="https://term.example/ui/auth/login"
+      />,
+    );
+    expect(screen.getByRole('alert').textContent).toContain('only work at https://term.example');
+    expect(
+      screen.getByRole('link', { name: 'Continue at https://term.example' }).getAttribute('href'),
+    ).toBe('https://term.example/ui/auth/login');
+    expect(screen.queryByRole('button')).toBeNull();
   });
 
   it('replaces the waiting state after handing a native sign-in to the app', async () => {
@@ -416,6 +453,7 @@ describe('Hub components', () => {
             needsName: false,
             defaultName: '',
             challenge: 'A'.repeat(43),
+            origin: '',
           },
         }}
         store={authStore}

@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { StoreContext } from '../app/context';
 import { App } from '../app/App';
 import { AppStore } from '../stores/app-store';
@@ -113,6 +113,13 @@ const expectPasswordManagersIgnored = (element: HTMLElement) => {
   expect(element).toHaveAttribute('data-lpignore', 'true');
   expect(element).toHaveAttribute('data-protonpass-ignore', 'true');
 };
+
+// Rich rendering publishes plain content if its lazy chunks miss a 250 ms
+// deadline. A cold import can exceed that under full-suite load, so load both
+// once up front; the components' own import() then resolves from the cache.
+beforeAll(async () => {
+  await Promise.all([import('../domain/rich-highlight'), import('../domain/rich-katex')]);
+});
 
 describe('Preact-owned chat surfaces', () => {
   it('focuses the composer and preserves typing from the page', async () => {

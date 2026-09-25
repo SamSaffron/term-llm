@@ -6,6 +6,7 @@ import { BearerLogin } from './components/BearerLogin';
 import { HubApp } from './components/HubApp';
 import { HubErrorBoundary } from './components/HubErrorBoundary';
 import { readHubConfig } from './config';
+import { checkPasskeyOrigin } from './domain/origin';
 import { browserClipboard } from './platform/clipboard';
 import { browserPasskeyPlatform } from './platform/passkeys';
 import { AuthStore } from './stores/auth-store';
@@ -31,8 +32,17 @@ function bootstrap(): void {
       <SecurityApp config={config} store={new HubStore(client, browserPasskeyPlatform())} />
     );
   } else if (config.page === 'passkey-auth') {
+    const origin = checkPasskeyOrigin(window.location, config.passkey?.origin ?? '');
+    if (origin.kind === 'redirect') {
+      window.location.replace(origin.url);
+      return;
+    }
     application = (
-      <AuthApp config={config} store={new AuthStore(client, browserPasskeyPlatform())} />
+      <AuthApp
+        config={config}
+        store={new AuthStore(client, browserPasskeyPlatform())}
+        canonicalURL={origin.kind === 'mismatch' ? origin.url : undefined}
+      />
     );
   } else {
     application = <BearerLogin config={config} />;

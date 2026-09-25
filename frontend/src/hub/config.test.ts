@@ -34,6 +34,21 @@ describe('Hub config', () => {
     }
   });
 
+  it('accepts only a bare HTTP(S) passkey origin', () => {
+    const login = (origin: unknown) =>
+      parseHubConfig({
+        page: 'passkey-auth',
+        authMode: 'passkey',
+        basePath: '/ui',
+        passkey: { mode: 'login', origin },
+      });
+    expect(login('http://localhost:8080').passkey?.origin).toBe('http://localhost:8080');
+    expect(login(undefined).passkey?.origin).toBe('');
+    for (const bad of ['localhost:8080', 'javascript:alert(1)', 'http://localhost:8080/ui']) {
+      expect(() => login(bad)).toThrow('passkey origin');
+    }
+  });
+
   it('reads escaped server configuration from the mount data attribute', () => {
     const root = document.createElement('div');
     root.dataset.hubConfig = JSON.stringify({

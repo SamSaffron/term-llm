@@ -37,6 +37,10 @@ type hubPasskeyPageConfig struct {
 	NeedsName   bool   `json:"needsName"`
 	DefaultName string `json:"defaultName"`
 	Challenge   string `json:"challenge,omitempty"`
+	// Origin is the configured WebAuthn origin. Passkeys and session cookies
+	// only work there, so the page steers other origins (e.g. 127.0.0.1 for
+	// localhost) to it instead of failing the ceremony's origin check.
+	Origin string `json:"origin,omitempty"`
 }
 
 type hubShellView struct {

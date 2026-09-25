@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/preact';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { StoreContext } from '../app/context';
 import { AppStore } from '../stores/app-store';
 import { testConfig, testSession } from '../stores/store-test-fixtures';
@@ -16,6 +16,12 @@ import type { DiffFile } from '../domain/types';
 
 const stores: AppStore[] = [];
 let counts: ReturnType<typeof observeRenders> | undefined;
+// Rich rendering publishes plain content if its lazy chunks miss a 250 ms
+// deadline. A cold import can exceed that under full-suite load, so load both
+// once up front; the components' own import() then resolves from the cache.
+beforeAll(async () => {
+  await Promise.all([import('../domain/rich-highlight'), import('../domain/rich-katex')]);
+});
 afterEach(() => {
   vi.useRealTimers();
   counts?.dispose();

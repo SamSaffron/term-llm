@@ -1,7 +1,11 @@
 import '@testing-library/jest-dom/vitest';
 import 'fake-indexeddb/auto';
-import { cleanup } from '@testing-library/preact';
+import { cleanup, configure } from '@testing-library/preact';
 import { afterEach, vi } from 'vitest';
+
+// findBy*/waitFor default to 1 s, which cold lazy-chunk imports exceed when the
+// full suite saturates the CPU. Passing assertions still resolve immediately.
+configure({ asyncUtilTimeout: 5_000 });
 
 // Node 25+ exposes incomplete process-level Web Storage globals unless it was
 // launched with storage-file flags, and test runners can copy those placeholders
