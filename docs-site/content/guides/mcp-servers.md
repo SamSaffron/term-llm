@@ -65,6 +65,10 @@ term-llm mcp add exa       # Exa web_search_exa and web_fetch_exa over https://m
 
 This adds Exa's free remote MCP endpoint. To use your own Exa key with this manually added MCP server, edit `mcp.json` and add an `x-api-key` header. The `search.exa_mcp.api_key` setting applies to term-llm's built-in `search.provider: exa_mcp` path.
 
+**From the web UI**: in `term-llm serve web`, open **MCP servers** and choose **Add**. You can pick from the built-in catalogue (with registry search), paste a remote URL with optional headers, or enter a local command with optional environment variables. New servers are saved to `mcp.json` and turned on for the current chat. To remove a server, open its **⋯** menu and choose **Remove server**; you can undo this for a few seconds. Changing servers from the browser is allowed only when serve requires authentication or the request comes from the same machine. A local command runs on the machine hosting term-llm, with your user's permissions.
+
+`mcp.json` is written atomically with private (`0600`) permissions. If it is a symlink, the file it points to is updated.
+
 ### OAuth sign-in for remote servers
 
 Streamable HTTP servers can use MCP OAuth automatically. Adding a URL does not contact it or open a browser. Enable the server, then sign in when term-llm reports that authentication is required:

@@ -132,6 +132,11 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		"dist/assets/Lightbox.css":   {raw: 4_000, gzip: 1_400},
 		"dist/chunks/StatsModal.js":  {raw: 8_000, gzip: 3_000},
 		"dist/assets/StatsModal.css": {raw: 5_000, gzip: 1_600},
+		// The MCP servers dialog (flat list, row menu, and the add-server sheet
+		// with catalogue/URL/command sources) measured 14.0/5.0 kB JS and
+		// 11.1/2.7 kB CSS; it loads only when the dialog opens.
+		"dist/chunks/MCPModal.js":  {raw: 15_500, gzip: 5_600},
+		"dist/assets/MCPModal.css": {raw: 12_500, gzip: 3_100},
 		// The live panel's binding line, the transcript cross-fade that runs when a
 		// voice switch swaps the session in place, and the subagent breadcrumb /
 		// index / live-tail styling bring the sheet to ~178.1 kB. Same reasoning as
@@ -193,6 +198,28 @@ func TestLightboxAssetsRemainLazy(t *testing.T) {
 		}
 		if !bytes.Contains(lazy, []byte(asset.marker)) {
 			t.Errorf("%s is missing image viewer code/styles", asset.lazy)
+		}
+	}
+}
+
+func TestMCPDialogAssetsRemainLazy(t *testing.T) {
+	for _, asset := range []struct{ eager, lazy, marker string }{
+		{"dist/app.js", "dist/chunks/MCPModal.js", "Local command"},
+		{"dist/app.css", "dist/assets/MCPModal.css", ".mcp-row-menu"},
+	} {
+		eager, err := StaticAsset(asset.eager)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lazy, err := StaticAsset(asset.lazy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(eager, []byte(asset.marker)) {
+			t.Errorf("%s unexpectedly contains MCP dialog code/styles", asset.eager)
+		}
+		if !bytes.Contains(lazy, []byte(asset.marker)) {
+			t.Errorf("%s is missing MCP dialog code/styles", asset.lazy)
 		}
 	}
 }

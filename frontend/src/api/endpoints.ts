@@ -87,7 +87,16 @@ export interface SessionChildrenResponse {
 import type { ExtensionStatus } from '../stores/extension-runtime';
 import type { APIClient, RequestControls } from './client';
 import type { LiveEndpoints } from './live-endpoints';
-import type { ApprovalMode, Goal, MCPOAuthFlow, MCPResponse } from '../domain/types';
+import type {
+  ApprovalMode,
+  Goal,
+  MCPAddRequest,
+  MCPAddResult,
+  MCPCatalogueResponse,
+  MCPOAuthFlow,
+  MCPRemoveResult,
+  MCPResponse,
+} from '../domain/types';
 import type { MentionSearchResponse } from '../domain/completions';
 
 export interface ApprovalPolicyResponse {
@@ -548,6 +557,14 @@ export const endpoints = (api: APIClient) => ({
     api.delete(`/v1/sessions/${encoded(id)}/mcp/${encoded(server)}/oauth`),
   getMCPOAuthFlow: (flowId: string) =>
     api.get<MCPOAuthFlow>(`/v1/mcp/oauth/flows/${encoded(flowId)}`),
+  getMCPCatalogue: (query: string, signal?: AbortSignal) =>
+    api.get<MCPCatalogueResponse>(
+      `/v1/mcp/catalogue${query ? `?q=${encodeURIComponent(query)}` : ''}`,
+      signal,
+    ),
+  addMCPServer: (body: MCPAddRequest) => api.post<MCPAddResult>('/v1/mcp/servers', body),
+  removeMCPServer: (name: string) =>
+    api.delete<MCPRemoveResult>(`/v1/mcp/servers/${encoded(name)}`),
   askUser: (id: string, body: unknown, operationId: string) =>
     api.post(`/v1/sessions/${encoded(id)}/ask_user`, body, 'idempotent-mutation', {
       'Idempotency-Key': `ask_user_${operationId}`,

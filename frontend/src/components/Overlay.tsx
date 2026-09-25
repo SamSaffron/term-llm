@@ -40,6 +40,8 @@ export function Overlay({
   className = '',
   id,
   focusContent = true,
+  titleLeading,
+  titleActions,
 }: {
   title: string;
   children: preact.ComponentChildren;
@@ -54,6 +56,10 @@ export function Overlay({
   // has nothing to fill in, so focusing its first button only paints a ring on
   // an action the reader did not ask for.
   focusContent?: boolean;
+  /** Rendered before the title, e.g. a back button for a pushed view. */
+  titleLeading?: preact.ComponentChildren;
+  /** Rendered between the title and the close button. */
+  titleActions?: preact.ComponentChildren;
 }) {
   const store = useContext(StoreContext);
   const overlay = useRef<HTMLDivElement>(null);
@@ -156,7 +162,9 @@ export function Overlay({
         }}
       >
         <div class="modal-title-row">
+          {titleLeading}
           <h2 id={label}>{title}</h2>
+          {titleActions}
           {close && (
             <button
               class="icon-btn close-button"

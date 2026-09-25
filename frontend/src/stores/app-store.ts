@@ -14,6 +14,9 @@ import type {
   DiffFile,
   Goal,
   InteractionRecord,
+  MCPAddRequest,
+  MCPAddResult,
+  MCPCatalogueResponse,
   MCPServer,
   Message,
   Project,
@@ -34,7 +37,7 @@ import { AppStoreServices, type StoreDiagnostics } from './app-store-services';
 import { RuntimeStore } from './runtime-store';
 import { InteractionStore } from './interaction-store';
 import { SideQuestionStore } from './side-question-store';
-import { MCPStore, type MCPOAuthUIState } from './mcp-store';
+import { MCPStore, type MCPOAuthUIState, type MCPRemovedServer } from './mcp-store';
 import { WorktreeStore } from './worktree-store';
 import { GoalStore } from './goal-store';
 import { PlanStore } from './plan-store';
@@ -202,6 +205,7 @@ export class AppStore {
     error: string;
     oauth?: Record<string, MCPOAuthUIState>;
   }>;
+  readonly mcpRemoved: Signal<MCPRemovedServer | null>;
   readonly worktrees: Signal<Record<string, unknown>[]>;
   readonly worktreeError: Signal<string>;
   readonly selectedDraftWorktree: Signal<string>;
@@ -372,6 +376,7 @@ export class AppStore {
       patchSession: (id, patch) => this.sessionStore.patch(id, patch),
     });
     this.mcp = this.mcpStore.state;
+    this.mcpRemoved = this.mcpStore.removed;
     this.worktreeStore = new WorktreeStore(this.services, {
       projectsEnabled: this.projectsEnabled,
       worktreesEnabled: this.worktreesEnabled,
@@ -1433,6 +1438,24 @@ export class AppStore {
   }
   async copyMCPOAuthLink(name: string): Promise<void> {
     await this.mcpStore.copyOAuthLink(name);
+  }
+  searchMCPCatalogue(query: string, signal?: AbortSignal): Promise<MCPCatalogueResponse> {
+    return this.mcpStore.searchCatalogue(query, signal);
+  }
+  previewMCPServer(request: MCPAddRequest): Promise<MCPAddResult> {
+    return this.mcpStore.preview(request);
+  }
+  addMCPServer(request: MCPAddRequest, enable = true): Promise<MCPAddResult> {
+    return this.mcpStore.addServer(request, enable);
+  }
+  removeMCPServer(name: string): Promise<boolean> {
+    return this.mcpStore.removeServer(name);
+  }
+  async undoRemoveMCPServer(): Promise<void> {
+    await this.mcpStore.undoRemove();
+  }
+  dismissRemovedMCPServer(): void {
+    this.mcpStore.dismissRemoved();
   }
   async saveGoal(goal: Goal | { action: string }): Promise<void> {
     const sessionId = 'objective' in goal ? await this.materializeSession() : undefined;

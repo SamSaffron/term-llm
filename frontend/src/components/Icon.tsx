@@ -25,9 +25,12 @@ export type IconName =
   | 'file-text'
   | 'fork'
   | 'folder'
+  | 'globe'
   | 'info'
   | 'live'
+  | 'logout'
   | 'menu'
+  | 'more'
   | 'markdown'
   | 'microphone'
   | 'panel'
@@ -36,6 +39,7 @@ export type IconName =
   | 'settings'
   | 'share'
   | 'steer'
+  | 'terminal'
   | 'trash'
   | 'widgets';
 
@@ -210,6 +214,34 @@ const paths: Record<IconName, JSX.Element> = {
     <>
       <path d="M5 6v7a2 2 0 0 0 2 2h12" />
       <path d="m14 10 5 5-5 5" />
+    </>
+  ),
+  more: (
+    <>
+      <circle cx="5.5" cy="12" r="1" fill="currentColor" />
+      <circle cx="12" cy="12" r="1" fill="currentColor" />
+      <circle cx="18.5" cy="12" r="1" fill="currentColor" />
+    </>
+  ),
+  globe: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M3.5 12h17" />
+      <path d="M12 3.5c2.5 2.6 3.6 5.4 3.6 8.5s-1.1 5.9-3.6 8.5c-2.5-2.6-3.6-5.4-3.6-8.5s1.1-5.9 3.6-8.5z" />
+    </>
+  ),
+  terminal: (
+    <>
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+      <path d="m7.5 9.5 3 2.5-3 2.5" />
+      <path d="M12.5 15h4" />
+    </>
+  ),
+  logout: (
+    <>
+      <path d="M14 4.5h4.5v15H14" />
+      <path d="m10 8-4 4 4 4" />
+      <path d="M6 12h9" />
     </>
   ),
   menu: (

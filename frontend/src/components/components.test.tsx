@@ -6389,7 +6389,7 @@ describe('Preact-owned chat surfaces', () => {
     );
   });
 
-  it('restores the rich, searchable MCP server picker', async () => {
+  it('renders MCP servers as a quiet, filterable list', async () => {
     const store = createStore();
     store.modal.value = 'mcp';
     store.mcp.value = {
@@ -6427,23 +6427,23 @@ describe('Preact-owned chat surfaces', () => {
     store.toggleMCP = vi.fn(async () => undefined);
     store.loadMCP = vi.fn(async () => undefined);
 
-    render(
+    const { container } = render(
       <StoreContext.Provider value={store}>
         <Modals />
       </StoreContext.Provider>,
     );
 
-    expect(screen.getByRole('dialog', { name: 'MCP servers' })).toHaveClass('mcp-modal');
-    expect(screen.getByText('Turn on servers to add their tools.')).toBeVisible();
-    expect(screen.queryByText(/Changes save immediately/)).not.toBeInTheDocument();
-    expect(screen.queryByText('Tools load when enabled')).not.toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: 'MCP servers' })).toHaveClass('mcp-modal');
+    expect(screen.getByRole('button', { name: 'Add' })).toBeVisible();
     expect(screen.getByLabelText('1 server enabled')).toHaveTextContent('1 of 2 on');
-    expect(screen.getByText('12 tools · 4 active, 8 deferred')).toBeVisible();
+    expect(screen.getByText('12 tools · 8 deferred')).toBeVisible();
+    expect(container.querySelector('.mcp-dot.ready')).not.toBeNull();
+    expect(container.querySelector('.mcp-dot.failed')).not.toBeNull();
+    expect(container.querySelector('.mcp-server-icon, .mcp-server-status')).toBeNull();
     expect(screen.getByRole('alert')).toHaveTextContent('MCP server error');
-    expect(screen.getByRole('region', { name: 'MCP server error details' })).toHaveClass(
-      'mcp-error-details',
+    expect(screen.getByRole('region', { name: 'MCP server error details' })).toHaveTextContent(
+      'Missing DISCOURSE_API_KEY',
     );
-    expect(screen.getByText('Missing DISCOURSE_API_KEY')).toBeVisible();
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(store.loadMCP).toHaveBeenCalledOnce();
     expect(screen.getByRole('checkbox', { name: 'Disable github' })).toBeChecked();
@@ -6454,7 +6454,6 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.queryByRole('checkbox', { name: 'Enable discourse' })).not.toBeInTheDocument();
     fireEvent.input(filter, { target: { value: 'missing-name' } });
     expect(screen.getByText('No matching servers')).toBeVisible();
-    expect(screen.getByLabelText('1 server enabled')).toHaveTextContent('1 of 2 on');
 
     fireEvent.input(filter, { target: { value: '' } });
     await userEvent.click(screen.getByRole('checkbox', { name: 'Enable discourse' }));
@@ -6498,7 +6497,7 @@ describe('Preact-owned chat surfaces', () => {
         <Modals />
       </StoreContext.Provider>,
     );
-    expect(screen.getByText('Server enabled · sign-in required')).toBeVisible();
+    expect(await screen.findByText('sign-in needed')).toBeVisible();
     await userEvent.click(screen.getByRole('button', { name: 'Sign in again' }));
     expect(store.startMCPOAuth).toHaveBeenCalledWith('protected', true);
     expect(screen.getByRole('checkbox', { name: 'Disable protected' })).toBeChecked();
@@ -6523,7 +6522,7 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
     await waitFor(() =>
-      expect(screen.getByText('Popup blocked — copy the sign-in link.')).toBeVisible(),
+      expect(screen.getByText('popup blocked — copy the sign-in link')).toBeVisible(),
     );
     await userEvent.click(screen.getByRole('button', { name: 'Copy link' }));
     await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
@@ -6531,7 +6530,181 @@ describe('Preact-owned chat surfaces', () => {
     expect(store.cancelMCPOAuth).toHaveBeenCalledWith('protected');
   });
 
-  it('does not claim the MCP config is empty when loading fails', () => {
+  it('removes an MCP server from the row menu and offers undo', async () => {
+    const store = createStore();
+    store.modal.value = 'mcp';
+    store.mcp.value = {
+      servers: [
+        {
+          name: 'context7',
+          configured: true,
+          enabled: false,
+          status: 'stopped',
+          error: '',
+          refreshWarning: '',
+          tools: 0,
+          active: 0,
+          deferred: 0,
+          loadingMode: '',
+          authState: 'signed_in',
+          canSignIn: false,
+          canSignOut: true,
+        },
+      ],
+      enabled: [],
+      loading: false,
+      pending: '',
+      error: '',
+    };
+    store.removeMCPServer = vi.fn(async () => {
+      store.mcpRemoved.value = { name: 'context7', config: { command: 'npx' }, wasEnabled: false };
+      return true;
+    });
+    store.undoRemoveMCPServer = vi.fn(async () => undefined);
+    store.logoutMCPOAuth = vi.fn(async () => undefined);
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.click(await screen.findByRole('button', { name: 'More actions for context7' }));
+    const menu = screen.getByRole('menu', { name: 'context7 actions' });
+    expect(within(menu).getByRole('menuitem', { name: 'Sign out' })).toBeVisible();
+    await userEvent.click(within(menu).getByRole('menuitem', { name: 'Remove server' }));
+    expect(store.removeMCPServer).toHaveBeenCalledWith('context7');
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+
+    await waitFor(() =>
+      expect(document.querySelector('.mcp-undo')).toHaveTextContent('Removed context7'),
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(store.undoRemoveMCPServer).toHaveBeenCalledOnce();
+  });
+
+  it('adds an MCP server from the catalogue and returns to the list', async () => {
+    const store = createStore();
+    store.modal.value = 'mcp';
+    store.mcp.value = { servers: [], enabled: [], loading: false, pending: '', error: '' };
+    store.searchMCPCatalogue = vi.fn(async () => ({
+      servers: [
+        {
+          id: 'bundled:exa',
+          name: 'exa',
+          title: 'exa',
+          description: 'Web search',
+          category: 'Search',
+          transport: 'remote' as const,
+          source: 'bundled' as const,
+          official: true,
+          installed: false,
+          needs_input: false,
+        },
+        {
+          id: 'bundled:github',
+          name: 'github',
+          title: 'github',
+          description: 'Repos and issues',
+          category: 'Dev',
+          transport: 'npm' as const,
+          source: 'bundled' as const,
+          official: true,
+          installed: true,
+          needs_input: false,
+        },
+      ],
+    }));
+    store.addMCPServer = vi.fn(async () => ({
+      name: 'exa',
+      transport: 'http' as const,
+      config_path: '/tmp/mcp.json',
+      needs_input: false,
+    }));
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    expect(await screen.findByText('No MCP servers yet')).toBeVisible();
+    await userEvent.click(screen.getByRole('button', { name: 'Add server' }));
+    expect(screen.getByRole('dialog', { name: 'Add server' })).toBeVisible();
+    expect(screen.getByRole('tab', { name: 'Catalogue' })).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByText('Web search')).toBeVisible();
+    expect(screen.getByText('Added')).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Add github' })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Add exa' }));
+    expect(store.addMCPServer).toHaveBeenCalledWith(
+      { kind: 'catalogue', catalogue_id: 'bundled:exa' },
+      true,
+    );
+    expect(await screen.findByRole('dialog', { name: 'MCP servers' })).toBeVisible();
+  });
+
+  it('adds a local command MCP server with environment variables', async () => {
+    const store = createStore();
+    store.modal.value = 'mcp';
+    store.mcp.value = { servers: [], enabled: [], loading: false, pending: '', error: '' };
+    store.searchMCPCatalogue = vi.fn(async () => ({ servers: [] }));
+    store.previewMCPServer = vi.fn(async (request) => ({
+      name: request.name || 'sentry',
+      transport: 'stdio' as const,
+      config_path: '/Users/sam/.config/term-llm/mcp.json',
+      needs_input: false,
+      exists: request.name === 'taken',
+    }));
+    store.addMCPServer = vi.fn(async () => ({
+      name: 'sentry',
+      transport: 'stdio' as const,
+      config_path: '/Users/sam/.config/term-llm/mcp.json',
+      needs_input: false,
+    }));
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Add' }));
+    await userEvent.click(screen.getByRole('tab', { name: 'Local command' }));
+    expect(screen.getByText(/Runs on the machine hosting term-llm/)).toBeVisible();
+    fireEvent.input(screen.getByLabelText('Command'), {
+      target: { value: 'npx -y @sentry/mcp-server' },
+    });
+    await waitFor(() =>
+      expect(screen.getByLabelText('Name')).toHaveAttribute('placeholder', 'sentry'),
+    );
+    expect(screen.getByText('~/.config/term-llm/mcp.json')).toBeVisible();
+
+    fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'taken' } });
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('“taken” already exists'),
+    );
+    expect(screen.getByRole('button', { name: 'Add & turn on' })).toBeDisabled();
+
+    fireEvent.input(screen.getByLabelText('Name'), { target: { value: '' } });
+    fireEvent.input(screen.getByLabelText('Environment variables'), {
+      target: { value: 'SENTRY_TOKEN=op://dev/sentry/token\n# note\n' },
+    });
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Add & turn on' })).toBeEnabled(),
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Add & turn on' }));
+    expect(store.addMCPServer).toHaveBeenCalledWith(
+      {
+        kind: 'command',
+        command: 'npx -y @sentry/mcp-server',
+        env: { SENTRY_TOKEN: 'op://dev/sentry/token' },
+      },
+      true,
+    );
+  });
+
+  it('does not claim the MCP config is empty when loading fails', async () => {
     const store = createStore();
     store.modal.value = 'mcp';
     store.mcp.value = {
@@ -6548,7 +6721,7 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
 
-    expect(screen.getByText('Unable to load MCP servers')).toBeVisible();
+    expect(await screen.findByText('Unable to load MCP servers')).toBeVisible();
     expect(screen.queryByText('No MCP servers configured')).not.toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent('session is temporarily busy');
   });

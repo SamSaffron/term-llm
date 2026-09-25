@@ -1,7 +1,14 @@
 import { signal, type ReadonlySignal } from '@preact/signals';
 import { APIError } from '../api/client';
 import { errorMessage } from '../domain/text';
-import type { MCPOAuthFlow, MCPServer, Session } from '../domain/types';
+import type {
+  MCPAddRequest,
+  MCPAddResult,
+  MCPCatalogueResponse,
+  MCPOAuthFlow,
+  MCPServer,
+  Session,
+} from '../domain/types';
 import type { AppStoreServices } from './app-store-services';
 import { normalizeMCPState } from './store-utils';
 import { copyText } from '../platform/clipboard';
@@ -24,6 +31,13 @@ export interface MCPState {
   oauth: Record<string, MCPOAuthUIState>;
 }
 
+/** A server just removed from mcp.json, kept so the removal can be undone. */
+export interface MCPRemovedServer {
+  name: string;
+  config: Record<string, unknown>;
+  wasEnabled: boolean;
+}
+
 export interface MCPStoreOptions {
   activeSession: ReadonlySignal<Session | null>;
   draftSessionId: () => string;
@@ -41,6 +55,7 @@ export class MCPStore {
     error: '',
     oauth: {},
   });
+  readonly removed = signal<MCPRemovedServer | null>(null);
 
   private readonly pollTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly popups = new Map<string, Window>();
@@ -147,6 +162,67 @@ export class MCPStore {
         error: errorMessage(error),
       };
     }
+  }
+
+  searchCatalogue(query: string, signal?: AbortSignal): Promise<MCPCatalogueResponse> {
+    return this.services.endpoints.getMCPCatalogue(query.trim(), signal);
+  }
+
+  /** Resolves the name and transport a request would produce without saving it. */
+  preview(request: MCPAddRequest): Promise<MCPAddResult> {
+    return this.services.endpoints.addMCPServer({ ...request, dry_run: true });
+  }
+
+  /**
+   * Saves a server to mcp.json and, unless it still needs manual configuration,
+   * turns it on for the current session. Errors from saving propagate so the
+   * add form can show them inline; enablement failures surface in state.error.
+   */
+  async addServer(request: MCPAddRequest, enable = true): Promise<MCPAddResult> {
+    const result = await this.services.endpoints.addMCPServer({ ...request, dry_run: false });
+    this.removed.value = null;
+    await this.load();
+    if (enable && !result.needs_input && !this.state.value.enabled.includes(result.name))
+      await this.toggle(result.name);
+    return result;
+  }
+
+  /** Turns a server off for this session, then deletes it from mcp.json. */
+  async removeServer(name: string): Promise<boolean> {
+    const sessionId = this.sessionId();
+    if (!sessionId || this.state.value.pending) return false;
+    const wasEnabled = this.state.value.enabled.includes(name);
+    if (wasEnabled) {
+      await this.toggle(name);
+      if (this.state.value.enabled.includes(name)) return false;
+    }
+    try {
+      const removed = await this.services.endpoints.removeMCPServer(name);
+      this.removed.value = { name, config: removed.config, wasEnabled };
+    } catch (error) {
+      this.state.value = { ...this.state.value, error: errorMessage(error) };
+      return false;
+    }
+    await this.load();
+    return true;
+  }
+
+  async undoRemove(): Promise<void> {
+    const removed = this.removed.value;
+    if (!removed) return;
+    this.removed.value = null;
+    try {
+      await this.addServer(
+        { kind: 'config', name: removed.name, config: removed.config },
+        removed.wasEnabled,
+      );
+    } catch (error) {
+      this.state.value = { ...this.state.value, error: errorMessage(error) };
+    }
+  }
+
+  dismissRemoved(): void {
+    this.removed.value = null;
   }
 
   async startOAuth(name: string, force = false): Promise<void> {

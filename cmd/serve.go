@@ -1371,6 +1371,7 @@ func normalizeBasePath(raw string) (string, error) {
 }
 
 type serveServer struct {
+	mcpRegistry              mcpRegistrySearcher
 	reloadRunsUnregister     func()
 	browserAuth              *browserPasskeyHandler
 	reloadHTTPOnce           sync.Once
@@ -1625,6 +1626,9 @@ func (s *serveServer) httpHandler() http.Handler {
 	inner.HandleFunc("/v1/events", s.auth(s.cors(s.handleEvents)))
 	inner.HandleFunc("/v1/events/poll", s.auth(s.cors(s.handleEventPoll)))
 	inner.HandleFunc("/v1/mcp/oauth/flows/", s.auth(s.cors(s.handleMCPOAuthFlow)))
+	inner.HandleFunc("/v1/mcp/catalogue", s.auth(s.cors(s.handleMCPCatalogue)))
+	inner.HandleFunc("/v1/mcp/servers", s.auth(s.cors(s.handleMCPServers)))
+	inner.HandleFunc("/v1/mcp/servers/", s.auth(s.cors(s.handleMCPServerByName)))
 	// OAuth callbacks cannot carry the serve bearer token. A high-entropy,
 	// single-use SDK state value is the capability checked by this handler.
 	inner.HandleFunc("/v1/mcp/oauth/callback", s.handleMCPOAuthCallback)

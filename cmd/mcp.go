@@ -341,19 +341,8 @@ func mcpAdd(cmd *cobra.Command, args []string) error {
 
 // mcpAddCommand registers a stdio server without executing the command.
 func mcpAddCommand(cmd *cobra.Command, name string, command []string) error {
-	cfg, err := mcp.LoadConfig()
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	if _, exists := cfg.Servers[name]; exists {
-		return fmt.Errorf("server '%s' already exists in config", name)
-	}
-	cfg.AddServer(name, mcp.ServerConfig{
-		Command: command[0],
-		Args:    command[1:],
-	})
-	if err := cfg.Save(); err != nil {
-		return fmt.Errorf("save config: %w", err)
+	if err := addMCPServer(name, mcp.ServerConfig{Command: command[0], Args: command[1:]}); err != nil {
+		return err
 	}
 	path, _ := mcp.DefaultConfigPath()
 	cmd.Printf("Added '%s' to %s\n", name, path)
@@ -364,37 +353,14 @@ func mcpAddCommand(cmd *cobra.Command, name string, command []string) error {
 
 // mcpAddURL adds an MCP server from a URL (HTTP transport).
 func mcpAddURL(urlStr string) error {
-	// Parse and validate the URL
 	u, err := url.Parse(urlStr)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
 	}
-
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("URL must use http or https scheme")
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return fmt.Errorf("URL must use http or https scheme and have a host")
 	}
-
-	// Derive a local name from the URL
-	// Use hostname, stripping common prefixes/suffixes
-	localName := u.Hostname()
-	localName = strings.TrimPrefix(localName, "www.")
-	localName = strings.TrimPrefix(localName, "api.")
-	localName = strings.TrimPrefix(localName, "mcp.")
-
-	// Remove common TLDs and suffixes for cleaner names
-	localName = strings.TrimSuffix(localName, ".com")
-	localName = strings.TrimSuffix(localName, ".io")
-	localName = strings.TrimSuffix(localName, ".ai")
-	localName = strings.TrimSuffix(localName, ".dev")
-
-	// Replace dots with hyphens
-	localName = strings.ReplaceAll(localName, ".", "-")
-
-	// If the path has a meaningful segment, append it
-	pathParts := strings.Split(strings.Trim(u.Path, "/"), "/")
-	if len(pathParts) > 0 && pathParts[0] != "" && pathParts[0] != "mcp" {
-		localName = localName + "-" + pathParts[0]
-	}
+	localName := mcp.DeriveNameFromURL(u)
 
 	fmt.Printf("Adding MCP server from URL: %s\n", urlStr)
 	fmt.Printf("  name: %s\n", localName)
@@ -407,19 +373,8 @@ func mcpAddURL(urlStr string) error {
 		URL:  urlStr,
 	}
 
-	// Load and update config
-	cfg, err := mcp.LoadConfig()
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-
-	if _, exists := cfg.Servers[localName]; exists {
-		return fmt.Errorf("server '%s' already exists in config", localName)
-	}
-
-	cfg.AddServer(localName, serverConfig)
-	if err := cfg.Save(); err != nil {
-		return fmt.Errorf("save config: %w", err)
+	if err := addMCPServer(localName, serverConfig); err != nil {
+		return err
 	}
 
 	path, _ := mcp.DefaultConfigPath()
@@ -502,39 +457,9 @@ func mcpAddFromRegistry(name string) error {
 		fmt.Println("Please edit mcp.json to fill in required arguments marked with <>")
 	}
 
-	// Determine local name - prefer server Name if it's clean (no @ or /)
-	// Registry servers often have nice names like "discourse", "brave-search"
-	localName := bestMatch.Name
-	if localName == "" || strings.ContainsAny(localName, "@/") {
-		// Fall back to deriving from the user-provided name or package identifier
-		localName = name
-		if strings.HasPrefix(localName, "@") {
-			parts := strings.Split(localName, "/")
-			if len(parts) > 1 {
-				pkgName := parts[1]
-				if pkgName == "mcp" {
-					localName = strings.TrimPrefix(parts[0], "@")
-				} else {
-					localName = strings.TrimSuffix(pkgName, "-mcp")
-					localName = strings.TrimPrefix(localName, "mcp-")
-				}
-			}
-		}
-	}
-
-	// Load and update config
-	cfg, err := mcp.LoadConfig()
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-
-	if _, exists := cfg.Servers[localName]; exists {
-		return fmt.Errorf("server '%s' already exists in config", localName)
-	}
-
-	cfg.AddServer(localName, serverConfig)
-	if err := cfg.Save(); err != nil {
-		return fmt.Errorf("save config: %w", err)
+	localName := mcp.DeriveNameFromRegistry(bestMatch, name)
+	if err := addMCPServer(localName, serverConfig); err != nil {
+		return err
 	}
 
 	path, _ := mcp.DefaultConfigPath()
@@ -557,19 +482,8 @@ func addBundledServer(bundled mcp.BundledServer) error {
 	serverConfig := bundled.ToServerConfig()
 	localName := bundled.Name
 
-	// Load and update config
-	cfg, err := mcp.LoadConfig()
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-
-	if _, exists := cfg.Servers[localName]; exists {
-		return fmt.Errorf("server '%s' already exists in config", localName)
-	}
-
-	cfg.AddServer(localName, serverConfig)
-	if err := cfg.Save(); err != nil {
-		return fmt.Errorf("save config: %w", err)
+	if err := addMCPServer(localName, serverConfig); err != nil {
+		return err
 	}
 
 	path, _ := mcp.DefaultConfigPath()
@@ -584,21 +498,31 @@ func addBundledServer(bundled mcp.BundledServer) error {
 func mcpRemove(cmd *cobra.Command, args []string) error {
 	name := args[0]
 
-	cfg, err := mcp.LoadConfig()
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-
-	if !cfg.RemoveServer(name) {
-		return fmt.Errorf("server '%s' not found in config", name)
-	}
-
-	if err := cfg.Save(); err != nil {
-		return fmt.Errorf("save config: %w", err)
+	if err := mcp.UpdateConfig(func(cfg *mcp.Config) error {
+		if !cfg.RemoveServer(name) {
+			return fmt.Errorf("server '%s' not found in config", name)
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("remove MCP server: %w", err)
 	}
 
 	fmt.Printf("Removed '%s' from config\n", name)
 	return nil
+}
+
+// addMCPServer performs the duplicate check and write as one locked mutation.
+func addMCPServer(name string, serverConfig mcp.ServerConfig) error {
+	if err := mcp.ValidateServerName(name); err != nil {
+		return err
+	}
+	return mcp.UpdateConfig(func(cfg *mcp.Config) error {
+		if _, exists := cfg.Servers[name]; exists {
+			return fmt.Errorf("server '%s' already exists in config", name)
+		}
+		cfg.AddServer(name, serverConfig)
+		return nil
+	})
 }
 
 // formatSchemaParams extracts parameter names from a JSON schema.

@@ -193,6 +193,49 @@ export interface MCPResponse {
   enabled: string[];
 }
 
+export interface MCPCatalogueEntry {
+  id: string;
+  name: string;
+  title: string;
+  description: string;
+  category: string;
+  transport: 'remote' | 'npm' | 'pypi' | 'oci' | '';
+  source: 'bundled' | 'registry';
+  official: boolean;
+  installed: boolean;
+  needs_input: boolean;
+}
+
+export interface MCPCatalogueResponse {
+  servers: MCPCatalogueEntry[];
+  registry_error?: string;
+}
+
+export interface MCPAddRequest {
+  kind: 'url' | 'command' | 'catalogue' | 'config';
+  name?: string;
+  url?: string;
+  headers?: Record<string, string>;
+  command?: string;
+  env?: Record<string, string>;
+  catalogue_id?: string;
+  config?: Record<string, unknown>;
+  dry_run?: boolean;
+}
+
+export interface MCPAddResult {
+  name: string;
+  transport: 'stdio' | 'http';
+  config_path: string;
+  needs_input: boolean;
+  exists?: boolean;
+}
+
+export interface MCPRemoveResult {
+  name: string;
+  config: Record<string, unknown>;
+}
+
 export interface Goal {
   objective: string;
   token_budget?: number;

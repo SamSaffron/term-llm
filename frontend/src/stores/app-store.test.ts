@@ -1206,6 +1206,141 @@ describe('AppStore compatibility behavior', () => {
     ]);
   });
 
+  it('adds an MCP server to config and turns it on for the draft', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [];
+    store.activeSessionId.value = '';
+    store.draftActive.value = true;
+    let configured = false;
+    store.endpoints.addMCPServer = vi.fn(async () => {
+      configured = true;
+      return { name: 'exa', transport: 'http' as const, config_path: '/x', needs_input: false };
+    });
+    store.endpoints.getMCP = vi.fn(async () => ({
+      enabled: [],
+      servers: configured ? [{ name: 'exa', configured: true, status: 'stopped' }] : [],
+    }));
+    store.endpoints.setMCP = vi.fn(async (_id, enabled) => ({
+      enabled,
+      servers: [{ name: 'exa', configured: true, status: 'ready' }],
+    }));
+
+    const result = await store.addMCPServer({ kind: 'catalogue', catalogue_id: 'bundled:exa' });
+
+    expect(result.name).toBe('exa');
+    expect(store.endpoints.addMCPServer).toHaveBeenCalledWith({
+      kind: 'catalogue',
+      catalogue_id: 'bundled:exa',
+      dry_run: false,
+    });
+    expect(store.endpoints.setMCP).toHaveBeenCalledWith(expect.stringMatching(/^draft_/), ['exa']);
+    expect(store.mcp.value.enabled).toEqual(['exa']);
+  });
+
+  it('does not enable an added MCP server that still needs configuration', async () => {
+    const store = new AppStore(config);
+    store.endpoints.addMCPServer = vi.fn(async () => ({
+      name: 'custom',
+      transport: 'stdio' as const,
+      config_path: '/x',
+      needs_input: true,
+    }));
+    store.endpoints.getMCP = vi.fn(async () => ({ enabled: [], servers: [] }));
+    store.endpoints.setMCP = vi.fn();
+
+    await store.addMCPServer({ kind: 'catalogue', catalogue_id: 'registry:custom' });
+
+    expect(store.endpoints.setMCP).not.toHaveBeenCalled();
+  });
+
+  it('turns an MCP server off before removing it and restores it on undo', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [];
+    store.activeSessionId.value = '';
+    store.draftActive.value = true;
+    const server = {
+      name: 'github',
+      configured: true,
+      enabled: true,
+      status: 'ready',
+      error: '',
+      refreshWarning: '',
+      tools: 3,
+      active: 0,
+      deferred: 0,
+      loadingMode: '',
+    };
+    store.mcp.value = {
+      ownerId: store.composer.runtimeDraftId(),
+      servers: [server],
+      enabled: ['github'],
+      loading: false,
+      pending: '',
+      error: '',
+    };
+    const calls: string[] = [];
+    store.endpoints.setMCP = vi.fn(async (_id, enabled) => {
+      calls.push(`set:${enabled.join(',')}`);
+      return { enabled, servers: [{ name: 'github', configured: true, status: 'stopped' }] };
+    });
+    store.endpoints.removeMCPServer = vi.fn(async (name) => {
+      calls.push(`delete:${name}`);
+      return { name, config: { command: 'npx', args: ['-y', 'gh'] } };
+    });
+    store.endpoints.getMCP = vi.fn(async () => ({ enabled: [], servers: [] }));
+
+    await expect(store.removeMCPServer('github')).resolves.toBe(true);
+
+    expect(calls).toEqual(['set:', 'delete:github']);
+    expect(store.mcpRemoved.value).toEqual({
+      name: 'github',
+      config: { command: 'npx', args: ['-y', 'gh'] },
+      wasEnabled: true,
+    });
+
+    store.endpoints.addMCPServer = vi.fn(async () => ({
+      name: 'github',
+      transport: 'stdio' as const,
+      config_path: '/x',
+      needs_input: false,
+    }));
+    store.endpoints.getMCP = vi.fn(async () => ({
+      enabled: [],
+      servers: [{ name: 'github', configured: true, status: 'stopped' }],
+    }));
+    await store.undoRemoveMCPServer();
+
+    expect(store.endpoints.addMCPServer).toHaveBeenCalledWith({
+      kind: 'config',
+      name: 'github',
+      config: { command: 'npx', args: ['-y', 'gh'] },
+      dry_run: false,
+    });
+    expect(calls.at(-1)).toBe('set:github');
+    expect(store.mcpRemoved.value).toBeNull();
+  });
+
+  it('keeps an MCP server configured when turning it off fails', async () => {
+    const store = new AppStore(config);
+    store.mcp.value = {
+      ownerId: store.composer.runtimeDraftId(),
+      servers: [],
+      enabled: ['github'],
+      loading: false,
+      pending: '',
+      error: '',
+    };
+    store.endpoints.setMCP = vi.fn(async () => {
+      throw new Error('cannot change MCP servers while a response is running');
+    });
+    store.endpoints.removeMCPServer = vi.fn();
+
+    await expect(store.removeMCPServer('github')).resolves.toBe(false);
+
+    expect(store.endpoints.removeMCPServer).not.toHaveBeenCalled();
+    expect(store.mcp.value.error).toContain('while a response is running');
+  });
+
   it('keeps pre-message MCP changes on the draft used by the first send', async () => {
     const store = new AppStore(config);
     store.sessions.value = [];
