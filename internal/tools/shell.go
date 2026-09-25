@@ -691,7 +691,9 @@ func formatShellResult(result ShellResult, limits OutputLimits) string {
 		}
 	}
 
-	sb.WriteString(fmt.Sprintf("\nexit_code: %d", result.ExitCode))
+	if !result.TimedOut && !result.Canceled {
+		sb.WriteString(fmt.Sprintf("\nexit_code: %d", result.ExitCode))
+	}
 
 	if truncated {
 		sb.WriteString("\n\n[Output truncated due to size limit]")
