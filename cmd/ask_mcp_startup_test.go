@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +16,39 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 )
+
+type stuckMCPStartup struct{}
+
+func (stuckMCPStartup) ServerStatus(string) (mcp.ServerStatus, error) {
+	return mcp.StatusStarting, nil
+}
+
+func TestWaitForMCPStartupBounded(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		context func() (context.Context, context.CancelFunc)
+		want    string
+		wantErr error
+	}{
+		{name: "fallback deadline", context: func() (context.Context, context.CancelFunc) {
+			return t.Context(), func() {}
+		}, want: "MCP servers still starting after startup timeout: slow, stuck"},
+		{name: "caller cancelled", context: func() (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			return ctx, cancel
+		}, want: "MCP servers still starting: slow, stuck", wantErr: context.Canceled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := tc.context()
+			defer cancel()
+			err := waitForMCPStartup(ctx, stuckMCPStartup{}, []string{"slow", "stuck"}, io.Discard, false, 20*time.Millisecond)
+			if err == nil || !strings.Contains(err.Error(), tc.want) || (tc.wantErr != nil && !errors.Is(err, tc.wantErr)) {
+				t.Fatalf("error = %v, want %q (cause %v)", err, tc.want, tc.wantErr)
+			}
+		})
+	}
+}
 
 func TestAskMCPStartup(t *testing.T) {
 	for _, tc := range []struct {
@@ -53,7 +88,11 @@ func TestAskMCPStartup(t *testing.T) {
 				httpServer.Close()
 			}()
 			writeServeMCPConfig(t, map[string]mcp.ServerConfig{"slow": {Type: "http", URL: httpServer.URL}})
-			manager, err := enableMCPServersWithFeedback(ctx, "slow", llm.NewEngine(nil, nil), io.Discard, nil)
+			var feedback bytes.Buffer
+			manager, err := enableMCPServersWithFeedback(ctx, "slow", llm.NewEngine(nil, nil), &feedback, nil)
+			if got := feedback.String(); strings.ContainsAny(got, "\r⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏") || !strings.HasPrefix(got, "Starting MCP: slow\n") {
+				t.Fatalf("non-terminal startup feedback = %q", got)
+			}
 			if manager != nil {
 				defer manager.StopAll()
 			}
@@ -67,6 +106,9 @@ func TestAskMCPStartup(t *testing.T) {
 			} else {
 				if err != nil {
 					t.Fatal(err)
+				}
+				if !strings.Contains(feedback.String(), "✓ MCP ready: 1 tools from slow\n") {
+					t.Fatalf("missing ready feedback: %q", feedback.String())
 				}
 				if manager == nil || len(manager.AllTools()) != 1 {
 					t.Fatal("slow server's tools were not loaded")

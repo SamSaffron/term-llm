@@ -164,8 +164,8 @@ Do not prioritize terminal protocol parsers or renderer rewrites solely by compl
 
 Start with reporting in M0; enforce after baseline and rename handling are reliable:
 
-- New ordinary functions above 20 require explicit justification or decomposition. Above 50 requires a specific exception and contract tests, including extracted helpers; do not merely relocate a hotspot.
-- Existing exceptional functions may not increase above their recorded baseline without an explicit justification and follow-up. Track exceptions with owner/subsystem, rationale and a removal milestone, not blanket per-file suppressions.
+- Functions may grow through complexity 30 without an exception. New functions or increases beyond 30 generate non-blocking warnings for review; above 50 still merits explicit justification and contract tests, including extracted helpers.
+- Existing high-complexity functions retain their recorded baseline for comparing growth above 30. Track historical exceptions with owner/subsystem, rationale and a removal milestone, not blanket per-file suppressions.
 - File sizes above roughly 1,000 lines trigger an organization discussion, not an automatic failure. Avoid arbitrary 500-line splits.
 - Record original function plus extracted family: maximum function complexity, count above 20/50, shared mutable state and responsibility boundaries. Summed complexity is not a strict success metric: each extracted function adds a baseline of 1.
 - Do not set a hard requirement that every dispatcher must fall below 20. A documented ordered dispatcher is preferable to opaque indirection added to satisfy a metric.

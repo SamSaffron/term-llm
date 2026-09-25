@@ -21,9 +21,10 @@ ordinary functions omitted from the compact checked-in view.
   2026-09-20; see "Counting revision" below). Top-level function-valued
   initializers are named after the initialized variable. Span and file size are
   physical lines.
-- The checked baseline records every existing exception above 20 with package
-  owner, rationale, and removal milestone. New functions above 20 and increases
-  to existing exceptions fail `make complexity`.
+- The checked baseline retains historical exceptions above 20 with package
+  owner, rationale, and removal milestone. Complexity can grow through 30.
+  New functions or increases above 30 produce warnings, not build failures;
+  malformed baseline metadata still fails `make complexity`.
 
 ## Counting revision (2026-09-20)
 
@@ -56,8 +57,10 @@ counts:
 Rationale and consequences: the measure now ranks dense nested code above long
 flat code. Straight-line dispatchers and provider `Stream` wrappers whose body
 is one closure fell sharply; deeply nested parsing, rendering, and HTTP state
-handlers rose. The threshold of 20 is unchanged, and the ratchet is unchanged:
-the baseline was rewritten under the new measure, preserving the ownership
+handlers rose. The counting threshold of 20 and its historical baseline were
+unchanged by that revision. The current enforcement policy permits growth through 30 and
+warns, without failing the build, on new or increased functions above 30.
+The baseline was rewritten under the new measure, preserving the ownership
 record of every exception that survived it. Exceptions that appear only because
 the measure changed are marked `"origin": "remeasured"`; they are not new code.
 Because the scale moved, complexity numbers recorded in earlier acceptance

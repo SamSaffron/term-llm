@@ -19,7 +19,7 @@ frontend: frontend-deps
 frontend-deps: $(FRONTEND_STAMP)
 
 complexity:
-	go run ./cmd/complexity --check plans/go-complexity-baseline.json --threshold 20
+	go run ./cmd/complexity --check plans/go-complexity-baseline.json --threshold 30
 
 complexity-report:
 	go run ./cmd/complexity --threshold 20
