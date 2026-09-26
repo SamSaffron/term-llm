@@ -33,6 +33,10 @@ func TestNativeDefinitions(t *testing.T) {
 				t.Fatalf("invalid definition %s", data)
 			}
 			if platform == "darwin" {
+				// Unset ProcessType makes launchd throttle timers and I/O like a daemon.
+				if !strings.Contains(string(data), "<key>ProcessType</key><string>Interactive</string>") {
+					t.Fatalf("launchd agent must be Interactive: %s", data)
+				}
 				dec := xml.NewDecoder(strings.NewReader(string(data)))
 				for {
 					_, err := dec.Token()
@@ -51,8 +55,17 @@ func TestNativeDefinitions(t *testing.T) {
 					t.Fatal("systemd expansion not escaped")
 				}
 			}
-			if err = n.Install(s, path); err != nil {
+			if replaced, err := n.Install(s, path); err != nil || replaced {
+				t.Fatalf("first install replaced=%v err=%v", replaced, err)
+			}
+			if replaced, err := n.Install(s, path); err != nil || replaced {
+				t.Fatalf("identical reinstall replaced=%v err=%v", replaced, err)
+			}
+			if err = os.WriteFile(n.Path("web"), append(data, []byte("<!-- older template -->")...), 0600); err != nil {
 				t.Fatal(err)
+			}
+			if replaced, err := n.Install(s, path); err != nil || !replaced {
+				t.Fatalf("changed definition replaced=%v err=%v", replaced, err)
 			}
 			if err = n.CheckOwned("web", path); err != nil {
 				t.Fatal(err)
@@ -220,7 +233,7 @@ func TestDarwinSubmittedJobOwnership(t *testing.T) {
 	if err := Save(specPath, s); err != nil {
 		t.Fatal(err)
 	}
-	if err := n.Install(s, specPath); err != nil {
+	if _, err := n.Install(s, specPath); err != nil {
 		t.Fatal(err)
 	}
 	args := serviceArgs(s.Binary, s.Kind, specPath)

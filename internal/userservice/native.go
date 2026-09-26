@@ -135,6 +135,9 @@ WantedBy=default.target
 	if n.OS != "darwin" {
 		return nil, fmt.Errorf("unsupported service platform %s", n.OS)
 	}
+	// Without ProcessType launchd spawns agents as throttled "daemon" jobs:
+	// timer wakeups are coalesced (~15-20ms late) and I/O is deprioritized, which
+	// makes an interactive web server stall on every poll, flush and SQLite retry.
 	var argv strings.Builder
 	for _, a := range args {
 		fmt.Fprintf(&argv, "<string>%s</string>", xmlText(a))
@@ -149,6 +152,7 @@ WantedBy=default.target
 <key>WorkingDirectory</key><string>%s</string>
 <key>EnvironmentVariables</key><dict>%s</dict>
 <key>RunAtLoad</key><true/>
+<key>ProcessType</key><string>Interactive</string>
 <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
 <key>ThrottleInterval</key><integer>5</integer>
 <key>ExitTimeOut</key><integer>30</integer>
@@ -186,19 +190,25 @@ func (n Native) CheckOwned(kind, specPath string) error {
 	}
 	return nil
 }
-func (n Native) Install(s Spec, specPath string) error {
+
+// Install writes the native definition. replaced reports whether an existing
+// definition had different content, so a loaded job must be reloaded to apply it
+// (for example after an upgrade changes the rendered template).
+func (n Native) Install(s Spec, specPath string) (replaced bool, err error) {
 	if err := n.CheckOwned(s.Kind, specPath); err != nil {
-		return err
+		return false, err
 	}
 	data, err := n.Render(s, specPath)
 	if err != nil {
-		return err
+		return false, err
 	}
 	path := n.Path(s.Kind)
 	if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
+		return false, err
 	}
-	return config.WriteFileAtomicallyNoFollow(path, data, 0600)
+	previous, readErr := os.ReadFile(path)
+	replaced = readErr == nil && !bytes.Equal(previous, data)
+	return replaced, config.WriteFileAtomicallyNoFollow(path, data, 0600)
 }
 
 // Start starts or restarts the process without replacing its native registration.
