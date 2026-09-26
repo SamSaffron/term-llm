@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -45,15 +46,17 @@ func (s *serveServer) startLiveNewSession(ctx context.Context, record *liveSessi
 	if bound == "" {
 		return tools.LiveNewSessionResult{}, errors.New("the live call is not bound to a chat session")
 	}
-	agent, err := s.resolveLiveNewSessionAgent(ctx, bound, request.Agent)
+	source := s.liveNewSessionSource(ctx, bound)
+	agent, err := s.resolveLiveNewSessionAgent(source, request.Agent)
 	if err != nil {
 		return tools.LiveNewSessionResult{}, err
 	}
-	projectID, err := s.resolveLiveNewSessionProject(ctx, bound, request.Project)
+	projectID, err := s.resolveLiveNewSessionProject(ctx, source, request.Project)
 	if err != nil {
 		return tools.LiveNewSessionResult{}, err
 	}
 	create := createWebSessionRequest{Agent: agent}
+	s.inheritLiveNewSessionRuntime(&create, source)
 	if s.projectsEnabled {
 		// The same choice the browser makes for a blank conversation: the selected
 		// project, or the explicit no-project workspace when there is none.
@@ -90,13 +93,69 @@ func (s *serveServer) startLiveNewSession(ctx context.Context, record *liveSessi
 	}, nil
 }
 
+// liveNewSessionSource reads the conversation the call is bound to, which is
+// what an omitted agent, project, and model are inherited from. An unreadable
+// row leaves the new conversation with the server defaults rather than failing
+// the request: inheritance is a convenience, and a broken read of it is not a
+// reason to refuse a conversation the user asked for.
+func (s *serveServer) liveNewSessionSource(ctx context.Context, boundSessionID string) *session.Session {
+	if s.store == nil || boundSessionID == "" {
+		return nil
+	}
+	sess, err := s.store.Get(ctx, boundSessionID)
+	if err != nil {
+		return nil
+	}
+	return sess
+}
+
+// inheritLiveNewSessionRuntime carries the bound conversation's provider,
+// model, reasoning effort, and reasoning mode into the new one, as the browser
+// carries its selected model into a new chat. It applies only when the new
+// conversation runs the same agent: a different agent brings its own model
+// choice, which the old conversation's selection must not override. A row with
+// no provider key cannot name its provider, so a bare model is not guessed at.
+//
+// The provider must still be one this server offers — the list the browser's
+// provider picker shows. Inheritance is a convenience, so a provider removed
+// since the row was written leaves the new conversation on the server defaults
+// rather than failing a request the user made. This is decided before anything
+// is created: a creation that fails part-way can leave a durable row behind, so
+// retrying on the defaults afterwards could start two conversations.
+func (s *serveServer) inheritLiveNewSessionRuntime(create *createWebSessionRequest, source *session.Session) {
+	if source == nil || !strings.EqualFold(strings.TrimSpace(source.Agent), strings.TrimSpace(create.Agent)) {
+		return
+	}
+	provider := strings.TrimSpace(source.ProviderKey)
+	if provider == "" || !s.offersProvider(provider) {
+		return
+	}
+	create.Provider = provider
+	create.Model = strings.TrimSpace(source.Model)
+	create.ReasoningEffort = strings.TrimSpace(source.ReasoningEffort)
+	create.ReasoningMode = strings.TrimSpace(source.ReasoningMode)
+}
+
+// offersProvider reports whether name is a provider /v1/providers lists: every
+// built-in, and every provider named in the configuration.
+func (s *serveServer) offersProvider(name string) bool {
+	if slices.Contains(llm.GetBuiltInProviderNames(), name) {
+		return true
+	}
+	if s.cfgRef == nil {
+		return false
+	}
+	_, ok := s.cfgRef.Providers[name]
+	return ok
+}
+
 // resolveLiveNewSessionAgent decides which agent the new conversation runs. A
 // server that pins an agent runs every conversation with it, an omitted request
 // inherits the conversation the user is already in, and a named one is matched
 // against the agent registry case-insensitively and answered with the registry's
 // own spelling. An unknown name is refused with the available ones: a
 // conversation started with an agent that does not exist would be a broken row.
-func (s *serveServer) resolveLiveNewSessionAgent(ctx context.Context, boundSessionID, requested string) (string, error) {
+func (s *serveServer) resolveLiveNewSessionAgent(source *session.Session, requested string) (string, error) {
 	requested = strings.TrimSpace(requested)
 	if pinned := strings.TrimSpace(s.cfg.agentName); pinned != "" {
 		if requested != "" && !strings.EqualFold(requested, pinned) {
@@ -105,21 +164,13 @@ func (s *serveServer) resolveLiveNewSessionAgent(ctx context.Context, boundSessi
 		return pinned, nil
 	}
 	if requested == "" {
-		if s.store == nil || boundSessionID == "" {
-			return "", nil
-		}
-		sess, err := s.store.Get(ctx, boundSessionID)
-		if err != nil || sess == nil {
-			// An unreadable row leaves the new conversation with the server default
-			// rather than failing the request: this is an inherited convenience, and
-			// a broken read of it is not a reason to refuse a conversation the user
-			// asked for.
+		if source == nil {
 			return "", nil
 		}
 		// Inherited as-is rather than re-validated: the name was written by the
 		// host when the bound conversation was created, and an agent that has since
 		// been removed must not make "start a new conversation" fail.
-		return strings.TrimSpace(sess.Agent), nil
+		return strings.TrimSpace(source.Agent), nil
 	}
 	// The list the browser's agent picker was given at startup, sorted so the
 	// message reads the same way twice.
@@ -147,17 +198,13 @@ func (s *serveServer) resolveLiveNewSessionAgent(ctx context.Context, boundSessi
 // case-insensitive substring — and anything ambiguous or unknown is refused with
 // the candidates, never guessed, because the project decides which files the
 // conversation can touch.
-func (s *serveServer) resolveLiveNewSessionProject(ctx context.Context, boundSessionID, requested string) (string, error) {
+func (s *serveServer) resolveLiveNewSessionProject(ctx context.Context, source *session.Session, requested string) (string, error) {
 	requested = strings.TrimSpace(requested)
 	if requested == "" {
-		if s.store == nil || boundSessionID == "" {
+		if source == nil {
 			return "", nil
 		}
-		sess, err := s.store.Get(ctx, boundSessionID)
-		if err != nil || sess == nil {
-			return "", nil
-		}
-		return strings.TrimSpace(sess.ProjectID), nil
+		return strings.TrimSpace(source.ProjectID), nil
 	}
 	projects, ok := s.projectStore()
 	if !ok {

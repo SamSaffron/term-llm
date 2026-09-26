@@ -257,6 +257,105 @@ func TestLiveNewSessionCreatesAndBindsAConversationTheBrowserWouldRecognise(t *t
 	})
 }
 
+// TestLiveNewSessionInheritsTheBoundConversationsModel pins "start a new session"
+// as the browser's New chat: the conversation the call leaves decides provider,
+// model, effort, and reasoning mode, not the server defaults. A different agent
+// brings its own model, and a provider the server no longer offers falls back to
+// the defaults — decided up front, so exactly one conversation is created.
+func TestLiveNewSessionInheritsTheBoundConversationsModel(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		args         string
+		source       session.Session
+		wantProvider string
+		wantModel    string
+		wantEffort   string
+		wantMode     string
+	}{
+		{
+			name:         "same agent inherits",
+			args:         `{}`,
+			source:       session.Session{Provider: "Work Claude (opus)", ProviderKey: "work-claude", Model: "opus", ReasoningEffort: "high"},
+			wantProvider: "work-claude", wantModel: "opus", wantEffort: "high",
+		},
+		{
+			name:         "reasoning mode carries over",
+			args:         `{}`,
+			source:       session.Session{Provider: "OpenAI", ProviderKey: "openai", Model: "gpt-5.6-sol", ReasoningMode: "pro"},
+			wantProvider: "openai", wantModel: "gpt-5.6-sol", wantMode: "pro",
+		},
+		{
+			name:         "other agent uses its own",
+			args:         `{"agent":"researcher"}`,
+			source:       session.Session{Provider: "Work Claude (opus)", ProviderKey: "work-claude", Model: "opus", ReasoningEffort: "high"},
+			wantProvider: "mock", wantModel: "mock-model",
+		},
+		{
+			name:         "provider no longer offered",
+			args:         `{}`,
+			source:       session.Session{Provider: "Retired", ProviderKey: "retired-provider", Model: "old-model", ReasoningEffort: "high"},
+			wantProvider: "mock", wantModel: "mock-model",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newVoiceNewSessionHarness(t, "voice-model", "reviewer", "researcher")
+			h.server.cfgRef.Providers = map[string]config.ProviderConfig{"work-claude": {Type: "claude-bin"}}
+			store := h.store
+			h.server.agentRuntimeFactory = func(_ context.Context, request serveRuntimeRequest) (*serveRuntime, error) {
+				providerKey, model := strings.TrimSpace(request.Provider), strings.TrimSpace(request.Model)
+				if providerKey == "retired-provider" {
+					return nil, fmt.Errorf("unknown provider %q", providerKey)
+				}
+				if providerKey == "" {
+					providerKey, model = "mock", "mock-model"
+				}
+				provider := llm.NewMockProvider(providerKey)
+				return &serveRuntime{
+					provider: provider, providerKey: providerKey, defaultModel: model,
+					agentName: strings.TrimSpace(request.Agent), engine: llm.NewEngine(provider, nil), store: store,
+				}, nil
+			}
+			registered := h.project(t, "Reflow work")
+			source := tc.source
+			source.ID, source.GeneratedShortTitle, source.Agent, source.Mode = "voice-model", "Voice work", "reviewer", session.ModeChat
+			source.ProjectID, source.ProjectName, source.CWD = registered.ID, registered.Name, registered.CanonicalDir
+			h.conversation(t, &source)
+
+			content, err := h.start(t, tc.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var result struct {
+				SessionID string `json:"session_id"`
+			}
+			if err := json.Unmarshal([]byte(content), &result); err != nil {
+				t.Fatal(err)
+			}
+			row, err := h.store.Get(context.Background(), result.SessionID)
+			if err != nil || row == nil {
+				t.Fatalf("created row = %#v, %v", row, err)
+			}
+			if row.ProviderKey != tc.wantProvider || row.Model != tc.wantModel ||
+				row.ReasoningEffort != tc.wantEffort || row.ReasoningMode != tc.wantMode {
+				t.Fatalf("created runtime = %s/%s effort %q mode %q, want %s/%s effort %q mode %q",
+					row.ProviderKey, row.Model, row.ReasoningEffort, row.ReasoningMode,
+					tc.wantProvider, tc.wantModel, tc.wantEffort, tc.wantMode)
+			}
+			if row.ProjectID != registered.ID {
+				t.Fatalf("created row project = %q, want %q", row.ProjectID, registered.ID)
+			}
+			// One request, one conversation: the fallback is decided before creation,
+			// so no half-made attempt is left behind next to the one the call joined.
+			if ids := durableSessionIDs(t, h.server); len(ids) != 2 {
+				t.Fatalf("durable conversations = %v, want the source and one new one", ids)
+			}
+			if created := h.createdSessions(); len(created) != 1 || created[0] != result.SessionID {
+				t.Fatalf("session.created = %v, want only %q", created, result.SessionID)
+			}
+		})
+	}
+}
+
 // TestLiveNewSessionResolvesNamedProjectsAndAgents covers the arguments the voice
 // model passes through from speech: a project named loosely, an agent named in the
 // wrong case. Both are resolved to the registry's own identity, and an exact name
