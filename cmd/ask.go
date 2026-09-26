@@ -47,6 +47,7 @@ var (
 	askMCP             string
 	askMaxTurns        int
 	askMaxOutputTokens int
+	askInlineMaxBytes  string
 	askTimeout         time.Duration
 	askStopWhen        string
 	askContinueWith    string
@@ -168,6 +169,7 @@ func init() {
 	askCmd.Flags().StringVar(&askStopWhen, "stop-when", "", "Progressive stop condition: done or timeout (defaults to done in progressive mode)")
 	askCmd.Flags().StringVar(&askContinueWith, "continue-with", "", "Custom continuation prompt for progressive timeout mode")
 	askCmd.Flags().BoolVar(&askFast, "fast", false, "Use the configured fast provider/model instead of the default")
+	askCmd.Flags().StringVar(&askInlineMaxBytes, "inline-max-bytes", "", "Embed stdin/-f text up to this size inline instead of staging it for tools (e.g. 512K, 2M; overrides ask.stdin_inline_max_bytes)")
 
 	// Session resume flag - NoOptDefVal allows --resume without a value
 	askCmd.Flags().StringVarP(&askResume, "resume", "r", "", "Continue a session (empty for most recent, or session ID)")
@@ -334,7 +336,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if agent != nil {
 		defaultQuestion = agent.DefaultPrompt
 	}
-	preparedInput, err := prepareAskInput(question, askFiles, stdinReader, hasStdin, cfg.Ask, defaultQuestion)
+	askInputCfg, err := applyAskInlineMaxBytesOverride(cfg.Ask, askInlineMaxBytes)
+	if err != nil {
+		return err
+	}
+	preparedInput, err := prepareAskInput(question, askFiles, stdinReader, hasStdin, askInputCfg, defaultQuestion)
 	if err != nil {
 		return err
 	}

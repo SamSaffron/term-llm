@@ -368,6 +368,8 @@ ask:
   stdin_max_bytes: 20971520       # 20 MiB hard ceiling; must be >= inline limit
 ```
 
+Override the inline threshold for a single run with `term-llm ask --inline-max-bytes <size>` (for example `512K`, `2MiB`, or a plain byte count). The override must be positive and may not exceed `ask.stdin_max_bytes`. Use it for scripted runs that deliberately pass a large prompt file and cannot spend a turn on `read_file`.
+
 The maximum applies independently to each resolved `-f` item and to stdin. It is enforced while reading (`max + 1` bytes), so oversized streams and regular files are rejected without being fully buffered or staged.
 
 ## Parallel tool execution
