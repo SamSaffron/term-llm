@@ -88,13 +88,14 @@ term-llm agents show reviewer                # Show agent configuration
 term-llm agents edit reviewer                # Edit agent configuration
 term-llm agents copy reviewer my-reviewer    # Copy an agent to customize
 term-llm agents path                         # Print agents directory
-term-llm agents export reviewer              # Export an agent bundle
-term-llm agents import ./agent-dir           # Import an agent bundle
-term-llm agents gist reviewer                # Publish agent as a gist
+term-llm agents export gist my-reviewer      # Publish the copied agent as a gist
+term-llm agents import gist <gist-url-or-id> # Import an agent from a gist
 term-llm agents set reviewer provider=openai model=gpt-5.2
 term-llm agents get reviewer
-term-llm agents clear reviewer model
+term-llm agents clear reviewer               # Clear ALL preferences for reviewer
 ```
+
+The Gist commands require the `gh` CLI. Export requires authentication; import requires authentication only for private gists.
 
 Registry lookup names are limited to 64 letters, digits, or underscores, with non-trailing spaces, dots, and hyphens between segments. This is also the grammar used by explicit `@agent:name` delegation mentions, so surrounding sentence punctuation is never part of the lookup key.
 
