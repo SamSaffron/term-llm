@@ -958,7 +958,7 @@ Fixture content.
 	}
 }
 
-func TestRegisterSkillToolWithEngine_AllowsSkillDeclaredToolsInAllowedToolsFilter(t *testing.T) {
+func TestModelSkillActivationPreservesParentToolsAcrossTurns(t *testing.T) {
 	origWD, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -995,7 +995,7 @@ tools:
 ---
 
 # Test Skill
-`
+` + strings.Repeat("Detailed skill instruction payload.\n", 4096)
 	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillMD), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -1011,12 +1011,16 @@ tools:
 		},
 	}
 
-	settings, err := ResolveSettings(cfg, nil, CLIFlags{Tools: tools.ReadFileToolName}, "", "", "tool instructions", 0, 20)
+	settings, err := ResolveSettings(cfg, nil, CLIFlags{Tools: tools.ReadFileToolName + "," + tools.ShellToolName}, "", "", "tool instructions", 0, 20)
 	if err != nil {
 		t.Fatalf("ResolveSettings() error = %v", err)
 	}
 
-	engine := newEngine(llm.NewMockProvider("mock"), cfg)
+	provider := llm.NewMockProvider("mock").
+		AddToolCall("activate", tools.ActivateSkillToolName, map[string]any{"name": "test-skill"}).
+		AddTextResponse("skill activated").
+		AddTextResponse("continued")
+	engine := newEngine(provider, cfg)
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
 	if err != nil {
 		t.Fatalf("SetupToolManager() error = %v", err)
@@ -1029,30 +1033,59 @@ tools:
 	if skillsSetup == nil {
 		t.Fatal("SetupSkills() = nil, want non-nil")
 	}
-
 	RegisterSkillToolWithEngine(engine, toolMgr, skillsSetup)
 
-	activateTool, ok := engine.Tools().Get(tools.ActivateSkillToolName)
-	if !ok {
-		t.Fatalf("expected %q tool to be registered", tools.ActivateSkillToolName)
+	drain := func(stream llm.Stream, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stream.Close()
+		for {
+			_, err := stream.Recv()
+			if err == io.EOF {
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 
-	if _, err := activateTool.Execute(context.Background(), json.RawMessage(`{"name":"test-skill"}`)); err != nil {
-		t.Fatalf("activate_skill Execute() error = %v", err)
-	}
+	// The first run reproduces the immediate post-activation boundary. The second
+	// run represents the next user message in the same developer session.
+	drain(engine.Stream(context.Background(), llm.Request{
+		Messages: []llm.Message{llm.UserText("activate the skill")},
+		Tools:    engine.Tools().AllSpecs(),
+		MaxTurns: 3,
+	}))
+	drain(engine.Stream(context.Background(), llm.Request{
+		Messages: []llm.Message{llm.UserText("continue")},
+		Tools:    engine.Tools().AllSpecs(),
+		MaxTurns: 3,
+	}))
 
-	if _, ok := engine.Tools().Get("test_echo"); !ok {
-		t.Fatal("expected skill-declared tool to be registered with engine")
+	requests := provider.RecordedRequests()
+	if len(requests) != 3 {
+		t.Fatalf("provider requests = %d, want activation + immediate follow-up + next user turn", len(requests))
 	}
-	if !engine.IsToolAllowed("test_echo") {
-		t.Fatal("expected skill-declared tool to remain allowed after activation")
-	}
-	if engine.IsToolAllowed(tools.ReadFileToolName) {
-		t.Fatalf("expected %q to be disallowed by skill allowlist", tools.ReadFileToolName)
+	for i, request := range requests[1:] {
+		visible := make(map[string]bool, len(request.Tools))
+		for _, spec := range request.Tools {
+			visible[spec.Name] = true
+		}
+		for _, parentTool := range []string{tools.ReadFileToolName, tools.ShellToolName} {
+			if !visible[parentTool] {
+				t.Errorf("request %d after activation omitted parent tool %q; visible tools: %v", i+1, parentTool, visible)
+			}
+		}
+		if !visible["test_echo"] {
+			t.Errorf("request %d after activation omitted skill-declared tool test_echo; visible tools: %v", i+1, visible)
+		}
 	}
 }
 
-func TestRegisterSkillToolWithEngineDoesNotWidenActiveToolPolicy(t *testing.T) {
+func TestRegisterSkillToolWithEnginePreservesActiveToolPolicy(t *testing.T) {
 	setup, _ := serveSkillTestSetup(t)
 	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
 	engine.RegisterTool(tools.NewReadFileTool(nil, tools.OutputLimits{}))
@@ -1064,29 +1097,12 @@ func TestRegisterSkillToolWithEngineDoesNotWidenActiveToolPolicy(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected %q tool to be registered", tools.ActivateSkillToolName)
 	}
-	if _, err := activateTool.Execute(context.Background(), json.RawMessage(`{"name":"compact"}`)); err != nil {
-		t.Fatalf("activate unrestricted skill: %v", err)
-	}
-	if !engine.IsToolAllowed(tools.ReadFileToolName) || engine.IsToolAllowed(tools.GrepToolName) {
-		t.Fatalf("omitted allowed-tools changed active policy: read=%v grep=%v", engine.IsToolAllowed(tools.ReadFileToolName), engine.IsToolAllowed(tools.GrepToolName))
-	}
-
-	if _, err := activateTool.Execute(context.Background(), json.RawMessage(`{"name":"grep-only"}`)); err != nil {
-		t.Fatalf("activate restricted skill: %v", err)
-	}
-	if engine.IsToolAllowed(tools.ReadFileToolName) || engine.IsToolAllowed(tools.GrepToolName) {
-		t.Fatalf("skill restriction widened or failed to use baseline policy: read=%v grep=%v", engine.IsToolAllowed(tools.ReadFileToolName), engine.IsToolAllowed(tools.GrepToolName))
-	}
-	if _, err := activateTool.Execute(context.Background(), json.RawMessage(`{"name":"read-only"}`)); err != nil {
-		t.Fatalf("activate second restricted skill: %v", err)
-	}
-	if !engine.IsToolAllowed(tools.ReadFileToolName) || engine.IsToolAllowed(tools.GrepToolName) {
-		t.Fatalf("second restriction did not reapply against baseline policy: read=%v grep=%v", engine.IsToolAllowed(tools.ReadFileToolName), engine.IsToolAllowed(tools.GrepToolName))
-	}
-	if _, err := activateTool.Execute(context.Background(), json.RawMessage(`{"name":"compact"}`)); err != nil {
-		t.Fatalf("restore baseline with unrestricted skill: %v", err)
-	}
-	if !engine.IsToolAllowed(tools.ReadFileToolName) || engine.IsToolAllowed(tools.GrepToolName) {
-		t.Fatalf("unrestricted skill did not restore baseline policy: read=%v grep=%v", engine.IsToolAllowed(tools.ReadFileToolName), engine.IsToolAllowed(tools.GrepToolName))
+	for _, skillName := range []string{"compact", "grep-only", "read-only"} {
+		if _, err := activateTool.Execute(context.Background(), json.RawMessage(fmt.Sprintf(`{"name":%q}`, skillName))); err != nil {
+			t.Fatalf("activate %q: %v", skillName, err)
+		}
+		if !engine.IsToolAllowed(tools.ReadFileToolName) || engine.IsToolAllowed(tools.GrepToolName) || !engine.IsToolAllowed(tools.ActivateSkillToolName) {
+			t.Fatalf("activation of %q changed parent policy: read=%v grep=%v activate=%v", skillName, engine.IsToolAllowed(tools.ReadFileToolName), engine.IsToolAllowed(tools.GrepToolName), engine.IsToolAllowed(tools.ActivateSkillToolName))
+		}
 	}
 }
