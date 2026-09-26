@@ -698,3 +698,66 @@ func tinyAskPNG(t *testing.T) []byte {
 	}
 	return buf.Bytes()
 }
+
+func TestApplyAskInlineMaxBytesOverride(t *testing.T) {
+	base := config.AskConfig{StdinInlineMaxBytes: 10 * 1024, StdinMaxBytes: 20 * 1024 * 1024}
+	cases := []struct {
+		raw     string
+		want    int64
+		wantErr string
+	}{
+		{raw: "", want: 10 * 1024},
+		{raw: "  ", want: 10 * 1024},
+		{raw: "4096", want: 4096},
+		{raw: "512K", want: 512000},
+		{raw: "2MiB", want: 2 * 1024 * 1024},
+		{raw: "20MiB", want: 20 * 1024 * 1024},
+		{raw: "0", wantErr: "positive"},
+		{raw: "banana", wantErr: "invalid --inline-max-bytes"},
+		{raw: "21MiB", wantErr: "must not exceed ask.stdin_max_bytes"},
+	}
+	for _, tc := range cases {
+		got, err := applyAskInlineMaxBytesOverride(base, tc.raw)
+		if tc.wantErr != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("%q: err = %v, want containing %q", tc.raw, err, tc.wantErr)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("%q: unexpected error: %v", tc.raw, err)
+		}
+		if got.StdinInlineMaxBytes != tc.want {
+			t.Fatalf("%q: inline = %d, want %d", tc.raw, got.StdinInlineMaxBytes, tc.want)
+		}
+		if got.StdinMaxBytes != base.StdinMaxBytes {
+			t.Fatalf("%q: stdin max changed to %d", tc.raw, got.StdinMaxBytes)
+		}
+	}
+}
+
+func TestAskInlineMaxBytesOverrideKeepsLargeTextInline(t *testing.T) {
+	cfg := config.AskConfig{StdinInlineMaxBytes: 10 * 1024, StdinMaxBytes: 20 * 1024 * 1024}
+	raw := []byte(strings.Repeat("briefing line\n", 12000)) // ~168 KB, like a large generated prompt
+	staged, err := prepareAskSource("prompt.txt", "prompt.txt", raw, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staged.inline != nil {
+		t.Fatal("expected default limit to stage large text")
+	}
+	if staged.stagedPath != "" {
+		_ = os.Remove(staged.stagedPath)
+	}
+	cfg, err = applyAskInlineMaxBytesOverride(cfg, "1MiB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inline, err := prepareAskSource("prompt.txt", "prompt.txt", raw, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inline.inline == nil || *inline.inline != string(raw) {
+		t.Fatal("expected override to keep large text inline")
+	}
+}
