@@ -600,15 +600,11 @@ func (p *OllamaProvider) Stream(ctx context.Context, req Request) (Stream, error
 	}
 
 	if req.Debug {
-		runtimeoutput.Printf("=== DEBUG: Ollama Stream Request ===\n")
-		runtimeoutput.Printf("URL: %s/api/chat\n", p.baseURL)
-		runtimeoutput.Printf("Model: %s\n", model)
-		runtimeoutput.Printf("Messages: %d\n", len(messages))
-		runtimeoutput.Printf("Tools: %d\n", len(tools))
+		debug := fmt.Sprintf("=== DEBUG: Ollama Stream Request ===\nURL: %s/api/chat\nModel: %s\nMessages: %d\nTools: %d\n", p.baseURL, model, len(messages), len(tools))
 		if think != nil {
-			runtimeoutput.Printf("Think: %v\n", think)
+			debug += fmt.Sprintf("Think: %v\n", think)
 		}
-		runtimeoutput.Printf("%s\n", "====================================")
+		runtimeoutput.Printf("%s====================================\n", debug)
 	}
 
 	body, err := json.Marshal(chatReq)

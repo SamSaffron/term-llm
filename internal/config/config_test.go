@@ -1921,3 +1921,11 @@ func TestLiveOpenAITransportAndVoices(t *testing.T) {
 		})
 	}
 }
+
+func TestDiagnosticsDirDoesNotUseWorkingDirectory(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_DATA_HOME", "relative-dir")
+	if got := GetDiagnosticsDir(); got != "" {
+		t.Fatalf("unsafe diagnostic directory = %q", got)
+	}
+}

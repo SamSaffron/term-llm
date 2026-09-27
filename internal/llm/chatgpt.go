@@ -74,7 +74,9 @@ func NewChatGPTProviderWithOptions(model string, opts ChatGPTProviderOptions) (*
 			if !errors.Is(refreshErr, oauth.ErrChatGPTRefreshTokenInvalid) {
 				return nil, fmt.Errorf("token refresh failed: %w", refreshErr)
 			}
-			fmt.Fprintln(os.Stderr, "Token refresh failed. Re-authentication required.")
+			if !runtimeoutput.Active() {
+				fmt.Fprintln(os.Stderr, "Token refresh failed. Re-authentication required.")
+			}
 			creds, err = PromptForChatGPTAuth()
 			if err != nil {
 				return nil, err

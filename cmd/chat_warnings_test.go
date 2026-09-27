@@ -149,3 +149,33 @@ func TestTUIWarningWriterDropsBlankWrites(t *testing.T) {
 		t.Fatalf("notices = %v, want none for a blank write", notices)
 	}
 }
+
+func TestChildProgressStaysOutOfFooter(t *testing.T) {
+	var notices []string
+	warning := newTUIWarningWriter(&bytes.Buffer{})
+	warning.attachNotifier(func(text string) { notices = append(notices, text) })
+	dir := t.TempDir()
+	closeLog, err := runtimeoutput.Start(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeLog()
+	_, err = chatChildProgressWriter().Write([]byte("MCP server ready; waiting for tool call\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notices) != 0 {
+		t.Fatalf("progress became footer notices: %v", notices)
+	}
+	_, _ = warning.Write([]byte("session save failed\n"))
+	if len(notices) != 1 {
+		t.Fatalf("actionable warning lost: %v", notices)
+	}
+	contents, err := os.ReadFile(filepath.Join(dir, "tui.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(contents), "MCP server ready") {
+		t.Fatalf("missing child progress: %q", contents)
+	}
+}

@@ -301,12 +301,11 @@ func DebugRawSection(enabled bool, label, body string) {
 	}
 
 	ts := time.Now().Format(time.RFC3339Nano)
-	runtimeoutput.Printf("\n[%s] %s\n", ts, label)
 	if body != "" {
-		runtimeoutput.Printf("%s\n", body)
+		runtimeoutput.Printf("\n[%s] %s\n%s\n[%s] END %s\n\n", ts, label, body, ts, label)
+	} else {
+		runtimeoutput.Printf("\n[%s] %s\n[%s] END %s\n\n", ts, label, ts, label)
 	}
-	runtimeoutput.Printf("[%s] END %s\n", ts, label)
-	runtimeoutput.Printf("\n")
 }
 
 type debugStream struct {
@@ -341,13 +340,11 @@ func debugSection(enabled bool, title, body string) {
 		return
 	}
 
-	runtimeoutput.Printf("\n")
-	runtimeoutput.Printf("=== DEBUG: %s ===\n", title)
 	if body != "" {
-		runtimeoutput.Printf("%s\n", body)
+		runtimeoutput.Printf("\n=== DEBUG: %s ===\n%s\n=== DEBUG: END %s ===\n\n", title, body, title)
+	} else {
+		runtimeoutput.Printf("\n=== DEBUG: %s ===\n=== DEBUG: END %s ===\n\n", title, title)
 	}
-	runtimeoutput.Printf("=== DEBUG: END %s ===\n", title)
-	runtimeoutput.Printf("\n")
 }
 
 func formatJSON(raw json.RawMessage) string {

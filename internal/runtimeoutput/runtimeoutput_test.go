@@ -175,3 +175,76 @@ func TestInteractiveLogOpenFailureDoesNotCaptureOutsideLogs(t *testing.T) {
 		t.Fatalf("outside log: %q", outside.String())
 	}
 }
+
+func TestBestEffortDiscardOnOpenFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(path, []byte("occupied"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	closeLog, warning, err := StartBestEffort(path)
+	if err != nil || warning == nil || !Active() {
+		t.Fatalf("fallback = %v, warning = %v, err = %v", Active(), warning, err)
+	}
+	defer closeLog()
+	if _, _, err := StartBestEffort(t.TempDir()); err != ErrAlreadyActive {
+		t.Fatalf("overlap = %v", err)
+	}
+	var outside bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&outside)
+	defer log.SetOutput(old)
+	Logf("discard this diagnostic")
+	if n, err := Fallback(&outside).Write([]byte("discard this too")); n != len("discard this too") || err != nil {
+		t.Fatalf("fallback write = %d, %v", n, err)
+	}
+	if outside.Len() != 0 {
+		t.Fatalf("diagnostics escaped: %q", outside.String())
+	}
+	closeLog()
+	if Active() {
+		t.Fatal("UI still active after closing discard sink")
+	}
+	Logf("ordinary CLI again")
+	if !strings.Contains(outside.String(), "ordinary CLI again") {
+		t.Fatalf("CLI logger not restored: %q", outside.String())
+	}
+}
+
+func TestRawDebugBlocksAndStructuredLevels(t *testing.T) {
+	dir := t.TempDir()
+	closeLog, err := Start(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	Printf("\n{\n  \"secret\": \"private\"\n}\n")
+	Info("retry", "attempt", 1)
+	Error("failure", "detail", "redacted")
+	closeLog()
+	data, err := os.ReadFile(filepath.Join(dir, "tui.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{"\n{\n  \"secret\": \"private\"\n}\n", "level=INFO msg=retry", "level=ERROR msg=failure"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in %q", want, text)
+		}
+	}
+}
+
+func TestOldDiscardCloserCannotReleaseNewUI(t *testing.T) {
+	oldClose, warning, err := StartBestEffort("")
+	if err != nil || warning == nil {
+		t.Fatalf("first start: %v, %v", warning, err)
+	}
+	oldClose()
+	newClose, warning, err := StartBestEffort("")
+	if err != nil || warning == nil {
+		t.Fatalf("second start: %v, %v", warning, err)
+	}
+	defer newClose()
+	oldClose()
+	if !Active() {
+		t.Fatal("old closer released the new UI")
+	}
+}

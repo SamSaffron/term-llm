@@ -672,16 +672,11 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 	}
 
 	if req.Debug {
-		runtimeoutput.Printf("=== DEBUG: %s Stream Request ===\n", p.name)
-		runtimeoutput.Printf("Provider: %s\n", p.Name())
-		runtimeoutput.Printf("URL: %s/chat/completions\n", p.baseURL)
-		runtimeoutput.Printf("Model: %s\n", model)
+		debug := fmt.Sprintf("=== DEBUG: %s Stream Request ===\nProvider: %s\nURL: %s/chat/completions\nModel: %s\n", p.name, p.Name(), p.baseURL, model)
 		if effort != "" {
-			runtimeoutput.Printf("ReasoningEffort: %s\n", effort)
+			debug += fmt.Sprintf("ReasoningEffort: %s\n", effort)
 		}
-		runtimeoutput.Printf("Messages: %d\n", len(messages))
-		runtimeoutput.Printf("Tools: %d\n", len(tools))
-		runtimeoutput.Printf("%s\n", "===================================")
+		runtimeoutput.Printf("%sMessages: %d\nTools: %d\n===================================\n", debug, len(messages), len(tools))
 	}
 
 	// Make HTTP request synchronously - this allows retry wrapper to catch errors like 429

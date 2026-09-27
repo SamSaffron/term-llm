@@ -18,7 +18,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/process"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/skills"
@@ -65,6 +64,9 @@ var (
 
 var chatOpenTTY = tea.OpenTTY
 var chatLifecycleInteractive = terminalpolicy.Interactive
+var chatOutputInteractive = terminalpolicy.OutputInteractive
+
+func chatRendererOwnsTerminal() bool { return chatOutputInteractive(os.Stdout) }
 
 type chatMCPManager interface {
 	SetSamplingProvider(provider llm.Provider, model string, yoloMode bool)
@@ -845,7 +847,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		ApprovalSource:     resolvedApproval.Source,
 		Debug:              chatDebug,
 		DebugRaw:           debugRaw,
-		ErrWriter:          storeWarnings,
+		ErrWriter:          chatChildProgressWriter(),
 		Store:              store,
 		ParentApprovalMgr:  approvalMgr,
 	}))
@@ -1153,8 +1155,8 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	if err != nil {
 		return "", "", err
 	}
-	if chatOwnsTerminalHost() {
-		closeLog, logErr := runtimeoutput.Start(config.GetDiagnosticsDir())
+	if chatRendererOwnsTerminal() {
+		closeLog, logErr := startInteractiveDiagnostics(cmd.ErrOrStderr())
 		if logErr != nil {
 			rt.cleanupResources()
 			return "", "", logErr

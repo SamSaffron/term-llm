@@ -4,6 +4,7 @@
 package runtimeoutput
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -19,14 +20,19 @@ var sink struct {
 	logger *slog.Logger
 }
 
+var ErrAlreadyActive = errors.New("interactive diagnostic log already active")
+
 // Start opens the interactive diagnostic log before a UI takes ownership of the
 // terminal. Call Close only after its background workers have stopped. The
 // caller must not run two independently owned terminal UIs at the same time.
 func Start(dir string) (func(), error) {
 	sink.Lock()
 	defer sink.Unlock()
-	if sink.file != nil {
-		return nil, fmt.Errorf("interactive diagnostic log already active")
+	if sink.logger != nil {
+		return nil, ErrAlreadyActive
+	}
+	if dir == "" || !filepath.IsAbs(dir) {
+		return nil, fmt.Errorf("diagnostic directory must be absolute")
 	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("create diagnostic directory: %w", err)
@@ -58,17 +64,44 @@ func Start(dir string) (func(), error) {
 	}, nil
 }
 
+// StartBestEffort keeps interactive output isolated even when the diagnostic
+// directory cannot be opened. The caller must display the returned warning
+// before the UI starts rendering. An overlapping UI remains an error.
+func StartBestEffort(dir string) (close func(), warning error, err error) {
+	close, err = Start(dir)
+	if err == nil || errors.Is(err, ErrAlreadyActive) {
+		return close, nil, err
+	}
+	warning = err
+	sink.Lock()
+	defer sink.Unlock()
+	if sink.logger != nil {
+		return nil, nil, ErrAlreadyActive
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	sink.logger = logger
+	return func() {
+		sink.Lock()
+		defer sink.Unlock()
+		if sink.logger == logger {
+			sink.logger = nil
+		}
+	}, warning, nil
+}
+
 // Active reports whether a terminal UI currently owns the diagnostic sink.
 func Active() bool {
 	sink.Lock()
 	defer sink.Unlock()
-	return sink.file != nil
+	return sink.logger != nil
 }
 
 // Debug and Warn preserve slog behavior outside an interactive UI. Inside it,
 // both levels go to the same restricted diagnostic file, never a footer toast.
 func Debug(message string, args ...any) { record(slog.LevelDebug, message, args...) }
 func Warn(message string, args ...any)  { record(slog.LevelWarn, message, args...) }
+func Info(message string, args ...any)  { record(slog.LevelInfo, message, args...) }
+func Error(message string, args ...any) { record(slog.LevelError, message, args...) }
 
 func record(level slog.Level, message string, args ...any) {
 	sink.Lock()
@@ -78,19 +111,27 @@ func record(level slog.Level, message string, args ...any) {
 		return
 	}
 	sink.Unlock()
-	if level == slog.LevelDebug {
+	switch level {
+	case slog.LevelDebug:
 		slog.Debug(message, args...)
-	} else {
+	case slog.LevelInfo:
+		slog.Info(message, args...)
+	case slog.LevelError:
+		slog.Error(message, args...)
+	default:
 		slog.Warn(message, args...)
 	}
 }
 
-// Printf retains the historical stderr behavior outside a terminal UI.
+// Printf writes raw formatted bytes to the active sink atomically. It retains
+// historical stderr behavior outside a terminal UI.
 func Printf(format string, args ...any) {
 	sink.Lock()
 	defer sink.Unlock()
 	if sink.logger != nil {
-		sink.logger.Info(fmt.Sprintf(format, args...))
+		if sink.file != nil {
+			_, _ = fmt.Fprintf(sink.file, format, args...)
+		}
 	} else {
 		fmt.Fprintf(os.Stderr, format, args...)
 	}
@@ -105,8 +146,11 @@ type writer struct{}
 func (writer) Write(p []byte) (int, error) {
 	sink.Lock()
 	defer sink.Unlock()
-	if sink.file != nil {
-		return sink.file.Write(p)
+	if sink.logger != nil {
+		if sink.file != nil {
+			return sink.file.Write(p)
+		}
+		return len(p), nil
 	}
 	return os.Stderr.Write(p)
 }
@@ -121,10 +165,14 @@ type fallback struct{ out io.Writer }
 
 func (w fallback) Write(p []byte) (int, error) {
 	sink.Lock()
-	if sink.file != nil {
-		n, err := sink.file.Write(p)
+	if sink.logger != nil {
+		if sink.file != nil {
+			n, err := sink.file.Write(p)
+			sink.Unlock()
+			return n, err
+		}
 		sink.Unlock()
-		return n, err
+		return len(p), nil
 	}
 	sink.Unlock()
 	if w.out == nil {

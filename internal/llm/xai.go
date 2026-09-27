@@ -101,12 +101,7 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 	}
 
 	if req.Debug {
-		runtimeoutput.Printf("=== DEBUG: xAI Stream Request ===\n")
-		runtimeoutput.Printf("Provider: %s\n", p.Name())
-		runtimeoutput.Printf("URL: %s/chat/completions\n", xaiBaseURL)
-		runtimeoutput.Printf("Messages: %d\n", len(messages))
-		runtimeoutput.Printf("Tools: %d\n", len(tools))
-		runtimeoutput.Printf("%s\n", "=================================")
+		runtimeoutput.Printf("=== DEBUG: xAI Stream Request ===\nProvider: %s\nURL: %s/chat/completions\nMessages: %d\nTools: %d\n=================================\n", p.Name(), xaiBaseURL, len(messages), len(tools))
 	}
 
 	resp, err := p.makeChatRequest(ctx, chatReq)
@@ -270,12 +265,7 @@ func (p *XAIProvider) streamWithSearch(ctx context.Context, req Request) (Stream
 	}
 
 	if req.Debug {
-		runtimeoutput.Printf("=== DEBUG: xAI Responses API Request ===\n")
-		runtimeoutput.Printf("Provider: %s\n", p.Name())
-		runtimeoutput.Printf("URL: %s/responses\n", xaiBaseURL)
-		runtimeoutput.Printf("Input items: %d\n", len(input))
-		runtimeoutput.Printf("Tools: web_search, x_search\n")
-		runtimeoutput.Printf("%s\n", "========================================")
+		runtimeoutput.Printf("=== DEBUG: xAI Responses API Request ===\nProvider: %s\nURL: %s/responses\nInput items: %d\nTools: web_search, x_search\n========================================\n", p.Name(), xaiBaseURL, len(input))
 	}
 
 	resp, err := p.makeResponsesRequest(ctx, responsesReq)

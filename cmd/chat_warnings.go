@@ -28,6 +28,10 @@ type tuiWarningWriter struct {
 	last     string
 }
 
+// Child-run progress (MCP ready/start and approval status) is not a footer
+// alert. Actual failures are returned via the child run result.
+func chatChildProgressWriter() io.Writer { return runtimeoutput.Writer() }
+
 func newTUIWarningWriter(fallback io.Writer) *tuiWarningWriter {
 	return &tuiWarningWriter{fallback: fallback}
 }

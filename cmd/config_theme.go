@@ -10,7 +10,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
@@ -295,7 +294,7 @@ func runThemeSelector(currentTheme string) (string, error) {
 		return "", fmt.Errorf("theme selector requires an interactive terminal")
 	}
 
-	closeLog, logErr := runtimeoutput.Start(config.GetDiagnosticsDir())
+	closeLog, logErr := startInteractiveDiagnostics(os.Stderr)
 	if logErr != nil {
 		return "", logErr
 	}

@@ -255,6 +255,12 @@ Deployment-specific monitoring should alert when any of these conditions persist
 
 Response creation replays `Idempotency-Key` only for stateful streaming runs, using the durable session plus `client_message_id` ownership contract. Completed run events remain replayable for five minutes by default. Steering identities are retained for the live response/runtime and persisted pending-steering reload window; cancellation remains permanently scoped to its exact response ID and repeated late cancellation returns that run's current terminal state. Clients must reconcile after these windows rather than assuming an unbounded global replay cache.
 
+## Interactive diagnostics and debug output
+
+Interactive chat, skills/MCP browsers, session browser, and theme selector keep application diagnostics out of the renderer's stdout/stderr. By default they append to `$XDG_DATA_HOME/term-llm/diagnostics/tui.log` (or `~/.local/share/term-llm/diagnostics/tui.log` when XDG data is unset). This is a restricted 0600 file under a 0700 directory, not the session debug log managed by `term-llm debug-log`. If the diagnostic file cannot be opened, a single warning appears **before** the UI starts and background diagnostics are discarded until it exits; the UI remains usable. The file has no automatic rotation or retention: check its size and delete/rotate it when needed.
+
+Provider debug output goes to this diagnostic file during interactive chat and retains its normal stderr behavior for one-shot CLI commands. Raw request and tool details can contain private prompts or responses: `--debug-raw` must be enabled explicitly to include them, and the interactive diagnostics file should be treated as sensitive. The `debug-log` command below manages **session JSONL logs**, not `diagnostics/tui.log`.
+
 ## Debug logging
 
 term-llm maintains debug logs for troubleshooting. Use the `debug-log` command to view and manage them:

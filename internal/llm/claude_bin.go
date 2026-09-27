@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"os/exec"
 	"strconv"
@@ -547,7 +546,7 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 						"limit", limit)
 					break
 				}
-				slog.Info("prompt too long, retrying with truncated tool results",
+				runtimeoutput.Info("prompt too long, retrying with truncated tool results",
 					"original_len", prevLen, "truncated_len", len(retryPrompt), "limit", limit)
 				prevLen = len(retryPrompt)
 				err = p.executeClaudeCommand(ctx, args, effort, retryPrompt, req.WorkingDir, debug, send, req.Ephemeral, exposeToolBridge)
@@ -873,15 +872,11 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 	// to avoid "argument list too long" errors with large tool results (e.g., base64 images)
 
 	if debug {
-		runtimeoutput.Printf("%s\n", "=== DEBUG: Claude CLI Command ===")
-		runtimeoutput.Printf("claude %s\n", strings.Join(args, " "))
-		runtimeoutput.Printf("Prompt length: %d bytes (via stdin)\n", len(userPrompt))
-		if effort != "" {
-			runtimeoutput.Printf("CLAUDE_CODE_EFFORT_LEVEL=%s\n", effort)
-		} else {
-			runtimeoutput.Printf("%s\n", "CLAUDE_CODE_EFFORT_LEVEL=(unset)")
+		level := effort
+		if level == "" {
+			level = "(unset)"
 		}
-		runtimeoutput.Printf("%s\n", "=================================")
+		runtimeoutput.Printf("=== DEBUG: Claude CLI Command ===\nclaude %s\nPrompt length: %d bytes (via stdin)\nCLAUDE_CODE_EFFORT_LEVEL=%s\n=================================\n", strings.Join(args, " "), len(userPrompt), level)
 	}
 
 	cmd, stdin, cleanup, err := p.prepareClaudeCommand(ctx, args, effort, workingDir)
@@ -1064,7 +1059,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		expectedHandledTerminalResult := handledTerminalResult && exitCode == 1
 		if !expectedToolExit && !expectedHandledTerminalResult {
 			claudeErr := p.newClaudeCommandError(cmdErr, exitCode, args, effort, userPrompt, cmd.Dir, toolsExecuted, stdoutSnapshot, stderrSnapshot)
-			slog.Error("claude command failed",
+			runtimeoutput.Error("claude command failed",
 				"exit_code", exitCode,
 				"tools_executed", toolsExecuted,
 				"effort", effort,

@@ -104,14 +104,7 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 	}
 
 	if req.Debug {
-		runtimeoutput.Printf("=== DEBUG: %s Stream Request ===\n", p.name)
-		runtimeoutput.Printf("Provider: %s\n", p.Name())
-		runtimeoutput.Printf("URL: %s/chat/completions\n", p.baseURL)
-		runtimeoutput.Printf("Model: %s\n", model)
-		runtimeoutput.Printf("Messages: %d\n", len(messages))
-		runtimeoutput.Printf("Tools: %d\n", len(tools))
-		runtimeoutput.Printf("Venice params: %v\n", veniceParams)
-		runtimeoutput.Printf("%s\n", "===================================")
+		runtimeoutput.Printf("=== DEBUG: %s Stream Request ===\nProvider: %s\nURL: %s/chat/completions\nModel: %s\nMessages: %d\nTools: %d\nVenice params: %v\n===================================\n", p.name, p.Name(), p.baseURL, model, len(messages), len(tools), veniceParams)
 	}
 
 	resp, err := p.makeChatRequest(ctx, chatReq)

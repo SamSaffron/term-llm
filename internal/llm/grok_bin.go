@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -615,10 +614,7 @@ func (p *GrokBinProvider) runGrokCommand(
 ) (grokCommandResult, error) {
 	systemPrompt := grokSystemPromptArg(args)
 	if debug {
-		runtimeoutput.Printf("%s\n", "=== DEBUG: Grok CLI Command ===")
-		runtimeoutput.Printf("grok %s\n", shellJoin(redactedGrokArgs(args)))
-		runtimeoutput.Printf("Prompt length: %d bytes (via --prompt-file)\n", len(prompt))
-		runtimeoutput.Printf("%s\n", "================================")
+		runtimeoutput.Printf("=== DEBUG: Grok CLI Command ===\ngrok %s\nPrompt length: %d bytes (via --prompt-file)\n================================\n", shellJoin(redactedGrokArgs(args)), len(prompt))
 	}
 
 	cmd, cleanup, err := p.prepareGrokCommand(ctx, args, workingDir)
@@ -728,7 +724,7 @@ func (p *GrokBinProvider) runGrokCommand(
 		if !state.maxTurnsReached {
 			commandErr := p.newGrokCommandError(cmdErr, exitCode, args, effort, prompt, cmd.Dir, toolsExecuted,
 				snapshotCLITail(&stdoutMu, stdoutTail), snapshotCLITail(&stderrMu, stderrTail))
-			slog.Error("grok command failed",
+			runtimeoutput.Error("grok command failed",
 				"exit_code", exitCode,
 				"tools_executed", toolsExecuted,
 				"command_line", commandErr.CommandLine,

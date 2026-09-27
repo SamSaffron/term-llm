@@ -13,8 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	skillsTui "github.com/samsaffron/term-llm/internal/tui/skills"
@@ -699,7 +697,7 @@ func runSkillsBrowse(cmd *cobra.Command, args []string) error {
 
 	// Use the interactive TUI only when the invoking streams support it.
 	if !skillsBrowseTUI && terminalpolicy.Interactive(os.Stdin, os.Stdout) {
-		closeLog, err := runtimeoutput.Start(config.GetDiagnosticsDir())
+		closeLog, err := startInteractiveDiagnostics(cmd.ErrOrStderr())
 		if err != nil {
 			return err
 		}
@@ -822,7 +820,7 @@ func runSkillsAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	// Interactive TUI mode
-	closeLog, err := runtimeoutput.Start(config.GetDiagnosticsDir())
+	closeLog, err := startInteractiveDiagnostics(cmd.ErrOrStderr())
 	if err != nil {
 		return err
 	}
