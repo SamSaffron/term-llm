@@ -122,9 +122,10 @@ export class WebMCPStore implements ClientToolBridge {
     this.persist([...stored.filter((id) => id !== oldId && id !== newId), newId]);
   }
 
+  /** Reactive: an effect reading this follows tool and per-conversation changes. */
   definitions(sessionId: string): ClientToolDefinition[] {
     return this.enabledFor(sessionId)
-      ? clientToolDefinitions(this.tools.peek(), this.providerName.peek())
+      ? clientToolDefinitions(this.tools.value, this.providerName.value)
       : [];
   }
 

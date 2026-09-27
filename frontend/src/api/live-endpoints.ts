@@ -3,6 +3,7 @@ import type {
   LiveSessionStartResponse,
   LiveSessionStopResponse,
   LiveSessionSwitchResponse,
+  LiveToolCallResult,
 } from './endpoints';
 
 const encoded = encodeURIComponent;
@@ -26,7 +27,14 @@ const reportLiveDiagnostics = (
 
 // Keep voice-only transport configuration out of the eager application shell.
 export const liveEndpoints = (api: APIClient) => ({
-  liveStart: (sdp: string, sessionId: string, audioTransport?: 'websocket_pcm' | 'http_pcm') =>
+  // clientTools are the page's own tools, declared with the start so the
+  // call's first delegated turn can already use them.
+  liveStart: (
+    sdp: string,
+    sessionId: string,
+    audioTransport?: 'websocket_pcm' | 'http_pcm',
+    clientTools?: readonly unknown[],
+  ) =>
     api.json<LiveSessionStartResponse>(
       '/v1/live/sessions',
       {
@@ -35,6 +43,7 @@ export const liveEndpoints = (api: APIClient) => ({
           sdp,
           session_id: sessionId,
           ...(audioTransport ? { audio_transport: audioTransport } : {}),
+          ...(clientTools?.length ? { client_tools: clientTools } : {}),
         }),
       },
       { policy: 'mutation', auth: 'session', retries: 0, timeoutMs: 0 },
@@ -76,6 +85,18 @@ export const liveEndpoints = (api: APIClient) => ({
     api.json<LiveSessionSwitchResponse>(
       `/v1/live/sessions/${encoded(liveId)}/session`,
       { method: 'POST', body: JSON.stringify({ session_id: sessionId }) },
+      { policy: 'mutation', auth: 'session', retries: 0 },
+    ),
+  liveClientTools: (liveId: string, tools: readonly unknown[]) =>
+    api.json<{ ok: true; tools: number }>(
+      `/v1/live/sessions/${encoded(liveId)}/client_tools`,
+      { method: 'POST', body: JSON.stringify({ tools }) },
+      { policy: 'mutation', auth: 'session', retries: 0 },
+    ),
+  liveToolResult: (liveId: string, requestId: string, result: LiveToolCallResult) =>
+    api.json<{ ok: true; duplicate?: boolean }>(
+      `/v1/live/sessions/${encoded(liveId)}/tool_calls/${encoded(requestId)}/result`,
+      { method: 'POST', body: JSON.stringify(result) },
       { policy: 'mutation', auth: 'session', retries: 0 },
     ),
   liveEvents: (liveId: string, after: number, signal: AbortSignal) =>
