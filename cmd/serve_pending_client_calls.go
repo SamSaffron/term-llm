@@ -6,8 +6,8 @@ import "github.com/samsaffron/term-llm/internal/llm"
 // hands back to its caller unanswered.
 //
 // The engine only stops on passthrough calls made by the final provider turn,
-// and only when that turn called no server tool; client calls that share a
-// turn with a server tool are dropped. Callers cannot reliably reconstruct
+// and only when that turn deferred no server tool to its end-of-turn split;
+// client calls that share a turn with such a server tool are dropped. Callers cannot reliably reconstruct
 // this from the event stream, because tool-only turns emit no text boundary,
 // so the server reports the list explicitly on completion.
 type pendingClientCallTracker struct {
@@ -34,7 +34,10 @@ func (t *pendingClientCallTracker) observe(event llm.Event, isServerTool func(st
 			t.resetTurn()
 		}
 	case llm.EventToolCall:
-		if event.Tool == nil {
+		// Inline calls ran during the provider stream and never enter the
+		// engine's end-of-turn split, so they neither stop the run nor cause
+		// passthrough calls in their turn to be dropped.
+		if event.Tool == nil || event.ToolInline {
 			return
 		}
 		if isServerTool != nil && isServerTool(event.Tool.Name) {
@@ -74,4 +77,22 @@ func pendingClientCallsPayload(calls []llm.ToolCall) []map[string]any {
 		})
 	}
 	return out
+}
+
+// pendingClientCallsValue reads a published pending list, native or JSON
+// decoded. It returns nil when the value is not a list.
+func pendingClientCallsValue(value any) []map[string]any {
+	switch calls := value.(type) {
+	case []map[string]any:
+		return calls
+	case []any:
+		out := make([]map[string]any, 0, len(calls))
+		for _, entry := range calls {
+			if call, ok := entry.(map[string]any); ok {
+				out = append(out, call)
+			}
+		}
+		return out
+	}
+	return nil
 }

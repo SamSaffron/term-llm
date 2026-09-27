@@ -66,9 +66,7 @@ func (r *responseRun) complete(payload map[string]any, usage llm.Usage, sessionU
 	r.errorType = ""
 	r.errorMessage = ""
 	if response := mapValue(payload["response"]); response != nil {
-		if calls, ok := response["pending_client_calls"].([]map[string]any); ok {
-			r.pendingClientCalls = calls
-		}
+		r.pendingClientCalls = pendingClientCallsValue(response["pending_client_calls"])
 	}
 	r.usage = usage
 	r.sessionUsage = sessionUsage
