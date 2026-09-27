@@ -661,20 +661,28 @@ export class AppStore {
         const routed = sessionIDFromLocation(this.config.prefix);
         const forceNew = new URLSearchParams(location.search).get('new') === '1';
         const restoreDraft = !routed && Boolean(this.storage.getItem(this.keys.draftSessionActive));
-        const preferred =
-          forceNew || restoreDraft
-            ? ''
-            : routed || this.storage.getItem(this.keys.activeSession) || '';
-        const session =
-          forceNew || restoreDraft
-            ? null
-            : this.sessions.value.find(
-                (entry) => entry.id === preferred || String(entry.number || '') === preferred,
-              ) ||
-              this.sessions.value[0] ||
-              null;
-        if (session) await this.selectSession(session, true);
-        else this.newChat(true, this.storage.getItem(this.keys.lastProject) || '', false);
+        const preferred = routed || this.storage.getItem(this.keys.activeSession) || '';
+        const session = this.sessions.value.find(
+          (entry) => entry.id === preferred || String(entry.number || '') === preferred,
+        );
+        const startNewChat = () =>
+          this.newChat(true, this.storage.getItem(this.keys.lastProject) || '', false);
+        if (forceNew || restoreDraft) startNewChat();
+        else if (session) await this.selectSession(session, true);
+        else if (routed) {
+          // Hub attention links can target sessions older than the sidebar page.
+          // A browser Back during the lookup must not replace the newer route.
+          const route = location.pathname;
+          const epoch = this.selectionEpoch;
+          const resolved = await this.resolveAndSelectSession(routed, true, {
+            newChatOnMiss: false,
+            propagateError: true,
+            isCurrent: () => location.pathname === route,
+          });
+          if (location.pathname !== route) await this.navigateFromHistory();
+          else if (!resolved && this.selectionEpoch === epoch) startNewChat();
+        } else if (this.sessions.value[0]) await this.selectSession(this.sessions.value[0], true);
+        else startNewChat();
       }
       this.syncSessionInterest();
       this.connected.value = true;
@@ -782,7 +790,7 @@ export class AppStore {
     // so Back after a voice-initiated switch moves the call back with it —
     // including when the session the call moved to is not in the loaded list.
     if (session) return this.selectSession(session, true);
-    void this.resolveAndSelectSession(slug, true);
+    await this.resolveAndSelectSession(slug, true);
   }
 
   private ensureSessionSyncChannel(): void {
@@ -1201,11 +1209,21 @@ export class AppStore {
   async resolveAndSelectSession(
     id: string,
     replace = false,
-    options: { keepLive?: boolean; fromLive?: boolean; prepend?: boolean } = {},
+    options: {
+      keepLive?: boolean;
+      fromLive?: boolean;
+      prepend?: boolean;
+      newChatOnMiss?: boolean;
+      propagateError?: boolean;
+      isCurrent?: () => boolean;
+    } = {},
   ): Promise<Session | null> {
     const { liveId, previous, rebind } = this.liveNavigation(id, options);
     const session = await this.selectionStore.resolveAndSelectSession(id, replace, {
       prepend: options.prepend,
+      newChatOnMiss: options.newChatOnMiss,
+      propagateError: options.propagateError,
+      isCurrent: options.isCurrent,
     });
     this.syncSessionInterest();
     if (!session) {
@@ -1215,6 +1233,7 @@ export class AppStore {
     }
     if (rebind && session.id !== previous)
       this.rebindLiveCall(liveId, session, this.selectionStore.generation);
+    void this.acknowledgeSelectedAttention();
     return session;
   }
 
