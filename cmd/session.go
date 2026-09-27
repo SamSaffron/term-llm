@@ -17,6 +17,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/terminalpolicy"
@@ -1012,7 +1013,7 @@ func RegisterSkillToolWithEngine(engine *llm.Engine, toolMgr *tools.ToolManager,
 	if toolMgr != nil {
 		skillTool.SetOnToolsActivated(func(defs []skills.SkillToolDef, skillDir string) {
 			if err := toolMgr.Registry.RegisterSkillTools(defs, skillDir); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: skill tools registration failed: %v\n", err)
+				runtimeoutput.Printf("warning: skill tools registration failed: %v\n", err)
 				return
 			}
 			// Register the newly added tools with the engine so the LLM can call them.
@@ -1046,7 +1047,7 @@ func InjectSkillsMetadata(instructions string, skillsSetup *skills.Setup) string
 		return instructions
 	}
 	if err := skillsSetup.EnsurePromptMetadata(); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: skills metadata generation failed: %v\n", err)
+		runtimeoutput.Printf("warning: skills metadata generation failed: %v\n", err)
 		return instructions
 	}
 	if !skillsSetup.HasSkillsXML() {

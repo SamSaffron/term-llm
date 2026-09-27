@@ -12,8 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	mcpTui "github.com/samsaffron/term-llm/internal/tui/mcp"
 	"github.com/spf13/cobra"
@@ -202,6 +204,11 @@ func mcpBrowse(cmd *cobra.Command, args []string) error {
 
 	// Use the interactive TUI only when the invoking streams support it.
 	if !mcpBrowseTUI && terminalpolicy.Interactive(os.Stdin, os.Stdout) {
+		closeLog, err := runtimeoutput.Start(config.GetDiagnosticsDir())
+		if err != nil {
+			return err
+		}
+		defer closeLog()
 		return mcpTui.RunBrowser(query)
 	}
 

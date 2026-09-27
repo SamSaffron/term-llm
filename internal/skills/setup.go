@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 // Setup holds the initialized skills system for a session.
@@ -135,9 +136,9 @@ func (s *Setup) EnsurePromptMetadata() error {
 
 		// Build the model-facing catalog. Explicit user invocation has a separate
 		// catalog and is intentionally unaffected by never_auto.
-		autoSkills, diagnostics := s.Registry.filterInvocable(allSkills, SkillActivationModel)
-		for _, diagnostic := range diagnostics {
-			fmt.Fprintf(os.Stderr, "warning: %v\n", diagnostic)
+		autoSkills, invocationDiagnostics := s.Registry.filterInvocable(allSkills, SkillActivationModel)
+		for _, diagnostic := range invocationDiagnostics {
+			runtimeoutput.Printf("warning: %v\n", diagnostic)
 		}
 
 		// Apply token budget and max count

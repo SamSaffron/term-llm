@@ -14,6 +14,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/credentials"
 	"github.com/samsaffron/term-llm/internal/oauth"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"golang.org/x/term"
 )
@@ -113,6 +114,11 @@ func NewChatGPTProviderWithCredsAndOptions(creds *credentials.ChatGPTCredentials
 // advertise device-code support. Exported so `term-llm auth login chatgpt`
 // can drive the same flow used by lazy auth.
 func PromptForChatGPTAuth() (*credentials.ChatGPTCredentials, error) {
+	// Authentication prompts need the terminal. During a live TUI, surface an
+	// actionable error through the caller's UI instead of drawing over it.
+	if runtimeoutput.Active() {
+		return nil, fmt.Errorf("ChatGPT authentication required; run 'term-llm auth login chatgpt' outside chat")
+	}
 	// Check if stdin is a terminal - if not, we can't do interactive auth
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return nil, fmt.Errorf("ChatGPT authentication required but running in non-interactive mode.\n" +

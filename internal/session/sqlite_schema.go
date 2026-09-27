@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/sqliteutil"
 )
 
@@ -87,7 +88,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 	if !cfg.ReadOnly {
 		if err := store.cleanup(); err != nil {
 			// Log but don't fail
-			fmt.Fprintf(os.Stderr, "warning: session cleanup failed: %v\n", err)
+			runtimeoutput.Printf("warning: session cleanup failed: %v\n", err)
 		}
 	}
 

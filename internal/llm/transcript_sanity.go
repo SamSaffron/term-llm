@@ -2,12 +2,13 @@ package llm
 
 import (
 	"context"
-	"log/slog"
 	"math"
 	"os/exec"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 var probeAudioDuration = ffprobeAudioDuration
@@ -36,7 +37,7 @@ func TruncateTranscriptForDuration(duration time.Duration, transcript string) st
 	if len(words) <= maxWords {
 		return transcript
 	}
-	slog.Debug("transcript implausibly long, truncating",
+	runtimeoutput.Debug("transcript implausibly long, truncating",
 		"duration_s", int(math.Round(duration.Seconds())),
 		"words", len(words),
 		"max_words", maxWords)

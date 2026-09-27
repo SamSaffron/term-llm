@@ -8,9 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 func debugRawHTTPErrorResponse(enabled bool, label string, resp *http.Response, body []byte) {
@@ -300,12 +301,12 @@ func DebugRawSection(enabled bool, label, body string) {
 	}
 
 	ts := time.Now().Format(time.RFC3339Nano)
-	fmt.Fprintf(os.Stderr, "\n[%s] %s\n", ts, label)
+	runtimeoutput.Printf("\n[%s] %s\n", ts, label)
 	if body != "" {
-		fmt.Fprintln(os.Stderr, body)
+		runtimeoutput.Printf("%s\n", body)
 	}
-	fmt.Fprintf(os.Stderr, "[%s] END %s\n", ts, label)
-	fmt.Fprintln(os.Stderr)
+	runtimeoutput.Printf("[%s] END %s\n", ts, label)
+	runtimeoutput.Printf("\n")
 }
 
 type debugStream struct {
@@ -340,13 +341,13 @@ func debugSection(enabled bool, title, body string) {
 		return
 	}
 
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintf(os.Stderr, "=== DEBUG: %s ===\n", title)
+	runtimeoutput.Printf("\n")
+	runtimeoutput.Printf("=== DEBUG: %s ===\n", title)
 	if body != "" {
-		fmt.Fprintln(os.Stderr, body)
+		runtimeoutput.Printf("%s\n", body)
 	}
-	fmt.Fprintf(os.Stderr, "=== DEBUG: END %s ===\n", title)
-	fmt.Fprintln(os.Stderr)
+	runtimeoutput.Printf("=== DEBUG: END %s ===\n", title)
+	runtimeoutput.Printf("\n")
 }
 
 func formatJSON(raw json.RawMessage) string {

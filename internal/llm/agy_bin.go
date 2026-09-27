@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +18,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/cliwire"
 	"github.com/samsaffron/term-llm/internal/mcphttp"
 	"github.com/samsaffron/term-llm/internal/procutil"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 const (
@@ -275,7 +275,7 @@ func (p *AgyBinProvider) Stream(ctx context.Context, req Request) (Stream, error
 		exposeBridge := false
 		if len(req.Tools) > 0 {
 			if !p.toolExecutorConfigured {
-				slog.Warn("agy-bin tools requested but no tool executor configured", "tool_count", len(req.Tools))
+				runtimeoutput.Warn("agy-bin tools requested but no tool executor configured", "tool_count", len(req.Tools))
 			} else if err := p.ensureMCPServer(ctx, req.Tools, req.Debug || req.DebugRaw); err != nil {
 				return err
 			} else {
@@ -346,7 +346,7 @@ func (p *AgyBinProvider) messagesForRequest(req Request) ([]Message, error) {
 		return req.Messages, nil
 	}
 	if p.messagesSent > len(req.Messages) {
-		slog.Warn("agy-bin resume message boundary exceeded request transcript; resetting conversation state",
+		runtimeoutput.Warn("agy-bin resume message boundary exceeded request transcript; resetting conversation state",
 			"messages_sent", p.messagesSent, "request_messages", len(req.Messages))
 		p.resetConversationLocked()
 		return req.Messages, nil
@@ -356,7 +356,7 @@ func (p *AgyBinProvider) messagesForRequest(req Request) ([]Message, error) {
 		return nil, err
 	}
 	if p.transcriptHash == "" || prefixHash != p.transcriptHash {
-		slog.Warn("agy-bin request transcript diverged from resumed conversation; resetting conversation state",
+		runtimeoutput.Warn("agy-bin request transcript diverged from resumed conversation; resetting conversation state",
 			"messages_sent", p.messagesSent)
 		p.resetConversationLocked()
 		return req.Messages, nil
@@ -458,7 +458,7 @@ func (p *AgyBinProvider) runCommand(ctx context.Context, args []string, prompt, 
 	neutralCWD := filepath.Join(p.agyHome, "cwd")
 	fullArgs := append(append(append([]string{}, args...), "--print"), prompt)
 	if debug {
-		fmt.Fprintf(os.Stderr, "[agy-bin] starting agy with model %q\n", chooseModel("", p.model))
+		runtimeoutput.Printf("[agy-bin] starting agy with model %q\n", chooseModel("", p.model))
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -515,7 +515,7 @@ func (p *AgyBinProvider) runCommand(ctx context.Context, args []string, prompt, 
 		_ = drainCLIDiagnosticLines(stderr, func(rawLine string) {
 			line := redact(rawLine)
 			if debug {
-				fmt.Fprintf(os.Stderr, "[agy stderr] %s\n", line)
+				runtimeoutput.Printf("[agy stderr] %s\n", line)
 			}
 			recordCLITailLine(&stderrMu, &stderrTail, line, agyStderrTailMaxLines)
 		})

@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 const (
@@ -101,12 +101,12 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 	}
 
 	if req.Debug {
-		fmt.Fprintf(os.Stderr, "=== DEBUG: xAI Stream Request ===\n")
-		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
-		fmt.Fprintf(os.Stderr, "URL: %s/chat/completions\n", xaiBaseURL)
-		fmt.Fprintf(os.Stderr, "Messages: %d\n", len(messages))
-		fmt.Fprintf(os.Stderr, "Tools: %d\n", len(tools))
-		fmt.Fprintln(os.Stderr, "=================================")
+		runtimeoutput.Printf("=== DEBUG: xAI Stream Request ===\n")
+		runtimeoutput.Printf("Provider: %s\n", p.Name())
+		runtimeoutput.Printf("URL: %s/chat/completions\n", xaiBaseURL)
+		runtimeoutput.Printf("Messages: %d\n", len(messages))
+		runtimeoutput.Printf("Tools: %d\n", len(tools))
+		runtimeoutput.Printf("%s\n", "=================================")
 	}
 
 	resp, err := p.makeChatRequest(ctx, chatReq)
@@ -270,12 +270,12 @@ func (p *XAIProvider) streamWithSearch(ctx context.Context, req Request) (Stream
 	}
 
 	if req.Debug {
-		fmt.Fprintf(os.Stderr, "=== DEBUG: xAI Responses API Request ===\n")
-		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
-		fmt.Fprintf(os.Stderr, "URL: %s/responses\n", xaiBaseURL)
-		fmt.Fprintf(os.Stderr, "Input items: %d\n", len(input))
-		fmt.Fprintf(os.Stderr, "Tools: web_search, x_search\n")
-		fmt.Fprintln(os.Stderr, "========================================")
+		runtimeoutput.Printf("=== DEBUG: xAI Responses API Request ===\n")
+		runtimeoutput.Printf("Provider: %s\n", p.Name())
+		runtimeoutput.Printf("URL: %s/responses\n", xaiBaseURL)
+		runtimeoutput.Printf("Input items: %d\n", len(input))
+		runtimeoutput.Printf("Tools: web_search, x_search\n")
+		runtimeoutput.Printf("%s\n", "========================================")
 	}
 
 	resp, err := p.makeResponsesRequest(ctx, responsesReq)

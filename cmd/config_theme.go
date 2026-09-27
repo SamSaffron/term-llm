@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
@@ -293,6 +294,12 @@ func runThemeSelector(currentTheme string) (string, error) {
 	if !terminalpolicy.Interactive(os.Stdin, os.Stdout) {
 		return "", fmt.Errorf("theme selector requires an interactive terminal")
 	}
+
+	closeLog, logErr := runtimeoutput.Start(config.GetDiagnosticsDir())
+	if logErr != nil {
+		return "", logErr
+	}
+	defer closeLog()
 
 	// Try to use /dev/tty for proper terminal handling
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)

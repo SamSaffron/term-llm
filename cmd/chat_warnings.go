@@ -24,6 +24,7 @@ type tuiWarningWriter struct {
 	mu       sync.Mutex
 	fallback io.Writer
 	notify   func(string)
+	last     string
 }
 
 func newTUIWarningWriter(fallback io.Writer) *tuiWarningWriter {
@@ -46,6 +47,7 @@ func (w *tuiWarningWriter) attachNotifier(notify func(string)) {
 	}
 	w.mu.Lock()
 	w.notify = notify
+	w.last = ""
 	w.mu.Unlock()
 }
 
@@ -66,6 +68,11 @@ func (w *tuiWarningWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	notify := w.notify
 	fallback := w.fallback
+	text := strings.TrimSpace(string(p))
+	duplicate := notify != nil && text == w.last
+	if notify != nil && text != "" && !duplicate {
+		w.last = text
+	}
 	w.mu.Unlock()
 
 	if notify == nil {
@@ -74,7 +81,7 @@ func (w *tuiWarningWriter) Write(p []byte) (int, error) {
 		}
 		return fallback.Write(p)
 	}
-	if text := strings.TrimSpace(string(p)); text != "" {
+	if text != "" && !duplicate {
 		notify(text)
 	}
 	return len(p), nil

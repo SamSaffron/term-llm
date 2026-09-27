@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	"golang.org/x/term"
 )
@@ -121,7 +122,7 @@ func CreateTUIHooks(prog *tea.Program, flushAndWait func()) (start, end func()) 
 // This allows prompting even when stdin is piped.
 func TTYApprovalPrompt(req *ApprovalRequest) (ConfirmOutcome, string) {
 	if !terminalpolicy.OutputInteractive(os.Stderr) {
-		fmt.Fprintln(os.Stderr, "Approval denied: interactive terminal unavailable")
+		runtimeoutput.Printf("%s\n", "Approval denied: interactive terminal unavailable")
 		return Cancel, ""
 	}
 
@@ -129,7 +130,7 @@ func TTYApprovalPrompt(req *ApprovalRequest) (ConfirmOutcome, string) {
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
 		// No TTY available - deny access
-		fmt.Fprintln(os.Stderr, "Approval denied: controlling terminal unavailable")
+		runtimeoutput.Printf("%s\n", "Approval denied: controlling terminal unavailable")
 		return Cancel, ""
 	}
 	defer tty.Close()
@@ -196,12 +197,12 @@ func TTYApprovalPrompt(req *ApprovalRequest) (ConfirmOutcome, string) {
 // This provides a nicer UI than the TTY-based prompt.
 func HuhApprovalPrompt(req *ApprovalRequest) (ConfirmOutcome, string) {
 	if !terminalpolicy.OutputInteractive(os.Stderr) {
-		fmt.Fprintln(os.Stderr, "Approval denied: interactive terminal unavailable")
+		runtimeoutput.Printf("%s\n", "Approval denied: interactive terminal unavailable")
 		return Cancel, ""
 	}
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Approval denied: controlling terminal unavailable")
+		runtimeoutput.Printf("%s\n", "Approval denied: controlling terminal unavailable")
 		return Cancel, ""
 	}
 	defer tty.Close()

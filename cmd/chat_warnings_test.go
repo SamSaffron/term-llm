@@ -50,6 +50,30 @@ func TestTUIWarningWriterRoutesThroughProgramWhileRendering(t *testing.T) {
 	}
 }
 
+func TestTUIWarningWriterDeduplicatesOnlyWhileAttached(t *testing.T) {
+	var fallback bytes.Buffer
+	writer := newTUIWarningWriter(&fallback)
+	var notices []string
+	writer.attachNotifier(func(text string) { notices = append(notices, text) })
+	for _, text := range []string{"disk full\n", "disk full\n", "save failed\n", "disk full\n"} {
+		if _, err := writer.Write([]byte(text)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := strings.Join(notices, "|"); got != "disk full|save failed|disk full" {
+		t.Fatalf("notices = %q", got)
+	}
+	if fallback.Len() != 0 {
+		t.Fatalf("stderr fallback during UI: %q", fallback.String())
+	}
+	writer.detach()
+	writer.attachNotifier(func(text string) { notices = append(notices, text) })
+	_, _ = writer.Write([]byte("disk full\n"))
+	if len(notices) != 4 {
+		t.Fatalf("notices after reattach = %v", notices)
+	}
+}
+
 // TestTUIWarningWriterDropsBlankWrites keeps padding writes from flashing an
 // empty footer notice.
 func TestTUIWarningWriterDropsBlankWrites(t *testing.T) {

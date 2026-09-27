@@ -14,6 +14,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/credentials"
 	"github.com/samsaffron/term-llm/internal/oauth"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"golang.org/x/term"
 )
@@ -80,7 +81,9 @@ func NewCopilotProvider(model string) (*CopilotProvider, error) {
 
 	// Check if token is expired (rare for GitHub tokens, but check anyway)
 	if creds.IsExpired() {
-		fmt.Println("Copilot token expired. Re-authentication required.")
+		if !runtimeoutput.Active() {
+			fmt.Println("Copilot token expired. Re-authentication required.")
+		}
 		creds, err = PromptForCopilotAuth()
 		if err != nil {
 			return nil, err
@@ -113,6 +116,9 @@ func NewCopilotProviderWithCreds(creds *credentials.CopilotCredentials, model st
 // Exported so `term-llm auth login copilot` can drive the same flow used by
 // lazy auth.
 func PromptForCopilotAuth() (*credentials.CopilotCredentials, error) {
+	if runtimeoutput.Active() {
+		return nil, fmt.Errorf("Copilot authentication required; run 'term-llm auth login copilot' outside chat")
+	}
 	// Check if stdin is a terminal - if not, we can't do interactive auth
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return nil, fmt.Errorf("Copilot authentication required but running in non-interactive mode.\n" +

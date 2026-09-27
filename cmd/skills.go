@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	skillsTui "github.com/samsaffron/term-llm/internal/tui/skills"
@@ -634,11 +636,7 @@ func runSkillsValidate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("create registry: %w", err)
 	}
 
-	skillList, err := registry.List()
-	if err != nil {
-		return fmt.Errorf("list skills: %w", err)
-	}
-
+	skillList := registry.ListForValidation()
 	if len(skillList) == 0 {
 		fmt.Println("No skills found to validate.")
 		return nil
@@ -646,23 +644,13 @@ func runSkillsValidate(cmd *cobra.Command, args []string) error {
 
 	validCount := 0
 	invalidCount := 0
-
-	for _, skill := range skillList {
-		// Load full content for validation
-		fullSkill, err := registry.Get(skill.Name)
-		if err != nil {
-			fmt.Printf("INVALID: %s - %v\n", skill.Name, err)
+	for _, result := range skillList {
+		if result.Err != nil {
+			fmt.Printf("INVALID: %s - %v\n", result.Path, result.Err)
 			invalidCount++
 			continue
 		}
-
-		if err := fullSkill.Validate(); err != nil {
-			fmt.Printf("INVALID: %s - %v\n", skill.Name, err)
-			invalidCount++
-			continue
-		}
-
-		fmt.Printf("VALID: %s (%s)\n", skill.Name, skill.Source.SourceName())
+		fmt.Printf("VALID: %s (%s)\n", result.Skill.Name, result.Source.SourceName())
 		validCount++
 	}
 
@@ -711,6 +699,11 @@ func runSkillsBrowse(cmd *cobra.Command, args []string) error {
 
 	// Use the interactive TUI only when the invoking streams support it.
 	if !skillsBrowseTUI && terminalpolicy.Interactive(os.Stdin, os.Stdout) {
+		closeLog, err := runtimeoutput.Start(config.GetDiagnosticsDir())
+		if err != nil {
+			return err
+		}
+		defer closeLog()
 		return skillsTui.RunBrowser(query, skillsBrowseAI)
 	}
 
@@ -829,6 +822,11 @@ func runSkillsAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	// Interactive TUI mode
+	closeLog, err := runtimeoutput.Start(config.GetDiagnosticsDir())
+	if err != nil {
+		return err
+	}
+	defer closeLog()
 	return skillsTui.RunAdd(*ref)
 }
 

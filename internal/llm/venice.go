@@ -6,11 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"strconv"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 const veniceBaseURL = "https://api.venice.ai/api/v1"
@@ -104,14 +104,14 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 	}
 
 	if req.Debug {
-		fmt.Fprintf(os.Stderr, "=== DEBUG: %s Stream Request ===\n", p.name)
-		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
-		fmt.Fprintf(os.Stderr, "URL: %s/chat/completions\n", p.baseURL)
-		fmt.Fprintf(os.Stderr, "Model: %s\n", model)
-		fmt.Fprintf(os.Stderr, "Messages: %d\n", len(messages))
-		fmt.Fprintf(os.Stderr, "Tools: %d\n", len(tools))
-		fmt.Fprintf(os.Stderr, "Venice params: %v\n", veniceParams)
-		fmt.Fprintln(os.Stderr, "===================================")
+		runtimeoutput.Printf("=== DEBUG: %s Stream Request ===\n", p.name)
+		runtimeoutput.Printf("Provider: %s\n", p.Name())
+		runtimeoutput.Printf("URL: %s/chat/completions\n", p.baseURL)
+		runtimeoutput.Printf("Model: %s\n", model)
+		runtimeoutput.Printf("Messages: %d\n", len(messages))
+		runtimeoutput.Printf("Tools: %d\n", len(tools))
+		runtimeoutput.Printf("Venice params: %v\n", veniceParams)
+		runtimeoutput.Printf("%s\n", "===================================")
 	}
 
 	resp, err := p.makeChatRequest(ctx, chatReq)

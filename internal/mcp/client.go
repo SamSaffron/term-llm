@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"mime"
 	"net"
 	"net/http"
@@ -22,6 +21,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
 	"github.com/samsaffron/term-llm/internal/procutil"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 var mcpCommandWaitDelay = time.Second
@@ -203,7 +203,7 @@ func (c *Client) start(ctx, processCtx context.Context) error {
 	c.running = true
 	c.mu.Unlock()
 	c.snapshot.Store(candidate)
-	slog.Debug("MCP tool catalogue initial snapshot published", "server", c.name, "generation", candidate.Generation, "tools", len(candidate.Tools), "hash", candidate.Hash)
+	runtimeoutput.Debug("MCP tool catalogue initial snapshot published", "server", c.name, "generation", candidate.Generation, "tools", len(candidate.Tools), "hash", candidate.Hash)
 	go c.refreshWorker(refreshCtx, session, refreshDone)
 	return nil
 }
@@ -536,7 +536,7 @@ func (c *Client) publishRefresh(session *mcp.ClientSession, candidate *ToolSnaps
 	handler := c.onCatalogueChange
 	c.mu.Unlock()
 
-	slog.Debug("MCP tool catalogue refresh published", "server", c.name, "generation", candidate.Generation, "tools", len(candidate.Tools), "hash", candidate.Hash)
+	runtimeoutput.Debug("MCP tool catalogue refresh published", "server", c.name, "generation", candidate.Generation, "tools", len(candidate.Tools), "hash", candidate.Hash)
 	if handler != nil {
 		handler(copyToolSnapshot(old), copyToolSnapshot(candidate), nil)
 	}
@@ -552,7 +552,7 @@ func (c *Client) reportRefreshError(err error) {
 		handler(snapshot, snapshot, err)
 		return
 	}
-	slog.Warn("MCP tool catalogue refresh failed; retaining previous snapshot", "server", c.name, "error", err)
+	runtimeoutput.Warn("MCP tool catalogue refresh failed; retaining previous snapshot", "server", c.name, "error", err)
 }
 
 func (c *Client) refreshWorker(ctx context.Context, session *mcp.ClientSession, done chan struct{}) {

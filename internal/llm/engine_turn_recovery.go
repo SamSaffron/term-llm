@@ -2,8 +2,9 @@ package llm
 
 import (
 	"context"
-	"log/slog"
 	"strings"
+
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 type engineTurnRecovery struct {
@@ -100,7 +101,7 @@ func (e *Engine) recoverCommittedTurn(r *engineTurnRecovery, cause error) (bool,
 		return false, err
 	}
 	if cause != nil {
-		slog.Debug("recovering stream failure from journaled tool work", "error", cause)
+		runtimeoutput.Debug("recovering stream failure from journaled tool work", "error", cause)
 	}
 	recoveredToolWork = true
 	recoveredAtMessageCount = len(req.Messages)

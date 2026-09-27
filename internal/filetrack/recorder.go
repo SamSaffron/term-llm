@@ -2,11 +2,10 @@ package filetrack
 
 import (
 	"context"
-	"fmt"
-	"os"
 	"sync"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 // Recorder adapts a Store to the tools-facing FileChangeRecorder interface.
@@ -61,7 +60,7 @@ func (r *Recorder) RecordChange(ctx context.Context, rec ChangeRecord) *llm.File
 	change, err := r.store.RecordChange(ctx, rec)
 	if err != nil {
 		r.warnOnce.Do(func() {
-			fmt.Fprintf(os.Stderr, "warning: file change tracking failed: %v\n", err)
+			runtimeoutput.Printf("warning: file change tracking failed: %v\n", err)
 		})
 		return nil
 	}

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/spf13/cobra"
 )
 
@@ -62,7 +63,7 @@ func SetupUpdateChecks(rootCmd *cobra.Command, version string) {
 		}
 		if ShouldCheckForUpdates(state) {
 			if err := LaunchBackgroundUpdateCheck(); err != nil {
-				fmt.Fprintf(os.Stderr, "term-llm: failed to schedule update check: %v\n", err)
+				runtimeoutput.Printf("term-llm: failed to schedule update check: %v\n", err)
 			}
 		}
 	})
@@ -133,7 +134,7 @@ func WarnIfOutdated(currentVersion string, state *State) {
 	if !shouldWarn {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "A newer term-llm release (%s) is available. Run 'term-llm upgrade' to update.\n", latest)
+	runtimeoutput.Printf("A newer term-llm release (%s) is available. Run 'term-llm upgrade' to update.\n", latest)
 	state.NotifiedVersion = latest
 	state.LastNotified = time.Now().UTC()
 	_ = SaveState(state)

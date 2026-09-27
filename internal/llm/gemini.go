@@ -6,10 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 // GeminiProvider implements Provider using the Google Gemini API.
@@ -145,13 +145,13 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (Stream, error
 
 		if req.Debug {
 			userPreview := collectGeminiUserPreview(contents)
-			fmt.Fprintln(os.Stderr, "=== DEBUG: Gemini Stream Request ===")
-			fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
-			fmt.Fprintf(os.Stderr, "System: %s\n", truncate(system, 200))
-			fmt.Fprintf(os.Stderr, "User: %s\n", truncate(userPreview, 200))
-			fmt.Fprintf(os.Stderr, "Input Items: %d\n", len(contents))
-			fmt.Fprintf(os.Stderr, "Tools: %d\n", len(req.Tools))
-			fmt.Fprintln(os.Stderr, "====================================")
+			runtimeoutput.Printf("%s\n", "=== DEBUG: Gemini Stream Request ===")
+			runtimeoutput.Printf("Provider: %s\n", p.Name())
+			runtimeoutput.Printf("System: %s\n", truncate(system, 200))
+			runtimeoutput.Printf("User: %s\n", truncate(userPreview, 200))
+			runtimeoutput.Printf("Input Items: %d\n", len(contents))
+			runtimeoutput.Printf("Tools: %d\n", len(req.Tools))
+			runtimeoutput.Printf("%s\n", "====================================")
 		}
 
 		var lastThoughtSig []byte

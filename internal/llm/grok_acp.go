@@ -17,6 +17,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/acp"
 	"github.com/samsaffron/term-llm/internal/cliwire"
 	"github.com/samsaffron/term-llm/internal/procutil"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 const (
@@ -606,7 +607,7 @@ func (p *GrokBinProvider) runGrokACP(ctx context.Context, req Request, messages 
 			return grokCommandResult{}, err
 		}
 		if debug {
-			fmt.Fprintf(os.Stderr, "[grok-bin] ACP resume unavailable; starting bounded recovery (source_messages=%d, recovery_messages=%d, recovery_bytes=%d)\n", len(req.Messages), len(recoveryMessages), grokMessagesTextBytes(recoveryMessages))
+			runtimeoutput.Printf("[grok-bin] ACP resume unavailable; starting bounded recovery (source_messages=%d, recovery_messages=%d, recovery_bytes=%d)\n", len(req.Messages), len(recoveryMessages), grokMessagesTextBytes(recoveryMessages))
 		}
 		return p.runGrokACP(ctx, req, recoveryMessages, debug, send, exposeToolBridge)
 	}
@@ -640,7 +641,7 @@ func (p *GrokBinProvider) runGrokACP(ctx context.Context, req Request, messages 
 	cancelDone := make(chan struct{})
 
 	if debug {
-		fmt.Fprintf(os.Stderr, "[grok-bin] prompting ACP session %s (prompt_id=%s, blocks=%d, bytes=%d, verbatim=true)\n", process.sessionID, promptID, len(blocks), len(promptData))
+		runtimeoutput.Printf("[grok-bin] prompting ACP session %s (prompt_id=%s, blocks=%d, bytes=%d, verbatim=true)\n", process.sessionID, promptID, len(blocks), len(promptData))
 	}
 	promptCtx, cancelPrompt := context.WithCancel(context.Background())
 	defer cancelPrompt()
@@ -719,7 +720,7 @@ promptComplete:
 	if promptResult.err != nil {
 		if debug {
 			redact := p.grokACPDiagnosticRedactor(req.Messages, process.cmd.Env)
-			fmt.Fprintf(os.Stderr, "[grok-bin] ACP prompt %s failed: %s\n", promptID, redact(promptResult.err.Error()))
+			runtimeoutput.Printf("[grok-bin] ACP prompt %s failed: %s\n", promptID, redact(promptResult.err.Error()))
 		}
 		if !temporary {
 			p.discardGrokACPProcess(process)
@@ -735,7 +736,7 @@ promptComplete:
 	}
 	if policyErr != nil {
 		if debug {
-			fmt.Fprintf(os.Stderr, "[grok-bin] ACP prompt %s policy failure: %v\n", promptID, policyErr)
+			runtimeoutput.Printf("[grok-bin] ACP prompt %s policy failure: %v\n", promptID, policyErr)
 		}
 		if !temporary {
 			p.discardGrokACPProcess(process)
@@ -750,7 +751,7 @@ promptComplete:
 		callerCancelled := ctx.Err() != nil && (errors.Is(turnErr, context.Canceled) || errors.Is(turnErr, context.DeadlineExceeded) || errors.Is(turnErr, errEventStreamClosed))
 		if !callerCancelled {
 			if debug {
-				fmt.Fprintf(os.Stderr, "[grok-bin] ACP prompt %s turn failure: %v\n", promptID, turnErr)
+				runtimeoutput.Printf("[grok-bin] ACP prompt %s turn failure: %v\n", promptID, turnErr)
 			}
 			if !temporary {
 				p.discardGrokACPProcess(process)
@@ -758,13 +759,13 @@ promptComplete:
 			return grokCommandResult{}, turnErr
 		}
 		if debug {
-			fmt.Fprintf(os.Stderr, "[grok-bin] ignoring post-cancel event delivery error for prompt %s: %v\n", promptID, turnErr)
+			runtimeoutput.Printf("[grok-bin] ignoring post-cancel event delivery error for prompt %s: %v\n", promptID, turnErr)
 		}
 	}
 	usage, usageErr := parseGrokACPUsage(promptResult.response.Meta)
 	if usageErr != nil {
 		if debug {
-			fmt.Fprintf(os.Stderr, "[grok-bin] ignoring invalid ACP usage metadata: %v\n", usageErr)
+			runtimeoutput.Printf("[grok-bin] ignoring invalid ACP usage metadata: %v\n", usageErr)
 		}
 		usage = nil
 	}
@@ -779,7 +780,7 @@ promptComplete:
 		}
 	}
 	if debug {
-		fmt.Fprintf(os.Stderr, "[grok-bin] ACP prompt %s completed (stop_reason=%s)\n", promptID, promptResult.response.StopReason)
+		runtimeoutput.Printf("[grok-bin] ACP prompt %s completed (stop_reason=%s)\n", promptID, promptResult.response.StopReason)
 	}
 	switch promptResult.response.StopReason {
 	case "max_tokens":
@@ -862,7 +863,7 @@ func (p *GrokBinProvider) startGrokACPProcess(ctx context.Context, req Request, 
 	model, _ := p.grokACPModelEffort(req)
 	systemPrompt := extractSystemPrompt(req.Messages)
 	if debug {
-		fmt.Fprintf(os.Stderr, "[grok-bin] starting ACP: grok %s\n", shellJoin(redactedGrokArgs(args)))
+		runtimeoutput.Printf("[grok-bin] starting ACP: grok %s\n", shellJoin(redactedGrokArgs(args)))
 	}
 	processCtx, cancel := context.WithCancel(context.Background())
 	cmd, err := newCLICommand(processCtx, "grok", args, req.WorkingDir)
@@ -936,7 +937,7 @@ func (p *GrokBinProvider) startGrokACPProcess(ctx context.Context, req Request, 
 		_ = drainCLIDiagnosticLines(stderr, func(rawLine string) {
 			line := redactDiagnostic(rawLine)
 			if debug {
-				fmt.Fprintf(os.Stderr, "[grok stderr] %s\n", line)
+				runtimeoutput.Printf("[grok stderr] %s\n", line)
 			}
 			recordCLITailLine(&process.stderrMu, &process.stderrTail, line, grokStderrTailMaxLines)
 		})
