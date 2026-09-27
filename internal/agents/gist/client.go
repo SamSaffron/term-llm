@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/procutil"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 var (
@@ -245,7 +245,7 @@ func logGistDiagnostic(operation, diagnostic string) {
 	if len(diagnostic) > maxBytes {
 		diagnostic = diagnostic[:maxBytes] + "…(truncated)"
 	}
-	log.Printf("[gist] gh %s diagnostic: %q", operation, diagnostic)
+	runtimeoutput.Logf("[gist] gh %s diagnostic: %q", operation, diagnostic)
 }
 
 // GetURL returns the web URL for a gist ID.

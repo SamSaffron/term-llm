@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/mcphttp"
 	"github.com/samsaffron/term-llm/internal/procutil"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 const (
@@ -285,7 +285,7 @@ func (p *CursorBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 		exposeBridge := false
 		if len(req.Tools) > 0 {
 			if !p.toolExecutorConfigured {
-				slog.Warn("cursor-bin tools requested but no tool executor configured", "tool_count", len(req.Tools))
+				runtimeoutput.Warn("cursor-bin tools requested but no tool executor configured", "tool_count", len(req.Tools))
 			} else if err := p.ensureMCPServer(ctx, req.Tools, req.Debug || req.DebugRaw); err != nil {
 				return err
 			} else {
@@ -418,7 +418,7 @@ func (p *CursorBinProvider) buildCursorArgs(req Request, resumeID string, imageP
 func (p *CursorBinProvider) runCursorCommand(ctx context.Context, args []string, prompt, home string, debug bool, send eventSender, exposeBridge bool) (*cursorStreamState, error) {
 	neutralCWD := filepath.Join(home, "cwd")
 	if debug {
-		fmt.Fprintf(os.Stderr, "[cursor-bin] starting: cursor-agent %s\n", shellJoin(args))
+		runtimeoutput.Printf("[cursor-bin] starting: cursor-agent %s\n", shellJoin(args))
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -481,7 +481,7 @@ func (p *CursorBinProvider) runCursorCommand(ctx context.Context, args []string,
 		_ = drainCLIDiagnosticLines(stderr, func(rawLine string) {
 			line := redactDiagnostic(rawLine)
 			if debug {
-				fmt.Fprintf(os.Stderr, "[cursor stderr] %s\n", line)
+				runtimeoutput.Printf("[cursor stderr] %s\n", line)
 			}
 			recordCLITailLine(&stderrMu, &stderrTail, line, cursorStderrTailMaxLines)
 		})

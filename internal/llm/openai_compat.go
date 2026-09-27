@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 // newStreamingHTTPClient creates an HTTP client with transport-level timeouts.
@@ -672,16 +672,11 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 	}
 
 	if req.Debug {
-		fmt.Fprintf(os.Stderr, "=== DEBUG: %s Stream Request ===\n", p.name)
-		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
-		fmt.Fprintf(os.Stderr, "URL: %s/chat/completions\n", p.baseURL)
-		fmt.Fprintf(os.Stderr, "Model: %s\n", model)
+		debug := fmt.Sprintf("=== DEBUG: %s Stream Request ===\nProvider: %s\nURL: %s/chat/completions\nModel: %s\n", p.name, p.Name(), p.baseURL, model)
 		if effort != "" {
-			fmt.Fprintf(os.Stderr, "ReasoningEffort: %s\n", effort)
+			debug += fmt.Sprintf("ReasoningEffort: %s\n", effort)
 		}
-		fmt.Fprintf(os.Stderr, "Messages: %d\n", len(messages))
-		fmt.Fprintf(os.Stderr, "Tools: %d\n", len(tools))
-		fmt.Fprintln(os.Stderr, "===================================")
+		runtimeoutput.Printf("%sMessages: %d\nTools: %d\n===================================\n", debug, len(messages), len(tools))
 	}
 
 	// Make HTTP request synchronously - this allows retry wrapper to catch errors like 429

@@ -17,6 +17,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/mediautil"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 const (
@@ -326,5 +327,5 @@ func veniceRequestError(err error) error {
 }
 
 func debugLog(title, format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "\n=== %s ===\n%s\n", title, fmt.Sprintf(format, args...))
+	runtimeoutput.Printf("\n=== %s ===\n%s\n", title, fmt.Sprintf(format, args...))
 }

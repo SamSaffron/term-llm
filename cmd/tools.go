@@ -2,10 +2,10 @@ package cmd
 
 import (
 	"fmt"
-	"log"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/search"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -16,7 +16,7 @@ func defaultToolRegistry(cfg *config.Config) *llm.ToolRegistry {
 	if err := search.Available(cfg); err != nil {
 		// Preserve the existing fallback for absent configuration, but never
 		// substitute a provider when an explicitly deferred secret fails.
-		log.Printf("Warning: search provider error: %v, falling back to DuckDuckGo", err)
+		runtimeoutput.Logf("Warning: search provider error: %v, falling back to DuckDuckGo", err)
 		searcher = search.NewDuckDuckGoLite(nil)
 	}
 	registry.Register(llm.NewWebSearchTool(searcher))
@@ -45,7 +45,7 @@ func newReadURLToolForConfig(cfg *config.Config) *llm.ReadURLTool {
 	case "none":
 		return nil
 	default:
-		log.Printf("Warning: unknown fetch provider %q, falling back to Jina", cfg.Search.FetchProvider)
+		runtimeoutput.Logf("Warning: unknown fetch provider %q, falling back to Jina", cfg.Search.FetchProvider)
 		return llm.NewReadURLTool()
 	}
 }

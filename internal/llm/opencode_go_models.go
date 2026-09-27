@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/samsaffron/term-llm/internal/cache"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -325,26 +325,26 @@ func decodeOpenCodeGoCatalog(result struct {
 	err  error
 }) (opencodeGoCatalogProvider, bool) {
 	if result.err != nil {
-		slog.Debug("OpenCode Go metadata catalog unavailable; using availability-only models", "error", result.err)
+		runtimeoutput.Debug("OpenCode Go metadata catalog unavailable; using availability-only models", "error", result.err)
 		return opencodeGoCatalogProvider{}, false
 	}
 	var catalog map[string]json.RawMessage
 	if err := json.Unmarshal(result.body, &catalog); err != nil {
-		slog.Debug("OpenCode Go metadata catalog is invalid; using availability-only models", "error", err)
+		runtimeoutput.Debug("OpenCode Go metadata catalog is invalid; using availability-only models", "error", err)
 		return opencodeGoCatalogProvider{}, false
 	}
 	rawProvider, ok := catalog[opencodeGoCatalogProviderKey]
 	if !ok {
-		slog.Debug("OpenCode Go metadata provider is missing; using availability-only models", "provider", opencodeGoCatalogProviderKey)
+		runtimeoutput.Debug("OpenCode Go metadata provider is missing; using availability-only models", "provider", opencodeGoCatalogProviderKey)
 		return opencodeGoCatalogProvider{}, false
 	}
 	var provider opencodeGoCatalogProvider
 	if err := json.Unmarshal(rawProvider, &provider); err != nil {
-		slog.Debug("OpenCode Go provider metadata is invalid; using availability-only models", "error", err)
+		runtimeoutput.Debug("OpenCode Go provider metadata is invalid; using availability-only models", "error", err)
 		return opencodeGoCatalogProvider{}, false
 	}
 	if len(provider.Models) == 0 {
-		slog.Debug("OpenCode Go provider metadata has no models; using availability-only models", "provider", opencodeGoCatalogProviderKey)
+		runtimeoutput.Debug("OpenCode Go provider metadata has no models; using availability-only models", "provider", opencodeGoCatalogProviderKey)
 		return opencodeGoCatalogProvider{}, false
 	}
 	return provider, true

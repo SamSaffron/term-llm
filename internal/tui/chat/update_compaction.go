@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -37,7 +37,7 @@ func (m *Model) handleCompactDone(msg compactDoneMsg) (tea.Model, tea.Cmd) {
 		err := m.engine.PrepareCompactionContext(restoreCtx, sessionID, toolSpecs, msg.result)
 		cancel()
 		if err != nil {
-			slog.Warn("plan restoration after manual compaction failed; continuing without it", "error", err)
+			runtimeoutput.Warn("plan restoration after manual compaction failed; continuing without it", "error", err)
 		}
 	}
 	m.messagesMu.Lock()

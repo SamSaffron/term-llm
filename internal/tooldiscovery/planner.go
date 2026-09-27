@@ -3,7 +3,6 @@ package tooldiscovery
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -12,6 +11,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 const (
@@ -205,7 +205,7 @@ func (p *Planner) currentEngine() *llm.Engine {
 
 func (p *Planner) handleCatalogueEvent(event mcp.CatalogueEvent) {
 	if event.Err != nil {
-		slog.Warn("MCP tool catalogue refresh failed; retaining previous catalogue", "server", event.Server, "error", event.Err)
+		runtimeoutput.Warn("MCP tool catalogue refresh failed; retaining previous catalogue", "server", event.Server, "error", event.Err)
 		return
 	}
 	if event.Snapshot == nil {
@@ -843,7 +843,7 @@ func (p *Planner) selectSurface(provider llm.Provider, req *llm.Request, key, ru
 	}
 	p.mu.Unlock()
 
-	slog.Debug("MCP tool discovery selection", "session_id", req.SessionID, "provider", provider.Name(), "model", req.Model, "catalogue_generation", snapshot.Generation, "catalogue_hash", snapshot.Hash, "configured_mode", p.mode, "resolved_mode", resolved, "strategy", strategy, "authorised", len(authorized), "active", selection.pinnedCount+selection.activeCount, "deferred", selection.deferredCount, "active_tokens", selection.pinnedTokens+selection.activeTokens, "deferred_tokens", selection.deferredTokens, "reset_reason", resetReason)
+	runtimeoutput.Debug("MCP tool discovery selection", "session_id", req.SessionID, "provider", provider.Name(), "model", req.Model, "catalogue_generation", snapshot.Generation, "catalogue_hash", snapshot.Hash, "configured_mode", p.mode, "resolved_mode", resolved, "strategy", strategy, "authorised", len(authorized), "active", selection.pinnedCount+selection.activeCount, "deferred", selection.deferredCount, "active_tokens", selection.pinnedTokens+selection.activeTokens, "deferred_tokens", selection.deferredTokens, "reset_reason", resetReason)
 	if forced != "" && containsMCPName(snapshot.Tools, forced) && !hasTool(req.Tools, forced) {
 		return "", fmt.Errorf("selected MCP tool %q could not be made provider-visible", forced)
 	}
@@ -1212,7 +1212,7 @@ func (p *Planner) alwaysLoadSet(snapshot *mcp.CatalogueSnapshot) map[string]bool
 			}
 			p.mu.Unlock()
 			if warn {
-				slog.Warn("MCP always_load entry is not present in the current catalogue", "server", server, "tool", original)
+				runtimeoutput.Warn("MCP always_load entry is not present in the current catalogue", "server", server, "tool", original)
 			}
 		}
 	}

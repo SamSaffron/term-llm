@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/process"
 	"github.com/samsaffron/term-llm/internal/restart"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -69,7 +69,7 @@ func bindProcessReload(ctx context.Context, extraEnv ...string) (func(), error) 
 		if phase == "cancelling" {
 			action = "interrupting; still waiting for"
 		}
-		log.Printf("[reload] %s %s", action, strings.Join(entries, "; "))
+		runtimeoutput.Logf("[reload] %s %s", action, strings.Join(entries, "; "))
 	}
 	return restart.Default.Bind(ctx, func(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {

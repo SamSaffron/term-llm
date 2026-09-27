@@ -64,6 +64,9 @@ var (
 
 var chatOpenTTY = tea.OpenTTY
 var chatLifecycleInteractive = terminalpolicy.Interactive
+var chatOutputInteractive = terminalpolicy.OutputInteractive
+
+func chatRendererOwnsTerminal() bool { return chatOutputInteractive(os.Stdout) }
 
 type chatMCPManager interface {
 	SetSamplingProvider(provider llm.Provider, model string, yoloMode bool)
@@ -402,6 +405,7 @@ type chatSessionLaunch struct {
 	handoverAutoSend string
 	relaunchHandoff  *chatRelaunchHandoff
 	config           *config.Config
+	warningSink      io.Writer
 }
 
 // chatSessionRuntime owns every per-session resource behind a visible chat
@@ -449,7 +453,9 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	// Initialize session store EARLY so resume can override settings before tool/MCP setup.
 	// Store warnings are raised in the background for the whole TUI lifetime, so
 	// they route through the program instead of stderr once it is rendering.
-	storeWarnings := newTUIWarningWriter(cmd.ErrOrStderr())
+	storeWarnings, finishWarningsBuild := newChatSessionWarningWriter(cmd.ErrOrStderr(), launch.warningSink)
+	defer finishWarningsBuild()
+	warnings := storeWarnings
 	store, storeCleanup := InitSessionStore(cfg, storeWarnings)
 	var spawnRunner *SpawnAgentRunner
 	// Failure path: release everything constructed so far, newest first. The
@@ -482,7 +488,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		// project instructions, or skills. A missing worktree falls back to the
 		// root/process directory through the same path used for tool binding.
 		if err := RestoreWorktreeBinding(context.Background(), store, sess, nil); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to restore session directory: %v\n", err)
+			fmt.Fprintf(warnings, "warning: failed to restore session directory: %v\n", err)
 		}
 	}
 	runtimeDir := effectiveSessionDirectory(sess)
@@ -572,7 +578,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		resumeProvider := resolveSessionProviderKey(cfg, sess)
 		if resumeProvider == "" {
 			resumeProvider = cfg.DefaultProvider
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: unable to infer provider for session %s; falling back to %s\n", session.ShortID(sess.ID), resumeProvider)
+			fmt.Fprintf(warnings, "warning: unable to infer provider for session %s; falling back to %s\n", session.ShortID(sess.ID), resumeProvider)
 		}
 		providerOverride := resumeProvider
 		if model := strings.TrimSpace(sess.Model); model != "" {
@@ -595,11 +601,11 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 
 	titleMode, titleModeOK := chat.ParseTerminalTitleMode(cfg.Chat.TerminalTitle)
 	if !titleModeOK {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: unknown chat.terminal_title %q; using %q\n", cfg.Chat.TerminalTitle, titleMode)
+		fmt.Fprintf(warnings, "warning: unknown chat.terminal_title %q; using %q\n", cfg.Chat.TerminalTitle, titleMode)
 	}
 	cfg.Chat.TerminalTitle = string(titleMode)
 	if err := chat.ValidateTerminalTitleFormat(cfg.Chat.TerminalTitleFormat); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: invalid chat.terminal_title_format %q: %v; using default title format\n", cfg.Chat.TerminalTitleFormat, err)
+		fmt.Fprintf(warnings, "warning: invalid chat.terminal_title_format %q: %v; using default title format\n", cfg.Chat.TerminalTitleFormat, err)
 		cfg.Chat.TerminalTitleFormat = ""
 	}
 
@@ -610,7 +616,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	}
 	fastProvider, fastErr := llm.NewFastProvider(cfg, cfg.DefaultProvider)
 	if fastErr != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: fast provider setup failed: %v\n", fastErr)
+		fmt.Fprintf(warnings, "warning: fast provider setup failed: %v\n", fastErr)
 	}
 	engine := newEngine(provider, cfg)
 
@@ -619,7 +625,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	// MCP servers may still log during shutdown, and the TUI blocks until exit.
 	debugLogger, debugLoggerErr := createDebugLogger(cfg)
 	if debugLoggerErr != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", debugLoggerErr)
+		fmt.Fprintf(warnings, "warning: %v\n", debugLoggerErr)
 	}
 	if debugLogger != nil {
 		engine.SetDebugLogger(debugLogger)
@@ -649,7 +655,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	}
 	if sess != nil && toolMgr != nil {
 		if err := RestoreWorktreeBinding(context.Background(), store, sess, toolMgr); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to restore worktree binding: %v\n", err)
+			fmt.Fprintf(warnings, "warning: failed to restore worktree binding: %v\n", err)
 		}
 	}
 	approvalMgr, err := buildChatHandoverApprovalManager(cfg, settings)
@@ -668,7 +674,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		approvalMgr = toolMgr.ApprovalMgr
 		if err := applyResolvedApprovalMode(cfg, approvalMgr, resolvedApproval, approvalRuntimeOptions{
 			PrepareCallbacks: true,
-			WarningWriter:    cmd.ErrOrStderr(),
+			WarningWriter:    storeWarnings,
 		}); err != nil {
 			return nil, err
 		}
@@ -692,19 +698,19 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	} else {
 		if err := applyResolvedApprovalMode(cfg, approvalMgr, resolvedApproval, approvalRuntimeOptions{
 			PrepareCallbacks: true,
-			WarningWriter:    cmd.ErrOrStderr(),
+			WarningWriter:    storeWarnings,
 		}); err != nil {
 			return nil, err
 		}
 	}
-	reportApprovalMode(cmd.ErrOrStderr(), chatDebug, resolvedApproval, approvalMgr)
+	reportApprovalMode(warnings, chatDebug, resolvedApproval, approvalMgr)
 
 	// Initialize skills system
 	agentSkills := ""
 	if agent != nil {
 		agentSkills = agent.Skills
 	}
-	skillsSetup := SetupSkillsInDir(&cfg.Skills, chatSkills, agentSkills, cmd.ErrOrStderr(), runtimeDir)
+	skillsSetup := SetupSkillsInDir(&cfg.Skills, chatSkills, agentSkills, warnings, runtimeDir)
 
 	// Store resolved instructions in config for chat TUI
 	cfg.Chat.Instructions = InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)
@@ -782,10 +788,10 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	failureCleanup = append(failureCleanup, mcpManager.StopAll)
 	if err := mcpManager.LoadConfig(); err != nil {
 		// Non-fatal: continue without MCP
-		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to load MCP config: %v\n", err)
+		fmt.Fprintf(warnings, "Warning: failed to load MCP config: %v\n", err)
 	}
 
-	configureChatMCPServers(ctx, mcpManager, provider, modelName, resolvedYolo, settings.MCP, cmd.ErrOrStderr())
+	configureChatMCPServers(ctx, mcpManager, provider, modelName, resolvedYolo, settings.MCP, warnings)
 
 	// Resolve force external search setting
 	forceExternalSearch := resolveForceExternalSearch(cfg, chatNativeSearch, chatNoNativeSearch)
@@ -841,7 +847,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		ApprovalSource:     resolvedApproval.Source,
 		Debug:              chatDebug,
 		DebugRaw:           debugRaw,
-		ErrWriter:          cmd.ErrOrStderr(),
+		ErrWriter:          chatChildProgressWriter(),
 		Store:              store,
 		ParentApprovalMgr:  approvalMgr,
 	}))
@@ -1149,6 +1155,14 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	if err != nil {
 		return "", "", err
 	}
+	if chatRendererOwnsTerminal() {
+		closeLog, logErr := startInteractiveDiagnostics(cmd.ErrOrStderr())
+		if logErr != nil {
+			rt.cleanupResources()
+			return "", "", logErr
+		}
+		defer closeLog()
+	}
 
 	// In-process session switches replace the active runtime while the program
 	// keeps running, so all teardown paths resolve the runtime late.
@@ -1235,6 +1249,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 			cliAgent:        cliAgent,
 			resumeRequested: true,
 			resumeID:        request.SessionID,
+			warningSink:     currentRuntime().storeWarnings,
 			relaunchHandoff: &chatRelaunchHandoff{
 				branchPrefill:   request.BranchPrefill,
 				branchPathNotes: request.BranchPathNotes,

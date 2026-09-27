@@ -16,6 +16,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/credentials"
 	"github.com/samsaffron/term-llm/internal/grokprotocol"
 	"github.com/samsaffron/term-llm/internal/oauth"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"golang.org/x/term"
 )
@@ -79,6 +80,9 @@ func NewGrokProviderWithOptions(model string, opts GrokProviderOptions) (*GrokPr
 	}
 	if creds.IsExpired() {
 		if err := refreshGrokSession(context.Background(), creds, false); err != nil {
+			if errors.Is(err, oauth.ErrGrokRefreshTokenInvalid) && runtimeoutput.Active() {
+				return nil, errors.New("Grok authentication required; run 'term-llm auth login grok' outside chat")
+			}
 			if !errors.Is(err, oauth.ErrGrokRefreshTokenInvalid) || !grokInteractiveTerminal() {
 				return nil, fmt.Errorf("refresh Grok session: %w", err)
 			}
@@ -109,6 +113,9 @@ func NewGrokProviderWithCredsAndOptions(creds *credentials.GrokCredentials, mode
 }
 
 func PromptForGrokAuth() (*credentials.GrokCredentials, error) {
+	if runtimeoutput.Active() {
+		return nil, errors.New("Grok authentication required; run 'term-llm auth login grok' outside chat")
+	}
 	if !grokInteractiveTerminal() {
 		return nil, errors.New("Grok subscription authentication required in non-interactive mode; run 'term-llm auth login grok' interactively first")
 	}

@@ -202,6 +202,11 @@ func mcpBrowse(cmd *cobra.Command, args []string) error {
 
 	// Use the interactive TUI only when the invoking streams support it.
 	if !mcpBrowseTUI && terminalpolicy.Interactive(os.Stdin, os.Stdout) {
+		closeLog, err := startInteractiveDiagnostics(cmd.ErrOrStderr())
+		if err != nil {
+			return err
+		}
+		defer closeLog()
 		return mcpTui.RunBrowser(query)
 	}
 

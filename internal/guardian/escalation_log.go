@@ -4,12 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 // FileEscalationLogger appends escalation records to a JSONL file so they can
@@ -27,7 +28,7 @@ type FileEscalationLogger struct {
 // nothing until the first LogEscalation call and reports failures through its
 // own warn signal, so a broken log never changes a review result.
 func NewFileEscalationLogger(path string) *FileEscalationLogger {
-	return &FileEscalationLogger{path: path, warn: func(message string) { log.Print(message) }}
+	return &FileEscalationLogger{path: path, warn: func(message string) { runtimeoutput.Logf("%s", message) }}
 }
 
 // LogEscalation appends one JSON line. It never keeps the file open between
@@ -121,7 +122,7 @@ func (l *FileEscalationLogger) fail(err error) {
 	}
 	warn := l.warn
 	if warn == nil {
-		warn = func(message string) { log.Print(message) }
+		warn = func(message string) { runtimeoutput.Logf("%s", message) }
 	}
 	warn(fmt.Sprintf("guardian: escalation log %s: %v", l.path, err))
 }

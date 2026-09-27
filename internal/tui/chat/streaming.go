@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -16,6 +15,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/restart"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/runboundary"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -398,7 +398,7 @@ func (m *Model) resetLivePresentationAfterCompaction() {
 	// current turn and jumps downward when StreamEventDone performs the same reload.
 	if m.store != nil && m.sess != nil {
 		if loaded, compactionIdx, err := loadSessionMessagesForScrollback(context.Background(), m.store, m.sess); err != nil {
-			slog.Warn("reload TUI scrollback at compaction boundary failed", "error", err)
+			runtimeoutput.Warn("reload TUI scrollback at compaction boundary failed", "error", err)
 		} else {
 			m.messagesMu.Lock()
 			m.messages = loaded

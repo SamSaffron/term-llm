@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"gopkg.in/yaml.v3"
 )
 
@@ -306,7 +307,7 @@ func LoadFromDir(dir string, source SkillSource, loadBody bool) (*Skill, error) 
 	if _, err := os.Stat(skillPath); os.IsNotExist(err) {
 		lowerPath := filepath.Join(dir, "skill.md")
 		if _, err := os.Stat(lowerPath); err == nil {
-			fmt.Fprintf(os.Stderr, "warning: skill.md should be SKILL.md: %s\n", lowerPath)
+			runtimeoutput.Printf("warning: skill.md should be SKILL.md: %s\n", lowerPath)
 			skillPath = lowerPath
 		} else {
 			return nil, fmt.Errorf("SKILL.md not found in %s", dir)
@@ -346,7 +347,7 @@ func findSkillManifest(dir string) (skillManifest, bool) {
 
 func loadFromSkillManifest(dir string, manifest skillManifest, source SkillSource, loadBody bool) (*Skill, error) {
 	if manifest.fileName == "skill.md" {
-		fmt.Fprintf(os.Stderr, "warning: skill.md should be SKILL.md: %s\n", manifest.path)
+		runtimeoutput.Printf("warning: skill.md should be SKILL.md: %s\n", manifest.path)
 	}
 	return loadFromSkillFile(manifest.path, dir, source, loadBody)
 }

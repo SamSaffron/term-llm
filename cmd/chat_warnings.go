@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/tui/chat"
 )
 
@@ -24,10 +25,36 @@ type tuiWarningWriter struct {
 	mu       sync.Mutex
 	fallback io.Writer
 	notify   func(string)
+	last     string
 }
+
+// Child-run progress (MCP ready/start and approval status) is not a footer
+// alert. Actual failures are returned via the child run result.
+func chatChildProgressWriter() io.Writer { return runtimeoutput.Writer() }
 
 func newTUIWarningWriter(fallback io.Writer) *tuiWarningWriter {
 	return &tuiWarningWriter{fallback: fallback}
+}
+
+// newChatSessionWarningWriter forwards only build-time warnings to the
+// preceding session. Long-lived writers must not retain the preceding session:
+// adopted background runs can write after that session (and the UI) closes.
+func newChatSessionWarningWriter(commandWriter, buildWriter io.Writer) (*tuiWarningWriter, func()) {
+	durable := runtimeoutput.Fallback(commandWriter)
+	writer := newTUIWarningWriter(durable)
+	if buildWriter == nil {
+		return writer, func() {}
+	}
+	// Build runs synchronously while the preceding session still owns the UI.
+	// Do not wrap this temporary route in Fallback: it must reach its footer.
+	writer.setFallback(buildWriter)
+	return writer, func() { writer.setFallback(durable) }
+}
+
+func (w *tuiWarningWriter) setFallback(fallback io.Writer) {
+	w.mu.Lock()
+	w.fallback = fallback
+	w.mu.Unlock()
 }
 
 // attach starts routing warnings to the running program.
@@ -46,6 +73,7 @@ func (w *tuiWarningWriter) attachNotifier(notify func(string)) {
 	}
 	w.mu.Lock()
 	w.notify = notify
+	w.last = ""
 	w.mu.Unlock()
 }
 
@@ -66,6 +94,11 @@ func (w *tuiWarningWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	notify := w.notify
 	fallback := w.fallback
+	text := strings.TrimSpace(string(p))
+	duplicate := notify != nil && text == w.last
+	if notify != nil && text != "" && !duplicate {
+		w.last = text
+	}
 	w.mu.Unlock()
 
 	if notify == nil {
@@ -74,7 +107,7 @@ func (w *tuiWarningWriter) Write(p []byte) (int, error) {
 		}
 		return fallback.Write(p)
 	}
-	if text := strings.TrimSpace(string(p)); text != "" {
+	if text != "" && !duplicate {
 		notify(text)
 	}
 	return len(p), nil

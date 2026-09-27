@@ -462,3 +462,16 @@ func TestBuildChatProgramInput_InteractivePropagatesTTYError(t *testing.T) {
 		t.Fatal("expected error when opening chat TTY fails")
 	}
 }
+
+func TestChatOutputOwnershipIndependentOfInput(t *testing.T) {
+	old := chatOutputInteractive
+	t.Cleanup(func() { chatOutputInteractive = old })
+	chatOutputInteractive = func(*os.File) bool { return true }
+	if !chatRendererOwnsTerminal() {
+		t.Fatal("redirected input must not disable renderer output protection")
+	}
+	chatOutputInteractive = func(*os.File) bool { return false }
+	if chatRendererOwnsTerminal() {
+		t.Fatal("captured output is not interactive")
+	}
+}

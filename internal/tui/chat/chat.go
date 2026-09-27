@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"sort"
 	"strconv"
@@ -30,6 +29,7 @@ import (
 	render "github.com/samsaffron/term-llm/internal/render/chat"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/runboundary"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/sessiontitle"
 	"github.com/samsaffron/term-llm/internal/skills"
@@ -919,7 +919,7 @@ func NewWithFastProviderAndApproval(cfg *config.Config, provider llm.Provider, f
 		var err error
 		discoveryPlanner, err = tooldiscovery.NewPlanner(cfg.ToolDiscovery, mcpManager, engine)
 		if err != nil {
-			slog.Warn("failed to configure MCP tool discovery", "error", err)
+			runtimeoutput.Warn("failed to configure MCP tool discovery", "error", err)
 		}
 	}
 	// Get terminal size

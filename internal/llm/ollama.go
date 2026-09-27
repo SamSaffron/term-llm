@@ -16,6 +16,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 var (
@@ -599,15 +600,11 @@ func (p *OllamaProvider) Stream(ctx context.Context, req Request) (Stream, error
 	}
 
 	if req.Debug {
-		fmt.Fprintf(os.Stderr, "=== DEBUG: Ollama Stream Request ===\n")
-		fmt.Fprintf(os.Stderr, "URL: %s/api/chat\n", p.baseURL)
-		fmt.Fprintf(os.Stderr, "Model: %s\n", model)
-		fmt.Fprintf(os.Stderr, "Messages: %d\n", len(messages))
-		fmt.Fprintf(os.Stderr, "Tools: %d\n", len(tools))
+		debug := fmt.Sprintf("=== DEBUG: Ollama Stream Request ===\nURL: %s/api/chat\nModel: %s\nMessages: %d\nTools: %d\n", p.baseURL, model, len(messages), len(tools))
 		if think != nil {
-			fmt.Fprintf(os.Stderr, "Think: %v\n", think)
+			debug += fmt.Sprintf("Think: %v\n", think)
 		}
-		fmt.Fprintln(os.Stderr, "====================================")
+		runtimeoutput.Printf("%s====================================\n", debug)
 	}
 
 	body, err := json.Marshal(chatReq)

@@ -294,6 +294,12 @@ func runThemeSelector(currentTheme string) (string, error) {
 		return "", fmt.Errorf("theme selector requires an interactive terminal")
 	}
 
+	closeLog, logErr := startInteractiveDiagnostics(os.Stderr)
+	if logErr != nil {
+		return "", logErr
+	}
+	defer closeLog()
+
 	// Try to use /dev/tty for proper terminal handling
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {

@@ -2,12 +2,12 @@ package ui
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -23,7 +23,7 @@ func debugFlushf(format string, args ...any) {
 	if !flushDebugEnabled {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "[flush] "+format+"\n", args...)
+	runtimeoutput.Printf("[flush] "+format+"\n", args...)
 }
 
 // stripLeadingBlankLine removes exactly ONE leading blank line from content.

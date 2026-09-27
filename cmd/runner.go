@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"strings"
 	"time"
 
@@ -13,6 +12,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/restart"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -719,7 +719,7 @@ func (r *cmdRunner) ensureRunSession(ctx context.Context, store session.Store, r
 		if existing, getErr := store.Get(ctx, req.SessionID); getErr == nil && existing != nil {
 			return existing, nil
 		}
-		log.Printf("[runner] session Create failed for %s: %v", req.SessionID, err)
+		runtimeoutput.Logf("[runner] session Create failed for %s: %v", req.SessionID, err)
 		return nil, fmt.Errorf("create session %q: %w", req.SessionID, err)
 	}
 	return sess, nil
@@ -787,7 +787,7 @@ func (r *cmdRunner) runProgressive(ctx context.Context, runtime *serveRuntime, e
 				}
 			}
 			if err := persistStore.UpdateMetrics(cbCtx, sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens); err != nil {
-				log.Printf("[runner] session UpdateMetrics failed for %s: %v", sess.ID, err)
+				runtimeoutput.Logf("[runner] session UpdateMetrics failed for %s: %v", sess.ID, err)
 			} else {
 				recordStoreModelUsage(cbCtx, persistStore, sess.ID, sess.Model, session.ModelUsageMain, llm.Usage{
 					InputTokens: metrics.InputTokens, OutputTokens: metrics.OutputTokens,
@@ -796,7 +796,7 @@ func (r *cmdRunner) runProgressive(ctx context.Context, runtime *serveRuntime, e
 			}
 			if total, count := engine.ContextEstimateBaseline(); total > 0 {
 				if err := persistStore.UpdateContextEstimate(cbCtx, sess.ID, total, count); err != nil {
-					log.Printf("[runner] session UpdateContextEstimate failed for %s: %v", sess.ID, err)
+					runtimeoutput.Logf("[runner] session UpdateContextEstimate failed for %s: %v", sess.ID, err)
 				}
 			}
 			if req.OnTurnCompleted != nil {

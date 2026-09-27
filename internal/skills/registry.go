@@ -2,13 +2,14 @@ package skills
 
 import (
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 // Registry manages skill discovery and resolution.
@@ -720,7 +721,7 @@ func (r *Registry) scanDir(dir string, source SkillSource) ([]*Skill, error) {
 // diagnosable without writing directly to stderr, which bypasses terminal UI
 // rendering and can corrupt the display each time a registry is scanned.
 func logSkippedInvalidSkill(skillDir string, err error) {
-	slog.Debug("skipping invalid skill", "path", skillDir, "error", err)
+	runtimeoutput.Debug("skipping invalid skill", "path", skillDir, "error", err)
 }
 
 func (r *Registry) scanDirWithFingerprint(dir string, source SkillSource, fingerprint *strings.Builder) ([]*Skill, error) {
@@ -760,6 +761,58 @@ func (r *Registry) scanDirWithFingerprint(dir string, source SkillSource, finger
 	}
 
 	return skills, nil
+}
+
+// ValidationResult includes malformed manifests that List intentionally omits.
+// It is intended for explicit validation, not prompt-time skill discovery.
+type ValidationResult struct {
+	Path   string
+	Skill  *Skill
+	Source SkillSource
+	Err    error
+}
+
+// ListForValidation inspects discovered manifests without hiding parse or
+// validation failures. Unlike List, this intentionally does not cache results.
+func (r *Registry) ListForValidation() []ValidationResult {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var results []ValidationResult
+	seenPaths := make(map[string]bool)
+	seenNames := make(map[string]bool)
+	for _, sp := range r.searchPaths {
+		entries, err := os.ReadDir(sp.path)
+		if err != nil {
+			continue // Match List's handling of unavailable search paths.
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			path := filepath.Join(sp.path, entry.Name())
+			if seenPaths[path] {
+				continue
+			}
+			manifest, ok := findSkillManifest(path)
+			if !ok {
+				continue
+			}
+			seenPaths[path] = true
+			skill, loadErr := loadFromSkillManifest(path, manifest, sp.source, true)
+			if loadErr == nil {
+				loadErr = skill.Validate()
+			}
+			if loadErr == nil {
+				if seenNames[skill.Name] {
+					continue // Keep List's first-valid-skill precedence.
+				}
+				seenNames[skill.Name] = true
+			}
+			results = append(results, ValidationResult{Path: path, Skill: skill, Source: sp.source, Err: loadErr})
+		}
+	}
+	return results
 }
 
 // Search finds model-invocable skills matching a query string by fuzzy matching

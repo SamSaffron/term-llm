@@ -2,13 +2,13 @@ package tools
 
 import (
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/samsaffron/term-llm/internal/pathutil"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 // ToolConfig holds configuration for the local tool system.
@@ -282,12 +282,12 @@ func (c *ToolConfig) Validate() []error {
 	// Warn for nonexistent directories (may be mounted later)
 	for _, dir := range readDirs {
 		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			slog.Warn("read_dir does not exist", "dir", dir)
+			runtimeoutput.Warn("read_dir does not exist", "dir", dir)
 		}
 	}
 	for _, dir := range writeDirs {
 		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			slog.Warn("write_dir does not exist", "dir", dir)
+			runtimeoutput.Warn("write_dir does not exist", "dir", dir)
 		}
 	}
 
@@ -504,7 +504,7 @@ func (c *ToolConfig) BuildPermissions() (*ToolPermissions, error) {
 		}
 		if err := perms.AddReadDir(dir); err != nil {
 			// Non-fatal: directory may not exist yet
-			slog.Warn("failed to add read dir", "dir", dir, "error", err)
+			runtimeoutput.Warn("failed to add read dir", "dir", dir, "error", err)
 		}
 	}
 
@@ -513,7 +513,7 @@ func (c *ToolConfig) BuildPermissions() (*ToolPermissions, error) {
 			dir = resolvePathAgainstBase(dir, baseAbs)
 		}
 		if err := perms.AddWriteDir(dir); err != nil {
-			slog.Warn("failed to add write dir", "dir", dir, "error", err)
+			runtimeoutput.Warn("failed to add write dir", "dir", dir, "error", err)
 		}
 	}
 

@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/guardian"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/pathutil"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/typesafe"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -298,20 +298,20 @@ var newGuardianEscalationLogger = func(cfg *config.Config) guardian.EscalationLo
 	if path == "" {
 		def, err := config.GuardianEscalationLogPath()
 		if err != nil {
-			log.Printf("warning: guardian escalation log disabled: %v", err)
+			runtimeoutput.Logf("warning: guardian escalation log disabled: %v", err)
 			return nil
 		}
 		return guardian.NewFileEscalationLogger(def)
 	}
 	expanded, err := pathutil.Expand(path)
 	if err != nil {
-		log.Printf("warning: guardian escalation log disabled: %v", err)
+		runtimeoutput.Logf("warning: guardian escalation log disabled: %v", err)
 		return nil
 	}
 	// These records contain transcript evidence, so a relative path would write
 	// them into whatever directory the process happened to start in.
 	if !filepath.IsAbs(expanded) {
-		log.Printf("warning: guardian escalation log disabled: guardian.fallback.log_path must be absolute (got %q)", path)
+		runtimeoutput.Logf("warning: guardian escalation log disabled: guardian.fallback.log_path must be absolute (got %q)", path)
 		return nil
 	}
 	return guardian.NewFileEscalationLogger(expanded)

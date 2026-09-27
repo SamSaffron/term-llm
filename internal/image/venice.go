@@ -11,13 +11,13 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 const (
@@ -388,11 +388,11 @@ func debugRawImageLog(enabled bool, label, format string, args ...interface{}) {
 	}
 	ts := time.Now().Format(time.RFC3339Nano)
 	body := fmt.Sprintf(format, args...)
-	fmt.Fprintf(os.Stderr, "\n[%s] %s\n", ts, label)
+	runtimeoutput.Printf("\n[%s] %s\n", ts, label)
 	if body != "" {
-		fmt.Fprintln(os.Stderr, body)
+		runtimeoutput.Printf("%s\n", body)
 	}
-	fmt.Fprintf(os.Stderr, "[%s] END %s\n\n", ts, label)
+	runtimeoutput.Printf("[%s] END %s\n\n", ts, label)
 }
 
 // truncateDebugBody returns a string representation of body, truncated to maxLen bytes.

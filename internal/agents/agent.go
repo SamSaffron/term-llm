@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"gopkg.in/yaml.v3"
 )
 
@@ -316,16 +317,16 @@ func LoadFromDir(dir string, source AgentSource) (*Agent, error) {
 		// to prevent path traversal attacks via "../" in include paths
 		absInclude, err := filepath.Abs(includePath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to resolve include path %q: %v\n", include, err)
+			runtimeoutput.Printf("warning: failed to resolve include path %q: %v\n", include, err)
 			continue
 		}
 		absDir, err := filepath.Abs(dir)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to resolve agent directory: %v\n", err)
+			runtimeoutput.Printf("warning: failed to resolve agent directory: %v\n", err)
 			continue
 		}
 		if !strings.HasPrefix(absInclude, absDir+string(filepath.Separator)) && absInclude != absDir {
-			fmt.Fprintf(os.Stderr, "warning: include path %q escapes agent directory, skipping\n", include)
+			runtimeoutput.Printf("warning: include path %q escapes agent directory, skipping\n", include)
 			continue
 		}
 		if includeData, err := os.ReadFile(includePath); err == nil {
@@ -334,10 +335,10 @@ func LoadFromDir(dir string, source AgentSource) (*Agent, error) {
 			agent.SystemPrompt += string(includeData)
 		} else if !os.IsNotExist(err) {
 			// Log non-existence errors (permission issues, etc.)
-			fmt.Fprintf(os.Stderr, "warning: failed to read include %q: %v\n", include, err)
+			runtimeoutput.Printf("warning: failed to read include %q: %v\n", include, err)
 		} else {
 			// Log missing includes as a debug hint
-			fmt.Fprintf(os.Stderr, "warning: agent include file not found: %s\n", includePath)
+			runtimeoutput.Printf("warning: agent include file not found: %s\n", includePath)
 		}
 	}
 

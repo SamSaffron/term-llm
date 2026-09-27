@@ -2,8 +2,12 @@ package cmd
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 // TestTUIWarningWriterRoutesThroughProgramWhileRendering pins the rule that a
@@ -50,6 +54,83 @@ func TestTUIWarningWriterRoutesThroughProgramWhileRendering(t *testing.T) {
 	}
 }
 
+func TestTUIWarningWriterDeduplicatesOnlyWhileAttached(t *testing.T) {
+	var fallback bytes.Buffer
+	writer := newTUIWarningWriter(&fallback)
+	var notices []string
+	writer.attachNotifier(func(text string) { notices = append(notices, text) })
+	for _, text := range []string{"disk full\n", "disk full\n", "save failed\n", "disk full\n"} {
+		if _, err := writer.Write([]byte(text)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := strings.Join(notices, "|"); got != "disk full|save failed|disk full" {
+		t.Fatalf("notices = %q", got)
+	}
+	if fallback.Len() != 0 {
+		t.Fatalf("stderr fallback during UI: %q", fallback.String())
+	}
+	writer.detach()
+	writer.attachNotifier(func(text string) { notices = append(notices, text) })
+	_, _ = writer.Write([]byte("disk full\n"))
+	if len(notices) != 4 {
+		t.Fatalf("notices after reattach = %v", notices)
+	}
+}
+
+func TestChatSessionWarningsAcrossSwitchDetachAndClose(t *testing.T) {
+	var command bytes.Buffer
+	first, finishFirst := newChatSessionWarningWriter(&command, nil)
+	finishFirst()
+	var notices []string
+	first.attachNotifier(func(text string) { notices = append(notices, "first: "+text) })
+
+	dir := t.TempDir()
+	closeLog, err := runtimeoutput.Start(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeLog()
+
+	second, finishSecond := newChatSessionWarningWriter(&command, first)
+	_, _ = second.Write([]byte("building second\n"))
+	finishSecond()
+	first.detach()
+	second.attachNotifier(func(text string) { notices = append(notices, "second: "+text) })
+
+	third, finishThird := newChatSessionWarningWriter(&command, second)
+	_, _ = third.Write([]byte("building third\n"))
+	finishThird()
+	second.detach()
+	third.attachNotifier(func(text string) { notices = append(notices, "third: "+text) })
+
+	// Both retired runtimes may still have adopted work while a new UI owns
+	// the terminal. Their warnings belong in the log, not the visible footer.
+	_, _ = first.Write([]byte("old first run\n"))
+	_, _ = second.Write([]byte("old second run\n"))
+	_, _ = third.Write([]byte("visible third run\n"))
+	if got := strings.Join(notices, "|"); got != "first: building second|second: building third|third: visible third run" {
+		t.Fatalf("notices: %q", got)
+	}
+	third.detach()
+	closeLog()
+	for _, writer := range []*tuiWarningWriter{first, second, third} {
+		if _, err := writer.Write([]byte("after close\n")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := command.String(); got != "after close\nafter close\nafter close\n" {
+		t.Fatalf("durable command fallback: %q", got)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "tui.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(data); !strings.Contains(got, "old first run") || !strings.Contains(got, "old second run") || strings.Contains(got, "after close") {
+		t.Fatalf("detached warnings log: %q", got)
+	}
+}
+
 // TestTUIWarningWriterDropsBlankWrites keeps padding writes from flashing an
 // empty footer notice.
 func TestTUIWarningWriterDropsBlankWrites(t *testing.T) {
@@ -66,5 +147,35 @@ func TestTUIWarningWriterDropsBlankWrites(t *testing.T) {
 	}
 	if len(notices) != 0 {
 		t.Fatalf("notices = %v, want none for a blank write", notices)
+	}
+}
+
+func TestChildProgressStaysOutOfFooter(t *testing.T) {
+	var notices []string
+	warning := newTUIWarningWriter(&bytes.Buffer{})
+	warning.attachNotifier(func(text string) { notices = append(notices, text) })
+	dir := t.TempDir()
+	closeLog, err := runtimeoutput.Start(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeLog()
+	_, err = chatChildProgressWriter().Write([]byte("MCP server ready; waiting for tool call\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notices) != 0 {
+		t.Fatalf("progress became footer notices: %v", notices)
+	}
+	_, _ = warning.Write([]byte("session save failed\n"))
+	if len(notices) != 1 {
+		t.Fatalf("actionable warning lost: %v", notices)
+	}
+	contents, err := os.ReadFile(filepath.Join(dir, "tui.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(contents), "MCP server ready") {
+		t.Fatalf("missing child progress: %q", contents)
 	}
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/lifecycle"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 // Control is terminal output that must be returned to Bubble Tea's renderer.
@@ -32,7 +33,7 @@ func newLifecycleDiagnostic(rt runtimeContext) *lifecycleDiagnostic {
 	if rt.getenv == nil || strings.TrimSpace(rt.getenv("TERM_LLM_LIFECYCLE_DEBUG")) != "1" || rt.stderr == nil {
 		return nil
 	}
-	return &lifecycleDiagnostic{writer: rt.stderr, seen: make(map[string]struct{})}
+	return &lifecycleDiagnostic{writer: runtimeoutput.Fallback(rt.stderr), seen: make(map[string]struct{})}
 }
 
 func (d *lifecycleDiagnostic) report(adapter string, err error) {

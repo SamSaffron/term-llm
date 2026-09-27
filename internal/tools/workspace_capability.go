@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -497,7 +497,7 @@ func (m *ApprovalManager) isRememberedWorkspace(ctx context.Context, trustStore 
 		// An unreadable ledger grants no authority, but must not disable the
 		// direct-human confirmation path. Remember writes still fail closed.
 		if m.DebugApproval {
-			log.Printf("[approval] remembered workspace lookup failed for %q: %v", proposal, err)
+			runtimeoutput.Logf("[approval] remembered workspace lookup failed for %q: %v", proposal, err)
 		}
 		return false
 	}
