@@ -670,11 +670,18 @@ export class AppStore {
             ? null
             : this.sessions.value.find(
                 (entry) => entry.id === preferred || String(entry.number || '') === preferred,
-              ) ||
-              this.sessions.value[0] ||
-              null;
+              ) || null;
         if (session) await this.selectSession(session, true);
-        else this.newChat(true, this.storage.getItem(this.keys.lastProject) || '', false);
+        else if (routed && !forceNew && !restoreDraft) {
+          // Hub attention and other deep links can target sessions older than
+          // the initial sidebar page. Do not replace their URL with the first
+          // recent session before looking up the requested selector.
+          await this.resolveAndSelectSession(routed, true);
+        } else if (this.sessions.value[0] && !forceNew && !restoreDraft) {
+          await this.selectSession(this.sessions.value[0], true);
+        } else {
+          this.newChat(true, this.storage.getItem(this.keys.lastProject) || '', false);
+        }
       }
       this.syncSessionInterest();
       this.connected.value = true;

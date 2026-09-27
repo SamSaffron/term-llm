@@ -1678,6 +1678,40 @@ describe('AppStore compatibility behavior', () => {
     expect(store.worktreesEnabled.value).toBe(true);
   });
 
+  it.each([false, true])(
+    'opens an older Hub attention deep link with projects enabled: %s',
+    async (projectsEnabled) => {
+      const previousRoute = `${location.pathname}${location.search}${location.hash}`;
+      history.replaceState(null, '', '/ui/chat/5093');
+      const store = new AppStore(config);
+      store.endpoints.capabilities = vi.fn(async () => ({
+        projects: { enabled: projectsEnabled },
+      }));
+      store.endpoints.providers = vi.fn(async () => ({ object: 'list', data: [] }));
+      store.endpoints.models = vi.fn(async () => ({ object: 'list', data: [] }));
+      store.endpoints.sessions = vi.fn(async () => ({ object: 'list', data: [session()] }));
+      store.endpoints.sidebar = vi.fn(async () => ({ groups: [], recent_sessions: [session()] }));
+      store.endpoints.selectedSession = vi.fn(async () => ({
+        selected_session: { ...session(), id: 'older-session', number: 5093 },
+        selected_transcript: { bodies: { messages: [] } },
+      }));
+      store.endpoints.sessionState = vi.fn(async () => ({}));
+      store.endpoints.skills = vi.fn(async () => ({ skills: [] }));
+      store.endpoints.tree = vi.fn(async () => ({}));
+      (store as unknown as { startStatusPoll(): void }).startStatusPoll = vi.fn();
+
+      try {
+        await store.bootstrap();
+        expect(store.endpoints.selectedSession).toHaveBeenCalledWith('5093');
+        expect(store.activeSessionId.value).toBe('older-session');
+        expect(location.pathname).toBe('/ui/chat/5093');
+      } finally {
+        store.dispose();
+        history.replaceState(null, '', previousRoute);
+      }
+    },
+  );
+
   it('bootstraps no-project mode without calling the project-only sidebar endpoint', async () => {
     const store = new AppStore(config);
     store.endpoints.capabilities = vi.fn(async () => ({
@@ -1700,36 +1734,42 @@ describe('AppStore compatibility behavior', () => {
   });
 
   it('restores an active new-chat draft on reload without reporting a stale-write conflict', async () => {
-    const seed = new AppStore(config);
-    const draftID = 'draft:reload';
-    localStorage.setItem(seed.keys.draftSessionActive, draftID);
-    saveDraft(localStorage, seed.keys.draftMessages, {
-      sessionId: draftID,
-      content: 'keep this draft through reload',
-      updated: Date.now(),
-      rev: 0,
-      model: 'test-model',
-    });
-
-    const store = new AppStore(config);
-    store.endpoints.capabilities = vi.fn(async () => ({ projects: { enabled: false } }));
-    store.endpoints.providers = vi.fn(async () => ({ object: 'list', data: [] }));
-    store.endpoints.models = vi.fn(async () => ({ object: 'list', data: [] }));
-    store.endpoints.sessions = vi.fn(async () => ({ object: 'list', data: [] }));
-    (store as unknown as { startStatusPoll(): void }).startStatusPoll = vi.fn();
-
-    await store.bootstrap();
-
-    expect(store.draftActive.value).toBe(true);
-    expect(store.prompt.value).toBe('keep this draft through reload');
-    expect(store.toasts.value).toEqual([]);
-    expect(readDrafts(localStorage, store.keys.draftMessages)).toEqual([
-      expect.objectContaining({
+    const previousRoute = `${location.pathname}${location.search}${location.hash}`;
+    history.replaceState(null, '', '/ui/');
+    try {
+      const seed = new AppStore(config);
+      const draftID = 'draft:reload';
+      localStorage.setItem(seed.keys.draftSessionActive, draftID);
+      saveDraft(localStorage, seed.keys.draftMessages, {
         sessionId: draftID,
         content: 'keep this draft through reload',
-        rev: 1,
-      }),
-    ]);
+        updated: Date.now(),
+        rev: 0,
+        model: 'test-model',
+      });
+
+      const store = new AppStore(config);
+      store.endpoints.capabilities = vi.fn(async () => ({ projects: { enabled: false } }));
+      store.endpoints.providers = vi.fn(async () => ({ object: 'list', data: [] }));
+      store.endpoints.models = vi.fn(async () => ({ object: 'list', data: [] }));
+      store.endpoints.sessions = vi.fn(async () => ({ object: 'list', data: [] }));
+      (store as unknown as { startStatusPoll(): void }).startStatusPoll = vi.fn();
+
+      await store.bootstrap();
+
+      expect(store.draftActive.value).toBe(true);
+      expect(store.prompt.value).toBe('keep this draft through reload');
+      expect(store.toasts.value).toEqual([]);
+      expect(readDrafts(localStorage, store.keys.draftMessages)).toEqual([
+        expect.objectContaining({
+          sessionId: draftID,
+          content: 'keep this draft through reload',
+          rev: 1,
+        }),
+      ]);
+    } finally {
+      history.replaceState(null, '', previousRoute);
+    }
   });
 
   it('persists and paginates the cross-project Recent view without duplicating rows', async () => {
