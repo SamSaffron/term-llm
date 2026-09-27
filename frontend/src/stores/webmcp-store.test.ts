@@ -4,7 +4,7 @@ import {
   MAX_CLIENT_TOOL_OUTPUT,
   type ClientTool,
 } from '../domain/client-tools';
-import { storageKeys } from '../platform/storage';
+import { migrateScopedStorage, storageKeys } from '../platform/storage';
 import type { PageToolHost } from '../platform/webmcp';
 import type { AppStoreServices } from './app-store-services';
 import { CLIENT_TOOL_TIMEOUT_MS, WebMCPStore } from './webmcp-store';
@@ -160,6 +160,40 @@ describe('WebMCPStore', () => {
     new WebMCPStore(hub('a'), fakeHost().host).setEnabled('s1', true);
     expect(new WebMCPStore(hub('a'), fakeHost().host).enabledFor('new')).toBe(true);
     expect(new WebMCPStore(hub('b'), fakeHost().host).enabledFor('new')).toBe(false);
+  });
+
+  it('merges opt-outs left by an older build alongside new choices', () => {
+    const keys = storageKeys(null);
+    localStorage.setItem(keys.webMCPSessions, JSON.stringify([['s2', true]]));
+    localStorage.setItem(keys.webMCPLegacyDisabledSessions, JSON.stringify(['s1', 's2']));
+    new WebMCPStore(services(), fakeHost().host);
+    expect(JSON.parse(localStorage.getItem(keys.webMCPSessions)!)).toEqual([
+      ['s1', false],
+      ['s2', true],
+    ]);
+    expect(localStorage.getItem(keys.webMCPLegacyDisabledSessions)).toBeNull();
+  });
+
+  it('does not let a Hub node inherit an unscoped default', () => {
+    const unscoped = storageKeys(null);
+    localStorage.setItem(unscoped.webMCPDefault, 'true');
+    localStorage.setItem(unscoped.webMCPSessions, JSON.stringify([['s1', true]]));
+    const keys = migrateScopedStorage(localStorage, { nodeId: 'a', nodeBasePath: '/n/a' } as never);
+    const store = new WebMCPStore(
+      { storage: localStorage, keys } as unknown as AppStoreServices,
+      fakeHost().host,
+    );
+    expect(store.enabledFor('new')).toBe(false);
+    expect(store.enabledFor('s1')).toBe(false);
+  });
+
+  it('pins a first send to a default another tab just changed', async () => {
+    const tabA = new WebMCPStore(services(), fakeHost().host);
+    const tabB = await loaded(fakeHost().host);
+    tabA.setEnabled('s1', true); // tab B has not seen the storage event yet
+    expect(tabB.definitions('s2')).toHaveLength(1);
+    tabB.reloadSettings();
+    expect(tabB.enabledFor('s2')).toBe(true);
   });
 
   it('follows and keeps choices made in another tab', () => {

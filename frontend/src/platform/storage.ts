@@ -44,11 +44,15 @@ export function storageKeys(hub: HubContext | null): StorageKeys {
   ) as StorageKeys;
 }
 
+/** Per-node choices that must not be inherited from unscoped storage. */
+const NODE_ONLY: ReadonlySet<StorageName> = new Set(['token', 'webMCPSessions', 'webMCPDefault']);
+
 export function migrateScopedStorage(storage: Storage, hub: HubContext | null): StorageKeys {
   const keys = storageKeys(hub);
   if (!hub?.nodeId) return keys;
   for (const [name, base] of Object.entries(STORAGE_BASE_KEYS) as Array<[StorageName, string]>) {
-    if (name === 'token' || keys[name] === base || storage.getItem(keys[name]) !== null) continue;
+    if (NODE_ONLY.has(name) || keys[name] === base || storage.getItem(keys[name]) !== null)
+      continue;
     const value = storage.getItem(base);
     if (value !== null) storage.setItem(keys[name], value);
   }

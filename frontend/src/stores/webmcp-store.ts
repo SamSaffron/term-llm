@@ -146,9 +146,11 @@ export class WebMCPStore implements ClientToolBridge {
    */
   definitions(sessionId: string): ClientToolDefinition[] {
     if (!this.available.peek()) return [];
-    const enabled = this.enabledFor(sessionId);
-    if (sessionId && !this.storedChoices().some(([id]) => id === sessionId))
-      this.remember(sessionId, enabled);
+    // Read storage, not this tab's copy: another tab may have just changed the
+    // default and its storage event may not have arrived yet.
+    const choice = this.storedChoices().find(([id]) => id === sessionId);
+    const enabled = choice ? choice[1] : this.storedDefault();
+    if (sessionId && !choice) this.remember(sessionId, enabled);
     return enabled ? clientToolDefinitions(this.tools.peek(), this.providerName.peek()) : [];
   }
 
@@ -227,13 +229,20 @@ export class WebMCPStore implements ClientToolBridge {
     const { storage, keys } = this.services;
     const legacy = readJSON<unknown>(storage, keys.webMCPLegacyDisabledSessions, null);
     if (legacy === null) return;
+    if (Array.isArray(legacy)) {
+      const current = this.storedChoices();
+      const known = new Set(current.map(([id]) => id));
+      const optedOut = legacy
+        .filter((id): id is string => typeof id === 'string' && !known.has(id))
+        .map((id): SessionChoice => [id, false]);
+      // Older opt-outs go first so the cap drops them before newer choices.
+      if (optedOut.length)
+        writeJSON(
+          storage,
+          keys.webMCPSessions,
+          [...optedOut, ...current].slice(-REMEMBERED_SESSIONS),
+        );
+    }
     storage.removeItem(keys.webMCPLegacyDisabledSessions);
-    if (!Array.isArray(legacy) || storage.getItem(keys.webMCPSessions) !== null) return;
-    const optedOut = legacy.filter((id): id is string => typeof id === 'string');
-    writeJSON(
-      storage,
-      keys.webMCPSessions,
-      optedOut.slice(-REMEMBERED_SESSIONS).map((id): SessionChoice => [id, false]),
-    );
   }
 }
