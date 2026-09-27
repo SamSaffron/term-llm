@@ -451,11 +451,9 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	// Initialize session store EARLY so resume can override settings before tool/MCP setup.
 	// Store warnings are raised in the background for the whole TUI lifetime, so
 	// they route through the program instead of stderr once it is rendering.
-	warnings := launch.warningSink
-	if warnings == nil {
-		warnings = cmd.ErrOrStderr()
-	}
-	storeWarnings := newTUIWarningWriter(runtimeoutput.Fallback(warnings))
+	storeWarnings, finishWarningsBuild := newChatSessionWarningWriter(cmd.ErrOrStderr(), launch.warningSink)
+	defer finishWarningsBuild()
+	warnings := storeWarnings
 	store, storeCleanup := InitSessionStore(cfg, storeWarnings)
 	var spawnRunner *SpawnAgentRunner
 	// Failure path: release everything constructed so far, newest first. The

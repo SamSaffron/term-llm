@@ -72,10 +72,13 @@ func Warn(message string, args ...any)  { record(slog.LevelWarn, message, args..
 
 func record(level slog.Level, message string, args ...any) {
 	sink.Lock()
-	defer sink.Unlock()
 	if sink.logger != nil {
 		sink.logger.Log(nil, level, message, args...)
-	} else if level == slog.LevelDebug {
+		sink.Unlock()
+		return
+	}
+	sink.Unlock()
+	if level == slog.LevelDebug {
 		slog.Debug(message, args...)
 	} else {
 		slog.Warn(message, args...)
@@ -110,19 +113,25 @@ func (writer) Write(p []byte) (int, error) {
 
 // Fallback preserves a caller's CLI writer before/after the UI, but prevents
 // detached background workers from writing to it while another UI is active.
+// As with Start, callers must finish synchronous CLI writes before giving a
+// new UI ownership of the terminal.
 func Fallback(out io.Writer) io.Writer { return fallback{out: out} }
 
 type fallback struct{ out io.Writer }
 
 func (w fallback) Write(p []byte) (int, error) {
 	sink.Lock()
-	defer sink.Unlock()
 	if sink.file != nil {
-		return sink.file.Write(p)
+		n, err := sink.file.Write(p)
+		sink.Unlock()
+		return n, err
 	}
+	sink.Unlock()
 	if w.out == nil {
 		return len(p), nil
 	}
+	// A caller's writer can itself be a Fallback (or invoke arbitrary code).
+	// Never hold the global sink lock while dispatching outside the UI.
 	return w.out.Write(p)
 }
 
@@ -130,10 +139,11 @@ func (w fallback) Write(p []byte) (int, error) {
 // a terminal UI, while routing internal runtime diagnostics to the safe sink.
 func Logf(format string, args ...any) {
 	sink.Lock()
-	defer sink.Unlock()
 	if sink.logger != nil {
 		sink.logger.Info(fmt.Sprintf(format, args...))
-	} else {
-		log.Printf(format, args...)
+		sink.Unlock()
+		return
 	}
+	sink.Unlock()
+	log.Printf(format, args...)
 }

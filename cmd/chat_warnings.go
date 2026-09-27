@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/tui/chat"
 )
 
@@ -29,6 +30,27 @@ type tuiWarningWriter struct {
 
 func newTUIWarningWriter(fallback io.Writer) *tuiWarningWriter {
 	return &tuiWarningWriter{fallback: fallback}
+}
+
+// newChatSessionWarningWriter forwards only build-time warnings to the
+// preceding session. Long-lived writers must not retain the preceding session:
+// adopted background runs can write after that session (and the UI) closes.
+func newChatSessionWarningWriter(commandWriter, buildWriter io.Writer) (*tuiWarningWriter, func()) {
+	durable := runtimeoutput.Fallback(commandWriter)
+	writer := newTUIWarningWriter(durable)
+	if buildWriter == nil {
+		return writer, func() {}
+	}
+	// Build runs synchronously while the preceding session still owns the UI.
+	// Do not wrap this temporary route in Fallback: it must reach its footer.
+	writer.setFallback(buildWriter)
+	return writer, func() { writer.setFallback(durable) }
+}
+
+func (w *tuiWarningWriter) setFallback(fallback io.Writer) {
+	w.mu.Lock()
+	w.fallback = fallback
+	w.mu.Unlock()
 }
 
 // attach starts routing warnings to the running program.

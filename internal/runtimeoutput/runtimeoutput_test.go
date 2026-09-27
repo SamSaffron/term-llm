@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestInteractiveDiagnosticsRouteAndRestore(t *testing.T) {
@@ -83,6 +84,53 @@ func TestDetachedWarningFallbackWhileAnotherUIRuns(t *testing.T) {
 	}
 	if got := outside.String(); got != "before\nafter\n" {
 		t.Fatalf("fallback output: %q", got)
+	}
+}
+
+func TestNestedFallbackBeforeDuringAndAfterUI(t *testing.T) {
+	var outside bytes.Buffer
+	writer := Fallback(Fallback(&outside))
+	write := func(text string) {
+		t.Helper()
+		done := make(chan error, 1)
+		go func() { _, err := writer.Write([]byte(text)); done <- err }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("nested fallback write deadlocked")
+		}
+	}
+	write("before\n")
+	closeLog, err := Start(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeLog()
+	write("during\n")
+	closeLog()
+	write("after\n")
+	if got := outside.String(); got != "before\nafter\n" {
+		t.Fatalf("fallback output: %q", got)
+	}
+}
+
+func TestLogfWithFallbackLoggerOutsideUI(t *testing.T) {
+	var outside bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(Fallback(&outside))
+	defer log.SetOutput(old)
+	done := make(chan struct{})
+	go func() { Logf("ordinary logger after UI close"); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Logf deadlocked calling a fallback-backed standard logger")
+	}
+	if !strings.Contains(outside.String(), "ordinary logger after UI close") {
+		t.Fatalf("logger output: %q", outside.String())
 	}
 }
 
