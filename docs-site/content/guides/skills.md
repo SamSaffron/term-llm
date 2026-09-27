@@ -173,6 +173,8 @@ Follow the repository's internal conventions...
 - a non-empty list permits only those names that existing policy already allows;
 - script-backed `tools` declared by the skill are registered before filtering, but still require inclusion in a present allowlist.
 
+These restrictions apply to direct user invocations and isolated skill runs, where the runtime can restore the prior policy when the invocation ends. Model-driven `activate_skill` calls load instructions and register declared tools without narrowing the parent conversation's existing tool surface.
+
 For isolated runs, normal approvals still apply to mutations. Cancellation preserves any partial final output returned by the child and keeps the child transcript linked for inspection. On quit, reload, or server shutdown, active child runners are cancelled and drained before their session store is closed.
 
 ### Structured Web API
