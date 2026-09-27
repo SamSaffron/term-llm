@@ -248,6 +248,8 @@ func (s *serveServer) storeCompletedResponseRun(runtime *serveRuntime, sessionID
 		"usage":         usagePayload(result.Usage),
 		"session_usage": usagePayload(result.SessionUsage),
 		"context_usage": result.ContextUsage,
+		// The client tool calls this response stopped on; authoritative even when empty.
+		"pending_client_calls": pendingClientCallsPayload(result.PendingClientCalls()),
 	}
 	if err := run.complete(map[string]any{
 		"response": completedResponse,

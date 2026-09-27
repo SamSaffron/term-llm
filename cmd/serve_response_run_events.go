@@ -65,6 +65,11 @@ func (r *responseRun) complete(payload map[string]any, usage llm.Usage, sessionU
 	r.status = "completed"
 	r.errorType = ""
 	r.errorMessage = ""
+	if response := mapValue(payload["response"]); response != nil {
+		if calls, ok := response["pending_client_calls"].([]map[string]any); ok {
+			r.pendingClientCalls = calls
+		}
+	}
 	r.usage = usage
 	r.sessionUsage = sessionUsage
 	if err := r.finalizeLifecycleLocked(session.ResponseRunCompleted); err != nil {

@@ -1,4 +1,4 @@
-import type { Message, ToolCall } from './types';
+import type { Message, PendingToolCall, ToolCall } from './types';
 
 /**
  * Client tools are functions the browser page offers the model (via WebMCP)
@@ -72,13 +72,45 @@ export function clientToolDefinitions(
 }
 
 /**
- * Client calls the server handed back when `responseId` ended. The server runs
- * its own tools and keeps looping, so only calls after the last group that
- * contains a server tool are still waiting for the page. (Client calls made in
- * the same turn as server tools are dropped by the server, and must not be
- * answered.)
+ * Parses the server's `pending_client_calls` list. Undefined when the payload
+ * has no list, so callers can tell an older server from "nothing pending".
  */
-export function pendingClientCalls(messages: Message[], responseId: string): PendingClientCall[] {
+export function parsePendingToolCalls(value: unknown): PendingToolCall[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object') return [];
+    const record = entry as Record<string, unknown>;
+    const callId = typeof record.call_id === 'string' ? record.call_id : '';
+    const name = typeof record.name === 'string' ? record.name : '';
+    if (!callId || !name) return [];
+    const args = typeof record.arguments === 'string' ? record.arguments : '';
+    return [{ callId, name, arguments: args || '{}' }];
+  });
+}
+
+/**
+ * Client calls the server handed back when `responseId` ended.
+ *
+ * Servers report them explicitly (`reported`); that list is authoritative even
+ * when empty. Older servers do not, so fall back to the transcript: the server
+ * runs its own tools and keeps looping, so only calls after the last group that
+ * contains a server tool can still be waiting. (Client calls made in the same
+ * turn as server tools are dropped by the server, and must not be answered.)
+ * That fallback misfires when tool-only provider turns share one group.
+ */
+export function pendingClientCalls(
+  messages: Message[],
+  responseId: string,
+  reported?: PendingToolCall[],
+): PendingClientCall[] {
+  if (reported)
+    return reported
+      .filter((call) => isClientToolName(call.name))
+      .map((call) => ({
+        callId: call.callId,
+        name: call.name.slice(CLIENT_TOOL_PREFIX.length),
+        arguments: call.arguments || '{}',
+      }));
   const groups = messages.filter(
     (message) => message.role === 'tool-group' && message.responseId === responseId,
   );
