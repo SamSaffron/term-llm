@@ -6499,6 +6499,12 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.queryByText('No MCP servers yet')).not.toBeInTheDocument();
     expect(screen.getByText('iPhone')).toBeVisible();
     expect(screen.getByText('1 tool · WebMCP from this page')).toBeVisible();
+    // Off until turned on.
+    expect(screen.getByLabelText('0 servers enabled')).toHaveTextContent('0 of 1 on');
+    expect(container.querySelector('.mcp-dot.ready')).toBeNull();
+
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Enable iPhone' }));
+    expect(store.webMCPEnabled.value).toBe(true);
     expect(screen.getByLabelText('1 server enabled')).toHaveTextContent('1 of 1 on');
     expect(container.querySelector('.mcp-dot.ready')).not.toBeNull();
 
@@ -6521,7 +6527,11 @@ describe('Preact-owned chat surfaces', () => {
         <Header />
       </StoreContext.Provider>,
     );
-    expect(screen.getByRole('button', { name: 'Manage MCP servers' })).toHaveTextContent('MCP 1');
+    // Shown while off, so the switch stays one tap away.
+    const button = screen.getByRole('button', { name: 'Manage MCP servers' });
+    expect(button).toHaveTextContent('MCP 0');
+    store.setWebMCPEnabled(true);
+    await waitFor(() => expect(button).toHaveTextContent('MCP 1'));
   });
 
   it('separates MCP enablement from OAuth sign-in actions', async () => {

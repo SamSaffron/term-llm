@@ -24,7 +24,10 @@ export const STORAGE_BASE_KEYS = {
   projectExpansion: 'term_llm_project_expansion',
   sidebarView: 'term_llm_sidebar_view',
   lastProject: 'term_llm_last_project',
-  webMCPDisabledSessions: 'term_llm_webmcp_disabled_sessions',
+  webMCPSessions: 'term_llm_webmcp_sessions',
+  webMCPDefault: 'term_llm_webmcp_default',
+  /** Read once to migrate opt-outs stored before page tools were off by default. */
+  webMCPLegacyDisabledSessions: 'term_llm_webmcp_disabled_sessions',
 } as const;
 
 export type StorageName = keyof typeof STORAGE_BASE_KEYS;
