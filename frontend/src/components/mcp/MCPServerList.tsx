@@ -1,3 +1,4 @@
+import type { ComponentChildren } from 'preact';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../../app/context';
 import type { MCPServer } from '../../domain/types';
@@ -5,7 +6,13 @@ import type { MCPOAuthUIState } from '../../stores/mcp-store';
 import { SearchField } from '../FormFields';
 import { Icon } from '../Icon';
 import { Menu } from '../Menu';
-import { mcpServerMeta, mcpServerTone } from './mcp-format';
+import {
+  mcpServerMeta,
+  mcpServerTone,
+  pageToolsMeta,
+  pageToolsName,
+  type MCPTone,
+} from './mcp-format';
 
 const UNDO_TIMEOUT_MS = 8_000;
 const MENU_GAP_PX = 6;
@@ -166,38 +173,83 @@ function rowMeta(server: MCPServer, oauth: MCPOAuthUIState | undefined): string 
   return mcpServerMeta(server);
 }
 
-function ServerRow({ server, disabled }: { server: MCPServer; disabled: boolean }) {
-  const store = useStore();
-  const checked = store.mcp.value.enabled.includes(server.name);
-  const tone = mcpServerTone(server);
-  const meta = rowMeta(server, store.mcp.value.oauth?.[server.name]);
+/** Dot + name + one muted line + actions + on/off switch. */
+function SwitchRow({
+  name,
+  meta,
+  tone,
+  checked,
+  disabled,
+  onToggle,
+  children,
+}: {
+  name: string;
+  meta: string;
+  tone: MCPTone;
+  checked: boolean;
+  disabled: boolean;
+  onToggle: () => void;
+  children?: ComponentChildren;
+}) {
   return (
     <div class="mcp-row" data-enabled={checked ? 'true' : 'false'} data-tone={tone}>
       <span class={`mcp-dot ${tone}`} aria-hidden="true" />
       <span class="mcp-row-text">
-        <span class="mcp-row-name">{server.name}</span>
+        <span class="mcp-row-name">{name}</span>
         {meta && (
           <span class="mcp-row-meta" title={meta}>
             {meta}
           </span>
         )}
       </span>
-      <AuthActions server={server} />
-      {server.configured && <ServerMenu server={server} disabled={disabled} />}
+      {children}
       <span class="mcp-switch">
         <input
           class="mcp-switch-input"
           type="checkbox"
-          aria-label={`${checked ? 'Disable' : 'Enable'} ${server.name}`}
+          aria-label={`${checked ? 'Disable' : 'Enable'} ${name}`}
           checked={checked}
           disabled={disabled}
-          onChange={() => void store.toggleMCP(server.name)}
+          onChange={onToggle}
         />
         <span class="mcp-switch-track" aria-hidden="true">
           <span class="mcp-switch-thumb" />
         </span>
       </span>
     </div>
+  );
+}
+
+function ServerRow({ server, disabled }: { server: MCPServer; disabled: boolean }) {
+  const store = useStore();
+  return (
+    <SwitchRow
+      name={server.name}
+      meta={rowMeta(server, store.mcp.value.oauth?.[server.name])}
+      tone={mcpServerTone(server)}
+      checked={store.mcp.value.enabled.includes(server.name)}
+      disabled={disabled}
+      onToggle={() => void store.toggleMCP(server.name)}
+    >
+      <AuthActions server={server} />
+      {server.configured && <ServerMenu server={server} disabled={disabled} />}
+    </SwitchRow>
+  );
+}
+
+/** Tools the page itself provides (WebMCP), e.g. the iOS app's device tools. */
+function PageToolsRow({ disabled }: { disabled: boolean }) {
+  const store = useStore();
+  const checked = store.webMCPEnabled.value;
+  return (
+    <SwitchRow
+      name={pageToolsName(store.webMCP.providerName.value)}
+      meta={pageToolsMeta(store.webMCP.tools.value.length)}
+      tone={checked ? 'ready' : 'stopped'}
+      checked={checked}
+      disabled={disabled}
+      onToggle={() => store.setWebMCPEnabled(!checked)}
+    />
   );
 }
 
@@ -297,11 +349,14 @@ export function MCPServerList({ notice, onAdd }: { notice: string; onAdd: () => 
   const state = store.mcp.value;
   const [query, setQuery] = useState('');
   const normalized = query.trim().toLocaleLowerCase();
-  const visible = normalized
-    ? state.servers.filter((server) => server.name.toLocaleLowerCase().includes(normalized))
-    : state.servers;
+  const matches = (name: string) => !normalized || name.toLocaleLowerCase().includes(normalized);
+  const visible = state.servers.filter((server) => matches(server.name));
+  const pageTools = store.webMCP.available.value;
+  const showPageTools = pageTools && matches(pageToolsName(store.webMCP.providerName.value));
   const disabled = state.loading || Boolean(state.pending) || store.streaming.value;
-  const ready = !state.loading && state.servers.length > 0;
+  const total = state.servers.length + (pageTools ? 1 : 0);
+  const enabled = state.enabled.length + (pageTools && store.webMCPEnabled.value ? 1 : 0);
+  const ready = !state.loading && total > 0;
   return (
     <>
       {ready && (
@@ -316,9 +371,9 @@ export function MCPServerList({ notice, onAdd }: { notice: string; onAdd: () => 
           />
           <span
             class="mcp-count"
-            aria-label={`${state.enabled.length} ${state.enabled.length === 1 ? 'server' : 'servers'} enabled`}
+            aria-label={`${enabled} ${enabled === 1 ? 'server' : 'servers'} enabled`}
           >
-            {state.enabled.length} of {state.servers.length} on
+            {enabled} of {total} on
           </span>
         </div>
       )}
@@ -327,17 +382,20 @@ export function MCPServerList({ notice, onAdd }: { notice: string; onAdd: () => 
           <div class="mcp-empty" role="status">
             Loading MCP servers…
           </div>
-        ) : state.servers.length === 0 ? (
+        ) : total === 0 ? (
           <EmptyState onAdd={onAdd} />
-        ) : visible.length === 0 ? (
+        ) : visible.length === 0 && !showPageTools ? (
           <div class="mcp-empty" role="status">
             <strong>No matching servers</strong>
             <span>Try a different name or clear the filter.</span>
           </div>
         ) : (
-          visible.map((server) => (
-            <ServerRow key={server.name} server={server} disabled={disabled} />
-          ))
+          <>
+            {showPageTools && <PageToolsRow disabled={store.streaming.value} />}
+            {visible.map((server) => (
+              <ServerRow key={server.name} server={server} disabled={disabled} />
+            ))}
+          </>
         )}
       </div>
       <ErrorPanel />

@@ -127,7 +127,12 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// attempt-discard handling and overflow recovery), the delegation context
 		// surface, the subagent index and the delegated composer modes, bringing
 		// the shell to ~535.1/151.3 kB. Same ~1% rule as above.
-		"dist/app.js":                {raw: 541_000, gzip: 153_000},
+		//
+		// Page-provided (WebMCP) tools add the eager tool discovery store, the
+		// client-tool runner, and the run engine's tool-output continuation;
+		// discovery must run at startup, so none of it can be lazy. That brings
+		// the shell to ~527.0/153.9 kB raw/gzip. Same ~1% rule as above.
+		"dist/app.js":                {raw: 541_000, gzip: 155_500},
 		"dist/chunks/Lightbox.js":    {raw: 8_000, gzip: 3_200},
 		"dist/assets/Lightbox.css":   {raw: 4_000, gzip: 1_400},
 		"dist/chunks/StatsModal.js":  {raw: 8_000, gzip: 3_000},

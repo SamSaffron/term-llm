@@ -403,6 +403,9 @@
 }
 
 .mcp-switch-track {
+  /* The checkbox covers the whole switch; the transformed thumb must not
+     paint over it and swallow taps. */
+  pointer-events: none;
   display: inline-flex;
   align-items: center;
   width: 32px;

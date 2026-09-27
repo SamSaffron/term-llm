@@ -38,6 +38,7 @@ import { RuntimeStore } from './runtime-store';
 import { InteractionStore } from './interaction-store';
 import { SideQuestionStore } from './side-question-store';
 import { MCPStore, type MCPOAuthUIState, type MCPRemovedServer } from './mcp-store';
+import { WebMCPStore } from './webmcp-store';
 import { WorktreeStore } from './worktree-store';
 import { GoalStore } from './goal-store';
 import { PlanStore } from './plan-store';
@@ -111,6 +112,10 @@ export class AppStore {
   readonly interactionStore: InteractionStore;
   readonly sideQuestions: SideQuestionStore;
   readonly mcpStore: MCPStore;
+  /** Tools the page provides via WebMCP, e.g. the iOS app's device tools. */
+  readonly webMCP: WebMCPStore;
+  /** Whether the conversation the MCP dialog controls may use the page's tools. */
+  readonly webMCPEnabled: ReadonlySignal<boolean>;
   readonly worktreeStore: WorktreeStore;
   readonly goalStore: GoalStore;
   readonly planStore: PlanStore;
@@ -377,6 +382,9 @@ export class AppStore {
     });
     this.mcp = this.mcpStore.state;
     this.mcpRemoved = this.mcpStore.removed;
+    this.webMCP = new WebMCPStore(this.services);
+    this.webMCP.start();
+    this.webMCPEnabled = computed(() => this.webMCP.enabledFor(this.mcpSessionId()));
     this.worktreeStore = new WorktreeStore(this.services, {
       projectsEnabled: this.projectsEnabled,
       worktreesEnabled: this.worktreesEnabled,
@@ -438,7 +446,11 @@ export class AppStore {
         applyResponseEvent: (sessionId, event, owner) =>
           this.applyResponseEvent(sessionId, event, owner),
         draftMCPEnabled: (draftId) => this.mcpStore.enabledFor(draftId),
-        rekeyMCP: (oldId, newId) => this.mcpStore.rekey(oldId, newId),
+        rekeyMCP: (oldId, newId) => {
+          this.mcpStore.rekey(oldId, newId);
+          this.webMCP.rekey(oldId, newId);
+        },
+        clientTools: this.webMCP,
       },
     );
     this.runs = this.runEngine.runs;
@@ -540,6 +552,7 @@ export class AppStore {
       onPendingIntentStorage: () => {
         this.pendingIntents.value = readPendingIntents(this.storage, this.keys.pendingIntents);
       },
+      onWebMCPSettingsStorage: () => this.webMCP.reloadSettings(),
       serverEventsEnabled: () =>
         this.serverEventFeedEnabled && this.serverEventCoordinator?.mode !== 'unsupported',
     });
@@ -1457,6 +1470,13 @@ export class AppStore {
   dismissRemovedMCPServer(): void {
     this.mcpStore.dismissRemoved();
   }
+  setWebMCPEnabled(enabled: boolean): void {
+    this.webMCP.setEnabled(this.mcpSessionId(), enabled);
+  }
+  /** The conversation MCP settings apply to: the active one, or the draft. */
+  private mcpSessionId(): string {
+    return this.activeSession.value?.id || this.composer.runtimeDraftId();
+  }
   async saveGoal(goal: Goal | { action: string }): Promise<void> {
     const sessionId = 'objective' in goal ? await this.materializeSession() : undefined;
     await this.goalStore.save(goal, sessionId);
@@ -1659,6 +1679,7 @@ export class AppStore {
     this.persistCurrentDraft();
     this.lifecycleAbort.abort();
     this.sideQuestions.dispose();
+    this.webMCP.dispose();
     this.runtime.dispose();
     this.sessionStore.dispose();
     this.selectionStore.dispose();

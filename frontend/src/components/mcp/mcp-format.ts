@@ -34,6 +34,15 @@ export function mcpServerMeta(server: MCPServer): string {
   }
 }
 
+/** Row name for page-provided (WebMCP) tools: where they run. */
+export function pageToolsName(provider: string): string {
+  return provider || 'This page';
+}
+
+export function pageToolsMeta(tools: number): string {
+  return `${tools} tool${tools === 1 ? '' : 's'} · WebMCP from this page`;
+}
+
 /**
  * Parses one `key<separator>value` pair per line (blank lines and `#` comments
  * are ignored), as typed into the headers and environment fields.

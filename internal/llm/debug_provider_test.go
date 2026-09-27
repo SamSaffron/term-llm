@@ -974,6 +974,31 @@ func TestGenerateWriteContent(t *testing.T) {
 	}
 }
 
+func TestParseCommandCallsAnyOfferedTool(t *testing.T) {
+	tools := []ToolSpec{{Name: "webmcp__ping"}}
+
+	calls := parseCommand("call webmcp__ping message=hi mode=a=b", tools)
+	if len(calls) != 1 || calls[0].Name != "webmcp__ping" {
+		t.Fatalf("calls = %#v, want one webmcp__ping call", calls)
+	}
+	var args map[string]string
+	if err := json.Unmarshal(calls[0].Arguments, &args); err != nil {
+		t.Fatalf("unmarshal args: %v", err)
+	}
+	if args["message"] != "hi" || args["mode"] != "a=b" || len(args) != 2 {
+		t.Fatalf("args = %#v", args)
+	}
+	if calls := parseCommand("call webmcp__ping x2", tools); len(calls) != 2 {
+		t.Fatalf("multiplier: got %d calls, want 2", len(calls))
+	}
+
+	for _, prompt := range []string{"call", "call missing_tool", "call webmcp__ping nokeyvalue", "call webmcp__ping =v"} {
+		if calls := parseCommand(prompt, tools); calls != nil {
+			t.Errorf("parseCommand(%q) = %#v, want nil", prompt, calls)
+		}
+	}
+}
+
 func TestParseCommandWriteLines(t *testing.T) {
 	t.Parallel()
 

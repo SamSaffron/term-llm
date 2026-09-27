@@ -6467,6 +6467,63 @@ describe('Preact-owned chat surfaces', () => {
     expect(store.toggleMCP).toHaveBeenCalledWith('discourse');
   });
 
+  /** Simulates a page (e.g. the iOS app) that injected WebMCP device tools. */
+  async function withPageTools(store: AppStore): Promise<void> {
+    await store.webMCP.refresh(); // settle the initial, empty discovery first
+    store.webMCP.tools.value = [
+      {
+        name: 'ping',
+        title: 'Ping',
+        description: 'Check the phone',
+        inputSchema: { type: 'object', properties: {} },
+        readOnly: true,
+      },
+    ];
+    store.webMCP.providerName.value = 'iPhone';
+  }
+
+  it('lists page-provided WebMCP tools as a switchable server', async () => {
+    const store = createStore();
+    store.modal.value = 'mcp';
+    store.mcp.value = { servers: [], enabled: [], loading: false, pending: '', error: '' };
+    store.loadMCP = vi.fn(async () => undefined);
+    await withPageTools(store);
+
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    expect(await screen.findByRole('dialog', { name: 'MCP servers' })).toBeVisible();
+    expect(screen.queryByText('No MCP servers yet')).not.toBeInTheDocument();
+    expect(screen.getByText('iPhone')).toBeVisible();
+    expect(screen.getByText('1 tool · WebMCP from this page')).toBeVisible();
+    expect(screen.getByLabelText('1 server enabled')).toHaveTextContent('1 of 1 on');
+    expect(container.querySelector('.mcp-dot.ready')).not.toBeNull();
+
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Disable iPhone' }));
+    expect(store.webMCPEnabled.value).toBe(false);
+    expect(screen.getByRole('checkbox', { name: 'Enable iPhone' })).not.toBeChecked();
+    expect(screen.getByLabelText('0 servers enabled')).toHaveTextContent('0 of 1 on');
+
+    fireEvent.input(screen.getByRole('searchbox', { name: 'Filter MCP servers' }), {
+      target: { value: 'github' },
+    });
+    expect(screen.getByText('No matching servers')).toBeVisible();
+  });
+
+  it('counts page tools in the header MCP button', async () => {
+    const store = createStore();
+    await withPageTools(store);
+    render(
+      <StoreContext.Provider value={store}>
+        <Header />
+      </StoreContext.Provider>,
+    );
+    expect(screen.getByRole('button', { name: 'Manage MCP servers' })).toHaveTextContent('MCP 1');
+  });
+
   it('separates MCP enablement from OAuth sign-in actions', async () => {
     const store = createStore();
     store.modal.value = 'mcp';

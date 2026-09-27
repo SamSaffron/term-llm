@@ -255,10 +255,12 @@ export function Header() {
     store.shellStore.status.value !== 'idle',
   );
   const mcpOwnerId = session?.id || store.composer.runtimeDraftId();
+  const pageTools = store.webMCP.available.value && store.webMCPEnabled.value ? 1 : 0;
   const mcpCount =
-    store.mcp.value.ownerId === mcpOwnerId
+    pageTools +
+    (store.mcp.value.ownerId === mcpOwnerId
       ? store.mcp.value.enabled.length
-      : session?.mcpEnabled?.length || 0;
+      : session?.mcpEnabled?.length || 0);
   const currentWorktreeDir = store.currentWorktreeDir.value;
   const loadedDiff =
     session && store.diff.value.sessionId === session.id && store.diff.value.files.length
