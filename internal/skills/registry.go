@@ -2,6 +2,7 @@ package skills
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -294,11 +295,11 @@ func (r *Registry) HasAnySkill() (bool, error) {
 
 			skill, err := loadFromSkillManifest(skillDir, manifest, sp.source, false)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "warning: skipping invalid skill %s: %v\n", skillDir, err)
+				logSkippedInvalidSkill(skillDir, err)
 				continue
 			}
 			if err := skill.Validate(); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: skipping invalid skill %s: %v\n", skillDir, err)
+				logSkippedInvalidSkill(skillDir, err)
 				continue
 			}
 
@@ -715,6 +716,13 @@ func (r *Registry) scanDir(dir string, source SkillSource) ([]*Skill, error) {
 	return r.scanDirWithFingerprint(dir, source, nil)
 }
 
+// Invalid ecosystem skills are expected during broad discovery. Keep them
+// diagnosable without writing directly to stderr, which bypasses terminal UI
+// rendering and can corrupt the display each time a registry is scanned.
+func logSkippedInvalidSkill(skillDir string, err error) {
+	slog.Debug("skipping invalid skill", "path", skillDir, "error", err)
+}
+
 func (r *Registry) scanDirWithFingerprint(dir string, source SkillSource, fingerprint *strings.Builder) ([]*Skill, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -739,13 +747,12 @@ func (r *Registry) scanDirWithFingerprint(dir string, source SkillSource, finger
 		// Load metadata only for listing
 		skill, err := loadFromSkillManifest(skillDir, manifest, source, false)
 		if err != nil {
-			// Skip invalid skills with a diagnostic
-			fmt.Fprintf(os.Stderr, "warning: skipping invalid skill %s: %v\n", skillDir, err)
+			logSkippedInvalidSkill(skillDir, err)
 			continue
 		}
 
 		if err := skill.Validate(); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: skipping invalid skill %s: %v\n", skillDir, err)
+			logSkippedInvalidSkill(skillDir, err)
 			continue
 		}
 
