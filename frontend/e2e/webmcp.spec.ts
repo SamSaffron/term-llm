@@ -39,6 +39,12 @@ async function rememberPageToolsOn(page: Page): Promise<void> {
   await page.addInitScript(() => localStorage.setItem('term_llm_webmcp_default', 'true'));
 }
 
+/** Through the composer's + menu: the header chip only counts servers that are on. */
+async function openMCPDialog(page: Page): Promise<void> {
+  await page.getByRole('button', { name: 'Add', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'MCP servers' }).click();
+}
+
 async function send(page: Page, prompt: string): Promise<void> {
   const composer = page.getByRole('textbox', { name: 'Message' });
   await expect(composer).toBeVisible();
@@ -89,7 +95,7 @@ test('lists page tools as an MCP server that is off until turned on', async ({
   await installPageTool(page);
   await page.goto('./?new=1');
 
-  await page.getByRole('button', { name: 'Manage MCP servers' }).click();
+  await openMCPDialog(page);
   const dialog = page.getByRole('dialog', { name: 'MCP servers' });
   await expect(dialog.getByText('iPhone')).toBeVisible();
   await expect(dialog.getByText('1 tool · WebMCP from this page')).toBeVisible();
@@ -103,13 +109,13 @@ test('lists page tools as an MCP server that is off until turned on', async ({
   expect(await page.evaluate(() => window.__pingCalls)).toEqual([]);
 
   // Turning it on becomes the default for the next new conversation.
-  await page.getByRole('button', { name: 'Manage MCP servers' }).click();
+  await openMCPDialog(page);
   // A real click on the switch.
   await dialog.getByRole('checkbox', { name: 'Enable iPhone' }).check();
   await expect(dialog.getByText('1 of 1 on')).toBeVisible();
   await page.keyboard.press('Escape');
 
   await page.goto('./?new=1');
-  await page.getByRole('button', { name: 'Manage MCP servers' }).click();
+  await openMCPDialog(page);
   await expect(dialog.getByRole('checkbox', { name: 'Disable iPhone' })).toBeChecked();
 });

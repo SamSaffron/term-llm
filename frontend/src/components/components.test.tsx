@@ -6527,11 +6527,11 @@ describe('Preact-owned chat surfaces', () => {
         <Header />
       </StoreContext.Provider>,
     );
-    // Shown while off, so the switch stays one tap away.
-    const button = screen.getByRole('button', { name: 'Manage MCP servers' });
-    expect(button).toHaveTextContent('MCP 0');
+    // Off by default, so nothing to count yet.
+    expect(screen.queryByRole('button', { name: 'Manage MCP servers' })).toBeNull();
     store.setWebMCPEnabled(true);
-    await waitFor(() => expect(button).toHaveTextContent('MCP 1'));
+    const button = await screen.findByRole('button', { name: 'Manage MCP servers' });
+    expect(button).toHaveTextContent('MCP 1');
   });
 
   it('separates MCP enablement from OAuth sign-in actions', async () => {

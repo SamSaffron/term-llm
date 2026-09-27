@@ -338,8 +338,7 @@ export function Header() {
           <div class="header-controls-row">
             <div class="header-stats" id="headerStats">
               <RuntimePicker />
-              {/* Page tools start off; keep their switch one tap away on the phone. */}
-              {(mcpCount > 0 || store.webMCP.available.value) && (
+              {mcpCount > 0 && (
                 <button
                   type="button"
                   class="mcp-status header-action"
