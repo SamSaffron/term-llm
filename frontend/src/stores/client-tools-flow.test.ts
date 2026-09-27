@@ -204,7 +204,8 @@ describe('client tool continuation', () => {
     expect(store.runActive.value).toBe(true);
     expect(store.sendBlocked.value).toBe(true);
     expect(store.canStop.value).toBe(true);
-    expect(store.activeProjection.value?.phase).toBe('Running ping on iPhone…');
+    // Progress lives in the tool block, not a transient phase line.
+    expect(store.activeProjection.value?.phase).toBeUndefined();
 
     await store.cancel();
     finish('too late');
@@ -239,6 +240,58 @@ describe('client tool continuation', () => {
     loaded();
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(store.endpoints.createResponse).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs page calls that follow a tool-only server turn in the same response', async () => {
+    // Session 5319: web_search, then read_url, then page calls, with no text
+    // between provider turns. The live transcript folds every call into one
+    // tool group, so only the server's pending list identifies what to run.
+    const context = installDeviceTools(async (input) => `pong: ${input.message}`);
+    const store = await chatStore();
+    const server = { type: 'function_call', id: 'fc_call_s', call_id: 'call_s', name: 'read_url' };
+    const page = {
+      type: 'function_call',
+      id: 'fc_call_2',
+      call_id: 'call_2',
+      name: 'webmcp__ping',
+    };
+    store.endpoints.createResponse = vi
+      .fn()
+      .mockResolvedValueOnce(
+        sse('r1', [
+          ['response.created', { response: { id: 'r1', status: 'in_progress' } }],
+          ['response.output_item.added', { item: { ...server, arguments: '' }, output_index: 0 }],
+          ['response.output_item.done', { item: { ...server, arguments: '{}' }, output_index: 0 }],
+          ['response.output_item.added', { item: { ...page, arguments: '' }, output_index: 1 }],
+          [
+            'response.output_item.done',
+            { item: { ...page, arguments: '{"message":"hi"}' }, output_index: 1 },
+          ],
+          [
+            'response.completed',
+            {
+              response: {
+                id: 'r1',
+                status: 'completed',
+                pending_client_calls: [
+                  { call_id: 'call_2', name: 'webmcp__ping', arguments: '{"message":"hi"}' },
+                ],
+              },
+              final_rev: 1,
+            },
+          ],
+        ]),
+      )
+      .mockResolvedValueOnce(sse('r2', textFrames('r2', 'Your iPhone answered.')));
+
+    store.prompt.value = 'Look it up, then ping my phone';
+    await store.send();
+
+    await vi.waitFor(() => expect(store.endpoints.createResponse).toHaveBeenCalledTimes(2));
+    expect(context.executeTool).toHaveBeenCalledTimes(1);
+    expect(requestBody(store, 1)).toMatchObject({
+      input: [{ type: 'function_call_output', call_id: 'call_2', output: 'pong: hi' }],
+    });
   });
 
   it('does not run calls for tools this page did not offer', async () => {

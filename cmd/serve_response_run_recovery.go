@@ -315,6 +315,9 @@ func (r *responseRun) snapshot() map[string]any {
 		if r.durableHandoffErr != "" {
 			payload["durable_handoff_error"] = r.durableHandoffErr
 		}
+		if r.status == "completed" && r.pendingClientCalls != nil {
+			payload["pending_client_calls"] = r.pendingClientCalls
+		}
 	}
 	if r.reasoningEffortSet {
 		payload["reasoning_effort"] = r.reasoningEffort

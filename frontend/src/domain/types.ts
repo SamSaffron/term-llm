@@ -555,5 +555,18 @@ export interface ActiveRun {
   notificationSubscriptionId?: string;
   finalRev?: number;
   durableHandoff?: boolean;
+  /**
+   * Tool calls the completed response stopped on, as reported by the server.
+   * Undefined when the server did not say (older servers).
+   */
+  pendingToolCalls?: PendingToolCall[];
   summary?: string;
+}
+
+/** A tool call a completed response handed back unanswered. */
+export interface PendingToolCall {
+  callId: string;
+  /** The model-facing name, including any client-tool prefix. */
+  name: string;
+  arguments: string;
 }

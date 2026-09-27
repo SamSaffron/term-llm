@@ -10,7 +10,7 @@ import {
   type ResponseEvent,
   type ResponseProjection,
 } from '../domain/response';
-import type { ClientToolOutputItem } from '../domain/client-tools';
+import { parsePendingToolCalls, type ClientToolOutputItem } from '../domain/client-tools';
 import { applyRuntimeToRequest, defaultProvider } from '../domain/runtime';
 import { errorMessage } from '../domain/text';
 import {
@@ -1729,6 +1729,10 @@ export class RunEngine {
           endedAt: Number(snapshot.ended_at) || existing.run.endedAt,
           finalRev: terminal ? Number(snapshot.final_rev) || 0 : undefined,
           durableHandoff: terminal ? snapshot.durable_handoff === true : undefined,
+          pendingToolCalls:
+            status === 'completed'
+              ? parsePendingToolCalls(snapshot.pending_client_calls)
+              : undefined,
           error:
             status === 'failed'
               ? String(snapshotError?.message || existing.run.error || 'Response failed')

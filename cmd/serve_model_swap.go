@@ -669,6 +669,8 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 			"usage":         usagePayload(result.Usage),
 			"session_usage": usagePayload(result.SessionUsage),
 			"context_usage": result.ContextUsage,
+			// The client tool calls this response stopped on; authoritative even when empty.
+			"pending_client_calls": pendingClientCallsPayload(result.PendingClientCalls()),
 		}
 		if effort := strings.TrimSpace(exec.plan.requestedEffort); effort != "" {
 			completeResponse["reasoning_effort"] = effort
@@ -768,6 +770,8 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 		"usage":         usagePayload(result.Usage),
 		"session_usage": usagePayload(result.SessionUsage),
 		"context_usage": result.ContextUsage,
+		// The client tool calls this response stopped on; authoritative even when empty.
+		"pending_client_calls": pendingClientCallsPayload(result.PendingClientCalls()),
 	}
 	if effort := strings.TrimSpace(exec.plan.requestedEffort); effort != "" {
 		completeResponse["reasoning_effort"] = effort

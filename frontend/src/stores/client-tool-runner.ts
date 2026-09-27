@@ -85,7 +85,11 @@ export class ClientToolRunner {
     if (!this.offered.delete(responseId) || status !== 'completed' || this.disposed) return;
     // One continuation per conversation at a time.
     if (this.running.peek()[sessionId]) return;
-    const calls = pendingClientCalls(projection.messages, responseId);
+    const calls = pendingClientCalls(
+      projection.messages,
+      responseId,
+      projection.run.pendingToolCalls,
+    );
     if (calls.length) void this.run(sessionId, responseId, calls);
   }
 
@@ -140,7 +144,7 @@ export class ClientToolRunner {
     signal: AbortSignal,
   ): Promise<ClientToolOutputItem[] | null> {
     try {
-      const outputs = await this.execute(sessionId, responseId, calls, provider, signal);
+      const outputs = await this.execute(sessionId, responseId, calls, signal);
       if (!outputs) return null;
       // Stop must not wait out a slow refresh; the refresh may finish unobserved.
       const current = await Promise.race([
@@ -160,7 +164,6 @@ export class ClientToolRunner {
     sessionId: string,
     responseId: string,
     calls: PendingClientCall[],
-    provider: string,
     signal: AbortSignal,
   ): Promise<ClientToolOutputItem[] | null> {
     const outputs: ClientToolOutputItem[] = [];
@@ -169,7 +172,6 @@ export class ClientToolRunner {
       const startedAt = Date.now();
       this.update(sessionId, responseId, (projection) => ({
         ...projection,
-        phase: `Running ${call.name} on ${provider}…`,
         messages: patchToolCalls(projection.messages, ids, { status: 'running', startedAt }),
       }));
       const result = await this.host.bridge.run(call, signal);
@@ -177,7 +179,6 @@ export class ClientToolRunner {
       const endedAt = Date.now();
       this.update(sessionId, responseId, (projection) => ({
         ...projection,
-        phase: undefined,
         messages: patchToolCalls(projection.messages, ids, {
           status: stopped ? 'cancelled' : result.ok ? 'done' : 'error',
           resultStatus: result.ok ? 'success' : 'error',

@@ -93,7 +93,8 @@ describe('ClientToolRunner', () => {
 
     await vi.waitFor(() => expect(host.bridge.run).toHaveBeenCalled());
     expect(running.value).toBe(true);
-    expect(runs.value.s1.phase).toBe('Running ping on iPhone…');
+    // Progress lives in the tool block, not a transient phase line.
+    expect(runs.value.s1.phase).toBeUndefined();
     expect(runs.value.s1.messages[0].tools?.[0].status).toBe('running');
 
     expect(runner.stop('s1')).toBe(true);

@@ -913,6 +913,7 @@ type Event struct {
 	ReasoningIndex             int           // For EventReasoningDelta: provider reasoning block/index when available
 	ReasoningFinal             bool          // For EventReasoningDelta: true when provider marks the reasoning block complete
 	Tool                       *ToolCall
+	ToolInline                 bool            // For EventToolCall: executed inline during the provider stream, outside the end-of-turn tool split
 	ToolCallID                 string          // For EventToolExecStart/End: unique ID of this tool invocation
 	ToolName                   string          // For EventToolExecStart/End: name of tool being executed
 	ToolInfo                   string          // For EventToolExecStart/End: additional info (e.g., URL being fetched)

@@ -1,3 +1,4 @@
+import { parsePendingToolCalls } from './client-tools';
 import { normalizeSteering } from './steering';
 import type {
   ActiveRun,
@@ -903,6 +904,10 @@ export function reduceResponse(
           endedAt: number(event.ended_at, Date.now()),
           finalRev: number(event.final_rev),
           durableHandoff: event.durable_handoff === true,
+          pendingToolCalls: parsePendingToolCalls(
+            event.pending_client_calls ??
+              (event.response as Record<string, unknown> | undefined)?.pending_client_calls,
+          ),
         },
         usage: (event.usage ||
           (event.response as Record<string, unknown> | undefined)?.usage ||

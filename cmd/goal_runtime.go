@@ -312,6 +312,7 @@ func (rt *serveRuntime) runActiveGoalLoop(ctx context.Context, stateful bool, re
 		replaceHistory = false
 		aggregate.Text.WriteString(result.Text.String())
 		aggregate.ToolCalls = append(aggregate.ToolCalls, result.ToolCalls...)
+		aggregate.clientCalls = result.clientCalls
 		aggregate.Usage.Add(result.Usage)
 		aggregate.SessionUsage = result.SessionUsage
 		if passUsage.IsZero() {

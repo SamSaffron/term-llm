@@ -3,6 +3,7 @@ import {
   CLIENT_TOOL_PREFIX,
   clientToolDefinitions,
   isValidClientToolName,
+  parsePendingToolCalls,
   parseToolArguments,
   patchToolCalls,
   pendingClientCalls,
@@ -91,9 +92,55 @@ describe('pendingClientCalls', () => {
     ]);
   });
 
+  it('trusts the server-reported list over transcript grouping', () => {
+    // Tool-only provider turns fold server and page calls into one group.
+    const folded = group('r1', [
+      { id: 'call_s', name: 'web_search' },
+      { id: 'call_r', name: 'read_url' },
+      ping,
+      { id: 'call_2', name: `${CLIENT_TOOL_PREFIX}info` },
+    ]);
+    const reported = [
+      { callId: 'call_1', name: ping.name, arguments: ping.arguments },
+      { callId: 'call_2', name: `${CLIENT_TOOL_PREFIX}info`, arguments: '' },
+      { callId: 'call_x', name: 'shell', arguments: '{}' },
+    ];
+    expect(pendingClientCalls([folded], 'r1')).toEqual([]);
+    expect(pendingClientCalls([folded], 'r1', reported)).toEqual([
+      { callId: 'call_1', name: 'ping', arguments: '{"message":"hi"}' },
+      { callId: 'call_2', name: 'info', arguments: '{}' },
+    ]);
+    // An empty report is authoritative: nothing is waiting.
+    expect(pendingClientCalls([group('r1', [ping])], 'r1', [])).toEqual([]);
+  });
+
   it('only looks at the given response', () => {
     expect(pendingClientCalls([group('r0', [ping])], 'r1')).toEqual([]);
     expect(pendingClientCalls([group('r1', [{ id: 'call_s', name: 'shell' }])], 'r1')).toEqual([]);
+  });
+});
+
+describe('parsePendingToolCalls', () => {
+  it('distinguishes a missing list from an empty one', () => {
+    expect(parsePendingToolCalls(undefined)).toBeUndefined();
+    expect(parsePendingToolCalls({})).toBeUndefined();
+    expect(parsePendingToolCalls([])).toEqual([]);
+  });
+
+  it('keeps well-formed entries only', () => {
+    expect(
+      parsePendingToolCalls([
+        { call_id: 'call_1', name: 'webmcp__ping', arguments: '{"a":1}' },
+        { call_id: 'call_2', name: 'webmcp__info' },
+        { call_id: '', name: 'webmcp__bad' },
+        { call_id: 'call_3' },
+        null,
+        'call_4',
+      ]),
+    ).toEqual([
+      { callId: 'call_1', name: 'webmcp__ping', arguments: '{"a":1}' },
+      { callId: 'call_2', name: 'webmcp__info', arguments: '{}' },
+    ]);
   });
 });
 

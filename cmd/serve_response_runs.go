@@ -147,6 +147,7 @@ type responseRun struct {
 	atomicTranscriptFencing bool
 	finalRevReader          func() (int64, error)
 	durableHandoff          bool
+	pendingClientCalls      []map[string]any // authoritative on completion; nil if omitted
 	durableOutputCount      int
 	durableHandoffErr       string
 	continuationResponseID  string
