@@ -1692,8 +1692,22 @@ describe('AppStore compatibility behavior', () => {
       store.endpoints.sessions = vi.fn(async () => ({ object: 'list', data: [session()] }));
       store.endpoints.sidebar = vi.fn(async () => ({ groups: [], recent_sessions: [session()] }));
       store.endpoints.selectedSession = vi.fn(async () => ({
-        selected_session: { ...session(), id: 'older-session', number: 5093 },
-        selected_transcript: { bodies: { messages: [] } },
+        selected_session: {
+          ...session(),
+          id: 'older-session',
+          number: 5093,
+          attention_store_instance_id: 'store-a',
+          attention_seq: 7,
+          seen_through_seq: 0,
+          attention_final_rev: 1,
+          attention_unseen: true,
+        },
+        selected_transcript: { bodies: { rev: 1, messages: [] } },
+      }));
+      store.endpoints.markAttentionSeen = vi.fn(async () => ({
+        store_instance_id: 'store-a',
+        latest_attention_seq: 7,
+        seen_through_seq: 7,
       }));
       store.endpoints.sessionState = vi.fn(async () => ({}));
       store.endpoints.skills = vi.fn(async () => ({ skills: [] }));
@@ -1705,6 +1719,11 @@ describe('AppStore compatibility behavior', () => {
         expect(store.endpoints.selectedSession).toHaveBeenCalledWith('5093');
         expect(store.activeSessionId.value).toBe('older-session');
         expect(location.pathname).toBe('/ui/chat/5093');
+        expect(store.endpoints.markAttentionSeen).toHaveBeenCalledWith(
+          'older-session',
+          'store-a',
+          7,
+        );
       } finally {
         store.dispose();
         history.replaceState(null, '', previousRoute);
@@ -1712,7 +1731,106 @@ describe('AppStore compatibility behavior', () => {
     },
   );
 
+  it('keeps the bootstrap draft and project fallback when a deep link is missing', async () => {
+    const previousRoute = `${location.pathname}${location.search}${location.hash}`;
+    history.replaceState(null, '', '/ui/chat/9999');
+    const seed = new AppStore(config);
+    localStorage.setItem(seed.keys.lastProject, 'p1');
+    localStorage.setItem(seed.keys.draftSessionActive, 'draft:missing');
+    saveDraft(localStorage, seed.keys.draftMessages, {
+      sessionId: 'draft:missing',
+      content: 'unsent draft',
+      updated: Date.now(),
+      rev: 0,
+      model: 'test-model',
+    });
+    const store = new AppStore(config);
+    store.endpoints.capabilities = vi.fn(async () => ({ projects: { enabled: true } }));
+    store.endpoints.providers = vi.fn(async () => ({ object: 'list', data: [] }));
+    store.endpoints.models = vi.fn(async () => ({ object: 'list', data: [] }));
+    store.endpoints.sidebar = vi.fn(async () => ({
+      groups: [{ project: { id: 'p1', name: 'One' }, sessions: [] }],
+    }));
+    store.endpoints.selectedSession = vi.fn(async () => ({ selected_session: null }));
+    (store as unknown as { startStatusPoll(): void }).startStatusPoll = vi.fn();
+    try {
+      await store.bootstrap();
+      expect(store.draftActive.value).toBe(true);
+      expect(store.activeProjectId.value).toBe('p1');
+      expect(store.prompt.value).toBe('unsent draft');
+      expect(location.pathname).toBe('/ui/');
+      expect(store.toasts.value).toEqual([]);
+    } finally {
+      store.dispose();
+      history.replaceState(null, '', previousRoute);
+    }
+  });
+
+  it('reports an initial deep-link lookup failure instead of declaring bootstrap complete', async () => {
+    const previousRoute = `${location.pathname}${location.search}${location.hash}`;
+    history.replaceState(null, '', '/ui/chat/5093');
+    const store = new AppStore(config);
+    store.endpoints.capabilities = vi.fn(async () => ({ projects: { enabled: false } }));
+    store.endpoints.providers = vi.fn(async () => ({ object: 'list', data: [] }));
+    store.endpoints.models = vi.fn(async () => ({ object: 'list', data: [] }));
+    store.endpoints.sessions = vi.fn(async () => ({ object: 'list', data: [session()] }));
+    store.endpoints.selectedSession = vi.fn(async () => {
+      throw new APIError('Unauthorized', 401);
+    });
+    try {
+      await expect(store.bootstrap(true)).rejects.toMatchObject({ status: 401 });
+      expect(store.startupDone.value).toBe(false);
+      expect(store.startupFailed.value).toBe(true);
+      expect(store.authRequired.value).toBe(true);
+      expect(location.pathname).toBe('/ui/chat/5093');
+    } finally {
+      store.dispose();
+      history.replaceState(null, '', previousRoute);
+    }
+  });
+
+  it('does not replace browser Back with a late startup deep-link result', async () => {
+    const previousRoute = `${location.pathname}${location.search}${location.hash}`;
+    history.replaceState(null, '', '/ui/chat/1');
+    history.pushState(null, '', '/ui/chat/5093');
+    const store = new AppStore(config);
+    store.endpoints.capabilities = vi.fn(async () => ({ projects: { enabled: false } }));
+    store.endpoints.providers = vi.fn(async () => ({ object: 'list', data: [] }));
+    store.endpoints.models = vi.fn(async () => ({ object: 'list', data: [] }));
+    store.endpoints.sessions = vi.fn(async () => ({
+      object: 'list',
+      data: [{ ...session(), number: 1 }],
+    }));
+    const lookup = deferred<Record<string, unknown>>();
+    store.endpoints.selectedSession = vi.fn(async (id: string) =>
+      id === '5093'
+        ? lookup.promise
+        : {
+            selected_session: { ...session(), number: 1 },
+            selected_transcript: { bodies: { messages: [] } },
+          },
+    );
+    store.endpoints.sessionState = vi.fn(async () => ({}));
+    store.endpoints.skills = vi.fn(async () => ({ skills: [] }));
+    store.endpoints.tree = vi.fn(async () => ({}));
+    (store as unknown as { startStatusPoll(): void }).startStatusPoll = vi.fn();
+    try {
+      const bootstrap = store.bootstrap();
+      await vi.waitFor(() => expect(store.endpoints.selectedSession).toHaveBeenCalledWith('5093'));
+      history.replaceState(null, '', '/ui/chat/1');
+      lookup.resolve({ selected_session: { ...session(), id: 'older-session', number: 5093 } });
+      await bootstrap;
+      expect(store.activeSessionId.value).toBe('s1');
+      expect(location.pathname).toBe('/ui/chat/1');
+    } finally {
+      store.dispose();
+      history.replaceState(null, '', previousRoute);
+    }
+  });
+
   it('bootstraps no-project mode without calling the project-only sidebar endpoint', async () => {
+    const previousRoute = `${location.pathname}${location.search}${location.hash}`;
+    history.replaceState(null, '', '/ui/');
     const store = new AppStore(config);
     store.endpoints.capabilities = vi.fn(async () => ({
       projects: { enabled: false },
@@ -1731,6 +1849,7 @@ describe('AppStore compatibility behavior', () => {
     expect(store.startupDone.value).toBe(true);
     expect(store.draftActive.value).toBe(true);
     expect(store.projectsEnabled.value).toBe(false);
+    history.replaceState(null, '', previousRoute);
   });
 
   it('restores an active new-chat draft on reload without reporting a stale-write conflict', async () => {

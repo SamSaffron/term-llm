@@ -217,15 +217,21 @@ export class SelectionStore {
   async resolveAndSelectSession(
     id: string,
     replace = false,
-    options: { prepend?: boolean } = {},
+    options: {
+      prepend?: boolean;
+      newChatOnMiss?: boolean;
+      propagateError?: boolean;
+      isCurrent?: () => boolean;
+    } = {},
   ): Promise<Session | null> {
     const epoch = this.epoch;
+    const stillCurrent = () => epoch === this.epoch && (options.isCurrent?.() ?? true);
     try {
       const data = await this.services.endpoints.selectedSession(id);
-      if (epoch !== this.epoch) return null;
+      if (!stillCurrent()) return null;
       const source = recordValue(data.selected_session);
       if (!source) {
-        this.newChat(replace);
+        if (options.newChatOnMiss !== false) this.newChat(replace);
         return null;
       }
       const session = this.sessionsStore.sessionFrom(source);
@@ -235,7 +241,10 @@ export class SelectionStore {
       await this.selectSession(existing || session, replace);
       return existing || session;
     } catch (error) {
-      if (epoch === this.epoch) this.services.toast(error, 'error');
+      if (stillCurrent()) {
+        if (options.propagateError) throw error;
+        this.services.toast(error, 'error');
+      }
       return null;
     }
   }
