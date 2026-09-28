@@ -131,7 +131,7 @@ func TestServeSessionSkillsListingVisibilityCollisionAndOwnership(t *testing.T) 
 	if got := seen["compact"]; !got.collision {
 		t.Fatalf("compact collision metadata = %#v", got)
 	}
-	for _, name := range []string{"pin", "rename"} {
+	for _, name := range []string{"archive", "pin", "rename"} {
 		if got := seen[name]; !got.collision {
 			t.Fatalf("%s collision metadata = %#v", name, got)
 		}
@@ -969,6 +969,7 @@ func serveSkillTestSetup(t *testing.T) (*skills.Setup, string) {
 		"model-only":    "---\nname: model-only\ndescription: Model only\nuser-invocable: false\n---\nModel body\n",
 		"forked":        "---\nname: forked\ndescription: Forked review\ncontext: fork\nagent: reviewer\n---\nReview $ARGUMENTS.\n",
 		"compact":       "---\nname: compact\ndescription: Collision\n---\nCompact skill\n",
+		"archive":       "---\nname: archive\ndescription: Web collision\n---\nArchive skill\n",
 		"pin":           "---\nname: pin\ndescription: Web collision\n---\nPin skill\n",
 		"rename":        "---\nname: rename\ndescription: Web collision\n---\nRename skill\n",
 		"grep-only":     "---\nname: grep-only\ndescription: Grep restriction\nallowed-tools: grep\n---\nGrep skill\n",

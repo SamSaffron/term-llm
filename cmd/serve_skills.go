@@ -430,7 +430,7 @@ func serveBuiltinSlashNames() map[string]bool {
 			}
 		}
 	}
-	for _, name := range []string{"pin", "rename"} {
+	for _, name := range []string{"archive", "pin", "rename"} {
 		set[name] = true
 	}
 	return set

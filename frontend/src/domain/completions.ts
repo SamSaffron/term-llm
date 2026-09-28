@@ -47,6 +47,11 @@ export const SLASH_COMMANDS = [
     description: 'Change tool approval mode',
     streamingSafe: true,
   },
+  {
+    command: '/archive',
+    description: 'Archive or restore this conversation',
+    streamingSafe: true,
+  },
   { command: '/compact', description: 'Compact conversation context' },
   { command: '/commit', description: 'Review, stage, and create a Git commit' },
   { command: '/effort', description: 'Choose reasoning effort' },

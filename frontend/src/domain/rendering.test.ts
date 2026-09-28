@@ -308,6 +308,7 @@ describe('composer completion', () => {
     expect(values).toEqual(
       expect.arrayContaining([
         '/approvals',
+        '/archive',
         '/fork',
         '/pin',
         '/rename',

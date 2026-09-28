@@ -648,6 +648,7 @@ describe('Preact-owned chat surfaces', () => {
     };
     store.steer = vi.fn(async () => undefined);
     store.cancel = vi.fn(async () => undefined);
+    store.archiveSession = vi.fn(async () => undefined);
     store.pinSession = vi.fn(async () => undefined);
     store.openRename = vi.fn();
     store.toast = vi.fn();
@@ -664,6 +665,7 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.queryByRole('button', { name: 'Stop subagent' })).not.toBeInTheDocument();
 
     for (const [command, message] of [
+      ['/archive', "Subagent conversations can't be archived."],
       ['/pin', "Subagent conversations can't be pinned."],
       ['/rename', "Subagent conversations can't be renamed."],
     ]) {
@@ -672,6 +674,7 @@ describe('Preact-owned chat surfaces', () => {
       expect(store.toast).toHaveBeenLastCalledWith(message, 'error');
       expect(textbox).toHaveValue('');
     }
+    expect(store.archiveSession).not.toHaveBeenCalled();
     expect(store.pinSession).not.toHaveBeenCalled();
     expect(store.openRename).not.toHaveBeenCalled();
 
@@ -4920,10 +4923,12 @@ describe('Preact-owned chat surfaces', () => {
   });
 
   it.each([
+    ['/archive', 'archiveSession'],
     ['/pin', 'pinSession'],
     ['/rename', 'openRename'],
   ] as const)('handles %s locally for the active conversation', async (command, action) => {
     const store = createStore();
+    store.archiveSession = vi.fn(async () => undefined);
     store.pinSession = vi.fn(async () => undefined);
     store.openRename = vi.fn();
     store.send = vi.fn(async () => undefined);
@@ -4942,11 +4947,13 @@ describe('Preact-owned chat surfaces', () => {
   });
 
   it.each([
+    ['/archive', 'Start the conversation before archiving.'],
     ['/pin', 'Start the conversation before pinning.'],
     ['/rename', 'Start the conversation before renaming.'],
   ])('does not run %s before the conversation starts', async (command, message) => {
     const store = createStore();
     store.draftActive.value = true;
+    store.archiveSession = vi.fn(async () => undefined);
     store.pinSession = vi.fn(async () => undefined);
     store.openRename = vi.fn();
     store.toast = vi.fn();
@@ -4959,6 +4966,7 @@ describe('Preact-owned chat surfaces', () => {
     await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), command);
     await userEvent.keyboard('{Enter}');
 
+    expect(store.archiveSession).not.toHaveBeenCalled();
     expect(store.pinSession).not.toHaveBeenCalled();
     expect(store.openRename).not.toHaveBeenCalled();
     expect(store.toast).toHaveBeenCalledWith(message, 'error');

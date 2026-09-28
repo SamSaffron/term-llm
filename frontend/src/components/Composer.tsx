@@ -428,18 +428,18 @@ function ConversationComposer() {
       return;
     }
     if (command === '/new') return store.newChat();
-    if (command === '/pin' || command === '/rename') {
+    if (command === '/archive' || command === '/pin' || command === '/rename') {
       store.prompt.value = '';
+      const gerund =
+        command === '/archive' ? 'archiving' : command === '/pin' ? 'pinning' : 'renaming';
+      const participle =
+        command === '/archive' ? 'archived' : command === '/pin' ? 'pinned' : 'renamed';
       if (!session || store.draftActive.value) {
-        store.toast(
-          `Start the conversation before ${command === '/pin' ? 'pinning' : 'renaming'}.`,
-          'error',
-        );
+        store.toast(`Start the conversation before ${gerund}.`, 'error');
       } else if (session.delegated || session.parentSessionId) {
-        store.toast(
-          `Subagent conversations can't be ${command === '/pin' ? 'pinned' : 'renamed'}.`,
-          'error',
-        );
+        store.toast(`Subagent conversations can't be ${participle}.`, 'error');
+      } else if (command === '/archive') {
+        void store.archiveSession(session);
       } else if (command === '/pin') {
         void store.pinSession(session);
       } else {
