@@ -12,13 +12,15 @@ import (
 	"unicode"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
 )
 
 // SpawnAgentArgs are the arguments for the spawn_agent tool.
 type SpawnAgentArgs struct {
 	AgentName string `json:"agent_name"`        // Required: name of the agent to spawn
 	Prompt    string `json:"prompt"`            // Required: task/prompt for the sub-agent
-	Timeout   int    `json:"timeout,omitempty"` // Optional: timeout in seconds (default 300)
+	Timeout   int    `json:"timeout,omitempty"` // Deprecated alias for wait (seconds)
+	Wait      *int   `json:"wait,omitempty"`    // Time to wait, not a child deadline
 	Model     string `json:"model,omitempty"`   // Optional: exact provider:model override
 }
 
@@ -39,12 +41,19 @@ const (
 
 // SpawnAgentResult is the result returned by spawn_agent.
 type SpawnAgentResult struct {
-	AgentName string `json:"agent_name"`
-	Output    string `json:"output,omitempty"`
-	Error     string `json:"error,omitempty"`
-	Type      string `json:"type,omitempty"` // Error type for structured handling
-	Duration  int64  `json:"duration_ms,omitempty"`
-	SessionID string `json:"session_id,omitempty"` // Child session ID for inspector integration
+	AgentName    string    `json:"agent_name"`
+	Output       string    `json:"output,omitempty"`
+	Error        string    `json:"error,omitempty"`
+	Type         string    `json:"type,omitempty"` // Error type for structured handling
+	Duration     int64     `json:"duration_ms,omitempty"`
+	SessionID    string    `json:"session_id,omitempty"` // Child session ID for inspector integration
+	AgentID      string    `json:"agent_id,omitempty"`
+	Status       string    `json:"status,omitempty"`
+	Resumable    bool      `json:"resumable"`
+	Next         string    `json:"next,omitempty"`
+	TurnsUsed    int       `json:"turns_used,omitempty"`
+	LastActivity time.Time `json:"last_activity,omitempty"`
+	CurrentTool  string    `json:"current_tool,omitempty"`
 	// Interventions records corrections a human made to this delegated run while
 	// it was executing. They are local corrections inside the assignment this
 	// call already made; they never redefine the assignment itself.
@@ -68,7 +77,7 @@ func ParseSpawnAgentResult(content string) (SpawnAgentResult, error) {
 	if err := json.Unmarshal([]byte(content), &result); err != nil {
 		return SpawnAgentResult{}, fmt.Errorf("decode spawn_agent result: %w", err)
 	}
-	if result.AgentName == "" && result.Output == "" && result.Error == "" && result.Type == "" && result.Duration == 0 && result.SessionID == "" {
+	if result.AgentName == "" && result.Output == "" && result.Error == "" && result.Type == "" && result.Duration == 0 && result.SessionID == "" && result.AgentID == "" && result.Status == "" {
 		return SpawnAgentResult{}, errors.New("spawn_agent result has no recognized fields")
 	}
 	return result, nil
@@ -105,6 +114,7 @@ type SubagentEvent struct {
 	Phase             string              // for "phase" events
 	InputTokens       int                 // fresh input tokens for "usage" events
 	OutputTokens      int                 // output tokens for "usage" events
+	CountsTurn        bool                // usage from a completed child model turn, not compaction or nested usage
 	CachedInputTokens int                 // cache-read tokens for "usage" events
 	CacheWriteTokens  int                 // cache-write tokens for "usage" events
 	Provider          string              // resolved provider for init/usage events
@@ -155,7 +165,8 @@ type SpawnAgentRunner interface {
 }
 
 type SpawnAgentRunOptions struct {
-	ModelOverride string
+	ModelOverride  string
+	ChildSessionID string
 }
 
 // SpawnAgentRunnerWithOptions can run sub-agents with call-specific overrides.
@@ -164,6 +175,12 @@ type SpawnAgentRunnerWithOptions interface {
 	RunAgentWithCallbackAndOptions(ctx context.Context, agentName string, prompt string, depth int,
 		callID string, cb SubagentEventCallback, opts SpawnAgentRunOptions) (SpawnAgentRunResult, error)
 }
+
+// DefaultSubagentMaxTurns is the turn budget for a delegated agent that does
+// not set max_turns. Children are no longer killed by wall-clock timeouts, so
+// the turn limit is their only budget; a child that exhausts it is resumable
+// with continue_agent, which grants the same allotment again.
+const DefaultSubagentMaxTurns = 500
 
 // SpawnConfig configures spawn_agent behavior.
 type SpawnConfig struct {
@@ -192,6 +209,7 @@ type SpawnAgentTool struct {
 	depth          int                   // Current nesting depth
 	mu             sync.Mutex            // Protects runner updates
 	eventCallback  SubagentEventCallback // Optional callback for event bubbling
+	manager        *agentManager
 }
 
 // NewSpawnAgentTool creates a new spawn_agent tool.
@@ -209,6 +227,7 @@ func NewSpawnAgentTool(config SpawnConfig, depth int) *SpawnAgentTool {
 	return &SpawnAgentTool{
 		config:    config,
 		semaphore: make(chan struct{}, config.MaxParallel),
+		manager:   newAgentManager(config),
 		depth:     depth,
 	}
 }
@@ -219,6 +238,16 @@ func (t *SpawnAgentTool) SetRunner(runner SpawnAgentRunner) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.runner = runner
+	if setter, ok := runner.(interface{ SetAgentLifecycleTool(*SpawnAgentTool) }); ok {
+		setter.SetAgentLifecycleTool(t)
+	}
+	t.manager.mu.Lock()
+	t.manager.runner = runner
+	t.manager.depth = t.depth
+	if provider, ok := runner.(interface{ AgentRunStore() session.AgentRunStore }); ok {
+		t.manager.store = provider.AgentRunStore()
+	}
+	t.manager.mu.Unlock()
 	if t.mediaPublisher != nil {
 		if setter, ok := t.runner.(interface{ SetMediaPublisher(MediaPublisher) }); ok {
 			setter.SetMediaPublisher(t.mediaPublisher)
@@ -243,6 +272,9 @@ func (t *SpawnAgentTool) SetDepth(depth int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.depth = depth
+	t.manager.mu.Lock()
+	t.manager.depth = depth
+	t.manager.mu.Unlock()
 }
 
 // SetEventCallback sets the callback for receiving subagent progress events.
@@ -269,7 +301,7 @@ func (t *SpawnAgentTool) Spec() llm.ToolSpec {
 Guidelines:
 - Spawn multiple agents concurrently for independent analysis tasks
 - Each agent runs with its own context and tools
-- Results are returned when the agent completes
+- If the wait budget expires the child keeps running; use wait_agent, continue_agent, cancel_agent, or list_agents
 - Use descriptive prompts that give the agent clear objectives
 - Only set model when the user explicitly asks for a specific model/provider, and use exact provider:model format`,
 		Schema: map[string]any{
@@ -285,10 +317,11 @@ Guidelines:
 				},
 				"timeout": map[string]any{
 					"type":        "integer",
-					"description": "Optional timeout in seconds (default 300, max 3600)",
-					"minimum":     10,
+					"description": "Deprecated alias for wait; never cancels the child",
+					"minimum":     0,
 					"maximum":     3600,
 				},
+				"wait": map[string]any{"type": "integer", "description": "Seconds to wait before detaching; 0 returns immediately (default 300)", "minimum": 0, "maximum": 3600},
 				"model": map[string]any{
 					"type":        "string",
 					"description": "Optional model override in exact provider:model format. If omitted, the sub-agent uses its configured/default model.",
@@ -471,116 +504,47 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 		return spawnAgentErrorOutput(t.formatError(errType, policyErr.Error()), false), nil
 	}
 
-	// Determine timeout.
-	// The timeout is clamped to [10, 3600] seconds to match the tool schema constraints.
-	// Values <= 0 use the default; values outside the range are clamped to the bounds.
-	timeout := t.config.DefaultTimeout
+	budget := t.config.DefaultTimeout
 	if a.Timeout > 0 {
-		timeout = a.Timeout
+		budget = a.Timeout
 	}
-	// Clamp to schema bounds regardless of source (config default or explicit)
-	if timeout < 10 {
-		timeout = 10 // Schema minimum
+	if a.Wait != nil {
+		budget = *a.Wait
 	}
-	if timeout > 3600 {
-		timeout = 3600 // Cap at 60 minutes
+	if budget < 0 {
+		return spawnAgentErrorOutput(t.formatError(ErrInvalidParams, "wait must be nonnegative"), false), nil
 	}
-
-	// Acquire semaphore (blocks if at max concurrency)
-	select {
-	case t.semaphore <- struct{}{}:
-		defer func() { <-t.semaphore }()
-	case <-ctx.Done():
-		// Distinguish between deadline exceeded (timeout) and manual cancellation.
-		if ctx.Err() == context.DeadlineExceeded {
-			return spawnAgentErrorOutput(t.formatError(ErrTimeout, "context deadline exceeded while waiting for agent slot"), true), nil
-		}
-		return spawnAgentErrorOutput(t.formatError(ErrExecutionFailed, "context cancelled while waiting for agent slot"), false), nil
-	}
-
-	// Create child context with timeout
-	childCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
-	defer cancel()
-
-	// Run the sub-agent (with callback if available)
-	start := time.Now()
-	var runResult SpawnAgentRunResult
-	var err error
-
-	// Snapshot callbacks at execution admission. The context callback is owned by
-	// this parent execution; the tool callback is lifetime-scoped (for stats and
-	// other process-wide observers).
-	externalCallback := t.GetEventCallback()
-	executionCallback := SubagentEventCallbackFromContext(ctx)
-	// Descendants bubble through the child sink, which qualifies their IDs. Do
-	// not also deliver their raw call IDs to this parent's context callback.
-	childCtx = ContextWithSubagentEventCallback(childCtx, nil)
-	callID := llm.CallIDFromContext(ctx)
-	var mediaMu sync.Mutex
-	var nestedMedia []llm.MediaArtifact
-	cb := func(eventCallID string, event SubagentEvent) {
-		event.Deadline, _ = childCtx.Deadline()
-		if event.Type == SubagentEventToolEnd && len(event.Media) > 0 {
-			mediaMu.Lock()
-			nestedMedia = append(nestedMedia, event.Media...)
-			mediaMu.Unlock()
-		}
-		if externalCallback != nil && callID != "" {
-			externalCallback(eventCallID, event)
-		}
-		emitExecutionSubagentEvent(executionCallback, callID, eventCallID, event)
+	if budget > 3600 {
+		budget = 3600
 	}
 	modelOverride := requestedModel
 	if modelOverride == "" {
 		modelOverride = strings.TrimSpace(t.config.AgentModels[a.AgentName])
 	}
-	opts := SpawnAgentRunOptions{ModelOverride: modelOverride}
-	runnerWithOptions, supportsOptions := runner.(SpawnAgentRunnerWithOptions)
-
-	childDepth := currentDepth + 1
-	if supportsOptions {
-		runResult, err = runnerWithOptions.RunAgentWithCallbackAndOptions(childCtx, a.AgentName, a.Prompt, childDepth, callID, cb, opts)
-	} else {
-		runResult, err = runner.RunAgentWithCallback(childCtx, a.AgentName, a.Prompt, childDepth, callID, cb)
+	callID := llm.CallIDFromContext(ctx)
+	executionCallback := SubagentEventCallbackFromContext(ctx)
+	cb := func(eventCallID string, event SubagentEvent) {
+		emitExecutionSubagentEvent(executionCallback, callID, eventCallID, event)
 	}
-	duration := time.Since(start).Milliseconds()
-
-	if err != nil {
-		errType := classifySpawnAgentError(err, ctx, childCtx)
-		message := spawnAgentErrorMessage(err, ctx, childCtx, a.AgentName, timeout)
-		if runResult.CancelledByUser {
-			// A human stopped this child deliberately. Reporting that as a generic
-			// execution failure invites the model to retry the abandoned work.
-			errType = ErrCancelledByUser
-			message = fmt.Sprintf("agent '%s' was cancelled by the user", a.AgentName)
-		}
-		output := spawnAgentErrorOutput(t.formatErrorWithPartialResult(errType, message, duration, runResult), errType == ErrTimeout)
-		mediaMu.Lock()
-		output.Media = llm.NormalizeMedia(append([]llm.MediaArtifact(nil), nestedMedia...), nil)
-		mediaMu.Unlock()
-		return output, nil
+	entry, startErr := t.manager.start(ctx, a.AgentName, a.Prompt, modelOverride, callID, cb, t.GetEventCallback(), runner, currentDepth+1, false, "", session.AgentRun{})
+	if startErr != nil {
+		return spawnAgentErrorOutput(t.formatError(ErrExecutionFailed, startErr.Error()), false), nil
 	}
+	t.manager.wait(ctx, entry, time.Duration(budget)*time.Second)
+	t.manager.detachInitial(entry)
+	record, _, _ := t.manager.get(context.Background(), entry.record.ID, entry.record.ParentSessionID)
+	return t.manager.output(record, entry), nil
+}
 
-	// Return success result
-	result := SpawnAgentResult{
-		AgentName:               a.AgentName,
-		Output:                  runResult.Output,
-		Duration:                duration,
-		SessionID:               runResult.SessionID,
-		Interventions:           runResult.Interventions,
-		InterventionDisposition: runResult.InterventionDisposition,
-		// A child can be stopped and still return usable partial work. Dropping
-		// the cause here would present a deliberate human stop as an ordinary
-		// completion, and the parent would treat the truncated result as final.
-		CancelledByUser: runResult.CancelledByUser,
-	}
-	data, _ := json.Marshal(result)
-	mediaMu.Lock()
-	media := llm.NormalizeMedia(append([]llm.MediaArtifact(nil), nestedMedia...), nil)
-	mediaMu.Unlock()
-	output := llm.TextOutput(string(data))
-	output.Media = media
-	return output, nil
+// OutstandingAgentIDs lists unfinished runs for one-shot host exit diagnostics.
+func (t *SpawnAgentTool) OutstandingAgentIDs() []string { return t.manager.outstandingIDs() }
+
+func (t *SpawnAgentTool) Drain(ctx context.Context) error { return t.manager.Drain(ctx) }
+
+func (t *SpawnAgentTool) Shutdown(ctx context.Context) error { return t.manager.Shutdown(ctx) }
+
+func (t *SpawnAgentTool) CancelDescendants(ctx context.Context) error {
+	return t.manager.CancelDescendants(ctx)
 }
 
 // Preview returns a short description of the tool call.

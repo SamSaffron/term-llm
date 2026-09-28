@@ -44,6 +44,8 @@ type ChildRunRequest struct {
 	Kind            ChildRunKind
 	RunID           string
 	ChildSessionID  string
+	Resume          bool
+	Instructions    string
 	AgentName       string
 	Prompt          string
 	ModelOverride   string

@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -316,27 +315,12 @@ func executeCancelledStatsChild(t *testing.T, ctx context.Context, cancel contex
 	cancel()
 	closed := make(chan struct{})
 	go func() { env.Close(); close(closed) }()
-	// Wait for the drain barrier rather than using a timing sleep. If Close skips
-	// draining, the closed channel exposes that failure while the child is held.
-	for {
-		select {
-		case <-closed:
-			t.Fatal("parent closed its store before child finished")
-		case <-watchdog.Done():
-			t.Fatal("parent did not start draining children")
-		default:
-		}
-		runner := env.runtime.spawnRunner
-		if runner == nil {
-			t.Fatal("runtime does not own its spawn runner")
-		}
-		runner.runMu.Lock()
-		draining := runner.draining
-		runner.runMu.Unlock()
-		if draining {
-			break
-		}
-		runtime.Gosched()
+	// The host cancels active children before its blocking runner drain.
+	// While the event callback is held, closing the store must not finish.
+	select {
+	case <-closed:
+		t.Fatal("parent closed its store before child finished")
+	default:
 	}
 	unblock()
 	var result outcome

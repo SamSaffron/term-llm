@@ -63,6 +63,7 @@ type cmdRunnerOptions struct {
 	// into nested runners, because a runner built for a child knows nothing
 	// about serve otherwise.
 	ChildRunObserver childRunObserver
+	AgentOwner       *agentHostOwner
 }
 
 type cmdRunner struct {
@@ -94,14 +95,35 @@ type cmdRunEnvironment struct {
 	sess          *session.Session
 	llmReq        llm.Request
 	inputMessages []llm.Message
+	runCtx        context.Context
+	agentOwner    *agentHostOwner
 }
 
 func (env *cmdRunEnvironment) Close() {
 	if env == nil {
 		return
 	}
+	if env.runtime != nil && env.req.Platform == runpkg.PlatformJob && env.runCtx != nil && env.runCtx.Err() != nil {
+		env.runtime.CloseAfterRun(env.runCtx)
+		if env.closeStore != nil {
+			env.closeStore()
+		}
+		return
+	}
+	if env.runtime != nil && !env.req.IsSubagent {
+		if env.agentOwner != nil {
+			env.agentOwner.adopt(env.runtime, env.closeStore)
+		} else {
+			// One-shot callers have no host owner to shut down adopted children.
+			env.runtime.CloseAfterRun(env.runCtx)
+			if env.closeStore != nil {
+				env.closeStore()
+			}
+		}
+		return
+	}
 	if env.runtime != nil {
-		env.runtime.Close()
+		env.runtime.CloseAfterRun(env.runCtx)
 	}
 	if env.closeStore != nil {
 		env.closeStore()
@@ -116,11 +138,17 @@ func (r *cmdRunner) Run(ctx context.Context, req runpkg.Request, sink runpkg.Eve
 	}
 	ctx, release, reloadErr := restart.Default.Activity(ctx)
 	if reloadErr != nil {
+		if req.IsSubagent {
+			return runpkg.Result{}, &tools.AgentRunAdmissionError{Err: reloadErr}
+		}
 		return runpkg.Result{}, reloadErr
 	}
 	defer release()
 	env, err := r.prepare(ctx, req, sink)
 	if err != nil {
+		if req.IsSubagent {
+			return runpkg.Result{}, &tools.AgentRunAdmissionError{Err: err}
+		}
 		return runpkg.Result{}, err
 	}
 	defer env.Close()
@@ -310,7 +338,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		if runtime != nil {
 			runtime.Close()
 		} else if spawnRunner != nil {
-			spawnRunner.Wait()
+			shutdownSpawnAgentRunner(spawnRunner)
 		}
 		if closeStore != nil {
 			closeStore()
@@ -386,6 +414,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	}
 	runtime = &serveRuntime{
 		spawnRunner:         spawnRunner,
+		agentOwner:          r.defaults.AgentOwner,
 		settings:            &settings,
 		agentSkills:         agentSkills,
 		provider:            provider,
@@ -522,6 +551,8 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 
 	cleanupOnError = false
 	return &cmdRunEnvironment{
+		runCtx:        ctx,
+		agentOwner:    r.defaults.AgentOwner,
 		cfg:           cfg,
 		req:           req,
 		runtime:       runtime,

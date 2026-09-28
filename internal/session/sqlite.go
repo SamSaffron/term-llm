@@ -424,7 +424,7 @@ CREATE INDEX IF NOT EXISTS session_attention_unseen
     WHERE latest_attention_seq > seen_through_seq;
 `
 
-const canonicalSessionSchema = schema + projectsSchemaV47 + changeLogSchemaV52 + attentionSchemaV54 + rushSchemaV57 + modelUsageSchemaV58
+const canonicalSessionSchema = schema + projectsSchemaV47 + changeLogSchemaV52 + attentionSchemaV54 + rushSchemaV57 + modelUsageSchemaV58 + agentRunSchemaV61
 
 // unrankedPinKeySQL orders a pinned row that somehow lacks a persisted rank
 // after every ranked pin rather than first. It must stay textually identical in

@@ -9,7 +9,7 @@ import type { SessionShareResponse } from '../api/endpoints';
 import type { Attachment, ToolCall } from '../domain/types';
 import { Transcript } from './Transcript';
 import { Composer } from './Composer';
-import { DelegationContext } from './DelegationContext';
+import { DelegationContext, returnToParent } from './DelegationContext';
 import { Markdown } from './Markdown';
 import { Modals } from './Modals';
 import { Sidebar } from './Sidebar';
@@ -289,10 +289,34 @@ describe('Preact-owned chat surfaces', () => {
       );
       await userEvent.click(within(navigation).getByRole('button', { name: 'Return to parent' }));
       if (loaded) expect(store.selectSession).toHaveBeenCalledWith(parent);
-      else expect(store.resolveAndSelectSession).toHaveBeenCalledWith(parent.id, false);
+      else
+        expect(store.resolveAndSelectSession).toHaveBeenCalledWith(parent.id, false, {
+          newChatOnMiss: false,
+        });
       store.dispose();
     },
   );
+
+  it('keeps the child selected if its unloaded parent temporarily cannot be resolved', async () => {
+    const store = createStore();
+    const parent = store.sessions.peek()[0];
+    store.sessions.value = [];
+    store.sessionStore.transientSession.value = {
+      ...parent,
+      id: 'child-1',
+      parentSessionId: 'parent-1',
+      delegated: true,
+    };
+    store.activeSessionId.value = 'child-1';
+    store.endpoints.selectedSession = vi.fn(async () => ({ selected_session: null }));
+    store.endpoints.sessionChildren = vi.fn(async () => ({ children: [] }));
+
+    await returnToParent(store);
+
+    expect(store.activeSessionId.value).toBe('child-1');
+    expect(store.activeSession.value?.parentSessionId).toBe('parent-1');
+    store.dispose();
+  });
 
   it('renders subagent output without a repeated agent heading or nested result wrapper', async () => {
     const store = createStore();
@@ -376,6 +400,77 @@ describe('Preact-owned chat surfaces', () => {
       prepend: false,
     });
     expect(store.resolveAndSelectSession).toHaveBeenNthCalledWith(2, 'skill-running', false, {
+      prepend: false,
+    });
+    store.dispose();
+  });
+
+  it('opens detached agents from wait and continue cards, including restored history', async () => {
+    const store = createStore();
+    store.sessions.value[0] = {
+      ...store.sessions.value[0],
+      messages: [
+        {
+          id: 'controls',
+          role: 'tool-group',
+          content: '',
+          created: 1,
+          tools: [
+            {
+              id: 'wait-live',
+              name: 'wait_agent',
+              status: 'running',
+              arguments: '{"agent_ids":["child-a","other"]}',
+            },
+            {
+              id: 'wait-saved',
+              name: 'wait_agent',
+              status: 'done',
+              agentSessionIds: ['child-a', 'child-b'],
+            },
+            {
+              id: 'continue-saved',
+              name: 'continue_agent',
+              status: 'done',
+              agentSessionIds: ['child-b'],
+            },
+          ],
+        },
+      ],
+    };
+    store.childSessionStore.children.value = [
+      {
+        session_id: 'child-a',
+        parent_session_id: 's1',
+        title: 'A',
+        state: 'active',
+        input_tokens: 0,
+        output_tokens: 0,
+        cached_input_tokens: 0,
+        cache_write_tokens: 0,
+        tool_calls: 0,
+        llm_turns: 0,
+      },
+    ];
+    store.resolveAndSelectSession = vi.fn(async () => null);
+    render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+
+    const links = screen.getAllByRole('button', { name: /Open subagent/ });
+    expect(links).toHaveLength(4);
+    await userEvent.click(links[0]);
+    await userEvent.click(links[2]);
+    await userEvent.click(links[3]);
+    expect(store.resolveAndSelectSession).toHaveBeenNthCalledWith(1, 'child-a', false, {
+      prepend: false,
+    });
+    expect(store.resolveAndSelectSession).toHaveBeenNthCalledWith(2, 'child-b', false, {
+      prepend: false,
+    });
+    expect(store.resolveAndSelectSession).toHaveBeenNthCalledWith(3, 'child-b', false, {
       prepend: false,
     });
     store.dispose();

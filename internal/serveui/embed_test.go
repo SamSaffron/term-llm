@@ -139,6 +139,10 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// moves, and the store's optimistic save and rollback. The section is on
 		// screen at startup, so the code is eager: ~542.1/158.4 kB. Same ~1%
 		// rule as above.
+		//
+		// Detached-agent wait/continue cards keep validated child links through
+		// live results and durable reloads; their small eager transcript parser
+		// adds a little to the compressed shell.
 		"dist/app.js":                {raw: 548_000, gzip: 160_000},
 		"dist/chunks/Lightbox.js":    {raw: 8_000, gzip: 3_200},
 		"dist/assets/Lightbox.css":   {raw: 4_000, gzip: 1_400},

@@ -41,6 +41,9 @@ type SpawnAgentRunner struct {
 	observerMu        sync.RWMutex
 	observer          childRunObserver
 	warnFunc          func(format string, args ...any)
+	enginesMu         sync.Mutex
+	engines           map[string]*llm.Engine
+	lifecycle         *tools.SpawnAgentTool
 	runMu             sync.Mutex
 	draining          bool
 	wg                sync.WaitGroup // tracks admitted agent runs so callers can drain before closing the store
@@ -160,6 +163,53 @@ func (r *SpawnAgentRunner) warn(format string, args ...any) {
 	}
 }
 
+func (r *SpawnAgentRunner) ParentAgentSessionID() string { return r.parentSessionID }
+
+func (r *SpawnAgentRunner) AgentApprovalScope(parent string) *tools.ApprovalManager {
+	return r.parentApprovalMgr.CloneForAgentRun(parent)
+}
+
+func (r *SpawnAgentRunner) AgentRunStore() session.AgentRunStore {
+	return session.AsAgentRunStore(r.store)
+}
+
+func (r *SpawnAgentRunner) SetAgentLifecycleTool(tool *tools.SpawnAgentTool) { r.lifecycle = tool }
+
+func (r *SpawnAgentRunner) OutstandingAgentIDs() []string {
+	if r.lifecycle == nil {
+		return nil
+	}
+	return r.lifecycle.OutstandingAgentIDs()
+}
+
+func (r *SpawnAgentRunner) Drain(ctx context.Context) error {
+	if r.lifecycle != nil {
+		if err := r.lifecycle.Drain(ctx); err != nil {
+			return err
+		}
+	}
+	return r.waitContext(ctx)
+}
+
+// Shutdown cancels detached children before closing the owning session store.
+func (r *SpawnAgentRunner) Shutdown(ctx context.Context) error {
+	if r.lifecycle != nil {
+		if err := r.lifecycle.Shutdown(ctx); err != nil {
+			return err
+		}
+	}
+	return r.waitContext(ctx)
+}
+
+func (r *SpawnAgentRunner) CancelDescendants(ctx context.Context) error {
+	if r.lifecycle != nil {
+		if err := r.lifecycle.CancelDescendants(ctx); err != nil {
+			return err
+		}
+	}
+	return r.waitContext(ctx)
+}
+
 // Wait permanently prevents new agent runs from starting, then blocks until
 // all admitted runs have completed. The runner cannot be reused after Wait.
 // Call this before closing the session store.
@@ -168,6 +218,26 @@ func (r *SpawnAgentRunner) Wait() {
 	r.draining = true
 	r.runMu.Unlock()
 	r.wg.Wait()
+}
+
+func (r *SpawnAgentRunner) waitContext(ctx context.Context) error {
+	r.runMu.Lock()
+	r.draining = true
+	r.runMu.Unlock()
+	done := make(chan struct{})
+	go func() { r.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func shutdownSpawnAgentRunner(r *SpawnAgentRunner) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = r.Shutdown(ctx)
 }
 
 // beginRun serializes run admission with Wait. A bare WaitGroup permits Add to
@@ -212,11 +282,12 @@ func (r *SpawnAgentRunner) RunAgentWithCallbackAndOptions(ctx context.Context, a
 
 func (r *SpawnAgentRunner) buildRunRequest(ctx context.Context, agentName, prompt, childSessionID string, depth int, search bool, opts tools.SpawnAgentRunOptions) runpkg.Request {
 	request := runpkg.ChildRunRequest{
-		Kind:          runpkg.ChildRunSpawnAgent,
-		AgentName:     agentName,
-		Prompt:        prompt,
-		ModelOverride: opts.ModelOverride,
-		Depth:         depth,
+		Kind:           runpkg.ChildRunSpawnAgent,
+		AgentName:      agentName,
+		Prompt:         prompt,
+		ModelOverride:  opts.ModelOverride,
+		ChildSessionID: opts.ChildSessionID,
+		Depth:          depth,
 	}
 	return r.buildChildExecutionRequest(ctx, request, childSessionID, search)
 }
@@ -229,9 +300,9 @@ func (r *SpawnAgentRunner) buildChildExecutionRequest(ctx context.Context, reque
 			parentSessionID = contextSessionID
 		}
 	}
-	if r.parentApprovalMgr != nil {
-		r.parentApprovalMgr.BindWorkspaceSessionID(parentSessionID)
-	}
+	// Bind a previously unbound parent's approvals before a first-tool spawn.
+	// Detached children snapshot this scope before any later session can rebind it.
+	r.parentApprovalMgr.BindWorkspaceSessionID(parentSessionID)
 	baseDir := strings.TrimSpace(request.BaseDir)
 	if baseDir == "" {
 		baseDir = r.currentBaseDir()
@@ -349,12 +420,13 @@ func (r *SpawnAgentRunner) RunChild(ctx context.Context, request runpkg.ChildRun
 func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName string, prompt string, depth int,
 	callID string, cb tools.SubagentEventCallback, opts tools.SpawnAgentRunOptions) (tools.SpawnAgentRunResult, error) {
 	request := runpkg.ChildRunRequest{
-		Kind:          runpkg.ChildRunSpawnAgent,
-		RunID:         callID,
-		AgentName:     agentName,
-		Prompt:        prompt,
-		ModelOverride: opts.ModelOverride,
-		Depth:         depth,
+		Kind:           runpkg.ChildRunSpawnAgent,
+		RunID:          callID,
+		AgentName:      agentName,
+		Prompt:         prompt,
+		ModelOverride:  opts.ModelOverride,
+		ChildSessionID: opts.ChildSessionID,
+		Depth:          depth,
 	}
 	var callback runpkg.ChildRunEventCallback
 	if cb != nil {
@@ -374,7 +446,7 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 	startedAt := time.Now()
 	emptyResult := runpkg.ChildRunResult{RunID: request.RunID, StartedAt: startedAt}
 	if !r.beginRun() {
-		return emptyResult, errSpawnAgentRunnerDraining
+		return emptyResult, &tools.AgentRunAdmissionError{Err: errSpawnAgentRunnerDraining}
 	}
 	defer r.endRun()
 
@@ -384,7 +456,7 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 	}
 	agent, err := r.resolveSpawnAgent(agentName)
 	if err != nil {
-		return emptyResult, err
+		return emptyResult, &tools.AgentRunAdmissionError{Err: err}
 	}
 	if request.SkipOnComplete || request.OutputTool != nil {
 		agentCopy := *agent
@@ -402,7 +474,7 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 		agentCopy.Model = strings.TrimSpace(request.ModelOverride)
 		agent = &agentCopy
 		if err := agent.Validate(); err != nil {
-			return emptyResult, fmt.Errorf("invalid agent '%s': %w", agentName, err)
+			return emptyResult, &tools.AgentRunAdmissionError{Err: fmt.Errorf("invalid agent '%s': %w", agentName, err)}
 		}
 	}
 	request.AgentName = agentName
@@ -420,8 +492,10 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 	sink.Start()
 	defer sink.Done()
 
-	search := agent.Search
-	executionRequest := r.buildChildExecutionRequest(ctx, request, childSessionID, search)
+	executionRequest, approvalScope, err := r.prepareLifecycleChildRequest(ctx, request, childSessionID, agent.Search)
+	if err != nil {
+		return emptyResult, &tools.AgentRunAdmissionError{Err: err}
+	}
 
 	var handle childRunSession
 	if observer := r.currentChildRunObserver(); observer != nil {
@@ -441,10 +515,10 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 	runner := newCmdRunner(r.cfg, cmdRunnerOptions{
 		ConfigSet:         true,
 		Yolo:              r.yoloMode,
-		DefaultMaxTurns:   20,
+		DefaultMaxTurns:   tools.DefaultSubagentMaxTurns,
 		ErrWriter:         io.Discard,
 		Store:             r.store,
-		ParentApprovalMgr: r.parentApprovalMgr,
+		ParentApprovalMgr: approvalScope,
 		ChildRunObserver:  r.currentChildRunObserver(),
 	})
 	result, err := runner.Run(ctx, executionRequest, sink)
@@ -466,10 +540,14 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 	status := session.StatusComplete
 	if errors.Is(err, context.Canceled) {
 		status = session.StatusInterrupted
+	} else if isChildTurnLimit(err) {
+		// The final turn's tools and results have already been persisted.
+		status = session.StatusTurnLimit
 	} else if err != nil {
 		status = session.StatusError
 	}
-	if r.store != nil {
+	var admission *tools.AgentRunAdmissionError
+	if r.store != nil && !(request.Resume && errors.As(err, &admission)) {
 		dbCtx, dbCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		if statusErr := safeStoreOp(func() error { return r.store.UpdateStatus(dbCtx, childSessionID, status) }); statusErr != nil {
 			r.warn("session UpdateStatus failed: %v", statusErr)
@@ -484,6 +562,51 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 		childResult.CancelledByUser = outcome.CancelledByUser
 	}
 	return childResult, err
+}
+
+func isChildTurnLimit(err error) bool {
+	var limit *llm.MaxTurnsExceededError
+	return errors.As(err, &limit)
+}
+
+// prepareLifecycleChildRequest repairs persisted history before the runtime can
+// sanitize it, and captures a per-run engine for honest steering dispositions.
+func (r *SpawnAgentRunner) prepareLifecycleChildRequest(ctx context.Context, request runpkg.ChildRunRequest, childSessionID string, search bool) (runpkg.Request, *tools.ApprovalManager, error) {
+	executionRequest := r.buildChildExecutionRequest(ctx, request, childSessionID, search)
+
+	if request.Resume {
+		executionRequest.Resume = true
+		executionRequest.Stateful = true
+		if _, repairErr := r.loadChildResumeHistory(ctx, childSessionID); repairErr != nil {
+			return runpkg.Request{}, nil, repairErr
+		}
+		instruction := strings.TrimSpace(request.Instructions)
+		if instruction == "" {
+			instruction = "Continue the assigned task."
+		}
+		executionRequest.Messages = []llm.Message{llm.UserText(instruction)}
+	}
+	approvalScope := tools.AgentApprovalScopeFromContext(ctx)
+	if approvalScope == nil {
+		approvalScope = r.AgentApprovalScope(executionRequest.ParentSessionID)
+	}
+	if request.Kind == runpkg.ChildRunSpawnAgent {
+		executionRequest.OnEngineReady = func(engine *llm.Engine) {
+			r.enginesMu.Lock()
+			if r.engines == nil {
+				r.engines = make(map[string]*llm.Engine)
+			}
+			r.engines[childSessionID] = engine
+			r.enginesMu.Unlock()
+		}
+		executionRequest.OnEngineDone = func(engine *llm.Engine) {
+			r.enginesMu.Lock()
+			delete(r.engines, childSessionID)
+			r.enginesMu.Unlock()
+		}
+	}
+
+	return executionRequest, approvalScope, nil
 }
 
 // completeChildAgent resolves the agent's semantic result before presentation.
@@ -708,6 +831,7 @@ func subagentEventFromLLM(event llm.Event) tools.SubagentEvent {
 		if event.Use != nil {
 			return tools.SubagentEvent{
 				Type:              tools.SubagentEventUsage,
+				CountsTurn:        true,
 				InputTokens:       event.Use.InputTokens,
 				OutputTokens:      event.Use.OutputTokens,
 				CachedInputTokens: event.Use.CachedInputTokens,
@@ -722,7 +846,7 @@ func subagentEventFromLLM(event llm.Event) tools.SubagentEvent {
 // focused tests while delegating to the shared SessionSettings tool setup.
 func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engine, agent *agents.Agent, depth int, childSessionID string) (*tools.ToolManager, error) {
 	baseDir := r.currentBaseDir()
-	settings, err := ResolveSettingsInDir(cfg, agent, CLIFlags{}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 20, baseDir)
+	settings, err := ResolveSettingsInDir(cfg, agent, CLIFlags{}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, tools.DefaultSubagentMaxTurns, baseDir)
 	if err != nil {
 		return nil, err
 	}

@@ -19,6 +19,11 @@ import (
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
+func TestServeRuntimeCloseContextNilWithSpawnRunner(t *testing.T) {
+	rt := &serveRuntime{spawnRunner: &SpawnAgentRunner{}}
+	rt.CloseContext(nil)
+}
+
 func TestServeRuntimeNewSessionDoesNotPersistDaemonCWD(t *testing.T) {
 	ctx := context.Background()
 	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})

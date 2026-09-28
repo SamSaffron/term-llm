@@ -32,9 +32,15 @@ term-llm exec --tools read_file,write_file,edit_file,shell,grep,glob,view_image
 | `manage_workspace` | Grant, list, or revoke session-scoped local workspaces. Added automatically whenever a local path-capable file/search/image tool is enabled. |
 | `ask_user` | Prompt user for input |
 | `create_goal` / `get_goal` / `update_goal` | Create/read or complete/block a persistent `/goal` (goal tools are injected automatically while a goal is active) |
-| `spawn_agent` | Spawn child agents for parallel tasks |
+| `spawn_agent` | Start a child agent; `wait`/deprecated `timeout` is a wait budget, not a child deadline. Returns an `agent_id` if it keeps running. |
+| `wait_agent` | Wait for or inspect child agents without cancelling them. |
+| `continue_agent` | Steer a running child or resume a stopped child with a fresh turn budget. |
+| `cancel_agent` | Cancel an agent (which can be resumed later). |
+| `list_agents` | Recover child agent IDs and statuses for the current parent session. |
 | `run_agent_script` | Run a script bundled in the agent directory |
 | `activate_skill` | Activate a skill by name |
+
+Lifecycle tools are enabled together whenever `spawn_agent` is enabled. `spawn_agent` returns `queued` when waiting for a parallel slot, `running` when its wait budget expires, or `completed` when it finishes in time; in every case `agent_id` is the child session ID. The turn limit is a child's only budget: the agent's `max_turns` if set, otherwise 500; `continue_agent` grants the same allotment again. `wait_agent` and `list_agents` are scoped to the parent session, including after reloading it. `turn_limit`, `cancelled`, and `interrupted` agents can be resumed with `continue_agent`; steering a running child may be reported as `undelivered` when it finishes before consuming the instruction. On exit, one-shot `ask` waits for outstanding children; chat and serve cancel them and leave them resumable. Detached approvals continue through the host's approval UI when available; headless hosts without a prompt transport deny operations rather than waiting silently.
 
 For `term-llm ask`, staged stdin or `-f` text/binary data transiently enables `read_file`; PNG/JPEG/GIF/WebP sources transiently enable both `read_file` and `view_image`. These additions are merged with explicit session tools and do not rewrite the saved tool list. The staged attachment receives an exact-file grant—nearby files, paths mentioned only in text, and symlink escapes receive no automatic access and remain subject to normal approval policy.
 
