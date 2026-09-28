@@ -32,9 +32,14 @@ func TestAgentRunStoreReload(t *testing.T) {
 		t.Fatalf("GetAgentRun = %+v, %v", got, err)
 	}
 	run.Status = "turn_limit"
-	run.CollectedAt = now
 	if err := store.PutAgentRun(ctx, run); err != nil {
 		t.Fatal(err)
+	}
+	if err := store.CollectAgentRun(ctx, run.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	if current, err := store.GetAgentRun(ctx, run.ID); err != nil || current.Status != "turn_limit" || current.CollectedAt.IsZero() {
+		t.Fatalf("collect changed state: %+v, %v", current, err)
 	}
 	list, err := store.ListAgentRuns(ctx, "parent")
 	if err != nil || len(list) != 1 || list[0].Status != "turn_limit" || list[0].CollectedAt.IsZero() {

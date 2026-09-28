@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -25,15 +27,21 @@ type AgentContinuation interface {
 }
 
 type agentEntry struct {
-	record   session.AgentRun
-	done     chan struct{}
-	cancel   context.CancelFunc
-	callback SubagentEventCallback
-	callID   string
-	result   SpawnAgentRunResult
-	media    []llm.MediaArtifact
-	err      error
-	queued   bool
+	record       session.AgentRun
+	done         chan struct{}
+	cancel       context.CancelFunc
+	callback     SubagentEventCallback
+	external     SubagentEventCallback
+	callID       string
+	originCallID string
+	result       SpawnAgentRunResult
+	startedAt    time.Time
+	media        []llm.MediaArtifact
+	currentTool  string
+	err          error
+	queued       bool
+	shutdown     bool
+	manager      *agentManager
 }
 
 type agentManager struct {
@@ -42,10 +50,13 @@ type agentManager struct {
 	slots    chan struct{}
 	store    session.AgentRunStore
 	owner    string
+	draining bool
 	runner   SpawnAgentRunner
 	depth    int
-	external SubagentEventCallback
 }
+
+var processAgentEntries sync.Map // agent_id -> *agentEntry, across host-owned tool registries
+var processAgentAdmission sync.Mutex
 
 func newAgentManager(config SpawnConfig) *agentManager {
 	return &agentManager{agents: make(map[string]*agentEntry), slots: make(chan struct{}, config.MaxParallel), owner: processAgentOwner()}
@@ -104,10 +115,12 @@ func (m *agentManager) save(record session.AgentRun) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = m.store.PutAgentRun(ctx, record)
+	if err := m.store.PutAgentRun(ctx, record); err != nil {
+		runtimeoutput.Logf("agent run %s status persistence failed: %v", record.ID, err)
+	}
 }
 
-func (m *agentManager) start(ctx context.Context, name, prompt, model, callID string, cb SubagentEventCallback, runner SpawnAgentRunner, depth int, resume bool, instructions string, existing session.AgentRun) *agentEntry {
+func (m *agentManager) start(ctx context.Context, name, prompt, model, callID string, cb SubagentEventCallback, external SubagentEventCallback, runner SpawnAgentRunner, depth int, resume bool, instructions string, existing session.AgentRun) (*agentEntry, error) {
 	id := existing.ID
 	if id == "" {
 		id = session.NewID()
@@ -118,11 +131,11 @@ func (m *agentManager) start(ctx context.Context, name, prompt, model, callID st
 			parent = provider.ParentAgentSessionID()
 		}
 	}
-	if parent != "" {
-		ctx = llm.ContextWithSessionID(ctx, parent)
-	}
 	if resume {
 		parent = existing.ParentSessionID
+	}
+	if parent != "" {
+		ctx = llm.ContextWithSessionID(ctx, parent)
 	}
 	now := time.Now()
 	record := session.AgentRun{ID: id, ParentSessionID: parent, AgentName: name, Prompt: prompt, Status: "queued", TurnsGranted: 20, OwnerInstanceID: m.owner, UpdatedAt: now}
@@ -131,17 +144,46 @@ func (m *agentManager) start(ctx context.Context, name, prompt, model, callID st
 		record.TurnsGranted = existing.TurnsGranted + 20
 	}
 	detached, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	e := &agentEntry{record: record, done: make(chan struct{}), cancel: cancel, callback: cb, external: external, callID: callID, originCallID: callID, queued: true, startedAt: now, manager: m}
 	if scoped, ok := runner.(interface{ AgentApprovalScope(string) *ApprovalManager }); ok {
-		detached = ContextWithAgentApprovalScope(detached, scoped.AgentApprovalScope(parent))
+		scope := scoped.AgentApprovalScope(parent)
+		m.trackApprovals(e, scope)
+		detached = ContextWithAgentApprovalScope(detached, scope)
 	}
 	detached = ContextWithSubagentEventCallback(detached, nil)
-	e := &agentEntry{record: record, done: make(chan struct{}), cancel: cancel, callback: cb, callID: callID, queued: true}
+	processAgentAdmission.Lock()
+	defer processAgentAdmission.Unlock()
 	m.mu.Lock()
+	if m.draining {
+		m.mu.Unlock()
+		cancel()
+		return nil, errors.New("agent manager is shutting down")
+	}
+	if previous := m.agents[id]; previous != nil {
+		select {
+		case <-previous.done:
+		default:
+			m.mu.Unlock()
+			cancel()
+			return nil, errors.New("agent is already running")
+		}
+	}
+	if previousAny, exists := processAgentEntries.Load(id); exists {
+		previous := previousAny.(*agentEntry)
+		select {
+		case <-previous.done:
+		default:
+			m.mu.Unlock()
+			cancel()
+			return nil, errors.New("agent is already running in this process")
+		}
+	}
 	m.agents[id] = e
+	processAgentEntries.Store(id, e)
 	m.mu.Unlock()
 	m.save(record)
 	go m.run(detached, e, runner, depth, model, resume, instructions)
-	return e
+	return e, nil
 }
 
 func (m *agentManager) run(ctx context.Context, e *agentEntry, runner SpawnAgentRunner, depth int, model string, resume bool, instructions string) {
@@ -165,24 +207,28 @@ func (m *agentManager) run(ctx context.Context, e *agentEntry, runner SpawnAgent
 	record := e.record
 	m.mu.Unlock()
 	m.save(record)
-	cb := func(_ string, event SubagentEvent) {
+	cb := func(eventCallID string, event SubagentEvent) {
 		m.mu.Lock()
 		e.record.UpdatedAt = time.Now()
+		if event.Type == SubagentEventUsage {
+			e.record.TurnsUsed++
+		}
 		if event.Type == SubagentEventToolStart {
-			e.record.StopReason = event.ToolName
+			e.currentTool = event.ToolName
 		}
 		if event.Type == SubagentEventToolEnd {
-			e.record.StopReason = ""
+			e.currentTool = ""
 			e.media = append(e.media, event.Media...)
 		}
 		attached, callID := e.callback, e.callID
 		record := e.record
 		m.mu.Unlock()
 		if attached != nil {
-			attached(callID, event)
+			mappedID := callID + strings.TrimPrefix(eventCallID, e.originCallID)
+			attached(mappedID, event)
 		}
-		if m.external != nil {
-			m.external(callID, event)
+		if e.external != nil {
+			e.external(eventCallID, event)
 		}
 		if event.Type == SubagentEventToolEnd || event.Type == SubagentEventDone {
 			m.save(record)
@@ -198,11 +244,16 @@ func (m *agentManager) run(ctx context.Context, e *agentEntry, runner SpawnAgent
 			err = errors.New("runner does not support resuming agents")
 		}
 	} else if extended, ok := runner.(SpawnAgentRunnerWithOptions); ok {
-		result, err = extended.RunAgentWithCallbackAndOptions(ctx, e.record.AgentName, e.record.Prompt, depth, e.callID, cb, opts)
+		result, err = extended.RunAgentWithCallbackAndOptions(ctx, e.record.AgentName, e.record.Prompt, depth, e.originCallID, cb, opts)
 	} else {
-		result, err = runner.RunAgentWithCallback(ctx, e.record.AgentName, e.record.Prompt, depth, e.callID, cb)
+		result, err = runner.RunAgentWithCallback(ctx, e.record.AgentName, e.record.Prompt, depth, e.originCallID, cb)
 	}
 	m.finish(e, result, err)
+}
+
+func isTypedTurnLimit(err error) bool {
+	var limit *llm.MaxTurnsExceededError
+	return errors.As(err, &limit)
 }
 
 func (m *agentManager) finish(e *agentEntry, result SpawnAgentRunResult, err error) {
@@ -210,16 +261,19 @@ func (m *agentManager) finish(e *agentEntry, result SpawnAgentRunResult, err err
 	e.result = result
 	e.err = err
 	switch {
+	case errors.Is(err, context.Canceled) && e.shutdown:
+		e.record.Status = "interrupted"
 	case errors.Is(err, context.Canceled):
 		e.record.Status = "cancelled"
-	case llm.IsMaxTurnsExceeded(err):
+	case isTypedTurnLimit(err):
 		e.record.Status = "turn_limit"
 	case err != nil:
 		e.record.Status = "failed"
 	default:
 		e.record.Status = "completed"
 	}
-	e.record.StopReason = ""
+	e.record.StopReason = e.record.Status
+	e.currentTool = ""
 	e.record.Output = result.Output
 	if err != nil {
 		e.record.Error = err.Error()
@@ -232,13 +286,17 @@ func (m *agentManager) finish(e *agentEntry, result SpawnAgentRunResult, err err
 }
 
 func (m *agentManager) get(ctx context.Context, id, parent string) (session.AgentRun, *agentEntry, error) {
-	m.mu.Lock()
-	e := m.agents[id]
+	var e *agentEntry
+	if value, ok := processAgentEntries.Load(id); ok {
+		e = value.(*agentEntry)
+	}
 	var record session.AgentRun
 	if e != nil {
+		e.manager.mu.Lock()
 		record = e.record
+		record.CurrentTool = e.currentTool
+		e.manager.mu.Unlock()
 	}
-	m.mu.Unlock()
 	if e == nil && m.store != nil {
 		var err error
 		record, err = m.store.GetAgentRun(ctx, id)
@@ -276,13 +334,17 @@ func (m *agentManager) snapshot(ctx context.Context, parent string) ([]session.A
 		seen[runs[i].ID] = true
 		runs[i], _, _ = m.get(ctx, runs[i].ID, parent)
 	}
-	m.mu.Lock()
-	for _, e := range m.agents {
-		if e.record.ParentSessionID == parent && !seen[e.record.ID] {
-			runs = append(runs, e.record)
+	processAgentEntries.Range(func(_, value any) bool {
+		e := value.(*agentEntry)
+		e.manager.mu.Lock()
+		record := e.record
+		record.CurrentTool = e.currentTool
+		e.manager.mu.Unlock()
+		if record.ParentSessionID == parent && !seen[record.ID] {
+			runs = append(runs, record)
 		}
-	}
-	m.mu.Unlock()
+		return true
+	})
 	return runs, nil
 }
 
@@ -308,22 +370,22 @@ func (m *agentManager) wait(ctx context.Context, e *agentEntry, budget time.Dura
 }
 
 func (m *agentManager) detach(e *agentEntry) {
-	m.mu.Lock()
+	e.manager.mu.Lock()
 	e.callback = nil
 	e.callID = ""
-	m.mu.Unlock()
+	e.manager.mu.Unlock()
 }
 
 func (m *agentManager) attach(e *agentEntry, cb SubagentEventCallback, callID string) {
-	m.mu.Lock()
+	e.manager.mu.Lock()
 	e.callback = cb
 	e.callID = callID
-	m.mu.Unlock()
+	e.manager.mu.Unlock()
 }
 
 func agentOutput(a session.AgentRun) llm.ToolOutput {
 	status := a.Status
-	result := SpawnAgentResult{AgentName: a.AgentName, AgentID: a.ID, SessionID: a.ID, Status: status, Output: a.Output, Error: a.Error, Duration: 0, TurnsUsed: a.TurnsUsed, LastActivity: a.UpdatedAt}
+	result := SpawnAgentResult{AgentName: a.AgentName, AgentID: a.ID, SessionID: a.ID, Status: status, Output: a.Output, Error: a.Error, Duration: 0, TurnsUsed: a.TurnsUsed, LastActivity: a.UpdatedAt, CurrentTool: a.CurrentTool}
 	if status == "failed" {
 		result.Type = string(ErrExecutionFailed)
 	}
@@ -339,12 +401,95 @@ func agentOutput(a session.AgentRun) llm.ToolOutput {
 	return llm.ToolOutput{Content: string(data), IsError: status == "failed"}
 }
 
+func (m *agentManager) output(record session.AgentRun, e *agentEntry) llm.ToolOutput {
+	out := agentOutput(record)
+	if e == nil {
+		return out
+	}
+	e.manager.mu.Lock()
+	result := e.result
+	media := append([]llm.MediaArtifact(nil), e.media...)
+	started := e.startedAt
+	m.mu.Unlock()
+	var payload SpawnAgentResult
+	if json.Unmarshal([]byte(out.Content), &payload) != nil {
+		return out
+	}
+	payload.Interventions = result.Interventions
+	payload.InterventionDisposition = result.InterventionDisposition
+	payload.CancelledByUser = result.CancelledByUser
+	if record.Status == "queued" || record.Status == "running" || record.Status == "awaiting_approval" {
+		payload.Duration = time.Since(started).Milliseconds()
+	} else {
+		payload.Duration = record.UpdatedAt.Sub(started).Milliseconds()
+	}
+	out.Content = marshalAgentResult(payload)
+	out.Media = llm.NormalizeMedia(media, nil)
+	return out
+}
+
+func marshalAgentResult(result SpawnAgentResult) string {
+	data, _ := json.Marshal(result)
+	return string(data)
+}
+
 func agentParent(ctx context.Context) string { return llm.SessionIDFromContext(ctx) }
+
+func (m *agentManager) outstandingIDs() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var ids []string
+	for id, e := range m.agents {
+		select {
+		case <-e.done:
+		default:
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func (m *agentManager) Drain(ctx context.Context) error {
+	m.mu.Lock()
+	m.draining = true
+	var entries []*agentEntry
+	for _, e := range m.agents {
+		entries = append(entries, e)
+	}
+	m.mu.Unlock()
+	for _, e := range entries {
+		select {
+		case <-e.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+func (m *agentManager) gracefulWait(ctx context.Context, entries []*agentEntry, grace time.Duration) {
+	if len(entries) == 0 {
+		return
+	}
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	for _, e := range entries {
+		select {
+		case <-e.done:
+		case <-timer.C:
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
+}
 
 // Shutdown cancels queued work first, then active children, and waits for their
 // terminal writes before hosts close the session store.
 func (m *agentManager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
+	m.draining = true
 	var queued, running []*agentEntry
 	for _, e := range m.agents {
 		select {
@@ -359,7 +504,22 @@ func (m *agentManager) Shutdown(ctx context.Context) error {
 		}
 	}
 	m.mu.Unlock()
-	for _, e := range append(queued, running...) {
+	for _, e := range queued {
+		e.cancel()
+	}
+	// Give active children a short chance to finish naturally; queued work never
+	// acquires a slot during shutdown.
+	m.gracefulWait(ctx, running, 250*time.Millisecond)
+	m.mu.Lock()
+	for _, e := range running {
+		select {
+		case <-e.done:
+		default:
+			e.shutdown = true
+		}
+	}
+	m.mu.Unlock()
+	for _, e := range running {
 		e.cancel()
 	}
 	for _, e := range append(queued, running...) {

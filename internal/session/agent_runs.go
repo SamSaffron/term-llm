@@ -13,6 +13,7 @@ type AgentRunStore interface {
 	PutAgentRun(context.Context, AgentRun) error
 	GetAgentRun(context.Context, string) (AgentRun, error)
 	ListAgentRuns(context.Context, string) ([]AgentRun, error)
+	CollectAgentRun(context.Context, string, time.Time) error
 }
 
 type AgentRun struct {
@@ -22,6 +23,7 @@ type AgentRun struct {
 	Prompt          string    `json:"prompt"`
 	Status          string    `json:"status"`
 	StopReason      string    `json:"stop_reason,omitempty"`
+	CurrentTool     string    `json:"current_tool,omitempty"` // In-process progress; not persisted
 	TurnsUsed       int       `json:"turns_used"`
 	TurnsGranted    int       `json:"turns_granted"`
 	Output          string    `json:"output,omitempty"`
@@ -55,7 +57,7 @@ func (s *SQLiteStore) PutAgentRun(ctx context.Context, a AgentRun) error {
 		collected = a.CollectedAt
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO session_agent_runs (child_session_id,parent_session_id,agent_name,prompt,run_status,stop_reason,turns_used,turns_granted,output,error,owner_instance_id,updated_at,collected_at)
- VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(child_session_id) DO UPDATE SET run_status=excluded.run_status,stop_reason=excluded.stop_reason,turns_used=excluded.turns_used,turns_granted=excluded.turns_granted,output=excluded.output,error=excluded.error,owner_instance_id=excluded.owner_instance_id,updated_at=excluded.updated_at,collected_at=excluded.collected_at`,
+ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(child_session_id) DO UPDATE SET run_status=excluded.run_status,stop_reason=excluded.stop_reason,turns_used=excluded.turns_used,turns_granted=excluded.turns_granted,output=excluded.output,error=excluded.error,owner_instance_id=excluded.owner_instance_id,updated_at=excluded.updated_at,collected_at=COALESCE(excluded.collected_at,session_agent_runs.collected_at)`,
 		a.ID, a.ParentSessionID, a.AgentName, a.Prompt, a.Status, a.StopReason, a.TurnsUsed, a.TurnsGranted, a.Output, a.Error, a.OwnerInstanceID, a.UpdatedAt, collected)
 	if err != nil {
 		return fmt.Errorf("save agent run: %w", err)
@@ -98,4 +100,14 @@ func (s *SQLiteStore) ListAgentRuns(ctx context.Context, parent string) ([]Agent
 		agents = append(agents, a)
 	}
 	return agents, rows.Err()
+}
+
+// CollectAgentRun marks a result as observed without rewriting a concurrently
+// saved terminal status.
+func (s *SQLiteStore) CollectAgentRun(ctx context.Context, id string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE session_agent_runs SET collected_at=COALESCE(collected_at,?) WHERE child_session_id=?`, at, id)
+	if err != nil {
+		return fmt.Errorf("collect agent run: %w", err)
+	}
+	return nil
 }

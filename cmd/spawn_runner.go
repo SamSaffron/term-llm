@@ -176,6 +176,23 @@ func (r *SpawnAgentRunner) AgentRunStore() session.AgentRunStore {
 
 func (r *SpawnAgentRunner) SetAgentLifecycleTool(tool *tools.SpawnAgentTool) { r.lifecycle = tool }
 
+func (r *SpawnAgentRunner) OutstandingAgentIDs() []string {
+	if r.lifecycle == nil {
+		return nil
+	}
+	return r.lifecycle.OutstandingAgentIDs()
+}
+
+func (r *SpawnAgentRunner) Drain(ctx context.Context) error {
+	if r.lifecycle != nil {
+		if err := r.lifecycle.Drain(ctx); err != nil {
+			return err
+		}
+	}
+	r.Wait()
+	return nil
+}
+
 // Shutdown cancels detached children before closing the owning session store.
 func (r *SpawnAgentRunner) Shutdown(ctx context.Context) error {
 	if r.lifecycle != nil {
@@ -448,41 +465,9 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 	sink.Start()
 	defer sink.Done()
 
-	search := agent.Search
-	executionRequest := r.buildChildExecutionRequest(ctx, request, childSessionID, search)
-
-	if request.Resume {
-		executionRequest.Resume = true
-		executionRequest.Stateful = true
-		executionRequest.ReplaceHistory = true
-		history, repairErr := r.loadChildResumeHistory(ctx, childSessionID)
-		if repairErr != nil {
-			return emptyResult, repairErr
-		}
-		instruction := strings.TrimSpace(request.Instructions)
-		if instruction == "" {
-			instruction = "Continue the assigned task."
-		}
-		executionRequest.Messages = append(history, llm.UserText(instruction))
-	}
-	approvalScope := tools.AgentApprovalScopeFromContext(ctx)
-	if approvalScope == nil {
-		approvalScope = r.AgentApprovalScope(executionRequest.ParentSessionID)
-	}
-	if request.Kind == runpkg.ChildRunSpawnAgent {
-		executionRequest.OnEngineReady = func(engine *llm.Engine) {
-			r.enginesMu.Lock()
-			if r.engines == nil {
-				r.engines = make(map[string]*llm.Engine)
-			}
-			r.engines[childSessionID] = engine
-			r.enginesMu.Unlock()
-		}
-		executionRequest.OnEngineDone = func(engine *llm.Engine) {
-			r.enginesMu.Lock()
-			delete(r.engines, childSessionID)
-			r.enginesMu.Unlock()
-		}
+	executionRequest, approvalScope, err := r.prepareLifecycleChildRequest(ctx, request, childSessionID, agent.Search)
+	if err != nil {
+		return emptyResult, err
 	}
 
 	var handle childRunSession
@@ -528,9 +513,9 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 	status := session.StatusComplete
 	if errors.Is(err, context.Canceled) {
 		status = session.StatusInterrupted
-	} else if llm.IsMaxTurnsExceeded(err) {
+	} else if isChildTurnLimit(err) {
 		// The final turn's tools and results have already been persisted.
-		status = session.StatusComplete
+		status = session.StatusTurnLimit
 	} else if err != nil {
 		status = session.StatusError
 	}
@@ -549,6 +534,51 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 		childResult.CancelledByUser = outcome.CancelledByUser
 	}
 	return childResult, err
+}
+
+func isChildTurnLimit(err error) bool {
+	var limit *llm.MaxTurnsExceededError
+	return errors.As(err, &limit)
+}
+
+// prepareLifecycleChildRequest repairs persisted history before the runtime can
+// sanitize it, and captures a per-run engine for honest steering dispositions.
+func (r *SpawnAgentRunner) prepareLifecycleChildRequest(ctx context.Context, request runpkg.ChildRunRequest, childSessionID string, search bool) (runpkg.Request, *tools.ApprovalManager, error) {
+	executionRequest := r.buildChildExecutionRequest(ctx, request, childSessionID, search)
+
+	if request.Resume {
+		executionRequest.Resume = true
+		executionRequest.Stateful = true
+		if _, repairErr := r.loadChildResumeHistory(ctx, childSessionID); repairErr != nil {
+			return runpkg.Request{}, nil, repairErr
+		}
+		instruction := strings.TrimSpace(request.Instructions)
+		if instruction == "" {
+			instruction = "Continue the assigned task."
+		}
+		executionRequest.Messages = []llm.Message{llm.UserText(instruction)}
+	}
+	approvalScope := tools.AgentApprovalScopeFromContext(ctx)
+	if approvalScope == nil {
+		approvalScope = r.AgentApprovalScope(executionRequest.ParentSessionID)
+	}
+	if request.Kind == runpkg.ChildRunSpawnAgent {
+		executionRequest.OnEngineReady = func(engine *llm.Engine) {
+			r.enginesMu.Lock()
+			if r.engines == nil {
+				r.engines = make(map[string]*llm.Engine)
+			}
+			r.engines[childSessionID] = engine
+			r.enginesMu.Unlock()
+		}
+		executionRequest.OnEngineDone = func(engine *llm.Engine) {
+			r.enginesMu.Lock()
+			delete(r.engines, childSessionID)
+			r.enginesMu.Unlock()
+		}
+	}
+
+	return executionRequest, approvalScope, nil
 }
 
 // completeChildAgent resolves the agent's semantic result before presentation.

@@ -319,7 +319,14 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	var spawnRunner *SpawnAgentRunner
 	defer func() {
 		if spawnRunner != nil {
-			_ = spawnRunner.Shutdown(context.Background())
+			if ids := spawnRunner.OutstandingAgentIDs(); len(ids) > 0 {
+				fmt.Fprintf(cmd.ErrOrStderr(), "waiting for child agents: %s\n", strings.Join(ids, ", "))
+			}
+			if ctx.Err() != nil {
+				_ = spawnRunner.Shutdown(context.Background())
+			} else if err := spawnRunner.Drain(ctx); err != nil {
+				_ = spawnRunner.Shutdown(context.Background())
+			}
 		}
 		storeCleanup()
 	}()

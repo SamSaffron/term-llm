@@ -50,19 +50,17 @@ func TestSpawnAgentToolUsesExecutionScopedEventCallback(t *testing.T) {
 	}
 }
 
-func TestSpawnAgentToolAddsVerifiedDeadlineToCallbackEvents(t *testing.T) {
+func TestSpawnAgentToolWaitBudgetDoesNotImposeChildDeadline(t *testing.T) {
 	tool := NewSpawnAgentTool(DefaultSpawnConfig(), 0)
 	tool.SetRunner(&mediaEventMockRunner{mockRunner: newMockRunner()})
 	var event SubagentEvent
 	tool.SetEventCallback(func(_ string, observed SubagentEvent) { event = observed })
-	before := time.Now().Add(9 * time.Second)
 	ctx := llm.ContextWithCallID(context.Background(), "parent-call")
 	if _, err := tool.Execute(ctx, makeSpawnArgs("reviewer", "inspect", 10)); err != nil {
 		t.Fatal(err)
 	}
-	after := time.Now().Add(11 * time.Second)
-	if event.Deadline.Before(before) || event.Deadline.After(after) {
-		t.Fatalf("callback deadline = %v, want enforced child deadline between %v and %v", event.Deadline, before, after)
+	if !event.Deadline.IsZero() {
+		t.Fatalf("wait budget unexpectedly imposed child deadline %v", event.Deadline)
 	}
 }
 
@@ -416,8 +414,8 @@ func TestSpawnAgentTool_PreservesPartialRunResultOnError(t *testing.T) {
 	if r.Output != "partial findings" {
 		t.Fatalf("expected partial output to be preserved, got %q", r.Output)
 	}
-	if r.SessionID != "child-session-1" {
-		t.Fatalf("expected child session ID to be preserved, got %q", r.SessionID)
+	if r.SessionID == "" || r.SessionID != r.AgentID {
+		t.Fatalf("child session ID must equal agent ID: %+v", r)
 	}
 }
 
@@ -429,18 +427,18 @@ func TestSpawnAgentTool_PreservesPartialRunResultOnTimeoutError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.IsError || !result.TimedOut {
-		t.Fatalf("timeout flags = IsError:%v TimedOut:%v, want true/true", result.IsError, result.TimedOut)
+	if !result.IsError || result.TimedOut {
+		t.Fatalf("runner failure flags = IsError:%v TimedOut:%v, want true/false", result.IsError, result.TimedOut)
 	}
 
 	r := parseResult(t, result.Content)
-	if r.Type != string(ErrTimeout) {
-		t.Fatalf("expected timeout, got %q (%s)", r.Type, r.Error)
+	if r.Status != "failed" {
+		t.Fatalf("runner failure status = %q (%s)", r.Status, r.Error)
 	}
 	if r.Output != "timeout findings" {
 		t.Fatalf("expected partial output to be preserved, got %q", r.Output)
 	}
-	if r.SessionID != "child-session-timeout" {
+	if r.SessionID == "" || r.SessionID != r.AgentID {
 		t.Fatalf("expected child session ID to be preserved, got %q", r.SessionID)
 	}
 }
@@ -479,7 +477,7 @@ func TestSpawnAgentStructuredFailureEmitsUnsuccessfulEngineTerminal(t *testing.T
 	if terminal == nil {
 		t.Fatal("missing spawn_agent terminal event")
 	}
-	if terminal.ToolSuccess || !strings.Contains(terminal.ToolOutput, `"type":"`+string(ErrExecutionFailed)+`"`) || !strings.Contains(terminal.ToolOutput, `"session_id":"child-failed"`) {
+	if terminal.ToolSuccess || !strings.Contains(terminal.ToolOutput, `"type":"`+string(ErrExecutionFailed)+`"`) || !strings.Contains(terminal.ToolOutput, `"agent_id":"`) {
 		t.Fatalf("terminal = %#v", *terminal)
 	}
 }
@@ -1076,12 +1074,11 @@ func TestSpawnAgentTool_ContextCancellation(t *testing.T) {
 	}
 
 	r := parseResult(t, result.Content)
-	if r.Error == "" {
-		t.Error("expected error for cancelled context")
+	if r.Status != "running" {
+		t.Fatalf("parent cancellation should detach, not kill child: %+v", r)
 	}
-	// Should be execution failed (cancellation)
-	if r.Type != string(ErrExecutionFailed) {
-		t.Errorf("expected error type %s, got %s", ErrExecutionFailed, r.Type)
+	if err := tool.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -1110,12 +1107,11 @@ func TestSpawnAgentTool_ContextTimeout(t *testing.T) {
 	}
 
 	r := parseResult(t, result.Content)
-	if r.Error == "" {
-		t.Error("expected error for timed out context")
+	if r.Status != "running" {
+		t.Fatalf("parent deadline should detach, not kill child: %+v", r)
 	}
-	// Should be timeout
-	if r.Type != string(ErrTimeout) {
-		t.Errorf("expected error type %s, got %s", ErrTimeout, r.Type)
+	if err := tool.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -1217,7 +1213,7 @@ func TestSpawnAgentTool_MaxTurnsErrorIsExplicit(t *testing.T) {
 	config := DefaultSpawnConfig()
 	tool := NewSpawnAgentTool(config, 0)
 
-	runner := newMockRunner().SetError(errors.New("agentic loop exceeded max turns (200)"))
+	runner := newMockRunner().SetError(&llm.MaxTurnsExceededError{MaxTurns: 200})
 	tool.SetRunner(runner)
 
 	ctx := context.Background()
@@ -1232,10 +1228,10 @@ func TestSpawnAgentTool_MaxTurnsErrorIsExplicit(t *testing.T) {
 	if r.Error == "" {
 		t.Fatal("expected error when max turns is exceeded")
 	}
-	if r.Type != string(ErrExecutionFailed) {
-		t.Errorf("expected error type %s, got %s", ErrExecutionFailed, r.Type)
+	if r.Status != "turn_limit" || r.AgentID == "" {
+		t.Errorf("expected resumable turn_limit with agent_id, got %+v", r)
 	}
-	if !contains(r.Error, "reaching max turns") && !contains(r.Error, "max turns") {
+	if !contains(r.Error, "max turns") {
 		t.Errorf("expected explicit max turns message, got: %s", r.Error)
 	}
 	if !contains(r.Error, "(200)") {
@@ -1527,8 +1523,7 @@ func TestSpawnAgentTool_SessionIDPropagation(t *testing.T) {
 	config := DefaultSpawnConfig()
 	tool := NewSpawnAgentTool(config, 0)
 
-	expectedSessionID := "child-123"
-	runner := newMockRunner().SetSessionID(expectedSessionID)
+	runner := newMockRunner().SetSessionID("child-123")
 	tool.SetRunner(runner)
 
 	ctx := context.Background()
@@ -1543,8 +1538,8 @@ func TestSpawnAgentTool_SessionIDPropagation(t *testing.T) {
 	if r.Error != "" {
 		t.Errorf("unexpected error: %s", r.Error)
 	}
-	if r.SessionID != expectedSessionID {
-		t.Errorf("expected session_id %q, got %q", expectedSessionID, r.SessionID)
+	if r.SessionID == "" || r.SessionID != r.AgentID {
+		t.Errorf("expected minted session_id to equal agent_id, got %+v", r)
 	}
 }
 

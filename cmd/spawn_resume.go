@@ -49,7 +49,7 @@ func (r *SpawnAgentRunner) loadChildResumeHistory(ctx context.Context, id string
 	if err != nil || sess == nil {
 		return nil, fmt.Errorf("load child session %q: %w", id, err)
 	}
-	stored, err := r.store.GetMessages(ctx, id, 0, 0)
+	stored, err := session.LoadActiveMessages(ctx, r.store, sess)
 	if err != nil {
 		return nil, fmt.Errorf("load child transcript: %w", err)
 	}
@@ -81,7 +81,7 @@ func (r *SpawnAgentRunner) loadChildResumeHistory(ctx context.Context, id string
 		}
 	}
 	for _, msg := range repaired {
-		if err := r.store.AddMessage(ctx, id, session.NewMessage(id, msg, 0)); err != nil {
+		if err := r.store.AddMessage(ctx, id, session.NewMessage(id, msg, -1)); err != nil {
 			return nil, fmt.Errorf("persist child tool-call repair: %w", err)
 		}
 		history = append(history, msg)

@@ -53,6 +53,7 @@ type SpawnAgentResult struct {
 	Next         string    `json:"next,omitempty"`
 	TurnsUsed    int       `json:"turns_used,omitempty"`
 	LastActivity time.Time `json:"last_activity,omitempty"`
+	CurrentTool  string    `json:"current_tool,omitempty"`
 	// Interventions records corrections a human made to this delegated run while
 	// it was executing. They are local corrections inside the assignment this
 	// call already made; they never redefine the assignment itself.
@@ -514,19 +515,20 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	cb := func(eventCallID string, event SubagentEvent) {
 		emitExecutionSubagentEvent(executionCallback, callID, eventCallID, event)
 	}
-	t.manager.mu.Lock()
-	t.manager.external = t.GetEventCallback()
-	t.manager.mu.Unlock()
-	entry := t.manager.start(ctx, a.AgentName, a.Prompt, modelOverride, callID, cb, runner, currentDepth+1, false, "", session.AgentRun{})
+	entry, startErr := t.manager.start(ctx, a.AgentName, a.Prompt, modelOverride, callID, cb, t.GetEventCallback(), runner, currentDepth+1, false, "", session.AgentRun{})
+	if startErr != nil {
+		return spawnAgentErrorOutput(t.formatError(ErrExecutionFailed, startErr.Error()), false), nil
+	}
 	t.manager.wait(ctx, entry, time.Duration(budget)*time.Second)
 	t.manager.detach(entry)
 	record, _, _ := t.manager.get(context.Background(), entry.record.ID, entry.record.ParentSessionID)
-	out := agentOutput(record)
-	t.manager.mu.Lock()
-	out.Media = llm.NormalizeMedia(append([]llm.MediaArtifact(nil), entry.media...), nil)
-	t.manager.mu.Unlock()
-	return out, nil
+	return t.manager.output(record, entry), nil
 }
+
+// OutstandingAgentIDs lists unfinished runs for one-shot host exit diagnostics.
+func (t *SpawnAgentTool) OutstandingAgentIDs() []string { return t.manager.outstandingIDs() }
+
+func (t *SpawnAgentTool) Drain(ctx context.Context) error { return t.manager.Drain(ctx) }
 
 func (t *SpawnAgentTool) Shutdown(ctx context.Context) error { return t.manager.Shutdown(ctx) }
 

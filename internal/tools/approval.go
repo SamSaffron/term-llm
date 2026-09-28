@@ -401,6 +401,7 @@ type ApprovalManager struct {
 	workspaceStore         session.WorkspaceGrantStore
 	workspaceTrustStore    workspaceTrustStore
 	workspaceSessionID     string
+	agentScopedCacheOwner  string // first owner whose session caches were snapshotted for detached children
 	workspaceVersion       uint64
 
 	// promptMu serializes interactive approval prompts.

@@ -1,18 +1,14 @@
 package tools
 
 // CloneForAgentRun snapshots the parent's approval scope before a child can
-// detach. A child must not inherit a mutable root whose workspaceSessionID a
-// subsequent serve request can rebind to a different parent session.
+// detach. The clone owns its caches and workspace identity: later serve requests
+// must never retarget an already-running child to another parent's grants.
 func (m *ApprovalManager) CloneForAgentRun(sessionID string) *ApprovalManager {
 	if m == nil {
 		return nil
 	}
 	root := m.root()
 	clone := NewApprovalManager(root.permissions)
-	clone.cache = root.cache
-	clone.dirCache = root.dirCache
-	clone.shellCache = root.shellCache
-	clone.sharedShellCache = root.sharedShellCache
 	clone.IgnoreProjectApprovals = root.IgnoreProjectApprovals
 	clone.DebugApproval = root.DebugApproval
 	clone.WorkspacePolicy = root.WorkspacePolicy
@@ -22,19 +18,51 @@ func (m *ApprovalManager) CloneForAgentRun(sessionID string) *ApprovalManager {
 	clone.WorkspacePromptFunc = root.WorkspacePromptFunc
 	clone.GuardianEventFunc = root.GuardianEventFunc
 	clone.SetApprovalMode(root.ApprovalMode())
-	root.workspaceMu.RLock()
+	if reviewer := root.lookupPolicyReviewFunc(); reviewer != nil {
+		clone.SetPolicyReviewFunc(reviewer, nil)
+	}
+	root.workspaceMu.Lock()
 	clone.workspaceStore = root.workspaceStore
 	clone.workspaceTrustStore = root.workspaceTrustStore
-	clone.primaryWorkspace = root.primaryWorkspace
-	clone.primaryWorkspaceGrant = root.primaryWorkspaceGrant
-	clone.primaryWorkspaceDenied = root.primaryWorkspaceDenied
-	for path, grant := range root.workspaceGrants {
-		clone.workspaceGrants[path] = grant
+	sameOwner := root.workspaceSessionID == sessionID && (root.agentScopedCacheOwner == "" || root.agentScopedCacheOwner == sessionID)
+	if sameOwner {
+		root.agentScopedCacheOwner = sessionID
 	}
-	for path, grant := range root.workspaceYoloGrants {
-		clone.workspaceYoloGrants[path] = grant
+	if sameOwner {
+		clone.primaryWorkspace = root.primaryWorkspace
+		clone.primaryWorkspaceGrant = root.primaryWorkspaceGrant
+		clone.primaryWorkspaceDenied = root.primaryWorkspaceDenied
+		for path, grant := range root.workspaceGrants {
+			clone.workspaceGrants[path] = grant
+		}
+		for path, grant := range root.workspaceYoloGrants {
+			clone.workspaceYoloGrants[path] = grant
+		}
 	}
-	root.workspaceMu.RUnlock()
+	root.workspaceMu.Unlock()
 	clone.workspaceSessionID = sessionID
+	if sameOwner {
+		root.cache.mu.RLock()
+		for k, v := range root.cache.cache {
+			clone.cache.cache[k] = v
+		}
+		root.cache.mu.RUnlock()
+		root.dirCache.mu.RLock()
+		for k, v := range root.dirCache.readDirs {
+			clone.dirCache.readDirs[k] = v
+		}
+		for k, v := range root.dirCache.writeDirs {
+			clone.dirCache.writeDirs[k] = v
+		}
+		root.dirCache.mu.RUnlock()
+		copyShellCache(clone.shellCache, root.shellCache)
+		copyShellCache(clone.sharedShellCache, root.sharedShellCache)
+	}
 	return clone
+}
+func copyShellCache(dst, src *ShellApprovalCache) {
+	src.mu.RLock()
+	defer src.mu.RUnlock()
+	dst.patterns = append(dst.patterns, src.patterns...)
+	dst.commands = append(dst.commands, src.commands...)
 }

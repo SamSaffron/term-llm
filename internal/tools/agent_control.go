@@ -51,16 +51,19 @@ func (t *agentControlTool) Spec() llm.ToolSpec {
 	return llm.ToolSpec{Name: t.name, Description: description, Schema: map[string]any{"type": "object", "properties": props, "required": required, "additionalProperties": false}}
 }
 func (t *agentControlTool) Preview(args json.RawMessage) string { return t.name }
+
+type agentControlArgs struct {
+	AgentID      string   `json:"agent_id"`
+	AgentIDs     []string `json:"agent_ids"`
+	Instructions string   `json:"instructions"`
+	Force        bool     `json:"force"`
+	Wait         *int     `json:"wait"`
+	MaxWait      int      `json:"max_wait"`
+	Status       string   `json:"status"`
+}
+
 func (t *agentControlTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
-	var a struct {
-		AgentID      string   `json:"agent_id"`
-		AgentIDs     []string `json:"agent_ids"`
-		Instructions string   `json:"instructions"`
-		Force        bool     `json:"force"`
-		Wait         *int     `json:"wait"`
-		MaxWait      int      `json:"max_wait"`
-		Status       string   `json:"status"`
-	}
+	var a agentControlArgs
 	if err := json.Unmarshal(args, &a); err != nil {
 		return llm.TextOutput(fmt.Sprintf("invalid arguments: %v", err)), nil
 	}
@@ -74,106 +77,157 @@ func (t *agentControlTool) Execute(ctx context.Context, args json.RawMessage) (l
 	if parent == "" {
 		return llm.TextOutput("agent lifecycle requires a parent session"), nil
 	}
+	var out llm.ToolOutput
 	switch t.name {
 	case ListAgentsToolName:
-		records, err := m.snapshot(ctx, parent)
-		if err != nil {
-			return llm.TextOutput(err.Error()), nil
-		}
-		filtered := make([]session.AgentRun, 0, len(records))
-		for _, r := range records {
-			if a.Status == "" || r.Status == a.Status {
-				filtered = append(filtered, r)
-			}
-		}
-		data, _ := json.Marshal(filtered)
-		return llm.TextOutput(string(data)), nil
+		out = t.list(ctx, parent, a)
 	case WaitAgentToolName:
-		if len(a.AgentIDs) == 0 {
-			return llm.TextOutput("agent_ids is required"), nil
-		}
-		if a.MaxWait < 0 {
-			return llm.TextOutput("max_wait must be nonnegative"), nil
-		}
-		results := make([]json.RawMessage, 0, len(a.AgentIDs))
-		for _, id := range a.AgentIDs {
-			record, e, err := m.get(ctx, id, parent)
-			if err != nil {
-				return llm.TextOutput(err.Error()), nil
-			}
-			if e != nil && a.MaxWait > 0 {
-				m.attach(e, SubagentEventCallbackFromContext(ctx), llm.CallIDFromContext(ctx))
-				m.wait(ctx, e, time.Duration(a.MaxWait)*time.Second)
-				m.detach(e)
-				record, _, _ = m.get(ctx, id, parent)
-			}
-			record.CollectedAt = time.Now()
-			m.save(record)
-			out := agentOutput(record)
-			results = append(results, json.RawMessage(out.Content))
-		}
-		data, _ := json.Marshal(results)
-		return llm.TextOutput(string(data)), nil
+		out = t.wait(ctx, parent, a)
 	case CancelAgentToolName:
-		record, e, err := m.get(ctx, a.AgentID, parent)
+		out = t.cancel(ctx, parent, a)
+	case ContinueAgentToolName:
+		out = t.continueRun(ctx, parent, a)
+	default:
+		out = llm.TextOutput("unknown agent control operation")
+	}
+	return out, nil
+}
+
+func (t *agentControlTool) list(ctx context.Context, parent string, a agentControlArgs) llm.ToolOutput {
+	records, err := t.spawn.manager.snapshot(ctx, parent)
+	if err != nil {
+		return llm.TextOutput(err.Error())
+	}
+	filtered := make([]map[string]any, 0, len(records))
+	for _, r := range records {
+		if a.Status != "" && r.Status != a.Status {
+			continue
+		}
+		resumable := r.Status == "completed" || r.Status == "turn_limit" || r.Status == "cancelled" || r.Status == "interrupted"
+		filtered = append(filtered, map[string]any{
+			"agent_id": r.ID, "agent_name": r.AgentName, "prompt_summary": session.TruncateSummary(r.Prompt),
+			"status": r.Status, "resumable": resumable, "turns_used": r.TurnsUsed,
+			"turns_granted": r.TurnsGranted, "last_activity": r.UpdatedAt, "collected": !r.CollectedAt.IsZero(), "current_tool": r.CurrentTool,
+		})
+	}
+	data, _ := json.Marshal(filtered)
+	return llm.TextOutput(string(data))
+}
+
+func (t *agentControlTool) wait(ctx context.Context, parent string, a agentControlArgs) llm.ToolOutput {
+	if len(a.AgentIDs) == 0 {
+		return llm.TextOutput("agent_ids is required")
+	}
+	if a.MaxWait < 0 || a.MaxWait > 3600 {
+		return llm.TextOutput("max_wait must be between 0 and 3600")
+	}
+	m := t.spawn.manager
+	results := make([]json.RawMessage, 0, len(a.AgentIDs))
+	deadline := time.Now().Add(time.Duration(a.MaxWait) * time.Second)
+	for _, id := range a.AgentIDs {
+		record, e, err := m.get(ctx, id, parent)
 		if err != nil {
-			return llm.TextOutput(err.Error()), nil
+			return llm.TextOutput(err.Error())
+		}
+		if e != nil && a.MaxWait > 0 {
+			m.attach(e, SubagentEventCallbackFromContext(ctx), llm.CallIDFromContext(ctx))
+			if remaining := time.Until(deadline); remaining > 0 {
+				m.wait(ctx, e, remaining)
+			}
+			m.detach(e)
+			record, _, _ = m.get(ctx, id, parent)
+		}
+		if record.CollectedAt.IsZero() {
+			record.CollectedAt = time.Now()
 		}
 		if e != nil {
-			e.cancel()
-			m.wait(ctx, e, 5*time.Second)
-			record, _, _ = m.get(ctx, a.AgentID, parent)
+			m.mu.Lock()
+			e.record.CollectedAt = record.CollectedAt
+			m.mu.Unlock()
 		}
-		return agentOutput(record), nil
-	case ContinueAgentToolName:
-		record, e, err := m.get(ctx, a.AgentID, parent)
-		if err != nil {
-			return llm.TextOutput(err.Error()), nil
-		}
-		if e != nil && (record.Status == "running" || record.Status == "queued") {
-			continuation, ok := m.runner.(AgentContinuation)
-			if !ok {
-				return llm.TextOutput("runner does not support steering"), nil
+		if m.store != nil {
+			collectCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			err := m.store.CollectAgentRun(collectCtx, record.ID, record.CollectedAt)
+			cancel()
+			if err != nil {
+				return llm.TextOutput(fmt.Sprintf("collect agent run: %v", err))
 			}
-			id, disposition := continuation.SteerAgent(a.AgentID, a.Instructions)
-			if strings.TrimSpace(a.Instructions) == "" {
-				return llm.TextOutput("instructions required to steer a running agent"), nil
-			}
-			result := map[string]string{"agent_id": a.AgentID, "status": record.Status, "steering_id": id, "intervention_disposition": disposition}
-			if disposition == "undelivered" {
-				result["next"] = "instruction was NOT delivered; call continue_agent again with it after the agent stops"
-			}
-			data, _ := json.Marshal(result)
-			return llm.TextOutput(string(data)), nil
 		}
-		if record.Status == "running_elsewhere" && !a.Force {
-			return llm.TextOutput("agent may still be running on another process; pass force:true to risk duplicate side effects"), nil
-		}
-		if record.Status == "failed" {
-			return llm.TextOutput("failed agent cannot be resumed"), nil
-		}
-		m.mu.Lock()
-		runner, depth := t.spawn.runner, t.spawn.depth
-		m.mu.Unlock()
-		if runner == nil {
-			return llm.TextOutput("agent runner unavailable"), nil
-		}
-		entry := m.start(ctx, record.AgentName, record.Prompt, "", llm.CallIDFromContext(ctx), SubagentEventCallbackFromContext(ctx), runner, depth+1, true, a.Instructions, record)
-		budget := t.spawn.config.DefaultTimeout
-		if a.Wait != nil {
-			budget = *a.Wait
-		}
-		if budget < 0 {
-			return llm.TextOutput("wait must be nonnegative"), nil
-		}
-		m.wait(ctx, entry, time.Duration(budget)*time.Second)
-		m.detach(entry)
-		current, _, _ := m.get(ctx, a.AgentID, parent)
-		out := agentOutput(current)
-		if record.Status == "running_elsewhere" {
-			out.Content = strings.TrimSuffix(out.Content, "}") + `,"warning":"possible duplicate side effects: another process may still be running"}`
-		}
-		return out, nil
+		results = append(results, json.RawMessage(m.output(record, e).Content))
 	}
-	return llm.TextOutput("unknown agent control operation"), nil
+	data, _ := json.Marshal(results)
+	return llm.TextOutput(string(data))
+}
+
+func (t *agentControlTool) cancel(ctx context.Context, parent string, a agentControlArgs) llm.ToolOutput {
+	m := t.spawn.manager
+	record, e, err := m.get(ctx, a.AgentID, parent)
+	if err != nil {
+		return llm.TextOutput(err.Error())
+	}
+	if e != nil {
+		e.cancel()
+		m.wait(ctx, e, 5*time.Second)
+		record, _, _ = m.get(ctx, a.AgentID, parent)
+	}
+	return agentOutput(record)
+}
+
+func (t *agentControlTool) continueRun(ctx context.Context, parent string, a agentControlArgs) llm.ToolOutput {
+	m := t.spawn.manager
+	record, e, err := m.get(ctx, a.AgentID, parent)
+	if err != nil {
+		return llm.TextOutput(err.Error())
+	}
+	if e != nil && (record.Status == "running" || record.Status == "queued") {
+		return t.steer(record, a)
+	}
+	if record.Status == "running_elsewhere" && !a.Force {
+		return llm.TextOutput("agent may still be running on another process; pass force:true to risk duplicate side effects")
+	}
+	if record.Status == "failed" {
+		return llm.TextOutput("failed agent cannot be resumed")
+	}
+	budget := t.spawn.config.DefaultTimeout
+	if a.Wait != nil {
+		budget = *a.Wait
+	}
+	if budget < 0 || budget > 3600 {
+		return llm.TextOutput("wait must be between 0 and 3600")
+	}
+	m.mu.Lock()
+	runner, depth := t.spawn.runner, t.spawn.depth
+	m.mu.Unlock()
+	if runner == nil {
+		return llm.TextOutput("agent runner unavailable")
+	}
+	entry, startErr := m.start(ctx, record.AgentName, record.Prompt, "", llm.CallIDFromContext(ctx), SubagentEventCallbackFromContext(ctx), t.spawn.GetEventCallback(), runner, depth+1, true, a.Instructions, record)
+	if startErr != nil {
+		return llm.TextOutput(startErr.Error())
+	}
+	m.wait(ctx, entry, time.Duration(budget)*time.Second)
+	m.detach(entry)
+	current, _, _ := m.get(ctx, a.AgentID, parent)
+	out := m.output(current, entry)
+	if record.Status == "running_elsewhere" {
+		out.Content = strings.TrimSuffix(out.Content, "}") + `,"warning":"possible duplicate side effects: another process may still be running"}`
+	}
+	return out
+}
+
+func (t *agentControlTool) steer(record session.AgentRun, a agentControlArgs) llm.ToolOutput {
+	continuation, ok := t.spawn.manager.runner.(AgentContinuation)
+	if !ok {
+		return llm.TextOutput("runner does not support steering")
+	}
+	if strings.TrimSpace(a.Instructions) == "" {
+		return llm.TextOutput("instructions required to steer a running agent")
+	}
+	id, disposition := continuation.SteerAgent(a.AgentID, a.Instructions)
+	result := map[string]string{"agent_id": a.AgentID, "status": record.Status, "steering_id": id, "intervention_disposition": disposition}
+	if disposition == "undelivered" {
+		result["next"] = "instruction was NOT delivered; call continue_agent again with it after the agent stops"
+	}
+	data, _ := json.Marshal(result)
+	return llm.TextOutput(string(data))
 }

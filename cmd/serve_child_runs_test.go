@@ -278,12 +278,12 @@ func TestHostedChildApprovalPolicyUsesServerDefault(t *testing.T) {
 							t.Errorf("%s = %v, want %v", key, got, want)
 						}
 					}
-					// Reporting Auto as the default must not pin the child's policy
-					// to Auto: the parent remains authoritative while it is running.
+					// Detached children pin the parent run's mode. Another request
+					// may rebind the host manager while this child remains active.
 					parent.SetApprovalMode(tools.ModePrompt)
 					child, ok := f.srv.sessionMgr.Get(childID)
-					if !ok || child.toolMgr == nil || child.toolMgr.ApprovalMgr == nil || child.toolMgr.ApprovalMgr.ApprovalMode() != tools.ModePrompt {
-						t.Error("child stopped inheriting the parent's approval mode")
+					if !ok || child.toolMgr == nil || child.toolMgr.ApprovalMgr == nil || child.toolMgr.ApprovalMgr.ApprovalMode() != parentMode {
+						t.Error("child did not retain its admitted approval scope")
 					}
 				})
 				if result := f.spawnChild(t); result.Error != "" || !observed {
