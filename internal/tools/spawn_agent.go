@@ -520,7 +520,7 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 		return spawnAgentErrorOutput(t.formatError(ErrExecutionFailed, startErr.Error()), false), nil
 	}
 	t.manager.wait(ctx, entry, time.Duration(budget)*time.Second)
-	t.manager.detach(entry)
+	t.manager.detach(entry, entry.initial)
 	record, _, _ := t.manager.get(context.Background(), entry.record.ID, entry.record.ParentSessionID)
 	return t.manager.output(record, entry), nil
 }

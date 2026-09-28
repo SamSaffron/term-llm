@@ -130,11 +130,11 @@ func (t *agentControlTool) wait(ctx context.Context, parent string, a agentContr
 			return llm.TextOutput(err.Error())
 		}
 		if e != nil && a.MaxWait > 0 {
-			m.attach(e, SubagentEventCallbackFromContext(ctx), llm.CallIDFromContext(ctx))
+			attached := m.attach(e, SubagentEventCallbackFromContext(ctx), llm.CallIDFromContext(ctx))
 			if remaining := time.Until(deadline); remaining > 0 {
 				m.wait(ctx, e, remaining)
 			}
-			m.detach(e)
+			m.detach(e, attached)
 			record, _, _ = m.get(ctx, id, parent)
 		}
 		if record.CollectedAt.IsZero() {
@@ -211,7 +211,7 @@ func (t *agentControlTool) continueRun(ctx context.Context, parent string, a age
 		return llm.TextOutput(startErr.Error())
 	}
 	m.wait(ctx, entry, time.Duration(budget)*time.Second)
-	m.detach(entry)
+	m.detach(entry, entry.initial)
 	current, _, _ := m.get(ctx, a.AgentID, parent)
 	out := m.output(current, entry)
 	if record.Status == "running_elsewhere" {

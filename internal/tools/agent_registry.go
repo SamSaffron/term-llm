@@ -26,13 +26,19 @@ type AgentContinuation interface {
 	SteerAgent(string, string) (string, string)
 }
 
+type agentAttachment struct {
+	callback SubagentEventCallback
+	callID   string
+	inFlight sync.WaitGroup
+}
+
 type agentEntry struct {
 	record       session.AgentRun
 	done         chan struct{}
 	cancel       context.CancelFunc
-	callback     SubagentEventCallback
+	attachment   *agentAttachment
+	initial      *agentAttachment
 	external     SubagentEventCallback
-	callID       string
 	originCallID string
 	result       SpawnAgentRunResult
 	startedAt    time.Time
@@ -144,7 +150,8 @@ func (m *agentManager) start(ctx context.Context, name, prompt, model, callID st
 		record.TurnsGranted = existing.TurnsGranted + 20
 	}
 	detached, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	e := &agentEntry{record: record, done: make(chan struct{}), cancel: cancel, callback: cb, external: external, callID: callID, originCallID: callID, queued: true, startedAt: now, manager: m}
+	e := &agentEntry{record: record, done: make(chan struct{}), cancel: cancel, attachment: &agentAttachment{callback: cb, callID: callID}, external: external, originCallID: callID, queued: true, startedAt: now, manager: m}
+	e.initial = e.attachment
 	if scoped, ok := runner.(interface{ AgentApprovalScope(string) *ApprovalManager }); ok {
 		scope := scoped.AgentApprovalScope(parent)
 		m.trackApprovals(e, scope)
@@ -221,12 +228,18 @@ func (m *agentManager) run(ctx context.Context, e *agentEntry, runner SpawnAgent
 			e.currentTool = ""
 			e.media = append(e.media, event.Media...)
 		}
-		attached, callID := e.callback, e.callID
+		attachment := e.attachment
+		if attachment != nil && attachment.callback != nil {
+			attachment.inFlight.Add(1)
+		}
 		record := e.record
 		m.mu.Unlock()
-		if attached != nil {
-			mappedID := callID + strings.TrimPrefix(eventCallID, e.originCallID)
-			attached(mappedID, event)
+		if attachment != nil && attachment.callback != nil {
+			func() {
+				defer attachment.inFlight.Done()
+				mappedID := attachment.callID + strings.TrimPrefix(eventCallID, e.originCallID)
+				attachment.callback(mappedID, event)
+			}()
 		}
 		if e.external != nil {
 			e.external(eventCallID, event)
@@ -280,7 +293,6 @@ func (m *agentManager) finish(e *agentEntry, result SpawnAgentRunResult, err err
 		e.record.Error = err.Error()
 	}
 	e.record.UpdatedAt = time.Now()
-	e.callback = nil
 	record := e.record
 	m.mu.Unlock()
 	m.save(record)
@@ -370,18 +382,23 @@ func (m *agentManager) wait(ctx context.Context, e *agentEntry, budget time.Dura
 	}
 }
 
-func (m *agentManager) detach(e *agentEntry) {
+func (m *agentManager) detach(e *agentEntry, attached *agentAttachment) {
 	e.manager.mu.Lock()
-	e.callback = nil
-	e.callID = ""
+	if e.attachment == attached {
+		e.attachment = nil
+	}
 	e.manager.mu.Unlock()
+	if attached != nil {
+		attached.inFlight.Wait()
+	}
 }
 
-func (m *agentManager) attach(e *agentEntry, cb SubagentEventCallback, callID string) {
+func (m *agentManager) attach(e *agentEntry, cb SubagentEventCallback, callID string) *agentAttachment {
+	attached := &agentAttachment{callback: cb, callID: callID}
 	e.manager.mu.Lock()
-	e.callback = cb
-	e.callID = callID
+	e.attachment = attached
 	e.manager.mu.Unlock()
+	return attached
 }
 
 func agentOutput(a session.AgentRun) llm.ToolOutput {

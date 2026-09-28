@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
 )
 
 type lifecycleRunner struct {
@@ -70,6 +71,52 @@ func lifecycleResult(t *testing.T, out llm.ToolOutput) SpawnAgentResult {
 	}
 	return result
 }
+
+type eventBarrierRunner struct {
+	emit    chan SubagentEventCallback
+	release chan struct{}
+}
+
+func (r *eventBarrierRunner) RunAgent(ctx context.Context, name, prompt string, depth int) (SpawnAgentRunResult, error) {
+	return r.RunAgentWithCallback(ctx, name, prompt, depth, "", nil)
+}
+func (r *eventBarrierRunner) RunAgentWithCallback(ctx context.Context, name, prompt string, depth int, id string, cb SubagentEventCallback) (SpawnAgentRunResult, error) {
+	r.emit <- cb
+	<-r.release
+	return SpawnAgentRunResult{}, nil
+}
+
+func TestAgentCallbackDetachWaitsForInFlightDelivery(t *testing.T) {
+	runner := &eventBarrierRunner{emit: make(chan SubagentEventCallback, 1), release: make(chan struct{})}
+	m := newAgentManager(SpawnConfig{MaxParallel: 1})
+	entered := make(chan struct{})
+	unblock := make(chan struct{})
+	entry, err := m.start(llm.ContextWithSessionID(context.Background(), "parent"), "developer", "work", "", "call", func(string, SubagentEvent) {
+		close(entered)
+		<-unblock
+	}, nil, runner, 0, false, "", session.AgentRun{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb := <-runner.emit
+	delivered := make(chan struct{})
+	go func() { cb("call", SubagentEvent{Type: SubagentEventText}); close(delivered) }()
+	<-entered
+	detached := make(chan struct{})
+	go func() { m.detach(entry, entry.initial); close(detached) }()
+	select {
+	case <-detached:
+		t.Fatal("detach returned while callback was executing")
+	default:
+	}
+	close(unblock)
+	<-delivered
+	<-detached
+	cb("call", SubagentEvent{Type: SubagentEventText}) // must not reach the old callback
+	close(runner.release)
+	<-entry.done
+}
+
 func TestAgentLifecycleCrossManagerWait(t *testing.T) {
 	runner := &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}
 	first := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
