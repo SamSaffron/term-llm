@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -150,5 +151,16 @@ func TestAgentLifecycleReloadListInterruptedAndResume(t *testing.T) {
 	continued := lifecycleResult(t, lifecycleCall(t, &agentControlTool{name: ContinueAgentToolName, spawn: replacement}, ctx, `{"agent_id":"`+first.AgentID+`","wait":1}`))
 	if continued.Status != "completed" || continued.AgentID != first.AgentID {
 		t.Fatalf("resumed record = %+v", continued)
+	}
+}
+
+func TestCompletedAgentNextIsFinal(t *testing.T) {
+	out := agentOutput(session.AgentRun{ID: "child", Status: "completed", Output: "answer"})
+	var result SpawnAgentResult
+	if err := json.Unmarshal([]byte(out.Content), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.Resumable || result.Output != "answer" || !strings.Contains(result.Next, "result is final") || strings.Contains(result.Next, `"continue"`) {
+		t.Fatalf("completed result = %+v", result)
 	}
 }

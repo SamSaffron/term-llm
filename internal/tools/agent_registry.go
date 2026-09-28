@@ -421,7 +421,10 @@ func agentOutput(a session.AgentRun) llm.ToolOutput {
 	case "queued", "running", "awaiting_approval", "running_elsewhere":
 		result.Resumable = false
 		result.Next = fmt.Sprintf("wait_agent({\"agent_ids\":[%q]})", a.ID)
-	case "completed", "turn_limit", "cancelled", "interrupted":
+	case "completed":
+		result.Resumable = true
+		result.Next = "result is final; use continue_agent only if you have follow-up work"
+	case "turn_limit", "cancelled", "interrupted":
 		result.Resumable = true
 		result.Next = fmt.Sprintf("continue_agent({\"agent_id\":%q,\"instructions\":\"continue\"})", a.ID)
 	}
