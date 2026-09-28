@@ -395,3 +395,39 @@ func TestReleaseCollectedDoesNotEvictReplacement(t *testing.T) {
 	}
 	processAgentEntries.CompareAndDelete(id, newEntry)
 }
+
+func TestCollectedRunEvictsAfterDoneCloses(t *testing.T) {
+	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "runs.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	runner := &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}
+	m := newAgentManager(SpawnConfig{MaxParallel: 1})
+	m.store = store
+	e, err := m.start(llm.ContextWithSessionID(context.Background(), "parent"), "developer", "work", "", "call", nil, nil, runner, 0, false, "", session.AgentRun{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-runner.entered
+	m.mu.Lock()
+	e.record.CollectedAt = time.Now()
+	m.mu.Unlock()
+	m.releaseCollected(e) // the live run cannot yet be evicted
+	close(runner.release)
+	<-e.done
+	deadline := time.After(time.Second)
+	for {
+		m.mu.Lock()
+		_, exists := m.agents[e.record.ID]
+		m.mu.Unlock()
+		if !exists {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("terminal collected entry not evicted on completion")
+		case <-time.After(time.Millisecond):
+		}
+	}
+}

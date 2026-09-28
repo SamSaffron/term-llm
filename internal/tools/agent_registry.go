@@ -194,7 +194,7 @@ func (m *agentManager) start(ctx context.Context, name, prompt, model, callID st
 }
 
 func (m *agentManager) run(ctx context.Context, e *agentEntry, runner SpawnAgentRunner, depth int, model string, resume bool, instructions string) {
-	defer close(e.done)
+	defer func() { close(e.done); m.releaseCollected(e) }()
 	select {
 	case m.slots <- struct{}{}:
 		defer func() { <-m.slots }()
