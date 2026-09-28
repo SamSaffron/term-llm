@@ -7,6 +7,12 @@ import (
 	"time"
 )
 
+func TestAsAgentRunStoreUnsupported(t *testing.T) {
+	if got := AsAgentRunStore(NewLoggingStore(&NoopStore{}, nil)); got != nil {
+		t.Fatalf("unsupported store gained persistence: %T", got)
+	}
+}
+
 func TestAgentRunStoreReload(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sessions.db")
 	ctx := context.Background()

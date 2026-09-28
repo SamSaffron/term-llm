@@ -16,6 +16,16 @@ type AgentRunStore interface {
 	CollectAgentRun(context.Context, string, time.Time) error
 }
 
+// AsAgentRunStore resolves the optional capability through session logging
+// wrappers without making unsupported stores appear persistent.
+func AsAgentRunStore(store Store) AgentRunStore {
+	if logging, ok := store.(*LoggingStore); ok {
+		return AsAgentRunStore(logging.Store)
+	}
+	capability, _ := store.(AgentRunStore)
+	return capability
+}
+
 type AgentRun struct {
 	ID              string    `json:"agent_id"`
 	ParentSessionID string    `json:"parent_session_id"`

@@ -170,8 +170,7 @@ func (r *SpawnAgentRunner) AgentApprovalScope(parent string) *tools.ApprovalMana
 }
 
 func (r *SpawnAgentRunner) AgentRunStore() session.AgentRunStore {
-	store, _ := r.store.(session.AgentRunStore)
-	return store
+	return session.AsAgentRunStore(r.store)
 }
 
 func (r *SpawnAgentRunner) SetAgentLifecycleTool(tool *tools.SpawnAgentTool) { r.lifecycle = tool }
