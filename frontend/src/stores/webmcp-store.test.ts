@@ -1,3 +1,4 @@
+import { effect } from '@preact/signals';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CLIENT_TOOL_PREFIX,
@@ -50,6 +51,27 @@ beforeEach(() => localStorage.clear());
 afterEach(() => vi.useRealTimers());
 
 describe('WebMCPStore', () => {
+  it('reactively updates live declarations while preserving pinned conversation choices', async () => {
+    const store = await loaded(fakeHost().host);
+    let offered: string[] = [];
+    const dispose = effect(() => {
+      offered = store.definitions('live').map((tool) => tool.name);
+    });
+    try {
+      expect(offered).toEqual([]);
+      store.setEnabled('other', true);
+      expect(offered).toEqual([]);
+      store.setEnabled('live', true);
+      expect(offered).toEqual([`${CLIENT_TOOL_PREFIX}ping`]);
+      store.tools.value = [ping, { ...ping, name: 'second' }];
+      expect(offered).toHaveLength(2);
+      store.setEnabled('live', false);
+      expect(offered).toEqual([]);
+    } finally {
+      dispose();
+      store.dispose();
+    }
+  });
   it('loads usable page tools and follows changes', async () => {
     const { host, changed } = fakeHost();
     const store = new WebMCPStore(services(), host);

@@ -140,18 +140,18 @@ export class WebMCPStore implements ClientToolBridge {
   }
 
   /**
-   * Definitions for the next request in `sessionId`. Offering the page's tools
-   * pins the conversation to its current choice, so a later default change
-   * elsewhere can't alter what an existing conversation was started with.
+   * Pins the conversation's choice when offering tools. Reactive reads also keep
+   * live calls in sync with page tools and per-conversation settings changes.
    */
   definitions(sessionId: string): ClientToolDefinition[] {
-    if (!this.available.peek()) return [];
-    // Read storage, not this tab's copy: another tab may have just changed the
-    // default and its storage event may not have arrived yet.
+    if (!this.available.value) return [];
+    // Track settings, but read storage for the decision: another tab's storage
+    // event may not have arrived yet.
+    this.enabledFor(sessionId);
     const choice = this.storedChoices().find(([id]) => id === sessionId);
     const enabled = choice ? choice[1] : this.storedDefault();
     if (sessionId && !choice) this.remember(sessionId, enabled);
-    return enabled ? clientToolDefinitions(this.tools.peek(), this.providerName.peek()) : [];
+    return enabled ? clientToolDefinitions(this.tools.value, this.providerName.value) : [];
   }
 
   async run(call: PendingClientCall, signal: AbortSignal): Promise<ClientToolResult> {
@@ -215,13 +215,13 @@ export class WebMCPStore implements ClientToolBridge {
 
   private persistChoices(choices: SessionChoice[]): void {
     const kept = choices.slice(-REMEMBERED_SESSIONS);
-    this.choices.value = kept;
     writeJSON(this.services.storage, this.services.keys.webMCPSessions, kept);
+    this.choices.value = kept;
   }
 
   private persistDefault(enabled: boolean): void {
-    this.defaultOn.value = enabled;
     writeJSON(this.services.storage, this.services.keys.webMCPDefault, enabled);
+    this.defaultOn.value = enabled;
   }
 
   /** Earlier builds stored only opt-outs; keep those conversations off. */

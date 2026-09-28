@@ -87,6 +87,11 @@ const (
 	// call to execute one delegation. It is published only in client delegation
 	// mode and never replaces the controller-owned live.delegation lifecycle.
 	liveEventDelegationRequested = "live.delegation_requested"
+	// liveEventToolCallsRequested asks the client that declared page tools for
+	// this call to run the ones a delegated turn stopped on. It is published only
+	// in server delegation mode, inside a delegation that is already running.
+	liveEventToolCallsRequested = "live.tool_calls_requested"
+	liveEventToolCallsCancelled = "live.tool_calls_cancelled"
 )
 
 type liveSessionEvent struct {
@@ -126,14 +131,19 @@ type liveSession struct {
 	// delegations this call published to its client, in publish order, so a result
 	// can be matched, a replay compared, and a shutdown can unblock waiters.
 	clientDelegations []*liveClientDelegation
-	events            []liveSessionEvent
-	eventHead         int
-	nextSequence      int
-	subscribers       map[int]chan liveSessionEvent
-	subscriberDropped map[int]bool
-	nextSubscriber    int
-	diagnosticLast    time.Time
-	diagnosticReports int
+	// clientTools are the page tools the client declared for this call, offered
+	// to every delegated turn; clientToolRequests are the rounds of those tools'
+	// calls published back to it, kept like clientDelegations.
+	clientTools        []json.RawMessage
+	clientToolRequests []*liveClientToolRequest
+	events             []liveSessionEvent
+	eventHead          int
+	nextSequence       int
+	subscribers        map[int]chan liveSessionEvent
+	subscriberDropped  map[int]bool
+	nextSubscriber     int
+	diagnosticLast     time.Time
+	diagnosticReports  int
 }
 
 func newLiveSession(id, sessionID string) *liveSession {
@@ -206,9 +216,7 @@ func (l *liveSession) appendEventLocked(eventType string, data map[string]any) {
 		// call with no host teardown running (a hangup, a provider error), and a
 		// waiter left behind then holds the controller's delegation loop until its
 		// timeout while the check above silently swallows its resends.
-		for _, entry := range l.clientDelegations {
-			entry.abandonLocked()
-		}
+		l.abandonClientWaitersLocked()
 	}
 	for id, subscriber := range l.subscribers {
 		select {
@@ -371,7 +379,16 @@ func (l *liveSession) closeSubscribers() {
 	// Teardown can reach here with no live.ended ever published — a call removed
 	// before its controller started — so this is not redundant with the abandon in
 	// appendEventLocked. Entries stay behind so a late POST is refused, not absorbed.
+	l.abandonClientWaitersLocked()
+}
+
+// abandonClientWaitersLocked releases every host waiter blocked on the client —
+// delegations and page tool calls alike — because the call has ended.
+func (l *liveSession) abandonClientWaitersLocked() {
 	for _, entry := range l.clientDelegations {
+		entry.abandonLocked()
+	}
+	for _, entry := range l.clientToolRequests {
 		entry.abandonLocked()
 	}
 }
@@ -452,6 +469,11 @@ type liveStartRequest struct {
 	// is prompt text, not a tool schema: tool authority stays on the device, which
 	// declares its real tools per request.
 	DelegationContext string `json:"delegation_context"`
+	// ClientTools are the page tools (Responses function definitions) a server-mode
+	// client offers its delegated turns and runs for them. Declaring them here,
+	// rather than after the call starts, is what lets the first spoken request use
+	// them.
+	ClientTools []json.RawMessage `json:"client_tools"`
 }
 
 // liveDelegationStart validates the delegation half of a start request. Mode and
@@ -587,7 +609,7 @@ func (s *serveServer) handleLiveSessions(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var request liveStartRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, liveSDPLimitBytes+liveTextLimitBytes)).Decode(&request); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, liveSDPLimitBytes+liveTextLimitBytes+liveClientToolsLimitBytes)).Decode(&request); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid request body: "+err.Error())
 		return
 	}
@@ -600,6 +622,11 @@ func (s *serveServer) handleLiveSessions(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	delegationMode, delegationContext, err := liveDelegationStart(request)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	clientTools, err := liveStartClientTools(delegationMode, request.ClientTools)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
@@ -631,6 +658,7 @@ func (s *serveServer) handleLiveSessions(w http.ResponseWriter, r *http.Request)
 	record := newLiveSession(liveID, sessionID)
 	record.capabilities = live.ConfigCapabilities(s.liveConfig())
 	record.delegationMode, record.delegationContext = delegationMode, delegationContext
+	record.clientTools = clientTools
 	if err := s.registerLiveSession(record); err != nil {
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
 		return
@@ -693,7 +721,8 @@ func (s *serveServer) handleLiveSessions(w http.ResponseWriter, r *http.Request)
 }
 
 // handleLiveSessionByID serves every per-call route: DELETE, /text, /session,
-// /events, the audio transports, /diagnostics, and one client delegation result.
+// /events, the audio transports, /diagnostics, /client_tools, one client
+// delegation result, and one round of page tool results.
 func (s *serveServer) handleLiveSessionByID(w http.ResponseWriter, r *http.Request) {
 	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/live/sessions/"), "/")
 	if path == "" {
@@ -729,22 +758,39 @@ func (s *serveServer) handleLiveSessionByID(w http.ResponseWriter, r *http.Reque
 		s.handleLiveSessionAudioInput(w, r, liveID)
 	case "diagnostics":
 		s.handleLiveSessionDiagnostics(w, r, liveID)
+	case "client_tools":
+		s.handleLiveClientTools(w, r, liveID)
 	default:
-		// The split above keeps the whole remainder in one string, so the delegation
-		// result path arrives as "delegations/{delegation_id}/result" and is parsed
-		// here rather than by adding a second Cut to every other action.
-		if rest, ok := strings.CutPrefix(action, "delegations/"); ok {
-			if delegationID, ok := strings.CutSuffix(rest, "/result"); ok {
-				s.handleLiveDelegationResult(w, r, liveID, delegationID)
-				return
-			}
-			// The call exists; it is the delegation sub-path that does not. Naming the
-			// right entity keeps a client from retrying the call id.
-			writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "live delegation not found")
+		s.handleLiveResultRoute(w, r, liveID, action)
+	}
+}
+
+// handleLiveResultRoute serves the client result paths. The split in
+// handleLiveSessionByID keeps the whole remainder in one string, so
+// "delegations/{delegation_id}/result" and "tool_calls/{request_id}/result" are
+// parsed here rather than by adding a second Cut to every other action.
+func (s *serveServer) handleLiveResultRoute(w http.ResponseWriter, r *http.Request, liveID, action string) {
+	for _, route := range []struct {
+		prefix, missing string
+		handle          func(http.ResponseWriter, *http.Request, string, string)
+	}{
+		{"delegations/", "live delegation not found", s.handleLiveDelegationResult},
+		{"tool_calls/", "live tool call request not found", s.handleLiveToolCallsResult},
+	} {
+		rest, ok := strings.CutPrefix(action, route.prefix)
+		if !ok {
+			continue
+		}
+		if id, ok := strings.CutSuffix(rest, "/result"); ok {
+			route.handle(w, r, liveID, id)
 			return
 		}
-		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "live session not found")
+		// The call exists; it is the result sub-path that does not. Naming the
+		// right entity keeps a client from retrying the call id.
+		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", route.missing)
+		return
 	}
+	writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "live session not found")
 }
 
 func (s *serveServer) handleLiveSessionText(w http.ResponseWriter, r *http.Request, liveID string) {
@@ -1703,6 +1749,10 @@ func (s *serveServer) closeLiveSessions(ctx context.Context) {
 type serveLiveDelegator struct {
 	server *serveServer
 	live   *liveSession
+	// toolResendInterval and toolTimeout pace a round of page tool calls; zero
+	// means the client-delegation defaults.
+	toolResendInterval time.Duration
+	toolTimeout        time.Duration
 }
 
 // Steer admits a voice follow-up through the same durable, run-fenced path as
@@ -1811,38 +1861,68 @@ func (d *serveLiveDelegator) Run(ctx context.Context, request live.DelegationReq
 		}
 		return err
 	}
-	previousResponseID := strings.TrimSpace(runtime.getLastResponseID())
-	if previousResponseID == "" {
-		previousResponseID = s.latestDurableResponseIDForSession(ctx, sessionID)
-	}
 	message := llm.UserText(live.DelegationPrompt(request.Input, request.TranscriptDelta))
 	message.DisplayText = strings.TrimSpace(request.Input)
-	req := s.buildResponsesLLMRequest(responsesCreateRequest{Model: runtime.defaultModel}, runtime, sessionID, true)
-	options := startResponseRunOptions{previousResponseID: previousResponseID, uiSession: true, live: d.live}
-	options.runtimeSetup = func(req *llm.Request) error {
-		if d.live != nil {
-			runtime.liveContext = d.live.executionContextFor(sessionID)
-		}
-		return nil
-	}
-	run, err := s.startResponseRun(runtime, true, false, []llm.Message{message}, req, sessionID, options)
+	// The page tools are read once, so every round of this delegation offers the
+	// same ones; a declaration that changes meanwhile applies to the next.
+	tools := d.pageTools()
+	run, err := d.startDelegatedRun(runtime, sessionID, d.previousResponseID(ctx, runtime, sessionID), []llm.Message{message}, tools)
 	if err != nil {
 		if errors.Is(err, errServeSessionBusy) {
 			return live.ErrDelegationBusy
 		}
 		return err
 	}
+	return d.streamDelegation(ctx, sessionID, run, tools, emit)
+}
+
+// previousResponseID is the response a delegated run in sessionID continues.
+func (d *serveLiveDelegator) previousResponseID(ctx context.Context, runtime *serveRuntime, sessionID string) string {
+	if previous := strings.TrimSpace(runtime.getLastResponseID()); previous != "" {
+		return previous
+	}
+	return d.server.latestDurableResponseIDForSession(ctx, sessionID)
+}
+
+// startDelegatedRun starts one host-owned turn in sessionID: the delegation
+// itself, or a continuation carrying page tool results. Both run with the call's
+// live context and offer the same page tools.
+func (d *serveLiveDelegator) startDelegatedRun(runtime *serveRuntime, sessionID, previousResponseID string, messages []llm.Message, tools []json.RawMessage, expectedLatest ...string) (*responseRun, error) {
+	s := d.server
+	req := s.buildResponsesLLMRequest(responsesCreateRequest{Model: runtime.defaultModel, Tools: tools}, runtime, sessionID, true)
+	options := startResponseRunOptions{previousResponseID: previousResponseID, uiSession: true, live: d.live}
+	if len(expectedLatest) > 0 {
+		expected := expectedLatest[0]
+		options.admissionCheck = func() bool {
+			return d.previousResponseID(context.Background(), runtime, sessionID) == expected
+		}
+	}
+	options.runtimeSetup = func(req *llm.Request) error {
+		if d.live != nil {
+			runtime.liveContext = d.live.executionContextFor(sessionID)
+		}
+		return nil
+	}
+	run, err := s.startResponseRun(runtime, true, false, messages, req, sessionID, options)
+	if err != nil {
+		return nil, err
+	}
 	if d.live != nil {
 		d.live.touch()
 	}
-	return d.streamRun(ctx, run, emit)
+	return run, nil
 }
 
 // streamRun consumes one run's event stream, reconnecting from the last
 // sequence when a slow subscriber is dropped. A ticker drives progress notes
 // through quiet stretches, when no event arrives to prompt them.
 func (d *serveLiveDelegator) streamRun(ctx context.Context, run *responseRun, emit func(live.DelegationChunk)) error {
-	progress := newLiveProgress(emit, time.Now)
+	return d.streamRunProgress(ctx, run, emit, newLiveProgress(emit, time.Now))
+}
+
+// streamRunProgress is streamRun reporting into a progress tracker the caller
+// owns, so one account of the work can span every run of a delegation.
+func (d *serveLiveDelegator) streamRunProgress(ctx context.Context, run *responseRun, emit func(live.DelegationChunk), progress *liveProgress) error {
 	ticker := time.NewTicker(liveProgressTick)
 	defer ticker.Stop()
 	after := int64(0)

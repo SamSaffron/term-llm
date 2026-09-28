@@ -1,8 +1,24 @@
-import { computed, signal, type ReadonlySignal, type Signal } from '@preact/signals';
-import { decodeSSE } from '../api/client';
-import type { Endpoints } from '../api/endpoints';
+import {
+  computed,
+  effect,
+  signal,
+  untracked,
+  type ReadonlySignal,
+  type Signal,
+} from '@preact/signals';
+import { APIError, decodeSSE } from '../api/client';
+import type { Endpoints, LiveToolCallResult } from '../api/endpoints';
+import {
+  CLIENT_TOOL_PREFIX,
+  isClientToolName,
+  parsePendingToolCalls,
+  type ClientToolDefinition,
+} from '../domain/client-tools';
+import { errorMessage } from '../domain/text';
+import type { PendingToolCall } from '../domain/types';
 import type { LivePhase, LiveSnapshot, LiveStartResponse, LiveTransport } from '../platform/live';
 import { liveCapability } from '../platform/voice';
+import type { ClientToolBridge, ClientToolResult } from './webmcp-store';
 
 export interface LiveTurn {
   interrupted?: boolean;
@@ -41,6 +57,45 @@ interface LiveEventData {
   session_id?: string;
   session_number?: number;
   title?: string;
+  request_id?: string;
+  deadline_ms?: number;
+  calls?: unknown;
+}
+
+/**
+ * The page's own tools (WebMCP), which a call offers its delegated turns and
+ * runs for them. `definitions` must be reactive: the call re-declares the tools
+ * whenever what it returns changes.
+ */
+export type LiveClientTools = Pick<ClientToolBridge, 'definitions' | 'run'>;
+
+/** One round of page tool calls a delegated turn asked this page to run. */
+interface LiveToolRound {
+  abort: AbortController;
+  /** Set once every call ran; a republished round is answered from it, never re-run. */
+  result?: LiveToolCallResult;
+  posting: boolean;
+  /** The server took the answer, or no longer wants one. */
+  settled: boolean;
+  deadlineTimer?: ReturnType<typeof setTimeout>;
+}
+
+// Quick retries for a round's answer; after these the server's republication retries.
+const TOOL_RESULT_RETRY_MS = [500, 2_000];
+
+/** The server cannot take these outputs: too large, or not the calls it asked for. */
+function unusableAnswer(error: unknown): boolean {
+  return error instanceof APIError && (error.status === 400 || error.status === 413);
+}
+
+/** A rejection retrying cannot fix: the server no longer wants this answer. */
+function definitiveRejection(error: unknown): boolean {
+  return (
+    error instanceof APIError &&
+    error.status >= 400 &&
+    error.status < 500 &&
+    ![408, 425, 429].includes(error.status)
+  );
 }
 
 /** The chat session a live call drives after the server moved its binding. */
@@ -148,6 +203,13 @@ export class LiveStore {
   private streamAbort: AbortController | null = null;
   private disposed = false;
   private readonly activeDelegations = new Map<string, LiveDelegation>();
+  /** JSON of the page tools the server holds for this call; '' when unknown. */
+  private toolDeclaration = '[]';
+  private toolSync: Promise<void> = Promise.resolve();
+  private toolRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private toolRetryDelay = 1_000;
+  private readonly toolRounds = new Map<string, LiveToolRound>();
+  private readonly stopToolSync: () => void;
 
   constructor(
     private readonly endpoints: Endpoints,
@@ -160,8 +222,22 @@ export class LiveStore {
     // Binding hints carry no title, so the app names them from what it knows.
     private readonly resolveSessionLabel: (sessionId: string) => LiveSessionLabel | null = () =>
       null,
+    // Voice delegations are host turns, so the page's tools reach them only
+    // through the call: declared with it, and run here when a turn stops on one.
+    private readonly clientTools?: LiveClientTools,
   ) {
     if (call) this.attachCall(call);
+    // The server's copy follows the tools the bound conversation may use, as
+    // the page's tools, the binding, or that conversation's choice change.
+    this.stopToolSync = clientTools
+      ? effect(() => {
+          const liveId = this.liveId.value;
+          const sessionId = this.sessionId.value;
+          if (!liveId || !sessionId) return;
+          const tools = clientTools.definitions(sessionId);
+          untracked(() => this.declareTools(liveId, tools));
+        })
+      : () => {};
   }
 
   private callCapability(): LiveSnapshot['capability'] {
@@ -183,7 +259,7 @@ export class LiveStore {
     return this.attachCall(
       new LiveCall(
         (sdp, sessionId, audioTransport) =>
-          this.endpoints.liveStart(sdp, sessionId, audioTransport),
+          this.endpoints.liveStart(sdp, sessionId, audioTransport, this.startTools(sessionId)),
         this.endpoints.liveStop,
         {
           transport: this.transport,
@@ -236,6 +312,10 @@ export class LiveStore {
     this.partialOrder = {};
     this.delegation.value = null;
     this.activeDelegations.clear();
+    this.abandonToolRounds();
+    this.clearToolRetry();
+    // A new call starts with no page tools unless its start request declares them.
+    this.toolDeclaration = '[]';
     this.lastError.value = '';
     this.sessionNumber.value = 0;
     this.sessionTitle.value = '';
@@ -269,6 +349,8 @@ export class LiveStore {
   async stop(): Promise<void> {
     if (this.disposed) return;
     this.invalidateStream();
+    this.abandonToolRounds();
+    this.clearToolRetry();
     try {
       await this.call?.stop();
     } catch (error) {
@@ -282,6 +364,7 @@ export class LiveStore {
       this.phase.value = 'ended';
       this.delegation.value = null;
       this.activeDelegations.clear();
+      this.abandonToolRounds();
       this.partialUser.value = '';
       this.partialAssistant.value = '';
     }
@@ -471,10 +554,200 @@ export class LiveStore {
       }
       return;
     }
+    if (event === 'live.tool_calls_cancelled') {
+      const round = this.toolRounds.get(String(data.request_id || ''));
+      if (round) {
+        round.abort.abort();
+        if (round.deadlineTimer) clearTimeout(round.deadlineTimer);
+        this.toolRounds.delete(String(data.request_id));
+      }
+      return;
+    }
+    if (event === 'live.tool_calls_requested') {
+      this.runToolRound(data);
+      return;
+    }
     if (event === 'live.error') {
       this.lastError.value = String(data.message || 'Live voice reported an error.');
       this.phase.value = 'failed';
     }
+  }
+
+  /** The page tools the start request declares, recorded as the server's copy. */
+  private startTools(sessionId: string): ClientToolDefinition[] {
+    const tools = this.clientTools?.definitions(sessionId) ?? [];
+    this.toolDeclaration = JSON.stringify(tools);
+    return tools;
+  }
+
+  /**
+   * Keeps the server's copy of the call's page tools equal to the page's.
+   * Declarations go out one at a time, so an older one can never land last.
+   */
+  private declareTools(liveId: string, tools: ClientToolDefinition[]): void {
+    const declaration = JSON.stringify(tools);
+    if (declaration === this.toolDeclaration) return;
+    if (this.toolRetryTimer) {
+      this.clearToolRetry();
+    }
+    this.toolDeclaration = declaration;
+    this.toolSync = this.toolSync.then(async () => {
+      // Superseded while queued by a newer declaration or another call.
+      if (declaration !== this.toolDeclaration || liveId !== this.liveId.peek()) return;
+      try {
+        await this.endpoints.liveClientTools(liveId, tools);
+        this.toolRetryDelay = 1_000;
+      } catch {
+        if (declaration === this.toolDeclaration && liveId === this.liveId.peek()) {
+          this.toolDeclaration = '';
+          const delay = this.toolRetryDelay;
+          this.toolRetryDelay = Math.min(delay * 2, 30_000);
+          this.toolRetryTimer = setTimeout(() => {
+            this.toolRetryTimer = null;
+            if (liveId === this.liveId.peek()) this.declareTools(liveId, tools);
+          }, delay);
+        }
+      }
+    });
+  }
+
+  private clearToolRetry(): void {
+    if (this.toolRetryTimer) clearTimeout(this.toolRetryTimer);
+    this.toolRetryTimer = null;
+    this.toolRetryDelay = 1_000;
+  }
+
+  /**
+   * Runs one round of page tool calls a delegated turn stopped on and posts
+   * their outputs, with which the server continues the turn. The server
+   * republishes a round until it is answered, so a repeat is answered from the
+   * first run's outputs and never runs a tool twice.
+   */
+  private runToolRound(data: LiveEventData): void {
+    const requestId = String(data.request_id || '');
+    const liveId = this.liveId.peek();
+    if (!requestId || !liveId || !this.clientTools) return;
+    const existing = this.toolRounds.get(requestId);
+    if (existing) {
+      void this.postToolResult(liveId, requestId, existing);
+      return;
+    }
+    const round: LiveToolRound = { abort: new AbortController(), posting: false, settled: false };
+    // Deadline comes from the host, not receipt time (reconnects can be late).
+    // Leave a margin so a slow batch never starts further side effects after
+    // the host has already given up on its answer.
+    const deadline = Number(data.deadline_ms);
+    if (Number.isFinite(deadline) && deadline > 0) {
+      const remaining = deadline - Date.now() - 1_000;
+      if (remaining <= 0) return;
+      round.deadlineTimer = setTimeout(() => round.abort.abort(), remaining);
+    }
+    this.toolRounds.set(requestId, round);
+    // Keep a bounded replay history; never evict a still-running/posting round.
+    const settled = [...this.toolRounds].filter(([, entry]) => entry.settled);
+    while (settled.length > 64) {
+      const [oldId, oldRound] = settled.shift()!;
+      if (oldRound.deadlineTimer) clearTimeout(oldRound.deadlineTimer);
+      this.toolRounds.delete(oldId);
+    }
+    void this.executeToolRound(liveId, requestId, String(data.session_id || ''), data.calls, round);
+  }
+
+  private async executeToolRound(
+    liveId: string,
+    requestId: string,
+    sessionId: string,
+    rawCalls: unknown,
+    round: LiveToolRound,
+  ): Promise<void> {
+    const calls = parsePendingToolCalls(rawCalls) ?? [];
+    if (!calls.length || calls.length !== (rawCalls as unknown[]).length) {
+      round.result = { error: 'The device could not read the requested tool calls.' };
+    } else {
+      const outputs: Array<{ call_id: string; output: string }> = [];
+      for (const call of calls) {
+        const result = await this.runPageTool(sessionId, call, round.abort.signal);
+        // The call ended: nobody is waiting for these outputs any more.
+        if (round.abort.signal.aborted) return;
+        outputs.push({ call_id: call.callId, output: result.output });
+      }
+      round.result = { outputs };
+    }
+    await this.postToolResult(liveId, requestId, round);
+  }
+
+  /** Runs one call, but only a page tool the conversation still offers. */
+  private async runPageTool(
+    sessionId: string,
+    call: PendingToolCall,
+    signal: AbortSignal,
+  ): Promise<ClientToolResult> {
+    const tools = this.clientTools!;
+    // The name comes from the model; what this conversation allows decides.
+    if (
+      !isClientToolName(call.name) ||
+      !tools.definitions(sessionId).some((tool) => tool.name === call.name)
+    )
+      return { ok: false, output: `Error: ${call.name} is not available in this conversation` };
+    try {
+      return await tools.run(
+        {
+          callId: call.callId,
+          name: call.name.slice(CLIENT_TOOL_PREFIX.length),
+          arguments: call.arguments,
+        },
+        signal,
+      );
+    } catch (error) {
+      return { ok: false, output: `Error: ${errorMessage(error)}` };
+    }
+  }
+
+  /** Posts a round's answer with brief retries; a republished round retries later. */
+  private async postToolResult(
+    liveId: string,
+    requestId: string,
+    round: LiveToolRound,
+  ): Promise<void> {
+    if (!round.result || round.posting || round.settled) return;
+    round.posting = true;
+    try {
+      for (let attempt = 0; ;) {
+        const result = round.result;
+        if (!result || round.abort.signal.aborted || liveId !== this.liveId.peek()) return;
+        try {
+          await this.endpoints.liveToolResult(liveId, requestId, result);
+          round.settled = true;
+          if (round.deadlineTimer) clearTimeout(round.deadlineTimer);
+          return;
+        } catch (error) {
+          if (unusableAnswer(error) && 'outputs' in result) {
+            // Say so instead, or the delegation waits out its timeout in silence.
+            round.result = { error: 'The device could not send its tool results.' };
+            continue;
+          }
+          if (definitiveRejection(error)) {
+            round.settled = true;
+            if (round.deadlineTimer) clearTimeout(round.deadlineTimer);
+            return;
+          }
+          const wait = TOOL_RESULT_RETRY_MS[attempt++];
+          if (wait === undefined) return;
+          await delay(wait, round.abort.signal);
+        }
+      }
+    } finally {
+      round.posting = false;
+    }
+  }
+
+  /** The call is over: stop its page tools and forget its rounds. */
+  private abandonToolRounds(): void {
+    for (const round of this.toolRounds.values()) {
+      round.abort.abort();
+      if (round.deadlineTimer) clearTimeout(round.deadlineTimer);
+    }
+    this.toolRounds.clear();
   }
 
   /**
@@ -504,6 +777,8 @@ export class LiveStore {
   private async endFromServer(generation: number): Promise<void> {
     if (!this.current(generation)) return;
     this.invalidateStream();
+    this.abandonToolRounds();
+    this.clearToolRetry();
     try {
       await this.call?.stop();
     } catch {
@@ -516,6 +791,7 @@ export class LiveStore {
     this.phase.value = 'ended';
     this.delegation.value = null;
     this.activeDelegations.clear();
+    this.abandonToolRounds();
     this.partialUser.value = '';
     this.partialAssistant.value = '';
   }
@@ -535,6 +811,9 @@ export class LiveStore {
     if (this.disposed) return;
     this.invalidateStream();
     this.disposed = true;
+    this.stopToolSync();
+    this.clearToolRetry();
+    this.abandonToolRounds();
     this.unsubscribeCall();
     this.call?.dispose();
     this.liveId.value = '';

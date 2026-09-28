@@ -191,6 +191,32 @@ describe('live voice endpoints', () => {
       { policy: 'mutation', auth: 'session', retries: 0, timeoutMs: 0 },
     );
 
+    const tools = [{ type: 'function', name: 'webmcp__ping', description: '', parameters: {} }];
+    await routes.liveStart('offer-sdp', 'session/one', undefined, tools);
+    expect(json).toHaveBeenLastCalledWith(
+      '/v1/live/sessions',
+      {
+        method: 'POST',
+        body: JSON.stringify({ sdp: 'offer-sdp', session_id: 'session/one', client_tools: tools }),
+      },
+      { policy: 'mutation', auth: 'session', retries: 0, timeoutMs: 0 },
+    );
+
+    await routes.liveClientTools('live/one', tools);
+    expect(json).toHaveBeenLastCalledWith(
+      '/v1/live/sessions/live%2Fone/client_tools',
+      { method: 'POST', body: JSON.stringify({ tools }) },
+      { policy: 'mutation', auth: 'session', retries: 0 },
+    );
+
+    const outputs = { outputs: [{ call_id: 'call_1', output: 'pong' }] };
+    await routes.liveToolResult('live/one', 'tools/1', outputs);
+    expect(json).toHaveBeenLastCalledWith(
+      '/v1/live/sessions/live%2Fone/tool_calls/tools%2F1/result',
+      { method: 'POST', body: JSON.stringify(outputs) },
+      { policy: 'mutation', auth: 'session', retries: 0 },
+    );
+
     await routes.liveText('live/one', 'hello');
     expect(json).toHaveBeenLastCalledWith(
       '/v1/live/sessions/live%2Fone/text',

@@ -23,6 +23,13 @@ export interface LiveSessionSwitchResponse {
   no_op?: boolean;
 }
 
+/**
+ * The page's answer to one round of tool calls a voice delegation stopped on:
+ * an output for every requested call, or why there are none.
+ */
+export type LiveToolCallResult =
+  { outputs: Array<{ call_id: string; output: string }> } | { error: string };
+
 export interface SessionMetrics {
   input_tokens: number;
   output_tokens: number;
@@ -408,6 +415,8 @@ export const endpoints = (api: APIClient) => ({
   liveAudioInput: liveRoute(api, (routes) => routes.liveAudioInput),
   liveText: liveRoute(api, (routes) => routes.liveText),
   liveSwitchSession: liveRoute(api, (routes) => routes.liveSwitchSession),
+  liveClientTools: liveRoute(api, (routes) => routes.liveClientTools),
+  liveToolResult: liveRoute(api, (routes) => routes.liveToolResult),
   liveEvents: liveRoute(api, (routes) => routes.liveEvents),
   shellCreate: (id: string, cols: number, rows: number) =>
     sessionPost<ShellCreateResponse>(api, id, 'shell', { cols, rows }),

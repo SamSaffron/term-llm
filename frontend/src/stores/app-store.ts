@@ -321,6 +321,11 @@ export class AppStore {
         const session = this.sessions.peek().find((entry) => entry.id === sessionId);
         return session ? { sessionNumber: session.number || 0, title: session.title } : null;
       },
+      // The page's WebMCP tools, created below; a call reads them only once live.
+      {
+        definitions: (sessionId) => this.webMCP.definitions(sessionId),
+        run: (call, signal) => this.webMCP.run(call, signal),
+      },
     );
     this.showWidgets = signal(storage.getItem(this.keys.showWidgetsSidebar) !== '0');
     // The legacy boolean was optimistic and is never authoritative. Enrollment
