@@ -439,7 +439,7 @@ function ConversationComposer() {
       } else if (session.delegated || session.parentSessionId) {
         store.toast(`Subagent conversations can't be ${participle}.`, 'error');
       } else if (command === '/archive') {
-        void store.archiveSession(session);
+        void store.archiveSession(session).catch((error) => store.toast(error, 'error'));
       } else if (command === '/pin') {
         void store.pinSession(session);
       } else {

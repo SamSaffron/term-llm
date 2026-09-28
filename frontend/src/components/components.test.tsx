@@ -4946,6 +4946,24 @@ describe('Preact-owned chat surfaces', () => {
     expect(store.prompt.value).toBe('');
   });
 
+  it('reports an archive command failure', async () => {
+    const store = createStore();
+    const error = new Error('Could not archive this conversation');
+    store.archiveSession = vi.fn(async () => Promise.reject(error));
+    store.toast = vi.fn();
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), '/archive');
+    await userEvent.keyboard('{Enter}');
+
+    await waitFor(() => expect(store.toast).toHaveBeenCalledWith(error, 'error'));
+    expect(store.prompt.value).toBe('');
+  });
+
   it.each([
     ['/archive', 'Start the conversation before archiving.'],
     ['/pin', 'Start the conversation before pinning.'],
