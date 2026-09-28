@@ -420,7 +420,15 @@ func (rt *serveRuntime) Close() {
 	rt.CloseContext(context.Background())
 }
 
+func (rt *serveRuntime) CloseAfterRun(ctx context.Context) {
+	rt.closeContext(ctx, true)
+}
+
 func (rt *serveRuntime) CloseContext(ctx context.Context) {
+	rt.closeContext(ctx, false)
+}
+
+func (rt *serveRuntime) closeContext(ctx context.Context, drain bool) {
 	sideCtx, sideCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	rt.sideQuestion.close(sideCtx)
 	sideCancel()
@@ -436,7 +444,7 @@ func (rt *serveRuntime) CloseContext(ctx context.Context) {
 	}
 	if ctx == nil || ctx.Done() == nil {
 		defer rt.mu.Unlock()
-		rt.closeLocked()
+		rt.closeLocked(drain && (ctx == nil || ctx.Err() == nil))
 		return
 	}
 
@@ -447,7 +455,7 @@ func (rt *serveRuntime) CloseContext(ctx context.Context) {
 	go func() {
 		defer close(done)
 		defer rt.mu.Unlock()
-		rt.closeLocked()
+		rt.closeLocked(drain && ctx.Err() == nil)
 	}()
 	select {
 	case <-done:
@@ -484,7 +492,10 @@ func (rt *serveRuntime) lockForClose(ctx context.Context) bool {
 	}
 }
 
-func (rt *serveRuntime) closeLocked() {
+func (rt *serveRuntime) closeLocked(drain bool) {
+	if rt.spawnRunner != nil && drain {
+		_ = rt.spawnRunner.Drain(context.Background())
+	}
 	rt.clearPendingAskUsers()
 	rt.clearPendingApprovals()
 	if rt.mcpManager != nil {
@@ -494,8 +505,10 @@ func (rt *serveRuntime) closeLocked() {
 	if rt.toolMgr != nil && rt.toolMgr.ApprovalMgr != nil {
 		rt.toolMgr.ApprovalMgr.Close()
 	}
-	if rt.spawnRunner != nil {
-		_ = rt.spawnRunner.Shutdown(context.Background())
+	if rt.spawnRunner != nil && !drain {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = rt.spawnRunner.Shutdown(shutdownCtx)
+		cancel()
 	}
 	if !rt.skipProviderCleanup {
 		if cleaner, ok := rt.provider.(interface{ CleanupMCP() }); ok {

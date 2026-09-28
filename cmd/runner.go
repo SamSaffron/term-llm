@@ -94,6 +94,7 @@ type cmdRunEnvironment struct {
 	sess          *session.Session
 	llmReq        llm.Request
 	inputMessages []llm.Message
+	runCtx        context.Context
 }
 
 func (env *cmdRunEnvironment) Close() {
@@ -101,7 +102,7 @@ func (env *cmdRunEnvironment) Close() {
 		return
 	}
 	if env.runtime != nil {
-		env.runtime.Close()
+		env.runtime.CloseAfterRun(env.runCtx)
 	}
 	if env.closeStore != nil {
 		env.closeStore()
@@ -522,6 +523,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 
 	cleanupOnError = false
 	return &cmdRunEnvironment{
+		runCtx:        ctx,
 		cfg:           cfg,
 		req:           req,
 		runtime:       runtime,
