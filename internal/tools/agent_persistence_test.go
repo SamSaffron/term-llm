@@ -18,6 +18,42 @@ type persistentLifecycleRunner struct {
 
 func (r *persistentLifecycleRunner) AgentRunStore() session.AgentRunStore { return r.store }
 
+func TestAgentCollectAcrossTurnStoreHandles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	firstStore, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}
+	firstTool := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
+	firstTool.SetRunner(&persistentLifecycleRunner{lifecycleRunner: child, store: firstStore})
+	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	first := lifecycleResult(t, lifecycleCall(t, firstTool, ctx, `{"agent_name":"developer","prompt":"work","wait":0}`))
+	<-child.entered
+	close(child.release)
+	if err := firstTool.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := firstStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	secondStore, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondStore.Close()
+	secondTool := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
+	secondTool.SetRunner(&persistentLifecycleRunner{lifecycleRunner: &lifecycleRunner{}, store: secondStore})
+	out := lifecycleCall(t, &agentControlTool{name: WaitAgentToolName, spawn: secondTool}, ctx, `{"agent_ids":["`+first.AgentID+`"],"max_wait":0}`)
+	if !strings.Contains(out.Content, `"status":"completed"`) {
+		t.Fatalf("second-turn wait = %s", out.Content)
+	}
+	got, err := secondStore.GetAgentRun(ctx, first.AgentID)
+	if err != nil || got.CollectedAt.IsZero() {
+		t.Fatalf("second-turn collection = %+v, %v", got, err)
+	}
+}
+
 func TestAgentLifecycleQueuedShutdownRestartsFreshAfterReload(t *testing.T) {
 	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
 	if err != nil {

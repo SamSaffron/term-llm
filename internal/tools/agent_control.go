@@ -148,13 +148,11 @@ func (t *agentControlTool) wait(ctx context.Context, parent string, a agentContr
 			e.record.CollectedAt = record.CollectedAt
 			e.manager.mu.Unlock()
 		}
-		store := m.store
-		if e != nil {
-			store = e.manager.store
-		}
-		if store != nil {
+		// A detached entry may belong to a prior turn whose store has already
+		// closed. Collect through this turn's live store, never the old owner.
+		if m.store != nil {
 			collectCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			err := store.CollectAgentRun(collectCtx, record.ID, record.CollectedAt)
+			err := m.store.CollectAgentRun(collectCtx, record.ID, record.CollectedAt)
 			cancel()
 			if err != nil {
 				return llm.TextOutput(fmt.Sprintf("collect agent run: %v", err))
