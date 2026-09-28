@@ -421,11 +421,17 @@ func (rt *serveRuntime) Close() {
 }
 
 func (rt *serveRuntime) CloseAfterRun(ctx context.Context) {
-	// Even after cancellation, per-run stores must not close until the child
-	// shutdown has had a chance to flush its terminal status.
+	if ctx == nil || ctx.Err() == nil {
+		// A completed run owns its detached children until they finish, even if
+		// the caller stopped waiting for the spawn_agent tool result.
+		rt.closeContext(context.Background(), true)
+		return
+	}
+	// A cancelled run must still flush child status before its store closes,
+	// but a context-less host prompt must not block shutdown forever.
 	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	rt.closeContext(closeCtx, ctx == nil || ctx.Err() == nil)
+	rt.closeContext(closeCtx, false)
 }
 
 func (rt *serveRuntime) CloseContext(ctx context.Context) {
