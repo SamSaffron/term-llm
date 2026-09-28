@@ -9,7 +9,7 @@ import type { SessionShareResponse } from '../api/endpoints';
 import type { Attachment, ToolCall } from '../domain/types';
 import { Transcript } from './Transcript';
 import { Composer } from './Composer';
-import { DelegationContext } from './DelegationContext';
+import { DelegationContext, returnToParent } from './DelegationContext';
 import { Markdown } from './Markdown';
 import { Modals } from './Modals';
 import { Sidebar } from './Sidebar';
@@ -289,10 +289,34 @@ describe('Preact-owned chat surfaces', () => {
       );
       await userEvent.click(within(navigation).getByRole('button', { name: 'Return to parent' }));
       if (loaded) expect(store.selectSession).toHaveBeenCalledWith(parent);
-      else expect(store.resolveAndSelectSession).toHaveBeenCalledWith(parent.id, false);
+      else
+        expect(store.resolveAndSelectSession).toHaveBeenCalledWith(parent.id, false, {
+          newChatOnMiss: false,
+        });
       store.dispose();
     },
   );
+
+  it('keeps the child selected if its unloaded parent temporarily cannot be resolved', async () => {
+    const store = createStore();
+    const parent = store.sessions.peek()[0];
+    store.sessions.value = [];
+    store.sessionStore.transientSession.value = {
+      ...parent,
+      id: 'child-1',
+      parentSessionId: 'parent-1',
+      delegated: true,
+    };
+    store.activeSessionId.value = 'child-1';
+    store.endpoints.selectedSession = vi.fn(async () => ({ selected_session: null }));
+    store.endpoints.sessionChildren = vi.fn(async () => ({ children: [] }));
+
+    await returnToParent(store);
+
+    expect(store.activeSessionId.value).toBe('child-1');
+    expect(store.activeSession.value?.parentSessionId).toBe('parent-1');
+    store.dispose();
+  });
 
   it('renders subagent output without a repeated agent heading or nested result wrapper', async () => {
     const store = createStore();
