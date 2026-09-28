@@ -298,6 +298,8 @@ test('Cmd-number switches chats immediately and holding Cmd reveals the matching
     .toBe('"⌘1"');
   await page.keyboard.up('Meta');
   await expect(sidebar).not.toHaveAttribute('data-show-chat-shortcuts');
+});
+
 test('typing on the page focuses the composer without losing or duplicating characters', async ({
   page,
 }) => {

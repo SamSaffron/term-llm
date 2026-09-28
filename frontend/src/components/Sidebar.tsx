@@ -331,7 +331,7 @@ function SessionRow({
       <button
         class={`session-btn ${active ? 'active' : ''}`}
         data-chat-shortcut-eligible={
-          shortcutEligible && !session.archived && !hiding ? '' : undefined
+          shortcutEligible && !session.archived && !archiving ? '' : undefined
         }
         type="button"
         aria-label={`${session.title || session.name || 'New chat'}${attentionLabel ? ` — ${attentionLabel}` : ''}`}
