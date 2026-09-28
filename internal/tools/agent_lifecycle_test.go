@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -43,7 +44,7 @@ func (r *lifecycleRunner) RunAgentWithCallbackAndOptions(ctx context.Context, na
 		return SpawnAgentRunResult{SessionID: opts.ChildSessionID}, ctx.Err()
 	}
 }
-func (r *lifecycleRunner) ContinueAgent(_ context.Context, id, name, instructions string, _ int, _ SpawnAgentRunOptions, _ SubagentEventCallback) (SpawnAgentRunResult, error) {
+func (r *lifecycleRunner) ContinueAgent(_ context.Context, id, name, instructions string, _ int, _ string, _ SpawnAgentRunOptions, _ SubagentEventCallback) (SpawnAgentRunResult, error) {
 	r.mu.Lock()
 	r.resumed++
 	r.mu.Unlock()
@@ -295,5 +296,61 @@ func TestAgentLifecycleParentCancellationDoesNotKillChild(t *testing.T) {
 	snapshot = lifecycleCall(t, wait, llm.ContextWithSessionID(context.Background(), "parent"), `{"agent_ids":["`+first.AgentID+`"]}`)
 	if !strings.Contains(snapshot.Content, `"status":"interrupted"`) {
 		t.Fatalf("shutdown = %s", snapshot.Content)
+	}
+}
+
+type resumedEventRunner struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r *resumedEventRunner) RunAgent(context.Context, string, string, int) (SpawnAgentRunResult, error) {
+	return SpawnAgentRunResult{}, nil
+}
+func (r *resumedEventRunner) RunAgentWithCallback(context.Context, string, string, int, string, SubagentEventCallback) (SpawnAgentRunResult, error) {
+	return SpawnAgentRunResult{}, nil
+}
+func (r *resumedEventRunner) SteerAgent(string, string) (string, string) { return "", "undelivered" }
+func (r *resumedEventRunner) ContinueAgent(ctx context.Context, id, _, _ string, _ int, callID string, _ SpawnAgentRunOptions, cb SubagentEventCallback) (SpawnAgentRunResult, error) {
+	if callID == "" {
+		return SpawnAgentRunResult{}, fmt.Errorf("missing resume call ID")
+	}
+	close(r.started)
+	select {
+	case <-r.release:
+	case <-ctx.Done():
+		return SpawnAgentRunResult{}, ctx.Err()
+	}
+	cb(callID, SubagentEvent{Type: SubagentEventUsage, CountsTurn: true})
+	cb(callID, SubagentEvent{Type: SubagentEventToolEnd, ToolName: "read_file"})
+	return SpawnAgentRunResult{SessionID: id, Output: "resumed"}, nil
+}
+
+func TestResumeEventsCountTurnsAndReachAttachedWaiter(t *testing.T) {
+	runner := &resumedEventRunner{started: make(chan struct{}), release: make(chan struct{})}
+	owner := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
+	owner.SetRunner(runner)
+	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	record := session.AgentRun{ID: session.NewID(), ParentSessionID: "parent", AgentName: "developer", Prompt: "work", Started: true, Status: "completed", TurnsUsed: 1}
+	e, err := owner.manager.start(ctx, record.AgentName, record.Prompt, "", "continue-call", nil, nil, runner, 1, true, "continue", record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	var received []SubagentEventType
+	attached := owner.manager.attach(e, func(id string, event SubagentEvent) {
+		if id != "wait-call" {
+			t.Errorf("waiter call ID = %q", id)
+		}
+		received = append(received, event.Type)
+	}, "wait-call")
+	close(runner.release)
+	<-e.done
+	owner.manager.detach(e, attached)
+	if e.record.TurnsUsed != 2 {
+		t.Fatalf("resume turns = %d, want 2", e.record.TurnsUsed)
+	}
+	if len(received) != 2 || received[0] != SubagentEventUsage || received[1] != SubagentEventToolEnd {
+		t.Fatalf("waiter events = %v", received)
 	}
 }

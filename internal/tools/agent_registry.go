@@ -22,7 +22,7 @@ import (
 // AgentContinuation is implemented by hosts that can resume a persisted child
 // and steer a live engine. Ordinary test runners still support spawn/wait/cancel.
 type AgentContinuation interface {
-	ContinueAgent(context.Context, string, string, string, int, SpawnAgentRunOptions, SubagentEventCallback) (SpawnAgentRunResult, error)
+	ContinueAgent(context.Context, string, string, string, int, string, SpawnAgentRunOptions, SubagentEventCallback) (SpawnAgentRunResult, error)
 	SteerAgent(string, string) (string, string)
 }
 
@@ -253,7 +253,7 @@ func (m *agentManager) run(ctx context.Context, e *agentEntry, runner SpawnAgent
 	opts := SpawnAgentRunOptions{ModelOverride: model, ChildSessionID: e.record.ID}
 	if resume {
 		if continuation, ok := runner.(AgentContinuation); ok {
-			result, err = continuation.ContinueAgent(ctx, e.record.ID, e.record.AgentName, instructions, depth, opts, cb)
+			result, err = continuation.ContinueAgent(ctx, e.record.ID, e.record.AgentName, instructions, depth, e.originCallID, opts, cb)
 		} else {
 			err = errors.New("runner does not support resuming agents")
 		}
