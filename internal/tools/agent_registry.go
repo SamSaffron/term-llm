@@ -410,7 +410,7 @@ func (m *agentManager) output(record session.AgentRun, e *agentEntry) llm.ToolOu
 	result := e.result
 	media := append([]llm.MediaArtifact(nil), e.media...)
 	started := e.startedAt
-	m.mu.Unlock()
+	e.manager.mu.Unlock()
 	var payload SpawnAgentResult
 	if json.Unmarshal([]byte(out.Content), &payload) != nil {
 		return out

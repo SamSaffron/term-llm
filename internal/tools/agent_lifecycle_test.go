@@ -70,6 +70,27 @@ func lifecycleResult(t *testing.T, out llm.ToolOutput) SpawnAgentResult {
 	}
 	return result
 }
+func TestAgentLifecycleCrossManagerWait(t *testing.T) {
+	runner := &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}
+	first := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
+	first.SetRunner(runner)
+	second := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
+	second.SetRunner(runner)
+	ctx := llm.ContextWithSessionID(context.Background(), "shared-parent")
+	spawned := lifecycleResult(t, lifecycleCall(t, first, ctx, `{"agent_name":"developer","prompt":"work","wait":0}`))
+	<-runner.entered
+	wait := &agentControlTool{name: WaitAgentToolName, spawn: second}
+	result := lifecycleCall(t, wait, ctx, `{"agent_ids":["`+spawned.AgentID+`"],"max_wait":0}`)
+	if !strings.Contains(result.Content, `"status":"running"`) {
+		t.Fatalf("cross-manager wait = %s", result.Content)
+	}
+	close(runner.release)
+	result = lifecycleCall(t, wait, ctx, `{"agent_ids":["`+spawned.AgentID+`"],"max_wait":1}`)
+	if !strings.Contains(result.Content, `"status":"completed"`) {
+		t.Fatalf("cross-manager completion = %s", result.Content)
+	}
+}
+
 func TestAgentLifecycleDetachQueueCancelResume(t *testing.T) {
 	runner := &lifecycleRunner{entered: make(chan string, 2), release: make(chan struct{})}
 	spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2, DefaultTimeout: 300}, 0)

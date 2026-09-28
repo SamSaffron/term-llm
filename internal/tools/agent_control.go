@@ -141,9 +141,9 @@ func (t *agentControlTool) wait(ctx context.Context, parent string, a agentContr
 			record.CollectedAt = time.Now()
 		}
 		if e != nil {
-			m.mu.Lock()
+			e.manager.mu.Lock()
 			e.record.CollectedAt = record.CollectedAt
-			m.mu.Unlock()
+			e.manager.mu.Unlock()
 		}
 		if m.store != nil {
 			collectCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
