@@ -48,6 +48,9 @@ func TestAgentLifecycleQueuedShutdownRestartsFreshAfterReload(t *testing.T) {
 	if err != nil || after.CollectedAt.IsZero() {
 		t.Fatalf("terminal agent not collected: %+v, %v", after, err)
 	}
+	if _, exists := processAgentEntries.Load(first.AgentID); exists {
+		t.Fatal("collected terminal agent retained process-wide")
+	}
 	stored, err := store.GetAgentRun(ctx, queued.AgentID)
 	if err != nil || stored.Status != "interrupted" || stored.Started || stored.Model != "test:model" {
 		t.Fatalf("queued admission = %+v, %v", stored, err)

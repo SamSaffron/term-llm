@@ -149,15 +149,23 @@ func (t *agentControlTool) wait(ctx context.Context, parent string, a agentContr
 			e.record.CollectedAt = record.CollectedAt
 			e.manager.mu.Unlock()
 		}
-		if m.store != nil {
+		store := m.store
+		if e != nil {
+			store = e.manager.store
+		}
+		if store != nil {
 			collectCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			err := m.store.CollectAgentRun(collectCtx, record.ID, record.CollectedAt)
+			err := store.CollectAgentRun(collectCtx, record.ID, record.CollectedAt)
 			cancel()
 			if err != nil {
 				return llm.TextOutput(fmt.Sprintf("collect agent run: %v", err))
 			}
 		}
-		results = append(results, json.RawMessage(m.output(record, e).Content))
+		out := m.output(record, e)
+		results = append(results, json.RawMessage(out.Content))
+		if e != nil {
+			e.manager.releaseCollected(e)
+		}
 	}
 	data, _ := json.Marshal(results)
 	return llm.TextOutput(string(data))

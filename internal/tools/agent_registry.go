@@ -453,6 +453,31 @@ func marshalAgentResult(result SpawnAgentResult) string {
 
 func agentParent(ctx context.Context) string { return llm.SessionIDFromContext(ctx) }
 
+// releaseCollected drops process-wide references after the terminal record is
+// durable. Without a store the entry must remain discoverable for list/continue.
+func (m *agentManager) releaseCollected(e *agentEntry) {
+	select {
+	case <-e.done:
+	default:
+		return
+	}
+	m.mu.Lock()
+	if !agentTerminal(e.record.Status) || e.record.CollectedAt.IsZero() {
+		m.mu.Unlock()
+		return
+	}
+	e.attachment = nil
+	e.initial = nil
+	e.external = nil
+	e.media = nil
+	e.result = SpawnAgentRunResult{}
+	if m.store != nil {
+		delete(m.agents, e.record.ID)
+		processAgentEntries.CompareAndDelete(e.record.ID, e)
+	}
+	m.mu.Unlock()
+}
+
 func (m *agentManager) outstandingIDs() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
