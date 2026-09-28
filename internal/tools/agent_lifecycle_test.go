@@ -13,12 +13,13 @@ import (
 )
 
 type lifecycleRunner struct {
-	entered chan string
-	release chan struct{}
-	mu      sync.Mutex
-	calls   int
-	resumed int
-	steered string
+	entered     chan string
+	release     chan struct{}
+	mu          sync.Mutex
+	calls       int
+	resumed     int
+	steered     string
+	disposition string
 }
 
 func (r *lifecycleRunner) RunAgent(ctx context.Context, name, prompt string, depth int) (SpawnAgentRunResult, error) {
@@ -52,6 +53,9 @@ func (r *lifecycleRunner) SteerAgent(_ string, instructions string) (string, str
 	r.mu.Lock()
 	r.steered = instructions
 	r.mu.Unlock()
+	if r.disposition != "" {
+		return "steer-id", r.disposition
+	}
 	return "steer-id", "queued"
 }
 
@@ -244,8 +248,15 @@ func TestAgentLifecycleDetachQueueCancelResume(t *testing.T) {
 	}
 	steer := &agentControlTool{name: ContinueAgentToolName, spawn: spawn}
 	output := lifecycleCall(t, steer, ctx, `{"agent_id":"`+first.AgentID+`","instructions":"focus on tests"}`)
-	if !strings.Contains(output.Content, `"intervention_disposition":"queued"`) {
+	if !strings.Contains(output.Content, `"intervention_disposition":"queued"`) || !strings.Contains(output.Content, `"resumable":false`) || !strings.Contains(output.Content, `"next":"wait_agent(`) {
 		t.Fatalf("steering = %s", output.Content)
+	}
+	runner.mu.Lock()
+	runner.disposition = "undelivered"
+	runner.mu.Unlock()
+	output = lifecycleCall(t, steer, ctx, `{"agent_id":"`+first.AgentID+`","instructions":"retry me"}`)
+	if !strings.Contains(output.Content, `"resumable":false`) || !strings.Contains(output.Content, `continue_agent(`) || !strings.Contains(output.Content, `retry me`) {
+		t.Fatalf("undelivered steering = %s", output.Content)
 	}
 	close(runner.release)
 	wait := &agentControlTool{name: WaitAgentToolName, spawn: spawn}

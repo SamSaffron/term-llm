@@ -271,9 +271,13 @@ func (t *agentControlTool) steer(record session.AgentRun, e *agentEntry, a agent
 		return llm.TextOutput("instructions required to steer a running agent")
 	}
 	id, disposition := continuation.SteerAgent(a.AgentID, a.Instructions)
-	result := map[string]string{"agent_id": a.AgentID, "status": record.Status, "steering_id": id, "intervention_disposition": disposition}
+	result := map[string]any{
+		"agent_id": a.AgentID, "status": record.Status, "steering_id": id,
+		"intervention_disposition": disposition, "resumable": false,
+		"next": fmt.Sprintf("wait_agent({\"agent_ids\":[%q]})", a.AgentID),
+	}
 	if disposition == "undelivered" {
-		result["next"] = "instruction was NOT delivered; call continue_agent again with it after the agent stops"
+		result["next"] = fmt.Sprintf("instruction was NOT delivered; call continue_agent({\"agent_id\":%q,\"instructions\":%q}) again after the agent stops", a.AgentID, a.Instructions)
 	}
 	data, _ := json.Marshal(result)
 	return llm.TextOutput(string(data))
