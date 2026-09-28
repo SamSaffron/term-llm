@@ -435,6 +435,11 @@ function ConversationComposer() {
           `Start the conversation before ${command === '/pin' ? 'pinning' : 'renaming'}.`,
           'error',
         );
+      } else if (session.delegated || session.parentSessionId) {
+        store.toast(
+          `Subagent conversations can't be ${command === '/pin' ? 'pinned' : 'renamed'}.`,
+          'error',
+        );
       } else if (command === '/pin') {
         void store.pinSession(session);
       } else {

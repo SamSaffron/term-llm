@@ -648,6 +648,9 @@ describe('Preact-owned chat surfaces', () => {
     };
     store.steer = vi.fn(async () => undefined);
     store.cancel = vi.fn(async () => undefined);
+    store.pinSession = vi.fn(async () => undefined);
+    store.openRename = vi.fn();
+    store.toast = vi.fn();
 
     render(
       <StoreContext.Provider value={store}>
@@ -659,6 +662,19 @@ describe('Preact-owned chat surfaces', () => {
     expect(textbox).toHaveAttribute('placeholder', 'Steer conversation…');
     expect(screen.getByRole('button', { name: 'Stop', exact: true })).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Stop subagent' })).not.toBeInTheDocument();
+
+    for (const [command, message] of [
+      ['/pin', "Subagent conversations can't be pinned."],
+      ['/rename', "Subagent conversations can't be renamed."],
+    ]) {
+      await userEvent.type(textbox, command);
+      await userEvent.keyboard('{Enter}');
+      expect(store.toast).toHaveBeenLastCalledWith(message, 'error');
+      expect(textbox).toHaveValue('');
+    }
+    expect(store.pinSession).not.toHaveBeenCalled();
+    expect(store.openRename).not.toHaveBeenCalled();
+
     await userEvent.type(textbox, 'stay focused');
     await userEvent.click(screen.getByRole('button', { name: 'Steer' }));
     expect(store.steer).toHaveBeenCalledWith('stay focused');
