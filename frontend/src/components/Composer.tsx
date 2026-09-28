@@ -428,6 +428,20 @@ function ConversationComposer() {
       return;
     }
     if (command === '/new') return store.newChat();
+    if (command === '/pin' || command === '/rename') {
+      store.prompt.value = '';
+      if (!session || store.draftActive.value) {
+        store.toast(
+          `Start the conversation before ${command === '/pin' ? 'pinning' : 'renaming'}.`,
+          'error',
+        );
+      } else if (command === '/pin') {
+        void store.pinSession(session);
+      } else {
+        store.openRename(session);
+      }
+      return;
+    }
     if (command === '/shell') {
       store.openShell();
       return;

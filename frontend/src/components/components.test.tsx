@@ -4903,6 +4903,52 @@ describe('Preact-owned chat surfaces', () => {
     expect(store.prompt.value).toBe('');
   });
 
+  it.each([
+    ['/pin', 'pinSession'],
+    ['/rename', 'openRename'],
+  ] as const)('handles %s locally for the active conversation', async (command, action) => {
+    const store = createStore();
+    store.pinSession = vi.fn(async () => undefined);
+    store.openRename = vi.fn();
+    store.send = vi.fn(async () => undefined);
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), command);
+    await userEvent.keyboard('{Enter}');
+
+    expect(store[action]).toHaveBeenCalledWith(store.activeSession.value);
+    expect(store.send).not.toHaveBeenCalled();
+    expect(store.prompt.value).toBe('');
+  });
+
+  it.each([
+    ['/pin', 'Start the conversation before pinning.'],
+    ['/rename', 'Start the conversation before renaming.'],
+  ])('does not run %s before the conversation starts', async (command, message) => {
+    const store = createStore();
+    store.draftActive.value = true;
+    store.pinSession = vi.fn(async () => undefined);
+    store.openRename = vi.fn();
+    store.toast = vi.fn();
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), command);
+    await userEvent.keyboard('{Enter}');
+
+    expect(store.pinSession).not.toHaveBeenCalled();
+    expect(store.openRename).not.toHaveBeenCalled();
+    expect(store.toast).toHaveBeenCalledWith(message, 'error');
+    expect(store.prompt.value).toBe('');
+  });
+
   it('shrinks the composer after sending a multiline prompt', async () => {
     const store = createStore();
     store.send = vi.fn(async () => {
