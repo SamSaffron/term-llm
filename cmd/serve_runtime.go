@@ -451,6 +451,9 @@ func (rt *serveRuntime) CloseContext(ctx context.Context) {
 }
 
 func (rt *serveRuntime) closeContext(ctx context.Context, drain bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	sideCtx, sideCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	rt.sideQuestion.close(sideCtx)
 	sideCancel()
