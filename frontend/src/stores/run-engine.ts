@@ -10,6 +10,7 @@ import {
   type ResponseEvent,
   type ResponseProjection,
 } from '../domain/response';
+import { parsePendingToolCalls, type ClientToolOutputItem } from '../domain/client-tools';
 import { applyRuntimeToRequest, defaultProvider } from '../domain/runtime';
 import { errorMessage } from '../domain/text';
 import {
@@ -46,6 +47,8 @@ import type { PlanStore } from './plan-store';
 import type { ReviewStore } from './review-store';
 import { StreamSupervisors, type StreamSupervisor } from './stream-supervisor';
 import type { PendingSteering, SendOptions } from './store-types';
+import { ClientToolRunner } from './client-tool-runner';
+import type { ClientToolBridge } from './webmcp-store';
 import { approvalPrompt, array, askUserPrompt, listFrom, recordValue, uuid } from './store-utils';
 import type { TabEventType } from '../platform/tab-sync';
 
@@ -55,6 +58,17 @@ const loadSteeringActions = () => import('./steering-actions');
 // thirty seconds without a successfully attached response transport.
 const STALE_RESPONSE_RECOVERY_FAILURES = 7;
 const RESPONSE_STREAM_CONNECT_TIMEOUT_MS = 15_000;
+// The server may still be releasing the finished run's turn.
+const CONTINUATION_BUSY_RETRY_MS = [300, 800, 1_500];
+
+/** The finished run may still hold the session's turn for a moment. */
+function sessionBusy(error: unknown): boolean {
+  return (
+    error instanceof APIError &&
+    error.status === 409 &&
+    /session is busy|owns this session's turn/i.test(error.message)
+  );
+}
 
 function retainInitiatingMessages(existing: Message[], incoming: Message[]): Message[] {
   const incomingIDs = new Set(incoming.map((message) => message.id));
@@ -95,6 +109,7 @@ export interface RunEngineHost {
   applyResponseEvent: (sessionId: string, event: ResponseEvent, owner?: StreamSupervisor) => void;
   draftMCPEnabled: (draftId: string) => string[];
   rekeyMCP: (oldId: string, newId: string) => void;
+  clientTools: ClientToolBridge;
 }
 
 /** Owns response creation, transport, recovery, intents, steering, and run projections. */
@@ -133,6 +148,7 @@ export class RunEngine {
   private readonly handledCompletionEvents = new Set<string>();
   private readonly titleRefreshTimers = new Map<string, number[]>();
   private steeringRevision = 0;
+  private readonly clientTools: ClientToolRunner;
 
   constructor(
     private readonly services: AppStoreServices,
@@ -187,9 +203,23 @@ export class RunEngine {
         this.hasActiveResponseTransport(projection.run.sessionId, projection.run.responseId),
       );
     });
+    this.clientTools = new ClientToolRunner({
+      bridge: host.clientTools,
+      runs: this.runs,
+      prepareContinuation: (sessionId, responseId) =>
+        this.prepareToolContinuation(sessionId, responseId),
+      continueWith: (sessionId, responseId, outputs) =>
+        this.continueWithToolOutputs(sessionId, responseId, outputs),
+      toast: (message) => services.toast(message, 'error'),
+    });
+    // The finished response's client tools are still running in this page.
+    const runningClientTools = this.clientTools.runningIn(
+      () => sessionStore.activeSession.value?.id || '',
+    );
     this.runActive = computed(() => {
       const projection = this.activeProjection.value;
       const session = this.sessionStore.activeSession.value;
+      if (runningClientTools.value) return true;
       if (!projection) return Boolean(session?.activeRun);
       // The projection owns the local response lifecycle. Losing a transport or
       // receiving a contradictory status sample starts recovery; neither is a
@@ -208,6 +238,7 @@ export class RunEngine {
         this.activeRush.value?.session_id === sessionStore.activeSession.value?.id
       )
         return true;
+      if (runningClientTools.value) return true;
       const projection = this.activeProjection.value;
       return Boolean(
         this.streaming.value &&
@@ -256,6 +287,7 @@ export class RunEngine {
       );
       return (
         composer.sendPending.value ||
+        runningClientTools.value ||
         projectedRunPending ||
         Boolean(sessionStore.activeSession.value?.activeRun && !this.canSteer.value) ||
         Boolean(
@@ -450,9 +482,7 @@ export class RunEngine {
     this.composer.sendPending.value = true;
     const clientMessageId = uuid();
     const requestId = uuid();
-    const notificationState = this.services.notifications.peek();
-    const notificationSubscriptionId =
-      notificationState.status === 'subscribed' ? notificationState.subscriptionId || '' : '';
+    const notificationSubscriptionId = this.notificationSubscriptionId();
 
     let session = this.sessionStore.activeSession.value;
     const optimistic: Message = {
@@ -546,8 +576,7 @@ export class RunEngine {
         ? [...attachmentParts, ...(inputText ? [{ type: 'input_text', text: inputText }] : [])]
         : inputText;
     const requestBody: Record<string, unknown> = {
-      stream: true,
-      include_server_tools: true,
+      ...this.responseRequestBody(session),
       client_message_id: clientMessageId,
       input: [
         {
@@ -558,49 +587,7 @@ export class RunEngine {
         },
       ],
     };
-    if ((session.agent || this.runtime.selectedAgent.peek()) === 'extension-builder')
-      requestBody.ui_context = {
-        asset_version: this.services.config.version,
-        generation: extensionRuntime.generation.peek(),
-        loaded: extensionRuntime.loaded.peek(),
-        safe_mode: extensionRuntime.safeMode.peek(),
-        width: innerWidth,
-        height: innerHeight,
-      };
-    if (session.lastResponseId) requestBody.previous_response_id = session.lastResponseId;
-    else if (this.sessionStore.projectsEnabled.value) {
-      if (session.projectId) requestBody.project_id = session.projectId;
-      else requestBody.no_project = true;
-    } else requestBody.use_default_workspace = true;
-    if (!session.lastResponseId && session.worktreeDir)
-      requestBody.worktree_dir = session.worktreeDir;
-    if (!session.lastResponseId)
-      requestBody.agent = session.agent || this.runtime.selectedAgent.value;
-    const selectedModel = this.runtime.models.value.find(
-      (entry) => entry.id === this.runtime.selectedModel.value,
-    );
-    const selectedProvider =
-      this.runtime.providers.value.find(
-        (entry) => entry.id === this.runtime.selectedProvider.value,
-      ) || defaultProvider(this.runtime.providers.value);
-    applyRuntimeToRequest(
-      requestBody,
-      {
-        provider: session.activeProvider,
-        model: session.activeModel,
-        effort: session.activeEffort,
-        reasoningMode: session.activeReasoningMode,
-      },
-      {
-        provider: this.runtime.selectedProvider.value,
-        model: this.runtime.selectedModel.value,
-        effort: this.runtime.selectedEffort.value,
-        reasoningMode: this.runtime.selectedReasoningMode.value,
-        fast: this.runtime.selectedFast.value,
-      },
-      selectedModel,
-      selectedProvider,
-    );
+    this.clientTools.userTurn(sessionId);
 
     let unknownAttempts = 0;
     const restoreRejectedComposer = (): void => {
@@ -616,15 +603,13 @@ export class RunEngine {
     };
     const submit = async (signal: AbortSignal): Promise<void> => {
       try {
-        const response = notificationSubscriptionId
-          ? await this.services.endpoints.createResponse(
-              requestBody,
-              sessionId,
-              requestId,
-              signal,
-              notificationSubscriptionId,
-            )
-          : await this.services.endpoints.createResponse(requestBody, sessionId, requestId, signal);
+        const response = await this.createResponse(
+          requestBody,
+          sessionId,
+          requestId,
+          signal,
+          notificationSubscriptionId,
+        );
         ownerID = await this.acceptCreatedResponse({
           response,
           streamOwner,
@@ -633,6 +618,7 @@ export class RunEngine {
           requestId,
           attachments,
           options,
+          offersClientTools: 'tools' in requestBody,
         });
       } catch (error) {
         if (!this.supervisors.owns(streamOwner)) return;
@@ -679,6 +665,83 @@ export class RunEngine {
     await submit(streamOwner.abort.signal);
   }
 
+  /**
+   * Fields every response request in `session` carries: continuation or
+   * workspace, agent, runtime selection, and the page's client tools.
+   */
+  private responseRequestBody(session: Session): Record<string, unknown> {
+    const requestBody: Record<string, unknown> = { stream: true, include_server_tools: true };
+    if ((session.agent || this.runtime.selectedAgent.peek()) === 'extension-builder')
+      requestBody.ui_context = {
+        asset_version: this.services.config.version,
+        generation: extensionRuntime.generation.peek(),
+        loaded: extensionRuntime.loaded.peek(),
+        safe_mode: extensionRuntime.safeMode.peek(),
+        width: innerWidth,
+        height: innerHeight,
+      };
+    if (session.lastResponseId) requestBody.previous_response_id = session.lastResponseId;
+    else if (this.sessionStore.projectsEnabled.value) {
+      if (session.projectId) requestBody.project_id = session.projectId;
+      else requestBody.no_project = true;
+    } else requestBody.use_default_workspace = true;
+    if (!session.lastResponseId && session.worktreeDir)
+      requestBody.worktree_dir = session.worktreeDir;
+    if (!session.lastResponseId)
+      requestBody.agent = session.agent || this.runtime.selectedAgent.value;
+    const selectedModel = this.runtime.models.value.find(
+      (entry) => entry.id === this.runtime.selectedModel.value,
+    );
+    const selectedProvider =
+      this.runtime.providers.value.find(
+        (entry) => entry.id === this.runtime.selectedProvider.value,
+      ) || defaultProvider(this.runtime.providers.value);
+    applyRuntimeToRequest(
+      requestBody,
+      {
+        provider: session.activeProvider,
+        model: session.activeModel,
+        effort: session.activeEffort,
+        reasoningMode: session.activeReasoningMode,
+      },
+      {
+        provider: this.runtime.selectedProvider.value,
+        model: this.runtime.selectedModel.value,
+        effort: this.runtime.selectedEffort.value,
+        reasoningMode: this.runtime.selectedReasoningMode.value,
+        fast: this.runtime.selectedFast.value,
+      },
+      selectedModel,
+      selectedProvider,
+    );
+    const clientTools = this.host.clientTools.definitions(session.id);
+    if (clientTools.length) requestBody.tools = clientTools;
+    return requestBody;
+  }
+
+  private notificationSubscriptionId(): string {
+    const state = this.services.notifications.peek();
+    return state.status === 'subscribed' ? state.subscriptionId || '' : '';
+  }
+
+  private createResponse(
+    requestBody: Record<string, unknown>,
+    sessionId: string,
+    requestId: string,
+    signal: AbortSignal,
+    notificationSubscriptionId: string,
+  ): Promise<Response> {
+    return notificationSubscriptionId
+      ? this.services.endpoints.createResponse(
+          requestBody,
+          sessionId,
+          requestId,
+          signal,
+          notificationSubscriptionId,
+        )
+      : this.services.endpoints.createResponse(requestBody, sessionId, requestId, signal);
+  }
+
   private definitiveSendRejection(error: unknown): boolean {
     return (
       error instanceof APIError &&
@@ -694,11 +757,20 @@ export class RunEngine {
     sessionId: string;
     clientMessageId: string;
     requestId: string;
-    attachments: Attachment[];
-    options: SendOptions;
+    attachments?: Attachment[];
+    options?: SendOptions;
+    offersClientTools: boolean;
   }): Promise<string> {
-    const { response, streamOwner, sessionId, clientMessageId, requestId, attachments, options } =
-      input;
+    const {
+      response,
+      streamOwner,
+      sessionId,
+      clientMessageId,
+      requestId,
+      attachments = [],
+      options = {},
+      offersClientTools,
+    } = input;
     if (!response.ok || !response.body) {
       const body = await response.text();
       if (response.status === 409) {
@@ -730,6 +802,7 @@ export class RunEngine {
     this.composer.releaseResources(attachments, true);
     if (!this.supervisors.owns(streamOwner)) return streamOwner.sessionId;
     if (!this.supervisors.adoptResponse(streamOwner, responseId)) return streamOwner.sessionId;
+    if (offersClientTools) this.clientTools.recordOffer(responseId);
     let ownerID = sessionId;
     if (durableSessionId !== sessionId) {
       if (!this.supervisors.rekey(streamOwner, durableSessionId)) return streamOwner.sessionId;
@@ -1257,6 +1330,7 @@ export class RunEngine {
       );
       if (next.run.status === 'completed')
         this.scheduleTitleReconciliation(sessionId, next.run.responseId, owner?.generation || 0);
+      this.clientTools.finished(sessionId, next);
     }
   }
 
@@ -1655,6 +1729,10 @@ export class RunEngine {
           endedAt: Number(snapshot.ended_at) || existing.run.endedAt,
           finalRev: terminal ? Number(snapshot.final_rev) || 0 : undefined,
           durableHandoff: terminal ? snapshot.durable_handoff === true : undefined,
+          pendingToolCalls:
+            status === 'completed'
+              ? parsePendingToolCalls(snapshot.pending_client_calls)
+              : undefined,
           error:
             status === 'failed'
               ? String(snapshotError?.message || existing.run.error || 'Response failed')
@@ -1769,6 +1847,7 @@ export class RunEngine {
         );
         if (next.run.status === 'completed')
           this.scheduleTitleReconciliation(sessionId, responseId, owner.generation);
+        this.clientTools.finished(sessionId, next);
       }
     } catch (error) {
       this.supervisors.finishRecovery(owner);
@@ -1795,6 +1874,7 @@ export class RunEngine {
       }
       return;
     }
+    if (this.clientTools.stop(this.sessionStore.activeSessionId.peek())) return;
     const projection = this.activeProjection.value;
     if (!projection || !['connecting', 'streaming', 'cancelling'].includes(projection.run.status))
       return;
@@ -1912,6 +1992,113 @@ export class RunEngine {
     });
   }
 
+  /**
+   * Loads the finished turn that called client tools into the durable
+   * transcript, which must hold it before its projection is replaced.
+   * Resolves whether `responseId` is still the conversation's latest.
+   */
+  private async prepareToolContinuation(sessionId: string, responseId: string): Promise<boolean> {
+    await this.host.refreshSessionMessages(
+      sessionId,
+      this.runs.peek()[sessionId]?.run.finalRev || 0,
+      responseId,
+    );
+    // Another send or tab moved the conversation on; these results are stale.
+    return !this.disposed && this.runs.peek()[sessionId]?.run.responseId === responseId;
+  }
+
+  /**
+   * Continues `responseId` with client tool results: a send without a user
+   * message. Installs the pending run before the first await, so the
+   * conversation stays busy from the tools' end to the new response.
+   */
+  private async continueWithToolOutputs(
+    sessionId: string,
+    responseId: string,
+    outputs: ClientToolOutputItem[],
+  ): Promise<void> {
+    if (this.disposed || this.runs.peek()[sessionId]?.run.responseId !== responseId) return;
+    // Like a user send, continue from the durable tail the refresh loaded.
+    const session = this.sessionStore.sessions.peek().find((entry) => entry.id === sessionId);
+    if (!session) return;
+    const requestId = uuid();
+    // First-party requests need an idempotency key even without a user message.
+    const clientMessageId = uuid();
+    const notificationSubscriptionId = this.notificationSubscriptionId();
+    const run: ActiveRun = {
+      responseId: `pending_${uuid()}`,
+      sessionId,
+      epoch: 1,
+      status: 'connecting',
+      lastSequence: 0,
+      startedRev: session.transcriptRev || 0,
+      startedAt: Date.now(),
+      reconnects: 0,
+      requestId,
+      notificationSubscriptionId: notificationSubscriptionId || undefined,
+    };
+    this.runs.value = { ...this.runs.peek(), [sessionId]: initialProjection(run) };
+    const streamOwner = this.supervisors.begin(sessionId, run.responseId);
+    const requestBody = {
+      // previous_response_id is the durable id the refresh loaded, which is
+      // not the stream's response id.
+      ...this.responseRequestBody(session),
+      client_message_id: clientMessageId,
+      input: outputs,
+    };
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        const response = await this.createResponse(
+          requestBody,
+          sessionId,
+          requestId,
+          streamOwner.abort.signal,
+          notificationSubscriptionId,
+        );
+        await this.acceptCreatedResponse({
+          response,
+          streamOwner,
+          sessionId,
+          clientMessageId,
+          requestId,
+          offersClientTools: 'tools' in requestBody,
+        });
+        return;
+      } catch (error) {
+        if (!this.supervisors.owns(streamOwner)) return;
+        // Delivered: only the resumable stream needs recovery.
+        if (!streamOwner.responseId.startsWith('pending_')) {
+          this.scheduleSupervisorRetry(streamOwner, error);
+          return;
+        }
+        const delay = sessionBusy(error) ? CONTINUATION_BUSY_RETRY_MS[attempt] : undefined;
+        if (delay === undefined) {
+          this.failRun(sessionId, error);
+          this.supervisors.retire(streamOwner);
+          return;
+        }
+        await this.waitUnlessStopped(streamOwner.abort.signal, delay);
+        if (!this.supervisors.owns(streamOwner)) return;
+      }
+    }
+  }
+
+  /** Waits `delay` ms, or less when `signal` aborts first. */
+  private waitUnlessStopped(signal: AbortSignal, delay: number): Promise<void> {
+    return new Promise((resolve) => {
+      if (signal.aborted) return resolve();
+      const timer = this.services.schedule(() => {
+        signal.removeEventListener('abort', stopped);
+        resolve();
+      }, delay);
+      const stopped = () => {
+        window.clearTimeout(timer);
+        resolve();
+      };
+      signal.addEventListener('abort', stopped, { once: true });
+    });
+  }
+
   private failRun(sessionId: string, error: unknown): void {
     const projection = this.runs.value[sessionId];
     if (!projection) return;
@@ -2006,6 +2193,7 @@ export class RunEngine {
 
   dispose(): void {
     this.disposed = true;
+    this.clientTools.dispose();
     for (const timers of this.titleRefreshTimers.values())
       timers.forEach((timer) => window.clearTimeout(timer));
     this.titleRefreshTimers.clear();

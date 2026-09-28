@@ -63,10 +63,11 @@ first passkey. The code is never put in a URL or page. Redirected output,
 systemd, and containers must use a private secret file:
 
 ```bash
-openssl rand -base64 32 | sudo install -m 600 /dev/stdin /run/secrets/term-llm-hub-bootstrap
+BOOTSTRAP_SECRET=$(mktemp)
+openssl rand -base64 32 > "$BOOTSTRAP_SECRET"
 term-llm serve hub --auth passkey \
   --public-url https://hub.example.com/hub/ \
-  --passkey-bootstrap-token-file /run/secrets/term-llm-hub-bootstrap
+  --passkey-bootstrap-token-file "$BOOTSTRAP_SECRET"
 ```
 
 `TERM_LLM_HUB_BOOTSTRAP_TOKEN` is also supported and is scrubbed from the
@@ -94,6 +95,11 @@ are written immediately. Recent-auth grants for sensitive credential changes
 remain process-local and must be renewed after a restart. Hub retains at most 1,024
 active browser sessions; if that defensive limit is ever reached, stop Hub and
 remove `sessions.json` to sign out every browser before restarting.
+
+Native clients sign in to a passkey Hub through the system browser using the
+same approval flow as the Web UI, under the Hub mount (for example
+`/hub/auth/native/{challenge}`). See
+[Native app sign-in](/guides/web-ui-and-api/#native-app-sign-in).
 
 ### Reverse proxy example
 

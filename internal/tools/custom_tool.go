@@ -16,6 +16,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 // validCustomToolNameRE matches valid custom tool names.
@@ -351,7 +352,7 @@ func (r *LocalToolRegistry) RegisterCustomTools(defs []agents.CustomToolDef, age
 		if agentDir != "" {
 			scriptPath := filepath.Join(agentDir, def.Script)
 			if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-				fmt.Fprintf(os.Stderr, "warning: custom tool %q script not found: %s\n", def.Name, scriptPath)
+				runtimeoutput.Printf("warning: custom tool %q script not found: %s\n", def.Name, scriptPath)
 			}
 		}
 

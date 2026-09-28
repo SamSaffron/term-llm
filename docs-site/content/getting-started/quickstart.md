@@ -8,7 +8,7 @@ next:
   label: Connect your preferred provider
   url: /getting-started/providers-and-setup/
 ---
-This path uses Zen’s supported free hosted models so you can try a first question without an API key. Already have a model provider? [Connect it instead](/getting-started/providers-and-setup/), then use its name in place of `zen` below.
+Install term-llm and [connect a provider](/getting-started/providers-and-setup/) for your first question. On an interactive first run, the setup wizard helps you choose one.
 
 ## 1. Install term-llm
 
@@ -34,15 +34,23 @@ term-llm version
 
 You should see the installed version. If your shell cannot find `term-llm`, follow the installer’s PATH instructions or see [installation](/getting-started/installation/).
 
-## 2. Get a useful first answer
+## 2. Connect a provider and get a first answer
+
+Choose a [provider API key, supported subscription, or local model](/getting-started/providers-and-setup/) before asking your first question. The default getting-started option is OpenRouter’s free model router. Create an [OpenRouter API key](https://openrouter.ai/keys) and set it in your shell:
 
 ```bash
-term-llm ask --provider zen "Explain git rebase in three sentences"
+export OPENROUTER_API_KEY=your-key
+```
+
+Replace `your-key` with your own key. Then run the command below in an interactive terminal. If you have no saved configuration, the setup wizard asks you to choose a provider and saves it as your default. Select OpenRouter to use `openrouter/free` for both the main and fast models, or follow the setup instructions for another provider. Saved provider and model choices are preserved.
+
+```bash
+term-llm ask "Explain git rebase in three sentences"
 ```
 
 You should receive a short explanation of how rebase replays commits onto a new base. Wording varies by model. This request asks a question; it does not run `git rebase` or change your repository.
 
-> Zen is a third-party hosted service. Your prompt is sent to it, and free model availability and limits can change. If the model is unavailable, run `term-llm models --provider zen` to inspect the current catalog, or [choose another provider](/getting-started/providers-and-setup/).
+> OpenRouter receives your prompts and routes them to an available free model. Free usage has limits and model availability varies; other models and features may incur charges. You can also [use a local model](/getting-started/providers-and-setup/#use-a-local-model).
 
 ## 3. Choose your interface
 
@@ -51,7 +59,7 @@ Both interfaces use the same underlying runtime and provider configuration. Try 
 ### Open the browser workspace
 
 ```bash
-term-llm serve web --provider zen
+term-llm serve web
 ```
 
 Open the URL printed in your terminal and follow the printed authentication instructions. Keep this terminal process running while you use the interface; press **Ctrl+C** to stop the server.
@@ -63,25 +71,25 @@ You get a complete workspace: saved conversations, project and worktree organiza
 ### Stay in your terminal
 
 ```bash
-term-llm chat --provider zen
+term-llm chat
 ```
 
 Ask follow-up questions in a persistent terminal conversation. When you are ready to work with a repository, run this from its directory:
 
 ```bash
-term-llm chat --provider zen @codebase
+term-llm chat @codebase
 ```
 
 Try asking: “Where does this application handle configuration?” Review workspace access requests before granting them. The quality of agent work depends on the chosen model and its tool support.
 
 ## 4. Try a real workflow
 
-Choose a task that fits your work. These examples keep `--provider zen` explicit; substitute your preferred provider if needed.
+Choose a task that fits your work. These examples use your configured default provider.
 
 **Review staged changes without editing them:**
 
 ```bash
-term-llm ask --provider zen @reviewer "review the staged changes"
+term-llm ask @reviewer "review the staged changes"
 ```
 
 Run it in a Git repository with staged changes. The built-in reviewer is read-only and git-aware. Expect observations tied to the code, not automatic fixes.
@@ -89,7 +97,7 @@ Run it in a Git repository with staged changes. The built-in reviewer is read-on
 **Preview a targeted edit:**
 
 ```bash
-term-llm edit --provider zen "improve error handling" -f main.go --dry-run
+term-llm edit "improve error handling" -f main.go --dry-run
 ```
 
 Replace `main.go` with a file in your project. `--dry-run` previews the change without writing it to disk.
@@ -97,7 +105,7 @@ Replace `main.go` with a file in your project. `--dry-run` previews the change w
 **Choose and run a command in plain English:**
 
 ```bash
-term-llm exec --provider zen "list files"
+term-llm exec "list files"
 ```
 
 You’ll see an interactive picker with suggested commands and an explanation for each. Use **↑/↓** to highlight an option, **i** for more information, and **Enter** to run the selected command. Choose **“something else...”** to refine your request, or **Esc** to cancel.

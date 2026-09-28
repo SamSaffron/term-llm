@@ -8,27 +8,23 @@ next:
   label: Choose a workflow
   url: /guides/
 ---
+
 term-llm runs on your machine; you choose where model inference happens. Start with **one** of the options below. You can add more providers and choose different models for individual agents later.
 
-## Try without an API key
+## Start with OpenRouter’s free models
 
-[OpenCode Zen](https://opencode.ai) offers access to supported free hosted models:
-
-```bash
-term-llm ask --provider zen "Explain git rebase in three sentences"
-```
-
-You should receive a short explanation. `--provider zen` explicitly selects the provider for this command; it does not change your saved default.
-
-Zen is a third-party service. Free model availability, capacity, and limits can change, and paid models require a Zen API key. Your prompt is sent to Zen, not processed locally. If the default model is unavailable, inspect the current catalog:
+Create an [OpenRouter API key](https://openrouter.ai/keys), then run:
 
 ```bash
-term-llm models --provider zen
+export OPENROUTER_API_KEY=your-key
+term-llm ask --provider openrouter "Explain git rebase in three sentences"
 ```
 
-Choose an available model with `--provider zen:MODEL_ID`, replacing `MODEL_ID` with the catalog entry. If no free model is available, use another connection option below.
+For new configurations, OpenRouter is the default provider and `openrouter/free` is its main and fast model. New-user setup prefers OpenRouter when its key is present. Existing saved provider and model selections take precedence; to try the free router with a saved model override, use `--provider openrouter:openrouter/free`.
 
-## Use a provider API key
+The router chooses among available free models. An API key is required, free usage has limits, and model availability varies. See [OpenRouter’s plans](https://openrouter.ai/pricing). Other models and features, such as image generation, may incur charges.
+
+## Use another provider API key
 
 For example, with Anthropic:
 
@@ -112,7 +108,7 @@ For specific settings, see [Provider setup details](/reference/provider-setup-de
 
 These detailed instructions now live in the reference. Existing section links are kept here.
 
-<p id="option-1-try-it-free-with-zen" class="legacy-provider-anchor"><a href="/reference/provider-setup-details/#option-1-try-it-free-with-zen">Option 1: Try it free with Zen →</a></p>
+<p id="option-1-try-it-free-with-zen" class="legacy-provider-anchor"><a href="/reference/provider-setup-details/#option-1-try-it-free-with-openrouter">Option 1: Try it free with OpenRouter →</a></p>
 <p id="option-2-use-api-key" class="legacy-provider-anchor"><a href="/reference/provider-setup-details/#option-2-use-api-key">Option 2: Use API key →</a></p>
 <p id="option-3-use-chatgpt-pluspro-subscription" class="legacy-provider-anchor"><a href="/reference/provider-setup-details/#option-3-use-chatgpt-pluspro-subscription">Option 3: Use ChatGPT (Plus/Pro subscription) →</a></p>
 <p id="grok-subscription-oauth" class="legacy-provider-anchor"><a href="/reference/provider-setup-details/#grok-subscription-oauth">Grok subscription OAuth →</a></p>

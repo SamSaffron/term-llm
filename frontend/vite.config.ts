@@ -102,5 +102,9 @@ export default defineConfig({
     setupFiles: ['./src/test/setup.ts'],
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
     outputFile: undefined,
+    // jsdom integration tests take ~1 s alone and several times that when the
+    // whole suite saturates the CPU. The timeout exists to catch hangs, not to
+    // measure speed, so leave headroom for loaded machines and CI.
+    testTimeout: 20_000,
   },
 });

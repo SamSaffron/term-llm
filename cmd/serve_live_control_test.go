@@ -385,7 +385,7 @@ func (h *controlLaneHarness) commentary(t *testing.T) string {
 	defer h.provider.mu.Unlock()
 	var out strings.Builder
 	for _, chunk := range h.provider.delegated {
-		if chunk.Channel != live.ChannelCommentary {
+		if chunk.Channel != live.ChannelQuiet {
 			t.Fatalf("the answer used the %s channel", chunk.Channel)
 		}
 		out.WriteString(chunk.Text)
@@ -734,7 +734,7 @@ func TestLiveWorkspaceRequestIsHandedOverInOneProviderRequest(t *testing.T) {
 	commentary := append([]live.DelegationChunk(nil), h.provider.delegated...)
 	h.provider.mu.Unlock()
 	for _, chunk := range commentary {
-		if chunk.Channel == live.ChannelCommentary {
+		if chunk.Channel == live.ChannelQuiet {
 			t.Fatalf("a handed-over request was answered by the router: %+v", chunk)
 		}
 	}

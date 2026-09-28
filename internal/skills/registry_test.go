@@ -2,6 +2,7 @@ package skills
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -56,6 +57,79 @@ description: "A test skill"
 	if skills[0].Name != "test-skill" {
 		t.Errorf("expected skill name 'test-skill', got %q", skills[0].Name)
 	}
+}
+
+func TestRegistryInvalidSkillDoesNotWriteToStderr(t *testing.T) {
+	tmpDir := t.TempDir()
+	skillsDir := filepath.Join(tmpDir, "skills")
+	invalidDir := filepath.Join(skillsDir, "md_solve_tickets")
+	if err := os.MkdirAll(invalidDir, 0o755); err != nil {
+		t.Fatalf("create invalid skill dir: %v", err)
+	}
+	content := `---
+name: md_solve_tickets
+description: "Uses a legacy underscore name"
+---
+`
+	if err := os.WriteFile(filepath.Join(invalidDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write invalid skill: %v", err)
+	}
+
+	registry, err := NewRegistry(RegistryConfig{
+		IncludeProjectSkills:  false,
+		IncludeEcosystemPaths: false,
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	registry.searchPaths = []searchPath{{path: skillsDir, source: SourceClaude}}
+
+	stderr := captureStderr(t, func() {
+		hasAny, err := registry.HasAnySkill()
+		if err != nil {
+			t.Fatalf("HasAnySkill: %v", err)
+		}
+		if hasAny {
+			t.Fatal("HasAnySkill reported an invalid skill")
+		}
+
+		listed, err := registry.List()
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(listed) != 0 {
+			t.Fatalf("List returned %d invalid skills", len(listed))
+		}
+	})
+	if stderr != "" {
+		t.Fatalf("invalid skill discovery wrote to stderr: %q", stderr)
+	}
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+
+	original := os.Stderr
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stderr pipe: %v", err)
+	}
+	os.Stderr = writer
+	defer func() {
+		os.Stderr = original
+		_ = reader.Close()
+		_ = writer.Close()
+	}()
+
+	fn()
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close stderr writer: %v", err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	return string(output)
 }
 
 func TestRegistryGet(t *testing.T) {

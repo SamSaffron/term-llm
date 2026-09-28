@@ -1,0 +1,80 @@
+.toggle-switch {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  padding: 3px;
+  margin: -3px;
+}
+
+.toggle-switch-input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.toggle-switch-input:disabled {
+  cursor: not-allowed;
+}
+
+.toggle-switch-track {
+  /* The checkbox covers the whole switch; the transformed thumb must not
+     paint over it and swallow taps. */
+  pointer-events: none;
+  display: inline-flex;
+  align-items: center;
+  width: 32px;
+  height: 19px;
+  padding: 2px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-muted) 30%, var(--surface-3));
+  transition: background 0.16s ease;
+}
+
+.toggle-switch-thumb {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 25%);
+  transition: transform 0.16s ease;
+}
+
+.toggle-switch-input:checked + .toggle-switch-track {
+  background: var(--text);
+}
+
+.toggle-switch-input:checked + .toggle-switch-track .toggle-switch-thumb {
+  transform: translateX(13px);
+  background: var(--bg);
+}
+
+.toggle-switch-input:focus-visible + .toggle-switch-track {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+.toggle-switch-input:disabled + .toggle-switch-track {
+  opacity: 0.5;
+}
+
+@media (forced-colors: active) {
+  .toggle-switch-track {
+    padding: 1px;
+    border: 1px solid CanvasText;
+  }
+
+  .toggle-switch-thumb {
+    background: CanvasText;
+  }
+
+  .toggle-switch-input:checked + .toggle-switch-track {
+    background: Highlight;
+  }
+
+  .toggle-switch-input:checked + .toggle-switch-track .toggle-switch-thumb {
+    background: HighlightText;
+  }
+}

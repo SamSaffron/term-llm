@@ -186,7 +186,7 @@ func (h *providerTurnToolEvents) resolveAndNormalize(event *Event) error {
 }
 
 func (h *providerTurnToolEvents) handleSync(event Event) error {
-	forward := Event{Type: EventToolCall, ToolCallID: event.ToolCallID, ToolName: event.ToolName, Tool: event.Tool, ProviderTurnIndex: h.attempt, ProviderTurnIndexSet: true}
+	forward := Event{Type: EventToolCall, ToolCallID: event.ToolCallID, ToolName: event.ToolName, Tool: event.Tool, ToolInline: true, ProviderTurnIndex: h.attempt, ProviderTurnIndexSet: true}
 	supervisor := h.syncTools.ensure()
 	h.syncTools.foldCompleted()
 	pending := append(append([]ToolCall(nil), h.turn.syncToolCalls...), supervisor.pendingCalls()...)

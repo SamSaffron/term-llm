@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -956,14 +956,14 @@ func (m *ApprovalManager) checkPathApprovalNoPrompt(toolName, path, absPath stri
 
 	if err != nil {
 		if m.DebugApproval {
-			log.Printf("[approval]   allowlist check error for %q: %v", path, err)
+			runtimeoutput.Logf("[approval]   allowlist check error for %q: %v", path, err)
 		}
 		return Cancel, true, err
 	}
 
 	if allowed {
 		if m.DebugApproval {
-			log.Printf("[approval]   allowlist approved %q (isWrite=%v)", path, isWrite)
+			runtimeoutput.Logf("[approval]   allowlist approved %q (isWrite=%v)", path, isWrite)
 		}
 		return ProceedOnce, true, nil
 	}
@@ -971,7 +971,7 @@ func (m *ApprovalManager) checkPathApprovalNoPrompt(toolName, path, absPath stri
 	// 1a. Check per-tool read allowlist (used for routed view_image uploads)
 	if !isWrite && m.isPathAllowedForToolRead(toolName, path) {
 		if m.DebugApproval {
-			log.Printf("[approval]   tool read allowlist approved %q for %s", path, toolName)
+			runtimeoutput.Logf("[approval]   tool read allowlist approved %q for %s", path, toolName)
 		}
 		return ProceedOnce, true, nil
 	}
@@ -979,7 +979,7 @@ func (m *ApprovalManager) checkPathApprovalNoPrompt(toolName, path, absPath stri
 	// 2. Check if path is in any approved directory (session cache, tool-agnostic)
 	if m.dirCache.IsPathInApprovedDir(path, isWrite) {
 		if m.DebugApproval {
-			log.Printf("[approval]   dirCache approved %q (isWrite=%v)", path, isWrite)
+			runtimeoutput.Logf("[approval]   dirCache approved %q (isWrite=%v)", path, isWrite)
 		}
 		return ProceedAlways, true, nil
 	}
@@ -987,7 +987,7 @@ func (m *ApprovalManager) checkPathApprovalNoPrompt(toolName, path, absPath stri
 	// 2a. Check parent's session cache (inherited approvals)
 	if m.parent != nil && m.parent.dirCache.IsPathInApprovedDir(path, isWrite) {
 		if m.DebugApproval {
-			log.Printf("[approval]   parent dirCache approved %q (isWrite=%v)", path, isWrite)
+			runtimeoutput.Logf("[approval]   parent dirCache approved %q (isWrite=%v)", path, isWrite)
 		}
 		return ProceedAlways, true, nil
 	}
@@ -996,7 +996,7 @@ func (m *ApprovalManager) checkPathApprovalNoPrompt(toolName, path, absPath stri
 	if m.parent != nil {
 		if outcome, ok := m.parent.cache.Get(toolName, path); ok {
 			if m.DebugApproval {
-				log.Printf("[approval]   parent cache approved %q: %v", path, outcome)
+				runtimeoutput.Logf("[approval]   parent cache approved %q: %v", path, outcome)
 			}
 			return outcome, true, nil
 		}
@@ -1014,7 +1014,7 @@ func (m *ApprovalManager) checkPathApprovalNoPrompt(toolName, path, absPath stri
 		projectApprovals := m.getProjectApprovals(absPath)
 		if projectApprovals != nil && projectApprovals.IsPathApproved(absPath, isWrite) {
 			if m.DebugApproval {
-				log.Printf("[approval]   project approvals approved %q (isWrite=%v)", absPath, isWrite)
+				runtimeoutput.Logf("[approval]   project approvals approved %q (isWrite=%v)", absPath, isWrite)
 			}
 			return ProceedAlways, true, nil
 		}
@@ -1189,7 +1189,7 @@ func (m *ApprovalManager) CheckPathApprovalWithContext(ctx context.Context, tool
 	absPath, err := canonicalApprovalPath(path, isWrite)
 	if err != nil {
 		if m.DebugApproval {
-			log.Printf("[approval] CheckPathApproval tool=%s path=%q → canonicalize error: %v", toolName, path, err)
+			runtimeoutput.Logf("[approval] CheckPathApproval tool=%s path=%q → canonicalize error: %v", toolName, path, err)
 		}
 		return Cancel, err
 	}
@@ -1198,7 +1198,7 @@ func (m *ApprovalManager) CheckPathApprovalWithContext(ctx context.Context, tool
 	// proposed primary workspace. It must not prompt or persist workspace authority.
 	if m.YoloEnabled() {
 		if m.DebugApproval {
-			log.Printf("[approval] CheckPathApproval tool=%s path=%q isWrite=%v → yolo auto-approve", toolName, path, isWrite)
+			runtimeoutput.Logf("[approval] CheckPathApproval tool=%s path=%q isWrite=%v → yolo auto-approve", toolName, path, isWrite)
 		}
 		return ProceedOnce, nil
 	}
@@ -1225,13 +1225,13 @@ func (m *ApprovalManager) CheckPathApprovalWithContext(ctx context.Context, tool
 	outcome, ok, err := m.checkPathApprovalNoPrompt(toolName, absPath, absPath, isWrite)
 	if err != nil {
 		if m.DebugApproval {
-			log.Printf("[approval] CheckPathApproval tool=%s path=%q → no-prompt error: %v", toolName, absPath, err)
+			runtimeoutput.Logf("[approval] CheckPathApproval tool=%s path=%q → no-prompt error: %v", toolName, absPath, err)
 		}
 		return Cancel, err
 	}
 	if ok {
 		if m.DebugApproval {
-			log.Printf("[approval] CheckPathApproval tool=%s path=%q → no-prompt decided: %v", toolName, absPath, outcome)
+			runtimeoutput.Logf("[approval] CheckPathApproval tool=%s path=%q → no-prompt decided: %v", toolName, absPath, outcome)
 		}
 		return outcome, nil
 	}
@@ -1257,7 +1257,7 @@ func (m *ApprovalManager) CheckPathApprovalWithContext(ctx context.Context, tool
 	// while this request was waiting behind another prompt.
 	if m.YoloEnabled() {
 		if m.DebugApproval {
-			log.Printf("[approval] CheckPathApproval tool=%s path=%q isWrite=%v → yolo auto-approve after lock", toolName, path, isWrite)
+			runtimeoutput.Logf("[approval] CheckPathApproval tool=%s path=%q isWrite=%v → yolo auto-approve after lock", toolName, path, isWrite)
 		}
 		return ProceedOnce, nil
 	}
@@ -1266,13 +1266,13 @@ func (m *ApprovalManager) CheckPathApprovalWithContext(ctx context.Context, tool
 	outcome, ok, err = m.checkPathApprovalNoPrompt(toolName, absPath, absPath, isWrite)
 	if err != nil {
 		if m.DebugApproval {
-			log.Printf("[approval] CheckPathApproval tool=%s path=%q → recheck error: %v", toolName, absPath, err)
+			runtimeoutput.Logf("[approval] CheckPathApproval tool=%s path=%q → recheck error: %v", toolName, absPath, err)
 		}
 		return Cancel, err
 	}
 	if ok {
 		if m.DebugApproval {
-			log.Printf("[approval] CheckPathApproval tool=%s path=%q → recheck decided: %v", toolName, absPath, outcome)
+			runtimeoutput.Logf("[approval] CheckPathApproval tool=%s path=%q → recheck decided: %v", toolName, absPath, outcome)
 		}
 		return outcome, nil
 	}
@@ -1292,17 +1292,17 @@ func (m *ApprovalManager) CheckPathApprovalWithContext(ctx context.Context, tool
 	promptUIFunc := m.lookupPromptUIFunc()
 	if promptUIFunc != nil {
 		if m.DebugApproval {
-			log.Printf("[approval] CheckPathApproval tool=%s path=%q → calling PromptUIFunc", toolName, absPath)
+			runtimeoutput.Logf("[approval] CheckPathApproval tool=%s path=%q → calling PromptUIFunc", toolName, absPath)
 		}
 		result, err := promptUIFunc(absPath, isWrite, false, "")
 		if err != nil {
 			if m.DebugApproval {
-				log.Printf("[approval] CheckPathApproval tool=%s path=%q → PromptUIFunc error: %v", toolName, absPath, err)
+				runtimeoutput.Logf("[approval] CheckPathApproval tool=%s path=%q → PromptUIFunc error: %v", toolName, absPath, err)
 			}
 			return Cancel, err
 		}
 		if m.DebugApproval {
-			log.Printf("[approval] CheckPathApproval tool=%s path=%q → PromptUIFunc result: choice=%v cancelled=%v", toolName, absPath, result.Choice, result.Cancelled)
+			runtimeoutput.Logf("[approval] CheckPathApproval tool=%s path=%q → PromptUIFunc result: choice=%v cancelled=%v", toolName, absPath, result.Choice, result.Cancelled)
 		}
 		outcome, err := m.handleFileApprovalResult(result, absPath, isWrite, projectApprovals)
 		if err == nil && (outcome == ProceedOnce || outcome == ProceedAlways || outcome == ProceedAlwaysAndSave) {
@@ -1312,7 +1312,7 @@ func (m *ApprovalManager) CheckPathApprovalWithContext(ctx context.Context, tool
 	}
 
 	if m.DebugApproval {
-		log.Printf("[approval] CheckPathApproval tool=%s path=%q → no PromptUIFunc or PromptFunc set, denying", toolName, absPath)
+		runtimeoutput.Logf("[approval] CheckPathApproval tool=%s path=%q → no PromptUIFunc or PromptFunc set, denying", toolName, absPath)
 	}
 
 	// Fall back to legacy PromptFunc (local, then ancestors)
@@ -1388,7 +1388,7 @@ func (m *ApprovalManager) handleFileApprovalResult(result ApprovalResult, path s
 		if projectApprovals != nil {
 			if err := projectApprovals.ApproveRead(); err != nil {
 				if m.DebugApproval {
-					log.Printf("[approval] failed to persist read approval: %v", err)
+					runtimeoutput.Logf("[approval] failed to persist read approval: %v", err)
 				}
 			}
 		}
@@ -1403,7 +1403,7 @@ func (m *ApprovalManager) handleFileApprovalResult(result ApprovalResult, path s
 		if projectApprovals != nil {
 			if err := projectApprovals.ApproveWrite(); err != nil {
 				if m.DebugApproval {
-					log.Printf("[approval] failed to persist write approval: %v", err)
+					runtimeoutput.Logf("[approval] failed to persist write approval: %v", err)
 				}
 			}
 		}
@@ -1464,14 +1464,14 @@ func (m *ApprovalManager) checkShellApprovalWithContext(ctx context.Context, com
 	// Yolo mode - auto-approve everything
 	if m.YoloEnabled() {
 		if m.DebugApproval {
-			log.Printf("[approval] CheckShellApproval cmd=%q → yolo auto-approve", command)
+			runtimeoutput.Logf("[approval] CheckShellApproval cmd=%q → yolo auto-approve", command)
 		}
 		return ProceedOnce, nil
 	}
 
 	if outcome, ok := m.checkShellApprovalNoPrompt(command, workDir); ok {
 		if m.DebugApproval {
-			log.Printf("[approval] CheckShellApproval cmd=%q → no-prompt decided: %v", command, outcome)
+			runtimeoutput.Logf("[approval] CheckShellApproval cmd=%q → no-prompt decided: %v", command, outcome)
 		}
 		return outcome, nil
 	}
@@ -1494,7 +1494,7 @@ func (m *ApprovalManager) checkShellApprovalWithContext(ctx context.Context, com
 	// while this request was waiting behind another prompt.
 	if m.YoloEnabled() {
 		if m.DebugApproval {
-			log.Printf("[approval] CheckShellApproval cmd=%q → yolo auto-approve after lock", command)
+			runtimeoutput.Logf("[approval] CheckShellApproval cmd=%q → yolo auto-approve after lock", command)
 		}
 		return ProceedOnce, nil
 	}
@@ -1502,7 +1502,7 @@ func (m *ApprovalManager) checkShellApprovalWithContext(ctx context.Context, com
 	// Recheck now that we hold the prompt lock to avoid duplicate prompts
 	if outcome, ok := m.checkShellApprovalNoPrompt(command, workDir); ok {
 		if m.DebugApproval {
-			log.Printf("[approval] CheckShellApproval cmd=%q → recheck decided: %v", command, outcome)
+			runtimeoutput.Logf("[approval] CheckShellApproval cmd=%q → recheck decided: %v", command, outcome)
 		}
 		return outcome, nil
 	}
@@ -1525,7 +1525,7 @@ func (m *ApprovalManager) checkShellApprovalWithContext(ctx context.Context, com
 	promptUIFunc := m.lookupPromptUIFunc()
 	if promptUIFunc != nil {
 		if m.DebugApproval {
-			log.Printf("[approval] CheckShellApproval cmd=%q → calling PromptUIFunc", command)
+			runtimeoutput.Logf("[approval] CheckShellApproval cmd=%q → calling PromptUIFunc", command)
 		}
 		result, err := promptUIFunc(command, false, true, workDir)
 		if err != nil {
@@ -1554,7 +1554,7 @@ func (m *ApprovalManager) checkShellApprovalWithContext(ctx context.Context, com
 		// pattern still honors the user's approval for this invocation.
 		if pattern != "" {
 			if err := m.shellCache.AddPattern(pattern); err != nil {
-				log.Printf("[approval] failed to remember shell pattern %q; using one-time approval: %v", pattern, err)
+				runtimeoutput.Logf("[approval] failed to remember shell pattern %q; using one-time approval: %v", pattern, err)
 				outcome = ProceedOnce
 			}
 		} else if err := m.shellCache.AddCommand(command, workDir); err != nil {
@@ -2063,14 +2063,14 @@ func (m *ApprovalManager) handleShellApprovalResult(result ApprovalResult, comma
 			pattern = GenerateShellPattern(command)
 		}
 		if err := validateShellApprovalPattern(pattern); err != nil {
-			log.Printf("[approval] invalid shell pattern %q; using one-time approval: %v", pattern, err)
+			runtimeoutput.Logf("[approval] invalid shell pattern %q; using one-time approval: %v", pattern, err)
 			m.resetGuardianDenials()
 			return ProceedOnce, nil
 		}
 		// Cache before persistence so a durable success can never be followed by a
 		// failed session insertion. Validation failures degrade to this invocation.
 		if err := m.shellCache.AddPattern(pattern); err != nil {
-			log.Printf("[approval] failed to remember shell pattern %q; using one-time approval: %v", pattern, err)
+			runtimeoutput.Logf("[approval] failed to remember shell pattern %q; using one-time approval: %v", pattern, err)
 			m.resetGuardianDenials()
 			return ProceedOnce, nil
 		}
@@ -2080,7 +2080,7 @@ func (m *ApprovalManager) handleShellApprovalResult(result ApprovalResult, comma
 			persistErr = projectApprovals.ApproveShellPattern(pattern)
 		}
 		if persistErr != nil {
-			log.Printf("[approval] failed to persist shell pattern %q; using session-only approval: %v", pattern, persistErr)
+			runtimeoutput.Logf("[approval] failed to persist shell pattern %q; using session-only approval: %v", pattern, persistErr)
 		}
 		m.resetGuardianDenials()
 		return ProceedAlways, nil

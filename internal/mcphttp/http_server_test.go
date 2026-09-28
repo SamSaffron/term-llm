@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -768,5 +769,150 @@ func TestServerSendsProgressForLongRunningTool(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("tool call did not complete")
+	}
+}
+
+func TestServerFlushesBeforeToolCompletes(t *testing.T) {
+	for _, version := range []string{"2024-11-05", "2025-11-25", "2026-07-28"} {
+		t.Run(version, func(t *testing.T) {
+			release := make(chan struct{})
+			server := NewServer(func(ctx context.Context, _ string, _ json.RawMessage) (ToolResult, error) {
+				select {
+				case <-release:
+					return ToolResult{Content: "finished"}, nil
+				case <-ctx.Done():
+					return ToolResult{}, ctx.Err()
+				}
+			})
+			url, token, err := server.Start(context.Background(), []ToolSpec{{Name: "slow", Schema: map[string]any{"type": "object"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = server.Stop(context.Background()) }()
+			releaseTool := sync.OnceFunc(func() { close(release) })
+			defer releaseTool()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			params := map[string]any{"name": "slow", "arguments": map[string]any{}}
+			if version == "2026-07-28" {
+				params["_meta"] = map[string]any{
+					"io.modelcontextprotocol/protocolVersion":    version,
+					"io.modelcontextprotocol/clientCapabilities": map[string]any{},
+					"io.modelcontextprotocol/clientInfo":         map[string]any{"name": "test", "version": "1"},
+				}
+			}
+			body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer "+token)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			req.Header.Set("Mcp-Protocol-Version", version)
+			req.Header.Set("Mcp-Method", "tools/call")
+			req.Header.Set("Mcp-Name", "slow")
+			transport := http.DefaultTransport.(*http.Transport).Clone()
+			transport.ResponseHeaderTimeout = time.Second
+			defer transport.CloseIdleConnections()
+			client := &http.Client{Transport: transport}
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("headers did not arrive while tool was blocked: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "text/event-stream" {
+				payload, _ := io.ReadAll(resp.Body)
+				t.Fatalf("response = %d %s: %s", resp.StatusCode, resp.Header.Get("Content-Type"), payload)
+			}
+			comment := make([]byte, len(": tool execution started\n\n"))
+			if _, err := io.ReadFull(resp.Body, comment); err != nil {
+				t.Fatal(err)
+			}
+			if string(comment) != ": tool execution started\n\n" {
+				t.Fatalf("first bytes = %q", comment)
+			}
+			releaseTool()
+			payload, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Contains(payload, []byte(`"text":"finished"`)) {
+				t.Fatalf("missing tool result: %s", payload)
+			}
+		})
+	}
+}
+
+func TestServerEarlyFlushPreservesProtocolErrors(t *testing.T) {
+	server := NewServer(func(context.Context, string, json.RawMessage) (ToolResult, error) {
+		t.Error("invalid request reached executor")
+		return ToolResult{}, nil
+	})
+	url, token, err := server.Start(context.Background(), []ToolSpec{{Name: "test", Schema: map[string]any{"type": "object"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = server.Stop(context.Background()) }()
+	for _, tc := range []struct {
+		name, method string
+		params       map[string]any
+		unauthorized bool
+		status       int
+	}{
+		{name: "unknown method", method: "not/a/method", status: http.StatusNotFound},
+		{name: "missing tool name", method: "tools/call", status: http.StatusBadRequest},
+		{name: "unknown tool", method: "tools/call", params: map[string]any{"name": "missing"}, status: http.StatusBadRequest},
+		{name: "unauthorized", method: "tools/call", unauthorized: true, status: http.StatusUnauthorized},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			params := tc.params
+			if params == nil {
+				params = map[string]any{}
+			}
+			params["_meta"] = map[string]any{
+				"io.modelcontextprotocol/protocolVersion":    "2026-07-28",
+				"io.modelcontextprotocol/clientCapabilities": map[string]any{},
+				"io.modelcontextprotocol/clientInfo":         map[string]any{"name": "test", "version": "1"},
+			}
+			body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": tc.method, "params": params})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !tc.unauthorized {
+				req.Header.Set("Authorization", "Bearer "+token)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			req.Header.Set("Mcp-Protocol-Version", "2026-07-28")
+			req.Header.Set("Mcp-Method", tc.method)
+			if name, ok := params["name"].(string); ok {
+				req.Header.Set("Mcp-Name", name)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			payload, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != tc.status {
+				t.Fatalf("status = %d, want %d: %s", resp.StatusCode, tc.status, payload)
+			}
+			if bytes.Contains(payload, []byte(": tool execution started")) {
+				t.Fatalf("error response was primed: %s", payload)
+			}
+		})
 	}
 }

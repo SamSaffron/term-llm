@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 const (
@@ -243,7 +243,7 @@ func (p *Planner) activate(runID string, input searchInput) (loaded []mcp.Catalo
 			candidateIDs = append(candidateIDs, result.ID)
 		}
 	}
-	slog.Debug("MCP tool catalogue search ranked candidates", "run_id", runID, "query", input.Query, "exact_names", input.ToolNames, "catalogue_generation", snapshot.Generation, "catalogue_hash", snapshot.Hash, "ranked", ranked)
+	runtimeoutput.Debug("MCP tool catalogue search ranked candidates", "run_id", runID, "query", input.Query, "exact_names", input.ToolNames, "catalogue_generation", snapshot.Generation, "catalogue_hash", snapshot.Hash, "ranked", ranked)
 
 	// Resolve ranked IDs against the latest committed catalogue and policy. The
 	// index may have been replaced while the model/tool call was in flight.
@@ -387,7 +387,7 @@ func (p *Planner) activate(runID string, input searchInput) (loaded []mcp.Catalo
 	for _, tool := range loaded {
 		loadedNames = append(loadedNames, tool.Name)
 	}
-	slog.Debug("MCP tool catalogue activation", "run_id", runID, "loaded", loadedNames, "already_active", already, "evicted", evicted, "working_set_omitted", omitted, "dynamic_active", dynamicCount-len(evicted)+len(loaded), "dynamic_limit", p.maxActiveTools)
+	runtimeoutput.Debug("MCP tool catalogue activation", "run_id", runID, "loaded", loadedNames, "already_active", already, "evicted", evicted, "working_set_omitted", omitted, "dynamic_active", dynamicCount-len(evicted)+len(loaded), "dynamic_limit", p.maxActiveTools)
 	return loaded, already, evicted, omitted, unavailable, label, nil
 }
 

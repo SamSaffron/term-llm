@@ -3,11 +3,11 @@ package llm
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 // OpenAIProvider implements Provider using the standard OpenAI API.
@@ -207,13 +207,13 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 		responsesReq.Input = BuildResponsesInputWithFilePolicy(req.Messages, responsesReq.FileUploadPolicy)
 		systemPreview := collectRoleText(req.Messages, RoleSystem)
 		userPreview := collectRoleText(req.Messages, RoleUser)
-		fmt.Fprintln(os.Stderr, "=== DEBUG: OpenAI Stream Request ===")
-		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
-		fmt.Fprintf(os.Stderr, "Developer: %s\n", truncate(systemPreview, 200))
-		fmt.Fprintf(os.Stderr, "User: %s\n", truncate(userPreview, 200))
-		fmt.Fprintf(os.Stderr, "Input Items: %d\n", len(responsesReq.Input))
-		fmt.Fprintf(os.Stderr, "Tools: %d\n", len(tools))
-		fmt.Fprintln(os.Stderr, "===================================")
+		runtimeoutput.Printf("%s\n", "=== DEBUG: OpenAI Stream Request ===")
+		runtimeoutput.Printf("Provider: %s\n", p.Name())
+		runtimeoutput.Printf("Developer: %s\n", truncate(systemPreview, 200))
+		runtimeoutput.Printf("User: %s\n", truncate(userPreview, 200))
+		runtimeoutput.Printf("Input Items: %d\n", len(responsesReq.Input))
+		runtimeoutput.Printf("Tools: %d\n", len(tools))
+		runtimeoutput.Printf("%s\n", "===================================")
 	}
 
 	return p.responsesClient.Stream(ctx, responsesReq, req.DebugRaw)

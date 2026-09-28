@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/image"
 	"github.com/samsaffron/term-llm/internal/llm"
 	memorystore "github.com/samsaffron/term-llm/internal/memory"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 // ImageRecorder is a minimal interface for recording generated images.
@@ -339,18 +339,18 @@ func (t *ImageGenerateTool) resolveInputImages(ctx context.Context, inputPaths [
 		resolvedInput, inputErr := resolveToolPathWithConfig(inputPath, false, t.toolConfig)
 		if inputErr == nil && strings.HasPrefix(resolvedInput, resolvedOutputDir+string(filepath.Separator)) {
 			if debug {
-				log.Printf("[image_generate] auto-approved input %q (inside output dir %q)", inputPath, resolvedOutputDir)
+				runtimeoutput.Logf("[image_generate] auto-approved input %q (inside output dir %q)", inputPath, resolvedOutputDir)
 			}
 			resolvedInputPaths = append(resolvedInputPaths, resolvedInput)
 			continue
 		}
 		if debug && inputErr != nil {
-			log.Printf("[image_generate] resolveToolPath input=%v — falling through to approval check", inputErr)
+			runtimeoutput.Logf("[image_generate] resolveToolPath input=%v — falling through to approval check", inputErr)
 		}
 
 		outcome, err := t.approval.CheckPathApprovalWithContext(ctx, ImageGenerateToolName, inputPath, inputPath, false)
 		if debug {
-			log.Printf("[image_generate] CheckPathApproval input=%q → outcome=%v err=%v", inputPath, outcome, err)
+			runtimeoutput.Logf("[image_generate] CheckPathApproval input=%q → outcome=%v err=%v", inputPath, outcome, err)
 		}
 		if err != nil {
 			out := pathApprovalErrorOutput("", err)

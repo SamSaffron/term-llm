@@ -174,7 +174,9 @@ func (s *openAISession) AppendDelegation(ctx context.Context, delegationID strin
 	if delegationID == "" {
 		return errors.New("live: OpenAI delegation is missing a call id")
 	}
-	if strings.TrimSpace(chunk.Text) == "" {
+	if strings.TrimSpace(chunk.Text) == "" || chunk.Progress {
+		// Progress describes work still running; this protocol only delivers the
+		// single function output at completion, when that note is stale.
 		return nil
 	}
 
@@ -191,7 +193,7 @@ func (s *openAISession) AppendDelegation(ctx context.Context, delegationID strin
 		pending = &openAIPendingDelegation{}
 		s.delegations[delegationID] = pending
 	}
-	if chunk.Channel == ChannelCommentary {
+	if chunk.Channel == ChannelQuiet {
 		if pending.text.Len() > 0 {
 			pending.text.WriteByte('\n')
 		}
@@ -313,7 +315,7 @@ func (s *openAILiveSession) AppendDelegation(ctx context.Context, delegationID s
 		return errors.New("live: OpenAI GPT-Live delegation is missing an id")
 	}
 	eventType := openAILiveCommentaryAppend
-	if chunk.Channel == ChannelCommentary {
+	if chunk.Channel == ChannelQuiet {
 		eventType = openAILiveThinkingAppend
 	}
 	s.closeMu.Lock()

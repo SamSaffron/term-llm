@@ -106,7 +106,7 @@ func TestParseEventReportsMalformedJSON(t *testing.T) {
 }
 
 func TestOutboundMessagesMatchProtocol(t *testing.T) {
-	encoded, err := json.Marshal(DelegationContextAppend("item_1", ChannelCommentary, "hi"))
+	encoded, err := json.Marshal(DelegationContextAppend("item_1", ChannelQuiet, "hi"))
 	if err != nil {
 		t.Fatal(err)
 	}

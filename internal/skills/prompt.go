@@ -2,8 +2,9 @@ package skills
 
 import (
 	"fmt"
-	"os"
 	"strings"
+
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 // GenerateAvailableSkillsXML generates the <available_skills> prompt injection.
@@ -133,7 +134,7 @@ func TruncateSkillsToTokenBudget(skills []*Skill, alwaysEnabled []string, budget
 	// Warn if any skills were dropped due to limits
 	if len(result) < len(skills) {
 		dropped := len(skills) - len(result)
-		fmt.Fprintf(os.Stderr, "warning: %d skill(s) not shown (max_visible_skills=%d, token_budget=%d); increase skills.max_visible_skills or skills.metadata_budget_tokens in config\n",
+		runtimeoutput.Printf("warning: %d skill(s) not shown (max_visible_skills=%d, token_budget=%d); increase skills.max_visible_skills or skills.metadata_budget_tokens in config\n",
 			dropped, maxSkills, budgetTokens)
 	}
 

@@ -28,6 +28,8 @@ term-llm ask --mcp github "list my open PRs"
 term-llm chat --mcp playwright,filesystem
 ```
 
+`ask` uses the MCP manager’s 30-second startup timeout, or an earlier command deadline. If startup times out, the error names the affected servers.
+
 ### MCP Commands
 
 | Command | Description |
@@ -64,6 +66,10 @@ term-llm mcp add exa       # Exa web_search_exa and web_fetch_exa over https://m
 ```
 
 This adds Exa's free remote MCP endpoint. To use your own Exa key with this manually added MCP server, edit `mcp.json` and add an `x-api-key` header. The `search.exa_mcp.api_key` setting applies to term-llm's built-in `search.provider: exa_mcp` path.
+
+**From the web UI**: in `term-llm serve web`, open **MCP servers** and choose **Add**. You can pick from the built-in catalogue (with registry search), paste a remote URL with optional headers, or enter a local command with optional environment variables. New servers are saved to `mcp.json` and turned on for the current chat. To remove a server, open its **⋯** menu and choose **Remove server**; you can undo this for a few seconds. Changing servers from the browser is allowed only when serve requires authentication or the request comes from the same machine. A local command runs on the machine hosting term-llm, with your user's permissions.
+
+`mcp.json` is written atomically with private (`0600`) permissions. If it is a symlink, the file it points to is updated.
 
 ### OAuth sign-in for remote servers
 
@@ -117,7 +123,7 @@ term-llm edit --mcp github -f main.go "update based on latest API"
 # Multiple servers (comma-separated)
 term-llm chat --mcp playwright,filesystem,github
 
-# In chat, toggle servers with Ctrl+M
+# In chat, open the MCP picker with Ctrl+T; press Enter to toggle a server.
 ```
 
 ### Running Tools Directly

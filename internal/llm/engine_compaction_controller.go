@@ -2,8 +2,9 @@ package llm
 
 import (
 	"context"
-	"log/slog"
 	"strings"
+
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 // runCompactionController owns compaction state for exactly one runLoop
@@ -78,11 +79,11 @@ func (c *runCompactionController) apply(result *CompactionResult) bool {
 		result.NewMessages = restoreToolDiscoveryReplay(result.NewMessages, collectToolDiscoveryReplay(c.req.Messages))
 	}
 	if err := c.engine.PrepareCompactionContext(c.ctx, c.req.SessionID, c.req.Tools, result); err != nil {
-		slog.Warn("compaction plan restoration failed; continuing without it", "error", err)
+		runtimeoutput.Warn("compaction plan restoration failed; continuing without it", "error", err)
 	}
 	if cb := c.engine.getCompactionCallback(); cb != nil {
 		if err := cb(c.ctx, result); err != nil {
-			slog.Debug("compaction callback failed", "error", err)
+			runtimeoutput.Debug("compaction callback failed", "error", err)
 			return false
 		}
 	}
@@ -94,7 +95,7 @@ func (c *runCompactionController) apply(result *CompactionResult) bool {
 	c.engine.lastMessageCount = 0
 	c.engine.callbackMu.Unlock()
 	if err := c.send.Send(Event{Type: EventCompaction}); err != nil {
-		slog.Debug("send compaction boundary failed", "error", err)
+		runtimeoutput.Debug("send compaction boundary failed", "error", err)
 	}
 	return true
 }
@@ -141,7 +142,7 @@ func (c *runCompactionController) applySoftHardFallback(originalTools []ToolSpec
 	}
 	result, err := Compact(c.ctx, c.engine.provider, c.req.Model, c.systemPrompt, nonSystemMessages(messages), *c.config)
 	if err != nil {
-		slog.Debug("soft compaction hard fallback failed", "error", err)
+		runtimeoutput.Debug("soft compaction hard fallback failed", "error", err)
 		return false
 	}
 	if !c.softUsage.IsZero() {
@@ -181,12 +182,12 @@ func (c *runCompactionController) maybeAfterResponse(pending []Message) bool {
 		return false
 	}
 	if err := c.send.Send(Event{Type: EventPhase, Text: PhaseCompactingSummarizeHistory}); err != nil {
-		slog.Debug("send compaction phase failed", "error", err)
+		runtimeoutput.Debug("send compaction phase failed", "error", err)
 		return false
 	}
 	result, err := Compact(c.ctx, c.engine.provider, c.req.Model, c.systemPrompt, nonSystemMessages(c.req.Messages), *c.config)
 	if err != nil {
-		slog.Debug("post-response compaction failed", "error", err)
+		runtimeoutput.Debug("post-response compaction failed", "error", err)
 		return false
 	}
 	return c.apply(result)

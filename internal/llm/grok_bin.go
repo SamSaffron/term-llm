@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +22,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/mcphttp"
 	"github.com/samsaffron/term-llm/internal/procutil"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 const (
@@ -283,7 +283,7 @@ func (p *GrokBinProvider) ImportProviderState(data []byte) error {
 		// The cache may have been cleared manually or by age-based GC while the
 		// term-llm session row survived. The old Grok session database is gone, so
 		// resume from the full term-llm transcript instead of retrying a dead ID.
-		slog.Warn("grok-bin durable home is missing; resetting resume state", "grok_home", home)
+		runtimeoutput.Warn("grok-bin durable home is missing; resetting resume state", "grok_home", home)
 		state.SessionID = ""
 		state.MessagesSent = 0
 	}
@@ -334,7 +334,7 @@ func (p *GrokBinProvider) Stream(ctx context.Context, req Request) (Stream, erro
 		exposeToolBridge := false
 		if len(req.Tools) > 0 {
 			if !p.toolExecutorConfigured {
-				slog.Warn("grok-bin tools requested but no tool executor configured", "tool_count", len(req.Tools))
+				runtimeoutput.Warn("grok-bin tools requested but no tool executor configured", "tool_count", len(req.Tools))
 				if err := p.writeConfig("", ""); err != nil {
 					return err
 				}
@@ -382,7 +382,7 @@ func (p *GrokBinProvider) Stream(ctx context.Context, req Request) (Stream, erro
 			}
 		}
 		if debug {
-			fmt.Fprintf(os.Stderr, "[grok-bin] ACP run result: saw_end=%t session_id=%s\n", result.sawEnd, result.sessionID)
+			runtimeoutput.Printf("[grok-bin] ACP run result: saw_end=%t session_id=%s\n", result.sawEnd, result.sessionID)
 		}
 		p.commitGrokResult(req, result)
 		return send.Send(Event{Type: EventDone})
@@ -407,7 +407,7 @@ func (p *GrokBinProvider) messagesForRequest(req Request) ([]Message, error) {
 
 	switch {
 	case p.messagesSent > len(req.Messages):
-		slog.Warn("grok-bin resume message boundary exceeded request transcript; resetting conversation state",
+		runtimeoutput.Warn("grok-bin resume message boundary exceeded request transcript; resetting conversation state",
 			"messages_sent", p.messagesSent, "request_messages", len(req.Messages))
 		p.ResetConversation()
 		return req.Messages, nil
@@ -614,10 +614,7 @@ func (p *GrokBinProvider) runGrokCommand(
 ) (grokCommandResult, error) {
 	systemPrompt := grokSystemPromptArg(args)
 	if debug {
-		fmt.Fprintln(os.Stderr, "=== DEBUG: Grok CLI Command ===")
-		fmt.Fprintf(os.Stderr, "grok %s\n", shellJoin(redactedGrokArgs(args)))
-		fmt.Fprintf(os.Stderr, "Prompt length: %d bytes (via --prompt-file)\n", len(prompt))
-		fmt.Fprintln(os.Stderr, "================================")
+		runtimeoutput.Printf("=== DEBUG: Grok CLI Command ===\ngrok %s\nPrompt length: %d bytes (via --prompt-file)\n================================\n", shellJoin(redactedGrokArgs(args)), len(prompt))
 	}
 
 	cmd, cleanup, err := p.prepareGrokCommand(ctx, args, workingDir)
@@ -657,7 +654,7 @@ func (p *GrokBinProvider) runGrokCommand(
 		defer close(stderrDone)
 		_ = drainCLIDiagnosticLines(stderr, func(line string) {
 			if debug {
-				fmt.Fprintf(os.Stderr, "[grok stderr] %s\n", redactGrokSystemPrompt(line, systemPrompt))
+				runtimeoutput.Printf("[grok stderr] %s\n", redactGrokSystemPrompt(line, systemPrompt))
 			}
 			recordCLITailLine(&stderrMu, &stderrTail, line, grokStderrTailMaxLines)
 		})
@@ -727,7 +724,7 @@ func (p *GrokBinProvider) runGrokCommand(
 		if !state.maxTurnsReached {
 			commandErr := p.newGrokCommandError(cmdErr, exitCode, args, effort, prompt, cmd.Dir, toolsExecuted,
 				snapshotCLITail(&stdoutMu, stdoutTail), snapshotCLITail(&stderrMu, stderrTail))
-			slog.Error("grok command failed",
+			runtimeoutput.Error("grok command failed",
 				"exit_code", exitCode,
 				"tools_executed", toolsExecuted,
 				"command_line", commandErr.CommandLine,
@@ -829,7 +826,7 @@ func (p *GrokBinProvider) handleGrokLine(line string, debug bool, send eventSend
 	}
 	if err := json.Unmarshal([]byte(line), &event); err != nil {
 		if debug {
-			fmt.Fprintf(os.Stderr, "[grok-bin] ignoring malformed streaming-json line: %s\n", truncateOneLine(line, 200))
+			runtimeoutput.Printf("[grok-bin] ignoring malformed streaming-json line: %s\n", truncateOneLine(line, 200))
 		}
 		return nil
 	}
@@ -978,7 +975,7 @@ func (p *GrokBinProvider) ensureMCPServer(ctx context.Context, tools []ToolSpec,
 	}
 
 	if debug {
-		fmt.Fprintf(os.Stderr, "[grok-bin] starting HTTP MCP server for %d tools\n", len(tools))
+		runtimeoutput.Printf("[grok-bin] starting HTTP MCP server for %d tools\n", len(tools))
 	}
 	server := mcphttp.NewServer(p.cliToolBridgeState.wrappedExecutor(p.formatToolOutput))
 	server.SetDebug(debug)
@@ -1529,7 +1526,7 @@ func (p *GrokBinProvider) touchGrokHome() {
 	now := time.Now()
 	marker := filepath.Join(p.grokHome, ".last_used")
 	if err := os.WriteFile(marker, []byte(now.UTC().Format(time.RFC3339Nano)), 0o600); err != nil {
-		slog.Debug("grok-bin could not update home age marker", "path", marker, "err", err)
+		runtimeoutput.Debug("grok-bin could not update home age marker", "path", marker, "err", err)
 	}
 }
 
@@ -1561,7 +1558,7 @@ func (p *GrokBinProvider) gcStaleGrokHomes(preserve string) {
 			continue
 		}
 		if err := os.RemoveAll(path); err != nil {
-			slog.Debug("grok-bin stale home cleanup failed", "path", path, "err", err)
+			runtimeoutput.Debug("grok-bin stale home cleanup failed", "path", path, "err", err)
 		}
 	}
 }

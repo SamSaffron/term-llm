@@ -147,6 +147,7 @@ type responseRun struct {
 	atomicTranscriptFencing bool
 	finalRevReader          func() (int64, error)
 	durableHandoff          bool
+	pendingClientCalls      []map[string]any // authoritative on completion; nil if omitted
 	durableOutputCount      int
 	durableHandoffErr       string
 	continuationResponseID  string
@@ -185,11 +186,14 @@ type responseRun struct {
 }
 
 type startResponseRunOptions struct {
-	live                       *liveSession // pins settings authority to this call, not whichever call is current later
-	resume                     *webRunContinuation
-	onInitialInput             func()
-	rush                       *session.RushOperation
-	previousResponseID         string
+	live               *liveSession // pins settings authority to this call, not whichever call is current later
+	resume             *webRunContinuation
+	onInitialInput     func()
+	rush               *session.RushOperation
+	previousResponseID string
+	// Checked under the session admission boundary, after the active slot is
+	// available and before a continuation takes it.
+	admissionCheck             func() bool
 	uiSession                  bool
 	resetResponseIDsOnSuccess  bool
 	modelSwap                  *responseModelSwapExecution

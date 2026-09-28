@@ -140,12 +140,12 @@ function PaginationSentinel({ load }: { load: () => Promise<void> }) {
 
 function SessionMenu({
   session,
-  onHide,
+  onArchive,
   open,
   onOpenChange,
 }: {
   session: Session;
-  onHide: () => void;
+  onArchive: () => void;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
@@ -209,7 +209,7 @@ function SessionMenu({
             type="button"
             role="menuitem"
             onClick={() => {
-              void store.pinSession(session);
+              void store.pinSession(session).catch((error) => store.toast(error, 'error'));
               onOpenChange(false);
             }}
           >
@@ -219,12 +219,13 @@ function SessionMenu({
             type="button"
             role="menuitem"
             onClick={() => {
-              if (session.archived) void store.archiveSession(session);
-              else onHide();
+              if (session.archived) {
+                void store.archiveSession(session).catch((error) => store.toast(error, 'error'));
+              } else onArchive();
               onOpenChange(false);
             }}
           >
-            {session.archived ? 'Unhide' : 'Hide'}
+            {session.archived ? 'Restore' : 'Archive'}
           </button>
         </div>
       )}
@@ -243,7 +244,7 @@ function SessionRow({
 }) {
   const store = useStore();
   const row = useRef<HTMLDivElement>(null);
-  const [hiding, setHiding] = useState(false);
+  const [archiving, setArchiving] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const active = store.activeSessionId.value === session.id;
   const localPendingInteractionCount = useMemo(
@@ -293,28 +294,39 @@ function SessionRow({
         : '';
   const messageCount = sessionMessageCount(session);
   const activityAt = session.lastMessageAt || session.created;
-  const hide = () => {
-    setHiding(true);
+  const archive = () => {
+    if (store.showArchived.peek()) {
+      void store.archiveSession(session).catch((error) => store.toast(error, 'error'));
+      return;
+    }
+    setArchiving(true);
     const node = row.current;
     let done = false;
     const finish = () => {
       if (done) return;
       done = true;
-      void store.archiveSession(session).catch((error) => {
-        setHiding(false);
-        store.toast(error, 'error');
-      });
+      node?.removeEventListener('transitionend', onTransitionEnd);
+      window.clearTimeout(timeout);
+      void store
+        .archiveSession(session)
+        .then(() => {
+          if (store.showArchived.peek()) setArchiving(false);
+        })
+        .catch((error) => {
+          setArchiving(false);
+          store.toast(error, 'error');
+        });
     };
     const onTransitionEnd = (event: TransitionEvent) => {
       if (event.propertyName === 'max-height') finish();
     };
     node?.addEventListener('transitionend', onTransitionEnd);
-    window.setTimeout(finish, 500);
+    const timeout = window.setTimeout(finish, 500);
   };
   return (
     <div
       ref={row}
-      class={`session-row ${session.archived ? 'archived' : ''} ${needsInput ? 'is-input-required' : running ? 'is-active' : ''} ${unseen ? 'is-unseen' : ''} ${menuOpen ? 'menu-open' : ''} ${hiding ? 'is-hiding' : ''}`}
+      class={`session-row ${session.archived ? 'archived' : ''} ${needsInput ? 'is-input-required' : running ? 'is-active' : ''} ${unseen ? 'is-unseen' : ''} ${menuOpen ? 'menu-open' : ''} ${archiving ? 'is-archiving' : ''}`}
     >
       <button
         class={`session-btn ${active ? 'active' : ''}`}
@@ -340,7 +352,12 @@ function SessionRow({
           )}
         </span>
       </button>
-      <SessionMenu session={session} onHide={hide} open={menuOpen} onOpenChange={setMenuOpen} />
+      <SessionMenu
+        session={session}
+        onArchive={archive}
+        open={menuOpen}
+        onOpenChange={setMenuOpen}
+      />
     </div>
   );
 }
@@ -599,7 +616,7 @@ function ProjectGroup({ project }: { project: Project }) {
                 if (
                   project.archived ||
                   confirm(
-                    'Archive this project? Conversations remain available when hidden sessions are shown.',
+                    'Archive this project? Conversations remain available when archived sessions are shown.',
                   )
                 )
                   void store.mutateProject(project, { archived: !project.archived });

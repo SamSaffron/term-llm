@@ -15,7 +15,7 @@ term-llm config
 term-llm config edit
 term-llm config path
 term-llm config get default_provider
-term-llm config set default_provider zen
+term-llm config set default_provider openrouter
 term-llm config reset
 term-llm config completion fish
 ```
@@ -58,7 +58,7 @@ classify:
 ## Example
 
 ```yaml
-default_provider: anthropic
+default_provider: openrouter
 
 providers:
   anthropic:
@@ -98,7 +98,8 @@ providers:
       IS_SANDBOX: "1"
 
   openrouter:
-    model: x-ai/grok-code-fast-1
+    model: openrouter/free
+    fast_model: openrouter/free
     app_url: https://github.com/samsaffron/term-llm
     app_title: term-llm
 
@@ -316,12 +317,12 @@ providers:
   openai:
     model: gpt-5.6-sol
     fast_model: gpt-5.6-luna
-  zen:
-    model: mimo-v2.5-free
+  openrouter:
+    model: openrouter/free
 
 exec:
-  provider: zen
-  model: mimo-v2.5-free
+  provider: openrouter
+  model: openrouter/free
 
 ask:
   model: claude-opus-4
@@ -366,6 +367,8 @@ ask:
   stdin_inline_max_bytes: 10240   # 10 KiB; must be positive
   stdin_max_bytes: 20971520       # 20 MiB hard ceiling; must be >= inline limit
 ```
+
+Override the inline threshold for a single run with `term-llm ask --inline-max-bytes <size>` (for example `512K`, `2MiB`, or a plain byte count). The override must be positive and may not exceed `ask.stdin_max_bytes`. Use it for scripted runs that deliberately pass a large prompt file and cannot spend a turn on `read_file`.
 
 The maximum applies independently to each resolved `-f` item and to stdin. It is enforced while reading (`max + 1` bytes), so oversized streams and regular files are rejected without being fully buffered or staged.
 

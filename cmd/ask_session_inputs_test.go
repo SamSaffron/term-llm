@@ -20,6 +20,11 @@ func TestSessionInputAskResumeUsesWorkspaceAndExplicitInputsOnce(t *testing.T) {
 	t.Cleanup(viper.Reset)
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
+	// The system prompt is asserted exactly, so user-global skills (discovered
+	// under HOME and CODEX_HOME) must not be appended.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
 	configDir := filepath.Join(configHome, "term-llm")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		t.Fatal(err)

@@ -3,13 +3,13 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sync"
 
 	"github.com/samsaffron/term-llm/internal/appdata"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/filetrack"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -37,7 +37,7 @@ func resolvedFileTrackConfig(cfg *config.Config) (path, key string, opts filetra
 	if path == "" {
 		dataDir, err := appdata.GetDataDir()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: file tracking disabled: %v\n", err)
+			runtimeoutput.Printf("warning: file tracking disabled: %v\n", err)
 			return "", "", filetrack.Options{}
 		}
 		path = filepath.Join(dataDir, "file_history.db")
@@ -87,7 +87,7 @@ func fileTrackingStore(cfg *config.Config) *filetrack.Store {
 
 	store, err := filetrack.Open(path, opts)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: file tracking disabled: %v\n", err)
+		runtimeoutput.Printf("warning: file tracking disabled: %v\n", err)
 		return nil
 	}
 	fileTrackStore = store

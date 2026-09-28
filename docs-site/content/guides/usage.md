@@ -240,7 +240,7 @@ term-llm ask --debug-raw "latest zig release"   # raw debug logs with timestamps
 term-llm ask --json "explain git rebase" | jq -c .   # JSONL event stream
 ```
 
-`ask` treats redirected stdin and `-f` sources as typed input. Small UTF-8 text is embedded in the prompt exactly as before. Larger text and binary data are copied to private app-owned uploads for `read_file`; valid PNG, JPEG, GIF, and WebP input is sent as an image attachment and also made available to `view_image`. These input-required tools are added transiently to configured or explicit tools. Each source is rejected when it exceeds `ask.stdin_max_bytes`.
+`ask` treats redirected stdin and `-f` sources as typed input. Small UTF-8 text is embedded in the prompt exactly as before. Larger text and binary data are copied to private app-owned uploads for `read_file`; valid PNG, JPEG, GIF, and WebP input is sent as an image attachment and also made available to `view_image`. These input-required tools are added transiently to configured or explicit tools. Each source is rejected when it exceeds `ask.stdin_max_bytes`. To keep a larger text source inline for one run, pass `--inline-max-bytes` (for example `term-llm ask --max-turns 1 --inline-max-bytes 1MiB -f prompt.md "follow the prompt"`).
 
 ```bash
 # The question may be omitted when the pipe supplies the input

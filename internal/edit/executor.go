@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/textmatch"
 	"github.com/samsaffron/term-llm/internal/udiff"
 )
@@ -201,13 +201,13 @@ func (e *StreamEditExecutor) executeOnce(ctx context.Context, messages []llm.Mes
 				if len(searchPreview) > 100 {
 					searchPreview = searchPreview[:100] + "..."
 				}
-				fmt.Fprintf(os.Stderr, "[DEBUG] Search block for %s: %q\n", path, searchPreview)
+				runtimeoutput.Printf("[DEBUG] Search block for %s: %q\n", path, searchPreview)
 			}
 
 			content, ok := workingContents[path]
 			if !ok {
 				if e.config.Debug {
-					fmt.Fprintf(os.Stderr, "[DEBUG] File not found: %s\n", path)
+					runtimeoutput.Printf("[DEBUG] File not found: %s\n", path)
 				}
 				err := fmt.Errorf("file not found: %s", path)
 				e.retryContext = &RetryContext{
@@ -229,7 +229,7 @@ func (e *StreamEditExecutor) executeOnce(ctx context.Context, messages []llm.Mes
 
 			if err != nil {
 				if e.config.Debug {
-					fmt.Fprintf(os.Stderr, "[DEBUG] Search failed: %v\n", err)
+					runtimeoutput.Printf("[DEBUG] Search failed: %v\n", err)
 				}
 				if e.config.OnSearchFail != nil {
 					e.config.OnSearchFail(path, search, err)
@@ -245,7 +245,7 @@ func (e *StreamEditExecutor) executeOnce(ctx context.Context, messages []llm.Mes
 			}
 
 			if e.config.Debug {
-				fmt.Fprintf(os.Stderr, "[DEBUG] Search matched at level: %s\n", match.Level)
+				runtimeoutput.Printf("[DEBUG] Search matched at level: %s\n", match.Level)
 			}
 
 			if e.config.OnSearchMatch != nil {
@@ -289,13 +289,13 @@ func (e *StreamEditExecutor) executeOnce(ctx context.Context, messages []llm.Mes
 			filteredLines := filterDiffEmptyLines(diffLines)
 
 			if e.config.Debug {
-				fmt.Fprintf(os.Stderr, "[DEBUG] Processing diff for: %s\n", path)
-				fmt.Fprintf(os.Stderr, "[DEBUG] Diff lines (%d total):\n", len(filteredLines))
+				runtimeoutput.Printf("[DEBUG] Processing diff for: %s\n", path)
+				runtimeoutput.Printf("[DEBUG] Diff lines (%d total):\n", len(filteredLines))
 				for i, line := range filteredLines {
 					if i < 20 || i >= len(filteredLines)-5 { // Show first 20 and last 5
-						fmt.Fprintf(os.Stderr, "  %3d: %s\n", i, line)
+						runtimeoutput.Printf("  %3d: %s\n", i, line)
 					} else if i == 20 {
-						fmt.Fprintf(os.Stderr, "  ... (%d lines omitted) ...\n", len(filteredLines)-25)
+						runtimeoutput.Printf("  ... (%d lines omitted) ...\n", len(filteredLines)-25)
 					}
 				}
 			}
@@ -304,7 +304,7 @@ func (e *StreamEditExecutor) executeOnce(ctx context.Context, messages []llm.Mes
 			content, resolvedPath, ok := findWorkingContent(workingContents, path)
 			if !ok {
 				if e.config.Debug {
-					fmt.Fprintf(os.Stderr, "[DEBUG] File not found: %s\n", path)
+					runtimeoutput.Printf("[DEBUG] File not found: %s\n", path)
 				}
 				err := fmt.Errorf("file not found: %s", path)
 				e.retryContext = &RetryContext{
@@ -316,7 +316,7 @@ func (e *StreamEditExecutor) executeOnce(ctx context.Context, messages []llm.Mes
 			path = resolvedPath // Use the resolved path for updates
 
 			if e.config.Debug {
-				fmt.Fprintf(os.Stderr, "[DEBUG] Resolved path: %s\n", resolvedPath)
+				runtimeoutput.Printf("[DEBUG] Resolved path: %s\n", resolvedPath)
 			}
 
 			// Parse and apply the unified diff
@@ -324,7 +324,7 @@ func (e *StreamEditExecutor) executeOnce(ctx context.Context, messages []llm.Mes
 			diffs, err := udiff.Parse(diffText)
 			if err != nil {
 				if e.config.Debug {
-					fmt.Fprintf(os.Stderr, "[DEBUG] Failed to parse diff: %v\n", err)
+					runtimeoutput.Printf("[DEBUG] Failed to parse diff: %v\n", err)
 				}
 				e.retryContext = &RetryContext{
 					FilePath:      path,
@@ -337,16 +337,16 @@ func (e *StreamEditExecutor) executeOnce(ctx context.Context, messages []llm.Mes
 			}
 
 			if e.config.Debug {
-				fmt.Fprintf(os.Stderr, "[DEBUG] Parsed %d file diff(s)\n", len(diffs))
+				runtimeoutput.Printf("[DEBUG] Parsed %d file diff(s)\n", len(diffs))
 				for i, fd := range diffs {
-					fmt.Fprintf(os.Stderr, "[DEBUG]   File %d: %s with %d hunk(s)\n", i, fd.Path, len(fd.Hunks))
+					runtimeoutput.Printf("[DEBUG]   File %d: %s with %d hunk(s)\n", i, fd.Path, len(fd.Hunks))
 				}
 			}
 
 			// Apply the diffs
 			if len(diffs) == 0 {
 				if e.config.Debug {
-					fmt.Fprintf(os.Stderr, "[DEBUG] No diffs to apply\n")
+					runtimeoutput.Printf("[DEBUG] No diffs to apply\n")
 				}
 				return nil
 			}
@@ -362,10 +362,10 @@ func (e *StreamEditExecutor) executeOnce(ctx context.Context, messages []llm.Mes
 				allWarnings = append(allWarnings, result.Warnings...)
 
 				if e.config.Debug {
-					fmt.Fprintf(os.Stderr, "[DEBUG] Applied %d hunk(s), %d warning(s)\n",
+					runtimeoutput.Printf("[DEBUG] Applied %d hunk(s), %d warning(s)\n",
 						len(fileDiff.Hunks), len(result.Warnings))
 					for _, w := range result.Warnings {
-						fmt.Fprintf(os.Stderr, "[DEBUG]   Warning: %s\n", w)
+						runtimeoutput.Printf("[DEBUG]   Warning: %s\n", w)
 					}
 				}
 			}
@@ -373,7 +373,7 @@ func (e *StreamEditExecutor) executeOnce(ctx context.Context, messages []llm.Mes
 			// If ANY hunks failed, trigger retry instead of partial success
 			if len(allWarnings) > 0 {
 				if e.config.Debug {
-					fmt.Fprintf(os.Stderr, "[DEBUG] Hunks failed - triggering retry\n")
+					runtimeoutput.Printf("[DEBUG] Hunks failed - triggering retry\n")
 				}
 				warning := strings.Join(allWarnings, "; ")
 				e.retryContext = &RetryContext{
@@ -387,7 +387,7 @@ func (e *StreamEditExecutor) executeOnce(ctx context.Context, messages []llm.Mes
 			}
 
 			if e.config.Debug {
-				fmt.Fprintf(os.Stderr, "[DEBUG] All hunks applied successfully\n")
+				runtimeoutput.Printf("[DEBUG] All hunks applied successfully\n")
 			}
 
 			e.results = append(e.results, EditResult{
@@ -528,7 +528,7 @@ func (e *StreamEditExecutor) executeOnce(ctx context.Context, messages []llm.Mes
 
 		// Execute read_context tool calls
 		if e.config.Debug {
-			fmt.Fprintf(os.Stderr, "[DEBUG] Handling %d tool call(s)\n", len(toolCalls))
+			runtimeoutput.Printf("[DEBUG] Handling %d tool call(s)\n", len(toolCalls))
 		}
 
 		toolResults := e.executeReadContextCalls(toolCalls, workingContents)
@@ -624,7 +624,7 @@ func (e *StreamEditExecutor) executeReadContextCalls(calls []llm.ToolCall, conte
 		excerpt := extractLineRangeNumbered(content, startLine, endLine)
 
 		if e.config.Debug {
-			fmt.Fprintf(os.Stderr, "[DEBUG] read_context: %s lines %d-%d (%d chars)\n",
+			runtimeoutput.Printf("[DEBUG] read_context: %s lines %d-%d (%d chars)\n",
 				resolvedPath, startLine, endLine, len(excerpt))
 		}
 

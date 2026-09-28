@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"gopkg.in/yaml.v3"
 )
 
@@ -316,16 +317,16 @@ func LoadFromDir(dir string, source AgentSource) (*Agent, error) {
 		// to prevent path traversal attacks via "../" in include paths
 		absInclude, err := filepath.Abs(includePath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to resolve include path %q: %v\n", include, err)
+			runtimeoutput.Printf("warning: failed to resolve include path %q: %v\n", include, err)
 			continue
 		}
 		absDir, err := filepath.Abs(dir)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to resolve agent directory: %v\n", err)
+			runtimeoutput.Printf("warning: failed to resolve agent directory: %v\n", err)
 			continue
 		}
 		if !strings.HasPrefix(absInclude, absDir+string(filepath.Separator)) && absInclude != absDir {
-			fmt.Fprintf(os.Stderr, "warning: include path %q escapes agent directory, skipping\n", include)
+			runtimeoutput.Printf("warning: include path %q escapes agent directory, skipping\n", include)
 			continue
 		}
 		if includeData, err := os.ReadFile(includePath); err == nil {
@@ -334,10 +335,10 @@ func LoadFromDir(dir string, source AgentSource) (*Agent, error) {
 			agent.SystemPrompt += string(includeData)
 		} else if !os.IsNotExist(err) {
 			// Log non-existence errors (permission issues, etc.)
-			fmt.Fprintf(os.Stderr, "warning: failed to read include %q: %v\n", include, err)
+			runtimeoutput.Printf("warning: failed to read include %q: %v\n", include, err)
 		} else {
 			// Log missing includes as a debug hint
-			fmt.Fprintf(os.Stderr, "warning: agent include file not found: %s\n", includePath)
+			runtimeoutput.Printf("warning: agent include file not found: %s\n", includePath)
 		}
 	}
 
@@ -458,19 +459,8 @@ func (a *Agent) Validate() error {
 		return fmt.Errorf("cannot specify both output and output_tool; use output_tool + on_complete instead")
 	}
 
-	// Validate output_tool if configured
-	if a.OutputTool.Schema != nil && a.OutputTool.Name == "" {
-		return fmt.Errorf("output_tool.name is required when output_tool.schema is configured")
-	}
-	if a.OutputTool.IsConfigured() {
-		if a.OutputTool.Param != "" && a.OutputTool.Schema != nil {
-			return fmt.Errorf("output_tool cannot configure both param and schema")
-		}
-		if a.OutputTool.Schema != nil {
-			if schemaType, ok := a.OutputTool.Schema["type"]; !ok || schemaType != "object" {
-				return fmt.Errorf("output_tool.schema must have \"type\": \"object\" at root")
-			}
-		}
+	if err := a.validateOutputTool(); err != nil {
+		return err
 	}
 
 	// Validate agents_md field
@@ -499,6 +489,23 @@ func (a *Agent) Validate() error {
 		return fmt.Errorf("handover_mode %q requires enable_handover: true", a.HandoverMode)
 	}
 
+	return nil
+}
+
+func (a *Agent) validateOutputTool() error {
+	if a.OutputTool.Schema != nil && a.OutputTool.Name == "" {
+		return fmt.Errorf("output_tool.name is required when output_tool.schema is configured")
+	}
+	if a.OutputTool.IsConfigured() {
+		if a.OutputTool.Param != "" && a.OutputTool.Schema != nil {
+			return fmt.Errorf("output_tool cannot configure both param and schema")
+		}
+		if a.OutputTool.Schema != nil {
+			if schemaType, ok := a.OutputTool.Schema["type"]; !ok || schemaType != "object" {
+				return fmt.Errorf("output_tool.schema must have \"type\": \"object\" at root")
+			}
+		}
+	}
 	return nil
 }
 

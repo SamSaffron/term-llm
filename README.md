@@ -47,11 +47,12 @@ See the [installation guide](https://term-llm.com/getting-started/installation/#
 
 ## 30-second quickstart
 
-No API key needed if you use Zen:
+Set an OpenRouter API key to start with the free model router (usage limits apply):
 
 ```bash
-term-llm exec --provider zen "list files"
-term-llm ask --provider zen "explain git rebase"
+export OPENROUTER_API_KEY=your-key
+term-llm exec "list files"
+term-llm ask "explain git rebase"
 term-llm chat
 term-llm serve web
 ```

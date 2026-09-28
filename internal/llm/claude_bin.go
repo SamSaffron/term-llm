@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"os/exec"
 	"strconv"
@@ -21,6 +20,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/mcphttp"
 	"github.com/samsaffron/term-llm/internal/procutil"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 // claudeStderrTailMaxLines caps the number of trailing stderr lines we retain
@@ -485,7 +485,7 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 		}
 
 		if !req.Ephemeral && p.sessionID != "" && !p.resumeBoundaryValid(req.Messages) {
-			slog.Warn("claude-bin resume boundary no longer matches the request transcript; resetting conversation state",
+			runtimeoutput.Warn("claude-bin resume boundary no longer matches the request transcript; resetting conversation state",
 				"messages_sent", p.messagesSent, "request_messages", len(req.Messages))
 			p.ResetConversation()
 		}
@@ -542,11 +542,11 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 				truncated := truncateToolResultsAt(messagesToSend, limit)
 				retryPrompt := buildPrompt(truncated)
 				if len(retryPrompt) >= prevLen {
-					slog.Warn("prompt too long but truncation did not reduce size, not retrying",
+					runtimeoutput.Warn("prompt too long but truncation did not reduce size, not retrying",
 						"limit", limit)
 					break
 				}
-				slog.Info("prompt too long, retrying with truncated tool results",
+				runtimeoutput.Info("prompt too long, retrying with truncated tool results",
 					"original_len", prevLen, "truncated_len", len(retryPrompt), "limit", limit)
 				prevLen = len(retryPrompt)
 				err = p.executeClaudeCommand(ctx, args, effort, retryPrompt, req.WorkingDir, debug, send, req.Ephemeral, exposeToolBridge)
@@ -872,15 +872,11 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 	// to avoid "argument list too long" errors with large tool results (e.g., base64 images)
 
 	if debug {
-		fmt.Fprintln(os.Stderr, "=== DEBUG: Claude CLI Command ===")
-		fmt.Fprintf(os.Stderr, "claude %s\n", strings.Join(args, " "))
-		fmt.Fprintf(os.Stderr, "Prompt length: %d bytes (via stdin)\n", len(userPrompt))
-		if effort != "" {
-			fmt.Fprintf(os.Stderr, "CLAUDE_CODE_EFFORT_LEVEL=%s\n", effort)
-		} else {
-			fmt.Fprintln(os.Stderr, "CLAUDE_CODE_EFFORT_LEVEL=(unset)")
+		level := effort
+		if level == "" {
+			level = "(unset)"
 		}
-		fmt.Fprintln(os.Stderr, "=================================")
+		runtimeoutput.Printf("=== DEBUG: Claude CLI Command ===\nclaude %s\nPrompt length: %d bytes (via stdin)\nCLAUDE_CODE_EFFORT_LEVEL=%s\n=================================\n", strings.Join(args, " "), len(userPrompt), level)
 	}
 
 	cmd, stdin, cleanup, err := p.prepareClaudeCommand(ctx, args, effort, workingDir)
@@ -961,7 +957,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		defer close(stderrDone)
 		_ = drainCLIDiagnosticLines(stderr, func(line string) {
 			if debug {
-				fmt.Fprintf(os.Stderr, "[claude stderr] %s\n", line)
+				runtimeoutput.Printf("[claude stderr] %s\n", line)
 			}
 			recordCLITailLine(&stderrMu, &stderrTail, line, claudeStderrTailMaxLines)
 		})
@@ -1063,7 +1059,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		expectedHandledTerminalResult := handledTerminalResult && exitCode == 1
 		if !expectedToolExit && !expectedHandledTerminalResult {
 			claudeErr := p.newClaudeCommandError(cmdErr, exitCode, args, effort, userPrompt, cmd.Dir, toolsExecuted, stdoutSnapshot, stderrSnapshot)
-			slog.Error("claude command failed",
+			runtimeoutput.Error("claude command failed",
 				"exit_code", exitCode,
 				"tools_executed", toolsExecuted,
 				"effort", effort,
@@ -1186,7 +1182,7 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 	}
 	if err := json.Unmarshal([]byte(line), &baseMsg); err != nil {
 		if debug {
-			fmt.Fprintf(os.Stderr, "Failed to parse JSON: %s\n", line[:min(100, len(line))])
+			runtimeoutput.Printf("Failed to parse JSON: %s\n", line[:min(100, len(line))])
 		}
 		return nil
 	}
@@ -1202,7 +1198,7 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 				p.sessionID = sysMsg.SessionID
 			}
 			if debug {
-				fmt.Fprintf(os.Stderr, "Session: %s, Model: %s, Tools: %v\n",
+				runtimeoutput.Printf("Session: %s, Model: %s, Tools: %v\n",
 					sysMsg.SessionID, sysMsg.Model, sysMsg.Tools)
 			}
 		}
@@ -1474,14 +1470,14 @@ func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, send eve
 	debug := req.Debug || req.DebugRaw
 	if len(req.Tools) > 0 {
 		if p.toolExecutor == nil {
-			slog.Warn("tools requested but no tool executor configured", "tool_count", len(req.Tools))
+			runtimeoutput.Warn("tools requested but no tool executor configured", "tool_count", len(req.Tools))
 		} else {
 			// Reuse existing MCP server if available, otherwise create new one
 			mcpConfig := p.getOrCreateMCPConfig(ctx, req.Tools, debug)
 			if mcpConfig != "" {
 				args = append(args, "--mcp-config", mcpConfig)
 			} else if debug {
-				fmt.Fprintf(os.Stderr, "[claude-bin] ERROR: MCP config creation failed\n")
+				runtimeoutput.Printf("[claude-bin] ERROR: MCP config creation failed\n")
 			}
 		}
 	}
@@ -1505,19 +1501,19 @@ func (p *ClaudeBinProvider) getOrCreateMCPConfig(ctx context.Context, tools []To
 	// If we already have a running MCP server, reuse its config
 	if p.mcpServer != nil && p.mcpConfigPath != "" {
 		if debug {
-			fmt.Fprintf(os.Stderr, "[claude-bin] Reusing existing MCP server at %s\n", p.mcpServer.URL())
+			runtimeoutput.Printf("[claude-bin] Reusing existing MCP server at %s\n", p.mcpServer.URL())
 		}
 		return p.mcpConfigPath
 	}
 
 	// Create new MCP server
 	if debug {
-		fmt.Fprintf(os.Stderr, "[claude-bin] Starting HTTP MCP server for %d tools\n", len(tools))
+		runtimeoutput.Printf("[claude-bin] Starting HTTP MCP server for %d tools\n", len(tools))
 	}
 
 	configPath := p.createHTTPMCPConfig(ctx, tools, debug)
 	if configPath != "" && debug {
-		fmt.Fprintf(os.Stderr, "[claude-bin] MCP config created: %s\n", configPath)
+		runtimeoutput.Printf("[claude-bin] MCP config created: %s\n", configPath)
 	}
 	return configPath
 }
@@ -1565,7 +1561,7 @@ func (p *ClaudeBinProvider) createHTTPMCPConfig(ctx context.Context, tools []Too
 	mcpTools := mcpToolSpecs(tools)
 	if debug {
 		for _, tool := range tools {
-			fmt.Fprintf(os.Stderr, "[claude-bin] Registering tool: %s\n", tool.Name)
+			runtimeoutput.Printf("[claude-bin] Registering tool: %s\n", tool.Name)
 		}
 	}
 
@@ -1577,12 +1573,12 @@ func (p *ClaudeBinProvider) createHTTPMCPConfig(ctx context.Context, tools []Too
 	url, token, err := server.Start(ctx, mcpTools)
 	if err != nil {
 		if debug {
-			fmt.Fprintf(os.Stderr, "[claude-bin] Failed to start MCP server: %v\n", err)
+			runtimeoutput.Printf("[claude-bin] Failed to start MCP server: %v\n", err)
 		}
 		return ""
 	}
 	if debug {
-		fmt.Fprintf(os.Stderr, "[claude-bin] MCP server started at %s\n", url)
+		runtimeoutput.Printf("[claude-bin] MCP server started at %s\n", url)
 	}
 
 	// Create MCP config with HTTP URL

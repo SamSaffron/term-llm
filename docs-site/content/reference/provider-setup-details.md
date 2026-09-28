@@ -13,27 +13,28 @@ Start with [Providers and setup](/getting-started/providers-and-setup/) if you j
 
 On an interactive first run, term-llm helps you choose a provider. See the [provider inventory](/reference/providers-and-models/#credentials) for the complete set of built-in adapters, companion CLIs, and custom endpoint types.
 
-### Option 1: Try it free with Zen
+<span id="option-1-try-it-free-with-zen"></span>
 
-[OpenCode Zen](https://opencode.ai) provides free access to multiple models. No API key required:
+### Option 1: Try it free with OpenRouter
+
+Create an [OpenRouter API key](https://openrouter.ai/keys) and set it before running term-llm:
 
 ```bash
-term-llm exec --provider zen "list files"
-term-llm ask --provider zen "explain git rebase"
-term-llm ask --provider zen:mimo-v2.5-free "quick question"  # explicit shipped free default
+export OPENROUTER_API_KEY=your-key
+term-llm exec --provider openrouter:openrouter/free "list files"
+term-llm ask --provider openrouter:openrouter/free "explain git rebase"
 ```
 
-The shipped main and fast defaults are `mimo-v2.5-free`. Free model availability and limits are controlled by OpenCode Zen and can change; a listed model may still be unavailable. Discover the current catalog with `term-llm models --provider zen`; paid models require a Zen API key.
+OpenRouter is the default provider for new configurations, with `openrouter/free` for both main and fast requests. The router selects available free models; usage limits and availability apply. Existing saved provider and model choices take precedence.
 
-Or configure as default:
+To save this choice in an existing configuration:
 
 ```yaml
-# In ~/.config/term-llm/config.yaml
-default_provider: zen
+default_provider: openrouter
 providers:
-  zen:
-    model: mimo-v2.5-free
-    fast_model: mimo-v2.5-free
+  openrouter:
+    model: openrouter/free
+    fast_model: openrouter/free
 ```
 
 ### Option 2: Use API key
@@ -245,18 +246,9 @@ term-llm models --provider sambanova
 
 ### Option 8: Use OpenRouter
 
-[OpenRouter](https://openrouter.ai) provides a unified OpenAI-compatible API across many models. term-llm sends attribution headers by default.
+For the default free router, follow [Option 1](#option-1-try-it-free-with-openrouter). To use another model, list the catalog with `term-llm models --provider openrouter` and select its ID with `--provider openrouter:MODEL_ID`. Other models may incur charges.
 
-```yaml
-# In ~/.config/term-llm/config.yaml
-default_provider: openrouter
-
-providers:
-  openrouter:
-    model: x-ai/grok-code-fast-1
-    app_url: https://github.com/samsaffron/term-llm
-    app_title: term-llm
-```
+term-llm sends attribution headers by default. Configure `providers.openrouter.app_url` and `app_title` to change them.
 
 ### Model Discovery
 

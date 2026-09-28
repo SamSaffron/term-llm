@@ -14,6 +14,7 @@ import {
 } from '../domain/completions';
 import { attachmentIconName, validateAttachmentFile } from '../domain/attachments';
 import type { Attachment } from '../domain/types';
+import { overlayManager } from '../platform/overlay-manager';
 import { VoiceOperation, type VoiceSnapshot } from '../platform/voice';
 import type { LiveStore } from '../stores/live-store';
 import { Icon } from './Icon';
@@ -219,6 +220,49 @@ function ConversationComposer() {
     [store],
   );
   useLayoutEffect(() => resizePrompt(textarea.current), [store.prompt.value]);
+  useEffect(() => {
+    const focusOnType = (event: KeyboardEvent) => {
+      const input = textarea.current;
+      if (
+        event.defaultPrevented ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey ||
+        event.isComposing ||
+        [...event.key].length !== 1 ||
+        event.key === ' ' ||
+        (store.diff.peek().open && (event.key === '[' || event.key === ']')) ||
+        overlayManager.size > 0 ||
+        !input ||
+        input.disabled ||
+        input.readOnly ||
+        input.closest('[inert], [hidden], [aria-hidden="true"]')
+      )
+        return;
+      const target = event.composedPath()[0];
+      if (
+        target instanceof Element &&
+        target.closest(
+          'input, textarea, select, button, a[href], summary, [contenteditable], ' +
+            '[role="textbox"], [role="combobox"], [role="menu"], [role="listbox"], ' +
+            '[role="slider"], [role="spinbutton"], [role="button"], .shell-overlay',
+        )
+      )
+        return;
+      input.focus();
+      if (document.activeElement !== input) return;
+      // Moving focus does not reliably deliver the triggering character to the
+      // textarea. Insert it once, then use the normal input handler.
+      event.preventDefault();
+      input.setSelectionRange(input.value.length, input.value.length);
+      input.setRangeText(event.key, input.value.length, input.value.length, 'end');
+      input.dispatchEvent(
+        new InputEvent('input', { bubbles: true, inputType: 'insertText', data: event.key }),
+      );
+    };
+    window.addEventListener('keydown', focusOnType);
+    return () => window.removeEventListener('keydown', focusOnType);
+  }, [store]);
 
   const session = store.draftActive.value ? null : store.activeSession.value;
   const messagePlaceholder = 'Type a message…';
@@ -384,6 +428,31 @@ function ConversationComposer() {
       return;
     }
     if (command === '/new') return store.newChat();
+    const sessionCommand = value.match(/^\/(archive|pin|rename)(?:\s+([\s\S]*))?$/i);
+    if (sessionCommand) {
+      const command = `/${sessionCommand[1].toLowerCase()}`;
+      if (sessionCommand[2]?.trim()) {
+        store.toast(`${command} does not accept arguments.`, 'error');
+        return;
+      }
+      store.prompt.value = '';
+      const gerund =
+        command === '/archive' ? 'archiving' : command === '/pin' ? 'pinning' : 'renaming';
+      const participle =
+        command === '/archive' ? 'archived' : command === '/pin' ? 'pinned' : 'renamed';
+      if (!session || store.draftActive.value) {
+        store.toast(`Start the conversation before ${gerund}.`, 'error');
+      } else if (session.delegated || session.parentSessionId) {
+        store.toast(`Subagent conversations can't be ${participle}.`, 'error');
+      } else if (command === '/archive') {
+        void store.archiveSession(session).catch((error) => store.toast(error, 'error'));
+      } else if (command === '/pin') {
+        void store.pinSession(session).catch((error) => store.toast(error, 'error'));
+      } else {
+        store.openRename(session);
+      }
+      return;
+    }
     if (command === '/shell') {
       store.openShell();
       return;

@@ -2440,7 +2440,6 @@ func resolveProviderCredentials(name string, cfg *ProviderConfig) error {
 		if cfg.ResolvedAPIKey == "" {
 			cfg.ResolvedAPIKey = os.Getenv("ZEN_API_KEY")
 		}
-		// Empty API key is valid for free tier
 
 	case ProviderTypeOpenCodeGo:
 		cfg.ResolvedAPIKey = strings.TrimSpace(expandEnv(cfg.APIKey))
@@ -2600,11 +2599,7 @@ func DescribeCredentialSource(name string, cfg *ProviderConfig) (string, bool) {
 	case ProviderTypeOpenRouter:
 		return describeEnvKeyCredential(cfg, "OPENROUTER_API_KEY")
 	case ProviderTypeZen:
-		source, found := describeEnvKeyCredential(cfg, "ZEN_API_KEY")
-		if !found {
-			return "none (free tier)", true // Zen works without a key
-		}
-		return source, found
+		return describeEnvKeyCredential(cfg, "ZEN_API_KEY")
 	case ProviderTypeOpenCodeGo:
 		return describeEnvKeyCredential(cfg, "OPENCODE_API_KEY")
 	case ProviderTypeXAI:
@@ -2731,14 +2726,15 @@ func GetConfigPath() (string, error) {
 }
 
 // GetDiagnosticsDir returns the XDG data directory for term-llm diagnostics.
-// Uses $XDG_DATA_HOME if set, otherwise ~/.local/share
+// Uses absolute $XDG_DATA_HOME if set, otherwise ~/.local/share. Returns
+// empty when neither resolves to an absolute path; never writes to the CWD.
 func GetDiagnosticsDir() string {
-	if xdgData := os.Getenv("XDG_DATA_HOME"); xdgData != "" {
+	if xdgData := os.Getenv("XDG_DATA_HOME"); filepath.IsAbs(xdgData) {
 		return filepath.Join(xdgData, "term-llm", "diagnostics")
 	}
 	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(".", "term-llm-diagnostics") // fallback
+	if err != nil || !filepath.IsAbs(homeDir) {
+		return "" // No safe absolute path: interactive diagnostics will be discarded.
 	}
 	return filepath.Join(homeDir, ".local", "share", "term-llm", "diagnostics")
 }

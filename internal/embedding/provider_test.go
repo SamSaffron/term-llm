@@ -158,6 +158,9 @@ func TestInferEmbeddingProvider(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Credentials fall back to the environment; isolate from the caller's keys.
+			t.Setenv("GEMINI_API_KEY", "")
+			t.Setenv("OPENAI_API_KEY", "")
 			cfg := &config.Config{}
 			cfg.Embed.Gemini.APIKey = tt.geminiKey
 			cfg.Embed.OpenAI.APIKey = tt.openaiKey

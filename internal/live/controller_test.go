@@ -74,12 +74,12 @@ func (f *fakeSession) speakable() string {
 	return b.String()
 }
 
-func (f *fakeSession) commentary() []string {
+func (f *fakeSession) quiet() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []string
 	for _, record := range f.appends {
-		if record.Chunk.Channel == ChannelCommentary {
+		if record.Chunk.Channel == ChannelQuiet {
 			out = append(out, record.Chunk.Text)
 		}
 	}
@@ -203,7 +203,9 @@ func startControllerWith(t *testing.T, session *fakeSession, opts ControllerOpti
 	t.Helper()
 	opts.Session = session
 	opts.Observer = recorder.observe
-	opts.FlushInterval = 5 * time.Millisecond
+	if opts.FlushInterval == 0 {
+		opts.FlushInterval = 5 * time.Millisecond
+	}
 	opts.BusyRetry = 5 * time.Millisecond
 	opts.BusyRetries = 3
 	controller := NewController(opts)
@@ -226,6 +228,58 @@ func waitFor(t *testing.T, what string, condition func() bool) {
 		time.Sleep(2 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
+}
+
+// Progress is sent without batching so it arrives while the work runs, but it
+// must not overtake result text the writer is still holding: the voice model
+// would hear "still working" before the words that preceded it.
+func TestControllerProgressNeverOvertakesBufferedResultText(t *testing.T) {
+	session := newFakeSession()
+	delegator := &fakeDelegator{run: func(_ int, emit func(DelegationChunk)) error {
+		emit(DelegationChunk{Channel: ChannelSpeakable, Text: "Checking the tests."})
+		emit(DelegationChunk{Channel: ChannelSpeakable, Text: "[PROGRESS] Still working.", Progress: true})
+		emit(DelegationChunk{Channel: ChannelQuiet, Text: "[STATUS] Running shell.", Progress: true})
+		return nil
+	}}
+	recorder := &updateRecorder{}
+	// A flush interval far longer than the test keeps the result text buffered
+	// until something other than the ticker sends it.
+	opts := ControllerOptions{Delegator: delegator, FlushInterval: time.Hour}
+	startControllerWith(t, session, opts, recorder)
+	session.emit(Event{Kind: EventDelegationCreated, DelegationID: "item_1", Text: "run the tests"})
+	waitFor(t, "all three appends", func() bool {
+		session.mu.Lock()
+		defer session.mu.Unlock()
+		return len(session.appends) == 3
+	})
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	want := []DelegationChunk{
+		{Channel: ChannelSpeakable, Text: "Checking the tests."},
+		{Channel: ChannelSpeakable, Text: "[PROGRESS] Still working.", Progress: true},
+		{Channel: ChannelQuiet, Text: "[STATUS] Running shell.", Progress: true},
+	}
+	for i, record := range session.appends {
+		if record.Chunk != want[i] {
+			t.Fatalf("append %d = %+v, want %+v (all: %+v)", i, record.Chunk, want[i], session.appends)
+		}
+	}
+}
+
+// Nothing may follow a delegation's final output, including a late note.
+func TestDelegationWriterDropsNotesAfterClose(t *testing.T) {
+	session := newFakeSession()
+	controller := NewController(ControllerOptions{Session: session, Delegator: &fakeDelegator{}})
+	writer := newDelegationWriter(context.Background(), controller, "item_1", time.Hour)
+	writer.emit(DelegationChunk{Channel: ChannelSpeakable, Text: "Done."})
+	writer.close()
+	writer.emit(DelegationChunk{Channel: ChannelQuiet, Text: "[STATUS] late", Progress: true})
+	writer.emit(DelegationChunk{Channel: ChannelSpeakable, Text: "[PROGRESS] late", Progress: true})
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if len(session.appends) != 1 || session.appends[0].Chunk.Text != "Done." {
+		t.Fatalf("appends = %+v", session.appends)
+	}
 }
 
 func TestControllerRunsDelegationAndSpeaksTheResult(t *testing.T) {
@@ -427,7 +481,7 @@ func TestControllerKeepsDelegationQueuedWhileTheSessionIsBusy(t *testing.T) {
 	if len(requests) != 2 || requests[0] != requests[1] || requests[0].Input != "do it" || requests[0].TranscriptDelta != "user: do it now" {
 		t.Fatalf("requests changed across retry: %+v", requests)
 	}
-	commentary := session.commentary()
+	commentary := session.quiet()
 	if len(commentary) != 1 || !strings.Contains(commentary[0], "previous request") {
 		t.Fatalf("commentary = %v", commentary)
 	}
@@ -800,8 +854,8 @@ func TestControllerAnswersHandledDelegationsWithoutTheSessionLane(t *testing.T) 
 
 	session.emit(Event{Kind: EventDelegationCreated, DelegationID: "control-1", Text: "Switch to the attachment icons one"})
 
-	waitFor(t, "the router's answer", func() bool { return len(session.commentary()) == 1 })
-	if text := session.commentary()[0]; text != "Switched to the Discourse Backport session." {
+	waitFor(t, "the router's answer", func() bool { return len(session.quiet()) == 1 })
+	if text := session.quiet()[0]; text != "Switched to the Discourse Backport session." {
 		t.Fatalf("commentary = %q", text)
 	}
 	if delegator.calls.Load() != 0 || len(delegator.steered) != 0 {
@@ -866,7 +920,7 @@ func TestControllerFallsOpenWhenRoutingFails(t *testing.T) {
 			}
 			// Nothing was refused and nothing was spoken at the user: a failed route
 			// is not a user-facing event.
-			if commentary := session.commentary(); len(commentary) != 0 {
+			if commentary := session.quiet(); len(commentary) != 0 {
 				t.Fatalf("a routing failure was surfaced to the voice model: %v", commentary)
 			}
 		})
@@ -910,7 +964,7 @@ func TestControllerAnswersHandledRequestsInSubmissionOrder(t *testing.T) {
 		session.emit(Event{Kind: EventDelegationCreated, DelegationID: input, Text: input})
 	}
 
-	waitFor(t, "every answer", func() bool { return len(session.commentary()) == 3 })
+	waitFor(t, "every answer", func() bool { return len(session.quiet()) == 3 })
 	router.mu.Lock()
 	defer router.mu.Unlock()
 	for i, want := range []string{"list the sessions", "switch to session 3", "change your voice to maple"} {
@@ -957,7 +1011,7 @@ func TestControllerDoesNotBlockTheEventLoopOnARoute(t *testing.T) {
 	})
 
 	releaseAll()
-	waitFor(t, "the answer", func() bool { return len(session.commentary()) == 1 })
+	waitFor(t, "the answer", func() bool { return len(session.quiet()) == 1 })
 }
 
 // TestControllerAnswersWhileADelegationIsBlocked pins the bug this lane exists for: a
@@ -986,7 +1040,7 @@ func TestControllerAnswersWhileADelegationIsBlocked(t *testing.T) {
 	}
 	session.emit(Event{Kind: EventDelegationCreated, DelegationID: "swap", Text: "switch to session 7447"})
 
-	waitFor(t, "the answer while the task runs", func() bool { return len(session.commentary()) == 1 })
+	waitFor(t, "the answer while the task runs", func() bool { return len(session.quiet()) == 1 })
 	if delegator.calls.Load() != 1 {
 		t.Fatalf("runs = %d, want the blocked task only", delegator.calls.Load())
 	}
@@ -1051,7 +1105,7 @@ func TestControllerRefusesRequestsTheRouteWorkerCannotTake(t *testing.T) {
 	}
 
 	releaseAll()
-	waitFor(t, "the queued answers", func() bool { return len(session.commentary()) == 6 })
+	waitFor(t, "the queued answers", func() bool { return len(session.quiet()) == 6 })
 	if router.count() != 5 {
 		t.Fatalf("routes = %d, want the five accepted requests", router.count())
 	}
@@ -1161,7 +1215,7 @@ func TestControllerCompletesADelegationTheDelegationQueueCannotTake(t *testing.T
 	// The two audiences, and the part the old path forgot: the voice model is told why
 	// on commentary, and the provider's delegation is completed so the model is not
 	// left waiting on it.
-	if commentary := session.commentary(); len(commentary) != 1 || !strings.Contains(commentary[0], "too many") {
+	if commentary := session.quiet(); len(commentary) != 1 || !strings.Contains(commentary[0], "too many") {
 		t.Fatalf("the voice model was not told why: %v", commentary)
 	}
 	if len(session.completions) != 1 || session.completions[0] != "overflow" {
@@ -1228,7 +1282,7 @@ func TestControllerDeduplicatesReplayedDelegations(t *testing.T) {
 
 	// The worker answers in submission order, so the second answer proves the
 	// replayed event has already been consumed without being answered twice.
-	waitFor(t, "both answers", func() bool { return len(session.commentary()) == 2 })
+	waitFor(t, "both answers", func() bool { return len(session.quiet()) == 2 })
 	if router.count() != 2 {
 		t.Fatalf("routes = %d, want one per distinct delegation", router.count())
 	}
@@ -1263,7 +1317,7 @@ func TestControllerResolvesMetadataOnlyDelegationBeforeRouting(t *testing.T) {
 	const spoken = "Do you mind switching back to the session where I was managing session with voice"
 	session.emit(Event{Kind: EventUserTranscript, Role: RoleUser, Text: spoken})
 
-	waitFor(t, "the answer", func() bool { return len(session.commentary()) == 1 })
+	waitFor(t, "the answer", func() bool { return len(session.quiet()) == 1 })
 	if request := router.lastRequest(); request.Input != spoken {
 		t.Fatalf("router received %q, want %q", request.Input, spoken)
 	}
@@ -1295,8 +1349,8 @@ func TestControllerReportsFailedAndRefusedDelegationsToBothAudiences(t *testing.
 		if terminal.State != DelegationFailed || terminal.Text == "" {
 			t.Fatalf("terminal update = %+v, want a failure carrying its reason", terminal)
 		}
-		waitFor(t, "the failure commentary", func() bool { return len(session.commentary()) == 1 })
-		if text := session.commentary()[0]; !strings.Contains(text, "no answer") {
+		waitFor(t, "the failure commentary", func() bool { return len(session.quiet()) == 1 })
+		if text := session.quiet()[0]; !strings.Contains(text, "no answer") {
 			t.Fatalf("the voice model was not told why: %q", text)
 		}
 	})

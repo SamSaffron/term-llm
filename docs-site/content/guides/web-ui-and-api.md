@@ -23,7 +23,7 @@ next:
 term-llm serve web
 ```
 
-Open the URL printed in the terminal and follow the authentication instructions. Keep the process running while you use the browser interface; **Ctrl+C** stops it. For a first test using Zen’s supported free hosted models, use `term-llm serve web --provider zen` (availability and limits depend on Zen).
+Open the URL printed in the terminal and follow the authentication instructions. Keep the process running while you use the browser interface; **Ctrl+C** stops it. Choose a configured provider with `--provider`, or use your saved default.
 
 Start a conversation, choose a model, and ask a question. To work on code, select a project/worktree and review any workspace access requests. Live changes appear when file tracking records edits; the shell is available through `/shell`. Widgets appear after you install or create a widget application.
 
@@ -129,6 +129,8 @@ A fresh project-aware Responses request includes:
 ```
 
 The server resolves the stable ID, revalidates the canonical path, verifies managed-worktree repository ownership, and atomically snapshots the binding before execution. Repeating the same binding is idempotent; conflicting project/worktree values return `409 workspace_conflict`. First-party UI requests require `project_id` in project mode. Authenticated third-party Responses clients may supply it, but omission keeps their existing unbound/explicit behavior.
+
+Session archival is separate from project archival. **Archive** in a conversation's sidebar menu (or `/archive` in its composer) removes that conversation from the default lists without deleting it. Enable **Show archived sessions** in Web UI settings to find it and choose **Restore**. Archived sessions are exempt from automatic cleanup when `sessions.max_age_days` or `sessions.max_count` is set; projects have their own Archive/Restore action.
 
 The grouped sidebar request is `GET /ui/v1/sidebar?per_project=12&include_archived_projects=1&include_archived_sessions=0`. It returns active, archived, empty, and optional **No project** groups in one bounded projection. Each group carries `session_count`, `last_activity_at`, up to `per_project` summaries, and an opaque `next_cursor`. Pass that cursor back only for the same group; the null-project cursor is sent without `project_id`. Global full-text search results include `project_id` and `project_name` so clients can regroup them without racing a second project lookup.
 
@@ -410,6 +412,48 @@ If all enrolled passkeys become inaccessible, restart with a private
 `/ui/auth/recover`, and enter that short-lived secret to enroll a recovery passkey.
 Remove the recovery secret and restart without it when finished. Recovery does
 not silently disable authentication or delete existing credentials.
+
+### Native app sign-in
+
+Native clients (such as the term-llm iOS app) cannot run WebAuthn for an
+arbitrary self-hosted origin, so they sign in through the system browser and
+receive their own session. The same routes exist under a passkey Hub's mount.
+Paths below are relative to the public URL (for example `/ui/`):
+
+1. The app generates a random `code_verifier` (43–128 characters of
+   `A–Z a–z 0–9 - . _ ~`, as in RFC 7636) and opens
+   `auth/native/{challenge}` in the system browser (on iOS,
+   `ASWebAuthenticationSession`), where
+   `challenge = base64url(sha256(code_verifier))` without padding.
+2. If the browser has no session, the server sends it through passkey sign-in
+   (or first-passkey setup) and back to the same page.
+3. The page asks the operator to approve the sign-in. **Opening the URL never
+   issues a code.** Approval requires a click and a fresh passkey assertion.
+   When the browser just signed in or enrolled its first passkey through step
+   2, that ceremony counts for this one approval (and nothing else), so the
+   operator is prompted for a passkey only once.
+4. The browser is redirected to
+   `termllm-auth://callback?code={code}&state={challenge}`. The app should
+   check that `state` equals its challenge. If the page stays open (for
+   example in a desktop browser), it tells the operator to continue in the app.
+5. The app sends `POST api/auth/native/redeem` with
+   `{"code": "…", "code_verifier": "…"}`, `Content-Type: application/json`, and
+   an `Origin` header equal to the public URL's origin. Success returns
+   `{"ok": true}` and sets a new session cookie. That cookie has the same
+   lifetime and flags as any browser session and appears in session management.
+
+Codes are single-use, expire after 60 seconds, and are bound to the challenge
+and to the mount that approved them. A wrong or missing verifier consumes the
+code, so an intercepted callback is useless without the verifier. Pending codes
+live only in server memory; a restart invalidates them and the app must start
+sign-in again. The approval granted by signing in through step 2 applies only
+to that link's challenge. Approval attempts with an invalid challenge or
+session count toward the same per-client authentication rate limit as sign-in
+and redemption. Codes also fail if the approving browser session
+is revoked first. Every code needs its own passkey assertion, so a session can't
+use this flow to extend itself without the operator. The app's session is
+independent of the browser session: signing out of one leaves the other signed
+in. Use **Revoke other sessions** to end both.
 
 ## Run persistently on macOS or Linux
 

@@ -5,11 +5,51 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
 )
+
+func TestCreateProviderFromConfigKeyProviderEnvFallback(t *testing.T) {
+	cases := []struct {
+		name   string
+		kind   config.ProviderType
+		envKey string
+		want   Provider
+	}{
+		{"zen", config.ProviderTypeZen, "ZEN_API_KEY", &ZenProvider{}},
+		{"venice", config.ProviderTypeVenice, "VENICE_API_KEY", &VeniceProvider{}},
+		{"nearai", config.ProviderTypeNearAI, "NEARAI_API_KEY", &NearAIProvider{}},
+		{"sambanova", config.ProviderTypeSambaNova, "SAMBANOVA_API_KEY", &SambaNovaProvider{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(tc.envKey, "  env-key  ")
+			provider, err := createProviderFromConfig(tc.name, &config.ProviderConfig{Type: tc.kind})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reflect.TypeOf(provider) != reflect.TypeOf(tc.want) {
+				t.Fatalf("provider type = %T, want %T", provider, tc.want)
+			}
+		})
+	}
+}
+
+func TestCreateProviderFromConfigClaudeBinPreservesHooks(t *testing.T) {
+	provider, err := createProviderFromConfig("claude-bin", &config.ProviderConfig{
+		Type: config.ProviderTypeClaudeBin, EnableHooks: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claude, ok := provider.(*ClaudeBinProvider)
+	if !ok || !claude.enableHooks {
+		t.Fatalf("provider = %T, want ClaudeBinProvider with hooks enabled", provider)
+	}
+}
 
 func TestCreateProviderFromConfigRejectsInvalidOllamaThinkLevel(t *testing.T) {
 	_, err := createProviderFromConfig("local", &config.ProviderConfig{
@@ -309,5 +349,35 @@ func TestNewProviderByNameNoRetryReturnsUnderlyingAdapter(t *testing.T) {
 	}
 	if _, ok := wrapped.(*RetryProvider); !ok {
 		t.Fatalf("production provider type = %T, want *RetryProvider", wrapped)
+	}
+}
+
+func TestZenRequiresKey(t *testing.T) {
+	t.Setenv("ZEN_API_KEY", "")
+	for _, configured := range []bool{false, true} {
+		cfg := &config.Config{DefaultProvider: "zen", Providers: map[string]config.ProviderConfig{}}
+		if configured {
+			cfg.Providers["zen"] = config.ProviderConfig{Type: config.ProviderTypeZen}
+		}
+		if _, err := NewProviderByName(cfg, "zen", ""); err == nil || !strings.Contains(err.Error(), "ZEN_API_KEY") {
+			t.Fatalf("configured=%v: error = %v", configured, err)
+		}
+		if _, err := NewProvider(cfg); err == nil || !strings.Contains(err.Error(), "ZEN_API_KEY") {
+			t.Fatalf("default provider configured=%v: error=%v", configured, err)
+		}
+	}
+	t.Setenv("ZEN_API_KEY", "env-key")
+	providerFromEnv, err := NewProviderByNameNoRetry(&config.Config{}, "zen", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	zen := providerFromEnv.(*ZenProvider)
+	if zen.apiKey != "env-key" || zen.model != "deepseek-v4-flash" {
+		t.Fatal("Zen did not use environment credentials and paid default")
+	}
+
+	provider, err := createProviderFromConfig("zen", &config.ProviderConfig{Type: config.ProviderTypeZen, ResolvedAPIKey: "test-key", Model: "deepseek-v4-flash"})
+	if err != nil || provider == nil {
+		t.Fatalf("keyed Zen: provider=%v error=%v", provider, err)
 	}
 }

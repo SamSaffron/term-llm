@@ -159,7 +159,7 @@ func TestOpenAIProviderGPTLiveEndToEnd(t *testing.T) {
 		}
 	}
 
-	if err := session.AppendDelegation(context.Background(), "item_delegate", DelegationChunk{Channel: ChannelCommentary, Text: "Checking now."}); err != nil {
+	if err := session.AppendDelegation(context.Background(), "item_delegate", DelegationChunk{Channel: ChannelQuiet, Text: "Checking now."}); err != nil {
 		t.Fatal(err)
 	}
 	thinking := receiveOpenAILiveClientMessage(t, clientMessages)
@@ -272,6 +272,25 @@ func TestOpenAIProviderRoutesRealtimeModelsToLegacyTransport(t *testing.T) {
 		t.Fatalf("paths = %q, %q", first, second)
 	}
 	_ = session.Close(context.Background())
+}
+
+// Realtime delivers one function output at completion, so progress notes about
+// work that has since finished are dropped rather than buried in the result.
+func TestOpenAISessionDropsProgressFromFunctionOutput(t *testing.T) {
+	session := newOpenAISession("v=0", nil)
+	for _, chunk := range []DelegationChunk{
+		{Channel: ChannelQuiet, Text: "Checking now."},
+		{Channel: ChannelQuiet, Text: "[STATUS] Running shell (4.0s).", Progress: true},
+		{Channel: ChannelSpeakable, Text: "[PROGRESS] Still working.", Progress: true},
+		{Channel: ChannelSpeakable, Text: "Tests passed."},
+	} {
+		if err := session.AppendDelegation(context.Background(), "call_1", chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, want := session.delegations["call_1"].text.String(), "[Progress update] Checking now.\nTests passed."; got != want {
+		t.Fatalf("function output = %q, want %q", got, want)
+	}
 }
 
 func TestOpenAIProviderUsesEnvironmentKeyAndReportsMissingKey(t *testing.T) {

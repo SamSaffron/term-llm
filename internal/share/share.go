@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/url"
 	"path/filepath"
@@ -20,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/agents/gist"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 const (
@@ -168,7 +168,7 @@ func errorWithDiagnostic(code ErrorCode, message, diagnostic string, cause error
 		// Diagnostics stay on the operator log surface. Quoting prevents helper
 		// control bytes from affecting terminals, and Error() never exposes them
 		// to Web or TUI users.
-		log.Printf("[share] provider diagnostic: %q", err.diagnostic)
+		runtimeoutput.Logf("[share] provider diagnostic: %q", err.diagnostic)
 	}
 	return err
 }

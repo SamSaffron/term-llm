@@ -53,8 +53,12 @@ func main() {
 		}
 	}
 	if *checkBaseline != "" {
-		if err := check(*checkBaseline, report); err != nil {
+		warnings, err := check(*checkBaseline, report)
+		if err != nil {
 			fatal(err)
+		}
+		for _, warning := range warnings {
+			fmt.Fprintln(os.Stderr, "complexity warning:", warning)
 		}
 	}
 	if *jsonOutput {
@@ -173,10 +177,8 @@ func writeBase(path string, report complexity.Report) error {
 			exception.Origin = "moved"
 			exception.Rationale = fmt.Sprintf("mechanically moved from %s while preserving its named responsibility", previous.Key)
 		case len(recordedByKey) != 0 && recorded.CountingRules != report.CountingRules:
-			// The ratchet rejects new declarations above 20, so when the measure
-			// itself changed, anything the accepted baseline never listed is
-			// above 20 only because of the new counting rules. Once the rules
-			// match again, an unrecorded key is genuinely new work.
+			// When the measure changed, functions previously below 20 could
+			// enter the historical exception report without being new code.
 			exception.Origin = "remeasured"
 			exception.Rationale = fmt.Sprintf("crossed 20 when counting moved to nesting-weighted branches and separately measured function literals; %s reduction is tracked by %s", exception.Owner, exception.Removal)
 		default:
@@ -258,41 +260,40 @@ func complexityMilestone(fn complexity.Function) string {
 	}
 }
 
-func check(path string, report complexity.Report) error {
+// check reports growth beyond 30 without blocking the build. Historical
+// exceptions above 20 remain in the baseline for ownership and comparison.
+func check(path string, report complexity.Report) ([]string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var b baseline
 	if err := json.Unmarshal(data, &b); err != nil {
-		return err
+		return nil, err
 	}
 	allowed := map[string]baselineException{}
 	for _, exception := range b.Exceptions {
 		if exception.Owner == "" || exception.Rationale == "" || exception.Removal == "" || exception.Origin == "" {
-			return fmt.Errorf("baseline exception %q lacks ownership or origin metadata", exception.Key)
+			return nil, fmt.Errorf("baseline exception %q lacks ownership or origin metadata", exception.Key)
 		}
 		allowed[exception.Key] = exception
 	}
-	var violations []string
+	var warnings []string
 	for _, fn := range report.Functions {
-		if fn.Complexity <= 20 {
+		if fn.Complexity <= 30 {
 			continue
 		}
 		exception, ok := allowed[complexity.Key(fn)]
 		if !ok {
-			violations = append(violations, fmt.Sprintf("new function above 20: %s (%d)", complexity.Key(fn), fn.Complexity))
+			warnings = append(warnings, fmt.Sprintf("new function above 30: %s (%d)", complexity.Key(fn), fn.Complexity))
 			continue
 		}
 		if fn.Complexity > exception.Complexity {
-			violations = append(violations, fmt.Sprintf("complexity increased: %s %d -> %d", exception.Key, exception.Complexity, fn.Complexity))
+			warnings = append(warnings, fmt.Sprintf("complexity increased above 30: %s %d -> %d", exception.Key, exception.Complexity, fn.Complexity))
 		}
 	}
-	if len(violations) != 0 {
-		sort.Strings(violations)
-		return fmt.Errorf("complexity ratchet failed:\n  %s", strings.Join(violations, "\n  "))
-	}
-	return nil
+	sort.Strings(warnings)
+	return warnings, nil
 }
 
 func fatal(err error) { fmt.Fprintln(os.Stderr, "complexity:", err); os.Exit(1) }

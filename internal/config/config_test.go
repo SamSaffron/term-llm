@@ -712,11 +712,8 @@ func TestDescribeCredentialSource_ZenNoKey(t *testing.T) {
 	t.Setenv("ZEN_API_KEY", "")
 	cfg := &ProviderConfig{}
 	source, found := DescribeCredentialSource("zen", cfg)
-	if !found {
-		t.Fatal("expected credential to be found (zen free tier)")
-	}
-	if !strings.Contains(source, "free tier") {
-		t.Fatalf("source=%q, expected to mention free tier", source)
+	if found {
+		t.Fatalf("unexpected Zen credential: %q", source)
 	}
 }
 
@@ -793,7 +790,7 @@ func TestGrokSchemaDefaults(t *testing.T) {
 }
 
 func TestZenSchemaDefaults(t *testing.T) {
-	const want = "mimo-v2.5-free"
+	const want = "deepseek-v4-flash"
 	if got := DefaultProviderModel("zen"); got != want {
 		t.Fatalf("DefaultProviderModel(zen) = %q, want %q", got, want)
 	}
@@ -1922,5 +1919,13 @@ func TestLiveOpenAITransportAndVoices(t *testing.T) {
 				t.Fatalf("resolved voice = %q", cfg.ResolvedVoice())
 			}
 		})
+	}
+}
+
+func TestDiagnosticsDirDoesNotUseWorkingDirectory(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_DATA_HOME", "relative-dir")
+	if got := GetDiagnosticsDir(); got != "" {
+		t.Fatalf("unsafe diagnostic directory = %q", got)
 	}
 }

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/mcphttp"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 const (
@@ -562,7 +562,7 @@ func (t *tempFileTracker) cleanupTempFiles() {
 			if name == "" {
 				name = "CLI provider"
 			}
-			slog.Warn(name+" failed to remove temp file", "path", path, "err", err)
+			runtimeoutput.Warn(name+" failed to remove temp file", "path", path, "err", err)
 		}
 	}
 }
@@ -611,7 +611,7 @@ func gcStaleCLIHomes(base, current string, maxAge time.Duration, validID func(st
 		}
 		if err == nil && info.ModTime().Before(cutoff) {
 			if err := os.RemoveAll(path); err != nil {
-				slog.Debug(logName+" stale home cleanup failed", "err", err)
+				runtimeoutput.Debug(logName+" stale home cleanup failed", "err", err)
 			}
 		}
 	}

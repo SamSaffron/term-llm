@@ -100,3 +100,4 @@ User-facing documentation lives in `docs-site/content/`; there is no separate `d
 - Use standard `gofmt`; exported names are CamelCase and unexported names mixedCaps.
 - Keep functions focused and errors explicit. Wrap propagated errors with context: `fmt.Errorf("operation: %w", err)`.
 - If asked to commit, use a short imperative, unprefixed subject and keep unrelated changes out of the commit.
+- always run make complexity at the end of your work and ensure it passes

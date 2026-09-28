@@ -14,7 +14,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,6 +21,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/samsaffron/term-llm/internal/restart"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 // ContentPartType identifies an MCP tool-result content block.
@@ -260,6 +260,9 @@ func (s *Server) startInternal(host string, port int, token string, tools []Tool
 			if rawID, ok := req.Params.Meta["claudecode/toolUseId"].(string); ok && strings.TrimSpace(rawID) != "" {
 				ctx = context.WithValue(ctx, toolRequestMetaKey{}, toolRequestMeta{callID: strings.TrimSpace(rawID)})
 			}
+			if response, ok := ctx.Value(toolResponseKey{}).(*toolResponse); ok {
+				response.start()
+			}
 			stopProgress := startToolProgress(ctx, req, s.progressInterval)
 			defer stopProgress()
 			// Execute the tool using the provided executor
@@ -300,7 +303,7 @@ func (s *Server) startInternal(host string, port int, token string, tools []Tool
 
 	mux := http.NewServeMux()
 	// Chain: logging -> auth -> mcp handler
-	var handler http.Handler = mcpHandler
+	var handler http.Handler = toolResponseMiddleware(mcpHandler)
 	if s.HandlerMiddleware != nil {
 		handler = s.HandlerMiddleware(handler)
 	}
@@ -361,7 +364,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedAuth)) != 1 {
 			if s.debug {
-				fmt.Fprintf(os.Stderr, "[mcp-http] %s Unauthorized request from %s (got auth: %q)\n",
+				runtimeoutput.Printf("[mcp-http] %s Unauthorized request from %s (got auth: %q)\n",
 					time.Now().Format("15:04:05.000"), r.RemoteAddr, authHeader[:min(20, len(authHeader))])
 			}
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -399,10 +402,10 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 					}
 				}
 			}
-			fmt.Fprintf(os.Stderr, "[mcp-http] %s %s %s from %s\n",
+			runtimeoutput.Printf("[mcp-http] %s %s %s from %s\n",
 				time.Now().Format("15:04:05.000"), r.Method, r.URL.Path, r.RemoteAddr)
 			if bodyPreview != "" {
-				fmt.Fprintf(os.Stderr, "[mcp-http] Request body: %s\n", bodyPreview)
+				runtimeoutput.Printf("[mcp-http] Request body: %s\n", bodyPreview)
 			}
 		}
 
@@ -411,7 +414,7 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(wrapped, r)
 
 		if s.debug {
-			fmt.Fprintf(os.Stderr, "[mcp-http] %s Response status: %d\n",
+			runtimeoutput.Printf("[mcp-http] %s Response status: %d\n",
 				time.Now().Format("15:04:05.000"), wrapped.status)
 		}
 	})

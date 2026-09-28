@@ -3,8 +3,9 @@ package llm
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"strings"
+
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 type engineUncommittedRetry struct {
@@ -39,7 +40,7 @@ func (r *engineUncommittedRetry) retry(cause error) (bool, error) {
 	if err := r.send.Send(Event{Type: EventRetry, RetryAttempt: *r.retries, RetryMaxAttempts: defaultUncommittedStreamMaxRetries, RetryWaitSecs: 0}); err != nil {
 		return false, err
 	}
-	slog.Debug("retrying failed uncommitted model stream", "attempt", *r.retries, "error", cause)
+	runtimeoutput.Debug("retrying failed uncommitted model stream", "attempt", *r.retries, "error", cause)
 	*r.scratchpadHasDiscardableOutput = false
 	if r.compaction.softActive {
 		r.compaction.softUsage = Usage{}

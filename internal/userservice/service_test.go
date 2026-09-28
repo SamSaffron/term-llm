@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/user"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -32,6 +33,10 @@ func TestNativeDefinitions(t *testing.T) {
 				t.Fatalf("invalid definition %s", data)
 			}
 			if platform == "darwin" {
+				// Unset ProcessType makes launchd throttle timers and I/O like a daemon.
+				if !strings.Contains(string(data), "<key>ProcessType</key><string>Interactive</string>") {
+					t.Fatalf("launchd agent must be Interactive: %s", data)
+				}
 				dec := xml.NewDecoder(strings.NewReader(string(data)))
 				for {
 					_, err := dec.Token()
@@ -50,8 +55,17 @@ func TestNativeDefinitions(t *testing.T) {
 					t.Fatal("systemd expansion not escaped")
 				}
 			}
-			if err = n.Install(s, path); err != nil {
+			if replaced, err := n.Install(s, path); err != nil || replaced {
+				t.Fatalf("first install replaced=%v err=%v", replaced, err)
+			}
+			if replaced, err := n.Install(s, path); err != nil || replaced {
+				t.Fatalf("identical reinstall replaced=%v err=%v", replaced, err)
+			}
+			if err = os.WriteFile(n.Path("web"), append(data, []byte("<!-- older template -->")...), 0600); err != nil {
 				t.Fatal(err)
+			}
+			if replaced, err := n.Install(s, path); err != nil || !replaced {
+				t.Fatalf("changed definition replaced=%v err=%v", replaced, err)
 			}
 			if err = n.CheckOwned("web", path); err != nil {
 				t.Fatal(err)
@@ -122,6 +136,23 @@ func TestPrivateFilesAndSpec(t *testing.T) {
 		t.Fatal("modified target")
 	}
 }
+func TestRunnerEnvironmentSetsAccountUser(t *testing.T) {
+	current, err := user.Current()
+	if err != nil {
+		t.Skipf("cannot resolve process user: %v", err)
+	}
+	env := RunnerEnvironment(fixtureSpec(t), []string{"USER=wrong-account"}, nil)
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "USER=") {
+			if entry != "USER="+current.Username {
+				t.Fatalf("USER = %q, want process account %q", entry, current.Username)
+			}
+			return
+		}
+	}
+	t.Fatal("managed service environment omitted USER")
+}
+
 func TestCredentialImportAndEnvironment(t *testing.T) {
 	for _, name := range []string{"HOME", "PATH", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "BASH_ENV", "TERM_LLM_SERVE_BOOTSTRAP_TOKEN", "lowercase_TOKEN"} {
 		if SecretName(name) {
@@ -188,6 +219,73 @@ func TestLoadedForeignDefinitionIsNotAdopted(t *testing.T) {
 	n.Run = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
 	if err := n.CheckLoaded(context.Background(), "web", "/our/service.json"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDarwinSubmittedJobOwnership(t *testing.T) {
+	s := fixtureSpec(t)
+	home := t.TempDir()
+	n := Native{OS: "darwin", Home: home, UID: 501}
+	specPath := filepath.Join(t.TempDir(), "private", "service.json")
+	if err := PrivateDir(filepath.Dir(specPath)); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(specPath, s); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := n.Install(s, specPath); err != nil {
+		t.Fatal(err)
+	}
+	args := serviceArgs(s.Binary, s.Kind, specPath)
+	for _, tc := range []struct {
+		name, path, program string
+		args                []string
+		wantOK              bool
+	}{
+		{"managed submission", "(submitted by smd.344)", s.Binary, args, true},
+		{"old binary during reinstall", "(submitted by smd.344)", "/opt/old/term-llm", serviceArgs("/opt/old/term-llm", s.Kind, specPath), true},
+		{"foreign submission", "(submitted by smd.344)", "/usr/bin/foreign", serviceArgs("/usr/bin/foreign", s.Kind, "/foreign/service.json"), false},
+		{"mismatched program", "(submitted by smd.344)", "/usr/bin/foreign", args, false},
+		{"extra argument", "(submitted by smd.344)", s.Binary, append(append([]string(nil), args...), "extra"), false},
+		{"relative program", "(submitted by smd.344)", "term-llm", serviceArgs("term-llm", s.Kind, specPath), false},
+		{"missing arguments", "(submitted by smd.344)", s.Binary, nil, false},
+		{"unknown source", "(other source)", s.Binary, args, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output := "gui/501/com.term-llm.web = {\n\tpath = " + tc.path + "\n\tmanaged_by = com.apple.xpc.ServiceManagement\n\tprogram = " + tc.program + "\n"
+			if tc.args != nil {
+				output += "\targuments = {\n\t\t" + strings.Join(tc.args, "\n\t\t") + "\n\t}\n"
+			}
+			output += "\tinherited environment = {\n\t\tPATH => /usr/bin\n\t}\n}\n"
+			n.Run = func(context.Context, string, ...string) ([]byte, error) { return []byte(output), nil }
+			err := n.CheckLoaded(context.Background(), s.Kind, specPath)
+			if (err == nil) != tc.wantOK {
+				t.Fatalf("CheckLoaded error = %v, wantOK %v", err, tc.wantOK)
+			}
+			if !tc.wantOK && strings.Contains(err.Error(), "open (submitted by") {
+				t.Fatalf("tried to read submission description: %v", err)
+			}
+		})
+	}
+	output := "gui/501/com.term-llm.web = {\n\tpath = (submitted by smd.344)\n\tprogram = " + s.Binary + "\n\targuments = {\n\t\t" + strings.Join(args, "\n\t\t") + "\n\t}\n}\n"
+	n.Run = func(context.Context, string, ...string) ([]byte, error) { return []byte(output), nil }
+	if err := os.Remove(specPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.CheckLoaded(context.Background(), s.Kind, specPath); err != nil {
+		t.Fatalf("rejected managed job when saved spec needs repair: %v", err)
+	}
+	if err := os.WriteFile(n.Path(s.Kind), []byte("foreign plist"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.CheckLoaded(context.Background(), s.Kind, specPath); err == nil {
+		t.Fatal("accepted unowned on-disk service")
+	}
+	if err := os.Remove(n.Path(s.Kind)); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.CheckLoaded(context.Background(), s.Kind, specPath); err == nil {
+		t.Fatal("accepted loaded job without an installed managed definition")
 	}
 }
 

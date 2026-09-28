@@ -6,7 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
+
+	"github.com/samsaffron/term-llm/internal/filelock"
 )
+
+var configUpdateMu sync.Mutex
 
 // Config represents the mcp.json configuration file.
 type Config struct {
@@ -155,18 +160,83 @@ func (c *Config) Save() error {
 	return c.SaveToPath(path)
 }
 
-// SaveToPath saves the configuration to a specific path.
+// SaveToPath atomically saves the configuration to a specific path with private permissions.
 func (c *Config) SaveToPath(path string) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
+	// Write through symlinks (e.g. dotfile-managed configs) instead of
+	// replacing the link itself with a regular file.
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
 	}
-
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create MCP config directory: %w", err)
+	}
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
+		return fmt.Errorf("marshal MCP config: %w", err)
+	}
+	file, err := os.CreateTemp(dir, ".mcp-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temporary MCP config: %w", err)
+	}
+	defer os.Remove(file.Name())
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("chmod temporary MCP config: %w", err)
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("write temporary MCP config: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("sync temporary MCP config: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close temporary MCP config: %w", err)
+	}
+	if err := os.Rename(file.Name(), path); err != nil {
+		return fmt.Errorf("replace MCP config: %w", err)
+	}
+	return nil
+}
+
+// UpdateConfig applies a mutation to the default MCP config under a process and file lock.
+func UpdateConfig(fn func(*Config) error) error {
+	path, err := DefaultConfigPath()
+	if err != nil {
+		return fmt.Errorf("find MCP config: %w", err)
+	}
+	return UpdateConfigAtPath(path, fn)
+}
+
+// UpdateConfigAtPath safely reads, mutates and atomically saves a configuration.
+func UpdateConfigAtPath(path string, fn func(*Config) error) (err error) {
+	configUpdateMu.Lock()
+	defer configUpdateMu.Unlock()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create MCP config directory: %w", err)
+	}
+	unlock, err := filelock.Lock(path + ".lock")
+	if err != nil {
+		return fmt.Errorf("lock MCP config: %w", err)
+	}
+	defer func() {
+		if unlockErr := unlock(); unlockErr != nil && err == nil {
+			err = fmt.Errorf("unlock MCP config: %w", unlockErr)
+		}
+	}()
+	cfg, err := LoadConfigFromPath(path)
+	if err != nil {
+		return fmt.Errorf("load MCP config: %w", err)
+	}
+	if err := fn(cfg); err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	if err := cfg.SaveToPath(path); err != nil {
+		return fmt.Errorf("save MCP config: %w", err)
+	}
+	return nil
 }
 
 // ServerNames returns a sorted list of configured server names.

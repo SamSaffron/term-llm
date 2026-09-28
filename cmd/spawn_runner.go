@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +13,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -156,7 +156,7 @@ func (r *SpawnAgentRunner) warn(format string, args ...any) {
 	if r.warnFunc != nil {
 		r.warnFunc(format, args...)
 	} else {
-		log.Printf("Warning: "+format, args...)
+		runtimeoutput.Logf("Warning: "+format, args...)
 	}
 }
 

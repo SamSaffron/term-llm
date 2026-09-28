@@ -8,15 +8,14 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/terminalpolicy"
@@ -974,45 +973,14 @@ func RegisterSkillToolWithEngine(engine *llm.Engine, toolMgr *tools.ToolManager,
 		return
 	}
 
-	var skillPolicyMu sync.Mutex
-	var baselineTools []string
-	var baselinePresent bool
-	var appliedTools []string
-	var appliedPresent bool
-	var skillPolicyActive bool
-	skillTool.SetOnActivated(func(allowedTools []string, present bool) {
-		skillPolicyMu.Lock()
-		defer skillPolicyMu.Unlock()
-		currentTools, currentPresent := engine.AllowedToolsFilter()
-		if !skillPolicyActive || currentPresent != appliedPresent || !slices.Equal(currentTools, appliedTools) {
-			// Another owner (for example a direct user skill turn) restored or
-			// changed policy since the last model activation. Treat that current
-			// policy as the new baseline rather than restoring stale state.
-			baselineTools, baselinePresent = currentTools, currentPresent
-			skillPolicyActive = true
-		}
-		if !present {
-			// Omitted means end any prior model-skill restriction and inherit
-			// the agent/session policy captured before activation.
-			engine.RestoreAllowedToolsFilter(baselineTools, baselinePresent)
-			baselineTools = nil
-			baselinePresent = false
-			appliedTools = nil
-			appliedPresent = false
-			skillPolicyActive = false
-			return
-		}
-		effective := append([]string(nil), allowedTools...)
-		if baselinePresent {
-			effective = intersectAllowedToolNames(effective, baselineTools)
-		}
-		engine.SetAllowedToolsFilter(effective)
-		appliedTools, appliedPresent = engine.AllowedToolsFilter()
-	})
+	// Model activation loads instructions and may add skill-declared tools, but it
+	// must not narrow the parent session's tool policy. Direct and isolated skill
+	// invocations apply their scoped allowed-tools restrictions in their own
+	// runtime paths, where the filter has a defined lifetime and is restored.
 	if toolMgr != nil {
 		skillTool.SetOnToolsActivated(func(defs []skills.SkillToolDef, skillDir string) {
 			if err := toolMgr.Registry.RegisterSkillTools(defs, skillDir); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: skill tools registration failed: %v\n", err)
+				runtimeoutput.Printf("warning: skill tools registration failed: %v\n", err)
 				return
 			}
 			// Register the newly added tools with the engine so the LLM can call them.
@@ -1046,7 +1014,7 @@ func InjectSkillsMetadata(instructions string, skillsSetup *skills.Setup) string
 		return instructions
 	}
 	if err := skillsSetup.EnsurePromptMetadata(); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: skills metadata generation failed: %v\n", err)
+		runtimeoutput.Printf("warning: skills metadata generation failed: %v\n", err)
 		return instructions
 	}
 	if !skillsSetup.HasSkillsXML() {

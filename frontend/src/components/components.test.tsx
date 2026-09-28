@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { StoreContext } from '../app/context';
 import { App } from '../app/App';
 import { AppStore } from '../stores/app-store';
@@ -114,7 +114,122 @@ const expectPasswordManagersIgnored = (element: HTMLElement) => {
   expect(element).toHaveAttribute('data-protonpass-ignore', 'true');
 };
 
+// Rich rendering publishes plain content if its lazy chunks miss a 250 ms
+// deadline. A cold import can exceed that under full-suite load, so load both
+// once up front; the components' own import() then resolves from the cache.
+beforeAll(async () => {
+  await Promise.all([import('../domain/rich-highlight'), import('../domain/rich-katex')]);
+});
+
 describe('Preact-owned chat surfaces', () => {
+  it('focuses the composer and preserves typing from the page', async () => {
+    const store = createStore();
+    store.prompt.value = 'Draft: ';
+    const { unmount } = render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+    const textbox = screen.getByRole('textbox', { name: 'Message' });
+    await userEvent.keyboard('Hello');
+    expect(textbox).toHaveFocus();
+    expect(textbox).toHaveValue('Draft: Hello');
+    expect(store.prompt.value).toBe('Draft: Hello');
+    unmount();
+    fireEvent.keyDown(document.body, { key: 'x' });
+    expect(store.prompt.value).toBe('Draft: Hello');
+    store.dispose();
+  });
+
+  it('leaves keyboard input with other controls and overlays', async () => {
+    const store = createStore();
+    const { container, rerender } = render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+        <input aria-label="Search" />
+        <div contentEditable="plaintext-only" tabIndex={0}>
+          Editable
+        </div>
+        <button>Action</button>
+        <div class="shell-overlay" tabIndex={0}>
+          Terminal
+        </div>
+        <div role="menu" tabIndex={0}>
+          Menu
+        </div>
+      </StoreContext.Provider>,
+    );
+    for (const target of [
+      screen.getByRole('textbox', { name: 'Search' }),
+      container.querySelector('[contenteditable]')!,
+      screen.getByRole('button', { name: 'Action' }),
+      screen.getByText('Terminal'),
+      screen.getByRole('menu'),
+    ]) {
+      (target as HTMLElement).focus();
+      fireEvent.keyDown(target, { key: 'a' });
+      expect(target).toHaveFocus();
+      expect(store.prompt.value).toBe('');
+    }
+    rerender(
+      <StoreContext.Provider value={store}>
+        <Composer />
+        <Overlay title="Dialog" onClose={() => undefined}>
+          Dialog content
+        </Overlay>
+      </StoreContext.Provider>,
+    );
+    fireEvent.keyDown(document.body, { key: 'a' });
+    expect(store.prompt.value).toBe('');
+    store.dispose();
+  });
+
+  it('preserves diff navigation shortcuts while the diff panel is open', () => {
+    const store = createStore();
+    store.diff.value = { ...store.diff.peek(), open: true };
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+    fireEvent.keyDown(document.body, { key: '[' });
+    fireEvent.keyDown(document.body, { key: ']' });
+    expect(store.prompt.value).toBe('');
+    expect(screen.getByRole('textbox', { name: 'Message' })).not.toHaveFocus();
+    store.diff.value = { ...store.diff.peek(), open: false };
+    fireEvent.keyDown(document.body, { key: '[' });
+    expect(store.prompt.value).toBe('[');
+    store.dispose();
+  });
+
+  it('ignores shortcuts, composition, handled events and an inert composer', () => {
+    const store = createStore();
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+    for (const options of [
+      { key: 'a', ctrlKey: true },
+      { key: 'a', metaKey: true },
+      { key: 'a', altKey: true },
+      { key: 'a', isComposing: true },
+      { key: 'Dead' },
+      { key: 'Enter' },
+      { key: 'Tab' },
+      { key: ' ' },
+    ])
+      fireEvent.keyDown(document.body, options);
+    const handled = new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true });
+    handled.preventDefault();
+    document.body.dispatchEvent(handled);
+    expect(store.prompt.value).toBe('');
+    container.setAttribute('inert', '');
+    fireEvent.keyDown(document.body, { key: 'a' });
+    expect(store.prompt.value).toBe('');
+    store.dispose();
+  });
+
   it('does not show a separate subagents panel in the parent conversation', () => {
     const store = createStore();
     store.childSessionStore.children.value = [
@@ -533,6 +648,10 @@ describe('Preact-owned chat surfaces', () => {
     };
     store.steer = vi.fn(async () => undefined);
     store.cancel = vi.fn(async () => undefined);
+    store.archiveSession = vi.fn(async () => undefined);
+    store.pinSession = vi.fn(async () => undefined);
+    store.openRename = vi.fn();
+    store.toast = vi.fn();
 
     render(
       <StoreContext.Provider value={store}>
@@ -544,6 +663,21 @@ describe('Preact-owned chat surfaces', () => {
     expect(textbox).toHaveAttribute('placeholder', 'Steer conversation…');
     expect(screen.getByRole('button', { name: 'Stop', exact: true })).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Stop subagent' })).not.toBeInTheDocument();
+
+    for (const [command, message] of [
+      ['/archive', "Subagent conversations can't be archived."],
+      ['/pin', "Subagent conversations can't be pinned."],
+      ['/rename', "Subagent conversations can't be renamed."],
+    ]) {
+      await userEvent.type(textbox, command);
+      await userEvent.keyboard('{Enter}');
+      expect(store.toast).toHaveBeenLastCalledWith(message, 'error');
+      expect(textbox).toHaveValue('');
+    }
+    expect(store.archiveSession).not.toHaveBeenCalled();
+    expect(store.pinSession).not.toHaveBeenCalled();
+    expect(store.openRename).not.toHaveBeenCalled();
+
     await userEvent.type(textbox, 'stay focused');
     await userEvent.click(screen.getByRole('button', { name: 'Steer' }));
     expect(store.steer).toHaveBeenCalledWith('stay focused');
@@ -4788,6 +4922,119 @@ describe('Preact-owned chat surfaces', () => {
     expect(store.prompt.value).toBe('');
   });
 
+  it.each([
+    ['/archive', 'archiveSession'],
+    ['/pin', 'pinSession'],
+    ['/rename', 'openRename'],
+  ] as const)('handles %s locally for the active conversation', async (command, action) => {
+    const store = createStore();
+    store.archiveSession = vi.fn(async () => undefined);
+    store.pinSession = vi.fn(async () => undefined);
+    store.openRename = vi.fn();
+    store.send = vi.fn(async () => undefined);
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), command);
+    await userEvent.keyboard('{Enter}');
+
+    expect(store[action]).toHaveBeenCalledWith(store.activeSession.value);
+    expect(store.send).not.toHaveBeenCalled();
+    expect(store.prompt.value).toBe('');
+  });
+
+  it.each(['/archive later', '/pin twice', '/rename Better title'])(
+    'does not send unsupported %s arguments to the model',
+    async (command) => {
+      const store = createStore();
+      store.send = vi.fn(async () => undefined);
+      store.steer = vi.fn(async () => undefined);
+      store.toast = vi.fn();
+      render(
+        <StoreContext.Provider value={store}>
+          <Composer />
+        </StoreContext.Provider>,
+      );
+
+      await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), command);
+      await userEvent.keyboard('{Enter}');
+
+      expect(store.toast).toHaveBeenCalledWith(
+        `${command.split(' ')[0]} does not accept arguments.`,
+        'error',
+      );
+      expect(store.send).not.toHaveBeenCalled();
+      expect(store.steer).not.toHaveBeenCalled();
+      expect(store.prompt.value).toBe(command);
+    },
+  );
+
+  it('reports an archive command failure', async () => {
+    const store = createStore();
+    const error = new Error('Could not archive this conversation');
+    store.archiveSession = vi.fn(async () => Promise.reject(error));
+    store.toast = vi.fn();
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), '/archive');
+    await userEvent.keyboard('{Enter}');
+
+    await waitFor(() => expect(store.toast).toHaveBeenCalledWith(error, 'error'));
+    expect(store.prompt.value).toBe('');
+  });
+
+  it('reports a pin command failure', async () => {
+    const store = createStore();
+    const error = new Error('Could not pin this conversation');
+    store.pinSession = vi.fn(async () => Promise.reject(error));
+    store.toast = vi.fn();
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), '/pin');
+    await userEvent.keyboard('{Enter}');
+
+    await waitFor(() => expect(store.toast).toHaveBeenCalledWith(error, 'error'));
+    expect(store.prompt.value).toBe('');
+  });
+
+  it.each([
+    ['/archive', 'Start the conversation before archiving.'],
+    ['/pin', 'Start the conversation before pinning.'],
+    ['/rename', 'Start the conversation before renaming.'],
+  ])('does not run %s before the conversation starts', async (command, message) => {
+    const store = createStore();
+    store.draftActive.value = true;
+    store.archiveSession = vi.fn(async () => undefined);
+    store.pinSession = vi.fn(async () => undefined);
+    store.openRename = vi.fn();
+    store.toast = vi.fn();
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), command);
+    await userEvent.keyboard('{Enter}');
+
+    expect(store.archiveSession).not.toHaveBeenCalled();
+    expect(store.pinSession).not.toHaveBeenCalled();
+    expect(store.openRename).not.toHaveBeenCalled();
+    expect(store.toast).toHaveBeenCalledWith(message, 'error');
+    expect(store.prompt.value).toBe('');
+  });
+
   it('shrinks the composer after sending a multiline prompt', async () => {
     const store = createStore();
     store.send = vi.fn(async () => {
@@ -5281,6 +5528,7 @@ describe('Preact-owned chat surfaces', () => {
 
   it('lifts an archived session row while its actions menu is open', () => {
     const store = createStore();
+    store.archiveSession = vi.fn(async () => undefined);
     store.sessions.value = store.sessions.value.map((session) => ({
       ...session,
       archived: true,
@@ -5298,13 +5546,77 @@ describe('Preact-owned chat surfaces', () => {
 
     fireEvent.click(trigger);
     expect(row).toHaveClass('menu-open');
-    expect(screen.getByRole('menuitem', { name: 'Unhide' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Restore' })).toBeInTheDocument();
 
-    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Restore' }));
+    expect(store.archiveSession).toHaveBeenCalledWith(expect.objectContaining({ archived: true }));
+    expect(row).not.toHaveClass('is-archiving');
     expect(row).not.toHaveClass('menu-open');
   });
 
-  it('collapses a hidden session before removing it from the sidebar', async () => {
+  it('keeps archived rows visible when Show archived sessions is enabled', async () => {
+    const store = createStore();
+    store.showArchived.value = true;
+    store.archiveSession = vi.fn(async (session) => {
+      store.sessions.value = store.sessions.value.map((entry) =>
+        entry.id === session.id ? { ...entry, archived: !session.archived } : entry,
+      );
+    });
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Sidebar />
+      </StoreContext.Provider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for Test' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Archive' }));
+
+    await waitFor(() => expect(store.archiveSession).toHaveBeenCalledOnce());
+    expect(container.querySelector('.session-row')).not.toHaveClass('is-archiving');
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for Test' }));
+    expect(screen.getByRole('menuitem', { name: 'Restore' })).toBeVisible();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Restore' }));
+    await waitFor(() => expect(store.archiveSession).toHaveBeenCalledTimes(2));
+    expect(store.sessions.value[0].archived).toBe(false);
+    expect(container.querySelector('.session-row')).not.toHaveClass('is-archiving');
+  });
+
+  it('uncollapses an archived row if Show archived sessions is enabled mid-transition', async () => {
+    vi.useFakeTimers();
+    try {
+      const store = createStore();
+      store.archiveSession = vi.fn(async (session) => {
+        store.sessions.value = store.sessions.value.map((entry) =>
+          entry.id === session.id ? { ...entry, archived: true } : entry,
+        );
+      });
+      const { container } = render(
+        <StoreContext.Provider value={store}>
+          <Sidebar />
+        </StoreContext.Provider>,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'Actions for Test' }));
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Archive' }));
+      const row = container.querySelector('.session-row');
+      expect(row).toHaveClass('is-archiving');
+      store.showArchived.value = true;
+      const transition = new Event('transitionend', { bubbles: true });
+      Object.defineProperty(transition, 'propertyName', { value: 'max-height' });
+      await act(async () => {
+        fireEvent(row as Element, transition);
+        await Promise.resolve();
+      });
+
+      expect(store.archiveSession).toHaveBeenCalledOnce();
+      expect(row).toHaveClass('archived');
+      expect(row).not.toHaveClass('is-archiving');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('collapses a session before archiving and removing it from the sidebar', async () => {
     vi.useFakeTimers();
     try {
       const store = createStore();
@@ -5323,10 +5635,10 @@ describe('Preact-owned chat surfaces', () => {
 
       fireEvent.click(screen.getByRole('button', { name: 'Actions for Test' }));
       expect(screen.queryByRole('menuitem', { name: 'Delete' })).not.toBeInTheDocument();
-      fireEvent.click(screen.getByRole('menuitem', { name: 'Hide' }));
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Archive' }));
 
       const row = container.querySelector('.session-row');
-      expect(row).toHaveClass('is-hiding');
+      expect(row).toHaveClass('is-archiving');
       expect(store.archiveSession).not.toHaveBeenCalled();
       expect(scroller.scrollTop).toBe(180);
 
@@ -6281,7 +6593,7 @@ describe('Preact-owned chat surfaces', () => {
     );
   });
 
-  it('restores the rich, searchable MCP server picker', async () => {
+  it('renders MCP servers as a quiet, filterable list', async () => {
     const store = createStore();
     store.modal.value = 'mcp';
     store.mcp.value = {
@@ -6319,23 +6631,23 @@ describe('Preact-owned chat surfaces', () => {
     store.toggleMCP = vi.fn(async () => undefined);
     store.loadMCP = vi.fn(async () => undefined);
 
-    render(
+    const { container } = render(
       <StoreContext.Provider value={store}>
         <Modals />
       </StoreContext.Provider>,
     );
 
-    expect(screen.getByRole('dialog', { name: 'MCP servers' })).toHaveClass('mcp-modal');
-    expect(screen.getByText('Turn on servers to add their tools.')).toBeVisible();
-    expect(screen.queryByText(/Changes save immediately/)).not.toBeInTheDocument();
-    expect(screen.queryByText('Tools load when enabled')).not.toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: 'MCP servers' })).toHaveClass('mcp-modal');
+    expect(screen.getByRole('button', { name: 'Add' })).toBeVisible();
     expect(screen.getByLabelText('1 server enabled')).toHaveTextContent('1 of 2 on');
-    expect(screen.getByText('12 tools · 4 active, 8 deferred')).toBeVisible();
+    expect(screen.getByText('12 tools · 8 deferred')).toBeVisible();
+    expect(container.querySelector('.mcp-dot.ready')).not.toBeNull();
+    expect(container.querySelector('.mcp-dot.failed')).not.toBeNull();
+    expect(container.querySelector('.mcp-server-icon, .mcp-server-status')).toBeNull();
     expect(screen.getByRole('alert')).toHaveTextContent('MCP server error');
-    expect(screen.getByRole('region', { name: 'MCP server error details' })).toHaveClass(
-      'mcp-error-details',
+    expect(screen.getByRole('region', { name: 'MCP server error details' })).toHaveTextContent(
+      'Missing DISCOURSE_API_KEY',
     );
-    expect(screen.getByText('Missing DISCOURSE_API_KEY')).toBeVisible();
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(store.loadMCP).toHaveBeenCalledOnce();
     expect(screen.getByRole('checkbox', { name: 'Disable github' })).toBeChecked();
@@ -6346,11 +6658,77 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.queryByRole('checkbox', { name: 'Enable discourse' })).not.toBeInTheDocument();
     fireEvent.input(filter, { target: { value: 'missing-name' } });
     expect(screen.getByText('No matching servers')).toBeVisible();
-    expect(screen.getByLabelText('1 server enabled')).toHaveTextContent('1 of 2 on');
 
     fireEvent.input(filter, { target: { value: '' } });
     await userEvent.click(screen.getByRole('checkbox', { name: 'Enable discourse' }));
     expect(store.toggleMCP).toHaveBeenCalledWith('discourse');
+  });
+
+  /** Simulates a page (e.g. the iOS app) that injected WebMCP device tools. */
+  async function withPageTools(store: AppStore): Promise<void> {
+    await store.webMCP.refresh(); // settle the initial, empty discovery first
+    store.webMCP.tools.value = [
+      {
+        name: 'ping',
+        title: 'Ping',
+        description: 'Check the phone',
+        inputSchema: { type: 'object', properties: {} },
+        readOnly: true,
+      },
+    ];
+    store.webMCP.providerName.value = 'iPhone';
+  }
+
+  it('lists page-provided WebMCP tools as a switchable server', async () => {
+    const store = createStore();
+    store.modal.value = 'mcp';
+    store.mcp.value = { servers: [], enabled: [], loading: false, pending: '', error: '' };
+    store.loadMCP = vi.fn(async () => undefined);
+    await withPageTools(store);
+
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    expect(await screen.findByRole('dialog', { name: 'MCP servers' })).toBeVisible();
+    expect(screen.queryByText('No MCP servers yet')).not.toBeInTheDocument();
+    expect(screen.getByText('iPhone')).toBeVisible();
+    expect(screen.getByText('1 tool · WebMCP from this page')).toBeVisible();
+    // Off until turned on.
+    expect(screen.getByLabelText('0 servers enabled')).toHaveTextContent('0 of 1 on');
+    expect(container.querySelector('.mcp-dot.ready')).toBeNull();
+
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Enable iPhone' }));
+    expect(store.webMCPEnabled.value).toBe(true);
+    expect(screen.getByLabelText('1 server enabled')).toHaveTextContent('1 of 1 on');
+    expect(container.querySelector('.mcp-dot.ready')).not.toBeNull();
+
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Disable iPhone' }));
+    expect(store.webMCPEnabled.value).toBe(false);
+    expect(screen.getByRole('checkbox', { name: 'Enable iPhone' })).not.toBeChecked();
+    expect(screen.getByLabelText('0 servers enabled')).toHaveTextContent('0 of 1 on');
+
+    fireEvent.input(screen.getByRole('searchbox', { name: 'Filter MCP servers' }), {
+      target: { value: 'github' },
+    });
+    expect(screen.getByText('No matching servers')).toBeVisible();
+  });
+
+  it('counts page tools in the header MCP button', async () => {
+    const store = createStore();
+    await withPageTools(store);
+    render(
+      <StoreContext.Provider value={store}>
+        <Header />
+      </StoreContext.Provider>,
+    );
+    // Off by default, so nothing to count yet.
+    expect(screen.queryByRole('button', { name: 'Manage MCP servers' })).toBeNull();
+    store.setWebMCPEnabled(true);
+    const button = await screen.findByRole('button', { name: 'Manage MCP servers' });
+    expect(button).toHaveTextContent('MCP 1');
   });
 
   it('separates MCP enablement from OAuth sign-in actions', async () => {
@@ -6390,7 +6768,7 @@ describe('Preact-owned chat surfaces', () => {
         <Modals />
       </StoreContext.Provider>,
     );
-    expect(screen.getByText('Server enabled · sign-in required')).toBeVisible();
+    expect(await screen.findByText('sign-in needed')).toBeVisible();
     await userEvent.click(screen.getByRole('button', { name: 'Sign in again' }));
     expect(store.startMCPOAuth).toHaveBeenCalledWith('protected', true);
     expect(screen.getByRole('checkbox', { name: 'Disable protected' })).toBeChecked();
@@ -6415,7 +6793,7 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
     await waitFor(() =>
-      expect(screen.getByText('Popup blocked — copy the sign-in link.')).toBeVisible(),
+      expect(screen.getByText('popup blocked — copy the sign-in link')).toBeVisible(),
     );
     await userEvent.click(screen.getByRole('button', { name: 'Copy link' }));
     await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
@@ -6423,7 +6801,181 @@ describe('Preact-owned chat surfaces', () => {
     expect(store.cancelMCPOAuth).toHaveBeenCalledWith('protected');
   });
 
-  it('does not claim the MCP config is empty when loading fails', () => {
+  it('removes an MCP server from the row menu and offers undo', async () => {
+    const store = createStore();
+    store.modal.value = 'mcp';
+    store.mcp.value = {
+      servers: [
+        {
+          name: 'context7',
+          configured: true,
+          enabled: false,
+          status: 'stopped',
+          error: '',
+          refreshWarning: '',
+          tools: 0,
+          active: 0,
+          deferred: 0,
+          loadingMode: '',
+          authState: 'signed_in',
+          canSignIn: false,
+          canSignOut: true,
+        },
+      ],
+      enabled: [],
+      loading: false,
+      pending: '',
+      error: '',
+    };
+    store.removeMCPServer = vi.fn(async () => {
+      store.mcpRemoved.value = { name: 'context7', config: { command: 'npx' }, wasEnabled: false };
+      return true;
+    });
+    store.undoRemoveMCPServer = vi.fn(async () => undefined);
+    store.logoutMCPOAuth = vi.fn(async () => undefined);
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.click(await screen.findByRole('button', { name: 'More actions for context7' }));
+    const menu = screen.getByRole('menu', { name: 'context7 actions' });
+    expect(within(menu).getByRole('menuitem', { name: 'Sign out' })).toBeVisible();
+    await userEvent.click(within(menu).getByRole('menuitem', { name: 'Remove server' }));
+    expect(store.removeMCPServer).toHaveBeenCalledWith('context7');
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+
+    await waitFor(() =>
+      expect(document.querySelector('.mcp-undo')).toHaveTextContent('Removed context7'),
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(store.undoRemoveMCPServer).toHaveBeenCalledOnce();
+  });
+
+  it('adds an MCP server from the catalogue and returns to the list', async () => {
+    const store = createStore();
+    store.modal.value = 'mcp';
+    store.mcp.value = { servers: [], enabled: [], loading: false, pending: '', error: '' };
+    store.searchMCPCatalogue = vi.fn(async () => ({
+      servers: [
+        {
+          id: 'bundled:exa',
+          name: 'exa',
+          title: 'exa',
+          description: 'Web search',
+          category: 'Search',
+          transport: 'remote' as const,
+          source: 'bundled' as const,
+          official: true,
+          installed: false,
+          needs_input: false,
+        },
+        {
+          id: 'bundled:github',
+          name: 'github',
+          title: 'github',
+          description: 'Repos and issues',
+          category: 'Dev',
+          transport: 'npm' as const,
+          source: 'bundled' as const,
+          official: true,
+          installed: true,
+          needs_input: false,
+        },
+      ],
+    }));
+    store.addMCPServer = vi.fn(async () => ({
+      name: 'exa',
+      transport: 'http' as const,
+      config_path: '/tmp/mcp.json',
+      needs_input: false,
+    }));
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    expect(await screen.findByText('No MCP servers yet')).toBeVisible();
+    await userEvent.click(screen.getByRole('button', { name: 'Add server' }));
+    expect(screen.getByRole('dialog', { name: 'Add server' })).toBeVisible();
+    expect(screen.getByRole('tab', { name: 'Catalogue' })).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByText('Web search')).toBeVisible();
+    expect(screen.getByText('Added')).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Add github' })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Add exa' }));
+    expect(store.addMCPServer).toHaveBeenCalledWith(
+      { kind: 'catalogue', catalogue_id: 'bundled:exa' },
+      true,
+    );
+    expect(await screen.findByRole('dialog', { name: 'MCP servers' })).toBeVisible();
+  });
+
+  it('adds a local command MCP server with environment variables', async () => {
+    const store = createStore();
+    store.modal.value = 'mcp';
+    store.mcp.value = { servers: [], enabled: [], loading: false, pending: '', error: '' };
+    store.searchMCPCatalogue = vi.fn(async () => ({ servers: [] }));
+    store.previewMCPServer = vi.fn(async (request) => ({
+      name: request.name || 'sentry',
+      transport: 'stdio' as const,
+      config_path: '/Users/sam/.config/term-llm/mcp.json',
+      needs_input: false,
+      exists: request.name === 'taken',
+    }));
+    store.addMCPServer = vi.fn(async () => ({
+      name: 'sentry',
+      transport: 'stdio' as const,
+      config_path: '/Users/sam/.config/term-llm/mcp.json',
+      needs_input: false,
+    }));
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Add' }));
+    await userEvent.click(screen.getByRole('tab', { name: 'Local command' }));
+    expect(screen.getByText(/Runs on the machine hosting term-llm/)).toBeVisible();
+    fireEvent.input(screen.getByLabelText('Command'), {
+      target: { value: 'npx -y @sentry/mcp-server' },
+    });
+    await waitFor(() =>
+      expect(screen.getByLabelText('Name')).toHaveAttribute('placeholder', 'sentry'),
+    );
+    expect(screen.getByText('~/.config/term-llm/mcp.json')).toBeVisible();
+
+    fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'taken' } });
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('“taken” already exists'),
+    );
+    expect(screen.getByRole('button', { name: 'Add & turn on' })).toBeDisabled();
+
+    fireEvent.input(screen.getByLabelText('Name'), { target: { value: '' } });
+    fireEvent.input(screen.getByLabelText('Environment variables'), {
+      target: { value: 'SENTRY_TOKEN=op://dev/sentry/token\n# note\n' },
+    });
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Add & turn on' })).toBeEnabled(),
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Add & turn on' }));
+    expect(store.addMCPServer).toHaveBeenCalledWith(
+      {
+        kind: 'command',
+        command: 'npx -y @sentry/mcp-server',
+        env: { SENTRY_TOKEN: 'op://dev/sentry/token' },
+      },
+      true,
+    );
+  });
+
+  it('does not claim the MCP config is empty when loading fails', async () => {
     const store = createStore();
     store.modal.value = 'mcp';
     store.mcp.value = {
@@ -6440,7 +6992,7 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
 
-    expect(screen.getByText('Unable to load MCP servers')).toBeVisible();
+    expect(await screen.findByText('Unable to load MCP servers')).toBeVisible();
     expect(screen.queryByText('No MCP servers configured')).not.toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent('session is temporarily busy');
   });
@@ -7008,6 +7560,7 @@ describe('Preact-owned chat surfaces', () => {
   it('separates settings into keyboard-accessible tabs and preserves edits', async () => {
     const store = createStore();
     store.modal.value = 'settings';
+    store.endpoints.sessions = vi.fn(async () => ({ sessions: [] }));
     const fetchExtensions = vi.fn(async () => ({
       directory: '/extensions',
       config_path: '/extensions/extensions.yaml',
@@ -7032,6 +7585,12 @@ describe('Preact-owned chat surfaces', () => {
     fireEvent.keyDown(screen.getByRole('tab', { name: 'Model' }), { key: 'ArrowRight' });
     expect(screen.getByRole('tab', { name: 'Interface' })).toHaveFocus();
     expect(screen.getByRole('checkbox', { name: 'Show widgets in sidebar' })).toBeVisible();
+    const archivedToggle = screen.getByRole('checkbox', { name: 'Show archived sessions' });
+    expect(archivedToggle).not.toBeChecked();
+    fireEvent.click(archivedToggle);
+    expect(store.showArchived.value).toBe(true);
+    expect(localStorage.getItem(store.keys.showArchivedSessions)).toBe('1');
+    expect(store.endpoints.sessions).toHaveBeenCalledWith('limit=30&include_archived=1');
     expect(screen.queryByRole('combobox', { name: 'Effort' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: 'Extensions' }));
     const cat = await screen.findByRole('checkbox', { name: /Composer Cat/ });

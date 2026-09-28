@@ -147,8 +147,17 @@ func TestGeminiProviderProtocolMediaTranscriptsAndDelegation(t *testing.T) {
 	if delegation.Kind != EventDelegationCreated || delegation.DelegationID != "call_1" || delegation.Text != "inspect the repository" {
 		t.Fatalf("delegation = %+v", delegation)
 	}
-	if err := session.AppendDelegation(context.Background(), "call_1", DelegationChunk{Channel: ChannelCommentary, Text: "Running tests"}); err != nil {
+	if err := session.AppendDelegation(context.Background(), "call_1", DelegationChunk{Channel: ChannelQuiet, Text: "Running tests"}); err != nil {
 		t.Fatal(err)
+	}
+	// Progress is stale by the time the single tool response is sent.
+	for _, chunk := range []DelegationChunk{
+		{Channel: ChannelQuiet, Text: "[STATUS] Running shell (4.0s).", Progress: true},
+		{Channel: ChannelSpeakable, Text: "[PROGRESS] Still working.", Progress: true},
+	} {
+		if err := session.AppendDelegation(context.Background(), "call_1", chunk); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := session.AppendDelegation(context.Background(), "call_1", DelegationChunk{Channel: ChannelSpeakable, Text: "All tests passed"}); err != nil {
 		t.Fatal(err)
@@ -163,6 +172,9 @@ func TestGeminiProviderProtocolMediaTranscriptsAndDelegation(t *testing.T) {
 	responses := result.ToolResponse.FunctionResponses
 	if len(responses) != 1 || responses[0].ID != "call_1" || !strings.Contains(responses[0].Response["result"].(string), "All tests passed") {
 		t.Fatalf("tool response = %+v", result.ToolResponse)
+	}
+	if text := responses[0].Response["result"].(string); strings.Contains(text, "[STATUS]") || strings.Contains(text, "[PROGRESS]") {
+		t.Fatalf("progress leaked into the final tool response: %q", text)
 	}
 
 	_ = conn.WriteJSON(map[string]any{"serverContent": map[string]any{"interrupted": true}})

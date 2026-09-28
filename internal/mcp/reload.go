@@ -3,9 +3,9 @@ package mcp
 import (
 	"context"
 	"fmt"
-	"log"
 
 	"github.com/samsaffron/term-llm/internal/restart"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 func (m *Manager) registerReload() {
@@ -19,7 +19,7 @@ func (m *Manager) registerReload() {
 		undo := func(recovery context.Context) {
 			for _, name := range names {
 				if err := m.Enable(recovery, name); err != nil {
-					log.Printf("[reload] restore MCP %s: %v", name, err)
+					runtimeoutput.Logf("[reload] restore MCP %s: %v", name, err)
 				}
 			}
 		}

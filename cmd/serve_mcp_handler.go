@@ -644,6 +644,16 @@ func (s *serveServer) writeConfiguredMCPState(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, state)
 }
 
+func (rt *serveRuntime) refreshMCPManagerLocked() error {
+	if err := rt.ensureMCPManagerLocked(); err != nil {
+		return fmt.Errorf("initialize MCP manager: %w", err)
+	}
+	if err := rt.mcpManager.LoadConfig(); err != nil {
+		return fmt.Errorf("reload MCP config: %w", err)
+	}
+	return nil
+}
+
 func (s *serveServer) handleSessionMCP(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if s.sessionMgr == nil {
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session runtime is unavailable")
@@ -689,7 +699,7 @@ func (s *serveServer) handleSessionMCP(w http.ResponseWriter, r *http.Request, s
 			return
 		}
 		defer rt.mu.Unlock()
-		if err := rt.ensureMCPManagerLocked(); err != nil {
+		if err := rt.refreshMCPManagerLocked(); err != nil {
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
 			return
 		}
@@ -709,7 +719,7 @@ func (s *serveServer) handleSessionMCP(w http.ResponseWriter, r *http.Request, s
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", "cannot change MCP servers while a response is running")
 		return
 	}
-	if err := rt.ensureMCPManagerLocked(); err != nil {
+	if err := rt.refreshMCPManagerLocked(); err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
 	}

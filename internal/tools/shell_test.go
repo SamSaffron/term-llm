@@ -436,6 +436,9 @@ func TestShellTool_Timeout(t *testing.T) {
 		if !strings.Contains(output.Content, "[Command timed out]") {
 			t.Errorf("expected '[Command timed out]' in output, got: %s", output.Content)
 		}
+		if strings.Contains(output.Content, "exit_code:") {
+			t.Errorf("timed-out command should not report an exit code, got: %s", output.Content)
+		}
 		if !output.TimedOut {
 			t.Error("expected output.TimedOut=true for timed-out command")
 		}
@@ -455,6 +458,9 @@ func TestShellTool_Timeout(t *testing.T) {
 		}
 		if !strings.Contains(output.Content, "[Command canceled]") {
 			t.Fatalf("expected cancellation marker in output, got: %s", output.Content)
+		}
+		if strings.Contains(output.Content, "exit_code:") {
+			t.Errorf("canceled command should not report an exit code, got: %s", output.Content)
 		}
 		if output.TimedOut || !output.IsError {
 			t.Fatalf("canceled command flags = IsError:%v TimedOut:%v; want true, false", output.IsError, output.TimedOut)

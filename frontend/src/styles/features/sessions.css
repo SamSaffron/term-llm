@@ -243,7 +243,7 @@
     transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.session-row.is-hiding {
+.session-row.is-archiving {
   overflow: hidden;
   max-height: 0;
   opacity: 0;

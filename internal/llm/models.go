@@ -108,7 +108,7 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "gpt-5", InputLimit: 272_000, OutputLimit: 128_000},
 	},
 	"openrouter": {
-		{ID: "x-ai/grok-code-fast-1"},
+		{ID: "openrouter/free"},
 	},
 	"gemini": {
 		{ID: "gemini-3-pro-preview", InputLimit: 936_000, OutputLimit: 65_536},
@@ -119,12 +119,7 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "gemini-2.5-flash-lite", InputLimit: 983_000, OutputLimit: 65_536},
 	},
 	"zen": {
-		{ID: "mimo-v2.5-free", InputLimit: 168_000, OutputLimit: 32_000},
-		{ID: "big-pickle", InputLimit: 168_000, OutputLimit: 32_000},
-		{ID: "gpt-5-nano", InputLimit: 96_000, OutputLimit: 32_000},
-		{ID: "nemotron-3-super-free", InputLimit: 96_000, OutputLimit: 32_000},
-		{ID: "trinity-large-preview-free", InputLimit: 96_000, OutputLimit: 32_000},
-		{ID: "qwen3.6-plus-free", InputLimit: 900_000, OutputLimit: 100_000},
+		{ID: "deepseek-v4-flash", InputLimit: 616_000, OutputLimit: 384_000},
 	},
 	// OpenCode Go models are populated dynamically from its merged live catalog.
 	"opencode-go": {},

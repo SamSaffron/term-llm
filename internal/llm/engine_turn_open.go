@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 
 	"github.com/samsaffron/term-llm/internal/restart"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 func (e *Engine) requestNativeToolFallback(req *Request, planner ToolSurfacePlanner, runID string, cause error, committed bool) (bool, string) {
@@ -20,7 +20,7 @@ func (e *Engine) requestNativeToolFallback(req *Request, planner ToolSurfacePlan
 	fallback, reason := nativePlanner.FallbackNativeToolDiscovery(runID, cause, committed)
 	if fallback {
 		resetProviderConversation(e.provider)
-		slog.Warn("native tool discovery fell back to portable", "reason", reason, "session_id", req.SessionID)
+		runtimeoutput.Warn("native tool discovery fell back to portable", "reason", reason, "session_id", req.SessionID)
 	}
 	return fallback, reason
 }
@@ -43,7 +43,7 @@ func (e *Engine) openProviderTurnStream(ctx context.Context, req *Request, send 
 		}
 		if resetReason != "" {
 			resetProviderConversation(e.provider)
-			slog.Debug("reset provider conversation for tool-surface change", "reason", resetReason, "session_id", req.SessionID, "turn", attempt)
+			runtimeoutput.Debug("reset provider conversation for tool-surface change", "reason", resetReason, "session_id", req.SessionID, "turn", attempt)
 		}
 	}
 	if len(req.Tools) == 0 && req.NativeToolDiscovery == nil {

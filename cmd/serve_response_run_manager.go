@@ -841,6 +841,12 @@ func (m *responseRunManager) sessionBoundary(sessionID string) *sync.Mutex {
 }
 
 func (m *responseRunManager) trySetActiveRun(sessionID, runID string) bool {
+	return m.trySetActiveRunIf(sessionID, runID, nil)
+}
+
+// trySetActiveRunIf fences a continuation against a newer completed turn while
+// holding the same boundary that protects active-run admission and release.
+func (m *responseRunManager) trySetActiveRunIf(sessionID, runID string, check func() bool) bool {
 	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(runID) == "" {
 		return false
 	}
@@ -853,6 +859,9 @@ func (m *responseRunManager) trySetActiveRun(sessionID, runID string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if active := m.activeBySession[sessionID]; active != "" && active != runID {
+		return false
+	}
+	if check != nil && !check() {
 		return false
 	}
 	m.activeBySession[sessionID] = runID

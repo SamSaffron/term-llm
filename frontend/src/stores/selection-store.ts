@@ -30,6 +30,12 @@ import { approvalPrompt, askUserPrompt, listFrom, recordValue } from './store-ut
 export class SelectionStore {
   private epoch = 0;
   readonly headerLoading = signal(false);
+  /**
+   * Session whose transcript is being hydrated with nothing local to show yet.
+   * The transcript must not fall back to the new-chat screen there: the switch
+   * would read as "this conversation is empty" until the bodies land.
+   */
+  readonly transcriptLoading = signal('');
   readonly historyLoading = signal('');
   readonly historyError = signal('');
   private historyRequest: AbortController | undefined;
@@ -55,6 +61,7 @@ export class SelectionStore {
     ++this.epoch;
     this.cancelHistoryRequest();
     clearTimeout(this.headerDeadline);
+    this.transcriptLoading.value = '';
   }
 
   get generation(): number {
@@ -73,6 +80,9 @@ export class SelectionStore {
     clearTimeout(this.headerDeadline);
     batch(() => {
       this.headerLoading.value = true;
+      // Cached bodies render immediately; only an unhydrated row needs the
+      // placeholder. A live projection alone still counts as nothing durable.
+      this.transcriptLoading.value = session.messages.length ? '' : session.id;
       this.sessionsStore.activate(session);
       this.plans.current.value = null;
       this.plans.openState.value = false;
@@ -107,6 +117,12 @@ export class SelectionStore {
     // Hydrate independent header sources together; branch discovery must not
     // wait behind skills before appearing as a separate header layer.
     const hydration = this.loadSession(session.id, epoch);
+    // Transcript bodies arrive with hydration and must not wait behind the
+    // ancillary header sources below. loadSession absorbs its own failures, so
+    // this always releases the placeholder.
+    void hydration.then(() => {
+      if (epoch === this.epoch) this.transcriptLoading.value = '';
+    });
     const revealHeader = () => {
       if (epoch !== this.epoch) return;
       clearTimeout(this.headerDeadline);
@@ -151,6 +167,7 @@ export class SelectionStore {
     this.cancelHistoryRequest();
     clearTimeout(this.headerDeadline);
     this.headerLoading.value = false;
+    this.transcriptLoading.value = '';
     const currentSession = this.sessionsStore.activeSession.peek();
     const requestedProject =
       projectId === undefined
@@ -200,15 +217,21 @@ export class SelectionStore {
   async resolveAndSelectSession(
     id: string,
     replace = false,
-    options: { prepend?: boolean } = {},
+    options: {
+      prepend?: boolean;
+      newChatOnMiss?: boolean;
+      propagateError?: boolean;
+      isCurrent?: () => boolean;
+    } = {},
   ): Promise<Session | null> {
     const epoch = this.epoch;
+    const stillCurrent = () => epoch === this.epoch && (options.isCurrent?.() ?? true);
     try {
       const data = await this.services.endpoints.selectedSession(id);
-      if (epoch !== this.epoch) return null;
+      if (!stillCurrent()) return null;
       const source = recordValue(data.selected_session);
       if (!source) {
-        this.newChat(replace);
+        if (options.newChatOnMiss !== false) this.newChat(replace);
         return null;
       }
       const session = this.sessionsStore.sessionFrom(source);
@@ -218,7 +241,10 @@ export class SelectionStore {
       await this.selectSession(existing || session, replace);
       return existing || session;
     } catch (error) {
-      if (epoch === this.epoch) this.services.toast(error, 'error');
+      if (stillCurrent()) {
+        if (options.propagateError) throw error;
+        this.services.toast(error, 'error');
+      }
       return null;
     }
   }

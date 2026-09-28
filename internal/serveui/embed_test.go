@@ -127,11 +127,21 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// attempt-discard handling and overflow recovery), the delegation context
 		// surface, the subagent index and the delegated composer modes, bringing
 		// the shell to ~535.1/151.3 kB. Same ~1% rule as above.
-		"dist/app.js":                {raw: 541_000, gzip: 153_000},
+		//
+		// Page-provided (WebMCP) tools add the eager tool discovery store, the
+		// client-tool runner, and the run engine's tool-output continuation;
+		// discovery must run at startup, so none of it can be lazy. That brings
+		// the shell to ~527.0/153.9 kB raw/gzip. Same ~1% rule as above.
+		"dist/app.js":                {raw: 541_000, gzip: 155_500},
 		"dist/chunks/Lightbox.js":    {raw: 8_000, gzip: 3_200},
 		"dist/assets/Lightbox.css":   {raw: 4_000, gzip: 1_400},
 		"dist/chunks/StatsModal.js":  {raw: 8_000, gzip: 3_000},
 		"dist/assets/StatsModal.css": {raw: 5_000, gzip: 1_600},
+		// The MCP servers dialog (flat list, row menu, and the add-server sheet
+		// with catalogue/URL/command sources) measured 14.0/5.0 kB JS and
+		// 11.1/2.7 kB CSS; it loads only when the dialog opens.
+		"dist/chunks/MCPModal.js":  {raw: 15_500, gzip: 5_600},
+		"dist/assets/MCPModal.css": {raw: 12_500, gzip: 3_100},
 		// The live panel's binding line, the transcript cross-fade that runs when a
 		// voice switch swaps the session in place, and the subagent breadcrumb /
 		// index / live-tail styling bring the sheet to ~178.1 kB. Same reasoning as
@@ -140,8 +150,11 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		"dist/app.css": {raw: 180_000, gzip: 34_000},
 		// Measured after the completed standalone port: 67.7/21.5 KiB JS and
 		// 16.7/4.1 KiB CSS. These limits retain modest growth headroom without
-		// allowing chat-only rendering dependencies into the Hub graph.
-		"dist/hub.js":  {raw: 72_000, gzip: 24_000},
+		// allowing chat-only rendering dependencies into the Hub graph. The
+		// native-app sign-in approval flow brought JS to 72.5/23.5 KiB, and
+		// steering sign-in off non-passkey origins (127.0.0.1 vs localhost) to
+		// 72.6/23.5 KiB.
+		"dist/hub.js":  {raw: 76_000, gzip: 25_000},
 		"dist/hub.css": {raw: 19_000, gzip: 5_500},
 	}
 	for name, budget := range budgets {
@@ -192,6 +205,28 @@ func TestLightboxAssetsRemainLazy(t *testing.T) {
 		}
 		if !bytes.Contains(lazy, []byte(asset.marker)) {
 			t.Errorf("%s is missing image viewer code/styles", asset.lazy)
+		}
+	}
+}
+
+func TestMCPDialogAssetsRemainLazy(t *testing.T) {
+	for _, asset := range []struct{ eager, lazy, marker string }{
+		{"dist/app.js", "dist/chunks/MCPModal.js", "Local command"},
+		{"dist/app.css", "dist/assets/MCPModal.css", ".mcp-row-menu"},
+	} {
+		eager, err := StaticAsset(asset.eager)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lazy, err := StaticAsset(asset.lazy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(eager, []byte(asset.marker)) {
+			t.Errorf("%s unexpectedly contains MCP dialog code/styles", asset.eager)
+		}
+		if !bytes.Contains(lazy, []byte(asset.marker)) {
+			t.Errorf("%s is missing MCP dialog code/styles", asset.lazy)
 		}
 	}
 }

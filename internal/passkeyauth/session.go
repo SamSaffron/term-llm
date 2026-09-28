@@ -55,6 +55,12 @@ type sessionRecord struct {
 	persistedLastSeen time.Time
 	recentUntil       time.Time
 	recentAvailable   bool
+	// nativeApprovalUntil is a one-use grant, created by a passkey login that
+	// returns to a native-app approval page. It authorizes only the approval of
+	// nativeApprovalChallenge, never other recent-auth operations such as
+	// credential changes.
+	nativeApprovalUntil     time.Time
+	nativeApprovalChallenge string
 }
 
 type sessionStoreFile struct {
@@ -465,6 +471,50 @@ func (s *Sessions) ConsumeRecentAuth(p Principal) error {
 		return ErrInvalidSession
 	}
 	if !r.recentAvailable || !s.now().UTC().Before(r.recentUntil) {
+		r.recentAvailable = false
+		return ErrRecentAuthRequired
+	}
+	r.recentAvailable = false
+	return nil
+}
+
+// GrantNativeApproval records that p just completed a passkey ceremony for
+// the native-app sign-in identified by challenge, so approving that sign-in
+// can proceed without a second prompt.
+func (s *Sessions) GrantNativeApproval(p Principal, challenge string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.recordForPrincipalLocked(p)
+	if r == nil {
+		return ErrInvalidSession
+	}
+	if challenge == "" {
+		return ErrRecentAuthRequired
+	}
+	r.nativeApprovalUntil = s.now().UTC().Add(RecentAuthLifetime)
+	r.nativeApprovalChallenge = challenge
+	return nil
+}
+
+// ConsumeNativeApproval authorizes approving the native sign-in identified by
+// challenge. It spends a native-approval grant for that same challenge or,
+// failing that, a general recent-auth grant, so each native-app ticket needs
+// its own passkey assertion. Any pending native-approval grant is discarded by
+// the attempt; a general grant survives when the native grant is used.
+func (s *Sessions) ConsumeNativeApproval(p Principal, challenge string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.recordForPrincipalLocked(p)
+	if r == nil {
+		return ErrInvalidSession
+	}
+	now := s.now().UTC()
+	nativeValid := now.Before(r.nativeApprovalUntil) && challenge != "" && r.nativeApprovalChallenge == challenge
+	r.nativeApprovalUntil, r.nativeApprovalChallenge = time.Time{}, ""
+	if nativeValid {
+		return nil
+	}
+	if !r.recentAvailable || !now.Before(r.recentUntil) {
 		r.recentAvailable = false
 		return ErrRecentAuthRequired
 	}

@@ -861,12 +861,15 @@ describe('LiveCall', () => {
       capture(40);
       expect(sent).toHaveLength(round + 1);
       release();
-      await vi.waitFor(() => expect(sent).toHaveLength(round + 2));
+      await vi.waitFor(() => expect(sent).toHaveLength(round + 2), { interval: 1 });
       expect(sent.at(-1)).toHaveLength(12_800);
     }
     const combined = sent.flatMap((part) => Array.from(part));
     expect(combined).toHaveLength(packet * 320);
-    combined.forEach((value, index) => expect(value).toBe(Math.floor(index / 320)));
+    // One assertion, not one per sample: ~155k expect() calls blow the test
+    // timeout under full-suite load.
+    const mismatch = combined.findIndex((value, index) => value !== Math.floor(index / 320));
+    expect(mismatch).toBe(-1);
     release();
     await call.stop();
   });

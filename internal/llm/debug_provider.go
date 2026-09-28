@@ -908,6 +908,22 @@ func parseCommand(prompt string, tools []ToolSpec) []*ToolCall {
 		}
 		return calls
 
+	case "call":
+		// Generic form for any offered tool, e.g. client-defined tools:
+		// "call webmcp__ping message=hi".
+		if len(args) < 1 || !toolSet[args[0]] {
+			return nil
+		}
+		toolName = args[0]
+		argsMap = map[string]string{}
+		for _, pair := range args[1:] {
+			key, value, ok := strings.Cut(pair, "=")
+			if !ok || key == "" {
+				return nil
+			}
+			argsMap[key] = value
+		}
+
 	case "ask":
 		if !toolSet["ask_user"] {
 			return nil

@@ -53,6 +53,50 @@
   gap: 0.85rem;
 }
 
+/* Placeholder shown while a newly selected transcript hydrates. */
+.transcript-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 0.6rem 0;
+}
+
+.transcript-loading-row {
+  height: 2.6rem;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  animation: transcript-loading-pulse 1.2s ease-in-out infinite alternate;
+}
+
+.transcript-loading-row:nth-child(1) {
+  width: min(52%, 22rem);
+  align-self: flex-end;
+}
+
+.transcript-loading-row:nth-child(2) {
+  width: 100%;
+  height: 4.4rem;
+  animation-delay: 0.15s;
+}
+
+.transcript-loading-row:nth-child(3) {
+  width: min(70%, 30rem);
+  animation-delay: 0.3s;
+}
+
+@keyframes transcript-loading-pulse {
+  to {
+    opacity: 0.45;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .transcript-loading-row {
+    animation: none;
+  }
+}
+
 .empty-state {
   margin: 2.5rem auto;
   text-align: center;

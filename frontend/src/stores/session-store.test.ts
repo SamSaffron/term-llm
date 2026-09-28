@@ -537,6 +537,114 @@ describe('SessionStore', () => {
     }
   });
 
+  it('restores an active archived session outside the sidebar and refreshes its listing', async () => {
+    const store = new AppStore(testConfig);
+    try {
+      const archived = testSession({ id: 's_archived', title: 'Archived convo', archived: true });
+      store.sessionStore.activate(archived);
+      expect(store.sessions.value).toEqual([]);
+      store.endpoints.patchSession = vi.fn(async () => ({}));
+      store.refreshSidebar = vi.fn(async () => undefined);
+
+      await store.archiveSession(archived);
+
+      expect(store.endpoints.patchSession).toHaveBeenCalledWith(archived.id, { archived: false });
+      expect(store.activeSession.value?.archived).toBe(false);
+      expect(store.refreshSidebar).toHaveBeenCalledOnce();
+      await store.archiveSession(store.activeSession.value!);
+      expect(store.endpoints.patchSession).toHaveBeenLastCalledWith(archived.id, {
+        archived: true,
+      });
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('restores a listed archived session without resetting its paginated sidebar', async () => {
+    const store = new AppStore(testConfig);
+    try {
+      const archived = testSession({ id: 's_archived', archived: true });
+      store.showArchived.value = true;
+      store.sessions.value = [archived];
+      store.endpoints.patchSession = vi.fn(async () => ({}));
+      store.refreshSidebar = vi.fn(async () => undefined);
+
+      await store.archiveSession(archived);
+
+      expect(store.sessions.value[0].archived).toBe(false);
+      expect(store.refreshSidebar).not.toHaveBeenCalled();
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('does not report a saved restore as failed when its sidebar refresh fails', async () => {
+    const store = new AppStore(testConfig);
+    try {
+      const archived = testSession({ id: 's_archived', archived: true });
+      store.sessionStore.activate(archived);
+      store.endpoints.patchSession = vi.fn(async () => ({}));
+      store.refreshSidebar = vi.fn(async () => {
+        throw new Error('Sidebar unavailable');
+      });
+
+      await expect(store.archiveSession(archived)).resolves.toBeUndefined();
+      expect(store.activeSession.value?.archived).toBe(false);
+      expect(store.refreshSidebar).toHaveBeenCalledOnce();
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('updates a transient session when pinning, even if the catalog refresh fails', async () => {
+    const store = new AppStore(testConfig);
+    try {
+      const transient = testSession({ id: 's_transient', pinned: false });
+      store.sessionStore.activate(transient);
+      store.recentSessions.value = [transient];
+      store.sessionStore.searchResults.value = [transient];
+      store.endpoints.patchSession = vi.fn(async () => ({}));
+      store.refreshSidebar = vi.fn(async () => {
+        throw new Error('Sidebar unavailable');
+      });
+
+      await store.pinSession(store.activeSession.value!);
+      expect(store.activeSession.value?.pinned).toBe(true);
+      expect(store.recentSessions.value[0].pinned).toBe(true);
+      expect(store.sessionStore.searchResults.value?.[0].pinned).toBe(true);
+      await store.pinSession(store.activeSession.value!);
+      expect(store.endpoints.patchSession).toHaveBeenNthCalledWith(2, transient.id, {
+        pinned: false,
+      });
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('updates the active transient title after renaming', async () => {
+    const store = new AppStore(testConfig);
+    try {
+      const transient = testSession({ id: 's_transient', title: 'Old title' });
+      store.sessionStore.activate(transient);
+      store.recentSessions.value = [transient];
+      store.sessionStore.openRename(transient);
+      store.endpoints.patchSession = vi.fn(async () => ({}));
+      store.refreshSidebar = vi.fn(async () => {
+        throw new Error('Sidebar unavailable');
+      });
+
+      await store.renameSession({ name: 'New title' });
+      expect(store.activeSession.value).toMatchObject({ name: 'New title', title: 'New title' });
+      expect(store.recentSessions.value[0].title).toBe('New title');
+      expect(store.renameTarget.value).toBeNull();
+      store.sessionStore.openRename(store.activeSession.value!);
+      await store.renameSession({ name: '' });
+      expect(store.activeSession.value).toMatchObject({ name: '', title: 'New chat' });
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('removes the old active draft row when rekeying a session', () => {
     const store = new AppStore(testConfig);
     try {

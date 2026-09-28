@@ -53,13 +53,13 @@ Config paths below are relative to `$XDG_CONFIG_HOME/term-llm/`, normally `~/.co
 | `copilot` | `term-llm auth login copilot`; `copilot_oauth.json` | GitHub account and organization policy determine available models. |
 | `gemini` | `GEMINI_API_KEY` | Google Gemini API. |
 | `bedrock` | AWS credential chain or explicit `access_key_id` / `secret_access_key` | Region, profile, model access, and inference-profile routing matter. |
-| `openrouter` | `OPENROUTER_API_KEY` | Use OpenRouter's provider-qualified model IDs. |
+| `openrouter` | `OPENROUTER_API_KEY` | Default provider; main and fast models use `openrouter/free` unless overridden. |
 | `xai` | `XAI_API_KEY` | Public xAI API. |
 | `venice` | `VENICE_API_KEY` | Hosted text models and Venice-native search. |
 | `nearai` | `NEARAI_API_KEY` | NEAR AI Cloud; check the service's privacy and TEE policies. |
 | `sambanova` | `SAMBANOVA_API_KEY` | SambaNova Cloud. |
-| `zen` | No key for supported free models; optional `ZEN_API_KEY` | Free model availability changes independently of term-llm releases. |
-| `opencode-go` | `OPENCODE_API_KEY` | OpenCode Go subscription key; distinct from Zen's optional key. |
+| `zen` | `ZEN_API_KEY` | Paid models only; the free tier is restricted to OpenCode. |
+| `opencode-go` | `OPENCODE_API_KEY` | OpenCode Go subscription key; distinct from Zen's API key. |
 | `ollama` | Running local Ollama server; no API key needed for local use | Native `/api/chat`; configure `base_url` or `OLLAMA_HOST`, without `/v1`. |
 | `vllm` | Configured endpoint/model; optional `VLLM_API_KEY` | Whether a key is required depends on your server. |
 | `claude-bin` | Installed `claude` CLI and its login | Uses Claude Code's authentication; no separate term-llm API key required. |
@@ -83,18 +83,24 @@ term-llm auth logout chatgpt
 
 Use the companion CLI's own sign-in process for `*-bin` integrations; `term-llm auth login` is not their login manager. Keep OAuth files private and do not copy tokens into project configuration. Copilot chat OAuth is also separate from the GitHub billing credentials used by [live usage reporting](/reference/usage-tracking/).
 
+### OpenRouter defaults
+
+New configurations use OpenRouter with `openrouter/free` for both the main and fast models. Set `OPENROUTER_API_KEY` before use. The free router selects from available free models that support the request; usage limits and availability apply. Existing saved provider and model choices are not rewritten.
+
+To explicitly select the free router, use `--provider openrouter:openrouter/free`. Other OpenRouter models and features may incur charges.
+
 ### OpenCode Zen
 
-The shipped Zen main and fast defaults are `mimo-v2.5-free`. To select that model explicitly, including on an older installation or one with a saved model override:
+Zen requires `ZEN_API_KEY` or `providers.zen.api_key`. The shipped main and fast defaults are `deepseek-v4-flash`. To select that model explicitly, including on an older installation or one with a saved model override:
 
 ```bash
-term-llm ask --provider zen:mimo-v2.5-free "Explain git rebase in three sentences"
+term-llm ask --provider zen:deepseek-v4-flash "Explain git rebase in three sentences"
 term-llm models --provider zen
 ```
 
 Zen uses the OpenAI-compatible Chat Completions endpoint at `https://opencode.ai/zen/v1`; unlike OpenCode Go, this adapter does not dynamically switch to Responses or Anthropic Messages. Only models compatible with that endpoint can be used through it. Reasoning-effort suffixes are offered when the catalog advertises discrete efforts; a model having internal reasoning does not mean it accepts every effort suffix.
 
-A model can remain listed while unavailable upstream. If a request reports an unsupported or unavailable model, choose another currently usable free model or a different configured provider. Do not assume `gpt-5-nano` or a model from an old free-model list is still free. An explicit saved `providers.zen.model` or `fast_model` takes precedence over new shipped defaults.
+Free models are excluded from term-llm's Zen model listings and completions. Existing saved free-model overrides are not migrated automatically: replace `providers.zen.model` and `fast_model` with a paid model, or choose another provider.
 
 ### Companion CLI providers
 
@@ -779,7 +785,7 @@ See [Search](/guides/search/) for the full routing model.
 
 ## Recommendations by use case
 
-- **fast free experimentation:** `zen`
+- **free experimentation:** `openrouter:openrouter/free` (API key required; usage limits apply)
 - **OpenAI ecosystem / Codex editing:** `openai`
 - **Claude models:** `anthropic`
 - **Claude models via AWS billing:** `bedrock`

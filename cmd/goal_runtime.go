@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/prompt"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
 	toolpkg "github.com/samsaffron/term-llm/internal/tools"
 )
@@ -312,6 +312,7 @@ func (rt *serveRuntime) runActiveGoalLoop(ctx context.Context, stateful bool, re
 		replaceHistory = false
 		aggregate.Text.WriteString(result.Text.String())
 		aggregate.ToolCalls = append(aggregate.ToolCalls, result.ToolCalls...)
+		aggregate.clientCalls = result.clientCalls
 		aggregate.Usage.Add(result.Usage)
 		aggregate.SessionUsage = result.SessionUsage
 		if passUsage.IsZero() {
@@ -605,7 +606,7 @@ func (rt *serveRuntime) persistGoal(ctx context.Context, sessionID string, goal 
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), goalPersistTimeout)
 	defer cancel()
 	if err := session.UpdateGoal(persistCtx, store, sessionID, goal); err != nil {
-		log.Printf("[goal] UpdateGoal failed for %s: %v", sessionID, err)
+		runtimeoutput.Logf("[goal] UpdateGoal failed for %s: %v", sessionID, err)
 		return err
 	}
 	rt.syncSessionMetaGoal(goal)

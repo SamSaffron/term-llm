@@ -125,7 +125,7 @@
         <div id="install-shell" class="install-option"><p class="install-option-label">Shell installer</p>{{ partial "command.html" (dict "command" .shell "label" "Install with the shell installer") }}<p class="small-note">Downloads and runs a shell script. <a href="https://github.com/samsaffron/term-llm/blob/main/install.sh">Inspect the installer</a> or <a href="https://github.com/samsaffron/term-llm/releases">download a release</a>.</p></div>
       </div>
       <h3><span class="step-number">2</span> Try a first question</h3>
-      {{ partial "command.html" (dict "command" .trial "label" "Try a question with Zen") }}
+      {{ partial "command.html" (dict "command" .trial "label" "Try a question") }}
       <p class="small-note">{{ .caveat }} <a href="/getting-started/providers-and-setup/">Already have a provider?</a></p>
       <a class="button primary" href="/getting-started/quickstart/">Continue to the quickstart →</a>
     </div>

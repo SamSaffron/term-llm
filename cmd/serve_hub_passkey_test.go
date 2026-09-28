@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -215,6 +216,10 @@ func TestHubPasskeyBootstrapVerifyCookieSecurityAndOrigin(t *testing.T) {
 	h.ServeHTTP(w, refresh)
 	if w.Code != http.StatusOK {
 		t.Fatalf("active bootstrap grant refresh=%d %s", w.Code, w.Body.String())
+	}
+	// The page must know its WebAuthn origin so the browser can leave aliases such as 127.0.0.1.
+	if !strings.Contains(html.UnescapeString(w.Body.String()), `"origin":"http://localhost:8090"`) {
+		t.Fatalf("auth page config lacks the passkey origin: %s", w.Body.String())
 	}
 	reuse := httptest.NewRequest(http.MethodPost, "http://backend/api/auth/bootstrap/verify", strings.NewReader(`{"code":""}`))
 	reuse.Header.Set("Origin", "http://localhost:8090")

@@ -243,7 +243,8 @@ func installUserService(cmd *cobra.Command, kind string, args []string, opts ser
 			}
 		}
 	}
-	if err = e.native.Install(spec, path); err != nil {
+	definitionReplaced, err := e.native.Install(spec, path)
+	if err != nil {
 		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Installed %s user service. Configuration: %s\n", kind, path)
@@ -251,7 +252,7 @@ func installUserService(cmd *cobra.Command, kind string, args []string, opts ser
 		reportServiceNotStarted(cmd, spec, kind, code)
 		return nil
 	}
-	if err = e.native.Reconcile(cmd.Context(), kind, serviceInstallNeedsRestart(oldErr, old, spec, imported, code)); err != nil {
+	if err = e.native.Reconcile(cmd.Context(), kind, serviceInstallNeedsRestart(oldErr, old, spec, imported, code, definitionReplaced)); err != nil {
 		return err
 	}
 	if err = waitUserService(cmd.Context(), spec, e.native); err != nil {
@@ -427,8 +428,10 @@ func reportServiceNotStarted(cmd *cobra.Command, spec userservice.Spec, kind, co
 	}
 }
 
-func serviceInstallNeedsRestart(oldErr error, old, spec userservice.Spec, imported map[string]string, code string) bool {
-	return oldErr == nil && (!reflect.DeepEqual(old, spec) || len(imported) > 0 || code != "")
+func serviceInstallNeedsRestart(oldErr error, old, spec userservice.Spec, imported map[string]string, code string, definitionReplaced bool) bool {
+	// A replaced native definition (e.g. a new launchd key after an upgrade)
+	// only takes effect once the loaded job is reloaded.
+	return definitionReplaced || (oldErr == nil && (!reflect.DeepEqual(old, spec) || len(imported) > 0 || code != ""))
 }
 
 func reportServiceInstalled(cmd *cobra.Command, e serviceEnvironment, spec userservice.Spec, kind, code string, opts serviceInstallOptions) {

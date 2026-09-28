@@ -2,13 +2,13 @@ package tools
 
 import (
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/samsaffron/term-llm/internal/pathutil"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 // ToolConfig holds configuration for the local tool system.
@@ -210,21 +210,27 @@ func (c ToolConfig) Merge(other ToolConfig) ToolConfig {
 		result.ShellWorkingDir = other.ShellWorkingDir
 	}
 
-	// Merge spawn config
-	if other.Spawn.MaxParallel > 0 {
-		result.Spawn.MaxParallel = other.Spawn.MaxParallel
+	result.Spawn = result.Spawn.merge(other.Spawn)
+
+	return result
+}
+
+func (c SpawnConfig) merge(other SpawnConfig) SpawnConfig {
+	result := c
+	if other.MaxParallel > 0 {
+		result.MaxParallel = other.MaxParallel
 	}
-	if other.Spawn.MaxDepth > 0 {
-		result.Spawn.MaxDepth = other.Spawn.MaxDepth
+	if other.MaxDepth > 0 {
+		result.MaxDepth = other.MaxDepth
 	}
-	if other.Spawn.DefaultTimeout > 0 {
-		result.Spawn.DefaultTimeout = other.Spawn.DefaultTimeout
+	if other.DefaultTimeout > 0 {
+		result.DefaultTimeout = other.DefaultTimeout
 	}
-	if len(other.Spawn.AllowedAgents) > 0 {
-		result.Spawn.AllowedAgents = other.Spawn.AllowedAgents
+	if len(other.AllowedAgents) > 0 {
+		result.AllowedAgents = other.AllowedAgents
 	}
-	if len(other.Spawn.AgentModels) > 0 {
-		result.Spawn.AgentModels = other.Spawn.AgentModels
+	if len(other.AgentModels) > 0 {
+		result.AgentModels = other.AgentModels
 	}
 
 	return result
@@ -276,12 +282,12 @@ func (c *ToolConfig) Validate() []error {
 	// Warn for nonexistent directories (may be mounted later)
 	for _, dir := range readDirs {
 		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			slog.Warn("read_dir does not exist", "dir", dir)
+			runtimeoutput.Warn("read_dir does not exist", "dir", dir)
 		}
 	}
 	for _, dir := range writeDirs {
 		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			slog.Warn("write_dir does not exist", "dir", dir)
+			runtimeoutput.Warn("write_dir does not exist", "dir", dir)
 		}
 	}
 
@@ -498,7 +504,7 @@ func (c *ToolConfig) BuildPermissions() (*ToolPermissions, error) {
 		}
 		if err := perms.AddReadDir(dir); err != nil {
 			// Non-fatal: directory may not exist yet
-			slog.Warn("failed to add read dir", "dir", dir, "error", err)
+			runtimeoutput.Warn("failed to add read dir", "dir", dir, "error", err)
 		}
 	}
 
@@ -507,7 +513,7 @@ func (c *ToolConfig) BuildPermissions() (*ToolPermissions, error) {
 			dir = resolvePathAgainstBase(dir, baseAbs)
 		}
 		if err := perms.AddWriteDir(dir); err != nil {
-			slog.Warn("failed to add write dir", "dir", dir, "error", err)
+			runtimeoutput.Warn("failed to add write dir", "dir", dir, "error", err)
 		}
 	}
 

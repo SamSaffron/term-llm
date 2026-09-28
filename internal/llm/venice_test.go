@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -388,6 +389,93 @@ func TestVeniceProviderSearchUsesVeniceParametersAndBaseModel(t *testing.T) {
 	}
 	if !got.Stream {
 		t.Fatal("expected stream=true")
+	}
+}
+
+func TestVeniceStreamDeltaCompletionAndErrors(t *testing.T) {
+	tests := []struct {
+		name      string
+		wire      string
+		wantTypes []EventType
+		wantText  string
+		wantError string
+	}{
+		{
+			name: "tool and usage after malformed data",
+			wire: "data: not-json\n\n" +
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"lookup","arguments":"{\"id\":"}}]}}]}` + "\n\n" +
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"1}"}}]}}],"usage":{"prompt_tokens":9,"completion_tokens":3,"total_tokens":12,"prompt_tokens_details":{"cached_tokens":2}}}` + "\n\n" +
+				"data: [DONE]\n\n",
+			wantTypes: []EventType{EventToolCall, EventUsage, EventDone},
+		},
+		{
+			name:      "flush unfinished inline tag at EOF",
+			wire:      "data: {\"choices\":[{\"delta\":{\"content\":\"<thi\"}}]}\n\n",
+			wantTypes: []EventType{EventTextDelta, EventDone},
+			wantText:  "<thi",
+		},
+		{
+			name:      "structured error event",
+			wire:      "event: error\ndata: {\"error\":{\"message\":\"quota exceeded\"}}\n\n",
+			wantError: "quota exceeded",
+		},
+		{
+			name:      "error after incomplete tool call",
+			wire:      `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1"}]}}]}` + "\n\n" + "data: [DONE]\n\n",
+			wantError: "missing tool name",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, tc.wire)
+			}))
+			defer ts.Close()
+			provider := &VeniceProvider{OpenAICompatProvider: NewOpenAICompatProvider(ts.URL, "test-key", "venice-uncensored", "Venice")}
+			stream, err := provider.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stream.Close()
+			var gotTypes []EventType
+			var gotText string
+			var gotError error
+			for {
+				event, err := stream.Recv()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					gotError = err
+					break
+				}
+				if event.Type == EventError {
+					gotError = event.Err
+					break
+				}
+				gotTypes = append(gotTypes, event.Type)
+				gotText += event.Text
+				if event.Type == EventToolCall && (event.Tool.ID != "call_1" || event.Tool.Name != "lookup" || string(event.Tool.Arguments) != `{"id":1}`) {
+					t.Errorf("tool call = %+v", event.Tool)
+				}
+				if event.Type == EventUsage && (event.Use.InputTokens != 7 || event.Use.CachedInputTokens != 2 || event.Use.OutputTokens != 3) {
+					t.Errorf("usage = %+v", event.Use)
+				}
+			}
+			if tc.wantError != "" {
+				if gotError == nil || !strings.Contains(gotError.Error(), tc.wantError) {
+					t.Fatalf("error = %v, want %q", gotError, tc.wantError)
+				}
+				return
+			}
+			if gotError != nil {
+				t.Fatal(gotError)
+			}
+			if !reflect.DeepEqual(gotTypes, tc.wantTypes) || gotText != tc.wantText {
+				t.Fatalf("events = %v, text = %q; want %v, %q", gotTypes, gotText, tc.wantTypes, tc.wantText)
+			}
+		})
 	}
 }
 

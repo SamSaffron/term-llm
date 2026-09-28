@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -85,11 +86,15 @@ func xmlText(s string) string {
 	return b.String()
 }
 
+func serviceArgs(binary, kind, specPath string) []string {
+	return []string{binary, "service", "run", kind, "--spec", specPath}
+}
+
 func (n Native) Render(s Spec, specPath string) ([]byte, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
-	args := []string{s.Binary, "service", "run", s.Kind, "--spec", specPath}
+	args := serviceArgs(s.Binary, s.Kind, specPath)
 	keys := make([]string, 0, len(s.Environment))
 	for key := range s.Environment {
 		keys = append(keys, key)
@@ -130,6 +135,9 @@ WantedBy=default.target
 	if n.OS != "darwin" {
 		return nil, fmt.Errorf("unsupported service platform %s", n.OS)
 	}
+	// Without ProcessType launchd spawns agents as throttled "daemon" jobs:
+	// timer wakeups are coalesced (~15-20ms late) and I/O is deprioritized, which
+	// makes an interactive web server stall on every poll, flush and SQLite retry.
 	var argv strings.Builder
 	for _, a := range args {
 		fmt.Fprintf(&argv, "<string>%s</string>", xmlText(a))
@@ -144,6 +152,7 @@ WantedBy=default.target
 <key>WorkingDirectory</key><string>%s</string>
 <key>EnvironmentVariables</key><dict>%s</dict>
 <key>RunAtLoad</key><true/>
+<key>ProcessType</key><string>Interactive</string>
 <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
 <key>ThrottleInterval</key><integer>5</integer>
 <key>ExitTimeOut</key><integer>30</integer>
@@ -181,19 +190,25 @@ func (n Native) CheckOwned(kind, specPath string) error {
 	}
 	return nil
 }
-func (n Native) Install(s Spec, specPath string) error {
+
+// Install writes the native definition. replaced reports whether an existing
+// definition had different content, so a loaded job must be reloaded to apply it
+// (for example after an upgrade changes the rendered template).
+func (n Native) Install(s Spec, specPath string) (replaced bool, err error) {
 	if err := n.CheckOwned(s.Kind, specPath); err != nil {
-		return err
+		return false, err
 	}
 	data, err := n.Render(s, specPath)
 	if err != nil {
-		return err
+		return false, err
 	}
 	path := n.Path(s.Kind)
 	if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
+		return false, err
 	}
-	return config.WriteFileAtomicallyNoFollow(path, data, 0600)
+	previous, readErr := os.ReadFile(path)
+	replaced = readErr == nil && !bytes.Equal(previous, data)
+	return replaced, config.WriteFileAtomicallyNoFollow(path, data, 0600)
 }
 
 // Start starts or restarts the process without replacing its native registration.
@@ -324,6 +339,49 @@ func (n Native) Enabled(ctx context.Context, kind string) (bool, error) {
 	return !strings.Contains(string(out), `"`+n.Label(kind)+`" => true`), nil
 }
 
+func launchdArguments(output string) []string {
+	lines := strings.Split(output, "\n")
+	for i, line := range lines {
+		if line != "\targuments = {" {
+			continue
+		}
+		var args []string
+		for _, entry := range lines[i+1:] {
+			entry = strings.TrimSpace(entry)
+			if entry == "}" {
+				return args
+			}
+			args = append(args, entry)
+		}
+		break
+	}
+	return nil
+}
+
+func (n Native) checkSubmittedJob(kind, specPath, source, output string) error {
+	if !strings.HasPrefix(source, "(submitted by ") || !strings.HasSuffix(source, ")") {
+		return fmt.Errorf("existing launchd job %s has no verifiable managed definition (source: %q); it will not be replaced", n.Label(kind), source)
+	}
+	if _, err := os.Stat(n.Path(kind)); err != nil {
+		return fmt.Errorf("existing launchd job %s has no installed managed definition: %w", n.Label(kind), err)
+	}
+	if err := n.CheckOwned(kind, specPath); err != nil {
+		return err
+	}
+	args := launchdArguments(output)
+	program := ""
+	for _, line := range strings.Split(output, "\n") {
+		if value, ok := strings.CutPrefix(line, "\tprogram = "); ok {
+			program = value
+			break
+		}
+	}
+	if len(args) == 6 && filepath.IsAbs(args[0]) && program == args[0] && slices.Equal(args[1:], serviceArgs("", kind, specPath)[1:]) {
+		return nil
+	}
+	return fmt.Errorf("existing launchd job %s has no verifiable managed definition (source: %q; loaded program or arguments differ); it will not be replaced", n.Label(kind), source)
+}
+
 // CheckLoaded also checks the supervisor's actual source, which may be outside
 // this shell's XDG_CONFIG_HOME or overridden in a runtime unit directory.
 func (n Native) CheckLoaded(ctx context.Context, kind, specPath string) error {
@@ -345,8 +403,10 @@ func (n Native) CheckLoaded(ctx context.Context, kind, specPath string) error {
 				break
 			}
 		}
-		if source == "" {
-			return fmt.Errorf("existing launchd job %s has no verifiable managed definition", n.Label(kind))
+		if !filepath.IsAbs(source) {
+			// ServiceManagement can report a submission description instead of a
+			// plist path. Never treat it as a filename or trust the label alone.
+			return n.checkSubmittedJob(kind, specPath, source, string(out))
 		}
 	}
 	if source == "" {

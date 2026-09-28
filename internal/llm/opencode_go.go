@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -15,6 +14,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 // OpenCode expects every request to carry a client identifier plus a stable
@@ -248,7 +248,7 @@ func (p *OpenCodeGoProvider) Stream(ctx context.Context, req Request) (Stream, e
 	}
 	metadata, err := p.catalog.model(ctx, p.httpClient, p.apiKey, p.baseURL, p.catalogURL, selected)
 	if err != nil {
-		slog.Debug("OpenCode Go catalog unavailable; defaulting to Chat Completions", "model", selected, "error", err)
+		runtimeoutput.Debug("OpenCode Go catalog unavailable; defaulting to Chat Completions", "model", selected, "error", err)
 		metadata = unknownOpenCodeGoModel(selected)
 	}
 	model, effort := splitOpenCodeGoModelEffort(selected, metadata)

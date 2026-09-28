@@ -1206,6 +1206,141 @@ describe('AppStore compatibility behavior', () => {
     ]);
   });
 
+  it('adds an MCP server to config and turns it on for the draft', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [];
+    store.activeSessionId.value = '';
+    store.draftActive.value = true;
+    let configured = false;
+    store.endpoints.addMCPServer = vi.fn(async () => {
+      configured = true;
+      return { name: 'exa', transport: 'http' as const, config_path: '/x', needs_input: false };
+    });
+    store.endpoints.getMCP = vi.fn(async () => ({
+      enabled: [],
+      servers: configured ? [{ name: 'exa', configured: true, status: 'stopped' }] : [],
+    }));
+    store.endpoints.setMCP = vi.fn(async (_id, enabled) => ({
+      enabled,
+      servers: [{ name: 'exa', configured: true, status: 'ready' }],
+    }));
+
+    const result = await store.addMCPServer({ kind: 'catalogue', catalogue_id: 'bundled:exa' });
+
+    expect(result.name).toBe('exa');
+    expect(store.endpoints.addMCPServer).toHaveBeenCalledWith({
+      kind: 'catalogue',
+      catalogue_id: 'bundled:exa',
+      dry_run: false,
+    });
+    expect(store.endpoints.setMCP).toHaveBeenCalledWith(expect.stringMatching(/^draft_/), ['exa']);
+    expect(store.mcp.value.enabled).toEqual(['exa']);
+  });
+
+  it('does not enable an added MCP server that still needs configuration', async () => {
+    const store = new AppStore(config);
+    store.endpoints.addMCPServer = vi.fn(async () => ({
+      name: 'custom',
+      transport: 'stdio' as const,
+      config_path: '/x',
+      needs_input: true,
+    }));
+    store.endpoints.getMCP = vi.fn(async () => ({ enabled: [], servers: [] }));
+    store.endpoints.setMCP = vi.fn();
+
+    await store.addMCPServer({ kind: 'catalogue', catalogue_id: 'registry:custom' });
+
+    expect(store.endpoints.setMCP).not.toHaveBeenCalled();
+  });
+
+  it('turns an MCP server off before removing it and restores it on undo', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [];
+    store.activeSessionId.value = '';
+    store.draftActive.value = true;
+    const server = {
+      name: 'github',
+      configured: true,
+      enabled: true,
+      status: 'ready',
+      error: '',
+      refreshWarning: '',
+      tools: 3,
+      active: 0,
+      deferred: 0,
+      loadingMode: '',
+    };
+    store.mcp.value = {
+      ownerId: store.composer.runtimeDraftId(),
+      servers: [server],
+      enabled: ['github'],
+      loading: false,
+      pending: '',
+      error: '',
+    };
+    const calls: string[] = [];
+    store.endpoints.setMCP = vi.fn(async (_id, enabled) => {
+      calls.push(`set:${enabled.join(',')}`);
+      return { enabled, servers: [{ name: 'github', configured: true, status: 'stopped' }] };
+    });
+    store.endpoints.removeMCPServer = vi.fn(async (name) => {
+      calls.push(`delete:${name}`);
+      return { name, config: { command: 'npx', args: ['-y', 'gh'] } };
+    });
+    store.endpoints.getMCP = vi.fn(async () => ({ enabled: [], servers: [] }));
+
+    await expect(store.removeMCPServer('github')).resolves.toBe(true);
+
+    expect(calls).toEqual(['set:', 'delete:github']);
+    expect(store.mcpRemoved.value).toEqual({
+      name: 'github',
+      config: { command: 'npx', args: ['-y', 'gh'] },
+      wasEnabled: true,
+    });
+
+    store.endpoints.addMCPServer = vi.fn(async () => ({
+      name: 'github',
+      transport: 'stdio' as const,
+      config_path: '/x',
+      needs_input: false,
+    }));
+    store.endpoints.getMCP = vi.fn(async () => ({
+      enabled: [],
+      servers: [{ name: 'github', configured: true, status: 'stopped' }],
+    }));
+    await store.undoRemoveMCPServer();
+
+    expect(store.endpoints.addMCPServer).toHaveBeenCalledWith({
+      kind: 'config',
+      name: 'github',
+      config: { command: 'npx', args: ['-y', 'gh'] },
+      dry_run: false,
+    });
+    expect(calls.at(-1)).toBe('set:github');
+    expect(store.mcpRemoved.value).toBeNull();
+  });
+
+  it('keeps an MCP server configured when turning it off fails', async () => {
+    const store = new AppStore(config);
+    store.mcp.value = {
+      ownerId: store.composer.runtimeDraftId(),
+      servers: [],
+      enabled: ['github'],
+      loading: false,
+      pending: '',
+      error: '',
+    };
+    store.endpoints.setMCP = vi.fn(async () => {
+      throw new Error('cannot change MCP servers while a response is running');
+    });
+    store.endpoints.removeMCPServer = vi.fn();
+
+    await expect(store.removeMCPServer('github')).resolves.toBe(false);
+
+    expect(store.endpoints.removeMCPServer).not.toHaveBeenCalled();
+    expect(store.mcp.value.error).toContain('while a response is running');
+  });
+
   it('keeps pre-message MCP changes on the draft used by the first send', async () => {
     const store = new AppStore(config);
     store.sessions.value = [];
@@ -1543,7 +1678,159 @@ describe('AppStore compatibility behavior', () => {
     expect(store.worktreesEnabled.value).toBe(true);
   });
 
+  it.each([false, true])(
+    'opens an older Hub attention deep link with projects enabled: %s',
+    async (projectsEnabled) => {
+      const previousRoute = `${location.pathname}${location.search}${location.hash}`;
+      history.replaceState(null, '', '/ui/chat/5093');
+      const store = new AppStore(config);
+      store.endpoints.capabilities = vi.fn(async () => ({
+        projects: { enabled: projectsEnabled },
+      }));
+      store.endpoints.providers = vi.fn(async () => ({ object: 'list', data: [] }));
+      store.endpoints.models = vi.fn(async () => ({ object: 'list', data: [] }));
+      store.endpoints.sessions = vi.fn(async () => ({ object: 'list', data: [session()] }));
+      store.endpoints.sidebar = vi.fn(async () => ({ groups: [], recent_sessions: [session()] }));
+      store.endpoints.selectedSession = vi.fn(async () => ({
+        selected_session: {
+          ...session(),
+          id: 'older-session',
+          number: 5093,
+          attention_store_instance_id: 'store-a',
+          attention_seq: 7,
+          seen_through_seq: 0,
+          attention_final_rev: 1,
+          attention_unseen: true,
+        },
+        selected_transcript: { bodies: { rev: 1, messages: [] } },
+      }));
+      store.endpoints.markAttentionSeen = vi.fn(async () => ({
+        store_instance_id: 'store-a',
+        latest_attention_seq: 7,
+        seen_through_seq: 7,
+      }));
+      store.endpoints.sessionState = vi.fn(async () => ({}));
+      store.endpoints.skills = vi.fn(async () => ({ skills: [] }));
+      store.endpoints.tree = vi.fn(async () => ({}));
+      (store as unknown as { startStatusPoll(): void }).startStatusPoll = vi.fn();
+
+      try {
+        await store.bootstrap();
+        expect(store.endpoints.selectedSession).toHaveBeenCalledWith('5093');
+        expect(store.activeSessionId.value).toBe('older-session');
+        expect(location.pathname).toBe('/ui/chat/5093');
+        expect(store.endpoints.markAttentionSeen).toHaveBeenCalledWith(
+          'older-session',
+          'store-a',
+          7,
+        );
+      } finally {
+        store.dispose();
+        history.replaceState(null, '', previousRoute);
+      }
+    },
+  );
+
+  it('keeps the bootstrap draft and project fallback when a deep link is missing', async () => {
+    const previousRoute = `${location.pathname}${location.search}${location.hash}`;
+    history.replaceState(null, '', '/ui/chat/9999');
+    const seed = new AppStore(config);
+    localStorage.setItem(seed.keys.lastProject, 'p1');
+    localStorage.setItem(seed.keys.draftSessionActive, 'draft:missing');
+    saveDraft(localStorage, seed.keys.draftMessages, {
+      sessionId: 'draft:missing',
+      content: 'unsent draft',
+      updated: Date.now(),
+      rev: 0,
+      model: 'test-model',
+    });
+    const store = new AppStore(config);
+    store.endpoints.capabilities = vi.fn(async () => ({ projects: { enabled: true } }));
+    store.endpoints.providers = vi.fn(async () => ({ object: 'list', data: [] }));
+    store.endpoints.models = vi.fn(async () => ({ object: 'list', data: [] }));
+    store.endpoints.sidebar = vi.fn(async () => ({
+      groups: [{ project: { id: 'p1', name: 'One' }, sessions: [] }],
+    }));
+    store.endpoints.selectedSession = vi.fn(async () => ({ selected_session: null }));
+    (store as unknown as { startStatusPoll(): void }).startStatusPoll = vi.fn();
+    try {
+      await store.bootstrap();
+      expect(store.draftActive.value).toBe(true);
+      expect(store.activeProjectId.value).toBe('p1');
+      expect(store.prompt.value).toBe('unsent draft');
+      expect(location.pathname).toBe('/ui/');
+      expect(store.toasts.value).toEqual([]);
+    } finally {
+      store.dispose();
+      history.replaceState(null, '', previousRoute);
+    }
+  });
+
+  it('reports an initial deep-link lookup failure instead of declaring bootstrap complete', async () => {
+    const previousRoute = `${location.pathname}${location.search}${location.hash}`;
+    history.replaceState(null, '', '/ui/chat/5093');
+    const store = new AppStore(config);
+    store.endpoints.capabilities = vi.fn(async () => ({ projects: { enabled: false } }));
+    store.endpoints.providers = vi.fn(async () => ({ object: 'list', data: [] }));
+    store.endpoints.models = vi.fn(async () => ({ object: 'list', data: [] }));
+    store.endpoints.sessions = vi.fn(async () => ({ object: 'list', data: [session()] }));
+    store.endpoints.selectedSession = vi.fn(async () => {
+      throw new APIError('Unauthorized', 401);
+    });
+    try {
+      await expect(store.bootstrap(true)).rejects.toMatchObject({ status: 401 });
+      expect(store.startupDone.value).toBe(false);
+      expect(store.startupFailed.value).toBe(true);
+      expect(store.authRequired.value).toBe(true);
+      expect(location.pathname).toBe('/ui/chat/5093');
+    } finally {
+      store.dispose();
+      history.replaceState(null, '', previousRoute);
+    }
+  });
+
+  it('does not replace browser Back with a late startup deep-link result', async () => {
+    const previousRoute = `${location.pathname}${location.search}${location.hash}`;
+    history.replaceState(null, '', '/ui/chat/1');
+    history.pushState(null, '', '/ui/chat/5093');
+    const store = new AppStore(config);
+    store.endpoints.capabilities = vi.fn(async () => ({ projects: { enabled: false } }));
+    store.endpoints.providers = vi.fn(async () => ({ object: 'list', data: [] }));
+    store.endpoints.models = vi.fn(async () => ({ object: 'list', data: [] }));
+    store.endpoints.sessions = vi.fn(async () => ({
+      object: 'list',
+      data: [{ ...session(), number: 1 }],
+    }));
+    const lookup = deferred<Record<string, unknown>>();
+    store.endpoints.selectedSession = vi.fn(async (id: string) =>
+      id === '5093'
+        ? lookup.promise
+        : {
+            selected_session: { ...session(), number: 1 },
+            selected_transcript: { bodies: { messages: [] } },
+          },
+    );
+    store.endpoints.sessionState = vi.fn(async () => ({}));
+    store.endpoints.skills = vi.fn(async () => ({ skills: [] }));
+    store.endpoints.tree = vi.fn(async () => ({}));
+    (store as unknown as { startStatusPoll(): void }).startStatusPoll = vi.fn();
+    try {
+      const bootstrap = store.bootstrap();
+      await vi.waitFor(() => expect(store.endpoints.selectedSession).toHaveBeenCalledWith('5093'));
+      history.replaceState(null, '', '/ui/chat/1');
+      lookup.resolve({ selected_session: { ...session(), id: 'older-session', number: 5093 } });
+      await bootstrap;
+      expect(store.activeSessionId.value).toBe('s1');
+      expect(location.pathname).toBe('/ui/chat/1');
+    } finally {
+      store.dispose();
+      history.replaceState(null, '', previousRoute);
+    }
+  });
+
   it('bootstraps no-project mode without calling the project-only sidebar endpoint', async () => {
+    const previousRoute = `${location.pathname}${location.search}${location.hash}`;
+    history.replaceState(null, '', '/ui/');
     const store = new AppStore(config);
     store.endpoints.capabilities = vi.fn(async () => ({
       projects: { enabled: false },
@@ -1562,39 +1849,46 @@ describe('AppStore compatibility behavior', () => {
     expect(store.startupDone.value).toBe(true);
     expect(store.draftActive.value).toBe(true);
     expect(store.projectsEnabled.value).toBe(false);
+    history.replaceState(null, '', previousRoute);
   });
 
   it('restores an active new-chat draft on reload without reporting a stale-write conflict', async () => {
-    const seed = new AppStore(config);
-    const draftID = 'draft:reload';
-    localStorage.setItem(seed.keys.draftSessionActive, draftID);
-    saveDraft(localStorage, seed.keys.draftMessages, {
-      sessionId: draftID,
-      content: 'keep this draft through reload',
-      updated: Date.now(),
-      rev: 0,
-      model: 'test-model',
-    });
-
-    const store = new AppStore(config);
-    store.endpoints.capabilities = vi.fn(async () => ({ projects: { enabled: false } }));
-    store.endpoints.providers = vi.fn(async () => ({ object: 'list', data: [] }));
-    store.endpoints.models = vi.fn(async () => ({ object: 'list', data: [] }));
-    store.endpoints.sessions = vi.fn(async () => ({ object: 'list', data: [] }));
-    (store as unknown as { startStatusPoll(): void }).startStatusPoll = vi.fn();
-
-    await store.bootstrap();
-
-    expect(store.draftActive.value).toBe(true);
-    expect(store.prompt.value).toBe('keep this draft through reload');
-    expect(store.toasts.value).toEqual([]);
-    expect(readDrafts(localStorage, store.keys.draftMessages)).toEqual([
-      expect.objectContaining({
+    const previousRoute = `${location.pathname}${location.search}${location.hash}`;
+    history.replaceState(null, '', '/ui/');
+    try {
+      const seed = new AppStore(config);
+      const draftID = 'draft:reload';
+      localStorage.setItem(seed.keys.draftSessionActive, draftID);
+      saveDraft(localStorage, seed.keys.draftMessages, {
         sessionId: draftID,
         content: 'keep this draft through reload',
-        rev: 1,
-      }),
-    ]);
+        updated: Date.now(),
+        rev: 0,
+        model: 'test-model',
+      });
+
+      const store = new AppStore(config);
+      store.endpoints.capabilities = vi.fn(async () => ({ projects: { enabled: false } }));
+      store.endpoints.providers = vi.fn(async () => ({ object: 'list', data: [] }));
+      store.endpoints.models = vi.fn(async () => ({ object: 'list', data: [] }));
+      store.endpoints.sessions = vi.fn(async () => ({ object: 'list', data: [] }));
+      (store as unknown as { startStatusPoll(): void }).startStatusPoll = vi.fn();
+
+      await store.bootstrap();
+
+      expect(store.draftActive.value).toBe(true);
+      expect(store.prompt.value).toBe('keep this draft through reload');
+      expect(store.toasts.value).toEqual([]);
+      expect(readDrafts(localStorage, store.keys.draftMessages)).toEqual([
+        expect.objectContaining({
+          sessionId: draftID,
+          content: 'keep this draft through reload',
+          rev: 1,
+        }),
+      ]);
+    } finally {
+      history.replaceState(null, '', previousRoute);
+    }
   });
 
   it('persists and paginates the cross-project Recent view without duplicating rows', async () => {

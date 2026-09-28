@@ -34,9 +34,8 @@ const session = (number: number) => ({
   message_count: number % 5,
 });
 
-async function mockSidebarAPI(page: Page) {
+async function mockSidebarAPI(page: Page, targetID = 'sidebar-40') {
   const allSessions = Array.from({ length: 48 }, (_, index) => session(index + 1));
-  const targetID = 'sidebar-40';
   const patchStarted = deferred();
   const releasePatch = deferred();
   let archived = false;
@@ -52,7 +51,7 @@ async function mockSidebarAPI(page: Page) {
     if (path.endsWith(`/v1/sessions/${targetID}`) && request.method() === 'PATCH') {
       patchStarted.resolve();
       await releasePatch.promise;
-      archived = true;
+      archived = Boolean((request.postDataJSON() as { archived?: boolean }).archived);
       return json({ ok: true });
     }
     if (path.endsWith('/v1/capabilities')) return json({ projects: { enabled: true } });
@@ -75,13 +74,19 @@ async function mockSidebarAPI(page: Page) {
       const selectedID = url.searchParams.get('selected_session');
       const selected = allSessions.find((entry) => entry.id === selectedID) || allSessions.at(-1)!;
       return json({
-        selected_session: selected,
+        selected_session: {
+          ...selected,
+          archived: selected.id === targetID ? archived : selected.archived,
+        },
         selected_transcript: { bodies: { messages: [] } },
       });
     }
     if (path.endsWith('/v1/sidebar') && request.method() === 'GET') {
       listCalls += 1;
-      const visible = archived ? allSessions.filter((entry) => entry.id !== targetID) : allSessions;
+      const includeArchived = url.searchParams.get('include_archived_sessions') === '1';
+      const visible = allSessions
+        .filter((entry) => !archived || includeArchived || entry.id !== targetID)
+        .map((entry) => (entry.id === targetID ? { ...entry, archived } : entry));
       const sessions = visible.slice(0, 12);
       return json({
         groups: [
@@ -100,13 +105,21 @@ async function mockSidebarAPI(page: Page) {
       url.searchParams.get('no_project') === '1'
     ) {
       const offset = Number(url.searchParams.get('cursor')) || 0;
-      const visible = archived ? allSessions.filter((entry) => entry.id !== targetID) : allSessions;
+      const includeArchived = url.searchParams.get('include_archived') === '1';
+      const visible = allSessions
+        .filter((entry) => !archived || includeArchived || entry.id !== targetID)
+        .map((entry) => (entry.id === targetID ? { ...entry, archived } : entry));
       const sessions = visible.slice(offset, offset + 12);
       const next = offset + sessions.length;
       return json({ sessions, next_cursor: next < visible.length ? String(next) : '' });
     }
     if (path.endsWith('/v1/sessions') && request.method() === 'GET') {
-      return json({ sessions: allSessions });
+      const includeArchived = url.searchParams.get('include_archived') === '1';
+      return json({
+        sessions: allSessions
+          .filter((entry) => !archived || includeArchived || entry.id !== targetID)
+          .map((entry) => (entry.id === targetID ? { ...entry, archived } : entry)),
+      });
     }
     if (/\/v1\/sessions\/[^/]+\/state$/.test(path)) return json({});
     if (path.endsWith('/v1/sessions/status')) return json({ sessions: [] });
@@ -130,7 +143,7 @@ async function nextFrames(page: Page, count = 2) {
 
 async function setPhase(page: Page, phase: string) {
   await page.evaluate((value) => {
-    document.documentElement.dataset.sidebarHidePhase = value;
+    document.documentElement.dataset.sidebarArchivePhase = value;
   }, phase);
 }
 
@@ -149,7 +162,7 @@ async function measure(
       const targetRow = rowFor(target);
       const anchorRow = rowFor(anchor);
       return {
-        phase: document.documentElement.dataset.sidebarHidePhase || '',
+        phase: document.documentElement.dataset.sidebarArchivePhase || '',
         time: performance.now(),
         scrollTop: scroller.scrollTop,
         scrollHeight: scroller.scrollHeight,
@@ -168,24 +181,24 @@ async function startFrameRecorder(page: Page, targetTitle: string, anchorTitle: 
   await page.evaluate(
     ({ target, anchor }) => {
       type RecorderWindow = Window & {
-        __sidebarHideFrames?: LayoutSample[];
-        __stopSidebarHideFrames?: boolean;
+        __sidebarArchiveFrames?: LayoutSample[];
+        __stopSidebarArchiveFrames?: boolean;
       };
       const recorder = window as RecorderWindow;
-      recorder.__sidebarHideFrames = [];
-      recorder.__stopSidebarHideFrames = false;
+      recorder.__sidebarArchiveFrames = [];
+      recorder.__stopSidebarArchiveFrames = false;
       const rowFor = (title: string) =>
         document
           .querySelector<HTMLButtonElement>(`.session-btn[aria-label="${title}"]`)
           ?.closest<HTMLElement>('.session-row') || null;
       const sample = () => {
-        if (recorder.__stopSidebarHideFrames) return;
+        if (recorder.__stopSidebarArchiveFrames) return;
         const scroller = document.querySelector<HTMLElement>('.sidebar-content');
         if (scroller) {
           const targetRow = rowFor(target);
           const anchorRow = rowFor(anchor);
-          recorder.__sidebarHideFrames!.push({
-            phase: document.documentElement.dataset.sidebarHidePhase || '',
+          recorder.__sidebarArchiveFrames!.push({
+            phase: document.documentElement.dataset.sidebarArchivePhase || '',
             time: performance.now(),
             scrollTop: scroller.scrollTop,
             scrollHeight: scroller.scrollHeight,
@@ -207,14 +220,14 @@ async function startFrameRecorder(page: Page, targetTitle: string, anchorTitle: 
 async function attachFrameRecorder(page: Page, testInfo: TestInfo) {
   const frames = await page.evaluate(() => {
     type RecorderWindow = Window & {
-      __sidebarHideFrames?: LayoutSample[];
-      __stopSidebarHideFrames?: boolean;
+      __sidebarArchiveFrames?: LayoutSample[];
+      __stopSidebarArchiveFrames?: boolean;
     };
     const recorder = window as RecorderWindow;
-    recorder.__stopSidebarHideFrames = true;
-    return recorder.__sidebarHideFrames || [];
+    recorder.__stopSidebarArchiveFrames = true;
+    return recorder.__sidebarArchiveFrames || [];
   });
-  await testInfo.attach('sidebar-hide-layout-frames.json', {
+  await testInfo.attach('sidebar-archive-layout-frames.json', {
     body: JSON.stringify(frames, null, 2),
     contentType: 'application/json',
   });
@@ -228,11 +241,11 @@ function expectStableAfterCollapse(baseline: LayoutSample, sample: LayoutSample)
   );
   expect(
     sample.anchorTop,
-    `${sample.phase} moved the stable row above the hidden item`,
+    `${sample.phase} moved the stable row above the archived item`,
   ).toBeCloseTo(baseline.anchorTop!, 0);
 }
 
-test('keeps paginated no-project scroll stable when hiding conversation #40', async ({
+test('keeps paginated no-project scroll stable when archiving conversation #40', async ({
   page,
 }, testInfo) => {
   test.skip(
@@ -272,7 +285,7 @@ test('keeps paginated no-project scroll stable when hiding conversation #40', as
   await setPhase(page, 'transition');
   await startFrameRecorder(page, targetTitle, anchorTitle);
   await page.getByRole('button', { name: `Actions for ${targetTitle}` }).click();
-  await page.getByRole('menuitem', { name: 'Hide' }).click();
+  await page.getByRole('menuitem', { name: 'Archive' }).click();
 
   await controls.patchStarted.promise;
   await setPhase(page, 'patch-held');
@@ -293,4 +306,34 @@ test('keeps paginated no-project scroll stable when hiding conversation #40', as
   expect(controls.sidebarCalls()).toBe(1);
   expect(frames.some((frame) => frame.phase === 'patch-held')).toBe(true);
   expect(frames.some((frame) => frame.phase === 'settled')).toBe(true);
+});
+
+test('keeps an archived row available to restore while archived sessions are shown', async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'desktop sidebar and settings flow');
+  const controls = await mockSidebarAPI(page, 'sidebar-1');
+  controls.releasePatch.resolve();
+  await page.addInitScript(() => localStorage.setItem('term_llm_sidebar_view', 'projects'));
+  await page.goto('./');
+  await expect(page.locator('#startupSplash')).toBeHidden({ timeout: 10_000 });
+
+  await page.locator('#settingsBtn').click();
+  const settings = page.getByRole('dialog', { name: 'Settings' });
+  await settings.getByRole('tab', { name: 'Interface' }).click();
+  await settings.getByRole('checkbox', { name: 'Show archived sessions' }).check();
+  await page.keyboard.press('Escape');
+
+  const title = 'No project conversation #1';
+  const row = page.getByRole('button', { name: title, exact: true }).locator('xpath=..');
+  await expect(row).toBeVisible();
+  await page.getByRole('button', { name: `Actions for ${title}`, exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Archive' }).click();
+  await expect(row).toHaveClass(/archived/);
+  await expect(row).not.toHaveClass(/is-archiving/);
+  const callsBeforeRestore = controls.sidebarCalls();
+  await page.getByRole('button', { name: `Actions for ${title}`, exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Restore' }).click();
+  await expect(row).not.toHaveClass(/archived/);
+  expect(controls.sidebarCalls()).toBe(callsBeforeRestore);
 });

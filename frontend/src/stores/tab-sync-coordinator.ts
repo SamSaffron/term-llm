@@ -12,6 +12,7 @@ export interface TabSyncHost {
   reloadReviewQueue: () => void;
   reconcilePeerChange: () => Promise<void>;
   onPendingIntentStorage: () => void;
+  onWebMCPSettingsStorage: () => void;
   serverEventsEnabled: () => boolean;
 }
 
@@ -39,6 +40,8 @@ export class TabSyncCoordinator {
         if (event.key?.startsWith(`${keys.draftMessages}:`))
           this.host.reconcileDraftStorage(this.host.draftStorageId());
         if (event.key?.startsWith(`${keys.diffCommentQueue}:`)) this.host.reloadReviewQueue();
+        if (event.key === keys.webMCPSessions || event.key === keys.webMCPDefault)
+          this.host.onWebMCPSettingsStorage();
       },
       { signal },
     );

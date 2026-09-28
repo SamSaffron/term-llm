@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -193,7 +194,7 @@ func newStreamPerfTelemetryFromEnv() *streamPerfTelemetry {
 	if !cfg.enabled {
 		return nil
 	}
-	return newStreamPerfTelemetry(cfg, os.Stderr)
+	return newStreamPerfTelemetry(cfg, runtimeoutput.Writer())
 }
 
 func (t *streamPerfTelemetry) Enabled() bool {

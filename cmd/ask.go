@@ -47,6 +47,7 @@ var (
 	askMCP             string
 	askMaxTurns        int
 	askMaxOutputTokens int
+	askInlineMaxBytes  string
 	askTimeout         time.Duration
 	askStopWhen        string
 	askContinueWith    string
@@ -168,6 +169,7 @@ func init() {
 	askCmd.Flags().StringVar(&askStopWhen, "stop-when", "", "Progressive stop condition: done or timeout (defaults to done in progressive mode)")
 	askCmd.Flags().StringVar(&askContinueWith, "continue-with", "", "Custom continuation prompt for progressive timeout mode")
 	askCmd.Flags().BoolVar(&askFast, "fast", false, "Use the configured fast provider/model instead of the default")
+	askCmd.Flags().StringVar(&askInlineMaxBytes, "inline-max-bytes", "", "Embed stdin/-f text up to this size inline instead of staging it for tools (e.g. 512K, 2M; overrides ask.stdin_inline_max_bytes)")
 
 	// Session resume flag - NoOptDefVal allows --resume without a value
 	askCmd.Flags().StringVarP(&askResume, "resume", "r", "", "Continue a session (empty for most recent, or session ID)")
@@ -334,7 +336,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if agent != nil {
 		defaultQuestion = agent.DefaultPrompt
 	}
-	preparedInput, err := prepareAskInput(question, askFiles, stdinReader, hasStdin, cfg.Ask, defaultQuestion)
+	askInputCfg, err := applyAskInlineMaxBytesOverride(cfg.Ask, askInlineMaxBytes)
+	if err != nil {
+		return err
+	}
+	preparedInput, err := prepareAskInput(question, askFiles, stdinReader, hasStdin, askInputCfg, defaultQuestion)
 	if err != nil {
 		return err
 	}
@@ -2321,61 +2327,28 @@ func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *l
 		return nil, fmt.Errorf("MCP servers not configured: %s. Add them with: term-llm mcp add <name>", strings.Join(missing, ", "))
 	}
 
-	// Show starting message
-	fmt.Fprintf(errWriter, "Starting MCP: %s", strings.Join(serverNames, ", "))
-
-	// Enable all servers (async)
-	var enableErrors []string
-	for _, server := range serverNames {
-		if err := mcpManager.Enable(ctx, server); err != nil {
-			enableErrors = append(enableErrors, fmt.Sprintf("%s: %v", server, err))
-		}
+	// Only repaint startup progress when feedback is an interactive terminal.
+	feedbackFile, _ := errWriter.(*os.File)
+	animate := terminalpolicy.OutputInteractive(feedbackFile)
+	if animate {
+		fmt.Fprintf(errWriter, "Starting MCP: %s", strings.Join(serverNames, ", "))
+	} else {
+		fmt.Fprintf(errWriter, "Starting MCP: %s\n", strings.Join(serverNames, ", "))
 	}
 
-	if len(enableErrors) > 0 {
-		fmt.Fprintf(errWriter, "\n")
-		return nil, fmt.Errorf("failed to start MCP servers: %s", strings.Join(enableErrors, "; "))
+	ready := false
+	defer func() {
+		if !ready {
+			mcpManager.StopAll()
+		}
+	}()
+
+	if err := startMCPServersWithFeedback(ctx, mcpManager, serverNames, errWriter, animate); err != nil {
+		return nil, err
 	}
 
-	// Wait for servers with spinner animation
-	spinChars := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-	spinIdx := 0
-	timeout := 10 * time.Second
-	deadline := time.Now().Add(timeout)
-
-	for time.Now().Before(deadline) {
-		allReady := true
-		for _, name := range mcpManager.EnabledServers() {
-			status, _ := mcpManager.ServerStatus(name)
-			if status == mcp.StatusStarting {
-				allReady = false
-				break
-			}
-		}
-		if allReady {
-			break
-		}
-		fmt.Fprintf(errWriter, "\r%s Starting MCP: %s", spinChars[spinIdx], strings.Join(serverNames, ", "))
-		spinIdx = (spinIdx + 1) % len(spinChars)
-		time.Sleep(80 * time.Millisecond)
-	}
-
-	// Check for failed servers
-	var failedServers []string
-	for _, name := range serverNames {
-		status, err := mcpManager.ServerStatus(name)
-		if status == mcp.StatusFailed {
-			errMsg := "unknown error"
-			if err != nil {
-				errMsg = err.Error()
-			}
-			failedServers = append(failedServers, fmt.Sprintf("%s (%s)", name, errMsg))
-		}
-	}
-
-	if len(failedServers) > 0 {
-		fmt.Fprintf(errWriter, "\n")
-		return nil, fmt.Errorf("MCP servers failed to start: %s", strings.Join(failedServers, "; "))
+	if err := checkMCPServerFailures(mcpManager, serverNames, errWriter, animate); err != nil {
+		return nil, err
 	}
 
 	// Register every authorised wrapper for execution while the planner owns
@@ -2385,20 +2358,114 @@ func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *l
 		discoveryCfg = opts.ToolDiscovery
 	}
 	if _, err := tooldiscovery.NewPlanner(discoveryCfg, mcpManager, engine); err != nil {
-		mcpManager.StopAll()
 		return nil, fmt.Errorf("configure MCP tool discovery: %w", err)
 	}
 	tools := mcpManager.AllTools()
 
 	// Show result
 	if len(tools) > 0 {
-		fmt.Fprintf(errWriter, "\r✓ MCP ready: %d tools from %s\n\n", len(tools), strings.Join(serverNames, ", "))
+		if animate {
+			fmt.Fprint(errWriter, "\r")
+		}
+		fmt.Fprintf(errWriter, "✓ MCP ready: %d tools from %s\n\n", len(tools), strings.Join(serverNames, ", "))
 	} else {
-		fmt.Fprintf(errWriter, "\n")
+		if animate {
+			fmt.Fprintln(errWriter)
+		}
 		return nil, fmt.Errorf("MCP servers started but no tools available from: %s", strings.Join(serverNames, ", "))
 	}
 
+	ready = true
 	return mcpManager, nil
+}
+
+func startMCPServersWithFeedback(ctx context.Context, manager *mcp.Manager, serverNames []string, feedback io.Writer, animate bool) error {
+	// Enable all servers (async).
+	var enableErrors []string
+	for _, server := range serverNames {
+		if err := manager.Enable(ctx, server); err != nil {
+			enableErrors = append(enableErrors, fmt.Sprintf("%s: %v", server, err))
+		}
+	}
+	if len(enableErrors) > 0 {
+		if animate {
+			fmt.Fprintln(feedback)
+		}
+		return fmt.Errorf("failed to start MCP servers: %s", strings.Join(enableErrors, "; "))
+	}
+
+	// Give the manager's 30-second per-server deadline time to settle, but
+	// don't wait forever if a transport ignores cancellation.
+	if err := waitForMCPStartup(ctx, manager, serverNames, feedback, animate, 35*time.Second); err != nil {
+		if animate {
+			fmt.Fprintln(feedback)
+		}
+		return err
+	}
+	return nil
+}
+
+func checkMCPServerFailures(manager *mcp.Manager, serverNames []string, feedback io.Writer, animate bool) error {
+	var failedServers []string
+	for _, name := range serverNames {
+		status, err := manager.ServerStatus(name)
+		if status != mcp.StatusFailed {
+			continue
+		}
+		errMsg := "unknown error"
+		if err != nil {
+			errMsg = err.Error()
+			if errors.Is(err, context.DeadlineExceeded) {
+				errMsg = "startup timed out: " + errMsg
+			}
+		}
+		failedServers = append(failedServers, fmt.Sprintf("%s (%s)", name, errMsg))
+	}
+	if len(failedServers) == 0 {
+		return nil
+	}
+	if animate {
+		fmt.Fprintln(feedback)
+	}
+	return fmt.Errorf("MCP servers failed to start: %s", strings.Join(failedServers, "; "))
+}
+
+// waitForMCPStartup waits for each requested server to leave the starting state.
+// The extra bound protects callers if a transport never returns after its own deadline.
+func waitForMCPStartup(ctx context.Context, manager interface {
+	ServerStatus(string) (mcp.ServerStatus, error)
+}, serverNames []string, feedback io.Writer, animate bool, maxWait time.Duration) error {
+	spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	ticker := time.NewTicker(80 * time.Millisecond)
+	defer ticker.Stop()
+	timer := time.NewTimer(maxWait)
+	defer timer.Stop()
+	spinIdx := 0
+	for {
+		var starting []string
+		for _, name := range serverNames {
+			if status, _ := manager.ServerStatus(name); status == mcp.StatusStarting {
+				starting = append(starting, name)
+			}
+		}
+		if len(starting) == 0 {
+			return nil
+		}
+		if animate {
+			fmt.Fprintf(feedback, "\r%s Starting MCP: %s", spinner[spinIdx], strings.Join(serverNames, ", "))
+			spinIdx = (spinIdx + 1) % len(spinner)
+		}
+		select {
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return fmt.Errorf("MCP servers still starting: %s (startup timed out: %w)", strings.Join(starting, ", "), ctx.Err())
+			}
+			return fmt.Errorf("MCP servers still starting: %s: %w", strings.Join(starting, ", "), ctx.Err())
+		case <-timer.C:
+			return fmt.Errorf("MCP servers still starting after startup timeout: %s", strings.Join(starting, ", "))
+		case <-ticker.C:
+		}
+	}
 }
 
 // parseServerList splits comma-separated server names and trims whitespace.

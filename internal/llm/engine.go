@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"mime"
 	"os"
 	"path/filepath"
@@ -23,6 +22,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/appdata"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/restart"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/usage"
 )
 
@@ -501,7 +501,7 @@ func (e *Engine) AddDynamicToolForRun(runID string, tool Tool) bool {
 		if err := publisher.PublishDynamicTools([]ToolSpec{spec}); err != nil {
 			// Keep the normal pending queue as a fallback for the next provider
 			// turn, but make the inline publication failure diagnosable.
-			slog.Warn("publish dynamic tool to active provider", "tool", spec.Name, "run_id", runID, "error", err)
+			runtimeoutput.Warn("publish dynamic tool to active provider", "tool", spec.Name, "run_id", runID, "error", err)
 		}
 	}
 	return true
@@ -521,7 +521,7 @@ func (e *Engine) recordFileTrackingRunStart(ctx context.Context, sessionID, runI
 	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	if err := recorder.RecordFileTrackingRunStart(recordCtx, sessionID, runID); err != nil {
-		slog.Warn("record file tracking run start", "session_id", sessionID, "run_id", runID, "error", err)
+		runtimeoutput.Warn("record file tracking run start", "session_id", sessionID, "run_id", runID, "error", err)
 	}
 }
 
@@ -533,7 +533,7 @@ func (e *Engine) recordFileTrackingRunComplete(ctx context.Context, sessionID, r
 	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	if err := recorder.RecordFileTrackingRunComplete(recordCtx, sessionID, runID); err != nil {
-		slog.Warn("record file tracking run completion", "session_id", sessionID, "run_id", runID, "error", err)
+		runtimeoutput.Warn("record file tracking run completion", "session_id", sessionID, "run_id", runID, "error", err)
 	}
 }
 
@@ -936,7 +936,7 @@ func (e *Engine) ConfigureContextManagement(provider Provider, providerName, mod
 			}
 			cancel()
 			if err != nil {
-				slog.Debug("failed to inspect provider runtime context limit", "provider", providerName, "model", modelName, "error", err)
+				runtimeoutput.Debug("failed to inspect provider runtime context limit", "provider", providerName, "model", modelName, "error", err)
 				limit = InputLimitForProviderModel(providerName, modelName)
 				if limit == 0 {
 					refreshDynamicModelLimitsForContext(provider, providerName, modelName)
@@ -981,7 +981,7 @@ func refreshDynamicModelLimitsForContext(provider Provider, providerName, modelN
 			return
 		}
 		if err := refresher.RefreshModelMetadata(ctx); err != nil {
-			slog.Debug("failed to refresh dynamic model metadata for context limits", "provider", providerName, "model", modelName, "error", err)
+			runtimeoutput.Debug("failed to refresh dynamic model metadata for context limits", "provider", providerName, "model", modelName, "error", err)
 		}
 		return
 	}
@@ -993,7 +993,7 @@ func refreshDynamicModelLimitsForContext(provider Provider, providerName, modelN
 	}
 	models, err := lister.ListModels(ctx)
 	if err != nil {
-		slog.Debug("failed to refresh dynamic model metadata for context limits", "provider", providerName, "model", modelName, "error", err)
+		runtimeoutput.Debug("failed to refresh dynamic model metadata for context limits", "provider", providerName, "model", modelName, "error", err)
 		return
 	}
 	if providerType == "copilot" {
@@ -2000,7 +2000,7 @@ func (e *Engine) prepareRequestContext(ctx context.Context, req *Request) {
 		if err != nil {
 			// Restored tool state is an optional context enhancement. A stale or
 			// temporarily unavailable state store must not prevent the request.
-			slog.Warn("request context restoration failed; continuing without it", "tool", spec.Name, "error", err)
+			runtimeoutput.Warn("request context restoration failed; continuing without it", "tool", spec.Name, "error", err)
 			continue
 		}
 		req.Messages = messages
@@ -2546,7 +2546,7 @@ func (e *Engine) runSimpleScratchpad(ctx context.Context, req Request, send even
 			if err := send.Send(Event{Type: EventRetry, RetryAttempt: attempt, RetryMaxAttempts: defaultUncommittedStreamMaxRetries, RetryWaitSecs: 0}); err != nil {
 				return err
 			}
-			slog.Debug("retrying failed uncommitted model stream", "attempt", attempt, "error", failed)
+			runtimeoutput.Debug("retrying failed uncommitted model stream", "attempt", attempt, "error", failed)
 			continue
 		}
 
@@ -2762,7 +2762,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) (re
 		}
 		if resetReason != "" {
 			resetProviderConversation(e.provider)
-			slog.Debug("reset provider conversation for tool-surface change", "reason", resetReason, "session_id", req.SessionID)
+			runtimeoutput.Debug("reset provider conversation for tool-surface change", "reason", resetReason, "session_id", req.SessionID)
 		}
 	}
 	sendDone := func() error {

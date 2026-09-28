@@ -124,6 +124,10 @@ serve:
     approval_mode: auto # prompt or auto; yolo is CLI-only
 ```
 
+## Long-running tools
+
+The server flushes HTTP headers and an SSE comment once the SDK accepts a tool call, so clients can receive a response before execution finishes. This avoids response-header timeouts without requiring a progress token. It does not extend the client’s overall request deadline or provide periodic idle keepalives.
+
 ## Edit format
 
 By default, the `edit_file` tool (find/replace) is exposed. If the connecting LLM handles unified diffs better, use `--edit-format diff` to swap it for the `unified_diff` tool instead. Only one edit tool is exposed at a time to avoid confusing the LLM.

@@ -1642,6 +1642,14 @@ type serveRunResult struct {
 	Usage        llm.Usage
 	SessionUsage llm.Usage
 	ContextUsage *serveContextUsage
+	// clientCalls tracks passthrough calls the final provider turn left for
+	// the caller to answer; see PendingClientCalls.
+	clientCalls pendingClientCallTracker
+}
+
+// PendingClientCalls returns the client tool calls this run stopped on.
+func (r *serveRunResult) PendingClientCalls() []llm.ToolCall {
+	return r.clientCalls.pending()
 }
 
 type serveRuntimeSetupContextKey struct{}
@@ -2112,6 +2120,7 @@ func (rt *serveRuntime) consumeRunStream(runCtx, persistCtx context.Context, sta
 }
 
 func (rt *serveRuntime) accumulateRunEvent(ctx context.Context, stateful, persisted bool, sessionID string, event llm.Event, result *serveRunResult) (bool, error) {
+	result.clientCalls.observe(event, rt.isServerExecutedTool)
 	switch event.Type {
 	case llm.EventTextDelta:
 		result.Text.WriteString(event.Text)

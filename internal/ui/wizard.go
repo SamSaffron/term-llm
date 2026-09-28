@@ -12,6 +12,8 @@ import (
 	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 )
 
+const openRouterGettingStartedHint = "Need a provider? See https://openrouter.ai/pricing for OpenRouter's free plan. Set OPENROUTER_API_KEY and try --provider openrouter:openrouter/free (usage limits apply)."
+
 // providerOption represents a provider choice in the setup wizard
 type providerOption struct {
 	name      string
@@ -23,6 +25,12 @@ type providerOption struct {
 // detectAvailableProviders checks which providers have credentials configured
 func detectAvailableProviders() []providerOption {
 	options := []providerOption{
+		{
+			name:      "OpenRouter - free models (API key required)",
+			value:     "openrouter",
+			available: strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")) != "",
+			hint:      "set OPENROUTER_API_KEY",
+		},
 		{
 			name:      "ChatGPT (Codex) - ChatGPT OAuth",
 			value:     "chatgpt",
@@ -102,16 +110,10 @@ func detectAvailableProviders() []providerOption {
 			hint:      "set SAMBANOVA_API_KEY",
 		},
 		{
-			name:      "OpenRouter - OPENROUTER_API_KEY",
-			value:     "openrouter",
-			available: os.Getenv("OPENROUTER_API_KEY") != "",
-			hint:      "set OPENROUTER_API_KEY",
-		},
-		{
-			name:      "Zen - free, no key required",
+			name:      "Zen - ZEN_API_KEY",
 			value:     "zen",
-			available: true, // Always available
-			hint:      "",
+			available: strings.TrimSpace(os.Getenv("ZEN_API_KEY")) != "",
+			hint:      "set ZEN_API_KEY",
 		},
 		{
 			name:      "OpenCode Go - OPENCODE_API_KEY",
@@ -277,14 +279,13 @@ func RunHeadlessSetup() (*config.Config, error) {
 	// Pick the first available provider (they're ordered by preference)
 	var provider string
 	for _, p := range providers {
-		if p.available && p.value != "zen" { // prefer a real provider over zen
+		if p.available {
 			provider = p.value
 			break
 		}
 	}
 	if provider == "" {
-		// Fall back to zen (always available)
-		provider = "zen"
+		return nil, fmt.Errorf("no provider credentials available; configure a provider API key or run term-llm interactively to set up a provider\n\n%s", openRouterGettingStartedHint)
 	}
 
 	// Pick image provider if available
@@ -336,7 +337,7 @@ func RunSetupWizard() (*config.Config, error) {
 	// Detect available providers
 	providers := detectAvailableProviders()
 
-	// Build LLM provider options - keep ChatGPT (Codex) first so it is easy to find,
+	// Keep the default provider and subscription sign-ins easy to find,
 	// then show the rest as available first, then unavailable.
 	var llmOptions []huh.Option[string]
 	var availableOptions []huh.Option[string]
@@ -351,7 +352,7 @@ func RunSetupWizard() (*config.Config, error) {
 		}
 
 		option := huh.NewOption(label, p.value)
-		if p.value == "chatgpt" || p.value == "grok" {
+		if p.value == config.DefaultConfigProvider || p.value == "chatgpt" || p.value == "grok" {
 			llmOptions = append(llmOptions, option)
 			continue
 		}
@@ -395,7 +396,7 @@ func RunSetupWizard() (*config.Config, error) {
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("Which LLM provider do you want to use?").
-				Description("Providers marked ✓ are ready to use").
+				Description("Providers marked ✓ are ready to use.\n\n" + openRouterGettingStartedHint).
 				Options(llmOptions...).
 				Value(&provider),
 		),

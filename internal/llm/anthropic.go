@@ -13,6 +13,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/shared/constant"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 // ListModels returns available models from Anthropic.
@@ -314,12 +315,12 @@ func (p *AnthropicProvider) streamStandardForModel(ctx context.Context, req Requ
 		}
 
 		if req.Debug {
-			fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic Stream Request ===")
-			fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
-			fmt.Fprintf(os.Stderr, "System: %s\n", truncate(system, 200))
-			fmt.Fprintf(os.Stderr, "Messages: %d\n", len(messages))
-			fmt.Fprintf(os.Stderr, "Tools: %d\n", len(req.Tools))
-			fmt.Fprintln(os.Stderr, "======================================")
+			runtimeoutput.Printf("%s\n", "=== DEBUG: Anthropic Stream Request ===")
+			runtimeoutput.Printf("Provider: %s\n", p.Name())
+			runtimeoutput.Printf("System: %s\n", truncate(system, 200))
+			runtimeoutput.Printf("Messages: %d\n", len(messages))
+			runtimeoutput.Printf("Tools: %d\n", len(req.Tools))
+			runtimeoutput.Printf("%s\n", "======================================")
 		}
 
 		var lastUsage *Usage
@@ -499,12 +500,12 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 		}
 
 		if req.Debug {
-			fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic Stream Request (search) ===")
-			fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
-			fmt.Fprintf(os.Stderr, "System: %s\n", truncate(system, 200))
-			fmt.Fprintf(os.Stderr, "Messages: %d\n", len(messages))
-			fmt.Fprintf(os.Stderr, "Tools: %d (includes web_search, web_fetch)\n", len(tools))
-			fmt.Fprintln(os.Stderr, "================================================")
+			runtimeoutput.Printf("%s\n", "=== DEBUG: Anthropic Stream Request (search) ===")
+			runtimeoutput.Printf("Provider: %s\n", p.Name())
+			runtimeoutput.Printf("System: %s\n", truncate(system, 200))
+			runtimeoutput.Printf("Messages: %d\n", len(messages))
+			runtimeoutput.Printf("Tools: %d (includes web_search, web_fetch)\n", len(tools))
+			runtimeoutput.Printf("%s\n", "================================================")
 		}
 
 		// Track current server tool use block (web_search, etc.)

@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/config"
 )
 
 const (
@@ -31,9 +33,12 @@ type ZenProvider struct {
 }
 
 // NewZenProvider creates a ZenProvider preconfigured for OpenCode Zen.
-// API key is optional: empty for supported free models, or set ZEN_API_KEY for paid models.
+// Inference requires a Zen API key. Free models are restricted to OpenCode.
 func NewZenProvider(apiKey, model string) *ZenProvider {
 	model = normalizeZenModel(model)
+	if model == "" {
+		model = config.DefaultProviderModel("zen")
+	}
 	return &ZenProvider{
 		OpenAICompatProvider: NewOpenAICompatProvider(zenBaseURL, apiKey, model, zenDisplayName),
 	}
@@ -85,7 +90,8 @@ func (p *ZenProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	if err != nil {
 		// Fall back to the basic listing without replacing a previously enriched
 		// cache with entries that lack pricing and reasoning metadata.
-		return p.OpenAICompatProvider.ListModels(ctx)
+		models, err := p.OpenAICompatProvider.ListModels(ctx)
+		return filterZenModels(models), err
 	}
 
 	// Fetch available models from Zen API
@@ -111,6 +117,9 @@ func (p *ZenProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 
 	models := make([]ModelInfo, 0, len(modelsResp.Data))
 	for _, m := range modelsResp.Data {
+		if isZenFreeModel(m.ID) {
+			continue
+		}
 		info := ModelInfo{
 			ID:          m.ID,
 			Created:     m.Created,
@@ -140,15 +149,8 @@ func (p *ZenProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 		}
 	}
 
-	// Sort: free models first, then by input price
-	sort.Slice(models, func(i, j int) bool {
-		isFreeI := models[i].InputPrice == 0 && models[i].OutputPrice == 0
-		isFreeJ := models[j].InputPrice == 0 && models[j].OutputPrice == 0
-		if isFreeI != isFreeJ {
-			return isFreeI // Free models come first
-		}
-		return models[i].InputPrice < models[j].InputPrice
-	})
+	// Sort by input price.
+	sort.Slice(models, func(i, j int) bool { return models[i].InputPrice < models[j].InputPrice })
 
 	RefreshZenCacheSync(models)
 	return models, nil
@@ -240,4 +242,20 @@ func fetchZenReasoningEfforts(ctx context.Context) map[string][]string {
 		}
 	}
 	return efforts
+}
+
+// Free Zen routes are restricted to the OpenCode client, including Big Pickle.
+func isZenFreeModel(id string) bool {
+	id = strings.ToLower(normalizeZenModel(id))
+	return id == "big-pickle" || strings.HasSuffix(id, "-free")
+}
+
+func filterZenModels(models []ModelInfo) []ModelInfo {
+	filtered := make([]ModelInfo, 0, len(models))
+	for _, model := range models {
+		if !isZenFreeModel(model.ID) {
+			filtered = append(filtered, model)
+		}
+	}
+	return filtered
 }

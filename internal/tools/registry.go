@@ -11,6 +11,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
 )
@@ -757,7 +758,7 @@ func (r *LocalToolRegistry) RegisterSkillTools(defs []skills.SkillToolDef, skill
 
 	// Warn if the skill dir doesn't exist (non-fatal, matches existing behaviour)
 	if _, err := os.Stat(skillDir); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "warning: skill directory not found: %s\n", skillDir)
+		runtimeoutput.Printf("warning: skill directory not found: %s\n", skillDir)
 	}
 
 	return r.RegisterCustomTools(agentDefs, skillDir)

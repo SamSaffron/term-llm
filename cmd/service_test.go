@@ -199,3 +199,25 @@ func TestServiceSelection(t *testing.T) {
 		})
 	}
 }
+
+func TestServiceInstallReloadsReplacedDefinition(t *testing.T) {
+	spec := userservice.Spec{Kind: "web", Port: 8080}
+	for _, tc := range []struct {
+		name     string
+		oldErr   error
+		replaced bool
+		want     bool
+	}{
+		{"fresh install", os.ErrNotExist, false, false},
+		{"unchanged reinstall", nil, false, false},
+		// Upgrades can change the rendered launchd/systemd template (for example
+		// ProcessType) without changing the saved spec; the loaded job must reload.
+		{"template changed", nil, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := serviceInstallNeedsRestart(tc.oldErr, spec, spec, nil, "", tc.replaced); got != tc.want {
+				t.Fatalf("serviceInstallNeedsRestart = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

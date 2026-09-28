@@ -14,6 +14,9 @@ import type {
   DiffFile,
   Goal,
   InteractionRecord,
+  MCPAddRequest,
+  MCPAddResult,
+  MCPCatalogueResponse,
   MCPServer,
   Message,
   Project,
@@ -34,7 +37,8 @@ import { AppStoreServices, type StoreDiagnostics } from './app-store-services';
 import { RuntimeStore } from './runtime-store';
 import { InteractionStore } from './interaction-store';
 import { SideQuestionStore } from './side-question-store';
-import { MCPStore, type MCPOAuthUIState } from './mcp-store';
+import { MCPStore, type MCPOAuthUIState, type MCPRemovedServer } from './mcp-store';
+import { WebMCPStore } from './webmcp-store';
 import { WorktreeStore } from './worktree-store';
 import { GoalStore } from './goal-store';
 import { PlanStore } from './plan-store';
@@ -108,6 +112,10 @@ export class AppStore {
   readonly interactionStore: InteractionStore;
   readonly sideQuestions: SideQuestionStore;
   readonly mcpStore: MCPStore;
+  /** Tools the page provides via WebMCP, e.g. the iOS app's device tools. */
+  readonly webMCP: WebMCPStore;
+  /** Whether the conversation the MCP dialog controls may use the page's tools. */
+  readonly webMCPEnabled: ReadonlySignal<boolean>;
   readonly worktreeStore: WorktreeStore;
   readonly goalStore: GoalStore;
   readonly planStore: PlanStore;
@@ -171,7 +179,7 @@ export class AppStore {
   readonly searchResults: Signal<Session[] | null>;
   readonly searchLoading: Signal<boolean>;
   readonly searchError: Signal<string>;
-  readonly showHidden: Signal<boolean>;
+  readonly showArchived: Signal<boolean>;
   readonly showWidgets: Signal<boolean>;
   readonly notifications: Signal<NotificationState>;
   readonly widgets: Signal<Widget[]>;
@@ -202,6 +210,7 @@ export class AppStore {
     error: string;
     oauth?: Record<string, MCPOAuthUIState>;
   }>;
+  readonly mcpRemoved: Signal<MCPRemovedServer | null>;
   readonly worktrees: Signal<Record<string, unknown>[]>;
   readonly worktreeError: Signal<string>;
   readonly selectedDraftWorktree: Signal<string>;
@@ -291,7 +300,7 @@ export class AppStore {
     this.searchResults = this.sessionStore.searchResults;
     this.searchLoading = this.sessionStore.searchLoading;
     this.searchError = this.sessionStore.searchError;
-    this.showHidden = this.sessionStore.showHidden;
+    this.showArchived = this.sessionStore.showArchived;
     this.hubAgents = this.sessionStore.hubAgents;
     this.renameTarget = this.sessionStore.renameTarget;
     this.projectTarget = this.sessionStore.projectTarget;
@@ -311,6 +320,11 @@ export class AppStore {
       (sessionId) => {
         const session = this.sessions.peek().find((entry) => entry.id === sessionId);
         return session ? { sessionNumber: session.number || 0, title: session.title } : null;
+      },
+      // The page's WebMCP tools, created below; a call reads them only once live.
+      {
+        definitions: (sessionId) => this.webMCP.definitions(sessionId),
+        run: (call, signal) => this.webMCP.run(call, signal),
       },
     );
     this.showWidgets = signal(storage.getItem(this.keys.showWidgetsSidebar) !== '0');
@@ -372,6 +386,10 @@ export class AppStore {
       patchSession: (id, patch) => this.sessionStore.patch(id, patch),
     });
     this.mcp = this.mcpStore.state;
+    this.mcpRemoved = this.mcpStore.removed;
+    this.webMCP = new WebMCPStore(this.services);
+    this.webMCP.start();
+    this.webMCPEnabled = computed(() => this.webMCP.enabledFor(this.mcpSessionId()));
     this.worktreeStore = new WorktreeStore(this.services, {
       projectsEnabled: this.projectsEnabled,
       worktreesEnabled: this.worktreesEnabled,
@@ -433,7 +451,11 @@ export class AppStore {
         applyResponseEvent: (sessionId, event, owner) =>
           this.applyResponseEvent(sessionId, event, owner),
         draftMCPEnabled: (draftId) => this.mcpStore.enabledFor(draftId),
-        rekeyMCP: (oldId, newId) => this.mcpStore.rekey(oldId, newId),
+        rekeyMCP: (oldId, newId) => {
+          this.mcpStore.rekey(oldId, newId);
+          this.webMCP.rekey(oldId, newId);
+        },
+        clientTools: this.webMCP,
       },
     );
     this.runs = this.runEngine.runs;
@@ -535,6 +557,7 @@ export class AppStore {
       onPendingIntentStorage: () => {
         this.pendingIntents.value = readPendingIntents(this.storage, this.keys.pendingIntents);
       },
+      onWebMCPSettingsStorage: () => this.webMCP.reloadSettings(),
       serverEventsEnabled: () =>
         this.serverEventFeedEnabled && this.serverEventCoordinator?.mode !== 'unsupported',
     });
@@ -629,9 +652,9 @@ export class AppStore {
       const [providers, sidebar] = await Promise.all([
         this.endpoints.providers(),
         this.projectsEnabled.value
-          ? this.endpoints.sidebar(this.showHidden.value)
+          ? this.endpoints.sidebar(this.showArchived.value)
           : this.endpoints.sessions(
-              `limit=30&include_archived=${this.showHidden.value ? '1' : '0'}`,
+              `limit=30&include_archived=${this.showArchived.value ? '1' : '0'}`,
             ),
       ]);
       this.applyProviders(providers);
@@ -643,20 +666,28 @@ export class AppStore {
         const routed = sessionIDFromLocation(this.config.prefix);
         const forceNew = new URLSearchParams(location.search).get('new') === '1';
         const restoreDraft = !routed && Boolean(this.storage.getItem(this.keys.draftSessionActive));
-        const preferred =
-          forceNew || restoreDraft
-            ? ''
-            : routed || this.storage.getItem(this.keys.activeSession) || '';
-        const session =
-          forceNew || restoreDraft
-            ? null
-            : this.sessions.value.find(
-                (entry) => entry.id === preferred || String(entry.number || '') === preferred,
-              ) ||
-              this.sessions.value[0] ||
-              null;
-        if (session) await this.selectSession(session, true);
-        else this.newChat(true, this.storage.getItem(this.keys.lastProject) || '', false);
+        const preferred = routed || this.storage.getItem(this.keys.activeSession) || '';
+        const session = this.sessions.value.find(
+          (entry) => entry.id === preferred || String(entry.number || '') === preferred,
+        );
+        const startNewChat = () =>
+          this.newChat(true, this.storage.getItem(this.keys.lastProject) || '', false);
+        if (forceNew || restoreDraft) startNewChat();
+        else if (session) await this.selectSession(session, true);
+        else if (routed) {
+          // Hub attention links can target sessions older than the sidebar page.
+          // A browser Back during the lookup must not replace the newer route.
+          const route = location.pathname;
+          const epoch = this.selectionEpoch;
+          const resolved = await this.resolveAndSelectSession(routed, true, {
+            newChatOnMiss: false,
+            propagateError: true,
+            isCurrent: () => location.pathname === route,
+          });
+          if (location.pathname !== route) await this.navigateFromHistory();
+          else if (!resolved && this.selectionEpoch === epoch) startNewChat();
+        } else if (this.sessions.value[0]) await this.selectSession(this.sessions.value[0], true);
+        else startNewChat();
       }
       this.syncSessionInterest();
       this.connected.value = true;
@@ -764,7 +795,7 @@ export class AppStore {
     // so Back after a voice-initiated switch moves the call back with it —
     // including when the session the call moved to is not in the loaded list.
     if (session) return this.selectSession(session, true);
-    void this.resolveAndSelectSession(slug, true);
+    await this.resolveAndSelectSession(slug, true);
   }
 
   private ensureSessionSyncChannel(): void {
@@ -1183,11 +1214,21 @@ export class AppStore {
   async resolveAndSelectSession(
     id: string,
     replace = false,
-    options: { keepLive?: boolean; fromLive?: boolean; prepend?: boolean } = {},
+    options: {
+      keepLive?: boolean;
+      fromLive?: boolean;
+      prepend?: boolean;
+      newChatOnMiss?: boolean;
+      propagateError?: boolean;
+      isCurrent?: () => boolean;
+    } = {},
   ): Promise<Session | null> {
     const { liveId, previous, rebind } = this.liveNavigation(id, options);
     const session = await this.selectionStore.resolveAndSelectSession(id, replace, {
       prepend: options.prepend,
+      newChatOnMiss: options.newChatOnMiss,
+      propagateError: options.propagateError,
+      isCurrent: options.isCurrent,
     });
     this.syncSessionInterest();
     if (!session) {
@@ -1197,6 +1238,7 @@ export class AppStore {
     }
     if (rebind && session.id !== previous)
       this.rebindLiveCall(liveId, session, this.selectionStore.generation);
+    void this.acknowledgeSelectedAttention();
     return session;
   }
 
@@ -1434,6 +1476,31 @@ export class AppStore {
   async copyMCPOAuthLink(name: string): Promise<void> {
     await this.mcpStore.copyOAuthLink(name);
   }
+  searchMCPCatalogue(query: string, signal?: AbortSignal): Promise<MCPCatalogueResponse> {
+    return this.mcpStore.searchCatalogue(query, signal);
+  }
+  previewMCPServer(request: MCPAddRequest): Promise<MCPAddResult> {
+    return this.mcpStore.preview(request);
+  }
+  addMCPServer(request: MCPAddRequest, enable = true): Promise<MCPAddResult> {
+    return this.mcpStore.addServer(request, enable);
+  }
+  removeMCPServer(name: string): Promise<boolean> {
+    return this.mcpStore.removeServer(name);
+  }
+  async undoRemoveMCPServer(): Promise<void> {
+    await this.mcpStore.undoRemove();
+  }
+  dismissRemovedMCPServer(): void {
+    this.mcpStore.dismissRemoved();
+  }
+  setWebMCPEnabled(enabled: boolean): void {
+    this.webMCP.setEnabled(this.mcpSessionId(), enabled);
+  }
+  /** The conversation MCP settings apply to: the active one, or the draft. */
+  private mcpSessionId(): string {
+    return this.activeSession.value?.id || this.composer.runtimeDraftId();
+  }
   async saveGoal(goal: Goal | { action: string }): Promise<void> {
     const sessionId = 'objective' in goal ? await this.materializeSession() : undefined;
     await this.goalStore.save(goal, sessionId);
@@ -1636,6 +1703,7 @@ export class AppStore {
     this.persistCurrentDraft();
     this.lifecycleAbort.abort();
     this.sideQuestions.dispose();
+    this.webMCP.dispose();
     this.runtime.dispose();
     this.sessionStore.dispose();
     this.selectionStore.dispose();

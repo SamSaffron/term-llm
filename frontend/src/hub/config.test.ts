@@ -19,6 +19,36 @@ describe('Hub config', () => {
     ).toThrow('passkey page configuration');
   });
 
+  it('requires an S256 challenge for native sign-in approval', () => {
+    const native = (challenge: unknown) =>
+      parseHubConfig({
+        page: 'passkey-auth',
+        authMode: 'passkey',
+        basePath: '/hub',
+        passkey: { mode: 'native', challenge },
+      });
+    const challenge = 'A'.repeat(43);
+    expect(native(challenge).passkey).toMatchObject({ mode: 'native', challenge });
+    for (const bad of [undefined, '', 'A'.repeat(42), `${'A'.repeat(42)}!`]) {
+      expect(() => native(bad)).toThrow('native sign-in challenge');
+    }
+  });
+
+  it('accepts only a bare HTTP(S) passkey origin', () => {
+    const login = (origin: unknown) =>
+      parseHubConfig({
+        page: 'passkey-auth',
+        authMode: 'passkey',
+        basePath: '/ui',
+        passkey: { mode: 'login', origin },
+      });
+    expect(login('http://localhost:8080').passkey?.origin).toBe('http://localhost:8080');
+    expect(login(undefined).passkey?.origin).toBe('');
+    for (const bad of ['localhost:8080', 'javascript:alert(1)', 'http://localhost:8080/ui']) {
+      expect(() => login(bad)).toThrow('passkey origin');
+    }
+  });
+
   it('reads escaped server configuration from the mount data attribute', () => {
     const root = document.createElement('div');
     root.dataset.hubConfig = JSON.stringify({

@@ -9,6 +9,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"math"
 	"mime"
 	"net/http"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/dustin/go-humanize"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
@@ -641,4 +643,27 @@ func grantAskUploadedFileReads(toolMgr *tools.ToolManager, messages []llm.Messag
 			_ = toolMgr.ApprovalMgr.AddReadFile(resolved)
 		}
 	}
+}
+
+// applyAskInlineMaxBytesOverride returns askCfg with the per-invocation
+// --inline-max-bytes override applied. Values accept plain byte counts or
+// human sizes (512K, 2M, 1MiB). The override may not exceed ask.stdin_max_bytes.
+func applyAskInlineMaxBytesOverride(askCfg config.AskConfig, raw string) (config.AskConfig, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return askCfg, nil
+	}
+	parsed, err := humanize.ParseBytes(raw)
+	if err != nil {
+		return askCfg, fmt.Errorf("invalid --inline-max-bytes %q: %w", raw, err)
+	}
+	if parsed == 0 || parsed > uint64(math.MaxInt64) {
+		return askCfg, fmt.Errorf("invalid --inline-max-bytes %q: expected a positive size", raw)
+	}
+	value := int64(parsed)
+	if value > askCfg.StdinMaxBytes {
+		return askCfg, fmt.Errorf("invalid --inline-max-bytes %q (%d bytes): must not exceed ask.stdin_max_bytes (%d)", raw, value, askCfg.StdinMaxBytes)
+	}
+	askCfg.StdinInlineMaxBytes = value
+	return askCfg, nil
 }

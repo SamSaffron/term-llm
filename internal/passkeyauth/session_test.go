@@ -53,6 +53,80 @@ func TestSessionsExpirationRevocationAndRecentAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+func TestNativeApprovalGrantIsScopedAndSingleUse(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	sessions := NewSessions(func() time.Time { return now }, nil)
+	issued, err := sessions.Create("cred")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := Principal{SessionID: issued.Info.ID, CredentialRecordID: "cred"}
+	if err := sessions.ConsumeNativeApproval(p, "a"); !errors.Is(err, ErrRecentAuthRequired) {
+		t.Fatalf("approval without any grant: %v", err)
+	}
+	if err := sessions.GrantNativeApproval(p, "a"); err != nil {
+		t.Fatal(err)
+	}
+	// The native grant must not unlock other recent-auth operations.
+	if sessions.HasRecentAuth(p) {
+		t.Fatal("native approval grant widened recent authentication")
+	}
+	if err := sessions.ConsumeRecentAuth(p); !errors.Is(err, ErrRecentAuthRequired) {
+		t.Fatalf("native approval grant consumed as recent auth: %v", err)
+	}
+	if err := sessions.ConsumeNativeApproval(p, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessions.ConsumeNativeApproval(p, "a"); !errors.Is(err, ErrRecentAuthRequired) {
+		t.Fatalf("native approval reused: %v", err)
+	}
+	// The grant approves only the sign-in it was issued for, and a mismatched
+	// attempt discards it.
+	if err := sessions.GrantNativeApproval(p, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessions.ConsumeNativeApproval(p, "b"); !errors.Is(err, ErrRecentAuthRequired) {
+		t.Fatalf("native approval used for another challenge: %v", err)
+	}
+	if err := sessions.ConsumeNativeApproval(p, "a"); !errors.Is(err, ErrRecentAuthRequired) {
+		t.Fatalf("native approval survived a mismatched attempt: %v", err)
+	}
+	if err := sessions.GrantNativeApproval(p, ""); !errors.Is(err, ErrRecentAuthRequired) {
+		t.Fatalf("grant without a challenge: %v", err)
+	}
+	// A general reauthentication also approves exactly one native sign-in.
+	if err := sessions.GrantRecentAuth(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessions.ConsumeNativeApproval(p, "c"); err != nil || sessions.HasRecentAuth(p) {
+		t.Fatalf("recent auth not consumed by native approval: %v", err)
+	}
+	// With both grants, the matching native grant is spent first and the
+	// general grant (from a separate ceremony) remains for its own use.
+	if err := sessions.GrantRecentAuth(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessions.GrantNativeApproval(p, "d"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessions.ConsumeNativeApproval(p, "d"); err != nil || !sessions.HasRecentAuth(p) {
+		t.Fatalf("native approval with both grants: err=%v recent=%v", err, sessions.HasRecentAuth(p))
+	}
+	if err := sessions.ConsumeRecentAuth(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessions.GrantNativeApproval(p, "e"); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(RecentAuthLifetime)
+	if err := sessions.ConsumeNativeApproval(p, "e"); !errors.Is(err, ErrRecentAuthRequired) {
+		t.Fatalf("expired native approval accepted: %v", err)
+	}
+	if err := sessions.GrantNativeApproval(Principal{SessionID: "missing", CredentialRecordID: "cred"}, "a"); !errors.Is(err, ErrInvalidSession) {
+		t.Fatalf("grant for unknown session: %v", err)
+	}
+}
+
 func TestSessionLogoutAndRevokeOthers(t *testing.T) {
 	sessions := NewSessions(nil, nil)
 	current, _ := sessions.Create("a")

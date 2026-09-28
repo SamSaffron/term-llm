@@ -173,6 +173,8 @@ Follow the repository's internal conventions...
 - a non-empty list permits only those names that existing policy already allows;
 - script-backed `tools` declared by the skill are registered before filtering, but still require inclusion in a present allowlist.
 
+These restrictions apply to direct user invocations and isolated skill runs, where the runtime can restore the prior policy when the invocation ends. Model-driven `activate_skill` calls load instructions and register declared tools without narrowing the parent conversation's existing tool surface.
+
 For isolated runs, normal approvals still apply to mutations. Cancellation preserves any partial final output returned by the child and keeps the child transcript linked for inspection. On quit, reload, or server shutdown, active child runners are cancelled and drained before their session store is closed.
 
 ### Structured Web API
@@ -262,6 +264,7 @@ tools:
   - name: maps_travel_time
     description: "Get traffic-aware travel time between two locations"
     script: scripts/travel-time.sh
+    call: json
     timeout_seconds: 15
     input:
       type: object
@@ -280,6 +283,7 @@ tools:
   - name: maps_places_search
     description: "Free-text place search with optional location bias"
     script: scripts/places-search.sh
+    call: json
     input:
       type: object
       properties:
@@ -297,7 +301,7 @@ API key is embedded in the scripts. No need to handle it here.
 ...
 ```
 
-Scripts live in the skill directory (e.g. `scripts/travel-time.sh`) and receive the LLM's arguments as **JSON on stdin**, exactly like agent custom tools:
+Scripts live in the skill directory (e.g. `scripts/travel-time.sh`) and, with `call: json`, receive the LLM's arguments as **JSON on stdin**, exactly like agent custom tools:
 
 ```bash
 #!/usr/bin/env bash
@@ -317,6 +321,7 @@ This is the recommended pattern for skills that need API keys or other secrets. 
 | `name` | ✓ | Tool name shown to LLM. Must match `^[a-z][a-z0-9_]*$` |
 | `description` | ✓ | Description passed to LLM in the tool spec |
 | `script` | ✓ | Path relative to the skill directory (e.g. `scripts/foo.sh`) |
+| `call` | | Argument passing mode: `args` (default) passes named flags (`--key value`); `positional` passes positional values; `json` sends JSON on stdin |
 | `input` | | JSON Schema for parameters. Must be `type: object` at root |
 | `timeout_seconds` | | Execution timeout (default 30, max 300) |
 | `env` | | Extra environment variables when running the script |

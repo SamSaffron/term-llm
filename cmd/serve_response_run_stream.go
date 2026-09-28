@@ -248,6 +248,8 @@ func (s *serveServer) storeCompletedResponseRun(runtime *serveRuntime, sessionID
 		"usage":         usagePayload(result.Usage),
 		"session_usage": usagePayload(result.SessionUsage),
 		"context_usage": result.ContextUsage,
+		// The client tool calls this response stopped on; authoritative even when empty.
+		"pending_client_calls": pendingClientCallsPayload(result.PendingClientCalls()),
 	}
 	if err := run.complete(map[string]any{
 		"response": completedResponse,
@@ -804,7 +806,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	}
 	// Reserve the source/replacement slot before durable admission. A losing
 	// start must never enter runOnce merely because the old runtime unlocks.
-	if sessionID != "" && !mgr.trySetActiveRun(sessionID, respID) {
+	if sessionID != "" && !mgr.trySetActiveRunIf(sessionID, respID, options.admissionCheck) {
 		cancel()
 		mgr.delete(respID)
 		if options.onDone != nil {

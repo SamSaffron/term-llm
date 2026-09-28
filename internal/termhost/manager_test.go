@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"sync"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/lifecycle"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
 type recordedCommand struct {
@@ -338,7 +341,11 @@ func TestLifecycleDebugReportsSafeRateLimitedErrorClasses(t *testing.T) {
 	<-called
 	manager.Close()
 	got := output.String()
-	if got != "term-llm lifecycle: adapter \"unsafe\\nname\" send failed\n" {
+	// Close can cancel the in-flight second state after Send signals `called`.
+	// Its cancellation is a distinct safe class, not a duplicate failure.
+	failed := "term-llm lifecycle: adapter \"unsafe\\nname\" send failed\n"
+	canceled := "term-llm lifecycle: adapter \"unsafe\\nname\" send was canceled\n"
+	if got != failed && got != failed+canceled {
 		t.Fatalf("diagnostic = %q", got)
 	}
 	for _, forbidden := range []string{"--token", "abc", "session-private"} {
@@ -534,5 +541,28 @@ func TestStatusAdapterOrderStable(t *testing.T) {
 	sort.Strings(want)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("status order = %v, want sorted %v", got, want)
+	}
+}
+
+func TestLifecycleDiagnosticUsesActiveSinkInsteadOfTerminal(t *testing.T) {
+	var stderr bytes.Buffer
+	rt := testRuntime(map[string]string{"TERM_LLM_LIFECYCLE_DEBUG": "1"})
+	rt.stderr = &stderr
+	dir := t.TempDir()
+	closeLog, err := runtimeoutput.Start(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeLog()
+	newLifecycleDiagnostic(rt).report("host", errors.New("private error detail"))
+	if stderr.Len() != 0 {
+		t.Fatalf("wrote to renderer: %q", stderr.String())
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "tui.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(`adapter "host" send failed`)) || bytes.Contains(data, []byte("private error detail")) {
+		t.Fatalf("unexpected diagnostic: %q", data)
 	}
 }

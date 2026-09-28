@@ -23,6 +23,13 @@ export interface LiveSessionSwitchResponse {
   no_op?: boolean;
 }
 
+/**
+ * The page's answer to one round of tool calls a voice delegation stopped on:
+ * an output for every requested call, or why there are none.
+ */
+export type LiveToolCallResult =
+  { outputs: Array<{ call_id: string; output: string }> } | { error: string };
+
 export interface SessionMetrics {
   input_tokens: number;
   output_tokens: number;
@@ -87,7 +94,16 @@ export interface SessionChildrenResponse {
 import type { ExtensionStatus } from '../stores/extension-runtime';
 import type { APIClient, RequestControls } from './client';
 import type { LiveEndpoints } from './live-endpoints';
-import type { ApprovalMode, Goal, MCPOAuthFlow, MCPResponse } from '../domain/types';
+import type {
+  ApprovalMode,
+  Goal,
+  MCPAddRequest,
+  MCPAddResult,
+  MCPCatalogueResponse,
+  MCPOAuthFlow,
+  MCPRemoveResult,
+  MCPResponse,
+} from '../domain/types';
 import type { MentionSearchResponse } from '../domain/completions';
 
 export interface ApprovalPolicyResponse {
@@ -223,31 +239,31 @@ export const endpoints = (api: APIClient) => ({
       },
       { policy: 'safe-read', auth: 'session' },
     ),
-  sidebar: (hidden: boolean) =>
+  sidebar: (includeArchived: boolean) =>
     api.get<Record<string, unknown>>(
-      `/v1/sidebar?per_project=12&include_archived_projects=1&include_archived_sessions=${hidden ? '1' : '0'}`,
+      `/v1/sidebar?per_project=12&include_archived_projects=1&include_archived_sessions=${includeArchived ? '1' : '0'}`,
     ),
-  recentSessions: (cursor: string, hidden: boolean) =>
+  recentSessions: (cursor: string, includeArchived: boolean) =>
     api.get<Record<string, unknown>>(
-      `/v1/sessions?scope=all${cursor ? `&cursor=${encoded(cursor)}` : ''}&limit=30&include_archived=${hidden ? '1' : '0'}`,
+      `/v1/sessions?scope=all${cursor ? `&cursor=${encoded(cursor)}` : ''}&limit=30&include_archived=${includeArchived ? '1' : '0'}`,
     ),
-  projectSessions: (projectId: string, cursor: string, hidden: boolean) =>
+  projectSessions: (projectId: string, cursor: string, includeArchived: boolean) =>
     api.get<Record<string, unknown>>(
-      `/v1/sessions?project_id=${encoded(projectId)}&cursor=${encoded(cursor)}&limit=12&include_archived=${hidden ? '1' : '0'}`,
+      `/v1/sessions?project_id=${encoded(projectId)}&cursor=${encoded(cursor)}&limit=12&include_archived=${includeArchived ? '1' : '0'}`,
     ),
-  noProjectSessions: (cursor: string, hidden: boolean) =>
+  noProjectSessions: (cursor: string, includeArchived: boolean) =>
     api.get<Record<string, unknown>>(
-      `/v1/sessions?no_project=1&cursor=${encoded(cursor)}&limit=30&include_archived=${hidden ? '1' : '0'}`,
+      `/v1/sessions?no_project=1&cursor=${encoded(cursor)}&limit=30&include_archived=${includeArchived ? '1' : '0'}`,
     ),
   sessionStatus: async (
     selected = '',
-    hidden = false,
+    includeArchived = false,
     categories: string[] = ['all'],
     etag = '',
   ): Promise<Record<string, unknown>> => {
     const params = new URLSearchParams();
     if (selected) params.set('selected_session', selected);
-    if (hidden) params.set('include_archived', '1');
+    if (includeArchived) params.set('include_archived', '1');
     if (!categories.includes('all')) params.set('categories', categories.join(','));
     const response = await api.request(
       `/v1/sessions/status${params.size ? `?${params}` : ''}`,
@@ -267,12 +283,12 @@ export const endpoints = (api: APIClient) => ({
   },
   searchSessions: (
     query: string,
-    hidden = false,
+    includeArchived = false,
     categories: string[] = ['all'],
     signal?: AbortSignal,
   ) => {
     const params = new URLSearchParams({ q: query, limit: '30' });
-    if (hidden) params.set('include_archived', '1');
+    if (includeArchived) params.set('include_archived', '1');
     if (!categories.includes('all')) params.set('categories', categories.join(','));
     return api.get<Record<string, unknown>>(`/v1/sessions/search?${params}`, signal);
   },
@@ -399,6 +415,8 @@ export const endpoints = (api: APIClient) => ({
   liveAudioInput: liveRoute(api, (routes) => routes.liveAudioInput),
   liveText: liveRoute(api, (routes) => routes.liveText),
   liveSwitchSession: liveRoute(api, (routes) => routes.liveSwitchSession),
+  liveClientTools: liveRoute(api, (routes) => routes.liveClientTools),
+  liveToolResult: liveRoute(api, (routes) => routes.liveToolResult),
   liveEvents: liveRoute(api, (routes) => routes.liveEvents),
   shellCreate: (id: string, cols: number, rows: number) =>
     sessionPost<ShellCreateResponse>(api, id, 'shell', { cols, rows }),
@@ -548,6 +566,14 @@ export const endpoints = (api: APIClient) => ({
     api.delete(`/v1/sessions/${encoded(id)}/mcp/${encoded(server)}/oauth`),
   getMCPOAuthFlow: (flowId: string) =>
     api.get<MCPOAuthFlow>(`/v1/mcp/oauth/flows/${encoded(flowId)}`),
+  getMCPCatalogue: (query: string, signal?: AbortSignal) =>
+    api.get<MCPCatalogueResponse>(
+      `/v1/mcp/catalogue${query ? `?q=${encodeURIComponent(query)}` : ''}`,
+      signal,
+    ),
+  addMCPServer: (body: MCPAddRequest) => api.post<MCPAddResult>('/v1/mcp/servers', body),
+  removeMCPServer: (name: string) =>
+    api.delete<MCPRemoveResult>(`/v1/mcp/servers/${encoded(name)}`),
   askUser: (id: string, body: unknown, operationId: string) =>
     api.post(`/v1/sessions/${encoded(id)}/ask_user`, body, 'idempotent-mutation', {
       'Idempotency-Key': `ask_user_${operationId}`,

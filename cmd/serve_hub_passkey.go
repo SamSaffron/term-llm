@@ -78,6 +78,7 @@ type hubPasskeyRuntime struct {
 	recovery      *passkeyauth.Grants
 	limiter       *hubAuthLimiter
 	peerResolver  *hubClientPeerResolver
+	nativeTickets nativeHandoffTickets
 	grantCommitMu sync.Mutex
 }
 type hubPrincipalKey struct{}
@@ -106,6 +107,9 @@ func (s *browserPasskeyHandler) registerPasskeyRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/auth/login", s.handlePasskeyPage)
 	mux.HandleFunc("/auth/setup", s.handlePasskeyPage)
 	mux.HandleFunc("/auth/recover", s.handlePasskeyPage)
+	mux.HandleFunc("/auth/native/", s.handleNativeHandoff)
+	mux.HandleFunc("/api/auth/native/authorize", s.handleNativeAuthorize)
+	mux.HandleFunc("/api/auth/native/redeem", s.handleNativeRedeem)
 	mux.HandleFunc("/api/auth/bootstrap/verify", s.handleBootstrapVerify)
 	mux.HandleFunc("/api/auth/bootstrap/register/begin", s.handleBootstrapRegisterBegin)
 	mux.HandleFunc("/api/auth/bootstrap/register/finish", s.handleBootstrapRegisterFinish)
@@ -132,7 +136,7 @@ func (s *browserPasskeyHandler) passkeyAPIAllowed(w http.ResponseWriter, r *http
 			return false
 		}
 	}
-	if (strings.HasPrefix(r.URL.Path, "/api/auth/login/") || strings.HasPrefix(r.URL.Path, "/api/auth/bootstrap/") || strings.HasPrefix(r.URL.Path, "/api/auth/recovery/")) && !s.passkey.limiter.allow(s.passkey.peerResolver.peer(r)) {
+	if (strings.HasPrefix(r.URL.Path, "/api/auth/login/") || strings.HasPrefix(r.URL.Path, "/api/auth/bootstrap/") || strings.HasPrefix(r.URL.Path, "/api/auth/recovery/") || r.URL.Path == "/api/auth/native/redeem") && !s.passkey.limiter.allow(s.passkey.peerResolver.peer(r)) {
 		writeHubRateLimited(w)
 		return false
 	}
@@ -384,8 +388,10 @@ func (s *browserPasskeyHandler) handleGrantRegisterFinish(w http.ResponseWriter,
 			s.writePasskeySessionCreateError(w, err)
 			return
 		}
+		returnPath := s.passkey.endpoint.SafeReturnPath(r.URL.Query().Get("return"))
+		s.grantNativeApprovalForReturn(issued, returnPath)
 		s.setSessionCookie(w, issued)
-		writeHubAuthJSON(w, http.StatusCreated, map[string]any{"ok": true, "redirect": s.publicPath("/")})
+		writeHubAuthJSON(w, http.StatusCreated, map[string]any{"ok": true, "redirect": returnPath})
 	} else {
 		log.Printf("Passkey recovery enrolled a replacement credential")
 		writeHubAuthJSON(w, http.StatusCreated, map[string]any{"ok": true, "redirect": s.publicPath("/auth/login")})
@@ -506,8 +512,20 @@ func (s *browserPasskeyHandler) handleLoginFinish(w http.ResponseWriter, r *http
 		s.writePasskeySessionCreateError(w, err)
 		return
 	}
+	s.grantNativeApprovalForReturn(issued, ceremony.Meta)
 	s.setSessionCookie(w, issued)
 	writeHubAuthJSON(w, http.StatusOK, map[string]any{"ok": true, "redirect": ceremony.Meta})
+}
+
+// grantNativeApprovalForReturn lets a passkey login or first-passkey setup that
+// returns to a native-app approval page approve that one sign-in (bound to its
+// challenge) without a second prompt. It grants nothing else, and the page still requires an
+// explicit same-origin approval POST.
+func (s *browserPasskeyHandler) grantNativeApprovalForReturn(issued passkeyauth.IssuedSession, returnPath string) {
+	challenge, ok := strings.CutPrefix(returnPath, s.publicPath(nativeHandoffPrefix))
+	if ok && validNativeChallenge(challenge) {
+		_ = s.passkey.sessions.GrantNativeApproval(passkeyauth.Principal{SessionID: issued.Info.ID, CredentialRecordID: issued.Info.CredentialRecordID}, challenge)
+	}
 }
 
 func (s *browserPasskeyHandler) writePasskeySessionCreateError(w http.ResponseWriter, err error) {
@@ -757,25 +775,11 @@ func (s *browserPasskeyHandler) passkeyAuth(next http.Handler) http.Handler {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		if strings.HasPrefix(r.URL.Path, "/api/auth/") {
-			w.Header().Set("Cache-Control", "no-store")
-			w.Header().Add("Vary", "Origin")
-		}
+		setPasskeyAuthResponseHeaders(w, r.URL.Path)
 		r = r.WithContext(context.WithValue(r.Context(), hubExpectedOriginKey{}, s.passkey.endpoint.Origin))
-		legacyName := hubAuthCookieName
-		if s.web {
-			legacyName = "term_llm_token"
-		}
-		if legacy, err := r.Cookie(legacyName); err == nil && legacy.Value != "" {
-			if s.web {
-				// The old Web cookie was scoped without a trailing slash (plus an
-				// older image-only cookie), unlike the new session cookie.
-				for _, path := range []string{s.basePath, s.basePath + "/images"} {
-					http.SetCookie(w, &http.Cookie{Name: legacyName, Path: path, MaxAge: -1, HttpOnly: true, Secure: s.passkey.endpoint.Secure, SameSite: http.SameSiteStrictMode})
-				}
-			} else {
-				s.clearCookie(w, legacyName)
-			}
+		s.clearLegacyAuthCookie(w, r)
+		if rejectInvalidNativeHandoff(w, r) {
+			return
 		}
 		if (r.Method == http.MethodOptions && !s.web) || r.URL.Path == "/healthz" || (s.bypass != nil && s.bypass(r)) || passkeyPublicRoute(r.URL.Path) {
 			next.ServeHTTP(w, r)
@@ -793,6 +797,9 @@ func (s *browserPasskeyHandler) passkeyAuth(next http.Handler) http.Handler {
 				r = s.prepare(r)
 			}
 			next.ServeHTTP(w, r)
+			return
+		}
+		if s.redirectNativeHandoffLogin(w, r) {
 			return
 		}
 		if hubShouldRenderLogin(r) {
@@ -817,10 +824,65 @@ func (s *browserPasskeyHandler) passkeyAuth(next http.Handler) http.Handler {
 	})
 }
 
+func (s *browserPasskeyHandler) clearLegacyAuthCookie(w http.ResponseWriter, r *http.Request) {
+	legacyName := hubAuthCookieName
+	if s.web {
+		legacyName = "term_llm_token"
+	}
+	legacy, err := r.Cookie(legacyName)
+	if err != nil || legacy.Value == "" {
+		return
+	}
+	if !s.web {
+		s.clearCookie(w, legacyName)
+		return
+	}
+	// The old Web cookie was scoped without a trailing slash (plus an
+	// older image-only cookie), unlike the new session cookie.
+	for _, path := range []string{s.basePath, s.basePath + "/images"} {
+		http.SetCookie(w, &http.Cookie{Name: legacyName, Path: path, MaxAge: -1, HttpOnly: true, Secure: s.passkey.endpoint.Secure, SameSite: http.SameSiteStrictMode})
+	}
+}
+
+func setPasskeyAuthResponseHeaders(w http.ResponseWriter, path string) {
+	if strings.HasPrefix(path, "/api/auth/") {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Add("Vary", "Origin")
+	} else if strings.HasPrefix(path, nativeHandoffPrefix) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+	}
+}
+
+// rejectInvalidNativeHandoff runs before authentication so malformed
+// challenges fail fast instead of being round-tripped through login.
+func rejectInvalidNativeHandoff(w http.ResponseWriter, r *http.Request) bool {
+	if !strings.HasPrefix(r.URL.Path, nativeHandoffPrefix) || validNativeChallenge(strings.TrimPrefix(r.URL.Path, nativeHandoffPrefix)) {
+		return false
+	}
+	http.Error(w, "invalid native login challenge", http.StatusBadRequest)
+	return true
+}
+
+// redirectNativeHandoffLogin sends unauthenticated handoff visits through
+// setup or login, returning to the approval page without any query string.
+func (s *browserPasskeyHandler) redirectNativeHandoffLogin(w http.ResponseWriter, r *http.Request) bool {
+	if !strings.HasPrefix(r.URL.Path, nativeHandoffPrefix) || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
+		return false
+	}
+	returnPath := url.QueryEscape(s.passkey.endpoint.SafeReturnPath(s.publicPath(r.URL.Path)))
+	target := s.publicPath("/auth/login") + "?return=" + returnPath
+	if s.bootstrapAvailable(r) {
+		target = s.publicPath("/auth/setup") + "?return=" + returnPath
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
+	return true
+}
+
 func passkeyPublicRoute(path string) bool {
 	switch path {
 	case "/auth/login", "/auth/setup", "/auth/recover", "/dist/hub.js", "/dist/hub.css",
-		"/api/auth/login/begin", "/api/auth/login/finish",
+		"/api/auth/login/begin", "/api/auth/login/finish", "/api/auth/native/redeem",
 		"/api/auth/bootstrap/verify", "/api/auth/bootstrap/register/begin", "/api/auth/bootstrap/register/finish",
 		"/api/auth/recovery/verify", "/api/auth/recovery/register/begin", "/api/auth/recovery/register/finish":
 		return true

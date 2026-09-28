@@ -870,6 +870,11 @@ func runSessionsBrowse(cmd *cobra.Command, args []string) error {
 	if !terminalpolicy.Interactive(os.Stdin, os.Stdout) {
 		return runSessionsList(cmd, args)
 	}
+	closeLog, logErr := startInteractiveDiagnostics(cmd.ErrOrStderr())
+	if logErr != nil {
+		return logErr
+	}
+	defer closeLog()
 
 	store, err := getSessionStore()
 	if err != nil {
@@ -900,6 +905,7 @@ func runSessionsBrowse(cmd *cobra.Command, args []string) error {
 		if err := chatCmd.Flags().Set("resume", chatResume); err != nil {
 			return fmt.Errorf("failed to set resume flag: %w", err)
 		}
+		closeLog() // The browser has quit; chat owns a new terminal UI lifecycle.
 		return runChat(chatCmd, nil)
 	}
 

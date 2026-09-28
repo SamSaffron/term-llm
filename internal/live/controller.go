@@ -540,7 +540,7 @@ func (c *Controller) finishHandled(ctx context.Context, id, answer string) {
 		c.finishFailure(ctx, id, errors.New("the router returned no answer"))
 		return
 	}
-	c.appendDelegation(ctx, id, DelegationChunk{Channel: ChannelCommentary, Text: answer})
+	c.appendDelegation(ctx, id, DelegationChunk{Channel: ChannelQuiet, Text: answer})
 	c.completeDelegation(ctx, id)
 	c.observe(Update{Kind: UpdateDelegation, DelegationID: id, State: DelegationDone})
 }
@@ -549,13 +549,13 @@ func (c *Controller) finishHandled(ctx context.Context, id, answer string) {
 // once.
 //
 // The two audiences are told different things, and they are not the same string.
-// The voice model hears guidance it can act on — the reason, on the commentary
+// The voice model hears guidance it can act on — the reason, on the quiet
 // channel — because it is the only retry channel. The browser is told only what
 // state the delegation reached: a failure carries its text, because something was
 // attempted and went wrong and the reason is the user's to see, while a refusal
 // carries none.
 func (c *Controller) finishFailure(ctx context.Context, id string, err error) {
-	c.appendDelegation(ctx, id, DelegationChunk{Channel: ChannelCommentary, Text: controlRejectionText(err)})
+	c.appendDelegation(ctx, id, DelegationChunk{Channel: ChannelQuiet, Text: controlRejectionText(err)})
 	c.completeDelegation(ctx, id)
 	if isControlRefusal(err) {
 		// DelegationRefused carries no text on purpose: the browser panel renders
@@ -774,7 +774,7 @@ func (c *Controller) runSteeringDelegations(ctx context.Context) {
 				c.completeDelegation(ctx, request.ID)
 				c.observe(Update{Kind: UpdateDelegation, DelegationID: request.ID, State: DelegationFailed, Text: err.Error()})
 			case admitted:
-				c.appendDelegation(ctx, request.ID, DelegationChunk{Channel: ChannelCommentary, Text: steeringNotice})
+				c.appendDelegation(ctx, request.ID, DelegationChunk{Channel: ChannelQuiet, Text: steeringNotice})
 				c.completeDelegation(ctx, request.ID)
 				c.observe(Update{Kind: UpdateDelegation, DelegationID: request.ID, State: DelegationDone})
 			case active == nil:
@@ -833,7 +833,7 @@ func (c *Controller) runWithBusyRetry(ctx context.Context, request DelegationReq
 			return err
 		}
 		if attempt == 0 {
-			writer.emit(DelegationChunk{Channel: ChannelCommentary, Text: busyNotice})
+			writer.emit(DelegationChunk{Channel: ChannelQuiet, Text: busyNotice})
 		}
 		select {
 		case <-ctx.Done():
@@ -931,6 +931,14 @@ type delegationWriter struct {
 	truncated bool
 	closed    bool
 
+	// sendMu orders appends to the session. It is held across a batch's
+	// append, so an unbatched note that follows buffered result text cannot
+	// reach the voice model ahead of it through the periodic flush. Holding it
+	// across network I/O is deliberate: appends to one delegation were already
+	// synchronous with the caller, and a stalled append delaying the next one
+	// is exactly the ordering this protects.
+	sendMu sync.Mutex
+
 	done     chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
@@ -959,9 +967,20 @@ func (w *delegationWriter) emit(chunk DelegationChunk) {
 	if strings.TrimSpace(chunk.Text) == "" {
 		return
 	}
-	if chunk.Channel == ChannelCommentary {
-		// Commentary is short status text; send it without waiting for the
-		// speakable batch so the voice model can fill the silence.
+	if chunk.Channel == ChannelQuiet || chunk.Progress {
+		// Quiet notes and progress are short status text; send them without
+		// waiting for the speakable batch so the voice model hears them while the
+		// work is still running. Result text already buffered goes first, so a
+		// note never overtakes the output it follows.
+		w.sendMu.Lock()
+		defer w.sendMu.Unlock()
+		w.mu.Lock()
+		closed := w.closed
+		w.mu.Unlock()
+		if closed {
+			return // nothing may follow the delegation's final output
+		}
+		w.flushLocked()
 		w.controller.appendDelegation(w.ctx, w.id, chunk)
 		return
 	}
@@ -997,6 +1016,13 @@ func (w *delegationWriter) emit(chunk DelegationChunk) {
 }
 
 func (w *delegationWriter) flush() {
+	w.sendMu.Lock()
+	defer w.sendMu.Unlock()
+	w.flushLocked()
+}
+
+// flushLocked sends buffered result text. The caller holds sendMu.
+func (w *delegationWriter) flushLocked() {
 	w.mu.Lock()
 	pending := w.buffer.String()
 	w.buffer.Reset()
@@ -1010,7 +1036,9 @@ func (w *delegationWriter) flush() {
 func (w *delegationWriter) close() {
 	w.stopOnce.Do(func() { close(w.done) })
 	w.wg.Wait()
-	w.flush()
+	w.sendMu.Lock()
+	defer w.sendMu.Unlock()
+	w.flushLocked()
 	w.mu.Lock()
 	truncated, tail := w.truncated, w.tail
 	w.tail = nil

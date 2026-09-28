@@ -6,13 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	planpkg "github.com/samsaffron/term-llm/internal/plan"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/sqlitefts"
 )
 
@@ -443,9 +443,9 @@ func (s *SQLiteStore) LoadPlanSnapshot(ctx context.Context, sessionID string) (p
 			return planpkg.Snapshot{}, 0, fmt.Errorf("%v; discard invalid plan snapshot: %w", decodeErr, deleteErr)
 		}
 		if deleted {
-			slog.Warn("discarded invalid stored plan snapshot", "session_id", sessionID, "version", version, "error", decodeErr)
+			runtimeoutput.Warn("discarded invalid stored plan snapshot", "session_id", sessionID, "version", version, "error", decodeErr)
 		} else {
-			slog.Warn("stored plan snapshot was invalid; cleanup skipped because the version changed", "session_id", sessionID, "version", version, "error", decodeErr)
+			runtimeoutput.Warn("stored plan snapshot was invalid; cleanup skipped because the version changed", "session_id", sessionID, "version", version, "error", decodeErr)
 		}
 		return planpkg.Snapshot{}, 0, nil
 	}
