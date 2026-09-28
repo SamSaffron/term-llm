@@ -3124,30 +3124,34 @@ func TestSQLiteStoreSidebarListUsesActivityIndexes(t *testing.T) {
 	}
 	defer store.Close()
 
+	// Use List's own ORDER BY so the pinned-rank expression stays textually
+	// matched to the pinOrderSchemaV60 index expressions.
 	queries := []struct {
 		name      string
-		query     string
+		opts      ListOptions
 		wantIndex string
 	}{
 		{
 			name:      "activity",
-			query:     `SELECT id FROM sessions WHERE archived = FALSE ORDER BY COALESCE(pinned, FALSE) DESC, COALESCE(last_message_at, last_user_message_at, created_at) DESC LIMIT 100`,
-			wantIndex: "idx_sessions_sidebar_activity",
+			opts:      ListOptions{SortByActivity: true},
+			wantIndex: "idx_sessions_sidebar_pin_activity",
 		},
 		{
 			name:      "last user activity",
-			query:     `SELECT id FROM sessions WHERE archived = FALSE ORDER BY COALESCE(pinned, FALSE) DESC, COALESCE(last_user_message_at, created_at) DESC LIMIT 100`,
-			wantIndex: "idx_sessions_sidebar_last_user_activity",
+			opts:      ListOptions{},
+			wantIndex: "idx_sessions_sidebar_pin_last_user_activity",
 		},
 	}
 	for _, tc := range queries {
 		t.Run(tc.name, func(t *testing.T) {
-			plan := explainQueryPlan(t, store.db, tc.query)
+			query := `SELECT s.id FROM sessions s WHERE s.parent_id IS NULL AND s.archived = FALSE` + store.listOrderBy(tc.opts) + ` LIMIT 100`
+			plan := explainQueryPlan(t, store.db, query)
 			if !strings.Contains(plan, tc.wantIndex) {
 				t.Fatalf("plan does not use %s:\n%s", tc.wantIndex, plan)
 			}
-			if strings.Contains(plan, "USE TEMP B-TREE") {
-				t.Fatalf("plan uses temp sort:\n%s", plan)
+			// Only the final session-number tie-break may be sorted separately.
+			if strings.Contains(plan, "USE TEMP B-TREE FOR ORDER BY") {
+				t.Fatalf("plan sorts the whole listing:\n%s", plan)
 			}
 		})
 	}

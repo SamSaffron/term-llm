@@ -132,7 +132,14 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// client-tool runner, and the run engine's tool-output continuation;
 		// discovery must run at startup, so none of it can be lazy. That brings
 		// the shell to ~527.0/153.9 kB raw/gzip. Same ~1% rule as above.
-		"dist/app.js":                {raw: 541_000, gzip: 155_500},
+		//
+		// Later conversation-management work left the shell at 534.5/155.9 kB,
+		// already over that compressed cap. Server-ordered pinned conversations
+		// then add the pinned section's pointer/touch drag, keyboard and menu
+		// moves, and the store's optimistic save and rollback. The section is on
+		// screen at startup, so the code is eager: ~542.1/158.4 kB. Same ~1%
+		// rule as above.
+		"dist/app.js":                {raw: 548_000, gzip: 160_000},
 		"dist/chunks/Lightbox.js":    {raw: 8_000, gzip: 3_200},
 		"dist/assets/Lightbox.css":   {raw: 4_000, gzip: 1_400},
 		"dist/chunks/StatsModal.js":  {raw: 8_000, gzip: 3_000},

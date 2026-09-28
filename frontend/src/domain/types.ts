@@ -272,6 +272,11 @@ export interface Session {
   delegated?: boolean;
   archived: boolean;
   pinned: boolean;
+  /**
+   * Persisted 1-based rank among pinned conversations. Activity never changes
+   * it; absent when unpinned or when the server does not rank pins.
+   */
+  pinOrder?: number;
   created: number;
   lastMessageAt: number;
   lastResponseId?: string | null;

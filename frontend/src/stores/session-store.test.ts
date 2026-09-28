@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { APIError } from '../api/client';
 import { initialProjection } from '../domain/response';
 import { AppStore } from './app-store';
 import { testConfig, testSession } from './store-test-fixtures';
+import { compareSessionsByActivity } from './store-utils';
 
 beforeEach(() => localStorage.clear());
 
@@ -659,6 +661,235 @@ describe('SessionStore', () => {
       expect(store.recentSessions.value.map((session) => session.id)).toEqual(['s9']);
       expect(store.recentSessions.value[0].title).toBe('Durable convo');
       expect(store.activeSessionId.value).toBe('s9');
+    } finally {
+      store.dispose();
+    }
+  });
+});
+
+describe('pinned conversation order', () => {
+  // Pins arrive in rank order, deliberately unlike their activity order.
+  const pinnedEntries = () => [
+    { id: 'a', short_title: 'A', pinned: true, pin_order: 1, created_at: 1, last_message_at: 10 },
+    { id: 'b', short_title: 'B', pinned: true, pin_order: 2, created_at: 1, last_message_at: 50 },
+    { id: 'c', short_title: 'C', pinned: true, pin_order: 3, created_at: 1, last_message_at: 90 },
+    { id: 'u', short_title: 'U', created_at: 1, last_message_at: 100 },
+  ];
+  const recentIDs = (store: AppStore) => store.recentSessions.value.map((session) => session.id);
+  const pinnedRanks = (store: AppStore) =>
+    store.sessions.value
+      .filter((session) => session.pinned)
+      .map((session) => [session.id, session.pinOrder]);
+  const pinnedStore = () => {
+    const store = new AppStore(testConfig);
+    store.sessionStore.applySidebar({ recent_sessions: pinnedEntries() });
+    store.refreshSidebar = vi.fn(async () => undefined);
+    return store;
+  };
+
+  it('orders pins by their saved rank while activity only reorders unpinned chats', () => {
+    const store = pinnedStore();
+    try {
+      expect(recentIDs(store)).toEqual(['a', 'b', 'c', 'u']);
+      expect(pinnedRanks(store)).toEqual([
+        ['a', 1],
+        ['b', 2],
+        ['c', 3],
+      ]);
+
+      store.sessionStore.applySidebar({
+        recent_sessions: [
+          ...pinnedEntries().map((entry) =>
+            entry.id === 'c' ? { ...entry, last_message_at: 500 } : entry,
+          ),
+          { id: 'v', short_title: 'V', created_at: 1, last_message_at: 400 },
+        ],
+      });
+
+      expect(recentIDs(store)).toEqual(['a', 'b', 'c', 'v', 'u']);
+      expect(store.sessions.value.map((session) => session.id)).toEqual(['a', 'b', 'c', 'v', 'u']);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('places pins without a saved rank after ranked pins and ignores ranks on unpinned chats', () => {
+    const store = new AppStore(testConfig);
+    try {
+      expect(
+        store.sessionStore.sessionFrom({ id: 'x', pinned: false, pin_order: 3 }),
+      ).toHaveProperty('pinOrder', undefined);
+      expect(
+        store.sessionStore.sessionFrom({ id: 'y', pinned: true, pin_order: 'x' }).pinOrder,
+      ).toBe(undefined);
+      const sessions = [
+        testSession({ id: 'recent-unranked', pinned: true, lastMessageAt: 90 }),
+        testSession({ id: 'regular', lastMessageAt: 100 }),
+        testSession({ id: 'second', pinned: true, pinOrder: 2, lastMessageAt: 10 }),
+        testSession({ id: 'first', pinned: true, pinOrder: 1, lastMessageAt: 5 }),
+        testSession({ id: 'old-unranked', pinned: true, lastMessageAt: 20 }),
+      ];
+      expect(sessions.sort(compareSessionsByActivity).map((session) => session.id)).toEqual([
+        'first',
+        'second',
+        'recent-unranked',
+        'old-unranked',
+        'regular',
+      ]);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('appends a new pin with the server rank and appends it again after unpinning', async () => {
+    const store = pinnedStore();
+    const sorted = () =>
+      [...store.recentSessions.value].sort(compareSessionsByActivity).map((session) => session.id);
+    try {
+      store.endpoints.patchSession = vi.fn(async () => ({ id: 'u', pinned: true, pin_order: 4 }));
+      await store.pinSession(store.sessions.value.find((session) => session.id === 'u')!);
+      expect(store.endpoints.patchSession).toHaveBeenLastCalledWith('u', { pinned: true });
+      expect(sorted()).toEqual(['a', 'b', 'c', 'u']);
+
+      store.endpoints.patchSession = vi.fn(async () => ({ id: 'a', pinned: false }));
+      await store.pinSession(store.sessions.value.find((session) => session.id === 'a')!);
+      expect(store.sessions.value.find((session) => session.id === 'a')).toMatchObject({
+        pinned: false,
+        pinOrder: undefined,
+      });
+
+      store.endpoints.patchSession = vi.fn(async () => ({ id: 'a', pinned: true, pin_order: 5 }));
+      await store.pinSession(store.sessions.value.find((session) => session.id === 'a')!);
+      expect(sorted()).toEqual(['b', 'c', 'u', 'a']);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('shows a reorder at once, keeps it through stale snapshots, then applies saved ranks', async () => {
+    const store = pinnedStore();
+    try {
+      let commit!: (value: Record<string, unknown>) => void;
+      store.endpoints.reorderPinnedSessions = vi.fn(
+        () => new Promise<Record<string, unknown>>((resolve) => (commit = resolve)),
+      );
+
+      const saving = store.reorderPinnedSessions(['c', 'a', 'b']);
+      expect(recentIDs(store)).toEqual(['c', 'a', 'b', 'u']);
+      await vi.waitFor(() =>
+        expect(store.endpoints.reorderPinnedSessions).toHaveBeenCalledWith(['c', 'a', 'b']),
+      );
+      // A refresh that read the catalog before the save committed cannot undo it.
+      store.sessionStore.applySidebar({ recent_sessions: pinnedEntries() });
+      expect(recentIDs(store)).toEqual(['c', 'a', 'b', 'u']);
+
+      commit({
+        pinned: [
+          { id: 'c', pin_order: 1 },
+          { id: 'hidden', pin_order: 2 },
+          { id: 'a', pin_order: 3 },
+          { id: 'b', pin_order: 4 },
+        ],
+      });
+      await saving;
+      expect(pinnedRanks(store)).toEqual([
+        ['c', 1],
+        ['a', 3],
+        ['b', 4],
+      ]);
+      expect(store.refreshSidebar).toHaveBeenCalledOnce();
+
+      // Once saved, server snapshots are authoritative again.
+      store.sessionStore.applySidebar({ recent_sessions: pinnedEntries() });
+      expect(recentIDs(store)).toEqual(['a', 'b', 'c', 'u']);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('moves only the listed pins, leaving other pins in their positions', async () => {
+    const store = new AppStore(testConfig);
+    try {
+      store.sessionStore.applySidebar({
+        recent_sessions: [
+          { id: 'a', pinned: true, pin_order: 1, created_at: 1, last_message_at: 1 },
+          { id: 'x', pinned: true, pin_order: 2, created_at: 1, last_message_at: 1 },
+          { id: 'b', pinned: true, pin_order: 3, created_at: 1, last_message_at: 1 },
+        ],
+      });
+      store.refreshSidebar = vi.fn(async () => undefined);
+      store.endpoints.reorderPinnedSessions = vi.fn(async () => ({}));
+
+      await store.reorderPinnedSessions(['b', 'a']);
+
+      expect(store.endpoints.reorderPinnedSessions).toHaveBeenCalledWith(['b', 'a']);
+      expect(recentIDs(store)).toEqual(['b', 'x', 'a']);
+      // Reordering into the current order saves nothing.
+      await store.reorderPinnedSessions(['b', 'x', 'a']);
+      expect(store.endpoints.reorderPinnedSessions).toHaveBeenCalledOnce();
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('restores the previous order, refreshes, and explains a rejected save', async () => {
+    const store = pinnedStore();
+    try {
+      store.endpoints.reorderPinnedSessions = vi.fn(async () => {
+        throw new APIError('a listed session is no longer pinned', 409);
+      });
+      await expect(store.reorderPinnedSessions(['b', 'a', 'c'])).rejects.toThrow(
+        'Pinned conversations changed elsewhere; showing the latest order.',
+      );
+      expect(recentIDs(store)).toEqual(['a', 'b', 'c', 'u']);
+      expect(pinnedRanks(store)).toEqual([
+        ['a', 1],
+        ['b', 2],
+        ['c', 3],
+      ]);
+      expect(store.refreshSidebar).toHaveBeenCalledOnce();
+
+      store.endpoints.reorderPinnedSessions = vi.fn(async () => {
+        throw new APIError('failed to save the pinned order', 500);
+      });
+      await expect(store.reorderPinnedSessions(['c', 'a', 'b'])).rejects.toThrow(
+        'Couldn’t save the pinned order: failed to save the pinned order',
+      );
+      expect(recentIDs(store)).toEqual(['a', 'b', 'c', 'u']);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('saves only the newest of several quick reorders', async () => {
+    const store = pinnedStore();
+    try {
+      const commits: Array<(value: Record<string, unknown>) => void> = [];
+      store.endpoints.reorderPinnedSessions = vi.fn(
+        () => new Promise<Record<string, unknown>>((resolve) => commits.push(resolve)),
+      );
+      const ranks = (ids: string[]) => ({
+        pinned: ids.map((id, index) => ({ id, pin_order: index + 1 })),
+      });
+
+      const first = store.reorderPinnedSessions(['b', 'a', 'c']);
+      await vi.waitFor(() => expect(commits).toHaveLength(1));
+      const second = store.reorderPinnedSessions(['b', 'c', 'a']);
+      const third = store.reorderPinnedSessions(['c', 'b', 'a']);
+      expect(recentIDs(store)).toEqual(['c', 'b', 'a', 'u']);
+
+      commits[0](ranks(['b', 'a', 'c']));
+      await first;
+      // The earlier save's ranks must not undo the newer, unsaved order.
+      expect(recentIDs(store)).toEqual(['c', 'b', 'a', 'u']);
+      await vi.waitFor(() => expect(commits).toHaveLength(2));
+      expect(store.endpoints.reorderPinnedSessions).toHaveBeenLastCalledWith(['c', 'b', 'a']);
+
+      commits[1](ranks(['c', 'b', 'a']));
+      await Promise.all([second, third]);
+      expect(recentIDs(store)).toEqual(['c', 'b', 'a', 'u']);
+      expect(store.endpoints.reorderPinnedSessions).toHaveBeenCalledTimes(2);
+      expect(store.refreshSidebar).toHaveBeenCalledOnce();
     } finally {
       store.dispose();
     }

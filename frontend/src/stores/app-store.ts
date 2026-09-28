@@ -1352,6 +1352,9 @@ export class AppStore {
   async pinSession(session: Session): Promise<void> {
     await this.sessionStore.pinSession(session);
   }
+  async reorderPinnedSessions(orderedIds: string[]): Promise<void> {
+    await this.sessionStore.reorderPinnedSessions(orderedIds);
+  }
   openRename(session: Session): void {
     this.sessionStore.openRename(session);
   }

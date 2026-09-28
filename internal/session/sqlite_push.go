@@ -269,6 +269,7 @@ func (s *SQLiteStore) setCurrentColumns() {
 	s.hasCacheWriteTokens = true
 	s.hasOrigin = true
 	s.hasPinned = true
+	s.hasPinOrder = true
 	s.hasTitleSkippedAt = true
 	s.hasLastUserMessageAt = true
 	s.hasLastMessageAt = true
@@ -338,6 +339,8 @@ func (s *SQLiteStore) probeSessionColumns() {
 			s.hasOrigin = true
 		case "pinned":
 			s.hasPinned = true
+		case "pin_order":
+			s.hasPinOrder = true
 		case "title_skipped_at":
 			s.hasTitleSkippedAt = true
 		case "last_user_message_at":
@@ -433,11 +436,7 @@ func (s *SQLiteStore) sessionSelectCols() string {
 	} else {
 		base += ", 'tui' AS origin"
 	}
-	if s.hasPinned {
-		base += ", pinned"
-	} else {
-		base += ", FALSE AS pinned"
-	}
+	base += ", " + s.pinnedSelectCols("")
 	base += `, agent, cwd`
 	if s.hasWorktreeDir {
 		base += ", worktree_dir"
@@ -491,6 +490,7 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 	var generatedShortTitle, generatedLongTitle, titleSource sql.NullString
 	var titleGeneratedAt, titleSkippedAt sql.NullTime
 	var mode, approvalMode, origin, agent, parentID, tools, mcp, status, tags, providerKey, reasoningEffort, reasoningMode, goalRaw, shareRaw sql.NullString
+	var pinOrder sql.NullInt64
 
 	var scanArgs []any
 	scanArgs = append(scanArgs, &sess.ID, &number, &name, &summary)
@@ -501,7 +501,7 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 		}
 	}
 	scanArgs = append(scanArgs,
-		&sess.Provider, &providerKey, &sess.Model, &reasoningEffort, &reasoningMode, &mode, &approvalMode, &origin, &sess.Pinned,
+		&sess.Provider, &providerKey, &sess.Model, &reasoningEffort, &reasoningMode, &mode, &approvalMode, &origin, &sess.Pinned, &pinOrder,
 		&agent, &cwd, &worktreeDir, &projectID, &sess.CreatedAt, &sess.UpdatedAt, &sess.Archived, &parentID,
 		&sess.Search, &tools, &mcp,
 		&sess.UserTurns, &sess.LLMTurns, &sess.ToolCalls, &sess.InputTokens, &sess.CachedInputTokens,
@@ -537,6 +537,7 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 	if !hasCompactionSeq {
 		sess.CompactionSeq = -1
 	}
+	sess.PinOrder = pinOrderValue(sess.Pinned, pinOrder)
 	if number.Valid {
 		sess.Number = number.Int64
 	}

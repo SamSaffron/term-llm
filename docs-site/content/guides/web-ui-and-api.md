@@ -75,6 +75,7 @@ With the default base path of `/ui`, the web runtime exposes:
 - `GET /ui/v1/sidebar`
 - `GET /ui/v1/sessions?project_id=prj_...&cursor=...`
 - `GET /ui/v1/sessions/search?q=...&project_id=prj_...`
+- `PATCH /ui/v1/sessions/pinned-order` (`{"session_ids": [...]}` moves the listed pinned conversations, in order, into the positions they already hold; other pins keep theirs)
 - `POST /ui/v1/sessions/:id/project` (validated one-time historical assignment)
 - `POST|DELETE /ui/v1/sessions/:id/shell`
 - `GET /ui/v1/sessions/:id/shell/stream` (SSE)
@@ -131,6 +132,8 @@ A fresh project-aware Responses request includes:
 The server resolves the stable ID, revalidates the canonical path, verifies managed-worktree repository ownership, and atomically snapshots the binding before execution. Repeating the same binding is idempotent; conflicting project/worktree values return `409 workspace_conflict`. First-party UI requests require `project_id` in project mode. Authenticated third-party Responses clients may supply it, but omission keeps their existing unbound/explicit behavior.
 
 Session archival is separate from project archival. **Archive** in a conversation's sidebar menu (or `/archive` in its composer) removes that conversation from the default lists without deleting it. Enable **Show archived sessions** in Web UI settings to find it and choose **Restore**. Archived sessions are exempt from automatic cleanup when `sessions.max_age_days` or `sessions.max_count` is set; projects have their own Archive/Restore action.
+
+**Pin** (or `/pin`) lifts a conversation into the **Pinned** section at the top of both the Recent and Projects views. Pinned conversations keep a saved order: a new pin goes to the end, and new messages never move a pin. Drag a pinned conversation by its row to reorder it (with a mouse or by a touch-and-hold), or use **Move up**/**Move down** in its menu or <kbd>Alt</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> on the focused row. The order is stored on the server, so it survives reloads and is shared by every browser. Unpinning forgets a conversation's place; pinning it again adds it to the end. Session summaries expose the rank as `pin_order`.
 
 The grouped sidebar request is `GET /ui/v1/sidebar?per_project=12&include_archived_projects=1&include_archived_sessions=0`. It returns active, archived, empty, and optional **No project** groups in one bounded projection. Each group carries `session_count`, `last_activity_at`, up to `per_project` summaries, and an opaque `next_cursor`. Pass that cursor back only for the same group; the null-project cursor is sent without `project_id`. Global full-text search results include `project_id` and `project_name` so clients can regroup them without racing a second project lookup.
 

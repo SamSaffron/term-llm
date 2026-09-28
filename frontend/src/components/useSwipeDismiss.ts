@@ -146,6 +146,12 @@ export function useSwipeDismiss(
 
     const move = (event: PointerEvent) => {
       if (pointerID !== event.pointerId || rejected) return;
+      // A nested gesture that claims the pointer, such as dragging a pinned
+      // conversation, marks its moves handled; the swipe then stands down.
+      if (!dragging && event.defaultPrevented) {
+        rejected = true;
+        return;
+      }
       const primary = axis === 'x' ? event.clientX : event.clientY;
       const cross = axis === 'x' ? event.clientY : event.clientX;
       const signedDistance = direction * (primary - startPrimary);

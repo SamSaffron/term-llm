@@ -44,6 +44,7 @@ Use version-named, immutable table SQL. Create the replacement table, copy an ex
 - Memory v12 canonicalizes the existing tables and owns the already-supported vector index. Its key/value marker remains readable by the previous binary.
 - File-history v3 adds a singleton marker key while preserving `SELECT version` and whole-table `UPDATE` compatibility.
 - Jobs v1 adopts the existing jobs-v2 shape and adds a marker unknown to older binaries; the reconciled columns and indexes remain compatible with the immediately previous jobs code.
+- Session v60 adds nullable `sessions.pin_order`, backfills existing pins in their last shown (activity) order, replaces the two v30 sidebar activity indexes with pin-aware equivalents, and recreates the metadata change trigger so rank changes reach other processes. The immediately previous binary rejects the v60 marker for read-write use; opened read-only it still lists sessions, ordering pins by activity without the replaced indexes.
 
 A process running an older binary concurrently with a new migrator is not granted write coordination beyond SQLite locking. Deploy one write-capable version at a time during these first marker transitions.
 

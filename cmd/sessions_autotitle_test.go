@@ -65,6 +65,10 @@ func TestUpdateAutotitleDoesNotClobberConcurrentSessionMetadata(t *testing.T) {
 	if err := sqlStore.Update(ctx, concurrent); err != nil {
 		t.Fatalf("concurrent Update: %v", err)
 	}
+	// Pin state is owned by the narrow pin path; Update never writes it.
+	if _, err := sqlStore.SetSessionPinned(ctx, original.ID, true); err != nil {
+		t.Fatalf("concurrent SetSessionPinned: %v", err)
+	}
 
 	store := &trackingAutotitleStore{SQLiteStore: sqlStore}
 	generatedAt := time.Now().UTC().Truncate(time.Second)

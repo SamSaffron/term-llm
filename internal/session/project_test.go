@@ -73,11 +73,22 @@ func openProjectMigration46DB(t *testing.T) *sql.DB {
 	}
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
+	seedProjectMigration46Schema(t, db)
+	return db
+}
 
+func seedProjectMigration46Schema(t *testing.T, db *sql.DB) {
+	t.Helper()
 	preProjectSchema := strings.Replace(schema, "    project_id TEXT,\n", "", 1)
 	if preProjectSchema == schema {
 		t.Fatal("project_id column not found in current schema")
 	}
+	// Version 46 also predates the v60 pinned rank.
+	prePinOrderSchema := strings.Replace(preProjectSchema, "    pin_order INTEGER,\n", "", 1)
+	if prePinOrderSchema == preProjectSchema {
+		t.Fatal("pin_order column not found in current schema")
+	}
+	preProjectSchema = prePinOrderSchema
 	if _, err := db.Exec(preProjectSchema); err != nil {
 		t.Fatalf("seed pre-project schema: %v", err)
 	}
@@ -88,7 +99,6 @@ func openProjectMigration46DB(t *testing.T) *sql.DB {
 	`); err != nil {
 		t.Fatalf("seed schema version: %v", err)
 	}
-	return db
 }
 
 func TestProjectMigration47UpgradesExistingDatabase(t *testing.T) {
@@ -414,8 +424,7 @@ func TestProjectSidebarActivityUsesAllRowsBeyondPinnedWindow(t *testing.T) {
 		if _, err := store.BindSessionWorkspace(ctx, sess.ID, SessionWorkspaceBinding{ProjectID: alpha.ID, CWD: alpha.CanonicalDir}); err != nil {
 			t.Fatal(err)
 		}
-		sess.Pinned = true
-		if err := store.Update(ctx, sess); err != nil {
+		if _, err := store.SetSessionPinned(ctx, sess.ID, true); err != nil {
 			t.Fatal(err)
 		}
 		message := NewMessage(sess.ID, llm.UserText("old pinned"), 0)

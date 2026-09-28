@@ -96,6 +96,16 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 			sharePlaceholder = ", ?"
 			shareArgs = []any{shareJSONString(sess.Share)}
 		}
+		pinOrderCol := ""
+		pinOrderPlaceholder := ""
+		var pinOrderArgs []any
+		if s.hasPinOrder {
+			// A session created pinned goes after every existing pin, exactly
+			// like one pinned later. One statement keeps the rank unique.
+			pinOrderCol = ", pin_order"
+			pinOrderPlaceholder = ", CASE WHEN ? THEN (SELECT COALESCE(MAX(pin_order), 0) + 1 FROM sessions WHERE COALESCE(pinned, FALSE)) END"
+			pinOrderArgs = []any{sess.Pinned}
+		}
 		insertArgs := []any{
 			sess.ID, sess.Name, sess.Summary, nullString(sess.GeneratedShortTitle), nullString(sess.GeneratedLongTitle), nullString(string(sess.TitleSource)), nullTime(sess.TitleGeneratedAt), sess.TitleBasisMsgSeq, nullTime(sess.TitleSkippedAt),
 			sess.Provider, nullString(sess.ProviderKey), sess.Model, string(sess.Mode),
@@ -116,12 +126,13 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 		insertArgs = append(insertArgs, shareArgs...)
 		insertArgs = append(insertArgs, reasoningEffortArgs...)
 		insertArgs = append(insertArgs, reasoningModeArgs...)
+		insertArgs = append(insertArgs, pinOrderArgs...)
 		result, err := s.db.ExecContext(ctx, `
 			INSERT INTO sessions (id, number, name, summary, generated_short_title, generated_long_title, title_source, title_generated_at, title_basis_msg_seq, title_skipped_at,
 				                      provider, provider_key, model, mode`+approvalModeCol+`, origin, agent, cwd`+worktreeDirCol+projectIDCol+`, created_at, updated_at, archived, pinned, parent_id, search, tools, mcp,
 			                      user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens,
-				                      last_total_tokens, last_message_count, status, tags`+goalCol+shareCol+reasoningEffortCol+reasoningModeCol+`)
-			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+approvalModePlaceholder+`, ?, ?, ?`+worktreeDirPlaceholder+projectIDPlaceholder+`, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+goalPlaceholder+sharePlaceholder+reasoningEffortPlaceholder+reasoningModePlaceholder+`)`,
+				                      last_total_tokens, last_message_count, status, tags`+goalCol+shareCol+reasoningEffortCol+reasoningModeCol+pinOrderCol+`)
+			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+approvalModePlaceholder+`, ?, ?, ?`+worktreeDirPlaceholder+projectIDPlaceholder+`, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+goalPlaceholder+sharePlaceholder+reasoningEffortPlaceholder+reasoningModePlaceholder+pinOrderPlaceholder+`)`,
 			insertArgs...)
 		if err != nil {
 			return fmt.Errorf("insert session: %w", err)
@@ -133,11 +144,13 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 			return fmt.Errorf("no rows inserted")
 		}
 
-		// Query the assigned number back
-		err = s.db.QueryRowContext(ctx, "SELECT number FROM sessions WHERE id = ?", sess.ID).Scan(&sess.Number)
+		// Query the assigned number (and any pinned rank) back
+		var pinOrder sql.NullInt64
+		err = s.db.QueryRowContext(ctx, "SELECT number, "+s.pinOrderCol("")+" FROM sessions WHERE id = ?", sess.ID).Scan(&sess.Number, &pinOrder)
 		if err != nil {
 			return fmt.Errorf("get assigned number: %w", err)
 		}
+		sess.PinOrder = pinOrderValue(sess.Pinned, pinOrder)
 		return nil
 	})
 	if err != nil {
@@ -222,7 +235,9 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 // Token metrics (input_tokens, cached_input_tokens, cache_write_tokens, output_tokens)
 // and turn counters (user_turns, llm_turns, tool_calls) are intentionally excluded — they are
 // managed exclusively by atomic update paths to prevent stale in-memory values from clobbering
-// accumulated totals.
+// accumulated totals. Pin state (pinned and pin_order) is likewise owned by
+// PinnedSessionStore, so a long-running runtime's stale snapshot cannot unpin
+// or reorder a conversation.
 func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	sess.UpdatedAt = time.Now()
 	if sess.Origin == "" {
@@ -272,7 +287,7 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 		titleSkippedAtClause + `,
 		       provider = ?, provider_key = ?, model = ?` + reasoningEffortClause + reasoningModeClause + `, mode = ?` + approvalModeClause + `, origin = ?,
 		       agent = CASE WHEN COALESCE(agent, '') <> '' AND COALESCE(?, '') = '' THEN agent ELSE ? END, ` + cwdAssignment + worktreeDirClause + `,
-		       updated_at = ?, archived = ?, pinned = ?, parent_id = ?, search = ?, tools = ?, mcp = ?,
+		       updated_at = ?, archived = ?, parent_id = ?, search = ?, tools = ?, mcp = ?,
 		       status = ?, tags = ?` + goalClause + shareClause + `
 		WHERE id = ?`
 
@@ -304,7 +319,7 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 		args = append(args, nullString(sess.WorktreeDir))
 	}
 	args = append(args,
-		sess.UpdatedAt, sess.Archived, sess.Pinned, nullString(sess.ParentID),
+		sess.UpdatedAt, sess.Archived, nullString(sess.ParentID),
 		sess.Search, nullString(sess.Tools), nullString(sess.MCP),
 		string(sess.Status), nullString(sess.Tags),
 	)
@@ -832,10 +847,6 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	if s.hasOrigin {
 		originCol = "COALESCE(NULLIF(TRIM(s.origin), ''), 'tui')"
 	}
-	pinnedCol := "FALSE"
-	if s.hasPinned {
-		pinnedCol = "COALESCE(s.pinned, FALSE)"
-	}
 	generatedShortCol := "''"
 	generatedLongCol := "''"
 	titleSourceCol := "''"
@@ -888,7 +899,7 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	}
 	query := `
 		SELECT s.id, s.number, s.name, s.summary, ` + generatedShortCol + `, ` + generatedLongCol + `, ` + titleSourceCol + `,
-		       s.provider, COALESCE(s.provider_key, ''), s.model, s.mode, ` + originCol + `, COALESCE(s.agent, ''), s.archived, ` + pinnedCol + `, s.created_at, s.updated_at, ` + lastMessageAtCol + `, ` + lastUserMessageAtCol + `,
+		       s.provider, COALESCE(s.provider_key, ''), s.model, s.mode, ` + originCol + `, COALESCE(s.agent, ''), s.archived, ` + s.pinnedSelectCols("s") + `, s.created_at, s.updated_at, ` + lastMessageAtCol + `, ` + lastUserMessageAtCol + `,
 		       ` + messageCountCol + ` as message_count, ` + transcriptRevCol + ` as transcript_rev,
 		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags, COALESCE(s.cwd, ''), ` + worktreeDirCol + `, ` + projectIDCol + `, ` + projectNameCol + `, ` + goalCol + `, ` + shareCol + `
 		` + fromClause + projectJoin + `
@@ -960,19 +971,12 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	} else if opts.NoProject && s.hasProjectID {
 		query += " AND s.project_id IS NULL"
 	}
-	if cursor := opts.ProjectCursor; cursor != nil {
-		if !opts.SortByActivity || !s.hasPinned || !s.hasLastMessageAt || !s.hasLastUserMessageAt {
-			return nil, fmt.Errorf("project cursor requires activity sorting on the current schema")
-		}
-		activityExpr := "COALESCE(s.last_message_at, s.last_user_message_at, s.created_at)"
-		query += ` AND (
-			COALESCE(s.pinned, FALSE) < ? OR
-			(COALESCE(s.pinned, FALSE) = ? AND (
-				` + activityExpr + ` < ? OR
-				(` + activityExpr + ` = ? AND s.number < ?)
-			)))`
-		args = append(args, cursor.Pinned, cursor.Pinned, cursor.ActivityAt, cursor.ActivityAt, cursor.Number)
+	cursorClause, cursorArgs, err := s.projectCursorClause(opts.ProjectCursor, opts)
+	if err != nil {
+		return nil, err
 	}
+	query += cursorClause
+	args = append(args, cursorArgs...)
 	categoryClause, categoryArgs := s.sessionCategoryFilter(opts.Categories)
 	query += categoryClause
 	args = append(args, categoryArgs...)
@@ -983,28 +987,7 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	if !opts.Archived {
 		query += " AND s.archived = FALSE"
 	}
-
-	if opts.SortByNumberDesc {
-		query += " ORDER BY s.number DESC"
-	} else {
-		// Sort by last user message time (when the user last interacted), falling back
-		// to created_at for sessions with no user messages yet. This prevents background
-		// activity (autotitle, mining, status changes) from reordering the sidebar.
-		// Web sidebar callers set SortByActivity to use last_message_at instead so
-		// assistant-only turns also surface (keeps the top-N window aligned with the
-		// client-side "any-message" ordering).
-		sortCol := "s.updated_at"
-		if opts.SortByActivity && s.hasLastMessageAt {
-			sortCol = "COALESCE(s.last_message_at, s.last_user_message_at, s.created_at)"
-		} else if s.hasLastUserMessageAt {
-			sortCol = "COALESCE(s.last_user_message_at, s.created_at)"
-		}
-		if s.hasPinned {
-			query += " ORDER BY COALESCE(s.pinned, FALSE) DESC, " + sortCol + " DESC, s.number DESC"
-		} else {
-			query += " ORDER BY " + sortCol + " DESC, s.number DESC"
-		}
-	}
+	query += s.listOrderBy(opts)
 
 	limit := opts.Limit
 	if limit == 0 {
@@ -1030,16 +1013,17 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	var results []SessionSummary
 	for rows.Next() {
 		var sum SessionSummary
-		var number sql.NullInt64
+		var number, pinOrder sql.NullInt64
 		var mode, status, tags, generatedShortTitle, generatedLongTitle, titleSource, origin, cwd, worktreeDir, projectID, projectName, goalRaw, shareRaw sql.NullString
 		var lastMessageAt, lastUserMessageAt sql.NullTime
 		err := rows.Scan(&sum.ID, &number, &sum.Name, &sum.Summary, &generatedShortTitle, &generatedLongTitle, &titleSource, &sum.Provider, &sum.ProviderKey, &sum.Model, &mode,
-			&origin, &sum.Agent, &sum.Archived, &sum.Pinned, &sum.CreatedAt, &sum.UpdatedAt, &lastMessageAt, &lastUserMessageAt, &sum.MessageCount, &sum.TranscriptRev,
+			&origin, &sum.Agent, &sum.Archived, &sum.Pinned, &pinOrder, &sum.CreatedAt, &sum.UpdatedAt, &lastMessageAt, &lastUserMessageAt, &sum.MessageCount, &sum.TranscriptRev,
 			&sum.UserTurns, &sum.LLMTurns, &sum.ToolCalls, &sum.InputTokens, &sum.CachedInputTokens, &sum.CacheWriteTokens, &sum.OutputTokens,
 			&status, &tags, &cwd, &worktreeDir, &projectID, &projectName, &goalRaw, &shareRaw)
 		if err != nil {
 			return nil, fmt.Errorf("scan session summary: %w", err)
 		}
+		sum.PinOrder = pinOrderValue(sum.Pinned, pinOrder)
 		if lastMessageAt.Valid {
 			sum.LastMessageAt = lastMessageAt.Time
 		} else if opts.SortByActivity && lastUserMessageAt.Valid {
@@ -1119,10 +1103,6 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	if s.hasOrigin {
 		originCol = "COALESCE(NULLIF(TRIM(s.origin), ''), 'tui')"
 	}
-	pinnedCol := "FALSE"
-	if s.hasPinned {
-		pinnedCol = "COALESCE(s.pinned, FALSE)"
-	}
 	generatedShortCol := "''"
 	generatedLongCol := "''"
 	titleSourceCol := "''"
@@ -1189,7 +1169,7 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 		SELECT m.session_id, s.number, m.id, s.name, s.summary, `+generatedShortCol+` AS generated_short_title,
 		       `+generatedLongCol+` AS generated_long_title, `+titleSourceCol+` AS title_source,
 		       snippet(messages_fts, 0, '**', '**', '...', 32) AS snippet, s.provider, COALESCE(s.provider_key, '') AS provider_key,
-		       s.model, s.mode, `+originCol+` AS origin, s.archived, `+pinnedCol+` AS pinned, s.status,
+		       s.model, s.mode, `+originCol+` AS origin, s.archived, `+s.pinnedSelectCols("s")+`, s.status,
 		       `+messageCountCol+` AS message_count, `+projectIDCol+` AS project_id, `+projectNameCol+` AS project_name,
 		       s.created_at, s.updated_at, `+lastMessageAtCol+` AS last_message_at,
 		       m.created_at AS message_created_at
@@ -1206,16 +1186,17 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	var results []SearchResult
 	for rows.Next() {
 		var r SearchResult
-		var number sql.NullInt64
+		var number, pinOrder sql.NullInt64
 		var generatedShortTitle, generatedLongTitle, titleSource, providerKey, mode, origin, status, projectID, projectName sql.NullString
 		var lastMessageAt sql.NullTime
 		err := rows.Scan(&r.SessionID, &number, &r.MessageID, &r.SessionName, &r.Summary,
 			&generatedShortTitle, &generatedLongTitle, &titleSource, &r.Snippet, &r.Provider, &providerKey,
-			&r.Model, &mode, &origin, &r.Archived, &r.Pinned, &status, &r.MessageCount, &projectID, &projectName,
+			&r.Model, &mode, &origin, &r.Archived, &r.Pinned, &pinOrder, &status, &r.MessageCount, &projectID, &projectName,
 			&r.SessionCreatedAt, &r.UpdatedAt, &lastMessageAt, &r.CreatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("scan search result: %w", err)
 		}
+		r.PinOrder = pinOrderValue(r.Pinned, pinOrder)
 		if number.Valid {
 			r.SessionNumber = number.Int64
 		}

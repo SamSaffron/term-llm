@@ -460,7 +460,7 @@ func (s *SQLiteStore) Sidebar(ctx context.Context, opts SidebarOptions) ([]Sideb
 			       s.generated_long_title, s.title_source, s.provider,
 			       COALESCE(s.provider_key, '') AS provider_key, s.model, s.mode,
 			       COALESCE(NULLIF(TRIM(s.origin), ''), 'tui') AS origin, s.archived,
-			       COALESCE(s.pinned, FALSE) AS pinned, s.message_count, s.transcript_rev,
+			       COALESCE(s.pinned, FALSE) AS pinned, `+s.pinOrderCol("s")+` AS pin_order, s.message_count, s.transcript_rev,
 			       s.status, COALESCE(s.worktree_dir, '') AS worktree_dir, COALESCE(s.project_id, '') AS project_id,
 			       COALESCE(p.name, '') AS project_name, s.created_at, s.updated_at, s.last_message_at, s.last_user_message_at,
 			       COUNT(*) OVER (PARTITION BY s.project_id) AS group_count,
@@ -471,7 +471,7 @@ func (s *SQLiteStore) Sidebar(ctx context.Context, opts SidebarOptions) ([]Sideb
 			       ) AS activity_rn,
 			       ROW_NUMBER() OVER (
 				   PARTITION BY s.project_id
-				   ORDER BY COALESCE(s.pinned, FALSE) DESC,
+				   ORDER BY `+s.pinnedOrderPrefix("s")+`
 				            COALESCE(s.last_message_at, s.last_user_message_at, s.created_at) DESC,
 				            s.number DESC
 			       ) AS rn
@@ -479,7 +479,7 @@ func (s *SQLiteStore) Sidebar(ctx context.Context, opts SidebarOptions) ([]Sideb
 			WHERE s.parent_id IS NULL `+archiveClause+`
 		)
 		SELECT id, number, name, summary, generated_short_title, generated_long_title,
-		       title_source, provider, provider_key, model, mode, origin, archived, pinned,
+		       title_source, provider, provider_key, model, mode, origin, archived, pinned, pin_order,
 		       message_count, transcript_rev, status, worktree_dir, project_id, project_name,
 		       created_at, updated_at, last_message_at, last_user_message_at, group_count, rn, activity_rn
 		FROM ranked WHERE rn <= ? OR activity_rn = 1
@@ -491,18 +491,19 @@ func (s *SQLiteStore) Sidebar(ctx context.Context, opts SidebarOptions) ([]Sideb
 	for rows.Next() {
 		var sum SessionSummary
 		var mode, origin, status, projectID string
-		var number sql.NullInt64
+		var number, pinOrder sql.NullInt64
 		var shortTitle, longTitle, titleSource sql.NullString
 		var lastMessage, lastUserMessage sql.NullTime
 		var groupCount, rank, activityRank int
 		if err := rows.Scan(&sum.ID, &number, &sum.Name, &sum.Summary, &shortTitle, &longTitle,
 			&titleSource, &sum.Provider, &sum.ProviderKey, &sum.Model, &mode, &origin,
-			&sum.Archived, &sum.Pinned, &sum.MessageCount, &sum.TranscriptRev, &status,
+			&sum.Archived, &sum.Pinned, &pinOrder, &sum.MessageCount, &sum.TranscriptRev, &status,
 			&sum.WorktreeDir, &projectID, &sum.ProjectName, &sum.CreatedAt, &sum.UpdatedAt,
 			&lastMessage, &lastUserMessage, &groupCount, &rank, &activityRank); err != nil {
 			return nil, fmt.Errorf("scan sidebar session: %w", err)
 		}
 		sum.Number = number.Int64
+		sum.PinOrder = pinOrderValue(sum.Pinned, pinOrder)
 		sum.GeneratedShortTitle = shortTitle.String
 		sum.GeneratedLongTitle = longTitle.String
 		sum.TitleSource = SessionTitleSource(titleSource.String)

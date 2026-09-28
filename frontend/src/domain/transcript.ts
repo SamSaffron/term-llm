@@ -31,6 +31,12 @@ const text = (value: unknown): string =>
 const record = (value: unknown): Record<string, unknown> | null =>
   Boolean(value) && typeof value === 'object' ? (value as Record<string, unknown>) : null;
 
+/** A persisted pinned rank (`pin_order`), or undefined when absent or invalid. */
+export const pinOrderFrom = (value: unknown): number | undefined => {
+  const rank = typeof value === 'number' || typeof value === 'string' ? Number(value) : Number.NaN;
+  return Number.isSafeInteger(rank) && rank > 0 ? rank : undefined;
+};
+
 export function sanitizeContextUsage(value: unknown): ContextUsage | undefined {
   const source = record(value);
   if (!source) return undefined;
@@ -770,6 +776,8 @@ export function sanitizeSession(
     delegated: Boolean(source.delegated),
     archived,
     pinned: Boolean(source.pinned),
+    // Always present so a merged server snapshot replaces a stale rank.
+    pinOrder: source.pinned ? pinOrderFrom(source.pin_order) : undefined,
     created: timestamp(source.created_at || source.created),
     lastMessageAt: timestamp(source.last_message_at || source.updated_at || source.created_at),
     lastResponseId: text(source.last_response_id || source.lastResponseId) || null,

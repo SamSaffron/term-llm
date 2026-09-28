@@ -12,7 +12,20 @@ import { trapOverlayFocus } from './Overlay';
 import { useMenuKeyboard } from './Menu';
 import { useChatShortcuts } from './useChatShortcuts';
 import { useMediaQuery } from './useMediaQuery';
+import { movedOrder, usePinnedReorder } from './usePinnedReorder';
 import { useEdgeSwipeOpen, useSwipeDismiss } from './useSwipeDismiss';
+
+/** Reordering controls for a row in the global pinned section. */
+interface PinnedRowControls {
+  /** Zero-based position within the pinned section. */
+  position: number;
+  count: number;
+  dragging: boolean;
+  /** Tracks a press on the row, which drags it once it moves (mouse) or rests (touch). */
+  press: (event: PointerEvent) => void;
+  /** Moves the row one place; `focus` names the control that keeps focus. */
+  move: (offset: -1 | 1, focus: 'row' | 'menu') => void;
+}
 
 function sessionMessageCount(session: Session): number {
   if (Number.isFinite(session.messageCount)) return Math.max(0, session.messageCount || 0);
@@ -143,11 +156,13 @@ function SessionMenu({
   onArchive,
   open,
   onOpenChange,
+  pinned,
 }: {
   session: Session;
   onArchive: () => void;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  pinned?: PinnedRowControls;
 }) {
   const store = useStore();
   const menuID = useId();
@@ -215,6 +230,30 @@ function SessionMenu({
           >
             {session.pinned ? 'Unpin' : 'Pin'}
           </button>
+          {pinned && pinned.position > 0 && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onOpenChange(false);
+                pinned.move(-1, 'menu');
+              }}
+            >
+              Move up
+            </button>
+          )}
+          {pinned && pinned.position < pinned.count - 1 && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onOpenChange(false);
+                pinned.move(1, 'menu');
+              }}
+            >
+              Move down
+            </button>
+          )}
           <button
             type="button"
             role="menuitem"
@@ -237,12 +276,15 @@ function SessionRow({
   session,
   showProject = false,
   shortcutEligible = true,
+  pinned,
 }: {
   session: Session;
   showProject?: boolean;
   shortcutEligible?: boolean;
+  pinned?: PinnedRowControls;
 }) {
   const store = useStore();
+  const reorderable = Boolean(pinned && pinned.count > 1);
   const row = useRef<HTMLDivElement>(null);
   const [archiving, setArchiving] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -326,7 +368,8 @@ function SessionRow({
   return (
     <div
       ref={row}
-      class={`session-row ${session.archived ? 'archived' : ''} ${needsInput ? 'is-input-required' : running ? 'is-active' : ''} ${unseen ? 'is-unseen' : ''} ${menuOpen ? 'menu-open' : ''} ${archiving ? 'is-archiving' : ''}`}
+      class={`session-row ${session.archived ? 'archived' : ''} ${needsInput ? 'is-input-required' : running ? 'is-active' : ''} ${unseen ? 'is-unseen' : ''} ${menuOpen ? 'menu-open' : ''} ${archiving ? 'is-archiving' : ''} ${reorderable ? 'is-reorderable' : ''} ${pinned?.dragging ? 'is-dragging' : ''}`}
+      data-pinned-id={pinned ? session.id : undefined}
     >
       <button
         class={`session-btn ${active ? 'active' : ''}`}
@@ -336,9 +379,21 @@ function SessionRow({
         type="button"
         aria-label={`${session.title || session.name || 'New chat'}${attentionLabel ? ` — ${attentionLabel}` : ''}`}
         aria-current={active ? 'page' : undefined}
+        aria-keyshortcuts={reorderable ? 'Alt+ArrowUp Alt+ArrowDown' : undefined}
         title={session.longTitle || session.title}
         onMouseDown={(event) => event.preventDefault()}
+        // The row itself is the drag surface (its actions menu is not); keyboard
+        // users reorder with Alt+Arrow keys or the menu.
+        onPointerDown={reorderable ? (event) => pinned!.press(event) : undefined}
         onClick={() => void store.selectSession(session)}
+        onKeyDown={(event) => {
+          if (!reorderable || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey)
+            return;
+          const offset = event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0;
+          if (!offset) return;
+          event.preventDefault();
+          pinned!.move(offset, 'row');
+        }}
       >
         <span class="session-title">{session.title || session.name || 'New chat'}</span>
         <span class="session-meta" title={new Date(activityAt).toLocaleString()}>
@@ -357,8 +412,70 @@ function SessionRow({
         onArchive={archive}
         open={menuOpen}
         onOpenChange={setMenuOpen}
+        pinned={reorderable ? pinned : undefined}
       />
     </div>
+  );
+}
+
+/** Focuses a pinned row's control after a move re-renders the list. */
+function focusPinnedRow(list: HTMLElement | null, id: string, focus: 'row' | 'menu'): void {
+  const row = [...(list?.children || [])].find(
+    (child): child is HTMLElement => child instanceof HTMLElement && child.dataset.pinnedId === id,
+  );
+  const control = row?.querySelector<HTMLElement>(
+    focus === 'row' ? '.session-btn' : '.session-menu-trigger',
+  );
+  if (control && document.activeElement !== control) control.focus();
+}
+
+/**
+ * The global pinned section. Its order is the server-persisted pinned rank, so
+ * activity never reorders it; users drag rows (pointer or touch) or use
+ * Alt+Arrow keys or the row menu to move them, and the order is saved.
+ */
+function PinnedSessions({ sessions, showProject }: { sessions: Session[]; showProject: boolean }) {
+  const store = useStore();
+  const list = useRef<HTMLDivElement>(null);
+  const [announcement, setAnnouncement] = useState('');
+  const ids = sessions.map((session) => session.id);
+  const commit = (orderedIds: string[], id: string, to: number, focus?: 'row' | 'menu') => {
+    const title = sessions.find((session) => session.id === id)?.title || 'Conversation';
+    setAnnouncement(`Moved ${title} to position ${to + 1} of ${orderedIds.length}.`);
+    void store.reorderPinnedSessions(orderedIds).catch((error) => {
+      setAnnouncement('');
+      store.toast(error, 'error');
+    });
+    if (focus) requestAnimationFrame(() => focusPinnedRow(list.current, id, focus));
+  };
+  const { draggingId, press } = usePinnedReorder(list, commit, ids.join('\0'));
+  return (
+    <section class="session-group sidebar-pinned-group">
+      <h3>Pinned</h3>
+      <div ref={list} class={`pinned-session-list ${draggingId ? 'is-reordering' : ''}`}>
+        {sessions.map((session, position) => (
+          <SessionRow
+            key={session.id}
+            session={session}
+            showProject={showProject}
+            pinned={{
+              position,
+              count: sessions.length,
+              dragging: draggingId === session.id,
+              press: (event) => press(event, session.id),
+              move: (offset, focus) => {
+                const to = position + offset;
+                if (to >= 0 && to < ids.length)
+                  commit(movedOrder(ids, position, to), session.id, to, focus);
+              },
+            }}
+          />
+        ))}
+      </div>
+      <div class="visually-hidden" role="status" aria-live="polite">
+        {announcement}
+      </div>
+    </section>
   );
 }
 
@@ -872,11 +989,14 @@ export function Sidebar() {
   const sidebarView = projectsEnabled ? store.sidebarView.value : 'recent';
   const visibleForView = projectsEnabled && sidebarView === 'recent' ? recent : sidebarSessions;
   const pinnedIDs = new Set<string>();
-  const pinned = visibleForView.filter((session) => {
-    if (!session.pinned || pinnedIDs.has(session.id)) return false;
-    pinnedIDs.add(session.id);
-    return true;
-  });
+  // Both views list pins in their persisted rank, never by activity.
+  const pinned = visibleForView
+    .filter((session) => {
+      if (!session.pinned || pinnedIDs.has(session.id)) return false;
+      pinnedIDs.add(session.id);
+      return true;
+    })
+    .sort(compareSessionsByActivity);
   const regular = standalone.filter((session) => !session.pinned);
   const recentRegular = recent.filter((session) => !session.pinned);
   const newChat = () => {
@@ -1050,16 +1170,10 @@ export function Sidebar() {
               ) : (
                 <>
                   {pinned.length > 0 && (
-                    <section class="session-group sidebar-pinned-group">
-                      <h3>Pinned</h3>
-                      {pinned.map((session) => (
-                        <SessionRow
-                          key={session.id}
-                          session={session}
-                          showProject={projectsEnabled && sidebarView === 'recent'}
-                        />
-                      ))}
-                    </section>
+                    <PinnedSessions
+                      sessions={pinned}
+                      showProject={projectsEnabled && sidebarView === 'recent'}
+                    />
                   )}
                   {projectsEnabled ? (
                     sidebarView === 'recent' ? (

@@ -21,6 +21,7 @@ type SQLiteStore struct {
 	hasCacheWriteTokens      bool // true if sessions table has cache_write_tokens column
 	hasOrigin                bool // true if sessions table has origin column
 	hasPinned                bool // true if sessions table has pinned column
+	hasPinOrder              bool // true if sessions table has pin_order column
 	hasTitleSkippedAt        bool // true if sessions table has title_skipped_at column
 	hasLastUserMessageAt     bool // true if sessions table has last_user_message_at column
 	hasLastMessageAt         bool // true if sessions table has last_message_at column
@@ -81,6 +82,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_message_at TIMESTAMP,
     archived BOOLEAN DEFAULT FALSE,
     pinned BOOLEAN DEFAULT FALSE,
+    pin_order INTEGER,
     parent_id TEXT REFERENCES sessions(id),
     search BOOLEAN DEFAULT FALSE,
     tools TEXT,
@@ -423,3 +425,64 @@ CREATE INDEX IF NOT EXISTS session_attention_unseen
 `
 
 const canonicalSessionSchema = schema + projectsSchemaV47 + changeLogSchemaV52 + attentionSchemaV54 + rushSchemaV57 + modelUsageSchemaV58
+
+// unrankedPinKeySQL orders a pinned row that somehow lacks a persisted rank
+// after every ranked pin rather than first. It must stay textually identical in
+// pinOrderSchemaV60 and pinnedRankSQL so SQLite matches the index expression.
+const unrankedPinKeySQL = "9223372036854775807"
+
+// pinOrderSchemaV60 publishes the objects that depend on sessions.pin_order.
+// Migration 60 and fresh bootstrap both apply it after the canonical schema. It
+// is deliberately not part of canonicalSessionSchema: migration 49 replays that
+// schema on databases that do not have pin_order yet.
+//
+// The sidebar indexes replace their v30 predecessors so a pinned-first listing
+// stays index ordered with the explicit rank between pinned state and activity.
+// The metadata trigger replaces the v53 definition so a reorder is observable
+// by other processes sharing the store.
+const pinOrderSchemaV60 = `
+DROP INDEX IF EXISTS idx_sessions_sidebar_activity;
+DROP INDEX IF EXISTS idx_sessions_sidebar_last_user_activity;
+CREATE INDEX IF NOT EXISTS idx_sessions_sidebar_pin_activity ON sessions(
+    archived,
+    COALESCE(pinned, FALSE) DESC,
+    (CASE WHEN COALESCE(pinned, FALSE) THEN COALESCE(pin_order, ` + unrankedPinKeySQL + `) ELSE 0 END),
+    COALESCE(last_message_at, last_user_message_at, created_at) DESC
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_sidebar_pin_last_user_activity ON sessions(
+    archived,
+    COALESCE(pinned, FALSE) DESC,
+    (CASE WHEN COALESCE(pinned, FALSE) THEN COALESCE(pin_order, ` + unrankedPinKeySQL + `) ELSE 0 END),
+    COALESCE(last_user_message_at, created_at) DESC
+);
+
+DROP TRIGGER IF EXISTS session_change_log_session_metadata;
+CREATE TRIGGER session_change_log_session_metadata
+AFTER UPDATE OF name, generated_short_title, generated_long_title, provider_key, model, agent, tools, mcp, cwd, worktree_dir, archived, pinned, pin_order ON sessions
+WHEN OLD.name IS NOT NEW.name
+  OR OLD.generated_short_title IS NOT NEW.generated_short_title
+  OR OLD.generated_long_title IS NOT NEW.generated_long_title
+  OR OLD.provider_key IS NOT NEW.provider_key
+  OR OLD.model IS NOT NEW.model
+  OR OLD.agent IS NOT NEW.agent
+  OR OLD.tools IS NOT NEW.tools
+  OR OLD.mcp IS NOT NEW.mcp
+  OR OLD.cwd IS NOT NEW.cwd
+  OR OLD.worktree_dir IS NOT NEW.worktree_dir
+  OR OLD.archived IS NOT NEW.archived
+  OR OLD.pinned IS NOT NEW.pinned
+  OR OLD.pin_order IS NOT NEW.pin_order
+BEGIN
+    INSERT INTO session_change_log(kind, session_id, project_id, transcript_rev, status)
+    VALUES ('session.metadata_changed', NEW.id, COALESCE(NEW.project_id, ''), COALESCE(NEW.transcript_rev, 0), COALESCE(NEW.status, ''));
+END;
+`
+
+// pinnedRankSQL is the ordering key shared by listings, keyset cursors, and
+// pinOrderSchemaV60's indexes: 0 for unpinned rows (which keep activity order)
+// and the persisted rank for pinned rows.
+func pinnedRankSQL(alias string) string {
+	pinned := qualifiedMessageColumn(alias, "pinned")
+	pinOrder := qualifiedMessageColumn(alias, "pin_order")
+	return "CASE WHEN COALESCE(" + pinned + ", FALSE) THEN COALESCE(" + pinOrder + ", " + unrankedPinKeySQL + ") ELSE 0 END"
+}

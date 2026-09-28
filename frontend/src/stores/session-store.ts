@@ -1,5 +1,7 @@
 import { computed, signal, type Signal } from '@preact/signals';
 import { APIError } from '../api/client';
+import { errorMessage } from '../domain/text';
+import { pinOrderFrom } from '../domain/transcript';
 import type { Project, Session } from '../domain/types';
 import type { Modal, HubAgent } from './store-types';
 import type { AppStoreServices } from './app-store-services';
@@ -10,6 +12,27 @@ import {
   recordValue,
   sessionFrom as sanitizeSessionFrom,
 } from './store-utils';
+
+/** Ranks from a pinned-order response, keyed by session ID. */
+function pinnedPositions(response: unknown): Map<string, number> {
+  const positions = new Map<string, number>();
+  for (const entry of array(recordValue(response)?.pinned)) {
+    const id = String(entry.id || '');
+    const rank = pinOrderFrom(entry.pin_order);
+    if (id && rank !== undefined) positions.set(id, rank);
+  }
+  return positions;
+}
+
+function pinOrderSaveError(error: unknown): Error {
+  const conflict = error instanceof APIError && (error.status === 404 || error.status === 409);
+  return new Error(
+    conflict
+      ? 'Pinned conversations changed elsewhere; showing the latest order.'
+      : `Couldn’t save the pinned order: ${errorMessage(error)}`,
+    { cause: error },
+  );
+}
 
 export type SidebarView = 'recent' | 'projects';
 
@@ -154,6 +177,12 @@ export class SessionStore {
   private recentTailLoaded = false;
   private hubAgentLastFetch = 0;
   private hubAgentFetch: Promise<void> | null = null;
+  /** Optimistic ranks of the newest unsaved pinned reorder; server snapshots defer to them. */
+  private pendingPinOrder: Map<string, number> | null = null;
+  /** Ranks from before the first unsaved reorder, restored when saving fails. */
+  private pinOrderBaseline: Map<string, number | undefined> | null = null;
+  private pinOrderGeneration = 0;
+  private pinOrderQueue: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly services: AppStoreServices,
@@ -203,6 +232,53 @@ export class SessionStore {
     });
     if (this.searchResults.peek())
       this.searchResults.value = updateEntries(this.searchResults.peek()!);
+  }
+
+  /** Applies updater to every catalog copy of every session, keeping sorted lists sorted. */
+  private updateEveryCatalogSession(updater: (session: Session) => Session): void {
+    const updateEntries = (entries: Session[]): Session[] => {
+      const next = entries.map(updater);
+      return sameIdentityList(entries, next) ? entries : next;
+    };
+    const sessions = updateEntries(this.sessions.peek());
+    if (sessions !== this.sessions.peek())
+      this.sessions.value = sessions.sort(compareSessionsByActivity);
+    const recent = updateEntries(this.recentSessions.peek());
+    if (recent !== this.recentSessions.peek())
+      this.recentSessions.value = recent.sort(compareSessionsByActivity);
+    const projects = this.projects.peek().map((project) => {
+      const entries = project.sessions && updateEntries(project.sessions);
+      return entries === project.sessions ? project : { ...project, sessions: entries };
+    });
+    if (!sameIdentityList(this.projects.peek(), projects)) this.projects.value = projects;
+    const results = this.searchResults.peek();
+    const nextResults = results && updateEntries(results);
+    if (nextResults !== results) this.searchResults.value = nextResults;
+    const transient = this.transientSession.peek();
+    const nextTransient = transient && updater(transient);
+    if (nextTransient !== transient) this.transientSession.value = nextTransient;
+  }
+
+  /** Sets the persisted rank of each listed session that is still pinned. */
+  private applyPinOrder(ranks: ReadonlyMap<string, number | undefined>): void {
+    this.updateEveryCatalogSession((session) =>
+      session.pinned && ranks.has(session.id) && session.pinOrder !== ranks.get(session.id)
+        ? { ...session, pinOrder: ranks.get(session.id) }
+        : session,
+    );
+  }
+
+  /** Every pinned conversation this client knows, deduplicated, in sidebar order. */
+  private knownPinnedSessions(): Session[] {
+    const pinned = new Map<string, Session>();
+    const catalog = [
+      ...this.sessions.peek(),
+      ...this.recentSessions.peek(),
+      ...this.projects.peek().flatMap((project) => project.sessions || []),
+    ];
+    for (const session of catalog)
+      if (session.pinned && !pinned.has(session.id)) pinned.set(session.id, session);
+    return [...pinned.values()].sort(compareSessionsByActivity);
   }
 
   replace(sessions: Session[]): void {
@@ -264,7 +340,12 @@ export class SessionStore {
   }
 
   sessionFrom(value: Record<string, unknown>): Session {
-    return this.services.api.registerSession(sanitizeSessionFrom(this.services.config, value));
+    const session = this.services.api.registerSession(
+      sanitizeSessionFrom(this.services.config, value),
+    );
+    // A snapshot taken before an unsaved reorder commits must not undo it.
+    const pending = session.pinned ? this.pendingPinOrder?.get(session.id) : undefined;
+    return pending === undefined ? session : { ...session, pinOrder: pending };
   }
 
   mergeSession(
@@ -614,7 +695,69 @@ export class SessionStore {
     }
   }
   async pinSession(session: Session): Promise<void> {
-    await this.mutateSession(session, { pinned: !session.pinned });
+    const pinned = !session.pinned;
+    const response = await this.services.endpoints.patchSession(session.id, { pinned });
+    // The server appends a new pin after every existing one; a pin that leaves
+    // and returns is appended again rather than restored to its old rank.
+    const pinOrder = pinned ? pinOrderFrom(recordValue(response)?.pin_order) : undefined;
+    this.pendingPinOrder?.delete(session.id);
+    this.pinOrderBaseline?.delete(session.id);
+    this.updateCatalogSession(session.id, (entry) => ({ ...entry, pinned, pinOrder }));
+    // The metadata PATCH succeeded; a failed catalog refresh must not report it as failed.
+    await this.host.refreshSidebar().catch(() => undefined);
+    this.host.publishSessionChange();
+  }
+
+  /**
+   * Saves a new relative order for pinned conversations. The listed sessions
+   * move, in order, into the positions they already occupy, so pins that are
+   * not listed keep theirs. The new order shows at once. Saves run one at a
+   * time, and a newer order replaces one not yet sent. If the newest save
+   * fails, the order from before the first unsaved change returns, the catalog
+   * refreshes, and a descriptive error is thrown for the caller to report.
+   */
+  async reorderPinnedSessions(orderedIds: string[]): Promise<void> {
+    const current = this.knownPinnedSessions();
+    const currentIDs = current.map((session) => session.id);
+    const listed = orderedIds.filter(
+      (id, index) => currentIDs.includes(id) && orderedIds.indexOf(id) === index,
+    );
+    const slots = listed.map((id) => currentIDs.indexOf(id)).sort((left, right) => left - right);
+    const next = [...currentIDs];
+    listed.forEach((id, index) => {
+      next[slots[index]] = id;
+    });
+    if (next.every((id, index) => id === currentIDs[index])) return;
+
+    this.pinOrderBaseline ??= new Map(current.map((session) => [session.id, session.pinOrder]));
+    this.pendingPinOrder = new Map(next.map((id, index) => [id, index + 1]));
+    this.applyPinOrder(this.pendingPinOrder);
+    const generation = ++this.pinOrderGeneration;
+    const save = this.pinOrderQueue.then(() =>
+      generation === this.pinOrderGeneration
+        ? this.services.endpoints.reorderPinnedSessions(listed)
+        : null,
+    );
+    this.pinOrderQueue = save.catch(() => undefined);
+    let response: Record<string, unknown> | null;
+    try {
+      response = await save;
+    } catch (error) {
+      // A newer order is already queued; its save decides the outcome.
+      if (generation !== this.pinOrderGeneration) return;
+      const baseline = this.pinOrderBaseline;
+      this.pendingPinOrder = null;
+      this.pinOrderBaseline = null;
+      if (baseline) this.applyPinOrder(baseline);
+      await this.host.refreshSidebar().catch(() => undefined);
+      throw pinOrderSaveError(error);
+    }
+    if (generation !== this.pinOrderGeneration) return;
+    this.pendingPinOrder = null;
+    this.pinOrderBaseline = null;
+    this.applyPinOrder(pinnedPositions(response));
+    await this.host.refreshSidebar().catch(() => undefined);
+    this.host.publishSessionChange();
   }
   openRename(session: Session): void {
     this.renameTarget.value = session;

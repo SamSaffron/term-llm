@@ -385,6 +385,34 @@
   border-color: var(--border);
 }
 
+/* Pinned conversations reorder by dragging the whole row: the mouse lifts it
+   after a few pixels of travel and touch after a brief still press, so rows
+   keep their normal look and touches still scroll the list. Holding a row must
+   lift it rather than select its title or open the touch callout. */
+.session-row.is-reorderable {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.pinned-session-list.is-reordering,
+.pinned-session-list.is-reordering * {
+  cursor: grabbing;
+}
+
+/* The dragged row tracks the pointer directly, lifted above the rows that
+   slide aside to show where it will land. */
+.session-row.is-dragging {
+  z-index: var(--z-local-popover);
+  transition: none;
+}
+
+.session-row.is-dragging > .session-btn {
+  border-color: var(--border);
+  background: var(--surface-2);
+  box-shadow: var(--shadow-strong);
+}
+
 .session-menu {
   position: absolute;
   top: calc(100% + 0.35rem);

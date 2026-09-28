@@ -84,8 +84,12 @@ type Session struct {
 	UpdatedAt       time.Time           `json:"updated_at"`
 	Archived        bool                `json:"archived,omitempty"`
 	Pinned          bool                `json:"pinned,omitempty"`
-	ParentID        string              `json:"parent_id,omitempty"`   // For session branching
-	IsSubagent      bool                `json:"is_subagent,omitempty"` // True if this is a subagent session
+	// PinOrder is the persisted 1-based sidebar rank of a pinned session and is
+	// zero when unpinned. Pin state is owned by PinnedSessionStore; Update never
+	// writes it, so a stale snapshot cannot unpin or reorder a conversation.
+	PinOrder   int64  `json:"pin_order,omitempty"`
+	ParentID   string `json:"parent_id,omitempty"`   // For session branching
+	IsSubagent bool   `json:"is_subagent,omitempty"` // True if this is a subagent session
 
 	// Session settings (restored on resume unless overridden)
 	Search bool   `json:"search,omitempty"` // Web search enabled
@@ -149,6 +153,7 @@ type SessionSummary struct {
 	Agent                    string             `json:"agent,omitempty"`
 	Archived                 bool               `json:"archived,omitempty"`
 	Pinned                   bool               `json:"pinned,omitempty"`
+	PinOrder                 int64              `json:"pin_order,omitempty"` // Persisted pinned rank; zero when unpinned
 	MessageCount             int                `json:"message_count"`
 	TranscriptRev            int64              `json:"transcript_rev"`
 	UserTurns                int                `json:"user_turns,omitempty"`
@@ -231,6 +236,7 @@ type SearchResult struct {
 	Origin              SessionOrigin      `json:"origin,omitempty"`
 	Archived            bool               `json:"archived,omitempty"`
 	Pinned              bool               `json:"pinned,omitempty"`
+	PinOrder            int64              `json:"pin_order,omitempty"`
 	Status              SessionStatus      `json:"status,omitempty"`
 	ProjectID           string             `json:"project_id,omitempty"`
 	ProjectName         string             `json:"project_name,omitempty"`

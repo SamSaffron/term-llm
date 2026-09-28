@@ -148,7 +148,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // Increment when adding new migrations.
 const (
 	projectSchemaVersion = 47
-	schemaVersion        = 59
+	schemaVersion        = 60
 )
 
 // migration represents a schema migration.
@@ -1274,6 +1274,53 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		version:     60,
+		description: "persist explicit pinned conversation order",
+		up: func(db schemaExecutor) error {
+			// Canonical-schema fixtures already carry the column.
+			exists, err := sqliteutil.ColumnExists(db, "sessions", "pin_order")
+			if err != nil {
+				return fmt.Errorf("inspect sessions.pin_order: %w", err)
+			}
+			if !exists {
+				if _, err := db.Exec("ALTER TABLE sessions ADD COLUMN pin_order INTEGER"); err != nil {
+					return fmt.Errorf("add sessions.pin_order: %w", err)
+				}
+			}
+			if err := backfillPinOrderV60(db); err != nil {
+				return err
+			}
+			if _, err := db.Exec(pinOrderSchemaV60); err != nil {
+				return fmt.Errorf("install pinned order indexes and metadata trigger: %w", err)
+			}
+			return nil
+		},
+	},
+}
+
+// backfillPinOrderV60 freezes the order existing pins were last shown in: the
+// pinned-first activity order (newest activity first, then highest number).
+// It runs before pinOrderSchemaV60 replaces the metadata trigger, so upgrading
+// does not flood the change log with one event per historical pin.
+func backfillPinOrderV60(db schemaExecutor) error {
+	if _, err := db.Exec(`UPDATE sessions SET pin_order = NULL WHERE pin_order IS NOT NULL AND NOT COALESCE(pinned, FALSE)`); err != nil {
+		return fmt.Errorf("clear unpinned session ranks: %w", err)
+	}
+	if _, err := db.Exec(`
+		WITH ranked AS (
+			SELECT id, ROW_NUMBER() OVER (
+				ORDER BY COALESCE(last_message_at, last_user_message_at, created_at) DESC, number DESC, id
+			) AS pin_rank
+			FROM sessions
+			WHERE COALESCE(pinned, FALSE)
+		)
+		UPDATE sessions
+		SET pin_order = (SELECT pin_rank FROM ranked WHERE ranked.id = sessions.id)
+		WHERE COALESCE(pinned, FALSE)`); err != nil {
+		return fmt.Errorf("backfill pinned session order: %w", err)
+	}
+	return nil
 }
 
 // Keep in sync with llm.IsInternalCompactionSummaryText. SQLite migrations and
@@ -1582,6 +1629,9 @@ func initSchema(db *sql.DB) error {
 			}
 			if err := createMessageCountTriggersV27(tx); err != nil {
 				return fmt.Errorf("bootstrap message count triggers: %w", err)
+			}
+			if _, err := tx.Exec(pinOrderSchemaV60); err != nil {
+				return fmt.Errorf("bootstrap pinned order schema: %w", err)
 			}
 			if _, err := tx.Exec(`CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL)`); err != nil {
 				return fmt.Errorf("create singleton session schema marker: %w", err)

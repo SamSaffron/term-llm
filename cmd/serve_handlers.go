@@ -1261,6 +1261,7 @@ type webSessionEntry struct {
 	WorktreeDir              string                   `json:"worktree_dir,omitempty"`
 	Archived                 bool                     `json:"archived"`
 	Pinned                   bool                     `json:"pinned"`
+	PinOrder                 int64                    `json:"pin_order,omitempty"`
 	CreatedAt                int64                    `json:"created_at"`
 	LastMessageAt            int64                    `json:"last_message_at"`
 	MsgCount                 int                      `json:"message_count"`
@@ -1327,6 +1328,7 @@ func (s *serveServer) webSessionEntryFromSummary(sess session.SessionSummary) we
 		WorktreeDir:   sess.WorktreeDir,
 		Archived:      sess.Archived,
 		Pinned:        sess.Pinned,
+		PinOrder:      sess.PinOrder,
 		CreatedAt:     sess.CreatedAt.UnixMilli(),
 		LastMessageAt: sessionSummaryLastMessageAt(sess).UnixMilli(),
 		MsgCount:      sess.MessageCount,
@@ -1359,6 +1361,7 @@ func (s *serveServer) webSessionEntryFromSession(sess *session.Session) webSessi
 		WorktreeDir:     sess.WorktreeDir,
 		Archived:        sess.Archived,
 		Pinned:          sess.Pinned,
+		PinOrder:        sess.PinOrder,
 		CreatedAt:       sess.CreatedAt.UnixMilli(),
 		LastMessageAt:   lastMessageAt.UnixMilli(),
 		MsgCount:        sess.MessageCount,
@@ -1681,6 +1684,7 @@ func (s *serveServer) handleSessionsSearch(w http.ResponseWriter, r *http.Reques
 		ProjectName              string                   `json:"project_name,omitempty"`
 		Archived                 bool                     `json:"archived"`
 		Pinned                   bool                     `json:"pinned"`
+		PinOrder                 int64                    `json:"pin_order,omitempty"`
 		CreatedAt                int64                    `json:"created_at"`
 		LastMessageAt            int64                    `json:"last_message_at"`
 		MsgCount                 int                      `json:"message_count"`
@@ -1726,6 +1730,7 @@ func (s *serveServer) handleSessionsSearch(w http.ResponseWriter, r *http.Reques
 			Origin:              match.Origin,
 			Archived:            match.Archived,
 			Pinned:              match.Pinned,
+			PinOrder:            match.PinOrder,
 			MessageCount:        match.MessageCount,
 			Status:              match.Status,
 			ProjectID:           match.ProjectID,
@@ -1753,6 +1758,7 @@ func (s *serveServer) handleSessionsSearch(w http.ResponseWriter, r *http.Reques
 			ProjectName:              summary.ProjectName,
 			Archived:                 summary.Archived,
 			Pinned:                   summary.Pinned,
+			PinOrder:                 summary.PinOrder,
 			CreatedAt:                summary.CreatedAt.UnixMilli(),
 			LastMessageAt:            lastMessageAt.UnixMilli(),
 			MsgCount:                 summary.MessageCount,
@@ -2739,6 +2745,7 @@ func trySyncRuntimeSessionMetadata(rt *serveRuntime, sess *session.Session) bool
 	rt.sessionMeta.TitleBasisMsgSeq = sess.TitleBasisMsgSeq
 	rt.sessionMeta.Archived = sess.Archived
 	rt.sessionMeta.Pinned = sess.Pinned
+	rt.sessionMeta.PinOrder = sess.PinOrder
 	rt.sessionMeta.Origin = sess.Origin
 	return true
 }
@@ -2800,11 +2807,12 @@ func (s *serveServer) handleSessionMetadataPatch(w http.ResponseWriter, r *http.
 	if req.Archived != nil {
 		sess.Archived = *req.Archived
 	}
-	if req.Pinned != nil {
-		sess.Pinned = *req.Pinned
-	}
+	// Update never writes pin state; the narrow pin path below owns it.
 	if err := s.store.Update(r.Context(), sess); err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to update session")
+		return
+	}
+	if req.Pinned != nil && !s.setSessionPinnedForPatch(w, r, sess, *req.Pinned) {
 		return
 	}
 
@@ -2828,6 +2836,7 @@ func (s *serveServer) handleSessionMetadataPatch(w http.ResponseWriter, r *http.
 		"origin":                sess.Origin,
 		"archived":              sess.Archived,
 		"pinned":                sess.Pinned,
+		"pin_order":             sess.PinOrder,
 		"created_at":            sess.CreatedAt.UnixMilli(),
 	})
 }

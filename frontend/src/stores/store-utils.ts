@@ -25,8 +25,20 @@ export const listFrom = (
   return [];
 };
 
+/**
+ * A session's position key within the pinned block. Like the server's key, a
+ * pin without a persisted rank (an older server) follows every ranked pin.
+ */
+const sessionPinRank = (session: Session): number =>
+  session.pinned ? session.pinOrder || Number.MAX_SAFE_INTEGER : 0;
+
+/**
+ * Sidebar order: pinned conversations first, in their persisted rank, which
+ * activity never changes; then every other conversation by latest activity.
+ */
 export const compareSessionsByActivity = (left: Session, right: Session): number =>
   Number(right.pinned) - Number(left.pinned) ||
+  sessionPinRank(left) - sessionPinRank(right) ||
   (right.lastMessageAt || right.created) - (left.lastMessageAt || left.created) ||
   (right.number || 0) - (left.number || 0);
 

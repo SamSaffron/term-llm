@@ -121,6 +121,20 @@ describe('stacking layers', () => {
   });
 });
 
+describe('pinned reorder styles', () => {
+  it('lets a long press lift a pinned row without blocking touch scrolling of the list', () => {
+    const sessionsCSS = readFileSync(resolve(stylesRoot, 'features/sessions.css'), 'utf8');
+    // Touches must keep scrolling the sidebar until a long press lifts a row;
+    // script then holds the scroll for just that drag.
+    expect(sessionsCSS).not.toContain('touch-action: none');
+    // Holding a row lifts it rather than selecting its title or opening the
+    // touch callout.
+    expect(appCSS).toMatch(
+      /\.session-row\.is-reorderable\s*\{[^}]*-webkit-touch-callout: none;[^}]*user-select: none;/s,
+    );
+  });
+});
+
 describe('header styles', () => {
   it('does not add a redundant chevron beside the runtime effort meter', () => {
     expect(appCSS).not.toContain('.model-chip::after');

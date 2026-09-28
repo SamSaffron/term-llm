@@ -511,6 +511,9 @@ export const endpoints = (api: APIClient) => ({
   ) =>
     steeringAPI().then(({ deleteSteering }) => deleteSteering(api, sessionId, id, run, canonical)),
   patchSession: (id: string, body: unknown) => api.patch(`/v1/sessions/${encoded(id)}`, body),
+  /** Moves the listed pinned sessions, in order, into the ranks they already occupy. */
+  reorderPinnedSessions: (sessionIds: string[]) =>
+    api.patch<Record<string, unknown>>('/v1/sessions/pinned-order', { session_ids: sessionIds }),
   refineTitle: (id: string) =>
     api.post<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/title/refine`, {
       preview: true,

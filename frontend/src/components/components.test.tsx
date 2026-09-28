@@ -13,6 +13,7 @@ import { DelegationContext } from './DelegationContext';
 import { Markdown } from './Markdown';
 import { Modals } from './Modals';
 import { Sidebar } from './Sidebar';
+import { LONG_PRESS_MS } from './usePinnedReorder';
 import { Header } from './Header';
 import { DiffSidebar, PlanSurface } from './Panels';
 import { ChipPicker } from './ChipPicker';
@@ -6106,6 +6107,505 @@ describe('Preact-owned chat surfaces', () => {
     expect(pinnedGroup.compareDocumentPosition(projectsGroup)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
+  });
+
+  describe('pinned conversation order', () => {
+    // Saved ranks deliberately disagree with activity (Beta is the most recent).
+    const pinnedSidebarStore = () => {
+      const store = createStore();
+      const base = { ...store.sessions.value[0], messages: [] };
+      const alpha = {
+        ...base,
+        id: 'p-a',
+        title: 'Alpha pin',
+        pinned: true,
+        pinOrder: 1,
+        lastMessageAt: 10,
+        projectId: 'p1',
+        projectName: 'Alpha',
+      };
+      const beta = {
+        ...base,
+        id: 'p-b',
+        title: 'Beta pin',
+        pinned: true,
+        pinOrder: 2,
+        lastMessageAt: 30,
+      };
+      const gamma = { ...alpha, id: 'p-c', title: 'Gamma pin', pinOrder: 3, lastMessageAt: 20 };
+      const regular = { ...base, id: 'regular', title: 'Regular chat', lastMessageAt: 40 };
+      store.sessions.value = [alpha, beta, gamma, regular];
+      store.recentSessions.value = [alpha, beta, gamma, regular];
+      store.projectsEnabled.value = true;
+      store.projects.value = [
+        { id: 'p1', name: 'Alpha', sessions: [gamma, alpha], has_more: false },
+      ];
+      store.refreshSidebar = vi.fn(async () => undefined);
+      store.selectSession = vi.fn(async () => undefined);
+      store.endpoints.reorderPinnedSessions = vi.fn(async (ids: string[]) => ({
+        pinned: ids.map((id, index) => ({ id, pin_order: index + 1 })),
+      }));
+      return store;
+    };
+    const renderSidebar = (store: AppStore) =>
+      render(
+        <StoreContext.Provider value={store}>
+          <Sidebar />
+        </StoreContext.Provider>,
+      );
+    const pinnedTitles = (container: Element) =>
+      [...container.querySelectorAll('.sidebar-pinned-group .session-title')].map(
+        (title) => title.textContent,
+      );
+    // jsdom has no layout: stack the pinned rows 40px apart, in DOM order.
+    const layoutPinnedRows = (container: Element) => {
+      const rows = [
+        ...container.querySelectorAll<HTMLElement>('.pinned-session-list > .session-row'),
+      ];
+      rows.forEach((row, index) =>
+        vi.spyOn(row, 'getBoundingClientRect').mockReturnValue({
+          top: index * 40,
+          bottom: index * 40 + 40,
+          height: 40,
+          left: 0,
+          right: 200,
+          width: 200,
+          x: 0,
+          y: index * 40,
+          toJSON: () => ({}),
+        } as DOMRect),
+      );
+      return rows;
+    };
+    // The whole row, apart from its actions menu, is the drag surface.
+    const bodyOf = (row: HTMLElement) => row.querySelector<HTMLElement>('.session-btn')!;
+    const pointer = { pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0 };
+    const touch = { pointerId: 7, pointerType: 'touch', isPrimary: true };
+    // Only the long-press timer is faked, so waitFor keeps polling in real time.
+    const withLongPressClock = (run: () => void) => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        run();
+      } finally {
+        vi.useRealTimers();
+      }
+    };
+    const rest = (ms = LONG_PRESS_MS) =>
+      act(() => {
+        vi.advanceTimersByTime(ms);
+      });
+
+    it('lists pins in their saved order in both views, whatever their activity', async () => {
+      const store = pinnedSidebarStore();
+      const { container } = renderSidebar(store);
+      expect(pinnedTitles(container)).toEqual(['Alpha pin', 'Beta pin', 'Gamma pin']);
+
+      await userEvent.click(screen.getByRole('tab', { name: 'Projects' }));
+      expect(pinnedTitles(container)).toEqual(['Alpha pin', 'Beta pin', 'Gamma pin']);
+
+      // New messages move regular chats, never pins.
+      act(() => {
+        store.sessions.value = store.sessions.value.map((session) =>
+          session.id === 'p-c' ? { ...session, lastMessageAt: 999 } : session,
+        );
+      });
+      expect(pinnedTitles(container)).toEqual(['Alpha pin', 'Beta pin', 'Gamma pin']);
+      await userEvent.click(screen.getByRole('tab', { name: 'Recent' }));
+      expect(pinnedTitles(container)).toEqual(['Alpha pin', 'Beta pin', 'Gamma pin']);
+    });
+
+    it('drags a pinned conversation by its row down and back up, saving each new order', async () => {
+      const store = pinnedSidebarStore();
+      const { container } = renderSidebar(store);
+      let rows = layoutPinnedRows(container);
+
+      fireEvent.pointerDown(bodyOf(rows[0]), { ...pointer, clientY: 20 });
+      // A few pixels of travel is still a click, not a drag.
+      fireEvent.pointerMove(window, { ...pointer, clientY: 24 });
+      expect(rows[0]).not.toHaveClass('is-dragging');
+      expect(rows[0].style.transform).toBe('');
+      fireEvent.pointerMove(window, { ...pointer, clientY: 26 });
+      expect(rows[0]).toHaveClass('is-dragging');
+      fireEvent.pointerMove(window, { ...pointer, clientY: 85 });
+      // The dragged row follows the pointer while the rows it passed slide up.
+      expect(rows[0].style.transform).toBe('translateY(65px)');
+      expect(rows[1].style.transform).toBe('translateY(-40px)');
+      expect(rows[2].style.transform).toBe('translateY(-40px)');
+      // It cannot be dragged past the last pin into unpinned conversations.
+      fireEvent.pointerMove(window, { ...pointer, clientY: 500 });
+      expect(rows[0].style.transform).toBe('translateY(80px)');
+      fireEvent.pointerUp(window, { ...pointer, clientY: 500 });
+      // The click that ends the drag does not open the conversation.
+      fireEvent.click(bodyOf(rows[0]), { detail: 1 });
+      expect(store.selectSession).not.toHaveBeenCalled();
+
+      await waitFor(() =>
+        expect(store.endpoints.reorderPinnedSessions).toHaveBeenCalledWith(['p-b', 'p-c', 'p-a']),
+      );
+      expect(pinnedTitles(container)).toEqual(['Beta pin', 'Gamma pin', 'Alpha pin']);
+      expect(rows.map((row) => row.style.transform)).toEqual(['', '', '']);
+      expect(rows[0]).not.toHaveClass('is-dragging');
+      expect(screen.getByText('Moved Alpha pin to position 3 of 3.')).toBeInTheDocument();
+      expect(store.sessions.value.find((session) => session.id === 'p-a')?.pinOrder).toBe(3);
+
+      rows = layoutPinnedRows(container);
+      fireEvent.pointerDown(bodyOf(rows[2]), { ...pointer, clientY: 100 });
+      fireEvent.pointerMove(window, { ...pointer, clientY: 35 });
+      expect(rows[0].style.transform).toBe('translateY(40px)');
+      expect(rows[1].style.transform).toBe('translateY(40px)');
+      fireEvent.pointerUp(window, { ...pointer, clientY: 35 });
+      fireEvent.click(bodyOf(rows[2]), { detail: 1 });
+
+      await waitFor(() =>
+        expect(store.endpoints.reorderPinnedSessions).toHaveBeenLastCalledWith([
+          'p-a',
+          'p-b',
+          'p-c',
+        ]),
+      );
+      expect(pinnedTitles(container)).toEqual(['Alpha pin', 'Beta pin', 'Gamma pin']);
+      expect(store.selectSession).not.toHaveBeenCalled();
+    });
+
+    it('lands a fast mouse release at its final position even if no move reached it', async () => {
+      const store = pinnedSidebarStore();
+      const [alpha] = store.sessions.value;
+      const delta = { ...alpha, id: 'p-d', title: 'Delta pin', pinOrder: 4 };
+      const echo = { ...alpha, id: 'p-e', title: 'Echo pin', pinOrder: 5 };
+      store.sessions.value = [...store.sessions.value, delta, echo];
+      store.recentSessions.value = [...store.recentSessions.value, delta, echo];
+      const { container } = renderSidebar(store);
+      const rows = layoutPinnedRows(container);
+
+      fireEvent.pointerDown(bodyOf(rows[0]), { ...pointer, clientY: 20 });
+      fireEvent.pointerMove(window, { ...pointer, clientY: 26 });
+      // The last sampled move is still at position 1. The next browser event
+      // is the release at position 5; no pause or intermediate move occurs.
+      fireEvent.pointerUp(window, { ...pointer, clientY: 180 });
+      fireEvent.click(bodyOf(rows[0]), { detail: 1 });
+
+      await waitFor(() =>
+        expect(store.endpoints.reorderPinnedSessions).toHaveBeenCalledWith([
+          'p-b',
+          'p-c',
+          'p-d',
+          'p-e',
+          'p-a',
+        ]),
+      );
+      expect(pinnedTitles(container)).toEqual([
+        'Beta pin',
+        'Gamma pin',
+        'Delta pin',
+        'Echo pin',
+        'Alpha pin',
+      ]);
+      expect(store.selectSession).not.toHaveBeenCalled();
+    });
+
+    it('commits a fast mouse drop after the row loses pointer capture', async () => {
+      const store = pinnedSidebarStore();
+      const [alpha] = store.sessions.value;
+      const delta = { ...alpha, id: 'p-d', title: 'Delta pin', pinOrder: 4 };
+      const echo = { ...alpha, id: 'p-e', title: 'Echo pin', pinOrder: 5 };
+      store.sessions.value = [...store.sessions.value, delta, echo];
+      store.recentSessions.value = [...store.recentSessions.value, delta, echo];
+      const { container } = renderSidebar(store);
+      const rows = layoutPinnedRows(container);
+
+      fireEvent.pointerDown(bodyOf(rows[4]), { ...pointer, clientY: 180 });
+      fireEvent.pointerMove(window, { ...pointer, clientY: 174 });
+      fireEvent.pointerMove(window, { ...pointer, clientY: 90 });
+      expect(rows[4]).toHaveClass('is-dragging');
+      // Capture can be lost while the button is still held. Window listeners
+      // still receive the release, even if it is the first event at position 1.
+      fireEvent.lostPointerCapture(rows[4], { ...pointer, clientY: 90 });
+      expect(rows[4]).toHaveClass('is-dragging');
+      fireEvent.pointerUp(window, { ...pointer, clientY: 20 });
+      fireEvent.click(bodyOf(rows[4]), { detail: 1 });
+
+      await waitFor(() =>
+        expect(store.endpoints.reorderPinnedSessions).toHaveBeenCalledWith([
+          'p-e',
+          'p-a',
+          'p-b',
+          'p-c',
+          'p-d',
+        ]),
+      );
+      expect(pinnedTitles(container)).toEqual([
+        'Echo pin',
+        'Alpha pin',
+        'Beta pin',
+        'Gamma pin',
+        'Delta pin',
+      ]);
+      expect(store.selectSession).not.toHaveBeenCalled();
+    });
+
+    it('cancels a drag if the sidebar pin list changes before release', async () => {
+      const store = pinnedSidebarStore();
+      const { container } = renderSidebar(store);
+      const rows = layoutPinnedRows(container);
+      fireEvent.pointerDown(bodyOf(rows[0]), { ...pointer, clientY: 20 });
+      fireEvent.pointerMove(window, { ...pointer, clientY: 85 });
+      expect(rows[0]).toHaveClass('is-dragging');
+
+      act(() => {
+        const delta = {
+          ...store.recentSessions.value[0],
+          id: 'p-d',
+          title: 'Delta pin',
+          pinOrder: 4,
+        };
+        store.recentSessions.value = [...store.recentSessions.value, delta];
+      });
+      expect(rows[0]).not.toHaveClass('is-dragging');
+      expect(rows.map((row) => row.style.transform)).toEqual(['', '', '']);
+      fireEvent.pointerUp(window, { ...pointer, clientY: 85 });
+      await act(async () => Promise.resolve());
+      expect(store.endpoints.reorderPinnedSessions).not.toHaveBeenCalled();
+    });
+
+    it('updates the landing position when the sidebar scrolls under a held row', async () => {
+      const store = pinnedSidebarStore();
+      const { container } = renderSidebar(store);
+      const rows = layoutPinnedRows(container);
+      const scroller = container.querySelector<HTMLElement>('.sidebar-content')!;
+      fireEvent.pointerDown(bodyOf(rows[2]), { ...pointer, clientY: 100 });
+      fireEvent.pointerMove(window, { ...pointer, clientY: 60 });
+      expect(rows[1].style.transform).toBe('translateY(40px)');
+
+      scroller.scrollTop = 40;
+      fireEvent.scroll(scroller);
+      expect(rows[1].style.transform).toBe('');
+      fireEvent.pointerUp(window, { ...pointer, clientY: 60 });
+      await act(async () => Promise.resolve());
+      expect(store.endpoints.reorderPinnedSessions).not.toHaveBeenCalled();
+    });
+
+    it('does not swallow keyboard activation after a pointer drag', () => {
+      const store = pinnedSidebarStore();
+      const { container } = renderSidebar(store);
+      const rows = layoutPinnedRows(container);
+      fireEvent.pointerDown(bodyOf(rows[0]), { ...pointer, clientY: 20 });
+      fireEvent.pointerMove(window, { ...pointer, clientY: 85 });
+      fireEvent.pointerUp(window, { ...pointer, clientY: 85 });
+
+      fireEvent.click(bodyOf(rows[1]), { detail: 0 });
+      expect(store.selectSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'p-b' }));
+      fireEvent.click(bodyOf(rows[0]), { detail: 1 });
+      expect(store.selectSession).toHaveBeenCalledTimes(1);
+    });
+
+    it('opens pinned conversations on a click or tap and never drags from the actions menu', async () => {
+      const store = pinnedSidebarStore();
+      const { container } = renderSidebar(store);
+      const rows = layoutPinnedRows(container);
+
+      // A click that wobbles a little still opens the conversation.
+      fireEvent.pointerDown(bodyOf(rows[0]), { ...pointer, clientY: 20 });
+      fireEvent.pointerMove(window, { ...pointer, clientY: 23 });
+      fireEvent.pointerUp(window, { ...pointer, clientY: 23 });
+      fireEvent.click(bodyOf(rows[0]), { detail: 1 });
+      expect(store.selectSession).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'p-a' }));
+
+      // So does a tap released before the row would lift.
+      withLongPressClock(() => {
+        fireEvent.pointerDown(bodyOf(rows[1]), { ...touch, clientX: 50, clientY: 60 });
+        rest(LONG_PRESS_MS - 1);
+        fireEvent.pointerUp(window, { ...touch, clientX: 50, clientY: 60 });
+        rest();
+      });
+      expect(rows[1]).not.toHaveClass('is-dragging');
+      fireEvent.click(bodyOf(rows[1]), { detail: 1 });
+      expect(store.selectSession).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'p-b' }));
+
+      // Pressing and dragging the actions button never moves the row, and the
+      // button still opens the menu.
+      const actions = screen.getByRole('button', { name: 'Actions for Gamma pin' });
+      fireEvent.pointerDown(actions, { ...pointer, clientY: 100 });
+      fireEvent.pointerMove(window, { ...pointer, clientY: 20 });
+      expect(rows[2]).not.toHaveClass('is-dragging');
+      expect(rows.map((row) => row.style.transform)).toEqual(['', '', '']);
+      fireEvent.pointerUp(window, { ...pointer, clientY: 20 });
+      await userEvent.click(actions);
+      expect(screen.getByRole('menuitem', { name: 'Move up' })).toBeInTheDocument();
+
+      // Unpinned conversations are never dragged.
+      fireEvent.pointerDown(screen.getByRole('button', { name: 'Regular chat' }), {
+        ...pointer,
+        clientY: 200,
+      });
+      fireEvent.pointerMove(window, { ...pointer, clientY: 20 });
+      fireEvent.pointerUp(window, { ...pointer, clientY: 20 });
+      expect(container.querySelector('.is-dragging')).not.toBeInTheDocument();
+      expect(store.endpoints.reorderPinnedSessions).not.toHaveBeenCalled();
+      expect(pinnedTitles(container)).toEqual(['Alpha pin', 'Beta pin', 'Gamma pin']);
+    });
+
+    it('does not save or open a conversation when a drag is cancelled or released in place', async () => {
+      const store = pinnedSidebarStore();
+      const { container } = renderSidebar(store);
+      const rows = layoutPinnedRows(container);
+
+      fireEvent.pointerDown(bodyOf(rows[0]), { ...pointer, clientY: 20 });
+      fireEvent.pointerMove(window, { ...pointer, clientY: 90 });
+      expect(rows[1].style.transform).toBe('translateY(-40px)');
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(rows.map((row) => row.style.transform)).toEqual(['', '', '']);
+      expect(rows[0]).not.toHaveClass('is-dragging');
+      // Moving on after Escape does not pick the row back up, and the
+      // cancelled press's release is neither a drop nor a click.
+      fireEvent.pointerMove(window, { ...pointer, clientY: 100 });
+      expect(rows.map((row) => row.style.transform)).toEqual(['', '', '']);
+      fireEvent.pointerUp(window, { ...pointer, clientY: 100 });
+      fireEvent.click(bodyOf(rows[0]), { detail: 1 });
+
+      fireEvent.pointerDown(bodyOf(rows[1]), { ...pointer, clientY: 60 });
+      fireEvent.pointerMove(window, { ...pointer, clientY: 110 });
+      fireEvent.pointerCancel(window, { ...pointer, clientY: 110 });
+      expect(rows.map((row) => row.style.transform)).toEqual(['', '', '']);
+      expect(rows[1]).not.toHaveClass('is-dragging');
+
+      fireEvent.pointerDown(bodyOf(rows[1]), { ...pointer, clientY: 60 });
+      fireEvent.pointerMove(window, { ...pointer, clientY: 70 });
+      expect(rows[1]).toHaveClass('is-dragging');
+      fireEvent.pointerUp(window, { ...pointer, clientY: 70 });
+      fireEvent.click(bodyOf(rows[1]), { detail: 1 });
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(store.endpoints.reorderPinnedSessions).not.toHaveBeenCalled();
+      expect(store.selectSession).not.toHaveBeenCalled();
+      expect(pinnedTitles(container)).toEqual(['Alpha pin', 'Beta pin', 'Gamma pin']);
+    });
+
+    it('moves pins with Alt+Arrow keys and row menu items as a keyboard alternative', async () => {
+      const store = pinnedSidebarStore();
+      const { container } = renderSidebar(store);
+
+      const beta = screen.getByRole('button', { name: 'Beta pin' });
+      expect(beta).toHaveAttribute('aria-keyshortcuts', 'Alt+ArrowUp Alt+ArrowDown');
+      beta.focus();
+      fireEvent.keyDown(beta, { key: 'ArrowUp', altKey: true });
+      expect(pinnedTitles(container)).toEqual(['Beta pin', 'Alpha pin', 'Gamma pin']);
+      await waitFor(() =>
+        expect(store.endpoints.reorderPinnedSessions).toHaveBeenCalledWith(['p-b', 'p-a', 'p-c']),
+      );
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Beta pin' })).toHaveFocus());
+      // Plain arrows and a move past either end do nothing.
+      fireEvent.keyDown(beta, { key: 'ArrowUp' });
+      fireEvent.keyDown(beta, { key: 'ArrowUp', altKey: true });
+      expect(pinnedTitles(container)).toEqual(['Beta pin', 'Alpha pin', 'Gamma pin']);
+
+      await userEvent.click(screen.getByRole('button', { name: 'Actions for Beta pin' }));
+      expect(screen.queryByRole('menuitem', { name: 'Move up' })).not.toBeInTheDocument();
+      await userEvent.click(screen.getByRole('menuitem', { name: 'Move down' }));
+      expect(pinnedTitles(container)).toEqual(['Alpha pin', 'Beta pin', 'Gamma pin']);
+      await waitFor(() =>
+        expect(store.endpoints.reorderPinnedSessions).toHaveBeenLastCalledWith([
+          'p-a',
+          'p-b',
+          'p-c',
+        ]),
+      );
+
+      await userEvent.click(screen.getByRole('button', { name: 'Actions for Gamma pin' }));
+      expect(screen.getByRole('menuitem', { name: 'Move up' })).toBeInTheDocument();
+      expect(screen.queryByRole('menuitem', { name: 'Move down' })).not.toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: 'Actions for Gamma pin' }));
+
+      await userEvent.click(screen.getByRole('button', { name: 'Actions for Regular chat' }));
+      expect(screen.queryByRole('menuitem', { name: 'Move up' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('menuitem', { name: 'Move down' })).not.toBeInTheDocument();
+    });
+
+    it('restores the order and reports when a reorder cannot be saved', async () => {
+      const store = pinnedSidebarStore();
+      store.endpoints.reorderPinnedSessions = vi.fn(async () => {
+        throw new APIError('a listed session is no longer pinned', 409);
+      });
+      const { container } = renderSidebar(store);
+
+      fireEvent.keyDown(screen.getByRole('button', { name: 'Alpha pin' }), {
+        key: 'ArrowDown',
+        altKey: true,
+      });
+      expect(pinnedTitles(container)).toEqual(['Beta pin', 'Alpha pin', 'Gamma pin']);
+
+      await waitFor(() =>
+        expect(store.toasts.value.map((toast) => toast.message)).toContain(
+          'Pinned conversations changed elsewhere; showing the latest order.',
+        ),
+      );
+      expect(pinnedTitles(container)).toEqual(['Alpha pin', 'Beta pin', 'Gamma pin']);
+      expect(store.refreshSidebar).toHaveBeenCalled();
+    });
+
+    it('lifts a pinned row by long press in the mobile drawer while quick swipes still scroll or close it', async () => {
+      vi.mocked(window.matchMedia).mockReturnValue({
+        matches: true,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as MediaQueryList);
+      try {
+        const store = pinnedSidebarStore();
+        store.sidebarOpen.value = true;
+        const { container } = renderSidebar(store);
+        const rows = layoutPinnedRows(container);
+        const alpha = bodyOf(rows[0]);
+
+        withLongPressClock(() => {
+          // A touch that moves on at once is a scroll: the row never lifts and
+          // the browser keeps its touch moves.
+          fireEvent.pointerDown(alpha, { ...touch, clientX: 100, clientY: 20 });
+          fireEvent.pointerMove(alpha, { ...touch, clientX: 100, clientY: 32 });
+          expect(fireEvent.touchMove(alpha)).toBe(true);
+          fireEvent.pointerCancel(alpha, { ...touch, clientX: 100, clientY: 40 });
+          rest();
+          expect(rows[0]).not.toHaveClass('is-dragging');
+
+          // Resting on the row lifts it despite a little drift. The lifted row
+          // owns the touch: a leftward drag that would read as a drawer swipe
+          // elsewhere moves the pin, and touch moves no longer scroll the list.
+          const held = { ...touch, pointerId: 8 };
+          fireEvent.pointerDown(alpha, { ...held, clientX: 150, clientY: 20 });
+          fireEvent.pointerMove(alpha, { ...held, clientX: 147, clientY: 22 });
+          rest();
+          expect(rows[0]).toHaveClass('is-dragging');
+          fireEvent.pointerMove(alpha, { ...held, clientX: 40, clientY: 24 });
+          expect(fireEvent.touchMove(alpha)).toBe(false);
+          fireEvent.pointerMove(alpha, { ...held, clientX: 30, clientY: 105 });
+          expect(rows[0].style.transform).toBe('translateY(80px)');
+          fireEvent.pointerUp(alpha, { ...held, clientX: 30, clientY: 105 });
+          fireEvent.click(alpha, { detail: 1 });
+        });
+
+        expect(store.sidebarOpen.value).toBe(true);
+        expect(pinnedTitles(container)).toEqual(['Beta pin', 'Gamma pin', 'Alpha pin']);
+        expect(store.selectSession).not.toHaveBeenCalled();
+        await waitFor(() =>
+          expect(store.endpoints.reorderPinnedSessions).toHaveBeenCalledWith(['p-b', 'p-c', 'p-a']),
+        );
+
+        // A swipe that starts on a pinned row without resting still closes the drawer.
+        const beta = screen.getByRole('button', { name: 'Beta pin' });
+        const swipe = { ...touch, pointerId: 9 };
+        fireEvent.pointerDown(beta, { ...swipe, clientX: 150, clientY: 60 });
+        fireEvent.pointerMove(beta, { ...swipe, clientX: 40, clientY: 62 });
+        fireEvent.pointerUp(beta, { ...swipe, clientX: 40, clientY: 62 });
+        expect(store.sidebarOpen.value).toBe(false);
+        expect(store.endpoints.reorderPinnedSessions).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.mocked(window.matchMedia).mockReturnValue({
+          matches: false,
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        } as unknown as MediaQueryList);
+      }
+    });
   });
 
   it('keeps the active conversation visible when its project is collapsed', async () => {
