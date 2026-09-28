@@ -644,3 +644,41 @@ func TestHostedChildContinuesCompletedSession(t *testing.T) {
 		t.Fatal("continued child runtime remained attached")
 	}
 }
+
+func TestHostedChildContinueAdmissionFailureRemainsResumable(t *testing.T) {
+	f := newChildRunFixture(t, true)
+	f.srv.ensureResponseRuns()
+	first := f.spawnChild(t)
+	before, err := session.AsAgentRunStore(f.store).GetAgentRun(f.ctx, first.AgentID)
+	if err != nil || before.Status != "completed" {
+		t.Fatalf("initial agent = %+v, %v", before, err)
+	}
+	if !f.srv.responseRuns.trySetActiveRun(first.SessionID, "conflicting-response") {
+		t.Fatal("could not reserve child response slot")
+	}
+	defer f.srv.responseRuns.clearActiveRun(first.SessionID, "conflicting-response")
+	continueTool, ok := f.env.runtime.toolMgr.Registry.Get(tools.ContinueAgentToolName)
+	if !ok {
+		t.Fatal("continue_agent tool missing")
+	}
+	args := json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"instructions":"One more turn","wait":5}`, first.AgentID))
+	output, err := continueTool.Execute(f.ctx, args)
+	var failed tools.SpawnAgentResult
+	if err != nil || json.Unmarshal([]byte(output.Content), &failed) != nil || !failed.Resumable || failed.Status != "completed" || !strings.Contains(failed.Error, errServeSessionBusy.Error()) {
+		t.Fatalf("busy continuation = %s, %v", output.Content, err)
+	}
+	after, err := session.AsAgentRunStore(f.store).GetAgentRun(f.ctx, first.AgentID)
+	if err != nil || after.Status != before.Status || after.Output != before.Output || after.Error != before.Error || after.TurnsUsed != before.TurnsUsed {
+		t.Fatalf("busy continuation changed agent: before=%+v after=%+v err=%v", before, after, err)
+	}
+	child, err := f.store.Get(f.ctx, first.SessionID)
+	if err != nil || child.Status != session.StatusComplete {
+		t.Fatalf("busy continuation changed child session: %+v, %v", child, err)
+	}
+	f.srv.responseRuns.clearActiveRun(first.SessionID, "conflicting-response")
+	output, err = continueTool.Execute(f.ctx, args)
+	var retried tools.SpawnAgentResult
+	if err != nil || json.Unmarshal([]byte(output.Content), &retried) != nil || retried.Status != "completed" || retried.AgentID != first.AgentID {
+		t.Fatalf("retry = %s, %v", output.Content, err)
+	}
+}

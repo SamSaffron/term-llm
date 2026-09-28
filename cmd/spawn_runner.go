@@ -446,7 +446,7 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 	startedAt := time.Now()
 	emptyResult := runpkg.ChildRunResult{RunID: request.RunID, StartedAt: startedAt}
 	if !r.beginRun() {
-		return emptyResult, errSpawnAgentRunnerDraining
+		return emptyResult, &tools.AgentRunAdmissionError{Err: errSpawnAgentRunnerDraining}
 	}
 	defer r.endRun()
 
@@ -456,7 +456,7 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 	}
 	agent, err := r.resolveSpawnAgent(agentName)
 	if err != nil {
-		return emptyResult, err
+		return emptyResult, &tools.AgentRunAdmissionError{Err: err}
 	}
 	if request.SkipOnComplete || request.OutputTool != nil {
 		agentCopy := *agent
@@ -474,7 +474,7 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 		agentCopy.Model = strings.TrimSpace(request.ModelOverride)
 		agent = &agentCopy
 		if err := agent.Validate(); err != nil {
-			return emptyResult, fmt.Errorf("invalid agent '%s': %w", agentName, err)
+			return emptyResult, &tools.AgentRunAdmissionError{Err: fmt.Errorf("invalid agent '%s': %w", agentName, err)}
 		}
 	}
 	request.AgentName = agentName
@@ -494,7 +494,7 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 
 	executionRequest, approvalScope, err := r.prepareLifecycleChildRequest(ctx, request, childSessionID, agent.Search)
 	if err != nil {
-		return emptyResult, err
+		return emptyResult, &tools.AgentRunAdmissionError{Err: err}
 	}
 
 	var handle childRunSession
@@ -546,7 +546,8 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 	} else if err != nil {
 		status = session.StatusError
 	}
-	if r.store != nil {
+	var admission *tools.AgentRunAdmissionError
+	if r.store != nil && !(request.Resume && errors.As(err, &admission)) {
 		dbCtx, dbCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		if statusErr := safeStoreOp(func() error { return r.store.UpdateStatus(dbCtx, childSessionID, status) }); statusErr != nil {
 			r.warn("session UpdateStatus failed: %v", statusErr)

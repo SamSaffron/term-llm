@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -167,5 +168,53 @@ func TestCompletedAgentNextIsFinal(t *testing.T) {
 	}
 	if !result.Resumable || result.Output != "answer" || !strings.Contains(result.Next, "result is final") || strings.Contains(result.Next, `"continue"`) {
 		t.Fatalf("completed result = %+v", result)
+	}
+}
+
+type admissionRetryRunner struct {
+	*persistentLifecycleRunner
+	attempts int
+}
+
+func (r *admissionRetryRunner) ContinueAgent(ctx context.Context, id, name, instructions string, depth int, callID string, opts SpawnAgentRunOptions, cb SubagentEventCallback) (SpawnAgentRunResult, error) {
+	r.attempts++
+	if r.attempts == 1 {
+		return SpawnAgentRunResult{}, &AgentRunAdmissionError{Err: errors.New("session is busy processing another request")}
+	}
+	return r.persistentLifecycleRunner.ContinueAgent(ctx, id, name, instructions, depth, callID, opts, cb)
+}
+
+func TestContinueAgentAdmissionFailurePreservesResumableRecord(t *testing.T) {
+	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	child := &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}
+	runner := &admissionRetryRunner{persistentLifecycleRunner: &persistentLifecycleRunner{lifecycleRunner: child, store: store}}
+	spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2, DefaultTimeout: 5}, 0)
+	spawn.SetRunner(runner)
+	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	initial := lifecycleResult(t, lifecycleCall(t, spawn, ctx, `{"agent_name":"developer","prompt":"work","wait":0}`))
+	<-child.entered
+	close(child.release)
+	wait := &agentControlTool{name: WaitAgentToolName, spawn: spawn}
+	lifecycleCall(t, wait, ctx, `{"agent_ids":["`+initial.AgentID+`"],"max_wait":1}`)
+	before, err := store.GetAgentRun(ctx, initial.AgentID)
+	if err != nil || before.Status != "completed" || before.Output != "done" {
+		t.Fatalf("completed agent = %+v, %v", before, err)
+	}
+	control := &agentControlTool{name: ContinueAgentToolName, spawn: spawn}
+	failed := lifecycleResult(t, lifecycleCall(t, control, ctx, `{"agent_id":"`+initial.AgentID+`","instructions":"average words","wait":5}`))
+	if failed.Status != "completed" || !failed.Resumable || !strings.Contains(failed.Error, "session is busy") || !strings.Contains(failed.Next, "retry continue_agent") || !strings.Contains(failed.Next, "average words") {
+		t.Fatalf("admission failure = %+v", failed)
+	}
+	after, err := store.GetAgentRun(ctx, initial.AgentID)
+	if err != nil || after.Status != before.Status || after.StopReason != before.StopReason || after.Output != before.Output || after.Error != before.Error || after.TurnsUsed != before.TurnsUsed || after.TurnsGranted != before.TurnsGranted {
+		t.Fatalf("admission failure changed durable record: before=%+v after=%+v err=%v", before, after, err)
+	}
+	retried := lifecycleResult(t, lifecycleCall(t, control, ctx, `{"agent_id":"`+initial.AgentID+`","instructions":"average words","wait":5}`))
+	if retried.Status != "completed" || retried.Output != "resumed" || retried.AgentID != initial.AgentID || runner.attempts != 2 {
+		t.Fatalf("retry = %+v; attempts=%d", retried, runner.attempts)
 	}
 }

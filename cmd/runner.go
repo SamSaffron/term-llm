@@ -138,11 +138,17 @@ func (r *cmdRunner) Run(ctx context.Context, req runpkg.Request, sink runpkg.Eve
 	}
 	ctx, release, reloadErr := restart.Default.Activity(ctx)
 	if reloadErr != nil {
+		if req.IsSubagent {
+			return runpkg.Result{}, &tools.AgentRunAdmissionError{Err: reloadErr}
+		}
 		return runpkg.Result{}, reloadErr
 	}
 	defer release()
 	env, err := r.prepare(ctx, req, sink)
 	if err != nil {
+		if req.IsSubagent {
+			return runpkg.Result{}, &tools.AgentRunAdmissionError{Err: err}
+		}
 		return runpkg.Result{}, err
 	}
 	defer env.Close()

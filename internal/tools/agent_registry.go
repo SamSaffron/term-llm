@@ -34,6 +34,8 @@ type agentAttachment struct {
 
 type agentEntry struct {
 	record       session.AgentRun
+	prior        *session.AgentRun
+	instructions string
 	done         chan struct{}
 	cancel       context.CancelFunc
 	interrupt    context.CancelFunc
@@ -161,6 +163,10 @@ func (m *agentManager) start(ctx context.Context, name, prompt, model, callID st
 	cancel := func() { cancelCause(errAgentCancelled) }
 	interrupt := func() { cancelCause(context.Canceled) }
 	e := &agentEntry{record: record, done: make(chan struct{}), cancel: cancel, interrupt: interrupt, attachment: &agentAttachment{callback: cb, callID: callID}, external: external, originCallID: callID, queued: true, startedAt: now, manager: m}
+	if resume {
+		e.prior = &existing
+		e.instructions = instructions
+	}
 	e.initial = e.attachment
 	if scoped, ok := runner.(interface{ AgentApprovalScope(string) *ApprovalManager }); ok {
 		scope := scoped.AgentApprovalScope(parent)
@@ -284,6 +290,16 @@ func (m *agentManager) finish(e *agentEntry, result SpawnAgentRunResult, err err
 	m.mu.Lock()
 	e.result = result
 	e.err = err
+	var admission *AgentRunAdmissionError
+	if e.prior != nil && errors.As(err, &admission) {
+		// The child never entered execution: restore the resumable record rather
+		// than making a transient admission failure terminal.
+		e.record = *e.prior
+		record := e.record
+		m.mu.Unlock()
+		m.save(record)
+		return
+	}
 	switch {
 	case errors.Is(err, context.Canceled) && e.shutdown:
 		e.record.Status = "interrupted"
@@ -439,6 +455,8 @@ func (m *agentManager) output(record session.AgentRun, e *agentEntry) llm.ToolOu
 	}
 	e.manager.mu.Lock()
 	result := e.result
+	runErr := e.err
+	instructions := e.instructions
 	media := append([]llm.MediaArtifact(nil), e.media...)
 	started := e.startedAt
 	e.manager.mu.Unlock()
@@ -449,10 +467,19 @@ func (m *agentManager) output(record session.AgentRun, e *agentEntry) llm.ToolOu
 	payload.Interventions = result.Interventions
 	payload.InterventionDisposition = result.InterventionDisposition
 	payload.CancelledByUser = result.CancelledByUser
+	var admission *AgentRunAdmissionError
+	if errors.As(runErr, &admission) {
+		payload.Error = runErr.Error()
+		payload.Next = fmt.Sprintf("retry continue_agent({\"agent_id\":%q,\"instructions\":%q}); the agent did not run", record.ID, instructions)
+		out.IsError = true
+	}
 	if record.Status == "queued" || record.Status == "running" || record.Status == "awaiting_approval" {
 		payload.Duration = time.Since(started).Milliseconds()
 	} else {
 		payload.Duration = record.UpdatedAt.Sub(started).Milliseconds()
+	}
+	if admission != nil {
+		payload.Duration = 0
 	}
 	out.Content = marshalAgentResult(payload)
 	out.Media = llm.NormalizeMedia(media, nil)
