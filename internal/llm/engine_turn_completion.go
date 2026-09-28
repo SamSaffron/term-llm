@@ -318,6 +318,12 @@ func (e *Engine) completeSyncTurn(c *engineTurnCompletion) (bool, error) {
 	return false, nil
 }
 
+func (e *Engine) rejectFinalTurnSteering(attempt, maxTurns int) {
+	if attempt == maxTurns-1 {
+		e.markSteeringRunNonConsuming()
+	}
+}
+
 func (e *Engine) completeAsyncTurn(c *engineTurnCompletion) error {
 	ctx, send, req := c.ctx, c.send, *c.req
 	attempt, maxTurns, runID := c.attempt, c.maxTurns, c.runID
@@ -409,13 +415,10 @@ func (e *Engine) completeAsyncTurn(c *engineTurnCompletion) error {
 		return nil
 	}
 
-	if attempt == maxTurns-1 {
-		e.markSteeringRunNonConsuming()
-		if err := send.Send(Event{Type: EventPhase, Text: MaxTurnsExceededWarning(maxTurns)}); err != nil {
-			return err
-		}
-		return &MaxTurnsExceededError{MaxTurns: maxTurns}
-	}
+	// Execute tools even on the last allotted turn. The assistant call and all
+	// tool results must be persisted together before reporting turn_limit;
+	// otherwise replay sanitization would discard an orphaned final call.
+	e.rejectFinalTurnSteering(attempt, maxTurns)
 
 	// Build assistant message with text + tool calls + reasoning
 	// (built before tool execution so we can save it incrementally)
@@ -524,6 +527,12 @@ func (e *Engine) completeAsyncTurn(c *engineTurnCompletion) error {
 			return err
 		}
 		return nil
+	}
+	if attempt == maxTurns-1 {
+		if err := send.Send(Event{Type: EventPhase, Text: MaxTurnsExceededWarning(maxTurns)}); err != nil {
+			return err
+		}
+		return &MaxTurnsExceededError{MaxTurns: maxTurns}
 	}
 	if err := e.applyPendingRequestModelSwitch(ctx, &req, send, runID, &modelSwitchOrdinal, attempt+1); err != nil {
 		return err
