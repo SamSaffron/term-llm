@@ -111,11 +111,15 @@ func (env *cmdRunEnvironment) Close() {
 		return
 	}
 	if env.runtime != nil && !env.req.IsSubagent {
-		owner := env.agentOwner
-		if owner == nil {
-			owner = &defaultAgentHostOwner
+		if env.agentOwner != nil {
+			env.agentOwner.adopt(env.runtime, env.closeStore)
+		} else {
+			// One-shot callers have no host owner to shut down adopted children.
+			env.runtime.CloseAfterRun(env.runCtx)
+			if env.closeStore != nil {
+				env.closeStore()
+			}
 		}
-		owner.adopt(env.runtime, env.closeStore)
 		return
 	}
 	if env.runtime != nil {

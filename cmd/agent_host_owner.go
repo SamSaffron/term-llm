@@ -13,8 +13,6 @@ type agentHostOwner struct {
 	runs map[*serveRuntime]chan struct{}
 }
 
-var defaultAgentHostOwner agentHostOwner
-
 func (o *agentHostOwner) adopt(rt *serveRuntime, closeStore func()) {
 	if rt == nil {
 		if closeStore != nil {

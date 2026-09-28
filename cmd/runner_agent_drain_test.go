@@ -90,6 +90,40 @@ func TestRunEnvironmentDrainsDetachedChild(t *testing.T) {
 	}
 }
 
+func TestRunEnvironmentWithoutOwnerDrainsDetachedChild(t *testing.T) {
+	child := &blockingChildRunner{entered: make(chan struct{}), release: make(chan struct{})}
+	tool := tools.NewSpawnAgentTool(tools.SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
+	tool.SetRunner(child)
+	runner := &SpawnAgentRunner{lifecycle: tool}
+	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	if _, err := tool.Execute(ctx, []byte(`{"agent_name":"developer","prompt":"work","wait":0}`)); err != nil {
+		t.Fatal(err)
+	}
+	<-child.entered
+	storeClosed := make(chan struct{})
+	env := &cmdRunEnvironment{runtime: &serveRuntime{spawnRunner: runner}, runCtx: ctx, closeStore: func() { close(storeClosed) }}
+	finished := make(chan struct{})
+	go func() { env.Close(); close(finished) }()
+	select {
+	case <-finished:
+		t.Fatal("owner-less run abandoned detached child")
+	case <-storeClosed:
+		t.Fatal("store closed before child finished")
+	default:
+	}
+	close(child.release)
+	select {
+	case <-finished:
+	case <-time.After(3 * time.Second):
+		t.Fatal("owner-less run did not drain")
+	}
+	select {
+	case <-storeClosed:
+	default:
+		t.Fatal("store not closed after drain")
+	}
+}
+
 func TestRunEnvironmentHandsOffDetachedChildAcrossTurns(t *testing.T) {
 	child := &blockingChildRunner{entered: make(chan struct{}), release: make(chan struct{})}
 	tool := tools.NewSpawnAgentTool(tools.SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
