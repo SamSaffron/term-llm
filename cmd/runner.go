@@ -63,6 +63,7 @@ type cmdRunnerOptions struct {
 	// into nested runners, because a runner built for a child knows nothing
 	// about serve otherwise.
 	ChildRunObserver childRunObserver
+	AgentOwner       *agentHostOwner
 }
 
 type cmdRunner struct {
@@ -95,10 +96,19 @@ type cmdRunEnvironment struct {
 	llmReq        llm.Request
 	inputMessages []llm.Message
 	runCtx        context.Context
+	agentOwner    *agentHostOwner
 }
 
 func (env *cmdRunEnvironment) Close() {
 	if env == nil {
+		return
+	}
+	if env.runtime != nil && !env.req.IsSubagent {
+		owner := env.agentOwner
+		if owner == nil {
+			owner = &defaultAgentHostOwner
+		}
+		owner.adopt(env.runtime, env.closeStore)
 		return
 	}
 	if env.runtime != nil {
@@ -387,6 +397,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	}
 	runtime = &serveRuntime{
 		spawnRunner:         spawnRunner,
+		agentOwner:          r.defaults.AgentOwner,
 		settings:            &settings,
 		agentSkills:         agentSkills,
 		provider:            provider,
@@ -524,6 +535,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	cleanupOnError = false
 	return &cmdRunEnvironment{
 		runCtx:        ctx,
+		agentOwner:    r.defaults.AgentOwner,
 		cfg:           cfg,
 		req:           req,
 		runtime:       runtime,

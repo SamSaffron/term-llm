@@ -53,6 +53,7 @@ type serveRuntime struct {
 	engine                 *llm.Engine
 	toolMgr                *tools.ToolManager
 	spawnRunner            *SpawnAgentRunner // drained before provider cleanup and owned session-store closure
+	agentOwner             *agentHostOwner
 	mcpManager             *mcp.Manager
 	toolDiscovery          config.ToolDiscoveryConfig
 	store                  session.Store
@@ -421,20 +422,27 @@ func (rt *serveRuntime) Close() {
 }
 
 func (rt *serveRuntime) CloseAfterRun(ctx context.Context) {
-	if ctx == nil || ctx.Err() == nil {
-		// A completed run owns its detached children until they finish, even if
-		// the caller stopped waiting for the spawn_agent tool result.
-		rt.closeContext(context.Background(), true)
-		return
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	// A cancelled run must still flush child status before its store closes,
-	// but a context-less host prompt must not block shutdown forever.
+	if rt.spawnRunner != nil {
+		if err := rt.spawnRunner.Drain(ctx); err != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+			_ = rt.spawnRunner.Shutdown(shutdownCtx)
+			cancel()
+		}
+	}
+	// Cancellation of the run must not skip provider and store cleanup.
 	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	rt.closeContext(closeCtx, false)
 }
 
 func (rt *serveRuntime) CloseContext(ctx context.Context) {
+	if rt.agentOwner != nil && rt.spawnRunner != nil && len(rt.spawnRunner.OutstandingAgentIDs()) > 0 {
+		rt.agentOwner.adopt(rt, nil)
+		return
+	}
 	rt.closeContext(ctx, false)
 }
 
@@ -454,7 +462,7 @@ func (rt *serveRuntime) closeContext(ctx context.Context, drain bool) {
 	}
 	if ctx == nil || ctx.Done() == nil {
 		defer rt.mu.Unlock()
-		rt.closeLocked(drain && (ctx == nil || ctx.Err() == nil))
+		rt.closeLocked(ctx, drain)
 		return
 	}
 
@@ -465,7 +473,7 @@ func (rt *serveRuntime) closeContext(ctx context.Context, drain bool) {
 	go func() {
 		defer close(done)
 		defer rt.mu.Unlock()
-		rt.closeLocked(drain && ctx.Err() == nil)
+		rt.closeLocked(ctx, drain)
 	}()
 	select {
 	case <-done:
@@ -502,9 +510,13 @@ func (rt *serveRuntime) lockForClose(ctx context.Context) bool {
 	}
 }
 
-func (rt *serveRuntime) closeLocked(drain bool) {
+func (rt *serveRuntime) closeLocked(ctx context.Context, drain bool) {
 	if rt.spawnRunner != nil && drain {
-		_ = rt.spawnRunner.Drain(context.Background())
+		if err := rt.spawnRunner.Drain(ctx); err != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+			_ = rt.spawnRunner.Shutdown(shutdownCtx)
+			cancel()
+		}
 	}
 	rt.clearPendingAskUsers()
 	rt.clearPendingApprovals()

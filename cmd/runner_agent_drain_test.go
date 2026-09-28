@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -64,7 +65,7 @@ func TestRunEnvironmentDrainsDetachedChild(t *testing.T) {
 	tool := tools.NewSpawnAgentTool(tools.SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
 	tool.SetRunner(child)
 	runner := &SpawnAgentRunner{lifecycle: tool}
-	env := &cmdRunEnvironment{runtime: &serveRuntime{spawnRunner: runner}, runCtx: context.Background()}
+	env := &cmdRunEnvironment{req: runpkg.Request{IsSubagent: true}, runtime: &serveRuntime{spawnRunner: runner}, runCtx: context.Background()}
 	ctx := llm.ContextWithSessionID(context.Background(), "parent")
 	result, err := tool.Execute(ctx, []byte(`{"agent_name":"developer","prompt":"work","wait":0}`))
 	if err != nil {
@@ -86,5 +87,66 @@ func TestRunEnvironmentDrainsDetachedChild(t *testing.T) {
 	case <-closed:
 	case <-time.After(3 * time.Second):
 		t.Fatal("drain did not finish")
+	}
+}
+
+func TestRunEnvironmentHandsOffDetachedChildAcrossTurns(t *testing.T) {
+	child := &blockingChildRunner{entered: make(chan struct{}), release: make(chan struct{})}
+	tool := tools.NewSpawnAgentTool(tools.SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
+	tool.SetRunner(child)
+	owner := &agentHostOwner{}
+	runner := &SpawnAgentRunner{lifecycle: tool}
+	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	res, err := tool.Execute(ctx, []byte(`{"agent_name":"developer","prompt":"work","wait":0}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-child.entered
+	closed := make(chan struct{})
+	env := &cmdRunEnvironment{runtime: &serveRuntime{spawnRunner: runner}, agentOwner: owner, runCtx: ctx}
+	go func() { env.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("parent turn blocked on child")
+	}
+	if len(runner.OutstandingAgentIDs()) != 1 {
+		t.Fatalf("child lost between turns: %s", res.Content)
+	}
+	close(child.release)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := owner.Shutdown(shutdownCtx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSubagentDrainCancellationShutsDownGrandchild(t *testing.T) {
+	child := &blockingChildRunner{entered: make(chan struct{}), release: make(chan struct{})}
+	tool := tools.NewSpawnAgentTool(tools.SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
+	tool.SetRunner(child)
+	runner := &SpawnAgentRunner{lifecycle: tool}
+	ctx, cancel := context.WithCancel(llm.ContextWithSessionID(context.Background(), "child"))
+	defer cancel()
+	if _, err := tool.Execute(ctx, []byte(`{"agent_name":"developer","prompt":"grandchild","wait":0}`)); err != nil {
+		t.Fatal(err)
+	}
+	<-child.entered
+	env := &cmdRunEnvironment{req: runpkg.Request{IsSubagent: true}, runtime: &serveRuntime{spawnRunner: runner}, runCtx: ctx}
+	done := make(chan struct{})
+	go func() { env.Close(); close(done) }()
+	select {
+	case <-done:
+		t.Fatal("drain returned before cancellation")
+	case <-time.After(20 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("grandchild was not stopped on cancellation")
+	}
+	if len(runner.OutstandingAgentIDs()) != 0 {
+		t.Fatal("grandchild is still running")
 	}
 }
