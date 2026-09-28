@@ -452,3 +452,21 @@ func TestUserCancellationPropagatesToGrandchild(t *testing.T) {
 		t.Fatalf("grandchild status = %s", result.Content)
 	}
 }
+
+func TestCollectedAgentWithoutStoreRemainsReadable(t *testing.T) {
+	m := newAgentManager(SpawnConfig{MaxParallel: 1})
+	id := session.NewID()
+	e := &agentEntry{
+		record: session.AgentRun{ID: id, ParentSessionID: "parent", Status: "completed", CollectedAt: time.Now()},
+		done:   make(chan struct{}), result: SpawnAgentRunResult{Output: "finished"},
+		media: []llm.MediaArtifact{{}}, manager: m,
+	}
+	close(e.done)
+	m.agents[id] = e
+	processAgentEntries.Store(id, e)
+	defer processAgentEntries.CompareAndDelete(id, e)
+	m.releaseCollected(e)
+	if m.agents[id] != e || e.result.Output != "finished" || len(e.media) != 1 {
+		t.Fatalf("no-store collected agent lost its result: %+v", e)
+	}
+}
