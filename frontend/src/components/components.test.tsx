@@ -405,6 +405,77 @@ describe('Preact-owned chat surfaces', () => {
     store.dispose();
   });
 
+  it('opens detached agents from wait and continue cards, including restored history', async () => {
+    const store = createStore();
+    store.sessions.value[0] = {
+      ...store.sessions.value[0],
+      messages: [
+        {
+          id: 'controls',
+          role: 'tool-group',
+          content: '',
+          created: 1,
+          tools: [
+            {
+              id: 'wait-live',
+              name: 'wait_agent',
+              status: 'running',
+              arguments: '{"agent_ids":["child-a","other"]}',
+            },
+            {
+              id: 'wait-saved',
+              name: 'wait_agent',
+              status: 'done',
+              agentSessionIds: ['child-a', 'child-b'],
+            },
+            {
+              id: 'continue-saved',
+              name: 'continue_agent',
+              status: 'done',
+              agentSessionIds: ['child-b'],
+            },
+          ],
+        },
+      ],
+    };
+    store.childSessionStore.children.value = [
+      {
+        session_id: 'child-a',
+        parent_session_id: 's1',
+        title: 'A',
+        state: 'active',
+        input_tokens: 0,
+        output_tokens: 0,
+        cached_input_tokens: 0,
+        cache_write_tokens: 0,
+        tool_calls: 0,
+        llm_turns: 0,
+      },
+    ];
+    store.resolveAndSelectSession = vi.fn(async () => null);
+    render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+
+    const links = screen.getAllByRole('button', { name: /Open subagent/ });
+    expect(links).toHaveLength(4);
+    await userEvent.click(links[0]);
+    await userEvent.click(links[2]);
+    await userEvent.click(links[3]);
+    expect(store.resolveAndSelectSession).toHaveBeenNthCalledWith(1, 'child-a', false, {
+      prepend: false,
+    });
+    expect(store.resolveAndSelectSession).toHaveBeenNthCalledWith(2, 'child-b', false, {
+      prepend: false,
+    });
+    expect(store.resolveAndSelectSession).toHaveBeenNthCalledWith(3, 'child-b', false, {
+      prepend: false,
+    });
+    store.dispose();
+  });
+
   it.each([
     ['completed', 'done'],
     ['failed', 'error'],
