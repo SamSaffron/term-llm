@@ -252,7 +252,7 @@ func (t *agentControlTool) continueRun(ctx context.Context, parent string, a age
 		return llm.TextOutput(startErr.Error())
 	}
 	owner.wait(ctx, entry, time.Duration(budget)*time.Second)
-	owner.detach(entry, entry.initial)
+	owner.detachInitial(entry)
 	current, _, _ := owner.get(ctx, a.AgentID, parent)
 	out := owner.output(current, entry)
 	if record.Status == "running_elsewhere" {

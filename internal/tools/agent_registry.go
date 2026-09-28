@@ -408,6 +408,15 @@ func (m *agentManager) wait(ctx context.Context, e *agentEntry, budget time.Dura
 	}
 }
 
+func (m *agentManager) detachInitial(e *agentEntry) {
+	e.manager.mu.Lock()
+	initial := e.initial
+	e.manager.mu.Unlock()
+	if initial != nil {
+		m.detach(e, initial)
+	}
+}
+
 func (m *agentManager) detach(e *agentEntry, attached *agentAttachment) {
 	e.manager.mu.Lock()
 	if e.attachment == attached {
