@@ -306,7 +306,17 @@ describe('composer completion', () => {
     ];
     const values = composerCompletions('/', [], skills, true).map((entry) => entry.value);
     expect(values).toEqual(
-      expect.arrayContaining(['/approvals', '/fork', '/thread', '/tree', '/side', '/review']),
+      expect.arrayContaining([
+        '/approvals',
+        '/archive',
+        '/fork',
+        '/pin',
+        '/rename',
+        '/thread',
+        '/tree',
+        '/side',
+        '/review',
+      ]),
     );
     expect(values).not.toEqual(expect.arrayContaining(['/compact', '/undo', '/explain']));
     expect(

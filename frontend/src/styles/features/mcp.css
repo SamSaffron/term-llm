@@ -381,68 +381,6 @@
   cursor: not-allowed;
 }
 
-/* Switch */
-
-.mcp-switch {
-  position: relative;
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-}
-
-.mcp-switch-input {
-  position: absolute;
-  inset: 0;
-  margin: 0;
-  opacity: 0;
-  cursor: pointer;
-}
-
-.mcp-switch-input:disabled {
-  cursor: not-allowed;
-}
-
-.mcp-switch-track {
-  /* The checkbox covers the whole switch; the transformed thumb must not
-     paint over it and swallow taps. */
-  pointer-events: none;
-  display: inline-flex;
-  align-items: center;
-  width: 32px;
-  height: 19px;
-  padding: 2px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--text-muted) 30%, var(--surface-3));
-  transition: background 0.16s ease;
-}
-
-.mcp-switch-thumb {
-  width: 15px;
-  height: 15px;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 2px rgb(0 0 0 / 25%);
-  transition: transform 0.16s ease;
-}
-
-.mcp-switch-input:checked + .mcp-switch-track {
-  background: var(--text);
-}
-
-.mcp-switch-input:checked + .mcp-switch-track .mcp-switch-thumb {
-  transform: translateX(13px);
-  background: var(--bg);
-}
-
-.mcp-switch-input:focus-visible + .mcp-switch-track {
-  outline: 2px solid color-mix(in srgb, var(--text) 30%, transparent);
-  outline-offset: 2px;
-}
-
-.mcp-switch-input:disabled + .mcp-switch-track {
-  opacity: 0.5;
-}
-
 /* Empty, feedback, errors, undo */
 
 .mcp-empty {

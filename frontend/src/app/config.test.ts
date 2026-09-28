@@ -54,6 +54,64 @@ describe('bootstrap configuration and storage', () => {
     expect(localStorage.getItem(keys.activeSession)).toBe('new');
   });
 
+  it('migrates legacy archived-session preferences without overwriting newer choices', () => {
+    localStorage.clear();
+    const legacy = 'term_llm_show_hidden_sessions';
+    const current = 'term_llm_show_archived_sessions';
+    localStorage.setItem(legacy, '1');
+    const direct = migrateScopedStorage(localStorage, null);
+    expect(direct.showArchivedSessions).toBe(current);
+    expect(localStorage.getItem(direct.showArchivedSessions)).toBe('1');
+    expect(localStorage.getItem(legacy)).toBeNull();
+
+    // A node's explicit disabled choice wins over the inherited unscoped one.
+    localStorage.setItem(`${legacy}:n1`, '0');
+    const hub = { nodeId: 'n1', nodeBasePath: '/nodes/n1' };
+    const scoped = migrateScopedStorage(localStorage, hub);
+    expect(localStorage.getItem(scoped.showArchivedSessions)).toBe('0');
+    expect(localStorage.getItem(`${legacy}:n1`)).toBeNull();
+    localStorage.setItem(`${legacy}:n1`, '1');
+    migrateScopedStorage(localStorage, hub);
+    expect(localStorage.getItem(scoped.showArchivedSessions)).toBe('0');
+    expect(localStorage.getItem(`${legacy}:n1`)).toBeNull();
+
+    // Nodes without a saved choice still inherit the unscoped preference.
+    const other = migrateScopedStorage(localStorage, { nodeId: 'n2', nodeBasePath: '/nodes/n2' });
+    expect(localStorage.getItem(other.showArchivedSessions)).toBe('1');
+    localStorage.setItem(legacy, '0');
+    migrateScopedStorage(localStorage, null);
+    expect(localStorage.getItem(current)).toBe('1');
+    expect(localStorage.getItem(legacy)).toBeNull();
+  });
+
+  it('does not block startup when an old archive preference cannot be written', () => {
+    const legacy = 'term_llm_show_hidden_sessions';
+    const current = 'term_llm_show_archived_sessions';
+    localStorage.clear();
+    localStorage.setItem(legacy, '1');
+    const storage: Storage = {
+      getItem: (key: string) => localStorage.getItem(key),
+      setItem: () => {
+        throw new DOMException('Storage quota exceeded', 'QuotaExceededError');
+      },
+      removeItem: (key: string) => localStorage.removeItem(key),
+      clear: () => localStorage.clear(),
+      key: (index: number) => localStorage.key(index),
+      get length() {
+        return localStorage.length;
+      },
+    };
+
+    expect(() => migrateScopedStorage(storage, null)).not.toThrow();
+    expect(localStorage.getItem(legacy)).toBe('1');
+    expect(localStorage.getItem(current)).toBeNull();
+    localStorage.setItem('term_llm_active_session', 's1');
+    expect(() =>
+      migrateScopedStorage(storage, { nodeId: 'n1', nodeBasePath: '/nodes/n1' }),
+    ).not.toThrow();
+    expect(localStorage.getItem(legacy)).toBe('1');
+  });
+
   it('merges cross-tab pending intents by client identity and creation order', () => {
     expect(
       mergePendingIntents(

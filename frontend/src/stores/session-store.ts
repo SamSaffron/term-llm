@@ -133,7 +133,7 @@ export class SessionStore {
   readonly searchResults = signal<Session[] | null>(null);
   readonly searchLoading = signal(false);
   readonly searchError = signal('');
-  readonly showHidden: Signal<boolean>;
+  readonly showArchived: Signal<boolean>;
   readonly hubAgents = signal<HubAgent[]>([]);
   readonly renameTarget = signal<Session | null>(null);
   readonly projectTarget = signal<Session | null>(null);
@@ -165,7 +165,9 @@ export class SessionStore {
     this.sidebarView = signal(
       services.storage.getItem(services.keys.sidebarView) === 'projects' ? 'projects' : 'recent',
     );
-    this.showHidden = signal(services.storage.getItem(services.keys.showHiddenSessions) === '1');
+    this.showArchived = signal(
+      services.storage.getItem(services.keys.showArchivedSessions) === '1',
+    );
   }
 
   get sidebarRefreshedAt(): number {
@@ -186,6 +188,21 @@ export class SessionStore {
       .map((session) => (session.id === id ? updater(session) : session));
     if (this.transientSession.peek()?.id === id)
       this.transientSession.value = updater(this.transientSession.peek()!);
+  }
+
+  private updateCatalogSession(id: string, updater: (session: Session) => Session): void {
+    this.update(id, updater);
+    const updateEntries = (entries: Session[]) =>
+      entries.some((entry) => entry.id === id)
+        ? entries.map((entry) => (entry.id === id ? updater(entry) : entry))
+        : entries;
+    this.recentSessions.value = updateEntries(this.recentSessions.peek());
+    this.projects.value = this.projects.peek().map((project) => {
+      const sessions = project.sessions && updateEntries(project.sessions);
+      return sessions === project.sessions ? project : { ...project, sessions };
+    });
+    if (this.searchResults.peek())
+      this.searchResults.value = updateEntries(this.searchResults.peek()!);
   }
 
   replace(sessions: Session[]): void {
@@ -484,17 +501,17 @@ export class SessionStore {
     if (!this.sidebarGeneration) this.sidebarGeneration = generation;
     if (authoritative && this.sidebarRefreshPromise)
       await this.sidebarRefreshPromise.catch(() => undefined);
-    const showHidden = this.showHidden.peek();
+    const showArchived = this.showArchived.peek();
     const request = (async () => {
       const data = this.projectsEnabled.value
-        ? await this.services.endpoints.sidebar(showHidden)
+        ? await this.services.endpoints.sidebar(showArchived)
         : await this.services.endpoints.sessions(
-            `limit=30&include_archived=${showHidden ? '1' : '0'}`,
+            `limit=30&include_archived=${showArchived ? '1' : '0'}`,
           );
       if (
         this.services.isDisposed ||
         generation !== this.sidebarGeneration ||
-        showHidden !== this.showHidden.peek() ||
+        showArchived !== this.showArchived.peek() ||
         generation < this.lastAppliedSidebarGeneration
       )
         return;
@@ -530,7 +547,7 @@ export class SessionStore {
     try {
       const data = await this.services.endpoints.searchSessions(
         query,
-        this.showHidden.value,
+        this.showArchived.value,
         this.services.config.sidebarCategories,
         abort.signal,
       );
@@ -551,16 +568,22 @@ export class SessionStore {
 
   async mutateSession(session: Session, patch: Record<string, unknown>): Promise<void> {
     await this.services.endpoints.patchSession(session.id, patch);
-    this.sessions.value = this.sessions.value.map((entry) =>
-      entry.id === session.id ? ({ ...entry, ...patch } as Session) : entry,
-    );
-    await this.host.refreshSidebar();
+    this.updateCatalogSession(session.id, (entry) => ({ ...entry, ...patch }) as Session);
+    // The metadata PATCH succeeded; a failed catalog refresh must not report it as failed.
+    await this.host.refreshSidebar().catch(() => undefined);
     this.host.publishSessionChange();
   }
   async archiveSession(session: Session): Promise<void> {
     const archived = !session.archived;
+    const wasListed = this.projectsEnabled.peek()
+      ? this.recentSessions.peek().some((entry) => entry.id === session.id) ||
+        this.projects
+          .peek()
+          .some((project) => project.sessions?.some((entry) => entry.id === session.id)) ||
+        (!session.projectId && this.sessions.peek().some((entry) => entry.id === session.id))
+      : this.sessions.peek().some((entry) => entry.id === session.id);
     await this.services.endpoints.patchSession(session.id, { archived });
-    const keepVisible = this.showHidden.peek() || !archived;
+    const keepVisible = this.showArchived.peek() || !archived;
     const reconcile = (entries: Session[]): Session[] =>
       entries.flatMap((entry) => {
         if (entry.id !== session.id) return [entry];
@@ -581,8 +604,14 @@ export class SessionStore {
       };
     });
     if (this.searchResults.peek()) this.searchResults.value = reconcile(this.searchResults.peek()!);
+    if (this.transientSession.peek()?.id === session.id)
+      this.transientSession.value = { ...this.transientSession.peek()!, archived };
     if (session.id === this.activeSessionId.value && archived) this.host.newChat();
     this.host.publishSessionChange();
+    if (!archived && !wasListed) {
+      // A restored session absent from the catalog needs a fetch to reappear there.
+      await this.host.refreshSidebar().catch(() => undefined);
+    }
   }
   async pinSession(session: Session): Promise<void> {
     await this.mutateSession(session, { pinned: !session.pinned });
@@ -636,7 +665,24 @@ export class SessionStore {
             generated_long_title: change.generatedLongTitle.trim(),
           };
     await this.services.endpoints.patchSession(session.id, patch);
-    await this.host.refreshSidebar();
+    this.updateCatalogSession(session.id, (current) =>
+      'name' in change
+        ? {
+            ...current,
+            name: patch.name,
+            title: patch.name || current.generatedShortTitle || 'New chat',
+          }
+        : {
+            ...current,
+            name: '',
+            title: change.generatedShortTitle.trim() || current.title,
+            longTitle: change.generatedLongTitle.trim(),
+            generatedShortTitle: change.generatedShortTitle.trim(),
+            generatedLongTitle: change.generatedLongTitle.trim(),
+          },
+    );
+    // The rename is saved even when the sidebar is temporarily unavailable.
+    await this.host.refreshSidebar().catch(() => undefined);
     this.host.publishSessionChange();
     this.renameTarget.value = null;
     this.host.modal.value = '';
@@ -659,7 +705,7 @@ export class SessionStore {
   async loadMoreRecent(): Promise<void> {
     const cursor = this.recentCursor.peek();
     if (!cursor) return;
-    const data = await this.services.endpoints.recentSessions(cursor, this.showHidden.value);
+    const data = await this.services.endpoints.recentSessions(cursor, this.showArchived.value);
     const incoming = listFrom(data, 'sessions', 'items').map((entry) => this.sessionFrom(entry));
     const existing = new Map(this.sessions.peek().map((entry) => [entry.id, entry]));
     incoming.forEach((entry) =>
@@ -679,7 +725,7 @@ export class SessionStore {
     const data = await this.services.endpoints.projectSessions(
       projectId,
       project.next_cursor,
-      this.showHidden.value,
+      this.showArchived.value,
     );
     const incoming = listFrom(data, 'sessions', 'items').map((entry) =>
       this.sessionFrom({ ...entry, project_id: project.id, project_name: project.name }),
@@ -710,7 +756,7 @@ export class SessionStore {
   async loadMoreNoProject(): Promise<void> {
     const cursor = this.noProjectCursor.peek();
     if (!cursor) return;
-    const data = await this.services.endpoints.noProjectSessions(cursor, this.showHidden.value);
+    const data = await this.services.endpoints.noProjectSessions(cursor, this.showArchived.value);
     const incoming = listFrom(data, 'sessions', 'items').map((entry) => this.sessionFrom(entry));
     const existing = new Map(this.sessions.peek().map((entry) => [entry.id, entry]));
     incoming.forEach((entry) =>

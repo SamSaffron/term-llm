@@ -47,6 +47,11 @@ export const SLASH_COMMANDS = [
     description: 'Change tool approval mode',
     streamingSafe: true,
   },
+  {
+    command: '/archive',
+    description: 'Archive or restore this conversation',
+    streamingSafe: true,
+  },
   { command: '/compact', description: 'Compact conversation context' },
   { command: '/commit', description: 'Review, stage, and create a Git commit' },
   { command: '/effort', description: 'Choose reasoning effort' },
@@ -59,8 +64,18 @@ export const SLASH_COMMANDS = [
   { command: '/mcp', description: 'Manage MCP servers' },
   { command: '/model', description: 'Choose a model' },
   { command: '/new', description: 'Start a new chat' },
+  {
+    command: '/pin',
+    description: 'Pin or unpin this conversation',
+    streamingSafe: true,
+  },
   { command: '/paths', description: 'Open conversation paths', streamingSafe: true },
   { command: '/redo', description: 'Restore the last undone turn' },
+  {
+    command: '/rename',
+    description: 'Rename this conversation',
+    streamingSafe: true,
+  },
   {
     command: '/side',
     description: 'Ask a side question without interrupting the main run',

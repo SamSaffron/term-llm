@@ -4,6 +4,7 @@ import { useStore } from '../../app/context';
 import type { MCPServer } from '../../domain/types';
 import type { MCPOAuthUIState } from '../../stores/mcp-store';
 import { SearchField } from '../FormFields';
+import { ToggleSwitch } from '../ToggleSwitch';
 import { Icon } from '../Icon';
 import { Menu } from '../Menu';
 import {
@@ -203,19 +204,12 @@ function SwitchRow({
         )}
       </span>
       {children}
-      <span class="mcp-switch">
-        <input
-          class="mcp-switch-input"
-          type="checkbox"
-          aria-label={`${checked ? 'Disable' : 'Enable'} ${name}`}
-          checked={checked}
-          disabled={disabled}
-          onChange={onToggle}
-        />
-        <span class="mcp-switch-track" aria-hidden="true">
-          <span class="mcp-switch-thumb" />
-        </span>
-      </span>
+      <ToggleSwitch
+        aria-label={`${checked ? 'Disable' : 'Enable'} ${name}`}
+        checked={checked}
+        disabled={disabled}
+        onChange={onToggle}
+      />
     </div>
   );
 }

@@ -1,8 +1,24 @@
 import { fireEvent, render, screen } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
 import { SearchField, SettingsSelect } from './FormFields';
+import { ToggleSwitch } from './ToggleSwitch';
 
 describe('form markup primitives', () => {
+  it('shares the accessible switch markup between settings and MCP controls', () => {
+    const change = vi.fn();
+    const { container } = render(
+      <label>
+        Show archived sessions
+        <ToggleSwitch checked={false} onChange={change} />
+      </label>,
+    );
+    const checkbox = screen.getByRole('checkbox', { name: 'Show archived sessions' });
+    expect(container.querySelector('.toggle-switch-input + .toggle-switch-track')).toBeVisible();
+    expect(checkbox).not.toBeChecked();
+    fireEvent.click(checkbox);
+    expect(change).toHaveBeenCalledOnce();
+  });
+
   it('retains select labels, options, DOM structure and change events', () => {
     const change = vi.fn();
     const { container } = render(

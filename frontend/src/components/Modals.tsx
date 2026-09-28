@@ -1,4 +1,5 @@
 import { SearchField, SettingsSelect } from './FormFields';
+import { ToggleSwitch } from './ToggleSwitch';
 import { memo } from './memo';
 import { lazyComponent } from './lazyComponent';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
@@ -180,14 +181,13 @@ function Settings() {
       >
         <div class="settings-field">
           <label class="settings-toggle">
-            <span class="settings-label settings-label-inline">Show hidden sessions</span>
-            <input
-              type="checkbox"
-              checked={store.showHidden.value}
+            <span class="settings-label settings-label-inline">Show archived sessions</span>
+            <ToggleSwitch
+              checked={store.showArchived.value}
               onChange={(event) => {
-                store.showHidden.value = event.currentTarget.checked;
+                store.showArchived.value = event.currentTarget.checked;
                 store.storage.setItem(
-                  store.keys.showHiddenSessions,
+                  store.keys.showArchivedSessions,
                   event.currentTarget.checked ? '1' : '0',
                 );
                 void store.refreshSidebar();
@@ -198,8 +198,7 @@ function Settings() {
         <div class="settings-field">
           <label class="settings-toggle">
             <span class="settings-label settings-label-inline">Show widgets in sidebar</span>
-            <input
-              type="checkbox"
+            <ToggleSwitch
               checked={store.showWidgets.value}
               onChange={(event) => {
                 store.showWidgets.value = event.currentTarget.checked;

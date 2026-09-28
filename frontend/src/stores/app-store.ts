@@ -179,7 +179,7 @@ export class AppStore {
   readonly searchResults: Signal<Session[] | null>;
   readonly searchLoading: Signal<boolean>;
   readonly searchError: Signal<string>;
-  readonly showHidden: Signal<boolean>;
+  readonly showArchived: Signal<boolean>;
   readonly showWidgets: Signal<boolean>;
   readonly notifications: Signal<NotificationState>;
   readonly widgets: Signal<Widget[]>;
@@ -300,7 +300,7 @@ export class AppStore {
     this.searchResults = this.sessionStore.searchResults;
     this.searchLoading = this.sessionStore.searchLoading;
     this.searchError = this.sessionStore.searchError;
-    this.showHidden = this.sessionStore.showHidden;
+    this.showArchived = this.sessionStore.showArchived;
     this.hubAgents = this.sessionStore.hubAgents;
     this.renameTarget = this.sessionStore.renameTarget;
     this.projectTarget = this.sessionStore.projectTarget;
@@ -652,9 +652,9 @@ export class AppStore {
       const [providers, sidebar] = await Promise.all([
         this.endpoints.providers(),
         this.projectsEnabled.value
-          ? this.endpoints.sidebar(this.showHidden.value)
+          ? this.endpoints.sidebar(this.showArchived.value)
           : this.endpoints.sessions(
-              `limit=30&include_archived=${this.showHidden.value ? '1' : '0'}`,
+              `limit=30&include_archived=${this.showArchived.value ? '1' : '0'}`,
             ),
       ]);
       this.applyProviders(providers);

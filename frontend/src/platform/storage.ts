@@ -14,7 +14,7 @@ export const STORAGE_BASE_KEYS = {
   sidebarCollapsed: 'term_llm_sidebar_collapsed',
   diffSidebarWidth: 'term_llm_diff_sidebar_width',
   shellLayout: 'term_llm_shell_layout',
-  showHiddenSessions: 'term_llm_show_hidden_sessions',
+  showArchivedSessions: 'term_llm_show_archived_sessions',
   showWidgetsSidebar: 'term_llm_show_widgets_sidebar',
   notificationsEnabled: 'term_llm_notifications_enabled',
   notificationSubscriptionID: 'term_llm_notification_subscription_id',
@@ -47,14 +47,45 @@ export function storageKeys(hub: HubContext | null): StorageKeys {
 /** Per-node choices that must not be inherited from unscoped storage. */
 const NODE_ONLY: ReadonlySet<StorageName> = new Set(['token', 'webMCPSessions', 'webMCPDefault']);
 
+const LEGACY_ARCHIVED_SESSIONS_KEY = 'term_llm_show_hidden_sessions';
+
+function migrateArchivedSessionsPreference(storage: Storage, key: string, legacyKey: string): void {
+  try {
+    const legacy = storage.getItem(legacyKey);
+    if (legacy === null) return;
+    if (storage.getItem(key) === null) storage.setItem(key, legacy);
+    storage.removeItem(legacyKey);
+  } catch {
+    // Storage can be unavailable or full; keep the old preference for a later retry.
+  }
+}
+
 export function migrateScopedStorage(storage: Storage, hub: HubContext | null): StorageKeys {
   const keys = storageKeys(hub);
+  // Import the node's old choice before inheriting an unscoped preference.
+  if (hub?.nodeId)
+    migrateArchivedSessionsPreference(
+      storage,
+      keys.showArchivedSessions,
+      `${LEGACY_ARCHIVED_SESSIONS_KEY}:${hub.nodeId}`,
+    );
+  migrateArchivedSessionsPreference(
+    storage,
+    STORAGE_BASE_KEYS.showArchivedSessions,
+    LEGACY_ARCHIVED_SESSIONS_KEY,
+  );
   if (!hub?.nodeId) return keys;
   for (const [name, base] of Object.entries(STORAGE_BASE_KEYS) as Array<[StorageName, string]>) {
     if (NODE_ONLY.has(name) || keys[name] === base || storage.getItem(keys[name]) !== null)
       continue;
     const value = storage.getItem(base);
-    if (value !== null) storage.setItem(keys[name], value);
+    if (value !== null) {
+      try {
+        storage.setItem(keys[name], value);
+      } catch {
+        // A full store must not block the Hub node from starting.
+      }
+    }
   }
   return keys;
 }

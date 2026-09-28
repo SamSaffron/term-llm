@@ -12,7 +12,7 @@ export interface StatusRequestMetadata {
   requestedAt: number;
   selectedSessionId: string;
   selectionEpoch: number;
-  showHidden: boolean;
+  showArchived: boolean;
   categories: string[];
   activeResponseIds: Record<string, string>;
 }
@@ -130,7 +130,7 @@ export class StatusReconciler {
       requestedAt: Date.now(),
       selectedSessionId: this.host.activeSessionId.peek(),
       selectionEpoch: this.host.selectionEpoch(),
-      showHidden: this.host.sessionStore.showHidden.peek(),
+      showArchived: this.host.sessionStore.showArchived.peek(),
       categories: [...this.services.config.sidebarCategories],
       activeResponseIds: Object.fromEntries(
         Object.entries(this.host.runs.peek())
@@ -146,7 +146,7 @@ export class StatusReconciler {
       if (authoritative && previous) await previous.catch(() => undefined);
       const data = await this.services.endpoints.sessionStatus(
         metadata.selectedSessionId,
-        metadata.showHidden,
+        metadata.showArchived,
         metadata.categories,
         authoritative ? '' : this.coordinator.etag,
       );
@@ -186,7 +186,7 @@ export class StatusReconciler {
       metadata.generation === this.coordinator.generation &&
       metadata.selectedSessionId === this.host.activeSessionId.peek() &&
       metadata.selectionEpoch === this.host.selectionEpoch() &&
-      metadata.showHidden === this.host.sessionStore.showHidden.peek() &&
+      metadata.showArchived === this.host.sessionStore.showArchived.peek() &&
       metadata.categories.join(',') === this.services.config.sidebarCategories.join(',') &&
       sameRunGeneration
     );

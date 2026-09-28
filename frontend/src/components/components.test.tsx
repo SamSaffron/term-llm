@@ -648,6 +648,10 @@ describe('Preact-owned chat surfaces', () => {
     };
     store.steer = vi.fn(async () => undefined);
     store.cancel = vi.fn(async () => undefined);
+    store.archiveSession = vi.fn(async () => undefined);
+    store.pinSession = vi.fn(async () => undefined);
+    store.openRename = vi.fn();
+    store.toast = vi.fn();
 
     render(
       <StoreContext.Provider value={store}>
@@ -659,6 +663,21 @@ describe('Preact-owned chat surfaces', () => {
     expect(textbox).toHaveAttribute('placeholder', 'Steer conversation…');
     expect(screen.getByRole('button', { name: 'Stop', exact: true })).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Stop subagent' })).not.toBeInTheDocument();
+
+    for (const [command, message] of [
+      ['/archive', "Subagent conversations can't be archived."],
+      ['/pin', "Subagent conversations can't be pinned."],
+      ['/rename', "Subagent conversations can't be renamed."],
+    ]) {
+      await userEvent.type(textbox, command);
+      await userEvent.keyboard('{Enter}');
+      expect(store.toast).toHaveBeenLastCalledWith(message, 'error');
+      expect(textbox).toHaveValue('');
+    }
+    expect(store.archiveSession).not.toHaveBeenCalled();
+    expect(store.pinSession).not.toHaveBeenCalled();
+    expect(store.openRename).not.toHaveBeenCalled();
+
     await userEvent.type(textbox, 'stay focused');
     await userEvent.click(screen.getByRole('button', { name: 'Steer' }));
     expect(store.steer).toHaveBeenCalledWith('stay focused');
@@ -4903,6 +4922,119 @@ describe('Preact-owned chat surfaces', () => {
     expect(store.prompt.value).toBe('');
   });
 
+  it.each([
+    ['/archive', 'archiveSession'],
+    ['/pin', 'pinSession'],
+    ['/rename', 'openRename'],
+  ] as const)('handles %s locally for the active conversation', async (command, action) => {
+    const store = createStore();
+    store.archiveSession = vi.fn(async () => undefined);
+    store.pinSession = vi.fn(async () => undefined);
+    store.openRename = vi.fn();
+    store.send = vi.fn(async () => undefined);
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), command);
+    await userEvent.keyboard('{Enter}');
+
+    expect(store[action]).toHaveBeenCalledWith(store.activeSession.value);
+    expect(store.send).not.toHaveBeenCalled();
+    expect(store.prompt.value).toBe('');
+  });
+
+  it.each(['/archive later', '/pin twice', '/rename Better title'])(
+    'does not send unsupported %s arguments to the model',
+    async (command) => {
+      const store = createStore();
+      store.send = vi.fn(async () => undefined);
+      store.steer = vi.fn(async () => undefined);
+      store.toast = vi.fn();
+      render(
+        <StoreContext.Provider value={store}>
+          <Composer />
+        </StoreContext.Provider>,
+      );
+
+      await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), command);
+      await userEvent.keyboard('{Enter}');
+
+      expect(store.toast).toHaveBeenCalledWith(
+        `${command.split(' ')[0]} does not accept arguments.`,
+        'error',
+      );
+      expect(store.send).not.toHaveBeenCalled();
+      expect(store.steer).not.toHaveBeenCalled();
+      expect(store.prompt.value).toBe(command);
+    },
+  );
+
+  it('reports an archive command failure', async () => {
+    const store = createStore();
+    const error = new Error('Could not archive this conversation');
+    store.archiveSession = vi.fn(async () => Promise.reject(error));
+    store.toast = vi.fn();
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), '/archive');
+    await userEvent.keyboard('{Enter}');
+
+    await waitFor(() => expect(store.toast).toHaveBeenCalledWith(error, 'error'));
+    expect(store.prompt.value).toBe('');
+  });
+
+  it('reports a pin command failure', async () => {
+    const store = createStore();
+    const error = new Error('Could not pin this conversation');
+    store.pinSession = vi.fn(async () => Promise.reject(error));
+    store.toast = vi.fn();
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), '/pin');
+    await userEvent.keyboard('{Enter}');
+
+    await waitFor(() => expect(store.toast).toHaveBeenCalledWith(error, 'error'));
+    expect(store.prompt.value).toBe('');
+  });
+
+  it.each([
+    ['/archive', 'Start the conversation before archiving.'],
+    ['/pin', 'Start the conversation before pinning.'],
+    ['/rename', 'Start the conversation before renaming.'],
+  ])('does not run %s before the conversation starts', async (command, message) => {
+    const store = createStore();
+    store.draftActive.value = true;
+    store.archiveSession = vi.fn(async () => undefined);
+    store.pinSession = vi.fn(async () => undefined);
+    store.openRename = vi.fn();
+    store.toast = vi.fn();
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), command);
+    await userEvent.keyboard('{Enter}');
+
+    expect(store.archiveSession).not.toHaveBeenCalled();
+    expect(store.pinSession).not.toHaveBeenCalled();
+    expect(store.openRename).not.toHaveBeenCalled();
+    expect(store.toast).toHaveBeenCalledWith(message, 'error');
+    expect(store.prompt.value).toBe('');
+  });
+
   it('shrinks the composer after sending a multiline prompt', async () => {
     const store = createStore();
     store.send = vi.fn(async () => {
@@ -5396,6 +5528,7 @@ describe('Preact-owned chat surfaces', () => {
 
   it('lifts an archived session row while its actions menu is open', () => {
     const store = createStore();
+    store.archiveSession = vi.fn(async () => undefined);
     store.sessions.value = store.sessions.value.map((session) => ({
       ...session,
       archived: true,
@@ -5413,13 +5546,77 @@ describe('Preact-owned chat surfaces', () => {
 
     fireEvent.click(trigger);
     expect(row).toHaveClass('menu-open');
-    expect(screen.getByRole('menuitem', { name: 'Unhide' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Restore' })).toBeInTheDocument();
 
-    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Restore' }));
+    expect(store.archiveSession).toHaveBeenCalledWith(expect.objectContaining({ archived: true }));
+    expect(row).not.toHaveClass('is-archiving');
     expect(row).not.toHaveClass('menu-open');
   });
 
-  it('collapses a hidden session before removing it from the sidebar', async () => {
+  it('keeps archived rows visible when Show archived sessions is enabled', async () => {
+    const store = createStore();
+    store.showArchived.value = true;
+    store.archiveSession = vi.fn(async (session) => {
+      store.sessions.value = store.sessions.value.map((entry) =>
+        entry.id === session.id ? { ...entry, archived: !session.archived } : entry,
+      );
+    });
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Sidebar />
+      </StoreContext.Provider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for Test' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Archive' }));
+
+    await waitFor(() => expect(store.archiveSession).toHaveBeenCalledOnce());
+    expect(container.querySelector('.session-row')).not.toHaveClass('is-archiving');
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for Test' }));
+    expect(screen.getByRole('menuitem', { name: 'Restore' })).toBeVisible();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Restore' }));
+    await waitFor(() => expect(store.archiveSession).toHaveBeenCalledTimes(2));
+    expect(store.sessions.value[0].archived).toBe(false);
+    expect(container.querySelector('.session-row')).not.toHaveClass('is-archiving');
+  });
+
+  it('uncollapses an archived row if Show archived sessions is enabled mid-transition', async () => {
+    vi.useFakeTimers();
+    try {
+      const store = createStore();
+      store.archiveSession = vi.fn(async (session) => {
+        store.sessions.value = store.sessions.value.map((entry) =>
+          entry.id === session.id ? { ...entry, archived: true } : entry,
+        );
+      });
+      const { container } = render(
+        <StoreContext.Provider value={store}>
+          <Sidebar />
+        </StoreContext.Provider>,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'Actions for Test' }));
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Archive' }));
+      const row = container.querySelector('.session-row');
+      expect(row).toHaveClass('is-archiving');
+      store.showArchived.value = true;
+      const transition = new Event('transitionend', { bubbles: true });
+      Object.defineProperty(transition, 'propertyName', { value: 'max-height' });
+      await act(async () => {
+        fireEvent(row as Element, transition);
+        await Promise.resolve();
+      });
+
+      expect(store.archiveSession).toHaveBeenCalledOnce();
+      expect(row).toHaveClass('archived');
+      expect(row).not.toHaveClass('is-archiving');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('collapses a session before archiving and removing it from the sidebar', async () => {
     vi.useFakeTimers();
     try {
       const store = createStore();
@@ -5438,10 +5635,10 @@ describe('Preact-owned chat surfaces', () => {
 
       fireEvent.click(screen.getByRole('button', { name: 'Actions for Test' }));
       expect(screen.queryByRole('menuitem', { name: 'Delete' })).not.toBeInTheDocument();
-      fireEvent.click(screen.getByRole('menuitem', { name: 'Hide' }));
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Archive' }));
 
       const row = container.querySelector('.session-row');
-      expect(row).toHaveClass('is-hiding');
+      expect(row).toHaveClass('is-archiving');
       expect(store.archiveSession).not.toHaveBeenCalled();
       expect(scroller.scrollTop).toBe(180);
 
@@ -7363,6 +7560,7 @@ describe('Preact-owned chat surfaces', () => {
   it('separates settings into keyboard-accessible tabs and preserves edits', async () => {
     const store = createStore();
     store.modal.value = 'settings';
+    store.endpoints.sessions = vi.fn(async () => ({ sessions: [] }));
     const fetchExtensions = vi.fn(async () => ({
       directory: '/extensions',
       config_path: '/extensions/extensions.yaml',
@@ -7387,6 +7585,12 @@ describe('Preact-owned chat surfaces', () => {
     fireEvent.keyDown(screen.getByRole('tab', { name: 'Model' }), { key: 'ArrowRight' });
     expect(screen.getByRole('tab', { name: 'Interface' })).toHaveFocus();
     expect(screen.getByRole('checkbox', { name: 'Show widgets in sidebar' })).toBeVisible();
+    const archivedToggle = screen.getByRole('checkbox', { name: 'Show archived sessions' });
+    expect(archivedToggle).not.toBeChecked();
+    fireEvent.click(archivedToggle);
+    expect(store.showArchived.value).toBe(true);
+    expect(localStorage.getItem(store.keys.showArchivedSessions)).toBe('1');
+    expect(store.endpoints.sessions).toHaveBeenCalledWith('limit=30&include_archived=1');
     expect(screen.queryByRole('combobox', { name: 'Effort' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: 'Extensions' }));
     const cat = await screen.findByRole('checkbox', { name: /Composer Cat/ });

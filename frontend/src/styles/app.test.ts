@@ -42,6 +42,18 @@ describe('stylesheet manifest', () => {
   });
 });
 
+describe('shared switch styles', () => {
+  it('loads for settings without opening MCP and stays visible in forced colors', () => {
+    expect(appCSS).toContain('.toggle-switch-track');
+    expect(appCSS).toContain('@media (forced-colors: active)');
+    expect(appCSS).toContain('border: 1px solid CanvasText');
+    expect(appCSS).toContain('background: HighlightText');
+    expect(appCSS).toMatch(
+      /\.toggle-switch-input:focus-visible \+ \.toggle-switch-track\s*\{[^}]*outline: 2px solid var\(--text\)/,
+    );
+  });
+});
+
 describe('commit modal styles', () => {
   it('loads after the generic modal shell and uses defined hierarchy tokens', () => {
     const manifest = readFileSync(resolve(stylesRoot, 'app.css'), 'utf8');

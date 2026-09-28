@@ -239,31 +239,31 @@ export const endpoints = (api: APIClient) => ({
       },
       { policy: 'safe-read', auth: 'session' },
     ),
-  sidebar: (hidden: boolean) =>
+  sidebar: (includeArchived: boolean) =>
     api.get<Record<string, unknown>>(
-      `/v1/sidebar?per_project=12&include_archived_projects=1&include_archived_sessions=${hidden ? '1' : '0'}`,
+      `/v1/sidebar?per_project=12&include_archived_projects=1&include_archived_sessions=${includeArchived ? '1' : '0'}`,
     ),
-  recentSessions: (cursor: string, hidden: boolean) =>
+  recentSessions: (cursor: string, includeArchived: boolean) =>
     api.get<Record<string, unknown>>(
-      `/v1/sessions?scope=all${cursor ? `&cursor=${encoded(cursor)}` : ''}&limit=30&include_archived=${hidden ? '1' : '0'}`,
+      `/v1/sessions?scope=all${cursor ? `&cursor=${encoded(cursor)}` : ''}&limit=30&include_archived=${includeArchived ? '1' : '0'}`,
     ),
-  projectSessions: (projectId: string, cursor: string, hidden: boolean) =>
+  projectSessions: (projectId: string, cursor: string, includeArchived: boolean) =>
     api.get<Record<string, unknown>>(
-      `/v1/sessions?project_id=${encoded(projectId)}&cursor=${encoded(cursor)}&limit=12&include_archived=${hidden ? '1' : '0'}`,
+      `/v1/sessions?project_id=${encoded(projectId)}&cursor=${encoded(cursor)}&limit=12&include_archived=${includeArchived ? '1' : '0'}`,
     ),
-  noProjectSessions: (cursor: string, hidden: boolean) =>
+  noProjectSessions: (cursor: string, includeArchived: boolean) =>
     api.get<Record<string, unknown>>(
-      `/v1/sessions?no_project=1&cursor=${encoded(cursor)}&limit=30&include_archived=${hidden ? '1' : '0'}`,
+      `/v1/sessions?no_project=1&cursor=${encoded(cursor)}&limit=30&include_archived=${includeArchived ? '1' : '0'}`,
     ),
   sessionStatus: async (
     selected = '',
-    hidden = false,
+    includeArchived = false,
     categories: string[] = ['all'],
     etag = '',
   ): Promise<Record<string, unknown>> => {
     const params = new URLSearchParams();
     if (selected) params.set('selected_session', selected);
-    if (hidden) params.set('include_archived', '1');
+    if (includeArchived) params.set('include_archived', '1');
     if (!categories.includes('all')) params.set('categories', categories.join(','));
     const response = await api.request(
       `/v1/sessions/status${params.size ? `?${params}` : ''}`,
@@ -283,12 +283,12 @@ export const endpoints = (api: APIClient) => ({
   },
   searchSessions: (
     query: string,
-    hidden = false,
+    includeArchived = false,
     categories: string[] = ['all'],
     signal?: AbortSignal,
   ) => {
     const params = new URLSearchParams({ q: query, limit: '30' });
-    if (hidden) params.set('include_archived', '1');
+    if (includeArchived) params.set('include_archived', '1');
     if (!categories.includes('all')) params.set('categories', categories.join(','));
     return api.get<Record<string, unknown>>(`/v1/sessions/search?${params}`, signal);
   },
