@@ -62,6 +62,9 @@ func (o *agentHostOwner) adopt(rt *serveRuntime, closeStore func()) {
 }
 
 func (o *agentHostOwner) Shutdown(ctx context.Context) error {
+	if o == nil {
+		return nil
+	}
 	o.mu.Lock()
 	o.stopping = true
 	runs := make(map[*serveRuntime]chan struct{}, len(o.runs))
