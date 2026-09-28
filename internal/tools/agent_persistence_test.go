@@ -30,6 +30,12 @@ func TestAgentLifecycleQueuedShutdownRestartsFreshAfterReload(t *testing.T) {
 	ctx := llm.ContextWithSessionID(context.Background(), "parent")
 	first := lifecycleResult(t, lifecycleCall(t, firstTool, ctx, `{"agent_name":"developer","prompt":"blocking","wait":0}`))
 	<-runner.entered
+	wait := &agentControlTool{name: WaitAgentToolName, spawn: firstTool}
+	lifecycleCall(t, wait, ctx, `{"agent_ids":["`+first.AgentID+`"],"max_wait":0}`)
+	before, err := store.GetAgentRun(ctx, first.AgentID)
+	if err != nil || !before.CollectedAt.IsZero() {
+		t.Fatalf("running agent collected: %+v, %v", before, err)
+	}
 	queued := lifecycleResult(t, lifecycleCall(t, firstTool, ctx, `{"agent_name":"developer","prompt":"queued","model":"test:model","wait":0}`))
 	if queued.Status != "queued" {
 		t.Fatalf("queued = %+v", queued)
