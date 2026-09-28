@@ -495,7 +495,7 @@ func (rt *serveRuntime) closeLocked() {
 		rt.toolMgr.ApprovalMgr.Close()
 	}
 	if rt.spawnRunner != nil {
-		rt.spawnRunner.Wait()
+		_ = rt.spawnRunner.Shutdown(context.Background())
 	}
 	if !rt.skipProviderCleanup {
 		if cleaner, ok := rt.provider.(interface{ CleanupMCP() }); ok {

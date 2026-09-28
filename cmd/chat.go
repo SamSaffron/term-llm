@@ -908,7 +908,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	cleanupResources := func() {
 		cleanupOnce.Do(func() {
 			if spawnRunner != nil {
-				spawnRunner.Wait()
+				_ = spawnRunner.Shutdown(context.Background())
 			}
 			mcpManager.StopAll()
 			if approvalMgr != nil {

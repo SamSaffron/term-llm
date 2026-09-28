@@ -310,7 +310,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		if runtime != nil {
 			runtime.Close()
 		} else if spawnRunner != nil {
-			spawnRunner.Wait()
+			_ = spawnRunner.Shutdown(context.Background())
 		}
 		if closeStore != nil {
 			closeStore()

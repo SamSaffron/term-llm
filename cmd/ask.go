@@ -319,7 +319,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	var spawnRunner *SpawnAgentRunner
 	defer func() {
 		if spawnRunner != nil {
-			spawnRunner.Wait()
+			_ = spawnRunner.Shutdown(context.Background())
 		}
 		storeCleanup()
 	}()
