@@ -1309,8 +1309,18 @@ var migrations = []migration{
 		version:     62,
 		description: "retain agent admission and model for queued cancellation recovery",
 		up: func(db schemaExecutor) error {
-			for _, column := range []string{"model TEXT NOT NULL DEFAULT ''", "started INTEGER NOT NULL DEFAULT 1"} {
-				if _, err := db.Exec("ALTER TABLE session_agent_runs ADD COLUMN " + column); err != nil {
+			for _, column := range []struct{ name, ddl string }{
+				{"model", "model TEXT NOT NULL DEFAULT ''"},
+				{"started", "started INTEGER NOT NULL DEFAULT 1"},
+			} {
+				exists, err := sqliteutil.ColumnExists(db, "session_agent_runs", column.name)
+				if err != nil {
+					return err
+				}
+				if exists {
+					continue
+				}
+				if _, err := db.Exec("ALTER TABLE session_agent_runs ADD COLUMN " + column.ddl); err != nil {
 					return err
 				}
 			}
