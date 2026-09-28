@@ -137,6 +137,10 @@ func (t *agentControlTool) wait(ctx context.Context, parent string, a agentContr
 			m.detach(e, attached)
 			record, _, _ = m.get(ctx, id, parent)
 		}
+		if !agentTerminal(record.Status) {
+			results = append(results, json.RawMessage(m.output(record, e).Content))
+			continue
+		}
 		if record.CollectedAt.IsZero() {
 			record.CollectedAt = time.Now()
 		}
@@ -157,6 +161,14 @@ func (t *agentControlTool) wait(ctx context.Context, parent string, a agentContr
 	}
 	data, _ := json.Marshal(results)
 	return llm.TextOutput(string(data))
+}
+
+func agentTerminal(status string) bool {
+	switch status {
+	case "completed", "turn_limit", "cancelled", "interrupted", "failed":
+		return true
+	}
+	return false
 }
 
 func (t *agentControlTool) cancel(ctx context.Context, parent string, a agentControlArgs) llm.ToolOutput {

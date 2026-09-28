@@ -37,6 +37,11 @@ func TestAgentLifecycleQueuedShutdownRestartsFreshAfterReload(t *testing.T) {
 	if err := firstTool.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	lifecycleCall(t, wait, ctx, `{"agent_ids":["`+first.AgentID+`"],"max_wait":0}`)
+	after, err := store.GetAgentRun(ctx, first.AgentID)
+	if err != nil || after.CollectedAt.IsZero() {
+		t.Fatalf("terminal agent not collected: %+v, %v", after, err)
+	}
 	stored, err := store.GetAgentRun(ctx, queued.AgentID)
 	if err != nil || stored.Status != "interrupted" || stored.Started || stored.Model != "test:model" {
 		t.Fatalf("queued admission = %+v, %v", stored, err)
@@ -82,6 +87,12 @@ func TestAgentLifecycleReloadListInterruptedAndResume(t *testing.T) {
 	ctx := llm.ContextWithSessionID(context.Background(), "parent")
 	first := lifecycleResult(t, lifecycleCall(t, firstTool, ctx, `{"agent_name":"developer","prompt":"work","wait":0}`))
 	<-runner.entered
+	wait := &agentControlTool{name: WaitAgentToolName, spawn: firstTool}
+	lifecycleCall(t, wait, ctx, `{"agent_ids":["`+first.AgentID+`"],"max_wait":0}`)
+	before, err := store.GetAgentRun(ctx, first.AgentID)
+	if err != nil || !before.CollectedAt.IsZero() {
+		t.Fatalf("running agent collected: %+v, %v", before, err)
+	}
 	if err := firstTool.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
