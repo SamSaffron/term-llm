@@ -67,10 +67,9 @@ func (t *agentControlTool) Execute(ctx context.Context, args json.RawMessage) (l
 	if err := json.Unmarshal(args, &a); err != nil {
 		return llm.TextOutput(fmt.Sprintf("invalid arguments: %v", err)), nil
 	}
-	m := t.spawn.manager
 	parent := agentParent(ctx)
 	if parent == "" {
-		if provider, ok := m.runner.(interface{ ParentAgentSessionID() string }); ok {
+		if provider, ok := t.spawn.snapshotLocalSpawnPolicy().runner.(interface{ ParentAgentSessionID() string }); ok {
 			parent = provider.ParentAgentSessionID()
 		}
 	}

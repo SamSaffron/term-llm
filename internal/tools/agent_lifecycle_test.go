@@ -86,6 +86,31 @@ func (r *eventBarrierRunner) RunAgentWithCallback(ctx context.Context, name, pro
 	return SpawnAgentRunResult{}, nil
 }
 
+type parentSessionRunner struct{ *lifecycleRunner }
+
+func (*parentSessionRunner) ParentAgentSessionID() string { return "shared-parent" }
+
+func TestAgentControlRunnerReplacementIsSynchronized(t *testing.T) {
+	spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1}, 0)
+	runner := &parentSessionRunner{lifecycleRunner: &lifecycleRunner{}}
+	spawn.SetRunner(runner)
+	control := &agentControlTool{name: ListAgentsToolName, spawn: spawn}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 100; i++ {
+			spawn.SetRunner(runner)
+		}
+	}()
+	for i := 0; i < 100; i++ {
+		out := lifecycleCall(t, control, context.Background(), `{}`)
+		if out.Content != "[]" {
+			t.Fatalf("list = %s", out.Content)
+		}
+	}
+	<-done
+}
+
 func TestAgentCallbackDetachWaitsForInFlightDelivery(t *testing.T) {
 	runner := &eventBarrierRunner{emit: make(chan SubagentEventCallback, 1), release: make(chan struct{})}
 	m := newAgentManager(SpawnConfig{MaxParallel: 1})
