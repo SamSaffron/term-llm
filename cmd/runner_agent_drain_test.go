@@ -27,6 +27,38 @@ func (r *blockingChildRunner) RunAgentWithCallback(ctx context.Context, name, pr
 	}
 }
 
+type uninterruptibleChildRunner struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (r *uninterruptibleChildRunner) RunAgent(ctx context.Context, name, prompt string, depth int) (tools.SpawnAgentRunResult, error) {
+	return r.RunAgentWithCallback(ctx, name, prompt, depth, "", nil)
+}
+func (r *uninterruptibleChildRunner) RunAgentWithCallback(_ context.Context, _, _ string, _ int, _ string, _ tools.SubagentEventCallback) (tools.SpawnAgentRunResult, error) {
+	close(r.entered)
+	<-r.release // A host prompt may not accept context cancellation.
+	return tools.SpawnAgentRunResult{}, nil
+}
+
+func TestSpawnRunnerShutdownHonorsDeadlineWithBlockedPrompt(t *testing.T) {
+	child := &uninterruptibleChildRunner{entered: make(chan struct{}), release: make(chan struct{})}
+	tool := tools.NewSpawnAgentTool(tools.SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
+	tool.SetRunner(child)
+	runner := &SpawnAgentRunner{lifecycle: tool}
+	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	if _, err := tool.Execute(ctx, []byte(`{"agent_name":"developer","prompt":"work","wait":0}`)); err != nil {
+		t.Fatal(err)
+	}
+	<-child.entered
+	deadline, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := runner.Shutdown(deadline); err != context.DeadlineExceeded {
+		t.Fatalf("blocked prompt shutdown = %v, want deadline exceeded", err)
+	}
+	close(child.release)
+}
+
 func TestRunEnvironmentDrainsDetachedChild(t *testing.T) {
 	child := &blockingChildRunner{entered: make(chan struct{}), release: make(chan struct{})}
 	tool := tools.NewSpawnAgentTool(tools.SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)

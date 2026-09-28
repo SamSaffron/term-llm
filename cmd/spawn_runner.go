@@ -189,8 +189,7 @@ func (r *SpawnAgentRunner) Drain(ctx context.Context) error {
 			return err
 		}
 	}
-	r.Wait()
-	return nil
+	return r.waitContext(ctx)
 }
 
 // Shutdown cancels detached children before closing the owning session store.
@@ -200,8 +199,7 @@ func (r *SpawnAgentRunner) Shutdown(ctx context.Context) error {
 			return err
 		}
 	}
-	r.Wait()
-	return nil
+	return r.waitContext(ctx)
 }
 
 // Wait permanently prevents new agent runs from starting, then blocks until
@@ -212,6 +210,26 @@ func (r *SpawnAgentRunner) Wait() {
 	r.draining = true
 	r.runMu.Unlock()
 	r.wg.Wait()
+}
+
+func (r *SpawnAgentRunner) waitContext(ctx context.Context) error {
+	r.runMu.Lock()
+	r.draining = true
+	r.runMu.Unlock()
+	done := make(chan struct{})
+	go func() { r.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func shutdownSpawnAgentRunner(r *SpawnAgentRunner) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = r.Shutdown(ctx)
 }
 
 // beginRun serializes run admission with Wait. A bare WaitGroup permits Add to

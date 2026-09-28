@@ -311,7 +311,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		if runtime != nil {
 			runtime.Close()
 		} else if spawnRunner != nil {
-			_ = spawnRunner.Shutdown(context.Background())
+			shutdownSpawnAgentRunner(spawnRunner)
 		}
 		if closeStore != nil {
 			closeStore()

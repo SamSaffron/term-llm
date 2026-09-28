@@ -323,9 +323,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 				fmt.Fprintf(cmd.ErrOrStderr(), "waiting for child agents: %s\n", strings.Join(ids, ", "))
 			}
 			if ctx.Err() != nil {
-				_ = spawnRunner.Shutdown(context.Background())
+				shutdownSpawnAgentRunner(spawnRunner)
 			} else if err := spawnRunner.Drain(ctx); err != nil {
-				_ = spawnRunner.Shutdown(context.Background())
+				shutdownSpawnAgentRunner(spawnRunner)
 			}
 		}
 		storeCleanup()
