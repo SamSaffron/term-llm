@@ -340,7 +340,7 @@ Precedence is:
 
 ## Agentic turn limits
 
-Agentic commands can make multiple provider calls while they execute tools and feed results back to the model. `max_turns` caps that loop.
+Agentic commands can make multiple provider calls while they execute tools and feed results back to the model. `max_turns` caps that loop. If turn N (the final permitted provider turn) requests tools, those tools **still execute**, and their results are persisted before a turn-limit error is returned. The model does not receive another turn to interpret those results until the session is resumed. This applies to all runs, not just delegated agents: N turns now allow N tool rounds instead of N-1. Check tool side effects before resuming or retrying a limited run.
 
 Defaults:
 
