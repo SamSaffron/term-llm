@@ -176,6 +176,12 @@ type SpawnAgentRunnerWithOptions interface {
 		callID string, cb SubagentEventCallback, opts SpawnAgentRunOptions) (SpawnAgentRunResult, error)
 }
 
+// DefaultSubagentMaxTurns is the turn budget for a delegated agent that does
+// not set max_turns. Children are no longer killed by wall-clock timeouts, so
+// the turn limit is their only budget; a child that exhausts it is resumable
+// with continue_agent, which grants the same allotment again.
+const DefaultSubagentMaxTurns = 500
+
 // SpawnConfig configures spawn_agent behavior.
 type SpawnConfig struct {
 	MaxParallel    int               // Max concurrent sub-agents (default 3)

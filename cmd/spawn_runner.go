@@ -515,7 +515,7 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 	runner := newCmdRunner(r.cfg, cmdRunnerOptions{
 		ConfigSet:         true,
 		Yolo:              r.yoloMode,
-		DefaultMaxTurns:   20,
+		DefaultMaxTurns:   tools.DefaultSubagentMaxTurns,
 		ErrWriter:         io.Discard,
 		Store:             r.store,
 		ParentApprovalMgr: approvalScope,
@@ -846,7 +846,7 @@ func subagentEventFromLLM(event llm.Event) tools.SubagentEvent {
 // focused tests while delegating to the shared SessionSettings tool setup.
 func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engine, agent *agents.Agent, depth int, childSessionID string) (*tools.ToolManager, error) {
 	baseDir := r.currentBaseDir()
-	settings, err := ResolveSettingsInDir(cfg, agent, CLIFlags{}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 20, baseDir)
+	settings, err := ResolveSettingsInDir(cfg, agent, CLIFlags{}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, tools.DefaultSubagentMaxTurns, baseDir)
 	if err != nil {
 		return nil, err
 	}

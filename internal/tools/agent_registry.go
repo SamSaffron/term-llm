@@ -154,10 +154,10 @@ func (m *agentManager) start(ctx context.Context, name, prompt, model, callID st
 		ctx = llm.ContextWithSessionID(ctx, parent)
 	}
 	now := time.Now()
-	record := session.AgentRun{ID: id, ParentSessionID: parent, AgentName: name, Prompt: prompt, Model: model, Status: "queued", TurnsGranted: 20, OwnerInstanceID: m.owner, UpdatedAt: now}
+	record := session.AgentRun{ID: id, ParentSessionID: parent, AgentName: name, Prompt: prompt, Model: model, Status: "queued", TurnsGranted: DefaultSubagentMaxTurns, OwnerInstanceID: m.owner, UpdatedAt: now}
 	if resume {
 		record.TurnsUsed = existing.TurnsUsed
-		record.TurnsGranted = existing.TurnsGranted + 20
+		record.TurnsGranted = existing.TurnsGranted + DefaultSubagentMaxTurns
 	}
 	detached, cancelCause := context.WithCancelCause(context.WithoutCancel(ctx))
 	cancel := func() { cancelCause(errAgentCancelled) }
