@@ -466,14 +466,16 @@ func (m *agentManager) releaseCollected(e *agentEntry) {
 		m.mu.Unlock()
 		return
 	}
-	e.attachment = nil
-	e.initial = nil
-	e.external = nil
-	e.media = nil
-	e.result = SpawnAgentRunResult{}
 	if m.store != nil {
-		delete(m.agents, e.record.ID)
+		if m.agents[e.record.ID] == e {
+			delete(m.agents, e.record.ID)
+		}
 		processAgentEntries.CompareAndDelete(e.record.ID, e)
+		e.attachment = nil
+		e.initial = nil
+		e.external = nil
+		e.media = nil
+		e.result = SpawnAgentRunResult{}
 	}
 	m.mu.Unlock()
 }

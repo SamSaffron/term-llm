@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -353,4 +354,44 @@ func TestResumeEventsCountTurnsAndReachAttachedWaiter(t *testing.T) {
 	if len(received) != 2 || received[0] != SubagentEventUsage || received[1] != SubagentEventToolEnd {
 		t.Fatalf("waiter events = %v", received)
 	}
+}
+
+func TestReleaseCollectedDoesNotEvictReplacement(t *testing.T) {
+	m := newAgentManager(SpawnConfig{MaxParallel: 1})
+	// A persisted terminal entry is collected while a continuation with the
+	// same ID is admitted. Collection must not delete the replacement.
+	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "runs.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	m.store = store
+	const id = "replacement-race"
+	old := &agentEntry{record: session.AgentRun{ID: id, Status: "completed", CollectedAt: time.Now()}, done: make(chan struct{}), manager: m}
+	close(old.done)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	newEntry := &agentEntry{record: session.AgentRun{ID: id, Status: "running"}, done: make(chan struct{}), cancel: cancel, manager: m}
+	go func() { <-ctx.Done(); close(newEntry.done) }()
+	m.mu.Lock()
+	m.agents[id] = old
+	processAgentEntries.Store(id, old)
+	finished := make(chan struct{})
+	go func() { m.releaseCollected(old); close(finished) }()
+	m.agents[id] = newEntry
+	processAgentEntries.Store(id, newEntry)
+	m.mu.Unlock()
+	<-finished
+	if m.agents[id] != newEntry {
+		t.Fatal("collected old entry deleted active replacement")
+	}
+	if current, ok := processAgentEntries.Load(id); !ok || current != newEntry {
+		t.Fatal("process-wide replacement evicted")
+	}
+	shutdown, done := context.WithTimeout(context.Background(), time.Second)
+	defer done()
+	if err := m.Shutdown(shutdown); err != nil {
+		t.Fatalf("replacement was not cancelled: %v", err)
+	}
+	processAgentEntries.CompareAndDelete(id, newEntry)
 }
