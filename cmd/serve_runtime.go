@@ -421,7 +421,11 @@ func (rt *serveRuntime) Close() {
 }
 
 func (rt *serveRuntime) CloseAfterRun(ctx context.Context) {
-	rt.closeContext(ctx, true)
+	// Even after cancellation, per-run stores must not close until the child
+	// shutdown has had a chance to flush its terminal status.
+	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	rt.closeContext(closeCtx, ctx == nil || ctx.Err() == nil)
 }
 
 func (rt *serveRuntime) CloseContext(ctx context.Context) {
