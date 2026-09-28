@@ -14,10 +14,12 @@ Skills are portable instruction bundles that provide specialized knowledge for s
 ### Using Skills
 
 ```bash
-term-llm ask --skills git "how to squash commits"   # use git skill
-term-llm chat --skills git,docker                   # multiple skills
-term-llm edit --skills refactoring -f main.go "refactor this"
+term-llm ask --skills git,+ "how to squash commits" # prioritize git metadata
+term-llm chat --skills git,docker,+                # prioritize multiple skills
+term-llm edit --skills refactoring,+ -f main.go "refactor this"
 ```
+
+The `,+` suffix keeps model-driven discovery and activation enabled while prioritizing the named skills in prompt metadata. It does not load their full instructions; the model loads those by calling `activate_skill`.
 
 ### Managing Skills
 
@@ -200,7 +202,7 @@ skills:
   enabled: false
 ```
 
-Supplying skill names or `all` with `--skills` implicitly enables the system for that invocation, so `term-llm ask --skills git "..."` works even when skills are disabled in config. Agents can also enable skills via their `skills` field. Some built-in agents, such as `developer` and `reviewer`, set `skills: "all"` and therefore enable skills even when the global setting is off. Agents without a `skills` override, such as `web-researcher`, inherit the global configuration. An explicit `--skills none` takes precedence over either.
+Supplying skill names or `all` with `--skills` implicitly enables the system for that invocation, so `term-llm ask --skills git,+ "..."` works even when skills are disabled in config. Agents can also enable skills via their `skills` field. Some built-in agents, such as `developer` and `reviewer`, set `skills: "all"` and therefore enable skills even when the global setting is off. Agents without a `skills` override, such as `web-researcher`, inherit the global configuration. An explicit `--skills none` takes precedence over either.
 
 Full configuration reference:
 
@@ -225,7 +227,7 @@ skills:
 | `include_project_skills` | `true` | Scan `.skills/` directories from CWD up to the repo root. |
 | `include_ecosystem_paths` | `true` | Also scan `.claude/skills/`, `.codex/skills/`, `.gemini/skills/`, `.cursor/skills/` at both project and user scope. |
 | `always_enabled` | `[]` | Skills that are always included in metadata, even if they would exceed the budget. |
-| `never_auto` | `[]` | Skills excluded from auto-discovery metadata. They can still be activated with `--skills name` or explicit `activate_skill` calls. |
+| `never_auto` | `[]` | Skills excluded from auto-discovery metadata. They can still be activated with explicit `activate_skill` calls when model invocation is enabled. |
 
 ### The `--skills` flag
 
@@ -233,11 +235,13 @@ The `--skills` flag overrides config for a single invocation:
 
 | Value | Effect |
 |-------|--------|
-| `--skills git` | Enable skills system, load `git` as always-enabled, disable auto-invoke for others |
-| `--skills git,docker` | Same, with multiple skills |
-| `--skills git,+` | Load `git` explicitly **and** keep auto-invoke on for remaining skills |
+| `--skills git` | Enable skills system, but disable all model-driven discovery and activation, including `git` |
+| `--skills git,docker` | Same: model-driven discovery and activation are disabled for all skills |
+| `--skills git,+` | Prioritize `git` in metadata and enable model-driven discovery and activation for eligible skills |
 | `--skills all` | Enable all skills with auto-invoke |
 | `--skills none` | Disable skills entirely for this command |
+
+Bare-name lists set `always_enabled`, but that list does not bypass disabled model invocation. User-invocable skills remain available through slash commands. With `,+`, named skills are prioritized only if they are eligible for model discovery (not in `never_auto` and not marked `disable-model-invocation`).
 
 ### How auto-loading works
 
