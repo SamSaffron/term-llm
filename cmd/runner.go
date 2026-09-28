@@ -103,6 +103,13 @@ func (env *cmdRunEnvironment) Close() {
 	if env == nil {
 		return
 	}
+	if env.runtime != nil && env.req.Platform == runpkg.PlatformJob && env.runCtx != nil && env.runCtx.Err() != nil {
+		env.runtime.CloseAfterRun(env.runCtx)
+		if env.closeStore != nil {
+			env.closeStore()
+		}
+		return
+	}
 	if env.runtime != nil && !env.req.IsSubagent {
 		owner := env.agentOwner
 		if owner == nil {
