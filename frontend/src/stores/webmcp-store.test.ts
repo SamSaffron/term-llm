@@ -1,10 +1,11 @@
+import { effect } from '@preact/signals';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CLIENT_TOOL_PREFIX,
   MAX_CLIENT_TOOL_OUTPUT,
   type ClientTool,
 } from '../domain/client-tools';
-import { storageKeys } from '../platform/storage';
+import { migrateScopedStorage, storageKeys } from '../platform/storage';
 import type { PageToolHost } from '../platform/webmcp';
 import type { AppStoreServices } from './app-store-services';
 import { CLIENT_TOOL_TIMEOUT_MS, WebMCPStore } from './webmcp-store';
@@ -50,6 +51,27 @@ beforeEach(() => localStorage.clear());
 afterEach(() => vi.useRealTimers());
 
 describe('WebMCPStore', () => {
+  it('reactively updates live declarations while preserving pinned conversation choices', async () => {
+    const store = await loaded(fakeHost().host);
+    let offered: string[] = [];
+    const dispose = effect(() => {
+      offered = store.definitions('live').map((tool) => tool.name);
+    });
+    try {
+      expect(offered).toEqual([]);
+      store.setEnabled('other', true);
+      expect(offered).toEqual([]);
+      store.setEnabled('live', true);
+      expect(offered).toEqual([`${CLIENT_TOOL_PREFIX}ping`]);
+      store.tools.value = [ping, { ...ping, name: 'second' }];
+      expect(offered).toHaveLength(2);
+      store.setEnabled('live', false);
+      expect(offered).toEqual([]);
+    } finally {
+      dispose();
+      store.dispose();
+    }
+  });
   it('loads usable page tools and follows changes', async () => {
     const { host, changed } = fakeHost();
     const store = new WebMCPStore(services(), host);
@@ -77,50 +99,140 @@ describe('WebMCPStore', () => {
     expect(store.provider()).toBe('browser');
   });
 
-  it('is on by default and remembers per-conversation opt-outs', async () => {
-    const store = new WebMCPStore(services(), fakeHost().host);
-    await store.refresh();
-    expect(store.enabledFor('s1')).toBe(true);
+  it('is off by default and remembers per-conversation choices', async () => {
+    const store = await loaded(fakeHost().host);
+    expect(store.enabledFor('s1')).toBe(false);
+    expect(store.definitions('s1')).toEqual([]);
+
+    store.setEnabled('s1', true);
     expect(store.definitions('s1').map((tool) => tool.name)).toEqual([`${CLIENT_TOOL_PREFIX}ping`]);
+    expect(new WebMCPStore(services(), fakeHost().host).enabledFor('s1')).toBe(true);
 
     store.setEnabled('s1', false);
     expect(store.definitions('s1')).toEqual([]);
-    expect(store.enabledFor('s2')).toBe(true);
     expect(new WebMCPStore(services(), fakeHost().host).enabledFor('s1')).toBe(false);
-
-    store.setEnabled('s1', true);
-    expect(new WebMCPStore(services(), fakeHost().host).enabledFor('s1')).toBe(true);
   });
 
-  it('carries a draft opt-out to the durable conversation', () => {
-    const store = new WebMCPStore(services(), fakeHost().host);
-    store.setEnabled('draft_1', false);
-    store.rekey('draft_1', 's1');
-    expect(store.enabledFor('s1')).toBe(false);
-    expect(store.enabledFor('draft_1')).toBe(true);
-    store.rekey('draft_2', 's2');
+  it('makes the last choice the default for new conversations', async () => {
+    const store = await loaded(fakeHost().host);
+    store.setEnabled('s1', true);
     expect(store.enabledFor('s2')).toBe(true);
+    expect(new WebMCPStore(services(), fakeHost().host).enabledFor('new')).toBe(true);
 
-    store.setEnabled('draft_3', false);
+    store.setEnabled('s2', false);
+    expect(store.enabledFor('s3')).toBe(false);
+    expect(store.enabledFor('s1')).toBe(true);
+  });
+
+  it('keeps a conversation on the choice it first sent with', async () => {
+    const store = await loaded(fakeHost().host);
+    expect(store.definitions('old')).toEqual([]); // sent while the default was off
+    store.setEnabled('s1', true); // default now on
+    expect(store.enabledFor('old')).toBe(false);
+    expect(store.enabledFor('untouched')).toBe(true);
+
+    expect(store.definitions('pinned-on')).toHaveLength(1);
+    store.setEnabled('s2', false);
+    expect(store.definitions('pinned-on')).toHaveLength(1);
+  });
+
+  it('does not pin conversations while the page has no tools', () => {
+    const store = new WebMCPStore(services(), fakeHost().host);
+    expect(store.definitions('s1')).toEqual([]);
+    expect(localStorage.getItem(storageKeys(null).webMCPSessions)).toBeNull();
+    store.setEnabled('other', true);
+    expect(store.enabledFor('s1')).toBe(true);
+  });
+
+  it('carries a draft choice to the durable conversation', () => {
+    const store = new WebMCPStore(services(), fakeHost().host);
+    store.setEnabled('draft_1', true);
+    store.rekey('draft_1', 's1');
+    expect(store.enabledFor('s1')).toBe(true);
+    store.setEnabled('draft_2', false);
+    expect(store.enabledFor('draft_1')).toBe(false); // falls back to the default again
+    store.rekey('draft_missing', 's2');
+    expect(store.enabledFor('s2')).toBe(false);
+
+    store.setEnabled('draft_3', true);
     store.rekey('draft_3', 's1');
-    const stored = JSON.parse(localStorage.getItem(storageKeys(null).webMCPDisabledSessions)!);
-    expect(stored).toEqual(['s1']);
+    const stored = JSON.parse(localStorage.getItem(storageKeys(null).webMCPSessions)!);
+    expect(stored).toEqual([
+      ['draft_2', false],
+      ['s1', true],
+    ]);
+  });
+
+  it('keeps conversations turned off before page tools were off by default', () => {
+    const keys = storageKeys(null);
+    localStorage.setItem(keys.webMCPLegacyDisabledSessions, JSON.stringify(['s1', 7]));
+    const store = new WebMCPStore(services(), fakeHost().host);
+    expect(localStorage.getItem(keys.webMCPLegacyDisabledSessions)).toBeNull();
+    store.setEnabled('s2', true);
+    expect(store.enabledFor('s1')).toBe(false);
+    expect(store.enabledFor('s3')).toBe(true);
+  });
+
+  it('keeps default and choices separate per Hub node', () => {
+    const hub = (nodeId: string) =>
+      ({
+        storage: localStorage,
+        keys: storageKeys({ nodeId, nodeBasePath: `/n/${nodeId}` } as never),
+      }) as unknown as AppStoreServices;
+    new WebMCPStore(hub('a'), fakeHost().host).setEnabled('s1', true);
+    expect(new WebMCPStore(hub('a'), fakeHost().host).enabledFor('new')).toBe(true);
+    expect(new WebMCPStore(hub('b'), fakeHost().host).enabledFor('new')).toBe(false);
+  });
+
+  it('merges opt-outs left by an older build alongside new choices', () => {
+    const keys = storageKeys(null);
+    localStorage.setItem(keys.webMCPSessions, JSON.stringify([['s2', true]]));
+    localStorage.setItem(keys.webMCPLegacyDisabledSessions, JSON.stringify(['s1', 's2']));
+    new WebMCPStore(services(), fakeHost().host);
+    expect(JSON.parse(localStorage.getItem(keys.webMCPSessions)!)).toEqual([
+      ['s1', false],
+      ['s2', true],
+    ]);
+    expect(localStorage.getItem(keys.webMCPLegacyDisabledSessions)).toBeNull();
+  });
+
+  it('does not let a Hub node inherit an unscoped default', () => {
+    const unscoped = storageKeys(null);
+    localStorage.setItem(unscoped.webMCPDefault, 'true');
+    localStorage.setItem(unscoped.webMCPSessions, JSON.stringify([['s1', true]]));
+    const keys = migrateScopedStorage(localStorage, { nodeId: 'a', nodeBasePath: '/n/a' } as never);
+    const store = new WebMCPStore(
+      { storage: localStorage, keys } as unknown as AppStoreServices,
+      fakeHost().host,
+    );
+    expect(store.enabledFor('new')).toBe(false);
+    expect(store.enabledFor('s1')).toBe(false);
+  });
+
+  it('pins a first send to a default another tab just changed', async () => {
+    const tabA = new WebMCPStore(services(), fakeHost().host);
+    const tabB = await loaded(fakeHost().host);
+    tabA.setEnabled('s1', true); // tab B has not seen the storage event yet
+    expect(tabB.definitions('s2')).toHaveLength(1);
+    tabB.reloadSettings();
+    expect(tabB.enabledFor('s2')).toBe(true);
   });
 
   it('follows and keeps choices made in another tab', () => {
     const tabA = new WebMCPStore(services(), fakeHost().host);
     const tabB = new WebMCPStore(services(), fakeHost().host);
-    tabA.setEnabled('s1', false);
-    expect(tabB.enabledFor('s1')).toBe(true);
-    tabB.reloadSettings();
+    tabA.setEnabled('s1', true);
     expect(tabB.enabledFor('s1')).toBe(false);
+    tabB.reloadSettings();
+    expect(tabB.enabledFor('s1')).toBe(true);
+    expect(tabB.enabledFor('new')).toBe(true);
 
     // A stale tab's own change must not undo the other tab's.
     const stale = new WebMCPStore(services(), fakeHost().host);
-    tabA.setEnabled('s2', false);
-    stale.setEnabled('s3', false);
+    tabA.setEnabled('s2', true);
+    stale.setEnabled('s3', true);
     tabA.reloadSettings();
-    expect(['s1', 's2', 's3'].map((id) => tabA.enabledFor(id))).toEqual([false, false, false]);
+    expect(['s1', 's2', 's3'].map((id) => tabA.enabledFor(id))).toEqual([true, true, true]);
   });
 
   it('keeps the newest tool listing when listings finish out of order', async () => {

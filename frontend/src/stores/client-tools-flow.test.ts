@@ -93,6 +93,8 @@ async function chatStore(): Promise<AppStore> {
   store.endpoints.selectedSession = vi.fn(async () => ({}));
   store.endpoints.sessionState = vi.fn(async () => ({}));
   await vi.waitFor(() => expect(store.webMCP.available.value).toBe(true));
+  // Page tools are off until turned on; these flows exercise them turned on.
+  store.setWebMCPEnabled(true);
   return store;
 }
 

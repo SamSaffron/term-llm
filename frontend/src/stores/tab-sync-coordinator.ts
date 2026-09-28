@@ -40,7 +40,8 @@ export class TabSyncCoordinator {
         if (event.key?.startsWith(`${keys.draftMessages}:`))
           this.host.reconcileDraftStorage(this.host.draftStorageId());
         if (event.key?.startsWith(`${keys.diffCommentQueue}:`)) this.host.reloadReviewQueue();
-        if (event.key === keys.webMCPDisabledSessions) this.host.onWebMCPSettingsStorage();
+        if (event.key === keys.webMCPSessions || event.key === keys.webMCPDefault)
+          this.host.onWebMCPSettingsStorage();
       },
       { signal },
     );
