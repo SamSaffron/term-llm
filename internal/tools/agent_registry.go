@@ -98,8 +98,8 @@ func ownerTerminated(owner string) bool {
 		return false
 	}
 	if runtime.GOOS != "linux" {
-		return false
-	} // Other hosts cannot prove another process's start identity here.
+		return ownerPIDTerminated(pid)
+	} // Non-Linux Unix can prove ESRCH, but not process start identity.
 	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if errors.Is(err, os.ErrNotExist) {
 		return true

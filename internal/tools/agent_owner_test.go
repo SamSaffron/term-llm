@@ -13,6 +13,14 @@ func TestAgentOwnerTerminationRequiresProcessProof(t *testing.T) {
 		t.Fatal("foreign host cannot be declared dead")
 	}
 	if runtime.GOOS != "linux" {
+		if runtime.GOOS != "windows" {
+			if !ownerTerminated(fmt.Sprintf("%s:%d:unknown", host, 1<<30)) {
+				t.Fatal("missing Unix PID should be interrupted")
+			}
+			if ownerTerminated(fmt.Sprintf("%s:%d:unknown", host, os.Getpid())) {
+				t.Fatal("live Unix PID must not be interrupted even with unknown start time")
+			}
+		}
 		return
 	}
 	if !ownerTerminated(fmt.Sprintf("%s:%d:wrong-start", host, os.Getpid())) {
