@@ -463,3 +463,27 @@
 .session-menu-label {
   min-width: 0;
 }
+
+/* Shortcut metadata is assigned in rendered sidebar order. */
+.sidebar[data-show-chat-shortcuts] .session-btn[data-chat-shortcut-number]::after {
+  content: '⌘' attr(data-chat-shortcut-number);
+  position: absolute;
+  inset-inline-end: 0.65rem;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 0.12rem 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+  pointer-events: none;
+}
+
+.sidebar[data-show-chat-shortcuts]
+  .session-row:has([data-chat-shortcut-number])
+  .session-menu-trigger {
+  visibility: hidden;
+}
