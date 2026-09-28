@@ -21,6 +21,8 @@ type AgentRun struct {
 	ParentSessionID string    `json:"parent_session_id"`
 	AgentName       string    `json:"agent_name"`
 	Prompt          string    `json:"prompt"`
+	Model           string    `json:"model,omitempty"`
+	Started         bool      `json:"started"`
 	Status          string    `json:"status"`
 	StopReason      string    `json:"stop_reason,omitempty"`
 	CurrentTool     string    `json:"current_tool,omitempty"` // In-process progress; not persisted
@@ -51,26 +53,46 @@ CREATE TABLE IF NOT EXISTS session_agent_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_session_agent_runs_parent ON session_agent_runs(parent_session_id, updated_at);`
 
+const agentRunSchemaV61 = `
+CREATE TABLE IF NOT EXISTS session_agent_runs (
+ child_session_id TEXT PRIMARY KEY,
+ parent_session_id TEXT NOT NULL,
+ agent_name TEXT NOT NULL,
+ prompt TEXT NOT NULL,
+ model TEXT NOT NULL DEFAULT '',
+ started INTEGER NOT NULL DEFAULT 1,
+ run_status TEXT NOT NULL,
+ stop_reason TEXT NOT NULL DEFAULT '',
+ turns_used INTEGER NOT NULL DEFAULT 0,
+ turns_granted INTEGER NOT NULL DEFAULT 20,
+ output TEXT NOT NULL DEFAULT '',
+ error TEXT NOT NULL DEFAULT '',
+ owner_instance_id TEXT NOT NULL,
+ updated_at DATETIME NOT NULL,
+ collected_at DATETIME
+);
+CREATE INDEX IF NOT EXISTS idx_session_agent_runs_parent ON session_agent_runs(parent_session_id, updated_at);`
+
 func (s *SQLiteStore) PutAgentRun(ctx context.Context, a AgentRun) error {
 	var collected any
 	if !a.CollectedAt.IsZero() {
 		collected = a.CollectedAt
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO session_agent_runs (child_session_id,parent_session_id,agent_name,prompt,run_status,stop_reason,turns_used,turns_granted,output,error,owner_instance_id,updated_at,collected_at)
- VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(child_session_id) DO UPDATE SET run_status=excluded.run_status,stop_reason=excluded.stop_reason,turns_used=excluded.turns_used,turns_granted=excluded.turns_granted,output=excluded.output,error=excluded.error,owner_instance_id=excluded.owner_instance_id,updated_at=excluded.updated_at,collected_at=COALESCE(excluded.collected_at,session_agent_runs.collected_at)`,
-		a.ID, a.ParentSessionID, a.AgentName, a.Prompt, a.Status, a.StopReason, a.TurnsUsed, a.TurnsGranted, a.Output, a.Error, a.OwnerInstanceID, a.UpdatedAt, collected)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO session_agent_runs (child_session_id,parent_session_id,agent_name,prompt,model,started,run_status,stop_reason,turns_used,turns_granted,output,error,owner_instance_id,updated_at,collected_at)
+ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(child_session_id) DO UPDATE SET model=excluded.model,started=excluded.started,run_status=excluded.run_status,stop_reason=excluded.stop_reason,turns_used=excluded.turns_used,turns_granted=excluded.turns_granted,output=excluded.output,error=excluded.error,owner_instance_id=excluded.owner_instance_id,updated_at=excluded.updated_at,collected_at=COALESCE(excluded.collected_at,session_agent_runs.collected_at)`,
+		a.ID, a.ParentSessionID, a.AgentName, a.Prompt, a.Model, a.Started, a.Status, a.StopReason, a.TurnsUsed, a.TurnsGranted, a.Output, a.Error, a.OwnerInstanceID, a.UpdatedAt, collected)
 	if err != nil {
 		return fmt.Errorf("save agent run: %w", err)
 	}
 	return nil
 }
 
-const agentRunColumns = `child_session_id,parent_session_id,agent_name,prompt,run_status,stop_reason,turns_used,turns_granted,output,error,owner_instance_id,updated_at,collected_at`
+const agentRunColumns = `child_session_id,parent_session_id,agent_name,prompt,model,started,run_status,stop_reason,turns_used,turns_granted,output,error,owner_instance_id,updated_at,collected_at`
 
 func scanAgentRun(row interface{ Scan(...any) error }) (AgentRun, error) {
 	var a AgentRun
 	var collected sql.NullTime
-	err := row.Scan(&a.ID, &a.ParentSessionID, &a.AgentName, &a.Prompt, &a.Status, &a.StopReason, &a.TurnsUsed, &a.TurnsGranted, &a.Output, &a.Error, &a.OwnerInstanceID, &a.UpdatedAt, &collected)
+	err := row.Scan(&a.ID, &a.ParentSessionID, &a.AgentName, &a.Prompt, &a.Model, &a.Started, &a.Status, &a.StopReason, &a.TurnsUsed, &a.TurnsGranted, &a.Output, &a.Error, &a.OwnerInstanceID, &a.UpdatedAt, &collected)
 	if collected.Valid {
 		a.CollectedAt = collected.Time
 	}

@@ -201,7 +201,12 @@ func (t *agentControlTool) continueRun(ctx context.Context, parent string, a age
 	if runner == nil {
 		return llm.TextOutput("agent runner unavailable")
 	}
-	entry, startErr := m.start(ctx, record.AgentName, record.Prompt, "", llm.CallIDFromContext(ctx), SubagentEventCallbackFromContext(ctx), t.spawn.GetEventCallback(), runner, depth+1, true, a.Instructions, record)
+	resume := record.Started
+	prompt := record.Prompt
+	if !resume && strings.TrimSpace(a.Instructions) != "" {
+		prompt += "\n\nAdditional instructions: " + a.Instructions
+	}
+	entry, startErr := m.start(ctx, record.AgentName, prompt, record.Model, llm.CallIDFromContext(ctx), SubagentEventCallbackFromContext(ctx), t.spawn.GetEventCallback(), runner, depth+1, resume, a.Instructions, record)
 	if startErr != nil {
 		return llm.TextOutput(startErr.Error())
 	}

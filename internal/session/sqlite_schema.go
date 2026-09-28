@@ -148,7 +148,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // Increment when adding new migrations.
 const (
 	projectSchemaVersion = 47
-	schemaVersion        = 61
+	schemaVersion        = 62
 )
 
 // migration represents a schema migration.
@@ -1303,6 +1303,18 @@ var migrations = []migration{
 		up: func(db schemaExecutor) error {
 			_, err := db.Exec(agentRunSchemaV60)
 			return err
+		},
+	},
+	{
+		version:     62,
+		description: "retain agent admission and model for queued cancellation recovery",
+		up: func(db schemaExecutor) error {
+			for _, column := range []string{"model TEXT NOT NULL DEFAULT ''", "started INTEGER NOT NULL DEFAULT 1"} {
+				if _, err := db.Exec("ALTER TABLE session_agent_runs ADD COLUMN " + column); err != nil {
+					return err
+				}
+			}
+			return nil
 		},
 	},
 }

@@ -138,7 +138,7 @@ func (m *agentManager) start(ctx context.Context, name, prompt, model, callID st
 		ctx = llm.ContextWithSessionID(ctx, parent)
 	}
 	now := time.Now()
-	record := session.AgentRun{ID: id, ParentSessionID: parent, AgentName: name, Prompt: prompt, Status: "queued", TurnsGranted: 20, OwnerInstanceID: m.owner, UpdatedAt: now}
+	record := session.AgentRun{ID: id, ParentSessionID: parent, AgentName: name, Prompt: prompt, Model: model, Status: "queued", TurnsGranted: 20, OwnerInstanceID: m.owner, UpdatedAt: now}
 	if resume {
 		record.TurnsUsed = existing.TurnsUsed
 		record.TurnsGranted = existing.TurnsGranted + 20
@@ -203,6 +203,7 @@ func (m *agentManager) run(ctx context.Context, e *agentEntry, runner SpawnAgent
 	}
 	e.queued = false
 	e.record.Status = "running"
+	e.record.Started = true
 	e.record.UpdatedAt = time.Now()
 	record := e.record
 	m.mu.Unlock()
@@ -505,6 +506,9 @@ func (m *agentManager) Shutdown(ctx context.Context) error {
 	}
 	m.mu.Unlock()
 	for _, e := range queued {
+		e.manager.mu.Lock()
+		e.shutdown = true
+		e.manager.mu.Unlock()
 		e.cancel()
 	}
 	// Give active children a short chance to finish naturally; queued work never
