@@ -148,6 +148,11 @@ func TestAgentLifecycleReloadListInterruptedAndResume(t *testing.T) {
 	if !strings.Contains(listed.Content, `"status":"interrupted"`) || !strings.Contains(listed.Content, first.AgentID) {
 		t.Fatalf("reloaded agents = %s", listed.Content)
 	}
+	// Strict-schema providers force the optional filter; "all" must not filter.
+	listedAll := lifecycleCall(t, &agentControlTool{name: ListAgentsToolName, spawn: replacement}, ctx, `{"status":"all"}`)
+	if !strings.Contains(listedAll.Content, first.AgentID) {
+		t.Fatalf("status=all agents = %s", listedAll.Content)
+	}
 	continued := lifecycleResult(t, lifecycleCall(t, &agentControlTool{name: ContinueAgentToolName, spawn: replacement}, ctx, `{"agent_id":"`+first.AgentID+`","wait":1}`))
 	if continued.Status != "completed" || continued.AgentID != first.AgentID {
 		t.Fatalf("resumed record = %+v", continued)

@@ -45,7 +45,11 @@ func (t *agentControlTool) Spec() llm.ToolSpec {
 		required = []string{"agent_id"}
 		description = "Cancel an agent and its active descendants; it may be resumed later."
 	case ListAgentsToolName:
-		props["status"] = map[string]any{"type": "string"}
+		props["status"] = map[string]any{
+			"type":        "string",
+			"description": "Optional status filter; omit or use \"all\" to list every agent.",
+			"enum":        []string{"all", "queued", "running", "awaiting_approval", "completed", "turn_limit", "cancelled", "interrupted", "failed", "running_elsewhere"},
+		}
 		description = "List agents belonging to this parent session, including interrupted agents from earlier processes."
 	}
 	return llm.ToolSpec{Name: t.name, Description: description, Schema: map[string]any{"type": "object", "properties": props, "required": required, "additionalProperties": false}}
@@ -99,7 +103,7 @@ func (t *agentControlTool) list(ctx context.Context, parent string, a agentContr
 	}
 	filtered := make([]map[string]any, 0, len(records))
 	for _, r := range records {
-		if a.Status != "" && r.Status != a.Status {
+		if a.Status != "" && a.Status != "all" && r.Status != a.Status {
 			continue
 		}
 		resumable := r.Status == "completed" || r.Status == "turn_limit" || r.Status == "cancelled" || r.Status == "interrupted"
