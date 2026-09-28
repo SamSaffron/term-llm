@@ -124,6 +124,27 @@ func TestRunEnvironmentWithoutOwnerDrainsDetachedChild(t *testing.T) {
 	}
 }
 
+func TestAgentHostOwnerRejectsAdoptionAfterShutdown(t *testing.T) {
+	owner := &agentHostOwner{}
+	if err := owner.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	child := &blockingChildRunner{entered: make(chan struct{}), release: make(chan struct{})}
+	tool := tools.NewSpawnAgentTool(tools.SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
+	tool.SetRunner(child)
+	runner := &SpawnAgentRunner{lifecycle: tool}
+	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	if _, err := tool.Execute(ctx, []byte(`{"agent_name":"developer","prompt":"work","wait":0}`)); err != nil {
+		t.Fatal(err)
+	}
+	<-child.entered
+	closed := false
+	owner.adopt(&serveRuntime{spawnRunner: runner}, func() { closed = true })
+	if !closed || len(runner.OutstandingAgentIDs()) != 0 {
+		t.Fatalf("late child survived shutdown: store closed=%t outstanding=%v", closed, runner.OutstandingAgentIDs())
+	}
+}
+
 func TestRunEnvironmentHandsOffDetachedChildAcrossTurns(t *testing.T) {
 	child := &blockingChildRunner{entered: make(chan struct{}), release: make(chan struct{})}
 	tool := tools.NewSpawnAgentTool(tools.SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)

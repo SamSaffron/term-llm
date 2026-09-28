@@ -3,14 +3,16 @@ package cmd
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 // agentHostOwner holds per-turn runtimes while their detached children finish.
 // In particular the child provider, approval manager and session store must not
 // be closed when the parent's model turn returns.
 type agentHostOwner struct {
-	mu   sync.Mutex
-	runs map[*serveRuntime]chan struct{}
+	mu       sync.Mutex
+	runs     map[*serveRuntime]chan struct{}
+	stopping bool
 }
 
 func (o *agentHostOwner) adopt(rt *serveRuntime, closeStore func()) {
@@ -29,6 +31,18 @@ func (o *agentHostOwner) adopt(rt *serveRuntime, closeStore func()) {
 	}
 	done := make(chan struct{})
 	o.mu.Lock()
+	if o.stopping {
+		o.mu.Unlock()
+		// Shutdown has already snapshotted its runs. Do not let this child
+		// escape that barrier or close its store before cancellation.
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		rt.closeContext(ctx, false)
+		cancel()
+		if closeStore != nil {
+			closeStore()
+		}
+		return
+	}
 	if o.runs == nil {
 		o.runs = make(map[*serveRuntime]chan struct{})
 	}
@@ -49,6 +63,7 @@ func (o *agentHostOwner) adopt(rt *serveRuntime, closeStore func()) {
 
 func (o *agentHostOwner) Shutdown(ctx context.Context) error {
 	o.mu.Lock()
+	o.stopping = true
 	runs := make(map[*serveRuntime]chan struct{}, len(o.runs))
 	for rt, done := range o.runs {
 		runs[rt] = done
