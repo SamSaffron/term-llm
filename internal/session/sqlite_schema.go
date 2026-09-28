@@ -148,7 +148,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // Increment when adding new migrations.
 const (
 	projectSchemaVersion = 47
-	schemaVersion        = 60
+	schemaVersion        = 61
 )
 
 // migration represents a schema migration.
@@ -1295,6 +1295,14 @@ var migrations = []migration{
 				return fmt.Errorf("install pinned order indexes and metadata trigger: %w", err)
 			}
 			return nil
+		},
+	},
+	{
+		version:     61,
+		description: "persist delegated agent lifecycle",
+		up: func(db schemaExecutor) error {
+			_, err := db.Exec(agentRunSchemaV60)
+			return err
 		},
 	},
 }

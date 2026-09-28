@@ -467,9 +467,14 @@ func failMigration60(t *testing.T) func() {
 	t.Helper()
 	original := migrations
 	migrations = append([]migration(nil), original...)
-	last := &migrations[len(migrations)-1]
-	if last.version != 60 {
-		t.Fatalf("last migration = %d, want 60", last.version)
+	var last *migration
+	for i := range migrations {
+		if migrations[i].version == 60 {
+			last = &migrations[i]
+		}
+	}
+	if last == nil {
+		t.Fatal("migration 60 not found")
 	}
 	realUp := last.up
 	last.up = func(db schemaExecutor) error {
