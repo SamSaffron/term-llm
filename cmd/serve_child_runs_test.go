@@ -601,3 +601,46 @@ func TestHostedChildTimerPreservesParentDeadline(t *testing.T) {
 		t.Fatalf("deadline=%v, present=%v", got, ok)
 	}
 }
+
+// A completed hosted child must admit a stateful continuation on the same
+// durable session while the new borrowed runtime holds its session reservation.
+func TestHostedChildContinuesCompletedSession(t *testing.T) {
+	f := newChildRunFixture(t, true)
+	f.srv.ensureResponseRuns()
+	first := f.spawnChild(t)
+	if first.Status != "completed" || first.SessionID == "" {
+		t.Fatalf("initial child = %+v", first)
+	}
+	if rt, attached := f.srv.sessionMgr.Get(first.SessionID); attached {
+		t.Fatalf("initial child runtime still attached: %p", rt)
+	}
+	if active := f.srv.ensureResponseRuns().activeRun(first.SessionID); active != nil {
+		t.Fatalf("initial child response still active: %s", active.id)
+	}
+	continueTool, ok := f.env.runtime.toolMgr.Registry.Get(tools.ContinueAgentToolName)
+	if !ok {
+		t.Fatal("continue_agent tool missing")
+	}
+	ctx := llm.ContextWithCallID(f.ctx, "continue-drill")
+	output, err := continueTool.Execute(ctx, json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"instructions":"Say hello again","wait":5}`, first.SessionID)))
+	var continued tools.SpawnAgentResult
+	if err != nil || json.Unmarshal([]byte(output.Content), &continued) != nil || continued.Status != "completed" || continued.AgentID != first.SessionID {
+		t.Fatalf("continue child = %s, err = %v", output.Content, err)
+	}
+	messages, err := f.store.GetMessages(ctx, first.SessionID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var followup bool
+	for _, msg := range messages {
+		if msg.Role == llm.RoleUser && strings.Contains(msg.TextContent, "Say hello again") {
+			followup = true
+		}
+	}
+	if !followup {
+		t.Fatalf("continued instruction missing from child transcript: %+v", messages)
+	}
+	if _, attached := f.srv.sessionMgr.Get(first.SessionID); attached {
+		t.Fatal("continued child runtime remained attached")
+	}
+}
