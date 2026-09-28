@@ -24,7 +24,10 @@ export const STORAGE_BASE_KEYS = {
   projectExpansion: 'term_llm_project_expansion',
   sidebarView: 'term_llm_sidebar_view',
   lastProject: 'term_llm_last_project',
-  webMCPDisabledSessions: 'term_llm_webmcp_disabled_sessions',
+  webMCPSessions: 'term_llm_webmcp_sessions',
+  webMCPDefault: 'term_llm_webmcp_default',
+  /** Read once to migrate opt-outs stored before page tools were off by default. */
+  webMCPLegacyDisabledSessions: 'term_llm_webmcp_disabled_sessions',
 } as const;
 
 export type StorageName = keyof typeof STORAGE_BASE_KEYS;
@@ -41,11 +44,15 @@ export function storageKeys(hub: HubContext | null): StorageKeys {
   ) as StorageKeys;
 }
 
+/** Per-node choices that must not be inherited from unscoped storage. */
+const NODE_ONLY: ReadonlySet<StorageName> = new Set(['token', 'webMCPSessions', 'webMCPDefault']);
+
 export function migrateScopedStorage(storage: Storage, hub: HubContext | null): StorageKeys {
   const keys = storageKeys(hub);
   if (!hub?.nodeId) return keys;
   for (const [name, base] of Object.entries(STORAGE_BASE_KEYS) as Array<[StorageName, string]>) {
-    if (name === 'token' || keys[name] === base || storage.getItem(keys[name]) !== null) continue;
+    if (NODE_ONLY.has(name) || keys[name] === base || storage.getItem(keys[name]) !== null)
+      continue;
     const value = storage.getItem(base);
     if (value !== null) storage.setItem(keys[name], value);
   }

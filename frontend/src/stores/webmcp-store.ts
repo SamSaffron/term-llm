@@ -41,22 +41,31 @@ export interface ClientToolBridge {
   run(call: PendingClientCall, signal: AbortSignal): Promise<ClientToolResult>;
 }
 
+/** A conversation's own page-tools choice, oldest first. */
+type SessionChoice = [sessionId: string, enabled: boolean];
+
 /**
  * Page-provided (WebMCP) tools. They appear in the MCP dialog as one more
  * server, switched per conversation like the configured ones.
  *
  * Trust model: whoever installs `document.modelContext` on this page (the
  * term-llm iOS app, or the browser) is trusted like a configured MCP server.
- * Its tools are on by default and run without per-call confirmation, because
- * a page only has tools when its host opted in. Their names, descriptions,
- * schemas, and results reach the model as-is apart from length limits.
+ * Its tools run without per-call confirmation, because a page only has tools
+ * when its host opted in. Their names, descriptions, schemas, and results
+ * reach the model as-is apart from length limits.
+ *
+ * They are off until turned on. The last choice made in any conversation
+ * becomes the default for new ones, remembered per browser and per Hub node.
+ * A conversation keeps the choice it first sent with, so changing the default
+ * never adds or removes tools in the middle of an older conversation.
  */
 export class WebMCPStore implements ClientToolBridge {
   /** The page's tools whose names can be offered to a model. */
   readonly tools = signal<ClientTool[]>([]);
   readonly providerName = signal('');
   readonly available: ReadonlySignal<boolean> = computed(() => this.tools.value.length > 0);
-  private readonly disabledSessions: Signal<string[]>;
+  private readonly choices: Signal<SessionChoice[]>;
+  private readonly defaultOn: Signal<boolean>;
   private unsubscribe: () => void = () => undefined;
   /** Only the newest listing may land; an older one can finish last. */
   private listing = 0;
@@ -65,7 +74,9 @@ export class WebMCPStore implements ClientToolBridge {
     private readonly services: AppStoreServices,
     private readonly host: PageToolHost = pageToolHost(),
   ) {
-    this.disabledSessions = signal(this.storedDisabledSessions());
+    this.migrateLegacyOptOuts();
+    this.choices = signal(this.storedChoices());
+    this.defaultOn = signal(this.storedDefault());
   }
 
   /** Loads the page's tools and follows later changes. */
@@ -94,9 +105,10 @@ export class WebMCPStore implements ClientToolBridge {
     this.providerName.value = tools.length ? this.host.provider() : '';
   }
 
-  /** Another tab changed the per-conversation choices. */
+  /** Another tab changed the page-tools choices. */
   reloadSettings(): void {
-    this.disabledSessions.value = this.storedDisabledSessions();
+    this.choices.value = this.storedChoices();
+    this.defaultOn.value = this.storedDefault();
   }
 
   provider(): string {
@@ -104,28 +116,42 @@ export class WebMCPStore implements ClientToolBridge {
   }
 
   enabledFor(sessionId: string): boolean {
-    return !this.disabledSessions.value.includes(sessionId);
+    const choice = this.choices.value.find(([id]) => id === sessionId);
+    return choice ? choice[1] : this.defaultOn.value;
   }
 
+  /** Sets this conversation's choice; it also becomes the default for new ones. */
   setEnabled(sessionId: string, enabled: boolean): void {
     if (!sessionId) return;
-    // Start from storage so another tab's recent choice isn't overwritten.
-    const others = this.storedDisabledSessions().filter((id) => id !== sessionId);
-    this.persist(enabled ? others : [...others, sessionId]);
+    this.persistDefault(enabled);
+    this.remember(sessionId, enabled);
   }
 
   /** A draft conversation became durable: carry its choice over. */
   rekey(oldId: string, newId: string): void {
     if (!oldId || !newId) return;
-    const stored = this.storedDisabledSessions();
-    if (!stored.includes(oldId)) return;
-    this.persist([...stored.filter((id) => id !== oldId && id !== newId), newId]);
+    const stored = this.storedChoices();
+    const choice = stored.find(([id]) => id === oldId);
+    if (!choice) return;
+    this.persistChoices([
+      ...stored.filter(([id]) => id !== oldId && id !== newId),
+      [newId, choice[1]],
+    ]);
   }
 
+  /**
+   * Definitions for the next request in `sessionId`. Offering the page's tools
+   * pins the conversation to its current choice, so a later default change
+   * elsewhere can't alter what an existing conversation was started with.
+   */
   definitions(sessionId: string): ClientToolDefinition[] {
-    return this.enabledFor(sessionId)
-      ? clientToolDefinitions(this.tools.peek(), this.providerName.peek())
-      : [];
+    if (!this.available.peek()) return [];
+    // Read storage, not this tab's copy: another tab may have just changed the
+    // default and its storage event may not have arrived yet.
+    const choice = this.storedChoices().find(([id]) => id === sessionId);
+    const enabled = choice ? choice[1] : this.storedDefault();
+    if (sessionId && !choice) this.remember(sessionId, enabled);
+    return enabled ? clientToolDefinitions(this.tools.peek(), this.providerName.peek()) : [];
   }
 
   async run(call: PendingClientCall, signal: AbortSignal): Promise<ClientToolResult> {
@@ -161,18 +187,62 @@ export class WebMCPStore implements ClientToolBridge {
     }
   }
 
-  private storedDisabledSessions(): string[] {
-    const stored = readJSON<unknown>(
-      this.services.storage,
-      this.services.keys.webMCPDisabledSessions,
-      [],
-    );
-    return Array.isArray(stored) ? stored.filter((id): id is string => typeof id === 'string') : [];
+  /** Records one conversation's choice, starting from storage so another tab's isn't lost. */
+  private remember(sessionId: string, enabled: boolean): void {
+    this.persistChoices([
+      ...this.storedChoices().filter(([id]) => id !== sessionId),
+      [sessionId, enabled],
+    ]);
   }
 
-  private persist(sessions: string[]): void {
-    const kept = sessions.slice(-REMEMBERED_SESSIONS);
-    this.disabledSessions.value = kept;
-    writeJSON(this.services.storage, this.services.keys.webMCPDisabledSessions, kept);
+  private storedChoices(): SessionChoice[] {
+    const stored = readJSON<unknown>(this.services.storage, this.services.keys.webMCPSessions, []);
+    if (!Array.isArray(stored)) return [];
+    return stored.filter(
+      (entry): entry is SessionChoice =>
+        Array.isArray(entry) &&
+        entry.length === 2 &&
+        typeof entry[0] === 'string' &&
+        typeof entry[1] === 'boolean',
+    );
+  }
+
+  private storedDefault(): boolean {
+    return (
+      readJSON<unknown>(this.services.storage, this.services.keys.webMCPDefault, false) === true
+    );
+  }
+
+  private persistChoices(choices: SessionChoice[]): void {
+    const kept = choices.slice(-REMEMBERED_SESSIONS);
+    this.choices.value = kept;
+    writeJSON(this.services.storage, this.services.keys.webMCPSessions, kept);
+  }
+
+  private persistDefault(enabled: boolean): void {
+    this.defaultOn.value = enabled;
+    writeJSON(this.services.storage, this.services.keys.webMCPDefault, enabled);
+  }
+
+  /** Earlier builds stored only opt-outs; keep those conversations off. */
+  private migrateLegacyOptOuts(): void {
+    const { storage, keys } = this.services;
+    const legacy = readJSON<unknown>(storage, keys.webMCPLegacyDisabledSessions, null);
+    if (legacy === null) return;
+    if (Array.isArray(legacy)) {
+      const current = this.storedChoices();
+      const known = new Set(current.map(([id]) => id));
+      const optedOut = legacy
+        .filter((id): id is string => typeof id === 'string' && !known.has(id))
+        .map((id): SessionChoice => [id, false]);
+      // Older opt-outs go first so the cap drops them before newer choices.
+      if (optedOut.length)
+        writeJSON(
+          storage,
+          keys.webMCPSessions,
+          [...optedOut, ...current].slice(-REMEMBERED_SESSIONS),
+        );
+    }
+    storage.removeItem(keys.webMCPLegacyDisabledSessions);
   }
 }
