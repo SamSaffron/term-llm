@@ -90,6 +90,32 @@ type parentSessionRunner struct{ *lifecycleRunner }
 
 func (*parentSessionRunner) ParentAgentSessionID() string { return "shared-parent" }
 
+type usageTurnRunner struct{}
+
+func (usageTurnRunner) RunAgent(ctx context.Context, name, prompt string, depth int) (SpawnAgentRunResult, error) {
+	return SpawnAgentRunResult{}, nil
+}
+func (usageTurnRunner) RunAgentWithCallback(_ context.Context, _, _ string, _ int, id string, cb SubagentEventCallback) (SpawnAgentRunResult, error) {
+	cb(id, SubagentEvent{Type: SubagentEventUsage}) // compaction billing
+	cb(id+"/nested", SubagentEvent{Type: SubagentEventUsage, CountsTurn: true})
+	cb(id, SubagentEvent{Type: SubagentEventUsage, CountsTurn: true})
+	return SpawnAgentRunResult{}, nil
+}
+
+func TestAgentLifecycleCountsOnlyChildModelTurns(t *testing.T) {
+	m := newAgentManager(SpawnConfig{MaxParallel: 1})
+	ctx := llm.ContextWithSessionID(context.Background(), "parent")
+	e, err := m.start(ctx, "developer", "work", "", "call", nil, nil, usageTurnRunner{}, 0, false, "", session.AgentRun{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-e.done
+	record, _, err := m.get(ctx, e.record.ID, "parent")
+	if err != nil || record.TurnsUsed != 1 {
+		t.Fatalf("turns with compaction and nested agent = %d, %v", record.TurnsUsed, err)
+	}
+}
+
 func TestAgentControlRunnerReplacementIsSynchronized(t *testing.T) {
 	spawn := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1}, 0)
 	runner := &parentSessionRunner{lifecycleRunner: &lifecycleRunner{}}

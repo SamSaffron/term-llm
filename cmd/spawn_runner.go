@@ -822,6 +822,7 @@ func subagentEventFromLLM(event llm.Event) tools.SubagentEvent {
 		if event.Use != nil {
 			return tools.SubagentEvent{
 				Type:              tools.SubagentEventUsage,
+				CountsTurn:        true,
 				InputTokens:       event.Use.InputTokens,
 				OutputTokens:      event.Use.OutputTokens,
 				CachedInputTokens: event.Use.CachedInputTokens,

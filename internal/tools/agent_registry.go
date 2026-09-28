@@ -218,7 +218,7 @@ func (m *agentManager) run(ctx context.Context, e *agentEntry, runner SpawnAgent
 	cb := func(eventCallID string, event SubagentEvent) {
 		m.mu.Lock()
 		e.record.UpdatedAt = time.Now()
-		if event.Type == SubagentEventUsage {
+		if event.Type == SubagentEventUsage && event.CountsTurn && eventCallID == e.originCallID {
 			e.record.TurnsUsed++
 		}
 		if event.Type == SubagentEventToolStart {

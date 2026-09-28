@@ -114,6 +114,7 @@ type SubagentEvent struct {
 	Phase             string              // for "phase" events
 	InputTokens       int                 // fresh input tokens for "usage" events
 	OutputTokens      int                 // output tokens for "usage" events
+	CountsTurn        bool                // usage from a completed child model turn, not compaction or nested usage
 	CachedInputTokens int                 // cache-read tokens for "usage" events
 	CacheWriteTokens  int                 // cache-write tokens for "usage" events
 	Provider          string              // resolved provider for init/usage events
