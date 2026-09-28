@@ -537,6 +537,10 @@ func (t *SpawnAgentTool) Drain(ctx context.Context) error { return t.manager.Dra
 
 func (t *SpawnAgentTool) Shutdown(ctx context.Context) error { return t.manager.Shutdown(ctx) }
 
+func (t *SpawnAgentTool) CancelDescendants(ctx context.Context) error {
+	return t.manager.CancelDescendants(ctx)
+}
+
 // Preview returns a short description of the tool call.
 func (t *SpawnAgentTool) Preview(args json.RawMessage) string {
 	var a SpawnAgentArgs

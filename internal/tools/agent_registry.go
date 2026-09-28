@@ -36,6 +36,7 @@ type agentEntry struct {
 	record       session.AgentRun
 	done         chan struct{}
 	cancel       context.CancelFunc
+	interrupt    context.CancelFunc
 	attachment   *agentAttachment
 	initial      *agentAttachment
 	external     SubagentEventCallback
@@ -63,6 +64,13 @@ type agentManager struct {
 
 var processAgentEntries sync.Map // agent_id -> *agentEntry, across host-owned tool registries
 var processAgentAdmission sync.Mutex
+
+var errAgentCancelled = errors.New("agent cancelled by user")
+
+// AgentCancelled reports cancellation propagated by cancel_agent, not host exit.
+func AgentCancelled(ctx context.Context) bool {
+	return errors.Is(context.Cause(ctx), errAgentCancelled)
+}
 
 func newAgentManager(config SpawnConfig) *agentManager {
 	return &agentManager{agents: make(map[string]*agentEntry), slots: make(chan struct{}, config.MaxParallel), owner: processAgentOwner()}
@@ -149,8 +157,10 @@ func (m *agentManager) start(ctx context.Context, name, prompt, model, callID st
 		record.TurnsUsed = existing.TurnsUsed
 		record.TurnsGranted = existing.TurnsGranted + 20
 	}
-	detached, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	e := &agentEntry{record: record, done: make(chan struct{}), cancel: cancel, attachment: &agentAttachment{callback: cb, callID: callID}, external: external, originCallID: callID, queued: true, startedAt: now, manager: m}
+	detached, cancelCause := context.WithCancelCause(context.WithoutCancel(ctx))
+	cancel := func() { cancelCause(errAgentCancelled) }
+	interrupt := func() { cancelCause(context.Canceled) }
+	e := &agentEntry{record: record, done: make(chan struct{}), cancel: cancel, interrupt: interrupt, attachment: &agentAttachment{callback: cb, callID: callID}, external: external, originCallID: callID, queued: true, startedAt: now, manager: m}
 	e.initial = e.attachment
 	if scoped, ok := runner.(interface{ AgentApprovalScope(string) *ApprovalManager }); ok {
 		scope := scoped.AgentApprovalScope(parent)
@@ -532,7 +542,12 @@ func (m *agentManager) gracefulWait(ctx context.Context, entries []*agentEntry, 
 
 // Shutdown cancels queued work first, then active children, and waits for their
 // terminal writes before hosts close the session store.
-func (m *agentManager) Shutdown(ctx context.Context) error {
+func (m *agentManager) Shutdown(ctx context.Context) error { return m.shutdown(ctx, true) }
+
+// CancelDescendants propagates a user's cancel_agent request to nested runs.
+func (m *agentManager) CancelDescendants(ctx context.Context) error { return m.shutdown(ctx, false) }
+
+func (m *agentManager) shutdown(ctx context.Context, interrupted bool) error {
 	m.mu.Lock()
 	m.draining = true
 	var queued, running []*agentEntry
@@ -551,9 +566,13 @@ func (m *agentManager) Shutdown(ctx context.Context) error {
 	m.mu.Unlock()
 	for _, e := range queued {
 		e.manager.mu.Lock()
-		e.shutdown = true
+		e.shutdown = interrupted
 		e.manager.mu.Unlock()
-		e.cancel()
+		if interrupted && e.interrupt != nil {
+			e.interrupt()
+		} else {
+			e.cancel()
+		}
 	}
 	// Give active children a short chance to finish naturally; queued work never
 	// acquires a slot during shutdown.
@@ -563,12 +582,16 @@ func (m *agentManager) Shutdown(ctx context.Context) error {
 		select {
 		case <-e.done:
 		default:
-			e.shutdown = true
+			e.shutdown = interrupted
 		}
 	}
 	m.mu.Unlock()
 	for _, e := range running {
-		e.cancel()
+		if interrupted && e.interrupt != nil {
+			e.interrupt()
+		} else {
+			e.cancel()
+		}
 	}
 	for _, e := range append(queued, running...) {
 		select {

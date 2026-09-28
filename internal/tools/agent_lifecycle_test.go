@@ -431,3 +431,24 @@ func TestCollectedRunEvictsAfterDoneCloses(t *testing.T) {
 		}
 	}
 }
+
+func TestUserCancellationPropagatesToGrandchild(t *testing.T) {
+	runner := &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}
+	tool := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
+	tool.SetRunner(runner)
+	ctx := llm.ContextWithSessionID(context.Background(), "child")
+	spawned := lifecycleResult(t, lifecycleCall(t, tool, ctx, `{"agent_name":"developer","prompt":"grandchild","wait":0}`))
+	<-runner.entered
+	cancelledCtx, cancel := context.WithCancelCause(context.Background())
+	cancel(errAgentCancelled)
+	if !AgentCancelled(cancelledCtx) {
+		t.Fatal("user cancel cause lost")
+	}
+	if err := tool.CancelDescendants(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	result := lifecycleCall(t, &agentControlTool{name: WaitAgentToolName, spawn: tool}, ctx, `{"agent_ids":["`+spawned.AgentID+`"]}`)
+	if !strings.Contains(result.Content, `"status":"cancelled"`) {
+		t.Fatalf("grandchild status = %s", result.Content)
+	}
+}

@@ -427,13 +427,17 @@ func (rt *serveRuntime) CloseAfterRun(ctx context.Context) {
 	}
 	if rt.spawnRunner != nil {
 		if err := rt.spawnRunner.Drain(ctx); err != nil {
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-			_ = rt.spawnRunner.Shutdown(shutdownCtx)
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			if tools.AgentCancelled(ctx) {
+				_ = rt.spawnRunner.CancelDescendants(shutdownCtx)
+			} else {
+				_ = rt.spawnRunner.Shutdown(shutdownCtx)
+			}
 			cancel()
 		}
 	}
 	// Cancellation of the run must not skip provider and store cleanup.
-	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	rt.closeContext(closeCtx, false)
 }
@@ -528,7 +532,7 @@ func (rt *serveRuntime) closeLocked(ctx context.Context, drain bool) {
 		rt.toolMgr.ApprovalMgr.Close()
 	}
 	if rt.spawnRunner != nil && !drain {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(ctx, time.Second)
 		_ = rt.spawnRunner.Shutdown(shutdownCtx)
 		cancel()
 	}

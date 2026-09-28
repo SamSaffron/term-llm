@@ -202,6 +202,15 @@ func (r *SpawnAgentRunner) Shutdown(ctx context.Context) error {
 	return r.waitContext(ctx)
 }
 
+func (r *SpawnAgentRunner) CancelDescendants(ctx context.Context) error {
+	if r.lifecycle != nil {
+		if err := r.lifecycle.CancelDescendants(ctx); err != nil {
+			return err
+		}
+	}
+	return r.waitContext(ctx)
+}
+
 // Wait permanently prevents new agent runs from starting, then blocks until
 // all admitted runs have completed. The runner cannot be reused after Wait.
 // Call this before closing the session store.
