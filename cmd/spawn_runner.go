@@ -274,8 +274,9 @@ func (r *SpawnAgentRunner) buildChildExecutionRequest(ctx context.Context, reque
 			parentSessionID = contextSessionID
 		}
 	}
-	// No mutation of the shared parent approval manager: detached runs snapshot
-	// their approval scope when admitted, before another parent can rebind it.
+	// Bind a previously unbound parent's approvals before a first-tool spawn.
+	// Detached children snapshot this scope before any later session can rebind it.
+	r.parentApprovalMgr.BindWorkspaceSessionID(parentSessionID)
 	baseDir := strings.TrimSpace(request.BaseDir)
 	if baseDir == "" {
 		baseDir = r.currentBaseDir()

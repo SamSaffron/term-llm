@@ -8,7 +8,9 @@ func (m *ApprovalManager) CloneForAgentRun(sessionID string) *ApprovalManager {
 		return nil
 	}
 	root := m.root()
+	root.BindWorkspaceSessionID(sessionID)
 	clone := NewApprovalManager(root.permissions)
+	clone.promptShared = root.PromptLock()
 	clone.IgnoreProjectApprovals = root.IgnoreProjectApprovals
 	clone.DebugApproval = root.DebugApproval
 	clone.WorkspacePolicy = root.WorkspacePolicy
@@ -24,10 +26,7 @@ func (m *ApprovalManager) CloneForAgentRun(sessionID string) *ApprovalManager {
 	root.workspaceMu.Lock()
 	clone.workspaceStore = root.workspaceStore
 	clone.workspaceTrustStore = root.workspaceTrustStore
-	sameOwner := root.workspaceSessionID == sessionID && (root.agentScopedCacheOwner == "" || root.agentScopedCacheOwner == sessionID)
-	if sameOwner {
-		root.agentScopedCacheOwner = sessionID
-	}
+	sameOwner := root.workspaceSessionID == sessionID
 	if sameOwner {
 		clone.primaryWorkspace = root.primaryWorkspace
 		clone.primaryWorkspaceGrant = root.primaryWorkspaceGrant

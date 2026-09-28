@@ -401,13 +401,13 @@ type ApprovalManager struct {
 	workspaceStore         session.WorkspaceGrantStore
 	workspaceTrustStore    workspaceTrustStore
 	workspaceSessionID     string
-	agentScopedCacheOwner  string // first owner whose session caches were snapshotted for detached children
 	workspaceVersion       uint64
 
 	// promptMu serializes interactive approval prompts.
 	// When tools execute in parallel, multiple may need approval simultaneously.
 	// This mutex ensures only one prompt is shown at a time to avoid UI conflicts.
-	promptMu sync.Mutex
+	promptMu     sync.Mutex
+	promptShared *sync.Mutex
 
 	// Approval mode. Yolo mode auto-approves all tool executions without prompting;
 	// auto mode asks a policy reviewer for unmatched shell commands and file
@@ -602,6 +602,9 @@ func (m *ApprovalManager) HasParent() bool {
 func (m *ApprovalManager) PromptLock() *sync.Mutex {
 	if m.parent != nil {
 		return m.parent.PromptLock()
+	}
+	if m.promptShared != nil {
+		return m.promptShared
 	}
 	return &m.promptMu
 }

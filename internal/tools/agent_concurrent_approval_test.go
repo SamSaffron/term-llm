@@ -34,9 +34,9 @@ func TestDetachedChildrenFromTwoParentsKeepSeparateApprovalScopes(t *testing.T) 
 	first := lifecycleResult(t, lifecycleCall(t, tool, llm.ContextWithSessionID(context.Background(), "parent-one"), `{"agent_name":"developer","prompt":"first","wait":0}`))
 	firstScope := <-runner.scopes
 	<-runner.entered
-	parent.workspaceMu.Lock()
-	parent.workspaceSessionID = "parent-two"
-	parent.workspaceMu.Unlock()
+	if err := parent.ConfigureWorkspacePersistence(context.Background(), nil, "parent-two"); err != nil {
+		t.Fatal(err)
+	}
 	second := lifecycleResult(t, lifecycleCall(t, tool, llm.ContextWithSessionID(context.Background(), "parent-two"), `{"agent_name":"developer","prompt":"second","wait":0}`))
 	secondScope := <-runner.scopes
 	<-runner.entered
