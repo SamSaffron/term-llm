@@ -122,7 +122,8 @@ func TestAgentLifecycleCrossManagerWait(t *testing.T) {
 	first := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
 	first.SetRunner(runner)
 	second := NewSpawnAgentTool(SpawnConfig{MaxParallel: 1, MaxDepth: 2}, 0)
-	second.SetRunner(runner)
+	otherRunner := &lifecycleRunner{entered: make(chan string, 1), release: make(chan struct{})}
+	second.SetRunner(otherRunner)
 	ctx := llm.ContextWithSessionID(context.Background(), "shared-parent")
 	spawned := lifecycleResult(t, lifecycleCall(t, first, ctx, `{"agent_name":"developer","prompt":"work","wait":0}`))
 	<-runner.entered
@@ -130,6 +131,29 @@ func TestAgentLifecycleCrossManagerWait(t *testing.T) {
 	result := lifecycleCall(t, wait, ctx, `{"agent_ids":["`+spawned.AgentID+`"],"max_wait":0}`)
 	if !strings.Contains(result.Content, `"status":"running"`) {
 		t.Fatalf("cross-manager wait = %s", result.Content)
+	}
+	control := &agentControlTool{name: ContinueAgentToolName, spawn: second}
+	steered := lifecycleCall(t, control, ctx, `{"agent_id":"`+spawned.AgentID+`","instructions":"owner only"}`)
+	if !strings.Contains(steered.Content, `"intervention_disposition":"queued"`) {
+		t.Fatalf("cross-manager steering = %s", steered.Content)
+	}
+	runner.mu.Lock()
+	ownerInstruction := runner.steered
+	runner.mu.Unlock()
+	if ownerInstruction != "owner only" || otherRunner.steered != "" {
+		t.Fatalf("steering routed to wrong runner: owner=%q caller=%q", ownerInstruction, otherRunner.steered)
+	}
+	entry, ok := processAgentEntries.Load(spawned.AgentID)
+	if !ok {
+		t.Fatal("missing live agent")
+	}
+	runnerEntry := entry.(*agentEntry)
+	runnerEntry.manager.mu.Lock()
+	runnerEntry.record.Status = "awaiting_approval"
+	runnerEntry.manager.mu.Unlock()
+	steered = lifecycleCall(t, control, ctx, `{"agent_id":"`+spawned.AgentID+`","instructions":"approval note"}`)
+	if !strings.Contains(steered.Content, `"intervention_disposition":"queued"`) {
+		t.Fatalf("approval steering = %s", steered.Content)
 	}
 	close(runner.release)
 	result = lifecycleCall(t, wait, ctx, `{"agent_ids":["`+spawned.AgentID+`"],"max_wait":1}`)

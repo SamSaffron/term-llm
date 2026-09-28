@@ -179,8 +179,18 @@ func (t *agentControlTool) continueRun(ctx context.Context, parent string, a age
 	if err != nil {
 		return llm.TextOutput(err.Error())
 	}
-	if e != nil && (record.Status == "running" || record.Status == "queued") {
-		return t.steer(record, a)
+	if e != nil {
+		switch record.Status {
+		case "queued":
+			out := agentOutput(record)
+			var result SpawnAgentResult
+			_ = json.Unmarshal([]byte(out.Content), &result)
+			result.Next = "agent not started yet; retry continue_agent once running or wait_agent for completion"
+			out.Content = marshalAgentResult(result)
+			return out
+		case "running", "awaiting_approval":
+			return t.steer(record, e, a)
+		}
 	}
 	if record.Status == "running_elsewhere" && !a.Force {
 		return llm.TextOutput("agent may still be running on another process; pass force:true to risk duplicate side effects")
@@ -195,9 +205,19 @@ func (t *agentControlTool) continueRun(ctx context.Context, parent string, a age
 	if budget < 0 || budget > 3600 {
 		return llm.TextOutput("wait must be between 0 and 3600")
 	}
-	m.mu.Lock()
-	runner, depth := t.spawn.runner, t.spawn.depth
-	m.mu.Unlock()
+	owner := m
+	if e != nil {
+		owner = e.manager
+	}
+	owner.mu.Lock()
+	runner, depth, draining := owner.runner, owner.depth, owner.draining
+	owner.mu.Unlock()
+	if draining {
+		owner = m
+		owner.mu.Lock()
+		runner, depth = owner.runner, owner.depth
+		owner.mu.Unlock()
+	}
 	if runner == nil {
 		return llm.TextOutput("agent runner unavailable")
 	}
@@ -206,22 +226,25 @@ func (t *agentControlTool) continueRun(ctx context.Context, parent string, a age
 	if !resume && strings.TrimSpace(a.Instructions) != "" {
 		prompt += "\n\nAdditional instructions: " + a.Instructions
 	}
-	entry, startErr := m.start(ctx, record.AgentName, prompt, record.Model, llm.CallIDFromContext(ctx), SubagentEventCallbackFromContext(ctx), t.spawn.GetEventCallback(), runner, depth+1, resume, a.Instructions, record)
+	entry, startErr := owner.start(ctx, record.AgentName, prompt, record.Model, llm.CallIDFromContext(ctx), SubagentEventCallbackFromContext(ctx), t.spawn.GetEventCallback(), runner, depth+1, resume, a.Instructions, record)
 	if startErr != nil {
 		return llm.TextOutput(startErr.Error())
 	}
-	m.wait(ctx, entry, time.Duration(budget)*time.Second)
-	m.detach(entry, entry.initial)
-	current, _, _ := m.get(ctx, a.AgentID, parent)
-	out := m.output(current, entry)
+	owner.wait(ctx, entry, time.Duration(budget)*time.Second)
+	owner.detach(entry, entry.initial)
+	current, _, _ := owner.get(ctx, a.AgentID, parent)
+	out := owner.output(current, entry)
 	if record.Status == "running_elsewhere" {
 		out.Content = strings.TrimSuffix(out.Content, "}") + `,"warning":"possible duplicate side effects: another process may still be running"}`
 	}
 	return out
 }
 
-func (t *agentControlTool) steer(record session.AgentRun, a agentControlArgs) llm.ToolOutput {
-	continuation, ok := t.spawn.manager.runner.(AgentContinuation)
+func (t *agentControlTool) steer(record session.AgentRun, e *agentEntry, a agentControlArgs) llm.ToolOutput {
+	e.manager.mu.Lock()
+	runner := e.manager.runner
+	e.manager.mu.Unlock()
+	continuation, ok := runner.(AgentContinuation)
 	if !ok {
 		return llm.TextOutput("runner does not support steering")
 	}

@@ -236,6 +236,7 @@ func (t *SpawnAgentTool) SetRunner(runner SpawnAgentRunner) {
 	}
 	t.manager.mu.Lock()
 	t.manager.runner = runner
+	t.manager.depth = t.depth
 	if provider, ok := runner.(interface{ AgentRunStore() session.AgentRunStore }); ok {
 		t.manager.store = provider.AgentRunStore()
 	}
@@ -264,6 +265,9 @@ func (t *SpawnAgentTool) SetDepth(depth int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.depth = depth
+	t.manager.mu.Lock()
+	t.manager.depth = depth
+	t.manager.mu.Unlock()
 }
 
 // SetEventCallback sets the callback for receiving subagent progress events.
