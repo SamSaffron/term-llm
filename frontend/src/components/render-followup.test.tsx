@@ -136,7 +136,9 @@ describe('second-pass rendering and atomic presentation', () => {
       await Promise.resolve();
     });
     await waitFor(() => expect(store.currentPlan.peek()).not.toBeNull());
-    expect(screen.getByLabelText('Loading session controls')).toBeInTheDocument();
+    expect(screen.getByLabelText('Loading session controls')).toBeEmptyDOMElement();
+    expect(screen.getByLabelText('Loading session controls')).toHaveAttribute('aria-busy', 'true');
+    expect(screen.queryByText('Loading session…')).toBeNull();
     expect(document.querySelector('#planToggleBtn')).toBeNull();
     await act(async () => {
       tree.resolve({ path_count: 3 });

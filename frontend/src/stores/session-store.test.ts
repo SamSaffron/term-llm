@@ -42,6 +42,32 @@ describe('chat Hub agent ordering', () => {
     }
   });
 
+  it('requests the lightweight sidebar snapshot and shows agents before health is probed', async () => {
+    const store = new AppStore(hubConfig);
+    try {
+      store.endpoints.hubNodes = vi.fn(async () => ({
+        nodes: ['beta', 'alpha'].map((id) => ({
+          id,
+          name: id,
+          status: { reachable: false, state: 'unknown' },
+          sessions: { resume_path: `/hub/node/${id}/`, unseen_count: id === 'beta' ? 1 : 0 },
+        })),
+      }));
+      await store.refreshHubAgents(true);
+      expect(store.endpoints.hubNodes).toHaveBeenCalledWith(
+        `${location.origin}/hub/api/nodes?view=sidebar`,
+        expect.any(AbortSignal),
+      );
+      expect(agentIds(store)).toEqual(['beta', 'alpha']);
+      expect(store.hubAgents.value[0]).toMatchObject({
+        target: '/hub/node/beta/',
+        attention: true,
+      });
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('optimistically saves only the changed span and keeps unrelated agents in place', async () => {
     const store = new AppStore(hubConfig);
     const save = deferred<{ node_ids: string[] }>();

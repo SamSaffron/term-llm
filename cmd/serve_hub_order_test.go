@@ -121,6 +121,42 @@ func assertNoNodeTokens(t *testing.T, rec *httptest.ResponseRecorder) {
 	}
 }
 
+func TestHubSidebarNodesNeverWaitForNodeProbes(t *testing.T) {
+	s := newBearerOrderHub(t)
+	s.basePath = "/hub"
+	// A full dashboard listing would dereference the prober. The lightweight
+	// listing must not use health, reverse transport, or live session clients.
+	s.prober = nil
+	s.nodeAPIClient = nil
+	if _, err := s.nodeOrder.Reorder(orderTestNodes(), []string{"gamma", "beta", "alpha", "silent"}); err != nil {
+		t.Fatal(err)
+	}
+	rec := serveHub(s.handler(), withBearer(httptest.NewRequest(http.MethodGet, "/hub/api/nodes?view=sidebar", nil), "hub-secret"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sidebar status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	assertNoNodeTokens(t, rec)
+	var body struct {
+		Nodes []hubNodeView `json:"nodes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, node := range body.Nodes {
+		ids = append(ids, node.ID)
+		if node.Status.State != "unknown" || node.Status.Reachable {
+			t.Fatalf("sidebar reported unprobed health: %+v", node.Status)
+		}
+		if node.Sessions == nil || node.Sessions.ResumePath != "/hub/node/"+node.ID+"/" {
+			t.Fatalf("sidebar resume path = %+v", node.Sessions)
+		}
+	}
+	if !slices.Equal(ids, []string{"gamma", "beta", "alpha", "silent"}) {
+		t.Fatalf("sidebar order = %v", ids)
+	}
+}
+
 func TestHubNodeOrderOperatorSavesAnOrderThatSurvivesRestart(t *testing.T) {
 	s := newBearerOrderHub(t)
 	h := s.handler()

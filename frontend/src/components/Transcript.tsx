@@ -1608,26 +1608,17 @@ export function Transcript() {
         id="messages"
         ref={content}
         data-session-id={store.activeSession.value?.id || ''}
+        role={hydratingTranscript ? 'status' : undefined}
+        aria-busy={hydratingTranscript || undefined}
+        aria-label={hydratingTranscript ? 'Loading conversation' : undefined}
       >
-        {!messages.length &&
-          (hydratingTranscript ? (
-            <div
-              class="transcript-loading"
-              role="status"
-              aria-label="Loading conversation"
-              aria-busy="true"
-            >
-              <span class="transcript-loading-row" />
-              <span class="transcript-loading-row" />
-              <span class="transcript-loading-row" />
-            </div>
-          ) : (
-            <div class="empty-chat">
-              <h2>{store.config.title || 'How can I help?'}</h2>
-              <p>Start a conversation with your agent.</p>
-              <NewChatControls />
-            </div>
-          ))}
+        {!messages.length && !hydratingTranscript && (
+          <div class="empty-chat">
+            <h2>{store.config.title || 'How can I help?'}</h2>
+            <p>Start a conversation with your agent.</p>
+            <NewChatControls />
+          </div>
+        )}
         {hasEarlier && (
           <button
             ref={historySentinel}

@@ -1051,7 +1051,7 @@ export class SessionStore {
   async refreshHubAgents(force = false): Promise<void> {
     if (this.hubAgentFetch) return this.hubAgentFetch;
     if (document.visibilityState === 'hidden') return;
-    const url = this.hubAgentURL('/api/nodes');
+    const url = this.hubAgentURL('/api/nodes?view=sidebar');
     if (!url) {
       this.hubAgents.value = [];
       return;
@@ -1079,7 +1079,12 @@ export class SessionStore {
         };
         this.showHubAgents(
           array(data.nodes)
-            .filter((node) => recordValue(node.status)?.reachable === true)
+            .filter((node) => {
+              const status = recordValue(node.status);
+              // The lightweight sidebar snapshot deliberately does not probe
+              // health. Registered agents appear immediately as unknown.
+              return status?.reachable === true || status?.state === 'unknown';
+            })
             .map((node) => {
               const id = String(node.id || '');
               const sessions = recordValue(node.sessions) || {};

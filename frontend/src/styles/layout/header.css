@@ -30,10 +30,12 @@
   flex-wrap: nowrap;
 }
 
+/* Keep the header height stable while session controls are loading. */
 .header-controls-row {
   display: flex;
   align-items: center;
   gap: var(--header-cluster-gap);
+  min-height: var(--header-action-height);
   min-width: 0;
   overflow: visible;
   flex: 0 0 auto;

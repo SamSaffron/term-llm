@@ -331,9 +331,7 @@ export function Header() {
             role="status"
             aria-label="Loading session controls"
             aria-busy="true"
-          >
-            <span class="header-action">Loading session…</span>
-          </div>
+          />
         ) : (
           <div class="header-controls-row">
             <div class="header-stats" id="headerStats">

@@ -131,6 +131,28 @@ func (s *hubServer) collectNodes(ctx context.Context) ([]hubNodeView, error) {
 	return views, err
 }
 
+// collectSidebarNodes lists registered agents without contacting their backends.
+// The sidebar needs names, saved order, links, and cached attention, not live
+// health/session probes that can take the dashboard's full five-second budget.
+func (s *hubServer) collectSidebarNodes(ctx context.Context) ([]hubNodeView, error) {
+	nodes, err := s.registry.Nodes()
+	nodes = s.arrangeNodes(nodes)
+	views := make([]hubNodeView, 0, len(nodes))
+	for _, n := range nodes {
+		proxyPath := s.hubPath("/node/" + n.ID + "/")
+		views = append(views, hubNodeView{
+			ID: n.ID, Name: n.Name, Source: n.Source, Connection: n.Connection,
+			ProxyPath: proxyPath, HasToken: n.Token != "",
+			Status: hub.Status{State: "unknown"},
+			// Opening the node root restores its last selected chat; no live
+			// session request is needed to offer a useful agent link.
+			Sessions: &hubNodeSessionsView{ResumePath: proxyPath},
+		})
+	}
+	s.applyHubAttentionViews(ctx, views)
+	return views, err
+}
+
 const (
 	hubNodeSessionActiveLimit = 2
 	hubNodeSessionRecentLimit = 4
@@ -511,7 +533,11 @@ func hubNodeListMatches(patterns []string, id string) bool {
 func (s *hubServer) handleNodes(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		views, err := s.collectNodes(r.Context())
+		collect := s.collectNodes
+		if r.URL.Query().Get("view") == "sidebar" {
+			collect = s.collectSidebarNodes
+		}
+		views, err := collect(r.Context())
 		resp := map[string]any{"nodes": views}
 		if err != nil {
 			resp["resolver_error"] = err.Error()

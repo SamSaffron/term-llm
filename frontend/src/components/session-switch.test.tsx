@@ -67,7 +67,7 @@ function mount(store: AppStore) {
 }
 
 describe('sidebar session switching', () => {
-  it('does not flash the new-chat screen while the next transcript hydrates', async () => {
+  it('keeps the transcript blank while the next conversation hydrates', async () => {
     vi.useFakeTimers();
     const store = setup();
     mount(store);
@@ -85,7 +85,9 @@ describe('sidebar session switching', () => {
     });
     expect(screen.queryByText('Start a conversation with your agent.')).toBeNull();
     expect(document.querySelector('.empty-chat')).toBeNull();
-    expect(screen.getByLabelText('Loading conversation')).toBeInTheDocument();
+    expect(screen.queryByText('First question')).toBeNull();
+    expect(screen.getByLabelText('Loading conversation')).toBeEmptyDOMElement();
+    expect(screen.getByLabelText('Loading conversation')).toHaveAttribute('aria-busy', 'true');
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(LATENCY + 1_000);
@@ -93,6 +95,31 @@ describe('sidebar session switching', () => {
     });
     expect(screen.getByText('Second question')).toBeInTheDocument();
     expect(screen.queryByLabelText('Loading conversation')).toBeNull();
+    expect(document.querySelector('#messages')).not.toHaveAttribute('aria-busy');
+  });
+
+  it('shows cached messages immediately without a blank loading state', async () => {
+    vi.useFakeTimers();
+    const store = setup();
+    store.activeSessionId.value = 's2';
+    mount(store);
+
+    let selection!: Promise<void>;
+    await act(async () => {
+      selection = store.selectSession(store.sessions.peek()[0]);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LATENCY - 100);
+    });
+    expect(screen.getByText('First question')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Loading conversation')).toBeNull();
+    expect(document.querySelector('#messages')).not.toHaveAttribute('aria-busy');
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LATENCY + 1_000);
+      await selection;
+    });
   });
 
   it('keeps the new-chat screen for drafts and for genuinely empty sessions', async () => {

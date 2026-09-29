@@ -207,26 +207,8 @@ test.describe('Hub node order', () => {
     test.setTimeout(60_000);
     await resetOrder();
     await openDashboard(page);
-    // The fixture's two extra nodes have no live backend. Mark them reachable
-    // in this browser's GET response so the chat sidebar can show all three,
-    // while PATCH still goes to the real Hub and persists its actual order.
-    await page.route('**/hub/api/nodes', async (route) => {
-      const response = await route.fetch();
-      const data = (await response.json()) as {
-        nodes: Array<{ id: string; status: { reachable: boolean } }>;
-      };
-      await route.fulfill({
-        response,
-        json: {
-          ...data,
-          nodes: data.nodes.map((node) =>
-            known.includes(node.id)
-              ? { ...node, status: { ...node.status, reachable: true } }
-              : node,
-          ),
-        },
-      });
-    });
+    // Sidebar metadata is served without backend probes, so even the two
+    // fixture nodes with no live backend appear without mocking this request.
     await page.goto(`${hubRoot}node/${production}/?new=1`);
     await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
     const agentRows = () => page.locator('.hub-agent-links > .hub-agent-row');

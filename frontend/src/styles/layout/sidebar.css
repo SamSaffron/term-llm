@@ -212,6 +212,12 @@
   transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+/* Lift the entire row: the translated menu wrapper traps its popup in a
+   stacking context that would otherwise sit below later agent rows. */
+.hub-agent-row.menu-open {
+  z-index: var(--z-session-menu-open);
+}
+
 .hub-agent-row.is-dragging {
   z-index: var(--z-local-dragging);
   transition: none;

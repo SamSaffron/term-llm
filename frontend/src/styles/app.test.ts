@@ -96,6 +96,20 @@ describe('shell layout', () => {
 });
 
 describe('stacking layers', () => {
+  it('lifts an open agent menu above later rows while keeping dragging higher', () => {
+    expect(appCSS).toMatch(/\.hub-agent-row\s*\{[^}]*position:\s*relative;/s);
+    expect(appCSS).toMatch(
+      /\.hub-agent-row\.menu-open\s*\{[^}]*z-index:\s*var\(--z-session-menu-open\);/s,
+    );
+    expect(appCSS).toMatch(
+      /\.hub-agent-row\.is-dragging\s*\{[^}]*z-index:\s*var\(--z-local-dragging\);/s,
+    );
+    // With equal selector specificity, dragging must win even if the menu is open.
+    expect(appCSS.indexOf('.hub-agent-row.menu-open {')).toBeLessThan(
+      appCSS.indexOf('.hub-agent-row.is-dragging {'),
+    );
+  });
+
   it('keeps an archived session menu opaque and above later rows', () => {
     expect(appCSS).toMatch(
       /\.session-row\.menu-open\s*\{[^}]*z-index:\s*var\(--z-session-menu-open\);/s,
