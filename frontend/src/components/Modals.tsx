@@ -12,7 +12,11 @@ import { Overlay } from './Overlay';
 import { Markdown } from './Markdown';
 import { ProjectAssignment } from './ProjectAssignment';
 import { Worktrees } from './Worktrees';
-import { CommitModal } from './CommitModal';
+
+const LazyCommitModal = lazyComponent(() =>
+  import('./CommitModal').then(({ CommitModal }) => CommitModal).catch(() => CommitModalLoadError),
+);
+
 const LazyStatsModal = lazyComponent(() =>
   import('./StatsModal').then(({ StatsModal }) => StatsModal),
 );
@@ -31,6 +35,15 @@ const LazyShareModal = lazyComponent(() =>
 const LazyApprovalsModal = lazyComponent(() =>
   import('./ApprovalsModal').then(({ ApprovalsModal }) => ApprovalsModal),
 );
+
+function CommitModalLoadError() {
+  const store = useStore();
+  return (
+    <Overlay title="Git commit" className="commit-modal" onClose={() => store.commitStore.close()}>
+      <p role="alert">Could not load commit controls. Reload the page to retry.</p>
+    </Overlay>
+  );
+}
 
 function Settings() {
   const store = useStore();
@@ -1855,7 +1868,7 @@ export function Modals() {
     case 'skills':
       return <Skills />;
     case 'commit':
-      return <CommitModal />;
+      return <LazyCommitModal />;
     case 'share':
       return <LazyShareModal />;
     case 'side':

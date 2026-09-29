@@ -232,6 +232,24 @@ func TestLightboxAssetsRemainLazy(t *testing.T) {
 	}
 }
 
+func TestCommitDialogRemainsLazy(t *testing.T) {
+	eager, err := StaticAsset("dist/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lazy, err := StaticAsset("dist/chunks/CommitModal.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := []byte("Commit is disabled until repository status and staged files are reviewed again.")
+	if bytes.Contains(eager, marker) {
+		t.Error("dist/app.js unexpectedly contains commit dialog code")
+	}
+	if !bytes.Contains(lazy, marker) {
+		t.Error("dist/chunks/CommitModal.js is missing commit dialog code")
+	}
+}
+
 func TestMCPDialogAssetsRemainLazy(t *testing.T) {
 	for _, asset := range []struct{ eager, lazy, marker string }{
 		{"dist/app.js", "dist/chunks/MCPModal.js", "Local command"},

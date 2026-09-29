@@ -8,6 +8,30 @@ import { Modals } from './Modals';
 vi.mock('./ExtensionSettings', () => {
   throw new Error('Chunk unavailable');
 });
+vi.mock('./CommitModal', () => {
+  throw new Error('Chunk unavailable');
+});
+
+it('keeps a failed commit chunk dismissible through the commit store', async () => {
+  const store = new AppStore(testConfig);
+  store.modal.value = 'commit';
+  const close = vi.spyOn(store.commitStore, 'close');
+  try {
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+    expect(
+      await screen.findByText('Could not load commit controls. Reload the page to retry.'),
+    ).toHaveAttribute('role', 'alert');
+    fireEvent.click(screen.getByRole('button', { name: 'Close Git commit' }));
+    expect(close).toHaveBeenCalledOnce();
+    expect(store.modal.value).toBe('');
+  } finally {
+    store.dispose();
+  }
+});
 
 it('preserves the extension settings loading and import-error messages', async () => {
   const store = new AppStore(testConfig);
