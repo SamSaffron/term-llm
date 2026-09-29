@@ -1,10 +1,19 @@
 import { memo } from '../../components/memo';
-import { useRef, useState } from 'preact/hooks';
+import { useMemo, useRef, useState } from 'preact/hooks';
 import { Menu } from '../../components/Menu';
+import { reorderKeyOffset, useReorderableList } from '../../components/useReorderableList';
 import { nodeResumePath } from '../domain/formatting';
 import type { HubNode } from '../domain/types';
 import type { HubStore } from '../stores/hub-store';
 import { NodeSessions } from './NodeSessions';
+
+/** Reordering callbacks shared, unchanged, by every card of the grid. */
+interface NodeReorder {
+  /** Tracks a press on a card's header, which drags the card once it moves (mouse) or rests (touch). */
+  press: (event: PointerEvent, id: string) => void;
+  /** Moves a card `offset` places; `focus` names the control that keeps focus. */
+  move: (id: string, offset: number, focus: 'row' | 'menu') => void;
+}
 
 function RemoveNodeAction({ store, remove }: { store: HubStore; remove: () => Promise<void> }) {
   return (
@@ -23,12 +32,23 @@ function RemoveNodeAction({ store, remove }: { store: HubStore; remove: () => Pr
 export const NodeCard = memo(function NodeCard({
   node,
   store,
+  position = 0,
+  count = 1,
+  dragging = false,
+  reorder,
 }: {
   node: HubNode;
   store: HubStore;
+  /** Zero-based place in the grid of `count` cards. */
+  position?: number;
+  count?: number;
+  /** Whether the card is lifted and following the pointer. */
+  dragging?: boolean;
+  reorder?: NodeReorder;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuTrigger = useRef<HTMLButtonElement>(null);
+  const reorderable = Boolean(reorder && count > 1);
   const status = node.status ?? { reachable: false, state: 'unknown', latency_ms: 0 };
   const summary = [
     status.agent || node.id,
@@ -42,16 +62,38 @@ export const NodeCard = memo(function NodeCard({
     (Number(sessions.active_count) > 0 ||
       Number(sessions.input_required_count) > 0 ||
       Number(sessions.unseen_count) > 0);
+  const keyShortcuts = reorderable ? 'Alt+ArrowUp Alt+ArrowDown' : undefined;
 
   const remove = async () => {
     setMenuOpen(false);
     if (!window.confirm(`Remove node "${node.name}"?`)) return;
     await store.removeNode(node.id);
   };
+  const move = (offset: -1 | 1) => {
+    setMenuOpen(false);
+    reorder!.move(node.id, offset, 'menu');
+  };
 
   return (
-    <article class="node-card">
-      <div class="node-card-head">
+    <article
+      class={`node-card ${reorderable ? 'is-reorderable' : ''} ${dragging ? 'is-dragging' : ''}`}
+      data-reorder-id={reorder ? node.id : undefined}
+      // Alt+ArrowUp/Down moves the card from any of its controls; focus stays
+      // on that control. The open menu keeps its own arrow keys.
+      onKeyDown={(event) => {
+        const offset = reorderable ? reorderKeyOffset(event) : 0;
+        if (!offset || (event.target as Element).closest('[role="menu"]')) return;
+        event.preventDefault();
+        reorder!.move(node.id, offset, 'row');
+      }}
+    >
+      <div
+        class="node-card-head"
+        // The whole header drags the card: a mouse press once it travels, a
+        // touch once it rests. The card's links, sessions, and menu below stay
+        // ordinary controls.
+        onPointerDown={reorderable ? (event) => reorder!.press(event, node.id) : undefined}
+      >
         <span
           class={`status-dot ${status.reachable ? 'ok' : 'down'}`}
           title={status.reachable ? 'Reachable' : status.error || 'Unreachable'}
@@ -96,7 +138,7 @@ export const NodeCard = memo(function NodeCard({
       )}
       <div class="node-actions">
         {resumePath ? (
-          <a class="hub-btn primary" href={resumePath}>
+          <a class="hub-btn primary" href={resumePath} aria-keyshortcuts={keyShortcuts}>
             Resume
           </a>
         ) : (
@@ -105,7 +147,11 @@ export const NodeCard = memo(function NodeCard({
           </span>
         )}
         {node.new_session_path || node.proxy_path ? (
-          <a class="hub-btn ghost" href={node.new_session_path || `${node.proxy_path}?new=1`}>
+          <a
+            class="hub-btn ghost"
+            href={node.new_session_path || `${node.proxy_path}?new=1`}
+            aria-keyshortcuts={keyShortcuts}
+          >
             New
           </a>
         ) : (
@@ -113,7 +159,7 @@ export const NodeCard = memo(function NodeCard({
             New
           </span>
         )}
-        {node.source === 'local' && (
+        {(node.source === 'local' || reorderable) && (
           <div class="node-menu">
             <button
               ref={menuTrigger}
@@ -122,6 +168,7 @@ export const NodeCard = memo(function NodeCard({
               aria-label={`More actions for ${node.name}`}
               aria-haspopup="menu"
               aria-expanded={menuOpen}
+              aria-keyshortcuts={keyShortcuts}
               onClick={() => setMenuOpen((open) => !open)}
             >
               ⋯
@@ -133,7 +180,27 @@ export const NodeCard = memo(function NodeCard({
               triggerRef={menuTrigger}
               className="node-menu-list"
             >
-              <RemoveNodeAction store={store} remove={remove} />
+              {reorderable && position > 0 && (
+                <button
+                  class="node-menu-item"
+                  type="button"
+                  role="menuitem"
+                  onClick={() => move(-1)}
+                >
+                  Move earlier
+                </button>
+              )}
+              {reorderable && position < count - 1 && (
+                <button
+                  class="node-menu-item"
+                  type="button"
+                  role="menuitem"
+                  onClick={() => move(1)}
+                >
+                  Move later
+                </button>
+              )}
+              {node.source === 'local' && <RemoveNodeAction store={store} remove={remove} />}
             </Menu>
           </div>
         )}
@@ -142,12 +209,48 @@ export const NodeCard = memo(function NodeCard({
   );
 });
 
+/**
+ * The node cards, in the Hub's saved order, which activity, names, and health
+ * never change. Users drag a card by its header (pointer, or touch-and-hold),
+ * or use Alt+ArrowUp/Down or the card menu, and the order is saved for every
+ * browser and node. Cards slide aside to preview where a dragged card lands.
+ */
 export function NodeGrid({ store }: { store: HubStore }) {
+  const nodes = store.nodes.value;
+  const { list, reordering, draggingId, announcement, press, move } =
+    useReorderableList<HTMLElement>(
+      nodes.map((node) => node.id),
+      {
+        label: (id) => nodes.find((node) => node.id === id)?.name || id,
+        save: (orderedIds) => store.reorderNodes(orderedIds),
+        report: (error) => store.reportNodeOrderError(error),
+        focusTargets: { row: '.node-menu-toggle', menu: '.node-menu-toggle' },
+      },
+    );
+  const reorder = useMemo<NodeReorder>(() => ({ press, move }), [press, move]);
   return (
-    <section class="node-grid" aria-label="Nodes" aria-busy={store.initialLoading.value}>
-      {store.nodes.value.map((node) => (
-        <NodeCard key={node.id} node={node} store={store} />
-      ))}
-    </section>
+    <>
+      <section
+        ref={list}
+        class={`node-grid ${reordering ? 'is-reordering' : ''}`}
+        aria-label="Nodes"
+        aria-busy={store.initialLoading.value}
+      >
+        {nodes.map((node, position) => (
+          <NodeCard
+            key={node.id}
+            node={node}
+            store={store}
+            position={position}
+            count={nodes.length}
+            dragging={draggingId === node.id}
+            reorder={reorder}
+          />
+        ))}
+      </section>
+      <div class="visually-hidden" role="status" aria-live="polite">
+        {announcement}
+      </div>
+    </>
   );
 }

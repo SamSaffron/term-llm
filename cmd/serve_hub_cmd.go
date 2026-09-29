@@ -63,6 +63,7 @@ Routes (root-mounted by default; when --base-path is set, prefix each route):
   GET  /api/nodes         list nodes with probe status (never includes tokens)
   POST /api/nodes         add a node to the local store
   DELETE /api/nodes/<id>  remove a local-store node
+  PATCH /api/nodes/order  reorder dashboard nodes (Hub auth or node auth)
   POST /api/nodes/test    probe a node spec without persisting it
   POST /api/register-node register/update a reverse node (registration token)
   DELETE /api/register-node/<id> deregister a reverse node (registration token)
@@ -81,9 +82,10 @@ Config file (--config), YAML or JSON:
 
 Hub auth defaults to --auth bearer for compatibility. Public browser-facing
 Hubs can use --auth passkey with a stable HTTPS --public-url; WebAuthn then
-issues expiring server-side browser sessions. /api/connect and node-originated
-delegation calls continue to use independent node auth. Use --auth none only
-for loopback-only local development.`,
+issues expiring server-side browser sessions. /api/connect, node-originated
+delegation calls, and node-saved dashboard order changes continue to use
+independent node auth. Use --auth none only for loopback-only local
+development.`,
 	Args: cobra.NoArgs,
 	RunE: runServeHub,
 }
@@ -227,8 +229,10 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 	s.token = token
 	s.registrationToken = resolveServeHubRegistrationToken(serveHubRegistrationTokenFlag)
 	s.basePath = hubBasePath
-	// The delegation ledger lives beside the node store (same private dir).
+	// The delegation ledger and the dashboard node order live beside the
+	// node store (same private dir).
 	s.delegations = hub.NewDelegationStore(filepath.Join(filepath.Dir(nodesFile), "delegations.json"))
+	s.nodeOrder = hub.NewNodeOrderStore(filepath.Join(filepath.Dir(nodesFile), "node-order.json"))
 	attentionStore, err := hub.OpenAttentionProjectionStore(filepath.Join(filepath.Dir(nodesFile), "attention.db"))
 	if err != nil {
 		return fmt.Errorf("open Hub attention projection: %w", err)

@@ -166,7 +166,14 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// native-app sign-in approval flow brought JS to 72.5/23.5 KiB, and
 		// steering sign-in off non-passkey origins (127.0.0.1 vs localhost) to
 		// 72.6/23.5 KiB.
-		"dist/hub.js":  {raw: 76_000, gzip: 25_000},
+		//
+		// The saved dashboard node order shares the chat's reorderable-list
+		// hook (pointer/touch drag, now with grid geometry, page scrolling,
+		// and keyboard/menu moves) and its optimistic, serialized saves with
+		// rollback, and adds the card controls and store wiring: ~9.4 KiB raw,
+		// all of it on screen at startup, bringing JS to 82.1/27.3 KiB. These
+		// limits keep the same modest headroom as before.
+		"dist/hub.js":  {raw: 88_000, gzip: 29_000},
 		"dist/hub.css": {raw: 19_000, gzip: 5_500},
 	}
 	for name, budget := range budgets {

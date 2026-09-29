@@ -260,6 +260,7 @@ body {
   gap: 0.76rem;
   min-height: 322px;
   box-shadow: var(--shadow-card);
+  transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .node-card-head {
@@ -267,6 +268,55 @@ body {
   align-items: center;
   gap: 0.62rem;
   min-width: 0;
+}
+
+/* Cards keep the Hub's saved order and are dragged by their whole header: the
+   mouse lifts a card after a few pixels of travel and touch after a brief still
+   press. The cards it passes slide one cell along to open the slot it lands in,
+   so the moving cards are the whole preview. Holding the header must lift the
+   card rather than select its name or open the touch callout. */
+.node-card.is-reorderable > .node-card-head {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .node-card.is-reorderable > .node-card-head {
+    cursor: grab;
+  }
+}
+
+.node-grid.is-reordering,
+.node-grid.is-reordering * {
+  cursor: grabbing;
+}
+
+/* The dragged card tracks the pointer directly, above the cards sliding aside
+   but below the sticky Hub header. */
+.node-card.is-dragging {
+  z-index: 5;
+  border-color: var(--border-strong);
+  box-shadow: 0 16px 40px rgb(0 0 0 / 28%);
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .node-card {
+    transition-duration: 0.01ms;
+  }
+}
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip-path: inset(50%) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
 }
 
 .node-name {

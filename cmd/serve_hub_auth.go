@@ -23,6 +23,7 @@ func (s *hubServer) handler() http.Handler {
 	mux.HandleFunc("/api/registration-info", s.handleRegistrationInfo)
 	mux.HandleFunc("/api/register-node/", s.handleRegisterNode)
 	mux.HandleFunc("/api/register-node", s.handleRegisterNode)
+	mux.HandleFunc(hubNodeOrderPath, s.handleNodesOrder)
 	mux.HandleFunc("/api/nodes/", s.handleNodeItem)
 	mux.HandleFunc("/api/nodes", s.handleNodes)
 	mux.HandleFunc("/api/attention", s.handleHubAttention)
@@ -82,8 +83,13 @@ func hubPublicAssetRoute(path string) bool {
 	return path == "/dist/hub.js" || path == "/dist/hub.css"
 }
 
+// hubNodeAuthRoute reports requests that skip Hub operator authentication
+// because their handler authenticates the calling node instead: the reverse
+// websocket, node-originated delegation calls, and a node saving the
+// dashboard order (PATCH only; see hubNodeOrderNodeRequest). Bearer and
+// passkey authentication share this list.
 func hubNodeAuthRoute(r *http.Request) bool {
-	if r.URL.Path == "/api/connect" {
+	if r.URL.Path == "/api/connect" || hubNodeOrderNodeRequest(r) {
 		return true
 	}
 	return (r.URL.Path == "/api/delegations" || strings.HasPrefix(r.URL.Path, "/api/delegations/")) && strings.TrimSpace(r.Header.Get(hubNodeIDHeader)) != ""

@@ -7,6 +7,7 @@ import type {
   HubCredential,
   HubSessionResponse,
   NodeFormData,
+  NodeOrderResponse,
   NodesResponse,
   RedirectResponse,
   RegistrationInfoResponse,
@@ -143,6 +144,11 @@ export class HubClient {
 
   removeNode(id: string): Promise<{ removed: string }> {
     return this.request(`/api/nodes/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+
+  /** Moves the listed nodes, in order, into the dashboard positions they already occupy. */
+  reorderNodes(nodeIds: string[]): Promise<NodeOrderResponse> {
+    return this.request('/api/nodes/order', { method: 'PATCH', body: { node_ids: nodeIds } });
   }
 
   registrationInfo(signal?: AbortSignal): Promise<RegistrationInfoResponse> {

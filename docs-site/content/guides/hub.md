@@ -342,6 +342,12 @@ When two sources produce the same node id, precedence is config → local store 
 
 The reverse connection is intentionally a transport choice, not a second Hub API. Delegation, node opening, token injection, and policy checks all continue to target the same node record; the Hub chooses direct HTTP or the reverse websocket based on `connection`. The socket is kept alive with websocket pings and read deadlines on both sides, so silent network drops are detected and the node reconnects. Reverse mode does not queue work while the node is offline: the dashboard shows it as disconnected and requests fail fast until it reconnects.
 
+### Dashboard order
+
+The dashboard lists node cards in an order you arrange; names, activity, health, and probe results never change it. Drag a card by its header (with a mouse, or touch and hold on a phone), press **Alt+↑** / **Alt+↓** on any of the card's controls, or choose **Move earlier** / **Move later** from its **⋯** menu. The new order shows at once and is saved on the Hub, so every browser sees it, including after a reload or a Hub restart. Nodes can arrange it too, with their own credentials (see [Reordering nodes](#reordering-nodes)).
+
+The first listing after an upgrade saves the nodes in their current name order. Nodes that appear later, from any source, join the end. A node that disappears for a while (a config edit, a failing resolver, a reverse node that deregisters while it is offline) keeps its place and returns to it. The order is stored separately from every node source in `node-order.json` beside the node store (by default `<data-dir>/hub/node-order.json`, mode 0600). It holds node IDs only, never names, URLs, or tokens; the Hub never rewrites your config or the node store to record an order. If the file cannot be read, the dashboard falls back to name order and the Hub logs the problem once; the next saved order replaces the file and keeps the unreadable one as `node-order.json.corrupt`.
+
 ## Opening a node
 
 Each node's **Open** action navigates to `/node/<id>/`, a proxy onto that node's serve. For direct nodes the Hub dials the configured URL; for reverse nodes the Hub sends the same request over the node's connected websocket.
@@ -366,9 +372,10 @@ check that restarts the node only after its installed binary changes.
 ## API
 
 ```text
-GET    /api/nodes        nodes with probe status (never includes tokens)
+GET    /api/nodes        nodes with probe status, in dashboard order (never includes tokens)
 POST   /api/nodes        add a node to the local store
 DELETE /api/nodes/<id>   remove a local-store node
+PATCH  /api/nodes/order  reorder dashboard nodes (Hub auth or node auth)
 POST   /api/nodes/test   probe a node spec without persisting it
 ANY    /node/<id>/...    reverse proxy to the node's serve
 GET    /api/connect      reverse-node websocket endpoint (node auth)
@@ -380,7 +387,7 @@ GET    /api/delegations/<id>         delegation status, refreshed from the targe
 POST   /api/delegations/<id>/cancel  cancel a delegation (originating node only)
 ```
 
-Probes hit each node's `{base}/healthz` with the node token. Serves report their agent name, version, and capabilities (`web`, `api`, `jobs`, `widgets`, `voice`) on `healthz` only to callers presenting the valid bearer token (or when the serve runs with auth disabled). Hub dashboard/API/proxy routes require the Hub bearer token when `--auth bearer` is active; `/api/connect` and node-originated delegation calls use node auth instead so reverse nodes and `hub_delegate` do not need a separate Hub user account.
+Probes hit each node's `{base}/healthz` with the node token. Serves report their agent name, version, and capabilities (`web`, `api`, `jobs`, `widgets`, `voice`) on `healthz` only to callers presenting the valid bearer token (or when the serve runs with auth disabled). Hub dashboard/API/proxy routes require the Hub bearer token when `--auth bearer` is active; `/api/connect`, node-originated delegation calls, and node-saved dashboard orders (`PATCH /api/nodes/order`) use node auth instead so reverse nodes, `hub_delegate`, and node tooling do not need a separate Hub user account.
 
 The dashboard also shows lightweight diagnostics on each node card when the Hub can spot a likely configuration problem:
 
@@ -392,13 +399,52 @@ The dashboard also shows lightweight diagnostics on each node card when the Hub 
 
 These diagnostics are advisory and token-safe; `/api/nodes` still never returns node tokens or full secret-bearing config.
 
+### Reordering nodes
+
+`PATCH /api/nodes/order` saves the [dashboard order](#dashboard-order). The body lists node IDs:
+
+```json
+{"node_ids": ["gamma", "alpha"]}
+```
+
+The listed nodes move, in the given order, into the positions they already occupy; every other node keeps its place. With the order `alpha, beta, gamma`, the request above commits `gamma, beta, alpha`. List every node to set the whole order; the dashboard sends only the span changed by a move, so unrelated moves made elsewhere can coexist. A request lists 1–1000 distinct IDs, each of a node the Hub currently lists. It is atomic and idempotent, and the response is the complete committed order of the nodes the Hub lists:
+
+```json
+{"node_ids": ["gamma", "beta", "alpha"]}
+```
+
+A request whose order is already in place writes nothing, so a node can read the current order by listing only its own ID.
+
+The Hub operator can call it with any Hub credential (bearer token or cookie, passkey session, or `--auth none` on loopback). A node calls it with its own serve token, exactly like delegation calls:
+
+```bash
+curl -X PATCH https://hub.example.com/hub/api/nodes/order \
+  -H "X-Term-LLM-Node-ID: jarvis" \
+  -H "Authorization: Bearer $JARVIS_WEB_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"node_ids": ["jarvis", "artist"]}'
+```
+
+A node credential authorizes this one route and method only. It cannot list, add, remove, test, or open nodes, read registration settings, or reach any other Hub route, and the node token alone (without `X-Term-LLM-Node-ID`) is not a Hub credential. A request that presents `X-Term-LLM-Node-ID` is authenticated as that node or rejected; it never falls back to Hub credentials the browser also sends. Nodes the Hub holds no token for can never authenticate, and the Hub logs which node saved an order.
+
+Errors use the Hub's JSON error shape, `{"error": {"message": "…", "type": "…"}}`:
+
+| Status | Type | Cause |
+|--------|------|-------|
+| 400 | `invalid_node_order` | Empty, oversized, duplicate, or invalid IDs; unknown fields; or not exactly one JSON object |
+| 401 | `invalid_node_credentials` | Node authentication failed; the response is the same whatever the reason, so node IDs cannot be probed |
+| 401 | Hub authentication error | No `X-Term-LLM-Node-ID` and no valid Hub credential |
+| 403 | `forbidden` | A cross-site browser request |
+| 404 | `node_not_found` | A listed ID is not a node the Hub currently lists; refresh and try again |
+| 405, 413, 415 | | Not `PATCH`; a body over 128 KiB; not `application/json` |
+
 ## Frontend development
 
 The dashboard and all Hub authentication pages are one standalone Preact application under `frontend/src/hub/`; Hub network calls are owned by `frontend/src/api/hub-client.ts`. Go renders only the escaped bootstrap shell and serves the embedded `dist/hub.js` and `dist/hub.css` assets. Source builds must run `make frontend`; generated files under `internal/serveui/static/dist/` are ignored and must not be edited or committed.
 
 ## Security posture
 
-The hub defaults to bearer auth: `--auth bearer` protects the dashboard, Hub APIs, and node proxy with a single Hub token. (`/healthz` is intentionally public and returns only `{"status":"ok","role":"hub"}`.) Set the bearer explicitly with `--token` or `TERM_LLM_HUB_TOKEN` for stable deployments; otherwise the hub prints a generated token at startup. Treat this token as an operator/admin secret: a holder can add or test nodes pointing at any address the Hub can reach and can proxy through those nodes. `--auth passkey` replaces browser bearer copies with WebAuthn-backed, revocable, expiring server-side sessions persisted in the private Hub session store while leaving node, registration, reverse-WebSocket, and delegation credentials unchanged. `--auth none` is available for local development, but it is loopback-only because anyone who can reach an unauthenticated hub can reach every node it fronts. Reverse nodes authenticate their websocket with the node id plus the node's bearer token; the hub accepts that connection only for nodes configured with `connection: reverse`, and the node-side connector forwards only requests under its configured base path.
+The hub defaults to bearer auth: `--auth bearer` protects the dashboard, Hub APIs, and node proxy with a single Hub token. (`/healthz` is intentionally public and returns only `{"status":"ok","role":"hub"}`.) Set the bearer explicitly with `--token` or `TERM_LLM_HUB_TOKEN` for stable deployments; otherwise the hub prints a generated token at startup. Treat this token as an operator/admin secret: a holder can add or test nodes pointing at any address the Hub can reach and can proxy through those nodes. `--auth passkey` replaces browser bearer copies with WebAuthn-backed, revocable, expiring server-side sessions persisted in the private Hub session store while leaving node, registration, reverse-WebSocket, and delegation credentials unchanged. `--auth none` is available for local development, but it is loopback-only because anyone who can reach an unauthenticated hub can reach every node it fronts. Reverse nodes authenticate their websocket with the node id plus the node's bearer token; the hub accepts that connection only for nodes configured with `connection: reverse`, and the node-side connector forwards only requests under its configured base path. The same node credentials may also save the dashboard order, and nothing else (see [Reordering nodes](#reordering-nodes)).
 
 The backend transport never uses an environment proxy (`HTTP_PROXY` would see injected tokens). The hub still rejects obvious cross-site browser requests and requires JSON content types for mutating node-registry APIs as defense-in-depth around the simple bearer gate.
 

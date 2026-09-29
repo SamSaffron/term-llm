@@ -11,6 +11,8 @@ free_port() {
 }
 node_port="$(free_port)"
 hub_port="$(free_port)"
+# Nothing listens here: the dashboard order fixture nodes are unreachable.
+closed_port="$(free_port)"
 node_token="production-node-bearer"
 hub_token="production-hub-bearer"
 registration_token="production-registration-secret"
@@ -94,6 +96,14 @@ nodes:
     name: Production Node
     url: http://127.0.0.1:${node_port}/chat
     token: ${node_token}
+  - id: order-alpha
+    name: Order Alpha
+    url: http://127.0.0.1:${closed_port}/chat
+    token: order-alpha-token
+  - id: order-beta
+    name: Order Beta
+    url: http://127.0.0.1:${closed_port}/chat
+    token: order-beta-token
 YAML
 env -u TERM_LLM_PPROF -u TERM_LLM_SERVE_HUB_URL -u TERM_LLM_SERVE_HUB_REGISTER \
   -u TERM_LLM_SERVE_HUB_NODE_ID -u TERM_LLM_SERVE_HUB_NODE_NAME \
@@ -115,5 +125,7 @@ fi
 TERM_LLM_SMOKE_URL="${hub_root}node/production-node/" \
 TERM_LLM_HUB_SMOKE_ROOT="$hub_root" TERM_LLM_HUB_SMOKE_TOKEN="$hub_token" \
 TERM_LLM_HUB_NODE_ROOT="$node_root" TERM_LLM_HUB_REGISTRATION_TOKEN="$registration_token" \
-npm run test:e2e -- --workers=1 --reporter=line --output="$results" e2e/hub-production.spec.ts "$@"
+TERM_LLM_HUB_NODE_TOKEN="$node_token" \
+npm run test:e2e -- --workers=1 --reporter=line --output="$results" \
+  e2e/hub-production.spec.ts e2e/hub-node-order.spec.ts "$@"
 succeeded=true

@@ -89,11 +89,12 @@ func (s *hubServer) handleHubHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// collectNodes resolves all nodes and probes them concurrently. Resolver
-// errors are soft: surviving sources still render, the error is reported
-// alongside.
+// collectNodes resolves all nodes in the saved dashboard order and probes
+// them concurrently. Resolver errors are soft: surviving sources still
+// render, the error is reported alongside.
 func (s *hubServer) collectNodes(ctx context.Context) ([]hubNodeView, error) {
 	nodes, err := s.registry.Nodes()
+	nodes = s.arrangeNodes(nodes)
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	statuses := s.prober.ProbeAll(probeCtx, nodes)

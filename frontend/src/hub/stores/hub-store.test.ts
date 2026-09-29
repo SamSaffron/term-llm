@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { HubClient } from '../../api/hub-client';
-import type { AttentionResponse, NodesResponse } from '../domain/types';
+import { HubAPIError, type HubClient } from '../../api/hub-client';
+import type { AttentionResponse, NodeOrderResponse, NodesResponse } from '../domain/types';
 import type { PasskeyPlatform } from '../platform/passkeys';
 import { HubStore } from './hub-store';
 
@@ -386,5 +386,225 @@ describe('HubStore', () => {
     await pending;
     expect(store.registrationInfo.value).toBeNull();
     expect(store.registrationLoading.value).toBe(false);
+  });
+});
+
+describe('HubStore node order', () => {
+  /** The Hub's listing: nodes in the given (saved) order. */
+  const listing = (...ids: string[]): NodesResponse => ({
+    nodes: ids.flatMap((id) => nodes(id).nodes),
+  });
+  const shown = (store: HubStore) => store.nodes.value.map((node) => node.id);
+  const deferred = <T>() => {
+    let resolve!: (value: T) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((done, fail) => {
+      resolve = done;
+      reject = fail;
+    });
+    return { promise, resolve, reject };
+  };
+  const committed = (...ids: string[]): NodeOrderResponse => ({ node_ids: ids });
+
+  it('shows a new order at once and keeps it through listings read before it was saved', async () => {
+    const listNodes = vi.fn(async () => listing('alpha', 'beta', 'gamma'));
+    const save = deferred<NodeOrderResponse>();
+    const client = fakeClient({ listNodes, reorderNodes: vi.fn(() => save.promise) });
+    const store = new HubStore(client);
+    await store.refresh('initial');
+    expect(shown(store)).toEqual(['alpha', 'beta', 'gamma']);
+
+    // A poll is in flight when the user moves Gamma first.
+    const stale = deferred<NodesResponse>();
+    listNodes.mockReturnValueOnce(stale.promise);
+    const poll = store.refresh('poll');
+    const saving = store.reorderNodes(['gamma', 'alpha', 'beta']);
+    expect(shown(store)).toEqual(['gamma', 'alpha', 'beta']);
+    await vi.waitFor(() =>
+      expect(client.reorderNodes).toHaveBeenCalledWith(['gamma', 'alpha', 'beta']),
+    );
+
+    // That poll read the old order, so it keeps the order shown, as does one
+    // read while the save is still on its way to the Hub.
+    stale.resolve(listing('alpha', 'beta', 'gamma'));
+    await poll;
+    expect(shown(store)).toEqual(['gamma', 'alpha', 'beta']);
+    await store.refresh('poll');
+    expect(shown(store)).toEqual(['gamma', 'alpha', 'beta']);
+
+    save.resolve(committed('gamma', 'alpha', 'beta'));
+    await saving;
+    expect(shown(store)).toEqual(['gamma', 'alpha', 'beta']);
+
+    // A poll can start after the optimistic move but read before the PATCH
+    // commits, then arrive after the save resolves. It must not undo the move.
+    const secondSave = deferred<NodeOrderResponse>();
+    (client.reorderNodes as ReturnType<typeof vi.fn>).mockReturnValueOnce(secondSave.promise);
+    const second = store.reorderNodes(['alpha', 'gamma', 'beta']);
+    await vi.waitFor(() => expect(client.reorderNodes).toHaveBeenCalledTimes(2));
+    const delayed = deferred<NodesResponse>();
+    listNodes.mockReturnValueOnce(delayed.promise);
+    const racingPoll = store.refresh('poll');
+    secondSave.resolve(committed('alpha', 'gamma', 'beta'));
+    await second;
+    delayed.resolve(listing('gamma', 'alpha', 'beta'));
+    await racingPoll;
+    expect(shown(store)).toEqual(['alpha', 'gamma', 'beta']);
+
+    // Later listings are the Hub's saved order, which new nodes join at the end.
+    listNodes.mockResolvedValue(listing('alpha', 'gamma', 'delta'));
+    await store.refresh('poll');
+    expect(shown(store)).toEqual(['alpha', 'gamma', 'delta']);
+    store.dispose();
+  });
+
+  it('keeps a listing read before a save in the shown order, with its new nodes last', async () => {
+    const listNodes = vi.fn(async () => listing('alpha', 'beta', 'gamma'));
+    const client = fakeClient({
+      listNodes,
+      reorderNodes: vi.fn(async (ids: string[]) => committed(...ids)),
+    });
+    const store = new HubStore(client);
+    await store.refresh('initial');
+    const stale = deferred<NodesResponse>();
+    listNodes.mockReturnValueOnce(stale.promise);
+    const poll = store.refresh('poll');
+    await store.reorderNodes(['beta', 'gamma', 'alpha']);
+    // Read before the move, the listing drops Gamma and adds Delta.
+    stale.resolve(listing('alpha', 'delta', 'beta'));
+    await poll;
+    expect(shown(store)).toEqual(['beta', 'alpha', 'delta']);
+    store.dispose();
+  });
+
+  it('coalesces rapid moves, saving one request at a time and skipping superseded orders', async () => {
+    const first = deferred<NodeOrderResponse>();
+    const reorderNodes = vi
+      .fn()
+      .mockReturnValueOnce(first.promise)
+      .mockImplementation(async (ids: string[]) => committed(...ids));
+    const client = fakeClient({
+      listNodes: vi.fn(async () => listing('alpha', 'beta', 'gamma')),
+      reorderNodes,
+    });
+    const store = new HubStore(client);
+    await store.refresh('initial');
+
+    const saves = [store.reorderNodes(['beta', 'alpha', 'gamma'])];
+    await vi.waitFor(() => expect(reorderNodes).toHaveBeenCalledOnce());
+    // Two more moves while the first is on its way: they wait behind it, and
+    // the newest replaces the one before it.
+    saves.push(
+      store.reorderNodes(['beta', 'gamma', 'alpha']),
+      store.reorderNodes(['gamma', 'beta', 'alpha']),
+    );
+    expect(shown(store)).toEqual(['gamma', 'beta', 'alpha']);
+    await Promise.resolve();
+    expect(reorderNodes).toHaveBeenCalledOnce();
+    // The second move acts on Gamma/Alpha, and the third on Gamma/Beta.
+    // Neither subset covers the other, so both have to be sent in sequence.
+    first.resolve(committed('beta', 'alpha', 'gamma'));
+    await Promise.all(saves);
+    expect(reorderNodes.mock.calls).toEqual([
+      [['beta', 'alpha']],
+      [['gamma', 'alpha']],
+      [['gamma', 'beta']],
+    ]);
+    expect(shown(store)).toEqual(['gamma', 'beta', 'alpha']);
+    store.dispose();
+  });
+
+  it('sends only the moved span so a separate node-auth move is preserved', async () => {
+    let server = ['alpha', 'beta', 'gamma', 'delta'];
+    const reorderNodes = vi.fn(async (listed: string[]) => {
+      // A different agent changed nodes outside the span before our PATCH.
+      server = ['alpha', 'beta', 'delta', 'gamma'];
+      const slots = listed.map((id) => server.indexOf(id)).sort((a, b) => a - b);
+      listed.forEach((id, index) => (server[slots[index]] = id));
+      return committed(...server);
+    });
+    const store = new HubStore(
+      fakeClient({ listNodes: vi.fn(async () => listing(...server)), reorderNodes }),
+    );
+    await store.refresh('initial');
+    await store.reorderNodes(['beta', 'alpha', 'gamma', 'delta']);
+    expect(reorderNodes).toHaveBeenCalledWith(['beta', 'alpha']);
+    expect(shown(store)).toEqual(['beta', 'alpha', 'delta', 'gamma']);
+    store.dispose();
+  });
+
+  it('clears manual refresh state when a failed save replaces the in-flight refresh', async () => {
+    const pending = deferred<NodesResponse>();
+    const listNodes = vi.fn(async () => listing('alpha', 'beta'));
+    const store = new HubStore(
+      fakeClient({
+        listNodes,
+        reorderNodes: vi.fn(async () => {
+          throw new HubAPIError(500, 'not saved');
+        }),
+      }),
+    );
+    await store.refresh('initial');
+    listNodes.mockReturnValueOnce(pending.promise);
+    const manual = store.refresh('manual');
+    expect(store.refreshing.value).toBe(true);
+    const failure = store.reorderNodes(['beta', 'alpha']);
+    await expect(failure).rejects.toThrow('not saved');
+    expect(store.refreshing.value).toBe(false);
+    pending.resolve(listing('alpha', 'beta'));
+    await manual;
+    expect(shown(store)).toEqual(['alpha', 'beta']);
+    store.dispose();
+  });
+
+  it('restores the previous order, shows the Hub order, and explains a failed save', async () => {
+    const listNodes = vi.fn(async () => listing('alpha', 'beta', 'gamma'));
+    const reorderNodes = vi
+      .fn()
+      .mockRejectedValueOnce(new HubAPIError(500, 'failed to save the node order'))
+      .mockRejectedValueOnce(new HubAPIError(404, 'a listed node was not found', 'node_not_found'));
+    const client = fakeClient({ listNodes, reorderNodes });
+    const store = new HubStore(client);
+    await store.refresh('initial');
+
+    // Another browser saved an order meanwhile: the failure shows it.
+    listNodes.mockResolvedValue(listing('beta', 'alpha', 'gamma'));
+    const failed = store.reorderNodes(['gamma', 'alpha', 'beta']);
+    expect(shown(store)).toEqual(['gamma', 'alpha', 'beta']);
+    await expect(failed).rejects.toThrow(
+      'Couldn’t save the node order: failed to save the node order',
+    );
+    expect(shown(store)).toEqual(['beta', 'alpha', 'gamma']);
+    expect(listNodes).toHaveBeenCalledTimes(2);
+
+    // A node the Hub no longer lists makes the save fail as a conflict.
+    listNodes.mockResolvedValue(listing('beta', 'gamma'));
+    const conflict = store.reorderNodes(['gamma', 'alpha', 'beta']);
+    await expect(conflict).rejects.toThrow('Nodes changed elsewhere; showing the latest order.');
+    expect(shown(store)).toEqual(['beta', 'gamma']);
+
+    await conflict.catch((error) => store.reportNodeOrderError(error));
+    expect(store.nodeError.value).toBe('Nodes changed elsewhere; showing the latest order.');
+    await store.refresh('poll');
+    expect(store.nodeError.value).toBe('');
+    store.dispose();
+    await store.reorderNodes(['gamma', 'beta']);
+    expect(reorderNodes).toHaveBeenCalledTimes(2);
+  });
+
+  it('follows an order saved elsewhere on the next poll and keeps unchanged cards', async () => {
+    const listNodes = vi.fn(async () => listing('alpha', 'beta', 'gamma'));
+    const client = fakeClient({ listNodes });
+    const store = new HubStore(client);
+    await store.refresh('initial');
+    const [alpha, beta, gamma] = store.nodes.value;
+    // Another browser, or a node with its own token, moved Gamma first.
+    listNodes.mockResolvedValue(listing('gamma', 'alpha', 'beta'));
+    await store.refresh('poll');
+    expect(store.nodes.value).toEqual([gamma, alpha, beta]);
+    expect(store.nodes.value[0]).toBe(gamma);
+    expect(store.nodes.value[1]).toBe(alpha);
+    expect(store.nodes.value[2]).toBe(beta);
+    store.dispose();
   });
 });

@@ -36,6 +36,47 @@ describe('HubClient', () => {
     expect((mutation.headers as Headers).get('Content-Type')).toBe('application/json');
   });
 
+  it('saves the node order as the operator, never with node credentials', async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ node_ids: ['beta', 'alpha', 'gamma'] }))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            error: {
+              message: 'a listed node was not found; refresh and try again',
+              type: 'node_not_found',
+            },
+          },
+          404,
+        ),
+      );
+    const client = new HubClient(
+      { basePath: '/hub', authMode: 'bearer' },
+      { fetch: fetcher as unknown as typeof fetch },
+    );
+    await expect(client.reorderNodes(['beta', 'alpha', 'gamma'])).resolves.toEqual({
+      node_ids: ['beta', 'alpha', 'gamma'],
+    });
+    const [url, request] = fetcher.mock.calls[0];
+    expect(url).toBe('/hub/api/nodes/order');
+    expect(request).toMatchObject({
+      method: 'PATCH',
+      credentials: 'same-origin',
+      body: JSON.stringify({ node_ids: ['beta', 'alpha', 'gamma'] }),
+    });
+    const headers = request!.headers as Headers;
+    expect(headers.get('Content-Type')).toBe('application/json');
+    // The dashboard is the Hub operator: it never claims a node identity or
+    // handles a node token.
+    expect(headers.get('X-Term-LLM-Node-ID')).toBeNull();
+    expect(headers.get('Authorization')).toBeNull();
+
+    await expect(client.reorderNodes(['ghost'])).rejects.toEqual(
+      expect.objectContaining({ name: 'HubAPIError', status: 404, type: 'node_not_found' }),
+    );
+  });
+
   it('forwards cancellation to reads and never retries a failed mutation', async () => {
     const controller = new AbortController();
     const fetcher = vi
@@ -67,6 +108,7 @@ describe('HubClient', () => {
       () => client.listDelegations(),
       () => client.testNode({ name: '', url: '', token: '' }),
       () => client.removeNode('a/b'),
+      () => client.reorderNodes(['alpha']),
       () => client.registrationInfo(),
       () => client.listCredentials(),
       () => client.session(),
@@ -93,6 +135,7 @@ describe('HubClient', () => {
       '/ops/api/delegations',
       '/ops/api/nodes/test',
       '/ops/api/nodes/a%2Fb',
+      '/ops/api/nodes/order',
       '/ops/api/registration-info',
       '/ops/api/auth/credentials',
       '/ops/api/auth/session',

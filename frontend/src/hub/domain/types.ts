@@ -63,6 +63,11 @@ export interface NodesResponse {
   resolver_error?: string;
 }
 
+/** The committed dashboard order of the nodes the Hub lists. */
+export interface NodeOrderResponse {
+  node_ids: string[];
+}
+
 export interface HubAttentionNode {
   node_id: string;
   node_name: string;

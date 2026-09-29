@@ -32,8 +32,13 @@ import (
 type hubServer struct {
 	registry *hub.Registry
 	// store backs the dashboard's Add Node form; nil disables mutation.
-	store  *hub.Store
-	prober *hub.Prober
+	store *hub.Store
+	// nodeOrder saves the dashboard's node order, which operators and nodes
+	// change through PATCH /api/nodes/order. Nil lists nodes in registry
+	// order and disables that endpoint.
+	nodeOrder    *hub.NodeOrderStore
+	nodeOrderLog hubRepeatLog
+	prober       *hub.Prober
 	// reverse tracks private nodes that dial out to the hub and receive node
 	// requests over a websocket instead of direct hub -> node HTTP.
 	reverse *hubReverseManager

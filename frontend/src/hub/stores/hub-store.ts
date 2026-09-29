@@ -1,7 +1,8 @@
 import { reconcileHubItems } from '../domain/reconcile';
 import { computed, signal } from '@preact/signals';
 import { activeSessionCount as countActiveSessions } from '../domain/formatting';
-import type { HubClient } from '../../api/hub-client';
+import { HubAPIError, type HubClient } from '../../api/hub-client';
+import { SavedOrder, type OrderRanks } from '../../stores/saved-order';
 import type {
   HubCredential,
   HubDelegation,
@@ -21,6 +22,20 @@ export interface HubStoreOptions {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Ranks of a committed order's IDs, by position. */
+const ranksOf = (ids: readonly string[]): OrderRanks =>
+  new Map(ids.map((id, index) => [id, index + 1]));
+
+/** Explains a failed node order save; a missing node means the list changed elsewhere. */
+function nodeOrderError(error: unknown): Error {
+  return new Error(
+    error instanceof HubAPIError && error.status === 404
+      ? 'Nodes changed elsewhere; showing the latest order.'
+      : `Couldn’t save the node order: ${message(error)}`,
+    { cause: error },
+  );
 }
 
 export class HubStore {
@@ -82,6 +97,12 @@ export class HubStore {
   private registrationRead: AbortController | undefined;
   private registrationGeneration = 0;
   private securityRead: AbortController | undefined;
+  /** The user's node order: shown at once, saved one request at a time. */
+  private readonly nodeOrder = new SavedOrder((ranks) => this.applyNodeOrder(ranks));
+  /** Counts local order changes; a node list read before the latest one keeps the shown order. */
+  private orderVersion = 0;
+  /** Node order saves that have not settled. */
+  private orderSaves = 0;
 
   constructor(
     readonly client: HubClient,
@@ -121,6 +142,7 @@ export class HubStore {
   }
 
   private async runRefresh(signal: AbortSignal, generation: number): Promise<void> {
+    const orderVersion = this.orderVersion;
     const [nodes, attention, delegations] = await Promise.allSettled([
       this.client.listNodes(signal),
       this.client.listAttention(signal),
@@ -129,11 +151,7 @@ export class HubStore {
     if (this.disposed || signal.aborted || generation !== this.generation) return;
     const now = Date.now();
     if (nodes.status === 'fulfilled') {
-      this.nodes.value = reconcileHubItems(
-        this.nodes.peek(),
-        nodes.value.nodes ?? [],
-        (node) => node.id,
-      );
+      this.showNodes(nodes.value.nodes ?? [], orderVersion);
       this.resolverWarning.value = nodes.value.resolver_error ?? '';
       this.nodeError.value = '';
       this.lastNodesRefresh.value = now;
@@ -258,11 +276,12 @@ export class HubStore {
     this.reads?.abort();
     const controller = new AbortController();
     const generation = ++this.generation;
+    const orderVersion = this.orderVersion;
     this.reads = controller;
     try {
       const response = await this.client.listNodes(controller.signal);
       if (this.disposed || controller.signal.aborted || generation !== this.generation) return;
-      this.nodes.value = response.nodes ?? [];
+      this.showNodes(response.nodes ?? [], orderVersion);
       this.resolverWarning.value = response.resolver_error ?? '';
       this.nodeError.value = '';
       this.lastNodesRefresh.value = Date.now();
@@ -273,7 +292,78 @@ export class HubStore {
       throw error;
     } finally {
       if (this.reads === controller) this.reads = undefined;
+      // This read can replace an in-flight manual refresh. Its old finally
+      // block will skip cleanup after our generation bump.
+      if (generation === this.generation) this.refreshing.value = false;
     }
+  }
+
+  /**
+   * Shows a node list the server sent, read when the local order was at
+   * `orderVersion`. The Hub lists nodes in their saved order, but a list read
+   * before the latest local reorder, or while one is saving, may predate it:
+   * such a list keeps the order shown now, with nodes new to it at the end.
+   */
+  private showNodes(nodes: HubNode[], orderVersion: number): void {
+    let listed = nodes;
+    if (orderVersion !== this.orderVersion || this.orderSaves > 0) {
+      const shown = new Map(this.nodes.peek().map((node, index) => [node.id, index]));
+      const place = (node: HubNode) => shown.get(node.id) ?? shown.size;
+      listed = [...nodes].sort((left, right) => place(left) - place(right));
+    }
+    this.nodes.value = reconcileHubItems(this.nodes.peek(), listed, (node) => node.id);
+  }
+
+  /** Shows nodes in `ranks` order; nodes it does not rank keep their order after the others. */
+  private applyNodeOrder(ranks: OrderRanks): void {
+    this.orderVersion++;
+    const rank = (node: HubNode) => ranks.get(node.id) ?? Number.MAX_SAFE_INTEGER;
+    const shown = this.nodes.peek();
+    const next = [...shown].sort((left, right) => rank(left) - rank(right));
+    if (next.some((node, index) => node !== shown[index])) this.nodes.value = next;
+  }
+
+  /**
+   * Saves a new node order. The listed nodes move, in order, into the
+   * positions they already occupy, so nodes that are not listed keep theirs.
+   * The new order shows at once; saves run one at a time, and a newer order
+   * replaces one not yet sent. If the newest save fails, the previous order
+   * returns, the list refreshes, and the error is thrown for the caller to
+   * report.
+   */
+  async reorderNodes(orderedIds: string[]): Promise<void> {
+    if (this.disposed) return;
+    this.orderSaves++;
+    let failure: { error: unknown } | null = null;
+    // The server permutes only the listed nodes. Send the smallest span that
+    // changed, so a move in one part of the grid cannot undo an independent
+    // reorder elsewhere (or fail because an unrelated node vanished).
+    const current = this.nodes.peek().map((node) => node.id);
+    let first = 0;
+    while (first < current.length && current[first] === orderedIds[first]) first++;
+    let last = current.length - 1;
+    while (last > first && current[last] === orderedIds[last]) last--;
+    const moved = orderedIds.slice(first, last + 1);
+    try {
+      await this.nodeOrder.save(
+        current.map((id, index) => ({ id, rank: index + 1 })),
+        moved,
+        async (listed) => ranksOf((await this.client.reorderNodes(listed)).node_ids ?? []),
+      );
+    } catch (error) {
+      failure = { error };
+    } finally {
+      this.orderSaves--;
+    }
+    if (!failure) return;
+    // The restored order may be stale too: show the Hub's order.
+    await this.refreshNodes().catch(() => undefined);
+    throw nodeOrderError(failure.error);
+  }
+
+  /** Shows why a node order could not be saved until the next successful refresh. */
+  reportNodeOrderError(error: unknown): void {
+    if (!this.disposed) this.nodeError.value = message(error);
   }
 
   async openRegistrationHelp(): Promise<void> {

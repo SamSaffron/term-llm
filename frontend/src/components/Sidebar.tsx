@@ -418,6 +418,7 @@ function PinnedSessions({ sessions, showProject }: { sessions: Session[]; showPr
       save: (orderedIds) => store.reorderPinnedSessions(orderedIds),
       report: (error) => store.toast(error, 'error'),
       focusTargets: { row: '.session-btn', menu: '.session-menu-trigger' },
+      scrollContainer: '.sidebar-content',
     },
   );
   return (
@@ -785,6 +786,7 @@ function ProjectOrderList({ projects }: { projects: Project[] }) {
       save: (orderedIds) => store.reorderProjects(orderedIds),
       report: (error) => store.toast(error, 'error'),
       focusTargets: { row: '.project-group-toggle', menu: '.project-group-action' },
+      scrollContainer: '.sidebar-content',
     },
   );
   return (
