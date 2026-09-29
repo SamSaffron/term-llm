@@ -3,6 +3,37 @@ import { APIClient } from './client';
 import { readInjectedConfig } from '../app/config';
 import { endpoints } from './endpoints';
 
+describe('Hub node order transport', () => {
+  it('PATCHes only listed IDs at the supplied Hub mount with cookie auth and no node bearer', async () => {
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ node_ids: ['beta', 'alpha'] }), {
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    try {
+      const api = new APIClient(readInjectedConfig({ TERM_LLM_UI_PREFIX: '/ui' } as Window), {
+        getToken: () => 'node-secret',
+        onAuthRequired: vi.fn(),
+      });
+      await expect(
+        endpoints(api).hubReorderNodes(`${location.origin}/hub/api/nodes/order`, ['beta', 'alpha']),
+      ).resolves.toEqual({ node_ids: ['beta', 'alpha'] });
+      expect(fetcher).toHaveBeenCalledOnce();
+      const [url, request] = fetcher.mock.calls[0];
+      expect(url).toBe(`${location.origin}/hub/api/nodes/order`);
+      expect(request?.method).toBe('PATCH');
+      expect(request?.body).toBe(JSON.stringify({ node_ids: ['beta', 'alpha'] }));
+      expect(request?.credentials).toBe('same-origin');
+      expect(new Headers(request?.headers).get('Authorization')).toBeNull();
+      expect((request as RequestInit & { __termLLMRetrySafe?: boolean }).__termLLMRetrySafe).toBe(
+        false,
+      );
+    } finally {
+      fetcher.mockRestore();
+    }
+  });
+});
+
 describe('session mutation request contracts', () => {
   it('preserves paths, ownership, bodies and controls for shared POST requests', async () => {
     const json = vi.fn(async () => ({}));

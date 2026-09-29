@@ -180,6 +180,12 @@ export class SessionStore {
   private recentTailLoaded = false;
   private hubAgentLastFetch = 0;
   private hubAgentFetch: Promise<void> | null = null;
+  /** Local reorders keep their place against stale Hub reads until saved. */
+  private readonly hubAgentOrder = new SavedOrder((ranks) => this.applyHubAgentOrder(ranks));
+  private hubAgentOrderVersion = 0;
+  private hubAgentOrderSaves = 0;
+  /** Includes queued saves, so a link can wait before navigating away. */
+  private readonly hubAgentPendingSaves = new Set<Promise<void>>();
   /** The user-arranged pinned order; server snapshots defer to an unsaved one. */
   private readonly pinOrder = new SavedOrder((ranks) => this.applyPinOrder(ranks));
   /** The user-arranged project order; server snapshots defer to an unsaved one. */
@@ -949,34 +955,114 @@ export class SessionStore {
     this.sidebarOpen.value = false;
   }
 
+  /** Only the same-origin Hub mount may receive sidebar node requests. */
+  private hubAgentURL(path: string): string | null {
+    const raw = this.services.config.hub?.url || '';
+    if (!raw) return null;
+    try {
+      const hub = new URL(raw, location.href);
+      if (hub.origin !== location.origin) return null;
+      return new URL(`${hub.pathname.replace(/\/+$/, '')}${path}`, location.origin).href;
+    } catch {
+      return null;
+    }
+  }
+
+  private applyHubAgentOrder(ranks: OrderRanks): void {
+    this.hubAgentOrderVersion++;
+    const shown = this.hubAgents.peek();
+    const rank = (agent: HubAgent) => ranks.get(agent.id) ?? Number.MAX_SAFE_INTEGER;
+    const next = [...shown].sort((left, right) => rank(left) - rank(right));
+    if (next.some((agent, index) => agent !== shown[index])) this.hubAgents.value = next;
+  }
+
+  /** A stale read cannot replace an optimistic order; new agents go at the end. */
+  private showHubAgents(agents: HubAgent[], orderVersion: number): void {
+    let listed = agents;
+    if (orderVersion !== this.hubAgentOrderVersion || this.hubAgentOrderSaves > 0) {
+      const shown = new Map(this.hubAgents.peek().map((agent, index) => [agent.id, index]));
+      const place = (agent: HubAgent) => shown.get(agent.id) ?? shown.size;
+      listed = [...agents].sort((left, right) => place(left) - place(right));
+    }
+    this.hubAgents.value = listed;
+  }
+
+  /** A navigation out of this node waits for every sent and queued Hub move. */
+  hasPendingHubAgentOrder(): boolean {
+    return this.hubAgentPendingSaves.size > 0;
+  }
+
+  async waitForHubAgentOrder(): Promise<void> {
+    while (this.hubAgentPendingSaves.size) await Promise.allSettled([...this.hubAgentPendingSaves]);
+  }
+
+  reorderHubAgents(orderedIds: string[]): Promise<void> {
+    const saving = this.saveHubAgentOrder(orderedIds);
+    this.hubAgentPendingSaves.add(saving);
+    void saving.then(
+      () => this.hubAgentPendingSaves.delete(saving),
+      () => this.hubAgentPendingSaves.delete(saving),
+    );
+    return saving;
+  }
+
+  /** Saves only the changed span, leaving unrelated Hub node moves untouched. */
+  private async saveHubAgentOrder(orderedIds: string[]): Promise<void> {
+    const url = this.hubAgentURL('/api/nodes/order');
+    if (!url) throw new Error('Hub is not available on this origin.');
+    const current = this.hubAgents.peek().map((agent) => agent.id);
+    let first = 0;
+    while (first < current.length && current[first] === orderedIds[first]) first++;
+    let last = current.length - 1;
+    while (last > first && current[last] === orderedIds[last]) last--;
+    const moved = orderedIds.slice(first, last + 1);
+    this.hubAgentOrderSaves++;
+    let saved = false;
+    let failure: { error: unknown } | null = null;
+    try {
+      saved = await this.hubAgentOrder.save(
+        current.map((id, index) => ({ id, rank: index + 1 })),
+        moved,
+        async (listed) =>
+          new Map(
+            (await this.services.endpoints.hubReorderNodes(url, listed)).node_ids.map(
+              (id, index) => [id, index + 1],
+            ),
+          ),
+      );
+    } catch (error) {
+      failure = { error };
+    } finally {
+      this.hubAgentOrderSaves--;
+    }
+    if (failure) {
+      // A pending read may have started before the failed save; read again after it settles.
+      await this.hubAgentFetch?.catch(() => undefined);
+      await this.refreshHubAgents(true).catch(() => undefined);
+      throw orderSaveError(failure.error, 'Hub nodes', 'Hub agent');
+    }
+    if (saved) {
+      // A read that started before the save may still be in flight; fetch the committed order.
+      await this.hubAgentFetch?.catch(() => undefined);
+      await this.refreshHubAgents(true).catch(() => undefined);
+    }
+  }
+
   async refreshHubAgents(force = false): Promise<void> {
     if (this.hubAgentFetch) return this.hubAgentFetch;
     if (document.visibilityState === 'hidden') return;
-    const raw = this.services.config.hub?.url || '';
-    if (!raw) {
-      this.hubAgents.value = [];
-      return;
-    }
-    let hub: URL;
-    try {
-      hub = new URL(raw, location.href);
-    } catch {
-      return;
-    }
-    if (hub.origin !== location.origin) {
+    const url = this.hubAgentURL('/api/nodes');
+    if (!url) {
       this.hubAgents.value = [];
       return;
     }
     if (!force && Date.now() - this.hubAgentLastFetch < 60_000) return;
     this.hubAgentLastFetch = Date.now();
+    const orderVersion = this.hubAgentOrderVersion;
     const controller = new AbortController();
     const request = (async () => {
       try {
-        const path = `${hub.pathname.replace(/\/+$/, '')}/api/nodes`;
-        const data = await this.services.endpoints.hubNodes(
-          new URL(path, location.origin).href,
-          controller.signal,
-        );
+        const data = await this.services.endpoints.hubNodes(url, controller.signal);
         const safePath = (value: unknown): string =>
           typeof value === 'string' && /^\/(?![\\/])/.test(value) ? value : '';
         const target = (node: Record<string, unknown>): string => {
@@ -991,29 +1077,36 @@ export class SessionStore {
             (safePath(node.proxy_path) ? `${safePath(node.proxy_path)}?new=1` : '')
           );
         };
-        this.hubAgents.value = array(data.nodes)
-          .filter((node) => recordValue(node.status)?.reachable === true)
-          .map((node) => {
-            const id = String(node.id || '');
-            const sessions = recordValue(node.sessions) || {};
-            const active = Number(sessions.active_count) > 0 || array(sessions.active).length > 0;
-            const unseen = Number(sessions.unseen_count) > 0;
-            return {
-              id,
-              name: String(node.name || id),
-              target: target(node),
-              active,
-              attention: id !== this.services.config.hub?.nodeId && unseen,
-            };
-          })
-          .filter((entry) => entry.name && entry.target)
-          .sort(
-            (left, right) =>
-              left.name.toLowerCase().localeCompare(right.name.toLowerCase()) ||
-              left.id.localeCompare(right.id),
-          );
+        this.showHubAgents(
+          array(data.nodes)
+            .filter((node) => recordValue(node.status)?.reachable === true)
+            .map((node) => {
+              const id = String(node.id || '');
+              const sessions = recordValue(node.sessions) || {};
+              const active = Number(sessions.active_count) > 0 || array(sessions.active).length > 0;
+              const unseen = Number(sessions.unseen_count) > 0;
+              return {
+                id,
+                name: String(node.name || id),
+                target: target(node),
+                active,
+                attention: id !== this.services.config.hub?.nodeId && unseen,
+              };
+            })
+            .filter((entry) => entry.name && entry.target),
+          orderVersion,
+        );
       } catch (error) {
-        if (error instanceof APIError && error.status >= 400 && error.status < 500)
+        // A failed read has not refreshed the order. Let the next focus or
+        // visibility event retry instead of suppressing it for a full minute.
+        this.hubAgentLastFetch = 0;
+        if (
+          error instanceof APIError &&
+          error.status >= 400 &&
+          error.status < 500 &&
+          orderVersion === this.hubAgentOrderVersion &&
+          this.hubAgentOrderSaves === 0
+        )
           this.hubAgents.value = [];
       }
     })();

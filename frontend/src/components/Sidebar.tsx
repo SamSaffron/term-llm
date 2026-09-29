@@ -7,9 +7,10 @@ import { displayName } from '../app/config';
 import { readJSON, writeJSON } from '../platform/storage';
 import { overlayManager } from '../platform/overlay-manager';
 import { compareSessionsByActivity } from '../stores/store-utils';
+import type { HubAgent } from '../stores/store-types';
 import { Icon } from './Icon';
 import { trapOverlayFocus } from './Overlay';
-import { useMenuKeyboard } from './Menu';
+import { Menu, useMenuKeyboard } from './Menu';
 import { useChatShortcuts } from './useChatShortcuts';
 import { useMediaQuery } from './useMediaQuery';
 import { reorderKeyOffset, useReorderableList, type ReorderControls } from './useReorderableList';
@@ -848,11 +849,128 @@ function ProjectsGroup({ projects }: { projects: Project[] }) {
   );
 }
 
+function HubAgentRow({
+  agent,
+  order,
+  onNavigate,
+}: {
+  agent: HubAgent;
+  order: ReorderControls;
+  onNavigate: (event: MouseEvent) => void;
+}) {
+  const store = useStore();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const canMove = order.count > 1;
+  const move = (offset: -1 | 1) => {
+    setMenuOpen(false);
+    order.move(offset, 'menu');
+  };
+  return (
+    <div
+      class={`hub-agent-row ${order.dragging ? 'is-dragging' : ''} ${menuOpen ? 'menu-open' : ''}`}
+      data-reorder-id={agent.id}
+      onKeyDown={(event) => {
+        const offset = canMove ? reorderKeyOffset(event) : 0;
+        if (!offset || (event.target as Element).closest('[role="menu"]')) return;
+        event.preventDefault();
+        order.move(offset, event.target === trigger.current ? 'menu' : 'row');
+      }}
+    >
+      <a
+        class="hub-agent-link"
+        href={agent.target}
+        draggable={false}
+        aria-current={agent.id === store.config.hub?.nodeId ? 'true' : undefined}
+        aria-keyshortcuts={canMove ? 'Alt+ArrowUp Alt+ArrowDown' : undefined}
+        onPointerDown={canMove ? order.press : undefined}
+        onClick={onNavigate}
+      >
+        <span class="hub-agent-icon" aria-hidden="true" />
+        <span class="hub-agent-name">{agent.name}</span>
+        {agent.attention && (
+          <>
+            <span class="hub-agent-attention" aria-hidden="true" />
+            <span class="visually-hidden">Needs attention</span>
+          </>
+        )}
+      </a>
+      {canMove && (
+        <div class="hub-agent-menu">
+          <button
+            ref={trigger}
+            class="hub-agent-menu-trigger"
+            type="button"
+            aria-label={`More actions for ${agent.name}`}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+            onClick={() => setMenuOpen((open) => !open)}
+          >
+            ⋯
+          </button>
+          <Menu
+            open={menuOpen}
+            label={`Actions for ${agent.name}`}
+            onClose={() => setMenuOpen(false)}
+            triggerRef={trigger}
+            className="session-menu"
+          >
+            {order.position > 0 && (
+              <button type="button" role="menuitem" onClick={() => move(-1)}>
+                Move earlier
+              </button>
+            )}
+            {order.position < order.count - 1 && (
+              <button type="button" role="menuitem" onClick={() => move(1)}>
+                Move later
+              </button>
+            )}
+          </Menu>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function HubAgents() {
   const store = useStore();
+  const navigating = useRef(false);
+  // A normal link click could unload this node before a sent (or queued)
+  // reorder reaches the Hub. Modifier-clicks open another tab and do not
+  // tear down this one, so leave their normal browser behavior untouched.
+  const onNavigate = (event: MouseEvent) => {
+    if (
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey ||
+      (event.currentTarget as HTMLAnchorElement).target === '_blank' ||
+      (!navigating.current && !store.hasPendingHubAgentOrder())
+    )
+      return;
+    event.preventDefault();
+    if (navigating.current) return;
+    navigating.current = true;
+    const href = (event.currentTarget as HTMLAnchorElement).href;
+    void store.waitForHubAgentOrder().then(() => window.location.assign(href));
+  };
+  const agents = store.hubAgents.value;
+  const { list, reordering, announcement, controls } = useReorderableList(
+    agents.map((agent) => agent.id),
+    {
+      label: (id) => agents.find((agent) => agent.id === id)?.name || id,
+      save: (orderedIds) => store.reorderHubAgents(orderedIds),
+      report: (error) => store.toast(error, 'error'),
+      focusTargets: { row: '.hub-agent-link', menu: '.hub-agent-menu-trigger' },
+      scrollContainer: '.sidebar-content',
+    },
+  );
   const { open, toggle } = useSidebarExpansion(SIDEBAR_EXPANSION_KEYS.hubAgents, false);
   const headingID = useId();
-  const needsAttention = store.hubAgents.value.some((agent) => agent.attention);
+  const needsAttention = agents.some((agent) => agent.attention);
   return (
     <section class="session-group hub-agent-group">
       <CollapsibleSectionHeading
@@ -872,31 +990,34 @@ function HubAgents() {
       />
       {open && (
         <>
-          <nav class="hub-agent-links" aria-labelledby={headingID}>
-            {store.hubAgents.value.map((agent) => (
-              <a
-                class="hub-agent-link"
+          <nav
+            ref={list}
+            class={`hub-agent-links reorder-list ${reordering ? 'is-reordering' : ''}`}
+            aria-labelledby={headingID}
+          >
+            {agents.map((agent, position) => (
+              <HubAgentRow
                 key={agent.id}
-                href={agent.target}
-                aria-current={agent.id === store.config.hub?.nodeId ? 'true' : undefined}
-              >
-                <span class="hub-agent-icon" aria-hidden="true" />
-                <span class="hub-agent-name">{agent.name}</span>
-                {agent.attention && (
-                  <>
-                    <span class="hub-agent-attention" aria-hidden="true" />
-                    <span class="visually-hidden">Needs attention</span>
-                  </>
-                )}
-              </a>
+                agent={agent}
+                order={controls(agent.id, position)}
+                onNavigate={onNavigate}
+              />
             ))}
           </nav>
           {store.config.hub?.url && (
-            <a class="back-to-hub-link" id="backToHubLink" href={store.config.hub.url}>
+            <a
+              class="back-to-hub-link"
+              id="backToHubLink"
+              href={store.config.hub.url}
+              onClick={onNavigate}
+            >
               <Icon class="sidebar-action-icon" name="arrow-left" />
               <span>Back to Hub</span>
             </a>
           )}
+          <div class="visually-hidden" role="status" aria-live="polite">
+            {announcement}
+          </div>
         </>
       )}
     </section>

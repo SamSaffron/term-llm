@@ -5479,6 +5479,91 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.queryByRole('link', { name: 'Back to Hub' })).not.toBeInTheDocument();
   });
 
+  it('reorders Hub agents directly in the sidebar by keyboard, menu, and link drag', async () => {
+    const store = createStore({ hub: { url: '/hub/', nodeId: 'dev', nodeBasePath: '/ui' } });
+    store.hubAgents.value = [
+      { id: 'dev', name: 'Dev', target: '/hub/node/dev/', active: true, attention: false },
+      {
+        id: 'worker',
+        name: 'Worker',
+        target: '/hub/node/worker/',
+        active: false,
+        attention: false,
+      },
+      { id: 'qa', name: 'QA', target: '/hub/node/qa/', active: false, attention: true },
+    ];
+    store.reorderHubAgents = vi.fn(async (ids: string[]) => {
+      const byID = new Map(store.hubAgents.value.map((agent) => [agent.id, agent]));
+      store.hubAgents.value = ids.map((id) => byID.get(id)!);
+    });
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Sidebar />
+      </StoreContext.Provider>,
+    );
+    const names = () =>
+      [...container.querySelectorAll('.hub-agent-name')].map((name) => name.textContent);
+    const devLink = screen.getByRole('link', { name: 'Dev' });
+    expect(devLink).toHaveAttribute('draggable', 'false');
+    devLink.focus();
+    fireEvent.keyDown(devLink, { key: 'ArrowDown', altKey: true });
+    expect(names()).toEqual(['Worker', 'Dev', 'QA']);
+    await waitFor(() =>
+      expect(store.reorderHubAgents).toHaveBeenCalledWith(['worker', 'dev', 'qa']),
+    );
+    await waitFor(() => expect(devLink).toHaveFocus());
+
+    const menuTrigger = screen.getByRole('button', { name: 'More actions for Dev' });
+    fireEvent.click(menuTrigger);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Move later' }));
+    expect(names()).toEqual(['Worker', 'QA', 'Dev']);
+    await waitFor(() => expect(menuTrigger).toHaveFocus());
+
+    // jsdom has no layout: stack the three links in fixed-height rows.
+    const rows = [...container.querySelectorAll<HTMLElement>('.hub-agent-row')];
+    rows.forEach((row, index) =>
+      vi.spyOn(row, 'getBoundingClientRect').mockReturnValue({
+        top: index * 40,
+        bottom: index * 40 + 40,
+        height: 40,
+        left: 0,
+        right: 200,
+        width: 200,
+        x: 0,
+        y: index * 40,
+        toJSON: () => ({}),
+      } as DOMRect),
+    );
+    const pointer = { pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0 };
+    fireEvent.pointerDown(devLink, { ...pointer, clientY: 100 });
+    fireEvent.pointerMove(window, { ...pointer, clientY: 94 });
+    expect(rows[2]).toHaveClass('is-dragging');
+    fireEvent.pointerMove(window, { ...pointer, clientY: 5 });
+    fireEvent.pointerUp(window, { ...pointer, clientY: 5 });
+    await waitFor(() => expect(names()).toEqual(['Dev', 'Worker', 'QA']));
+    expect(store.reorderHubAgents).toHaveBeenLastCalledWith(['dev', 'worker', 'qa']);
+    expect(screen.getByText('Moved Dev to position 1 of 3.')).toBeInTheDocument();
+  });
+
+  it('holds agent links and Back to Hub while a node order save is pending', () => {
+    const store = createStore({ hub: { url: '/hub/', nodeId: 'dev', nodeBasePath: '/ui' } });
+    store.hubAgents.value = [
+      { id: 'dev', name: 'Dev', target: '/hub/node/dev/', active: true, attention: false },
+      { id: 'qa', name: 'QA', target: '/hub/node/qa/', active: false, attention: false },
+    ];
+    store.hasPendingHubAgentOrder = vi.fn(() => true);
+    // Keep this promise unresolved: navigation would be a jsdom page teardown.
+    store.waitForHubAgentOrder = vi.fn(() => new Promise<void>(() => undefined));
+    render(
+      <StoreContext.Provider value={store}>
+        <Sidebar />
+      </StoreContext.Provider>,
+    );
+    expect(fireEvent.click(screen.getByRole('link', { name: 'QA' }))).toBe(false);
+    expect(fireEvent.click(screen.getByRole('link', { name: 'Back to Hub' }))).toBe(false);
+    expect(store.waitForHubAgentOrder).toHaveBeenCalledOnce();
+  });
+
   it('shows terminal chats but keeps terminal one-shot runs out of the sidebar', () => {
     const store = createStore();
     store.sessions.value = [

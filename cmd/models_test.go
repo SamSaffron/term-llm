@@ -181,6 +181,12 @@ func TestRunModelsQueriesConfiguredOllamaEndpoint(t *testing.T) {
 	}
 }
 
+func TestModelsRefreshFlag(t *testing.T) {
+	if flag := modelsCmd.Flags().Lookup("refresh"); flag == nil {
+		t.Fatal("models command missing --refresh")
+	}
+}
+
 func TestModelListSupportedTypesIncludesChatGPT(t *testing.T) {
 	if !modelListSupportedTypes[config.ProviderTypeChatGPT] {
 		t.Fatal("chatgpt should be wired for authenticated dynamic model listing")

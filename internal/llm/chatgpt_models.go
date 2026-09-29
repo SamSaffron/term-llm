@@ -26,7 +26,9 @@ const (
 	chatGPTOriginator = "term-llm"
 	// /codex/models requires this semver query parameter to select the catalog
 	// protocol. It is not our application identity and is never sent as a header.
-	chatGPTModelsClientVersion = "0.156.0"
+	// Keep this aligned with a Codex release that advertises gpt-6.1-sol:
+	// older client versions receive an older catalog even with a forced refresh.
+	chatGPTModelsClientVersion = "0.159.0"
 	chatGPTModelsCacheFile     = "chatgpt_models_cache_v2.json"
 	chatGPTModelsCacheTTL      = 5 * time.Minute
 	chatGPTModelsTimeout       = 5 * time.Second
@@ -152,20 +154,41 @@ func (p *ChatGPTProvider) ListModelsForProvider(ctx context.Context, provider st
 	return resolveChatGPTModels(provider, models), err
 }
 
+// RefreshModelsForProvider bypasses the cache and reports fetch failures instead
+// of returning stale or bundled models. A successful response updates the cache.
+func (p *ChatGPTProvider) RefreshModelsForProvider(ctx context.Context, provider string) ([]ModelInfo, error) {
+	models, err := p.refreshChatGPTModelFacts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return resolveChatGPTModels(provider, models), nil
+}
+
+func (p *ChatGPTProvider) refreshChatGPTModelFacts(ctx context.Context) ([]ModelInfo, error) {
+	models, etag, err := p.fetchChatGPTModels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(models) == 0 {
+		return nil, fmt.Errorf("ChatGPT models request returned no models")
+	}
+	_ = saveChatGPTModelsCache(chatGPTModelsCache{
+		AccountID:     p.creds.AccountID,
+		FetchedAt:     time.Now(),
+		ETag:          etag,
+		ClientVersion: chatGPTModelsClientVersion,
+		Models:        models,
+	})
+	return models, nil
+}
+
 func (p *ChatGPTProvider) chatGPTModelFacts(ctx context.Context) ([]ModelInfo, bool, error) {
 	if cache, err := loadChatGPTModelsCacheForAccount(chatGPTModelsClientVersion, p.creds.AccountID); err == nil && time.Since(cache.FetchedAt) <= chatGPTModelsCacheTTL {
 		return cache.Models, true, nil
 	}
 
-	models, etag, err := p.fetchChatGPTModels(ctx)
-	if err == nil && len(models) > 0 {
-		_ = saveChatGPTModelsCache(chatGPTModelsCache{
-			AccountID:     p.creds.AccountID,
-			FetchedAt:     time.Now(),
-			ETag:          etag,
-			ClientVersion: chatGPTModelsClientVersion,
-			Models:        models,
-		})
+	models, err := p.refreshChatGPTModelFacts(ctx)
+	if err == nil {
 		return models, true, nil
 	}
 	if cache, cacheErr := loadChatGPTModelsCacheForAccount(chatGPTModelsClientVersion, p.creds.AccountID); cacheErr == nil && len(cache.Models) > 0 {

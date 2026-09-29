@@ -24,8 +24,8 @@ func TestChatGPTListModelsFetchesAndCachesServiceTiers(t *testing.T) {
 		if req.URL.Path != "/backend-api/codex/models" {
 			t.Fatalf("path = %q", req.URL.Path)
 		}
-		if got := req.URL.Query().Get("client_version"); got != chatGPTModelsClientVersion {
-			t.Fatalf("client_version = %q, want %q", got, chatGPTModelsClientVersion)
+		if got := req.URL.Query().Get("client_version"); got != "0.159.0" {
+			t.Fatalf("client_version = %q, want version that advertises gpt-6.1-sol", got)
 		}
 		if got := req.Header.Get("Authorization"); got != "Bearer test-token" {
 			t.Fatalf("Authorization = %q", got)
@@ -80,6 +80,76 @@ func TestChatGPTListModelsFetchesAndCachesServiceTiers(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("calls after cache = %d, want 1", calls)
+	}
+}
+
+func TestChatGPTRefreshModelsBypassesFreshCache(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	origClient := chatGPTHTTPClient
+	defer func() { chatGPTHTTPClient = origClient }()
+
+	if err := saveChatGPTModelsCache(chatGPTModelsCache{
+		AccountID: "test-account", FetchedAt: time.Now(), ClientVersion: chatGPTModelsClientVersion,
+		Models: []ModelInfo{{ID: "old-model"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	chatGPTHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"models":[{"slug":"gpt-6.1-sol","context_window":272000}]}`))}, nil
+	})}
+	provider := NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{
+		AccessToken: "test-token", AccountID: "test-account", ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	}, "old-model")
+
+	models, err := provider.RefreshModelsForProvider(context.Background(), "chatgpt")
+	if err != nil || len(models) != 1 || models[0].ID != "gpt-6.1-sol" || calls != 1 {
+		t.Fatalf("refresh = %#v, error %v, calls %d", models, err, calls)
+	}
+	models, err = provider.ListModels(context.Background())
+	if err != nil || len(models) != 1 || models[0].ID != "gpt-6.1-sol" || calls != 1 {
+		t.Fatalf("cached listing = %#v, error %v, calls %d", models, err, calls)
+	}
+}
+
+func TestChatGPTRefreshModelsReportsFailureWithoutFallback(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	origClient := chatGPTHTTPClient
+	defer func() { chatGPTHTTPClient = origClient }()
+	if err := saveChatGPTModelsCache(chatGPTModelsCache{
+		AccountID: "test-account", FetchedAt: time.Now(), ClientVersion: chatGPTModelsClientVersion,
+		Models: []ModelInfo{{ID: "old-model"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	chatGPTHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return nil, errors.New("network down")
+	})}
+	provider := NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{
+		AccessToken: "test-token", AccountID: "test-account", ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	}, "old-model")
+	if _, err := provider.RefreshModelsForProvider(context.Background(), "chatgpt"); err == nil || !strings.Contains(err.Error(), "network down") {
+		t.Fatalf("refresh error = %v, want network failure", err)
+	}
+	models, err := provider.ListModels(context.Background())
+	if err != nil || len(models) != 1 || models[0].ID != "old-model" {
+		t.Fatalf("cache after failed refresh = %#v, error %v", models, err)
+	}
+}
+
+func TestChatGPTRefreshModelsRejectsEmptyCatalog(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	origClient := chatGPTHTTPClient
+	defer func() { chatGPTHTTPClient = origClient }()
+	chatGPTHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"models":[]}`))}, nil
+	})}
+	provider := NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{
+		AccessToken: "test-token", AccountID: "test-account", ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	}, "old-model")
+	if _, err := provider.RefreshModelsForProvider(context.Background(), "chatgpt"); err == nil || !strings.Contains(err.Error(), "no models") {
+		t.Fatalf("refresh error = %v, want empty catalog error", err)
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 
 var modelsProvider string
 var modelsJSON bool
+var modelsRefresh bool
 
 var modelsCmd = &cobra.Command{
 	Use:   "models",
@@ -37,6 +38,7 @@ Examples:
   term-llm models --provider agy-bin    # list/cache Antigravity CLI models
   term-llm models --provider ollama     # list models from Ollama
   term-llm models --provider lmstudio   # list models from LM Studio
+  term-llm models --provider chatgpt --refresh # fetch the latest ChatGPT catalog
   term-llm models --json                # output as JSON`,
 	RunE: runModels,
 }
@@ -45,6 +47,7 @@ func init() {
 	rootCmd.AddCommand(modelsCmd)
 	modelsCmd.Flags().StringVarP(&modelsProvider, "provider", "p", "", "Provider to list models from ("+strings.Join(supportedModelListProviderTypes(), ", ")+")")
 	modelsCmd.Flags().BoolVar(&modelsJSON, "json", false, "Output as JSON")
+	modelsCmd.Flags().BoolVar(&modelsRefresh, "refresh", false, "Force a fresh ChatGPT model catalog fetch (report fetch errors)")
 	modelsCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion)
 }
 
@@ -120,6 +123,10 @@ func runModels(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	if modelsRefresh && providerType != config.ProviderTypeChatGPT {
+		return fmt.Errorf("--refresh is only supported for ChatGPT model listings")
+	}
+
 	handled, err := handleUnsupportedModelListProvider(providerName, providerType, configured)
 	if handled {
 		return err
@@ -134,7 +141,11 @@ func runModels(cmd *cobra.Command, args []string) error {
 	defer cancel()
 
 	var models []llm.ModelInfo
-	if scoped, ok := lister.(interface {
+	if modelsRefresh {
+		models, err = lister.(interface {
+			RefreshModelsForProvider(context.Context, string) ([]llm.ModelInfo, error)
+		}).RefreshModelsForProvider(ctx, providerName)
+	} else if scoped, ok := lister.(interface {
 		ListModelsForProvider(context.Context, string) ([]llm.ModelInfo, error)
 	}); ok {
 		models, err = scoped.ListModelsForProvider(ctx, providerName)

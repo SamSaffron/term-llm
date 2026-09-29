@@ -7,6 +7,243 @@ import { compareSessionsByActivity } from './store-utils';
 
 beforeEach(() => localStorage.clear());
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
+
+const hubNode = (id: string, reachable = true) => ({
+  id,
+  name: id === 'beta' ? 'A beta' : `Z ${id}`,
+  status: { reachable },
+  new_session_path: `/hub/node/${id}/?new=1`,
+});
+const hubListing = (...ids: string[]) => ({ nodes: ids.map((id) => hubNode(id)) });
+const agentIds = (store: AppStore) => store.hubAgents.value.map((agent) => agent.id);
+
+const hubConfig = { ...testConfig, hub: { url: '/hub/', nodeId: 'current', nodeBasePath: '/ui' } };
+
+describe('chat Hub agent ordering', () => {
+  it('keeps the Hub GET order rather than sorting names and excludes unreachable nodes', async () => {
+    const store = new AppStore(hubConfig);
+    try {
+      store.endpoints.hubNodes = vi.fn(async () => ({
+        nodes: [hubNode('alpha'), hubNode('offline', false), hubNode('beta')],
+      }));
+      await store.refreshHubAgents(true);
+      expect(agentIds(store)).toEqual(['alpha', 'beta']);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('optimistically saves only the changed span and keeps unrelated agents in place', async () => {
+    const store = new AppStore(hubConfig);
+    const save = deferred<{ node_ids: string[] }>();
+    try {
+      let server = hubListing('alpha', 'beta', 'gamma', 'delta');
+      store.endpoints.hubNodes = vi.fn(async () => server);
+      store.endpoints.hubReorderNodes = vi.fn(() => save.promise);
+      await store.refreshHubAgents(true);
+      const saving = store.reorderHubAgents(['alpha', 'gamma', 'beta', 'delta']);
+      expect(agentIds(store)).toEqual(['alpha', 'gamma', 'beta', 'delta']);
+      await vi.waitFor(() =>
+        expect(store.endpoints.hubReorderNodes).toHaveBeenCalledWith(
+          `${location.origin}/hub/api/nodes/order`,
+          ['gamma', 'beta'],
+        ),
+      );
+      server = hubListing('alpha', 'gamma', 'beta', 'delta');
+      save.resolve({ node_ids: ['alpha', 'gamma', 'beta', 'delta'] });
+      await saving;
+      expect(agentIds(store)).toEqual(['alpha', 'gamma', 'beta', 'delta']);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('does not replace an optimistic order with a stale in-flight GET', async () => {
+    const store = new AppStore(hubConfig);
+    const poll = deferred<ReturnType<typeof hubListing>>();
+    const save = deferred<{ node_ids: string[] }>();
+    try {
+      store.endpoints.hubNodes = vi
+        .fn()
+        .mockResolvedValueOnce(hubListing('alpha', 'beta', 'gamma'))
+        .mockReturnValueOnce(poll.promise)
+        .mockResolvedValue(hubListing('gamma', 'alpha', 'beta'));
+      store.endpoints.hubReorderNodes = vi.fn(() => save.promise);
+      await store.refreshHubAgents(true);
+      const refreshing = store.refreshHubAgents(true);
+      const saving = store.reorderHubAgents(['gamma', 'alpha', 'beta']);
+      poll.resolve(hubListing('alpha', 'beta', 'gamma'));
+      await refreshing;
+      expect(agentIds(store)).toEqual(['gamma', 'alpha', 'beta']);
+      save.resolve({ node_ids: ['gamma', 'alpha', 'beta'] });
+      await saving;
+      expect(agentIds(store)).toEqual(['gamma', 'alpha', 'beta']);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('retries the next ordinary refresh after a transient Hub read failure', async () => {
+    const store = new AppStore(hubConfig);
+    try {
+      store.endpoints.hubNodes = vi
+        .fn()
+        .mockResolvedValueOnce(hubListing('alpha', 'beta'))
+        .mockRejectedValueOnce(new Error('Hub temporarily unavailable'))
+        .mockResolvedValueOnce(hubListing('beta', 'alpha'));
+      await store.refreshHubAgents(true);
+      await store.refreshHubAgents(true);
+      expect(agentIds(store)).toEqual(['alpha', 'beta']);
+      await store.refreshHubAgents();
+      expect(agentIds(store)).toEqual(['beta', 'alpha']);
+      expect(store.endpoints.hubNodes).toHaveBeenCalledTimes(3);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('restores the prior order and refreshes after a failed PATCH', async () => {
+    const store = new AppStore(hubConfig);
+    const save = deferred<{ node_ids: string[] }>();
+    try {
+      store.endpoints.hubNodes = vi
+        .fn()
+        .mockResolvedValueOnce(hubListing('alpha', 'beta', 'gamma'))
+        .mockResolvedValue(hubListing('alpha', 'beta', 'gamma'));
+      store.endpoints.hubReorderNodes = vi.fn(() => save.promise);
+      await store.refreshHubAgents(true);
+      const saving = store.reorderHubAgents(['beta', 'alpha', 'gamma']);
+      expect(agentIds(store)).toEqual(['beta', 'alpha', 'gamma']);
+      save.reject(new Error('offline'));
+      await expect(saving).rejects.toThrow('Couldn’t save the Hub agent order: offline');
+      expect(agentIds(store)).toEqual(['alpha', 'beta', 'gamma']);
+      expect(store.endpoints.hubNodes).toHaveBeenCalledTimes(2);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('serializes saves and replaces a queued reorder when its IDs are covered', async () => {
+    const store = new AppStore(hubConfig);
+    const first = deferred<{ node_ids: string[] }>();
+    const second = deferred<{ node_ids: string[] }>();
+    try {
+      store.endpoints.hubNodes = vi.fn(async () => hubListing('gamma', 'beta', 'alpha'));
+      store.endpoints.hubReorderNodes = vi
+        .fn()
+        .mockReturnValueOnce(first.promise)
+        .mockReturnValueOnce(second.promise);
+      await store.refreshHubAgents(true);
+      const saves = [store.reorderHubAgents(['beta', 'gamma', 'alpha'])];
+      await vi.waitFor(() => expect(store.endpoints.hubReorderNodes).toHaveBeenCalledTimes(1));
+      saves.push(store.reorderHubAgents(['beta', 'alpha', 'gamma']));
+      saves.push(store.reorderHubAgents(['gamma', 'beta', 'alpha']));
+      expect(agentIds(store)).toEqual(['gamma', 'beta', 'alpha']);
+      expect(store.endpoints.hubReorderNodes).toHaveBeenCalledTimes(1);
+      first.resolve({ node_ids: ['beta', 'gamma', 'alpha'] });
+      await vi.waitFor(() => expect(store.endpoints.hubReorderNodes).toHaveBeenCalledTimes(2));
+      expect(vi.mocked(store.endpoints.hubReorderNodes).mock.calls.map(([, ids]) => ids)).toEqual([
+        ['beta', 'gamma'],
+        ['gamma', 'beta', 'alpha'],
+      ]);
+      second.resolve({ node_ids: ['gamma', 'beta', 'alpha'] });
+      await Promise.all(saves);
+      expect(agentIds(store)).toEqual(['gamma', 'beta', 'alpha']);
+    } finally {
+      store.dispose();
+    }
+  });
+  it('waits for sent and queued Hub moves before allowing navigation', async () => {
+    const store = new AppStore(hubConfig);
+    const first = deferred<{ node_ids: string[] }>();
+    const second = deferred<{ node_ids: string[] }>();
+    try {
+      let server = hubListing('alpha', 'beta', 'gamma', 'delta');
+      store.endpoints.hubNodes = vi.fn(async () => server);
+      store.endpoints.hubReorderNodes = vi
+        .fn()
+        .mockReturnValueOnce(first.promise)
+        .mockReturnValueOnce(second.promise);
+      await store.refreshHubAgents(true);
+      const saves = [store.reorderHubAgents(['beta', 'alpha', 'gamma', 'delta'])];
+      await vi.waitFor(() => expect(store.endpoints.hubReorderNodes).toHaveBeenCalledTimes(1));
+      saves.push(store.reorderHubAgents(['beta', 'alpha', 'delta', 'gamma']));
+      let readyToNavigate = false;
+      const waiting = store.waitForHubAgentOrder().then(() => (readyToNavigate = true));
+      expect(store.hasPendingHubAgentOrder()).toBe(true);
+      server = hubListing('beta', 'alpha', 'gamma', 'delta');
+      first.resolve({ node_ids: server.nodes.map((node) => node.id) });
+      await vi.waitFor(() => expect(store.endpoints.hubReorderNodes).toHaveBeenCalledTimes(2));
+      expect(readyToNavigate).toBe(false);
+      server = hubListing('beta', 'alpha', 'delta', 'gamma');
+      second.resolve({ node_ids: server.nodes.map((node) => node.id) });
+      await Promise.all([...saves, waiting]);
+      expect(readyToNavigate).toBe(true);
+      expect(store.hasPendingHubAgentOrder()).toBe(false);
+      expect(agentIds(store)).toEqual(['beta', 'alpha', 'delta', 'gamma']);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('sends queued changes to different subsets in order', async () => {
+    const store = new AppStore(hubConfig);
+    const first = deferred<{ node_ids: string[] }>();
+    try {
+      let server = hubListing('alpha', 'beta', 'gamma', 'delta');
+      store.endpoints.hubNodes = vi.fn(async () => server);
+      store.endpoints.hubReorderNodes = vi.fn(async (_url, ids: string[]) => {
+        if (ids[0] === 'beta') {
+          await first.promise;
+          server = hubListing('beta', 'alpha', 'gamma', 'delta');
+        } else {
+          server = hubListing('beta', 'alpha', 'delta', 'gamma');
+        }
+        return { node_ids: server.nodes.map((node) => node.id) };
+      });
+      await store.refreshHubAgents(true);
+      const firstSave = store.reorderHubAgents(['beta', 'alpha', 'gamma', 'delta']);
+      await vi.waitFor(() => expect(store.endpoints.hubReorderNodes).toHaveBeenCalledTimes(1));
+      const secondSave = store.reorderHubAgents(['beta', 'alpha', 'delta', 'gamma']);
+      expect(agentIds(store)).toEqual(['beta', 'alpha', 'delta', 'gamma']);
+      first.resolve({ node_ids: ['beta', 'alpha', 'gamma', 'delta'] });
+      await Promise.all([firstSave, secondSave]);
+      expect(vi.mocked(store.endpoints.hubReorderNodes).mock.calls.map(([, ids]) => ids)).toEqual([
+        ['beta', 'alpha'],
+        ['delta', 'gamma'],
+      ]);
+      expect(agentIds(store)).toEqual(['beta', 'alpha', 'delta', 'gamma']);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('refuses to reorder through a cross-origin Hub URL', async () => {
+    const store = new AppStore({
+      ...hubConfig,
+      hub: { ...hubConfig.hub, url: 'https://other.test/hub/' },
+    });
+    try {
+      store.endpoints.hubReorderNodes = vi.fn();
+      await expect(store.reorderHubAgents(['beta', 'alpha'])).rejects.toThrow(
+        'Hub is not available on this origin.',
+      );
+      expect(store.endpoints.hubReorderNodes).not.toHaveBeenCalled();
+    } finally {
+      store.dispose();
+    }
+  });
+});
+
 describe('SessionStore', () => {
   it('routes legacy session requests by number while preserving their saved identity', async () => {
     const fetcher = vi.fn(async () => new Response('{}', { status: 200 }));

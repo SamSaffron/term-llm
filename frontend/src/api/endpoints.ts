@@ -745,6 +745,12 @@ export const endpoints = (api: APIClient) => ({
     ),
   stopWidget: (mount: string) =>
     api.post<Record<string, unknown>>(`/admin/widgets/${encoded(mount)}/stop`, {}, 'mutation'),
+  hubReorderNodes: (absoluteURL: string, nodeIds: string[]) =>
+    api.json<{ node_ids: string[] }>(
+      absoluteURL,
+      { method: 'PATCH', body: JSON.stringify({ node_ids: nodeIds }) },
+      { policy: 'mutation', auth: 'ignore' },
+    ),
   hubNodes: (absoluteURL: string, signal?: AbortSignal) =>
     api.json<Record<string, unknown>>(
       absoluteURL,

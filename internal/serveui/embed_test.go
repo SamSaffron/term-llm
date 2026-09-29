@@ -144,7 +144,11 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// shared list and store helpers, and add the project header drag and the
 		// keyboard and menu moves. The Projects view is on screen at startup too:
 		// ~546.9/160.0 kB. Same ~1% rule as above.
-		"dist/app.js":                {raw: 553_000, gzip: 161_600},
+		// The proxied node's Agents sidebar now follows the Hub's saved node order
+		// and offers link drag, keyboard/menu moves, optimistic saves, and stale
+		// read protection. Those controls are needed at startup: ~552.0/161.6 kB
+		// raw/gzip, with roughly the same modest headroom as the other budgets.
+		"dist/app.js":                {raw: 558_000, gzip: 164_000},
 		"dist/chunks/Lightbox.js":    {raw: 8_000, gzip: 3_200},
 		"dist/assets/Lightbox.css":   {raw: 4_000, gzip: 1_400},
 		"dist/chunks/StatsModal.js":  {raw: 8_000, gzip: 3_000},

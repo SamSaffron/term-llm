@@ -1696,6 +1696,18 @@ export class AppStore {
     await this.sessionStore.refreshHubAgents(force);
   }
 
+  async reorderHubAgents(orderedIds: string[]): Promise<void> {
+    await this.sessionStore.reorderHubAgents(orderedIds);
+  }
+
+  hasPendingHubAgentOrder(): boolean {
+    return this.sessionStore.hasPendingHubAgentOrder();
+  }
+
+  async waitForHubAgentOrder(): Promise<void> {
+    await this.sessionStore.waitForHubAgentOrder();
+  }
+
   private startStatusPoll(): void {
     this.statusReconciler.start();
   }

@@ -200,6 +200,103 @@ test.describe('Hub node order', () => {
     await expectNoSecrets(JSON.stringify(listed));
   });
 
+  test('synchronizes the node chat sidebar with Hub order and saves moves from its links', async ({
+    page,
+  }, testInfo) => {
+    test.skip(testInfo.project.name !== 'desktop', 'sidebar pointer and keyboard on desktop');
+    test.setTimeout(60_000);
+    await resetOrder();
+    await openDashboard(page);
+    // The fixture's two extra nodes have no live backend. Mark them reachable
+    // in this browser's GET response so the chat sidebar can show all three,
+    // while PATCH still goes to the real Hub and persists its actual order.
+    await page.route('**/hub/api/nodes', async (route) => {
+      const response = await route.fetch();
+      const data = (await response.json()) as {
+        nodes: Array<{ id: string; status: { reachable: boolean } }>;
+      };
+      await route.fulfill({
+        response,
+        json: {
+          ...data,
+          nodes: data.nodes.map((node) =>
+            known.includes(node.id)
+              ? { ...node, status: { ...node.status, reachable: true } }
+              : node,
+          ),
+        },
+      });
+    });
+    await page.goto(`${hubRoot}node/${production}/?new=1`);
+    await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
+    const agentRows = () => page.locator('.hub-agent-links > .hub-agent-row');
+    const agentLink = (id: string) => page.locator(`.hub-agent-row[data-reorder-id="${id}"] a`);
+    const shown = () =>
+      agentRows().evaluateAll((rows) =>
+        rows.map((row) => (row as HTMLElement).dataset.reorderId || ''),
+      );
+    await expect.poll(shown).toEqual(known);
+
+    // Keyboard movement from the link preserves focus and changes Hub order.
+    const betaLink = agentLink(beta);
+    await betaLink.focus();
+    const raised = await nextSave(page, () => page.keyboard.press('Alt+ArrowUp'));
+    expect(raised.sent).toEqual([beta, alpha]);
+    expect(raised.committed).toEqual([production, beta, alpha]);
+    await expect.poll(shown).toEqual([production, beta, alpha]);
+    await expect(betaLink).toBeFocused();
+
+    // The link itself is the drag surface; a drop saves without navigating.
+    const start = await center(betaLink);
+    const end = await center(agentLink(production));
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    await page.mouse.move(end.x, end.y, { steps: 10 });
+    await expect(page.locator(`.hub-agent-row[data-reorder-id="${beta}"]`)).toHaveClass(
+      /is-dragging/,
+    );
+    const dragged = await nextSave(page, () => page.mouse.up());
+    expect(dragged.sent).toEqual([beta, production]);
+    expect(dragged.committed).toEqual([beta, production, alpha]);
+    await expect.poll(shown).toEqual([beta, production, alpha]);
+    await expect(page).toHaveURL(new RegExp(`/node/${production}/`));
+
+    await page.getByRole('button', { name: `More actions for ${names[alpha]}` }).click();
+    const earlier = await nextSave(page, () =>
+      page.getByRole('menuitem', { name: 'Move earlier' }).click(),
+    );
+    expect(earlier.committed).toEqual([beta, alpha, production]);
+
+    // A link away from this node must wait for an in-flight reorder; otherwise
+    // page teardown could cancel the PATCH before it reaches the Hub.
+    let releaseSave!: () => void;
+    const heldSave = new Promise<void>((resolve) => (releaseSave = resolve));
+    await page.route('**/hub/api/nodes/order', async (route) => {
+      await heldSave;
+      await route.continue();
+    });
+    await agentLink(alpha).focus();
+    const pendingResponse = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname.endsWith('/api/nodes/order') &&
+        response.request().method() === 'PATCH',
+    );
+    await page.keyboard.press('Alt+ArrowDown');
+    await page.getByRole('link', { name: 'Back to Hub' }).click();
+    await expect(page).toHaveURL(new RegExp(`/node/${production}/`));
+    releaseSave();
+    const pending = await pendingResponse;
+    expect(pending.status()).toBe(200);
+    await expectShown(page, [beta, production, alpha]);
+
+    await page.goto(`${hubRoot}node/${production}/?new=1`);
+    await expect.poll(shown).toEqual([beta, production, alpha]);
+    await page.reload();
+    await expect.poll(shown).toEqual([beta, production, alpha]);
+    await page.getByRole('link', { name: 'Back to Hub' }).click();
+    await expectShown(page, [beta, production, alpha]);
+  });
+
   test('shows an order a node saved with its own token on the next poll; node tokens reach nothing else', async ({
     page,
   }, testInfo) => {
