@@ -395,15 +395,16 @@
   user-select: none;
 }
 
-.pinned-session-list.is-reordering,
-.pinned-session-list.is-reordering * {
+/* Shared by every user-ordered list: pinned conversations and projects. */
+.reorder-list.is-reordering,
+.reorder-list.is-reordering * {
   cursor: grabbing;
 }
 
 /* The dragged row tracks the pointer directly, lifted above the rows that
-   slide aside to show where it will land. */
+   slide aside to show where it will land and their menu buttons. */
 .session-row.is-dragging {
-  z-index: var(--z-local-popover);
+  z-index: var(--z-local-dragging);
   transition: none;
 }
 

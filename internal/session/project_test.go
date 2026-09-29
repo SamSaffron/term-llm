@@ -456,11 +456,16 @@ func TestProjectSidebarActivityUsesAllRowsBeyondPinnedWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(groups) < 2 || groups[0].Project == nil || groups[0].Project.ID != alpha.ID {
-		t.Fatalf("group order ignored latest unpinned activity: %#v", groups)
+	// Groups list in their persisted rank; each still reports its latest
+	// activity, including rows beyond the pinned window.
+	activity := map[string]time.Time{}
+	for _, group := range groups {
+		if group.Project != nil {
+			activity[group.Project.ID] = group.LastActivity
+		}
 	}
-	if !groups[0].LastActivity.After(groups[1].LastActivity) || !groups[0].LastActivity.Equal(latestMessage.CreatedAt) {
-		t.Fatalf("group activity alpha=%v beta=%v latest=%v", groups[0].LastActivity, groups[1].LastActivity, latestMessage.CreatedAt)
+	if !activity[alpha.ID].After(activity[beta.ID]) || !activity[alpha.ID].Equal(latestMessage.CreatedAt) {
+		t.Fatalf("group activity alpha=%v beta=%v latest=%v", activity[alpha.ID], activity[beta.ID], latestMessage.CreatedAt)
 	}
 }
 

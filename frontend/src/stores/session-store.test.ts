@@ -895,3 +895,256 @@ describe('pinned conversation order', () => {
     }
   });
 });
+
+describe('project order', () => {
+  // Groups arrive in saved rank order, deliberately unlike their activity:
+  // Gamma has the newest conversation and Zulu is archived.
+  const group = (id: string, name: string, rank: number, activity: number, archived = false) => ({
+    project: {
+      id,
+      name,
+      canonical_dir: `/p/${id}`,
+      sort_order: rank,
+      ...(archived ? { archived_at: '2026-01-01T00:00:00Z' } : {}),
+    },
+    session_count: 1,
+    sessions: [
+      {
+        id: `${id}-chat`,
+        short_title: `${name} chat`,
+        created_at: 1,
+        last_message_at: activity,
+      },
+    ],
+  });
+  const groups = (activity: Record<string, number> = {}) => [
+    group('a', 'Alpha', 1, activity.a ?? 10),
+    group('b', 'Beta', 2, activity.b ?? 20),
+    group('c', 'Gamma', 3, activity.c ?? 90),
+    group('z', 'Zulu', 4, activity.z ?? 5, true),
+  ];
+  const projectIDs = (store: AppStore) => store.projects.value.map((project) => project.id);
+  const projectRanks = (store: AppStore) =>
+    store.projects.value.map((project) => [project.id, project.sortOrder]);
+  const projectStore = () => {
+    const store = new AppStore(testConfig);
+    store.sessionStore.applySidebar({ groups: groups(), recent_sessions: [] });
+    store.refreshSidebar = vi.fn(async () => undefined);
+    return store;
+  };
+  const ranks = (ids: string[]) => ({
+    projects: ids.map((id, index) => ({ id, sort_order: index + 1 })),
+  });
+
+  it('keeps projects in their saved order, archived last, whatever their activity', () => {
+    const store = projectStore();
+    try {
+      expect(projectIDs(store)).toEqual(['a', 'b', 'c', 'z']);
+      expect(projectRanks(store)).toEqual([
+        ['a', 1],
+        ['b', 2],
+        ['c', 3],
+        ['z', 4],
+      ]);
+      // New replies never move a project, and archived projects list after
+      // active ones even when a snapshot interleaves them.
+      store.sessionStore.applySidebar({
+        groups: [group('z', 'Zulu', 1, 999, true), ...groups({ a: 500, b: 400 }).slice(0, 3)],
+        recent_sessions: [],
+      });
+      expect(projectIDs(store)).toEqual(['a', 'b', 'c', 'z']);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('shows a reorder at once, keeps it through stale snapshots, then applies saved ranks', async () => {
+    const store = projectStore();
+    try {
+      let commit!: (value: Record<string, unknown>) => void;
+      store.endpoints.reorderProjects = vi.fn(
+        () => new Promise<Record<string, unknown>>((resolve) => (commit = resolve)),
+      );
+
+      const saving = store.reorderProjects(['c', 'a', 'b']);
+      expect(projectIDs(store)).toEqual(['c', 'a', 'b', 'z']);
+      await vi.waitFor(() =>
+        expect(store.endpoints.reorderProjects).toHaveBeenCalledWith(['c', 'a', 'b']),
+      );
+      // A refresh that read the catalog before the save committed cannot undo it.
+      store.sessionStore.applySidebar({ groups: groups({ a: 800 }), recent_sessions: [] });
+      expect(projectIDs(store)).toEqual(['c', 'a', 'b', 'z']);
+
+      commit({
+        projects: [
+          { id: 'c', sort_order: 1 },
+          { id: 'a', sort_order: 2 },
+          { id: 'z', sort_order: 3 },
+          { id: 'b', sort_order: 4 },
+        ],
+      });
+      await saving;
+      expect(projectRanks(store)).toEqual([
+        ['c', 1],
+        ['a', 2],
+        ['b', 4],
+        ['z', 3],
+      ]);
+      expect(store.refreshSidebar).toHaveBeenCalledOnce();
+
+      // Once saved, server snapshots are authoritative again.
+      store.sessionStore.applySidebar({ groups: groups(), recent_sessions: [] });
+      expect(projectIDs(store)).toEqual(['a', 'b', 'c', 'z']);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('moves only the listed projects and saves nothing for the current order', async () => {
+    const store = projectStore();
+    try {
+      store.endpoints.reorderProjects = vi.fn(async (ids: string[]) => ranks(ids));
+
+      await store.reorderProjects(['c', 'a']);
+      expect(store.endpoints.reorderProjects).toHaveBeenCalledWith(['c', 'a']);
+      expect(projectIDs(store)).toEqual(['c', 'b', 'a', 'z']);
+      await store.reorderProjects(['c', 'b', 'a']);
+      expect(store.endpoints.reorderProjects).toHaveBeenCalledOnce();
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('restores the previous order, refreshes, and explains a rejected save', async () => {
+    const store = projectStore();
+    try {
+      store.endpoints.reorderProjects = vi.fn(async () => {
+        throw new APIError('a listed project was not found; refresh and try again', 404);
+      });
+      await expect(store.reorderProjects(['b', 'a', 'c'])).rejects.toThrow(
+        'Projects changed elsewhere; showing the latest order.',
+      );
+      expect(projectIDs(store)).toEqual(['a', 'b', 'c', 'z']);
+      expect(projectRanks(store).slice(0, 3)).toEqual([
+        ['a', 1],
+        ['b', 2],
+        ['c', 3],
+      ]);
+      expect(store.refreshSidebar).toHaveBeenCalledOnce();
+
+      store.endpoints.reorderProjects = vi.fn(async () => {
+        throw new APIError('failed to save the project order', 500);
+      });
+      await expect(store.reorderProjects(['c', 'a', 'b'])).rejects.toThrow(
+        'Couldn’t save the project order: failed to save the project order',
+      );
+      expect(projectIDs(store)).toEqual(['a', 'b', 'c', 'z']);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('saves queued active and archived project moves even when their ID sets differ', async () => {
+    const store = projectStore();
+    try {
+      store.sessionStore.applySidebar({
+        groups: [...groups(), group('y', 'Yankee', 5, 1, true)],
+        recent_sessions: [],
+      });
+      const commits: Array<(value: Record<string, unknown>) => void> = [];
+      store.endpoints.reorderProjects = vi.fn(
+        () => new Promise<Record<string, unknown>>((resolve) => commits.push(resolve)),
+      );
+
+      const first = store.reorderProjects(['b', 'a', 'c']);
+      await vi.waitFor(() => expect(commits).toHaveLength(1));
+      const active = store.reorderProjects(['b', 'c', 'a']);
+      const archived = store.reorderProjects(['y', 'z']);
+      expect(projectIDs(store)).toEqual(['b', 'c', 'a', 'y', 'z']);
+
+      commits[0](ranks(['b', 'a', 'c']));
+      await first;
+      await vi.waitFor(() => expect(commits).toHaveLength(2));
+      expect(store.endpoints.reorderProjects).toHaveBeenNthCalledWith(2, ['b', 'c', 'a']);
+      commits[1](ranks(['b', 'c', 'a']));
+      await active;
+      await vi.waitFor(() => expect(commits).toHaveLength(3));
+      expect(store.endpoints.reorderProjects).toHaveBeenNthCalledWith(3, ['y', 'z']);
+      commits[2]({
+        projects: [
+          { id: 'y', sort_order: 4 },
+          { id: 'z', sort_order: 5 },
+        ],
+      });
+      await archived;
+      expect(projectIDs(store)).toEqual(['b', 'c', 'a', 'y', 'z']);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('reports a failed active move even if an archived move is queued next', async () => {
+    const store = projectStore();
+    try {
+      store.sessionStore.applySidebar({
+        groups: [...groups(), group('y', 'Yankee', 5, 1, true)],
+        recent_sessions: [],
+      });
+      let fail!: (error: Error) => void;
+      store.endpoints.reorderProjects = vi
+        .fn()
+        .mockImplementationOnce(() => new Promise((_, reject) => (fail = reject)))
+        .mockImplementationOnce(async () => ({
+          projects: [
+            { id: 'a', sort_order: 1 },
+            { id: 'b', sort_order: 2 },
+            { id: 'c', sort_order: 3 },
+            { id: 'y', sort_order: 4 },
+            { id: 'z', sort_order: 5 },
+          ],
+        }));
+
+      const active = store.reorderProjects(['b', 'a', 'c']);
+      await vi.waitFor(() => expect(fail).toBeTypeOf('function'));
+      const archived = store.reorderProjects(['y', 'z']);
+      fail(new APIError('active move failed', 500));
+      await expect(active).rejects.toThrow('active move failed');
+      await archived;
+      expect(store.endpoints.reorderProjects).toHaveBeenCalledTimes(2);
+      expect(projectIDs(store)).toEqual(['a', 'b', 'c', 'y', 'z']);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('saves only the newest of several quick reorders', async () => {
+    const store = projectStore();
+    try {
+      const commits: Array<(value: Record<string, unknown>) => void> = [];
+      store.endpoints.reorderProjects = vi.fn(
+        () => new Promise<Record<string, unknown>>((resolve) => commits.push(resolve)),
+      );
+
+      const first = store.reorderProjects(['b', 'a', 'c']);
+      await vi.waitFor(() => expect(commits).toHaveLength(1));
+      const second = store.reorderProjects(['b', 'c', 'a']);
+      const third = store.reorderProjects(['c', 'b', 'a']);
+      expect(projectIDs(store)).toEqual(['c', 'b', 'a', 'z']);
+
+      commits[0](ranks(['b', 'a', 'c']));
+      await first;
+      // The earlier save's ranks must not undo the newer, unsaved order.
+      expect(projectIDs(store)).toEqual(['c', 'b', 'a', 'z']);
+      await vi.waitFor(() => expect(commits).toHaveLength(2));
+      expect(store.endpoints.reorderProjects).toHaveBeenLastCalledWith(['c', 'b', 'a']);
+
+      commits[1](ranks(['c', 'b', 'a']));
+      await Promise.all([second, third]);
+      expect(projectIDs(store)).toEqual(['c', 'b', 'a', 'z']);
+      expect(store.endpoints.reorderProjects).toHaveBeenCalledTimes(2);
+      expect(store.refreshSidebar).toHaveBeenCalledOnce();
+    } finally {
+      store.dispose();
+    }
+  });
+});

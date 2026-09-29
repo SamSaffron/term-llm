@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sort"
 	"strings"
 	"time"
 )
@@ -157,10 +156,10 @@ func (s *SQLiteStore) pinnedOrderPrefix(alias string) string {
 
 // pinOrderValue exposes a rank only for pinned rows.
 func pinOrderValue(pinned bool, raw sql.NullInt64) int64 {
-	if !pinned || !raw.Valid || raw.Int64 <= 0 {
+	if !pinned {
 		return 0
 	}
-	return raw.Int64
+	return rankValue(raw)
 }
 
 // cursorPinRank is a boundary row's pinnedRankSQL value.
@@ -296,7 +295,7 @@ func (s *SQLiteStore) setSessionPinnedTx(ctx context.Context, id string, pinned 
 
 // ReorderPinnedSessions implements PinnedSessionStore.
 func (s *SQLiteStore) ReorderPinnedSessions(ctx context.Context, orderedIDs []string) (PinnedOrder, error) {
-	ids, err := normalizePinnedOrderIDs(orderedIDs)
+	ids, err := normalizeOrderIDs(orderedIDs, MaxPinnedOrderIDs, ErrPinnedOrderInvalid, "session")
 	if err != nil {
 		return PinnedOrder{}, err
 	}
@@ -315,34 +314,6 @@ func (s *SQLiteStore) ReorderPinnedSessions(ctx context.Context, orderedIDs []st
 	return order, nil
 }
 
-func normalizePinnedOrderIDs(orderedIDs []string) ([]string, error) {
-	if len(orderedIDs) == 0 {
-		return nil, fmt.Errorf("%w: no sessions listed", ErrPinnedOrderInvalid)
-	}
-	if len(orderedIDs) > MaxPinnedOrderIDs {
-		return nil, fmt.Errorf("%w: at most %d sessions may be ordered at once", ErrPinnedOrderInvalid, MaxPinnedOrderIDs)
-	}
-	ids := make([]string, 0, len(orderedIDs))
-	seen := make(map[string]struct{}, len(orderedIDs))
-	for _, raw := range orderedIDs {
-		id := strings.TrimSpace(raw)
-		if id == "" {
-			return nil, fmt.Errorf("%w: session id is empty", ErrPinnedOrderInvalid)
-		}
-		if _, duplicate := seen[id]; duplicate {
-			return nil, fmt.Errorf("%w: session %s is listed more than once", ErrPinnedOrderInvalid, id)
-		}
-		seen[id] = struct{}{}
-		ids = append(ids, id)
-	}
-	return ids, nil
-}
-
-type pinnedRow struct {
-	id   string
-	rank int64
-}
-
 func (s *SQLiteStore) reorderPinnedSessionsTx(ctx context.Context, ids []string) (PinnedOrder, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -350,49 +321,34 @@ func (s *SQLiteStore) reorderPinnedSessionsTx(ctx context.Context, ids []string)
 	}
 	defer tx.Rollback()
 
-	current, err := loadPinnedRowsTx(ctx, tx)
-	if err != nil {
-		return PinnedOrder{}, err
-	}
-	if err := validatePinnedOrderTx(ctx, tx, current, ids); err != nil {
-		return PinnedOrder{}, err
-	}
-	order, err := writePinnedOrderTx(ctx, tx, current, permutePinnedOrder(current, ids))
-	if err != nil {
-		return PinnedOrder{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return PinnedOrder{}, err
-	}
-	return order, nil
-}
-
-// loadPinnedRowsTx returns every pinned session in its displayed order.
-func loadPinnedRowsTx(ctx context.Context, tx *sql.Tx) ([]pinnedRow, error) {
-	rows, err := tx.QueryContext(ctx, `
+	// Every pinned session in its displayed order.
+	current, err := loadRankedRowsTx(ctx, tx, `
 		SELECT id, pin_order FROM sessions
 		WHERE COALESCE(pinned, FALSE)
 		ORDER BY `+pinnedRankSQL("")+` ASC,
 		         COALESCE(last_message_at, last_user_message_at, created_at) DESC,
 		         number DESC, id`)
 	if err != nil {
-		return nil, fmt.Errorf("load pinned sessions: %w", err)
+		return PinnedOrder{}, fmt.Errorf("load pinned sessions: %w", err)
 	}
-	defer rows.Close()
-	var pinned []pinnedRow
-	for rows.Next() {
-		var row pinnedRow
-		var rank sql.NullInt64
-		if err := rows.Scan(&row.id, &rank); err != nil {
-			return nil, fmt.Errorf("scan pinned session: %w", err)
-		}
-		row.rank = pinOrderValue(true, rank)
-		pinned = append(pinned, row)
+	if err := validatePinnedOrderTx(ctx, tx, current, ids); err != nil {
+		return PinnedOrder{}, err
 	}
-	return pinned, rows.Err()
+	positions, changed, err := writeOrderTx(ctx, tx, `UPDATE sessions SET pin_order = ? WHERE id = ?`, current, permuteOrder(current, ids))
+	if err != nil {
+		return PinnedOrder{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return PinnedOrder{}, err
+	}
+	order := PinnedOrder{Positions: make([]PinnedPosition, 0, len(positions)), Changed: changed}
+	for _, row := range positions {
+		order.Positions = append(order.Positions, PinnedPosition{ID: row.id, PinOrder: row.rank})
+	}
+	return order, nil
 }
 
-func validatePinnedOrderTx(ctx context.Context, tx *sql.Tx, current []pinnedRow, ids []string) error {
+func validatePinnedOrderTx(ctx context.Context, tx *sql.Tx, current []rankedRow, ids []string) error {
 	pinned := make(map[string]struct{}, len(current))
 	for _, row := range current {
 		pinned[row.id] = struct{}{}
@@ -411,51 +367,4 @@ func validatePinnedOrderTx(ctx context.Context, tx *sql.Tx, current []pinnedRow,
 		return fmt.Errorf("%w: session %s is not pinned", ErrPinnedOrderConflict, id)
 	}
 	return nil
-}
-
-// permutePinnedOrder places ids, in order, into the positions they currently
-// occupy within current. Every other pinned session keeps its position.
-func permutePinnedOrder(current []pinnedRow, ids []string) []string {
-	position := make(map[string]int, len(current))
-	next := make([]string, len(current))
-	for i, row := range current {
-		position[row.id] = i
-		next[i] = row.id
-	}
-	slots := make([]int, 0, len(ids))
-	for _, id := range ids {
-		slots = append(slots, position[id])
-	}
-	sort.Ints(slots)
-	for i, id := range ids {
-		next[slots[i]] = id
-	}
-	return next
-}
-
-// writePinnedOrderTx stores dense 1-based ranks for next, updating only rows
-// whose rank changes so an unchanged order writes nothing.
-func writePinnedOrderTx(ctx context.Context, tx *sql.Tx, current []pinnedRow, next []string) (PinnedOrder, error) {
-	existing := make(map[string]int64, len(current))
-	for _, row := range current {
-		existing[row.id] = row.rank
-	}
-	update, err := tx.PrepareContext(ctx, `UPDATE sessions SET pin_order = ? WHERE id = ?`)
-	if err != nil {
-		return PinnedOrder{}, fmt.Errorf("prepare pinned rank update: %w", err)
-	}
-	defer update.Close()
-	order := PinnedOrder{Positions: make([]PinnedPosition, 0, len(next))}
-	for i, id := range next {
-		rank := int64(i + 1)
-		order.Positions = append(order.Positions, PinnedPosition{ID: id, PinOrder: rank})
-		if existing[id] == rank {
-			continue
-		}
-		if _, err := update.ExecContext(ctx, rank, id); err != nil {
-			return PinnedOrder{}, fmt.Errorf("store pinned rank for %s: %w", id, err)
-		}
-		order.Changed = append(order.Changed, id)
-	}
-	return order, nil
 }

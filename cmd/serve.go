@@ -1621,6 +1621,7 @@ func (s *serveServer) httpHandler() http.Handler {
 	inner.HandleFunc("/v1/sharing/capabilities", s.auth(s.cors(s.handleSharingCapabilities)))
 	inner.HandleFunc("/v1/project-directories", s.auth(s.cors(s.handleProjectDirectories)))
 	inner.HandleFunc("/v1/projects", s.auth(s.cors(s.handleProjects)))
+	inner.HandleFunc("/v1/projects/order", s.auth(s.cors(s.handleProjectsOrder)))
 	inner.HandleFunc("/v1/projects/", s.auth(s.cors(s.handleProjectByID)))
 	inner.HandleFunc("/v1/sidebar", s.auth(s.cors(s.handleSidebar)))
 	inner.HandleFunc("/v1/events", s.auth(s.cors(s.handleEvents)))

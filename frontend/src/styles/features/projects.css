@@ -2,7 +2,34 @@
 
 /* Project navigator */
 .project-group {
+  position: relative;
   margin: 0.3rem 0;
+  transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Projects reorder like pinned conversations (see sessions.css), dragged by
+   their header: the mouse lifts a project after a few pixels of travel and
+   touch after a brief still press, and the whole group, conversations
+   included, moves. Holding the header must lift it rather than select its
+   name or open the touch callout. */
+.project-group.is-reorderable > .project-group-header {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* The dragged project tracks the pointer directly, lifted above the groups
+   that slide aside to show where it will land. An expanded project can be
+   much taller than its neighbours, so it covers many of their rows: it is
+   opaque and sits above their menu buttons, which touch screens always show. */
+.project-group.is-dragging {
+  z-index: var(--z-local-dragging);
+  border-radius: 0.5rem;
+  background: var(--surface);
+  box-shadow:
+    0 0 0 1px var(--border),
+    var(--shadow-strong);
+  transition: none;
 }
 
 .project-group-header {
@@ -911,6 +938,7 @@
 
   .project-group {
     scroll-behavior: auto;
+    transition-duration: 0.01ms;
   }
 
   .project-group-chevron,

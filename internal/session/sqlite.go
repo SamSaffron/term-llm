@@ -42,6 +42,7 @@ type SQLiteStore struct {
 	hasSessionBranches       bool // true if session_branches table exists
 	hasProjectID             bool // true if sessions table has project_id
 	hasProjectsTable         bool // true if projects table exists
+	hasProjectSortOrder      bool // true if projects table has sort_order column
 	storeInstanceMu          sync.Mutex
 	storeInstanceID          string
 }
@@ -475,6 +476,25 @@ WHEN OLD.name IS NOT NEW.name
 BEGIN
     INSERT INTO session_change_log(kind, session_id, project_id, transcript_rev, status)
     VALUES ('session.metadata_changed', NEW.id, COALESCE(NEW.project_id, ''), COALESCE(NEW.transcript_rev, 0), COALESCE(NEW.status, ''));
+END;
+`
+
+// projectOrderSchemaV61 replaces the v52 project change trigger so a reorder,
+// which changes only projects.sort_order, is observable by other processes
+// sharing the store. Migration 61 and fresh bootstrap both apply it through
+// migrateProjectOrderV61 after adding the column; like pinOrderSchemaV60 it is
+// deliberately not part of canonicalSessionSchema, which migration 49 replays
+// on databases that do not have sort_order yet.
+const projectOrderSchemaV61 = `
+DROP TRIGGER IF EXISTS session_change_log_project_update;
+CREATE TRIGGER session_change_log_project_update
+AFTER UPDATE OF name, canonical_dir, archived_at, sort_order ON projects
+WHEN OLD.name IS NOT NEW.name
+  OR OLD.canonical_dir IS NOT NEW.canonical_dir
+  OR OLD.archived_at IS NOT NEW.archived_at
+  OR OLD.sort_order IS NOT NEW.sort_order
+BEGIN
+    INSERT INTO session_change_log(kind, project_id) VALUES ('project.updated', NEW.id);
 END;
 `
 

@@ -290,12 +290,31 @@ func (s *SQLiteStore) setCurrentColumns() {
 	s.hasSessionBranches = true
 	s.hasProjectID = true
 	s.hasProjectsTable = true
+	s.hasProjectSortOrder = true
 }
 
-func (s *SQLiteStore) probeProjectsTable() {
-	var count int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'projects'`).Scan(&count); err == nil {
-		s.hasProjectsTable = count > 0
+// probeProjectColumns detects the projects table and its optional columns in
+// a single PRAGMA scan; a missing table reports no columns.
+func (s *SQLiteStore) probeProjectColumns() {
+	rows, err := s.db.Query("PRAGMA table_info(projects)")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull int
+		var dfltValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dfltValue, &pk); err != nil {
+			return
+		}
+		s.hasProjectsTable = true
+		if name == "sort_order" {
+			s.hasProjectSortOrder = true
+		}
 	}
 }
 

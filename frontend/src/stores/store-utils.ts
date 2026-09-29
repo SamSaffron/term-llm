@@ -1,7 +1,7 @@
 import { APIError } from '../api/client';
 import type { AppConfig } from '../app/config';
 import { rebaseHubAssetURL } from '../app/config';
-import type { ApprovalPrompt, AskUserPrompt, MCPServer, Session } from '../domain/types';
+import type { ApprovalPrompt, AskUserPrompt, MCPServer, Project, Session } from '../domain/types';
 import { sanitizeSession } from '../domain/transcript';
 
 export const uuid = (): string =>
@@ -41,6 +41,15 @@ export const compareSessionsByActivity = (left: Session, right: Session): number
   sessionPinRank(left) - sessionPinRank(right) ||
   (right.lastMessageAt || right.created) - (left.lastMessageAt || left.created) ||
   (right.number || 0) - (left.number || 0);
+
+/**
+ * Sidebar project order: active projects before archived ones, each in their
+ * persisted rank, which activity never changes. Unranked projects follow
+ * ranked ones; a stable sort keeps the server's order among them.
+ */
+export const compareProjects = (left: Project, right: Project): number =>
+  Number(Boolean(left.archived)) - Number(Boolean(right.archived)) ||
+  (left.sortOrder || Number.MAX_SAFE_INTEGER) - (right.sortOrder || Number.MAX_SAFE_INTEGER);
 
 export const sessionFrom = (config: AppConfig, value: Record<string, unknown>): Session =>
   sanitizeSession(value, { rebaseAssetURL: (url) => rebaseHubAssetURL(config, url) });

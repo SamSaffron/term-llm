@@ -528,6 +528,9 @@ export const endpoints = (api: APIClient) => ({
       { 'Idempotency-Key': `project_${id}_${JSON.stringify(body)}` },
     ),
   patchProject: (id: string, body: unknown) => api.patch(`/v1/projects/${encoded(id)}`, body),
+  /** Moves the listed projects, in order, into the sidebar ranks they already occupy. */
+  reorderProjects: (projectIds: string[]) =>
+    api.patch<Record<string, unknown>>('/v1/projects/order', { project_ids: projectIds }),
   projectDirectories: (path = '', showHidden = false, signal?: AbortSignal) => {
     const params = new URLSearchParams();
     if (path) params.set('path', path);

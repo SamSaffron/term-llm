@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 
-/** Mouse travel before a press on a pinned row becomes a drag instead of a click. */
+/** Mouse travel before a press on a reorderable row becomes a drag instead of a click. */
 const DRAG_THRESHOLD = 5;
 /**
- * How long a touch (or pen) must rest on a pinned row to lift it. Moving
+ * How long a touch (or pen) must rest on a reorderable row to lift it. Moving
  * sooner scrolls the sidebar or swipes the drawer, as it does on other rows.
  */
 export const LONG_PRESS_MS = 300;
@@ -27,10 +27,23 @@ export function movedOrder(ids: readonly string[], from: number, to: number): st
   return next;
 }
 
+/** The move an Alt+Arrow key asks of a focused reorderable row, or 0 for any other key. */
+export function reorderKeyOffset(event: KeyboardEvent): -1 | 0 | 1 {
+  if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return 0;
+  return event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0;
+}
+
+/** The reorderable rows of a list: its direct children carrying `data-reorder-id`. */
+function reorderRows(list: HTMLElement): HTMLElement[] {
+  return [...list.children].filter(
+    (row): row is HTMLElement => row instanceof HTMLElement && Boolean(row.dataset.reorderId),
+  );
+}
+
 /**
  * Swallows the click that releasing a dragged row produces, so a drag never
- * also opens the conversation. The next press or a short grace period disarms
- * it, so later clicks are unaffected.
+ * also opens the conversation or toggles the project. The next press or a
+ * short grace period disarms it, so later clicks are unaffected.
  */
 function swallowReleaseClick(): void {
   const disarm = () => {
@@ -51,6 +64,32 @@ function swallowReleaseClick(): void {
   const timer = window.setTimeout(disarm, RELEASE_CLICK_GRACE_MS);
 }
 
+/**
+ * The landing slots of a lifted row, measured once as it lifts. Rows may
+ * differ in height (a project group is as tall as its open conversation
+ * list), so nothing assumes a fixed row height. `tops[i]` is where the lifted
+ * row's top sits if it lands at position i: at row i's top above its origin,
+ * or with its bottom at row i's bottom below it. The rows it passes slide by
+ * its pitch (its height plus the spacing to its neighbour) to open that slot,
+ * so the previewed gap is exactly where the re-rendered list puts the row.
+ */
+interface LandingSlots {
+  tops: number[];
+  /** How far rows below the lifted row rise when it moves past them. */
+  rise: number;
+  /** How far rows above the lifted row drop when it moves past them. */
+  drop: number;
+}
+
+function landingSlots(rects: readonly DOMRect[], from: number): LandingSlots {
+  const height = rects[from].height;
+  return {
+    tops: rects.map((rect, index) => (index <= from ? rect.top : rect.bottom - height)),
+    rise: from < rects.length - 1 ? rects[from + 1].top - rects[from].top : height,
+    drop: from > 0 ? rects[from].bottom - rects[from - 1].bottom : height,
+  };
+}
+
 interface DragGesture {
   /** Whether the pressed row is lifted and following the pointer. */
   readonly lifted: boolean;
@@ -60,16 +99,16 @@ interface DragGesture {
 
 /**
  * Pointer (mouse, touch, and pen) reordering for a list whose direct children
- * carry `data-pinned-id`. The whole row is the drag surface: a mouse press
- * lifts it after a few pixels of travel and a touch after a brief still press,
- * so clicks and taps still open the conversation and quick swipes still scroll
+ * carry `data-reorder-id`. The pressed control is the drag surface: a mouse
+ * press lifts its row after a few pixels of travel and a touch after a brief
+ * still press, so clicks and taps keep working and quick swipes still scroll
  * or close the drawer. The lifted row follows the pointer within the list's
- * bounds while the rows it passes slide to open its landing slot. Releasing
- * over a new slot reports the new order; Escape, pointer cancellation, or
- * releasing in place restores the list without reporting. A press that lifted
- * its row never also counts as a click.
+ * bounds while the rows it passes slide to open the slot nearest to it, which
+ * is where it lands. Releasing over a new slot reports the new order; Escape,
+ * pointer cancellation, or releasing in place restores the list without
+ * reporting. A press that lifted its row never also counts as a click.
  */
-export function usePinnedReorder(
+function useDragReorder(
   list: preact.RefObject<HTMLElement>,
   onReorder: (orderedIds: string[], movedId: string, to: number) => void,
   orderKey: string,
@@ -79,7 +118,7 @@ export function usePinnedReorder(
   reorder.current = onReorder;
   const active = useRef<DragGesture | null>(null);
 
-  // A sidebar refresh can add/remove/reorder pins mid-gesture. Never save a
+  // A sidebar refresh can add/remove/reorder rows mid-gesture. Never save a
   // destination computed against an obsolete list of row IDs or rectangles.
   useLayoutEffect(() => {
     active.current?.cancel();
@@ -109,17 +148,16 @@ export function usePinnedReorder(
       if (!event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
       const root = list.current;
       if (!root) return;
-      const rows = [...root.children].filter(
-        (row): row is HTMLElement => row instanceof HTMLElement && Boolean(row.dataset.pinnedId),
-      );
-      const from = rows.findIndex((row) => row.dataset.pinnedId === id);
+      const rows = reorderRows(root);
+      const from = rows.findIndex((row) => row.dataset.reorderId === id);
       if (from < 0 || rows.length < 2) return;
       // The press is not prevented: until the row lifts it is an ordinary
       // click, tap, scroll, or swipe.
       active.current?.cancel();
 
       const row = rows[from];
-      const ids = rows.map((entry) => entry.dataset.pinnedId || '');
+      const last = rows.length - 1;
+      const ids = rows.map((entry) => entry.dataset.reorderId || '');
       const scroller = root.closest<HTMLElement>('.sidebar-content');
       const pointerId = event.pointerId;
       // Touch and pen drags scroll, so they lift a row only after resting still.
@@ -130,8 +168,8 @@ export function usePinnedReorder(
       let lifted = false;
       // Whether the row ever lifted: such a press never also counts as a click.
       let held = false;
-      let rects: DOMRect[] = [];
-      let centers: number[] = [];
+      let origin = 0;
+      let slots: LandingSlots = { tops: [], rise: 0, drop: 0 };
       let startScroll = 0;
       let to = from;
       let frame = 0;
@@ -139,26 +177,27 @@ export function usePinnedReorder(
 
       const layout = () => {
         const travel = pointerY - startY + ((scroller?.scrollTop ?? 0) - startScroll);
-        // The lifted row stays within the pinned list: it cannot cross into
-        // unpinned conversations.
+        // The lifted row stays within its list: it cannot cross into rows
+        // outside it, such as unpinned conversations.
         const offset = Math.min(
-          rects[rects.length - 1].bottom - rects[from].bottom,
-          Math.max(rects[0].top - rects[from].top, travel),
+          slots.tops[last] - origin,
+          Math.max(slots.tops[0] - origin, travel),
         );
-        const height = rects[from].height;
-        // A row yields its slot once the lifted row's leading edge passes its
-        // middle, which also works when rows differ in height.
+        // It lands in the slot nearest to where it is shown, so a drop never
+        // jumps further than halfway to a neighbouring slot, whatever the
+        // heights of the rows around it.
+        const top = origin + offset;
         to = from;
-        while (to > 0 && rects[from].top + offset < centers[to - 1]) to -= 1;
-        while (to < rows.length - 1 && rects[from].bottom + offset > centers[to + 1]) to += 1;
+        while (to > 0 && top < (slots.tops[to - 1] + slots.tops[to]) / 2) to -= 1;
+        while (to < last && top > (slots.tops[to] + slots.tops[to + 1]) / 2) to += 1;
         rows.forEach((entry, index) => {
           const shift =
             index === from
               ? offset
               : from < index && index <= to
-                ? -height
+                ? -slots.rise
                 : to <= index && index < from
-                  ? height
+                  ? slots.drop
                   : 0;
           entry.style.transform = shift ? `translateY(${shift}px)` : '';
         });
@@ -168,8 +207,9 @@ export function usePinnedReorder(
       };
       const lift = () => {
         window.clearTimeout(timer);
-        rects = rows.map((entry) => entry.getBoundingClientRect());
-        centers = rects.map((rect) => rect.top + rect.height / 2);
+        const rects = rows.map((entry) => entry.getBoundingClientRect());
+        origin = rects[from].top;
+        slots = landingSlots(rects, from);
         startScroll = scroller?.scrollTop ?? 0;
         lifted = true;
         held = true;
@@ -299,4 +339,66 @@ export function usePinnedReorder(
   );
 
   return { draggingId, press };
+}
+
+/** Reordering controls for one row of a user-ordered list. */
+export interface ReorderControls {
+  /** Zero-based position within the list. */
+  position: number;
+  count: number;
+  dragging: boolean;
+  /** Tracks a press on the row's drag surface, which drags it once it moves (mouse) or rests (touch). */
+  press: (event: PointerEvent) => void;
+  /** Moves the row one place; `focus` names the control that keeps focus. */
+  move: (offset: -1 | 1, focus: 'row' | 'menu') => void;
+}
+
+export interface ReorderableListOptions {
+  /** Names a row in the announcement of its move. */
+  label: (id: string) => string;
+  /** Saves a new order of the list's IDs. */
+  save: (orderedIds: string[]) => Promise<void>;
+  /** Reports a save that failed; its announcement is withdrawn. */
+  report: (error: unknown) => void;
+  /** Selectors, within a row, of the controls that keep focus after a keyboard or menu move. */
+  focusTargets: Record<'row' | 'menu', string>;
+}
+
+/** Focuses a row's control after a move re-renders the list. */
+function focusRow(list: HTMLElement | null, id: string, selector: string): void {
+  const row = list && reorderRows(list).find((entry) => entry.dataset.reorderId === id);
+  const control = row?.querySelector<HTMLElement>(selector);
+  if (control && document.activeElement !== control) control.focus();
+}
+
+/**
+ * A user-ordered list, such as the pinned conversations or the projects, whose
+ * rows are the direct children of `list` carrying `data-reorder-id`. Rows move
+ * by dragging (see useDragReorder), Alt+Arrow keys, or menu items. Each move
+ * is announced politely, keeps focus on the moved row's control, and is saved
+ * through `options.save`.
+ */
+export function useReorderableList(ids: readonly string[], options: ReorderableListOptions) {
+  const list = useRef<HTMLDivElement>(null);
+  const [announcement, setAnnouncement] = useState('');
+  const commit = (orderedIds: string[], id: string, to: number, focus?: 'row' | 'menu') => {
+    setAnnouncement(`Moved ${options.label(id)} to position ${to + 1} of ${orderedIds.length}.`);
+    void options.save(orderedIds).catch((error) => {
+      setAnnouncement('');
+      options.report(error);
+    });
+    if (focus) requestAnimationFrame(() => focusRow(list.current, id, options.focusTargets[focus]));
+  };
+  const { draggingId, press } = useDragReorder(list, commit, ids.join('\0'));
+  const controls = (id: string, position: number): ReorderControls => ({
+    position,
+    count: ids.length,
+    dragging: draggingId === id,
+    press: (event) => press(event, id),
+    move: (offset, focus) => {
+      const to = position + offset;
+      if (to >= 0 && to < ids.length) commit(movedOrder(ids, position, to), id, to, focus);
+    },
+  });
+  return { list, reordering: draggingId !== null, announcement, controls };
 }

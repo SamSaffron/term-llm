@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -344,23 +345,6 @@ func TestReorderPinnedSessionsPublishesMetadataChanges(t *testing.T) {
 	}
 }
 
-func TestPermutePinnedOrder(t *testing.T) {
-	current := []pinnedRow{{id: "a", rank: 1}, {id: "b", rank: 2}, {id: "c", rank: 3}, {id: "d", rank: 4}}
-	for _, tc := range []struct {
-		ids  []string
-		want []string
-	}{
-		{ids: []string{"d", "a"}, want: []string{"d", "b", "c", "a"}},
-		{ids: []string{"b"}, want: []string{"a", "b", "c", "d"}},
-		{ids: []string{"c", "b", "a"}, want: []string{"c", "b", "a", "d"}},
-		{ids: []string{"b", "d", "a", "c"}, want: []string{"b", "d", "a", "c"}},
-	} {
-		if got := permutePinnedOrder(current, tc.ids); !reflect.DeepEqual(got, tc.want) {
-			t.Fatalf("permute %v = %v, want %v", tc.ids, got, tc.want)
-		}
-	}
-}
-
 func TestListCursorPagesThroughPinnedRanks(t *testing.T) {
 	store := newProjectTestStore(t)
 	ctx := context.Background()
@@ -461,24 +445,34 @@ func TestSidebarOrdersProjectPinsByRankAndContinuesCursor(t *testing.T) {
 	}
 }
 
-// failMigration60 makes migration 60 do its real work and then fail, leaving
-// the database genuinely at version 59. The returned func restores migrations.
-func failMigration60(t *testing.T) func() {
+// failMigration makes the given migration do its real work and then fail,
+// leaving the database genuinely at the previous version. The returned func
+// restores migrations.
+func failMigration(t *testing.T, version int) func() {
 	t.Helper()
 	original := migrations
 	migrations = append([]migration(nil), original...)
-	last := &migrations[len(migrations)-1]
-	if last.version != 60 {
-		t.Fatalf("last migration = %d, want 60", last.version)
-	}
-	realUp := last.up
-	last.up = func(db schemaExecutor) error {
-		if err := realUp(db); err != nil {
-			return err
+	for i := range migrations {
+		if migrations[i].version != version {
+			continue
 		}
-		return errors.New("injected migration 60 failure")
+		realUp := migrations[i].up
+		migrations[i].up = func(db schemaExecutor) error {
+			if err := realUp(db); err != nil {
+				return err
+			}
+			return fmt.Errorf("injected migration %d failure", version)
+		}
+		return func() { migrations = original }
 	}
-	return func() { migrations = original }
+	migrations = original
+	t.Fatalf("migration %d not found", version)
+	return nil
+}
+
+func failMigration60(t *testing.T) func() {
+	t.Helper()
+	return failMigration(t, 60)
 }
 
 func TestSessionMigration60BackfillsPinnedOrderFromActivityAndRetries(t *testing.T) {

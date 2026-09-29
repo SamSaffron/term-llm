@@ -13,7 +13,7 @@ import { DelegationContext } from './DelegationContext';
 import { Markdown } from './Markdown';
 import { Modals } from './Modals';
 import { Sidebar } from './Sidebar';
-import { LONG_PRESS_MS } from './usePinnedReorder';
+import { LONG_PRESS_MS } from './useReorderableList';
 import { Header } from './Header';
 import { DiffSidebar, PlanSurface } from './Panels';
 import { ChipPicker } from './ChipPicker';
@@ -6598,6 +6598,363 @@ describe('Preact-owned chat surfaces', () => {
         fireEvent.pointerUp(beta, { ...swipe, clientX: 40, clientY: 62 });
         expect(store.sidebarOpen.value).toBe(false);
         expect(store.endpoints.reorderPinnedSessions).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.mocked(window.matchMedia).mockReturnValue({
+          matches: false,
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        } as unknown as MediaQueryList);
+      }
+    });
+  });
+
+  describe('project order', () => {
+    // Saved ranks deliberately disagree with activity (Delta is the most recent).
+    const projectSidebarStore = () => {
+      const store = createStore();
+      store.setSidebarView('projects');
+      store.projectsEnabled.value = true;
+      const base = { ...store.sessions.value[0], messages: [] };
+      const chat = (id: string, projectId: string, title: string, lastMessageAt: number) => ({
+        ...base,
+        id,
+        title,
+        projectId,
+        lastMessageAt,
+      });
+      const alphaChat = chat('a-chat', 'p-a', 'Alpha work', 10);
+      const betaChats = [
+        chat('b-one', 'p-b', 'Beta one', 20),
+        chat('b-two', 'p-b', 'Beta two', 21),
+      ];
+      const deltaChat = chat('d-chat', 'p-d', 'Delta work', 90);
+      store.sessions.value = [alphaChat, ...betaChats, deltaChat];
+      store.activeSessionId.value = '';
+      store.projects.value = [
+        { id: 'p-a', name: 'Alpha', sortOrder: 1, sessions: [alphaChat], has_more: false },
+        { id: 'p-b', name: 'Beta', sortOrder: 2, sessions: betaChats, has_more: false },
+        { id: 'p-c', name: 'Gamma', sortOrder: 3, sessions: [], has_more: false },
+        { id: 'p-d', name: 'Delta', sortOrder: 4, sessions: [deltaChat], has_more: false },
+        { id: 'p-z', name: 'Zulu', sortOrder: 5, archived: true, sessions: [], has_more: false },
+      ];
+      store.refreshSidebar = vi.fn(async () => undefined);
+      store.selectSession = vi.fn(async () => undefined);
+      store.endpoints.reorderProjects = vi.fn(async (ids: string[]) => ({
+        projects: ids.map((id, index) => ({ id, sort_order: index + 1 })),
+      }));
+      return store;
+    };
+    const renderSidebar = (store: AppStore) =>
+      render(
+        <StoreContext.Provider value={store}>
+          <Sidebar />
+        </StoreContext.Provider>,
+      );
+    const projectTitles = (container: Element) =>
+      [...container.querySelectorAll('.project-group-label')].map((title) => title.textContent);
+    // jsdom has no layout: stack the active project groups 8px apart (their
+    // collapsed margins) with the given heights, since an open project is as
+    // tall as its conversation list.
+    const layoutProjects = (container: Element, heights: number[]) => {
+      const groups = [
+        ...container
+          .querySelectorAll('.project-order-list')[0]
+          .querySelectorAll<HTMLElement>(':scope > .project-group'),
+      ];
+      let top = 0;
+      groups.forEach((group, index) => {
+        const height = heights[index];
+        vi.spyOn(group, 'getBoundingClientRect').mockReturnValue({
+          top,
+          bottom: top + height,
+          height,
+          left: 0,
+          right: 200,
+          width: 200,
+          x: 0,
+          y: top,
+          toJSON: () => ({}),
+        } as DOMRect);
+        top += height + 8;
+      });
+      return groups;
+    };
+    // The header, not the actions menu or the conversations, is the drag surface.
+    const headerOf = (group: HTMLElement) =>
+      group.querySelector<HTMLElement>('.project-group-toggle')!;
+    const transforms = (groups: HTMLElement[]) => groups.map((group) => group.style.transform);
+    const pointer = { pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0 };
+    const touch = { pointerId: 7, pointerType: 'touch', isPrimary: true };
+
+    it('lists projects in their saved order and never moves them for new activity', () => {
+      const store = projectSidebarStore();
+      const { container } = renderSidebar(store);
+      expect(projectTitles(container)).toEqual(['Alpha', 'Beta', 'Gamma', 'Delta', 'Zulu']);
+
+      act(() => {
+        store.sessions.value = store.sessions.value.map((session) =>
+          session.id === 'a-chat' ? { ...session, lastMessageAt: 999 } : session,
+        );
+        store.projects.value = store.projects.value.map((project) =>
+          project.id === 'p-a'
+            ? {
+                ...project,
+                sessions: project.sessions?.map((session) => ({ ...session, lastMessageAt: 999 })),
+              }
+            : project,
+        );
+      });
+      expect(projectTitles(container)).toEqual(['Alpha', 'Beta', 'Gamma', 'Delta', 'Zulu']);
+    });
+
+    it('drags a short project past taller ones by its header and lands where the preview showed', async () => {
+      const store = projectSidebarStore();
+      const { container } = renderSidebar(store);
+      // Alpha 0-40, Beta 48-248 (open), Gamma 256-296, Delta 304-424.
+      const groups = layoutProjects(container, [40, 200, 40, 120]);
+      const alpha = headerOf(groups[0]);
+      expect(alpha).toHaveAttribute('aria-expanded', 'true');
+
+      fireEvent.pointerDown(alpha, { ...pointer, clientY: 20 });
+      fireEvent.pointerMove(window, { ...pointer, clientY: 26 });
+      expect(groups[0]).toHaveClass('is-dragging');
+      // Alpha's top passes halfway to the slot below Beta: Beta rises by
+      // Alpha's height plus the spacing between groups, not its height alone.
+      fireEvent.pointerMove(window, { ...pointer, clientY: 130 });
+      expect(transforms(groups)).toEqual(['translateY(110px)', 'translateY(-48px)', '', '']);
+      fireEvent.pointerMove(window, { ...pointer, clientY: 260 });
+      expect(transforms(groups)).toEqual([
+        'translateY(240px)',
+        'translateY(-48px)',
+        'translateY(-48px)',
+        '',
+      ]);
+      // It cannot leave the active projects: it stops at the last slot.
+      fireEvent.pointerMove(window, { ...pointer, clientY: 900 });
+      expect(transforms(groups)[0]).toBe('translateY(384px)');
+      fireEvent.pointerMove(window, { ...pointer, clientY: 260 });
+      fireEvent.pointerUp(window, { ...pointer, clientY: 260 });
+      // The click that ends the drag neither opens nor collapses the project.
+      fireEvent.click(alpha, { detail: 1 });
+      expect(alpha).toHaveAttribute('aria-expanded', 'true');
+
+      await waitFor(() =>
+        expect(store.endpoints.reorderProjects).toHaveBeenCalledWith(['p-b', 'p-c', 'p-a', 'p-d']),
+      );
+      expect(projectTitles(container)).toEqual(['Beta', 'Gamma', 'Alpha', 'Delta', 'Zulu']);
+      expect(transforms(groups)).toEqual(['', '', '', '']);
+      expect(groups[0]).not.toHaveClass('is-dragging');
+      expect(screen.getByText('Moved Alpha to position 3 of 4.')).toBeInTheDocument();
+      expect(store.projects.value.find((project) => project.id === 'p-a')?.sortOrder).toBe(3);
+    });
+
+    it('lifts a tall project over shorter ones and opens a gap its own size', async () => {
+      const store = projectSidebarStore();
+      const { container } = renderSidebar(store);
+      const groups = layoutProjects(container, [40, 200, 40, 120]);
+
+      // Delta (120px tall) moves up: the groups it passes drop by its height
+      // plus the spacing, exactly where the re-rendered list puts them.
+      fireEvent.pointerDown(headerOf(groups[3]), { ...pointer, clientY: 310 });
+      fireEvent.pointerMove(window, { ...pointer, clientY: 300 });
+      fireEvent.pointerMove(window, { ...pointer, clientY: 30 });
+      expect(transforms(groups)).toEqual([
+        '',
+        'translateY(128px)',
+        'translateY(128px)',
+        'translateY(-280px)',
+      ]);
+      fireEvent.pointerMove(window, { ...pointer, clientY: 10 });
+      expect(transforms(groups)).toEqual([
+        'translateY(128px)',
+        'translateY(128px)',
+        'translateY(128px)',
+        'translateY(-300px)',
+      ]);
+      // A fast release past the top lands in the first slot.
+      fireEvent.pointerUp(window, { ...pointer, clientY: -200 });
+      fireEvent.click(headerOf(groups[3]), { detail: 1 });
+
+      await waitFor(() =>
+        expect(store.endpoints.reorderProjects).toHaveBeenCalledWith(['p-d', 'p-a', 'p-b', 'p-c']),
+      );
+      expect(projectTitles(container)).toEqual(['Delta', 'Alpha', 'Beta', 'Gamma', 'Zulu']);
+      expect(headerOf(groups[3])).toHaveAttribute('aria-expanded', 'true');
+    });
+
+    it('toggles on a click and never drags from the actions menu, conversations, or archived boundary', async () => {
+      const store = projectSidebarStore();
+      const { container } = renderSidebar(store);
+      const groups = layoutProjects(container, [40, 200, 40, 120]);
+
+      // A click that wobbles a little still collapses and reopens the project.
+      fireEvent.pointerDown(headerOf(groups[1]), { ...pointer, clientY: 60 });
+      fireEvent.pointerMove(window, { ...pointer, clientY: 63 });
+      fireEvent.pointerUp(window, { ...pointer, clientY: 63 });
+      fireEvent.click(headerOf(groups[1]), { detail: 1 });
+      expect(headerOf(groups[1])).toHaveAttribute('aria-expanded', 'false');
+      fireEvent.click(headerOf(groups[1]), { detail: 1 });
+      expect(headerOf(groups[1])).toHaveAttribute('aria-expanded', 'true');
+
+      const actions = screen.getByRole('button', { name: 'Actions for project Beta' });
+      fireEvent.pointerDown(actions, { ...pointer, clientY: 60 });
+      fireEvent.pointerMove(window, { ...pointer, clientY: 300 });
+      fireEvent.pointerUp(window, { ...pointer, clientY: 300 });
+      const conversation = screen.getByRole('button', { name: 'Beta one' });
+      fireEvent.pointerDown(conversation, { ...pointer, clientY: 100 });
+      fireEvent.pointerMove(window, { ...pointer, clientY: 400 });
+      fireEvent.pointerUp(window, { ...pointer, clientY: 400 });
+      expect(container.querySelector('.is-dragging')).not.toBeInTheDocument();
+      expect(transforms(groups)).toEqual(['', '', '', '']);
+
+      // The last active project cannot be dragged among archived ones, and
+      // releasing it in place neither saves nor toggles it.
+      fireEvent.pointerDown(headerOf(groups[3]), { ...pointer, clientY: 310 });
+      fireEvent.pointerMove(window, { ...pointer, clientY: 700 });
+      expect(groups[3]).toHaveClass('is-dragging');
+      expect(transforms(groups)).toEqual(['', '', '', '']);
+      fireEvent.pointerUp(window, { ...pointer, clientY: 700 });
+      fireEvent.click(headerOf(groups[3]), { detail: 1 });
+      expect(headerOf(groups[3])).toHaveAttribute('aria-expanded', 'true');
+      await act(async () => Promise.resolve());
+      expect(store.endpoints.reorderProjects).not.toHaveBeenCalled();
+      expect(projectTitles(container)).toEqual(['Alpha', 'Beta', 'Gamma', 'Delta', 'Zulu']);
+    });
+
+    it('moves projects with Alt+Arrow keys and menu items as a keyboard alternative', async () => {
+      const store = projectSidebarStore();
+      const { container } = renderSidebar(store);
+
+      const beta = screen.getByRole('button', { name: 'Beta' });
+      expect(beta).toHaveAttribute('aria-keyshortcuts', 'Alt+ArrowUp Alt+ArrowDown');
+      beta.focus();
+      fireEvent.keyDown(beta, { key: 'ArrowUp', altKey: true });
+      expect(projectTitles(container)).toEqual(['Beta', 'Alpha', 'Gamma', 'Delta', 'Zulu']);
+      await waitFor(() =>
+        expect(store.endpoints.reorderProjects).toHaveBeenCalledWith(['p-b', 'p-a', 'p-c', 'p-d']),
+      );
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Beta' })).toHaveFocus());
+      expect(screen.getByText('Moved Beta to position 1 of 4.')).toBeInTheDocument();
+      // Plain arrows and a move past either end do nothing, and neither
+      // toggles the project.
+      fireEvent.keyDown(beta, { key: 'ArrowUp' });
+      fireEvent.keyDown(beta, { key: 'ArrowUp', altKey: true });
+      expect(projectTitles(container)).toEqual(['Beta', 'Alpha', 'Gamma', 'Delta', 'Zulu']);
+      expect(beta).toHaveAttribute('aria-expanded', 'true');
+
+      await userEvent.click(screen.getByRole('button', { name: 'Actions for project Beta' }));
+      expect(screen.queryByRole('menuitem', { name: 'Move up' })).not.toBeInTheDocument();
+      await userEvent.click(screen.getByRole('menuitem', { name: 'Move down' }));
+      expect(projectTitles(container)).toEqual(['Alpha', 'Beta', 'Gamma', 'Delta', 'Zulu']);
+      await waitFor(() =>
+        expect(store.endpoints.reorderProjects).toHaveBeenLastCalledWith([
+          'p-a',
+          'p-b',
+          'p-c',
+          'p-d',
+        ]),
+      );
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Actions for project Beta' })).toHaveFocus(),
+      );
+
+      await userEvent.click(screen.getByRole('button', { name: 'Actions for project Delta' }));
+      expect(screen.getByRole('menuitem', { name: 'Move up' })).toBeInTheDocument();
+      expect(screen.queryByRole('menuitem', { name: 'Move down' })).not.toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: 'Actions for project Delta' }));
+
+      // The only archived project has nowhere to move.
+      expect(screen.getByRole('button', { name: 'Zulu' })).not.toHaveAttribute('aria-keyshortcuts');
+      await userEvent.click(screen.getByRole('button', { name: 'Actions for project Zulu' }));
+      expect(screen.queryByRole('menuitem', { name: 'Move up' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('menuitem', { name: 'Move down' })).not.toBeInTheDocument();
+      expect(screen.getByRole('menuitem', { name: 'Restore' })).toBeInTheDocument();
+    });
+
+    it('restores the order and reports when a project reorder cannot be saved', async () => {
+      const store = projectSidebarStore();
+      store.endpoints.reorderProjects = vi.fn(async () => {
+        throw new APIError('a listed project was not found; refresh and try again', 404);
+      });
+      const { container } = renderSidebar(store);
+
+      fireEvent.keyDown(screen.getByRole('button', { name: 'Alpha' }), {
+        key: 'ArrowDown',
+        altKey: true,
+      });
+      expect(projectTitles(container)).toEqual(['Beta', 'Alpha', 'Gamma', 'Delta', 'Zulu']);
+
+      await waitFor(() =>
+        expect(store.toasts.value.map((toast) => toast.message)).toContain(
+          'Projects changed elsewhere; showing the latest order.',
+        ),
+      );
+      expect(projectTitles(container)).toEqual(['Alpha', 'Beta', 'Gamma', 'Delta', 'Zulu']);
+      expect(store.refreshSidebar).toHaveBeenCalled();
+    });
+
+    it('lifts a project by long press in the mobile drawer while quick swipes still close it', async () => {
+      vi.mocked(window.matchMedia).mockReturnValue({
+        matches: true,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as MediaQueryList);
+      try {
+        const store = projectSidebarStore();
+        store.sidebarOpen.value = true;
+        const { container } = renderSidebar(store);
+        const groups = layoutProjects(container, [40, 200, 40, 120]);
+        const alpha = headerOf(groups[0]);
+
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        try {
+          // A touch that moves on at once scrolls: the project never lifts.
+          fireEvent.pointerDown(alpha, { ...touch, clientX: 100, clientY: 20 });
+          fireEvent.pointerMove(alpha, { ...touch, clientX: 100, clientY: 34 });
+          expect(fireEvent.touchMove(alpha)).toBe(true);
+          fireEvent.pointerCancel(alpha, { ...touch, clientX: 100, clientY: 40 });
+          act(() => {
+            vi.advanceTimersByTime(LONG_PRESS_MS);
+          });
+          expect(groups[0]).not.toHaveClass('is-dragging');
+
+          // Resting lifts it; the lifted project owns the touch, even through a
+          // leftward slide that would otherwise swipe the drawer closed.
+          const held = { ...touch, pointerId: 8 };
+          fireEvent.pointerDown(alpha, { ...held, clientX: 150, clientY: 20 });
+          act(() => {
+            vi.advanceTimersByTime(LONG_PRESS_MS);
+          });
+          expect(groups[0]).toHaveClass('is-dragging');
+          fireEvent.pointerMove(alpha, { ...held, clientX: 40, clientY: 24 });
+          expect(fireEvent.touchMove(alpha)).toBe(false);
+          fireEvent.pointerMove(alpha, { ...held, clientX: 40, clientY: 290 });
+          fireEvent.pointerUp(alpha, { ...held, clientX: 40, clientY: 20 });
+          fireEvent.click(alpha, { detail: 1 });
+        } finally {
+          vi.useRealTimers();
+        }
+
+        expect(store.sidebarOpen.value).toBe(true);
+        expect(alpha).toHaveAttribute('aria-expanded', 'true');
+        expect(projectTitles(container)).toEqual(['Beta', 'Gamma', 'Alpha', 'Delta', 'Zulu']);
+        await waitFor(() =>
+          expect(store.endpoints.reorderProjects).toHaveBeenCalledWith([
+            'p-b',
+            'p-c',
+            'p-a',
+            'p-d',
+          ]),
+        );
+
+        // A swipe that starts on a project header without resting closes the drawer.
+        const gamma = screen.getByRole('button', { name: 'Gamma' });
+        const swipe = { ...touch, pointerId: 9 };
+        fireEvent.pointerDown(gamma, { ...swipe, clientX: 150, clientY: 60 });
+        fireEvent.pointerMove(gamma, { ...swipe, clientX: 40, clientY: 62 });
+        fireEvent.pointerUp(gamma, { ...swipe, clientX: 40, clientY: 62 });
+        expect(store.sidebarOpen.value).toBe(false);
+        expect(store.endpoints.reorderProjects).toHaveBeenCalledTimes(1);
       } finally {
         vi.mocked(window.matchMedia).mockReturnValue({
           matches: false,

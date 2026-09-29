@@ -1355,6 +1355,9 @@ export class AppStore {
   async reorderPinnedSessions(orderedIds: string[]): Promise<void> {
     await this.sessionStore.reorderPinnedSessions(orderedIds);
   }
+  async reorderProjects(orderedIds: string[]): Promise<void> {
+    await this.sessionStore.reorderProjects(orderedIds);
+  }
   openRename(session: Session): void {
     this.sessionStore.openRename(session);
   }

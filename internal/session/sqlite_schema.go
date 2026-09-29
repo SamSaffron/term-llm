@@ -79,7 +79,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 		store.probeSessionColumns()
 		store.probeMessageColumns()
 		store.probeBranchTable()
-		store.probeProjectsTable()
+		store.probeProjectColumns()
 	} else {
 		store.setCurrentColumns()
 	}
@@ -148,7 +148,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // Increment when adding new migrations.
 const (
 	projectSchemaVersion = 47
-	schemaVersion        = 60
+	schemaVersion        = 61
 )
 
 // migration represents a schema migration.
@@ -1297,6 +1297,62 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		version:     61,
+		description: "persist explicit sidebar project order",
+		up:          migrateProjectOrderV61,
+	},
+}
+
+// migrateProjectOrderV61 adds projects.sort_order, ranks existing projects,
+// and installs projectOrderSchemaV61. Fresh bootstrap runs it too, because the
+// frozen projectsSchemaV47 table definition predates the column.
+func migrateProjectOrderV61(db schemaExecutor) error {
+	exists, err := sqliteutil.ColumnExists(db, "projects", "sort_order")
+	if err != nil {
+		return fmt.Errorf("inspect projects.sort_order: %w", err)
+	}
+	if !exists {
+		if _, err := db.Exec("ALTER TABLE projects ADD COLUMN sort_order INTEGER"); err != nil {
+			return fmt.Errorf("add projects.sort_order: %w", err)
+		}
+	}
+	if err := backfillProjectOrderV61(db); err != nil {
+		return err
+	}
+	if _, err := db.Exec(projectOrderSchemaV61); err != nil {
+		return fmt.Errorf("install project order change trigger: %w", err)
+	}
+	return nil
+}
+
+// backfillProjectOrderV61 freezes the order the sidebar last showed projects
+// in: active projects before archived ones, then most recent conversation
+// activity (the latest non-archived top-level conversation; projects without
+// one follow), then lower-cased name and ID. Ranks cover every project,
+// archived ones included, so restoring a project returns it to its place. It
+// runs before projectOrderSchemaV61 replaces the change trigger, so upgrading
+// records no change events.
+func backfillProjectOrderV61(db schemaExecutor) error {
+	if _, err := db.Exec(`
+		WITH activity AS (
+			SELECT project_id, MAX(COALESCE(last_message_at, last_user_message_at, created_at)) AS last_activity
+			FROM sessions
+			WHERE project_id IS NOT NULL AND parent_id IS NULL AND archived = FALSE
+			GROUP BY project_id
+		), ranked AS (
+			SELECT p.id, ROW_NUMBER() OVER (
+				ORDER BY p.archived_at IS NOT NULL, a.last_activity IS NULL, a.last_activity DESC,
+				         LOWER(p.name) || p.id, p.id
+			) AS project_rank
+			FROM projects p LEFT JOIN activity a ON a.project_id = p.id
+		)
+		UPDATE projects
+		SET sort_order = (SELECT project_rank FROM ranked WHERE ranked.id = projects.id)
+		WHERE sort_order IS NULL`); err != nil {
+		return fmt.Errorf("backfill project order: %w", err)
+	}
+	return nil
 }
 
 // backfillPinOrderV60 freezes the order existing pins were last shown in: the
@@ -1632,6 +1688,9 @@ func initSchema(db *sql.DB) error {
 			}
 			if _, err := tx.Exec(pinOrderSchemaV60); err != nil {
 				return fmt.Errorf("bootstrap pinned order schema: %w", err)
+			}
+			if err := migrateProjectOrderV61(tx); err != nil {
+				return fmt.Errorf("bootstrap project order schema: %w", err)
 			}
 			if _, err := tx.Exec(`CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL)`); err != nil {
 				return fmt.Errorf("create singleton session schema marker: %w", err)

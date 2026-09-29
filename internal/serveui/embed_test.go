@@ -139,7 +139,12 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// moves, and the store's optimistic save and rollback. The section is on
 		// screen at startup, so the code is eager: ~542.1/158.4 kB. Same ~1%
 		// rule as above.
-		"dist/app.js":                {raw: 548_000, gzip: 160_000},
+		//
+		// Server-ordered projects generalize that drag and optimistic save into
+		// shared list and store helpers, and add the project header drag and the
+		// keyboard and menu moves. The Projects view is on screen at startup too:
+		// ~546.9/160.0 kB. Same ~1% rule as above.
+		"dist/app.js":                {raw: 553_000, gzip: 161_600},
 		"dist/chunks/Lightbox.js":    {raw: 8_000, gzip: 3_200},
 		"dist/assets/Lightbox.css":   {raw: 4_000, gzip: 1_400},
 		"dist/chunks/StatsModal.js":  {raw: 8_000, gzip: 3_000},

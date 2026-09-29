@@ -42,6 +42,7 @@ type Project struct {
 	UpdatedAt         time.Time  `json:"updated_at"`
 	LastUsedAt        time.Time  `json:"last_used_at"`
 	ArchivedAt        *time.Time `json:"archived_at,omitempty"`
+	SortOrder         int64      `json:"sort_order,omitempty"` // Persisted sidebar rank (see ReorderProjects); zero when unranked
 	ConversationCount int        `json:"conversation_count"`
 	Available         bool       `json:"available"`
 	Git               bool       `json:"git"`
@@ -163,6 +164,15 @@ type ProjectStore interface {
 	ClaimProjectSessions(ctx context.Context, projectID string, matchingSessions []ProjectSessionMatch) (int, error)
 	Sidebar(ctx context.Context, opts SidebarOptions) ([]SidebarGroup, error)
 	AssignSessionProject(ctx context.Context, sessionID, projectID, expectedCWD, expectedWorktreeDir string) error
+	// ReorderProjects atomically places the listed projects, in the given
+	// order, into the ranks (Project.SortOrder) they currently occupy.
+	// Projects that are not listed (for example archived projects, which list
+	// after active ones) keep their positions, so a caller may send any
+	// subset. Unknown IDs return ErrNotFound without changing any rank, and
+	// repeating a request is a no-op. New projects append after every
+	// existing rank; archiving, restoring, and conversation activity never
+	// change one.
+	ReorderProjects(ctx context.Context, orderedIDs []string) (ProjectOrder, error)
 }
 
 func AsProjectStore(store Store) (ProjectStore, bool) {
@@ -189,7 +199,7 @@ type loggingProjectStore struct {
 }
 
 func (s *loggingProjectStore) log(op string, err error) {
-	if err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrProjectDuplicate) {
+	if err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrProjectDuplicate) && !errors.Is(err, ErrProjectOrderInvalid) {
 		s.logger.logOnce(op, err)
 	}
 }
@@ -243,6 +253,11 @@ func (s *loggingProjectStore) AssignSessionProject(ctx context.Context, sid, pid
 	err := s.store.AssignSessionProject(ctx, sid, pid, cwd, worktreeDir)
 	s.log("AssignSessionProject", err)
 	return err
+}
+func (s *loggingProjectStore) ReorderProjects(ctx context.Context, orderedIDs []string) (ProjectOrder, error) {
+	v, err := s.store.ReorderProjects(ctx, orderedIDs)
+	s.log("ReorderProjects", err)
+	return v, err
 }
 
 // SessionWorkspaceBinding is committed atomically after request validation.

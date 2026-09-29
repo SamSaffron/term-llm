@@ -344,6 +344,11 @@ export interface Project {
   id: string;
   name: string;
   path?: string;
+  /**
+   * Persisted 1-based sidebar rank. Activity never changes it; archived
+   * projects keep theirs but list after active ones. Absent when unranked.
+   */
+  sortOrder?: number;
   archived?: boolean;
   available?: boolean;
   unavailableReason?: string;

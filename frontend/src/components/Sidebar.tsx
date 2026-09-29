@@ -12,20 +12,8 @@ import { trapOverlayFocus } from './Overlay';
 import { useMenuKeyboard } from './Menu';
 import { useChatShortcuts } from './useChatShortcuts';
 import { useMediaQuery } from './useMediaQuery';
-import { movedOrder, usePinnedReorder } from './usePinnedReorder';
+import { reorderKeyOffset, useReorderableList, type ReorderControls } from './useReorderableList';
 import { useEdgeSwipeOpen, useSwipeDismiss } from './useSwipeDismiss';
-
-/** Reordering controls for a row in the global pinned section. */
-interface PinnedRowControls {
-  /** Zero-based position within the pinned section. */
-  position: number;
-  count: number;
-  dragging: boolean;
-  /** Tracks a press on the row, which drags it once it moves (mouse) or rests (touch). */
-  press: (event: PointerEvent) => void;
-  /** Moves the row one place; `focus` names the control that keeps focus. */
-  move: (offset: -1 | 1, focus: 'row' | 'menu') => void;
-}
 
 function sessionMessageCount(session: Session): number {
   if (Number.isFinite(session.messageCount)) return Math.max(0, session.messageCount || 0);
@@ -162,7 +150,7 @@ function SessionMenu({
   onArchive: () => void;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  pinned?: PinnedRowControls;
+  pinned?: ReorderControls;
 }) {
   const store = useStore();
   const menuID = useId();
@@ -281,7 +269,7 @@ function SessionRow({
   session: Session;
   showProject?: boolean;
   shortcutEligible?: boolean;
-  pinned?: PinnedRowControls;
+  pinned?: ReorderControls;
 }) {
   const store = useStore();
   const reorderable = Boolean(pinned && pinned.count > 1);
@@ -369,7 +357,7 @@ function SessionRow({
     <div
       ref={row}
       class={`session-row ${session.archived ? 'archived' : ''} ${needsInput ? 'is-input-required' : running ? 'is-active' : ''} ${unseen ? 'is-unseen' : ''} ${menuOpen ? 'menu-open' : ''} ${archiving ? 'is-archiving' : ''} ${reorderable ? 'is-reorderable' : ''} ${pinned?.dragging ? 'is-dragging' : ''}`}
-      data-pinned-id={pinned ? session.id : undefined}
+      data-reorder-id={pinned ? session.id : undefined}
     >
       <button
         class={`session-btn ${active ? 'active' : ''}`}
@@ -387,9 +375,7 @@ function SessionRow({
         onPointerDown={reorderable ? (event) => pinned!.press(event) : undefined}
         onClick={() => void store.selectSession(session)}
         onKeyDown={(event) => {
-          if (!reorderable || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey)
-            return;
-          const offset = event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0;
+          const offset = reorderable ? reorderKeyOffset(event) : 0;
           if (!offset) return;
           event.preventDefault();
           pinned!.move(offset, 'row');
@@ -418,17 +404,6 @@ function SessionRow({
   );
 }
 
-/** Focuses a pinned row's control after a move re-renders the list. */
-function focusPinnedRow(list: HTMLElement | null, id: string, focus: 'row' | 'menu'): void {
-  const row = [...(list?.children || [])].find(
-    (child): child is HTMLElement => child instanceof HTMLElement && child.dataset.pinnedId === id,
-  );
-  const control = row?.querySelector<HTMLElement>(
-    focus === 'row' ? '.session-btn' : '.session-menu-trigger',
-  );
-  if (control && document.activeElement !== control) control.focus();
-}
-
 /**
  * The global pinned section. Its order is the server-persisted pinned rank, so
  * activity never reorders it; users drag rows (pointer or touch) or use
@@ -436,39 +411,28 @@ function focusPinnedRow(list: HTMLElement | null, id: string, focus: 'row' | 'me
  */
 function PinnedSessions({ sessions, showProject }: { sessions: Session[]; showProject: boolean }) {
   const store = useStore();
-  const list = useRef<HTMLDivElement>(null);
-  const [announcement, setAnnouncement] = useState('');
-  const ids = sessions.map((session) => session.id);
-  const commit = (orderedIds: string[], id: string, to: number, focus?: 'row' | 'menu') => {
-    const title = sessions.find((session) => session.id === id)?.title || 'Conversation';
-    setAnnouncement(`Moved ${title} to position ${to + 1} of ${orderedIds.length}.`);
-    void store.reorderPinnedSessions(orderedIds).catch((error) => {
-      setAnnouncement('');
-      store.toast(error, 'error');
-    });
-    if (focus) requestAnimationFrame(() => focusPinnedRow(list.current, id, focus));
-  };
-  const { draggingId, press } = usePinnedReorder(list, commit, ids.join('\0'));
+  const { list, reordering, announcement, controls } = useReorderableList(
+    sessions.map((session) => session.id),
+    {
+      label: (id) => sessions.find((session) => session.id === id)?.title || 'Conversation',
+      save: (orderedIds) => store.reorderPinnedSessions(orderedIds),
+      report: (error) => store.toast(error, 'error'),
+      focusTargets: { row: '.session-btn', menu: '.session-menu-trigger' },
+    },
+  );
   return (
     <section class="session-group sidebar-pinned-group">
       <h3>Pinned</h3>
-      <div ref={list} class={`pinned-session-list ${draggingId ? 'is-reordering' : ''}`}>
+      <div
+        ref={list}
+        class={`pinned-session-list reorder-list ${reordering ? 'is-reordering' : ''}`}
+      >
         {sessions.map((session, position) => (
           <SessionRow
             key={session.id}
             session={session}
             showProject={showProject}
-            pinned={{
-              position,
-              count: sessions.length,
-              dragging: draggingId === session.id,
-              press: (event) => press(event, session.id),
-              move: (offset, focus) => {
-                const to = position + offset;
-                if (to >= 0 && to < ids.length)
-                  commit(movedOrder(ids, position, to), session.id, to, focus);
-              },
-            }}
+            pinned={controls(session.id, position)}
           />
         ))}
       </div>
@@ -626,8 +590,9 @@ function NoProjectGroup({ sessions }: { sessions: Session[] }) {
   );
 }
 
-function ProjectGroup({ project }: { project: Project }) {
+function ProjectGroup({ project, order }: { project: Project; order?: ReorderControls }) {
   const store = useStore();
+  const reorderable = Boolean(order && order.count > 1);
   const { open, opening, toggle, finishOpening } = useSidebarExpansion(project.id);
   const [menu, setMenu] = useState(false);
   const menuID = useId();
@@ -660,16 +625,28 @@ function ProjectGroup({ project }: { project: Project }) {
       : regular.find((session) => session.id === store.activeSessionId.value);
   return (
     <section
-      class={`project-group ${project.available === false ? 'unavailable' : ''}`}
+      class={`project-group ${project.available === false ? 'unavailable' : ''} ${reorderable ? 'is-reorderable' : ''} ${order?.dragging ? 'is-dragging' : ''}`}
       data-project-id={project.id}
+      data-reorder-id={order ? project.id : undefined}
     >
       <div class="project-group-header">
         <button
           class="project-group-toggle"
           type="button"
           aria-expanded={open}
+          aria-keyshortcuts={reorderable ? 'Alt+ArrowUp Alt+ArrowDown' : undefined}
           title={project.path || `${open ? 'Collapse' : 'Expand'} ${project.name}`}
+          // The header is the drag surface for the whole project; its actions
+          // menu and conversations are not. Keyboard users reorder with
+          // Alt+Arrow keys or the menu.
+          onPointerDown={reorderable ? (event) => order!.press(event) : undefined}
           onClick={toggle}
+          onKeyDown={(event) => {
+            const offset = reorderable ? reorderKeyOffset(event) : 0;
+            if (!offset) return;
+            event.preventDefault();
+            order!.move(offset, 'row');
+          }}
         >
           <span class="project-group-label">{project.name}</span>
           {project.available === false && (
@@ -726,6 +703,30 @@ function ProjectGroup({ project }: { project: Project }) {
             >
               Rename
             </button>
+            {reorderable && order!.position > 0 && (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setMenu(false);
+                  order!.move(-1, 'menu');
+                }}
+              >
+                Move up
+              </button>
+            )}
+            {reorderable && order!.position < order!.count - 1 && (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setMenu(false);
+                  order!.move(1, 'menu');
+                }}
+              >
+                Move down
+              </button>
+            )}
             <button
               type="button"
               role="menuitem"
@@ -768,6 +769,41 @@ function ProjectGroup({ project }: { project: Project }) {
   );
 }
 
+/**
+ * Projects in their server-persisted order, which conversation activity never
+ * changes. Users drag a project by its header (pointer or touch-and-hold) or
+ * use Alt+Arrow keys or its menu to move it, and the order is saved. Active
+ * and archived projects are separate lists, so a project never lands on the
+ * other side of the boundary between them.
+ */
+function ProjectOrderList({ projects }: { projects: Project[] }) {
+  const store = useStore();
+  const { list, reordering, announcement, controls } = useReorderableList(
+    projects.map((project) => project.id),
+    {
+      label: (id) => projects.find((project) => project.id === id)?.name || 'Project',
+      save: (orderedIds) => store.reorderProjects(orderedIds),
+      report: (error) => store.toast(error, 'error'),
+      focusTargets: { row: '.project-group-toggle', menu: '.project-group-action' },
+    },
+  );
+  return (
+    <>
+      <div
+        ref={list}
+        class={`project-order-list reorder-list ${reordering ? 'is-reordering' : ''}`}
+      >
+        {projects.map((project, position) => (
+          <ProjectGroup key={project.id} project={project} order={controls(project.id, position)} />
+        ))}
+      </div>
+      <div class="visually-hidden" role="status" aria-live="polite">
+        {announcement}
+      </div>
+    </>
+  );
+}
+
 function ProjectsGroup({ projects }: { projects: Project[] }) {
   const store = useStore();
   const { open, opening, toggle, finishOpening } = useSidebarExpansion(
@@ -785,6 +821,7 @@ function ProjectsGroup({ projects }: { projects: Project[] }) {
     projects.some((project) => project.id === activeSession.projectId)
       ? activeSession
       : undefined;
+  const archived = projects.filter((project) => project.archived);
   return (
     <section class="session-group sidebar-project-groups">
       <CollapsibleSectionHeading label="Projects" open={open} onToggle={toggle} />
@@ -795,9 +832,8 @@ function ProjectsGroup({ projects }: { projects: Project[] }) {
             if (event.target === event.currentTarget) finishOpening();
           }}
         >
-          {projects.map((project) => (
-            <ProjectGroup key={project.id} project={project} />
-          ))}
+          <ProjectOrderList projects={projects.filter((project) => !project.archived)} />
+          {archived.length > 0 && <ProjectOrderList projects={archived} />}
         </div>
       ) : (
         collapsedActiveSession && (

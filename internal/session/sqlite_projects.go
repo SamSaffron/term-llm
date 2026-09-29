@@ -17,7 +17,8 @@ func (s *SQLiteStore) projectsAvailable() bool {
 func scanProject(scanner interface{ Scan(...any) error }) (*Project, error) {
 	var p Project
 	var archived sql.NullTime
-	if err := scanner.Scan(&p.ID, &p.Name, &p.CanonicalDir, &p.IsBootstrap, &p.CreatedAt, &p.UpdatedAt, &p.LastUsedAt, &archived, &p.ConversationCount); err != nil {
+	var sortOrder sql.NullInt64
+	if err := scanner.Scan(&p.ID, &p.Name, &p.CanonicalDir, &p.IsBootstrap, &p.CreatedAt, &p.UpdatedAt, &p.LastUsedAt, &archived, &sortOrder, &p.ConversationCount); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -26,24 +27,27 @@ func scanProject(scanner interface{ Scan(...any) error }) (*Project, error) {
 	if archived.Valid {
 		p.ArchivedAt = &archived.Time
 	}
+	p.SortOrder = rankValue(sortOrder)
 	return &p, nil
 }
 
-const projectSelectSQL = `
+func (s *SQLiteStore) projectSelectSQL() string {
+	return `
 	SELECT p.id, p.name, p.canonical_dir, p.is_bootstrap,
-	       p.created_at, p.updated_at, p.last_used_at, p.archived_at,
+	       p.created_at, p.updated_at, p.last_used_at, p.archived_at, ` + s.projectSortOrderCol("p") + `,
 	       COUNT(s.id) AS conversation_count
 	FROM projects p LEFT JOIN sessions s ON s.project_id = p.id AND s.archived = FALSE AND s.parent_id IS NULL`
+}
 
 func (s *SQLiteStore) ListProjects(ctx context.Context, opts ProjectListOptions) ([]Project, error) {
 	if !s.hasProjectsTable || !s.hasProjectID {
 		return nil, ErrProjectsUnsupported
 	}
-	query := projectSelectSQL
+	query := s.projectSelectSQL()
 	if !opts.IncludeArchived {
 		query += " WHERE p.archived_at IS NULL"
 	}
-	query += ` GROUP BY p.id ORDER BY p.archived_at IS NOT NULL, p.last_used_at DESC, LOWER(p.name), p.id`
+	query += ` GROUP BY p.id ORDER BY ` + s.projectListOrderSQL("p")
 	rows, err := s.queryDB().QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
@@ -64,7 +68,7 @@ func (s *SQLiteStore) GetProject(ctx context.Context, id string) (*Project, erro
 	if !s.hasProjectsTable || !s.hasProjectID {
 		return nil, ErrProjectsUnsupported
 	}
-	p, err := scanProject(s.queryDB().QueryRowContext(ctx, projectSelectSQL+` WHERE p.id = ? GROUP BY p.id`, id))
+	p, err := scanProject(s.queryDB().QueryRowContext(ctx, s.projectSelectSQL()+` WHERE p.id = ? GROUP BY p.id`, id))
 	if err != nil {
 		return nil, fmt.Errorf("get project: %w", err)
 	}
@@ -75,7 +79,7 @@ func (s *SQLiteStore) GetProjectByCanonicalDir(ctx context.Context, canonicalDir
 	if !s.hasProjectsTable || !s.hasProjectID {
 		return nil, ErrProjectsUnsupported
 	}
-	p, err := scanProject(s.queryDB().QueryRowContext(ctx, projectSelectSQL+` WHERE p.canonical_dir = ? GROUP BY p.id`, canonicalDir))
+	p, err := scanProject(s.queryDB().QueryRowContext(ctx, s.projectSelectSQL()+` WHERE p.canonical_dir = ? GROUP BY p.id`, canonicalDir))
 	if err != nil {
 		return nil, fmt.Errorf("get project by canonical directory: %w", err)
 	}
@@ -139,10 +143,13 @@ func (s *SQLiteStore) CreateProject(ctx context.Context, p *Project) error {
 
 		var existing Project
 		var archived sql.NullTime
-		err = tx.QueryRowContext(ctx, `SELECT id, name, canonical_dir, is_bootstrap, created_at, updated_at, last_used_at, archived_at FROM projects WHERE canonical_dir = ?`, p.CanonicalDir).
-			Scan(&existing.ID, &existing.Name, &existing.CanonicalDir, &existing.IsBootstrap, &existing.CreatedAt, &existing.UpdatedAt, &existing.LastUsedAt, &archived)
+		var sortOrder sql.NullInt64
+		err = tx.QueryRowContext(ctx, `SELECT id, name, canonical_dir, is_bootstrap, created_at, updated_at, last_used_at, archived_at, `+s.projectSortOrderCol("")+` FROM projects WHERE canonical_dir = ?`, p.CanonicalDir).
+			Scan(&existing.ID, &existing.Name, &existing.CanonicalDir, &existing.IsBootstrap, &existing.CreatedAt, &existing.UpdatedAt, &existing.LastUsedAt, &archived, &sortOrder)
 		if err == nil {
+			existing.SortOrder = rankValue(sortOrder)
 			if archived.Valid {
+				// Restoring keeps the project's rank, returning it to its place.
 				now := time.Now().UTC()
 				name := p.Name
 				if _, err := tx.ExecContext(ctx, `UPDATE projects SET name = ?, archived_at = NULL, updated_at = ?, last_used_at = ? WHERE id = ?`, name, now, now, existing.ID); err != nil {
@@ -170,9 +177,7 @@ func (s *SQLiteStore) CreateProject(ctx context.Context, p *Project) error {
 				return fmt.Errorf("bootstrap project already exists")
 			}
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO projects (id, name, canonical_dir, is_bootstrap, created_at, updated_at, last_used_at, archived_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
-			p.ID, p.Name, p.CanonicalDir, p.IsBootstrap, p.CreatedAt.UTC(), p.UpdatedAt.UTC(), p.LastUsedAt.UTC())
-		if err != nil {
+		if err := s.insertProject(ctx, tx, p); err != nil {
 			// The unique constraint is the final authority for concurrent creates.
 			var existingID string
 			if qerr := tx.QueryRowContext(ctx, `SELECT id FROM projects WHERE canonical_dir = ?`, p.CanonicalDir).Scan(&existingID); qerr == nil {
@@ -183,6 +188,24 @@ func (s *SQLiteStore) CreateProject(ctx context.Context, p *Project) error {
 		}
 		return tx.Commit()
 	})
+}
+
+// insertProject inserts p after every existing project and records the rank
+// it was assigned.
+func (s *SQLiteStore) insertProject(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, p *Project) error {
+	rankColumn, rankExpr := s.projectRankInsert()
+	var sortOrder sql.NullInt64
+	if err := q.QueryRowContext(ctx, `
+		INSERT INTO projects (id, name, canonical_dir, is_bootstrap, created_at, updated_at, last_used_at, archived_at`+rankColumn+`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, NULL`+rankExpr+`)
+		RETURNING `+s.projectSortOrderCol(""),
+		p.ID, p.Name, p.CanonicalDir, p.IsBootstrap, p.CreatedAt.UTC(), p.UpdatedAt.UTC(), p.LastUsedAt.UTC()).Scan(&sortOrder); err != nil {
+		return err
+	}
+	p.SortOrder = rankValue(sortOrder)
+	return nil
 }
 
 func (s *SQLiteStore) UpdateProject(ctx context.Context, id string, update ProjectUpdate) (*Project, error) {
@@ -261,7 +284,7 @@ func (s *SQLiteStore) BootstrapProject(ctx context.Context, p *Project, matching
 		committed = true
 		return nil
 	}
-	if _, err := conn.ExecContext(ctx, `INSERT INTO projects (id, name, canonical_dir, is_bootstrap, created_at, updated_at, last_used_at) VALUES (?, ?, ?, 1, ?, ?, ?)`, p.ID, p.Name, p.CanonicalDir, p.CreatedAt.UTC(), p.UpdatedAt.UTC(), p.LastUsedAt.UTC()); err != nil {
+	if err := s.insertProject(ctx, conn, p); err != nil {
 		return fmt.Errorf("insert bootstrap project: %w", err)
 	}
 	for _, match := range matchingSessions {
@@ -548,25 +571,6 @@ func (s *SQLiteStore) Sidebar(ctx context.Context, opts SidebarOptions) ([]Sideb
 	for _, group := range groups {
 		out = append(out, *group)
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		ai, aj := out[i], out[j]
-		if ai.NoProject != aj.NoProject {
-			return !ai.NoProject
-		}
-		if ai.Project != nil && aj.Project != nil && ai.Project.Archived() != aj.Project.Archived() {
-			return !ai.Project.Archived()
-		}
-		if !ai.LastActivity.Equal(aj.LastActivity) {
-			return ai.LastActivity.After(aj.LastActivity)
-		}
-		ni, nj := "", ""
-		if ai.Project != nil {
-			ni = strings.ToLower(ai.Project.Name) + ai.Project.ID
-		}
-		if aj.Project != nil {
-			nj = strings.ToLower(aj.Project.Name) + aj.Project.ID
-		}
-		return ni < nj
-	})
+	sort.SliceStable(out, func(i, j int) bool { return sidebarGroupLess(out[i], out[j]) })
 	return out, nil
 }

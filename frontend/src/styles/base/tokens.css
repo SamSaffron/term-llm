@@ -61,6 +61,10 @@
   --z-local-popover: 5;
   --z-session-menu: 6;
   --z-session-menu-open: 7;
+
+  /* A dragged pinned row or project covers every local sidebar layer,
+     including the menu buttons of rows it passes over. */
+  --z-local-dragging: 8;
   --z-sidebar-backdrop: 15;
   --z-floating-panel: 20;
   --z-drop-target: 50;

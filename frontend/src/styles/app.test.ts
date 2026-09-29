@@ -121,7 +121,7 @@ describe('stacking layers', () => {
   });
 });
 
-describe('pinned reorder styles', () => {
+describe('reorder styles', () => {
   it('lets a long press lift a pinned row without blocking touch scrolling of the list', () => {
     const sessionsCSS = readFileSync(resolve(stylesRoot, 'features/sessions.css'), 'utf8');
     // Touches must keep scrolling the sidebar until a long press lifts a row;
@@ -132,6 +132,38 @@ describe('pinned reorder styles', () => {
     expect(appCSS).toMatch(
       /\.session-row\.is-reorderable\s*\{[^}]*-webkit-touch-callout: none;[^}]*user-select: none;/s,
     );
+  });
+
+  it('lets a long press lift a project header while its conversations stay selectable', () => {
+    const projectsCSS = readFileSync(resolve(stylesRoot, 'features/projects.css'), 'utf8');
+    expect(projectsCSS).not.toContain('touch-action: none');
+    expect(appCSS).toMatch(
+      /\.project-group\.is-reorderable > \.project-group-header\s*\{[^}]*-webkit-touch-callout: none;[^}]*user-select: none;/s,
+    );
+    // Groups slide aside to open the landing slot; the dragged one tracks the
+    // pointer directly, above them.
+    expect(appCSS).toMatch(
+      /\.project-group\s*\{[^}]*position: relative;[^}]*transition: transform/s,
+    );
+    expect(appCSS).toMatch(
+      /\.project-group\.is-dragging\s*\{[^}]*z-index: var\(--z-local-dragging\);[^}]*background: var\(--surface\);[^}]*transition: none;/s,
+    );
+    // Both lists share the grabbing cursor while a row is lifted.
+    expect(appCSS).toMatch(/\.reorder-list\.is-reordering,\s*\.reorder-list\.is-reordering \*/);
+  });
+
+  it('lifts a dragged pinned row or project above the menu buttons of the rows it covers', () => {
+    const tokens = readFileSync(resolve(stylesRoot, 'base/tokens.css'), 'utf8');
+    const layer = (name: string) =>
+      Number(tokens.match(new RegExp(`--z-${name}:\\s*(\\d+);`))?.[1]);
+    // An expanded project covers many rows of the groups it passes, and touch
+    // screens always show those rows' menu buttons.
+    expect(layer('local-dragging')).toBeGreaterThan(layer('session-menu-open'));
+    expect(layer('local-dragging')).toBeLessThan(layer('sidebar-backdrop'));
+    for (const selector of ['\\.session-row\\.is-dragging', '\\.project-group\\.is-dragging'])
+      expect(appCSS).toMatch(
+        new RegExp(`${selector}\\s*\\{[^}]*z-index: var\\(--z-local-dragging\\);`, 's'),
+      );
   });
 });
 
