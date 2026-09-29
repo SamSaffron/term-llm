@@ -54,6 +54,9 @@ type hubServer struct {
 	// node tokens) but, unlike streaming proxy traffic, gets a whole-request
 	// timeout.
 	nodeAPIClient        *http.Client
+	healthCache          hubHealthCache
+	healthCancel         context.CancelFunc
+	healthWG             sync.WaitGroup
 	attentionStore       *hub.AttentionProjectionStore
 	attentionCancel      context.CancelFunc
 	attentionWG          sync.WaitGroup

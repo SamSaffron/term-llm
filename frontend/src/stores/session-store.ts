@@ -180,6 +180,9 @@ export class SessionStore {
   private recentTailLoaded = false;
   private hubAgentLastFetch = 0;
   private hubAgentFetch: Promise<void> | null = null;
+  private hubAgentRefreshTimer = 0;
+  private hubAgentAbort: AbortController | null = null;
+  private disposed = false;
   /** Local reorders keep their place against stale Hub reads until saved. */
   private readonly hubAgentOrder = new SavedOrder((ranks) => this.applyHubAgentOrder(ranks));
   private hubAgentOrderVersion = 0;
@@ -1049,20 +1052,40 @@ export class SessionStore {
   }
 
   async refreshHubAgents(force = false): Promise<void> {
+    if (this.disposed) return;
     if (this.hubAgentFetch) return this.hubAgentFetch;
-    if (document.visibilityState === 'hidden') return;
+    if (document.visibilityState === 'hidden') {
+      window.clearTimeout(this.hubAgentRefreshTimer);
+      this.hubAgentRefreshTimer = 0;
+      this.hubAgentLastFetch = 0;
+      return;
+    }
     const url = this.hubAgentURL('/api/nodes?view=sidebar');
     if (!url) {
       this.hubAgents.value = [];
       return;
     }
-    if (!force && Date.now() - this.hubAgentLastFetch < 60_000) return;
+    const age = Date.now() - this.hubAgentLastFetch;
+    if (!force && age < 10_000) {
+      if (!this.hubAgentRefreshTimer) this.scheduleHubAgentRefresh(10_000 - age);
+      return;
+    }
+    window.clearTimeout(this.hubAgentRefreshTimer);
+    this.hubAgentRefreshTimer = 0;
     this.hubAgentLastFetch = Date.now();
     const orderVersion = this.hubAgentOrderVersion;
     const controller = new AbortController();
+    this.hubAgentAbort = controller;
+    let refreshDelay = 10_000;
+    let refreshAgain = true;
     const request = (async () => {
       try {
         const data = await this.services.endpoints.hubNodes(url, controller.signal);
+        if (this.disposed) return;
+        // While the Hub's background health cache warms, retry quickly without
+        // showing unknown nodes or waiting behind slow offline probes.
+        if (array(data.nodes).some((node) => recordValue(node.status)?.state === 'unknown'))
+          refreshDelay = 1_000;
         const safePath = (value: unknown): string =>
           typeof value === 'string' && /^\/(?![\\/])/.test(value) ? value : '';
         const target = (node: Record<string, unknown>): string => {
@@ -1079,12 +1102,7 @@ export class SessionStore {
         };
         this.showHubAgents(
           array(data.nodes)
-            .filter((node) => {
-              const status = recordValue(node.status);
-              // The lightweight sidebar snapshot deliberately does not probe
-              // health. Registered agents appear immediately as unknown.
-              return status?.reachable === true || status?.state === 'unknown';
-            })
+            .filter((node) => recordValue(node.status)?.reachable === true)
             .map((node) => {
               const id = String(node.id || '');
               const sessions = recordValue(node.sessions) || {};
@@ -1105,6 +1123,8 @@ export class SessionStore {
         // A failed read has not refreshed the order. Let the next focus or
         // visibility event retry instead of suppressing it for a full minute.
         this.hubAgentLastFetch = 0;
+        if (error instanceof APIError && error.status >= 400 && error.status < 500)
+          refreshAgain = false;
         if (
           error instanceof APIError &&
           error.status >= 400 &&
@@ -1117,11 +1137,24 @@ export class SessionStore {
     })();
     this.hubAgentFetch = request.finally(() => {
       this.hubAgentFetch = null;
+      this.hubAgentAbort = null;
+      if (!this.disposed && refreshAgain && document.visibilityState !== 'hidden')
+        this.scheduleHubAgentRefresh(refreshDelay);
     });
     return this.hubAgentFetch;
   }
 
+  private scheduleHubAgentRefresh(delay: number): void {
+    this.hubAgentRefreshTimer = window.setTimeout(() => {
+      this.hubAgentRefreshTimer = 0;
+      void this.refreshHubAgents(true);
+    }, delay);
+  }
+
   dispose(): void {
+    this.disposed = true;
+    this.hubAgentAbort?.abort();
+    window.clearTimeout(this.hubAgentRefreshTimer);
     this.searchAbort?.abort();
     window.clearTimeout(this.searchTimer);
   }

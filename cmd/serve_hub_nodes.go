@@ -132,18 +132,20 @@ func (s *hubServer) collectNodes(ctx context.Context) ([]hubNodeView, error) {
 }
 
 // collectSidebarNodes lists registered agents without contacting their backends.
-// The sidebar needs names, saved order, links, and cached attention, not live
-// health/session probes that can take the dashboard's full five-second budget.
+// The sidebar needs names, saved order, links, cached health and attention,
+// not live probes that can take the dashboard's full five-second budget.
 func (s *hubServer) collectSidebarNodes(ctx context.Context) ([]hubNodeView, error) {
 	nodes, err := s.registry.Nodes()
 	nodes = s.arrangeNodes(nodes)
+	s.healthCache.retain(nodes)
+	now := time.Now()
 	views := make([]hubNodeView, 0, len(nodes))
 	for _, n := range nodes {
 		proxyPath := s.hubPath("/node/" + n.ID + "/")
 		views = append(views, hubNodeView{
 			ID: n.ID, Name: n.Name, Source: n.Source, Connection: n.Connection,
 			ProxyPath: proxyPath, HasToken: n.Token != "",
-			Status: hub.Status{State: "unknown"},
+			Status: s.sidebarNodeHealth(n, now),
 			// Opening the node root restores its last selected chat; no live
 			// session request is needed to offer a useful agent link.
 			Sessions: &hubNodeSessionsView{ResumePath: proxyPath},

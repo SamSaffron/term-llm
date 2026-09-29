@@ -659,6 +659,9 @@ export class AppStore {
       ]);
       this.applyProviders(providers);
       this.applySidebar(sidebar);
+      // Agent health is cached on the Hub; fetch it alongside model/session
+      // hydration instead of making the list wait for the selected chat.
+      void this.refreshHubAgents();
       await this.loadModels().catch(optional);
       // Route hydration is first-load work. Reauthentication and Settings saves
       // must not reselect the chat or restore over the live unsent composer.
@@ -700,7 +703,6 @@ export class AppStore {
       this.serverEventCoordinator.flushBuffered();
       this.startStatusPoll();
       this.tabSyncCoordinator.flushPending();
-      void this.refreshHubAgents();
       if (!this.widgets.value.length) void this.loadWidgetStatus();
     } catch (error) {
       this.startup.value = error instanceof Error ? error.message : 'Could not load the chat UI.';

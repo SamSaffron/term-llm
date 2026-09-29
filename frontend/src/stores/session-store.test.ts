@@ -42,14 +42,17 @@ describe('chat Hub agent ordering', () => {
     }
   });
 
-  it('requests the lightweight sidebar snapshot and shows agents before health is probed', async () => {
+  it('requests cached sidebar health and excludes offline and unprobed agents', async () => {
     const store = new AppStore(hubConfig);
     try {
       store.endpoints.hubNodes = vi.fn(async () => ({
-        nodes: ['beta', 'alpha'].map((id) => ({
+        nodes: ['beta', 'offline', 'unknown', 'alpha'].map((id) => ({
           id,
           name: id,
-          status: { reachable: false, state: 'unknown' },
+          status: {
+            reachable: id === 'beta' || id === 'alpha',
+            state: id === 'unknown' ? 'unknown' : id === 'offline' ? 'unreachable' : 'ok',
+          },
           sessions: { resume_path: `/hub/node/${id}/`, unseen_count: id === 'beta' ? 1 : 0 },
         })),
       }));
@@ -64,6 +67,102 @@ describe('chat Hub agent ordering', () => {
         attention: true,
       });
     } finally {
+      store.dispose();
+    }
+  });
+
+  it('retries unprobed health promptly, removes offline agents on polls, and stops on disposal', async () => {
+    vi.useFakeTimers();
+    const store = new AppStore(hubConfig);
+    try {
+      const unprobed = {
+        ...hubNode('alpha', false),
+        status: { reachable: false, state: 'unknown' },
+      };
+      const fetchNodes = vi
+        .fn()
+        .mockResolvedValueOnce({ nodes: [unprobed] })
+        .mockResolvedValueOnce(hubListing('alpha', 'beta'))
+        .mockResolvedValue({ nodes: [hubNode('alpha', false), hubNode('beta')] });
+      store.endpoints.hubNodes = fetchNodes;
+      await store.refreshHubAgents(true);
+      expect(agentIds(store)).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(agentIds(store)).toEqual(['alpha', 'beta']);
+      expect(fetchNodes).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(agentIds(store)).toEqual(['beta']);
+      expect(fetchNodes).toHaveBeenCalledTimes(3);
+      store.dispose();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(fetchNodes).toHaveBeenCalledTimes(3);
+    } finally {
+      store.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('pauses polling while hidden and resumes on a visible refresh', async () => {
+    vi.useFakeTimers();
+    const store = new AppStore(hubConfig);
+    try {
+      const fetchNodes = vi.fn(async () => hubListing('alpha'));
+      store.endpoints.hubNodes = fetchNodes;
+      await store.refreshHubAgents(true);
+      vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(fetchNodes).toHaveBeenCalledTimes(1);
+      vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+      await store.refreshHubAgents();
+      expect(fetchNodes).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(fetchNodes).toHaveBeenCalledTimes(3);
+    } finally {
+      store.dispose();
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not publish a late fetch or restart polling after disposal', async () => {
+    vi.useFakeTimers();
+    const store = new AppStore(hubConfig);
+    const listing = deferred<ReturnType<typeof hubListing>>();
+    try {
+      const fetchNodes = vi.fn(() => listing.promise);
+      store.endpoints.hubNodes = fetchNodes;
+      const pending = store.refreshHubAgents(true);
+      const signal = fetchNodes.mock.calls[0] as unknown as [string, AbortSignal];
+      store.dispose();
+      expect(signal[1].aborted).toBe(true);
+      listing.resolve(hubListing('alpha'));
+      await pending;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(agentIds(store)).toEqual([]);
+      expect(fetchNodes).toHaveBeenCalledTimes(1);
+    } finally {
+      store.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('loads online Hub agents before model and selected-chat hydration completes', async () => {
+    const store = new AppStore(hubConfig);
+    const models = deferred<Record<string, unknown>>();
+    let pending: Promise<void> | undefined;
+    try {
+      store.endpoints.capabilities = vi.fn(async () => ({ projects: { enabled: false } }));
+      store.endpoints.providers = vi.fn(async () => ({ object: 'list', data: [] }));
+      store.endpoints.sessions = vi.fn(async () => ({ object: 'list', data: [] }));
+      store.endpoints.models = vi.fn(() => models.promise);
+      store.endpoints.hubNodes = vi.fn(async () => hubListing('alpha'));
+      pending = store.bootstrap();
+      await vi.waitFor(() => expect(agentIds(store)).toEqual(['alpha']));
+      expect(store.startupDone.value).toBe(false);
+      expect(store.endpoints.models).toHaveBeenCalled();
+    } finally {
+      models.resolve({ object: 'list', data: [] });
+      await pending;
       store.dispose();
     }
   });

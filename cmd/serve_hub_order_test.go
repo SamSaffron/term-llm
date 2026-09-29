@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/hub"
 )
@@ -128,6 +130,22 @@ func TestHubSidebarNodesNeverWaitForNodeProbes(t *testing.T) {
 	// listing must not use health, reverse transport, or live session clients.
 	s.prober = nil
 	s.nodeAPIClient = nil
+	nodes, err := s.registry.Nodes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.healthCache.retain(nodes)
+	wantStatuses := map[string]hub.Status{
+		"alpha":  {State: "ok", Reachable: true},
+		"beta":   {State: "unreachable"},
+		"gamma":  {State: "unknown"},
+		"silent": {State: "unknown"},
+	}
+	for _, n := range nodes {
+		if n.ID == "alpha" || n.ID == "beta" {
+			s.healthCache.publish(context.Background(), n, time.Now(), wantStatuses[n.ID])
+		}
+	}
 	if _, err := s.nodeOrder.Reorder(orderTestNodes(), []string{"gamma", "beta", "alpha", "silent"}); err != nil {
 		t.Fatal(err)
 	}
@@ -145,8 +163,9 @@ func TestHubSidebarNodesNeverWaitForNodeProbes(t *testing.T) {
 	var ids []string
 	for _, node := range body.Nodes {
 		ids = append(ids, node.ID)
-		if node.Status.State != "unknown" || node.Status.Reachable {
-			t.Fatalf("sidebar reported unprobed health: %+v", node.Status)
+		want := wantStatuses[node.ID]
+		if node.Status.State != want.State || node.Status.Reachable != want.Reachable {
+			t.Fatalf("sidebar health for %s = %+v, want %+v", node.ID, node.Status, want)
 		}
 		if node.Sessions == nil || node.Sessions.ResumePath != "/hub/node/"+node.ID+"/" {
 			t.Fatalf("sidebar resume path = %+v", node.Sessions)

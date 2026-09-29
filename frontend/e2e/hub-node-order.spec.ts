@@ -207,8 +207,6 @@ test.describe('Hub node order', () => {
     test.setTimeout(60_000);
     await resetOrder();
     await openDashboard(page);
-    // Sidebar metadata is served without backend probes, so even the two
-    // fixture nodes with no live backend appear without mocking this request.
     await page.goto(`${hubRoot}node/${production}/?new=1`);
     await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
     const agentRows = () => page.locator('.hub-agent-links > .hub-agent-row');
@@ -217,6 +215,20 @@ test.describe('Hub node order', () => {
       agentRows().evaluateAll((rows) =>
         rows.map((row) => (row as HTMLElement).dataset.reorderId || ''),
       );
+    // Real cached health must hide the two fixture nodes with no live backend.
+    await expect.poll(shown, { timeout: 10_000 }).toEqual([production]);
+    // The remaining interactions need three online rows. Stub only the
+    // fixture health; saved order and PATCHes still come from the real Hub.
+    await page.route('**/hub/api/nodes?view=sidebar', async (route) => {
+      const response = await route.fetch();
+      const body = (await response.json()) as {
+        nodes: Array<{ id: string; status: { reachable: boolean; state: string } }>;
+      };
+      for (const node of body.nodes)
+        if (node.id === alpha || node.id === beta) node.status = { reachable: true, state: 'ok' };
+      await route.fulfill({ response, json: body });
+    });
+    await page.reload();
     await expect.poll(shown).toEqual(known);
 
     // Keyboard movement from the link preserves focus and changes Hub order.

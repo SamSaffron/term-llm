@@ -240,7 +240,12 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 	defer attentionStore.Close()
 	s.attentionStore = attentionStore
 	s.startAttentionCollector()
+	s.startHealthMonitor()
 	defer func() {
+		if s.healthCancel != nil {
+			s.healthCancel()
+			s.healthWG.Wait()
+		}
 		if s.attentionCancel != nil {
 			s.attentionCancel()
 			s.attentionWG.Wait()
