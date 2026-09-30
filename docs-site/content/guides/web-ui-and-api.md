@@ -459,7 +459,8 @@ and redemption. Codes also fail if the approving browser session
 is revoked first. Every code needs its own passkey assertion, so a session can't
 use this flow to extend itself without the operator. The app's session is
 independent of the browser session: signing out of one leaves the other signed
-in. Use **Revoke other sessions** to end both.
+in. To end both from the browser, choose **Revoke other sessions**, then **Sign out**
+to end the current browser session.
 
 ## Run persistently on macOS or Linux
 
