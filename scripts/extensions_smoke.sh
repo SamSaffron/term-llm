@@ -19,6 +19,8 @@ default_provider: debug
 providers:
   debug:
     model: fast
+    # Reused sessions submit "fast" as an override, which resolves as a model alias.
+    fast_model: fast
 YAML
 printf 'enabled: []\n' > "$home/config/term-llm/extensions/extensions.yaml"
 port="$(node "$root/scripts/free_port.mjs")"
