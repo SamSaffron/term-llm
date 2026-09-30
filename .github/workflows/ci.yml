@@ -238,7 +238,8 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Browser chat smoke
-        timeout-minutes: 5
+        # Includes fixture builds and serial tests across three browser projects.
+        timeout-minutes: 10
         run: scripts/browser_lifecycle_smoke.sh
 
       - name: Clean-room extension browser smoke
